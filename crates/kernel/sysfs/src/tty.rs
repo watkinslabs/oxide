@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use sync::{Kernfs as SysfsLockClass, Spinlock};
 
 use vfs::{
-    default_inode_ops, mk_mode, DirContext, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps,
+    mk_mode, DirContext, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps,
     InodeRef, KResult, PollSubscribers, VfsError, POLL_ERR, POLL_IN, POLL_PRI,
 };
 
@@ -259,7 +259,7 @@ fn make_tty_active_inode(name: &str, minor: u32) -> InodeRef {
         g.push(Arc::downgrade(&subs));
     }
     InodeBuilder::new(crate::ids::TTY_RO_ATTR + minor as Ino, mk_mode(FileType::Regular, RO_PERM),
-        default_inode_ops(), Arc::new(TtyActiveFileOps))
+        crate::kobject::attr_inode_ops(), Arc::new(TtyActiveFileOps))
         .private(Arc::new(TtyActiveData { is_vt }))
         .poll_subs_arc(subs)
         .build()
@@ -294,7 +294,7 @@ impl FileOps for TtyUeventFileOps {
 
 fn make_tty_uevent_inode(name: String, major: u32, minor: u32) -> InodeRef {
     InodeBuilder::new(crate::ids::TTY_RW_ATTR + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
-        default_inode_ops(), Arc::new(TtyUeventFileOps))
+        crate::kobject::attr_inode_ops(), Arc::new(TtyUeventFileOps))
         .private(Arc::new(TtyUeventData { name, major, minor }))
         .build()
 }

@@ -23,7 +23,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{default_file_ops, default_inode_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode,
+use vfs::{default_file_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode,
           InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 pub mod block;
@@ -451,7 +451,7 @@ impl FileOps for BodyFileOps {
 pub fn make_body_inode(body: Vec<u8>, ino: Ino) -> InodeRef {
     let size = body.len() as u64;
     InodeBuilder::new(ino, mk_mode(FileType::Regular, RO_PERM),
-        default_inode_ops(), Arc::new(BodyFileOps))
+        crate::kobject::attr_inode_ops(), Arc::new(BodyFileOps))
         .size(size)
         .private(Arc::new(BodyData { body }))
         .build()

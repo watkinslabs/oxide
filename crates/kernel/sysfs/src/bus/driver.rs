@@ -111,7 +111,7 @@ impl FileOps for DriverAttrOps {
 fn make_driver_attr_inode(bus: &'static str, driver: &'static str, attr: DriverAttr) -> InodeRef {
     let off = match attr { DriverAttr::Bind => 0, DriverAttr::Unbind => 1 };
     InodeBuilder::new(INO_DRIVER_ATTR + off, mk_mode(FileType::Regular, RW_PERM),
-        vfs::default_inode_ops(), Arc::new(DriverAttrOps))
+        crate::kobject::attr_inode_ops(), Arc::new(DriverAttrOps))
         .private(Arc::new(DriverAttrData { bus, driver, attr }))
         .build()
 }

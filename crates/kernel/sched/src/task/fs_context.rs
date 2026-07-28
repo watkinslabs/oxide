@@ -79,11 +79,20 @@ pub struct FsContext {
 }
 
 impl FsContext {
-    /// Construct the initial `/` filesystem context. # C: O(1)
+    /// Construct the initial `/` filesystem context — Linux `init_fs` after
+    /// `fs/namespace.c init_mount_tree()` ran `set_fs_pwd`/`set_fs_root` on it:
+    /// root AND pwd are the mount-namespace root `struct path`, not "unset".
+    /// A live task's `fs->root` is what `/proc/<pid>/root` resolves to
+    /// (`fs/proc/base.c proc_root_link` → `get_task_root`), so leaving it unset
+    /// makes that magic link ENOENT — which systemd reads as "I am in a
+    /// chroot" and then skips `udevadm trigger`, leaving the udev database
+    /// empty for the whole boot. `None` only before the root filesystem is
+    /// mounted (Linux's pre-`init_mount_tree` window). # C: O(log N)
     pub fn new() -> Self {
+        let root = vfs::mount::root_path_for_ns(vfs::mount::current_ns());
         Self { state: Spinlock::new(FsContextState {
-            cwd: String::from("/"), cwd_vfs: None,
-            root: String::from("/"), root_vfs: None,
+            cwd: String::from("/"), cwd_vfs: root.clone(),
+            root: String::from("/"), root_vfs: root,
         }), umask: AtomicU32::new(UMASK_DEFAULT) }
     }
 

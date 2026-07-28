@@ -181,3 +181,54 @@ Post-dates the audit; neither ledger carried the ISN row before this branch.
 - `bpf` is **not** an arbitrary-kernel-execution hole — programs never execute; a functional void, not a security one.
 - The TCP ISN finding is **new** — it post-dates every earlier ledger and appeared in neither. Fixed on `B1465`; see §6a.
 - `bind()`/`mknod` stale negative dentries: **already fixed**. A blocking lease break **does** exist. Unwritten-extent writes are **not** rejected. Mandatory locking is `ABSENT-OK` (Linux removed it in 5.15). `copy_file_range`'s unconditional `EXDEV` matches current Linux.
+
+## 8 B1472 — gdm "no session desktop files installed": three Linux-incompat kernel bugs
+
+Reported symptom: `live-gnome` reaches `graphical.target`, gdm aborts with `GdmSession: no
+session desktop files installed, aborting...` about `/usr/share/wayland-sessions`, which
+demonstrably holds `gnome.desktop` + `gnome-wayland.desktop`. `gnome-shell` never starts.
+
+**`readdir` was NOT the cause** (the reported hypothesis). Verified in a live guest on the
+`systemd.debug_shell=ttyS0` console: `ls -la /usr/share/wayland-sessions` lists both files,
+`md5sum` matches the host, `TryExec=/usr/bin/gnome-session` exists mode 0755. gdm never opens
+that directory — it drops the Wayland session dirs before searching. `gdm`'s
+`get_system_session_dirs` (disassembled from the image binary) builds the search list from
+`self->supported_session_types`; with only `x11` the list is the four X11 dirs, and
+`/usr/share/xsessions` is EMPTY in this image, so zero sessions is the correct output of a
+wrong input.
+
+Chain, each link observed rather than inferred:
+
+| # | Bug | Observation | Linux |
+|---|---|---|---|
+| 1 | `fs_struct.root`/`pwd` only set by `chroot(2)`, so `/proc/<pid>/root` is ENOENT | `readlink /proc/1/root` → ENOENT; `stat -L` → ENOENT | `init_mount_tree()` runs `set_fs_root`/`set_fs_pwd` on `init_fs`; `proc_root_link` → `get_task_root` never fails for a live task |
+| 2 | sysfs attributes reject `O_TRUNC` (`i_op->truncate` default `EROFS`) | `echo add > /sys/class/drm/card0/uevent` → "Read-only file system" | `kernfs_iop_setattr` runs `setattr_copy` and "ignores size changes" (`fs/kernfs/inode.c`) |
+| 3 | `fstatfs` on a synthesized sysfs inode reports TMPFS_MAGIC (no `i_sb`) | `udevadm trigger --dry-run -v` lists 2 devices; debug log: `sd-device: the syspath "/sys/devices/…" is outside of sysfs, refusing` | `vfs_statfs(&f->f_path)` reads `f_path.dentry->d_sb`, which for a path-backed fd IS the mount's sb — `sys_statfs` on the same path already answered SYSFS_MAGIC, so the two disagreed |
+
+Consequence chain: (1) makes systemd's `running_in_chroot()` true — `udevadm trigger` prints
+"Running in chroot, ignoring request." (2) and (3) independently break coldplug even once the
+chroot check passes. No udev database ⇒ no `master-of-seat` tag on the DRM card ⇒ logind
+`/run/systemd/seats/seat0` `CAN_GRAPHICAL=0` ⇒ gdm's Wayland session types are dropped ⇒ empty
+X11-only session dirs ⇒ `g_error` ⇒ abort.
+
+Before/after, same image, x86_64:
+
+```
+before: readlink /proc/1/root = ENOENT   udevadm trigger = "Running in chroot, ignoring request."
+        /run/udev/data absent            CAN_GRAPHICAL=0    gnome-shell never runs
+after:  readlink /proc/1/root = "/"      trigger enumerates 43 devices (was 2)
+        /run/udev/data = 35 entries      tags = master-of-seat,seat,systemd,uaccess
+        master-of-seat = c226:0          CAN_GRAPHICAL=1    gnome-shell running (2 procs)
+```
+
+Also observed and NOT fixed here:
+
+- gdm's `abort()` after `g_error` killed it with **SIGSEGV, not SIGABRT** — glibc's `abort()`
+  falls through to `ABORT_INSTRUCTION` (`hlt`, → #GP → SIGSEGV) only when BOTH `raise(SIGABRT)`
+  calls return. Signal-to-self via `tgkill` in a threaded process is not terminating the group.
+  Moot for this blocker (gdm no longer aborts) but a real signal-delivery gap.
+- SMP=2 `live-gnome` boot panicked at `sched/live/schedule/switch.rs:367`
+  "schedule selected task already owned by another CPU". Pre-existing `on_cpu` ownership race,
+  unrelated to this diff; the faster boot (working udev) makes it easier to hit.
+- Serial RX duplicates input bytes under load (`xsessions` → `xsessiions`), and a burst of
+  typed input has twice ended in `#DF` inside `sched::diag::emit::sysrq_rx`.
