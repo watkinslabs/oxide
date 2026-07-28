@@ -94,9 +94,9 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
 /// # C: O(1)
 fn notify_sender_side(q: &MqQueue) {
     let Some(cur) = sched::live::current() else { return };
-    let tgid = cur.tgid.load(Ordering::Acquire);
+    let vpid = sched::session::process_vpid(&cur);
     let uid = cur.creds.euid.load(Ordering::Acquire);
-    super::notify::do_notify(q, tgid, uid);
+    super::notify::do_notify(q, vpid, uid);
 }
 
 /// `sys_mq_timedreceive(mqdes, msg_ptr, msg_len, msg_prio_p, abs_timeout)` —
