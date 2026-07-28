@@ -157,7 +157,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // and a task running on an AP got no one-shot at all.
             crate::deadline::rearm_local();
         }
-        sched::live::preempt::set_need_resched();
+        sched::live::preempt::task_tick();
         // `membarrier(2)` rides the resched SGI (Linux `ipi_mb` is just a full
         // barrier — no private SGI to enable per-redistributor). No-op unless
         // this CPU is a target of an in-flight round.

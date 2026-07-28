@@ -247,3 +247,13 @@ pub fn set_class(task: &Arc<Task>, new: crate::SchedClass) {
     // that has not completed `install_global`, which the walk skips.
     super::rq_locate::set_class_with(&|cpu| unsafe { global_for(cpu) }, task, new);
 }
+
+/// Linux `task_tick_rt`'s peer test, resolved against the runqueue the task is
+/// actually on. Used by the periodic tick to decide whether an exhausted
+/// `SCHED_RR` quantum should yield the CPU.
+/// # C: O(1)
+pub fn has_rt_peer_at_same_level(t: &Task) -> bool {
+    let crate::SchedClass::Rt { prio, .. } = t.sched_class() else { return false };
+    let Some(rq) = global() else { return false };
+    rq.inner.lock().rt.has_peer_at(prio)
+}
