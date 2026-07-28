@@ -242,7 +242,16 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
 unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_x86_64::PtRegs) {
     if regs.is_null() { return; }
     // SAFETY: the IRQ-exit asm passes the interrupted `PtRegs`, live here.
+    let vector = unsafe { (*regs).vector };
+    // SAFETY: same live frame.
     if !unsafe { (*regs).from_user() } { return; }
+    // Linux routes NMI through `irqentry_nmi_enter`/`irqentry_nmi_exit`, which
+    // never reach `exit_to_user_mode_loop`. The fault epilogue this function
+    // also serves resumes an NMI (the cross-CPU backtrace poke) exactly like a
+    // resolved exception, so the vector is the only thing distinguishing them:
+    // an NMI can land on top of any kernel critical section, and running the
+    // scheduler or building a signal frame there is not recoverable.
+    if vector == hal_x86_64::PT_REGS_VECTOR_NMI { return; }
     // Snapshot BEFORE the loop: the loop consumes `need_resched` when it
     // schedules, and the rseq abort below must fire exactly when the thread
     // lost the CPU inside user code — not on every interrupt return, which

@@ -42,6 +42,15 @@ use syscall::SyscallArgs;
 /// `-1` — see the module header.
 pub const PT_REGS_VECTOR_SYSCALL: u64 = u64::MAX;
 
+/// `#NMI` — Intel SDM Vol. 3 Table 6-1 vector 2. Named here because the
+/// return-to-user work loop has to recognise it: an NMI is delivered through
+/// IF=0 and can land anywhere, so Linux routes it through
+/// `irqentry_nmi_enter`/`irqentry_nmi_exit`, which deliberately never reach
+/// `exit_to_user_mode_loop`. Delivering a signal or calling `schedule()` from
+/// NMI context would run the scheduler on top of an arbitrary interrupted
+/// kernel critical section.
+pub const PT_REGS_VECTOR_NMI: u64 = 2;
+
 /// Saved user state at any kernel entry. Field order == Linux
 /// `struct pt_regs` (x86_64) with `orig_ax` split into `vector`/`error`.
 #[repr(C)]

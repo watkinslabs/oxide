@@ -171,7 +171,7 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
     // on a CPU spinning in a spinlock deadlock with interrupts masked.
     // Print this CPU's RIP/regs then RESUME (return true → iretq): a poke
     // at a CPU that wasn't actually wedged must be non-destructive.
-    if f.vector == 2 {
+    if f.vector == crate::PT_REGS_VECTOR_NMI {
         #[cfg(feature = "debug-watchdog")]
         nmi_backtrace(f);
         return true;
