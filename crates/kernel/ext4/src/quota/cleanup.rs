@@ -19,7 +19,10 @@ pub(super) fn mark_visible_quota_file(st: &RootfsState, inode: &vfs::Inode, ino:
 pub(super) fn clear_visible_quota_file(st: &RootfsState, ino: u32, orig_flags: u32) -> vfs::KResult<()> {
     let raw = st.mount.read_inode(ino).map_err(|_| vfs::VfsError::Eio)?;
     let raw_now = vfs::inode_times::realtime_now_ns();
-    let mut ts = raw_now;
+    // No cached inode ⇒ no superblock granularity to floor to; the raw clock
+    // reading is already the `current_time` input (Linux `current_time` on an
+    // inode whose sb is in hand does the same truncate).
+    let mut ts = vfs::Timespec64::from_clock_ns(raw_now);
     let mut cached = None;
     if let Some(sb) = st.i_sb() {
         if let Some(inode) = sb.ilookup(ext4_wrap_ino(ino)) {

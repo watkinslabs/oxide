@@ -34,6 +34,8 @@ pub mod readahead;
 /// (Linux `fs/splice.c` + `fs/read_write.c`).
 pub mod splice;
 pub mod xattr;
+/// `file_getattr(2)`/`file_setattr(2)` `struct file_attr` ABI (Linux `fs/file_attr.c`).
+pub mod fileattr;
 pub mod keyring;
 pub mod perf;
 pub mod tmpfs;

@@ -238,7 +238,14 @@ fn init_exit_check(task: &sched::Task) {
     let is_global_init = is_ns_init && sched::live::in_initial_pid_namespace(task);
     match init_exit(group_dead, is_global_init, is_ns_init) {
         InitExit::None         => {}
-        InitExit::ZapNamespace => sched::live::zap_pid_namespace(task),
+        InitExit::ZapNamespace => {
+            sched::live::zap_pid_namespace(task);
+            // `zap_pid_ns_processes` closes with `if (pid_ns->reboot)
+            // current->signal->group_exit_code = pid_ns->reboot`: an in-namespace
+            // reboot(2) reports SIGHUP/SIGINT, not the SIGKILL that tore the
+            // namespace down.
+            let _ = sched::live::apply_pid_namespace_reboot_status(task);
+        }
         InitExit::PanicMachine => panic!("Attempted to kill init!"),
     }
 }

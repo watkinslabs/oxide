@@ -11,6 +11,15 @@ pub struct TmpfsSymlinkData { target: Vec<u8> }
 /// `i_op` for a tmpfs symlink: `readlink` returns the stored target. # C: O(1)
 struct TmpfsSymlinkOps;
 impl InodeOps for TmpfsSymlinkOps {
+    /// `shmem_fileattr_get` — the `chattr` word for this inode. # C: O(1)
+    fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
+        super::fileattr::tmpfs_fileattr_get(inode)
+    }
+    /// `shmem_fileattr_set`. # C: O(1)
+    fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
+        super::fileattr::tmpfs_fileattr_set(inode, fa)
+    }
+
     fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
         let d = inode.private::<TmpfsSymlinkData>().ok_or(VfsError::Einval)?;
         Ok(d.target.clone())
