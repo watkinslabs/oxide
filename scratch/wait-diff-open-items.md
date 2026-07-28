@@ -24,9 +24,66 @@ Record count is **44** since B1460 added `latency|nanosleep_short` and
 `latency|epoll_wait_short` (it was 42 after F760's `mqapi` block; the 29 below
 predates both).
 
-Differential state at `8b4c9a668` + B1456, own runs, clean builds: **29/29
-identical records on BOTH arches — zero divergences**, the first time that has
-held. x86 `x86-20260727-192336-a52Dqp`, arm `arm-20260727-192540-46DkYl`.
+| DONE | W8 `shm_nattch` counted shmat/shmdt calls, not VMAs | `F765-sysv-blocking-differential` | both | §9 |
+| OPEN | W9 a userspace spin loop is UNKILLABLE — no signal reaches it | | both | §10 |
+
+Differential state after F765 merged with the `latency` and `inotify` rows,
+own runs, clean builds: **87/87 identical records on BOTH arches — zero
+divergences** (x86 `x86-20260728-010744-KpVGX3`, arm
+`arm-20260728-011000-3u4phl`). F765 grew
+it 42 -> 77 with `sysv_sem` / `sysv_msg` / `sysv_shm`, the first execution of
+the SysV blocking paths and of `shmdt`'s address-space half.
+
+## 10 W9 — a spinning userspace task takes no signal, not even SIGKILL
+
+The shared differential is RED on main because of this, on BOTH arches, and
+it is not a probe bug. `sigfpu.c` (B1466) is the first case that spins in a
+pure userspace loop rather than parking in a syscall, and on oxide nothing
+ever interrupts it:
+
+```
+[12.893] [EXECLOAD begin tid=4180 path=/usr/local/bin/wait_diff]
+wdiff|meta|format|wait_diff=1                <- last record ever printed
+[311.776] wait-diff-smoke.service: start operation timed out. Terminating.
+[357.070] Killing process 78 (wait_diff) with signal SIGABRT.
+[402.315] Killing process 78 (wait_diff) with signal SIGKILL.
+[447.526] Processes still around after SIGKILL. Ignoring.
+```
+
+Three signals the probe arranged itself never arrived either: the kicker
+child's `SIGUSR1`, and the probe's own `alarm(JOBCTL_GUARD_S)` `SIGALRM`,
+whose entire purpose is to stop exactly this hang. So the defect is not
+"SIGKILL is special" — it is that a task which never enters the kernel never
+reaches a signal-delivery point. Linux preempts it on the timer tick and
+runs `get_signal` on the return-to-user path.
+
+Every syscall-parked case in this probe passes, which is why 97 records of
+coverage never found it: `signal_pending` is only ever consulted by a
+parked waiter here. Needs the timer-tick preemption path to force a
+signal-delivery check on return to user mode.
+
+B1466 could not have seen it: its `SOURCES` list omitted `sigfpu.c`, so the
+guest binary never contained the probe (F765 added it, plus the
+`<stddef.h>` its `offsetof` needs to cross-compile for aarch64).
+
+## 9 W8 — `shm_nattch` counted calls, not VMAs — DONE (F765)
+
+```
+-wdiff|sysv_shm|nattch_tracks_fork|forked=2|after_exit=1   <- Linux
++wdiff|sysv_shm|nattch_tracks_fork|forked=1|after_exit=1   <- oxide
+```
+
+Linux moves `shm_nattch` from `shm_vm_ops.open`/`.close` (`ipc/shm.c`), so it
+counts VMAs: fork copy, mprotect split, merge and `exit_mmap` all move it.
+oxide moved it only in `shmat`/`shmdt`, so `ipcs -m` under-reported forked
+attachers and — since teardown never decremented — a process exiting without
+`shmdt` left the count raised forever, keeping an `IPC_RMID`ed segment alive.
+
+Fixed by `VmaFlags::SYSVSHM` + `mm-vmm/src/vm_ops.rs`, with every VMA-tree
+birth/death funnelled through `VmaTree::map_put`/`map_take`. Ordering matters:
+a split opens the fragments BEFORE closing the original, or a
+single-attachment `SHM_DEST` segment hits zero mid-split and is destroyed
+under the fragments about to reference it. Hosted: `vmm::tests_vm_ops`.
 
 ## 2 W1 — the job-control stop never unwinds the sleep — DONE (B1456)
 
@@ -134,7 +191,11 @@ Two candidate lanes, pick deliberately:
 - move to precise accounting at switch/entry boundaries (Linux
   `vtime_task_switch`), which is the real fidelity gap.
 
-Not a blocker for W1; it makes that row flaky on ARM, not wrong.
+Not a blocker for W1; it makes that row flaky on ARM, not wrong. F765
+re-measured it at `ced0a0d26`: one ARM run showed `slept=0`, the next was
+exact, so the rate is unchanged and it is the only row that has ever needed
+a re-run. Widening the probe's margin is the cheap lane and nothing else is
+waiting on it.
 
 ## 5 W4 — `SMP>1` is untested for the new per-CPU tick state
 

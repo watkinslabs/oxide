@@ -81,6 +81,21 @@
 #define JOBCTL_GUARD_S   10u
 #define MQ_ABS_TIMEOUT_S 30
 
+/* System V IPC. None of these cases combines a signal with a release, so
+ * the 10x margin B1449/B1453 needed does not apply: an EINTR case has NO
+ * peer that could satisfy it, and a release case has no signal that could
+ * race the release. The only requirement left is that a park is entered
+ * before the peer acts, which SYSV_SETTLE_MS covers. */
+#define SYSV_RELEASE_MS  600u
+#define SYSV_SETTLE_MS   600u
+#define SYSV_TIMEOUT_MS  400u
+#define SYSV_GUARD_MS   4000u
+#define SYSV_STOP_MS     150u
+#define SYSV_CONT_MS     900u
+/* "The call really parked" buckets. Half the interval it had to wait. */
+#define SYSV_SLEPT_MS    (SYSV_RELEASE_MS / 2)
+#define SYSV_TIMED_MS    (SYSV_TIMEOUT_MS / 2)
+
 /* B1460 timed-wait latency (`latency.c`). The claim these encode is a
  * CONFORMANCE claim about the kernel's timeout floor, not scaffolding — do not
  * widen the budget to make a run go green, because widening it past
@@ -152,6 +167,21 @@ int wait_bounded(pid_t pid, unsigned ms, int *st);
 int         err_class(int rc, int err);
 const char *err_class_name(int cls);
 
+/* SysV IPC needs EAGAIN / EIDRM / ENOMSG / E2BIG told apart, which
+ * `err_class` folds into `other`. Three bits, so a child can hand the
+ * outcome back in an exit code beside the SV_* flag bits. */
+int         sysv_class(int rc, int err);
+const char *sysv_class_name(int cls);
+#define SV_CLS_MASK 7
+#define SV_SLEPT    8
+#define SV_SIG     16
+#define SV_DATA    32
+
+/* How a child that was expected to fault ended: `ok` (exited zero),
+ * `segv`, `bus`, `signalled`, `exited`. Used to prove an address really
+ * is unmapped after shmdt, which no return value can show. */
+const char *fault_class(int st);
+
 /* poll(2)/epoll readiness classification, shared by readiness.c (a parked
  * waiter that a source callback must wake) and readiness_out.c (POLLOUT
  * de-asserting under send-buffer backpressure). `err_class` cannot serve
@@ -195,5 +225,8 @@ void probe_mqueue_api(void);
 void probe_syslog(void);
 void probe_inotify(void);
 void probe_sigfpu(void);
+void probe_sysv_sem(void);
+void probe_sysv_msg(void);
+void probe_sysv_shm(void);
 
 #endif

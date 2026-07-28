@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI64, Ordering};
 
 use super::*;
-use crate::sysv_shm::{lookup_by_id, ShmSegment, PAGE_SIZE, REG, SHM_DEST};
+use crate::sysv_shm::{lookup_by_id, shm_vma_close, ShmSegment, PAGE_SIZE, REG, SHM_DEST};
 
 const SPAN: u64 = 4 * PAGE_SIZE;
 const BASE: u64 = 0x7000_0000;
@@ -109,10 +109,10 @@ fn detach_drops_the_attach_count_without_destroying_a_live_segment() {
     REG.segs.lock().clear();
     let seg = seg_with(901, 2, 0o600);
     REG.segs.lock().push(seg.clone());
-    release_detached(&seg);
+    shm_vma_close(&seg.backing);
     assert_eq!(seg.nattch.load(Ordering::Acquire), 1);
     assert!(lookup_by_id(901).is_some(), "a segment without SHM_DEST survives detach");
-    release_detached(&seg);
+    shm_vma_close(&seg.backing);
     assert_eq!(seg.nattch.load(Ordering::Acquire), 0);
     assert!(lookup_by_id(901).is_some(), "IPC_RMID, not the last detach, marks a segment for death");
     REG.segs.lock().clear();
@@ -124,9 +124,9 @@ fn last_detach_destroys_a_segment_already_marked_shm_dest() {
     REG.segs.lock().clear();
     let seg = seg_with(902, 2, 0o600 | SHM_DEST);
     REG.segs.lock().push(seg.clone());
-    release_detached(&seg);
+    shm_vma_close(&seg.backing);
     assert!(lookup_by_id(902).is_some(), "an RMID'd segment lives until its last attach goes");
-    release_detached(&seg);
+    shm_vma_close(&seg.backing);
     assert!(lookup_by_id(902).is_none(), "the last detach of an RMID'd segment destroys it");
     assert!(REG.segs.lock().is_empty());
 }

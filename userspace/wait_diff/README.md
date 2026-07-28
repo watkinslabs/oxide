@@ -76,6 +76,14 @@ green boot look like evidence.
 | `nodrain` | the backpressure reader never drains — every `out_after_drain` |
 | `nofill` | the backpressure writer never fills — every `out_when_full` |
 | `nosig` | drops the mid-wait interrupt entirely (blanket) |
+| `sysvavail` | the SysV IPC_NOWAIT cases start satisfiable |
+| `sysvnopost` | no SysV peer ever posts/sends/drains |
+| `sysvnormid` | never `IPC_RMID`s the set/queue a waiter is parked on |
+| `sysvnoundo` | drops `SEM_UNDO` from the undo case |
+| `sysvmsgflags` | drops `MSG_NOERROR`/`MSG_EXCEPT`, positive `msgtyp` |
+| `sysvdt1page` | `shmdt` -> one-page `munmap` (the historical shmdt bug) |
+| `sysvdtbase` | the shmdt-rejection cases get the real attach base |
+| `sysvnofork` | no forked second attach for the `shm_nattch` case |
 
 `latency|*` is the only area whose records depend on how FAST the guest is
 rather than on what it decided, so its two buckets are conformance claims, not
@@ -116,6 +124,16 @@ The generalisation: for any case whose success value is also what a
 DEGENERATE implementation returns, the record needs a second observable
 that the degenerate path cannot fake.
 
+The converse, from F765: that second observable must not be a duration
+the two kernels may legitimately disagree about. The SysV `signal_*`
+rows shipped a `slept=` bucket and an ARM guest recorded `slept=1` where
+the oracle had `slept=0` — the semantics (`eintr`, `sig=1`) were
+identical and the bucket was measuring the wall time between arming a
+150 ms itimer and the EINTR reaching userspace, i.e. guest wake latency.
+`slept=` now appears ONLY on rows where a real wait IS the assertion
+(a peer releases at 600 ms, a timeout expires at 400 ms); interrupted
+rows do not carry it.
+
 ## 6 Every blocking case is bounded
 
 Cases whose failure mode is "never returns" run in a child behind
@@ -132,3 +150,4 @@ cost all 21 records behind it.
 | `syslog(2)` by default | needs `CAP_SYSLOG` and an EMPTY ring, reachable on the oracle only by CONSUMING the host's kernel ring (global cursor). Opt in with `WAIT_DIFF_SYSLOG=1` |
 | PI futexes | `-ENOSYS` in this tree (plan §7, own project) |
 | `mq_timedsend` full-queue block | only the receive side is exercised |
+| SysV `MSG_COPY` | needs `CONFIG_CHECKPOINT_RESTORE`, absent on stock Fedora |

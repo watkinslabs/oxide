@@ -25,22 +25,23 @@ impl VmaTree {
         let keys: Vec<UserVirtAddr> = self.map.range(..end)
             .filter_map(|(k, v)| (v.end.as_u64() > start.as_u64()).then_some(*k)).collect();
         for k in keys {
-            let v = self.map.remove(&k).expect("collected VMA key");
+            let v = self.map_take(&k).expect("collected VMA key");
             let (vs, ve) = (v.start.as_u64(), v.end.as_u64());
             let (s, e) = (start.as_u64().max(vs), end.as_u64().min(ve));
             if vs < s {
                 let left = v.clone_subrange(v.start, UserVirtAddr::new(s).expect("validated VMA boundary"));
-                self.map.insert(left.start, left);
+                self.map_put(left.start, left);
             }
             let mut mid = v.clone_subrange(UserVirtAddr::new(s).expect("validated VMA boundary"),
                                              UserVirtAddr::new(e).expect("validated VMA boundary"));
             mid.anon_name = name.as_ref().map(Arc::clone);
             let mid_key = mid.start;
-            self.map.insert(mid_key, mid);
+            self.map_put(mid_key, mid);
             if e < ve {
                 let right = v.clone_subrange(UserVirtAddr::new(e).expect("validated VMA boundary"), v.end);
-                self.map.insert(right.start, right);
+                self.map_put(right.start, right);
             }
+            crate::vm_ops::vma_closed(&v);
             self.try_merge_left(mid_key);
             let key = if self.map.contains_key(&mid_key) { mid_key }
                 else { self.map.range(..mid_key).next_back().map(|(k, _)| *k).expect("left VMA") };
