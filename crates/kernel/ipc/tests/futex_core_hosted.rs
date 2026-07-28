@@ -104,6 +104,30 @@ pub mod task {
     }
 }
 
+/// Stand-in for `sched::hrtimeout`. The real module owns a deadline-ordered
+/// queue plus the arch one-shot programmer; the only part the futex wait loop
+/// itself observes is `wakeup_deadline_ns`, and these tests drive expiry by
+/// hand, so the shim keeps that field and nothing else.
+pub mod hrtimeout {
+    use super::*;
+
+    /// Hosted tasks are fair-policy with no `prctl(PR_SET_TIMERSLACK)`; the
+    /// futex classification never reads the slack, only the soft deadline.
+    pub fn task_slack_ns(_task: &Task) -> u64 { 0 }
+
+    pub fn arm_current(soft_ns: u64, _slack_ns: u64) {
+        if let Some(t) = live::current() {
+            t.wakeup_deadline_ns.store(soft_ns, Ordering::Release);
+        }
+    }
+
+    pub fn disarm_current() {
+        if let Some(t) = live::current() {
+            t.wakeup_deadline_ns.store(0, Ordering::Release);
+        }
+    }
+}
+
 /// Mock `RestartBlock` recording the last `arm()` so a test can assert the
 /// resumed wait would carry the SAME absolute deadline.
 #[derive(Default)]

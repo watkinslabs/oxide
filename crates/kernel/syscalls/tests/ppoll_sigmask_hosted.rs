@@ -421,7 +421,7 @@ fn the_real_waiter_publishes_sleeping_before_it_rechecks_the_generation() {
     // is asserted on the source: park (publish Sleeping) THEN compare the
     // snapshot, never the reverse — check-then-park loses wakeups.
     let src = include_str!("../src/poll_common.rs");
-    let park = src.find("park_with_deadline(deadline_ns)").expect("park call");
+    let park = src.find("park_with_deadline_range(deadline_ns, slack_ns)").expect("park call");
     let recheck = src.find("if self.generation.load(Ordering::Acquire) != observed").expect("recheck");
     let yield_at = src.find("sched::live::park_yield()").expect("yield");
     assert!(park < recheck && recheck < yield_at);
