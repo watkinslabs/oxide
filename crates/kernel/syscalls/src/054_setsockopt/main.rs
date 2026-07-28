@@ -144,7 +144,14 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
               let stored = sk_buf_value(v, SOCK_MIN_RCVBUF);
               sock.opts.rcvbuf.store(stored, Ordering::Release);
-              sync_raw_rcvbuf(&sock, stored); },
+              // Linux `__sock_set_rcvbuf` sets `SOCK_RCVBUF_LOCK`, which stops
+              // `tcp_rcv_space_adjust` autotuning: from here the advertised
+              // window follows the caller's number. Without the lock TCP kept
+              // autotuning up to 4 MiB and an application that asked for a
+              // small receive buffer never got backpressure.
+              sock.opts.rcvbuf_locked.store(true, Ordering::Release);
+              sync_raw_rcvbuf(&sock, stored);
+              sync_tcp_rcvbuf(&sock, stored); },
         (SOL_SOCKET, SO_PASSCRED) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.passcred.store(v, Ordering::Release);
@@ -412,6 +419,15 @@ fn sync_raw_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
         net::sock::SockKind::Raw4(endpoint) => endpoint.set_rcvbuf(value.max(0) as usize),
         net::sock::SockKind::Raw6(endpoint) => endpoint.set_rcvbuf(value.max(0) as usize),
         _ => {}
+    }
+}
+
+/// Apply a just-locked `SO_RCVBUF` to a connection that already exists.
+/// Connections created later pick it up from `sock.opts` at connect/accept.
+/// # C: O(1)
+fn sync_tcp_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
+    if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
+        entry.set_rcv_buf_cap(value.max(0) as u32);
     }
 }
 

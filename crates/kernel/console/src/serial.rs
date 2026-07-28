@@ -89,6 +89,14 @@ impl FileOps for SerialFileOps {
         crate::static_console::poll()
     }
 
+    /// `/dev/ttyS0`'s poll waiters belong on the serial `TtyStruct`'s own
+    /// `read_wait` — the list `receive_from_driver` notifies on every UART RX
+    /// byte. Resolved per call because the tty is installed after the inode is
+    /// built. # C: O(1)
+    fn poll_subscribers(&self, _file: &vfs::File) -> Option<alloc::sync::Arc<vfs::PollSubscribers>> {
+        crate::static_console::poll_subscribers()
+    }
+
     fn write(&self, _i: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         serial_write(buf)
     }

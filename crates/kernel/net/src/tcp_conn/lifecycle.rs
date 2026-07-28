@@ -45,6 +45,7 @@ impl TcpConn {
             dup_acks:   0,
             rcv_buf_cap: 65_536,
             rcv_buf_max: 4 * 1024 * 1024,
+            rcv_buf_locked: false,
             rcv_peak:    0,
             cubic_w_max:    0,
             cubic_epoch_ms: 0,
@@ -99,6 +100,7 @@ impl TcpConn {
             dup_acks:   0,
             rcv_buf_cap: 65_536,
             rcv_buf_max: 4 * 1024 * 1024,
+            rcv_buf_locked: false,
             rcv_peak:    0,
             cubic_w_max:    0,
             cubic_epoch_ms: 0,
@@ -205,9 +207,24 @@ impl TcpConn {
         if scaled > u16::MAX as u32 { u16::MAX } else { scaled as u16 }
     }
 
+    /// Apply `setsockopt(SO_RCVBUF)` to the advertised receive window and stop
+    /// autotuning (Linux `__sock_set_rcvbuf`: sets `SOCK_RCVBUF_LOCK`, and
+    /// `sk_rcvbuf` is what `__tcp_select_window` then works from). `bytes` is
+    /// the already-doubled, already-floored value the socket layer stored.
+    /// # C: O(1)
+    pub fn set_rcv_buf_cap(&mut self, bytes: u32) {
+        self.rcv_buf_cap = bytes;
+        self.rcv_buf_max = bytes;
+        self.rcv_peak = 0;
+        self.rcv_buf_locked = true;
+    }
+
     /// F186: grow advertised receive window when observed peak exceeds half cap.
     /// # C: O(1)
     pub fn rcv_autotune(&mut self) {
+        // `tcp_rcv_space_adjust` is a no-op once the application locked the
+        // buffer with `setsockopt(SO_RCVBUF)`.
+        if self.rcv_buf_locked { return; }
         let len = self.recv_buf.len() as u32;
         if len > self.rcv_peak {
             self.rcv_peak = len;

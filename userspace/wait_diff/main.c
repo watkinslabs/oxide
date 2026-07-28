@@ -15,6 +15,7 @@ int main(void) {
     probe_sleep();
     probe_inotify();
     probe_fdwait();
+    probe_readiness();
     probe_jobctl();
     probe_cputime();
     probe_latency();
