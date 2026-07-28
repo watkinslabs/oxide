@@ -248,25 +248,17 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
     pmm::user_as::install_teardown(&new_as);
-    #[cfg(feature = "debug-swap")]
-    trace_swap_exec_stage(&path_owned, b"before-elf-load");
-    let img = match elf_load::load_static_blob(blob, &new_as) {
-        Ok(i) => i,
-        Err(_) => return -(Errno::Enoexec.as_i32() as i64),
-    };
-    #[cfg(feature = "debug-swap")]
-    trace_swap_exec_stage(&path_owned, b"after-elf-load");
-    // Record the ELF code/data bounds + initial brk (Linux mm->start_code..
-    // end_data + start_brk) so /proc/<pid>/stat + PR_SET_MM validation see
-    // real values. arg/env/stack land after the stack is built below.
-    new_as.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
-    new_as.set_start_brk(img.brk.as_u64());
+    // Linux `setup_new_exec` runs `arch_pick_mmap_layout` and `setup_arg_pages`
+    // BEFORE `load_elf_binary` places any PT_LOAD (`fs/binfmt_elf.c:1024-1028`
+    // vs `:1073`), because the interpreter and a no-interp PIE are placed by
+    // `get_unmapped_area` and therefore need `mmap_base` already armed.
+    let rnd = crate::exec_transition::exec_rnd(&cur, creds.per_clear);
     let rlim_stack: u64 = {
         let (rc, _) = cur.rlimit(sched::rlimit::rlim::STACK);
         let rc = crate::exec_transition::secure_stack_limit(rc, creds.secure_exec);
-        ((rc + 0xfff) & !0xfff).min(0x4000_0000)
+        ((rc + 0xfff) & !0xfff).min(aslr::limits::RLIM_STACK_MAP_CAP)
     };
-    let stack_top: u64 = hal::USER_VA_END - 0x10000;
+    let stack_top: u64 = rnd.stack_top();
     let exec_user_stack_va = stack_top - rlim_stack;
     let exec_user_stack_top = stack_top;
     let exec_user_stack_len = rlim_stack as usize;
@@ -283,7 +275,20 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     }
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-stack-map");
-    new_as.set_mmap_base(exec_user_stack_va.saturating_sub(vmm::MMAP_BASE_GAP));
+    new_as.set_mmap_base(rnd.mmap_base(rlim_stack));
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"before-elf-load");
+    let img = match elf_load::load_static_blob(blob, &new_as, &rnd) {
+        Ok(i) => i,
+        Err(_) => return -(Errno::Enoexec.as_i32() as i64),
+    };
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"after-elf-load");
+    // Record the ELF code/data bounds + initial brk (Linux mm->start_code..
+    // end_data + start_brk) so /proc/<pid>/stat + PR_SET_MM validation see
+    // real values. arg/env/stack land after the stack is built below.
+    new_as.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
+    new_as.set_start_brk(img.brk.as_u64());
     sched::live::zap_other_threads();
     use hal::MmuOps;
     let me = { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
@@ -346,6 +351,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,
+            exec_user_stack_len as u64,
             &argv_slices[..argc],
             &envp_slices[..envc],
             &img,
@@ -359,6 +365,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
                 secure: creds.secure_exec,
             },
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_min_sigstksz(),
+            &rnd,
         )
     } {
         Some(l) => l,

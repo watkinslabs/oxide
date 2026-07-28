@@ -41,6 +41,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aslr"
+version = "0.1.0"
+dependencies = [
+ "crng",
+ "hal",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,6 +510,7 @@ dependencies = [
 name = "elf-load"
 version = "0.1.0"
 dependencies = [
+ "aslr",
  "elf",
  "ext4",
  "hal",
@@ -1306,6 +1315,7 @@ name = "procfs"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "aslr",
  "block",
  "cgroup",
  "cpu",
@@ -1610,8 +1620,10 @@ name = "smoke"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "aslr",
  "cmdline",
  "console",
+ "crng",
  "elf-load",
  "ext4",
  "firmware",
@@ -1711,6 +1723,7 @@ name = "syscalls"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "aslr",
  "block",
  "boot-info",
  "cgroup",

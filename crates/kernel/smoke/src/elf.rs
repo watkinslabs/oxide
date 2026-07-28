@@ -27,17 +27,11 @@ pub fn lookup_blob_by_path(path: &[u8]) -> Option<&'static [u8]> {
 
 /// User stack length for boot-spawned user blobs. 64 KiB matches
 /// the execve path; the prior 4 KiB underflowed in the first wide
-/// musl init frame and the prior VA (0x501_000) collided with
-/// a large init's .text segment, chopping a hole in code while
-/// giving init no room. Place near the top of user-half VA so we
-/// stay disjoint from any reasonable ELF text.
+/// musl init frame. The stack ADDRESS is no longer a constant — it is
+/// `aslr::ExecRnd::stack_top()` minus this, exactly as `execve` computes it.
 pub const EXEC_USER_STACK_LEN: u64 = 0x10000;
-pub const EXEC_USER_STACK_VA:  u64 = hal::USER_VA_END - 0x20000;
-pub const EXEC_USER_STACK_TOP: u64 = EXEC_USER_STACK_VA + EXEC_USER_STACK_LEN;
 
 const USER_STACK_LEN: u64 = EXEC_USER_STACK_LEN;
-const USER_STACK_VA:  u64 = EXEC_USER_STACK_VA;
-const USER_STACK_TOP: u64 = EXEC_USER_STACK_TOP;
 
 /// User-page fault handler: demand-paging for PIE relocs + stack/heap growth.
 /// # C: O(1) typical
@@ -214,9 +208,16 @@ unsafe fn spawn_user_blob_with_vpid(
         klog::write_raw(name.as_bytes());
         klog::write_raw(b"\n");
     }
+    // PID 1 reaches userspace through this boot path rather than `execve`, but
+    // Linux randomises it like any other exec (`kernel_init` →
+    // `run_init_process` → `load_elf_binary`), so it draws and applies the same
+    // `ExecRnd`. Order matches Linux: arena and stack are armed BEFORE any
+    // PT_LOAD is placed, because the interpreter is placed by the arena search.
+    let rnd = aslr::ExecRnd::draw(false);
+    let stack_top = rnd.stack_top();
+    let stack_va = stack_top - USER_STACK_LEN;
     let img = match (|| -> Result<_, elf_load::LoadError> {
-        let img = load_static_blob(blob, &mm)?;
-        let stack_hint = UserVirtAddr::new(USER_STACK_VA)
+        let stack_hint = UserVirtAddr::new(stack_va)
             .ok_or(elf_load::LoadError::Einval)?;
         mm.mmap(
             Some(stack_hint), USER_STACK_LEN as usize,
@@ -225,6 +226,8 @@ unsafe fn spawn_user_blob_with_vpid(
             VmaBacking::Anonymous,
             true,
         ).map_err(|_| elf_load::LoadError::Enomem)?;
+        mm.set_mmap_base(rnd.mmap_base(USER_STACK_LEN));
+        let img = load_static_blob(blob, &mm, &rnd)?;
         // F152-2: no kernel-side TLS region — user crt1 mmaps its
         // own TCB and installs FS_BASE via arch_prctl(ARCH_SET_FS).
         Ok(img)
@@ -249,16 +252,15 @@ unsafe fn spawn_user_blob_with_vpid(
     #[cfg(feature = "debug-boot")]
     klog::write_raw(b"[INFO]  user-blob: load ok\n");
 
-    let random16 = {
-        use hal::TimerOps;
-        let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
-        let mut r = [0u8; 16];
-        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
-        r
-    };
+    // Linux `create_elf_tables`: 16 `get_random_bytes()` bytes. The clock-derived
+    // fill this replaced was the `F768` bug surviving in the PID 1 path — glibc
+    // seeds its stack canary and pointer guard from AT_RANDOM, so a monotonic
+    // source hands the most privileged process on the system a guessable canary.
+    let mut random16 = [0u8; 16];
+    crng::fill(&mut random16);
     // setup_arg_pages: eagerly map the initial stack into the new AS so the
     // stack build below doesn't demand-fault in boot context (current()==None).
-    pmm::user_as::prefault_stack(&mm, USER_STACK_TOP, USER_STACK_LEN);
+    pmm::user_as::prefault_stack(&mm, stack_top, USER_STACK_LEN);
     #[cfg(feature = "debug-boot")]
     klog::write_raw(b"[INFO]  user-blob: stack prefault ok\n");
     // Default argv = ['/init']; otherwise caller-provided.
@@ -267,7 +269,8 @@ unsafe fn spawn_user_blob_with_vpid(
     // SAFETY: per-task AS just activated; build_user_stack writes through it; demand-fault resolves the new stack page.
     let new_sp = unsafe {
         elf_load::stack::build_user_stack(
-            USER_STACK_TOP,
+            stack_top,
+            USER_STACK_LEN,
             argv_ref, &[b"TERM=vt100" as &[u8]],
             &img,
             &random16,
@@ -278,8 +281,9 @@ unsafe fn spawn_user_blob_with_vpid(
             // no privilege gained, so AT_SECURE is 0 (Linux's plain-exec case).
             elf_load::stack::AuxCreds::default(),
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_min_sigstksz(),
+            &rnd,
         )
-    }.map(|l| l.sp).unwrap_or(USER_STACK_TOP);
+    }.map(|l| l.sp).unwrap_or(stack_top);
     #[cfg(feature = "debug-boot")]
     klog::write_raw(b"[INFO]  user-blob: stack build ok\n");
 
