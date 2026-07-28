@@ -205,9 +205,29 @@ void probe_sigfpu(void) {
      * from hanging the run. */
     g_hit = 0;
     g_uc_present = g_uc_live = 0;
+    /* `ready` closes the race the other way round. The kick must not land
+     * BEFORE `load_spin_store` has put the pattern in the vector registers,
+     * or `uc_fpstate` legitimately reports `live=0` — the saved state is
+     * whatever those registers held during the setup calls, and the case
+     * silently measures nothing. On Linux the parent always wins that race;
+     * inside a TCG guest, where fork+setup costs far more than SIG_DELAY_MS,
+     * it does not, and B1471's arm64 differential flaked on exactly this row.
+     * The parent publishes the edge one instruction before the asm block, so
+     * the remaining window is four register loads against SIG_DELAY_MS. */
+    volatile sig_atomic_t *ready = mmap(NULL, sizeof(sig_atomic_t),
+                                        PROT_READ | PROT_WRITE,
+                                        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (ready == MAP_FAILED) {
+        out("sigfpu", "simd_preserved", "outcome=setup_failed");
+        out("sigfpu", "uc_fpstate", "outcome=setup_failed");
+        return;
+    }
+    *ready = 0;
     pid_t me = getpid();
     pid_t kicker = fork();
     if (kicker == 0) {
+        long long deadline = mono_ms() + (long long)SPIN_READY_MS;
+        while (!*ready && mono_ms() < deadline) sleep_ms(5);
         sleep_ms(SIG_DELAY_MS);
         kill(me, SIGUSR1);
         _exit(0);
@@ -215,6 +235,7 @@ void probe_sigfpu(void) {
     if (kicker < 0) {
         out("sigfpu", "simd_preserved", "outcome=fork_failed");
         out("sigfpu", "uc_fpstate", "outcome=fork_failed");
+        munmap((void *)ready, sizeof(sig_atomic_t));
         return;
     }
     /* A kernel that loses the signal entirely would spin forever. */
@@ -222,10 +243,12 @@ void probe_sigfpu(void) {
     alarm(JOBCTL_GUARD_S);
 
     memset(g_readback, 0, sizeof g_readback);
+    *ready = 1;
     load_spin_store(loaded, g_readback, &g_hit);
 
     alarm(0);
     reap(kicker);
+    munmap((void *)ready, sizeof(sig_atomic_t));
 
     int preserved = memcmp(g_readback, loaded, PAT_BYTES) == 0;
     int clobber_leaked = memcmp(g_readback, g_clobber, PAT_BYTES) == 0;

@@ -32,11 +32,15 @@ Open PRs: #4093 (SysV differential), #4097 (procfs creds + inotify names),
 #4098 (durable write). Lanes running: `B1461` poll-subscribers/`POLL_OUT`,
 `B1465` TCP ISN, `B1466` signal-frame FPU state, `B1467` SMP TLB+runqueue.
 
+`B1471` closed blocker #3 / W9: signals now delivered on the IRQ and exception
+return paths, both arches (Linux `exit_to_user_mode_loop`). It also gave x86_64
+ONE `pt_regs` built identically by every entry (it had three save layouts) and
+added Linux's SYSRET-eligibility guard with an IRETQ fallback. Guest
+differential is 100/100 identical on both arches — the shared gate that was red
+on main is green.
+
 ## Open, no lane yet
 
-- **Blocker #3**: signals only delivered at the syscall-return tail → a compute-bound
-  loop issuing no syscalls is **unkillable**. Needs the IRQ/exception return path,
-  both arches (`docs/54`). Hold until `B1466` lands — same files.
 - **Blocker #10**: no global OOM killer (`kill_memcg` has one caller, memcg-only).
 - ASLR does not exist (`docs/31§6`) while `randomize_va_space` reports 2.
 - `timerfd` still polls — not covered by the `B1460` timeout fix.
@@ -64,6 +68,12 @@ Open PRs: #4093 (SysV differential), #4097 (procfs creds + inotify names),
    *actual* failure mode.
 5. Absence of an `arm_abi` mapping is **not** `ENOSYS` — unmapped aarch64 numbers
    fall through to the x86 table and run the wrong syscall.
+6. **Hosted tests cannot see an entry/exit ABI bug.** B1471 shipped a green
+   workspace and two green `boot-smoke` runs while `rt_sigreturn` was destroying
+   user `rcx` (x86 `sysretq`) and zeroing user `x0` (arm). Only the guest
+   differential caught either, and each showed up as a userspace SEGV whose
+   faulting instruction named the register. Disassemble at the reported
+   `rip`/`elr` before theorising — both took minutes that way.
 
 ## First task next session
 
