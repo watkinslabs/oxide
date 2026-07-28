@@ -5,6 +5,7 @@ mod anon_dname;
 mod clock_ops;
 mod timex_ops;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-startlat"))] pub mod startlat;
 #[cfg(feature = "debug-fdlife")] mod fd_life;
 // Moved out of the kernel binary with the syscall layer (docs/53):
 pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
@@ -46,7 +47,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "132_utime.rs"] pub mod s132_utime; #[path = "235_utimes.rs"] pub mod s235_utimes; #[path = "280_utimensat.rs"] pub mod s280_utimensat;
 #[path = "261_futimesat.rs"] pub mod s261_futimesat;
-mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path = "165_mount.rs"] pub mod s165_mount; #[path = "166_umount2.rs"] pub mod s166_umount2;
+mod mount_common; pub mod mount_perm; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path = "165_mount.rs"] pub mod s165_mount; #[path = "166_umount2.rs"] pub mod s166_umount2;
 #[path = "167_swapon.rs"] pub mod s167_swapon;
 #[path = "168_swapoff.rs"] pub mod s168_swapoff;
 #[path = "424_pidfd_send_signal.rs"] pub mod s424_pidfd_send_signal; #[path = "434_pidfd_open.rs"] pub mod s434_pidfd_open; #[path = "438_pidfd_getfd.rs"] pub mod s438_pidfd_getfd;

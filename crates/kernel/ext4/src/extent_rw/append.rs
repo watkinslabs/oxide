@@ -79,19 +79,24 @@ impl Mount {
         }
 
         let hint_group = Self::extent_hint_group(self, &leaf_extents, logical);
-        let mut simulated_extents = leaf_extents;
-        Self::insert_extent_record(&mut simulated_extents, Self::extent_for(logical, 0))?;
-        let extra_meta_sectors = self.extra_meta_sectors_for_insert(&i_block, &hdr, logical, simulated_extents.len())?;
+        let spb = self.sb.sectors_per_block();
+        // Linux charges each allocation as it happens, never a prediction:
+        // `ext4_mb_new_blocks` (fs/ext4/mballoc.c) calls `dquot_alloc_block`
+        // BEFORE handing out the block, and `dquot_alloc_block` ->
+        // `__dquot_alloc_space` (fs/quota/dquot.c) is what does
+        // `inode_add_bytes` — so i_blocks and the quota charge are one act, per
+        // block actually allocated. Charge the DATA block here; the extent-tree
+        // metadata blocks are charged below, once the merge-aware insert says
+        // how many of them the tree really needs (`ext4_ext_new_meta_block`
+        // charges its own via the same path).
         let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
-        let charged_i_blocks = prev_i_blocks
-            .saturating_add((self.sb.block_size / 512) as u32)
-            .saturating_add(extra_meta_sectors);
-        self.account_i_blocks_delta(ino, prev_i_blocks, charged_i_blocks)?;
+        let data_charged = prev_i_blocks.saturating_add(spb);
+        self.account_i_blocks_delta(ino, prev_i_blocks, data_charged)?;
 
         let phys = match self.alloc_block(hint_group) {
             Ok(phys) => phys,
             Err(e) => {
-                return Err(self.rollback_i_blocks_delta(ino, charged_i_blocks, prev_i_blocks, e));
+                return Err(self.rollback_i_blocks_delta(ino, data_charged, prev_i_blocks, e));
             }
         };
         let new_extent = if unwritten {
@@ -99,11 +104,29 @@ impl Mount {
         } else {
             if !defer_data {
                 if let Err(e) = self.write_data_byte_range(phys * bs as u64, data) {
-                    return Err(self.rollback_insert_charge(ino, prev_i_blocks, charged_i_blocks, Some(phys), &[], e));
+                    return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e));
                 }
             }
             Self::extent_for(logical, phys)
         };
+
+        // Simulate with the REAL extent (physical block included): whether the
+        // leaf grows an entry or merges into its neighbour decides whether a
+        // metadata block gets allocated at all. Simulating with a placeholder
+        // physical block never merges, so it over-predicts the entry count and
+        // charges metadata blocks that are never allocated.
+        let mut simulated_extents = leaf_extents;
+        if let Err(e) = Self::insert_extent_record(&mut simulated_extents, new_extent) {
+            return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e));
+        }
+        let extra_meta_sectors = match self.extra_meta_sectors_for_insert(&i_block, &hdr, logical, simulated_extents.len()) {
+            Ok(v) => v,
+            Err(e) => return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e)),
+        };
+        let charged_i_blocks = data_charged.saturating_add(extra_meta_sectors);
+        if let Err(e) = self.account_i_blocks_delta(ino, data_charged, charged_i_blocks) {
+            return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e));
+        }
 
         let insert = self.insert_into_inline_root(ino, gen, &mut i_block, hdr, logical, new_extent, hint_group);
         let (actual_extra_meta_sectors, allocated_meta_blocks) = match insert {

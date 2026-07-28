@@ -13,7 +13,7 @@ impl Mount {
         ino_bytes[0x04..0x08].copy_from_slice(&((new_size & 0xFFFF_FFFF) as u32).to_le_bytes());
         ino_bytes[0x6C..0x70].copy_from_slice(&((new_size >> 32) as u32).to_le_bytes());
         let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
-        let added_sectors = (self.sb.block_size / 512) as u32 + extra_meta_sectors;
+        let added_sectors = self.sb.sectors_per_block() + extra_meta_sectors;
         let new_i_blocks = prev_i_blocks.saturating_add(added_sectors);
         if !precharged { self.account_i_blocks_delta(ino, prev_i_blocks, new_i_blocks)?; }
         ino_bytes[0x1C..0x20].copy_from_slice(&new_i_blocks.to_le_bytes());

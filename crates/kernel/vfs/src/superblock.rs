@@ -33,7 +33,7 @@ mod ops;
 mod registry;
 mod stat;
 
-pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
+pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_NODEV, SB_I_NOEXEC, SB_I_RESTRICTED_VARIANT, SB_I_USERNS_REQUIRED, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
 pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
 pub use registry::{fs_supers, next_anon_dev, register_super, sb_by_dev, sget, sget_result};
 pub(crate) use registry::alloc_anon_minor;
@@ -86,6 +86,13 @@ pub struct SuperBlock {
     /// Atomic so a future sb-level remount (`remount_fs`) flips `SB_RDONLY`
     /// without rebuilding the SB. # consumers: D16 remount.
     s_flags: AtomicU64,
+    /// `s_iflags` — the KERNEL-INTERNAL superblock flag word (`SB_I_*`), a space
+    /// DISJOINT from the user-visible `SB_*` bits in `s_flags`. Stamped at
+    /// fill-super from [`crate::fs::FileSystem::s_iflags`] (Linux does it in each
+    /// backend's `fill_super`) and never user-settable, which is exactly why
+    /// `mount_too_revealing` may trust it. # consumers: path_noexec,
+    /// may_open_dev, mount_too_revealing.
+    s_iflags: AtomicU64,
     /// `s_active` — active reference count (Linux `super_block.s_active`). A
     /// freshly filled+mounted SB starts at 1; each extra live mount sharing this
     /// instance (sget reuse / bind clone) grabs one via [`SuperBlock::grab_active`]

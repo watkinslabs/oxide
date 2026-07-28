@@ -638,6 +638,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "namespace-identity",
  "nscg",
  "pmm",
  "procfs",

@@ -150,7 +150,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                         use core::sync::atomic::Ordering;
                         use sched::live::sigpend::Signum;
                         let forced  = Signum::Sigkill.bit() | Signum::Sigstop.bit();
-                        let pending = cur.sigpending.load(Ordering::Acquire);
+                        let pending = cur.pending_signals();
                         let masked  = cur.sigmask.load(Ordering::Acquire);
                         let deliver = (pending & !masked) | (pending & forced);
                         if deliver != 0 { return syscall::restart::restart_sys(); }
@@ -243,7 +243,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         #[cfg(feature = "debug-displaystack")]
         if let Some(cur) = sched::live::current() {
             use core::sync::atomic::Ordering;
-            let pending = cur.sigpending.load(Ordering::Acquire);
+            let pending = cur.pending_signals();
             let mask = cur.sigmask.load(Ordering::Acquire);
             klog::write_raw(b"[waitid signal] tid=");
             klog::write_dec_u64(cur.tid as u64);

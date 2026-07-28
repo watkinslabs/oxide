@@ -76,6 +76,10 @@ struct EventQueue {
 /// fd's read(), keyed by stable DRM card id + open-file token.
 static EVENTS: Spinlock<Vec<EventQueue>, CrtcLockClass> = Spinlock::new(Vec::new());
 static CURRENT_FB: Spinlock<alloc::vec::Vec<u32>, CrtcLockClass> = Spinlock::new(alloc::vec::Vec::new());
+/// Blob id of the mode last committed through `MODE_ID`, per stable card id.
+/// Lives beside `CURRENT_FB` so `MODE_ID` reads back the committed mode from
+/// the one owner of scanout state rather than a parallel property table.
+static CURRENT_MODE_BLOB: Spinlock<alloc::vec::Vec<u32>, CrtcLockClass> = Spinlock::new(alloc::vec::Vec::new());
 
 /// Record `token` as the current scanout owner. # C: O(1)
 pub fn set_owner(card_id: u32, token: u64) {
@@ -120,10 +124,26 @@ fn clear_current_fb(card_id: u32) {
     if let Some(fb_id) = CURRENT_FB.lock().get_mut(card_id as usize) {
         *fb_id = 0;
     }
+    set_current_mode_blob(card_id, 0);
 }
 
 pub fn current_fb(card_id: u32) -> u32 {
     CURRENT_FB.lock().get(card_id as usize).copied().unwrap_or(0)
+}
+
+/// Record the mode blob a modeset committed (0 = no mode). # C: O(1)
+pub(crate) fn set_current_mode_blob(card_id: u32, blob_id: u32) {
+    let mut current = CURRENT_MODE_BLOB.lock();
+    let idx = card_id as usize;
+    if current.len() <= idx {
+        current.resize(idx + 1, 0);
+    }
+    current[idx] = blob_id;
+}
+
+/// Blob id of the currently committed mode, as `MODE_ID` reports it. # C: O(1)
+pub fn current_mode_blob(card_id: u32) -> u32 {
+    CURRENT_MODE_BLOB.lock().get(card_id as usize).copied().unwrap_or(0)
 }
 
 /// Detach a framebuffer from the live CRTC before RMFB tears down its backend

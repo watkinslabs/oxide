@@ -407,46 +407,4 @@ impl AddressSpace {
         self.vmas.read().audit_no_overlap()
     }
 
-    /// userfaultfd(2) `UFFDIO_REGISTER(MODE_MISSING)`: bind `ctx` to every
-    /// VMA fragment overlapping `[start, end)` and set `UFFD_MISSING`, so a
-    /// NotPresent fault there routes to the fd instead of zero-filling.
-    /// # C: O(K log N)
-    pub fn set_uffd_missing(&self, start: u64, end: u64,
-                            ctx: Arc<dyn crate::uffd::UffdContext>) {
-        let (Some(s), Some(e)) = (UserVirtAddr::new(start), UserVirtAddr::new(end)) else { return };
-        self.has_uffd.store(true, core::sync::atomic::Ordering::Release);
-        self.vmas.write().set_uffd_range(s, e, Some(ctx));
-    }
-
-    /// Fast-path guard: `true` iff any uffd range was ever registered on
-    /// this AS. The fault handler checks this before `uffd_for` so
-    /// no-uffd processes skip the extra vmas read-lock per fault.
-    /// # C: O(1)
-    pub fn maybe_uffd(&self) -> bool {
-        self.has_uffd.load(core::sync::atomic::Ordering::Acquire)
-    }
-
-    /// userfaultfd(2) `UFFDIO_UNREGISTER`: clear the uffd registration +
-    /// `UFFD_MISSING` over `[start, end)`.
-    /// # C: O(K log N)
-    pub fn clear_uffd(&self, start: u64, end: u64) {
-        let (Some(s), Some(e)) = (UserVirtAddr::new(start), UserVirtAddr::new(end)) else { return };
-        self.vmas.write().set_uffd_range(s, e, None);
-    }
-
-    /// Fault-path lookup: the uffd context registered on the VMA
-    /// containing `va` plus whether MISSING mode is set. Clones the Arc
-    /// out and RELEASES the read lock before returning — the caller
-    /// (`missing_fault`) blocks, and must never hold the vmas lock across
-    /// a park. `None` when the VMA has no uffd registration.
-    /// # C: O(log N)
-    pub fn uffd_for(&self, va: UserVirtAddr)
-        -> Option<(Arc<dyn crate::uffd::UffdContext>, bool)> {
-        let g = self.vmas.read();
-        let v = g.find_containing(va)?;
-        let ctx = v.uffd.clone()?;
-        let missing = v.flags.contains(VmaFlags::UFFD_MISSING);
-        Some((ctx, missing))
-    }
-
 }

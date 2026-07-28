@@ -27,7 +27,7 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
     const MS_SLAVE:      u64 = 1 << 19;
     const MS_SHARED:     u64 = 1 << 20;
     const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
-    if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
+    if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
     // Linux `sys_mount_setattr` order: validate `uattr`/`usize` (copy_mount_setattr)
     // BEFORE resolving `path` (user_path_at is last). So a support-probe
     // `mount_setattr(fd, NULL, 0, NULL, 0)` must return EINVAL (usize < VER0),
@@ -45,7 +45,7 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
     const AT_RECURSIVE: u64 = 0x8000;
     const AT_EMPTY_PATH: u64 = 0x1000;
     const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
-    use vfs::mount::{MNT_ATIME_MASK, MOUNT_ATTR_NOATIME, MOUNT_ATTR_SETTABLE,
+    use vfs::mount::{MNT_ATIME_MODE_MASK, MOUNT_ATTR_NOATIME, MOUNT_ATTR_SETTABLE,
                      MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME, mount_attr_to_mnt};
     // SAFETY: uattr+16 is covered by the validated minimum struct size.
     let attr_set = unsafe { core::ptr::read_volatile(uattr as *const u64) };
@@ -73,11 +73,11 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
     // Map the request into the per-mount MNT_* option space. Direct bits map
     // one-to-one; the atime mode is only touched when the full sub-field is
     // cleared (else the mount keeps its current atime policy).
-    let mut set_mnt = mount_attr_to_mnt(attr_set) & !MNT_ATIME_MASK;
-    let mut clr_mnt = mount_attr_to_mnt(attr_clr) & !MNT_ATIME_MASK;
+    let mut set_mnt = mount_attr_to_mnt(attr_set) & !MNT_ATIME_MODE_MASK;
+    let mut clr_mnt = mount_attr_to_mnt(attr_clr) & !MNT_ATIME_MODE_MASK;
     if atime_clr == MOUNT_ATTR__ATIME {
-        clr_mnt |= MNT_ATIME_MASK;                                // clear all 3
-        set_mnt |= mount_attr_to_mnt(attr_set) & MNT_ATIME_MASK;  // set chosen
+        clr_mnt |= MNT_ATIME_MODE_MASK;                           // clear all 3 modes
+        set_mnt |= mount_attr_to_mnt(attr_set) & MNT_ATIME_MODE_MASK;  // set chosen
     }
     // NB: `userns_fd` (offset 24) is deliberately NOT inspected. Linux
     // `build_mount_kattr` reads it ONLY inside `if attr_set & MOUNT_ATTR_IDMAP`

@@ -104,8 +104,11 @@ mod limits;
 mod membarrier;
 mod mmfields;
 mod ops;
+mod uffd;
+pub mod pkeys;
 
 pub use limits::{MIN_USER_VA, MMAP_TOP};
+pub use uffd::UffdVma;
 pub use accounting::{global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown, VmAccountingSnapshot};
 pub use mmfields::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
@@ -212,6 +215,11 @@ pub struct AddressSpace {
     /// `MCL_ONFAULT` paired with `mlock_future`: mappings are VM_LOCKED now
     /// but resident frames are faulted only on first access.
     mlock_onfault: core::sync::atomic::AtomicBool,
+    /// Linux `mm_context_t::pkey_allocation_map` — the protection-key
+    /// allocation bitmap `pkey_alloc`/`pkey_free`/`pkey_mprotect` consult.
+    /// Initial value and semantics are arch-specific; see the `pkeys` child
+    /// module.
+    pkeys: pkeys::PkeyContext,
 }
 
 impl Drop for AddressSpace {
@@ -301,6 +309,7 @@ impl AddressSpace {
             mm_layout: mmfields::MmLayout::new(),
             accounting: accounting::VmAccounting::new(root_pa),
             membarrier: membarrier::MembarrierState::new(),
+            pkeys: pkeys::PkeyContext::new(),
         });
         accounting::register_page_table_owner(root_pa, &as_.accounting);
         register_live_address_space(root_pa, Arc::downgrade(&as_));

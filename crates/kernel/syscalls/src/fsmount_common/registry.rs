@@ -6,18 +6,9 @@ use alloc::sync::Arc;
 
 use core::sync::atomic::AtomicU64;
 use sync::{Spinlock, TaskList as LockClass};
-use syscall::errno::Errno;
 use vfs::FileType;
 
 pub(crate) static NEXT_FSCTX_INO: AtomicU64 = AtomicU64::new(0x4600_0000);
-
-/// # C: O(1)
-pub(crate) fn require_sys_admin() -> Option<i64> {
-    match sched::live::current() {
-        Some(c) if c.has_cap(sched::cap::SYS_ADMIN) => None,
-        _ => Some(-(Errno::Eperm.as_i32() as i64)),
-    }
-}
 
 /// # C: O(1)
 pub(crate) fn fstype_ok(t: &str) -> bool {

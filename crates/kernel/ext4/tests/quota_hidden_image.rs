@@ -265,7 +265,16 @@ fn rename_overwrite_releases_replaced_project_quota_usage() {
 
     m.state().rename_at(b"/rename-src.txt", b"/rename-dst.txt").expect("rename overwrite");
 
-    let after = vfs::quota_getquota(&sb, qid).expect("quota after rename");
+    // `dst` still holds the replaced victim. `ext4_rename` (`fs/ext4/namei.c`)
+    // only `ext4_dec_count(new.inode)` + `ext4_orphan_add`s it — no dquot call
+    // — so the charge lives until `dquot_free_inode` inside `ext4_free_inode`
+    // (`fs/ext4/ialloc.c:275`) runs at `ext4_evict_inode`.
+    let held = vfs::quota_getquota(&sb, qid).expect("quota after rename while victim held");
+    assert_eq!(held.dqb_curinodes, 2, "the overwritten victim stays charged while held");
+    assert_eq!(held.dqb_curspace, dst_usage);
+
+    vfs::file::iput(dst);
+    let after = vfs::quota_getquota(&sb, qid).expect("quota after victim eviction");
     assert_eq!(after.dqb_curinodes, 1);
     assert_eq!(after.dqb_curspace, 0);
 }

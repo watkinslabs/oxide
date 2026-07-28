@@ -29,3 +29,33 @@ pub fn current_user_regs() -> *mut UserRegs {
 /// specifically. # C: O(1)
 #[cfg(target_arch = "aarch64")]
 pub fn current_svc_frame() -> *mut hal_aarch64::SvcFrame { current_user_regs() }
+
+/// The trapped user PC of the syscall currently dispatching — Linux
+/// `KSTK_EIP(current)`, which is what `populate_seccomp_data` puts in
+/// `seccomp_data.instruction_pointer` and what `force_sig_seccomp` puts in
+/// `si_call_addr`. `0` when there is no live entry frame.
+/// # C: O(1)
+pub fn current_user_pc() -> u64 {
+    let regs = current_user_regs();
+    if regs.is_null() { return 0; }
+    // SAFETY: `current_user_regs` returns this task's live syscall entry frame on its own kstack; read-only field access under dispatch context.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]   { (*regs).rip }
+        #[cfg(target_arch = "aarch64")]  { (*regs).elr_el1 }
+    }
+}
+
+/// The syscall number the live entry frame currently carries, re-read after a
+/// ptrace stop so a tracer's rewrite is visible (Linux
+/// `syscall_get_nr(current, current_pt_regs())`).
+/// # SAFETY: `regs` is the live entry frame owned by this dispatch.
+/// # C: O(1)
+pub unsafe fn frame_syscall_nr(regs: *mut UserRegs) -> u64 {
+    // SAFETY: caller's contract — `regs` is the live entry frame for this dispatch and is exclusively owned by this CPU for the read.
+    unsafe {
+        // x86_64 keeps the syscall number in `rax` (Linux's `orig_ax` slot);
+        // aarch64 keeps it in x8.
+        #[cfg(target_arch = "x86_64")]  { (*regs).rax }
+        #[cfg(target_arch = "aarch64")] { (*regs).gp[8] }
+    }
+}

@@ -397,7 +397,29 @@ pub fn sys_clone_dispatch(
             (*p).fs_base = tls;
         }
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    // aarch64 stores it in TPIDR_EL0, which `switch_to`'s asm restores from
+    // `ContextAArch64::tpidr`. Linux `arch/arm64/kernel/process.c` `copy_thread`:
+    // `if (clone_flags & CLONE_SETTLS) p->thread.uw.tp_value = tls;`, applied by
+    // `tls_thread_switch()`.
+    //
+    // This arm did not exist: the tls argument was discarded on aarch64 and the
+    // child kept the value `spawn_user_thread_for_fork` copied from the PARENT's
+    // live TPIDR_EL0. Every `pthread_create`d thread therefore ran on the main
+    // thread's thread pointer, so `pthread_self()`, `errno` and every `__thread`
+    // variable in a worker resolved to the main thread's storage. Caught by
+    // `wait_diff`'s `groupsig|handler_runs_in_unblocked_thread`: the row's
+    // `gettid()` said the SIGUSR1 handler ran on the sibling while
+    // `pthread_self()` insisted it was the main thread (`tls_agrees=0`), which
+    // is exactly the shape of a shared thread pointer.
+    #[cfg(target_arch = "aarch64")]
+    if (flags & CLONE_SETTLS) != 0 {
+        // SAFETY: child task not yet scheduled; sole writer to its arch_ctx.
+        unsafe {
+            let p: *mut hal_aarch64::ContextAArch64 = child.arch_ctx_ptr();
+            (*p).tpidr = tls;
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let _ = (tls, CLONE_SETTLS);
 
     debug_sched! {

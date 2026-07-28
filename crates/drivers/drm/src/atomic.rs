@@ -10,4 +10,4 @@ mod props;
 
 pub use blobs::{create_blob, destroy_blob, get_blob, mode_blob};
 pub use commit::commit;
-pub use props::{get_obj_properties, get_property};
+pub use props::{copy_object_properties, get_obj_properties, get_property, IN_FORMATS_BLOB_ID};

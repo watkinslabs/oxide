@@ -160,7 +160,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
                 // Any unblocked pending signal interrupts the wait (mirrors the
                 // poll/pselect6 EINTR check) so the dispatch tail can deliver it
                 // — including the relsig the owner must answer with VT_RELDISP.
-                let pending = cur.sigpending.load(Ordering::Acquire);
+                let pending = cur.pending_signals();
                 let mask    = cur.sigmask.load(Ordering::Acquire);
                 if pending & !mask != 0 { return Some(-(Errno::Eintr.as_i32() as i64)); }
                 // park WITH a re-check deadline (not a bare park): the

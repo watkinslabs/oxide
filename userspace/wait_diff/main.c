@@ -18,6 +18,13 @@ int main(void) {
      * signal a spinning task sigfpu swallows the run. Collect the three rows
      * that NAME that defect before the case it disables. */
     probe_spinsig();
+    /* `abortsig` sits next to `spinsig` for the same reason: both name a
+     * defect in the fatal-signal path itself, and a kernel that cannot kill a
+     * thread group makes several later cases (which fork children they expect
+     * to die) collect nothing. Every row is bounded by `wait_bounded` plus a
+     * fallback SIGKILL, so it cannot swallow the run. */
+    probe_abortsig();
+    probe_groupsig();
     probe_sigfpu();
     probe_sleep();
     probe_inotify();
@@ -31,6 +38,7 @@ int main(void) {
     probe_sysv_sem();
     probe_sysv_msg();
     probe_sysv_shm();
+    probe_openat2_resolve();
     probe_locks();
     probe_syslog();
     out("meta", "complete", "status=DONE");
