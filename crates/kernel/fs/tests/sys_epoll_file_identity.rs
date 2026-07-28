@@ -131,7 +131,15 @@ fn duplicate_fd_preserves_epoll_interest_after_fd_reuse() {
     assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, 2, reused_fd as u64, 0)), 0,
         "DEL removes the current fd/file key without deleting the old dup-kept interest");
 
+    // Publish the readiness edge the way a real source does: flip the mask,
+    // then notify the file's own `PollSubscribers`. Linux `ep_poll` is
+    // strictly rdllist-driven — an fd whose mask changes with no wait-queue
+    // wakeup is never reported, so a bare `store` here was testing epoll's
+    // fallback rescan rather than the callback path B1461 wired.
     old_mask.store(vfs::POLL_IN, Ordering::Release);
+    fdt.get(old_dup).unwrap().poll_subscribers()
+        .expect("fixture file carries a wait queue")
+        .notify_mask(vfs::POLL_IN);
     let mut out = [0u8; 12];
     let n = fs::epoll::sys_epoll_wait(&args(epfd as u64, out.as_mut_ptr() as u64, 1, 0));
     assert_eq!(n, 1, "epoll entry must poll the original file, not the reused fd slot");
