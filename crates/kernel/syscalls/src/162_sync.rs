@@ -46,13 +46,17 @@ pub fn sys_syncfs(args: &SyscallArgs) -> i64 {
         Ok(f)  => f,
         Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    // Anon-inode / mnt_id==0 fds have no backing filesystem: nothing to sync.
-    if let Some(mnt) = file.vfsmount() {
-        if mnt.sb().sync_filesystem().is_err() {
-            return -(Errno::Eio.as_i32() as i64);
-        }
-    }
-    // Make the ext4 root running journal transaction durable (cross-op batching).
-    if ext4::commit_rootfs_journal().is_err() { return -(Errno::Eio.as_i32() as i64); }
+    // Linux takes the superblock from `fd_file(f)->f_path.dentry->d_sb` — the
+    // fd's OWN filesystem — so resolve it from the inode rather than the mount:
+    // an fd whose mount lookup fails (anon inode, mnt_id 0) still belongs to a
+    // superblock, and `sync_filesystem` on a pseudo-fs is a no-op returning 0.
+    let sb = match file.f_inode().i_sb() { Some(s) => s, None => return 0 };
+    if sb.sync_filesystem().is_err() { return -(Errno::Eio.as_i32() as i64); }
+    // NOTE: no `ext4::commit_rootfs_journal()` here. ext4's own
+    // `SuperOps::sync_fs` already calls `commit_batch()` for EVERY ext4 mount
+    // (`rootfs/ops/mountfs.rs`), so the `sync_filesystem` above is the whole
+    // job. Calling the root helper as well made syncfs(2) on a tmpfs or procfs
+    // fd commit — and, on failure, report EIO for — an unrelated filesystem the
+    // caller never named. Linux syncs the one filesystem containing the fd.
     0
 }
