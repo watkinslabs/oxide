@@ -303,10 +303,8 @@ impl InetSocket {
             .dgram_lookup_addr(&address) else { return true };
         // `unix_peer(other) != sk` — a symmetrically connected pair is
         // flow-controlled by wmem alone, so its backlog is not consulted.
-        let symmetric = match (peer.peer(), local.bound()) {
-            (Some(back), Some(mine)) => back.key == mine.key,
-            _ => false,
-        };
+        let symmetric = crate::unix_sock::dgram_symmetric_pair(
+            peer.peer().as_ref(), local.bound().as_ref());
         if symmetric { return true; }
         if crate::unix_sock::dgram_peer_writable(peer.queued_bytes(), sndbuf_cap) { return true; }
         // `unix_dgram_peer_wake_me`: register on the peer's wake list at the
