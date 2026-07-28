@@ -173,6 +173,13 @@ impl InetSocket {
             }
         }
         sock.opts.bound_ifindex.store(bound_ifindex, core::sync::atomic::Ordering::Release);
+        // Linux `sk_clone_lock` copies the listening `struct sock` wholesale,
+        // so an accepted child starts with the listener's buffer sizing and
+        // its `sk_userlocks` — which is why `setsockopt(SO_RCVBUF)` on a
+        // listener is the documented way to size every future connection's
+        // receive window (the window is negotiated during the handshake, so
+        // setting it on the accepted fd is already too late).
+        super::tcp_rcvbuf::inherit_buffer_opts(listener, &sock);
         super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(&sock, &entry);
         *sock.kind.lock() = SockKind::TcpConn(entry);
         sock
