@@ -32,7 +32,7 @@ fn thread_group() -> (Arc<Task>, Arc<Task>) {
 }
 
 fn info(signo: u32, code: i32, value: u64) -> SigInfo {
-    SigInfo { signo, code, pid: 7, uid: 0, value }
+    SigInfo { signo, code, pid: 7, uid: 0, value, sys: None }
 }
 
 // --- queue depth policy (Linux `legacy_queue` vs POSIX RT) -------------------
@@ -115,44 +115,66 @@ fn flush_pending_signal_drops_the_queued_record_too() {
 }
 
 // --- thread-private vs process-directed pending -----------------------------
+//
+// Linux's two sets: `task_struct::pending` (thread private, `tgkill`) and
+// `signal_struct::shared_pending` (process wide, `kill(2)`). The shared set is
+// owned by `ThreadGroup` — this kernel's `signal_struct` — NOT by the leader's
+// `Task`, which is what these tests pin down.
 
 #[test]
-fn a_group_leader_has_no_separate_shared_pending_set() {
-    let (leader, _worker) = thread_group();
+fn a_thread_directed_signal_never_becomes_process_directed() {
+    let (leader, worker) = thread_group();
+    // `tgkill(pid, leader_tid, SIGUSR1)` — aimed at ONE thread.
     leader.sigpending.fetch_or(Signum::Sigusr1.bit(), Ordering::Release);
-    assert_eq!(sigpend::group_signal_target(&leader).map(|t| t.tid), None);
-    assert_eq!(sigpend::shared_pending(&leader), 0, "no double-count for the leader");
+    assert_eq!(sigpend::shared_pending(&worker), 0,
+               "a sibling must not be able to consume the leader's private signal");
+    assert_eq!(sigpend::all_pending(&worker), 0);
     assert_eq!(sigpend::all_pending(&leader), Signum::Sigusr1.bit());
 }
 
 #[test]
-fn a_worker_thread_sees_process_directed_pending_signals() {
+fn every_thread_sees_a_process_directed_pending_signal() {
     let (leader, worker) = thread_group();
-    // `kill(getpid(), SIGUSR1)` resolves the tgid to the leader and posts there.
-    leader.sigpending.fetch_or(Signum::Sigusr1.bit(), Ordering::Release);
+    // `kill(getpid(), SIGUSR1)` — `PIDTYPE_TGID`, so it lands in the shared set.
+    leader.thread_group.post_shared(SIGUSR1, None);
     assert_eq!(worker.sigpending.load(Ordering::Acquire), 0, "not thread-private");
     assert_eq!(sigpend::shared_pending(&worker), Signum::Sigusr1.bit());
+    assert_eq!(sigpend::shared_pending(&leader), Signum::Sigusr1.bit());
     assert_eq!(sigpend::all_pending(&worker), Signum::Sigusr1.bit(),
                "sigwaitinfo in a worker thread must see it, or it hangs forever");
 }
 
 #[test]
+fn a_worker_can_take_a_process_signal_its_leader_blocks() {
+    // THE defect: main thread blocks SIGTERM and leaves it to a worker (every
+    // glib/GIO program), so `kill(pid, SIGTERM)` must still be deliverable.
+    let (leader, worker) = thread_group();
+    leader.set_current_blocked(Signum::Sigterm.bit());
+    leader.thread_group.post_shared(Signum::Sigterm as u32, None);
+    let leader_mask = leader.sigmask.load(Ordering::Acquire);
+    assert_eq!(signum::next_deliverable(sigpend::all_pending(&leader), leader_mask), None,
+               "blocked in the thread that blocked it");
+    let worker_mask = worker.sigmask.load(Ordering::Acquire);
+    assert_eq!(signum::next_deliverable(sigpend::all_pending(&worker), worker_mask),
+               Some(Signum::Sigterm as u32),
+               "deliverable in the thread that did not");
+}
+
+#[test]
 fn all_pending_unions_both_sets() {
     let (leader, worker) = thread_group();
-    leader.sigpending.fetch_or(Signum::Sigusr1.bit(), Ordering::Release);
+    leader.thread_group.post_shared(SIGUSR1, None);
     worker.sigpending.fetch_or(Signum::Sigusr2.bit(), Ordering::Release);
     assert_eq!(sigpend::all_pending(&worker), Signum::Sigusr1.bit() | Signum::Sigusr2.bit());
 }
 
 #[test]
 fn dequeue_signal_prefers_the_thread_private_record() {
-    let (leader, worker) = thread_group();
+    let (_leader, worker) = thread_group();
     worker.sigq_reserve(SIGRTMIN);
     worker.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, 0x11));
     worker.sigpending.fetch_or(1 << (SIGRTMIN - 1), Ordering::Release);
-    leader.sigq_reserve(SIGRTMIN);
-    leader.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, 0x22));
-    leader.sigpending.fetch_or(1 << (SIGRTMIN - 1), Ordering::Release);
+    worker.thread_group.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 0x22)));
     let got = sigpend::dequeue_signal(&worker, SIGRTMIN).flatten();
     assert_eq!(got.map(|r| r.value), Some(0x11), "private queue first, like __dequeue_signal");
 }
@@ -160,20 +182,45 @@ fn dequeue_signal_prefers_the_thread_private_record() {
 #[test]
 fn dequeue_signal_falls_back_to_the_process_directed_set_and_consumes_it() {
     let (leader, worker) = thread_group();
-    leader.sigpending.fetch_or(Signum::Sigusr1.bit(), Ordering::Release);
+    leader.thread_group.post_shared(SIGUSR1, None);
     assert_eq!(sigpend::dequeue_signal(&worker, SIGUSR1), Some(None),
                "bitmap-only signal claimed with a synthesised siginfo");
-    assert_eq!(leader.sigpending.load(Ordering::Acquire) & Signum::Sigusr1.bit(), 0,
+    assert_eq!(sigpend::shared_pending(&leader) & Signum::Sigusr1.bit(), 0,
                "consumed, not merely observed");
 }
 
 #[test]
 fn a_bitmap_only_signal_is_claimed_by_exactly_one_consumer() {
     let (leader, worker) = thread_group();
-    leader.sigpending.fetch_or(Signum::Sigusr1.bit(), Ordering::Release);
+    leader.thread_group.post_shared(SIGUSR1, None);
     assert!(sigpend::dequeue_signal(&worker, SIGUSR1).is_some());
     assert!(sigpend::dequeue_signal(&leader, SIGUSR1).is_none(),
             "the loser of the claim gets nothing, never a duplicate delivery");
+}
+
+#[test]
+fn a_process_directed_record_survives_until_its_queue_drains() {
+    // POSIX RT semantics over the SHARED queue, the same rule the private one
+    // follows: the pending bit clears only when the last record is popped.
+    let (leader, worker) = thread_group();
+    let tg = &leader.thread_group;
+    tg.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 1)));
+    tg.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 2)));
+    assert_eq!(sigpend::dequeue_signal(&worker, SIGRTMIN).flatten().map(|r| r.value), Some(1));
+    assert_ne!(tg.shared_pending() & (1 << (SIGRTMIN - 1)), 0, "second record still queued");
+    assert_eq!(sigpend::dequeue_signal(&leader, SIGRTMIN).flatten().map(|r| r.value), Some(2),
+               "either thread may take the next one");
+    assert_eq!(tg.shared_pending() & (1 << (SIGRTMIN - 1)), 0);
+}
+
+#[test]
+fn flush_shared_mask_drops_the_bit_and_the_queued_record() {
+    let (leader, worker) = thread_group();
+    leader.thread_group.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 9)));
+    leader.thread_group.flush_shared_mask(1 << (SIGRTMIN - 1));
+    assert_eq!(sigpend::shared_pending(&worker), 0);
+    assert_eq!(sigpend::dequeue_signal(&worker, SIGRTMIN), None,
+               "no orphan record left to be delivered by the next post");
 }
 
 #[test]
@@ -182,6 +229,26 @@ fn dequeue_signal_reports_nothing_when_the_signal_is_not_pending() {
     assert_eq!(sigpend::dequeue_signal(&worker, SIGUSR1), None);
     assert_eq!(sigpend::dequeue_signal(&worker, 0), None);
     assert_eq!(sigpend::dequeue_signal(&worker, 65), None);
+}
+
+// --- complete_signal thread selection (Linux `wants_signal`) ----------------
+
+#[test]
+fn wants_signal_skips_a_thread_that_blocks_it() {
+    use crate::thread_group::shared_signal::wants_signal;
+    let bit = Signum::Sigterm.bit();
+    assert!(wants_signal(0, bit, false));
+    assert!(!wants_signal(bit, bit, false), "blocked thread is not a delivery target");
+    assert!(wants_signal(Signum::Sigusr1.bit(), bit, false), "a different block is no bar");
+}
+
+#[test]
+fn wants_signal_ignores_the_mask_for_sigkill_and_sigstop() {
+    use crate::thread_group::shared_signal::wants_signal;
+    // signal(7): SIGKILL/SIGSTOP cannot be blocked, so a full mask must not
+    // make a process unkillable.
+    assert!(wants_signal(u64::MAX, Signum::Sigkill.bit(), true));
+    assert!(wants_signal(u64::MAX, Signum::Sigstop.bit(), true));
 }
 
 // --- rt_sigsuspend saved-mask handshake -------------------------------------

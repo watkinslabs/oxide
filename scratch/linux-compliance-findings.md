@@ -180,6 +180,23 @@ Post-dates the audit; neither ledger carried the ISN row before this branch.
 - The AF_UNIX listener accept-readiness wakeup is **already fixed**.
 - `bpf` is **not** an arbitrary-kernel-execution hole — programs never execute; a functional void, not a security one.
 - The TCP ISN finding is **new** — it post-dates every earlier ledger and appeared in neither. Fixed on `B1465`; see §6a.
+- **B1434's `pkey_alloc` correction was itself wrong for x86_64 — corrected by B1479.** B1434
+  replaced an `ENOSYS` strawman with a flat `ENOSPC` on both arches, on the reasoning that "pkey 0
+  is allocated implicitly when the mm is created, so the allocation map is already full". That
+  holds on arm64 and NOT on x86_64: `arch/x86/include/asm/mmu_context.h` `init_new_context` sets
+  `pkey_allocation_map = 0x1` *inside* `if (cpu_feature_enabled(X86_FEATURE_OSPKE))`, so without
+  OSPKE the map starts EMPTY. x86's `mm_pkey_alloc` has no `arch_pkeys_enabled()` guard (arm64's
+  does), so the first call hands out key 0 and fails one step later in
+  `arch_set_user_pkey_access` with `EINVAL` (`arch/x86/kernel/fpu/xstate.c`); the rollback
+  `mm_pkey_free` fails too, because key 0 equals the likewise-uninitialised `execute_only_pkey`
+  and `mm_pkey_is_allocated` refuses it, so the bit stays set and every later call is `ENOSPC`.
+  Result: **x86_64 `EINVAL` once per mm then `ENOSPC`; aarch64 `ENOSPC` from the first call.**
+  Two more per-arch differences fell out of the same read: `PKEY_ACCESS_MASK` is `0x3` on x86 and
+  `0xF` on arm64 (`PKEY_DISABLE_READ`/`_EXECUTE` are arm64-only, `arch/arm64/include/uapi/asm/mman.h`),
+  and `pkey_free(0)`/`pkey_mprotect(...,0)` succeed on arm64 and are `EINVAL` on x86. B1479 models
+  the real per-mm `mm_context_t::pkey_allocation_map` instead of a constant, so all three syscalls
+  follow one map. **Method note:** the error was believing a plausible chain without tracing the
+  one `#ifdef`/`if` that gates the initialisation — the same failure mode B1434 existed to fix.
 - `bind()`/`mknod` stale negative dentries: **already fixed**. A blocking lease break **does** exist. Unwritten-extent writes are **not** rejected. Mandatory locking is `ABSENT-OK` (Linux removed it in 5.15). `copy_file_range`'s unconditional `EXDEV` matches current Linux.
 
 ## 8 B1472 — gdm "no session desktop files installed": three Linux-incompat kernel bugs
@@ -344,13 +361,140 @@ Found while verifying the gdm/udev fix. None has a lane.
 | 2 | **`[CPU-STALL]` = a CPU wedged in an IF=0 kernel section, plus a TLB-shootdown sender spinning on it.** FIXED — `B1476` found and closed BOTH wedge sites; the underlying IF=0 architecture stays open (#2a) | Every `[CPU-STALL]` in the campaign logs sits within ~20 ms of a `[TLB-MISSED-FLUSH]`: `tlb.rs` `shootdown()` spun a blind 1e9 iterations (≈10–18 s — exactly the reported 10/16/17/18 s) then declared the flush missed. Both CPUs stop ticking for that window. `rflags=0x6`/`0x96` on every `[NMI-BT]` — IF clear in all of them. The blind cap was replaced by Linux's `csd_lock_wait_toolong` escalation (`kernel/smp.c`, 5 s base + backoff): `[TLB-STUCK]` names the waiter, pending mask, VA and round, re-sends the IPI and NMI-backtraces each stuck CPU, and NEVER abandons the round (abandoning frees a frame a peer still maps). On its FIRST live-gnome boot that instrument named both real causes, each confirmed by `addr2line` against that boot's own ELF: **(a)** `syscalls::userbuf::validate_user_buf_{readable,writable}` walked the user buffer one 4 KiB PAGE at a time — O(len/4096) over a user-controlled length, with interrupts masked, so the caller chose how long its CPU stopped ticking (observed 300+ s at a fixed rip, `r12=0x800000000000`). Linux's `access_ok` is O(1) (`arch/x86/include/asm/uaccess.h`); this port needs the VMA check because it has no kernel extable, so the walk now steps VMA-by-VMA — 1 probe for a single mapping, bounded by the address space's VMA count, uninflatable by any argument. **(b)** the sender↔lock-waiter deadlock the protocol assumed away: CPU1 held the mm's VMA write lock, issued the shootdown and waited; CPU0 spun for that same lock with interrupts masked and so never took the 0x42 IPI. Linux has no such cycle (`smp_call_function_many_cond` requires IRQs enabled at the sender; `mmap_lock` sleeps). Fixed by routing every `sync` spin through one `spin_relax::relax()` that services pending shootdowns — the deadlock-breaker `shootdown`'s own acquire loop already ran, now reaching every spin. Also fixed: per-ROUND ACKs (a target still inside `service()` when a round was torn down could ACK the NEXT round having flushed the PREVIOUS VA — a silent stale-TLB UAF no log line named) and a target with no hardware id clearing its bit instead of guaranteeing the spin. `[CPU-STALL]` additionally prints the wedged CPU's LIVE `rq->curr` tid / last syscall / `preempt_count` / `resched`, since the heartbeat fields are `age_ns` stale by construction. **Evidence:** deep-window live-gnome x86 (800 s, no early marker) — before: wedged at 405 s, `[TLB-STUCK]` from round 581 onward, 1442 kernel lines; after (a): wedged at 611 s, round 2277, 1597 lines; after (a)+(b): **765 s, 2604 lines, 0 `[BUG]`, 0 `[TLB-STUCK]`, 0 `[CPU-STALL]`, 0 `[FAULT]`, `graphical.target` reached** | `B1476` |
 | 2a | **ROOT CAUSE underneath #2, OPEN: x86_64 syscalls and faults run with IF=0 end to end.** `IA32_FMASK` masks IF (`hal-x86_64/src/syscall.rs` `SFMASK_BITS`) and `oxide_syscall_entry` never `sti`s; every IDT vector is an interrupt gate (`idt.rs` `GATE_INT64_KERNEL = 0x8e`) and `oxide_fault_common` never `sti`s; `schedule()` deliberately CARRIES each task's IF across the switch (`live/schedule/switch.rs` `irq_save_disable`). Linux does the opposite in both paths — `syscall_enter_from_user_mode()` calls `local_irq_enable()` immediately (`include/linux/entry-common.h`), `do_user_addr_fault()` does the same under `WARN_ON_ONCE(!(regs->flags & X86_EFLAGS_IF))` (`arch/x86/mm/fault.c`) — and requires IRQs ENABLED at every cross-CPU call sender (`kernel/smp.c` `smp_call_function_many_cond`: `lockdep_assert_irqs_enabled()`, "Can deadlock when called with interrupts disabled"). So on this port ANY long kernel section freezes its CPU's tick and blocks every cross-CPU ACK; `B1476` removed the two sites that made that fatal, but the class remains. Only three `IrqGate::save_enable()` call sites exist in the whole tree. The incremental approach is already in flight (`dde0f0bb8` per-CPU IRQ stack "foundation for IRQs-on-in-kernel", `36d08b42b` virtio-blk busy-poll with IRQs enabled). Needs its own lane: the switch path's IF-carrying design exists precisely to protect process-context locks the timer ISR takes without `irqsave`, so flipping IF on is not a one-PR change | sched/hal |
 | 2b | **`kalloc`'s free-list insertion is a linear walk, and it runs with IF=0** — NEW, found by `B1476`'s stall instrument on a PASSING boot | `[CPU-STALL] cpu=1 no heartbeat for 10s (seen by cpu=0) last: tid=4136 syscall=fallocate nr_running=1 now: tid=4136 syscall=fallocate preempt_count=0x0 resched=1`, `[NMI-BT] rip=…801a0fab rflags=0x97`. The live `now:` fields (added by `B1476`) say the task never left the CPU, so the wedge is inside tid 4136's own `fallocate(2)`; `addr2line` puts the rip in `<kalloc::holes::HoleList>::add_free_region` — the O(N_holes) free-list insertion, called per free, under a syscall that runs at IF=0 (#2a). It RECOVERED (one report; the boot ran on to 767 s and reached `graphical.target`), so this is a latency/allocator problem, not a deadlock. Linux's SLUB free path is O(1) (`mm/slub.c` `do_slab_free` pushes onto the cpu freelist) | kalloc |
-| 3 | **SIGABRT does not kill a threaded process** | glibc `abort()` reaches `ABORT_INSTRUCTION` (`hlt` → #GP → SIGSEGV) only when *both* `raise(SIGABRT)` calls return. gdm died `11/SEGV`, not `6/SIGABRT` | sched signals |
-| 3b | **`accounts-daemon` never signals READY within systemd's 90s start timeout — REAL, not a tracing artefact.** With `B1474`'s volume fix the guest reaches `graphical.target` in 265.9s guest and the process still logs `started daemon version 25.05.0` only 86s after `Starting accounts-daemon.service`, so `start operation timed out. Terminating.` fires and gdm reports `Failed to contact accountsservice: … Timeout was reached`. Present identically on `origin/main` (timeout at guest 241.2s) and on the ~2x faster tree (153.8s) | dbus/sched |
-| 4 | Serial RX duplicates bytes under load (`xsessions` → `xsessiions`); typed bursts twice ended in `#DF` inside `sched::diag::emit::sysrq_rx` | Observed from the guest debug shell | drivers/tty |
+| 3 | ~~**SIGABRT does not kill a threaded process**~~ **NOT REPRODUCIBLE — `B1477`.** The mechanism was inferred, never observed. glibc's `abort()` was disassembled from the shipped `libc.so.6` and is exactly `raise; sigaction(SIG_DFL); __pthread_raise_internal; rt_sigprocmask(UNBLOCK); hlt; _exit(127)` — so the inference (`11/SEGV` ⇒ both raises returned) is sound, but the premise does not hold at HEAD. `userspace/wait_diff/abortsig.c` runs all seven shapes — single-threaded, group leader, NON-leader thread, returning SIGABRT handler, SIGABRT blocked, and a bare `raise(SIGABRT)` from a leader and from a sibling — against this machine's Linux and inside an oxide boot: **byte-identical on both, `outcome=signalled sig=abrt` every row, `returned=0`**. `raise` never comes back and the parent reaps SIGABRT, not SIGKILL, even when the aborting thread was not the leader. The observation predates `B1471`; gdm's `11/SEGV` was most likely a real segfault. Two mutants (`abrtnokill`, `abrtnoraise`) hold the rows falsifiable | sched signals |
+| 3a | **`kill(2)` was not process-directed — there was no `signal_struct::shared_pending`.** FIXED `B1477`. `sys_kill` resolved a tgid to the group LEADER and posted into that ONE thread's private word, and `take_lowest_pending`/`work_flags` read only the running thread's own word. So a process whose main thread blocks SIGTERM and leaves it to a worker — every glib/GIO program, and how systemd stops a service — ignored `kill(pid, SIGTERM)` forever. Same root cause as rows 62 / 128 / 130 / 282 / 289 of `scratch/partial-surface-2026-07-28.md`. The set now lives on `ThreadGroup` (this kernel's `signal_struct`); `live::sigpend::post_group_signal` is Linux `group_send_sig_info` + `complete_signal` thread selection, `Task::dequeue_pending` the private-then-shared claim, `Task::pending_signals` the union every consumer reads. `userspace/wait_diff/groupsig.c` (2 rows, 2 mutants) + 11 hosted tests, 3 of which fail against the pre-fix algorithm | sched signals |
+| 3b | ~~`accounts-daemon` never signals READY within systemd's 90s start timeout.~~ **ROOT-CAUSED + FIXED — `B1475`.** Not accountsservice-specific and not D-Bus activation: `udisks2`, `upower`, `rtkit-daemon`, `switcheroo-control`, `polkit` and `systemd-hostnamed` all blow the same 90s timeout on the same boot. Split of the interval (`debug-execload` + a new `debug-startlat` >50ms dispatch probe): of 158s measured, **127s is BEFORE the binary is exec'd** — it is `systemd-executor` building the unit's sandbox (`ProtectSystem=strict`, `ReadWritePaths=`, `PrivateDevices=`, `PrivateNetwork=`), where every `mount(2)` is followed by a `/proc/self/mountinfo` re-parse. Renders of that file measured 267 ms for 59 rows. Root cause is one level down: kalloc's sorted hole list is O(N) on BOTH `alloc` (first fit) and `dealloc` (ordered insert), so an alloc+free pair costs **21 ns on a clean heap and 128 µs once ~20 000 holes exist — 6000×** (hosted probe on a 64 MiB heap). Every allocation-heavy kernel path paid it; a single `format!` in the mountinfo row loop cost 1.97 ms. Fixes: (a) `kmalloc` size-class front end (`kalloc/sizeclass.rs`, Linux `mm/slub.c` shape) → fragmented alloc+free back to **20 ns**; (b) mountinfo field 4 via the `d_parent` walk Linux uses (`show_path`→`dentry_path`) instead of two global `absolute_path()`s, each of which linearly scanned the system-wide mount table; (c) `/proc/*/mountinfo` renders on first read, not at open (Linux `seq_open` renders nothing) — an open+read-at-0 was doing TWO full renders | mm/kalloc, procfs |
+| 4 | **`#DF` on console input** — FIXED `B1477`; the byte duplication is UNCONFIRMED and two of its code-visible mechanisms are removed with it. The `#DF` was a hardirq-stack overflow, not a fault in `sysrq_rx`: the UART ISR ran the WHOLE line discipline — `n_tty_receive_buf`, the inline echo (which polls THRE up to 100 000 times **per byte**), `wake_all` (which allocates a `Vec<Arc<Task>>` and takes runqueue locks) and the poll fan-out — on the 16 KiB per-CPU hardirq stack, whose own comment records a measured 14.5 KiB peak during a net-RX softirq drain. That drain re-enables interrupts on the SAME stack by design (`lapic/dispatch.rs`, `hal-x86_64/src/irq.rs`'s nested-entry arm), so a keystroke during a drain stacked the RX chain on ~1.5 KiB of headroom; `#PF` has no IST (`tss.rs`), so the guard-page hit escalated straight to `#DF`. `sysrq_rx` is merely the first non-inlined call after the byte leaves the RBR. Linux never does this: `tty_insert_flip_char` + `tty_flip_buffer_push` stage the bytes and `flush_to_ldisc` cooks them from a workqueue. Ported as `tty/src/core/flip.rs` (9 hosted tests, ungated). The ISR is now a memcpy plus a `queue_work`. **Still open:** no single-byte duplication path was found in the drain loop, the ldisc or the read path (all provably single-push); the two remaining candidates are TX-side — echo emits inline and bypasses the `tx` lock application writes take, and klog is a third unsynchronised writer to the same THR — so what was seen may have been a display splice rather than duplicated input | drivers/tty |
 | 5 | ~~**`debug-boot` tracing is now self-defeating.**~~ **FIXED — `B1474`.** Root cause was broader than the serial volume: `debug-boot` had become the junk drawer for every campaign trace, and `make qemu-*` sets it unconditionally. `[SIGDELIV]`, `[USTACK]`, the `trace_mutter_syscall` ledger (twice per syscall), `trace_logind_dev` (an extra `read_user_path` per `openat`), `[MUTTERWAIT]` (per deadline park) and `[B288 dgram]` (a full ~14-field journald record per log line) each paid a `with_exe_path` lock + substring scan on their hot path even when nothing printed. Split into `debug-sigdeliv` / `debug-ustack` / `debug-desktop` / `debug-execload` / `debug-journal` / `debug-taskdrop` / `debug-faultdiag`; nothing removed. A/B on the same `live-gnome` x86 boot: `graphical.target` **509.5s guest / 550s wall → 265.9s / 305s**; `basic.target` 72.5 → 46.2s; serial 8900 → 4270 lines. **Trap found while verifying:** `boot-smoke`'s `Reached target basic.target` marker is delivered BY `[B288 dgram]` — systemd's own console output stops once journald starts — so that trace stays on `debug-boot`, narrowed to each record's `MESSAGE=` line | observability |
 | 6 | ~~klog interleaving~~ **FIXED — `B1474`.** Not interrupt context specifically: the console owner lock serialised each `emit_bytes_at` CALL and every trace site builds one line from many calls, so the lock was dropped between fragments and ANY two emitters spliced. klog now assembles per-CPU line buffers keyed by a caller identity and publishes a completed line in one fan-out (Linux `LOG_CONT` / `prb_reserve_in_last`). Splice signature `<token>=[TAG` on the same `live-gnome` boot: **37 → 0** (`origin/main` sample: `[EXECLOAD begin tid=[EXECLOAD ready tid=41124114`, tids 4112/4114 interleaved; also `accounts-daemon[162]: started daemon version 25.05.0[TASK-DROP] tid=`) | klog |
+
+| 7 | **`CLONE_SETTLS` was x86-only — every pthread on aarch64 shared the main thread's TLS.** FIXED `B1477`. `056_clone.rs` discarded the `tls` argument on aarch64 (`let _ = (tls, CLONE_SETTLS)`), so a `pthread_create`d thread kept the `TPIDR_EL0` that `spawn_user_thread_for_fork` copied from the PARENT: `pthread_self()`, `errno` and every `__thread` variable in a worker thread resolved to the MAIN thread's storage. Linux `arch/arm64/kernel/process.c:486` sets `p->thread.uw.tp_value = tls` and `tls_thread_switch()` applies it; this port's `switch_to` asm already restored `ContextAArch64::tpidr`, so only the assignment was missing. Found because `groupsig|handler_runs_in_unblocked_thread` reports thread identity BOTH ways: `gettid()` (a syscall, authoritative) said the handler ran on the sibling — the correct delivery — while `pthread_self()` claimed the main thread. A row that asked only once would have blamed signal delivery and sent the lane hunting an ARM signal bug that does not exist | drivers/sched |
+| 8 | `sig_perm_check` has no `same_thread_group` short-circuit (Linux `check_kill_permission` returns 0 immediately for a sibling). Only reachable after a partial per-thread credential change, so no observed impact; unowned | sched signals |
+| 9 | `fs::coredump::write_for_current` ignores `RLIMIT_CORE` (Linux gates the dump on it) and `Box::leak`s a devfs path per dump. Unowned | fs |
 
 ### Measurement traps confirmed here
 
 - `SMOKE_KEEP_LOG` retains only the **last** attempt's log, while a panic appears in the **failing** attempt's dump inside boot-smoke's own output. Reading only the kept log makes a real panic look like a plain timeout — this nearly produced a false retraction.
 - Marking on a process name (`SMOKE_MARKER='gnome-shell'`) is unmeasurable when that process prints nothing to serial. The reliable check is the sysrq task dump boot-smoke injects on timeout, or `ps` from `systemd.debug_shell=ttyS0`.
+
+## 11 DRM atomic modesetting — mutter drives the display (`B1480`, 2026-07-28)
+
+GNOME Shell now scans out through the atomic path. mutter logs
+`Added device '/dev/dri/card0' (virtio_gpu) using atomic mode setting.` and a
+QMP `screendump` shows the **rendered GDM greeter top bar** (menu pill, clock,
+power button) on GNOME's `#222226` background at 1280x800.
+
+Three defects, all in the same class: **a wire-format error that keeps `size_of`
+unchanged, so every existing test still passes.**
+
+| # | Defect | Linux | Symptom |
+|---|---|---|---|
+| 1 | `DRM_IOCTL_MODE_ATOMIC` encoded size 64 | `drm_mode_atomic` is 2×u32+6×u64 = **56** | `node.rs` matches the whole u64 → libdrm's number never matched → `drmModeAtomicCommit: Inappropriate ioctl for device`. The entire atomic implementation was complete, wired, and **unreachable** |
+| 2 | `DRM_IOCTL_MODE_SETPLANE` encoded size 64; `DrmModeSetPlane.src_*` widened to u64 to agree | twelve 32-bit fields = **48**; src order is x, y, **h, w** | universal-plane path equally unreachable. A comment claimed "the earlier 0x30 (48) never matched libdrm" — 0x30 was correct and was "fixed" into a bug |
+| 3 | `DrmModeCreateBlob` field order `(length, blob_id, data)` | `{ __u64 data; __u32 length; __u32 blob_id; }` | `length` read the low half of the caller's data pointer → every `CREATEPROPBLOB` EINVAL → `Page flip failed: drmModeCreatePropertyBlob: Invalid argument`. sizeof stays 16, so the ioctl-number and struct-size tests both passed |
+
+`MODE_GETCONNECTOR` also reported `count_props = 0`. libdrm surfaces that array
+as `drmModeConnector::props` — the only place a compositor looks for a
+connector's `CRTC_ID` — so mutter logged
+`Property (CRTC_ID) not found on connector N` and abandoned atomic modesetting.
+Linux fills it from `drm_mode_object_get_properties`, the same call backing
+`MODE_OBJ_GETPROPERTIES`; both now route through `atomic::copy_object_properties`.
+
+Also brought to Linux: `DRM_MODE_PROP_ATOMIC` hides atomic-only properties from
+clients without `DRM_CLIENT_CAP_ATOMIC`; per-element copy (short buffer gets a
+prefix, count is always the true total); `MODE_GETPROPERTY` emits enum entries,
+sizes `num_values` Linux's way (enum value arrays are `kcalloc`-zeroed), forces
+`count_enum_blobs = 0` for blob properties, and returns ENOENT not EINVAL;
+per-object attach lists match Linux (CRTC gains `VRR_ENABLED`, connector gains
+`non-desktop`/`TILE`, planes drop `rotation`/`zpos` which virtio-gpu never
+creates, EDID drops off the virtual connector). Ten further ioctl constants were
+mis-encoded but never dispatched (`GET_CLIENT`, `GET_STATS`, `ATTACHMODE`,
+`DETACHMODE`, six `SYNCOBJ_*`) — corrected so they do not bite when wired.
+
+### Dead code removed
+
+`modeset.rs` held a second, diverging `get_obj_properties`/`get_property` plus
+duplicate property-id constants; `node.rs` dispatches to `atomic::*`, so they
+had no callers. `props::object_type` had no caller anywhere in the workspace.
+
+### Why the tests did not catch any of it
+
+`ioctl_size_fields_match_structs` only proves the number and the struct agree
+with **each other** — SETPLANE satisfied it for months with both wrong. Added
+`ioctl_numbers_encode_their_linux_struct_size` (anchors 22 numbers to Linux
+sizes) and `wire_struct_field_offsets_match_linux` (offsets, not sizes — the
+only check that catches a transposition). Both verified to fail on the original
+bugs.
+
+### Open: first frame renders, then freezes
+
+Five `screendump`s from 150s to 400s are **byte-identical** — the greeter paints
+once and never advances (clock frozen at 17:40). Correlates with 183 326
+`Failed to dispatch fd source: Invalid argument` from `gnome-shell` starting at
+92.9s, right after the first paint. Prime suspect is DRM event delivery:
+`node/publication.rs` `DrmCardFileOps::read_file` returns `Ok(0)` when no event
+is queued, but Linux `drm_read` (drm_file.c) returns **-EAGAIN** on `O_NONBLOCK`
+and otherwise **sleeps on `file_priv->event_wait`** — it never returns 0, which
+to a GLib fd source is EOF. Pre-existing (that file is untouched by `B1480`) and
+needs a waitqueue on the card fd. Separate lane.
+## 12 B1478 — security controls that reported success while enforcing nothing
+
+Branch `B1478-security-enforcement`. Four controls whose callers built on a
+guarantee the kernel never delivered. Each is worse than an unimplemented
+feature, because userspace treats the success return as enforcement.
+
+| # | Control | What was actually unenforced | Linux rule mirrored |
+|---|---|---|---|
+| 1 | `openat2` `RESOLVE_*` | `O_CREAT` branch built its parent walk from `LookupFlags::default()`, dropping every scoping bit | `fs/open.c build_open_flags` folds all six into ONE `op->lookup_flags`; `fs/namei.c path_openat` uses it for both walk phases |
+| 2 | `userfaultfd` | `UFFDIO_COPY`/`ZEROPAGE` installed USER\|RW at any VA with no VMA and no registration — an arbitrary-write primitive; no creation gate at all | `mm/userfaultfd.c validate_dst_vma`, `find_vma_and_prepare_anon`, `userfaultfd_syscall_allowed` |
+| 3 | mount flags | `graft_mount` passed a hardcoded `0` as `mnt_flags`; `MNT_LOCK_*` did not exist; `require_sys_admin()` was a flat effective-set test | `fs/namespace.c path_mount`, `lock_mnt_tree`, `may_mount`; `fs/super.c mount_capable` |
+| 4 | `seccomp` | `RET_TRACE`/`RET_LOG` failed OPEN — a filter denying by tracing was a no-op | `kernel/seccomp.c __seccomp_filter` |
+
+### 12.1 Corrections to the source audit
+
+The audit rows were treated as claims to disprove. Four were wrong:
+
+- **`fs/userfaultfd.c` does not exist in v7.2.0-rc4.** userfaultfd is entirely
+  in `mm/userfaultfd.c`. Any row citing the old path was not read against this tree.
+- **`validate_dst_vma` tests `vm_userfaultfd_ctx.ctx` for NON-NULL, not identity**
+  with the calling ctx. The identity test is MOVE-only (`validate_move_areas`).
+  There is likewise no `ctx->mm != current->mm` check outside `userfaultfd_move`.
+- **Mount binds are not a gap.** `path_mount` DISCARDS `mnt_flags` for `MS_BIND`
+  (`return do_loopback(path, dev_name, flags & MS_REC)`) and the clone inherits
+  from its source. `mount --bind -o ro` does not make a ro bind upstream either.
+- **A tracerless `SECCOMP_RET_TRACE` does not act as `RET_KILL_THREAD`.**
+  `kernel/seccomp.c __seccomp_filter` sets the return value to `-ENOSYS` and
+  `goto skip` — the task LIVES. `RET_LOG` likewise does not "fail open": it IS
+  an allow-after-audit action. And the filter chain WAS already cloned on fork;
+  only `seccomp_mode` was not, which produced the same escape by a different
+  route.
+- **`RESOLVE_BENEATH` was not the escaping flag.** Only `RESOLVE_IN_ROOT`
+  produced a live escape: it is the sole scoping bit that CLAMPS rather than
+  errors, so the scoped walk returns ENOENT and hands control to the unscoped
+  create path. BENEATH/NO_SYMLINKS/NO_XDEV all abort earlier with
+  EXDEV/ELOOP/EXDEV — incidentally covered, never enforced.
+
+### 12.2 Method note
+
+Every fix carries a NEGATIVE assertion (the escape is refused, the unprivileged
+call is denied, the flag is honoured), because a happy-path test passes a
+control that enforces nothing — which is how all four shipped. Causality was
+verified by reverting each production edit and confirming the specific tests go
+red, not by asserting that new tests pass.
+
+## 13 B1482 — ext4 charged `i_blocks` for extent metadata it never allocated
+
+`htree_leaf_split_stays_e2fsck_clean` failed on clean `main`: `Inode 12, i_blocks is 74, should be 42` for a 21-block htree directory (1 KiB blocks, 2 sectors per block). Not a units error and not a factor of two on the whole inode — the fixture's first 5 blocks were charged correctly and every one of the 16 blocks added afterwards was charged **twice**: `10 + 16×4 = 74` against the true `10 + 16×2 = 42`.
+
+Cause: the append path charged a *predicted* metadata block, not an allocated one. Both insert sites decided "this insert overflows the extent leaf, so it will cost an index block" **before** the insert ran, and both simulated the insert with a placeholder physical block (`extent_for(logical, 0)`) — which can never merge. A physically contiguous append merges into its neighbouring extent and adds no entry, so the predicted metadata block was never allocated while the charge stayed.
+
+| Site | Shape of the bug |
+|---|---|
+| `extent_rw/insert.rs insert_inline_sorted` (depth 0) | `will_promote = extents.len() + 1 > 4` — silent over-charge on every merging append. This is the failing test. |
+| `extent_rw/append.rs insert_logical_block_with_inode_bytes` (depth ≥ 1) | `extra_meta_sectors_for_insert(.., simulated.len())` — the predicted-vs-actual guard turned the same mismatch into a hard `CorruptExtentTree` **write error**. Reproduces at `FRAG=83` in `merging_append_onto_a_full_extent_leaf_succeeds`: an ordinary append onto a leaf sitting exactly at its entry limit fails. |
+
+Linux never predicts. `ext4_mb_new_blocks` (`fs/ext4/mballoc.c`) calls `dquot_alloc_block` immediately before handing out each block, and `__dquot_alloc_space` (`fs/quota/dquot.c`) is what runs `inode_add_bytes` — so `i_blocks` and the quota charge are one act, per block actually taken, for data blocks and for `ext4_ext_new_meta_block` metadata alike. The fix charges the data block ahead of its allocation (Linux's order) and charges metadata only once the merge-aware insert — now simulated with the REAL extent — says the tree needs it.
+
+Not a split source of truth: `st_blocks` (`rootfs/inode/{regular,special}.rs`) reads `read_inode().i_blocks`, and `account_i_blocks_delta` derives the quota delta from the same sector count, so the over-charge inflated `du`, `stat` and the user's quota consumption by the identical amount. The uncharge sites are sound — `truncate.rs`/`punch.rs` recompute from the tree (`count_all_sectors` + `external_xattr_sectors`) rather than tracking a delta, which is why the drift only ever appeared on grow-only inodes such as directories.
+
+Coverage: `crates/kernel/ext4/tests/i_blocks_accounting_image.rs` (7 tests, `e2fsck -fn` as the oracle) covers grown htree dirs, contiguous appends, fragmented deep trees, `mkdir`, `rmdir` uncharge, `stat` agreement, and the depth≥1 full-leaf boundary. Two fail against pre-fix code.

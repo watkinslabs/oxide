@@ -10,7 +10,9 @@ pub fn prefault_stack(as_: &AddressSpace, top: u64, len: u64) {
     let mut va = top.saturating_sub(len) & !PAGE_MASK;
     while va < top {
         if let Some(uva) = UserVirtAddr::new(va) {
-            let _ = do_handle(as_, uva, FaultKind::NotPresent { access: FaultAccess::Write }, hhdm);
+            // Kernel-initiated prefault, so Linux's `FAULT_FLAG_USER` is clear
+            // (only the arch fault vector sets it).
+            let _ = do_handle(as_, uva, FaultKind::NotPresent { access: FaultAccess::Write }, hhdm, false);
         }
         va += PAGE_BYTES;
     }

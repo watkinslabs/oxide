@@ -71,6 +71,9 @@ fn siginfo_payload(p: &PendingSignal) -> Option<hal::SigPayload> {
     Some(hal::SigPayload {
         code: i.code, pid: i.pid as i32, uid: i.uid,
         status: i.value as i32, value: i.value, chld_arm,
+        // A seccomp-raised SIGSYS selects the `_sigsys` arm instead, which
+        // overlays si_pid/si_uid/si_value. `hal::write_siginfo` picks.
+        sigsys: i.sys,
     })
 }
 

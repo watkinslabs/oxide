@@ -96,7 +96,11 @@ fn work_flags() -> u32 {
     // THIS task (`sched::preempt::resched`), so a tick charged to whoever ran
     // while this task was off the CPU cannot come back as another pass.
     let need_resched = sched::preempt::should_resched();
-    let pending = cur.sigpending.load(Ordering::Acquire);
+    // Both pending sets, exactly as `take_lowest_pending` reads them — the
+    // "is there work" question and the "which signal" answer must never
+    // disagree, or the loop either spins on a signal it cannot dequeue or
+    // returns to userspace with a deliverable one still queued.
+    let pending = sched::live::sigpend::all_pending(&cur);
     let blocked = cur.sigmask.load(Ordering::Acquire);
     // `NOTIFY_RESUME` is Linux's `resume_user_mode_work()`. Never set on this
     // port: there is no `task_work` queue and no blkcg/memcg association to

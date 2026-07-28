@@ -76,7 +76,7 @@ fn user_ok(ptr: u64, len: u64) -> bool {
 /// a bad plane id / unknown fb / no scanout backend. # C: O(1) + O(scanout).
 pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeSetPlane>() as u64) { return einval(); }
-    // SAFETY: arg range validated < USER_VA_END; DrmModeSetPlane is repr(C) 64 B; aligned read through the caller's AS at CPL=0.
+    // SAFETY: arg range validated < USER_VA_END; DrmModeSetPlane is repr(C) 48 B; aligned read through the caller's AS at CPL=0.
     let p: DrmModeSetPlane = unsafe { core::ptr::read_volatile(arg as *const DrmModeSetPlane) };
     let idx = match card.plane_ids().iter().position(|id| *id == p.plane_id) { Some(i) => i, None => return einval() };
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
@@ -94,7 +94,7 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
             Some(v) => v, None => return einval(),
         };
         if w > 64 || h > 64 || p.crtc_w != w || p.crtc_h != h
-            || p.src_x != 0 || p.src_y != 0 || p.src_w != (w as u64) << 16 || p.src_h != (h as u64) << 16 {
+            || p.src_x != 0 || p.src_y != 0 || p.src_w != w << 16 || p.src_h != h << 16 {
             return einval();
         }
         return if (ops.set_cursor)(ops.driver_key, res_id, w, h, p.crtc_x, p.crtc_y, 0, 0) { 0 } else { einval() };

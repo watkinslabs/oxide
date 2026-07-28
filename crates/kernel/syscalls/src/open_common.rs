@@ -170,7 +170,12 @@ pub(crate) fn enforce_open_perm(
         && matches!(inode.file_type(), vfs::types::FileType::CharDev | vfs::types::FileType::BlockDev)
     {
         if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
-            if m.is_nodev() || m.sb().is_nodev() { return Some(-(Errno::Eacces.as_i32() as i64)); }
+            // `s_iflags & SB_I_NODEV` is the KERNEL-INTERNAL word procfs/sysfs/
+            // pseudo-fs stamp at fill-super; `s_flags & SB_NODEV` is the
+            // user-visible one. Linux tests the former; both are honoured here.
+            if m.is_nodev() || m.sb().is_nodev() || m.sb().is_sb_i_nodev() {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
         }
     }
     if created || mnt_id == 0 { return None; }

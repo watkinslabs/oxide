@@ -22,7 +22,7 @@
 // split (tty-rebuild-plan §0 fact (a)).
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use serialtty::{KernelUart, SerialOut, SerialTtyDriver};
 use tty::ldisc::Sig;
@@ -95,15 +95,60 @@ pub fn install() {
     drv_serial::set_rx_sink(rx_byte);
 }
 
-/// UART RX byte sink (`fn(u8)` for `drv_serial::set_rx_sink`). Pushes the
-/// byte into the console tty's flip path → N_TTY → cooks/echoes/ISIG →
-/// wakes parked readers. Mirrors Linux `uart_insert_char` →
-/// `tty_flip_buffer_push`. Dropped silently before `install`.
-/// # C: O(1) + O(waiters) wake
+/// Linux `work_struct`'s `WORK_STRUCT_PENDING` bit for the flush item: at most
+/// one queued `flush_to_ldisc` at a time. Without it a 64-byte FIFO drain
+/// queues 64 identical work items and saturates the per-CPU work ring.
+static FLUSH_QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// UART RX byte sink (`fn(u8)` for `drv_serial::set_rx_sink`) — Linux
+/// `uart_insert_char` → `tty_flip_buffer_push`, and NOTHING else.
+///
+/// This runs in the UART's hard-IRQ handler, on the per-CPU hardirq stack, so
+/// it stages the byte and schedules; the line discipline, the echo (which polls
+/// the UART transmitter up to 100 000 times per byte), the reader wake and the
+/// poll fan-out all run in `flush_input_work` on a kworker. Running them here
+/// was the `#DF`: an interrupt taken during a softirq drain nests on the same
+/// 16 KiB stack, whose measured peak was already 14.5 KiB (`sched::kstack`),
+/// and `#PF` has no IST so the guard-page hit escalated straight to a double
+/// fault. Dropped silently before `install`.
+/// # C: O(1)
+/// # Ctx: hard IRQ
+/// # Sleeps: no
 pub fn rx_byte(b: u8) {
-    if let Some(tty) = console() {
-        tty.receive_from_driver(&[b]);
+    let Some(tty) = console() else { return };
+    if tty.insert_flip(&[b]) == 0 { return; }
+    schedule_flush();
+}
+
+/// Queue one `flush_to_ldisc`, or note that one is already owed.
+///
+/// The flag stays set for the WHOLE life of the work item, not just until the
+/// callback starts: that is what Linux's workqueue core guarantees for a single
+/// `work_struct`, and `flush_to_ldisc` depends on it. Two flushes running at
+/// once would each take a chunk out of the ring and could hand them to the line
+/// discipline out of order — byte reordering on the console, indistinguishable
+/// from the corruption this branch is fixing.
+/// # C: O(1)
+/// # Ctx: any, including hard IRQ
+fn schedule_flush() {
+    if FLUSH_QUEUED.swap(true, Ordering::AcqRel) { return; }
+    if !sched::live::workqueue::queue_work(flush_input_work, 0) {
+        FLUSH_QUEUED.store(false, Ordering::Release);
     }
+}
+
+/// Linux `flush_to_ldisc`, the `tty_bufhead::work` callback: cook everything
+/// the ISR staged, in process context.
+/// # C: O(staged bytes)
+/// # Ctx: process (kworker)
+fn flush_input_work(_arg: usize) {
+    let Some(tty) = console() else { FLUSH_QUEUED.store(false, Ordering::Release); return };
+    tty.flush_to_ldisc();
+    // Release the single-flush token only now, then re-check: a byte staged
+    // between the last drain and this store queued nothing (it saw the token
+    // taken), so this is the one place that can still pick it up.
+    FLUSH_QUEUED.store(false, Ordering::Release);
+    if tty.flip_pending() > 0 { schedule_flush(); }
 }
 
 // ------------------------------------------------------------- inode ops

@@ -544,13 +544,20 @@ pub struct Task {
     #[cfg(target_arch = "aarch64")]
     pub svc_frame: core::sync::atomic::AtomicU64,
     /// Per-task seccomp cBPF chain per `13§5`. Drop on task exit.
-    pub seccomp_filters: UnsafeCell<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
+    ///
+    /// LOCKED, not `UnsafeCell`: `SECCOMP_FILTER_FLAG_TSYNC` publishes the
+    /// caller's chain into every SIBLING thread (Linux `seccomp_sync_threads`
+    /// under `siglock`), so the owning task is not the only writer and a
+    /// bare cell would let a sibling's `Vec` realloc race the owner's
+    /// per-syscall walk of it.
+    pub seccomp_filters: Spinlock<alloc::vec::Vec<alloc::vec::Vec<u64>>, TaskListClass>,
 
     /// Linux `task_struct::seccomp.mode` — `SECCOMP_MODE_{DISABLED,STRICT,
-    /// FILTER}`. `prctl(PR_GET_SECCOMP)` returns it verbatim, so STRICT must
-    /// be distinguishable from FILTER; deriving the answer from
-    /// `seccomp_filters.len()` cannot do that, since STRICT installs a filter
-    /// chain too. Written only by `seccomp(2)` / `prctl(PR_SET_SECCOMP)`.
+    /// FILTER,DEAD}`. `prctl(PR_GET_SECCOMP)` returns it verbatim, so STRICT
+    /// must be distinguishable from FILTER; deriving the answer from
+    /// `seccomp_filters.len()` cannot do that, since a STRICT task has an
+    /// EMPTY chain (Linux mode 1 installs no cBPF program at all) and so
+    /// looks identical to an unconfined one.
     pub seccomp_mode: AtomicU8,
 
     /// Per-thread robust-mutex list head + len per

@@ -224,22 +224,18 @@ impl RootfsState {
         Ok(())
     }
 
-    /// # C: O(N parent entries) + (free blocks if last link)
-    pub fn unlink_at(&self, path: &[u8]) -> Result<(), vfs::VfsError> {
+    /// Free-fn `unlink(2)` over this mount (no VFS dentry in play). Quota and
+    /// the page cache are released by the eviction, not here — see
+    /// `Mount::unlink` and `RootfsState::after_unlink`.
+    /// # C: O(N parent entries) + (eviction cost when nothing holds the inode)
+    pub fn unlink_at(self: &Arc<Self>, path: &[u8]) -> Result<(), vfs::VfsError> {
         let (pino, name) = self.parent_inode(path).ok_or(vfs::VfsError::Enoent)?;
         let target = self.mount.lookup_path(path).map_err(|_| vfs::VfsError::Enoent)?;
         let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
         if inode.is_dir() { return Err(vfs::VfsError::Eisdir); }
-        let final_link = inode.links_count <= 1;
-        if final_link { super::quota::release_existing_inode_usage(self, &inode)?; }
         let name = name.to_vec();
-        if let Err(e) = self.mount.run_journaled(|m| m.unlink(pino, &name)) {
-            if final_link { let _ = super::quota::rollback_existing_inode_release(self, &inode); }
-            return Err(namei_error_from_mount(e));
-        }
-        if final_link { super::quota::drop_existing_inode_dquots(self, target); }
-        self.page_cache.invalidate(InodeId(target as u64));
-        Ok(())
+        let out = self.mount.run_journaled(|m| m.unlink(pino, &name)).map_err(namei_error_from_mount)?;
+        self.after_unlink(out)
     }
 
     /// # C: O(N parent entries)
@@ -338,7 +334,7 @@ impl RootfsState {
 
     /// Resolve the two pathnames of a path-based rename into the object
     /// identities the shared `ext4_rename2` core consumes. # C: O(path)
-    fn rename_sides_at<'a>(&'a self, from: &[u8], to: &[u8])
+    fn rename_sides_at<'a>(self: &'a Arc<Self>, from: &[u8], to: &[u8])
         -> Result<(super::inode::RenameSides<'a>, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>), vfs::VfsError>
     {
         let target = self.mount.lookup_path(from).map_err(|_| vfs::VfsError::Enoent)?;
@@ -354,7 +350,7 @@ impl RootfsState {
     /// `i_op->rename` entry, so ENOTEMPTY, the `..` repoint, the parent
     /// `i_links_count` fixups and the timestamp stamps cannot diverge between
     /// the two callers. # C: O(N parent entries) + 1 journaled tx
-    pub fn rename_at(&self, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
+    pub fn rename_at(self: &Arc<Self>, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
         let (s, from_name, to_name) = self.rename_sides_at(from, to)?;
         super::inode::rename_sides(&s, &from_name, &to_name, 0)
     }
@@ -365,7 +361,7 @@ impl RootfsState {
     /// cross-parent swap repoints each directory's `..` and shifts the parent
     /// link counts by `ext4_update_dir_count`'s delta.
     /// # C: O(N parent entries) + 1 journaled tx
-    pub fn exchange_at(&self, a: &[u8], b: &[u8]) -> Result<(), vfs::VfsError> {
+    pub fn exchange_at(self: &Arc<Self>, a: &[u8], b: &[u8]) -> Result<(), vfs::VfsError> {
         let (s, aname, bname) = self.rename_sides_at(a, b)?;
         if s.dest_victim.is_none() { return Err(vfs::VfsError::Enoent); }
         super::inode::rename_sides(&s, &aname, &bname, vfs::namei::RENAME_EXCHANGE)
@@ -375,7 +371,7 @@ impl RootfsState {
     /// `from`→`to` AND plant a whiteout at the vacated source — a character
     /// device with rdev 0:0 (`S_IFCHR | 0`), owner root — ATOMICALLY in ONE
     /// journaled transaction. # C: O(N parent entries) + 1 journaled tx
-    pub fn whiteout_at(&self, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
+    pub fn whiteout_at(self: &Arc<Self>, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
         let (s, from_name, to_name) = self.rename_sides_at(from, to)?;
         super::inode::rename_sides(&s, &from_name, &to_name, vfs::namei::RENAME_WHITEOUT)
     }

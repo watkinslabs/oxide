@@ -56,6 +56,17 @@ pub fn copy_mnt_ns_map(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRe
     }
     reservation.commit();
     rebuild_ns_index(to_ns);
+    // Linux `copy_mnt_ns`: `if (user_ns != ns->user_ns) lock_mnt_tree(new)`. A
+    // mount namespace whose owning USER namespace differs from the source's was
+    // created by a caller that is unprivileged w.r.t. the original mounter — it
+    // inherits the tree but must not be able to remount away NOSUID/NODEV/NOEXEC/
+    // RDONLY, retune atime, or unmount a node to reveal what it covers. Without
+    // this stamp `unshare(CLONE_NEWUSER|CLONE_NEWNS)` is a privilege-escalation
+    // surface rather than a sandbox.
+    if !namespace_identity::NamespacePin::ptr_eq(
+        &from.owner_user_namespace(), &to.owner_user_namespace()) {
+        locked::lock_mnt_ns(to_ns);
+    }
     mntns::bump_gen(to_ns);
     Ok(map)
 }

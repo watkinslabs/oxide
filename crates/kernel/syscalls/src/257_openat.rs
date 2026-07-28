@@ -34,40 +34,21 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     rv
 }
 
-// openat2 RESOLVE_* (uapi/linux/openat2.h). VALID = OR of all six.
-const RESOLVE_NO_XDEV:       u64 = 0x01;
-const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-const RESOLVE_NO_SYMLINKS:   u64 = 0x04;
-const RESOLVE_BENEATH:       u64 = 0x08;
-const RESOLVE_IN_ROOT:       u64 = 0x10;
-const RESOLVE_CACHED:        u64 = 0x20;
-const RESOLVE_VALID: u64 = RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS
-    | RESOLVE_BENEATH | RESOLVE_IN_ROOT | RESOLVE_CACHED;
-
 /// `sys_openat2(dirfd, path, how, size)`. Copies `struct open_how` with Linux
 /// size/tail rules, validates `resolve`, and maps it onto `LookupFlags`
-/// consumed by the resolver. # C: O(N_path + how_size)
+/// consumed by the resolver. The `RESOLVE_*` decisions live in the ungated
+/// `openat2_resolve` module so they are unit-tested. # C: O(N_path + how_size)
 pub fn sys_openat2(args: &SyscallArgs) -> i64 {
     let how = match copy_open_how(args.a2, args.a3) {
         Ok(h) => h, Err(rv) => return rv,
     };
-    if how.resolve & !RESOLVE_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
-    // Linux rejects RESOLVE_BENEATH together with RESOLVE_IN_ROOT.
-    if (how.resolve & RESOLVE_BENEATH != 0) && (how.resolve & RESOLVE_IN_ROOT != 0) {
-        return -(Errno::Einval.as_i32() as i64);
+    if let Err(e) = crate::openat2_resolve::validate_resolve(how.resolve) {
+        return -(e.as_i32() as i64);
     }
     let mut sa = *args;
     sa.a2 = how.flags;
     sa.a3 = how.mode;
-    let extra = vfs::LookupFlags {
-        no_xdev:       how.resolve & RESOLVE_NO_XDEV != 0,
-        no_magiclinks: how.resolve & RESOLVE_NO_MAGICLINKS != 0,
-        no_symlinks:   how.resolve & RESOLVE_NO_SYMLINKS != 0,
-        beneath_exdev: how.resolve & RESOLVE_BENEATH != 0,
-        in_root:       how.resolve & RESOLVE_IN_ROOT != 0,
-        cached:        how.resolve & RESOLVE_CACHED != 0,
-        ..Default::default()
-    };
+    let extra = crate::openat2_resolve::lookup_flags_from_resolve(how.resolve);
     let rv = open_core(&sa, extra, true);
     #[cfg(feature = "debug-udevdb")]
     if let Ok(p) = crate::namei_common::read_user_path(args.a1) {
@@ -130,13 +111,6 @@ fn validate_user_readable(ptr: u64, len: u64) -> Result<(), i64> {
         if va == last { return Ok(()); }
         va = va.checked_add(PAGE_SIZE_BYTES).ok_or(-(Errno::Efault.as_i32() as i64))?;
     }
-}
-
-/// True when any openat2 RESOLVE_* modifier is set (so the resolve path takes
-/// the flag-aware route that surfaces EXDEV/ELOOP instead of the legacy
-/// collapse-to-ENOENT). # C: O(1)
-fn extra_active(x: &vfs::LookupFlags) -> bool {
-    x.no_xdev || x.no_magiclinks || x.no_symlinks || x.beneath_exdev || x.in_root || x.cached
 }
 
 fn is_chr_rdev(inode: &vfs::InodeRef, rdev: u32) -> bool {
@@ -257,12 +231,12 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
     // EAGAIN (CACHED) surface to userspace instead of collapsing to ENOENT.
     // BENEATH/IN_ROOT re-base the walk START on the dirfd (resolve_confined).
     let nofollow = (flags & O_NOFOLLOW) != 0;
-    let lookup_resolved: Option<vfs::VfsPath> = if extra_active(&extra) {
+    let lookup_resolved: Option<vfs::VfsPath> = if crate::openat2_resolve::resolve_active(&extra) {
         let mut lookup = extra;
         lookup.no_follow_final = nofollow;
         lookup.directory = (flags & O_DIRECTORY) != 0;
         lookup.empty = empty_path;
-        let r: Result<vfs::VfsPath, i64> = if extra.beneath_exdev || extra.in_root {
+        let r: Result<vfs::VfsPath, i64> = if extra.confines_to_dirfd() {
             crate::pathresolve::resolve_confined(args.a0 as i32, s, lookup)
         } else {
             // D17: seed from the dirfd's real (mnt_id, dentry) so EXDEV (NO_XDEV)
@@ -380,7 +354,15 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         let umask = cur.umask();
         // S_IALLUGO (0o7777): pass requested suid/sgid/sticky to VFS prepare.
         let final_mode = mode & 0o7777;
-        let parent = match crate::pathresolve::resolve_parent_at(args.a0 as i32, s) {
+        // The openat2 RESOLVE_* scope MUST survive into the create path. Linux
+        // hands one `op->lookup_flags` (`fs/open.c` build_open_flags) to
+        // `path_openat`, which runs the LOOKUP_PARENT walk with the same
+        // `nd->flags` — no create-path exception exists. Resolving the parent
+        // unscoped here let `openat2(dirfd, "/etc/x", O_CREAT, {RESOLVE_IN_ROOT})`
+        // create at the REAL /etc: the scoped full-path walk clamps and returns
+        // ENOENT, then this branch re-walked from the process root.
+        let parent_flags = crate::openat2_resolve::parent_lookup_flags(&extra);
+        let parent = match crate::pathresolve::resolve_parent_at_flags(args.a0 as i32, s, parent_flags) {
             Ok(x) => x,
             Err(rv) => {
                 #[cfg(feature = "debug-eacces")]

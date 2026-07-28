@@ -35,6 +35,24 @@ use alloc::vec;
 /// the exact value is immaterial to validity as long as it is large.
 const DELETED_DTIME: u32 = 1_700_000_000;
 
+/// What [`Mount::unlink`] did, so the caller can finish the Linux sequence.
+/// `links == 0` means the name that just went was the last one and the inode
+/// is now on the on-disk orphan list awaiting eviction — NOT that it was
+/// freed.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct UnlinkOutcome {
+    /// The inode the removed directory entry pointed at.
+    pub ino: u32,
+    /// `i_links_count` after the decrement.
+    pub links: u16,
+}
+
+impl UnlinkOutcome {
+    /// True iff this unlink orphaned the inode (last link gone).
+    /// # C: O(1)
+    pub fn orphaned(&self) -> bool { self.links == 0 }
+}
+
 /// Stamp owner ids into a fresh on-disk inode buffer: low u16 into `i_uid`
 /// @0x02 / `i_gid` @0x18, high u16 into osd2 `l_i_uid_high` @0x78 /
 /// `l_i_gid_high` @0x7A (matching `Inode::parse`). `bytes` must be a full
@@ -364,9 +382,21 @@ impl Mount {
             // This also clears `i_dtime`; the genuine deletion timestamp is
             // re-stamped below.
             m.orphan_del(ino)?;
-            // Free EVERY data + interior-node block at ANY tree depth (see the
-            // matching note in `unlink`); the old depth==0-only walk leaked a
-            // deep-tree file's blocks + interior nodes.
+            // A directory reaching here (orphaned by a rename-over or a crash)
+            // stops counting toward its group's `bg_used_dirs_count`, exactly
+            // as `rmdir`'s immediate free does.
+            let is_dir = {
+                let (b, _o) = m.read_inode_bytes(ino)?;
+                (u16::from_le_bytes([b[0x00], b[0x01]]) & S_IFMT) == S_IFDIR
+            };
+            if is_dir {
+                let g = (ino - 1) / m.sb.inodes_per_group;
+                { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
+                m.persist_gdt_slot_meta(g)?;
+            }
+            // Free EVERY data + interior-node block at ANY tree depth (Linux
+            // `ext4_truncate` → `ext4_ext_remove_space`); a depth==0-only walk
+            // leaks a deep-tree file's blocks and its interior nodes.
             m.truncate_inode_for_deletion(ino)?;
             m.free_external_xattr_for_deletion(ino)?;
             // Re-read after orphan_del + truncate rewrote the slot.
@@ -383,44 +413,34 @@ impl Mount {
         })
     }
 
-    /// Unlink `name` from `parent_ino`. Decrements target's
-    /// link count; on reaching 0 frees data blocks + inode.
-    /// # C: O(N parent entries) + (link>1 ? 1 inode write : N_extents block frees + 1 inode-free)
-    pub fn unlink(&self, parent_ino: u32, name: &[u8]) -> Result<(), MountError> {
+    /// `__ext4_unlink` (`fs/ext4/namei.c`): drop `name` from `parent_ino` and
+    /// decrement the target's link count. **When the last link goes the inode
+    /// is put on the on-disk orphan list — its data blocks and inode slot are
+    /// NOT freed here.**
+    ///
+    /// POSIX and Linux both keep an unlinked-but-still-open file fully alive:
+    /// `unlink(2)` removes the name, `ext4_orphan_add` records the inode, and
+    /// only `ext4_evict_inode` — reached from `iput_final` when the LAST
+    /// reference (open fd, dentry alias) goes away — truncates and frees. That
+    /// is what makes `open`+`unlink`+keep-using-the-fd (mkstemp, compilers,
+    /// shared-memory shims) safe. Freeing at unlink time hands the blocks to
+    /// the next allocation while the first reader still holds the fd, which is
+    /// silent cross-file data corruption.
+    ///
+    /// The caller completes the sequence via `RootfsState::after_unlink`; a
+    /// crash before eviction is recovered by `orphan_cleanup` at next mount.
+    /// # C: O(N parent entries) + 1 inode write (+1 SB/inode write when orphaned)
+    pub fn unlink(&self, parent_ino: u32, name: &[u8]) -> Result<UnlinkOutcome, MountError> {
         self.run_journaled(|m| {
-            let target_ino = m.dir_unlink(parent_ino, name)?;
-            let (mut bytes, _off) = m.read_inode_bytes(target_ino)?;
-            let is_dir = (u16::from_le_bytes([bytes[0x00], bytes[0x01]]) & S_IFMT) == S_IFDIR;
+            let ino = m.dir_unlink(parent_ino, name)?;
+            let (mut bytes, _off) = m.read_inode_bytes(ino)?;
             let mut links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
             links = links.saturating_sub(1);
             bytes[0x1A..0x1C].copy_from_slice(&links.to_le_bytes());
-            if links == 0 {
-                // Freeing a directory inode → it no longer counts toward
-                // its group's bg_used_dirs_count.
-                if is_dir {
-                    let g = (target_ino - 1) / m.sb.inodes_per_group;
-                    { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
-                    m.persist_gdt_slot_meta(g)?;
-                }
-                // Free EVERY data + interior-node block at ANY tree depth (Linux
-                // ext4_truncate → ext4_ext_remove_space). The old inline-only
-                // (depth==0) walk leaked all blocks AND interior nodes of a
-                // deep-tree (large) file. truncate_inode walks the full extent
-                // tree — the same path rmdir already uses.
-                m.truncate_inode_for_deletion(target_ino)?;
-                m.free_external_xattr_for_deletion(target_ino)?;
-                let (mut bytes, _) = m.read_inode_bytes(target_ino)?;
-                bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
-                bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
-                bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
-                bytes[0x14..0x18].copy_from_slice(&DELETED_DTIME.to_le_bytes()); // i_dtime != 0
-                for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
-                m.write_inode_bytes(target_ino, &bytes)?;
-                m.free_inode(target_ino)?;
-            } else {
-                m.write_inode_bytes(target_ino, &bytes)?;
-            }
-            Ok(())
+            m.write_inode_bytes(ino, &bytes)?;
+            // `orphan_add` re-reads the slot, so it must follow the nlink write.
+            if links == 0 { m.orphan_add(ino)?; }
+            Ok(UnlinkOutcome { ino, links })
         })
     }
 

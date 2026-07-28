@@ -72,6 +72,19 @@ echo "wait-diff-selftest: baseline $(records "$WORK/base.txt" | wc -l) records"
 check spinnokick  'spinsig|usr1_interrupts_spin'
 check spinnoalarm 'spinsig|alarm_interrupts_spin'
 check spinnokill  'spinsig|sigkill_kills_spinning_thread'
+# B1477: a fatal signal raised by a thread must kill the thread group.
+# `abrtnokill` catches SIGABRT so neither of glibc's raises can kill, which is
+# the defective kernel's shape; `abrtnoraise` removes the bare raise that is
+# the whole content of the `sibling_raise_dfl` row.
+check abrtnokill \
+    'abortsig|single_abort' 'abortsig|leader_abort' 'abortsig|sibling_abort' \
+    'abortsig|handler_then_abort' 'abortsig|blocked_then_abort'
+check abrtnoraise 'abortsig|leader_raise_dfl' 'abortsig|sibling_raise_dfl'
+# B1477: a PROCESS-directed signal is taken by whichever thread has it
+# unblocked, not by the group leader. Each mutant removes the send, which is
+# the only thing that can end that row.
+check grpnoterm 'groupsig|term_taken_by_unblocked_thread'
+check grpnousr1 'groupsig|handler_runs_in_unblocked_thread'
 check fpuclobber 'sigfpu|simd_preserved'
 check fpunopat   'sigfpu|uc_fpstate'
 check eintr \

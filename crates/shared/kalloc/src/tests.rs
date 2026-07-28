@@ -78,12 +78,19 @@ fn malformed_successor_link_is_rejected_before_merge_dereference() {
 // `debug-heappoison`'s redzone check (B1313) runs before the ownership check
 // below and catches a duplicate free earlier, with a different panic message
 // — split by feature so each build's actual first-line-of-defense is tested.
+// The ownership rejection lives in the HOLE LIST, so this exercises a layout
+// the `kmalloc` size classes do not serve (`sizeclass::MAX_CLASS_BYTES`).
+// Class-routed sizes match Linux: SLUB's production free path pushes onto the
+// per-cache freelist with no consistency check, and only `CONFIG_SLUB_DEBUG`
+// (`free_consistency_checks`) catches a double free — the role this heap's
+// `debug-heappoison` / `debug-dealloc-diag` builds play, both of which bypass
+// the front end entirely so every block stays individually hole-list-known.
 #[cfg(not(feature = "debug-heappoison"))]
 #[test]
 #[should_panic(expected = "kalloc")]
 fn duplicate_global_free_is_rejected_without_free_list_mutation() {
     let (_buf, ka) = fresh_heap(64 * 1024);
-    let l = layout(256, 16);
+    let l = layout(crate::sizeclass::MAX_CLASS_BYTES * 2, 16);
     // SAFETY: valid layout and initialized allocator.
     let ptr = unsafe { ka.alloc(l) };
     // SAFETY: this is the first release of the allocation above.
@@ -551,4 +558,94 @@ fn concurrent_alloc_free_never_lets_free_list_overlap_quarantine() {
     if let Some(msg) = taken {
         panic!("{msg}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// `kmalloc` size-class front end (`sizeclass.rs`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn size_class_routing_matches_the_kmalloc_cache_table() {
+    use crate::sizeclass::{class_index, CLASS_SIZES, MAX_CLASS_BYTES, SLAB_ALIGN};
+    // Exact cache sizes route to themselves; one byte over rolls to the next.
+    for (i, &c) in CLASS_SIZES.iter().enumerate() {
+        assert_eq!(class_index(layout(c, 8)), Some(i), "size {c} routes to its own cache");
+    }
+    assert_eq!(class_index(layout(17, 8)), Some(1), "17 bytes rounds up to the 32 cache");
+    assert_eq!(class_index(layout(97, 8)), Some(4), "97 bytes rounds up to the 128 cache");
+    // Out of range in either dimension stays on the hole list.
+    assert_eq!(class_index(layout(MAX_CLASS_BYTES + 1, 8)), None, "over-size leaves kmalloc");
+    assert_eq!(class_index(layout(64, SLAB_ALIGN * 2)), None, "over-alignment leaves kmalloc");
+    // A stride that cannot carry the requested alignment is not routed: 96 is
+    // not a multiple of 64, so 96-byte objects cannot all be 64-aligned.
+    assert_eq!(class_index(layout(96, 64)), None, "stride must carry the alignment");
+    assert_eq!(class_index(layout(0, 8)), None, "zero-size request is not a cache request");
+}
+
+#[test]
+fn size_class_allocations_are_distinct_aligned_and_reusable() {
+    let (_buf, ka) = fresh_heap(1024 * 1024);
+    let l = layout(64, 16);
+    let mut seen: Vec<*mut u8> = Vec::new();
+    for _ in 0..2000 {
+        // SAFETY: valid layout on an initialized allocator.
+        let p = unsafe { ka.alloc(l) };
+        assert!(!p.is_null(), "class allocation must be served");
+        assert_eq!(p as usize % 16, 0, "class object must carry the requested alignment");
+        seen.push(p);
+    }
+    let mut sorted = seen.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), seen.len(), "class must never hand out the same object twice");
+    // Every object must be writable without disturbing its neighbours.
+    for (i, p) in seen.iter().enumerate() {
+        // SAFETY: each `p` is a live 64-byte allocation owned by this test.
+        unsafe { core::ptr::write_bytes(*p, (i % 251) as u8, 64) };
+    }
+    for (i, p) in seen.iter().enumerate() {
+        // SAFETY: same live allocation, written just above.
+        let v = unsafe { core::ptr::read(*p) };
+        assert_eq!(v, (i % 251) as u8, "class objects must not overlap");
+    }
+    for p in seen.drain(..) {
+        // SAFETY: allocated above with exactly `l`.
+        unsafe { ka.dealloc(p, l) };
+    }
+    // A freed object comes straight back (LIFO), without a hole-list walk.
+    // SAFETY: valid layout.
+    let a = unsafe { ka.alloc(l) };
+    // SAFETY: just allocated.
+    unsafe { ka.dealloc(a, l) };
+    // SAFETY: valid layout.
+    let b = unsafe { ka.alloc(l) };
+    assert_eq!(a, b, "class free list is LIFO");
+    // SAFETY: just allocated.
+    unsafe { ka.dealloc(b, l) };
+}
+
+#[test]
+fn idle_class_memory_is_reclaimed_when_a_large_request_needs_it() {
+    // A cache that once served small objects must not pin that memory against
+    // a later large request (Linux `kmem_cache_shrink` / `discard_slab`).
+    let (_buf, ka) = fresh_heap(256 * 1024);
+    let small = layout(32, 8);
+    let mut ptrs: Vec<*mut u8> = Vec::new();
+    loop {
+        // SAFETY: valid layout.
+        let p = unsafe { ka.alloc(small) };
+        if p.is_null() { break; }
+        ptrs.push(p);
+    }
+    assert!(ptrs.len() > 1000, "expected the small cache to absorb the heap");
+    while let Some(p) = ptrs.pop() {
+        // SAFETY: each came from `alloc(small)`.
+        unsafe { ka.dealloc(p, small) };
+    }
+    let big = layout(128 * 1024, 64);
+    // SAFETY: valid layout.
+    let p = unsafe { ka.alloc(big) };
+    assert!(!p.is_null(), "class reclaim must return idle slab memory to the hole list");
+    // SAFETY: just allocated.
+    unsafe { ka.dealloc(p, big) };
 }

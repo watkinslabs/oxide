@@ -1,5 +1,7 @@
 # PARTIAL-row triage — what is actually missing vs merely untested
 
+**SUPERSEDED 2026-07-28 by `scratch/partial-surface-2026-07-28.md`** — this file predates the four subsystem audits and ~30 merged fix lanes; several entries are verified stale (`rseq`, `personality`, `RLIMIT_MEMLOCK`, lease break). Kept for history. Use the successor.
+
 Status: LIVE 2026-07-27. Source: `scratch/syscall-compliance-matrix.md` (386 rows).
 Sibling ledgers: `scratch/wait-diff-open-items.md` (W1-W7).
 
