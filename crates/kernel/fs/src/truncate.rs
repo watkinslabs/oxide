@@ -13,14 +13,12 @@ fn send_sigxfsz() {
     sched::live::sigpend::send_signal_self(sched::live::sigpend::Signum::Sigxfsz);
 }
 
-/// Monotonic stamp for the `mtime`/`ctime` a size change records (Linux
-/// `current_time(inode)`). Arch-gated so the work-fns stay cfg-free. # C: O(1)
-fn monotonic_now_ns() -> u64 {
-    use hal::TimerOps;
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-    #[cfg(not(target_os = "oxide-kernel"))] { 0u64 }
-}
+/// Wall-clock stamp for the `mtime`/`ctime` a size change records (Linux
+/// `current_time(inode)` reads `ktime_get_coarse_real_ts64` — CLOCK_REALTIME,
+/// not the monotonic counter). This used to read the arch monotonic timer,
+/// which made every `truncate`/`ftruncate` record `1970-01-01 + uptime`.
+/// # C: O(1)
+fn wall_now_ns() -> u64 { vfs::inode_times::realtime_now_ns() }
 
 /// `RLIMIT_FSIZE` half of Linux `inode_newsize_ok`, installed into VFS at boot
 /// by [`install_rlimit_fsize_hook`]. `false` means the new size exceeds the
@@ -57,12 +55,12 @@ pub fn do_truncate(inode: &InodeRef, mnt_id: u64, len: u64, times: u32, cred: &v
     // Linux `dentry_needs_remove_privs`: a size change drops the privilege
     // bits, so a set-user-ID binary cannot be re-shaped and keep its setid.
     valid |= vfs::setattr_should_drop_suidgid(inode.as_ref(), cred);
-    let now = monotonic_now_ns();
+    let now = wall_now_ns();
     let mut ia = vfs::Iattr {
         valid,
         size: len,
-        mtime_ns: now,
-        ctime_ns: now,
+        mtime: vfs::Timespec64::from_clock_ns(now),
+        ctime: vfs::Timespec64::from_clock_ns(now),
         ..Default::default()
     };
     match vfs::notify_change_mnt(inode, mnt_id, &mut ia, cred, now) {
