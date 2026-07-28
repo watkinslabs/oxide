@@ -327,7 +327,7 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
 /// EOF; symmetric for readable closes and the write side seeing
 /// EPIPE.
 /// # C: O(1) per call
-fn pipe_close_hook(inode: &InodeRef, was_writable: bool) {
+fn pipe_close_hook(inode: &InodeRef, was_writable: bool, _d: &alloc::sync::Arc<vfs::Dentry>) {
     let Some(pipe) = pipe_data(inode) else {
         #[cfg(feature = "debug-ssh")]
         {

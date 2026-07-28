@@ -1,66 +1,109 @@
-// F158: /proc/<pid>/status body builder. Extracted from procfs.rs to
-// keep that file under the 1000-line cap. Linux-conformant field
-// set: identity (Name/Umask/State/Tgid/Pid/PPid/etc.), capability
-// bitmaps, signal masks, namespaces (NStgid/NSpid/NSpgid/NSsid),
-// CPU/memory affinity, ctxt-switch counts, speculation status.
-
+// `/proc/<pid>/status` value COLLECTION. Every field is read from the owning
+// subsystem's live state (`sched::Task` + its `Creds`, `ThreadGroup`,
+// `SigActions`, fd table); the rendering lives in `crate::status_render`, which
+// carries no target gate and is where the hosted tests run. Nothing here
+// decides anything, so nothing here can be a phantom test.
+//
+// Before B1463 this file printed `Uid:\t0\t0\t0\t0` and
+// `CapPrm/CapEff/CapBnd = 000001ffffffffff` for EVERY task, plus a constant
+// NoNewPrivs/Threads/SigQ/Sig*/Seccomp block. systemd, polkit, dbus-daemon and
+// pkexec read exactly those lines to decide who a peer is.
 
 use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 
-/// # C: O(1) — fixed field set.
+use crate::status_render::{render, Status};
+
+/// Signals 1..=64 whose action is `SIG_IGN`, and those with a real handler
+/// (Linux `collect_sigign_sigcatch`). # C: O(64)
+fn sigign_sigcatch(task: &sched::Task) -> (u64, u64) {
+    const NSIG: u32 = 64;
+    let (mut ign, mut cgt) = (0u64, 0u64);
+    let actions = task.sigactions_ref();
+    for sig in 1..=NSIG {
+        let act = actions.get(sig);
+        let bit = 1u64 << (sig - 1);
+        if act.is_ignored() { ign |= bit; }
+        else if act.is_caught() { cgt |= bit; }
+    }
+    (ign, cgt)
+}
+
+/// Linux `files_fdtable(p->files)->max_fds`. # C: O(1)
+fn fd_size(task: &sched::Task) -> u64 {
+    // SAFETY: read-only capacity probe of the task's fd table; `fd_table_ref`
+    // hands back the live table and `capacity` takes that table's own lock.
+    match unsafe { task.fd_table_ref() } { Some(t) => t.capacity() as u64, None => 0 }
+}
+
+/// # C: O(ngroups + 64 signal slots)
 pub fn body(tid: u32) -> Vec<u8> {
-    use core::sync::atomic::Ordering;
-    let mut out = Vec::with_capacity(1024);
-    let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
+    let Some(task) = sched::live::registry::lookup(tid) else { return Vec::new() };
     // Display the namespace PID (Linux "PID" == our vtgid), not the internal
     // kernel tid. PID1 (systemd/init) is stamped vtgid=1 but keeps an opaque
     // internal tid; `ps` reads these fields and must show 1, not 0xC0DE….
     let vpid = sched::live::registry::display_vpid(tid);
     let ppid = sched::live::registry::parent_vpid(tid);
-    let umask = task.umask() as u64;
-    let pgid = task.pgid() as u64;
-    let sid  = task.sid() as u64;
-    push(&mut out, b"Name:\t"); push(&mut out, task.comm().as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"Umask:\t"); push_octal(&mut out, umask, 4); push(&mut out, b"\n");
-    push(&mut out, b"State:\t"); push(&mut out, task.state().linux_status_label().as_bytes()); push(&mut out, b"\n");
-    push(&mut out, b"Tgid:\t"); push_u64(&mut out, vpid);
-    push(&mut out, b"\nNgid:\t0\nPid:\t"); push_u64(&mut out, vpid);
-    push(&mut out, b"\nPPid:\t"); push_u64(&mut out, ppid);
-    push(&mut out, b"\nTracerPid:\t0\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nFDSize:\t256\nGroups:\t\n");
-    push(&mut out, b"NStgid:\t"); push_u64(&mut out, vpid);
-    push(&mut out, b"\nNSpid:\t"); push_u64(&mut out, vpid);
-    push(&mut out, b"\nNSpgid:\t"); push_u64(&mut out, pgid);
-    push(&mut out, b"\nNSsid:\t"); push_u64(&mut out, sid);
-    push(&mut out, b"\nThreads:\t1\nSigQ:\t0/0\n\
-SigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\n\
-SigBlk:\t0000000000000000\nSigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\n\
-CapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\n\
-CapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n\
-NoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\n\
-Speculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tunknown\n\
-Cpus_allowed:\t1\nCpus_allowed_list:\t0\nMems_allowed:\t1\nMems_allowed_list:\t0\n");
-    // Linux `task_struct::nvcsw`/`nivcsw`, maintained by `__schedule()`.
-    push(&mut out, b"voluntary_ctxt_switches:\t");
-    push_u64(&mut out, task.nvcsw.load(Ordering::Relaxed));
-    push(&mut out, b"\nnonvoluntary_ctxt_switches:\t");
-    push_u64(&mut out, task.nivcsw.load(Ordering::Relaxed));
-    push(&mut out, b"\n");
-    out
-}
-
-fn push(v: &mut Vec<u8>, b: &[u8]) { v.extend_from_slice(b); }
-
-fn push_u64(v: &mut Vec<u8>, mut n: u64) {
-    if n == 0 { v.push(b'0'); return; }
-    let mut buf = [0u8; 20]; let mut i = 0;
-    while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
-    while i > 0 { i -= 1; v.push(buf[i]); }
-}
-
-fn push_octal(v: &mut Vec<u8>, mut n: u64, min_width: usize) {
-    let mut buf = [0u8; 24]; let mut i = 0;
-    if n == 0 { buf[0] = b'0'; i = 1; }
-    while n > 0 { buf[i] = b'0' + (n & 7) as u8; n >>= 3; i += 1; }
-    while i < min_width { buf[i] = b'0'; i += 1; }
-    while i > 0 { i -= 1; v.push(buf[i]); }
+    let c = &task.creds;
+    let group_list = c.group_list();
+    let groups: &[u32] = group_list.as_deref().unwrap_or(&[]);
+    let (sig_ign, sig_cgt) = sigign_sigcatch(&task);
+    // Process-DIRECTED signals land on the group leader's pending set in this
+    // kernel, which is where `signal_struct::shared_pending` lives
+    // (`ThreadGroup::leader_task`) — one source of truth, not a second queue.
+    let shd_pnd = task.thread_group.leader_task()
+        .map(|l| l.sigpending.load(Ordering::Acquire)).unwrap_or(0);
+    let tracer = task.traced_by.load(Ordering::Acquire);
+    let name = task.comm();
+    let s = Status {
+        name:   &name,
+        umask:  task.umask(),
+        state:  task.state().linux_status_label(),
+        tgid:   vpid,
+        // Linux `task_numa_group_id` — no NUMA balancing, so no group.
+        ngid:   0,
+        pid:    vpid,
+        ppid,
+        tracer_pid: if tracer == 0 { 0 } else { sched::live::registry::display_vpid(tracer) },
+        uid: [c.ruid.load(Ordering::Acquire), c.euid.load(Ordering::Acquire),
+              c.suid.load(Ordering::Acquire), c.fsuid.load(Ordering::Acquire)],
+        gid: [c.rgid.load(Ordering::Acquire), c.egid.load(Ordering::Acquire),
+              c.sgid.load(Ordering::Acquire), c.fsgid.load(Ordering::Acquire)],
+        fd_size: fd_size(&task),
+        groups,
+        ns_tgid: vpid,
+        ns_pid:  vpid,
+        ns_pgid: task.pgid() as u64,
+        ns_sid:  task.sid() as u64,
+        // Linux `PF_KTHREAD`. A kernel thread is exactly a task with no mm,
+        // which is also the property `task_dump_owner` uses the flag to detect.
+        kthread: task.clone_mm().is_none(),
+        threads: sched::live::registry::thread_entries(task.tgid.load(Ordering::Acquire)).len() as u64,
+        // No per-user queued-signal accounting exists to source a non-zero
+        // `qsize` from; the limit is the task's real RLIMIT_SIGPENDING.
+        sig_queued: 0,
+        sig_limit:  task.rlimit(sched::rlimit::rlim::SIGPENDING).0,
+        sig_pnd: task.sigpending.load(Ordering::Acquire),
+        shd_pnd,
+        sig_blk: task.sigmask.load(Ordering::Acquire),
+        sig_ign,
+        sig_cgt,
+        cap_inh: c.cap_inheritable.load(Ordering::Acquire),
+        cap_prm: c.cap_permitted.load(Ordering::Acquire),
+        cap_eff: c.cap_effective.load(Ordering::Acquire),
+        cap_bnd: c.cap_bounding.load(Ordering::Acquire),
+        cap_amb: c.cap_ambient.load(Ordering::Acquire),
+        no_new_privs: task.no_new_privs.load(Ordering::Acquire),
+        seccomp: task.seccomp_mode.load(Ordering::Acquire) as u64,
+        seccomp_filters: task.seccomp_filter_count() as u64,
+        cpus_allowed: task.cpus_allowed.load(Ordering::Acquire),
+        // Linux `nr_cpu_ids` — the width `%*pb` pads the mask to.
+        nr_cpus: (cpu::smp::online_count() as u32).clamp(1, cpu::MAX_CPUS as u32),
+        // One NUMA node.
+        mems_allowed: 1,
+        nr_nodes: 1,
+        nvcsw:  task.nvcsw.load(Ordering::Relaxed),
+        nivcsw: task.nivcsw.load(Ordering::Relaxed),
+    };
+    render(&s)
 }

@@ -117,6 +117,15 @@ fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
     } else {
         d.tid
     };
+    let inode = pid_entry_inode(d, tid, name)?;
+    // Linux `pid_update_inode`: the per-pid inode is synthesized on every
+    // lookup, so its mode (`tgid_base_stuff`) and its `task_dump_owner`
+    // ownership are stamped here rather than baked into each constructor.
+    super::pid_access::pid_update_inode(tid, name, &inode);
+    Ok(inode)
+}
+
+fn pid_entry_inode(d: &ProcPidDirInode, tid: u32, name: &str) -> KResult<InodeRef> {
     if let Some((_, _, ctor)) = PID_ENTRIES.iter().find(|(n, _, _)| *n == name) {
         return Ok(ctor(tid, d.is_self));
     }
@@ -169,14 +178,19 @@ impl FileOps for ProcPidDirOps {
 }
 
 pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool) -> InodeRef {
-    InodeBuilder::new(
+    let inode = InodeBuilder::new(
         pid_ino(0x01, tid),
-        mk_mode(FileType::Directory, 0o555),
+        mk_mode(FileType::Directory, crate::pid_file_policy::MODE_DIR_RUGO),
         Arc::new(ProcPidDirOps),
         Arc::new(ProcPidDirOps),
     )
     .private(Arc::new(ProcPidDirInode { tid, is_self, allow_task_dir }))
-    .build()
+    .build();
+    // `task_dump_owner` exempts the `S_IFDIR|S_IRUGO|S_IXUGO` per-pid directory
+    // from the non-dumpable clamp: `stat /proc/<pid>` reports the task's euid
+    // even for a task whose files are root-owned.
+    super::pid_access::pid_update_dir_inode(tid, &inode);
+    inode
 }
 
 pub struct ProcPidTaskDirInode {
@@ -236,7 +250,7 @@ impl FileOps for ProcPidTaskDirOps {
 pub fn make_proc_pid_task_dir(tgid: u32) -> InodeRef {
     InodeBuilder::new(
         pid_ino(0x07, tgid),
-        mk_mode(FileType::Directory, 0o555),
+        mk_mode(FileType::Directory, crate::pid_file_policy::MODE_DIR_RUGO),
         Arc::new(ProcPidTaskDirOps),
         Arc::new(ProcPidTaskDirOps),
     )
