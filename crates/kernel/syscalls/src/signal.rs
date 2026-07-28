@@ -92,7 +92,14 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     } else {
         (h.handler, h.flags, h.restorer, h.mask)
     };
-    #[cfg(feature = "debug-boot")]
+    // `debug-sigdeliv`, NOT `debug-boot`: B1471 made every return to user mode
+    // — syscall, IRQ and exception — a delivery point, so this runs orders of
+    // magnitude more often than it did when only the syscall tail dequeued. On
+    // `debug-boot` (which `make qemu-x86`/`qemu-arm` set unconditionally) both
+    // the serial volume AND the per-dequeue `with_exe_path` lock+substring scan
+    // slowed a live-gnome guest enough to blow userspace activation timeouts —
+    // the instrument changing the result it measures.
+    #[cfg(feature = "debug-sigdeliv")]
     {
         let is_gdm = cur.with_exe_path(|p| p.map(|s| s.contains("gdm-session")).unwrap_or(false));
         if is_gdm {

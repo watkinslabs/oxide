@@ -85,6 +85,20 @@ ci: lint test build build-debug
 # can tell the kernel is alive while waiting for the login prompt.
 # `debug-sched` is intentionally excluded — that's the per-syscall
 # trace flood. FEATURES=... appends extras (e.g. FEATURES=debug-irq).
+#
+# B1474: `debug-boot` is the OPERATIONAL PULSE, nothing else. Because this
+# target turns it on unconditionally, any trace that fires per syscall, per
+# signal, per fault, per exec or per journald datagram belongs to its own
+# feature — on `debug-boot` such a trace slowed a live-gnome guest by an order
+# of magnitude, far enough to blow userspace D-Bus activation timeouts, so the
+# instrument changed the result instead of measuring it. Opt in per lane:
+#   FEATURES=debug-sigdeliv   [SIGDELIV]  per-delivery signal trace
+#   FEATURES=debug-ustack     [USTACK]    futex user return-address walk
+#   FEATURES=debug-desktop    [MUTTER*]/[DRMPROP]/[LGD] compositor+KMS ledger
+#   FEATURES=debug-execload   [EXECLOAD]  per-exec image + ELF interp trace
+#   FEATURES=debug-journal    [B288]      journald/notify datagram payloads
+#   FEATURES=debug-taskdrop   [TASK-DROP] per-task teardown record
+#   FEATURES=debug-faultdiag  [FAULT-*]   per-page-fault VMA/resolve trace
 comma := ,
 QEMU_FEATURES_X86 := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)

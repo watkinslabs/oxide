@@ -6,7 +6,7 @@ use super::Task;
 
 impl Drop for Task {
     fn drop(&mut self) {
-        #[cfg(feature = "debug-boot")]
+        #[cfg(feature = "debug-taskdrop")]
         {
             let top = self.kernel_stack.load(Ordering::Acquire) as u64;
             let len = self.stack.as_ref().map(|s| s.len() as u64).unwrap_or(0);

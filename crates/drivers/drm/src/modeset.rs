@@ -159,7 +159,7 @@ pub fn get_plane_res(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_get_plane_res is 16 B; aligned struct read.
     let r: DrmModeGetPlaneRes = unsafe { core::ptr::read_volatile(arg as *const DrmModeGetPlaneRes) };
     let planes = card.plane_ids();
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMPROP planeres count="); klog::write_dec_u64(planes.len() as u64);
       klog::write_raw(b" ucount="); klog::write_dec_u64(r.count_planes as u64); klog::write_raw(b"]\n"); }
     if r.plane_id_ptr != 0 && r.count_planes >= planes.len() as u32 {
@@ -186,7 +186,7 @@ pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     p.possible_crtcs     = info.possible_crtcs;
     p.gamma_size         = 0;
     p.count_format_types = fmts.len() as u32;
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMPROP getplane id="); klog::write_dec_u64(p.plane_id as u64);
       klog::write_raw(b" crtc_id="); klog::write_dec_u64(info.crtc_id as u64);
       klog::write_raw(b" possible_crtcs="); klog::write_hex_u64(info.possible_crtcs as u64); klog::write_raw(b"]\n"); }
@@ -256,7 +256,7 @@ pub fn get_prop_blob(arg: u64) -> i64 {
          core::ptr::read_volatile((arg + 4) as *const u32),
          core::ptr::read_volatile((arg + 8) as *const u64))
     };
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMPROP getblob id="); klog::write_dec_u64(blob_id as u64);
       klog::write_raw(b" ulen="); klog::write_dec_u64(ulen as u64); klog::write_raw(b"]\n"); }
     if blob_id != IN_FORMATS_BLOB_ID {
@@ -305,7 +305,7 @@ pub fn get_obj_properties(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     let plane_idx = card.plane_ids().iter().position(|id| *id == obj_id);
     let plane_type = if plane_idx.is_some_and(|idx| idx & 1 != 0) { 2 } else { 1 };
     let n: u32 = if obj_type == DRM_MODE_OBJECT_PLANE && plane_idx.is_some() { 2 } else { 0 };
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     {
         klog::write_raw(b"[DRMPROP objprops obj_type="); klog::write_hex_u64(obj_type as u64);
         klog::write_raw(b" ucount="); klog::write_dec_u64(ucount as u64);
@@ -340,7 +340,7 @@ pub fn get_property(arg: u64) -> i64 {
          core::ptr::read_volatile((arg + 8) as *const u64),
          core::ptr::read_volatile((arg + 60) as *const u32))
     };
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMPROP getprop id="); klog::write_dec_u64(prop_id as u64);
       klog::write_raw(b" ucount="); klog::write_dec_u64(ucount as u64); klog::write_raw(b"]\n"); }
     // IN_FORMATS: an immutable BLOB property. GETPROPERTY only describes it

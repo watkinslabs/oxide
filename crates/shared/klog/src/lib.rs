@@ -21,6 +21,9 @@ pub use console::{
 pub mod lock;
 pub use lock::{clear_cpu_fn, set_cpu_fn, CpuFn};
 
+pub mod cont;
+pub use cont::{clear_caller_fn, set_caller_fn, CallerFn};
+
 pub mod syslog;
 
 /// Maximum base-10 digits in a `u64` (`18446744073709551615`).
@@ -172,7 +175,7 @@ fn write_dec(out: &mut [u8], mut v: u64, pad3: bool) -> usize {
 
 /// Emit `[<sec>.<frac3>] ` via the sink — seconds + millisecond
 /// fractional, padded to 3 digits.
-fn emit_timestamp(ns: u64, lvl: u32) {
+fn emit_timestamp(ns: u64, lvl: u32, route: u32) {
     let secs = ns / 1_000_000_000;
     let ms   = (ns % 1_000_000_000) / 1_000_000;
     let mut buf = [0u8; 24];
@@ -183,7 +186,34 @@ fn emit_timestamp(ns: u64, lvl: u32) {
     i += write_dec(&mut buf[i..], ms, true);
     buf[i] = b']'; i += 1;
     buf[i] = b' '; i += 1;
-    invoke_sink(&buf[..i], lvl);
+    sink_route(&buf[..i], lvl, route);
+}
+
+/// Ring + the consoles selected by `route`. `ROUTE_PRIMARY` skips auxiliary
+/// consoles, which can allocate.
+#[inline]
+fn sink_route(bytes: &[u8], lvl: u32, route: u32) {
+    if route == cont::ROUTE_PRIMARY {
+        ring_push(bytes);
+        console::primary_only(bytes);
+        return;
+    }
+    invoke_sink(bytes, lvl);
+}
+
+/// Publish one assembled line (Linux `console_unlock`'s per-record write):
+/// timestamp if this starts a line, then the bytes, as one fan-out. Called by
+/// `cont` with the console lock held.
+/// # C: O(bytes.len())
+pub(crate) fn flush_line(bytes: &[u8], lvl: u32, route: u32) {
+    if bytes.is_empty() { return; }
+    if LINE_START.swap(false, core::sync::atomic::Ordering::AcqRel) {
+        if let Some(ns) = now_ns() { emit_timestamp(ns, lvl, route); }
+    }
+    sink_route(bytes, lvl, route);
+    if bytes[bytes.len() - 1] == b'\n' {
+        LINE_START.store(true, core::sync::atomic::Ordering::Release);
+    }
 }
 
 #[inline]
@@ -209,39 +239,12 @@ fn emit_bytes(bytes: &[u8]) {
 pub fn write_raw_at(bytes: &[u8], lvl: u32) { emit_bytes_at(bytes, lvl) }
 
 fn emit_bytes_at(bytes: &[u8], lvl: u32) {
-    let Some(_) = now_ns() else {
-        let h = lock::acquire();
-        invoke_sink(bytes, lvl);
-        lock::release(h);
-        return;
-    };
     if bytes.is_empty() { return; }
-
-    // Serialise the whole line-assembly loop, not each sink call: LINE_START
-    // and the timestamp emit are shared state, so a per-call lock would still
-    // let another CPU splice its timestamp between our timestamp and our text.
+    // The lock serialises THIS call; `cont` serialises the LINE. Every trace
+    // site in the tree builds one line from many calls, so per-call locking
+    // alone let two emitters splice mid-token (`cont.rs` header, B1474).
     let h = lock::acquire();
-    let mut start = 0usize;
-    while start < bytes.len() {
-        if LINE_START.swap(false, core::sync::atomic::Ordering::AcqRel) {
-            if let Some(ns) = now_ns() {
-                emit_timestamp(ns, lvl);
-            }
-        }
-
-        let mut end = start;
-        while end < bytes.len() && bytes[end] != b'\n' {
-            end += 1;
-        }
-        if end < bytes.len() {
-            end += 1;
-            invoke_sink(&bytes[start..end], lvl);
-            LINE_START.store(true, core::sync::atomic::Ordering::Release);
-        } else {
-            invoke_sink(&bytes[start..end], lvl);
-        }
-        start = end;
-    }
+    cont::append(bytes, lvl, cont::ROUTE_FANOUT);
     lock::release(h);
 }
 
@@ -352,7 +355,13 @@ pub fn write_primary_raw(bytes: &[u8]) {
     // Serialised too: an emergency diagnostic spliced by another CPU's normal
     // output is exactly the message we can least afford to lose. Safe from a
     // leaf-lock holder because acquisition is bounded and same-CPU reentrant.
+    //
+    // Unbuffered by design: this route exists for callers that may not survive
+    // to emit a terminating `\n`, so its bytes must reach the wire now. Any
+    // partial line this CPU had pending is published first, on the same
+    // primary route, so the emergency text lands after it instead of inside it.
     let h = lock::acquire();
+    cont::flush_local_primary();
     ring_push(bytes);
     console::primary_only(bytes);
     lock::release(h);
