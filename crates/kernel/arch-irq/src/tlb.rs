@@ -60,19 +60,13 @@ static PENDING: AtomicU64 = AtomicU64::new(0);
 /// serviced, so a late ACK cannot be credited to a later round.
 static ROUND: AtomicU64 = AtomicU64::new(0);
 
-/// First escalation: warn + re-send the IPI + NMI-backtrace the stuck CPU.
-/// Linux's `csd_lock_wait_toolong` uses `csd_lock_timeout` (5s default); this
-/// port's targets are blocked by IF=0 kernel sections whose length is the thing
-/// being measured, so the first report comes early enough to be attributable.
-const STUCK_WARN_NS: u64 = 1_000_000_000;
-/// Spacing between repeat escalations, so a genuinely wedged peer keeps naming
-/// itself without flooding the console.
-const STUCK_REPEAT_NS: u64 = 5_000_000_000;
-/// Clock-free fallback for the first escalation, used only while the TSC is
-/// uncalibrated (`monotonic_ns()` still reports 0).
-const STUCK_WARN_SPINS: u64 = 100_000_000;
-/// Clock-free fallback spacing for repeat escalations.
-const STUCK_REPEAT_SPINS: u64 = 500_000_000;
+/// Escalation base: warn + re-send the IPI + NMI-backtrace the stuck CPU.
+/// Linux `kernel/smp.c` `csd_lock_timeout = 5000` ms. Repeats back off from
+/// here via `tlb_round::escalation_gap`, as Linux's do.
+const STUCK_WARN_NS: u64 = 5_000_000_000;
+/// Clock-free equivalent, used only while the TSC is uncalibrated
+/// (`monotonic_ns()` still reports 0) and the spin count is the only measure.
+const STUCK_WARN_SPINS: u64 = 500_000_000;
 
 #[inline]
 fn this_cpu() -> usize {
@@ -201,6 +195,7 @@ fn shootdown(va: u64, mask: u64) {
     // peer holding a live writable translation into a page the buddy is about to
     // recycle.
     let t0 = now_ns();
+    let mut fired: u32 = 0;
     let mut next_warn = t0.wrapping_add(STUCK_WARN_NS);
     let mut spins: u64 = 0;
     let mut next_spin_warn = STUCK_WARN_SPINS;
@@ -209,11 +204,12 @@ fn shootdown(va: u64, mask: u64) {
         core::hint::spin_loop();
         spins = spins.wrapping_add(1);
         let now = now_ns();
-        let due = crate::tlb_round::escalation_due(now, next_warn, spins, next_spin_warn);
-        if due {
-            next_warn = now.wrapping_add(STUCK_REPEAT_NS);
-            next_spin_warn = spins.wrapping_add(STUCK_REPEAT_SPINS);
+        if crate::tlb_round::escalation_due(now, next_warn, spins, next_spin_warn) {
             report_stuck(me, now.wrapping_sub(t0), spins);
+            fired = fired.saturating_add(1);
+            next_warn = now.wrapping_add(crate::tlb_round::escalation_gap(STUCK_WARN_NS, fired));
+            next_spin_warn = spins
+                .wrapping_add(crate::tlb_round::escalation_gap(STUCK_WARN_SPINS, fired));
         }
     }
 
