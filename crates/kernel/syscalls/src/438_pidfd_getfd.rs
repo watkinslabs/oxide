@@ -38,7 +38,7 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
         Some(target) => target,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
-    if !pidfd_getfd_access(&cur, &target) {
+    if sched::ptrace_access::may_access(&cur, &target).is_err() {
         return -(Errno::Eperm.as_i32() as i64);
     }
     if target.state() == sched::task::TaskState::Zombie {
@@ -62,25 +62,11 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     }
 }
 
-/// Linux `pidfd_getfd` gates on `ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS)`.
-/// This is the non-LSM core: same thread-group, real uid/gid matching the
-/// target's real/effective/saved ids, or `CAP_SYS_PTRACE` in the target userns.
-/// # C: O(userns-depth)
-fn pidfd_getfd_access(cur: &sched::Task, target: &sched::Task) -> bool {
-    use core::sync::atomic::Ordering;
-    if cur.vtgid.load(Ordering::Acquire) == target.vtgid.load(Ordering::Acquire) { return true; }
-    let cruid = cur.creds.ruid.load(Ordering::Acquire);
-    let crgid = cur.creds.rgid.load(Ordering::Acquire);
-    let tcred = &target.creds;
-    let uid_ok = cruid == tcred.euid.load(Ordering::Acquire)
-        && cruid == tcred.suid.load(Ordering::Acquire)
-        && cruid == tcred.ruid.load(Ordering::Acquire);
-    let gid_ok = crgid == tcred.egid.load(Ordering::Acquire)
-        && crgid == tcred.sgid.load(Ordering::Acquire)
-        && crgid == tcred.rgid.load(Ordering::Acquire);
-    if uid_ok && gid_ok { return true; }
-    let Some(target_ns) = target.namespace_owner(namespace_identity::NamespaceKind::User) else {
-        return false;
-    };
-    nscg::proc_ns::has_cap_for(cur, &target_ns.pin(), sched::cap::SYS_PTRACE)
-}
+// The access gate is `sched::ptrace_access::may_access` — Linux
+// `ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS)`. This file used to carry its
+// own open-coded copy of the cred ladder, which OMITTED the dumpability gate:
+// `__ptrace_may_access` requires `CAP_SYS_PTRACE` when the target is
+// non-dumpable, so a process that dropped privileges (setuid exec, or
+// `prctl(PR_SET_DUMPABLE, 0)`) could still have its fds stolen by the uid that
+// launched it. A second copy of a security ladder is exactly the split source of
+// truth that lets one side rot.
