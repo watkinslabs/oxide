@@ -1,12 +1,12 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 
-use hal::{TimerOps, USER_VA_END};
+use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::execve_common::{
-    apply_file_caps_at_execve, regain_root_caps_at_execve, read_user_exec_path,
-    reset_caught_signals, reset_per_execve_state, resolve_shebang_chain,
+    open_exec_image, read_user_exec_path, reset_caught_signals, reset_per_execve_state,
+    resolve_shebang_chain,
 };
 
 use super::fd_table::unshare_fd_table_and_close_on_exec;
@@ -57,9 +57,12 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         Some(c) => c,
         None => return -(Errno::Einval.as_i32() as i64),
     };
-    let mut blob_vec = match crate::pathresolve::read_exec(&path_owned).or_else(|| ext4::rootfs::read_file(&path_owned)) {
-        Some(v) => v,
-        None => return -(Errno::Enoent.as_i32() as i64),
+    // Linux `do_open_execat`: the MAY_EXEC / noexec / file-type gate runs HERE,
+    // before anything is committed, and `exec_vp` carries the very inode+mount
+    // it ran against into the credential transition below.
+    let (mut blob_vec, mut exec_vp) = match open_exec_image(&path_owned) {
+        Ok(v) => v,
+        Err(rc) => return rc,
     };
     const ARG_MAX_BYTES: usize = 128 * 1024;
     const ARG_MAX_ENTRIES: usize = 1024;
@@ -102,10 +105,17 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         }
     }
     if blob_vec.starts_with(b"#!") {
-        if let Err(e) = resolve_shebang_chain(&mut blob_vec, &mut path_owned, &mut argv_vec) {
-            return -(e.as_i32() as i64);
+        if let Err(rc) = resolve_shebang_chain(&mut blob_vec, &mut path_owned, &mut argv_vec, &mut exec_vp) {
+            return rc;
         }
     }
+    // Linux `bprm_creds_from_file` — computed on the FINAL image (the
+    // interpreter for a `#!` chain, which is why a setuid script confers
+    // nothing) and BEFORE the point of no return, so EPERM is still returnable.
+    let creds = match crate::exec_transition::decide(cur, exec_vp.as_ref()) {
+        Ok(t) => t,
+        Err(e) => return -(e.as_i32() as i64),
+    };
     let blob: &[u8] = &blob_vec;
     let argc = argv_vec.len();
     let envc = envp_vec.len();
@@ -138,6 +148,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     new_as.set_start_brk(img.brk.as_u64());
     let rlim_stack: u64 = {
         let (rc, _) = cur.rlimit(sched::rlimit::rlim::STACK);
+        let rc = crate::exec_transition::secure_stack_limit(rc, creds.secure_exec);
         ((rc + 0xfff) & !0xfff).min(0x4000_0000)
     };
     let stack_top: u64 = hal::USER_VA_END - 0x10000;
@@ -171,12 +182,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     unsafe {
         core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags));
     }
-    let random16 = {
-        let ns = <hal_aarch64::ArmTimerOps as TimerOps>::monotonic_ns().0;
-        let mut r = [0u8; 16];
-        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
-        r
-    };
+    // Linux `fs/binfmt_elf.c:226` `create_elf_tables()`: AT_RANDOM is 16
+    // `get_random_bytes()` bytes drawn per exec.
+    let random16 = crate::auxrandom::at_random_bytes();
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
     let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     cur.set_cmdline(Some(sched::argv_to_cmdline(&argv_slices[..argc])));
@@ -202,13 +210,11 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     };
     #[cfg(feature = "debug-sshd")]
     trace_sshd_exec_success(cur.tid, &path_owned);
-    regain_root_caps_at_execve(cur);
-    if let Some(p) = exec_path_for_caps {
-        if let Ok(vp) = crate::pathresolve::resolve_path_raw(&p, true) {
-            apply_file_caps_at_execve(&vp.inode, cur);
-            ::fs::inotify::fire_open_exec(&vp.inode);
-        }
-    }
+    let _ = exec_path_for_caps;
+    // Past the point of no return: install the credentials decided above
+    // (Linux `commit_creds(bprm->cred)` inside `begin_new_exec`).
+    crate::exec_transition::commit(cur, &creds);
+    if let Some(vp) = exec_vp.as_ref() { ::fs::inotify::fire_open_exec(&vp.inode); }
     if let Err(e) = crate::exec_time::promote_time_namespace_at_exec(cur) {
         return -(e.as_i32() as i64);
     }
@@ -234,6 +240,11 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             &path_owned,
             vdso_ehdr,
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
+            elf_load::stack::AuxCreds {
+                uid: creds.new.ruid, euid: creds.new.euid,
+                gid: creds.new.rgid, egid: creds.new.egid,
+                secure: creds.secure_exec,
+            },
         )
     } {
         Some(l) => l,

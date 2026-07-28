@@ -494,7 +494,7 @@ impl Mount {
         // (Linux). Without this a new inode carries the zero-filled epoch and
         // every file created under oxide shows mtime 1970 until first utimes.
         crate::extent_rw::meta::stamp_new_inode_times(&mut bytes, self.sb.inode_size as usize,
-            vfs::inode_times::realtime_now_ns());
+            vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns()));
         self.write_inode_bytes(ino, &bytes)
     }
 

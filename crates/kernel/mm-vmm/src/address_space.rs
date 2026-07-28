@@ -98,6 +98,7 @@ mod live_registry_tests {
 mod accounting;
 mod fault;
 mod fork;
+mod mempolicy;
 mod layout;
 mod limits;
 mod membarrier;
@@ -120,6 +121,7 @@ pub use mmfields::{
 // - mmfields: mm_struct arg/env/stack/code/data/brk bounds + prctl(PR_SET_MM).
 // - ops: VMA lookup, mmap/munmap/mprotect/mseal, rmap edge upkeep.
 // - fork: fork tree cloning, eager copy, and COW page sharing.
+// - mempolicy: mbind/get_mempolicy/set_mempolicy_home_node VMA policy access.
 // - fault: demand-fault, file-fill, COW, and rmap-aware fault paths.
 
 /// Per-process AS. Public surface mirrors `11§3`. The Page Table side

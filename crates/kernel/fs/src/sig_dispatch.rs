@@ -57,15 +57,24 @@ pub fn current_user_sp() -> u64 {
 pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret: u64, restart: bool,
                                 payload: Option<hal::SigPayload>, sa_flags: u64, sa_mask: u64) -> u64 {
     let user_sp = current_user_sp();
-    let (frame_mask, alt) = match sched::live::current() {
-        Some(c) => (setup_masks(&c, sig, sa_flags, sa_mask), setup_altstack(&c, user_sp, sa_flags)),
-        None    => (0, hal::AltStack::default()),
+    let cur = sched::live::current();
+    // Linux order (`handle_signal`): `setup_rt_frame` — including
+    // `get_sigframe`'s `access_ok` — runs BEFORE `signal_delivered` installs
+    // the handler's blocked mask and resets an SS_AUTODISARM stack, so a
+    // delivery that cannot write its frame leaves no half-applied state.
+    let alt = match &cur { Some(c) => altstack_for(c, user_sp, sa_flags), None => hal::AltStack::default() };
+    if !sigframe_writable(user_sp, alt) { bad_sigframe(); }
+    let frame_mask = match &cur {
+        Some(c) => { let m = setup_masks(c, sig, sa_flags, sa_mask); disarm_autodisarm(c); m }
+        None    => 0,
     };
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: dispatch tail; hal owns the arch frame mechanics + uses the
         // live saved syscall frame on this CPU's kstack.
-        unsafe { hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, restart, frame_mask, payload, alt); }
+        if !unsafe { hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, restart, frame_mask, payload, alt) } {
+            bad_sigframe();
+        }
         0
     }
     #[cfg(target_arch = "aarch64")]
@@ -83,9 +92,43 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
         // fall back to the per-CPU current frame for slot-less tasks.
         let frame = current_signal_svc_frame();
         // SAFETY: dispatch tail; `frame` is the live saved SVC frame.
-        unsafe { hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, restart, frame_mask, payload, alt); }
+        if !unsafe { hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, restart, frame_mask, payload, alt) } {
+            bad_sigframe();
+        }
         sig as u64
     }
+}
+
+/// Linux `get_sigframe`'s `access_ok(user->sigframe, …)` (arm64) /
+/// `user_access_begin(frame, sizeof(*frame))` (x86_64). The interrupted SP is
+/// user-chosen, so without this the delivery `write_volatile`s a signal frame
+/// wherever the process pointed its stack — including kernel VAs, which EL1 /
+/// CPL0 write through happily (B1459).
+///
+/// `validate_user_buf` (range + alignment), NOT the VMA-walking
+/// `validate_user_buf_writable`: `access_ok` deliberately proves only that the
+/// span is user space. A frame legitimately lands on the page below a
+/// `MAP_GROWSDOWN` stack VMA's current `start`, which has no VMA yet — Linux
+/// lets `unsafe_put_user` fault and `expand_downwards` grow the stack, and a
+/// VMA precondition here would `force_sigsegv` those deliveries instead.
+/// # C: O(1)
+fn sigframe_writable(user_sp: u64, alt: hal::AltStack) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    let range = hal_x86_64::sigframe_range(user_sp, alt);
+    #[cfg(target_arch = "aarch64")]
+    let range = hal_aarch64::sigframe_range(user_sp, alt);
+    match range {
+        Some((ptr, len, align)) => crate::userbuf::validate_user_buf(ptr, len, align).is_ok(),
+        None => false,
+    }
+}
+
+/// Linux `signal_setup_done(failed)` → `force_sigsegv(ksig->sig)`. Our
+/// terminator is unconditional where Linux first resets SIGSEGV to SIG_DFL and
+/// re-enters delivery; the second attempt fails identically, so both end at a
+/// SIGSEGV-killed task. Same path `rt_sigreturn` takes on a bad frame.
+fn bad_sigframe() -> ! {
+    sched::live::terminate_current_with_signal(sched::live::Signum::Sigsegv.as_u8())
 }
 
 /// Linux `sigmask_to_save()` + `signal_delivered()`. Returns the mask the
@@ -108,31 +151,32 @@ fn setup_masks(cur: &sched::Task, sig: u32, sa_flags: u64, sa_mask: u64) -> u64 
     frame_mask
 }
 
-/// Linux `sigsp()` + `save_altstack_ex()` + the `SS_AUTODISARM` half of
-/// `signal_delivered`. Decides whether this delivery switches to the
-/// alternate stack, hands the arch builder the `uc_stack` contents
-/// `rt_sigreturn` will restore, and disarms an `SS_AUTODISARM` stack for the
-/// duration of the handler.
+/// Linux `sigsp()` + `save_altstack_ex()`. Decides whether this delivery
+/// switches to the alternate stack and hands the arch builder the `uc_stack`
+/// contents `rt_sigreturn` will restore. Pure — the `SS_AUTODISARM` mutation
+/// is `disarm_autodisarm`, so the frame's `access_ok` can run first.
 /// # C: O(1)
-fn setup_altstack(cur: &sched::Task, user_sp: u64, sa_flags: u64) -> hal::AltStack {
+fn altstack_for(cur: &sched::Task, user_sp: u64, sa_flags: u64) -> hal::AltStack {
     let cur_alt = cur.altstack();
-    let use_alt = sas::use_alt_stack(user_sp, cur_alt, sa_flags & SA_ONSTACK != 0);
-    let out = hal::AltStack {
+    hal::AltStack {
         sp:      cur_alt.sp,
         size:    cur_alt.size,
         // `uc_stack.ss_flags` is what `sigaltstack(2)` would report right now,
         // so `restore_altstack` at sigreturn re-arms the same state.
         flags:   sas::sas_ss_flags(user_sp, cur_alt),
-        use_alt,
-    };
-    // `signal_delivered`: `if (current->sas_ss_flags & SS_AUTODISARM)
-    // sas_ss_reset(current);` — unconditional on whether this delivery
-    // actually switched stacks, so an armed SS_AUTODISARM stack is disarmed by
-    // ANY successful delivery and re-armed from `uc_stack` at sigreturn.
-    if cur_alt.flags & sas::SS_AUTODISARM != 0 {
+        use_alt: sas::use_alt_stack(user_sp, cur_alt, sa_flags & SA_ONSTACK != 0),
+    }
+}
+
+/// `signal_delivered`: `if (current->sas_ss_flags & SS_AUTODISARM)
+/// sas_ss_reset(current);` — unconditional on whether this delivery actually
+/// switched stacks, so an armed SS_AUTODISARM stack is disarmed by ANY
+/// successful delivery and re-armed from `uc_stack` at sigreturn.
+/// # C: O(1)
+fn disarm_autodisarm(cur: &sched::Task) {
+    if cur.altstack().flags & sas::SS_AUTODISARM != 0 {
         cur.set_altstack(sas::reset());
     }
-    out
 }
 
 /// Arch-neutral `rt_sigreturn` body: route to the per-arch restorer, store the

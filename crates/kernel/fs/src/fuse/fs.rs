@@ -11,7 +11,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use vfs::fs::FileSystem;
-use vfs::{FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::timespec::NSEC_PER_SEC;
+use vfs::{FileType, Inode, InodeBuilder, InodeRef, KResult, Timespec64, VfsError};
 
 use super::conn::FuseConn;
 use super::fops::{FuseFileOps, FuseInodeOps};
@@ -37,11 +38,30 @@ pub fn fuse_data(inode: &Inode) -> KResult<&FuseInodeData> {
 /// Build an in-core inode for `nodeid` from a daemon-supplied [`Attr`], reusing a
 /// live cached inode for the nodeid (identity) when present. `mode` is the full
 /// `S_IF*|perm` word from the attr. # C: O(log N_nodes)
+/// Daemon-supplied `fuse_attr` time pair as a [`Timespec64`]. The wire seconds
+/// field is `uint64_t` but Linux assigns it straight into a `time64_t`
+/// (`fs/fuse/inode.c` `fuse_change_attributes_common`:
+/// `inode_set_atime(inode, attr->atime, attr->atimensec)`), so the value is
+/// REINTERPRETED as signed — a pre-1970 fuse timestamp arrives as a large
+/// unsigned and must land as a negative second, not a year-2500 one. The
+/// sub-second field is CLAMPED, not rejected, matching the
+/// `min_t(u32, attr->atimensec, NSEC_PER_SEC - 1)` immediately above it.
+/// # C: O(1)
+pub(crate) fn attr_time(sec: u64, nsec: u32) -> Timespec64 {
+    Timespec64 { sec: sec as i64, nsec: nsec.min(NSEC_PER_SEC - 1) }
+}
+
 pub fn build_inode(conn: &Arc<FuseConn>, nodeid: u64, attr: &Attr) -> InodeRef {
+    let atime = attr_time(attr.atime, attr.atimensec);
+    let mtime = attr_time(attr.mtime, attr.mtimensec);
+    let ctime = attr_time(attr.ctime, attr.ctimensec);
     if let Some(existing) = conn.cached_inode(nodeid) {
         // Refresh the volatile size/nlink so a re-lookup reflects the daemon.
         existing.set_size(attr.size);
         if attr.nlink != 0 { existing.set_nlink(attr.nlink); }
+        // Linux `fuse_change_attributes_common` refreshes the times on every
+        // attr refresh, not only at first build.
+        let _ = existing.set_times(Some(atime), Some(mtime), ctime);
         return existing;
     }
     let ino = if attr.ino != 0 { attr.ino } else { nodeid };
@@ -50,6 +70,7 @@ pub fn build_inode(conn: &Arc<FuseConn>, nodeid: u64, attr: &Attr) -> InodeRef {
         .nlink(if attr.nlink != 0 { attr.nlink } else { 1 })
         .owner(attr.uid, attr.gid)
         .rdev(attr.rdev)
+        .times(atime, mtime, ctime)
         .private(Arc::new(FuseInodeData { conn: conn.clone(), nodeid }))
         .build();
     conn.cache_inode(nodeid, &inode);

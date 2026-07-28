@@ -13,10 +13,12 @@ int main(void) {
      * every other probe read as "unknown". Keep the cheap, collectible
      * evidence in front of the case that can swallow the run. */
     probe_sleep();
+    probe_inotify();
     probe_fdwait();
     probe_readiness();
     probe_jobctl();
     probe_cputime();
+    probe_latency();
     probe_mqueue();
     probe_mqueue_api();
     probe_locks();

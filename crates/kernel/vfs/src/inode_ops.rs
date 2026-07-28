@@ -22,6 +22,7 @@ use crate::inode::InodeRef;
 use crate::getattr::Kstat;
 use crate::namei::Cred;
 use crate::setattr::Iattr;
+use crate::timespec::Timespec64;
 use crate::types::{KResult, VfsError};
 
 /// The all-powerful root cred backing [`CreateCtx::root`] — the default-allow
@@ -180,12 +181,12 @@ pub trait InodeOps: Send + Sync {
 
     /// `i_op->update_time` (Linux `->update_time(inode, now, flags)`) — apply the
     /// VFS timestamp-update policy: write the atime/mtime/ctime selected by
-    /// `flags` (`S_ATIME`/`S_MTIME`/`S_CTIME`) to `now` (ns), and on `S_VERSION`
+    /// `flags` (`S_ATIME`/`S_MTIME`/`S_CTIME`) to `now`, and on `S_VERSION`
     /// lazily bump `i_version`. Default `generic_update_time` over the concrete
     /// inode fields; a backend overrides only to journal the change (ext4). The
     /// caller supplies `now` (the vfs crate is clock-free / `no_std`).
     /// # C: O(1)
-    fn update_time(&self, inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+    fn update_time(&self, inode: &Inode, now: Timespec64, flags: u32) -> KResult<()> {
         crate::inode::generic_update_time(inode, now, flags)
     }
 

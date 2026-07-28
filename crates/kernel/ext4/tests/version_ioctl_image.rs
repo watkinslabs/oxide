@@ -126,7 +126,7 @@ fn setversion_persists_generation_and_updates_ctime() {
     let inode = m.state().create_at(b"/version-set.txt", 0o644).expect("create");
     let ino = m.state().mount.lookup_path(b"/version-set.txt").expect("lookup");
     let file = open_file(inode.clone());
-    let before_ctime = inode.ctime().unwrap_or(0);
+    let before_ctime = inode.ctime().unwrap_or(vfs::Timespec64::ZERO);
     let before_version = vfs::inode::inode_query_iversion(&inode);
 
     file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::SetVersionPrepare)
@@ -134,7 +134,7 @@ fn setversion_persists_generation_and_updates_ctime() {
     file.unlocked_ioctl(&vfs::IDENTITY, &vfs::Cred::root(), FileIoctlCmd::SetVersion(0x1234_5678))
         .expect("setversion");
     assert_eq!(m.state().mount.read_inode(ino).unwrap().generation, 0x1234_5678);
-    assert!(inode.ctime().unwrap_or(0) >= before_ctime);
+    assert!(inode.ctime().unwrap_or(vfs::Timespec64::ZERO) >= before_ctime);
     assert!(vfs::inode::inode_query_iversion(&inode) > before_version);
 
     drop(file); drop(inode); drop(sb); drop(m);

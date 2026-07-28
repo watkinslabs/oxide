@@ -66,10 +66,23 @@ green boot look like evidence.
 | `wallcpu` | CPU clock -> `CLOCK_MONOTONIC` (the pre-F751 bug) |
 | `noburn` | no sibling to advance the process CPU clock |
 | `mqnokill` | never signals the parked mq receiver |
+| `mqnoprio` | sends every message at the same priority |
+| `mqnonotify` | never registers the `mq_notify` signal |
+| `mqnothread` | never registers the `mq_notify` thread callback |
+| `mqnostate` | leaves the queue empty, so `QSIZE` cannot change |
+| `latnowait` | asks for no wait at all (the return-immediately kernel) |
+| `latslow` | spends a ~100 ms floor per wait (the B1460 defect) |
 | `nopeerwrite` | the readiness poker never writes — every `ready|*_poll_in` + `ready|epoll_pty_in` |
 | `nodrain` | the backpressure reader never drains — every `out_after_drain` |
 | `nofill` | the backpressure writer never fills — every `out_when_full` |
 | `nosig` | drops the mid-wait interrupt entirely (blanket) |
+
+`latency|*` is the only area whose records depend on how FAST the guest is
+rather than on what it decided, so its two buckets are conformance claims, not
+scaffolding: `ge_req` excludes a kernel that never waited, `within_budget`
+excludes a kernel that quantises every timeout to a periodic scan. Widening
+`LAT_BUDGET_MS` past `LAT_ITERS * LAT_FLOOR_SIM_MS` deletes the finding — if it
+flakes, measure the guest, do not move the edge.
 
 ## 5 A record that goes green for the wrong reason
 

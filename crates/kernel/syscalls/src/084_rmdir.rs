@@ -63,7 +63,7 @@ pub(crate) fn do_rmdir_at(dirfd: i32, raw: &str) -> i64 {
                 Some(d) => { vfs::d_invalidate(&d); vfs::dcache::d_unlink(&d); }
                 None    => drop_child_cache(&parent, &name),
             }
-            vfs::fire_dirent_delete(&parent.inode, &name);
+            vfs::fire_dirent_delete(&parent.inode, &name, true);
             0
         }
         Err(e)  => errno_from_vfs(e),

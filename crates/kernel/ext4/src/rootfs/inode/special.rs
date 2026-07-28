@@ -360,7 +360,7 @@ impl FileOps for Ext4StatFileOps {
 /// CHR/BLK nodes (generic_fillattr reads it for those types only). # C: O(1)
 pub(crate) fn build_stat_inode(
     st: Arc<RootfsState>, ino: u32, ft: FileType, perm: u16, size: u64, nlink: u32, rdev: u32,
-    uid: u32, gid: u32, projid: u32, times: (u64, u64, u64, u64),
+    uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes,
 ) -> InodeRef {
     let data = Arc::new(Ext4StatData { st, ino, ft, size });
     let weak_sb = data.st.sb.lock().clone();
@@ -377,7 +377,7 @@ pub(crate) fn build_stat_inode(
     let mut b = InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(ft, perm),
                       Arc::new(Ext4StatInodeOps), Arc::new(Ext4StatFileOps));
     if vfs::special_inode_needs_poll_subs(ft) { b = b.poll_subs(vfs::PollSubscribers::new()); }
-    b
+    b = b
         .sb(weak_sb)
         .size(size)
         .blocks(blocks)
@@ -385,11 +385,13 @@ pub(crate) fn build_stat_inode(
         .rdev(rdev)
         .owner(uid, gid)
         .projid(projid)
-        .times(times.0, times.1, times.2)
-        .btime(times.3)
+        .times(times.atime, times.mtime, times.ctime)
         .xattrs(xattrs)
-        .private(data)
-        .build()
+        .private(data);
+    // Only an inode whose extra region reaches `i_crtime` reports STATX_BTIME
+    // (Linux `ext4_getattr`); leaving it unset is how the VFS says "absent".
+    if let Some(bt) = times.btime { b = b.btime(bt); }
+    b.build()
 }
 
 #[cfg(test)]

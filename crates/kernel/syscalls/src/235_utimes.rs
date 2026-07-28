@@ -8,7 +8,8 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use crate::utime_common::{iattr_from_times, iattr_touch, now_ns, read_timeval_pair, resolve_target, AT_FDCWD};
+use crate::utime_common::{now, read_timeval_pair, resolve_target, AT_FDCWD};
+use crate::utimes_abi::{iattr_from_times, iattr_touch};
 
 /// `sys_utimes(path, times[2])` — slot 235. Times are 16-byte timeval
 /// (sec, usec) pairs; no dirfd / flags. NULL ⇒ both = now. Routes through
@@ -22,10 +23,10 @@ pub fn sys_utimes(args: &SyscallArgs) -> i64 {
     } else {
         match read_timeval_pair(times_ptr) { Ok(t) => Some(t), Err(rv) => return rv }
     };
-    let (inode, mnt_id) = match resolve_target(AT_FDCWD, path_ptr, false) {
+    let (inode, mnt_id) = match resolve_target(AT_FDCWD, path_ptr, false, false) {
         Ok(t) => t, Err(rv) => return rv,
     };
-    let now = now_ns();
+    let now = now();
     let ia = match times {
         Some(t) => iattr_from_times(t, now),
         None => iattr_touch(now),

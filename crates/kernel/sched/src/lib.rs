@@ -46,6 +46,7 @@ pub use signum::{bit_for, clone_exit_signal, Signum};
 pub mod wait_select;
 mod sigqueue;
 pub mod sched_enc;
+pub mod hrtimeout;
 #[path = "timers/clockid.rs"] pub mod posix_clock;
 #[path = "timers/model.rs"] mod timer_model;
 #[path = "timers/queue.rs"] mod timer_queue;
@@ -60,7 +61,7 @@ pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use registry::kernel_stack_bytes_snapshot;
 pub use runqueue::RunqueueInner;
-pub use task::{cap, ArchFpuBuf, Creds, GroupList, PosixTimer, SaHandler, SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo, SleepWake, WaitOutcome, WaitState, signal_pending_state, Task, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use task::{cap, securebits, ArchFpuBuf, Creds, GroupList, PosixTimer, SaHandler, SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo, SleepWake, WaitOutcome, WaitState, signal_pending_state, Task, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
 /// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer
