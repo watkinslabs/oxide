@@ -30,6 +30,8 @@ pub mod mlock_policy;
 // ABI, the AT_HANDLE_* flag masks and both admission ladders.
 pub mod handle_policy;
 pub mod sched_policy;
+pub mod sched_attr;
+pub mod ioprio;
 // rename(2)/renameat2(2): the `filename_renameat2` errno LADDER (EXDEV before
 // EBUSY, the NOREPLACE EEXIST override, the ancestor-trap EINVAL/ENOTEMPTY
 // split, trailing-slash ENOTDIR) — order is the whole contract, so it lives
