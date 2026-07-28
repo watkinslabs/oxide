@@ -3,13 +3,18 @@
 /// collapse to the pending bitmap and any siginfo at delivery time
 /// is synthesised. RT signals (33..=64) queue distinct records
 /// per `sigqueue(2)` / `pthread_sigqueue(3)` semantics.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct SigInfo {
     pub signo: u32, // signal number 1..=64 (RT: 33..=64)
     pub code:  i32, // si_code (SI_USER=0, SI_QUEUE=-1, …)
     pub pid:   u32, // si_pid
     pub uid:   u32, // si_uid
     pub value: u64, // sigval_t (sigqueue(2) value.sival_int|sival_ptr)
+    /// `_sigsys` union arm (`force_sig_seccomp`, `kernel/signal.c`) — `Some`
+    /// only for a seccomp-raised SIGSYS. siginfo_t OVERLAYS it on the same
+    /// `_sifields` bytes `pid`/`uid`/`value` use, so the delivery path must
+    /// pick one arm; `hal::write_siginfo` does.
+    pub sys: Option<hal::Sigsys>,
 }
 
 /// Per-signal RT queue depth cap. Drops new arrivals past this

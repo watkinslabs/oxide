@@ -123,6 +123,7 @@ mod live {
             pid: spid,
             uid: cur.creds.ruid.load(Ordering::Relaxed),
             value: 0,
+            sys:   None,
         });
         t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
         if sig == sched::Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
