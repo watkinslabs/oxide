@@ -6,7 +6,7 @@ machine's Linux kernel and inside one oxide boot; the `wdiff|` record
 streams must match byte-for-byte.
 
     make -C userspace/wait_diff run     # oracle only
-    make wait-diff-selftest             # falsification gate, ~2min, no boot
+    make wait-diff-selftest             # falsification gate, ~9min, no boot
     make smoke-wait-diff-x86            # oracle + one boot + diff
     make smoke-wait-diff-arm
 
@@ -72,6 +72,9 @@ green boot look like evidence.
 | `mqnostate` | leaves the queue empty, so `QSIZE` cannot change |
 | `latnowait` | asks for no wait at all (the return-immediately kernel) |
 | `latslow` | spends a ~100 ms floor per wait (the B1460 defect) |
+| `nopeerwrite` | the readiness poker never writes — every `ready|*_poll_in` + `ready|epoll_pty_in` |
+| `nodrain` | the backpressure reader never drains — every `out_after_drain` |
+| `nofill` | the backpressure writer never fills — every `out_when_full` |
 | `nosig` | drops the mid-wait interrupt entirely (blanket) |
 | `sysvavail` | the SysV IPC_NOWAIT cases start satisfiable |
 | `sysvnopost` | no SysV peer ever posts/sends/drains |
@@ -105,6 +108,17 @@ Both are closed; both are the reason to distrust a bare `outcome=ok`.
   `sibling_burn_completes` read as a match because a no-op and a correct
   sleep both report `ok`. Fixed by adding `slept=`, which a real sleep
   cannot set without spending the cpu time it waited for.
+
+- **B1461** — `tcp_pollout_backpressure` stopped filling at the FIRST
+  `EAGAIN`, which on TCP means "the send queue is momentarily full", not
+  "the path is full": loopback drains it into the peer within
+  milliseconds, so writability returned with no reader involved and the
+  `nodrain` mutant could not change the record at all. Fixed by settling —
+  fullness counts only once `EAGAIN` persists across four offers 50 ms
+  apart, by which point the peer's receive buffer is full too and only a
+  reader can free it. AF_UNIX never showed this (its `EAGAIN` is stable
+  because `sk_wmem_alloc` is released by the reader), so the one-kernel
+  oracle caught a defect the AF_UNIX twin case hid.
 
 The generalisation: for any case whose success value is also what a
 DEGENERATE implementation returns, the record needs a second observable

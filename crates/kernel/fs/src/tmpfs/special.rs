@@ -45,7 +45,7 @@ pub(super) fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: 
         // (systemd's sd-event epolls /run/systemd/initctl). The `TmpfsErrFileOps`
         // stub stays as the on-disk `i_fop` — a bare read of an unopened FIFO is
         // still meaningless; the pipe vtable is installed on the open `File`.
-        if ft == FileType::Fifo { b = b.poll_subs(PollSubscribers::new()); }
+        if vfs::special_inode_needs_poll_subs(ft) { b = b.poll_subs(PollSubscribers::new()); }
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()
     })

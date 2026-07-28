@@ -165,6 +165,9 @@ pub struct SockOpts {
     /// F164: SO_SNDBUF (bytes); enforced by tcp_send → backpressure.
     pub sndbuf:    core::sync::atomic::AtomicI32,
     pub rcvbuf:    core::sync::atomic::AtomicI32,
+    /// Linux `SOCK_RCVBUF_LOCK`: set once `setsockopt(SO_RCVBUF)` names a
+    /// size, after which the transport must follow it instead of autotuning.
+    pub rcvbuf_locked: core::sync::atomic::AtomicBool,
     pub sndtimeo_ns: core::sync::atomic::AtomicI64,
     pub rcvtimeo_ns: core::sync::atomic::AtomicI64,
     pub linger_on: core::sync::atomic::AtomicI32,
@@ -235,6 +238,7 @@ impl Default for SockOpts {
             oobinline:   AtomicI32::new(0),
             sndbuf:      AtomicI32::new(TCP_SNDBUF_DEFAULT),
             rcvbuf:      AtomicI32::new(TCP_RCVBUF_DEFAULT),
+            rcvbuf_locked: core::sync::atomic::AtomicBool::new(false),
             sndtimeo_ns: AtomicI64::new(0),
             rcvtimeo_ns: AtomicI64::new(0),
             linger_on:   AtomicI32::new(0),

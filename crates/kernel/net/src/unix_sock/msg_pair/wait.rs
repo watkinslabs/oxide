@@ -10,19 +10,26 @@ pub enum ArmMsgReadAfter { Retry, Reset, Eof, DatagramShutdown, Parked }
 pub enum ArmMsgWrite { Retry, PeerClosed, MessageTooLarge, Parked }
 
 impl UnixMsgPair {
-    /// Linux message-pair readiness derived from both directional halves. # C: O(1)
-    pub fn poll_mask(&self, end: UnixEnd) -> u32 {
+    /// Linux `unix_dgram_poll` (`net/unix/af_unix.c:3398-3456`) — the `->poll`
+    /// of BOTH `unix_seqpacket_ops` and `unix_dgram_ops`. Writability is
+    /// `unix_writable(sk, state)` on the local send queue; the connected-peer
+    /// backlog arm is skipped here because a socketpair is symmetrically
+    /// connected (`unix_peer(other) == sk`), which is exactly the case Linux
+    /// excludes from `unix_recvq_full_lockless`.
+    /// # C: O(1)
+    pub fn poll_mask(&self, end: UnixEnd, sndbuf_cap: usize) -> u32 {
         let (has_msg, peer_send_shut, local_recv_shut) = {
             let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
             (!g.msgs.is_empty(), g.closed_writer, g.reader_shutdown)
         };
-        let (local_send_shut, peer_recv_shut) = {
+        let (local_send_shut, peer_recv_shut, queued) = {
             let g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
-            (g.closed_writer, g.reader_shutdown)
+            (g.closed_writer, g.reader_shutdown, g.bytes)
         };
         let gone = self.peer_gone(end);
         let reset = self.reset_pending(end);
-        let mut mask = vfs::POLL_OUT;
+        let mut mask = 0u32;
+        if super::super::unix_writable(queued, sndbuf_cap) { mask |= vfs::POLL_OUT | vfs::POLL_WRNORM; }
         if has_msg || local_recv_shut || (self.kind == UnixMsgKind::SeqPacket && (peer_send_shut || gone || reset)) { mask |= vfs::POLL_IN; }
         if local_recv_shut || (self.kind == UnixMsgKind::SeqPacket && (peer_send_shut || gone)) { mask |= vfs::POLL_RDHUP; }
         if (local_recv_shut && local_send_shut)

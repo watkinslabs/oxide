@@ -91,6 +91,7 @@ pub unsafe fn build_user_stack(
     vdso_ehdr: u64,
     hwcap: u64,
     creds: AuxCreds,
+    min_sigstksz: u64,
 ) -> Option<StackLayout> {
     let mut cursor = stack_top;
 
@@ -135,7 +136,7 @@ pub unsafe fn build_user_stack(
     // 2. Compute total size of the pointer/auxv vector area, then
     //    align the resulting SP down to 16. The vector area is
     //    written bottom-up (low → high) starting at `vec_base`.
-    let auxv: [(u64, u64); 18] = [
+    let auxv: [(u64, u64); 19] = [
         (AT_PHDR,    img.phdr_va),
         (AT_PHENT,   img.phentsize as u64),
         (AT_PHNUM,   img.phnum as u64),
@@ -153,6 +154,7 @@ pub unsafe fn build_user_stack(
         (AT_RANDOM,  random_va),
         (AT_HWCAP,   hwcap),
         (AT_CLKTCK,  100),
+        (AT_MINSIGSTKSZ, min_sigstksz),
         // 0 = "no vDSO mapped" — glibc / musl skip the AT_SYSINFO_EHDR
         // entry under that value. Non-zero = vDSO load VA per K14.
         (AT_SYSINFO_EHDR, vdso_ehdr),

@@ -175,3 +175,39 @@ impl PollSubscribers {
 }
 
 impl Default for PollSubscribers { fn default() -> Self { Self::new() } }
+
+/// Whether an on-disk inode of `ft` needs its own poll wait queue, independent
+/// of which filesystem stores it.
+///
+/// Linux `init_special_inode` gives an `S_IFIFO` node `pipefifo_fops`, and
+/// `fifo_open` (`fs/pipe.c:1219`) attaches an `i_pipe` whose `rd_wait`/
+/// `wr_wait` ARE the queues `pipe_poll` registers on — the backing filesystem
+/// never enters into it. Every `S_IFIFO` constructor must therefore attach a
+/// subscriber list; `fs::pipe`'s notify sites read it back through
+/// `inode.poll_subscribers()` and silently do nothing when it is `None`.
+///
+/// Character/block nodes get their queue from the driver, sockets from the
+/// socket object, so neither takes one here.
+/// # C: O(1)
+pub fn special_inode_needs_poll_subs(ft: crate::FileType) -> bool {
+    matches!(ft, crate::FileType::Fifo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FileType;
+
+    #[test]
+    fn fifo_nodes_take_a_wait_queue() {
+        assert!(special_inode_needs_poll_subs(FileType::Fifo));
+    }
+
+    #[test]
+    fn other_special_nodes_do_not() {
+        for ft in [FileType::Regular, FileType::Directory, FileType::Symlink,
+                   FileType::CharDev, FileType::BlockDev, FileType::Socket] {
+            assert!(!special_inode_needs_poll_subs(ft), "{ft:?} must not take one");
+        }
+    }
+}

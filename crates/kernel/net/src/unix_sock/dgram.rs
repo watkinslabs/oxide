@@ -43,6 +43,14 @@ pub struct UnixDgramQueue {
     pub writers: sched::live::WaitList,
     /// F181a: epoll subscribers of the owning InetSocket.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    /// Linux `sk->sk_peer_wait` (`net/unix/af_unix.c` `unix_dgram_peer_wake_
+    /// connect`): the wait queues of OTHER sockets that are connected to this
+    /// one and found it full during `unix_dgram_poll`. Their `EPOLLOUT`
+    /// depends on THIS queue draining, and they are subscribed to their own
+    /// list, not to this one — without the relay a poll-driven connected
+    /// datagram writer parks and is never woken. Weak, deduped by pointer,
+    /// pruned on every wake.
+    peer_writer_subs: Spinlock<Vec<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     gc: GcNode,
 }
 
@@ -67,6 +75,7 @@ impl UnixDgramQueue {
             waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
             writers: sched::live::WaitList::new(),
+            peer_writer_subs: Spinlock::new(Vec::new()),
             subs: Spinlock::new(None),
             gc: GcNode::new(),
         })
@@ -281,12 +290,33 @@ impl UnixDgramQueue {
         ArmDgramWrite::Parked
     }
 
+    /// Linux `unix_dgram_peer_wake_connect`: remember `subs` so this queue's
+    /// drain relays an `EPOLLOUT` wake to the connected sender that just
+    /// observed us full. Idempotent on pointer identity.
+    /// # C: O(N_registered)
+    pub fn register_peer_writer(&self, subs: &Arc<vfs::PollSubscribers>) {
+        let want = Arc::as_ptr(subs);
+        let mut g = self.peer_writer_subs.lock();
+        g.retain(|w| w.strong_count() != 0);
+        if g.iter().any(|w| w.as_ptr() == want) { return; }
+        g.push(Arc::downgrade(subs));
+    }
+
     #[cfg(target_os = "oxide-kernel")]
     fn wake_writers(&self) {
         self.writers.wake_all();
         if let Some(subs) = self.subs.lock().as_ref().and_then(|weak| weak.upgrade()) {
             subs.notify_mask(vfs::POLL_OUT);
         }
+        // `unix_dgram_peer_wake_relay` → `wake_up_interruptible_poll(
+        // sk_sleep(sk), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND)` on every sender
+        // that registered while we were full.
+        let relay: Vec<Arc<vfs::PollSubscribers>> = {
+            let mut g = self.peer_writer_subs.lock();
+            g.retain(|w| w.strong_count() != 0);
+            g.iter().filter_map(|w| w.upgrade()).collect()
+        };
+        for subs in relay { subs.notify_mask(vfs::POLL_OUT | vfs::POLL_WRNORM); }
     }
 }
 

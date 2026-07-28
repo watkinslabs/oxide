@@ -198,8 +198,16 @@ pub fn pid_arg(raw: u64) -> Result<u32, i64> {
 //                (`user_check_sched_setscheduler`, `check_same_owner`).
 //   setattr.rs — `__sched_setscheduler` proper: validation order, the no-change
 //                fast path, and the commit onto the runqueue.
+//   commit.rs  — the runqueue commit, selected by target. `sched::live` is gated
+//                to kernel/test/hosted builds (`sched/src/lib.rs:173`), and this
+//                module is deliberately ungated so its decision logic is testable,
+//                so the commit is chosen at the module boundary per `07§5` rather
+//                than by scattering `#[cfg]` through `setattr`'s logic.
 mod task;
 mod setattr;
+#[cfg_attr(any(target_os = "oxide-kernel", test), path = "sched_policy/commit_live.rs")]
+#[cfg_attr(not(any(target_os = "oxide-kernel", test)), path = "sched_policy/commit_absent.rs")]
+mod commit;
 pub use task::{check_same_owner, get_params, task_policy, task_rt_priority, task_slice_ns,
                uclamp_req, user_check};
 pub use setattr::{setattr, setscheduler, trace_admission};

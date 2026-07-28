@@ -121,11 +121,22 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
 /// present leaf is cleared then released via the SAME
 /// `crate::setup::rmap_aware_dec_and_maybe_free`, so a COW-shared frame
 /// (still mapped in a peer AS) is only unmapped from the target, never
-/// freed early. No TLB shootdown is issued — oxide is UP (`smp cpus=0`),
-/// the foreign target is not executing, and its TLB is flushed on its
-/// next CR3/TTBR reload (`20§5`).
-/// # C: O(len/page) PT walks
-pub fn evict_foreign_pages_in_range(root_pa: u64, addr: u64, len: u64) -> i64 {
+/// freed early.
+///
+/// TLB coherence (`20§5`) runs through [`crate::tlb_gather::TlbGather`],
+/// which enforces Linux's `mm/mmu_gather.c` rule that the invalidate
+/// completes BEFORE the frame is released. This is NOT optional on a
+/// foreign root: the target is a live process whose threads may be
+/// executing on other CPUs (`process_madvise`), and even
+/// `process_mrelease`'s SIGKILLed target has not necessarily left its
+/// CPU yet. Freeing while a peer CPU retains a writable translation is a
+/// use-after-free into the buddy allocator.
+///
+/// `cpumask` is the TARGET mm's `mm_cpumask` (Linux `flush_tlb_others`
+/// targeting) — the caller's own mask is the wrong set, since the pages
+/// being torn down belong to the target's address space.
+/// # C: O(len/page) PT walks + O(pages/GATHER_BATCH_PAGES) shootdowns
+pub fn evict_foreign_pages_in_range(root_pa: u64, cpumask: u64, addr: u64, len: u64) -> i64 {
     use syscall::errno::Errno;
     if addr == 0 || len == 0 || (addr & PAGE_MASK) != 0 {
         return -(Errno::Einval.as_i32() as i64);
@@ -134,31 +145,72 @@ pub fn evict_foreign_pages_in_range(root_pa: u64, addr: u64, len: u64) -> i64 {
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let hhdm = hhdm_offset();
+    let mut ops = ForeignGatherOps { root_pa, hhdm: hhdm_offset() };
+    let mut gather = crate::tlb_gather::TlbGather::new(cpumask);
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
-        // SAFETY: root_pa is a live foreign AS root the caller pins via
-        // Arc and that is NOT active on this UP CPU; HHDM covers PT
-        // memory; the leaf slot is exclusively owned (target not running).
-        let torn = unsafe {
-            #[cfg(target_arch = "x86_64")]
-            { hal::pt_walker::unmap_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root_pa, va, hhdm) }
-            #[cfg(target_arch = "aarch64")]
-            { hal::pt_walker::unmap_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(root_pa, va, hhdm) }
-            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-            { let _ = (root_pa, va, hhdm); None::<u64> }
-        };
-        if let Some(pa) = torn {
-            // SAFETY: pa was reachable via the foreign leaf just cleared;
-            // rmap_aware_dec_and_maybe_free checks the struct-page refcount
-            // and only releases to PMM when the last mapping drops — same
-            // contract as the active-root evict path in unmap.rs.
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
-        }
+        gather.unmap_one(&mut ops, va);
         va += PAGE_BYTES;
     }
+    gather.finish(&mut ops);
     0
+}
+
+/// Kernel-side [`crate::tlb_gather::GatherOps`] over a foreign page-table root.
+struct ForeignGatherOps { root_pa: u64, hhdm: u64 }
+
+impl crate::tlb_gather::GatherOps for ForeignGatherOps {
+    /// # C: O(1) PT walk
+    fn tear_leaf(&mut self, va: u64) -> Option<u64> {
+        // SAFETY: root_pa is a live foreign AS root the caller pins via an
+        // Arc for the duration of this call; HHDM covers the page-table
+        // memory; the walker only clears a 4K leaf slot and returns the PA
+        // it held. TLB invalidation is the gather's responsibility.
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            { hal::pt_walker::unmap_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(self.root_pa, va, self.hhdm) }
+            #[cfg(target_arch = "aarch64")]
+            { hal::pt_walker::unmap_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(self.root_pa, va, self.hhdm) }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            { let _ = va; None::<u64> }
+        }
+    }
+
+    /// x86_64: `invlpg`, CPU-local — covers this CPU only (it may itself be
+    /// running a thread of the target, e.g. `process_madvise` on one's own
+    /// pid). aarch64: `tlbi vae1is` is inner-shareable, so the hardware
+    /// broadcasts to every CPU and this call alone closes the window.
+    /// # C: O(1) local; O(N_cpus) shareable broadcast on aarch64
+    fn invalidate_local(&mut self, va: u64) {
+        // SAFETY: privileged TLB invalidation, legal at CPL=0 / EL1; a
+        // stale-entry-removing operation is always sound.
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::flush_local_va(va); }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::flush_local_va(va); }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            { let _ = va; }
+        }
+    }
+
+    /// x86_64 only: IPI the CPUs holding the target mm and wait. aarch64
+    /// leaves the hook unset (hardware TLBI broadcast already did it).
+    /// # C: O(popcount(targets)) + IPI round-trip
+    fn shootdown_others(&mut self, targets: u64) {
+        hal::tlb::shootdown_others_all(targets);
+    }
+
+    /// # C: O(1)
+    fn free_frame(&mut self, pa: u64) {
+        // SAFETY: pa was reachable via the foreign leaf cleared by tear_leaf
+        // and every CPU's translation for it has been invalidated by the
+        // gather's flush; rmap_aware_dec_and_maybe_free checks the
+        // struct-page refcount and only releases to PMM when the last
+        // mapping drops — same contract as the active-root path in unmap.rs.
+        unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

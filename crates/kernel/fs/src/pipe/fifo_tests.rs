@@ -119,3 +119,84 @@ fn is_named_fifo_rejects_anon_pipe_and_eventfd() {
     assert!(!is_named_fifo(&make_eventfd_inode(0, false)), "eventfd is not a named FIFO");
     assert!(is_named_fifo(&fifo(0xF1F0_0007)), "mknod FIFO IS a named FIFO");
 }
+
+// --- readiness edges -------------------------------------------------------
+//
+// The FIFO data paths publish every readiness transition through
+// `inode.poll_subscribers()`, and every one of those call sites is
+// `if let Some(s) = subs`. An `S_IFIFO` inode built WITHOUT a subscriber list
+// therefore takes the silent no-op branch on every write, read and last-close:
+// blocking I/O still works, but `poll`/`select`/`epoll_wait` on the FIFO
+// subscribes to nothing and parks with no deadline and no source. That is
+// exactly the shape ext4-backed FIFOs had (`build_stat_inode` never called
+// `poll_subs`) while devnode and tmpfs FIFOs were fine.
+
+struct CountingWaiter { hits: core::sync::atomic::AtomicU32 }
+
+impl vfs::EpollNotify for CountingWaiter {
+    fn notify(&self) { self.hits.fetch_add(1, core::sync::atomic::Ordering::AcqRel); }
+}
+
+/// Subscribe a counter to `inode`'s wait queue the way `sys_poll`'s
+/// `PollWaiter` and an epitem do. Returns `None` when the inode carries no
+/// queue at all — the defect under test.
+fn watch(inode: &vfs::InodeRef) -> Option<alloc::sync::Arc<CountingWaiter>> {
+    let subs = inode.poll_subscribers()?;
+    let waiter = alloc::sync::Arc::new(CountingWaiter {
+        hits: core::sync::atomic::AtomicU32::new(0) });
+    let weak: Weak<dyn vfs::EpollNotify> =
+        alloc::sync::Arc::downgrade(&(waiter.clone() as alloc::sync::Arc<dyn vfs::EpollNotify>));
+    subs.subscribe(1, weak);
+    Some(waiter)
+}
+
+#[test]
+fn fifo_inode_carries_a_wait_queue() {
+    let inode = fifo(0xF1F0_0100);
+    assert!(inode.poll_subscribers().is_some(),
+        "an S_IFIFO inode with no PollSubscribers makes every notify site a no-op");
+}
+
+#[test]
+fn every_fifo_filesystem_decides_the_same_way() {
+    // The one decision the devnode, tmpfs and ext4 constructors all consult,
+    // so a fourth filesystem cannot quietly disagree.
+    assert!(vfs::special_inode_needs_poll_subs(vfs::FileType::Fifo));
+    assert!(!vfs::special_inode_needs_poll_subs(vfs::FileType::Regular));
+}
+
+#[test]
+fn write_wakes_a_subscribed_waiter() {
+    let inode = fifo(0xF1F0_0101);
+    let fop = fifo_open(&inode, O_RDWR).expect("O_RDWR fifo_open never blocks");
+    let waiter = watch(&inode).expect("fifo inode has a wait queue");
+    assert_eq!(waiter.hits.load(core::sync::atomic::Ordering::Acquire), 0);
+    fop.write(&inode, 0, b"wake").expect("fifo write");
+    assert_ne!(waiter.hits.load(core::sync::atomic::Ordering::Acquire), 0,
+        "a write that flips POLLIN must notify the FIFO's poll waiters");
+    fifo_release(&inode, true, true);
+}
+
+#[test]
+fn read_wakes_a_subscribed_waiter() {
+    let inode = fifo(0xF1F0_0102);
+    let fop = fifo_open(&inode, O_RDWR).expect("O_RDWR fifo_open never blocks");
+    fop.write(&inode, 0, b"drain").expect("fifo write");
+    let waiter = watch(&inode).expect("fifo inode has a wait queue");
+    let mut buf = [0u8; 16];
+    fop.read(&inode, 0, &mut buf).expect("fifo read");
+    assert_ne!(waiter.hits.load(core::sync::atomic::Ordering::Acquire), 0,
+        "a read that frees ring space must notify the FIFO's poll waiters");
+    fifo_release(&inode, true, true);
+}
+
+#[test]
+fn last_close_wakes_a_subscribed_waiter() {
+    // Writer EOF / reader EPIPE is the transition an event loop parks on.
+    let inode = fifo(0xF1F0_0103);
+    let _fop = fifo_open(&inode, O_RDWR).expect("O_RDWR fifo_open never blocks");
+    let waiter = watch(&inode).expect("fifo inode has a wait queue");
+    fifo_release(&inode, true, true);
+    assert_ne!(waiter.hits.load(core::sync::atomic::Ordering::Acquire), 0,
+        "last close must notify so a parked poller sees POLLHUP/EOF");
+}

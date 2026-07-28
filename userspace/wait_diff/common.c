@@ -189,6 +189,15 @@ const char *fault_class(int st) {
     return WEXITSTATUS(st) == 0 ? "ok" : "exited";
 }
 
+const char *rdy_outcome_name(int cls) {
+    switch (cls) {
+    case RDY_OK:      return "ok";
+    case RDY_TIMEOUT: return "timeout";
+    case RDY_NOFILL:  return "nofill";
+    default:          return "error";
+    }
+}
+
 const char *err_class_name(int cls) {
     switch (cls) {
     case CLS_OK:         return "ok";
