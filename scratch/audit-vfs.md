@@ -107,6 +107,7 @@ journalled image and because the images' journal-less state is itself the top fi
 | `fallocate` COLLAPSE_RANGE / INSERT_RANGE | ext4 implements BOTH: `ext4_fallocate` dispatches to `ext4_collapse_range` and `ext4_insert_range`, which shift logical block numbers across the extent tree | Both are listed in `EXT4_SUPPORTED_MODES` but fall through the `match` to `_ => Eopnotsupp`. The in-tree comment asserts "Linux itself returns `EOPNOTSUPP` from these modes on filesystems that lack the shift, so the errno is the honest one" — for ext4 specifically that claim is FALSE | Two `fallocate` modes silently unavailable, defended by an unverified Linux claim of exactly the kind `CLAUDE.md` warns about. `fallocate --collapse-range`, log rotators and video tooling use them | CORRECTNESS | `kernel/ext4` | `fs/ext4/extents.c:4915-4919`, `:5525 ext4_collapse_range`, `:4708 ext4_insert_range` | crates/kernel/ext4/src/rootfs/inode/fallocate.rs:15-19,27-32,56 |
 | `fallocate` ZERO_RANGE cost | `ext4_zero_range` converts the range to UNWRITTEN extents — O(1) metadata, no data I/O; reads serve zeros from the unwritten flag | Zeroes eagerly, writing the whole range and producing INITIALIZED extents | `fallocate --zero-range` on a large range writes every byte where Linux writes none. Same root cause as the unwritten-conversion row | PERF | `kernel/ext4` | `fs/ext4/extents.c ext4_zero_range` | crates/kernel/ext4/src/rootfs/inode/fallocate.rs:53-56 |
 | Extent tree depth | `EXT4_MAX_EXTENT_DEPTH` 5, full read/write/split/merge | Implemented to depth 5 with insert, split and grow (`extent_rw/insert.rs`, `append.rs`, `truncate.rs`). **Corrects the brief's "inline only" worry — that limit now applies only to the journal reader.** | none material | — | `kernel/ext4` | `fs/ext4/extents.c` | crates/kernel/ext4/src/inode.rs:35; extent_rw/insert.rs |
+| htree hash signedness (`s_hash_unsigned`) | The dx_root stores the BASE hash version (0/1/2). At hash time Linux adds `EXT4_SB(sb)->s_hash_unsigned` — 3 when the superblock's `s_flags` (offset 0x160) carries `EXT2_FLAGS_UNSIGNED_HASH`, 0 otherwise — turning `HALF_MD4` into `HALF_MD4_UNSIGNED` and so on | `s_flags` at 0x160 is NOT parsed anywhere in `superblock.rs`, and `dirhash_major` receives the raw dx_root version with no `+3` adjustment. Signedness is inferred solely from the stored version id | Latent: our images were built on x86_64 and carry `signed_directory_hash`, so oxide happens to agree. Any filesystem created or last touched by `mke2fs`/`e2fsck` on an unsigned-char arch (aarch64 — the second lockstep target) carries `unsigned_directory_hash` and will be hashed with the SIGNED variant: htree lookups miss so files are invisible in large indexed directories, and `htree_insert` files dx_entries under the wrong hash, corrupting the index | CORRECTNESS | `kernel/ext4` | `fs/ext4/namei.c:821,1175,2300`; `fs/ext4/super.c:5259-5266`; `fs/ext4/ext4.h:1243-1244,1624` | crates/kernel/ext4/src/superblock.rs:264-268 (0x160 unread); htree.rs:35-60,198 |
 | htree directories | `ext4_dx_add_entry` → `do_split` → index growth; `EXT4_INDEX_FL`; hash versions incl. signed variants + `s_hash_seed` | Real htree insert with leaf split (`htree_split`) and index growth (`htree_grow`), dx_root/dx_node walk, legacy/half-md4/tea + signed variants. **Corrects the brief's linear-insert-into-htree worry.** | none material | — | `kernel/ext4` | `fs/ext4/namei.c ext4_dx_add_entry`, `do_split` | crates/kernel/ext4/src/htree.rs:188-280 |
 | `metadata_csum` | crc32c on superblock, group descriptors, inode, bitmaps, extent tails, dirent tails, xattr blocks | Verified on read (`BadChecksum` → `EIO`) and recomputed on write across those objects | none material | — | `kernel/ext4` | `fs/ext4/*_csum` | crates/kernel/ext4/src/csum.rs; mount.rs:70-79 |
 
@@ -219,34 +220,37 @@ By impact, highest first.
    no-journal design as intentional. It cannot stay implicit.
 10. **JBD2 descriptor tag size wrong for 64bit** (§5) — would destroy a filesystem the moment a
    journalled image is recovered. Must land before any journal work.
-11. **No `data=ordered`, no revoke sequence on replay** (§5) — stale-data exposure after a crash,
+11. **htree hash ignores `s_hash_unsigned`** (§5) — an aarch64-created ext4 filesystem is hashed
+    with the wrong variant: files invisible in large directories, and inserts corrupt the index.
+    Directly in the path of the ARM lockstep rule.
+12. **No `data=ordered`, no revoke sequence on replay** (§5) — stale-data exposure after a crash,
     and recovery silently dropping legitimate later writes.
-12. **`s_wb_err` absent, no dirty throttling, no periodic writeback** (§4) — three parts of one
+13. **`s_wb_err` absent, no dirty throttling, no periodic writeback** (§4) — three parts of one
     hole: nothing ages dirty data, nothing bounds it, nothing reports a failure to write it.
 
 **Then correctness with a smaller blast radius.**
 
-13. **`i_writecount` absent** (§2) — `ETXTBSY` impossible in both directions.
-14. **`may_open` misses `noexec`/`nodev`/append-only/`O_NOATIME`** (§2) — mount options stored but
+14. **`i_writecount` absent** (§2) — `ETXTBSY` impossible in both directions.
+15. **`may_open` misses `noexec`/`nodev`/append-only/`O_NOATIME`** (§2) — mount options stored but
     not enforced at open.
-15. **`d_move` has no callers and would mint a new dentry anyway** (§1) — renamed files and
+16. **`d_move` has no callers and would mint a new dentry anyway** (§1) — renamed files and
     directories render stale ` (deleted)` paths through `/proc/<pid>/fd` and `getcwd`.
-16. **procfs renders fabricated `Vm*`/`stat`/`statm`/`maps` fields** (§8) — `ps`, `top` and every
+17. **procfs renders fabricated `Vm*`/`stat`/`statm`/`maps` fields** (§8) — `ps`, `top` and every
     memory tool read zeros or VSZ-as-RSS.
-17. **seq_file regenerates the body on every `read()`** (§8) — chunked reads tear.
-18. **Lease break reaches only `open`** (§3) — truncate, unlink, rename and setattr bypass it.
-19. **`/proc/locks` empty, `vm.dirty_*` inert, `cpu.stat` zeros** (§3, §4, §9) — nodes that answer
+18. **seq_file regenerates the body on every `read()`** (§8) — chunked reads tear.
+19. **Lease break reaches only `open`** (§3) — truncate, unlink, rename and setattr bypass it.
+20. **`/proc/locks` empty, `vm.dirty_*` inert, `cpu.stat` zeros** (§3, §4, §9) — nodes that answer
     plausibly and mean nothing are worse than absent ones.
-20. **Unwritten-extent conversion zeroes the whole extent** (§5) — the concrete mechanism behind
+21. **Unwritten-extent conversion zeroes the whole extent** (§5) — the concrete mechanism behind
     journald's historical writeback cost; splitting makes it proportional to the write.
 
 **Then cost.**
 
-21. **dcache/icache never reclaimed, 256 hash buckets, ref-walk only, negative caching limited to
+22. **dcache/icache never reclaimed, 256 hash buckets, ref-walk only, negative caching limited to
     three fs types by string** (§1) — unbounded growth plus a linear scan on the hottest path in
     the kernel.
-22. **fsnotify dispatch is `O(groups × watches)` on every hooked VFS op** (§6).
-23. **No JBD2 transaction batching or commit timer** (§5) — every drain is a full checkpoint with
+23. **fsnotify dispatch is `O(groups × watches)` on every hooked VFS op** (§6).
+24. **No JBD2 transaction batching or commit timer** (§5) — every drain is a full checkpoint with
     three device flushes.
 
 ## What I could not determine
