@@ -185,9 +185,11 @@ const MCAST_RETRY_INTERVAL_NS: u64 = 100_000_000;
 /// strings (tmpfiles/sysusers/udevd/journald) surface in klog. The
 /// services log their fatal reason to journald's socket (which queues
 /// because journald itself is wedged), so the payload is the only
-/// place the human-readable cause appears. Gated on `debug-boot`.
+/// place the human-readable cause appears. Gated on `debug-journal` — under
+/// systemd every service's log line reaches journald through this path, so on
+/// `debug-boot` it mirrored the entire system journal to the UART.
 /// # C: O(payload bytes)
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-journal"))]
 pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
     let is_journal = path.windows(7).any(|w| w == b"journal")
         || path.windows(4).any(|w| w == b"/log")
@@ -206,9 +208,9 @@ pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
     klog::write_raw(b"\n");
 }
 
-/// No-op when debug-boot is off.
+/// No-op when debug-journal is off.
 /// # C: O(1)
-#[cfg(not(all(target_os = "oxide-kernel", feature = "debug-boot")))]
+#[cfg(not(all(target_os = "oxide-kernel", feature = "debug-journal")))]
 #[inline]
 pub fn trace_dgram_journal(_path: &[u8], _payload: &[u8]) {}
 

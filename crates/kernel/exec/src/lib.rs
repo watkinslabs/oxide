@@ -200,7 +200,7 @@ pub fn load_static_blob(
     let mut interp_base: u64 = 0;
     let mut interp_entry: u64 = 0;
     if let Some(interp_path) = parsed.interp {
-        #[cfg(feature = "debug-boot")]
+        #[cfg(feature = "debug-execload")]
         {
             klog::write_raw(b"[INFO]  elf-load: interp ");
             klog::write_raw(interp_path);
@@ -208,24 +208,24 @@ pub fn load_static_blob(
         }
         let interp_blob = match read_interp_blob(interp_path) {
             Some(blob) => {
-                #[cfg(feature = "debug-boot")]
+                #[cfg(feature = "debug-execload")]
                 klog::write_raw(b"[INFO]  elf-load: interp read ok\n");
                 blob
             }
             None => {
-                #[cfg(feature = "debug-boot")]
+                #[cfg(feature = "debug-execload")]
                 klog::write_raw(b"[ERROR] elf-load: interp read failed\n");
                 return Err(LoadError::Enoexec);
             }
         };
         let interp = match place_image(&interp_blob, as_, Placement::Unmapped, false) {
             Ok(img) => {
-                #[cfg(feature = "debug-boot")]
+                #[cfg(feature = "debug-execload")]
                 klog::write_raw(b"[INFO]  elf-load: interp place ok\n");
                 img
             }
             Err(err) => {
-                #[cfg(feature = "debug-boot")]
+                #[cfg(feature = "debug-execload")]
                 {
                     klog::write_raw(b"[ERROR] elf-load: interp place failed err=");
                     klog::write_raw(load_error_name(err));
@@ -259,7 +259,7 @@ pub fn load_static_blob(
     })
 }
 
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-execload")]
 fn load_error_name(err: LoadError) -> &'static [u8] {
     match err {
         LoadError::Enoexec => b"Enoexec",

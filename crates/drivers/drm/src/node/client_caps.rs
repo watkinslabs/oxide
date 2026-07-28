@@ -25,7 +25,7 @@ pub(super) fn set_client_cap(file: &File, arg: u64) -> i64 {
         crate::DRM_CLIENT_CAP_STEREO_3D
         | crate::DRM_CLIENT_CAP_ASPECT_RATIO
         | crate::DRM_CLIENT_CAP_WRITEBACK_CONNECTORS => {
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-desktop")]
             {
                 klog::write_raw(b"[DRMCAP reject cap=");
                 klog::write_dec_u64(capability);
@@ -40,7 +40,7 @@ pub(super) fn set_client_cap(file: &File, arg: u64) -> i64 {
     let mut state = file.private_data();
     if value != 0 { state |= bit; } else { state &= !bit; }
     file.set_private_data(state);
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     {
         klog::write_raw(b"[DRMCAP accept cap=");
         klog::write_dec_u64(capability);

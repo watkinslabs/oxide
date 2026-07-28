@@ -167,7 +167,7 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     }
     // D339: distinguish a missing VMA from a page-table/fault-fill failure
     // for the ARM userspace translation fault that blocks target verification.
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-faultdiag")]
     if let Some(cur) = sched::live::current() {
         // SAFETY: the current task's mm is read under the active-task
         // single-mutator invariant while handling its synchronous fault.
@@ -544,7 +544,7 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
             sched::perf_sw::charge(kind, c.cpu.load(Ordering::Acquire) as usize, 1);
         }
     }
-    #[cfg(all(feature = "debug-boot", target_arch = "x86_64"))]
+    #[cfg(all(feature = "debug-faultdiag", target_arch = "x86_64"))]
     if !matches!(&r, Some(Ok(()))) {
         klog::write_raw(b"[FAULT-RESOLVE] va=");
         klog::write_hex_u64(va_raw);

@@ -27,7 +27,7 @@ pub fn sys_readlinkat(args: &SyscallArgs) -> i64 {
     let path = match crate::namei_common::read_user_path(path_ptr) { Ok(s) => s, Err(rv) => return rv };
     let raw: &str = path.as_str();
     let rv = crate::s089_readlink::readlink_at_path(dirfd, raw, buf_ptr, bufsize);
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     crate::namei_common::trace_logind_dev(b"readlink", raw, rv);
     rv
 }

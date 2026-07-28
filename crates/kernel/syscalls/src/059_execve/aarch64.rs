@@ -94,7 +94,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     };
     if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
     if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     if path_owned.windows(b"gnome-shell".len()).any(|part| part == b"gnome-shell") {
         for entry in &envp_vec {
             if entry.starts_with(b"CLUTTER_DEBUG=") || entry.starts_with(b"MUTTER_DEBUG=") {

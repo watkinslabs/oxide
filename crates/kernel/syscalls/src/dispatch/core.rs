@@ -1,7 +1,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::ptrace::ptrace_syscall_stop_if_armed;
@@ -20,65 +20,68 @@ use super::route_c::dispatch_route_c;
 /// boundary.  Keeping this feature-gated trace permanent lets future display
 /// regressions distinguish an absent DRM request from a syscall that returned
 /// an errno before it reached DRM.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_POLL_TRACE_REMAINING: AtomicU32 = AtomicU32::new(16);
 
 /// Once Mutter owns its initial KMS buffers, retain a small syscall ledger for
 /// the KMS handoff.  The pre-buffer startup is intentionally omitted: Mesa and
 /// GLib issue enough setup calls there to obscure the first presentation
-/// boundary.  `debug-boot` only; normal syscall dispatch has no trace cost.
-#[cfg(feature = "debug-boot")]
+/// boundary.  `debug-desktop` only; normal syscall dispatch has no trace cost.
+/// It ran on `debug-boot` until B1474, where its unconditional per-syscall
+/// `with_exe_path` (a lock plus two substring scans, twice per syscall) plus the
+/// serial volume made a `make qemu-*` guest run an order of magnitude slow.
+#[cfg(feature = "debug-desktop")]
 static MUTTER_POST_DUMB_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 /// Separate budget for render submission.  Synchronization can consume dozens
 /// of calls before the compositor maps its first BO, so it must not starve the
 /// mmap/epoll evidence above the KMS boundary.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_POST_DUMB_RENDER_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 /// Keep the first failures after KMS-buffer allocation separate from the
 /// ordinary handoff budget.  A compositor can legitimately issue a dense
 /// futex/eventfd exchange before its first map, so failures must never be
 /// hidden merely because that exchange consumed the presentation ledger.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_POST_DUMB_ERR_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 /// `ppoll` owns GLib's main-context sleep. Keep a separate post-buffer budget
 /// so startup probes cannot consume the frame-source deadline evidence.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_POST_DUMB_PPOLL_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 /// GLib's main wakeup descriptor must be drained after it becomes readable.
 /// Keep a separate, narrow ledger for it: a generic post-KMS trace can be
 /// consumed by the render worker before the main context reaches its first
 /// frame source.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_MAIN_FD3_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 /// Frame-clock timerfds are created by Clutter and must remain installed in
 /// the main context.  Retaining their descriptor numbers lets a debug boot
 /// prove whether a view is destroyed before GLib can arm it.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_FRAME_TIMERFD_A: AtomicU32 = AtomicU32::new(u32::MAX);
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_FRAME_TIMERFD_B: AtomicU32 = AtomicU32::new(u32::MAX);
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_FRAME_TIMERFD_POLL_TRACE_REMAINING: AtomicU32 = AtomicU32::new(16);
 /// The thread which first allocates the KMS dumb buffer owns Mutter's GLib
 /// main context.  Worker threads generate dense control-pipe traffic, so keep
 /// their ppoll calls out of the frame-clock ledger.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_KMS_MAIN_TID: AtomicU32 = AtomicU32::new(0);
 /// Epoll's return count alone cannot identify a missing GLib source wakeup.
 /// Retain the first returned event records independently, so a compositor
 /// regression can distinguish an absent timerfd event from a mismatched data
 /// payload without enabling a desktop-wide syscall trace.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_POST_DUMB_EPOLL_EVENT_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_POST_DUMB_TRACE_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 const DRM_IOCTL_MODE_CREATE_DUMB: u64 = 0xc020_64b2;
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 const PR_SET_VMA: u64 = 0x5356_4d41;
 
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64,
     a3: u64, a4: u64, a5: u64, rv: Option<i64>)
 {
@@ -410,7 +413,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     syscall::tracepoint::fire_sys_enter(nr as u32);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     debug_gnome_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     trace_mutter_syscall(b"enter", nr, a0, a1, a2, a3, a4, a5, None);
     // seccomp sees the syscall number AS THE CALLING ABI NUMBERS IT. This
     // dispatcher remaps aarch64's generic-ABI number onto the x86_64 numbering
@@ -451,7 +454,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     trace_swapon_process(b"exit", nr, Some(rv));
     debug_syscall! { sched::trace::ret(nr, rv); }
     debug_gnome_syscall! { sched::trace::ret(nr, rv); }
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     trace_mutter_syscall(b"exit", nr, a0, a1, a2, a3, a4, a5, Some(rv));
     syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {

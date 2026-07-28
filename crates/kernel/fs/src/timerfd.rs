@@ -18,7 +18,7 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
-#[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+#[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
 #[path = "timerfd/debug.rs"]
 mod debug;
 
@@ -150,7 +150,7 @@ impl FileOps for TimerfdFileOps {
         let expiry = d.expiry_ns.load(Ordering::Acquire);
         let now = monotonic_ns();
         if expiry != 0 && now >= expiry {
-            #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+            #[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
             debug::event(b"ready", d.id, d.clockid, 0, expiry, now);
             vfs::POLL_IN
         } else { 0 }
@@ -251,7 +251,7 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = make_timerfd_inode(clockid);
-    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    #[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
     if let Some(d) = inode.private::<TimerfdData>() {
         debug::event(b"create", d.id, clockid, flags, 0, monotonic_ns());
     }
@@ -331,7 +331,7 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     let interval = match syscall::time::timespec_to_ns(is, ins) {
         Ok(ns) => ns,
         Err(_) => {
-            #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+            #[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
             debug::bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
             return -(Errno::Einval.as_i32() as i64);
         }
@@ -339,12 +339,12 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     let value = match syscall::time::timespec_to_ns(vs, vns) {
         Ok(ns) => ns,
         Err(_) => {
-            #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+            #[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
             debug::bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
             return -(Errno::Einval.as_i32() as i64);
         }
     };
-    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    #[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
     debug::spec(inode.id, inode.clockid, flags, is, ins, vs, vns);
     let host_value = if (flags & TFD_TIMER_ABSTIME) != 0 && value != 0 {
         match timerfd_namespace_clock(inode.clockid) {
@@ -377,7 +377,7 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     inode.cancel_gen.store(cancel_gen, Ordering::Release);
     inode.expiry_ns.store(expiry, Ordering::Release);
     inode.read_waiters.wake_all();
-    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    #[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
     debug::event(b"arm", inode.id, inode.clockid, flags, expiry, now);
     if let Some(subs) = file.poll_subscribers() { subs.notify_mask(vfs::POLL_IN); }
     0

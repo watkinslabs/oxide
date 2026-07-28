@@ -24,7 +24,10 @@ pub fn sys_openat(args: &SyscallArgs) -> i64 {
     if let Ok(p) = crate::namei_common::read_user_path(args.a1) {
         crate::namei_common::trace_udevdb_path(b"openat", p.as_str(), rv);
     }
-    #[cfg(feature = "debug-boot")]
+    // `debug-desktop`, not `debug-boot`: this re-copies the pathname out of
+    // user memory on EVERY openat(2) just to run six substring scans, which is
+    // real per-open cost even when nothing is printed.
+    #[cfg(feature = "debug-desktop")]
     if let Ok(p) = crate::namei_common::read_user_path(args.a1) {
         crate::namei_common::trace_logind_dev(b"open", p.as_str(), rv);
     }
@@ -444,7 +447,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         }
         return -(Errno::Enoent.as_i32() as i64);
     };
-    #[cfg(any(feature = "debug-atexit", feature = "debug-boot", feature = "debug-eacces"))]
+    #[cfg(any(feature = "debug-atexit", feature = "debug-eacces"))]
     let path_str = _path_display.as_str();
     #[cfg(feature = "debug-atexit")]
     if dyn_trace_path(path_str) {

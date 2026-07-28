@@ -109,11 +109,78 @@
         static N: AtomicUsize = AtomicUsize::new(0);
         fn counting(_b: &[u8]) { N.fetch_add(1, Ordering::Relaxed); }
         N.store(0, Ordering::Relaxed);
+        set_cpu_fn(|| 0);
         set_byte_sink(counting);
         kinfo!("hi");
         clear_byte_sink();
-        // Three calls per event: prefix, message, newline.
-        assert_eq!(N.load(Ordering::Relaxed), 3);
+        clear_cpu_fn();
+        // ONE call per event. `__klog_emit` still makes three emit calls
+        // (prefix, message, newline), but `cont` assembles them into a single
+        // line and hands the console one write — Linux's per-record
+        // `console_unlock` fan-out, and the property that makes a line
+        // unspliceable.
+        assert_eq!(N.load(Ordering::Relaxed), 1);
+    }
+
+    /// The B1474 defect: a line built from MANY emit calls. Per-call locking
+    /// serialises each fragment but not the sequence, so two emitters splice
+    /// mid-token (`[SIGDELIV tid=[SIGDELIV tid=43304327 sig= sig=3333`). Each
+    /// thread here writes a line as four separate calls, all of one character;
+    /// any output line mixing two characters is a splice.
+    #[test]
+    fn multi_call_lines_do_not_splice() {
+        let _g = lock_sink();
+        let _ = drain_sink();
+        set_byte_sink(test_sink);
+        set_clock_fn(|| 0);
+        // Per-CPU line buffers are keyed by the cpu thunk, and fragments only
+        // join a pending line when the caller identity matches. Hosted threads
+        // stand in for both: one "cpu" each, and its own caller id.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        std::thread_local! {
+            static ID: usize = NEXT.fetch_add(1, Ordering::Relaxed);
+        }
+        fn tid() -> u32 { ID.with(|i| *i as u32) }
+        set_cpu_fn(|| tid() % 8);
+        set_caller_fn(tid);
+
+        const THREADS: usize = 8;
+        const LINES: usize = 200;
+        const CHUNK: usize = 12;
+        std::thread::scope(|s| {
+            for t in 0..THREADS {
+                s.spawn(move || {
+                    let c = b'A' + t as u8;
+                    let chunk = [c; CHUNK];
+                    for _ in 0..LINES {
+                        write_raw(&chunk);
+                        write_raw(&chunk);
+                        write_raw(&chunk);
+                        write_raw(&chunk);
+                        write_raw(b"\n");
+                    }
+                });
+            }
+        });
+
+        clear_caller_fn();
+        clear_cpu_fn();
+        clear_clock_fn();
+        clear_byte_sink();
+        let out = drain_sink();
+        let mut lines = 0usize;
+        for line in out.split(|b| *b == b'\n') {
+            let payload: alloc::vec::Vec<u8> =
+                line.iter().copied().filter(|b| b.is_ascii_uppercase()).collect();
+            if payload.len() != CHUNK * 4 { continue; }
+            lines += 1;
+            let first = payload[0];
+            assert!(
+                payload.iter().all(|b| *b == first),
+                "spliced line: two emitters interleaved inside one assembled line"
+            );
+        }
+        assert!(lines >= THREADS, "expected every emitter's assembled lines present");
     }
 
     // ---------------------------------------------------------------------
