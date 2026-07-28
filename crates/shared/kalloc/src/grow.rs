@@ -25,31 +25,17 @@ impl KAlloc {
     /// # C: O(N) plus the grow hook
     pub(crate) unsafe fn grow_and_alloc(&self, layout: Layout, carve_layout: Layout) -> *mut u8 {
         let _ = &layout;
-        // Before asking the PMM for more memory, reclaim what the size classes
-        // hold idle: the request can be unsatisfiable only because a cache pins
-        // the span it needs. Linux shrinks slab under pressure before the page
-        // allocator escalates.
-        {
-            let mut g = self.inner.lock();
-            if Self::drain_classes(&mut g) {
-                if let Some(p) = g.holes.alloc(carve_layout) {
-                    #[cfg(feature = "debug-dealloc-diag")]
-                    g.size_track.record(p.as_ptr() as usize, carve_layout.size());
-                    return p.as_ptr();
-                }
-            }
-        }
         let raw = self.grow_hook.load(Ordering::Acquire);
         if raw == GROW_HOOK_NONE {
             #[cfg(feature = "debug-heappoison")]
             klog::write_primary_raw(b"[KALLOC] growth-unavailable no-hook\n");
-            return ptr::null_mut();
+            return self.shrink_classes_and_alloc(carve_layout);
         }
         let memcg = self.active_memcg();
         if memcg == NO_MEMCG_CONTEXT && self.context_required.load(Ordering::Acquire) {
             #[cfg(feature = "debug-heappoison")]
             klog::write_primary_raw(b"[KALLOC] growth-unavailable no-context\n");
-            return ptr::null_mut();
+            return self.shrink_classes_and_alloc(carve_layout);
         }
         // SAFETY: stored only via set_grow_hook from a `GrowFn`; the
         // round-trip cast restores the fn-pointer's ABI.
@@ -78,7 +64,7 @@ impl KAlloc {
             None    => {
                 #[cfg(feature = "debug-heappoison")]
                 klog::write_primary_raw(b"[KALLOC] growth-failed\n");
-                return ptr::null_mut();
+                return self.shrink_classes_and_alloc(carve_layout);
             }
         };
         let mut g = self.inner.lock();
@@ -120,7 +106,30 @@ impl KAlloc {
         if !p.is_null() { self.periodic_validate_diag(caller::alloc_return_ip()); }
         #[cfg(feature = "debug-heappoison")]
         klog::write_primary_raw(b"[KALLOC] growth-registered\n");
+        // A fresh region that still cannot serve the carve means the heap is
+        // fragmented past this request; the size classes are the only reserve
+        // left before OOM.
+        if p.is_null() { return self.shrink_classes_and_alloc(carve_layout); }
         p
+    }
+
+    /// LAST RESORT after growth is unavailable or refused: give the size classes
+    /// idle objects back to the hole list, coalesce, and retry. Linux reclaims
+    /// slab only under real memory pressure (`do_shrink_slab`), never on the
+    /// ordinary allocation path — draining eagerly would re-lengthen the very
+    /// free list the classes exist to keep short.
+    /// # C: O(F × N) in freed objects F and holes N
+    fn shrink_classes_and_alloc(&self, carve_layout: Layout) -> *mut u8 {
+        let mut g = self.inner.lock();
+        if !Self::drain_classes(&mut g) { return ptr::null_mut(); }
+        match g.holes.alloc(carve_layout) {
+            Some(p) => {
+                #[cfg(feature = "debug-dealloc-diag")]
+                g.size_track.record(p.as_ptr() as usize, carve_layout.size());
+                p.as_ptr()
+            }
+            None => ptr::null_mut(),
+        }
     }
 
     /// Return every free object held by the size classes to the hole list, so
