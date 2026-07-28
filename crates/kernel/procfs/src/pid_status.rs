@@ -38,8 +38,13 @@ CapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\
 CapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n\
 NoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\n\
 Speculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tunknown\n\
-Cpus_allowed:\t1\nCpus_allowed_list:\t0\nMems_allowed:\t1\nMems_allowed_list:\t0\n\
-voluntary_ctxt_switches:\t0\nnonvoluntary_ctxt_switches:\t0\n");
+Cpus_allowed:\t1\nCpus_allowed_list:\t0\nMems_allowed:\t1\nMems_allowed_list:\t0\n");
+    // Linux `task_struct::nvcsw`/`nivcsw`, maintained by `__schedule()`.
+    push(&mut out, b"voluntary_ctxt_switches:\t");
+    push_u64(&mut out, task.nvcsw.load(Ordering::Relaxed));
+    push(&mut out, b"\nnonvoluntary_ctxt_switches:\t");
+    push_u64(&mut out, task.nivcsw.load(Ordering::Relaxed));
+    push(&mut out, b"\n");
     out
 }
 
