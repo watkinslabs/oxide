@@ -7,24 +7,18 @@ use net::sock::InetSocket;
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 use syscall::errno::Errno;
 
-const AF_INET:  u32 = 2;
-const AF_INET6: u32 = 10;
-const AF_UNIX:  u16 = 1;
-const AF_NETLINK: u16 = 16;
-const AF_PACKET: u16 = 17;
+// The pure encoders + their ABI constants live in `sockaddr_encode`, which is
+// not kernel-cfg-gated so hosted `cargo test` can prove every `*_getname`
+// length and byte layout. This module owns only the user-memory marshalling.
+pub(crate) use crate::sockaddr_encode::{encoded_sockaddr_for_socket, encoded_sockaddr_in,
+    encoded_sockaddr_in6, encoded_sockaddr_ll, encoded_sockaddr_nl, encoded_sockaddr_un,
+    encoded_sockaddr_vm, v4_mapped_bytes, EncodedSockaddr};
+use crate::sockaddr_encode::{AF_INET, AF_INET6, AF_UNIX, SOCKADDR_IN_LEN, SOCKADDR_IN6_LEN,
+    SOCKADDR_STORAGE, SOCKADDR_UN_LEN, SOCKADDR_VM_LEN, SA_FAMILY_LEN};
 
-const SOCKADDR_UN_LEN:    usize = 110;
-const SOCKADDR_IN_LEN:    usize = 16;
-const SOCKADDR_IN6_LEN:   usize = 28;
 /// Linux `SIN6_LEN_RFC2133` — the minimum `sockaddr_in6` length `inet6_bind`
 /// and `inet6_dgram_connect` accept (the trailing `sin6_scope_id` is optional).
 const SIN6_MIN_LEN:       usize = 24;
-const SOCKADDR_NL_LEN:    usize = 12;
-const SOCKADDR_LL_BASE_LEN: usize = 12;
-const SOCKADDR_LL_ADDR_LEN: usize = 8;
-const SOCKADDR_VM_LEN:    usize = 16;
-const SOCKADDR_STORAGE:   usize = SOCKADDR_UN_LEN;
-const SA_FAMILY_LEN:      usize = 2;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -60,72 +54,6 @@ pub(crate) fn require_sockaddr_vm(addrlen: usize) -> Result<(), i64> {
     if addrlen < SOCKADDR_VM_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
 }
 
-pub(crate) struct EncodedSockaddr {
-    bytes: [u8; SOCKADDR_STORAGE],
-    len:   usize,
-}
-
-impl EncodedSockaddr {
-    fn new(len: usize) -> Self { Self { bytes: [0; SOCKADDR_STORAGE], len } }
-    pub(crate) fn as_bytes(&self) -> &[u8] { &self.bytes[..self.len] }
-    pub(crate) fn len(&self) -> usize { self.len }
-    fn put_u16(&mut self, off: usize, v: u16) { self.bytes[off..off + 2].copy_from_slice(&v.to_ne_bytes()); }
-    fn put_u32(&mut self, off: usize, v: u32) { self.bytes[off..off + 4].copy_from_slice(&v.to_ne_bytes()); }
-}
-
-pub(crate) fn encoded_sockaddr_un(path: Option<&[u8]>) -> EncodedSockaddr {
-    let bytes = path.unwrap_or(&[]);
-    let path_len = bytes.len().min(108);
-    let needs_nul = path_len > 0 && bytes.first().copied() != Some(0);
-    let len = 2 + path_len + usize::from(needs_nul);
-    let mut out = EncodedSockaddr::new(len.min(SOCKADDR_UN_LEN));
-    out.put_u16(0, AF_UNIX);
-    for i in 0..path_len { out.bytes[2 + i] = bytes[i]; }
-    out
-}
-
-pub(crate) fn encoded_sockaddr_in(addr_be: u32, port_be: u16) -> EncodedSockaddr {
-    let mut out = EncodedSockaddr::new(SOCKADDR_IN_LEN);
-    out.put_u16(0, AF_INET as u16);
-    out.put_u16(2, port_be);
-    out.put_u32(4, addr_be);
-    out
-}
-
-pub(crate) fn encoded_sockaddr_in6(addr_bytes: [u8; 16], port_be: u16, scope_id: u32) -> EncodedSockaddr {
-    let mut out = EncodedSockaddr::new(SOCKADDR_IN6_LEN);
-    out.put_u16(0, AF_INET6 as u16);
-    out.put_u16(2, port_be);
-    out.put_u32(4, 0);
-    out.bytes[8..24].copy_from_slice(&addr_bytes);
-    out.put_u32(24, scope_id);
-    out
-}
-
-/// Encode Linux `struct sockaddr_nl`. # C: O(1)
-pub(crate) fn encoded_sockaddr_nl(pid: u32, groups: u32) -> EncodedSockaddr {
-    let mut out = EncodedSockaddr::new(SOCKADDR_NL_LEN);
-    out.put_u16(0, AF_NETLINK);
-    out.put_u16(2, 0);
-    out.put_u32(4, pid);
-    out.put_u32(8, groups);
-    out
-}
-
-/// Encode Linux `struct sockaddr_ll` for AF_PACKET name queries. # C: O(1)
-pub(crate) fn encoded_sockaddr_ll(meta: net::sock::PacketAddr) -> EncodedSockaddr {
-    let address_len = core::cmp::min(meta.halen as usize, SOCKADDR_LL_ADDR_LEN);
-    let mut out = EncodedSockaddr::new(SOCKADDR_LL_BASE_LEN + address_len);
-    out.put_u16(0, AF_PACKET);
-    out.bytes[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
-    out.put_u32(4, meta.ifindex);
-    out.put_u16(8, meta.hatype);
-    out.bytes[10] = meta.pkttype;
-    out.bytes[11] = address_len as u8;
-    out.bytes[SOCKADDR_LL_BASE_LEN..SOCKADDR_LL_BASE_LEN + address_len]
-        .copy_from_slice(&meta.addr[..address_len]);
-    out
-}
 
 /// Copy an encoded kernel sockaddr to `addr` using Linux value-result
 /// `addrlen`: read caller length, copy min(caller, kernel), then write the
@@ -136,33 +64,12 @@ pub(crate) fn copy_sockaddr_to_user(addr: u64, addrlen: u64, sa: &EncodedSockadd
             uaccess::copy_from_user(&mut raw_len, addrlen)?;
             Ok(i32::from_ne_bytes(raw_len))
         },
-        sa.len as u32,
+        sa.len() as u32,
         |full_len| uaccess::copy_to_user(addrlen, &full_len.to_ne_bytes()),
         |copy_len| uaccess::copy_to_user(addr, &sa.as_bytes()[..copy_len]))
     .map_or_else(err, |_| 0)
 }
 
-/// Write a `sockaddr_un` (family + sun_path) at user pointer `ptr`. An
-/// abstract address (leading NUL) writes its name after the family with the
-/// leading NUL preserved; a pathname address writes the path + a trailing
-/// NUL. `None`/empty path writes the bare 2-byte family (unbound socket).
-/// Direct writer for legacy recv/accept paths that validate addrlen at the
-/// syscall boundary. # C: O(path len)
-pub(crate) fn write_sockaddr_un(ptr: u64, path: Option<&[u8]>) {
-    if ptr == 0 || ptr >= USER_VA_END { return; }
-    // SAFETY: ptr validated in user range; caller AS active; bounded writes within sockaddr_un (2 + 108).
-    unsafe {
-        core::ptr::write_volatile(ptr as *mut u16, AF_UNIX);
-        let bytes = path.unwrap_or(&[]);
-        let n = core::cmp::min(bytes.len(), 108);
-        for i in 0..n {
-            core::ptr::write_volatile((ptr + 2 + i as u64) as *mut u8, bytes[i]);
-        }
-        if n < 108 {
-            core::ptr::write_volatile((ptr + 2 + n as u64) as *mut u8, 0);
-        }
-    }
-}
 
 /// Read sa_family (first 2 bytes) at user pointer `ptr`. # C: O(1)
 pub(crate) fn read_sa_family(ptr: u64) -> Option<u16> {
@@ -331,65 +238,12 @@ pub(crate) fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
     } else { None }
 }
 
-/// Write sockaddr at `ptr` per sock family (V4 → in, V6 → in6 with
-/// mapped/::1/:: synthesis when sock holds V4 state). # C: O(1)
-pub(crate) fn write_sockaddr_for_socket(ptr: u64, sock: &InetSocket, ip: net::Ipv4Addr, port: u16) {
-    let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    if fam == net::sock::AF_UNIX {
-        // getsockname on an AF_UNIX socket must report sa_family=AF_UNIX +
-        // the bound sun_path. systemd-udevd's sd_is_socket(fd, AF_UNIX, …)
-        // family check (listen_fds) fails — returning -EINVAL — if we fall
-        // through to the AF_INET writer below.
-        let path = net::sock::unix_local_path(sock);
-        write_sockaddr_un(ptr, path.as_deref());
-        return;
-    }
-    if fam == net::sock::AF_INET6 {
-        let mut b = [0u8; 16];
-        if ip == net::Ipv4Addr::LOOPBACK {
-            b[15] = 1; // ::1
-        } else if ip == net::Ipv4Addr::ANY {
-            // :: stays all-zero.
-        } else {
-            // V4-mapped form: ::ffff:a.b.c.d
-            b[10] = 0xff; b[11] = 0xff;
-            let v = ip.as_u32();
-            b[12] = (v >> 24) as u8;
-            b[13] = (v >> 16) as u8;
-            b[14] = (v >>  8) as u8;
-            b[15] =  v        as u8;
-        }
-        write_sockaddr_in6(ptr, b, port.to_be(), 0);
-    } else {
-        write_sockaddr_in(ptr, ip.as_u32().to_be(), port.to_be());
-    }
-}
 
 /// Encode sockaddr for a socket's current family without touching user memory.
 /// # C: O(1)
-pub(crate) fn encoded_sockaddr_for_socket(sock: &InetSocket, ip: net::Ipv4Addr, port: u16) -> EncodedSockaddr {
-    let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    if fam == net::sock::AF_UNIX {
-        let path = net::sock::unix_local_path(sock);
-        return encoded_sockaddr_un(path.as_deref());
-    }
-    if fam == net::sock::AF_INET6 {
-        let mut b = [0u8; 16];
-        if ip == net::Ipv4Addr::LOOPBACK {
-            b[15] = 1;
-        } else if ip != net::Ipv4Addr::ANY {
-            b[10] = 0xff; b[11] = 0xff;
-            let v = ip.as_u32();
-            b[12] = (v >> 24) as u8;
-            b[13] = (v >> 16) as u8;
-            b[14] = (v >>  8) as u8;
-            b[15] =  v        as u8;
-        }
-        encoded_sockaddr_in6(b, port.to_be(), 0)
-    } else {
-        encoded_sockaddr_in(ip.as_u32().to_be(), port.to_be())
-    }
-}
+/// `::ffff:a.b.c.d` for an IPv4 address, `::` for the unspecified one —
+/// Linux `ipv6_addr_set_v4mapped`. # C: O(1)
+
 
 /// Encode AF_UNIX sockaddr for a peer/local path without touching user memory.
 /// # C: O(path len)
@@ -398,15 +252,6 @@ pub(crate) fn encoded_sockaddr_un_path(path: Option<&[u8]>) -> EncodedSockaddr {
 }
 
 /// Encode `struct sockaddr_vm` without touching user memory. # C: O(1)
-pub(crate) fn encoded_sockaddr_vm(port: u32, cid: u64) -> EncodedSockaddr {
-    let mut out = EncodedSockaddr::new(SOCKADDR_VM_LEN);
-    out.put_u16(0, net::socket_args::AF_VSOCK as u16);
-    out.put_u16(2, 0);
-    out.put_u32(4, port);
-    out.put_u32(8, cid as u32);
-    out.put_u32(12, 0);
-    out
-}
 
 /// Write a sockaddr_in6 from a genuine IPv6 source address (the recv
 /// path's `peer6`), as opposed to the V4-state synthesis above.

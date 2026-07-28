@@ -77,7 +77,14 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         Target::Tcp(entry) => {
             if how.read() { sock.read_shut.store(true, Release); }
             if how.write() { sock.write_shut.store(true, Release); }
-            let active_open = stack().tcp_shutdown(&entry, how.write())?;
+            // Linux `tcp_shutdown` returns void and `inet_shutdown` returns 0
+            // regardless: a FIN that cannot go out right now is left to the
+            // retransmit timer, and a state that cannot take one is skipped.
+            // Failing `shutdown(2)` with a transport errno is not an outcome
+            // Linux ever produces here, and it also skipped the poll edge
+            // below. The cancel-open path returns before any transmit, so a
+            // failure can only mean "no FIN went out".
+            let active_open = stack().tcp_shutdown(&entry, how.write()).unwrap_or(false);
             if active_open {
                 *sock.kind.lock() = SockKind::TcpInit;
                 *sock.peer.lock() = None;
@@ -103,6 +110,14 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
                 #[cfg(target_os = "oxide-kernel")]
                 entry.rx_waiters.wake_all();
             }
+            // Linux `inet_shutdown` ends with an unconditional
+            // `sk->sk_state_change(sk)` — "wake up anyone sleeping in poll".
+            // `rx_waiters.wake_all()` only releases blocking recv; a thread in
+            // `poll`/`epoll_wait` on this fd subscribes through `poll_subs`
+            // and was never edged, so shutting a socket down from another
+            // thread left the poller asleep on a mask that already reads
+            // POLLIN|POLLRDHUP.
+            sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
         Target::TcpListener(listener) => {
             // Linux inet_shutdown leaves a listener intact for SHUT_WR,
