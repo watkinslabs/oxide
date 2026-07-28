@@ -19,8 +19,8 @@ mod user;
 #[cfg(test)]
 mod tests;
 
-pub use policy::{current_xattr_cred, XattrCred, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
-                 XATTR_REPLACE, XATTR_SIZE_MAX};
+pub use policy::{check_at_flags, current_xattr_cred, XattrCred, XATTR_CREATE, XATTR_LIST_MAX,
+                 XATTR_NAME_MAX, XATTR_REPLACE, XATTR_SIZE_MAX};
 pub use ops::{query_into, query_len, vfs_getxattr, vfs_listxattr, vfs_removexattr, vfs_setxattr};
-pub use user::{get_on, import_name, import_set, import_xattr_args, list_on, remove_on, set_on,
-               SetCtx};
+pub use user::{admit_getxattrat, admit_listxattrat, admit_removexattrat, admit_setxattrat, get_on,
+               import_name, import_set, import_xattr_args, list_on, remove_on, set_on, SetCtx};
