@@ -180,6 +180,23 @@ Post-dates the audit; neither ledger carried the ISN row before this branch.
 - The AF_UNIX listener accept-readiness wakeup is **already fixed**.
 - `bpf` is **not** an arbitrary-kernel-execution hole — programs never execute; a functional void, not a security one.
 - The TCP ISN finding is **new** — it post-dates every earlier ledger and appeared in neither. Fixed on `B1465`; see §6a.
+- **B1434's `pkey_alloc` correction was itself wrong for x86_64 — corrected by B1479.** B1434
+  replaced an `ENOSYS` strawman with a flat `ENOSPC` on both arches, on the reasoning that "pkey 0
+  is allocated implicitly when the mm is created, so the allocation map is already full". That
+  holds on arm64 and NOT on x86_64: `arch/x86/include/asm/mmu_context.h` `init_new_context` sets
+  `pkey_allocation_map = 0x1` *inside* `if (cpu_feature_enabled(X86_FEATURE_OSPKE))`, so without
+  OSPKE the map starts EMPTY. x86's `mm_pkey_alloc` has no `arch_pkeys_enabled()` guard (arm64's
+  does), so the first call hands out key 0 and fails one step later in
+  `arch_set_user_pkey_access` with `EINVAL` (`arch/x86/kernel/fpu/xstate.c`); the rollback
+  `mm_pkey_free` fails too, because key 0 equals the likewise-uninitialised `execute_only_pkey`
+  and `mm_pkey_is_allocated` refuses it, so the bit stays set and every later call is `ENOSPC`.
+  Result: **x86_64 `EINVAL` once per mm then `ENOSPC`; aarch64 `ENOSPC` from the first call.**
+  Two more per-arch differences fell out of the same read: `PKEY_ACCESS_MASK` is `0x3` on x86 and
+  `0xF` on arm64 (`PKEY_DISABLE_READ`/`_EXECUTE` are arm64-only, `arch/arm64/include/uapi/asm/mman.h`),
+  and `pkey_free(0)`/`pkey_mprotect(...,0)` succeed on arm64 and are `EINVAL` on x86. B1479 models
+  the real per-mm `mm_context_t::pkey_allocation_map` instead of a constant, so all three syscalls
+  follow one map. **Method note:** the error was believing a plausible chain without tracing the
+  one `#ifdef`/`if` that gates the initialisation — the same failure mode B1434 existed to fix.
 - `bind()`/`mknod` stale negative dentries: **already fixed**. A blocking lease break **does** exist. Unwritten-extent writes are **not** rejected. Mandatory locking is `ABSENT-OK` (Linux removed it in 5.15). `copy_file_range`'s unconditional `EXDEV` matches current Linux.
 
 ## 8 B1472 — gdm "no session desktop files installed": three Linux-incompat kernel bugs
