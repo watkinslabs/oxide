@@ -375,6 +375,66 @@ Found while verifying the gdm/udev fix. None has a lane.
 - `SMOKE_KEEP_LOG` retains only the **last** attempt's log, while a panic appears in the **failing** attempt's dump inside boot-smoke's own output. Reading only the kept log makes a real panic look like a plain timeout — this nearly produced a false retraction.
 - Marking on a process name (`SMOKE_MARKER='gnome-shell'`) is unmeasurable when that process prints nothing to serial. The reliable check is the sysrq task dump boot-smoke injects on timeout, or `ps` from `systemd.debug_shell=ttyS0`.
 
+## 11 DRM atomic modesetting — mutter drives the display (`B1480`, 2026-07-28)
+
+GNOME Shell now scans out through the atomic path. mutter logs
+`Added device '/dev/dri/card0' (virtio_gpu) using atomic mode setting.` and a
+QMP `screendump` shows the **rendered GDM greeter top bar** (menu pill, clock,
+power button) on GNOME's `#222226` background at 1280x800.
+
+Three defects, all in the same class: **a wire-format error that keeps `size_of`
+unchanged, so every existing test still passes.**
+
+| # | Defect | Linux | Symptom |
+|---|---|---|---|
+| 1 | `DRM_IOCTL_MODE_ATOMIC` encoded size 64 | `drm_mode_atomic` is 2×u32+6×u64 = **56** | `node.rs` matches the whole u64 → libdrm's number never matched → `drmModeAtomicCommit: Inappropriate ioctl for device`. The entire atomic implementation was complete, wired, and **unreachable** |
+| 2 | `DRM_IOCTL_MODE_SETPLANE` encoded size 64; `DrmModeSetPlane.src_*` widened to u64 to agree | twelve 32-bit fields = **48**; src order is x, y, **h, w** | universal-plane path equally unreachable. A comment claimed "the earlier 0x30 (48) never matched libdrm" — 0x30 was correct and was "fixed" into a bug |
+| 3 | `DrmModeCreateBlob` field order `(length, blob_id, data)` | `{ __u64 data; __u32 length; __u32 blob_id; }` | `length` read the low half of the caller's data pointer → every `CREATEPROPBLOB` EINVAL → `Page flip failed: drmModeCreatePropertyBlob: Invalid argument`. sizeof stays 16, so the ioctl-number and struct-size tests both passed |
+
+`MODE_GETCONNECTOR` also reported `count_props = 0`. libdrm surfaces that array
+as `drmModeConnector::props` — the only place a compositor looks for a
+connector's `CRTC_ID` — so mutter logged
+`Property (CRTC_ID) not found on connector N` and abandoned atomic modesetting.
+Linux fills it from `drm_mode_object_get_properties`, the same call backing
+`MODE_OBJ_GETPROPERTIES`; both now route through `atomic::copy_object_properties`.
+
+Also brought to Linux: `DRM_MODE_PROP_ATOMIC` hides atomic-only properties from
+clients without `DRM_CLIENT_CAP_ATOMIC`; per-element copy (short buffer gets a
+prefix, count is always the true total); `MODE_GETPROPERTY` emits enum entries,
+sizes `num_values` Linux's way (enum value arrays are `kcalloc`-zeroed), forces
+`count_enum_blobs = 0` for blob properties, and returns ENOENT not EINVAL;
+per-object attach lists match Linux (CRTC gains `VRR_ENABLED`, connector gains
+`non-desktop`/`TILE`, planes drop `rotation`/`zpos` which virtio-gpu never
+creates, EDID drops off the virtual connector). Ten further ioctl constants were
+mis-encoded but never dispatched (`GET_CLIENT`, `GET_STATS`, `ATTACHMODE`,
+`DETACHMODE`, six `SYNCOBJ_*`) — corrected so they do not bite when wired.
+
+### Dead code removed
+
+`modeset.rs` held a second, diverging `get_obj_properties`/`get_property` plus
+duplicate property-id constants; `node.rs` dispatches to `atomic::*`, so they
+had no callers. `props::object_type` had no caller anywhere in the workspace.
+
+### Why the tests did not catch any of it
+
+`ioctl_size_fields_match_structs` only proves the number and the struct agree
+with **each other** — SETPLANE satisfied it for months with both wrong. Added
+`ioctl_numbers_encode_their_linux_struct_size` (anchors 22 numbers to Linux
+sizes) and `wire_struct_field_offsets_match_linux` (offsets, not sizes — the
+only check that catches a transposition). Both verified to fail on the original
+bugs.
+
+### Open: first frame renders, then freezes
+
+Five `screendump`s from 150s to 400s are **byte-identical** — the greeter paints
+once and never advances (clock frozen at 17:40). Correlates with 183 326
+`Failed to dispatch fd source: Invalid argument` from `gnome-shell` starting at
+92.9s, right after the first paint. Prime suspect is DRM event delivery:
+`node/publication.rs` `DrmCardFileOps::read_file` returns `Ok(0)` when no event
+is queued, but Linux `drm_read` (drm_file.c) returns **-EAGAIN** on `O_NONBLOCK`
+and otherwise **sleeps on `file_priv->event_wait`** — it never returns 0, which
+to a GLib fd source is EOF. Pre-existing (that file is untouched by `B1480`) and
+needs a waitqueue on the card fd. Separate lane.
 ## 12 B1478 — security controls that reported success while enforcing nothing
 
 Branch `B1478-security-enforcement`. Four controls whose callers built on a
