@@ -16,6 +16,17 @@ fn take(n: usize) -> alloc_vec::Vec<u8> {
 // The crate is no_std; hosted tests get a Vec through std.
 mod alloc_vec { pub use std::vec::Vec; }
 
+/// `BULK_SOURCE` and `SEEDED` are process-global, so every test that installs
+/// a source or inspects readiness must run alone or it will observe another
+/// test's source.
+static SOURCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the source lock, ignoring a poisoned mutex — a panicking sibling test
+/// should fail on its own assertion, not cascade into every other test.
+fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    SOURCE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn successive_fills_differ() {
     let a = take(64);
@@ -89,14 +100,60 @@ fn adding_entropy_changes_subsequent_output() {
     assert_ne!(before, after);
 }
 
+/// Replaces `is_initialized_after_a_fill`, which asserted the bug: `reseed()`
+/// set the ready flag whether or not any source answered, so a `fill()` was
+/// enough to make the pool claim readiness. On a host (and on a TCG boot) there
+/// is no RDRAND/RNDR and no bulk source, so the honest answer is "not ready" —
+/// a `fill()` still returns good ChaCha output, it just cannot claim its key
+/// came from entropy.
 #[test]
-fn is_initialized_after_a_fill() {
-    let _ = take(1);
-    assert!(is_initialized());
+fn a_fill_with_no_entropy_source_does_not_claim_readiness() {
+    let _guard = exclusive();
+    clear_bulk_source();
+    reset_seeded_for_test();
+    let v = take(32);
+    assert!(v.iter().any(|&b| b != 0), "cold pool must still produce output");
+    assert!(!reseed(), "reseed credited a pool with no entropy source");
+    assert!(!is_initialized(),
+        "pool reports ready with no entropy source — getrandom can never block \
+         and GRND_NONBLOCK can never return EAGAIN");
+}
+
+/// The counterpart: a source that actually answers DOES make the pool ready.
+/// Without this, the honesty fix could be "always report cold", which is just a
+/// different lie and would hang `getrandom(2)` forever.
+#[test]
+fn a_bulk_source_that_answers_makes_the_pool_ready() {
+    let _guard = exclusive();
+    fn constant_source(dst: &mut [u8]) -> usize { dst.fill(0xA5); dst.len() }
+    reset_seeded_for_test();
+    assert!(!is_initialized());
+    set_bulk_source(constant_source);
+    assert!(is_initialized(), "an answering hardware source must credit the pool");
+    clear_bulk_source();
+}
+
+/// `add_entropy` is Linux `add_device_randomness` — an attacker may have
+/// chosen those bytes (userspace can write `/dev/urandom`), so it must mix
+/// without crediting. `add_hw_entropy` is `add_hwgenerator_randomness` and does
+/// credit.
+#[test]
+fn only_hardware_entropy_credits_the_pool() {
+    let _guard = exclusive();
+    clear_bulk_source();
+    reset_seeded_for_test();
+    add_entropy(&[0xde, 0xad, 0xbe, 0xef]);
+    assert!(!is_initialized(), "attacker-suppliable bytes must not mark the pool ready");
+    add_hw_entropy(&[0x01, 0x02, 0x03, 0x04]);
+    assert!(is_initialized(), "a hardware generator must be able to make a cold pool ready");
+    reset_seeded_for_test();
+    add_hw_entropy(&[]);
+    assert!(!is_initialized(), "an empty contribution is not entropy");
 }
 
 #[test]
 fn a_bulk_source_that_returns_nothing_still_yields_output() {
+    let _guard = exclusive();
     fn empty_source(_: &mut [u8]) -> usize { 0 }
     set_bulk_source(empty_source);
     let v = take(32);
@@ -108,6 +165,7 @@ fn a_bulk_source_that_returns_nothing_still_yields_output() {
 fn a_constant_bulk_source_cannot_freeze_the_pool() {
     // Even a wholly predictable "entropy" source must not make output repeat:
     // the ChaCha20 key erasure keeps every call distinct.
+    let _guard = exclusive();
     fn constant_source(dst: &mut [u8]) -> usize { dst.fill(0xA5); dst.len() }
     set_bulk_source(constant_source);
     let a = take(32);

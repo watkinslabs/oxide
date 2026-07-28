@@ -21,6 +21,15 @@ pub const IN_MOVED_TO:      u32 = 0x0080;
 pub const IN_CREATE:        u32 = 0x0100;
 pub const IN_DELETE:        u32 = 0x0200;
 pub const IN_ALL_EVENTS:    u32 = 0x0fff;
+/// `IN_ISDIR` — the object the event happened to is a directory. Same bit as
+/// `FAN_ONDIR` (Linux `FS_ISDIR`), but inotify REPORTS it to userspace while
+/// legacy (fd-reporting) fanotify strips it (`fanotify_group_event_mask`:
+/// `user_mask &= ~FANOTIFY_EVENT_FLAGS`).
+pub const IN_ISDIR:         u32 = 0x4000_0000;
+/// inotify never reported `IN_ISDIR` alongside these two. Linux
+/// `inotify_handle_inode_event` masks the bit out deliberately ("It looks like
+/// an oversight, but to avoid the risk of breaking existing inotify programs").
+pub(crate) const IN_SELF_NO_ISDIR: u32 = FAN_DELETE_SELF | FAN_MOVE_SELF;
 pub(crate) const IN_IGNORED:     u32 = 0x0000_8000;
 pub(crate) const IN_Q_OVERFLOW:  u32 = 0x0000_4000;
 pub(crate) const IN_EXCL_UNLINK: u32 = 0x0400_0000;
@@ -139,8 +148,13 @@ pub(crate) struct Event {
     pub(crate) wd:     i32,
     pub(crate) mask:   u32,
     pub(crate) cookie: u32,
-    /// Length of the trailing name field (0 — v1 doesn't track names yet).
-    pub(crate) len:    u32,
+    /// Linux `inotify_event_info::name` — the affected dir-entry leaf, held as
+    /// raw bytes. Non-empty exactly when the event was reported on a WATCHED
+    /// DIRECTORY about an entry inside it (create/delete/move, and any child
+    /// open/access/modify/close reaching the parent's mark); empty for an event
+    /// on the watched object itself. The wire `len` is derived from this at
+    /// read time (`layout::round_event_name_len`) and is the PADDED length.
+    pub(crate) name:   Vec<u8>,
     /// fanotify only: the object that triggered the event (read() opens a
     /// fresh fd to it for `fanotify_event_metadata.fd`). `None` for inotify.
     pub(crate) obj:    Option<InodeRef>,

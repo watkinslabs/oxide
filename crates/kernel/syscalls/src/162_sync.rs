@@ -51,12 +51,25 @@ pub fn sys_syncfs(args: &SyscallArgs) -> i64 {
     // an fd whose mount lookup fails (anon inode, mnt_id 0) still belongs to a
     // superblock, and `sync_filesystem` on a pseudo-fs is a no-op returning 0.
     let sb = match file.f_inode().i_sb() { Some(s) => s, None => return 0 };
-    if sb.sync_filesystem().is_err() { return -(Errno::Eio.as_i32() as i64); }
+    let ret = sb.sync_filesystem();
     // NOTE: no `ext4::commit_rootfs_journal()` here. ext4's own
     // `SuperOps::sync_fs` already calls `commit_batch()` for EVERY ext4 mount
     // (`rootfs/ops/mountfs.rs`), so the `sync_filesystem` above is the whole
     // job. Calling the root helper as well made syncfs(2) on a tmpfs or procfs
     // fd commit — and, on failure, report EIO for — an unrelated filesystem the
     // caller never named. Linux syncs the one filesystem containing the fd.
-    0
+    //
+    // `ret2 = errseq_check_and_advance(&sb->s_wb_err, &file->f_sb_err);
+    //  return ret ? ret : ret2;` (`fs/sync.c:162-164`) — a writeback error that
+    // happened at ANY point since this fd was opened is reported here exactly
+    // once, even though the pass just now succeeded and even if the inode that
+    // failed has since been evicted (which is why `mapping_set_error` records
+    // into the superblock as well as the inode). Without this, a background
+    // writeback failure was simply invisible to `syncfs`.
+    let deferred = file.check_and_advance_sb_err();
+    match (ret, deferred) {
+        (Err(_), _) => -(Errno::Eio.as_i32() as i64),
+        (Ok(()), Err(e)) => -(e as i64),
+        (Ok(()), Ok(())) => 0,
+    }
 }

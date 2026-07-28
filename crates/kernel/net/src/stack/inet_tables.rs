@@ -9,8 +9,6 @@ pub(crate) struct InetTables {
     pub(crate) tcp_conns: Arc<Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>>,
     pub(crate) tcp_listens: Arc<Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass>>,
     pub(crate) tcp_binds: Arc<Spinlock<BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>, StackLockClass>>,
-    pub(crate) next_tcp_ephemeral: ::core::sync::atomic::AtomicU32,
-    pub(crate) next_udp_ephemeral: ::core::sync::atomic::AtomicU32,
     pub(crate) pmtu: super::pmtu_cache::PmtuCache,
 }
 
@@ -36,12 +34,6 @@ impl InetTables {
             tcp_conns: Arc::new(Spinlock::new(BTreeMap::new())),
             tcp_listens: Arc::new(Spinlock::new(BTreeMap::new())),
             tcp_binds: Arc::new(Spinlock::new(BTreeMap::new())),
-            next_tcp_ephemeral: ::core::sync::atomic::AtomicU32::new(
-                crate::ephemeral::DEFAULT_START as u32,
-            ),
-            next_udp_ephemeral: ::core::sync::atomic::AtomicU32::new(
-                crate::ephemeral::DEFAULT_START as u32,
-            ),
             pmtu: super::pmtu_cache::PmtuCache::new(),
         }
     }

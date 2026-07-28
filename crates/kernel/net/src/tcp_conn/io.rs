@@ -99,7 +99,7 @@ impl TcpConn {
     }
 
     fn input_with_header(&mut self, src_ip: crate::addr::IpAddr,
-                         _dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr)
+                         dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr)
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
         self.last_rx_ns = crate::tcp_conn::ka_now_ns();
@@ -114,8 +114,18 @@ impl TcpConn {
                 self.remote = crate::tcp_conn::Endpoint { ip: src_ip, port: hdr.src_port };
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.rcv_read_seq = self.rcv_nxt;
-                self.snd_una = 0;
-                self.snd_nxt = 0;
+                // Linux `tcp_v4_init_seq_and_ts_off` keys the passive ISN on the
+                // packet's own (daddr, saddr, dest, source) — the wildcard
+                // listener's `self.local.ip` may be ANY, so use the delivered
+                // destination (`net/ipv4/tcp_ipv4.c`). This opened at 0 before:
+                // every inbound connection to any listening service started at
+                // sequence 0, so blind injection needed no guess at all.
+                let isn = crate::secure_seq::secure_tcp_seq(
+                    dst_ip, src_ip, self.local.port, hdr.src_port);
+                self.snd_una = isn;
+                self.snd_nxt = isn;
+                self.ts_off = crate::secure_seq::secure_tcp_ts_off(
+                    dst_ip, src_ip, self.local.port, hdr.src_port);
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
                     self.rcv_wscale = s;

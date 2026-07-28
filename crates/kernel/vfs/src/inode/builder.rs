@@ -110,6 +110,7 @@ impl InodeBuilder {
             i_fsid: AtomicU64::new(self.fsid),
             i_sb: self.sb,
             i_mapping: self.mapping,
+            i_wb_err: crate::errseq::Errseq::new(),
             i_file_rmap: vmm::FileRmap::new(),
             i_op: self.i_op,
             i_fop: self.i_fop,
