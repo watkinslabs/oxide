@@ -424,7 +424,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // compiled for arm64 miss every `nr` comparison and fall through to its
     // default action — SCMP_ACT_KILL or a blanket errno — which kills or
     // corrupts any confined process on aarch64 while behaving on x86_64.
-    if let Err(rv) = security::seccomp::check(orig_nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
+    if let Some(rv) = super::seccomp::seccomp_gate(orig_nr, &[a0, a1, a2, a3, a4, a5]) { return rv; }
     ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP);
     #[cfg(feature = "debug-syscost")]
     let __syscost = crate::syscost::start();
