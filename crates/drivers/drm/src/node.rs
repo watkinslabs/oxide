@@ -22,6 +22,9 @@ mod virtgpu;
 mod tests;
 
 pub use publication::{register, unregister};
+/// Crate-internal: the event queue in `crtc` notifies the same per-card
+/// subscriber set the card inode was built with.
+pub(crate) use publication::card_poll_subs;
 #[cfg(test)]
 pub use publication::{registered_card_ids, unregister_all};
 pub use scanout::{clear_scanout_ops, scanout_ops, set_scanout_ops, ScanoutDriverKey, ScanoutOps};

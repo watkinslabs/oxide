@@ -99,3 +99,37 @@ fn register_publishes_card_and_render_metadata_per_stable_slot() {
 
     unregister(card_id);
 }
+
+/// A card inode MUST carry the same `PollSubscribers` object the flip-event
+/// queue notifies. Two distinct sets would leave every poll/epoll waiter
+/// registered on something nothing ever wakes — the failure mode that made
+/// tty, pty, ext4 FIFOs and mqueue fds unwakeable (B1461).
+#[test]
+fn card_inode_shares_the_subscriber_set_the_event_queue_notifies() {
+    let card_id = 6;
+    let inode = super::super::publication::make_card_inode(card_id);
+    let on_inode = inode.poll_subscribers_arc().expect("card inode has no poll subscribers");
+    let notified = super::super::publication::card_poll_subs(card_id);
+    assert!(Arc::ptr_eq(&on_inode, &notified),
+            "card inode subscriber set is not the one queue_flip_event notifies");
+}
+
+/// Linux `drm_read` never returns 0: nothing queued is `-EAGAIN` for
+/// `O_NONBLOCK` and a sleep otherwise. A 0-byte read is EOF to a GLib fd
+/// source, which tears the source down and re-dispatches it forever.
+#[test]
+fn empty_card_read_is_eagain_never_zero() {
+    let card_id = 7;
+    crate::crtc::clear_card_state(card_id);
+    let inode = super::super::publication::make_card_inode(card_id);
+    static CARD_TEST_OPS: vfs::dentry::DentryOps = vfs::dentry::DentryOps {
+        d_dname: None, d_hash: None, d_compare: None, d_revalidate: None,
+        d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None,
+        d_init: None, d_prune: None,
+    };
+    let dentry = vfs::dcache::d_alloc_pseudo("card-test", inode.clone(), &CARD_TEST_OPS);
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    let mut buf = [0u8; 64];
+    let r = vfs::FileOps::read_file(&super::super::publication::DrmCardFileOps, &file, 0, &mut buf);
+    assert!(matches!(r, Err(vfs::VfsError::Eagain)), "empty card read returned {r:?}, want Eagain");
+}
