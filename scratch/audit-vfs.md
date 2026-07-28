@@ -250,9 +250,11 @@ By impact, highest first.
 
 **Then the things userspace cannot work around.**
 
-7. **inotify events carry no filename** (§6) — one field. Every directory watcher in the desktop
-   stack (systemd `.path` units, udev, `GFileMonitor`, Nautilus, dconf) is told THAT something
-   changed but never WHICH file. Cheapest large win here.
+7. **inotify events carry no filename, and a blocking `read()` returns `EAGAIN`** (§6) — two
+   independent breaks in the same fd. Every directory watcher in the desktop stack (systemd
+   `.path` units, udev, `GFileMonitor`, Nautilus, dconf) is told THAT something changed but never
+   WHICH file; and a non-epoll reader gets `EAGAIN` on an empty queue instead of sleeping. The
+   filename is one field — the cheapest large win in this audit.
 8. **`/dev/kmsg` returns raw console text, not devkmsg records** (§8) — journald's parser fails on
    every line, so kernel-log import silently drops everything.
 9. **ext4 frees an unlinked inode's blocks while fds are still open** (§2) — the POSIX
