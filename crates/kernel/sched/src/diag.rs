@@ -35,6 +35,7 @@ pub use getdents::{getdents_begin, getdents_clear, getdents_progress, getdents_s
 pub use syscall_return::{syscall_return_clear, syscall_return_stage,
                          SYSCALL_RETURN_STAGE_AFTER_DIAG, SYSCALL_RETURN_STAGE_AFTER_DISPATCH,
                          SYSCALL_RETURN_STAGE_AFTER_PTRACE, SYSCALL_RETURN_STAGE_AFTER_RSEQ,
+                         SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER,
                          SYSCALL_RETURN_STAGE_AFTER_TIMERS};
 pub use ring::{dump_exit_recent, note_switch, record_syscall, switches};
 #[cfg(test)]

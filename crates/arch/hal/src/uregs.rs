@@ -43,6 +43,18 @@ pub mod x86_64 {
     pub const X86_EFLAGS_VIP:  u64 = 1 << 20;
     pub const X86_EFLAGS_ID:   u64 = 1 << 21;
 
+    /// Segment-selector RPL field (`SEGMENT_RPL_MASK`,
+    /// `arch/x86/include/asm/segment.h`).
+    pub const X86_CS_RPL_MASK: u64 = 3;
+    /// `USER_RPL` — the RPL a CPL3 selector carries. Linux `user_mode(regs)` is
+    /// `!!(regs->cs & 3)` on x86_64 (`arch/x86/include/asm/ptrace.h`), so the
+    /// saved CS's RPL is the whole test for "this entry came from user mode" —
+    /// the gate on whether a return runs `exit_to_user_mode_loop`.
+    pub const X86_CS_RPL_USER: u64 = 3;
+
+    /// Linux `user_mode(regs)`, x86_64 arm. # C: O(1)
+    pub const fn user_mode(cs: u64) -> bool { (cs & X86_CS_RPL_MASK) == X86_CS_RPL_USER }
+
     /// Linux `FIX_EFLAGS` (`arch/x86/include/asm/sighandling.h`) — the ONLY
     /// EFLAGS bits `rt_sigreturn` takes from the user's `sigcontext.flags`.
     /// Everything outside it keeps the kernel's saved value, so IF, IOPL, NT,
@@ -171,6 +183,14 @@ pub mod aarch64 {
             && (p & PSR_I_BIT) == 0
             && (p & PSR_F_BIT) == 0;
         if accepted { (p, true) } else { (p & PSR_NZCV, false) }
+    }
+
+    /// Linux `user_mode(regs)`, arm64 arm: `(regs->pstate & PSR_MODE_MASK) ==
+    /// PSR_MODE_EL0t` (`arch/arm64/include/asm/ptrace.h`). The gate on whether
+    /// a return runs `exit_to_user_mode_loop`.
+    /// # C: O(1)
+    pub const fn user_mode(pstate: u64) -> bool {
+        (pstate & PSR_MODE_MASK) == PSR_MODE_EL0T
     }
 
     /// `setup_return` (`arch/arm64/kernel/signal.c`): the PSTATE a handler is

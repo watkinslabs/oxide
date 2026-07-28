@@ -69,9 +69,9 @@ pub unsafe extern "C" fn oxide_x86_arm_singlestep(rflags_ptr: *mut u64) {
 /// frame. The pending SIGTRAP is delivered on the next syscall
 /// boundary (or on next user-trap if user is wedged).
 #[cfg(target_arch = "x86_64")]
-fn x86_user_trap_hook(frame: &mut hal_x86_64::FaultFrame) -> bool {
-    if frame.vector != 1 { return false; }
-    frame.rflags &= !RFLAGS_TF;
+fn x86_user_trap_hook(regs: &mut hal_x86_64::PtRegs) -> bool {
+    if regs.vector != 1 { return false; }
+    regs.rflags &= !RFLAGS_TF;
     if let Some(cur) = sched::current() {
         cur.sigpending.fetch_or(1u64 << (SIGTRAP - 1), Ordering::Release);
         cur.singlestep.store(0, Ordering::Release);
@@ -199,7 +199,9 @@ pub unsafe extern "C" fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64 {
         };
         // SAFETY: dispatch from fault context; svc_frame now points at
         // this frame; deliver rewrites only the saved frame + user sig stack.
-        unsafe { crate::sig_dispatch::deliver_with_info(sa.handler, sa.restorer, SIGILL, saved_x0, false, None, sa.flags, sa.mask); }
+        unsafe { crate::sig_dispatch::deliver_with_info(frame_ptr as *mut crate::sig_dispatch::UserRegs,
+                                                        sa.handler, sa.restorer, SIGILL, saved_x0,
+                                                        false, None, sa.flags, sa.mask); }
         return SIGILL as u64;   // retval slot → x0 = SIGILL at handler entry
     }
     // No handler: SIGILL default action = terminate (core). Reuse the

@@ -375,15 +375,26 @@ fn syscall_return_stages_are_feature_gated_ordered_and_cleared() {
     let timers = source.find("SYSCALL_RETURN_STAGE_AFTER_TIMERS").unwrap();
     let rseq = source.find("SYSCALL_RETURN_STAGE_AFTER_RSEQ").unwrap();
     let ptrace = source.find("SYSCALL_RETURN_STAGE_AFTER_PTRACE").unwrap();
+    let loop_stage = source.find("SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER").unwrap();
     let clear = source.rfind("syscall_return_clear(task)").unwrap();
-    // The `return_task` binding plus the five ordered stage markers
-    // (DISPATCH/DIAG/TIMERS/RSEQ/PTRACE) are each feature-gated; the DISPATCH
-    // marker's binding and emit are two attributes, giving nine — plus the
-    // no-handler restart arm's own clear (F741), which returns early through
-    // `super::restart::apply` and so needs its own gated clear.
-    assert_eq!(source.matches(feature).count(), 10);
-    assert!(dispatch < diag && diag < timers && timers < rseq && rseq < ptrace && ptrace < clear);
-    assert!(source.contains("if sig_rv != 0 {\n            #[cfg(feature = \"debug-syscall-return\")]"));
+    // The `return_task` binding plus the six ordered stage markers
+    // (DISPATCH/DIAG/TIMERS/RSEQ/PTRACE/IN_EXIT_TO_USER) are each
+    // feature-gated; the DISPATCH marker's binding and emit are two
+    // attributes, giving eight.
+    //
+    // B1471 dropped the ninth and tenth: the signal + restart arms used to
+    // sit inline here and return EARLY, so each early exit needed its own
+    // gated `syscall_return_clear`. They now live in the shared
+    // `exit_to_user` loop (Linux `exit_to_user_mode_loop`, run by the IRQ and
+    // exception return paths too), so this function has exactly ONE exit and
+    // one clear.
+    assert_eq!(source.matches(feature).count(), 8);
+    assert!(dispatch < diag && diag < timers && timers < rseq && rseq < ptrace);
+    assert!(ptrace < loop_stage && loop_stage < clear);
+    assert_eq!(source.matches("syscall_return_clear(task)").count(), 1,
+        "one exit from the tail means one clear");
+    assert!(source.contains("crate::exit_to_user::exit_to_user_mode_loop(regs, Some(rv))"),
+        "the tail delegates to the ONE return-to-user work loop");
 }
 
 // A dual-stack AF_INET6 socket that connected to an IPv4 peer took the IPv4

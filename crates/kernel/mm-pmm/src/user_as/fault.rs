@@ -57,7 +57,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
         // halt-and-print path so we notice them.
         let frame_ptr = hal_x86_64::current_fault_frame();
         if !frame_ptr.is_null() {
-            // SAFETY: live FaultFrame published by oxide_fault_print_rust on the kernel stack; we only read cs to check CPL.
+            // SAFETY: live PtRegs published by oxide_fault_print_rust on the kernel stack; we only read cs to check CPL.
             let cs = unsafe { (*frame_ptr).cs };
             if cs & 3 == 3 {
                 deliver_sigsegv_x86(vec, err, _rip, cr2);
@@ -95,7 +95,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                                 unsafe { mprotect_pages(root, cr2 & !PAGE_MASK, PAGE_BYTES as usize, VmaProt::READ | VmaProt::WRITE); }
                                 let f = hal_x86_64::current_fault_frame();
                                 if !f.is_null() {
-                                    // SAFETY: live FaultFrame on the kernel stack; set TF (bit 8).
+                                    // SAFETY: live PtRegs on the kernel stack; set TF (bit 8).
                                     unsafe { (*f).rflags |= 0x100; }
                                     STEP_ROOT.store(root, Ordering::Release);
                                     STEP_RIP.store(_rip, Ordering::Release);
@@ -117,7 +117,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     #[cfg(feature = "debug-cow")]
     segv_dump(_rip, cr2, err);
     // Unhandled fault from user mode. F158: try Linux-style
-    // catchable SIGSEGV — rewrite the live FaultFrame to call
+    // catchable SIGSEGV — rewrite the live PtRegs to call
     // the user-installed handler. If no handler is installed
     // (SIG_DFL), fall back to terminate via deliver_sigsegv.
     if err & 0x4 != 0 {
@@ -492,7 +492,7 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
             klog::write_raw(b" rip=");
             klog::write_hex_u64(rip);
             if in_memset {
-                let gp = hal_x86_64::current_fault_gprs();
+                let gp = hal_x86_64::current_fault_frame();
                 if !gp.is_null() {
                     let g = unsafe { &*gp };
                     klog::write_raw(b" MEMSET dst=");

@@ -265,10 +265,10 @@ pub unsafe fn spawn_user_thread_with_vpid(
 /// the Context callee-saved fields. Child's `rax` is forced to 0
 /// so the post-syscall return value is `fork() == 0`.
 ///
-/// `entry_va` / `user_sp` come from `current_user_frame()` (the
+/// `entry_va` / `user_sp` come from `current_pt_regs()` (the
 /// parent's RIP just past the syscall + the parent's user RSP at
 /// syscall time). `regs` is captured from
-/// `current_user_full_frame()` BEFORE this call so the parent's
+/// the same frame BEFORE this call so the parent's
 /// state is still intact on the saved stack.
 ///
 /// # SAFETY: same preconditions as `spawn_user_thread`; in

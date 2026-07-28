@@ -14,7 +14,8 @@
 //   `xstate` — `uc_mcontext.fpstate` area: layout, epilog, restore checks.
 //   `tests`  — host unit tests, including an end-to-end frame round trip.
 
-use crate::{current_user_frame, current_user_full_frame};
+use crate::gdt::USER_CS_SELECTOR;
+use crate::pt_regs::PtRegs;
 
 pub(crate) mod xstate;
 
@@ -73,11 +74,6 @@ const _: () = {
 
 /// x86_64 SysV ABI red zone — 128 B below RSP callers may use across calls.
 const RED_ZONE: u64 = 128;
-/// `r11` slot of the 16-quadword syscall save block — SYSCALL parks the user
-/// RFLAGS there and `sysretq` reloads them from it, so this index IS the
-/// user's next EFLAGS. Named because a bare `8` next to `s(8, mc.eflags)` is
-/// what let an unfiltered user word reach the hardware (B1459).
-const F_RFLAGS: usize = 8;
 /// Handler-entry SP alignment: `new_rsp % 16 == 8` at handler entry, since the
 /// `pretcode` quadword plays the role of a pushed return address (`54§3.3`).
 const FRAME_ALIGN: u64 = 16;
@@ -149,16 +145,17 @@ pub fn min_sigstksz() -> usize {
     xstate::min_sigstksz(core::mem::size_of::<RtSigframe>(), crate::xsave_area_bytes())
 }
 
-/// The interrupted task's user RSP, out of the live saved syscall frame.
+/// The interrupted task's user RSP, out of its live entry frame.
 /// `sigaltstack(2)` needs it for `on_sig_stack`, and signal delivery for
 /// `sigsp` — both of which Linux drives off `current_user_stack_pointer()`.
-/// # SAFETY: syscall/dispatch context on the running task's kstack; the saved
-/// frame is live.
+/// `0` for a null frame (no user entry on this CPU yet).
+/// # SAFETY: dispatch context on the running task's kstack; `regs` is that
+/// task's live entry frame.
 /// # C: O(1)
-pub unsafe fn current_user_sp() -> u64 {
-    // SAFETY: per fn contract — RIP/RFLAGS/RSP triple of the live saved frame.
-    let frame = unsafe { &*current_user_frame() };
-    frame[2]
+pub unsafe fn current_user_sp(regs: *mut PtRegs) -> u64 {
+    if regs.is_null() { return 0; }
+    // SAFETY: per fn contract — `regs` is the live entry frame, read-only here.
+    unsafe { (*regs).rsp }
 }
 
 /// Handler-entry RSP a delivery would use. # C: O(1)
@@ -202,13 +199,13 @@ fn frame_span(user_sp: u64, alt: hal::AltStack, math: u64) -> Option<(u64, u64, 
     Some((l.sp, end.checked_sub(l.sp)?, PRETCODE_BYTES))
 }
 
-/// Build the rt_sigframe on the user stack and rewrite the saved syscall
-/// frame so the dispatch return enters `handler(sig, &siginfo, &ucontext)`
-/// with RSP at the frame. `old_sigmask` is recorded in the ucontext for
-/// rt_sigreturn to restore. The full 16-quadword saved block (all GP regs)
-/// is read via `current_user_full_frame` (indices: 0 rax,1 rdi,2 rsi,3 rdx,
-/// 4 r10,5 r8,6 r9,7 rcx=rip,8 r11=rflags,9 rsp,10 rbx,11 rbp,12 r13,13 r14,
-/// 14 r15,15 r12).
+/// Build the rt_sigframe on the user stack and rewrite `regs` so the entry
+/// return enters `handler(sig, &siginfo, &ucontext)` with RSP at the frame.
+/// `old_sigmask` is recorded in the ucontext for rt_sigreturn to restore.
+///
+/// `regs` is the frame of WHATEVER entry is returning to user — syscall,
+/// fault or IRQ (`pt_regs.rs`) — never a hardcoded syscall save block, which
+/// is what let a userspace spin loop ignore signals.
 ///
 /// `fpu` is the calling task's XSAVE image, already synced from the hardware
 /// by the caller (Linux's `copy_fpstate_to_sigframe` does the `xsave` itself;
@@ -222,22 +219,20 @@ fn frame_span(user_sp: u64, alt: hal::AltStack, math: u64) -> Option<(u64, u64, 
 /// `force_sigsegv`. That check is the difference between a signal delivery and
 /// an arbitrary kernel write: `mov rsp, <kernel VA>; syscall` otherwise has
 /// the kernel `write_volatile` an attacker-shaped frame there (B1459).
-/// # SAFETY: dispatch-tail ctx on the running task's syscall kstack; the
-/// saved frame is live; active CR3 is the caller's user AS.
+/// # SAFETY: entry-return ctx on the running task's kstack; `regs` is that
+/// entry's live frame; active CR3 is the caller's user AS.
 /// # C: O(n) in the XSAVE image size
 #[must_use]
-pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
+pub unsafe fn build_signal_frame(regs: *mut PtRegs, handler: u64, restorer: u64, sig: u32,
                                  saved_ret: u64, restart: bool, old_sigmask: u64,
                                  payload: Option<hal::SigPayload>, alt: hal::AltStack,
                                  fpu: &[u8]) -> bool {
-    let full = current_user_full_frame();
-    // SAFETY: dispatch ctx; `full` points at the live 16-quadword saved block.
-    let g = |i: usize| unsafe { core::ptr::read_volatile(full.add(i)) };
-    // SAFETY: same saved frame, RIP/RFLAGS/RSP triple alias full[7..9].
-    let frame = unsafe { &mut *current_user_frame() };
-    let saved_rip    = g(7);
-    let saved_rflags = g(F_RFLAGS);
-    let saved_rsp    = g(9);
+    if regs.is_null() { return false }
+    // SAFETY: per fn contract — sole writer of this entry's live frame.
+    let r = unsafe { &mut *regs };
+    let saved_rip    = r.rip;
+    let saved_rflags = r.rflags;
+    let saved_rsp    = r.rsp;
 
     // Placement + `access_ok`-equivalent bound. Frame sits AT/ABOVE new_rsp so
     // the handler's downward stack can't trample it (`54§3.1`).
@@ -260,14 +255,28 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
     // Linux `frame_uc_flags()`.
     sf.uc.uc_flags = UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS
                      | if have_fpu && area != 0 { UC_FP_XSTATE } else { 0 };
+    // Linux `__unsafe_setup_sigcontext` (`arch/x86/kernel/signal_64.c`):
+    // every GP register straight out of `pt_regs`, `trapno`/`err` from the
+    // task's last trap, `cs`/`ss` from `pt_regs` (NOT literals — the frame
+    // knows which selectors it will iretq/sysretq with). `rcx` and `r11` are
+    // now the user's real rcx/r11 rather than aliases of rip/eflags, which
+    // the old syscall-block-shaped reader had conflated.
+    //
+    // `rax`: Linux reports `regs->ax`, which for an interrupted syscall is
+    // the return value the kernel was about to hand back — except on the
+    // restart path, where it has been rewound to `orig_ax` so the handler
+    // (and `rt_sigreturn`) see the syscall number about to be re-issued.
+    // oxide keeps the number in `regs.rax` for the whole dispatch, so the
+    // non-restart arm takes the caller's `saved_ret` instead.
+    let (trapno, err) = if r.from_syscall() { (0, 0) } else { (r.vector, r.error) };
     sf.uc.uc_mcontext = Sigctx {
-        r8: g(5), r9: g(6), r10: g(4), r11: saved_rflags,
-        r12: g(15), r13: g(12), r14: g(13), r15: g(14),
-        rdi: g(1), rsi: g(2), rbp: g(11), rbx: g(10),
-        rdx: g(3), rax: if restart { g(0) } else { saved_ret }, rcx: saved_rip, rsp: saved_rsp,
+        r8: r.r8, r9: r.r9, r10: r.r10, r11: r.r11,
+        r12: r.r12, r13: r.r13, r14: r.r14, r15: r.r15,
+        rdi: r.rdi, rsi: r.rsi, rbp: r.rbp, rbx: r.rbx,
+        rdx: r.rdx, rax: if restart { r.rax } else { saved_ret }, rcx: r.rcx, rsp: saved_rsp,
         rip: if restart { saved_rip.saturating_sub(SYSCALL_INSTRUCTION_BYTES) } else { saved_rip }, eflags: saved_rflags,
-        cs: 0x33, gs: 0, fs: 0, ss: 0x2b,
-        err: 0, trapno: 0, oldmask: old_sigmask, cr2: 0,
+        cs: r.cs as u16, gs: 0, fs: 0, ss: r.ss as u16,
+        err, trapno, oldmask: old_sigmask, cr2: 0,
         fpstate: if have_fpu { l.fpstate } else { 0 }, reserved: [0; 8],
     };
     sf.uc.uc_sigmask[0] = old_sigmask;
@@ -288,78 +297,78 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
         let _ = xstate::write_epilog(dst, area, crate::xsave_xcr0());
     }
 
-    frame[0] = handler;          // user RIP = handler
+    // Linux `x64_setup_rt_frame`'s "Set up registers for signal handler":
+    // di = sig, si = &info, dx = &uc, ip = handler, sp = frame, cs = __USER_CS.
+    // These are plain field writes on the entry frame, so the SAME code
+    // delivers on a syscall, fault or IRQ return.
+    r.rdi = sig as u64;
+    r.rsi = new_rsp + core::mem::offset_of!(RtSigframe, info) as u64;
+    r.rdx = new_rsp + core::mem::offset_of!(RtSigframe, uc) as u64;
+    r.rip = handler;
+    r.rsp = new_rsp;
+    r.cs  = USER_CS_SELECTOR;
     // Linux `handle_signal`: DF|RF|TF cleared for handler entry. The frame's
     // `sigcontext.eflags` above keeps the PRE-clear value, so rt_sigreturn
     // restores the interrupted code's DF/TF.
-    frame[1] = hal::uregs::x86_64::handler_entry_eflags(saved_rflags);
-    frame[2] = new_rsp;          // user RSP = frame
-    // SA_SIGINFO args: rdi=sig, rsi=&siginfo, rdx=&ucontext (exit asm restores
-    // rdi/rsi/rdx from saved slots top-0x78/-0x70/-0x68).
-    let kstack_top = crate::current_kstack_top();
-    if kstack_top != 0 {
-        let info_ptr = new_rsp + core::mem::offset_of!(RtSigframe, info) as u64;
-        let uc_ptr   = new_rsp + core::mem::offset_of!(RtSigframe, uc) as u64;
-        // SAFETY: writing saved rdi/rsi/rdx slots on the live syscall stack pre-restore.
-        unsafe {
-            core::ptr::write_volatile((kstack_top - 0x78) as *mut u64, sig as u64);
-            core::ptr::write_volatile((kstack_top - 0x70) as *mut u64, info_ptr);
-            core::ptr::write_volatile((kstack_top - 0x68) as *mut u64, uc_ptr);
-        }
-    }
+    r.rflags = hal::uregs::x86_64::handler_entry_eflags(saved_rflags);
+    // Linux sets `regs->ax = 0` here ("in case the signal handler was declared
+    // without prototypes"). oxide's syscall epilogue leaves the DISPATCH
+    // return value in the live rax rather than reloading `regs.rax` (which
+    // holds the syscall number for the whole dispatch, Linux's `orig_ax`), so
+    // the caller seeds user rax by returning 0 from the delivery — see
+    // `fs::sig_dispatch::deliver_with_info`'s x86_64 arm.
     true
 }
 
 /// Linux `arch_do_signal_or_restart`'s `regs->ip -= 2` with
 /// `regs->ax = regs->orig_ax`: re-enter the SAME syscall number. The live
-/// syscall-save block retains the original RAX and argument registers, so
-/// only RIP and the eventual return RAX need repair.
-/// # SAFETY: syscall-return tail exclusively owns the current saved frame.
+/// entry frame retains the original RAX (the number) and every argument
+/// register, so only RIP and the eventual return RAX need repair.
+/// # SAFETY: syscall-return tail exclusively owns `regs`.
 /// # C: O(1)
-pub unsafe fn restart_ignored_syscall() -> u64 {
-    let full = current_user_full_frame();
-    // SAFETY: dispatch context owns the 16-word saved syscall register block.
-    let nr = unsafe { core::ptr::read_volatile(full) };
-    // SAFETY: same saved frame the caller owns; rewind is the only edit.
-    unsafe { rewind_syscall_instruction(); }
-    nr
+pub unsafe fn restart_ignored_syscall(regs: *mut PtRegs) -> u64 {
+    if regs.is_null() { return 0; }
+    // SAFETY: per fn contract — the return tail owns this frame.
+    let r = unsafe { &mut *regs };
+    rewind_syscall_instruction(r);
+    r.syscall_nr()
 }
 
 /// Linux `arch_do_signal_or_restart`'s ERESTART_RESTARTBLOCK arm:
 /// `regs->ax = get_nr_restart_syscall(regs); regs->ip -= 2`. The argument
 /// registers are irrelevant — `restart_syscall(2)` takes none and resumes
 /// through the task's `restart_block`.
-/// # SAFETY: syscall-return tail exclusively owns the current saved frame.
+/// # SAFETY: syscall-return tail exclusively owns `regs`.
 /// # C: O(1)
-pub unsafe fn restart_via_restart_syscall(nr_restart_syscall: u64) -> u64 {
-    // SAFETY: same saved frame the caller owns; rewind is the only edit.
-    unsafe { rewind_syscall_instruction(); }
+pub unsafe fn restart_via_restart_syscall(regs: *mut PtRegs, nr_restart_syscall: u64) -> u64 {
+    if regs.is_null() { return nr_restart_syscall; }
+    // SAFETY: per fn contract — the return tail owns this frame.
+    rewind_syscall_instruction(unsafe { &mut *regs });
     nr_restart_syscall
 }
 
 /// Rewind the saved user RIP over the two-byte `syscall` instruction so the
-/// `sysretq` re-executes it.
-/// # SAFETY: syscall-return tail exclusively owns the current saved frame.
-/// # C: O(1)
-unsafe fn rewind_syscall_instruction() {
-    // SAFETY: dispatch context exclusively updates the saved RIP/RSP/RFLAGS frame.
-    let frame = unsafe { &mut *current_user_frame() };
-    frame[0] = frame[0].saturating_sub(SYSCALL_INSTRUCTION_BYTES);
+/// return re-executes it. # C: O(1)
+fn rewind_syscall_instruction(r: &mut PtRegs) {
+    r.rip = r.rip.saturating_sub(SYSCALL_INSTRUCTION_BYTES);
 }
 
 /// Restore the full register set from the rt_sigframe's ucontext into the
-/// saved syscall frame, and rebuild the task's XSAVE image from the frame's
+/// live entry frame, and rebuild the task's XSAVE image from the frame's
 /// `fpstate` area into `fpu`. Returns `(restored_sigmask, dispatch_retval,
 /// uc_stack, fpu_dirty)` — the caller stores the mask, re-arms the alternate
 /// stack from `uc_stack` (Linux `restore_altstack`), propagates the retval as
 /// user rax, and reloads the FPU from `fpu` when `fpu_dirty`. `None` on a
 /// malformed frame (caller forces SIGSEGV).
-/// # SAFETY: rt_sigreturn dispatch ctx on the running task's syscall kstack.
+/// # SAFETY: rt_sigreturn dispatch ctx on the running task's kstack; `regs`
+/// is that entry's live frame.
 /// # C: O(n) in the XSAVE image size
-pub unsafe fn restore_signal_frame(fpu: &mut [u8]) -> Option<(u64, i64, hal::AltStack, bool)> {
-    // SAFETY: dispatch ctx; RIP/RFLAGS/RSP triple of the live saved frame.
-    let frame = unsafe { &*current_user_frame() };
-    let cur_rsp = frame[2];               // = new_rsp + 8 (ret popped pretcode)
+pub unsafe fn restore_signal_frame(regs: *mut PtRegs, fpu: &mut [u8])
+    -> Option<(u64, i64, hal::AltStack, bool)> {
+    if regs.is_null() { return None; }
+    // SAFETY: per fn contract — the rt_sigreturn tail owns this frame.
+    let r = unsafe { &mut *regs };
+    let cur_rsp = r.rsp;                  // = new_rsp + 8 (ret popped pretcode)
     let frame_base = cur_rsp.saturating_sub(8);
     if frame_base == 0 { return None; }
     if frame_base.checked_add(core::mem::size_of::<RtSigframe>() as u64)
@@ -377,25 +386,31 @@ pub unsafe fn restore_signal_frame(fpu: &mut [u8]) -> Option<(u64, i64, hal::Alt
     if mc.rip >= hal::USER_VA_END || mc.rsp >= hal::USER_VA_END { return None; }
     // SAFETY: `mc.fpstate` is user-supplied; `restore_fpstate` proves the whole area lies below USER_VA_END and is alignment-legal before it reads a byte.
     let fpu_dirty = unsafe { restore_fpstate(mc.fpstate, fpu) }?;
-    // Restore the FULL GP set; slots rcx(7)=rip + r11(8)=eflags carry the
-    // sysretq epilogue.
-    let full = current_user_full_frame();
     // Linux `restore_sigcontext` (`arch/x86/kernel/signal_64.c`):
     // `regs->flags = (regs->flags & ~FIX_EFLAGS) | (sc.flags & FIX_EFLAGS)`.
-    // MUST be read before the write loop below overwrites the slot. `sysretq`
-    // reloads RFLAGS straight from this quadword and the Intel SDM's SYSRET
-    // mask (`R11 & 3C7FD7H`) passes IOPL, IF, NT and TF through, so an
-    // unfiltered `mc.eflags` lets any process grant itself IOPL=3 (port I/O +
-    // `cli`) or return to user with interrupts disabled (B1459).
-    // SAFETY: dispatch ctx; `full` is the live 16-quadword saved block.
-    let cur_rflags = unsafe { core::ptr::read_volatile(full.add(F_RFLAGS)) };
-    let new_rflags = hal::uregs::x86_64::sigreturn_eflags(cur_rflags, mc.eflags);
-    // SAFETY: dispatch ctx; `full` is the live 16-quadword saved block.
-    let s = |i: usize, v: u64| unsafe { core::ptr::write_volatile(full.add(i), v) };
-    s(0, mc.rax);  s(1, mc.rdi); s(2, mc.rsi); s(3, mc.rdx);
-    s(4, mc.r10);  s(5, mc.r8);  s(6, mc.r9);
-    s(7, mc.rip);  s(F_RFLAGS, new_rflags); s(9, mc.rsp);
-    s(10, mc.rbx); s(11, mc.rbp); s(12, mc.r13); s(13, mc.r14); s(14, mc.r15); s(15, mc.r12);
+    // MUST be read before the write below overwrites it. `sysretq` reloads
+    // RFLAGS straight from this slot and the Intel SDM's SYSRET mask
+    // (`R11 & 3C7FD7H`) passes IOPL, IF, NT and TF through, so an unfiltered
+    // `mc.eflags` lets any process grant itself IOPL=3 (port I/O + `cli`) or
+    // return to user with interrupts disabled (B1459).
+    let new_rflags = hal::uregs::x86_64::sigreturn_eflags(r.rflags, mc.eflags);
+    r.rax = mc.rax; r.rbx = mc.rbx; r.rcx = mc.rcx; r.rdx = mc.rdx;
+    r.rsi = mc.rsi; r.rdi = mc.rdi; r.rbp = mc.rbp;
+    r.r8  = mc.r8;  r.r9  = mc.r9;  r.r10 = mc.r10; r.r11 = mc.r11;
+    r.r12 = mc.r12; r.r13 = mc.r13; r.r14 = mc.r14; r.r15 = mc.r15;
+    r.rip = mc.rip; r.rsp = mc.rsp; r.rflags = new_rflags;
+    // Linux: "Get CS/SS and force CPL3" — a sigcontext CS/SS with RPL < 3
+    // would otherwise return the process to a lower ring.
+    r.cs = mc.cs as u64 | 3;
+    r.ss = mc.ss as u64 | 3;
+    // Linux additionally does `regs->orig_ax = -1` here ("disable syscall
+    // checks"), i.e. mark the frame as NOT a syscall so the return tail
+    // cannot re-run syscall-restart against a register set userspace chose.
+    // oxide cannot mirror that on `vector`: this frame IS a `syscall` entry
+    // and its epilogue is `sysretq`, so the tag has to stay. The equivalent
+    // guarantee comes from the restart classifier
+    // (`syscalls::dispatch::restart`) acting only on an `-ERESTART*` value
+    // this path returns as `mc.rax` — see the note in the fn docs.
     let alt = hal::AltStack { sp: st.ss_sp, size: st.ss_size, flags: st.ss_flags, use_alt: false };
     Some((sigmask, mc.rax as i64, alt, fpu_dirty))
 }
@@ -446,11 +461,13 @@ unsafe fn restore_fpstate(ptr: u64, fpu: &mut [u8]) -> Option<bool> {
     Some(true)
 }
 
-/// User rt-sigframe range for pre-copy badframe validation. # C: O(1)
-pub fn rt_sigreturn_frame_range() -> Option<(u64, u64, u64)> {
-    // SAFETY: rt_sigreturn dispatch context owns the live syscall frame slots.
-    let frame = unsafe { &*current_user_frame() };
-    let frame_base = frame[2].checked_sub(8)?;
+/// User rt-sigframe range for pre-copy badframe validation.
+/// # SAFETY: rt_sigreturn dispatch ctx; `regs` is the live entry frame.
+/// # C: O(1)
+pub unsafe fn rt_sigreturn_frame_range(regs: *mut PtRegs) -> Option<(u64, u64, u64)> {
+    if regs.is_null() { return None; }
+    // SAFETY: per fn contract — the rt_sigreturn tail owns this frame.
+    let frame_base = unsafe { (*regs).rsp }.checked_sub(8)?;
     if frame_base == 0 { return None; }
     let len = core::mem::size_of::<RtSigframe>() as u64;
     frame_base.checked_add(len).filter(|end| *end <= hal::USER_VA_END)?;
