@@ -10,6 +10,9 @@
 // closures. Default bodies are the Linux "no f_op installed" behaviour
 // (`EISDIR` on a directory read, `EINVAL` otherwise; always-ready poll), so a
 // backend overrides only what it implements.
+//
+// Module manifest:
+//   ioctl.rs — `unlocked_ioctl` command/reply shapes.
 
 extern crate alloc;
 use alloc::sync::Arc;
@@ -19,6 +22,9 @@ use crate::file::File;
 use crate::inode::{Inode, no_data_op_errno, POLL_IN, POLL_OUT};
 use crate::poll_subs::PollSubscribers;
 use crate::types::{FileType, KResult, VfsError};
+
+mod ioctl;
+pub use ioctl::{FileIoctlCmd, FileIoctlReply, IoctlIntCmd};
 
 /// `SEEK_HOLE`/`SEEK_DATA` selector for [`FileOps::seek_hole_data`] (Linux
 /// `lseek(2)` whence `4`/`3`). `Data` finds the next byte ≥ `offset` that is
@@ -30,53 +36,6 @@ pub enum HoleOrData {
     Data,
     /// `SEEK_HOLE` — next hole at/after `offset`.
     Hole,
-}
-
-/// Int-valued Linux `unlocked_ioctl` queue queries whose copy_to_user remains
-/// owned by the syscall ABI layer. # C: O(1)
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum IoctlIntCmd {
-    /// `FIONREAD` / `SIOCINQ` — readable bytes or next datagram length.
-    Fionread,
-    /// `SIOCOUTQ` / `TIOCOUTQ` — protocol-defined outgoing queued bytes.
-    Siocoutq,
-    /// `SIOCOUTQNSD` — TCP bytes not yet handed to transmission.
-    Siocoutqnsd,
-    /// `SIOCATMARK` — whether the next TCP stream byte is the urgent mark.
-    Siocatmark,
-}
-
-/// Linux `file_operations->unlocked_ioctl` operations whose usercopy remains
-/// in the syscall ABI layer. # C: O(1)
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FileIoctlCmd {
-    /// `EXT4_IOC_GETVERSION` / legacy `FS_IOC_GETVERSION`.
-    GetVersion,
-    /// Pre-copyin admission for `EXT4_IOC_SETVERSION`.
-    SetVersionPrepare,
-    /// `EXT4_IOC_SETVERSION` / legacy `FS_IOC_SETVERSION`.
-    SetVersion(u32),
-    /// `FS_IOC_GETFSLABEL` on filesystem-specific `f_op->unlocked_ioctl`.
-    GetFsLabel,
-    /// Pre-copyin admission for `FS_IOC_SETFSLABEL`; carries CAP_SYS_ADMIN.
-    SetFsLabelPrepare(bool),
-    /// `FS_IOC_SETFSLABEL`: exact ext4 16-byte on-disk label payload.
-    SetFsLabel([u8; 16]),
-    /// Pre-copyin admission for `FITRIM`; carries CAP_SYS_ADMIN.
-    FitTrimPrepare(bool),
-    /// `FITRIM`: filesystem trim request after ABI-layer usercopy.
-    FitTrim { start: u64, len: u64, minlen: u64 },
-}
-
-/// Return payload for [`FileOps::unlocked_ioctl`]. # C: O(1)
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FileIoctlReply {
-    /// ioctl succeeded without a scalar payload.
-    Done,
-    /// ioctl returned a 32-bit scalar copied by the ABI layer.
-    U32(u32),
-    /// ioctl returned an ext4 label buffer including the trailing NUL byte.
-    Label([u8; 17]),
 }
 
 /// `filldir`-style sink (Linux `struct dir_context.actor` / `filldir_t`): the
@@ -425,6 +384,34 @@ pub trait FileOps: Send + Sync {
             _ => Err(VfsError::Einval),
         }
     }
+
+    /// Does an `fsync` on this description have page-cache data to write back
+    /// BEFORE the backend commits (Linux `ext4_sync_file`'s
+    /// `file_write_and_wait_range` step, `fs/ext4/fsync.c:189`)?
+    ///
+    /// Deliberately NOT "is `fsync` legal here" — that answer belongs to
+    /// [`Self::fsync`] alone, so a backend that installs a real `fsync` slot on
+    /// a type the generic table calls streaming (Linux does have such
+    /// character devices) keeps its own answer and cannot be overruled by a
+    /// list kept elsewhere. This is only the writeback-ordering question, and
+    /// the byte-addressable types are exactly the ones that can have a page
+    /// cache. # C: O(1)
+    fn fsync_needs_writeback(&self, file: &File) -> bool {
+        crate::file::fsync_slot_present(file.inode().file_type())
+    }
+
+    /// `FMODE_CAN_ODIRECT` — does this backend have a real `a_ops->direct_IO`,
+    /// i.e. an I/O path that genuinely bypasses the page cache?
+    ///
+    /// Linux sets the bit from `f_mapping->a_ops->direct_IO` (`fs/open.c:960`),
+    /// and `open(2)` returns `EINVAL` for `O_DIRECT` without it (`:968`).
+    /// Default `false` — a backend must claim direct I/O, never inherit the
+    /// claim, because the failure mode of being wrong is that a caller relying
+    /// on cache bypass for correctness gets silently buffered I/O and no
+    /// indication. Backends whose pages ARE the store (tmpfs/shmem,
+    /// `mm/shmem.c:2910`) answer `true` because bypassing the cache is vacuous
+    /// there. # C: O(1)
+    fn can_odirect(&self, _inode: &Inode) -> bool { false }
 
     /// `f_op->llseek` SEEK_HOLE/SEEK_DATA core (Linux `generic_file_llseek` →
     /// `*_seek_hole_data`): map the starting byte `offset` to the next data byte

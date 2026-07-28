@@ -141,7 +141,13 @@ impl Mount {
         let mut sb_bytes = sb_bytes;
         #[cfg(feature = "debug-fsync-latency")]
         let flush_started_ns = crate::fsync_latency::now_ns();
-        let _ = self.dev.flush(); // journal body (desc+data+commit) durable first
+        // WAL barrier #1. A failed flush means the journal body may NOT be on
+        // stable media, so publishing `s_start` next would point recovery at a
+        // transaction that might not exist. Discarding this error (the old
+        // `let _ =`) made the write-ahead guarantee unverifiable even in
+        // principle. Linux checks `blkdev_issue_flush` and propagates it
+        // (`fs/ext4/fsync.c:186-189`, `jbd2_journal_commit_transaction`).
+        self.dev.flush().map_err(|_| MountError::BlockIo)?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-flush", flush_started_ns, staged_blocks);
         sb_bytes[0x18..0x1C].copy_from_slice(&seq.to_be_bytes());      // s_sequence = seq
@@ -149,7 +155,10 @@ impl Mount {
         log.write_journal_block(0, &sb_bytes)?;
         #[cfg(feature = "debug-fsync-latency")]
         let publish_started_ns = crate::fsync_latency::now_ns();
-        let _ = self.dev.flush(); // "recover from desc_at" durable before targets
+        // WAL barrier #2: "recover from desc_at" must be durable BEFORE any
+        // target write, or a crash mid-checkpoint leaves the fs half-updated
+        // with no record of the transaction to replay.
+        self.dev.flush().map_err(|_| MountError::BlockIo)?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-publish", publish_started_ns, staged_blocks);
         // Journal now leads the fs; apply staged blocks to their targets.
@@ -160,7 +169,10 @@ impl Mount {
         crate::fsync_latency::report(b"target-write", target_started_ns, staged_blocks);
         #[cfg(feature = "debug-fsync-latency")]
         let target_flush_started_ns = crate::fsync_latency::now_ns();
-        let _ = self.dev.flush(); // targets durable before dropping the journal
+        // WAL barrier #3: the targets must be durable before the journal is
+        // marked clean below, or recovery would skip a transaction whose
+        // target writes are still in the device cache.
+        self.dev.flush().map_err(|_| MountError::BlockIo)?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"target-flush", target_flush_started_ns, staged_blocks);
         // Checkpoint complete: mark the journal clean (s_start = 0, bump sequence).

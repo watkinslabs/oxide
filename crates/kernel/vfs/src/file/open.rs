@@ -53,6 +53,30 @@ pub fn install_open_at(
             None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
         };
         if !file_flags.contains(OpenFlags::O_PATH) { file.open_hook()?; }
+        // `if ((f->f_flags & O_DIRECT) && !(f->f_mode & FMODE_CAN_ODIRECT))
+        //      return -EINVAL;` (`fs/open.c:968-969`).
+        //
+        // `FMODE_CAN_ODIRECT` is set only by backends that install an
+        // `a_ops->direct_IO` (`fs/open.c:960-961`), plus block devices
+        // (`block/bdev.c:987`) and shmem (`mm/shmem.c:2910`). We have no
+        // direct-I/O path for ext4 regular files — no cache bypass, no
+        // alignment gate, no `invalidate_inode_pages2_range` for coherency —
+        // so the honest answer is Linux's own answer for a filesystem without
+        // one: EINVAL at open. Silently buffering an `O_DIRECT` open is the
+        // one outcome that is not acceptable, because callers use the flag for
+        // correctness (a database's "this write is not in the page cache"
+        // assumption), not just for speed, and they discover the truth only by
+        // being told at open.
+        //
+        // Scoped to regular files: `O_DIRECT` means packet-mode on a pipe
+        // (`pipe2(2)`), and block devices already do unbuffered I/O — neither
+        // is the buffered-behind-your-back case this gate exists to catch.
+        if file_flags.contains(OpenFlags::O_DIRECT)
+            && matches!(file.inode().file_type(), crate::types::FileType::Regular)
+            && !file.f_op().can_odirect(file.inode())
+        {
+            return Err(VfsError::Einval);
+        }
         if truncate { file.inode().truncate(0)?; }
         fdt.fd_install(fd, file);
         Ok(fd)

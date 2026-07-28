@@ -186,6 +186,7 @@ impl File {
         if n > 0 {
             self.file_update_time();
             fire_write_hook(&self.inode);
+            self.generic_write_sync(off + n as u64, n, crate::file::SyncMode::default())?; // `generic_write_sync`
         }
         Ok(n)
     }
@@ -360,6 +361,7 @@ impl File {
         if n > 0 {
             self.file_update_time();
             fire_write_hook(&self.inode);
+            self.generic_write_sync(pos + n as u64, n, crate::file::SyncMode::default())?;
         }
         Ok(n)
     }
@@ -477,6 +479,7 @@ impl File {
         if total > 0 {
             self.file_update_time();
             fire_write_hook(&self.inode);
+            self.generic_write_sync(base + total, total as usize, crate::file::SyncMode::default())?;
         }
         Ok(total as usize)
     }

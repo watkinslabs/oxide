@@ -45,6 +45,7 @@ impl SuperBlock {
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
             s_dquot: QuotaInfo::new(),
+            s_wb_err: crate::errseq::Errseq::new(),
         });
         sb.s_dquot.bind_super(&sb);
         sb

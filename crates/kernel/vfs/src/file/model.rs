@@ -87,6 +87,8 @@ impl File {
         // (Linux `struct file` pins the inode; iget/igrab supplies the ref). The
         // matching `iput`/dec is in `File::drop`.
         inode.igrab();
+        let inode_wb_err = inode.wb_err().sample();
+        let sb_wb_err = inode.i_sb().map_or(0, |sb| sb.s_wb_err.sample());
         Arc::new(Self {
             inode,
             f_op,
@@ -100,6 +102,12 @@ impl File {
             f_pos_lock: Spinlock::new(()),
             f_ra: Spinlock::new(FileRaState { ra_pages: DEFAULT_RA_PAGES, ..FileRaState::default() }),
             flags: AtomicU32::new(flags.bits()),
+            // `filemap_sample_wb_err` / `file_sample_sb_err` at open
+            // (`fs/open.c:895-896`): an error nobody has collected yet is
+            // still owed to this brand-new description, which is why
+            // `Errseq::sample` returns the epoch while the value is UNSEEN.
+            f_wb_err: AtomicU32::new(inode_wb_err),
+            f_sb_err: AtomicU32::new(sb_wb_err),
             flock_op: AtomicU32::new(0),
             owner: ::core::sync::atomic::AtomicI32::new(0),
             owner_creds: AtomicU64::new(0),
@@ -370,10 +378,23 @@ impl File {
     /// `F_SETFL` on a shared description is last-writer-wins on the atomic,
     /// matching Linux's `f_lock`-guarded single store.
     /// # C: O(1)
-    pub fn set_fl(&self, arg: OpenFlags) -> OpenFlags {
+    pub fn set_fl(&self, arg: OpenFlags) -> crate::types::KResult<OpenFlags> {
+        // `if (!S_ISFIFO(inode->i_mode) && (arg & O_DIRECT) &&
+        //     !(filp->f_mode & FMODE_CAN_ODIRECT)) return -EINVAL;`
+        // (`fs/fcntl.c:62-65`). The FIFO exemption is Linux's own comment:
+        // "Pipe packetized mode is controlled by O_DIRECT flag" — on a pipe the
+        // bit means something else entirely and must keep working. Same reason
+        // the open-time gate exists: turning on O_DIRECT for a backend with no
+        // direct-I/O path would leave the caller buffered and unaware.
+        if arg.contains(OpenFlags::O_DIRECT)
+            && matches!(self.inode.file_type(), crate::types::FileType::Regular)
+            && !self.f_op.can_odirect(&self.inode)
+        {
+            return Err(crate::types::VfsError::Einval);
+        }
         let old = self.flags.load(Ordering::Acquire);
         let new = (arg.bits() & SETFL_MASK) | (old & !SETFL_MASK);
         self.flags.store(new, Ordering::Release);
-        OpenFlags::from_bits_retain(new)
+        Ok(OpenFlags::from_bits_retain(new))
     }
 }
