@@ -53,7 +53,7 @@ impl<T, C: LockClass> RwLock<T, C> {
         loop {
             let s = self.state.load(Ordering::Relaxed);
             if s & WRITER_BIT != 0 || (s & READER_MASK) == READER_MAX {
-                core::hint::spin_loop();
+                crate::spin_relax::relax();
                 continue;
             }
             if self.state
@@ -74,7 +74,7 @@ impl<T, C: LockClass> RwLock<T, C> {
         loop {
             let s = self.state.load(Ordering::Relaxed);
             if s != 0 {
-                core::hint::spin_loop();
+                crate::spin_relax::relax();
                 continue;
             }
             if self.state
