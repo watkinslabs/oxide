@@ -239,3 +239,24 @@ fn thread_primitive_numbers_map_to_their_own_slots() {
     // tkill and tgkill are distinct slots — tkill must not alias kill.
     assert_ne!(aarch64_nr_to_x86(130), NR_KILL);
 }
+
+/// aarch64 has no `uretprobe`/`uprobe` syscall: 335/336 exist only in
+/// `arch/x86/entry/syscalls/syscall_64.tbl`, and the asm-generic table marks
+/// 295..402 "unassigned … don't use". Passing them through unchanged made an
+/// aarch64 `syscall(335)` execute x86's `sys_uretprobe` and take a SIGILL.
+#[test]
+fn arm_unassigned_numbers_do_not_reach_x86_only_syscalls() {
+    use super::{arm_nr_is_unassigned, NO_AARCH64_SLOT};
+    for nr in [295, 300, 320, 335, 336, 402, 403, 422, 423] {
+        assert!(arm_nr_is_unassigned(nr), "arm nr {nr} is unassigned on arm64");
+        assert_eq!(aarch64_nr_to_x86(nr), NO_AARCH64_SLOT,
+                   "arm nr {nr} must not land on an x86-only slot");
+    }
+    // The boundaries stay live.
+    assert_eq!(aarch64_nr_to_x86(294), syscall_nr_kexec_file_load());
+    assert_eq!(aarch64_nr_to_x86(424), 424, "pidfd_send_signal is unified");
+    assert!(!arm_nr_is_unassigned(294));
+    assert!(!arm_nr_is_unassigned(424));
+}
+
+fn syscall_nr_kexec_file_load() -> u64 { crate::nrs::NR_KEXEC_FILE_LOAD }

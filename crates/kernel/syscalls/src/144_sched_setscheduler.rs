@@ -45,5 +45,5 @@ pub(crate) fn do_sched_setscheduler(pid_raw: u64, policy: i32, uparam: u64) -> i
     let nice = t.nice.load(Ordering::Acquire) as i32;
     // A `struct sched_param` carries no runtime/deadline/period, so a
     // SCHED_DEADLINE request can never satisfy Linux `__checkparam_dl` here.
-    sched_policy::setscheduler(caller, &t, policy, prio, nice, false)
+    sched_policy::setscheduler(caller, &t, policy, prio, nice)
 }

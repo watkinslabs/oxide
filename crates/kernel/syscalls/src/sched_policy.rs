@@ -10,10 +10,11 @@
 // silently, so they live here and the slots stay thin shims (docs/53).
 //
 // Module manifest:
-//   this file — UAPI constants, policy predicates, parameter validation,
-//               priority ranges, RR interval, and the `Task`-level
-//               permission check + policy application.
-//   tests/     — hosted unit tests (`sched_policy_tests.rs`).
+//   this file  — UAPI constants, policy predicates, parameter/flag validation,
+//                priority ranges, RR interval, pid decoding.
+//   task.rs    — live `Task` accessors + the permission ladder.
+//   setattr.rs — `__sched_setscheduler` + the runqueue commit.
+//   tests.rs   — hosted unit tests.
 
 use syscall::errno::Errno;
 
@@ -114,21 +115,42 @@ pub fn priority_min(policy: i32) -> i64 {
     }
 }
 
-/// Linux `__checkparam_dl()` applied to the parameters a `sched_param`-based
-/// `sched_setscheduler(2)` can express: `sched_runtime`/`sched_deadline`/
-/// `sched_period` are all zero there, so a DEADLINE request from slot 144 can
-/// never satisfy it and fails `-EINVAL` before any permission check. That is
-/// what mainline Linux returns for `sched_setscheduler(pid, SCHED_DEADLINE, …)`.
+/// Linux `DL_SCALE` (`kernel/sched/sched.h:182`): the low bits `sched_runtime`
+/// loses to the bandwidth fixed point, so a runtime below `1 << DL_SCALE` is
+/// rejected outright.
+pub const DL_SCALE: u32 = 10;
+/// `sysctl_sched_dl_period_min` (`kernel/sched/deadline.c:32`), in ns.
+pub const DL_PERIOD_MIN_NS: u64 = 100 * 1_000;
+/// `sysctl_sched_dl_period_max` (`kernel/sched/deadline.c:31`), in ns.
+pub const DL_PERIOD_MAX_NS: u64 = (1u64 << 22) * 1_000;
+
+/// Linux `__checkparam_dl()` (`kernel/sched/deadline.c:3889`). A `sched_param`-
+/// based `sched_setscheduler(2)` leaves runtime/deadline/period zero, so a
+/// DEADLINE request from slot 144 can never satisfy this and fails `-EINVAL`
+/// before any permission check — mainline's answer for
+/// `sched_setscheduler(pid, SCHED_DEADLINE, …)`.
 /// # C: O(1)
-pub fn checkparam_dl(runtime: u64, deadline: u64, period: u64) -> bool {
-    // Linux: a special (0-runtime) DL attr is only legal via SCHED_FLAG_SUGOV,
-    // which is kernel-internal. runtime must be non-zero, and
-    // runtime <= deadline <= period once period is given.
-    if runtime == 0 || deadline == 0 { return false; }
-    let period = if period == 0 { deadline } else { period };
-    if period < deadline { return false; }
-    if deadline < runtime { return false; }
+pub fn checkparam_dl(attr: &crate::sched_attr::SchedAttr) -> bool {
+    // Special (parameter-less) DL tasks exist only via the kernel-internal
+    // SCHED_FLAG_SUGOV, which the syscall path rejects separately.
+    if attr.flags & crate::sched_attr::FLAG_SUGOV != 0 { return true; }
+    if attr.deadline == 0 { return false; }
+    if attr.runtime < (1u64 << DL_SCALE) { return false; }
+    // The MSB is reserved for wrap-around/sign handling in the bandwidth math.
+    if attr.deadline & (1u64 << 63) != 0 || attr.period & (1u64 << 63) != 0 { return false; }
+    let period = if attr.period == 0 { attr.deadline } else { attr.period };
+    if period < attr.deadline || attr.deadline < attr.runtime { return false; }
+    if period < DL_PERIOD_MIN_NS || period > DL_PERIOD_MAX_NS { return false; }
     true
+}
+
+/// Linux `__sched_setscheduler()` flag-mask gate: anything outside
+/// `SCHED_FLAG_ALL | SCHED_FLAG_SUGOV` is an unknown flag.
+/// # C: O(1)
+pub fn check_flags(flags: u64) -> Result<(), i64> {
+    use crate::sched_attr::{FLAG_ALL, FLAG_SUGOV};
+    if flags & !(FLAG_ALL | FLAG_SUGOV) != 0 { return Err(err(Errno::Einval)); }
+    Ok(())
 }
 
 /// Linux `__sched_setscheduler()` parameter validation, in Linux's ORDER —
@@ -170,164 +192,17 @@ pub fn pid_arg(raw: u64) -> Result<u32, i64> {
     Ok(pid as u32)
 }
 
-// ---------------------------------------------------------------------------
-// Task-level rules. `&sched::Task` is hosted-constructible (`Task::new`), so
-// these stay testable without a boot.
-// ---------------------------------------------------------------------------
-
-/// Live policy of `t` — Linux `p->policy`, stored separately from the
-/// scheduler class exactly as Linux does, so `SCHED_BATCH`/`SCHED_IDLE`
-/// round-trip through `sched_getscheduler` instead of collapsing onto the
-/// class that implements them.
-/// # C: O(1)
-pub fn task_policy(t: &sched::Task) -> u32 {
-    t.policy.load(core::sync::atomic::Ordering::Acquire)
-}
-
-/// Linux `p->rt_priority`: the RT priority, 0 for every non-RT policy.
-/// # C: O(1)
-pub fn task_rt_priority(t: &sched::Task) -> u32 {
-    match t.sched_class() { sched::SchedClass::Rt { prio, .. } => prio as u32, _ => 0 }
-}
-
-/// Linux `is_nice_reduction()`: is `nice` within the target's `RLIMIT_NICE`
-/// allowance (expressed as `20 - nice`)?
-/// # C: O(1)
-fn is_nice_reduction(target: &sched::Task, nice: i32) -> bool {
-    let lim = target.rlimit(sched::rlimit::rlim::NICE).0;
-    nice_to_rlimit(nice) as i64 <= lim as i64
-}
-
-/// Linux `check_same_owner()`: caller's euid matches the target's euid or ruid.
-/// # C: O(1)
-pub fn check_same_owner(caller: &sched::Task, target: &sched::Task) -> bool {
-    use core::sync::atomic::Ordering;
-    let euid = caller.creds.euid.load(Ordering::Acquire);
-    euid == target.creds.euid.load(Ordering::Acquire)
-        || euid == target.creds.ruid.load(Ordering::Acquire)
-}
-
-/// Linux `user_check_sched_setscheduler()` verbatim: every branch that needs
-/// privilege falls through to a single `capable(CAP_SYS_NICE)` test, so
-/// `CAP_SYS_NICE` is an override rather than a precondition. Returns `0` or
-/// `-EPERM`.
-/// # C: O(1)
-pub fn user_check(caller: &sched::Task, target: &sched::Task,
-                  policy: u32, nice: i32, prio: u32, reset_on_fork: bool) -> i64 {
-    use core::sync::atomic::Ordering;
-    let mut req_priv = false;
-    let target_nice = target.nice.load(Ordering::Acquire) as i32;
-
-    if fair_policy(policy) && nice < target_nice && !is_nice_reduction(target, nice) { req_priv = true; }
-
-    if rt_policy(policy) {
-        let rlim_rtprio = target.rlimit(sched::rlimit::rlim::RTPRIO).0;
-        let old_policy = task_policy(target);
-        let old_prio = task_rt_priority(target);
-        // Can't set/change the rt policy:
-        if policy != old_policy && rlim_rtprio == 0 { req_priv = true; }
-        // Can't increase priority:
-        if prio > old_prio && prio as u64 > rlim_rtprio { req_priv = true; }
-    }
-
-    // Unprivileged tasks may never request SCHED_DEADLINE.
-    if dl_policy(policy) { req_priv = true; }
-
-    // SCHED_IDLE is treated as nice 20: leaving it needs the RLIMIT_NICE room.
-    if idle_policy(task_policy(target)) && !idle_policy(policy)
-        && !is_nice_reduction(target, target_nice) { req_priv = true; }
-
-    if !check_same_owner(caller, target) { req_priv = true; }
-
-    // Normal users shall not reset the sched_reset_on_fork flag.
-    if target.sched_reset_on_fork.load(Ordering::Acquire) && !reset_on_fork { req_priv = true; }
-
-    if req_priv && !caller.has_cap(sched::cap::SYS_NICE) { return err(Errno::Eperm); }
-    0
-}
-
-/// Linux `__sched_setscheduler()` for the policies this scheduler implements.
-///
-/// `policy_arg` is the caller-supplied policy INCLUDING `SCHED_RESET_ON_FORK`,
-/// or `SETPARAM_POLICY` for `sched_setparam(2)`. Ordering is Linux's:
-/// policy validity → priority validity → permission → apply. Returns `0` or
-/// `-errno`.
-/// # C: O(log N) requeue
-pub fn setscheduler(caller: &sched::Task, t: &alloc::sync::Arc<sched::Task>,
-                    policy_arg: i32, prio: i32, nice: i32, dl_ok: bool) -> i64 {
-    use core::sync::atomic::Ordering;
-    let (policy_i, reset_on_fork) = split_reset_on_fork(policy_arg);
-    let (policy, reset_on_fork) = if policy_i == SETPARAM_POLICY {
-        (task_policy(t), t.sched_reset_on_fork.load(Ordering::Acquire))
-    } else {
-        (policy_i as u32, reset_on_fork)
-    };
-    if let Err(rv) = check_params(policy, prio, dl_ok) { return rv; }
-    let prio = prio as u32;
-
-    let authorization = user_check(caller, t, policy, nice, prio, reset_on_fork);
-    trace_admission(caller, t, policy, prio, authorization);
-    if authorization != 0 { return authorization; }
-
-    // A policy this scheduler cannot honour must not be silently recorded and
-    // then run as SCHED_NORMAL. SCHED_DEADLINE has no deadline class here.
-    if dl_policy(policy) { return err(Errno::Eopnotsupp); }
-
-    apply(t, policy, nice, prio, reset_on_fork);
-    0
-}
-
-/// Commit a validated + authorized policy change onto `t`, moving it between
-/// the RT and CFS trees under the runqueue lock (Linux's
-/// `dequeue → __setscheduler_params → enqueue`).
-/// # C: O(log N)
-fn apply(t: &alloc::sync::Arc<sched::Task>, policy: u32, nice: i32, prio: u32, reset_on_fork: bool) {
-    use core::sync::atomic::Ordering;
-    use sched::{SchedClass, SchedPolicy};
-    let new_class = match policy {
-        SCHED_FIFO | SCHED_RR => {
-            let p = if policy == SCHED_FIFO { SchedPolicy::Fifo } else { SchedPolicy::Rr };
-            SchedClass::Rt { prio: prio as u8, policy: p }
-        }
-        SCHED_IDLE => {
-            t.load_weight.store(SCHED_IDLE_WEIGHT, Ordering::Release);
-            SchedClass::Normal { weight: SCHED_IDLE_WEIGHT }
-        }
-        // SCHED_NORMAL / SCHED_BATCH
-        _ => {
-            let n = sched::rlimit::clamp_nice(nice);
-            let w = sched::cputime::nice_to_weight(n);
-            t.nice.store(n, Ordering::Release);
-            t.load_weight.store(w, Ordering::Release);
-            SchedClass::Normal { weight: w }
-        }
-    };
-    t.policy.store(policy, Ordering::Release);
-    t.sched_reset_on_fork.store(reset_on_fork, Ordering::Release);
-    sched::live::runqueue::set_class(t, new_class);
-}
-
-/// Bounded scheduler-admission record. Kept behind `debug-boot` so desktop
-/// bring-up can separate an RLIMIT denial from a credential denial without
-/// perturbing normal scheduling.
-#[cfg(all(feature = "debug-boot", target_os = "oxide-kernel"))]
-pub fn trace_admission(caller: &sched::Task, target: &sched::Task, policy: u32, prio: u32, result: i64) {
-    let rtprio = target.rlimit(sched::rlimit::rlim::RTPRIO).0;
-    klog::write_raw(b"[SCHEDCTL caller="); klog::write_dec_u64(caller.tid as u64);
-    klog::write_raw(b" target="); klog::write_dec_u64(target.tid as u64);
-    klog::write_raw(b" policy="); klog::write_dec_u64(policy as u64);
-    klog::write_raw(b" prio="); klog::write_dec_u64(prio as u64);
-    klog::write_raw(b" rlimit_rtprio="); klog::write_dec_u64(rtprio);
-    klog::write_raw(b" cap_sys_nice="); klog::write_dec_u64(caller.has_cap(sched::cap::SYS_NICE) as u64);
-    klog::write_raw(b" rv=");
-    if result < 0 { klog::write_raw(b"-"); klog::write_dec_u64(result.wrapping_neg() as u64); }
-    else { klog::write_dec_u64(result as u64); }
-    klog::write_raw(b"]\n");
-}
-
-/// # C: O(1)
-#[cfg(not(all(feature = "debug-boot", target_os = "oxide-kernel")))]
-pub fn trace_admission(_caller: &sched::Task, _target: &sched::Task, _policy: u32, _prio: u32, _result: i64) {}
+// Task-level rules live in the child modules; `&sched::Task` is
+// hosted-constructible (`Task::new`), so both stay testable without a boot.
+//   task.rs    — live policy/priority/slice accessors + the permission ladder
+//                (`user_check_sched_setscheduler`, `check_same_owner`).
+//   setattr.rs — `__sched_setscheduler` proper: validation order, the no-change
+//                fast path, and the commit onto the runqueue.
+mod task;
+mod setattr;
+pub use task::{check_same_owner, get_params, task_policy, task_rt_priority, task_slice_ns,
+               uclamp_req, user_check};
+pub use setattr::{setattr, setscheduler, trace_admission};
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "sched_policy/tests.rs"]

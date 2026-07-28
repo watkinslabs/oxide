@@ -381,6 +381,7 @@ dependencies = [
  "input",
  "klog",
  "pmm",
+ "power",
  "procfs",
  "sched",
  "softirq",
@@ -622,6 +623,7 @@ dependencies = [
  "block",
  "boot-info",
  "cgroup",
+ "cpu",
  "devfs",
  "hal",
  "hal-aarch64",
@@ -633,6 +635,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "uaccess",
  "vfs",
  "vmm",
 ]
