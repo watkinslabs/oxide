@@ -159,9 +159,11 @@ pub fn poll() -> u32 {
 }
 
 /// The serial console tty's poll/select/epoll wait queue (the Linux
-/// `->poll` wait queue). `None` before `install`. # C: O(1)
-pub fn poll_subscribers() -> Option<&'static vfs::PollSubscribers> {
-    console().map(|tty| tty.poll_subs())
+/// `->poll` wait queue, `tty->read_wait`). `None` before `install`, which is
+/// why the console fops resolve it per call rather than stamping it on the
+/// inode at build time. # C: O(1)
+pub fn poll_subscribers() -> Option<alloc::sync::Arc<vfs::PollSubscribers>> {
+    console().map(|tty| tty.poll_subs_arc())
 }
 
 /// Open admission for the serial console tty (`tty_reopen` TTY_EXCLUSIVE).

@@ -169,20 +169,30 @@ impl UnixPair {
         (g.closed_writer || g.reader_shutdown) && g.buf.is_empty() && !self.reset_pending(end)
     }
 
-    /// Linux AF_UNIX stream readiness derived from both directional halves.
+    /// Linux `unix_poll` (`net/unix/af_unix.c:3353-3396`) for a stream end:
+    /// readability from both directional halves, writability from
+    /// `unix_writable(sk, state)` alone — the local send queue against
+    /// `sndbuf_cap`, never the peer's state. An unconditional `POLL_OUT` here
+    /// told a non-blocking writer "writable" while `send_unix_once` was
+    /// returning `EAGAIN` at the same cap, which is a 100 %-CPU spin rather
+    /// than a sleep.
     /// # C: O(1)
-    pub fn poll_mask(&self, end: UnixEnd) -> u32 {
+    pub fn poll_mask(&self, end: UnixEnd, sndbuf_cap: usize) -> u32 {
         let (has_data, peer_send_shut, local_recv_shut) = {
             let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
             (!g.buf.is_empty(), g.closed_writer, g.reader_shutdown)
         };
-        let (local_send_shut, peer_recv_shut) = {
+        let (local_send_shut, peer_recv_shut, queued) = {
             let g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
-            (g.closed_writer, g.reader_shutdown)
+            (g.closed_writer, g.reader_shutdown, g.buf.len())
         };
         let gone = self.peer_gone(end);
         let reset = self.reset_pending(end);
-        let mut mask = vfs::POLL_OUT;
+        let mut mask = 0u32;
+        // "we set writable also when the other side has shut down the
+        // connection. This prevents stuck sockets." — `unix_poll`'s comment;
+        // the shutdown arms below never clear POLL_OUT, matching that.
+        if super::super::unix_writable(queued, sndbuf_cap) { mask |= vfs::POLL_OUT | vfs::POLL_WRNORM; }
         if has_data || peer_send_shut || local_recv_shut || gone || reset {
             mask |= vfs::POLL_IN;
         }

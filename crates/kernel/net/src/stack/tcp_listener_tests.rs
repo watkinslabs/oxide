@@ -1,5 +1,8 @@
 use super::*;
 
+/// `max(SO_SNDBUF, TCP_SNDBUF_DEFAULT)` — the cap `InetSocket::poll` supplies.
+const TEST_SNDBUF: usize = crate::sock::TCP_SNDBUF_DEFAULT as usize;
+
 fn namespace() -> network_namespace::NetworkNamespaceRef {
     crate::net_ns::test_support::allocate_namespace()
 }
@@ -524,9 +527,9 @@ fn transport_error_exposes_failed_connect_writable_readiness() {
     let owner = namespace();
     let listener = listener(&stack, &owner, 41_017);
     let (_key, entry) = reserved_child(&listener, 51_017, crate::tcp_state::TcpState::SynSent);
-    assert_eq!(entry.poll_mask() & (vfs::POLL_OUT | vfs::POLL_ERR), 0);
+    assert_eq!(entry.poll_mask(TEST_SNDBUF) & (vfs::POLL_OUT | vfs::POLL_ERR), 0);
     entry.set_error(syscall::errno::Errno::Econnrefused as i32);
-    assert_eq!(entry.poll_mask() & (vfs::POLL_OUT | vfs::POLL_ERR),
+    assert_eq!(entry.poll_mask(TEST_SNDBUF) & (vfs::POLL_OUT | vfs::POLL_ERR),
         vfs::POLL_OUT | vfs::POLL_ERR);
 }
 
@@ -536,7 +539,7 @@ fn peer_half_close_is_readable_rdhup_but_remains_writable() {
     let owner = namespace();
     let listener = listener(&stack, &owner, 41_018);
     let (_key, entry) = reserved_child(&listener, 51_018, crate::tcp_state::TcpState::CloseWait);
-    let mask = entry.poll_mask();
+    let mask = entry.poll_mask(TEST_SNDBUF);
     assert_ne!(mask & vfs::POLL_OUT, 0);
     assert_ne!(mask & vfs::POLL_IN, 0);
     assert_ne!(mask & vfs::POLL_RDHUP, 0);
@@ -551,7 +554,7 @@ fn local_half_close_does_not_report_full_hangup_before_peer_fin() {
     for (port, state) in [(51_019, crate::tcp_state::TcpState::FinWait1),
                           (51_020, crate::tcp_state::TcpState::FinWait2)] {
         let (_key, entry) = reserved_child(&listener, port, state);
-        let mask = entry.poll_mask();
+        let mask = entry.poll_mask(TEST_SNDBUF);
         assert_ne!(mask & vfs::POLL_OUT, 0);
         assert_eq!(mask & vfs::POLL_HUP, 0);
     }
