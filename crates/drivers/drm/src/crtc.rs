@@ -190,14 +190,22 @@ pub fn queue_flip_event(card_id: u32, token: u64, crtc_id: u32, user_data: u64) 
         sequence: 0,
         crtc_id,
     };
-    let mut events = EVENTS.lock();
-    if let Some(q) = events.iter_mut().find(|q| q.card_id == card_id && q.token == token) {
-        q.queue.push_back(ev);
-    } else {
-        let mut queue = VecDeque::new();
-        queue.push_back(ev);
-        events.push(EventQueue { card_id, token, queue });
+    {
+        let mut events = EVENTS.lock();
+        if let Some(q) = events.iter_mut().find(|q| q.card_id == card_id && q.token == token) {
+            q.queue.push_back(ev);
+        } else {
+            let mut queue = VecDeque::new();
+            queue.push_back(ev);
+            events.push(EventQueue { card_id, token, queue });
+        }
     }
+    // Linux `drm_send_event_locked` wakes `file_priv->event_wait` with
+    // `EPOLLIN | EPOLLRDNORM` after every queued event. Without this the queue
+    // grew silently and no poll/epoll waiter on the card fd ever learned an
+    // event had arrived. Notified OUTSIDE the EVENTS lock: a waiter woken here
+    // reads the queue, and waking under the lock invites a self-deadlock.
+    crate::node::card_poll_subs(card_id).notify_mask(vfs::POLL_IN);
 }
 
 /// Drain queued flip events into `buf`, returning the bytes written.
