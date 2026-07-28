@@ -46,6 +46,27 @@ impl vfs::SuperOps for Ext4SuperOps {
         })
     }
 
+    /// Linux `ext4_drop_inode` → `generic_drop_inode`: evict as soon as the
+    /// last reference goes if the inode has no remaining links. The generic
+    /// default additionally requires `i_count == 0`, which `iput` has already
+    /// established by the time it asks; keeping only the link test makes this
+    /// the exact `!inode->i_nlink` predicate and is what turns the last close
+    /// of an unlinked file into an eviction.
+    /// # C: O(1)
+    fn drop_inode(&self, inode: &vfs::Inode) -> bool { inode.nlink() == 0 }
+
+    /// Linux `ext4_evict_inode`: an inode reaching here with no links is the
+    /// unlinked-but-was-open (or never-named O_TMPFILE) case — truncate its
+    /// data blocks, release its quota charge, and free the inode slot NOW that
+    /// the last reference is gone. A still-linked inode is only cleared.
+    /// # C: O(N_extents) when it frees, else O(1)
+    fn evict_inode(&self, inode: &vfs::Inode) {
+        if inode.nlink() == 0 {
+            if let Some((st, ino)) = crate::rootfs::ext4_state_of(inode) { let _ = st.evict_orphan(ino); }
+        }
+        inode.set_state(vfs::inode::I_FREEING | vfs::inode::I_CLEAR, vfs::inode::I_DIRTY);
+    }
+
     fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
         // sync(2)/syncfs(2): flush buffered file-data pages (Linux buffered
         // writes sit dirty in the page cache until writeback) before the

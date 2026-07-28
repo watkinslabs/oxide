@@ -163,32 +163,50 @@ fn final_unlink_inode_write_failure_preserves_namespace_and_project_quota() {
     assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
 }
 
+/// A failed quota release CANNOT roll an unlink back, and this test used to
+/// assert that it did (EIO returned, dirent preserved). That expectation was
+/// never Linux: `__ext4_unlink` (`fs/ext4/namei.c`) calls no dquot function at
+/// all — it deletes the entry, `drop_nlink`s and `ext4_orphan_add`s. The
+/// release is `dquot_free_inode` inside `ext4_free_inode`
+/// (`fs/ext4/ialloc.c:275`), reached from `ext4_evict_inode`
+/// (`fs/ext4/inode.c:319`), and `ext4_free_inode` returns `void` — by then the
+/// name is long gone and there is nothing to undo.
+///
+/// The real contract: the unlink succeeds, and because nothing holds this
+/// inode the eviction runs inline, where `RootfsState::free_orphan_inode`
+/// releases through `release_existing_inode_retry` — which absorbs exactly one
+/// failed `mark_dirty`. So the accounting still lands and the blocks and the
+/// inode slot both come back.
 #[test]
-fn final_unlink_quota_release_failure_preserves_namespace_and_project_quota() {
+fn final_unlink_quota_release_failure_is_retried_at_eviction() {
     common::boot_hosted_pmm();
     let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
     let qid = Kqid::project(0);
+    let base_free_inodes = m.state().mount.state_free_inodes();
+    let base_q = vfs::quota_getquota(&sb, qid).expect("quota before create");
+
     let inode = m.state().create_at(b"/unlink-quota-release-fail.txt", 0o644).expect("create file");
     let ino = inode.ino() as u32;
-    let before_raw = m.state().mount.read_inode(ino).expect("raw before");
-    let before_free_blocks = m.state().mount.state_free_blocks();
-    let before_free_inodes = m.state().mount.state_free_inodes();
+    let free_blocks_before_data = m.state().mount.state_free_blocks();
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(ino, 0, &vec![0xC3; (bs * 2) as usize]).expect("seed file data");
+    let charged = m.state().mount.read_inode(ino).expect("raw before").i_blocks as u64 * 512;
+    assert_ne!(charged, 0, "the victim must own blocks for the space release to mean anything");
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+    assert_eq!(before_q.dqb_curinodes, base_q.dqb_curinodes + 1);
+    assert_eq!(before_q.dqb_curspace, base_q.dqb_curspace + charged);
     drop(inode);
 
     m.state().mount.fail_next_quota_mark_dirty_for_tests();
-    let err = m.state().unlink_at(b"/unlink-quota-release-fail.txt").expect_err("quota release failure");
+    m.state().unlink_at(b"/unlink-quota-release-fail.txt")
+        .expect("unlink succeeds — no dquot call can fail it");
 
-    assert_eq!(err, VfsError::Eio);
-    assert_eq!(m.state().lookup_path(b"/unlink-quota-release-fail.txt"), Some(ino));
-    assert_eq!(m.state().mount.state_free_blocks(), before_free_blocks);
-    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
-    let after_raw = m.state().mount.read_inode(ino).expect("raw after");
-    assert_eq!(after_raw.links_count, before_raw.links_count);
-    assert_eq!(after_raw.size, before_raw.size);
+    assert_eq!(m.state().lookup_path(b"/unlink-quota-release-fail.txt"), None, "the name is gone");
+    assert_eq!(m.state().mount.state_free_blocks(), free_blocks_before_data, "eviction gave the blocks back");
+    assert_eq!(m.state().mount.state_free_inodes(), base_free_inodes, "eviction gave the inode slot back");
     let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
-    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
-    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
+    assert_eq!(after_q.dqb_curinodes, base_q.dqb_curinodes, "the retried release still lands");
+    assert_eq!(after_q.dqb_curspace, base_q.dqb_curspace);
 }
 
 #[test]
@@ -227,35 +245,53 @@ fn vfs_final_unlink_inode_write_failure_preserves_namespace_and_project_quota() 
     assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
 }
 
+/// Same correction as [`final_unlink_quota_release_failure_is_retried_at_eviction`]
+/// through `i_op->unlink`, and one step further: the test holds `file`, so the
+/// eviction is DEFERRED. `__ext4_unlink` (`fs/ext4/namei.c`) removes the name
+/// and orphans the inode without touching quota; the armed `mark_dirty`
+/// failure therefore cannot reach the unlink at all, and only fires later,
+/// inside `ext4_evict_inode` → `ext4_free_inode` → `dquot_free_inode`
+/// (`fs/ext4/ialloc.c:275`), where `release_existing_inode_retry` absorbs it.
 #[test]
-fn vfs_final_unlink_quota_release_failure_preserves_namespace_and_project_quota() {
+fn vfs_final_unlink_quota_release_failure_is_retried_at_eviction() {
     common::boot_hosted_pmm();
     let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
     let qid = Kqid::project(0);
     let root = sb.s_root_inode().expect("root inode");
+    let base_free_inodes = m.state().mount.state_free_inodes();
+    let base_q = vfs::quota_getquota(&sb, qid).expect("quota before create");
+
     let file = root.create_child("iop-unlink-quota-release-fail.txt", 0o644, &CreateCtx::root()).expect("create file");
     let ino = file.ino() as u32;
-    let before_raw = m.state().mount.read_inode(ino).expect("raw before");
-    let before_free_blocks = m.state().mount.state_free_blocks();
-    let before_free_inodes = m.state().mount.state_free_inodes();
+    let free_blocks_before_data = m.state().mount.state_free_blocks();
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(ino, 0, &vec![0xD4; (bs * 2) as usize]).expect("seed file data");
+    let charged = m.state().mount.read_inode(ino).expect("raw before").i_blocks as u64 * 512;
+    assert_ne!(charged, 0);
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+    assert_eq!(before_q.dqb_curinodes, base_q.dqb_curinodes + 1);
+    assert_eq!(before_q.dqb_curspace, base_q.dqb_curspace + charged);
 
     m.state().mount.fail_next_quota_mark_dirty_for_tests();
-    let err = root.unlink_child("iop-unlink-quota-release-fail.txt").expect_err("quota release failure");
+    root.unlink_child("iop-unlink-quota-release-fail.txt")
+        .expect("unlink succeeds — no dquot call can fail it");
 
-    assert_eq!(err, VfsError::Eio);
-    assert_eq!(m.state().lookup_path(b"/iop-unlink-quota-release-fail.txt"), Some(ino));
-    assert_eq!(root.lookup("iop-unlink-quota-release-fail.txt").expect("source remains").ino(), file.ino());
-    assert_eq!(file.nlink(), 1, "failed unlink keeps cached link count");
-    assert_eq!(m.state().mount.state_free_blocks(), before_free_blocks);
-    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
-    let after_raw = m.state().mount.read_inode(ino).expect("raw after");
-    assert_eq!(after_raw.links_count, before_raw.links_count);
-    assert_eq!(after_raw.i_blocks, before_raw.i_blocks);
-    assert_eq!(after_raw.size, before_raw.size);
-    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
-    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
-    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
+    assert_eq!(m.state().lookup_path(b"/iop-unlink-quota-release-fail.txt"), None, "the name is gone");
+    assert!(root.lookup("iop-unlink-quota-release-fail.txt").is_err(), "the dcache entry is gone too");
+    assert_eq!(file.nlink(), 0, "the final unlink zeroed the cached link count");
+    // Held-across-unlink invariant: nothing is freed while `file` lives.
+    assert_eq!(m.state().mount.state_free_inodes(), base_free_inodes - 1, "the inode slot is still in use");
+    let held_q = vfs::quota_getquota(&sb, qid).expect("quota while held");
+    assert_eq!(held_q.dqb_curinodes, before_q.dqb_curinodes, "unlink-while-held keeps the inode charged");
+    assert_eq!(held_q.dqb_curspace, before_q.dqb_curspace, "unlink-while-held keeps the space charged");
+
+    vfs::file::iput(file);
+
+    assert_eq!(m.state().mount.state_free_blocks(), free_blocks_before_data, "eviction gave the blocks back");
+    assert_eq!(m.state().mount.state_free_inodes(), base_free_inodes, "eviction gave the inode slot back");
+    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after eviction");
+    assert_eq!(after_q.dqb_curinodes, base_q.dqb_curinodes, "the retried release still lands");
+    assert_eq!(after_q.dqb_curspace, base_q.dqb_curspace);
 }
 
 #[test]
@@ -359,8 +395,17 @@ fn vfs_final_rmdir_quota_release_failure_preserves_namespace_and_project_quota()
     assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
 }
 
+/// A REGULAR-file rename victim now follows the unlink contract, so this test's
+/// old expectation (EIO, both names preserved) was wrong for the same reason:
+/// `ext4_rename` (`fs/ext4/namei.c`) only `ext4_dec_count(new.inode)` and
+/// `ext4_orphan_add(handle, new.inode)`s the victim — no dquot call — leaving
+/// `dquot_free_inode` in `ext4_free_inode` (`fs/ext4/ialloc.c:275`) to release
+/// it at eviction, where nothing can un-rename anything.
+///
+/// Here neither side is held, so the victim's eviction runs inline inside the
+/// rename and `release_existing_inode_retry` absorbs the injected failure.
 #[test]
-fn rename_overwrite_quota_release_failure_preserves_namespace_and_project_quota() {
+fn rename_overwrite_quota_release_failure_is_retried_at_victim_eviction() {
     common::boot_hosted_pmm();
     let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
     let qid = Kqid::project(0);
@@ -368,7 +413,10 @@ fn rename_overwrite_quota_release_failure_preserves_namespace_and_project_quota(
     let dst = m.state().create_at(b"/rename-quota-dst.txt", 0o644).expect("create dest");
     let src_ino = src.ino() as u32;
     let dst_ino = dst.ino() as u32;
-    let before_dst_raw = m.state().mount.read_inode(dst_ino).expect("raw dest before");
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(dst_ino, 0, &vec![0xE5; (bs * 2) as usize]).expect("seed victim data");
+    let victim_space = m.state().mount.read_inode(dst_ino).expect("raw dest before").i_blocks as u64 * 512;
+    assert_ne!(victim_space, 0);
     let before_free_blocks = m.state().mount.state_free_blocks();
     let before_free_inodes = m.state().mount.state_free_inodes();
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
@@ -376,24 +424,71 @@ fn rename_overwrite_quota_release_failure_preserves_namespace_and_project_quota(
     drop(dst);
 
     m.state().mount.fail_next_quota_mark_dirty_for_tests();
-    let err = m.state().rename_at(b"/rename-quota-src.txt", b"/rename-quota-dst.txt").expect_err("quota release failure");
+    m.state().rename_at(b"/rename-quota-src.txt", b"/rename-quota-dst.txt")
+        .expect("rename succeeds — a regular victim's release is not on the rename path");
+
+    assert_eq!(m.state().lookup_path(b"/rename-quota-src.txt"), None, "the source name is gone");
+    assert_eq!(m.state().lookup_path(b"/rename-quota-dst.txt"), Some(src_ino), "the destination names the source");
+    assert!(m.state().mount.read_inode(dst_ino).map(|i| i.links_count).unwrap_or(0) == 0,
+        "the replaced victim lost its last link");
+    assert_eq!(m.state().mount.state_free_blocks(), before_free_blocks + (victim_space / bs),
+        "the victim's blocks came back at eviction");
+    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes + 1,
+        "the victim's inode slot came back at eviction");
+    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
+    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes - 1, "the retried release still lands");
+    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace - victim_space);
+}
+
+/// The path that genuinely still pre-releases and rolls back: a DIRECTORY
+/// victim. `Mount::rmdir` frees a directory outright (a directory has no
+/// open-fd data to preserve), so its charge is released up front — and a
+/// failure there aborts the rename with the namespace and the quota intact,
+/// exactly like `Ext4StatInodeOps::rmdir`. Contrast with the regular-file
+/// victim above, which is merely orphaned.
+#[test]
+fn rename_overwrite_directory_victim_quota_release_failure_rolls_back() {
+    common::boot_hosted_pmm();
+    let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
+    let qid = Kqid::project(0);
+    m.state().mkdir_at(b"/rename-quota-dir-src", 0o755).expect("mkdir source");
+    m.state().mkdir_at(b"/rename-quota-dir-dst", 0o755).expect("mkdir dest");
+    let src_ino = m.state().lookup_path(b"/rename-quota-dir-src").expect("source ino");
+    let dst_ino = m.state().lookup_path(b"/rename-quota-dir-dst").expect("dest ino");
+    let before_dst_raw = m.state().mount.read_inode(dst_ino).expect("raw dest before");
+    let before_root = m.state().mount.read_inode(2).expect("root before");
+    let before_free_blocks = m.state().mount.state_free_blocks();
+    let before_free_inodes = m.state().mount.state_free_inodes();
+    let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
+
+    m.state().mount.fail_next_quota_mark_dirty_for_tests();
+    let err = m.state().rename_at(b"/rename-quota-dir-src", b"/rename-quota-dir-dst")
+        .expect_err("up-front directory-victim release failure aborts the rename");
 
     assert_eq!(err, VfsError::Eio);
-    assert_eq!(m.state().lookup_path(b"/rename-quota-src.txt"), Some(src_ino));
-    assert_eq!(m.state().lookup_path(b"/rename-quota-dst.txt"), Some(dst_ino));
+    assert_eq!(m.state().lookup_path(b"/rename-quota-dir-src"), Some(src_ino));
+    assert_eq!(m.state().lookup_path(b"/rename-quota-dir-dst"), Some(dst_ino));
     assert_eq!(m.state().mount.state_free_blocks(), before_free_blocks);
     assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
     let after_dst_raw = m.state().mount.read_inode(dst_ino).expect("raw dest after");
     assert_eq!(after_dst_raw.links_count, before_dst_raw.links_count);
     assert_eq!(after_dst_raw.size, before_dst_raw.size);
     assert_eq!(after_dst_raw.i_blocks, before_dst_raw.i_blocks);
+    assert_eq!(m.state().mount.read_inode(2).expect("root after").links_count, before_root.links_count);
     let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
     assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
     assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
 }
 
+/// `i_op->rename` over a REGULAR-file victim that the test still HOLDS. Same
+/// correction as the path-based case — `ext4_rename` (`fs/ext4/namei.c`) only
+/// `ext4_dec_count`s + `ext4_orphan_add`s the victim, calling no dquot function
+/// — plus the deferral: with `dst` alive the victim's blocks and charge outlive
+/// the rename, and the armed `mark_dirty` failure only reaches
+/// `dquot_free_inode` (`fs/ext4/ialloc.c:275`) at the eviction `iput` triggers,
+/// where `release_existing_inode_retry` absorbs it.
 #[test]
-fn vfs_rename_overwrite_quota_release_failure_preserves_namespace_and_project_quota() {
+fn vfs_rename_overwrite_quota_release_failure_is_retried_at_victim_eviction() {
     common::boot_hosted_pmm();
     let (m, sb) = mount_result(seeded_quota_disk()).expect("rw mount with hidden quota");
     let qid = Kqid::project(0);
@@ -402,28 +497,36 @@ fn vfs_rename_overwrite_quota_release_failure_preserves_namespace_and_project_qu
     let dst = root.create_child("iop-rename-quota-dst.txt", 0o644, &CreateCtx::root()).expect("create dest");
     let src_ino = src.ino() as u32;
     let dst_ino = dst.ino() as u32;
-    let before_dst_raw = m.state().mount.read_inode(dst_ino).expect("raw dest before");
+    let bs = m.state().mount.sb.block_size as u64;
+    m.state().mount.write_at(dst_ino, 0, &vec![0xF6; (bs * 2) as usize]).expect("seed victim data");
+    let victim_space = m.state().mount.read_inode(dst_ino).expect("raw dest before").i_blocks as u64 * 512;
+    assert_ne!(victim_space, 0);
     let before_free_blocks = m.state().mount.state_free_blocks();
     let before_free_inodes = m.state().mount.state_free_inodes();
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
 
     m.state().mount.fail_next_quota_mark_dirty_for_tests();
-    let err = root.rename_child("iop-rename-quota-src.txt", &root, "iop-rename-quota-dst.txt", 0, &CreateCtx::root())
-        .expect_err("quota release failure");
+    root.rename_child("iop-rename-quota-src.txt", &root, "iop-rename-quota-dst.txt", 0, &CreateCtx::root())
+        .expect("rename succeeds — a regular victim's release is not on the rename path");
 
-    assert_eq!(err, VfsError::Eio);
-    assert_eq!(m.state().lookup_path(b"/iop-rename-quota-src.txt"), Some(src_ino));
-    assert_eq!(m.state().lookup_path(b"/iop-rename-quota-dst.txt"), Some(dst_ino));
-    assert_eq!(dst.nlink(), 1, "failed overwrite keeps cached dest linked");
-    assert_eq!(m.state().mount.state_free_blocks(), before_free_blocks);
-    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes);
-    let after_dst_raw = m.state().mount.read_inode(dst_ino).expect("raw dest after");
-    assert_eq!(after_dst_raw.links_count, before_dst_raw.links_count);
-    assert_eq!(after_dst_raw.size, before_dst_raw.size);
-    assert_eq!(after_dst_raw.i_blocks, before_dst_raw.i_blocks);
-    assert_eq!(root.lookup("iop-rename-quota-src.txt").expect("source remains").ino(), src.ino());
-    assert_eq!(root.lookup("iop-rename-quota-dst.txt").expect("dest remains").ino(), dst.ino());
-    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after");
-    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes);
-    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace);
+    assert_eq!(m.state().lookup_path(b"/iop-rename-quota-src.txt"), None, "the source name is gone");
+    assert_eq!(m.state().lookup_path(b"/iop-rename-quota-dst.txt"), Some(src_ino), "the destination names the source");
+    assert_eq!(dst.nlink(), 0, "the replaced victim lost its last link");
+    // Held-across-rename invariant: the victim is orphaned, not freed.
+    assert_eq!(m.state().mount.state_free_blocks(), before_free_blocks, "the victim's blocks survive while held");
+    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes, "the victim's inode slot survives while held");
+    let held_q = vfs::quota_getquota(&sb, qid).expect("quota while victim held");
+    assert_eq!(held_q.dqb_curinodes, before_q.dqb_curinodes, "the victim stays charged while held");
+    assert_eq!(held_q.dqb_curspace, before_q.dqb_curspace);
+
+    vfs::file::iput(dst);
+
+    assert_eq!(m.state().mount.state_free_blocks(), before_free_blocks + (victim_space / bs),
+        "eviction gave the victim's blocks back");
+    assert_eq!(m.state().mount.state_free_inodes(), before_free_inodes + 1,
+        "eviction gave the victim's inode slot back");
+    let after_q = vfs::quota_getquota(&sb, qid).expect("quota after eviction");
+    assert_eq!(after_q.dqb_curinodes, before_q.dqb_curinodes - 1, "the retried release still lands");
+    assert_eq!(after_q.dqb_curspace, before_q.dqb_curspace - victim_space);
+    drop(src);
 }

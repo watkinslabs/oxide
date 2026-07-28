@@ -19,6 +19,7 @@ pub use vfs::StaticFileInode;  // generic inode lives in vfs
 #[cfg(target_os = "oxide-kernel")] pub mod static_files;
 #[cfg(target_os = "oxide-kernel")] pub mod cgroup_file;
 #[cfg(target_os = "oxide-kernel")] pub mod mounts;
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-mntcost"))] mod mnt_cost;
 #[cfg(any(target_os = "oxide-kernel", test))] mod mount_snapshot;
 #[cfg(target_os = "oxide-kernel")] pub mod cmdline;
 #[cfg(target_os = "oxide-kernel")] pub mod stat;

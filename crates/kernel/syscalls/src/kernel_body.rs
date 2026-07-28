@@ -5,6 +5,7 @@ mod anon_dname;
 mod clock_ops;
 mod timex_ops;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-startlat"))] pub mod startlat;
 #[cfg(feature = "debug-fdlife")] mod fd_life;
 // Moved out of the kernel binary with the syscall layer (docs/53):
 pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;

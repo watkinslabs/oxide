@@ -496,9 +496,13 @@ impl HoleList {
         // Walk and validate before writing the candidate header. Writing first
         // lets a duplicate free overwrite its existing header and create a
         // self-loop, which later makes `alloc` dereference arbitrary metadata.
+        #[cfg(feature = "debug-heapwalk")]
+        let mut steps: u64 = 0;
         let mut prev: *mut HoleHdr = &mut self.first;
         let mut prev_addr = None;
         loop {
+            #[cfg(feature = "debug-heapwalk")]
+            { steps += 1; }
             // SAFETY: `prev` is initialized to `&mut self.first` and
             // thereafter only advanced through `(*prev).next` pointers
             // that we ourselves inserted; every dereference targets a
@@ -605,6 +609,8 @@ impl HoleList {
         // the new region above; `try_merge` only walks `next` pointers
         // belonging to this same list.
         unsafe { self.try_merge(prev) }?;
+        #[cfg(feature = "debug-heapwalk")]
+        crate::walkstat::note_free(steps);
         Ok(())
     }
 
@@ -744,8 +750,12 @@ impl HoleList {
     pub fn alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
         let (need, align) = normalize(layout)?;
 
+        #[cfg(feature = "debug-heapwalk")]
+        let mut steps: u64 = 0;
         let mut prev: *mut HoleHdr = &mut self.first;
         loop {
+            #[cfg(feature = "debug-heapwalk")]
+            { steps += 1; }
             // SAFETY: list invariant — `prev` is always a valid header;
             // `prev.next` is `Some(NonNull)` into our owned heap or `None`.
             let cur_nn = unsafe { (*prev).next };
@@ -845,8 +855,29 @@ impl HoleList {
             // back padding < MIN_HOLE_SIZE is leaked (bounded waste, see
             // module docs).
 
+            #[cfg(feature = "debug-heapwalk")]
+            crate::walkstat::note_alloc(steps);
             return NonNull::new(user_start as *mut u8);
         }
+    }
+
+    /// Live free-hole count. Diagnostic companion to `walkstat`: the walk-step
+    /// averages are only interpretable against the list length that produced
+    /// them. # C: O(N)
+    #[cfg(feature = "debug-heapwalk")]
+    pub fn hole_count(&self) -> u64 {
+        let mut n = 0u64;
+        let mut cur = self.first.next;
+        while let Some(node) = cur {
+            if !self.owns_header(node.as_ptr() as usize) { break; }
+            // SAFETY: list invariant — every `next`-reachable header lies in a
+            // region this list owns, and the caller holds the allocator lock.
+            let hdr = unsafe { node.as_ref() };
+            if hdr.size < MIN_HOLE_SIZE { break; }
+            cur = hdr.next;
+            n += 1;
+        }
+        n
     }
 
     /// Release `[ptr, ptr + need)` (where `need = normalize(layout).0`)

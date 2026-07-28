@@ -57,10 +57,21 @@ fn unlink_frees_inode_and_blocks() {
     let bs = m.sb.block_size as usize;
     m.append_block(n, &std::vec![0u8; bs]).unwrap();
     m.append_block(n, &std::vec![0u8; bs]).unwrap();
-    m.unlink(2, b"toremove").unwrap();
+    // Linux `ext4_unlink` drops the NAME and orphans the inode; the blocks and
+    // the inode slot survive until `ext4_evict_inode` runs, so an fd still open
+    // on the file keeps working.
+    let out = m.unlink(2, b"toremove").unwrap();
+    assert!(out.orphaned() && out.ino == n);
+    assert!(m.lookup_path(b"/toremove").is_err(), "name is gone immediately");
+    assert_eq!(m.read_sb_last_orphan().unwrap(), n, "inode is on the on-disk orphan list");
+    assert_eq!(m.read_inode(n).unwrap().links_count, 0);
+    assert!(m.state_free_blocks() < pre_blocks, "blocks NOT reclaimed at unlink time");
+    assert!(m.state_free_inodes() < pre_inodes, "inode slot NOT reclaimed at unlink time");
+    // Eviction (`ext4_evict_inode`) is what returns the space.
+    m.free_orphan_inode(n).unwrap();
     assert_eq!(m.state_free_blocks(), pre_blocks, "data blocks returned to pool");
     assert_eq!(m.state_free_inodes(), pre_inodes, "inode returned to pool");
-    assert!(m.lookup_path(b"/toremove").is_err());
+    assert_eq!(m.read_sb_last_orphan().unwrap(), 0, "orphan list drained");
 }
 
 #[test]

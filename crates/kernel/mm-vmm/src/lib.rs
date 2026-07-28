@@ -40,6 +40,7 @@ pub use address_space::{
     PR_SET_MM_EXE_FILE, PR_SET_MM_MAP, PR_SET_MM_MAP_SIZE, PR_SET_MM_START_BRK,
     PR_SET_MM_START_CODE, PR_SET_MM_START_DATA, PR_SET_MM_START_STACK,
 };
+pub use address_space::pkeys;
 pub use anon_vma::{AnonVma, RmapTarget};
 pub use file_rmap::FileRmap;
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
