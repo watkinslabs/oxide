@@ -175,7 +175,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
     // SAFETY: EOI issued above; still on this CPU's IRQ stack with IRQs masked.
     unsafe { oxide_arm_softirq_drain(); }
     // The actual switch happens at IRQ exit via
-    // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the tick
+    // `oxide_irq_exit_to_user` → the return-to-user work loop (one engine);
     // only requested it by setting need_resched above.
 }
 
@@ -237,36 +237,43 @@ unsafe extern "C" fn oxide_arm_softirq_drain() {
     unsafe { sched::bh::do_softirq(); }
 }
 
-/// IRQ-exit return-to-user reschedule slow path (`14§R07` / `smp-arch.md`
-/// Phase A) — arm mirror of x86's. Called by the IRQ vector handler after
-/// the dispatcher returns, with the interrupted frame's saved SPSR_EL1.
-/// VOLUNTARY preempt: switch only when returning to EL0 (SPSR.M[3:0]==0,
-/// i.e. EL0t) AND a resched was requested at a safe point. The one
-/// `schedule()` performs the switch; it preserves the caller's DAIF (here
-/// the IRQ-exit context's IRQ-masked state), so IRQs stay masked through
-/// the `eret` tail (the `eret` restores the user DAIF from the saved SPSR).
+/// Linux `irqentry_exit` — the arm64 half. Called by the IRQ vector handler
+/// (and by the default/fault vector on a RESOLVED exception) after the
+/// dispatcher returns, with the whole 288 B entry frame.
 ///
-/// # SAFETY: invoked only from the IRQ-exit asm with IRQs masked; the
-/// interrupted GP + ELR/SPSR/SP_EL0 frame lives on the current kernel
-/// stack and is restored by `oxide_irq_resume_user` after this returns.
-/// # C: O(log N) when it schedules; O(1) otherwise
-/// # Ctx: IRQ-exit
+/// `user_mode(regs)` picks the arm: an EL0 return runs the ONE return-to-user
+/// work loop (`sched::exit_to_user::hook`) — reschedule, then signal delivery,
+/// looping while work remains; an EL1 return does nothing, because an
+/// interrupt that hit kernel code has no user register set to deliver into and
+/// this port is VOLUNTARY-preempt only (`smp-arch.md` Phase A).
+///
+/// # SAFETY: invoked only from the exception-exit asm with IRQs masked, the
+/// hardirq accounting already dropped, and SP back on the interrupted task's
+/// own kernel stack; `regs` is that frame, restored by `oxide_irq_resume_user`
+/// (or the fault vector's `kernel_exit`) after this returns.
+/// # C: O(1) plus the work serviced
+/// # Ctx: exception-exit
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_irq_resched_on_exit(saved_spsr: u64, saved_elr: *mut u64) {
-    let from_user = (saved_spsr & 0xf) == 0; // EL0t
-    if sched::preempt::should_resched_to_user(from_user) {
-        sched::preempt::take_need_resched();
-        // SAFETY: IRQ-exit safe point — should_resched_to_user confirmed
-        // preempt_count==0 and EL0-return; the interrupted frame is on the
-        // stack and restored after schedule() returns. schedule() preserves
-        // this context's masked DAIF, so IRQs stay masked through the eret.
-        unsafe { sched::live::schedule(); }
+unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_aarch64::SvcFrame) {
+    if regs.is_null() { return; }
+    // SAFETY: the exception-exit asm passes SP, the live 288 B entry frame.
+    let spsr = unsafe { (*regs).spsr_el1 };
+    if !hal::uregs::aarch64::user_mode(spsr) { return; }
+    // Snapshot BEFORE the loop: the loop consumes `need_resched` when it
+    // schedules, and the rseq abort below must fire exactly when the thread
+    // lost the CPU inside EL0 code — not on every interrupt return, which
+    // would abort critical sections that were never preempted.
+    let preempted = sched::preempt::should_resched();
+    // SAFETY: forwarded contract — `regs` is the live entry frame and the
+    // registered loop is the one installed at boot.
+    unsafe { sched::exit_to_user::hook::run(regs as *mut u8); }
+    if preempted {
         // The thread just lost the CPU inside EL0 code. If it was inside a
         // declared rseq critical section, invalidate it and restart at
-        // `abort_ip` BEFORE the eret resumes, so the commit never runs
-        // against per-cpu state another thread mutated in the gap.
-        // SAFETY: `saved_elr` is the interrupted frame's ELR_EL1 slot on this task's kernel stack, published by `oxide_irq_vector_handler`'s `add x1, sp, #176`; the frame outlives this call and is consumed by `oxide_irq_resume_user`.
-        unsafe { sched::rseq::rseq_preempt_return(&mut *saved_elr); }
+        // `abort_ip` BEFORE the eret resumes, so the commit never runs against
+        // per-cpu state another thread mutated in the gap.
+        // SAFETY: `regs` is the live entry frame; its `elr_el1` slot is the PC the eret consumes, and the frame outlives this call.
+        unsafe { sched::rseq::rseq_preempt_return(&mut (*regs).elr_el1); }
     }
 }

@@ -11,6 +11,13 @@ pub type CoredumpFn = fn(i32);
 /// (128 B) + zeroed ucontext stub (128 B) + the restorer quadword.
 #[cfg(target_arch = "x86_64")]
 const FAULT_FRAME_BYTES: u64 = 0x108;
+/// `SIGSEGV` as the handler's first argument (Linux `regs->di = sig`).
+#[cfg(target_arch = "x86_64")]
+const SIGSEGV_SIGNO: u64 = sched::signum::Signum::Sigsegv.as_u8() as u64;
+/// RFLAGS a fault-path handler entry runs with: IF=1 plus the always-set
+/// reserved bit 1, with DF/TF/RF clear per Linux `handle_signal`.
+#[cfg(target_arch = "x86_64")]
+const HANDLER_ENTRY_RFLAGS: u64 = 0x202;
 static COREDUMP_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 /// # C: O(1) — atomic store.
@@ -32,7 +39,7 @@ fn coredump_then_terminate(sig: sched::signum::Signum) -> ! {
 
 /// Public wrapper for SIGSEGV delivery. F158: tries Linux-style
 /// catchable signal first — if the user task has installed a
-/// SIGSEGV handler via rt_sigaction, rewrite the live FaultFrame
+/// SIGSEGV handler via rt_sigaction, rewrite the live PtRegs
 /// so iretq lands at the handler with `sig=11` in rdi and a
 /// minimal siginfo on the user stack. Falls back to terminate
 /// when SIG_DFL or no live frame.
@@ -44,7 +51,7 @@ pub fn deliver_sigsegv_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
     sigsegv_terminate_x86(vec, err, rip, cr2);
 }
 
-/// F158: rewrite the live FaultFrame so iretq lands at the user's
+/// F158: rewrite the live PtRegs so iretq lands at the user's
 /// SIGSEGV handler with `sig=11` in rdi (passed via fault asm
 /// scratch slot). siginfo + ucontext stub pushed on user stack.
 /// # SAFETY: caller is in fault dispatch, IRQs off.
@@ -73,7 +80,7 @@ pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
         klog::write_raw(b" handler="); klog::write_hex_u64(sa.handler);
         klog::write_raw(b"\n");
     }
-    // SAFETY: frame_ptr is the live FaultFrame for this PF, exposed by oxide_fault_print_rust on the kernel stack; mutable borrow is sound under fault dispatch context (single-CPU, IRQs off).
+    // SAFETY: frame_ptr is the live PtRegs for this PF, exposed by oxide_fault_print_rust on the kernel stack; mutable borrow is sound under fault dispatch context (single-CPU, IRQs off).
     let frame = unsafe { &mut *frame_ptr };
     // User stack layout (top → bottom):
     //   [old_rsp - 0x10]  restorer    ← ret addr from handler
@@ -106,23 +113,17 @@ pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
     }
     frame.rip    = sa.handler;
     frame.rsp    = ret;
-    frame.rflags = 0x202;
-    // F158: rewrite the saved-scratch slots that oxide_fault_common
-    // pops back into rdi/rsi/rdx before iretq, so the user handler
-    // sees Linux ABI args:
+    frame.rflags = HANDLER_ENTRY_RFLAGS;
+    // F158: the argument registers oxide_fault_common restores before its
+    // iretq, so the user handler sees the Linux ABI:
     //   rdi = sig num (11)
     //   rsi = ptr to siginfo_t (only meaningful with SA_SIGINFO)
     //   rdx = ptr to ucontext_t (only meaningful with SA_SIGINFO)
-    // Per fault.rs stack diagram (B45 layout — callee-saved pushes
-    // added), the slots are at frame_ptr - 0x28 (rdi), -0x20 (rsi),
-    // -0x18 (rdx).
-    let frame_addr = frame_ptr as u64;
-    // SAFETY: frame_ptr is a kernel-stack address from current_fault_frame; the saved-scratch slots at -0x28/-0x20/-0x18 are within the per-task syscall/fault stack and only oxide_fault_common (which runs after we return) reads them.
-    unsafe {
-        core::ptr::write_volatile((frame_addr - 0x28) as *mut u64, 11);
-        core::ptr::write_volatile((frame_addr - 0x20) as *mut u64, si);
-        core::ptr::write_volatile((frame_addr - 0x18) as *mut u64, uc);
-    }
+    // Named fields on the entry frame — these were raw `frame_ptr - 0x28`
+    // stack pokes back when the fault path had its own ad-hoc save layout.
+    frame.rdi = SIGSEGV_SIGNO;
+    frame.rsi = si;
+    frame.rdx = uc;
     let _ = sa.flags;
     true
 }
@@ -158,9 +159,9 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
         // oxide_fault_print_rust (which only fires when the handler
         // returns false); the SIGSEGV path diverges before that block
         // runs, so we mirror the dump here.
-        let gp = hal_x86_64::current_fault_gprs();
+        let gp = hal_x86_64::current_fault_frame();
         if !gp.is_null() {
-            // SAFETY: stub-built GPR block on the kernel stack; valid for read while we're in fault dispatch (the stub doesn't pop until after the Rust dispatcher returns — which it doesn't here, since we diverge — so the slots stay live for the schedule()-away that follows).
+            // SAFETY: stub-built PtRegs on the kernel stack; valid for read while we're in fault dispatch (the stub doesn't pop until after the Rust dispatcher returns — which it doesn't here, since we diverge — so the slots stay live for the schedule()-away that follows).
             let g = unsafe { &*gp };
             klog::write_raw(b"[FAULT] rax=");  klog::write_hex_u64(g.rax);
             klog::write_raw(b" rbx=");          klog::write_hex_u64(g.rbx);
@@ -205,7 +206,7 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
             // is fine (we just want return addresses to name functions).
             let fp = hal_x86_64::current_fault_frame();
             if !fp.is_null() {
-                // SAFETY: live FaultFrame on the kernel stack; read-only rsp.
+                // SAFETY: live PtRegs on the kernel stack; read-only rsp.
                 let mut sp = unsafe { (*fp).rsp };
                 klog::write_raw(b"[FAULT] user rsp="); klog::write_hex_u64(sp);
                 klog::write_raw(b"\n");

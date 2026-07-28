@@ -48,7 +48,7 @@ const WATCH_VA: u64 = 0x0000_7fff_fe88_e000;
 /// stray ASCII path ("/lib…") logs the writing RIP — the corruptor. Chains
 /// the previous (ptrace) hook for non-DR #DBs.
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
-pub fn lock_step_hook(frame: &mut hal_x86_64::FaultFrame) -> bool {
+pub fn lock_step_hook(frame: &mut hal_x86_64::PtRegs) -> bool {
     // SAFETY: privileged DR6 read+clear at CPL=0.
     let dr6 = unsafe { hal_x86_64::read_clear_dr6() };
     if dr6 & 0x1 == 0 {
@@ -234,9 +234,9 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
         // fsbase==0 is the tell.
         #[cfg(target_arch = "x86_64")]
         {
-            let g = hal_x86_64::current_fault_gprs();
+            let g = hal_x86_64::current_fault_frame();
             if !g.is_null() {
-                // SAFETY: current_fault_gprs() returns the live FaultGprs the per-vector stub pushed on the kernel stack; we only read.
+                // SAFETY: current_fault_frame() returns the live PtRegs the per-vector stub pushed on the kernel stack; we only read.
                 let g = unsafe { &*g };
                 klog::write_raw(b" rax="); klog::write_hex_u64(g.rax);
                 klog::write_raw(b" rbx="); klog::write_hex_u64(g.rbx);

@@ -21,11 +21,12 @@
 pub unsafe fn read() -> u64 {
     #[cfg(target_arch = "x86_64")]
     {
-        // x86 entry pushes [rsp+0x00] nr, [+0x08] a0, ..., [+0x30] a5.
-        let p = hal_x86_64::current_user_full_frame();
+        // x86 entry saves the user regs as a `PtRegs`; a5 is the r9 slot
+        // (`15§1.1`: nr=rax, args=rdi,rsi,rdx,r10,r8,r9).
+        let p = hal_x86_64::current_pt_regs();
         if p.is_null() { 0 } else {
-            // SAFETY: p is a valid pointer to a 16-quadword block on the running task's kernel stack; index 6 is the a5 slot per oxide_syscall_entry's push order; aligned u64 read.
-            unsafe { *p.add(6) }
+            // SAFETY: p is the running task's live syscall entry frame on its own kernel stack, published by oxide_syscall_entry before the dispatch call; aligned u64 read.
+            unsafe { (*p).r9 }
         }
     }
     #[cfg(target_arch = "aarch64")]

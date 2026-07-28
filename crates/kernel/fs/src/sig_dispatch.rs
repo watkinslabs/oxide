@@ -21,20 +21,34 @@ const SA_NODEFER: u64 = 0x4000_0000;
 /// Linux `SA_ONSTACK` — run the handler on the `sigaltstack(2)` stack.
 const SA_ONSTACK: u64 = 0x0800_0000;
 
+/// Linux `struct pt_regs` — the interrupted user register frame this delivery
+/// reads and rewrites. ONE type per arch, built identically by every entry
+/// path (syscall, IRQ, exception), so a signal delivered from an interrupt
+/// return goes through the same builder as one delivered from a syscall
+/// return. Before B1471 the x86_64 builder reached implicitly for the syscall
+/// save block, which is why delivery was impossible from any other path.
+#[cfg(target_arch = "x86_64")]
+pub type UserRegs = hal_x86_64::PtRegs;
+/// See the x86_64 alias. aarch64 already shared one 288-byte frame shape
+/// across the SVC, IRQ, fault, undef and software-step vectors.
+#[cfg(target_arch = "aarch64")]
+pub type UserRegs = hal_aarch64::SvcFrame;
+
 /// The interrupted task's user stack pointer (Linux
 /// `current_user_stack_pointer()`). Sole arch boundary for that read, shared
 /// by signal delivery and `sigaltstack(2)` so the two can never disagree about
 /// whether the caller is standing on the alternate stack.
+/// # SAFETY: `regs` is the live entry frame owned by the calling return path.
 /// # C: O(1)
-pub fn current_user_sp() -> u64 {
+pub unsafe fn current_user_sp(regs: *mut UserRegs) -> u64 {
     #[cfg(target_arch = "x86_64")]
-    // SAFETY: syscall/dispatch tail on the running task's kstack; the saved
-    // frame is live and exclusively owned here.
-    unsafe { hal_x86_64::current_user_sp() }
+    // SAFETY: caller's contract — `regs` is the live entry frame for this
+    // return and is exclusively owned by this CPU for the call.
+    unsafe { hal_x86_64::current_user_sp(regs) }
     #[cfg(target_arch = "aarch64")]
-    // SAFETY: same dispatch-tail contract; `current_signal_svc_frame` resolves
-    // the running task's live SVC frame.
-    unsafe { hal_aarch64::svc_frame_user_sp(current_signal_svc_frame()) }
+    // SAFETY: same contract; the 288-byte frame's `sp_el0` slot holds the
+    // interrupted EL0 stack pointer.
+    unsafe { hal_aarch64::svc_frame_user_sp(regs) }
 }
 
 /// Arch-neutral signal delivery: pick the handler stack, compute the mask the
@@ -49,14 +63,19 @@ pub fn current_user_sp() -> u64 {
 /// `handle_signal` consumes (SA_ONSTACK, SA_NODEFER, the handler's hold-off
 /// mask). The ONE entry point — a variant that dropped the flags would deliver
 /// signals that silently ignore SA_ONSTACK and `sa_mask`.
-/// # SAFETY: caller is the syscall dispatch tail on the running task's
-/// per-task kernel stack; the per-arch saved frame is live; active CR3/TTBR0
-/// is the running task's user AS.
+/// `regs` is the interrupted user frame — the syscall frame on a syscall
+/// return, the IRQ/exception frame on an interrupt return. Linux passes the
+/// same `struct pt_regs` from every entry path into `handle_signal`.
+/// # SAFETY: caller is a return-to-user path on the running task's per-task
+/// kernel stack; `regs` is that path's live frame; active CR3/TTBR0 is the
+/// running task's user AS.
 /// # C: O(1)
 #[inline]
-pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret: u64, restart: bool,
+pub unsafe fn deliver_with_info(regs: *mut UserRegs, handler: u64, restorer: u64, sig: u32,
+                                saved_ret: u64, restart: bool,
                                 payload: Option<hal::SigPayload>, sa_flags: u64, sa_mask: u64) -> u64 {
-    let user_sp = current_user_sp();
+    // SAFETY: caller's contract — `regs` is the live entry frame.
+    let user_sp = unsafe { current_user_sp(regs) };
     let cur = sched::live::current();
     // Linux order (`handle_signal`): `setup_rt_frame` — including
     // `get_sigframe`'s `access_ok` — runs BEFORE `signal_delivered` installs
@@ -70,12 +89,12 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
     };
     #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: dispatch tail; hal owns the arch frame mechanics + uses the
-        // live saved syscall frame on this CPU's kstack; `fpu_snapshot` has
-        // just synced the running task's live FPU state into the buffer.
+        // SAFETY: return-to-user path; `regs` is the caller's live entry
+        // frame; `fpu_snapshot` has just synced the running task's live FPU
+        // state into the buffer.
         let ok = unsafe {
             with_fpu(cur, Fpu::Snapshot, |fpu| {
-                (hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, restart,
+                (hal_x86_64::build_signal_frame(regs, handler, restorer, sig, saved_ret, restart,
                                                 frame_mask, payload, alt, fpu), false)
             })
         };
@@ -93,11 +112,9 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
             .map(|mm| mm.vdso_rt_sigreturn())
             .filter(|v| *v != 0)
             .unwrap_or_else(|| sched::live::terminate_current_with_signal(sched::live::Signum::Sigsegv.as_u8()));
-        // F206: prefer the per-task SVC-frame slot (race-free vs schedule());
-        // fall back to the per-CPU current frame for slot-less tasks.
-        let frame = current_signal_svc_frame();
-        // SAFETY: dispatch tail; `frame` is the live saved SVC frame;
-        // `fpu_snapshot` has just synced the live FP/SIMD state into the buffer.
+        let frame = regs;
+        // SAFETY: return-to-user path; `frame` is the caller's live entry
+        // frame; `fpu_snapshot` has just synced the live FP/SIMD state.
         let ok = unsafe {
             with_fpu(cur, Fpu::Snapshot, |fpu| {
                 (hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, restart,
@@ -194,13 +211,14 @@ fn disarm_autodisarm(cur: &sched::Task) {
 /// the interrupted syscall's retval (becomes user rax/x0 after the dispatch
 /// epilogue). Malformed frames force SIGSEGV.
 /// # SAFETY: caller is the rt_sigreturn syscall dispatch on the running task's
-/// per-task kernel stack; the per-arch saved frame is live.
+/// per-task kernel stack; `regs` is that dispatch's live entry frame.
 /// # C: O(1)
 #[inline]
-pub unsafe fn rt_sigreturn() -> i64 {
+pub unsafe fn rt_sigreturn(regs: *mut UserRegs) -> i64 {
     #[cfg(target_arch = "x86_64")]
     {
-        let Some((ptr, len, align)) = hal_x86_64::rt_sigreturn_frame_range() else {
+        // SAFETY: caller's contract — `regs` is the live syscall entry frame.
+        let Some((ptr, len, align)) = (unsafe { hal_x86_64::rt_sigreturn_frame_range(regs) }) else {
             return bad_rt_sigframe();
         };
         if crate::userbuf::validate_user_buf_readable(ptr, len, align).is_err() {
@@ -208,7 +226,7 @@ pub unsafe fn rt_sigreturn() -> i64 {
         }
     }
     #[cfg(target_arch = "aarch64")]
-    let frame = current_signal_svc_frame();
+    let frame = regs;
     #[cfg(target_arch = "aarch64")]
     {
         // SAFETY: rt_sigreturn dispatch tail; `frame` is the live saved SVC frame.
@@ -224,7 +242,7 @@ pub unsafe fn rt_sigreturn() -> i64 {
     // SAFETY: rt_sigreturn dispatch tail; hal owns the arch restore and fills
     // the task's own FPU save area, which no other CPU may touch while this
     // task runs.
-    let restored = unsafe { with_fpu(cur, Fpu::Reload, |fpu| { let r = hal_x86_64::restore_signal_frame(fpu);
+    let restored = unsafe { with_fpu(cur, Fpu::Reload, |fpu| { let r = hal_x86_64::restore_signal_frame(regs, fpu);
         let dirty = matches!(r, Some((_, _, _, true))); (r, dirty) }) };
     #[cfg(target_arch = "aarch64")]
     // SAFETY: rt_sigreturn dispatch tail; `frame` is the live saved SVC frame.
@@ -234,7 +252,8 @@ pub unsafe fn rt_sigreturn() -> i64 {
         Some((sigmask, ret, alt, _)) => {
             if let Some(c) = cur {
                 c.set_current_blocked(sigmask);
-                restore_altstack(c, alt);
+                // SAFETY: `regs` is this rt_sigreturn's live entry frame.
+                unsafe { restore_altstack(regs, c, alt); }
             }
             ret
         }
@@ -323,9 +342,12 @@ unsafe fn with_fpu<R>(cur: Option<&sched::Task>, mode: Fpu,
 /// Linux squashes every error but EFAULT here, so a nonsensical `uc_stack`
 /// leaves the current one alone rather than killing the task.
 /// # C: O(1)
-fn restore_altstack(cur: &sched::Task, alt: hal::AltStack) {
+/// # SAFETY: `regs` is the rt_sigreturn caller's live entry frame.
+unsafe fn restore_altstack(regs: *mut UserRegs, cur: &sched::Task, alt: hal::AltStack) {
     let req = sas::AltStack { sp: alt.sp, size: alt.size, flags: alt.flags };
-    if let Ok(Some(new)) = sas::apply(current_user_sp(), cur.altstack(), req) {
+    // SAFETY: forwarded contract — `regs` is the live entry frame.
+    let sp = unsafe { current_user_sp(regs) };
+    if let Ok(Some(new)) = sas::apply(sp, cur.altstack(), req) {
         cur.set_altstack(new);
     }
 }
@@ -333,14 +355,4 @@ fn restore_altstack(cur: &sched::Task, alt: hal::AltStack) {
 #[inline]
 fn bad_rt_sigframe() -> i64 {
     sched::live::terminate_current_with_signal(sched::live::Signum::Sigsegv.as_u8())
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn current_signal_svc_frame() -> *mut hal_aarch64::SvcFrame {
-    sched::live::current()
-        .map(|c| c.svc_frame.load(Ordering::Acquire))
-        .filter(|p| *p != 0)
-        .map(|p| p as *mut hal_aarch64::SvcFrame)
-        .unwrap_or_else(hal_aarch64::current_svc_frame)
 }

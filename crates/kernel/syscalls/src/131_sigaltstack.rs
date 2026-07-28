@@ -45,7 +45,8 @@ pub fn sys_sigaltstack(args: &SyscallArgs) -> i64 {
         if let Err(rv) = validate_user_buf(ss, STACK_T_BYTES, 1) { return rv; }
         new = Some(read_stack_t(ss));
     }
-    let user_sp = ::fs::sig_dispatch::current_user_sp();
+    // SAFETY: syscall dispatch context; the entry frame is live and owned here.
+    let user_sp = unsafe { ::fs::sig_dispatch::current_user_sp(crate::arch_frame::current_user_regs()) };
     let old = cur.altstack();
     // `oss` is snapshotted BEFORE `ss` is applied — a call that both reads and
     // writes reports the stack as it was on entry.

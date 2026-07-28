@@ -29,9 +29,9 @@ pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
             // User PC + user SP at trap entry, arch-neutral: x86 saves them in
             // the [rip,_,rsp] user frame; aarch64 in the SVC frame (elr_el1 =
             // user PC, sp_el0 = user SP). Same YIELD-SPIN symbolization below.
-            // SAFETY: current_user_frame()[0] is the saved user RIP on this task's syscall kstack.
+            // SAFETY: current_pt_regs() is this task's live syscall entry frame; rip is the trapped user PC.
             #[cfg(target_arch = "x86_64")]
-            let rip = unsafe { (*hal_x86_64::current_user_frame())[0] };
+            let rip = { let f = hal_x86_64::current_pt_regs(); if f.is_null() { 0 } else { unsafe { (*f).rip } } };
             // SAFETY: current_svc_frame() is this CPU's live SVC frame; elr_el1 is the trapped user PC.
             #[cfg(target_arch = "aarch64")]
             let rip = { let f = hal_aarch64::current_svc_frame(); if f.is_null() { 0 } else { unsafe { (*f).elr_el1 } } };
@@ -44,9 +44,9 @@ pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
             // __sched_yield is a leaf (syscall;ret) so the CALLER's return
             // address is at [user_rsp]. Symbolize BOTH the direct caller and
             // its caller (2 stack slots) to (library ino, file offset).
-            // SAFETY: current_user_frame()[2] is the saved user rsp on this task's syscall kstack.
+            // SAFETY: current_pt_regs() is this task's live syscall entry frame; rsp is the trapped user SP.
             #[cfg(target_arch = "x86_64")]
-            let ursp = unsafe { (*hal_x86_64::current_user_frame())[2] };
+            let ursp = unsafe { hal_x86_64::current_user_sp(hal_x86_64::current_pt_regs()) };
             // SAFETY: current_svc_frame() is this CPU's live SVC frame; sp_el0 is the trapped user SP.
             #[cfg(target_arch = "aarch64")]
             let ursp = { let f = hal_aarch64::current_svc_frame(); if f.is_null() { 0 } else { unsafe { (*f).sp_el0 } } };

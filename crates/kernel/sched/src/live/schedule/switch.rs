@@ -1,7 +1,7 @@
 // `schedule()` - the ONE task-switch primitive per `13§8`.
 // the timer/IPI IRQ path only sets `need_resched`; the actual switch
 // happens through `schedule()` at the return-to-user slow path
-// (`oxide_irq_resched_on_exit` -> `schedule()`), at `preempt_enable`
+// (`oxide_irq_exit_to_user` -> the return-to-user work loop), at `preempt_enable`
 // drop-to-zero, and at voluntary yields (`tick_yield`, kthread exit).
 //
 // Preempt/IRQ handoff (Linux `context_switch`/`finish_task_switch`):
