@@ -19,6 +19,11 @@ mod pkey;
 // execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
 // tested, and this is what glibc's stack canary + pointer guard come from.
 pub mod auxrandom;
+// execve(2) 59 / execveat(2) 322: the credential transition — setuid/setgid
+// honouring and its suppression rules, the capability sets, AT_SECURE and
+// dumpability. Same reason as `auxrandom`: the slot files are kernel-gated, and
+// this is the one decision in exec that must never ship untested.
+pub mod exec_creds;
 // swapon(2) 167: the `swap_flags` decode + its EINVAL-before-EPERM order.
 // futimesat(2) 261 / utimes(2) 235: the `struct timeval[2]` decode. Both slot
 // files are kernel-gated, so the decisions live here where the hosted suite

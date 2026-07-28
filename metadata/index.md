@@ -13,7 +13,7 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | Type | next | meaning |
 |---|---|---|
 | F | 769 | new functionality |
-| B | 1459 | bug fix |
+| B | 1466 | bug fix |
 | D | 410 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
@@ -28,6 +28,10 @@ advanced to 765 so a concurrent lane cannot collide with them.
 
 `D406`-`D409` reserved 2026-07-27 for the Linux subsystem-audit lanes
 (mm, sched, vfs/block, net/security). Counter advanced to 410.
+
+`B1459`-`B1465` reserved 2026-07-27 for the concurrent compliance-blocker
+lanes (signal frames, wait deadlines, poll subscribers, durable writes, procfs
+creds, exec privilege transition). Counter advanced to 1466.
 
 ## Known counter collisions
 

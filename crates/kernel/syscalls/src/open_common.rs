@@ -160,6 +160,19 @@ pub(crate) fn enforce_open_perm(
             }
         }
     }
+    // Linux `may_open` `case S_IFBLK: case S_IFCHR: if (!may_open_dev(path))
+    // return -EACCES;` (`fs/namei.c` `may_open_dev`: `!(mnt_flags & MNT_NODEV)
+    // && !(s_iflags & SB_I_NODEV)`). This runs BEFORE the `O_CREAT` bypass:
+    // Linux applies it to every open of a device node, and it is the whole
+    // content of `mount -o nodev` — without it an unprivileged user with a
+    // writable mount can mknod a `/dev/mem` alias there and read all of RAM.
+    if mnt_id != 0
+        && matches!(inode.file_type(), vfs::types::FileType::CharDev | vfs::types::FileType::BlockDev)
+    {
+        if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
+            if m.is_nodev() || m.sb().is_nodev() { return Some(-(Errno::Eacces.as_i32() as i64)); }
+        }
+    }
     if created || mnt_id == 0 { return None; }
     if let Err(e) = vfs::may_open(inode, want_read, want_write, &crate::pathresolve::current_cred()) {
         return Some(-(e as i64));
