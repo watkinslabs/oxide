@@ -386,16 +386,21 @@ fn register_tree(prefix: &str, nodes: &[Node]) {
     }
 }
 
-/// Register every `/proc/sys` leaf. `boot_id`/`random_uuid` are the per-boot
-/// random lines (passed in — they have no fixed default), the binfmt_misc dir
-/// is created here; the const/live tree + per-iface knobs come from the table.
+/// Register every `/proc/sys` leaf. `boot_id` is the once-per-boot random line
+/// (passed in — it has no fixed default), the binfmt_misc dir is created here;
+/// the const/live tree + per-iface knobs come from the table.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N leaves)
-pub fn register_sysctl_table(boot_id: &'static [u8], random_uuid: &'static [u8]) {
+pub fn register_sysctl_table(boot_id: &'static [u8]) {
     net::net_ns::materialize_state(&network_namespace::initial());
-    // Per-boot random-valued leaves (not const-table material).
-    crate::reg::register("/proc/sys/kernel/random/boot_id", StaticFileInode::new(boot_id) as InodeRef);
-    crate::reg::register("/proc/sys/kernel/random/uuid", StaticFileInode::new(random_uuid) as InodeRef);
+    // The two `proc_do_uuid` leaves (`drivers/char/random.c` `random_table`).
+    // `boot_id` has `.data = &sysctl_bootid`: generated once, then stable.
+    // `uuid` has NO `.data`, so each read generates a fresh v4 UUID — a
+    // generator inode, not a snapshot every reader on this boot would share.
+    crate::reg::register("/proc/sys/kernel/random/boot_id",
+        crate::random_uuid::make_boot_id_inode(boot_id));
+    crate::reg::register("/proc/sys/kernel/random/uuid",
+        crate::random_uuid::make_uuid_inode(crate::ids::RANDOM_UUID));
     crate::reg::register(
         "/proc/sys/fs/binfmt_misc",
         kernfs::PseudoDir::new_root(

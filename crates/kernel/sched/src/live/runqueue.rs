@@ -235,26 +235,19 @@ pub unsafe fn uninstall_global() -> Option<Runqueue> {
 }
 
 /// Change a task's scheduling class at runtime (sched_setattr/setparam).
-/// If the task is currently queued it is removed from its present rt/cfs tree,
-/// its class updated, then re-enqueued into the new class's tree — so the
-/// trees stay consistent (changing class while queued would otherwise dequeue
-/// the task from the wrong tree). Idle is never re-enqueued.
-/// # C: O(log N) — dequeue + enqueue
+/// A queued task is dequeued from the runqueue it is ACTUALLY on — which is
+/// not necessarily the caller's CPU — its class updated, then re-enqueued on
+/// that same runqueue. Idle is never re-enqueued.
+///
+/// Delegates to [`super::rq_locate::set_class_with`], which also backs the
+/// affinity walk, so there is exactly one "find the task's runqueue" routine.
+/// Using the CALLER's runqueue here (the pre-B1467 behaviour) found nothing to
+/// remove when the task sat on another CPU, yet still force-cleared `on_rq` —
+/// defeating `RunqueueInner::enqueue`'s double-enqueue guard and leaving one
+/// `Arc<Task>` in two trees for two CPUs to run at once.
+/// # C: O(N_cpus · log N)
 pub fn set_class(task: &Arc<Task>, new: crate::SchedClass) {
-    match global() {
-        Some(rq) => {
-            let mut inner = rq.inner.lock();
-            let was_queued = task.on_rq.load(Ordering::Acquire);
-            if was_queued {
-                inner.remove(task.tid);
-                task.on_rq.store(false, Ordering::Release);
-            }
-            task.set_sched_class(new);
-            if was_queued && !matches!(new, crate::SchedClass::Idle) {
-                inner.enqueue(task.clone());
-            }
-            rq.nr_running.store(inner.nr_running(), Ordering::Release);
-        }
-        None => task.set_sched_class(new),
-    }
+    // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
+    // that has not completed `install_global`, which the walk skips.
+    super::rq_locate::set_class_with(&|cpu| unsafe { global_for(cpu) }, task, new);
 }

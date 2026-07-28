@@ -53,6 +53,11 @@ pub struct TcpConn {
     pub ooo_urgent: BTreeMap<u32, Option<(u32, u8)>>,
     pub ts_enabled: bool,
     pub ts_recent:  u32,
+    /// Linux `tp->tsoffset` — the per-connection TSval bias from
+    /// `secure_tcp_seq_and_ts_off`'s high half. Without it every connection
+    /// from this host advertises the same timestamp clock, publishing host
+    /// uptime and letting an off-path observer correlate connections.
+    pub ts_off:     u32,
     pub own_mss: u16,
     pub cwnd:     u32,
     pub ssthresh: u32,
@@ -63,6 +68,10 @@ pub struct TcpConn {
     pub rcv_buf_cap: u32,
     pub rcv_buf_max: u32,
     pub rcv_peak: u32,
+    /// Linux `sk->sk_userlocks & SOCK_RCVBUF_LOCK` (`net/core/sock.c:975`):
+    /// once `setsockopt(SO_RCVBUF)` names a size, receive-window autotuning
+    /// stops and the advertised window follows the caller's number.
+    pub rcv_buf_locked: bool,
     pub ecn_enabled: bool,
     pub send_ece:    bool,
     pub send_cwr:    bool,

@@ -355,6 +355,16 @@ pub trait CpuOps {
     /// are set, so a program can never pick an instruction the hardware
     /// lacks (→ SIGILL). # C: O(1)
     fn cpu_hwcap() -> u64;
+
+    /// ELF `AT_MINSIGSTKSZ` (Linux `get_sigframe_size()` on x86_64,
+    /// `signal_minsigstksz` on arm64): bytes of stack ONE signal delivery
+    /// needs, worst case. Dynamic because the frame carries the CPU's
+    /// FPU/SIMD save area, whose size varies with XCR0 — which is exactly why
+    /// Linux exports it in the auxv instead of leaving userspace with the
+    /// frozen `MINSIGSTKSZ`. glibc 2.34+ answers `sysconf(_SC_MINSIGSTKSZ)`
+    /// from it and sizes every `sigaltstack(2)` accordingly.
+    /// # C: O(1)
+    fn cpu_min_sigstksz() -> u64;
 }
 
 // ---------------------------------------------------------------------------

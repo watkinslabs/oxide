@@ -48,8 +48,13 @@ extern "C" fn add_device_randomness(buf: *const u8, nbytes: usize) {
 }
 
 extern "C" fn add_hwgenerator_randomness(buf: *const u8, nbytes: usize, entropy: usize) {
+    // Linux credits this path and not `add_device_randomness`; aliasing the two
+    // meant a hwrng module could never bring a cold pool to ready.
     let _ = entropy;
-    add_device_randomness(buf, nbytes);
+    if buf.is_null() || nbytes == 0 { return; }
+    // SAFETY: Linux modules pass a readable kernel buffer of nbytes bytes to add_hwgenerator_randomness.
+    let bytes = unsafe { core::slice::from_raw_parts(buf, nbytes) };
+    devfs::misc::add_hw_entropy(bytes);
 }
 
 #[cfg(test)]

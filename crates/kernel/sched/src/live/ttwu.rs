@@ -255,12 +255,9 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
             moved.on_rq.store(false, Ordering::Release);
             // Re-place on an allowed CPU (select_task_rq filters by the mask).
             let target = select_task_rq(&moved);
-            // SAFETY: target came from select_task_rq over installed runqueues.
-            if let Some(trq) = unsafe { global_for(target) } {
-                let mut ti = trq.inner.lock();
-                ti.enqueue(moved);
-                trq.nr_running.store(ti.nr_running(), Ordering::Release);
-            }
+            // SAFETY: `global_for` is sound for any index; skipped when the
+            // target CPU has not installed its runqueue yet.
+            super::rq_locate::enqueue_on_with(&|c| unsafe { global_for(c) }, target, moved);
             resched_curr(target);
         } else {
             // Not queued here — is it the RUNNING task on this disallowed CPU?

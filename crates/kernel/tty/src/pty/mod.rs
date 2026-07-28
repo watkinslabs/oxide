@@ -1,9 +1,11 @@
 // Module manifest:
 // - `termios`: PTY termios bits, control chars, and winsize layout helpers.
 // - `pair`: ring buffers plus master/slave PTY data-path state.
+// - `readiness`: `n_tty_poll` / `pty_write_room` predicates for both halves.
 
 mod termios;
 mod pair;
+mod readiness;
 
 pub use pair::{Pair, Ring};
 pub use termios::{

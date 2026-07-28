@@ -120,15 +120,22 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         let token = file_token(file);
         let slot = (evdev_id as usize).min(MAX_EVDEV - 1);
         if arg != 0 {
-            let mut grabs = EVDEV_GRABS.lock();
-            return Some(if grabs[slot] == 0 || grabs[slot] == token {
-                grabs[slot] = token;
-                0
-            } else {
-                err(Errno::Ebusy)
-            });
+            let taken = {
+                let mut grabs = EVDEV_GRABS.lock();
+                if grabs[slot] == 0 || grabs[slot] == token { grabs[slot] = token; true } else { false }
+            };
+            if !taken { return Some(err(Errno::Ebusy)); }
+            // A grab makes `poll_open_file` drop POLLIN for every OTHER open
+            // description (`grabbed_by_other`), so it is a readiness
+            // transition and needs the same wake an incoming event gets —
+            // Linux `evdev_grab` runs under the client list and the ungrabbed
+            // clients simply stop being fed. Without this the change is only
+            // observable on a rescan.
+            super::fileops::notify_evdev_subs(evdev_id);
+            return Some(0);
         }
         release_grab(evdev_id, token);
+        super::fileops::notify_evdev_subs(evdev_id);
         return Some(0);
     }
 
@@ -136,6 +143,10 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         if arg != 0 {
             file.set_private_data(file.private_data() | EVDEV_FILE_REVOKED);
             release_grab(evdev_id, file_token(file));
+            // `evdev_revoke` marks the client revoked and wakes it
+            // (`drivers/input/evdev.c`): its poll flips to EPOLLHUP and every
+            // read returns ENODEV, so a parked waiter must be released.
+            super::fileops::notify_evdev_subs(evdev_id);
         }
         return Some(0);
     }

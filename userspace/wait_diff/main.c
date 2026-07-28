@@ -12,9 +12,11 @@ int main(void) {
      * With locks first that one defect cost the 21 records behind it and
      * every other probe read as "unknown". Keep the cheap, collectible
      * evidence in front of the case that can swallow the run. */
+    probe_sigfpu();
     probe_sleep();
     probe_inotify();
     probe_fdwait();
+    probe_readiness();
     probe_jobctl();
     probe_cputime();
     probe_latency();
