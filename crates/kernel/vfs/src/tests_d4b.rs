@@ -75,20 +75,20 @@ fn t1b_idmap_chown_in() {
 fn t2_setattr_prepare_utimes_eperm() {
     let inode: InodeRef = MetaInode::reg(0o666, 1000, 1000); // other-write set
     // non-owner, specific mtime -> EPERM
-    let mut ia = Iattr { valid: ATTR_MTIME | ATTR_MTIME_SET, mtime_ns: 123, ..Default::default() };
+    let mut ia = Iattr { valid: ATTR_MTIME | ATTR_MTIME_SET, mtime: crate::Timespec64::from_secs(123), ..Default::default() };
     assert_eq!(setattr_prepare(&Idmap::identity(), &inode, &mut ia, &cred_with(2000)), Err(VfsError::Eperm));
     // owner, specific mtime -> Ok
-    let mut ia2 = Iattr { valid: ATTR_MTIME | ATTR_MTIME_SET, mtime_ns: 123, ..Default::default() };
+    let mut ia2 = Iattr { valid: ATTR_MTIME | ATTR_MTIME_SET, mtime: crate::Timespec64::from_secs(123), ..Default::default() };
     assert!(setattr_prepare(&Idmap::identity(), &inode, &mut ia2, &cred_with(1000)).is_ok());
     // non-owner, BOTH-to-now (no _SET), write permitted by other-write -> Ok
-    let mut ia3 = Iattr { valid: ATTR_ATIME | ATTR_MTIME, atime_ns: 999, mtime_ns: 999, ..Default::default() };
+    let mut ia3 = Iattr { valid: ATTR_ATIME | ATTR_MTIME, atime: crate::Timespec64::from_secs(999), mtime: crate::Timespec64::from_secs(999), ..Default::default() };
     assert!(setattr_prepare(&Idmap::identity(), &inode, &mut ia3, &cred_with(2000)).is_ok());
     // non-owner, single-field "now" {UTIME_OMIT, UTIME_NOW} -> EPERM (ATTR_TIMES_SET)
-    let mut ia3b = Iattr { valid: ATTR_MTIME, mtime_ns: 999, ..Default::default() };
+    let mut ia3b = Iattr { valid: ATTR_MTIME, mtime: crate::Timespec64::from_secs(999), ..Default::default() };
     assert_eq!(setattr_prepare(&Idmap::identity(), &inode, &mut ia3b, &cred_with(2000)), Err(VfsError::Eperm));
     // non-owner, BOTH-to-now, no write perm -> EACCES
     let ro: InodeRef = MetaInode::reg(0o644, 1000, 1000);
-    let mut ia4 = Iattr { valid: ATTR_ATIME | ATTR_MTIME, atime_ns: 999, mtime_ns: 999, ..Default::default() };
+    let mut ia4 = Iattr { valid: ATTR_ATIME | ATTR_MTIME, atime: crate::Timespec64::from_secs(999), mtime: crate::Timespec64::from_secs(999), ..Default::default() };
     assert_eq!(setattr_prepare(&Idmap::identity(), &ro, &mut ia4, &cred_with(2000)), Err(VfsError::Eacces));
 }
 
@@ -105,12 +105,12 @@ fn t3_get_link() {
 #[test]
 fn t4_utimensat_omit_leaves_other() {
     let inode: InodeRef = MetaInode::reg(0o644, 1000, 1000);
-    inode.set_times(Some(11), Some(22), 0).unwrap();
+    inode.set_times(Some(crate::Timespec64::from_secs(11)), Some(crate::Timespec64::from_secs(22)), crate::Timespec64::ZERO).unwrap();
     // Update mtime only (atime omitted), owner cred so the gate passes.
-    let mut ia = Iattr { valid: ATTR_MTIME, mtime_ns: 555, ctime_ns: 1, ..Default::default() };
+    let mut ia = Iattr { valid: ATTR_MTIME, mtime: crate::Timespec64::from_secs(555), ctime: crate::Timespec64::from_secs(1), ..Default::default() };
     notify_change(&Idmap::identity(), &inode, &mut ia, &Cred::root()).unwrap();
-    assert_eq!(inode.atime(), Some(11)); // preserved (UTIME_OMIT)
-    assert_eq!(inode.mtime(), Some(555)); // updated
+    assert_eq!(inode.atime(), Some(crate::Timespec64::from_secs(11))); // preserved (UTIME_OMIT)
+    assert_eq!(inode.mtime(), Some(crate::Timespec64::from_secs(555))); // updated
 }
 
 // T5: generic_fillattr reports symlink native permission bits.

@@ -9,6 +9,7 @@
 extern crate alloc;
 use crate::idmap::Idmap;
 use crate::inode::Inode;
+use crate::timespec::Timespec64;
 use crate::types::FileType;
 
 /// `S_IF*` file-type bits as the `u32` `Kstat`/stat-ABI surface. Re-derived
@@ -73,8 +74,8 @@ pub const KSTAT_ATTR_VFS_LEVEL: u64 = STATX_ATTR_AUTOMOUNT | STATX_ATTR_DAX;
 /// filesystem identity (`Inode::fsid`); the syscall layer encodes it into the
 /// ABI `dev_t`. `result_mask` reports exactly which fields are valid (statx
 /// `stx_mask`); `attributes`/`attributes_mask` carry the `STATX_ATTR_*`
-/// flag report (statx `stx_attributes`/`stx_attributes_mask`); `btime_ns` is
-/// the creation time, valid only when `STATX_BTIME` is set in `result_mask`.
+/// flag report (statx `stx_attributes`/`stx_attributes_mask`); `btime` is
+/// the creation time, `Some` exactly when `STATX_BTIME` is set in `result_mask`.
 /// `change_cookie` is the statx `stx_change_attr`, valid only when
 /// `STATX_CHANGE_COOKIE` is set in `result_mask` (filled by [`vfs_getattr_mask`]
 /// from the inode `i_version`).
@@ -89,10 +90,12 @@ pub struct Kstat {
     pub size: u64,
     pub blksize: u32,
     pub blocks: u64,
-    pub atime_ns: u64,
-    pub mtime_ns: u64,
-    pub ctime_ns: u64,
-    pub btime_ns: u64,
+    pub atime: Timespec64,
+    pub mtime: Timespec64,
+    pub ctime: Timespec64,
+    /// Creation time; `None` (and no `STATX_BTIME` in `result_mask`) on a
+    /// backend that stores none.
+    pub btime: Option<Timespec64>,
     pub fsid: u64,
     pub change_cookie: u64,
     pub result_mask: u32,
@@ -291,10 +294,8 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap) -> Kstat {
     // `stx_btime` is only valid when the inode stores a real creation time.
     // Linux omits `STATX_BTIME` from `stx_mask` otherwise (it does NOT fall
     // back to ctime) — pseudo-fs without an `i_crtime` leave the bit clear.
-    let (btime_ns, btime_bit) = match inode.btime() {
-        Some(b) => (b, STATX_BTIME),
-        None    => (0, 0),
-    };
+    let btime = inode.btime();
+    let btime_bit = if btime.is_some() { STATX_BTIME } else { 0 };
     // `stx_attributes` mirrors the VFS `i_flags` (Linux `generic_fillattr` does
     // not set them; `vfs_getattr` ORs the per-fs `stx_attributes` reported via
     // `request_mask`). The generic backend understands exactly the two flags
@@ -320,10 +321,10 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap) -> Kstat {
         // silently discarding a stored `i_blocks` — wrong for a sparse file
         // (over-count) or a file with preallocation past EOF (under-count). D20.
         blocks:   if inode.blocks() != 0 { inode.blocks() } else { blocks_for(inode.size(), bsize) },
-        atime_ns: inode.atime().unwrap_or(0),
-        mtime_ns: inode.mtime().unwrap_or(0),
-        ctime_ns: inode.ctime().unwrap_or(0),
-        btime_ns,
+        atime:    inode.atime().unwrap_or_default(),
+        mtime:    inode.mtime().unwrap_or_default(),
+        ctime:    inode.ctime().unwrap_or_default(),
+        btime,
         fsid:     inode.fsid(),
         // `change_cookie` is NOT filled here: querying the i_version latches the
         // QUERIED flag, a side effect a plain stat must avoid. Only the

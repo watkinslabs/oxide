@@ -34,9 +34,56 @@ pub fn validate_grnd_flags(flags: u32) -> Result<(), Errno> {
     Ok(())
 }
 
+/// What a caller must do when the pool is not yet initialised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColdPool {
+    /// Hand out bytes regardless — `GRND_INSECURE`.
+    Proceed,
+    /// `EAGAIN` — `GRND_NONBLOCK` without `GRND_INSECURE`.
+    Again,
+    /// Block until seeded (Linux `wait_for_random_bytes()`).
+    Wait,
+}
+
+/// Linux `drivers/char/random.c` `SYSCALL_DEFINE3(getrandom)`:
+///
+/// ```text
+/// if (!crng_ready() && !(flags & GRND_INSECURE)) {
+///         if (flags & GRND_NONBLOCK)
+///                 return -EAGAIN;
+///         ret = wait_for_random_bytes();
+/// }
+/// ```
+///
+/// `GRND_INSECURE` means "never block, never fail" and so suppresses the
+/// `EAGAIN` entirely; it is not itself an `EAGAIN` trigger. # C: O(1)
+pub fn cold_pool_action(flags: u32) -> ColdPool {
+    if (flags & GRND_INSECURE) != 0 { return ColdPool::Proceed; }
+    if (flags & GRND_NONBLOCK) != 0 { return ColdPool::Again; }
+    ColdPool::Wait
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insecure_never_fails_even_with_nonblock() {
+        assert_eq!(cold_pool_action(GRND_INSECURE), ColdPool::Proceed);
+        assert_eq!(cold_pool_action(GRND_INSECURE | GRND_NONBLOCK), ColdPool::Proceed);
+    }
+
+    #[test]
+    fn nonblock_alone_is_eagain() {
+        assert_eq!(cold_pool_action(GRND_NONBLOCK), ColdPool::Again);
+        assert_eq!(cold_pool_action(GRND_NONBLOCK | GRND_RANDOM), ColdPool::Again);
+    }
+
+    #[test]
+    fn plain_and_random_block() {
+        assert_eq!(cold_pool_action(0), ColdPool::Wait);
+        assert_eq!(cold_pool_action(GRND_RANDOM), ColdPool::Wait);
+    }
 
     #[test]
     fn accepts_no_flags() { assert_eq!(validate_grnd_flags(0), Ok(())); }

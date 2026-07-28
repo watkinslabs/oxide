@@ -38,6 +38,7 @@
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -78,6 +79,27 @@
 #define CPU_BURN_GUARD_MS 5000u
 #define JOBCTL_GUARD_S   10u
 #define MQ_ABS_TIMEOUT_S 30
+
+/* B1460 timed-wait latency (`latency.c`). The claim these encode is a
+ * CONFORMANCE claim about the kernel's timeout floor, not scaffolding — do not
+ * widen the budget to make a run go green, because widening it past
+ * `LAT_ITERS * LAT_FLOOR_SIM_MS` deletes the only finding the case carries.
+ *
+ * LAT_ITERS short waits are measured as one total, so a per-wait floor cannot
+ * hide inside single-shot jitter. Nominal cost on a correct kernel is
+ * `LAT_ITERS * LAT_REQ_MS` = 20 ms; a kernel that quantises every timeout to
+ * its 100 ms scan cadence spends `LAT_ITERS * LAT_FLOOR_SIM_MS` = 2000 ms. The
+ * budget sits between them at 500 ms — 25x above the correct cost and 4x below
+ * the defective one, so neither verdict is reachable by guest slowness. */
+#define LAT_ITERS          20u
+#define LAT_REQ_MS          1u
+#define LAT_BUDGET_MS     500u
+/* What one wait costs when a periodic scan is the only thing that ends it —
+ * the `latslow` mutant spends exactly this, so the budget is proven to reject
+ * the defect rather than merely to accept the fix. */
+#define LAT_FLOOR_SIM_MS  100u
+/* Must exceed the `latslow` total (2000 ms) or the mutant reads as a hang. */
+#define LAT_GUARD_MS     8000u
 
 /* Sentinel written into every `rem` buffer before a sleep, so "the kernel
  * did not touch rem" is observable rather than inferred from a zero. */
@@ -138,6 +160,7 @@ void probe_locks(void);
 void probe_fdwait(void);
 void probe_jobctl(void);
 void probe_cputime(void);
+void probe_latency(void);
 void probe_mqueue(void);
 void probe_mqueue_api(void);
 void probe_syslog(void);

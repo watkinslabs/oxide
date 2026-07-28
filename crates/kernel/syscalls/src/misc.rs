@@ -8,9 +8,14 @@
 //     v1 compares Task fields directly when both pids exist; ESRCH
 //     otherwise; EBADF for a KCMP_FILE fd that is not allocated.
 //   - set_mempolicy / get_mempolicy / mbind / migrate_pages /
-//     move_pages / set_mempolicy_home_node: validate args; on a
-//     single-node UMA system Linux returns success because the
-//     "policy applied" outcome is trivially true.
+//     move_pages / set_mempolicy_home_node: full `mm/mempolicy.c`
+//     semantics. Policy is stored (per-thread and per-VMA),
+//     inherited by fork, and reported back verbatim; the argument
+//     ladders and nodemask conventions live in `vmm::mempolicy`.
+//     Page MOVEMENT is the only trivial part, and only because
+//     `mpol_set_nodemask` has already reduced every legal
+//     destination to the node each page occupies — a policy naming
+//     a memoryless node is EINVAL, not a silent success.
 //   - process_madvise(iov, advice): walk the iov, validate each
 //     segment is in user range; same advise semantics as madvise.
 //   - process_mrelease(pidfd, flags): validate pidfd, return 0.
@@ -25,6 +30,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 #[path = "misc_common.rs"]                  pub mod misc_common;
+#[path = "mempolicy_common.rs"]             pub mod mempolicy_common;
 #[path = "330_pkey_alloc.rs"]               pub mod s330_pkey_alloc;
 #[path = "331_pkey_free.rs"]                pub mod s331_pkey_free;
 #[path = "329_pkey_mprotect.rs"]            pub mod s329_pkey_mprotect;
