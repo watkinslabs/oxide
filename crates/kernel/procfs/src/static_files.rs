@@ -32,8 +32,8 @@ fn fill_hex(dst: &mut [u8], bytes: &[u8]) {
 
 fn random_uuid_bytes() -> [u8; 16] {
     let mut out = [0u8; 16];
-    let a = devfs::misc::lcg_next().to_le_bytes();
-    let b = devfs::misc::lcg_next().to_le_bytes();
+    let a = devfs::misc::random_u64().to_le_bytes();
+    let b = devfs::misc::random_u64().to_le_bytes();
     out[..8].copy_from_slice(&a);
     out[8..].copy_from_slice(&b);
     out[6] = (out[6] & 0x0f) | 0x40;

@@ -19,6 +19,8 @@ use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, LinkTarget, VfsErro
 
 use crate::owner::NsOwner;
 
+pub mod setns_perm;
+
 /// Linux CLONE_NEW* bits — match clone(2) for setns(fd, nstype) checks.
 pub const CLONE_NEWNS:    u64 = 0x00020000;
 pub const CLONE_NEWTIME:  u64 = 0x00000080;
@@ -96,6 +98,10 @@ impl NsInode {
     fn new(kind: NsKind, owner: NsOwner) -> Self { Self { kind, owner } }
 
     fn ino(&self) -> Ino { self.owner.ino() }
+
+    /// The exact namespace owner this nsfs node retains — what
+    /// `setns_perm::check_install` judges. # C: O(1)
+    pub fn owner(&self) -> &NsOwner { &self.owner }
 
     fn clone_for_node(&self) -> Self {
         Self { kind: self.kind, owner: self.owner.clone_ref() }
@@ -226,13 +232,21 @@ pub fn has_net_bind_service_for(cur: &sched::Task, namespace: &NetworkNamespaceR
     has_cap_for(cur, &namespace.owner_user_namespace(), sched::cap::NET_BIND_SERVICE)
 }
 
-/// Apply an NsInode (resolved from setns's fd arg) to the calling
-/// task. Returns 0 on success or -EINVAL when nstype mismatches.
-/// # C: O(1)
+/// Apply an NsInode (resolved from setns's fd arg) to the calling task.
+///
+/// Linux `setns(2)` on an `/proc/<pid>/ns/*` fd is: type check, then the
+/// namespace's own `install()` callback (`setns_perm::check_install` — the
+/// CAP_SYS_ADMIN / CAP_SYS_CHROOT / descendancy / single-thread ladder), then
+/// the state swap. The permission ladder runs BEFORE any task slot is
+/// touched, so a rejected call leaves the caller exactly as it was.
+/// # C: O(depth)
 pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     use syscall::errno::Errno;
     if nstype != 0 && nstype != ns.kind.clone_bit() {
         return -(Errno::Einval.as_i32() as i64);
+    }
+    if let Err(e) = setns_perm::check_install(ns.kind, &ns.owner, cur) {
+        return -(e.as_i32() as i64);
     }
     if matches!(ns.kind, NsKind::Time | NsKind::TimeForChildren) {
         let NsOwner::Time(owner) = &ns.owner else {
@@ -358,6 +372,9 @@ fn final_drop_notify() {}
 
 #[cfg(test)]
 mod setns_fd_tests;
+
+#[cfg(test)]
+mod setns_perm_tests;
 
 #[cfg(test)]
 mod tests;

@@ -173,40 +173,17 @@ impl FileOps for FullFileOps {
 /// `/dev/full` inode (1:7 mem/full, `0o666`). # C: O(1)
 pub fn make_full_inode() -> InodeRef { public_char_inode(crate::uapi::INO_FULL, crate::uapi::DEV_MEM_FULL, Arc::new(FullFileOps)) }
 
-/// LCG pseudo-random source seeded from a monotonic counter. v1
-/// has no real entropy pool (per docs/26 the CPRNG/RDRAND wiring
-/// rides P3 follow-up); LCG is enough for libc's "give me bytes"
-/// shape but NOT for cryptographic use.
-static PRNG_STATE: AtomicU64 = AtomicU64::new(0x9E37_79B9_7F4A_7C15);
-
-/// Mix externally-sourced entropy bytes into the shared PRNG state.
-/// Folds each byte into `PRNG_STATE` via a wrapping multiply-xor so real
-/// hardware entropy (e.g. virtio-rng at boot, `/dev/hwrng` reads) actually
-/// perturbs the stream the LCG produces. NOT a cryptographic mixer — it is
-/// a deterministic avalanche over the existing non-crypto LCG placeholder
-/// (docs/26 CPRNG supersedes). Empty input is a no-op.
+/// Mix externally-sourced entropy bytes into the kernel CSPRNG (Linux
+/// `add_device_randomness`). Empty input is a no-op.
 /// # C: O(bytes.len())
 pub fn add_entropy(bytes: &[u8]) {
     if bytes.is_empty() { return; }
-    let mut s = PRNG_STATE.load(Ordering::Relaxed);
-    for &b in bytes {
-        // Fold the byte in, then avalanche so adjacent inputs diverge.
-        s = (s ^ (b as u64)).wrapping_mul(0x100000001B3);
-        s ^= s >> 29;
-    }
-    PRNG_STATE.store(s, Ordering::Relaxed);
+    crng::add_entropy(bytes);
 }
 
-/// Pull one 64-bit pseudo-random value from the shared LCG.
-/// Used by `RandomInode` and `sys_getrandom`.
-/// SECURITY: NOT cryptographic — placeholder until docs/26.
+/// One CSPRNG word. Callers wanting a buffer use `random_fill`.
 /// # C: O(1)
-pub fn lcg_next() -> u64 {
-    let mut s = PRNG_STATE.load(Ordering::Relaxed);
-    s = s.wrapping_mul(0x5851_F42D_4C95_7F2D).wrapping_add(0x14057B7E_F767_814F);
-    PRNG_STATE.store(s, Ordering::Relaxed);
-    s
-}
+pub fn random_u64() -> u64 { crng::next_u64() }
 
 /// Hardware-entropy source hook. `/dev/hwrng` reads route here; the hwrng
 /// driver installs its `fill` function from probe and clears it from remove.
@@ -220,11 +197,15 @@ type HwRngFn = fn(&mut [u8]) -> usize;
 /// # C: O(1)
 pub fn set_hwrng_source(f: HwRngFn) {
     HWRNG_SOURCE.store(f as usize as u64, Ordering::Release);
+    // Same source feeds the kernel CSPRNG's reseed (Linux registers a hwrng
+    // as an entropy source, not merely as a `/dev/hwrng` read path).
+    crng::set_bulk_source(f);
 }
 
 /// Clear the hardware-entropy source during driver remove. # C: O(1)
 pub fn clear_hwrng_source() {
     HWRNG_SOURCE.store(0, Ordering::Release);
+    crng::clear_bulk_source();
 }
 
 /// `/dev/hwrng` — Linux hardware-RNG char device. Each read pulls fresh
@@ -252,22 +233,13 @@ pub fn make_hwrng_inode() -> InodeRef { char_inode(crate::uapi::INO_HWRNG, 0o644
 /// # C: O(1)
 pub fn make_autofs_inode() -> InodeRef { char_inode(crate::uapi::INO_AUTOFS, 0o600, crate::uapi::DEV_MISC_AUTOFS, default_file_ops()) }
 
-/// Fill `b` with LCG pseudo-random bytes (the shared `/dev/random`,
-/// `/dev/urandom` and `sys_getrandom` body). NOT cryptographic — v1
-/// placeholder until docs/26 CPRNG lands. # C: O(b.len())
-pub fn random_fill(b: &mut [u8]) {
-    let mut i = 0;
-    while i < b.len() {
-        let v = lcg_next().to_le_bytes();
-        let n = (b.len() - i).min(8);
-        b[i..i + n].copy_from_slice(&v[..n]);
-        i += n;
-    }
-}
+/// Fill `b` from the kernel CSPRNG — the shared `/dev/random`,
+/// `/dev/urandom` and `sys_getrandom` body (`crng`). # C: O(b.len())
+pub fn random_fill(b: &mut [u8]) { crng::fill(b); }
 
-/// `/dev/random` and `/dev/urandom` — fill with LCG bytes.
-/// SECURITY: NOT cryptographic; v1 placeholder until docs/26
-/// CPRNG lands.
+/// `/dev/random` and `/dev/urandom` — ChaCha20 CSPRNG output (`crng`).
+/// Linux hands both minors the same generator; neither blocks once the pool
+/// is up.
 struct RandomFileOps;
 impl FileOps for RandomFileOps {
     fn read(&self, _i: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
@@ -328,13 +300,13 @@ impl vfs::CharDevOps for MemCharDevOps {
 mod tests {
     use super::*;
 
-    /// Mixing entropy must perturb the PRNG state: the LCG stream after a
-    /// mix differs from the stream without it.
+    /// Mixing entropy must perturb the CSPRNG: the stream after a mix
+    /// differs from the stream without it.
     #[test]
     fn add_entropy_changes_state() {
-        let before = lcg_next();
+        let before = random_u64();
         add_entropy(&[0x42, 0x99, 0x01, 0xFE]);
-        let after = lcg_next();
+        let after = random_u64();
         assert_ne!(before, after, "entropy mix must perturb the stream");
     }
 
@@ -342,19 +314,21 @@ mod tests {
     #[test]
     fn distinct_inputs_distinct_state() {
         add_entropy(&[1, 2, 3, 4, 5, 6, 7, 8]);
-        let a = lcg_next();
+        let a = random_u64();
         add_entropy(&[8, 7, 6, 5, 4, 3, 2, 1]);
-        let b = lcg_next();
+        let b = random_u64();
         assert_ne!(a, b, "distinct entropy inputs must diverge");
     }
 
-    /// Empty input is a no-op: the stream is unchanged.
+    /// `random_fill` must fill the whole buffer, including unaligned tails.
     #[test]
-    fn empty_input_noop() {
-        let s0 = PRNG_STATE.load(Ordering::Relaxed);
-        add_entropy(&[]);
-        let s1 = PRNG_STATE.load(Ordering::Relaxed);
-        assert_eq!(s0, s1, "empty entropy must not change state");
+    fn random_fill_covers_unaligned_lengths() {
+        for n in [1usize, 7, 8, 63, 65] {
+            let mut buf = alloc::vec![0u8; n];
+            random_fill(&mut buf);
+            assert_eq!(buf.len(), n);
+            assert!(buf.iter().any(|&b| b != 0), "random_fill({n}) wrote nothing");
+        }
     }
 
     /// A mknod'd char node on major 1 (systemd `PrivateDevices=` clones the
