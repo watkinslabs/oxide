@@ -22,33 +22,12 @@ pub const SUID_DUMP_USER: u8 = 1;
 /// target's uids and all three of its gids. CAP_SYS_PTRACE bypasses the
 /// comparison; the dumpability gate is then applied on top of either path.
 /// # C: O(1)
+///
+/// The predicate itself is owned by `sched::ptrace_access` — `kcmp(2)`,
+/// `pidfd_getfd(2)` and `perf_event_open(2)`'s `perf_check_permission()` all
+/// consult it, so it cannot live inside one syscall's shim.
 pub fn may_access(cur: &Task, target: &Task) -> Result<(), Errno> {
-    // Introspection within one's own thread group is always allowed —
-    // security modules are not consulted for it either.
-    if cur.tgid.load(Ordering::Acquire) == target.tgid.load(Ordering::Acquire) {
-        return Ok(());
-    }
-    let cap = cur.has_cap(sched::cap::SYS_PTRACE);
-    if !cap && !creds_match(cur, target) { return Err(Errno::Eperm); }
-    // A target that dropped privileges became non-dumpable; only
-    // CAP_SYS_PTRACE may still attach (Linux `task_still_dumpable`).
-    if target.dumpable.load(Ordering::Acquire) != SUID_DUMP_USER && !cap {
-        return Err(Errno::Eperm);
-    }
-    Ok(())
-}
-
-/// The `PTRACE_MODE_REALCREDS` credential comparison.
-/// # C: O(1)
-fn creds_match(cur: &Task, target: &Task) -> bool {
-    let uid = cur.creds.ruid.load(Ordering::Acquire);
-    let gid = cur.creds.rgid.load(Ordering::Acquire);
-    target.creds.ruid.load(Ordering::Acquire) == uid
-        && target.creds.euid.load(Ordering::Acquire) == uid
-        && target.creds.suid.load(Ordering::Acquire) == uid
-        && target.creds.rgid.load(Ordering::Acquire) == gid
-        && target.creds.egid.load(Ordering::Acquire) == gid
-        && target.creds.sgid.load(Ordering::Acquire) == gid
+    sched::ptrace_access::may_access(cur, target).map_err(|_| Errno::Eperm)
 }
 
 /// Linux `ptrace_attach` gate, in Linux's order. `is_kthread` is the

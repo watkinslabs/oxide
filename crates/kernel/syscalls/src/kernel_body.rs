@@ -52,6 +52,7 @@ mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path 
 #[path = "444_landlock_create_ruleset.rs"] pub mod s444_landlock_create_ruleset; #[path = "445_landlock_add_rule.rs"] pub mod s445_landlock_add_rule; #[path = "446_landlock_restrict_self.rs"] pub mod s446_landlock_restrict_self;
 mod fs_access_common; #[path = "021_access.rs"] pub mod s021_access; #[path = "269_faccessat.rs"] pub mod s269_faccessat; #[path = "307_sendmmsg.rs"] pub mod s307_sendmmsg; #[path = "299_recvmmsg.rs"] pub mod s299_recvmmsg;
 mod xattr_common;
+mod fileattr_common;
 mod write_common;
 #[path = "290_eventfd2.rs"] pub mod s290_eventfd2; #[path = "319_memfd_create.rs"] pub mod s319_memfd_create;
 mod affinity_common; #[path = "203_sched_setaffinity.rs"] pub mod s203_sched_setaffinity; #[path = "204_sched_getaffinity.rs"] pub mod s204_sched_getaffinity;

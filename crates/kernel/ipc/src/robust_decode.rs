@@ -11,6 +11,13 @@
 // the pointer odd and killed the whole walk — every robust mutex after it on
 // the list stayed owned by a dead thread, silently, with its waiters blocked.
 
+/// `sizeof(struct robust_list_head)` on a 64-bit ABI: `robust_list list` (8) +
+/// `long futex_offset` (8) + `robust_list *list_op_pending` (8)
+/// (`include/uapi/linux/futex.h:212-231`). `set_robust_list(2)` accepts NO
+/// other length, and `get_robust_list(2)` reports THIS constant — never the
+/// length the caller happened to register.
+pub const ROBUST_LIST_HEAD_SIZE: u64 = 24;
+
 /// `include/uapi/linux/futex.h:207` — bit 0 of a `robust_list` pointer tags a
 /// PI futex.
 pub const FUTEX_ROBUST_MOD_PI: u64 = 0x1;

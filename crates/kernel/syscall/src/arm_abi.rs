@@ -390,8 +390,30 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
     // Linear search; ~250 entries, called per-syscall on arm — still
     // cheaper than a thousand-element jump table at this size.
     for &(arm, x86) in MAP { if arm == nr { return x86; } }
+    if arm_nr_is_unassigned(nr) { return NO_AARCH64_SLOT; }
     nr
 }
+
+/// Sentinel for an aarch64 syscall number with no aarch64 syscall behind it.
+/// No dispatch route claims it, so `dispatch()` falls through to its honest
+/// `-ENOSYS` — which is exactly what arm64 Linux returns for these numbers.
+pub const NO_AARCH64_SLOT: u64 = u64::MAX;
+
+/// True for aarch64 numbers that carry no syscall on a 64-bit asm-generic ABI.
+///
+/// `include/uapi/asm-generic/unistd.h`:
+///   * `/* 295 through 402 are unassigned to sync up with generic numbers,
+///      don't use */`
+///   * 403..=423 are the `*_time64` variants, compiled only under
+///     `defined(__SYSCALL_COMPAT) || __BITS_PER_LONG == 32` — never on arm64.
+///
+/// Without this guard the unmapped-pass-through arm sends those numbers
+/// straight into the x86_64 table, where 295..=336 *are* real syscalls: an
+/// aarch64 `syscall(335)` would run `sys_uretprobe` (SIGILL) and `syscall(300)`
+/// would run x86's `fanotify_mark`. That is the same class of silent
+/// cross-architecture mis-dispatch that put `nfsservctl` on x86's `connect`.
+/// # C: O(1)
+pub fn arm_nr_is_unassigned(nr: u64) -> bool { (295..=423).contains(&nr) }
 
 #[cfg(test)]
 mod tests;

@@ -95,41 +95,13 @@ pub(super) const REMAP_FILE_CAN_SHORTEN: u32 = 2;
 pub(super) const FILE_DEDUPE_RANGE_SAME: i32 = 0;
 pub(super) const FILE_DEDUPE_RANGE_DIFFERS: i32 = 1;
 
-pub(super) const FS_IMMUTABLE_FL: u32 = 0x0000_0010;
-pub(super) const FS_APPEND_FL: u32 = 0x0000_0020;
-pub(super) const FS_SYNC_FL: u32 = 0x0000_0008;
-pub(super) const FS_NOATIME_FL: u32 = 0x0000_0080;
-pub(super) const FS_NODUMP_FL: u32 = 0x0000_0040;
-pub(super) const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
-pub(super) const FS_VERITY_FL: u32 = 0x0010_0000;
-pub(super) const FS_DAX_FL: u32 = 0x0200_0000;
-pub(super) const FS_CASEFOLD_FL: u32 = 0x4000_0000;
-
-pub(super) const FS_XFLAG_IMMUTABLE: u32 = 0x0000_0008;
-pub(super) const FS_XFLAG_APPEND: u32 = 0x0000_0010;
-pub(super) const FS_XFLAG_SYNC: u32 = 0x0000_0020;
-pub(super) const FS_XFLAG_NOATIME: u32 = 0x0000_0040;
-pub(super) const FS_XFLAG_NODUMP: u32 = 0x0000_0080;
-pub(super) const FS_XFLAG_PROJINHERIT: u32 = 0x0000_0200;
-pub(super) const FS_XFLAG_DAX: u32 = 0x0000_8000;
-pub(super) const FS_XFLAG_VERITY: u32 = 0x0002_0000;
-pub(super) const FS_XFLAG_PREALLOC: u32 = 0x0000_0002;
-pub(super) const FS_XFLAG_CASEFOLD: u32 = 0x0004_0000;
-pub(super) const FS_XFLAG_CASENONPRESERVING: u32 = 0x0008_0000;
-pub(super) const FS_XFLAG_HASATTR: u32 = 0x8000_0000;
-pub(super) const FS_XFLAG_EXTSIZE: u32 = 0x0000_0800;
-pub(super) const FS_XFLAG_COWEXTSIZE: u32 = 0x0001_0000;
-pub(super) const FS_XFLAG_RTINHERIT: u32 = 0x0000_0100;
-pub(super) const FS_XFLAG_NOSYMLINKS: u32 = 0x0000_0400;
-pub(super) const FS_XFLAG_EXTSZINHERIT: u32 = 0x0000_1000;
-pub(super) const FS_XFLAG_REALTIME: u32 = 0x0000_0001;
-pub(super) const FS_XFLAG_NODEFRAG: u32 = 0x0000_2000;
-pub(super) const FS_XFLAG_FILESTREAM: u32 = 0x0000_4000;
-pub(super) const FS_XFLAG_COMMON: u32 = FS_XFLAG_SYNC | FS_XFLAG_IMMUTABLE | FS_XFLAG_APPEND
-    | FS_XFLAG_NODUMP | FS_XFLAG_NOATIME | FS_XFLAG_DAX | FS_XFLAG_PROJINHERIT
-    | FS_XFLAG_VERITY;
-pub(super) const FS_XFLAG_RDONLY_MASK: u32 = FS_XFLAG_PREALLOC | FS_XFLAG_HASATTR | FS_XFLAG_VERITY
-    | FS_XFLAG_CASEFOLD | FS_XFLAG_CASENONPRESERVING;
-pub(super) const FS_XFLAGS_MASK: u32 = FS_XFLAG_COMMON | FS_XFLAG_RDONLY_MASK | FS_XFLAG_EXTSIZE
-    | FS_XFLAG_COWEXTSIZE | FS_XFLAG_RTINHERIT | FS_XFLAG_NOSYMLINKS | FS_XFLAG_EXTSZINHERIT
-    | FS_XFLAG_REALTIME | FS_XFLAG_NODEFRAG | FS_XFLAG_FILESTREAM;
+// `FS_*_FL` / `FS_XFLAG_*` and the `include/linux/fileattr.h` masks are owned
+// by `vfs::inode::flags` (the fileattr state they describe lives there); this
+// module re-exports rather than re-declaring, so the two can never disagree.
+pub(super) use vfs::inode::{
+    FS_APPEND_FL, FS_CASEFOLD_FL, FS_DAX_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_NODUMP_FL,
+    FS_PROJINHERIT_FL, FS_SYNC_FL, FS_VERITY_FL,
+    FS_XFLAG_APPEND, FS_XFLAG_CASEFOLD, FS_XFLAG_COMMON, FS_XFLAG_COWEXTSIZE, FS_XFLAG_DAX,
+    FS_XFLAG_EXTSIZE, FS_XFLAG_IMMUTABLE, FS_XFLAG_NOATIME, FS_XFLAG_NODUMP,
+    FS_XFLAG_PROJINHERIT, FS_XFLAG_RDONLY_MASK, FS_XFLAG_SYNC, FS_XFLAG_VERITY, FS_XFLAGS_MASK,
+};
