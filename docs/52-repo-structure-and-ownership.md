@@ -121,6 +121,9 @@ Constraints:
 8. `crates/kernel/user-namespace` is a leaf over `namespace-identity`; `nscg`,
    procfs, and future credential-translation consumers depend on it, never
    vice versa.
+9. `crates/kernel/ipc` may depend on `netlink` for `mq_notify(SIGEV_THREAD)`
+   cookie delivery, mirroring `ipc/mqueue.c`'s `netlink_getsockbyfd` /
+   `netlink_sendskb`; `netlink` never depends on `ipc`.
 
 ## 8 Change policy
 

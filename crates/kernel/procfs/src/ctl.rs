@@ -46,6 +46,13 @@ use crate::proc_handler::{
 /// `proc_dointvec_minmax` window upper bound for a 32-bit-int knob.
 const INT_MAX: i64 = i32::MAX as i64;
 
+/// `fs.mqueue.{msg_max,msg_default}` window (`ipc/mq_sysctl.c` `msg_max_limit_*`).
+const MQ_MSG_BOUNDS: (i64, i64) =
+    (ipc::mqueue_policy::limits::MIN_MSGMAX, ipc::mqueue_policy::limits::HARD_MSGMAX);
+/// `fs.mqueue.{msgsize_max,msgsize_default}` window (`msg_maxsize_limit_*`).
+const MQ_MSGSIZE_BOUNDS: (i64, i64) =
+    (ipc::mqueue_policy::limits::MIN_MSGSIZEMAX, ipc::mqueue_policy::limits::HARD_MSGSIZEMAX);
+
 fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
     net::net_ns::current_namespace()
 }
@@ -60,6 +67,20 @@ fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
 fn get_nr_open() -> i64 { vfs::fdtable::nr_open() as i64 }
 fn set_nr_open(value: i64) { let _ = vfs::fdtable::set_nr_open(value as u32); }
 fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0); }
+/// `fs.mqueue.*` binds to the per-IPC-namespace values `mq_open` measures a
+/// `struct mq_attr` against (`ipc/mq_sysctl.c`), so raising a ceiling here and
+/// the EINVAL the syscall reports can never disagree. Every leaf is
+/// namespace-scoped: Linux's `set_lookup` resolves `current`'s `ipc_ns`.
+fn get_mq_queues_max() -> i64 { ipc::live::posix_mq::sysctl::queues_max() }
+fn set_mq_queues_max(v: i64) { ipc::live::posix_mq::sysctl::set_queues_max(v) }
+fn get_mq_msg_max() -> i64 { ipc::live::posix_mq::sysctl::msg_max() }
+fn set_mq_msg_max(v: i64) { ipc::live::posix_mq::sysctl::set_msg_max(v) }
+fn get_mq_msgsize_max() -> i64 { ipc::live::posix_mq::sysctl::msgsize_max() }
+fn set_mq_msgsize_max(v: i64) { ipc::live::posix_mq::sysctl::set_msgsize_max(v) }
+fn get_mq_msg_default() -> i64 { ipc::live::posix_mq::sysctl::msg_default() }
+fn set_mq_msg_default(v: i64) { ipc::live::posix_mq::sysctl::set_msg_default(v) }
+fn get_mq_msgsize_default() -> i64 { ipc::live::posix_mq::sysctl::msgsize_default() }
+fn set_mq_msgsize_default(v: i64) { ipc::live::posix_mq::sysctl::set_msgsize_default(v) }
 /// `kernel.modules_disabled` binds to the variable `init_module`/`finit_module`/
 /// `delete_module` actually read (`modules::admission`), so the file and the
 /// syscall admission can never disagree. Linux registers the leaf with
@@ -180,6 +201,16 @@ const SYSCTL_TREE: &[Node] = &[
         File("protected_hardlinks",   Const(b"1\n")),
         File("protected_symlinks",    Const(b"1\n")),
         File("suid_dumpable",         IntHook(get_suid_dumpable, set_suid_dumpable, Some((0, 2)))),
+        Dir("mqueue", &[
+            // `ipc/mq_sysctl.c`: `queues_max` is a plain `proc_dointvec`; the
+            // four size knobs are `proc_dointvec_minmax` between the MIN_* an
+            // admin may lower to and the HARD_* even CAP_SYS_RESOURCE cannot pass.
+            File("queues_max",       IntHook(get_mq_queues_max, set_mq_queues_max, None)),
+            File("msg_max",          IntHook(get_mq_msg_max, set_mq_msg_max, Some(MQ_MSG_BOUNDS))),
+            File("msgsize_max",      IntHook(get_mq_msgsize_max, set_mq_msgsize_max, Some(MQ_MSGSIZE_BOUNDS))),
+            File("msg_default",      IntHook(get_mq_msg_default, set_mq_msg_default, Some(MQ_MSG_BOUNDS))),
+            File("msgsize_default",  IntHook(get_mq_msgsize_default, set_mq_msgsize_default, Some(MQ_MSGSIZE_BOUNDS))),
+        ]),
         Dir("inotify", &[
             File("max_user_watches",  Const(b"65536\n")),
             File("max_user_instances", Const(b"128\n")),
