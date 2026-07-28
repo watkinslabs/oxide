@@ -31,6 +31,9 @@ mod load;
 mod place;
 mod uapi;
 
+#[cfg(test)]
+mod tests;
+
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 
 /// The current-arch `e_machine` per `31§2` invariant 1.

@@ -14,16 +14,31 @@ fn seg(vaddr: u64, mem_sz: u64, align: u64) -> LoadSegment {
 #[test]
 fn total_mapping_size_spans_page_start_to_last_byte() {
     let loads = [seg(0x1000, 0x2000, 0x1000), seg(0x5000, 0x800, 0x1000)];
-    assert_eq!(total_mapping_size(&loads), 0x5800 - 0x1000);
+    assert_eq!(total_mapping_size(&loads), 0x6000 - 0x1000);
     // Unaligned first vaddr: the span starts at its PAGE START.
     let loads = [seg(0x1240, 0x1000, 0x1000)];
-    assert_eq!(total_mapping_size(&loads), 0x2240 - 0x1000);
+    assert_eq!(total_mapping_size(&loads), 0x3000 - 0x1000);
     assert_eq!(min_vaddr(&loads), 0x1000);
     // Out-of-order phdrs must not fool the scan.
     let loads = [seg(0x9000, 0x1000, 0x1000), seg(0x2000, 0x1000, 0x1000)];
     assert_eq!(total_mapping_size(&loads), 0xa000 - 0x2000);
     assert_eq!(min_vaddr(&loads), 0x2000);
     assert_eq!(total_mapping_size(&[]), 0);
+}
+
+/// `AddressSpace::get_unmapped_area` rejects a non-page-multiple length with
+/// EINVAL, and a hole derived from an unaligned length would place the image at
+/// an unaligned bias. Every realistic image ends mid-page (`.bss`), so an
+/// unrounded span here fails every dynamically linked exec at runtime while
+/// compiling perfectly.
+#[test]
+fn total_mapping_size_is_always_page_granular() {
+    for end in [0x1u64, 0x999, 0x1000, 0x1001, 0x2fff] {
+        let loads = [seg(0x1000, end, 0x1000)];
+        let n = total_mapping_size(&loads);
+        assert_eq!(n % crate::PAGE, 0, "unaligned reservation {n:#x} for memsz {end:#x}");
+        assert!(n >= end, "reservation {n:#x} smaller than the image {end:#x}");
+    }
 }
 
 /// `fs/binfmt_elf.c:491-509`: coarsest power-of-two `p_align`, page-aligned;
