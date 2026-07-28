@@ -378,6 +378,12 @@ The audit rows were treated as claims to disprove. Four were wrong:
 - **Mount binds are not a gap.** `path_mount` DISCARDS `mnt_flags` for `MS_BIND`
   (`return do_loopback(path, dev_name, flags & MS_REC)`) and the clone inherits
   from its source. `mount --bind -o ro` does not make a ro bind upstream either.
+- **A tracerless `SECCOMP_RET_TRACE` does not act as `RET_KILL_THREAD`.**
+  `kernel/seccomp.c __seccomp_filter` sets the return value to `-ENOSYS` and
+  `goto skip` — the task LIVES. `RET_LOG` likewise does not "fail open": it IS
+  an allow-after-audit action. And the filter chain WAS already cloned on fork;
+  only `seccomp_mode` was not, which produced the same escape by a different
+  route.
 - **`RESOLVE_BENEATH` was not the escaping flag.** Only `RESOLVE_IN_ROOT`
   produced a live escape: it is the sole scoping bit that CLAMPS rather than
   errors, so the scoped walk returns ENOENT and hands control to the unscoped
