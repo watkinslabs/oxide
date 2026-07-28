@@ -170,6 +170,18 @@ impl super::Task {
         *self.fs_context.lock() = Arc::new(FsContext::from_snapshot(current.snapshot()));
     }
 
+    /// Linux `fs->users`: how many tasks share this `fs_struct`.
+    ///
+    /// `mntns_install` refuses `setns(CLONE_NEWNS)` unless this is exactly 1
+    /// — stricter than `fs_context_shared_outside_thread_group`'s
+    /// `LSM_UNSAFE_SHARE` rule, because re-rooting moves cwd and root for
+    /// EVERY sharer, including a `CLONE_FS` thread in the caller's own group.
+    /// # C: O(1)
+    pub fn fs_context_users(&self) -> usize {
+        // One strong ref is the clone `fs_context()` just handed back.
+        Arc::strong_count(&self.fs_context()) - 1
+    }
+
     /// Whether two tasks reference the same `CLONE_FS` owner. # C: O(1)
     pub fn shares_fs_context_with(&self, other: &super::Task) -> bool {
         Arc::ptr_eq(&self.fs_context(), &other.fs_context())
