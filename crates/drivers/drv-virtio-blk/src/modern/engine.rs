@@ -173,10 +173,10 @@ impl BlkState {
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
         let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
-        if blk::decode_status(status).is_err() {
+        if let Err(st) = blk::decode_status(status) {
             #[cfg(feature = "debug-boot")]
             log_status_error(type_, sector, data_len, status);
-            return Err(BlockError::Eio);
+            return Err(block_error_for_status(st));
         }
         if is_in {
             unsafe {
@@ -188,11 +188,32 @@ impl BlkState {
         Ok(())
     }
 
+    /// Issue the device barrier, or skip it when the negotiated cache mode is
+    /// write-through.
+    ///
+    /// Linux's equivalent is structural rather than a branch: without
+    /// `F_FLUSH` it calls `blk_queue_write_cache(q, false, false)`
+    /// (`virtio_blk.c:1084` → `virtblk_probe`), after which `blk_insert_flush`
+    /// (`block/blk-flush.c`) retires a flush-only request immediately and
+    /// `virtblk_setup_cmd` is never reached with `REQ_OP_FLUSH`. Same outcome,
+    /// and it is the CORRECT outcome: a device with no volatile write cache has
+    /// nothing to fence, so `Ok(())` here is a truthful durability answer, not
+    /// a swallowed error. Sending `T_FLUSH` anyway violates Virtio 1.2 §5.2.6
+    /// and earns `S_UNSUPP` from a conforming device. # C: O(1) or one request
+    pub(super) fn issue_flush(&self) -> KResult<()> {
+        if !self.write_cache { return Ok(()); }
+        self.submit(blk::VIRTIO_BLK_T_FLUSH, 0, &mut [])
+    }
+
     /// Describe an owned request that fits in one hardware chain. Larger
     /// requests retain the synchronous chunking path until the queued engine
     /// can chain their chunks under one completion continuation.
     fn owned_request_plan(&self, request: &mut BlockRequest) -> Option<(u32, u64, bool, bool, u32)> {
         match request.op {
+            // A write-through device has no volatile cache and did not negotiate
+            // `F_FLUSH`; `None` sends this down `submit_sync`, which completes it
+            // without a wire request (Linux `blk_insert_flush`).
+            BlockOp::Flush if !self.write_cache => None,
             BlockOp::Flush => Some((blk::VIRTIO_BLK_T_FLUSH, 0, false, true, 0)),
             BlockOp::Read | BlockOp::Write => {
                 let bytes = (request.len_blocks as usize).checked_mul(self.blk_size as usize)?;
@@ -366,7 +387,7 @@ impl BlkState {
                     }
                 }
                 Ok(()) => Ok(()),
-                Err(_) => Err(BlockError::Eio),
+                Err(st) => Err(block_error_for_status(st)),
             };
             // SAFETY: the device returned this descriptor head in used.ring;
             // the DMA region is no longer reachable by the device.
@@ -444,7 +465,7 @@ impl BlockDevice for BlkState {
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
         let sec = blk::VIRTIO_BLK_SECTOR_BYTES as usize;
         match req.op {
-            BlockOp::Flush => self.submit(blk::VIRTIO_BLK_T_FLUSH, 0, &mut []),
+            BlockOp::Flush => self.issue_flush(),
             BlockOp::Read | BlockOp::Write => {
                 let bs = self.blk_size as usize;
                 let nbytes = (req.len_blocks as usize)
@@ -485,6 +506,17 @@ impl BlockDevice for BlkState {
     }
 
     fn flush(&self) -> KResult<()> {
-        self.submit(blk::VIRTIO_BLK_T_FLUSH, 0, &mut [])
+        self.issue_flush()
+    }
+}
+
+/// `virtblk_result` (Linux `virtio_blk.c:107-118`): `S_UNSUPP` is
+/// `BLK_STS_NOTSUPP`, not an I/O error. Collapsing both into `Eio` is what made
+/// a flush issued against an un-negotiated `F_FLUSH` indistinguishable from a
+/// real media failure. # C: O(1)
+fn block_error_for_status(status: u8) -> BlockError {
+    match status {
+        blk::VIRTIO_BLK_S_UNSUPP => BlockError::Eopnotsupp,
+        _ => BlockError::Eio,
     }
 }

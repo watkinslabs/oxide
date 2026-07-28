@@ -36,8 +36,10 @@ pub use vfs::StaticFileInode;  // generic inode lives in vfs
 #[cfg(target_os = "oxide-kernel")] pub mod ctl;
 #[cfg(target_os = "oxide-kernel")] pub mod pressure;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod limits_render;
+pub mod hardening;
 pub mod proc_dointvec;
 pub mod proc_handler;
+pub mod random_uuid;
 #[cfg(target_os = "oxide-kernel")] mod pid_sched;
 #[cfg(any(target_os = "oxide-kernel", test))] mod proc_clock;
 #[cfg(any(target_os = "oxide-kernel", test))] mod timens_offsets;

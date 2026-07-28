@@ -181,6 +181,15 @@ pub fn add_entropy(bytes: &[u8]) {
     crng::add_entropy(bytes);
 }
 
+/// Mix entropy from a hardware generator and credit it (Linux
+/// `add_hwgenerator_randomness`) — unlike `add_entropy`, this is what marks
+/// the pool ready. Only a real hardware source may call it.
+/// # C: O(bytes.len())
+pub fn add_hw_entropy(bytes: &[u8]) {
+    if bytes.is_empty() { return; }
+    crng::add_hw_entropy(bytes);
+}
+
 /// One CSPRNG word. Callers wanting a buffer use `random_fill`.
 /// # C: O(1)
 pub fn random_u64() -> u64 { crng::next_u64() }

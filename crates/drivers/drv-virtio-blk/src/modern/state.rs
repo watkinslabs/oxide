@@ -216,7 +216,13 @@ pub(super) fn log_submit_failure(
     klog::write_raw(b"\n");
 }
 
-const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE;
+/// Feature bits we ask the device for. `VIRTIO_BLK_F_FLUSH` is what makes
+/// `VIRTIO_BLK_T_FLUSH` a legal request at all (Virtio 1.2 §5.2.6) and is in
+/// Linux's `features[]` for exactly that reason (`virtio_blk.c:1669-1676`).
+/// Without it negotiated the device may answer every barrier `S_UNSUPP`, so a
+/// journal commit that believes it fenced its writes has not.
+const WANTED_FEATURES: u64 =
+    virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE | virtio::VIRTIO_BLK_F_FLUSH;
 
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
@@ -296,6 +302,10 @@ pub struct BlkState {
     pub(super) blk_size: u32,
     pub(super) serial: [u8; blk::BLK_SERIAL_LEN],
     pub(super) bounce_pa: u64,
+    /// Post-negotiation cache mode (Linux `virtblk_get_cache_mode` →
+    /// `blk_queue_write_cache`). `false` = write-through: no volatile cache to
+    /// fence, and `VIRTIO_BLK_T_FLUSH` must NOT go on the wire.
+    pub(super) write_cache: bool,
     pub(super) inflight: Spinlock<RingShadow, DriverLockClass>,
     pub(super) poisoned: core::sync::atomic::AtomicBool,
 }
@@ -318,6 +328,7 @@ impl BlkState {
             blk_size: blk::VIRTIO_BLK_SECTOR_BYTES,
             serial: [0u8; blk::BLK_SERIAL_LEN],
             bounce_pa: 0,
+            write_cache: true,
             inflight: Spinlock::new(RingShadow {
                 avail_idx: 0, used_seen: 0, busy: false, free_heads: Vec::new(), pending: Vec::new(), deferred: Vec::new(),
             }),

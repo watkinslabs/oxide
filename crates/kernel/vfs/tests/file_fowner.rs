@@ -133,7 +133,7 @@ fn kill_fasync_delivers_to_owner_via_hook() {
     f.kill_fasync(SIGIO);
     assert_eq!(GOT_FIRES.load(Ordering::Acquire), 0, "no O_ASYNC → no delivery");
     // Enable O_ASYNC, then deliver: hook fires with owner + default SIGIO + creds.
-    f.set_fl(OpenFlags::from_bits_retain(O_ASYNC));
+    let _ = f.set_fl(OpenFlags::from_bits_retain(O_ASYNC));
     assert!(f.is_async(), "O_ASYNC stored via set_fl");
     f.kill_fasync(SIGIO);
     assert_eq!(GOT_FIRES.load(Ordering::Acquire), 1, "delivered once");

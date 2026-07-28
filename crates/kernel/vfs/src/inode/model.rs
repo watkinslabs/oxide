@@ -78,6 +78,12 @@ pub struct Inode {
     pub(super) i_fsid:         AtomicU64,
     pub(super) i_sb:           Weak<SuperBlock>,
     pub(super) i_mapping:      Option<Arc<dyn AddressSpaceOps>>,
+    /// `mapping->wb_err` (Linux `struct address_space`): this inode's
+    /// writeback-error latch, reported once per open description by
+    /// `file_check_and_advance_wb_err`. Lives on the inode because our
+    /// `i_mapping` is 1:1 with it and an address_space with no frame store
+    /// still needs somewhere to record a failed flush.
+    pub(super) i_wb_err:       crate::errseq::Errseq,
     /// Canonical `address_space->i_mmap` reverse-map owner. It is inode
     /// lifetime state, so separately opened file descriptors and forked VMAs
     /// cannot invent competing file-rmap objects for the same shared pages.

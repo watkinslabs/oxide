@@ -104,7 +104,9 @@ pub fn install(
         let _ = uninstall(device_key);
         return None;
     }
-    devfs::misc::add_entropy(&seed[..n]);
+    // A virtio-rng device IS a hardware generator: Linux credits it via
+    // `add_hwgenerator_randomness`, which is what makes a cold pool ready.
+    devfs::misc::add_hw_entropy(&seed[..n]);
     Some(n)
 }
 

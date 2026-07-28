@@ -380,7 +380,6 @@ pub struct NetStack {
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
-    pub(crate) next_isn: Spinlock<u32, StackLockClass>,
     /// F180c: IPv6 neighbor cache keyed by ingress/egress interface.
     pub(crate) ndp: Spinlock<BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>, StackLockClass>,
     /// F195: IPv4 reassembly table.
