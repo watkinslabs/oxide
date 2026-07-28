@@ -40,7 +40,15 @@ fn cred_for_effective(c: &sched::Task, real: bool, effective: u64) -> vfs::Cred 
         (c.creds.fsuid.load(Ordering::Acquire), c.creds.fsgid.load(Ordering::Acquire))
     };
     let eff = if real {
-        if uid == 0 { permitted } else { 0 }
+        // Linux `access_override_creds` (`fs/open.c`): the capability fixup runs
+        // ONLY when `SECURE_NO_SETUID_FIXUP` is clear. With the securebit set, a
+        // process that deliberately keeps its capabilities across a uid switch
+        // keeps them here too, and recomputing from uid silently strips them —
+        // which is the whole reason the securebit exists.
+        let sb = c.creds.securebits.load(Ordering::Acquire);
+        let no_fixup = sb & sched::securebits::mask(sched::securebits::SECURE_NO_SETUID_FIXUP) != 0;
+        crate::access_cred::access_override_effective(
+            uid, permitted, c.creds.cap_effective.load(Ordering::Acquire), no_fixup)
     } else {
         effective
     };
