@@ -153,7 +153,7 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
             return Err(e);
         }
     }
-    let now = vfs::inode_times::realtime_now_ns();
+    let now = vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns());
     let cross_dir_move = src_is_dir && s.from_p != s.to_p;
     let rename = mount.run_journaled(|m| {
         if s.dest_victim.is_some() {
@@ -216,7 +216,7 @@ fn cross_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8]) -> KResul
     let src = mount.read_inode(s.target).map_err(|_| VfsError::Eio)?;
     let dst = mount.read_inode(bino).map_err(|_| VfsError::Eio)?;
     let (src_is_dir, dst_is_dir) = (src.is_dir(), dst.is_dir());
-    let now = vfs::inode_times::realtime_now_ns();
+    let now = vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns());
     let cross = s.from_p != s.to_p;
     mount.run_journaled(|m| {
         m.dir_unlink(s.from_p, from_name)?;

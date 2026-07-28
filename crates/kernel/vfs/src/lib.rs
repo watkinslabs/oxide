@@ -47,6 +47,7 @@ pub mod mount;
 pub mod mntns;
 pub mod superblock;
 mod superblock_wb;
+pub mod timespec;
 pub mod types;
 pub mod uapi;
 pub mod poll_subs;
@@ -77,6 +78,7 @@ pub use file_ops::{FileOps, DefaultFileOps, default_file_ops, stream_write_iter_
 pub use file_ops::DirDebugBackend;
 pub use getattr::{fsid_to_dev, st_dev_for_fsid, generic_fillattr, vfs_getattr, default_perm_for, Kstat, S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO};
 pub use idmap::{Idmap, IdExtent, IDENTITY};
+pub use timespec::Timespec64;
 pub use setattr::{setattr_prepare, simple_setattr, notify_change, notify_change_mnt, apply_kill_priv, setattr_should_drop_suidgid, inode_newsize_ok, set_rlimit_fsize_hook, clear_rlimit_fsize_hook, RlimitFsizeHook, Iattr, ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME, ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_KILL_SUID, ATTR_KILL_SGID, ATTR_FORCE};
 pub use mapping::{AddressSpaceOps, SharedFrame};
 pub use errseq::{Errseq, ErrseqVal, MAX_ERRNO};

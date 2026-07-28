@@ -11,8 +11,8 @@ mod common;
 use vfs::fs::FileSystem;
 use vfs::inode::InodeBuilder;
 use vfs::inode_times::{current_time, inode_set_ctime_current};
-use vfs::superblock::NSEC_PER_SEC;
-use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, SuperBlock};
+use vfs::timespec::NSEC_PER_SEC;
+use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, SuperBlock, Timespec64};
 
 /// Backend with a name only — the test exercises SB granularity, not storage.
 struct TFs;
@@ -37,31 +37,32 @@ fn node(sb: Option<&Arc<SuperBlock>>) -> InodeRef {
 fn coarse_gran_floors_subsecond() {
     let sb = sb_with_gran(1_000_000); // 1 ms
     let node = node(Some(&sb));
-    let t = 7 * NSEC_PER_SEC + 123_456_789;
+    let t = 7 * NSEC_PER_SEC as u64 + 123_456_789;
     // 123_456_789 ns floored to a 1 ms (1_000_000 ns) multiple = 123_000_000.
-    assert_eq!(current_time(&node, t), 7 * NSEC_PER_SEC + 123_000_000);
+    assert_eq!(current_time(&node, t), Timespec64::new(7, 123_000_000));
 }
 
 #[test]
 fn ns_gran_is_identity() {
     let sb = sb_with_gran(1); // ns precision
     let node = node(Some(&sb));
-    let t = 9 * NSEC_PER_SEC + 42;
-    assert_eq!(current_time(&node, t), t);
+    let t = 9 * NSEC_PER_SEC as u64 + 42;
+    assert_eq!(current_time(&node, t), Timespec64::new(9, 42));
 }
 
 #[test]
 fn sb_less_inode_keeps_full_precision() {
     let node = node(None);
-    let t = 3 * NSEC_PER_SEC + 999;
-    assert_eq!(current_time(&node, t), t, "anon inode has no s_time_gran to floor to");
+    let t = 3 * NSEC_PER_SEC as u64 + 999;
+    assert_eq!(current_time(&node, t), Timespec64::new(3, 999),
+        "anon inode has no s_time_gran to floor to");
 }
 
 #[test]
 fn set_ctime_current_returns_floored_value() {
     let sb = sb_with_gran(1_000); // 1 µs
     let node = node(Some(&sb));
-    let t = 5 * NSEC_PER_SEC + 654_321;
+    let t = 5 * NSEC_PER_SEC as u64 + 654_321;
     // Stamp + report: the returned ctime equals current_time (floored to µs).
-    assert_eq!(inode_set_ctime_current(&node, t), 5 * NSEC_PER_SEC + 654_000);
+    assert_eq!(inode_set_ctime_current(&node, t), Timespec64::new(5, 654_000));
 }

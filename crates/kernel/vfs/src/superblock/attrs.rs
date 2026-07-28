@@ -1,8 +1,9 @@
 extern crate alloc;
 use alloc::string::String;
 use core::sync::atomic::Ordering;
+use crate::timespec::Timespec64;
 use crate::types::KResult;
-use super::{SuperBlock, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SYNCHRONOUS};
+use super::{SuperBlock, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SYNCHRONOUS};
 
 impl SuperBlock {
     /// `s_flags` snapshot (Linux `sb->s_flags`). # C: O(1)
@@ -271,37 +272,20 @@ impl SuperBlock {
         self.s_time_max.store(max, Ordering::Release);
     }
 
-    /// `timestamp_truncate` (Linux fs/inode.c): round a wall-clock timestamp
-    /// (`t_ns`, nanoseconds since the epoch — the inode atime/mtime/ctime
-    /// representation) DOWN to this superblock's `s_time_gran`, THEN clamp the
-    /// seconds field to `[s_time_min, s_time_max]`, so a setattr never records
-    /// either sub-granularity precision OR an out-of-epoch-window timestamp the
-    /// backend cannot persist. `gran <= 1` is the granularity identity (full ns);
-    /// `gran >= NSEC_PER_SEC` floors to a whole second; an in-between granularity
-    /// truncates the sub-second remainder to a `gran` multiple. The granularity
-    /// truncation is confined to the sub-second field (Linux truncates `tv_nsec`
-    /// only). The range clamp pins an out-of-window time to the boundary second
-    /// with a zeroed sub-second field (Linux sets `tv_nsec = 0` when it clamps);
-    /// with the default [`TIME64_MIN`]/[`TIME64_MAX`] window it is a no-op. Since
-    /// `t_ns` is unsigned (≥ epoch), the floor clamp only fires for a backend
-    /// whose `s_time_min` is itself post-epoch. # C: O(1)
-    pub fn timestamp_truncate(&self, t_ns: u64) -> u64 {
-        let gran = self.s_time_gran() as u64;
-        let sec = t_ns / NSEC_PER_SEC;
-        let nsec = t_ns % NSEC_PER_SEC;
-        let nsec = if gran <= 1 { nsec }
-                   else if gran >= NSEC_PER_SEC { 0 }
-                   else { nsec - nsec % gran };
-        let sec_i = sec as i64; // t_ns unsigned ⇒ sec_i ≥ 0
-        let smax = self.s_time_max();
-        if sec_i > smax {
-            return if smax < 0 { 0 } else { (smax as u64).saturating_mul(NSEC_PER_SEC) };
-        }
-        let smin = self.s_time_min();
-        if sec_i < smin {
-            // Reachable only when smin > 0 (sec_i ≥ 0); the floor is post-epoch.
-            return (smin as u64).saturating_mul(NSEC_PER_SEC);
-        }
-        sec * NSEC_PER_SEC + nsec
+    /// `timestamp_truncate` (Linux fs/inode.c): clamp a wall-clock timestamp's
+    /// SIGNED seconds field to `[s_time_min, s_time_max]`, then floor its
+    /// sub-second field to this superblock's `s_time_gran`, so a setattr never
+    /// records either an out-of-window instant the backend cannot persist or
+    /// sub-granularity precision it cannot express.
+    ///
+    /// The range rule is a CLAMP, never an error: Linux caps at the filesystem
+    /// boundary (`clamp(t.tv_sec, sb->s_time_min, sb->s_time_max)`) and lets the
+    /// syscall succeed, which is why `utimensat` has no seconds-range check at
+    /// all. A clamp that bites pins to the boundary SECOND with a zeroed
+    /// sub-second field, matching Linux's `t.tv_nsec = 0` on the boundary. With
+    /// the default [`TIME64_MIN`]/[`TIME64_MAX`] window the clamp is a no-op, so
+    /// a pre-epoch time survives it untouched. # C: O(1)
+    pub fn timestamp_truncate(&self, t: Timespec64) -> Timespec64 {
+        t.clamp_secs(self.s_time_min(), self.s_time_max()).floor_gran(self.s_time_gran())
     }
 }
