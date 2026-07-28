@@ -25,7 +25,7 @@ Record count is **44** since B1460 added `latency|nanosleep_short` and
 predates both).
 
 | DONE | W8 `shm_nattch` counted shmat/shmdt calls, not VMAs | `F765-sysv-blocking-differential` | both | §9 |
-| OPEN | W9 a userspace spin loop is UNKILLABLE — no signal reaches it | | both | §10 |
+| CLAIMED | W9 a userspace spin loop is UNKILLABLE — no signal reaches it | `B1471-signal-on-irq-return` | both | §10 |
 
 Differential state after F765 merged with the `latency` and `inotify` rows,
 own runs, clean builds: **87/87 identical records on BOTH arches — zero
