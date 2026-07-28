@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vmm::VmaBacking;
 
-use super::{lookup_segment_by_backing, page_align_len, release_detached, ShmSegment, PAGE_SIZE};
+use super::{lookup_segment_by_backing, page_align_len, ShmSegment, PAGE_SIZE};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -116,14 +116,14 @@ pub fn sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
     let plan = match plan_detach(&desc, addr, |s| page_align_len(segs[s].size).map(|l| l as u64)) {
         Some(p) => p, None => return err(Errno::Einval),
     };
+    // Each unmapped VMA runs `shm_vma_close` from the VMA tree, so the count
+    // drops once per fragment exactly as Linux's `remove_vma` does — shmdt
+    // itself does no accounting.
     for i in plan.victims {
         let v = &vmas[i];
         let len = (v.end.as_u64() - v.start.as_u64()) as usize;
         if let Some(u) = UserVirtAddr::new(v.start.as_u64()) { let _ = mm.munmap(u, len); }
     }
-    // Linux `shm_close`: the attachment count drops, and a segment already
-    // marked SHM_DEST by IPC_RMID is destroyed once the last attach goes.
-    release_detached(&segs[plan.seg]);
     0
 }
 
