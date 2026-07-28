@@ -122,6 +122,35 @@ impl Inode {
     pub fn blocks(&self) -> u64 { self.i_blocks.load(Ordering::Relaxed) }
     /// Set `i_flags`. # C: O(1)
     pub fn set_i_flags(&self, flags: u32) { self.i_flags.store(flags, Ordering::Relaxed); }
+
+    /// `IS_SYNC(inode)` (Linux `include/linux/fs.h`): the `chattr +S` per-inode
+    /// synchronous-write flag. Makes every write on this inode behave as if the
+    /// description had `O_SYNC`, which is why `iocb_is_dsync` tests it
+    /// alongside `IOCB_DSYNC` (`include/linux/fs.h:2652-2656`). # C: O(1)
+    pub fn is_sync(&self) -> bool {
+        self.i_flags.load(Ordering::Relaxed) & super::flags::S_SYNC != 0
+    }
+
+    /// `mapping->wb_err` — the writeback-error latch for this inode's
+    /// address_space. # C: O(1)
+    pub fn wb_err(&self) -> &crate::errseq::Errseq { &self.i_wb_err }
+
+    /// `mapping_set_error` (Linux `include/linux/pagemap.h:238-255`): record a
+    /// deferred writeback failure so the NEXT `fsync`/`syncfs` reports it, even
+    /// though the call that hit the error (background writeback, inode
+    /// eviction, `msync`) had no one to return it to.
+    ///
+    /// Recorded in BOTH the inode's own latch and the superblock's `s_wb_err`,
+    /// exactly as Linux does — the superblock copy is what lets `syncfs(2)`
+    /// report an error whose inode has already been evicted, and it is why
+    /// dropping a dirty inode is not a way to lose the failure.
+    ///
+    /// `errno` is the POSITIVE POSIX code; `0` is a no-op. # C: O(1)
+    pub fn mapping_set_error(&self, errno: i32) {
+        if errno <= 0 { return; }
+        self.i_wb_err.set(errno as u32);
+        if let Some(sb) = self.i_sb() { sb.s_wb_err.set(errno as u32); }
+    }
     /// Replace permission bits, preserving `S_IFMT`. # C: O(1)
     pub fn set_perm(&self, perm: u16) -> KResult<()> {
         let ifmt = self.i_mode.load(Ordering::Relaxed) & (S_IFMT as u32);

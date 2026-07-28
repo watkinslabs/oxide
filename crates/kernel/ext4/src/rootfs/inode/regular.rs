@@ -358,6 +358,15 @@ impl AddressSpaceOps for Ext4FileMapping {
         self.data.frames.writeback_range(start, end)
     }
 
+    /// Backend half of an `fsync` reached without an open description
+    /// (`msync(MS_SYNC)`): the SAME journal commit + device barrier
+    /// `ext4_sync_file` performs for `f_op->fsync`, so the two routes to
+    /// durability cannot diverge. # C: O(journal tx)
+    fn sync_backing(&self) -> Result<(), ()> {
+        self.data.st.mount.commit_batch().map_err(|_| ())?;
+        self.data.st.mount.dev.flush().map_err(|_| ())
+    }
+
     fn mincore_page(&self, off: u64) -> bool { self.data.frames.mincore_page(off) }
 
     fn invalidate_range(&self, start: u64, end: u64) -> usize {

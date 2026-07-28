@@ -24,20 +24,50 @@ fn offset_from_args(args: &SyscallArgs) -> i64 { pos_from_hilo(args.a3, args.a4)
 /// # C: O(iovcnt x iov[i].len)
 pub fn sys_pwritev2(args: &SyscallArgs) -> i64 {
     let pos = offset_from_args(args);
-    if preadv_pos(pos, true) == PreadvPos::CurrentOffset {
-        if args.a5 != 0 {
-            if let Err(e) = validate_rwf(args.a0 as i32, args.a5) { return e; }
-        }
-        return crate::s020_writev::sys_writev(args);
-    }
-    if let Err(e) = validate_rwf(args.a0 as i32, args.a5) { return e; }
-    sys_pwritev(args)
+    let cur_off = preadv_pos(pos, true) == PreadvPos::CurrentOffset;
+    let eff = match validate_rwf(args.a0 as i32, args.a5) {
+        Ok(e)  => e,
+        Err(e) => return e,
+    };
+    // `kiocb_set_rw_flags` folded `RWF_SYNC`/`RWF_DSYNC` into `IOCB_SYNC`/
+    // `IOCB_DSYNC`; Linux then acts on them in `generic_write_sync` at the tail
+    // of the write (`include/linux/fs.h:2665-2670`). Previously the effect was
+    // computed and dropped on the floor, so `pwritev2(..., RWF_SYNC)` behaved
+    // exactly like `pwritev`.
+    let extra = vfs::SyncMode { dsync: eff.dsync, sync: eff.sync };
+    let start = if cur_off { u64::MAX } else { pos as u64 };
+    let n = if cur_off { crate::s020_writev::sys_writev(args) } else { sys_pwritev(args) };
+    if n <= 0 || !extra.dsync { return n; }
+    rwf_write_sync(args.a0 as i32, start, n as u64, extra)
+        .map_or_else(|e| e, |()| n)
+}
+
+/// `generic_write_sync` for the per-operation `RWF_SYNC`/`RWF_DSYNC` bits.
+///
+/// Split from the description-level `O_SYNC`/`O_DSYNC` handling, which
+/// `vfs::File`'s write paths already apply on every write: this covers only the
+/// case where the OPERATION asked for durability that the open description did
+/// not. `start == u64::MAX` marks the current-offset (`writev`) form, where the
+/// bytes ended at the fd's post-write `f_pos`.
+///
+/// A sync failure replaces the byte count with `-errno`, per Linux — a
+/// synchronous write that could not be made durable did not do what was asked.
+/// # C: O(N_dirty in range) + O(journal tx)
+fn rwf_write_sync(fd: i32, start: u64, written: u64, extra: vfs::SyncMode) -> Result<(), i64> {
+    let Some(cur) = sched::live::current() else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    let fdt = fdt.clone();
+    let Ok(file) = fdt.get(fd) else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    let end_pos = if start == u64::MAX { file.pos() } else { start.saturating_add(written) };
+    file.generic_write_sync(end_pos, written as usize, extra)
+        .map_err(|e| -(e as i64))
 }
 
 /// Run the write-side `kiocb_set_rw_flags` ladder against the description's
 /// real capabilities. Returns `Err(-errno)` on rejection. # C: O(1)
-fn validate_rwf(fd: i32, flags: u64) -> Result<(), i64> {
-    if flags == 0 { return Ok(()); }
+fn validate_rwf(fd: i32, flags: u64) -> Result<crate::rwf::RwEffect, i64> {
+    if flags == 0 { return Ok(crate::rwf::RwEffect::default()); }
     let Some(cur) = sched::live::current() else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
@@ -50,7 +80,6 @@ fn validate_rwf(fd: i32, flags: u64) -> Result<(), i64> {
         ..RwCaps::default()
     };
     kiocb_set_rw_flags(flags, RwDir::Write, &caps)
-        .map(|_| ())
         .map_err(|e| -(e.as_i32() as i64))
 }
 

@@ -39,7 +39,7 @@ fn file(flags: u32) -> Arc<File> {
 #[test]
 fn access_mode_preserved() {
     let f = file(OpenFlags::O_RDWR.bits());
-    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_NONBLOCK.bits())); // access bits 0
+    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_NONBLOCK.bits())).expect("set_fl"); // access bits 0
     assert!(out.contains(OpenFlags::O_RDWR), "O_RDWR access mode must survive F_SETFL");
     assert!(out.contains(OpenFlags::O_NONBLOCK), "O_NONBLOCK must be set");
     assert_eq!(f.flags(), out, "flags() reflects the new f_flags");
@@ -53,7 +53,7 @@ fn creation_flags_ignored_and_preserved() {
     let f = file(OpenFlags::O_WRONLY.bits() | OpenFlags::O_CLOEXEC.bits());
     // arg requests O_CREAT|O_TRUNC|O_APPEND; only O_APPEND is in SETFL_MASK.
     let arg = OpenFlags::O_CREAT.bits() | OpenFlags::O_TRUNC.bits() | OpenFlags::O_APPEND.bits();
-    let out = f.set_fl(OpenFlags::from_bits_retain(arg));
+    let out = f.set_fl(OpenFlags::from_bits_retain(arg)).expect("set_fl");
     assert!(out.contains(OpenFlags::O_APPEND), "O_APPEND is settable");
     assert!(!out.contains(OpenFlags::O_CREAT), "O_CREAT must not be settable via F_SETFL");
     assert!(!out.contains(OpenFlags::O_TRUNC), "O_TRUNC must not be settable via F_SETFL");
@@ -67,25 +67,55 @@ fn creation_flags_ignored_and_preserved() {
 fn append_settable_and_clearable() {
     let f = file(OpenFlags::O_RDWR.bits() | OpenFlags::O_APPEND.bits());
     // Clear all status flags: arg = access mode only (0 here for status bits).
-    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_RDWR.bits()));
+    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_RDWR.bits())).expect("set_fl");
     assert!(!out.contains(OpenFlags::O_APPEND), "O_APPEND cleared when arg omits it");
     // Set it back.
-    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_APPEND.bits()));
+    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_APPEND.bits())).expect("set_fl");
     assert!(out.contains(OpenFlags::O_APPEND), "O_APPEND re-set");
     assert!(out.contains(OpenFlags::O_RDWR), "access mode never changed");
 }
 
-/// O_DIRECT and O_NOATIME (raw bits, not in OpenFlags) are inside SETFL_MASK and
-/// must be both settable and preservable through subsequent F_SETFL calls.
+/// O_NOATIME (a raw bit, not in OpenFlags) is inside SETFL_MASK and must be
+/// settable, and a later F_SETFL that omits it clears it — Linux overwrites the
+/// whole masked region rather than OR-ing into it.
 #[test]
-fn direct_and_noatime_settable() {
+fn noatime_settable_and_region_overwritten() {
     let f = file(OpenFlags::O_RDONLY.bits());
-    let out = f.set_fl(OpenFlags::from_bits_retain(O_DIRECT | O_NOATIME));
-    assert_eq!(out.bits() & O_DIRECT, O_DIRECT, "O_DIRECT settable");
+    let out = f.set_fl(OpenFlags::from_bits_retain(O_NOATIME)).expect("set_fl");
     assert_eq!(out.bits() & O_NOATIME, O_NOATIME, "O_NOATIME settable");
-    // A later F_SETFL that only toggles O_NONBLOCK must NOT clear them? In Linux
-    // SETFL overwrites the whole masked region, so omitting O_DIRECT clears it.
-    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_NONBLOCK.bits()));
-    assert_eq!(out.bits() & O_DIRECT, 0, "omitting O_DIRECT in arg clears it (whole-region overwrite)");
+    let out = f.set_fl(OpenFlags::from_bits_retain(OpenFlags::O_NONBLOCK.bits())).expect("set_fl");
+    assert_eq!(out.bits() & O_NOATIME, 0, "omitting O_NOATIME in arg clears it (whole-region overwrite)");
     assert!(out.contains(OpenFlags::O_NONBLOCK), "O_NONBLOCK set");
+}
+
+/// `F_SETFL` may NOT switch a regular file to `O_DIRECT` when the backend has
+/// no direct-I/O path: `if (!S_ISFIFO(inode->i_mode) && (arg & O_DIRECT) &&
+/// !(filp->f_mode & FMODE_CAN_ODIRECT)) return -EINVAL;` (`fs/fcntl.c:62-65`).
+///
+/// Accepting it and continuing to buffer is the failure this rejects — a caller
+/// that sets `O_DIRECT` for correctness would be told it succeeded while its
+/// writes still sat in the page cache. The pre-fix `set_fl` had `O_DIRECT` in
+/// `SETFL_MASK` and stored it unconditionally.
+#[test]
+fn direct_rejected_without_backend_support() {
+    let f = file(OpenFlags::O_RDONLY.bits());
+    assert!(f.set_fl(OpenFlags::from_bits_retain(O_DIRECT)).is_err(),
+        "O_DIRECT on a backend with no direct_IO must be EINVAL, not silently buffered");
+    assert_eq!(f.flags().bits() & O_DIRECT, 0, "a rejected F_SETFL must not have stored the bit");
+    // The rejection is specific to O_DIRECT: the rest of SETFL_MASK still works.
+    let out = f.set_fl(OpenFlags::from_bits_retain(O_NOATIME)).expect("set_fl");
+    assert_eq!(out.bits() & O_NOATIME, O_NOATIME);
+}
+
+/// The `O_DIRECT` gate is scoped to regular files. On a FIFO the bit selects
+/// packet mode (`pipe2(2)`), which Linux exempts by name — `fs/fcntl.c:61`
+/// "Pipe packetized mode is controlled by O_DIRECT flag".
+#[test]
+fn direct_still_settable_on_a_fifo() {
+    let ino: InodeRef = InodeBuilder::new(0x60, mk_mode(FileType::Fifo, 0),
+        default_inode_ops(), default_file_ops()).build();
+    let d = Dentry::new(None, "p".into(), Arc::clone(&ino));
+    let f = File::new(ino, d, OpenFlags::O_RDONLY);
+    let out = f.set_fl(OpenFlags::from_bits_retain(O_DIRECT)).expect("FIFO packet mode must stay settable");
+    assert_eq!(out.bits() & O_DIRECT, O_DIRECT);
 }
