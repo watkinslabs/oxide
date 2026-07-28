@@ -82,15 +82,15 @@ impl InodeOps for Ext4StatInodeOps {
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
         super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
-        let ino = match d.st.mount.create_dir(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
-            Ok(ino) => ino,
+        let (ino, node) = match d.st.mount.create_dir_inode(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
+            Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
                 return Err(super::regular::vfs_error_from_mount(e));
             }
         };
         d.st.forget_created_ino(ino);
-        d.st.wrap_any_ino(ino).ok_or(VfsError::Eio)
+        Ok(d.st.wrap_created_any(ino, &node))
     }
 
     fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
@@ -125,15 +125,15 @@ impl InodeOps for Ext4StatInodeOps {
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
         super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
-        let ino = match d.st.mount.create_file(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
-            Ok(ino) => ino,
+        let (ino, node) = match d.st.mount.create_file_inode(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
+            Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
                 return Err(super::regular::vfs_error_from_mount(e));
             }
         };
         d.st.forget_created_ino(ino);
-        d.st.wrap_file(ino).ok_or(VfsError::Eio)
+        Ok(d.st.wrap_created_file(ino, &node))
     }
 
     fn tmpfile(&self, inode: &Inode, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
@@ -142,8 +142,8 @@ impl InodeOps for Ext4StatInodeOps {
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
         super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
-        let ino = match d.st.mount.create_anonymous_as(d.ino, m & 0o7777, uid, gid) {
-            Ok(ino) => ino,
+        let (ino, node) = match d.st.mount.create_anonymous_inode(d.ino, m & 0o7777, uid, gid) {
+            Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
                 return Err(super::regular::vfs_error_from_mount(e));
@@ -151,7 +151,7 @@ impl InodeOps for Ext4StatInodeOps {
         };
         d.st.orphan_insert(ino);
         d.st.forget_created_ino(ino);
-        d.st.wrap_file(ino).ok_or(VfsError::Eio)
+        Ok(d.st.wrap_created_file(ino, &node))
     }
 
     fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {

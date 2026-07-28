@@ -11,6 +11,9 @@ pub(crate) struct HostedFaults {
     pub(crate) inode_write_after: AtomicU32,
     pub(crate) next_metadata_write: AtomicBool,
     pub(crate) metadata_write_after: AtomicU32,
+    pub(crate) next_inode_read: AtomicBool,
+    pub(crate) inode_read_after: AtomicU32,
+    pub(crate) inode_reads: AtomicU32,
     pub(crate) next_extent_write: AtomicBool,
     pub(crate) extent_write_after: AtomicU32,
     pub(crate) next_data_write:  AtomicBool,
@@ -34,6 +37,9 @@ impl HostedFaults {
             inode_write_after: AtomicU32::new(0),
             next_metadata_write: AtomicBool::new(false),
             metadata_write_after: AtomicU32::new(0),
+            next_inode_read: AtomicBool::new(false),
+            inode_read_after: AtomicU32::new(0),
+            inode_reads: AtomicU32::new(0),
             next_extent_write: AtomicBool::new(false),
             extent_write_after: AtomicU32::new(0),
             next_data_write: AtomicBool::new(false),
@@ -98,6 +104,43 @@ impl Mount {
             return true;
         }
         let _ = self.faults.metadata_write_after.compare_exchange(n, n - 1, Ordering::AcqRel, Ordering::Acquire);
+        false
+    }
+
+    /// Hosted-test hook: fail the next `read_inode` (an inode-table read that
+    /// returns `BadChecksum`/`BlockIo` on real hardware). Load-bearing for
+    /// "create must not depend on reading back what it just wrote". # C: O(1)
+    pub fn fail_next_inode_read_for_tests(&self) {
+        self.faults.next_inode_read.store(true, Ordering::Release);
+    }
+
+    /// Hosted-test hook: fail after `ok_count` successful `read_inode`s. # C: O(1)
+    pub fn fail_inode_read_after_for_tests(&self, ok_count: u32) {
+        self.faults.inode_read_after.store(ok_count + 1, Ordering::Release);
+    }
+
+    /// Hosted-test hook: `read_inode` calls since the last reset. Lets a test
+    /// assert an op performs ZERO inode-table reads rather than infer it from
+    /// which injected fault happened to fire first. # C: O(1)
+    pub fn inode_read_count_for_tests(&self) -> u32 {
+        self.faults.inode_reads.load(Ordering::Acquire)
+    }
+
+    /// Hosted-test hook: zero the `read_inode` counter. # C: O(1)
+    pub fn reset_inode_read_count_for_tests(&self) {
+        self.faults.inode_reads.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn should_fail_inode_read_for_tests(&self) -> bool {
+        self.faults.inode_reads.fetch_add(1, Ordering::AcqRel);
+        if self.faults.next_inode_read.swap(false, Ordering::AcqRel) { return true; }
+        let n = self.faults.inode_read_after.load(Ordering::Acquire);
+        if n == 0 { return false; }
+        if n == 1 {
+            self.faults.inode_read_after.store(0, Ordering::Release);
+            return true;
+        }
+        let _ = self.faults.inode_read_after.compare_exchange(n, n - 1, Ordering::AcqRel, Ordering::Acquire);
         false
     }
 
