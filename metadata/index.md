@@ -29,6 +29,10 @@ advanced to 765 so a concurrent lane cannot collide with them.
 `D406`-`D409` reserved 2026-07-27 for the Linux subsystem-audit lanes
 (mm, sched, vfs/block, net/security). Counter advanced to 410.
 
+`B1459`-`B1465` reserved 2026-07-27 for the concurrent compliance-blocker
+lanes (signal frames, wait deadlines, poll subscribers, durable writes, procfs
+creds, exec privilege transition). Counter advanced to 1466.
+
 ## Known counter collisions
 
 `D399` was issued twice — `D399-handoff-refresh` and

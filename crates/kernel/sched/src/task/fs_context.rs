@@ -166,6 +166,26 @@ impl super::Task {
         Arc::ptr_eq(&self.fs_context(), &other.fs_context())
     }
 
+    /// Linux `fs/exec.c` `check_unsafe_exec`'s `LSM_UNSAFE_SHARE`:
+    /// `p->fs->users > n_fs`, where `n_fs` counts this task plus the threads of
+    /// its own group that share the owner. A task OUTSIDE the thread group
+    /// holding the same `fs_struct` can rewrite cwd/root while the exec is in
+    /// flight, so `cap_bprm_creds_from_file` refuses the setuid transition.
+    /// # C: O(threads in group)
+    pub fn fs_context_shared_outside_thread_group(&self) -> bool {
+        let mine = self.fs_context();
+        // One of the strong refs is the clone just taken; the rest are tasks.
+        let users = Arc::strong_count(&mine) - 1;
+        let mut n_fs = 1usize;
+        for (_vtid, tid) in crate::registry::thread_entries(self.tgid.load(Ordering::Acquire)) {
+            if tid == self.tid { continue; }
+            if let Some(t) = crate::registry::lookup(tid) {
+                if Arc::ptr_eq(&t.fs_context(), &mine) { n_fs += 1; }
+            }
+        }
+        users > n_fs
+    }
+
     /// Replace the current working directory after successful lookup. # C: O(1)
     pub fn set_fs_cwd(&self, cwd: String, cwd_vfs: VfsPath) { self.fs_context().set_cwd(cwd, cwd_vfs); }
 

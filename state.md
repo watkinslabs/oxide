@@ -1,76 +1,74 @@
 # state.md — session hand-off
 
-Branch: `main` @ `aca89904f`. Clean tree, no open PRs, no stray worktrees.
-`make smoke` PASS both arches on this code (x86 90s, ARM 109s, own runs, exit 0).
-
 ## Headline
 
-The guest differential (`tools/boot-smoke-wait-diff.sh`) went from three
-divergent records to **one on each arch**. Two accounting/wake bugs closed:
+Syscall compliance campaign **closed**: `NEEDS-AUDIT` is 0 (was 198). Matrix now
+161 IMPL / 197 PARTIAL / 22 LINUX-ENOSYS / 3 DONE across 385 rows.
 
-- `a5791c6d3` (#4064, B1455) — the accounting tick was derived as
-  `now + TICK_NSEC` on every reprogram, and `fire_due_timers` reprograms on
-  EVERY syscall return, so any task syscalling faster than 100 Hz postponed its
-  own tick forever. Measured: **zero** timer interrupts in 5.01 s while a thread
-  spun (`TICK_COUNT` 2432→2433, 214835 re-arms in the same window). No tick ⇒ no
-  `charge_current_tick` ⇒ `CLOCK_PROCESS_CPUTIME_ID` frozen, and no preemption of
-  a CPU-bound thread either. Now an absolute per-CPU deadline advanced only when
-  it fires (Linux `hrtimer_forward`).
-- `f964bb16c` (#4063, B1454) — TCP receive wake.
+Four Linux subsystem audits ran and merged (~689 findings, 34 BLOCKER, 95
+SECURITY). Consolidated index: **`scratch/linux-compliance-findings.md`** — read
+this first; it deduplicates blockers across the four source docs, orders them by
+impact, and records what could not be determined rather than guessing.
 
-`aca89904f` (#4065) wrote down what is left.
+Source docs: `scratch/audit-{mm,sched,vfs,net-sec}.md`.
 
-## Open work
+## Landed this session (selected)
 
-`scratch/wait-diff-open-items.md` — seven rows, Status + Branch columns, claim
-before writing code.
+| What | Effect |
+|---|---|
+| `B1460` timeout floor | `nanosleep(1ms)` 104.6ms → **7.6ms**; `epoll_wait(..,1)` 109.5ms → **6.0ms** (host oracle 1.05ms) |
+| `B1459` signal frames | arm64 `rt_sigreturn` let userspace run at **EL1**; x86 EFLAGS let it clear IF. Same hole existed via `PTRACE_SETREGS` (duplicate rule copy, arm64 one missing the RES0 mask) |
+| `B1464` exec creds | `S_ISUID`/`MAY_EXEC`/`AT_SECURE`/`MNT_NOSUID` all absent; file-cap decoder read the interleaved `vfs_cap_data` as contiguous, granting the wrong caps above bit 31 |
+| `F768` `AT_RANDOM` | was a clock reading — glibc's stack canary + pointer guard were predictable |
+| `F767` timestamps | `Iattr` unsigned ns → `{sec: i64, nsec: u32}`; relatime compared unsigned (pre-1970 looked *newer*); ext4 read 1901 back as 2106 |
+| `F766` perf/bpf/uring | `perf_event_open` discarded all 5 args and returned a timestamp as any counter; aarch64 295..402 fell through to the **x86 table** (`syscall(300)` ran `fanotify_mark`); 3 io_uring ring-layout bugs |
+| `F763` mempolicy/mseal | `mmap(MAP_FIXED)` replaced a **sealed** range; `memfd_secret` never worked (args rewritten into `memfd_create`) |
+| `F764` admin/tty | `reboot(2)` in a container **halted the host**; `vhangup` never touched a tty; `futimesat` was wired to `utimensat` (µs read as ns) |
+| `C232`/`C233` tooling | vendor firmware pinned to a rolling nightly that had drifted; boot-smoke now self-heals a fresh worktree's `vendor/` |
 
-| | Item | State |
-|---|---|---|
-| W1 | `sleep\|stopcont_restart_block` | **root cause found, ready to start** |
-| W2 | `fire_due_timers` on every syscall return | needs a "what expiry would be lost" audit first |
-| W3 | tick-quantised accounting overshoots wall time | ARM-only flake, pick a lane deliberately |
-| W4 | per-CPU tick/arm state untested at `SMP>1` | qemu MCP, `accel="tcg"` |
-| W5 | nine standing hosted failures | 4 ext4 e2fsck + 5 independent |
-| W6 | `delayed_work` flakes under parallel load | same class as B1446 |
-| W7 | post-fix tick-gap distribution never re-measured | one boot settles it |
+## In flight
 
-W1 is the last differential divergence, on both arches, and is NOT a B1455
-regression (proven with a clean baseline run with the fix stashed).
-`sleep_until_deadline`'s `SleepWake::Stop` arm (`035_nanosleep.rs:133-146`) takes
-the stop *inside* the park loop and `continue`s, so it never unwinds through
-`interrupt_result` — the only caller of `write_remaining` and the only site that
-arms `RESTART_NANOSLEEP`. `rmtp` is never written; the resume is an in-place
-`continue` rather than `restart_syscall(2)`, so `rc=0` is right by the wrong
-mechanism. Linux exits the loop on `signal_pending` (true for a pending stop,
-`hrtimer.c:2404`), copies the remainder out, takes the stop in `get_signal()`.
-`034_pause.rs:19` and `:31` are the identical shape — one lane, all three loops,
-do not sweep past `grep -rn "SleepWake::Stop" crates/`.
+Open PRs: #4093 (SysV differential), #4097 (procfs creds + inotify names),
+#4098 (durable write). Lanes running: `B1461` poll-subscribers/`POLL_OUT`,
+`B1465` TCP ISN, `B1466` signal-frame FPU state, `B1467` SMP TLB+runqueue.
 
-## First command next session
+## Open, no lane yet
 
-    cd /home/nd/oxide/kernel && git pull && gh pr list --state open \
-      && sed -n '1,20p' scratch/wait-diff-open-items.md
+- **Blocker #3**: signals only delivered at the syscall-return tail → a compute-bound
+  loop issuing no syscalls is **unkillable**. Needs the IRQ/exception return path,
+  both arches (`docs/54`). Hold until `B1466` lands — same files.
+- **Blocker #10**: no global OOM killer (`kill_memcg` has one caller, memcg-only).
+- ASLR does not exist (`docs/31§6`) while `randomize_va_space` reports 2.
+- `timerfd` still polls — not covered by the `B1460` timeout fix.
+- The O(N) all-task scan survives at 100ms cadence for `alarm(2)`/itimers.
+- 197 PARTIAL rows; `scratch/partial-gap-triage.md` splits them (33 functional
+  gaps vs coverage debt) but predates the audits — re-derive against the findings doc.
 
-Then claim W1 as `B1456-...` (counter is current in `metadata/index.md`), put the
-branch in its Branch column, commit that claim, and work in a fresh worktree.
+## Standing hazards (cost real hours; do not relearn)
 
-## Reusable from this session
+1. **Phantom tests.** Files under `#[cfg(target_os = "oxide-kernel")]` compile their
+   `#[cfg(test)] mod tests` out **silently** while cargo prints "ok". Hit **five** times
+   in shipped code; `stat_common.rs`'s tests had never compiled once. Put decision
+   logic in ungated modules; prove tests run by breaking an assertion and watching
+   the count drop.
+2. **Machinery with no callers** is the dominant defect class — not missing code.
+   `age_anon`, `psi::task_stall`, the readahead state machine, the slab allocator,
+   `update_rtt` (TCP RTO stuck at 1s), `timer_slack_ns`, `atime_needs_update`,
+   `is_nosuid`. **Grep call sites, not definitions.** Many "features" are wiring jobs.
+3. **`tools/boot-smoke.sh` reuses /tmp log names** across concurrent runs. Trust only
+   your own invocation's exit status and `PASS/FAIL` line — never a log found by
+   timestamp. This has produced a retracted before/after claim.
+4. **A weak implementation passes a naive test.** `AT_RANDOM`'s "two execs differ"
+   test passed with the broken clock formula. The load-bearing assertion was
+   "upper half not derivable from lower half." Design the assertion against the
+   *actual* failure mode.
+5. Absence of an `arm_abi` mapping is **not** `ENOSYS` — unmapped aarch64 numbers
+   fall through to the x86 table and run the wrong syscall.
 
-- **`debug-cputime`** (`crates/kernel/sched/src/cputime_trace.rs`, default-off,
-  both arches) is the probe that cracked B1455. Its header names the four
-  signatures that separate a mis-charged group, a mis-read sample, an
-  uninterruptible child, and an absent interrupt. `ticks=` on the non-tick events
-  is the decisive one: identical either side of a window means no timer interrupt
-  arrived — which no amount of reading the accounting code would have shown.
-- **The differential is a ~2 min loop**, not a boot-per-hypothesis slog:
-  `FEATURES=<feat> ./tools/boot-smoke-wait-diff.sh x86 900` builds, boots, runs
-  the same binary on the host oracle, and diffs the record streams. Seven
-  instrumented runs fit in one session.
-- **A record's extra bits are the falsifier.** `cpu=0|burn=1` is what proved
-  B1455 was a kernel bug and not a probe artifact; `outcome=ok` alone would have
-  read as a match. When adding a probe case, carry the evidence bits that
-  separate "did the right thing" from "did nothing".
-- **Attribute before you fix.** Stash the fix and re-run to prove a neighbouring
-  divergence pre-exists. That is how W1 was cleared of being a B1455 regression,
-  and it cost one 2-minute run.
+## First task next session
+
+```
+git -C /home/nd/oxide/kernel pull && cat scratch/linux-compliance-findings.md
+```
+Then: land the remaining lanes, and **boot GNOME** — it has not been run since any
+of this work, and the timeout fix is the most likely desktop unblocker.

@@ -412,6 +412,9 @@ fn spawn_init_from_rootfs_arm() {
             init_path,
             0, // smoke: no vDSO mapped
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
+            // The smoke loader runs before any credential exists: uid 0,
+            // no privilege gained, so AT_SECURE is 0 (Linux's plain-exec case).
+            elf_load::stack::AuxCreds::default(),
         )
     }.map(|l| l.sp).unwrap_or(INIT_STACK_TOP);
 
