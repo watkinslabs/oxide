@@ -38,6 +38,7 @@ kmacros = { path = "../../shared/kmacros" }
 
 [features]
 debug-cgroup = []  # [PROCCG]/[OPENCG-adjacent] /proc/<pid>/cgroup read trace
+debug-mntcost = []  # [MNTBUILD] per-render cost census for /proc/*/mountinfo + /proc/mounts (snapshot vs row-render split, row + global mount counts)
 debug-mnt = []  # [MNTINFO] /proc mountinfo reader namespace/projection trace
 default = []
 hosted  = []

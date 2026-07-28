@@ -15,39 +15,45 @@ pub fn mountinfo_root_field(m: &Arc<super::Mount>) -> String {
 
 /// Render mountinfo field 4 from explicit root dentries. The result is `/` for
 /// a whole-filesystem mount and a slash-prefixed subpath for bind roots.
+///
+/// Linux `show_path()` (`fs/namespace.c`) → `seq_dentry()` → `dentry_path()` →
+/// `__dentry_path()` (`fs/d_path.c`): a plain `d_parent` walk terminating at
+/// `IS_ROOT`, with `//deleted` appended for an unlinked root. It never consults
+/// the mount table.
+///
+/// This previously built two GLOBAL `absolute_path()`s and subtracted them as
+/// strings. `absolute_path` resolves every mount crossing through
+/// `mountpoint_for_root_ptr`, a linear scan of the system-wide mount table
+/// under its lock, so field 4 cost O(depth × N_mounts_system_wide) per row —
+/// and systemd re-reads `/proc/self/mountinfo` after every mount operation
+/// while setting up a sandboxed unit (B1475).
 /// # C: O(depth)
 pub fn render_mount_root_field(root: Option<Arc<Dentry>>, sb_root: Option<Arc<Dentry>>) -> String {
     let Some(r) = root else { return String::from("/"); };
-    let rp = r.absolute_path();
-    let Some(sr) = sb_root else {
-        return crate::path::path_from_bytes(&rp);
-    };
-    let sp = sr.absolute_path();
-    let rel = if r.is_subdir_of(&sr) && rp.starts_with(sp.as_slice()) {
-        let strip = if sp.as_slice() == b"/" { 0 } else { sp.len() };
-        &rp[strip..]
-    } else {
-        rp.as_slice()
-    };
-    match core::str::from_utf8(rel) {
-        Ok("") => String::from("/"),
-        Ok(s) if s.starts_with('/') => String::from(s),
-        Ok(s) => {
-            let mut out = String::from("/");
-            out.push_str(s);
-            out
-        }
-        Err(_) => {
-            let s = crate::path::path_from_bytes(rel);
-            if s.is_empty() { String::from("/") }
-            else if s.starts_with('/') { s }
-            else {
-                let mut out = String::from("/");
-                out.push_str(&s);
-                out
-            }
+    if let Some(dyn_name) = r.d_dname() { return dyn_name; }
+    // Stop at the superblock root by IDENTITY. Linux's `IS_ROOT` (`d_parent ==
+    // dentry`) is the same boundary: a real superblock root's parent link ends
+    // the walk, and `sb_root` names it explicitly for callers whose fixture
+    // trees share one parent chain across filesystems.
+    let stop = sb_root.as_ref().map(Arc::as_ptr);
+    let me = r.as_ref() as *const Dentry;
+    let mut parts: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+    if stop != Some(me) && !r.is_root() && !r.is_disconnected() {
+        if !r.name().is_empty() { parts.push(String::from(r.name())); }
+        let mut cur = r.parent().cloned();
+        while let Some(d) = cur {
+            if stop == Some(Arc::as_ptr(&d)) || d.is_root() || d.is_disconnected() { break; }
+            if !d.name().is_empty() { parts.push(String::from(d.name())); }
+            cur = d.parent().cloned();
         }
     }
+    let mut out = String::new();
+    if parts.is_empty() { out.push('/'); }
+    else { for name in parts.iter().rev() { out.push('/'); out.push_str(name); } }
+    // Linux `dentry_path()` prepends `"//deleted"` into a backwards-filling
+    // buffer, which lands it at the END of the rendered path.
+    if r.is_unlinked() { out.push_str("//deleted"); }
+    out
 }
 
 /// Render mountinfo field 6 (`mount options`) from mount identity. # C: O(len opts)
