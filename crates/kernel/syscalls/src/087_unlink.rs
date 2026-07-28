@@ -96,9 +96,9 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
             if let Some(a) = unix_addr.as_ref() { unlink_unix_socket_addr(a); }
             match victim {
                 Some(d) => {
-                    // FAN_DELETE_SELF / IN_DELETE_SELF on the victim before its
-                    // alias is torn down (Linux fsnotify_unlink → fsnotify_inoderemove).
-                    if let Some(ino) = d.inode() { ::fs::inotify::fire_delete_self(&ino); }
+                    // IN_DELETE_SELF is fired by `d_unlink` itself, gated on the
+                    // link count reaching 0 — Linux `dentry_unlink_inode`. Doing
+                    // it here reported a still-hardlinked file as deleted.
                     vfs::dcache::d_unlink(&d);
                 }
                 None    => drop_child_cache(&parent, &name),

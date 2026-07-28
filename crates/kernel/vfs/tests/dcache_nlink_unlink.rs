@@ -117,3 +117,66 @@ fn last_unlink_with_open_fd_defers_eviction() {
     drop(file);
     assert!(sb.ilookup(60).is_none(), "last close retires the unlinked inode");
 }
+
+// --- fsnotify_inoderemove gating ---------------------------------------------
+// Linux `dentry_unlink_inode`: `if (!inode->i_nlink) fsnotify_inoderemove()`
+// (`fs/dcache.c`). The count is what decides, not which syscall ran — which is
+// why this lives here and not in `unlink(2)`.
+
+static DELETE_SELF_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn count_delete_self(_i: &InodeRef) {
+    DELETE_SELF_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn hits() -> usize { DELETE_SELF_HITS.load(std::sync::atomic::Ordering::Relaxed) }
+
+#[test]
+fn delete_self_fires_only_when_the_last_link_goes() {
+    let _g = guard();
+    vfs::set_delete_self_hook(count_delete_self);
+    DELETE_SELF_HITS.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    let sb = mount_ramfs(0x0D5E);
+    let root = vfs::Dentry::new_root(ramfile(&sb, 1, 2));
+    let inode: InodeRef = ramfile(&sb, 70, 2);
+    let a = vfs::d_add(&root, "a", inode.clone());
+    let b = vfs::d_add(&root, "b", inode.clone());
+    vfs::file::iput(inode.clone());
+
+    // Two names: removing the first must NOT report the file as deleted. The
+    // old `unlink(2)`-side firing reported it here.
+    inode.drop_link();
+    assert!(!d_unlink(&a));
+    assert_eq!(hits(), 0, "a still-hardlinked file is not deleted");
+
+    // The last name takes nlink to 0 — now it fires, exactly once.
+    inode.drop_link();
+    assert!(d_unlink(&b));
+    assert_eq!(hits(), 1, "the last link going reports DELETE_SELF once");
+}
+
+/// `rmdir` goes through the same `d_unlink`, so a removed directory now
+/// reports DELETE_SELF — it previously reported nothing, because only
+/// `unlink(2)` carried the call.
+#[test]
+fn a_removed_directory_reports_delete_self() {
+    let _g = guard();
+    vfs::set_delete_self_hook(count_delete_self);
+    DELETE_SELF_HITS.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    let sb = mount_ramfs(0x0D5F);
+    let root = vfs::Dentry::new_root(ramfile(&sb, 1, 2));
+    // An empty directory carries nlink 2 (`.` + the parent's entry); `rmdir`
+    // drops both, exactly as the backend `i_op->rmdir` does before `d_unlink`.
+    let dir: InodeRef = vfs::InodeBuilder::new(71, vfs::mk_mode(FileType::Directory, 0o755),
+        vfs::default_inode_ops(), vfs::default_file_ops())
+        .sb(Arc::downgrade(&sb)).nlink(2).build();
+    let d = vfs::d_add(&root, "sub", dir.clone());
+    vfs::file::iput(dir.clone());
+
+    dir.drop_link();
+    dir.drop_link();
+    assert!(d_unlink(&d));
+    assert_eq!(hits(), 1, "rmdir reports DELETE_SELF — it used to report nothing");
+}
