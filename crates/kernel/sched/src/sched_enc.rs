@@ -83,9 +83,30 @@ impl crate::task::Task {
     }
 }
 
+/// Linux `sysctl_sched_rr_timeslice` — 100 ms expressed in ticks. This is the
+/// value `sched_rr_get_interval` reports, and until the tick became class-aware
+/// nothing enforced it.
+pub const RR_TIMESLICE_TICKS: u32 = 100;
+
 /// `SCHED_FIFO` (`include/uapi/linux/sched.h`).
 pub const SCHED_FIFO: u32 = 1;
 /// `SCHED_RR`.
 pub const SCHED_RR: u32 = 2;
 /// `SCHED_DEADLINE`.
 pub const SCHED_DEADLINE: u32 = 6;
+
+/// The `task_tick` decision as a pure function — Linux `task_tick_rt`
+/// (`kernel/sched/rt.c`). Split out so it is testable without a runqueue: the
+/// live tick supplies `slice_left` and `has_peer` and applies the result.
+///
+/// `SCHED_FIFO` returns false unconditionally (FIFO has no timeslice and runs
+/// until it blocks). `SCHED_RR` yields only when the quantum is exhausted AND a
+/// peer exists at its level. Everything else preempts per tick.
+/// # C: O(1)
+pub fn rt_tick_wants_resched(policy: u32, slice_left: u32, has_peer: bool) -> bool {
+    match policy {
+        SCHED_FIFO => false,
+        SCHED_RR   => slice_left <= 1 && has_peer,
+        _          => true,
+    }
+}
