@@ -13,7 +13,7 @@ pub type GroupList = Option<Arc<[u32]>>;
 ///
 /// These are credential state, not independent task flags: `PR_SET_KEEPCAPS`
 /// is specified as a compatibility interface for `SECBIT_KEEP_CAPS`.
-pub(crate) mod securebits {
+pub mod securebits {
     pub const SECURE_NOROOT: u32 = 0;
     pub const SECURE_NOROOT_LOCKED: u32 = 1;
     pub const SECURE_NO_SETUID_FIXUP: u32 = 2;
