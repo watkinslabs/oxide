@@ -65,27 +65,72 @@ pub fn zap_other_threads() {
     }
 }
 
-/// Task holding the PROCESS-directed pending set for `task`'s thread group —
-/// Linux `signal_struct::shared_pending`. `kill(2)`/`sigqueue(3)` resolve a
-/// tgid to the group LEADER and post there, so the leader's `sigpending` IS
-/// the shared set; a thread that only ever inspects its own set is blind to
-/// every process-directed signal (`sigwaitinfo` in a worker thread would hang
-/// forever). `None` when `task` is itself the leader — its own set already
-/// covers both, and a union must not double-count.
-/// # C: O(1)
-pub fn group_signal_target(task: &crate::Task) -> Option<alloc::sync::Arc<crate::Task>> {
-    let leader = task.thread_group.leader_task()?;
-    if leader.tid == task.tid { None } else { Some(leader) }
+/// Linux `group_send_sig_info` / `__kill_pgrp_info`'s per-process half: queue
+/// `sig` on the TARGET PROCESS' shared pending set (never on one thread's
+/// private set), then run `complete_signal` to wake a thread that can take it.
+/// `target` may be any thread of that process — the group is what is signalled.
+///
+/// One owner for "post a process-directed signal", so `kill(2)`, the pgrp fan
+/// and the broadcast cannot drift from each other.
+/// # C: O(N_threads)
+pub fn post_group_signal(target: &crate::Task, sig: u32, info: Option<crate::SigInfo>) {
+    let leader_tid = target.tgid.load(Ordering::Acquire);
+    // Linux `prepare_signal`: SIGCONT resumes EVERY stopped thread of the
+    // group before the signal is even queued — a stopped thread must not be
+    // left behind because `complete_signal` picked a different one.
+    if sig == Signum::Sigcont as u32 { resume_group(leader_tid); }
+    target.thread_group.post_shared(sig, info);
+    complete_signal(leader_tid, sig);
 }
 
-/// Process-directed pending bits visible to `task` (Linux
-/// `signal->shared_pending.signal`). Zero for a group leader, whose own
-/// `sigpending` already is that set. # C: O(1)
-pub fn shared_pending(task: &crate::Task) -> u64 {
-    match group_signal_target(task) {
-        Some(l) => l.sigpending.load(Ordering::Acquire),
-        None    => 0,
+/// Linux `complete_signal` (`kernel/signal.c`): once a process-directed signal
+/// is queued, find a thread that `wants_signal()` — one that does not have it
+/// blocked — and wake THAT thread so it reaches a delivery point.
+///
+/// The leader is tried first (Linux tries the task the sender named, which for
+/// `PIDTYPE_TGID` is the group leader), then the rest of the group. When no
+/// thread wants the signal Linux wakes nothing and the signal simply waits in
+/// `shared_pending` until some thread unblocks it, so `false` is returned
+/// rather than rousing a thread that could not take it.
+///
+/// `leader_tid` is the group's INTERNAL leader tid (`Task::tgid`), which is how
+/// the registry keys threads. The mask rule itself lives ungated in
+/// `thread_group::shared_signal::wants_signal` so it is hosted-tested; only the
+/// registry walk is here.
+/// # C: O(N_threads)
+pub fn complete_signal(leader_tid: u32, sig: u32) -> bool {
+    use crate::thread_group::shared_signal::wants_signal;
+    let Some(bit) = crate::signum::bit_for(sig) else { return false };
+    let unblockable = crate::signum::is_unblockable(sig);
+    let wake = |t: &alloc::sync::Arc<crate::Task>| {
+        if !wants_signal(t.sigmask.load(Ordering::Acquire), bit, unblockable) { return false; }
+        super::registry::wake_if_stopped(t);
+        signal_wake_up(t);
+        true
+    };
+    if let Some(l) = crate::registry::lookup(leader_tid) { if wake(&l) { return true; } }
+    for (_vtid, tid) in crate::registry::thread_entries(leader_tid) {
+        if tid == leader_tid { continue; }
+        if let Some(t) = crate::registry::lookup(tid) { if wake(&t) { return true; } }
     }
+    false
+}
+
+/// `prepare_signal`'s SIGCONT arm: wake every job-control-stopped member.
+/// # C: O(N_threads)
+fn resume_group(leader_tid: u32) {
+    for (_vtid, tid) in crate::registry::thread_entries(leader_tid) {
+        if let Some(t) = super::registry::lookup(tid) { super::registry::wake_if_stopped(&t); }
+    }
+}
+
+/// Process-directed pending bits visible to `task` — Linux
+/// `signal->shared_pending.signal`, owned by the thread group
+/// (`thread_group/shared_signal.rs`). Identical for every thread of a process,
+/// which is the whole point: a worker inspecting only its own set used to be
+/// blind to every `kill(2)`. # C: O(1)
+pub fn shared_pending(task: &crate::Task) -> u64 {
+    task.thread_group.shared_pending()
 }
 
 /// Linux `do_sigpending`'s union: thread-private pending OR process-directed
@@ -95,35 +140,12 @@ pub fn all_pending(task: &crate::Task) -> u64 {
     task.sigpending.load(Ordering::Acquire) | shared_pending(task)
 }
 
-/// Dequeue one queued record for `sig` from `t` and clear the pending bit when
-/// the queue drains, claiming the signal so exactly ONE consumer gets it.
-/// `None` = the bit was not set, or a concurrent consumer won the claim.
-/// `Some(None)` = claimed a bitmap-only signal with no queued siginfo.
-/// # C: O(1)
-fn claim_from(t: &crate::Task, sig: u32, bit: u64) -> Option<Option<crate::SigInfo>> {
-    if t.sigpending.load(Ordering::Acquire) & bit == 0 { return None; }
-    let (rec, empty) = t.dequeue_siginfo(sig);
-    if rec.is_some() {
-        // Popping a record IS the claim — no other consumer can pop the same one.
-        if empty { t.sigpending.fetch_and(!bit, Ordering::Release); }
-        return Some(rec);
-    }
-    // Bitmap-only signal: the bit itself is the token. Exactly one clearer
-    // observes it set in the prior value, so two `sigwaitinfo` threads racing
-    // for one `kill(2)` can never both return it.
-    if t.sigpending.fetch_and(!bit, Ordering::AcqRel) & bit != 0 { Some(None) } else { None }
-}
-
-/// Linux `dequeue_signal`: consume `sig` for `task`, preferring the
-/// thread-private queue and falling back to the process-directed one, exactly
-/// as `__dequeue_signal(&tsk->pending, ...)` then `&tsk->signal->shared_pending`.
-/// `None` when neither set held it.
+/// Linux `dequeue_signal`. Delegates to `Task::dequeue_pending`, which owns
+/// the private-then-shared claim protocol so crates without the kernel-only
+/// `live` module (signalfd) use the same one.
 /// # C: O(1)
 pub fn dequeue_signal(task: &crate::Task, sig: u32) -> Option<Option<crate::SigInfo>> {
-    let Some(bit) = crate::signum::bit_for(sig) else { return None };
-    if let Some(rec) = claim_from(task, sig, bit) { return Some(rec); }
-    let shared = group_signal_target(task)?;
-    claim_from(&shared, sig, bit)
+    task.dequeue_pending(sig)
 }
 
 /// F168: bits in `task.sigpending` that are not masked by

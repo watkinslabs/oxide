@@ -114,7 +114,7 @@ where
             use core::sync::atomic::Ordering;
             use sched::live::sigpend::Signum;
             let forced  = Signum::Sigkill.bit() | Signum::Sigstop.bit();
-            let pending = cur.sigpending.load(Ordering::Acquire);
+            let pending = cur.pending_signals();
             let masked  = cur.sigmask.load(Ordering::Acquire);
             let deliver = (pending & !masked) | (pending & forced);
             if deliver != 0 { return syscall::restart::restart_sys(); }
