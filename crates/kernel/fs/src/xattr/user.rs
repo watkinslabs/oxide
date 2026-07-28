@@ -13,8 +13,8 @@ use vfs::InodeRef;
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 use super::ops::{vfs_getxattr, vfs_listxattr, vfs_removexattr, vfs_setxattr};
-use super::policy::{check_fit, check_name, check_set_flags, check_value_size, current_xattr_cred,
-                    err, XATTR_LIST_MAX, XATTR_NAME_MAX, XATTR_SIZE_MAX};
+use super::policy::{check_at_flags, check_fit, check_name, check_set_flags, check_value_size,
+                    current_xattr_cred, err, XATTR_LIST_MAX, XATTR_NAME_MAX, XATTR_SIZE_MAX};
 
 /// `struct xattr_args` (`uapi/linux/xattr.h`): `{ __u64 value; __u32 size; __u32 flags; }`.
 const XATTR_ARGS_SIZE_VER0: usize = 16;
@@ -100,6 +100,46 @@ pub fn import_xattr_args(args_ptr: u64, args_size: usize, zero_flags: bool)
     if zero_flags && flags != 0 { return Err(err(Errno::Einval)); }
     Ok((value, size, flags))
 }
+
+// ===========================================================================
+// `*xattrat` argument admission — everything the four slots do BEFORE the path
+// is resolved, in Linux's exact order. Keeping the order here (and not in the
+// kernel-gated shim) is what makes it hosted-testable: `tests.rs` drives each
+// function with a null user pointer and pins which errno wins.
+// ===========================================================================
+
+/// `sys_setxattrat` (fs/xattr.c:740) then `path_setxattrat` (:701): the
+/// `xattr_args` handshake first, then `at_flags`, then `setxattr_copy`.
+/// Returns the imported context plus the raw `xattr_args`. # C: O(size)
+pub fn admit_setxattrat(at_flags: u32, name_ptr: u64, args_ptr: u64, args_size: usize)
+    -> Result<SetCtx, i64>
+{
+    let (value_ptr, size, flags) = import_xattr_args(args_ptr, args_size, false)?;
+    check_at_flags(at_flags)?;
+    import_set(name_ptr, value_ptr, size as usize, flags)
+}
+
+/// `sys_getxattrat` (fs/xattr.c:880) then `path_getxattrat` (:846): the
+/// `xattr_args` handshake (including the `args.flags != 0` rejection) first,
+/// then `at_flags`, then `import_xattr_name`. # C: O(len)
+pub fn admit_getxattrat(at_flags: u32, name_ptr: u64, args_ptr: u64, args_size: usize)
+    -> Result<(String, u64, usize), i64>
+{
+    let (value_ptr, size, _) = import_xattr_args(args_ptr, args_size, true)?;
+    check_at_flags(at_flags)?;
+    Ok((import_name(name_ptr)?, value_ptr, size as usize))
+}
+
+/// `path_removexattrat` (fs/xattr.c:1075): `at_flags` outranks the name.
+/// # C: O(len)
+pub fn admit_removexattrat(at_flags: u32, name_ptr: u64) -> Result<String, i64> {
+    check_at_flags(at_flags)?;
+    import_name(name_ptr)
+}
+
+/// `path_listxattrat` (fs/xattr.c:983): `at_flags` is the only pre-resolution
+/// check — the list buffer is validated at copy-out time. # C: O(1)
+pub fn admit_listxattrat(at_flags: u32) -> Result<(), i64> { check_at_flags(at_flags) }
 
 /// Copy `len` bytes in from user. A zero length never touches the pointer
 /// (Linux skips the copy entirely, so a NULL value with size 0 is legal).
