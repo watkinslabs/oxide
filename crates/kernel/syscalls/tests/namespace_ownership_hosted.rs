@@ -69,6 +69,10 @@ const WEIGHT: u32 = 1024;
 const CLONE_FILES: u64 = 0x00000400;
 
 static SERIAL: Mutex<()> = Mutex::new(());
+/// Every test here mutates the process-global `CURRENT`; cargo runs them on
+/// concurrent threads, so one test's `install_current` was being observed by
+/// another's syscall. Serialize them (same guard as `sys_dup2_shape`).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 static CURRENT: AtomicPtr<Task> = AtomicPtr::new(core::ptr::null_mut());
 
 fn hosted_current_task() -> Option<&'static Task> {
@@ -127,6 +131,7 @@ fn assert_same_set(left: &sched::task::TaskNamespaceSnapshot,
 
 #[test]
 fn sys_unshare_files_detaches_shared_descriptor_table() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let task = install_current(899);
     let shared = Arc::new(FdTable::new());
@@ -148,6 +153,7 @@ fn sys_unshare_files_detaches_shared_descriptor_table() {
 
 #[test]
 fn clone_without_new_flags_inherits_exact_owners() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let parent = task(901);
     let child = task(902);
@@ -164,6 +170,7 @@ fn clone_without_new_flags_inherits_exact_owners() {
 
 #[test]
 fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let parent = task(903);
     let child = task(904);
@@ -221,6 +228,7 @@ fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them(
 
 #[test]
 fn unshare_pid_is_for_children_until_the_next_clone() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let parent = task(905);
     let current = owner(&parent, NamespaceKind::Pid);
@@ -247,6 +255,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
 
 #[test]
 fn second_pending_pid_transition_is_einval_without_owner_leak() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let task = task(907);
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWPID);
@@ -266,6 +275,7 @@ fn second_pending_pid_transition_is_einval_without_owner_leak() {
 
 #[test]
 fn time_for_children_enters_only_without_clone_vm() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let parent = task(908);
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWTIME);
@@ -294,6 +304,7 @@ fn time_for_children_enters_only_without_clone_vm() {
 
 #[test]
 fn repeated_time_unshare_replaces_pending_owner_and_inherits_offsets() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let task = task(916);
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWTIME);
@@ -316,6 +327,7 @@ fn repeated_time_unshare_replaces_pending_owner_and_inherits_offsets() {
 
 #[test]
 fn fallible_setup_rolls_back_allocated_user_owner() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let task = task(910);
     let before = task.namespace_snapshot().unwrap();
@@ -335,6 +347,7 @@ fn fallible_setup_rolls_back_allocated_user_owner() {
 
 #[test]
 fn sys_unshare_replaces_all_supported_nonnetwork_owners() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let current = install_current(911);
     let before = current.namespace_snapshot().unwrap();
@@ -363,6 +376,7 @@ fn sys_unshare_replaces_all_supported_nonnetwork_owners() {
 
 #[test]
 fn sys_unshare_time_changes_only_for_children_owner() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let current = install_current(912);
     let before = current.namespace_snapshot().unwrap();
@@ -376,6 +390,7 @@ fn sys_unshare_time_changes_only_for_children_owner() {
 
 #[test]
 fn sys_unshare_rejects_second_pending_pid_transition() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let current = install_current(913);
     let flags = args(CLONE_NEWPID);
@@ -389,6 +404,7 @@ fn sys_unshare_rejects_second_pending_pid_transition() {
 
 #[test]
 fn sys_unshare_reports_esrch_after_namespace_release() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = guard();
     let current = install_current(914);
     current.release_namespaces();

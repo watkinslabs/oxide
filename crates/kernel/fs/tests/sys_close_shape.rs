@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ptr;
+use std::sync::Mutex;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use sched::{SchedClass, Task};
@@ -12,6 +13,10 @@ use vfs::{Dentry, FdTable, File, FileType, InodeBuilder, OpenFlags, default_file
 #[path = "../../syscalls/src/003_close.rs"]
 mod close_syscall;
 
+/// Every test here mutates the process-global `CURRENT`; cargo runs them on
+/// concurrent threads, so one test's `install_current` was being observed by
+/// another's syscall. Serialize them (same guard as `sys_dup2_shape`).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 static CURRENT: AtomicPtr<Task> = AtomicPtr::new(ptr::null_mut());
 
 fn hooked_current() -> Option<&'static Task> {
@@ -46,6 +51,7 @@ fn install_current_with_fdt(fdt: Option<Arc<FdTable>>) -> &'static Task {
 
 #[test]
 fn sys_close_uses_current_fdtable_and_removes_before_return() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(0xC103)).unwrap();
     assert_eq!(fd, 0);
@@ -60,6 +66,7 @@ fn sys_close_uses_current_fdtable_and_removes_before_return() {
 
 #[test]
 fn sys_close_matches_linux_unsigned_int_fd_truncation() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(0xC104)).unwrap();
     assert_eq!(fd, 0);
@@ -74,6 +81,7 @@ fn sys_close_matches_linux_unsigned_int_fd_truncation() {
 
 #[test]
 fn sys_close_without_current_or_fdtable_is_ebadf() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     sched::set_current_hook(hooked_current);
     CURRENT.store(ptr::null_mut(), Ordering::Release);
     assert_eq!(close_syscall::sys_close(&args(0)), -(Errno::Ebadf.as_i32() as i64));
