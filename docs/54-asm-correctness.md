@@ -18,6 +18,8 @@ the actual mistake instead of repeating it.
 | 1.4 | x86 | `r12`–`r15` and `rbx`/`rbp` are user callee-saved; an asm stub that clobbers them across `bl`/`call` must push first. | P5-10 / B04. |
 | 1.5 | x86 | `mov r12, rsp` to stash user RSP corrupts user r12. Use a per-CPU mem slot (see `oxide_syscall_entry`'s `OXIDE_SYSCALL_USER_RSP_SAVE`). | P5-10. |
 | 1.6 | both | Any recoverable-resume asm stub MUST save+restore the FULL caller-saved set BEFORE calling Rust. Memorize: skipping one of {rax,rcx,rdx,rsi,rdi,r8-r11} on x86 or {x0..x18} on arm silently breaks any retry path. | `feedback_register_safety.md` user-memory; #172 era. |
+| 1.7 | both | ONE user-register frame type per arch (`hal_x86_64::PtRegs`, `hal_aarch64::SvcFrame`), pushed IDENTICALLY by every entry — syscall, IRQ, exception — and passed to Rust as a pointer. A per-entry-path layout means any work that reads or rewrites user state (signal delivery, ptrace, restart, rseq, fork) is reachable from exactly one path and silently wrong from the others. Corollary: an IRQ stub that saves only the caller-saved set is NOT a frame — a signal frame built from it carries garbage callee-saved regs into `ucontext`, and `rt_sigreturn` restores the garbage. | B1471 — x86 had three layouts and a signal builder hardwired to `gs:[8]-0x80`, so no signal could be delivered on IRQ/exception return and a userspace spin loop was unkillable. |
+| 1.8 | both | Every return to USER mode runs the one work loop (`sched::exit_to_user` / `syscalls::exit_to_user`, Linux `exit_to_user_mode_loop`); returns to KERNEL mode never do. Adding an entry path without wiring its exit means signals and reschedules silently stop happening for whatever that path interrupts. Gate on the saved mode (`hal::uregs::*::user_mode`), never on which stub you are in. | B1471. |
 
 ## 2 Syscall ABI plumbing
 
@@ -38,6 +40,7 @@ the actual mistake instead of repeating it.
 | 3.3 | x86 | After `call`, `(rsp+8) % 16 == 0`. The restorer slot at `[new_rsp+0]` plays the role of the pushed return address — `new_rsp` must satisfy `new_rsp % 16 == 8` at handler entry. | F203 `deliver_x86`. |
 | 3.4 | arm | ARM `ret` is `br lr` — no stack pop. The handler returns via x30 = restorer (no on-stack return slot needed). AAPCS64 requires `sp % 16 == 0` at every public function entry. | F203 `deliver_arm`. |
 | 3.5 | both | `deliver_<arch>` ORs the delivered sig bit into `sigmask`. `rt_sigreturn_<arch>` MUST restore mask from the saved sigmask slot, or the bit stays set forever and every subsequent sigprocmask cycle propagates it via musl's `__block_all_sigs` / `__restore_sigs`. | F205. |
+| 3.6 | both | The frame's register-state source is the ENTRY frame passed in, never a per-CPU "current syscall frame" the builder fetches itself. A builder that fetches loses the ability to serve any other entry path, and on a path where no syscall ran it silently writes the LAST syscall's frame. | B1471. |
 
 ## 4 Per-fd state lifecycle
 

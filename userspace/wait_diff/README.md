@@ -58,6 +58,9 @@ green boot look like evidence.
 
 | Mutant | Breaks |
 |---|---|
+| `spinnokick` | no peer SIGUSR1 reaches the userspace spinner |
+| `spinnoalarm` | the userspace spinner arms no `alarm(2)` |
+| `spinnokill` | the spinning thread group is never SIGKILLed |
 | `eintr` | strips `SA_RESTART` — every must-resume case |
 | `restartall` | forces `SA_RESTART` on — every must-`EINTR` case |
 | `absrem` | runs the ABSTIME case relatively (`rem` writeback) |
@@ -141,6 +144,25 @@ Cases whose failure mode is "never returns" run in a child behind
 run. This is not defensive padding: oxide's `fcntl(F_SETLKW)` blocked past
 the holder's release on the first guest run and, as an in-process call,
 cost all 21 records behind it.
+
+`spinsig|*` (B1471) is the case where the usual guard is itself under test.
+Linux delivers on EVERY return to user mode — `__exit_to_user_mode_loop` runs
+`arch_do_signal_or_restart()` off the IRQ and exception returns too, not only
+the syscall tail — so a task burning CPU with no syscall in its loop still
+takes SIGUSR1, its own `alarm(2)` SIGALRM and SIGKILL. Oxide delivered only at
+the syscall tail, which makes `alarm()` *and* the follow-up SIGKILL in
+`wait_bounded` no-ops for exactly the task they are meant to rescue. The
+watchdog is therefore a `MAP_SHARED` stop flag the observer writes and the spin
+loop reads — a plain memory load, syscall-free, so the loop always terminates
+and the broken kernel yields a different record instead of a hang.
+
+`forced=` is the discriminator on all three rows, and `handled=`/`outcome=`
+alone is the §5 trap again: a rescued spinner makes syscalls once it leaves the
+loop, and the defective kernel delivers the long-pending signal at that
+syscall's tail — so a child SIGKILLed at the very end is indistinguishable by
+exit status from one killed promptly. `forced=1` says userspace had to do the
+kernel's job. Keep `probe_spinsig` ahead of `probe_sigfpu` in `main.c`:
+sigfpu's only guard is the `alarm()` this area proves cannot fire.
 
 ## 7 Not covered
 

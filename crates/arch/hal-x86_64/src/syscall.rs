@@ -206,12 +206,28 @@ core::arch::global_asm!(
     "    call oxide_x86_arm_singlestep",
     "    pop  rax",                            // drop pad
     "    pop  rax",                            // dispatch retval back
+    // SYSRET-eligibility, exactly Linux's: `do_syscall_64` runs the same
+    // checks in C and returns a bool its asm caller branches on
+    // (`arch/x86/entry/entry_64.S`: "Try to use SYSRET instead of IRET if
+    // we're returning to a completely clean 64-bit userspace context").
+    // `SYSRETQ` forces RIP := RCX and RFLAGS := R11, so it CANNOT return a
+    // frame whose rcx/r11 are an independent interrupted context —
+    // `rt_sigreturn`, `ptrace` and `execve` all install exactly that. Same
+    // rax-preserving shape as the singlestep call above.
+    "    push rax",                            // dispatch retval
+    "    push rax",                            // 16-align pad
+    "    lea  rdi, [rsp + 0x10]",              // &frame (past both pushes)
+    "    call oxide_x86_sysret_ok",            // -> bool in al
+    "    test al, al",
+    "    pop  rcx",                            // drop pad (rcx is reloaded below)
+    "    pop  rax",                            // dispatch retval back
+    "    jz   3f",                             // not SYSRET-able -> IRETQ path
     // Restore the user GPRs from the frame. rax is NOT restored: it carries
     // the dispatch return value, and the frame's rax slot keeps the original
     // syscall nr for the whole dispatch (Linux `orig_ax`). rcx/r11 are not
-    // restored either — `sysretq` requires them to be the user RIP/RFLAGS,
-    // which is also exactly what the x86_64 syscall ABI says userspace may
-    // assume about them (clobbered).
+    // restored either — on THIS path `oxide_x86_sysret_ok` has just proved
+    // they equal the user RIP/RFLAGS, which is also what the x86_64 syscall
+    // ABI says userspace may assume about them (clobbered).
     "    mov  r15, [rsp + 0x00]",
     "    mov  r14, [rsp + 0x08]",
     "    mov  r13, [rsp + 0x10]",
@@ -233,6 +249,31 @@ core::arch::global_asm!(
     // The frame itself is abandoned below the kernel rsp we just dropped;
     // the next syscall starts fresh from the kstack top.
     "    sysretq",
+    // ---- IRETQ return (Linux `swapgs_restore_regs_and_return_to_usermode`) --
+    // The full-fidelity exit: restores rcx and r11 as ordinary registers and
+    // takes RIP/CS/RFLAGS/RSP/SS from the frame's IRETQ image, which is the
+    // top five quadwords of `PtRegs` by construction — so the whole return is
+    // "restore the GPRs, drop to the image, iretq", the same shape as
+    // `oxide_irq_resume_user`.
+    "3:",
+    "    mov  r15, [rsp + 0x00]",
+    "    mov  r14, [rsp + 0x08]",
+    "    mov  r13, [rsp + 0x10]",
+    "    mov  r12, [rsp + 0x18]",
+    "    mov  rbp, [rsp + 0x20]",
+    "    mov  rbx, [rsp + 0x28]",
+    "    mov  r11, [rsp + 0x30]",
+    "    mov  r10, [rsp + 0x38]",
+    "    mov  r9,  [rsp + 0x40]",
+    "    mov  r8,  [rsp + 0x48]",
+    "    mov  rdi, [rsp + 0x50]",
+    "    mov  rsi, [rsp + 0x58]",
+    "    mov  rdx, [rsp + 0x60]",
+    "    mov  rcx, [rsp + 0x68]",
+    // Drop the 15 GPR slots plus `vector`/`error`, leaving rsp on the frame's
+    // rip/cs/rflags/rsp/ss image. rax still holds the dispatch retval.
+    "    add  rsp, 0x88",
+    "    iretq",
     ".size oxide_syscall_entry, . - oxide_syscall_entry",
     user_cs = const USER_CS_SELECTOR,
     user_ss = const USER_SS_SELECTOR,
@@ -242,6 +283,32 @@ core::arch::global_asm!(
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_syscall_entry();
+}
+
+/// Asm-callable mirror of the tail of Linux's `do_syscall_64()`
+/// (`arch/x86/entry/syscall_64.c`), which likewise runs these checks in C and
+/// hands its asm caller a bool: may this return use `SYSRETQ`, or must it take
+/// the slower full-fidelity `IRETQ` path?
+///
+/// The rules themselves live in `hal::uregs::x86_64::sysret_ok` — ungated and
+/// host-unit-tested, since getting them wrong is either a silently corrupted
+/// user context (`rt_sigreturn` losing rcx/r11) or a `#GP` at CPL0 with the
+/// user's stack loaded.
+///
+/// # SAFETY: caller is the syscall epilogue; `regs` is the live entry frame on
+/// this CPU's per-task syscall kstack.
+/// # C: O(1)
+/// # Ctx: syscall-return tail, IRQs masked
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[no_mangle]
+pub unsafe extern "C" fn oxide_x86_sysret_ok(regs: *const crate::PtRegs) -> bool {
+    if regs.is_null() { return false; }
+    // SAFETY: per fn contract — `regs` is the live syscall entry frame, owned
+    // by this CPU until the epilogue consumes it.
+    let r = unsafe { &*regs };
+    hal::uregs::x86_64::sysret_ok(
+        r.rcx, r.rip, r.r11, r.rflags, r.cs, r.ss,
+        crate::gdt::USER_CS_SELECTOR, crate::gdt::USER_SS_SELECTOR, hal::USER_VA_END)
 }
 
 /// The active task's saved `PtRegs` per `13§5` — the frame

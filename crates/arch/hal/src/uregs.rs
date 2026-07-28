@@ -55,6 +55,48 @@ pub mod x86_64 {
     /// Linux `user_mode(regs)`, x86_64 arm. # C: O(1)
     pub const fn user_mode(cs: u64) -> bool { (cs & X86_CS_RPL_MASK) == X86_CS_RPL_USER }
 
+    /// The saved register state a syscall return needs before `SYSRETQ` may be
+    /// used instead of `IRETQ` — a direct port of the tail of
+    /// `do_syscall_64()` (`arch/x86/entry/syscall_64.c`), which returns this
+    /// same bool for its asm caller to branch on.
+    ///
+    /// `SYSRETQ` FORCES `RIP := RCX` and `RFLAGS := R11`; it cannot restore an
+    /// independent RCX/R11. That is invisible for an ordinary syscall (the
+    /// `SYSCALL` instruction already clobbered both, so the ABI lets userspace
+    /// assume nothing about them) and fatal the moment the frame carries a
+    /// real interrupted context: `rt_sigreturn`, `ptrace(POKEUSER)` and
+    /// `execve` all install register sets where `rcx != rip`.
+    ///
+    /// B1471 hit exactly that. Once signals could be delivered mid-computation
+    /// (not only at a syscall boundary), a handler's `rt_sigreturn` resumed the
+    /// interrupted code with `rcx` overwritten by the resume address — a
+    /// `movdqu %xmm4,(%rcx)` in the interrupted loop then stored into its own
+    /// text and took SIGSEGV. Before B1471 this could not be observed, because
+    /// the x86 syscall frame conflated `rcx`/`rip` in one slot and there was
+    /// never a distinct `rcx` to lose.
+    ///
+    /// `user_va_end` is the caller's `hal::USER_VA_END` (Linux `TASK_SIZE_MAX`):
+    /// `SYSRET` with a non-canonical RCX `#GP`s **in kernel space** with the
+    /// user's RSP loaded, which hands the process the kernel — hence Linux's
+    /// comment calling it "essentially lets the user take over the kernel".
+    /// # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub const fn sysret_ok(rcx: u64, rip: u64, r11: u64, rflags: u64,
+                           cs: u64, ss: u64,
+                           user_cs: u64, user_ss: u64, user_va_end: u64) -> bool {
+        // "SYSRET requires RCX == RIP and R11 == EFLAGS"
+        if rcx != rip || r11 != rflags { return false; }
+        // "CS and SS must match the values set in MSR_STAR"
+        if cs != user_cs || ss != user_ss { return false; }
+        // Non-canonical RIP: `SYSRET` #GPs at CPL0 with the user stack live.
+        if rip >= user_va_end { return false; }
+        // "SYSRET cannot restore RF. It can restore TF, but unlike IRET,
+        //  restoring TF results in a trap from userspace immediately after
+        //  SYSRET." — which is why PTRACE_SINGLESTEP must take the IRET path.
+        if (rflags & (X86_EFLAGS_RF | X86_EFLAGS_TF)) != 0 { return false; }
+        true
+    }
+
     /// Linux `FIX_EFLAGS` (`arch/x86/include/asm/sighandling.h`) — the ONLY
     /// EFLAGS bits `rt_sigreturn` takes from the user's `sigcontext.flags`.
     /// Everything outside it keeps the kernel's saved value, so IF, IOPL, NT,

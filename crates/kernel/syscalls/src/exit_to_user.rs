@@ -61,6 +61,29 @@ pub unsafe fn user_mode(regs: *const UserRegs) -> bool {
     }
 }
 
+/// The interrupted context's syscall-return register — `rax` on x86_64, `x0`
+/// on aarch64. Linux's `setup_sigframe` copies the WHOLE register set into the
+/// signal frame and `handle_signal` overwrites that one slot only for the
+/// syscall-restart arms; on an interrupt or exception return there is no
+/// syscall, so the register holds ordinary user data and must be recorded
+/// verbatim.
+///
+/// Getting this wrong is silent and severe: B1471's first arm64 differential
+/// run delivered SIGUSR1 into a spin loop correctly, then `rt_sigreturn`
+/// restored `x0 = 0` because the delivery had recorded a syscall return value
+/// that did not exist — the resumed loop dereferenced its `stop` pointer,
+/// which lived in x0, and took a NULL data abort.
+/// # SAFETY: `regs` is a live entry frame.
+/// # C: O(1)
+unsafe fn frame_retval(regs: *const UserRegs) -> i64 {
+    // SAFETY: caller's contract — `regs` is a live entry frame.
+    #[cfg(target_arch = "x86_64")]
+    { unsafe { (*regs).rax as i64 } }
+    // SAFETY: same contract; `gp[0]` is the saved x0 slot.
+    #[cfg(target_arch = "aarch64")]
+    { unsafe { (*regs).gp[0] as i64 } }
+}
+
 /// Linux `read_thread_flags() & EXIT_TO_USER_MODE_WORK`, read with interrupts
 /// masked so the value the loop acts on cannot go stale before the final
 /// re-check (`exit_to_user_mode_prepare`'s `lockdep_assert_irqs_disabled`).
@@ -112,7 +135,10 @@ fn work_flags() -> u32 {
 /// # Sleeps: yes — `schedule()` and a faulting frame write both can
 pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64>) -> u64 {
     let from_syscall = syscall_rv.is_some();
-    let mut rv = syscall_rv.unwrap_or(0);
+    // No interrupted syscall ⇒ the return-value register is ordinary user
+    // state, and a signal frame built here must record what is actually in it.
+    // SAFETY: caller's contract — `regs` is this return's live entry frame.
+    let mut rv = match syscall_rv { Some(v) => v, None => unsafe { frame_retval(regs) } };
     // Linux enters `arch_do_signal_or_restart` on `_TIF_SIGPENDING`; a syscall
     // that returned an ERESTART* sentinel needs the same entry even when the
     // signal was consumed elsewhere (group-exit latch, a racing dequeue), which
