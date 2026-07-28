@@ -6,7 +6,7 @@ LDLIBS += -pthread -lrt
 TARGET := wait_diff
 OBJS := main.o common.o sleep.o locks.o fdwait.o readiness.o readiness_out.o \
         jobctl.o cputime.o latency.o mqueue.o mqueue_api.o syslog.o inotify.o \
-        sigfpu.o
+        sigfpu.o sysv_sem.o sysv_msg.o sysv_shm.o
 
 .PHONY: all clean run
 

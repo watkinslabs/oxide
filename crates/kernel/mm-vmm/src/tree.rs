@@ -38,9 +38,44 @@ pub struct VmaTree {
     pub(crate) map: BTreeMap<UserVirtAddr, Vma>,
 }
 
+impl Drop for VmaTree {
+    /// Linux `exit_mmap` -> `remove_vma`: every VMA still mapped when the
+    /// address space goes away runs `vm_ops->close`. Without it a process
+    /// that exits without calling `shmdt` — the normal case — leaves
+    /// `shm_nattch` permanently raised, so an `IPC_RMID`ed segment is never
+    /// reclaimed and `ipcs -m` reports attachers that no longer exist.
+    /// # C: O(N_vmas)
+    fn drop(&mut self) {
+        for v in self.map.values() { crate::vm_ops::vma_closed(v); }
+    }
+}
+
 impl VmaTree {
     /// # C: O(1)
     pub fn new() -> Self { Self { map: BTreeMap::new() } }
+
+    /// Every VMA that enters the tree goes through here, so Linux's
+    /// `vm_ops->open` runs exactly once per VMA birth — `shmat`'s mmap, a
+    /// fork copy, and each fragment of a split alike.
+    /// # C: O(log N)
+    fn map_put(&mut self, key: UserVirtAddr, vma: Vma) {
+        crate::vm_ops::vma_opened(&vma);
+        self.map.insert(key, vma);
+    }
+
+    /// Put a VMA back that never left as far as `vm_ops` is concerned — a
+    /// re-key, not a birth. Pairs with [`VmaTree::map_take`].
+    /// # C: O(log N)
+    fn map_reinsert(&mut self, key: UserVirtAddr, vma: Vma) { self.map.insert(key, vma); }
+
+    /// Take a VMA out WITHOUT running `vm_ops->close`. Every caller either
+    /// re-keys it or replaces it with fragments and then closes it
+    /// explicitly. Splits MUST open the fragments before closing the
+    /// original: closing first would take a one-attachment `SHM_DEST`
+    /// segment to zero mid-mprotect, destroying it under the fragments that
+    /// are about to reference it.
+    /// # C: O(log N)
+    fn map_take(&mut self, key: &UserVirtAddr) -> Option<Vma> { self.map.remove(key) }
 
     /// # C: O(1)
     pub fn len(&self) -> usize { self.map.len() }
@@ -89,14 +124,14 @@ impl VmaTree {
             if lower.end.as_u64() > new_start.as_u64() { return Err(Error::Inval); }
         }
         // Take the VMA out, mutate, re-insert under the new key.
-        let mut v = self.map.remove(&current_start).ok_or(Error::Inval)?;
+        let mut v = self.map_take(&current_start).ok_or(Error::Inval)?;
         if !v.flags.contains(crate::vma::VmaFlags::GROWSDOWN) {
             // Re-insert unchanged on misuse.
-            self.map.insert(current_start, v);
+            self.map_reinsert(current_start, v);
             return Err(Error::Inval);
         }
         v.start = new_start;
-        self.map.insert(new_start, v);
+        self.map_reinsert(new_start, v);
         Ok(())
     }
 
@@ -136,7 +171,7 @@ impl VmaTree {
             }
         }
         let key = vma.start;
-        self.map.insert(key, vma);
+        self.map_put(key, vma);
         self.try_merge_left(key);
         // After a left-merge, the entry now lives under the left key;
         // try_merge_right needs to operate from whichever key still
@@ -161,7 +196,10 @@ impl VmaTree {
             left.mergeable_with_next(cur)
         };
         if !mergeable { return; }
-        let cur = self.map.remove(&key).expect("just-inserted key");
+        // Linux `vma_merge` -> `remove_vma`: the absorbed VMA is freed, so
+        // its `vm_ops->close` runs even though the range stays mapped.
+        let cur = self.map_take(&key).expect("just-inserted key");
+        crate::vm_ops::vma_closed(&cur);
         let left = self.map.get_mut(&lk).expect("left-floor key");
         left.end = cur.end;
         let combined = left.rss.load(core::sync::atomic::Ordering::Relaxed)
@@ -180,7 +218,8 @@ impl VmaTree {
             cur.mergeable_with_next(right)
         };
         if !mergeable { return; }
-        let right = self.map.remove(&rk).expect("right-ceil key");
+        let right = self.map_take(&rk).expect("right-ceil key");
+        crate::vm_ops::vma_closed(&right);
         let cur = self.map.get_mut(&key).expect("merge-target key");
         cur.end = right.end;
         let combined = cur.rss.load(core::sync::atomic::Ordering::Relaxed)
@@ -218,7 +257,7 @@ impl VmaTree {
         }
 
         for k in keys {
-            let v = self.map.remove(&k).expect("collected key");
+            let v = self.map_take(&k).expect("collected key");
             let v_start = v.start.as_u64();
             let v_end   = v.end.as_u64();
             let s = start.as_u64().max(v_start);
@@ -228,9 +267,10 @@ impl VmaTree {
             if v_start < s {
                 let lend = UserVirtAddr::new(s).expect("UVA in valid range");
                 let left = v.clone_subrange(v.start, lend);
-                self.map.insert(left.start, left);
+                self.map_put(left.start, left);
             }
-            // Removed middle.
+            // Removed middle. It never entered the tree, so it never opened;
+            // the original's close below is the one that accounts for it.
             let ms = UserVirtAddr::new(s).expect("UVA in valid range");
             let me = UserVirtAddr::new(e).expect("UVA in valid range");
             removed.push(v.clone_subrange(ms, me));
@@ -238,8 +278,9 @@ impl VmaTree {
             if e < v_end {
                 let rstart = UserVirtAddr::new(e).expect("UVA in valid range");
                 let right = v.clone_subrange(rstart, v.end);
-                self.map.insert(right.start, right);
+                self.map_put(right.start, right);
             }
+            crate::vm_ops::vma_closed(&v);
         }
         removed
     }
@@ -284,7 +325,7 @@ impl VmaTree {
             }
         }
         for k in keys {
-            let v = self.map.remove(&k).expect("collected key");
+            let v = self.map_take(&k).expect("collected key");
             let v_start = v.start.as_u64();
             let v_end   = v.end.as_u64();
             let s = start.as_u64().max(v_start);
@@ -293,19 +334,23 @@ impl VmaTree {
             if v_start < s {
                 let lend = UserVirtAddr::new(s).expect("UVA in range");
                 let left = v.clone_subrange(v.start, lend);
-                self.map.insert(left.start, left);
+                self.map_put(left.start, left);
             }
             let ms = UserVirtAddr::new(s).expect("UVA in range");
             let me = UserVirtAddr::new(e).expect("UVA in range");
             let mut mid = v.clone_subrange(ms, me);
             mid.prot = new_prot;
             let mid_key = mid.start;
-            self.map.insert(mid_key, mid);
+            self.map_put(mid_key, mid);
             if e < v_end {
                 let rstart = UserVirtAddr::new(e).expect("UVA in range");
                 let right = v.clone_subrange(rstart, v.end);
-                self.map.insert(right.start, right);
+                self.map_put(right.start, right);
             }
+            // Linux `__split_vma` opens the new VMAs while the original is
+            // still live and frees it afterwards; closing first would take a
+            // single-attachment SHM_DEST segment to zero mid-split.
+            crate::vm_ops::vma_closed(&v);
             // Try merging the modified middle with its neighbors. The
             // boundary fragments retain the old prot, so they merge
             // back together with their original other halves only if
@@ -340,7 +385,7 @@ impl VmaTree {
             if v.end.as_u64() > start.as_u64() { keys.push(*k); }
         }
         for k in keys {
-            let v = self.map.remove(&k).expect("collected key");
+            let v = self.map_take(&k).expect("collected key");
             let v_start = v.start.as_u64();
             let v_end   = v.end.as_u64();
             let s = start.as_u64().max(v_start);
@@ -348,7 +393,7 @@ impl VmaTree {
             if v_start < s {
                 let lend = UserVirtAddr::new(s).expect("UVA in range");
                 let left = v.clone_subrange(v.start, lend);
-                self.map.insert(left.start, left);
+                self.map_put(left.start, left);
             }
             let ms = UserVirtAddr::new(s).expect("UVA in range");
             let me = UserVirtAddr::new(e).expect("UVA in range");
@@ -356,12 +401,16 @@ impl VmaTree {
             mid.flags.insert(set);
             mid.flags.remove(clear);
             let mid_key = mid.start;
-            self.map.insert(mid_key, mid);
+            self.map_put(mid_key, mid);
             if e < v_end {
                 let rstart = UserVirtAddr::new(e).expect("UVA in range");
                 let right = v.clone_subrange(rstart, v.end);
-                self.map.insert(right.start, right);
+                self.map_put(right.start, right);
             }
+            // Linux `__split_vma` opens the new VMAs while the original is
+            // still live and frees it afterwards; closing first would take a
+            // single-attachment SHM_DEST segment to zero mid-split.
+            crate::vm_ops::vma_closed(&v);
             self.try_merge_left(mid_key);
             let after_left = if self.map.contains_key(&mid_key) {
                 mid_key
@@ -391,7 +440,7 @@ impl VmaTree {
             if v.end.as_u64() > start.as_u64() { keys.push(*k); }
         }
         for k in keys {
-            let v = self.map.remove(&k).expect("collected key");
+            let v = self.map_take(&k).expect("collected key");
             let v_start = v.start.as_u64();
             let v_end   = v.end.as_u64();
             let s = start.as_u64().max(v_start);
@@ -399,7 +448,7 @@ impl VmaTree {
             if v_start < s {
                 let lend = UserVirtAddr::new(s).expect("UVA in range");
                 let left = v.clone_subrange(v.start, lend);
-                self.map.insert(left.start, left);
+                self.map_put(left.start, left);
             }
             let ms = UserVirtAddr::new(s).expect("UVA in range");
             let me = UserVirtAddr::new(e).expect("UVA in range");
@@ -409,12 +458,16 @@ impl VmaTree {
                 None    => { mid.uffd = None;            mid.flags.remove(crate::vma::VmaFlags::UFFD_MISSING); }
             }
             let mid_key = mid.start;
-            self.map.insert(mid_key, mid);
+            self.map_put(mid_key, mid);
             if e < v_end {
                 let rstart = UserVirtAddr::new(e).expect("UVA in range");
                 let right = v.clone_subrange(rstart, v.end);
-                self.map.insert(right.start, right);
+                self.map_put(right.start, right);
             }
+            // Linux `__split_vma` opens the new VMAs while the original is
+            // still live and frees it afterwards; closing first would take a
+            // single-attachment SHM_DEST segment to zero mid-split.
+            crate::vm_ops::vma_closed(&v);
             self.try_merge_left(mid_key);
             let after_left = if self.map.contains_key(&mid_key) {
                 mid_key
@@ -460,25 +513,29 @@ impl VmaTree {
             if v.end.as_u64() > start.as_u64() { keys.push(*k); }
         }
         for k in keys {
-            let v = self.map.remove(&k).expect("collected key");
+            let v = self.map_take(&k).expect("collected key");
             let (v_start, v_end) = (v.start.as_u64(), v.end.as_u64());
             let s = start.as_u64().max(v_start);
             let e = end.as_u64().min(v_end);
             if v_start < s {
                 let lend = UserVirtAddr::new(s).expect("UVA in range");
                 let left = v.clone_subrange(v.start, lend);
-                self.map.insert(left.start, left);
+                self.map_put(left.start, left);
             }
             let ms = UserVirtAddr::new(s).expect("UVA in range");
             let me = UserVirtAddr::new(e).expect("UVA in range");
             let mut mid = v.clone_subrange(ms, me);
             mid.flags |= crate::vma::VmaFlags::SEALED;
-            self.map.insert(mid.start, mid);
+            self.map_put(mid.start, mid);
             if e < v_end {
                 let rstart = UserVirtAddr::new(e).expect("UVA in range");
                 let right = v.clone_subrange(rstart, v.end);
-                self.map.insert(right.start, right);
+                self.map_put(right.start, right);
             }
+            // Linux `__split_vma` opens the new VMAs while the original is
+            // still live and frees it afterwards; closing first would take a
+            // single-attachment SHM_DEST segment to zero mid-split.
+            crate::vm_ops::vma_closed(&v);
         }
         Ok(())
     }

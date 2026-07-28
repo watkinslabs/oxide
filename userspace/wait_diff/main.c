@@ -22,6 +22,9 @@ int main(void) {
     probe_latency();
     probe_mqueue();
     probe_mqueue_api();
+    probe_sysv_sem();
+    probe_sysv_msg();
+    probe_sysv_shm();
     probe_locks();
     probe_syslog();
     out("meta", "complete", "status=DONE");

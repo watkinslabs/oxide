@@ -185,6 +185,8 @@ fn init_runtime_subsystems() {
     // fault must still have its registered semaphore adjustments applied, or
     // peers blocked on those semaphores never run again.
     sched::live::set_sysvsem_exit_hook(ipc::sysv::sem::exit_sem);
+    // Linux `shm_vm_ops`: shm_nattch follows VMA lifetime, not shmat/shmdt.
+    vmm::set_shm_vm_ops(ipc::sysv_shm::shm_vma_open, ipc::sysv_shm::shm_vma_close);
     let _ = unsafe { nscg::init() };
     sched::cgroup::install();
     cgroup::set_notify_hook(fs::inotify::fire_modify);

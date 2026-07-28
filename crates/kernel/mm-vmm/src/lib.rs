@@ -26,6 +26,7 @@ pub mod rmap;
 pub mod vma;
 pub mod tree;
 pub mod uffd;
+pub mod vm_ops;
 pub(crate) mod hole;
 
 pub use address_space::{
@@ -45,6 +46,7 @@ pub use migration::{migration_attach_marker, migration_begin, migration_drop_mar
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::{HomeNodeErr, VmaTree};
 pub use uffd::UffdContext;
+pub use vm_ops::{set_shm_vm_ops, VmaOpsFn};
 
 /// DIAG (debug-atexit): fn-ptr the arch layer installs to arm a DR0 hardware
 /// write-watchpoint at a VA. The File fill arm calls it once, on the first
@@ -134,6 +136,11 @@ mod tests_cow_invariant;
 // refuse to install a partially-zero page (SIGBUS, not silent zeros).
 #[cfg(test)]
 mod tests_shortfill;
+
+// F765: Linux `shm_vm_ops.open`/`.close` — `shm_nattch` counts VMAs, so fork,
+// split, merge and address-space teardown all move it.
+#[cfg(test)]
+mod tests_vm_ops;
 
 // ld.so `needed != NULL` blocker: the write-protection fault must never
 // zero-fill over File/KernelBytes backing when the leaf is zapped between the

@@ -3,7 +3,7 @@ use std::process::Command;
 use crate::cmds::run;
 
 const ARM_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
-const SOURCES: [&str; 14] = [
+const SOURCES: [&str; 18] = [
     "userspace/wait_diff/main.c",
     "userspace/wait_diff/common.c",
     "userspace/wait_diff/sleep.c",
@@ -18,6 +18,10 @@ const SOURCES: [&str; 14] = [
     "userspace/wait_diff/readiness_out.c",
     "userspace/wait_diff/syslog.c",
     "userspace/wait_diff/inotify.c",
+    "userspace/wait_diff/sigfpu.c",
+    "userspace/wait_diff/sysv_sem.c",
+    "userspace/wait_diff/sysv_msg.c",
+    "userspace/wait_diff/sysv_shm.c",
 ];
 
 pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {

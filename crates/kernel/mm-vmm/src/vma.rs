@@ -110,6 +110,11 @@ bitflags::bitflags! {
         const HUGEPAGE = 1 << 13;
         /// madvise(MADV_NOHUGEPAGE): transparent hugepage opt-out.
         const NOHUGEPAGE = 1 << 14;
+        /// A SysV shared-memory attachment (`shmat`). Linux identifies these
+        /// by `vma->vm_ops == &shm_vm_ops`; this kernel has no per-VMA ops
+        /// table, so the marker is a flag. It is what makes `shm_nattch`
+        /// track VMA lifetime (`crate::vm_ops`) and what `shmdt` matches on.
+        const SYSVSHM = 1 << 15;
     }
 }
 

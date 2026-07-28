@@ -177,13 +177,34 @@ pub(super) fn page_align_len(size: usize) -> Option<usize> {
 /// The registered segment (in the caller's IPC namespace) whose shmem object
 /// is `backing`, if any. `shmdt` uses this to tell a shm attachment apart from
 /// every other file-backed VMA.
+/// Identify a segment from the backing object one of its VMAs carries. The
+/// backing pointer IS the identity (Linux matches `vma->vm_file`), so there is
+/// no namespace filter: a task that entered a new IPC namespace still holds and
+/// must still be able to detach the attachment it made in the old one, and the
+/// `vm_ops` callbacks below run during address-space teardown where the
+/// exiting task's namespace is not a meaningful question.
 /// # C: O(N_segments)
 pub(super) fn lookup_segment_by_backing(backing: &Arc<dyn vmm::FileBacking>) -> Option<Arc<ShmSegment>> {
-    let owner = crate::ipc_namespace::current().ok()?;
-    let ns = owner.key();
     let want = self::shmdt::backing_addr(backing);
     let g = REG.segs.lock();
-    g.iter().find(|s| s.ns == ns && self::shmdt::backing_addr(&s.backing) == want).cloned()
+    g.iter().find(|s| self::shmdt::backing_addr(&s.backing) == want).cloned()
+}
+
+/// Linux `shm_open` (`ipc/shm.c` `shm_vm_ops.open`): a new VMA references this
+/// segment — `shmat`'s own mmap, a fork copy, or a fragment of a split.
+/// # C: O(N_segments)
+pub fn shm_vma_open(backing: &Arc<dyn vmm::FileBacking>) {
+    if let Some(seg) = lookup_segment_by_backing(backing) {
+        seg.nattch.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Linux `shm_close` (`ipc/shm.c` `shm_vm_ops.close`): one VMA referencing
+/// this segment is gone. The last one destroys a segment already marked
+/// `SHM_DEST`.
+/// # C: O(N_segments)
+pub fn shm_vma_close(backing: &Arc<dyn vmm::FileBacking>) {
+    if let Some(seg) = lookup_segment_by_backing(backing) { release_detached(&seg); }
 }
 
 /// Linux `shm_close` accounting: one attachment went away. A segment whose
@@ -194,12 +215,18 @@ pub(super) fn lookup_segment_by_backing(backing: &Arc<dyn vmm::FileBacking>) -> 
 pub(super) fn release_detached(seg: &Arc<ShmSegment>) {
     let left = seg.nattch.fetch_sub(1, Ordering::AcqRel) - 1;
     if left > 0 { return; }
-    let mut g = REG.segs.lock();
-    if let Some(pos) = g.iter().position(|s| Arc::ptr_eq(s, seg)) {
-        if (g[pos].mode & SHM_DEST) != 0 && g[pos].nattch.load(Ordering::Acquire) <= 0 {
-            g.remove(pos);
+    // The last reference is dropped OUTSIDE the registry lock: this runs from
+    // `shm_vma_close` with the address space's VMA lock held, and destroying
+    // the backing object under a second lock is how lock orders get invented.
+    let doomed = {
+        let mut g = REG.segs.lock();
+        match g.iter().position(|s| Arc::ptr_eq(s, seg)) {
+            Some(pos) if (g[pos].mode & SHM_DEST) != 0
+                && g[pos].nattch.load(Ordering::Acquire) <= 0 => Some(g.remove(pos)),
+            _ => None,
         }
-    }
+    };
+    drop(doomed);
 }
 
 fn shmat_addr(shmaddr: u64, shmflg: u64) -> Result<Option<u64>, syscall::errno::Errno> {
@@ -303,15 +330,16 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     let res = mm.mmap(
         hint, plan.len,
         plan.prot,
-        VmaFlags::SHARED | VmaFlags::ANONYMOUS,
+        // `SYSVSHM` is this kernel's `vma->vm_ops == &shm_vm_ops`: it is what
+        // makes `shm_nattch` follow VMA lifetime through fork, split and
+        // address-space teardown instead of only shmat/shmdt, and the mmap
+        // below is the `vm_ops->open` that counts THIS attachment.
+        VmaFlags::SHARED | VmaFlags::ANONYMOUS | VmaFlags::SYSVSHM,
         VmaBacking::File { backing: seg.backing.clone(), off: 0 },
         plan.fixed,
     );
     match res {
-        Ok(va)  => {
-            seg.nattch.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
-            va.as_u64() as i64
-        }
+        Ok(va)  => va.as_u64() as i64,
         Err(e)  => {
             let eno = errno_from_vmm(e);
             -(eno.as_i32() as i64)
