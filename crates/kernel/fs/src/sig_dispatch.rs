@@ -104,14 +104,21 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
 /// user-chosen, so without this the delivery `write_volatile`s a signal frame
 /// wherever the process pointed its stack — including kernel VAs, which EL1 /
 /// CPL0 write through happily (B1459).
-/// # C: O(N_pages * log N_vmas)
+///
+/// `validate_user_buf` (range + alignment), NOT the VMA-walking
+/// `validate_user_buf_writable`: `access_ok` deliberately proves only that the
+/// span is user space. A frame legitimately lands on the page below a
+/// `MAP_GROWSDOWN` stack VMA's current `start`, which has no VMA yet — Linux
+/// lets `unsafe_put_user` fault and `expand_downwards` grow the stack, and a
+/// VMA precondition here would `force_sigsegv` those deliveries instead.
+/// # C: O(1)
 fn sigframe_writable(user_sp: u64, alt: hal::AltStack) -> bool {
     #[cfg(target_arch = "x86_64")]
     let range = hal_x86_64::sigframe_range(user_sp, alt);
     #[cfg(target_arch = "aarch64")]
     let range = hal_aarch64::sigframe_range(user_sp, alt);
     match range {
-        Some((ptr, len, align)) => crate::userbuf::validate_user_buf_writable(ptr, len, align).is_ok(),
+        Some((ptr, len, align)) => crate::userbuf::validate_user_buf(ptr, len, align).is_ok(),
         None => false,
     }
 }
