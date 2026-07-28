@@ -20,6 +20,10 @@ mod validate;
 mod fan_tests;
 
 #[cfg(test)]
+#[path = "inotify_setattr_tests.rs"]
+mod setattr_tests;
+
+#[cfg(test)]
 mod tests;
 
 pub use dispatch::{fire_attrib, fire_delete_self, fire_modify, fire_move, fire_open_exec, install_write_hook};

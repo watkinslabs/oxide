@@ -24,7 +24,5 @@ pub fn sys_chmod(args: &SyscallArgs) -> i64 {
             if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log("chmod", &path, rc); }
         }
     }
-    // FAN_ATTRIB / IN_ATTRIB on a successful metadata change (Linux fsnotify_change).
-    if rc == 0 { ::fs::inotify::fire_attrib(&inode); }
     rc
 }
