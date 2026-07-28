@@ -99,6 +99,9 @@ pub fn init_blk(init: BlkInit) -> u32 {
         blk_size,
         serial: [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
+        // Linux `virtblk_get_cache_mode` → `blk_queue_write_cache`
+        // (`virtio_blk.c:1084`): the negotiated `F_FLUSH` bit IS the cache mode.
+        write_cache: virtio::cache_mode_writeback(init.drv_features),
         inflight: Spinlock::new(RingShadow {
             avail_idx: seed, used_seen: seed, busy: false,
             free_heads: request_heads(requestq.size), pending: Vec::new(), deferred: Vec::new(),
@@ -201,6 +204,7 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
         blk_size: 512,
         serial: [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa: 0,
+        write_cache: true,
         inflight: Spinlock::new(RingShadow {
             avail_idx: 0, used_seen: 0, busy: false, free_heads: Vec::new(), pending: Vec::new(), deferred: Vec::new(),
         }),

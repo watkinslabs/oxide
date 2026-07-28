@@ -90,7 +90,9 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                     Err(e) => return -(e as i64),
                 }
             }
-            file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32));
+            if file.set_fl(vfs::OpenFlags::from_bits_retain(arg as u32)).is_err() {
+                return -(Errno::Einval.as_i32() as i64);
+            }
             0
         }
         F_GETPIPE_SZ => match fs::pipe::pipe_size(file.inode()) {

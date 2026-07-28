@@ -107,7 +107,9 @@ fn ioctl_fionbio(file: &vfs::File, arg: u64) -> i64 {
     let on = unsafe { core::ptr::read_volatile(arg as *const i32) } != 0;
     let mut fl = file.flags();
     if on { fl |= vfs::OpenFlags::O_NONBLOCK; } else { fl &= !vfs::OpenFlags::O_NONBLOCK; }
-    file.set_fl(fl);
+    // FIONBIO only ever toggles O_NONBLOCK, never O_DIRECT, so `set_fl`'s
+    // direct-I/O admission cannot reject it.
+    let _ = file.set_fl(fl);
     0
 }
 
