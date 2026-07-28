@@ -6,6 +6,11 @@
 /// Hook installed at boot from `fs::coredump::write_for_current`.
 /// Avoids vmm→fs cycle.
 pub type CoredumpFn = fn(i32);
+
+/// Span the fault-path SIGSEGV frame occupies on the user stack: siginfo
+/// (128 B) + zeroed ucontext stub (128 B) + the restorer quadword.
+#[cfg(target_arch = "x86_64")]
+const FAULT_FRAME_BYTES: u64 = 0x108;
 static COREDUMP_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 /// # C: O(1) — atomic store.
@@ -74,8 +79,18 @@ pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
     //   [old_rsp - 0x10]  restorer    ← ret addr from handler
     //   [old_rsp - 0x88]  ucontext stub (zeroed, 128 B)
     //   [old_rsp - 0x108] siginfo_t   (128 B; si_signo/si_addr/si_code)
-    let new_sp = frame.rsp.saturating_sub(0x108);
-    if new_sp == 0 || new_sp >= hal::USER_VA_END { return false; }
+    // The whole span is FAULT_FRAME_BYTES wide; the last write is the
+    // restorer quadword at `new_sp + 0x100`.
+    let new_sp = frame.rsp.saturating_sub(FAULT_FRAME_BYTES);
+    // Linux `get_sigframe`'s `access_ok` covers the WHOLE frame, not just its
+    // base: the writes below run up to `new_sp + FAULT_FRAME_BYTES`, so
+    // bounding only the base leaves the tail landing above USER_VA_END
+    // (non-canonical → #GP inside the fault handler). B1459.
+    if new_sp == 0 { return false; }
+    match new_sp.checked_add(FAULT_FRAME_BYTES) {
+        Some(end) if end <= hal::USER_VA_END => {}
+        _ => return false,
+    }
     let si  = new_sp;                   // siginfo at base
     let uc  = new_sp + 0x80;            // ucontext above
     let ret = new_sp + 0x100;           // restorer addr above ucontext
