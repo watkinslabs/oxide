@@ -11,6 +11,14 @@ use crate::inotify::types::{
     Event, INOTIFY_DEFAULT_MAX_QUEUED_EVENTS, INOTIFY_INO_BASE, IN_Q_OVERFLOW, PERM_MARK_COUNT,
 };
 
+/// `signal_pending(current)` — Linux breaks the read loop with `-ERESTARTSYS`
+/// on a deliverable signal. Hosted builds install no scheduler and never take
+/// the blocking arm. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn signals_pending() -> bool { sched::live::deliverable_signals_self() != 0 }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn signals_pending() -> bool { false }
+
 impl InotifyData {
     /// Construct + register in the global instance list so the vfs
     /// write hook can find this inotify when an inode it watches is
@@ -139,48 +147,121 @@ impl InotifyData {
     /// returns `ERR_PTR(-EINVAL)` and `inotify_read` propagates it). A partial
     /// event is never emitted.
     pub(crate) fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if self.fanotify {
-            loop {
-                match self.read_fanotify(buf) {
-                    Err(VfsError::Eagain) => {
-                        // Spins rather than parks — same unproven-wake reason as
-                        // the inotify arm below. Parking wedged the boot.
-                        #[cfg(target_os = "oxide-kernel")]
-                        // SAFETY: read syscall context; runqueue installed; yield until an event arrives.
-                        unsafe { sched::live::tick_yield(); }
-                        #[cfg(not(target_os = "oxide-kernel"))]
-                        return Err(VfsError::Eagain);
-                    }
-                    other => return other,
-                }
-            }
-        }
-        let mut written = 0;
-        let mut q = self.events.lock();
-        while let Some(need) = q.front().map(|e| event_record_len(e.name.len())) {
-            if written + need > buf.len() {
-                if written == 0 { return Err(VfsError::Einval); }
-                break;
-            }
-            let ev = match q.pop_front() { Some(e) => e, None => break };
-            written += encode_event(&mut buf[written..], ev.wd, ev.mask, ev.cookie, &ev.name);
-        }
-        // KNOWN GAP, deliberately not parked yet: Linux `inotify_read` sleeps
-        // here and EAGAIN belongs to the O_NONBLOCK path. Parking was tried and
-        // WEDGED THE BOOT — some producer of watched events does not reach
-        // `enqueue_event`, so a parked reader is never woken, which is strictly
-        // worse than the wrong errno. The wait list and its wake sites are in
-        // place; what is missing is proof that every event producer wakes it.
-        // See scratch/partial-surface-2026-07-28.md 4.14.
-        if written == 0 { return Err(VfsError::Eagain); }
-        Ok(written)
+        self.inotify_read(buf, false)
     }
 
-    /// O_NONBLOCK read: never parks. fanotify drains once (EAGAIN if empty);
-    /// inotify already drains non-blocking. # C: O(events drained)
-    pub(crate) fn read_nonblock(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if self.fanotify { return self.read_fanotify(buf); }
-        self.read(off, buf)
+    /// O_NONBLOCK read. Linux has ONE `inotify_read`; the `O_NONBLOCK` flag
+    /// only decides whether the empty-queue arm breaks with `EAGAIN` or sleeps.
+    /// Modelled the same way, so the two paths cannot drift.
+    ///
+    /// This must NOT delegate to a blocking read. It used to, which was
+    /// harmless only while that read returned `EAGAIN` instead of sleeping —
+    /// the moment it sleeps, every `O_NONBLOCK` reader blocks forever, and an
+    /// epoll-driven inotify consumer (systemd, glib) is exactly that.
+    /// # C: O(events drained)
+    pub(crate) fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        self.inotify_read(buf, true)
+    }
+
+    /// Linux `get_one_event` (`fs/notify/inotify/inotify_user.c`): peek the
+    /// head under the notification lock; `None` when the queue is empty;
+    /// `Some(Err(EINVAL))` when the head's whole record cannot fit in `count`;
+    /// otherwise pop and return it. The peek-then-pop under one lock hold is
+    /// what guarantees the popped event is the one that was size-checked.
+    /// # C: O(1)
+    fn get_one_event(&self, count: usize) -> Option<KResult<Event>> {
+        let mut q = self.events.lock();
+        let event_size = event_record_len(q.front()?.name.len());
+        if event_size > count { return Some(Err(VfsError::Einval)); }
+        q.pop_front().map(Ok)
+    }
+
+    /// Linux `inotify_read`, structurally: register on the wait queue once,
+    /// then loop { get_one_event -> copy -> continue } until the queue is
+    /// empty, and only then consider EAGAIN / ERESTARTSYS / sleeping. The
+    /// closing `if (start != buf && ret != -EFAULT) ret = buf - start` rule
+    /// means every error arm reports the bytes ALREADY copied instead of the
+    /// error, so a short buffer or a signal never discards delivered events.
+    /// # C: O(events drained) + at most one sleep per empty poll
+    fn inotify_read(&self, buf: &mut [u8], nonblock: bool) -> KResult<usize> {
+        if self.fanotify { return self.fanotify_read(buf, nonblock); }
+        let mut written = 0usize;
+        loop {
+            match self.get_one_event(buf.len() - written) {
+                Some(Ok(ev)) => {
+                    written += encode_event(&mut buf[written..], ev.wd, ev.mask, ev.cookie, &ev.name);
+                    continue;
+                }
+                // `ret = PTR_ERR(kevent); break;` — then the tail rule turns a
+                // non-empty copy into a byte count (EINVAL only on the FIRST).
+                Some(Err(e)) => return if written != 0 { Ok(written) } else { Err(e) },
+                None => {}
+            }
+            // `ret = -EAGAIN; if (f_flags & O_NONBLOCK) break;`
+            if nonblock { return if written != 0 { Ok(written) } else { Err(VfsError::Eagain) }; }
+            // `ret = -ERESTARTSYS; if (signal_pending(current)) break;`
+            if signals_pending() { return if written != 0 { Ok(written) } else { Err(VfsError::Erestartsys) }; }
+            // `if (start != buf) break;` — never sleep holding delivered bytes.
+            if written != 0 { return Ok(written); }
+            // `wait_woken(&wait, TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT)`.
+            #[cfg(target_os = "oxide-kernel")]
+            self.wait_for_event();
+            #[cfg(not(target_os = "oxide-kernel"))]
+            return Err(VfsError::Eagain);
+        }
+    }
+
+    /// fanotify's `fanotify_read` shares the same shape: drain, then EAGAIN or
+    /// sleep. Its records are fixed-size, so there is no short-buffer EINVAL.
+    /// # C: O(events drained) + at most one sleep per empty poll
+    fn fanotify_read(&self, buf: &mut [u8], nonblock: bool) -> KResult<usize> {
+        loop {
+            match self.read_fanotify(buf) {
+                Err(VfsError::Eagain) => {}
+                other => return other,
+            }
+            if nonblock { return Err(VfsError::Eagain); }
+            if signals_pending() { return Err(VfsError::Erestartsys); }
+            #[cfg(target_os = "oxide-kernel")]
+            self.wait_for_event();
+            #[cfg(not(target_os = "oxide-kernel"))]
+            return Err(VfsError::Eagain);
+        }
+    }
+
+    /// `wait_woken(TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT)`.
+    ///
+    /// Linux calls `add_wait_queue` ONCE before the loop, so it is registered
+    /// across the condition check and cannot miss a wake. `park_*` here
+    /// publishes `Sleeping` BEFORE pushing onto the waiter list, so a
+    /// producer's `wake_all` landing in that gap finds an empty list
+    /// (`if g.is_empty() { return; }`) and wakes nobody — a PERMANENTLY lost
+    /// wakeup, since inotify passes no deadline to break it out (timerfd
+    /// survives the identical gap only because it does). Re-checking after
+    /// registering restores Linux's ordering without needing the producer's
+    /// lock, which matters because fanotify has two independent producer
+    /// queues that share no lock.
+    /// # C: O(1) + one sleep
+    #[cfg(target_os = "oxide-kernel")]
+    fn wait_for_event(&self) {
+        // SAFETY: read syscall context, no locks held; the re-check below cancels
+        // the park if an event or signal arrived while we were publishing.
+        unsafe { self.read_waiters.park_interruptible_with_deadline(0); }
+        if self.has_queued_events() || signals_pending() {
+            self.read_waiters.cancel_current_park();
+            return;
+        }
+        // SAFETY: this task published Sleeping through the wait list and holds no locks.
+        unsafe { sched::live::schedule::schedule(); }
+        self.read_waiters.remove_current();
+    }
+
+    /// Whether any queue a reader drains is non-empty — the condition
+    /// re-checked after registering. # C: O(1)
+    fn has_queued_events(&self) -> bool {
+        if !self.events.lock().is_empty() { return true; }
+        if self.fanotify && !self.perm_queue.lock().is_empty() { return true; }
+        false
     }
 
     /// POLLIN only when at least one event is queued. The default inode
