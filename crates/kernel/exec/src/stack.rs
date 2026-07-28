@@ -26,6 +26,25 @@ const PLATFORM: &[u8] = b"aarch64\0";
 /// (Linux `mm->arg_start`..`env_end` + `start_stack`), the source for
 /// `/proc/<pid>/{cmdline,environ,stat}`. `arg_*`/`env_*` are `0` when the
 /// corresponding vector is empty.
+/// The credential half of the auxiliary vector (`fs/binfmt_elf.c:261-265`
+/// `create_elf_tables`): `AT_UID`/`AT_EUID`/`AT_GID`/`AT_EGID` are the NEW
+/// credentials `from_kuid_munged` through the task's user namespace, and
+/// `AT_SECURE` is `bprm->secureexec`.
+///
+/// `AT_SECURE` is what glibc's `__libc_enable_secure` reads. On 1 the dynamic
+/// loader ignores `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT` and the whole
+/// `LD_*` tunables set, and glibc drops `MALLOC_*`, `GCONV_PATH`,
+/// `RESOLV_HOST_CONF` and friends. A hardcoded 0 there is a privilege
+/// escalation the moment anything on the system is setuid.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct AuxCreds {
+    pub uid: u32,
+    pub euid: u32,
+    pub gid: u32,
+    pub egid: u32,
+    pub secure: bool,
+}
+
 #[derive(Copy, Clone, Debug, Default)]
 pub struct StackLayout {
     pub sp:        u64,
@@ -71,6 +90,7 @@ pub unsafe fn build_user_stack(
     exec_path: &[u8],
     vdso_ehdr: u64,
     hwcap: u64,
+    creds: AuxCreds,
 ) -> Option<StackLayout> {
     let mut cursor = stack_top;
 
@@ -123,11 +143,11 @@ pub unsafe fn build_user_stack(
         (AT_BASE,    img.interp_base),
         (AT_FLAGS,   0),
         (AT_ENTRY,   img.entry.as_u64()),
-        (AT_UID,     0),
-        (AT_EUID,    0),
-        (AT_GID,     0),
-        (AT_EGID,    0),
-        (AT_SECURE,  0),
+        (AT_UID,     creds.uid  as u64),
+        (AT_EUID,    creds.euid as u64),
+        (AT_GID,     creds.gid  as u64),
+        (AT_EGID,    creds.egid as u64),
+        (AT_SECURE,  creds.secure as u64),
         (AT_PLATFORM, platform_va),
         (AT_EXECFN,  execfn_va),
         (AT_RANDOM,  random_va),

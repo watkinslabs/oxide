@@ -194,6 +194,7 @@ void probe_latency(void);
 void probe_mqueue(void);
 void probe_mqueue_api(void);
 void probe_syslog(void);
+void probe_inotify(void);
 void probe_sysv_sem(void);
 void probe_sysv_msg(void);
 void probe_sysv_shm(void);

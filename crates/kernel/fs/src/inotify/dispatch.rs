@@ -1,15 +1,30 @@
-use alloc::sync::{Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, InodeRef};
 
+use crate::inotify::layout::encode_name;
 use crate::inotify::types::{
     inode_key, Event, InotifyData, FAN_ATTRIB, FAN_DELETE_SELF, FAN_MOVED_FROM, FAN_MOVED_TO, FAN_MOVE_SELF,
     FAN_ONDIR, FAN_OPEN_EXEC, IN_ACCESS, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_IGNORED,
-    IN_MODIFY, IN_ONESHOT, IN_OPEN, MARK_COUNT, MOVE_COOKIE,
+    IN_ISDIR, IN_MODIFY, IN_ONESHOT, IN_OPEN, IN_SELF_NO_ISDIR, MARK_COUNT, MOVE_COOKIE,
 };
+
+/// One notification's identifying facts, shared by every group the fire path
+/// visits — the same set Linux threads through `fsnotify()`: the event bit, the
+/// rename cookie, the affected entry's name (`struct qstr`, `NULL` for an event
+/// on the watched object itself), and whether the AFFECTED object is a
+/// directory (`FS_ISDIR` — the CHILD for a dirent/child event, the watched
+/// object otherwise).
+struct Fire<'a> {
+    mask_bit:   u32,
+    cookie:     u32,
+    /// `None` for an event on the watched object itself.
+    name:       Option<&'a str>,
+    target_dir: bool,
+}
 
 /// Global registry of weak refs to every live InotifyData. Walked
 /// on each VFS write-hook call to find watches matching the modified
@@ -26,17 +41,18 @@ pub(crate) fn register_instance(w: Weak<InotifyData>) {
 }
 
 /// Core event dispatch. Walks the live group list and pushes one event per
-/// matching mark (inode / mount / filesystem scope). `self_event` = the event
-/// is on `inode` itself (open/read/write/close/attrib/*_self); `false` = a
-/// dir-entry event reported on the watched directory `inode` (create/delete/
-/// moved_*). `cookie` pairs the two halves of a rename. fanotify groups honor
-/// FAN_ONDIR (directory self-events) and the per-mark ignore mask; inotify
-/// groups keep verbatim inotify semantics. # C: O(N_groups * N_watches)
-fn dispatch(inode: &InodeRef, mask_bit: u32, self_event: bool, cookie: u32) {
+/// matching mark (inode / mount / filesystem scope).
+///
+/// The reported mask carries `IN_ISDIR` for inotify groups when the affected
+/// object is a directory (Linux `FS_ISDIR`), except on `IN_DELETE_SELF` /
+/// `IN_MOVE_SELF`. Legacy (fd-reporting) fanotify groups instead FILTER on it —
+/// `fsnotify_mask_applicable` drops a directory event for a mark without
+/// `FAN_ONDIR` — and never report the bit back to userspace.
+/// # C: O(N_groups * N_watches)
+fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
     if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
     let key = inode_key(inode);
     let fsid = inode.fsid();
-    let is_dir = inode.file_type() == FileType::Directory;
     #[cfg(target_os = "oxide-kernel")]
     let pid = sched::current().map(|t| t.tgid.load(Ordering::Relaxed)).unwrap_or(0);
     #[cfg(not(target_os = "oxide-kernel"))]
@@ -49,20 +65,24 @@ fn dispatch(inode: &InodeRef, mask_bit: u32, self_event: bool, cookie: u32) {
         while i < watches.len() {
             let wi = &watches[i];
             if !wi.applies(key, fsid) { i += 1; continue; }
-            if (wi.ignored & mask_bit) != 0 { i += 1; continue; }
-            if (wi.mask & mask_bit) == 0 { i += 1; continue; }
-            let mut report = mask_bit;
+            if (wi.ignored & f.mask_bit) != 0 { i += 1; continue; }
+            if (wi.mask & f.mask_bit) == 0 { i += 1; continue; }
+            let mut report = f.mask_bit;
             if arc.fanotify {
-                if self_event && is_dir && (wi.mask & FAN_ONDIR) == 0 { i += 1; continue; }
-                if is_dir { report |= FAN_ONDIR; }
+                if f.target_dir && (wi.mask & FAN_ONDIR) == 0 { i += 1; continue; }
+            } else if f.target_dir && (f.mask_bit & IN_SELF_NO_ISDIR) == 0 {
+                report |= IN_ISDIR;
             }
             let obj = if arc.fanotify { Some(inode.clone()) } else { None };
-            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie, len: 0, obj, pid });
+            // fanotify's legacy record is a fixed 24-byte metadata blob with no
+            // name field, so the leaf rides only on inotify events.
+            let name = if arc.fanotify { Vec::new() } else { encode_name(f.name) };
+            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie: f.cookie, name, obj, pid });
             if !arc.fanotify && (wi.flags & IN_ONESHOT) != 0 {
                 let wd = wi.wd;
                 watches.remove(i);
                 MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
-                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, len: 0, obj: None, pid });
+                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid });
                 continue;
             }
             i += 1;
@@ -70,11 +90,19 @@ fn dispatch(inode: &InodeRef, mask_bit: u32, self_event: bool, cookie: u32) {
     }
 }
 
-/// An event on `inode` itself. # C: O(N_groups * N_watches)
-pub(crate) fn fire_self(inode: &InodeRef, mask_bit: u32) { dispatch(inode, mask_bit, true, 0); }
+/// An event on `inode` itself (no name; `FS_ISDIR` from `inode`).
+/// # C: O(N_groups * N_watches)
+pub(crate) fn fire_self(inode: &InodeRef, mask_bit: u32) {
+    let target_dir = inode.file_type() == FileType::Directory;
+    dispatch(inode, &Fire { mask_bit, cookie: 0, name: None, target_dir });
+}
 
-/// A dir-entry event reported on watched directory `parent`. # C: as dispatch
-pub(crate) fn fire_child(parent: &InodeRef, mask_bit: u32, cookie: u32) { dispatch(parent, mask_bit, false, cookie); }
+/// A dir-entry event reported on watched directory `parent`, naming the entry
+/// (`leaf`) it happened to. `child_dir` is whether THAT entry is a directory.
+/// # C: as dispatch
+pub(crate) fn fire_child(parent: &InodeRef, mask_bit: u32, cookie: u32, leaf: &str, child_dir: bool) {
+    dispatch(parent, &Fire { mask_bit, cookie, name: Some(leaf), target_dir: child_dir });
+}
 
 /// Fire `IN_MODIFY` on an already-identified inode. Leaf crates (cgroup) that
 /// mutate synthetic file content without going through the VFS write path use
@@ -100,23 +128,44 @@ pub fn fire_open_exec(inode: &InodeRef) { fire_self(inode, FAN_OPEN_EXEC); }
 pub fn fire_delete_self(inode: &InodeRef) { fire_self(inode, FAN_DELETE_SELF); }
 
 /// Rename notification triple (Linux `fsnotify_move`): FAN_MOVED_FROM on the
-/// source directory + FAN_MOVED_TO on the destination directory share one
-/// cookie, and FAN_MOVE_SELF fires on the moved object.
+/// source directory (naming the OLD entry) + FAN_MOVED_TO on the destination
+/// directory (naming the NEW entry) share one cookie, and FAN_MOVE_SELF fires
+/// on the moved object. The two names are what lets a watcher pair the halves
+/// with the entries they refer to — the cookie alone only says "same rename".
 /// # C: O(N_groups * N_watches)
-pub fn fire_move(old_parent: &InodeRef, new_parent: &InodeRef, moved: Option<&InodeRef>) {
+pub fn fire_move(old_parent: &InodeRef, new_parent: &InodeRef, moved: Option<&InodeRef>,
+                 old_name: &str, new_name: &str) {
     let c = MOVE_COOKIE.fetch_add(1, Ordering::Relaxed);
-    fire_child(old_parent, FAN_MOVED_FROM, c);
-    fire_child(new_parent, FAN_MOVED_TO, c);
+    let is_dir = moved.map(|m| m.file_type() == FileType::Directory).unwrap_or(false);
+    fire_child(old_parent, FAN_MOVED_FROM, c, old_name, is_dir);
+    fire_child(new_parent, FAN_MOVED_TO, c, new_name, is_dir);
     if let Some(m) = moved { fire_self(m, FAN_MOVE_SELF); }
     vfs::file::dnotify_emit(old_parent, vfs::file::DN_RENAME);
     vfs::file::dnotify_emit(new_parent, vfs::file::DN_RENAME);
 }
 
-fn vfs_write_notify(inode: &InodeRef) { fire_self(inode, IN_MODIFY); }
-fn vfs_open_notify(inode: &InodeRef)  { fire_self(inode, IN_OPEN); }
-fn vfs_read_notify(inode: &InodeRef)  { fire_self(inode, IN_ACCESS); }
-fn vfs_close_notify(inode: &InodeRef, was_writable: bool) {
-    fire_self(inode, if was_writable { IN_CLOSE_WRITE } else { IN_CLOSE_NOWRITE });
+/// Linux `fsnotify_parent`: an event on a file is reported on the file's OWN
+/// marks and, named, on its PARENT directory's marks. Watching a directory is
+/// the normal way inotify is used (`GFileMonitor`, systemd `.path` units), and
+/// without the parent leg such a watch never learns that a file inside it was
+/// opened / read / written / closed at all. # C: 2x dispatch
+fn fire_with_parent(inode: &InodeRef, mask_bit: u32, dentry: &Arc<vfs::Dentry>) {
+    // Same zero-watch fast path `dispatch` takes, hoisted so a system with no
+    // marks pays neither the parent walk nor its dentry-inode lock on every
+    // read/write/open/close.
+    if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
+    fire_self(inode, mask_bit);
+    let Some(parent) = dentry.parent() else { return };
+    let Some(pino) = parent.inode() else { return };
+    let child_dir = inode.file_type() == FileType::Directory;
+    fire_child(&pino, mask_bit, 0, dentry.name(), child_dir);
+}
+
+fn vfs_write_notify(inode: &InodeRef, d: &Arc<vfs::Dentry>) { fire_with_parent(inode, IN_MODIFY, d); }
+fn vfs_open_notify(inode: &InodeRef, d: &Arc<vfs::Dentry>)  { fire_with_parent(inode, IN_OPEN, d); }
+fn vfs_read_notify(inode: &InodeRef, d: &Arc<vfs::Dentry>)  { fire_with_parent(inode, IN_ACCESS, d); }
+fn vfs_close_notify(inode: &InodeRef, was_writable: bool, d: &Arc<vfs::Dentry>) {
+    fire_with_parent(inode, if was_writable { IN_CLOSE_WRITE } else { IN_CLOSE_NOWRITE }, d);
 }
 
 /// Install all inotify event hooks into vfs. Called once at kernel_main.
@@ -130,12 +179,12 @@ pub fn install_write_hook() {
     vfs::set_dirent_delete_hook(vfs_dirent_delete);
 }
 
-fn vfs_dirent_create(parent: &InodeRef, _leaf: &str) {
-    fire_child(parent, IN_CREATE, 0);
+fn vfs_dirent_create(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {
+    fire_child(parent, IN_CREATE, 0, leaf, leaf_is_dir);
     vfs::file::dnotify_emit(parent, vfs::file::DN_CREATE);
 }
 
-fn vfs_dirent_delete(parent: &InodeRef, _leaf: &str) {
-    fire_child(parent, IN_DELETE, 0);
+fn vfs_dirent_delete(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {
+    fire_child(parent, IN_DELETE, 0, leaf, leaf_is_dir);
     vfs::file::dnotify_emit(parent, vfs::file::DN_DELETE);
 }

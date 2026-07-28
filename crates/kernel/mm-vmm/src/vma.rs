@@ -191,6 +191,21 @@ pub trait FileBacking: Send + Sync {
     /// already the store. # C: O(N_dirty in range)
     fn writeback_range(&self, _start: u64, _end: u64) -> Result<(), ()> { Ok(()) }
 
+    /// `msync(MS_SYNC)`: make `[start,end)` DURABLE, not merely written —
+    /// Linux `mm/msync.c:96` calls `vfs_fsync_range(vma->vm_file, fstart, fend,
+    /// 1)`, which is page-cache writeback FOLLOWED BY the filesystem's journal
+    /// commit and a device barrier.
+    ///
+    /// Distinct from [`Self::writeback_range`], which only hands the bytes to
+    /// the filesystem. A backing that stops at `writeback_range` gives
+    /// `MS_SYNC` no more durability than `MS_ASYNC`, which is the whole reason
+    /// programs call it. Default forwards to `writeback_range` — correct for
+    /// shmem/memfd, where the mapped pages ARE the store and there is nothing
+    /// behind them to commit. # C: O(N_dirty in range) + O(journal tx)
+    fn fsync_range(&self, start: u64, end: u64) -> Result<(), ()> {
+        self.writeback_range(start, end)
+    }
+
     /// Non-faulting Linux `mincore(2)` page-cache residency query for a
     /// page-aligned file offset. `true` means a fault would not need backing I/O.
     /// # C: O(log N_pages)

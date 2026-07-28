@@ -44,7 +44,8 @@ impl TcpConn {
             i += 1;
             buf[i] = opt::TIMESTAMP;
             buf[i + 1] = 10;
-            buf[i + 2..i + 6].copy_from_slice(&crate::tcp_conn::tcp_now_ms().to_be_bytes());
+            buf[i + 2..i + 6].copy_from_slice(
+            &crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off).to_be_bytes());
             buf[i + 6..i + 10].copy_from_slice(&self.ts_recent.to_be_bytes());
         }
         if !payload.is_empty() {
@@ -91,7 +92,8 @@ impl TcpConn {
         i += 1;
         buf[i] = opt::TIMESTAMP;
         buf[i + 1] = 10;
-        buf[i + 2..i + 6].copy_from_slice(&crate::tcp_conn::tcp_now_ms().to_be_bytes());
+        buf[i + 2..i + 6].copy_from_slice(
+            &crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off).to_be_bytes());
         buf[i + 6..i + 10].copy_from_slice(&self.ts_recent.to_be_bytes());
         let mut h = TcpHdr {
             src_port: self.local.port,

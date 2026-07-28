@@ -229,4 +229,28 @@ pub enum VfsError {
     Erestartsys = 512,
 }
 
+impl VfsError {
+    /// Reconstruct the error a writeback recorded in an `errseq_t` latch.
+    ///
+    /// `errseq` stores a bare positive errno (Linux keeps the raw `-err` in the
+    /// low 12 bits and `fsync` returns it verbatim), so the harvest side has to
+    /// map back. Only the codes a writeback can actually produce are listed;
+    /// anything else falls back to `EIO`, which is the generic writeback
+    /// failure and never over-reports a more specific condition.
+    /// # C: O(1)
+    pub fn from_errno(e: i32) -> VfsError {
+        match e {
+            x if x == VfsError::Enospc as i32     => VfsError::Enospc,
+            x if x == VfsError::Edquot as i32     => VfsError::Edquot,
+            x if x == VfsError::Erofs as i32      => VfsError::Erofs,
+            x if x == VfsError::Efbig as i32      => VfsError::Efbig,
+            x if x == VfsError::Enomem as i32     => VfsError::Enomem,
+            x if x == VfsError::Eopnotsupp as i32 => VfsError::Eopnotsupp,
+            x if x == VfsError::Euclean as i32    => VfsError::Euclean,
+            x if x == VfsError::Einval as i32     => VfsError::Einval,
+            _ => VfsError::Eio,
+        }
+    }
+}
+
 pub type KResult<T> = core::result::Result<T, VfsError>;

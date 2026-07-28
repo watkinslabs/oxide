@@ -140,6 +140,69 @@ pub fn decode_status(status: u8) -> Result<(), u8> {
     if status == VIRTIO_BLK_S_OK { Ok(()) } else { Err(status) }
 }
 
+/// Device cache mode after feature negotiation — Linux
+/// `virtblk_get_cache_mode` (`drivers/block/virtio_blk.c:1069-1087`).
+///
+/// Without `VIRTIO_BLK_F_CONFIG_WCE` (which neither we nor the QEMU
+/// configurations we boot negotiate) Linux's fallback is exactly this line:
+/// `writeback = virtio_has_feature(vdev, VIRTIO_BLK_F_FLUSH)` — i.e. the device
+/// has a volatile write cache IFF it agreed to support the flush command.
+///
+/// `true` → writeback cache, a `VIRTIO_BLK_T_FLUSH` barrier is both legal and
+/// REQUIRED for durability. `false` → write-through: Linux calls
+/// `blk_queue_write_cache(q, false, false)`, after which `blk_insert_flush`
+/// (`block/blk-flush.c`) completes a flush-only request immediately and
+/// `VIRTIO_BLK_T_FLUSH` is never put on the wire. Issuing it anyway is a spec
+/// violation (Virtio 1.2 §5.2.6: the request type is valid only when `F_FLUSH`
+/// was negotiated) that a conforming device answers with `S_UNSUPP`.
+/// # C: O(1)
+pub fn cache_mode_writeback(drv_features: u64) -> bool {
+    drv_features & VIRTIO_BLK_F_FLUSH != 0
+}
+
+#[cfg(test)]
+mod cache_mode_tests {
+    use super::*;
+
+    /// The negotiated `F_FLUSH` bit is the ONLY input to the cache mode, per
+    /// `virtio_blk.c:1084`. Note the argument is the post-negotiation
+    /// `driver_feature` word (`dev_features & wanted`), never the device's raw
+    /// offer — a bit the device offers but we mask out is not negotiated.
+    /// # C: O(1)
+    #[test]
+    fn writeback_iff_flush_negotiated() {
+        assert!(!cache_mode_writeback(0));
+        assert!(!cache_mode_writeback(VIRTIO_BLK_F_BLK_SIZE));
+        assert!(cache_mode_writeback(VIRTIO_BLK_F_FLUSH));
+        assert!(cache_mode_writeback(VIRTIO_BLK_F_FLUSH | VIRTIO_BLK_F_BLK_SIZE));
+        // Every other feature bit on its own leaves the cache write-through.
+        for bit in 0..64u32 {
+            if 1u64 << bit == VIRTIO_BLK_F_FLUSH { continue; }
+            assert!(!cache_mode_writeback(1u64 << bit), "bit {bit} must not imply a write cache");
+        }
+    }
+
+    /// `VIRTIO_BLK_F_FLUSH` is bit 9 (`include/uapi/linux/virtio_blk.h:50`).
+    /// An off-by-one here silently disables every barrier. # C: O(1)
+    #[test]
+    fn flush_feature_is_bit_nine() {
+        assert_eq!(VIRTIO_BLK_F_FLUSH, 1 << 9);
+        assert_eq!(VIRTIO_BLK_T_FLUSH, 4); // uapi/linux/virtio_blk.h:174
+    }
+
+    /// `S_UNSUPP` and `S_IOERR` are DIFFERENT device answers and must stay
+    /// distinguishable — collapsing them is what made the un-negotiated flush
+    /// undiagnosable from the guest (`virtio_blk.c:113` maps `S_UNSUPP` to
+    /// `BLK_STS_NOTSUPP`, `S_IOERR` to `BLK_STS_IOERR`). # C: O(1)
+    #[test]
+    fn status_bytes_stay_distinct() {
+        assert_eq!(decode_status(VIRTIO_BLK_S_OK), Ok(()));
+        assert_eq!(decode_status(VIRTIO_BLK_S_IOERR), Err(VIRTIO_BLK_S_IOERR));
+        assert_eq!(decode_status(VIRTIO_BLK_S_UNSUPP), Err(VIRTIO_BLK_S_UNSUPP));
+        assert_ne!(VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_UNSUPP);
+    }
+}
+
 /// Trim a `GET_ID` serial buffer to its printable-ASCII core: stop at
 /// the first NUL, drop trailing spaces, reject `/` (path-unsafe for a
 /// registry name) and any non-printable byte by skipping it. Writes

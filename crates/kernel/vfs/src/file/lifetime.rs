@@ -51,7 +51,7 @@ impl Drop for File {
         };
         let close = close_hooks();
         for slot in close.iter() {
-            if let Some(f) = slot { f(&self.inode, was_writable); }
+            if let Some(f) = slot { f(&self.inode, was_writable, &self.dentry); }
         }
         // Last-close release per Linux `file_operations->release`: a
         // File == one open file description; dup'd fds share this Arc,

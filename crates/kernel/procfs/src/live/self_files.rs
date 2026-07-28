@@ -138,93 +138,24 @@ fn self_stat_body() -> Vec<u8> {
 /// `/proc/self/stat` inode. # C: O(1)
 pub fn make_proc_self_stat() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_STAT, self_stat_body) }
 
-/// `/proc/self/status` per `19§4`. Synthesises body at read time from the
-/// current task; bash and many libc fns parse this.
+/// `/proc/self/status` — the SAME renderer `/proc/<pid>/status` uses, run
+/// against the current task. This file used to be a SECOND, independent
+/// renderer carrying its own `Uid:\t0\t0\t0\t0` / `CapPrm = 000001ffffffffff`
+/// constants and its own `Threads`/`Sig*`/`Cpus_allowed` tail, so the two
+/// paths could — and did — disagree about the same task's credentials. It also
+/// reported `VmRSS` as the total MAPPED size, which is not RSS; that number is
+/// gone rather than propagated to the per-pid file, since no RSS accounting
+/// exists to source it from (`scratch/audit-vfs.md` §8 keeps the `Vm*` row
+/// open). # C: as `pid_status::body`
 fn self_status_body() -> Vec<u8> {
-    let mut out = Vec::with_capacity(256);
-    let cur = sched::live::current();
-    let tid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
-    let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
-    let name = cur.map(|c| c.comm()).unwrap_or_else(|| alloc::string::String::from("oxide"));
-    push(&mut out, b"Name:\t");
-    push(&mut out, name.as_bytes());
-    push(&mut out, b"\n");
-    let state_label = cur
-        .map(|c| c.state().linux_status_label())
-        .unwrap_or("R (running)");
-    push(&mut out, b"State:\t");
-    push(&mut out, state_label.as_bytes());
-    push(&mut out, b"\n");
-    push(&mut out, b"Tgid:\t");
-    push_u64(&mut out, tid);
-    push(&mut out, b"\nPid:\t");
-    push_u64(&mut out, tid);
-    push(&mut out, b"\nPPid:\t");
-    push_u64(&mut out, ppid);
-    push(&mut out, b"\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n");
-    push(&mut out, b"FDSize:\t");
-    let fds = cur
-        // SAFETY: fd_table slot single-mutator per `13§5`; current task is the running task on this CPU and the sole writer.
-        .and_then(|c| unsafe { (*c.fd_table.get()).as_ref().cloned() })
-        .map(|t| t.count() as u64)
-        .unwrap_or(0);
-    push_u64(&mut out, fds);
-    push(&mut out, b"\n");
-    push(&mut out, b"Groups:\t\n");
-    let (vm, d, s, e, l) = cur
-        // SAFETY: mm slot single-mutator per `13§5`; sole writer is this running task per the address-space ownership rule.
-        .and_then(|c| unsafe {
-            (*c.mm.get()).as_ref().map(|m| {
-                let (mut v, mut d, mut s, mut e, mut l) = (0u64, 0u64, 0u64, 0u64, 0u64);
-                for x in m.snapshot_vmas() {
-                    let kb = (x.end.as_u64() - x.start.as_u64()) / 1024;
-                    v += kb;
-                    if x.flags.contains(vmm::VmaFlags::GROWSDOWN) {
-                        s += kb;
-                    } else if x.prot.contains(vmm::VmaProt::EXEC) {
-                        e += kb;
-                    } else if x.prot.contains(vmm::VmaProt::WRITE) {
-                        d += kb;
-                    } else {
-                        l += kb;
-                    }
-                }
-                (v, d, s, e, l)
-            })
-        })
-        .unwrap_or((0, 0, 0, 0, 0));
-    let row = |out: &mut Vec<u8>, k: &[u8], v: u64| {
-        push(out, k);
-        push_u64(out, v);
-        push(out, b" kB\n");
-    };
-    for &(k, v) in &[
-        (b"VmPeak:\t" as &[u8], vm),
-        (b"VmSize:\t", vm),
-        (b"VmHWM:\t", vm),
-        (b"VmRSS:\t", vm),
-        (b"VmData:\t", d),
-        (b"VmStk:\t", s),
-        (b"VmExe:\t", e),
-        (b"VmLib:\t", l),
-    ] {
-        row(&mut out, k, v);
+    match sched::live::current() {
+        Some(c) => crate::pid_status::body(c.tid),
+        None    => Vec::new(),
     }
-    push(&mut out, STATUS_TAIL);
-    out
 }
 /// `/proc/self/status` inode. # C: O(1)
 pub fn make_proc_self_status() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_STATUS, self_status_body) }
 
-const STATUS_TAIL: &[u8] = b"\
-Threads:\t1\n\
-SigQ:\t0/0\n\
-SigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\n\
-SigBlk:\t0000000000000000\nSigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\n\
-CapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\n\
-CapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\n\
-Cpus_allowed:\t1\nCpus_allowed_list:\t0\n\
-Mems_allowed:\t1\nMems_allowed_list:\t0\n";
 
 /// # C: O(len s)
 pub(crate) fn push(v: &mut Vec<u8>, s: &[u8]) {

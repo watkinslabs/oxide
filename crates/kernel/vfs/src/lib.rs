@@ -24,6 +24,7 @@ extern crate std;
 
 pub mod dcache;
 pub mod dentry;
+pub mod errseq;
 pub mod devnode;
 pub mod dirent;
 pub mod readdir;
@@ -67,7 +68,7 @@ pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER, dirent_pack, d
 pub use readdir::readdir_dots;
 pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX, set_file_ref_drop_hook};
-pub use file::{File, FileCred, FileEpollLink, Fmode, SeekFrom, clear_file_lock_wait_hooks, file_lock_interrupted, file_lock_park, file_lock_schedule, file_lock_wake, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_file_lock_wait_hooks, set_open_hook, set_read_hook, set_write_hook};
+pub use file::{File, FileCred, FileEpollLink, Fmode, SeekFrom, SyncMode, SYNC_TO_EOF, iocb_sync_mode, fsync_slot_present, clear_file_lock_wait_hooks, file_lock_interrupted, file_lock_park, file_lock_schedule, file_lock_wake, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_file_lock_wait_hooks, set_open_hook, set_read_hook, set_write_hook};
 pub use inode::{Inode, InodeBuilder, InodeRef, SealCarrier, FileAttr, FiemapExtent, FileLockContext, FlockKind, FlockTry, RECORD_END_MAX, RecordLock, RecordOwner, RecordTry, record_lock_block_on, record_lock_unblock, get_next_ino, generic_update_time, inode_unlock, lock_rename, unlock_rename, RenameLockGuard, prepare_create_owner_mode, prepare_symlink_owner, I_DIRTY, I_NEW, I_FREEING, I_LINKABLE, S_IMMUTABLE, S_APPEND, S_NOATIME, S_SWAPFILE, S_SYNC, S_ATIME, S_MTIME, S_CTIME, S_VERSION, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDNORM, POLL_RDHUP};
 pub use fileattr::{FileAttrSource, clear_fileattr_hooks, fileattr_fill_flags, fileattr_fill_xflags, fileattr_get, fileattr_prepare_set, fileattr_set, set_fileattr_hooks};
 pub use inode_ops::{InodeOps, DefaultInodeOps, default_inode_ops, mk_mode, CreateCtx};
@@ -80,6 +81,7 @@ pub use idmap::{Idmap, IdExtent, IDENTITY};
 pub use timespec::Timespec64;
 pub use setattr::{setattr_prepare, simple_setattr, notify_change, notify_change_mnt, apply_kill_priv, setattr_should_drop_suidgid, inode_newsize_ok, set_rlimit_fsize_hook, clear_rlimit_fsize_hook, RlimitFsizeHook, Iattr, ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME, ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_KILL_SUID, ATTR_KILL_SGID, ATTR_FORCE};
 pub use mapping::{AddressSpaceOps, SharedFrame};
+pub use errseq::{Errseq, ErrseqVal, MAX_ERRNO};
 pub use memory_accounting::{MemoryPageSnapshot, memory_page_snapshot};
 pub use types::{FileMode, FileType, Ino, KResult, OpenFlags, PollMask, StatxMask, VfsError};
 pub use poll_subs::{EpollNotify, PollSubscribers};

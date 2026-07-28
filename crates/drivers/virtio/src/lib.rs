@@ -63,7 +63,7 @@ pub use net::{VirtioNet, VirtioNetHdr, VIRTIO_NET_HDR_LEN_V1,
 
 pub mod blk;
 pub use blk::{
-    DescSpec, build_chain, encode_header, decode_status, pack_desc,
+    DescSpec, build_chain, encode_header, decode_status, cache_mode_writeback, pack_desc,
     VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID,
     VIRTIO_BLK_S_OK, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_UNSUPP,
     VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_FLUSH,

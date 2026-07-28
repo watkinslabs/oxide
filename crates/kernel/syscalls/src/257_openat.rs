@@ -414,7 +414,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
             Ok(i) => {
                 let d = vfs::file::open_dentry_at(&parent.dentry, &name, &i);
                 crate::namei_common::drop_child_cache(&parent, &name);
-                vfs::fire_dirent_create(&parent.inode, &name);
+                vfs::fire_dirent_create(&parent.inode, &name, false);
                 (i, mnt.mnt_id, d, true, create_path)
             }
             Err(e) => {

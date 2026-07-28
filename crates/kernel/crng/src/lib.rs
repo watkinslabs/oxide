@@ -21,5 +21,5 @@ mod hw;
 mod pool;
 
 pub use hw::{cycles, hw_random_u64};
-pub use pool::{add_entropy, clear_bulk_source, fill, is_initialized, next_u64, reseed,
-               set_bulk_source};
+pub use pool::{add_entropy, add_hw_entropy, clear_bulk_source, fill, is_initialized,
+               next_u64, reseed, set_bulk_source};
