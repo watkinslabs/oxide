@@ -300,6 +300,13 @@ impl Superblock {
         (self.feature_ro_compat & RO_COMPAT_SPARSE_SUPER) != 0
     }
 
+    /// `i_blocks` sectors charged by one filesystem block — the ONLY conversion
+    /// between the allocator's unit (fs blocks) and the on-disk accounting unit
+    /// (512-byte sectors). # C: O(1)
+    pub fn sectors_per_block(&self) -> u32 {
+        self.block_size / crate::layout::I_BLOCKS_SECTOR_BYTES
+    }
+
     /// `EXT4_FEATURE_RO_COMPAT_HUGE_FILE`: when set, `i_blocks` uses the 48-bit
     /// (`i_blocks_lo` + `l_i_blocks_high`) form and a per-inode `EXT4_HUGE_FILE_FL`
     /// may switch its unit from 512-byte sectors to fs-blocks. When CLEAR,

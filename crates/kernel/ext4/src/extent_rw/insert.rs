@@ -16,7 +16,7 @@ impl Mount {
         hint_group: u32,
     ) -> Result<(u32, Vec<u64>), MountError> {
         let bs = self.sb.block_size as usize;
-        let spb = (self.sb.block_size / 512) as u32;
+        let spb = self.sb.sectors_per_block();
         let child_n = Self::inline_child_index_for_insert(i_block, &hdr, logical)?;
         let child_idx = inode::parse_extent_idx(i_block, &hdr, child_n).ok_or(MountError::NotFound)?;
         let mut child = self.insert_into_extent_node(ino, gen, child_idx.leaf_lba(), hdr.depth - 1, logical, new_extent, hint_group)?;
@@ -123,7 +123,7 @@ impl Mount {
         hint_group: u32,
     ) -> Result<ExtentInsertResult, MountError> {
         let bs = self.sb.block_size as usize;
-        let spb = (self.sb.block_size / 512) as u32;
+        let spb = self.sb.sectors_per_block();
         let mut buf = self.read_metadata_block(lba)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
         if hdr.depth != depth {
@@ -301,7 +301,7 @@ impl Mount {
         logical: u32,
         inserted_leaf_entries: usize,
     ) -> Result<u32, MountError> {
-        let spb = (self.sb.block_size / 512) as u32;
+        let spb = self.sb.sectors_per_block();
         let mut ancestors: Vec<(u16, u16)> = Vec::new();
         ancestors.push((hdr.entries, hdr.max));
 
@@ -364,25 +364,26 @@ impl Mount {
     ) -> Result<u32, MountError> {
         let bs = self.sb.block_size as usize;
         let gen = Self::inode_generation(ino_bytes);
-        let spb = (self.sb.block_size / 512) as u32;
+        let spb = self.sb.sectors_per_block();
         let mut extents = Self::inline_extents(i_block, &hdr)?;
         if Self::extent_vec_contains(&extents, logical) {
             return Ok(logical);
         }
         let hint_group = Self::extent_hint_group(self, &extents, logical);
         let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
-        let will_promote = extents.len() + 1 > 4;
-        let extra_meta_sectors = if will_promote { spb } else { 0 };
-        let charged_i_blocks = prev_i_blocks.saturating_add(spb).saturating_add(extra_meta_sectors);
-        if will_promote {
-            let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
-            if extents.len() + 1 > leaf_max as usize { return Err(MountError::ExtentTreeFull); }
-        }
-        self.account_i_blocks_delta(ino, prev_i_blocks, charged_i_blocks)?;
+        // Charge the DATA block before allocating it, exactly as
+        // `ext4_mb_new_blocks` (fs/ext4/mballoc.c) calls `dquot_alloc_block`
+        // ahead of the allocation. Whether the inline root ALSO needs an
+        // external leaf block is not knowable yet: an appended block that is
+        // physically contiguous with an existing extent merges into it and
+        // leaves the entry count unchanged, so the promotion is decided below
+        // from the real post-insert count, never predicted from `len() + 1`.
+        let data_charged = prev_i_blocks.saturating_add(spb);
+        self.account_i_blocks_delta(ino, prev_i_blocks, data_charged)?;
         let phys = match self.alloc_block(hint_group) {
             Ok(phys) => phys,
             Err(e) => {
-                return Err(self.rollback_i_blocks_delta(ino, charged_i_blocks, prev_i_blocks, e));
+                return Err(self.rollback_i_blocks_delta(ino, data_charged, prev_i_blocks, e));
             }
         };
         let new_extent = if unwritten {
@@ -394,20 +395,29 @@ impl Mount {
             // location; written before the batch commit → data=ordered).
             if !defer_data {
                 if let Err(e) = self.write_data_byte_range(phys * bs as u64, data) {
-                    return Err(self.rollback_insert_charge(ino, prev_i_blocks, charged_i_blocks, Some(phys), &[], e));
+                    return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e));
                 }
             }
             Self::extent_for(logical, phys)
         };
         if let Err(e) = Self::insert_extent_record(&mut extents, new_extent) {
-            return Err(self.rollback_insert_charge(ino, prev_i_blocks, charged_i_blocks, Some(phys), &[], e));
+            return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e));
         }
 
         let mut leaf_lba = None;
+        let mut extra_meta_sectors = 0;
         if extents.len() <= 4 {
             Self::write_inline_extents(i_block, hdr, &extents);
         } else {
             let leaf_max = crate::csum::extent_block_max(&self.sb, bs);
+            if extents.len() > leaf_max as usize {
+                return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], MountError::ExtentTreeFull));
+            }
+            extra_meta_sectors = spb;
+            let charged_i_blocks = data_charged.saturating_add(spb);
+            if let Err(e) = self.account_i_blocks_delta(ino, data_charged, charged_i_blocks) {
+                return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e));
+            }
             let lba = match self.alloc_block(hint_group) {
                 Ok(lba) => lba,
                 Err(e) => {
