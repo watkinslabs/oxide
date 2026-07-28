@@ -98,15 +98,23 @@ fn pid_for_children_leaf_and_time_kind_snapshot_exact_slots() {
         NsOwner::Time(owner) if NamespaceRef::ptr_eq(owner, &time)));
 }
 
+/// A mount namespace with no resolvable root cannot be entered, and a refused
+/// entry must leave the caller in its ORIGINAL namespace — Linux
+/// `mntns_install` swaps first, then reverts `nsproxy->mnt_ns` if the root
+/// lookup fails. Entering on paper while cwd and root still resolve through the
+/// old tree is the containment escape this path exists to prevent.
 #[test]
-fn mount_setns_installs_exact_owner() {
+fn mount_setns_refuses_a_rootless_namespace_and_reverts() {
     let user = namespace_identity::initial(NamespaceKind::User);
     let mount = vfs::mntns::allocate(user).unwrap();
     let destination = task(80, "destination");
     let ns = NsInode::new(NsKind::Mnt, NsOwner::Mnt(Arc::clone(&mount)));
 
-    assert_eq!(setns_apply(&ns, CLONE_NEWNS, &destination), 0);
-    assert!(Arc::ptr_eq(&destination.mount_namespace_snapshot().unwrap(), &mount));
+    let before = destination.mount_namespace_snapshot().unwrap();
+    assert_eq!(setns_apply(&ns, CLONE_NEWNS, &destination), -22);
+    let after = destination.mount_namespace_snapshot().unwrap();
+    assert!(Arc::ptr_eq(&after, &before), "refused setns must revert the namespace swap");
+    assert!(!Arc::ptr_eq(&after, &mount), "caller must not be left in the target namespace");
 }
 
 #[test]

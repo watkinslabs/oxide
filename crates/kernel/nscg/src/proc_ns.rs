@@ -240,6 +240,55 @@ pub fn has_net_bind_service_for(cur: &sched::Task, namespace: &NetworkNamespaceR
 /// the state swap. The permission ladder runs BEFORE any task slot is
 /// touched, so a rejected call leaves the caller exactly as it was.
 /// # C: O(depth)
+/// Linux `mntns_install` (`fs/namespace.c`). Entering a mount namespace is not
+/// just a pointer swap: the caller's root AND cwd must be re-pointed at the new
+/// namespace's root, or it joins the namespace on paper while still resolving
+/// every path through the tree it came from — a containment escape, since a
+/// process that "entered" a container's mount namespace can still reach the
+/// host filesystem through its unchanged cwd.
+///
+/// `CAP_SYS_CHROOT` is NOT re-checked here: `setns_perm::check_install` already
+/// owns that ladder for `NsKind::Mnt`, and a second copy would be a split source
+/// of truth that can disagree with it.
+///
+/// One guard Linux applies that is easy to miss:
+///   * `fs->users != 1` → `EINVAL`. This is STRICTER than the `LSM_UNSAFE_SHARE`
+///     rule (`users > n_fs`): any sharing at all is refused, including a
+///     `CLONE_FS` thread in the caller's own group, because re-rooting would
+///     move that sibling's cwd out from under it.
+///
+/// The namespace swap happens FIRST and is reverted if the root lookup fails,
+/// exactly as Linux does — a half-installed namespace with the old root is the
+/// state this function exists to prevent.
+/// # C: O(1)
+fn mntns_install(owner: &vfs::mntns::MntNamespaceRef, cur: &sched::Task) -> i64 {
+    use syscall::errno::Errno;
+    // `fs->users != 1`: one strong ref is the clone `fs_context()` just took.
+    if cur.fs_context_users() != 1 { return -(Errno::Einval.as_i32() as i64); }
+    let ns_id = owner.id();
+    let old = match cur.mount_namespace_snapshot() {
+        Some(o) => o,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    if cur.replace_mount_namespace(owner.clone()).is_err() {
+        return -(Errno::Esrch.as_i32() as i64);
+    }
+    // Resolve "/" in the namespace just installed.
+    let root = vfs::mntns::ns_root_id(ns_id)
+        .and_then(|mnt_id| vfs::mount::root_dentry_for_mount_id(mnt_id)
+            .and_then(|d| vfs::mount::root_for_mount_id(mnt_id).map(|ino| (mnt_id, d, ino))));
+    let Some((mnt_id, dentry, inode)) = root else {
+        // Revert to the old namespace rather than leave the caller in a
+        // namespace whose root it cannot resolve (Linux's error arm).
+        let _ = cur.replace_mount_namespace(old);
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    let path = vfs::VfsPath { mnt_id, dentry, inode, last_component: None };
+    cur.set_fs_root(alloc::string::String::from("/"), path.clone());
+    cur.set_fs_cwd(alloc::string::String::from("/"), path);
+    0
+}
+
 pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     use syscall::errno::Errno;
     if nstype != 0 && nstype != ns.kind.clone_bit() {
@@ -276,7 +325,7 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
         NsOwner::Cgroup(owner) | NsOwner::Ipc(owner)
         | NsOwner::User(owner) | NsOwner::Uts(owner) => cur.replace_namespace(owner.clone()).is_ok(),
         NsOwner::Time(_) => false,
-        NsOwner::Mnt(owner) => cur.replace_mount_namespace(owner.clone()).is_ok(),
+        NsOwner::Mnt(owner) => return mntns_install(owner, cur),
         NsOwner::Net(owner) => cur.replace_network_namespace(owner.clone()).is_ok(),
     };
     if !installed { return -(Errno::Esrch.as_i32() as i64); }
