@@ -148,6 +148,15 @@ int err_class(int rc, int err) {
     }
 }
 
+const char *rdy_outcome_name(int cls) {
+    switch (cls) {
+    case RDY_OK:      return "ok";
+    case RDY_TIMEOUT: return "timeout";
+    case RDY_NOFILL:  return "nofill";
+    default:          return "error";
+    }
+}
+
 const char *err_class_name(int cls) {
     switch (cls) {
     case CLS_OK:         return "ok";

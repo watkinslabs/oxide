@@ -367,8 +367,17 @@ pub(crate) fn build_stat_inode(
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
     let blocks = data.st.mount.read_inode(ino).map(|i| i.i_blocks as u64).unwrap_or(0);
+    // Linux `init_special_inode` gives an on-disk `S_IFIFO` the pipe fops, and
+    // `fifo_open` attaches an `i_pipe` whose `rd_wait`/`wr_wait` are the poll
+    // queues — independent of the backing filesystem (`fs/pipe.c:1219`). A FIFO
+    // that lives on ext4 must therefore carry a subscriber list exactly like
+    // `vfs::make_fifo_inode` and the tmpfs one; without it `fs::pipe`'s
+    // `inode.poll_subscribers()` is `None` at every notify site and a
+    // poll/epoll waiter on the FIFO subscribes to nothing.
     let mut b = InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(ft, perm),
-                      Arc::new(Ext4StatInodeOps), Arc::new(Ext4StatFileOps))
+                      Arc::new(Ext4StatInodeOps), Arc::new(Ext4StatFileOps));
+    if vfs::special_inode_needs_poll_subs(ft) { b = b.poll_subs(vfs::PollSubscribers::new()); }
+    b = b
         .sb(weak_sb)
         .size(size)
         .blocks(blocks)

@@ -9,6 +9,7 @@
 // - listener.rs  : listener state, shutdown, accept queue, and waiters.
 // - registry.rs  : path registry for listeners and datagram queues.
 // - gc.rs        : serialized SCM_RIGHTS cycle collection.
+// - writable.rs  : `unix_writable` / peer-backlog write-readiness predicates.
 // - gc_test_support.rs: deterministic hosted collector schedules.
 // - test_support.rs: canonical hosted AF_UNIX fixture serialization.
 // - tests.rs     : unit tests for the AF_UNIX data paths.
@@ -23,6 +24,7 @@ pub mod dgram;
 pub mod listener;
 pub mod registry;
 pub mod gc;
+pub mod writable;
 #[cfg(test)]
 pub(crate) mod gc_test_support;
 #[cfg(test)]
@@ -37,6 +39,7 @@ pub use stream::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};
 pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing, UnixMsgSendError};
 pub use dgram::{UnixDgram, UnixDgramQueue};
 pub use listener::{UnixAddr, UnixAddrKey, UnixConnectError, UnixListener};
+pub use writable::{dgram_peer_writable, unix_writable};
 pub use registry::{unix_path_display, unix_path_is_abstract, UnixRegistry};
 pub use gc::{classify_files, collect as collect_scm_rights, inflight_rights, register_file, transfer_guard, GcLink, GcNode, GcPin, GcRights, GcTransferGuard};
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

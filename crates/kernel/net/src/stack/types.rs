@@ -403,6 +403,10 @@ mod socket_error_tests {
     use crate::addr::{IpAddr, Ipv4Addr};
     use crate::tcp_conn::{Endpoint, TcpConn};
 
+    /// `max(SO_SNDBUF, TCP_SNDBUF_DEFAULT)` — the cap `InetSocket::poll`
+    /// passes down, so these masks are the ones userspace sees.
+    const TEST_SNDBUF: usize = crate::sock::TCP_SNDBUF_DEFAULT as usize;
+
     #[test]
     fn entry_and_socket_owner_share_canonical_error() {
         let error = Arc::new(crate::SocketError::new());
@@ -449,9 +453,9 @@ mod socket_error_tests {
         conn.active_open().unwrap();
         let entry = TcpEntry::new(conn);
 
-        assert_eq!(entry.poll_mask() & vfs::POLL_OUT, 0);
+        assert_eq!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_OUT, 0);
         entry.conn.lock().state = crate::tcp_state::TcpState::Established;
-        assert_ne!(entry.poll_mask() & vfs::POLL_OUT, 0);
+        assert_ne!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_OUT, 0);
     }
 
     #[test]
@@ -480,7 +484,7 @@ mod socket_error_tests {
 
         entry.close_and_wake();
         assert!(poll.generation() > before);
-        assert_ne!(entry.poll_mask() & vfs::POLL_HUP, 0);
+        assert_ne!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_HUP, 0);
     }
 
     #[test]
