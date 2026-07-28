@@ -428,6 +428,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP);
     #[cfg(feature = "debug-syscost")]
     let __syscost = crate::syscost::start();
+    #[cfg(feature = "debug-startlat")]
+    let __startlat = crate::startlat::start();
     let rv = if let Some(rv) = dispatch_route_a(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_b(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_c(nr, &args) { rv }
@@ -475,6 +477,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     crate::signal_trace::zram_lifecycle_syscall(nr, rv);
     #[cfg(feature = "debug-syscost")]
     crate::syscost::record(nr, __syscost);
+    #[cfg(feature = "debug-startlat")]
+    crate::startlat::record(nr, __startlat, rv);
     sched::diag::record_syscall(nr as u32, rv);
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {

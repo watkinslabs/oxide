@@ -8,25 +8,30 @@ pub(crate) type MountSnapshotBuilder = fn(&MntNamespaceRef, Option<&str>) -> Vec
 pub(crate) struct OpenMountSnapshot {
     namespace: MntNamespaceRef,
     root_prefix: Option<String>,
+    /// `false` until the first `refresh`. Linux `seq_open` allocates the
+    /// `seq_file` and its private state but renders NOTHING; the first `read()`
+    /// runs `->start/->show`. Rendering at open instead made every
+    /// open+read-at-0 (what a `/proc/self/mountinfo` re-parse is) pay for TWO
+    /// full renders, and systemd re-parses after every mount operation while
+    /// setting up a sandboxed unit (B1475).
+    built: bool,
     data_seen: u64,
     poll_seen: u64,
     data: Vec<u8>,
 }
 
 impl OpenMountSnapshot {
-    pub(crate) fn new(namespace: MntNamespaceRef, root_prefix: Option<String>,
-        build: MountSnapshotBuilder) -> Self
-    {
+    pub(crate) fn new(namespace: MntNamespaceRef, root_prefix: Option<String>) -> Self {
         let seq = vfs::mntns::ns_seq(namespace.id());
-        let data = build(&namespace, root_prefix.as_deref());
-        Self { namespace, root_prefix, data_seen: seq, poll_seen: seq, data }
+        Self { namespace, root_prefix, built: false, data_seen: seq, poll_seen: seq, data: Vec::new() }
     }
 
     pub(crate) fn refresh(&mut self, force: bool, build: MountSnapshotBuilder) {
         let seq = vfs::mntns::ns_seq(self.namespace.id());
-        if !force && seq == self.data_seen { return; }
+        if self.built && !force && seq == self.data_seen { return; }
         self.data = build(&self.namespace, self.root_prefix.as_deref());
         self.data_seen = seq;
+        self.built = true;
     }
 
     pub(crate) fn data(&self) -> &[u8] { &self.data }
@@ -55,7 +60,7 @@ mod tests {
         let switched_namespace = vfs::mntns::allocate(user).unwrap();
         let target_id = target_namespace.id();
         let switched_id = switched_namespace.id();
-        let mut open = OpenMountSnapshot::new(Arc::clone(&target_namespace), None, namespace_id);
+        let mut open = OpenMountSnapshot::new(Arc::clone(&target_namespace), None);
 
         drop(target_namespace);
         assert!(vfs::mntns::ns_by_id(target_id).is_some(), "open state pins target namespace");
