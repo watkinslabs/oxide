@@ -447,4 +447,15 @@ impl Pair {
     /// that also owes the slave a SIGHUP.
     /// # C: O(1)
     pub fn hangup(&mut self) { self.hung_up = true; }
+
+    /// Linux `clear_bit(TTY_HUPPED, &tty->flags)` at the tail of a successful
+    /// `tty_open` (`drivers/tty/tty_io.c:2161`). Only meaningful while the
+    /// MASTER is still open: a hangup that came from the master's last close
+    /// is permanent (the pts node goes away with it), whereas a `vhangup(2)`
+    /// revoked a line whose peer is still there and a fresh open revives it.
+    /// # C: O(1)
+    pub fn clear_hangup(&mut self) {
+        self.hung_up = false;
+        self.pending_sighup = false;
+    }
 }

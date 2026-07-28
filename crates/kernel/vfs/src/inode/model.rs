@@ -13,7 +13,7 @@ use crate::quota::InodeDquots;
 use crate::superblock::SuperBlock;
 use crate::types::Ino;
 
-use super::flags::{FS_APPEND_FL, FS_CASEFOLD_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_SYNC_FL};
+use super::flags::{FS_APPEND_FL, FS_CASEFOLD_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_NODUMP_FL, FS_SYNC_FL};
 use super::file_lock::FileLockContext;
 
 /// `struct inode` reference (Linux `struct inode *`). CONCRETE — one type for
@@ -114,6 +114,7 @@ impl FileAttr {
         if i_flags & super::flags::S_NOATIME   != 0 { flags |= FS_NOATIME_FL; }
         if i_flags & super::flags::S_SYNC      != 0 { flags |= FS_SYNC_FL; }
         if i_flags & super::flags::S_CASEFOLD  != 0 { flags |= FS_CASEFOLD_FL; }
+        if i_flags & super::flags::S_NODUMP    != 0 { flags |= FS_NODUMP_FL; }
         FileAttr { flags, ..Default::default() }
     }
 }

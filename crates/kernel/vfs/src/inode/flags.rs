@@ -26,6 +26,10 @@ pub const FS_CASEFOLD_FL:  u32 = 0x4000_0000;
 pub const FS_COMMON_FL:    u32 = FS_SYNC_FL | FS_IMMUTABLE_FL | FS_APPEND_FL
     | FS_NODUMP_FL | FS_NOATIME_FL | FS_DAX_FL | FS_PROJINHERIT_FL | FS_VERITY_FL;
 
+/// `FS_XFLAG_*` (`uapi/linux/fs.h`) — the whole published set, so no caller
+/// re-declares a subset of its own.
+pub const FS_XFLAG_REALTIME:  u32 = 0x0000_0001;
+pub const FS_XFLAG_PREALLOC:  u32 = 0x0000_0002;
 pub const FS_XFLAG_IMMUTABLE: u32 = 0x0000_0008;
 pub const FS_XFLAG_APPEND:    u32 = 0x0000_0010;
 pub const FS_XFLAG_SYNC:      u32 = 0x0000_0020;
@@ -33,14 +37,30 @@ pub const FS_XFLAG_NOATIME:   u32 = 0x0000_0040;
 pub const FS_XFLAG_NODUMP:    u32 = 0x0000_0080;
 pub const FS_XFLAG_RTINHERIT: u32 = 0x0000_0100;
 pub const FS_XFLAG_PROJINHERIT: u32 = 0x0000_0200;
-pub const FS_XFLAG_DAX:       u32 = 0x0000_8000;
-pub const FS_XFLAG_VERITY:    u32 = 0x0002_0000;
-pub const FS_XFLAG_CASEFOLD:  u32 = 0x0004_0000;
+pub const FS_XFLAG_NOSYMLINKS: u32 = 0x0000_0400;
 pub const FS_XFLAG_EXTSIZE:   u32 = 0x0000_0800;
 pub const FS_XFLAG_EXTSZINHERIT: u32 = 0x0000_1000;
+pub const FS_XFLAG_NODEFRAG:  u32 = 0x0000_2000;
+pub const FS_XFLAG_FILESTREAM: u32 = 0x0000_4000;
+pub const FS_XFLAG_DAX:       u32 = 0x0000_8000;
 pub const FS_XFLAG_COWEXTSIZE: u32 = 0x0001_0000;
+pub const FS_XFLAG_VERITY:    u32 = 0x0002_0000;
+pub const FS_XFLAG_CASEFOLD:  u32 = 0x0004_0000;
+pub const FS_XFLAG_CASENONPRESERVING: u32 = 0x0008_0000;
+pub const FS_XFLAG_HASATTR:   u32 = 0x8000_0000;
+
+/// `include/linux/fileattr.h` masks — shared between `flags` and `xflags`,
+/// read-only, value-carrying, directory-only, and misc-settable.
 pub const FS_XFLAG_COMMON:    u32 = FS_XFLAG_SYNC | FS_XFLAG_IMMUTABLE | FS_XFLAG_APPEND
     | FS_XFLAG_NODUMP | FS_XFLAG_NOATIME | FS_XFLAG_DAX | FS_XFLAG_PROJINHERIT | FS_XFLAG_VERITY;
+pub const FS_XFLAG_RDONLY_MASK: u32 = FS_XFLAG_PREALLOC | FS_XFLAG_HASATTR | FS_XFLAG_VERITY
+    | FS_XFLAG_CASEFOLD | FS_XFLAG_CASENONPRESERVING;
+pub const FS_XFLAG_VALUES_MASK: u32 = FS_XFLAG_EXTSIZE | FS_XFLAG_COWEXTSIZE;
+pub const FS_XFLAG_DIRONLY_MASK: u32 = FS_XFLAG_RTINHERIT | FS_XFLAG_NOSYMLINKS
+    | FS_XFLAG_EXTSZINHERIT;
+pub const FS_XFLAG_MISC_MASK: u32 = FS_XFLAG_REALTIME | FS_XFLAG_NODEFRAG | FS_XFLAG_FILESTREAM;
+pub const FS_XFLAGS_MASK:     u32 = FS_XFLAG_COMMON | FS_XFLAG_RDONLY_MASK | FS_XFLAG_VALUES_MASK
+    | FS_XFLAG_DIRONLY_MASK | FS_XFLAG_MISC_MASK;
 
 pub const I_VERSION_QUERIED_SHIFT: u32 = 1;
 pub const I_VERSION_QUERIED:       u64 = 1 << (I_VERSION_QUERIED_SHIFT - 1);
@@ -74,6 +94,13 @@ pub const S_DAX:       u32 = 1 << 13;
 pub const S_ENCRYPTED: u32 = 1 << 14;
 pub const S_CASEFOLD:  u32 = 1 << 15;
 pub const S_VERITY:    u32 = 1 << 16;
+/// oxide-internal `i_flags` bit (like `I_PUBLIC_DEV` in `inode/metadata.rs`).
+/// Linux's `inode->i_flags` has no `NODUMP` — `FS_NODUMP_FL` "does not require
+/// any action in i_flags" (`mm/shmem.c` `shmem_set_inode_flags`), so shmem
+/// parks it in `shmem_inode_info.fsflags`. The oxide inode carries the whole
+/// `chattr` word in `i_flags`, so the bit lives here instead of in a
+/// per-filesystem shadow field that could disagree with it.
+pub const S_NODUMP:    u32 = 1 << 17;
 
 pub const POLL_IN:    u32 = 0x0001;
 pub const POLL_OUT:   u32 = 0x0004;

@@ -136,6 +136,14 @@ pub fn resolve_name(name: &str) -> Result<(), i64> {
     Err(err(Errno::Eopnotsupp))
 }
 
+/// `path_{set,get,list,remove}xattrat` (fs/xattr.c): the `*xattrat` family
+/// accepts only `AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH`; every other bit is
+/// `EINVAL`, and the check runs BEFORE the name/value import. # C: O(1)
+pub fn check_at_flags(at_flags: u32) -> Result<(), i64> {
+    if at_flags & !syscall::at::AT_NOFOLLOW_EMPTY != 0 { return Err(err(Errno::Einval)); }
+    Ok(())
+}
+
 /// `setxattr_copy` flag validation — only CREATE/REPLACE exist. Both together
 /// is NOT an error here: the store reports `EEXIST`/`ENODATA` per Linux
 /// `simple_xattr_set`. # C: O(1)

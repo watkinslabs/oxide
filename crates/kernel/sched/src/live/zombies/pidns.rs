@@ -71,6 +71,27 @@ pub fn namespace_child_reaper(task: &Task) -> Option<Arc<Task>> {
     fallback
 }
 
+/// Linux `cad_pid`'s default target — `cad_pid = task_pid(&init_task)`
+/// (`kernel/reboot.c`), i.e. the init of the INITIAL pid namespace. Used by
+/// `ctrl_alt_del()` to deliver SIGINT when `C_A_D` is clear.
+///
+/// The visible pid is `vtgid` when set and the real `tgid` otherwise — an
+/// initial-namespace task leaves `vtgid` at 0 (`Task::vtgid`: "0 means use the
+/// real tgid"), so matching on `vtgid == 1` alone never finds the real init.
+/// # C: O(N_tasks)
+pub fn initial_init_task() -> Option<Arc<Task>> {
+    for tid in registry::live_tids() {
+        let Some(t) = registry::lookup(tid) else { continue };
+        let tgid = t.tgid.load(Ordering::Acquire);
+        if t.tid != tgid { continue; }
+        let vtgid = t.vtgid.load(Ordering::Acquire);
+        let visible = if vtgid != 0 { vtgid } else { tgid };
+        if visible != INIT_VPID { continue; }
+        if in_initial_pid_namespace(&t) { return Some(t); }
+    }
+    None
+}
+
 /// Linux `zap_pid_ns_processes`: a pid namespace that loses its init loses
 /// every member. SIGKILL each remaining task of `task`'s namespace so they run
 /// their own fatal-signal exit; the machine is unaffected.

@@ -331,6 +331,11 @@ pub struct Vma {
     /// fault handler calls `missing_fault` on a NotPresent fault here.
     /// `None` for the overwhelming majority of VMAs.
     pub uffd: Option<Arc<dyn crate::uffd::UffdContext>>,
+    /// Linux `vm_area_struct::vm_policy` — the NUMA policy `mbind(2)` installed
+    /// over this range. `None` is Linux's NULL `vm_policy`, which makes
+    /// allocation fall back to the task policy and makes
+    /// `get_mempolicy(MPOL_F_ADDR)` report `MPOL_DEFAULT`.
+    pub mempolicy: Option<crate::mempolicy::MemPolicy>,
 }
 
 impl core::fmt::Debug for Vma {
@@ -347,6 +352,7 @@ impl core::fmt::Debug for Vma {
             .field("file_rmap", &self.file_rmap.is_some())
             .field("anon_name", &self.anon_name)
             .field("uffd", &self.uffd.is_some())
+            .field("mempolicy", &self.mempolicy)
             .finish()
     }
 }
@@ -397,6 +403,7 @@ impl Vma {
             file_rmap,
             anon_name: None,
             uffd: None,
+            mempolicy: None,
         }
     }
 
@@ -435,6 +442,10 @@ impl Vma {
         // check above already blocks registered↔unregistered; this
         // blocks two ranges bound to distinct uffd fds.
         if !crate::uffd::uffd_ptr_eq(&self.uffd, &next.uffd) { return false; }
+        // Linux `can_vma_merge_after` → `mpol_equal(vma_policy(vma), policy)`:
+        // two ranges under different mbind(2) policies never coalesce, or the
+        // survivor would silently acquire the other's policy.
+        if !crate::mempolicy::mpol_equal(&self.mempolicy, &next.mempolicy) { return false; }
         match (&self.backing, &next.backing) {
             (VmaBacking::Anonymous, VmaBacking::Anonymous) => true,
             (VmaBacking::File { backing: ab, off: a },
@@ -453,47 +464,4 @@ impl Vma {
         }
     }
 
-    /// Clone metadata into a sub-range `[new_start, new_end)`. Used by
-    /// `VmaTree::remove_range` and `mprotect_range` when splitting at
-    /// boundaries. File-backed offset is adjusted to maintain contiguity
-    /// (`11§4`: "contig-offset"). `rss` is reset to zero; accurate
-    /// resident-count tracking lands with the page-fault handler in a
-    /// later P1-N.
-    /// # C: O(1)
-    pub fn clone_subrange(&self, new_start: UserVirtAddr, new_end: UserVirtAddr) -> Vma {
-        let off_delta = new_start.as_u64() - self.start.as_u64();
-        let backing = match &self.backing {
-            VmaBacking::File { backing, off } => VmaBacking::File {
-                backing: alloc::sync::Arc::clone(backing),
-                off: off + off_delta,
-            },
-            VmaBacking::KernelBytes { data, off } => {
-                // Sub-range starts `off_delta` bytes into the parent
-                // VMA → bump the byte offset into the shared Arc.
-                VmaBacking::KernelBytes {
-                    data: alloc::sync::Arc::clone(data),
-                    off: off + off_delta as usize,
-                }
-            }
-            other => other.clone(),
-        };
-        Vma {
-            start: new_start,
-            end:   new_end,
-            prot:  self.prot,
-            may_prot: self.may_prot,
-            flags: self.flags,
-            backing,
-            rss: AtomicU64::new(0),
-            // Sub-range stays in the same anon_vma family — Linux
-            // `__split_vma` keeps both halves on the parent's anon_vma
-            // (and adds a chain entry for the new half).
-            anon_vma: self.anon_vma.as_ref().map(Arc::clone),
-            file_rmap: self.file_rmap.as_ref().map(Arc::clone),
-            anon_name: self.anon_name.as_ref().map(Arc::clone),
-            // Split VMA fragments inherit the uffd registration (Linux
-            // `__split_vma` copies `vm_userfaultfd_ctx`).
-            uffd: self.uffd.clone(),
-        }
-    }
 }
