@@ -16,6 +16,14 @@ pub trait FileSystem: Send + Sync {
     fn name(&self) -> &str;
     fn magic(&self) -> u64 { 0 }
     fn fs_flags(&self) -> FsFlags { FsFlags::empty() }
+    /// `sb->s_iflags` this backend stamps at fill-super (Linux does it inline in
+    /// each `fill_super`: `fs/proc/root.c` and `fs/kernfs/mount.c` both set
+    /// `SB_I_NOEXEC | SB_I_NODEV`, `fs/libfs.c` `init_pseudo` sets the same pair
+    /// for every pseudo filesystem). A backend marked
+    /// `FS_USERNS_MOUNT_RESTRICTED` MUST return at least
+    /// [`crate::superblock::SB_I_USERNS_REQUIRED`] or `mount_too_revealing`
+    /// refuses every user-namespace mount of it. # C: O(1)
+    fn s_iflags(&self) -> u64 { 0 }
     fn requires_dev(&self) -> bool { self.fs_flags().contains(FsFlags::FS_REQUIRES_DEV) }
     fn dev_id(&self) -> Option<u64> { None }
     fn rename_does_d_move(&self) -> bool { self.fs_flags().contains(FsFlags::FS_RENAME_DOES_D_MOVE) }
@@ -52,11 +60,15 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
     });
     let s_magic = fs.magic();
     let s_blocksize = fs.block_size();
+    // Linux stamps `s_iflags` inside `fill_super`, before the instance is
+    // published — so it is set on every path that can reach `mount_too_revealing`.
+    let s_iflags = fs.s_iflags();
     match fs.dev_id() {
         Some(dev) => {
             let fs_for_stamp = fs.clone();
             sget_result(dev, move || {
                 let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
+                sb.set_s_iflags(s_iflags);
                 fs_for_stamp.set_sb(Arc::downgrade(&sb))?;
                 if let Some(name) = fs_for_stamp.sysfs_name() { sb.set_sysfs_name(&name); }
                 Ok(sb)
@@ -64,6 +76,7 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
         }
         None => {
             let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
+            sb.set_s_iflags(s_iflags);
             fs.set_sb(Arc::downgrade(&sb))?;
             if let Some(name) = fs.sysfs_name() { sb.set_sysfs_name(&name); }
             Ok(sb)

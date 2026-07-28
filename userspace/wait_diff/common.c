@@ -22,6 +22,10 @@ const char *errno_name(int err) {
     case ECONNREFUSED: return "ECONNREFUSED";
     case E2BIG: return "E2BIG";
     case EEXIST: return "EEXIST";
+    case ELOOP: return "ELOOP";
+    case EXDEV: return "EXDEV";
+    case EISDIR: return "EISDIR";
+    case ENOTDIR: return "ENOTDIR";
     case EFAULT: return "EFAULT";
     case EIDRM: return "EIDRM";
     case EINTR: return "EINTR";

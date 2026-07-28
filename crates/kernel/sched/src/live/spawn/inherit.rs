@@ -75,14 +75,21 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     task.vtgid.store(v, Ordering::Release);
     task.vtid.store(v, Ordering::Release);
     // Seccomp is INHERITED across fork/clone and PRESERVED across execve
-    // (Linux copies the filter chain in dup_task_struct; execve never
-    // clears it). Without this a seccomp-sandboxed process could fork() and
-    // the child would run with an EMPTY filter set — a trivial sandbox
-    // escape (`fork(); <forbidden syscall in child>`).
-    // SAFETY: parent is the running task on this CPU (single-mutator read
-    // per `13§5`); `task` is local and not yet scheduled (single-mutator
-    // write). The child gets its own copy of the filter chain.
-    unsafe { *task.seccomp_filters.get() = (*parent.seccomp_filters.get()).clone(); }
+    // (Linux `copy_seccomp` in `copy_process`; execve never clears it).
+    // Without this a seccomp-sandboxed process could fork() and the child
+    // would run with an EMPTY filter set — a trivial sandbox escape
+    // (`fork(); <forbidden syscall in child>`).
+    //
+    // The MODE rides with the chain. `copy_seccomp` copies `p->seccomp =
+    // current->seccomp` wholesale, mode included; copying only the chain
+    // left the child at `SECCOMP_MODE_DISABLED`, where `__secure_computing`
+    // returns before it ever looks at the inherited filters — the same
+    // escape by another route — and `PR_GET_SECCOMP` / `/proc/<pid>/status`
+    // reported the child unconfined. A `SECCOMP_MODE_DEAD` parent cannot
+    // fork (it is being killed), so the value is copied verbatim.
+    let parent_chain = parent.seccomp_filters.lock().clone();
+    *task.seccomp_filters.lock() = parent_chain;
+    task.seccomp_mode.store(parent.seccomp_mode.load(Ordering::Acquire), Ordering::Release);
     // Landlock ruleset chain is likewise inherited across fork and kept
     // across execve — a Landlock-confined process's children stay confined.
     let parent_chain = parent.landlock_chain.lock().clone();
