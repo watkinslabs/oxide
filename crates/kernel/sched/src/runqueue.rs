@@ -4,9 +4,9 @@
 // `13§2`).
 //
 // Concurrency: the spec wraps `RunqueueInner` in a per-CPU spinlock
-// (class `Runqueue`, `06§3.6`); `nr_running` / `current` /
-// `preempt_count` / `need_resched` live as atomics for lock-free reads
-// (`13§6`). This PR exposes the inner state directly so the runqueue
+// (class `Runqueue`, `06§3.6`); `nr_running` / `current` / `preempt_count`
+// live as atomics for lock-free reads (`13§6`). `TIF_NEED_RESCHED` is not
+// among them — Linux keeps it per-TASK (`preempt::resched`). This PR exposes the inner state directly so the runqueue
 // logic is hosted-testable; the spinlock + atomic outer skin land
 // alongside `schedule()` once HAL `Context` exists.
 
