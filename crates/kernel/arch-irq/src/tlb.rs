@@ -89,32 +89,43 @@ pub fn service() {
     let me = this_cpu();
     if me >= 64 { return; }
     let bit = 1u64 << me;
-    // Read the round FIRST: everything below describes that round, and the ACK
-    // at the end is only valid while it is still the live one.
-    let round = ROUND.load(Ordering::Acquire);
-    let mut pending = PENDING.load(Ordering::Acquire);
-    if pending & bit == 0 { return; }
-    let va = SHOOT_VA.load(Ordering::Acquire);
-    // SAFETY: local TLB invalidate; legal at CPL=0. `va` is the VA the
-    // owner published (or the ALL sentinel for a full flush).
-    unsafe {
-        if va == hal::tlb::ALL {
-            <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::flush_all_local();
-        } else {
-            <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::flush_va(Va(va));
-        }
-    }
-    // ACK only the round that was live when the flush was decided. A plain
-    // `fetch_and` would credit whatever round happens to be live now — the
-    // owner would then free a frame this CPU never invalidated for.
+    // Retry, not return, when the round advances mid-service. The `ROUND` load
+    // precedes the `PENDING` load in program order, so a CPU can pair a stale
+    // round id with a fresh pending mask; refusing the ACK and leaving would
+    // then hold the new round open until its owner re-sent the IPI. Rounds only
+    // advance once every target has ACKed, so this retries at most once per
+    // completed round.
     loop {
-        if !crate::tlb_round::ack_valid(round, ROUND.load(Ordering::Acquire)) { return; }
+        let round = ROUND.load(Ordering::Acquire);
+        let mut pending = PENDING.load(Ordering::Acquire);
         if pending & bit == 0 { return; }
-        match PENDING.compare_exchange(pending, pending & !bit,
-                                       Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_)  => return,
-            Err(p) => pending = p,
+        let va = SHOOT_VA.load(Ordering::Acquire);
+        // SAFETY: local TLB invalidate; legal at CPL=0. `va` is the VA the
+        // owner published (or the ALL sentinel for a full flush).
+        unsafe {
+            if va == hal::tlb::ALL {
+                <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::flush_all_local();
+            } else {
+                <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::flush_va(Va(va));
+            }
         }
+        // ACK only the round that was live when the flush was decided. A plain
+        // `fetch_and` would credit whatever round happens to be live now — the
+        // owner would then free a frame this CPU never invalidated for.
+        let mut stale = false;
+        loop {
+            if !crate::tlb_round::ack_valid(round, ROUND.load(Ordering::Acquire)) {
+                stale = true;
+                break;
+            }
+            if pending & bit == 0 { return; }
+            match PENDING.compare_exchange(pending, pending & !bit,
+                                           Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_)  => return,
+                Err(p) => pending = p,
+            }
+        }
+        if !stale { return; }
     }
 }
 
