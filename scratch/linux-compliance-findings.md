@@ -118,6 +118,19 @@ robust-futex exit walker, `restart_block`, NTP discipline, POSIX CPU timers,
 `sigaltstack`, the tty job-control decision table, and `rseq` (`rseq_cs` decode, IP
 fixup, signature validation — both arches).
 
+## 6a Fixed by `B1465` — TCP sequence prediction + randomness honesty
+
+Post-dates the audit; neither ledger carried the ISN row before this branch.
+
+| Finding | Why it mattered | Fix |
+|---|---|---|
+| **TCP initial sequence numbers were a fixed constant** — `TCP_ISN_INITIAL = 0x1000_0000` stepping `0x1000` from a global counter, identical every boot; the passive/server side opened at literal **0**; ephemeral ports scanned sequentially from a fixed base | Remotely exploitable TCP sequence prediction (RFC 6528): an off-path attacker needed to guess neither the sequence number nor the source port, so blind connection reset and blind data injection against any TCP connection were arithmetic rather than search. Structural cause: `crates/kernel/net` had no `crng` dependency | Linux `net/core/secure_seq.c` construction — `seq_scale(siphash(4-tuple, net_secret))` with a per-boot CSPRNG key. New `crates/shared/siphash` (Linux `lib/siphash.c`, pinned to upstream's own vectors); `crates/kernel/net/src/secure_seq.rs` |
+| TCP TSval was one global clock shared by every connection | Published host uptime; let an observer correlate every connection from this host | `tp->tsoffset` from the high half of the same hash |
+| `crng::reseed()` set `SEEDED` unconditionally, so `is_initialized()` could never report a cold pool | `getrandom(2)` could never block and `GRND_NONBLOCK` could never return `EAGAIN` — the readiness signal userspace relies on to know its keys are safe was synthetic. On a TCG boot with no RDRAND and no virtio-rng the pool was keyed from one cycle-counter read while reporting itself ready | Credit only a source that actually answered (never the TSC, matching Linux); `add_hw_entropy` vs `add_entropy` split; a real `wait_for_random_bytes()` loop in slot 318 |
+| `/proc/sys/kernel/randomize_va_space` reported `2` with no ASLR implemented | Hardening detectors read it and concluded the system was protected | Reports `0`. **ASLR itself remains absent and remains on the ledger** — only the false report is fixed |
+| `/proc/sys/kernel/random/uuid` (and the sysfs copy) were static inodes | Every reader for the whole boot got the identical UUID | Fresh v4 UUID per read |
+| glibc `mkstemp`/`mkdtemp`/`mktemp` used a clock-seeded LCG | Predictable temp filenames — classic `/tmp` symlink-attack vector | glibc's `__gen_tempname` over `getrandom(2)` |
+
 ## 7 Corrections to earlier ledgers
 
 - `partial-gap-triage.md` A1 lists `rseq` as missing `rseq_cs`/IP-fixup. **Stale** — only `rseq_signal_deliver` is absent.
@@ -126,4 +139,5 @@ fixup, signature validation — both arches).
 - hugetlbfs is **not** absent; it is mountable and hands out 4 KiB pages (a false capability probe).
 - The AF_UNIX listener accept-readiness wakeup is **already fixed**.
 - `bpf` is **not** an arbitrary-kernel-execution hole — programs never execute; a functional void, not a security one.
+- The TCP ISN finding is **new** — it post-dates every earlier ledger and appeared in neither. Fixed on `B1465`; see §6a.
 - `bind()`/`mknod` stale negative dentries: **already fixed**. A blocking lease break **does** exist. Unwritten-extent writes are **not** rejected. Mandatory locking is `ABSENT-OK` (Linux removed it in 5.15). `copy_file_range`'s unconditional `EXDEV` matches current Linux.

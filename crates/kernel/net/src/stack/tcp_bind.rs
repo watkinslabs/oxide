@@ -118,6 +118,34 @@ impl NetStack {
                           owner_uid: u32, v6only: bool)
         -> NetResult<Arc<TcpBindReservation>>
     {
+        self.tcp_reserve_peer_in(net_ns, local_ip, requested_port, iface, reuseaddr, reuseport,
+            owner_uid, v6only, None)
+    }
+
+    /// Auto-bind for an outbound connection — Linux `inet_hash_connect`
+    /// (`net/ipv4/inet_hashtables.c`). Knowing the peer lets the scan start at
+    /// the keyed 4-tuple offset instead of a uniform random one, which is what
+    /// keeps two connections to *different* destinations from walking the same
+    /// port order. # C: O(range * N_port)
+    pub fn tcp_reserve_connect_in(&self, net_ns: u64, local_ip: IpAddr, requested_port: u16,
+                                  iface: Option<NetIfaceId>, reuseaddr: bool, reuseport: bool,
+                                  owner_uid: u32, v6only: bool, peer: (IpAddr, u16))
+        -> NetResult<Arc<TcpBindReservation>>
+    {
+        self.tcp_reserve_peer_in(net_ns, local_ip, requested_port, iface, reuseaddr, reuseport,
+            owner_uid, v6only, Some(peer))
+    }
+
+    fn tcp_reserve_peer_in(&self, net_ns: u64, local_ip: IpAddr, requested_port: u16,
+                           iface: Option<NetIfaceId>, reuseaddr: bool, reuseport: bool,
+                           owner_uid: u32, v6only: bool, peer: Option<(IpAddr, u16)>)
+        -> NetResult<Arc<TcpBindReservation>>
+    {
+        // Draw the boot secret here, in process context: the passive-open
+        // reader runs in softirq and must never call the CSPRNG. A SYN cannot
+        // arrive for a listener that was never bound, so priming on every
+        // reservation is sufficient (`secure_seq::prime`).
+        crate::secure_seq::prime();
         let namespace = if net_ns == 0 { network_namespace::initial() }
             else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
         let tables = self.inet_tables(net_ns);
@@ -128,13 +156,28 @@ impl NetStack {
                 reuseaddr, reuseport, owner_uid, v6only).ok_or(NetError::Eaddrinuse);
         }
         let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
-        for _ in 0..range.count() {
-            let seq = tables.next_tcp_ephemeral.fetch_add(1, Ordering::Relaxed);
-            let port = range.port(seq);
+        // Peer known (`connect`) → keyed 4-tuple offset, Linux
+        // `inet_hash_connect`. Peer unknown (`bind(0)`/`listen`) → uniform
+        // random offset on the opposite parity, Linux
+        // `inet_csk_find_open_port`. Neither starts at the range base.
+        let (bucket, scan) = match peer {
+            Some((remote_ip, remote_port)) => {
+                let (index, scan) = crate::secure_seq::connect_port_scan(
+                    local_ip, remote_ip, remote_port, range.start, range.count());
+                (Some(index), scan)
+            }
+            None => (None, crate::secure_seq::bind_port_scan(range.start, range.count())),
+        };
+        for (step, port) in scan.enumerate() {
             if let Some(bind) = self.tcp_try_reserve_locked(&tables, &namespace, &mut binds,
                 local_ip, port, iface,
                 reuseaddr, reuseport, owner_uid, v6only)
             {
+                // Linux charges the walk length back to the perturb bucket so
+                // the next connect to this destination resumes further along.
+                if let Some(index) = bucket {
+                    crate::secure_seq::perturb::record_scan(index, step as u32);
+                }
                 return Ok(bind);
             }
         }
@@ -301,11 +344,17 @@ impl NetStack {
         let key = TcpKey { local_ip, local_port: bind.local.port, remote_ip, remote_port };
         let mut conns = tables.tcp_conns.lock();
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
-        let isn = self.next_isn_value();
+        // Linux `tcp_v4_connect`: `st = secure_tcp_seq_and_ts_off(net, saddr,
+        // daddr, sport, dport); tp->write_seq = st.seq` (`net/ipv4/tcp_ipv4.c`).
+        let isn = crate::secure_seq::secure_tcp_seq(
+            local_ip, remote_ip, bind.local.port, remote_port);
         let mut conn = TcpConn::new_client(
             Endpoint { ip: local_ip, port: bind.local.port },
             Endpoint { ip: remote_ip, port: remote_port }, isn,
         );
+        // Linux `tp->tsoffset = st.ts_off` — the other half of the same hash.
+        conn.ts_off = crate::secure_seq::secure_tcp_ts_off(
+            local_ip, remote_ip, bind.local.port, remote_port);
         let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
         let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
         conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
@@ -330,164 +379,5 @@ impl NetStack {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const UID: u32 = 1_000;
-    const PORT: u16 = 42_123;
-    const IFACE_A: NetIfaceId = NetIfaceId::from_raw(11);
-    const IFACE_B: NetIfaceId = NetIfaceId::from_raw(12);
-
-    fn reserve(stack: &NetStack, ip: IpAddr, port: u16, iface: Option<NetIfaceId>, v6only: bool)
-        -> NetResult<Arc<TcpBindReservation>>
-    {
-        stack.tcp_reserve(ip, port, iface, false, false, UID, v6only)
-    }
-
-    #[test]
-    fn exact_reservation_conflicts_until_exact_release() {
-        let stack = NetStack::new();
-        let first = reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), PORT, None, false).unwrap();
-        assert_eq!(reserve(&stack, IpAddr::V4(Ipv4Addr::LOOPBACK), PORT, None, false).err(),
-                   Some(NetError::Eaddrinuse));
-        stack.tcp_release_bind(&first);
-        assert!(reserve(&stack, IpAddr::V4(Ipv4Addr::LOOPBACK), PORT, None, false).is_ok());
-    }
-
-    #[test]
-    fn reuseaddr_cannot_bind_over_listener() {
-        let stack = NetStack::new();
-        let first = stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT, None,
-            true, false, UID, false).unwrap();
-        stack.tcp_listen_reserved(&first).unwrap();
-        assert!(matches!(stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT, None,
-                   true, false, UID, false), Err(NetError::Eaddrinuse)));
-    }
-
-    #[test]
-    fn time_wait_reuseaddr_requires_both_sockets_to_opt_in() {
-        let stack = NetStack::new();
-        let local = IpAddr::V4(Ipv4Addr::LOOPBACK);
-        let remote = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
-        let old = stack.tcp_reserve(local, PORT + 2, None, false, false, UID, false).unwrap();
-        let key = TcpKey { local_ip: local, local_port: PORT + 2,
-            remote_ip: remote, remote_port: PORT + 3 };
-        let mut conn = TcpConn::new_client(
-            Endpoint { ip: local, port: PORT + 2 },
-            Endpoint { ip: remote, port: PORT + 3 }, 1);
-        conn.state = crate::tcp_state::TcpState::TimeWait;
-        let old_entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
-            conn, Arc::new(crate::SocketError::new()), Some(old.clone()),
-            Arc::new(crate::bpf_filter::SocketFilter::new()),
-            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
-            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT))));
-        stack.inet_tables(0).tcp_conns.lock().insert(key, old_entry);
-
-        assert_eq!(stack.tcp_reserve(local, PORT + 2, None, true, false, UID, false).err(),
-            Some(NetError::Eaddrinuse));
-
-        drop(old);
-        let stack = NetStack::new();
-        let old = stack.tcp_reserve(local, PORT + 4, None, true, false, UID, false).unwrap();
-        let key = TcpKey { local_ip: local, local_port: PORT + 4,
-            remote_ip: remote, remote_port: PORT + 5 };
-        let mut conn = TcpConn::new_client(
-            Endpoint { ip: local, port: PORT + 4 },
-            Endpoint { ip: remote, port: PORT + 5 }, 1);
-        conn.state = crate::tcp_state::TcpState::TimeWait;
-        let old_entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
-            conn, Arc::new(crate::SocketError::new()), Some(old),
-            Arc::new(crate::bpf_filter::SocketFilter::new()),
-            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
-            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT))));
-        stack.inet_tables(0).tcp_conns.lock().insert(key, old_entry);
-        assert!(stack.tcp_reserve(local, PORT + 4, None, true, false, UID, false).is_ok());
-    }
-
-    #[test]
-    fn reuseport_listener_group_requires_same_owner_uid() {
-        let stack = NetStack::new();
-        let first = stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT + 1, None,
-            false, true, UID, false).unwrap();
-        let second = stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT + 1, None,
-            false, true, UID, false).unwrap();
-        stack.tcp_listen_reserved(&first).unwrap();
-        stack.tcp_listen_reserved(&second).unwrap();
-        assert_eq!(stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT + 1, None,
-            false, true, UID + 1, false).err(), Some(NetError::Eaddrinuse));
-    }
-
-    #[test]
-    fn ephemeral_sequence_wraps_from_last_to_first() {
-        let stack = NetStack::new();
-        stack.inet_tables(0).next_tcp_ephemeral
-            .store(crate::ephemeral::DEFAULT_END as u32, Ordering::Release);
-        let last = reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), 0, None, false).unwrap();
-        let first = reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), 0, None, false).unwrap();
-        assert_eq!(last.local.port, crate::ephemeral::DEFAULT_END);
-        assert_eq!(first.local.port, crate::ephemeral::DEFAULT_START);
-    }
-
-    #[test]
-    fn ephemeral_range_is_selected_by_socket_namespace() {
-        let stack = NetStack::new();
-        let owner = crate::net_ns::test_support::allocate_namespace();
-        crate::net_ns::materialize_state(&owner);
-        let net_ns = owner.id().as_u64();
-        crate::ephemeral::set_range_in(net_ns, 45_100, 45_101).unwrap();
-        let first = stack.tcp_reserve_in(net_ns, IpAddr::V4(Ipv4Addr::ANY), 0,
-            None, false, false, UID, false).unwrap();
-        let second = stack.tcp_reserve_in(net_ns, IpAddr::V4(Ipv4Addr::ANY), 0,
-            None, false, false, UID, false).unwrap();
-        assert!(matches!(first.local.port, 45_100 | 45_101));
-        assert!(matches!(second.local.port, 45_100 | 45_101));
-        assert_ne!(first.local.port, second.local.port);
-    }
-
-    #[test]
-    fn ephemeral_exhaustion_scans_each_canonical_port_once() {
-        let stack = NetStack::new();
-        let range = crate::ephemeral::range().unwrap();
-        let mut held = Vec::with_capacity(range.count() as usize);
-        for port in range.start..=range.end {
-            held.push(reserve(
-                &stack, IpAddr::V4(Ipv4Addr::ANY), port as u16, None, false,
-            ).unwrap());
-        }
-        assert_eq!(reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), 0, None, false).err(),
-                   Some(NetError::Eaddrnotavail));
-        assert_eq!(held.len(), range.count() as usize);
-    }
-
-    #[test]
-    fn v6only_controls_cross_family_wildcard_conflict() {
-        let stack = NetStack::new();
-        let _v6 = reserve(&stack, IpAddr::V6(Ipv6Addr::ANY), PORT, None, true).unwrap();
-        assert!(reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), PORT, None, false).is_ok());
-
-        let stack = NetStack::new();
-        let _v6 = reserve(&stack, IpAddr::V6(Ipv6Addr::ANY), PORT, None, false).unwrap();
-        assert_eq!(reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), PORT, None, false).err(),
-                   Some(NetError::Eaddrinuse));
-    }
-
-    #[test]
-    fn bind_to_device_rebind_is_transactional() {
-        let stack = NetStack::new();
-        let a = reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), PORT, Some(IFACE_A), false).unwrap();
-        let _b = reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), PORT, Some(IFACE_B), false).unwrap();
-        assert_eq!(stack.tcp_rebind_iface(&a, Some(IFACE_B)), Err(NetError::Eaddrinuse));
-        assert_eq!(a.bound_iface(), Some(IFACE_A));
-    }
-
-    #[test]
-    fn listener_transition_consumes_one_reservation_role() {
-        let stack = NetStack::new();
-        let bind = reserve(&stack, IpAddr::V4(Ipv4Addr::LOOPBACK), PORT, None, false).unwrap();
-        let listener = stack.tcp_listen_reserved(&bind).unwrap();
-        assert_eq!(bind.role.load(Ordering::Acquire), TCP_BIND_LISTEN);
-        assert_eq!(stack.tcp_listen_reserved(&bind).err(), Some(NetError::Einval));
-        stack.tcp_unlisten_entry(&listener);
-        assert_eq!(bind.role.load(Ordering::Acquire), TCP_BIND_BOUND);
-    }
-}
+#[path = "tcp_bind/tests.rs"]
+mod tests;
