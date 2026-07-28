@@ -35,6 +35,10 @@ pub(crate) fn link_inode_at(src: vfs::InodeRef, src_mnt_id: u64, dirfd: i32, raw
             src.set_state(0, vfs::I_LINKABLE);
             drop_child_cache(&parent, &name);
             vfs::fire_dirent_create(&parent.inode, &name, false);
+            // Linux `fsnotify_link` = `fsnotify_link_count(inode)` + the named
+            // FS_CREATE on the parent. A watch on the FILE must see its link
+            // count move; only the parent leg existed.
+            ::fs::inotify::fire_link_count(&src);
             0
         }
         Err(e)  => errno_from_vfs(e),

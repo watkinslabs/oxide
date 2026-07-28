@@ -118,6 +118,14 @@ pub fn fire_attrib(inode: &InodeRef) {
     vfs::file::dnotify_emit(inode, vfs::file::DN_ATTRIB);
 }
 
+/// Linux `fsnotify_link_count` — the inode's link count changed, reported as
+/// FS_ATTRIB on the inode itself (`include/linux/fsnotify.h`). Fired by
+/// `fsnotify_link` on every new hardlink and by `fsnotify_move` on a rename
+/// that overwrote an existing target. Distinct from the dirent CREATE/DELETE
+/// on the parent: a watch on the FILE learns its link count moved.
+/// # C: O(N_groups * N_watches)
+pub fn fire_link_count(inode: &InodeRef) { fire_self(inode, FAN_ATTRIB); }
+
 /// FAN_OPEN_EXEC — a file opened for program execution (Linux
 /// `fsnotify_open` with `FMODE_EXEC`). Wired from the execve path.
 /// # C: O(N_groups * N_watches)
@@ -203,6 +211,7 @@ pub(crate) fn vfs_setattr_notify(inode: &InodeRef, ia_valid: u32) {
 /// Install all inotify event hooks into vfs. Called once at kernel_main.
 /// # C: O(1)
 pub fn install_write_hook() {
+    vfs::set_delete_self_hook(fire_delete_self);
     vfs::set_setattr_hook(vfs_setattr_notify);
     vfs::set_write_hook(vfs_write_notify);
     vfs::set_open_hook(vfs_open_notify);

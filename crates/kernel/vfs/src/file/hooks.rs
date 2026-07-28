@@ -59,6 +59,8 @@ struct InodeHooks {
     dirent_create: Option<fn(&InodeRef, &str, bool)>,
     /// IN_DELETE — dirent removed from a watched parent inode. Same args.
     dirent_delete: Option<fn(&InodeRef, &str, bool)>,
+    /// `fsnotify_inoderemove` — the inode's LAST link is gone. Args: (inode).
+    delete_self: Option<fn(&InodeRef)>,
     /// `fsnotify_change` — a successful `notify_change`. Args: (inode, ia_valid).
     /// The subscriber owns the `ATTR_*` → event-mask mapping, exactly as
     /// Linux's `fsnotify_change` inline does (`include/linux/fsnotify.h`).
@@ -70,7 +72,7 @@ impl InodeHooks {
     const fn new() -> Self {
         Self { open: None, read: None, write: None, clone: None,
                close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None,
-               setattr: None }
+               delete_self: None, setattr: None }
     }
 }
 
@@ -142,6 +144,20 @@ pub fn fire_clone_hook(file: &File) {
 pub fn set_dirent_create_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_create = Some(f); }
 /// Install the dirent-delete hook (fires IN_DELETE; args (parent inode, leaf)). # C: O(1)
 pub fn set_dirent_delete_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_delete = Some(f); }
+
+/// Install the delete-self hook. Fired from the dcache, where Linux fires it:
+/// `dentry_unlink_inode` runs `if (!inode->i_nlink) fsnotify_inoderemove(inode)`
+/// (`fs/dcache.c`). Firing from `unlink(2)` instead both over-reported (a file
+/// with remaining hardlinks got IN_DELETE_SELF on the first name removed) and
+/// under-reported (`rmdir` never sent it at all, so a watch on a removed
+/// directory never learned it was gone). # C: O(1)
+pub fn set_delete_self_hook(f: fn(&InodeRef)) { HOOKS.lock().delete_self = Some(f); }
+
+/// Fire the delete-self hook (no-op when not installed). # C: O(1)
+pub fn fire_delete_self_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().delete_self;
+    if let Some(f) = h { f(inode); }
+}
 
 /// Install the setattr hook. Fired from the ONE point Linux fires it: after
 /// `i_op->setattr` succeeds inside `notify_change` (`fs/attr.c` `notify_change`

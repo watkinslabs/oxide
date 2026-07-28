@@ -138,6 +138,13 @@ pub fn d_unlink(d: &Arc<Dentry>) -> bool {
     // Backend `i_op->unlink`/`rmdir` already dropped the in-memory link.
     let last = inode.nlink() == 0;
     d_delete(d);
-    if last { d_prune_aliases(&inode); }
+    // Linux `dentry_unlink_inode`: `if (!inode->i_nlink) fsnotify_inoderemove()`
+    // (`fs/dcache.c`). Firing here rather than from `unlink(2)` is what makes
+    // `rmdir` report it at all, and what stops a file with remaining hardlinks
+    // reporting it on the first name removed.
+    if last {
+        crate::file::fire_delete_self_hook(&inode);
+        d_prune_aliases(&inode);
+    }
     last
 }
