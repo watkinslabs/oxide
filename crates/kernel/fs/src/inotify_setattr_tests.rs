@@ -151,3 +151,72 @@ fn a_rejected_setattr_fires_nothing() {
     assert!(vfs::notify_change(&vfs::IDENTITY, &f, &mut ia, &nobody).is_err());
     assert_eq!(masks(&g), Vec::<u32>::new(), "a rejected setattr is silent");
 }
+
+// --- inotify_read shape (Linux fs/notify/inotify/inotify_user.c) -------------
+// `read` and `read_nonblock` are ONE Linux function differing only by the
+// O_NONBLOCK arm, so every drain/short-buffer rule must hold identically on
+// both. `read_nonblock` used to delegate to the blocking read, which is only
+// safe while that read cannot sleep.
+
+use crate::inotify::syscalls::add_or_update_watch as add_watch;
+use crate::inotify::types::{Event as InEvent, IN_CREATE as IN_CREATE_BIT};
+
+fn queue(g: &InotifyData, name: &[u8]) {
+    g.enqueue_event(InEvent { wd: 1, mask: IN_CREATE_BIT, cookie: 0,
+        name: name.to_vec(), obj: None, pid: 0 });
+}
+
+/// `get_one_event` returns EINVAL only when the FIRST event cannot fit; the
+/// tail rule (`if (start != buf) ret = buf - start`) means a later misfit
+/// reports the bytes already copied. Both entry points, same answers.
+#[test]
+fn the_short_buffer_rule_is_identical_on_both_entry_points() {
+    for nonblock in [false, true] {
+        let g = InotifyData::new(0);
+        queue(&g, b"aaaa");   // 16 hdr + 16 padded name = 32
+        let mut tiny = [0u8; 16];
+        let r = if nonblock { g.read_nonblock(0, &mut tiny) } else { g.read(0, &mut tiny) };
+        assert_eq!(r, Err(vfs::VfsError::Einval), "nothing copied yet -> EINVAL (nonblock={nonblock})");
+
+        let g2 = InotifyData::new(0);
+        queue(&g2, b"aaaa");
+        queue(&g2, b"bbbbbbbbbbbbbbbbbbbb"); // needs 16 + 32 = 48
+        let mut room = [0u8; 40];            // fits the first only
+        let r2 = if nonblock { g2.read_nonblock(0, &mut room) } else { g2.read(0, &mut room) };
+        assert_eq!(r2, Ok(32), "second event misfits AFTER a copy -> byte count, not EINVAL");
+    }
+}
+
+/// An empty queue is EAGAIN on the O_NONBLOCK path. (Under hosted there is no
+/// scheduler, so the blocking path cannot be exercised here — the boot is its
+/// gate; see the `wait_for_event` comment.)
+#[test]
+fn an_empty_queue_is_eagain_on_the_nonblocking_path() {
+    let g = InotifyData::new(0);
+    assert_eq!(g.read_nonblock(0, &mut [0u8; 64]), Err(vfs::VfsError::Eagain));
+}
+
+/// One call drains every event that fits, as Linux's `continue` loop does.
+#[test]
+fn one_read_drains_every_event_that_fits() {
+    let g = InotifyData::new(0);
+    for n in [&b"one"[..], b"two", b"three"] { queue(&g, n); }
+    let mut buf = [0u8; 256];
+    let n = g.read_nonblock(0, &mut buf).expect("drains");
+    assert_eq!(n, 32 * 3, "three 32-byte records in a single call");
+    assert_eq!(g.read_nonblock(0, &mut buf), Err(vfs::VfsError::Eagain), "queue emptied");
+}
+
+/// A watch's events reach the reader through the same path (guards the
+/// dispatch->queue->read chain, not just direct enqueues).
+#[test]
+fn a_watched_event_is_readable() {
+    let g = InotifyData::new(0);
+    let f = mk_file(0x5A09);
+    let wd = add_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB).unwrap();
+    vfs_setattr_notify(&f, ATTR_MODE);
+    let mut buf = [0u8; 64];
+    let n = g.read_nonblock(0, &mut buf).expect("event readable");
+    assert_eq!(n, 16, "nameless event = bare header");
+    assert_eq!(i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), wd);
+}
