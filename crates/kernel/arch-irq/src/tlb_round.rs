@@ -44,6 +44,18 @@ pub fn escalation_due(now_ns: u64, next_warn_ns: u64, spins: u64, next_warn_spin
     if now_ns != 0 { now_ns.wrapping_sub(next_warn_ns) as i64 >= 0 } else { spins >= next_warn_spins }
 }
 
+/// Gap before the NEXT escalation, given how many have already fired. Linux
+/// backs the check off as `csd_lock_timeout_ns * (nmessages + 1) * …`
+/// (`kernel/smp.c` `csd_lock_wait_toolong`) so a genuinely wedged peer keeps
+/// naming itself without turning the console into the reason it is wedged —
+/// the failure mode `B1474` measured, where the instrument cost more than what
+/// it measured. Saturating, so a very long wait cannot wrap the deadline
+/// backwards and fire every iteration.
+/// # C: O(1)
+pub fn escalation_gap(base_ns: u64, fired: u32) -> u64 {
+    base_ns.saturating_mul(fired as u64 + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,6 +87,15 @@ mod tests {
         // Uncalibrated (`monotonic_ns() == 0`): the spin count decides.
         assert!(!escalation_due(0, 1_000, 9, 10));
         assert!(escalation_due(0, 1_000, 10, 10));
+    }
+
+    #[test]
+    fn repeat_escalations_back_off_instead_of_flooding() {
+        assert_eq!(escalation_gap(5_000_000_000, 0), 5_000_000_000);
+        assert_eq!(escalation_gap(5_000_000_000, 1), 10_000_000_000);
+        assert_eq!(escalation_gap(5_000_000_000, 3), 20_000_000_000);
+        // Saturating: a huge count must not wrap the gap back to something small.
+        assert_eq!(escalation_gap(u64::MAX, 7), u64::MAX);
     }
 
     #[test]
