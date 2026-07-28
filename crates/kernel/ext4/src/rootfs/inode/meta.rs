@@ -29,11 +29,13 @@ pub(crate) fn ext4_fileattr_get(inode: &Inode) -> KResult<FileAttr> {
     if inode.file_type() == vfs::FileType::Regular {
         flags &= !FS_PROJINHERIT_FL;
     }
-    Ok(FileAttr {
-        flags,
-        fsx_projid: if st.mount.sb.has_project() { raw.i_projid } else { 0 },
-        ..Default::default()
-    })
+    // Linux `ext4_fileattr_get` publishes the translated `fsx_xflags` view via
+    // `fileattr_fill_flags` (fs/ext4/ioctl.c) — `file_getattr(2)` reads
+    // `fa_xflags` straight out of it, so the backend, not the consumer, owns
+    // the translation.
+    let mut fa = vfs::fileattr_fill_flags(flags);
+    fa.fsx_projid = if st.mount.sb.has_project() { raw.i_projid } else { 0 };
+    Ok(fa)
 }
 
 /// `EXT4_IOC_GETVERSION`: return on-disk `i_generation`.

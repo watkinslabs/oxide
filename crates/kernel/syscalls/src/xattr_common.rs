@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::perms_common::{AT_FDCWD, AT_SYMLINK_NOFOLLOW, check_rofs, resolve_fd_file, resolve_xattr_at, resolve_xattr_at_mnt};
+use crate::perms_common::{AT_FDCWD, AT_SYMLINK_NOFOLLOW, resolve_fd_file, resolve_xattr_at_mnt, with_mnt_write};
 
 #[cfg(feature = "debug-mount")]
 fn log_path_error(op: &str, path_ptr: u64, rv: i64) {
@@ -34,11 +34,7 @@ pub fn sys_setxattr_path(args: &SyscallArgs, follow: bool) -> i64 {
         #[cfg(feature = "debug-mount")] log_path_error("setxattr_resolve", args.a0, rv);
         return rv;
     } };
-    if let Err(rv) = check_rofs(mnt_id) {
-        #[cfg(feature = "debug-mount")] log_path_error("setxattr_rofs", args.a0, rv);
-        return rv;
-    }
-    let rv = ::fs::xattr::set_on(&inode, ctx);
+    let rv = with_mnt_write(mnt_id, || ::fs::xattr::set_on(&inode, ctx));
     #[cfg(feature = "debug-mount")] if rv < 0 { log_path_error("setxattr", args.a0, rv); }
     rv
 }
@@ -49,8 +45,7 @@ pub fn sys_fsetxattr(args: &SyscallArgs) -> i64 {
         Ok(c) => c, Err(rv) => return rv,
     };
     let f = match resolve_fd(args.a0 as i32) { Ok(f) => f, Err(rv) => return rv };
-    if let Err(rv) = check_rofs(f.mnt_id()) { return rv; }
-    ::fs::xattr::set_on(f.inode(), ctx)
+    with_mnt_write(f.mnt_id(), || ::fs::xattr::set_on(f.inode(), ctx))
 }
 
 /// `getxattr/lgetxattr` work shared by slots 191/192. # C: O(N_path + N_xattrs)
@@ -96,11 +91,7 @@ pub fn sys_removexattr_path(args: &SyscallArgs, follow: bool) -> i64 {
         #[cfg(feature = "debug-mount")] log_path_error("removexattr_resolve", args.a0, rv);
         return rv;
     } };
-    if let Err(rv) = check_rofs(mnt_id) {
-        #[cfg(feature = "debug-mount")] log_path_error("removexattr_rofs", args.a0, rv);
-        return rv;
-    }
-    let rv = ::fs::xattr::remove_on(&inode, &name);
+    let rv = with_mnt_write(mnt_id, || ::fs::xattr::remove_on(&inode, &name));
     #[cfg(feature = "debug-mount")] if rv < 0 { log_path_error("removexattr", args.a0, rv); }
     rv
 }
@@ -109,56 +100,55 @@ pub fn sys_removexattr_path(args: &SyscallArgs, follow: bool) -> i64 {
 pub fn sys_fremovexattr(args: &SyscallArgs) -> i64 {
     let name = match ::fs::xattr::import_name(args.a1) { Ok(n) => n, Err(rv) => return rv };
     let f = match resolve_fd(args.a0 as i32) { Ok(f) => f, Err(rv) => return rv };
-    if let Err(rv) = check_rofs(f.mnt_id()) { return rv; }
-    ::fs::xattr::remove_on(f.inode(), &name)
+    with_mnt_write(f.mnt_id(), || ::fs::xattr::remove_on(f.inode(), &name))
 }
 
 /// `setxattrat(dfd, path, at_flags, name, xattr_args*, usize)` — slot 463.
+/// Admission order and target selection are Linux's (`fs/xattr.c:701,740`);
+/// see `fs::xattr::admit_setxattrat` and `pathresolve::resolve_at_or_dirfd`.
 /// # C: O(N_path + N_xattrs)
 pub fn sys_setxattrat(args: &SyscallArgs) -> i64 {
-    let (value_ptr, size, flags) =
-        match ::fs::xattr::import_xattr_args(args.a4, args.a5 as usize, false) {
-            Ok(t) => t, Err(rv) => return rv,
-        };
-    let ctx = match ::fs::xattr::import_set(args.a3, value_ptr, size as usize, flags) {
+    let ctx = match ::fs::xattr::admit_setxattrat(args.a2 as u32, args.a3, args.a4, args.a5 as usize) {
         Ok(c) => c, Err(rv) => return rv,
     };
-    let (inode, mnt_id) = match resolve_xattr_at_mnt(args.a0 as i32, args.a1, args.a2 as u32) {
+    let p = match crate::pathresolve::resolve_at_or_dirfd(args.a0 as i32, args.a1, args.a2 as u32) {
         Ok(p) => p, Err(rv) => return rv,
     };
-    if let Err(rv) = check_rofs(mnt_id) { return rv; }
-    ::fs::xattr::set_on(&inode, ctx)
+    with_mnt_write(p.mnt_id, || ::fs::xattr::set_on(&p.inode, ctx))
 }
 
 /// `getxattrat(dfd, path, at_flags, name, xattr_args*, usize)` — slot 464.
 /// `xattr_args.flags` must be zero here. # C: O(N_path + N_xattrs)
 pub fn sys_getxattrat(args: &SyscallArgs) -> i64 {
-    let (value_ptr, size, _) =
-        match ::fs::xattr::import_xattr_args(args.a4, args.a5 as usize, true) {
+    let (name, value_ptr, size) =
+        match ::fs::xattr::admit_getxattrat(args.a2 as u32, args.a3, args.a4, args.a5 as usize) {
             Ok(t) => t, Err(rv) => return rv,
         };
-    let name = match ::fs::xattr::import_name(args.a3) { Ok(n) => n, Err(rv) => return rv };
-    let inode = match resolve_xattr_at(args.a0 as i32, args.a1, args.a2 as u32) {
-        Ok(i) => i, Err(rv) => return rv,
+    let p = match crate::pathresolve::resolve_at_or_dirfd(args.a0 as i32, args.a1, args.a2 as u32) {
+        Ok(p) => p, Err(rv) => return rv,
     };
-    ::fs::xattr::get_on(&inode, &name, value_ptr, size as usize)
+    ::fs::xattr::get_on(&p.inode, &name, value_ptr, size)
 }
 
 /// `listxattrat(dfd, path, at_flags, list, size)` — slot 465. Takes the buffer
-/// DIRECTLY, not a `struct xattr_args`, and carries no name. # C: O(N_path + N_xattrs)
+/// DIRECTLY, not a `struct xattr_args`, and carries no name. A NULL/empty
+/// pathname resolves through the fd table, not the cwd (`fs/xattr.c:992`).
+/// # C: O(N_path + N_xattrs)
 pub fn sys_listxattrat(args: &SyscallArgs) -> i64 {
-    let inode = match resolve_xattr_at(args.a0 as i32, args.a1, args.a2 as u32) {
-        Ok(i) => i, Err(rv) => return rv,
+    if let Err(rv) = ::fs::xattr::admit_listxattrat(args.a2 as u32) { return rv; }
+    let p = match crate::pathresolve::resolve_at_or_fd(args.a0 as i32, args.a1, args.a2 as u32) {
+        Ok(p) => p, Err(rv) => return rv,
     };
-    ::fs::xattr::list_on(&inode, args.a3, args.a4 as usize)
+    ::fs::xattr::list_on(&p.inode, args.a3, args.a4 as usize)
 }
 
 /// `removexattrat(dfd, path, at_flags, name)` — slot 466. # C: O(N_path + N_xattrs)
 pub fn sys_removexattrat(args: &SyscallArgs) -> i64 {
-    let name = match ::fs::xattr::import_name(args.a3) { Ok(n) => n, Err(rv) => return rv };
-    let (inode, mnt_id) = match resolve_xattr_at_mnt(args.a0 as i32, args.a1, args.a2 as u32) {
+    let name = match ::fs::xattr::admit_removexattrat(args.a2 as u32, args.a3) {
+        Ok(n) => n, Err(rv) => return rv,
+    };
+    let p = match crate::pathresolve::resolve_at_or_fd(args.a0 as i32, args.a1, args.a2 as u32) {
         Ok(p) => p, Err(rv) => return rv,
     };
-    if let Err(rv) = check_rofs(mnt_id) { return rv; }
-    ::fs::xattr::remove_on(&inode, &name)
+    with_mnt_write(p.mnt_id, || ::fs::xattr::remove_on(&p.inode, &name))
 }
