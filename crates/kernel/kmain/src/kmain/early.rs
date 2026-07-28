@@ -11,6 +11,21 @@ fn klog_cpu_id() -> u32 {
     #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmCpuOps::current_cpu() }
 }
 
+/// Linux `printk_caller_id()` (`kernel/printk/printk.c`): the task pid in task
+/// context, `CALLER_ID_MASK + cpu` in interrupt context. klog's line assembly
+/// only joins a fragment to a pending line when this matches, so a hard IRQ
+/// that logs while task context is mid-line starts its own line instead of
+/// splicing into it.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn klog_caller_id() -> u32 {
+    /// Linux's `CALLER_ID_MASK`: high bit set marks a non-task caller, so an
+    /// interrupt identity can never collide with a tid.
+    const CALLER_ID_MASK: u32 = 0x8000_0000;
+    if sched::preempt::in_interrupt() { return CALLER_ID_MASK | klog_cpu_id(); }
+    match sched::live::current() { Some(c) => c.tid, None => CALLER_ID_MASK | klog_cpu_id() }
+}
+
 /// Early boot bring-up before runtime device and filesystem init.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
 /// # C: not measured (one-shot init)
@@ -32,6 +47,9 @@ pub unsafe fn init(info: &BootInfo) {
     // reentrancy; until this is installed every CPU reports "unknown" and the
     // lock simply always engages (correct — we are still UP here).
     klog::set_cpu_fn(klog_cpu_id);
+    // …and an identity for the LINE, so a multi-call trace line cannot be
+    // spliced by another caller's fragments (Linux `prb_reserve_in_last`).
+    klog::set_caller_fn(klog_caller_id);
 
     log_boot_info(info);
     init_pmm_and_arch(info);

@@ -114,7 +114,11 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     // wakes can be symbolized offline (objdump of the stripped PIE). Equivalent
     // to a gdb backtrace of the parked thread, but captured in the worker's own
     // context (its CR3 is live) where the user stack is directly readable.
-    #[cfg(all(feature = "debug-boot", target_arch = "x86_64"))]
+    // Its own feature, not `debug-boot`: this walks up to 80 user stack words
+    // and emits a line per plausible code address, on EVERY `FUTEX_WAIT`
+    // against a stack address — and pays a `with_exe_path` lock + substring
+    // scan even when the caller is not the traced process.
+    #[cfg(all(feature = "debug-ustack", target_arch = "x86_64"))]
     if (op_base == FUTEX_WAIT || op_base == FUTEX_WAIT_BITSET) && args.a0 >= 0x7fff_0000_0000 {
         let is_worker = sched::live::current()
             .map(|c| c.with_exe_path(|p| p.map(|s| s.ends_with("gdm-session-worker")).unwrap_or(false)))

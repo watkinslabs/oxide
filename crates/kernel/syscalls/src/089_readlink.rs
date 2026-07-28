@@ -23,7 +23,7 @@ pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let rv = readlink_at_path(crate::pathresolve::AT_FDCWD, raw, buf_ptr, bufsize);
     // Keep the plain readlink entry point in the same DRM discovery trace as
     // readlinkat: libdrm uses this form for `/sys/dev/char/<major>:<minor>`.
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     crate::namei_common::trace_logind_dev(b"readlink", raw, rv);
     rv
 }

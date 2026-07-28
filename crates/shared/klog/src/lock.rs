@@ -68,6 +68,16 @@ fn cpu_id() -> u32 {
     f()
 }
 
+/// This CPU's index for per-CPU console state, or `None` while the cpu-id
+/// thunk is absent (early boot, still UP — `cont.rs` then keeps its pre-B1474
+/// direct path, which is correct with a single emitter).
+/// # C: O(1)
+pub(crate) fn cpu_index() -> Option<usize> {
+    let id = cpu_id();
+    if id == UNKNOWN_CPU { return None; }
+    Some(id as usize)
+}
+
 /// Held-token for `release`. `false` means "we did not take the lock, do not
 /// release it" — either same-CPU reentrancy or a bounded-spin steal.
 pub(crate) struct Held(bool);

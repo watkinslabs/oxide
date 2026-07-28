@@ -64,14 +64,14 @@ pub(crate) fn trace_udevdb_file(op: &'static [u8], file: &vfs::File, rv: i64) {
     klog::write_raw(b"]\n");
 }
 
-/// debug-boot: trace DRM device discovery by logind and the compositor.  Both
+/// debug-desktop: trace DRM device discovery by logind and the compositor.  Both
 /// resolve `/sys/dev/char/226:0` and the card's class links, but they consume
 /// the result differently: logind gates `TakeDevice`, while Mesa/libdrm turns
 /// a failed topology probe into "failed to retrieve device information".  Keep
 /// both callers visible so a GNOME black screen can be assigned to the actual
 /// discovery failure instead of guessing at KMS or scanout.  Gated; no effect
 /// in production. # C: O(len)
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 pub(crate) fn trace_logind_dev(op: &'static [u8], path: &str, rv: i64) {
     let hit = path.contains("card0") || path.contains("226:0")
         || path.contains("dri/card") || path.contains("/dri")

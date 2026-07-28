@@ -180,37 +180,9 @@ fn packet_ring_timer(now_ns: u64) { sock::service_packet_ring_timers(now_ns); }
 #[cfg(target_os = "oxide-kernel")]
 const MCAST_RETRY_INTERVAL_NS: u64 = 100_000_000;
 
-/// B288 diagnostic: dump AF_UNIX SOCK_DGRAM payloads sent to the
-/// journal / syslog / sd_notify sockets so early-boot service error
-/// strings (tmpfiles/sysusers/udevd/journald) surface in klog. The
-/// services log their fatal reason to journald's socket (which queues
-/// because journald itself is wedged), so the payload is the only
-/// place the human-readable cause appears. Gated on `debug-boot`.
-/// # C: O(payload bytes)
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
-pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
-    let is_journal = path.windows(7).any(|w| w == b"journal")
-        || path.windows(4).any(|w| w == b"/log")
-        || path.windows(6).any(|w| w == b"notify")
-        || path.windows(7).any(|w| w == b"dev-log");
-    if !is_journal { return; }
-    klog::write_raw(b"[B288 dgram ");
-    klog::write_raw(&crate::unix_sock::unix_path_display(path));
-    klog::write_raw(b" pid=");
-    let pid = sched::live::current().map(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
-    klog::write_dec_u64(pid as u64);
-    klog::write_raw(b"] ");
-    // Cap the dump so a huge journal record can't flood the UART.
-    let n = core::cmp::min(payload.len(), 512);
-    klog::write_raw(&payload[..n]);
-    klog::write_raw(b"\n");
-}
+pub mod journal_trace;
+pub use journal_trace::{message_field, trace_dgram_journal};
 
-/// No-op when debug-boot is off.
-/// # C: O(1)
-#[cfg(not(all(target_os = "oxide-kernel", feature = "debug-boot")))]
-#[inline]
-pub fn trace_dgram_journal(_path: &[u8], _payload: &[u8]) {}
 
 /// Register net's periodic timers. Boot, once.
 /// # C: O(1)

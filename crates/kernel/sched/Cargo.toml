@@ -49,6 +49,8 @@ debug-sched = []
 # deliberately separate from debug-sched, whose coroutine smoke changes the
 # boot path and therefore cannot validate a normal desktop boot.
 debug-boot = []
+debug-taskdrop = []  # [TASK-DROP] per-task teardown stack record
+debug-desktop = []  # [MUTTERWAIT] compositor deadline-park ledger — pays a with_exe_path lock + substring scan on EVERY deadline park
 debug-syscall = []
 debug-displaystack = []
 debug-gnome-syscall = []

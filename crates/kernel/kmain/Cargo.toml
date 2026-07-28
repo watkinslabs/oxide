@@ -92,6 +92,19 @@ debug-smp = ["sched/debug-smp", "sync/debug-smp", "syscalls/debug-smp"]  # spin-
 debug-task-fpu-provenance = ["sched/debug-task-fpu-provenance"]  # validates each Task's FP/SIMD save-area identity before raw scheduler/ptrace access
 debug-as-lifetime = ["sched/debug-as-lifetime", "vmm/debug-as-lifetime"]  # retained AddressSpace/VMA ownership provenance
 debug-boot = ["sched/debug-boot", "ipc/debug-boot", "fs/debug-boot", "pmm/debug-boot", "drv-virtio-gpu/debug-boot", "drv-virtio-blk/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "elf-load/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot", "drv-ps2-keyboard/debug-boot", "sysfs/debug-zram"]  # operational-pulse trace (init started, pmm: ready, …)
+# B1474: per-event campaign traces, split out of `debug-boot`. `make qemu-x86`
+# / `qemu-arm` set `debug-boot` unconditionally (the boot UART sink needs it),
+# so a trace that fires per syscall / per signal / per fault / per journald
+# datagram made the guest an order of magnitude slow there — slow enough to
+# blow userspace D-Bus activation timeouts, i.e. the instrument changing the
+# result. Each of these is now opt-in for the lane that needs it.
+debug-sigdeliv = ["syscalls/debug-sigdeliv"]  # [SIGDELIV] per-delivery signal trace (every return to user mode is a delivery point since B1471)
+debug-ustack = ["syscalls/debug-ustack"]  # [USTACK] user return-address walk on a stack-address FUTEX_WAIT
+debug-desktop = ["syscalls/debug-desktop", "sched/debug-desktop", "fs/debug-desktop", "drm/debug-desktop"]  # [MUTTERSYS]/[MUTTERPPOLL]/[MUTTEREPOLL]/[MUTTERWAIT]/[DRMPROP]/[LGD]/[DRMDISC] gnome-shell + logind + KMS + frame-clock ledger
+debug-execload = ["syscalls/debug-execload", "elf-load/debug-execload"]  # [EXECLOAD]/[execve ENOENT] per-exec image + ELF interp trace
+debug-journal = ["syscalls/debug-journal", "net/debug-journal"]  # FULL journald records + [B288 env] exec LISTEN_* dump; debug-boot already keeps each record's MESSAGE= line (boot-smoke's marker rides it)
+debug-taskdrop = ["sched/debug-taskdrop"]  # [TASK-DROP] per-task teardown stack record
+debug-faultdiag = ["pmm/debug-faultdiag", "vmm/debug-faultdiag"]  # [FAULT-ARM-VMA]/[FAULT-RESOLVE]/[file frame map] per-page-fault trace
 debug-zram = ["tracefs/zram-memory-tracking"]  # retained CONFIG_ZRAM_MEMORY_TRACKING-equivalent block_state debugfs ABI
 debug-zram-lifecycle = ["syscalls/debug-zram-lifecycle"]  # [ZRAM-TEST] executable-scoped lifecycle conformance trace
 debug-mutter-timer-verbose = ["fs/debug-mutter-timer-verbose"]  # full timerfd ledger; debug-boot keeps the frame-clock-only subset

@@ -60,6 +60,7 @@ debug-hw-watchpoint = []
 debug-vmm = []
 debug-irq = []
 debug-boot = []
+debug-faultdiag = []  # [FAULT-ARM-VMA]/[FAULT-RESOLVE] per-page-fault VMA + resolve-failure trace
 debug-displaystack = []
 debug-mount = []  # [mnt] ZAP tracer: log MADV_DONTNEED/munmap ranges (diagnose spurious lock-page zap)
 debug-noreclaim = []  # DIAG: never return frames to the buddy (leak) — confirms free-while-mapped aliasing

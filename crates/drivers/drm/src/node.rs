@@ -86,7 +86,7 @@ pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dum
     // A dumb buffer must be selected by the MODE_MAP_DUMB cookie before its
     // VMA can be installed. Retain this feature-gated miss/hit trace so an
     // eventual compositor mmap stall can be separated from PMM allocation.
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     {
         klog::write_raw(b"[DRMDUMB mmap card=");
         klog::write_dec_u64(card_id as u64);
@@ -110,7 +110,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         // Render-node rejections occur before the general ioctl trace below.
         // Keep this independently visible under the DRM bring-up flag: Mesa
         // otherwise degrades a missing render UAPI into a silent black frame.
-        #[cfg(feature = "debug-boot")]
+        #[cfg(feature = "debug-desktop")]
         {
             klog::write_raw(b"[DRMRENDER reject req=");
             klog::write_hex_u64(req);
@@ -125,13 +125,13 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     }
     let token = file_token(file);
     let driver = crate::card(card_id);
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMIOCTL req="); klog::write_hex_u64(req);
       klog::write_raw(b" card="); klog::write_dec_u64(card_id as u64);
       klog::write_raw(b" tag="); klog::write_hex_u64(tag);
       klog::write_raw(b" drv="); klog::write_dec_u64(driver.is_some() as u64);
       // The KMS lease arrives through logind's SCM_RIGHTS handoff.  Preserve
-      // the file-object identity and current master decision in debug-boot
+      // the file-object identity and current master decision in debug-desktop
       // so a missing modeset can distinguish a rejected lease from a renderer
       // that never submits SETCRTC.
       klog::write_raw(b" tok="); klog::write_hex_u64(token);
