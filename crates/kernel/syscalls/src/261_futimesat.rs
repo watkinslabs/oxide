@@ -13,7 +13,8 @@
 
 use syscall::SyscallArgs;
 
-use crate::utime_common::{iattr_from_times, iattr_touch, now_ns, read_timeval_pair, resolve_target};
+use crate::utime_common::{now, read_timeval_pair, resolve_target};
+use crate::utimes_abi::{iattr_from_times, iattr_touch};
 
 /// `sys_futimesat(dirfd, path, times[2])` — slot 261. `times == NULL` sets both
 /// stamps to now (write permission suffices); otherwise both are explicit and
@@ -32,10 +33,10 @@ pub fn sys_futimesat(args: &SyscallArgs) -> i64 {
     };
     // `do_utimes(dfd, filename, tstimes, 0)`: flags are hard-zero, so the
     // lookup always follows a trailing symlink.
-    let (inode, mnt_id) = match resolve_target(dirfd, path_ptr, false) {
+    let (inode, mnt_id) = match resolve_target(dirfd, path_ptr, false, false) {
         Ok(t) => t, Err(rv) => return rv,
     };
-    let now = now_ns();
+    let now = now();
     let ia = match times {
         Some(t) => iattr_from_times(t, now),
         None => iattr_touch(now),

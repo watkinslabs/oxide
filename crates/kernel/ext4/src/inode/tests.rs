@@ -191,3 +191,60 @@ fn extent_child_depth_bounds_descent() {
     // u16 edge: child_depth+1 must not wrap to match parent 0.
     assert!(!extent_child_depth_ok(0, u16::MAX));
 }
+
+/// Write a raw `(base, extra)` timestamp pair straight into an inode slot, as
+/// the on-disk bytes an image would carry.
+fn put_raw_time(buf: &mut [u8], base_off: usize, extra_off: usize, base: u32, extra: u32) {
+    buf[base_off..base_off + 4].copy_from_slice(&base.to_le_bytes());
+    buf[extra_off..extra_off + 4].copy_from_slice(&extra.to_le_bytes());
+}
+
+#[test]
+fn parse_decodes_a_pre_1970_mtime_as_negative_seconds() {
+    // The regression this fixes: `i_mtime` with the high bit set and
+    // `i_mtime_extra == 0` is a 1906 timestamp. Zero-extending the base word
+    // read it back as 0x8DE7_3600 seconds ≈ year 2106.
+    let sb = fake_sb_inode_size(256);
+    let mut buf = make_inode_buf(256, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+    let raw_base = (-2_000_000_000i32) as u32;
+    put_raw_time(&mut buf, 0x10, 0x88, raw_base, 0);
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert_eq!(ino.mtime, vfs::Timespec64::from_secs(-2_000_000_000));
+    assert!(ino.mtime.sec < 0, "1906 mtime stays pre-epoch");
+    assert_ne!(ino.mtime.sec, raw_base as i64, "not the zero-extended year-2106 reading");
+}
+
+#[test]
+fn parse_decodes_the_far_future_epoch_band() {
+    // Top row of the ext4.h epoch table: epoch bits 1,1 with msb 0 → year 2378+.
+    let sb = fake_sb_inode_size(256);
+    let mut buf = make_inode_buf(256, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+    put_raw_time(&mut buf, 0x08, 0x8C, 0, 0x3 | (500u32 << 2));
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert_eq!(ino.atime, vfs::Timespec64::new(0x3_0000_0000, 500));
+}
+
+#[test]
+fn a_128_byte_inode_reports_no_birth_time() {
+    // `EXT4_EINODE_GET_XTIME(i_crtime)`: absent, not epoch-zero.
+    let sb = fake_sb_inode_size(128);
+    let buf = make_inode_buf(128, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert_eq!(ino.crtime, None);
+    // ...while a 256-byte inode born at the epoch reports Some(ZERO): the old
+    // `0`-means-absent sentinel is gone.
+    let sb256 = fake_sb_inode_size(256);
+    let buf256 = make_inode_buf(256, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+    let ino256 = Inode::parse(&buf256, &sb256).expect("parse");
+    assert_eq!(ino256.crtime, Some(vfs::Timespec64::ZERO));
+}
+
+#[test]
+fn a_128_byte_inode_decodes_seconds_only_and_still_sign_extends() {
+    let sb = fake_sb_inode_size(128);
+    let mut buf = make_inode_buf(128, S_IFREG | 0o644, 0, 1, [0u8; I_BLOCK_LEN]);
+    buf[0x0C..0x10].copy_from_slice(&((-1i32) as u32).to_le_bytes());
+    let ino = Inode::parse(&buf, &sb).expect("parse");
+    assert_eq!(ino.ctime, vfs::Timespec64::from_secs(-1), "1969-12-31T23:59:59");
+    assert_eq!(ino.ctime.nsec, 0, "no extra field ⇒ no sub-second part");
+}
