@@ -181,6 +181,13 @@ name = "crc"
 version = "0.1.0"
 
 [[package]]
+name = "crng"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
+
+[[package]]
 name = "crt1"
 version = "0.1.0"
 
@@ -192,6 +199,7 @@ version = "0.1.0"
 name = "devfs"
 version = "0.1.0"
 dependencies = [
+ "crng",
  "drv",
  "drv-zram",
  "hal",
@@ -1697,6 +1705,7 @@ dependencies = [
  "conformance",
  "console",
  "cpu",
+ "crng",
  "devfs",
  "devpts",
  "drm",

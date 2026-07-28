@@ -601,18 +601,23 @@ pub struct Task {
     /// wait4 WUNTRACED/WCONTINUED flags + stop signal.
     pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_signal: AtomicU8,
 
-    /// `rseq(2)` registration pointer. Per-task user-space pointer to a
-    /// `struct rseq` (32 bytes). When non-zero, the syscall-return tail
-    /// writes the current cpu_id (always 0 on v1 UP) into offsets 0
-    /// (cpu_id_start) and 4 (cpu_id) so glibc's fast-path sees correct
-    /// data instead of stale zeros from initialisation.
+    /// `rseq(2)` registration pointer — per-THREAD user pointer to a
+    /// `struct rseq`. Non-zero means every exit to user republishes the ids
+    /// and the IRQ-exit tail performs the critical-section abort
+    /// (`crate::rseq`). Reset by execve; inherited across a non-CLONE_VM
+    /// fork, cleared for a CLONE_VM child (Linux `rseq_fork`).
     pub rseq_ptr: AtomicU64,
-    /// Length of the user `struct rseq` (typically 32). Stored to
-    /// validate the writeback range fits in user memory.
+    /// Length of the registered area, validated against Linux
+    /// `rseq_length_valid` and matched on re-register/unregister.
     pub rseq_len: AtomicU32,
-    /// 4-byte signature passed at registration; used by glibc/musl as
-    /// a cookie. Stored but not enforced by the kernel.
+    /// Abort signature. The four bytes below a critical section's `abort_ip`
+    /// must equal it or the abort is fatal — this is what keeps a writable
+    /// `rseq_cs` from redirecting execution at an arbitrary gadget.
     pub rseq_sig: AtomicU32,
+    /// Cache of the (cpu_id, mm_cid) pair last published into the rseq area,
+    /// so an exit to user that did not change CPU costs no user writes.
+    /// `crate::rseq::exit::IDS_UNSET` = nothing published yet.
+    pub rseq_ids: AtomicU64,
 
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.

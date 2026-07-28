@@ -57,9 +57,14 @@ fn installed_identity(destination: &sched::Task, kind: NsKind) -> NamespaceRef {
 fn exercise_identity_close_reuse(kind: NsKind, identity_kind: NamespaceKind, tid: u32) {
     let fdt = vfs::FdTable::new();
     let initial_user = namespace_identity::initial(NamespaceKind::User);
-    let parent = if identity_kind == NamespaceKind::User {
-        Some(initial_user.clone())
-    } else { None };
+    // Linux `pidns_install` only admits the caller's ACTIVE pid namespace or a
+    // descendant of it, and `userns_install` walks the user-namespace parent
+    // chain, so both fixtures must hang off the initial namespace.
+    let parent = match identity_kind {
+        NamespaceKind::User => Some(initial_user.clone()),
+        NamespaceKind::Pid  => Some(namespace_identity::initial(NamespaceKind::Pid)),
+        _ => None,
+    };
     let original = namespace_identity::allocate(identity_kind,
         initial_user.clone(), parent.clone()).unwrap();
     let replacement = namespace_identity::allocate(identity_kind,

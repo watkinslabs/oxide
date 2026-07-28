@@ -250,7 +250,7 @@ unsafe extern "C" fn oxide_arm_softirq_drain() {
 /// # Ctx: IRQ-exit
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_irq_resched_on_exit(saved_spsr: u64) {
+unsafe extern "C" fn oxide_irq_resched_on_exit(saved_spsr: u64, saved_elr: *mut u64) {
     let from_user = (saved_spsr & 0xf) == 0; // EL0t
     if sched::preempt::should_resched_to_user(from_user) {
         sched::preempt::take_need_resched();
@@ -259,5 +259,11 @@ unsafe extern "C" fn oxide_irq_resched_on_exit(saved_spsr: u64) {
         // stack and restored after schedule() returns. schedule() preserves
         // this context's masked DAIF, so IRQs stay masked through the eret.
         unsafe { sched::live::schedule(); }
+        // The thread just lost the CPU inside EL0 code. If it was inside a
+        // declared rseq critical section, invalidate it and restart at
+        // `abort_ip` BEFORE the eret resumes, so the commit never runs
+        // against per-cpu state another thread mutated in the gap.
+        // SAFETY: `saved_elr` is the interrupted frame's ELR_EL1 slot on this task's kernel stack, published by `oxide_irq_vector_handler`'s `add x1, sp, #176`; the frame outlives this call and is consumed by `oxide_irq_resume_user`.
+        unsafe { sched::rseq::rseq_preempt_return(&mut *saved_elr); }
     }
 }

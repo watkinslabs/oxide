@@ -390,6 +390,7 @@ impl Task {
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
+            rseq_ids:       AtomicU64::new(u64::MAX),
             creds: Creds::root(),
             #[cfg(feature = "debug-smp")]
             dbg_canary_tail: AtomicU64::new(task_canary_tail(tid)),

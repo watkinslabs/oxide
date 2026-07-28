@@ -1,4 +1,6 @@
-// 319 memfd_create — one syscall, one file (docs/53 §0). Moved verbatim from anonfd.rs.
+// 319 memfd_create — one syscall, one file (docs/53 §0). ABI shim only: the
+// flag ladder and the derived seal/mode state live in `memfd_flags.rs`
+// (non-gated, hosted-tested); this file parses, fetches and encodes.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -8,26 +10,24 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
-const MFD_CLOEXEC:       u64 = 0x0001;
-const MFD_ALLOW_SEALING: u64 = 0x0002;
-const MFD_HUGETLB:       u64 = 0x0004;
-const MFD_NOEXEC_SEAL:   u64 = 0x0008;
-const MFD_EXEC:          u64 = 0x0010;
-const MFD_NAME_PREFIX: &[u8] = b"memfd:";
-const MFD_NAME_MAX_LEN: usize = vfs::path::NAME_MAX - MFD_NAME_PREFIX.len();
+use crate::memfd_flags::{
+    MEMFD_NOEXEC_SCOPE_EXEC, MFD_NAME_MAX_LEN, MFD_NAME_PREFIX, name_scan_err, sanitize_flags, setup,
+};
 
 #[inline]
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// `alloc_name` (`mm/memfd.c:428`): `"memfd:"` then
+/// `strncpy_from_user(uname, MFD_NAME_MAX_LEN + 1)`. A NULL/unreadable pointer
+/// is `EFAULT`; a name longer than the budget is `EINVAL`, not `ENAMETOOLONG`.
 fn read_memfd_name(name_ptr: u64) -> Result<String, i64> {
     if name_ptr == 0 { return Err(err(Errno::Efault)); }
     let raw = match syscall::scan_user_cstr(name_ptr, (MFD_NAME_MAX_LEN + 1) as u64, |va| {
-        // SAFETY: scan_user_cstr bounds each user VA before asking for this byte.
+        // SAFETY: scan_user_cstr bounds each user VA below USER_VA_END before asking for this byte.
         unsafe { core::ptr::read_volatile(va as *const u8) }
     }) {
         Ok(b) => b,
-        Err(Errno::Enametoolong) => return Err(err(Errno::Einval)),
-        Err(e) => return Err(err(e)),
+        Err(e) => return Err(err(name_scan_err(e))),
     };
     let mut name = Vec::with_capacity(MFD_NAME_PREFIX.len() + raw.len());
     name.extend_from_slice(MFD_NAME_PREFIX);
@@ -35,20 +35,38 @@ fn read_memfd_name(name_ptr: u64) -> Result<String, i64> {
     Ok(vfs::path_from_bytes(&name))
 }
 
-/// `sys_memfd_create(name, flags)` — slot 319.
+/// `sys_memfd_create(name, flags)` — slot 319, `SYSCALL_DEFINE2(memfd_create)`
+/// (`mm/memfd.c:505`). Order is `sanitize_flags` → `alloc_name` →
+/// `memfd_alloc_file`, which is why an undefined flag bit beats a bad name
+/// pointer and a bad name pointer beats the hugetlb backing store's error.
 /// # C: O(N_fds) for the fd-table alloc
 pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     let name_ptr = args.a0;
-    let flags    = args.a1;
-    let known = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXEC_SEAL | MFD_EXEC;
-    if flags & !known != 0 { return err(Errno::Einval); }
-    if (flags & MFD_EXEC) != 0 && (flags & MFD_NOEXEC_SEAL) != 0 { return err(Errno::Einval); }
-    if (flags & MFD_HUGETLB) != 0 { return err(Errno::Enosys); }
-    let allow_sealing = (flags & (MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL)) != 0;
+    // Linux declares `unsigned int flags`; the upper half of the register
+    // never reaches the handler.
+    let flags = args.a1 as u32;
+    // oxide has no per-pid-namespace `vm.memfd_noexec` knob, so the scope is
+    // the Linux boot default `MEMFD_NOEXEC_SCOPE_EXEC`
+    // (`include/linux/pid_namespace.h:71`): neither MFD_EXEC nor
+    // MFD_NOEXEC_SEAL given ⇒ MFD_EXEC implied.
+    let eff = match sanitize_flags(flags, MEMFD_NOEXEC_SCOPE_EXEC) {
+        Ok(f) => f,
+        Err(e) => return err(e),
+    };
     let name = match read_memfd_name(name_ptr) {
         Ok(name) => name,
         Err(e) => return e,
     };
+    let st = setup(eff);
+    if st.hugetlb {
+        // `memfd_alloc_file` calls `hugetlb_file_setup`, whose
+        // !CONFIG_HUGETLBFS stub is `ERR_PTR(-ENOSYS)`
+        // (`include/linux/hugetlb.h:531`). oxide has no hugetlbfs (mmap's
+        // MAP_HUGETLB is likewise refused in `mm-pmm/src/mmap_flags.rs`), so
+        // this is the honest CONFIG_HUGETLBFS=n answer, not a stub for a
+        // syscall we declined to write.
+        return err(Errno::Enosys);
+    }
     let cur = match sched::live::current() {
         Some(c) => c, None => return err(Errno::Ebadf),
     };
@@ -56,17 +74,24 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return err(Errno::Ebadf),
     };
-    let inode = if allow_sealing {
-        ::fs::tmpfs::tmpfs_sealable_file()
-    } else {
-        ::fs::tmpfs::tmpfs_anon_file()
-    };
+    // Every memfd carries the seal word — a memfd created WITHOUT
+    // MFD_ALLOW_SEALING is not "unsealable", it is born holding F_SEAL_SEAL
+    // (`mm/shmem.c:3030`), so F_GET_SEALS reads 1 and F_ADD_SEALS is EPERM.
+    let inode = ::fs::tmpfs::tmpfs_sealable_file();
+    if let Some(seals) = inode.fcntl_seals() {
+        seals.store(st.seals, core::sync::atomic::Ordering::Release);
+    }
+    let _ = inode.set_perm(st.perm);
+    // `shmem_get_inode` → `inode_init_owner`: the memfd belongs to the
+    // creator's fsuid/fsgid, which is what fstat(2) on the fd reports.
+    let cred = crate::pathresolve::current_cred();
+    let _ = inode.set_owner(cred.uid, cred.gid);
     let dentry = vfs::dcache::d_alloc_pseudo(&name, inode.clone(), &crate::anon_dname::MEMFD_OPS);
     let file = File::new(inode, dentry, OpenFlags::O_RDWR);
     let fd = match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => fd, Err(e) => return -(e as i64),
     };
-    if (flags & MFD_CLOEXEC) != 0 {
+    if st.cloexec {
         let _ = fdt.set_cloexec(fd, true);
     }
     fd as i64

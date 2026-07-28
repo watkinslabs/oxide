@@ -71,6 +71,14 @@ pub mod tkill_common;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "219_restart_syscall.rs"] pub mod s219_restart_syscall;
 
+// memfd_create (319): the `sanitize_flags` EINVAL/EACCES ladder plus the seal
+// word / inode mode `memfd_alloc_file` derives. execveat (322): the AT_* flag
+// mask, the empty-path ENOENT rule, the dirfd-base decision and the `may_open`
+// file-type verdict. Both outside their kernel-only slot files so the rules
+// that decide a rejected call are unit-tested hosted.
+pub mod memfd_flags;
+pub mod execveat_at;
+
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
 
@@ -100,6 +108,8 @@ pub mod rwf;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "103_syslog/decide.rs"] pub mod s103_syslog_decide;
 #[cfg(any(target_os = "oxide-kernel", test))]
+pub mod kcmp_abi;
+pub mod setns_flags;
 #[path = "101_ptrace/uapi.rs"] pub mod s101_ptrace_uapi;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "101_ptrace/decide.rs"] pub mod s101_ptrace_decide;
