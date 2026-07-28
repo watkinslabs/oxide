@@ -1,36 +1,36 @@
-// Permission enforcement chokepoint for `add_key`/`request_key`/`keyctl`.
-// Mirrors Linux `key_task_permission` (`security/keys/permission.c`): a key's
-// `perm: u32` packs four 6-bit need-masks — possessor(31:24) / user(23:16) /
-// group(15:8) / other(7:0) — each tested against the `KEY_NEED_*` bit the op
-// requires. `check_perm` is the ONE call every op site in `keyring.rs` makes
-// before touching a key; no op reads `perm` or `uid`/`gid` directly.
+// Permission + validity chokepoint for `add_key`/`request_key`/`keyctl`.
+// Mirrors Linux `key_task_permission` and `key_validate`
+// (`security/keys/permission.c`): a key's `perm: u32` packs four 6-bit
+// need-masks — possessor(31:24) / user(23:16) / group(15:8) / other(7:0) —
+// each tested against the `KEY_NEED_*` bit the op requires. `check_perm` is
+// the ONE call every op site makes before touching a key; no op reads `perm`
+// or `uid`/`gid` directly.
 
-use super::{Key, Store, TaskIds};
 use syscall::errno::Errno;
 
-// keyctl(2) need bits (uapi/linux/key.h `KEY_NEED_*`).
-pub(crate) const KEY_NEED_VIEW:    u32 = 0x01;
-pub(crate) const KEY_NEED_READ:    u32 = 0x02;
-pub(crate) const KEY_NEED_WRITE:   u32 = 0x04;
-pub(crate) const KEY_NEED_SEARCH:  u32 = 0x08;
-pub(crate) const KEY_NEED_LINK:    u32 = 0x10;
-pub(crate) const KEY_NEED_SETATTR: u32 = 0x20;
+use super::store::{Key, Store, TaskIds};
+use super::uapi::*;
 
-const KEY_PERM_BYTE_MASK: u32 = 0x3f;
-const KEY_PERM_POS_SHIFT: u32 = 24;
-const KEY_PERM_USR_SHIFT: u32 = 16;
-const KEY_PERM_GRP_SHIFT: u32 = 8;
-const KEY_PERM_OTH_SHIFT: u32 = 0;
-
-/// Linux `key_task_permission`: pick the user/group/other perm byte by uid/gid
-/// match (owner takes user byte, else gid match takes group byte, else other),
-/// then OR in the possessor byte if `t` possesses `key`. Simplification vs
-/// Linux: gid match is a single egid, not the full supplementary-group list
-/// `groups_search` walks. # C: O(members) via possession search
-fn key_permission(g: &Store, key: &Key, t: TaskIds, need: u32) -> Result<(), Errno> {
-    let mut kperm = if key.uid == t.uid { (key.perm >> KEY_PERM_USR_SHIFT) & KEY_PERM_BYTE_MASK }
-        else if key.gid == t.gid { (key.perm >> KEY_PERM_GRP_SHIFT) & KEY_PERM_BYTE_MASK }
-        else { (key.perm >> KEY_PERM_OTH_SHIFT) & KEY_PERM_BYTE_MASK };
+/// Linux `key_task_permission`: pick the user/group/other perm byte, then OR
+/// in the possessor byte if `t` possesses `key`.
+///
+/// Two details Linux gets right that a naive port does not:
+///   * ownership is `cred->fsuid`, not euid — `setfsuid()` changes which keys
+///     a task owns.
+///   * the group byte is only consulted when the key HAS group bits
+///     (`key->perm & KEY_GRP_ALL`) and a valid gid; otherwise the caller falls
+///     through to the other byte, which may well be more permissive. Group
+///     membership is the full supplementary list (`groups_search`), not just
+///     the fsgid.
+/// # C: O(members + groups) via possession search
+fn key_task_permission(g: &Store, key: &Key, t: &TaskIds, need: u32) -> Result<(), Errno> {
+    let mut kperm = if key.uid == t.fsuid {
+        (key.perm >> KEY_PERM_USR_SHIFT) & KEY_PERM_BYTE_MASK
+    } else if key.gid != GID_INVALID && key.perm & KEY_GRP_ALL != 0 && t.in_group(key.gid) {
+        (key.perm >> KEY_PERM_GRP_SHIFT) & KEY_PERM_BYTE_MASK
+    } else {
+        (key.perm >> KEY_PERM_OTH_SHIFT) & KEY_PERM_BYTE_MASK
+    };
     if is_possessed(g, key.serial, t) { kperm |= (key.perm >> KEY_PERM_POS_SHIFT) & KEY_PERM_BYTE_MASK; }
     if kperm & need == need { Ok(()) } else { Err(Errno::Eacces) }
 }
@@ -39,13 +39,8 @@ fn key_permission(g: &Store, key: &Key, t: TaskIds, need: u32) -> Result<(), Err
 /// session/user/user-session keyrings, transitively through nested keyrings?
 /// Linux `is_key_possessed`. Peeks the per-task maps (no lazy-create side
 /// effect); cycle-safe via `visited`. # C: O(members)
-fn is_possessed(g: &Store, target: i32, t: TaskIds) -> bool {
-    let mut roots: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
-    if let Some(&v) = g.thread.get(&t.tid) { roots.push(v); }
-    if let Some(&v) = g.process.get(&t.tgid) { roots.push(v); }
-    if let Some(&v) = g.session.get(&t.tid) { roots.push(v); }
-    if let Some(&v) = g.user.get(&t.uid) { roots.push(v); }
-    if let Some(&v) = g.usersess.get(&t.uid) { roots.push(v); }
+pub(super) fn is_possessed(g: &Store, target: i32, t: &TaskIds) -> bool {
+    let roots = g.possession_roots(t);
     if roots.contains(&target) { return true; }
     let mut visited: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
     let mut stack = roots;
@@ -55,37 +50,63 @@ fn is_possessed(g: &Store, target: i32, t: TaskIds) -> bool {
         if let Some(k) = g.keys.get(&cur) {
             if k.members.contains(&target) { return true; }
             for &m in &k.members {
-                if g.keys.get(&m).map(|kk| kk.key_type == "keyring").unwrap_or(false) { stack.push(m); }
+                if g.keys.get(&m).map(|kk| kk.is_keyring()).unwrap_or(false) { stack.push(m); }
             }
         }
     }
     false
 }
 
-/// THE choke-point: every `add_key`/`request_key`/`keyctl` op site resolves a
-/// serial then calls this before reading/mutating the key. `ENOKEY` if the
-/// serial names no key; `EACCES` if it exists but `need` is denied. A
-/// `KEY_NEED_SETATTR` denial is bypassed when `admin` is set (Linux:
-/// `capable(CAP_SYS_ADMIN)` short-circuits `keyctl_setperm_key`/
-/// `keyctl_set_timeout` — irrelevant for any other `need` and ignored then).
-/// `admin` is threaded in explicitly (not read from `current()` here) so this
-/// stays a pure, hosted-testable function; callers resolve the real
-/// capability once via `super::cur_is_sys_admin()`. Returns the
-/// already-negated errno ready to hand back from a syscall entry point.
+/// Linux `key_validate` (`security/keys/permission.c`), verbatim:
+/// invalidated → ENOKEY, revoked or dead → EKEYREVOKED, past its expiry →
+/// EKEYEXPIRED. Every non-`KEY_LOOKUP_PARTIAL` lookup runs this, which is what
+/// makes `KEYCTL_SET_TIMEOUT` and `KEYCTL_REVOKE` actually take effect rather
+/// than being recorded and ignored. # C: O(1)
+pub(crate) fn key_validate(key: &Key, now_ns: u64) -> Result<(), Errno> {
+    if key.invalidated { return Err(Errno::Enokey); }
+    if key.revoked { return Err(Errno::Ekeyrevoked); }
+    if key.expiry_ns != 0 && now_ns >= key.expiry_ns { return Err(Errno::Ekeyexpired); }
+    Ok(())
+}
+
+/// Whether a lookup runs `key_validate` — Linux `KEY_LOOKUP_PARTIAL` skips it
+/// so a key under construction (or already revoked) can still be described,
+/// have its perms set, or be given a timeout.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum Lookup {
+    /// `lookup_user_key(..., 0, need)` — validate.
+    Full,
+    /// `lookup_user_key(..., KEY_LOOKUP_PARTIAL, need)` — skip validation.
+    Partial,
+}
+
+/// THE choke-point: every op site resolves a serial then calls this before
+/// reading/mutating the key. `ENOKEY` if the serial names no key; the
+/// `key_validate` errno if it is revoked/invalidated/expired and `mode` is
+/// [`Lookup::Full`]; `EACCES` if it exists but `need` is denied.
+///
+/// There is deliberately no `CAP_SYS_ADMIN` bypass here. Linux's
+/// `lookup_user_key` grants none for `KEY_NEED_*`: `keyctl_setperm_key` and
+/// `keyctl_chown_key` consult `capable(CAP_SYS_ADMIN)` only AFTER this check
+/// has already passed, as a second owner-or-sysadmin gate on the mutation
+/// itself. Folding the capability in here let a privileged process rewrite the
+/// perms of a key it had no `KEY_NEED_SETATTR` on at all.
+/// Returns the already-negated errno ready to hand back from a syscall entry.
 /// # C: O(members)
-pub(crate) fn check_perm(g: &Store, serial: i32, t: TaskIds, need: u32, admin: bool) -> Result<(), i64> {
-    let key = g.keys.get(&serial).ok_or(-(super::ENOKEY as i64))?;
-    match key_permission(g, key, t, need) {
-        Ok(()) => Ok(()),
-        Err(_) if need == KEY_NEED_SETATTR && admin => Ok(()),
-        Err(e) => Err(-(e.as_i32() as i64)),
+pub(crate) fn check_perm(g: &Store, serial: i32, t: &TaskIds, need: u32, mode: Lookup, now_ns: u64)
+    -> Result<(), i64>
+{
+    let key = g.keys.get(&serial).ok_or(-(Errno::Enokey.as_i32() as i64))?;
+    if mode == Lookup::Full {
+        key_validate(key, now_ns).map_err(|e| -(e.as_i32() as i64))?;
     }
+    key_task_permission(g, key, t, need).map_err(|e| -(e.as_i32() as i64))
 }
 
 /// Search-path visibility check (`KEYCTL_SEARCH`/`request_key`): a key the
-/// caller cannot `KEY_NEED_SEARCH` is invisible — no ENOKEY/EACCES split, it
-/// just never matches, matching Linux hiding existence from keyring search.
-/// # C: O(members)
-pub(crate) fn visible_for_search(g: &Store, key: &Key, t: TaskIds) -> bool {
-    key_permission(g, key, t, KEY_NEED_SEARCH).is_ok()
+/// caller cannot `KEY_NEED_SEARCH`, or that is revoked/invalidated/expired, is
+/// invisible — no ENOKEY/EACCES split, it just never matches, matching Linux
+/// hiding existence from keyring search. # C: O(members)
+pub(crate) fn visible_for_search(g: &Store, key: &Key, t: &TaskIds, now_ns: u64) -> bool {
+    key_validate(key, now_ns).is_ok() && key_task_permission(g, key, t, KEY_NEED_SEARCH).is_ok()
 }

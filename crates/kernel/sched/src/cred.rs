@@ -16,9 +16,11 @@
 // - groups:   getgroups/setgroups + `may_setgroups` policy.
 // - snapshot: the one `current_cred()` -> `vfs::Cred` construction site.
 // - dispatch: cred slot table for `syscall_glue.rs`.
-// - caps:     capget/capset.
+// - caps:     capget/capset user-memory marshalling + target resolution.
+// - cap_policy: the pure `cap_validate_magic` / `cap_capset` decision logic.
 // - tests:    hosted coverage of every transition, errno, and error order.
 
+mod cap_policy;
 mod caps;
 mod capfix;
 mod commit;

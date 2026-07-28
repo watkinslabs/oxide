@@ -1,57 +1,14 @@
+// `capget(2)` / `capset(2)` marshalling shell: read the
+// `__user_cap_header_struct`, resolve the target task, hand the numbers to
+// `cap_policy`, write the `__user_cap_data_struct` blocks back. Every
+// admission decision lives in `cap_policy` so hosted tests can drive it.
+
 use core::sync::atomic::Ordering;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-/// Linux `_LINUX_CAPABILITY_VERSION_3` magic. v1 (32-bit caps) +
-/// v2 (deprecated/buggy) accepted with single-u32 layout for
-/// backwards compat; v3 is the current normal case.
-const CAPV1: u32 = 0x1998_0330;
-const CAPV2: u32 = 0x2007_1026;
-const CAPV3: u32 = 0x2008_0522;
-
-/// Number of `__user_cap_data_struct` blocks for each version.
-fn cap_data_blocks(ver: u32) -> Option<usize> {
-    match ver {
-        CAPV1 => Some(1),
-        CAPV2 | CAPV3 => Some(2),
-        _ => None,
-    }
-}
-
-/// What `capget` does after validating the header magic, before it ever looks
-/// at the target task. Linux `SYSCALL_DEFINE2(capget)`:
-///
-/// ```text
-/// ret = cap_validate_magic(header, &tocopy);          // bad magic: writes
-///                                                     // back V3, ret=-EINVAL
-/// if ((dataptr == NULL) || (ret != 0))
-///         return ((dataptr == NULL) && (ret == -EINVAL)) ? 0 : ret;
-/// ```
-///
-/// So a NULL `dataptr` is a *version probe* and always succeeds — including
-/// when the magic was wrong, which is precisely libcap's probe sequence — and
-/// it returns before `cap_get_target_pid`, so the pid in the header is never
-/// resolved. Returning EINVAL to a probe, or ESRCH because the probe named a
-/// pid that no longer exists, both break the caller at its first call.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum CapgetEarly {
-    /// Magic was bad: write V3 back to the header, then return this.
-    RewriteVersion(i64),
-    /// Magic was good and `dataptr` is NULL: succeed without touching the target.
-    Ok,
-    /// Magic was good and `dataptr` is set: proceed with `n` data blocks.
-    Proceed(usize),
-}
-
-/// # C: O(1)
-pub(super) fn capget_early(ver: u32, datap: u64) -> CapgetEarly {
-    match cap_data_blocks(ver) {
-        None => CapgetEarly::RewriteVersion(if datap == 0 { 0 } else { -(Errno::Einval.as_i32() as i64) }),
-        Some(_) if datap == 0 => CapgetEarly::Ok,
-        Some(n) => CapgetEarly::Proceed(n),
-    }
-}
+use super::cap_policy::{cap_data_blocks, capget_early, capset_check, CapgetEarly, CapsetOld, CAPV3};
 
 /// Read a `__user_cap_header_struct` (8 bytes: u32 version, i32 pid).
 /// # SAFETY: caller validated `hp` < USER_VA_END and the 8-byte tail
@@ -110,8 +67,11 @@ fn cap_load_target(pid: i32) -> Result<(u64, u64, u64), i64> {
 /// (low32 of each u64 first, high32 second for v2/v3).
 ///
 /// A NULL `datap` is a version probe and always returns 0 — see
-/// `capget_early` for Linux's exact ladder. Note capset has NO such case:
-/// `cap_validate_magic` failing there is EINVAL unconditionally.
+/// `cap_policy::capget_early` for Linux's exact ladder. Note capset has NO
+/// such case: `cap_validate_magic` failing there is EINVAL unconditionally.
+/// A v1 request silently drops the upper 32 bits, matching Linux's
+/// documented fail-safe (`kernel/capability.c`: "we silently drop the upper
+/// capabilities here" rather than -ERANGE).
 /// # C: O(1)
 pub(super) fn sys_capget(args: &SyscallArgs) -> i64 {
     let hp = args.a0;
@@ -159,12 +119,9 @@ pub(super) fn sys_capget(args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_capset(hdrp, datap)` — slot 126. Linux only allows capset
-/// against the calling task (pid==0 or pid==tid). Permission rules:
-///   * new permitted ⊆ old permitted
-///   * new effective ⊆ new permitted
-///   * new inheritable ⊆ old inheritable ∪ old permitted (intersected with bounding)
-/// Root may freely shrink; raising bits beyond old_permitted is EPERM.
+/// `sys_capset(hdrp, datap)` — slot 126. Linux only allows capset against
+/// the calling task (pid==0 or pid==`task_pid_vnr(current)`); the admission
+/// rules themselves are `cap_policy::capset_check`.
 /// # C: O(1)
 pub(super) fn sys_capset(args: &SyscallArgs) -> i64 {
     let hp = args.a0;
@@ -207,7 +164,7 @@ pub(super) fn sys_capset(args: &SyscallArgs) -> i64 {
         return -(Errno::Efault.as_i32() as i64);
     }
     // SAFETY: dp validated; CPL=0 reads from caller AS.
-    let (new_eff, new_perm, new_inh) = unsafe {
+    let (raw_eff, raw_perm, raw_inh) = unsafe {
         let p = dp as *const u32;
         let e0 = core::ptr::read_volatile(p.add(0)) as u64;
         let p0 = core::ptr::read_volatile(p.add(1)) as u64;
@@ -221,64 +178,20 @@ pub(super) fn sys_capset(args: &SyscallArgs) -> i64 {
             (e0, p0, i0)
         }
     };
-    let old_perm = cur.creds.cap_permitted.load(Ordering::Acquire);
-    let old_inh = cur.creds.cap_inheritable.load(Ordering::Acquire);
-    let bounding = cur.creds.cap_bounding.load(Ordering::Acquire);
-    if new_perm & !old_perm != 0 {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    if new_eff & !new_perm != 0 {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    if new_inh & !((old_inh | old_perm) & bounding) != 0 {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    cur.creds.cap_permitted.store(new_perm, Ordering::Release);
-    cur.creds.cap_effective.store(new_eff, Ordering::Release);
-    cur.creds.cap_inheritable.store(new_inh, Ordering::Release);
-    cur.creds.cap_ambient.fetch_and(new_perm & new_inh, Ordering::AcqRel);
+    let old = CapsetOld {
+        effective:   cur.creds.cap_effective.load(Ordering::Acquire),
+        permitted:   cur.creds.cap_permitted.load(Ordering::Acquire),
+        inheritable: cur.creds.cap_inheritable.load(Ordering::Acquire),
+        bounding:    cur.creds.cap_bounding.load(Ordering::Acquire),
+        ambient:     cur.creds.cap_ambient.load(Ordering::Acquire),
+    };
+    let new = match capset_check(old, raw_eff, raw_perm, raw_inh) {
+        Ok(n) => n,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    cur.creds.cap_permitted.store(new.permitted, Ordering::Release);
+    cur.creds.cap_effective.store(new.effective, Ordering::Release);
+    cur.creds.cap_inheritable.store(new.inheritable, Ordering::Release);
+    cur.creds.cap_ambient.store(new.ambient, Ordering::Release);
     0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// libcap's opening move is `capget(&hdr, NULL)` with whatever magic it was
-    /// built against. Linux answers 0 and rewrites the header to the version it
-    /// speaks. We answered EINVAL, so the probe failed at the first call — and
-    /// this runs on every service spawn at the CAPABILITIES step.
-    #[test]
-    fn null_dataptr_probe_with_bad_magic_succeeds() {
-        assert_eq!(capget_early(0xdead_beef, 0), CapgetEarly::RewriteVersion(0));
-    }
-
-    /// The same bad magic WITH a real data pointer is a genuine request and
-    /// must still fail — the header is rewritten either way.
-    #[test]
-    fn bad_magic_with_dataptr_is_einval() {
-        assert_eq!(
-            capget_early(0xdead_beef, 0x1000),
-            CapgetEarly::RewriteVersion(-(Errno::Einval.as_i32() as i64))
-        );
-    }
-
-    /// A NULL dataptr returns BEFORE `cap_get_target_pid`, so the pid in the
-    /// header is never resolved. Loading the target first made a probe that
-    /// named a dead pid fail with ESRCH.
-    #[test]
-    fn null_dataptr_never_consults_the_target() {
-        for ver in [CAPV1, CAPV2, CAPV3] {
-            assert_eq!(capget_early(ver, 0), CapgetEarly::Ok);
-        }
-    }
-
-    /// v1 carries one 32-bit block; v2 and v3 carry two (v3 is otherwise
-    /// identical to v2 — Linux falls through between them).
-    #[test]
-    fn block_counts_match_linux_versions() {
-        assert_eq!(capget_early(CAPV1, 0x1000), CapgetEarly::Proceed(1));
-        assert_eq!(capget_early(CAPV2, 0x1000), CapgetEarly::Proceed(2));
-        assert_eq!(capget_early(CAPV3, 0x1000), CapgetEarly::Proceed(2));
-    }
 }

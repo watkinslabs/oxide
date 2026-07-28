@@ -401,6 +401,7 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
             let mut st = c.st.lock();
             if *st != VsockState::Closed {
                 *st = VsockState::Connected;
+                c.ever_connected.store(true, core::sync::atomic::Ordering::Release);
                 drop(st);
                 cancel_connect_timeout(&c);
             }

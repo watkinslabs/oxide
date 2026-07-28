@@ -55,13 +55,22 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
         return copy_sockaddr_to_user(addr_p, len_p, &sa);
     }
     let port = (*sock.local_port.lock()).unwrap_or(0);
+    let ip   = *sock.local_ip.lock();
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_INET6 {
-        let ip = *sock.local_ip6.lock();
+        let ip6 = *sock.local_ip6.lock();
+        // Linux `inet6_getname`: report `sk->sk_v6_rcv_saddr`, or `np->saddr`
+        // when that is unspecified. A dual-stack socket that connected to an
+        // IPv4 peer took the v4 path, so its local address is in the IPv4
+        // tuple and Linux renders it `::ffff:a.b.c.d`; reading `local_ip6`
+        // unconditionally reported `[::]` for every such socket.
+        if crate::sockaddr_encode::v6_name_is_v4_mapped(ip6, ip) {
+            let sa = encoded_sockaddr_for_socket(&sock, ip, port);
+            return copy_sockaddr_to_user(addr_p, len_p, &sa);
+        }
         let bound_ifindex = net::sock_v6::name_bound_ifindex(&sock);
-        let sa = encoded_sockaddr_in6(ip.0, port.to_be(), net::sock_v6::name_scope_id(ip, bound_ifindex));
+        let sa = encoded_sockaddr_in6(ip6.0, port.to_be(), net::sock_v6::name_scope_id(ip6, bound_ifindex));
         return copy_sockaddr_to_user(addr_p, len_p, &sa);
     }
-    let ip   = *sock.local_ip.lock();
     let sa = encoded_sockaddr_for_socket(&sock, ip, port);
     copy_sockaddr_to_user(addr_p, len_p, &sa)
 }
