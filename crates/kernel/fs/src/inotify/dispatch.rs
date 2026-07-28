@@ -168,9 +168,42 @@ fn vfs_close_notify(inode: &InodeRef, was_writable: bool, d: &Arc<vfs::Dentry>) 
     fire_with_parent(inode, if was_writable { IN_CLOSE_WRITE } else { IN_CLOSE_NOWRITE }, d);
 }
 
+/// Linux `fsnotify_change` (`include/linux/fsnotify.h`): map the applied
+/// `ATTR_*` set onto event bits. Not every attribute change is `FS_ATTRIB` — a
+/// size change is a MODIFY, and a lone atime/mtime update is ACCESS/MODIFY
+/// respectively, while BOTH together mean a `utimes()` call and are ATTRIB.
+/// # C: O(1)
+pub(crate) fn setattr_event_mask(ia_valid: u32) -> u32 {
+    let mut mask = 0;
+    if ia_valid & (vfs::ATTR_UID | vfs::ATTR_GID | vfs::ATTR_MODE) != 0 { mask |= FAN_ATTRIB; }
+    if ia_valid & vfs::ATTR_SIZE != 0 { mask |= IN_MODIFY; }
+    let times = ia_valid & (vfs::ATTR_ATIME | vfs::ATTR_MTIME);
+    if times == vfs::ATTR_ATIME | vfs::ATTR_MTIME { mask |= FAN_ATTRIB; }
+    else if times == vfs::ATTR_ATIME { mask |= IN_ACCESS; }
+    else if times == vfs::ATTR_MTIME { mask |= IN_MODIFY; }
+    mask
+}
+
+/// The `fsnotify_change` subscriber. One event per set bit, since `fire_self`
+/// dispatches a single bit at a time. # C: O(bits × dispatch)
+pub(crate) fn vfs_setattr_notify(inode: &InodeRef, ia_valid: u32) {
+    let mask = setattr_event_mask(ia_valid);
+    if mask == 0 { return; }
+    for bit in [FAN_ATTRIB, IN_MODIFY, IN_ACCESS] {
+        if mask & bit != 0 { fire_self(inode, bit); }
+    }
+    // dnotify's equivalent split (Linux `fsnotify_dentry` feeds both).
+    let mut dn = 0;
+    if mask & FAN_ATTRIB != 0 { dn |= vfs::file::DN_ATTRIB; }
+    if mask & IN_MODIFY  != 0 { dn |= vfs::file::DN_MODIFY; }
+    if mask & IN_ACCESS  != 0 { dn |= vfs::file::DN_ACCESS; }
+    vfs::file::dnotify_emit(inode, dn);
+}
+
 /// Install all inotify event hooks into vfs. Called once at kernel_main.
 /// # C: O(1)
 pub fn install_write_hook() {
+    vfs::set_setattr_hook(vfs_setattr_notify);
     vfs::set_write_hook(vfs_write_notify);
     vfs::set_open_hook(vfs_open_notify);
     vfs::set_read_hook(vfs_read_notify);
