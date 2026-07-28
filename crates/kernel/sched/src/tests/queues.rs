@@ -261,3 +261,97 @@ fn cfs_rotation_is_round_robin_for_equal_weight() {
     assert_eq!(order, alloc::vec![1u32, 2, 3, 1, 2, 3, 1, 2, 3],
         "equal-weight tasks must round-robin in stable order");
 }
+
+// Linux `__schedule`'s `prepare_task(next)` store order: `on_cpu` goes up
+// BEFORE the task leaves the tree (`on_rq` goes down). `kernel/sched/core.c`
+// spells the pairing out next to ttwu's `smp_load_acquire(&p->on_cpu)`:
+//
+//   __schedule() (switch to task 'p')      try_to_wake_up()
+//     STORE p->on_cpu = 1                    LOAD p->on_rq
+//   __schedule() (put 'p' to sleep)
+//     STORE p->on_rq = 0                     LOAD p->on_cpu
+//
+// "One must be running (->on_cpu == 1) in order to remove oneself from the
+// runqueue" — so a reader must never observe BOTH clear for a task being
+// switched to. `Task::pending_wake` is that reader.
+
+use crate::task::PendingWake;
+
+#[test]
+fn claiming_pick_publishes_on_cpu_and_clears_on_rq() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let t = normal(30, 0, 1024);
+    rq.enqueue(Arc::clone(&t));
+    assert!(t.on_rq.load(Ordering::Acquire));
+
+    let (picked, already) = rq.pick_next_task_claim();
+
+    assert_eq!(picked.tid, 30);
+    assert!(!already, "nobody owned this task before the pick");
+    assert!(picked.on_cpu.load(Ordering::Acquire), "prepare_task(next) did not publish on_cpu");
+    assert!(!picked.on_rq.load(Ordering::Acquire), "the pick must take it out of the tree");
+}
+
+/// The window the store order closes: at EVERY point observable by a
+/// concurrent wake-list drain, the task being switched to must look
+/// "executing" (Defer), never "safe to enqueue" (Ready).
+#[test]
+fn a_task_being_switched_to_is_never_reported_enqueueable() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let t = normal(31, 0, 1024);
+    rq.enqueue(Arc::clone(&t));
+
+    // Before the pick: queued, so a drain drops the wake.
+    assert!(matches!(t.pending_wake(core::ptr::null_mut()), PendingWake::Drop));
+
+    let (picked, _) = rq.pick_next_task_claim();
+
+    // After the pick: executing, so a drain defers it to the owner CPU.
+    assert!(matches!(picked.pending_wake(core::ptr::null_mut()), PendingWake::Defer),
+        "a task mid-switch-to was reported ready to enqueue on another CPU");
+}
+
+/// Reproduces the pre-fix order literally — pick first, publish `on_cpu`
+/// after — and shows the reader falsely observes Ready in between. Without
+/// this, the test above could pass against a broken probe.
+#[test]
+fn probe_detects_the_pre_fix_pick_then_claim_window() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let t = normal(32, 0, 1024);
+    rq.enqueue(Arc::clone(&t));
+
+    // Pre-fix body: `pick_next_task()` (clears on_rq), THEN set on_cpu.
+    let picked = rq.pick_next_task();
+    assert!(matches!(picked.pending_wake(core::ptr::null_mut()), PendingWake::Ready),
+        "probe failed to observe the falsely-enqueueable window Linux warns about");
+    picked.on_cpu.store(true, Ordering::Release);
+}
+
+/// A re-pick of the task already running here (`schedule()` selecting `prev`
+/// again) reports `already == true`; that is the signal `schedule()` uses to
+/// distinguish its own task from one another CPU owns.
+#[test]
+fn claiming_pick_reports_an_already_owned_task() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let t = normal(33, 0, 1024);
+    t.on_cpu.store(true, Ordering::Release);
+    rq.enqueue(Arc::clone(&t));
+
+    let (picked, already) = rq.pick_next_task_claim();
+
+    assert_eq!(picked.tid, 33);
+    assert!(already, "an already-executing task must be reported as already owned");
+}
+
+/// Falling through to idle claims the idle task, not a stale tree entry.
+#[test]
+fn claiming_pick_of_an_empty_runqueue_claims_idle() {
+    let id = idle(0);
+    let mut rq = RunqueueInner::new(0, Arc::clone(&id));
+
+    let (picked, already) = rq.pick_next_task_claim();
+
+    assert_eq!(picked.tid, id.tid);
+    assert!(!already);
+    assert!(id.on_cpu.load(Ordering::Acquire));
+}

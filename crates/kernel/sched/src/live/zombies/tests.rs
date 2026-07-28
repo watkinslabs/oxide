@@ -126,3 +126,69 @@ fn wake_wait4_parent_drops_a_stale_entry_instead_of_re_placing_a_running_task() 
 
     uninstall();
 }
+
+/// The SMP hazard `claim_wake` alone does not cover: a parent that parked in
+/// `wait4` and called `schedule()` is genuinely `Sleeping` — so the claim
+/// legitimately succeeds — yet it is still `on_cpu` until its CPU's incoming
+/// task runs `finish_task_switch`. Placement must go to that CPU's wake-list
+/// (Linux `ttwu_queue_wakelist`), never into a ready tree, or `schedule()`
+/// picks a task another CPU still owns.
+#[test]
+fn wake_wait4_parent_defers_a_parent_that_is_still_on_cpu() {
+    let _g = test_lock();
+    WAITERS.lock().clear();
+    let _ = crate::live::ttwu::wake_list_drain(0);
+    let parent = Arc::new(Task::new(9103, "parent", SchedClass::Normal { weight: 1024 }));
+    parent.cpu.store(0, Ordering::Release);
+    install(&parent);
+
+    // park_for_wait4 marks it Sleeping; the switch-off has NOT completed, so
+    // the scheduler's `on_cpu` ownership flag is still set.
+    unsafe { park_for_wait4(); }
+    parent.on_cpu.store(true, Ordering::Release);
+    assert_eq!(parent.state(), TaskState::Sleeping);
+
+    wake_wait4_parent(parent.tid);
+
+    // Pre-fix: `claim_wake` succeeds (it IS Sleeping) and the parent was
+    // enqueued straight onto the caller's runqueue — an executing task in the
+    // ready tree, which the next `schedule()` picks and whose `on_cpu` CAS
+    // then fails ("schedule selected task already owned by another CPU").
+    assert!(!parent.on_rq.load(Ordering::Acquire),
+        "a parent still executing on a CPU must not be enqueued by its waker");
+    let rq = runqueue::global().expect("installed");
+    assert_eq!(rq.inner.lock().nr_running(), 0, "the ready tree must stay empty");
+
+    let deferred = crate::live::ttwu::wake_list_drain(0);
+    assert_eq!(deferred.len(), 1, "the wake must be deferred to the owner CPU's wake list");
+    assert_eq!(deferred[0].tid, parent.tid);
+    assert_eq!(parent.state(), TaskState::Runnable, "the wake itself is not lost");
+
+    uninstall();
+}
+
+#[test]
+fn take_wait4_waiters_detaches_only_the_matching_parent() {
+    let mut waiters: Vec<Arc<Task>> = Vec::new();
+    for tid in [9201u32, 9202, 9201, 9203] {
+        waiters.push(Arc::new(Task::new(tid, "p", SchedClass::Normal { weight: 1024 })));
+    }
+
+    let taken = take_wait4_waiters(&mut waiters, 9201);
+
+    assert_eq!(taken.len(), 2, "both registrations for the parent must be detached");
+    assert!(taken.iter().all(|t| t.tid == 9201));
+    assert_eq!(waiters.len(), 2);
+    assert!(waiters.iter().all(|t| t.tid != 9201), "a matching entry was left behind");
+    assert!(waiters.iter().any(|t| t.tid == 9202) && waiters.iter().any(|t| t.tid == 9203),
+        "swap_remove walk dropped an unrelated waiter");
+}
+
+#[test]
+fn take_wait4_waiters_is_a_no_op_for_an_unregistered_parent() {
+    let mut waiters: Vec<Arc<Task>> = Vec::new();
+    waiters.push(Arc::new(Task::new(9204, "p", SchedClass::Normal { weight: 1024 })));
+
+    assert!(take_wait4_waiters(&mut waiters, 9999).is_empty());
+    assert_eq!(waiters.len(), 1);
+}
