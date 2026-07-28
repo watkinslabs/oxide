@@ -135,9 +135,17 @@ it. Then `wrap_file` calls `read_inode`, which must now go to disk — for an
 inode-table block whose write may still be sitting in the deferred batch. That
 ordering reads through a cache it just dropped, for data not yet committed.
 
-**Test it cheaply:** commit (or consult the pending batch) before
-`forget_created_ino`, or have `read_inode` see the uncommitted inode, and re-run
-the user's boot. If the journal file then creates, that is the bug.
+**Do NOT "just commit before the forget".** `create_op` already ends with
+`maybe_commit_batch()`, and the mount carries a shadow that reads are supposed
+to consult — so forcing a commit per create would (a) paper over the real
+question of why the read misses the shadow, and (b) reintroduce per-operation
+synchronous journal commits, which this project already measured as a
+pathological slowness source (~87 commits/s dominating boot).
+
+**The right question is why `read_inode` does not see the just-created inode**
+— whether through the batch, the shadow, or the cache that `forget_created_ino`
+drops immediately beforehand. Establish that first; the fix follows from it and
+is probably in the read path, not the commit policy.
 
 Either way this leaves an allocated on-disk inode with no VFS reference on every
 failure — a leak alongside the wrong errno, and if journald retries in a loop it
