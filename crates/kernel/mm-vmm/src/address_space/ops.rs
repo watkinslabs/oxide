@@ -102,6 +102,19 @@ impl AddressSpace {
         self.accounting.replace_locked_range(old_locked, new_locked);
     }
 
+    /// Linux `count_mm_mlocked_page_nr` (`mm/mlock.c`), in BYTES: how much of
+    /// `[start, start+len)` is ALREADY `VM_LOCKED`. `do_mlock`'s RLIMIT_MEMLOCK
+    /// ladder subtracts this before rejecting, so re-locking a range that is
+    /// already locked is not charged against the limit a second time — without
+    /// it, an idempotent `mlock()` of the same buffer eventually fails.
+    /// # C: O(N)
+    pub fn locked_bytes_in_range(&self, start: UserVirtAddr, len: usize) -> u64 {
+        let end = start.as_u64().saturating_add(len as u64);
+        self.vmas.read().iter().filter(|v| {
+            v.flags.contains(VmaFlags::LOCKED) && v.end.as_u64() > start.as_u64() && v.start.as_u64() < end
+        }).map(|v| v.end.as_u64().min(end) - v.start.as_u64().max(start.as_u64())).sum()
+    }
+
     /// # C: O(N)
     pub fn snapshot_vmas(&self) -> alloc::vec::Vec<Vma> {
         let g: RwReadGuard<'_, _, _> = self.vmas.read();

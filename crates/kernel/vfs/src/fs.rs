@@ -18,5 +18,5 @@ pub use fs_context::{
     vfs_parse_fs_string,
 };
 pub use get_tree::{get_tree_keyed, get_tree_nodev, get_tree_single, reconfigure_single};
-pub use registry::{get_fs, get_fs_type, register_filesystem, register_fs, registered_filesystems,
-    unregister_filesystem, unregister_fs};
+pub use registry::{filesystems_proc_body, get_fs, get_fs_type, register_filesystem, register_fs,
+    registered_filesystems, unregister_filesystem, unregister_fs};

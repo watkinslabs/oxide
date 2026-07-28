@@ -11,7 +11,7 @@ use crate::{
     make_proc_cmdline, make_proc_loadavg, make_proc_meminfo, make_proc_root,
     make_proc_self_cmdline, make_proc_self_comm, make_proc_self_environ, make_proc_self_exe,
     make_proc_self_fd, make_proc_self_maps, make_proc_self_root, make_proc_self_stat,
-    make_proc_self_io, make_proc_self_status, make_proc_uptime, StaticFileInode, FILESYSTEMS,
+    make_proc_self_io, make_proc_self_status, make_proc_uptime, StaticFileInode,
     VERSION_BODY,
 };
 use crate::{make_proc_self_cwd, make_proc_cgroup};
@@ -71,7 +71,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("uptime".to_string(),      make_proc_uptime());
     c.insert("loadavg".to_string(),     make_proc_loadavg());
     c.insert("stat".to_string(),        crate::stat::make_proc_stat());
-    c.insert("filesystems".to_string(), StaticFileInode::new(FILESYSTEMS));
+    c.insert("filesystems".to_string(), crate::filesystems::make_proc_filesystems());
     c.insert("cmdline".to_string(),     make_proc_cmdline());
     c.insert("devices".to_string(),     crate::devices::make_proc_devices());
     c.insert("modules".to_string(),     crate::net::make_proc_modules());
