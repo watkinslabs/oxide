@@ -26,9 +26,10 @@ predates both).
 
 | DONE | W8 `shm_nattch` counted shmat/shmdt calls, not VMAs | `F765-sysv-blocking-differential` | both | §9 |
 
-Differential state after F765 merged with B1460's `latency` rows, own runs,
-clean builds: **79/79 identical records on BOTH arches — zero divergences**
-(x86 `x86-20260728-001140-7z5Es4`, arm `arm-20260728-001449-cpsSR8`). F765 grew
+Differential state after F765 merged with the `latency` and `inotify` rows,
+own runs, clean builds: **87/87 identical records on BOTH arches — zero
+divergences** (x86 `x86-20260728-010744-KpVGX3`, arm
+`arm-20260728-011000-3u4phl`). F765 grew
 it 42 -> 77 with `sysv_sem` / `sysv_msg` / `sysv_shm`, the first execution of
 the SysV blocking paths and of `shmdt`'s address-space half.
 
