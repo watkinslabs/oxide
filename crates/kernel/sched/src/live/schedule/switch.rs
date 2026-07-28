@@ -308,6 +308,17 @@ pub unsafe fn schedule() {
     hal::kassert!(!next_arc.on_rq.load(Ordering::Acquire),
         "schedule picked task still marked on_rq");
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    // Linux `picked:` in `__schedule` — `clear_tsk_need_resched(prev)`, run
+    // BEFORE the `prev != next` test so a re-pick of `prev` also consumes the
+    // request. The flag is per-TASK, so clearing it here (rather than leaving a
+    // per-CPU word set) is what stops the NEXT task from inheriting a
+    // reschedule that was asked of whoever was running when the tick landed.
+    {
+        // SAFETY: rq.current is non-null after install_global; lock-free read
+        // of a slot whose `Arc` the runqueue owns, inside this preempt-off scope.
+        let prev_ref = unsafe { rq.current_ref() };
+        crate::preempt::resched::clear_tsk_need_resched(prev_ref);
+    }
 
     let next_raw = Arc::as_ptr(&next_arc) as *mut Task;
     let prev_raw = rq.current.load(Ordering::Acquire);
