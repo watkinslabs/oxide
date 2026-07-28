@@ -44,6 +44,10 @@ pub use relocator::{
     R_AARCH64_MOVW_PREL_G2_NC, R_AARCH64_MOVW_PREL_G3, R_AARCH64_LDST128_ABS_LO12_NC,
 };
 
+// `may_init_module()` + the `kernel.modules_disabled` latch: the admission
+// ladder shared by init_module / finit_module / delete_module.
+pub mod admission;
+
 pub mod modinfo;
 pub use modinfo::{KERNEL_VERMAGIC, ModuleInfo, ModuleParam};
 
