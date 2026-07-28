@@ -98,18 +98,71 @@ macro_rules! pid_inode_ctor {
     };
 }
 
+/// Same shape, but the read is behind `ptrace_may_access` (Linux `lock_trace`
+/// / `proc_mem_open`). Used for every entry `pid_file_policy::needs_ptrace_gate`
+/// names that has real content to leak — the DAC mode alone cannot refuse a
+/// same-uid caller once the target stopped being dumpable.
+macro_rules! pid_gated_ctor {
+    ($ctor:ident, $body:ident, $tag:expr, $entry:expr) => {
+        pub fn $ctor(tid: u32) -> InodeRef {
+            super::pid_access::make_pid_gated_file(pid_ino($tag, tid), tid, $entry, $body)
+        }
+    };
+}
+
 pid_inode_ctor!(make_pid_status, pid_status_body, 0x20);
 pid_inode_ctor!(make_pid_cmdline, pid_cmdline_body, 0x21);
 pid_inode_ctor!(make_pid_stat, pid_stat_body, 0x22);
-pid_inode_ctor!(make_pid_maps, pid_maps_body, 0x23);
-pid_inode_ctor!(make_pid_comm, pid_comm_body, 0x24);
-pid_inode_ctor!(make_pid_environ, pid_environ_body, 0x25);
+pid_gated_ctor!(make_pid_maps, pid_maps_body, 0x23, "maps");
+/// `/proc/<pid>/comm` — `S_IRUGO|S_IWUSR`, and Linux really does honour the
+/// write (`comm_write`): a thread renames itself or a sibling by writing here,
+/// which is `prctl(PR_SET_NAME)` through the filesystem. The bytes are stored
+/// VERBATIM up to `TASK_COMM_LEN - 1`; the kernel strips nothing, so
+/// `echo foo > /proc/self/comm` leaves the trailing newline IN `comm` (verified
+/// against a live host kernel: write("abc\n") -> comm reads back "abc\n"). The
+/// return value is the caller's full `count`, even when it was truncated.
+struct CommFileOps;
+
+impl vfs::FileOps for CommFileOps {
+    fn read(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let d = inode.private::<crate::dyn_file::PidGenData>().ok_or(vfs::VfsError::Einval)?;
+        Ok(crate::dyn_file::read_at(&(d.gen)(d.tid), off, buf))
+    }
+    fn write(&self, inode: &vfs::Inode, _off: u64, src: &[u8]) -> vfs::KResult<usize> {
+        let d = inode.private::<crate::dyn_file::PidGenData>().ok_or(vfs::VfsError::Einval)?;
+        let target = sched::live::registry::lookup(d.tid).ok_or(vfs::VfsError::Esrch)?;
+        // Linux `comm_write`: only a thread of the SAME thread group may rename
+        // it; anyone else gets EINVAL (not EPERM).
+        let cur = sched::live::current().ok_or(vfs::VfsError::Einval)?;
+        use core::sync::atomic::Ordering;
+        if cur.tgid.load(Ordering::Acquire) != target.tgid.load(Ordering::Acquire) {
+            return Err(vfs::VfsError::Einval);
+        }
+        // `sched::TASK_COMM_LEN` is the one definition of this width; a local
+        // copy here could drift from the array `set_comm_bytes` accepts.
+        let mut name = [0u8; sched::TASK_COMM_LEN];
+        let n = src.len().min(sched::TASK_COMM_LEN - 1);
+        name[..n].copy_from_slice(&src[..n]);
+        target.set_comm_bytes(name);
+        Ok(src.len())
+    }
+}
+
+/// # C: O(1)
+pub fn make_pid_comm(tid: u32) -> InodeRef {
+    vfs::InodeBuilder::new(pid_ino(0x24, tid),
+        vfs::mk_mode(vfs::FileType::Regular, crate::pid_file_policy::MODE_RUGO_WUSR),
+        vfs::default_inode_ops(), alloc::sync::Arc::new(CommFileOps))
+        .private(alloc::sync::Arc::new(crate::dyn_file::PidGenData { tid, gen: pid_comm_body }))
+        .build()
+}
+pid_gated_ctor!(make_pid_environ, pid_environ_body, 0x25, "environ");
 pid_inode_ctor!(make_pid_statm, pid_statm_body, 0x26);
-pid_inode_ctor!(make_pid_io, pid_io_body, 0x29);
+pid_gated_ctor!(make_pid_io, pid_io_body, 0x29, "io");
 pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
 use crate::pid_sched::pid_sched_body;
 pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
-pid_inode_ctor!(make_pid_personality, pid_personality_body, 0x2e);
+pid_gated_ctor!(make_pid_personality, pid_personality_body, 0x2e, "personality");
 
 /// Linux `proc_pid_personality`: `seq_printf(m, "%08x\n", task->personality)`.
 /// It was a hardcoded `00000000`, so `setarch`/`personality(2)` state was

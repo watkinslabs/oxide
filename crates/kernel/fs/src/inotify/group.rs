@@ -5,6 +5,7 @@ use core::sync::atomic::Ordering;
 use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, PollSubscribers, VfsError};
 
 use crate::inotify::dispatch::register_instance;
+use crate::inotify::layout::{encode_event, event_record_len};
 use crate::inotify::types::{
     inode_key, InotifyData, PermEvent, FAN_ACCESS_PERM, FAN_ALLOW, FAN_DENY, FAN_OPEN_EXEC_PERM, FAN_OPEN_PERM,
     Event, INOTIFY_DEFAULT_MAX_QUEUED_EVENTS, INOTIFY_INO_BASE, IN_Q_OVERFLOW, PERM_MARK_COUNT,
@@ -100,7 +101,7 @@ impl InotifyData {
             return;
         }
         if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return; }
-        q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, len: 0, obj: None, pid: 0 });
+        q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
         self.poll_subs.notify_mask(vfs::POLL_IN);
     }
 
@@ -124,9 +125,14 @@ impl InotifyData {
         for (_, ev) in self.perm_pending.lock().drain(..) { ev.response.store(FAN_ALLOW, Ordering::Release); }
     }
 
-    /// Drain queued events into `buf` in Linux `struct inotify_event`
-    /// shape: {wd: i32, mask: u32, cookie: u32, len: u32, name[len]}.
-    /// v1 always emits len=0 (no name tail).
+    /// Drain queued events into `buf` in Linux `struct inotify_event` shape:
+    /// `{wd: i32, mask: u32, cookie: u32, len: u32, name[len]}`, where `len` is
+    /// the NAME PADDED up to a whole 16-byte header (`layout`). Records are
+    /// variable-length, so the queue is PEEKED before popping: a caller whose
+    /// remaining buffer cannot hold the next whole event gets what has already
+    /// been copied, or `EINVAL` when that is nothing (Linux `get_one_event`
+    /// returns `ERR_PTR(-EINVAL)` and `inotify_read` propagates it). A partial
+    /// event is never emitted.
     pub(crate) fn read(&self, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         if self.fanotify {
             loop {
@@ -142,17 +148,15 @@ impl InotifyData {
                 }
             }
         }
-        const HDR: usize = 16;
         let mut written = 0;
         let mut q = self.events.lock();
-        while written + HDR <= buf.len() {
+        while let Some(need) = q.front().map(|e| event_record_len(e.name.len())) {
+            if written + need > buf.len() {
+                if written == 0 { return Err(VfsError::Einval); }
+                break;
+            }
             let ev = match q.pop_front() { Some(e) => e, None => break };
-            let s = &mut buf[written..written + HDR];
-            s[0..4].copy_from_slice(&ev.wd.to_le_bytes());
-            s[4..8].copy_from_slice(&ev.mask.to_le_bytes());
-            s[8..12].copy_from_slice(&ev.cookie.to_le_bytes());
-            s[12..16].copy_from_slice(&ev.len.to_le_bytes());
-            written += HDR;
+            written += encode_event(&mut buf[written..], ev.wd, ev.mask, ev.cookie, &ev.name);
         }
         if written == 0 { return Err(VfsError::Eagain); }
         Ok(written)

@@ -199,7 +199,7 @@ pub(crate) fn remove_watch(inotify: &Arc<InotifyData>, wd: i32) -> Result<(), Er
     };
     g.remove(pos);
     MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
-    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, len: 0, obj: None, pid: 0 });
+    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
     Ok(())
 }
 

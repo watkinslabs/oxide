@@ -183,7 +183,7 @@ fn rename_resolved(s: &RenameSides, from_raw: &str, to_raw: &str, flags: u32) ->
                 drop_child_cache(old_parent, old_name);
                 drop_child_cache(new_parent, new_name);
             }
-            ::fs::inotify::fire_move(&old_parent.inode, &new_parent.inode, Some(&old_victim));
+            ::fs::inotify::fire_move(&old_parent.inode, &new_parent.inode, Some(&old_victim), old_name, new_name);
             0
         }
         Err(e)  => errno_from_vfs(e),

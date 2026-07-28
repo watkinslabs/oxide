@@ -92,4 +92,6 @@ pub mod net_raw;
 
 #[cfg(target_os = "oxide-kernel")] pub mod pid_stat;
 #[cfg(target_os = "oxide-kernel")] pub mod pid_status;
+#[cfg(any(target_os = "oxide-kernel", test))] pub mod status_render;
+pub mod pid_file_policy;
 #[cfg(target_os = "oxide-kernel")] pub mod smaps;
