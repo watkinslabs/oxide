@@ -99,57 +99,44 @@ not exist yet — and are noise here.
 This also matches a standing note that journald writes zero entries despite fs
 and mmap working.
 
-**Traced to the exact line 2026-07-28 (not fixed).** An earlier note here named
-`RootfsState::create_at` (the `Option`-returning one) — **that was wrong**, it is
-not the path `openat` takes. The real path is
-`ext4/rootfs/inode/special.rs::create`, which propagates errors correctly:
-quota via `?`, backend failures through `vfs_error_from_mount`.
-
-It contains exactly ONE `Eio`, and it is the last line:
+**RESOLVED 2026-07-28 — `B1494` / PR #4143 (merged).** The EIO was the last line
+of `ext4/rootfs/inode/special.rs::create`:
 
 ```rust
 d.st.forget_created_ino(ino);
-d.st.wrap_file(ino).ok_or(VfsError::Eio)   // <- err=5 comes from here
+d.st.wrap_file(ino).ok_or(VfsError::Eio)   // <- err=5
 ```
 
-So for the journal file, **`create_file` SUCCEEDED — the inode was allocated on
-disk — and `wrap_file(ino)` then returned `None`.** The EIO is not an I/O error
-and not a quota rejection: it is a freshly created inode that could not be
-wrapped into a VFS inode. `tmpfile` has the identical last line.
+`create_file` had SUCCEEDED — the inode was on disk — and `wrap_file` then
+re-read the slot to build the VFS inode, folding every backend failure into
+`None` through `read_inode(..).ok()?`. So a create that worked surfaced as a
+bare EIO with no diagnostic, and stranded the allocated inode on every attempt.
 
-**Narrowed to two lines.** `wrap_file` (`ext4/rootfs/ops.rs:105`) returns
-`None` in exactly two places:
+The earlier reading here (arm 2 `!is_reg()` "RULED OUT", so it must be a
+deferred-batch visibility problem) was **wrong on both halves**: the read path
+IS shadow-coherent (`read_inode` → `read_meta_byte_range` →
+`read_metadata_block` consults `state.shadow`), and the ruling-out was circular
+— it assumed the read sees the write.
 
-1. `self.mount.read_inode(ino).ok()?` — the inode `create_file` just allocated
-   cannot be read back. Suspect ordering: `forget_created_ino` runs immediately
-   before and invalidates the page cache + `iforget`s the number, so the re-read
-   goes to disk; if the inode-table write is not yet visible this fails.
-2. `if !inode.is_reg() { return None; }` — **RULED OUT.** `create_file`
-   (`ialloc/create.rs:34`) writes `S_IFREG | (mode_perm & 0x0FFF)`, so masking
-   the type off at the call site is harmless. Checked, not assumed.
+The real defect was structural, not a race. **Linux never re-reads what it just
+allocated:** `ext4_create` hands the live `struct inode` from `ext4_new_inode`
+straight to `d_instantiate_new` (`fs/ext4/namei.c` `ext4_add_nondir`), and
+orphans rather than leaks on failure. `forget_created_ino` — dropping the cache
+immediately before the read — existed only to service a round trip Linux does
+not make. `init_inode` now returns the parsed `Inode` it wrote, and
+`wrap_created_file`/`wrap_created_any` build from it with no I/O and no failure
+mode. `mkdir` shared the bug (the boot's other symptom,
+`mkdir /var/log/journal/<id> err=5`) and is fixed with it. `build_file_inode`
+also stopped re-reading the slot for `i_blocks` alone — it had been silently
+reporting `st_blocks = 0` whenever that read failed — so every instantiation,
+not just creates, lost a metadata read.
 
-**So it is arm 1, and there is a concrete mechanism.** `create_file` runs inside
-`create_op`, whose own comment says it "defers the batch commit". Then
-`forget_created_ino` invalidates the page cache for that inode and `iforget`s
-it. Then `wrap_file` calls `read_inode`, which must now go to disk — for an
-inode-table block whose write may still be sitting in the deferred batch. That
-ordering reads through a cache it just dropped, for data not yet committed.
+Guarded by `crates/kernel/ext4/tests/create_no_readback_image.rs`: the wrap is
+asserted to issue ZERO inode-table reads, with a control proving the injected
+read fault actually bites.
 
-**Do NOT "just commit before the forget".** `create_op` already ends with
-`maybe_commit_batch()`, and the mount carries a shadow that reads are supposed
-to consult — so forcing a commit per create would (a) paper over the real
-question of why the read misses the shadow, and (b) reintroduce per-operation
-synchronous journal commits, which this project already measured as a
-pathological slowness source (~87 commits/s dominating boot).
-
-**The right question is why `read_inode` does not see the just-created inode**
-— whether through the batch, the shadow, or the cache that `forget_created_ino`
-drops immediately beforehand. Establish that first; the fix follows from it and
-is probably in the read path, not the commit policy.
-
-Either way this leaves an allocated on-disk inode with no VFS reference on every
-failure — a leak alongside the wrong errno, and if journald retries in a loop it
-burns an inode per attempt.
+**Whether this unfreezes the greeter is unverified** — it removes the journald
+write failure, not necessarily the freeze below.
 
 Then it **freezes**: screendumps 150s→400s byte-identical, alongside a large
 volume of `Failed to dispatch fd source: Invalid argument` from gnome-shell —
@@ -179,6 +166,7 @@ Recorded because each was asserted before being checked, and propagated.
 - `fadvise64 NOREUSE`, THP, KSM, mandatory locking and `copy_file_range`'s `EXDEV` are ABSENT-OK — Linux omits them too.
 - `rseq`, blocking lease break, `RLIMIT_MEMLOCK`, hugetlbfs and `timerfd` parking were all listed as gaps and are **implemented**.
 - `gnome-shell` runs, and did before this session's fixes — an earlier doubt of mine was wrong.
+- The journald EIO was **not** a deferred-batch visibility problem. The read path is shadow-coherent, and the "arm 2 ruled out" argument was circular — it assumed the read sees the write. Real cause: a read-back round trip Linux does not make (`B1494`).
 
 ## 7 Traps that cost real time
 
@@ -189,3 +177,6 @@ Recorded because each was asserted before being checked, and propagated.
 5. **A weak implementation passes a naive test.** `AT_RANDOM`'s "two execs differ" passed with a clock-derived value; the load-bearing assertion was "upper half not derivable from lower half".
 6. **A consistency test comparing two of our own values proves nothing** — DRM's ioctl-size test passed with both number and struct wrong. Anchor to Linux.
 7. **An 8-byte-wrong ioctl size made a complete subsystem unreachable.** DRM atomic modesetting was fully implemented and never once ran.
+8. **A read-back of what you just wrote is a non-Linux invention, and it manufactures a failure mode that cannot happen in Linux.** ext4's `create`/`mkdir`/`tmpfile` allocated an inode, discarded what they knew, re-read the slot, and folded every backend error into one bare `EIO` from an operation that had SUCCEEDED. Linux hands the live `struct inode` to `d_instantiate_new` and never re-reads. When an error is unattributable, ask what the Linux path does *not* do — the round trip was also costing a metadata read per create (`B1494`).
+9. **`cargo test` halts on the first failing target, so one red test hides the rest.** Use `--no-fail-fast` when auditing a crate. A `-p fs` run reported only `sys_dup2_shape`; `sys_close_shape` was failing behind it (`B1495`).
+10. **A hosted test that passes standalone and fails in the suite is a shared-global race, not a flake to re-run.** Test binaries run their tests on concurrent threads, so any `static CURRENT`-style global needs a `TEST_LOCK`. Three files had it; two did not (`B1495`).
