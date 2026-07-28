@@ -36,7 +36,7 @@ fn create_unix_sock_node_bytes(path: &[u8]) -> Result<Option<UnixSockNode>, i64>
             let addr = net::UnixAddr::from_inode_bytes(path.to_vec(), &inode);
             vfs::file::iput(inode);
             crate::namei_common::drop_child_cache(&parent, &name);
-            vfs::fire_dirent_create(&parent.inode, &name);
+            vfs::fire_dirent_create(&parent.inode, &name, false);
             Ok(Some(UnixSockNode { parent, name, addr }))
         }
         Err(vfs::VfsError::Eexist) => Err(-(Errno::Eaddrinuse.as_i32() as i64)),
@@ -50,7 +50,7 @@ fn remove_unix_sock_node(n: &UnixSockNode) {
         n.parent.inode.unlink_child(&n.name)
     };
     crate::namei_common::drop_child_cache(&n.parent, &n.name);
-    vfs::fire_dirent_delete(&n.parent.inode, &n.name);
+    vfs::fire_dirent_delete(&n.parent.inode, &n.name, false);
 }
 
 /// Linux privileged-port admission for explicit INET binds. # C: O(1)

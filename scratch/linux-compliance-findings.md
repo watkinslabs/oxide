@@ -1,0 +1,129 @@
+# Linux compliance findings — consolidated subsystem audit
+
+DRAFT 2026-07-27. Dep: `scratch/audit-mm.md`, `scratch/audit-sched.md`, `scratch/audit-vfs.md`, `scratch/audit-net-sec.md`, `scratch/syscall-compliance-matrix.md`, `scratch/partial-gap-triage.md`.
+
+Consolidates four read-only subsystem audits run against `/home/nd/oxide/linux-master`
+(v7.2.0-rc4). Each source doc carries per-row Linux file:line and oxide file:line;
+this file is the index, the cross-cutting patterns, and the work order.
+
+## 1 Totals
+
+Counts as reported by each audit lane from its own document.
+
+| Subsystem | Doc | BLOCKER | SECURITY | CORRECTNESS | PERF | ABSENT-OK | Findings |
+|---|---|---|---|---|---|---|---|
+| mm | `audit-mm.md` | 3 | 23 | 58 | 29 | 24 | 137 |
+| sched/time/signals | `audit-sched.md` | 4 | 8 | 66 | 20 | 15 | ~150 |
+| vfs/fs/block | `audit-vfs.md` | 11 | 25 | 112 | 31 | 1 | 180 |
+| net/security/ipc/tty/drivers | `audit-net-sec.md` | 16 | 39 | 102 | 14 | 51 | 222 |
+| **Total** | | **34** | **95** | **338** | **94** | **91** | **~689** |
+
+`ABSENT-OK` = Linux itself omits this under a plausible `CONFIG`; recorded so a later
+lane does not implement something upstream does not have either. Not a gap.
+
+Separately, 46 rows record mechanisms **verified as matching Linux** (§6).
+
+## 2 Blockers, deduplicated and ordered
+
+Ordered by user-visible impact. Several audits reached the same defect from different
+directions; those are merged here with all reporting docs cited.
+
+| # | Blocker | Effect | Status |
+|---|---|---|---|
+| 1 | **Every kernel timeout has a ~100 ms floor** — `park_with_deadline` only stamps a deadline; the sole consumer is a 100 ms periodic that is itself self-throttled to 100 ms on a kthread parking 100 ms per loop. Wait deadlines never reach `next_interrupt_deadline()`. | `nanosleep(1ms)`, `epoll_wait(…,1)`, futex/select/poll timeouts all block ~100 ms (worst case ~200 ms). A global latency floor under every desktop IPC wait. **Leading explanation for the standing desktop-slowness symptom.** | `B1460` in flight |
+| 2 | **timerfd has no timer object** — expiry is discovered by polling the same 100 ms scanner; nothing ever fires. | systemd and GNOME are heavy timerfd users. | with #1 |
+| 3 | **Signals are only delivered at the syscall-return tail** — `take_lowest_pending()` has one call site and none on the IRQ/exception return path, either arch. | A compute-bound loop issuing no syscalls is **unkillable**: `kill -9`, `^C`, `SIGALRM` never arrive. Sibling SIGKILL from `zap_other_threads` also lands only at each sibling's next syscall return. | open |
+| 4 | **No working path to a durable write** — `vfs_fsync` calls `f_op->fsync` before `mapping.writeback()` (Linux is the reverse); `O_SYNC`/`O_DSYNC`/`RWF_SYNC` parsed and never consulted; `msync(MS_SYNC)` never reaches the device; `O_DIRECT` a no-op; `VIRTIO_BLK_F_FLUSH` never negotiated while `T_FLUSH` is sent and its result discarded. | `write()` + `fsync()` returning 0 can lose data. Invisible to boot tests. | `B1462` in flight |
+| 5 | **Inodes built with no `PollSubscribers`** — tty, pty, ext4 FIFOs, mqueue fds. `poll` parks with no wake source; `epoll_ctl(ADD)` registers no callback. | Readiness survives only via epoll's O(N) rescan fallback — which is why this presents as slowness, not as a hang. Found independently by three lanes in three subsystems. | `B1461` in flight |
+| 6 | **`POLL_OUT` never de-asserts** — every AF_UNIX and TCP poll mask sets it unconditionally while the send paths correctly return `EAGAIN`. | A non-blocking poll-driven writer against a slow reader spins at 100% CPU. | with #5 |
+| 7 | **inotify events carry no filename** — `len` hardwired to 0, the leaf name taken and discarded. | Every directory watcher learns *that* something changed, never *which* file: systemd `.path` units, udev, `GFileMonitor`, Nautilus, dconf. | `B1463` in flight |
+| 8 | **User frames freed with no TLB flush** — `evict_foreign_pages_in_range` unmaps then immediately frees, no local flush, no shootdown, either arch. The in-file justification ("oxide is UP") is false; SMP bring-up runs on both arches and smoke boots `-smp 2`. | Reachable from `process_madvise`/`process_mrelease`: a frame returns to the buddy while another CPU holds a writable TLB entry. Same class as the io_uring free-while-mapped UAF. | open |
+| 9 | **`sched_setscheduler` on a remote-queued task uses the caller's runqueue** — force-clears `on_rq`, then enqueues into a second tree. | One `Arc<Task>` in two runqueue trees; two CPUs can run one task and corrupt its saved context. Latent until SMP>1, which is untested (`wait-diff-open-items` W4). | open |
+| 10 | **No global OOM killer** — `kill_memcg` has one caller and fires only under a cgroup limit. | On a normal desktop, memory exhaustion kills nothing; the allocation failure propagates and the *faulting* process takes SIGSEGV instead of a badness-selected victim taking SIGKILL. | open |
+| 11 | ~~**The exec transition has no security floor**~~ — every part of the finding was CONFIRMED and is now FIXED: `S_ISUID`/`S_ISGID` honouring with all of Linux's suppression rules, `MAY_EXEC` + file-type + `path_noexec` on the live exec path, `AT_SECURE`/`AT_UID`/`AT_EUID`/`AT_GID`/`AT_EGID` from the real creds on both arches, `MNT_NOSUID` via `Mount::may_suid`, `MNT_NODEV` in `may_open`. Plus the capability half: file caps (incl. the rev-3 `rootid` namespace test and an interleaved-layout decode bug), ambient clearing, `SECBIT_NOROOT`/`SECBIT_KEEP_CAPS`, the `LSM_UNSAFE_*` downgrade, `PER_CLEAR_ON_SETID` and `would_dump` dumpability. Decision is one pure ungated fn with 38 unit tests. | DONE | `B1464-exec-privilege-transition` |
+| 12 | **`/proc/<pid>/status` is fabricated** — `Uid: 0 0 0 0`, all-ones capability masks, `NoNewPrivs: 0` for every process; procfs has no `ptrace_may_access` gate and every dynamic file is 0444. | systemd, polkit, dbus-daemon and `pkexec` read this to decide who a peer is and what it may do. | `B1463` in flight |
+| 13 | **arm64 `rt_sigreturn` writes raw user PSTATE into `spsr_el1`** — forging `M[3:0]=0b0101` returns user code at **EL1**. x86_64 has the same shape with EFLAGS and no `FIX_EFLAGS` whitelist (IOPL user-settable); `build_signal_frame` has no `access_ok`, giving an arbitrary kernel write. | Unprivileged local privilege escalation. | `B1459` in flight |
+| 14 | **`AT_RANDOM` is a clock reading** — 16 bytes derived from one `monotonic_ns()` sample; bytes 8..15 re-derive from the same word. | glibc builds `__stack_chk_guard` and the `PTR_MANGLE` pointer guard from it, so both mitigations are predictable. `crates/kernel/crng` exists and is not called. | `F768` in flight |
+
+## 3 Cross-cutting patterns
+
+These explain a large share of the 338 CORRECTNESS rows and change how the work should
+be estimated.
+
+### 3.1 Complete machinery with no callers
+The dominant defect class is **correct, sometimes tested code that nothing invokes** —
+not missing code. Confirmed: `age_anon`/`age_file`, `mark_lru_referenced`,
+`psi::task_stall`, `vfs::DirtyPages`, the `f_ra` readahead state machine, the whole
+`crates/shared/slab` allocator, `sched::oom::kill_memcg` (one caller), `update_rtt`
+(so TCP's RTO is a fixed 1 s and `tcpi_rtt` always 0), `static_console::poll_subscribers`,
+`encode_get_edid`, `register_family`, `virtio::queue::VirtQueue`,
+`sigpend::all_pending`, `security::bpf_lsm`.
+
+Consequence: **a symbol existing proves nothing.** Grep call sites, not definitions.
+Corollary: many of these are wiring jobs, not implementations — cheaper than they look.
+
+### 3.2 Gated files hide their own tests
+`crates/kernel/syscalls/src/kernel_body.rs` and every slot file it `#[path]`-includes are
+`#[cfg(target_os = "oxide-kernel")]`. A `#[cfg(test)] mod tests` there **compiles out
+silently** while cargo prints "ok". The sched audit found the correlation directly: the
+code that turned out **correct** overwhelmingly lives in *ungated* modules. This is the
+strongest available argument for moving decision logic out of gated files, and it is now
+a standing requirement in every fix brief.
+
+### 3.3 Fabricated data presented as real
+Distinct from "unimplemented", and worse, because callers cannot detect it:
+`perf_event_open` returned a timestamp as whatever counter was requested;
+`/proc/<pid>/status` reports uid 0 and full capabilities for every process;
+`AT_RANDOM` is a clock; `/proc/sys/kernel/perf_event_paranoid` was a dead cell no code
+read — a split source of truth letting userspace "loosen" a gate the syscall never
+consulted. Hunt for constants in files that render kernel state.
+
+### 3.4 aarch64 numbers falling through to the x86 table
+`arm_abi.rs` passes an unmapped aarch64 number straight into the x86_64 dispatch table.
+`asm-generic/unistd.h` reserves 295..402 as unassigned; every one of those ran a real x86
+syscall — aarch64 `syscall(300)` executed `fanotify_mark`. Earlier instance: `nfsservctl`
+ran `connect`. **Absence of a mapping is not `ENOSYS`** — it must be an explicit rule.
+
+## 4 Work order
+
+1. **#1/#2 timeout floor** — largest user-visible win, self-contained, one-shot programmer already exists.
+2. **#13/#14 signal-frame escalation + `AT_RANDOM`** — security, both small and isolated.
+3. **#4 durable write** — data loss; invisible to every test we currently run.
+4. **#5/#6 readiness** — removes an O(N) fallback the desktop leans on.
+5. **#3 signal delivery on IRQ/exception return** — correctness floor; `docs/54` governs both arches.
+6. **#11/#12 exec floor + procfs credentials** — the privilege model; #11 must follow `F768` (same files).
+7. **#8/#9 SMP hazards** — currently latent; blocking for SMP>1, which is untested.
+8. **#10 OOM killer**, then the long CORRECTNESS tail by owning subsystem.
+
+## 5 What could not be determined
+
+Recorded rather than guessed. Each needs a targeted lane.
+
+| Question | Why it matters | Doc |
+|---|---|---|
+| Does the fault handler recover from a kernel-mode fault at an unmapped user VA? | Bounds whether the mqueue user-buffer row is a trivially reachable unprivileged kernel fault. | net-sec |
+| AF_VSOCK message-level conformance | Not diffed against Linux. | net-sec |
+| IPv6 SLAAC / NUD correctness | Not verified. | net-sec |
+| Full 281-hook LSM inventory | Only sampled. | net-sec |
+| 9 further mm items | Listed in `audit-mm.md` § What I could not determine. | mm |
+
+## 6 Verified correct — do not re-audit
+
+Recorded to stop future lanes spending time here. Capabilities, user namespaces,
+keyrings, job control, VT process-mode switching, TCP CUBIC, POSIX/OFD/flock owner
+split, atime policy, xattr namespace gating, `sync_file_range`, htree insert/split,
+extent trees to depth 5, `metadata_csum`, fanotify (including blocking permission
+events), zram, quota (the most Linux-faithful subsystem audited), `membarrier`, the
+robust-futex exit walker, `restart_block`, NTP discipline, POSIX CPU timers,
+`sigaltstack`, the tty job-control decision table, and `rseq` (`rseq_cs` decode, IP
+fixup, signature validation — both arches).
+
+## 7 Corrections to earlier ledgers
+
+- `partial-gap-triage.md` A1 lists `rseq` as missing `rseq_cs`/IP-fixup. **Stale** — only `rseq_signal_deliver` is absent.
+- `fadvise64 NOREUSE` is **not** a gap; Linux's effect is reclaim-bias only.
+- `RLIMIT_MEMLOCK` **is** enforced — but `mlockall(2)` and `mmap(MAP_LOCKED)` bypass it.
+- hugetlbfs is **not** absent; it is mountable and hands out 4 KiB pages (a false capability probe).
+- The AF_UNIX listener accept-readiness wakeup is **already fixed**.
+- `bpf` is **not** an arbitrary-kernel-execution hole — programs never execute; a functional void, not a security one.
+- `bind()`/`mknod` stale negative dentries: **already fixed**. A blocking lease break **does** exist. Unwritten-extent writes are **not** rejected. Mandatory locking is `ABSENT-OK` (Linux removed it in 5.15). `copy_file_range`'s unconditional `EXDEV` matches current Linux.

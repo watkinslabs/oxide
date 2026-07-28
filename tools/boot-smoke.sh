@@ -33,6 +33,21 @@ case "$ARCH" in
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 
+# Vendor preflight. `vendor/` holds fetched, gitignored boot artifacts, so a
+# fresh feature worktree has none — and an arm boot then fails on missing
+# arm64-efi GRUB modules, which reads as a kernel fault but is not one. Five
+# separate lanes lost an ARM smoke to this and hand-symlinked from the main
+# tree. Fetch instead: fetch-vendor.sh restores firmware from the shared cache
+# and delegates the GRUB modules to fetch-grub.sh.
+SMOKE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ ! -d "$SMOKE_ROOT/vendor/grub/arm64-efi" ] || [ ! -f "$SMOKE_ROOT/vendor/firmware/ovmf-aarch64.fd" ]; then
+    echo "boot-smoke: vendor/ incomplete in this tree — running tools/fetch-vendor.sh" >&2
+    if ! sh "$SMOKE_ROOT/tools/fetch-vendor.sh" >&2; then
+        echo "boot-smoke: vendor fetch FAILED — boot would fail on missing boot artifacts, not on kernel code" >&2
+        exit 2
+    fi
+fi
+
 # Serial marker signalling success. The quick-boot root is now a glibc
 # systemd image (images repo), which logs to serial (journald
 # forward_to_console) and boots to gdm on the framebuffer — it does NOT

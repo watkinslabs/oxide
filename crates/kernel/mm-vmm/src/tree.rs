@@ -22,6 +22,10 @@ use crate::vma::Vma;
 use crate::Error;
 
 mod anon_name;
+// Module manifest: anon_name = PR_SET_VMA_ANON_NAME range writer;
+// policy = mbind(2)/set_mempolicy_home_node(2) range writers.
+mod policy;
+pub use policy::HomeNodeErr;
 
 fn raw_end_key(end: u64) -> Option<UserVirtAddr> {
     UserVirtAddr::new(end).or_else(|| if end == USER_VA_END { UserVirtAddr::new(USER_VA_END - 1) } else { None })
@@ -31,7 +35,7 @@ fn raw_end_key(end: u64) -> Option<UserVirtAddr> {
 /// virtual address space. Lookup `O(log N)` (`11§4`); insert worst-case
 /// `O(log N)` plus up to two adjacent merges.
 pub struct VmaTree {
-    map: BTreeMap<UserVirtAddr, Vma>,
+    pub(crate) map: BTreeMap<UserVirtAddr, Vma>,
 }
 
 impl VmaTree {

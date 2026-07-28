@@ -87,10 +87,28 @@ check nofg     'jobctl|sigttin_stops_background' 'jobctl|read_resumes_after_fg'
 check wallcpu  'cputime|single_thread_no_progress'
 check noburn   'cputime|sibling_burn_completes'
 check mqnokill 'mqueue|sigkill_kills_blocked_receiver'
+# B1460: `latnowait` removes the wait entirely (the degenerate
+# return-immediately implementation) so the lower bound must flip;
+# `latslow` spends the ~100 ms-per-wait floor this branch removed, so the
+# conformance budget must flip. Two edges, two mutants — a ladder whose top
+# rung cannot be moved is only half proven.
+check latnowait 'latency|nanosleep_short' 'latency|epoll_wait_short'
+check latslow   'latency|nanosleep_short' 'latency|epoll_wait_short'
 check mqnoprio   'mqapi|priority_order'
 check mqnonotify 'mqapi|notify_signal'
 check mqnothread 'mqapi|notify_thread'
 check mqnostate  'mqapi|read_state_line'
+# inotify event LAYOUT — the host kernel is the oracle for the exact bytes, so
+# each mutant corrupts one part of what the reader recovers.
+check inoname \
+    'inotify|create_name' 'inotify|pad_fills_one' 'inotify|pad_spills_two' \
+    'inotify|mkdir_isdir' 'inotify|move_names' 'inotify|child_modify' \
+    'inotify|short_buf'
+check inolen \
+    'inotify|create_name' 'inotify|pad_fills_one' 'inotify|pad_spills_two' \
+    'inotify|mkdir_isdir' 'inotify|child_modify'
+check inobuf   'inotify|short_buf'
+check inochild 'inotify|child_modify'
 check nosig \
     'sleep|rel_norestart' 'sleep|rel_sarestart' 'sleep|abs_sarestart' \
     'lock|flock_sarestart' 'lock|flock_norestart' \

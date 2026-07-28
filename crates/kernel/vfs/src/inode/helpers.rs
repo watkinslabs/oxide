@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::idmap::Idmap;
 use crate::namei::{Cred, S_ISGID, S_IXGRP};
+use crate::timespec::Timespec64;
 use crate::types::{FileType, KResult, S_IFMT, S_IFDIR, S_IFLNK, Umode, VfsError};
 
 use super::flags::{
@@ -61,11 +62,11 @@ pub fn inode_query_iversion(inode: &Inode) -> u64 {
     cur >> I_VERSION_QUERIED_SHIFT
 }
 
-pub fn generic_update_time(inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+pub fn generic_update_time(inode: &Inode, now: Timespec64, flags: u32) -> KResult<()> {
     let a = if flags & S_ATIME != 0 { Some(now) } else { None };
     let m = if flags & S_MTIME != 0 { Some(now) } else { None };
     if flags & (S_ATIME | S_MTIME | S_CTIME) != 0 {
-        let ctime = if flags & S_CTIME != 0 { now } else { inode.ctime().unwrap_or(0) };
+        let ctime = if flags & S_CTIME != 0 { now } else { inode.ctime().unwrap_or_default() };
         inode.set_times(a, m, ctime)?;
     }
     if flags & S_VERSION != 0 { inode_maybe_inc_iversion(inode, false); }

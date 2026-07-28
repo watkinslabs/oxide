@@ -297,6 +297,7 @@ impl Task {
                 SchedClass::Normal { weight } => weight,
                 _ => crate::cputime::NICE_0_WEIGHT,
             }),
+            mempolicy: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
             cpus_allowed: AtomicU64::new(u64::MAX),
             user_cpus_allowed: AtomicU64::new(0),
             cpuset_cpus_allowed: AtomicU64::new(u64::MAX),

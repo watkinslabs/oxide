@@ -17,6 +17,7 @@ use crate::inode::{Inode, InodeRef, inode_owner_or_capable};
 use crate::getattr::default_perm_for;
 use crate::inode::S_APPEND;
 use crate::namei::{Cred, inode_permission, MAY_WRITE, S_ISGID, S_ISUID, S_IXGRP};
+use crate::timespec::Timespec64;
 use crate::types::{FileType, KResult, VfsError};
 
 /// `ATTR_*` valid-mask bits (Linux `include/linux/fs.h`, subset). `*_SET`
@@ -43,7 +44,10 @@ pub const ATTR_FORCE:     u32 = 1 << 11;
 
 /// Requested attribute change (Linux `struct iattr`). `valid` selects which
 /// fields apply; uid/gid are vfs ids (the caller's view) until `map_in_*` at
-/// apply. Times are absolute ns; `ctime_ns` is stamped on every change.
+/// apply. Times are absolute [`Timespec64`] wall-clock instants — SIGNED
+/// seconds, so a pre-1970 `utimensat` is an ordinary request, not an error
+/// (Linux `fs/utimes.c` validates `tv_nsec` only). `ctime` is stamped on every
+/// change.
 #[derive(Clone, Copy, Default)]
 pub struct Iattr {
     pub valid: u32,
@@ -51,9 +55,9 @@ pub struct Iattr {
     pub uid: u32,
     pub gid: u32,
     pub size: u64,
-    pub atime_ns: u64,
-    pub mtime_ns: u64,
-    pub ctime_ns: u64,
+    pub atime: Timespec64,
+    pub mtime: Timespec64,
+    pub ctime: Timespec64,
 }
 
 /// Scheduler boundary for the `RLIMIT_FSIZE` half of [`inode_newsize_ok`]
@@ -215,9 +219,9 @@ pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     }
     if set_mode { inode.set_perm(mode & 0o7777)?; }
     if ia.valid & (ATTR_ATIME | ATTR_MTIME | ATTR_CTIME) != 0 {
-        let a = if ia.valid & ATTR_ATIME != 0 { Some(ia.atime_ns) } else { None };
-        let m = if ia.valid & ATTR_MTIME != 0 { Some(ia.mtime_ns) } else { None };
-        inode.set_times(a, m, ia.ctime_ns)?;
+        let a = if ia.valid & ATTR_ATIME != 0 { Some(ia.atime) } else { None };
+        let m = if ia.valid & ATTR_MTIME != 0 { Some(ia.mtime) } else { None };
+        inode.set_times(a, m, ia.ctime)?;
     }
     Ok(())
 }
@@ -297,7 +301,7 @@ pub fn notify_change_mnt(inode: &InodeRef, mnt_id: u64, ia: &mut Iattr, cred: &C
     if inode.is_public_device() && ia.valid & (ATTR_UID | ATTR_GID | ATTR_MODE) != 0 {
         return Ok(());
     }
-    ia.ctime_ns = now_ns;
+    ia.ctime = Timespec64::from_clock_ns(now_ns);
     notify_change_applied(&idmap, inode, ia)
 }
 
@@ -306,10 +310,10 @@ pub fn notify_change_mnt(inode: &InodeRef, mnt_id: u64, ia: &mut Iattr, cred: &C
 /// floor lives in exactly one place. # C: O(1)
 fn notify_change_applied(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr) -> KResult<()> {
     if let Some(sb) = inode.i_sb() {
-        if ia.valid & ATTR_ATIME != 0 { ia.atime_ns = sb.timestamp_truncate(ia.atime_ns); }
-        if ia.valid & ATTR_MTIME != 0 { ia.mtime_ns = sb.timestamp_truncate(ia.mtime_ns); }
+        if ia.valid & ATTR_ATIME != 0 { ia.atime = sb.timestamp_truncate(ia.atime); }
+        if ia.valid & ATTR_MTIME != 0 { ia.mtime = sb.timestamp_truncate(ia.mtime); }
         if ia.valid & (ATTR_ATIME | ATTR_MTIME | ATTR_CTIME) != 0 {
-            ia.ctime_ns = sb.timestamp_truncate(ia.ctime_ns);
+            ia.ctime = sb.timestamp_truncate(ia.ctime);
         }
     }
     inode.setattr(idmap, ia)

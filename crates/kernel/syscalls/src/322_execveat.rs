@@ -92,7 +92,12 @@ fn exec_pathname(dirfd: i32, pathp: u64, argv: u64, envp: u64, flags: u32) -> i6
                 if nofollow || check {
                     if let Err(e) = may_exec_file_type(vp.inode.file_type()) { return err(e); }
                 }
-                if check { return exec_permission(&vp.inode); }
+                // The full gate, mount included: Linux's `AT_EXECVE_CHECK`
+                // runs the same `may_open` a real exec would, so a `noexec`
+                // mount must answer EACCES here too.
+                if check {
+                    return match crate::pathresolve::exec_permission(&vp) { Ok(()) => 0, Err(rc) => rc };
+                }
                 if at_base {
                     // `execve_inner` re-resolves from the task's cwd/root, so
                     // the dirfd-relative walk has to be rendered back into a
@@ -126,10 +131,11 @@ fn render_resolved(vp: &vfs::VfsPath, dirfd: i32, rel: &str) -> String {
     join_dirfd_path(&vfs::mount::render_path_for_mount(f.mnt_id(), f.dentry()), rel)
 }
 
-/// `AT_EXECVE_CHECK` (`fs/exec.c:1485`): everything `bprm_execve` does up to
-/// and including the credential check runs, then the call returns without
-/// parsing or replacing the image. The DAC half is `may_open`'s
-/// `inode_permission(MAY_EXEC)`.
+/// `AT_EXECVE_CHECK` (`fs/exec.c:1485`) for an exec'able reached through a file
+/// DESCRIPTOR, which carries no resolved mount: everything `bprm_execve` does
+/// up to and including the credential check runs, then the call returns without
+/// parsing or replacing the image. The pathname form uses
+/// `pathresolve::exec_permission`, which adds the `noexec` mount test.
 /// # C: O(1)
 fn exec_permission(inode: &vfs::InodeRef) -> i64 {
     match vfs::inode_permission(inode, vfs::MAY_EXEC, &crate::pathresolve::current_cred()) {

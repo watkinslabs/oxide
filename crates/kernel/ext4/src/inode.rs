@@ -11,7 +11,10 @@
 // Indirect-block ext2 inodes are out of v1 scope; the parser
 // flags non-extent inodes via `ExtentInodeError::NotExtents`.
 
+use vfs::Timespec64;
+
 use crate::superblock::Superblock;
+use crate::timestamp as ts;
 
 #[cfg(test)]
 mod tests;
@@ -87,18 +90,20 @@ pub struct Inode {
     /// Owner gid: `i_gid` @0x18 (low u16) merged with `l_i_gid_high` @0x7A
     /// (osd2 high u16). Drives `st_gid`.
     pub gid:         u32,
-    /// `i_atime` in absolute ns: `i_atime` @0x08 (u32 secs) + the epoch-high /
-    /// nanosecond `i_atime_extra` @0x8C (only present in a >128-byte inode).
+    /// `i_atime`: the SIGNED seconds base field @0x08 plus the epoch-high /
+    /// nanosecond `i_atime_extra` @0x8C (present per `EXT4_FITS_IN_INODE`).
     /// Drives `st_atim`; the utimes writeback round-trips through it.
-    pub atime_ns:    u64,
-    /// `i_mtime` in absolute ns (`i_mtime` @0x10 + `i_mtime_extra` @0x88).
-    pub mtime_ns:    u64,
-    /// `i_ctime` in absolute ns (`i_ctime` @0x0C + `i_ctime_extra` @0x84).
-    pub ctime_ns:    u64,
-    /// `i_crtime` (creation/birth time) in absolute ns (`i_crtime` @0x90 +
-    /// `i_crtime_extra` @0x94; present only in a >128-byte inode). Drives
-    /// `statx STATX_BTIME`; `0` when the inode has no crtime (128-byte inode).
-    pub crtime_ns:   u64,
+    pub atime:       Timespec64,
+    /// `i_mtime` (`i_mtime` @0x10 + `i_mtime_extra` @0x88).
+    pub mtime:       Timespec64,
+    /// `i_ctime` (`i_ctime` @0x0C + `i_ctime_extra` @0x84).
+    pub ctime:       Timespec64,
+    /// `i_crtime` (creation/birth time; `i_crtime` @0x90 + `i_crtime_extra`
+    /// @0x94). Drives `statx STATX_BTIME`. `None` when the inode's extra
+    /// region does not reach `i_crtime` — the same predicate `ext4_getattr`
+    /// uses to decide whether to set `STATX_BTIME` in `result_mask`. Absence is
+    /// NOT an epoch sentinel: a file born at epoch second 0 is `Some(ZERO)`.
+    pub crtime:      Option<Timespec64>,
     /// `i_flags` @0x20 — the ext4 inode flag word. Low bits are the `chattr`
     /// user flags (`EXT4_*_FL` == `FS_*_FL`: SECRM/UNRM/COMPR/SYNC/IMMUTABLE/
     /// APPEND/NODUMP/NOATIME/…); high bits are kernel-internal layout flags
@@ -119,19 +124,6 @@ pub struct Inode {
     pub ino:         u32,
     /// `i_generation` @0x64 — the per-inode csum-seed input (with `ino`).
     pub generation:  u32,
-}
-
-/// Decode an ext4 `(i_*time, i_*time_extra)` pair to absolute ns: `base` holds
-/// the low 32 bits of the seconds; the extra word (present only when the inode
-/// is large enough to hold `extra_off`) carries `epoch_hi2` in bits[1:0] and
-/// nanoseconds in bits[31:2] (Linux `ext4_decode_extra_time`). # C: O(1)
-fn decode_time(buf: &[u8], base: usize, extra_off: usize, isize: usize) -> u64 {
-    let secs = u32::from_le_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]) as u64;
-    let (epoch, nsec) = if isize >= extra_off + 4 {
-        let ex = u32::from_le_bytes([buf[extra_off], buf[extra_off + 1], buf[extra_off + 2], buf[extra_off + 3]]);
-        ((ex & 0x3) as u64, (ex >> 2) as u64)
-    } else { (0, 0) };
-    ((epoch << 32) | secs) * 1_000_000_000 + nsec
 }
 
 impl Inode {
@@ -179,12 +171,13 @@ impl Inode {
                 | ((u16::from_le_bytes([buf[0x78], buf[0x79]]) as u32) << 16);
         let gid = u16::from_le_bytes([buf[0x18], buf[0x19]]) as u32
                 | ((u16::from_le_bytes([buf[0x7A], buf[0x7B]]) as u32) << 16);
-        let atime_ns = decode_time(buf, 0x08, 0x8C, isize);
-        let ctime_ns = decode_time(buf, 0x0C, 0x84, isize);
-        let mtime_ns = decode_time(buf, 0x10, 0x88, isize);
-        // i_crtime @0x90 + i_crtime_extra @0x94 — only in a >128-byte inode;
-        // decode_time yields 0 when the extra word is out of range.
-        let crtime_ns = if isize > 0x90 { decode_time(buf, 0x90, 0x94, isize) } else { 0 };
+        // `EXT4_INODE_GET_{A,C,M}TIME` + `EXT4_EINODE_GET_XTIME(i_crtime)`
+        // (Linux fs/ext4/ext4.h). Signed seconds: a pre-1970 base word
+        // sign-extends rather than reading back as year 2106.
+        let atime = ts::get_xtime(buf, isize, ts::I_ATIME, ts::I_ATIME_EXTRA);
+        let ctime = ts::get_xtime(buf, isize, ts::I_CTIME, ts::I_CTIME_EXTRA);
+        let mtime = ts::get_xtime(buf, isize, ts::I_MTIME, ts::I_MTIME_EXTRA);
+        let crtime = ts::get_crtime(buf, isize);
         let i_projid = if isize >= 0xA0 {
             u32::from_le_bytes([buf[0x9C], buf[0x9D], buf[0x9E], buf[0x9F]])
         } else { 0 };
@@ -195,16 +188,22 @@ impl Inode {
             i_blocks,
             uid,
             gid,
-            atime_ns,
-            mtime_ns,
-            ctime_ns,
-            crtime_ns,
+            atime,
+            mtime,
+            ctime,
+            crtime,
             i_flags: i_flags_raw,
             i_projid,
             i_block,
             ino: 0, // stamped by read_inode (parse has no ino)
             generation: u32::from_le_bytes([buf[0x64], buf[0x65], buf[0x66], buf[0x67]]),
         })
+    }
+
+    /// The four decoded timestamps as one value, for handing to the VFS inode
+    /// builder without a positional 4-tuple. # C: O(1)
+    pub fn times(&self) -> ts::InodeTimes {
+        ts::InodeTimes { atime: self.atime, mtime: self.mtime, ctime: self.ctime, btime: self.crtime }
     }
 
     /// File type per `i_mode & S_IFMT`.

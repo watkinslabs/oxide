@@ -16,6 +16,15 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+pub mod secretmem;
+// execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
+// tested, and this is what glibc's stack canary + pointer guard come from.
+pub mod auxrandom;
+// execve(2) 59 / execveat(2) 322: the credential transition — setuid/setgid
+// honouring and its suppression rules, the capability sets, AT_SECURE and
+// dumpability. Same reason as `auxrandom`: the slot files are kernel-gated, and
+// this is the one decision in exec that must never ship untested.
+pub mod exec_creds;
 // swapon(2) 167: the `swap_flags` decode + its EINVAL-before-EPERM order.
 // futimesat(2) 261 / utimes(2) 235: the `struct timeval[2]` decode. Both slot
 // files are kernel-gated, so the decisions live here where the hosted suite
@@ -25,6 +34,7 @@ pub mod swap_abi;
 // resolver so they cannot disagree about which tty the caller holds.
 mod tty_hangup;
 pub mod utimes_abi;
+pub mod utimensat_abi;
 // ustat(2) 136: `struct ustat` wire layout. sysfs(2) 139: the option/index
 // query over the filesystem-type registry. remap_file_pages(2) 216 /
 // fadvise64(2) 221 / mlock2(2) 325: their admission ladders. All five slot
@@ -95,6 +105,14 @@ include!("kernel_body.rs");
 
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
+
+// Linux `struct stat` encoder: the byte offsets and the signed `st_*time` /
+// unsigned `st_*time_nsec` split are the whole observable contract, so it
+// compiles hosted too. Declared here rather than in `kernel_body.rs` because a
+// `#[cfg(test)] mod tests` under that gate compiles out silently — which is
+// exactly what happened to its two `write_new_stat_*_bytes` helpers.
+#[cfg(any(target_os = "oxide-kernel", test))]
+mod stat_common;
 
 // io_uring(2) 425/426/427: the `struct io_uring_params` wire form, the setup
 // flag/entries ladder, the ring-region geometry and the register-opcode

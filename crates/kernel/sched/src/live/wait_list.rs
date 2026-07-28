@@ -79,15 +79,34 @@ impl WaitList {
         unsafe { self.park_with_deadline(0); }
     }
 
-    /// F169: as `park` but also stamps `current.wakeup_deadline_ns`
-    /// so the periodic deadline scanner (`tick_wake_expired`) can
-    /// rouse the task with `Eagain` semantics when the SO_*TIMEO
-    /// window expires without another waker firing. Pass `0` for
-    /// the deadline to disable the timer (== plain `park`).
+    /// F169: as `park` but also arms a wait expiry, so the timer IRQ rouses the
+    /// task with `Eagain` semantics when the SO_*TIMEO window closes without
+    /// another waker firing. Pass `0` for the deadline to disable the timer
+    /// (== plain `park`).
+    ///
+    /// Grants the task's own `timer_slack_ns` — Linux's default for a generic
+    /// timed wait (`hrtimer_nanosleep` at `kernel/time/hrtimer.c:2444`,
+    /// `futex_wait` at `kernel/futex/waitwake.c:748`,
+    /// `wait_event_hrtimeout` at `include/linux/wait.h:554` all pass exactly
+    /// this). Callers that coalesce harder — poll/select/epoll, which spend
+    /// 0.1% of the remaining timeout — use `park_with_deadline_range` with
+    /// `hrtimeout::select_estimate_accuracy`.
     /// # SAFETY: see `park`. Caller still owns the post-park
     /// `schedule()` call.
-    /// # C: O(1)
+    /// # C: O(N armed)
     pub unsafe fn park_with_deadline(&self, deadline_ns: u64) {
+        let slack = super::schedule::current()
+            .map(crate::hrtimeout::task_slack_ns).unwrap_or(0);
+        // SAFETY: forwards the caller's contract unchanged; this wrapper only supplies the default slack.
+        unsafe { self.park_with_deadline_range(deadline_ns, slack); }
+    }
+
+    /// [`park_with_deadline`] with an explicit coalescing window — Linux
+    /// `schedule_hrtimeout_range(expires, delta, ...)`. The wait may end any
+    /// time in `[deadline_ns, deadline_ns + slack_ns]`, never before.
+    /// # SAFETY: see `park`.
+    /// # C: O(N armed)
+    pub unsafe fn park_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
         let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let raw = rq.current.load(Ordering::Acquire);
         if raw.is_null() { return; }
@@ -96,11 +115,16 @@ impl WaitList {
         // SAFETY: matching Arc::from_raw consumes the bumped ref.
         let arc = unsafe { Arc::from_raw(raw) };
         arc.set_state(TaskState::Sleeping);
-        // Publish Sleeping before the deadline. If the scanner runs between
-        // these stores it retries next tick; publishing in the opposite order
-        // lets it consume an already-expired deadline while claim_wake still
-        // sees Runnable, after which this task can sleep with no armed wake.
-        arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
+        // Publish Sleeping before arming. If the timer fires between these two
+        // it wakes a task that is already Sleeping and the wake lands; arming
+        // first lets the expiry be consumed while `claim_wake` still sees
+        // Runnable, after which this task sleeps with no armed wake.
+        //
+        // Armed BEFORE the wait-list push, not after: `Hrtimeout` ranks below
+        // `TaskList`, so this is the ascending order. A wake that lands in the
+        // gap finds the task Runnable and the post-park `schedule()` simply
+        // keeps running it — the same race the deadline stamp always had.
+        crate::hrtimeout::arm(&arc, deadline_ns, slack_ns);
         #[cfg(feature = "debug-boot")]
         if deadline_ns != 0 && arc.with_exe_path(|p| p.map(|p| {
             p.contains("gnome-shell") || p.contains("mutter")
@@ -136,6 +160,22 @@ impl WaitList {
         // SAFETY: caller provides the same process-context contract required by
         // park_with_deadline; this wrapper only performs the post-publish check.
         unsafe { self.park_with_deadline(deadline_ns); }
+        self.check_pending_after_park();
+    }
+
+    /// [`park_interruptible_with_deadline`] with an explicit coalescing window.
+    /// # SAFETY: see `park`.
+    /// # C: O(N armed)
+    pub unsafe fn park_interruptible_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
+        // SAFETY: same contract as `park_interruptible_with_deadline`; only the slack differs.
+        unsafe { self.park_with_deadline_range(deadline_ns, slack_ns); }
+        self.check_pending_after_park();
+    }
+
+    /// Close the signal-before-sleep race: a signal that arrived while this
+    /// task was publishing itself Sleeping must not be missed.
+    /// # C: O(1)
+    fn check_pending_after_park(&self) {
         if super::sigpend::deliverable_signals_self() != 0 {
             if let Some(cur) = super::schedule::current() {
                 if let Some(task) = crate::registry::lookup(cur.tid) {
@@ -202,7 +242,7 @@ impl WaitList {
         let Some(cur) = super::schedule::current() else { return };
         let ptr = cur as *const Task;
         waiters_lock!(self).retain(|task| Arc::as_ptr(task) != ptr);
-        cur.wakeup_deadline_ns.store(0, Ordering::Release);
+        crate::hrtimeout::disarm(cur);
         if cur.state() == TaskState::Sleeping { cur.set_state(TaskState::Runnable); }
     }
 

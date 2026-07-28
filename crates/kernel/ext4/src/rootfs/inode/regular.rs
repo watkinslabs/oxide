@@ -128,13 +128,15 @@ impl InodeOps for Ext4RegInodeOps {
     /// to the on-disk slot (journaled) so a write(2)-stamped mtime/ctime is
     /// durable across eviction and remount. Mirrors `ext4_setattr`'s writeback.
     /// # C: O(1) + one journaled inode write
-    fn update_time(&self, inode: &Inode, now: u64, flags: u32) -> KResult<()> {
+    fn update_time(&self, inode: &Inode, now: vfs::Timespec64, flags: u32) -> KResult<()> {
         vfs::generic_update_time(inode, now, flags)?;
         if let Some(d) = inode.private::<Ext4FileData>() {
             d.st.mount.persist_inode_meta(
                 d.ino, inode.i_mode(),
                 inode.uid().unwrap_or(0), inode.gid().unwrap_or(0),
-                inode.atime().unwrap_or(0), inode.mtime().unwrap_or(0), inode.ctime().unwrap_or(0),
+                inode.atime().unwrap_or(vfs::Timespec64::ZERO),
+                inode.mtime().unwrap_or(vfs::Timespec64::ZERO),
+                inode.ctime().unwrap_or(vfs::Timespec64::ZERO),
             ).map_err(vfs_error_from_mount)?;
         }
         Ok(())
@@ -369,10 +371,9 @@ impl AddressSpaceOps for Ext4FileMapping {
 
 /// Build a regular-file `vfs::Inode` for ext4 inode `ino`. `mode`/`size`/
 /// `nlink`/`times` are the captured on-disk metadata (read by the caller before
-/// the `iget` build closure). `times` = `(atime, mtime, ctime, crtime)` ns
-/// (crtime `0` → no STATX_BTIME). # C: O(1)
+/// the `iget` build closure). # C: O(1)
 pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32,
-    uid: u32, gid: u32, projid: u32, times: (u64, u64, u64, u64))
+    uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes)
     -> InodeRef
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino, size);
@@ -384,7 +385,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
     let blocks = data.st.mount.read_inode(ino).map(|i| i.i_blocks as u64).unwrap_or(0);
-    InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(FileType::Regular, mode & 0o7777),
+    let mut b = InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(FileType::Regular, mode & 0o7777),
                       Arc::new(Ext4RegInodeOps), Arc::new(Ext4RegFileOps))
         .sb(weak_sb)
         .size(size)
@@ -392,12 +393,13 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .projid(projid)
-        .times(times.0, times.1, times.2)
-        .btime(times.3)
+        .times(times.atime, times.mtime, times.ctime)
         .mapping(mapping)
         .xattrs(xattrs)
-        .private(data)
-        .build()
+        .private(data);
+    // Absent `i_crtime` ⇒ no STATX_BTIME (Linux `ext4_getattr`).
+    if let Some(bt) = times.btime { b = b.btime(bt); }
+    b.build()
 }
 
 #[cfg(test)]

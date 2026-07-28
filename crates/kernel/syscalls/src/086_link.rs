@@ -34,7 +34,7 @@ pub(crate) fn link_inode_at(src: vfs::InodeRef, src_mnt_id: u64, dirfd: i32, raw
         Ok(())  => {
             src.set_state(0, vfs::I_LINKABLE);
             drop_child_cache(&parent, &name);
-            vfs::fire_dirent_create(&parent.inode, &name);
+            vfs::fire_dirent_create(&parent.inode, &name, false);
             0
         }
         Err(e)  => errno_from_vfs(e),
