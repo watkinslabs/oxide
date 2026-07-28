@@ -53,6 +53,19 @@ pub const USER_DS: u16 = 0x40 | 3;
 /// internal validation.
 pub const USER_CS32: u16 = 0x38 | 3;
 
+/// Kernel data selector (sel 0x30, DPL=0) — the kernel SS too. Named so
+/// the first-run kthread scaffold stops spelling it `0x30` inline.
+pub const KERNEL_DS: u16 = 0x30;
+
+/// The ring-3 selector pair as `pt_regs.cs` / `pt_regs.ss` quadwords — the
+/// ONE definition shared by `oxide_syscall_entry` (which synthesizes the
+/// IRETQ image `syscall` does not push) and the signal-frame builder (Linux
+/// `x64_setup_rt_frame`'s `regs->cs = __USER_CS`). Two copies of these
+/// numbers is how `sigcontext.cs` ended up reporting Linux's 0x33/0x2b while
+/// the hardware ran on oxide's 0x4b/0x43.
+pub const USER_CS_SELECTOR: u64 = USER_CS as u64;
+pub const USER_SS_SELECTOR: u64 = USER_DS as u64;
+
 /// Access-byte for a 64-bit kernel code segment: P=1 DPL=0 S=1
 /// type=Execute/Read/Accessed (0xA + accessed=1 → 0xB; we set
 /// accessed=0 since CPU sets it on load).

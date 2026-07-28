@@ -10,6 +10,50 @@
 
 use hal::Context;
 
+use crate::pt_regs::{PtRegs, PT_REGS_BYTES};
+
+/// Bytes a first-run task's scaffold occupies below `stack_top`: the saved
+/// RIP `oxide_context_switch`'s `ret` pops, then the `PtRegs`
+/// `oxide_irq_resume_user` pops and `iretq`s.
+const SCAFFOLD_BYTES: usize = core::mem::size_of::<u64>() + PT_REGS_BYTES;
+
+/// RFLAGS a first-run task starts with: IF=1 (preemptible by the LAPIC
+/// timer) plus the always-set reserved bit 1. Ring 3 can neither `sti` nor
+/// `cli` (IOPL=0), so this IS what user runs with for its lifetime.
+const SCAFFOLD_RFLAGS: u64 = 0x202;
+
+/// Synthetic vector tag the kthread scaffold carries, mirroring what the
+/// LAPIC-timer stub (`oxide_irq_vec_40`) would have pushed. Never consumed
+/// — `oxide_irq_resume_user` drops the (vector, error) pair — but a real
+/// vector reads better than 0 in a dump.
+const SCAFFOLD_VECTOR: u64 = crate::irq::VEC_TIMER as u64;
+
+/// Write a first-run scaffold `regs` image below `stack_top` and return the
+/// resulting `Context.rsp` (the saved-RIP slot at scaffold base).
+///
+/// The image is written THROUGH `PtRegs` fields rather than raw stack
+/// offsets, so the layout can only drift if `pt_regs.rs` itself changes —
+/// which its const asserts forbid.
+///
+/// # SAFETY: `stack_top` is the high end of a writable, 16-byte-aligned
+/// kernel stack with at least `SCAFFOLD_BYTES` below it; the caller owns
+/// that stack until the task is scheduled.
+/// # C: O(1)
+unsafe fn write_scaffold(stack_top: *mut u8, regs: PtRegs) -> u64 {
+    // SAFETY: per fn contract — `[stack_top - SCAFFOLD_BYTES, stack_top)` is
+    // writable kernel stack we exclusively own here. `stack_top` is
+    // 16-aligned and `PT_REGS_BYTES` is a multiple of 16, so the `PtRegs`
+    // store is naturally aligned.
+    unsafe {
+        let base = stack_top.sub(SCAFFOLD_BYTES);
+        core::ptr::write(base.add(core::mem::size_of::<u64>()).cast::<PtRegs>(), regs);
+        // Saved RIP for `oxide_context_switch`'s `ret`: the finish-switch
+        // trampoline pays the switch handoff, then jmps the shared epilogue.
+        core::ptr::write(base.cast::<u64>(), finish_switch_tramp_addr());
+        base as u64
+    }
+}
+
 /// Saved kernel-state register set per `14§5.2`. Field order is
 /// asm-coupled; do not reorder.
 #[repr(C)]
@@ -147,28 +191,25 @@ impl Context for ContextX86_64 {
         }
     }
 
-    /// Build a kernel-thread context whose saved kernel stack
-    /// carries a synthetic IRQ frame matching the layout the IRQ
-    /// epilogue (`oxide_irq_resume_user`) expects. Lets the IRQ
-    /// dispatcher tail `Context::switch` directly into a fresh task
-    /// and `iretq` from the same epilogue. Layout pinned in
-    /// `14§R07`; total scaffold = 17 × 8 = 136 B starting at
-    /// `Context.rsp`, growing toward `stack_top`:
+    /// Build a kernel-thread context whose saved kernel stack carries a
+    /// synthetic entry frame matching what the IRQ epilogue
+    /// (`oxide_irq_resume_user`) pops. Lets the scheduler `Context::switch`
+    /// directly into a fresh task and `iretq` from the same epilogue.
+    /// Layout pinned in `14§R07`; scaffold = saved-RIP + one `PtRegs` =
+    /// 8 + 0xb0 = 184 B starting at `Context.rsp`, growing toward
+    /// `stack_top`:
     ///
-    ///   [rsp+0x00]  saved RIP = oxide_irq_resume_user
-    ///   [rsp+0x08..0x50]  saved scratch r11..rax (9×8, zero)
-    ///   [rsp+0x50]  err = 0
-    ///   [rsp+0x58]  vec = 0x40
-    ///   [rsp+0x60]  iretq RIP = oxide_trampoline_kernel
-    ///   [rsp+0x68]  iretq CS  = `KERNEL_CS` (0x28 — Limine GDT 64-bit code)
-    ///   [rsp+0x70]  iretq RFL = 0x202 (IF=1, reserved bit 1)
-    ///   [rsp+0x78]  iretq RSP = stack_top (post-iretq RSP — kthread
-    ///               runs with the entire stack below stack_top)
-    ///   [rsp+0x80]  iretq SS  = `KERNEL_DS` (0x30 — Limine GDT 64-bit data)
+    ///   [rsp+0x00]        saved RIP = oxide_finish_switch_tramp
+    ///   [rsp+0x08..0xb8]  `PtRegs` (GPRs zero; vector/error tag; IRETQ
+    ///                     image = trampoline / KERNEL_CS / IF=1 /
+    ///                     stack_top / KERNEL_DS)
     ///
-    /// `r12 = entry`, `r13 = arg` per the trampoline ABI; iretq
-    /// preserves r12..r15 so the trampoline reads them correctly
-    /// after iretq lands.
+    /// `stack_top` is the post-iretq RSP — the kthread runs with the whole
+    /// stack below it. `r12 = entry`, `r13 = arg` per the trampoline ABI,
+    /// staged in the FRAME as well as in `Context`: the epilogue now pops
+    /// the callee-saved set too (it must, so an IRQ-return signal delivery
+    /// sees real rbx/rbp/r12-r15), which would otherwise overwrite the
+    /// values `oxide_context_switch` loaded from `Context` with zeros.
     ///
     /// # C: O(1)
     fn new_kernel_with_irq_frame(
@@ -176,31 +217,24 @@ impl Context for ContextX86_64 {
         entry: extern "C" fn(usize) -> !,
         arg: usize,
     ) -> Self {
-        // SAFETY: caller asserts `stack_top` is the high end of a
-        // writable, 16-byte-aligned kernel stack of at least 136 B.
-        // We write 17 quadwords below stack_top in the layout above.
-        let sp = unsafe {
-            let p = stack_top.cast::<u64>();
-            // iretq frame (offsets 0x60..0x80 from final rsp).
-            // Selectors per Limine v6+ GDT layout: code = 0x28
-            // (64-bit kernel CS), data = 0x30 (64-bit kernel DS/SS).
-            p.sub(1).write(0x30);                        // SS  (kernel data)
-            p.sub(2).write(stack_top as u64);            // RSP_post
-            p.sub(3).write(0x202);                       // RFLAGS, IF=1
-            p.sub(4).write(crate::idt::KERNEL_CS as u64); // CS  (kernel code)
-            p.sub(5).write(trampoline_kernel_addr());    // RIP
-            // synthetic vec/err pad (matches IRQ stub `push 0; push 0x40`).
-            p.sub(6).write(0x40);                        // vec
-            p.sub(7).write(0);                           // err
-            // 9 scratch slots r11..rax — values irrelevant (popped + discarded).
-            for i in 8..=16 { p.sub(i).write(0); }
-            // saved RIP for oxide_context_switch's `ret`: the finish_switch
-            // trampoline pays the switch handoff, then jmps the epilogue.
-            p.sub(17).write(finish_switch_tramp_addr());
-            p.sub(17)
+        // Selectors per Limine v6+ GDT layout: code = 0x28 (64-bit kernel
+        // CS), data = 0x30 (64-bit kernel DS/SS).
+        let regs = PtRegs {
+            r12:    entry as *const () as usize as u64,
+            r13:    arg as u64,
+            vector: SCAFFOLD_VECTOR,
+            rip:    trampoline_kernel_addr(),
+            cs:     crate::idt::KERNEL_CS as u64,
+            rflags: SCAFFOLD_RFLAGS,
+            rsp:    stack_top as u64,
+            ss:     crate::gdt::KERNEL_DS as u64,
+            ..Default::default()
         };
+        // SAFETY: caller asserts `stack_top` is the high end of a writable,
+        // 16-byte-aligned kernel stack of at least SCAFFOLD_BYTES.
+        let sp = unsafe { write_scaffold(stack_top, regs) };
         Self {
-            rsp: sp as u64,
+            rsp: sp,
             rbp: 0,
             rbx: 0,
             r12: entry as *const () as usize as u64,
@@ -321,46 +355,35 @@ impl Context for ContextX86_64 {
 
 impl ContextX86_64 {
     /// User-mode flavor of `new_kernel_with_irq_frame`. The synthetic
-    /// IRQ frame uses USER selectors (DPL=3) and `iretq` therefore
+    /// frame uses USER selectors (DPL=3) and `iretq` therefore
     /// transitions to ring 3 with CS=`USER_CS`, SS=`USER_DS`, RIP=
     /// `user_ip`, RSP=`user_sp`. RFLAGS=0x202 (IF=1, reserved bit 1)
     /// so user tasks are preemptible by the LAPIC timer. Ring-3 can
     /// neither sti nor cli (IOPL=0), so the IF state baked into the
-    /// iretq frame is what user runs with for its lifetime.
+    /// frame is what user runs with for its lifetime.
     ///
-    /// Layout matches the kernel-mode flavor — same scratch + vec/err
-    /// + iretq frame shape — so the shared `oxide_irq_resume_user`
-    /// epilogue iretq's into ring 3 instead of staying at CPL=0.
-    /// Inherent on `ContextX86_64` (not on the `hal::Context` trait):
-    /// arm parity rides a follow-up that adds sp_el0 save/restore to
-    /// the IRQ frame.
+    /// Layout matches the kernel-mode flavor — the same `PtRegs` — so the
+    /// shared `oxide_irq_resume_user` epilogue iretq's into ring 3 instead
+    /// of staying at CPL=0. Inherent on `ContextX86_64` (not on the
+    /// `hal::Context` trait): arm parity rides a follow-up that adds
+    /// sp_el0 save/restore to the IRQ frame.
     /// # C: O(1)
     pub fn new_user_with_irq_frame(stack_top: *mut u8, user_ip: u64, user_sp: u64) -> Self {
-        // SAFETY: caller asserts `stack_top` is the high end of a
-        // writable, 16-byte-aligned kernel stack of at least 136 B.
-        let sp = unsafe {
-            let p = stack_top.cast::<u64>();
-            // iretq frame (offsets 0x60..0x80 from final rsp). USER
-            // CS/SS per `36-bootloader-handoff` GDT (P1-93): USER_CS
-            // = 0x4B (DPL=3 64-bit code), USER_DS = 0x43 (DPL=3 data).
-            p.sub(1).write(crate::gdt::USER_DS as u64);     // SS  (user data)
-            p.sub(2).write(user_sp);                         // RSP (user stack)
-            p.sub(3).write(0x202);                           // RFLAGS, IF=1
-            p.sub(4).write(crate::gdt::USER_CS as u64);     // CS  (user code)
-            p.sub(5).write(user_ip);                         // RIP (user entry)
-            // synthetic vec/err pad (matches IRQ stub layout).
-            p.sub(6).write(0);                               // vec
-            p.sub(7).write(0);                               // err
-            // 9 scratch slots r11..rax — values irrelevant.
-            for i in 8..=16 { p.sub(i).write(0); }
-            // saved RIP for oxide_context_switch's `ret`: finish_switch
-            // trampoline pays the handoff, then the shared epilogue iretq's
-            // the frame above.
-            p.sub(17).write(finish_switch_tramp_addr());
-            p.sub(17)
+        // USER CS/SS per `36-bootloader-handoff` GDT (P1-93): USER_CS =
+        // 0x4B (DPL=3 64-bit code), USER_DS = 0x43 (DPL=3 data).
+        let regs = PtRegs {
+            rip:    user_ip,
+            cs:     crate::gdt::USER_CS_SELECTOR,
+            rflags: SCAFFOLD_RFLAGS,
+            rsp:    user_sp,
+            ss:     crate::gdt::USER_SS_SELECTOR,
+            ..Default::default()
         };
+        // SAFETY: caller asserts `stack_top` is the high end of a writable,
+        // 16-byte-aligned kernel stack of at least SCAFFOLD_BYTES.
+        let sp = unsafe { write_scaffold(stack_top, regs) };
         Self {
-            rsp: sp as u64,
+            rsp: sp,
             rbp: 0,
             rbx: 0,
             r12: 0,
@@ -371,24 +394,16 @@ impl ContextX86_64 {
         }
     }
 
-    /// Fork-specific user-task scaffold (P5-10): builds the same
-    /// iretq frame as `new_user_with_irq_frame` but populates the 9
-    /// scratch slots (r11..rax) and the Context callee-saved fields
-    /// (rbx/rbp/r13/r14/r15) from the parent's saved-syscall block,
-    /// so the child resumes user mode with the exact same register
-    /// state — except `rax` is overwritten to 0 (the fork return
-    /// value the child sees).
+    /// Fork-specific user-task scaffold (P5-10): the same frame shape as
+    /// `new_user_with_irq_frame`, populated from the parent's live
+    /// `PtRegs` so the child resumes user mode with the identical register
+    /// state — except `rax` is 0 (the fork return value the child sees).
     ///
-    /// `regs` layout matches `current_user_full_frame()` — see
-    /// `crates/hal-x86_64::syscall::current_user_full_frame` for
-    /// offsets. user_ip/user_sp are passed separately because the
-    /// caller already pulls them from `current_user_frame()`.
-    ///
-    /// Note: user `r12` is unrecoverable (the syscall asm clobbers
-    /// it before any save) — the slot in `regs` here is the parent's
-    /// saved-stack slot which actually holds user RSP. `r12` is now
-    /// preserved (was zeroed pre-B04; broke compiled C `_start` that
-    /// loaded loop-invariant pointers into r12).
+    /// Every GPR now lives in the FRAME, because `oxide_irq_resume_user`
+    /// pops the callee-saved set as well; the matching `Context` fields
+    /// are kept in step so a resumed (non-first-run) switch is identical.
+    /// `user_ip`/`user_sp`/`user_rflags` are passed separately: a thread
+    /// clone overrides the stack, and `sys_clone` already resolved them.
     /// # C: O(1)
     pub fn new_user_for_fork(
         stack_top: *mut u8,
@@ -398,33 +413,23 @@ impl ContextX86_64 {
         regs: &ForkRegs,
         parent_fs_base: u64,
     ) -> Self {
-        // SAFETY: same as `new_user_with_irq_frame`.
-        let sp = unsafe {
-            let p = stack_top.cast::<u64>();
-            p.sub(1).write(crate::gdt::USER_DS as u64);
-            p.sub(2).write(user_sp);
-            p.sub(3).write(user_rflags);
-            p.sub(4).write(crate::gdt::USER_CS as u64);
-            p.sub(5).write(user_ip);
-            p.sub(6).write(0);                               // vec
-            p.sub(7).write(0);                               // err
-            // Scratch slots, popped low→high by oxide_irq_resume_user
-            // in this order: r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax.
-            // Stack-wise: sub(16) = r11 (lowest), sub(8) = rax (highest).
-            p.sub(16).write(regs.r11);
-            p.sub(15).write(regs.r10);
-            p.sub(14).write(regs.r9);
-            p.sub(13).write(regs.r8);
-            p.sub(12).write(regs.rdi);
-            p.sub(11).write(regs.rsi);
-            p.sub(10).write(regs.rdx);
-            p.sub(9).write(regs.rcx);
-            p.sub(8).write(0);                               // rax = 0 (child's fork return)
-            p.sub(17).write(finish_switch_tramp_addr());
-            p.sub(17)
+        let frame = PtRegs {
+            r15: regs.r15, r14: regs.r14, r13: regs.r13, r12: regs.r12,
+            rbp: regs.rbp, rbx: regs.rbx,
+            r11: regs.r11, r10: regs.r10, r9: regs.r9, r8: regs.r8,
+            rdi: regs.rdi, rsi: regs.rsi, rdx: regs.rdx, rcx: regs.rcx,
+            rax: 0,                                  // child's fork(2) return
+            vector: 0, error: 0,
+            rip:    user_ip,
+            cs:     crate::gdt::USER_CS_SELECTOR,
+            rflags: user_rflags,
+            rsp:    user_sp,
+            ss:     crate::gdt::USER_SS_SELECTOR,
         };
+        // SAFETY: same as `new_user_with_irq_frame`.
+        let sp = unsafe { write_scaffold(stack_top, frame) };
         Self {
-            rsp: sp as u64,
+            rsp: sp,
             rbp: regs.rbp,
             rbx: regs.rbx,
             r12: regs.r12,
@@ -436,8 +441,8 @@ impl ContextX86_64 {
     }
 }
 
-/// Parent-side syscall-frame snapshot used by `new_user_for_fork`.
-/// Populated by `sys_fork` from the saved-syscall block.
+/// Parent-side entry-frame snapshot used by `new_user_for_fork`.
+/// Populated by `sys_fork` from the parent's live `PtRegs`.
 #[derive(Copy, Clone, Default)]
 pub struct ForkRegs {
     pub rdi: u64, pub rsi: u64, pub rdx: u64,

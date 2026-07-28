@@ -15,6 +15,7 @@ const SA_RESTORER: u64 = 0x0400_0000;
 /// restart decision has one owner.
 pub(crate) const SA_RESTART: u64 = 0x1000_0000;
 use crate::signal::PendingSignal;
+use crate::arch_frame::UserRegs;
 
 /// `kernel-internal` SIG_DFL / SIG_IGN sentinel values — match the
 /// Linux uapi sa_handler convention. NEVER inline these as bare 0/1
@@ -32,7 +33,7 @@ fn aarch64_restorer(p: &PendingSignal) -> Option<u64> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, restart: bool, payload: Option<hal::SigPayload>) -> u64 {
+fn deliver_aarch64(regs: *mut UserRegs, p: &PendingSignal, saved_ret: u64, restart: bool, payload: Option<hal::SigPayload>) -> u64 {
     let Some(restorer) = aarch64_restorer(p) else {
         sched::live::terminate_current_with_signal(Signum::Sigsegv.as_u8());
     };
@@ -47,7 +48,7 @@ fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, restart: bool, payload: Op
     }
     // SAFETY: dispatch tail; per-task SVC frame and active user AS belong to
     // this task for the whole frame construction.
-    unsafe { ::fs::sig_dispatch::deliver_with_info(p.handler, restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) }
+    unsafe { ::fs::sig_dispatch::deliver_with_info(regs, p.handler, restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) }
 }
 
 /// Build the `hal::SigPayload` siginfo payload from a dequeued
@@ -79,14 +80,20 @@ fn siginfo_payload(p: &PendingSignal) -> Option<hal::SigPayload> {
 /// restore asm uses retval to seed user x0 → handler's first AAPCS64
 /// arg). x86 injects sig directly into the saved-rdi slot and
 /// returns 0 here.
-/// # SAFETY: caller is the syscall-return tail; per-arch saved frame is live.
+/// `from_syscall` is Linux's `syscall_get_nr(regs) != -1`: false on an
+/// interrupt or exception return, where there is no interrupted syscall and
+/// the return-value register holds an ordinary user value the frame must
+/// record verbatim.
+/// # SAFETY: caller is a return-to-user path; `regs` is its live entry frame.
 /// # C: O(1)
-pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
+pub unsafe fn dispatch_pending(regs: *mut UserRegs, p: &PendingSignal, saved_ret: u64,
+                               from_syscall: bool) -> u64 {
     // Linux `handle_signal`'s restart switch, evaluated for the frame this
     // delivery builds: ERESTARTSYS restarts only under SA_RESTART,
     // ERESTARTNOINTR restarts unconditionally, ERESTARTNOHAND and
     // ERESTART_RESTARTBLOCK become EINTR once a handler runs.
-    let restart = crate::signal::runs_user_handler(p)
+    let restart = from_syscall
+        && crate::signal::runs_user_handler(p)
         && syscall::restart::signal_restart_action(
                saved_ret as i64, true, (p.flags & SA_RESTART) != 0)
            == syscall::restart::RestartAction::RestartSame;
@@ -98,7 +105,11 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
     // without SA_RESTART surfaced -512/-514/-516 to userspace instead of
     // EINTR. One owner for the rule, both arches, hosted-tested in
     // `syscall::restart`.
-    let saved_ret = syscall::restart::frame_user_return(saved_ret as i64, restart) as u64;
+    // An interrupt return has no ERESTART* sentinel to normalize — the word is
+    // the user's own return-value register and goes into the frame untouched.
+    let saved_ret = if from_syscall {
+        syscall::restart::frame_user_return(saved_ret as i64, restart) as u64
+    } else { saved_ret };
     // SIGCONT — default no-op (process continues running). User
     // handler dispatches normally; SIG_DFL / SIG_IGN silently drop.
     if p.sig as u8 == Signum::Sigcont as u8 {
@@ -107,11 +118,11 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
             // sa_mask and SA_NODEFER like every other one.
             let payload = siginfo_payload(p);
             #[cfg(target_arch = "aarch64")]
-            return deliver_aarch64(p, saved_ret, restart, payload);
+            return deliver_aarch64(regs, p, saved_ret, restart, payload);
             #[cfg(not(target_arch = "aarch64"))]
             {
             // SAFETY: same dispatch-tail context as the handler arm below.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(p.handler, p.restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) };
+            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(regs, p.handler, p.restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) };
             { let _ = sig_rv; return 0; }
             }
         }
@@ -149,11 +160,11 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
             // so an SA_SIGINFO handler reads si_pid/si_status/si_code.
             let payload = siginfo_payload(p);
             #[cfg(target_arch = "aarch64")]
-            return deliver_aarch64(p, saved_ret, restart, payload);
+            return deliver_aarch64(regs, p, saved_ret, restart, payload);
             #[cfg(not(target_arch = "aarch64"))]
             {
             // SAFETY: dispatch tail; per-arch saved frame live; deliver_arm/_x86 rewrites only the saved frame and user signal stack.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(_handler, p.restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) };
+            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(regs, _handler, p.restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) };
             { let _ = sig_rv; 0 }
             }
         }

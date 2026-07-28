@@ -20,24 +20,24 @@ Status: `OPEN` unclaimed · `CLAIMED` lane exists · `DONE` merged · `WONTFIX`.
 | OPEN | W7 post-fix tick-gap distribution never re-measured | | x86 | §8 |
 | DONE | W8 every kernel timeout had a ~100 ms floor (`latency|*` records added) | `B1460-wait-deadline-timer-floor` | both | §10 |
 
-Record count is **44** since B1460 added `latency|nanosleep_short` and
-`latency|epoll_wait_short` (it was 42 after F760's `mqapi` block; the 29 below
-predates both).
-
 | DONE | W8 `shm_nattch` counted shmat/shmdt calls, not VMAs | `F765-sysv-blocking-differential` | both | §9 |
-| OPEN | W9 a userspace spin loop is UNKILLABLE — no signal reaches it | | both | §10 |
+| DONE | W9 a userspace spin loop is UNKILLABLE — no signal reaches it | `B1471-signal-on-irq-return` | both | §10 |
 
-Differential state after F765 merged with the `latency` and `inotify` rows,
-own runs, clean builds: **87/87 identical records on BOTH arches — zero
-divergences** (x86 `x86-20260728-010744-KpVGX3`, arm
-`arm-20260728-011000-3u4phl`). F765 grew
-it 42 -> 77 with `sysv_sem` / `sysv_msg` / `sysv_shm`, the first execution of
-the SysV blocking paths and of `shmdt`'s address-space half.
+Differential state after B1471, own runs, clean builds: **100/100 identical
+records on BOTH arches — zero divergences** (x86
+`x86-20260728-032604-w89e2r`, arm `arm-20260728-032249-8RUMaZ`). B1471 grew it
+97 -> 100 with the `spinsig` block — the first cases that exercise signal
+delivery to a task spinning in USERSPACE rather than parked in a syscall, and
+the first thing that could see W9 at all.
 
-## 10 W9 — a spinning userspace task takes no signal, not even SIGKILL
+Prior state (F765): 87/87, having grown 42 -> 77 with `sysv_sem` / `sysv_msg` /
+`sysv_shm`, the first execution of the SysV blocking paths and of `shmdt`'s
+address-space half.
 
-The shared differential is RED on main because of this, on BOTH arches, and
-it is not a probe bug. `sigfpu.c` (B1466) is the first case that spins in a
+## 10 W9 — a spinning userspace task takes no signal, not even SIGKILL — DONE (B1471)
+
+The shared differential was RED on main because of this, on BOTH arches, and
+it was not a probe bug. `sigfpu.c` (B1466) is the first case that spins in a
 pure userspace loop rather than parking in a syscall, and on oxide nothing
 ever interrupts it:
 
@@ -61,6 +61,38 @@ Every syscall-parked case in this probe passes, which is why 97 records of
 coverage never found it: `signal_pending` is only ever consulted by a
 parked waiter here. Needs the timer-tick preemption path to force a
 signal-delivery check on return to user mode.
+
+### Fix (B1471)
+
+Linux runs ONE loop before EVERY return to user mode — `kernel/entry/common.c`
+`__exit_to_user_mode_loop`, reached from `syscall_exit_to_user_mode_prepare`
+(syscall) and `irqentry_exit_to_user_mode_prepare` (interrupt + exception, via
+`irqentry_exit`'s `if (user_mode(regs))` arm). oxide had that work only at the
+syscall tail, open-coded, and not even as a loop.
+
+| Piece | Where |
+|---|---|
+| decision logic, ungated + hosted-tested | `sched/src/exit_to_user.rs` (+`/tests.rs`) |
+| registry the arch paths call through | `sched/src/exit_to_user/hook.rs` |
+| the loop body | `syscalls/src/exit_to_user.rs` |
+| `arch_do_signal_or_restart` | `syscalls/src/exit_to_user/signal.rs` |
+| `user_mode(regs)` bit rules | `hal/src/uregs.rs` (both arches, hosted-tested) |
+
+`arch-irq` cannot depend on `syscalls` (`syscalls` already depends on
+`arch-irq`), so the arch exit paths reach the loop through a boot-installed fn
+pointer — the same shape as `preempt::set_schedule_hook`.
+
+The register frame is now a parameter everywhere: `hal_x86_64::PtRegs` /
+`hal_aarch64::SvcFrame`, ONE type per arch built identically by the syscall,
+IRQ and exception entries. x86_64 previously had three save layouts and a
+signal builder hardwired to `gs:[8] - 0x80` (the syscall block), which is the
+mechanical reason delivery from any other path was impossible; its IRQ frame
+also saved only the 9 scratch GPRs, so a ucontext built there would have
+carried garbage rbx/rbp/r12-r15.
+
+Also de-duplicated: the alarm/ITIMER expiry rules existed twice (the syscall
+tail's open-coded copy and `live::tick_deadline`'s registry walk). One owner
+now — `sched::live::service_task_timers`.
 
 B1466 could not have seen it: its `SOURCES` list omitted `sigfpu.c`, so the
 guest binary never contained the probe (F765 added it, plus the

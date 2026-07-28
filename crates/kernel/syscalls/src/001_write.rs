@@ -81,8 +81,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
         static WSYM: AtomicU64 = AtomicU64::new(0);
         let k = WSYM.fetch_add(1, Ordering::Relaxed);
         if k >= 40 && k % 256 == 0 && k < 40000 {
-            // SAFETY: current_user_frame()[2] is the saved user rsp on this task's syscall kstack.
-            let ursp = unsafe { (*hal_x86_64::current_user_frame())[2] };
+            // SAFETY: current_pt_regs() is this task's live syscall entry frame on its kstack; read-only.
+            let ursp = unsafe { hal_x86_64::current_user_sp(hal_x86_64::current_pt_regs()) };
             klog::write_raw(b"[HWSTK ursp="); klog::write_hex_u64(ursp); klog::write_raw(b"]\n");
             // SAFETY: running task on this CPU; single-mutator mm slot per 13§5.
             if let Some(mm) = unsafe { cur.mm_ref() } {

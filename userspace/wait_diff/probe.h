@@ -117,6 +117,18 @@
 /* Must exceed the `latslow` total (2000 ms) or the mutant reads as a hang. */
 #define LAT_GUARD_MS     8000u
 
+/* `spinsig`: a task spinning in USERSPACE with no syscall in the loop, so no
+ * syscall-tail delivery point exists and only a return-to-user check on the
+ * tick can deliver. The guard cannot be an `alarm()` — that IS the mechanism
+ * under test — so it is a shared-memory stop flag the observer writes; the
+ * budget below is what separates "the kernel delivered" from "userspace had
+ * to rescue it". 10x the alarm case's own 1 s expiry, same margin as
+ * RELEASE_MS, so guest slowness cannot reach the verdict. */
+#define SPIN_READY_MS   2000u
+#define SPIN_ALARM_S       1u
+#define SPIN_GUARD_MS  10000u
+#define SPIN_RESCUE_MS  2000u
+
 /* Sentinel written into every `rem` buffer before a sleep, so "the kernel
  * did not touch rem" is observable rather than inferred from a zero. */
 #define REM_SENTINEL_SEC  987654321L
@@ -225,6 +237,7 @@ void probe_mqueue_api(void);
 void probe_syslog(void);
 void probe_inotify(void);
 void probe_sigfpu(void);
+void probe_spinsig(void);
 void probe_sysv_sem(void);
 void probe_sysv_msg(void);
 void probe_sysv_shm(void);

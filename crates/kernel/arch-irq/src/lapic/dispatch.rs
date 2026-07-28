@@ -37,20 +37,18 @@ pub static IRQ_LAST_VEC: AtomicU64 = AtomicU64::new(0);
 /// # Ctx: IRQ
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
+unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
     // Linux `irq_enter`: hardirq-account the whole dispatcher. While the
     // HARDIRQ field is set, no `preempt_enable` pair inside any handler can
     // fire `schedule()` — a context switch can never happen on the per-CPU
     // hardirq stack this dispatcher runs on. Dropped (`irq_exit`) before the
     // tail softirq drain, exactly as Linux `irq_exit`→`invoke_softirq`.
     sched::preempt::irq_enter();
-    // Frame layout (push order in oxide_irq_vec_NN):
-    //   err(0) vec(8) r11..rax -- `mov rdi,rsp` happens AFTER the
-    //   9 reg pushes, so frame[0..8] = r11 ... frame[72..80] = vec.
-    // SAFETY: caller is the per-vector IRQ asm stub which always pushes the same scaffold; offset 72 lies within.
-    let vec_tag = unsafe {
-        core::ptr::read_volatile(frame.add(72) as *const u64)
-    } as u8;
+    // SAFETY: caller is the per-vector IRQ asm stub, which hands us the
+    // `PtRegs` it just built on the interrupted stack (`hal_x86_64::PtRegs`);
+    // the frame outlives this call (`oxide_irq_resume_user` consumes it).
+    let r = unsafe { &*regs };
+    let vec_tag = r.vector as u8;
 
     // B1347: stamp the IRQ arrival BEFORE any handler runs, so kalloc can tell an
     // IRQ fired in the corruption window and name its vector.
@@ -78,11 +76,9 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             sched::live::preempt::set_need_resched();
             // /proc/stat per-CPU cputime accounting runs on EVERY CPU — each
             // charges its OWN tick to its own `cpuN` bucket (Linux per-CPU
-            // kcpustat). Was the timer taken in user mode? Saved CS sits at
-            // frame+96 (r11@0..vec@72, err@80, rip@88, cs@96); ring 3
-            // (CS&3==3) = user code was running.
-            // SAFETY: `frame` is the per-vector IRQ scaffold pushed by the stub; +96 is the CPU-pushed CS slot, within the saved frame.
-            let from_user = unsafe { (core::ptr::read_volatile(frame.add(96) as *const u64) & 3) == 3 };
+            // kcpustat). Was the timer taken in user mode? Linux
+            // `user_mode(regs)` — the interrupted frame's CS RPL.
+            let from_user = r.from_user();
             sched::cpustat::account(
                 if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
             // G3: per-task utime/stime — charge the real inter-tick delta to
@@ -101,8 +97,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             if from_user {
                 static URIP_SAMP: AtomicU64 = AtomicU64::new(0);
                 if URIP_SAMP.fetch_add(1, Ordering::Relaxed) % 128 == 0 {
-                    // SAFETY: frame+88 is the CPU-pushed user RIP slot (layout above).
-                    let rip = unsafe { core::ptr::read_volatile(frame.add(88) as *const u64) };
+                    let rip = r.rip;
                     klog::write_raw(b"[USERIP rip=");
                     klog::write_hex_u64(rip);
                     if let Some(c) = sched::live::current() {
@@ -128,9 +123,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                     if c.tgid.load(Ordering::Relaxed) != 0 {
                         static KRIP_SAMP: AtomicU64 = AtomicU64::new(0);
                         if KRIP_SAMP.fetch_add(1, Ordering::Relaxed) % 128 == 0 {
-                            // SAFETY: frame+88 is the CPU-pushed RIP slot; same offset
-                            // for kernel-mode ticks (no SS/RSP pushed, but RIP is top).
-                            let rip = unsafe { core::ptr::read_volatile(frame.add(88) as *const u64) };
+                            let rip = r.rip;
                             klog::write_raw(b"[KERNIP rip=");
                             klog::write_hex_u64(rip);
                             klog::write_raw(b" tid=");
@@ -167,7 +160,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // Per-CPU: arms THIS CPU's one-shot for its own running task.
             crate::deadline::rearm_local();
             // The actual switch happens at IRQ exit via
-            // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the
+            // `oxide_irq_exit_to_user` → the return-to-user work loop (one engine); the
             // tick only requested it by setting need_resched above.
         }
         hal_x86_64::VEC_RESCHED => {
@@ -175,7 +168,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             crate::irqstat::hit_resched();
             // Cross-CPU resched IPI: another CPU asked us to pick a new
             // task. Set need_resched; the IRQ-exit slow path
-            // (`oxide_irq_resched_on_exit` → `schedule()`) does the switch.
+            // (`oxide_irq_exit_to_user` → the work loop) does the switch.
             sched::live::preempt::set_need_resched();
             // `membarrier(2)` rides this same IPI (Linux `ipi_mb` is just a
             // full barrier — no private vector needed). No-op unless this CPU
@@ -227,39 +220,52 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
     }
 }
 
-/// IRQ-exit return-to-user reschedule slow path (`14§R07` / `smp-arch.md`
-/// Phase A). Every IRQ stub calls this after the dispatcher returns,
-/// passing the interrupted frame's saved CS. VOLUNTARY preempt: switch
-/// only when returning to user mode (`CS&3==3`) AND a resched was
-/// requested at a safe point (`preempt_count==0`, via
-/// `should_resched_to_user`). The one `schedule()` performs the switch —
-/// there is no IRQ-tail staging engine. `schedule()` preserves the IRQ
-/// state of its caller (here the IRQ-exit context's IF=0), so on return
-/// IRQs are still masked and the stub's pop+`iretq` tail is atomic (the
-/// `iretq` restores the user IF from the frame).
+/// Linux `irqentry_exit` — the x86_64 half. Called by the IRQ-exit asm after
+/// the dispatcher returns, on the OUTER (interrupted) stack, with the whole
+/// interrupted `PtRegs`.
 ///
-/// # SAFETY: invoked only from the IRQ-exit asm with IRQs masked; the
-/// interrupted scratch + iretq image live on the current kernel stack and
-/// are restored by `oxide_irq_resume_user` after this returns (across the
-/// `schedule()` switch, the stack is preserved by the saved Context).
-/// # C: O(log N) when it schedules; O(1) otherwise
+/// `user_mode(regs)` picks the arm: a user-mode return runs the ONE
+/// return-to-user work loop (`sched::exit_to_user::hook`) — reschedule, then
+/// signal delivery, looping while work remains; a kernel-mode return does
+/// nothing, because an interrupt that hit kernel code has no user register set
+/// to deliver into and this port is VOLUNTARY-preempt only (`smp-arch.md`
+/// Phase A). Before B1471 only the reschedule half existed, which is why a
+/// userspace spin loop took no signals at all.
+///
+/// # SAFETY: invoked only from the IRQ-exit asm with IRQs masked, the hardirq
+/// accounting already dropped, and `regs` the interrupted frame on this task's
+/// own kernel stack — it stays live until `oxide_irq_resume_user` pops it.
+/// # C: O(1) plus the work serviced
 /// # Ctx: IRQ-exit
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_irq_resched_on_exit(saved_cs: u64, saved_rip: *mut u64) {
-    let from_user = (saved_cs & 3) == 3;
-    if sched::preempt::should_resched_to_user(from_user) {
-        sched::preempt::take_need_resched();
-        // SAFETY: IRQ-exit safe point — should_resched_to_user confirmed
-        // preempt_count==0 and user-return; the interrupted frame is on the
-        // stack and restored after schedule() returns. schedule() preserves
-        // this context's IF=0, so IRQs stay masked through the iretq tail.
-        unsafe { sched::live::schedule(); }
+unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_x86_64::PtRegs) {
+    if regs.is_null() { return; }
+    // SAFETY: the IRQ-exit asm passes the interrupted `PtRegs`, live here.
+    let vector = unsafe { (*regs).vector };
+    // SAFETY: same live frame.
+    if !unsafe { (*regs).from_user() } { return; }
+    // Linux routes NMI through `irqentry_nmi_enter`/`irqentry_nmi_exit`, which
+    // never reach `exit_to_user_mode_loop`. The fault epilogue this function
+    // also serves resumes an NMI (the cross-CPU backtrace poke) exactly like a
+    // resolved exception, so the vector is the only thing distinguishing them:
+    // an NMI can land on top of any kernel critical section, and running the
+    // scheduler or building a signal frame there is not recoverable.
+    if vector == hal_x86_64::PT_REGS_VECTOR_NMI { return; }
+    // Snapshot BEFORE the loop: the loop consumes `need_resched` when it
+    // schedules, and the rseq abort below must fire exactly when the thread
+    // lost the CPU inside user code — not on every interrupt return, which
+    // would abort critical sections that were never preempted.
+    let preempted = sched::preempt::should_resched();
+    // SAFETY: forwarded contract — `regs` is the live entry frame and the
+    // registered loop is the one installed at boot.
+    unsafe { sched::exit_to_user::hook::run(regs as *mut u8); }
+    if preempted {
         // The thread just lost the CPU inside user code. If it was inside a
         // declared rseq critical section, invalidate it and restart at
         // `abort_ip` BEFORE the iretq resumes, so the commit never runs
         // against per-cpu state another thread mutated in the gap.
-        // SAFETY: `saved_rip` is the iretq frame's RIP slot on this task's kernel stack, published by `oxide_irq_common`'s `lea rsi,[rsp+0x58]`; the frame outlives this call and is consumed by `oxide_irq_resume_user`.
-        unsafe { sched::rseq::rseq_preempt_return(&mut *saved_rip); }
+        // SAFETY: `regs` is the interrupted frame on this task's kernel stack, published by `oxide_irq_common`'s `mov rdi, rsp`; it outlives this call and is consumed by `oxide_irq_resume_user`.
+        unsafe { sched::rseq::rseq_preempt_return(&mut (*regs).rip); }
     }
 }

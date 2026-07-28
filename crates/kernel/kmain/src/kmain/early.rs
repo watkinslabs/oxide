@@ -43,6 +43,12 @@ pub unsafe fn init(info: &BootInfo) {
     unsafe { pmm::user_as::init(info.hhdm_offset); }
     // SAFETY: PMM up; HHDM offset just published; one-shot.
     unsafe { syscalls::vvar::init(); }
+    // The ONE return-to-user work loop (Linux `exit_to_user_mode_loop`). Must
+    // be installed before the first interrupt that can be taken from user
+    // mode; the IRQ and exception exit paths call through the registry, since
+    // `arch-irq` sits below the crate that owns signal delivery.
+    // SAFETY: boot path, single CPU, before any user task exists.
+    unsafe { syscalls::exit_to_user::install(); }
     procfs::hooks::set_boot_unix_secs_hook(syscalls::time::boot_unix_seconds);
     procfs::hooks::set_hostname_hooks(syscalls::hostname::snapshot_current, syscalls::hostname::set_current);
     procfs::hooks::set_domainname_hooks(syscalls::hostname::domain_snapshot_current, syscalls::hostname::domain_set_current);

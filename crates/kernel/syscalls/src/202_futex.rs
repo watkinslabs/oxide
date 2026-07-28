@@ -120,13 +120,11 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
             .map(|c| c.with_exe_path(|p| p.map(|s| s.ends_with("gdm-session-worker")).unwrap_or(false)))
             .unwrap_or(false);
         if is_worker {
-            // SAFETY: dispatch context; current_user_full_frame() points at the
-            // 15-quadword saved-syscall block on THIS task's kernel stack. The
-            // r12 slot (+0x48 = index 9) holds the user RSP, rcx (+0x38 =
-            // index 7) the user RIP (see hal-x86_64 syscall.rs layout).
-            let ff = unsafe { hal_x86_64::current_user_full_frame() };
-            let user_rip = unsafe { *ff.add(7) };
-            let user_rsp = unsafe { *ff.add(9) };
+            // SAFETY: dispatch context; current_pt_regs() is THIS task's live
+            // syscall entry frame on its kernel stack (hal-x86_64 pt_regs.rs).
+            let ff = hal_x86_64::current_pt_regs();
+            let user_rip = if ff.is_null() { 0 } else { unsafe { (*ff).rip } };
+            let user_rsp = if ff.is_null() { 0 } else { unsafe { (*ff).rsp } };
             // DIAG: read the cond word ourselves via the same read_volatile the
             // futex uses — if this != val the read path is broken in this ctx.
             let condw = unsafe { core::ptr::read_volatile(args.a0 as *const u64) };
