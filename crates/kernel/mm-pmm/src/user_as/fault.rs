@@ -109,7 +109,11 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
             }
         }
     }
-    if handle(cr2, kind) {
+    // Linux `FAULT_FLAG_USER`: #PF error-code bit 2 (U/S) is set when the
+    // access that faulted was issued at CPL=3. Kernel-mode faults on a user VA
+    // (uaccess, exec's direct stack pushes) clear it, and a
+    // `UFFD_USER_MODE_ONLY` context refuses to intercept those.
+    if handle(cr2, kind, err & 0x4 != 0) {
         return true;
     }
     // debug-cow probe 2: the fault is now fatal (the demand-page resolver
@@ -136,7 +140,11 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
         Some(k) => k,
         None    => return false,
     };
-    if handle(far, kind) {
+    // Linux `FAULT_FLAG_USER`: EC 0x20/0x24 are instruction/data aborts from a
+    // LOWER exception level (EL0 user); 0x21/0x25 are the same-EL (kernel
+    // uaccess) forms, which clear the flag.
+    let user_mode = matches!((esr >> 26) & 0x3F, 0x20 | 0x24);
+    if handle(far, kind, user_mode) {
         return true;
     }
     #[cfg(feature = "debug-displaystack")]
@@ -216,7 +224,8 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 /// otherwise.
 /// F158: NotPresent faults try MAP_GROWSDOWN stack auto-extension
 /// before falling through to the normal demand-page path.
-pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64)
+pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64,
+                        user_mode: bool)
     -> Result<(), vmm::Error>
 {
     // DIAG (debug-atexit): sentinel-frame re-verify on every fault entry —
@@ -296,7 +305,15 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
                 #[cfg(target_arch = "aarch64")]
                 let present = hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)).is_some();
                 if !present {
-                    ctx.missing_fault(va_page, matches!(access, FaultAccess::Write));
+                    // `missing_fault` returns false only for Linux's
+                    // `VM_FAULT_SIGBUS` arm: a kernel-mode fault against a
+                    // `UFFD_USER_MODE_ONLY` context. Report the fault
+                    // unresolved rather than silently zero-filling it, so the
+                    // uaccess exception table turns the access into EFAULT
+                    // instead of parking the kernel in a monitor's queue.
+                    if !ctx.missing_fault(va_page, matches!(access, FaultAccess::Write), user_mode) {
+                        return Err(vmm::Error::Fault);
+                    }
                     return Ok(());
                 }
             }
@@ -457,7 +474,7 @@ fn handle_swap_fault(
 /// before any task is current (e.g. the demand-page smoke). Allocates
 /// a PMM frame and installs the leaf via per-arch MmuOps; flushes
 /// the faulting VA's TLB. Returns true to retry, false to halt.
-fn handle(va_raw: u64, fault: FaultKind) -> bool {
+fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     let uva = match UserVirtAddr::new(va_raw) {
         Some(u) => u,
@@ -533,7 +550,7 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
         });
     let r = match cur.as_ref() {
         // SAFETY: fault dispatcher with IRQs masked; cur is the running task on this CPU; no concurrent mm writer.
-        Some(cur) => unsafe { cur.mm_ref() }.map(|mm| do_handle(mm, uva, fault, hhdm)),
+        Some(cur) => unsafe { cur.mm_ref() }.map(|mm| do_handle(mm, uva, fault, hhdm, user_mode)),
         None => None,
     };
     if matches!(r, Some(Ok(()))) {
