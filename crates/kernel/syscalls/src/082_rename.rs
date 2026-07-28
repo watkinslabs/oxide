@@ -177,7 +177,14 @@ fn rename_resolved(s: &RenameSides, from_raw: &str, to_raw: &str, flags: u32) ->
                 drop_child_cache(old_parent, old_name);
                 drop_child_cache(new_parent, new_name);
             } else if let Some(d) = source_dentry {
-                if let Some(v) = dest_victim { vfs::dcache::d_unlink(&v); }
+                if let Some(v) = dest_victim {
+                    // Linux `fsnotify_move`: `if (target) fsnotify_link_count(target)`
+                    // — the overwritten entry's link count dropped, so a watch on
+                    // THAT file gets FS_ATTRIB. `d_unlink` then reports
+                    // IN_DELETE_SELF if the drop took it to zero.
+                    if let Some(vi) = v.inode() { ::fs::inotify::fire_link_count(&vi); }
+                    vfs::dcache::d_unlink(&v);
+                }
                 vfs::dcache::d_move(&d, &new_parent.dentry, new_name);
             } else {
                 drop_child_cache(old_parent, old_name);
