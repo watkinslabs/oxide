@@ -12,6 +12,13 @@
 use crate::SvcFrame;
 
 const SIGCONTEXT_RESERVED_BYTES: usize = 4096;
+/// AAPCS64 requires `sp % 16 == 0` at every public function entry (`54§3.4`).
+const FRAME_ALIGN: u64 = 16;
+/// Whether this CPU implements FEAT_BTI. PSTATE.BTYPE is RES0 without it, so
+/// Linux's `setup_return` guards its `PSR_BTYPE_C` stamp on
+/// `system_supports_bti()`; we do not implement `PROT_BTI` (`31§*`), so the
+/// guard is a compile-time `false` until that lands.
+const SYSTEM_SUPPORTS_BTI: bool = false;
 /// Width of the AArch64 `svc #0` instruction, used when restarting an
 /// interrupted syscall from its post-SVC ELR.
 const SVC_INSTRUCTION_BYTES: u64 = core::mem::size_of::<u32>() as u64;
@@ -87,18 +94,54 @@ pub unsafe fn svc_frame_user_sp(frame: *mut SvcFrame) -> u64 {
     unsafe { (*frame).sp_el0 }
 }
 
+/// Linux `get_sigframe` (`arch/arm64/kernel/signal.c`) placement arithmetic,
+/// as a pure function so the caller's `access_ok` check and the builder's
+/// write can never disagree about WHERE the frame lands. AArch64 has no red
+/// zone, so the non-alt base is the interrupted SP itself. `None` when the
+/// arithmetic underflows — `user_sp` is hostile input, a process is free to
+/// `mov sp, <kernel VA>; svc #0`.
+/// # C: O(1)
+pub fn sigframe_base(user_sp: u64, alt: hal::AltStack) -> Option<u64> {
+    // `sigsp()`: SA_ONSTACK with a usable `sigaltstack(2)` puts the frame at
+    // the alternate stack's TOP. Without this a SIGSEGV-on-stack-overflow
+    // handler builds its frame on the stack that just overflowed and faults
+    // instead of running.
+    let base = if alt.use_alt { alt.sp.checked_add(alt.size)? } else { user_sp };
+    Some(base.checked_sub(core::mem::size_of::<RtSigframe>() as u64)? & !(FRAME_ALIGN - 1))
+}
+
+/// `(base, len, align)` of the rt_sigframe a delivery would write, for the
+/// caller's `access_ok`. Linux `get_sigframe` runs
+/// `if (!access_ok(user->sigframe, sp_top - sp)) return -EFAULT`, which
+/// `handle_signal` turns into `force_sigsegv`.
+/// # C: O(1)
+pub fn sigframe_range(user_sp: u64, alt: hal::AltStack) -> Option<(u64, u64, u64)> {
+    let base = sigframe_base(user_sp, alt)?;
+    if base == 0 { return None; }
+    let len = core::mem::size_of::<RtSigframe>() as u64;
+    base.checked_add(len).filter(|end| *end <= hal::USER_VA_END)?;
+    Some((base, len, FRAME_ALIGN))
+}
+
 /// Build the rt_sigframe on the user stack and rewrite `frame` so the
 /// dispatch `eret` enters the handler with x1=&siginfo, x2=&ucontext, pc=
 /// handler, lr=restorer, sp=frame. x0=sig is seeded by the dispatch retval
 /// (the SVC restore's `ldr x0,[sp,#0xc8]`), so the caller returns `sig`.
 /// `saved_ret` is the interrupted syscall's x0 (stored in the ucontext for
 /// rt_sigreturn). `old_sigmask` is recorded for rt_sigreturn to restore.
+/// Returns `false` without touching user memory or the SVC frame when the
+/// frame does not fit in user space (Linux `get_sigframe`'s `access_ok`
+/// failing); the caller must then `force_sigsegv`. That check is the
+/// difference between a signal delivery and an arbitrary kernel write: EL1
+/// writes through TTBR1 just fine, so `mov sp, <kernel VA>; svc #0` otherwise
+/// has the kernel `write_volatile` an attacker-shaped frame there (B1459).
 /// # SAFETY: dispatch-tail ctx; `frame` is the live saved SVC frame; active
 /// TTBR0 is the caller's user AS.
 /// # C: O(1)
+#[must_use]
 pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u64,
                                  sig: u32, saved_ret: u64, restart: bool, old_sigmask: u64,
-                                 payload: Option<hal::SigPayload>, alt: hal::AltStack) {
+                                 payload: Option<hal::SigPayload>, alt: hal::AltStack) -> bool {
     // SAFETY: per fn contract — sole writer of the live SVC frame this dispatch.
     let frame = unsafe { &mut *frame };
     let saved_pc     = frame.elr_el1;
@@ -107,14 +150,9 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     let mut regs = regs_from_frame(frame);
     if !restart { regs[0] = saved_ret; } // x0 = interrupted syscall's return value
 
-    // Linux `sigsp()`: SA_ONSTACK with a usable `sigaltstack(2)` puts the frame
-    // at the alternate stack's TOP. Without this a SIGSEGV-on-stack-overflow
-    // handler builds its frame on the stack that just overflowed and faults
-    // instead of running. AArch64 has no red zone, so the non-alt base is the
-    // interrupted SP itself.
-    let base = if alt.use_alt { alt.sp.saturating_add(alt.size) } else { saved_sp };
-    let fsz = core::mem::size_of::<RtSigframe>() as u64;
-    let new_sp = base.saturating_sub(fsz) & !0xfu64; // AAPCS64 SP%16==0
+    // Placement + `access_ok`-equivalent bound. Frame sits AT/ABOVE new_sp so
+    // the handler's downward stack can't trample it (`54§3.1`).
+    let Some((new_sp, _, _)) = sigframe_range(saved_sp, alt) else { return false };
 
     // SAFETY: RtSigframe is plain-old-data (repr(C) integers + byte arrays); an all-zero bit pattern is a valid instance, every meaningful field is overwritten below before the frame is read.
     let mut sf: RtSigframe = unsafe { core::mem::zeroed() };
@@ -141,6 +179,10 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     frame.elr_el1 = handler;    // pc = handler
     frame.x30     = restorer;   // lr — handler `ret` lands at restorer
     frame.sp_el0  = new_sp;
+    // Linux `setup_return`: TCO always cleared for a handler; BTYPE stamped as
+    // if the handler were reached by `BLR` where FEAT_BTI exists.
+    frame.spsr_el1 = hal::uregs::aarch64::handler_entry_pstate(saved_pstate, SYSTEM_SUPPORTS_BTI);
+    true
 }
 
 /// SVC frame index of x8, the AArch64 Linux syscall-number register
@@ -205,6 +247,16 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64, ha
     // SAFETY: st_ptr is uc_stack inside the same validated frame_base region; CPL=EL1 read via the caller's TTBR0, identical validity to the mc_ptr read above.
     let st = unsafe { core::ptr::read_volatile(st_ptr) };
     if mc.pc >= hal::USER_VA_END || mc.sp >= hal::USER_VA_END { return None; }
+    // Linux `restore_sigframe`: `err |= !valid_user_regs(&regs->user_regs,
+    // current)` and `rt_sigreturn` then `goto badframe` → `force_sig(SIGSEGV)`.
+    // The SVC exit asm does `msr spsr_el1, x10` from this slot before `eret`,
+    // so an unfiltered `mc.pstate` with `M[3:0] = 0b0101` erets the process's
+    // OWN code at EL1 — arbitrary kernel execution from any unprivileged
+    // process (B1459). `single_step` is false because the ptrace software-step
+    // bit is (re-)armed AFTER dispatch by `oxide_arm_arm_singlestep`, from
+    // `Task.singlestep` — never from this user word.
+    let (pstate, accepted) = hal::uregs::aarch64::sanitize_native_pstate(mc.pstate, false);
+    if !accepted { return None; }
     // Restore x0..x30 into the scattered SvcFrame slots.
     for i in 0..18 { frame.gp[i] = mc.regs[i]; }
     frame.x18_x29[0] = mc.regs[18];
@@ -213,7 +265,7 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64, ha
     frame.x30      = mc.regs[30];
     frame.sp_el0   = mc.sp;
     frame.elr_el1  = mc.pc;
-    frame.spsr_el1 = mc.pstate;
+    frame.spsr_el1 = pstate;
     let alt = hal::AltStack { sp: st.ss_sp, size: st.ss_size, flags: st.ss_flags, use_alt: false };
     Some((sigmask, mc.regs[0] as i64, alt))
 }
@@ -233,6 +285,110 @@ pub unsafe fn rt_sigreturn_frame_range(frame: *mut SvcFrame) -> Option<(u64, u64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A user SP the process pointed at the TTBR1 half (`mov sp, <kernel VA>;
+    /// svc #0`) must not yield a writable placement: EL1 writes through TTBR1
+    /// happily, so the builder would land the frame in kernel memory.
+    #[test]
+    fn kernel_stack_pointer_yields_no_signal_frame() {
+        let none = hal::AltStack::default();
+        for sp in [hal::USER_VA_END + 0x10000, 0xffff_0000_0800_0000,
+                   0xffff_8000_0000_0000, 0xffff_ffff_ffff_f000, u64::MAX] {
+            assert!(sigframe_range(sp, none).is_none(), "sp {sp:#x} accepted");
+        }
+        // The invariant, swept across the whole boundary: an accepted frame is
+        // ALWAYS entirely inside user space. Near the boundary the frame still
+        // lands wholly below it, which is what `access_ok` permits — it is
+        // carved DOWNWARD from the SP.
+        for d in 0..0x4000u64 {
+            let sp = hal::USER_VA_END - 0x2000 + d;
+            if let Some((base, len, _)) = sigframe_range(sp, none) {
+                assert!(base + len <= hal::USER_VA_END, "sp {sp:#x} frame escapes user VA");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tiny_or_wrapping_stack_pointer_is_rejected_not_wrapped() {
+        let none = hal::AltStack::default();
+        for sp in [0u64, 1, 0x1000] {
+            assert!(sigframe_range(sp, none).is_none(), "sp {sp:#x} accepted");
+        }
+        let alt = hal::AltStack { sp: u64::MAX - 0x100, size: 0x1000, flags: 0, use_alt: true };
+        assert!(sigframe_range(0x7fff_0000_0000, alt).is_none());
+        let alt = hal::AltStack { sp: hal::USER_VA_END - 0x1000, size: 0x9000, flags: 0, use_alt: true };
+        assert!(sigframe_range(0x7fff_0000_0000, alt).is_none());
+    }
+
+    #[test]
+    fn handler_entry_sp_is_16_aligned_and_below_the_interrupted_sp() {
+        let none = hal::AltStack::default();
+        let sp = 0x7fff_ffff_e008u64;   // deliberately misaligned input
+        let (base, len, align) = sigframe_range(sp, none).unwrap();
+        assert_eq!(base % FRAME_ALIGN, 0, "54§3.4 AAPCS64 sp%16==0");
+        assert_eq!(align, FRAME_ALIGN);
+        assert_eq!(len, core::mem::size_of::<RtSigframe>() as u64);
+        // AArch64 has no red zone: the frame starts at the interrupted SP.
+        assert!(base + len <= sp);
+        let alt = hal::AltStack { sp: 0x1000_0000, size: 0x8000, flags: 0, use_alt: true };
+        let (abase, alen, _) = sigframe_range(sp, alt).unwrap();
+        assert!(abase >= alt.sp && abase + alen <= alt.sp + alt.size);
+        assert_eq!(abase % FRAME_ALIGN, 0);
+    }
+
+    /// End-to-end `rt_sigreturn` over a REAL rt_sigframe in memory, driving
+    /// the same code the kernel runs. The host's stack lives below
+    /// `USER_VA_END`, so the "user" frame is just a 16-aligned local — no
+    /// target gate, no boot. This is the wiring test the pure-function tests
+    /// in `hal::uregs` cannot cover: before B1459 `restore_signal_frame` did
+    /// `frame.spsr_el1 = mc.pstate` and every case below "succeeded".
+    #[repr(align(16))]
+    struct AlignedFrame(RtSigframe);
+
+    fn sigreturn_with_pstate(pstate: u64) -> (Option<(u64, i64, hal::AltStack)>, u64) {
+        // SAFETY: RtSigframe is plain-old-data (repr(C) integers + byte arrays); an all-zero bit pattern is a valid instance and every field the restore reads is set below.
+        let mut uframe: AlignedFrame = unsafe { core::mem::zeroed() };
+        uframe.0.uc.uc_mcontext.pstate = pstate;
+        uframe.0.uc.uc_mcontext.pc = 0x1000;
+        uframe.0.uc.uc_mcontext.sp = 0x2000;
+        uframe.0.uc.uc_mcontext.regs[0] = 0x1234;
+        let base = &uframe.0 as *const RtSigframe as u64;
+        assert!(base % FRAME_ALIGN == 0 && base + core::mem::size_of::<RtSigframe>() as u64 <= hal::USER_VA_END,
+                "host stack must model a user address for this test");
+        let mut svc: SvcFrame = SvcFrame {
+            gp: [0; 18], x18_x29: [0; 2], x30: 0, _pad_x30: 0,
+            elr_el1: 0xdead, spsr_el1: 0xbeef, sp_el0: base, retval: 0, x19_x28: [0; 10],
+        };
+        // SAFETY: `svc` is a live exclusively-owned frame and `base` a live
+        // rt_sigframe, exactly the contract `restore_signal_frame` states.
+        let out = unsafe { restore_signal_frame(&mut svc) };
+        (out, svc.spsr_el1)
+    }
+
+    #[test]
+    fn rt_sigreturn_rejects_a_forged_el1_pstate_end_to_end() {
+        // M[3:0] = 0b0101 = EL1h. The SVC exit does `msr spsr_el1, x10` from
+        // this slot and `eret`s — accepting it runs user code at EL1.
+        let (out, spsr) = sigreturn_with_pstate(0x3c5);
+        assert!(out.is_none(), "forged EL1h pstate accepted by rt_sigreturn");
+        assert_eq!(spsr, 0xbeef, "the SVC frame must be left untouched on a bad frame");
+    }
+
+    #[test]
+    fn rt_sigreturn_accepts_a_normal_el0_pstate_end_to_end() {
+        let (out, spsr) = sigreturn_with_pstate(hal::uregs::aarch64::PSR_NZCV);
+        let (_, x0, _) = out.expect("a legal EL0t pstate must round-trip");
+        assert_eq!(x0, 0x1234);
+        assert_eq!(spsr, hal::uregs::aarch64::PSR_NZCV);
+    }
+
+    #[test]
+    fn rt_sigreturn_masks_res0_bits_end_to_end() {
+        use hal::uregs::aarch64::{PSR_IL_BIT, PSR_NZCV, PSR_SS_BIT};
+        let (out, spsr) = sigreturn_with_pstate(PSR_NZCV | PSR_IL_BIT | PSR_SS_BIT);
+        assert!(out.is_some());
+        assert_eq!(spsr, PSR_NZCV, "IL / SS reached SPSR_EL1");
+    }
 
     #[test]
     fn aarch64_rt_sigframe_matches_linux_uapi_shape() {
