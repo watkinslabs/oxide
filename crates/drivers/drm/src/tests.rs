@@ -231,8 +231,12 @@ fn ioc_size(ioctl: u64) -> u64 { (ioctl >> 16) & 0x3fff }
 #[test]
 fn ioctl_size_fields_match_structs() {
     // Every _IOWR ioctl encodes sizeof(struct) in bits 16..30. A mismatch means
-    // the number was mis-transcribed (GETGAMMA/SETGAMMA had 0x18 vs 0x20,
-    // SETPLANE had 0x30 vs 0x40) and libdrm's real call falls through to ENOTTY.
+    // the number was mis-transcribed (GETGAMMA/SETGAMMA had 0x18 vs 0x20) and
+    // libdrm's real call falls through to ENOTTY. This check only proves the
+    // number and the struct agree with EACH OTHER: SETPLANE passed it for months
+    // with both wrong (48-byte struct widened to 64 to match a 0x40 number).
+    // `ioctl_numbers_encode_their_linux_struct_size` is the one that anchors
+    // them to Linux.
     use core::mem::size_of;
     assert_eq!(ioc_size(DRM_IOCTL_MODE_SETPLANE),        size_of::<DrmModeSetPlane>() as u64);
     assert_eq!(ioc_size(DRM_IOCTL_MODE_DIRTYFB),         size_of::<DrmModeFbDirtyCmd>() as u64);
@@ -253,7 +257,7 @@ fn ioctl_size_fields_match_structs() {
 #[test]
 fn new_kms_struct_sizes() {
     use core::mem::size_of;
-    assert_eq!(size_of::<DrmModeSetPlane>(),             64);
+    assert_eq!(size_of::<DrmModeSetPlane>(),             48);
     assert_eq!(size_of::<DrmModeFbDirtyCmd>(),           24);
     assert_eq!(size_of::<DrmModeObjSetProperty>(),       24);
     assert_eq!(size_of::<DrmModeConnectorSetProperty>(), 16);
@@ -261,4 +265,65 @@ fn new_kms_struct_sizes() {
     assert_eq!(size_of::<DrmModeCursor>(),               28);
     assert_eq!(size_of::<DrmModeCursor2>(),              36);
     assert_eq!(size_of::<DrmModeFbCmd>(),                28);
+}
+
+// ---------------------------------------------------------------------------
+// ioctl request-number encoding.
+//
+// A DRM request number embeds sizeof(struct) in bits 16..30. Deriving one from
+// the wrong struct size does not fail loudly: the dispatch `match` in `node.rs`
+// compares the whole u64, so a wrong size means userspace's request number
+// never matches and the ioctl falls through to ENOTTY. That is how both
+// MODE_ATOMIC (56 mis-encoded as 64) and MODE_SETPLANE (48 mis-encoded as 64)
+// became silently unreachable.
+// ---------------------------------------------------------------------------
+
+const IOC_WRITE: u64 = 1;
+const IOC_READ: u64 = 2;
+const IOC_RW: u64 = 3;
+/// `_IOC(dir, 'd', nr, size)` — DRM's ioctl type byte is 'd' (0x64).
+const fn ioc(dir: u64, nr: u64, size: u64) -> u64 { (dir << 30) | (size << 16) | (0x64 << 8) | nr }
+
+/// Sizes taken from `include/uapi/drm/{drm.h,drm_mode.h}` in linux-master.
+#[test]
+fn ioctl_numbers_encode_their_linux_struct_size() {
+    assert_eq!(DRM_IOCTL_MODE_ATOMIC,            ioc(IOC_RW, 0xBC, 56), "drm_mode_atomic");
+    assert_eq!(DRM_IOCTL_MODE_SETPLANE,          ioc(IOC_RW, 0xB7, 48), "drm_mode_set_plane");
+    assert_eq!(DRM_IOCTL_MODE_OBJ_GETPROPERTIES, ioc(IOC_RW, 0xB9, 32), "drm_mode_obj_get_properties");
+    assert_eq!(DRM_IOCTL_MODE_GETPROPERTY,       ioc(IOC_RW, 0xAA, 64), "drm_mode_get_property");
+    assert_eq!(DRM_IOCTL_MODE_GETCONNECTOR,      ioc(IOC_RW, 0xA7, 80), "drm_mode_get_connector");
+    assert_eq!(DRM_IOCTL_MODE_GETRESOURCES,      ioc(IOC_RW, 0xA0, 64), "drm_mode_card_res");
+    assert_eq!(DRM_IOCTL_MODE_GETPLANE,          ioc(IOC_RW, 0xB6, 32), "drm_mode_get_plane");
+    assert_eq!(DRM_IOCTL_MODE_GETPLANERESOURCES, ioc(IOC_RW, 0xB5, 16), "drm_mode_get_plane_res");
+    assert_eq!(DRM_IOCTL_MODE_CREATEPROPBLOB,    ioc(IOC_RW, 0xBD, 16), "drm_mode_create_blob");
+    assert_eq!(DRM_IOCTL_MODE_DESTROYPROPBLOB,   ioc(IOC_RW, 0xBE, 4),  "drm_mode_destroy_blob");
+    assert_eq!(DRM_IOCTL_MODE_GETPROPBLOB,       ioc(IOC_RW, 0xAC, 16), "drm_mode_get_blob");
+    assert_eq!(DRM_IOCTL_SET_CLIENT_CAP,         ioc(IOC_WRITE, 0x0d, 16), "drm_set_client_cap");
+    assert_eq!(DRM_IOCTL_GET_CLIENT,             ioc(IOC_RW, 0x05, 40), "drm_client");
+    assert_eq!(DRM_IOCTL_GET_STATS,              ioc(IOC_READ, 0x06, 248), "drm_stats");
+    assert_eq!(DRM_IOCTL_MODE_ATTACHMODE,        ioc(IOC_RW, 0xA8, 72), "drm_mode_mode_cmd");
+    assert_eq!(DRM_IOCTL_MODE_DETACHMODE,        ioc(IOC_RW, 0xA9, 72), "drm_mode_mode_cmd");
+    assert_eq!(DRM_IOCTL_SYNCOBJ_WAIT,           ioc(IOC_RW, 0xC3, 40), "drm_syncobj_wait");
+    assert_eq!(DRM_IOCTL_SYNCOBJ_RESET,          ioc(IOC_RW, 0xC4, 16), "drm_syncobj_array");
+    assert_eq!(DRM_IOCTL_SYNCOBJ_SIGNAL,         ioc(IOC_RW, 0xC5, 16), "drm_syncobj_array");
+    assert_eq!(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT,  ioc(IOC_RW, 0xCA, 48), "drm_syncobj_timeline_wait");
+    assert_eq!(DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD,   ioc(IOC_RW, 0xC1, 24), "drm_syncobj_handle");
+    assert_eq!(DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE,   ioc(IOC_RW, 0xC2, 24), "drm_syncobj_handle");
+}
+
+/// Each wire struct must be exactly the size its own request number claims.
+/// This is the check that would have caught `DrmModeSetPlane` widening its
+/// `src_*` fields to u64 while its request number stayed at the 48-byte value.
+#[test]
+fn wire_structs_are_the_size_their_ioctl_number_claims() {
+    use core::mem::size_of;
+    assert_eq!(size_of::<DrmModeSetPlane>(),     ioc_size(DRM_IOCTL_MODE_SETPLANE) as usize);
+    assert_eq!(size_of::<DrmModeCardRes>(),      ioc_size(DRM_IOCTL_MODE_GETRESOURCES) as usize);
+    assert_eq!(size_of::<DrmModeGetConnector>(), ioc_size(DRM_IOCTL_MODE_GETCONNECTOR) as usize);
+    assert_eq!(size_of::<DrmModeGetPlane>(),     ioc_size(DRM_IOCTL_MODE_GETPLANE) as usize);
+    assert_eq!(size_of::<DrmModeGetPlaneRes>(),  ioc_size(DRM_IOCTL_MODE_GETPLANERESOURCES) as usize);
+    assert_eq!(size_of::<DrmModeGetEncoder>(),   ioc_size(DRM_IOCTL_MODE_GETENCODER) as usize);
+    assert_eq!(size_of::<DrmModeCrtc>(),         ioc_size(DRM_IOCTL_MODE_GETCRTC) as usize);
+    assert_eq!(size_of::<DrmModeCreateBlob>(),   ioc_size(DRM_IOCTL_MODE_CREATEPROPBLOB) as usize);
+    assert_eq!(size_of::<DrmModeDestroyBlob>(),  ioc_size(DRM_IOCTL_MODE_DESTROYPROPBLOB) as usize);
 }

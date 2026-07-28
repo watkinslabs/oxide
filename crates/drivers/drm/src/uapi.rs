@@ -10,8 +10,8 @@ pub const DRM_IOCTL_GET_UNIQUE:     u64 = 0xc0106401;
 pub const DRM_IOCTL_GET_MAGIC:      u64 = 0x80046402;
 pub const DRM_IOCTL_IRQ_BUSID:      u64 = 0xc0106403;
 pub const DRM_IOCTL_GET_MAP:        u64 = 0xc0286404;
-pub const DRM_IOCTL_GET_CLIENT:     u64 = 0xc01c6405;
-pub const DRM_IOCTL_GET_STATS:      u64 = 0x807c6406;
+pub const DRM_IOCTL_GET_CLIENT:     u64 = 0xc0286405;
+pub const DRM_IOCTL_GET_STATS:      u64 = 0x80f86406;
 pub const DRM_IOCTL_SET_VERSION:    u64 = 0xc0106407;
 pub const DRM_IOCTL_MODESET_CTL:    u64 = 0x40086408;
 pub const DRM_IOCTL_GEM_CLOSE:      u64 = 0x40086409;
@@ -48,8 +48,8 @@ pub const DRM_IOCTL_MODE_GETGAMMA:          u64 = 0xc02064a4;
 pub const DRM_IOCTL_MODE_SETGAMMA:          u64 = 0xc02064a5;
 pub const DRM_IOCTL_MODE_GETENCODER:        u64 = 0xc01464a6;
 pub const DRM_IOCTL_MODE_GETCONNECTOR:      u64 = 0xc05064a7;
-pub const DRM_IOCTL_MODE_ATTACHMODE:        u64 = 0xc05064a8;
-pub const DRM_IOCTL_MODE_DETACHMODE:        u64 = 0xc05064a9;
+pub const DRM_IOCTL_MODE_ATTACHMODE:        u64 = 0xc04864a8;
+pub const DRM_IOCTL_MODE_DETACHMODE:        u64 = 0xc04864a9;
 pub const DRM_IOCTL_MODE_GETPROPERTY:       u64 = 0xc04064aa;
 pub const DRM_IOCTL_MODE_SETPROPERTY:       u64 = 0xc01064ab;
 pub const DRM_IOCTL_MODE_GETPROPBLOB:       u64 = 0xc01064ac;
@@ -63,9 +63,12 @@ pub const DRM_IOCTL_MODE_MAP_DUMB:          u64 = 0xc01064b3;
 pub const DRM_IOCTL_MODE_DESTROY_DUMB:      u64 = 0xc00464b4;
 pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u64 = 0xc01064b5;
 pub const DRM_IOCTL_MODE_GETPLANE:          u64 = 0xc02064b6;
-// `drm_mode_set_plane` is 64 bytes (8×u32/s32 + 4×u64 src_* fixed-16.16), so
-// the size field is 0x40 — the earlier 0x30 (48) never matched libdrm's SETPLANE.
-pub const DRM_IOCTL_MODE_SETPLANE:          u64 = 0xc04064b7;
+// `drm_mode_set_plane` (drm_mode.h) is twelve 32-bit fields = 48 (0x30) bytes.
+// The src_* rectangle is 16.16 fixed point but each field is still `__u32`, so
+// widening them to u64 produced a 64-byte struct and a 0x40 size field that
+// libdrm's SETPLANE request number never matched: the universal-plane path fell
+// through to ENOTTY exactly like MODE_ATOMIC did.
+pub const DRM_IOCTL_MODE_SETPLANE:          u64 = 0xc03064b7;
 // _IOWR(0x64, 0xb8, struct drm_mode_fb_cmd2): modern struct carries
 // modifier[4] (u64), so sizeof = 104 (0x68), not pre-modifier 68 (0x44).
 pub const DRM_IOCTL_MODE_ADDFB2:            u64 = 0xc06864b8;
@@ -74,19 +77,24 @@ pub const DRM_IOCTL_MODE_OBJ_SETPROPERTY:   u64 = 0xc01864ba;
 // CURSOR2 is nr 0xBB (drm_mode_cursor2, 36 bytes) — the earlier 0xBF byte was a
 // transcription error (0xBF is SYNCOBJ_CREATE's nr) and never matched libdrm.
 pub const DRM_IOCTL_MODE_CURSOR2:           u64 = 0xc02464bb;
-pub const DRM_IOCTL_MODE_ATOMIC:            u64 = 0xc04064bc;
+// `struct drm_mode_atomic` (drm_mode.h) is flags+count_objs (2×u32) + 6×u64 =
+// 56 (0x38) bytes, so DRM_IOWR(0xBC, ..) encodes 0x38, not 0x40. The former
+// 0x40 size never matched libdrm's request number, so every drmModeAtomicCommit
+// fell through the card-node dispatch to ENOTTY ("Inappropriate ioctl for
+// device") and mutter could not drive a display at all.
+pub const DRM_IOCTL_MODE_ATOMIC:            u64 = 0xc03864bc;
 pub const DRM_IOCTL_MODE_CREATEPROPBLOB:    u64 = 0xc01064bd;
 pub const DRM_IOCTL_MODE_DESTROYPROPBLOB:   u64 = 0xc00464be;
 
 // Sync-object ioctls (per `47§19`)
 pub const DRM_IOCTL_SYNCOBJ_CREATE:          u64 = 0xc00864bf;
 pub const DRM_IOCTL_SYNCOBJ_DESTROY:         u64 = 0xc00864c0;
-pub const DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD:    u64 = 0xc00c64c1;
-pub const DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE:    u64 = 0xc00c64c2;
-pub const DRM_IOCTL_SYNCOBJ_WAIT:            u64 = 0xc01864c3;
-pub const DRM_IOCTL_SYNCOBJ_RESET:           u64 = 0xc00864c4;
-pub const DRM_IOCTL_SYNCOBJ_SIGNAL:          u64 = 0xc00864c5;
-pub const DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT:   u64 = 0xc02864ca;
+pub const DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD:    u64 = 0xc01864c1;
+pub const DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE:    u64 = 0xc01864c2;
+pub const DRM_IOCTL_SYNCOBJ_WAIT:            u64 = 0xc02864c3;
+pub const DRM_IOCTL_SYNCOBJ_RESET:           u64 = 0xc01064c4;
+pub const DRM_IOCTL_SYNCOBJ_SIGNAL:          u64 = 0xc01064c5;
+pub const DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT:   u64 = 0xc03064ca;
 pub const DRM_IOCTL_SYNCOBJ_QUERY:           u64 = 0xc01864cb;
 pub const DRM_IOCTL_SYNCOBJ_TRANSFER:        u64 = 0xc02064cc;
 pub const DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL: u64 = 0xc01864cd;
@@ -129,6 +137,30 @@ pub const DRM_MODE_OBJECT_FB:        u32 = 0xfbfbfbfb;
 pub const DRM_MODE_OBJECT_BLOB:      u32 = 0xbbbbbbbb;
 pub const DRM_MODE_OBJECT_PLANE:     u32 = 0xeeeeeeee;
 pub const DRM_MODE_OBJECT_ANY:       u32 = 0;
+
+// Property flag bits (`DRM_MODE_PROP_*`, drm_mode.h). The legacy type bits are
+// a 1-bit-each mask; the extended types are `DRM_MODE_PROP_TYPE(n) = n << 6`.
+// `ATOMIC` marks a property hidden from clients that have not set
+// `DRM_CLIENT_CAP_ATOMIC` (`drm_mode_object_get_properties`).
+pub const DRM_MODE_PROP_PENDING:      u32 = 1 << 0;
+pub const DRM_MODE_PROP_RANGE:        u32 = 1 << 1;
+pub const DRM_MODE_PROP_IMMUTABLE:    u32 = 1 << 2;
+pub const DRM_MODE_PROP_ENUM:         u32 = 1 << 3;
+pub const DRM_MODE_PROP_BLOB:         u32 = 1 << 4;
+pub const DRM_MODE_PROP_BITMASK:      u32 = 1 << 5;
+pub const DRM_MODE_PROP_OBJECT:       u32 = 1 << 6;
+pub const DRM_MODE_PROP_SIGNED_RANGE: u32 = 2 << 6;
+pub const DRM_MODE_PROP_ATOMIC:       u32 = 0x8000_0000;
+
+// `struct drm_mode_property_enum` = { __u64 value; char name[32]; } = 40 bytes.
+pub const DRM_PROP_ENUM_STRIDE: u64 = 40;
+// `char name[DRM_PROP_NAME_LEN]` in drm_mode_get_property / _property_enum.
+pub const DRM_PROP_NAME_LEN: u64 = 32;
+
+// Plane type enum values (`drm_plane_type`, drm_plane.h).
+pub const DRM_PLANE_TYPE_OVERLAY: u64 = 0;
+pub const DRM_PLANE_TYPE_PRIMARY: u64 = 1;
+pub const DRM_PLANE_TYPE_CURSOR:  u64 = 2;
 
 // Atomic/page-flip flags
 pub const DRM_MODE_PAGE_FLIP_EVENT:      u32 = 0x01;
@@ -303,7 +335,9 @@ pub struct DrmEventVblank {
 // field offsets). Layouts copied EXACTLY from linux/include/uapi/drm/drm_mode.h.
 // ---------------------------------------------------------------------------
 
-/// `struct drm_mode_set_plane` — 0xc04064b7, 64 bytes. src_* are 16.16 fixed.
+/// `struct drm_mode_set_plane` — 0xc03064b7, 48 bytes. src_* are 16.16 fixed
+/// point but each is a `__u32`. Field order follows drm_mode.h exactly: the
+/// source rectangle is declared x, y, **h, w** (height before width).
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct DrmModeSetPlane {
@@ -315,10 +349,10 @@ pub struct DrmModeSetPlane {
     pub crtc_y:   i32,
     pub crtc_w:   u32,
     pub crtc_h:   u32,
-    pub src_x:    u64,
-    pub src_y:    u64,
-    pub src_h:    u64,
-    pub src_w:    u64,
+    pub src_x:    u32,
+    pub src_y:    u32,
+    pub src_h:    u32,
+    pub src_w:    u32,
 }
 
 /// `struct drm_mode_fb_dirty_cmd` — DIRTYFB, 0xc01864b1, 24 bytes.

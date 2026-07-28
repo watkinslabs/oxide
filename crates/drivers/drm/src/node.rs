@@ -273,11 +273,11 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
-        // Object properties: report zero (no mutable KMS props on the legacy
-        // path yet) so mutter's drmModeObjectGetProperties succeeds instead of
-        // ENOTTY — the bare ENOTTY made mutter abort with "No available CRTC".
+        // Properties carrying DRM_MODE_PROP_ATOMIC are hidden from a client that
+        // has not set DRM_CLIENT_CAP_ATOMIC, matching drm_file::atomic in
+        // drm_mode_object_get_properties.
         DRM_IOCTL_MODE_OBJ_GETPROPERTIES => match driver.as_ref() {
-            Some(d) => Some(crate::atomic::get_obj_properties(card_id, d, arg)),
+            Some(d) => Some(crate::atomic::get_obj_properties(card_id, d, client_cap_atomic(file), arg)),
             None => Some(-(Errno::Einval.as_i32() as i64)),
         },
         DRM_IOCTL_MODE_GETPROPERTY       => Some(crate::atomic::get_property(arg)),
@@ -299,7 +299,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         }
         DRM_IOCTL_MODE_GETCONNECTOR => {
             match driver.as_ref() {
-                Some(d) => Some(crate::modeset::get_connector(d, arg)),
+                Some(d) => Some(crate::modeset::get_connector(card_id, d, client_cap_atomic(file), arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
