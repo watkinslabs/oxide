@@ -140,7 +140,7 @@ impl ThreadGroup {
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             shared_pending: AtomicU64::new(0),
-            shared_sigqueue: Spinlock::new([const { alloc::collections::VecDeque::new() }; 64]),
+            shared_sigqueue: crate::sigqueue::new_queues(),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
