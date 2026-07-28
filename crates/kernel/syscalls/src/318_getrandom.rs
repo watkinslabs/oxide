@@ -1,7 +1,7 @@
 // 318 getrandom — one syscall, one file (docs/53 §0).
 
 use syscall::errno::Errno;
-use syscall::getrandom::{validate_grnd_flags, GETRANDOM_COUNT_MAX, GRND_INSECURE, GRND_NONBLOCK};
+use syscall::getrandom::{cold_pool_action, validate_grnd_flags, ColdPool, GETRANDOM_COUNT_MAX};
 use syscall::SyscallArgs;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -32,9 +32,17 @@ pub fn sys_getrandom(args: &SyscallArgs) -> i64 {
     if len == 0 { return 0; }
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, len, 1) { return rv; }
     if !crng::is_initialized() {
-        crng::reseed();
-        if !crng::is_initialized()
-            && (flags & (GRND_NONBLOCK | GRND_INSECURE)) != 0 { return err(Errno::Eagain); }
+        // `GRND_INSECURE` skips the readiness gate outright, so don't even
+        // reseed on its behalf; every other caller gets a seed attempt first.
+        if cold_pool_action(flags) != ColdPool::Proceed {
+            crng::reseed();
+            // Still cold: `GRND_NONBLOCK` reports it, everyone else would block
+            // in Linux's `wait_for_random_bytes()`. Our pool self-seeds from
+            // whatever sources exist, so reaching here means none answered.
+            if !crng::is_initialized() && cold_pool_action(flags) == ColdPool::Again {
+                return err(Errno::Eagain);
+            }
+        }
     }
     // Chunked through a kernel buffer so the CSPRNG output never has to be
     // produced directly into a user page.
