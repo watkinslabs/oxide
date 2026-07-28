@@ -16,6 +16,15 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+// swapon(2) 167: the `swap_flags` decode + its EINVAL-before-EPERM order.
+// futimesat(2) 261 / utimes(2) 235: the `struct timeval[2]` decode. Both slot
+// files are kernel-gated, so the decisions live here where the hosted suite
+// can reach them (docs/53, CLAUDE.md phantom-test rule).
+pub mod swap_abi;
+// vhangup(2) 153 + the TIOCNOTTY ioctl share ONE controlling-terminal
+// resolver so they cannot disagree about which tty the caller holds.
+mod tty_hangup;
+pub mod utimes_abi;
 // ustat(2) 136: `struct ustat` wire layout. sysfs(2) 139: the option/index
 // query over the filesystem-type registry. remap_file_pages(2) 216 /
 // fadvise64(2) 221 / mlock2(2) 325: their admission ladders. All five slot
