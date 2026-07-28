@@ -68,8 +68,8 @@ pub(super) fn tmpfs_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
     if fa.flags & FS_CASEFOLD_FL  != 0 { s |= S_CASEFOLD; }
     inode.set_i_flags(s);
     let raw_now = vfs::inode_times::realtime_now_ns();
-    let ctime_ns = vfs::inode_times::current_time(inode, raw_now);
+    let ctime = vfs::inode_times::current_time(inode, raw_now);
     vfs::inode::inode_inc_iversion(inode);
-    inode.set_times(None, None, ctime_ns)?;
+    inode.set_times(None, None, ctime)?;
     Ok(())
 }

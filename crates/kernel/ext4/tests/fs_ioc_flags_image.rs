@@ -35,6 +35,7 @@ const FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 const EXT4_EXTENTS_FL: u32 = 0x0008_0000; // kernel-internal, must be preserved
 const EXT4_FEATURE_RO_COMPAT_PROJECT: u32 = ext4::superblock::RO_COMPAT_PROJECT;
 const T_FILEATTR: u64 = 1_720_007_200 * 1_000_000_000 + 125_000_000;
+fn t_fileattr() -> vfs::Timespec64 { vfs::Timespec64::from_clock_ns(T_FILEATTR) }
 
 static NOW: AtomicU64 = AtomicU64::new(T_FILEATTR);
 fn now_provider() -> u64 { NOW.load(Ordering::Relaxed) }
@@ -143,16 +144,16 @@ fn setflags_updates_ctime_and_iversion() {
 
     inode.fileattr_set(&FileAttr { flags: flags | FS_NODUMP_FL, ..Default::default() })
         .expect("set nodump");
-    assert_eq!(inode.ctime(), Some(T_FILEATTR), "in-core ctime stamped by SETFLAGS");
+    assert_eq!(inode.ctime(), Some(t_fileattr()), "in-core ctime stamped by SETFLAGS");
     assert!(vfs::inode::inode_query_iversion(&inode) > before_version,
         "SETFLAGS forces i_version bump like ext4_ioctl_setflags");
-    assert_eq!(m.state().mount.read_inode(ino).unwrap().ctime_ns, T_FILEATTR,
+    assert_eq!(m.state().mount.read_inode(ino).unwrap().ctime, t_fileattr(),
         "on-disk ctime stamped by SETFLAGS");
 
     drop(inode); drop(sb); drop(m);
     let (m2, _sb2) = mount(disk);
     let ino2 = m2.state().mount.lookup_path(b"/chattr-time.txt").expect("lookup after remount");
-    assert_eq!(m2.state().mount.read_inode(ino2).unwrap().ctime_ns, T_FILEATTR,
+    assert_eq!(m2.state().mount.read_inode(ino2).unwrap().ctime, t_fileattr(),
         "remount: SETFLAGS ctime persisted");
 }
 
