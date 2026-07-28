@@ -9,15 +9,14 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 use vfs::{File, InodeRef};
 
-/// Monotonic ns for the inode_times overlay (mtime/ctime stamping).
-/// # C: O(1)
-pub(crate) fn now_ns() -> u64 {
-    use hal::TimerOps;
-    #[cfg(target_arch = "x86_64")]
-    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
-    #[cfg(target_arch = "aarch64")]
-    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-}
+/// Wall-clock ns for the inode_times overlay (mtime/ctime stamping) — Linux
+/// `current_time` (`fs/inode.c`) reads `ktime_get_coarse_real_ts64`, i.e.
+/// CLOCK_REALTIME. This used to return the MONOTONIC counter, so every
+/// `notify_change` ctime stamp was the machine's uptime rather than an
+/// epoch-relative time, and `ls -l` after a chmod showed 1970 plus a few
+/// seconds. `timekeeper` owns the wall clock and is the same source installed
+/// as vfs's realtime provider (`crate::mount`). # C: O(1)
+pub(crate) fn now_ns() -> u64 { timekeeper::realtime_ns() }
 
 // `AT_*` numbers are owned by `syscall::at` (the ABI crate both this shim and
 // the `fs` work-fn crate depend on); re-exported, never re-declared.
