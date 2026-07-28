@@ -19,9 +19,31 @@ Status: `OPEN` unclaimed · `CLAIMED` lane exists · `DONE` merged · `WONTFIX`.
 | OPEN | W6 `delayed_work` tests flake under parallel load | | hosted | §7 |
 | OPEN | W7 post-fix tick-gap distribution never re-measured | | x86 | §8 |
 
-Differential state at `8b4c9a668` + B1456, own runs, clean builds: **29/29
-identical records on BOTH arches — zero divergences**, the first time that has
-held. x86 `x86-20260727-192336-a52Dqp`, arm `arm-20260727-192540-46DkYl`.
+| DONE | W8 `shm_nattch` counted shmat/shmdt calls, not VMAs | `F765-sysv-blocking-differential` | both | §9 |
+
+Differential state at `ced0a0d26` + F765, own runs, clean builds: **77/77
+identical records on BOTH arches — zero divergences**. F765 grew it 42 -> 77
+with `sysv_sem` / `sysv_msg` / `sysv_shm`, the first execution of the SysV
+blocking paths and of `shmdt`'s address-space half.
+
+## 9 W8 — `shm_nattch` counted calls, not VMAs — DONE (F765)
+
+```
+-wdiff|sysv_shm|nattch_tracks_fork|forked=2|after_exit=1   <- Linux
++wdiff|sysv_shm|nattch_tracks_fork|forked=1|after_exit=1   <- oxide
+```
+
+Linux moves `shm_nattch` from `shm_vm_ops.open`/`.close` (`ipc/shm.c`), so it
+counts VMAs: fork copy, mprotect split, merge and `exit_mmap` all move it.
+oxide moved it only in `shmat`/`shmdt`, so `ipcs -m` under-reported forked
+attachers and — since teardown never decremented — a process exiting without
+`shmdt` left the count raised forever, keeping an `IPC_RMID`ed segment alive.
+
+Fixed by `VmaFlags::SYSVSHM` + `mm-vmm/src/vm_ops.rs`, with every VMA-tree
+birth/death funnelled through `VmaTree::map_put`/`map_take`. Ordering matters:
+a split opens the fragments BEFORE closing the original, or a
+single-attachment `SHM_DEST` segment hits zero mid-split and is destroyed
+under the fragments about to reference it. Hosted: `vmm::tests_vm_ops`.
 
 ## 2 W1 — the job-control stop never unwinds the sleep — DONE (B1456)
 
