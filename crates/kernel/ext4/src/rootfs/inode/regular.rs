@@ -381,8 +381,11 @@ impl AddressSpaceOps for Ext4FileMapping {
 /// Build a regular-file `vfs::Inode` for ext4 inode `ino`. `mode`/`size`/
 /// `nlink`/`times` are the captured on-disk metadata (read by the caller before
 /// the `iget` build closure). # C: O(1)
+/// `blocks` is `i_blocks` from the caller's already-read (or just-written)
+/// on-disk inode. Re-reading the slot here to fetch it made every instantiation
+/// a second inode-table read whose failure silently reported `st_blocks = 0`.
 pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32,
-    uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes)
+    uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, blocks: u64)
     -> InodeRef
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino, size);
@@ -393,7 +396,6 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();
     data.st.mount.load_xattrs(ino, &xattrs);
-    let blocks = data.st.mount.read_inode(ino).map(|i| i.i_blocks as u64).unwrap_or(0);
     let mut b = InodeBuilder::new(ext4_wrap_ino(ino), mk_mode(FileType::Regular, mode & 0o7777),
                       Arc::new(Ext4RegInodeOps), Arc::new(Ext4RegFileOps))
         .sb(weak_sb)
