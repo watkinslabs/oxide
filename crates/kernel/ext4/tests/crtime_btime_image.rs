@@ -1,4 +1,4 @@
-//! C5(crtime) integration: `i_crtime` decode → Inode.crtime_ns (drives statx
+//! C5(crtime) integration: `i_crtime` decode → Inode.crtime (drives statx
 //! STATX_BTIME). A freshly created file carries a crtime (stamped by A1); a
 //! hand-written i_crtime round-trips through the decoder.
 
@@ -15,6 +15,7 @@ const SECTOR: u32 = 512;
 // clock; tests install a provider like mtime_on_write_image does).
 const T_CREATE: u64 = 1_700_000_000_000_000_000; // 2023-11-14 in ns
 fn clock() -> u64 { T_CREATE }
+fn t_create() -> vfs::Timespec64 { vfs::Timespec64::from_clock_ns(T_CREATE) }
 
 fn build_disk() -> Arc<dyn BlockDevice> {
     let cap = (MINI.len() as u64) / (SECTOR as u64);
@@ -34,8 +35,8 @@ fn created_file_has_crtime() {
     let n = m.create_file(2, b"born.bin", 0o644, 0, 0).unwrap();
     let i = m.read_inode(n).unwrap();
     // create stamps crtime = ctime = mtime = current_time (ext4_new_inode).
-    assert_eq!(i.crtime_ns, T_CREATE, "created file's birth time = create clock");
-    assert_eq!(i.crtime_ns, i.ctime_ns, "crtime equals ctime at create");
+    assert_eq!(i.crtime, Some(t_create()), "created file's birth time = create clock");
+    assert_eq!(i.crtime, Some(i.ctime), "crtime equals ctime at create");
 }
 
 #[test]
@@ -45,11 +46,11 @@ fn crtime_survives_remount() {
     {
         let m = ext4::Mount::open(disk.clone()).unwrap();
         let n = m.create_file(2, b"persist.bin", 0o644, 0, 0).unwrap();
-        assert_eq!(m.read_inode(n).unwrap().crtime_ns, T_CREATE);
+        assert_eq!(m.read_inode(n).unwrap().crtime, Some(t_create()));
     }
     let m2 = ext4::Mount::open(disk).unwrap();
     let n = m2.lookup_path(b"/persist.bin").unwrap();
-    assert_eq!(m2.read_inode(n).unwrap().crtime_ns, T_CREATE, "crtime persists across remount");
+    assert_eq!(m2.read_inode(n).unwrap().crtime, Some(t_create()), "crtime persists across remount");
 }
 
 #[test]
@@ -71,6 +72,6 @@ fn hand_written_crtime_decodes() {
     m.write_inode_bytes(n, &bytes).unwrap();
 
     let i = m.read_inode(n).unwrap();
-    assert_eq!(i.crtime_ns, secs as u64 * 1_000_000_000 + nsec as u64,
-        "i_crtime + extra decode to absolute ns");
+    assert_eq!(i.crtime, Some(vfs::Timespec64::new(secs as i64, nsec)),
+        "i_crtime + extra decode to the (sec, nsec) pair");
 }

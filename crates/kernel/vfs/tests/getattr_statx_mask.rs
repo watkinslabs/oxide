@@ -14,11 +14,11 @@
 use vfs::getattr::{
     STATX_ATTR_APPEND, STATX_ATTR_IMMUTABLE, STATX_BASIC_STATS, STATX_BTIME,
 };
-use vfs::{FileType, InodeBuilder, InodeRef, S_APPEND, S_IMMUTABLE, IDENTITY,
+use vfs::{FileType, InodeBuilder, InodeRef, S_APPEND, S_IMMUTABLE, Timespec64, IDENTITY,
           default_file_ops, default_inode_ops, mk_mode};
 
 /// Regular file with optional birth time and settable `i_flags`.
-fn tfile(flags: u32, btime: Option<u64>) -> InodeRef {
+fn tfile(flags: u32, btime: Option<Timespec64>) -> InodeRef {
     let mut b = InodeBuilder::new(7, mk_mode(FileType::Regular, 0o644),
             default_inode_ops(), default_file_ops()).i_flags(flags);
     if let Some(t) = btime { b = b.btime(t); }
@@ -32,16 +32,17 @@ fn mask_is_basic_stats_without_btime() {
     let st = vfs::generic_fillattr(&tfile(0, None), &IDENTITY);
     assert_eq!(st.result_mask, STATX_BASIC_STATS, "exactly the base fields, no more");
     assert_eq!(st.result_mask & STATX_BTIME, 0, "STATX_BTIME clear when no birth time");
-    assert_eq!(st.btime_ns, 0, "btime field zero when unavailable");
+    assert_eq!(st.btime, None, "btime field absent when unavailable");
 }
 
 /// A stored birth time adds `STATX_BTIME` to the mask and carries the value.
 #[test]
 fn btime_sets_mask_bit_and_value() {
-    let st = vfs::generic_fillattr(&tfile(0, Some(1_234_000_000_999)), &IDENTITY);
+    let bt = Timespec64::new(1_234, 999);
+    let st = vfs::generic_fillattr(&tfile(0, Some(bt)), &IDENTITY);
     assert_eq!(st.result_mask & STATX_BTIME, STATX_BTIME, "STATX_BTIME set when present");
     assert_eq!(st.result_mask, STATX_BASIC_STATS | STATX_BTIME, "base set unchanged, only BTIME added");
-    assert_eq!(st.btime_ns, 1_234_000_000_999, "btime value passed through");
+    assert_eq!(st.btime, Some(bt), "btime value passed through");
 }
 
 /// `i_flags` immutable/append map onto `stx_attributes`; the mask advertises
@@ -81,4 +82,23 @@ fn default_btime_none() {
     assert_eq!(plain.btime(), None);
     let st = vfs::generic_fillattr(&plain, &IDENTITY);
     assert_eq!(st.result_mask & STATX_BTIME, 0);
+}
+
+/// F767: the epoch second is a LEGAL birth time, not an "absent" sentinel. The
+/// old model stored `btime_ns: u64` and treated `0` as "no creation time", so a
+/// file born at 1970-01-01T00:00:00Z reported no btime at all.
+#[test]
+fn epoch_btime_is_present_not_absent() {
+    let st = vfs::generic_fillattr(&tfile(0, Some(Timespec64::ZERO)), &IDENTITY);
+    assert_eq!(st.btime, Some(Timespec64::ZERO), "epoch btime is a real value");
+    assert_eq!(st.result_mask & STATX_BTIME, STATX_BTIME, "STATX_BTIME set for an epoch birth time");
+}
+
+/// F767: a pre-1970 birth time round-trips with signed seconds.
+#[test]
+fn pre_epoch_btime_round_trips() {
+    let bt = Timespec64::new(-1_000_000_000, 7);
+    let st = vfs::generic_fillattr(&tfile(0, Some(bt)), &IDENTITY);
+    assert_eq!(st.btime, Some(bt));
+    assert_eq!(st.result_mask & STATX_BTIME, STATX_BTIME);
 }
