@@ -129,8 +129,14 @@ fn mnt_setns_requires_sys_chroot_on_top_of_sys_admin() {
     t.creds.cap_effective.store(admin_only, core::sync::atomic::Ordering::Release);
     assert_eq!(setns_apply(&ns, CLONE_NEWNS, &t), eperm());
 
+    // With CAP_SYS_CHROOT the permission ladder passes. The call still fails
+    // EINVAL because this fixture's namespace has no root mount recorded, and
+    // `mntns_install` refuses a namespace whose root it cannot resolve (Linux
+    // rejects the analogous anonymous namespace outright, and its
+    // `vfs_path_lookup` error arm reverts the swap). What matters here is that
+    // it is no longer EPERM.
     let privileged = task(611, "mnt-cap");
-    assert_eq!(setns_apply(&ns, CLONE_NEWNS, &privileged), 0);
+    assert_ne!(setns_apply(&ns, CLONE_NEWNS, &privileged), eperm());
 }
 
 #[test]

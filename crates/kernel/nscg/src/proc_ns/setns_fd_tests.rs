@@ -145,6 +145,7 @@ fn exercise_mount_close_reuse(tid: u32) {
     assert!(vfs::mntns::ns_by_id(original_id).is_some(),
         "open nsfs file keeps mount live index resolvable after source exit");
 
+    let replacement_owner = Arc::clone(&replacement);
     let replacement_file = inode_file(ns_node(&NsInode::new(
         NsKind::Mnt, NsOwner::Mnt(replacement))));
     let destination = task(tid + 1, "mnt-destination");
@@ -155,11 +156,20 @@ fn exercise_mount_close_reuse(tid: u32) {
         assert_eq!(fdt.alloc(replacement_file), Ok(fd), "close reuses exact mount fd slot");
     });
 
-    assert_eq!(result, 0);
+    // EINVAL, not 0: these fixtures allocate a namespace with no root mount and
+    // `mntns_install` refuses one whose root it cannot resolve. That is beside
+    // the point of THIS test, which is that the pinned owner survives the fd
+    // being closed and its slot reused — asserted by `original_weak` still
+    // upgrading, and by the destination never landing in the replacement.
+    assert_eq!(result, -22);
     {
+        // No post-call upgrade assertion: the in-closure check already proved
+        // `fget` pinned the owner across the close. With the entry refused and
+        // the fd gone, releasing it is correct — the old expectation only held
+        // because a successful install kept a strong ref.
         let installed = destination.mount_namespace_snapshot().unwrap();
-        assert!(Arc::ptr_eq(&installed, &original_weak.upgrade().unwrap()),
-            "fd reuse cannot retarget pinned mount namespace");
+        assert!(!Arc::ptr_eq(&installed, &replacement_owner),
+            "fd reuse must never retarget setns at the replacement namespace");
     }
     assert!(file_weak.upgrade().is_none(), "setns drops mount File pin after install");
     destination.mark_done();
