@@ -16,6 +16,9 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+// execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
+// tested, and this is what glibc's stack canary + pointer guard come from.
+pub mod auxrandom;
 // ustat(2) 136: `struct ustat` wire layout. sysfs(2) 139: the option/index
 // query over the filesystem-type registry. remap_file_pages(2) 216 /
 // fadvise64(2) 221 / mlock2(2) 325: their admission ladders. All five slot
