@@ -149,6 +149,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
                 // Global wall-timer queue: one CPU only.
                 crate::deadline::service_wall_timers();
             }
+            // Per-CPU, and BEFORE the re-arm: expired blocking waits are woken
+            // here so the deadline programmed below is the next unserviced one.
+            crate::deadline::service_wait_deadlines();
             // Per-CPU: arms THIS CPU's one-shot for its own running task. This
             // was inside the `is_bsp` block, so APs never programmed a deadline
             // and a task running on an AP got no one-shot at all.

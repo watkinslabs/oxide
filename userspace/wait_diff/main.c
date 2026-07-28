@@ -16,6 +16,7 @@ int main(void) {
     probe_fdwait();
     probe_jobctl();
     probe_cputime();
+    probe_latency();
     probe_mqueue();
     probe_mqueue_api();
     probe_locks();
