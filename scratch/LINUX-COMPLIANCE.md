@@ -124,14 +124,20 @@ wrapped into a VFS inode. `tmpfile` has the identical last line.
    cannot be read back. Suspect ordering: `forget_created_ino` runs immediately
    before and invalidates the page cache + `iforget`s the number, so the re-read
    goes to disk; if the inode-table write is not yet visible this fails.
-2. `if !inode.is_reg() { return None; }` — it reads back without `S_IFREG`.
-   **Worth checking first:** `create` passes `m & 0o7777` to `create_file`,
-   which masks the type bits off. That is only safe if `create_file` re-adds
-   `S_IFREG` itself. If it does so for most callers but not on some path, this
-   is the failure.
+2. `if !inode.is_reg() { return None; }` — **RULED OUT.** `create_file`
+   (`ialloc/create.rs:34`) writes `S_IFREG | (mode_perm & 0x0FFF)`, so masking
+   the type off at the call site is harmless. Checked, not assumed.
 
-Distinguishing them is one boot with the two arms logged separately — currently
-both collapse into the same `Eio`, which is why the errno says nothing.
+**So it is arm 1, and there is a concrete mechanism.** `create_file` runs inside
+`create_op`, whose own comment says it "defers the batch commit". Then
+`forget_created_ino` invalidates the page cache for that inode and `iforget`s
+it. Then `wrap_file` calls `read_inode`, which must now go to disk — for an
+inode-table block whose write may still be sitting in the deferred batch. That
+ordering reads through a cache it just dropped, for data not yet committed.
+
+**Test it cheaply:** commit (or consult the pending batch) before
+`forget_created_ino`, or have `read_inode` see the uncommitted inode, and re-run
+the user's boot. If the journal file then creates, that is the bug.
 
 Either way this leaves an allocated on-disk inode with no VFS reference on every
 failure — a leak alongside the wrong errno, and if journald retries in a loop it
