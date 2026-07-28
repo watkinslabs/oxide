@@ -292,11 +292,16 @@ static void notify_signal(mqd_t mq) {
     char buf[API_MSGSIZE];
     if (sent == 0) mq_receive(mq, buf, sizeof buf, NULL);
     sigprocmask(SIG_SETMASK, &old, NULL);
+    /* `si_pid` is the SENDING process in the registrant's pid namespace
+     * (ipc/mqueue.c:804). Here the sender IS the registrant, so it must be
+     * this process's own pid — an internal task id rendered here instead of a
+     * namespace pid would show up as 0. */
     out("mqapi", "notify_signal",
-        "armed=%s|delivered=%d|si_code_mesgq=%d|sival=%d|oneshot_rearm=%s",
+        "armed=%s|delivered=%d|si_code_mesgq=%d|sival=%d|si_pid_is_self=%d|oneshot_rearm=%s",
         errno_name(armed), delivered,
         delivered && info.si_code == SI_MESGQ ? 1 : 0,
         delivered && info.si_value.sival_int == API_SIVAL ? 1 : 0,
+        delivered && info.si_pid == getpid() ? 1 : 0,
         errno_name(rearm));
 }
 

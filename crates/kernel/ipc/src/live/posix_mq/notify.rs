@@ -49,7 +49,7 @@ fn send_cookie(reg: &MqNotifyReg, code: u8) {
 /// queue from empty to one message AND no receiver was waiting synchronously,
 /// then UNREGISTERS — a notification is one-shot.
 /// # C: O(1)
-pub(super) fn do_notify(q: &MqQueue, sender_tgid: u32, sender_uid: u32) {
+pub(super) fn do_notify(q: &MqQueue, sender_vpid: u32, sender_uid: u32) {
     // Detach under the queue lock, deliver outside it: both delivery arms take
     // foreign locks (the target task's signal queue and runqueue, or a netlink
     // socket's RX queue and its waiters).
@@ -60,7 +60,7 @@ pub(super) fn do_notify(q: &MqQueue, sender_tgid: u32, sender_uid: u32) {
         NotifyKind::Signal(signo) => {
             // `do_mq_notify` accepts `sigev_signo == 0`; `__do_notify` then
             // sends nothing (`mqueue.c:793-795`).
-            if signo != 0 { queue_mesgq_signal(&reg, signo, sender_tgid, sender_uid); }
+            if signo != 0 { queue_mesgq_signal(&reg, signo, sender_vpid, sender_uid); }
         }
         NotifyKind::Thread => send_cookie(&reg, NOTIFY_WOKENUP),
     }
@@ -69,16 +69,18 @@ pub(super) fn do_notify(q: &MqQueue, sender_tgid: u32, sender_uid: u32) {
 /// Post `signo` at the registered thread group with `si_code == SI_MESGQ`,
 /// `si_pid` = the sending process and `si_value` = the registered
 /// `sigev_value` (`ipc/mqueue.c:797-820`). Linux bypasses
-/// `check_kill_permission` here — the signal is from the kernel.
+/// `check_kill_permission` here — the signal is from the kernel. `si_pid` is
+/// `task_tgid_nr_ns(current, ns_of_pid(info->notify_owner))`, i.e. the sender's
+/// NAMESPACE pid, never the opaque internal tgid.
 /// # C: O(1)
-fn queue_mesgq_signal(reg: &MqNotifyReg, signo: u32, sender_tgid: u32, sender_uid: u32) {
+fn queue_mesgq_signal(reg: &MqNotifyReg, signo: u32, sender_vpid: u32, sender_uid: u32) {
     let Some(bit) = sched::signum::bit_for(signo) else { return };
     let Some(target) = sched::live::registry::lookup(reg.owner_tgid) else { return };
     target.sigq_reserve(signo);
     target.sigq_push(sched::SigInfo {
         signo,
         code: sched::signum::SI_MESGQ,
-        pid: sender_tgid,
+        pid: sender_vpid,
         uid: sender_uid,
         value: reg.value,
     });

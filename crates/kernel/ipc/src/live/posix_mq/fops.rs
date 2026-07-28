@@ -57,7 +57,9 @@ fn state_line(q: &MqQueue, out: &mut [u8; FILENT_SIZE]) -> usize {
                 NotifyKind::Thread => SIGEV_THREAD,
             };
             let sig = match r.kind { NotifyKind::Signal(s) => s as u64, _ => 0 };
-            (kind as u64, sig, r.owner_tgid as u64)
+            // `pid_vnr(info->notify_owner)` — the NAMESPACE pid, not the
+            // opaque internal tgid the registration is keyed by.
+            (kind as u64, sig, sched::live::registry::display_vpid(r.owner_tgid))
         }
     };
     let mut at = 0usize;
