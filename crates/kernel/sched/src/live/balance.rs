@@ -92,6 +92,31 @@ fn pop_one_cfs(rq: &Runqueue) -> Option<Arc<Task>> {
     t
 }
 
+/// Linux `can_migrate_task` (`kernel/sched/fair.c`), the two unconditional
+/// refusals. Both are correctness, not policy:
+///
+///   * `task_on_cpu(env->src_rq, p)` — a task still executing on its source CPU
+///     may NOT be pulled. Its registers are being saved; moving it lets the
+///     destination pick it and run it on two CPUs at once, which is what
+///     `schedule()`'s `on_cpu` CAS ("selected task already owned by another
+///     CPU") catches. Linux counts these as `nr_failed_migrations_running`.
+///   * `!cpumask_test_cpu(env->dst_cpu, p->cpus_ptr)` — the destination must be
+///     in `cpus_allowed` (`sched_setaffinity` / cgroup `cpuset.cpus`). Linux
+///     counts these as `nr_failed_migrations_affine`.
+///
+/// A CPU id at or above the 64-bit mask width cannot be expressed in
+/// `cpus_allowed`, so affinity does not constrain it.
+/// The cache-hot heuristic (`sysctl_sched_migration_cost`) is a separate,
+/// imbalance-scaled decision and stays at the call site.
+/// # C: O(1)
+pub fn can_migrate_task(task: &Task, dst_cpu: u32) -> bool {
+    if task.on_cpu.load(Ordering::Acquire) { return false; }
+    if dst_cpu < 64 && task.cpus_allowed.load(Ordering::Acquire) & (1u64 << dst_cpu) == 0 {
+        return false;
+    }
+    true
+}
+
 /// Push `task` onto `rq`'s queue.
 fn push_to(rq: &Runqueue, task: Arc<Task>) {
     // Same reasoning as `pop_one_cfs`: reached from the idle-loop balancer.
@@ -157,11 +182,10 @@ pub unsafe fn balance_once() -> u32 {
 
     let task = pop_one_cfs(busy_rq);
     let task = match task { Some(t) => t, None => return 0 };
-    // Affinity: only migrate to a CPU in the task's cpus_allowed mask
-    // (`sched_setaffinity` / cgroup cpuset.cpus). If the chosen task is
-    // pinned away from idle_cpu, put it back and skip this round rather
-    // than violate the mask (a later round may move a different task).
-    if idle_cpu < 64 && task.cpus_allowed.load(Ordering::Acquire) & (1u64 << idle_cpu) == 0 {
+    // Still running on busy_cpu, or pinned away from idle_cpu? Put it back and
+    // skip this round rather than violate either rule (a later round may move a
+    // different task).
+    if !can_migrate_task(&task, idle_cpu) {
         push_to(busy_rq, task);
         return 0;
     }
@@ -234,8 +258,8 @@ pub unsafe fn newidle_balance() -> u32 {
     let busy_rq = match unsafe { global_for(busy_cpu) } { Some(r) => r, None => return 0 };
     let task = pop_one_cfs(busy_rq);
     let task = match task { Some(t) => t, None => return 0 };
-    // Affinity: if pinned away from us, put it back and skip.
-    if me < 64 && task.cpus_allowed.load(Ordering::Acquire) & (1u64 << me) == 0 {
+    // Still running on busy_cpu, or pinned away from us? Put it back and skip.
+    if !can_migrate_task(&task, me) {
         push_to(busy_rq, task);
         return 0;
     }
@@ -243,3 +267,6 @@ pub unsafe fn newidle_balance() -> u32 {
     push_to(my_rq, task);
     1
 }
+
+#[cfg(test)]
+mod tests;

@@ -3,6 +3,7 @@
 // - `hooks` owns sched_switch tracing and teardown stats surface.
 // - `lifecycle` owns runqueue install/current-task helpers and teardown glue.
 // - `switch` owns the context-switch engine, finish-task-switch tail, and yield path.
+// - `ownership` owns the post-mortem for the `on_cpu` ownership assertion.
 // - `ctxprobe` (aarch64, debug-armctx) owns the fatal-fault register-corruption
 //   post-mortem: the context save/restore ring + the hal fault-dump hook.
 
@@ -11,6 +12,7 @@ mod active_mm;
 pub mod ctxprobe;
 mod hooks;
 mod lifecycle;
+mod ownership;
 mod switch;
 
 pub use active_mm::park_active_mm;

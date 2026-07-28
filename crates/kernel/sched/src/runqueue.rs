@@ -69,6 +69,15 @@ impl RunqueueInner {
         }
     }
 
+    /// Linux `put_prev_task`: return the still-Runnable outgoing task to its
+    /// own runqueue's class tree from `schedule()`. Named apart from
+    /// [`RunqueueInner::enqueue`] because this is the ONE enqueue whose task is
+    /// legitimately still `on_cpu` — it stops running a few instructions later,
+    /// under this same rq lock, and its `on_rq` is published BEFORE `on_cpu`
+    /// drops (see [`RunqueueInner::pick_next_task_claim`] for the pairing).
+    /// # C: O(log N) (CFS) / O(1) (RT)
+    pub fn put_prev_task(&mut self, task: Arc<Task>) { self.enqueue(task) }
+
     /// Linux `yield_task()` class hook for the current runnable task before
     /// `schedule()` re-enqueues it. # C: O(log N)
     pub fn yield_current_task(&mut self, task: &Task) {
@@ -90,6 +99,40 @@ impl RunqueueInner {
         if let Some(t) = self.rt.pick_highest()  { return t; }
         if let Some(t) = self.cfs.pick_leftmost() { return t; }
         Arc::clone(&self.idle)
+    }
+
+    /// `pick_next_task` fused with Linux `prepare_task(next)`: publish the
+    /// picked task's `on_cpu` BEFORE it leaves the tree, and report whether
+    /// someone already owned it. Returns `(task, was_already_on_cpu)`.
+    ///
+    /// The order is load-bearing and is Linux's, stated in `kernel/sched/core.c`
+    /// beside `try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)`:
+    ///
+    /// ```text
+    /// __schedule() (switch to task 'p')      try_to_wake_up()
+    ///   STORE p->on_cpu = 1                    LOAD p->on_rq
+    /// __schedule() (put 'p' to sleep)
+    ///   STORE p->on_rq = 0                     LOAD p->on_cpu
+    /// ```
+    ///
+    /// "One must be running (->on_cpu == 1) in order to remove oneself from the
+    /// runqueue." A reader that loads `on_rq` then `on_cpu` must therefore never
+    /// see BOTH clear for a task being switched to — Linux's own words for what
+    /// goes wrong are "it would be possible to, falsely, observe p->on_cpu == 0".
+    ///
+    /// In Linux a running task keeps `on_rq == TASK_ON_RQ_QUEUED` and only
+    /// `block_task()` clears it, so the order is automatic. Here `on_rq` means
+    /// "in a class tree", so the pick itself clears it — and setting `on_cpu`
+    /// after the pick (the pre-fix code) produced exactly the falsely-observable
+    /// window: `Task::pending_wake` reads `on_rq` then `on_cpu`, saw both clear
+    /// for a task the local CPU was mid-switch onto, reported it Ready, and
+    /// enqueued a task that was already executing elsewhere.
+    /// # C: O(log N)
+    pub fn pick_next_task_claim(&mut self) -> (Arc<Task>, bool) {
+        // Claim through the same selection `pick_next_task` will make — one
+        // `&mut self` scope, no interleaving, so peek and pick agree.
+        let claimed = self.peek_next_task().on_cpu.swap(true, core::sync::atomic::Ordering::AcqRel);
+        (self.pick_next_task(), claimed)
     }
 
     /// Peek at the next pick without removing. Used by `need_resched`

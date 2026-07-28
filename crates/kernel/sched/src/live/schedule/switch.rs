@@ -30,6 +30,7 @@ use crate::live::runqueue::{global, Runqueue};
 use super::active_mm::{active_mm_drop, active_mm_grab, sched_current_cpu};
 use super::hooks::{fire_sched_switch, sched_switch_hook_installed};
 use super::lifecycle::VOLUNTARY;
+use super::ownership::report_ownership_conflict;
 
 #[cfg(target_arch = "x86_64")]
 type ArchCtx = hal_x86_64::ContextX86_64;
@@ -158,21 +159,36 @@ unsafe fn finish_switched_from(rq: &Runqueue) {
 pub unsafe extern "C" fn oxide_finish_task_switch() {
     sync::note_qs();
     if let Some(rq) = global() {
-        // SAFETY: the switcher acquired rq.inner via lock() and mem::forget'd the guard; this is the matching 1:1 release on the incoming stack.
-        unsafe { rq.inner.raw_unlock(); }
-        // Write `switched_from->on_cpu = false` FIRST, while the outgoing task is
-        // still alive. For a self-reaping non-leader thread exit the outgoing
-        // task (switched_from) IS the reap_pending task; draining reap_pending
-        // below drops its last Arc and frees it, so doing the on_cpu write AFTER
-        // the drain would store `false` (0) through a raw pointer into freed —
-        // then reused — memory (a use-after-free that scribbles whatever object
-        // the allocator later placed in that Task's slot: BTree node, Vec buffer,
-        // dcache Weak, VMA, etc. — the ~55s live-gnome heap-corruption blocker).
-        // reap_pending still holds the Arc here, so the task is guaranteed live.
+        // Linux `finish_task_switch()` order: `finish_task(prev)` — the
+        // `smp_store_release(&prev->on_cpu, 0)` — runs BEFORE
+        // `finish_lock_switch(rq)` releases the rq lock. `kernel/sched/core.c`
+        // states the rule outright: "p->on_cpu ... is set by prepare_task() and
+        // cleared by finish_task() such that it will be set before p is
+        // scheduled-in and cleared after p is scheduled-out, BOTH UNDER
+        // rq->lock". Releasing first opened a window in which this rq's class
+        // tree held the outgoing task (re-enqueued by `schedule()` while still
+        // Runnable) with `on_cpu` still set: a peer CPU parked in
+        // `newidle_balance` spinning on this very lock takes it the instant it
+        // drops, steals that task, and picks it — tripping the ownership claim
+        // in `schedule()` ("selected task already owned by another CPU").
+        //
+        // Also write `switched_from->on_cpu = false` BEFORE draining
+        // reap_pending, while the outgoing task is still alive. For a
+        // self-reaping non-leader thread exit the outgoing task
+        // (switched_from) IS the reap_pending task; draining reap_pending below
+        // drops its last Arc and frees it, so doing the on_cpu write AFTER the
+        // drain would store `false` (0) through a raw pointer into freed — then
+        // reused — memory (a use-after-free that scribbles whatever object the
+        // allocator later placed in that Task's slot: BTree node, Vec buffer,
+        // dcache Weak, VMA, etc. — the ~55s live-gnome heap-corruption
+        // blocker). reap_pending still holds the Arc here, so the task is
+        // guaranteed live.
         // SAFETY: schedule_tail is the normal handoff completion point for
         // this CPU's previous switch; the outgoing task is kept alive by
         // reap_pending (drained below) or its runqueue/registry membership.
         unsafe { finish_switched_from(rq); }
+        // SAFETY: the switcher acquired rq.inner via lock() and mem::forget'd the guard; this is the matching 1:1 release on the incoming stack.
+        unsafe { rq.inner.raw_unlock(); }
         let current = rq.current.load(Ordering::Acquire);
         super::super::ttwu::sched_ttwu_pending(rq.cpu as u32, current, rq);
         let raw = rq.reap_pending.swap(core::ptr::null_mut(), Ordering::AcqRel);
@@ -281,10 +297,14 @@ pub unsafe fn schedule() {
             unsafe { Arc::increment_strong_count(raw); }
             // SAFETY: same raw -> matching Arc::from_raw reclaims that bumped strong ref into a fresh Arc.
             let cloned = unsafe { Arc::from_raw(raw) };
-            inner.enqueue(cloned);
+            inner.put_prev_task(cloned);
         }
     }
-    let next_arc = inner.pick_next_task();
+    // Linux `pick_next_task` + `prepare_task(next)`: ownership is published
+    // BEFORE the task leaves the tree, under this rq lock. `already_owned` is
+    // the pre-existing `on_cpu` — true only for a re-pick of `prev` (still
+    // running here) or for the ownership violation asserted below.
+    let (next_arc, already_owned) = inner.pick_next_task_claim();
     hal::kassert!(!next_arc.on_rq.load(Ordering::Acquire),
         "schedule picked task still marked on_rq");
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
@@ -297,6 +317,17 @@ pub unsafe fn schedule() {
         // SAFETY: restores the IRQ state this fn saved at entry; no switch.
         unsafe { irq_restore(flags); }
         return;
+    }
+
+    // Switching to a task some OTHER CPU still owns means two CPUs are about to
+    // run one `Arc<Task>` off one saved register context. The claim above is
+    // `prepare_task(next)`; a task that was already `on_cpu` and is not this
+    // CPU's `prev` was placed on this runqueue while still executing elsewhere.
+    if already_owned {
+        // SAFETY: diagnostic-only reads of installed per-CPU runqueue slots and
+        // of the picked task, all live for this preempt-off scope.
+        unsafe { report_ownership_conflict(&next_arc, me_cpu as usize); }
+        hal::kassert!(false, "schedule selected task already owned by another CPU");
     }
 
     // SAFETY: prev_raw is non-null after install_global.
@@ -363,10 +394,6 @@ pub unsafe fn schedule() {
     }
     // SAFETY: rq.current was just set to the new Arc by swap_current.
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
-    // SAFETY: rq.current was just set to next; prev_raw is the outgoing task, kept alive by `prev_arc`/the runqueue across the switch.
-    hal::kassert!(unsafe { rq.current_ref() }.on_cpu
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok(), "schedule selected task already owned by another CPU");
     // SAFETY: rq.current was just set to next and this scheduler context owns
     // the incoming task's CPU ownership transition.
     // Linux `set_task_cpu()` bumps `se.nr_migrations` when a task lands on a

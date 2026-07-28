@@ -189,14 +189,17 @@ pub fn vfork_done(child: &crate::Task) {
 /// off the runqueue. A running task yields on the next `need_resched` and
 /// the enqueue chokepoint won't re-add it; a sleeping task stays parked
 /// (the chokepoint blocks its wake-enqueue) until thawed.
-/// # C: O(N) runqueue remove
+/// Dequeued from the runqueue it is ACTUALLY on (`rq_locate`, Linux
+/// `task_rq_lock`): the caller's CPU is not necessarily the task's, and
+/// removing from the wrong tree left a frozen task runnable elsewhere.
+/// # C: O(N_cpus · N) runqueue remove
 pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
     task.frozen.store(true, Ordering::Release);
-    if let Some(rq) = super::runqueue::global() {
-        let mut inner = rq.inner.lock();
-        let _ = inner.remove(task.tid);
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    }
+    // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
+    // that has not completed `install_global`, which the walk skips.
+    let found = super::rq_locate::dequeue_from_owning_rq_with(
+        &|c| unsafe { super::runqueue::global_for(c) }, task.tid);
+    if let Some((_, cpu)) = found { super::resched_curr(cpu); }
     crate::preempt::set_need_resched();
 }
 
@@ -242,14 +245,19 @@ pub fn install_sigio_hook() {
 /// cgroup v2 thaw (`cgroup.freeze=0`): clear the frozen flag and
 /// re-enqueue if the task is runnable (a still-blocked task re-enqueues on
 /// its own wake, now that the chokepoint admits it).
-/// # C: O(log N) enqueue
+///
+/// Placement goes through `place_runnable` (Linux `ttwu`'s `select_task_rq` +
+/// `on_cpu` handshake), NOT a raw enqueue onto the caller's runqueue: the
+/// thawed task may be `on_cpu` on another CPU (thaw races a `need_resched`
+/// yield it has not finished), and only `select_task_rq` honours
+/// `cpus_allowed`. `try_to_wake_up` is the wrong entry point here — the task is
+/// already Runnable, so its Sleeping->Runnable claim would drop the placement.
+/// # C: O(N_cpus + log N)
 pub fn unfreeze_task(task: &alloc::sync::Arc<crate::Task>) {
     task.frozen.store(false, Ordering::Release);
     if task.state() != crate::TaskState::Runnable { return; }
-    if let Some(rq) = super::runqueue::global() {
-        let mut inner = rq.inner.lock();
-        inner.enqueue(alloc::sync::Arc::clone(task));
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-        crate::preempt::set_need_resched();
-    }
+    // SAFETY: thaw site in process context; the caller's Arc keeps `task` alive
+    // across placement.
+    unsafe { super::ttwu::place_runnable(alloc::sync::Arc::clone(task), false); }
+    crate::preempt::set_need_resched();
 }

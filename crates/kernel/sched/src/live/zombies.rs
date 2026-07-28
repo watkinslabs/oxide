@@ -201,65 +201,70 @@ pub fn unpark_self_from_wait4() {
 /// reap_one filter; if no zombie matches its specific pid filter,
 /// it falls back through the wait4 retry loop and re-parks.
 ///
-/// Placement is gated by `Task::claim_wake` (the same Sleeping->Runnable
-/// CAS `try_to_wake_up` uses), NOT an unconditional `set_state` + enqueue.
-/// A WAITERS entry can go stale without being removed (an unrelated signal
-/// wake resumed the task without popping it — `park_for_wait4` dedups the
-/// NEXT park, but a wake racing between that resume and the next park still
-/// finds the old entry here first). Without the claim, a stale entry for a
-/// task that is now `current` (Runnable, on_cpu=true, on_rq=false) would be
-/// force-set Runnable (harmless, already is) and unconditionally enqueued —
-/// `RunqueueInner::enqueue`'s on_rq guard would accept it (on_rq is false
-/// while it's executing), landing a task that is ACTIVELY RUNNING into the
-/// ready tree too. `claim_wake` requires the observed state to be exactly
-/// `Sleeping`, so a task that already resumed (Runnable) or died (Zombie)
-/// fails the claim and is safely dropped instead of re-placed.
-/// # C: O(N_waiters)
-/// # Lk: WAITERS, then runqueue inner
+/// Placement goes through `try_to_wake_up` — the ONE waker (Linux `ttwu`) —
+/// never a raw enqueue onto the CALLER's runqueue. Both halves of that matter,
+/// and the raw form violated both:
+///
+///   * `claim_wake` (the Sleeping->Runnable CAS) must gate placement. A WAITERS
+///     entry can go stale without being removed (an unrelated signal wake
+///     resumed the task without popping it — `park_for_wait4` dedups the NEXT
+///     park, but a wake racing between that resume and the next park still
+///     finds the old entry here first). Without the claim, a stale entry for a
+///     task that is now `current` (Runnable, on_cpu=true, on_rq=false) is
+///     unconditionally enqueued — `RunqueueInner::enqueue`'s `on_rq` guard
+///     accepts it (on_rq is false while it executes), landing an ACTIVELY
+///     RUNNING task in the ready tree.
+///   * the `on_cpu` handshake must gate the CPU choice. `claim_wake` alone is
+///     not enough under SMP: a parent that set itself Sleeping and called
+///     `schedule()` on CPU A is still `on_cpu` there until A's incoming task
+///     runs `finish_task_switch`. A child exiting on CPU B claims that wake
+///     legitimately, and the old code then enqueued the parent into **B's**
+///     tree while A was still saving its registers — B picks it, `schedule()`'s
+///     ownership claim fails ("selected task already owned by another CPU"),
+///     and without that assertion the task runs on two CPUs with a half-saved
+///     context. Linux defers exactly this case to the owner
+///     CPU's wake-list (`try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)` ->
+///     `ttwu_queue_wakelist`, `kernel/sched/core.c`). The raw enqueue also
+///     ignored `cpus_allowed`, which only `select_task_rq` consults.
+/// # C: O(N_waiters + N_cpus)
+/// # Lk: WAITERS (released before the wake)
 pub(crate) fn wake_wait4_parent(parent_tid: u32) {
-    let mut waiters = WAITERS.lock();
-    #[cfg(feature = "debug-ssh")]
-    {
-        let n = waiters.iter().filter(|t| t.tid == parent_tid).count();
-        klog::write_raw(b"[INFO]  ssh-trace: wake_wait4_parent parent_tid=");
-        klog::write_dec_u64(parent_tid as u64);
-        klog::write_raw(b" wait4_waiters_found=");
-        klog::write_dec_u64(n as u64);
-        klog::write_raw(b" (0 => parent not in wait4 - reap relies on its SIGCHLD handler)\n");
-    }
-    if waiters.is_empty() { return; }
-    let rq = match super::runqueue::global() {
-        Some(r) => r,
-        None    => { waiters.clear(); return; }
+    let woken = {
+        let mut waiters = WAITERS.lock();
+        #[cfg(feature = "debug-ssh")]
+        {
+            let n = waiters.iter().filter(|t| t.tid == parent_tid).count();
+            klog::write_raw(b"[INFO]  ssh-trace: wake_wait4_parent parent_tid=");
+            klog::write_dec_u64(parent_tid as u64);
+            klog::write_raw(b" wait4_waiters_found=");
+            klog::write_dec_u64(n as u64);
+            klog::write_raw(b" (0 => parent not in wait4 - reap relies on its SIGCHLD handler)\n");
+        }
+        take_wait4_waiters(&mut waiters, parent_tid)
     };
+    for t in woken {
+        // SAFETY: wake site in process context (child exit / reap); the Arc
+        // taken off WAITERS keeps the parent alive across placement.
+        unsafe { super::try_to_wake_up(t); }
+    }
+}
+
+/// Detach every WAITERS entry parked by `parent_tid` and hand the strong refs
+/// to the caller. Split out of [`wake_wait4_parent`] so the list surgery is
+/// hosted-testable without the process-global WAITERS spinlock, and so the
+/// wake itself never runs under that lock.
+/// # C: O(N_waiters)
+pub(crate) fn take_wait4_waiters(waiters: &mut Vec<Arc<Task>>, parent_tid: u32) -> Vec<Arc<Task>> {
+    let mut woken: Vec<Arc<Task>> = Vec::new();
     // Walk in reverse so swap_remove preserves earlier indices.
     let mut i = waiters.len();
-    let mut woken: Vec<Arc<Task>> = Vec::new();
     while i > 0 {
         i -= 1;
         if waiters[i].tid == parent_tid {
             woken.push(waiters.swap_remove(i));
         }
     }
-    drop(waiters);
-    if woken.is_empty() { return; }
-    let mut inner = rq.inner.lock();
-    let mut placed = false;
-    for t in woken {
-        // Exclusive Sleeping->Runnable claim (see fn doc): a task that isn't
-        // genuinely Sleeping anymore (already woken elsewhere, or exited) is
-        // dropped here rather than force-placed.
-        if !t.claim_wake() { continue; }
-        // F211: sleeper credit. Reset vruntime to min so a long-running
-        // task that blocked on wait4 doesn't lose the pick to a freshly-
-        // spawned child with vruntime=0. See Task::set_vruntime_to_floor.
-        t.set_vruntime_to_floor(inner.cfs.min_vruntime());
-        inner.enqueue(t);
-        placed = true;
-    }
-    if !placed { return; }
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    crate::preempt::set_need_resched();
+    woken
 }
 
 /// Wake `task` from an interruptible sleep (epoll_wait/poll on a
