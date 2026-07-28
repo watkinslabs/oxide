@@ -5,6 +5,19 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::PollSubscribers;
 
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use sched::live::wait_list::WaitList as ReadWaiters;
+
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) struct ReadWaiters;
+#[cfg(not(target_os = "oxide-kernel"))]
+impl ReadWaiters {
+    pub(crate) const fn new() -> Self { Self }
+    pub(crate) fn wake_all(&self) {}
+    /// # SAFETY: hosted tests install no scheduler and never take the blocking arm.
+    pub(crate) unsafe fn park(&self) { unreachable!("inotify wait under hosted") }
+}
+
 use vfs::{Ino, InodeRef};
 
 pub(crate) const INOTIFY_INO_BASE: Ino = 0x7100_0000;
@@ -173,6 +186,11 @@ pub struct InotifyData {
     /// fanotify perm events awaiting delivery to the daemon's read().
     pub(crate) perm_queue: Spinlock<VecDeque<Arc<PermEvent>>, TaskListClass>,
     pub(crate) poll_subs: Arc<PollSubscribers>,
+    /// Sleepers in a BLOCKING `read(2)`. `poll_subs` wakes epoll/poll waiters;
+    /// it does not wake a reader parked in the read path — those are different
+    /// mechanisms, and having only the former is why a blocking inotify read
+    /// returned `EAGAIN` and a fanotify one spun on `tick_yield`.
+    pub(crate) read_waiters: ReadWaiters,
     /// Perm events the daemon has read (minted-fd → event), awaiting its
     /// `fanotify_response` write.
     pub(crate) perm_pending: Spinlock<Vec<(i32, Arc<PermEvent>)>, TaskListClass>,
