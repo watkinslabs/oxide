@@ -37,15 +37,16 @@ pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, vendor
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
 pub use fault::{
-    current_fault_frame, current_fault_gprs, install_fault_handler, install_user_trap_hook,
-    vector_stub_addr, FaultFrame, FaultGprs, FaultHandler, UserTrapHook,
+    current_fault_frame, install_fault_handler, install_user_trap_hook,
+    vector_stub_addr, FaultHandler, UserTrapHook,
 };
 pub use fpu::{
     fpu_disable, fpu_enable, fpu_restore, fpu_save, mxcsr_feature_mask, mxcsr_mask_init,
     xsave_active, xsave_area_bytes, xsave_xcr0, xstate_init,
     FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES,
 };
-pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, USER_CS, USER_DS};
+pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, KERNEL_DS,
+    USER_CS, USER_CS_SELECTOR, USER_DS, USER_SS_SELECTOR};
 pub use idt::{
     install_default as install_default_idt, install_ist_gates, load_idtr_for_ap, IdtEntry,
     IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS,
@@ -61,7 +62,7 @@ pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteFlags, PteX86_64, PtIndices,
     ENTRIES_PER_TABLE, PD_SHIFT, PDPT_SHIFT, PML4_SHIFT, PT_SHIFT, PTE_PHYS_MASK,
 };
-pub use pt_regs::PtRegsX86_64;
+pub use pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_SYSCALL};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use regs::{read_clear_dr6, set_data_watchpoint};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
@@ -69,7 +70,7 @@ pub use regs::{arm_hole_watchpoint, disarm_hole_watchpoint, read_dr0_dr1};
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
 pub use signal::{build_signal_frame, min_sigstksz, current_user_sp, sigframe_base, sigframe_range, restart_ignored_syscall, restart_via_restart_syscall, restore_signal_frame, rt_sigreturn_frame_range};
 pub use syscall::{
-    boot_syscall_kstack_top, current_kstack_top, current_user_frame, current_user_full_frame,
+    boot_syscall_kstack_top, current_kstack_top, current_pt_regs,
     init_percpu_syscall_kstack, install_syscall_msrs, set_syscall_kstack,
 };
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]

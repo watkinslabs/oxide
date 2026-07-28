@@ -179,3 +179,35 @@ mod arm {
         assert_eq!(handler_entry_pstate(cur, true), PSR_NZCV | PSR_BTYPE_C);
     }
 }
+
+// `user_mode(regs)` — the gate that decides whether a return runs the
+// return-to-user work loop. A wrong answer here either delivers a signal into
+// a kernel frame or leaves a spinning task unkillable (B1471).
+mod user_mode {
+    use crate::uregs::{aarch64 as a64, x86_64 as x86};
+
+    #[test]
+    fn x86_kernel_cs_is_not_user_mode() {
+        // Linux `!!(regs->cs & 3)`. Kernel CS has RPL 0.
+        assert!(!x86::user_mode(0x08));
+        assert!(!x86::user_mode(0x10));
+    }
+
+    #[test]
+    fn x86_user_cs_is_user_mode() {
+        // The 64-bit user code selector this kernel loads via STAR.
+        assert!(x86::user_mode(0x33));
+        assert!(x86::user_mode(0x2b));
+    }
+
+    #[test]
+    fn arm_el0t_is_user_mode_and_every_el1_mode_is_not() {
+        assert!(a64::user_mode(a64::PSR_MODE_EL0T));
+        // Condition flags and DAIF bits outside M[3:0] must not change it.
+        assert!(a64::user_mode(a64::PSR_MODE_EL0T | a64::PSR_NZCV | a64::PSR_SSBS_BIT));
+        // EL1t (0b0100) and EL1h (0b0101) — the modes a forged frame would use.
+        assert!(!a64::user_mode(0b0100));
+        assert!(!a64::user_mode(0b0101));
+        assert!(!a64::user_mode(0b1001));
+    }
+}

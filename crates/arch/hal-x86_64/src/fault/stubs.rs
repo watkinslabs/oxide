@@ -83,29 +83,27 @@ core::arch::global_asm!(
     // a #PF at e.g. `mov %rax, [%rsi+disp]` would retry with a
     // clobbered `%rsi` and re-fault at a garbage address.
     //
-    // Stack after GPR save (10 × 8 = 80 B pushed):
     // B45: capture callee-saved (rbx/rbp/r12-r15) in addition to
     // caller-saved so the #GP diagnostic can name the bad register.
-    // Layout after the 15 GPR pushes (15 × 8 = 120 B = 0x78, + 0x08
-    // align pad → 0x80 to the fault frame):
-    //   [rsp+0x00]  (align pad)
-    //   [rsp+0x08]  r15
-    //   [rsp+0x10]  r14
-    //   [rsp+0x18]  r13
-    //   [rsp+0x20]  r12
-    //   [rsp+0x28]  rbp
-    //   [rsp+0x30]  rbx
-    //   [rsp+0x38]  r11
-    //   [rsp+0x40]  r10
-    //   [rsp+0x48]  r9
-    //   [rsp+0x50]  r8
-    //   [rsp+0x58]  rdi
-    //   [rsp+0x60]  rsi
-    //   [rsp+0x68]  rdx
-    //   [rsp+0x70]  rcx
-    //   [rsp+0x78]  rax
-    //   [rsp+0x80..]  fault frame (vec/err/rip/cs/rflags/rsp/ss)
-    // Rust dispatcher gets rdi=*FaultFrame, rsi=*FaultGprs.
+    // The 15 GPR pushes sit directly below the stub's (vec, err) pair
+    // and the CPU's IRETQ image, so rsp after them IS a `PtRegs`
+    // (`pt_regs.rs`, offsets 0x00 r15 … 0xa8 ss, size 0xb0):
+    //   [rsp+0x00]  r15   [rsp+0x30]  r11   [rsp+0x60]  rdx
+    //   [rsp+0x08]  r14   [rsp+0x38]  r10   [rsp+0x68]  rcx
+    //   [rsp+0x10]  r13   [rsp+0x40]  r9    [rsp+0x70]  rax
+    //   [rsp+0x18]  r12   [rsp+0x48]  r8    [rsp+0x78]  vector
+    //   [rsp+0x20]  rbp   [rsp+0x50]  rdi   [rsp+0x80]  error
+    //   [rsp+0x28]  rbx   [rsp+0x58]  rsi   [rsp+0x88..0xa8] iretq image
+    // Rust dispatcher gets rdi = *mut PtRegs.
+    //
+    // SysV stack alignment: the CPU 16-aligns RSP before pushing the
+    // 5-quadword IRETQ image (Intel SDM Vol. 3 §6.14.2), so RSP ≡ 8
+    // (mod 16) once the stub's (vec, err) pair makes the tag+image an
+    // odd 7 quadwords — the SAME state `oxide_irq_common` reasons from.
+    // 15 pushes (0x78) then leave RSP ≡ 0 (mod 16), which is exactly
+    // what SysV wants AT a `call`. The prior `sub rsp, 8` "align" pad
+    // made it ≡ 8 and left the callee entered at rsp ≡ 0 (mod 16),
+    // i.e. misaligned; it is gone.
     ".globl oxide_fault_common",
     ".type  oxide_fault_common, @function",
     "oxide_fault_common:",
@@ -125,17 +123,24 @@ core::arch::global_asm!(
     "    push r13",
     "    push r14",
     "    push r15",
-    "    sub  rsp, 8",                   // align to 16 before call
-    "    lea  rdi, [rsp + 0x80]",        // arg 0 = *FaultFrame
-    "    lea  rsi, [rsp + 0x08]",        // arg 1 = *FaultGprs (skip pad)
+    "    mov  rdi, rsp",                 // arg 0 = *mut PtRegs (rsp IS the frame base)
     "    call oxide_fault_print_rust",   // returns bool in al
-    "    add  rsp, 8",                   // undo align
     "    test al, al",
     "    jnz 2f",
     "    cli",
     "1:  hlt",
     "    jmp 1b",
-    "2:  pop r15",
+    // Linux `exc_page_fault` and friends end in `irqentry_exit(regs, state)`,
+    // whose `user_mode(regs)` arm runs `exit_to_user_mode_loop`. A RESOLVED
+    // exception returning to CPL3 therefore delivers any signal posted while
+    // the task was faulting — including the SIGTRAP the #DB user-trap hook
+    // just queued — instead of holding it until the next `syscall`. The Rust
+    // side is a no-op for a kernel-mode return (saved CS RPL 0), which is what
+    // makes this safe on the exception-table fixup path.
+    // RSP is the `PtRegs` base here and 16-aligned, as at the call above.
+    "2:  mov  rdi, rsp",
+    "    call oxide_irq_exit_to_user",
+    "    pop r15",
     "    pop r14",
     "    pop r13",
     "    pop r12",

@@ -29,6 +29,35 @@ use super::sigpend::Signum;
 static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 const SCAN_PERIOD_NS: u64 = 100_000_000;
 
+/// Service ONE task's expired `alarm(2)`/`ITIMER_REAL` deadline and its
+/// CPU-time itimers, posting SIGALRM / SIGVTALRM / SIGPROF and re-arming by
+/// interval (or clearing for a one-shot). Returns whether anything was posted,
+/// so a caller that must also wake the task can.
+///
+/// ONE owner for the expiry policy: the registry walk below runs it for every
+/// live task, and the return-to-user path runs it for the current task so a
+/// timer that came due inside the last syscall is not held for up to a full
+/// scan period. Before this the syscall tail carried its own open-coded copy.
+/// # C: O(1)
+pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> bool {
+    let mut fired = false;
+    let adl = t.alarm_ns.load(Ordering::Acquire);
+    if adl != 0 && adl <= now_ns {
+        let interval = t.alarm_interval_ns.load(Ordering::Acquire);
+        t.alarm_ns.store(
+            if interval != 0 { now_ns.saturating_add(interval) } else { 0 },
+            Ordering::Release,
+        );
+        t.sigpending.fetch_or(Signum::Sigalrm.bit(), Ordering::Release);
+        fired = true;
+    }
+    let u = t.utime_ns.load(Ordering::Acquire);
+    let s = t.stime_ns.load(Ordering::Acquire);
+    fired
+        | fire_cpu_itimer(t, &t.itimer_virtual_ns, &t.itimer_virtual_interval_ns, u, Signum::Sigvtalrm)
+        | fire_cpu_itimer(t, &t.itimer_prof_ns, &t.itimer_prof_interval_ns, u.saturating_add(s), Signum::Sigprof)
+}
+
 fn fire_cpu_itimer(t: &crate::Task, deadline: &AtomicU64, interval: &AtomicU64, now_cpu: u64, sig: Signum) -> bool {
     let dl = deadline.load(Ordering::Acquire);
     if dl == 0 || dl > now_cpu { return false; }
@@ -68,26 +97,10 @@ pub fn tick_wake_expired(now_ns: u64) {
     while let Some(tid) = crate::registry::next_live_tid_after(after) {
         after = tid;
         let t = match crate::registry::lookup(tid) { Some(t) => t, None => continue };
-        // alarm(2)/ITIMER_REAL expiry: post SIGALRM, re-arm, wake.
-        let adl = t.alarm_ns.load(Ordering::Acquire);
-        if adl != 0 && adl <= now_ns {
-            let interval = t.alarm_interval_ns.load(Ordering::Acquire);
-            t.alarm_ns.store(
-                if interval != 0 { now_ns.saturating_add(interval) } else { 0 },
-                Ordering::Release,
-            );
-            t.sigpending.fetch_or(super::sigpend::Signum::Sigalrm.bit(), Ordering::Release);
+        if service_task_timers(&t, now_ns) {
             // Timer-ISR (IF=0): defer placement to the target's wake_list so the
             // tick never blocks on a contended rq lock and never enqueues a task
-            // still on_cpu elsewhere. SAFETY: timer-ISR wake site; lookup keeps t alive.
-            unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
-        }
-        let u = t.utime_ns.load(Ordering::Acquire);
-        let s = t.stime_ns.load(Ordering::Acquire);
-        let cpu_fired =
-            fire_cpu_itimer(&t, &t.itimer_virtual_ns, &t.itimer_virtual_interval_ns, u, Signum::Sigvtalrm)
-            | fire_cpu_itimer(&t, &t.itimer_prof_ns, &t.itimer_prof_interval_ns, u.saturating_add(s), Signum::Sigprof);
-        if cpu_fired {
+            // still on_cpu elsewhere.
             // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
             unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
         }

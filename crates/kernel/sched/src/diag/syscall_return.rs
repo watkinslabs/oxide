@@ -8,6 +8,11 @@ pub const SYSCALL_RETURN_STAGE_AFTER_DIAG: u8 = 2;
 pub const SYSCALL_RETURN_STAGE_AFTER_TIMERS: u8 = 3;
 pub const SYSCALL_RETURN_STAGE_AFTER_RSEQ: u8 = 4;
 pub const SYSCALL_RETURN_STAGE_AFTER_PTRACE: u8 = 5;
+/// Inside the return-to-user work loop (Linux `exit_to_user_mode_loop`): the
+/// tail's one blocking step, where a reschedule, a job-control stop or a
+/// faulting signal-frame write can park the task for an unbounded time. A
+/// watchdog dump stuck here names the loop rather than "after-ptrace".
+pub const SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER: u8 = 6;
 
 /// Task-owned syscall-return tail stage, read only by watchdog/task dumps. # C: O(1)
 pub(crate) struct SyscallReturnState { stage: AtomicU8 }
@@ -41,6 +46,7 @@ fn stage_name(stage: u8) -> &'static [u8] {
         SYSCALL_RETURN_STAGE_AFTER_TIMERS => b"after-timers",
         SYSCALL_RETURN_STAGE_AFTER_RSEQ => b"after-rseq",
         SYSCALL_RETURN_STAGE_AFTER_PTRACE => b"after-ptrace",
+        SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER => b"in-exit-to-user",
         _ => b"unknown",
     }
 }
@@ -55,6 +61,8 @@ mod tests {
         assert_eq!(state.stage.load(Ordering::Acquire), SYSCALL_RETURN_STAGE_NONE);
         state.stage.store(SYSCALL_RETURN_STAGE_AFTER_TIMERS, Ordering::Release);
         assert_eq!(stage_name(state.stage.load(Ordering::Acquire)), b"after-timers");
+        state.stage.store(SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER, Ordering::Release);
+        assert_eq!(stage_name(state.stage.load(Ordering::Acquire)), b"in-exit-to-user");
         state.stage.store(SYSCALL_RETURN_STAGE_NONE, Ordering::Release);
         assert_eq!(state.stage.load(Ordering::Acquire), SYSCALL_RETURN_STAGE_NONE);
     }

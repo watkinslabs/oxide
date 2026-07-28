@@ -17,12 +17,23 @@
 // r8, r9) with nr in rax -- `r10` substitutes for `rcx` because the
 // instruction itself clobbers rcx with the user RIP. The Rust
 // dispatcher `oxide_syscall_dispatch(nr, a0..a4)` takes 6 SysV args
-// in (rdi, rsi, rdx, rcx, r8, r9). We push all source regs to the
-// kernel stack then pop them back in target order to avoid clobber
-// hazards mid-shuffle. a5 is discarded for the v1 smoke.
+// in (rdi, rsi, rdx, rcx, r8, r9). The entry stub saves every user
+// register into a `PtRegs` (`pt_regs.rs` — the SAME frame the fault
+// and IRQ stubs build) and then loads the dispatcher's argument
+// registers FROM that frame, so the shuffle has no clobber hazard and
+// a5 stays readable (`syscalls::syscall_a5`).
 
 use core::cell::UnsafeCell;
 
+use crate::gdt::{USER_CS_SELECTOR, USER_SS_SELECTOR};
+use crate::pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_SYSCALL};
+
+/// `PT_REGS_VECTOR_SYSCALL` in the only form `push imm` accepts: a
+/// sign-extended `-1`. `push 18446744073709551615` is not encodable, so the
+/// asm operand carries the signed spelling and this assert pins the two to
+/// the same bit pattern.
+const PT_REGS_VECTOR_SYSCALL_IMM: i64 = -1;
+const _: () = assert!(PT_REGS_VECTOR_SYSCALL_IMM as u64 == PT_REGS_VECTOR_SYSCALL);
 
 const IA32_EFER:  u32 = 0xC000_0080;
 const IA32_STAR:  u32 = 0xC000_0081;
@@ -134,111 +145,98 @@ core::arch::global_asm!(
     // shared scratch. gs:[8] = this CPU's per-task syscall kstack top
     // (set by set_syscall_kstack on every switch); gs:[16] = user-RSP scratch.
     "    mov  gs:[16], rsp",
-    "    mov  rsp, gs:[8]",                           // switch to this CPU's kernel syscall stack
-    // Save user callee-saved regs first (rbx/rbp/r13/r14/r15) so
-    // sys_fork can read them out of the saved frame to
-    // build the child's iretq state. Pushed BEFORE the existing
-    // 10 saves so the existing [rsp+0x00..0x48] offsets stay
-    // valid; the new 6 sit at [rsp+0x50..0x78] after all 16
-    // pushes. Per P5-10 fork-reg-preservation fix + B04 r12 save.
-    "    push r12",                                    // [rsp+0x78]
-    "    push r15",                                    // [rsp+0x70]
-    "    push r14",                                    // [rsp+0x68]
-    "    push r13",                                    // [rsp+0x60]
-    "    push rbp",                                    // [rsp+0x58]
-    "    push rbx",                                    // [rsp+0x50]
-    // Existing saves (10 quadwords). Layout from the new rsp:
-    //   [rsp+0x00] rax (nr)
-    //   [rsp+0x08] rdi (a0)
-    //   [rsp+0x10] rsi (a1)
-    //   [rsp+0x18] rdx (a2)
-    //   [rsp+0x20] r10 (a3)
-    //   [rsp+0x28] r8  (a4)
-    //   [rsp+0x30] r9  (a5)
-    //   [rsp+0x38] rcx (user RIP)
-    //   [rsp+0x40] r11 (user RFLAGS)
-    //   [rsp+0x48] r12 (user RSP)
-    "    push qword ptr gs:[16]",                     // [rsp+0x48] user RSP (per-CPU scratch saved above)
-    "    push r11",                                    // [rsp+0x40] user RFLAGS
-    "    push rcx",                                    // [rsp+0x38] user RIP
-    "    push r9",                                     // [rsp+0x30] a5
-    "    push r8",                                     // [rsp+0x28] a4
-    "    push r10",                                    // [rsp+0x20] a3
-    "    push rdx",                                    // [rsp+0x18] a2
-    "    push rsi",                                    // [rsp+0x10] a1
-    "    push rdi",                                    // [rsp+0x08] a0
-    "    push rax",                                    // [rsp+0x00] nr
-    // Move SysV-arg regs into target order WITHOUT consuming the
-    // saved-arg slots. Linux x86_64 syscall ABI preserves user's
-    // rdi/rsi/rdx/r10/r8/r9 across syscalls (only rax/rcx/r11 are
-    // clobbered) -- we restore them from the on-stack copies after
-    // dispatch returns. Per docs/15§1.3.
-    "    mov  rdi, [rsp + 0x00]",                      // nr
-    "    mov  rsi, [rsp + 0x08]",                      // a0
-    "    mov  rdx, [rsp + 0x10]",                      // a1
-    "    mov  rcx, [rsp + 0x18]",                      // a2
-    "    mov  r8,  [rsp + 0x20]",                      // a3
-    "    mov  r9,  [rsp + 0x28]",                      // a4
-    // SysV requires rsp 16-aligned at `call`. 16 pushes = 0x80
-    // (0 mod 16) — no extra sub needed. (Was sub 8 / add 8 before
-    // we added the r12 save in B04.)
-    "    call oxide_syscall_dispatch",                 // returns u64 retval in rax
-    // Restore user-side rdi/rsi/rdx/r10/r8/r9 (Linux ABI preserve
-    // rule) and the 5 callee-saved regs we additionally stashed.
-    // rax holds the syscall return value from dispatch -- leave it.
-    "    mov  rdi, [rsp + 0x08]",
-    "    mov  rsi, [rsp + 0x10]",
-    "    mov  rdx, [rsp + 0x18]",
-    "    mov  r10, [rsp + 0x20]",
-    "    mov  r8,  [rsp + 0x28]",
-    "    mov  r9,  [rsp + 0x30]",
-    "    mov  rbx, [rsp + 0x50]",
-    "    mov  rbp, [rsp + 0x58]",
-    "    mov  r13, [rsp + 0x60]",
-    "    mov  r14, [rsp + 0x68]",
-    "    mov  r15, [rsp + 0x70]",
-    "    mov  r12, [rsp + 0x78]",
-    // Discard the 7 saved-arg slots (nr + a0..a5).
-    "    add  rsp, 0x38",
-    // F50: arm RFLAGS.TF for PTRACE_SINGLESTEP if the current task
-    // has Task.singlestep set. Stack at this point holds:
-    //   [rsp+0x00] user RIP   (rcx)
-    //   [rsp+0x08] user RFLAGS (r11)
-    //   [rsp+0x10] user RSP
-    // The SysV call to oxide_x86_arm_singlestep is allowed to clobber
-    // rax/rcx/rdx/rsi/rdi/r8-r11 per AMD64 ABI -- save the user-ABI
-    // args we already restored from the saved frame so sysretq lands
-    // user code with intact rdi/rsi/rdx/r10/r8/r9. Linux x86_64
-    // syscall ABI guarantees the kernel preserves those across the
-    // syscall; without these saves user libc paths (e.g. musl/uclibc
-    // open() that re-uses rdi as fd for __syscall_ret) read garbage.
-    "    push rax",                                     // dispatch retval
-    "    push rdi",
-    "    push rsi",
-    "    push rdx",
-    "    push r10",
-    "    push r8",
-    "    push r9",
-    "    lea  rdi, [rsp + 0x40]",                      // &user RFLAGS (shifted past 7 pushes + 1 dispatch-rax)
+    "    mov  rsp, gs:[8]",                    // switch to this CPU's kernel syscall stack
+    // Build the SAME `PtRegs` the fault and IRQ stubs build (`pt_regs.rs`),
+    // so one frame type serves every x86_64 entry. `syscall`/`sysretq` push
+    // nothing, so the whole IRETQ-shaped tail is synthesized here:
+    //   rip    <- rcx  (the insn parks the return address there)
+    //   rflags <- r11  (ditto for RFLAGS)
+    //   rsp    <- gs:[16] (the user RSP stashed above)
+    //   cs/ss  <- the fixed ring-3 selectors `sysretq` will reload
+    //   error  <- 0            (no CPU error code on a syscall)
+    //   vector <- PT_REGS_VECTOR_SYSCALL (Linux tests `orig_ax != -1`)
+    // Pushes run in REVERSE field order so the resulting image is
+    // r15 @ +0x00 … ss @ +0xa8, size 0xb0.
+    "    push {user_ss}",                      // +0xa8 ss
+    "    push qword ptr gs:[16]",              // +0xa0 rsp  (user RSP)
+    "    push r11",                            // +0x98 rflags
+    "    push {user_cs}",                      // +0x90 cs
+    "    push rcx",                            // +0x88 rip
+    "    push 0",                              // +0x80 error
+    "    push {vec_syscall}",                  // +0x78 vector
+    "    push rax",                            // +0x70 rax (syscall nr; Linux orig_ax)
+    "    push rcx",                            // +0x68 rcx (clobbered by the insn)
+    "    push rdx",                            // +0x60 rdx (a2)
+    "    push rsi",                            // +0x58 rsi (a1)
+    "    push rdi",                            // +0x50 rdi (a0)
+    "    push r8",                             // +0x48 r8  (a4)
+    "    push r9",                             // +0x40 r9  (a5)
+    "    push r10",                            // +0x38 r10 (a3)
+    "    push r11",                            // +0x30 r11 (clobbered by the insn)
+    "    push rbx",                            // +0x28
+    "    push rbp",                            // +0x20
+    "    push r12",                            // +0x18
+    "    push r13",                            // +0x10
+    "    push r14",                            // +0x08
+    "    push r15",                            // +0x00
+    // Move SysV-arg regs into target order WITHOUT consuming the saved
+    // slots. Linux x86_64 preserves the user's rdi/rsi/rdx/r10/r8/r9 across
+    // a syscall (only rax/rcx/r11 are clobbered), so the epilogue restores
+    // them from this frame. Per docs/15§1.3. Sources are memory, so the
+    // shuffle has no register-clobber hazard.
+    "    mov  rdi, [rsp + 0x70]",              // nr <- rax
+    "    mov  rsi, [rsp + 0x50]",              // a0 <- rdi
+    "    mov  rdx, [rsp + 0x58]",              // a1 <- rsi
+    "    mov  rcx, [rsp + 0x60]",              // a2 <- rdx
+    "    mov  r8,  [rsp + 0x38]",              // a3 <- r10
+    "    mov  r9,  [rsp + 0x48]",              // a4 <- r8
+    // a5 (the frame's r9 slot) exceeds the 6 SysV register args and is read
+    // back out of the frame by `syscalls::syscall_a5`.
+    // SysV wants rsp 16-aligned AT the `call`. Entry rsp = gs:[8], a
+    // 16-aligned kstack top; 22 pushes = 0xb0 ≡ 0 (mod 16) — no pad needed.
+    "    call oxide_syscall_dispatch",         // returns u64 retval in rax
+    // F50: arm RFLAGS.TF for PTRACE_SINGLESTEP if the current task has
+    // Task.singlestep set. Called BEFORE the GPR restore below, so the
+    // SysV-clobbered set needs no save/restore dance — only the dispatch
+    // retval in rax has to survive (the second push is the 16-align pad,
+    // since rsp is ≡ 0 (mod 16) here and the `call` needs the same).
+    "    push rax",                            // dispatch retval
+    "    push rax",                            // 16-align pad
+    "    lea  rdi, [rsp + 0x10 + 0x98]",       // &frame.rflags (past both pushes)
     "    call oxide_x86_arm_singlestep",
-    "    pop  r9",
-    "    pop  r8",
-    "    pop  r10",
-    "    pop  rdx",
-    "    pop  rsi",
-    "    pop  rdi",
-    "    pop  rax",
-    // Restore user state from the per-task syscall-stack tail.
-    // `execve` (P2-21) modifies these in-place via
-    // `current_user_frame()` so sysretq lands the user at the new
-    // program entry.
-    "    pop  rcx",                                    // user RIP
-    "    pop  r11",                                    // user RFLAGS (TF possibly set above)
-    "    pop  rsp",                                    // user RSP (last write per sysretq spec)
-    // 5 callee-saved slots remain unconsumed below the abandoned
-    // kernel rsp; next syscall starts fresh from KSTACK top.
+    "    pop  rax",                            // drop pad
+    "    pop  rax",                            // dispatch retval back
+    // Restore the user GPRs from the frame. rax is NOT restored: it carries
+    // the dispatch return value, and the frame's rax slot keeps the original
+    // syscall nr for the whole dispatch (Linux `orig_ax`). rcx/r11 are not
+    // restored either — `sysretq` requires them to be the user RIP/RFLAGS,
+    // which is also exactly what the x86_64 syscall ABI says userspace may
+    // assume about them (clobbered).
+    "    mov  r15, [rsp + 0x00]",
+    "    mov  r14, [rsp + 0x08]",
+    "    mov  r13, [rsp + 0x10]",
+    "    mov  r12, [rsp + 0x18]",
+    "    mov  rbp, [rsp + 0x20]",
+    "    mov  rbx, [rsp + 0x28]",
+    "    mov  r10, [rsp + 0x38]",
+    "    mov  r9,  [rsp + 0x40]",
+    "    mov  r8,  [rsp + 0x48]",
+    "    mov  rdi, [rsp + 0x50]",
+    "    mov  rsi, [rsp + 0x58]",
+    "    mov  rdx, [rsp + 0x60]",
+    // Return to user through the frame's IRETQ image. `execve` (P2-21) and
+    // signal delivery rewrite exactly these slots via `current_pt_regs()`, so
+    // `sysretq` lands wherever they point.
+    "    mov  rcx, [rsp + 0x88]",              // user RIP
+    "    mov  r11, [rsp + 0x98]",              // user RFLAGS (TF possibly set above)
+    "    mov  rsp, [rsp + 0xa0]",              // user RSP (last write per sysretq spec)
+    // The frame itself is abandoned below the kernel rsp we just dropped;
+    // the next syscall starts fresh from the kstack top.
     "    sysretq",
     ".size oxide_syscall_entry, . - oxide_syscall_entry",
+    user_cs = const USER_CS_SELECTOR,
+    user_ss = const USER_SS_SELECTOR,
+    vec_syscall = const PT_REGS_VECTOR_SYSCALL_IMM,
 );
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -246,60 +244,30 @@ extern "C" {
     fn oxide_syscall_entry();
 }
 
-/// Per-task user-frame slot per `13§5`. Pointers to the saved
-/// (user_rip, user_rflags, user_rsp) quadwords on the current
-/// task's syscall kernel stack (the 3-quadword tail left by
-/// `oxide_syscall_entry` after its 7 pops, before the call to
-/// dispatch). Layout: indices [0]=rip, [1]=rflags, [2]=rsp.
+/// The active task's saved `PtRegs` per `13§5` — the frame
+/// `oxide_syscall_entry` pushed at the top of this CPU's per-task syscall
+/// kernel stack, and the frame its epilogue returns through. Null before
+/// the per-CPU kstack slot is armed (boot-only kthread path).
 ///
-/// Used by `sys_fork` (read user RIP/RSP/RFLAGS to build
-/// the child's iretq frame) and `sys_execve` (write to
-/// redirect sysretq into the new program's entry without
-/// returning to the caller). The asm sysretq pops from these
-/// same slots -- modifying them in-place is equivalent to "return
-/// from the syscall as if the user had been at this RIP all
-/// along".
+/// Used by `sys_fork` (read the parent's user state to build the child's
+/// resume frame), `sys_execve` (rewrite rip/rsp/rflags so `sysretq` lands
+/// in the new program without returning to the caller) and signal
+/// delivery/restore. Editing the frame in place IS "return from this
+/// syscall as if the user had been in that state all along".
 ///
-/// # SAFETY: caller is `oxide_syscall_dispatch` running on the
-/// active task's per-task kernel stack; the syscall asm has
-/// already pushed the user RIP/RFLAGS/RSP triple at top-24..top
-/// before calling dispatch (B09: arg regs are now mov'd, not
-/// popped, so the slot positions stay the same). Single-CPU UP
-/// v1 -- per-CPU pointer once SMP lands.
+/// # SAFETY (for callers dereferencing it): caller is
+/// `oxide_syscall_dispatch` running on the active task's per-task kernel
+/// stack, so the frame is live and singly-owned per `13§5`.
 /// # C: O(1)
-pub fn current_user_frame() -> *mut [u64; 3] {
+pub fn current_pt_regs() -> *mut PtRegs {
     let top = percpu_syscall_kstack();
-    // B04: 16 pushes total (P5-10's 5 + the original 10 + a new r12
-    // slot at top-0x08). RIP/RFLAGS/USER_RSP triple is at base+0x38
-    // where base = top-0x80, so [top-0x48..top-0x30].
-    (top - 0x48) as *mut [u64; 3]
+    if top == 0 { return core::ptr::null_mut(); }
+    (top - PT_REGS_BYTES as u64) as *mut PtRegs
 }
 
-/// Pointer to the full saved-syscall block on the current task's
-/// kernel stack. Layout (offsets from returned base):
-///   [+0x00] rax (nr)
-///   [+0x08] rdi   [+0x10] rsi   [+0x18] rdx
-///   [+0x20] r10   [+0x28] r8    [+0x30] r9
-///   [+0x38] rcx (user RIP)      [+0x40] r11 (user RFLAGS)
-///   [+0x48] r12 (user RSP, NOT user's r12 — see entry asm)
-///   [+0x50] rbx   [+0x58] rbp
-///   [+0x60] r13   [+0x68] r14   [+0x70] r15
-/// Used by `sys_fork` to capture parent reg state for the
-/// child's iretq frame. Pre-P5-10 only the RIP/RFLAGS/RSP tail
-/// was reliable; now the full 15-quadword block is.
-/// # SAFETY: same as `current_user_frame` — caller is dispatch ctx.
-/// # C: O(1)
-pub fn current_user_full_frame() -> *mut u64 {
-    let top = percpu_syscall_kstack();
-    // 16 saves total (B04 r12 slot at +0x78). Base = top - 0x80.
-    (top - 0x80) as *mut u64
-}
-
-/// Top of the active task's per-task syscall kernel stack -- same
-/// pointer the asm prologue loads via `OXIDE_SYSCALL_KSTACK`.
-/// `0` when the global hasn't been set yet (boot-only kthread
-/// path). The signal-dispatch helper writes the saved-rdi slot at
-/// `top - 0x70` so sysretq leaves rdi = sig (post-P5-10 layout).
+/// Top of the active task's per-task syscall kernel stack — the value the
+/// entry asm loads from `gs:[8]`, and the high end of the `PtRegs` frame
+/// `current_pt_regs` derives. `0` when the slot has not been armed yet.
 /// # C: O(1)
 pub fn current_kstack_top() -> u64 {
     percpu_syscall_kstack()
@@ -407,5 +375,34 @@ mod tests {
     #[test]
     fn syscall_kstack_size_is_4k() {
         assert_eq!(core::mem::size_of::<SyscallKStack>(), 4096);
+    }
+
+    #[test]
+    fn the_entry_stub_pushes_exactly_one_pt_regs() {
+        // 22 `push`es in `oxide_syscall_entry`; the frame it leaves is what
+        // `current_pt_regs()` re-derives from the kstack top.
+        assert_eq!(PT_REGS_BYTES, 22 * 8);
+        // ...and that count keeps rsp 16-aligned at the `call`, which is why
+        // the stub needs no alignment pad before `oxide_syscall_dispatch`.
+        assert_eq!(PT_REGS_BYTES % 16, 0, "entry pushes must not skew the SysV alignment");
+    }
+
+    #[test]
+    fn the_syscall_vector_sentinel_survives_the_asm_immediate() {
+        // `push -1` is what the assembler accepts; `from_syscall()` tests
+        // against the u64 spelling.
+        assert_eq!(PT_REGS_VECTOR_SYSCALL_IMM as u64, PT_REGS_VECTOR_SYSCALL);
+        assert_eq!(PT_REGS_VECTOR_SYSCALL, u64::MAX);
+    }
+
+    #[test]
+    fn the_synthesized_selectors_are_the_ring3_gdt_pair() {
+        // The IRETQ image `syscall` does not push is synthesized from these;
+        // they must be the very selectors `sysretq` reloads (gdt.rs STAR
+        // arithmetic), or the first IRQ from ring 3 pushes a mismatched SS.
+        assert_eq!(USER_CS_SELECTOR, crate::gdt::USER_CS as u64);
+        assert_eq!(USER_SS_SELECTOR, crate::gdt::USER_DS as u64);
+        assert_eq!(USER_CS_SELECTOR & 3, 3);
+        assert_eq!(USER_SS_SELECTOR & 3, 3);
     }
 }

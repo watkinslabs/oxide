@@ -483,37 +483,24 @@ fn clone_spawn_arch(
     child_mm: alloc::sync::Arc<vmm::AddressSpace>,
     thread_group: Option<alloc::sync::Arc<sched::thread_group::ThreadGroup>>,
 ) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
-    // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
-    let frame = unsafe { &*hal_x86_64::current_user_frame() };
-    let user_rip = frame[0];
-    let user_rflags = frame[1];
+    let regs = hal_x86_64::current_pt_regs();
+    if regs.is_null() { return Err(sched::live::spawn::SpawnError::NoRunqueue); }
+    // SAFETY: we are running on the parent's per-task syscall stack; current_pt_regs() is its live entry frame; we read but do not write.
+    let frame = unsafe { &*regs };
+    let user_rip = frame.rip;
+    let user_rflags = frame.rflags;
     // Thread spawns pass a libc-allocated stack via clone()/clone3();
     // honor it so each thread has its own user stack rather than
     // racing on the parent's. fork(2) leaves child_stack=0 and the
     // child resumes on the parent's RSP after the COW copy.
-    let user_rsp = if child_stack != 0 { child_stack } else { frame[2] };
-    // SAFETY: same dispatch-context invariant as current_user_frame; full_frame block is the 15-quadword saved area at top-0x78..top.
-    let full = unsafe { hal_x86_64::current_user_full_frame() };
-    // SAFETY: full points to the 15-quadword saved area at top-0x78..top of the kernel stack for the current user task; layout is fixed by syscall entry asm.
-    let pregs = unsafe {
-        hal_x86_64::ForkRegs {
-            rdi: *full.add(1),
-            rsi: *full.add(2),
-            rdx: *full.add(3),
-            r10: *full.add(4),
-            r8:  *full.add(5),
-            r9:  *full.add(6),
-            rcx: *full.add(7),
-            r11: *full.add(8),
-            // index 9 = user RSP, NOT user's r12. r12 sits in the
-            // B04-added save at index 15 (top of the 16-slot frame).
-            rbx: *full.add(10),
-            rbp: *full.add(11),
-            r13: *full.add(12),
-            r14: *full.add(13),
-            r15: *full.add(14),
-            r12: *full.add(15),
-        }
+    let user_rsp = if child_stack != 0 { child_stack } else { frame.rsp };
+    let pregs = hal_x86_64::ForkRegs {
+        rdi: frame.rdi, rsi: frame.rsi, rdx: frame.rdx,
+        r10: frame.r10, r8:  frame.r8,  r9:  frame.r9,
+        rcx: frame.rcx, r11: frame.r11,
+        r12: frame.r12,
+        rbx: frame.rbx, rbp: frame.rbp,
+        r13: frame.r13, r14: frame.r14, r15: frame.r15,
     };
     sched::cputime_trace::clone_frame(child_tid, user_rip, user_rsp, user_rflags);
     // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.

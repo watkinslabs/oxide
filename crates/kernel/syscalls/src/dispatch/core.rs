@@ -492,105 +492,31 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_PTRACE);
     }
+    // Linux `run_posix_cpu_timers` / `it_real_fn`: a deadline that came due
+    // inside this syscall posts its signal before the return-to-user loop
+    // below looks for one. The expiry policy itself is owned by
+    // `sched::live::service_task_timers`, shared with the tick's registry walk
+    // — this used to be an open-coded second copy of the same rules.
     if let Some(cur) = sched::live::current() {
-        use core::sync::atomic::Ordering;
-        use sched::live::sigpend::Signum;
-        let deadline = cur.alarm_ns.load(Ordering::Acquire);
-        if deadline != 0 {
-            #[cfg(target_arch = "x86_64")]
-            let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
-            #[cfg(target_arch = "aarch64")]
-            let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
-            if now >= deadline {
-                let interval = cur.alarm_interval_ns.load(Ordering::Acquire);
-                cur.alarm_ns.store(if interval != 0 { now.saturating_add(interval) } else { 0 }, Ordering::Release);
-                cur.sigpending.fetch_or(Signum::Sigalrm.bit(), Ordering::Release);
-            }
-        }
-        let u = cur.utime_ns.load(Ordering::Acquire);
-        let s = cur.stime_ns.load(Ordering::Acquire);
-        let vdl = cur.itimer_virtual_ns.load(Ordering::Acquire);
-        if vdl != 0 && u >= vdl {
-            let interval = cur.itimer_virtual_interval_ns.load(Ordering::Acquire);
-            cur.itimer_virtual_ns.store(if interval != 0 { u.saturating_add(interval) } else { 0 }, Ordering::Release);
-            cur.sigpending.fetch_or(Signum::Sigvtalrm.bit(), Ordering::Release);
-        }
-        let pdl = cur.itimer_prof_ns.load(Ordering::Acquire);
-        let cpu = u.saturating_add(s);
-        if pdl != 0 && cpu >= pdl {
-            let interval = cur.itimer_prof_interval_ns.load(Ordering::Acquire);
-            cur.itimer_prof_ns.store(if interval != 0 { cpu.saturating_add(interval) } else { 0 }, Ordering::Release);
-            cur.sigpending.fetch_or(Signum::Sigprof.bit(), Ordering::Release);
-        }
+        #[cfg(target_arch = "x86_64")]
+        let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
+        #[cfg(target_arch = "aarch64")]
+        let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
+        let _ = sched::live::service_task_timers(&cur, now);
     }
-    if sched::preempt::preempt_count() == 0 && sched::preempt::take_need_resched() {
-        unsafe { sched::live::schedule(); }
+    // Linux `syscall_exit_to_user_mode_prepare` -> `exit_to_user_mode_loop`:
+    // reschedule, deliver signals and apply the restart decision, LOOPING while
+    // work remains. The SAME loop runs on the IRQ and exception return paths
+    // (`sched::exit_to_user::hook`), which is what makes a signal reach a task
+    // that never enters the kernel (B1471 / `wait-diff-open-items.md` W9).
+    #[cfg(feature = "debug-syscall-return")]
+    if let Some(task) = return_task {
+        sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER);
     }
-    if let Some(p) = crate::signal::take_lowest_pending() {
-        debug_ssh! { crate::signal_trace::deliver_taken(&p); }
-        #[cfg(feature = "debug-zram-lifecycle")]
-        crate::signal_trace::zram_lifecycle_deliver(&p);
-        if matches!(p.sig, 19) || (matches!(p.sig, 20 | 21 | 22) && p.handler == 0) {
-            restore_saved_sigmask();
-            sched::live::stop::stop_until_cont_sig(p.sig as u8);
-            // A job-control stop builds NO handler frame, so Linux's
-            // `arch_do_signal_or_restart` arm applies once the task resumes:
-            // every ERESTART* code restarts, ERESTART_RESTARTBLOCK through
-            // `restart_syscall(2)`. Returning `rv` raw here leaked the
-            // internal -512/-514/-516 sentinels to userspace as bogus errnos
-            // for every interruptible syscall that emits one.
-            let action = syscall::restart::signal_restart_action(rv, false, false);
-            // SAFETY: syscall-return tail exclusively owns the saved user frame.
-            if let Some(re) = unsafe { super::restart::apply(action) } { return re; }
-            return syscall::restart::normalize_user_return(rv) as u64;
-        }
-        // Linux's restart decision (`handle_signal` vs
-        // `arch_do_signal_or_restart`) keys on whether a HANDLER FRAME was
-        // actually built. SIG_DFL and SIG_IGN dispositions take the
-        // no-handler arm, which restarts every ERESTART* code instead of
-        // reporting a spurious EINTR.
-        let handler_ran = crate::signal::runs_user_handler(&p);
-        let action = syscall::restart::signal_restart_action(
-            rv, handler_ran, (p.flags & crate::signal_dispatch::SA_RESTART) != 0);
-        let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64) };
-        // Linux `restore_saved_sigmask()` on the no-handler exits. A handler
-        // delivery already consumed the flag inside `sigmask_to_save()` and
-        // folded the saved mask into the frame `rt_sigreturn` restores, so
-        // this is a no-op there — the flag is one-shot.
-        restore_saved_sigmask();
-        if sig_rv != 0 {
-            #[cfg(feature = "debug-syscall-return")]
-            if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
-            return sig_rv;
-        }
-        // A delivered handler restarts through its own signal frame
-        // (`dispatch_pending` rewinds the saved PC the `rt_sigreturn` restores),
-        // so only the no-handler arm rewrites the live frame here.
-        if !handler_ran {
-            // SAFETY: syscall-return tail exclusively owns the saved user frame.
-            if let Some(re) = unsafe { super::restart::apply(action) } {
-                #[cfg(feature = "debug-syscall-return")]
-                if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
-                return re;
-            }
-        }
-    } else {
-        debug_ssh! { crate::signal_trace::deliver_blocked(); }
-        restore_saved_sigmask();
-        // Linux `arch_do_signal_or_restart` with `get_signal()` returning 0:
-        // the interrupting signal was consumed elsewhere (group-exit latch,
-        // stop/cont, a racing dequeue), so the interrupted call restarts. A
-        // blocking syscall only emits ERESTART* when a deliverable signal
-        // existed, and `take_lowest_pending` clears the pending bit before the
-        // restart, so this cannot spin.
-        let action = syscall::restart::signal_restart_action(rv, false, false);
-        // SAFETY: syscall-return tail exclusively owns the saved user frame.
-        if let Some(re) = unsafe { super::restart::apply(action) } {
-            #[cfg(feature = "debug-syscall-return")]
-            if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
-            return re;
-        }
-    }
+    let regs = crate::arch_frame::current_user_regs();
+    // SAFETY: syscall-return tail on the running task's own kernel stack; the
+    // entry frame is live and exclusively owned until the epilogue consumes it.
+    let rv_out = unsafe { crate::exit_to_user::exit_to_user_mode_loop(regs, Some(rv)) };
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
     // Diagnostic only: the ARM wait4(ECHILD) investigation needs to know
@@ -613,7 +539,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             klog::write_raw(b"]\n");
         }
     }
-    syscall::restart::normalize_user_return(rv) as u64
+    rv_out
 }
 
 /// Retained executable-scoped syscall trace for the OpenSSH daemon. The

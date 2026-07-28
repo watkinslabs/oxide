@@ -11,6 +11,12 @@ use crate::execve_common::{
 
 use super::fd_table::unshare_fd_table_and_close_on_exec;
 
+/// RFLAGS the freshly-exec'd image starts with: IF=1 (preemptible) plus the
+/// always-set reserved bit 1, every other flag clear. Linux `start_thread`
+/// reaches the same state via `regs->flags = X86_EFLAGS_IF | X86_EFLAGS_FIXED`
+/// (`arch/x86/kernel/process_64.c` `start_thread_common`).
+const EXEC_ENTRY_RFLAGS: u64 = 0x202;
+
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
 /// that reads the user-space path then delegates to `execve_inner`.
 /// # SAFETY: dispatch ctx, IRQs masked.
@@ -381,14 +387,28 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     if let Some(mm) = unsafe { cur.mm_ref() } {
         mm.set_arg_env_stack(layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, new_sp);
     }
-    let frame = unsafe { &mut *hal_x86_64::current_user_frame() };
-    frame[0] = img.user_ip();
-    frame[1] = 0x202;
-    frame[2] = new_sp;
-    unsafe {
-        let base = (frame as *mut [u64; 3] as *mut u64).sub(7);
-        for i in 0..7 { core::ptr::write_volatile(base.add(i), 0); }
-    }
+    // Redirect this syscall's return into the new image. Linux
+    // `start_thread` + `ELF_PLAT_INIT` (`arch/x86/include/asm/elf.h`) zero
+    // EVERY general-purpose register for the fresh program — glibc's `_start`
+    // reads rdx as the "function to register with atexit", so a stale value
+    // there is a call through garbage. The zeroing used to cover only the 7
+    // arg/nr slots the old save block exposed; the whole GPR set is now
+    // reachable, so all of it is cleared like Linux does.
+    let regs = hal_x86_64::current_pt_regs();
+    if regs.is_null() { return -(Errno::Enomem.as_i32() as i64); }
+    // SAFETY: dispatch context on this task's own kernel stack; current_pt_regs() is its live syscall entry frame and we are its sole writer.
+    let frame = unsafe { &mut *regs };
+    let entry_state = hal_x86_64::PtRegs {
+        rip:    img.user_ip(),
+        rflags: EXEC_ENTRY_RFLAGS,
+        rsp:    new_sp,
+        cs:     frame.cs,
+        ss:     frame.ss,
+        vector: frame.vector,
+        error:  frame.error,
+        ..Default::default()
+    };
+    *frame = entry_state;
     // A vfork parent shares this mm and user stack until exec completes.
     // Publish completion only after the child has its final user return
     // frame, so the parent cannot resume and alter that shared stack while

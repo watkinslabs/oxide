@@ -1,9 +1,11 @@
 // Per-vector IRQ entry stubs per `22§4` + IRQ-exit preemption epilogue
 // per `14§R07`.
 //
-// Distinct from the fault stubs (`fault.rs`): IRQ stubs save the
-// scratch registers, switch to this CPU's per-CPU hardirq stack (F699),
-// call the Rust dispatcher, then call `oxide_irq_resched_on_exit` (one
+// Distinct from the fault stubs (`fault.rs`) only in vector tagging and
+// the stack switch: both build the SAME `PtRegs` (`pt_regs.rs`). IRQ
+// stubs save the full user register set, switch to this CPU's per-CPU
+// hardirq stack (F699),
+// call the Rust dispatcher, then call `oxide_irq_exit_to_user` (one
 // engine — it calls the single `schedule()` iff returning to user with a
 // pending resched), then `iretq` back to whatever task we end up resuming.
 // The dispatcher does the EOI dance; there is no IRQ-tail staging.
@@ -62,59 +64,77 @@ core::arch::global_asm!(
     ".size oxide_irq_vec_57, . - oxide_irq_vec_57",
 
     // ----- common IRQ path -------------------------------------------------
-    // Save scratch, switch to the per-CPU hardirq stack (unless already
-    // nested on it), dispatch, unwind back to the interrupted stack, then
-    // resched-on-exit + iretq. The interrupted frame (9 scratch + err/vec +
-    // CPU iretq image) stays on the OUTER stack; only the dispatcher's own
-    // usage + nested IRQs + do_softirq run on the hardirq stack (Linux model).
+    // Save the FULL user register set, switch to the per-CPU hardirq stack
+    // (unless already nested on it), dispatch, unwind back to the interrupted
+    // stack, then resched-on-exit + iretq. The interrupted frame (the 22-quad
+    // `PtRegs`) stays on the OUTER stack; only the dispatcher's own usage +
+    // nested IRQs + do_softirq run on the hardirq stack (Linux model).
+    //
+    // All 15 GPRs — not just the 9 caller-saved scratch — for the same reason
+    // Linux's `idtentry` uses `PUSH_AND_CLEAR_REGS`: an IRQ return is a signal
+    // delivery point, and a `rt_sigframe` built from a frame missing
+    // rbx/rbp/r12-r15 hands the handler garbage in `uc_mcontext` and restores
+    // that garbage at `rt_sigreturn`. Push order is identical to the fault
+    // stubs, so rsp after them IS a `PtRegs` (`pt_regs.rs`).
     ".type oxide_irq_common, @function",
     "oxide_irq_common:",
     "    push rax", "    push rcx", "    push rdx",
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
+    "    push rbx", "    push rbp",
+    "    push r12", "    push r13", "    push r14", "    push r15",
     "    cld",
-    "    mov  rax, rsp",            // rax = interrupted frame ptr (outer stack)
-    "    mov  rdi, rax",            // arg0 = frame ptr (dispatch reads offsets off this)
+    "    mov  rax, rsp",            // rax = *mut PtRegs on the outer stack
+    "    mov  rdi, rax",            // arg0 = *mut PtRegs
     // hardirq-stack switch with a STATELESS nesting guard: switch rsp to
     // gs:[24] (this CPU's guard-paged 16 KiB hardirq-stack top) UNLESS the
     // interrupted rsp is already inside that stack (a nested IRQ during the
     // do_softirq sti-window) — resetting rsp then would clobber the outer
-    // softirq frame. Range test: (top - outer_rsp) <= 0x4000 ⇒ nested.
-    // 0x4000 == sched::kstack::KSTACK_BYTES (reverse-asserted there).
+    // softirq frame. Range test: (top - frame_base) <= 0x4000 ⇒ nested.
+    // 0x4000 == sched::kstack::KSTACK_BYTES == IRQ_STACK_BYTES (the hardirq
+    // stack's SIZE, not a frame-derived number): a nested entry's `PtRegs`
+    // lands wherever the softirq window left rsp inside [top-16K, top], and
+    // growing the frame from 0x58 to 0xb0 only moves it deeper INTO that same
+    // range. A non-nested entry's frame lives on an unrelated task kstack, so
+    // the unsigned difference is astronomically larger than 0x4000.
     "    mov  rcx, gs:[24]",        // this CPU's hardirq stack top (0 = unarmed)
     "    test rcx, rcx",
     "    jz   2f",                  // unarmed (early boot) -> stay on current stack
     "    mov  rdx, rcx",
-    "    sub  rdx, rax",            // rdx = top - outer_rsp (unsigned)
+    "    sub  rdx, rax",            // rdx = top - frame_base (unsigned)
     "    cmp  rdx, 0x4000",
-    "    jbe  2f",                  // outer_rsp within [top-16K, top] -> nested, no reset
+    "    jbe  2f",                  // frame_base within [top-16K, top] -> nested, no reset
     "    mov  rsp, rcx",            // switch to the fresh 16-aligned hardirq-stack top
     "2:",
+    // Alignment: the CPU 16-aligns RSP before pushing its 5-quadword IRETQ
+    // image, the per-vector head pushes (err, vec) → RSP ≡ 8 (mod 16) here,
+    // and 15 pushes (0x78) bring it to ≡ 0. The two pushes below keep it ≡ 0,
+    // which is what SysV requires AT a `call`.
     "    push rax",                 // save outer rsp
     "    push rax",                 // 16-align pad (rsp is 16-aligned at 2:)
     "    call oxide_irq_dispatch",  // handler + sti/do_softirq/cli on the hardirq stack
     "    pop  rax",                 // drop pad
     "    pop  rsp",                 // back to the interrupted (outer) stack
-    // -- resched-on-exit (`14§R07`): pass the interrupted frame's saved CS to
-    //    the Rust slow path, which calls schedule() iff returning to user with
-    //    a pending resched. Runs on the OUTER stack (correct save point).
-    //    arg1 is a POINTER to the frame's saved RIP so the slow path can
-    //    perform the rseq critical-section abort (`sched::rseq`) after a
-    //    preemption without knowing this frame's layout. Frame from rsp:
-    //    9 scratch qwords, vec(+0x48), err(+0x50), RIP(+0x58), CS(+0x60).
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    lea  rsi, [rsp + 0x58]",   // &saved RIP in the iretq frame
-    "    call oxide_irq_resched_on_exit",
+    // -- resched-on-exit (`14§R07`): hand the Rust slow path the interrupted
+    //    `PtRegs` itself, so it reads the saved CS (return-to-user test) and
+    //    rewrites the saved RIP (rseq critical-section abort, `sched::rseq`)
+    //    through named fields instead of this stub's byte offsets. Runs on the
+    //    OUTER stack (correct save point).
+    "    mov  rdi, rsp",            // arg0 = *mut PtRegs
+    "    call oxide_irq_exit_to_user",
     "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_common, . - oxide_irq_common",
 
     // ----- shared IRQ epilogue --------------------------------------------
     // Globally addressable so `Context::new_kernel_with_irq_frame`
     // can park its address as the saved-RIP at scaffold base. Reached with
-    // rsp already restored to the interrupted (outer) stack.
+    // rsp already restored to the interrupted (outer) stack, pointing at the
+    // `PtRegs` base. Pops mirror `oxide_irq_common`'s pushes exactly.
     ".globl oxide_irq_resume_user",
     ".type  oxide_irq_resume_user, @function",
     "oxide_irq_resume_user:",
+    "    pop r15", "    pop r14", "    pop r13", "    pop r12",
+    "    pop rbp", "    pop rbx",
     "    pop r11", "    pop r10", "    pop r9", "    pop r8",
     "    pop rdi", "    pop rsi",
     "    pop rdx", "    pop rcx", "    pop rax",

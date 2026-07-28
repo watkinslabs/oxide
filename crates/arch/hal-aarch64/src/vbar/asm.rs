@@ -204,6 +204,13 @@ core::arch::global_asm!(
     "    mov  x7,  sp",
     "    bl   oxide_fault_print_rust",
     "    cbz  w0, 1f",             // not handled → wfi forever
+    // Linux `el0_da`/`el0_ia` end in `arm64_exit_to_user_mode(regs)`: a
+    // RESOLVED exception returning to EL0 runs the same return-to-user work
+    // loop an IRQ return does, so a signal posted while the task was faulting
+    // is delivered now rather than at its next `svc`. The Rust side is a no-op
+    // for an EL1 return (`SPSR.M != EL0t`).
+    "    mov  x0,  sp",                     // arg0 = *mut SvcFrame
+    "    bl   oxide_irq_exit_to_user",
     // `kernel_exit`: this exception's ELR/SPSR/SP_EL0 come back from the
     // frame, not from whatever the system registers hold now.
     "    ldp  x9,  x10, [sp, #176]",
@@ -597,11 +604,12 @@ core::arch::global_asm!(
     // ELR/SPSR currently held — wrong as soon as the dispatcher
     // swapped tasks. They sit at [sp+0xb0..0xc0] now.
     //
-    // After the dispatcher returns, the asm hands the saved SPSR_EL1 to
-    // `oxide_irq_resched_on_exit`, which calls the one `schedule()` iff
-    // returning to EL0 with a pending resched (VOLUNTARY preempt). The
-    // switch itself happens inside `schedule()`; on a fresh task the
-    // saved `Context.lr` is `oxide_finish_switch_tramp` (pays the
+    // After the dispatcher returns, the asm hands the whole frame to
+    // `oxide_irq_exit_to_user` — Linux `irqentry_exit`. For an EL0 return it
+    // runs the ONE return-to-user work loop (`schedule()` on a pending
+    // resched, then signal delivery); an EL1 return takes the other arm and
+    // does nothing. The switch itself happens inside `schedule()`; on a fresh
+    // task the saved `Context.lr` is `oxide_finish_switch_tramp` (pays the
     // `finish_task_switch` handoff) which then reaches this epilogue.
     ".balign 4",
     ".globl oxide_irq_vector_handler",
@@ -729,16 +737,15 @@ core::arch::global_asm!(
     ".Lirq_dispatch_sp:",
     "    bl   oxide_arm_irq_dispatch",
     "    mov  sp, x19",                    // restore interrupted frame base (no-op if nested/unarmed)
-    // -- resched-on-exit (`14§R07` / smp-arch.md Phase A). One engine:
-    //    pass the interrupted SPSR_EL1 (saved at [sp+184]) to the Rust slow
-    //    path, which calls the single `schedule()` iff returning to EL0 with
-    //    a pending resched. No IRQ-tail staging / second switch engine.
-    //    arg1 is a POINTER to the frame's saved ELR_EL1 so the slow path can
-    //    perform the rseq critical-section abort (`sched::rseq`) after a
-    //    preemption without knowing this frame's layout.
-    "    ldr  x0,  [sp, #184]",             // saved SPSR_EL1
-    "    add  x1,  sp, #176",               // &saved ELR_EL1
-    "    bl   oxide_irq_resched_on_exit",
+    // -- return-to-user work loop (Linux `irqentry_exit`). The WHOLE 288 B
+    //    entry frame goes to Rust as `*mut SvcFrame`: the loop needs the saved
+    //    SPSR to decide user-vs-kernel return, the saved ELR for the rseq
+    //    critical-section abort, and every GPR slot to build a signal frame.
+    //    Passing only SPSR + &ELR (pre-B1471) is why nothing but `schedule()`
+    //    could run here, and why a userspace spin loop took no signals at all.
+    //    SP is the frame base again after the IRQ-stack switch-out above.
+    "    mov  x0,  sp",                     // arg0 = *mut SvcFrame
+    "    bl   oxide_irq_exit_to_user",
     "    b    oxide_irq_resume_user",
     ".size oxide_irq_vector_handler, . - oxide_irq_vector_handler",
 
