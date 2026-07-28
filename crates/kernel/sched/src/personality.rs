@@ -71,6 +71,15 @@ pub fn get_set(cur: &Task, persona: u32) -> u32 {
 /// Current persona. # C: O(1)
 pub fn get(cur: &Task) -> u32 { cur.personality.load(Ordering::Acquire) }
 
+/// Linux `begin_new_exec`: `me->personality &= ~bprm->per_clear`. The exec
+/// credential transition raises [`PER_CLEAR_ON_SETID`] whenever the new image
+/// gained ids or capabilities, so a caller cannot pre-arm `ADDR_NO_RANDOMIZE`
+/// or `READ_IMPLIES_EXEC` and have a privileged binary inherit them.
+/// # C: O(1)
+pub fn clear(cur: &Task, mask: u32) {
+    if mask != 0 { cur.personality.fetch_and(!mask, Ordering::AcqRel); }
+}
+
 /// Whether `PROT_READ` must imply `PROT_EXEC` for this task's mappings.
 /// # C: O(1)
 pub fn read_implies_exec(cur: &Task) -> bool {

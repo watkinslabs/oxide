@@ -49,7 +49,7 @@ mod types;
 mod uapi;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
-pub use creds::{Creds, GroupList};
+pub use creds::{securebits, Creds, GroupList};
 pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;

@@ -108,101 +108,32 @@ pub(crate) fn read_user_exec_path(path_ptr: u64) -> Result<alloc::vec::Vec<u8>, 
     ).map_err(|e| -(e.as_i32() as i64))
 }
 
-/// Decode the `security.capability` xattr on `inode` (Linux's
-/// `struct vfs_cap_data` v2/v3 layout) and apply file capabilities
-/// to `task.creds` per `capabilities(7)` semantics.
+/// Read the exec image, falling back to the raw rootfs reader ONLY when the
+/// pathname could not be resolved at all — during early boot the VFS root is
+/// not mounted yet and `/init` has to come straight off the image. A permission
+/// denial (`EACCES` from `may_open(..., MAY_EXEC)`, a `noexec` mount, a
+/// directory) must never be papered over by the fallback: that is the whole
+/// point of the check.
 ///
-/// Layout (`linux/capability.h`):
-///   magic_etc:  u32 (low 24 bits version, top 8 = flags;
-///                    VFS_CAP_FLAGS_EFFECTIVE = 0x01)
-///   permitted:  [u32; 2]
-///   inheritable: [u32; 2]
-///   v3 adds rootid: u32 at the tail (24 bytes total). v2 = 20 bytes.
-///
-/// Effect on the task post-execve (simplified Linux rule):
-///   new_perm  = (file.perm  | (cap_inheritable & file.inh)) & cap_bounding
-///   new_eff   = if VFS_CAP_FLAGS_EFFECTIVE then new_perm else 0
-///   inh stays unchanged.
-/// # C: O(1)
-/// Capability transition every execve must apply, regardless of whether the
-/// exec'd file's inode resolves for file-caps. Privileged-root path (Linux
-/// `cap_bprm_creds_from_file`): a process exec'ing with euid 0 regains the
-/// full bounding set as permitted AND effective. systemd's executor lowers
-/// its *effective* set before execve and relies on the kernel restoring
-/// effective=permitted for root on exec; without this, systemd-networkd
-/// (root, then drops privs deliberately) can't acquire CAP_SETPCAP and aborts
-/// ("Failed to drop privileges: Operation not permitted"). # C: O(1)
-pub(crate) fn regain_root_caps_at_execve(cur: &sched::Task) {
-    use core::sync::atomic::Ordering;
-    let euid = cur.creds.euid.load(Ordering::Acquire);
-    if euid == 0 {
-        let old_perm = cur.creds.cap_permitted.load(Ordering::Acquire);
-        let bounding = cur.creds.cap_bounding.load(Ordering::Acquire);
-        let (perm, eff) = no_new_privs_clamp(cur, bounding, bounding, old_perm);
-        cur.creds.cap_permitted.store(perm, Ordering::Release);
-        cur.creds.cap_effective.store(eff,  Ordering::Release);
+/// `None` for the resolved path means "no inode behind this image", which the
+/// credential transition reads as no setuid bits, no file caps and no
+/// `mnt_may_suid`.
+/// # C: O(components) + O(size/PAGE)
+pub(crate) fn open_exec_image(path: &[u8])
+    -> Result<(alloc::vec::Vec<u8>, Option<vfs::VfsPath>), i64>
+{
+    match crate::pathresolve::open_exec(path) {
+        Ok((blob, vp)) => Ok((blob, Some(vp))),
+        Err(rc) => {
+            let unresolved = rc == -(Errno::Enoent.as_i32() as i64)
+                || rc == -(Errno::Enotdir.as_i32() as i64);
+            if !unresolved { return Err(rc); }
+            match ext4::rootfs::read_file(path) {
+                Some(blob) => Ok((blob, None)),
+                None => Err(rc),
+            }
+        }
     }
-}
-
-/// Linux `cap_bprm_creds_from_file`'s no-new-privs downgrade:
-///
-/// ```text
-/// if ((is_setid || __cap_gained(permitted, new, old)) &&
-///     ((bprm->unsafe & ~LSM_UNSAFE_PTRACE) || !ptracer_capable(...))) {
-///         if (!ns_capable(..., CAP_SETUID) || (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS))
-///                 new->euid = new->uid;   /* no setuid transition */
-///         new->cap_permitted = cap_intersect(new->cap_permitted, old->cap_permitted);
-/// }
-/// ```
-///
-/// `PR_SET_NO_NEW_PRIVS` sets `LSM_UNSAFE_NO_NEW_PRIVS` for every subsequent
-/// execve (`fs/exec.c:check_unsafe_exec`), so a confined task may never come
-/// out of an exec with MORE permitted capabilities than it went in with — not
-/// from file caps, and not from the privileged-root path. Without this clamp
-/// the flag stores and reports correctly while granting privilege anyway,
-/// which is the exact failure it exists to prevent.
-///
-/// Returns the `(permitted, effective)` pair to install.
-/// # C: O(1)
-pub(crate) fn no_new_privs_clamp(cur: &sched::Task, new_perm: u64, new_eff: u64, old_perm: u64)
-    -> (u64, u64) {
-    use core::sync::atomic::Ordering;
-    if !cur.no_new_privs.load(Ordering::Acquire) { return (new_perm, new_eff); }
-    // Gained nothing => nothing to clamp (Linux's `__cap_gained` guard).
-    if new_perm & !old_perm == 0 { return (new_perm, new_eff); }
-    let perm = new_perm & old_perm;
-    (perm, new_eff & perm)
-}
-
-/// Apply the exec'd file's `security.capability` xattr to the task's caps
-/// (non-root file-cap path; root is handled by `regain_root_caps_at_execve`).
-/// # C: O(1)
-pub(crate) fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task) {
-    use core::sync::atomic::Ordering;
-    const VFS_CAP_FLAGS_EFFECTIVE: u32 = 0x01;
-    // First probe the value length via getxattr-len (buf=0).
-    let s = "security.capability";
-    let want = ::fs::xattr::query_len(inode, s);
-    if want < 12 { return; }
-    let mut buf = alloc::vec![0u8; want.min(24)];
-    if !::fs::xattr::query_into(inode, s, &mut buf) { return; }
-    if buf.len() < 12 { return; }
-    let read_u32 = |off: usize| -> u32 {
-        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
-    };
-    let magic_etc = read_u32(0);
-    let perm = ((read_u32(4) as u64) | ((read_u32(8) as u64) << 32)) & ((1u64 << 40) - 1);
-    let inh  = if buf.len() >= 20 {
-        ((read_u32(12) as u64) | ((read_u32(16) as u64) << 32)) & ((1u64 << 40) - 1)
-    } else { 0 };
-    let task_inh = cur.creds.cap_inheritable.load(Ordering::Acquire);
-    let bounding = cur.creds.cap_bounding.load(Ordering::Acquire);
-    let old_perm = cur.creds.cap_permitted.load(Ordering::Acquire);
-    let new_perm = (perm | (task_inh & inh)) & bounding;
-    let new_eff  = if magic_etc & VFS_CAP_FLAGS_EFFECTIVE != 0 { new_perm } else { 0 };
-    let (new_perm, new_eff) = no_new_privs_clamp(cur, new_perm, new_eff, old_perm);
-    cur.creds.cap_permitted.store(new_perm, Ordering::Release);
-    cur.creds.cap_effective.store(new_eff,  Ordering::Release);
 }
 
 /// Resolve a `#!`-script chain per Linux `fs/binfmt_script.c`.
@@ -219,6 +150,14 @@ pub(crate) fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task
 ///   3. Update `path_owned` to `interp`, re-read it from ext4 into
 ///      `blob_owned`, and loop. Bail with ENOENT if interp missing.
 ///
+/// Every interpreter is re-opened through the same `do_open_execat` gate the
+/// original file went through (Linux loops `search_binary_handler`, and each
+/// pass re-opens), so `mode 0000` or a `noexec` mount on `/bin/sh` denies the
+/// script too. `exec_path` tracks the resolved path of the file the credential
+/// transition must be computed from — Linux's `bprm->file` after the rewrite
+/// loop, which is the INTERPRETER, never the script. That is why a setuid shell
+/// script confers nothing.
+///
 /// Recursion cap = 4 (matches Linux `BINPRM_MAX_RECURSION`).
 /// Returns `Ok(())` when the chain terminates on a non-script blob.
 /// # C: O(N_chain × file_size)
@@ -227,7 +166,8 @@ pub(crate) fn resolve_shebang_chain(
     blob_owned: &mut alloc::vec::Vec<u8>,
     path_owned: &mut alloc::vec::Vec<u8>,
     argv_vec: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
-) -> Result<(), Errno> {
+    exec_path: &mut Option<vfs::VfsPath>,
+) -> Result<(), i64> {
     for _ in 0..4 {
         if blob_owned.len() < 2 || &blob_owned[..2] != b"#!" {
             return Ok(());
@@ -240,7 +180,7 @@ pub(crate) fn resolve_shebang_chain(
         let interp_start = i;
         while i < line.len() && line[i] != b' ' && line[i] != b'\t' { i += 1; }
         let interp_end = i;
-        if interp_end == interp_start { return Err(Errno::Enoexec); }
+        if interp_end == interp_start { return Err(-(Errno::Enoexec.as_i32() as i64)); }
         let interp: alloc::vec::Vec<u8> = line[interp_start..interp_end].to_vec();
         while i < line.len() && (line[i] == b' ' || line[i] == b'\t') { i += 1; }
         let mut j = line.len();
@@ -260,15 +200,12 @@ pub(crate) fn resolve_shebang_chain(
         if let Some(a) = opt_arg { argv_vec.push(a); }
         argv_vec.push(cur_path);
         argv_vec.extend(original_tail);
-        // Update path → interp, refresh blob from ext4.
+        // Update path → interp, re-open it through the full exec gate.
         *path_owned = interp.clone();
-        match crate::pathresolve::read_exec(&interp)
-            .or_else(|| ext4::rootfs::read_file(&interp)) {
-            Some(v) => *blob_owned = v,
-            None    => return Err(Errno::Enoent),
-        }
+        let (blob, vp) = open_exec_image(&interp)?;
+        *blob_owned = blob;
+        *exec_path = vp;
     }
-    // Recursion cap exceeded: Linux returns ELOOP; we lack ELOOP in
-    // our errno table so map to ENOEXEC (closest valid v1 code).
-    Err(Errno::Enoexec)
+    // Recursion cap exceeded (Linux `exec_binprm`: `if (depth > 5) return -ELOOP`).
+    Err(-(Errno::Eloop.as_i32() as i64))
 }
