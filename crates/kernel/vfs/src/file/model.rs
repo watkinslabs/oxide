@@ -285,6 +285,23 @@ impl File {
     /// doubles the default, `POSIX_FADV_RANDOM` zeroes it to disable RA). # C: O(1)
     pub fn set_ra_pages(&self, pages: u32) { self.f_ra.lock().ra_pages = pages; }
 
+    /// `POSIX_FADV_NORMAL` — restore the backing device's default readahead
+    /// window (Linux `mm/fadvise.c`: `file->f_ra.ra_pages = bdi->ra_pages`).
+    /// The ceiling itself is `f_ra`'s to own, so fadvise names the intent and
+    /// does not carry the number. # C: O(1)
+    pub fn ra_set_normal(&self) { self.set_ra_pages(DEFAULT_RA_PAGES); }
+
+    /// `POSIX_FADV_SEQUENTIAL` — double the window (Linux `bdi->ra_pages * 2`).
+    /// # C: O(1)
+    pub fn ra_set_sequential(&self) { self.set_ra_pages(DEFAULT_RA_PAGES.saturating_mul(2)); }
+
+    /// `POSIX_FADV_RANDOM` — disable readahead for this open. Linux expresses
+    /// this as `FMODE_RANDOM`, which `page_cache_sync_ra` reads to bypass the
+    /// sequential heuristic; [`File::ra_ondemand`] expresses the same state as
+    /// `ra_pages == 0`, so there is one representation of "no readahead", not
+    /// two that can disagree. # C: O(1)
+    pub fn ra_set_random(&self) { self.set_ra_pages(0); }
+
     /// On-demand readahead advance (Linux `ondemand_readahead` core): from the
     /// read's first page `index`, page count `req`, and whether the PG_readahead
     /// marker was hit, update `f_ra` and return the `(start, size, async_size)`

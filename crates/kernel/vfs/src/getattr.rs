@@ -164,7 +164,22 @@ pub fn st_dev_for_fsid(fsid: u64) -> u32 {
 
 #[cfg(test)]
 mod dev_tests {
-    use crate::devnode::{Devt, mkdev, kdev_major, kdev_minor, new_encode_dev, huge_encode_dev, MINORMASK};
+    use crate::devnode::{Devt, mkdev, kdev_major, kdev_minor, new_encode_dev, new_decode_dev, huge_encode_dev, MINORMASK};
+
+    /// `new_decode_dev` is the exact inverse of `new_encode_dev` across the
+    /// high-minor split — the `ustat(2)` argument path depends on it landing
+    /// back on the same KERNEL `dev_t` the superblock registry keys on, so a
+    /// one-sided encode test would not catch a decode that drops minor's
+    /// high bits. # C: O(N samples)
+    #[test]
+    fn decode_dev_inverts_encode_dev() {
+        for (ma, mi) in [(0u32, 1u32), (0, 21), (1, 3), (8, 0), (10, 200), (4, 300), (89, 1), (8, 70000), (0xfff, 0xfffff)] {
+            let kd = mkdev(ma, mi);
+            assert_eq!(new_decode_dev(new_encode_dev(kd)), kd, "roundtrip {ma}:{mi}");
+            assert_eq!(kdev_major(new_decode_dev(new_encode_dev(kd))), ma, "major {ma}:{mi}");
+            assert_eq!(kdev_minor(new_decode_dev(new_encode_dev(kd))), mi, "minor {ma}:{mi}");
+        }
+    }
 
     /// `MKDEV`/`MAJOR`/`MINOR` round-trip on a KERNEL `dev_t` (12:20 split),
     /// including a high minor that overflows the legacy 8-bit field. # C: O(1)

@@ -92,6 +92,18 @@ pub const fn new_encode_dev(kdev: u32) -> u32 {
 /// stay clear for a 32-bit-representable dev). # C: O(1)
 pub const fn huge_encode_dev(kdev: u32) -> u64 { new_encode_dev(kdev) as u64 }
 
+/// `new_decode_dev` (Linux `include/linux/kdev_t.h`) — the exact inverse of
+/// [`new_encode_dev`]: unpack the 32-bit glibc/user wire `dev_t` a syscall
+/// ARGUMENT carries back into a KERNEL `dev_t`. `ustat(2)` takes the user form
+/// (`fs/statfs.c` `SYSCALL_DEFINE2(ustat)` calls `new_decode_dev(dev)` before
+/// `user_get_super`), so a lookup against `SuperBlock::s_dev` — which is the
+/// kernel form — must decode first or it never matches. # C: O(1)
+pub const fn new_decode_dev(udev: u32) -> u32 {
+    let major = (udev & 0xf_ff00) >> 8;
+    let minor = (udev & 0xff) | ((udev >> 12) & 0xf_ff00);
+    mkdev(major, minor)
+}
+
 /// `struct cdev` operations — a char driver's per-`dev_t` I/O vtable. The
 /// `devt` is passed on every call so one driver instance can back a whole
 /// minor range (mem driver: null=3, zero=5, random=8, urandom=9).

@@ -88,7 +88,52 @@ fn lock_current_mappings(mm: &vmm::AddressSpace, onfault: bool) -> Result<(), Er
     Ok(())
 }
 
-fn mlock_range(args: &SyscallArgs, set_locked: bool) -> i64 {
+/// Linux `can_do_mlock()` + `do_mlock()`'s RLIMIT_MEMLOCK ladder for the
+/// running task. Split out so mlock(2) and mlock2(2) share ONE admission path:
+/// an enforcement that lived only in mlock2 would let the same program lock the
+/// same memory by picking the other slot. Decision logic is
+/// `crate::mlock_policy` (hosted-tested); this reads the live task state.
+/// # C: O(N_vmas)
+fn memlock_admission(mm: &vmm::AddressSpace, start: hal::UserVirtAddr, len: usize) -> Result<(), Errno> {
+    let cur = sched::live::current().ok_or(Errno::Einval)?;
+    let has_ipc_lock = cur.has_cap(sched::cap::IPC_LOCK);
+    let (limit, _max) = cur.rlimit(sched::rlimit::rlim::MEMLOCK);
+    if !crate::mlock_policy::can_do_mlock(limit, has_ipc_lock) { return Err(Errno::Eperm); }
+    let mm_locked = mm.accounting_snapshot().locked_virtual_bytes;
+    let already = mm.locked_bytes_in_range(start, len);
+    crate::mlock_policy::memlock_admits(len as u64, mm_locked, already, limit, has_ipc_lock)
+}
+
+/// Linux `do_mlock(start, len, flags)` — the body mlock(2) and mlock2(2) share.
+/// `onfault` is mlock2's `MLOCK_ONFAULT` (Linux `VM_LOCKONFAULT`): the VMA is
+/// marked locked but pages are NOT prefaulted, so they are pinned as they fault
+/// in instead. # C: O(len/PAGE)
+fn do_mlock(addr: u64, len_arg: u64, onfault: bool) -> i64 {
+    let Some((start, len)) = (match locked_range(addr, len_arg) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    }) else {
+        return 0;
+    };
+    let mm = match current_mm() {
+        Ok(m) => m, Err(e) => return err(e),
+    };
+    if let Err(e) = validate_mapped(&mm, start, len) { return err(e); }
+    if let Err(e) = memlock_admission(&mm, start, len) { return err(e); }
+    if !onfault {
+        // Linux applies the VMA flags first and populates after dropping the
+        // mmap lock; a populate failure is remapped by
+        // `__mlock_posix_error_return` (EFAULT->ENOMEM, ENOMEM->EAGAIN).
+        if let Err(e) = populate_locked_range(&mm, start, len) {
+            return err(crate::mlock_policy::posix_error_return(e));
+        }
+    }
+    mm.update_flags_range(start, len, vmm::VmaFlags::LOCKED, vmm::VmaFlags::empty());
+    if !onfault { transition_resident_lru(start, len, true); }
+    0
+}
+
+fn munlock_range(args: &SyscallArgs) -> i64 {
     let Some((start, len)) = (match locked_range(args.a0, args.a1) {
         Ok(v) => v,
         Err(e) => return err(e),
@@ -99,24 +144,30 @@ fn mlock_range(args: &SyscallArgs, set_locked: bool) -> i64 {
         Ok(m) => m, Err(e) => return err(e),
     };
     if let Err(e) = validate_mapped(&mm, start, len) { return err(e); }
-    if set_locked {
-        if let Err(e) = populate_locked_range(&mm, start, len) { return err(e); }
-        mm.update_flags_range(start, len, vmm::VmaFlags::LOCKED, vmm::VmaFlags::empty());
-        transition_resident_lru(start, len, true);
-    } else {
-        transition_resident_lru(start, len, false);
-        mm.update_flags_range(start, len, vmm::VmaFlags::empty(), vmm::VmaFlags::LOCKED);
-    }
+    transition_resident_lru(start, len, false);
+    mm.update_flags_range(start, len, vmm::VmaFlags::empty(), vmm::VmaFlags::LOCKED);
     0
 }
 
-/// `mlock(addr, len)` — slot 149. Validate mapped range, then set VM_LOCKED.
+/// `mlock(addr, len)` — slot 149. Linux `SYSCALL_DEFINE2(mlock)` =
+/// `do_mlock(start, len, VM_LOCKED)`. # C: O(len/PAGE)
+pub fn sys_mlock(args: &SyscallArgs) -> i64 { do_mlock(args.a0, args.a1, false) }
+
+/// `mlock2(addr, len, flags)` — slot 325. Linux `SYSCALL_DEFINE3(mlock2)`:
+/// reject any flag outside `MLOCK_ONFAULT`, then the same `do_mlock` mlock(2)
+/// runs with `VM_LOCKONFAULT` added. The flag check precedes the EPERM/ENOMEM
+/// ladder, so a bad flag reports EINVAL regardless of RLIMIT_MEMLOCK.
 /// # C: O(len/PAGE)
-pub fn sys_mlock(args: &SyscallArgs) -> i64 { mlock_range(args, true) }
+pub fn sys_mlock2(args: &SyscallArgs) -> i64 {
+    match crate::mlock_policy::mlock2_flags_check(args.a2) {
+        Ok(onfault) => do_mlock(args.a0, args.a1, onfault),
+        Err(e)      => err(e),
+    }
+}
 
 /// `munlock(addr, len)` — slot 150. Validate mapped range, then clear VM_LOCKED.
 /// # C: O(len/PAGE)
-pub fn sys_munlock(args: &SyscallArgs) -> i64 { mlock_range(args, false) }
+pub fn sys_munlock(args: &SyscallArgs) -> i64 { munlock_range(args) }
 
 /// `mlockall(flags)` — slot 151. Locks current VMAs and/or persists the
 /// policy to future mappings. `MCL_ONFAULT` is valid only with one of those

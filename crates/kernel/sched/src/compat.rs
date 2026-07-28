@@ -36,7 +36,17 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // only "is fd open" and returned 0: it never applied FMODE_READ
         // (EBADF), never rejected a FIFO / an fd with no address space
         // (EINVAL), and never populated the page cache — accept-and-ignore.
-        NR_FADVISE64 | NR_MLOCK2       => sys_fadvise_validate(_args),
+        // NR_FADVISE64 moved to a real impl (F756, syscalls/221_fadvise64.rs):
+        // the shared "validate then 0" arm could not be right for it — it
+        // checked `len < 0` BEFORE the fd, inverting Linux's EBADF-first order,
+        // and never checked the advice value or ESPIPE on a FIFO, so every
+        // bad-advice call reported success.
+        // NR_MLOCK2 moved to a real impl (F756, syscalls/149_mlock_family.rs
+        // over the same `do_mlock` mlock(2) uses). Routing it here was actively
+        // wrong: `sys_fadvise_validate` reads `a0` as an fd, but mlock2's `a0`
+        // is an ADDRESS — so mlock2 answered EBADF for almost every call and
+        // never locked anything.
+        // With all three gone the shared validator has no callers left.
 
         // NR_RESTART_SYSCALL moved to a real impl (F741,
         // syscalls/219_restart_syscall.rs over `Task::restart_block`). The
@@ -89,12 +99,21 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // records in posix_mq.rs). MQ_NOTIFY/GETSETATTR stay
         // silent-0 above. Keyring moved to silent-0 admit above.
         // Misc ENOSYS.
-        | NR_LOOKUP_DCOOKIE | NR_REMAP_FILE_PAGES
-        | NR_USELIB | NR_USTAT | NR_SYSFS
+        // NR_REMAP_FILE_PAGES moved to a real impl (F756,
+        // syscalls/216_remap_file_pages.rs). Linux did NOT retire this syscall
+        // — it re-implemented it as an emulation over mmap in `mm/mmap.c`, so
+        // ENOSYS was a claim about Linux that Linux does not make.
+        // NR_USTAT moved to a real impl (F756, syscalls/136_ustat.rs) over
+        // `sb_by_dev` + the superblock's own statfs — the same `vfs_ustat` path
+        // Linux uses. NR_SYSFS moved to a real impl (F756,
+        // syscalls/139_sysfs.rs) over the live filesystem-type registry, the
+        // same list /proc/filesystems renders.
         // NR_MODIFY_LDT answers ENOSYS through `syscalls::unconfigured`
         // (F757) — Linux's own `COND_SYSCALL(modify_ldt)` result with
         // CONFIG_MODIFY_LDT_SYSCALL unset, and the only honest answer on
         // aarch64, which has no such slot at all.
+        | NR_LOOKUP_DCOOKIE
+        | NR_USELIB
         // QUOTACTL / QUOTACTL_FD moved to real impls (F4) — faithful
         // no-quota-active dispatch (Q_SYNC=0, mutating=EPERM/ESRCH,
         // queries=ESRCH). See syscalls/{179_quotactl,443_quotactl_fd}.rs.
@@ -156,22 +175,3 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
     }
 }
 
-/// Shared validation for advisory cache hints (fadvise/readahead/mlock2).
-/// Linux returns 0 when args are sane, EBADF for bad fds, EINVAL for
-/// negative lengths. v1 has no page cache so the hint itself is a
-/// true no-op once validation passes.
-/// # C: O(1)
-pub fn sys_fadvise_validate(args: &SyscallArgs) -> Option<i64> {
-    let fd  = args.a0 as i32;
-    let len = args.a2 as i64;
-    if len < 0 {
-        return Some(-(Errno::Einval.as_i32() as i64));
-    }
-    let cur = match crate::live::current() { Some(c) => c, None => return Some(0) };
-    // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; Arc clone.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Some(0) };
-    if fdt.get(fd).is_err() {
-        return Some(-(Errno::Ebadf.as_i32() as i64));
-    }
-    Some(0)
-}
