@@ -14,6 +14,7 @@
 //! - `detach`: umount/detach tear-down.
 //! - `pivot_check`: `pivot_root(2)` admission ladder and its errno order.
 //! - `mnt_flags`: internal lifecycle flags and mount_setattr translation.
+//! - `locked`: MNT_LOCK_*/MNT_LOCKED stamping and the no-relax admission ladder.
 //! - `expiry`: expiry list marking and sweep logic.
 
 extern crate alloc;
@@ -62,9 +63,17 @@ pub(crate) use detach::detach_mounts_on;
 mod mnt_flags;
 pub use mnt_flags::{
     AtimePolicy, MNT_DOOMED, MNT_EXPIRE_MARK, MNT_INTERNAL, MNT_LOCKED, MNT_MARKED, MNT_UMOUNT,
-    MNT_ATIME_MASK, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_RDONLY, MOUNT_ATTR_SETTABLE,
+    MNT_LOCK_ATIME, MNT_LOCK_MASK, MNT_LOCK_NODEV, MNT_LOCK_NOEXEC, MNT_LOCK_NOSUID,
+    MNT_LOCK_READONLY,
+    MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_RDONLY, MOUNT_ATTR_SETTABLE,
     MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME, mount_attr_to_mnt,
 };
+
+// Locked mount flags: the MNT_LOCK_*/MNT_LOCKED stamp an unprivileged user-ns
+// copy inherits (`lock_mnt_tree`) and the ladder that refuses to relax it
+// (`can_change_locked_flags`). A submodule so it carries its own unit tests.
+mod locked;
+pub use locked::{can_change_locked_flags, has_locked_children};
 
 // Mount expiry list (Linux `mark_mounts_for_expiry`, autofs/NFS auto-umount):
 // a two-sweep grace where an unused, unmarked mount is marked on one pass and

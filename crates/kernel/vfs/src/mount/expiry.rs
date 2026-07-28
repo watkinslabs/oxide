@@ -44,6 +44,14 @@ pub fn mnt_expire_remove(list: u64, m: &Arc<Mount>) {
     if let Some(v) = EXPIRE_LISTS.lock().get_mut(&list) { v.retain(|&id| id != m.mnt_id); }
 }
 
+/// Linux `!list_empty(&mnt->mnt_expire)`: is this mount queued on ANY expire
+/// list? `lock_mnt_tree` skips such mounts when stamping `MNT_LOCKED`, so an
+/// auto-expiring (autofs/NFS) submount stays reapable inside an unprivileged
+/// user-namespace copy. # C: O(N_lists × N_members)
+pub(super) fn on_any_expire_list(id: u64) -> bool {
+    EXPIRE_LISTS.lock().values().any(|v| v.contains(&id))
+}
+
 /// Too-busy-to-expire test (Linux `propagate_mount_busy(mnt, 1)`): a mount with
 /// child mounts, an external pin (`mnt_count`), or that is LOCKED / INTERNAL is
 /// never auto-expired. # C: O(1)

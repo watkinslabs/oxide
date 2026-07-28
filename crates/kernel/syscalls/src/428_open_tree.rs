@@ -40,7 +40,7 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         // OPEN_TREE_CLONE creates a detached mount → requires CAP_SYS_ADMIN
         // (Linux open_detached_copy/may_mount); the non-clone O_PATH-like form
         // below is unprivileged (D49).
-        if let Some(rv) = require_sys_admin() { return rv; }
+        if let Some(rv) = may_mount_or_eperm() { return rv; }
         // D24 Stage 1a: RECURSIVELY clone the mount SUBTREE rooted at `abs`
         // (AT_RECURSIVE ⇒ whole bindable subtree; else root-only) into a
         // DETACHED node list stored in the mount-object fd. `move_mount` later
