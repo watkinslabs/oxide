@@ -13,6 +13,10 @@ extern crate std;
 #[cfg(feature = "debug-lockdep")]
 pub mod lockdep;
 mod percpu;
+/// The single relax step every spin loop here takes — and the hook that lets a
+/// spinning CPU keep servicing cross-CPU work it owes.
+pub mod spin_relax;
+pub use spin_relax::{relax, set_spin_relax_hook, SpinRelaxFn};
 mod rcu;
 mod rwlock;
 mod seqlock;
@@ -330,7 +334,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            core::hint::spin_loop();
+            crate::spin_relax::relax();
             // Capture-first SMP probe (prod-inert: compiled out unless `debug-smp`).
             // A lock spin past the threshold is a suspected IF=0 cross-CPU stall —
             // report the lock CLASS rank so the next -smp boot names the vertex.
@@ -388,7 +392,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            core::hint::spin_loop();
+            crate::spin_relax::relax();
         }
         IrqGuard { lock: self, flags, _g: PhantomData }
     }
@@ -417,7 +421,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            core::hint::spin_loop();
+            crate::spin_relax::relax();
         }
         LockBhGuard { lock: self, _g: PhantomData }
     }

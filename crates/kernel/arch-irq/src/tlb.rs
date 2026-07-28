@@ -262,4 +262,14 @@ fn report_stuck(me: usize, waited_ns: u64, spins: u64) {
 pub unsafe fn install() {
     // SAFETY: boot path; `shootdown` lives for the kernel lifetime.
     unsafe { hal::tlb::set_shootdown_hook(shootdown); }
+    // Every spin in `sync` now services pending shootdowns, which is what makes
+    // this protocol's liveness claim true rather than assumed: a CPU spinning
+    // for a lock with interrupts masked would otherwise never take the 0x42 IPI,
+    // and the owner (often the very CPU holding that lock) would wait forever.
+    // `service` takes no locks and is idempotent, so it meets the hook's
+    // no-locks / reentrant contract.
+    // SAFETY: `service` takes no locks, touches only this CPU's TLB plus two
+    // atomics, and is already called from IRQ context — it satisfies the
+    // reentrancy contract `set_spin_relax_hook` requires.
+    unsafe { sync::set_spin_relax_hook(service); }
 }
