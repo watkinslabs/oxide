@@ -112,6 +112,7 @@ journalled image and because the images' journal-less state is itself the top fi
 | htree hash signedness (`s_hash_unsigned`) | The dx_root stores the BASE hash version (0/1/2). At hash time Linux adds `EXT4_SB(sb)->s_hash_unsigned` — 3 when the superblock's `s_flags` (offset 0x160) carries `EXT2_FLAGS_UNSIGNED_HASH`, 0 otherwise — turning `HALF_MD4` into `HALF_MD4_UNSIGNED` and so on | `s_flags` at 0x160 is NOT parsed anywhere in `superblock.rs`, and `dirhash_major` receives the raw dx_root version with no `+3` adjustment. Signedness is inferred solely from the stored version id | Latent: our images were built on x86_64 and carry `signed_directory_hash`, so oxide happens to agree. Any filesystem created or last touched by `mke2fs`/`e2fsck` on an unsigned-char arch (aarch64 — the second lockstep target) carries `unsigned_directory_hash` and will be hashed with the SIGNED variant: htree lookups miss so files are invisible in large indexed directories, and `htree_insert` files dx_entries under the wrong hash, corrupting the index | CORRECTNESS | `kernel/ext4` | `fs/ext4/namei.c:821,1175,2300`; `fs/ext4/super.c:5259-5266`; `fs/ext4/ext4.h:1243-1244,1624` | crates/kernel/ext4/src/superblock.rs:264-268 (0x160 unread); htree.rs:35-60,198 |
 | htree directories | `ext4_dx_add_entry` → `do_split` → index growth; `EXT4_INDEX_FL`; hash versions incl. signed variants + `s_hash_seed` | Real htree insert with leaf split (`htree_split`) and index growth (`htree_grow`), dx_root/dx_node walk, legacy/half-md4/tea + signed variants. **Corrects the brief's linear-insert-into-htree worry.** | none material | — | `kernel/ext4` | `fs/ext4/namei.c ext4_dx_add_entry`, `do_split` | crates/kernel/ext4/src/htree.rs:188-280 |
 | `metadata_csum` | crc32c on superblock, group descriptors, inode, bitmaps, extent tails, dirent tails, xattr blocks | Verified on read (`BadChecksum` → `EIO`) and recomputed on write across those objects | none material | — | `kernel/ext4` | `fs/ext4/*_csum` | crates/kernel/ext4/src/csum.rs; mount.rs:70-79 |
+| **e2fsck gate** | `e2fsck -fn` clean is the project's stated correctness gate for ext4 | A REAL hosted harness exists and runs `e2fsck -fn` against the written image, covering the write path, deep extent trees, ENOSPC, htree insert / leaf split / root grow, fallocate-unwritten-then-write, sparse writes past EOF, punch hole, and xattr `i_blocks`. `i_blocks` is correctly carried in 512-byte sectors | Strong for what it covers, and it actively defends the counter-drift, csum-omission and htree-corruption classes. It does NOT cover unlink-while-open (§2 row 1), anything journal-related (the images have none), or the tag-size / revoke-sequence replay paths | — | `kernel/ext4` | `e2fsprogs e2fsck` | crates/kernel/ext4/tests/e2fsck_image.rs:66-460; balloc_uninit_e2fsck.rs |
 
 ## 6 fsnotify — inotify / fanotify
 
@@ -318,9 +319,9 @@ By impact, highest first.
   structural; there is no profile.
 - Whether anything invalidates `/proc/<pid>` dentries out of band at task exit. procfs makes no
   dcache calls and installs no `d_op`, but I did not trace the reap path.
-- `e2fsck` cleanliness of a filesystem after an oxide write session. The project's stated gate is
-  `e2fsck`, and this audit ran no filesystem work — the counter/csum/orphan reasoning above is from
-  reading the write paths only.
+- Breadth of the `e2fsck` gate beyond the twelve cases in `e2fsck_image.rs`. I read the harness
+  rather than running it, and it is genuinely strong — but it does not exercise unlink-while-open,
+  the journal, or concurrent mutation, so the `e2fsck`-clean claim does not extend to those.
 - Whether the JBD2 tag-size bug is reachable on any image the project actually builds. Every image
   I inspected has no journal, so the path is dead today; I could not rule out a fixture or a
   future image that enables one.
