@@ -132,6 +132,7 @@ pub mod setup;
 pub mod mmap_flags;
 mod munmap_range;
 pub mod swap;
+pub mod tlb_gather;
 
 pub use munmap_range::{validate_munmap_range, MunmapRange};
 
