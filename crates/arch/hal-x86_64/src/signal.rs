@@ -1,15 +1,22 @@
 // x86_64 signal-frame ABI: build/restore the full Linux `rt_sigframe`
-// (siginfo_t + ucontext_t) so SA_SIGINFO handlers (Go runtime, glibc/musl
-// crash handlers, profilers) get `handler(sig, &siginfo, &ucontext)` and
-// rt_sigreturn restores the full register set. Arch-specific layout lives
-// HERE (not #[cfg]-gated in the generic fs dispatcher). The generic caller
-// (`fs::sig_dispatch`) owns sigmask/sched orchestration and passes
-// `old_sigmask` in / gets the restored mask out.
+// (siginfo_t + ucontext_t + the FPU/extended-state area) so SA_SIGINFO
+// handlers (Go runtime, glibc/musl crash handlers, profilers) get
+// `handler(sig, &siginfo, &ucontext)` and rt_sigreturn restores the full
+// register set. Arch-specific layout lives HERE (not #[cfg]-gated in the
+// generic fs dispatcher). The generic caller (`fs::sig_dispatch`) owns
+// sigmask/sched orchestration, passes `old_sigmask` in / gets the restored
+// mask out, and owns the per-task XSAVE buffer this file reads and writes.
 //
 // Layout MUST match Linux exactly — Go hardcodes the offsets (sigctxt.rip()
 // reads uc_mcontext+128). Asserted below.
+//
+// Module manifest:
+//   `xstate` — `uc_mcontext.fpstate` area: layout, epilog, restore checks.
+//   `tests`  — host unit tests, including an end-to-end frame round trip.
 
 use crate::{current_user_frame, current_user_full_frame};
+
+pub(crate) mod xstate;
 
 /// Linux x86_64 `struct sigcontext` (== `ucontext.uc_mcontext`).
 #[repr(C)]
@@ -57,6 +64,7 @@ const _: () = {
     assert!(core::mem::offset_of!(Sigctx, rip) == 128);
     assert!(core::mem::offset_of!(Sigctx, eflags) == 136);
     assert!(core::mem::offset_of!(Sigctx, cr2) == 176);
+    assert!(core::mem::offset_of!(Sigctx, fpstate) == 184);
     assert!(core::mem::size_of::<Sigctx>() == 256);
     assert!(core::mem::offset_of!(Ucontext, uc_mcontext) == 40);
     assert!(core::mem::offset_of!(Ucontext, uc_sigmask) == 296);
@@ -80,11 +88,66 @@ const PRETCODE_BYTES: u64 = 8;
 const UC_SIGCONTEXT_SS: u64 = 0x2;
 /// Linux `UC_STRICT_RESTORE_SS` — sigreturn must restore SS verbatim rather
 /// than run `force_valid_ss`. `frame_uc_flags()` sets it for every 64-bit-mode
-/// frame. `UC_FP_XSTATE` is NOT set: this frame carries no `fpstate` area.
+/// frame.
 const UC_STRICT_RESTORE_SS: u64 = 0x4;
+/// Linux `UC_FP_XSTATE` — `uc_mcontext.fpstate` carries an extended (XSAVE)
+/// area, not just the 512-byte legacy image. `frame_uc_flags()` sets it
+/// exactly when `boot_cpu_has(X86_FEATURE_XSAVE)`.
+const UC_FP_XSTATE: u64 = 0x1;
+/// FXRSTOR's operand alignment (Intel SDM); XSAVE's 64 is the stricter case.
+const FXSAVE_ALIGN: u64 = 16;
 /// Width of the x86_64 `syscall` instruction, used when restarting from the
 /// hardware-saved post-syscall RIP.
 const SYSCALL_INSTRUCTION_BYTES: u64 = core::mem::size_of::<u16>() as u64;
+
+/// Placement of one delivery's user-stack objects. Linux `get_sigframe`
+/// builds this triple: the math (xstate) frame is carved first, 64-byte
+/// aligned, and the rt_sigframe goes BELOW it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FrameLayout {
+    /// Handler-entry RSP; `RtSigframe` starts here.
+    pub sp: u64,
+    /// `uc_mcontext.fpstate` — 64-byte-aligned base of the XSAVE image.
+    pub fpstate: u64,
+    /// Bytes reserved at `fpstate` (Linux `xstate_sigframe_size`).
+    pub math: u64,
+}
+
+/// Linux `get_sigframe` (`arch/x86/kernel/signal.c`) placement arithmetic, as
+/// a pure function of the math-frame size so the caller's `access_ok` check
+/// and the builder's write can never disagree about WHERE the frame lands.
+/// `None` when the arithmetic underflows — a process is free to run
+/// `mov rsp, <kernel VA>; syscall`, so `user_sp` is hostile input.
+/// # C: O(1)
+pub fn frame_layout(user_sp: u64, alt: hal::AltStack, math: u64) -> Option<FrameLayout> {
+    // `sigsp()`: SA_ONSTACK with a usable alternate stack puts the frame at
+    // that stack's TOP; otherwise carve below the interrupted stack's red
+    // zone. The red zone does not apply to a fresh alt stack — nothing owns
+    // memory below its top. Without this branch a SIGSEGV-on-stack-overflow
+    // handler builds its frame on the stack that just overflowed.
+    let top = if alt.use_alt { alt.sp.checked_add(alt.size)? }
+              else { user_sp.checked_sub(RED_ZONE)? };
+    // `fpu__alloc_mathframe`: `*buf_fx = sp = round_down(sp - frame_size, 64)`.
+    let fpstate = top.checked_sub(math)? & !(xstate::XSTATE_ALIGN - 1);
+    // `sp -= frame_size; sp = round_down(sp, FRAME_ALIGNMENT) - 8`.
+    let base = fpstate.checked_sub(core::mem::size_of::<RtSigframe>() as u64)?
+                      & !(FRAME_ALIGN - 1);
+    Some(FrameLayout { sp: base.checked_sub(PRETCODE_BYTES)?, fpstate, math })
+}
+
+/// Bytes of XSAVE image this CPU writes into a signal frame. Read once per
+/// delivery so the placement math and the write agree.
+/// # C: O(1)
+fn math_size() -> u64 { xstate::math_frame_size(crate::xsave_area_bytes()) as u64 }
+
+/// Linux `get_sigframe_size()`, exported to userspace as `AT_MINSIGSTKSZ`.
+/// The legacy `MINSIGSTKSZ` (2048) has not covered a real x86_64 signal frame
+/// since AVX; glibc 2.34+ takes the true size from the auxv, which is the
+/// whole reason Linux exports it.
+/// # C: O(1)
+pub fn min_sigstksz() -> usize {
+    xstate::min_sigstksz(core::mem::size_of::<RtSigframe>(), crate::xsave_area_bytes())
+}
 
 /// The interrupted task's user RSP, out of the live saved syscall frame.
 /// `sigaltstack(2)` needs it for `on_sig_stack`, and signal delivery for
@@ -98,37 +161,45 @@ pub unsafe fn current_user_sp() -> u64 {
     frame[2]
 }
 
-/// Linux `get_sigframe` (`arch/x86/kernel/signal.c`) placement arithmetic, as
-/// a pure function so the caller's `access_ok` check and the builder's write
-/// can never disagree about WHERE the frame lands. `None` when the arithmetic
-/// underflows or the frame would leave user space — a process is free to run
-/// `mov rsp, <kernel VA>; syscall`, so `user_sp` is hostile input.
-/// # C: O(1)
+/// Handler-entry RSP a delivery would use. # C: O(1)
 pub fn sigframe_base(user_sp: u64, alt: hal::AltStack) -> Option<u64> {
-    // `sigsp()`: SA_ONSTACK with a usable alternate stack puts the frame at
-    // that stack's TOP; otherwise carve below the interrupted stack's red
-    // zone. The red zone does not apply to a fresh alt stack — nothing owns
-    // memory below its top. Without this branch a SIGSEGV-on-stack-overflow
-    // handler builds its frame on the stack that just overflowed.
-    let top = if alt.use_alt { alt.sp.checked_add(alt.size)? }
-              else { user_sp.checked_sub(RED_ZONE)? };
-    // `sp -= frame_size; sp = round_down(sp, FRAME_ALIGNMENT) - 8`.
-    let base = top.checked_sub(core::mem::size_of::<RtSigframe>() as u64)?
-                  & !(FRAME_ALIGN - 1);
-    base.checked_sub(PRETCODE_BYTES)
+    frame_layout(user_sp, alt, math_size()).map(|l| l.sp)
 }
 
-/// `(base, len, align)` of the rt_sigframe a delivery would write, for the
-/// caller's `access_ok`. Linux `x64_setup_rt_frame` does
-/// `user_access_begin(frame, sizeof(*frame))` and fails the delivery with
-/// `-EFAULT` → `signal_setup_done` → `force_sigsegv` when it does not hold.
+/// `(base, len, align)` spanning EVERY user byte a delivery writes — the
+/// rt_sigframe AND the xstate area above it — for the caller's `access_ok`.
+/// Linux checks the two separately (`user_access_begin(frame, sizeof(*frame))`
+/// and `access_ok(buf, size)` inside `copy_fpstate_to_sigframe`); one span
+/// over the contiguous region is the same guarantee. Failing it fails the
+/// delivery with `-EFAULT` → `signal_setup_done` → `force_sigsegv`.
 /// # C: O(1)
 pub fn sigframe_range(user_sp: u64, alt: hal::AltStack) -> Option<(u64, u64, u64)> {
-    let base = sigframe_base(user_sp, alt)?;
-    if base == 0 { return None; }
-    let len = core::mem::size_of::<RtSigframe>() as u64;
-    base.checked_add(len).filter(|end| *end <= hal::USER_VA_END)?;
-    Some((base, len, PRETCODE_BYTES))
+    frame_span(user_sp, alt, math_size())
+}
+
+/// `sigframe_range` with an explicit math size, so the span rule is testable
+/// against both the XSAVE and the FXSAVE-fallback frame shapes.
+/// # C: O(1)
+fn frame_span(user_sp: u64, alt: hal::AltStack, math: u64) -> Option<(u64, u64, u64)> {
+    let l = frame_layout(user_sp, alt, math)?;
+    if l.sp == 0 { return None; }
+    let end = l.fpstate.checked_add(l.math)?;
+    if end > hal::USER_VA_END { return None; }
+    // Linux `get_sigframe`: "If we are on the alternate signal stack and would
+    // overflow it, don't. Return an always-bogus address instead so we will
+    // die with SIGSEGV." `__on_sig_stack(sp)` is `sp > ss_sp && sp - ss_sp <=
+    // ss_size` (`include/linux/sched/signal.h:574`).
+    //
+    // Load-bearing since B1466 grew the frame past the legacy `MINSIGSTKSZ`:
+    // an XSAVE-carrying frame is ~3.3 KB, `sigaltstack(2)` still accepts
+    // `ss_size == 2048` (Linux's own gate is the static `MINSIGSTKSZ` too —
+    // `do_sigaltstack`'s `min_ss_size`, with `sigaltstack_size_valid` a no-op
+    // outside `CONFIG_DYNAMIC_SIGFRAME`), and userspace is expected to size
+    // from `AT_MINSIGSTKSZ` instead. Without this check a program that did not
+    // would have its frame carved BELOW its alternate stack, over whatever
+    // lives there.
+    if alt.use_alt && !(l.sp > alt.sp && l.sp - alt.sp <= alt.size) { return None; }
+    Some((l.sp, end.checked_sub(l.sp)?, PRETCODE_BYTES))
 }
 
 /// Build the rt_sigframe on the user stack and rewrite the saved syscall
@@ -138,19 +209,27 @@ pub fn sigframe_range(user_sp: u64, alt: hal::AltStack) -> Option<(u64, u64, u64
 /// is read via `current_user_full_frame` (indices: 0 rax,1 rdi,2 rsi,3 rdx,
 /// 4 r10,5 r8,6 r9,7 rcx=rip,8 r11=rflags,9 rsp,10 rbx,11 rbp,12 r13,13 r14,
 /// 14 r15,15 r12).
+///
+/// `fpu` is the calling task's XSAVE image, already synced from the hardware
+/// by the caller (Linux's `copy_fpstate_to_sigframe` does the `xsave` itself;
+/// our per-task buffer lives in `sched`, so the sync is the caller's job).
+/// Too short a slice writes `fpstate = 0`, which Linux defines as "no FPU
+/// context" and answers at sigreturn by re-initialising the FPU.
+///
 /// Returns `false` without touching user memory or the saved frame when the
 /// frame does not fit in user space (Linux `get_sigframe` returning
 /// `(void __user *)-1L` / `user_access_begin` failing); the caller must then
 /// `force_sigsegv`. That check is the difference between a signal delivery and
 /// an arbitrary kernel write: `mov rsp, <kernel VA>; syscall` otherwise has
-/// the kernel `write_volatile` a 560-byte attacker-shaped frame there (B1459).
+/// the kernel `write_volatile` an attacker-shaped frame there (B1459).
 /// # SAFETY: dispatch-tail ctx on the running task's syscall kstack; the
 /// saved frame is live; active CR3 is the caller's user AS.
-/// # C: O(1)
+/// # C: O(n) in the XSAVE image size
 #[must_use]
 pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
                                  saved_ret: u64, restart: bool, old_sigmask: u64,
-                                 payload: Option<hal::SigPayload>, alt: hal::AltStack) -> bool {
+                                 payload: Option<hal::SigPayload>, alt: hal::AltStack,
+                                 fpu: &[u8]) -> bool {
     let full = current_user_full_frame();
     // SAFETY: dispatch ctx; `full` points at the live 16-quadword saved block.
     let g = |i: usize| unsafe { core::ptr::read_volatile(full.add(i)) };
@@ -162,13 +241,25 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
 
     // Placement + `access_ok`-equivalent bound. Frame sits AT/ABOVE new_rsp so
     // the handler's downward stack can't trample it (`54§3.1`).
-    let Some((new_rsp, _, _)) = sigframe_range(saved_rsp, alt) else { return false };
+    let area = crate::xsave_area_bytes();
+    let math = xstate::math_frame_size(area);
+    if frame_span(saved_rsp, alt, math as u64).is_none() { return false }
+    let Some(l) = frame_layout(saved_rsp, alt, math as u64) else { return false };
+    let new_rsp = l.sp;
+    // The FPU image only lands in the frame when the caller supplied a full
+    // one; a task-less delivery gets Linux's legal `fpstate = 0`. The task
+    // buffer holds `user_size` bytes of image — the `MAGIC2` trailer is a
+    // frame-only footer and lives in the extra 4 bytes of `math`, so the
+    // buffer is NOT required to be `math` long.
+    let user_size = xstate::user_xstate_size(area);
+    let have_fpu = fpu.len() >= user_size;
 
     // SAFETY: RtSigframe is plain-old-data (repr(C) integers + byte arrays); an all-zero bit pattern is a valid instance, every meaningful field is overwritten below before the frame is read.
     let mut sf: RtSigframe = unsafe { core::mem::zeroed() };
     sf.pretcode = restorer;
-    // Linux `frame_uc_flags()`. No `UC_FP_XSTATE` — `fpstate` is null below.
-    sf.uc.uc_flags = UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS;
+    // Linux `frame_uc_flags()`.
+    sf.uc.uc_flags = UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS
+                     | if have_fpu && area != 0 { UC_FP_XSTATE } else { 0 };
     sf.uc.uc_mcontext = Sigctx {
         r8: g(5), r9: g(6), r10: g(4), r11: saved_rflags,
         r12: g(15), r13: g(12), r14: g(13), r15: g(14),
@@ -177,7 +268,7 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
         rip: if restart { saved_rip.saturating_sub(SYSCALL_INSTRUCTION_BYTES) } else { saved_rip }, eflags: saved_rflags,
         cs: 0x33, gs: 0, fs: 0, ss: 0x2b,
         err: 0, trapno: 0, oldmask: old_sigmask, cr2: 0,
-        fpstate: 0, reserved: [0; 8],
+        fpstate: if have_fpu { l.fpstate } else { 0 }, reserved: [0; 8],
     };
     sf.uc.uc_sigmask[0] = old_sigmask;
     // Linux `save_altstack_ex`: `uc_stack` records the alt-stack state as of
@@ -187,6 +278,15 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
     hal::write_siginfo(&mut sf.info, sig, payload);
     // SAFETY: new_rsp < saved_rsp < USER_VA_END; CPL=0 write via active CR3; repr(C) matches restore.
     unsafe { core::ptr::write_volatile(new_rsp as *mut RtSigframe, sf); }
+    if have_fpu {
+        // Linux `copy_fpstate_to_sigframe` + `save_xstate_epilog`. The image
+        // is copied rather than `xsave`d straight to the user address so the
+        // SW-footer / MAGIC2 stamping stays one host-testable transform.
+        // SAFETY: `frame_span` above proved `l.fpstate + math <= USER_VA_END`; CPL=0 writes go through the caller's active CR3, so this writes the calling process's own stack; the region is plain bytes aliasing no kernel object.
+        let dst = unsafe { core::slice::from_raw_parts_mut(l.fpstate as *mut u8, math) };
+        dst[..user_size].copy_from_slice(&fpu[..user_size]);
+        let _ = xstate::write_epilog(dst, area, crate::xsave_xcr0());
+    }
 
     frame[0] = handler;          // user RIP = handler
     // Linux `handle_signal`: DF|RF|TF cleared for handler entry. The frame's
@@ -248,13 +348,15 @@ unsafe fn rewind_syscall_instruction() {
 }
 
 /// Restore the full register set from the rt_sigframe's ucontext into the
-/// saved syscall frame. Returns `(restored_sigmask, dispatch_retval,
-/// uc_stack)` — the caller stores the mask, re-arms the alternate stack from
-/// `uc_stack` (Linux `restore_altstack`), and propagates the retval as user
-/// rax. `None` on a malformed frame (caller forces SIGSEGV).
+/// saved syscall frame, and rebuild the task's XSAVE image from the frame's
+/// `fpstate` area into `fpu`. Returns `(restored_sigmask, dispatch_retval,
+/// uc_stack, fpu_dirty)` — the caller stores the mask, re-arms the alternate
+/// stack from `uc_stack` (Linux `restore_altstack`), propagates the retval as
+/// user rax, and reloads the FPU from `fpu` when `fpu_dirty`. `None` on a
+/// malformed frame (caller forces SIGSEGV).
 /// # SAFETY: rt_sigreturn dispatch ctx on the running task's syscall kstack.
-/// # C: O(1)
-pub unsafe fn restore_signal_frame() -> Option<(u64, i64, hal::AltStack)> {
+/// # C: O(n) in the XSAVE image size
+pub unsafe fn restore_signal_frame(fpu: &mut [u8]) -> Option<(u64, i64, hal::AltStack, bool)> {
     // SAFETY: dispatch ctx; RIP/RFLAGS/RSP triple of the live saved frame.
     let frame = unsafe { &*current_user_frame() };
     let cur_rsp = frame[2];               // = new_rsp + 8 (ret popped pretcode)
@@ -273,6 +375,8 @@ pub unsafe fn restore_signal_frame() -> Option<(u64, i64, hal::AltStack)> {
     // SAFETY: st_ptr is uc_stack inside the same validated frame_base region; CPL=0 read via the caller's user AS, identical validity to the mc_ptr read above.
     let st = unsafe { core::ptr::read_volatile(st_ptr) };
     if mc.rip >= hal::USER_VA_END || mc.rsp >= hal::USER_VA_END { return None; }
+    // SAFETY: `mc.fpstate` is user-supplied; `restore_fpstate` proves the whole area lies below USER_VA_END and is alignment-legal before it reads a byte.
+    let fpu_dirty = unsafe { restore_fpstate(mc.fpstate, fpu) }?;
     // Restore the FULL GP set; slots rcx(7)=rip + r11(8)=eflags carry the
     // sysretq epilogue.
     let full = current_user_full_frame();
@@ -293,7 +397,53 @@ pub unsafe fn restore_signal_frame() -> Option<(u64, i64, hal::AltStack)> {
     s(7, mc.rip);  s(F_RFLAGS, new_rflags); s(9, mc.rsp);
     s(10, mc.rbx); s(11, mc.rbp); s(12, mc.r13); s(13, mc.r14); s(14, mc.r15); s(15, mc.r12);
     let alt = hal::AltStack { sp: st.ss_sp, size: st.ss_size, flags: st.ss_flags, use_alt: false };
-    Some((sigmask, mc.rax as i64, alt))
+    Some((sigmask, mc.rax as i64, alt, fpu_dirty))
+}
+
+/// Linux `fpu__restore_sig`: rebuild the task's XSAVE image from the user's
+/// `uc_mcontext.fpstate`. `Some(true)` = `fpu` now holds an image to load,
+/// `Some(false)` = nothing to do, `None` = the frame is bad and the caller
+/// force-SIGSEGVs (Linux `fpu__clear_user_states` then `goto badframe`).
+///
+/// `ptr == 0` is LEGAL and means "no FPU context": Linux answers it with
+/// `fpu__clear_user_states`, i.e. reset every user component to its init
+/// value — success, not an error.
+/// # SAFETY: rt_sigreturn dispatch ctx; the active CR3 is the caller's user
+/// address space, so a VA proved below `USER_VA_END` reads the caller's own
+/// memory and nothing else.
+/// # C: O(n) in the XSAVE image size
+unsafe fn restore_fpstate(ptr: u64, fpu: &mut [u8]) -> Option<bool> {
+    let area = crate::xsave_area_bytes();
+    let user_size = xstate::user_xstate_size(area);
+    let math = xstate::math_frame_size(area);
+    if fpu.len() < user_size { return Some(false); }
+    if ptr == 0 {
+        // `fpu__clear_user_states`: everything back to `init_fpstate`.
+        xstate::write_init_image(&mut fpu[..user_size], area != 0);
+        return Some(true);
+    }
+    // Linux `access_ok(buf, size)`, where the size is the KERNEL's own
+    // `xstate_sigframe_size` — never a user-claimed length.
+    if ptr.checked_add(math as u64).filter(|e| *e <= hal::USER_VA_END).is_none() { return None; }
+    // Linux lets `xrstor64`/`fxrstor` raise #GP on a misaligned buffer and
+    // treats that #GP as fatal. We copy first, so the alignment rule has to be
+    // enforced here to keep the same accept/reject set.
+    let align = if area != 0 { xstate::XSTATE_ALIGN } else { FXSAVE_ALIGN };
+    if ptr & (align - 1) != 0 { return None; }
+    // SAFETY: `[ptr, ptr+math)` was just proved to end at or below USER_VA_END and CPL=0 reads run through the caller's active CR3, so this reads the calling process's own stack bytes.
+    let user = unsafe { core::slice::from_raw_parts(ptr as *const u8, math) };
+    let check = if area != 0 {
+        let sw = xstate::read_sw_bytes(user)?;
+        let magic2 = xstate::read_trailer(user, sw.xstate_size as usize);
+        xstate::check_xstate_in_sigframe(&sw, magic2, user_size)
+    } else {
+        xstate::SwCheck::FxOnly
+    };
+    if !xstate::build_restore_image(user, &mut fpu[..user_size], check, crate::xsave_xcr0(),
+                                    crate::mxcsr_feature_mask(), area != 0) {
+        return None;
+    }
+    Some(true)
 }
 
 /// User rt-sigframe range for pre-copy badframe validation. # C: O(1)
@@ -308,80 +458,4 @@ pub fn rt_sigreturn_frame_range() -> Option<(u64, u64, u64)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A user SP the process pointed at the kernel half of the address space
-    /// (`mov rsp, <kernel VA>; syscall`) must not yield a writable placement:
-    /// the builder's `write_volatile` runs at CPL0 through the live CR3 and
-    /// would land a 560-byte attacker-shaped frame in kernel memory.
-    #[test]
-    fn kernel_stack_pointer_yields_no_signal_frame() {
-        let none = hal::AltStack::default();
-        for sp in [hal::USER_VA_END + 0x10000, 0xffff_ffff_8100_0000,
-                   0xffff_8000_0000_0000, 0xffff_ffff_ffff_f000, u64::MAX] {
-            assert!(sigframe_range(sp, none).is_none(), "sp {sp:#x} accepted");
-        }
-    }
-
-    #[test]
-    fn a_frame_ending_past_the_user_boundary_is_rejected() {
-        let none = hal::AltStack::default();
-        // The invariant, swept across the whole boundary: an accepted frame is
-        // ALWAYS entirely inside user space. Near the boundary the frame still
-        // lands wholly below it, which is what `access_ok` permits — it is
-        // carved DOWNWARD from the SP.
-        for d in 0..0x4000u64 {
-            let sp = hal::USER_VA_END - 0x2000 + d;
-            if let Some((base, len, _)) = sigframe_range(sp, none) {
-                assert!(base + len <= hal::USER_VA_END, "sp {sp:#x} frame escapes user VA");
-            }
-        }
-        // An alt stack whose top is in kernel space is rejected the same way.
-        let alt = hal::AltStack { sp: hal::USER_VA_END - 0x1000, size: 0x4000, flags: 0, use_alt: true };
-        assert!(sigframe_range(0x7fff_0000_0000, alt).is_none());
-    }
-
-    #[test]
-    fn a_tiny_or_wrapping_stack_pointer_is_rejected_not_wrapped() {
-        let none = hal::AltStack::default();
-        let fsz = core::mem::size_of::<RtSigframe>() as u64;
-        for sp in [0u64, 1, RED_ZONE, RED_ZONE + 8, RED_ZONE + fsz,
-                   RED_ZONE + fsz + PRETCODE_BYTES - 1] {
-            assert!(sigframe_range(sp, none).is_none(), "sp {sp:#x} accepted");
-            // The `- 8` for the pretcode slot must not wrap either.
-            assert!(sigframe_base(sp, none).is_none(), "sp {sp:#x} base wrapped");
-        }
-        // Overflowing alt-stack top must not wrap into a low user address.
-        let alt = hal::AltStack { sp: u64::MAX - 0x100, size: 0x1000, flags: 0, use_alt: true };
-        assert!(sigframe_range(0x7fff_0000_0000, alt).is_none());
-    }
-
-    #[test]
-    fn handler_entry_sp_is_16n_plus_8_below_the_red_zone() {
-        let none = hal::AltStack::default();
-        let sp = 0x7fff_ffff_e000u64;
-        let (base, len, align) = sigframe_range(sp, none).unwrap();
-        assert_eq!(base % FRAME_ALIGN, PRETCODE_BYTES, "54§3.3 handler-entry alignment");
-        assert_eq!(len, core::mem::size_of::<RtSigframe>() as u64);
-        assert_eq!(align, PRETCODE_BYTES);
-        assert!(base + len <= sp - RED_ZONE, "frame overlaps the red zone");
-        // The alt-stack arm places the frame at the alt stack's TOP, with no
-        // red zone: nothing owns memory below a fresh alt stack.
-        let alt = hal::AltStack { sp: 0x1000_0000, size: 0x8000, flags: 0, use_alt: true };
-        let (abase, alen, _) = sigframe_range(sp, alt).unwrap();
-        assert!(abase >= alt.sp && abase + alen <= alt.sp + alt.size);
-        assert_eq!(abase % FRAME_ALIGN, PRETCODE_BYTES);
-    }
-
-    #[test]
-    fn x86_64_rt_sigframe_matches_linux_uapi_shape() {
-        assert_eq!(core::mem::offset_of!(Sigctx, rip), 128);
-        assert_eq!(core::mem::offset_of!(Sigctx, eflags), 136);
-        assert_eq!(core::mem::offset_of!(Sigctx, cr2), 176);
-        assert_eq!(core::mem::size_of::<Sigctx>(), 256);
-        assert_eq!(core::mem::offset_of!(Ucontext, uc_mcontext), 40);
-        assert_eq!(core::mem::offset_of!(Ucontext, uc_sigmask), 296);
-        assert_eq!(core::mem::offset_of!(RtSigframe, uc), 8);
-    }
-}
+mod tests;
