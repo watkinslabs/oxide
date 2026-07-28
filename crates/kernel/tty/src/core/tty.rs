@@ -49,6 +49,13 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// exactly what Step 4e removes.
     tx: Spinlock<(), sync::TtyTx>,
     wait: W,
+    /// Linux `tty_port::buf` — bytes staged by a device INTERRUPT for the line
+    /// discipline to cook later, in process context. Separate from `inner`
+    /// because the whole point is that the producer never touches the ldisc:
+    /// taking the port lock in an ISR is what made a keystroke run
+    /// `n_tty_receive_buf`, the UART echo poll and `wake_all` on the per-CPU
+    /// hardirq stack (see `core/flip.rs`).
+    flip: Spinlock<super::flip::FlipRing, TtyClass>,
     /// `winsize` (rows/cols/xpixel/ypixel) — TIOCGWINSZ/TIOCSWINSZ.
     winsize: Spinlock<Winsize, TtyClass>,
     /// Foreground process group — TIOCGPGRP/TIOCSPGRP. 0 = unset.
@@ -86,6 +93,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         Self {
             inner: Spinlock::new(PortInner { ldisc: NTty::new(), driver }),
             tx: Spinlock::new(()),
+            flip: Spinlock::new(super::flip::FlipRing::new()),
             wait,
             winsize: Spinlock::new(Winsize::default_pty()),
             fg_pgrp: AtomicU32::new(0),
@@ -114,6 +122,41 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         let s = Self::new(driver, wait);
         s.inner.lock_irqsave::<W::Irq>().ldisc = NTty::with_termios(t);
         s
+    }
+
+    /// Linux `tty_insert_flip_string` + `tty_flip_buffer_push`: the INTERRUPT
+    /// half of the RX path. Stages `input` and returns — no line discipline, no
+    /// echo transmission, no wakeup, no allocation. Returns the number of bytes
+    /// accepted; a short return is a FIFO overrun (the ring is full because the
+    /// consumer has not run).
+    ///
+    /// The caller schedules `flush_to_ldisc` on a workqueue, exactly as Linux's
+    /// `tty_flip_buffer_push` queues `buf->work`.
+    /// # C: O(len)
+    /// # Ctx: any, including hard IRQ
+    /// # Sleeps: no
+    pub fn insert_flip(&self, input: &[u8]) -> usize {
+        self.flip.lock_irqsave::<W::Irq>().insert(input)
+    }
+
+    /// Bytes refused because the flip ring was full, since boot — Linux's
+    /// silent buffer-overrun count, made visible. # C: O(1)
+    pub fn flip_dropped(&self) -> u64 { self.flip.lock_irqsave::<W::Irq>().dropped() }
+
+    /// Linux `flush_to_ldisc` (`drivers/tty/tty_buffer.c`, the `buf->work`
+    /// callback): drain everything `insert_flip` staged into the line
+    /// discipline, in PROCESS context. Loops until the ring is empty so a byte
+    /// inserted mid-drain is never stranded waiting for the next keystroke.
+    /// # C: O(staged bytes)
+    /// # Ctx: process
+    /// # Sleeps: yes — the ldisc echo transmits, and the wake takes rq locks
+    pub fn flush_to_ldisc(&self) {
+        loop {
+            let mut chunk = [0u8; super::flip::FLUSH_CHUNK];
+            let n = self.flip.lock_irqsave::<W::Irq>().drain(&mut chunk);
+            if n == 0 { return; }
+            self.receive_from_driver(&chunk[..n]);
+        }
     }
 
     /// RX path: device delivered `input` (UART RX / kbd). Runs the ldisc
@@ -405,6 +448,9 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// drops unread input, TCOFLUSH(1) drops untransmitted output,
     /// TCIOFLUSH(2) both. Also the input-flush half of TCSETSF. # C: O(1)
     pub fn flush(&self, qsel: TtyFlush) {
+        // Staged-but-uncooked input is input too: leaving it would make
+        // TCIFLUSH deliver it a moment later instead of discarding it.
+        if qsel.input() { self.flip.lock_irqsave::<W::Irq>().clear(); }
         let mut g = self.inner.lock_irqsave::<W::Irq>();
         if qsel.input() { g.ldisc.flush_input(); }
         if qsel.output() { g.ldisc.flush_output(); }

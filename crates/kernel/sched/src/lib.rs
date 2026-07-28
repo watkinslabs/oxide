@@ -45,7 +45,7 @@ pub mod signum;
 pub mod sigaltstack;
 pub use signum::{bit_for, clone_exit_signal, Signum};
 pub mod wait_select;
-mod sigqueue;
+pub mod sigqueue;
 pub mod sched_enc;
 pub mod hrtimeout;
 #[path = "timers/clockid.rs"] pub mod posix_clock;
