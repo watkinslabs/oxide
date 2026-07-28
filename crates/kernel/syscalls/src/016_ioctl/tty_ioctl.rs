@@ -376,29 +376,52 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
             0
         }
         TIOCNOTTY => {
-            // B40: detach controlling tty for the calling session.
-            // v1 clears the per-VT sid slot when the calling task
-            // matches; ignored otherwise. getty issues this
-            // to drop inherited ctty before its TIOCSCTTY-steal so a
-            // real session leader doesn't already own the line.
-            if pty_pair.is_some() { return 0; }
+            // Linux `tty_jobctrl_ioctl` TIOCNOTTY (`drivers/tty/tty_jobctrl.c:578-582`):
+            //     if (current->signal->tty != tty) return -ENOTTY;
+            //     no_tty();   /* = disassociate_ctty(0) + proc_clear_tty(current) */
+            //
+            // The `proc_clear_tty(current)` half is what agetty depends on: it
+            // runs TIOCNOTTY, closes every fd, then calls vhangup(2), and
+            // expects the vhangup to be a NO-OP because it no longer holds a
+            // controlling terminal. Clearing only the tty's sid slot — as this
+            // handler used to — left `task.ctty` populated, so the following
+            // vhangup revoked a console nobody asked it to touch.
             let cur = match sched::live::current() {
-                Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
+                Some(c) => c, None => return -(Errno::Enotty.as_i32() as i64),
             };
             use core::sync::atomic::Ordering;
+            // SAFETY: `ctty` is single-mutator per `13§5` — the running task on this CPU is its sole writer; this is a read in syscall context.
+            let ctty_ino = unsafe { (*cur.ctty.get()).as_ref().map(|i| i.ino()) };
+            if ctty_ino != Some(ino) { return -(Errno::Enotty.as_i32() as i64); }
+            let target = crate::tty_hangup::resolve(ino);
+            // `disassociate_ctty(0)` returns immediately for a non-leader
+            // (`tty_jobctrl.c:269-270`); only `proc_clear_tty` runs for it.
+            let my_pid = { let v = cur.vtgid.load(Ordering::Acquire);
+                if v != 0 { v } else { cur.tgid.load(Ordering::Acquire) } };
             let my_sid = cur.sid();
-            match console::route(ino) {
-                console::TtyTarget::Serial => {
-                    if my_sid != 0 && console::static_console::session() == my_sid {
-                        console::static_console::notty();
+            if my_sid != 0 && my_sid == my_pid {
+                if let Some(t) = &target {
+                    // (1) SIGHUP + SIGCONT to the tty's foreground process group
+                    // (`tty_jobctrl.c:277-286`, `on_exit == 0` so both go out).
+                    let fg = crate::tty_hangup::foreground_pgrp(t);
+                    if fg != 0 {
+                        let bits = sched::Signum::Sighup.bit() | sched::Signum::Sigcont.bit();
+                        for task in sched::live::registry::tasks_in_pgrp(fg) {
+                            task.sigpending.fetch_or(bits, Ordering::Release);
+                            sched::live::signal_wake_up(&task);
+                        }
                     }
+                    // (2) clear tty->ctrl.session / tty->ctrl.pgrp — detach, do
+                    // NOT revoke: TIOCNOTTY is not a hangup.
+                    crate::tty_hangup::clear_linkage(t);
                 }
-                console::TtyTarget::Vt(vt) => {
-                    if my_sid != 0 && console::vt_tty::vt_tty(vt).sid() == my_sid {
-                        console::vt_tty::notty(vt);
-                    }
-                }
+                // (3) `session_clear_tty(task_session(current))`: every member
+                // of the session loses this terminal.
+                tty::hangup::clear_session_ctty(ino, my_sid);
             }
+            // `proc_clear_tty(tsk)` — unconditional, leader or not.
+            // SAFETY: single-mutator per `13§5` — the running task on this CPU is the sole writer of its own ctty slot.
+            unsafe { *cur.ctty.get() = None; }
             0
         }
         TIOCMGET => {
