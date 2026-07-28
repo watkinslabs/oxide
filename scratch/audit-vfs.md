@@ -218,101 +218,162 @@ journalled image and because the images' journal-less state is itself the top fi
 | `binfmt_misc` | `search_binary_handler` → `load_misc_binary` consults the registered rules at execve | `register`/`status` parse and store rules; NOTHING consults the table at execve (self-admitted) | Worse than absent: registration succeeds, `systemd-binfmt` reports success, and foreign binaries still `ENOEXEC`. A silent no-op beats a clean `ENOENT` | CORRECTNESS | `kernel/fs` | `fs/binfmt_misc.c load_misc_binary` | crates/kernel/fs/src/binfmt_misc.rs:5,223 |
 | tracefs registration | One tracefs instance | TWO writers: `tracefs::init` registers into tracefs's own root, AND `procfs::static_files` registers `/sys/kernel/tracing/*` and `/sys/kernel/debug/tracing/*` as static string inodes into sysfs | Split source of truth — the sysfs copies are dead constants shadowing the live tracefs inodes | CORRECTNESS | `kernel/procfs`, `kernel/tracefs` | `fs/tracefs/inode.c` | crates/kernel/procfs/src/static_files.rs:215-238 |
 
+## 10 block layer and drivers
+
+| Area | Linux mechanism | Oxide state | Gap | Severity | Owner crate | Linux ref | Oxide ref |
+|---|---|---|---|---|---|---|---|
+| Loop device | `drivers/block/loop.c`, `LOOP_SET_FD`/`LOOP_CONFIGURE`, `/dev/loop-control` | ABSENT ENTIRELY — zero grep hits anywhere in the tree | `losetup`, `mount -o loop`, systemd `RootImage=`/`MountImages=`, `systemd-dissect`, and live-ISO squashfs are all impossible. Nothing can mount a filesystem stored in a file | BLOCKER | (none) | `drivers/block/loop.c` | absent |
+| Partition table parsing | `block/partitions/{efi,msdos}.c` — protective MBR, GPT header + entry-array CRC32, backup header, extended/logical DOS partitions | No parser of any kind; self-admitted "v1 has no partitions" | A stock GPT or MBR disk image cannot be enumerated or mounted — ext4 is read at byte 1024 of the raw device. Invisible today only because the shipped images are whole-device filesystems (`mkfs.ext4 -d "$R" "$OUTIMG"`, no table) | BLOCKER | `kernel/block` | `block/partitions/efi.c:334 is_gpt_valid` | absent; crates/kernel/procfs/src/partitions.rs:14-25 |
+| Partition device nodes | 16-minor stride per disk, `/dev/vda1`, `/sys/block/vda/vda1/{start,size,partition}` | Flat `next_minor += 1` per driver; no stride, no partition nodes, no start-sector offset | `PARTUUID`, `/dev/disk/by-partuuid/*`, `systemd-gpt-auto-generator`, `systemd-repart` and `growfs` are all dead | BLOCKER | `kernel/block` | `block/partitions/core.c:295 add_partition` | crates/kernel/block/src/registry/core.rs:274 |
+| AIO `IOCB_FLAG_RESFD` | `eventfd_ctx_fdget` — `EINVAL`/`EBADF` at submit if the fd is not an eventfd | `signal_resfd` looks up the fd and does `inode().write(0, &one)` with NO eventfd type check and NO `FMODE_WRITE` check | Writes 8 bytes at offset 0 of an ARBITRARY file — including one opened `O_RDONLY`. Silent user-data corruption reachable from an unprivileged `io_submit` | SECURITY | `kernel/syscalls` | `fs/aio.c:2038` | crates/kernel/syscalls/src/aio.rs:192 |
+| splice / copy_file_range / sendfile offset fetch | `ESPIPE` is checked BEFORE `copy_from_user`, and the usercopy is exception-table fixed so a bad address is `EFAULT` | `get_loff` range-checks then does a bare `read_volatile`; the `ESPIPE` test comes after | Order inverted, and an in-range-but-UNMAPPED `off_in` OOPSES THE KERNEL instead of returning `EFAULT`. Same defect in `copy_file_range` and `sendfile` | SECURITY | `kernel/syscalls`, `kernel/sched` | `fs/splice.c:1408` | crates/kernel/syscalls/src/275_splice.rs:32,59; 326_copy_file_range.rs:55; crates/kernel/sched/src/xfer.rs:57 |
+| Quota usercopy | `copy_from_user`/`copy_to_user` → `EFAULT` | `read_dqblk`/`write_dqblk` range-check then bare `read_volatile`, and `Q_SETQUOTA` reaches them BEFORE the quota-enabled check | Root-triggerable kernel oops instead of `EFAULT` | SECURITY | `kernel/syscalls` | `fs/quota/quota.c:130` | crates/kernel/syscalls/src/179_quotactl/abi.rs:66,127 |
+| AIO context scoping | `mm->ioctx_table` — per-mm, torn down at `exit`/`exec` | A process-GLOBAL `static REG` BTreeMap keyed by a small monotonic integer | Another process can `io_destroy` or reap a context by guessing a small integer; contexts leak forever because nothing tears them down at exit | SECURITY | `kernel/syscalls` | `fs/aio.c ioctx_alloc` | crates/kernel/syscalls/src/aio.rs:117 |
+| `fsync` ordering | `ext4_sync_file`: `file_write_and_wait_range` (data out) → journal commit → `blkdev_issue_flush` LAST | `vfs_fsync` calls `f_op->fsync` FIRST (which does `commit_batch` + `dev.flush()`), then `mapping.writeback()` — the actual data plus the extent/`i_size` metadata — AFTER | `fsync(2)` returns with the just-written data unflushed and its metadata in an uncommitted batch. It is not a durability boundary at all, which is the single most load-bearing promise a filesystem makes | CORRECTNESS | `kernel/fs`, `kernel/ext4` | `fs/ext4/fsync.c:166-179` | crates/kernel/fs/src/sync/fsync.rs:29-33 |
+| virtio-blk flush feature | `virtio_blk` advertises `VIRTIO_BLK_F_FLUSH` and gates the cache mode on it (`writeback = virtio_has_feature(...)`); without the negotiated feature Linux marks the queue write-through and NEVER issues `VIRTIO_BLK_T_FLUSH` | `WANTED_FEATURES = VIRTIO_F_VERSION_1 \| VIRTIO_BLK_F_BLK_SIZE` — `F_FLUSH` is NOT negotiated, yet `BlockOp::Flush` issues `T_FLUSH` anyway | Exactly inverted from Linux. A spec-conforming device answers `S_UNSUPP` and every barrier silently fails. Latent rather than observed only because QEMU services flush unconditionally | CORRECTNESS | `drivers/drv-virtio-blk` | `drivers/block/virtio_blk.c:1084` | crates/drivers/drv-virtio-blk/src/modern/state.rs:219 |
+| Journal write barriers | `blkdev_issue_flush` return value checked and propagated | `let _ = self.dev.flush();` at all three journal barriers | A flush failure or `S_UNSUPP` is discarded, so the jbd2 ordering guarantee is unverifiable even in principle | CORRECTNESS | `kernel/ext4` | `fs/ext4/fsync.c:177` | crates/kernel/ext4/src/journal.rs:144,152,163 |
+| virtio status decoding | `S_UNSUPP` → `BLK_STS_NOTSUPP`, `S_IOERR` → `BLK_STS_IOERR` | Both collapse to `BlockError::Eio` | `EOPNOTSUPP` is unreachable, which is precisely what makes the un-negotiated-flush bug above undiagnosable from the guest | CORRECTNESS | `drivers/drv-virtio-blk` | `drivers/block/virtio_blk.c:113` | crates/drivers/drv-virtio-blk/src/modern/engine.rs:176 |
+| `msync(MS_SYNC)` | `vfs_fsync_range` → `blkdev_issue_flush` | `writeback_range` only; no `dev.flush()` anywhere on the msync path | `MS_SYNC` never reaches the device cache | CORRECTNESS | `kernel/syscalls` | `mm/msync.c:88` | crates/kernel/syscalls/src/026_msync.rs:54 |
+| `O_SYNC` / `O_DSYNC` | `generic_write_sync` after every write on an `IOCB_DSYNC` kiocb | Parsed, stored, honoured by `F_SETFL`'s mask — and never consulted on any write path | `open(O_SYNC)` writes are ordinary buffered writes. With the `fsync` ordering bug and absent `O_DIRECT`, there is NO documented mechanism by which a program can obtain a durable write | CORRECTNESS | `kernel/vfs` | `include/linux/fs.h generic_write_sync` | crates/kernel/vfs/src/file/io.rs (no consumer) |
+| `RWF_*` per-I/O flags | `kiocb_set_rw_flags` sets `IOCB_DSYNC`/`SYNC`/`APPEND`/`NOWAIT` and they take effect | The validation ladder is ported exactly, then the result is dropped with `.map(\|_\| ())` | `RWF_DSYNC`/`RWF_SYNC` do not sync, and **`RWF_APPEND` does not append** — the write lands at the supplied offset, silently overwriting data | CORRECTNESS | `kernel/syscalls` | `include/linux/fs.h:3427` | crates/kernel/syscalls/src/296_pwritev.rs:52 |
+| AIO ring identity | `aio_setup_ring` mmaps the ring; `ctx->user_id = ctx->mmap_base`, so the `aio_context_t` IS the ring address and libaio's `io_getevents` fast path reads `ring->magic` directly | `ctx_id` is `NEXT_ID.fetch_add(1)` → 1, 2, 3…; completions live in a kernel `VecDeque`; no ring is mapped (self-admitted) | libaio dereferences that small integer as a pointer — a near-null read, i.e. `SIGSEGV` in every real libaio client (fio, PostgreSQL, MySQL/InnoDB) rather than a clean error | BLOCKER | `kernel/syscalls` | `fs/aio.c:536,617,624`; `:53 AIO_RING_MAGIC` | crates/kernel/syscalls/src/aio.rs:119,137 |
+| AIO submission | `io_submit_one` dispatches async `->read_iter`; `aio_fsync` punts to a workqueue | `dispatch_iocb` calls `sys_pread64`/`sys_pwritev`/`sys_fsync` INLINE and pushes the completion before returning | `io_submit` blocks for the full I/O — zero overlap, which is the entire purpose of the interface | CORRECTNESS | `kernel/syscalls` | `fs/aio.c:2076` | crates/kernel/syscalls/src/aio.rs:178,249 |
+| AIO remaining semantics | `IOCB_CMD_POLL`, `io_cancel` `EFAULT`/`EINPROGRESS`, blocking `io_getevents(min_nr, timeout, sigmask)`, `aio-nr`/`aio-max-nr` sysctls | `POLL` → `EINVAL`; `io_cancel` hardcoded `-EINVAL`; `min_nr`, timeout and sigmask ignored so it never blocks; no sysctls | Submit-side errors are returned as completions with a success count rather than `-errno`; `PREADV`/`PWRITEV` offsets ≥ 4 GiB are truncated by a bad hi/lo split | CORRECTNESS | `kernel/syscalls` | `fs/aio.c:1947,2229,2282` | crates/kernel/syscalls/src/aio.rs:167,185,290,305 |
+| Page cache identity | One `address_space` per inode; mmap, `read`/`write` and writeback share its folios, so coherency is structural | TWO caches for the same file data: `block::PageCache` (`Vec`-backed, per mount) and the ext4 `Ext4FrameStore` (PMM frames, per inode, default-on) | A split source of truth kept in step only by hand-placed `invalidate` calls at each mutation site. A missed one is a stale-read bug with no structural defence | CORRECTNESS | `kernel/block`, `kernel/ext4` | `mm/filemap.c filemap_get_folio` | crates/kernel/ext4/src/rootfs/state.rs:30 vs rootfs/framecache.rs:59 |
+| Legacy cache reachability | The ELF loader reads the `PT_INTERP` interpreter through a normal `struct file` and `->read_iter`, so it sees the page cache and the caller's mount namespace | `RootfsState::read_file` — the legacy `Vec` cache — serves execve `PT_INTERP` loading and firmware loads | Dirty framecache data is INVISIBLE to exec (a just-written `ld.so` would load stale), and the loader read bypasses the VFS and the mount namespace entirely | CORRECTNESS | `kernel/exec`, `kernel/ext4` | `fs/binfmt_elf.c` (interp via `->read_iter`) | crates/kernel/exec/src/lib.rs:113 → crates/kernel/ext4/src/rootfs/mod.rs:146 |
+| `block::PageCache` write side | `->read_folio`, `->writepages`, `filemap_fdatawrite` | `read_page`/`write_page`/`fsync` have ZERO callers outside the crate's own tests | The block-layer page cache's write and flush paths are dead code; only `read_page_with` is live | CORRECTNESS | `kernel/block` | `mm/filemap.c` | crates/kernel/block/src/pagecache.rs:137,175,197 |
+| cgroup I/O accounting | `blk_account_io_done` → `io.stat`; `io.max`/`io.weight`/`io.latency` | `charge_io` is called only from the dead `PageCache::read_page`/`fsync`; no `io.max`/`io.weight` files exist | `io.stat` reports ~0 for all real I/O, and `IOAccounting=` / `IOReadBandwidthMax=` unit settings are inert | CORRECTNESS | `kernel/block`, `kernel/cgroup` | `block/blk-cgroup.c` | crates/kernel/block/src/lib.rs:43; pagecache.rs:159 |
+| aarch64 DMA coherency | `virtio_mb` plus a dma sync on every request | `virtio/src/dma.rs` maintenance runs once at init and never on the request path | On a non-coherent aarch64 platform the device sees stale descriptors and data. Directly in the path of the ARM lockstep rule | CORRECTNESS | `drivers/virtio` | `drivers/virtio/virtio_ring.c:851` | crates/drivers/drv-virtio-blk/src/modern/init.rs:169 |
+| Read-only block devices | `BLKROGET`/`BLKROSET` backed by `set_disk_ro`; `VIRTIO_BLK_F_RO` | `BLKROGET` hardcoded `0`, `BLKROSET` absent, sysfs `ro` hardcoded `0\n`, and `VIRTIO_BLK_F_RO` has no constant at all | A read-only device cannot be represented or enforced — writes are issued to host read-only disks | CORRECTNESS | `kernel/syscalls`, `drivers/drv-virtio-blk` | `block/ioctl.c:659` | crates/kernel/syscalls/src/016_ioctl/blk.rs:46 |
+| Topology ioctls | `BLKPBSZGET`/`BLKIOMIN`/`BLKIOOPT`/`BLKALIGNOFF` | `ENOTTY`, even though `queue_limits.rs` already holds the correct values | `mkfs.ext4`/`mkfs.xfs` silently fall back to default stride/stripe geometry | CORRECTNESS | `kernel/syscalls` | `block/ioctl.c:685-691` | crates/kernel/syscalls/src/016_ioctl/blk.rs:51 |
+| Remaining blkdev ioctls | `BLKFLSBUF`/`BLKRAGET`/`BLKRASET`/`BLKBSZSET`/`BLKSECTGET`/`BLKGETDISKSEQ`; `BLKRRPART`/`BLKPG` | All `ENOTTY`; `BLKBSZGET` is wrongly aliased to `BLKSSZGET` | `blockdev --report` is partial and modern `sd-device` diskseq tagging fails. (`BLKRRPART`/`BLKPG` are moot without a partition parser) | CORRECTNESS | `kernel/syscalls` | `block/ioctl.c:657,667,707,764,778` | crates/kernel/syscalls/src/016_ioctl/blk.rs:39,51 |
+| `/sys/block` attributes | `disk_attrs` + `queue_attrs` — `rotational`, `scheduler`, `nr_requests`, `read_ahead_kb`, `max_sectors_kb`, `stat`, `inflight`, partition subdirs | 5 disk attrs and 10 queue attrs; no `rotational`, no `stat`, no `inflight`, no partition subdirs | udev rules keyed on `ATTR{queue/rotational}` never match, and `iostat`'s per-disk source is missing | CORRECTNESS | `kernel/sysfs` | `block/genhd.c disk_attrs` | crates/kernel/sysfs/src/block.rs:80,125 |
+| `/proc/diskstats` | 20 fields including the `*_merged` counts and `*_ms` timings | Real counters for the basic fields; every `*_merged` and `*_ms` field emitted as `0` | `iostat` and `sar` report 0% utilisation and 0 await for every device | PERF | `kernel/procfs` | `block/genhd.c diskstats_show` | crates/kernel/procfs/src/diskstats.rs:29 |
+| bio / request abstraction | `struct bio` + `bio_vec` reference PAGES; no data copy | `BlockRequest { op, start_block, len_blocks, buffer: Vec<u8> }` — a heap bounce buffer per I/O | No page-referencing bio, so every transfer allocates and copies | PERF | `kernel/block` | `block/blk-core.c submit_bio` | crates/kernel/block/src/blockdev.rs:20 |
+| Plugging, merging, elevator | `blk_start_plug`, `elv_merge`, mq-deadline/bfq, `nr_requests` | None — grep for plug/elevator/blk_mq finds only the modules KPI shim | No merging, no scheduling, no queue-depth tuning, no `/sys/block/<d>/queue/scheduler` | PERF | `kernel/block` | `block/blk-mq.c blk_mq_flush_plug_list` | crates/kernel/block/src/lib.rs:9 |
+| Queue depth | blk-mq keeps many tags in flight per hardware queue | `acquire_turn` requires `!busy && pending.is_empty() && deferred.is_empty()` — strictly ONE request per device at a time | Queue depth 1: the submitter blocks for a full round trip before the next request can start | PERF | `drivers/drv-virtio-blk` | `drivers/block/virtio_blk.c:456` | crates/drivers/drv-virtio-blk/src/modern/wait.rs:68 |
+| Async engine reachability | n/a | A `post_owned_request` multi-in-flight engine EXISTS, but every real caller (ext4 mount/io, pagecache, devbridge) uses `submit_sync` | The queued engine is dead code on the boot path | PERF | `drivers/drv-virtio-blk` | — | crates/drivers/drv-virtio-blk/src/modern/engine.rs:430 |
+| Scatter-gather | `sg_init_one` + `virtqueue_add_sgs`, indirect descriptors | `build_chain` emits exactly 3 descriptors; data is staged through one contiguous bounce via a PER-BYTE `write_volatile` loop | A 128 KiB read costs 131 072 volatile byte writes, and `submit_sync` adds a second full copy on top | PERF | `drivers/drv-virtio-blk` | `drivers/block/virtio_blk.c:144` | crates/drivers/drv-virtio-blk/src/modern/engine.rs:126,181 |
+| Notification suppression | `VRING_USED_F_NO_NOTIFY` checked; `EVENT_IDX` | The notify register is written unconditionally on every request; `used.flags` is never read | One vmexit per I/O | PERF | `drivers/virtio` | `drivers/virtio/virtio_ring.c:843` | crates/drivers/drv-virtio-blk/src/modern/engine.rs:163 |
+| Readahead drive | `page_cache_sync_ra`/`async_ra` SUBMIT the computed window; `do_page_cache_ra` issues the reads and sets the `PG_readahead` async marker | The read path DOES call `ra_ondemand` at both sites, and the sizing algorithm is a faithful port — but the returned `(start, size, async_size)` is bound to `_` and thrown away. The only real prefetch is a fixed 16-page `fill_window` on framecache miss, which `f_ra` and `FADV_RANDOM` cannot influence | `f_ra` is bookkeeping attached to nothing: no adaptive window, no async marker, and `FADV_SEQUENTIAL`/`RANDOM` change nothing. Directly relevant to the project's page-fault-I/O boot-cost history | PERF | `kernel/vfs`, `kernel/ext4` | `mm/readahead.c ondemand_readahead`, `do_page_cache_ra` | crates/kernel/vfs/src/file/io.rs:71,392; crates/kernel/ext4/src/rootfs/framecache.rs:135 |
+| `readahead(2)` / `FADV_WILLNEED` | `force_page_cache_readahead` batches the fill | Real and correctly gated, but fills via `mapping.read_at` one 4 KiB page at a time | Works; one synchronous device round trip per page | PERF | `kernel/fs` | `mm/readahead.c:724` | crates/kernel/fs/src/readahead.rs:78 |
+| splice zero-copy | `pipe_buffer` + `->ops` (get/steal/confirm); `*obuf = *ibuf` moves page references | A flat `[u8; 4096]` ring with per-byte push/pop; every direction bounces through a `vec![]` | No `pipe_buffer`, no `->ops`, no `f_op->splice_read/write` — roughly two byte-copies plus a heap allocation per 4 KiB | PERF | `kernel/fs` | `fs/splice.c:1895 link_pipe` | crates/kernel/fs/src/pipe/ring.rs:12; splice/pipe_xfer.rs:37,68 |
+| Pipe capacity | `PIPE_DEF_BUFFERS` = 16 (64 KiB); `pipe_max_size` = 1 MiB | `PIPE_CAP = 4096`, and `F_SETPIPE_SZ` above 4096 returns `EPERM` | Every splice batch is capped at 4 KiB, and pipe-heavy userspace (shells, journald) pays 16× the syscalls. `EPERM` is also the wrong errno for an over-large request | PERF | `kernel/fs` | `fs/pipe.c:55` | crates/kernel/fs/src/pipe/ring.rs:10,299 |
+| `SPLICE_F_*` | `MOVE`/`GIFT` steal pages; `MORE` → `MSG_MORE` | Validated, then `MOVE` and `MORE` are never read; `GIFT` is an explicit no-op | No page donation and no `MSG_MORE` coalescing to sockets. (`SPLICE_F_MOVE` is advisory upstream too) | PERF | `kernel/fs` | `fs/splice.c:1538` | crates/kernel/fs/src/splice/flags.rs:9,14 |
+| splice non-blocking | `O_NONBLOCK` is OR'd from BOTH fds only for the pipe→pipe case | OR'd from both fds in all three cases | Spurious `EAGAIN` on `splice(pipe, <O_NONBLOCK file>)` where Linux blocks | CORRECTNESS | `kernel/fs` | `fs/splice.c:1324,1344,1370` | crates/kernel/fs/src/splice/splice_sys.rs:47 |
+| `sendfile` | `do_sendfile` detects a pipe `out_fd` and takes the splice path; enforces `s_maxbytes`/`EOVERFLOW` | A separate legacy implementation in `sched::xfer`, deliberately left out of the splice rewrite: no pipe branch, no `EOVERFLOW`, and a `[u8; 4096]` buffer ON THE KERNEL STACK | Pipe output is a plain copy, and the stack array is exactly the shape the splice rewrite removed after the kernel-stack-overflow campaign | CORRECTNESS | `kernel/sched` | `fs/read_write.c:1366,1394` | crates/kernel/sched/src/xfer.rs:65 |
+| `copy_file_range` | Full check ladder including swapfile `ETXTBSY`, `s_maxbytes`/`MAX_NON_LFS` `EFBIG` + `SIGXFSZ`. **Cross-superblock copy returns `EXDEV`** — the 5.3-era generic fallback was reverted in 5.19 | Ladder ported faithfully and in order, but `swapfile: false` is hardcoded and there is no `s_maxbytes`/`MAX_NON_LFS` gate or `SIGXFSZ` | Copying to or from a swapfile is permitted and large-file limits are unenforced. **Correcting the brief: the unconditional `EXDEV` MATCHES current Linux and is not a gap** | CORRECTNESS | `kernel/fs` | `fs/read_write.c:1512,1518,1725` | crates/kernel/fs/src/splice/copy_range.rs:116 |
+| NVMe driver | PRP lists, `MDTS`-sized transfers, MSI-X per-CPU queues | Real bring-up, but `MAX_XFER = PAGE` (4 KiB per command), `IEN = 0` phase-bit spin, and the whole-body `Spinlock` is held across a 5 s poll | A 1 MiB read becomes 256 serialised commands, and the driver can spin 5 s under its own lock | PERF | `drivers/drv-nvme` | `drivers/nvme/host/pci.c nvme_pci_setup_prps` | crates/drivers/drv-nvme/src/queue.rs:411,432 |
+| AHCI driver | 32 NCQ slots, full PRDT scatter-gather, `PORT_IRQ_MASK` | One port only (so it stops at the first SATA disk), slot 0 only, `prdtl = 1`, `PxIE` never programmed, poll-only | No NCQ, 4 KiB per command, and any second SATA disk is invisible | PERF | `drivers/drv-ahci` | `drivers/ata/libahci.c:1652,2044` | crates/drivers/drv-ahci/src/port.rs:138,377 |
+| Writeback daemon | Per-bdi flusher threads, `balance_dirty_pages`, `dirty_expire_centisecs` (30 s) | None. Dirty frames flush only on `fsync`/`msync`/`sync`/inode-drop; `vm.dirty_ratio` and `dirty_background_ratio` are inert procfs integers | Unbounded dirty accumulation, and reclaim refuses dirty pages — so memory pressure produces OOM instead of writeback. No periodic durability at all. (Same hole as §4, seen from the block side) | CORRECTNESS | `kernel/ext4`, `kernel/vfs` | `mm/page-writeback.c balance_dirty_pages` | crates/kernel/ext4/src/rootfs/framecache/dirty.rs:83 |
+| `REQ_FUA` / `REQ_PREFLUSH` | The `blk-flush.c` state machine plus per-request FUA | Only `BlockOp::Flush`; no FUA or PREFLUSH concept | Ordering is by manual explicit flushes rather than per-write barriers. Acceptable given the flush-based design | ABSENT-OK (no `CONFIG_BLK_DEV_INTEGRITY`-class consumer; QEMU tolerates it) | `kernel/block` | `block/blk-flush.c` | crates/kernel/block/src/types.rs:1 |
+| zram driver | `zcomp` lzo/lzo-rle/lz4/lz4hc/zstd/deflate/842, zsmalloc, `ZRAM_SAME`/`ZRAM_HUGE`, full sysfs surface | All real: genuine codecs, real zsmalloc over PMM, a sysfs set matching modern `zram_drv.c` exactly, `SAME` comparing native words, `HUGE` storing raw | Architecturally the strongest piece in this area | — | `drivers/drv-zram` | `drivers/block/zram/zram_drv.c` | crates/drivers/drv-zram/src/io.rs:18,69 |
+| zram end to end | `zram-generator` → `/dev/zram0` → `swapon` | The most recent boot log shows `dev-zram0.device: Job … timed out`, then `dev-zram0.swap` and `systemd-zram-setup@zram0.service` failing | The node never materialises for userspace, so compressed swap is dead and the whole (excellent) driver is unexercised | CORRECTNESS | `drivers/drv-zram`, `kernel/sysfs` | — | boot log 2026-07-20 (not re-measured here) |
+| Quota implementation | `fs/quota/{dquot,quota_v2,quota_tree}.c` | Genuinely complete: every `Q_*` plus the XFS `Q_X*` set, all three types, real v2r1 qtree read AND write, a dquot cache with dirty writeback, `EDQUOT` at inode/block/xattr allocation with rollback, soft limits and grace timers | Not a stub — the most Linux-faithful subsystem in this area. **Correcting the brief: quota is a strength, not a weak spot** | — | `kernel/vfs`, `kernel/ext4` | `fs/quota/quota_v2.c:284` | crates/kernel/ext4/src/quota/format.rs:1 |
+| Quota reachability | Mount options plus the `quota` feature enable it | The shipped images carry no `quota`/`project` feature, `enable_mount_quotas` returns at the `!has_quota()` gate, and fstab has no `usrquota` | ~2500 correct lines never execute at boot. Coverage debt, not a functional gap | ABSENT-OK (disabled by image feature set, the `CONFIG_QUOTA` equivalent) | `kernel/ext4` | `fs/ext4/super.c:5690` | crates/kernel/ext4/src/rootfs/state.rs:73 |
+| Quota mount options | `usrquota`/`grpquota`/`prjquota`/`jqfmt` parsed at mount, enforcement enabled from there | Not parsed anywhere (zero grep hits); the mount comes up accounting-only | Even on a quota-featured image, enforcement would require an explicit `Q_QUOTAON`. Same root cause as the discarded `mount(2)` options in §7 | CORRECTNESS | `kernel/ext4` | `fs/ext4/super.c quota_mopt[]` | crates/kernel/ext4/src/rootfs/state.rs:90 |
+| Quota writeback and warnings | `->quota_sync` on `sync_filesystem`; `quota_send_warning` netlink | Writeback only on `Q_SYNC`/quota-off/unmount; no warned state and no `QUOTA_NL_*` | Dirty dquots survive `sync(2)`, and `warnquota`/`quota_nld` see nothing | CORRECTNESS | `kernel/vfs` | `fs/quota/dquot.c:708,1165` | crates/kernel/vfs/src/quota/control.rs:225 |
+
 ## Ordering
 
 By impact, highest first.
 
-**Security first — three fabrications that userspace uses to make privilege decisions.**
+**Durability — there is no working path to a durable write.** These compose into one hole, and
+nothing in userspace can route around it.
 
-1. **`/proc/<pid>/status` reports `Uid: 0` and full capabilities for every process** (§8) — two
-   hardcoded string literals. polkit and logind map pids to users through this; `capsh` and
-   systemd probe their own capabilities through it and skip privilege drops when it says they
-   already have none to drop. Fabricated data feeding a security decision is the worst shape in
-   this audit.
-2. **No `ptrace_may_access` gate on `/proc/<pid>`, and every file is mode 0444** (§8) — any uid
-   reads any process's `environ`, `maps`, `fd/`, `io`. Two independent protections, both absent,
-   so neither backstops the other. `NoNewPrivs`/`Seccomp` are likewise hardcoded to 0, so sandbox
-   self-verification reads a clean lie.
-3. **POSIX ACLs are silently ignored on ext4** (§2) — the ACL evaluator is correct but reads the
-   VFS in-memory xattr store, which ext4 never populates. The root image is mkfs'd with `acl` in
-   its default mount options. A named-user entry more restrictive than `other` is bypassed.
-   Default-ACL inheritance does not exist either.
-4. **`mount(2)` drops the whole `MS_*` flag word on a fresh mount, and `nosuid`/`nodev`/`noexec`
-   are never enforced anyway** (§7) — two independent failures stacking into one hole.
-   `mount(…, MS_RDONLY|MS_NOSUID|MS_NODEV|MS_NOEXEC, …)` yields a rw/suid/dev/exec mount, and even
-   when the bits ARE set (via `mount_setattr`) nothing reads them. `execve` on a `noexec` mount
-   succeeds while `access(X_OK)` on the same file returns `EACCES`.
-5. **`MNT_LOCKED` is never set** (§7) — the constant, the clone-preservation and four consumer
-   checks all exist, so the code reads as implemented. Nothing sets the bit, so every check is
-   dead and an unprivileged user ns can umount an inherited mount to reveal what it covers.
-6. **`setns(CLONE_NEWNS)` never re-roots** (§7) — a task enters the mount namespace but keeps
-   resolving `/` and `.` through the old tree. Small fix, containment-escape impact.
-
-**Then the things userspace cannot work around.**
-
-7. **inotify events carry no filename, and a blocking `read()` returns `EAGAIN`** (§6) — two
-   independent breaks in the same fd. Every directory watcher in the desktop stack (systemd
-   `.path` units, udev, `GFileMonitor`, Nautilus, dconf) is told THAT something changed but never
-   WHICH file; and a non-epoll reader gets `EAGAIN` on an empty queue instead of sleeping. The
-   filename is one field — the cheapest large win in this audit.
-8. **`/dev/kmsg` returns raw console text, not devkmsg records** (§8) — journald's parser fails on
-   every line, so kernel-log import silently drops everything.
-9. **ext4 frees an unlinked inode's blocks while fds are still open** (§2) — the POSIX
-   unlink-open idiom is data corruption, not a leak. Needs the orphan list wired to `evict_inode`.
-10. **`binfmt_misc` registers rules that execve never consults** (§9) — a silent no-op that reports
-   success. Either wire it or return `ENOENT` honestly.
-
-**Then durability and the on-disk format.**
-
-11. **Root images ship `-O ^has_journal`** (§5) — the booted filesystem has no crash consistency at
-   all. Decide deliberately: enable the journal and fix the JBD2 format bugs below, or record the
+1. **`fsync(2)` is not a durability boundary** (§10) — `vfs_fsync` calls `f_op->fsync` (which
+   commits the batch and flushes the device) FIRST, then writes the data and its extent/`i_size`
+   metadata AFTER. Linux orders it the other way round for exactly this reason.
+2. **`O_SYNC`/`O_DSYNC` are parsed and never consulted; `msync(MS_SYNC)` never flushes the device;
+   `RWF_DSYNC`/`RWF_SYNC` are validated and dropped; `O_DIRECT` is a no-op on regular files**
+   (§4, §10) — every documented alternative to `fsync` is also inert.
+3. **`VIRTIO_BLK_F_FLUSH` is never negotiated yet `T_FLUSH` is sent, and the result is discarded**
+   (§10) — `let _ = self.dev.flush()` at all three journal barriers. A conforming device answers
+   `S_UNSUPP` and every barrier fails silently; oxide also collapses `S_UNSUPP` into `EIO`, so the
+   failure is undiagnosable from the guest.
+4. **Root images ship `-O ^has_journal`** (§5) — there is no journal to order against in the first
+   place. Decide deliberately: enable it and fix the JBD2 format bugs below, or record the
    no-journal design as intentional. It cannot stay implicit.
-12. **JBD2 descriptor tag size wrong for 64bit** (§5) — would destroy a filesystem the moment a
-   journalled image is recovered. Must land before any journal work.
-13. **htree hash ignores `s_hash_unsigned`** (§5) — an aarch64-created ext4 filesystem is hashed
-    with the wrong variant: files invisible in large directories, and inserts corrupt the index.
-    Directly in the path of the ARM lockstep rule.
-14. **No `data=ordered`, no revoke sequence on replay** (§5) — stale-data exposure after a crash,
-    and recovery silently dropping legitimate later writes.
-15. **`s_wb_err` absent, no dirty throttling, no periodic writeback** (§4) — three parts of one
-    hole: nothing ages dirty data, nothing bounds it, nothing reports a failure to write it.
 
-**Then correctness with a smaller blast radius.**
+**Security — protections that are absent, and fabrications feeding privilege decisions.**
 
-16. **Cross-namespace mount propagation does not exist; `unshare` slaves unconditionally** (§7) —
-    shared subtrees never cross a namespace boundary, and same-userns `unshare` demotes the whole
-    tree to slave. Both are the propagation behaviour systemd depends on.
-17. **Mount lookup by dentry alone where bind clones share a dentry** (§7) — the repo's own
-    documented gotcha, still live in `umount2`, propagation, `d_path` and the EBUSY test.
-18. **`mount(2)` discards the options string for every fs except tmpfs/ramfs/autofs/fuse** (§7) —
-    `-o` is silently ignored for ext4, devpts, cgroup2, proc and sysfs. Explains the devpts
-    ownership breakage in §9.
-19. **mountinfo MAJ:MIN, options, `propagate_from:` and `parent_id` are fabricated or missing**
-    (§7) — systemd parses this file to decide whether a mount unit has converged.
-20. **`i_writecount` absent** (§2) — `ETXTBSY` impossible in both directions.
-21. **`may_open` misses `noexec`/`nodev`/append-only/`O_NOATIME`** (§2) — mount options stored but
-    not enforced at open.
-22. **`d_move` has no callers and would mint a new dentry anyway** (§1) — renamed files and
-    directories render stale ` (deleted)` paths through `/proc/<pid>/fd` and `getcwd`.
-23. **procfs renders fabricated `Vm*`/`stat`/`statm`/`maps` fields** (§8) — `ps`, `top` and every
-    memory tool read zeros or VSZ-as-RSS.
-24. **seq_file regenerates the body on every `read()`** (§8) — chunked reads tear.
-25. **Leases never signal their holder, and the break reaches only `open`** (§3) — `F_SETLEASE`
-    does not auto-`__f_setown` as Linux does, so the holder is unreachable and the opener simply
-    stalls 45 s; truncate, unlink, rename and setattr bypass the break entirely.
-26. **`/proc/locks` empty, `vm.dirty_*` inert, `cpu.stat` zeros** (§3, §4, §9) — nodes that answer
-    plausibly and mean nothing are worse than absent ones.
-27. **Unwritten-extent conversion zeroes the whole extent** (§5) — the concrete mechanism behind
-    journald's historical writeback cost; splitting makes it proportional to the write.
+5. **`/proc/<pid>/status` reports `Uid: 0`, full capabilities, and `NoNewPrivs: 0` for every
+   process** (§8) — hardcoded string literals. polkit and logind map pids to users through this;
+   `capsh`, systemd and sandboxed apps probe their own privilege through it.
+6. **`AIO IOCB_FLAG_RESFD` writes 8 bytes into an arbitrary file** (§10) — no eventfd type check
+   and no `FMODE_WRITE` check, so an unprivileged `io_submit` corrupts a file opened `O_RDONLY`.
+7. **`splice`/`copy_file_range`/`sendfile` offset fetch and the quota usercopy oops the kernel**
+   (§10) — bare `read_volatile` on a user pointer where Linux does an exception-table-fixed
+   `copy_from_user`. An in-range-but-unmapped address is a kernel fault, not `EFAULT`.
+8. **No `ptrace_may_access` gate on `/proc/<pid>`, every file mode 0444** (§8) — any uid reads any
+   process's `environ`, `maps`, `fd/`, `io`. Two independent protections, both absent.
+9. **POSIX ACLs are silently ignored on ext4** (§2) — the evaluator is correct but reads the VFS
+   in-memory xattr store, which ext4 never populates. The root image is mkfs'd with `acl`.
+10. **`mount(2)` drops the whole `MS_*` flag word on a fresh mount, and `nosuid`/`nodev`/`noexec`
+    are unenforced anyway** (§7) — `execve` on a `noexec` mount succeeds while `access(X_OK)` on
+    the same file returns `EACCES`.
+11. **`MNT_LOCKED` is never set** (§7) — the constant, the clone-preservation and four consumer
+    checks all exist, so it reads as implemented. Every check is dead.
+12. **AIO contexts live in a process-global map keyed by a guessable small integer** (§10) — one
+    process can `io_destroy` another's context.
+13. **`setns(CLONE_NEWNS)` never re-roots** (§7) — small fix, containment-escape impact.
 
-**Then cost.**
+**Capability holes — things userspace simply cannot do.**
 
-28. **dcache/icache never reclaimed, 256 hash buckets, ref-walk only, negative caching limited to
-    three fs types by string** (§1) — unbounded growth plus a linear scan on the hottest path in
-    the kernel.
-29. **fsnotify dispatch is `O(groups × watches)` on every hooked VFS op** (§6).
-30. **No JBD2 transaction batching or commit timer** (§5) — every drain is a full checkpoint with
-    three device flushes.
+14. **No loop device at all** (§10) — `mount -o loop`, `losetup`, `RootImage=`,
+    `systemd-dissect` and live-ISO squashfs are impossible.
+15. **No partition table parsing and no partition device nodes** (§10) — a stock GPT or MBR image
+    cannot be enumerated or mounted; `PARTUUID`, `systemd-repart` and `growfs` are dead.
+16. **AIO hands back a small integer where Linux hands back the ring's mmap address** (§10) —
+    libaio dereferences it and `SIGSEGV`s, so fio, PostgreSQL and MySQL crash rather than degrade.
+17. **inotify events carry no filename, and a blocking `read()` returns `EAGAIN`** (§6) — every
+    directory watcher in the desktop stack is told THAT something changed but never WHICH file.
+    The filename is one field: the cheapest large win in this audit.
+18. **`/dev/kmsg` returns raw console text, not devkmsg records** (§8) — journald's parser fails
+    on every line, so kernel-log import silently drops everything.
+19. **ext4 frees an unlinked inode's blocks while fds are still open** (§2) — the POSIX
+    unlink-open idiom is data corruption, not a leak.
+20. **`binfmt_misc` registers rules that execve never consults** (§9) — a silent no-op that
+    reports success.
+
+**On-disk format and data correctness.**
+
+21. **JBD2 descriptor tag size wrong for 64bit** (§5) — would destroy a filesystem the moment a
+    journalled image is recovered. Must land before any journal work.
+22. **htree hash ignores `s_hash_unsigned`** (§5) — an aarch64-created ext4 filesystem is hashed
+    with the wrong variant. In the path of the ARM lockstep rule, as is the missing per-request
+    aarch64 DMA sync (§10).
+23. **`RWF_APPEND` does not append** (§10) — the write lands at the supplied offset, silently
+    overwriting data.
+24. **Two page caches for the same file data, and execve reads through the legacy one** (§10) — a
+    just-written `ld.so` would load stale, and the loader bypasses the mount namespace entirely.
+25. **No revoke sequence on replay; `data=ordered` holds only by construction** (§5).
+26. **Fabricated `/proc` and mountinfo fields** (§7, §8) — `Vm*`/`stat`/`statm`/`maps`, mountinfo
+    MAJ:MIN and options, `/proc/locks`, `vm.dirty_*`, `cpu.stat`, inotify sysctls. Nodes that
+    answer plausibly and mean nothing are worse than absent ones.
+27. **`d_move` has no callers and would mint a new dentry anyway** (§1) — renamed files render
+    stale ` (deleted)` paths through `/proc/<pid>/fd` and `getcwd`.
+28. **Leases never signal their holder; the break reaches only `open`** (§3).
+29. **seq_file regenerates the body on every `read()`** (§8) — chunked reads tear.
+30. **Cross-namespace mount propagation does not exist; `unshare` slaves unconditionally** (§7).
+31. **Mount lookup by dentry alone where bind clones share a dentry** (§7).
+
+**Cost.**
+
+32. **Readahead is inert** (§10) — a faithful sizing algorithm whose result is discarded; the only
+    prefetch is a fixed 16-page framecache fill. Directly relevant to the page-fault-I/O boot cost.
+33. **No bio, no plugging, no merging, no scheduler; queue depth 1; no scatter-gather and a
+    per-byte `write_volatile` staging loop** (§10) — a 128 KiB read costs 131 072 volatile byte
+    writes plus a second full copy.
+34. **Unwritten-extent conversion zeroes the whole extent; `fallocate` ZERO_RANGE writes every
+    byte** (§5) — the mechanism behind journald's historical writeback cost.
+35. **splice bounce-copies and the pipe capacity is 4 KiB** (§10) — `F_SETPIPE_SZ` above 4096 is
+    `EPERM`, so every splice batch is 16× smaller than Linux's default.
+36. **dcache/icache never reclaimed, 256 hash buckets, ref-walk only** (§1) — unbounded growth
+    plus a linear scan on the hottest path in the kernel.
+37. **No JBD2 transaction batching or commit timer** (§5); **fsnotify dispatch is
+    `O(groups × watches)` per hooked VFS op** (§6); **NVMe 4 KiB/command and AHCI single-slot,
+    single-port** (§10).
 
 ## What I could not determine
 
@@ -363,3 +424,12 @@ By impact, highest first.
 - Whether the `mnt_ns_id` `statmount` reports (the internal `identity.id()`, `0` for the initial
   namespace) is the value systemd expects; `MntNamespace` also carries a distinct `ns_id()` that
   looks like the better match.
+- Whether `/dev/zram0` failing to appear is a devtmpfs node-creation gap, a udev ordering problem,
+  or the `disksize` store guards refusing the write. The boot log consulted is from 2026-07-20 and
+  no boots were run for this audit.
+- Whether the un-negotiated `VIRTIO_BLK_T_FLUSH` actually draws `S_UNSUPP` on the QEMU builds we
+  ship. QEMU services flush unconditionally, so the bug is latent rather than observed.
+- Whether anything in the shipped root image links `libaio` — i.e. whether the `aio_context_t`
+  `SIGSEGV` is currently being hit. No `DT_NEEDED` sweep was done.
+- Whether NVMe and AHCI are probed at all in the shipped QEMU configuration. Both drivers are
+  registered and functional; the boot path uses virtio-blk.
