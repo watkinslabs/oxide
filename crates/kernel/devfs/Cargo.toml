@@ -13,6 +13,7 @@ license = "MPL-2.0"
 [dependencies]
 hal    = { path = "../../arch/hal" }
 sync   = { path = "../../shared/sync" }
+crng   = { path = "../crng" }
 vfs    = { path = "../../kernel/vfs" }
 klog   = { path = "../../shared/klog" }
 kernfs = { path = "../kernfs" }

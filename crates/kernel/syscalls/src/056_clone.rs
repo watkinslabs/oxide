@@ -301,6 +301,19 @@ pub fn sys_clone_dispatch(
     // at PER_LINUX and `personality(0xffffffff)` in a forked child reported the
     // wrong persona.
     child.personality.store(cur.personality.load(Ordering::Acquire), Ordering::Release);
+    // Linux `rseq_fork`: a CLONE_VM child (a thread) starts unregistered and
+    // its libc registers a fresh area; a non-CLONE_VM child (fork) INHERITS
+    // the registration, because its copied address space still holds the same
+    // `struct rseq` at the same address and its libc will not re-register.
+    // Dropping the inheritance leaves a forked child whose user space
+    // believes rseq is live while the kernel neither publishes ids nor aborts
+    // critical sections — the exact silent-corruption shape rseq exists to
+    // prevent. `Task::new` already left the CLONE_VM case cleared.
+    if !share_vm {
+        child.rseq_ptr.store(cur.rseq_ptr.load(Ordering::Acquire), Ordering::Release);
+        child.rseq_len.store(cur.rseq_len.load(Ordering::Acquire), Ordering::Release);
+        child.rseq_sig.store(cur.rseq_sig.load(Ordering::Acquire), Ordering::Release);
+    }
     if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret) {
         return errno(e);
     }

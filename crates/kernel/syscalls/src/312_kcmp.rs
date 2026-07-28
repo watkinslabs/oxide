@@ -1,92 +1,103 @@
-// 312 kcmp — one syscall, one file (docs/53 §0). Moved verbatim from misc.rs.
+// 312 kcmp — one syscall, one file (docs/53 §0). ABI shim: resolve the two
+// tasks, run the ptrace access gate, then hand the chosen resource pair to
+// `kcmp_abi`'s ordering. The type vocabulary and result encoding live in
+// `crate::kcmp_abi` (non-gated, hosted-tested); the KCMP_EPOLL_TFD interest
+// walk lives in `312_kcmp/epoll_tfd.rs`.
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
+
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use crate::kcmp_abi::{self as abi, opt_cmp, ptr_cmp};
 use crate::misc::misc_common::errno;
+
+#[path = "312_kcmp/epoll_tfd.rs"]
+mod epoll_tfd;
 
 /// kcmp(2): compare two tasks' resources by pointer identity.
 ///
-/// Return encoding is Linux's ordered, NON-NEGATIVE triple (kernel
-/// `kcmp_ptr` via `kptr_obfuscate`): 0 = same resource, 1 = idx1's
-/// resource orders before idx2's, 2 = idx1 orders after idx2. A raw
-/// syscall return in `[-4095,-1]` is read by musl/glibc as `-errno`,
-/// so a valid ordering result MUST NOT be negative — the previous
-/// `-1` for "less than" was seen by userspace as EPERM. systemd's
-/// `same_fd()` does `r = kcmp(...); if (r >= 0) return !r;`, i.e. it
-/// requires a non-negative result and only reaches its fstat fallback
-/// on a (spurious) error. ESRCH for missing pids; EINVAL for unknown
-/// type; EBADF when a KCMP_FILE fd is not allocated (Linux guarantee).
-/// # C: O(1)
+/// Ladder order is Linux `kernel/kcmp.c:135` and observable: task lookup
+/// (ESRCH) → `ptrace_may_access(PTRACE_MODE_READ_REALCREDS)` on BOTH tasks
+/// (EPERM) → the type switch (EINVAL). Validating `type` first, as this shim
+/// used to, reports EINVAL where Linux reports ESRCH for a dead pid.
+///
+/// The return encoding is Linux's ordered, NON-NEGATIVE triple: 0 = same
+/// resource, 1 = idx1 orders before idx2, 2 = after. A raw syscall return in
+/// `[-4095,-1]` is read by musl/glibc as `-errno`, so an ordering result must
+/// never be negative — systemd's `same_fd()` does
+/// `r = kcmp(...); if (r >= 0) return !r;`.
+/// # C: O(1); O(N_epoll_entries) for KCMP_EPOLL_TFD
 pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
     let pid1 = args.a0 as u32;
     let pid2 = args.a1 as u32;
     let ty   = args.a2 as u32;
     let idx1 = args.a3 as u64;
     let idx2 = args.a4 as u64;
-    if ty > 7 { return errno(Errno::Einval); }
     let t1 = match sched::live::registry::resolve_user_pid(pid1) {
         Some(t) => t, None => return errno(Errno::Esrch),
     };
     let t2 = match sched::live::registry::resolve_user_pid(pid2) {
         Some(t) => t, None => return errno(Errno::Esrch),
     };
-    // KCMP_FILE = 0: compare File at fd idx1 in t1 vs fd idx2 in t2.
+    // Linux gates on the caller being able to inspect BOTH tasks. Without it
+    // any process could probe another's descriptor-table / address-space
+    // identity — the side channel this gate exists to close.
+    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Esrch) };
+    if crate::s101_ptrace_perm::may_access(cur, &t1).is_err()
+        || crate::s101_ptrace_perm::may_access(cur, &t2).is_err() {
+        return errno(Errno::Eperm);
+    }
+    if !abi::type_is_known(ty) { return errno(Errno::Einval); }
     match ty {
-        0 => {
+        abi::KCMP_FILE => {
             // t1/t2 are arbitrary (possibly-foreign) tasks: clone_fd_table pins
             // each against a concurrent exit-time replace_fd_table(None).
             let f1 = t1.clone_fd_table().and_then(|t| t.get(idx1 as i32).ok());
             let f2 = t2.clone_fd_table().and_then(|t| t.get(idx2 as i32).ok());
             // Linux guarantees -EBADF if either fd is not allocated.
             match (f1, f2) {
-                (Some(f1), Some(f2)) => ptr_cmp(
-                    alloc::sync::Arc::as_ptr(&f1) as usize,
-                    alloc::sync::Arc::as_ptr(&f2) as usize),
+                (Some(f1), Some(f2)) => ptr_cmp(Arc::as_ptr(&f1) as usize,
+                                                Arc::as_ptr(&f2) as usize),
                 _ => errno(Errno::Ebadf),
             }
-        },
-        // KCMP_FILES = 1: compare fd_table identity.
-        1 => {
-            // t1/t2 are arbitrary (possibly-foreign) tasks: clone_fd_table pins
-            // each against a concurrent exit-time replace_fd_table(None).
-            let p1 = t1.clone_fd_table().map(|t| alloc::sync::Arc::as_ptr(&t) as usize);
-            let p2 = t2.clone_fd_table().map(|t| alloc::sync::Arc::as_ptr(&t) as usize);
+        }
+        // KCMP_VM is 1 and KCMP_FILES is 2 (`include/uapi/linux/kcmp.h`).
+        // This shim had them swapped, so every caller asking "same address
+        // space?" was answered about descriptor tables, and vice versa.
+        abi::KCMP_VM => {
+            // clone_mm pins each against a concurrent exit/execve mm replacement.
+            let p1 = t1.clone_mm().map(|m| Arc::as_ptr(&m) as usize);
+            let p2 = t2.clone_mm().map(|m| Arc::as_ptr(&m) as usize);
             opt_cmp(p1, p2)
-        },
-        // KCMP_VM = 2: address-space identity.
-        2 => {
-            // t1/t2 are arbitrary (possibly-foreign) tasks: clone_mm pins
-            // each against a concurrent exit/execve mm replacement.
-            let p1 = t1.clone_mm().map(|m| alloc::sync::Arc::as_ptr(&m) as usize);
-            let p2 = t2.clone_mm().map(|m| alloc::sync::Arc::as_ptr(&m) as usize);
+        }
+        abi::KCMP_FILES => {
+            let p1 = t1.clone_fd_table().map(|t| Arc::as_ptr(&t) as usize);
+            let p2 = t2.clone_fd_table().map(|t| Arc::as_ptr(&t) as usize);
             opt_cmp(p1, p2)
-        },
-        // KCMP_FS = 3: Linux fs_struct allocation identity.
-        3 => ptr_cmp(alloc::sync::Arc::as_ptr(&t1.fs_context()) as usize,
-                      alloc::sync::Arc::as_ptr(&t2.fs_context()) as usize),
-        // KCMP_SIGHAND=4 / KCMP_IO=5 / KCMP_SYSVSEM=6 are task-local until
-        // their corresponding shared Linux owners are implemented.
-        _ => ptr_cmp(pid1 as usize, pid2 as usize),
-    }
-}
-
-/// Linux kcmp ordering of two present resource ids: 0 equal, 1 less,
-/// 2 greater. Never negative (see `sys_kcmp` return-encoding note).
-/// # C: O(1)
-fn ptr_cmp(a: usize, b: usize) -> i64 {
-    if a == b { 0 } else if a < b { 1 } else { 2 }
-}
-
-/// Ordering when a resource id may be absent (task without the slot).
-/// Absent sorts before present; both-absent is "equal". Non-negative.
-/// # C: O(1)
-fn opt_cmp(a: Option<usize>, b: Option<usize>) -> i64 {
-    match (a, b) {
-        (Some(x), Some(y)) => ptr_cmp(x, y),
-        (None,    None)    => 0,
-        (None,    Some(_)) => 1,
-        (Some(_), None)    => 2,
+        }
+        abi::KCMP_FS => ptr_cmp(Arc::as_ptr(&t1.fs_context()) as usize,
+                                Arc::as_ptr(&t2.fs_context()) as usize),
+        // Linux `task->sighand`, shared by CLONE_SIGHAND. `sigactions_arc`
+        // clones the same Arc `clone(2)` installs, so its allocation address
+        // IS the sighand identity two threads of one process share. The old
+        // `ptr_cmp(pid1, pid2)` fallback answered "different" for two threads
+        // that demonstrably share one table.
+        abi::KCMP_SIGHAND => ptr_cmp(Arc::as_ptr(&t1.sigactions_arc()) as usize,
+                                     Arc::as_ptr(&t2.sigactions_arc()) as usize),
+        // Linux `task->io_context`, allocated lazily by the block layer's I/O
+        // scheduler. oxide allocates none, so every task presents the same
+        // NULL — exactly what Linux reports for two tasks that never entered
+        // an io-context-allocating scheduler.
+        abi::KCMP_IO => opt_cmp(None, None),
+        // Linux `task->sysvsem.undo_list`. oxide keys the undo list on the
+        // thread-group id (`ipc::sysv::sem::undo`), so an identical tgid IS an
+        // identical undo list.
+        abi::KCMP_SYSVSEM => ptr_cmp(t1.tgid.load(Ordering::Acquire) as usize,
+                                     t2.tgid.load(Ordering::Acquire) as usize),
+        abi::KCMP_EPOLL_TFD => epoll_tfd::compare(&t1, &t2, idx1, idx2),
+        _ => errno(Errno::Einval),
     }
 }

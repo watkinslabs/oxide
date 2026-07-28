@@ -733,7 +733,11 @@ core::arch::global_asm!(
     //    pass the interrupted SPSR_EL1 (saved at [sp+184]) to the Rust slow
     //    path, which calls the single `schedule()` iff returning to EL0 with
     //    a pending resched. No IRQ-tail staging / second switch engine.
+    //    arg1 is a POINTER to the frame's saved ELR_EL1 so the slow path can
+    //    perform the rseq critical-section abort (`sched::rseq`) after a
+    //    preemption without knowing this frame's layout.
     "    ldr  x0,  [sp, #184]",             // saved SPSR_EL1
+    "    add  x1,  sp, #176",               // &saved ELR_EL1
     "    bl   oxide_irq_resched_on_exit",
     "    b    oxide_irq_resume_user",
     ".size oxide_irq_vector_handler, . - oxide_irq_vector_handler",

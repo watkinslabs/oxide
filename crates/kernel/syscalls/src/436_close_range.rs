@@ -26,15 +26,21 @@ pub fn sys_close_range(args: &SyscallArgs) -> i64 {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    let owned = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t, None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Linux `atomic_read(&cur_fds->count) > 1`: unshare only when ANOTHER task
+    // still owns the table. The count must be read from the task's OWN Arc —
+    // taking a local clone first adds a reference, which made the predicate
+    // permanently true and unshared on every call. That is not merely wasteful:
+    // installing a private table drops the old one, and `FdTable::drop` runs
+    // `filp_close` for every descriptor in it, releasing the process's POSIX
+    // record locks on files it still holds open. systemd issues
+    // `close_range(..., CLOSE_RANGE_UNSHARE)` on every spawn.
+    let shared = Arc::strong_count(owned) > 1;
+    let fdt = owned.clone();
     let cloexec_only = (flags & CLOSE_RANGE_CLOEXEC) != 0;
-    // Linux CLOSE_RANGE_UNSHARE detaches whenever another task still owns the
-    // table.  The common fork+exec case has exactly two Arc owners (parent and
-    // child); `> 2` incorrectly mutated the parent's table and leaked its
-    // non-listener descriptors into socket-activated services.
-    if (flags & CLOSE_RANGE_UNSHARE) != 0 && Arc::strong_count(&fdt) > 1 {
+    if (flags & CLOSE_RANGE_UNSHARE) != 0 && shared {
         let new_fdt = Arc::new(fdt.fork_clone_close_range(first, last, cloexec_only));
         // SAFETY: current task is the caller; replacing its fd table does not mutate other tasks still sharing the old Arc.
         unsafe { cur.replace_fd_table(Some(new_fdt)); }

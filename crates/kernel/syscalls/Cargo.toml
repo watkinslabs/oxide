@@ -8,6 +8,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+crng = { path = "../crng" }
 block   = { path = "../block" }
 boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }

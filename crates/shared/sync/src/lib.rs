@@ -159,6 +159,11 @@ decl_lock_class! {
     // tracked lock. Leaf rank above the task-creation locks (Runqueue/TaskList)
     // it is acquired under during spawn.
     KStack       = 206,
+    // Kernel CSPRNG state (`crng::pool`). A strict LEAF: the ChaCha20 rekey and
+    // output run entirely inside it and take no nested tracked lock, so any
+    // consumer (getrandom, /dev/urandom, AT_RANDOM, uuid, socket cookies) may
+    // call `crng::fill` with its own lock held.
+    Crng         = 207,
 }
 
 // ---------------------------------------------------------------------------

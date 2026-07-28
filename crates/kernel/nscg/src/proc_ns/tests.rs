@@ -60,9 +60,12 @@ fn proc_link_retains_exact_owner_after_task_namespace_release() {
 #[test]
 fn pid_setns_changes_only_pid_namespace_for_children() {
     let user = namespace_identity::initial(NamespaceKind::User);
-    let target = allocate(NamespaceKind::Pid, &user);
     let destination = task(78, "destination");
     let current = destination.namespace_owner(NamespaceKind::Pid).unwrap();
+    // Linux `pidns_install` refuses anything outside the caller's active pid
+    // namespace subtree, so the target has to be a child of it.
+    let target = namespace_identity::allocate(NamespaceKind::Pid, user,
+        Some(current.clone())).unwrap();
     let ns = NsInode::new(NsKind::Pid, NsOwner::Pid(target.clone()));
 
     assert_eq!(setns_apply(&ns, CLONE_NEWPID, &destination), 0);

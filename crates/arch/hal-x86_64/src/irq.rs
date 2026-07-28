@@ -98,7 +98,12 @@ core::arch::global_asm!(
     // -- resched-on-exit (`14§R07`): pass the interrupted frame's saved CS to
     //    the Rust slow path, which calls schedule() iff returning to user with
     //    a pending resched. Runs on the OUTER stack (correct save point).
+    //    arg1 is a POINTER to the frame's saved RIP so the slow path can
+    //    perform the rseq critical-section abort (`sched::rseq`) after a
+    //    preemption without knowing this frame's layout. Frame from rsp:
+    //    9 scratch qwords, vec(+0x48), err(+0x50), RIP(+0x58), CS(+0x60).
     "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
+    "    lea  rsi, [rsp + 0x58]",   // &saved RIP in the iretq frame
     "    call oxide_irq_resched_on_exit",
     "    jmp  oxide_irq_resume_user",
     ".size oxide_irq_common, . - oxide_irq_common",
