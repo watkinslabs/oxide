@@ -37,8 +37,13 @@
 /* glibc has no openat2 wrapper on either arch; the raw slot is the ABI under
  * test anyway (the wrapper would only re-pack the same struct). */
 /* mkdtemp template is 17 bytes; a small fixed base keeps every derived
- * snprintf provably short of PATH_MAX (the probe builds with -Werror). */
+ * snprintf provably short of the buffers below (the probe builds with -Werror).
+ * O2_PATH_MAX is used instead of PATH_MAX because PATH_MAX is not visible
+ * through <limits.h> in the aarch64 cross-sysroot the way it is on the host —
+ * every path this probe builds is `<base>/box/sub` shaped, so 96 is provably
+ * ample and the probe compiles identically on both arches. */
 #define O2_BASE_MAX 32
+#define O2_PATH_MAX 96
 
 struct o2_how { uint64_t flags; uint64_t mode; uint64_t resolve; };
 
@@ -52,7 +57,7 @@ static int o2(int dfd, const char *path, uint64_t flags, uint64_t mode, uint64_t
 }
 
 /* Build <base>/{box,box/sub,outside} and return an O_PATH-free dirfd on box.
- * `base` must be PATH_MAX-sized; it receives the mkdtemp() result. */
+ * `base` must be O2_BASE_MAX-sized; it receives the mkdtemp() result. */
 static int make_scope(char *base, size_t baselen) {
     char p[O2_BASE_MAX + 32];
     snprintf(base, baselen, "/tmp/o2res.XXXXXX");
@@ -106,7 +111,7 @@ static void create_case(const char *test, const char *path, uint64_t resolve) {
 /* Same, but the path traverses a symlink planted at <base>/box/link that
  * points OUT of the scope. */
 static void create_case_via_symlink(const char *test, const char *path, uint64_t resolve) {
-    char base[O2_BASE_MAX], p[PATH_MAX];
+    char base[O2_BASE_MAX], p[O2_PATH_MAX];
     int dfd = make_scope(base, sizeof base);
     int fd, err;
     if (dfd < 0) { out("openat2", test, "setup=FAIL"); return; }
