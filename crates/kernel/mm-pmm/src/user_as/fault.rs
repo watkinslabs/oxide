@@ -517,11 +517,33 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
     // is a kernel bug, not something to paper over against a shared AS — return
     // unhandled so it surfaces. The boot PID-1 stack is mapped eagerly via
     // `prefault_stack` (setup_arg_pages), so no boot-context user fault occurs.
-    let r = match sched::live::current() {
+    // Linux `mm_account_fault()` (`mm/memory.c`) charges every *completed*
+    // user fault to `current->min_flt`, or to `maj_flt` when the fill had to
+    // reach backing store (`VM_FAULT_MAJOR`). oxide's file fill
+    // (`mm-vmm address_space/fault/fill.rs`) has no page-cache short-circuit:
+    // a NotPresent fault on a file-backed VMA always issues `read_at` against
+    // the block device, which is exactly Linux's `filemap_fault` cache-miss
+    // arm. Anonymous, COW and protection faults never touch backing store.
+    let cur = sched::live::current();
+    let major = matches!(fault, FaultKind::NotPresent { .. })
+        && cur.as_ref().is_some_and(|c| {
+            // SAFETY: fault dispatcher with IRQs masked; single-mutator mm slot per 13§5; read-only VMA query.
+            unsafe { c.mm_ref() }.and_then(|mm| mm.find_vma(uva))
+                .is_some_and(|v| matches!(v.backing, VmaBacking::File { .. }))
+        });
+    let r = match cur.as_ref() {
         // SAFETY: fault dispatcher with IRQs masked; cur is the running task on this CPU; no concurrent mm writer.
         Some(cur) => unsafe { cur.mm_ref() }.map(|mm| do_handle(mm, uva, fault, hhdm)),
         None => None,
     };
+    if matches!(r, Some(Ok(()))) {
+        if let Some(c) = cur.as_ref() {
+            let counter = if major { &c.maj_flt } else { &c.min_flt };
+            counter.fetch_add(1, Ordering::Relaxed);
+            let kind = if major { sched::perf_sw::CpuSw::MajFlt } else { sched::perf_sw::CpuSw::MinFlt };
+            sched::perf_sw::charge(kind, c.cpu.load(Ordering::Acquire) as usize, 1);
+        }
+    }
     #[cfg(all(feature = "debug-boot", target_arch = "x86_64"))]
     if !matches!(&r, Some(Ok(()))) {
         klog::write_raw(b"[FAULT-RESOLVE] va=");

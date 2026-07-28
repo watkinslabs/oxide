@@ -89,7 +89,9 @@ mod tests {
     fn every_socket_descriptor_route_uses_atomic_publication() {
         let socket = include_str!("041_socket.rs");
         let accept = include_str!("043_accept.rs");
-        let uring = include_str!("io_uring.rs");
+        // IORING_OP_* dispatch moved out of the io_uring manifest into its own
+        // child module when the ring grew a second (SQEs) region.
+        let uring = include_str!("io_uring/dispatch.rs");
         let enter = include_str!("426_io_uring_enter.rs");
 
         assert_eq!(socket.matches("socket_fd::install").count(), 1);
