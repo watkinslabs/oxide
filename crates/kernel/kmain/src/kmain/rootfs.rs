@@ -169,7 +169,7 @@ fn install_network_hooks() {
             security::socket_filter::run_with_context(insns, security::socket_filter::Context {
                 packet: ctx.packet, protocol: ctx.protocol,
                 ifindex: ctx.ifindex, pay_offset: ctx.pay_offset, hatype: ctx.hatype,
-                cpu: socket_filter_cpu(), random: devfs::misc::lcg_next() as u32,
+                cpu: socket_filter_cpu(), random: devfs::misc::random_u64() as u32,
             }),
     });
 }

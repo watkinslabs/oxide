@@ -243,7 +243,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
 /// # Ctx: IRQ-exit
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_irq_resched_on_exit(saved_cs: u64) {
+unsafe extern "C" fn oxide_irq_resched_on_exit(saved_cs: u64, saved_rip: *mut u64) {
     let from_user = (saved_cs & 3) == 3;
     if sched::preempt::should_resched_to_user(from_user) {
         sched::preempt::take_need_resched();
@@ -252,5 +252,11 @@ unsafe extern "C" fn oxide_irq_resched_on_exit(saved_cs: u64) {
         // stack and restored after schedule() returns. schedule() preserves
         // this context's IF=0, so IRQs stay masked through the iretq tail.
         unsafe { sched::live::schedule(); }
+        // The thread just lost the CPU inside user code. If it was inside a
+        // declared rseq critical section, invalidate it and restart at
+        // `abort_ip` BEFORE the iretq resumes, so the commit never runs
+        // against per-cpu state another thread mutated in the gap.
+        // SAFETY: `saved_rip` is the iretq frame's RIP slot on this task's kernel stack, published by `oxide_irq_common`'s `lea rsi,[rsp+0x58]`; the frame outlives this call and is consumed by `oxide_irq_resume_user`.
+        unsafe { sched::rseq::rseq_preempt_return(&mut *saved_rip); }
     }
 }
