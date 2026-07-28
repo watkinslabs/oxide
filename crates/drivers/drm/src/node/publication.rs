@@ -42,17 +42,8 @@ impl vfs::FileOps for DrmCardFileOps {
         let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
             return Err(vfs::VfsError::Einval);
         };
-        let token = file_token(file);
-        let n = crate::crtc::drain_events(card_id, token, b);
-        if n > 0 { return Ok(n); }
-        // Linux distinguishes two zero-copy cases and we must too. A buffer too
-        // small for the first queued event takes `put_back_event` → `break` →
-        // `return ret` with ret == 0 — there is no minimum-`count` guard in
-        // `drm_read`, so 0 is the correct answer there. Only an EMPTY queue
-        // reaches the EAGAIN/sleep arm. Collapsing the two would either report
-        // EOF on a short buffer or spin a reader that will never fit a record.
-        if crate::crtc::has_events(card_id, token) { return Ok(0); }
-        Err(vfs::VfsError::Eagain)
+        let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
+        crate::crtc::drain_events_blocking(card_id, file_token(file), b, nonblock)
     }
     fn poll_open_file(&self, file: &File) -> u32 {
         let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {

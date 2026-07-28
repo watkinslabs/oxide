@@ -16,6 +16,7 @@ vfs     = { path = "../../kernel/vfs" }
 devfs   = { path = "../../kernel/devfs" }
 drv     = { path = "../drv" }
 syscall = { path = "../../kernel/syscall" }
+sched   = { path = "../../kernel/sched" }
 
 [features]
 debug-boot = []  # [DRMPROP] KMS plane/property ioctl trace (mutter primary-plane hunt)
