@@ -211,3 +211,73 @@ mod user_mode {
         assert!(!a64::user_mode(0b1001));
     }
 }
+
+// `sysret_ok` — whether a syscall return may use SYSRETQ. Port of the tail of
+// Linux `do_syscall_64()`; every `false` arm is a real corruption or fault.
+mod sysret {
+    use crate::uregs::x86_64::{self as x86, X86_EFLAGS_RF, X86_EFLAGS_TF};
+
+    /// This kernel's ring-3 selectors and user-VA bound.
+    const UCS: u64 = 0x4b;
+    const USS: u64 = 0x43;
+    const VA_END: u64 = 0x0000_8000_0000_0000;
+    const RIP: u64 = 0x0000_0000_0040_6adf;
+    const FLAGS: u64 = 0x202;
+
+    fn ok(rcx: u64, rip: u64, r11: u64, rflags: u64, cs: u64, ss: u64) -> bool {
+        x86::sysret_ok(rcx, rip, r11, rflags, cs, ss, UCS, USS, VA_END)
+    }
+
+    #[test]
+    fn a_clean_syscall_return_uses_sysret() {
+        // SYSCALL left rcx = rip and r11 = rflags, nothing rewrote the frame.
+        assert!(ok(RIP, RIP, FLAGS, FLAGS, UCS, USS));
+    }
+
+    #[test]
+    fn an_independent_rcx_forces_iret() {
+        // THE B1471 case: `rt_sigreturn` restores the interrupted context's
+        // own rcx. SYSRETQ would overwrite it with the resume RIP — which is
+        // how a spin loop's `movdqu %xmm4,(%rcx)` came to store into its own
+        // text and take SIGSEGV.
+        assert!(!ok(0xdead_beef, RIP, FLAGS, FLAGS, UCS, USS));
+    }
+
+    #[test]
+    fn an_independent_r11_forces_iret() {
+        // Same shape for RFLAGS: SYSRETQ takes them from r11.
+        assert!(!ok(RIP, RIP, 0xdead_beef, FLAGS, UCS, USS));
+    }
+
+    #[test]
+    fn a_rewritten_selector_forces_iret() {
+        // SYSRETQ hardcodes the selectors from MSR_STAR; a frame carrying
+        // anything else must go through IRETQ or userspace silently gets the
+        // wrong CS/SS.
+        assert!(!ok(RIP, RIP, FLAGS, FLAGS, 0x33, USS));
+        assert!(!ok(RIP, RIP, FLAGS, FLAGS, UCS, 0x2b));
+    }
+
+    #[test]
+    fn a_non_canonical_rip_forces_iret() {
+        // The security-critical arm: SYSRET with non-canonical RCX #GPs at
+        // CPL0 with the user's RSP live. Linux: "essentially lets the user
+        // take over the kernel".
+        let bad = VA_END;                    // first non-user address
+        assert!(!ok(bad, bad, FLAGS, FLAGS, UCS, USS));
+        assert!(!ok(u64::MAX, u64::MAX, FLAGS, FLAGS, UCS, USS));
+        // The last user-space byte is still fine.
+        assert!(ok(VA_END - 1, VA_END - 1, FLAGS, FLAGS, UCS, USS));
+    }
+
+    #[test]
+    fn trap_and_resume_flags_force_iret() {
+        // SYSRET cannot restore RF at all, and restoring TF traps immediately
+        // after the SYSRET rather than after the first user instruction — so
+        // PTRACE_SINGLESTEP must take the IRET path.
+        let tf = FLAGS | X86_EFLAGS_TF;
+        assert!(!ok(RIP, RIP, tf, tf, UCS, USS));
+        let rf = FLAGS | X86_EFLAGS_RF;
+        assert!(!ok(RIP, RIP, rf, rf, UCS, USS));
+    }
+}

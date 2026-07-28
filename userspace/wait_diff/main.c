@@ -12,6 +12,12 @@ int main(void) {
      * With locks first that one defect cost the 21 records behind it and
      * every other probe read as "unknown". Keep the cheap, collectible
      * evidence in front of the case that can swallow the run. */
+    /* `spinsig` runs before `sigfpu` for the same reason `locks` runs last:
+     * both spin in userspace, but sigfpu's only guard is its own `alarm()` —
+     * the very delivery path spinsig measures — so on a kernel that cannot
+     * signal a spinning task sigfpu swallows the run. Collect the three rows
+     * that NAME that defect before the case it disables. */
+    probe_spinsig();
     probe_sigfpu();
     probe_sleep();
     probe_inotify();

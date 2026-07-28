@@ -66,6 +66,12 @@ run "$WORK/base.txt" || {
 }
 echo "wait-diff-selftest: baseline $(records "$WORK/base.txt" | wc -l) records"
 
+# B1471: a task spinning in userspace takes no syscall-tail delivery point, so
+# each mutant removes the ONE thing that can end its loop — the record then has
+# to fall back to `forced=1`, which is exactly what the defective kernel prints.
+check spinnokick  'spinsig|usr1_interrupts_spin'
+check spinnoalarm 'spinsig|alarm_interrupts_spin'
+check spinnokill  'spinsig|sigkill_kills_spinning_thread'
 check fpuclobber 'sigfpu|simd_preserved'
 check fpunopat   'sigfpu|uc_fpstate'
 check eintr \
