@@ -74,12 +74,11 @@ pub fn alloc_ephemeral_udp4(net_ns: u64, bind_ip: Ipv4Addr,
                             mcast: Arc<crate::mcast_filter::SocketMcast>)
     -> Result<(u16, Arc<UdpRxQueue>), NetError>
 {
-    use core::sync::atomic::Ordering;
+    // Linux `udp_lib_get_port`: `first = reciprocal_scale(get_random_u32(),
+    // remaining) + low`. The old sequential counter from a fixed base made a
+    // client's source port predictable, which is half of an off-path spoof.
     let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
-    let tables = crate::global_stack().inet_tables(net_ns);
-    for _ in 0..range.count() {
-        let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);
-        let p = range.port(seq);
+    for p in crate::secure_seq::bind_port_scan(range.start, range.count()) {
         if let Ok(endpoint) = crate::global_stack().bind_udp_socket_in(
             net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
             ip_mtu_discover.clone(), owner_uid,
@@ -127,12 +126,9 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
                             mcast: Arc<crate::mcast_filter::SocketMcast>)
     -> Result<(u16, Arc<crate::stack_ipv6::Udp6RxQueue>), NetError>
 {
-    use core::sync::atomic::Ordering;
+    // Linux `udp_lib_get_port`, IPv6 side — same randomized start.
     let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
-    let tables = crate::global_stack().inet_tables(net_ns);
-    for _ in 0..range.count() {
-        let seq = tables.next_udp_ephemeral.fetch_add(1, Ordering::Relaxed);
-        let p = range.port(seq);
+    for p in crate::secure_seq::bind_port_scan(range.start, range.count()) {
         if let Ok(endpoint) = crate::global_stack().bind_udp6_socket_in(
             net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(), owner_uid,
             v6only.clone(),

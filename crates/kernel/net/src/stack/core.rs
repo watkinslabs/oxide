@@ -14,7 +14,6 @@ impl NetStack {
             bridge_pending: Spinlock::new(BTreeMap::new()),
             inet: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
-            next_isn:   Spinlock::new(crate::stack_binddev::TCP_ISN_INITIAL),
             ndp:        Spinlock::new(BTreeMap::new()),
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),

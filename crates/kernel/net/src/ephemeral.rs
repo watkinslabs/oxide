@@ -67,11 +67,6 @@ impl Range {
 
     /// Inclusive number of candidate ports. # C: O(1)
     pub const fn count(self) -> u32 { self.end as u32 - self.start as u32 + 1 }
-
-    /// Map a wrapping allocation sequence into this interval. # C: O(1)
-    pub const fn port(self, seq: u32) -> u16 {
-        (self.start as u32 + seq.wrapping_sub(self.start as u32) % self.count()) as u16
-    }
 }
 
 /// Snapshot the live `ip_local_port_range` atomically. # C: O(1)
@@ -132,14 +127,16 @@ pub fn set_unprivileged_start_for(namespace: &NetworkNamespaceRef, floor: u16) -
 mod tests {
     use super::{Range, State};
 
+    /// `Range::port(seq)` — the "map an allocation counter into the interval"
+    /// helper — is gone with the counter it served; scan order is now owned
+    /// solely by `secure_seq::scan::PortScan`, so there is one place that
+    /// decides which port comes next. What remains here is the range itself.
     #[test]
-    fn snapshot_mapping_wraps_and_visits_both_endpoints() {
+    fn range_validation_rejects_degenerate_intervals() {
         let range = Range::new(40_000, 40_002).unwrap();
         assert_eq!(range.count(), 3);
-        assert_eq!(range.port(40_000), 40_000);
-        assert_eq!(range.port(40_001), 40_001);
-        assert_eq!(range.port(40_002), 40_002);
-        assert_eq!(range.port(40_003), 40_000);
+        assert_eq!(range.start, 40_000);
+        assert_eq!(range.end, 40_002);
         assert!(Range::new(0, 1).is_none());
         assert!(Range::new(2, 1).is_none());
     }
