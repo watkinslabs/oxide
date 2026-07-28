@@ -204,6 +204,18 @@ Do not edit the matrix from this document. A follow-up lane makes these three ed
 
 ## 4 Work order
 
+**STATUS 2026-07-28 (post-triage lanes) — check before claiming:**
+
+| Item | State |
+|---|---|
+| 4.2 process-wide pending signals | **DONE** — `B1477` put `shared_pending` on `ThreadGroup` |
+| 4.9 ext4 inode lifetime | **DONE** — `B1479` wired `orphan_add` to `unlink` + `evict_inode` |
+| 4.12 mount flags | **PARTIAL** — `B1478` fixed `graft_mount`'s hardcoded 0 and `mount_too_revealing`; `MNT_LOCKED` and `top_mount_on` remain |
+| 4.16 seccomp | **PARTIAL** — `B1478` fixed the `BPF_RVAL` decode, NNP, fork inheritance, `RET_TRACE`; user-notif remains, fails closed |
+| 4.18 userfaultfd | **PARTIAL** — `B1478` closed the no-VMA arbitrary-write and the admission gate; WP/MINOR/MOVE/POISON remain, fail closed |
+
+Everything else below is unclaimed as of this line.
+
 Grouped so each block is one lane with one owner. Ordered by value per unit of work.
 
 ### 4.1 sched — RT + deadline classes (rows 144, 148, 314, 315)
