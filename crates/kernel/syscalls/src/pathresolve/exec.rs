@@ -35,10 +35,15 @@ pub fn exec_permission(vp: &vfs::VfsPath) -> Result<(), i64> {
     use syscall::errno::Errno;
     crate::execveat_at::may_exec_file_type(vp.inode.file_type())
         .map_err(|e| -(e.as_i32() as i64))?;
-    // `path_noexec(path)`: `(mnt->mnt_flags & MNT_NOEXEC) ||
-    // (mnt->mnt_sb->s_iflags & SB_I_NOEXEC)`.
+    // `path_noexec(path)` (`fs/exec.c`): `(mnt->mnt_flags & MNT_NOEXEC) ||
+    // (mnt->mnt_sb->s_iflags & SB_I_NOEXEC)`. `s_iflags` is the KERNEL-INTERNAL
+    // word procfs/sysfs/pseudo-fs stamp at fill-super — a different field from
+    // the user-visible `s_flags` `SB_NOEXEC`, and the only one those backends
+    // set, so testing `s_flags` alone let an execve off /proc or /sys through.
     if let Some(m) = vfs::mount::mount_by_id(vp.mnt_id) {
-        if m.is_noexec() || m.sb().is_noexec() { return Err(-(Errno::Eacces.as_i32() as i64)); }
+        if m.is_noexec() || m.sb().is_noexec() || m.sb().is_sb_i_noexec() {
+            return Err(-(Errno::Eacces.as_i32() as i64));
+        }
     }
     vfs::inode_permission(&vp.inode, vfs::MAY_EXEC, &super::cred::current_cred())
         .map_err(crate::namei_common::errno_from_vfs)

@@ -15,6 +15,7 @@
 //! - `pivot_check`: `pivot_root(2)` admission ladder and its errno order.
 //! - `mnt_flags`: internal lifecycle flags and mount_setattr translation.
 //! - `locked`: MNT_LOCK_*/MNT_LOCKED stamping and the no-relax admission ladder.
+//! - `revealing`: `mount_too_revealing` — the userns already-visible constraint.
 //! - `expiry`: expiry list marking and sweep logic.
 
 extern crate alloc;
@@ -73,7 +74,16 @@ pub use mnt_flags::{
 // copy inherits (`lock_mnt_tree`) and the ladder that refuses to relax it
 // (`can_change_locked_flags`). A submodule so it carries its own unit tests.
 mod locked;
-pub use locked::{can_change_locked_flags, has_locked_children};
+pub use locked::{
+    can_change_locked_flags, has_locked_children, lock_bits_for, lock_detached_tree,
+    lock_new_mount_bits,
+};
+
+// mount_too_revealing: the visibility constraint on an unprivileged user-ns
+// mount of a FS_USERNS_MOUNT_RESTRICTED filesystem (procfs/sysfs). A submodule
+// so it carries its own unit tests.
+mod revealing;
+pub use revealing::{mnt_already_visible, mount_too_revealing};
 
 // Mount expiry list (Linux `mark_mounts_for_expiry`, autofs/NFS auto-umount):
 // a two-sweep grace where an unused, unmarked mount is marked on one pass and

@@ -34,8 +34,9 @@ pub(crate) fn mount_capable(fs_flags: FsFlags, caps: MountCaps) -> bool {
 }
 
 fn graft_mount(sb: Arc<vfs::SuperBlock>, target_d: &Arc<Dentry>, parent_hint: Option<u64>,
-    mnt_flags: u64) -> i64 {
-    match vfs::mount::attach_sb_with_flags_at(Some(target_d.clone()), sb, mnt_flags, parent_hint) {
+    mnt_flags: u64, lock_flags: u32) -> i64 {
+    match vfs::mount::attach_sb_locked_at(Some(target_d.clone()), sb, mnt_flags, lock_flags,
+        parent_hint) {
         Ok(()) => { let _ = vfs::mount::propagate_mount(target_d); 0 }
         Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
         Err(e) => crate::namei_common::errno_from_vfs(e),
@@ -83,7 +84,27 @@ pub(crate) fn dispatch_mount(source: Option<&str>, fstype: &str, target: &str, t
             Ok(s) => s,
             Err(e) => return crate::namei_common::errno_from_vfs(e),
         };
-        return graft_mount(sb, target_d, parent_hint, vfs::mount::ms_to_mnt(ms_flags));
+        let mnt_flags = vfs::mount::ms_to_mnt(ms_flags);
+        // Linux `do_new_mount_fc`: after the superblock exists and BEFORE
+        // `do_add_mount`, `if (mount_too_revealing(sb, &mnt_flags)) return
+        // -EPERM;`. This is what stops an unprivileged user-namespace holder
+        // from mounting a pristine `proc`/`sysfs` over the masked one it was
+        // given. It also feeds back the locked read-only/atime attributes the
+        // already-visible instance imposes, which ride the same `mnt_flags`
+        // word in Linux and a separate internal word here. The refusal returns
+        // BEFORE `graft_mount`, so nothing is left attached.
+        let lock_flags = match vfs::mount::mount_too_revealing(&sb, mnt_flags) {
+            Ok(l) => l,
+            Err(_) => {
+                // Linux's `fc_mount` result is `__free(mntput)`, so refusing
+                // here releases the just-built superblock. Drop the active ref
+                // `fill_super` took, or the instance leaks (and, for a
+                // device-backed type, keeps `fs_supers` occupied).
+                sb.deactivate_super();
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+        };
+        return graft_mount(sb, target_d, parent_hint, mnt_flags, lock_flags);
     }
     -(Errno::Enodev.as_i32() as i64)
 }

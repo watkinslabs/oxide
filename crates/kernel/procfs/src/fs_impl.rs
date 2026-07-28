@@ -41,6 +41,12 @@ impl vfs::fs::FileSystem for ProcfsFs {
     /// PROC_SUPER_MAGIC (linux/magic.h).
     /// # C: O(1)
     fn magic(&self) -> u64 { PROC_SUPER_MAGIC }
+    /// Linux `fs/proc/root.c` `proc_fill_super`: "User space would break if
+    /// executables or devices appear on proc" — `s->s_iflags |= SB_I_NOEXEC |
+    /// SB_I_NODEV`. These are also the `required_iflags` `mount_too_revealing`
+    /// demands of every `FS_USERNS_MOUNT_RESTRICTED` filesystem; without them a
+    /// user-namespace `mount -t proc` is refused outright. # C: O(1)
+    fn s_iflags(&self) -> u64 { vfs::superblock::SB_I_USERNS_REQUIRED }
     /// Install zero-sized pseudo-fs statfs (`simple_statfs`) as this SB's `s_op`
     /// so `statfs(2)`/`df` report PROC_SUPER_MAGIC + PAGE_SIZE, not the generic
     /// synthetic figures. # C: O(1)

@@ -49,6 +49,21 @@ fn cap_sys_admin_in_init_user_ns() -> bool {
     nscg::proc_ns::has_cap_for(&cur, &init.pin(), sched::cap::SYS_ADMIN)
 }
 
+/// Linux `create_new_namespace`'s `user_ns != ns->user_ns` — the calling task's
+/// CURRENT user namespace against the one owning its mount namespace. When they
+/// differ, the detached copy `open_tree(OPEN_TREE_CLONE)` / `fsmount(2)` produces
+/// is stamped by `lock_mnt_tree` so the caller cannot later relax or unmount away
+/// what the copy inherited. Sampled here because the current user namespace is a
+/// scheduler fact; `vfs::mount` owns only the mount tree. # C: O(1)
+pub(crate) fn current_user_ns_differs_from_mount_ns_owner() -> bool {
+    let Some(cur) = sched::live::current() else { return false; };
+    let Some(mnt_ns) = cur.mount_namespace_snapshot() else { return false; };
+    let Some(user_ns) = cur.namespace_owner(namespace_identity::NamespaceKind::User) else {
+        return false;
+    };
+    !namespace_identity::NamespacePin::ptr_eq(&user_ns.pin(), &mnt_ns.owner_user_namespace())
+}
+
 /// The two capability facts Linux `mount_capable` chooses between, sampled once
 /// per `mount(2)` so the decision itself stays a pure, hosted-testable function
 /// (`fsmount_common::mount_dispatch::mount_capable`). # C: O(userns depth)

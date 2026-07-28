@@ -127,7 +127,12 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
                 // creates the sandbox apivfs at /run/systemd/namespace-X after
                 // rbinding / onto /run/systemd/mount-rootfs, so parent_by_dentry
                 // is ambiguous; the walked mnt_id places it under the real /run.
-                return match vfs::mount::attach_sb_with_flags_at(Some(target_d.clone()), sb.clone(), mnt_flags, Some(target_mnt)) {
+                // The MNT_LOCK_*/MNT_LOCKED word `fsmount(2)` decided
+                // (`mount_too_revealing`'s preserved attributes +
+                // `create_new_namespace`'s `lock_mnt_tree`) is installed with the
+                // option mask, before the mount goes live.
+                let lock_flags = mo.mnt_lock_flags.load(core::sync::atomic::Ordering::Acquire);
+                return match vfs::mount::attach_sb_locked_at(Some(target_d.clone()), sb.clone(), mnt_flags, lock_flags, Some(target_mnt)) {
                     Ok(()) => { let _ = vfs::mount::propagate_mount(&target_d); 0 }
                     Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
                     Err(e) => crate::namei_common::errno_from_vfs(e),
