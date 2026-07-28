@@ -22,7 +22,7 @@ mod uapi;
 pub use engine::{setgroups_policy, snapshot_map, write_map, write_setgroups, IdMapKind,
     SetgroupsPolicy, UserNsError};
 pub use extent::{validate_extents, ExtentError, IdMapExtent};
-pub use translate::{to_host, to_ns, OverflowId};
+pub use translate::{has_mapping, to_host, to_host_checked, to_ns, OverflowId};
 pub use uapi::{OVERFLOW_GID, OVERFLOW_UID, UID_GID_MAP_MAX_EXTENTS};
 
 #[cfg(test)]

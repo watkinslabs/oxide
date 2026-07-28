@@ -130,6 +130,13 @@ decl_lock_class! {
     // `schedule`. Ranked just below `TaskList` for the same reason as
     // `MutexGate`.
     KthreadPark  = 97,
+    // Armed wait expiries (`sched::hrtimeout`) — Linux's per-CPU hrtimer base.
+    // Taken irqsave: the hard timer IRQ sweeps it while process-context parks
+    // insert. `WaitList::park_with_deadline` arms BEFORE pushing the waiter, so
+    // it must rank below `TaskList`; it takes no nested tracked lock of its own
+    // (the sweep drops it before `ttwu_deferred`), so a rank anywhere under
+    // `TaskList` is sound and this one keeps the park path ascending.
+    Hrtimeout    = 98,
     TaskList     = 100,
     Runqueue     = 110,
     // Serialises tty TRANSMISSION so two writers cannot interleave bytes now
