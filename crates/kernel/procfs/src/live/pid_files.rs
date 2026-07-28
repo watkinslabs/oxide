@@ -123,9 +123,6 @@ pid_gated_ctor!(make_pid_maps, pid_maps_body, 0x23, "maps");
 /// return value is the caller's full `count`, even when it was truncated.
 struct CommFileOps;
 
-/// Linux `TASK_COMM_LEN` (`include/linux/sched.h`).
-const TASK_COMM_LEN: usize = 16;
-
 impl vfs::FileOps for CommFileOps {
     fn read(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         let d = inode.private::<crate::dyn_file::PidGenData>().ok_or(vfs::VfsError::Einval)?;
@@ -141,8 +138,10 @@ impl vfs::FileOps for CommFileOps {
         if cur.tgid.load(Ordering::Acquire) != target.tgid.load(Ordering::Acquire) {
             return Err(vfs::VfsError::Einval);
         }
-        let mut name = [0u8; TASK_COMM_LEN];
-        let n = src.len().min(TASK_COMM_LEN - 1);
+        // `sched::TASK_COMM_LEN` is the one definition of this width; a local
+        // copy here could drift from the array `set_comm_bytes` accepts.
+        let mut name = [0u8; sched::TASK_COMM_LEN];
+        let n = src.len().min(sched::TASK_COMM_LEN - 1);
         name[..n].copy_from_slice(&src[..n]);
         target.set_comm_bytes(name);
         Ok(src.len())
