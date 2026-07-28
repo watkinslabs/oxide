@@ -16,19 +16,31 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use crate::signum;
 use crate::task::{SigInfo, Task, RT_QUEUE_CAP};
 
-/// The per-signal record array both pending sets are built from — Linux's
-/// `struct sigpending::list`, once. `Task` owns one for the thread-private set
-/// and `ThreadGroup` owns one for `signal_struct::shared_pending`, so the
-/// "which queue does this signal use, and how deep is it" decision has ONE
-/// implementation and the two sets cannot drift apart.
-pub type SigQueues = Spinlock<[VecDeque<SigInfo>; 64], TaskListClass>;
+/// One per-signal record slot for every signo — Linux's `struct
+/// sigpending::list`, indexed by `signum::sigq_index` so a dequeue is O(1)
+/// without walking a list.
+pub const SIGQ_SLOTS: usize = 64;
+
+/// `ThreadGroup`'s copy of that array, behind a `Box` because `ThreadGroup` is
+/// built BY VALUE inside `Task::new_with_mm` before it is moved into its `Arc`:
+/// an inline `[VecDeque<SigInfo>; 64]` is 2 KiB of stack in a frame that was
+/// already 4.2 KiB on a 16 KiB guard-paged kstack, and the clone path overflowed
+/// into the guard page (`#DF`, caught by the boot gate). `vec![…]` builds on the
+/// heap directly, so no stack temporary is ever materialised.
+pub type SigQueues = Spinlock<alloc::boxed::Box<[VecDeque<SigInfo>]>, TaskListClass>;
+
+/// Heap-build an empty record array. # C: O(SIGQ_SLOTS)
+pub fn new_queues() -> SigQueues {
+    Spinlock::new(alloc::vec![VecDeque::new(); SIGQ_SLOTS].into_boxed_slice())
+}
 
 /// Reserve the complete bounded queue for `signo` so an IRQ-context producer
 /// can publish without allocating. # C: O(RT_QUEUE_CAP)
 /// # Ctx: process
-pub fn queues_reserve(q: &SigQueues, signo: u32) {
+pub fn queues_reserve<A: AsMut<[VecDeque<SigInfo>]>>(q: &Spinlock<A, TaskListClass>, signo: u32) {
     let Some(idx) = signum::sigq_index(signo) else { return };
-    let mut queues = q.lock();
+    let mut g = q.lock();
+    let queues = g.as_mut();
     let additional = queue_cap(signo).saturating_sub(queues[idx].len());
     queues[idx].reserve(additional);
 }
@@ -36,9 +48,10 @@ pub fn queues_reserve(q: &SigQueues, signo: u32) {
 /// Enqueue `info`, honouring the per-signal depth cap. `false` = dropped by
 /// the cap (Linux drops silently and still sets the pending bit).
 /// # C: O(1)
-pub fn queues_push(q: &SigQueues, info: SigInfo) -> bool {
+pub fn queues_push<A: AsMut<[VecDeque<SigInfo>]>>(q: &Spinlock<A, TaskListClass>, info: SigInfo) -> bool {
     let Some(idx) = signum::sigq_index(info.signo) else { return false };
-    let mut g = q.lock();
+    let mut gg = q.lock();
+    let g = gg.as_mut();
     if g[idx].len() >= queue_cap(info.signo) { return false; }
     debug_assert!(g[idx].len() < g[idx].capacity(),
         "IRQ signal producer must reserve queue capacity in process context");
@@ -49,9 +62,10 @@ pub fn queues_push(q: &SigQueues, info: SigInfo) -> bool {
 /// Pop the longest-waiting record for `signo`; the bool is "queue empty AFTER
 /// the pop", which is what keeps a real-time signal's pending bit set while
 /// records remain. # C: O(1)
-pub fn queues_pop(q: &SigQueues, signo: u32) -> (Option<SigInfo>, bool) {
+pub fn queues_pop<A: AsMut<[VecDeque<SigInfo>]>>(q: &Spinlock<A, TaskListClass>, signo: u32) -> (Option<SigInfo>, bool) {
     let Some(idx) = signum::sigq_index(signo) else { return (None, true) };
-    let mut g = q.lock();
+    let mut gg = q.lock();
+    let g = gg.as_mut();
     let info = g[idx].pop_front();
     let empty = g[idx].is_empty();
     (info, empty)
@@ -59,9 +73,9 @@ pub fn queues_pop(q: &SigQueues, signo: u32) -> (Option<SigInfo>, bool) {
 
 /// Linux `flush_sigqueue_mask` for one signal: discard every queued record.
 /// # C: O(queued)
-pub fn queues_clear(q: &SigQueues, signo: u32) {
+pub fn queues_clear<A: AsMut<[VecDeque<SigInfo>]>>(q: &Spinlock<A, TaskListClass>, signo: u32) {
     let Some(idx) = signum::sigq_index(signo) else { return };
-    q.lock()[idx].clear();
+    q.lock().as_mut()[idx].clear();
 }
 
 /// `legacy_queue` depth for a standard (non-real-time) signal: Linux keeps at
