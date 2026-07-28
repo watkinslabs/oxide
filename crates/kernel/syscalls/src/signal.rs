@@ -67,22 +67,25 @@ pub fn runs_user_handler(p: &PendingSignal) -> bool {
 pub fn take_lowest_pending() -> Option<PendingSignal> {
     use core::sync::atomic::Ordering;
     let cur = sched::live::current()?;
-    let pending = cur.sigpending.load(Ordering::Acquire);
+    // Linux `dequeue_signal` looks at BOTH pending sets: the thread's private
+    // one and its process' `signal->shared_pending`. A worker thread that only
+    // ever consulted its own word was blind to every `kill(2)`, which is
+    // posted against the process.
+    let pending = sched::live::sigpend::all_pending(&cur);
     let masked  = cur.sigmask.load(Ordering::Acquire);
     // signal(7): SIGKILL/SIGSTOP bypass the mask, so a masked fatal signal can
     // never wedge a task unkillable; everything else honours the mask. Lowest
     // pending wins (Linux next_signal).
     let sig = sched::signum::next_deliverable(pending, masked)?;
-    // One owner for "which queue backs this signal, and when does its pending
-    // bit clear" (`Task::dequeue_siginfo`): RT signals keep the bit while
-    // records remain, SIGCHLD does the same over its child-event queue so a
-    // reaper handling N exits sees N deliveries, standard signals clear on
-    // take but still surrender the single `legacy_queue` record an
-    // SA_SIGINFO handler reads (si_code / si_pid / si_value).
-    let (info, empty) = cur.dequeue_siginfo(sig);
-    if empty {
-        cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-    }
+    // One owner for "which set holds this signal, which queue backs it, and
+    // when does its pending bit clear" (`sigpend::dequeue_signal`): private
+    // set first then shared, RT signals keep the bit while records remain,
+    // SIGCHLD does the same over its child-event queue so a reaper handling N
+    // exits sees N deliveries, standard signals clear on take but still
+    // surrender the single `legacy_queue` record an SA_SIGINFO handler reads.
+    // `None` = a concurrent consumer won the claim, which is Linux's
+    // `get_signal` seeing `dequeue_signal` return 0.
+    let info = sched::live::sigpend::dequeue_signal(&cur, sig)?;
     let h = cur.sigactions_ref().get(sig);
     // SIGKILL/SIGSTOP can never be caught or ignored (signal(7)): force SIG_DFL
     // so a stale/buggy handler-table slot can't intercept them. rt_sigaction

@@ -4,6 +4,8 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
+pub mod shared_signal;
+
 use crate::pid::PidIdentity;
 use crate::task::PosixTimer;
 use crate::Task;
@@ -99,6 +101,16 @@ pub struct ThreadGroup {
     /// the reap path reads it while holding the `ZOMBIES` list, another
     /// `TaskList`-class lock (`06§3.6` forbids that nesting).
     group_exit_code: AtomicI32,
+    /// Linux `signal_struct::shared_pending.signal` — the PROCESS-directed
+    /// pending bitmap, the set `kill(2)`/`kill_pgrp`/`sigqueue(3)` post into
+    /// and that ANY thread of the group may dequeue from. See
+    /// `thread_group/shared_signal.rs` for why it cannot live on the leader's
+    /// `Task`.
+    shared_pending: AtomicU64,
+    /// Linux `signal_struct::shared_pending.list` — the queued `siginfo_t`
+    /// records behind `shared_pending`, same per-signal shape and depth policy
+    /// as the thread-private set (`crate::sigqueue::SigQueues`).
+    shared_sigqueue: crate::sigqueue::SigQueues,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
 }
@@ -127,6 +139,8 @@ impl ThreadGroup {
             is_child_subreaper: AtomicBool::new(false),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
+            shared_pending: AtomicU64::new(0),
+            shared_sigqueue: crate::sigqueue::new_queues(),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
@@ -154,10 +168,7 @@ impl ThreadGroup {
     }
 
     /// The group leader's `Task`, straight off the group's own PID identity —
-    /// O(1), no registry lock and no scan. Process-DIRECTED signals land on
-    /// the leader's pending set in this kernel (`kill(2)` resolves a tgid to
-    /// its leader), so this is where `signal_struct::shared_pending` lives.
-    /// # C: O(1)
+    /// O(1), no registry lock and no scan. # C: O(1)
     pub fn leader_task(&self) -> Option<Arc<Task>> { self.leader.task() }
 
     /// `prctl(PR_GET_CHILD_SUBREAPER)`. # C: O(1)
