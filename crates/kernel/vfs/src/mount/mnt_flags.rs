@@ -104,6 +104,20 @@ impl Mount {
     pub fn is_nodev(&self) -> bool { self.flags() & MNT_NODEV != 0 }
     /// Execution of binaries disallowed (`MNT_NOEXEC`). # C: O(1)
     pub fn is_noexec(&self) -> bool { self.flags() & MNT_NOEXEC != 0 }
+    /// Linux `fs/namespace.c` `mnt_may_suid`: whether `execve` of a binary on
+    /// this mount may honour its set-user-ID / set-group-ID bits AND its
+    /// `security.capability` xattr — one gate covers both, per
+    /// `security/commoncap.c` `get_file_caps`.
+    ///
+    /// Linux also demands `check_mnt(real_mount(mnt))` (the mount belongs to
+    /// the caller's mount namespace, so a foreign mount reached through
+    /// `/proc/<pid>/root` is treated as nosuid) and
+    /// `current_in_userns(mnt->mnt_sb->s_user_ns)`. Every superblock in this
+    /// tree is owned by the initial user namespace, of which every namespace is
+    /// a descendant, so the latter is unconditionally true; the mount-namespace
+    /// test lives at the resolution layer, which is what produced this mount.
+    /// # C: O(1)
+    pub fn may_suid(&self) -> bool { !self.is_nosuid() && !self.sb().is_nosuid() }
     /// atime never updated (`MNT_NOATIME`). # C: O(1)
     pub fn is_noatime(&self) -> bool { self.flags() & MNT_NOATIME != 0 }
     /// Directory atime never updated (`MNT_NODIRATIME`). # C: O(1)
