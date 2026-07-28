@@ -51,7 +51,7 @@ pub(crate) fn symlink_impl(dirfd: i32, target: Vec<u8>, link: String) -> i64 {
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);
-            vfs::fire_dirent_create(&parent.inode, &name);
+            vfs::fire_dirent_create(&parent.inode, &name, false);
             0
         }
         Err(e)  => {

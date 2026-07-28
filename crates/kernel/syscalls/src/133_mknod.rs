@@ -86,7 +86,7 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);
-            vfs::fire_dirent_create(&parent.inode, &name);
+            vfs::fire_dirent_create(&parent.inode, &name, real_ftype == S_IFDIR);
             0
         }
         Err(e)  => {

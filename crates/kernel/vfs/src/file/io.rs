@@ -79,7 +79,7 @@ impl File {
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if n > 0 {
-            fire_read_hook(&self.inode);
+            fire_read_hook(&self.inode, &self.dentry);
         }
         Ok(n)
     }
@@ -185,7 +185,7 @@ impl File {
         // inotify IN_MODIFY hook (no-op when nothing installed).
         if n > 0 {
             self.file_update_time();
-            fire_write_hook(&self.inode);
+            fire_write_hook(&self.inode, &self.dentry);
         }
         Ok(n)
     }
@@ -282,7 +282,7 @@ impl File {
             self.f_op.read(&self.inode, off as u64, buf)?
         };
         if n > 0 {
-            fire_read_hook(&self.inode);
+            fire_read_hook(&self.inode, &self.dentry);
         }
         Ok(n)
     }
@@ -359,7 +359,7 @@ impl File {
         };
         if n > 0 {
             self.file_update_time();
-            fire_write_hook(&self.inode);
+            fire_write_hook(&self.inode, &self.dentry);
         }
         Ok(n)
     }
@@ -412,7 +412,7 @@ impl File {
         self.pos.store(pos + total, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
-            fire_read_hook(&self.inode);
+            fire_read_hook(&self.inode, &self.dentry);
         }
         Ok(total as usize)
     }
@@ -476,7 +476,7 @@ impl File {
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {
             self.file_update_time();
-            fire_write_hook(&self.inode);
+            fire_write_hook(&self.inode, &self.dentry);
         }
         Ok(total as usize)
     }

@@ -2,6 +2,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::Spinlock;
 
+use alloc::sync::Arc;
+
+use crate::dentry::Dentry;
 use crate::inode::InodeRef;
 use crate::types::OpenFlags;
 
@@ -40,21 +43,22 @@ const CLOSE_HOOK_SLOTS: usize = 4;
 #[derive(Copy, Clone)]
 struct InodeHooks {
     /// IN_OPEN — fired at `File::new_at` (Linux `fsnotify_open`).
-    open:  Option<fn(&InodeRef)>,
+    open:  Option<fn(&InodeRef, &Arc<Dentry>)>,
     /// IN_ACCESS — fired after a `read` returns >0 (Linux `fsnotify_access`).
-    read:  Option<fn(&InodeRef)>,
+    read:  Option<fn(&InodeRef, &Arc<Dentry>)>,
     /// IN_MODIFY — fired after a `write` returns >0 (Linux `fsnotify_modify`).
-    write: Option<fn(&InodeRef)>,
+    write: Option<fn(&InodeRef, &Arc<Dentry>)>,
     /// Per-reference clone (fork_clone / dup / dup2): pipe writer-count++.
     /// `bool` = opened-writable.
     clone: Option<fn(&InodeRef, bool)>,
     /// IN_CLOSE_* + pipe close accounting, fired in `File::Drop`. Multiple
     /// subsystems register; every occupied slot fires. `bool` = was-writable.
-    close: [Option<fn(&InodeRef, bool)>; CLOSE_HOOK_SLOTS],
-    /// IN_CREATE — dirent created in a watched parent inode. Args: (parent, leaf).
-    dirent_create: Option<fn(&InodeRef, &str)>,
-    /// IN_DELETE — dirent removed from a watched parent inode. Args: (parent, leaf).
-    dirent_delete: Option<fn(&InodeRef, &str)>,
+    close: [Option<fn(&InodeRef, bool, &Arc<Dentry>)>; CLOSE_HOOK_SLOTS],
+    /// IN_CREATE — dirent created in a watched parent inode.
+    /// Args: (parent, leaf, leaf-is-a-directory).
+    dirent_create: Option<fn(&InodeRef, &str, bool)>,
+    /// IN_DELETE — dirent removed from a watched parent inode. Same args.
+    dirent_delete: Option<fn(&InodeRef, &str, bool)>,
 }
 
 impl InodeHooks {
@@ -74,7 +78,7 @@ impl sync::LockClass for HookReg { fn rank() -> u16 { 33 } fn name() -> &'static
 static HOOKS: Spinlock<InodeHooks, HookReg> = Spinlock::new(InodeHooks::new());
 
 /// Snapshot installed close hooks before running foreign callbacks. # C: O(1)
-pub(super) fn close_hooks() -> [Option<fn(&InodeRef, bool)>; CLOSE_HOOK_SLOTS] {
+pub(super) fn close_hooks() -> [Option<fn(&InodeRef, bool, &Arc<Dentry>)>; CLOSE_HOOK_SLOTS] {
     HOOKS.lock().close
 }
 
@@ -84,18 +88,18 @@ pub(super) fn flock_release_hook() -> u64 {
 }
 
 /// Install the open hook (fires IN_OPEN at `File::new_at`). # C: O(1)
-pub fn set_open_hook(f: fn(&InodeRef))  { HOOKS.lock().open = Some(f); }
+pub fn set_open_hook(f: fn(&InodeRef, &Arc<Dentry>))  { HOOKS.lock().open = Some(f); }
 
 /// Install the read hook (fires IN_ACCESS after `File::read` returns >0). # C: O(1)
-pub fn set_read_hook(f: fn(&InodeRef))  { HOOKS.lock().read = Some(f); }
+pub fn set_read_hook(f: fn(&InodeRef, &Arc<Dentry>))  { HOOKS.lock().read = Some(f); }
 
 /// Install the post-write hook used by inotify(7) to fire IN_MODIFY. # C: O(1)
-pub fn set_write_hook(f: fn(&InodeRef)) { HOOKS.lock().write = Some(f); }
+pub fn set_write_hook(f: fn(&InodeRef, &Arc<Dentry>)) { HOOKS.lock().write = Some(f); }
 
 /// Install a close hook (fires at `File::Drop`; `bool` = opened-writable).
 /// Takes the next free slot; panics if the table is full so a misconfiguration
 /// is loud rather than silent. # C: O(N) slot scan, N=4 fixed.
-pub fn set_close_hook(f: fn(&InodeRef, bool)) {
+pub fn set_close_hook(f: fn(&InodeRef, bool, &Arc<Dentry>)) {
     let mut h = HOOKS.lock();
     for slot in h.close.iter_mut() {
         if slot.is_none() { *slot = Some(f); return; }
@@ -130,36 +134,36 @@ pub fn fire_clone_hook(file: &File) {
 /// Install the dirent-create hook (fires IN_CREATE; args (parent inode, leaf)).
 /// Fired after namespace mutations so inotify watches on the resolved parent
 /// directory can dispatch IN_CREATE without re-resolving a rendered path. # C: O(1)
-pub fn set_dirent_create_hook(f: fn(&InodeRef, &str)) { HOOKS.lock().dirent_create = Some(f); }
+pub fn set_dirent_create_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_create = Some(f); }
 /// Install the dirent-delete hook (fires IN_DELETE; args (parent inode, leaf)). # C: O(1)
-pub fn set_dirent_delete_hook(f: fn(&InodeRef, &str)) { HOOKS.lock().dirent_delete = Some(f); }
+pub fn set_dirent_delete_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_delete = Some(f); }
 
 /// Fire the dirent-create hook (no-op when not installed). # C: O(1)
-pub fn fire_dirent_create(parent: &InodeRef, leaf: &str) {
+pub fn fire_dirent_create(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {
     let h = HOOKS.lock().dirent_create;
-    if let Some(f) = h { f(parent, leaf); }
+    if let Some(f) = h { f(parent, leaf, leaf_is_dir); }
 }
 
 /// Fire the dirent-delete hook (no-op when not installed). # C: O(1)
-pub fn fire_dirent_delete(parent: &InodeRef, leaf: &str) {
+pub fn fire_dirent_delete(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {
     let h = HOOKS.lock().dirent_delete;
-    if let Some(f) = h { f(parent, leaf); }
+    if let Some(f) = h { f(parent, leaf, leaf_is_dir); }
 }
 
 /// Fire the IN_OPEN hook (no-op when not installed). # C: O(1)
-pub(crate) fn fire_open_hook(inode: &InodeRef) {
+pub(crate) fn fire_open_hook(inode: &InodeRef, dentry: &Arc<Dentry>) {
     let h = HOOKS.lock().open;
-    if let Some(f) = h { f(inode); }
+    if let Some(f) = h { f(inode, dentry); }
 }
 
 /// Fire the IN_ACCESS hook (no-op when not installed). # C: O(1)
-pub(crate) fn fire_read_hook(inode: &InodeRef) {
+pub(crate) fn fire_read_hook(inode: &InodeRef, dentry: &Arc<Dentry>) {
     let h = HOOKS.lock().read;
-    if let Some(f) = h { f(inode); }
+    if let Some(f) = h { f(inode, dentry); }
 }
 
 /// Fire the IN_MODIFY hook (no-op when not installed). # C: O(1)
-pub(crate) fn fire_write_hook(inode: &InodeRef) {
+pub(crate) fn fire_write_hook(inode: &InodeRef, dentry: &Arc<Dentry>) {
     let h = HOOKS.lock().write;
-    if let Some(f) = h { f(inode); }
+    if let Some(f) = h { f(inode, dentry); }
 }
