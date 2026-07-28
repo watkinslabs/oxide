@@ -69,6 +69,16 @@ impl File {
         {
             f_mode |= Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
         }
+        // FMODE_NOWAIT (Linux `do_dentry_open`: set by filesystems whose
+        // read/write paths honour `IOCB_NOWAIT`). Claimed only for a regular
+        // file with a page-cache address space, because that is exactly the
+        // case where `AddressSpaceOps::mincore_page` can answer "is this byte
+        // available without I/O" — the question `RWF_NOWAIT` asks. Anything
+        // else leaves the bit clear and gets `EOPNOTSUPP`, which is what Linux
+        // does for a filesystem that has not opted in.
+        if matches!(inode.file_type(), FileType::Regular) && inode.i_mapping().is_some() {
+            f_mode |= Fmode::NOWAIT;
+        }
         // D11 (`16§97` lockref): the open file description pins its dentry with a
         // `d_count` ref (Linux `struct file` holds a `dget`'d `f_path.dentry`);
         // the matching `dput` is in `File::drop`.
