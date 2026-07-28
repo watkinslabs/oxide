@@ -105,7 +105,7 @@ mod membarrier;
 mod mmfields;
 mod ops;
 
-pub use limits::{MIN_USER_VA, MMAP_BASE_GAP, MMAP_TOP};
+pub use limits::{MIN_USER_VA, MMAP_TOP};
 pub use accounting::{global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown, VmAccountingSnapshot};
 pub use mmfields::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
