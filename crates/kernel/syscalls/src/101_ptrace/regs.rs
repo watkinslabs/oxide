@@ -65,10 +65,13 @@ pub mod x86 {
     pub const U_FS:      usize = 25;
     pub const U_GS:      usize = 26;
 
-    /// Linux `FLAG_MASK` — the EFLAGS bits a tracer may install
-    /// (CF PF AF ZF SF TF DF OF RF AC). Everything else keeps the
-    /// kernel's value, so IF/IOPL cannot be forged from userspace.
-    pub const FLAG_MASK: u64 = 0x0005_0DD5;
+    /// Linux x86_64 `FLAG_MASK` = `FLAG_MASK_32 | X86_EFLAGS_NT`
+    /// (`arch/x86/kernel/ptrace.c`) — the EFLAGS bits a tracer may install
+    /// (CF PF AF ZF SF TF DF OF RF AC NT). Everything else keeps the kernel's
+    /// value, so IF/IOPL cannot be forged from userspace. Owned by
+    /// `hal::uregs` so this and `rt_sigreturn`'s stricter `FIX_EFLAGS` cannot
+    /// drift apart.
+    pub const FLAG_MASK: u64 = hal::uregs::x86_64::PTRACE_FLAG_MASK;
 
     /// Segment-register context the frame does not carry.
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -150,7 +153,7 @@ pub mod x86 {
         f[F_ORIG_RAX] = u[U_ORIG_RAX];
         f[F_RIP] = u[U_RIP];
         f[F_RSP] = u[U_RSP];
-        f[F_RFLAGS] = (f[F_RFLAGS] & !FLAG_MASK) | (u[U_EFLAGS] & FLAG_MASK);
+        f[F_RFLAGS] = hal::uregs::x86_64::ptrace_eflags(f[F_RFLAGS], u[U_EFLAGS]);
         seg.cs = u[U_CS]; seg.ss = u[U_SS];
         seg.ds = u[U_DS]; seg.es = u[U_ES];
         seg.fs = u[U_FS]; seg.gs = u[U_GS];
@@ -185,30 +188,27 @@ pub mod arm64 {
     pub const U_PC: usize = 32;
     pub const U_PSTATE: usize = 33;
 
-    /// `SPSR_EL1` fields consulted by Linux `valid_native_regs`.
-    pub const PSR_MODE_MASK:  u64 = 0x0000_000f;
-    pub const PSR_MODE_EL0T:  u64 = 0x0000_0000;
-    pub const PSR_MODE32_BIT: u64 = 0x0000_0010;
-    pub const PSR_F_BIT:      u64 = 0x0000_0040;
-    pub const PSR_I_BIT:      u64 = 0x0000_0080;
-    pub const PSR_A_BIT:      u64 = 0x0000_0100;
-    pub const PSR_D_BIT:      u64 = 0x0000_0200;
-    /// N|Z|C|V — the only bits kept when a tracer supplies an invalid PSTATE.
-    pub const PSR_NZCV: u64 = 0xf000_0000;
+    /// `SPSR_EL1` fields consulted by Linux `valid_native_regs`. Owned by
+    /// `hal::uregs::aarch64` — the same rule `rt_sigreturn` applies.
+    pub use hal::uregs::aarch64::{
+        PSR_A_BIT, PSR_D_BIT, PSR_F_BIT, PSR_I_BIT, PSR_MODE32_BIT, PSR_MODE_EL0T,
+        PSR_MODE_MASK, PSR_NZCV, PSR_SS_BIT,
+    };
 
     /// Linux `valid_native_regs`: a tracer-supplied PSTATE is accepted whole
     /// only when it still describes unmasked EL0t AArch64 execution; anything
     /// else collapses to the condition flags, so a tracer can never promote
-    /// the tracee's exception level or mask its interrupts.
+    /// the tracee's exception level or mask its interrupts. RES0 bits (IL,
+    /// PAN, UAO, bits 63:32) are masked off either way.
+    ///
+    /// Linux's `gpr_set` rejects an invalid set with `-EINVAL` and writes
+    /// NOTHING; we sanitize in place, which is strictly narrower (the tracee
+    /// still cannot escalate) but reports success. Tracked as a fidelity gap.
     /// # C: O(1)
     pub fn sanitize_pstate(new: u64) -> u64 {
-        let ok = (new & PSR_MODE_MASK) == PSR_MODE_EL0T
-            && (new & PSR_MODE32_BIT) == 0
-            && (new & PSR_D_BIT) == 0
-            && (new & PSR_A_BIT) == 0
-            && (new & PSR_I_BIT) == 0
-            && (new & PSR_F_BIT) == 0;
-        if ok { new } else { new & PSR_NZCV }
+        // `single_step` is false: the software-step bit is (re-)armed after
+        // dispatch from `Task.singlestep`, never from the tracer's word.
+        hal::uregs::aarch64::sanitize_native_pstate(new, false).0
     }
 
     /// Materialise `struct user_pt_regs`. `x0` is supplied separately for the

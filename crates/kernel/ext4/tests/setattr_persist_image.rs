@@ -56,6 +56,7 @@ const D5_MODE: u16 = 0o2750;
 const D5_ATIME: u64 = 1_600_000_000 * 1_000_000_000 + 123_456_789;
 const D5_MTIME: u64 = 1_700_000_000 * 1_000_000_000 + 987_654_321;
 const D5_CTIME: u64 = 1_650_000_000 * 1_000_000_000 + 555_000_111;
+fn ts(ns: u64) -> vfs::Timespec64 { vfs::Timespec64::from_clock_ns(ns) }
 
 #[test]
 fn chmod_chown_utimes_survive_remount() {
@@ -69,7 +70,7 @@ fn chmod_chown_utimes_survive_remount() {
     let ia = vfs::Iattr {
         valid: vfs::ATTR_MODE | vfs::ATTR_UID | vfs::ATTR_GID | vfs::ATTR_ATIME | vfs::ATTR_MTIME,
         mode: D5_MODE, uid: D5_UID, gid: D5_GID,
-        atime_ns: D5_ATIME, mtime_ns: D5_MTIME, ctime_ns: D5_CTIME, size: 0,
+        atime: ts(D5_ATIME), mtime: ts(D5_MTIME), ctime: ts(D5_CTIME), size: 0,
     };
     inode.setattr(&Idmap::identity(), &ia).expect("ext4 setattr");
 
@@ -86,9 +87,9 @@ fn chmod_chown_utimes_survive_remount() {
     assert_eq!(node.perm(), Some(D5_MODE & 0o7777), "remount: chmod persisted (incl. setgid)");
     assert_eq!(node.uid(), Some(D5_UID), "remount: chown uid persisted (>16-bit high half)");
     assert_eq!(node.gid(), Some(D5_GID), "remount: chown gid persisted (>16-bit high half)");
-    assert_eq!(node.atime(), Some(D5_ATIME), "remount: utimes atime persisted (ns)");
-    assert_eq!(node.mtime(), Some(D5_MTIME), "remount: utimes mtime persisted (ns)");
-    assert_eq!(node.ctime(), Some(D5_CTIME), "remount: ctime persisted (ns)");
+    assert_eq!(node.atime(), Some(ts(D5_ATIME)), "remount: utimes atime persisted (ns)");
+    assert_eq!(node.mtime(), Some(ts(D5_MTIME)), "remount: utimes mtime persisted (ns)");
+    assert_eq!(node.ctime(), Some(ts(D5_CTIME)), "remount: ctime persisted (ns)");
 }
 
 #[test]
@@ -108,8 +109,8 @@ fn size_setattr_persists_size_and_times_in_one_inode_write() {
     let ia = vfs::Iattr {
         valid: vfs::ATTR_SIZE | vfs::ATTR_MTIME | vfs::ATTR_CTIME,
         size: bs,
-        mtime_ns: new_mtime,
-        ctime_ns: new_ctime,
+        mtime: ts(new_mtime),
+        ctime: ts(new_ctime),
         ..Default::default()
     };
     st.mount.fail_inode_write_after_for_tests(1);
@@ -123,6 +124,6 @@ fn size_setattr_persists_size_and_times_in_one_inode_write() {
     let (m2, _sb2) = mount(disk);
     let node = m2.state().lookup_inode_any(b"/truncate-d5.txt").expect("lookup truncate-d5 after remount");
     assert_eq!(node.size(), bs, "remount: size persisted");
-    assert_eq!(node.mtime(), Some(new_mtime), "remount: mtime persisted with size");
-    assert_eq!(node.ctime(), Some(new_ctime), "remount: ctime persisted with size");
+    assert_eq!(node.mtime(), Some(ts(new_mtime)), "remount: mtime persisted with size");
+    assert_eq!(node.ctime(), Some(ts(new_ctime)), "remount: ctime persisted with size");
 }
