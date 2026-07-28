@@ -30,14 +30,29 @@ pub(super) const DRM_RENDER_INO: vfs::Ino = 0x4452_4D52_0000_0000;
 pub(super) struct DrmCardFileOps;
 impl vfs::FileOps for DrmCardFileOps {
     /// read(2) on the card fd drains queued KMS events (DRM page-flip
-    /// completions) as `drm_event_vblank` records — Linux `drm_read`.
-    /// 0 bytes when no event is pending (libdrm polls then reads).
+    /// completions) as `drm_event_vblank` records — Linux `drm_read`
+    /// (`drivers/gpu/drm/drm_file.c`).
+    ///
+    /// Linux NEVER returns 0 here: with nothing queued it answers `-EAGAIN`
+    /// for `O_NONBLOCK` and otherwise sleeps on `file_priv->event_wait`. A
+    /// 0-byte read is EOF to a GLib fd source, which then tears the source
+    /// down and re-dispatches it forever.
     /// # C: O(events)
     fn read_file(&self, file: &File, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
         let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
-            return Ok(0);
+            return Err(vfs::VfsError::Einval);
         };
-        Ok(crate::crtc::drain_events(card_id, file_token(file), b))
+        let token = file_token(file);
+        let n = crate::crtc::drain_events(card_id, token, b);
+        if n > 0 { return Ok(n); }
+        // Linux distinguishes two zero-copy cases and we must too. A buffer too
+        // small for the first queued event takes `put_back_event` → `break` →
+        // `return ret` with ret == 0 — there is no minimum-`count` guard in
+        // `drm_read`, so 0 is the correct answer there. Only an EMPTY queue
+        // reaches the EAGAIN/sleep arm. Collapsing the two would either report
+        // EOF on a short buffer or spin a reader that will never fit a record.
+        if crate::crtc::has_events(card_id, token) { return Ok(0); }
+        Err(vfs::VfsError::Eagain)
     }
     fn poll_open_file(&self, file: &File) -> u32 {
         let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
@@ -115,8 +130,26 @@ pub(super) fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> 
 pub(super) fn make_card_inode(card_id: u32) -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_CARD_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
                            vfs::default_inode_ops(), Arc::new(DrmCardFileOps))
+        .poll_subs_arc(card_poll_subs(card_id))
         .rdev(vfs::Devt::new(DRM_MAJOR, card_id).raw()).build()
 }
+
+/// Per-card epoll subscriber set, shared between the card inode and the event
+/// queue that wakes it. The inode adopts this exact `Arc` (`poll_subs_arc`, the
+/// same arrangement `/dev/fuse` uses) so a waiter subscribes to the object
+/// `crtc::queue_flip_event` notifies — a second set would leave every poller
+/// registered on something nothing ever wakes.
+/// # C: O(cards)
+pub(crate) fn card_poll_subs(card_id: u32) -> Arc<vfs::PollSubscribers> {
+    let mut g = CARD_POLL.lock();
+    if let Some((_, s)) = g.iter().find(|(id, _)| *id == card_id) { return s.clone(); }
+    let s = Arc::new(vfs::PollSubscribers::new());
+    g.push((card_id, s.clone()));
+    s
+}
+
+static CARD_POLL: Spinlock<Vec<(u32, Arc<vfs::PollSubscribers>)>, OpsLockClass> =
+    Spinlock::new(Vec::new());
 /// Build a `/dev/dri/renderD128+N` inode (sink f_op). `i_rdev` = `(226, 128+N)`
 /// (Linux DRM render minors start at 128), same rationale as the card node. # C: O(1)
 pub(super) fn make_render_inode(card_id: u32) -> vfs::InodeRef {
@@ -260,7 +293,9 @@ mod tests {
         let mut buf = [0u8; 64];
 
         assert_eq!(owner.poll(), vfs::POLL_OUT);
-        assert_eq!(owner.read(&mut buf), Ok(0));
+        // Linux `drm_read` never returns 0 on an EMPTY queue: `-EAGAIN` for
+        // O_NONBLOCK, otherwise it sleeps on `event_wait`. 0 would be EOF.
+        assert_eq!(owner.read(&mut buf), Err(vfs::VfsError::Eagain));
         crate::crtc::queue_flip_event(CARD, file_token(&owner), 7, 0xfeed_beef);
 
         assert_eq!(owner.poll(), vfs::POLL_IN | vfs::POLL_OUT);
