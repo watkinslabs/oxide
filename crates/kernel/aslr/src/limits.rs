@@ -1,0 +1,110 @@
+// Entropy budgets and address anchors. Every number here is a Linux constant,
+// cited to the file it came from; nothing is invented.
+
+use hal::{PAGE_SIZE_BYTES, USER_VA_END};
+
+/// `PAGE_SHIFT` — random words are drawn in PAGE units and shifted up, so a
+/// randomised base is page-aligned by construction (`mm/util.c:347`).
+pub const PAGE_SHIFT: u32 = PAGE_SIZE_BYTES.trailing_zeros();
+
+/// Linux `DEFAULT_MAP_WINDOW`: the VA span the default mapping window covers.
+/// x86_64 spells it `(1UL << 47) - PAGE_SIZE`
+/// (`arch/x86/include/asm/page_64_types.h:54`); arm64 spells the same idea as
+/// `1 << VA_BITS_MIN` (`arch/arm64/include/asm/memory.h:56`). This kernel pins
+/// ONE user ceiling for both arches — `hal::USER_VA_END`, 47 bits per `01§1` —
+/// so both derive the window from it instead of from Linux's per-arch literal.
+pub const DEFAULT_MAP_WINDOW: u64 = USER_VA_END - PAGE_SIZE_BYTES;
+
+/// Linux `ELF_ET_DYN_BASE`: the un-randomised load base for a PIE executable
+/// that carries a PT_INTERP. x86_64 (`arch/x86/include/asm/elf.h:234`):
+/// `DEFAULT_MAP_WINDOW / 3 * 2`. arm64 (`arch/arm64/include/asm/elf.h:143`):
+/// `2 * DEFAULT_MAP_WINDOW_64 / 3`. Same two-thirds-of-window rule, so one
+/// expression serves both. Page-aligned here because `load_bias` is fed
+/// through `ELF_PAGESTART` in `load_elf_binary` (`fs/binfmt_elf.c:1185`).
+pub const ELF_ET_DYN_BASE: u64 = (DEFAULT_MAP_WINDOW / 3 * 2) & !(PAGE_SIZE_BYTES - 1);
+
+/// Bytes reserved above `STACK_TOP`. Linux puts `STACK_TOP` at `TASK_SIZE`;
+/// this kernel keeps the top 64 KiB of the user half clear so a stack pointer
+/// one page past the top is still a non-canonical fault rather than a wrap.
+pub const STACK_TOP_RESERVE: u64 = 0x1_0000;
+
+/// Linux `STACK_TOP` — the pre-randomisation top of the initial stack.
+pub const STACK_TOP: u64 = USER_VA_END - STACK_TOP_RESERVE;
+
+/// Linux `stack_guard_gap` (`mm/mmap.c`, default `256 << PAGE_SHIFT`): the
+/// unmapped band a growable stack keeps below itself. Folded into the mmap
+/// gap so the arena can never be adjacent to the stack.
+pub const STACK_GUARD_GAP: u64 = 256 * PAGE_SIZE_BYTES;
+
+/// Linux `MIN_GAP` (`mm/util.c:428` `SZ_128M`; `arch/x86/mm/mmap.c:60`
+/// `SIZE_128M`): the floor on the distance from `STACK_TOP` down to
+/// `mmap_base`.
+pub const MIN_GAP: u64 = 128 * 1024 * 1024;
+
+/// Linux `MAX_GAP` (`mm/util.c:429`): `STACK_TOP / 6 * 5`.
+pub const MAX_GAP: u64 = STACK_TOP / 6 * 5;
+
+/// Ceiling on the stack VMA this kernel maps up front at execve. Linux maps
+/// only the argument pages and grows on demand, so it has no equivalent; here
+/// the initial reservation is `min(RLIMIT_STACK, this)` and `MAP_GROWSDOWN`
+/// covers the rest. Bounding it is what keeps `mmap_base` clear of
+/// `ELF_ET_DYN_BASE` for every reachable `RLIMIT_STACK`.
+pub const RLIM_STACK_MAP_CAP: u64 = 1024 * 1024 * 1024;
+
+/// Linux `arch_randomize_brk` range for a native 64-bit task: `SZ_1G`
+/// (`arch/x86/kernel/process.c:1032`, generic `mm/util.c:396`).
+pub const BRK_RND_RANGE: u64 = 1024 * 1024 * 1024;
+
+/// Per-arch randomisation budget. Linux scatters these across Kconfig
+/// (`ARCH_MMAP_RND_BITS*`) and arch headers (`STACK_RND_MASK`,
+/// `arch_align_stack`). Collecting them in one struct — rather than behind
+/// `#[cfg(target_arch)]` at each use site — is what lets a hosted test
+/// exercise BOTH arches' address math instead of only the host's.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Budget {
+    /// `CONFIG_ARCH_MMAP_RND_BITS` boot value. Neither x86 nor arm64 defines
+    /// `ARCH_MMAP_RND_BITS_DEFAULT`, so both boot at their `_MIN`
+    /// (`arch/Kconfig:1227`).
+    pub mmap_rnd_bits: u32,
+    /// `CONFIG_ARCH_MMAP_RND_BITS_MIN` — `vm.mmap_rnd_bits` floor.
+    pub mmap_rnd_bits_min: u32,
+    /// `CONFIG_ARCH_MMAP_RND_BITS_MAX` — `vm.mmap_rnd_bits` ceiling.
+    pub mmap_rnd_bits_max: u32,
+    /// `STACK_RND_MASK` — page-count mask in `randomize_stack_top`.
+    pub stack_rnd_mask: u64,
+    /// `arch_align_stack` jitter ceiling in bytes (exclusive).
+    pub align_stack_max: u32,
+}
+
+/// x86_64. `mmap_rnd_bits` 28..32 (`arch/x86/Kconfig:358-364`),
+/// `STACK_RND_MASK = 0x3fffff` (`arch/x86/include/asm/elf.h:326`, 22 bits =
+/// 16 GiB of stack-top slop), `arch_align_stack` subtracts
+/// `get_random_u32_below(8192)` (`arch/x86/kernel/process.c:1023`).
+pub const X86_64: Budget = Budget {
+    mmap_rnd_bits:     28,
+    mmap_rnd_bits_min: 28,
+    mmap_rnd_bits_max: 32,
+    stack_rnd_mask:    0x3f_ffff,
+    align_stack_max:   8192,
+};
+
+/// aarch64, 4 KiB pages. `mmap_rnd_bits` min 18 (`arch/arm64/Kconfig:299`);
+/// max 30 — the Kconfig's own `ARM64_VA_BITS=47` row (`arch/arm64/Kconfig:307`),
+/// which is this kernel's user VA width, NOT the 33 that a 48-bit-VA arm64
+/// would use. `STACK_RND_MASK = 0x3ffff >> (PAGE_SHIFT - 12)`
+/// (`arch/arm64/include/asm/elf.h:194`, 18 bits = 1 GiB). `arch_align_stack`
+/// subtracts `get_random_u32_below(PAGE_SIZE)`
+/// (`arch/arm64/kernel/process.c:816`) — narrower than x86's fixed 8192.
+pub const AARCH64: Budget = Budget {
+    mmap_rnd_bits:     18,
+    mmap_rnd_bits_min: 18,
+    mmap_rnd_bits_max: 30,
+    stack_rnd_mask:    0x3_ffff >> (PAGE_SHIFT - 12),
+    align_stack_max:   PAGE_SIZE_BYTES as u32,
+};
+
+/// The budget for the arch this kernel is being built for.
+#[cfg(target_arch = "aarch64")]
+pub const CURRENT: Budget = AARCH64;
+#[cfg(not(target_arch = "aarch64"))]
+pub const CURRENT: Budget = X86_64;

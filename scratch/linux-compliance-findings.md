@@ -88,6 +88,7 @@ ran `connect`. **Absence of a mapping is not `ENOSYS`** — it must be an explic
 
 1. **#1/#2 timeout floor** — largest user-visible win, self-contained, one-shot programmer already exists.
 2. **#13/#14 signal-frame escalation + `AT_RANDOM`** — security, both small and isolated.
+   `AT_RANDOM` closed by `F768` (execve) and `F771` (PID 1 spawn); ASLR itself closed by `F771`.
 3. **#4 durable write** — data loss; invisible to every test we currently run.
 4. **#5/#6 readiness** — removes an O(N) fallback the desktop leans on.
 5. **#3 signal delivery on IRQ/exception return** — correctness floor; `docs/54` governs both arches.
@@ -120,6 +121,26 @@ fixup, signature validation — both arches).
 
 ## 7 Corrections to earlier ledgers
 
+- **ASLR (`audit-mm.md` §1, `audit-net-sec.md` §A2): all six components implemented in F771.**
+  Two corrections to how those rows described Linux. (a) The dynamic linker's base is NOT an
+  independent random draw — `load_elf_interp` passes the main image's `load_bias` as `no_base`
+  and maps with hint 0 and no `MAP_FIXED`, so `get_unmapped_area` places it off the already
+  randomised `mmap_base` (`fs/binfmt_elf.c:686-689`). (b) The vDSO likewise has NO dedicated
+  random slot on x86_64 or arm64 in v7.2.0-rc4; `map_vdso_randomized()` no longer exists and
+  `vdso_addr()` survives only on s390/sparc. Both are `get_unmapped_area(NULL, 0, ...)` +
+  `_install_special_mapping`. Implementing them therefore meant routing both through the arena,
+  not inventing draws Linux does not take.
+- **`personality(ADDR_NO_RANDOMIZE)` is no longer a no-op.** It is read by
+  `exec_transition::exec_rnd` with `per_clear` folded in first, matching Linux's ordering
+  (`begin_new_exec` applies `per_clear` before `load_elf_binary` derives `PF_RANDOMIZE`), so a
+  setuid exec cannot inherit a pre-armed bit. `setarch -R` now produces a genuinely fixed layout.
+- **`kernel.randomize_va_space` no longer lies in either direction.** Bound to `aslr`'s live
+  cell; default `2`, and all three modes behave as documented. Linux registers this leaf with
+  plain `proc_dointvec` and no min/max — the previous `Some((0,2))` bounds were not Linux.
+- **A second clock-derived `AT_RANDOM` survived `F768` in the PID 1 boot spawn** (`smoke/src/elf.rs`,
+  `smoke/src/elf_arm.rs` both built `random16` from one `monotonic_ns()` sample). F768 fixed only
+  the `execve` path. Both now call `crng::fill`, so the most privileged process on the system no
+  longer gets a guessable stack canary.
 - `partial-gap-triage.md` A1 lists `rseq` as missing `rseq_cs`/IP-fixup. **Stale** — only `rseq_signal_deliver` is absent.
 - `fadvise64 NOREUSE` is **not** a gap; Linux's effect is reclaim-bias only.
 - `RLIMIT_MEMLOCK` **is** enforced — but `mlockall(2)` and `mmap(MAP_LOCKED)` bypass it.

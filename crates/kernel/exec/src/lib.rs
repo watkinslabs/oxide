@@ -5,27 +5,30 @@
 // `AddressSpace` with `VmaBacking::KernelBytes` (P2-17). Returns
 // the entry-point VA the caller drops to user mode at.
 //
-// v1 scope (no VFS, no ld.so):
-//  - blob is `&'static [u8]` baked into the kernel image; future
-//    callers (execve via VFS) will pass a freshly-read inode page
-//    instead.
-//  - `ET_DYN` (PIE) is loaded at its declared `p_vaddr` — no
-//    `load_bias` randomisation yet (`31§6` ASLR is v1.x).
-//  - PT_INTERP / PT_TLS / PT_DYNAMIC are parsed but not acted on.
-//  - Stack + auxv build is the smoke driver's responsibility for
-//    now; the loader only places the executable image.
+// Module manifest:
+//   `load`  — PT_LOAD placement + R_*_RELATIVE self-relocation staging.
+//   `place` — the two Linux placement strategies and the phdr scans they need.
+//   `brk`   — `start_brk` selection and the heap window.
+//   `stack` — initial stack, argv/envp/auxv (kernel-only).
+//   `uapi`  — auxv keys.
+//
+// Address randomisation is `aslr::ExecRnd`, drawn once per exec by the execve
+// work fn and threaded in — the loader never draws its own, so every mapping
+// in one exec agrees about where the others are (`31§6`).
 
 #![no_std]
 
 extern crate alloc;
 
-use elf::{parse, ElfError, EM_X86_64};
+use elf::{parse, ElfError, ElfType, EM_X86_64};
 #[cfg(target_arch = "aarch64")]
 use elf::EM_AARCH64;
 use hal::UserVirtAddr;
 use vmm::{AddressSpace, VmaProt};
 
+mod brk;
 mod load;
+mod place;
 mod uapi;
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
@@ -61,11 +64,14 @@ impl From<ElfError> for LoadError {
 /// in AT_BASE so the dynamic linker can locate itself.
 #[derive(Copy, Clone, Debug)]
 pub struct LoadedImage {
-    /// The exec's own e_entry, biased by PIE_LOAD_BIAS for ET_DYN.
+    /// The exec's own e_entry, biased by the ET_DYN load bias.
     /// Becomes auxv AT_ENTRY; the dynamic linker hands control here
     /// after loading DT_NEEDED. Static-PIE binaries jump here directly.
     pub entry:      UserVirtAddr,
     pub brk:        UserVirtAddr,
+    /// The bias every `p_vaddr` in this image was placed at — Linux
+    /// `load_bias`. `0` for ET_EXEC. The interpreter's value becomes AT_BASE.
+    pub load_base:  u64,
     /// User VA where the program-header table lives. Computed by
     /// finding the PT_LOAD whose file range covers `e_phoff` and
     /// translating: `phdr_va = seg.vaddr + (phoff - seg.file_off)`.
@@ -134,26 +140,9 @@ fn read_interp_blob(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
 #[cfg(not(target_os = "oxide-kernel"))]
 fn read_interp_blob(_path: &[u8]) -> Option<alloc::vec::Vec<u8>> { None }
 
-/// Default load bias for ET_DYN (PIE) images. Real Linux
-/// randomises this per-exec; v1 uses a fixed value disjoint from
-/// the hand-rolled-blob VAs (0x400000) and from the user stack
-/// (0x501000). 0x10000000 keeps the user-half plenty of room.
-/// docs/31§6 ASLR is v1.x — fixed bias for now.
-const PIE_LOAD_BIAS: u64 = 0x1000_0000;
-
-/// Load bias for the dynamic-linker (PT_INTERP) image. Disjoint
-/// from `PIE_LOAD_BIAS` + the 64 MiB heap above the exec so the
-/// linker's PT_LOADs never collide with the exec's heap window.
-/// Real Linux randomises this; v1 fixed.
-const INTERP_LOAD_BIAS: u64 = 0x4000_0000;
-
 /// Load `blob` into `as_` per docs/31§4. Each PT_LOAD becomes a
 /// MAP_FIXED VMA with `VmaBacking::KernelBytes` (P2-17) so demand-
 /// paging copies the bytes from the kernel image on first touch.
-///
-/// PIE binaries (`ET_DYN`) get the fixed `PIE_LOAD_BIAS`; non-PIE
-/// (`ET_EXEC`) load at their declared `p_vaddr`. All `entry`,
-/// `phdr_va`, `brk`, and stack VAs are biased accordingly.
 ///
 /// `blob` only needs to live for the duration of this call: the
 /// segment bytes are copied into AS-owned staging Vecs (B22), so
@@ -168,10 +157,13 @@ struct LoadStaging {
     head_pad: usize,
 }
 
+/// `rnd` is this exec's randomisation draw. Callers that are not an execve
+/// (boot smoke drivers) pass `aslr::exec::NONE` for a fixed layout.
 /// # C: O(phdrs) parse + O(phdrs) mmap
 pub fn load_static_blob(
     blob: &[u8],
     as_: &AddressSpace,
+    rnd: &aslr::ExecRnd,
 ) -> Result<LoadedImage, LoadError> {
     // Two cases per Linux execve:
     //   * No PT_INTERP (static, static-PIE): the kernel is the
@@ -185,7 +177,21 @@ pub fn load_static_blob(
     //     on both images in this case.
     let exec_parsed = parse(blob, ARCH_MACHINE)?;
     let has_interp = exec_parsed.interp.is_some();
-    let exec = place_image(blob, as_, None, !has_interp)?;
+
+    // Linux `load_elf_binary` (`fs/binfmt_elf.c:1097-1186`). ET_EXEC is
+    // absolute. A PIE WITH an interpreter is the case Linux randomises
+    // explicitly — `ELF_ET_DYN_BASE + arch_mmap_rnd()`. A PIE WITHOUT one
+    // (static-PIE, or ld.so invoked directly) gets `load_bias = 0` and a
+    // hint-0 mmap, so the arena search places it and it inherits `mmap_base`'s
+    // randomisation instead of drawing its own.
+    let placement = match (exec_parsed.elf_type, has_interp) {
+        (ElfType::Exec, _)   => Placement::Fixed(0),
+        (ElfType::Dyn, true) => Placement::Fixed(
+            rnd.elf_dyn_load_bias(place::maximum_alignment(&exec_parsed.loads))),
+        (ElfType::Dyn, false) => Placement::Unmapped,
+        _ => return Err(LoadError::Enoexec),
+    };
+    let exec = place_image(blob, as_, placement, !has_interp)?;
 
     let parsed = exec_parsed;
     let mut interp_base: u64 = 0;
@@ -209,7 +215,7 @@ pub fn load_static_blob(
                 return Err(LoadError::Enoexec);
             }
         };
-        let interp = match place_image(&interp_blob, as_, Some(INTERP_LOAD_BIAS), false) {
+        let interp = match place_image(&interp_blob, as_, Placement::Unmapped, false) {
             Ok(img) => {
                 #[cfg(feature = "debug-boot")]
                 klog::write_raw(b"[INFO]  elf-load: interp place ok\n");
@@ -225,13 +231,18 @@ pub fn load_static_blob(
                 return Err(err);
             }
         };
-        interp_base  = INTERP_LOAD_BIAS;
+        interp_base  = interp.load_base;
         interp_entry = interp.entry.as_u64();
     }
 
+    // Heap placement runs LAST, after the interpreter, exactly as Linux orders
+    // it — `start_brk` depends on whether an interpreter was present.
+    let start_brk = brk::install(as_, parsed.elf_type, has_interp, exec.brk.as_u64(), rnd)?;
+
     Ok(LoadedImage {
         entry:        exec.entry,
-        brk:          exec.brk,
+        brk:          UserVirtAddr::new(start_brk).ok_or(LoadError::Einval)?,
+        load_base:    exec.load_base,
         phdr_va:      exec.phdr_va,
         phentsize:    exec.phentsize,
         phnum:        exec.phnum,
@@ -255,6 +266,7 @@ fn load_error_name(err: LoadError) -> &'static [u8] {
 }
 
 use load::place_image;
+use place::Placement;
 
 
 #[cfg(target_os = "oxide-kernel")] pub mod stack;

@@ -66,6 +66,11 @@ must use grouped paths from day one.
 5. Network-namespace identity and lifetime ownership lives in
    `crates/kernel/network-namespace`; it cannot depend on tasks, networking,
    nsfs, or syscall crates.
+5a. Address-space randomization policy lives in `crates/kernel/aslr`: the entropy
+   budgets, the `randomize_va_space` / `mmap_rnd_bits` cells, and the address math.
+   It depends only on `crng` + `hal`. `exec`, `syscalls`, `smoke` and `procfs`
+   consume it; none of them may keep a second copy of a budget, a mode, or a base
+   address, and no crate may draw ASLR entropy from anything but `crng`.
 6. Non-network/non-mount namespace identity and lifetime ownership lives in
    `crates/kernel/namespace-identity`; it depends only on `core` + `alloc` and
    owns canonical Cgroup/Ipc/Pid/Time/User/Uts identities, ancestry, and weak
@@ -169,6 +174,7 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-07-28: Added `crates/kernel/aslr` as the single owner of address-space randomization policy (budgets, mode, address math); removed `vmm::MMAP_BASE_GAP` and the fixed `PIE_LOAD_BIAS`/`INTERP_LOAD_BIAS` constants.
 - 2026-07-26: Added `crates/kernel/user-namespace` id-map engine ownership boundary (real `uid_map`/`gid_map`/`setgroups`, replacing the procfs `SysctlInode` fake).
 - 2026-07-15: Added dependency-neutral non-network/non-mount namespace identity ownership boundary.
 - 2026-07-15: Added canonical cross-family socket work-layer ownership.

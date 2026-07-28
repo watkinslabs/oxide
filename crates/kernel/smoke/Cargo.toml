@@ -8,6 +8,8 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+aslr = { path = "../aslr" }
+crng = { path = "../crng" }
 sched   = { path = "../sched" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }

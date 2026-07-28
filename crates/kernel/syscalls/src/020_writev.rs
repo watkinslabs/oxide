@@ -100,72 +100,11 @@ fn trace_stderr_writev(fd: i32, bytes: &[u8]) {
                     }
                     klog::write_raw(b"\n");
                 }
-
-                // Walk ld.so's link_map chain (the list find_needed loop-1 walks
-                // via l_next) so we see WHERE it breaks / whether libgcc_s is
-                // reachable. Uses the STABLE public ABI: ld.so@INTERP_LOAD_BIAS
-                // 0x40000000; `_r_debug` at file offset 0x37e58 (readelf of this
-                // ld-linux); r_debug.r_map at +8; per link_map l_name at +8,
-                // l_next at +24. Reads are through the running task's active AS
-                // (user pages readable at CPL=0); each node VA is translate-gated
-                // so a bad pointer logs and stops instead of faulting the kernel.
-                #[cfg(target_arch = "x86_64")]
-                {
-                    use hal::{MmuOps, Va};
-                    let rd = |va: u64| -> Option<u64> {
-                        if va < 0x1000 || va >= hal::USER_VA_END { return None; }
-                        // SAFETY: translate is a privileged PT read of the running task's root.
-                        <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va & !0xfff))?;
-                        // SAFETY: page mapped (translate ok); CPL=0 read of user VA.
-                        Some(unsafe { core::ptr::read_volatile(va as *const u64) })
-                    };
-                    // `_r_debug_extended` @ 0x37e58: base r_debug (r_map @ +8) then
-                    // r_next @ +40 chains per-NAMESPACE r_debug structs. Walk every
-                    // namespace to see if libgcc_s was added to a DIFFERENT one
-                    // (wrong l_ns) rather than genuinely dropped.
-                    const R_DEBUG_VA: u64 = 0x4000_0000 + 0x0003_7e58;
-                    let read_name = |np: u64, want: &[u8]| -> bool {
-                        if np == 0 { return false; }
-                        let mut i = 0u64; let mut buf = [0u8; 96]; let mut m = 0usize;
-                        while i < 96 {
-                            if (np + i) & 0xfff == 0 || i == 0 { if rd(np + i).is_none() { break; } }
-                            // SAFETY: page validated per 4K boundary; CPL=0 read.
-                            let b = unsafe { core::ptr::read_volatile((np + i) as *const u8) };
-                            if b == 0 { break; }
-                            buf[m] = b; m += 1; i += 1;
-                        }
-                        klog::write_raw(&buf[..m]);
-                        m >= want.len() && buf[..m].windows(want.len()).any(|w| w == want)
-                    };
-                    let mut ns_va = R_DEBUG_VA;
-                    let mut nsidx = 0u32;
-                    let mut gcc_in_ns: i64 = -1;
-                    while ns_va != 0 && nsidx < 8 {
-                        klog::write_raw(b"[LINKMAP] ns="); klog::write_dec_u64(nsidx as u64);
-                        klog::write_raw(b" chain:\n");
-                        let mut node = rd(ns_va + 8).unwrap_or(0);
-                        let mut n = 0u32;
-                        while node != 0 && n < 64 {
-                            klog::write_raw(b"  #"); klog::write_dec_u64(n as u64);
-                            klog::write_raw(b" map="); klog::write_hex_u64(node);
-                            klog::write_raw(b" name=");
-                            let name_ptr = rd(node + 8).unwrap_or(0);
-                            if read_name(name_ptr, b"libgcc_s.") { gcc_in_ns = nsidx as i64; }
-                            let lnext = rd(node + 24).unwrap_or(0);
-                            klog::write_raw(b" l_next="); klog::write_hex_u64(lnext);
-                            klog::write_raw(b"\n");
-                            node = lnext;
-                            n += 1;
-                        }
-                        klog::write_raw(b"[LINKMAP] ns="); klog::write_dec_u64(nsidx as u64);
-                        klog::write_raw(b" nodes="); klog::write_dec_u64(n as u64); klog::write_raw(b"\n");
-                        ns_va = rd(ns_va + 40).unwrap_or(0);   // r_next → next namespace
-                        nsidx += 1;
-                    }
-                    klog::write_raw(b"[LINKMAP] libgcc_s ");
-                    if gcc_in_ns < 0 { klog::write_raw(b"MISSING-FROM-ALL-NAMESPACES\n"); }
-                    else { klog::write_raw(b"in ns="); klog::write_dec_u64(gcc_in_ns as u64); klog::write_raw(b"\n"); }
-                }
+                // A link_map walk used to live here, keyed off a hardcoded
+                // ld.so base (the old fixed `INTERP_LOAD_BIAS` 0x40000000).
+                // ASLR places the interpreter through the mmap arena now, so no
+                // compile-time constant can name `_r_debug` any more; the walk
+                // is gone rather than left reading a wrong address.
             }
         }
     }
