@@ -1,11 +1,11 @@
-// 165 mount — one syscall, one file (docs/53 §0). Moved verbatim from mount.rs.
+// 165 mount — one syscall, one file (docs/53 §0).
 //
-// Real `sys_mount(source, target, fstype, flags, data)` — slot 165.
-// V1 honours fstype="tmpfs" by spawning a fresh TmpfsRootInode at
-// `target` in devfs. Other fstypes return EOPNOTSUPP. Requires
-// CAP_SYS_ADMIN. Per-NS mount-table virtualisation is a follow-up (per-NS mount table)
-// once a real backend (ext4 + block) lands; until then mount(2)
-// affects the global registry shared by all mount_ns ids.
+// `sys_mount(source, target, fstype, flags, data)`, shaped as Linux
+// `fs/namespace.c` `do_mount` → `path_mount`: resolve `target`, gate on
+// `may_mount()`, derive the per-mount MNT_* option mask from `flags`, then
+// dispatch on the operation selector — MS_REMOUNT / MS_BIND / MS_{SHARED,
+// PRIVATE,SLAVE,UNBINDABLE} / MS_MOVE / else a new mount by fstype. Mounts are
+// per mount-namespace; the fstype registry lives in `fsmount_common::registry`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -17,31 +17,11 @@ use syscall::errno::Errno;
 use crate::mount_common::{read_optional_user_path, read_user_cstr_owned, read_user_path_required};
 use crate::fsmount_common::mount_fstype_at;
 
-// mount(2) flag bits (linux/mount.h).
-const MS_REMOUNT:    u64 = 0x20;
-const MS_RDONLY:     u64 = 0x1;
-const MS_NOSUID:     u64 = 0x2;
-const MS_NODEV:      u64 = 0x4;
-const MS_NOEXEC:     u64 = 0x8;
-const MS_SYNCHRONOUS: u64 = 0x10;
-const MS_MANDLOCK:   u64 = 0x40;
-const MS_DIRSYNC:    u64 = 0x80;
-const MS_NOATIME:    u64 = 0x400;
-const MS_NODIRATIME: u64 = 0x800;
-const MS_RELATIME:   u64 = 1 << 21;
-const MS_STRICTATIME: u64 = 1 << 24;
-const MS_LAZYTIME:   u64 = 1 << 25;
-const MS_BIND:       u64 = 0x1000;
-const MS_MOVE:       u64 = 0x2000;
-const MS_REC:        u64 = 0x4000;
-const MS_UNBINDABLE: u64 = 1 << 17;
-const MS_PRIVATE:    u64 = 1 << 18;
-const MS_SLAVE:      u64 = 1 << 19;
-const MS_SHARED:     u64 = 1 << 20;
-const MS_PROPAGATION: u64 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
-const MS_REMOUNTABLE: u64 = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_SYNCHRONOUS
-    | MS_MANDLOCK | MS_DIRSYNC | MS_NOATIME | MS_NODIRATIME | MS_RELATIME | MS_STRICTATIME
-    | MS_LAZYTIME;
+// mount(2) request bits are owned by `vfs::mount` (`mount/flags.rs`) — the same
+// definition `ms_to_mnt`/`ms_to_mnt_remount` map from. Re-declaring them here
+// was a second source of truth for the same UAPI contract.
+use vfs::mount::{MS_BIND, MS_MOVE, MS_PROPAGATION, MS_REC, MS_REMOUNT, MS_REMOUNTABLE,
+                 MS_SHARED, MS_SLAVE, MS_UNBINDABLE};
 
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
@@ -142,14 +122,17 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    if !cur.has_cap(sched::cap::SYS_ADMIN) {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
+    // Linux `do_mount` resolves `dir_name` (`user_path_at`) BEFORE calling
+    // `path_mount`, whose first gate is `may_mount()` — so a bad target reports
+    // ENOENT/ENOTDIR, not EPERM. And `may_mount` is `ns_capable(mnt_ns->user_ns,
+    // CAP_SYS_ADMIN)`: the flat `has_cap(SYS_ADMIN)` this used said "yes" to a
+    // caller holding SYS_ADMIN only inside an unrelated user namespace.
     let target_raw = match read_user_path_required(target_p) { Ok(s) => s, Err(rv) => return rv };
     let (target_mt, target) = match crate::pathresolve::resolve_mount_target_raw(&target_raw) {
         Ok(t) => t,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
+    if let Some(rv) = crate::mount_perm::may_mount_or_eperm() { return rv; }
     let namespace = match cur.mount_namespace_snapshot() {
         Some(namespace) => namespace,
         None => return -(Errno::Esrch.as_i32() as i64),
@@ -211,6 +194,15 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         }
         if !source_ok {
             return -(Errno::Einval.as_i32() as i64);
+        }
+        // Linux `__do_loopback`: `if (!recurse && __has_locked_children(old,
+        // old_path->dentry)) return -EINVAL`. A NON-recursive bind of a subtree
+        // that has a locked child would publish the directory that child covers,
+        // which is exactly the reveal `MNT_LOCKED` exists to prevent.
+        if flags & MS_REC == 0 {
+            let locked_kids = vfs::mount::mount_by_id(source_mnt)
+                .map(|m| vfs::mount::has_locked_children(&m, &source_d)).unwrap_or(false);
+            if locked_kids { return -(Errno::Einval.as_i32() as i64); }
         }
         let target_d = target_mt.mountpoint.clone();
         let target_parent_mnt = target_mt.parent.mnt_id;
@@ -338,5 +330,10 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     } else {
         String::new()
     };
-    mount_fstype_at(source.as_deref(), &fstype, &target, &target_mt.mountpoint, Some(target_mt.parent.mnt_id), &data)
+    // Linux `path_mount` → `do_new_mount(path, type, sb_flags, mnt_flags, ...)`:
+    // the per-mount option mask derived from `flags` is stamped on the new mount
+    // by `do_add_mount`. `flags` was dropped here, so every `mount -o
+    // ro,nosuid,nodev,noexec` produced a rw/suid/dev/exec mount.
+    mount_fstype_at(source.as_deref(), &fstype, &target, &target_mt.mountpoint,
+        Some(target_mt.parent.mnt_id), &data, flags)
 }

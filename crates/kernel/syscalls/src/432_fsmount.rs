@@ -26,7 +26,7 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     const MOUNT_ATTR_NOSYMFOLLOW:u64 = 0x20_0000;
     const ATTR_VALID: u64 = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV
         | MOUNT_ATTR_NOEXEC | MOUNT_ATTR__ATIME | MOUNT_ATTR_NODIRATIME | MOUNT_ATTR_NOSYMFOLLOW;
-    if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
+    if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
     // Validate the fsmount(2) flag words the old shim silently dropped (D51):
     // `flags` outside FSMOUNT_CLOEXEC → EINVAL; `attr_flags` outside the settable
     // MOUNT_ATTR_* set → EINVAL; the atime sub-field must name exactly one mode.

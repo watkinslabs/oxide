@@ -60,18 +60,7 @@ impl PivotOps for KernelPivotOps {
         Ok(())
     }
 
-    fn may_mount(&mut self) -> bool {
-        let Some(cur) = sched::live::current() else { return false; };
-        // Linux `may_mount()` is `ns_capable(current->nsproxy->mnt_ns->user_ns,
-        // CAP_SYS_ADMIN)`: the capability must be held in the user namespace
-        // that OWNS the mount namespace being modified, not merely present in
-        // the caller's own effective set.
-        match cur.mount_namespace_snapshot() {
-            Some(mnt_ns) => nscg::proc_ns::has_cap_for(
-                &cur, &mnt_ns.owner_user_namespace(), sched::cap::SYS_ADMIN),
-            None => false,
-        }
-    }
+    fn may_mount(&mut self) -> bool { crate::mount_perm::may_mount() }
 
     fn commit(&mut self) -> Result<(), i64> {
         let einval = -(Errno::Einval.as_i32() as i64);
