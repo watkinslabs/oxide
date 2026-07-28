@@ -3,7 +3,7 @@ use std::process::Command;
 use crate::cmds::run;
 
 const ARM_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
-const SOURCES: [&str; 11] = [
+const SOURCES: [&str; 12] = [
     "userspace/wait_diff/main.c",
     "userspace/wait_diff/common.c",
     "userspace/wait_diff/sleep.c",
