@@ -26,6 +26,13 @@ pub(crate) enum Placement {
 /// Linux `total_mapping_size()` (`fs/binfmt_elf.c:463-478`): the VA span from
 /// the lowest PT_LOAD's page start to the highest PT_LOAD's end. This is the
 /// size reserved as one unit so the image cannot be split across two holes.
+///
+/// Rounded UP to a page. Linux leaves the raw span and lets `vm_mmap` round it
+/// (`PAGE_ALIGN(len)`); here the reservation goes to `get_unmapped_area`, which
+/// rejects a non-page-multiple length outright — and the last PT_LOAD's
+/// `p_vaddr + p_memsz` is the end of `.bss`, so the raw span is essentially
+/// never page-aligned. Returning it unrounded fails every dynamically linked
+/// exec, and a hole address derived from it would be misaligned besides.
 /// # C: O(phdrs)
 pub(crate) fn total_mapping_size(loads: &[LoadSegment]) -> u64 {
     let (mut min, mut max) = (u64::MAX, 0u64);
@@ -33,7 +40,7 @@ pub(crate) fn total_mapping_size(loads: &[LoadSegment]) -> u64 {
         min = min.min(align_down(s.vaddr));
         max = max.max(s.vaddr.saturating_add(s.mem_sz));
     }
-    if min == u64::MAX { 0 } else { max.saturating_sub(min) }
+    if min == u64::MAX { 0 } else { align_up(max).saturating_sub(min) }
 }
 
 /// Page start of the lowest PT_LOAD — the offset the chosen base must be
