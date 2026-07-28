@@ -419,3 +419,20 @@ call is denied, the flag is honoured), because a happy-path test passes a
 control that enforces nothing — which is how all four shipped. Causality was
 verified by reverting each production edit and confirming the specific tests go
 red, not by asserting that new tests pass.
+
+## 13 B1482 — ext4 charged `i_blocks` for extent metadata it never allocated
+
+`htree_leaf_split_stays_e2fsck_clean` failed on clean `main`: `Inode 12, i_blocks is 74, should be 42` for a 21-block htree directory (1 KiB blocks, 2 sectors per block). Not a units error and not a factor of two on the whole inode — the fixture's first 5 blocks were charged correctly and every one of the 16 blocks added afterwards was charged **twice**: `10 + 16×4 = 74` against the true `10 + 16×2 = 42`.
+
+Cause: the append path charged a *predicted* metadata block, not an allocated one. Both insert sites decided "this insert overflows the extent leaf, so it will cost an index block" **before** the insert ran, and both simulated the insert with a placeholder physical block (`extent_for(logical, 0)`) — which can never merge. A physically contiguous append merges into its neighbouring extent and adds no entry, so the predicted metadata block was never allocated while the charge stayed.
+
+| Site | Shape of the bug |
+|---|---|
+| `extent_rw/insert.rs insert_inline_sorted` (depth 0) | `will_promote = extents.len() + 1 > 4` — silent over-charge on every merging append. This is the failing test. |
+| `extent_rw/append.rs insert_logical_block_with_inode_bytes` (depth ≥ 1) | `extra_meta_sectors_for_insert(.., simulated.len())` — the predicted-vs-actual guard turned the same mismatch into a hard `CorruptExtentTree` **write error**. Reproduces at `FRAG=83` in `merging_append_onto_a_full_extent_leaf_succeeds`: an ordinary append onto a leaf sitting exactly at its entry limit fails. |
+
+Linux never predicts. `ext4_mb_new_blocks` (`fs/ext4/mballoc.c`) calls `dquot_alloc_block` immediately before handing out each block, and `__dquot_alloc_space` (`fs/quota/dquot.c`) is what runs `inode_add_bytes` — so `i_blocks` and the quota charge are one act, per block actually taken, for data blocks and for `ext4_ext_new_meta_block` metadata alike. The fix charges the data block ahead of its allocation (Linux's order) and charges metadata only once the merge-aware insert — now simulated with the REAL extent — says the tree needs it.
+
+Not a split source of truth: `st_blocks` (`rootfs/inode/{regular,special}.rs`) reads `read_inode().i_blocks`, and `account_i_blocks_delta` derives the quota delta from the same sector count, so the over-charge inflated `du`, `stat` and the user's quota consumption by the identical amount. The uncharge sites are sound — `truncate.rs`/`punch.rs` recompute from the tree (`count_all_sectors` + `external_xattr_sectors`) rather than tracking a delta, which is why the drift only ever appeared on grow-only inodes such as directories.
+
+Coverage: `crates/kernel/ext4/tests/i_blocks_accounting_image.rs` (7 tests, `e2fsck -fn` as the oracle) covers grown htree dirs, contiguous appends, fragmented deep trees, `mkdir`, `rmdir` uncharge, `stat` agreement, and the depth≥1 full-leaf boundary. Two fail against pre-fix code.

@@ -332,7 +332,7 @@ impl Mount {
             let old_sectors = Self::i_blocks_of(&bytes);
             let mut charged_sectors = old_sectors;
             let block_nr = if old_facl != 0 { old_facl } else {
-                charged_sectors = old_sectors.saturating_add((bs / 512) as u32);
+                charged_sectors = old_sectors.saturating_add(m.sb.sectors_per_block());
                 m.account_i_blocks_delta(ino, old_sectors, charged_sectors)?;
                 let b = match m.alloc_block(0) {
                     Ok(b) => b,
@@ -372,7 +372,7 @@ impl Mount {
     fn attach_external_block(bytes: &mut [u8], block_nr: u64, bs: usize) {
         bytes[0x68..0x6C].copy_from_slice(&((block_nr & 0xFFFF_FFFF) as u32).to_le_bytes());
         bytes[0x76..0x78].copy_from_slice(&(((block_nr >> 32) & 0xFFFF) as u16).to_le_bytes());
-        let sectors = (bs / 512) as u32;
+        let sectors = (bs as u32) / crate::layout::I_BLOCKS_SECTOR_BYTES;
         let ib = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
         bytes[0x1C..0x20].copy_from_slice(&ib.saturating_add(sectors).to_le_bytes());
     }
@@ -382,7 +382,7 @@ impl Mount {
     fn detach_external_block(bytes: &mut [u8], bs: usize) {
         bytes[0x68..0x6C].copy_from_slice(&0u32.to_le_bytes());
         bytes[0x76..0x78].copy_from_slice(&0u16.to_le_bytes());
-        let sectors = (bs / 512) as u32;
+        let sectors = (bs as u32) / crate::layout::I_BLOCKS_SECTOR_BYTES;
         let ib = u32::from_le_bytes([bytes[0x1C], bytes[0x1D], bytes[0x1E], bytes[0x1F]]);
         bytes[0x1C..0x20].copy_from_slice(&ib.saturating_sub(sectors).to_le_bytes());
     }

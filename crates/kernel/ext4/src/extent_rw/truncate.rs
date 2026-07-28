@@ -221,7 +221,7 @@ impl Mount {
 
     fn count_all_sectors_planned(&self, i_block: &[u8; I_BLOCK_LEN], node_writes: &[(u64, Vec<u8>)]) -> Result<u32, MountError> {
         let hdr = inode::parse_extent_header(i_block)?;
-        let spb = self.sb.block_size / 512;
+        let spb = self.sb.sectors_per_block();
         if hdr.depth == 0 {
             let mut s = 0u32;
             for i in 0..hdr.entries {
@@ -250,7 +250,7 @@ impl Mount {
             }
         };
         let hdr = inode::parse_extent_header_slice(buf)?;
-        let spb = self.sb.block_size / 512;
+        let spb = self.sb.sectors_per_block();
         let mut s = 0u32;
         if depth == 0 {
             for i in 0..hdr.entries {
@@ -276,7 +276,7 @@ impl Mount {
     /// # C: O(tree) block I/Os
     pub(super) fn count_all_sectors(&self, i_block: &[u8; I_BLOCK_LEN]) -> Result<u32, MountError> {
         let hdr = inode::parse_extent_header(i_block)?;
-        let spb = self.sb.block_size / 512;
+        let spb = self.sb.sectors_per_block();
         if hdr.depth == 0 {
             let mut s = 0u32;
             for i in 0..hdr.entries {
@@ -299,7 +299,7 @@ impl Mount {
     pub(super) fn count_all_sectors_node(&self, lba: u64, depth: u16) -> Result<u32, MountError> {
         let buf = self.read_metadata_block(lba)?;
         let hdr = inode::parse_extent_header_slice(&buf)?;
-        let spb = self.sb.block_size / 512;
+        let spb = self.sb.sectors_per_block();
         let mut s = 0u32;
         if depth == 0 {
             for i in 0..hdr.entries {
