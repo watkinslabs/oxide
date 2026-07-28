@@ -196,10 +196,19 @@ fn iop_create_reused_ino_rebuilds_cached_type() {
     let stale_ino = stale_file.ino();
     assert_eq!(stale_file.file_type(), FileType::Regular);
 
+    // Identity handle only — `Arc::clone` is not a counted `i_count` reference.
+    let stale_alias = stale_file.clone();
+
     root.unlink_child("reuse").expect("unlink file");
+    // The inode outlives the name for as long as a reference is held (POSIX
+    // unlink-while-open), so the ino is NOT reusable yet.
+    assert_eq!(stale_file.nlink(), 0, "name gone, inode still alive");
+    // Dropping the last reference is what runs `ext4_evict_inode` and returns
+    // the inode number to the allocator.
+    vfs::file::iput(stale_file);
     let new_dir = root.mkdir("reuse", 0o755, &CreateCtx::root()).expect("mkdir reused name");
 
     assert_eq!(new_dir.ino(), stale_ino, "fixture reused the freed inode number");
     assert_eq!(new_dir.file_type(), FileType::Directory, "reused inode was rebuilt from disk type");
-    assert!(!Arc::ptr_eq(&new_dir, &stale_file), "mkdir did not return stale regular-file Arc");
+    assert!(!Arc::ptr_eq(&new_dir, &stale_alias), "mkdir did not return stale regular-file Arc");
 }

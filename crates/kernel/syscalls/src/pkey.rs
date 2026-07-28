@@ -1,99 +1,111 @@
-// Memory-protection-key UAPI constants and admission logic (Linux
-// `include/uapi/asm-generic/mman-common.h`, `mm/mprotect.c`). Shared by slots
-// 329/330/331.
+// Memory-protection-key syscall bodies — `mm/mprotect.c`
+// `SYSCALL_DEFINE2(pkey_alloc)`, `SYSCALL_DEFINE1(pkey_free)`, and the pkey
+// admission clause of `do_mprotect_pkey`. Shared by slots 329/330/331.
 //
-// The decision functions are deliberately NOT kernel-cfg'd: the syscall files
-// are `#![cfg(target_os = "oxide-kernel")]` and so cannot be exercised by the
-// hosted suite, which would leave the errno ordering — the whole point of this
-// module — untested. Keeping the policy here makes the shims thin (docs/53)
-// and the rules testable.
+// The per-mm allocation map and the `mm_pkey_*` helpers live with the mm
+// (`vmm::pkeys`, mirroring `asm/pkeys.h`); this module owns only what
+// `mm/mprotect.c` owns — the UAPI masks and the validation ORDER.
+//
+// **B1479 corrects B1434.** B1434 replaced an ENOSYS strawman with a flat
+// ENOSPC on both arches, reasoning that "pkey 0 is allocated implicitly when
+// the mm is created, so the allocation map is already full". True on arm64,
+// false on x86_64: `arch/x86/include/asm/mmu_context.h` `init_new_context`
+// sets `pkey_allocation_map = 0x1` *inside*
+// `if (cpu_feature_enabled(X86_FEATURE_OSPKE))`, so on a CPU without OSPKE the
+// map starts empty, `mm_pkey_alloc` hands out key 0, and the syscall fails one
+// step later in `arch_set_user_pkey_access` (`arch/x86/kernel/fpu/xstate.c`,
+// `if (!cpu_feature_enabled(X86_FEATURE_OSPKE)) return -EINVAL`). The rollback
+// `mm_pkey_free` then fails too — key 0 equals the uninitialised
+// `execute_only_pkey`, so `mm_pkey_is_allocated` refuses it — leaving the bit
+// set. Hence x86_64: **EINVAL once per mm, ENOSPC forever after**; aarch64:
+// ENOSPC from the first call, because its `mm_pkey_alloc` opens with an
+// `arch_pkeys_enabled()` guard that x86's lacks.
+//
+// Ungated on purpose: the slot files are `#![cfg(target_os = "oxide-kernel")]`
+// and cannot be exercised hosted, which would leave the errno ordering — the
+// whole point of this module — untested.
 
 use syscall::errno::Errno;
+use vmm::pkeys::{self, PkeyArch};
 
-/// `PKEY_DISABLE_ACCESS`.
+/// `PKEY_DISABLE_ACCESS` (`uapi/asm-generic/mman-common.h`), both arches.
 pub const PKEY_DISABLE_ACCESS: u64 = 0x1;
-/// `PKEY_DISABLE_WRITE`.
+/// `PKEY_DISABLE_WRITE`, both arches.
 pub const PKEY_DISABLE_WRITE: u64 = 0x2;
-/// `PKEY_ACCESS_MASK` — the only bits `pkey_alloc`'s `init_val` may carry.
-pub const PKEY_ACCESS_MASK: u64 = PKEY_DISABLE_ACCESS | PKEY_DISABLE_WRITE;
-
-/// Linux `arch_max_pkey()` on a CPU without `X86_FEATURE_OSPKE`: pkey 0 only,
-/// and pkey 0 is allocated implicitly with the mm, so no key is ever free.
-pub const ARCH_MAX_PKEY_NO_OSPKE: i32 = 1;
+/// `PKEY_DISABLE_EXECUTE` — aarch64 only (`arch/arm64/include/uapi/asm/mman.h`).
+pub const PKEY_DISABLE_EXECUTE: u64 = 0x4;
+/// `PKEY_DISABLE_READ` — aarch64 only. POE can revoke read; PKRU cannot
+/// express read-without-access, so x86 defines no such bit and rejects it.
+pub const PKEY_DISABLE_READ: u64 = 0x8;
 
 /// "Keep the current key" sentinel accepted by `pkey_mprotect`.
 pub const PKEY_KEEP: i32 = -1;
-/// The implicitly-allocated default key.
-pub const PKEY_DEFAULT: i32 = 0;
 
-/// `pkey_alloc` admission, in Linux's order: flags, then init_val, then the
-/// allocation attempt. Always `Err` for us — with no OSPKE the allocation map
-/// is full at mm creation — but WHICH error, and in what order, is what
-/// callers branch on.
+/// The `mm/mprotect.c`-side per-arch facts: the `PKEY_ACCESS_MASK` `init_val`
+/// is validated against, and the errno `arch_set_user_pkey_access` returns
+/// when the hardware feature is absent.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PkeyAbi {
+    /// `PKEY_ACCESS_MASK` — the only bits `init_val` may carry.
+    pub access_mask: u64,
+    /// `arch_set_user_pkey_access` with the hardware feature off: x86 returns
+    /// `-EINVAL`, arm64 (`arch/arm64/mm/mmu.c`) returns `-ENOSPC`.
+    pub set_access_err: Errno,
+    /// The mm-side descriptor for the same arch.
+    pub mm: PkeyArch,
+}
+
+/// x86_64 without OSPKE.
+pub const X86_64: PkeyAbi = PkeyAbi {
+    access_mask: PKEY_DISABLE_ACCESS | PKEY_DISABLE_WRITE,
+    set_access_err: Errno::Einval,
+    mm: pkeys::X86_64,
+};
+
+/// aarch64 without FEAT_S1POE.
+pub const AARCH64: PkeyAbi = PkeyAbi {
+    access_mask: PKEY_DISABLE_ACCESS | PKEY_DISABLE_WRITE | PKEY_DISABLE_EXECUTE | PKEY_DISABLE_READ,
+    set_access_err: Errno::Enospc,
+    mm: pkeys::AARCH64,
+};
+
+/// The descriptor for the arch this kernel is built for.
+#[cfg(target_arch = "aarch64")]
+pub const ARCH: PkeyAbi = AARCH64;
+/// The descriptor for the arch this kernel is built for. Hosted tests run on
+/// the x86_64 host and must name [`AARCH64`] explicitly rather than rely on it.
+#[cfg(not(target_arch = "aarch64"))]
+pub const ARCH: PkeyAbi = X86_64;
+
+/// `SYSCALL_DEFINE2(pkey_alloc)` against this mm's allocation `map`.
+/// Validation order is Linux's: flags, then `init_val`, then the allocation
+/// attempt, then the arch install.
 /// # C: O(1)
-pub fn pkey_alloc_check(flags: u64, init_val: u64) -> Result<i32, Errno> {
+pub fn pkey_alloc(a: &PkeyAbi, map: &mut u16, flags: u64, init_val: u64) -> Result<i32, Errno> {
     if flags != 0 { return Err(Errno::Einval); }
-    if init_val & !PKEY_ACCESS_MASK != 0 { return Err(Errno::Einval); }
-    Err(Errno::Enospc)
+    if init_val & !a.access_mask != 0 { return Err(Errno::Einval); }
+    let pkey = pkeys::mm_pkey_alloc(&a.mm, map);
+    if pkey == pkeys::PKEY_ALLOC_FAILED { return Err(Errno::Enospc); }
+    // We have no PKU/PKRU and no POE, so `arch_set_user_pkey_access` always
+    // takes its feature-absent early return. Linux discards the rollback's own
+    // result and reports the install error.
+    let _ = pkeys::mm_pkey_free(&a.mm, map, pkey);
+    Err(a.set_access_err)
 }
 
-/// True iff `pkey` is allocated for the current mm, per Linux
-/// `mm_pkey_is_allocated` with `arch_max_pkey() == 1`.
+/// `SYSCALL_DEFINE1(pkey_free)` — `mm_pkey_free` verbatim.
 /// # C: O(1)
-pub fn pkey_is_allocated(pkey: i32) -> bool {
-    pkey == PKEY_DEFAULT
+pub fn pkey_free(a: &PkeyAbi, map: &mut u16, pkey: i32) -> Result<(), Errno> {
+    if pkeys::mm_pkey_free(&a.mm, map, pkey) { Ok(()) } else { Err(Errno::Einval) }
 }
 
-/// `pkey_mprotect` key admission: `-1` keeps the current key, otherwise the
-/// key must be allocated (Linux `do_mprotect_pkey`, checked before the VMA
-/// walk so a bad key never partially applies).
+/// `do_mprotect_pkey`'s pkey clause: `pkey != -1 && !mm_pkey_is_allocated` is
+/// EINVAL, checked after the address/length/prot validation and before the VMA
+/// walk so a bad key never partially applies.
 /// # C: O(1)
-pub fn pkey_mprotect_allows(pkey: i32) -> bool {
-    pkey == PKEY_KEEP || pkey_is_allocated(pkey)
+pub fn pkey_mprotect_allows(a: &PkeyAbi, map: u16, pkey: i32) -> bool {
+    pkey == PKEY_KEEP || pkeys::mm_pkey_is_allocated(&a.mm, map, pkey)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn alloc_rejects_any_flag_before_looking_at_init_val() {
-        // Linux checks flags first, so a call that is wrong in BOTH ways must
-        // still report the flags error.
-        assert_eq!(pkey_alloc_check(1, !0), Err(Errno::Einval));
-        assert_eq!(pkey_alloc_check(0x8000, 0), Err(Errno::Einval));
-    }
-
-    #[test]
-    fn alloc_rejects_init_val_outside_access_mask() {
-        assert_eq!(pkey_alloc_check(0, !PKEY_ACCESS_MASK), Err(Errno::Einval));
-        assert_eq!(pkey_alloc_check(0, 0x4), Err(Errno::Einval));
-    }
-
-    #[test]
-    fn alloc_reports_exhaustion_not_unimplemented() {
-        // The whole point: a well-formed request gets ENOSPC ("no keys left"),
-        // which is what Linux returns on a CPU without OSPKE. ENOSYS would
-        // misreport the reason and skip the validation above.
-        for iv in [0, PKEY_DISABLE_ACCESS, PKEY_DISABLE_WRITE, PKEY_ACCESS_MASK] {
-            assert_eq!(pkey_alloc_check(0, iv), Err(Errno::Enospc));
-        }
-    }
-
-    #[test]
-    fn only_the_implicit_default_key_is_allocated() {
-        assert!(pkey_is_allocated(PKEY_DEFAULT));
-        for k in [1, 2, 15, ARCH_MAX_PKEY_NO_OSPKE, 16, i32::MAX] {
-            assert!(!pkey_is_allocated(k), "pkey {k} must not be allocated without OSPKE");
-        }
-    }
-
-    #[test]
-    fn mprotect_accepts_keep_and_default_only() {
-        assert!(pkey_mprotect_allows(PKEY_KEEP));
-        assert!(pkey_mprotect_allows(PKEY_DEFAULT));
-        for k in [1, 2, 15, 16, i32::MAX, -2, i32::MIN] {
-            assert!(!pkey_mprotect_allows(k), "pkey {k} must be EINVAL");
-        }
-    }
-}
+mod tests;
