@@ -14,7 +14,6 @@
 use crate::{uapi::*, LoadedImage};
 
 /// SysV auxv keys (subset). Full set in `linux/auxvec.h`.
-const EXEC_USER_STACK_LEN: u64 = 64 * 1024;
 
 #[cfg(target_arch = "x86_64")]
 const PLATFORM: &[u8] = b"x86_64\0";
@@ -54,7 +53,7 @@ pub struct StackLayout {
     pub env_end:   u64,
 }
 
-/// Build the initial user stack at `[stack_top - SIZE, stack_top)`.
+/// Build the initial user stack in `[stack_top - stack_len, stack_top)`.
 /// `argv`/`envp` are slices of NUL-free byte strings; the builder
 /// adds the trailing NUL. Returns the new SP (16-byte aligned,
 /// pointing at the `argc` slot) on success, `None` if the
@@ -83,6 +82,7 @@ pub struct StackLayout {
 /// # C: O(strings_total + auxv_count)
 pub unsafe fn build_user_stack(
     stack_top: u64,
+    stack_len: u64,
     argv: &[&[u8]],
     envp: &[&[u8]],
     img:  &LoadedImage,
@@ -91,8 +91,14 @@ pub unsafe fn build_user_stack(
     vdso_ehdr: u64,
     hwcap: u64,
     creds: AuxCreds,
+    rnd: &aslr::ExecRnd,
 ) -> Option<StackLayout> {
-    let mut cursor = stack_top;
+    // Linux `create_elf_tables` opens with `p = arch_align_stack(p)`
+    // (`fs/binfmt_elf.c:193`) — a sub-page shuffle of the string area so
+    // sibling processes on an SMT pair do not share L1 cache sets, then a hard
+    // 16-byte align for the SysV ABI. Applied to the cursor before the first
+    // push, which is exactly where Linux applies it.
+    let mut cursor = rnd.align_stack(stack_top);
 
     // 1. Strings region (top-down): random, platform, execfn,
     //    argv[*], envp[*]. Track the user VA each lands at.
@@ -168,11 +174,13 @@ pub unsafe fn build_user_stack(
     let raw_sp = cursor.checked_sub(bytes as u64)?;
     let sp = raw_sp & !0xfu64;
 
-    if sp < stack_top.saturating_sub(EXEC_USER_STACK_LEN) {
-        // Caller pre-maps EXEC_USER_STACK_LEN below stack_top
-        // in execve.rs. Stay within that region.
-        return None;
-    }
+    // Linux `setup_arg_pages` fails the exec with E2BIG when the argument
+    // block will not fit under `RLIMIT_STACK`. `stack_len` is what the caller
+    // actually mapped at `[stack_top - stack_len, stack_top)`; writing below it
+    // faults in kernel context, where no handler can demand-page it. A fixed
+    // 64 KiB bound lived here before and silently capped every process's
+    // argv+env at 64 KiB regardless of its real stack limit.
+    if sp < stack_top.saturating_sub(stack_len) { return None; }
 
     // 3. Write the vector area at sp, low → high.
     let mut w = sp;

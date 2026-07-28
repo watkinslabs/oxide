@@ -12,7 +12,7 @@ Load ELF64 binaries into an `AddressSpace`. Support static + dynamic (PIE). Esta
 3. PT_LOAD segments mapped with `mmap` (file-backed, MAP_PRIVATE), permissions per `p_flags`. W^X enforced (no segment both W and X).
 4. PT_INTERP load: read interp string, recursively load ld.so.
 5. Stack: 8 MiB initial, MAP_GROWSDOWN, MAP_STACK; argv/envp/auxv populated at top; SP aligned per ABI (16 on x86, 16 on arm).
-6. Brk: initial brk at end of bss, randomized within 32 MiB above (when KASLR on).
+6. Brk: `start_brk` at the image end, moved to `ELF_ET_DYN_BASE` for a PIE with no PT_INTERP, then randomized within 1 GiB when `randomize_va_space > 1` (`fs/binfmt_elf.c:1310-1342`).
 
 ## 3 Public ifc
 
@@ -56,8 +56,10 @@ Not in kernel scope; userspace implementation. Only relevance to kernel: `PT_INT
 
 ## 6 Hardening
 
-- ASLR: randomize stack base, mmap base, brk base, ld.so load base. PIE-required for full randomization. Tracked as later phase; ships without ASLR for now.
-- VDSO mapped at randomized va per process.
+- ASLR: implemented (F771), owned by `crates/kernel/aslr` — one crate holds the entropy budgets, the `randomize_va_space` cell and the address math; `crng` is the only entropy source.
+- Randomized per exec: PIE load bias (`ELF_ET_DYN_BASE + arch_mmap_rnd()`), `mmap_base`, stack top (`STACK_RND_MASK`), `brk` (`randomize_page`, mode 2 only), and `arch_align_stack` sub-page jitter. The PT_INTERP base and the vDSO are placed by `get_unmapped_area` off `mmap_base`, which is how Linux randomizes them — neither takes its own draw.
+- Entropy budgets differ per arch and are Kconfig-derived: `mmap_rnd_bits` 28 (max 32) x86_64 vs 18 (max 30, the `ARM64_VA_BITS=47` row) aarch64; `STACK_RND_MASK` 22 bits vs 18. `vm.mmap_rnd_bits` is a live sysctl bounded by that pair.
+- `personality(ADDR_NO_RANDOMIZE)` and `randomize_va_space=0` both pin the layout exactly; `PER_CLEAR_ON_SETID` is applied before the decision so a setuid exec cannot inherit the bit.
 - `noexec` stack enforced.
 
 ## 7 Concurrency

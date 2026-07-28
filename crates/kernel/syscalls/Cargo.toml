@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 crng = { path = "../crng" }
+aslr = { path = "../aslr" }
 block   = { path = "../block" }
 boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }

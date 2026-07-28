@@ -122,9 +122,9 @@ const USER_STACK_TOP: u64 = USER_STACK_VA + 0x1000;
 /// first wide musl frame; with the prior 0x501000/4 KiB layout the
 /// fork child SIGSEGV'd at far=0x500f70 (one page below the stack
 /// base) when init walked deeper than the page boundary.
+/// The stack ADDRESS is `aslr::ExecRnd::stack_top()` minus this length, the
+/// same computation `execve` performs; only the length is a constant.
 const INIT_STACK_LEN: u64 = 0x10000;
-const INIT_STACK_VA:  u64 = hal::USER_VA_END - 0x20000;
-const INIT_STACK_TOP: u64 = INIT_STACK_VA + INIT_STACK_LEN;
 
 /// File-side address of the brk landmark — entry (0x400080) +
 /// 36 (offset of the `brk #0` instruction within the code block).
@@ -163,7 +163,7 @@ pub unsafe fn run() -> ! {
     use vmm::{VmaBacking, VmaFlags, VmaProt};
     use hal::UserVirtAddr;
 
-    let img = match pmm::user_as::with(|as_| load_static_blob(ELF_BLOB, as_)) {
+    let img = match pmm::user_as::with(|as_| load_static_blob(ELF_BLOB, as_, &aslr::exec::NONE)) {
         Some(Ok(i))  => i,
         Some(Err(e)) => {
             debug_irq! {
@@ -339,12 +339,16 @@ fn spawn_init_from_rootfs_arm() {
     // SAFETY: per-AS L0 was constructed with kernel-half shared from master so kernel mappings remain valid; TTBR0 swap legal at EL1 IRQ-off.
     unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::activate(root_pa); }
 
-    let img = match elf_load::load_static_blob(init_blob, &mm) {
-        Ok(i)  => i,
-        Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
-    };
+    // Same as the x86 PID 1 path: Linux randomises init like any other exec,
+    // and the arena must be armed before a PT_LOAD is placed because the
+    // interpreter is positioned by the arena search. aarch64's budgets are
+    // narrower than x86's (`aslr::AARCH64`), which is exactly why they are
+    // per-arch constants rather than one shared number.
+    let rnd = aslr::ExecRnd::draw(false);
+    let stack_top = rnd.stack_top();
+    let stack_va = stack_top - INIT_STACK_LEN;
 
-    let stack_hint = match UserVirtAddr::new(INIT_STACK_VA) {
+    let stack_hint = match UserVirtAddr::new(stack_va) {
         Some(u) => u,
         None    => { debug_irq! { klog::kerror!("init-arm: bad stack VA"); } return; }
     };
@@ -358,6 +362,12 @@ fn spawn_init_from_rootfs_arm() {
         debug_irq! { klog::kerror!("init-arm: stack mmap failed"); }
         return;
     }
+    mm.set_mmap_base(rnd.mmap_base(INIT_STACK_LEN));
+
+    let img = match elf_load::load_static_blob(init_blob, &mm, &rnd) {
+        Ok(i)  => i,
+        Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
+    };
 
     // Pre-fault every stack page so kernel-side `build_user_stack`
     // writes don't take EL1 same-EL data aborts. The boot fault
@@ -370,8 +380,8 @@ fn spawn_init_from_rootfs_arm() {
     {
         use hal::{Pa, PageFlags, PageSize, Va};
         let prot = (VmaProt::READ | VmaProt::WRITE).to_page_flags();
-        let mut va = INIT_STACK_VA;
-        while va < INIT_STACK_TOP {
+        let mut va = stack_va;
+        while va < stack_top {
             let pa = match pmm::setup::alloc_one_frame() {
                 Some(p) => p,
                 None    => {
@@ -394,18 +404,17 @@ fn spawn_init_from_rootfs_arm() {
 
     // F153-1: build a real SysV initial stack with argv[0]=selected init.
     // Same shape and init selection order as the x86 PID1 path.
-    let random16 = {
-        use hal::TimerOps;
-        let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-        let mut r = [0u8; 16];
-        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
-        r
-    };
+    // Linux `create_elf_tables`: 16 `get_random_bytes()` bytes. Replaces the
+    // clock-derived fill — the `F768` bug still live in the PID 1 path — which
+    // handed init a guessable glibc stack canary and pointer guard.
+    let mut random16 = [0u8; 16];
+    crng::fill(&mut random16);
     let argv0: &[&[u8]] = &[init_path];
     // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
     let new_sp = unsafe {
         elf_load::stack::build_user_stack(
-            INIT_STACK_TOP,
+            stack_top,
+            INIT_STACK_LEN,
             argv0, &[b"TERM=vt100" as &[u8]],
             &img,
             &random16,
@@ -415,8 +424,9 @@ fn spawn_init_from_rootfs_arm() {
             // The smoke loader runs before any credential exists: uid 0,
             // no privilege gained, so AT_SECURE is 0 (Linux's plain-exec case).
             elf_load::stack::AuxCreds::default(),
+            &rnd,
         )
-    }.map(|l| l.sp).unwrap_or(INIT_STACK_TOP);
+    }.map(|l| l.sp).unwrap_or(stack_top);
 
     // F152-2: leave TPIDR_EL0 = 0 on first user entry. musl crt1's
     // __init_tls mmaps a TCB and writes TPIDR_EL0 directly (EL0

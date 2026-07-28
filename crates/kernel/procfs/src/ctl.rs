@@ -65,6 +65,12 @@ fn set_perf_paranoid(v: i64) { sched::perf_sw::set_paranoid(v as i32); }
 fn get_perf_sample_rate() -> i64 { sched::perf_sw::sample_rate() as i64 }
 fn set_perf_sample_rate(v: i64) { sched::perf_sw::set_sample_rate(v as i32); }
 fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
+/// `kernel.randomize_va_space` + `vm.mmap_rnd_bits` bind to `aslr`, the single
+/// owner of the randomisation policy every `execve` consults.
+fn get_randomize_va_space() -> i64 { aslr::randomize_va_space() as i64 }
+fn set_randomize_va_space(v: i64) { aslr::set_randomize_va_space(v as i32); }
+fn get_mmap_rnd_bits() -> i64 { aslr::tunable::mmap_rnd_bits() as i64 }
+fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max(0) as u32); }
 /// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
 /// `vfs::fdtable`), so `setrlimit(RLIMIT_NOFILE)`'s EPERM ceiling and this file
 /// can never disagree.
@@ -176,7 +182,14 @@ const SYSCTL_TREE: &[Node] = &[
         File("threads-max",           Int(32768, Some((20, INT_MAX)))),
         File("printk",                Bytes(b"4\t4\t1\t7\n")),
         File("sched_rr_timeslice_ms", Int(100, Some((1, INT_MAX)))),
-        File("randomize_va_space",    Int(2, Some((0, 2)))),
+        // Bound to `aslr`'s live cell — the same value every exec reads when it
+        // decides whether to randomise. A procfs-local copy would let this file
+        // report a protection the loader is not applying (or the reverse), which
+        // is the exact falsehood hardening scanners were being told before ASLR
+        // existed. Linux registers this leaf with plain `proc_dointvec` and NO
+        // extra1/extra2 (`mm/memory.c:128-136`), so no bounds here either.
+        File("randomize_va_space",    IntHook(get_randomize_va_space,
+                                              set_randomize_va_space, None)),
         // Bound to the live value `perf_event_open` consults (`sched::perf_sw`),
         // not a procfs-local cell — a dead cell here would let userspace loosen
         // a gate the syscall never reads.
@@ -237,6 +250,13 @@ const SYSCTL_TREE: &[Node] = &[
         File("page-cluster",            Int(3, Some((0, INT_MAX)))),
         File("nr_hugepages",            Int(0, Some((0, INT_MAX)))),
         File("mmap_min_addr",           Int(65536, Some((0, INT_MAX)))),
+        // `vm.mmap_rnd_bits` — the live entropy width `arch_mmap_rnd()` uses,
+        // bounded by this arch's Kconfig pair (`mm/mmap.c:66-75`). Linux has a
+        // `mmap_rnd_compat_bits` sibling only under `CONFIG_COMPAT`; this
+        // kernel has no 32-bit personality, so there is nothing to register.
+        File("mmap_rnd_bits",           IntHook(get_mmap_rnd_bits, set_mmap_rnd_bits,
+            Some((aslr::tunable::mmap_rnd_bits_min() as i64,
+                  aslr::tunable::mmap_rnd_bits_max() as i64)))),
     ]),
     Dir("net", &[
         Dir("core", &[
