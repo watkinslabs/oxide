@@ -77,6 +77,10 @@ check nofg     'jobctl|sigttin_stops_background' 'jobctl|read_resumes_after_fg'
 check wallcpu  'cputime|single_thread_no_progress'
 check noburn   'cputime|sibling_burn_completes'
 check mqnokill 'mqueue|sigkill_kills_blocked_receiver'
+check mqnoprio   'mqapi|priority_order'
+check mqnonotify 'mqapi|notify_signal'
+check mqnothread 'mqapi|notify_thread'
+check mqnostate  'mqapi|read_state_line'
 check nosig \
     'sleep|rel_norestart' 'sleep|rel_sarestart' 'sleep|abs_sarestart' \
     'lock|flock_sarestart' 'lock|flock_norestart' \

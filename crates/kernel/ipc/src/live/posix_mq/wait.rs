@@ -7,6 +7,9 @@
 
 use crate::mqueue_wait;
 
+/// `struct timespec` — two 64-bit words on both LP64 arches.
+const TIMESPEC_BYTES: u64 = 16;
+
 /// Linux `prepare_timeout` (`ipc/mqueue.c:838-846`) applied to the raw user
 /// pointer, plus the absolute-deadline conversion `wq_sleep` waits on
 /// (`mqueue.c:722-723`: `HRTIMER_MODE_ABS, CLOCK_REALTIME`).
@@ -19,7 +22,12 @@ use crate::mqueue_wait;
 pub(super) fn mq_abs_deadline(abstime: u64) -> Result<Option<u64>, i64> {
     use syscall::errno::Errno;
     if abstime == 0 { return Ok(None); }
-    if abstime >= hal::USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
+    // `get_timespec64` copies BOTH words, so the whole struct must be in user
+    // space — not merely its first byte.
+    if abstime >= hal::USER_VA_END
+        || abstime.checked_add(TIMESPEC_BYTES).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
     // SAFETY: abstime validated below USER_VA_END; a user timespec is 2x i64
     // at +0/+8, read through the caller's active address space at CPL=0.
     let (sec, nsec) = unsafe {

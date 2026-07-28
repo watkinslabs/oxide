@@ -24,12 +24,16 @@ const char *errno_name(int err) {
     case EFAULT: return "EFAULT";
     case EINTR: return "EINTR";
     case EINVAL: return "EINVAL";
+    case EMFILE: return "EMFILE";
     case EMSGSIZE: return "EMSGSIZE";
+    case ENAMETOOLONG: return "ENAMETOOLONG";
     case ENODEV: return "ENODEV";
     case ENOENT: return "ENOENT";
     case ENOMEM: return "ENOMEM";
+    case ENOSPC: return "ENOSPC";
     case ENOSYS: return "ENOSYS";
     case EOPNOTSUPP: return "EOPNOTSUPP";
+    case EOVERFLOW: return "EOVERFLOW";
     case EPERM: return "EPERM";
     case EPIPE: return "EPIPE";
     case ERANGE: return "ERANGE";

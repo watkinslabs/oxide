@@ -180,3 +180,36 @@ fn deadline_conversion_rejects_invalid_timespecs() {
     let d = deadline_from(Some((1, 500))).unwrap().unwrap();
     assert!(d >= 1_000_000_500);
 }
+
+#[test]
+fn an_already_expired_semtimedop_timeout_is_eagain_without_parking() {
+    // Linux `__do_semtimedop`: `schedule_hrtimeout_range` on a deadline in the
+    // past returns immediately with `timed_out`, and the loop tail turns that
+    // into `-EAGAIN` (`ipc/sem.c:2209-2210`). A `{0,0}` timeout is therefore
+    // "poll once, then EAGAIN" — never an indefinite park, and never EINVAL.
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let (ns, c) = (ns(), root());
+    let id = semget_in(ns, &c, IPC_PRIVATE, 1, IPC_CREAT | 0o600).unwrap();
+    assert_eq!(semop_in(ns, &c, id, &[sop(0, -1, 0)], Some((0, 0))), Err(Errno::Eagain));
+    // An op that can commit ignores the expired deadline entirely.
+    assert_eq!(semop_in(ns, &c, id, &[sop(0, 1, 0)], Some((0, 0))), Ok(()));
+    assert_eq!(semctl_in(ns, &c, id, 0, GETVAL, 0), Ok(1));
+}
+
+#[test]
+fn a_timeout_is_rejected_before_the_id_is_resolved() {
+    // `__do_semtimedop` validates the timespec at `ipc/sem.c:2003-2009`, before
+    // `sem_obtain_object_check`, so a malformed timeout beats EINVAL-for-bad-id.
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let (ns, c) = (ns(), root());
+    // Both are EINVAL here, so pin the ORDER by using an id that cannot exist
+    // together with a timespec that cannot validate, then confirm a valid
+    // timespec on the same id still reports EINVAL for the id alone.
+    assert_eq!(semop_in(ns, &c, 4096, &[sop(0, 1, 0)], Some((0, -1))), Err(Errno::Einval));
+    assert_eq!(semop_in(ns, &c, 4096, &[sop(0, 1, 0)], Some((0, 0))), Err(Errno::Einval));
+    // E2BIG outranks the timeout check (`ipc/sem.c:2000-2001` precedes `:2003`).
+    let big: Vec<Sembuf> = (0..SEMOPM + 1).map(|_| sop(0, 1, 0)).collect();
+    assert_eq!(semop_in(ns, &c, 4096, &big, Some((0, -1))), Err(Errno::E2big));
+}

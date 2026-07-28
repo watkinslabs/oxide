@@ -17,6 +17,7 @@ int main(void) {
     probe_jobctl();
     probe_cputime();
     probe_mqueue();
+    probe_mqueue_api();
     probe_locks();
     probe_syslog();
     out("meta", "complete", "status=DONE");
