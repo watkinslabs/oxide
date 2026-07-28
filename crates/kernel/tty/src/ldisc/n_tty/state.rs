@@ -250,6 +250,16 @@ impl NTty {
         self.hung_up = true;
     }
 
+    /// Linux `clear_bit(TTY_HUPPED, &tty->flags)` at the tail of a successful
+    /// `tty_open` (`drivers/tty/tty_io.c:2161`). A hangup is a property of the
+    /// OPEN, not of the device: Linux revokes the old file descriptors by
+    /// swapping their `f_op` to `hung_up_tty_fops` and hands a fresh
+    /// (re-initialised) ldisc to the next opener. oxide's ttys are long-lived
+    /// singletons, so without this a single `vhangup(2)` on `/dev/console`
+    /// would wedge the console for every later login.
+    /// # C: O(1)
+    pub fn clear_hangup(&mut self) { self.hung_up = false; }
+
     /// ISIG dispatch: if `b` matches a signal cc and ISIG is set, raise
     /// it on the fg pgrp, drop the in-progress line, echo `^X`, and
     /// return true (byte consumed).

@@ -3,12 +3,15 @@
 
 use syscall::{errno::Errno, SyscallArgs};
 
-#[path = "167_swapon/uapi.rs"]
-mod uapi;
-use uapi::*;
+use crate::swap_abi::swapon_precheck;
 
-/// `swapon(special, swap_flags)` — slot 167. Resolves a real block node,
-/// validates Linux priority flags, and activates its canonical PMM swap area.
+/// `swapon(special, swap_flags)` — slot 167. Resolves a real block node or
+/// swapfile and activates its canonical PMM swap area.
+///
+/// Argument order follows `mm/swapfile.c:3610-3614`: the `swap_flags` validity
+/// mask is applied BEFORE `capable(CAP_SYS_ADMIN)`, so an unprivileged caller
+/// passing a bad flag gets EINVAL. Reversing the two turns every malformed
+/// call from an unprivileged process into EPERM and hides the caller's bug.
 /// # C: O(path + device pages + header I/O)
 pub fn sys_swapon(args: &SyscallArgs) -> i64 {
     #[cfg(any(feature = "debug-boot", feature = "debug-swap"))]
@@ -21,8 +24,10 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
         Some(current) => current,
         None => return errno(Errno::Esrch),
     };
-    if !current.has_cap(sched::cap::SYS_ADMIN) { return errno(Errno::Eperm); }
-    if args.a1 & !SUPPORTED_SWAPON_FLAGS != 0 { return errno(Errno::Einval); }
+    let flags = match swapon_precheck(args.a1, current.has_cap(sched::cap::SYS_ADMIN)) {
+        Ok(flags) => flags,
+        Err(error) => return errno(error),
+    };
     let path = match crate::namei_common::read_user_path(args.a0) {
         Ok(path) => path,
         Err(result) => return result,
@@ -31,12 +36,10 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
         Ok(node) => node,
         Err(error) => return crate::namei_common::errno_from_vfs(error),
     };
-    let priority = (args.a1 & SWAP_FLAG_PREFER != 0)
-        .then_some((args.a1 & SWAP_FLAG_PRIO_MASK) as i32);
     let discard = pmm::swap::SwapDiscard::from_swapon(
-        args.a1 & SWAP_FLAG_DISCARD != 0,
-        args.a1 & SWAP_FLAG_DISCARD_ONCE != 0,
-        args.a1 & SWAP_FLAG_DISCARD_PAGES != 0,
+        flags.discard,
+        flags.discard_once,
+        flags.discard_pages,
     );
     let result = match node.inode.file_type() {
         vfs::FileType::BlockDev => {
@@ -46,7 +49,7 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
             };
             #[cfg(any(feature = "debug-boot", feature = "debug-swap"))]
             { klog::write_raw(b"[SWAPON] activate "); klog::write_raw(disk.name.as_bytes()); klog::write_raw(b"\n"); }
-            pmm::swap::activate_registered_with_options(&disk.name, priority, discard)
+            pmm::swap::activate_registered_with_options(&disk.name, flags.priority, discard)
         }
         vfs::FileType::Regular => {
             let backing = match ext4::rootfs::swapfile_backing(&node.inode) {
@@ -55,8 +58,9 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
             };
             #[cfg(any(feature = "debug-boot", feature = "debug-swap"))]
             { klog::write_raw(b"[SWAPON] activate "); klog::write_raw(backing.name.as_bytes()); klog::write_raw(b"\n"); }
-            pmm::swap::activate_file_with_options(backing.name, path, backing.device, priority, discard)
+            pmm::swap::activate_file_with_options(backing.name, path, backing.device, flags.priority, discard)
         }
+        // `claim_swapfile` (`mm/swapfile.c`) accepts S_ISBLK and S_ISREG only.
         _ => return errno(Errno::Einval),
     };
     #[cfg(any(feature = "debug-boot", feature = "debug-swap"))]
