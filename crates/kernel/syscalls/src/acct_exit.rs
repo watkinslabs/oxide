@@ -63,7 +63,6 @@ fn collect(task: &sched::Task, internal_status: i32) -> AcctFacts {
 
     // `pacct->ac_mem = vsize / 1024`, summed over the mm's VMAs and recorded
     // only for the last task of the group (Linux `if (group_dead && current->mm)`),
-    // and `ac_minflt` from the same mm's fault counter.
     // SAFETY: mm slot single-mutator per `13§5`; the exiting task runs on this CPU and is the sole reader here.
     if let Some(mm) = unsafe { task.mm_ref() } {
         if group_dead {
@@ -71,7 +70,6 @@ fn collect(task: &sched::Task, internal_status: i32) -> AcctFacts {
                 .map(|v| v.end.as_u64().saturating_sub(v.start.as_u64())).sum();
             f.mem_kb = vsize / 1024;
         }
-        f.minflt = mm.accounting_snapshot().faults;
     }
 
     // `ac_io` / `ac_rw`: characters transferred and blocks read-or-written,
@@ -81,12 +79,14 @@ fn collect(task: &sched::Task, internal_status: i32) -> AcctFacts {
     f.rw = (task.io_read_bytes.load(Ordering::Relaxed)
         .saturating_add(task.io_write_bytes.load(Ordering::Relaxed))) / 512;
 
-    // `ac_majflt`: the VMM's per-mm accounting deliberately carries no
-    // major/minor split (`mm-vmm/src/address_space/accounting.rs`: the
-    // FileBacking API exposes no cache-miss signal, and inventing one would be
-    // a second source of truth). The field stays 0 until that backing layer
-    // reports misses; `ac_minflt` above carries the whole fault count.
-    f.majflt = 0;
+    // `acct_collect` (`kernel/acct.c:592-593`) accumulates `current->min_flt`
+    // and `current->maj_flt` — the PER-TASK counters, not an mm-wide total.
+    // Those counters exist and are charged in the fault handler (F766 added
+    // them for `perf_event_open`'s software events); this record simply never
+    // read them, so every accounting record reported `ac_majflt` 0 and an
+    // `ac_minflt` taken from the wrong scope.
+    f.minflt = task.min_flt.load(Ordering::Relaxed);
+    f.majflt = task.maj_flt.load(Ordering::Relaxed);
     // `ac_swaps` counts swap-ins charged to the task; Linux has not maintained
     // the underlying counter since 2.6 and always writes 0.
     f.swaps = 0;
