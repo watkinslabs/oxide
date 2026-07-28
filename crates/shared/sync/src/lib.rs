@@ -159,6 +159,13 @@ decl_lock_class! {
     // tracked lock. Leaf rank above the task-creation locks (Runqueue/TaskList)
     // it is acquired under during spawn.
     KStack       = 206,
+    // Boot-time network secrets: the SipHash key behind TCP initial sequence
+    // numbers and ephemeral-port offsets, plus the connect-time port-perturb
+    // table (`net::secure_seq`). Taken on the connect / passive-open path with
+    // socket and socket-table locks (130/140) already held, and takes `Crng`
+    // (207) inside on its one-time fill — so it must rank above the socket
+    // locks and below the CSPRNG leaf.
+    NetSecret    = 145,
     // Kernel CSPRNG state (`crng::pool`). A strict LEAF: the ChaCha20 rekey and
     // output run entirely inside it and take no nested tracked lock, so any
     // consumer (getrandom, /dev/urandom, AT_RANDOM, uuid, socket cookies) may

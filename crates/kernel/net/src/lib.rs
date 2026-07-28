@@ -27,6 +27,7 @@ pub mod send_control;
 pub mod socket_args;
 pub mod socket_error;
 pub mod ephemeral;
+pub mod secure_seq;
 pub use socket_error::{SocketError, SocketErrorEntry};
 pub mod loopback;
 pub mod ipv4;
