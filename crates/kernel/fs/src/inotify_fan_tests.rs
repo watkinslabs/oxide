@@ -59,8 +59,10 @@ fn filesystem_mark_matches_superblock() {
     assert_eq!(masks(&g), [FAN_MODIFY, FAN_MODIFY]);
 }
 
-// A self-event on a directory is delivered only when the mark set FAN_ONDIR,
-// and the reported mask then carries FAN_ONDIR.
+// A self-event on a directory is delivered only when the mark set FAN_ONDIR
+// (Linux `fsnotify_mask_applicable`). The bit is a mark-side OPT-IN, never
+// echoed back to a legacy fd-reporting group (`fanotify_group_event_mask`
+// clears FANOTIFY_EVENT_FLAGS from `user_mask` outside fid mode).
 #[test]
 fn ondir_filters_directory_self_events() {
     let g = InotifyData::new_fanotify(0);
@@ -70,7 +72,7 @@ fn ondir_filters_directory_self_events() {
     assert!(masks(&g).is_empty());
     apply_mark(&g, MarkScope::Inode, inode_key(&dir), dir.fsid(), FAN_ONDIR, true, false);
     fire_self(&dir, FAN_OPEN);
-    assert_eq!(masks(&g), [FAN_OPEN | FAN_ONDIR]);
+    assert_eq!(masks(&g), [FAN_OPEN]);
 }
 
 // FAN_MARK_IGNORED_MASK bits suppress otherwise-requested events.
@@ -97,11 +99,14 @@ fn move_emits_paired_cookie() {
         apply_mark(&g, MarkScope::Inode, inode_key(d), d.fsid(), FAN_MOVE | FAN_ONDIR, true, false);
     }
     apply_mark(&g, MarkScope::Inode, inode_key(&moved), moved.fsid(), FAN_MOVE_SELF, true, false);
-    fire_move(&old, &new, Some(&moved));
+    fire_move(&old, &new, Some(&moved), "before", "after");
     let evs: Vec<(u32, u32)> = g.events.lock().iter().map(|e| (e.mask, e.cookie)).collect();
-    // MOVED_FROM (+ONDIR on the dir), MOVED_TO (+ONDIR), MOVE_SELF.
-    assert_eq!(evs[0].0, FAN_MOVED_FROM | FAN_ONDIR);
-    assert_eq!(evs[1].0, FAN_MOVED_TO | FAN_ONDIR);
+    // MOVED_FROM, MOVED_TO, MOVE_SELF. A legacy (fd-reporting) fanotify group
+    // never reports FAN_ONDIR back to userspace — Linux
+    // `fanotify_group_event_mask` strips FANOTIFY_EVENT_FLAGS outside fid mode
+    // — and the moved object is a regular file, so FS_ISDIR is unset anyway.
+    assert_eq!(evs[0].0, FAN_MOVED_FROM);
+    assert_eq!(evs[1].0, FAN_MOVED_TO);
     assert_eq!(evs[2].0, FAN_MOVE_SELF);
     assert_ne!(evs[0].1, 0);
     assert_eq!(evs[0].1, evs[1].1);  // FROM/TO share a cookie
@@ -114,10 +119,27 @@ fn child_create_delete_events_reach_watched_directory() {
     apply_mark(&g, MarkScope::Inode, inode_key(&dir), dir.fsid(),
                IN_CREATE | IN_DELETE, true, false);
 
-    fire_child(&dir, IN_CREATE, 0);
-    fire_child(&dir, IN_DELETE, 0);
+    fire_child(&dir, IN_CREATE, 0, "kid", false);
+    fire_child(&dir, IN_DELETE, 0, "kid", false);
 
     assert_eq!(masks(&g), [IN_CREATE, IN_DELETE]);
+}
+
+// Linux `fsnotify_mask_applicable`: a fanotify mark WITHOUT FAN_ONDIR never
+// sees an event whose affected object is a directory — and one WITH it does.
+#[test]
+fn fanotify_directory_events_need_fan_ondir_on_the_mark() {
+    let plain = InotifyData::new_fanotify(0);
+    let ondir = InotifyData::new_fanotify(0);
+    let dir = mk_inode(FileType::Directory, 0x6d55);
+    apply_mark(&plain, MarkScope::Inode, inode_key(&dir), dir.fsid(), FAN_CREATE, true, false);
+    apply_mark(&ondir, MarkScope::Inode, inode_key(&dir), dir.fsid(), FAN_CREATE | FAN_ONDIR, true, false);
+
+    // A subdirectory was created inside the watched directory: FS_ISDIR is set.
+    fire_child(&dir, FAN_CREATE, 0, "sub", true);
+
+    assert!(plain.events.lock().is_empty(), "mark without FAN_ONDIR must not see a dir event");
+    assert_eq!(masks(&ondir), [FAN_CREATE], "FAN_ONDIR mark sees it, without the flag echoed back");
 }
 
 // FAN_OPEN_EXEC is delivered to a mark requesting it (execve open-exec event).

@@ -58,7 +58,7 @@ impl File {
         cred: FileCred,
         f_op: Arc<dyn FileOps>,
     ) -> Arc<Self> {
-        fire_open_hook(&inode);
+        fire_open_hook(&inode, &dentry);
         let mut f_mode = fmode_from_flags(flags);
         // FMODE_LSEEK/PREAD/PWRITE (Linux `do_dentry_open`): a seekable backing
         // (anything but a streaming pipe/socket/fifo) carries a real cursor +

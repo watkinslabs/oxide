@@ -76,6 +76,21 @@ pub struct SaHandler {
     pub mask:      u64,
 }
 
+impl SaHandler {
+    /// `sa_handler == SIG_IGN` (Linux `collect_sigign_sigcatch`'s first test).
+    /// Exposed so `/proc/<pid>/status`'s `SigIgn`/`SigCgt` read the ONE
+    /// disposition encoding rather than re-deriving the sentinel values.
+    /// # C: O(1)
+    pub fn is_ignored(&self) -> bool { self.handler == SIG_IGN }
+
+    /// `sa_handler == SIG_DFL`. # C: O(1)
+    pub fn is_default(&self) -> bool { self.handler == SIG_DFL }
+
+    /// A real user handler is installed — neither `SIG_DFL` nor `SIG_IGN`
+    /// (Linux `collect_sigign_sigcatch`'s `sigcatch` branch). # C: O(1)
+    pub fn is_caught(&self) -> bool { !self.is_default() && !self.is_ignored() }
+}
+
 pub struct SigActions {
     table: Spinlock<[SaHandler; SIGACTION_COUNT], TaskListClass>,
 }
@@ -340,6 +355,17 @@ impl Task {
     /// # C: O(1)
     pub fn nofile_soft(&self) -> usize {
         self.rlimit(crate::rlimit::rlim::NOFILE).0 as usize
+    }
+
+    /// Linux `atomic_read(&p->seccomp.filter_count)` — the installed cBPF
+    /// program count `/proc/<pid>/status`'s `Seccomp_filters` reports. Reads
+    /// the ONE chain `seccomp(2)` appends to; no shadow counter exists to
+    /// disagree with it. # C: O(1)
+    pub fn seccomp_filter_count(&self) -> usize {
+        // SAFETY: reads the length of the seccomp filter chain this task owns;
+        // the chain is appended to only by seccomp(2)/prctl on the task itself
+        // and cloned before publication, so no concurrent mutator exists.
+        unsafe { (*self.seccomp_filters.get()).len() }
     }
 
     /// Atomically replace `mm` with `new`. The displaced Arc is NOT dropped
