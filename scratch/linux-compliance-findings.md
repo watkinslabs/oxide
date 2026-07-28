@@ -352,3 +352,42 @@ Found while verifying the gdm/udev fix. None has a lane.
 
 - `SMOKE_KEEP_LOG` retains only the **last** attempt's log, while a panic appears in the **failing** attempt's dump inside boot-smoke's own output. Reading only the kept log makes a real panic look like a plain timeout — this nearly produced a false retraction.
 - Marking on a process name (`SMOKE_MARKER='gnome-shell'`) is unmeasurable when that process prints nothing to serial. The reliable check is the sysrq task dump boot-smoke injects on timeout, or `ps` from `systemd.debug_shell=ttyS0`.
+
+## 12 B1478 — security controls that reported success while enforcing nothing
+
+Branch `B1478-security-enforcement`. Four controls whose callers built on a
+guarantee the kernel never delivered. Each is worse than an unimplemented
+feature, because userspace treats the success return as enforcement.
+
+| # | Control | What was actually unenforced | Linux rule mirrored |
+|---|---|---|---|
+| 1 | `openat2` `RESOLVE_*` | `O_CREAT` branch built its parent walk from `LookupFlags::default()`, dropping every scoping bit | `fs/open.c build_open_flags` folds all six into ONE `op->lookup_flags`; `fs/namei.c path_openat` uses it for both walk phases |
+| 2 | `userfaultfd` | `UFFDIO_COPY`/`ZEROPAGE` installed USER\|RW at any VA with no VMA and no registration — an arbitrary-write primitive; no creation gate at all | `mm/userfaultfd.c validate_dst_vma`, `find_vma_and_prepare_anon`, `userfaultfd_syscall_allowed` |
+| 3 | mount flags | `graft_mount` passed a hardcoded `0` as `mnt_flags`; `MNT_LOCK_*` did not exist; `require_sys_admin()` was a flat effective-set test | `fs/namespace.c path_mount`, `lock_mnt_tree`, `may_mount`; `fs/super.c mount_capable` |
+| 4 | `seccomp` | `RET_TRACE`/`RET_LOG` failed OPEN — a filter denying by tracing was a no-op | `kernel/seccomp.c __seccomp_filter` |
+
+### 12.1 Corrections to the source audit
+
+The audit rows were treated as claims to disprove. Four were wrong:
+
+- **`fs/userfaultfd.c` does not exist in v7.2.0-rc4.** userfaultfd is entirely
+  in `mm/userfaultfd.c`. Any row citing the old path was not read against this tree.
+- **`validate_dst_vma` tests `vm_userfaultfd_ctx.ctx` for NON-NULL, not identity**
+  with the calling ctx. The identity test is MOVE-only (`validate_move_areas`).
+  There is likewise no `ctx->mm != current->mm` check outside `userfaultfd_move`.
+- **Mount binds are not a gap.** `path_mount` DISCARDS `mnt_flags` for `MS_BIND`
+  (`return do_loopback(path, dev_name, flags & MS_REC)`) and the clone inherits
+  from its source. `mount --bind -o ro` does not make a ro bind upstream either.
+- **`RESOLVE_BENEATH` was not the escaping flag.** Only `RESOLVE_IN_ROOT`
+  produced a live escape: it is the sole scoping bit that CLAMPS rather than
+  errors, so the scoped walk returns ENOENT and hands control to the unscoped
+  create path. BENEATH/NO_SYMLINKS/NO_XDEV all abort earlier with
+  EXDEV/ELOOP/EXDEV — incidentally covered, never enforced.
+
+### 12.2 Method note
+
+Every fix carries a NEGATIVE assertion (the escape is refused, the unprivileged
+call is denied, the flag is honoured), because a happy-path test passes a
+control that enforces nothing — which is how all four shipped. Causality was
+verified by reverting each production edit and confirming the specific tests go
+red, not by asserting that new tests pass.
