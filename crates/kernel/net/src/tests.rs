@@ -288,3 +288,47 @@ fn tcp_state_classifiers() {
     assert!(TcpState::CloseWait.is_closing());
     assert!(!TcpState::Established.is_closing());
 }
+
+// ---------------------------------------------------------------------------
+// journald record filtering (B1474). `trace_dgram_journal` is target-gated, so
+// the FIELD-selection decision lives in the ungated `message_field` and is
+// tested here — a `#[cfg(test)]` block inside the gated body would compile out
+// silently (CLAUDE.md phantom-test rule).
+// ---------------------------------------------------------------------------
+
+/// A real systemd job-completion record, as captured off `/run/systemd/journal/socket`.
+const JOURNAL_RECORD: &[u8] = b"PRIORITY=6\nSYSLOG_FACILITY=3\nTID=1\nCODE_FILE=src/core/job.c\nCODE_LINE=818\nCODE_FUNC=job_emit_done_message\nSYSLOG_IDENTIFIER=systemd\nMESSAGE=Reached target basic.target - Basic System.\nJOB_ID=15\nJOB_TYPE=start\nJOB_RESULT=done\nUNIT=basic.target\n";
+
+#[test]
+fn message_field_selects_only_the_human_readable_line() {
+    let m = crate::journal_trace::message_field(JOURNAL_RECORD).expect("record carries MESSAGE=");
+    assert_eq!(m, b"MESSAGE=Reached target basic.target - Basic System.");
+    // The point of the filter: one line instead of twelve.
+    assert!(m.len() * 4 < JOURNAL_RECORD.len(), "filter must cut the record substantially");
+}
+
+/// `boot-smoke`'s marker is carried by this trace. Dropping the whole record
+/// on `debug-boot` would have made the x86/arm gate unmeasurable.
+#[test]
+fn message_field_preserves_the_boot_smoke_marker() {
+    let m = crate::journal_trace::message_field(JOURNAL_RECORD).unwrap();
+    assert!(m.windows(21).any(|w| w == b"Reached target basic."));
+}
+
+#[test]
+fn payload_without_message_field_is_passed_through_whole() {
+    // sd_notify and /dev/log syslog text carry no MESSAGE= field and are
+    // already one short line.
+    assert_eq!(crate::journal_trace::message_field(b"READY=1\nSTATUS=Processing requests...\n"), None);
+    assert_eq!(crate::journal_trace::message_field(b"<30>Jul 28 11:00:00 systemd[1]: started\n"), None);
+    assert_eq!(crate::journal_trace::message_field(b""), None);
+}
+
+/// A field whose NAME merely contains the key must not be mistaken for it:
+/// only a line that STARTS with `MESSAGE=` is the message.
+#[test]
+fn message_field_matches_only_at_line_start() {
+    assert_eq!(crate::journal_trace::message_field(b"MESSAGE_ID=39f53479\nUNIT=x.target\n"), None);
+    let m = crate::journal_trace::message_field(b"MESSAGE_ID=39f5\nMESSAGE=real text\n").unwrap();
+    assert_eq!(m, b"MESSAGE=real text");
+}

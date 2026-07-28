@@ -109,11 +109,78 @@
         static N: AtomicUsize = AtomicUsize::new(0);
         fn counting(_b: &[u8]) { N.fetch_add(1, Ordering::Relaxed); }
         N.store(0, Ordering::Relaxed);
+        set_cpu_fn(|| 0);
         set_byte_sink(counting);
         kinfo!("hi");
         clear_byte_sink();
-        // Three calls per event: prefix, message, newline.
-        assert_eq!(N.load(Ordering::Relaxed), 3);
+        clear_cpu_fn();
+        // ONE call per event. `__klog_emit` still makes three emit calls
+        // (prefix, message, newline), but `cont` assembles them into a single
+        // line and hands the console one write — Linux's per-record
+        // `console_unlock` fan-out, and the property that makes a line
+        // unspliceable.
+        assert_eq!(N.load(Ordering::Relaxed), 1);
+    }
+
+    /// The B1474 defect: a line built from MANY emit calls. Per-call locking
+    /// serialises each fragment but not the sequence, so two emitters splice
+    /// mid-token (`[SIGDELIV tid=[SIGDELIV tid=43304327 sig= sig=3333`). Each
+    /// thread here writes a line as four separate calls, all of one character;
+    /// any output line mixing two characters is a splice.
+    #[test]
+    fn multi_call_lines_do_not_splice() {
+        let _g = lock_sink();
+        let _ = drain_sink();
+        set_byte_sink(test_sink);
+        set_clock_fn(|| 0);
+        // Per-CPU line buffers are keyed by the cpu thunk, and fragments only
+        // join a pending line when the caller identity matches. Hosted threads
+        // stand in for both: one "cpu" each, and its own caller id.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        std::thread_local! {
+            static ID: usize = NEXT.fetch_add(1, Ordering::Relaxed);
+        }
+        fn tid() -> u32 { ID.with(|i| *i as u32) }
+        set_cpu_fn(|| tid() % 8);
+        set_caller_fn(tid);
+
+        const THREADS: usize = 8;
+        const LINES: usize = 200;
+        const CHUNK: usize = 12;
+        std::thread::scope(|s| {
+            for t in 0..THREADS {
+                s.spawn(move || {
+                    let c = b'A' + t as u8;
+                    let chunk = [c; CHUNK];
+                    for _ in 0..LINES {
+                        write_raw(&chunk);
+                        write_raw(&chunk);
+                        write_raw(&chunk);
+                        write_raw(&chunk);
+                        write_raw(b"\n");
+                    }
+                });
+            }
+        });
+
+        clear_caller_fn();
+        clear_cpu_fn();
+        clear_clock_fn();
+        clear_byte_sink();
+        let out = drain_sink();
+        let mut lines = 0usize;
+        for line in out.split(|b| *b == b'\n') {
+            let payload: alloc::vec::Vec<u8> =
+                line.iter().copied().filter(|b| b.is_ascii_uppercase()).collect();
+            if payload.len() != CHUNK * 4 { continue; }
+            lines += 1;
+            let first = payload[0];
+            assert!(
+                payload.iter().all(|b| *b == first),
+                "spliced line: two emitters interleaved inside one assembled line"
+            );
+        }
+        assert!(lines >= THREADS, "expected every emitter's assembled lines present");
     }
 
     // ---------------------------------------------------------------------
@@ -201,3 +268,36 @@
         clear_cpu_fn();
         assert!(DEPTH.load(Ordering::Relaxed) >= 2, "nested emit did not run");
     }
+
+/// A forced flush (caller identity changed mid-line) must TERMINATE the
+/// fragment it publishes. Without that the next caller's line continues on the
+/// same output line, so a legitimate split reads as a splice — the exact
+/// confusion this module removes.
+#[test]
+fn interrupted_line_is_terminated_not_concatenated() {
+    let _g = lock_sink();
+    let _ = drain_sink();
+    set_byte_sink(test_sink);
+    set_clock_fn(|| 0);
+    set_cpu_fn(|| 0);
+    // Two callers on ONE cpu — a hard IRQ logging while task context is
+    // mid-line. The thunk flips identity on each call so the second fragment
+    // always lands under a different owner.
+    static WHO: AtomicUsize = AtomicUsize::new(0);
+    WHO.store(0, Ordering::Relaxed);
+    set_caller_fn(|| WHO.load(Ordering::Relaxed) as u32);
+
+    write_raw(b"AAA");                       // caller 0, no newline
+    WHO.store(1, Ordering::Relaxed);
+    write_raw(b"BBB\n");                     // caller 1 displaces it
+
+    clear_caller_fn();
+    clear_cpu_fn();
+    clear_clock_fn();
+    clear_byte_sink();
+    let out = drain_sink();
+    assert!(!out.windows(6).any(|w| w == b"AAABBB"),
+            "forced flush concatenated two callers onto one line: {out:?}");
+    assert!(out.windows(4).any(|w| w == b"AAA\n"), "first fragment not terminated: {out:?}");
+    assert!(out.windows(4).any(|w| w == b"BBB\n"), "second line missing: {out:?}");
+}

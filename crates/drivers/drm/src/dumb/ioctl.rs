@@ -19,7 +19,7 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     // Keep this behind the established boot diagnostic feature: a compositor
     // stalled in CREATE_DUMB otherwise leaves no distinction between the PMM
     // allocation and the DRM table publication steps.
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     {
         klog::write_raw(b"[DRMDUMB begin card=");
         klog::write_dec_u64(card_id as u64);
@@ -38,7 +38,7 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
         klog::write_raw(b"]\n");
     }
     let pa = match pmm::setup::alloc_contig_object(pmm::Order(order)) { Some(p) => p, None => return enomem() };
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     {
         klog::write_raw(b"[DRMDUMB allocated pa=");
         klog::write_hex_u64(pa);
@@ -58,7 +58,7 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     // stops after CREATE_DUMB needs an unambiguous record that the handle,
     // pitch, and size were published successfully, not merely that PMM found
     // pages for the request.
-    #[cfg(feature = "debug-boot")]
+    #[cfg(feature = "debug-desktop")]
     {
         klog::write_raw(b"[DRMDUMB ready handle=");
         klog::write_dec_u64(handle as u64);

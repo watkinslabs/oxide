@@ -220,7 +220,7 @@ impl AddressSpace {
                     }
                 } else { None };
                 if let Some((spa, map_ref_held)) = direct {
-                    #[cfg(feature = "debug-boot")]
+                    #[cfg(feature = "debug-faultdiag")]
                     {
                         klog::write_raw(b"[file frame map] va="); klog::write_hex_u64(va_page);
                         klog::write_raw(b" pa="); klog::write_hex_u64(spa);

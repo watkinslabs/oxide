@@ -81,6 +81,14 @@ sched = { path = "../sched", features = ["hosted"] }
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW
 debug-tcprx = []  # [TCPRX] shim receive-loop enter/park/wake trace for restarted recv(2)
 debug-boot = ["kmacros/debug-boot", "net/debug-boot", "drm/debug-boot"]
+# B1474: campaign traces that used to ride debug-boot. `make qemu-*` turns
+# debug-boot on unconditionally, so anything per-syscall / per-signal /
+# per-fault there changes the guest's timing instead of measuring it.
+debug-sigdeliv = []  # [SIGDELIV] per-delivery signal trace — B1471 made EVERY return to user mode a delivery point
+debug-ustack = []  # [USTACK] user return-address walk on a stack-address FUTEX_WAIT (up to 80 words per call)
+debug-desktop = ["drm/debug-desktop", "fs/debug-desktop", "sched/debug-desktop"]  # [MUTTERSYS]/[MUTTERPPOLL]/[MUTTEREPOLL]/[DRMPROP]/[LGD]/[DRMDISC] gnome-shell + logind + KMS ledger
+debug-execload = ["elf-load/debug-execload"]  # [EXECLOAD]/[execve ENOENT] per-exec image trace
+debug-journal = ["net/debug-journal"]  # [B288 env] exec LISTEN_* env + FULL journald records ([B288 dgram] keeps its MESSAGE= line on debug-boot)
 debug-displaystack = []  # [VTIO]/[TGKILL]/[waitid] per-op display-stack bring-up traces; OFF by default (were under debug-boot / ungated, too noisy)
 debug-trace = ["kmacros/debug-trace"]
 debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]

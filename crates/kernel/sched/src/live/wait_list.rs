@@ -26,7 +26,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 use core::sync::atomic::AtomicU32;
 
 use crate::{Task, TaskState};
@@ -35,7 +35,7 @@ use sync::{Spinlock, TaskList as WaitClass};
 /// Bounded, feature-gated ledger for compositor deadline parks.  Retaining the
 /// publication point makes a missed deadline wake distinguishable from an
 /// absent timerfd/epoll registration without perturbing normal scheduling.
-#[cfg(feature = "debug-boot")]
+#[cfg(feature = "debug-desktop")]
 static MUTTER_DEADLINE_PARK_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -125,7 +125,7 @@ impl WaitList {
         // gap finds the task Runnable and the post-park `schedule()` simply
         // keeps running it — the same race the deadline stamp always had.
         crate::hrtimeout::arm(&arc, deadline_ns, slack_ns);
-        #[cfg(feature = "debug-boot")]
+        #[cfg(feature = "debug-desktop")]
         if deadline_ns != 0 && arc.with_exe_path(|p| p.map(|p| {
             p.contains("gnome-shell") || p.contains("mutter")
         }).unwrap_or(false))

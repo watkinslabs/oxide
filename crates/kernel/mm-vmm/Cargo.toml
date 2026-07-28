@@ -16,6 +16,7 @@ bitflags  = { version = "2", default-features = false }
 [features]
 debug-atexit = []  # loader-corruption probes ([FILLTAIL] EOF-straddling fill trace)
 debug-swap = []  # [AS-DROP] narrow address-space teardown trace for swap activation
+debug-faultdiag = []  # [file frame map] per-file-backed-page-fault mapping trace
 debug-as-lifetime = []  # [AS-LIFE] canonical AddressSpace ownership transition provenance
 default = []
 hosted  = []
