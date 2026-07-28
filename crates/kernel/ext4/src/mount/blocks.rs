@@ -10,6 +10,8 @@ impl Mount {
     /// Read inode `ino` (1-indexed) from disk.
     /// # C: O(1) I/O + O(1) parse
     pub fn read_inode(&self, ino: u32) -> Result<Inode, MountError> {
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.should_fail_inode_read_for_tests() { return Err(MountError::BlockIo); }
         let (group, idx) = gdt::locate_inode(&self.sb, ino)?;
         let gd = {
             let g = self.state.lock();
