@@ -1,8 +1,9 @@
-// Preempt-count machinery per `13§9`. Per-CPU: `preempt_count` and
-// `need_resched` are each a `[_; MAX_CPUS]` slot indexed by the current
-// CPU (`13§9`/`06§4`), so two CPUs never clobber each other's count or
-// resched flag. The public API is unchanged — callers operate on "this
-// CPU" implicitly, exactly as Linux's `__preempt_count` / `TIF_NEED_RESCHED`.
+// Preempt-count machinery per `13§9`. `preempt_count` is per-CPU — a
+// `[_; MAX_CPUS]` slot indexed by the current CPU (`13§9`/`06§4`), swapped with
+// the incoming task's value at each switch, exactly as x86 Linux treats
+// `pcpu_hot.preempt_count`. `TIF_NEED_RESCHED` is NOT per-CPU: it lives on the
+// TASK (`resched`), because Linux stamps it on `rq->curr` and clears it on
+// `prev` at every `__schedule`.
 //
 // Discipline (`13§9`):
 //   - `preempt_count > 0` ⇒ no schedule() may run on this CPU.
@@ -18,7 +19,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use cpu::MAX_CPUS;
 
-/// Cacheline-padded per-CPU slot so adjacent CPUs' preempt state never
+/// Cacheline-padded per-CPU slot so adjacent CPUs' preempt count never
 /// shares a cache line (`04§6` / `06§4`).
 #[repr(C, align(64))]
 struct Pcpu<T>(T);
