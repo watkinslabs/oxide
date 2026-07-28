@@ -230,5 +230,106 @@ Also observed and NOT fixed here:
 - SMP=2 `live-gnome` boot panicked at `sched/live/schedule/switch.rs:367`
   "schedule selected task already owned by another CPU". Pre-existing `on_cpu` ownership race,
   unrelated to this diff; the faster boot (working udev) makes it easier to hit.
+  **Root-caused and fixed in B1473 — see §9.**
 - Serial RX duplicates input bytes under load (`xsessions` → `xsessiions`), and a burst of
   typed input has twice ended in `#DF` inside `sched::diag::emit::sysrq_rx`.
+
+## 9 B1473 — "schedule selected task already owned by another CPU": two `on_cpu` protocol breaks
+
+Invariant the `kassert` encodes (`live/schedule/switch.rs`): a task with `on_cpu == true` is
+EXECUTING on its owner CPU, so no other CPU may pick it. A failure means two CPUs are about to
+run one `Arc<Task>` off one saved register context.
+
+Distinct from B1467 (`set_class` dequeuing from the CALLER's runqueue). Two independent
+deviations from Linux's `on_cpu` protocol, both required to close it. Neither is a wake-path
+routing bug — the routing bugs found alongside (table below) were real but did not stop the
+panic; that was established by fixing them first and still reproducing.
+
+### 9.1 `schedule()` published `on_cpu = 1` AFTER the pick had cleared `on_rq`
+
+`kernel/sched/core.c`, beside `try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)`:
+
+```
+ * Ensure we load p->on_cpu _after_ p->on_rq, otherwise it would be
+ * possible to, falsely, observe p->on_cpu == 0.
+ *
+ * One must be running (->on_cpu == 1) in order to remove oneself
+ * from the runqueue.
+ *
+ * __schedule() (switch to task 'p')	try_to_wake_up()
+ *   STORE p->on_cpu = 1		  LOAD p->on_rq
+ * __schedule() (put 'p' to sleep)
+ *   STORE p->on_rq = 0			  LOAD p->on_cpu
+```
+
+In Linux a RUNNING task keeps `on_rq == TASK_ON_RQ_QUEUED`; only `block_task()` clears it, long
+after `prepare_task(next)` set `on_cpu`, so the order holds for free. Here `on_rq` means "in a
+class tree", so the pick itself clears it — and the pre-fix code set `on_cpu` ~20 instructions
+LATER, after `swap_current`, the AS switch and the FPU save. `Task::pending_wake` (the wake-list
+drain's reader) loads `on_rq` then `on_cpu`, so it could see BOTH clear for a task the local CPU
+was mid-switch onto and report it `Ready`.
+
+Fix: `RunqueueInner::pick_next_task_claim` — Linux's `pick_next_task` + `prepare_task(next)`
+fused, so `on_cpu` is published BEFORE the task leaves the tree, under the rq lock. It returns
+the prior `on_cpu`, which is what `schedule()` now asserts on, so the guard is unchanged in
+strength and is checked where ownership is taken rather than after the switch.
+
+### 9.2 `sched_ttwu_pending` classified outside the rq lock, then enqueued inside it
+
+Linux (`kernel/sched/core.c`) takes the rq lock FIRST and re-reads `p->on_cpu` at the activation
+point, waiting the switch out if it is still set:
+
+```c
+rq_lock_irqsave(rq, &rf);
+llist_for_each_entry_safe(p, t, llist, wake_entry.llist) {
+        if (WARN_ON_ONCE(p->on_cpu))
+                smp_cond_load_acquire(&p->on_cpu, !VAL);
+        if (WARN_ON_ONCE(task_cpu(p) != cpu_of(rq)))
+                set_task_cpu(p, cpu_of(rq));
+        ttwu_do_activate(rq, p, ..., &rf);
+}
+```
+
+Ours drained + classified with no lock, then acquired the rq lock and enqueued — a check-then-act
+across an unbounded wait, because this rq's lock is held across whole context switches. A task
+cleared as "not executing" could be executing by the time the enqueue landed. Both of Linux's
+`WARN_ON_ONCE` conditions were live in our tree simultaneously, which is how it was caught: a
+chokepoint probe in `RunqueueInner::enqueue` logged
+`tid=4096 on_rq=0 tcpu=1 rq=0 at=live/schedule/switch.rs:281` — `p->on_cpu` set AND
+`task_cpu(p) != cpu_of(rq)`, from `sched_ttwu_pending`'s call site.
+
+Fix: classify inside the rq lock, immediately before the enqueue it authorises. Where Linux
+waits with `smp_cond_load_acquire`, this defers to the owner's wake-list — an unbounded cross-CPU
+spin under a held rq lock AB-BAs against a peer balancer wanting that same lock (the `-smp` hang
+the wake-list exists to avoid). Deferral loses no wake.
+
+### 9.3 Same-family deviations fixed in the same PR
+
+| # | Site | What it did | Linux |
+|---|---|---|---|
+| 1 | `switch.rs` `oxide_finish_task_switch` | released the rq lock BEFORE clearing `prev->on_cpu` | `finish_task(prev)` runs before `finish_lock_switch(rq)`; core.c: `on_cpu` is set and cleared "both under rq->lock" |
+| 2 | `zombies.rs` `wake_wait4_parent` | `claim_wake` then raw `inner.enqueue` on the CALLER's rq — no `on_cpu` handshake, no `select_task_rq` | `try_to_wake_up` → `smp_load_acquire(&p->on_cpu)` → `ttwu_queue_wakelist(p, task_cpu(p), …)` |
+| 3 | `sigpend.rs` `unfreeze_task` / `freeze_task` | thaw raw-enqueued on the caller's rq; freeze removed from the caller's rq only, so a task queued elsewhere stayed runnable | thaw goes through ttwu placement; freeze under `task_rq_lock(p)` |
+| 4 | `balance.rs` | migrated the leftmost CFS task with no running check | `can_migrate_task`: `if (task_on_cpu(env->src_rq, p) …) return 0` (`kernel/sched/fair.c`, `nr_failed_migrations_running`) |
+
+### 9.4 Evidence
+
+Hosted, deterministic, no boots. `tests/queues.rs`:
+`a_task_being_switched_to_is_never_reported_enqueueable` asserts `pending_wake` reports `Defer`
+at every point after the claiming pick; `probe_detects_the_pre_fix_pick_then_claim_window` runs
+the pre-fix order and asserts the reader falsely observes `Ready` in between, so the first test
+cannot be vacuous. The wake-path deviations get a two-CPU model over real `Runqueue`s with an
+injected CPU→rq accessor (the `rq_locate` split from B1467, now applied to
+`ttwu::place_runnable_with` / `select_task_rq_with`);
+`live/zombies/tests.rs::wake_wait4_parent_defers_a_parent_that_is_still_on_cpu` fails against the
+pre-fix `wake_wait4_parent` and passes after (verified by reverting).
+
+Boot measurement used a non-fatal probe at the `RunqueueInner::enqueue` chokepoint, so a PASSING
+boot still reports whether a live task was enqueued. `live-gnome` x86 SMP=2:
+
+| build | boots | ownership panics | live-task enqueues caught |
+|---|---|---|---|
+| §9.1 fix only | 4 | 1 | 2 |
+| §9.1 + §9.2 | 6 | 0 | 0 |
+
+The probe going to zero is the direct signal; the panic is only its fatal tail.

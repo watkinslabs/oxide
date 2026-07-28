@@ -114,46 +114,69 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
     out
 }
 
-/// Drain this CPU's claimed wakes and return tasks now safe to enqueue. Tasks
-/// still completing a switch-off are returned to their installed owner CPU;
-/// that CPU's next scheduler edge retries after `finish_task_switch` clears
-/// `on_cpu`. # C: O(deferred)
-fn wake_list_ready(cpu: u32, current: *mut Task) -> Vec<Arc<Task>> {
-    let mut ready = Vec::new();
-    for task in wake_list_drain(cpu) {
-        match task.pending_wake(current) {
-            PendingWake::Drop => {}
-            PendingWake::Ready => ready.push(task),
-            PendingWake::Defer => {
-                let owner = task.cpu.load(Ordering::Acquire) as u32;
-                // SAFETY: bounded lookup; an absent old owner cannot drain a list.
-                let target = if owner < cpu::MAX_CPUS as u32
-                    && unsafe { global_for(owner) }.is_some() { owner } else { cpu };
-                wake_list_push(target, task);
-                resched_curr(target);
-            }
-        }
-    }
-    ready
-}
-
 /// Linux `sched_ttwu_pending`: consume this CPU's wake-list after switch
 /// ownership is settled and enqueue each task exactly once. Called both before
 /// a pick and from `finish_task_switch`; the latter closes a wake arriving
 /// after the pre-pick drain but before the outgoing task clears `on_cpu`.
+///
+/// The per-task decision is made INSIDE the rq lock, immediately before the
+/// enqueue it authorises — Linux's structure exactly (`kernel/sched/core.c`):
+///
+/// ```c
+/// rq_lock_irqsave(rq, &rf);
+/// llist_for_each_entry_safe(p, t, llist, wake_entry.llist) {
+///         if (WARN_ON_ONCE(p->on_cpu))
+///                 smp_cond_load_acquire(&p->on_cpu, !VAL);
+///         ...
+///         ttwu_do_activate(rq, p, ..., &rf);
+/// }
+/// ```
+///
+/// Classifying first and taking the lock afterwards (the pre-fix shape) is a
+/// check-then-act across an unbounded wait: this rq's lock is held across whole
+/// context switches, so a task cleared as "not executing" could be executing by
+/// the time the enqueue landed. That is precisely the `WARN_ON_ONCE(p->on_cpu)`
+/// Linux places at the activation point, and here it was fatal — `schedule()`
+/// then picks a task another CPU owns. Where Linux waits the switch out with
+/// `smp_cond_load_acquire`, this defers to the owner's wake-list instead: an
+/// unbounded cross-CPU spin under a held rq lock AB-BA's against a peer
+/// balancer wanting this same lock (the `-smp` hang this module's wake-list
+/// exists to avoid). Deferral loses no wake — the owner drains it once its own
+/// switch settles.
 /// # C: O(deferred * log N)
 pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
-    let ready = wake_list_ready(cpu, current);
-    if ready.is_empty() { return false; }
-    let mut inner = rq.inner.lock();
-    for task in ready {
-        task.set_vruntime_to_floor(inner.cfs.min_vruntime());
-        inner.enqueue(task);
+    let drained = wake_list_drain(cpu);
+    if drained.is_empty() { return false; }
+    let mut deferred: Vec<Arc<Task>> = Vec::new();
+    let mut placed = false;
+    {
+        let mut inner = rq.inner.lock();
+        for task in drained {
+            match task.pending_wake(current) {
+                PendingWake::Drop  => {}
+                PendingWake::Defer => deferred.push(task),
+                PendingWake::Ready => {
+                    // Sleeper credit on wake (F211).
+                    task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+                    inner.enqueue(task);
+                    placed = true;
+                }
+            }
+        }
+        rq.nr_running.store(inner.nr_running(), Ordering::Release);
     }
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    drop(inner);
-    resched_curr(cpu);
-    true
+    // Re-queue still-executing tasks to their owner CPU, outside the rq lock so
+    // no reschedule IPI is ever sent from under it.
+    for task in deferred {
+        let owner = task.cpu.load(Ordering::Acquire) as u32;
+        // SAFETY: bounded lookup; an absent old owner cannot drain a list.
+        let target = if owner < cpu::MAX_CPUS as u32
+            && unsafe { global_for(owner) }.is_some() { owner } else { cpu };
+        wake_list_push(target, task);
+        resched_curr(target);
+    }
+    if placed { resched_curr(cpu); }
+    placed
 }
 
 /// This CPU's index (gs:0 / TPIDR). Host build → 0.
@@ -174,15 +197,24 @@ fn this_cpu() -> u32 {
 /// cpuset). UP / single online CPU → that CPU.
 /// # C: O(N_cpus)
 pub fn select_task_rq(task: &Task) -> u32 {
+    // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
+    // that has not completed `install_global`, which the walk skips.
+    select_task_rq_with(&|c| unsafe { global_for(c) }, this_cpu(), task)
+}
+
+/// [`select_task_rq`] over an injected CPU->runqueue accessor, so the placement
+/// decision is exercised by hosted tests against real `Runqueue` instances on
+/// more than one CPU (`GLOBALS` only accepts writes for `this_cpu()`, which is
+/// unconditionally 0 off-target). Same split `rq_locate` uses.
+/// # C: O(N_cpus)
+pub fn select_task_rq_with<'a, F>(get_rq: &F, local: u32, task: &Task) -> u32
+where F: Fn(u32) -> Option<&'a Runqueue> {
     let allowed = task.cpus_allowed.load(Ordering::Acquire);
-    let local = this_cpu();
     let prev = task.cpu.load(Ordering::Acquire);
     if prev != u16::MAX {
         let cpu = prev as u32;
         if cpu < 64 && (allowed & (1u64 << cpu)) != 0 {
-            // SAFETY: global_for returns None unless this prior owner still
-            // has an installed runqueue.
-            if let Some(rq) = unsafe { global_for(cpu) } {
+            if let Some(rq) = get_rq(cpu) {
                 // Keep prev ONLY if it is idle (cache-warm + runs the wakee
                 // immediately). If prev is busy, fall through to the idlest-CPU
                 // scan so the wakee lands on an idle CPU and runs now instead of
@@ -201,9 +233,7 @@ pub fn select_task_rq(task: &Task) -> u32 {
     for cpu in order {
         // Affinity: only CPUs in the task's mask (bit per CPU, <64).
         if cpu < 64 && (allowed & (1u64 << cpu)) == 0 { continue; }
-        // SAFETY: global_for is sound for any index; returns None unless that
-        // CPU has installed its runqueue (online + scheduling).
-        if let Some(rq) = unsafe { global_for(cpu) } {
+        if let Some(rq) = get_rq(cpu) {
             let load = rq.nr_running.load(Ordering::Acquire);
             if load < best_load { best_load = load; best = Some(cpu); }
         }
@@ -329,17 +359,28 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
 /// # SAFETY: caller is a wake site and owns an `Arc<Task>` for placement.
 /// # C: O(N_cpus + log N)
 pub(crate) unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
-    let me = this_cpu();
+    // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
+    // that has not completed `install_global`, which the walk skips.
+    place_runnable_with(&|c| unsafe { global_for(c) }, this_cpu(), task, force_defer);
+}
+
+/// [`place_runnable`] over an injected CPU->runqueue accessor and local CPU id.
+/// Every wake in the tree funnels through here, so the `on_cpu` handshake is
+/// stated once and is hosted-testable on a real two-CPU model — see
+/// [`select_task_rq_with`] for why the accessor is injected.
+/// # C: O(N_cpus + log N)
+pub(crate) fn place_runnable_with<'a, F>(get_rq: &F, me: u32, task: Arc<Task>, force_defer: bool)
+where F: Fn(u32) -> Option<&'a Runqueue> {
     let owner = task.cpu.load(Ordering::Acquire) as u32;
+    // Linux ttwu's `smp_load_acquire(&p->on_cpu)` (`kernel/sched/core.c`
+    // `try_to_wake_up`), pairing with `finish_task`'s
+    // `smp_store_release(&prev->on_cpu, 0)`.
     let on_cpu = task.on_cpu.load(Ordering::Acquire);
-    // SAFETY: owner is range-checked and global_for returns None unless that
-    // CPU has an installed runqueue.
-    let owner_online = owner < cpu::MAX_CPUS as u32
-        && unsafe { global_for(owner) }.is_some();
+    let owner_online = owner < cpu::MAX_CPUS as u32 && get_rq(owner).is_some();
     let target = if on_cpu && owner_online {
         owner
     } else {
-        select_task_rq(&task)
+        select_task_rq_with(get_rq, me, &task)
     };
     // Defer to the target's wake_list (Linux `ttwu_queue_wakelist`) when we must
     // not place directly: the task is still switching OFF elsewhere (`on_cpu`),
@@ -349,9 +390,8 @@ pub(crate) unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
     // blocks IF=0 on a peer's rq lock.
     if force_defer || target != me || task.on_cpu.load(Ordering::Acquire) {
         // Pick a real, installed CPU to own the deferred task; fall back to local.
-        // SAFETY: global_for reads installed per-CPU runqueue slots; None unless online.
-        let tcpu = if unsafe { global_for(target) }.is_some() { target }
-                   else if unsafe { global_for(me) }.is_some() { me }
+        let tcpu = if get_rq(target).is_some() { target }
+                   else if get_rq(me).is_some() { me }
                    else { wake_list_push(target, task); return; };
         wake_list_push(tcpu, task);
         resched_curr(tcpu);
@@ -362,8 +402,7 @@ pub(crate) unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
     // is not on any rq (just claimed Runnable) so nobody can pick it / set its
     // `on_cpu` until we enqueue; the `on_cpu == false` check above therefore
     // can't race a fresh switch-on.
-    // SAFETY: global_for(me) reads this CPU's own installed runqueue slot.
-    if let Some(rq) = unsafe { global_for(me) } {
+    if let Some(rq) = get_rq(me) {
         {
             let mut inner = rq.inner.lock();
             // Sleeper credit on wake (F211).
@@ -401,3 +440,6 @@ pub unsafe fn ttwu_deferred(task: Arc<Task>) -> bool {
     // SAFETY: see try_to_wake_up; force_defer avoids any rq-lock acquire here.
     unsafe { ttwu_inner(task, true) }
 }
+
+#[cfg(test)]
+mod tests;
