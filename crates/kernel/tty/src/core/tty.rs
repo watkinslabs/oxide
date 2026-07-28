@@ -143,10 +143,22 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// silent buffer-overrun count, made visible. # C: O(1)
     pub fn flip_dropped(&self) -> u64 { self.flip.lock_irqsave::<W::Irq>().dropped() }
 
+    /// Staged bytes still owed to the line discipline. The flush worker checks
+    /// this after clearing its pending flag, so a byte staged mid-drain — which
+    /// saw the flag set and therefore queued nothing — is not stranded until
+    /// the next keystroke. # C: O(1)
+    pub fn flip_pending(&self) -> usize { self.flip.lock_irqsave::<W::Irq>().pending() }
+
     /// Linux `flush_to_ldisc` (`drivers/tty/tty_buffer.c`, the `buf->work`
     /// callback): drain everything `insert_flip` staged into the line
     /// discipline, in PROCESS context. Loops until the ring is empty so a byte
-    /// inserted mid-drain is never stranded waiting for the next keystroke.
+    /// inserted mid-drain is not stranded waiting for the next keystroke.
+    ///
+    /// The CALLER must guarantee only one flush runs at a time — Linux gets
+    /// that free, because the workqueue core never runs one `work_struct`
+    /// concurrently with itself. Two concurrent drains would each take a chunk
+    /// and could hand them to the ldisc out of order, which is byte
+    /// reordering, not just a missed wakeup.
     /// # C: O(staged bytes)
     /// # Ctx: process
     /// # Sleeps: yes — the ldisc echo transmits, and the wake takes rq locks
