@@ -24,14 +24,17 @@ use sync::{Spinlock, TaskList as TaskListClass};
 //   notify    — do_notify_parent siginfo + the exit_notify decision
 //   orphan    — kill_orphaned_pgrp (POSIX 3.2.2.2 SIGHUP+SIGCONT)
 //   pidns     — namespace-qualified reaper lookup + zap_pid_ns_processes
+//   ns_reboot — `pid_ns->reboot`: reboot(2) issued inside a child pid namespace
 //   terminate — fatal-signal death of the running task (fault path)
 mod reparent;
 mod notify;
 mod orphan;
 mod pidns;
+mod ns_reboot;
 mod terminate;
 pub use reparent::{reap_orphans, reparent_children};
-pub use pidns::{in_initial_pid_namespace, pid_namespace_chain, zap_pid_namespace};
+pub use pidns::{in_initial_pid_namespace, initial_init_task, namespace_child_reaper, pid_namespace_chain, zap_pid_namespace};
+pub use ns_reboot::{apply_pid_namespace_reboot_status, set_pid_namespace_reboot};
 pub use terminate::terminate_current_with_signal;
 use notify::{accrue_child_time, child_exit_info, exit_notify_decision, push_child_event};
 #[cfg(test)]

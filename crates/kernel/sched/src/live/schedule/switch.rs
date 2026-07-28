@@ -121,6 +121,10 @@ fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
     let delta = crate::cputime::clamp_delta(now, start, MAX_TICK_NS);
     if delta != 0 {
         prev.sum_exec_runtime_ns.fetch_add(delta, Ordering::Relaxed);
+        // Same ns, charged to the CPU that burned it, for CPU-context
+        // `PERF_COUNT_SW_TASK_CLOCK` (Linux `task_clock_event_update`).
+        crate::perf_sw::charge(crate::perf_sw::CpuSw::ExecNs,
+            prev.cpu.load(Ordering::Acquire) as usize, delta);
     }
     let vdelta = crate::cputime::vruntime_delta(delta, weight).max(1);
     let cur = prev.vruntime.load(Ordering::Acquire);
@@ -365,7 +369,16 @@ pub unsafe fn schedule() {
         .is_ok(), "schedule selected task already owned by another CPU");
     // SAFETY: rq.current was just set to next and this scheduler context owns
     // the incoming task's CPU ownership transition.
-    unsafe { rq.current_ref() }.cpu.store(me as u16, Ordering::Release);
+    // Linux `set_task_cpu()` bumps `se.nr_migrations` when a task lands on a
+    // different CPU than it last ran on (`kernel/sched/core.c`); that counter
+    // is what `PERF_COUNT_SW_CPU_MIGRATIONS` reports. `u16::MAX` is the
+    // never-scheduled sentinel and is not a migration.
+    let prev_cpu = unsafe { rq.current_ref() }.cpu.swap(me as u16, Ordering::AcqRel);
+    if prev_cpu != u16::MAX && prev_cpu != me as u16 {
+        // SAFETY: rq.current is the incoming task just published by swap_current; relaxed counter bump only.
+        unsafe { rq.current_ref() }.nr_migrations.fetch_add(1, Ordering::Relaxed);
+        crate::perf_sw::charge(crate::perf_sw::CpuSw::Migration, me, 1);
+    }
     // SAFETY: before overwriting the single handoff slot, complete any
     // previous switch whose incoming task reached schedule() before its tail
     // hook cleared the old outgoing task.
@@ -376,6 +389,15 @@ pub unsafe fn schedule() {
     if matches!(prev_arc_opt.as_ref().expect("just set").state(), TaskState::Zombie) {
         let dying = prev_arc_opt.take().expect("just set");
         rq.reap_pending.store(Arc::into_raw(dying) as *mut Task, Ordering::Release);
+    }
+    // Linux `__schedule()`: the outgoing task charges `nvcsw` when it gave the
+    // CPU up by blocking and `nivcsw` when it was preempted while still
+    // runnable. `PERF_COUNT_SW_CONTEXT_SWITCHES` reports their sum, and
+    // `/proc/<pid>/status` reports them separately.
+    if let Some(p) = prev_arc_opt.as_ref() {
+        if matches!(p.state(), TaskState::Runnable) { p.nivcsw.fetch_add(1, Ordering::Relaxed); }
+        else                                        { p.nvcsw .fetch_add(1, Ordering::Relaxed); }
+        crate::perf_sw::charge(crate::perf_sw::CpuSw::ContextSwitch, me, 1);
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
     crate::diag::note_switch();

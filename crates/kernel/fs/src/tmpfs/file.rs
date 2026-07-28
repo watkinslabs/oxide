@@ -398,6 +398,15 @@ impl Drop for TmpfsFileData {
 /// memfd seal word before mutating the body. # C: O(1)
 struct TmpfsFileInodeOps;
 impl InodeOps for TmpfsFileInodeOps {
+    /// `shmem_fileattr_get` — the `chattr` word for this inode. # C: O(1)
+    fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
+        super::fileattr::tmpfs_fileattr_get(inode)
+    }
+    /// `shmem_fileattr_set`. # C: O(1)
+    fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
+        super::fileattr::tmpfs_fileattr_set(inode, fa)
+    }
+
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<TmpfsFileData>().ok_or(VfsError::Einval)?;
         let s = inode.fcntl_seals().map_or(0, |a| a.load(Ordering::Acquire));

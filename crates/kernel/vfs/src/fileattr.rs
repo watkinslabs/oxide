@@ -55,6 +55,39 @@ pub fn fileattr_get(inode: &InodeRef) -> KResult<FileAttr> {
     inode.fileattr_get()
 }
 
+/// Linux `fileattr_fill_flags` (fs/file_attr.c): a backend reporting the legacy
+/// `FS_*_FL` word publishes the translated `fsx_xflags` view in the same call,
+/// so no consumer has to re-derive it. # C: O(1)
+pub fn fileattr_fill_flags(flags: u32) -> FileAttr {
+    let mut fa = FileAttr { flags, ..Default::default() };
+    if flags & FS_SYNC_FL        != 0 { fa.fsx_xflags |= FS_XFLAG_SYNC; }
+    if flags & FS_IMMUTABLE_FL   != 0 { fa.fsx_xflags |= FS_XFLAG_IMMUTABLE; }
+    if flags & FS_APPEND_FL      != 0 { fa.fsx_xflags |= FS_XFLAG_APPEND; }
+    if flags & FS_NODUMP_FL      != 0 { fa.fsx_xflags |= FS_XFLAG_NODUMP; }
+    if flags & FS_NOATIME_FL     != 0 { fa.fsx_xflags |= FS_XFLAG_NOATIME; }
+    if flags & FS_DAX_FL         != 0 { fa.fsx_xflags |= FS_XFLAG_DAX; }
+    if flags & FS_PROJINHERIT_FL != 0 { fa.fsx_xflags |= FS_XFLAG_PROJINHERIT; }
+    if flags & FS_VERITY_FL      != 0 { fa.fsx_xflags |= FS_XFLAG_VERITY; }
+    if flags & FS_CASEFOLD_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_CASEFOLD; }
+    fa
+}
+
+/// Linux `fileattr_fill_xflags` (fs/file_attr.c): the `fsxattr`-side inverse of
+/// [`fileattr_fill_flags`]. # C: O(1)
+pub fn fileattr_fill_xflags(xflags: u32) -> FileAttr {
+    let mut fa = FileAttr { fsx_xflags: xflags, ..Default::default() };
+    if xflags & FS_XFLAG_IMMUTABLE   != 0 { fa.flags |= FS_IMMUTABLE_FL; }
+    if xflags & FS_XFLAG_APPEND      != 0 { fa.flags |= FS_APPEND_FL; }
+    if xflags & FS_XFLAG_SYNC        != 0 { fa.flags |= FS_SYNC_FL; }
+    if xflags & FS_XFLAG_NOATIME     != 0 { fa.flags |= FS_NOATIME_FL; }
+    if xflags & FS_XFLAG_NODUMP      != 0 { fa.flags |= FS_NODUMP_FL; }
+    if xflags & FS_XFLAG_DAX         != 0 { fa.flags |= FS_DAX_FL; }
+    if xflags & FS_XFLAG_PROJINHERIT != 0 { fa.flags |= FS_PROJINHERIT_FL; }
+    if xflags & FS_XFLAG_VERITY      != 0 { fa.flags |= FS_VERITY_FL; }
+    if xflags & FS_XFLAG_CASEFOLD    != 0 { fa.flags |= FS_CASEFOLD_FL; }
+    fa
+}
+
 /// Linux `vfs_fileattr_set`: prepare, LSM hook, backend set, fsnotify. # C: FS-dependent
 pub fn fileattr_set(
     idmap: &Idmap,
@@ -65,8 +98,13 @@ pub fn fileattr_set(
     cap_linux_immutable: bool,
     in_init_user_ns: bool,
 ) -> KResult<()> {
-    if !inode_owner_or_capable(idmap, inode.as_ref(), cred) { return Err(VfsError::Eperm); }
+    // Linux checks `i_op->fileattr_set` (`-ENOIOCTLCMD`) BEFORE
+    // `inode_owner_or_capable` (`-EPERM`), so a filesystem with no fileattr
+    // support answers EOPNOTSUPP even to a non-owner. `fileattr_get` is the
+    // support probe here: every backend that implements one implements both,
+    // and `vfs_fileattr_set` needs the old attrs anyway.
     let old = fill_xflags(fileattr_get(inode)?);
+    if !inode_owner_or_capable(idmap, inode.as_ref(), cred) { return Err(VfsError::Eperm); }
     let fa = fileattr_prepare_set(idmap, inode, old, want, source, cred,
         cap_linux_immutable, in_init_user_ns)?;
     let h = HOOKS.lock();

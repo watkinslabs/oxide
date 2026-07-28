@@ -3,10 +3,22 @@
 // `#![cfg(target_os = "oxide-kernel")]` and unreachable from `cargo test`.
 // Reference: Linux `kernel/sched/syscalls.c` (v7.2.0-rc4).
 
+// Module manifest:
+//   this file  — predicates, parameter validation, permission ladder, the
+//                `sched_param`-shaped entry, fork inheritance.
+//   tests/setattr.rs — end-to-end `sched_setattr(2)` flag/uclamp/slice rules.
+//                      (`#[path]` is mandatory: nested modules of a
+//                      `#[path]`-declared file resolve against
+//                      `src/sched_policy/`, where `setattr.rs` is the
+//                      IMPLEMENTATION module — a bare `mod setattr;` silently
+//                      compiles that a second time and contributes no tests.)
+#[path = "tests/setattr.rs"] mod setattr_e2e;
+
 use super::*;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use sched::{SchedClass, SchedPolicy, Task};
+use crate::sched_attr::SchedAttr;
 use syscall::errno::Errno;
 
 const EINVAL: i64 = -(Errno::Einval as i32 as i64);
@@ -123,10 +135,32 @@ fn deadline_without_dl_parameters_is_einval() {
     // sched_setscheduler(2) carries no runtime/deadline/period, so Linux's
     // __checkparam_dl always fails there.
     assert_eq!(check_params(SCHED_DEADLINE, 0, false), Err(EINVAL));
-    assert!(!checkparam_dl(0, 0, 0));
-    assert!(checkparam_dl(1_000_000, 10_000_000, 10_000_000));
-    assert!(!checkparam_dl(20_000_000, 10_000_000, 10_000_000)); // runtime > deadline
-    assert!(!checkparam_dl(1_000_000, 10_000_000, 5_000_000));   // period < deadline
+    assert!(!checkparam_dl(&dl(0, 0, 0)));
+    assert!(checkparam_dl(&dl(1_000_000, 10_000_000, 10_000_000)));
+    assert!(!checkparam_dl(&dl(20_000_000, 10_000_000, 10_000_000))); // runtime > deadline
+    assert!(!checkparam_dl(&dl(1_000_000, 10_000_000, 5_000_000)));   // period < deadline
+}
+
+/// A `sched_attr` carrying only SCHED_DEADLINE parameters.
+fn dl(runtime: u64, deadline: u64, period: u64) -> SchedAttr {
+    SchedAttr { policy: SCHED_DEADLINE, runtime, deadline, period, ..Default::default() }
+}
+
+#[test]
+fn checkparam_dl_enforces_the_scale_msb_and_period_bounds() {
+    // runtime below 1 << DL_SCALE is truncated away by the bandwidth math.
+    assert!(!checkparam_dl(&dl((1 << DL_SCALE) - 1, 10_000_000, 10_000_000)));
+    assert!(checkparam_dl(&dl(1 << DL_SCALE, 10_000_000, 10_000_000)));
+    // The MSB is reserved for wrap-around handling.
+    assert!(!checkparam_dl(&dl(1_000_000, 1u64 << 63, 0)));
+    assert!(!checkparam_dl(&dl(1_000_000, 10_000_000, 1u64 << 63)));
+    // period must land inside [sysctl_sched_dl_period_min, ..._max].
+    assert!(!checkparam_dl(&dl(2_000, 2_000, DL_PERIOD_MIN_NS - 1)));
+    assert!(!checkparam_dl(&dl(2_000, 2_000, DL_PERIOD_MAX_NS + 1)));
+    // SCHED_FLAG_SUGOV short-circuits the whole check.
+    let mut sugov = dl(0, 0, 0);
+    sugov.flags = crate::sched_attr::FLAG_SUGOV;
+    assert!(checkparam_dl(&sugov));
 }
 
 // --- pid argument ----------------------------------------------------------
@@ -247,11 +281,11 @@ fn invalid_priority_is_einval_even_when_the_caller_would_be_denied() {
     // Linux validates parameters BEFORE user_check_sched_setscheduler.
     let caller = normal(1, 1000);
     let target = normal(2, 1001);
-    assert_eq!(setscheduler(&caller, &target, SCHED_FIFO as i32, 200, 0, false), EINVAL);
-    assert_eq!(setscheduler(&caller, &target, SCHED_NORMAL as i32, 5, 0, false), EINVAL);
-    assert_eq!(setscheduler(&caller, &target, 4, 0, 0, false), EINVAL);
+    assert_eq!(setscheduler(&caller, &target, SCHED_FIFO as i32, 200, 0), EINVAL);
+    assert_eq!(setscheduler(&caller, &target, SCHED_NORMAL as i32, 5, 0), EINVAL);
+    assert_eq!(setscheduler(&caller, &target, 4, 0, 0), EINVAL);
     // With a valid priority the same call is EPERM.
-    assert_eq!(setscheduler(&caller, &target, SCHED_FIFO as i32, 10, 0, false), EPERM);
+    assert_eq!(setscheduler(&caller, &target, SCHED_FIFO as i32, 10, 0), EPERM);
 }
 
 // --- end-to-end policy application -----------------------------------------
@@ -263,7 +297,7 @@ fn setscheduler_round_trips_every_implemented_policy() {
     for (p, prio) in [(SCHED_FIFO, 40), (SCHED_RR, 7), (SCHED_NORMAL, 0),
                       (SCHED_BATCH, 0), (SCHED_IDLE, 0)] {
         let t = normal(2, 0);
-        assert_eq!(setscheduler(&caller, &t, p as i32, prio, 0, false), 0, "policy {p}");
+        assert_eq!(setscheduler(&caller, &t, p as i32, prio, 0), 0, "policy {p}");
         assert_eq!(task_policy(&t), p, "policy {p} must round-trip");
         assert_eq!(task_rt_priority(&t), prio as u32, "prio for policy {p}");
     }
@@ -274,7 +308,7 @@ fn sched_idle_lands_on_the_idle_weight() {
     let caller = normal(1, 0);
     privileged(&caller);
     let t = normal(2, 0);
-    assert_eq!(setscheduler(&caller, &t, SCHED_IDLE as i32, 0, 0, false), 0);
+    assert_eq!(setscheduler(&caller, &t, SCHED_IDLE as i32, 0, 0), 0);
     assert_eq!(t.load_weight.load(Ordering::Acquire), SCHED_IDLE_WEIGHT);
     assert!(matches!(t.sched_class(), SchedClass::Normal { weight } if weight == SCHED_IDLE_WEIGHT));
 }
@@ -285,11 +319,11 @@ fn reset_on_fork_bit_is_recorded_and_reported() {
     privileged(&caller);
     let t = normal(2, 0);
     let arg = (SCHED_RR | SCHED_RESET_ON_FORK) as i32;
-    assert_eq!(setscheduler(&caller, &t, arg, 5, 0, false), 0);
+    assert_eq!(setscheduler(&caller, &t, arg, 5, 0), 0);
     assert_eq!(task_policy(&t), SCHED_RR);
     assert!(t.sched_reset_on_fork.load(Ordering::Acquire));
     // Clearing it: a privileged caller may.
-    assert_eq!(setscheduler(&caller, &t, SCHED_RR as i32, 5, 0, false), 0);
+    assert_eq!(setscheduler(&caller, &t, SCHED_RR as i32, 5, 0), 0);
     assert!(!t.sched_reset_on_fork.load(Ordering::Acquire));
 }
 
@@ -298,20 +332,20 @@ fn setparam_sentinel_keeps_the_current_policy() {
     let caller = normal(1, 0);
     privileged(&caller);
     let t = normal(2, 0);
-    assert_eq!(setscheduler(&caller, &t, SCHED_FIFO as i32, 20, 0, false), 0);
+    assert_eq!(setscheduler(&caller, &t, SCHED_FIFO as i32, 20, 0), 0);
     // sched_setparam(2): SETPARAM_POLICY + a new RT priority.
-    assert_eq!(setscheduler(&caller, &t, SETPARAM_POLICY, 33, 0, false), 0);
+    assert_eq!(setscheduler(&caller, &t, SETPARAM_POLICY, 33, 0), 0);
     assert_eq!(task_policy(&t), SCHED_FIFO);
     assert_eq!(task_rt_priority(&t), 33);
     // A non-zero priority on a SCHED_NORMAL task is EINVAL through the same path.
     let n = normal(3, 0);
-    assert_eq!(setscheduler(&caller, &n, SETPARAM_POLICY, 5, 0, false), EINVAL);
-    assert_eq!(setscheduler(&caller, &n, SETPARAM_POLICY, 0, 0, false), 0);
+    assert_eq!(setscheduler(&caller, &n, SETPARAM_POLICY, 5, 0), EINVAL);
+    assert_eq!(setscheduler(&caller, &n, SETPARAM_POLICY, 0, 0), 0);
     // As is a non-zero priority on a SCHED_IDLE task; zero is accepted.
     let i = normal(4, 0);
-    assert_eq!(setscheduler(&caller, &i, SCHED_IDLE as i32, 0, 0, false), 0);
-    assert_eq!(setscheduler(&caller, &i, SETPARAM_POLICY, 1, 0, false), EINVAL);
-    assert_eq!(setscheduler(&caller, &i, SETPARAM_POLICY, 0, 0, false), 0);
+    assert_eq!(setscheduler(&caller, &i, SCHED_IDLE as i32, 0, 0), 0);
+    assert_eq!(setscheduler(&caller, &i, SETPARAM_POLICY, 1, 0), EINVAL);
+    assert_eq!(setscheduler(&caller, &i, SETPARAM_POLICY, 0, 0), 0);
     assert_eq!(task_policy(&i), SCHED_IDLE);
 }
 
@@ -321,11 +355,11 @@ fn deadline_is_rejected_never_silently_run_as_normal() {
     privileged(&caller);
     let t = normal(2, 0);
     // sched_setscheduler(2) path: no DL parameters ⇒ EINVAL, like Linux.
-    assert_eq!(setscheduler(&caller, &t, SCHED_DEADLINE as i32, 0, 0, false), EINVAL);
+    assert_eq!(setscheduler(&caller, &t, SCHED_DEADLINE as i32, 0, 0), EINVAL);
     // sched_setattr(2) path with well-formed DL parameters: this scheduler has
     // no deadline class, so it refuses rather than recording a policy it would
     // then run as SCHED_NORMAL.
-    assert_eq!(setscheduler(&caller, &t, SCHED_DEADLINE as i32, 0, 0, true), EOPNOTSUPP);
+    assert_eq!(setattr(&caller, &t, &dl(1_000_000, 10_000_000, 10_000_000)), EOPNOTSUPP);
     assert_eq!(task_policy(&t), SCHED_NORMAL);
 }
 

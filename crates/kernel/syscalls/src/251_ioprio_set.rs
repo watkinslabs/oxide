@@ -1,45 +1,56 @@
 // 251 ioprio_set — one syscall, one file (docs/53 §0).
-//
-// ioprio_set(which, who, ioprio): set per-task I/O priority. which is
-// IOPRIO_WHO_PROCESS=1 / PGRP=2 / USER=3 (same target resolution as
-// getpriority(2), shifted by 1). ioprio packs class (bits[15:13]: 1=RT,
-// 2=BE, 3=IDLE) + level (low 13 bits). RT class needs privilege (euid 0).
-// Real per-task state (stored, inherited on fork, queried by ionice).
+// `ioprio_set(which, who, ioprio)`: Linux `block/ioprio.c:65`. Thin shim over
+// `crate::ioprio` (Linux `ioprio_check_cap`) and `priority_common` for the
+// which/who target set; the stored value is the raw `int`, as
+// `io_context::ioprio` holds it.
+#![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 use syscall::SyscallArgs;
+use crate::ioprio::{self, CapNeed};
 
-const CLASS_RT:   u16 = 1;
-const CLASS_IDLE: u16 = 3;
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// `sys_ioprio_set(which, who, ioprio)` — slot 251.
 /// # C: O(N_tasks) for PGRP/USER
 pub fn sys_ioprio_set(args: &SyscallArgs) -> i64 {
-    let which  = args.a0;
+    let which  = args.a0 as i32;
     let who    = args.a1 as u32;
-    let ioprio = args.a2 as u16;
-    if !(1..=3).contains(&which) { return -(Errno::Einval.as_i32() as i64); }
-    let class = ioprio >> 13;
-    if class > CLASS_IDLE { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
-    let has_nice = cur.has_cap(sched::cap::SYS_NICE);
-    // Linux `ioprio_check_cap`: the RT class needs CAP_SYS_ADMIN or CAP_SYS_NICE
-    // (not merely euid 0).
-    if class == CLASS_RT && !cur.has_cap(sched::cap::SYS_ADMIN) && !has_nice {
-        return -(Errno::Eperm.as_i32() as i64);
+    let prio   = args.a2 as i32;
+    let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Esrch) };
+    // Linux runs ioprio_check_cap BEFORE the `which` switch, so an RT request
+    // from an unprivileged caller is EPERM even when `which` is nonsense.
+    match ioprio::check_cap(prio) {
+        Err(rv) => return rv,
+        Ok(CapNeed::SysAdminOrSysNice) => {
+            // CAP_SYS_ADMIN is tested first so an LSM denial names the
+            // capability Linux historically required.
+            if !cur.has_cap(sched::cap::SYS_ADMIN) && !cur.has_cap(sched::cap::SYS_NICE) {
+                return err(Errno::Eperm);
+            }
+        }
+        Ok(CapNeed::None) => {}
     }
+    let base = match ioprio::who_base(which) { Ok(b) => b, Err(rv) => return rv };
+
+    let has_nice = cur.has_cap(sched::cap::SYS_NICE);
     let euid = cur.creds.euid.load(Ordering::Acquire);
     let ruid = cur.creds.ruid.load(Ordering::Acquire);
-    // Linux `set_task_ioprio` per-target owner check: the target's real uid must
-    // match the caller's euid or ruid, or the caller holds CAP_SYS_NICE.
-    let mut error: i64 = -(Errno::Esrch.as_i32() as i64);
-    crate::priority::priority_common::for_each_target(which - 1, who, |t| {
+    // Linux `set_task_ioprio` owner check: the target's REAL uid must match the
+    // caller's euid or ruid, or the caller holds CAP_SYS_NICE. The loop aborts
+    // on the first failure and returns it, so a partially-applied PGRP/USER
+    // request still reports EPERM.
+    let mut ret: i64 = err(Errno::Esrch);
+    crate::priority::priority_common::for_each_target(base, who, |t| {
+        if ret != err(Errno::Esrch) && ret != 0 { return; }
         let target_ruid = t.creds.ruid.load(Ordering::Acquire);
-        let owner_ok = has_nice || target_ruid == euid || target_ruid == ruid;
-        if !owner_ok { error = -(Errno::Eperm.as_i32() as i64); return; }
-        t.ioprio.store(ioprio, Ordering::Release);
-        if error == -(Errno::Esrch.as_i32() as i64) { error = 0; }
+        if !(has_nice || target_ruid == euid || target_ruid == ruid) {
+            ret = err(Errno::Eperm);
+            return;
+        }
+        t.ioprio.store(prio as u32, Ordering::Release);
+        ret = 0;
     });
-    error
+    ret
 }

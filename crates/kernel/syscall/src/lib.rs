@@ -9,6 +9,7 @@
 // `errno.rs` — Linux-numbered `Errno` enum used as the universal
 // `KResult<T>` error type at the syscall boundary.
 // `nrs.rs` — Linux syscall numbers. `tracepoint.rs` — sys_enter/exit hooks.
+// `at.rs` — `AT_*` dirfd/`*at` flag numbers (`uapi/linux/fcntl.h`).
 // `getrandom.rs` — `GRND_*` flags + flag-validation for `sys_getrandom`.
 // `time.rs` — shared timespec→ns decode + `ktime_set`-style clamp.
 
@@ -20,6 +21,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod args;
+pub mod at;
 pub mod errno;
 pub mod getrandom;
 pub mod nrs;
