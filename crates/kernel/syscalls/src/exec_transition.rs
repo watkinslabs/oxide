@@ -163,6 +163,21 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     cur.dumpable.store(t.dumpable, Ordering::Release);
 }
 
+/// Draw this exec's address randomisation (`aslr::ExecRnd`).
+///
+/// Linux applies `me->personality &= ~bprm->per_clear` inside `begin_new_exec`,
+/// which runs BEFORE `load_elf_binary` derives `PF_RANDOMIZE`
+/// (`fs/binfmt_elf.c:1021`). This kernel commits credentials later — past the
+/// point of no return — so `per_clear` has to be folded in here by hand.
+/// Reading the raw persona instead would let a caller pre-arm
+/// `ADDR_NO_RANDOMIZE`, exec a setuid binary and have it run at fixed
+/// addresses: precisely the escalation `PER_CLEAR_ON_SETID` exists to stop.
+/// # C: O(1) — five CRNG words
+pub(crate) fn exec_rnd(cur: &sched::Task, per_clear: u32) -> aslr::ExecRnd {
+    let persona = sched::personality::get(cur) & !per_clear;
+    aslr::ExecRnd::draw(persona & sched::personality::ADDR_NO_RANDOMIZE != 0)
+}
+
 /// Linux `begin_new_exec`: a secure exec resets `RLIMIT_STACK` to `_STK_LIM`
 /// so a hostile caller cannot hand a setuid binary a pathological stack limit.
 /// # C: O(1)

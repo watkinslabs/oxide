@@ -221,13 +221,18 @@ pub fn map_into_current() -> Option<u64> {
     let (total, segs) = parse_segments()?;
     if segs.is_empty() || total == 0 { return None; }
     // Reserve vvar + total bytes: vvar = 1 page right before vDSO base.
+    //
+    // Linux picks the vDSO address with `get_unmapped_area(NULL, 0, ...)` and
+    // `_install_special_mapping` (`arch/x86/entry/vdso/vma.c:174`,
+    // `arch/arm64/kernel/vdso.c:114`) — there is no dedicated vDSO random draw
+    // on either arch in modern kernels. Its randomisation is `mmap_base`'s,
+    // inherited through this search. Asking for the address without mapping
+    // (rather than mapping a placeholder and unmapping it) keeps the hole from
+    // being reused between the two calls and drops an mmap/munmap pair from
+    // every exec.
     let reserve = (0x1000 + total) as usize;
-    let placeholder = mm.mmap(None, reserve,
-        VmaProt::READ, VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-        VmaBacking::Anonymous, false).ok()?;
-    let vvar_va = placeholder.as_u64();
+    let vvar_va = mm.get_unmapped_area(reserve).ok()?.as_u64();
     let base    = vvar_va + 0x1000;
-    let _ = mm.munmap(placeholder, reserve);
     // 1. Map the vvar page (RO from user mode) backed by the
     // single shared kernel frame so kernel publisher writes
     // propagate to every user reader without copy.
