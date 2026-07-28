@@ -7,6 +7,7 @@
 // silently compile out.
 
 use syscall::errno::Errno;
+use vfs::Timespec64;
 use vfs::getattr::Kstat;
 
 /// `sizeof(struct statx)` — 256 bytes, byte-identical on x86_64 and aarch64
@@ -170,10 +171,14 @@ pub fn cp_statx(st: &Kstat, p: &StatxPathInfo, request_mask: u32) -> [u8; STATX_
     put_u64(&mut b, off::SIZE, st.size);
     put_u64(&mut b, off::BLOCKS, st.blocks);
     put_u64(&mut b, off::ATTRIBUTES_MASK, st.attributes_mask | STATX_ATTR_MOUNT_ROOT);
-    put_ts(&mut b, off::ATIME, st.atime_ns);
-    put_ts(&mut b, off::BTIME, st.btime_ns);
-    put_ts(&mut b, off::CTIME, st.ctime_ns);
-    put_ts(&mut b, off::MTIME, st.mtime_ns);
+    put_ts(&mut b, off::ATIME, st.atime);
+    // `btime` is `None` when the backend stores no creation time. Linux leaves
+    // `stx_btime` at its memset zero and clears `STATX_BTIME` in `stx_mask`
+    // (the VFS already did the latter) — the zero is NOT an "absent" sentinel,
+    // because epoch second 0 is a legal birth time that a `Some` may carry.
+    put_ts(&mut b, off::BTIME, st.btime.unwrap_or(Timespec64::ZERO));
+    put_ts(&mut b, off::CTIME, st.ctime);
+    put_ts(&mut b, off::MTIME, st.mtime);
     put_u32(&mut b, off::RDEV_MAJOR, p.rdev_major);
     put_u32(&mut b, off::RDEV_MINOR, p.rdev_minor);
     put_u32(&mut b, off::DEV_MAJOR, p.dev_major);
@@ -187,11 +192,15 @@ fn put_u32(b: &mut [u8; STATX_SIZE], o: usize, v: u32) { b[o..o + 4].copy_from_s
 fn put_u64(b: &mut [u8; STATX_SIZE], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_ne_bytes()); }
 
 /// One `struct statx_timestamp`: `__s64 tv_sec; __u32 tv_nsec; __s32 __reserved`.
-/// The reserved word stays zero. # C: O(1)
-fn put_ts(b: &mut [u8; STATX_SIZE], o: usize, ns: u64) {
-    const NSEC_PER_SEC: u64 = 1_000_000_000;
-    b[o..o + 8].copy_from_slice(&((ns / NSEC_PER_SEC) as i64).to_ne_bytes());
-    b[o + 8..o + 12].copy_from_slice(&((ns % NSEC_PER_SEC) as u32).to_ne_bytes());
+/// The reserved word stays zero.
+///
+/// Written straight from the `timespec64` fields. The pre-fix form derived both
+/// halves from an unsigned ns scalar, so a pre-1970 stamp read back as
+/// `tv_nsec ~= 4.29e9` — outside the `[0, 1e9)` the field is defined over — and
+/// no stamp before 1677 or after 2262 was representable at all. # C: O(1)
+fn put_ts(b: &mut [u8; STATX_SIZE], o: usize, t: Timespec64) {
+    b[o..o + 8].copy_from_slice(&t.sec.to_ne_bytes());
+    b[o + 8..o + 12].copy_from_slice(&t.nsec.to_ne_bytes());
 }
 
 #[cfg(test)]
@@ -209,8 +218,10 @@ mod tests {
         Kstat {
             ino: 0x1122_3344_5566_7788, mode: 0o100_644, nlink: 3, uid: 1000, gid: 1001,
             rdev: 0, size: 0xdead_beef, blksize: 4096, blocks: 24,
-            atime_ns: 1_500_000_000_123_456_789, mtime_ns: 1_600_000_000_000_000_001,
-            ctime_ns: 1_700_000_000_999_999_999, btime_ns: 1_400_000_000_000_000_000,
+            atime: Timespec64 { sec: 1_500_000_000, nsec: 123_456_789 },
+            mtime: Timespec64 { sec: 1_600_000_000, nsec: 1 },
+            ctime: Timespec64 { sec: 1_700_000_000, nsec: 999_999_999 },
+            btime: Some(Timespec64::from_secs(1_400_000_000)),
             fsid: 7, change_cookie: 0,
             result_mask: STATX_BASIC_STATS | STATX_BTIME,
             attributes: STATX_ATTR_IMMUTABLE,
@@ -285,7 +296,7 @@ mod tests {
             "basic stats are unconditional (fs/stat.c:188)");
         let mut no_btime = sample();
         no_btime.result_mask = STATX_BASIC_STATS;
-        no_btime.btime_ns = 0;
+        no_btime.btime = None;
         let b = cp_statx(&no_btime, &p, STATX_BTIME | STATX_BASIC_STATS);
         assert_eq!(rd_u32(&b, off::MASK) & STATX_BTIME, 0, "unknown btime must not be claimed");
         assert_eq!(rd_i64(&b, off::BTIME), 0);
@@ -360,6 +371,58 @@ mod tests {
         }
         // STATX_CHANGE_COOKIE is silently cleared, never an error.
         assert_eq!(statx_validate(StatxEntry::Path, 0, STATX_CHANGE_COOKIE | 0x100), Ok(0x100));
+    }
+
+    /// The silent-corruption case the split pair fixes. `struct statx_timestamp`
+    /// declares `__s64 tv_sec; __u32 tv_nsec`, so a pre-1970 stamp needs a
+    /// NEGATIVE second with a NON-NEGATIVE nanosecond. Deriving both halves
+    /// from an unsigned ns scalar could not do that: `%` on the wrapped value
+    /// produced a `tv_nsec` near 4.29e9, far outside `[0, 1e9)`, and any stamp
+    /// outside 1677..2262 was unrepresentable. # C: O(1)
+    #[test]
+    fn pre_1970_and_out_of_ns_range_timestamps_are_exact() {
+        let mut st = sample();
+        st.atime = Timespec64 { sec: -2, nsec: 500_000_000 };
+        st.mtime = Timespec64 { sec: -1_000_000, nsec: 0 };
+        // Year 2446 — ext4's own `s_time_max`, which overflows an i64 of ns.
+        st.ctime = Timespec64 { sec: 15_032_385_535, nsec: 999_999_999 };
+        st.btime = Some(Timespec64 { sec: i64::MIN, nsec: 1 });
+        let b = cp_statx(&st, &StatxPathInfo::default(), STATX_BASIC_STATS);
+        assert_eq!(rd_i64(&b, off::ATIME), -2);
+        assert_eq!(rd_u32(&b, off::ATIME + 8), 500_000_000);
+        assert_eq!(rd_i64(&b, off::MTIME), -1_000_000);
+        assert_eq!(rd_u32(&b, off::MTIME + 8), 0);
+        assert_eq!(rd_i64(&b, off::CTIME), 15_032_385_535);
+        assert_eq!(rd_u32(&b, off::CTIME + 8), 999_999_999);
+        assert_eq!(rd_i64(&b, off::BTIME), i64::MIN);
+        assert_eq!(rd_u32(&b, off::BTIME + 8), 1);
+        // Every `tv_nsec` stays inside the field's defined range.
+        for ts in [off::ATIME, off::BTIME, off::CTIME, off::MTIME] {
+            assert!(rd_u32(&b, ts + 8) < 1_000_000_000, "tv_nsec out of range @{ts}");
+            assert_eq!(&b[ts + 12..ts + 16], &[0, 0, 0, 0]);
+        }
+    }
+
+    /// Epoch second 0 is a LEGAL birth time, not the "no btime" sentinel — the
+    /// absence signal is `btime: None` plus a clear `STATX_BTIME` in
+    /// `result_mask`. A `Some(ZERO)` must still be copied and still claim the
+    /// bit. # C: O(1)
+    #[test]
+    fn epoch_btime_is_a_real_value_not_an_absent_sentinel() {
+        let mut st = sample();
+        st.btime = Some(Timespec64::ZERO);
+        let b = cp_statx(&st, &StatxPathInfo::default(), STATX_BTIME | STATX_BASIC_STATS);
+        assert_eq!(rd_u32(&b, off::MASK) & STATX_BTIME, STATX_BTIME,
+            "a 1970 birth time is still a known birth time");
+        assert_eq!(rd_i64(&b, off::BTIME), 0);
+        // And `None` writes the same zeros WITHOUT the bit — the mask is what
+        // distinguishes them, never the value.
+        st.btime = None;
+        st.result_mask &= !STATX_BTIME;
+        let b = cp_statx(&st, &StatxPathInfo::default(), STATX_BTIME | STATX_BASIC_STATS);
+        assert_eq!(rd_u32(&b, off::MASK) & STATX_BTIME, 0);
+        assert_eq!(rd_i64(&b, off::BTIME), 0);
+        assert_eq!(rd_u32(&b, off::BTIME + 8), 0);
     }
 
     /// Entry selection: `AT_EMPTY_PATH` + empty/NULL name + `dfd >= 0` is the

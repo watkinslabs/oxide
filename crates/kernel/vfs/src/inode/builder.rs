@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
-use core::sync::atomic::{AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
@@ -11,6 +11,7 @@ use crate::mapping::AddressSpaceOps;
 use crate::poll_subs::PollSubscribers;
 use crate::quota::InodeDquots;
 use crate::superblock::SuperBlock;
+use crate::timespec::Timespec64;
 use crate::types::{Ino, S_IFDIR};
 
 use super::model::{Inode, OwnerPersist, SealCarrier};
@@ -33,10 +34,10 @@ pub struct InodeBuilder {
     rdev:         u32,
     generation:   u32,
     fsid:         u64,
-    atime:        u64,
-    mtime:        u64,
-    ctime:        u64,
-    btime:        u64,
+    atime:        Timespec64,
+    mtime:        Timespec64,
+    ctime:        Timespec64,
+    btime:        Option<Timespec64>,
     version:      u64,
     mapping:      Option<Arc<dyn AddressSpaceOps>>,
     private:      Arc<dyn Any + Send + Sync>,
@@ -52,7 +53,7 @@ impl InodeBuilder {
     pub fn new(ino: Ino, mode: u32, i_op: Arc<dyn InodeOps>, i_fop: Arc<dyn FileOps>) -> Self {
         InodeBuilder {
             ino, mode, i_op, i_fop, sb: Weak::new(), size: 0, blocks: 0, nlink: None, uid: 0, gid: 0,
-            projid: 0, flags: 0, rdev: 0, generation: 0, fsid: 0, atime: 0, mtime: 0, ctime: 0, btime: 0,
+            projid: 0, flags: 0, rdev: 0, generation: 0, fsid: 0, atime: Timespec64::ZERO, mtime: Timespec64::ZERO, ctime: Timespec64::ZERO, btime: None,
             version: 0, mapping: None, private: Arc::new(()), poll_subs: None, seal_carrier: None,
             owner_persist: None, link: None, xattrs: None,
         }
@@ -67,8 +68,8 @@ impl InodeBuilder {
     pub fn rdev(mut self, d: u32) -> Self { self.rdev = d; self }
     pub fn generation(mut self, g: u32) -> Self { self.generation = g; self }
     pub fn fsid(mut self, f: u64) -> Self { self.fsid = f; self }
-    pub fn times(mut self, a: u64, m: u64, c: u64) -> Self { self.atime = a; self.mtime = m; self.ctime = c; self }
-    pub fn btime(mut self, b: u64) -> Self { self.btime = b; self }
+    pub fn times(mut self, a: Timespec64, m: Timespec64, c: Timespec64) -> Self { self.atime = a; self.mtime = m; self.ctime = c; self }
+    pub fn btime(mut self, b: Timespec64) -> Self { self.btime = Some(b); self }
     pub fn version(mut self, v: u64) -> Self { self.version = v; self }
     pub fn mapping(mut self, m: Arc<dyn AddressSpaceOps>) -> Self { self.mapping = Some(m); self }
     pub fn private(mut self, p: Arc<dyn Any + Send + Sync>) -> Self { self.private = p; self }
@@ -96,9 +97,12 @@ impl InodeBuilder {
             i_flags: AtomicU32::new(self.flags),
             i_rdev: self.rdev,
             i_generation: self.generation,
-            i_atime: AtomicU64::new(self.atime),
-            i_mtime: AtomicU64::new(self.mtime),
-            i_ctime: AtomicU64::new(self.ctime),
+            i_atime_sec: AtomicI64::new(self.atime.sec),
+            i_atime_nsec: AtomicU32::new(self.atime.nsec),
+            i_mtime_sec: AtomicI64::new(self.mtime.sec),
+            i_mtime_nsec: AtomicU32::new(self.mtime.nsec),
+            i_ctime_sec: AtomicI64::new(self.ctime.sec),
+            i_ctime_nsec: AtomicU32::new(self.ctime.nsec),
             i_btime: self.btime,
             i_state: AtomicU32::new(0),
             i_count: AtomicU32::new(1),
