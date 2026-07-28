@@ -40,7 +40,7 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         // OPEN_TREE_CLONE creates a detached mount → requires CAP_SYS_ADMIN
         // (Linux open_detached_copy/may_mount); the non-clone O_PATH-like form
         // below is unprivileged (D49).
-        if let Some(rv) = require_sys_admin() { return rv; }
+        if let Some(rv) = may_mount_or_eperm() { return rv; }
         // D24 Stage 1a: RECURSIVELY clone the mount SUBTREE rooted at `abs`
         // (AT_RECURSIVE ⇒ whole bindable subtree; else root-only) into a
         // DETACHED node list stored in the mount-object fd. `move_mount` later
@@ -56,6 +56,16 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         };
         let tree = vfs::mount::clone_mount_tree(&mnt, recursive);
         if tree.is_empty() { return -(Errno::Einval.as_i32() as i64); }
+        // Linux `fs/namespace.c` `create_new_namespace` (reached from
+        // `open_tree(OPEN_TREE_CLONE)` via `open_new_namespace`): `if (user_ns !=
+        // ns->user_ns) lock_mnt_tree(new_ns_root);`. A caller whose CURRENT user
+        // namespace is not the one owning its mount namespace is unprivileged
+        // with respect to the mounter of the tree it just copied — freeze the
+        // copy's protections and mark it MNT_LOCKED so a later `move_mount` +
+        // remount cannot relax them, or unmount a node to reveal what it covers.
+        if crate::mount_perm::current_user_ns_differs_from_mount_ns_owner() {
+            vfs::mount::lock_detached_tree(&tree);
+        }
         let mo = MountObjectInode::new_clone_tree(tree);
         return install_fd(mo, "open_tree", cloexec);
     }

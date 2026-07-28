@@ -24,6 +24,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <mqueue.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -243,5 +244,6 @@ void probe_groupsig(void);
 void probe_sysv_sem(void);
 void probe_sysv_msg(void);
 void probe_sysv_shm(void);
+void probe_openat2_resolve(void);
 
 #endif

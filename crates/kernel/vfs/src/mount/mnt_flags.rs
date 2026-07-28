@@ -20,6 +20,26 @@ use super::*;
 /// Kernel-internal mount (rootfs / kern_mount); never user-visible, never
 /// auto-expired. Linux `MNT_INTERNAL`.
 pub const MNT_INTERNAL: u32 = 0x4000;
+// --- MNT_LOCK_* — the sticky "this option may never be relaxed again" bits
+// (Linux `include/linux/mount.h` real values). Stamped by `lock_mnt_tree` when a
+// mount tree is copied into a mount namespace owned by a DIFFERENT (i.e.
+// unprivileged) user namespace, and honoured by `can_change_locked_flags` on
+// every remount / mount_setattr. Once set they are NEVER cleared, which is what
+// lets `can_change_locked_flags` run lock-free (Linux's comment says so). ---
+/// atime policy frozen: a remount must reproduce the same `MNT_ATIME_MASK`.
+pub const MNT_LOCK_ATIME: u32 = 0x04_0000;
+/// `MNT_NOEXEC` frozen on.
+pub const MNT_LOCK_NOEXEC: u32 = 0x08_0000;
+/// `MNT_NOSUID` frozen on.
+pub const MNT_LOCK_NOSUID: u32 = 0x10_0000;
+/// `MNT_NODEV` frozen on.
+pub const MNT_LOCK_NODEV: u32 = 0x20_0000;
+/// `MNT_RDONLY` frozen on.
+pub const MNT_LOCK_READONLY: u32 = 0x40_0000;
+/// Every `MNT_LOCK_*` bit. # C: const
+pub const MNT_LOCK_MASK: u32 = MNT_LOCK_ATIME | MNT_LOCK_NOEXEC | MNT_LOCK_NOSUID
+    | MNT_LOCK_NODEV | MNT_LOCK_READONLY;
+
 /// Mount locked to its parent: an unprivileged userns may not unmount or move
 /// it, and a clone keeps the bit. Linux `MNT_LOCKED`.
 pub const MNT_LOCKED: u32 = 0x80_0000;
@@ -66,10 +86,6 @@ pub const MOUNT_ATTR_NOSYMFOLLOW: u64 = 0x0020_0000;
 pub const MOUNT_ATTR_SETTABLE: u64 = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID
     | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC | MOUNT_ATTR__ATIME
     | MOUNT_ATTR_NODIRATIME | MOUNT_ATTR_NOSYMFOLLOW;
-
-/// The MNT_* atime bits (a mount carries exactly one as its resolved policy).
-/// # C: const
-pub const MNT_ATIME_MASK: u64 = MNT_NOATIME | MNT_RELATIME | MNT_STRICTATIME;
 
 /// Map a MOUNT_ATTR_* request mask into the per-mount MNT_* option space (Linux
 /// `build_mount_kattr`). Direct bits map one-to-one; the atime SUB-FIELD

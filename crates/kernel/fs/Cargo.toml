@@ -23,6 +23,9 @@ vfs      = { path = "../vfs" }
 devfs    = { path = "../devfs" }
 procfs   = { path = "../procfs" }
 nscg     = { path = "../nscg" }
+# `capable(CAP_SYS_PTRACE)` for userfaultfd(2) is `ns_capable(&init_user_ns, …)`,
+# so the gate needs the initial-user-namespace test, not just the effective set.
+namespace-identity = { path = "../namespace-identity" }
 uaccess  = { path = "../uaccess" }
 cpu      = { path = "../cpu" }
 

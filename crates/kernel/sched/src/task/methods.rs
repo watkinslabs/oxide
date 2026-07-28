@@ -371,7 +371,7 @@ impl Task {
             singlestep:    AtomicU32::new(0),
             #[cfg(target_arch = "aarch64")]
             svc_frame:     core::sync::atomic::AtomicU64::new(0),
-            seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
+            seccomp_filters: Spinlock::new(alloc::vec::Vec::new()),
             seccomp_mode:    AtomicU8::new(0),
             robust_list_head: AtomicU64::new(0),
             robust_list_len:  AtomicU64::new(0),
