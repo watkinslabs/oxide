@@ -416,6 +416,13 @@ pub struct Task {
     /// instead of a side pin-lock since every access already goes through
     /// `task/exe_path.rs` accessors.
     pub exe_path: Spinlock<Option<alloc::string::String>, TaskListClass>,
+    /// Linux `mm_struct::exe_file`. Retained so the running image holds a
+    /// `deny_write_access` on its inode for as long as it is executing —
+    /// modern Linux dropped `VM_DENYWRITE` and hangs `ETXTBSY` off the
+    /// exe_file instead (`fs/exec.c` `exe_file_deny_write_access`,
+    /// `kernel/fork.c` `replace_mm_exe_file`). Without it, a running binary's
+    /// text can be rewritten under it.
+    pub exe_inode: Spinlock<Option<vfs::InodeRef>, TaskListClass>,
 
     /// Linux `fs_struct` analogue: shared by `CLONE_FS` tasks and replaced by
     /// `unshare(CLONE_FS)`.  Private so readers/writers must use owned
