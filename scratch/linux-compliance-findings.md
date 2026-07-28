@@ -333,3 +333,21 @@ boot still reports whether a live task was enqueued. `live-gnome` x86 SMP=2:
 | §9.1 + §9.2 | 6 | 0 | 0 |
 
 The probe going to zero is the direct signal; the panic is only its fatal tail.
+
+## 10 Open after the desktop-blocker chain (2026-07-28)
+
+Found while verifying the gdm/udev fix. None has a lane.
+
+| # | Item | Evidence | Owner |
+|---|---|---|---|
+| 1 | `[BUG] exit_to_user_mode_loop: work never cleared` — the pass-bound bail-out in `B1471`'s return-to-user work loop | 2 of 17 `live-gnome` boots. Trips `boot-smoke`'s `[BUG]` fail marker, so it presents as an intermittent smoke failure unrelated to whatever is under test. Not A/B'd against clean `main` — too rare to settle in a few boots | sched/syscalls |
+| 2 | `[CPU-STALL] cpu=0 no heartbeat for 18s (seen by cpu=1)`, `nr_running=9`, NMI backtrace at `rip=ffffffff8019407e` | Own `live-gnome` SMP=2 run, ~503s guest. Distinct from the `on_cpu` ownership race (`B1473`), which this tree already carries | sched |
+| 3 | **SIGABRT does not kill a threaded process** | glibc `abort()` reaches `ABORT_INSTRUCTION` (`hlt` → #GP → SIGSEGV) only when *both* `raise(SIGABRT)` calls return. gdm died `11/SEGV`, not `6/SIGABRT` | sched signals |
+| 4 | Serial RX duplicates bytes under load (`xsessions` → `xsessiions`); typed bursts twice ended in `#DF` inside `sched::diag::emit::sysrq_rx` | Observed from the guest debug shell | drivers/tty |
+| 5 | **`debug-boot` tracing is now self-defeating.** Signals are delivered on every IRQ return since `B1471`, so per-delivery `[SIGDELIV]`/`[USTACK]` traces can slow a guest to ~13s of guest time per 900s of wall clock — unusable for the long boots it exists to diagnose. Volume is phase-dependent (another run managed ~503s guest in 800s wall) | observability |
+| 6 | klog interleaving: two `[SIGDELIV` lines shred into each other character-by-character when delivery happens from interrupt context mid-write | klog |
+
+### Measurement traps confirmed here
+
+- `SMOKE_KEEP_LOG` retains only the **last** attempt's log, while a panic appears in the **failing** attempt's dump inside boot-smoke's own output. Reading only the kept log makes a real panic look like a plain timeout — this nearly produced a false retraction.
+- Marking on a process name (`SMOKE_MARKER='gnome-shell'`) is unmeasurable when that process prints nothing to serial. The reliable check is the sysrq task dump boot-smoke injects on timeout, or `ps` from `systemd.debug_shell=ttyS0`.
