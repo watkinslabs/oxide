@@ -25,15 +25,32 @@ impl Mount {
         uid: u32,
         gid: u32,
     ) -> Result<u32, MountError> {
+        self.create_file_inode(parent_ino, name, mode_perm, uid, gid).map(|(ino, _)| ino)
+    }
+
+    /// `create_file` returning the freshly written in-memory `Inode` alongside
+    /// its number, so the VFS layer instantiates from it instead of reading the
+    /// slot back off disk. Linux `ext4_create` does exactly this: the
+    /// `struct inode` from `ext4_new_inode` goes straight to
+    /// `d_instantiate_new` (`fs/ext4/namei.c` `ext4_add_nondir`).
+    /// # C: same as `create_file`, minus one inode-table read
+    pub fn create_file_inode(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(u32, inode::Inode), MountError> {
         // Serialize the whole create (Linux `ext4_lock_group` + txn): concurrent
         // creates must not double-allocate an inode/block or race the shadow.
         // `create_op` holds `op_lock` for the op and defers the batch commit.
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
+            let node = m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
             m.dir_link(parent_ino, name, new_ino, dir::DT_REG)?;
-            Ok(new_ino)
+            Ok((new_ino, node))
         })
     }
 
@@ -52,11 +69,28 @@ impl Mount {
         uid: u32,
         gid: u32,
     ) -> Result<u32, MountError> {
+        self.create_dir_inode(parent_ino, name, mode_perm, uid, gid).map(|(ino, _)| ino)
+    }
+
+    /// `create_dir` returning the freshly written in-memory `Inode` alongside
+    /// its number, so `mkdir` instantiates from it instead of reading the slot
+    /// back off disk (Linux `ext4_mkdir` → `d_instantiate_new` on the live
+    /// inode). `size` is stamped to the `.`/`..` block this writes, matching
+    /// the `set_inode_size` below.
+    /// # C: same as `create_dir`, minus one inode-table read
+    pub fn create_dir_inode(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(u32, inode::Inode), MountError> {
         self.create_op(|m| {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(parent_ino, new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
+            let mut node = m.init_inode(parent_ino, new_ino, S_IFDIR | (mode_perm & 0x0FFF), 2, uid, gid)?;
             let usable = crate::csum::dir_usable_len(&m.sb, bs);
             let mut blk = alloc::vec![0u8; bs];
             blk[0..4].copy_from_slice(&new_ino.to_le_bytes());
@@ -74,6 +108,7 @@ impl Mount {
             crate::csum::stamp_dirent_tail(&m.sb, new_ino, ngen, &mut blk);
             m.append_block(new_ino, &blk)?;
             m.set_inode_size(new_ino, bs as u64)?;
+            node.size = bs as u64;
             m.dir_link(parent_ino, name, new_ino, dir::DT_DIR)?;
             let ng = (new_ino - 1) / m.sb.inodes_per_group;
             {
@@ -85,7 +120,7 @@ impl Mount {
             let pl = u16::from_le_bytes([pb[0x1A], pb[0x1B]]).saturating_add(1);
             pb[0x1A..0x1C].copy_from_slice(&pl.to_le_bytes());
             m.write_inode_bytes(parent_ino, &pb)?;
-            Ok(new_ino)
+            Ok((new_ino, node))
         })
     }
 

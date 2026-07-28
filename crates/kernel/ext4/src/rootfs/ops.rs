@@ -100,6 +100,60 @@ impl RootfsState {
         })
     }
 
+    /// Wrap the regular file just written by `init_inode`, using the in-memory
+    /// `Inode` the create returned instead of reading the slot back off disk.
+    ///
+    /// Linux never re-reads what it just allocated: `ext4_create` hands the
+    /// live `struct inode` from `ext4_new_inode` straight to
+    /// `d_instantiate_new` (`fs/ext4/namei.c` `ext4_add_nondir`). Round-tripping
+    /// through the disk made every create depend on an inode-table read that
+    /// can legitimately fail (`BadChecksum`, `BlockIo`, a torn group descriptor)
+    /// and collapsed all of them into a bare `EIO` from a create that had in
+    /// fact SUCCEEDED — the boot's
+    /// `openat-create /var/log/journal/<id>/user-1000.journal err=5`. Infallible
+    /// by construction, and one fewer metadata read per create.
+    /// # C: O(1), no I/O
+    pub fn wrap_created_file(self: &Arc<Self>, ino: u32, inode: &crate::inode::Inode) -> vfs::InodeRef {
+        let st = self.clone();
+        let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
+        let (size, mode, nlink, times) = (inode.size, inode.mode, inode.links_count as u32, inode.times());
+        let blocks = inode.i_blocks as u64;
+        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times, blocks);
+        // Shared identity via the SB inode cache (Linux `iget`).
+        match self.i_sb() {
+            Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
+            None => build(),
+        }
+    }
+
+    /// `wrap_any_ino` for an inode a create just wrote, from that struct rather
+    /// than a read-back — the `mkdir` half of the same defect
+    /// (`mkdir /var/log/journal/<id> err=5`). Regular files route to
+    /// `wrap_created_file`; every other type builds the stat-only inode.
+    /// # C: O(1), no I/O
+    pub fn wrap_created_any(self: &Arc<Self>, ino: u32, inode: &crate::inode::Inode) -> vfs::InodeRef {
+        if inode.is_reg() { return self.wrap_created_file(ino, inode); }
+        let ft = match inode.mode & crate::inode::S_IFMT {
+            crate::inode::S_IFDIR  => vfs::FileType::Directory,
+            crate::inode::S_IFLNK  => vfs::FileType::Symlink,
+            crate::inode::S_IFCHR  => vfs::FileType::CharDev,
+            crate::inode::S_IFBLK  => vfs::FileType::BlockDev,
+            crate::inode::S_IFIFO  => vfs::FileType::Fifo,
+            crate::inode::S_IFSOCK => vfs::FileType::Socket,
+            _                      => vfs::FileType::Regular,
+        };
+        let rdev = if matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { inode.rdev() } else { 0 };
+        let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
+        let (perm, size, nlink, times) = (inode.mode & 0o7777, inode.size as u64,
+                                          inode.links_count as u32, inode.times());
+        let st = self.clone();
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times);
+        match self.i_sb() {
+            Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
+            None => build(),
+        }
+    }
+
     /// Wrap regular-file `ino` in a deferred-bytes file inode.
     /// # C: O(1) inode read
     pub fn wrap_file(self: &Arc<Self>, ino: u32) -> Option<vfs::InodeRef> {
@@ -110,8 +164,9 @@ impl RootfsState {
         let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
         let times = inode.times();
         let nlink = inode.links_count as u32;
+        let blocks = inode.i_blocks as u64;
         let st = self.clone();
-        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times);
+        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times, blocks);
         // Shared identity via the SB inode cache (Linux `iget`).
         Some(match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),

@@ -10,7 +10,7 @@
 use crate::balloc::find_first_clear;
 use crate::gdt;
 use crate::inode::{
-    self, ExtentHeader, EXT4_EXT_MAGIC, I_BLOCK_LEN, S_IFDIR, S_IFMT, S_IFREG,
+    self, ExtentHeader, Inode, EXT4_EXT_MAGIC, I_BLOCK_LEN, S_IFDIR, S_IFMT, S_IFREG,
 };
 use crate::mount::{Mount, MountError};
 use crate::superblock::{SB_OFF_FREE_INODES, SB_OFF_LAST_ORPHAN, SUPERBLOCK_LEN, SUPERBLOCK_OFFSET};
@@ -230,16 +230,29 @@ impl Mount {
     pub fn create_anonymous_as(&self, parent_ino: u32, mode_perm: u16, uid: u32, gid: u32)
         -> Result<u32, MountError>
     {
+        self.create_anonymous_inode(parent_ino, mode_perm, uid, gid).map(|(ino, _)| ino)
+    }
+
+    /// `create_anonymous_as` returning the freshly written in-memory `Inode`
+    /// alongside its number, so `tmpfile` instantiates from it rather than
+    /// re-reading the slot (Linux `ext4_tmpfile` → `d_tmpfile` uses the live
+    /// inode from `ext4_new_inode`). `orphan_add` only touches `i_dtime`
+    /// (`NEXT_ORPHAN`), which the VFS wrap does not read, so the returned
+    /// struct stays accurate across it.
+    /// # C: same as `create_anonymous_as`, minus one inode-table read
+    pub fn create_anonymous_inode(&self, parent_ino: u32, mode_perm: u16, uid: u32, gid: u32)
+        -> Result<(u32, Inode), MountError>
+    {
         self.create_op(|m| {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
-            m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, uid, gid)?;
+            let node = m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, uid, gid)?;
             // Persist on the on-disk orphan list: a crash before a name is
             // linked (or before the last fd closes) leaves the inode + its
             // blocks recoverable by `orphan_cleanup` on the next mount,
             // instead of leaking (Linux `ext4_orphan_add`).
             m.orphan_add(new_ino)?;
-            Ok(new_ino)
+            Ok((new_ino, node))
         })
     }
 
@@ -482,9 +495,15 @@ impl Mount {
     /// (Linux `ext4_new_inode` stamps `current_fsuid`/`current_fsgid` mapped
     /// through the mount idmap) — split into the low u16 (0x02/0x18) and the
     /// osd2 high u16 (0x78/0x7A). Other timestamps stay 0.
+    ///
+    /// Returns the parsed in-memory `Inode` matching the bytes just written, so
+    /// a caller can instantiate the VFS inode from it WITHOUT reading the slot
+    /// back off disk — Linux `ext4_new_inode` likewise returns a live
+    /// `struct inode` that `ext4_create` hands straight to `d_instantiate_new`
+    /// (`fs/ext4/namei.c`); it never re-reads what it just allocated.
     /// # C: O(1) I/O
     pub fn init_inode(&self, parent_ino: u32, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32)
-        -> Result<(), MountError>
+        -> Result<Inode, MountError>
     {
         let mut bytes = vec![0u8; self.sb.inode_size as usize];
         bytes[0x00..0x02].copy_from_slice(&mode.to_le_bytes());
@@ -515,7 +534,10 @@ impl Mount {
         // every file created under oxide shows mtime 1970 until first utimes.
         crate::extent_rw::meta::stamp_new_inode_times(&mut bytes, self.sb.inode_size as usize,
             vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns()));
-        self.write_inode_bytes(ino, &bytes)
+        self.write_inode_bytes(ino, &bytes)?;
+        let mut node = Inode::parse(&bytes, &self.sb)?;
+        node.ino = ino; // stamp so dir/extent-block verify can key the inode seed
+        Ok(node)
     }
 
 }
