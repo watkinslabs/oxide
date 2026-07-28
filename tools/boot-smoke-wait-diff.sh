@@ -102,7 +102,11 @@ env OXIDE_WAIT_DIFF_SMOKE=1 $WAIT_DIFF_SYSLOG_ENV OXIDE_QEMU_HEADLESS=1 \
     setsid bash -c "exec make '$MT' > '$BOOT_LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 
-for _ in $(seq 1 600); do
+# Bounded by the run's own timeout, not a fixed 60s: `make qemu-arm` on a
+# cold tree spends minutes building before QEMU exists, and the old 600 x
+# 0.1s wait reported "UART socket did not become available" for a build that
+# was still healthy. The loop already exits early if the boot process dies.
+for _ in $(seq 1 $((TIMEOUT * 10))); do
     [ -S "$UART" ] && break
     pid="$(cat "$PIDFILE" 2>/dev/null || true)"
     if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
