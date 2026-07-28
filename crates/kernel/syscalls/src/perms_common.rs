@@ -19,33 +19,16 @@ pub(crate) fn now_ns() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
-/// AT_FDCWD sentinel — legacy (non-*at) callers pass this so the path
-/// resolves against cwd; *at callers pass the real dirfd.
-pub(crate) const AT_FDCWD: i32 = -100;
+// `AT_*` numbers are owned by `syscall::at` (the ABI crate both this shim and
+// the `fs` work-fn crate depend on); re-exported, never re-declared.
+pub(crate) use syscall::at::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
-/// `AT_SYMLINK_NOFOLLOW` (uapi): when set in a *at `at_flags`, operate on the
-/// symlink itself rather than its target. Shared by the *at families.
-pub(crate) const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
-
-/// Resolve a dirfd-relative path to its inode (shared by chmod/chown *at and
-/// the *xattrat family). `follow` controls symlink-following (AT_SYMLINK_NOFOLLOW).
-/// # C: O(N_path)
-pub(crate) fn resolve_path_inode(dirfd: i32, path_ptr: u64, follow: bool) -> Result<InodeRef, i64> {
-    let lf = vfs::LookupFlags {
-        no_follow_final: !follow,
-        follow,
-        ..Default::default()
-    };
-    crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf).map(|p| p.inode)
-}
-
-/// BUG E: resolve the `*at` target. `AT_EMPTY_PATH` (0x1000) with an empty
-/// path means "operate on the dirfd itself" — i.e. fchmodat/fchownat with `""`
-/// == fchmod/fchown on the open fd. systemd uses this to reset /dev/console's
-/// ownership/mode; without it the empty path resolved to EINVAL. Mirrors
-/// `newfstatat`'s AT_EMPTY_PATH handling.
-pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
-pub(crate) const AT_CHMOD_CHOWN_VALID: u32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
+/// BUG E: `AT_EMPTY_PATH` with an empty path means "operate on the dirfd
+/// itself" — fchmodat/fchownat with `""` == fchmod/fchown on the open fd.
+/// systemd uses this to reset /dev/console's ownership/mode; without it the
+/// empty path resolved to EINVAL. Mirrors `newfstatat`'s handling.
+pub(crate) use syscall::at::AT_EMPTY_PATH;
+pub(crate) const AT_CHMOD_CHOWN_VALID: u32 = syscall::at::AT_NOFOLLOW_EMPTY;
 
 /// Validate chmod/chown `*at` flags before lookup or mutation. # C: O(1)
 pub(crate) fn validate_chmod_chown_flags(flags: u32) -> Result<(), i64> {
@@ -76,17 +59,10 @@ pub(crate) fn resolve_path_mnt(dirfd: i32, path_ptr: u64, follow: bool) -> Resul
     Ok((vp.inode, vp.mnt_id))
 }
 
-/// Resolve a `*xattrat` (Linux 6.13) target inode, honouring the at_flags
-/// shared by that family: AT_SYMLINK_NOFOLLOW (operate on the symlink) and
-/// AT_EMPTY_PATH (empty path → operate on the dirfd itself). Unknown flag bits
-/// → EINVAL (Linux `setxattrat`/`getxattrat` reject `~(AT_SYMLINK_NOFOLLOW |
-/// AT_EMPTY_PATH)`). # C: O(N_path)
-pub(crate) fn resolve_xattr_at(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<InodeRef, i64> {
-    resolve_xattr_at_mnt(dirfd, path_ptr, at_flags).map(|p| p.0)
-}
-
-/// Resolve a `*xattrat`/legacy xattr target to `(inode, mnt_id)`, preserving
-/// mount identity for write-side EROFS checks. # C: O(N_path)
+/// Resolve a legacy (non-`*at`) xattr target to `(inode, mnt_id)`, preserving
+/// mount identity for write-side EROFS checks. The `*xattrat` slots use
+/// `pathresolve::resolve_at_or_{dirfd,fd}` instead, which carry Linux's
+/// `getname_maybe_null` NULL-pathname rule. # C: O(N_path)
 pub(crate) fn resolve_xattr_at_mnt(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<(InodeRef, u64), i64> {
     if at_flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
         return Err(-(Errno::Einval.as_i32() as i64));
@@ -128,17 +104,18 @@ pub(crate) fn resolve_at_target_mnt(dirfd: i32, path_ptr: u64, flags: u32, follo
     Ok((p.inode, p.mnt_id))
 }
 
-/// EROFS when `mnt_id` names a read-only mount (Linux `mnt_want_write`). A
-/// `0` id (anon/pseudo inode) has no mount to enforce. # C: O(log N)
-pub(crate) fn check_rofs(mnt_id: u64) -> Result<(), i64> {
-    use core::sync::atomic::Ordering;
-    if mnt_id == 0 { return Ok(()); }
-    if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
-        if (m.flags.load(Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
-            return Err(-(Errno::Erofs.as_i32() as i64));
-        }
-    }
-    Ok(())
+/// Linux `mnt_want_write` … `mnt_drop_write` bracket around a metadata write:
+/// `EROFS` on a read-only mount, otherwise the write hold is held for the whole
+/// of `f` so a concurrent remount-ro cannot land mid-operation (Linux
+/// `filename_setxattr` / `file_setxattr` / `filename_removexattr`). A `0`
+/// `mnt_id` (anon/pseudo inode) has no mount to hold. # C: O(log N) + C(f)
+pub(crate) fn with_mnt_write(mnt_id: u64, f: impl FnOnce() -> i64) -> i64 {
+    if mnt_id == 0 { return f(); }
+    let Some(m) = vfs::mount::mount_by_id(mnt_id) else { return f(); };
+    if let Err(e) = vfs::mount::mnt_want_write(&m) { return -(e as i64); }
+    let rv = f();
+    vfs::mount::mnt_drop_write(&m);
+    rv
 }
 
 /// Kernel `notify_change` (Linux `fs/attr.c`): the single convergence point for

@@ -5,6 +5,11 @@
 
 use crate::task::{SchedClass, SchedPolicy};
 
+/// Linux `SCHED_CAPACITY_SCALE` — the utilization-clamp upper bound and the
+/// default `uclamp_req[UCLAMP_MAX]` value every task starts with
+/// (`uclamp_none(UCLAMP_MAX)`, `kernel/sched/sched.h:3682`).
+pub const UCLAMP_CAPACITY_SCALE: u32 = 1024;
+
 impl SchedPolicy {
     /// Stable wire code for the atomic class encoding.
     /// # C: O(1)

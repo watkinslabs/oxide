@@ -22,11 +22,13 @@
 // - `special`: socket/FIFO/device special inode builders.
 // - `dir`: directory tree state and namespace inode ops.
 // - `fs`: mounted tmpfs filesystem and superblock ops.
+// - `fileattr`: `chattr` flag word (`i_op->fileattr_{get,set}`, Linux shmem).
 
 mod accounting;
 mod dir;
 mod falloc;
 mod file;
+mod fileattr;
 mod flags;
 mod fs;
 mod inode;

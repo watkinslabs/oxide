@@ -31,6 +31,8 @@ pub mod mlock_policy;
 // ABI, the AT_HANDLE_* flag masks and both admission ladders.
 pub mod handle_policy;
 pub mod sched_policy;
+pub mod sched_attr;
+pub mod ioprio;
 // rename(2)/renameat2(2): the `filename_renameat2` errno LADDER (EXDEV before
 // EBUSY, the NOREPLACE EEXIST override, the ancestor-trap EINVAL/ENOTEMPTY
 // split, trailing-slash ENOTDIR) — order is the whole contract, so it lives
@@ -85,6 +87,15 @@ include!("kernel_body.rs");
 
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
+
+// io_uring(2) 425/426/427: the `struct io_uring_params` wire form, the setup
+// flag/entries ladder, the ring-region geometry and the register-opcode
+// ladder. The three slot files AND `io_uring.rs` are kernel-gated, so every
+// decision left in them is invisible to `cargo test` (CLAUDE.md phantom-test
+// rule); the slots parse/validate/call/encode around this module (docs/53).
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "io_uring/abi/mod.rs"]
+pub mod io_uring_abi;
 
 // statfs(2) wire encoding and uname(2) personality overrides: pure ABI logic,
 // compiled into the kernel and into the hosted test build so the struct layout

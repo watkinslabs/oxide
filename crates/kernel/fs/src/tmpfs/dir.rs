@@ -81,6 +81,15 @@ impl FileOps for TmpfsDirFileOps {
 /// `i_op` for a tmpfs directory (lookup + namespace mutators). # C: O(log N)
 struct TmpfsDirOps;
 impl InodeOps for TmpfsDirOps {
+    /// `shmem_fileattr_get` — the `chattr` word for this inode. # C: O(1)
+    fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
+        super::fileattr::tmpfs_fileattr_get(inode)
+    }
+    /// `shmem_fileattr_set`. # C: O(1)
+    fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
+        super::fileattr::tmpfs_fileattr_set(inode, fa)
+    }
+
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         d.kids.lock().get(name).cloned().ok_or(VfsError::Enoent)
