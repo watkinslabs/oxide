@@ -6,7 +6,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::format;
+use core::fmt::Write;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -19,12 +19,16 @@ use crate::mount_snapshot::{MountSnapshotBuilder, OpenMountSnapshot};
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 const MOUNTS_FILE_MODE: u16 = 0o444;
+/// Bytes reserved per rendered mountinfo row, so one buffer covers a whole
+/// render without repeated growth. Long enough for the common row; a longer one
+/// just grows the buffer as `String` normally would.
+const MOUNTINFO_ROW_HINT: usize = 192;
 static SNAPSHOTS: Spinlock<BTreeMap<u64, OpenMountSnapshot>, MountSnapClass> = Spinlock::new(BTreeMap::new());
 
-fn alloc_snapshot(tid_opt: Option<u32>, build: MountSnapshotBuilder) -> Option<u64> {
+fn alloc_snapshot(tid_opt: Option<u32>) -> Option<u64> {
     let (namespace, root_prefix) = task_mount_context(tid_opt)?;
     let id = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
-    SNAPSHOTS.lock().insert(id, OpenMountSnapshot::new(namespace, root_prefix, build));
+    SNAPSHOTS.lock().insert(id, OpenMountSnapshot::new(namespace, root_prefix));
     Some(id)
 }
 
@@ -110,7 +114,11 @@ fn root_prefix_for_task(cur: &sched::Task) -> Option<String> {
 /// # C: O(N_mounts) (parent_mnt_id reads the attach-time stored parent id)
 fn build_mountinfo(namespace: &vfs::mntns::MntNamespaceRef, root_prefix: Option<&str>) -> Vec<u8> {
     let ns = namespace.id();
+    #[cfg(feature = "debug-mntcost")]
+    let t_enter = crate::mnt_cost::now_ns();
     let mounts = vfs::mount::snapshot_ns_view(ns);
+    #[cfg(feature = "debug-mntcost")]
+    let snap_ns = crate::mnt_cost::now_ns() - t_enter;
     #[cfg(feature = "debug-mnt")]
     {
         klog::write_raw(b"[MNTINFO] ns="); klog::write_dec_u64(ns);
@@ -119,8 +127,16 @@ fn build_mountinfo(namespace: &vfs::mntns::MntNamespaceRef, root_prefix: Option<
         klog::write_raw(b" rows="); klog::write_dec_u64(mounts.len() as u64);
         klog::write_raw(b"\n");
     }
-    let mut s = String::new();
+    #[cfg(feature = "debug-mntcost")]
+    let mut census = crate::mnt_cost::Census::default();
+    // One buffer, grown once. Linux's seq_file renders every row into a single
+    // preallocated page; building each row into its own throwaway `String` and
+    // copying it in cost more than every other field of the row put together
+    // (B1475: `fmt_us` was 43% of a 55-row render).
+    let mut s = String::with_capacity(mounts.len() * MOUNTINFO_ROW_HINT);
     for m in mounts.iter() {
+        #[cfg(feature = "debug-mntcost")]
+        let t_mp = crate::mnt_cost::now_ns();
         let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix) {
             Some(p) => {
                 #[cfg(feature = "debug-mnt")]
@@ -135,22 +151,44 @@ fn build_mountinfo(namespace: &vfs::mntns::MntNamespaceRef, root_prefix: Option<
             }
             None => continue,
         };
+        #[cfg(feature = "debug-mntcost")]
+        { census.mp += crate::mnt_cost::now_ns() - t_mp; }
         let id = m.mnt_id;
         // Parent from mount-object identity (`parent_id`), not a string-prefix
         // scan. Root mounts render parent 0 (Linux mountinfo: the root has no
         // parent mount), every other mount its real parent mnt_id.
         let parent = if m.is_root() || mp == "/" { 0 } else { vfs::mount::parent_mnt_id(&m) };
         let name = m.sb().s_type.name();
+        #[cfg(feature = "debug-mntcost")]
+        let t_root = crate::mnt_cost::now_ns();
         let root = vfs::mount::mountinfo_root_field(m);
+        #[cfg(feature = "debug-mntcost")]
+        let t_opts = crate::mnt_cost::now_ns();
         let opts = vfs::mount::mountinfo_mount_options(m);
         let opt = vfs::mount::mountinfo_optional_fields(m);
+        #[cfg(feature = "debug-mntcost")]
+        let t_src = crate::mnt_cost::now_ns();
         let src = vfs::mount::mountinfo_source_field(m);
         let sb_opts = vfs::mount::mountinfo_super_options(m);
-        s.push_str(&format!(
+        #[cfg(feature = "debug-mntcost")]
+        let t_fmt = crate::mnt_cost::now_ns();
+        #[cfg(feature = "debug-mntcost")]
+        {
+            census.root += t_opts - t_root;
+            census.opts += t_src - t_opts;
+            census.src  += t_fmt - t_src;
+        }
+        let _ = write!(s,
             "{} {} 0:{} {} {} {}{} - {} {} {}\n",
             id, parent, id, root, mp, opts, opt, name, src, sb_opts,
-        ));
+        );
+        #[cfg(feature = "debug-mntcost")]
+        { census.fmt += crate::mnt_cost::now_ns() - t_fmt; }
     }
+    #[cfg(feature = "debug-mntcost")]
+    crate::mnt_cost::report(b"mountinfo", mounts.len() as u64,
+        vfs::mount::snapshot_all().len() as u64, snap_ns,
+        crate::mnt_cost::now_ns() - t_enter, &census);
     s.into_bytes()
 }
 
@@ -168,7 +206,7 @@ struct MountsFileOps;
 impl FileOps for MountsFileOps {
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let d = file.inode().private::<ProcMountsData>().ok_or(VfsError::Einval)?;
-        file.set_private_data(alloc_snapshot(d.tid_opt, build_mounts).ok_or(VfsError::Enoent)?);
+        file.set_private_data(alloc_snapshot(d.tid_opt).ok_or(VfsError::Enoent)?);
         Ok(())
     }
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -202,7 +240,7 @@ struct MountinfoFileOps;
 impl FileOps for MountinfoFileOps {
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let d = file.inode().private::<MountinfoData>().ok_or(VfsError::Einval)?;
-        file.set_private_data(alloc_snapshot(d.tid_opt, build_mountinfo).ok_or(VfsError::Enoent)?);
+        file.set_private_data(alloc_snapshot(d.tid_opt).ok_or(VfsError::Enoent)?);
         Ok(())
     }
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {

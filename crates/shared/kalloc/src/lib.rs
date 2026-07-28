@@ -30,6 +30,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{KMalloc, Spinlock, MAX_CPUS};
 
 mod holes;
+mod sizeclass;
+mod grow;
+#[cfg(feature = "debug-heapwalk")] pub mod walkstat;
 pub use holes::{HoleList, HoleListError, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 
 #[cfg(feature = "debug-dealloc-diag")]
@@ -141,6 +144,10 @@ static GLOBAL_ALLOC: AtomicU64 = AtomicU64::new(0);
 /// hole list (free), the quarantine (debug-held), or caller ownership (live).
 struct AllocState {
     holes: HoleList,
+    /// `kmalloc` size-class free lists (`sizeclass.rs`). Guarded by the same
+    /// lock as `holes`: a refill moves a slab from one to the other, so the two
+    /// must never be observed disagreeing about who owns a block.
+    classes: sizeclass::SizeClasses,
     #[cfg(feature = "debug-heappoison")]
     quarantine: poison::Quar,
     /// Bounded live-allocation size ledger (`debug-dealloc-diag`) — see
@@ -154,6 +161,7 @@ impl AllocState {
     const fn new() -> Self {
         Self {
             holes: HoleList::new(),
+            classes: sizeclass::SizeClasses::new(),
             #[cfg(feature = "debug-heappoison")]
             quarantine: poison::Quar::new(),
             #[cfg(feature = "debug-dealloc-diag")]
@@ -942,6 +950,18 @@ unsafe impl GlobalAlloc for KAlloc {
         let carve_layout = layout;
         // IRQ-atomic across the WHOLE alloc (incl. the unlocked grow window).
         let _irq = self.irq_off();
+        // `kmalloc` front end (`sizeclass.rs`): small objects come off an O(1)
+        // per-size LIFO, never the O(N) hole-list walk. A class-routed layout is
+        // ALWAYS served here — `dealloc` re-derives the same class from the same
+        // `Layout`, so a routed object must never have come from the hole list.
+        if let Some(i) = sizeclass::class_index(carve_layout) {
+            {
+                let mut g = self.inner.lock();
+                if let Some(p) = g.classes.pop(i) { return p.as_ptr(); }
+            }
+            // SAFETY: refill carves an allocator-owned slab under the same lock.
+            return unsafe { self.refill_class(i) }.map_or(ptr::null_mut(), |p| p.as_ptr());
+        }
         // Disarm before this op touches the hole list, so kalloc's own header
         // writes (split/coalesce) don't self-trip the freed-block watchpoint.
         #[cfg(feature = "debug-hw-watchpoint")]
@@ -991,89 +1011,8 @@ unsafe impl GlobalAlloc for KAlloc {
             klog::write_primary_dec_u64(carve_layout.align() as u64);
             klog::write_primary_raw(b"\n");
         }
-        // T16: hole-list couldn't satisfy. Try the grow hook.
-        let raw = self.grow_hook.load(Ordering::Acquire);
-        if raw == GROW_HOOK_NONE {
-            #[cfg(feature = "debug-heappoison")]
-            klog::write_primary_raw(b"[KALLOC] growth-unavailable no-hook\n");
-            return ptr::null_mut();
-        }
-        let memcg = self.active_memcg();
-        if memcg == NO_MEMCG_CONTEXT && self.context_required.load(Ordering::Acquire) {
-            #[cfg(feature = "debug-heappoison")]
-            klog::write_primary_raw(b"[KALLOC] growth-unavailable no-context\n");
-            return ptr::null_mut();
-        }
-        // SAFETY: stored only via set_grow_hook from a `GrowFn`; the
-        // round-trip cast restores the fn-pointer's ABI.
-        let f: GrowFn = unsafe { core::mem::transmute(raw as usize) };
-        // Ask for at least the layout, with align headroom, rounded up
-        // to GROW_CHUNK_MIN so we don't thrash the PMM with tiny grows.
-        let need = carve_layout.size().saturating_add(carve_layout.align()).max(GROW_CHUNK_MIN);
-        #[cfg(feature = "debug-heappoison")]
-        {
-            klog::write_primary_raw(b"[KALLOC] growth-request bytes=");
-            klog::write_primary_dec_u64(need as u64);
-            klog::write_primary_raw(b"\n");
-        }
-        let (addr, size) = match f(need, memcg) {
-            Some(p) => {
-                #[cfg(feature = "debug-heappoison")]
-                {
-                    klog::write_primary_raw(b"[KALLOC] growth-acquired addr=");
-                    klog::write_primary_hex_u64(p.0 as u64);
-                    klog::write_primary_raw(b" bytes=");
-                    klog::write_primary_dec_u64(p.1 as u64);
-                    klog::write_primary_raw(b"\n");
-                }
-                p
-            }
-            None    => {
-                #[cfg(feature = "debug-heappoison")]
-                klog::write_primary_raw(b"[KALLOC] growth-failed\n");
-                return ptr::null_mut();
-            }
-        };
-        let mut g = self.inner.lock();
-        #[cfg(feature = "debug-heappoison")]
-        g.holes.dump(256);
-        // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
-        // exclusive ownership of [addr, addr + size); fully writable.
-        let registered = unsafe { g.holes.add_region(addr, size) };
-        let p = if registered.is_ok() { g.holes.alloc(carve_layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
-        #[cfg(feature = "debug-dealloc-diag")]
-        if !p.is_null() { g.size_track.record(p as usize, carve_layout.size()); }
-        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
-        if !p.is_null() { g.holes.record_alloc_ip(p as usize, caller::alloc_return_ip()); }
-        #[cfg(feature = "debug-dealloc-diag")]
-        if !p.is_null() { record_recent_op(caller::alloc_return_ip(), p as usize, true); }
-        drop(g);
-        if let Err(_e) = registered {
-            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
-            {
-                klog::write_primary_raw(b"[KALLOC] growth-register-failed addr=");
-                klog::write_primary_hex_u64(addr as u64);
-                klog::write_primary_raw(b" size=");
-                klog::write_primary_dec_u64(size as u64);
-                klog::write_primary_raw(b" tag=");
-                klog::write_primary_raw(_e.tag());
-                klog::write_primary_raw(b"\n");
-            }
-            assert!(false, "kalloc grow region invalid");
-        }
-        #[cfg(feature = "debug-heappoison")]
-        if !p.is_null() {
-            // SAFETY: `p` was just carved with `carve_layout`'s extra
-            // trailing bytes reserved exactly for this redzone.
-            unsafe { poison::arm_redzone(p, layout); }
-        }
-        // B1347: validate right after a GROW carve — the large zram allocation
-        // grows the heap, and a carve/region-boundary bug would first appear here.
-        #[cfg(feature = "debug-dealloc-diag")]
-        if !p.is_null() { self.periodic_validate_diag(caller::alloc_return_ip()); }
-        #[cfg(feature = "debug-heappoison")]
-        klog::write_primary_raw(b"[KALLOC] growth-registered\n");
-        p
+        // SAFETY: same allocation contract; the IRQ guard above is still held.
+        unsafe { self.grow_and_alloc(layout, carve_layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -1106,6 +1045,16 @@ unsafe impl GlobalAlloc for KAlloc {
         // IRQ-atomic: dealloc mutates the same hole list an IRQ-context alloc
         // touches; disable IRQs for the whole op (see `IrqOff`).
         let _irq = self.irq_off();
+        // `kmalloc` front end: the same routing predicate `alloc` used, on the
+        // same `Layout` Rust guarantees is passed back, so a class-routed object
+        // returns to the class it was carved from and never to the hole list.
+        if let Some(i) = sizeclass::class_index(carve_layout) {
+            let mut g = self.inner.lock();
+            // SAFETY: `ptr` came from `alloc(layout)`, which routed the identical
+            // layout to class `i`, and the caller no longer borrows it.
+            unsafe { g.classes.push(i, ptr) };
+            return;
+        }
         // B1347: tight-mode op-START validate (before the coalesce can panic).
         #[cfg(feature = "debug-dealloc-diag")]
         self.tight_precheck(free_ip);
