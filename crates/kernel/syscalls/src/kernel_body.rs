@@ -57,6 +57,7 @@ mod write_common;
 mod affinity_common; #[path = "203_sched_setaffinity.rs"] pub mod s203_sched_setaffinity; #[path = "204_sched_getaffinity.rs"] pub mod s204_sched_getaffinity;
 mod execve_common; #[path = "059_execve/mod.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;
 #[path = "425_io_uring_setup.rs"] pub mod s425_io_uring_setup; #[path = "426_io_uring_enter.rs"] pub mod s426_io_uring_enter; #[path = "427_io_uring_register.rs"] pub mod s427_io_uring_register;
+#[path = "447_memfd_secret.rs"] pub mod s447_memfd_secret;
 #[path = "462_mseal.rs"] pub mod s462_mseal;
 #[path = "039_getpid.rs"] pub mod s039_getpid;
 #[path = "003_close.rs"] pub mod s003_close;
