@@ -30,6 +30,11 @@ struct group_shared {
     volatile sig_atomic_t handled; /* the handler ran, and in which thread */
     volatile sig_atomic_t in_main; /* handler ran on the main thread */
     volatile sig_atomic_t stop;    /* release for the sibling's loop */
+    volatile sig_atomic_t main_blocked;  /* main thread still has the signal blocked */
+    volatile sig_atomic_t sib_blocked;   /* sibling does not */
+    volatile sig_atomic_t main_tid;      /* gettid() of the main thread */
+    volatile sig_atomic_t handler_tid;   /* gettid() inside the handler */
+    volatile sig_atomic_t tls_agrees;    /* pthread_self() told the same story */
 };
 
 #define GRP_READY_MS   2000u
@@ -144,10 +149,21 @@ static void term_case(void) {
  * main thread installs is the one the sibling runs. `in_main=0` is the claim:
  * the signal was delivered to the thread that could take it, not to the one it
  * was posted against. */
+/* Which thread ran is decided by `gettid()`, not by `pthread_self()`: the
+ * pthread identity comes out of the thread pointer, so a kernel that entered
+ * the handler with the wrong TLS register would make a CORRECT delivery look
+ * like a delivery to the main thread. `tls_agrees` records whether the two
+ * views match, so the row can tell a delivery defect from a TLS defect instead
+ * of blaming whichever is guessed first. */
 static void usr1_handler(int sig) {
     (void)sig;
     if (g_gsh == NULL) return;
-    g_gsh->in_main = pthread_equal(pthread_self(), g_main_thread) ? 1 : 0;
+    pid_t me = (pid_t)syscall(SYS_gettid);
+    int by_tid = (me == (pid_t)g_gsh->main_tid) ? 1 : 0;
+    int by_tls = pthread_equal(pthread_self(), g_main_thread) ? 1 : 0;
+    g_gsh->handler_tid = me;
+    g_gsh->in_main = by_tid;
+    g_gsh->tls_agrees = (by_tid == by_tls) ? 1 : 0;
     g_gsh->handled = 1;
     g_gsh->stop = 1;
 }
@@ -155,6 +171,10 @@ static void usr1_handler(int sig) {
 static void *usr1_sibling(void *arg) {
     struct group_shared *sh = (struct group_shared *)arg;
     if (unblock_here(SIGUSR1) != 0) return NULL;
+    sigset_t cur;
+    sigemptyset(&cur);
+    if (pthread_sigmask(SIG_BLOCK, NULL, &cur) == 0)
+        sh->sib_blocked = sigismember(&cur, SIGUSR1) ? 1 : 0;
     sh->ready = 1;
     while (!sh->stop) sleep_ms(GRP_SLEEP_MS);
     return NULL;
@@ -168,19 +188,30 @@ static void usr1_child(struct group_shared *sh) {
     sigemptyset(&sa.sa_mask);
     if (sigaction(SIGUSR1, &sa, NULL) != 0) _exit(GRP_SETUP_FAIL);
     g_main_thread = pthread_self();
+    sh->main_tid = (sig_atomic_t)syscall(SYS_gettid);
     if (block_here(SIGUSR1) != 0) _exit(GRP_SETUP_FAIL);
     if (pthread_create(&th, NULL, usr1_sibling, sh) != 0) _exit(GRP_SETUP_FAIL);
+    /* Re-read the masks the kernel actually holds, so a mismatch says WHICH
+     * half broke: `main_blocked=0` means the block never took effect (a
+     * `rt_sigprocmask` / thread-mask defect), while `main_blocked=1` with
+     * `in_main=1` means the kernel delivered a signal to a thread that has it
+     * blocked (a delivery defect). Without this the row can only report that
+     * something is wrong. */
+    sigset_t cur;
+    sigemptyset(&cur);
+    if (pthread_sigmask(SIG_BLOCK, NULL, &cur) == 0)
+        sh->main_blocked = sigismember(&cur, SIGUSR1) ? 1 : 0;
     pthread_join(th, NULL);
     _exit(0);
 }
 
 static void usr1_case(void) {
     struct group_shared *sh = gshared_new();
-    if (sh == NULL) { out("groupsig", "handler_runs_in_unblocked_thread", "outcome=setup_failed|handled=0|in_main=0"); return; }
+    if (sh == NULL) { out("groupsig", "handler_runs_in_unblocked_thread", "outcome=setup_failed|handled=0|in_main=0|tls_agrees=0|main_blocked=0|sib_blocked=0"); return; }
     pid_t pid = fork();
     if (pid == 0) { g_gsh = sh; usr1_child(sh); _exit(GRP_SETUP_FAIL); }
     if (pid < 0) {
-        out("groupsig", "handler_runs_in_unblocked_thread", "outcome=fork_failed|handled=0|in_main=0");
+        out("groupsig", "handler_runs_in_unblocked_thread", "outcome=fork_failed|handled=0|in_main=0|tls_agrees=0|main_blocked=0|sib_blocked=0");
         return;
     }
     if (gwait_ready(sh, GRP_READY_MS)) {
@@ -195,8 +226,10 @@ static void usr1_case(void) {
         if (WIFSIGNALED(st)) outcome = "signalled";
         else if (WIFEXITED(st)) outcome = WEXITSTATUS(st) == GRP_SETUP_FAIL ? "setup_failed" : "exited";
     }
-    out("groupsig", "handler_runs_in_unblocked_thread", "outcome=%s|handled=%d|in_main=%d",
-        outcome, sh->handled ? 1 : 0, sh->in_main ? 1 : 0);
+    out("groupsig", "handler_runs_in_unblocked_thread",
+        "outcome=%s|handled=%d|in_main=%d|tls_agrees=%d|main_blocked=%d|sib_blocked=%d",
+        outcome, sh->handled ? 1 : 0, sh->in_main ? 1 : 0, sh->tls_agrees ? 1 : 0,
+        sh->main_blocked ? 1 : 0, sh->sib_blocked ? 1 : 0);
     munmap((void *)sh, sizeof *sh);
 }
 
