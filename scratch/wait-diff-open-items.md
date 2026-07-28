@@ -151,7 +151,11 @@ Two candidate lanes, pick deliberately:
 - move to precise accounting at switch/entry boundaries (Linux
   `vtime_task_switch`), which is the real fidelity gap.
 
-Not a blocker for W1; it makes that row flaky on ARM, not wrong.
+Not a blocker for W1; it makes that row flaky on ARM, not wrong. F765
+re-measured it at `ced0a0d26`: one ARM run showed `slept=0`, the next was
+exact, so the rate is unchanged and it is the only row that has ever needed
+a re-run. Widening the probe's margin is the cheap lane and nothing else is
+waiting on it.
 
 ## 5 W4 — `SMP>1` is untested for the new per-CPU tick state
 
