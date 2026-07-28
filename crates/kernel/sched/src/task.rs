@@ -190,6 +190,20 @@ pub struct Task {
     /// the fork path, which drops an RT/DEADLINE child back to `SCHED_NORMAL`
     /// nice 0 and then clears the flag on the child.
     pub sched_reset_on_fork: AtomicBool,
+    /// Linux `task_struct::se.slice` — the CFS slice `sched_setattr(2)` sets
+    /// from `sched_attr::sched_runtime` and `sched_getattr(2)` reports back.
+    /// `0` is Linux's `!se.custom_slice`, which reads back as
+    /// `sysctl_sched_base_slice`. Inherited on fork.
+    pub sched_slice_ns: AtomicU64,
+    /// Linux `task_struct::uclamp_req[UCLAMP_MIN]` / `[UCLAMP_MAX]` values —
+    /// the per-task utilization-clamp request `sched_setattr(2)`'s
+    /// `SCHED_FLAG_UTIL_CLAMP_{MIN,MAX}` sets and `sched_getattr(2)` reports.
+    pub uclamp_min: AtomicU32,
+    pub uclamp_max: AtomicU32,
+    /// `uclamp_se::user_defined` for both clamps — bit0 = MIN, bit1 = MAX.
+    /// A clamp that was never requested by userspace is reset to its class
+    /// default on every `sched_setattr`; a user-defined one survives.
+    pub uclamp_user_defined: AtomicU8,
 
     pub exit_status: AtomicI32,
     /// Low-byte clone/fork exit signal (`task_struct::exit_signal`). Linux
@@ -390,11 +404,13 @@ pub struct Task {
     /// /proc/<pid>/stat field 19.
     pub nice: AtomicI8,
 
-    /// Per-task I/O priority per ioprio_set/get(2). Packed: class =
-    /// `ioprio >> 13` (0=NONE, 1=RT, 2=BE, 3=IDLE), level = low 13 bits.
-    /// 0 = IOPRIO_CLASS_NONE (kernel derives from nice). Inherited on
-    /// fork; honored by a priority-aware I/O scheduler when present.
-    pub ioprio: AtomicU16,
+    /// Linux `io_context::ioprio` — the RAW `int` ioprio_set(2) stored, which
+    /// `ioprio_get(IOPRIO_WHO_PROCESS)` reports verbatim so userspace can tell
+    /// "never set" (`IOPRIO_CLASS_NONE`) from an explicit value. Class =
+    /// `(ioprio >> 13) & 7`, hint = bits [12:3], level = bits [2:0].
+    /// Inherited on fork; `__get_task_ioprio` derives class+level from nice
+    /// whenever the class is NONE.
+    pub ioprio: AtomicU32,
 
     /// Monotonic ns at spawn; getrusage/times/proc-stat utime
     /// derived as `monotonic_ns() - spawn_ns`. 0 in hosted tests.
@@ -618,6 +634,14 @@ pub struct Task {
     /// so an exit to user that did not change CPU costs no user writes.
     /// `crate::rseq::exit::IDS_UNSET` = nothing published yet.
     pub rseq_ids: AtomicU64,
+    /// Linux `task_struct::rseq.slice.yielded` — read-and-cleared by
+    /// `rseq_slice_yield(2)` (slot 471). Set by `rseq_syscall_enter_work` when
+    /// a GRANTED time-slice extension is relinquished through that syscall.
+    /// The grant machinery itself (`PR_RSEQ_SLICE_EXTENSION`, the rseq-ABI
+    /// `slice_ctrl` word, the preempt-time grant and its revoke timer) is not
+    /// implemented, so nothing sets this yet and 471 answers 0 — the same
+    /// answer Linux gives any thread that never opted in via prctl.
+    pub rseq_slice_yielded: AtomicBool,
 
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.
