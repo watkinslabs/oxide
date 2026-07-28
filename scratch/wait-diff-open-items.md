@@ -236,6 +236,29 @@ Two new records, both falsifiable: `latnowait` (ask for no wait — the
 return-immediately kernel) flips `ge_req`, `latslow` (spend 100 ms per wait —
 the defect itself) flips `within_budget`.
 
+**Measured, x86, same probe both sides** (20 iterations of a 1 ms wait, run as
+the boot-time systemd oneshot; a temporary non-record `latms|` print carried the
+raw total out on the UART and was reverted before merge):
+
+| | `nanosleep(1ms)` | `epoll_wait(.., 1)` |
+|---|---|---|
+| oxide before (`x86-20260727-233627-niTEfx`) | 2092 ms / 20 = **104.6 ms** per call | 2189 ms / 20 = **109.5 ms** |
+| oxide after (`x86-20260727-233854-LPUmvg`) | 152 ms / 20 = **7.6 ms** | 120 ms / 20 = **6.0 ms** |
+| host Linux oracle, both runs | 21 ms / 20 = **1.05 ms** | 21 ms / 20 = **1.05 ms** |
+
+The before-run diverges on those two records and NOTHING else (4 diff lines,
+all `latency|*`), which is the falsification the case exists to provide.
+
+**Not isolated — the honest gap.** The post-fix residual is ~5-6 ms per wait
+above the host oracle. It is measured while the probe races the rest of userspace
+starting, so contention is the obvious candidate, but this lane did NOT separate
+wake->run scheduling latency from any remaining timer quantisation: no
+request-length experiment can, because tick quantisation adds a CONSTANT to the
+latency rather than scaling it, so it is invisible in a difference of two request
+lengths. The discriminator is kernel-side — `FEATURES=debug-wakelat` already
+reports wake->run latency (H2) — and it is one boot plus a histogram. Worth a
+lane; the 14-18x already banked does not depend on the answer.
+
 **Interaction with W2.** W2 (`fire_due_timers` on every syscall return) is
 UNCHANGED by this lane and still open on `B1457-timers-off-syscall-return`. It
 is now less load-bearing, not more: wait expiries no longer depend on any
