@@ -173,6 +173,7 @@ impl InetSocket {
             }
         }
         sock.opts.bound_ifindex.store(bound_ifindex, core::sync::atomic::Ordering::Release);
+        super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(&sock, &entry);
         *sock.kind.lock() = SockKind::TcpConn(entry);
         sock
     }

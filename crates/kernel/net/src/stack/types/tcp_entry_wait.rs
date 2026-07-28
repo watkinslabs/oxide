@@ -67,6 +67,11 @@ impl TcpEntry {
         mask
     }
 
+    /// Push a locked `SO_RCVBUF` down to the connection's advertised receive
+    /// window (Linux `__sock_set_rcvbuf` → `sk_rcvbuf` → `__tcp_select_window`).
+    /// # C: O(1)
+    pub fn set_rcv_buf_cap(&self, bytes: u32) { self.conn.lock().set_rcv_buf_cap(bytes); }
+
     /// F181a: register owning InetSocket's epoll subscribers. # C: O(1)
     pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
