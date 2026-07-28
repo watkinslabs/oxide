@@ -5,14 +5,21 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::misc::misc_common::errno;
+use crate::pkey;
 
-/// `pkey_free(pkey)` — slot 331.
+/// `pkey_free(pkey)` — slot 331 (arm64 290).
 ///
-/// Linux `mm_pkey_free` rejects any key that is not currently allocated with
-/// EINVAL. Without `X86_FEATURE_OSPKE` `arch_max_pkey()` is 1, so no key is
-/// ever allocatable through `pkey_alloc` (see slot 330) and every argument —
-/// including 0, which is the implicitly-allocated default key and is likewise
-/// refused by `mm_pkey_is_allocated` for the user interfaces — is invalid.
-/// EINVAL, not ENOSYS: the syscall exists on x86_64 regardless of OSPKE.
+/// Linux `SYSCALL_DEFINE1(pkey_free)` is `mm_pkey_free` and nothing else: any
+/// key not currently allocated in this mm is EINVAL. Which keys those are is
+/// arch-specific — arm64 reserves key 0 in every mm and so accepts
+/// `pkey_free(0)` once, x86 without OSPKE never has key 0 allocated because
+/// the uninitialised `execute_only_pkey` is also 0. See `crate::pkey`.
 /// # C: O(1)
-pub fn sys_pkey_free(_args: &SyscallArgs) -> i64 { errno(Errno::Einval) }
+/// # Lk: mm pkey map acquired
+pub fn sys_pkey_free(args: &SyscallArgs) -> i64 {
+    let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Einval) };
+    // SAFETY: mm slot single-mutator per `13§5`; the Arc clone keeps this mm alive across the pkey-map update below.
+    let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return errno(Errno::Einval) };
+    let r = mm.pkeys().with_map(|map| pkey::pkey_free(&pkey::ARCH, map, args.a0 as i32));
+    match r { Ok(()) => 0, Err(e) => errno(e) }
+}

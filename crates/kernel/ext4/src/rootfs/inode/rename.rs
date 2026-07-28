@@ -51,7 +51,7 @@ pub(crate) fn ext4_empty_dir(mount: &Mount, dir: &crate::inode::Inode) -> bool {
 /// `RootfsState::rename_at`, so both reach the same `..`/nlink/ENOTEMPTY
 /// handling instead of maintaining two divergent copies.
 pub(crate) struct RenameSides<'a> {
-    pub(crate) st: &'a RootfsState,
+    pub(crate) st: &'a alloc::sync::Arc<RootfsState>,
     pub(crate) from_p: u32,
     pub(crate) to_p: u32,
     pub(crate) target: u32,
@@ -145,22 +145,37 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
         if to_dir.links_count >= EXT4_LINK_MAX { return Err(VfsError::Emlink); }
     }
 
-    let dest_quota_released = dest_raw.as_ref().map_or(Ok(false),
-        |raw| super::super::quota::pre_release_existing_inode_if_final(s.st, raw))?;
+    // The overwritten destination keeps its quota charge and its blocks until
+    // it is EVICTED, exactly like an unlinked-but-open file: Linux
+    // `ext4_rename` only `ext4_dec_count`s the victim and `ext4_orphan_add`s
+    // it when the count hits zero, leaving `ext4_evict_inode` to truncate,
+    // free and `dquot_free_inode`. Releasing here would drop the charge — and
+    // under the old code the blocks too — while an fd still held the file.
+    //
+    // A DIRECTORY victim is different: `Mount::rmdir` frees it outright (a
+    // directory has no open-fd data to preserve), so its charge is released
+    // up front and rolled back if the transaction fails, exactly as
+    // `Ext4StatInodeOps::rmdir` does.
+    let dir_quota_released = match (dest_is_dir, dest_raw.as_ref()) {
+        (true, Some(raw)) => { super::super::quota::release_existing_inode_usage(s.st, raw)?; true }
+        _ => false,
+    };
     if whiteout {
         if let Err(e) = super::super::quota::charge_new_inode(s.st, s.from_p, WHITEOUT_MODE, 0, 0) {
-            rollback_dest(s, dest_quota_released, dest_raw.as_ref());
+            rollback_dir_quota(s, dir_quota_released, dest_raw.as_ref());
             return Err(e);
         }
     }
     let now = vfs::Timespec64::from_clock_ns(vfs::inode_times::realtime_now_ns());
     let cross_dir_move = src_is_dir && s.from_p != s.to_p;
+    let mut dest_out = None;
     let rename = mount.run_journaled(|m| {
         if s.dest_victim.is_some() {
             // `Mount::rmdir` also drops `to_p`'s link count for the victim's
             // departing `..`, which is why the moved directory's arrival is
-            // accounted separately below.
-            if dest_is_dir { m.rmdir(s.to_p, to_name)?; } else { m.unlink(s.to_p, to_name)?; }
+            // accounted separately below. A non-directory victim is unlinked,
+            // which orphans it rather than freeing it (see `Mount::unlink`).
+            if dest_is_dir { m.rmdir(s.to_p, to_name)?; } else { dest_out = Some(m.unlink(s.to_p, to_name)?); }
         }
         m.dir_link(s.to_p, to_name, s.target, ftype)?;
         m.dir_unlink(s.from_p, from_name)?;
@@ -182,26 +197,29 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
         if whiteout {
             let _ = super::super::quota::rollback_new_inode_charge(s.st, s.from_p, WHITEOUT_MODE, 0, 0);
         }
-        rollback_dest(s, dest_quota_released, dest_raw.as_ref());
+        rollback_dir_quota(s, dir_quota_released, dest_raw.as_ref());
         return Err(super::regular::vfs_error_from_mount(e));
     }
-    if let Some(victim_ino) = s.dest_victim {
-        if let Some(sb) = s.st.i_sb() {
-            if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
-                if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
+    match dest_out {
+        // Non-directory victim: same tail as `unlink` — publish the orphan,
+        // sync the in-core link count, free now only if nothing holds it.
+        Some(out) => s.st.after_unlink(out)?,
+        // `rmdir` already freed the directory victim outright.
+        None => if let Some(victim_ino) = s.dest_victim {
+            if let Some(sb) = s.st.i_sb() {
+                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) { victim.set_nlink(0); }
             }
-        }
-        if dest_quota_released { super::super::quota::drop_existing_inode_dquots(s.st, victim_ino); }
+            if dir_quota_released { super::super::quota::drop_existing_inode_dquots(s.st, victim_ino); }
+        },
     }
     Ok(())
 }
 
-/// # C: O(1)
-fn rollback_dest(s: &RenameSides<'_>, released: bool, dest_raw: Option<&crate::inode::Inode>) {
+/// Undo the up-front charge release for a directory victim whose `rmdir`
+/// never ran. # C: O(1)
+fn rollback_dir_quota(s: &RenameSides<'_>, released: bool, dest_raw: Option<&crate::inode::Inode>) {
     if !released { return; }
-    if let Some(raw) = dest_raw {
-        let _ = super::super::quota::rollback_existing_inode_release(s.st, raw);
-    }
+    if let Some(raw) = dest_raw { let _ = super::super::quota::rollback_existing_inode_release(s.st, raw); }
 }
 
 /// `ext4_cross_rename` (`RENAME_EXCHANGE`): swap the two existing entries in

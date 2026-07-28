@@ -96,8 +96,13 @@ fn write_path_produces_e2fsck_clean_image() {
         m.create_symlink(2, b"slowln", &long, 0, 0).unwrap();
         m.create_mknod(2, b"nulldev", ext4::inode::S_IFCHR | 0o666, (1 << 8) | 3, 0, 0).unwrap();
 
-        // 5) unlink one file (frees inode + blocks).
-        m.unlink(2, b"newfile.bin").unwrap();
+        // 5) unlink one file. `Mount::unlink` only orphans it — with no VFS
+        // layer above, this test is the last reference, so it also evicts
+        // (blocks + inode come back here). An image left with a populated
+        // orphan list is NOT fsck-clean, which is what this assert proves.
+        let out = m.unlink(2, b"newfile.bin").unwrap();
+        assert!(out.orphaned(), "last link gone");
+        m.free_orphan_inode(out.ino).unwrap();
     }
     let bytes = dump_disk(&disk, cap);
     match e2fsck_clean(&bytes) {

@@ -161,18 +161,14 @@ impl InodeOps for Ext4StatInodeOps {
         let target = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
         let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
         if i.is_dir() { return Err(VfsError::Eisdir); }
-        let final_link = i.links_count <= 1;
-        if final_link { super::super::quota::release_existing_inode_usage(&d.st, &i)?; }
-        if let Err(e) = mount.run_journaled(|m| m.unlink(d.ino, name.as_bytes())) {
-            if final_link { let _ = super::super::quota::rollback_existing_inode_release(&d.st, &i); }
-            return Err(super::regular::vfs_error_from_mount(e));
-        }
-        if final_link { super::super::quota::drop_existing_inode_dquots(&d.st, target); }
-        d.st.page_cache.invalidate(InodeId(target as u64));
-        if let Some(sb) = d.st.i_sb() {
-            if let Some(victim) = sb.ilookup(ext4_wrap_ino(target)) { victim.drop_link(); }
-        }
-        Ok(())
+        // Quota charge and page cache both follow the BLOCKS, and the blocks
+        // outlive the name for as long as an fd holds the inode. Both are
+        // released by `evict_orphan`, not here — Linux keeps the inode
+        // charged until `ext4_free_inode`/`ext4_truncate` run inside
+        // `ext4_evict_inode`.
+        let out = mount.run_journaled(|m| m.unlink(d.ino, name.as_bytes()))
+            .map_err(super::regular::vfs_error_from_mount)?;
+        d.st.after_unlink(out)
     }
 
     fn link(&self, inode: &Inode, target: &InodeRef, name: &str, _ctx: &vfs::CreateCtx) -> KResult<()> {

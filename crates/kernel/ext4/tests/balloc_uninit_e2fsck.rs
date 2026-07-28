@@ -110,7 +110,10 @@ fn boot_like_balloc_into_uninit_group_keeps_fsck_clean() {
             if live.len() > 40 {
                 let old = live.pop_front().unwrap();
                 let oname = std::format!("f{:04}", i - 40);
-                m.unlink(dir, oname.as_bytes()).expect("unlink");
+                // `Mount::unlink` orphans the inode; with no VFS layer above
+                // this test IS the last reference, so it runs the eviction.
+                let out = m.unlink(dir, oname.as_bytes()).expect("unlink");
+                if out.orphaned() { m.free_orphan_inode(out.ino).expect("evict orphan"); }
                 let _ = old;
             }
         }
@@ -157,7 +160,9 @@ fn concurrent_churn_keeps_fsck_clean() {
                     live.push_back((ino, name));
                     if live.len() > 20 {
                         let (_o, on) = live.pop_front().unwrap();
-                        let _ = m.unlink(dir, on.as_bytes());
+                        if let Ok(out) = m.unlink(dir, on.as_bytes()) {
+                            if out.orphaned() { let _ = m.free_orphan_inode(out.ino); }
+                        }
                     }
                 }
             }));
