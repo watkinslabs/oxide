@@ -29,6 +29,27 @@ pub const SB_FREEZE_PAGEFAULT: u32 = 2;
 pub const SB_FREEZE_FS:        u32 = 3;
 pub const SB_FREEZE_COMPLETE:  u32 = 4;
 
+// --- `sb->s_iflags` (Linux `include/linux/fs/super_types.h`) — the
+// KERNEL-INTERNAL superblock flag word, a space DISJOINT from the user-visible
+// `SB_*` bits in `s_flags` above. Set by `fill_super` (`fs/proc/root.c`
+// `proc_fill_super`, `fs/kernfs/mount.c` `kernfs_fill_super`, `fs/libfs.c`
+// `init_pseudo`); read by `path_noexec`, `may_open_dev` and — the reason this
+// word exists here — `fs/namespace.c` `mount_too_revealing`. ---
+/// `SB_I_NOEXEC` — nothing on this filesystem is ever executable, whatever the
+/// per-mount `MNT_NOEXEC` says (Linux `path_noexec`).
+pub const SB_I_NOEXEC: u64 = 0x0000_0002;
+/// `SB_I_NODEV` — device nodes on this filesystem never function, whatever the
+/// per-mount `MNT_NODEV` says (Linux `may_open_dev`).
+pub const SB_I_NODEV: u64 = 0x0000_0004;
+/// `SB_I_RESTRICTED_VARIANT` — this instance exposes only a SUBSET of what the
+/// filesystem can show (procfs `-o subset=pid`), so `mount_too_revealing` both
+/// exempts it from needing an already-visible instance AND refuses to let it
+/// serve as the already-visible instance for anything else.
+pub const SB_I_RESTRICTED_VARIANT: u64 = 0x0000_0010;
+/// The `s_iflags` pair `mount_too_revealing` REQUIRES on any filesystem marked
+/// `FS_USERNS_MOUNT_RESTRICTED` (Linux `required_iflags`). # C: const
+pub const SB_I_USERNS_REQUIRED: u64 = SB_I_NOEXEC | SB_I_NODEV;
+
 /// `MAX_LFS_FILESIZE` on a 64-bit kernel (Linux include/linux/fs.h) — the
 /// default `s_maxbytes` a large-file backend reports. # C: O(1)
 pub const MAX_LFS_FILESIZE: u64 = i64::MAX as u64;

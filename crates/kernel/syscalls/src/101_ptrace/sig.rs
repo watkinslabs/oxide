@@ -65,6 +65,8 @@ pub fn setsiginfo(target: &Task, data: u64) -> Result<(), Errno> {
             pid:   core::ptr::read_unaligned((data + 16) as *const u32),
             uid:   core::ptr::read_unaligned((data + 20) as *const u32),
             value: core::ptr::read_unaligned((data + 24) as *const u64),
+            // PTRACE_SETSIGINFO cannot forge a seccomp `_sigsys` arm.
+            sys:   None,
         }
     };
     *target.ptrace_siginfo.lock() = Some(info);
@@ -103,7 +105,7 @@ pub fn interrupt(target: &Arc<Task>) -> Result<(), Errno> {
     *target.ptrace_siginfo.lock() = Some(sched::SigInfo {
         signo: sched::Signum::Sigtrap as u32,
         code: ((uapi::EVENT_STOP << 8) | sched::Signum::Sigtrap as u32) as i32,
-        pid: 0, uid: 0, value: 0,
+        pid: 0, uid: 0, value: 0, sys: None,
     });
     target.sigpending.fetch_or(sched::Signum::Sigstop.bit(), Ordering::Release);
     sched::live::signal_wake_up(target);

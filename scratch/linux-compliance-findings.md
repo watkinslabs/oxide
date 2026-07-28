@@ -359,11 +359,16 @@ Found while verifying the gdm/udev fix. None has a lane.
 |---|---|---|---|
 | 1 | `[BUG] exit_to_user_mode_loop: work never cleared` — the pass-bound bail-out in `B1471`'s return-to-user work loop | 2 of 17 `live-gnome` boots. Trips `boot-smoke`'s `[BUG]` fail marker, so it presents as an intermittent smoke failure unrelated to whatever is under test. Not A/B'd against clean `main` — too rare to settle in a few boots | sched/syscalls |
 | 2 | `[CPU-STALL] cpu=0 no heartbeat for 18s (seen by cpu=1)`, `nr_running=9`, NMI backtrace at `rip=ffffffff8019407e` | Own `live-gnome` SMP=2 run, ~503s guest. Distinct from the `on_cpu` ownership race (`B1473`), which this tree already carries | sched |
-| 3 | **SIGABRT does not kill a threaded process** | glibc `abort()` reaches `ABORT_INSTRUCTION` (`hlt` → #GP → SIGSEGV) only when *both* `raise(SIGABRT)` calls return. gdm died `11/SEGV`, not `6/SIGABRT` | sched signals |
+| 3 | ~~**SIGABRT does not kill a threaded process**~~ **NOT REPRODUCIBLE — `B1477`.** The mechanism was inferred, never observed. glibc's `abort()` was disassembled from the shipped `libc.so.6` and is exactly `raise; sigaction(SIG_DFL); __pthread_raise_internal; rt_sigprocmask(UNBLOCK); hlt; _exit(127)` — so the inference (`11/SEGV` ⇒ both raises returned) is sound, but the premise does not hold at HEAD. `userspace/wait_diff/abortsig.c` runs all seven shapes — single-threaded, group leader, NON-leader thread, returning SIGABRT handler, SIGABRT blocked, and a bare `raise(SIGABRT)` from a leader and from a sibling — against this machine's Linux and inside an oxide boot: **byte-identical on both, `outcome=signalled sig=abrt` every row, `returned=0`**. `raise` never comes back and the parent reaps SIGABRT, not SIGKILL, even when the aborting thread was not the leader. The observation predates `B1471`; gdm's `11/SEGV` was most likely a real segfault. Two mutants (`abrtnokill`, `abrtnoraise`) hold the rows falsifiable | sched signals |
+| 3a | **`kill(2)` was not process-directed — there was no `signal_struct::shared_pending`.** FIXED `B1477`. `sys_kill` resolved a tgid to the group LEADER and posted into that ONE thread's private word, and `take_lowest_pending`/`work_flags` read only the running thread's own word. So a process whose main thread blocks SIGTERM and leaves it to a worker — every glib/GIO program, and how systemd stops a service — ignored `kill(pid, SIGTERM)` forever. Same root cause as rows 62 / 128 / 130 / 282 / 289 of `scratch/partial-surface-2026-07-28.md`. The set now lives on `ThreadGroup` (this kernel's `signal_struct`); `live::sigpend::post_group_signal` is Linux `group_send_sig_info` + `complete_signal` thread selection, `Task::dequeue_pending` the private-then-shared claim, `Task::pending_signals` the union every consumer reads. `userspace/wait_diff/groupsig.c` (2 rows, 2 mutants) + 11 hosted tests, 3 of which fail against the pre-fix algorithm | sched signals |
 | 3b | ~~`accounts-daemon` never signals READY within systemd's 90s start timeout.~~ **ROOT-CAUSED + FIXED — `B1475`.** Not accountsservice-specific and not D-Bus activation: `udisks2`, `upower`, `rtkit-daemon`, `switcheroo-control`, `polkit` and `systemd-hostnamed` all blow the same 90s timeout on the same boot. Split of the interval (`debug-execload` + a new `debug-startlat` >50ms dispatch probe): of 158s measured, **127s is BEFORE the binary is exec'd** — it is `systemd-executor` building the unit's sandbox (`ProtectSystem=strict`, `ReadWritePaths=`, `PrivateDevices=`, `PrivateNetwork=`), where every `mount(2)` is followed by a `/proc/self/mountinfo` re-parse. Renders of that file measured 267 ms for 59 rows. Root cause is one level down: kalloc's sorted hole list is O(N) on BOTH `alloc` (first fit) and `dealloc` (ordered insert), so an alloc+free pair costs **21 ns on a clean heap and 128 µs once ~20 000 holes exist — 6000×** (hosted probe on a 64 MiB heap). Every allocation-heavy kernel path paid it; a single `format!` in the mountinfo row loop cost 1.97 ms. Fixes: (a) `kmalloc` size-class front end (`kalloc/sizeclass.rs`, Linux `mm/slub.c` shape) → fragmented alloc+free back to **20 ns**; (b) mountinfo field 4 via the `d_parent` walk Linux uses (`show_path`→`dentry_path`) instead of two global `absolute_path()`s, each of which linearly scanned the system-wide mount table; (c) `/proc/*/mountinfo` renders on first read, not at open (Linux `seq_open` renders nothing) — an open+read-at-0 was doing TWO full renders | mm/kalloc, procfs |
-| 4 | Serial RX duplicates bytes under load (`xsessions` → `xsessiions`); typed bursts twice ended in `#DF` inside `sched::diag::emit::sysrq_rx` | Observed from the guest debug shell | drivers/tty |
+| 4 | **`#DF` on console input** — FIXED `B1477`; the byte duplication is UNCONFIRMED and two of its code-visible mechanisms are removed with it. The `#DF` was a hardirq-stack overflow, not a fault in `sysrq_rx`: the UART ISR ran the WHOLE line discipline — `n_tty_receive_buf`, the inline echo (which polls THRE up to 100 000 times **per byte**), `wake_all` (which allocates a `Vec<Arc<Task>>` and takes runqueue locks) and the poll fan-out — on the 16 KiB per-CPU hardirq stack, whose own comment records a measured 14.5 KiB peak during a net-RX softirq drain. That drain re-enables interrupts on the SAME stack by design (`lapic/dispatch.rs`, `hal-x86_64/src/irq.rs`'s nested-entry arm), so a keystroke during a drain stacked the RX chain on ~1.5 KiB of headroom; `#PF` has no IST (`tss.rs`), so the guard-page hit escalated straight to `#DF`. `sysrq_rx` is merely the first non-inlined call after the byte leaves the RBR. Linux never does this: `tty_insert_flip_char` + `tty_flip_buffer_push` stage the bytes and `flush_to_ldisc` cooks them from a workqueue. Ported as `tty/src/core/flip.rs` (9 hosted tests, ungated). The ISR is now a memcpy plus a `queue_work`. **Still open:** no single-byte duplication path was found in the drain loop, the ldisc or the read path (all provably single-push); the two remaining candidates are TX-side — echo emits inline and bypasses the `tx` lock application writes take, and klog is a third unsynchronised writer to the same THR — so what was seen may have been a display splice rather than duplicated input | drivers/tty |
 | 5 | ~~**`debug-boot` tracing is now self-defeating.**~~ **FIXED — `B1474`.** Root cause was broader than the serial volume: `debug-boot` had become the junk drawer for every campaign trace, and `make qemu-*` sets it unconditionally. `[SIGDELIV]`, `[USTACK]`, the `trace_mutter_syscall` ledger (twice per syscall), `trace_logind_dev` (an extra `read_user_path` per `openat`), `[MUTTERWAIT]` (per deadline park) and `[B288 dgram]` (a full ~14-field journald record per log line) each paid a `with_exe_path` lock + substring scan on their hot path even when nothing printed. Split into `debug-sigdeliv` / `debug-ustack` / `debug-desktop` / `debug-execload` / `debug-journal` / `debug-taskdrop` / `debug-faultdiag`; nothing removed. A/B on the same `live-gnome` x86 boot: `graphical.target` **509.5s guest / 550s wall → 265.9s / 305s**; `basic.target` 72.5 → 46.2s; serial 8900 → 4270 lines. **Trap found while verifying:** `boot-smoke`'s `Reached target basic.target` marker is delivered BY `[B288 dgram]` — systemd's own console output stops once journald starts — so that trace stays on `debug-boot`, narrowed to each record's `MESSAGE=` line | observability |
 | 6 | ~~klog interleaving~~ **FIXED — `B1474`.** Not interrupt context specifically: the console owner lock serialised each `emit_bytes_at` CALL and every trace site builds one line from many calls, so the lock was dropped between fragments and ANY two emitters spliced. klog now assembles per-CPU line buffers keyed by a caller identity and publishes a completed line in one fan-out (Linux `LOG_CONT` / `prb_reserve_in_last`). Splice signature `<token>=[TAG` on the same `live-gnome` boot: **37 → 0** (`origin/main` sample: `[EXECLOAD begin tid=[EXECLOAD ready tid=41124114`, tids 4112/4114 interleaved; also `accounts-daemon[162]: started daemon version 25.05.0[TASK-DROP] tid=`) | klog |
+
+| 7 | **`CLONE_SETTLS` was x86-only — every pthread on aarch64 shared the main thread's TLS.** FIXED `B1477`. `056_clone.rs` discarded the `tls` argument on aarch64 (`let _ = (tls, CLONE_SETTLS)`), so a `pthread_create`d thread kept the `TPIDR_EL0` that `spawn_user_thread_for_fork` copied from the PARENT: `pthread_self()`, `errno` and every `__thread` variable in a worker thread resolved to the MAIN thread's storage. Linux `arch/arm64/kernel/process.c:486` sets `p->thread.uw.tp_value = tls` and `tls_thread_switch()` applies it; this port's `switch_to` asm already restored `ContextAArch64::tpidr`, so only the assignment was missing. Found because `groupsig|handler_runs_in_unblocked_thread` reports thread identity BOTH ways: `gettid()` (a syscall, authoritative) said the handler ran on the sibling — the correct delivery — while `pthread_self()` claimed the main thread. A row that asked only once would have blamed signal delivery and sent the lane hunting an ARM signal bug that does not exist | drivers/sched |
+| 8 | `sig_perm_check` has no `same_thread_group` short-circuit (Linux `check_kill_permission` returns 0 immediately for a sibling). Only reachable after a partial per-thread credential change, so no observed impact; unowned | sched signals |
+| 9 | `fs::coredump::write_for_current` ignores `RLIMIT_CORE` (Linux gates the dump on it) and `Box::leak`s a devfs path per dump. Unowned | fs |
 
 ### Measurement traps confirmed here
 
@@ -430,3 +435,64 @@ is queued, but Linux `drm_read` (drm_file.c) returns **-EAGAIN** on `O_NONBLOCK`
 and otherwise **sleeps on `file_priv->event_wait`** — it never returns 0, which
 to a GLib fd source is EOF. Pre-existing (that file is untouched by `B1480`) and
 needs a waitqueue on the card fd. Separate lane.
+## 12 B1478 — security controls that reported success while enforcing nothing
+
+Branch `B1478-security-enforcement`. Four controls whose callers built on a
+guarantee the kernel never delivered. Each is worse than an unimplemented
+feature, because userspace treats the success return as enforcement.
+
+| # | Control | What was actually unenforced | Linux rule mirrored |
+|---|---|---|---|
+| 1 | `openat2` `RESOLVE_*` | `O_CREAT` branch built its parent walk from `LookupFlags::default()`, dropping every scoping bit | `fs/open.c build_open_flags` folds all six into ONE `op->lookup_flags`; `fs/namei.c path_openat` uses it for both walk phases |
+| 2 | `userfaultfd` | `UFFDIO_COPY`/`ZEROPAGE` installed USER\|RW at any VA with no VMA and no registration — an arbitrary-write primitive; no creation gate at all | `mm/userfaultfd.c validate_dst_vma`, `find_vma_and_prepare_anon`, `userfaultfd_syscall_allowed` |
+| 3 | mount flags | `graft_mount` passed a hardcoded `0` as `mnt_flags`; `MNT_LOCK_*` did not exist; `require_sys_admin()` was a flat effective-set test | `fs/namespace.c path_mount`, `lock_mnt_tree`, `may_mount`; `fs/super.c mount_capable` |
+| 4 | `seccomp` | `RET_TRACE`/`RET_LOG` failed OPEN — a filter denying by tracing was a no-op | `kernel/seccomp.c __seccomp_filter` |
+
+### 12.1 Corrections to the source audit
+
+The audit rows were treated as claims to disprove. Four were wrong:
+
+- **`fs/userfaultfd.c` does not exist in v7.2.0-rc4.** userfaultfd is entirely
+  in `mm/userfaultfd.c`. Any row citing the old path was not read against this tree.
+- **`validate_dst_vma` tests `vm_userfaultfd_ctx.ctx` for NON-NULL, not identity**
+  with the calling ctx. The identity test is MOVE-only (`validate_move_areas`).
+  There is likewise no `ctx->mm != current->mm` check outside `userfaultfd_move`.
+- **Mount binds are not a gap.** `path_mount` DISCARDS `mnt_flags` for `MS_BIND`
+  (`return do_loopback(path, dev_name, flags & MS_REC)`) and the clone inherits
+  from its source. `mount --bind -o ro` does not make a ro bind upstream either.
+- **A tracerless `SECCOMP_RET_TRACE` does not act as `RET_KILL_THREAD`.**
+  `kernel/seccomp.c __seccomp_filter` sets the return value to `-ENOSYS` and
+  `goto skip` — the task LIVES. `RET_LOG` likewise does not "fail open": it IS
+  an allow-after-audit action. And the filter chain WAS already cloned on fork;
+  only `seccomp_mode` was not, which produced the same escape by a different
+  route.
+- **`RESOLVE_BENEATH` was not the escaping flag.** Only `RESOLVE_IN_ROOT`
+  produced a live escape: it is the sole scoping bit that CLAMPS rather than
+  errors, so the scoped walk returns ENOENT and hands control to the unscoped
+  create path. BENEATH/NO_SYMLINKS/NO_XDEV all abort earlier with
+  EXDEV/ELOOP/EXDEV — incidentally covered, never enforced.
+
+### 12.2 Method note
+
+Every fix carries a NEGATIVE assertion (the escape is refused, the unprivileged
+call is denied, the flag is honoured), because a happy-path test passes a
+control that enforces nothing — which is how all four shipped. Causality was
+verified by reverting each production edit and confirming the specific tests go
+red, not by asserting that new tests pass.
+
+## 13 B1482 — ext4 charged `i_blocks` for extent metadata it never allocated
+
+`htree_leaf_split_stays_e2fsck_clean` failed on clean `main`: `Inode 12, i_blocks is 74, should be 42` for a 21-block htree directory (1 KiB blocks, 2 sectors per block). Not a units error and not a factor of two on the whole inode — the fixture's first 5 blocks were charged correctly and every one of the 16 blocks added afterwards was charged **twice**: `10 + 16×4 = 74` against the true `10 + 16×2 = 42`.
+
+Cause: the append path charged a *predicted* metadata block, not an allocated one. Both insert sites decided "this insert overflows the extent leaf, so it will cost an index block" **before** the insert ran, and both simulated the insert with a placeholder physical block (`extent_for(logical, 0)`) — which can never merge. A physically contiguous append merges into its neighbouring extent and adds no entry, so the predicted metadata block was never allocated while the charge stayed.
+
+| Site | Shape of the bug |
+|---|---|
+| `extent_rw/insert.rs insert_inline_sorted` (depth 0) | `will_promote = extents.len() + 1 > 4` — silent over-charge on every merging append. This is the failing test. |
+| `extent_rw/append.rs insert_logical_block_with_inode_bytes` (depth ≥ 1) | `extra_meta_sectors_for_insert(.., simulated.len())` — the predicted-vs-actual guard turned the same mismatch into a hard `CorruptExtentTree` **write error**. Reproduces at `FRAG=83` in `merging_append_onto_a_full_extent_leaf_succeeds`: an ordinary append onto a leaf sitting exactly at its entry limit fails. |
+
+Linux never predicts. `ext4_mb_new_blocks` (`fs/ext4/mballoc.c`) calls `dquot_alloc_block` immediately before handing out each block, and `__dquot_alloc_space` (`fs/quota/dquot.c`) is what runs `inode_add_bytes` — so `i_blocks` and the quota charge are one act, per block actually taken, for data blocks and for `ext4_ext_new_meta_block` metadata alike. The fix charges the data block ahead of its allocation (Linux's order) and charges metadata only once the merge-aware insert — now simulated with the REAL extent — says the tree needs it.
+
+Not a split source of truth: `st_blocks` (`rootfs/inode/{regular,special}.rs`) reads `read_inode().i_blocks`, and `account_i_blocks_delta` derives the quota delta from the same sector count, so the over-charge inflated `du`, `stat` and the user's quota consumption by the identical amount. The uncharge sites are sound — `truncate.rs`/`punch.rs` recompute from the tree (`count_all_sectors` + `external_xattr_sectors`) rather than tracking a delta, which is why the drift only ever appeared on grow-only inodes such as directories.
+
+Coverage: `crates/kernel/ext4/tests/i_blocks_accounting_image.rs` (7 tests, `e2fsck -fn` as the oracle) covers grown htree dirs, contiguous appends, fragmented deep trees, `mkdir`, `rmdir` uncharge, `stat` agreement, and the depth≥1 full-leaf boundary. Two fail against pre-fix code.

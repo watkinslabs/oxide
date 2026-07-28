@@ -284,7 +284,7 @@ pub mod kernel {
             use core::sync::atomic::Ordering;
             match sched::live::current() {
                 Some(cur) => {
-                    let pending = cur.sigpending.load(Ordering::Acquire);
+                    let pending = cur.pending_signals();
                     let mask = cur.sigmask.load(Ordering::Acquire);
                     pending & !mask != 0
                 }

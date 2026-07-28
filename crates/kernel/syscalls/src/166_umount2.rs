@@ -51,9 +51,6 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    if !cur.has_cap(sched::cap::SYS_ADMIN) {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
     let target_ptr = args.a0;
     let path_raw = match read_user_path_required(target_ptr) {
         Ok(p) => p, Err(rv) => return rv,
@@ -63,6 +60,16 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         Ok(p) => p,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
+    // Linux `ksys_umount` resolves the path (`user_path_at`) BEFORE `path_umount`
+    // → `can_umount`, whose first gate is `may_mount()` = `ns_capable(mnt_ns->
+    // user_ns, CAP_SYS_ADMIN)` — not the flat effective-set test this had.
+    if let Some(rv) = crate::mount_perm::may_mount_or_eperm() { return rv; }
+    // `can_umount`: `if (flags & MNT_FORCE && !ns_capable(sb->s_user_ns,
+    // CAP_SYS_ADMIN)) return -EPERM` — a forced unmount needs authority over the
+    // FILESYSTEM's user namespace, a strictly stronger demand than may_mount.
+    if (flags & MNT_FORCE) != 0 && !cur.has_cap(sched::cap::SYS_ADMIN) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
     let _display = vfs::mount::render_path_for_mount(resolved.mnt_id, &resolved.dentry);
     let namespace = match cur.mount_namespace_snapshot() {
         Some(namespace) => namespace,

@@ -24,6 +24,7 @@ pub mod static_console;
 pub mod vcs;
 pub mod vt_console;
 pub mod vt_tty;
+mod vt_input;
 
 pub use devnodes::{register_devnodes, try_register_devnodes};
 pub use routing::{

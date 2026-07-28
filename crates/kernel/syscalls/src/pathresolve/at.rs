@@ -94,9 +94,25 @@ pub fn resolve_at_path_cred(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, 
 }
 
 /// Resolve the parent directory of a `*at` pathname while preserving the
-/// dirfd/cwd mount identity. # C: O(components × dir-lookup) + O(symlinks)
+/// dirfd/cwd mount identity AND any openat2 `RESOLVE_*` confinement carried in
+/// `flags`.
+///
+/// `beneath_exdev`/`in_root` make the DIRFD the resolution root, so the walk
+/// must be seeded by [`resolve_confined`] — routing them through
+/// [`resolve_at_path`] would re-base an absolute pathname on the process root
+/// and resolve the parent OUTSIDE the scope (Linux `path_init`'s
+/// `LOOKUP_IS_SCOPED` branch runs for the `LOOKUP_PARENT` walk too; there is no
+/// create-path exception in `fs/namei.c` `path_openat`).
+/// # C: O(components × dir-lookup) + O(symlinks)
+pub fn resolve_parent_at_flags(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+    if flags.confines_to_dirfd() { return resolve_confined(dirfd, raw, flags); }
+    resolve_at_path(dirfd, raw, flags)
+}
+
+/// Unscoped parent resolve — the `mknodat`/`linkat`/`symlinkat` family, which
+/// has no `open_how`. # C: O(components × dir-lookup) + O(symlinks)
 pub fn resolve_parent_at(dirfd: i32, raw: &str) -> Result<vfs::VfsPath, i64> {
-    resolve_at_path(dirfd, raw, vfs::LookupFlags { parent: true, ..Default::default() })
+    resolve_parent_at_flags(dirfd, raw, vfs::LookupFlags { parent: true, ..Default::default() })
 }
 
 /// Probe whether a user pathname is the empty string without consuming normal

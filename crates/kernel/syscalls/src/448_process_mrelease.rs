@@ -43,7 +43,7 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
 
     // Require the target be exiting: pending SIGKILL OR already Zombie
     // (Linux gate: `task_will_free_mem` / signal_group_exit / PF_EXITING).
-    let sigkill_pending = target.sigpending.load(Ordering::Acquire) & SIGKILL_PENDING_BIT != 0;
+    let sigkill_pending = target.pending_signals() & SIGKILL_PENDING_BIT != 0;
     let is_zombie = target.state() == sched::task::TaskState::Zombie;
     if !sigkill_pending && !is_zombie { return errno(Errno::Einval); }
 

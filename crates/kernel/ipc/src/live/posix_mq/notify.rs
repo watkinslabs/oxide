@@ -83,6 +83,7 @@ fn queue_mesgq_signal(reg: &MqNotifyReg, signo: u32, sender_vpid: u32, sender_ui
         pid: sender_vpid,
         uid: sender_uid,
         value: reg.value,
+        sys: None,
     });
     target.sigpending.fetch_or(bit, Ordering::Release);
     sched::live::registry::wake_if_stopped(&target);

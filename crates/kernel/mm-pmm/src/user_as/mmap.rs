@@ -201,7 +201,9 @@ fn populate_range(mm: &AddressSpace, start: UserVirtAddr, len: usize, prot: VmaP
     let end = va.saturating_add(len as u64);
     while va < end {
         if let Some(uva) = UserVirtAddr::new(va) {
-            do_handle(mm, uva, FaultKind::NotPresent { access }, hhdm)?;
+            // MAP_POPULATE prefault runs the Linux `__mm_populate` /
+            // `__get_user_pages` path, which does not set `FAULT_FLAG_USER`.
+            do_handle(mm, uva, FaultKind::NotPresent { access }, hhdm, false)?;
         }
         va = va.saturating_add(PAGE_BYTES);
     }
