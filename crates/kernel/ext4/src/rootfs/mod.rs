@@ -11,6 +11,7 @@
 // the transition.
 
 mod state;
+mod evict;
 mod inode;
 mod ops;
 mod quota;
@@ -18,6 +19,7 @@ mod framecache;
 mod swapfile;
 
 pub use state::RootfsState;
+pub(crate) use inode::ext4_state_of;
 pub use inode::{EXT4_INO_MARK, EXT4_INO_MASK,
     ext4_wrap_ino, is_ext4_ino, ext4_unwrap_ino};
 pub use ops::Ext4Mount;
@@ -81,7 +83,6 @@ pub unsafe fn init_from_dev(dev: Arc<dyn BlockDevice>) -> Result<(), block::type
     // batches. Root fs only — fixture mounts keep per-op commits.
     st.mount.begin_batch();
     publish_root(st);
-    vfs::file::set_close_hook(close_hook_free_orphan);
     Ok(())
 }
 
@@ -101,32 +102,14 @@ pub fn set_test_mount(mount: crate::Mount) {
     publish_root(RootfsState::new(Arc::new(mount)));
 }
 
-/// Close-hook: free an ext4 O_TMPFILE inode once its last fd drops AND
-/// its on-disk nlink is 0. Routes to the OWNING mount via the closed
-/// inode's own `Arc<RootfsState>` (recovered from `i_private` by
-/// `ext4_state_of`) — NEVER `root()`. Small on-disk inos (11,12,13…)
-/// collide across every ext4 image, so freeing against the root would
-/// silently corrupt the root fs when a non-root mount's fd closes. The
-/// marker only proves "some ext4 inode"; the wrapper's `st` field
-/// disambiguates which mount owns it.
-#[cfg(target_os = "oxide-kernel")]
-fn close_hook_free_orphan(ino_ref: &vfs::InodeRef, _was_writable: bool, _d: &alloc::sync::Arc<vfs::Dentry>) {
-    if !is_ext4_ino(ino_ref.ino()) { return; }
-    // Recover (owning mount state, ext4 ino) from the inode's i_private.
-    let (st, ino): (Arc<RootfsState>, u32) = match inode::ext4_state_of(ino_ref) {
-        Some(v) => v,
-        None => return,
-    };
-    if !st.orphan_contains(ino) { return; }
-    if Arc::strong_count(ino_ref) != 1 { return; }
-    if let Ok(inode) = st.mount.read_inode(ino) {
-        if inode.links_count == 0 {
-            let _ = st.free_orphan_inode(ino);
-            st.orphan_remove(ino);
-        }
-    }
-}
-
+/// `ext4_evict_inode` (`Ext4SuperOps::evict_inode`) is the ONE place an ext4
+/// inode with no links is freed — reached from `SuperBlock::iput` when the
+/// last reference drops, for a plain unlink victim and an O_TMPFILE alike. The
+/// former `vfs::file::set_close_hook(close_hook_free_orphan)` fast path is
+/// gone: it fired BEFORE `File::drop`'s `dput`/`iput`, so with eviction also
+/// wired the same inode could be freed twice (the second `free_inode` hitting
+/// an already-clear bitmap bit). Umount (`Ext4Mount::drop`) and mount-time
+/// `orphan_cleanup` remain the backstops, exactly as in Linux.
 /// (hits, misses) for the root mount's page cache.
 /// # C: O(1)
 pub fn cache_stats() -> (u64, u64) { root().map(|s| s.cache_stats()).unwrap_or((0, 0)) }
