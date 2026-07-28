@@ -4,23 +4,20 @@ use elf::{self, ElfType, PFlags};
 use hal::UserVirtAddr;
 use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
 
-use crate::{ARCH_MACHINE, LoadError, LoadStaging, LoadedImage, PAGE, PIE_LOAD_BIAS};
+use crate::place::{self, Placement};
+use crate::{ARCH_MACHINE, LoadError, LoadStaging, LoadedImage, PAGE};
 
 pub(crate) fn place_image(
     blob: &[u8],
     as_: &AddressSpace,
-    bias_override: Option<u64>,
+    placement: Placement,
     apply_self_relocs: bool,
 ) -> Result<LoadedImage, LoadError> {
     let parsed = elf::parse(blob, ARCH_MACHINE)?;
-
-    let bias: u64 = match (bias_override, parsed.elf_type) {
-        (Some(b), ElfType::Dyn) => b,
-        (Some(_), _) => return Err(LoadError::Enoexec),
-        (None, ElfType::Dyn) => PIE_LOAD_BIAS,
-        (None, ElfType::Exec) => 0,
-        _ => return Err(LoadError::Enoexec),
-    };
+    if !matches!(parsed.elf_type, ElfType::Dyn | ElfType::Exec) {
+        return Err(LoadError::Enoexec);
+    }
+    let bias = place::resolve(placement, parsed.elf_type, &parsed.loads, as_)?;
 
     let mut max_end: u64 = 0;
     // Linux `mm->start_code`..`end_data`: first executable PT_LOAD is
@@ -103,30 +100,10 @@ pub(crate) fn place_image(
         }
     }
 
-    if bias_override.is_none() {
-        const HEAP_RESERVE: u64 = 64 * 1024 * 1024;
-        let heap_start = max_end;
-        let heap_end = heap_start.checked_add(HEAP_RESERVE).ok_or(LoadError::Einval)?;
-        let heap_hint = UserVirtAddr::new(heap_start).ok_or(LoadError::Einval)?;
-        if heap_end <= heap_start {
-            return Err(LoadError::Einval);
-        }
-        let _ = as_
-            .mmap(
-                Some(heap_hint),
-                (heap_end - heap_start) as usize,
-                VmaProt::READ | VmaProt::WRITE,
-                VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-                VmaBacking::Anonymous,
-                true,
-            )
-            .map_err(|_| LoadError::Enomem)?;
-        as_.set_brk_window(heap_start, heap_end);
-    }
-
     Ok(LoadedImage {
         entry,
         brk,
+        load_base: bias,
         phdr_va,
         phentsize: parsed.phentsize,
         phnum: parsed.phnum,

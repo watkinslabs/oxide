@@ -163,6 +163,26 @@ impl AddressSpace {
             flags, backing, fixed)
     }
 
+    /// Linux `get_unmapped_area(NULL, 0, len, 0, 0)`: the address the top-down
+    /// arena search would hand out for `len` bytes, WITHOUT mapping anything.
+    ///
+    /// The ELF loader needs this for the two images Linux places by hint-0
+    /// mmap rather than by an explicit bias — the PT_INTERP dynamic linker
+    /// (`fs/binfmt_elf.c:686-689`) and a PIE with no interpreter
+    /// (`fs/binfmt_elf.c:1175`) — so both inherit `mmap_base`'s randomisation.
+    /// Reserving-then-unmapping to learn the same address would open a window
+    /// where another mapping lands in the hole.
+    /// # C: O(N) over VMAs
+    pub fn get_unmapped_area(&self, len: usize) -> KResult<UserVirtAddr> {
+        validate_len(len)?;
+        let tree = self.vmas.read();
+        let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
+            0 => MMAP_TOP,
+            v => v,
+        };
+        find_hole(&tree, len as u64, top).ok_or(Error::NoMem)
+    }
+
     /// Place a new VMA with Linux `VM_MAY*` permissions.
     /// # C: O(log N) hint path; O(N) hole search fallback
     pub fn mmap_with_may(
