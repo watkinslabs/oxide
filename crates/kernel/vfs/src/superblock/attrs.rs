@@ -3,7 +3,7 @@ use alloc::string::String;
 use core::sync::atomic::Ordering;
 use crate::timespec::Timespec64;
 use crate::types::KResult;
-use super::{SuperBlock, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SYNCHRONOUS};
+use super::{SuperBlock, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_I_NODEV, SB_I_NOEXEC, SB_I_RESTRICTED_VARIANT, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SYNCHRONOUS};
 
 impl SuperBlock {
     /// `s_flags` snapshot (Linux `sb->s_flags`). # C: O(1)
@@ -18,6 +18,31 @@ impl SuperBlock {
                 Ok(_) => break, Err(v) => cur = v,
             }
         }
+    }
+
+    /// `s_iflags` snapshot (Linux `sb->s_iflags`). # C: O(1)
+    pub fn s_iflags(&self) -> u64 { self.s_iflags.load(Ordering::Acquire) }
+
+    /// OR bits into `s_iflags` (Linux `fill_super`'s `s->s_iflags |= …`).
+    /// Fill-super only: `s_iflags` is never user-settable, which is what lets
+    /// `mount_too_revealing` trust it. # C: O(1)
+    pub fn set_s_iflags(&self, set: u64) { self.s_iflags.fetch_or(set, Ordering::AcqRel); }
+
+    /// True iff every bit of `flag` is set in `s_iflags`. # C: O(1)
+    pub fn sb_has_iflag(&self, flag: u64) -> bool { (self.s_iflags() & flag) == flag }
+
+    /// `SB_I_NOEXEC` — the superblock half of Linux `path_noexec`
+    /// (`fs/exec.c`: `mnt->mnt_sb->s_iflags & SB_I_NOEXEC`). # C: O(1)
+    pub fn is_sb_i_noexec(&self) -> bool { (self.s_iflags() & SB_I_NOEXEC) != 0 }
+
+    /// `SB_I_NODEV` — the superblock half of Linux `may_open_dev`
+    /// (`fs/namei.c`: `!(path->mnt->mnt_sb->s_iflags & SB_I_NODEV)`). # C: O(1)
+    pub fn is_sb_i_nodev(&self) -> bool { (self.s_iflags() & SB_I_NODEV) != 0 }
+
+    /// `SB_I_RESTRICTED_VARIANT` — this instance shows only a subset of the
+    /// filesystem (`fs/proc/root.c` sets it for `-o subset=pid`). # C: O(1)
+    pub fn is_restricted_variant(&self) -> bool {
+        (self.s_iflags() & SB_I_RESTRICTED_VARIANT) != 0
     }
 
     /// True iff this superblock is mounted read-only (`SB_RDONLY`). # C: O(1)

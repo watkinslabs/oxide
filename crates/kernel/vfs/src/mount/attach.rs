@@ -42,9 +42,22 @@ pub fn attach_sb_with_flags(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_fl
 /// parent mnt_id fixes the placement. # C: O(depth)
 pub fn attach_sb_with_flags_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
     mnt_flags: u64, parent_hint: Option<u64>) -> KResult<()> {
+    attach_sb_locked_at(mp, sb, mnt_flags, 0, parent_hint)
+}
+
+/// As [`attach_sb_with_flags_at`] but ALSO stamps kernel-internal `mnt_flags`
+/// bits (`MNT_LOCK_*` / `MNT_LOCKED`) on the new mount before it goes live —
+/// Linux's `*new_mnt_flags` is one word, so `mount_too_revealing`'s "preserve
+/// the locked attributes" and `lock_mnt_tree`'s stamp both ride the same value
+/// `do_add_mount` installs. Here the two spaces are separate fields, so the
+/// caller passes them separately. Only `MNT_LOCK_MASK | MNT_LOCKED` bits are
+/// honoured. # C: O(depth)
+pub fn attach_sb_locked_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
+    mnt_flags: u64, lock_flags: u32, parent_hint: Option<u64>) -> KResult<()> {
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach_sb_with_flags", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
-    graft_realized(mp, sb, mnt_flags & MNT_OPTION_MASK, parent_hint)
+    graft_realized_locked(mp, sb, mnt_flags & MNT_OPTION_MASK,
+        lock_flags & (MNT_LOCK_MASK | MNT_LOCKED), parent_hint)
 }
 
 /// Shared TAIL of [`attach`]/[`attach_sb`]: reserve the per-ns mount slot,
@@ -54,6 +67,14 @@ pub fn attach_sb_with_flags_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
 /// namespace root mount. # C: O(depth)
 fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
     parent_hint: Option<u64>) -> KResult<()> {
+    graft_realized_locked(mp, sb, mnt_flags, 0, parent_hint)
+}
+
+/// [`graft_realized`] with an additional kernel-internal `mnt_flags` word
+/// (`MNT_LOCK_*` / `MNT_LOCKED`) stamped alongside the option mask.
+/// # C: O(depth)
+fn graft_realized_locked(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
+    lock_flags: u32, parent_hint: Option<u64>) -> KResult<()> {
     let namespace = current_namespace();
     let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
     let ns = reservation.namespace_id();
@@ -70,6 +91,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
         if let Some(global) = global_root() { *m.mnt_root.lock() = Some(global); }
         // [D51] Stamp the requested option bits before the mount goes live.
         if mnt_flags != 0 { m.flags.store(mnt_flags, Ordering::Release); }
+        if lock_flags != 0 { m.set_internal_flag(lock_flags); }
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
         // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
         m.set_internal_flag(MNT_INTERNAL);
@@ -91,6 +113,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
     // [D51] Stamp the requested option bits before the mount goes live, so a
     // following propagate_mount peer-copy inherits them via clone_mnt.
     if mnt_flags != 0 { m.flags.store(mnt_flags, Ordering::Release); }
+    if lock_flags != 0 { m.set_internal_flag(lock_flags); }
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("graft", mnt_id, parent_id, Some(&d), m.mnt_root().as_ref(), Some(&m.sb));
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
