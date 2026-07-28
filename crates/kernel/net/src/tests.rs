@@ -301,7 +301,7 @@ const JOURNAL_RECORD: &[u8] = b"PRIORITY=6\nSYSLOG_FACILITY=3\nTID=1\nCODE_FILE=
 
 #[test]
 fn message_field_selects_only_the_human_readable_line() {
-    let m = crate::message_field(JOURNAL_RECORD).expect("record carries MESSAGE=");
+    let m = crate::journal_trace::message_field(JOURNAL_RECORD).expect("record carries MESSAGE=");
     assert_eq!(m, b"MESSAGE=Reached target basic.target - Basic System.");
     // The point of the filter: one line instead of twelve.
     assert!(m.len() * 4 < JOURNAL_RECORD.len(), "filter must cut the record substantially");
@@ -311,7 +311,7 @@ fn message_field_selects_only_the_human_readable_line() {
 /// on `debug-boot` would have made the x86/arm gate unmeasurable.
 #[test]
 fn message_field_preserves_the_boot_smoke_marker() {
-    let m = crate::message_field(JOURNAL_RECORD).unwrap();
+    let m = crate::journal_trace::message_field(JOURNAL_RECORD).unwrap();
     assert!(m.windows(21).any(|w| w == b"Reached target basic."));
 }
 
@@ -319,16 +319,16 @@ fn message_field_preserves_the_boot_smoke_marker() {
 fn payload_without_message_field_is_passed_through_whole() {
     // sd_notify and /dev/log syslog text carry no MESSAGE= field and are
     // already one short line.
-    assert_eq!(crate::message_field(b"READY=1\nSTATUS=Processing requests...\n"), None);
-    assert_eq!(crate::message_field(b"<30>Jul 28 11:00:00 systemd[1]: started\n"), None);
-    assert_eq!(crate::message_field(b""), None);
+    assert_eq!(crate::journal_trace::message_field(b"READY=1\nSTATUS=Processing requests...\n"), None);
+    assert_eq!(crate::journal_trace::message_field(b"<30>Jul 28 11:00:00 systemd[1]: started\n"), None);
+    assert_eq!(crate::journal_trace::message_field(b""), None);
 }
 
 /// A field whose NAME merely contains the key must not be mistaken for it:
 /// only a line that STARTS with `MESSAGE=` is the message.
 #[test]
 fn message_field_matches_only_at_line_start() {
-    assert_eq!(crate::message_field(b"MESSAGE_ID=39f53479\nUNIT=x.target\n"), None);
-    let m = crate::message_field(b"MESSAGE_ID=39f5\nMESSAGE=real text\n").unwrap();
+    assert_eq!(crate::journal_trace::message_field(b"MESSAGE_ID=39f53479\nUNIT=x.target\n"), None);
+    let m = crate::journal_trace::message_field(b"MESSAGE_ID=39f5\nMESSAGE=real text\n").unwrap();
     assert_eq!(m, b"MESSAGE=real text");
 }
