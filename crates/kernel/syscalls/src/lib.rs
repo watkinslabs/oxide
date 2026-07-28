@@ -16,6 +16,7 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+pub mod secretmem;
 // execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
 // tested, and this is what glibc's stack canary + pointer guard come from.
 pub mod auxrandom;

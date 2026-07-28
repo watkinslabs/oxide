@@ -186,6 +186,13 @@ impl AddressSpace {
             let h = hint.ok_or(Error::Inval)?;
             validate_aligned(h)?;
             let end = end_of(h, len_u64)?;
+            // mseal(2): MAP_FIXED tears the overlap down through the same
+            // `vms_gather_munmap_vmas` Linux uses for munmap (`mm/vma.c:1422`),
+            // so a sealed VMA refuses to be replaced. This is the check, not
+            // the pmm glue's: `glue_mmap` discarded `glue_munmap`'s return, so
+            // without it MAP_FIXED silently replaced a sealed mapping while
+            // leaving its PTEs installed — mseal's whole purpose defeated.
+            if tree.any_sealed(h, end) { return Err(Error::Perm); }
             // MAP_FIXED clears overlap before placing per `11§6`.
             let removed = tree.remove_range(h, end);
             for vma in &removed { self.accounting.remove_vma(vma); }
@@ -247,6 +254,9 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of_raw(addr, len as u64)?;
         let mut tree = self.vmas.write();
+        // mseal(2) `vms_gather_munmap_vmas` (`mm/vma.c:1422`): a sealed VMA
+        // anywhere in the range refuses the whole unmap, before any split.
+        if tree.any_sealed_raw_end(addr, end) { return Err(Error::Perm); }
         // A4-rmap (GAP A4-2): detach the anon_vma chain edges of every
         // VMA the unmap touches (their pre-split ranges), then re-attach
         // the surviving fragments' new ranges after the tree mutation.
@@ -359,15 +369,15 @@ impl AddressSpace {
         }
     }
 
-    /// mseal(2): seal `[addr, addr+len)` so later userspace mprotect/munmap/
-    /// mremap fail with EPERM. Full coverage required (hole → Inval, which the
-    /// shim maps to ENOMEM). Idempotent.
+    /// mseal(2): seal `[start, end)` so later userspace mprotect/munmap/
+    /// mremap/MAP_FIXED/destructive-madvise fail with EPERM. `Err(Inval)` is
+    /// reserved for the one condition `do_mseal` reports as ENOMEM: the range
+    /// is not fully mapped. Argument validation belongs to `vmm::mseal`, which
+    /// the shim has already run — passing an unvalidated range here would
+    /// collapse EINVAL into ENOMEM. Idempotent; there is no unseal.
     /// # C: O(K log N)
-    pub fn mseal(&self, addr: UserVirtAddr, len: usize) -> KResult<()> {
-        validate_len(len)?;
-        validate_aligned(addr)?;
-        let end = end_of(addr, len as u64)?;
-        self.vmas.write().seal_range(addr, end)
+    pub fn mseal_range(&self, start: UserVirtAddr, end: UserVirtAddr) -> KResult<()> {
+        self.vmas.write().seal_range(start, end)
     }
 
     /// Audit hook: invariant 1 (non-overlap, `11§2`). Used by tests
