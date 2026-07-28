@@ -49,5 +49,5 @@ pub(super) fn external_xattr_sectors(sb: &crate::Superblock, inode: &[u8]) -> u3
     if inode.len() < 0x78 { return 0; }
     let lo = u32::from_le_bytes([inode[0x68], inode[0x69], inode[0x6a], inode[0x6b]]);
     let hi = u16::from_le_bytes([inode[0x76], inode[0x77]]);
-    if lo == 0 && hi == 0 { 0 } else { sb.block_size / 512 }
+    if lo == 0 && hi == 0 { 0 } else { sb.sectors_per_block() }
 }
