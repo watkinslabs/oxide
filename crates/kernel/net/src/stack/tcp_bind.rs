@@ -141,6 +141,11 @@ impl NetStack {
                            owner_uid: u32, v6only: bool, peer: Option<(IpAddr, u16)>)
         -> NetResult<Arc<TcpBindReservation>>
     {
+        // Draw the boot secret here, in process context: the passive-open
+        // reader runs in softirq and must never call the CSPRNG. A SYN cannot
+        // arrive for a listener that was never bound, so priming on every
+        // reservation is sufficient (`secure_seq::prime`).
+        crate::secure_seq::prime();
         let namespace = if net_ns == 0 { network_namespace::initial() }
             else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
         let tables = self.inet_tables(net_ns);
