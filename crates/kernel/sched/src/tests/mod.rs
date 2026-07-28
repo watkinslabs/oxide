@@ -26,6 +26,7 @@ mod net_namespace;
 mod namespaces;
 mod pidfd;
 mod prctl;
+mod ptrace_dumpable;
 mod rt_tick_policy;
 mod procfs;
 mod queues;
