@@ -100,3 +100,16 @@ impl RtRunqueue {
 impl Default for RtRunqueue {
     fn default() -> Self { Self::new() }
 }
+
+impl RtRunqueue {
+    /// Linux `task_tick_rt`'s `run_list.prev != run_list.next`: is there another
+    /// runnable task at `prio` besides the one currently running?
+    ///
+    /// The running task has already been picked OFF its bucket, so a peer is any
+    /// non-empty bucket at that priority. Requeueing a task that is alone at its
+    /// level is pure overhead — Linux checks this before `requeue_task_rt`.
+    /// # C: O(1)
+    pub fn has_peer_at(&self, prio: u8) -> bool {
+        self.queues.get(prio as usize).is_some_and(|q| !q.is_empty())
+    }
+}

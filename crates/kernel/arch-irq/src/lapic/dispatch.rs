@@ -73,7 +73,7 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             // Per-CPU heartbeat + cross-CPU hard-lockup scan (runs on every
             // CPU that ticks, so a frozen CPU is observed by another).
             sched::diag::percpu::tick();
-            sched::live::preempt::set_need_resched();
+            sched::live::preempt::task_tick();
             // /proc/stat per-CPU cputime accounting runs on EVERY CPU — each
             // charges its OWN tick to its own `cpuN` bucket (Linux per-CPU
             // kcpustat). Was the timer taken in user mode? Linux
@@ -169,7 +169,7 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             // Cross-CPU resched IPI: another CPU asked us to pick a new
             // task. Set need_resched; the IRQ-exit slow path
             // (`oxide_irq_exit_to_user` → the work loop) does the switch.
-            sched::live::preempt::set_need_resched();
+            sched::live::preempt::task_tick();
             // `membarrier(2)` rides this same IPI (Linux `ipi_mb` is just a
             // full barrier — no private vector needed). No-op unless this CPU
             // is a target of an in-flight round.

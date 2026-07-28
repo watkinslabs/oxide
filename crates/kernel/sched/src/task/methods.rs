@@ -339,6 +339,7 @@ impl Task {
             ctty:       UnsafeCell::new(None),
             exe_path:   Spinlock::new(None),
             exe_inode:  Spinlock::new(None),
+            rt_time_slice: AtomicU32::new(crate::sched_enc::RR_TIMESLICE_TICKS),
             fs_context: Spinlock::new(Arc::new(super::FsContext::new())),
             environ:    Spinlock::new(None),
             nice:       AtomicI8::new(0),
