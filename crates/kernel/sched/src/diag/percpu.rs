@@ -146,6 +146,7 @@ fn report_stall(x: u32, age_ns: u64, me: u32) {
 
 /// Live `rq(cpu)->curr` tid (0 when that runqueue is not installed).
 /// # C: O(1)
+#[cfg(feature = "debug-watchdog")]
 fn live_tid(cpu: u32) -> u32 { live_curr(cpu).map_or(0, |t| t.tid) }
 
 /// Live `rq(cpu)->curr`'s last-entered syscall (`u32::MAX` = never entered one,
@@ -153,12 +154,13 @@ fn live_tid(cpu: u32) -> u32 { live_curr(cpu).map_or(0, |t| t.tid) }
 /// snapshot's copy — so this is "the last syscall this task ever made", not
 /// "the syscall it is in".
 /// # C: O(1)
+#[cfg(feature = "debug-watchdog")]
 fn live_syscall(cpu: u32) -> u32 {
     live_curr(cpu).map_or(u32::MAX, |t| t.last_syscall_nr.load(Ordering::Relaxed))
 }
 
 /// `rq(cpu)->curr`, read cross-CPU. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(all(feature = "debug-watchdog", target_os = "oxide-kernel"))]
 fn live_curr(cpu: u32) -> Option<&'static crate::Task> {
     // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
     // that has not completed `install_global`; the read is lock-free and the
@@ -168,7 +170,7 @@ fn live_curr(cpu: u32) -> Option<&'static crate::Task> {
     Some(unsafe { rq.current_ref() })
 }
 /// # C: O(1)
-#[cfg(not(target_os = "oxide-kernel"))]
+#[cfg(all(feature = "debug-watchdog", not(target_os = "oxide-kernel")))]
 fn live_curr(_cpu: u32) -> Option<&'static crate::Task> { None }
 #[cfg(not(feature = "debug-watchdog"))]
 fn report_stall(_x: u32, _age_ns: u64, _me: u32) {}
