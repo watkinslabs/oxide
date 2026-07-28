@@ -385,3 +385,32 @@ fn syscall_return_stages_are_feature_gated_ordered_and_cleared() {
     assert!(dispatch < diag && diag < timers && timers < rseq && rseq < ptrace && ptrace < clear);
     assert!(source.contains("if sig_rv != 0 {\n            #[cfg(feature = \"debug-syscall-return\")]"));
 }
+
+// A dual-stack AF_INET6 socket that connected to an IPv4 peer took the IPv4
+// path, so its peer tuple is in `sock.peer`, not `sock.peer6`. Linux
+// `inet6_getname` still answers with `sk->sk_v6_daddr` == `::ffff:a.b.c.d`
+// (`net/ipv6/af_inet6.c`), so an empty `peer6` must FALL THROUGH to the
+// generic tuple rather than short-circuit to ENOTCONN — that early return
+// declared every `getaddrinfo(AI_V4MAPPED)` connection unconnected.
+#[test]
+fn ipv6_peername_falls_through_to_the_v4_mapped_tuple() {
+    let source = include_str!("052_getpeername.rs");
+    let v6 = source.find("net::sock::AF_INET6").expect("the AF_INET6 branch exists");
+    let tail = &source[v6..];
+    let peer6 = tail.find("sock.peer6.lock()").expect("the branch reads peer6");
+    let enotconn = tail.find("Errno::Enotconn").unwrap_or(tail.len());
+    assert!(peer6 < enotconn,
+        "the peer6 read must precede any ENOTCONN in the AF_INET6 branch");
+    assert!(tail[..enotconn].contains("if let Some((ip, port)) = *sock.peer6.lock()"),
+        "an absent native-v6 peer falls through instead of returning ENOTCONN");
+}
+
+// `getsockname` on the same socket has the mirror bug: reading `local_ip6`
+// unconditionally reported `[::]`. Linux reports `sk_v6_rcv_saddr` or, when
+// that is unspecified, whatever local address the socket actually holds.
+#[test]
+fn ipv6_sockname_consults_the_v4_mapped_source() {
+    let source = include_str!("051_getsockname.rs");
+    assert!(source.contains("v6_name_is_v4_mapped"),
+        "the AF_INET6 branch routes through the shared name-source rule");
+}

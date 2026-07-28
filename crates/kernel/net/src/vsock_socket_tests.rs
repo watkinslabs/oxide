@@ -429,68 +429,7 @@ fn accepted_connection_failed_publication_and_table_drop_release_synchronously()
     assert!(vsock::driver_uninstall(drop_key.owner));
 }
 
-#[test]
-fn shutdown_is_net_owned_and_latches_both_directions_without_a_driver() {
-    let _guard = vsock::tests::test_domain();
-    let (key, conn) = connection(0x0a00_000d, 61_013);
-    let sock = VsockSocket::new();
-    *sock.kind.lock() = VsockKind::Conn(conn.clone());
-
-    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Write), Ok(()));
-    assert!(conn.tx.lock().local_shut);
-    assert_eq!(sock.write(0, b"blocked"), Err(vfs::VfsError::Epipe));
-    assert_eq!(sock.write_nonblock(0, b"blocked"), Err(vfs::VfsError::Epipe));
-    assert_eq!(sock.poll() & vfs::POLL_OUT, 0);
-
-    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Read), Ok(()));
-    assert!(sock.read_shut.load(core::sync::atomic::Ordering::Acquire));
-    assert_eq!(sock.read(0, &mut [0u8; 1]), Ok(0));
-    assert_eq!(sock.poll() & (vfs::POLL_IN | vfs::POLL_RDHUP | vfs::POLL_HUP),
-        vfs::POLL_IN | vfs::POLL_RDHUP | vfs::POLL_HUP);
-
-    sock.release_file();
-    assert_eq!(*conn.st.lock(), VsockState::Closed);
-    assert!(vsock::TABLE.find(key).is_none());
-}
-
-#[test]
-fn shutdown_admission_uses_socket_namespace_before_transport_mutation() {
-    let _guard = vsock::tests::test_domain();
-    let namespace = namespace();
-    let id = crate::net_ns::namespace_id(&namespace);
-    let (key, conn) = connection(0x0a00_0014, 61_014);
-    let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
-    *sock.kind.lock() = VsockKind::Conn(conn.clone());
-    assert_eq!(security::network::install(id, security::network::Operation::Shutdown,
-        deny_vsock_shutdown), None);
-    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Write), Err(crate::NetError::Eacces));
-    assert!(!conn.tx.lock().local_shut);
-    assert_eq!(security::network::counters(id, security::network::Operation::Shutdown), Some((0, 1)));
-    assert!(security::network::remove(id, security::network::Operation::Shutdown).is_some());
-    sock.release_file();
-    assert!(vsock::TABLE.find(key).is_none());
-}
-
-#[test]
-fn shutdown_admission_precedes_vsock_direction_validation() {
-    let namespace = namespace();
-    let id = crate::net_ns::namespace_id(&namespace);
-    let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
-    assert_eq!(security::network::install(id, security::network::Operation::Shutdown,
-        deny_vsock_shutdown), None);
-    assert_eq!(sock.shutdown_raw(INVALID_SHUTDOWN_DIRECTION), Err(crate::NetError::Eacces));
-    assert_eq!(security::network::counters(id, security::network::Operation::Shutdown), Some((0, 1)));
-    assert!(security::network::remove(id, security::network::Operation::Shutdown).is_some());
-}
-
-#[test]
-fn pending_recv_error_overwrites_with_latest_positive_errno() {
-    let sock = VsockSocket::new();
-    assert_eq!(sock.take_pending_recv_error(), 0);
-    assert!(!sock.set_pending_recv_error(0));
-    assert!(!sock.set_pending_recv_error(-5));
-    assert!(sock.set_pending_recv_error(111));
-    assert!(sock.set_pending_recv_error(104));
-    assert_eq!(sock.take_pending_recv_error(), 104);
-    assert_eq!(sock.take_pending_recv_error(), 0);
-}
+// Shutdown-specific coverage lives in the sibling module (file-length cap,
+// `08§7`); it shares the fixtures above through `use super::*`.
+#[path = "vsock_socket_tests/shutdown.rs"]
+mod shutdown;

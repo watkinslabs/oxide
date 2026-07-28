@@ -118,3 +118,29 @@ fn repeated_write_shutdown_is_idempotent() {
     assert_eq!(shutdown_raw(&sock, ShutdownHow::Write as u32), Err(NetError::Enotconn));
     assert!(sock.write_shut.load(core::sync::atomic::Ordering::Acquire));
 }
+
+// Linux `inet_shutdown` ends with `sk->sk_state_change(sk)` — "wake up anyone
+// sleeping in poll" — for every state it reaches. Waking `rx_waiters` alone
+// releases a blocking `recv` but leaves a thread parked in `poll`/`epoll_wait`
+// asleep, because pollers subscribe through `poll_subs`. A connected TCP
+// socket was the one family that never edged them.
+#[test]
+fn established_tcp_shutdown_wakes_poll_subscribers() {
+    use crate::stack::TcpEntry;
+    use crate::tcp_conn::TcpConn;
+    use crate::{Endpoint, IpAddr, Ipv4Addr};
+    for how in [ShutdownHow::Read, ShutdownHow::Write, ShutdownHow::ReadWrite] {
+        let owner = crate::net_ns::test_support::allocate_namespace();
+        let sock = InetSocket::new_tcp_in(owner);
+        let local  = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 41_020 };
+        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
+        let mut conn = TcpConn::new_client(local, remote, 9);
+        conn.state = crate::tcp_state::TcpState::Established;
+        let entry = alloc::sync::Arc::new(TcpEntry::new(conn));
+        *sock.kind.lock() = SockKind::TcpConn(entry);
+        let before = sock.poll_subs.generation();
+        assert_eq!(shutdown(&sock, how), Ok(()));
+        assert!(sock.poll_subs.generation() > before,
+            "shutdown({how:?}) on an established TCP socket must edge poll subscribers");
+    }
+}
