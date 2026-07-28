@@ -12,9 +12,9 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 
 | Type | next | meaning |
 |---|---|---|
-| F | 766 | new functionality |
-| B | 1459 | bug fix |
-| D | 405 | spec/doc edits (no code) |
+| F | 769 | new functionality |
+| B | 1464 | bug fix |
+| D | 410 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
 | C | 231 | tooling / deps / CI plumbing |
@@ -25,6 +25,9 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 `F761`–`F764` reserved 2026-07-27 for the syscall-matrix audit batches
 (xattr-at family, sched/ioprio, mempolicy/mseal, admin/misc). Counter already
 advanced to 765 so a concurrent lane cannot collide with them.
+
+`D406`-`D409` reserved 2026-07-27 for the Linux subsystem-audit lanes
+(mm, sched, vfs/block, net/security). Counter advanced to 410.
 
 ## Known counter collisions
 

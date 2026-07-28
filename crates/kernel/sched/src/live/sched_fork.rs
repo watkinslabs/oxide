@@ -52,6 +52,26 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
     child.user_cpus_allowed.store(parent.user_cpus_allowed.load(Ordering::Acquire), Ordering::Release);
     child.cpuset_cpus_allowed.store(parent.cpuset_cpus_allowed.load(Ordering::Acquire), Ordering::Release);
 
+    // `dup_task_struct` copies `se.slice`/`custom_slice` and `uclamp_req`;
+    // `sched_reset_on_fork` puts both back to the class defaults
+    // (`kernel/sched/core.c:4834` and `uclamp_fork`), and `uclamp_post_fork`
+    // then re-applies the RT 100%-boost default to a non-user-defined
+    // `UCLAMP_MIN`.
+    let (uc_min, uc_max, uc_ud) = if reset {
+        (0, crate::sched_enc::UCLAMP_CAPACITY_SCALE, 0)
+    } else {
+        (parent.uclamp_min.load(Ordering::Acquire), parent.uclamp_max.load(Ordering::Acquire),
+         parent.uclamp_user_defined.load(Ordering::Acquire))
+    };
+    let uc_min = if matches!(class, SchedClass::Rt { .. }) && uc_ud & 1 == 0 {
+        crate::sched_enc::UCLAMP_CAPACITY_SCALE
+    } else { uc_min };
+    child.uclamp_min.store(uc_min, Ordering::Release);
+    child.uclamp_max.store(uc_max, Ordering::Release);
+    child.uclamp_user_defined.store(uc_ud, Ordering::Release);
+    child.sched_slice_ns.store(
+        if reset { 0 } else { parent.sched_slice_ns.load(Ordering::Acquire) }, Ordering::Release);
+
     child.nice.store(nice, Ordering::Release);
     child.policy.store(policy, Ordering::Release);
     // `sched_reset_on_fork` is one-shot: the child starts clean.

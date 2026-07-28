@@ -71,10 +71,7 @@ pub(super) fn dispatch_route_b(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_PREADV2 => crate::s295_preadv::sys_preadv2(args),
         syscall::nrs::NR_PWRITEV2 => crate::s296_pwritev::sys_pwritev2(args),
         syscall::nrs::NR_MEMFD_CREATE => crate::s319_memfd_create::sys_memfd_create(args),
-        syscall::nrs::NR_MEMFD_SECRET => {
-            let mut sa = *args; sa.a0 = 0; sa.a1 = args.a0;
-            crate::s319_memfd_create::sys_memfd_create(&sa)
-        }
+        syscall::nrs::NR_MEMFD_SECRET => crate::s447_memfd_secret::sys_memfd_secret(args),
         syscall::nrs::NR_MKDIR => crate::s083_mkdir::sys_mkdir(args),
         syscall::nrs::NR_MKDIRAT => crate::s258_mkdirat::sys_mkdirat(args),
         syscall::nrs::NR_RMDIR => crate::s084_rmdir::sys_rmdir(args),

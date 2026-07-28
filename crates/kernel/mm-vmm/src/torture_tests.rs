@@ -12,6 +12,7 @@
 // - VMA split at all four positions (start, mid, end, both)
 // - VMA merge across prot/flag/backing diffs
 // - brk window: shrink, grow, overflow, underflow
+// - mseal: what a seal marks and which operations it then refuses (mseal.rs)
 //
 // Hosted-only — no real PT walk; AddressSpace::new(0) sentinel
 // skips all MmuOps activation paths.
@@ -19,6 +20,7 @@
 #![cfg(test)]
 
 mod mapping;
+mod mseal;
 mod stack;
 mod stress;
 
