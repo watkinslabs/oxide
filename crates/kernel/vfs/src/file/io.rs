@@ -287,6 +287,36 @@ impl File {
         Ok(n)
     }
 
+    /// `pread` with `IOCB_NOWAIT` semantics (`RWF_NOWAIT`): return `EAGAIN`
+    /// rather than sleep for backing-store I/O. Linux enforces this inside
+    /// `filemap_read` — every point that would have to wait for a folio
+    /// (`mm/filemap.c:2559`, `:2566`, `:2592`, `:2617`) short-circuits to
+    /// `-EAGAIN` — while readahead is still permitted (`mm/filemap.c:2951-2953`).
+    ///
+    /// Oxide's page cache answers the same question with `mincore_page`: if the
+    /// FIRST page of the request is already resident the read completes from
+    /// cache without I/O; if it is not, serving it would require a block read,
+    /// so this is `EAGAIN`. The gate order is `pread`'s (`EINVAL` for a negative
+    /// offset, `ESPIPE` without FMODE_PREAD, `EBADF` without FMODE_READ) because
+    /// those precede the iocb in Linux too. # C: O(1) + `pread` on a cache hit
+    pub fn pread_nowait(&self, buf: &mut [u8], off: i64) -> KResult<usize> {
+        if off < 0 { return Err(VfsError::Einval); }
+        if !self.f_mode.contains(Fmode::PREAD) { return Err(VfsError::Espipe); }
+        if !self.f_mode.contains(Fmode::READ) { return Err(VfsError::Ebadf); }
+        if buf.is_empty() { return Ok(0); }
+        // Past EOF there is nothing to wait FOR: the read returns 0 immediately,
+        // so EAGAIN would be a lie about why no bytes came back.
+        let pos = off as u64;
+        if pos < self.inode.size() {
+            match self.inode.i_mapping() {
+                Some(m) if !m.mincore_page(pos & !(PAGE_SIZE - 1)) => return Err(VfsError::Eagain),
+                None => return Err(VfsError::Eagain),
+                _ => {}
+            }
+        }
+        self.pread(buf, off)
+    }
+
     /// `pwrite(2)` / `pwrite64` — positional write at the explicit `off` that
     /// does NOT touch `f_pos` (Linux `ksys_pwrite64` → `vfs_write` over a
     /// LOCAL `pos`, bypassing `__fdget_pos`), so `f_pos_lock` is NOT taken.

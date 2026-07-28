@@ -162,9 +162,11 @@ impl FileBacking for InodeFileBacking {
             || self.inode.permission(MAY_WRITE, &cred).is_ok()
     }
 
-    /// `MADV_REMOVE` file punch-hole leg. # C: filesystem-dependent
+    /// `MADV_REMOVE` file punch-hole leg — Linux `madvise_remove` issues
+    /// `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`. # C: filesystem-dependent
     fn madvise_remove(&self, off: u64, len: u64) -> Result<(), FileBackingError> {
-        self.inode.fallocate(off, len, true, false, true).map_err(|e| match e {
+        let mode = vfs::uapi::FALLOC_FL_PUNCH_HOLE | vfs::uapi::FALLOC_FL_KEEP_SIZE;
+        self.inode.fallocate(mode, off, len).map_err(|e| match e {
             vfs::VfsError::Eacces => FileBackingError::Acces,
             vfs::VfsError::Ebadf => FileBackingError::Badf,
             vfs::VfsError::Einval => FileBackingError::Inval,

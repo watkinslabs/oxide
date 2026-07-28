@@ -45,7 +45,7 @@ mod ioctl_common;
 #[derive(Default)]
 struct Ops {
     bmap_calls: AtomicUsize,
-    fallocate_calls: Mutex<Vec<(u64, u64, bool, bool, bool)>>,
+    fallocate_calls: Mutex<Vec<(u32, u64, u64)>>,
 }
 
 impl InodeOps for Ops {
@@ -54,8 +54,8 @@ impl InodeOps for Ops {
         Ok(block + 10)
     }
 
-    fn fallocate(&self, _inode: &Inode, off: u64, len: u64, keep_size: bool, zero_range: bool, punch: bool) -> KResult<()> {
-        self.fallocate_calls.lock().unwrap().push((off, len, keep_size, zero_range, punch));
+    fn fallocate(&self, _inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
+        self.fallocate_calls.lock().unwrap().push((mode, off, len));
         Ok(())
     }
 }
@@ -161,5 +161,6 @@ fn regular_files_still_take_fibmap_and_preallocate_paths() {
 
     let sr = SpaceResv { l_type: 0, l_whence: uapi::SEEK_SET, l_start: 6, l_len: 7, l_sysid: 0, l_pid: 0, l_pad: [0; 4] };
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_ZERO_RANGE, &sr as *const SpaceResv as u64), Some(0));
-    assert_eq!(*ops.fallocate_calls.lock().unwrap(), vec![(6, 7, true, true, false)]);
+    assert_eq!(*ops.fallocate_calls.lock().unwrap(),
+        vec![(vfs::uapi::FALLOC_FL_ZERO_RANGE | vfs::uapi::FALLOC_FL_KEEP_SIZE, 6, 7)]);
 }

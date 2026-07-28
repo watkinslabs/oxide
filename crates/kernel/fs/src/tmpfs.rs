@@ -25,6 +25,7 @@
 
 mod accounting;
 mod dir;
+mod falloc;
 mod file;
 mod flags;
 mod fs;
