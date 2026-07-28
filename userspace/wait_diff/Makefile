@@ -4,7 +4,7 @@ CFLAGS += -std=gnu11 -Wall -Wextra -Werror -pthread
 LDLIBS += -pthread -lrt
 
 TARGET := wait_diff
-OBJS := main.o common.o sleep.o locks.o fdwait.o jobctl.o cputime.o mqueue.o syslog.o
+OBJS := main.o common.o sleep.o locks.o fdwait.o jobctl.o cputime.o mqueue.o mqueue_api.o syslog.o
 
 .PHONY: all clean run
 

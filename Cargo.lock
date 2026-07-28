@@ -783,6 +783,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "namespace-identity",
+ "netlink",
  "sched",
  "sync",
  "syscall",
