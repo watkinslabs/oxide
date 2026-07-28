@@ -42,6 +42,24 @@ pub fn dgram_peer_writable(peer_queued: usize, sndbuf: usize) -> bool {
     peer_queued < sndbuf
 }
 
+/// Linux `unix_peer(other) == sk` — the destination is connected back to the
+/// sender, i.e. a symmetrically connected pair (what `socketpair(AF_UNIX,
+/// SOCK_DGRAM)` produces).
+///
+/// This gates the receive-queue-full flow control on BOTH sides, and it must:
+/// `unix_dgram_sendmsg` refuses with EAGAIN only `if (other != sk &&
+/// unix_peer(other) != sk && unix_recvq_full_lockless(other))`, and
+/// `unix_dgram_poll` clears writability under the identical guard
+/// (`net/unix/af_unix.c`). Applying it to one side alone is what tells a writer
+/// "writable" and then hands it EAGAIN forever.
+/// # C: O(1)
+pub fn dgram_symmetric_pair(peer_peer: Option<&crate::UnixAddr>, local_bound: Option<&crate::UnixAddr>) -> bool {
+    match (peer_peer, local_bound) {
+        (Some(back), Some(mine)) => back.key == mine.key,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
