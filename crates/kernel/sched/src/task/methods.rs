@@ -260,6 +260,7 @@ impl Task {
             state:    AtomicU8::new(TaskState::Runnable as u8),
             on_rq:    AtomicBool::new(false),
             on_cpu:   AtomicBool::new(false),
+            need_resched: AtomicBool::new(false),
             frozen:   AtomicBool::new(false),
             yield_pending: AtomicBool::new(false),
             kthread_stop: AtomicBool::new(false),
