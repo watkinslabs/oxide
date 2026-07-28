@@ -33,6 +33,7 @@ fn now_provider() -> u64 { NOW.load(Ordering::Relaxed) }
 
 const T_CREATE: u64 = 1_720_000_000 * 1_000_000_000 + 250_000_000; // ~2024-07
 const T_WRITE:  u64 = 1_720_003_600 * 1_000_000_000 + 750_000_000; // one hour later
+fn ts(ns: u64) -> vfs::Timespec64 { vfs::Timespec64::from_clock_ns(ns) }
 
 fn shared_disk() -> Arc<dyn BlockDevice> {
     let cap = (IMAGE.len() as u64) / (SECTOR as u64);
@@ -62,24 +63,24 @@ fn create_stamps_now_and_write_advances_mtime() {
     let inode = m.state().create_at(b"/j.txt", 0o644).expect("create j.txt");
 
     // (1) create stamped the wall clock, not epoch 0.
-    assert_eq!(inode.mtime(), Some(T_CREATE), "create stamps mtime");
-    assert_eq!(inode.ctime(), Some(T_CREATE), "create stamps ctime");
-    assert_eq!(inode.atime(), Some(T_CREATE), "create stamps atime");
+    assert_eq!(inode.mtime(), Some(ts(T_CREATE)), "create stamps mtime");
+    assert_eq!(inode.ctime(), Some(ts(T_CREATE)), "create stamps ctime");
+    assert_eq!(inode.atime(), Some(ts(T_CREATE)), "create stamps atime");
 
     // (2) the write-path file_update_time: mtime + ctime advance, atime holds.
     NOW.store(T_WRITE, Ordering::Relaxed);
-    inode.update_time(T_WRITE, vfs::S_MTIME | vfs::S_CTIME).expect("update_time");
-    assert_eq!(inode.mtime(), Some(T_WRITE), "in-core mtime advanced by write");
-    assert_eq!(inode.ctime(), Some(T_WRITE), "in-core ctime advanced by write");
-    assert_eq!(inode.atime(), Some(T_CREATE), "atime unchanged (S_ATIME not set)");
+    inode.update_time(ts(T_WRITE), vfs::S_MTIME | vfs::S_CTIME).expect("update_time");
+    assert_eq!(inode.mtime(), Some(ts(T_WRITE)), "in-core mtime advanced by write");
+    assert_eq!(inode.ctime(), Some(ts(T_WRITE)), "in-core ctime advanced by write");
+    assert_eq!(inode.atime(), Some(ts(T_CREATE)), "atime unchanged (S_ATIME not set)");
 
     // Persisted: remount the same disk and confirm the on-disk inode carries
     // the advanced mtime/ctime (would be 1970 before A1).
     drop(sb); drop(m);
     let (m2, _sb2) = mount(disk);
     let node = m2.state().lookup_inode_any(b"/j.txt").expect("lookup after remount");
-    assert_eq!(node.mtime(), Some(T_WRITE), "remount: mtime persisted");
-    assert_eq!(node.ctime(), Some(T_WRITE), "remount: ctime persisted");
-    assert_eq!(node.atime(), Some(T_CREATE), "remount: atime persisted");
-    assert_ne!(node.mtime(), Some(0), "remount: not frozen at epoch");
+    assert_eq!(node.mtime(), Some(ts(T_WRITE)), "remount: mtime persisted");
+    assert_eq!(node.ctime(), Some(ts(T_WRITE)), "remount: ctime persisted");
+    assert_eq!(node.atime(), Some(ts(T_CREATE)), "remount: atime persisted");
+    assert_ne!(node.mtime(), Some(vfs::Timespec64::ZERO), "remount: not frozen at epoch");
 }

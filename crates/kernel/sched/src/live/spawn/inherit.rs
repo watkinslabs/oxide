@@ -32,6 +32,11 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // Linux sched_fork(): policy, RT priority, nice and load weight are
     // inherited across fork/clone; SCHED_RESET_ON_FORK demotes the child.
     crate::live::sched_fork::inherit_sched_params(&task, &parent);
+    // Linux `copy_process` → `mpol_dup(p->mempolicy)` (`kernel/fork.c:2225`):
+    // the thread's NUMA policy is inherited by fork AND by CLONE_THREAD.
+    for i in 0..task.mempolicy.len() {
+        task.mempolicy[i].store(parent.mempolicy[i].load(Ordering::Acquire), Ordering::Release);
+    }
     // ioprio_set/get(2): I/O priority is inherited across fork.
     task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
     // /proc/<pid>/exe is inherited across fork until the child execs (Linux

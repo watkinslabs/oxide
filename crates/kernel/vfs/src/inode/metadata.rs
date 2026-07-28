@@ -2,17 +2,31 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use core::any::Any;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
 use crate::poll_subs::PollSubscribers;
 use crate::superblock::SuperBlock;
+use crate::timespec::Timespec64;
 use crate::types::{FileType, KResult, Umode, S_IFMT};
 
 use super::flags::{I_FREEING, I_WILL_FREE};
 use super::model::{Inode, SealCarrier};
+
+/// Read a `(sec, nsec)` inode-time field pair. Linux's fields are plain and
+/// read unlocked, so the pair is not observed atomically there either; Relaxed
+/// matches that contract exactly. # C: O(1)
+fn load_ts(sec: &AtomicI64, nsec: &AtomicU32) -> Timespec64 {
+    Timespec64 { sec: sec.load(Ordering::Relaxed), nsec: nsec.load(Ordering::Relaxed) }
+}
+
+/// Write a `(sec, nsec)` inode-time field pair. See [`load_ts`]. # C: O(1)
+fn store_ts(sec: &AtomicI64, nsec: &AtomicU32, t: Timespec64) {
+    sec.store(t.sec, Ordering::Relaxed);
+    nsec.store(t.nsec, Ordering::Relaxed);
+}
 
 /// oxide-internal `i_flags` bit: a shared-across-namespaces public device node
 /// whose owner/mode is held at its universal-access as-created value (see
@@ -42,14 +56,15 @@ impl Inode {
     pub fn gid(&self) -> Option<u32> { Some(self.i_gid.load(Ordering::Relaxed)) }
     /// `i_projid`. # C: O(1)
     pub fn projid(&self) -> u32 { self.i_projid.load(Ordering::Relaxed) }
-    /// `i_atime` (ns). # C: O(1)
-    pub fn atime(&self) -> Option<u64> { Some(self.i_atime.load(Ordering::Relaxed)) }
-    /// `i_mtime` (ns). # C: O(1)
-    pub fn mtime(&self) -> Option<u64> { Some(self.i_mtime.load(Ordering::Relaxed)) }
-    /// `i_ctime` (ns). # C: O(1)
-    pub fn ctime(&self) -> Option<u64> { Some(self.i_ctime.load(Ordering::Relaxed)) }
-    /// `i_btime`. # C: O(1)
-    pub fn btime(&self) -> Option<u64> { if self.i_btime != 0 { Some(self.i_btime) } else { None } }
+    /// `inode_get_atime` (Linux include/linux/fs.h) — the `i_atime_sec` /
+    /// `i_atime_nsec` pair as one [`Timespec64`]. # C: O(1)
+    pub fn atime(&self) -> Option<Timespec64> { Some(load_ts(&self.i_atime_sec, &self.i_atime_nsec)) }
+    /// `inode_get_mtime`. # C: O(1)
+    pub fn mtime(&self) -> Option<Timespec64> { Some(load_ts(&self.i_mtime_sec, &self.i_mtime_nsec)) }
+    /// `inode_get_ctime`. # C: O(1)
+    pub fn ctime(&self) -> Option<Timespec64> { Some(load_ts(&self.i_ctime_sec, &self.i_ctime_nsec)) }
+    /// Creation time, or `None` on a backend that stores none. # C: O(1)
+    pub fn btime(&self) -> Option<Timespec64> { self.i_btime }
     /// `i_flags` (`S_*`). # C: O(1)
     pub fn i_flags(&self) -> u32 { self.i_flags.load(Ordering::Relaxed) }
     /// Mark this inode a kernel-provided PUBLIC device node (/dev/null, /dev/zero,
@@ -171,11 +186,11 @@ impl Inode {
     }
     /// Project-id field write. # C: O(1)
     pub fn set_projid(&self, projid: u32) { self.i_projid.store(projid, Ordering::Relaxed); }
-    /// utimes field write. # C: O(1)
-    pub fn set_times(&self, atime: Option<u64>, mtime: Option<u64>, ctime: u64) -> KResult<()> {
-        if let Some(a) = atime { self.i_atime.store(a, Ordering::Relaxed); }
-        if let Some(m) = mtime { self.i_mtime.store(m, Ordering::Relaxed); }
-        self.i_ctime.store(ctime, Ordering::Relaxed);
+    /// utimes field write (Linux `inode_set_atime_to_ts` and friends). # C: O(1)
+    pub fn set_times(&self, atime: Option<Timespec64>, mtime: Option<Timespec64>, ctime: Timespec64) -> KResult<()> {
+        if let Some(a) = atime { store_ts(&self.i_atime_sec, &self.i_atime_nsec, a); }
+        if let Some(m) = mtime { store_ts(&self.i_mtime_sec, &self.i_mtime_nsec, m); }
+        store_ts(&self.i_ctime_sec, &self.i_ctime_nsec, ctime);
         Ok(())
     }
 

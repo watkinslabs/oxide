@@ -56,3 +56,15 @@ pub fn service_wall_timers() {
     #[cfg(target_os = "oxide-kernel")]
     sched::timers::wall_timer_interrupt();
 }
+
+/// Wake every blocking wait whose timeout has expired — Linux
+/// `__hrtimer_run_queues`, driven from the same interrupt that armed it. Every
+/// CPU, every tick: each expiry is taken under the queue lock, so a waiter is
+/// woken exactly once however many CPUs reach here. This must run BEFORE
+/// `rearm_local` so the deadline it programs is the next UNSERVICED one.
+/// # C: O(due)
+/// # Ctx: timer IRQ
+pub fn service_wait_deadlines() {
+    #[cfg(target_os = "oxide-kernel")]
+    sched::hrtimeout::expire_now();
+}

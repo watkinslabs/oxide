@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 
-use hal::{TimerOps, USER_VA_END};
+use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -171,12 +171,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     unsafe {
         core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags));
     }
-    let random16 = {
-        let ns = <hal_aarch64::ArmTimerOps as TimerOps>::monotonic_ns().0;
-        let mut r = [0u8; 16];
-        for i in 0..16 { r[i] = (ns >> ((i % 8) * 8)) as u8 ^ (i as u8 * 0x9b); }
-        r
-    };
+    // Linux `fs/binfmt_elf.c:226` `create_elf_tables()`: AT_RANDOM is 16
+    // `get_random_bytes()` bytes drawn per exec.
+    let random16 = crate::auxrandom::at_random_bytes();
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
     let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     cur.set_cmdline(Some(sched::argv_to_cmdline(&argv_slices[..argc])));

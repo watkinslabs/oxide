@@ -39,6 +39,10 @@ pub use gdt::{GroupDesc, GdtError, desc_size_for, parse_descriptor, locate_inode
 pub mod csum;
 mod layout;
 
+pub mod timestamp;
+pub use timestamp::{EXT4_EXTRA_TIMESTAMP_MAX, EXT4_NON_EXTRA_TIMESTAMP_MAX, EXT4_TIMESTAMP_MIN,
+                    decode_extra_time, encode_base, encode_extra_time};
+
 pub mod htree;
 pub use htree::EXT4_INDEX_FL;
 

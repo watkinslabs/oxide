@@ -314,5 +314,20 @@ pub fn next_interrupt_deadline() -> u64 {
     let now = clock::monotonic_now_ns();
     let advancing = EARLIEST_WALL_NS.load(Ordering::Acquire)
         .min(current_cpu_deadline(now));
-    next_programmed_interrupt(now, advancing, tick_deadline(now))
+    let programmed = next_programmed_interrupt(now, advancing, tick_deadline(now));
+    // B1460: armed WAIT expiries are part of the next event too — Linux
+    // `__hrtimer_get_next_event` mins over every active base, and a blocking
+    // wait's timeout is an hrtimer like any other. Folded here rather than into
+    // `advancing` so a POSIX wall timer that is due-but-uncollectable (the
+    // contested-lock case `next_programmed_interrupt` guards) cannot also
+    // discard an unrelated sub-tick wait deadline.
+    crate::hrtimeout::fold_wait_expiry(now, programmed, crate::hrtimeout::earliest_hard_ns())
 }
+
+/// Re-arm this CPU's one-shot after a wait expiry was armed or cancelled in
+/// process context — Linux `hrtimer_reprogram`. `program`'s `ARMED_NS` cache
+/// makes it a no-op when the resolved deadline is unchanged, which is the
+/// common case for a park behind an already-earlier timer.
+/// # C: O(SLOTS * N_threads)
+/// # Ctx: process
+pub fn reprogram_local() { program(next_interrupt_deadline()); }

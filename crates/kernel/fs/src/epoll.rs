@@ -280,8 +280,12 @@ impl EpollData {
     pub(super) unsafe fn prepare_park(&self, observed_global: u64, deadline_ns: u64) -> bool {
         let ready = self.ready.lock();
         if !ready.is_empty() || GLOBAL_EPOLL_GEN.load(Ordering::Acquire) != observed_global { return false; }
+        // `epoll_wait` coalesces exactly like poll/select — `fs/eventpoll.c:2251`
+        // `slack = select_estimate_accuracy(timeout);` feeding
+        // `schedule_hrtimeout_range(to, slack, HRTIMER_MODE_ABS)` at `:2332`.
+        let slack_ns = sched::hrtimeout::select_estimate_accuracy(deadline_ns);
         // SAFETY: caller is current in process context; ready lock serializes callback/global wake against park preparation.
-        unsafe { self.waiters.park_with_deadline(deadline_ns); }
+        unsafe { self.waiters.park_with_deadline_range(deadline_ns, slack_ns); }
         drop(ready);
         true
     }

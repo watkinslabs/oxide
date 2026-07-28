@@ -38,7 +38,7 @@ fn atime_now_only() -> Iattr { Iattr { valid: ATTR_ATIME, ..Default::default() }
 /// `{UTIME_OMIT, UTIME_NOW}` — mtime to now, atime untouched (mtime only).
 fn mtime_now_only() -> Iattr { Iattr { valid: ATTR_MTIME, ..Default::default() } }
 /// `{<specific>, UTIME_OMIT}` — a concrete atime (carries `ATTR_ATIME_SET`).
-fn atime_specific() -> Iattr { Iattr { valid: ATTR_ATIME | ATTR_ATIME_SET, atime_ns: 12_345, ..Default::default() } }
+fn atime_specific() -> Iattr { Iattr { valid: ATTR_ATIME | ATTR_ATIME_SET, atime: vfs::Timespec64::new(12_345, 0), ..Default::default() } }
 
 fn prepare(node: &InodeRef, ia: &mut Iattr, c: &Cred) -> KResult<()> {
     setattr_prepare(&Idmap::identity(), node, ia, c)
