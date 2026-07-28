@@ -343,6 +343,9 @@ By impact, highest first.
 - Whether sysfs attribute reads are snapshotted at lookup or re-read live. Both patterns exist
   (`make_body_inode` snapshots; `SysClassNetOps` and zram re-resolve); no per-attribute census.
 - devpts multi-instance: whether two `mount -t devpts` produce independent pty number spaces.
+- Why a root-owned `0620` `/dev/pts/<n>` does not already make non-root terminal allocation fail
+  with `EACCES`. Either the pts open path skips `inode_permission`, or nothing non-root has
+  allocated a pty on the paths exercised so far. I could not distinguish the two by reading.
 - `SEEK_HOLE`/`SEEK_DATA` and xattr support on tmpfs.
 - Whether `poll()` on `/proc/<pid>/*` or on sysfs attributes returns anything useful. Only PSI was
   confirmed working.
