@@ -45,6 +45,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
 #[path = "001_write.rs"] pub mod s001_write; #[path = "257_openat.rs"] pub mod s257_openat; #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "132_utime.rs"] pub mod s132_utime; #[path = "235_utimes.rs"] pub mod s235_utimes; #[path = "280_utimensat.rs"] pub mod s280_utimensat;
+#[path = "261_futimesat.rs"] pub mod s261_futimesat;
 mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path = "165_mount.rs"] pub mod s165_mount; #[path = "166_umount2.rs"] pub mod s166_umount2;
 #[path = "167_swapon.rs"] pub mod s167_swapon;
 #[path = "168_swapoff.rs"] pub mod s168_swapoff;
