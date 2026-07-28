@@ -57,6 +57,7 @@ impl AddressSpace {
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
+            pkeys: super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
         });
         super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
@@ -344,6 +345,7 @@ impl AddressSpace {
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
+            pkeys: super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
         });
         // Linux `anon_vma_fork`: each anonymous VMA in the child
@@ -443,6 +445,7 @@ impl AddressSpace {
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
+            pkeys: super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
         }))
     }
