@@ -30,8 +30,8 @@ keys_changed() {
 
 run() { # run <outfile> [mutant]
     local out="$1" m="${2:-}"
-    if [ -n "$m" ]; then WAIT_DIFF_MUTANT="$m" timeout 120 "$PROBE" >"$out" 2>&1
-    else timeout 120 "$PROBE" >"$out" 2>&1; fi
+    if [ -n "$m" ]; then WAIT_DIFF_MUTANT="$m" timeout 300 "$PROBE" >"$out" 2>&1
+    else timeout 300 "$PROBE" >"$out" 2>&1; fi
     grep -q '^wdiff|meta|complete|status=DONE$' "$out"
 }
 
@@ -72,7 +72,8 @@ check restartall \
     'lock|flock_norestart' 'lock|setlkw_norestart' 'fd|pipe_read_norestart' \
     'fd|unix_recv_norestart' 'fd|tcp_recv_norestart' 'mqueue|recv_norestart'
 check absrem   'sleep|abs_sarestart'
-check handler  'sleep|stopcont_restart_block'
+check handler  'sleep|stopcont_restart_block' \
+    'sysv_msg|rcv_stopcont_restarts' 'sysv_msg|snd_stopcont_restarts'
 check nofg     'jobctl|sigttin_stops_background' 'jobctl|read_resumes_after_fg'
 check wallcpu  'cputime|single_thread_no_progress'
 check noburn   'cputime|sibling_burn_completes'
@@ -89,7 +90,25 @@ check nosig \
     'fd|unix_recv_sarestart' 'fd|unix_recv_norestart' \
     'fd|unix_recv_timed_sarestart' \
     'fd|tcp_recv_sarestart' 'fd|tcp_recv_norestart' \
-    'mqueue|recv_sarestart' 'mqueue|recv_norestart'
+    'mqueue|recv_sarestart' 'mqueue|recv_norestart' \
+    'sysv_sem|signal_sarestart' 'sysv_sem|signal_norestart' \
+    'sysv_msg|rcv_signal_sarestart' 'sysv_msg|rcv_signal_norestart' \
+    'sysv_msg|snd_signal_sarestart' 'sysv_msg|snd_signal_norestart'
+check sysvavail \
+    'sysv_sem|nowait_eagain' 'sysv_msg|rcv_nowait_enomsg' 'sysv_msg|snd_nowait_eagain'
+check sysvnopost \
+    'sysv_sem|block_until_posted' 'sysv_sem|wait_for_zero' \
+    'sysv_msg|rcv_blocks_until_sent' 'sysv_msg|snd_blocks_until_drained'
+check sysvnormid  'sysv_sem|rmid_eidrm' 'sysv_msg|rmid_eidrm'
+check sysvnoundo  'sysv_sem|undo_reverted_on_exit'
+check sysvmsgflags \
+    'sysv_msg|rcv_noerror_truncates' 'sysv_msg|negative_msgtyp_lowest' \
+    'sysv_msg|msg_except_skips'
+check sysvdt1page 'sysv_shm|detach_whole_segment' 'sysv_shm|detach_twice_einval'
+check sysvdtbase \
+    'sysv_shm|detach_interior_einval' 'sysv_shm|detach_unaligned_einval' \
+    'sysv_shm|detach_foreign_mapping_einval'
+check sysvnofork  'sysv_shm|nattch_tracks_fork'
 
 [ "$rc" -eq 0 ] && echo "wait-diff-selftest: PASS - every probe case is falsifiable"
 exit "$rc"

@@ -20,8 +20,10 @@ const char *errno_name(int err) {
     case EBADF: return "EBADF";
     case EBUSY: return "EBUSY";
     case ECONNREFUSED: return "ECONNREFUSED";
+    case E2BIG: return "E2BIG";
     case EEXIST: return "EEXIST";
     case EFAULT: return "EFAULT";
+    case EIDRM: return "EIDRM";
     case EINTR: return "EINTR";
     case EINVAL: return "EINVAL";
     case EMFILE: return "EMFILE";
@@ -30,6 +32,7 @@ const char *errno_name(int err) {
     case ENODEV: return "ENODEV";
     case ENOENT: return "ENOENT";
     case ENOMEM: return "ENOMEM";
+    case ENOMSG: return "ENOMSG";
     case ENOSPC: return "ENOSPC";
     case ENOSYS: return "ENOSYS";
     case EOPNOTSUPP: return "EOPNOTSUPP";
@@ -146,6 +149,44 @@ int err_class(int rc, int err) {
     case EINVAL:     return CLS_EINVAL;
     default:         return CLS_OTHER;
     }
+}
+
+int sysv_class(int rc, int err) {
+    if (rc >= 0) return 0;
+    switch (err) {
+    case EINTR:  return 1;
+    case EAGAIN: return 2;
+    case EIDRM:  return 3;
+    case ENOMSG: return 4;
+    case EINVAL: return 5;
+    case E2BIG:  return 6;
+    default:     return 7;
+    }
+}
+
+const char *sysv_class_name(int cls) {
+    switch (cls) {
+    case 0: return "ok";
+    case 1: return "eintr";
+    case 2: return "eagain";
+    case 3: return "eidrm";
+    case 4: return "enomsg";
+    case 5: return "einval";
+    case 6: return "e2big";
+    default: return "other";
+    }
+}
+
+const char *fault_class(int st) {
+    if (WIFSIGNALED(st)) {
+        switch (WTERMSIG(st)) {
+        case SIGSEGV: return "segv";
+        case SIGBUS:  return "bus";
+        default:      return "signalled";
+        }
+    }
+    if (!WIFEXITED(st)) return "other";
+    return WEXITSTATUS(st) == 0 ? "ok" : "exited";
 }
 
 const char *err_class_name(int cls) {
