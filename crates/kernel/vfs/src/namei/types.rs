@@ -117,6 +117,18 @@ pub struct LookupFlags {
     pub rcu: bool,
 }
 
+impl LookupFlags {
+    /// True when the START directory (the `*at` dirfd) IS the resolution root,
+    /// so the walk must be seeded from it rather than from the process root —
+    /// Linux `fs/namei.c` `path_init`'s `LOOKUP_IS_SCOPED` branch
+    /// (`LOOKUP_BENEATH | LOOKUP_IN_ROOT`), which sets `nd->root = nd->path`.
+    ///
+    /// Single owner for the predicate: the resolver seeds `Nameidata` on it and
+    /// the syscall layer picks its resolve entry point on it, and the two may
+    /// never disagree about whether a walk is scoped. # C: O(1)
+    pub fn confines_to_dirfd(&self) -> bool { self.beneath_exdev || self.in_root }
+}
+
 /// Caller credentials for the VFS permission checks — Linux `struct cred`
 /// subset: fsuid/fsgid + supplementary groups + the DAC/owner/chown-bypass
 /// capabilities. The vfs crate is task-agnostic, so the cred is threaded in
