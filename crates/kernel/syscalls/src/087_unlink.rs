@@ -103,7 +103,7 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
                 }
                 None    => drop_child_cache(&parent, &name),
             }
-            vfs::fire_dirent_delete(&parent.inode, &name);
+            vfs::fire_dirent_delete(&parent.inode, &name, false);
             0
         }
         Err(e)  => errno_from_vfs(e),

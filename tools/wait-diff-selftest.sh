@@ -88,6 +88,17 @@ check mqnoprio   'mqapi|priority_order'
 check mqnonotify 'mqapi|notify_signal'
 check mqnothread 'mqapi|notify_thread'
 check mqnostate  'mqapi|read_state_line'
+# inotify event LAYOUT — the host kernel is the oracle for the exact bytes, so
+# each mutant corrupts one part of what the reader recovers.
+check inoname \
+    'inotify|create_name' 'inotify|pad_fills_one' 'inotify|pad_spills_two' \
+    'inotify|mkdir_isdir' 'inotify|move_names' 'inotify|child_modify' \
+    'inotify|short_buf'
+check inolen \
+    'inotify|create_name' 'inotify|pad_fills_one' 'inotify|pad_spills_two' \
+    'inotify|mkdir_isdir' 'inotify|child_modify'
+check inobuf   'inotify|short_buf'
+check inochild 'inotify|child_modify'
 check nosig \
     'sleep|rel_norestart' 'sleep|rel_sarestart' 'sleep|abs_sarestart' \
     'lock|flock_sarestart' 'lock|flock_norestart' \

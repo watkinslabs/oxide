@@ -110,7 +110,7 @@ pub fn set_test_mount(mount: crate::Mount) {
 /// marker only proves "some ext4 inode"; the wrapper's `st` field
 /// disambiguates which mount owns it.
 #[cfg(target_os = "oxide-kernel")]
-fn close_hook_free_orphan(ino_ref: &vfs::InodeRef, _was_writable: bool) {
+fn close_hook_free_orphan(ino_ref: &vfs::InodeRef, _was_writable: bool, _d: &alloc::sync::Arc<vfs::Dentry>) {
     if !is_ext4_ino(ino_ref.ino()) { return; }
     // Recover (owning mount state, ext4 ino) from the inode's i_private.
     let (st, ino): (Arc<RootfsState>, u32) = match inode::ext4_state_of(ino_ref) {

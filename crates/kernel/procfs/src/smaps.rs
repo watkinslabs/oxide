@@ -31,7 +31,10 @@ pub fn make_proc_self_smaps() -> InodeRef {
 
 /// `/proc/<pid>/smaps` inode (per-pid). # C: O(1)
 pub fn make_proc_pid_smaps(tid: u32) -> InodeRef {
-    crate::dyn_file::make_pid_gen_file(crate::live::pid_ino(0x1B, tid), tid, build_for_pid)
+    // Linux `proc_maps_open` -> `proc_mem_open(inode, PTRACE_MODE_READ)`: the
+    // mode is S_IRUGO, so the ptrace check is the ONLY thing keeping another
+    // user's address-space layout private.
+    crate::live::make_pid_gated_file(crate::live::pid_ino(0x1B, tid), tid, "smaps", build_for_pid)
 }
 
 /// Build the body for the current task.
