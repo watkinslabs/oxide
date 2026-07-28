@@ -41,7 +41,8 @@ pub use fault::{
     vector_stub_addr, FaultFrame, FaultGprs, FaultHandler, UserTrapHook,
 };
 pub use fpu::{
-    fpu_disable, fpu_enable, fpu_restore, fpu_save, xsave_active, xsave_area_bytes, xstate_init,
+    fpu_disable, fpu_enable, fpu_restore, fpu_save, mxcsr_feature_mask, mxcsr_mask_init,
+    xsave_active, xsave_area_bytes, xsave_xcr0, xstate_init,
     FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES,
 };
 pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, USER_CS, USER_DS};
@@ -66,7 +67,7 @@ pub use regs::{read_clear_dr6, set_data_watchpoint};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
 pub use regs::{arm_hole_watchpoint, disarm_hole_watchpoint, read_dr0_dr1};
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
-pub use signal::{build_signal_frame, current_user_sp, sigframe_base, sigframe_range, restart_ignored_syscall, restart_via_restart_syscall, restore_signal_frame, rt_sigreturn_frame_range};
+pub use signal::{build_signal_frame, min_sigstksz, current_user_sp, sigframe_base, sigframe_range, restart_ignored_syscall, restart_via_restart_syscall, restore_signal_frame, rt_sigreturn_frame_range};
 pub use syscall::{
     boot_syscall_kstack_top, current_kstack_top, current_user_frame, current_user_full_frame,
     init_percpu_syscall_kstack, install_syscall_msrs, set_syscall_kstack,

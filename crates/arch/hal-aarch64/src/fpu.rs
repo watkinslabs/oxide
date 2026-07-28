@@ -14,6 +14,15 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 /// 32-bit FPSR + padding to 16-byte alignment = 528 B.
 pub const FPU_STATE_BYTES: usize = 32 * 16 + 16; // 528
 
+/// `fpcr` offset inside [`FpuStateAArch64`] — pinned by the save/restore asm
+/// and read by the signal-frame builder, which must place it in the OPPOSITE
+/// order inside `struct fpsimd_context` (fpsr first there).
+pub const FPU_FPCR_OFF: usize = 0x200;
+/// `fpsr` offset inside [`FpuStateAArch64`].
+pub const FPU_FPSR_OFF: usize = 0x204;
+/// Bytes of Q-register state at offset 0 (`q0..q31`, 16 B each).
+pub const FPU_VREGS_BYTES: usize = 32 * 16;
+
 /// Saved FP/SIMD state. Layout-pinned: `q[i]` at offset `i*16`,
 /// `fpcr` at 0x200, `fpsr` at 0x204.
 #[repr(C, align(16))]

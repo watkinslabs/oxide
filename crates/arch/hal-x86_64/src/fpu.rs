@@ -9,7 +9,7 @@
 // FXSAVE-shaped (512 B) — XSAVE / AVX expansion to ~832 B comes
 // once the boot path enables CR4.OSXSAVE + queries XCR0.
 
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 use crate::cpuid::{cpuid, cpuid_count};
@@ -43,6 +43,45 @@ static XSAVE_ENABLED: AtomicBool = AtomicBool::new(false);
 static XSAVE_XCR0: AtomicU64 = AtomicU64::new(0);
 /// XSAVE area size (bytes) for the enabled XCR0 (CPUID.0Dh:EBX); 0 pre-init.
 static XSAVE_AREA_BYTES: AtomicUsize = AtomicUsize::new(0);
+/// Linux `mxcsr_feature_mask` (`arch/x86/kernel/fpu/init.c`): the MXCSR bits
+/// this CPU implements, taken from an FXSAVE image's `mxcsr_mask` word.
+/// `rt_sigreturn` rejects a user MXCSR with any bit outside it, because
+/// `fxrstor`/`xrstor64` #GP on a reserved MXCSR bit and that #GP would land
+/// in the kernel with no handler.
+static MXCSR_FEATURE_MASK: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Exact XCR0 the ctxsw saves/restores; 0 on the FXSAVE fallback. The signal
+/// frame reports it as `_fpx_sw_bytes.xfeatures` and clamps any user-supplied
+/// XSTATE_BV to it. # C: O(1)
+pub fn xsave_xcr0() -> u64 { XSAVE_XCR0.load(Ordering::Acquire) }
+
+/// Linux `mxcsr_feature_mask`. # C: O(1)
+pub fn mxcsr_feature_mask() -> u32 { MXCSR_FEATURE_MASK.load(Ordering::Acquire) }
+
+/// Linux `fpu__init_system_mxcsr()`: FXSAVE a scratch area and take its
+/// `mxcsr_mask` word; hardware that reports 0 means the original P6 mask.
+/// Called once per CPU from `xstate_init`, before any signal can be
+/// delivered. Idempotent — every CPU computes the same value.
+/// # SAFETY: `fxsave` writes 512 B into a 64-byte-aligned stack local this
+/// function exclusively owns; FXSR is a baseline x86_64 feature so the insn
+/// cannot #UD, and CR0.TS is clear on the boot/AP path that calls this.
+/// # C: O(1)
+pub unsafe fn mxcsr_mask_init() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let mut fx = FpuStateX86_64::zeroed();
+        // SAFETY: `fxsave` writes exactly 512 B at a 64-byte-aligned local of that size; no other reference to `fx` exists.
+        unsafe { core::arch::asm!("fxsave [{s}]", s = in(reg) &mut fx as *mut FpuStateX86_64, options(nostack, preserves_flags)); }
+        let mut w = [0u8; 4];
+        w.copy_from_slice(&fx.bytes[MXCSR_MASK_OFF..MXCSR_MASK_OFF + 4]);
+        let mask = u32::from_le_bytes(w);
+        let mask = if mask == 0 { crate::signal::xstate::MXCSR_DEFAULT_FEATURE_MASK } else { mask };
+        MXCSR_FEATURE_MASK.store(mask, Ordering::Release);
+    }
+}
+
+/// `mxcsr_mask` offset inside the FXSAVE image (Intel SDM Vol. 1 Tab. 10-2).
+const MXCSR_MASK_OFF: usize = 28;
 
 /// True if the CPU advertises `xsave` AND it fits our buffer — i.e. the
 /// ctxsw preserves the full AVX/AVX512 state. Diagnostics / callers that

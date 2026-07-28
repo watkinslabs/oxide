@@ -42,7 +42,7 @@ directions; those are merged here with all reporting docs cited.
 | 10 | **No global OOM killer** — `kill_memcg` has one caller and fires only under a cgroup limit. | On a normal desktop, memory exhaustion kills nothing; the allocation failure propagates and the *faulting* process takes SIGSEGV instead of a badness-selected victim taking SIGKILL. | open |
 | 11 | ~~**The exec transition has no security floor**~~ — every part of the finding was CONFIRMED and is now FIXED: `S_ISUID`/`S_ISGID` honouring with all of Linux's suppression rules, `MAY_EXEC` + file-type + `path_noexec` on the live exec path, `AT_SECURE`/`AT_UID`/`AT_EUID`/`AT_GID`/`AT_EGID` from the real creds on both arches, `MNT_NOSUID` via `Mount::may_suid`, `MNT_NODEV` in `may_open`. Plus the capability half: file caps (incl. the rev-3 `rootid` namespace test and an interleaved-layout decode bug), ambient clearing, `SECBIT_NOROOT`/`SECBIT_KEEP_CAPS`, the `LSM_UNSAFE_*` downgrade, `PER_CLEAR_ON_SETID` and `would_dump` dumpability. Decision is one pure ungated fn with 38 unit tests. | DONE | `B1464-exec-privilege-transition` |
 | 12 | **`/proc/<pid>/status` is fabricated** — `Uid: 0 0 0 0`, all-ones capability masks, `NoNewPrivs: 0` for every process; procfs has no `ptrace_may_access` gate and every dynamic file is 0444. | systemd, polkit, dbus-daemon and `pkexec` read this to decide who a peer is and what it may do. | `B1463` in flight |
-| 13 | **arm64 `rt_sigreturn` writes raw user PSTATE into `spsr_el1`** — forging `M[3:0]=0b0101` returns user code at **EL1**. x86_64 has the same shape with EFLAGS and no `FIX_EFLAGS` whitelist (IOPL user-settable); `build_signal_frame` has no `access_ok`, giving an arbitrary kernel write. | Unprivileged local privilege escalation. | `B1459` in flight |
+| 13 | **arm64 `rt_sigreturn` writes raw user PSTATE into `spsr_el1`** — forging `M[3:0]=0b0101` returns user code at **EL1**. x86_64 has the same shape with EFLAGS and no `FIX_EFLAGS` whitelist (IOPL user-settable); `build_signal_frame` has no `access_ok`, giving an arbitrary kernel write. | Unprivileged local privilege escalation. | `B1459` merged; the FPU/SIMD gap the same lane found is `B1466`, merged |
 | 14 | **`AT_RANDOM` is a clock reading** — 16 bytes derived from one `monotonic_ns()` sample; bytes 8..15 re-derive from the same word. | glibc builds `__stack_chk_guard` and the `PTR_MANGLE` pointer guard from it, so both mitigations are predictable. `crates/kernel/crng` exists and is not called. | `F768` in flight |
 
 ## 3 Cross-cutting patterns
@@ -61,6 +61,25 @@ not missing code. Confirmed: `age_anon`/`age_file`, `mark_lru_referenced`,
 
 Consequence: **a symbol existing proves nothing.** Grep call sites, not definitions.
 Corollary: many of these are wiring jobs, not implementations — cheaper than they look.
+
+Worked example, FIXED `B1466`: `fpu_save`/`fpu_restore` and a full per-task XSAVE area
+existed and were exercised on every context switch, while the signal frame wrote
+`fpstate = 0` (x86_64) and an empty `__reserved` (arm64) — so any handler calling a
+SIMD-optimised glibc routine silently destroyed the interrupted context. The fix was
+mostly wiring, but NOT only wiring: the frame layout, `save_xstate_epilog`, the
+`check_xstate_in_sigframe` / `validate_user_xstate_header` / MXCSR restore checks and
+arm64's `parse_user_sigframe` record chain all had to be written, and arm64's
+`sigcontext.__reserved` turned out to be 8 bytes off Linux (280 vs the UAPI's
+`__aligned__(16)` 288) — latent exactly as long as nothing lived there.
+`userspace/wait_diff/sigfpu.c` now diffs SIMD preservation across signal delivery
+against the host's real Linux, with two mutants in `tools/wait-diff-selftest.sh`.
+
+Second lesson from the same lane, for anyone touching an arm64 signal frame:
+`struct sigcontext` is 4384 bytes and `rt_sigframe` 4688, so staging either in a
+kernel-stack local is fatal — LLVM turned ONE by-value read of `sigcontext` into a
+21 KiB stack frame on a 16 KiB guard-paged kstack. Hosted tests were all green;
+only `make smoke-arm` caught it. Write and read the frame field by field straight
+into user memory, which is what Linux's `__put_user_error`/`__get_user_error` do.
 
 ### 3.2 Gated files hide their own tests
 `crates/kernel/syscalls/src/kernel_body.rs` and every slot file it `#[path]`-includes are
