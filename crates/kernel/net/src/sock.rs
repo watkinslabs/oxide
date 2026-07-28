@@ -72,6 +72,7 @@ mod lifecycle;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod raw_bind;
 mod bind_admission;
+mod tcp_rcvbuf;
 mod legacy_ioctl;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod tcp_lifecycle;

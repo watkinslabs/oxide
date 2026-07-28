@@ -63,6 +63,10 @@ pub struct TcpConn {
     pub rcv_buf_cap: u32,
     pub rcv_buf_max: u32,
     pub rcv_peak: u32,
+    /// Linux `sk->sk_userlocks & SOCK_RCVBUF_LOCK` (`net/core/sock.c:975`):
+    /// once `setsockopt(SO_RCVBUF)` names a size, receive-window autotuning
+    /// stops and the advertised window follows the caller's number.
+    pub rcv_buf_locked: bool,
     pub ecn_enabled: bool,
     pub send_ece:    bool,
     pub send_cwr:    bool,

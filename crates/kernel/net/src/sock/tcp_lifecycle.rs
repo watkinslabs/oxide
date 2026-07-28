@@ -86,6 +86,7 @@ fn connect_tcp(sock: &alloc::sync::Arc<InetSocket>, local_ip: crate::IpAddr,
     )?;
     entry.register_poll_subs(&sock.poll_subs);
     apply_tcp_keepalive_opts(sock, &entry);
+    super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(sock, &entry);
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     match remote_ip {
         crate::IpAddr::V4(ip) => *sock.peer.lock() = Some((ip, remote_port)),
