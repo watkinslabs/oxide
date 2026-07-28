@@ -31,6 +31,7 @@ impl InotifyData {
             events: sync::Spinlock::new(alloc::collections::VecDeque::new()),
             perm_queue: sync::Spinlock::new(alloc::collections::VecDeque::new()),
             poll_subs: Arc::new(PollSubscribers::new()),
+            read_waiters: crate::inotify::types::ReadWaiters::new(),
             perm_pending: sync::Spinlock::new(Vec::new()),
         });
         register_instance(Arc::downgrade(&arc));
@@ -97,12 +98,16 @@ impl InotifyData {
         let mut q = self.events.lock();
         if q.len() < INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
             q.push_back(ev);
+            drop(q);
             self.poll_subs.notify_mask(vfs::POLL_IN);
+            self.read_waiters.wake_all();
             return;
         }
         if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return; }
         q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
+        drop(q);
         self.poll_subs.notify_mask(vfs::POLL_IN);
+        self.read_waiters.wake_all();
     }
 
     /// Apply a `struct fanotify_response { __s32 fd; __u32 response }` write:
@@ -138,6 +143,8 @@ impl InotifyData {
             loop {
                 match self.read_fanotify(buf) {
                     Err(VfsError::Eagain) => {
+                        // Spins rather than parks — same unproven-wake reason as
+                        // the inotify arm below. Parking wedged the boot.
                         #[cfg(target_os = "oxide-kernel")]
                         // SAFETY: read syscall context; runqueue installed; yield until an event arrives.
                         unsafe { sched::live::tick_yield(); }
@@ -158,6 +165,13 @@ impl InotifyData {
             let ev = match q.pop_front() { Some(e) => e, None => break };
             written += encode_event(&mut buf[written..], ev.wd, ev.mask, ev.cookie, &ev.name);
         }
+        // KNOWN GAP, deliberately not parked yet: Linux `inotify_read` sleeps
+        // here and EAGAIN belongs to the O_NONBLOCK path. Parking was tried and
+        // WEDGED THE BOOT — some producer of watched events does not reach
+        // `enqueue_event`, so a parked reader is never woken, which is strictly
+        // worse than the wrong errno. The wait list and its wake sites are in
+        // place; what is missing is proof that every event producer wakes it.
+        // See scratch/partial-surface-2026-07-28.md 4.14.
         if written == 0 { return Err(VfsError::Eagain); }
         Ok(written)
     }
@@ -238,7 +252,7 @@ fn check_perm(inode: &InodeRef, perm_mask: u32) -> bool {
             if !arc.fanotify { continue; }
             let hit = arc.watches.lock().iter().any(|wi|
                 wi.applies(key, fsid) && (wi.mask & perm_mask) != 0 && (wi.ignored & perm_mask) == 0);
-            if hit { arc.perm_queue.lock().push_back(ev.clone()); arc.poll_subs.notify_mask(vfs::POLL_IN); queued = true; }
+            if hit { arc.perm_queue.lock().push_back(ev.clone()); arc.poll_subs.notify_mask(vfs::POLL_IN); arc.read_waiters.wake_all(); queued = true; }
         }
     }
     if !queued { return true; }
