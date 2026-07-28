@@ -59,13 +59,18 @@ struct InodeHooks {
     dirent_create: Option<fn(&InodeRef, &str, bool)>,
     /// IN_DELETE — dirent removed from a watched parent inode. Same args.
     dirent_delete: Option<fn(&InodeRef, &str, bool)>,
+    /// `fsnotify_change` — a successful `notify_change`. Args: (inode, ia_valid).
+    /// The subscriber owns the `ATTR_*` → event-mask mapping, exactly as
+    /// Linux's `fsnotify_change` inline does (`include/linux/fsnotify.h`).
+    setattr: Option<fn(&InodeRef, u32)>,
 }
 
 impl InodeHooks {
     /// # C: O(1)
     const fn new() -> Self {
         Self { open: None, read: None, write: None, clone: None,
-               close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None }
+               close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None,
+               setattr: None }
     }
 }
 
@@ -137,6 +142,21 @@ pub fn fire_clone_hook(file: &File) {
 pub fn set_dirent_create_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_create = Some(f); }
 /// Install the dirent-delete hook (fires IN_DELETE; args (parent inode, leaf)). # C: O(1)
 pub fn set_dirent_delete_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_delete = Some(f); }
+
+/// Install the setattr hook. Fired from the ONE point Linux fires it: after
+/// `i_op->setattr` succeeds inside `notify_change` (`fs/attr.c` `notify_change`
+/// → `fsnotify_change`). Per-syscall firing cannot work — it misses every
+/// caller that does not go through that syscall (`fchmod`, `fchmodat`,
+/// `fchown`, `fchownat`, `truncate`, `ftruncate`, `utimensat`), and aarch64
+/// has no legacy `chmod`/`chown` slots at all. # C: O(1)
+pub fn set_setattr_hook(f: fn(&InodeRef, u32)) { HOOKS.lock().setattr = Some(f); }
+
+/// Fire the setattr hook with the applied `ATTR_*` set (no-op when not
+/// installed). # C: O(1)
+pub fn fire_setattr_hook(inode: &InodeRef, ia_valid: u32) {
+    let h = HOOKS.lock().setattr;
+    if let Some(f) = h { f(inode, ia_valid); }
+}
 
 /// Fire the dirent-create hook (no-op when not installed). # C: O(1)
 pub fn fire_dirent_create(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {

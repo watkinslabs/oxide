@@ -316,5 +316,11 @@ fn notify_change_applied(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr) -> KRe
             ia.ctime = sb.timestamp_truncate(ia.ctime);
         }
     }
-    inode.setattr(idmap, ia)
+    let r = inode.setattr(idmap, ia);
+    // Linux fires notification from HERE and nowhere else: `notify_change`
+    // calls `fsnotify_change(dentry, ia_valid)` once `i_op->setattr` returns 0
+    // (`fs/attr.c`). Firing per-syscall instead silently skips every path that
+    // does not go through that one syscall.
+    if r.is_ok() { crate::file::fire_setattr_hook(inode, ia.valid); }
+    r
 }

@@ -21,7 +21,5 @@ pub fn sys_lchown(args: &SyscallArgs) -> i64 {
         Err(rv) => return rv,
     };
     let rc = do_chown(&inode, mnt_id, args.a1 as u32, args.a2 as u32);
-    // FAN_ATTRIB / IN_ATTRIB on a successful ownership change (Linux fsnotify_change).
-    if rc == 0 { ::fs::inotify::fire_attrib(&inode); }
     rc
 }
