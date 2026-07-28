@@ -95,41 +95,12 @@ impl InodeOps for Ext4RegInodeOps {
         Ok(())
     }
 
-    fn fallocate(&self, inode: &Inode, off: u64, len: u64, keep_size: bool, zero_range: bool, punch: bool)
-        -> KResult<()>
-    {
-        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        let _mutation = d.begin_swap_mutation()?;
-        if punch {
-            // FALLOC_FL_PUNCH_HOLE: deallocate the range → holes (read zeros),
-            // size unchanged. Linux requires KEEP_SIZE with PUNCH_HOLE.
-            d.st.mount.punch_hole_inode(d.ino, off, len).map_err(vfs_error_from_mount)?;
-        } else if zero_range {
-            let old = d.size_hint.load(Ordering::Acquire);
-            let end = off.checked_add(len).ok_or(VfsError::Einval)?;
-            let bs = d.st.mount.sb.block_size.max(1) as usize;
-            let zeros = alloc::vec![0u8; bs];
-            let mut pos = off;
-            while pos < end {
-                let n = core::cmp::min((end - pos) as usize, zeros.len());
-                d.st.mount.write_at(d.ino, pos, &zeros[..n]).map_err(vfs_error_from_mount)?;
-                pos += n as u64;
-            }
-            if keep_size && end > old {
-                d.st.mount.set_inode_size(d.ino, old).map_err(vfs_error_from_mount)?;
-            }
-        } else {
-            d.st.mount.fallocate_inode(d.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
-        }
-        d.st.page_cache.invalidate(InodeId(d.ino as u64));
-        if let Some(end) = off.checked_add(len) { d.frames.invalidate_range(off & !(4095u64), end); }
-        d.refresh_size();
-        inode.set_size(d.size_hint.load(Ordering::Acquire));
-        d.refresh_inode_usage(inode);
-        #[cfg(feature = "ext4-frame-cache")]
-        d.frames.set_size(d.size_hint.load(Ordering::Acquire));
-        // ext4_fallocate stamps mtime + ctime (Linux) — the allocation mutates
-        // the file even under keep_size, so the change/modify times advance.
+    /// `ext4_fallocate` — mode dispatch lives in `fallocate.rs`; this slot adds
+    /// the `file_modified` timestamp stamp Linux runs before the extent work.
+    /// The allocation mutates the file even under KEEP_SIZE, so mtime + ctime
+    /// advance regardless of whether `i_size` moved. # C: O(len/blocksize)
+    fn fallocate(&self, inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
+        super::fallocate::ext4_fallocate(inode, mode, off, len)?;
         let raw = vfs::inode_times::realtime_now_ns();
         if raw != 0 {
             let now = vfs::inode_times::current_time(inode, raw);

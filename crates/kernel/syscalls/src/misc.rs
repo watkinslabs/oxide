@@ -38,11 +38,15 @@ use syscall::errno::Errno;
 #[path = "440_process_madvise.rs"]          pub mod s440_process_madvise;
 #[path = "448_process_mrelease.rs"]         pub mod s448_process_mrelease;
 #[path = "074_fsync.rs"]                    pub mod s074_fsync;
+#[path = "277_sync_file_range.rs"]          pub mod s277_sync_file_range;
+#[path = "187_readahead.rs"]                pub mod s187_readahead;
 #[path = "162_sync.rs"]                     pub mod s162_sync;
 #[path = "169_reboot.rs"]                   pub mod s169_reboot;
 
 // Routed via `crate::misc::sys_fsync` / `sys_reboot` / `sys_sync` / `sys_syncfs`.
 pub use s074_fsync::{sys_fsync, sys_fdatasync};
+pub use s277_sync_file_range::sys_sync_file_range;
+pub use s187_readahead::sys_readahead;
 pub use s162_sync::{sys_sync, sys_syncfs};
 pub use s169_reboot::sys_reboot;
 

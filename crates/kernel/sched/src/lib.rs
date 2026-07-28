@@ -170,7 +170,6 @@ pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod cred;
-#[cfg(target_os = "oxide-kernel")] pub mod falloc;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod prctl;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_set_mm;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_vma;

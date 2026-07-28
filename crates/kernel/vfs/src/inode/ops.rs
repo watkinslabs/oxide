@@ -51,9 +51,9 @@ impl Inode {
     }
     /// `i_op->truncate`. # C: backend-dependent
     pub fn truncate(&self, len: u64) -> KResult<()> { self.i_op.truncate(self, len) }
-    /// `i_op->fallocate`. # C: backend-dependent
-    pub fn fallocate(&self, off: u64, len: u64, keep_size: bool, zero_range: bool, punch: bool) -> KResult<()> {
-        self.i_op.fallocate(self, off, len, keep_size, zero_range, punch)
+    /// `f_op->fallocate`. `mode` is a raw `FALLOC_FL_*` combination. # C: backend-dependent
+    pub fn fallocate(&self, mode: u32, off: u64, len: u64) -> KResult<()> {
+        self.i_op.fallocate(self, mode, off, len)
     }
     /// `i_op->fiemap`. # C: O(extents)
     pub fn fiemap(&self, start: u64, len: u64, emit: &mut dyn FnMut(FiemapExtent) -> bool) -> KResult<()> {
