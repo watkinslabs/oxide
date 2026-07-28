@@ -16,6 +16,9 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+// execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
+// tested, and this is what glibc's stack canary + pointer guard come from.
+pub mod auxrandom;
 // swapon(2) 167: the `swap_flags` decode + its EINVAL-before-EPERM order.
 // futimesat(2) 261 / utimes(2) 235: the `struct timeval[2]` decode. Both slot
 // files are kernel-gated, so the decisions live here where the hosted suite
