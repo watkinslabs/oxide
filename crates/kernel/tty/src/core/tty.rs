@@ -68,7 +68,7 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// queue). poll/select/epoll subscribe here via the fd's inode; every
     /// RX / hangup transition calls `subs.notify()` to wake ONLY the tasks
     /// polling THIS tty — no global broadcast.
-    subs: vfs::PollSubscribers,
+    subs: alloc::sync::Arc<vfs::PollSubscribers>,
     /// Output-suspend flag (Linux `tty->flow.stopped` / `STOP_OUTPUT`).
     /// Set by TCXONC TCOOFF or a ^S under IXON; cleared by TCOON / ^Q.
     /// While set, `write` parks the caller on the wait queue rather than
@@ -92,7 +92,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             sid: AtomicU32::new(0),
             open_count: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
-            subs: vfs::PollSubscribers::new(),
+            subs: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
             output_stopped: AtomicBool::new(false),
         }
     }
@@ -100,6 +100,13 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// The per-tty poll/select/epoll wait queue, for the fd inode's
     /// `poll_subscribers()`. # C: O(1)
     pub fn poll_subs(&self) -> &vfs::PollSubscribers { &self.subs }
+
+    /// The same queue as a shared handle, so the tty's device inode can
+    /// publish it through `InodeBuilder::poll_subs_arc` — one list, shared by
+    /// the notifier and the waiter, never two that can disagree. # C: O(1)
+    pub fn poll_subs_arc(&self) -> alloc::sync::Arc<vfs::PollSubscribers> {
+        alloc::sync::Arc::clone(&self.subs)
+    }
 
     /// Build with a caller-supplied termios image (raw-mode ptys etc.).
     /// # C: O(1)
@@ -131,7 +138,9 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         // `PollSubscribers` via the fd inode's `poll_subscribers()`). Per-fd,
         // targeted — the Linux `->poll` wait-queue wake. Outside the port lock
         // (same as the reader wake); level-triggered, so spurious wakes safe.
-        self.subs.notify();
+        // Keyed POLLIN, like Linux `n_tty_receive_buf` →
+        // `wake_up_interruptible_poll(&tty->read_wait, EPOLLIN | EPOLLRDNORM)`.
+        self.subs.notify_mask(vfs::POLL_IN);
     }
 
     /// Blocking read — THE lost-wakeup-free read. Returns a whole cooked
@@ -494,8 +503,9 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         self.fg_pgrp.store(0, Ordering::Release);
         self.wait.wake_all();
         // Hangup flips POLLHUP + read→EOF: wake poll/select/epoll waiters too
-        // (same rationale as receive_from_driver).
-        self.subs.notify();
+        // (same rationale as receive_from_driver). `tty_release` wakes both the
+        // read and the write queue (`drivers/tty/tty_io.c:1766-1785`).
+        self.subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
     }
 
     /// True once `hangup` has dropped the ldisc into its EOF/EIO state.

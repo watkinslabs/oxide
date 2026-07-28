@@ -233,17 +233,57 @@ pub struct EpollData {
 }
 
 impl EpollData {
-    /// Queue currently-ready level interests after a keyless/global rescan. ET
-    /// entries are excluded because only their own source callback creates a
-    /// post-ADD edge. # C: O(N_entries)
+    /// Level-interest fallback for sources that publish NO readiness callback.
+    ///
+    /// Linux has no counterpart: `ep_poll` is strictly `rdllist`-driven, items
+    /// enter it only from `ep_poll_callback` / `ep_insert` / `ep_modify` /
+    /// level re-injection in `ep_send_events`, and `fs/eventpoll.c` contains no
+    /// timer, workqueue or rescan of the interest tree at all. Every readiness
+    /// transition there is a wait-queue wakeup, so a source with no wakeup is
+    /// simply broken and visibly so.
+    ///
+    /// This kernel still has a handful of pollable objects whose mask moves
+    /// with no `PollSubscribers` behind it, so dropping the fallback outright
+    /// would turn "slow" into "hangs" for them:
+    ///   - `crates/drivers/drm/src/node/publication.rs:42` — `/dev/dri/cardN`
+    ///     KMS/page-flip events (mutter's frame loop).
+    ///   - `crates/kernel/devfs/src/misc.rs:113` — `/dev/kmsg` new records.
+    ///   - `crates/kernel/modules/src/linux_chrdev/core.rs:208` — module chrdevs.
+    ///   - `crates/kernel/modules/src/linux_debugfs_file.rs:115` — module
+    ///     debugfs files that supply a `->poll`.
+    ///   - `crates/kernel/tracefs/src/ring.rs:423` — `trace_pipe`.
+    /// They are tracked in `scratch/audit-net-sec.md`; each one wired removes a
+    /// line from that list, and the fallback disappears when the list empties.
+    ///
+    /// So it is deliberately restricted to interests whose ADD found NO source
+    /// (`poll_source.is_none()`). That makes it structurally incapable of
+    /// papering over a missing `notify` on a source that HAS a subscriber list
+    /// — the failure mode that hid the tty/pty/FIFO/mqueue defect — and it
+    /// costs O(N_unwired) rather than O(N_entries) per wakeup, which is zero
+    /// for the event loops (systemd, dbus-broker, gnome-shell) that watch
+    /// nothing but sockets, pipes, timerfds and signalfds.
+    ///
+    /// ET entries are excluded: only their own source callback creates a
+    /// post-ADD edge. # C: O(N_entries) scan, O(N_unwired) polls
     pub(super) fn rescan_levels(&self) {
         let entries = self.entries.lock().clone();
         for item in entries {
+            if item.poll_source.is_some() { continue; }
             let state = item.state.lock();
             let queue = state.active && state.armed
                 && state.events & EPOLLET == 0 && item.ready(state.events) != 0;
             drop(state);
-            if queue { EpItem::queue(&item, false); }
+            if queue {
+                #[cfg(feature = "debug-epoll")]
+                if diag_slot() {
+                    // Names an fd that is ONLY reachable through the fallback,
+                    // i.e. a source still missing its `PollSubscribers`.
+                    klog::write_raw(b"[EPRESCAN ep="); klog::write_dec_u64(self.id as u64);
+                    klog::write_raw(b" fd="); klog::write_dec_u64(item.fd as u64);
+                    klog::write_raw(b"]\n");
+                }
+                EpItem::queue(&item, false);
+            }
         }
     }
 

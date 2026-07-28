@@ -37,12 +37,12 @@ directions; those are merged here with all reporting docs cited.
 | 5 | **Inodes built with no `PollSubscribers`** — tty, pty, ext4 FIFOs, mqueue fds. `poll` parks with no wake source; `epoll_ctl(ADD)` registers no callback. | Readiness survives only via epoll's O(N) rescan fallback — which is why this presents as slowness, not as a hang. Found independently by three lanes in three subsystems. | `B1461` in flight |
 | 6 | **`POLL_OUT` never de-asserts** — every AF_UNIX and TCP poll mask sets it unconditionally while the send paths correctly return `EAGAIN`. | A non-blocking poll-driven writer against a slow reader spins at 100% CPU. | with #5 |
 | 7 | **inotify events carry no filename** — `len` hardwired to 0, the leaf name taken and discarded. | Every directory watcher learns *that* something changed, never *which* file: systemd `.path` units, udev, `GFileMonitor`, Nautilus, dconf. | `B1463` in flight |
-| 8 | **User frames freed with no TLB flush** — `evict_foreign_pages_in_range` unmaps then immediately frees, no local flush, no shootdown, either arch. The in-file justification ("oxide is UP") is false; SMP bring-up runs on both arches and smoke boots `-smp 2`. | Reachable from `process_madvise`/`process_mrelease`: a frame returns to the buddy while another CPU holds a writable TLB entry. Same class as the io_uring free-while-mapped UAF. | open |
-| 9 | **`sched_setscheduler` on a remote-queued task uses the caller's runqueue** — force-clears `on_rq`, then enqueues into a second tree. | One `Arc<Task>` in two runqueue trees; two CPUs can run one task and corrupt its saved context. Latent until SMP>1, which is untested (`wait-diff-open-items` W4). | open |
+| 8 | **User frames freed with no TLB flush** — `evict_foreign_pages_in_range` unmapped then immediately freed, no local flush, no shootdown, either arch. The in-file justification ("oxide is UP") was false; SMP bring-up runs on both arches and smoke boots `-smp 2`. | Reachable from `process_madvise`/`process_mrelease`: a frame returned to the buddy while another CPU held a writable TLB entry. Same class as the io_uring free-while-mapped UAF. | FIXED `B1467-smp-tlb-and-runqueue` — teardown now runs through `pmm::tlb_gather::TlbGather` (Linux `mm/mmu_gather.c`: unhook -> invalidate -> free, batched), targeting the TARGET mm's cpumask rather than the caller's. Two ADDITIONAL sites of the same class found and fixed: `unmap.rs` `glue_munmap` + `evict_pages_in_range` gated their local flush on `#[cfg(target_arch="x86_64")]`, so EVERY aarch64 munmap/MADV_DONTNEED freed frames with no invalidation at all (ARM has no TLB IPI — `arch-irq::tlb` is x86-only — so the no-op shootdown was the only other candidate); and `pageout.rs` `flush_reclaim_mapping` issued its ARM broadcast only when the mm was current, leaving the normal foreign-rmap reclaim path uninvalidated on ARM. 8 hosted ordering tests in `mm-pmm/src/tlb_gather/tests.rs` (ungated; `user_as` is kernel-gated and would compile tests out). |
+| 9 | **`sched_setscheduler` on a remote-queued task uses the caller's runqueue** — force-cleared `on_rq`, then enqueued into a second tree. | One `Arc<Task>` in two runqueue trees; two CPUs can run one task and corrupt its saved context. | FIXED `B1467-smp-tlb-and-runqueue` — `set_class` now delegates to `live::rq_locate::set_class_with`, which locates the runqueue the task is ACTUALLY on (Linux `task_rq_lock` / `sched_change_begin`+`end`, both of which recompute `task_rq(p)`), dequeues and re-enqueues THERE. `relocate_for_affinity` shares the same helper, so there is one locating routine, not a third pattern. 11 hosted tests in `sched/src/live/rq_locate/tests.rs`; 3 of them fail against the pre-fix algorithm (verified by reverting). |
 | 10 | **No global OOM killer** — `kill_memcg` has one caller and fires only under a cgroup limit. | On a normal desktop, memory exhaustion kills nothing; the allocation failure propagates and the *faulting* process takes SIGSEGV instead of a badness-selected victim taking SIGKILL. | open |
 | 11 | ~~**The exec transition has no security floor**~~ — every part of the finding was CONFIRMED and is now FIXED: `S_ISUID`/`S_ISGID` honouring with all of Linux's suppression rules, `MAY_EXEC` + file-type + `path_noexec` on the live exec path, `AT_SECURE`/`AT_UID`/`AT_EUID`/`AT_GID`/`AT_EGID` from the real creds on both arches, `MNT_NOSUID` via `Mount::may_suid`, `MNT_NODEV` in `may_open`. Plus the capability half: file caps (incl. the rev-3 `rootid` namespace test and an interleaved-layout decode bug), ambient clearing, `SECBIT_NOROOT`/`SECBIT_KEEP_CAPS`, the `LSM_UNSAFE_*` downgrade, `PER_CLEAR_ON_SETID` and `would_dump` dumpability. Decision is one pure ungated fn with 38 unit tests. | DONE | `B1464-exec-privilege-transition` |
 | 12 | **`/proc/<pid>/status` is fabricated** — `Uid: 0 0 0 0`, all-ones capability masks, `NoNewPrivs: 0` for every process; procfs has no `ptrace_may_access` gate and every dynamic file is 0444. | systemd, polkit, dbus-daemon and `pkexec` read this to decide who a peer is and what it may do. | `B1463` in flight |
-| 13 | **arm64 `rt_sigreturn` writes raw user PSTATE into `spsr_el1`** — forging `M[3:0]=0b0101` returns user code at **EL1**. x86_64 has the same shape with EFLAGS and no `FIX_EFLAGS` whitelist (IOPL user-settable); `build_signal_frame` has no `access_ok`, giving an arbitrary kernel write. | Unprivileged local privilege escalation. | `B1459` in flight |
+| 13 | **arm64 `rt_sigreturn` writes raw user PSTATE into `spsr_el1`** — forging `M[3:0]=0b0101` returns user code at **EL1**. x86_64 has the same shape with EFLAGS and no `FIX_EFLAGS` whitelist (IOPL user-settable); `build_signal_frame` has no `access_ok`, giving an arbitrary kernel write. | Unprivileged local privilege escalation. | `B1459` merged; the FPU/SIMD gap the same lane found is `B1466`, merged |
 | 14 | **`AT_RANDOM` is a clock reading** — 16 bytes derived from one `monotonic_ns()` sample; bytes 8..15 re-derive from the same word. | glibc builds `__stack_chk_guard` and the `PTR_MANGLE` pointer guard from it, so both mitigations are predictable. `crates/kernel/crng` exists and is not called. | `F768` in flight |
 
 ## 3 Cross-cutting patterns
@@ -61,6 +61,25 @@ not missing code. Confirmed: `age_anon`/`age_file`, `mark_lru_referenced`,
 
 Consequence: **a symbol existing proves nothing.** Grep call sites, not definitions.
 Corollary: many of these are wiring jobs, not implementations — cheaper than they look.
+
+Worked example, FIXED `B1466`: `fpu_save`/`fpu_restore` and a full per-task XSAVE area
+existed and were exercised on every context switch, while the signal frame wrote
+`fpstate = 0` (x86_64) and an empty `__reserved` (arm64) — so any handler calling a
+SIMD-optimised glibc routine silently destroyed the interrupted context. The fix was
+mostly wiring, but NOT only wiring: the frame layout, `save_xstate_epilog`, the
+`check_xstate_in_sigframe` / `validate_user_xstate_header` / MXCSR restore checks and
+arm64's `parse_user_sigframe` record chain all had to be written, and arm64's
+`sigcontext.__reserved` turned out to be 8 bytes off Linux (280 vs the UAPI's
+`__aligned__(16)` 288) — latent exactly as long as nothing lived there.
+`userspace/wait_diff/sigfpu.c` now diffs SIMD preservation across signal delivery
+against the host's real Linux, with two mutants in `tools/wait-diff-selftest.sh`.
+
+Second lesson from the same lane, for anyone touching an arm64 signal frame:
+`struct sigcontext` is 4384 bytes and `rt_sigframe` 4688, so staging either in a
+kernel-stack local is fatal — LLVM turned ONE by-value read of `sigcontext` into a
+21 KiB stack frame on a 16 KiB guard-paged kstack. Hosted tests were all green;
+only `make smoke-arm` caught it. Write and read the frame field by field straight
+into user memory, which is what Linux's `__put_user_error`/`__get_user_error` do.
 
 ### 3.2 Gated files hide their own tests
 `crates/kernel/syscalls/src/kernel_body.rs` and every slot file it `#[path]`-includes are
@@ -119,6 +138,19 @@ robust-futex exit walker, `restart_block`, NTP discipline, POSIX CPU timers,
 `sigaltstack`, the tty job-control decision table, and `rseq` (`rseq_cs` decode, IP
 fixup, signature validation — both arches).
 
+## 6a Fixed by `B1465` — TCP sequence prediction + randomness honesty
+
+Post-dates the audit; neither ledger carried the ISN row before this branch.
+
+| Finding | Why it mattered | Fix |
+|---|---|---|
+| **TCP initial sequence numbers were a fixed constant** — `TCP_ISN_INITIAL = 0x1000_0000` stepping `0x1000` from a global counter, identical every boot; the passive/server side opened at literal **0**; ephemeral ports scanned sequentially from a fixed base | Remotely exploitable TCP sequence prediction (RFC 6528): an off-path attacker needed to guess neither the sequence number nor the source port, so blind connection reset and blind data injection against any TCP connection were arithmetic rather than search. Structural cause: `crates/kernel/net` had no `crng` dependency | Linux `net/core/secure_seq.c` construction — `seq_scale(siphash(4-tuple, net_secret))` with a per-boot CSPRNG key. New `crates/shared/siphash` (Linux `lib/siphash.c`, pinned to upstream's own vectors); `crates/kernel/net/src/secure_seq.rs` |
+| TCP TSval was one global clock shared by every connection | Published host uptime; let an observer correlate every connection from this host | `tp->tsoffset` from the high half of the same hash |
+| `crng::reseed()` set `SEEDED` unconditionally, so `is_initialized()` could never report a cold pool | `getrandom(2)` could never block and `GRND_NONBLOCK` could never return `EAGAIN` — the readiness signal userspace relies on to know its keys are safe was synthetic. On a TCG boot with no RDRAND and no virtio-rng the pool was keyed from one cycle-counter read while reporting itself ready | Credit only a source that actually answered (never the TSC, matching Linux); `add_hw_entropy` vs `add_entropy` split; a real `wait_for_random_bytes()` loop in slot 318 |
+| `/proc/sys/kernel/randomize_va_space` reported `2` with no ASLR implemented | Hardening detectors read it and concluded the system was protected | Reports `0`. **ASLR itself remains absent and remains on the ledger** — only the false report is fixed |
+| `/proc/sys/kernel/random/uuid` (and the sysfs copy) were static inodes | Every reader for the whole boot got the identical UUID | Fresh v4 UUID per read |
+| glibc `mkstemp`/`mkdtemp`/`mktemp` used a clock-seeded LCG | Predictable temp filenames — classic `/tmp` symlink-attack vector | glibc's `__gen_tempname` over `getrandom(2)` |
+
 ## 7 Corrections to earlier ledgers
 
 - **ASLR (`audit-mm.md` §1, `audit-net-sec.md` §A2): all six components implemented in F771.**
@@ -147,4 +179,5 @@ fixup, signature validation — both arches).
 - hugetlbfs is **not** absent; it is mountable and hands out 4 KiB pages (a false capability probe).
 - The AF_UNIX listener accept-readiness wakeup is **already fixed**.
 - `bpf` is **not** an arbitrary-kernel-execution hole — programs never execute; a functional void, not a security one.
+- The TCP ISN finding is **new** — it post-dates every earlier ledger and appeared in neither. Fixed on `B1465`; see §6a.
 - `bind()`/`mknod` stale negative dentries: **already fixed**. A blocking lease break **does** exist. Unwritten-extent writes are **not** rejected. Mandatory locking is `ABSENT-OK` (Linux removed it in 5.15). `copy_file_range`'s unconditional `EXDEV` matches current Linux.

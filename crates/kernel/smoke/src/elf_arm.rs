@@ -424,6 +424,7 @@ fn spawn_init_from_rootfs_arm() {
             // The smoke loader runs before any credential exists: uid 0,
             // no privilege gained, so AT_SECURE is 0 (Linux's plain-exec case).
             elf_load::stack::AuxCreds::default(),
+            <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_min_sigstksz(),
             &rnd,
         )
     }.map(|l| l.sp).unwrap_or(stack_top);

@@ -169,6 +169,17 @@ impl FileOps for ConsoleFileOps {
         }
     }
 
+    /// Linux `n_tty_poll` registers the caller on `tty->read_wait`; the tty a
+    /// VT node speaks for is resolved the same way `poll`/`read` resolve it
+    /// (`vt == 0` = whichever VT is foreground right now), so the waiter joins
+    /// the queue the RX path actually notifies. Resolving here rather than
+    /// stamping `poll_subs` on the inode is what keeps `/dev/tty0` correct
+    /// across a VT switch — one list, owned by the tty. # C: O(1)
+    fn poll_subscribers(&self, file: &File) -> Option<Arc<vfs::PollSubscribers>> {
+        let vt = console_data(file.inode()).ok()?.vt;
+        Some(vt_tty::vt_tty(if vt == 0 { foreground_vt() } else { vt }).poll_subs_arc())
+    }
+
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         let vt = console_data(inode)?.vt;
         vt_write(vt, inode.ino(), buf)
@@ -234,6 +245,17 @@ impl FileOps for SystemConsoleFileOps {
         match cmdline::preferred_console() {
             cmdline::ConsoleKind::Serial => serial::poll(),
             cmdline::ConsoleKind::Vt(_) => vt_poll(0),
+        }
+    }
+
+    /// `/dev/console` forwards to whichever tty `preferred_console()` selects,
+    /// so its poll waiters must land on THAT tty's `read_wait` — the same
+    /// resolution `poll`/`read` use, evaluated per call because the serial tty
+    /// does not exist until `static_console::install`. # C: O(1)
+    fn poll_subscribers(&self, _file: &File) -> Option<Arc<vfs::PollSubscribers>> {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial => crate::static_console::poll_subscribers(),
+            cmdline::ConsoleKind::Vt(_) => Some(vt_tty::vt_tty(foreground_vt()).poll_subs_arc()),
         }
     }
 }

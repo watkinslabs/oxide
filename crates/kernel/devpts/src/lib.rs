@@ -64,6 +64,14 @@ pub struct LockedPair {
     slave_exclusive: AtomicBool,
     master_opens: AtomicU32,
     slave_opens: AtomicU32,
+    /// Linux `tty->read_wait`/`tty->write_wait` for the MASTER half — the
+    /// queues `n_tty_poll` registers on (`drivers/tty/n_tty.c:2425-2426`).
+    /// Each pty half is its OWN `tty_struct` with its own queues, so master
+    /// and slave get separate subscriber lists; the master inode publishes
+    /// this one through `InodeBuilder::poll_subs_arc`.
+    master_subs: Arc<vfs::PollSubscribers>,
+    /// Same for the SLAVE half (`/dev/pts/<n>`).
+    slave_subs: Arc<vfs::PollSubscribers>,
 }
 
 impl LockedPair {
@@ -78,7 +86,29 @@ impl LockedPair {
             slave_exclusive: AtomicBool::new(false),
             master_opens: AtomicU32::new(0),
             slave_opens: AtomicU32::new(0),
+            master_subs: Arc::new(vfs::PollSubscribers::new()),
+            slave_subs: Arc::new(vfs::PollSubscribers::new()),
         })
+    }
+
+    /// The MASTER half's poll/select/epoll wait queue. # C: O(1)
+    pub fn master_subs(&self) -> &Arc<vfs::PollSubscribers> { &self.master_subs }
+    /// The SLAVE half's poll/select/epoll wait queue. # C: O(1)
+    pub fn slave_subs(&self) -> &Arc<vfs::PollSubscribers> { &self.slave_subs }
+
+    /// Publish a readiness transition on one half (Linux
+    /// `wake_up_interruptible_poll(&tty->read_wait, EPOLLIN)` and friends).
+    /// `master` selects which half's waiters see it. # C: O(N_subs)
+    pub fn wake_subs(&self, master: bool, events: u32) {
+        if master { self.master_subs.notify_mask(events); } else { self.slave_subs.notify_mask(events); }
+    }
+
+    /// Publish a transition on BOTH halves — the `pty_close` shape, which
+    /// wakes the closing side's queues AND the link's
+    /// (`drivers/tty/pty.c:58-69`). # C: O(N_subs)
+    pub fn wake_both_subs(&self, events: u32) {
+        self.master_subs.notify_mask(events);
+        self.slave_subs.notify_mask(events);
     }
     /// # C: O(1)
     pub fn pts_num(&self) -> u32 { self.inner.lock().pts_num }
@@ -131,8 +161,10 @@ fn pair_of(inode: &Inode) -> KResult<&LockedPair> {
 pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_master;
     let rdev = ids::PTY_MASTER_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
+    let subs = pair.master_subs.clone();
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, PTY_MASTER_MODE), default_inode_ops(), Arc::new(PtyMasterFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
+        .poll_subs_arc(subs)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
         .build()
 }
@@ -142,8 +174,10 @@ pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
 pub fn make_slave_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_slave;
     let rdev = ids::PTY_SLAVE_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
+    let subs = pair.slave_subs.clone();
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, PTY_SLAVE_MODE), default_inode_ops(), Arc::new(PtySlaveFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
+        .poll_subs_arc(subs)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
         .build()
 }

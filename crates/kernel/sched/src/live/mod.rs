@@ -29,6 +29,7 @@ pub mod balance;
 pub mod chroot_refs;
 pub mod registry;
 pub mod runqueue;
+pub mod rq_locate;
 pub mod schedule;
 pub mod spawn;
 pub mod sched_fork;

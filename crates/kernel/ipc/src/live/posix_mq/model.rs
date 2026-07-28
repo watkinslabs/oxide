@@ -68,11 +68,30 @@ pub struct MqQueue {
     /// `mq_unlink` dropped the directory link; the queue dies with its last
     /// description (POSIX: an unlinked queue stays usable through open fds).
     pub unlinked: AtomicBool,
+    /// Linux `info->wait_q` — the queue `mqueue_poll_file` registers on
+    /// (`ipc/mqueue.c:674`), distinct from the `e_wait_q[]` lists that hold
+    /// blocked `mq_timedsend`/`mq_timedreceive` callers. Published on the
+    /// queue's inode so `poll`/`select`/`epoll` on an `mqd_t` have a real
+    /// wake source instead of parking with no deadline and no callback.
+    pub poll_subs: Arc<vfs::PollSubscribers>,
 }
 
 impl MqQueue {
     /// # C: O(1)
     pub fn curmsgs(&self) -> usize { self.msgs.lock().len() }
+
+    /// Linux `__do_notify`'s trailing `wake_up(&info->wait_q)`
+    /// (`ipc/mqueue.c:835`): a message landed in the buffer, so the queue is
+    /// now readable. Fired only on the path that actually grew `mq_curmsgs` —
+    /// a hand-off straight to a blocked receiver leaves the count unchanged
+    /// and deliberately does NOT wake pollers. # C: O(N_subs)
+    pub fn notify_readable(&self) { self.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_RDNORM); }
+
+    /// Linux `pipelined_receive`'s `/* for poll */ wake_up_interruptible(
+    /// &info->wait_q)` (`ipc/mqueue.c:1029`): a receive freed a slot with no
+    /// blocked sender to refill it, so the queue is now writable.
+    /// # C: O(N_subs)
+    pub fn notify_writable(&self) { self.poll_subs.notify_mask(vfs::POLL_OUT | vfs::POLL_WRNORM); }
 }
 
 /// One directory link: a name and the inode it resolves to.
@@ -181,11 +200,14 @@ pub fn create_linked(
         notify: Spinlock::new(None),
         opens: AtomicU32::new(0),
         unlinked: AtomicBool::new(false),
+        poll_subs: Arc::new(vfs::PollSubscribers::new()),
     });
+    let poll_subs = queue.poll_subs.clone();
     let inode = InodeBuilder::new(vfs::get_next_ino() as vfs::Ino,
                                   mk_mode(FileType::Regular, mode),
                                   default_inode_ops(), mq_file_ops())
         .owner(uid, gid)
+        .poll_subs_arc(poll_subs)
         .private(Arc::new(MqInodePrivate { queue }))
         .build();
     let name = String::from(name);

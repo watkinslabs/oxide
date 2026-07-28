@@ -3,7 +3,7 @@
 // defined in `procfs.rs`; this module only carries the boot-time
 // `register()` walk.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use vfs::InodeRef;
 use sync::{Spinlock, MountTable as RootClass};
 
@@ -15,48 +15,6 @@ use crate::{
     VERSION_BODY,
 };
 use crate::{make_proc_self_cwd, make_proc_cgroup};
-
-fn hex_nibble(n: u8) -> u8 {
-    match n & 0x0f {
-        v @ 0..=9 => b'0' + v,
-        v => b'a' + (v - 10),
-    }
-}
-
-fn fill_hex(dst: &mut [u8], bytes: &[u8]) {
-    for (i, b) in bytes.iter().copied().enumerate() {
-        dst[i * 2] = hex_nibble(b >> 4);
-        dst[i * 2 + 1] = hex_nibble(b);
-    }
-}
-
-fn random_uuid_bytes() -> [u8; 16] {
-    let mut out = [0u8; 16];
-    let a = devfs::misc::random_u64().to_le_bytes();
-    let b = devfs::misc::random_u64().to_le_bytes();
-    out[..8].copy_from_slice(&a);
-    out[8..].copy_from_slice(&b);
-    out[6] = (out[6] & 0x0f) | 0x40;
-    out[8] = (out[8] & 0x3f) | 0x80;
-    out
-}
-
-fn leak_uuid_line(bytes: [u8; 16]) -> &'static [u8] {
-    let mut s = Vec::with_capacity(37);
-    let mut hex = [0u8; 32];
-    fill_hex(&mut hex, &bytes);
-    s.extend_from_slice(&hex[0..8]);
-    s.push(b'-');
-    s.extend_from_slice(&hex[8..12]);
-    s.push(b'-');
-    s.extend_from_slice(&hex[12..16]);
-    s.push(b'-');
-    s.extend_from_slice(&hex[16..20]);
-    s.push(b'-');
-    s.extend_from_slice(&hex[20..32]);
-    s.push(b'\n');
-    Box::leak(s.into_boxed_slice())
-}
 
 /// Build the `/proc` root directory's static children — the Linux `proc_create`
 /// set (cpuinfo/meminfo/stat/…). Each is a real child inode the directory OWNS
@@ -120,8 +78,10 @@ pub fn proc_root() -> InodeRef {
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(N_files)
 pub fn register_static_files() {
-    let random_uuid = leak_uuid_line(random_uuid_bytes());
-    let boot_id = leak_uuid_line(random_uuid_bytes());
+    // Linux `sysctl_bootid`: generated ONCE here (boot path, single-CPU
+    // pre-init) and shared by the /proc/sys and /sys leaves, so the two can
+    // never report different boot ids.
+    let boot_id = crate::random_uuid::leak_boot_id_line();
 
     // /proc/self/cgroup resolves the calling task's real cgroup path at read time.
     crate::reg::register("/proc/self/cgroup", make_proc_cgroup(None));
@@ -147,13 +107,16 @@ pub fn register_static_files() {
         "/sys/kernel/ostype",
         StaticFileInode::new(b"oxide\n") as InodeRef,
     );
+    // Same `proc_do_uuid` semantics as the /proc/sys leaf: fresh v4 UUID per
+    // read. A static body here would hand every reader on the boot the same
+    // "random" UUID — the exact bug systemd/dbus id generators trip over.
     sysfs::register(
         "/sys/kernel/random/uuid",
-        StaticFileInode::new(random_uuid) as InodeRef,
+        crate::random_uuid::make_uuid_inode(crate::ids::SYS_RANDOM_UUID),
     );
     sysfs::register(
         "/sys/kernel/random/boot_id",
-        StaticFileInode::new(boot_id) as InodeRef,
+        crate::random_uuid::make_boot_id_inode(boot_id),
     );
     sysfs::register(
         "/sys/kernel/random/entropy_avail",
@@ -252,7 +215,7 @@ pub fn register_static_files() {
     // /proc/sys ctl_table (D22): one declarative table + the dynamic/live-bound
     // handlers, registered into procfs's own PROC_REG subtree. Replaces the
     // ~70 scattered imperative `register("/proc/sys/...")` calls.
-    crate::ctl::register_sysctl_table(boot_id, random_uuid);
+    crate::ctl::register_sysctl_table(boot_id);
 
     // /proc/net/* — Linux networking surface. Entries with live kernel table
     // backing use procfs inodes, not static header snapshots.

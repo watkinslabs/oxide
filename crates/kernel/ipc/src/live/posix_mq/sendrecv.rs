@@ -73,6 +73,13 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
             g.insert(pos, m);
             drop(g);
             q.wait_recv.wake_one();
+            // `mq_curmsgs` grew, so `mqueue_poll_file` now reports EPOLLIN:
+            // wake `info->wait_q` (Linux `__do_notify`'s trailing `wake_up`,
+            // `mqueue.c:835`). Unconditional here, unlike the notification
+            // below, because this implementation always INSERTS the message —
+            // it has no `pipelined_send` hand-off that leaves `mq_curmsgs`
+            // unchanged, so the polled observable changes on every send.
+            q.notify_readable();
             // `__do_notify` fires only when the queue went 0 -> 1 AND nobody
             // was waiting synchronously: Linux hands a pipelined message
             // straight to a waiting receiver and skips the notification
@@ -121,6 +128,12 @@ pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
             let m = g.remove(0);
             drop(g);
             q.wait_send.wake_one();
+            // A slot came free: `mq_curmsgs < mq_maxmsg` now holds, so the
+            // queue reports EPOLLOUT (Linux `pipelined_receive`'s
+            // `/* for poll */ wake_up_interruptible(&info->wait_q)`,
+            // `mqueue.c:1029`). Unconditional for the same reason as the send
+            // side: the removal always happens, so the observable always moves.
+            q.notify_writable();
             break m;
         }
         if nonblock { drop(g); return errno(Errno::Eagain); }

@@ -63,6 +63,32 @@ pub fn cold_pool_action(flags: u32) -> ColdPool {
     ColdPool::Wait
 }
 
+/// Linux `wait_for_random_bytes()` re-checks readiness on a 1 s timeout, so a
+/// pool that becomes ready without an explicit wakeup still releases waiters.
+pub const CRNG_WAIT_POLL_NS: u64 = 1_000_000_000;
+
+/// How a `ColdPool::Wait` waiter must return once it stops waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitOutcome {
+    /// Pool became ready — go on and fill the buffer.
+    Ready,
+    /// Linux `wait_for_random_bytes()` returns `-ERESTARTSYS` on a signal, and
+    /// `getrandom(2)` propagates it unchanged.
+    Restart,
+}
+
+/// Resolve one iteration of the `wait_for_random_bytes()` loop. Split out from
+/// the syscall shim so the decision is testable: the shim itself is
+/// `#[cfg(target_os = "oxide-kernel")]` and its tests would never compile.
+/// # C: O(1)
+pub fn wait_step(seeded: bool, signal_pending: bool) -> Option<WaitOutcome> {
+    // Linux checks `crng_ready()` first: a pool that went ready in the same
+    // instant a signal arrived still succeeds rather than returning ERESTARTSYS.
+    if seeded { return Some(WaitOutcome::Ready); }
+    if signal_pending { return Some(WaitOutcome::Restart); }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +121,36 @@ mod tests {
         assert_eq!(validate_grnd_flags(GRND_INSECURE), Ok(()));
         assert_eq!(validate_grnd_flags(GRND_NONBLOCK | GRND_RANDOM), Ok(()));
         assert_eq!(validate_grnd_flags(GRND_NONBLOCK | GRND_INSECURE), Ok(()));
+    }
+
+    #[test]
+    fn a_ready_pool_ends_the_wait() {
+        assert_eq!(wait_step(true, false), Some(WaitOutcome::Ready));
+    }
+
+    #[test]
+    fn readiness_beats_a_signal_that_arrived_in_the_same_instant() {
+        // Linux checks `crng_ready()` before the interruptible wait returns, so
+        // a caller whose bytes are available does not get ERESTARTSYS.
+        assert_eq!(wait_step(true, true), Some(WaitOutcome::Ready));
+    }
+
+    #[test]
+    fn a_signal_on_a_cold_pool_restarts() {
+        assert_eq!(wait_step(false, true), Some(WaitOutcome::Restart));
+    }
+
+    #[test]
+    fn a_cold_pool_with_no_signal_keeps_waiting() {
+        // The load-bearing case: `None` means "park and re-check". If this
+        // returned `Ready`, getrandom would hand out bytes from an
+        // uninitialised pool — the behaviour the old always-seeded flag caused.
+        assert_eq!(wait_step(false, false), None);
+    }
+
+    #[test]
+    fn the_wait_poll_matches_linux_one_second_recheck() {
+        assert_eq!(CRNG_WAIT_POLL_NS, 1_000_000_000);
     }
 
     #[test]

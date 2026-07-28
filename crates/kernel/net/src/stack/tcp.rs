@@ -111,7 +111,31 @@ impl NetStack {
         offset: usize, inline: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
         -> Result<Option<R>, E>
     {
-        entry.conn.lock().recv_with_offset_oob(max, peek, offset, inline, copy)
+        // Linux `tcp_cleanup_rbuf` (`net/ipv4/tcp.c:1575-1600`): "We send an
+        // ACK if we can now advertise a non-zero window which has been raised
+        // significantly ... `new_window >= 2 * rcv_window_now`". Without this
+        // window-update ACK a receiver that drained a CLOSED window never tells
+        // the sender, and — with no persist/probe0 timer on the send side — the
+        // connection deadlocks permanently. `poll` correctly reporting the
+        // sender un-writable turns that deadlock from a busy spin into a stall,
+        // so the update has to exist for the writability predicate to be safe.
+        let (result, update) = {
+            let mut conn = entry.conn.lock();
+            let before = conn.current_rcv_window() as u32;
+            let result = conn.recv_with_offset_oob(max, peek, offset, inline, copy);
+            let after = conn.current_rcv_window() as u32;
+            let raised = after != 0 && after >= before.saturating_mul(2) && after > before;
+            let update = if raised && !peek {
+                Some((conn.build_segment(crate::tcp_hdr::flags::ACK, &[]),
+                      conn.local.ip, conn.remote.ip, ecn_tos(&conn)))
+            } else { None };
+            (result, update)
+        };
+        if let Some((seg, src, dst, tos)) = update {
+            let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos,
+                entry.bound_iface(), TcpTxPolicy::Entry(entry));
+        }
+        result
     }
 
     /// Copy the pending TCP urgent byte and consume it when the copy succeeds. # C: O(1)

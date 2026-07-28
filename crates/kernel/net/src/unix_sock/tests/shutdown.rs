@@ -1,6 +1,10 @@
 use super::*;
 use alloc::sync::Arc;
 
+/// `max(SO_SNDBUF, TCP_SNDBUF_DEFAULT)` — the cap the production send path
+/// passes to `poll_mask` (`socket::send::send_unix_blocking`).
+const TEST_SNDBUF: usize = crate::sock::TCP_SNDBUF_DEFAULT as usize;
+
 #[test]
 fn stream_shutdown_read_drains_queue_then_rejects_peer_writes() {
     let _serial = test_guard();
@@ -11,7 +15,7 @@ fn stream_shutdown_read_drains_queue_then_rejects_peer_writes() {
     assert_eq!(pair.read(UnixEnd::B, 64), b"queued");
     assert!(pair.is_eof(UnixEnd::B));
     assert!(matches!(pair.write(UnixEnd::A, b"late"), Err(UnixStreamError::PeerClosed)));
-    assert_eq!(pair.poll_mask(UnixEnd::B) & (vfs::POLL_IN | vfs::POLL_RDHUP),
+    assert_eq!(pair.poll_mask(UnixEnd::B, TEST_SNDBUF) & (vfs::POLL_IN | vfs::POLL_RDHUP),
         vfs::POLL_IN | vfs::POLL_RDHUP);
 }
 
@@ -22,7 +26,7 @@ fn stream_shutdown_write_publishes_rdhup_before_drain() {
     pair.write(UnixEnd::A, b"queued").unwrap();
     pair.close_writer(UnixEnd::A);
 
-    let mask = pair.poll_mask(UnixEnd::B);
+    let mask = pair.poll_mask(UnixEnd::B, TEST_SNDBUF);
     assert_ne!(mask & vfs::POLL_IN, 0);
     assert_ne!(mask & vfs::POLL_RDHUP, 0);
     assert_eq!(mask & vfs::POLL_HUP, 0);
@@ -38,7 +42,7 @@ fn stream_shutdown_both_publishes_hup_at_both_ends() {
     pair.close_writer(UnixEnd::A);
 
     for end in [UnixEnd::A, UnixEnd::B] {
-        let mask = pair.poll_mask(end);
+        let mask = pair.poll_mask(end, TEST_SNDBUF);
         assert_eq!(mask & (vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP | vfs::POLL_RDHUP),
             vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP | vfs::POLL_RDHUP);
     }
@@ -87,9 +91,9 @@ fn so_error_consumption_clears_stream_reset_readiness() {
     pair.write(UnixEnd::B, b"unread").unwrap();
     pair.release_end(UnixEnd::A);
 
-    assert_ne!(pair.poll_mask(UnixEnd::B) & vfs::POLL_ERR, 0);
+    assert_ne!(pair.poll_mask(UnixEnd::B, TEST_SNDBUF) & vfs::POLL_ERR, 0);
     assert_eq!(error.take(), syscall::errno::Errno::Econnreset as i32);
-    assert_eq!(pair.poll_mask(UnixEnd::B) & vfs::POLL_ERR, 0);
+    assert_eq!(pair.poll_mask(UnixEnd::B, TEST_SNDBUF) & vfs::POLL_ERR, 0);
     assert!(!pair.take_reset(UnixEnd::B), "lifecycle marker cannot redeliver consumed SO_ERROR");
     assert!(pair.is_eof(UnixEnd::B));
 }
@@ -143,7 +147,7 @@ fn datagram_pair_close_has_no_eof_or_reset_and_refuses_peer_send() {
     assert!(!pair.take_reset(UnixEnd::B));
     assert!(!pair.is_eof(UnixEnd::B));
     assert!(matches!(pair.send(UnixEnd::B, b"late"), Err(UnixMsgError::PeerRefused)));
-    assert_eq!(pair.poll_mask(UnixEnd::B) & (vfs::POLL_HUP | vfs::POLL_RDHUP), 0);
+    assert_eq!(pair.poll_mask(UnixEnd::B, TEST_SNDBUF) & (vfs::POLL_HUP | vfs::POLL_RDHUP), 0);
 }
 
 #[test]

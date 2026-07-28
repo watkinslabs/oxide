@@ -12,6 +12,9 @@ pub mod stdbit;
 pub mod arith;
 #[cfg(feature = "freestanding")]
 pub mod realpath;
+// tempname is ungated: its pure value layer carries the hosted tests that pin
+// the getrandom(2) bytes → suffix mapping (gen/entropy stay freestanding).
+pub mod tempname;
 #[cfg(feature = "freestanding")]
 pub mod mkstemp;
 #[cfg(feature = "freestanding")]

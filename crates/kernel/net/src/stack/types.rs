@@ -380,7 +380,6 @@ pub struct NetStack {
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
-    pub(crate) next_isn: Spinlock<u32, StackLockClass>,
     /// F180c: IPv6 neighbor cache keyed by ingress/egress interface.
     pub(crate) ndp: Spinlock<BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>, StackLockClass>,
     /// F195: IPv4 reassembly table.
@@ -403,6 +402,10 @@ mod socket_error_tests {
     use super::{NetStack, TcpEntry, UdpRxQueue, tcp_send_closed, tcp_transmit_ready};
     use crate::addr::{IpAddr, Ipv4Addr};
     use crate::tcp_conn::{Endpoint, TcpConn};
+
+    /// `max(SO_SNDBUF, TCP_SNDBUF_DEFAULT)` — the cap `InetSocket::poll`
+    /// passes down, so these masks are the ones userspace sees.
+    const TEST_SNDBUF: usize = crate::sock::TCP_SNDBUF_DEFAULT as usize;
 
     #[test]
     fn entry_and_socket_owner_share_canonical_error() {
@@ -450,9 +453,9 @@ mod socket_error_tests {
         conn.active_open().unwrap();
         let entry = TcpEntry::new(conn);
 
-        assert_eq!(entry.poll_mask() & vfs::POLL_OUT, 0);
+        assert_eq!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_OUT, 0);
         entry.conn.lock().state = crate::tcp_state::TcpState::Established;
-        assert_ne!(entry.poll_mask() & vfs::POLL_OUT, 0);
+        assert_ne!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_OUT, 0);
     }
 
     #[test]
@@ -481,7 +484,7 @@ mod socket_error_tests {
 
         entry.close_and_wake();
         assert!(poll.generation() > before);
-        assert_ne!(entry.poll_mask() & vfs::POLL_HUP, 0);
+        assert_ne!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_HUP, 0);
     }
 
     #[test]
