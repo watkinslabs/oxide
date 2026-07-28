@@ -87,6 +87,15 @@ include!("kernel_body.rs");
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
 
+// io_uring(2) 425/426/427: the `struct io_uring_params` wire form, the setup
+// flag/entries ladder, the ring-region geometry and the register-opcode
+// ladder. The three slot files AND `io_uring.rs` are kernel-gated, so every
+// decision left in them is invisible to `cargo test` (CLAUDE.md phantom-test
+// rule); the slots parse/validate/call/encode around this module (docs/53).
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "io_uring/abi/mod.rs"]
+pub mod io_uring_abi;
+
 // statfs(2) wire encoding and uname(2) personality overrides: pure ABI logic,
 // compiled into the kernel and into the hosted test build so the struct layout
 // and the Linux override rules are unit-testable without a boot.
