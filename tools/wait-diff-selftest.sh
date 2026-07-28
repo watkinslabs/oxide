@@ -71,6 +71,15 @@ check eintr \
 check restartall \
     'lock|flock_norestart' 'lock|setlkw_norestart' 'fd|pipe_read_norestart' \
     'fd|unix_recv_norestart' 'fd|tcp_recv_norestart' 'mqueue|recv_norestart'
+check nopeerwrite \
+    'ready|pty_master_poll_in' 'ready|pty_slave_poll_in' \
+    'ready|fifo_poll_in' 'ready|mq_poll_in' 'ready|epoll_pty_in'
+check nodrain \
+    'ready|unix_pollout_backpressure' 'ready|tcp_pollout_backpressure' \
+    'ready|epoll_unix_out_backpressure'
+check nofill \
+    'ready|unix_pollout_backpressure' 'ready|tcp_pollout_backpressure' \
+    'ready|epoll_unix_out_backpressure'
 check absrem   'sleep|abs_sarestart'
 check handler  'sleep|stopcont_restart_block'
 check nofg     'jobctl|sigttin_stops_background' 'jobctl|read_resumes_after_fg'

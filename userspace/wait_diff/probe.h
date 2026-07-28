@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -129,6 +130,32 @@ int wait_bounded(pid_t pid, unsigned ms, int *st);
 int         err_class(int rc, int err);
 const char *err_class_name(int cls);
 
+/* poll(2)/epoll readiness classification, shared by readiness.c (a parked
+ * waiter that a source callback must wake) and readiness_out.c (POLLOUT
+ * de-asserting under send-buffer backpressure). `err_class` cannot serve
+ * here: its success value is "the call returned", while these cases must
+ * separate a READY return from a TIMED-OUT one, and the timeout IS the
+ * failure signature of a kernel with no wake source. */
+#define RDY_OK      0
+#define RDY_TIMEOUT 1
+#define RDY_ERROR   2
+#define RDY_NOFILL  3
+const char *rdy_outcome_name(int cls);
+
+/* Child exit-code bits carrying the observables back to the printer. */
+#define RDY_IN_BIT    8
+#define RDY_FULL_BIT  16
+#define RDY_DRAIN_BIT 32
+
+/* The poll under test must outlive the helper's poke by an order of
+ * magnitude (same reasoning as SIG_DELAY_MS vs RELEASE_MS), and the
+ * parent's guard must outlive the poll — otherwise a missing wakeup races
+ * `timeout` against `blocked` and the record is not reproducible. */
+#define RDY_POLL_MS       5000u
+#define RDY_HELPER_MS      300u
+#define RDY_DRAIN_POLL_MS 2000u
+#define RDY_GUARD_MS     10000u
+
 /* Raw clock_nanosleep — see the header comment for why. */
 int raw_clock_nanosleep(clockid_t clk, int flags,
                         const struct timespec *req, struct timespec *rem);
@@ -136,6 +163,8 @@ int raw_clock_nanosleep(clockid_t clk, int flags,
 void probe_sleep(void);
 void probe_locks(void);
 void probe_fdwait(void);
+void probe_readiness(void);
+void probe_readiness_out(void);
 void probe_jobctl(void);
 void probe_cputime(void);
 void probe_mqueue(void);

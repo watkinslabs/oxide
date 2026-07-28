@@ -18,8 +18,6 @@ use crate::pselect_ppoll::wait_verdict;
 /// directly, so this scale belongs to slot 7 alone.
 const NSEC_PER_MSEC: u64 = 1_000_000;
 
-const POLLIN:  i16 = 0x0001;
-const POLLOUT: i16 = 0x0004;
 /// B17 (T11): POSIX poll(2) — these are unconditionally reported in
 /// `revents` regardless of whether the caller requested them in
 /// `events`. Without this, sshd-session's poll(POLLIN) never sees
@@ -126,25 +124,10 @@ fn snapshot_poll_files(fdt: &vfs::FdTable, pfds: &[PollFd]) -> Vec<Option<Arc<vf
     }).collect()
 }
 
-#[cfg(target_os = "oxide-kernel")]
-fn pty_poll_in_bit(ino: u64) -> i16 {
-    let is_master = (ino & 0x8000) == 0;
-    let pty_readable = devpts::pair_for((ino & 0x7FFF) as u32).map(|pair| {
-        pair.with_pair(|p| if is_master { p.master_readable() } else { p.slave_readable() })
-    });
-    match pty_readable {
-        Some(true)  => POLLIN,
-        Some(false) => 0,
-        None        => POLLIN,
-    }
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
-fn pty_poll_in_bit(_ino: u64) -> i16 { POLLIN }
-
-/// `sys_poll(fds, nfds, timeout)` — slot 7. Honors per-fd
-/// readiness via PTY-pair `master_readable`/`slave_readable`;
-/// non-pty CharDev defaults to always-ready (POLLIN | POLLOUT).
+/// `sys_poll(fds, nfds, timeout)` — slot 7. Readiness comes from the
+/// polled file's own `->poll` (`do_sys_poll` → `vfs_poll`); this shim
+/// masks the result with the caller's `events` plus the always-reported
+/// POSIX bits and never computes readiness itself.
 /// # C: O(nfds × N_loop)
 pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let timeout = args.a2 as i32;
@@ -255,25 +238,17 @@ pub(crate) fn sys_poll_deadline(fds_ptr: u64, nfds: u64, deadline_ns: Option<u64
         for (pfd, file) in pfds.iter_mut().zip(files.iter()) {
             let mut revents: i16 = 0;
             if let Some(file) = file.as_ref() {
-                if file.inode().file_type() == vfs::FileType::CharDev
-                    && (file.inode().ino() & 0xFFFF_0000) == 0x6000_0000
-                {
-                    // PTY: readability from the pair state (master/slave).
-                    let inb = pty_poll_in_bit(file.inode().ino());
-                    revents = (pfd.events & (inb | POLLOUT)) | ((file.poll() as i16) & POLL_ALWAYS);
-                } else {
-                    // Non-pty chardevs (e.g. /dev/console) + sockets / pipes /
-                    // ext4 regulars: delegate to inode.poll() so POLLIN
-                    // reflects real input readiness. Hardcoding POLLIN for
-                    // console made systemd's DSR `ppoll(POLLIN)` loop spin on
-                    // EAGAIN forever instead of timing out (it never reached
-                    // the timeout→fallback path). ConsoleInode::poll() returns
-                    // POLLIN only when its VT ring holds bytes. (F146: same
-                    // POLL_IN/OUT/HUP bit layout as POLLIN/OUT/HUP; POSIX
-                    // POLLHUP/ERR/NVAL always reported — see POLL_ALWAYS.)
-                    let mask = file.poll() as i16;
-                    revents = mask & (pfd.events | POLL_ALWAYS);
-                }
+                // Linux `do_pollfd`: `mask = vfs_poll(f, pwait); mask &=
+                // demangle_poll(pollfd->events) | EPOLLERR | EPOLLHUP;`. Every
+                // kind of fd — chardev, pty, socket, pipe, ext4 regular —
+                // answers through its own `->poll`. A per-fd-class shortcut
+                // here is a second source of truth that silently outranks the
+                // backend's mask (it used to force POLLOUT on every pty
+                // regardless of write room). (F146: same POLL_IN/OUT/HUP bit
+                // layout as POLLIN/OUT/HUP; POSIX POLLHUP/ERR/NVAL always
+                // reported — see POLL_ALWAYS.)
+                let mask = file.poll() as i16;
+                revents = mask & (pfd.events | POLL_ALWAYS);
             } else if pfd.fd >= 0 {
                 revents = POLLNVAL;
             }

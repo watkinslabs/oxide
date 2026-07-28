@@ -14,6 +14,7 @@ int main(void) {
      * evidence in front of the case that can swallow the run. */
     probe_sleep();
     probe_fdwait();
+    probe_readiness();
     probe_jobctl();
     probe_cputime();
     probe_mqueue();
