@@ -102,7 +102,7 @@ debug-sigdeliv = ["syscalls/debug-sigdeliv"]  # [SIGDELIV] per-delivery signal t
 debug-ustack = ["syscalls/debug-ustack"]  # [USTACK] user return-address walk on a stack-address FUTEX_WAIT
 debug-desktop = ["syscalls/debug-desktop", "sched/debug-desktop", "fs/debug-desktop", "drm/debug-desktop"]  # [MUTTERSYS]/[MUTTERPPOLL]/[MUTTEREPOLL]/[MUTTERWAIT]/[DRMPROP]/[LGD]/[DRMDISC] gnome-shell + logind + KMS + frame-clock ledger
 debug-execload = ["syscalls/debug-execload", "elf-load/debug-execload"]  # [EXECLOAD]/[execve ENOENT] per-exec image + ELF interp trace
-debug-journal = ["syscalls/debug-journal", "net/debug-journal"]  # [B288 dgram]/[B288 env] journald+notify datagram payloads
+debug-journal = ["syscalls/debug-journal", "net/debug-journal"]  # FULL journald records + [B288 env] exec LISTEN_* dump; debug-boot already keeps each record's MESSAGE= line (boot-smoke's marker rides it)
 debug-taskdrop = ["sched/debug-taskdrop"]  # [TASK-DROP] per-task teardown stack record
 debug-faultdiag = ["pmm/debug-faultdiag", "vmm/debug-faultdiag"]  # [FAULT-ARM-VMA]/[FAULT-RESOLVE]/[file frame map] per-page-fault trace
 debug-zram = ["tracefs/zram-memory-tracking"]  # retained CONFIG_ZRAM_MEMORY_TRACKING-equivalent block_state debugfs ABI

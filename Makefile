@@ -96,7 +96,8 @@ ci: lint test build build-debug
 #   FEATURES=debug-ustack     [USTACK]    futex user return-address walk
 #   FEATURES=debug-desktop    [MUTTER*]/[DRMPROP]/[LGD] compositor+KMS ledger
 #   FEATURES=debug-execload   [EXECLOAD]  per-exec image + ELF interp trace
-#   FEATURES=debug-journal    [B288]      journald/notify datagram payloads
+#   FEATURES=debug-journal    [B288]      FULL journald records (debug-boot
+#                                         already keeps each MESSAGE= line)
 #   FEATURES=debug-taskdrop   [TASK-DROP] per-task teardown record
 #   FEATURES=debug-faultdiag  [FAULT-*]   per-page-fault VMA/resolve trace
 comma := ,
