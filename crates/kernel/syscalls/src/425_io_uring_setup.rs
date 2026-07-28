@@ -1,59 +1,52 @@
-// sys_io_uring_setup (NR_IO_URING_SETUP=425) per docs/53§0 —
-// per-syscall-file module. The ring/SQE/CQE machinery, op
-// constants, and dispatch stay in the io_uring module; this file
-// holds only the syscall handler.
+// sys_io_uring_setup (NR_IO_URING_SETUP=425) per docs/53§0 — ABI shim only:
+// copy the params in, admit them (`io_uring_abi::layout::prepare`), build the
+// ring, copy the params back, install the fd. Every decision — the flag mask,
+// the entries ladder, the region geometry, the reported feature bits — lives
+// in `crate::io_uring_abi`, which the hosted suite compiles and tests.
+//
+// Linux: `io_uring/io_uring.c` `SYSCALL_DEFINE2(io_uring_setup)` →
+// `io_uring_setup()` → `io_uring_create()`.
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
+use syscall::errno::Errno;
 
-use crate::io_uring::{
-    make_io_uring_inode, IoUringInode, MAX_ENTRIES, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR, OFF_SQ_RING,
-};
+use crate::io_uring::{make_io_uring_inode, IoUringInode};
+use crate::io_uring_abi::layout::{prepare, REPORTED_FEATURES};
+use crate::io_uring_abi::uapi::{Params, PARAMS_SIZE};
+
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// `sys_io_uring_setup(entries, *params)` — slot 425.
 /// # C: O(1)
 pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     use vfs::{File, OpenFlags};
-    use syscall::errno::Errno;
-    let entries = args.a0 as u32;
-    let params  = args.a1;
-    if entries == 0 || entries > MAX_ENTRIES {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let inode = match IoUringInode::new(entries) {
-        Some(i) => i, None => return -(Errno::Enomem.as_i32() as i64),
-    };
-    if params != 0 && params < hal::USER_VA_END {
-        let n = inode.ring.lock().entries;
-        // SAFETY: params validated < USER_VA_END; struct io_uring_params is 120 bytes; CPL=0 writes through caller's AS.
-        unsafe {
-            for i in 0..120usize {
-                core::ptr::write_volatile((params + i as u64) as *mut u8, 0);
-            }
-            core::ptr::write_volatile((params       ) as *mut u32, n);
-            core::ptr::write_volatile((params +   4 ) as *mut u32, n);
-            // sq_off at +40
-            core::ptr::write_volatile((params + 40 +  0) as *mut u32, OFF_SQ_HDR    );
-            core::ptr::write_volatile((params + 40 +  4) as *mut u32, OFF_SQ_HDR + 4);
-            core::ptr::write_volatile((params + 40 +  8) as *mut u32, OFF_SQ_HDR + 8);
-            core::ptr::write_volatile((params + 40 + 12) as *mut u32, OFF_SQ_HDR +12);
-            core::ptr::write_volatile((params + 40 + 24) as *mut u32, OFF_SQ_RING);
-            // cq_off at +72
-            core::ptr::write_volatile((params + 72 +  0) as *mut u32, OFF_CQ_HDR    );
-            core::ptr::write_volatile((params + 72 +  4) as *mut u32, OFF_CQ_HDR + 4);
-            core::ptr::write_volatile((params + 72 +  8) as *mut u32, OFF_CQ_HDR + 8);
-            core::ptr::write_volatile((params + 72 + 12) as *mut u32, OFF_CQ_HDR +12);
-            core::ptr::write_volatile((params + 72 + 20) as *mut u32, OFF_CQ_RING);
-        }
-    }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let entries  = args.a0 as u32;
+    let params_p = args.a1;
+
+    // Linux io_uring_setup(): the WHOLE struct is copied in first, so a bad
+    // pointer — including NULL — is EFAULT before anything is validated or
+    // allocated. Skipping the copy for a NULL pointer returned a usable fd
+    // whose ring geometry the caller never learned.
+    let mut buf = [0u8; PARAMS_SIZE];
+    if uaccess::copy_from_user(&mut buf, params_p).is_err() { return err(Errno::Efault); }
+    let mut p = Params::from_bytes(&buf);
+
+    // resv[] zero check, flag mask, flag combinations, entries ladder, region
+    // sizing, sq_off/cq_off writeback.
+    let geom = match prepare(&mut p, entries) { Ok(g) => g, Err(e) => return err(e) };
+
+    let inode = match IoUringInode::new(&geom) { Some(i) => i, None => return err(Errno::Enomem) };
+
+    // Linux io_uring_create() sets p->features only once the rings exist, then
+    // copies the params back BEFORE installing the fd, so a failed copy-back
+    // never leaks a descriptor.
+    p.features = REPORTED_FEATURES;
+    if uaccess::copy_to_user(params_p, &p.to_bytes()).is_err() { return err(Errno::Efault); }
+
+    let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Ebadf) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return err(Errno::Ebadf) };
     let inode_ref: vfs::InodeRef = make_io_uring_inode(inode);
     let dentry = vfs::dcache::d_alloc_pseudo("[io_uring]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
