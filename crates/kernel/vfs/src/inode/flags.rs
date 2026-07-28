@@ -67,6 +67,9 @@ pub const S_APPEND:    u32 = 1 << 2;
 pub const S_IMMUTABLE: u32 = 1 << 3;
 pub const S_DEAD:      u32 = 1 << 4;
 pub const S_DIRSYNC:   u32 = 1 << 6;
+/// `S_SWAPFILE` — swapon captured this inode's block map, so no truncate,
+/// fallocate, or remap may move its blocks (Linux `IS_SWAPFILE` → `ETXTBSY`).
+pub const S_SWAPFILE:  u32 = 1 << 8;
 pub const S_DAX:       u32 = 1 << 13;
 pub const S_ENCRYPTED: u32 = 1 << 14;
 pub const S_CASEFOLD:  u32 = 1 << 15;

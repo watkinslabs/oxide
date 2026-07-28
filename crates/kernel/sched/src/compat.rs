@@ -31,19 +31,22 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // NR_SYNCFS / NR_SYNC_FILE_RANGE moved to sys_fsync
         // (real fd validation; v1 RAM-only fs is always sync, so the
         // syscall is a true no-op for valid fds and EBADF for bad).
+        // NR_READAHEAD moved to a real impl (F754, syscalls/187_readahead.rs
+        // over `fs::readahead`). The shared `sys_fadvise_validate` answered
+        // only "is fd open" and returned 0: it never applied FMODE_READ
+        // (EBADF), never rejected a FIFO / an fd with no address space
+        // (EINVAL), and never populated the page cache — accept-and-ignore.
         // NR_FADVISE64 moved to a real impl (F756, syscalls/221_fadvise64.rs):
-        // the shared "validate then 0" arm below could not be right for it —
-        // it checked `len < 0` BEFORE the fd, inverting Linux's EBADF-first
-        // order, and never checked the advice value or ESPIPE on a FIFO, so
-        // every bad-advice call reported success. It now sets the real per-open
-        // `f_ra.ra_pages` window and flushes/invalidates for DONTNEED.
+        // the shared "validate then 0" arm could not be right for it — it
+        // checked `len < 0` BEFORE the fd, inverting Linux's EBADF-first order,
+        // and never checked the advice value or ESPIPE on a FIFO, so every
+        // bad-advice call reported success.
         // NR_MLOCK2 moved to a real impl (F756, syscalls/149_mlock_family.rs
         // over the same `do_mlock` mlock(2) uses). Routing it here was actively
         // wrong: `sys_fadvise_validate` reads `a0` as an fd, but mlock2's `a0`
         // is an ADDRESS — so mlock2 answered EBADF for almost every call and
-        // never locked anything, while `MLOCK_ONFAULT` validation and the
-        // RLIMIT_MEMLOCK ladder did not exist at all.
-        NR_READAHEAD                   => sys_fadvise_validate(_args),
+        // never locked anything.
+        // With all three gone the shared validator has no callers left.
 
         // NR_RESTART_SYSCALL moved to a real impl (F741,
         // syscalls/219_restart_syscall.rs over `Task::restart_block`). The
@@ -172,22 +175,3 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
     }
 }
 
-/// Shared validation for advisory cache hints (fadvise/readahead/mlock2).
-/// Linux returns 0 when args are sane, EBADF for bad fds, EINVAL for
-/// negative lengths. v1 has no page cache so the hint itself is a
-/// true no-op once validation passes.
-/// # C: O(1)
-pub fn sys_fadvise_validate(args: &SyscallArgs) -> Option<i64> {
-    let fd  = args.a0 as i32;
-    let len = args.a2 as i64;
-    if len < 0 {
-        return Some(-(Errno::Einval.as_i32() as i64));
-    }
-    let cur = match crate::live::current() { Some(c) => c, None => return Some(0) };
-    // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; Arc clone.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return Some(0) };
-    if fdt.get(fd).is_err() {
-        return Some(-(Errno::Ebadf.as_i32() as i64));
-    }
-    Some(0)
-}

@@ -330,7 +330,7 @@ impl TmpfsFileData {
 
     /// Ensure backing for `[off, off+len)`, optionally zeroing + extending.
     /// (Seal checks are the caller's.) # C: O(len/PG)
-    fn do_fallocate(&self, off: u64, len: u64, keep_size: bool, zero_range: bool) -> KResult<()> {
+    pub(super) fn do_fallocate(&self, off: u64, len: u64, keep_size: bool, zero_range: bool) -> KResult<()> {
         let end = off.checked_add(len).ok_or(VfsError::Einval)?;
         let old = self.len.load(Ordering::Acquire);
         let mut pos = off;
@@ -408,22 +408,9 @@ impl InodeOps for TmpfsFileInodeOps {
         inode.set_size(len);
         Ok(())
     }
-    fn fallocate(&self, inode: &Inode, off: u64, len: u64, keep_size: bool, zero_range: bool, punch: bool) -> KResult<()> {
-        let d = inode.private::<TmpfsFileData>().ok_or(VfsError::Einval)?;
-        let s = inode.fcntl_seals().map_or(0, |a| a.load(Ordering::Acquire));
-        let end = off.checked_add(len).ok_or(VfsError::Einval)?;
-        let old = d.len.load(Ordering::Acquire);
-        if !keep_size && end > old && s & F_SEAL_GROW != 0 { return Err(VfsError::Eperm); }
-        if (zero_range || punch) && s & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 { return Err(VfsError::Eperm); }
-        if punch {
-            // PUNCH_HOLE on RAM-backed data: zero the range, size unchanged
-            // (satisfies the read-as-zeros contract for the deallocated range).
-            d.do_fallocate(off, len, /*keep_size*/ true, /*zero_range*/ true)?;
-        } else {
-            d.do_fallocate(off, len, keep_size, zero_range)?;
-        }
-        inode.set_size(d.len.load(Ordering::Acquire));
-        Ok(())
+    /// `shmem_fallocate` — body in `falloc.rs`. # C: O(len/PG)
+    fn fallocate(&self, inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
+        super::falloc::shmem_fallocate(inode, mode, off, len)
     }
 }
 

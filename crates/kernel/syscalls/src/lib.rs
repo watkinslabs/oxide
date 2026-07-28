@@ -90,6 +90,16 @@ mod tcp_info;
 // and the Linux override rules are unit-testable without a boot.
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod statfs_abi;
+// statx(2) wire layout + the EINVAL ladder and its fd-vs-path asymmetry. Not
+// target-gated: the 256-byte offsets and the validation ORDER are the whole
+// observable contract and must be unit-tested (`08` phantom-test rule).
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod statx_abi;
+// preadv2/pwritev2 RWF_* validation + the 64-bit `pos_from_hilo` rule. Hosted
+// for the same reason: an arch-conditional offset formula that is wrong on
+// x86_64 is invisible to any test that lives inside the gated slot file.
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod rwf;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "063_uname/release.rs"] pub mod uname_release;
 #[cfg(any(target_os = "oxide-kernel", test))]

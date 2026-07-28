@@ -35,13 +35,13 @@ pub(super) fn handle_common_ioctl(
         FIDEDUPERANGE => Some(ioctl_file_dedupe_range(cur, file, fdt, arg)),
         FIBMAP if file.inode().file_type() == vfs::FileType::Regular => Some(ioctl_fibmap(cur, file, arg)),
         FS_IOC_RESVSP | FS_IOC_RESVSP64 if file.inode().file_type() == vfs::FileType::Regular => {
-            Some(ioctl_preallocate(file, 0, arg))
+            Some(ioctl_preallocate(cur, file, 0, arg))
         }
         FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 if file.inode().file_type() == vfs::FileType::Regular => {
-            Some(ioctl_preallocate(file, FALLOC_FL_PUNCH_HOLE, arg))
+            Some(ioctl_preallocate(cur, file, vfs::uapi::FALLOC_FL_PUNCH_HOLE, arg))
         }
         FS_IOC_ZERO_RANGE if file.inode().file_type() == vfs::FileType::Regular => {
-            Some(ioctl_preallocate(file, FALLOC_FL_ZERO_RANGE, arg))
+            Some(ioctl_preallocate(cur, file, vfs::uapi::FALLOC_FL_ZERO_RANGE, arg))
         }
         FS_IOC_GETFLAGS => Some(super::fileattr::ioctl_getflags(file, arg)),
         FS_IOC_SETFLAGS => Some(super::fileattr::ioctl_setflags(cur, file, arg)),
@@ -280,8 +280,13 @@ fn ioctl_fibmap(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     rv
 }
 
-/// Legacy XFS preallocation ioctls routed to `i_op->fallocate`. # C: FS-dependent
-fn ioctl_preallocate(file: &vfs::File, mode: u32, arg: u64) -> i64 {
+/// `ioctl_preallocate` (Linux `fs/ioctl.c`) — the legacy XFS space-reservation
+/// ioctls. Only the `l_whence` fixup belongs here; the range, mode, writability
+/// and inode-flag ladder is `vfs_fallocate`'s, and duplicating it produced the
+/// wrong errno (`EINVAL` where Linux reports `EFBIG` on wraparound).
+/// `FALLOC_FL_KEEP_SIZE` is always added: these ioctls reserve space, never
+/// move the file's end. # C: FS-dependent
+fn ioctl_preallocate(cur: &sched::Task, file: &vfs::File, mode: u32, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, SPACE_RESV_BYTES, 1) { return rv; }
     // SAFETY: copy_from_user-equivalent after validating the whole `space_resv` payload.
     let whence = unsafe { core::ptr::read_unaligned((arg + SPACE_RESV_L_WHENCE) as *const i16) };
@@ -299,15 +304,7 @@ fn ioctl_preallocate(file: &vfs::File, mode: u32, arg: u64) -> i64 {
         },
         _ => return -(Errno::Einval.as_i32() as i64),
     }
-    if start < 0 || len <= 0 { return -(Errno::Einval.as_i32() as i64); }
-    if (start as u64).checked_add(len as u64).is_none() { return -(Errno::Einval.as_i32() as i64); }
-    if !file.f_mode().contains(vfs::Fmode::WRITE) { return -(Errno::Ebadf.as_i32() as i64); }
-    let zero = mode & FALLOC_FL_ZERO_RANGE != 0;
-    let punch = mode & FALLOC_FL_PUNCH_HOLE != 0;
-    match file.inode().fallocate(start as u64, len as u64, true, zero, punch) {
-        Ok(()) => 0,
-        Err(e) => -(e as i64),
-    }
+    fs::fallocate::vfs_fallocate(cur, file, mode | vfs::uapi::FALLOC_FL_KEEP_SIZE, start, len)
 }
 
 /// Linux `FS_IOC_GETFSUUID`: expose superblock UUID or `ENOTTY`. # C: O(1)

@@ -46,6 +46,13 @@ bitflags::bitflags! {
         /// FMODE_NONOTIFY — suppress fsnotify events on this description
         /// (fanotify's own fds avoid self-notification loops). Linux `(1 << 26)`.
         const NONOTIFY = 0x0400_0000;
+        /// FMODE_NOWAIT — the backend can answer `RWF_NOWAIT` honestly: either
+        /// complete without sleeping or report `EAGAIN`. Linux `(1 << 27)`;
+        /// `kiocb_set_rw_flags` rejects `RWF_NOWAIT` with `EOPNOTSUPP` on a
+        /// description that lacks it (`include/linux/fs.h:3442-3445`), so the
+        /// bit is what separates "we support this" from "we would have blocked
+        /// while pretending not to".
+        const NOWAIT   = 0x0800_0000;
     }
 }
 
