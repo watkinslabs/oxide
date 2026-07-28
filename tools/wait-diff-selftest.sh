@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Falsification gate for the wait_diff probe. Host-only, no boot, ~2min.
+# Falsification gate for the wait_diff probe. Host-only, no boot, ~9min
+# (one baseline run plus one run per mutant, each ~27s).
 #
 # A differential probe that cannot fail is worse than no probe: it makes a
 # green boot look like evidence. Every case in userspace/wait_diff carries
