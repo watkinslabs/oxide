@@ -99,6 +99,21 @@ not exist yet — and are noise here.
 This also matches a standing note that journald writes zero entries despite fs
 and mmap working.
 
+**Traced one level 2026-07-28 (not fixed):** `openat`'s create arm calls
+`parent.inode.create_child(...)`, and ext4's backend create is
+`RootfsState::create_at(path, mode) -> Option<vfs::InodeRef>` — an **Option**,
+not a `KResult`. Its own tests confirm distinct failures collapse into `None`
+(`quota_create_rollback_image.rs`: "create must fail at inode write" for a
+quota rejection). So the real reason is **discarded at the backend boundary**
+and surfaces as a generic errno — which is the most likely explanation for
+`err=5` on the journal file, and means the EIO is probably not the actual
+failure. Linux returns the specific errno (`EDQUOT`, `ENOSPC`, `EEXIST`, …)
+from `i_op->create`.
+
+**Next step:** change `create_at`/`create_anonymous_at` to return `KResult` and
+propagate, then re-read the journal failure — the true errno is likely to name
+the bug outright. Until then, do not treat EIO here as an I/O error.
+
 Then it **freezes**: screendumps 150s→400s byte-identical, alongside a large
 volume of `Failed to dispatch fd source: Invalid argument` from gnome-shell —
 also observed independently by the user on their own boots. The DRM EOF bugs
