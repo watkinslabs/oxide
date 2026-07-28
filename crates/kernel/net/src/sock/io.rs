@@ -308,7 +308,13 @@ impl InetSocket {
             _ => false,
         };
         if symmetric { return true; }
-        crate::unix_sock::dgram_peer_writable(peer.queued_bytes(), sndbuf_cap)
+        if crate::unix_sock::dgram_peer_writable(peer.queued_bytes(), sndbuf_cap) { return true; }
+        // `unix_dgram_peer_wake_me`: register on the peer's wake list at the
+        // exact point we decide "not writable", so the peer's drain relays an
+        // EPOLLOUT to US. Our own subscribers never see the peer's activity,
+        // so without this the writer parks and nothing ever wakes it.
+        peer.register_peer_writer(&self.poll_subs);
+        false
     }
 
     /// # C: O(1)
