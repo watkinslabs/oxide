@@ -67,6 +67,14 @@ green boot look like evidence.
 | `noburn` | no sibling to advance the process CPU clock |
 | `mqnokill` | never signals the parked mq receiver |
 | `nosig` | drops the mid-wait interrupt entirely (blanket) |
+| `sysvavail` | the SysV IPC_NOWAIT cases start satisfiable |
+| `sysvnopost` | no SysV peer ever posts/sends/drains |
+| `sysvnormid` | never `IPC_RMID`s the set/queue a waiter is parked on |
+| `sysvnoundo` | drops `SEM_UNDO` from the undo case |
+| `sysvmsgflags` | drops `MSG_NOERROR`/`MSG_EXCEPT`, positive `msgtyp` |
+| `sysvdt1page` | `shmdt` -> one-page `munmap` (the historical shmdt bug) |
+| `sysvdtbase` | the shmdt-rejection cases get the real attach base |
+| `sysvnofork` | no forked second attach for the `shm_nattch` case |
 
 ## 5 A record that goes green for the wrong reason
 
@@ -105,3 +113,4 @@ cost all 21 records behind it.
 | `syslog(2)` by default | needs `CAP_SYSLOG` and an EMPTY ring, reachable on the oracle only by CONSUMING the host's kernel ring (global cursor). Opt in with `WAIT_DIFF_SYSLOG=1` |
 | PI futexes | `-ENOSYS` in this tree (plan §7, own project) |
 | `mq_timedsend` full-queue block | only the receive side is exercised |
+| SysV `MSG_COPY` | needs `CONFIG_CHECKPOINT_RESTORE`, absent on stock Fedora |

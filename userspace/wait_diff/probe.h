@@ -79,6 +79,21 @@
 #define JOBCTL_GUARD_S   10u
 #define MQ_ABS_TIMEOUT_S 30
 
+/* System V IPC. None of these cases combines a signal with a release, so
+ * the 10x margin B1449/B1453 needed does not apply: an EINTR case has NO
+ * peer that could satisfy it, and a release case has no signal that could
+ * race the release. The only requirement left is that a park is entered
+ * before the peer acts, which SYSV_SETTLE_MS covers. */
+#define SYSV_RELEASE_MS  600u
+#define SYSV_SETTLE_MS   600u
+#define SYSV_TIMEOUT_MS  400u
+#define SYSV_GUARD_MS   4000u
+#define SYSV_STOP_MS     150u
+#define SYSV_CONT_MS     900u
+/* "The call really parked" buckets. Half the interval it had to wait. */
+#define SYSV_SLEPT_MS    (SYSV_RELEASE_MS / 2)
+#define SYSV_TIMED_MS    (SYSV_TIMEOUT_MS / 2)
+
 /* Sentinel written into every `rem` buffer before a sleep, so "the kernel
  * did not touch rem" is observable rather than inferred from a zero. */
 #define REM_SENTINEL_SEC  987654321L
@@ -129,6 +144,21 @@ int wait_bounded(pid_t pid, unsigned ms, int *st);
 int         err_class(int rc, int err);
 const char *err_class_name(int cls);
 
+/* SysV IPC needs EAGAIN / EIDRM / ENOMSG / E2BIG told apart, which
+ * `err_class` folds into `other`. Three bits, so a child can hand the
+ * outcome back in an exit code beside the SV_* flag bits. */
+int         sysv_class(int rc, int err);
+const char *sysv_class_name(int cls);
+#define SV_CLS_MASK 7
+#define SV_SLEPT    8
+#define SV_SIG     16
+#define SV_DATA    32
+
+/* How a child that was expected to fault ended: `ok` (exited zero),
+ * `segv`, `bus`, `signalled`, `exited`. Used to prove an address really
+ * is unmapped after shmdt, which no return value can show. */
+const char *fault_class(int st);
+
 /* Raw clock_nanosleep — see the header comment for why. */
 int raw_clock_nanosleep(clockid_t clk, int flags,
                         const struct timespec *req, struct timespec *rem);
@@ -141,5 +171,8 @@ void probe_cputime(void);
 void probe_mqueue(void);
 void probe_mqueue_api(void);
 void probe_syslog(void);
+void probe_sysv_sem(void);
+void probe_sysv_msg(void);
+void probe_sysv_shm(void);
 
 #endif
