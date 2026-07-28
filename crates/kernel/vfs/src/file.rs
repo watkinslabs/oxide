@@ -14,6 +14,7 @@
 // - `lifetime`: `Drop`, `get_file`, `fput`, `iput`, and `Debug`.
 // - `epoll`: weak eventpoll backlinks released from final `File::drop`.
 // - `open`: post-lookup open/install helpers.
+// - `fsync`: `vfs_fsync_range`, `generic_write_sync`, errseq wb-err harvest.
 
 extern crate alloc;
 use alloc::sync::{Arc, Weak};
@@ -39,6 +40,7 @@ mod model;
 mod mode;
 mod open;
 mod readahead;
+mod fsync;
 
 pub use async_notify::{fasync_register, fasync_registered, fasync_unregister, kill_fasync, set_sigio_hook};
 pub use cred::FileCred;
@@ -50,6 +52,7 @@ pub use lifetime::{fput, get_file, iput};
 pub use mode::{Fmode, SeekFrom};
 pub use open::{install_open_at, open_dentry_at};
 pub use readahead::FileRaState;
+pub use fsync::{iocb_sync_mode, fsync_slot_present, SyncMode, SYNC_TO_EOF};
 
 pub(super) use async_notify::SIGIO_HOOK;
 pub(super) use hooks::{fire_open_hook, fire_read_hook, fire_write_hook};
@@ -98,6 +101,15 @@ pub struct File {
     /// the on-demand advance is atomic against a dup'd / shared description.
     f_ra: Spinlock<FileRaState, FileRa>,
     flags:  AtomicU32,
+    /// `f_wb_err` — snapshot of the inode address_space's `wb_err` taken at
+    /// open (`fs/open.c:895`), advanced by `file_check_and_advance_wb_err`.
+    /// This is what makes `fsync` report a writeback error EXACTLY ONCE per
+    /// open file description.
+    f_wb_err: AtomicU32,
+    /// `f_sb_err` — the same, against the superblock's `s_wb_err`, read by
+    /// `syncfs(2)` (`fs/open.c:896`, `fs/sync.c:162`). Kept separate from
+    /// `f_wb_err` because the two are advanced by different syscalls.
+    f_sb_err: AtomicU32,
     /// Currently-held flock kind: 0=none, 1=LOCK_SH, 2=LOCK_EX. Used
     /// by the kernel-side flock registry to find which lock to drop
     /// when the last reference to this open-file-description goes

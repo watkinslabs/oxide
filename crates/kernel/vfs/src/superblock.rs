@@ -172,6 +172,12 @@ pub struct SuperBlock {
     pub(crate) s_wb: Spinlock<BTreeMap<Ino, InodeRef>, SbClass>,
     /// `s_dquot` — superblock quota state and dquot cache.
     pub s_dquot: QuotaInfo,
+    /// `s_wb_err` (Linux `struct super_block`): filesystem-wide writeback
+    /// error latch. Every `mapping_set_error` on any inode of this mount also
+    /// records here (`include/linux/pagemap.h:246-248`), so `syncfs(2)` can
+    /// report a failure whose inode has since been evicted. Read against the
+    /// per-description `f_sb_err` snapshot (`fs/sync.c:162`).
+    pub s_wb_err: crate::errseq::Errseq,
 }
 
 /// One inode-cache slot. `Weak` everywhere so the cache never keeps an inode or

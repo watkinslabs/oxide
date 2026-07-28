@@ -196,6 +196,22 @@ pub trait AddressSpaceOps: Send + Sync {
         None
     }
 
+    /// The backend half of `fsync` for this address_space: commit the metadata
+    /// describing the pages [`Self::writeback_range`] just wrote and issue the
+    /// device barrier (for ext4: the journal transaction carrying this inode,
+    /// then `blkdev_issue_flush`).
+    ///
+    /// This exists because `msync(MS_SYNC)` and inode eviction reach an
+    /// address_space through a VMA, which carries no open file description, so
+    /// `f_op->fsync(struct file *)` is unreachable — Linux gets there via
+    /// `vma->vm_file`. Same work, same ordering (the caller runs writeback
+    /// first; see [`crate::File::vfs_fsync_range`]), reached from the mapping.
+    ///
+    /// Default `Ok(())` is correct for shmem/tmpfs: the pages ARE the store, so
+    /// there is nothing behind them to commit. `Err` is a REAL durability
+    /// failure and must not be swallowed. # C: O(journal tx) + one barrier
+    fn sync_backing(&self) -> Result<(), ()> { Ok(()) }
+
     /// Logical size (Linux `i_size`) the cache reflects. # C: O(1)
     fn size(&self) -> u64;
 }
