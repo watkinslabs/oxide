@@ -55,3 +55,34 @@ impl Task {
         *self.exe_path.lock() = path;
     }
 }
+
+impl Task {
+    /// Linux `replace_mm_exe_file` (`kernel/fork.c`): install `inode` as the
+    /// running image, taking a `deny_write_access` on it and releasing the one
+    /// held on the previous image. That deny is what makes `ETXTBSY` real —
+    /// `open(O_WRONLY)` and `truncate` of a live binary must fail while it runs.
+    ///
+    /// Returns `Etxtbsy` if the new image is currently open for write, and
+    /// leaves the old image installed — Linux fails the exec in that case
+    /// rather than running a file someone is writing.
+    /// # C: O(1); # Lk: TaskList (self, momentary)
+    pub fn set_exe_inode(&self, inode: Option<vfs::InodeRef>) -> vfs::KResult<()> {
+        if let Some(new) = inode.as_ref() { new.deny_write_access()?; }
+        let old = core::mem::replace(&mut *self.exe_inode.lock(), inode);
+        if let Some(old) = old { old.allow_write_access(); }
+        Ok(())
+    }
+
+    /// Release the exec-time write deny — task teardown, or an mm swap that
+    /// leaves no image. Linux `exe_file_allow_write_access` on the old file.
+    /// # C: O(1)
+    pub fn clear_exe_inode(&self) {
+        if let Some(old) = self.exe_inode.lock().take() { old.allow_write_access(); }
+    }
+
+    /// True iff this task's running image is `inode` — the `ETXTBSY` test a
+    /// truncate/open-for-write consults. # C: O(1)
+    pub fn exe_inode_is(&self, ino: vfs::Ino) -> bool {
+        self.exe_inode.lock().as_ref().is_some_and(|i| i.ino() == ino)
+    }
+}

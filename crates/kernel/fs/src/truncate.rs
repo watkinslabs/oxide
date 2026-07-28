@@ -84,7 +84,14 @@ pub fn vfs_truncate(vp: &VfsPath, len: u64, cred: &vfs::Cred) -> i64 {
     if let Err(e) = vfs::inode_permission(&vp.inode, vfs::MAY_WRITE, cred) {
         return -(e as i64);
     }
-    do_truncate(&vp.inode, vp.mnt_id, len, 0, cred)
+    // Linux `vfs_truncate` takes `get_write_access` here — after the permission
+    // and append checks, before the lease break. It fails `ETXTBSY` while any
+    // task is executing this inode, which is what stops a running binary's text
+    // being rewritten under it. Released immediately after (`put_write_and_out`).
+    if let Err(e) = vp.inode.get_write_access() { return -(e as i64); }
+    let rc = do_truncate(&vp.inode, vp.mnt_id, len, 0, cred);
+    vp.inode.put_write_access();
+    rc
 }
 
 /// `do_ftruncate` (Linux `fs/open.c`) — the `ftruncate(2)` descriptor form.
@@ -101,5 +108,11 @@ pub fn do_ftruncate(file: &File, len: u64, cred: &vfs::Cred) -> i64 {
     if file.inode().i_flags() & vfs::S_APPEND != 0 {
         return -(Errno::Eperm.as_i32() as i64);
     }
-    do_truncate(file.inode(), file.mnt_id(), len, vfs::ATTR_MTIME | vfs::ATTR_CTIME, cred)
+    // `do_ftruncate` reaches `do_truncate` through the same `get_write_access`
+    // gate as the path form — an fd opened for write on a file that later got
+    // executed must still refuse.
+    if let Err(e) = file.inode().get_write_access() { return -(e as i64); }
+    let rc = do_truncate(file.inode(), file.mnt_id(), len, vfs::ATTR_MTIME | vfs::ATTR_CTIME, cred);
+    file.inode().put_write_access();
+    rc
 }
