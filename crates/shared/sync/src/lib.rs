@@ -166,6 +166,13 @@ decl_lock_class! {
     // tracked lock. Leaf rank above the task-creation locks (Runqueue/TaskList)
     // it is acquired under during spawn.
     KStack       = 206,
+    // Connect-time ephemeral-port perturb table (`net::secure_seq::perturb`,
+    // Linux `table_perturb`). Taken on the bind/connect path with socket and
+    // socket-table locks (130/140) already held, and takes `Crng` (207) inside
+    // to seed itself — so it ranks above the socket locks and below the CSPRNG
+    // leaf. PROCESS CONTEXT ONLY: the softirq RX path must not take it, which
+    // is why `net_secret` itself is lock-free atomics rather than living here.
+    NetSecret    = 145,
     // Kernel CSPRNG state (`crng::pool`). A strict LEAF: the ChaCha20 rekey and
     // output run entirely inside it and take no nested tracked lock, so any
     // consumer (getrandom, /dev/urandom, AT_RANDOM, uuid, socket cookies) may

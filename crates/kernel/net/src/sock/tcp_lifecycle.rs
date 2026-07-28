@@ -31,15 +31,23 @@ pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
     Ok(())
 }
 
+/// `peer` is `Some` only on the `connect()` path, where Linux picks the
+/// ephemeral port from the 4-tuple hash (`inet_hash_connect`) rather than a
+/// uniform offset (`inet_csk_get_port`). # C: O(range * N_port)
 fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
-                   local_port: &mut Option<u16>)
+                   local_port: &mut Option<u16>, peer: Option<(crate::IpAddr, u16)>)
     -> Result<Arc<crate::stack::TcpBindReservation>, NetError> {
     if let Some(bind) = sock.tcp_bind.lock().as_ref().cloned() { return Ok(bind); }
     let iface = bound_iface(sock)?;
-    let bind = stack().tcp_reserve_in(sock.net_ns(), local_ip, 0, iface,
-        sock.opts.reuseaddr.load(Ordering::Acquire) != 0,
-        sock.opts.reuseport.load(Ordering::Acquire) != 0,
-        sock.owner_uid, tcp_v6only(sock, local_ip))?;
+    let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
+    let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
+    let v6only = tcp_v6only(sock, local_ip);
+    let bind = match peer {
+        Some(peer) => stack().tcp_reserve_connect_in(sock.net_ns(), local_ip, 0, iface,
+            reuseaddr, reuseport, sock.owner_uid, v6only, peer)?,
+        None => stack().tcp_reserve_in(sock.net_ns(), local_ip, 0, iface,
+            reuseaddr, reuseport, sock.owner_uid, v6only)?,
+    };
     *local_port = Some(bind.local.port);
     *sock.tcp_bind.lock() = Some(bind.clone());
     Ok(bind)
@@ -64,7 +72,7 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
     } else {
         crate::IpAddr::V4(*sock.local_ip.lock())
     };
-    let bind = ensure_tcp_bind(sock, local_ip, &mut local_port)?;
+    let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, None)?;
     let listener = stack().tcp_listen_reserved_filter_pmtu_modes(
         &bind, sock.bpf_filter.clone(), sock.opts.ip_mtu_discover.clone(),
         sock.opts.ipv6_mtu_discover.clone())?;
@@ -79,7 +87,7 @@ fn connect_tcp(sock: &alloc::sync::Arc<InetSocket>, local_ip: crate::IpAddr,
     -> Result<(), NetError> {
     let mut local_port = sock.local_port.lock();
     if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
-    let bind = ensure_tcp_bind(sock, local_ip, &mut local_port)?;
+    let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, Some((remote_ip, remote_port)))?;
     let entry = stack().tcp_connect_reserved_filter_pmtu_modes(
         &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
         sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),

@@ -145,6 +145,15 @@ impl FileBacking for InodeFileBacking {
         if let Some(m) = self.inode.i_mapping() { m.writeback_range(start, end) } else { Ok(()) }
     }
 
+    /// `msync(MS_SYNC)` durability leg — `vfs_fsync_range(vm_file, .., 1)`.
+    /// `Inode::mapping_fsync_range` runs the same ordering as an fd `fsync`:
+    /// writeback, then the journal commit + device barrier. `end` is exclusive
+    /// here and inclusive there. # C: O(N_dirty in range) + O(journal tx)
+    fn fsync_range(&self, start: u64, end: u64) -> Result<(), ()> {
+        let end_incl = if end == 0 { return Ok(()) } else { end - 1 };
+        self.inode.mapping_fsync_range(start, end_incl).map_err(|_| ())
+    }
+
     /// Non-faulting `mincore(2)` page-cache query. # C: O(log N_pages)
     fn mincore_page(&self, off: u64) -> bool {
         if let Some(m) = self.inode.i_mapping() {

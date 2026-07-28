@@ -23,6 +23,8 @@ namespace-identity = { path = "../namespace-identity" }
 softirq  = { path = "../softirq" }
 pmm      = { path = "../mm-pmm" }
 security = { path = "../security" }
+crng     = { path = "../crng" }
+siphash  = { path = "../../shared/siphash" }
 nscg = { path = "../nscg" }
 
 [dev-dependencies]

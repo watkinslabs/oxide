@@ -10,8 +10,6 @@ use crate::stack::{NetStack, TcpEntry};
 
 const IPV4_TCP_OVERHEAD: u32 = 40;
 const IPV6_TCP_OVERHEAD: u32 = 60;
-pub(crate) const TCP_ISN_STEP: u32 = 0x1000;
-pub(crate) const TCP_ISN_INITIAL: u32 = 0x1000_0000;
 
 fn usable_route(record: RouteRecord) -> NetResult<RouteEntry> {
     match record.kind {
@@ -279,12 +277,6 @@ impl NetStack {
     pub(crate) fn next_ipv4_id(&self) -> u16 {
         let mut s = self.next_ip_id.lock();
         *s = s.wrapping_add(1);
-        *s
-    }
-
-    pub(crate) fn next_isn_value(&self) -> u32 {
-        let mut s = self.next_isn.lock();
-        *s = s.wrapping_add(TCP_ISN_STEP);
         *s
     }
 }

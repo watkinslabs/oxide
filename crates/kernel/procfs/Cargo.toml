@@ -21,6 +21,9 @@ modules = { path = "../modules" }
 sched = { path = "../sched" }
 vmm   = { path = "../mm-vmm" }
 devfs = { path = "../devfs" }
+# `/proc/sys/kernel/random/uuid` regenerates per read from the ONE kernel
+# CSPRNG (`27`); procfs never carries a second generator.
+crng  = { path = "../crng" }
 kernfs = { path = "../kernfs" }
 nscg  = { path = "../nscg" }
 network-namespace = { path = "../network-namespace" }
