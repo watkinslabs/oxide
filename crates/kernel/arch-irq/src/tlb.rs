@@ -108,7 +108,7 @@ pub fn service() {
     // `fetch_and` would credit whatever round happens to be live now — the
     // owner would then free a frame this CPU never invalidated for.
     loop {
-        if ROUND.load(Ordering::Acquire) != round { return; }
+        if !crate::tlb_round::ack_valid(round, ROUND.load(Ordering::Acquire)) { return; }
         if pending & bit == 0 { return; }
         match PENDING.compare_exchange(pending, pending & !bit,
                                        Ordering::AcqRel, Ordering::Acquire) {
@@ -166,7 +166,7 @@ fn shootdown(va: u64, mask: u64) {
 
     // Publish the round BEFORE the targets: a `service()` that reads this
     // round id is then guaranteed to see the matching VA and pending mask.
-    ROUND.fetch_add(1, Ordering::AcqRel);
+    ROUND.store(crate::tlb_round::next_round(ROUND.load(Ordering::Acquire)), Ordering::Release);
     SHOOT_VA.store(va, Ordering::Release);
     PENDING.store(targets, Ordering::Release);
     let mut c = 0u32;
@@ -175,7 +175,7 @@ fn shootdown(va: u64, mask: u64) {
             // SAFETY: LAPIC enabled post-boot; target is an online CPU.
             // A logical id with no hardware id was never IPI'd, so waiting on
             // it would be a guaranteed hang for an ACK that cannot arrive.
-            if !unsafe { send_ipi(c) } { PENDING.fetch_and(!(1u64 << c), Ordering::AcqRel); }
+            if !unsafe { send_ipi(c) } { PENDING.store(crate::tlb_round::drop_unreachable(PENDING.load(Ordering::Acquire), c), Ordering::Release); }
         }
         c += 1;
     }
@@ -198,12 +198,7 @@ fn shootdown(va: u64, mask: u64) {
         core::hint::spin_loop();
         spins = spins.wrapping_add(1);
         let now = now_ns();
-        // The clock is authoritative once it is calibrated; before that
-        // (`TSC_KHZ == 0` ⇒ `monotonic_ns() == 0`) the spin count is the only
-        // measure left, and losing the diagnostic entirely is the one outcome
-        // this escalation exists to prevent.
-        let due = if now != 0 { now.wrapping_sub(next_warn) as i64 >= 0 }
-                  else        { spins >= next_spin_warn };
+        let due = crate::tlb_round::escalation_due(now, next_warn, spins, next_spin_warn);
         if due {
             next_warn = now.wrapping_add(STUCK_REPEAT_NS);
             next_spin_warn = spins.wrapping_add(STUCK_REPEAT_SPINS);
