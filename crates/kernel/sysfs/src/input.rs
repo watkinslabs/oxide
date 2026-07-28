@@ -121,7 +121,7 @@ impl FileOps for InputUeventOps {
 
 fn make_input_uevent_inode(info: InputDevInfo) -> InodeRef {
     InodeBuilder::new(INO_INPUT_ATTR, mk_mode(FileType::Regular, RW_PERM),
-        vfs::default_inode_ops(), Arc::new(InputUeventOps))
+        crate::kobject::attr_inode_ops(), Arc::new(InputUeventOps))
         .private(Arc::new(InputUeventData { info }))
         .build()
 }
@@ -143,7 +143,7 @@ impl FileOps for InputParentUeventOps {
 }
 fn make_input_parent_uevent_inode(info: InputDevInfo) -> InodeRef {
     InodeBuilder::new(INO_INPUT_ATTR, mk_mode(FileType::Regular, RW_PERM),
-        vfs::default_inode_ops(), Arc::new(InputParentUeventOps))
+        crate::kobject::attr_inode_ops(), Arc::new(InputParentUeventOps))
         .private(Arc::new(InputParentUeventData { info }))
         .build()
 }

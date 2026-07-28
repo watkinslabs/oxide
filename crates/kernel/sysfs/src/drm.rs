@@ -372,7 +372,7 @@ impl FileOps for DrmUeventFileOps {
 }
 fn make_drm_uevent_inode(name: String, minor: u32, devtype: &'static str) -> InodeRef {
     InodeBuilder::new(crate::ids::DRM_RW_ATTR + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
-        vfs::default_inode_ops(), Arc::new(DrmUeventFileOps))
+        crate::kobject::attr_inode_ops(), Arc::new(DrmUeventFileOps))
         .private(Arc::new(DrmUeventData { name, minor, devtype }))
         .build()
 }
@@ -489,5 +489,29 @@ mod tests {
         drv::device_del(&card);
         drv::device_del(&parent);
         assert_eq!(parent_drm.lookup("card43").err(), Some(VfsError::Enoent));
+    }
+
+    /// `udevadm trigger` coldplug — and the hand equivalent `echo add >
+    /// /sys/class/drm/card0/uevent` — reach the uevent attribute through
+    /// `O_WRONLY|O_CREAT|O_TRUNC` (systemd `write_string_file` → `fopen("we")`).
+    /// With the VFS default `i_op->truncate` (EROFS) the OPEN fails, udevd
+    /// receives no coldplug event, `/run/udev/data` stays empty, and logind
+    /// reports `CAN_GRAPHICAL=0` for seat0. kernfs accepts `ATTR_SIZE` and
+    /// ignores the size (`fs/kernfs/inode.c kernfs_iop_setattr`).
+    #[test]
+    fn drm_uevent_attr_accepts_o_trunc_open() {
+        let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let card = drm_dev("sysfs-drm-card44", "dri/card44", 44);
+        let devices = make_sys_devices_virtual_drm_inode();
+        let card_dir = devices.lookup("card44").expect("card44 sysfs dir");
+        let uevent = card_dir.lookup("uevent").expect("card44 uevent attr");
+        assert_eq!(uevent.truncate(0), Ok(()));
+        let dentry = vfs::Dentry::new_root(Arc::clone(&uevent));
+        let fdt = vfs::FdTable::new();
+        let fd = vfs::file::install_open_at(&fdt, uevent, dentry,
+            vfs::OpenFlags::O_WRONLY | vfs::OpenFlags::O_TRUNC, 0,
+            vfs::FileCred::root(), usize::MAX, None).expect("O_TRUNC open of uevent attr");
+        assert_eq!(fdt.get(fd).unwrap().write(b"add\n"), Ok(4));
+        drv::device_del(&card);
     }
 }

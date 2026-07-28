@@ -360,6 +360,18 @@ pub fn mount_at_path_exact_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> Option<
 /// Root mount id for namespace `ns` (Linux `mnt_ns->root`). # C: O(log N)
 pub fn root_mount_id(ns: u64) -> Option<u64> { mntns::ns_root_id(ns) }
 
+/// Namespace `ns`'s root as a Linux `struct path` — `mnt_ns->root` paired with
+/// that mount's `mnt_root` dentry and inode. This is the value
+/// `fs/namespace.c init_mount_tree()` installs into `init_fs`'s root and pwd,
+/// so it is the ONE definition of "the root a task resolves from when it has
+/// not chrooted". `None` before the root filesystem is mounted. # C: O(log N)
+pub fn root_path_for_ns(ns: u64) -> Option<crate::VfsPath> {
+    let mnt_id = root_mount_id(ns)?;
+    let dentry = crate::mount::root_dentry_for_mount_id(mnt_id)?;
+    let inode = dentry.inode()?;
+    Some(crate::VfsPath { mnt_id, dentry, inode, last_component: None })
+}
+
 /// `mnt_id` of `m`'s parent mount — the value RECORDED at attach. # C: O(1)
 pub fn parent_mnt_id(m: &Mount) -> u64 { m.parent_id.load(Ordering::Acquire) }
 
