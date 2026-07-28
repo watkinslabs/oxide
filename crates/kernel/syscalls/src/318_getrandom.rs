@@ -1,10 +1,55 @@
 // 318 getrandom — one syscall, one file (docs/53 §0).
 
 use syscall::errno::Errno;
-use syscall::getrandom::{cold_pool_action, validate_grnd_flags, ColdPool, GETRANDOM_COUNT_MAX};
+use syscall::getrandom::{cold_pool_action, validate_grnd_flags, wait_step, ColdPool,
+    WaitOutcome, CRNG_WAIT_POLL_NS, GETRANDOM_COUNT_MAX};
 use syscall::SyscallArgs;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// # C: O(1)
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+
+/// Linux `wait_for_random_bytes()` (`drivers/char/random.c`): loop until
+/// `crng_ready()`, waking on a 1 s timeout so a pool that becomes ready with no
+/// explicit wakeup still releases waiters, and returning `-ERESTARTSYS` when a
+/// signal arrives first.
+///
+/// This used to be unreachable: `crng::reseed()` set the ready flag whether or
+/// not any entropy source answered, so `is_initialized()` was true from the
+/// first call and no caller ever waited. With the flag now honest, a boot with
+/// no RDRAND/RNDR and no virtio-rng really does park here — which is the Linux
+/// behaviour userspace expects when it asks for secure bytes.
+/// # C: O(schedules until seeded or signal)
+fn wait_for_random_bytes(cur: &sched::Task) -> WaitOutcome {
+    use sched::SleepWake;
+    loop {
+        let pending = cur.sleep_wake() == SleepWake::Deliver;
+        if let Some(out) = wait_step(crng::is_initialized(), pending) { return out; }
+        // Linux calls `try_to_generate_entropy()` each pass; our equivalent is
+        // re-polling every source, which also folds fresh cycle-counter jitter.
+        if crng::reseed() { return WaitOutcome::Ready; }
+        // SAFETY: process context; the current task is enqueued on a scheduler
+        // wait list with an absolute wake deadline, then immediately scheduled.
+        unsafe {
+            CRNG_WAIT.park_with_deadline(monotonic_ns().saturating_add(CRNG_WAIT_POLL_NS));
+            sched::live::park_yield();
+        }
+    }
+}
+
+/// Linux `crng_init_wait` — the queue a newly-credited entropy source releases;
+/// the 1 s poll deadline covers the case where the credit lands with no wakeup.
+static CRNG_WAIT: sched::live::WaitList = sched::live::WaitList::new();
+
+/// # C: O(1)
+fn monotonic_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
 
 /// `sys_getrandom(buf, len, flags)` — slot 318. Fills `buf` from the kernel
 /// CSPRNG (`crng`: ChaCha20 with fast key erasure, seeded from virtio-rng /
@@ -17,11 +62,11 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Linux since 5.6 — `/dev/random` and `/dev/urandom` were unified there and
 /// `GRND_RANDOM` became a no-op.
 ///
-/// `GRND_NONBLOCK` returns `EAGAIN` while the pool is uninitialised. The pool
-/// seeds itself on first use from every source present, so this is reachable
-/// only if no source at all answered; it is wired rather than assumed away so
-/// the flag reports the truth instead of a fixed "always ready".
-/// # C: O(len)
+/// Cold-pool behaviour now matches Linux exactly, because `crng` can finally
+/// report a cold pool: `GRND_INSECURE` proceeds, `GRND_NONBLOCK` returns
+/// `EAGAIN`, and everyone else blocks in `wait_for_random_bytes()` until a real
+/// entropy source contributes (or a signal arrives, giving `ERESTARTSYS`).
+/// # C: O(len), plus the cold-pool wait
 pub fn sys_getrandom(args: &SyscallArgs) -> i64 {
     let buf = args.a0;
     // Linux clamps count to INT_MAX before touching the buffer (signed
@@ -34,13 +79,18 @@ pub fn sys_getrandom(args: &SyscallArgs) -> i64 {
     if !crng::is_initialized() {
         // `GRND_INSECURE` skips the readiness gate outright, so don't even
         // reseed on its behalf; every other caller gets a seed attempt first.
-        if cold_pool_action(flags) != ColdPool::Proceed {
-            crng::reseed();
-            // Still cold: `GRND_NONBLOCK` reports it, everyone else would block
-            // in Linux's `wait_for_random_bytes()`. Our pool self-seeds from
-            // whatever sources exist, so reaching here means none answered.
-            if !crng::is_initialized() && cold_pool_action(flags) == ColdPool::Again {
-                return err(Errno::Eagain);
+        match cold_pool_action(flags) {
+            ColdPool::Proceed => {}
+            ColdPool::Again => {
+                if !crng::reseed() { return err(Errno::Eagain); }
+            }
+            ColdPool::Wait => {
+                if !crng::reseed() {
+                    let Some(cur) = current_task() else { return err(Errno::Eagain) };
+                    if wait_for_random_bytes(cur) == WaitOutcome::Restart {
+                        return syscall::restart::restart_sys();
+                    }
+                }
             }
         }
     }

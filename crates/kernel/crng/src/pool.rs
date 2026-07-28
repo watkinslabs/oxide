@@ -22,8 +22,17 @@ use crate::hw;
 static BULK_SOURCE: AtomicU64 = AtomicU64::new(0);
 type BulkFn = fn(&mut [u8]) -> usize;
 
-/// Set once the pool has absorbed its boot seed. Read without the lock so
-/// `is_initialized` costs nothing.
+/// Set once a source that actually carries entropy has contributed — Linux
+/// `crng_init == CRNG_READY` (`drivers/char/random.c`). Read without the lock
+/// so `is_initialized` costs nothing.
+///
+/// Deliberately NOT set by a bare `reseed()` that found no source. It used to
+/// be, which made `is_initialized()` return true unconditionally after the
+/// first call: on a TCG boot with no RDRAND and no virtio-rng the pool was
+/// keyed from a cycle-counter reading and reported itself ready, so
+/// `getrandom(2)` never blocked and `GRND_NONBLOCK` never returned EAGAIN.
+/// Callers had no way to learn the pool was cold, which is precisely the
+/// question those interfaces exist to answer.
 static SEEDED: AtomicBool = AtomicBool::new(false);
 
 /// Bytes of bulk entropy pulled per (re)seed.
@@ -71,8 +80,8 @@ impl Crng {
 pub fn set_bulk_source(f: BulkFn) {
     BULK_SOURCE.store(f as usize as u64, Ordering::Release);
     // A newly-attached source is fresh entropy: fold it in immediately rather
-    // than waiting for the next consumer.
-    reseed();
+    // than waiting for the next consumer, and it credits the pool.
+    let _ = reseed();
 }
 
 /// Drop the bulk source during driver remove. # C: O(1)
@@ -87,15 +96,22 @@ fn bulk_fill(dst: &mut [u8]) -> usize {
 }
 
 /// Fold every available source into the pool: the bulk driver source, the
-/// per-CPU hardware instruction, and the cycle counter. # C: O(1)
-pub fn reseed() {
+/// per-CPU hardware instruction, and the cycle counter.
+///
+/// Returns whether a source that CARRIES entropy answered. The cycle counter
+/// is always folded — it keeps the key moving between calls — but it is not
+/// entropy and Linux does not credit it either (`random_init` credits
+/// `arch_get_random_seed_long`, never the TSC). # C: O(1)
+pub fn reseed() -> bool {
     let mut seed = [0u8; SEED_BYTES + (SEED_HW_WORDS + 1) * 8];
     let got = bulk_fill(&mut seed[..SEED_BYTES]);
     let mut off = got.min(SEED_BYTES);
+    let mut credited = off > 0;
     for _ in 0..SEED_HW_WORDS {
         if let Some(v) = hw::hw_random_u64() {
             seed[off..off + 8].copy_from_slice(&v.to_le_bytes());
             off += 8;
+            credited = true;
         }
     }
     seed[off..off + 8].copy_from_slice(&hw::cycles().to_le_bytes());
@@ -103,18 +119,36 @@ pub fn reseed() {
     let mut g = CRNG.lock();
     g.absorb(&seed[..off]);
     drop(g);
-    SEEDED.store(true, Ordering::Release);
+    if credited { SEEDED.store(true, Ordering::Release); }
+    credited
 }
 
-/// Fold caller-supplied entropy into the pool (Linux `add_device_randomness` /
-/// `add_interrupt_randomness`). Never reduces unpredictability. # C: O(len)
+/// Fold caller-supplied entropy into the pool WITHOUT crediting it — Linux
+/// `add_device_randomness` / `mix_pool_bytes`, the path `/dev/urandom` writes
+/// take. Never reduces unpredictability, but an attacker may have chosen the
+/// bytes, so it cannot be what makes the pool ready. # C: O(len)
 pub fn add_entropy(bytes: &[u8]) {
     let mut g = CRNG.lock();
     g.absorb(bytes);
 }
 
-/// True once the pool has absorbed a boot seed. Linux blocks `getrandom(2)`
-/// (without GRND_NONBLOCK/GRND_INSECURE) until this holds. # C: O(1)
+/// Fold entropy from a hardware generator and CREDIT it — Linux
+/// `add_hwgenerator_randomness`. This is what makes a cold pool ready on a
+/// machine with no RDRAND/RNDR but a `virtio-rng`. # C: O(len)
+pub fn add_hw_entropy(bytes: &[u8]) {
+    if bytes.is_empty() { return; }
+    add_entropy(bytes);
+    SEEDED.store(true, Ordering::Release);
+}
+
+/// Clear the readiness flag so a test can observe a genuinely cold pool.
+/// # C: O(1)
+#[cfg(test)]
+pub fn reset_seeded_for_test() { SEEDED.store(false, Ordering::Release); }
+
+/// True once a real entropy source has contributed. Linux blocks
+/// `getrandom(2)` (without GRND_NONBLOCK/GRND_INSECURE) until this holds.
+/// # C: O(1)
 pub fn is_initialized() -> bool { SEEDED.load(Ordering::Acquire) }
 
 /// Fill `dst` with CSPRNG output. The shared body of `getrandom(2)`,
@@ -124,7 +158,7 @@ pub fn is_initialized() -> bool { SEEDED.load(Ordering::Acquire) }
 /// one-shot key this call streams under, so the master key that produced these
 /// bytes is destroyed before they reach the caller. # C: O(dst.len())
 pub fn fill(dst: &mut [u8]) {
-    if !SEEDED.load(Ordering::Acquire) { reseed(); }
+    if !SEEDED.load(Ordering::Acquire) { let _ = reseed(); }
     let (mut key, nonce, mut counter) = {
         let mut g = CRNG.lock();
         // Stir in fresh jitter so two calls at different instants diverge even
