@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, KResult, VfsError};
+use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, KResult, VfsError};
 
 use crate::{read_window, register, RO_PERM};
 
@@ -19,7 +19,7 @@ impl FileOps for UeventSeqnumOps {
 
 fn make_uevent_seqnum_inode() -> vfs::InodeRef {
     InodeBuilder::new(INO_UEVENT_SEQNUM, mk_mode(FileType::Regular, RO_PERM),
-        default_inode_ops(), Arc::new(UeventSeqnumOps))
+        crate::kobject::attr_inode_ops(), Arc::new(UeventSeqnumOps))
         .build()
 }
 

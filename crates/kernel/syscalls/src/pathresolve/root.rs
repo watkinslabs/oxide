@@ -22,12 +22,7 @@ pub fn root_dentry() -> Option<Arc<vfs::Dentry>> {
 pub(super) fn resolution_root_vfs() -> Option<(vfs::VfsPath, bool)> {
     let global = root_dentry()?;
     let ns = vfs::mount::current_ns();
-    let namespace_root = || -> Option<vfs::VfsPath> {
-        let mnt_id = vfs::mount::root_mount_id(ns)?;
-        let dentry = vfs::mount::root_dentry_for_mount_id(mnt_id)?;
-        let inode = dentry.inode()?;
-        Some(vfs::VfsPath { mnt_id, dentry, inode, last_component: None })
-    };
+    let namespace_root = || -> Option<vfs::VfsPath> { vfs::mount::root_path_for_ns(ns) };
     let Some(cur) = sched::live::current() else {
         if let Some(p) = namespace_root() { return Some((p, false)); }
         let inode = global.inode()?;

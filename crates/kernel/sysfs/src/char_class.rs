@@ -135,7 +135,7 @@ fn make_char_uevent_inode(class: &'static str, info: CharDevInfo) -> InodeRef {
     InodeBuilder::new(
         INO_CHAR_ATTR,
         mk_mode(FileType::Regular, RW_PERM),
-        vfs::default_inode_ops(),
+        crate::kobject::attr_inode_ops(),
         Arc::new(CharUeventOps),
     )
     .private(Arc::new(CharUeventData { class, info }))

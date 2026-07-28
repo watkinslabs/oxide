@@ -58,10 +58,23 @@ struct AttrFileData {
 /// Sysfs attributes are regular-looking files whose writes are commands, not
 /// stored file contents. Linux accepts `O_TRUNC` on them (including Rust's
 /// `fs::write`), so truncation is a no-op before `sysfs_ops->store`.
-struct AttrInodeOps;
+///
+/// This is kernfs's `kernfs_iop_setattr`, which runs `setattr_copy` and
+/// explicitly "ignores size changes" (`fs/kernfs/inode.c`) — so EVERY sysfs
+/// file accepts `ATTR_SIZE`, not just the ones built through
+/// [`make_attr_inode`]. `echo add > /sys/.../uevent` and systemd's
+/// `write_string_file` both open `O_WRONLY|O_CREAT|O_TRUNC`, so a sysfs inode
+/// left on the VFS default (`truncate` → `EROFS`) fails the OPEN: that is what
+/// made `udevadm trigger` write nothing and leave `/run/udev/data` empty for
+/// the whole boot.
+pub(crate) struct AttrInodeOps;
 impl InodeOps for AttrInodeOps {
     fn truncate(&self, _inode: &Inode, _len: u64) -> KResult<()> { Ok(()) }
 }
+
+/// The shared sysfs attribute-file `i_op` (kernfs `kernfs_iops`). Every sysfs
+/// regular file must use this instead of `vfs::default_inode_ops()`. # C: O(1)
+pub fn attr_inode_ops() -> Arc<dyn InodeOps> { Arc::new(AttrInodeOps) }
 
 /// `f_op` for a sysfs attribute file. Linux materializes `->show()` once for
 /// an open sysfs file, then serves every partial read from that same result.
