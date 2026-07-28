@@ -15,6 +15,7 @@
 // - `notify`:        `mq_notify(2)` registration + `__do_notify` delivery.
 // - `thread_notify`: the SIGEV_THREAD netlink socket bridge.
 // - `attr`:          `mq_getsetattr(2)`.
+// - `sysctl`:        the `/proc/sys/fs/mqueue/*` leaves.
 // - `wait`:          the blocking edge (`prepare_timeout`, `wq_sleep`'s verdict).
 // - `user`:          user-memory access + current-task snapshots.
 
@@ -24,6 +25,7 @@ mod model;
 mod notify;
 mod open;
 mod sendrecv;
+pub mod sysctl;
 mod thread_notify;
 mod user;
 mod wait;

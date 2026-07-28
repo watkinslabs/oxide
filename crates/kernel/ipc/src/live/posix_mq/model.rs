@@ -133,6 +133,13 @@ pub fn sysctls(ns: NamespaceId) -> MqSysctls {
     g[i].sysctls
 }
 
+/// Apply one `/proc/sys/fs/mqueue/*` write to this namespace. # C: O(N_ns)
+pub fn update_sysctls(ns: NamespaceId, f: impl FnOnce(&mut MqSysctls)) {
+    let mut g = REG.lock();
+    let i = dir_index(&mut g, ns);
+    f(&mut g[i].sysctls);
+}
+
 /// Resolve a linked name to its inode. # C: O(N_queues)
 pub fn lookup(ns: NamespaceId, name: &str) -> Option<InodeRef> {
     let mut g = REG.lock();
