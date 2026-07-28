@@ -79,6 +79,26 @@ marks the five entries already closed. Highest value first:
 `basic.target` 13.6s · `graphical.target` 19.4s · `Running GNOME Shell` 54.9s ·
 **greeter renders** (QMP screendump, 1280×800, top bar + clock + power button).
 
+**User field data 2026-07-28 — the dispatch error is probably NOT gnome-shell's.**
+Two lines land adjacent on their boots, repeatedly:
+
+```
+[NAMEI] openat-create path="/var/log/journal/<id>/user-1000.journal" err=5
+[B288 dgram /run/systemd/journal/socket pid=4451] MESSAGE=Failed to dispatch fd source: Invalid argument
+```
+
+`err=5` is **EIO** creating the journal file, and the dispatch message is
+emitted by the process writing to the journal socket — i.e. journald's own,
+not the compositor's. That reframes the whole line of enquiry: the leading
+theory has been a DRM fd returning EOF, and the errno was never explained by
+it (EOF does not produce EINVAL). **Chase the EIO on journal creation first**,
+and confirm which pid emits the dispatch error before assuming the compositor.
+The adjacent `[INOTIFY-ENOENT …]` lines are expected — watches on paths that do
+not exist yet — and are noise here.
+
+This also matches a standing note that journald writes zero entries despite fs
+and mmap working.
+
 Then it **freezes**: screendumps 150s→400s byte-identical, alongside a large
 volume of `Failed to dispatch fd source: Invalid argument` from gnome-shell —
 also observed independently by the user on their own boots. The DRM EOF bugs
