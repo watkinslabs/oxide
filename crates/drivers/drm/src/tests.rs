@@ -327,3 +327,33 @@ fn wire_structs_are_the_size_their_ioctl_number_claims() {
     assert_eq!(size_of::<DrmModeCreateBlob>(),   ioc_size(DRM_IOCTL_MODE_CREATEPROPBLOB) as usize);
     assert_eq!(size_of::<DrmModeDestroyBlob>(),  ioc_size(DRM_IOCTL_MODE_DESTROYPROPBLOB) as usize);
 }
+
+/// Field OFFSETS, not just sizes. Transposing fields inside a struct leaves
+/// `size_of` unchanged, so both the ioctl-number check and the struct-size
+/// check keep passing while every field is read from the wrong place —
+/// `drm_mode_create_blob` shipped as (length, blob_id, data) instead of
+/// (data, length, blob_id), which made `length` the low half of the caller's
+/// data pointer and failed every CREATEPROPBLOB with EINVAL.
+/// Offsets are from `include/uapi/drm/drm_mode.h`.
+#[test]
+fn wire_struct_field_offsets_match_linux() {
+    use core::mem::offset_of;
+    assert_eq!(offset_of!(DrmModeCreateBlob, data),    0);
+    assert_eq!(offset_of!(DrmModeCreateBlob, length),  8);
+    assert_eq!(offset_of!(DrmModeCreateBlob, blob_id), 12);
+
+    // drm_mode_set_plane declares the source rect x, y, **h, w**.
+    assert_eq!(offset_of!(DrmModeSetPlane, crtc_x), 16);
+    assert_eq!(offset_of!(DrmModeSetPlane, crtc_w), 24);
+    assert_eq!(offset_of!(DrmModeSetPlane, src_x),  32);
+    assert_eq!(offset_of!(DrmModeSetPlane, src_y),  36);
+    assert_eq!(offset_of!(DrmModeSetPlane, src_h),  40);
+    assert_eq!(offset_of!(DrmModeSetPlane, src_w),  44);
+
+    // The property tail of drm_mode_get_connector; get_connector writes these.
+    assert_eq!(offset_of!(DrmModeGetConnector, props_ptr),       16);
+    assert_eq!(offset_of!(DrmModeGetConnector, prop_values_ptr), 24);
+    assert_eq!(offset_of!(DrmModeGetConnector, count_modes),     32);
+    assert_eq!(offset_of!(DrmModeGetConnector, count_props),     36);
+    assert_eq!(offset_of!(DrmModeGetConnector, count_encoders),  40);
+}

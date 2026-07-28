@@ -9,9 +9,13 @@ use syscall::errno::Errno;
 
 use crate::{DrmModeCreateBlob, DrmModeDestroyBlob};
 
-const MAX_USER_BLOB_BYTES: u32 = 64 * 1024;
-
 struct Blob { id: u32, bytes: Vec<u8> }
+
+/// `drm_property_create_blob` rejects only an empty blob or one that cannot be
+/// described alongside its header: `length > INT_MAX - sizeof(*blob)`. Anything
+/// within that bound is an allocation question, not a validity one, so an
+/// oversize-but-legal request is ENOMEM rather than EINVAL.
+const MAX_USER_BLOB_BYTES: u32 = i32::MAX as u32 - core::mem::size_of::<Blob>() as u32;
 
 static BLOBS: Spinlock<Vec<Blob>, AtomicLockClass> = Spinlock::new(Vec::new());
 static NEXT_BLOB_ID: AtomicU32 = AtomicU32::new(0x100);
@@ -32,7 +36,10 @@ pub fn create_blob(arg: u64) -> i64 {
     if req.length == 0 || req.length > MAX_USER_BLOB_BYTES || !user_ok(req.data, req.length as u64) {
         return einval();
     }
-    let mut bytes = Vec::with_capacity(req.length as usize);
+    let mut bytes = Vec::new();
+    if bytes.try_reserve_exact(req.length as usize).is_err() {
+        return -(Errno::Enomem.as_i32() as i64);
+    }
     for off in 0..req.length as u64 {
         // SAFETY: [data,data+length) was validated and bytes are copied now.
         bytes.push(unsafe { core::ptr::read_volatile((req.data + off) as *const u8) });

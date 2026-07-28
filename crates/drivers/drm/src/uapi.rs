@@ -442,9 +442,15 @@ pub struct DrmModeFbCmd {
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct DrmModeCreateBlob {
+    /// Field order is data, length, blob_id — NOT length-first. Transposing
+    /// these keeps sizeof at 16, so both the ioctl-number check and the
+    /// struct-size check keep passing, while `length` silently reads the low
+    /// half of the caller's `data` pointer: every CREATEPROPBLOB then failed
+    /// the length bound and mutter reported "drmModeCreatePropertyBlob:
+    /// Invalid argument" on every KMS update, blocking all page flips.
+    pub data: u64,
     pub length: u32,
     pub blob_id: u32,
-    pub data: u64,
 }
 
 /// `struct drm_mode_destroy_blob` — DESTROYPROPBLOB, 4 bytes.
