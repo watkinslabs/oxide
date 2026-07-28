@@ -54,19 +54,26 @@ static void drain_one(int id) {
     msgrcv(id, &buf, MSG_BIG, 1, IPC_NOWAIT);
 }
 
-static void report_child(const char *test, pid_t pid, unsigned guard_ms) {
+/* See `sysv_sem.c`: `slept` is only reported where a real wait is the
+ * assertion. An interrupted case would be reporting guest wake latency. */
+static void report_child(const char *test, pid_t pid, unsigned guard_ms, int want_slept) {
     int st = 0;
+    const char *cls = "blocked";
+    int slept = 0, sig = 0, data = 0;
     if (!wait_bounded(pid, guard_ms, &st)) {
         kill(pid, SIGKILL);
         reap(pid);
-        out("sysv_msg", test, "outcome=blocked|slept=0|sig=0|payload=0");
-        return;
+    } else if (!WIFEXITED(st)) {
+        cls = "killed";
+    } else {
+        int code = WEXITSTATUS(st);
+        cls = sysv_class_name(code & SV_CLS_MASK);
+        slept = (code & SV_SLEPT) ? 1 : 0;
+        sig = (code & SV_SIG) ? 1 : 0;
+        data = (code & SV_DATA) ? 1 : 0;
     }
-    if (!WIFEXITED(st)) { out("sysv_msg", test, "outcome=killed|slept=0|sig=0|payload=0"); return; }
-    int code = WEXITSTATUS(st);
-    out("sysv_msg", test, "outcome=%s|slept=%d|sig=%d|payload=%d",
-        sysv_class_name(code & SV_CLS_MASK), (code & SV_SLEPT) ? 1 : 0,
-        (code & SV_SIG) ? 1 : 0, (code & SV_DATA) ? 1 : 0);
+    if (want_slept) out("sysv_msg", test, "outcome=%s|slept=%d|sig=%d|payload=%d", cls, slept, sig, data);
+    else            out("sysv_msg", test, "outcome=%s|sig=%d|payload=%d", cls, sig, data);
 }
 
 /* `sig` < 0 installs no handler; otherwise it is the SA_RESTART argument
@@ -133,7 +140,7 @@ static void rcv_blocks(void) {
     if (pid == 0) rcv_child(id, -1);
     sleep_ms(SYSV_RELEASE_MS);
     if (!mutant("sysvnopost")) send_n(id, 1, MSG_PAYLOAD, 0);
-    report_child("rcv_blocks_until_sent", pid, SYSV_GUARD_MS);
+    report_child("rcv_blocks_until_sent", pid, SYSV_GUARD_MS, 1);
     msg_kill(id);
 }
 
@@ -146,17 +153,17 @@ static void snd_blocks(void) {
     if (pid == 0) snd_child(id, -1);
     sleep_ms(SYSV_RELEASE_MS);
     if (!mutant("sysvnopost")) drain_one(id);
-    report_child("snd_blocks_until_drained", pid, SYSV_GUARD_MS);
+    report_child("snd_blocks_until_drained", pid, SYSV_GUARD_MS, 1);
     msg_kill(id);
 }
 
 static void signal_case(const char *test, int restart, int sender) {
     int id = msg_new();
-    if (id < 0) { out("sysv_msg", test, "outcome=setup_failed|slept=0|sig=0|payload=0"); return; }
+    if (id < 0) { out("sysv_msg", test, "outcome=setup_failed|sig=0|payload=0"); return; }
     if (sender) fill_queue(id);
     pid_t pid = fork();
     if (pid == 0) { if (sender) snd_child(id, restart); else rcv_child(id, restart); }
-    report_child(test, pid, SYSV_GUARD_MS);
+    report_child(test, pid, SYSV_GUARD_MS, 0);
     msg_kill(id);
 }
 
@@ -204,7 +211,7 @@ static void stopcont_case(const char *test, int sender) {
     sleep_ms(MSG_LATE_MS);
     if (sender) drain_one(id);
     else send_n(id, 1, MSG_PAYLOAD, 0);
-    report_child(test, pid, SYSV_GUARD_MS);
+    report_child(test, pid, SYSV_GUARD_MS, 1);
     msg_kill(id);
 }
 
@@ -215,7 +222,7 @@ static void rmid_case(void) {
     if (pid == 0) rcv_child(id, -1);
     sleep_ms(SYSV_SETTLE_MS);
     if (!mutant("sysvnormid")) msg_kill(id);
-    report_child("rmid_eidrm", pid, SYSV_GUARD_MS);
+    report_child("rmid_eidrm", pid, SYSV_GUARD_MS, 1);
     msg_kill(id);
 }
 

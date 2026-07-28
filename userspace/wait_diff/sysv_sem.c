@@ -72,19 +72,30 @@ static void sem_blocker(int id, short op, short flg, int sig, unsigned slept_ms)
     _exit(code);
 }
 
-static void report_child(const char *test, pid_t pid, unsigned guard_ms) {
+/* `slept` is reported ONLY where a real wait is the assertion. An
+ * interrupted case must NOT report it: the wall time between arming a
+ * 150 ms itimer and the EINTR reaching userspace is guest wake latency,
+ * which the two kernels may legitimately disagree about — exactly the
+ * class B1453 hit. An ARM run recorded `slept=1` on both `signal_*` rows
+ * where the oracle had `slept=0`, with the semantics (`eintr`, `sig=1`)
+ * identical. `outcome` carries the claim; the duration never did. */
+static void report_child(const char *test, pid_t pid, unsigned guard_ms, int want_slept) {
     int st = 0;
+    const char *cls = "blocked";
+    int slept = 0, sig = 0;
     if (!wait_bounded(pid, guard_ms, &st)) {
         kill(pid, SIGKILL);
         reap(pid);
-        out("sysv_sem", test, "outcome=blocked|slept=0|sig=0");
-        return;
+    } else if (!WIFEXITED(st)) {
+        cls = "killed";
+    } else {
+        int code = WEXITSTATUS(st);
+        cls = sysv_class_name(code & SV_CLS_MASK);
+        slept = (code & SV_SLEPT) ? 1 : 0;
+        sig = (code & SV_SIG) ? 1 : 0;
     }
-    if (!WIFEXITED(st)) { out("sysv_sem", test, "outcome=killed|slept=0|sig=0"); return; }
-    int code = WEXITSTATUS(st);
-    out("sysv_sem", test, "outcome=%s|slept=%d|sig=%d",
-        sysv_class_name(code & SV_CLS_MASK),
-        (code & SV_SLEPT) ? 1 : 0, (code & SV_SIG) ? 1 : 0);
+    if (want_slept) out("sysv_sem", test, "outcome=%s|slept=%d|sig=%d", cls, slept, sig);
+    else            out("sysv_sem", test, "outcome=%s|sig=%d", cls, sig);
 }
 
 /* IPC_NOWAIT on an op that cannot proceed: EAGAIN, never a park.
@@ -109,7 +120,7 @@ static void block_until_posted(void) {
     if (pid == 0) sem_blocker(id, -1, 0, -1, SYSV_SLEPT_MS);
     sleep_ms(SYSV_RELEASE_MS);
     if (!mutant("sysvnopost")) sem_apply(id, 1, 0);
-    report_child("block_until_posted", pid, SYSV_GUARD_MS);
+    report_child("block_until_posted", pid, SYSV_GUARD_MS, 1);
     sem_kill(id);
 }
 
@@ -123,7 +134,7 @@ static void wait_for_zero(void) {
     if (pid == 0) sem_blocker(id, 0, 0, -1, SYSV_SLEPT_MS);
     sleep_ms(SYSV_RELEASE_MS);
     if (!mutant("sysvnopost")) sem_apply(id, -2, 0);
-    report_child("wait_for_zero", pid, SYSV_GUARD_MS);
+    report_child("wait_for_zero", pid, SYSV_GUARD_MS, 1);
     sem_kill(id);
 }
 
@@ -158,10 +169,10 @@ static void counted_waiters(void) {
  * turns both records into `blocked`. */
 static void signal_case(const char *test, int restart) {
     int id = sem_new(0);
-    if (id < 0) { out("sysv_sem", test, "outcome=setup_failed|slept=0|sig=0"); return; }
+    if (id < 0) { out("sysv_sem", test, "outcome=setup_failed|sig=0"); return; }
     pid_t pid = fork();
     if (pid == 0) sem_blocker(id, -1, 0, restart, SYSV_SLEPT_MS);
-    report_child(test, pid, SYSV_GUARD_MS);
+    report_child(test, pid, SYSV_GUARD_MS, 0);
     sem_kill(id);
 }
 
@@ -184,7 +195,7 @@ static void timeout_case(void) {
         if (mono_ms() - t0 >= (long long)SYSV_TIMED_MS) code |= SV_SLEPT;
         _exit(code);
     }
-    report_child("timedop_eagain", pid, SYSV_GUARD_MS);
+    report_child("timedop_eagain", pid, SYSV_GUARD_MS, 1);
     sem_kill(id);
 }
 
@@ -197,7 +208,7 @@ static void rmid_case(void) {
     if (pid == 0) sem_blocker(id, -1, 0, -1, SYSV_SLEPT_MS);
     sleep_ms(SYSV_SETTLE_MS);
     if (!mutant("sysvnormid")) sem_kill(id);
-    report_child("rmid_eidrm", pid, SYSV_GUARD_MS);
+    report_child("rmid_eidrm", pid, SYSV_GUARD_MS, 1);
     sem_kill(id);
 }
 
