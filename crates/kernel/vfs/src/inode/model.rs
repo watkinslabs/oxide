@@ -3,12 +3,13 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
-use core::sync::atomic::{AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
 use crate::poll_subs::PollSubscribers;
+use crate::timespec::Timespec64;
 use crate::quota::InodeDquots;
 use crate::superblock::SuperBlock;
 use crate::types::Ino;
@@ -55,10 +56,22 @@ pub struct Inode {
     pub(super) i_flags:        AtomicU32,
     pub(super) i_rdev:         u32,
     pub(super) i_generation:   u32,
-    pub(super) i_atime:        AtomicU64,
-    pub(super) i_mtime:        AtomicU64,
-    pub(super) i_ctime:        AtomicU64,
-    pub(super) i_btime:        u64,
+    // Linux `struct inode` splits each file time into a SIGNED `time64_t
+    // i_atime_sec` plus an unsigned `u32 i_atime_nsec` (include/linux/fs.h) —
+    // pre-1970 stamps are ordinary, and the pair spans the full `time64_t`
+    // window a single ns scalar cannot. Linux's fields are plain (unlocked
+    // readers may observe a half-updated pair); the Relaxed atomics here give
+    // exactly that, no more.
+    pub(super) i_atime_sec:    AtomicI64,
+    pub(super) i_atime_nsec:   AtomicU32,
+    pub(super) i_mtime_sec:    AtomicI64,
+    pub(super) i_mtime_nsec:   AtomicU32,
+    pub(super) i_ctime_sec:    AtomicI64,
+    pub(super) i_ctime_nsec:   AtomicU32,
+    /// Creation time, immutable after construction. `None` on a backend that
+    /// stores none — NOT a zero sentinel, since the epoch second is itself a
+    /// legal birth time.
+    pub(super) i_btime:        Option<Timespec64>,
     pub(super) i_state:        AtomicU32,
     pub(super) i_count:        AtomicU32,
     pub(super) i_version:      AtomicU64,
