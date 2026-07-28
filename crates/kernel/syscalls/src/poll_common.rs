@@ -66,8 +66,14 @@ impl PollWaiter {
     /// Sleeping + stamps the deadline; park_yield yields into the scheduler.
     /// # C: O(1) + ctxsw
     pub(crate) unsafe fn park_until(&self, observed: u64, deadline_ns: u64) {
-        // SAFETY: caller (sys_poll/sys_select) is the running task on this CPU in process context, preempt-off; park_with_deadline publishes Sleeping on this wait list before the generation recheck.
-        unsafe { self.wq.park_with_deadline(deadline_ns); }
+        // `select_estimate_accuracy`, not the flat task slack: Linux hands
+        // poll(2)/select(2) 0.1% of the remaining timeout as coalescing range
+        // (`fs/select.c:509`, `:900`, `:965` → `poll_schedule_timeout` →
+        // `schedule_hrtimeout_range(expires, slack, HRTIMER_MODE_ABS)`), which
+        // is what keeps a machine full of long pollers off the interrupt path.
+        let slack_ns = sched::hrtimeout::select_estimate_accuracy(deadline_ns);
+        // SAFETY: caller (sys_poll/sys_select) is the running task on this CPU in process context, preempt-off; park_with_deadline_range publishes Sleeping on this wait list before the generation recheck.
+        unsafe { self.wq.park_with_deadline_range(deadline_ns, slack_ns); }
         if self.generation.load(Ordering::Acquire) != observed {
             self.wq.wake_all();
         }

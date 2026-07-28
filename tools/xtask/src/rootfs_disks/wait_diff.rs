@@ -11,6 +11,7 @@ const SOURCES: [&str; 11] = [
     "userspace/wait_diff/fdwait.c",
     "userspace/wait_diff/jobctl.c",
     "userspace/wait_diff/cputime.c",
+    "userspace/wait_diff/latency.c",
     "userspace/wait_diff/mqueue.c",
     "userspace/wait_diff/mqueue_api.c",
     "userspace/wait_diff/syslog.c",

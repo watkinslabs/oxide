@@ -258,3 +258,33 @@ fn init_negotiation_incompatible_major_fails() {
     let st = c.init_state();
     assert!(st.done && st.failed);
 }
+
+/// F767: the `fuse_attr` seconds field is `uint64_t` on the wire, but Linux
+/// assigns it straight into a `time64_t` (`fs/fuse/inode.c`
+/// `fuse_change_attributes_common`), so it is REINTERPRETED as signed. A daemon
+/// reporting a pre-1970 mtime sends `(u64)(-2_000_000_000)`; that must land as
+/// second `-2_000_000_000`, not as year ~2554. Before F767 the fuse backend
+/// dropped every daemon timestamp on the floor (`build_inode` never called
+/// `.times()`), so no value at all reached the inode.
+#[test]
+fn attr_time_reinterprets_wire_seconds_as_signed() {
+    use super::fs::attr_time;
+    assert_eq!(attr_time(1_700_000_000, 123), vfs::Timespec64::new(1_700_000_000, 123));
+    assert_eq!(attr_time((-2_000_000_000i64) as u64, 123),
+               vfs::Timespec64 { sec: -2_000_000_000, nsec: 123 });
+    assert_eq!(attr_time((-1i64) as u64, 0), vfs::Timespec64 { sec: -1, nsec: 0 });
+    assert_eq!(attr_time(0, 0), vfs::Timespec64::ZERO);
+}
+
+/// Linux CLAMPS an out-of-range daemon `*nsec` rather than rejecting it
+/// (`min_t(u32, attr->atimensec, NSEC_PER_SEC - 1)`, fs/fuse/inode.c:245).
+#[test]
+fn attr_time_clamps_an_out_of_range_subsecond_field() {
+    use super::fs::attr_time;
+    use vfs::timespec::NSEC_PER_SEC;
+    assert_eq!(attr_time(5, NSEC_PER_SEC), vfs::Timespec64::new(5, NSEC_PER_SEC - 1));
+    assert_eq!(attr_time(5, u32::MAX), vfs::Timespec64::new(5, NSEC_PER_SEC - 1));
+    // A pre-epoch second with an over-range nsec clamps the nsec only.
+    assert_eq!(attr_time((-5i64) as u64, u32::MAX),
+               vfs::Timespec64 { sec: -5, nsec: NSEC_PER_SEC - 1 });
+}

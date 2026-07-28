@@ -3,7 +3,8 @@
 // owner of mode, uid, gid, and timestamps.
 
 use crate::mount::{MNT_NOATIME, MNT_NODIRATIME, MNT_RELATIME};
-use crate::superblock::{NSEC_PER_SEC, SB_NOATIME, SB_NODIRATIME, SB_RDONLY};
+use crate::superblock::{SB_NOATIME, SB_NODIRATIME, SB_RDONLY};
+use crate::timespec::{Timespec64, SECS_PER_DAY};
 use sync::{Spinlock, Timer as ClockClass};
 
 /// Wall-clock (`CLOCK_REALTIME`) provider, installed at boot by the syscall
@@ -25,10 +26,11 @@ pub fn realtime_now_ns() -> u64 {
     f.map(|f| f()).unwrap_or(0)
 }
 
-/// `24*60*60` seconds in nanoseconds — the relatime staleness window (Linux
-/// fs/inode.c `relatime_need_update`: an atime older than a day forces an
-/// update even when mtime/ctime have not advanced past it). # C: O(1)
-pub const RELATIME_MAX_AGE_NS: u64 = 24 * 60 * 60 * NSEC_PER_SEC;
+/// `24*60*60` seconds — the relatime staleness window (Linux fs/inode.c
+/// `relatime_need_update`: an atime older than a day forces an update even when
+/// mtime/ctime have not advanced past it). Linux compares whole SECONDS
+/// (`(long)(now.tv_sec - atime.tv_sec) >= 24*60*60`), not nanoseconds. # C: O(1)
+pub const RELATIME_MAX_AGE_SECS: i64 = SECS_PER_DAY;
 
 /// Value snapshot feeding the atime-update policy (Linux fs/inode.c
 /// `atime_needs_update`). Pure inputs so the decision is testable hosted
@@ -46,33 +48,37 @@ pub struct AtimeCtx {
     /// `S_ISDIR(i_mode)` — gates the NODIRATIME branches.
     pub is_dir: bool,
     /// Current `i_atime`.
-    pub atime_ns: u64,
+    pub atime: Timespec64,
     /// Current `i_mtime`.
-    pub mtime_ns: u64,
+    pub mtime: Timespec64,
     /// Current `i_ctime`.
-    pub ctime_ns: u64,
+    pub ctime: Timespec64,
 }
 
 /// `relatime_need_update` (Linux fs/inode.c): under `MNT_RELATIME`, update
 /// atime only if mtime≥atime, ctime≥atime, or atime is older than 24h. With
 /// strictatime (no `MNT_RELATIME`) this is unconditionally true — the noatime
 /// gates and the equality test in [`atime_needs_update`] still apply.
-/// `now_ns` is the candidate replacement atime. # C: O(1)
-pub fn relatime_need_update(mnt_flags: u64, atime_ns: u64, mtime_ns: u64,
-                            ctime_ns: u64, now_ns: u64) -> bool {
+/// `now` is the candidate replacement atime. # C: O(1)
+pub fn relatime_need_update(mnt_flags: u64, atime: Timespec64, mtime: Timespec64,
+                            ctime: Timespec64, now: Timespec64) -> bool {
     if mnt_flags & MNT_RELATIME == 0 { return true; }
-    if mtime_ns >= atime_ns { return true; }
-    if ctime_ns >= atime_ns { return true; }
-    // Signed in Linux: a backwards clock (now < atime) yields a negative delta
-    // and skips the update; saturating_sub gives 0 → below the window → skip.
-    now_ns.saturating_sub(atime_ns) >= RELATIME_MAX_AGE_NS
+    // `timespec64_compare(&mtime, &atime) >= 0` — the derived `Ord` on
+    // `Timespec64` IS that comparison (signed seconds, then sub-second).
+    if mtime >= atime { return true; }
+    if ctime >= atime { return true; }
+    // Linux: `(long)(now.tv_sec - atime.tv_sec) >= 24*60*60`. Signed, so a
+    // backwards clock (now < atime) yields a negative delta and skips the
+    // update — the unsigned model could only approximate this with a
+    // `saturating_sub` floor at 0.
+    now.secs_since(atime) >= RELATIME_MAX_AGE_SECS
 }
 
 /// `atime_needs_update` (Linux fs/inode.c) — decide whether a read access bumps
 /// inode atime, honoring per-inode noatime, RO/noatime/nodiratime superblocks,
 /// per-mount noatime/nodiratime, and the relatime vs strictatime policy.
-/// `now_ns` is the candidate timestamp (`current_time`). # C: O(1)
-pub fn atime_needs_update(c: &AtimeCtx, now_ns: u64) -> bool {
+/// `now` is the candidate timestamp (`current_time`). # C: O(1)
+pub fn atime_needs_update(c: &AtimeCtx, now: Timespec64) -> bool {
     if c.inode_noatime { return false; }
     // A read-only or noatime superblock never advances atime (Linux IS_NOATIME
     // == SB_RDONLY|SB_NOATIME).
@@ -80,9 +86,9 @@ pub fn atime_needs_update(c: &AtimeCtx, now_ns: u64) -> bool {
     if c.sb_flags & SB_NODIRATIME != 0 && c.is_dir { return false; }
     if c.mnt_flags & MNT_NOATIME != 0 { return false; }
     if c.mnt_flags & MNT_NODIRATIME != 0 && c.is_dir { return false; }
-    if !relatime_need_update(c.mnt_flags, c.atime_ns, c.mtime_ns, c.ctime_ns, now_ns) { return false; }
+    if !relatime_need_update(c.mnt_flags, c.atime, c.mtime, c.ctime, now) { return false; }
     // No-op write avoidance: atime already at the candidate value.
-    if c.atime_ns == now_ns { return false; }
+    if c.atime == now { return false; }
     true
 }
 
@@ -93,8 +99,9 @@ pub fn atime_needs_update(c: &AtimeCtx, now_ns: u64) -> bool {
 /// atime/mtime/ctime never carries sub-granularity precision the backend cannot
 /// persist. An SB-less inode (anon pidfd/pipe/socket) gets the raw `now_ns`
 /// (ns precision). # C: O(1)
-pub fn current_time(inode: &crate::inode::Inode, now_ns: u64) -> u64 {
-    inode.i_sb().map(|sb| sb.timestamp_truncate(now_ns)).unwrap_or(now_ns)
+pub fn current_time(inode: &crate::inode::Inode, now_ns: u64) -> Timespec64 {
+    let now = Timespec64::from_clock_ns(now_ns);
+    inode.i_sb().map(|sb| sb.timestamp_truncate(now)).unwrap_or(now)
 }
 
 /// `inode_set_ctime_current` (Linux fs/inode.c) — floor `now_ns` to the inode's
@@ -102,6 +109,6 @@ pub fn current_time(inode: &crate::inode::Inode, now_ns: u64) -> u64 {
 /// reports and (via the inode's own `set_times`) records the change time.
 /// D17: no longer writes any out-of-line overlay — the concrete inode owns its
 /// `i_ctime` field. # C: O(1)
-pub fn inode_set_ctime_current(inode: &crate::InodeRef, now_ns: u64) -> u64 {
+pub fn inode_set_ctime_current(inode: &crate::InodeRef, now_ns: u64) -> Timespec64 {
     current_time(&**inode, now_ns)
 }

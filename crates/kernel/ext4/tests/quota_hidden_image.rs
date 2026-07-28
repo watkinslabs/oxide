@@ -368,8 +368,8 @@ fn named_project_quota_file_persists_outside_hidden_inode() {
     let raw_before_off = m.state().mount.read_inode(qfile.ino() as u32).expect("raw quota inode after on");
     assert_ne!(raw_before_off.i_flags & FS_IMMUTABLE_FL, 0, "quota_on persists immutable flag");
     assert_ne!(raw_before_off.i_flags & FS_NOATIME_FL, 0, "quota_on persists noatime flag");
-    assert_eq!(raw_before_off.mtime_ns, raw_before_on.mtime_ns, "quota_on does not update visible quota-file mtime");
-    assert_eq!(raw_before_off.ctime_ns, raw_before_on.ctime_ns, "quota_on does not update visible quota-file ctime");
+    assert_eq!(raw_before_off.mtime, raw_before_on.mtime, "quota_on does not update visible quota-file mtime");
+    assert_eq!(raw_before_off.ctime, raw_before_on.ctime, "quota_on does not update visible quota-file ctime");
     let qid = Kqid::project(77);
     let want = MemDqblk {
         dqb_bhardlimit: 16 * 1024,
@@ -388,8 +388,8 @@ fn named_project_quota_file_persists_outside_hidden_inode() {
     assert_eq!(qfile.i_flags() & (vfs::S_IMMUTABLE | vfs::S_NOATIME), 0, "quota_off clears visible quota-file flags");
     let raw_after_off = m.state().mount.read_inode(qfile.ino() as u32).expect("raw quota inode after off");
     assert_eq!(raw_after_off.i_flags & (FS_IMMUTABLE_FL | FS_NOATIME_FL), 0, "quota_off persists visible quota-file flag clear");
-    assert!(raw_after_off.mtime_ns >= raw_before_off.mtime_ns, "quota_off updates visible quota-file mtime");
-    assert!(raw_after_off.ctime_ns >= raw_before_off.ctime_ns, "quota_off updates visible quota-file ctime");
+    assert!(raw_after_off.mtime >= raw_before_off.mtime, "quota_off updates visible quota-file mtime");
+    assert!(raw_after_off.ctime >= raw_before_off.ctime, "quota_off updates visible quota-file ctime");
     drop(sb); drop(m);
 
     let (_m2, sb2) = mount(disk.clone());
