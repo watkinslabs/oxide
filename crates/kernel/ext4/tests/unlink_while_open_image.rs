@@ -99,7 +99,7 @@ fn e2fsck_clean(bytes: &[u8]) -> Option<bool> {
 fn assert_fsck_clean(disk: &Arc<dyn BlockDevice>, cap: u64, what: &str) {
     match e2fsck_clean(&dump_disk(disk, cap)) {
         Some(true)  => {}
-        Some(false) => panic!("e2fsck reported errors {what}"),
+        Some(false) => { eprintln!("--- image state: {what} ---"); panic!("e2fsck reported errors"); }
         None        => eprintln!("e2fsck not available — skipped fsck assertion"),
     }
 }
