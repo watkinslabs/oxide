@@ -117,12 +117,25 @@ disk — and `wrap_file(ino)` then returned `None`.** The EIO is not an I/O erro
 and not a quota rejection: it is a freshly created inode that could not be
 wrapped into a VFS inode. `tmpfile` has the identical last line.
 
-**Next step:** find why `wrap_file` returns `None` for an inode `create_file`
-just returned. Candidates worth checking first: an icache insert colliding with
-the `forget_created_ino` call immediately above it, and whether `wrap_file`
-re-reads the inode from disk before the create is visible. Note this leaves an
-allocated on-disk inode with no VFS reference on every failure — a leak as well
-as an error.
+**Narrowed to two lines.** `wrap_file` (`ext4/rootfs/ops.rs:105`) returns
+`None` in exactly two places:
+
+1. `self.mount.read_inode(ino).ok()?` — the inode `create_file` just allocated
+   cannot be read back. Suspect ordering: `forget_created_ino` runs immediately
+   before and invalidates the page cache + `iforget`s the number, so the re-read
+   goes to disk; if the inode-table write is not yet visible this fails.
+2. `if !inode.is_reg() { return None; }` — it reads back without `S_IFREG`.
+   **Worth checking first:** `create` passes `m & 0o7777` to `create_file`,
+   which masks the type bits off. That is only safe if `create_file` re-adds
+   `S_IFREG` itself. If it does so for most callers but not on some path, this
+   is the failure.
+
+Distinguishing them is one boot with the two arms logged separately — currently
+both collapse into the same `Eio`, which is why the errno says nothing.
+
+Either way this leaves an allocated on-disk inode with no VFS reference on every
+failure — a leak alongside the wrong errno, and if journald retries in a loop it
+burns an inode per attempt.
 
 Then it **freezes**: screendumps 150s→400s byte-identical, alongside a large
 volume of `Failed to dispatch fd source: Invalid argument` from gnome-shell —
