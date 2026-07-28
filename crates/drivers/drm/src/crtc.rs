@@ -206,6 +206,97 @@ pub fn queue_flip_event(card_id: u32, token: u64, crtc_id: u32, user_data: u64) 
     // event had arrived. Notified OUTSIDE the EVENTS lock: a waiter woken here
     // reads the queue, and waking under the lock invites a self-deadlock.
     crate::node::card_poll_subs(card_id).notify_mask(vfs::POLL_IN);
+    #[cfg(target_os = "oxide-kernel")]
+    event_waiters(card_id).wake_all();
+}
+
+/// Per-card sleepers in `drm_read` — Linux `file_priv->event_wait`.
+/// Woken by `queue_flip_event` after the event is queued and the `EVENTS`
+/// lock is dropped. Per-card rather than per-file: a wake is a hint, and each
+/// sleeper re-checks its own `(card_id, token)` queue on wake, so a spurious
+/// wake costs one re-check (Linux's `wait_event_interruptible` is the same
+/// shape).
+#[cfg(target_os = "oxide-kernel")]
+static EVENT_WAITERS: Spinlock<Vec<(u32, alloc::sync::Arc<sched::live::wait_list::WaitList>)>, CrtcLockClass> =
+    Spinlock::new(Vec::new());
+
+/// The wait list for `card_id`, created on first use. `sched::live` exists only
+/// in a kernel build, so a host build has no sleeper set and the read path
+/// answers `EAGAIN` — it never schedules. # C: O(cards)
+#[cfg(target_os = "oxide-kernel")]
+fn event_waiters(card_id: u32) -> alloc::sync::Arc<sched::live::wait_list::WaitList> {
+    let mut g = EVENT_WAITERS.lock();
+    if let Some((_, w)) = g.iter().find(|(id, _)| *id == card_id) { return w.clone(); }
+    let w = alloc::sync::Arc::new(sched::live::wait_list::WaitList::new());
+    g.push((card_id, w.clone()));
+    w
+}
+
+/// Blocking drain — Linux `drm_read` (`drivers/gpu/drm/drm_file.c`).
+///
+/// Empty queue: `EAGAIN` for `O_NONBLOCK`, otherwise sleep on the card's
+/// wait list until an event arrives or a signal is deliverable
+/// (`ERESTARTSYS`). NEVER returns 0 for an empty queue — a 0-byte read is
+/// EOF to a GLib fd source. A buffer too small for the first queued record
+/// DOES return 0, exactly as Linux's `put_back_event` → `break` path does;
+/// there is no minimum-`count` guard in `drm_read`.
+///
+/// The emptiness test and the park enqueue are ONE critical section over
+/// `EVENTS`, because `queue_flip_event` pushes under that same lock before it
+/// wakes — so its push+wake cannot land between "we saw empty" and "we are on
+/// the wait list" (same rule as `pipe::ring::read_blocking`, B1422).
+/// # C: O(events) + park
+pub fn drain_events_blocking(card_id: u32, token: u64, buf: &mut [u8], nonblock: bool)
+    -> Result<usize, vfs::VfsError>
+{
+    loop {
+        let mut events = EVENTS.lock();
+        if let Some(idx) = events.iter().position(|q| q.card_id == card_id && q.token == token) {
+            if !events[idx].queue.is_empty() {
+                let n = drain_locked(&mut events, idx, buf);
+                drop(events);
+                // A short buffer copies nothing and leaves the record queued;
+                // Linux returns 0 there rather than blocking or erroring.
+                return Ok(n);
+            }
+        }
+        if nonblock { return Err(vfs::VfsError::Eagain); }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            if sched::live::deliverable_signals_self() != 0 {
+                return Err(vfs::VfsError::Erestartsys);
+            }
+            // SAFETY: running task; preempt-off; park bumps the Arc and marks
+            // Sleeping while the EVENTS lock is still held, so a racing
+            // queue_flip_event's push+wake cannot land between the emptiness
+            // check above and this enqueue.
+            unsafe { event_waiters(card_id).park(); }
+        }
+        drop(events);
+        #[cfg(target_os = "oxide-kernel")]
+        // SAFETY: process context; runqueue installed; preempt-off; current is
+        // Sleeping until queue_flip_event wakes it. EVENTS lock dropped above.
+        unsafe { sched::live::schedule::schedule(); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return Err(vfs::VfsError::Eagain);
+    }
+}
+
+/// Copy whole records out of `events[idx]`, removing the queue when drained.
+/// # C: O(events)
+fn drain_locked(events: &mut Vec<EventQueue>, idx: usize, buf: &mut [u8]) -> usize {
+    let rec = core::mem::size_of::<crate::DrmEventVblank>();
+    let mut off = 0usize;
+    let q = &mut events[idx];
+    while off + rec <= buf.len() {
+        let ev = match q.queue.pop_front() { Some(e) => e, None => break };
+        // SAFETY: DrmEventVblank is repr(C) POD (all integer fields); reading its bytes as a [u8; rec] is a valid reinterpretation of an owned stack value.
+        let bytes: &[u8] = unsafe { core::slice::from_raw_parts(&ev as *const _ as *const u8, rec) };
+        buf[off..off + rec].copy_from_slice(bytes);
+        off += rec;
+    }
+    if q.queue.is_empty() { events.remove(idx); }
+    off
 }
 
 /// Drain queued flip events into `buf`, returning the bytes written.
