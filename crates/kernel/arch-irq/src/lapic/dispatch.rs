@@ -159,6 +159,9 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 // CPU did the same work N times over one shared try-lock.
                 crate::deadline::service_wall_timers();
             }
+            // Per-CPU, and BEFORE the re-arm: expired blocking waits are woken
+            // here so the deadline programmed below is the next unserviced one.
+            crate::deadline::service_wait_deadlines();
             // Softirq drain moved to the fn tail (after `irq_exit`) — Linux
             // order: the hardirq field must drop before `invoke_softirq`.
             // Per-CPU: arms THIS CPU's one-shot for its own running task.

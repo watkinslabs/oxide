@@ -74,6 +74,16 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
 
     child.nice.store(nice, Ordering::Release);
     child.policy.store(policy, Ordering::Release);
+    // `__setscheduler_params` runs for the child too (`kernel/sched/core.c:4828`,
+    // via `sched_fork`), so a child that inherits — or is reset to — an RT
+    // policy carries zero timer slack, and one reset to a fair policy gets its
+    // default back rather than the parent's zero.
+    if child.is_rt_or_dl_policy() {
+        child.timer_slack_ns.store(0, Ordering::Release);
+    } else if child.timer_slack_ns.load(Ordering::Acquire) == 0 {
+        child.timer_slack_ns.store(
+            child.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+    }
     // `sched_reset_on_fork` is one-shot: the child starts clean.
     child.sched_reset_on_fork.store(false, Ordering::Release);
     child.load_weight.store(match class {
