@@ -54,9 +54,16 @@ pub fn record(nr: u64, start: (u64, u64), rv: i64) {
     klog::write_dec_u64(nr);
     klog::write_raw(b" ms=");
     klog::write_dec_u64(dt / NS_PER_MS);
-    klog::write_raw(b" oncpu_ms=");
-    klog::write_dec_u64(cur.sum_exec_runtime_ns.load(Ordering::Relaxed)
-        .saturating_sub(cpu0) / NS_PER_MS);
+    // `sum_exec_runtime_ns` only advances when the task is switched OFF a CPU,
+    // so an unchanged counter means the call never left the CPU and its whole
+    // wall time was kernel work; a changed one means it blocked or was
+    // preempted, and `cpu_ms` is what it actually ran. Same discriminator
+    // `debug-syscost` uses.
+    let cpu_ns = cur.sum_exec_runtime_ns.load(Ordering::Relaxed).saturating_sub(cpu0);
+    klog::write_raw(b" left_cpu=");
+    klog::write_dec_u64(if cpu_ns == 0 { 0 } else { 1 });
+    klog::write_raw(b" cpu_ms=");
+    klog::write_dec_u64(cpu_ns / NS_PER_MS);
     klog::write_raw(b" tid=");
     klog::write_dec_u64(cur.tid as u64);
     klog::write_raw(b" tgid=");
