@@ -114,12 +114,20 @@ pub fn make_serial_inode() -> InodeRef {
     .build()
 }
 
+/// Keyboard byte for the foreground VT. Staged rather than cooked inline —
+/// this runs in the virtio-input SOFTIRQ, on the per-CPU hardirq stack; see
+/// `crate::vt_input`.
+/// # C: O(1)
 pub fn kbd_input(b: u8) {
-    vt_tty::vt_tty(foreground_vt()).receive_from_driver(&[b]);
+    crate::vt_input::stage(foreground_vt(), &[b]);
 }
 
+/// DSR/answerback reply from the VT emulator, injected into `vt`'s input.
+/// Through the same staging ring as the keyboard, or a reply could overtake
+/// the keystrokes that preceded it.
+/// # C: O(len)
 pub fn vt_reply_sink(vt: u8, bytes: &[u8]) {
-    vt_tty::vt_tty(vt.max(1)).receive_from_driver(bytes);
+    crate::vt_input::stage(vt.max(1), bytes);
 }
 
 pub fn system_console_inode() -> InodeRef {
