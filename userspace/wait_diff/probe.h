@@ -139,6 +139,7 @@ void probe_fdwait(void);
 void probe_jobctl(void);
 void probe_cputime(void);
 void probe_mqueue(void);
+void probe_mqueue_api(void);
 void probe_syslog(void);
 
 #endif

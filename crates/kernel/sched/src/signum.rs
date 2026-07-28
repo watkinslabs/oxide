@@ -73,6 +73,9 @@ pub const RT_SIGNAL_MAX: u32 = 64;
 pub const SI_USER: i32 = 0;
 pub const SI_KERNEL: i32 = 0x80;
 pub const SI_QUEUE: i32 = -1;
+/// `SI_MESGQ` — "sent by real time mesq state change", the code
+/// `mq_notify(SIGEV_SIGNAL)` delivery stamps (`ipc/mqueue.c:800`).
+pub const SI_MESGQ: i32 = -3;
 pub const SI_TKILL: i32 = -6;
 
 /// True when `code` impersonates a kernel/tkill-origin `si_code` that

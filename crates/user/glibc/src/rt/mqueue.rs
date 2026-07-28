@@ -27,6 +27,10 @@ mod imp {
         fn __fortify_fail(msg: *const u8) -> !;
     }
 
+    // glibc `sysdeps/unix/sysv/linux/mq_open.c` / `mq_unlink.c`: a POSIX queue
+    // name MUST start with `/`, and the kernel is handed the name WITHOUT it —
+    // `ipc/mqueue.c` looks the remainder up as a single component under the
+    // namespace's mqueuefs root, so a leading `/` would be EACCES.
     unsafe fn kernel_mq_name(name: *const u8) -> *const u8 {
         // SAFETY: caller supplies a NUL-terminated POSIX message-queue name.
         if unsafe { *name } == b'/' {
@@ -40,8 +44,15 @@ mod imp {
     // # C: mqd_t mq_open(const char *name, int oflag, ... [mode_t, struct mq_attr *])
     #[no_mangle]
     pub unsafe extern "C" fn mq_open(name: *const u8, oflag: i32, mode: u32, attr: *const mq_attr) -> i32 {
-        // SAFETY: name is a C string; mode/attr are only consumed by the kernel
-        // when O_CREAT is set (extra varargs registers, ABI-compatible).
+        // glibc `sysdeps/unix/sysv/linux/mq_open.c` consumes the `mode`/`attr`
+        // varargs ONLY when O_CREAT is set and otherwise passes `attr = NULL`.
+        // A two-argument `mq_open(name, oflag)` leaves those argument registers
+        // holding whatever the caller last put there, and the kernel copies the
+        // whole `struct mq_attr` from a non-NULL pointer before it looks at
+        // anything else (`ipc/mqueue.c:934`) — forwarding the garbage would be
+        // a spurious EFAULT.
+        let (mode, attr) = if oflag & O_CREAT != 0 { (mode, attr) } else { (0, core::ptr::null()) };
+        // SAFETY: name is a C string; the leading slash is stripped for the kernel.
         let name = unsafe { kernel_mq_name(name) };
         // SAFETY: name now follows the mq_open syscall convention; scalar
         // flags/mode and optional attr pointer are kernel-validated.
@@ -70,6 +81,8 @@ mod imp {
     #[no_mangle]
     pub unsafe extern "C" fn mq_unlink(name: *const u8) -> i32 {
         // SAFETY: name is a NUL-terminated queue name.
+        let name = unsafe { kernel_mq_name(name) };
+        // SAFETY: name now follows the mq_unlink syscall convention (no leading slash).
         ret_isize(unsafe { sys1(nr::MQ_UNLINK, name as usize) }) as i32
     }
 
