@@ -34,11 +34,21 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         Ok(self.open())
     }
 
-    /// Open reference: bump count; fire `driver.open()` on 0->1 only.
+    /// Open reference: bump count; fire `driver.open()` on 0->1 only, and
+    /// clear any latched hangup — Linux `tty_open` ends with
+    /// `clear_bit(TTY_HUPPED, &tty->flags)` on EVERY successful open
+    /// (`drivers/tty/tty_io.c:2161`), so a `vhangup(2)` revokes the open file
+    /// descriptors without permanently killing the device. oxide's ttys are
+    /// long-lived singletons; without this a single hangup on `/dev/console`
+    /// would wedge the console for every later `login`.
     /// # C: O(1)
     pub fn open(&self) -> u32 {
         let prev = self.open_count.fetch_add(1, Ordering::AcqRel);
-        if prev == 0 { self.inner.lock_irqsave::<W::Irq>().driver.open(); }
+        {
+            let mut g = self.inner.lock_irqsave::<W::Irq>();
+            g.ldisc.clear_hangup();
+            if prev == 0 { g.driver.open(); }
+        }
         prev + 1
     }
 

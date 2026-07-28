@@ -1,10 +1,15 @@
-// 235 utimes — one syscall, one file (docs/53 §0). Moved verbatim from utime.rs.
+// 235 utimes — one syscall, one file (docs/53 §0).
+//
+// Linux implements this as `do_futimesat(AT_FDCWD, filename, utimes)`
+// (`fs/utimes.c:203-207`), so it is slot 261 with the dirfd pinned. The decode
+// is shared, not copied, and the microsecond validation therefore precedes the
+// path lookup here too.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
-use crate::utime_common::{now_ns, resolve_target, AT_FDCWD};
+use crate::utime_common::{now, read_timeval_pair, resolve_target, AT_FDCWD};
+use crate::utimes_abi::{iattr_from_times, iattr_touch};
 
 /// `sys_utimes(path, times[2])` — slot 235. Times are 16-byte timeval
 /// (sec, usec) pairs; no dirfd / flags. NULL ⇒ both = now. Routes through
@@ -13,29 +18,18 @@ use crate::utime_common::{now_ns, resolve_target, AT_FDCWD};
 pub fn sys_utimes(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let times_ptr = args.a1;
-    let (inode, mnt_id) = match resolve_target(AT_FDCWD, path_ptr, false) {
+    let times = if times_ptr == 0 {
+        None
+    } else {
+        match read_timeval_pair(times_ptr) { Ok(t) => Some(t), Err(rv) => return rv }
+    };
+    let (inode, mnt_id) = match resolve_target(AT_FDCWD, path_ptr, false, false) {
         Ok(t) => t, Err(rv) => return rv,
     };
-    let now = now_ns();
-    let mut ia = vfs::Iattr { valid: vfs::ATTR_ATIME | vfs::ATTR_MTIME, ctime_ns: now, ..Default::default() };
-    if times_ptr == 0 {
-        ia.atime_ns = now; ia.mtime_ns = now;
-    } else {
-        if let Err(rv) = crate::userbuf::validate_user_buf(times_ptr, 32, 1) { return rv; }
-        // SAFETY: full timeval[2] byte range validated readable; Linux copyin accepts unaligned storage.
-        let (asec, ausec, msec, musec) = unsafe {
-            (core::ptr::read_unaligned( times_ptr        as *const i64),
-             core::ptr::read_unaligned((times_ptr +  8)  as *const i64),
-             core::ptr::read_unaligned((times_ptr + 16)  as *const i64),
-             core::ptr::read_unaligned((times_ptr + 24)  as *const i64))
-        };
-        if asec < 0 || msec < 0 || ausec < 0 || musec < 0
-            || ausec >= 1_000_000 || musec >= 1_000_000 {
-            return -(Errno::Einval.as_i32() as i64);
-        }
-        ia.atime_ns = (asec as u64) * 1_000_000_000 + (ausec as u64) * 1_000;
-        ia.mtime_ns = (msec as u64) * 1_000_000_000 + (musec as u64) * 1_000;
-        ia.valid |= vfs::ATTR_ATIME_SET | vfs::ATTR_MTIME_SET;
-    }
+    let now = now();
+    let ia = match times {
+        Some(t) => iattr_from_times(t, now),
+        None => iattr_touch(now),
+    };
     crate::perms_common::notify_change(&inode, mnt_id, ia)
 }

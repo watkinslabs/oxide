@@ -19,6 +19,10 @@ pub mod cmdline;
 pub mod cputime;
 pub mod cpustat;
 pub mod cputime_trace;
+/// Per-CPU software-event accumulators for CPU-context `perf_event_open`.
+pub mod perf_sw;
+/// `__ptrace_may_access` — the credential predicate ptrace/kcmp/pidfd_getfd/perf share.
+pub mod ptrace_access;
 pub mod loadavg;
 pub mod psi;
 pub mod diag;

@@ -1,6 +1,6 @@
 use vfs::idmap::Idmap;
 use vfs::inode::FS_PROJINHERIT_FL;
-use vfs::{FileAttr, Iattr, Inode, KResult, VfsError};
+use vfs::{FileAttr, Iattr, Inode, KResult, Timespec64, VfsError};
 
 use super::data::{Ext4FileData, ext4_state_of};
 use crate::extent_rw::meta::InodeMetaUpdate;
@@ -29,11 +29,13 @@ pub(crate) fn ext4_fileattr_get(inode: &Inode) -> KResult<FileAttr> {
     if inode.file_type() == vfs::FileType::Regular {
         flags &= !FS_PROJINHERIT_FL;
     }
-    Ok(FileAttr {
-        flags,
-        fsx_projid: if st.mount.sb.has_project() { raw.i_projid } else { 0 },
-        ..Default::default()
-    })
+    // Linux `ext4_fileattr_get` publishes the translated `fsx_xflags` view via
+    // `fileattr_fill_flags` (fs/ext4/ioctl.c) — `file_getattr(2)` reads
+    // `fa_xflags` straight out of it, so the backend, not the consumer, owns
+    // the translation.
+    let mut fa = vfs::fileattr_fill_flags(flags);
+    fa.fsx_projid = if st.mount.sb.has_project() { raw.i_projid } else { 0 };
+    Ok(fa)
 }
 
 /// `EXT4_IOC_GETVERSION`: return on-disk `i_generation`.
@@ -57,10 +59,10 @@ pub(crate) fn ext4_setversion_prepare(inode: &Inode, idmap: &Idmap, cred: &vfs::
 pub(crate) fn ext4_setversion(inode: &Inode, gen: u32) -> KResult<()> {
     let (st, ino) = ext4_state_of(inode).ok_or(VfsError::Eio)?;
     let raw = vfs::inode_times::realtime_now_ns();
-    let ctime_ns = vfs::inode_times::current_time(inode, raw);
+    let ctime = vfs::inode_times::current_time(inode, raw);
     vfs::inode::inode_inc_iversion(inode);
-    st.mount.persist_inode_generation(ino, gen, ctime_ns).map_err(|_| VfsError::Eio)?;
-    inode.set_times(None, None, ctime_ns)
+    st.mount.persist_inode_generation(ino, gen, ctime).map_err(|_| VfsError::Eio)?;
+    inode.set_times(None, None, ctime)
 }
 
 /// `FS_IOC_GETFSLABEL`: return `s_volume_name` padded with one NUL byte.
@@ -129,10 +131,10 @@ pub(crate) fn ext4_fileattr_set(inode: &Inode, fa: &FileAttr) -> KResult<()> {
         return Err(VfsError::Eopnotsupp);
     }
     let raw_now = vfs::inode_times::realtime_now_ns();
-    let ctime_ns = vfs::inode_times::current_time(inode, raw_now);
-    st.mount.persist_inode_flags(ino, new, ctime_ns).map_err(|_| VfsError::Eio)?;
+    let ctime = vfs::inode_times::current_time(inode, raw_now);
+    st.mount.persist_inode_flags(ino, new, ctime).map_err(|_| VfsError::Eio)?;
     vfs::inode::inode_inc_iversion(inode);
-    inode.set_times(None, None, ctime_ns)?;
+    inode.set_times(None, None, ctime)?;
     let mut s = inode.i_flags()
         & !(vfs::S_IMMUTABLE | vfs::S_APPEND | vfs::S_NOATIME | vfs::S_SYNC);
     if new & EXT4_IMMUTABLE_FL != 0 { s |= vfs::S_IMMUTABLE; }
@@ -180,15 +182,15 @@ fn ext4_fileattr_setproject(
     if raw.i_projid == projid { return Ok(()); }
     super::super::quota::transfer_project_inode(st, inode, &raw, projid)?;
     let raw_now = vfs::inode_times::realtime_now_ns();
-    let ctime_ns = vfs::inode_times::current_time(inode, raw_now);
+    let ctime = vfs::inode_times::current_time(inode, raw_now);
     vfs::inode::inode_inc_iversion(inode);
     inode.set_projid(projid);
-    if st.mount.persist_inode_project(ino, projid, ctime_ns).is_err() {
+    if st.mount.persist_inode_project(ino, projid, ctime).is_err() {
         super::super::quota::rollback_project_inode_transfer(st, inode, &raw, raw.i_projid)?;
         inode.set_projid(raw.i_projid);
         return Err(VfsError::Eio);
     }
-    inode.set_times(None, None, ctime_ns)
+    inode.set_times(None, None, ctime)
 }
 
 /// `ext4_setattr` (Linux `fs/ext4/inode.c`): the `i_op->setattr` for every
@@ -207,9 +209,9 @@ pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<
     let old_uid = inode.uid().unwrap_or(0);
     let old_gid = inode.gid().unwrap_or(0);
     let old_mode = inode.i_mode();
-    let old_atime = inode.atime().unwrap_or(0);
-    let old_mtime = inode.mtime().unwrap_or(0);
-    let old_ctime = inode.ctime().unwrap_or(0);
+    let old_atime = inode.atime().unwrap_or(Timespec64::ZERO);
+    let old_mtime = inode.mtime().unwrap_or(Timespec64::ZERO);
+    let old_ctime = inode.ctime().unwrap_or(Timespec64::ZERO);
     if ia.valid & (vfs::ATTR_UID | vfs::ATTR_GID) != 0 {
         if let Some((st, ino)) = ext4_state_of(inode) { refresh_cached_usage_from_raw(inode, &st, ino)?; }
     }
@@ -220,9 +222,9 @@ pub(crate) fn ext4_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<
             inode.i_mode(),
             inode.uid().unwrap_or(0),
             inode.gid().unwrap_or(0),
-            inode.atime().unwrap_or(0),
-            inode.mtime().unwrap_or(0),
-            inode.ctime().unwrap_or(0),
+            inode.atime().unwrap_or(Timespec64::ZERO),
+            inode.mtime().unwrap_or(Timespec64::ZERO),
+            inode.ctime().unwrap_or(Timespec64::ZERO),
         ).is_err() {
             rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime)?;
             return Err(VfsError::Eio);
@@ -238,9 +240,9 @@ fn ext4_setattr_size(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     let old_uid = inode.uid().unwrap_or(0);
     let old_gid = inode.gid().unwrap_or(0);
     let old_mode = inode.i_mode();
-    let old_atime = inode.atime().unwrap_or(0);
-    let old_mtime = inode.mtime().unwrap_or(0);
-    let old_ctime = inode.ctime().unwrap_or(0);
+    let old_atime = inode.atime().unwrap_or(Timespec64::ZERO);
+    let old_mtime = inode.mtime().unwrap_or(Timespec64::ZERO);
+    let old_ctime = inode.ctime().unwrap_or(Timespec64::ZERO);
     let raw_before = st.mount.read_inode(ino).map_err(|_| VfsError::Eio)?;
     inode.set_blocks(raw_before.i_blocks as u64);
     inode.set_size(raw_before.size);
@@ -268,9 +270,9 @@ fn ext4_setattr_size(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
             owner_meta.mode,
             owner_meta.uid,
             owner_meta.gid,
-            owner_meta.atime_ns,
-            owner_meta.mtime_ns,
-            owner_meta.ctime_ns,
+            owner_meta.atime,
+            owner_meta.mtime,
+            owner_meta.ctime,
         ).is_err() {
             rollback_setattr_inode(inode, old_uid, old_gid, old_mode, old_atime, old_mtime, old_ctime)?;
             return Err(VfsError::Eio);
@@ -296,9 +298,9 @@ fn size_setattr_meta(
     uid: u32,
     gid: u32,
     old_mode: u16,
-    old_atime: u64,
-    old_mtime: u64,
-    old_ctime: u64,
+    old_atime: Timespec64,
+    old_mtime: Timespec64,
+    old_ctime: Timespec64,
 ) -> InodeMetaUpdate {
     let mut perm = inode.perm().unwrap_or(old_mode & 0o7777);
     if ia.valid & vfs::ATTR_MODE != 0 { perm = ia.mode & 0o7777; }
@@ -309,9 +311,9 @@ fn size_setattr_meta(
         mode: (old_mode & !0o7777) | (perm & 0o7777),
         uid,
         gid,
-        atime_ns: if ia.valid & vfs::ATTR_ATIME != 0 { ia.atime_ns } else { old_atime },
-        mtime_ns: if ia.valid & vfs::ATTR_MTIME != 0 { ia.mtime_ns } else { old_mtime },
-        ctime_ns: if ia.valid & vfs::ATTR_CTIME != 0 { ia.ctime_ns } else { old_ctime },
+        atime: if ia.valid & vfs::ATTR_ATIME != 0 { ia.atime } else { old_atime },
+        mtime: if ia.valid & vfs::ATTR_MTIME != 0 { ia.mtime } else { old_mtime },
+        ctime: if ia.valid & vfs::ATTR_CTIME != 0 { ia.ctime } else { old_ctime },
     }
 }
 
@@ -330,9 +332,9 @@ fn rollback_setattr_inode(
     old_uid: u32,
     old_gid: u32,
     old_mode: u16,
-    old_atime: u64,
-    old_mtime: u64,
-    old_ctime: u64,
+    old_atime: Timespec64,
+    old_mtime: Timespec64,
+    old_ctime: Timespec64,
 ) -> KResult<()> {
     if inode.uid().unwrap_or(0) != old_uid || inode.gid().unwrap_or(0) != old_gid {
         let usage = vfs::DquotUsage { space: inode.blocks().saturating_mul(512), reserved_space: 0, inodes: 1 };

@@ -1,0 +1,188 @@
+// User-register sanitation: the exact bit rules Linux applies to a
+// USER-SUPPLIED EFLAGS / PSTATE before it reaches the hardware on a
+// CPL3 / EL0 return. Two consumers, ONE owner, so they cannot drift:
+//
+//   * `rt_sigreturn`  — `hal-x86_64/src/signal.rs::restore_signal_frame`,
+//                       `hal-aarch64/src/signal.rs::restore_signal_frame`
+//   * `ptrace(2)`     — `syscalls/src/101_ptrace/regs.rs`
+//
+// Both take a word straight out of memory an unprivileged process writes.
+// Without the rules below a forged `pstate.M[3:0] = 0b0101` returns the
+// process's own code at EL1, and a forged `eflags.IOPL = 3` hands it the
+// x86 I/O port space; SYSRET copies R11 bits 12-13 (IOPL) and 9 (IF)
+// verbatim per Intel SDM `RFLAGS := (R11 & 3C7FD7H) | 2`.
+//
+// Pure decision logic, NO target gate — every rule is host-unit-tested
+// against the hostile inputs in `uregs/tests.rs`.
+//
+// Module manifest:
+//   `x86_64`  — EFLAGS bit names, `FIX_EFLAGS`, ptrace `FLAG_MASK`, merges.
+//   `aarch64` — SPSR_EL1 bit names, RES0 mask, `valid_native_regs` port.
+
+/// x86_64 EFLAGS. Bit names from `arch/x86/include/uapi/asm/processor-flags.h`.
+pub mod x86_64 {
+    pub const X86_EFLAGS_CF:   u64 = 1 << 0;
+    /// Bit 1 reads as 1 architecturally; SYSRET ORs it back in unconditionally.
+    pub const X86_EFLAGS_FIXED: u64 = 1 << 1;
+    pub const X86_EFLAGS_PF:   u64 = 1 << 2;
+    pub const X86_EFLAGS_AF:   u64 = 1 << 4;
+    pub const X86_EFLAGS_ZF:   u64 = 1 << 6;
+    pub const X86_EFLAGS_SF:   u64 = 1 << 7;
+    pub const X86_EFLAGS_TF:   u64 = 1 << 8;
+    pub const X86_EFLAGS_IF:   u64 = 1 << 9;
+    pub const X86_EFLAGS_DF:   u64 = 1 << 10;
+    pub const X86_EFLAGS_OF:   u64 = 1 << 11;
+    /// I/O privilege level, bits 13:12. CPL3 with IOPL=3 may run `IN`/`OUT`
+    /// and `CLI`/`STI` — the escalation a missing mask hands out.
+    pub const X86_EFLAGS_IOPL: u64 = 3 << 12;
+    pub const X86_EFLAGS_NT:   u64 = 1 << 14;
+    pub const X86_EFLAGS_RF:   u64 = 1 << 16;
+    pub const X86_EFLAGS_VM:   u64 = 1 << 17;
+    pub const X86_EFLAGS_AC:   u64 = 1 << 18;
+    pub const X86_EFLAGS_VIF:  u64 = 1 << 19;
+    pub const X86_EFLAGS_VIP:  u64 = 1 << 20;
+    pub const X86_EFLAGS_ID:   u64 = 1 << 21;
+
+    /// Linux `FIX_EFLAGS` (`arch/x86/include/asm/sighandling.h`) — the ONLY
+    /// EFLAGS bits `rt_sigreturn` takes from the user's `sigcontext.flags`.
+    /// Everything outside it keeps the kernel's saved value, so IF, IOPL, NT,
+    /// VM, VIF, VIP and ID cannot be forged through a signal frame.
+    pub const FIX_EFLAGS: u64 =
+        X86_EFLAGS_AC | X86_EFLAGS_OF | X86_EFLAGS_DF | X86_EFLAGS_TF |
+        X86_EFLAGS_SF | X86_EFLAGS_ZF | X86_EFLAGS_AF | X86_EFLAGS_PF |
+        X86_EFLAGS_CF | X86_EFLAGS_RF;
+
+    /// Linux x86_64 ptrace `FLAG_MASK` = `FLAG_MASK_32 | X86_EFLAGS_NT`
+    /// (`arch/x86/kernel/ptrace.c`, `#else /* CONFIG_X86_64 */` arm). Same set
+    /// as `FIX_EFLAGS` plus NT — a tracer may set NT, a signal frame may not.
+    pub const PTRACE_FLAG_MASK: u64 = FIX_EFLAGS | X86_EFLAGS_NT;
+
+    /// Linux's `regs->flags = (regs->flags & ~MASK) | (user & MASK)` splice.
+    /// # C: O(1)
+    pub const fn merge_eflags(cur: u64, user: u64, mask: u64) -> u64 {
+        (cur & !mask) | (user & mask)
+    }
+
+    /// `restore_sigcontext` (`arch/x86/kernel/signal_64.c`):
+    /// `regs->flags = (regs->flags & ~FIX_EFLAGS) | (sc.flags & FIX_EFLAGS)`.
+    /// `cur` is the interrupted task's saved RFLAGS (the r11 slot the SYSCALL
+    /// instruction filled), `user` the word read out of the user sigcontext.
+    /// # C: O(1)
+    pub const fn sigreturn_eflags(cur: u64, user: u64) -> u64 {
+        merge_eflags(cur, user, FIX_EFLAGS)
+    }
+
+    /// `putreg`/`genregs_set` (`arch/x86/kernel/ptrace.c`) EFLAGS arm.
+    /// # C: O(1)
+    pub const fn ptrace_eflags(cur: u64, user: u64) -> u64 {
+        merge_eflags(cur, user, PTRACE_FLAG_MASK)
+    }
+
+    /// `handle_signal` (`arch/x86/kernel/signal.c`), post-`setup_rt_frame`:
+    /// `regs->flags &= ~(X86_EFLAGS_DF | X86_EFLAGS_RF | X86_EFLAGS_TF)`.
+    /// DF because the SysV ABI requires it clear at function entry — a handler
+    /// entered with DF set runs every `rep movs` backwards. TF so a SIGTRAP
+    /// handler does not immediately re-trap. The value saved into the frame's
+    /// `sigcontext.eflags` is the PRE-clear one, so `rt_sigreturn` puts DF/TF
+    /// back exactly as the interrupted code had them.
+    pub const SIGNAL_ENTRY_CLEAR: u64 = X86_EFLAGS_DF | X86_EFLAGS_RF | X86_EFLAGS_TF;
+
+    /// EFLAGS a signal handler is ENTERED with. See `SIGNAL_ENTRY_CLEAR`.
+    /// # C: O(1)
+    pub const fn handler_entry_eflags(cur: u64) -> u64 { cur & !SIGNAL_ENTRY_CLEAR }
+}
+
+/// aarch64 SPSR_EL1. Bit names from `arch/arm64/include/uapi/asm/ptrace.h`
+/// (plus IL from `arch/arm64/include/asm/ptrace.h` and SS = `DBG_SPSR_SS`
+/// from `arch/arm64/include/asm/debug-monitors.h`).
+pub mod aarch64 {
+    /// `M[3:0]` — the exception level + stack-pointer selector.
+    pub const PSR_MODE_MASK:  u64 = 0x0000_000f;
+    /// EL0 with SP_EL0: the ONLY mode a user context may carry.
+    pub const PSR_MODE_EL0T:  u64 = 0x0000_0000;
+    /// `M[4]` — AArch32 execution state.
+    pub const PSR_MODE32_BIT: u64 = 1 << 4;
+    pub const PSR_F_BIT:      u64 = 1 << 6;
+    pub const PSR_I_BIT:      u64 = 1 << 7;
+    pub const PSR_A_BIT:      u64 = 1 << 8;
+    pub const PSR_D_BIT:      u64 = 1 << 9;
+    pub const PSR_BTYPE_MASK: u64 = 0b11 << 10;
+    /// `PSR_BTYPE_C` — the BTYPE an indirect `BLR` sets; Linux stamps it on a
+    /// signal handler's entry PSTATE when the CPU implements FEAT_BTI.
+    pub const PSR_BTYPE_C:    u64 = 0b10 << 10;
+    pub const PSR_SSBS_BIT:   u64 = 1 << 12;
+    /// Illegal-execution-state bit — kernel-reserved, RES0 to userspace.
+    pub const PSR_IL_BIT:     u64 = 1 << 20;
+    /// Software-step (`DBG_SPSR_SS`). Not RES0: driven by the ptrace
+    /// single-step state, never taken from the user word.
+    pub const PSR_SS_BIT:     u64 = 1 << 21;
+    pub const PSR_PAN_BIT:    u64 = 1 << 22;
+    pub const PSR_UAO_BIT:    u64 = 1 << 23;
+    pub const PSR_DIT_BIT:    u64 = 1 << 24;
+    pub const PSR_TCO_BIT:    u64 = 1 << 25;
+    pub const PSR_V_BIT:      u64 = 1 << 28;
+    pub const PSR_C_BIT:      u64 = 1 << 29;
+    pub const PSR_Z_BIT:      u64 = 1 << 30;
+    pub const PSR_N_BIT:      u64 = 1 << 31;
+    /// Condition flags — all that survives a rejected PSTATE.
+    pub const PSR_NZCV: u64 = PSR_N_BIT | PSR_Z_BIT | PSR_C_BIT | PSR_V_BIT;
+
+    /// Linux `SPSR_EL1_AARCH64_RES0_BITS` (`arch/arm64/kernel/ptrace.c`):
+    /// `GENMASK_ULL(63,32) | GENMASK_ULL(27,26) | GENMASK_ULL(23,22) |
+    ///  GENMASK_ULL(20,13) | GENMASK_ULL(5,5)`. Architecturally RES0, plus
+    /// PAN/UAO (meaningless at EL0) and IL (kernel-reserved). SSBS (bit 12),
+    /// DIT (24) and TCO (25) are deliberately OUTSIDE the mask — Linux lets
+    /// userspace set those.
+    pub const SPSR_EL1_AARCH64_RES0_BITS: u64 =
+        genmask(63, 32) | genmask(27, 26) | genmask(23, 22) |
+        genmask(20, 13) | genmask(5, 5);
+
+    /// Linux `GENMASK_ULL(hi, lo)`, inclusive both ends.
+    /// # C: O(1)
+    const fn genmask(hi: u32, lo: u32) -> u64 {
+        (u64::MAX << lo) & (u64::MAX >> (63 - hi))
+    }
+
+    /// Port of `valid_user_regs` → `user_regs_reset_single_step` +
+    /// `valid_native_regs` (`arch/arm64/kernel/ptrace.c`), whose comment names
+    /// signal-handler security as the reason it exists.
+    ///
+    /// Returns `(pstate, accepted)`. `accepted == false` means the caller must
+    /// treat the whole register set as bad — Linux's `restore_sigframe` folds
+    /// the `!valid_user_regs()` result into `err` and `rt_sigreturn` then
+    /// `goto badframe` → `force_sig(SIGSEGV)`; `gpr_set` returns `-EINVAL`.
+    /// The returned word is still sanitized (collapsed to NZCV, i.e. EL0t with
+    /// DAIF clear) so a caller that installs it anyway cannot escalate.
+    ///
+    /// `single_step` is the task's ptrace single-step state, NOT anything read
+    /// from user memory: Linux sets SS when `TIF_SINGLESTEP`, clears it
+    /// otherwise, so a process can never software-step itself by forging the
+    /// bit in a signal frame.
+    /// # C: O(1)
+    pub const fn sanitize_native_pstate(user: u64, single_step: bool) -> (u64, bool) {
+        // `user_regs_reset_single_step()`
+        let mut p = if single_step { user | PSR_SS_BIT } else { user & !PSR_SS_BIT };
+        // `valid_native_regs()`
+        p &= !SPSR_EL1_AARCH64_RES0_BITS;
+        let accepted = (p & PSR_MODE_MASK) == PSR_MODE_EL0T
+            && (p & PSR_MODE32_BIT) == 0
+            && (p & PSR_D_BIT) == 0
+            && (p & PSR_A_BIT) == 0
+            && (p & PSR_I_BIT) == 0
+            && (p & PSR_F_BIT) == 0;
+        if accepted { (p, true) } else { (p & PSR_NZCV, false) }
+    }
+
+    /// `setup_return` (`arch/arm64/kernel/signal.c`): the PSTATE a handler is
+    /// ENTERED with. TCO is always cleared for a signal handler; BTYPE is set
+    /// to `PSR_BTYPE_C` only where FEAT_BTI is implemented, since PSTATE.BTYPE
+    /// is RES0 without it.
+    /// # C: O(1)
+    pub const fn handler_entry_pstate(cur: u64, bti: bool) -> u64 {
+        let p = cur & !PSR_TCO_BIT;
+        if bti { (p & !PSR_BTYPE_MASK) | PSR_BTYPE_C } else { p }
+    }
+}
+
+#[cfg(test)]
+#[path = "uregs/tests.rs"] mod tests;

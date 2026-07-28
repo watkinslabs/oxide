@@ -110,6 +110,18 @@ pub(crate) fn at_path_empty(ptr: u64) -> Result<bool, i64> {
         .ok_or(-(Errno::Efault.as_i32() as i64))
 }
 
+/// Resolve `dirfd` itself as a path — Linux `CLASS(fd, f)(dfd)` + `f->f_path`.
+/// `AT_FDCWD` is not an open descriptor here, so it is `EBADF` like any other
+/// unopened number (`fd_empty`). # C: O(1)
+pub(crate) fn resolve_fd_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
+    let ebadf = -(Errno::Ebadf.as_i32() as i64);
+    let cur = current_task().ok_or(ebadf)?;
+    // SAFETY: running task on this CPU; sole reader of its fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
+    let f = fdt.get(dirfd).map_err(|_| ebadf)?;
+    Ok(vfs::VfsPath { mnt_id: f.mnt_id(), dentry: f.dentry().clone(), inode: f.inode().clone(), last_component: None })
+}
+
 /// # C: O(components × dir-lookup)
 fn resolve_empty_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
@@ -120,11 +132,7 @@ fn resolve_empty_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
         }
         return Ok(resolution_root_vfs().ok_or(ebadf)?.0);
     }
-    let cur = current_task().ok_or(ebadf)?;
-    // SAFETY: running task on this CPU; sole reader of its fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
-    let f = fdt.get(dirfd).map_err(|_| ebadf)?;
-    Ok(vfs::VfsPath { mnt_id: f.mnt_id(), dentry: f.dentry().clone(), inode: f.inode().clone(), last_component: None })
+    resolve_fd_at(dirfd)
 }
 
 /// # C: O(components × dir-lookup)
@@ -152,6 +160,48 @@ pub fn resolve_at_lookup_maybe_null(dirfd: i32, path_ptr: u64, flags: vfs::Looku
         return resolve_empty_at(dirfd);
     }
     resolve_at_lookup(dirfd, path_ptr, flags)
+}
+
+/// Linux `getname_maybe_null` (`include/linux/fs.h`) reduced to its decision:
+/// with `AT_EMPTY_PATH`, a NULL pointer OR an empty string yields a NULL
+/// `struct filename`, which is how the `*at` syscall is told to operate on
+/// `dfd` itself. Without the flag neither shortcut applies — the ordinary walk
+/// then raises `EFAULT` for NULL and `ENOENT` for `""`. # C: O(1)
+fn at_filename_is_null(path_ptr: u64, at_flags: u32) -> Result<bool, i64> {
+    if at_flags & syscall::at::AT_EMPTY_PATH == 0 { return Ok(false); }
+    if path_ptr == 0 { return Ok(true); }
+    at_path_empty(path_ptr)
+}
+
+/// `LookupFlags` for a `*at` metadata syscall: `LOOKUP_FOLLOW` unless
+/// `AT_SYMLINK_NOFOLLOW`. `empty` stays false — an empty pathname that should
+/// operate on `dfd` has already been split off by [`at_filename_is_null`], so
+/// reaching the walk with `""` is the no-AT_EMPTY_PATH case Linux answers
+/// `ENOENT`. # C: O(1)
+fn at_lookup_flags(at_flags: u32) -> vfs::LookupFlags {
+    let follow = at_flags & syscall::at::AT_SYMLINK_NOFOLLOW == 0;
+    vfs::LookupFlags { no_follow_final: !follow, follow, ..Default::default() }
+}
+
+/// Linux `path_setxattrat` / `path_getxattrat` / `file_getattr` / `file_setattr`
+/// target resolution: a NULL `struct filename` with `dfd >= 0` uses the open
+/// file, and with `dfd < 0` falls through to `filename_lookup(dfd, NULL, …)`,
+/// which `__set_nameidata` turns into an empty pathname relative to `dfd` —
+/// i.e. the cwd for `AT_FDCWD` and `EBADF` for any other negative number.
+/// [`resolve_empty_at`] is exactly that pair. # C: O(components × dir-lookup)
+pub fn resolve_at_or_dirfd(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<vfs::VfsPath, i64> {
+    if at_filename_is_null(path_ptr, at_flags)? { return resolve_empty_at(dirfd); }
+    resolve_at_lookup(dirfd, path_ptr, at_lookup_flags(at_flags))
+}
+
+/// Linux `path_listxattrat` / `path_removexattrat` target resolution. These two
+/// omit the `dfd >= 0` guard their `set`/`get` siblings carry (`fs/xattr.c:992`,
+/// `:1089` vs `:726`, `:866`), so a NULL `struct filename` ALWAYS goes to the
+/// descriptor table — `AT_FDCWD` included, which `fd_empty` rejects with
+/// `EBADF` rather than resolving to the cwd. # C: O(components × dir-lookup)
+pub fn resolve_at_or_fd(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<vfs::VfsPath, i64> {
+    if at_filename_is_null(path_ptr, at_flags)? { return resolve_fd_at(dirfd); }
+    resolve_at_lookup(dirfd, path_ptr, at_lookup_flags(at_flags))
 }
 
 #[cfg(feature = "debug-boot")]

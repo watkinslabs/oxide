@@ -169,6 +169,15 @@ pub fn set_session_and_fg(vt: u8, sid: u32, pgid: u32) {
     tty.with_driver(|d| d.set_fg_pgrp(pgid));
 }
 
+/// Linux `__tty_hangup` on VT `vt`. The VT counterpart of
+/// `static_console::hangup`; the session walk lives in `tty::hangup`.
+/// # C: O(W) waiters
+pub fn hangup(vt: u8, kind: tty::HangupKind) {
+    let tty = vt_tty(vt);
+    tty.hangup(kind);
+    tty.with_driver(|d| d.set_fg_pgrp(0));
+}
+
 /// Release the controlling tty for VT `vt` (clear sid + fg pgrp + driver
 /// shadow). The VT counterpart of `static_console::notty`.
 /// # C: O(1)

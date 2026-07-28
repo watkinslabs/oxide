@@ -75,7 +75,11 @@ pub fn glue_mmap(
     // (PTEs + frames + TLB) via glue_munmap, then insert into the
     // now-hole range via the non-fixed path.
     if want_fixed && !want_no_replace {
-        let _ = glue_munmap(addr, len_aligned as u64);
+        // mseal(2): glue_munmap answers -EPERM for a sealed range. Discarding
+        // it left the sealed VMAs mapped but let the placement below replace
+        // them anyway; propagate so MAP_FIXED over a sealed range fails.
+        let rv = glue_munmap(addr, len_aligned as u64);
+        if rv < 0 { return Err(rv); }
     }
     // MAP_FIXED is not an advisory hint: after clearing the destination
     // range above, the VMM must either place the VMA exactly there or fail.
@@ -163,6 +167,8 @@ pub fn glue_mmap(
         // exhaustion (no hole / no frame) is ENOMEM.
         Err(vmm::Error::Inval) => Err(-(Errno::Einval.as_i32() as i64)),
         Err(vmm::Error::Access) => Err(-(Errno::Eacces.as_i32() as i64)),
+        // mseal(2): MAP_FIXED over a sealed range.
+        Err(vmm::Error::Perm) => Err(-(Errno::Eperm.as_i32() as i64)),
         Err(_)   => Err(-(Errno::Enomem.as_i32() as i64)),
     }
 }

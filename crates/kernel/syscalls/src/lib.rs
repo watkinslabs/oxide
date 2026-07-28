@@ -16,6 +16,20 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+pub mod secretmem;
+// execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
+// tested, and this is what glibc's stack canary + pointer guard come from.
+pub mod auxrandom;
+// swapon(2) 167: the `swap_flags` decode + its EINVAL-before-EPERM order.
+// futimesat(2) 261 / utimes(2) 235: the `struct timeval[2]` decode. Both slot
+// files are kernel-gated, so the decisions live here where the hosted suite
+// can reach them (docs/53, CLAUDE.md phantom-test rule).
+pub mod swap_abi;
+// vhangup(2) 153 + the TIOCNOTTY ioctl share ONE controlling-terminal
+// resolver so they cannot disagree about which tty the caller holds.
+mod tty_hangup;
+pub mod utimes_abi;
+pub mod utimensat_abi;
 // ustat(2) 136: `struct ustat` wire layout. sysfs(2) 139: the option/index
 // query over the filesystem-type registry. remap_file_pages(2) 216 /
 // fadvise64(2) 221 / mlock2(2) 325: their admission ladders. All five slot
@@ -86,6 +100,23 @@ include!("kernel_body.rs");
 
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
+
+// Linux `struct stat` encoder: the byte offsets and the signed `st_*time` /
+// unsigned `st_*time_nsec` split are the whole observable contract, so it
+// compiles hosted too. Declared here rather than in `kernel_body.rs` because a
+// `#[cfg(test)] mod tests` under that gate compiles out silently — which is
+// exactly what happened to its two `write_new_stat_*_bytes` helpers.
+#[cfg(any(target_os = "oxide-kernel", test))]
+mod stat_common;
+
+// io_uring(2) 425/426/427: the `struct io_uring_params` wire form, the setup
+// flag/entries ladder, the ring-region geometry and the register-opcode
+// ladder. The three slot files AND `io_uring.rs` are kernel-gated, so every
+// decision left in them is invisible to `cargo test` (CLAUDE.md phantom-test
+// rule); the slots parse/validate/call/encode around this module (docs/53).
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "io_uring/abi/mod.rs"]
+pub mod io_uring_abi;
 
 // statfs(2) wire encoding and uname(2) personality overrides: pure ABI logic,
 // compiled into the kernel and into the hosted test build so the struct layout

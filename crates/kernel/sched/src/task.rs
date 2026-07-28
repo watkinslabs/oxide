@@ -38,6 +38,7 @@ mod rlimits;
 mod fd_table;
 mod fs_context;
 mod lifetime;
+mod mempolicy;
 mod methods;
 mod net_namespace;
 mod namespaces;
@@ -135,6 +136,18 @@ pub struct Task {
     pub sum_exec_runtime_ns: AtomicU64,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
+    /// Linux `task_struct::min_flt` / `maj_flt` — page faults resolved without
+    /// and with a backing-store read. Feed `/proc/<pid>/stat` fields 10/12 and
+    /// `PERF_COUNT_SW_PAGE_FAULTS{,_MIN,_MAJ}`.
+    pub min_flt: AtomicU64,
+    pub maj_flt: AtomicU64,
+    /// Linux `task_struct::nvcsw` / `nivcsw` — voluntary (blocked) and
+    /// involuntary (preempted) context switches away from this task.
+    /// `PERF_COUNT_SW_CONTEXT_SWITCHES` is their sum.
+    pub nvcsw:  AtomicU64,
+    pub nivcsw: AtomicU64,
+    /// Linux `sched_entity::nr_migrations` — `PERF_COUNT_SW_CPU_MIGRATIONS`.
+    pub nr_migrations: AtomicU64,
     #[cfg(feature = "debug-getdents")]
     pub(crate) getdents: crate::diag::getdents::GetdentsState,
     #[cfg(feature = "debug-syscall-return")]
@@ -184,6 +197,13 @@ pub struct Task {
     /// on CFS), so the class alone cannot round-trip through
     /// `sched_getscheduler(2)` / `sched_getattr(2)` / `/proc/<pid>/stat`.
     pub policy: AtomicU32,
+    /// Linux `task_struct::mempolicy` — the PER-THREAD NUMA policy
+    /// `set_mempolicy(2)` installed, packed by `MemPolicy::to_words`. Word 0
+    /// is zero when no policy is installed, which is Linux's NULL
+    /// `->mempolicy` (i.e. MPOL_DEFAULT). Inherited by fork/clone
+    /// (`kernel/fork.c:2225` `mpol_dup`) and NOT reset by execve.
+    /// Read/written through `mempolicy()` / `set_mempolicy()`.
+    pub mempolicy: [AtomicU64; 3],
     /// Linux `task_struct::sched_reset_on_fork`. Set by the
     /// `SCHED_RESET_ON_FORK` bit ORed into the `sched_setscheduler(2)` policy
     /// argument; ORed back into `sched_getscheduler(2)`'s return; consumed by

@@ -109,7 +109,13 @@ impl FileOps for PtySlaveFileOps {
     fn on_open(&self, inode: &Inode) -> KResult<()> {
         let pair = pair_of(inode)?;
         if pair.is_locked() { return Err(VfsError::Eio); }
-        pair.open_endpoint(false, crate::current_has_sys_admin())
+        pair.open_endpoint(false, crate::current_has_sys_admin())?;
+        // Linux `tty_open` ends with `clear_bit(TTY_HUPPED, &tty->flags)`
+        // (`drivers/tty/tty_io.c:2161`), so a `vhangup(2)` revokes the OPEN
+        // descriptors and a fresh open revives the line. A hangup that came
+        // from the master's last close stays: that pty is gone for good.
+        if pair.master_is_open() { pair.with_pair(|p| p.clear_hangup()); }
+        Ok(())
     }
 
     fn on_release(&self, inode: &Inode) {

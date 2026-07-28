@@ -65,6 +65,23 @@ const _: () = {
 
 /// x86_64 SysV ABI red zone — 128 B below RSP callers may use across calls.
 const RED_ZONE: u64 = 128;
+/// `r11` slot of the 16-quadword syscall save block — SYSCALL parks the user
+/// RFLAGS there and `sysretq` reloads them from it, so this index IS the
+/// user's next EFLAGS. Named because a bare `8` next to `s(8, mc.eflags)` is
+/// what let an unfiltered user word reach the hardware (B1459).
+const F_RFLAGS: usize = 8;
+/// Handler-entry SP alignment: `new_rsp % 16 == 8` at handler entry, since the
+/// `pretcode` quadword plays the role of a pushed return address (`54§3.3`).
+const FRAME_ALIGN: u64 = 16;
+/// Byte width of the `pretcode` slot the handler's `ret` pops.
+const PRETCODE_BYTES: u64 = 8;
+/// Linux `UC_SIGCONTEXT_SS` (`arch/x86/include/uapi/asm/ucontext.h`) —
+/// `uc_mcontext.ss` carries the interrupted SS.
+const UC_SIGCONTEXT_SS: u64 = 0x2;
+/// Linux `UC_STRICT_RESTORE_SS` — sigreturn must restore SS verbatim rather
+/// than run `force_valid_ss`. `frame_uc_flags()` sets it for every 64-bit-mode
+/// frame. `UC_FP_XSTATE` is NOT set: this frame carries no `fpstate` area.
+const UC_STRICT_RESTORE_SS: u64 = 0x4;
 /// Width of the x86_64 `syscall` instruction, used when restarting from the
 /// hardware-saved post-syscall RIP.
 const SYSCALL_INSTRUCTION_BYTES: u64 = core::mem::size_of::<u16>() as u64;
@@ -81,6 +98,39 @@ pub unsafe fn current_user_sp() -> u64 {
     frame[2]
 }
 
+/// Linux `get_sigframe` (`arch/x86/kernel/signal.c`) placement arithmetic, as
+/// a pure function so the caller's `access_ok` check and the builder's write
+/// can never disagree about WHERE the frame lands. `None` when the arithmetic
+/// underflows or the frame would leave user space — a process is free to run
+/// `mov rsp, <kernel VA>; syscall`, so `user_sp` is hostile input.
+/// # C: O(1)
+pub fn sigframe_base(user_sp: u64, alt: hal::AltStack) -> Option<u64> {
+    // `sigsp()`: SA_ONSTACK with a usable alternate stack puts the frame at
+    // that stack's TOP; otherwise carve below the interrupted stack's red
+    // zone. The red zone does not apply to a fresh alt stack — nothing owns
+    // memory below its top. Without this branch a SIGSEGV-on-stack-overflow
+    // handler builds its frame on the stack that just overflowed.
+    let top = if alt.use_alt { alt.sp.checked_add(alt.size)? }
+              else { user_sp.checked_sub(RED_ZONE)? };
+    // `sp -= frame_size; sp = round_down(sp, FRAME_ALIGNMENT) - 8`.
+    let base = top.checked_sub(core::mem::size_of::<RtSigframe>() as u64)?
+                  & !(FRAME_ALIGN - 1);
+    base.checked_sub(PRETCODE_BYTES)
+}
+
+/// `(base, len, align)` of the rt_sigframe a delivery would write, for the
+/// caller's `access_ok`. Linux `x64_setup_rt_frame` does
+/// `user_access_begin(frame, sizeof(*frame))` and fails the delivery with
+/// `-EFAULT` → `signal_setup_done` → `force_sigsegv` when it does not hold.
+/// # C: O(1)
+pub fn sigframe_range(user_sp: u64, alt: hal::AltStack) -> Option<(u64, u64, u64)> {
+    let base = sigframe_base(user_sp, alt)?;
+    if base == 0 { return None; }
+    let len = core::mem::size_of::<RtSigframe>() as u64;
+    base.checked_add(len).filter(|end| *end <= hal::USER_VA_END)?;
+    Some((base, len, PRETCODE_BYTES))
+}
+
 /// Build the rt_sigframe on the user stack and rewrite the saved syscall
 /// frame so the dispatch return enters `handler(sig, &siginfo, &ucontext)`
 /// with RSP at the frame. `old_sigmask` is recorded in the ucontext for
@@ -88,39 +138,37 @@ pub unsafe fn current_user_sp() -> u64 {
 /// is read via `current_user_full_frame` (indices: 0 rax,1 rdi,2 rsi,3 rdx,
 /// 4 r10,5 r8,6 r9,7 rcx=rip,8 r11=rflags,9 rsp,10 rbx,11 rbp,12 r13,13 r14,
 /// 14 r15,15 r12).
+/// Returns `false` without touching user memory or the saved frame when the
+/// frame does not fit in user space (Linux `get_sigframe` returning
+/// `(void __user *)-1L` / `user_access_begin` failing); the caller must then
+/// `force_sigsegv`. That check is the difference between a signal delivery and
+/// an arbitrary kernel write: `mov rsp, <kernel VA>; syscall` otherwise has
+/// the kernel `write_volatile` a 560-byte attacker-shaped frame there (B1459).
 /// # SAFETY: dispatch-tail ctx on the running task's syscall kstack; the
 /// saved frame is live; active CR3 is the caller's user AS.
 /// # C: O(1)
+#[must_use]
 pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
                                  saved_ret: u64, restart: bool, old_sigmask: u64,
-                                 payload: Option<hal::SigPayload>, alt: hal::AltStack) {
+                                 payload: Option<hal::SigPayload>, alt: hal::AltStack) -> bool {
     let full = current_user_full_frame();
     // SAFETY: dispatch ctx; `full` points at the live 16-quadword saved block.
     let g = |i: usize| unsafe { core::ptr::read_volatile(full.add(i)) };
     // SAFETY: same saved frame, RIP/RFLAGS/RSP triple alias full[7..9].
     let frame = unsafe { &mut *current_user_frame() };
     let saved_rip    = g(7);
-    let saved_rflags = g(8);
+    let saved_rflags = g(F_RFLAGS);
     let saved_rsp    = g(9);
 
-    // Linux `sigsp()`: SA_ONSTACK with a usable `sigaltstack(2)` puts the
-    // frame at the alternate stack's TOP; otherwise carve below the red zone
-    // of the interrupted stack. The red zone does not apply to a fresh alt
-    // stack — nothing owns memory below its top. Without this branch a
-    // SIGSEGV-on-stack-overflow handler builds its frame on the very stack
-    // that just overflowed, so the crash handler faults instead of running.
-    // new_rsp%16==8 at handler entry (pretcode plays the pushed-return-address
-    // role). Frame sits AT/ABOVE new_rsp so the handler's downward stack can't
-    // trample it.
-    let top = if alt.use_alt { alt.sp.saturating_add(alt.size) }
-              else { saved_rsp.saturating_sub(RED_ZONE) };
-    let fsz = core::mem::size_of::<RtSigframe>() as u64;
-    let new_rsp = top.saturating_sub(fsz) & !0xfu64;
-    let new_rsp = new_rsp.saturating_sub(8);
+    // Placement + `access_ok`-equivalent bound. Frame sits AT/ABOVE new_rsp so
+    // the handler's downward stack can't trample it (`54§3.1`).
+    let Some((new_rsp, _, _)) = sigframe_range(saved_rsp, alt) else { return false };
 
     // SAFETY: RtSigframe is plain-old-data (repr(C) integers + byte arrays); an all-zero bit pattern is a valid instance, every meaningful field is overwritten below before the frame is read.
     let mut sf: RtSigframe = unsafe { core::mem::zeroed() };
     sf.pretcode = restorer;
+    // Linux `frame_uc_flags()`. No `UC_FP_XSTATE` — `fpstate` is null below.
+    sf.uc.uc_flags = UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS;
     sf.uc.uc_mcontext = Sigctx {
         r8: g(5), r9: g(6), r10: g(4), r11: saved_rflags,
         r12: g(15), r13: g(12), r14: g(13), r15: g(14),
@@ -141,7 +189,10 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
     unsafe { core::ptr::write_volatile(new_rsp as *mut RtSigframe, sf); }
 
     frame[0] = handler;          // user RIP = handler
-    frame[1] = saved_rflags;
+    // Linux `handle_signal`: DF|RF|TF cleared for handler entry. The frame's
+    // `sigcontext.eflags` above keeps the PRE-clear value, so rt_sigreturn
+    // restores the interrupted code's DF/TF.
+    frame[1] = hal::uregs::x86_64::handler_entry_eflags(saved_rflags);
     frame[2] = new_rsp;          // user RSP = frame
     // SA_SIGINFO args: rdi=sig, rsi=&siginfo, rdx=&ucontext (exit asm restores
     // rdi/rsi/rdx from saved slots top-0x78/-0x70/-0x68).
@@ -156,6 +207,7 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
             core::ptr::write_volatile((kstack_top - 0x68) as *mut u64, uc_ptr);
         }
     }
+    true
 }
 
 /// Linux `arch_do_signal_or_restart`'s `regs->ip -= 2` with
@@ -224,11 +276,21 @@ pub unsafe fn restore_signal_frame() -> Option<(u64, i64, hal::AltStack)> {
     // Restore the FULL GP set; slots rcx(7)=rip + r11(8)=eflags carry the
     // sysretq epilogue.
     let full = current_user_full_frame();
+    // Linux `restore_sigcontext` (`arch/x86/kernel/signal_64.c`):
+    // `regs->flags = (regs->flags & ~FIX_EFLAGS) | (sc.flags & FIX_EFLAGS)`.
+    // MUST be read before the write loop below overwrites the slot. `sysretq`
+    // reloads RFLAGS straight from this quadword and the Intel SDM's SYSRET
+    // mask (`R11 & 3C7FD7H`) passes IOPL, IF, NT and TF through, so an
+    // unfiltered `mc.eflags` lets any process grant itself IOPL=3 (port I/O +
+    // `cli`) or return to user with interrupts disabled (B1459).
+    // SAFETY: dispatch ctx; `full` is the live 16-quadword saved block.
+    let cur_rflags = unsafe { core::ptr::read_volatile(full.add(F_RFLAGS)) };
+    let new_rflags = hal::uregs::x86_64::sigreturn_eflags(cur_rflags, mc.eflags);
     // SAFETY: dispatch ctx; `full` is the live 16-quadword saved block.
     let s = |i: usize, v: u64| unsafe { core::ptr::write_volatile(full.add(i), v) };
     s(0, mc.rax);  s(1, mc.rdi); s(2, mc.rsi); s(3, mc.rdx);
     s(4, mc.r10);  s(5, mc.r8);  s(6, mc.r9);
-    s(7, mc.rip);  s(8, mc.eflags); s(9, mc.rsp);
+    s(7, mc.rip);  s(F_RFLAGS, new_rflags); s(9, mc.rsp);
     s(10, mc.rbx); s(11, mc.rbp); s(12, mc.r13); s(13, mc.r14); s(14, mc.r15); s(15, mc.r12);
     let alt = hal::AltStack { sp: st.ss_sp, size: st.ss_size, flags: st.ss_flags, use_alt: false };
     Some((sigmask, mc.rax as i64, alt))
@@ -248,6 +310,69 @@ pub fn rt_sigreturn_frame_range() -> Option<(u64, u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A user SP the process pointed at the kernel half of the address space
+    /// (`mov rsp, <kernel VA>; syscall`) must not yield a writable placement:
+    /// the builder's `write_volatile` runs at CPL0 through the live CR3 and
+    /// would land a 560-byte attacker-shaped frame in kernel memory.
+    #[test]
+    fn kernel_stack_pointer_yields_no_signal_frame() {
+        let none = hal::AltStack::default();
+        for sp in [hal::USER_VA_END + 0x10000, 0xffff_ffff_8100_0000,
+                   0xffff_8000_0000_0000, 0xffff_ffff_ffff_f000, u64::MAX] {
+            assert!(sigframe_range(sp, none).is_none(), "sp {sp:#x} accepted");
+        }
+    }
+
+    #[test]
+    fn a_frame_ending_past_the_user_boundary_is_rejected() {
+        let none = hal::AltStack::default();
+        // The invariant, swept across the whole boundary: an accepted frame is
+        // ALWAYS entirely inside user space. Near the boundary the frame still
+        // lands wholly below it, which is what `access_ok` permits — it is
+        // carved DOWNWARD from the SP.
+        for d in 0..0x4000u64 {
+            let sp = hal::USER_VA_END - 0x2000 + d;
+            if let Some((base, len, _)) = sigframe_range(sp, none) {
+                assert!(base + len <= hal::USER_VA_END, "sp {sp:#x} frame escapes user VA");
+            }
+        }
+        // An alt stack whose top is in kernel space is rejected the same way.
+        let alt = hal::AltStack { sp: hal::USER_VA_END - 0x1000, size: 0x4000, flags: 0, use_alt: true };
+        assert!(sigframe_range(0x7fff_0000_0000, alt).is_none());
+    }
+
+    #[test]
+    fn a_tiny_or_wrapping_stack_pointer_is_rejected_not_wrapped() {
+        let none = hal::AltStack::default();
+        let fsz = core::mem::size_of::<RtSigframe>() as u64;
+        for sp in [0u64, 1, RED_ZONE, RED_ZONE + 8, RED_ZONE + fsz,
+                   RED_ZONE + fsz + PRETCODE_BYTES - 1] {
+            assert!(sigframe_range(sp, none).is_none(), "sp {sp:#x} accepted");
+            // The `- 8` for the pretcode slot must not wrap either.
+            assert!(sigframe_base(sp, none).is_none(), "sp {sp:#x} base wrapped");
+        }
+        // Overflowing alt-stack top must not wrap into a low user address.
+        let alt = hal::AltStack { sp: u64::MAX - 0x100, size: 0x1000, flags: 0, use_alt: true };
+        assert!(sigframe_range(0x7fff_0000_0000, alt).is_none());
+    }
+
+    #[test]
+    fn handler_entry_sp_is_16n_plus_8_below_the_red_zone() {
+        let none = hal::AltStack::default();
+        let sp = 0x7fff_ffff_e000u64;
+        let (base, len, align) = sigframe_range(sp, none).unwrap();
+        assert_eq!(base % FRAME_ALIGN, PRETCODE_BYTES, "54§3.3 handler-entry alignment");
+        assert_eq!(len, core::mem::size_of::<RtSigframe>() as u64);
+        assert_eq!(align, PRETCODE_BYTES);
+        assert!(base + len <= sp - RED_ZONE, "frame overlaps the red zone");
+        // The alt-stack arm places the frame at the alt stack's TOP, with no
+        // red zone: nothing owns memory below a fresh alt stack.
+        let alt = hal::AltStack { sp: 0x1000_0000, size: 0x8000, flags: 0, use_alt: true };
+        let (abase, alen, _) = sigframe_range(sp, alt).unwrap();
+        assert!(abase >= alt.sp && abase + alen <= alt.sp + alt.size);
+        assert_eq!(abase % FRAME_ALIGN, PRETCODE_BYTES);
+    }
 
     #[test]
     fn x86_64_rt_sigframe_matches_linux_uapi_shape() {

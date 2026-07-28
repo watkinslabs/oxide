@@ -3,6 +3,7 @@ use ::core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use sync::{Spinlock, Tty as TtyClass};
 
 use super::api::{ReadOutcome, TtyDriver, TtyFlow, TtyFlush};
+use crate::hangup::HangupKind;
 use crate::ldisc::{vmin_vtime_decision, LdiscOps, NTty, Sig, VmtDecision};
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
@@ -465,18 +466,25 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         crate::ioctl::core_ioctl(self, cmd, arg)
     }
 
-    /// Hang up the tty (Linux `tty_hangup` / `__tty_hangup`): raise SIGHUP
-    /// on the foreground process group, reset the ldisc into its hung-up
-    /// state (queues flushed; reads → EOF, writes dropped), notify the
-    /// driver, and clear the controlling-session linkage. Idempotent — a
-    /// second hangup re-signals but the ldisc state is already hung.
-    /// # C: O(P) fg-pgrp tasks
-    pub fn hangup(&self) {
+    /// Hang up the tty — Linux `__tty_hangup(tty, exit_session)`
+    /// (`drivers/tty/tty_io.c:568-656`): reset the ldisc into its hung-up
+    /// state (queues flushed; reads → EOF, writes dropped), notify the driver,
+    /// and clear the controlling-session linkage (`tty->ctrl.session` /
+    /// `tty->ctrl.pgrp`). Idempotent.
+    ///
+    /// `kind` selects Linux's `exit_session` argument. It decides ONLY whether
+    /// the foreground process group is SIGHUP'd wholesale: `tty_signal_session
+    /// _leader` sends `kill_pgrp(tty_pgrp, SIGHUP)` when `exit_session` is set
+    /// and NOT otherwise (`drivers/tty/tty_jobctrl.c:232-236`). Signalling the
+    /// SESSION LEADER is the caller's job — it needs the task list, which the
+    /// driver hook cannot reach (`crate::hangup`).
+    /// # C: O(P) fg-pgrp tasks on `SessionExit`, O(1) otherwise
+    pub fn hangup(&self, kind: HangupKind) {
         {
             let mut g = self.inner.lock_irqsave::<W::Irq>();
             let PortInner { ldisc, driver } = &mut *g;
             ldisc.hangup();
-            driver.signal_fg_pgrp(Sig::Hup);
+            if kind == HangupKind::SessionExit { driver.signal_fg_pgrp(Sig::Hup); }
             driver.hangup();
         }
         // Drop the controlling-tty linkage (Linux clears tty->session /
@@ -494,6 +502,13 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// # C: O(1)
     pub fn is_hung_up(&self) -> bool {
         self.inner.lock_irqsave::<W::Irq>().ldisc.is_hung_up()
+    }
+
+    /// Linux `clear_bit(TTY_HUPPED, &tty->flags)` on a successful `tty_open`
+    /// (`drivers/tty/tty_io.c:2161`).
+    /// # C: O(1)
+    pub fn clear_hangup(&self) {
+        self.inner.lock_irqsave::<W::Irq>().ldisc.clear_hangup();
     }
 
     /// Run a closure against the driver (open/close/hangup plumbing, and
