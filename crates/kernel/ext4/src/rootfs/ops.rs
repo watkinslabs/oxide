@@ -88,7 +88,7 @@ impl RootfsState {
         let rdev = if matches!(ft, vfs::FileType::CharDev | vfs::FileType::BlockDev) { inode.rdev() } else { 0 };
         let nlink = inode.links_count as u32;
         let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
-        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns, inode.crtime_ns);
+        let times = inode.times();
         let st = self.clone();
         let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times);
         // Route through the SB inode cache so a repeated lookup of the same ino
@@ -108,7 +108,7 @@ impl RootfsState {
         let size = inode.size;
         let mode = inode.mode;
         let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
-        let times = (inode.atime_ns, inode.mtime_ns, inode.ctime_ns, inode.crtime_ns);
+        let times = inode.times();
         let nlink = inode.links_count as u32;
         let st = self.clone();
         let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times);

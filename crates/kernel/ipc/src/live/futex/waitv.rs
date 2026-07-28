@@ -52,15 +52,11 @@ pub fn dispatch_waitv_timed(uaddrs: &[u64], vals: &[u32], private: bool, deadlin
         let group = Arc::new(WaitvGroup {
             keys: keys.clone(), task: arc.clone(), woken_idx: AtomicI32::new(-1),
         });
-        if deadline_ns != 0 {
-            cur.wakeup_deadline_ns.store(deadline_ns, core::sync::atomic::Ordering::Release);
-        }
         {
             let mut groups = WAITV_GROUPS.lock();
             for (i, &ua) in uaddrs.iter().enumerate() {
                 // SAFETY: bounded user VA validated above; CR3 is the caller's.
                 if unsafe { load_user_u32(ua) } != vals[i] {
-                    cur.wakeup_deadline_ns.store(0, core::sync::atomic::Ordering::Release);
                     return -(Errno::Eagain.as_i32() as i64);
                 }
             }
@@ -68,10 +64,16 @@ pub fn dispatch_waitv_timed(uaddrs: &[u64], vals: &[u32], private: bool, deadlin
             cur.futex_uaddr.store(uaddrs[0], core::sync::atomic::Ordering::Relaxed);
             groups.push(group.clone());
         }
+        // Armed after the group is published and the task is Sleeping — same
+        // order as `wait::wait_loop`, and for the same reason: an expiry
+        // consumed before `claim_wake` can win is a lost timeout.
+        if deadline_ns != 0 {
+            sched::hrtimeout::arm_current(deadline_ns, sched::hrtimeout::task_slack_ns(cur));
+        }
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
         cur.futex_uaddr.store(0, core::sync::atomic::Ordering::Relaxed);
-        cur.wakeup_deadline_ns.store(0, core::sync::atomic::Ordering::Release);
+        sched::hrtimeout::disarm_current();
         let idx = group.woken_idx.load(Ordering::Acquire);
         if idx >= 0 { return idx as i64; }
         // Not woken by a real key match: same classification order as

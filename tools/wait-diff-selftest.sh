@@ -78,6 +78,13 @@ check nofg     'jobctl|sigttin_stops_background' 'jobctl|read_resumes_after_fg'
 check wallcpu  'cputime|single_thread_no_progress'
 check noburn   'cputime|sibling_burn_completes'
 check mqnokill 'mqueue|sigkill_kills_blocked_receiver'
+# B1460: `latnowait` removes the wait entirely (the degenerate
+# return-immediately implementation) so the lower bound must flip;
+# `latslow` spends the ~100 ms-per-wait floor this branch removed, so the
+# conformance budget must flip. Two edges, two mutants — a ladder whose top
+# rung cannot be moved is only half proven.
+check latnowait 'latency|nanosleep_short' 'latency|epoll_wait_short'
+check latslow   'latency|nanosleep_short' 'latency|epoll_wait_short'
 check mqnoprio   'mqapi|priority_order'
 check mqnonotify 'mqapi|notify_signal'
 check mqnothread 'mqapi|notify_thread'
