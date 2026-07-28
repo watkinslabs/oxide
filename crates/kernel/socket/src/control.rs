@@ -19,6 +19,10 @@ pub(crate) enum UnixScm {
         queue: Arc<net::UnixDgramQueue>,
         sender: Option<net::UnixAddr>,
         address: net::UnixAddr,
+        /// Linux `unix_peer(other) == sk`: a symmetrically connected pair is
+        /// NOT flow-controlled by the destination's receive queue, on the send
+        /// side any more than in `poll`.
+        symmetric: bool,
     },
     Stream(Scm),
 }
@@ -161,7 +165,9 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
                 } else { local.peer().ok_or(Error::Edestaddrreq)? };
                 let queue = net::net_ns::unix_registry_for_addr_in(&socket.net_namespace, &address)
                     .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
-                Ok(UnixScm::Datagram { scm, queue, sender, address })
+                let symmetric = net::unix_sock::dgram_symmetric_pair(
+                    queue.peer().as_ref(), local.bound().as_ref());
+                Ok(UnixScm::Datagram { scm, queue, sender, address, symmetric })
             }
         }
     })())
@@ -172,8 +178,9 @@ pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::Inet
     message: &Message, scm: &UnixScm, cap: usize, offset: usize) -> KResult<usize>
 {
     match scm {
-        UnixScm::Datagram { scm, queue, sender, address } =>
-            datagram(ctx, message, scm, queue.clone(), sender.clone(), address.clone(), cap),
+        UnixScm::Datagram { scm, queue, sender, address, symmetric } =>
+            datagram(ctx, message, scm, queue.clone(), sender.clone(), address.clone(),
+                if *symmetric { usize::MAX } else { cap }),
         UnixScm::Stream(scm) => stream(ctx, socket, &message.payload[offset..], scm, cap, offset == 0),
     }
 }
@@ -184,7 +191,8 @@ pub(crate) fn wait_unix_send(socket: &Arc<net::sock::InetSocket>, scm: &UnixScm,
     len: usize, cap: usize, deadline_ns: u64) -> KResult<()>
 {
     match scm {
-        UnixScm::Datagram { queue, .. } => match queue.arm_write(len, cap, deadline_ns) {
+        UnixScm::Datagram { queue, symmetric, .. } =>
+            match queue.arm_write(len, if *symmetric { usize::MAX } else { cap }, deadline_ns) {
             net::unix_sock::dgram::ArmDgramWrite::Retry => Ok(()),
             net::unix_sock::dgram::ArmDgramWrite::PeerClosed => Err(Error::Econnrefused),
             net::unix_sock::dgram::ArmDgramWrite::MessageTooLarge => Err(Error::Emsgsize),

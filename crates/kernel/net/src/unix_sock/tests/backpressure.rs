@@ -83,3 +83,57 @@ fn datagram_shutdown_transition_has_one_generation() {
     queue.shutdown_reader();
     assert_eq!(queue.shutdown_generation(), queue_generation.wrapping_add(1));
 }
+
+// --- symmetric-pair flow control (net/unix/af_unix.c) ------------------------
+// `unix_dgram_sendmsg` refuses with EAGAIN only when
+//   `other != sk && unix_peer(other) != sk && unix_recvq_full_lockless(other)`,
+// and `unix_dgram_poll` clears writability under the IDENTICAL guard. The guard
+// existed on the poll side alone, so a socketpair — symmetric by construction —
+// polled writable forever while every send returned EAGAIN. A writer that
+// trusts poll then spins: gnome-shell's KMS thread burned a core on 236k
+// sendmsg calls per 3.7s that way.
+
+use crate::unix_sock::dgram_symmetric_pair;
+use crate::UnixAddr;
+
+fn addr(name: &str) -> UnixAddr { UnixAddr::from_abstract_or_test_path(alloc::string::String::from(name)) }
+
+#[test]
+fn a_mutually_connected_pair_is_symmetric() {
+    let a = addr("/run/a");
+    let b = addr("/run/b");
+    // peer's peer == us -> symmetric.
+    assert!(dgram_symmetric_pair(Some(&a), Some(&a)));
+    // peer points elsewhere -> not symmetric, recvq flow control applies.
+    assert!(!dgram_symmetric_pair(Some(&b), Some(&a)));
+    // an unconnected peer, or an unbound sender, is never symmetric.
+    assert!(!dgram_symmetric_pair(None, Some(&a)));
+    assert!(!dgram_symmetric_pair(Some(&a), None));
+}
+
+/// THE invariant: for one pair, the cap the send applies and the cap poll
+/// consults must be the same number. Symmetric -> unbounded on both sides;
+/// asymmetric -> the receive queue bounds both.
+#[test]
+fn poll_and_send_agree_on_the_same_cap() {
+    let _serial = test_guard();
+    const CAP: usize = 5;
+    for symmetric in [false, true] {
+        let q = UnixDgramQueue::new();
+        // Fill past CAP the way the send path would.
+        let send_cap = if symmetric { usize::MAX } else { CAP };
+        assert_eq!(q.try_push_from_with_rights_bounded(datagram(b"abcdef"), None,
+            GcRights::from_files(alloc::vec::Vec::new()), send_cap),
+            if symmetric { Ok(()) } else { Err(crate::NetError::Emsgsize) },
+            "symmetric={symmetric}: send bound");
+        if !symmetric { continue; }
+        // Symmetric: the queue is over CAP, and the send still succeeds — so
+        // poll must NOT be reporting a bound the send does not enforce.
+        assert!(q.queued_bytes() > CAP, "symmetric queue exceeded the recvq cap");
+        assert!(crate::unix_sock::dgram_peer_writable(q.queued_bytes(), usize::MAX),
+            "symmetric pair stays writable, matching the send that just succeeded");
+        // ...and the asymmetric bound is what would have refused it.
+        assert!(!crate::unix_sock::dgram_peer_writable(q.queued_bytes(), CAP),
+            "the recvq bound is real — it just does not apply to a symmetric pair");
+    }
+}
