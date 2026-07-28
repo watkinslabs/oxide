@@ -25,6 +25,7 @@ Record count is **44** since B1460 added `latency|nanosleep_short` and
 predates both).
 
 | DONE | W8 `shm_nattch` counted shmat/shmdt calls, not VMAs | `F765-sysv-blocking-differential` | both | §9 |
+| OPEN | W9 a userspace spin loop is UNKILLABLE — no signal reaches it | | both | §10 |
 
 Differential state after F765 merged with the `latency` and `inotify` rows,
 own runs, clean builds: **87/87 identical records on BOTH arches — zero
@@ -32,6 +33,38 @@ divergences** (x86 `x86-20260728-010744-KpVGX3`, arm
 `arm-20260728-011000-3u4phl`). F765 grew
 it 42 -> 77 with `sysv_sem` / `sysv_msg` / `sysv_shm`, the first execution of
 the SysV blocking paths and of `shmdt`'s address-space half.
+
+## 10 W9 — a spinning userspace task takes no signal, not even SIGKILL
+
+The shared differential is RED on main because of this, on BOTH arches, and
+it is not a probe bug. `sigfpu.c` (B1466) is the first case that spins in a
+pure userspace loop rather than parking in a syscall, and on oxide nothing
+ever interrupts it:
+
+```
+[12.893] [EXECLOAD begin tid=4180 path=/usr/local/bin/wait_diff]
+wdiff|meta|format|wait_diff=1                <- last record ever printed
+[311.776] wait-diff-smoke.service: start operation timed out. Terminating.
+[357.070] Killing process 78 (wait_diff) with signal SIGABRT.
+[402.315] Killing process 78 (wait_diff) with signal SIGKILL.
+[447.526] Processes still around after SIGKILL. Ignoring.
+```
+
+Three signals the probe arranged itself never arrived either: the kicker
+child's `SIGUSR1`, and the probe's own `alarm(JOBCTL_GUARD_S)` `SIGALRM`,
+whose entire purpose is to stop exactly this hang. So the defect is not
+"SIGKILL is special" — it is that a task which never enters the kernel never
+reaches a signal-delivery point. Linux preempts it on the timer tick and
+runs `get_signal` on the return-to-user path.
+
+Every syscall-parked case in this probe passes, which is why 97 records of
+coverage never found it: `signal_pending` is only ever consulted by a
+parked waiter here. Needs the timer-tick preemption path to force a
+signal-delivery check on return to user mode.
+
+B1466 could not have seen it: its `SOURCES` list omitted `sigfpu.c`, so the
+guest binary never contained the probe (F765 added it, plus the
+`<stddef.h>` its `offsetof` needs to cross-compile for aarch64).
 
 ## 9 W8 — `shm_nattch` counted calls, not VMAs — DONE (F765)
 

@@ -23,6 +23,10 @@
  */
 #include "probe.h"
 
+/* `offsetof` — probe.h does not pull in <stddef.h>, and the aarch64
+ * cross-build fails on `uc_vregs`'s use of it. */
+#include <stddef.h>
+
 /* Callee-clobberable vector registers on both arches, and the byte width of
  * the pattern they hold. x86_64 xmm4..xmm7 / aarch64 v4..v7. */
 #define VREGS      4
