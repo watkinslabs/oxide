@@ -17,6 +17,7 @@ const KEY_RIGHTALT:   u16 = 100; // a.k.a. AltGr
 const KEY_LEFTMETA:   u16 = 125; // Super / Win
 const KEY_RIGHTMETA:  u16 = 126;
 
+const KEY_DELETE:   u16 = 111;
 const KEY_PAGEUP:   u16 = 104;
 const KEY_PAGEDOWN: u16 = 109;
 const KEY_F1:       u16 = 59;
@@ -40,6 +41,45 @@ fn handle_vt_switch(keycode: u16, pressed: bool) -> bool {
         _ => return false,
     };
     let _ = vt::activate(vt);
+    true
+}
+
+/// Linux `ctrl_alt_del()` (`kernel/reboot.c:828-836`), reached from the VT
+/// keyboard driver's `fn_boot_it`. `C_A_D` decides the outcome:
+///   set   -> `schedule_work(&cad_work)` -> `kernel_restart(NULL)`
+///   clear -> `kill_cad_pid(SIGINT, 1)` — init runs an orderly shutdown.
+///
+/// The restart is DEFERRED onto the workqueue exactly as Linux defers it: this
+/// runs from the input drain, which must not shut every device down or triple-
+/// fault in place. `reboot(2)`'s `LINUX_REBOOT_CMD_CAD_ON`/`CAD_OFF` — which
+/// systemd issues at startup — exist solely to steer this decision, so without
+/// this consumer both commands would latch a flag nothing ever reads.
+/// # C: O(N_tasks) to find init, else O(1).
+#[cfg(target_os = "oxide-kernel")]
+fn deferred_cad(_arg: usize) {
+    // SAFETY: runs on a kworker in process context, exactly where Linux's `deferred_cad` work item runs; the restart is irreversible by contract.
+    unsafe { power::terminal(power::TerminalCmd::Restart) }
+}
+
+fn handle_ctrl_alt_del(keycode: u16, pressed: bool) -> bool {
+    if keycode != KEY_DELETE { return false; }
+    let m = keymap::mods();
+    if !m.contains(Mods::CTRL) || !m.contains(Mods::ALT) { return false; }
+    // Consume the release too, so the keycode never reaches the ldisc.
+    if !pressed { return true; }
+    #[cfg(target_os = "oxide-kernel")]
+    match power::cad_action(power::cad_enabled()) {
+        power::CadAction::Restart => {
+            let _ = sched::live::workqueue::queue_work(deferred_cad, 0);
+        }
+        power::CadAction::SignalInit => {
+            if let Some(init) = sched::live::initial_init_task() {
+                init.sigpending.fetch_or(sched::Signum::Sigint.bit(),
+                    core::sync::atomic::Ordering::Release);
+                sched::live::signal_wake_up(&init);
+            }
+        }
+    }
     true
 }
 
@@ -82,6 +122,7 @@ fn handle_modifier(keycode: u16, pressed: bool) -> bool {
 /// # C: O(cols*rows) on a VT switch/scroll repaint, else O(1).
 pub fn handle_key_event(keycode: u16, pressed: bool) {
     if handle_modifier(keycode, pressed) {
+    } else if handle_ctrl_alt_del(keycode, pressed) {
     } else if handle_vt_switch(keycode, pressed) {
     } else if handle_scroll(keycode, pressed) {
     } else if pressed {
