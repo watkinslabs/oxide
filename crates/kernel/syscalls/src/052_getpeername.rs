@@ -80,13 +80,18 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
     };
     if tcp_peer_unavailable { return -(Errno::Enotconn.as_i32() as i64); }
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_INET6 {
-        let (ip, port) = match *sock.peer6.lock() {
-            Some(peer) => peer,
-            None => return -(Errno::Enotconn.as_i32() as i64),
-        };
-        let bound_ifindex = net::sock_v6::name_bound_ifindex(&sock);
-        let sa = encoded_sockaddr_in6(ip.0, port.to_be(), net::sock_v6::name_scope_id(ip, bound_ifindex));
-        return copy_sockaddr_to_user(addr_p, len_p, &sa);
+        // Only a NATIVE v6 peer lives in `peer6`. A dual-stack socket that
+        // connected to an IPv4 peer (`::ffff:a.b.c.d`, the standard
+        // `getaddrinfo(AI_V4MAPPED)` client shape) took the v4 path, so its
+        // peer tuple is in `sock.peer` — Linux `inet6_getname` still answers
+        // with `sk->sk_v6_daddr` == `::ffff:a.b.c.d`. Returning ENOTCONN as
+        // soon as `peer6` was empty declared every such live connection
+        // unconnected.
+        if let Some((ip, port)) = *sock.peer6.lock() {
+            let bound_ifindex = net::sock_v6::name_bound_ifindex(&sock);
+            let sa = encoded_sockaddr_in6(ip.0, port.to_be(), net::sock_v6::name_scope_id(ip, bound_ifindex));
+            return copy_sockaddr_to_user(addr_p, len_p, &sa);
+        }
     }
     let (ip, port) = match *sock.peer.lock() {
         Some(t) => t, None => return -(Errno::Enotconn.as_i32() as i64),

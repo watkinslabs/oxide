@@ -87,6 +87,13 @@ pub enum Errno {
     Euclean           = 117,
     Edquot            = 122,
     Ecanceled         = 125,
+    /// Keyring errnos (`include/uapi/asm-generic/errno.h`), returned by
+    /// `add_key`/`request_key`/`keyctl` per `security/keys/permission.c`
+    /// `key_validate` and the keyring search paths.
+    Enokey            = 126,
+    Ekeyexpired       = 127,
+    Ekeyrevoked       = 128,
+    Ekeyrejected      = 129,
     Eftype            = 134,
 }
 

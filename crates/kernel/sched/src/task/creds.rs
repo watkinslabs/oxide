@@ -126,10 +126,12 @@ impl Creds {
         }
     }
 
-    /// All-bits-set bounding/permitted mask for v1 root tasks. Linux
-    /// has ~40 capability bits defined; storing 64 leaves room for
-    /// future additions and matches the v3 capset ABI shape exactly.
-    pub const CAP_FULL: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+    /// Linux `CAP_FULL_SET` == `CAP_VALID_MASK` == `BIT_ULL(CAP_LAST_CAP+1)-1`
+    /// (`include/linux/capability.h`), i.e. bits 0..=`CAP_CHECKPOINT_RESTORE`.
+    /// Setting every one of the 64 bits instead leaks undefined capabilities
+    /// out through `capget` and makes `capset` reject the mask Linux itself
+    /// hands back (`mk_kernel_cap` masks with exactly this value).
+    pub const CAP_FULL: u64 = (1u64 << (crate::cap::CHECKPOINT_RESTORE + 1)) - 1;
 
     /// Snapshot for fork/clone — copies every field and SHARES the
     /// supplementary group list (Linux `get_group_info`: `group_info` is

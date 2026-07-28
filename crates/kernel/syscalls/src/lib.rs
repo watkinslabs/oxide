@@ -155,6 +155,11 @@ mod recvmsg_entry_hosted;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod send_user;
 
+// Pure sockaddr encoders: compiled for BOTH the kernel and hosted tests, so
+// every `*_getname` length/byte layout is provable under `cargo test` even
+// though `net_sockaddr` (its user-memory marshalling) is kernel-only.
+mod sockaddr_encode;
+
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod socket_control_tests;
 

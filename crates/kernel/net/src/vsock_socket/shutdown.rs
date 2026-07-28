@@ -41,7 +41,15 @@ impl VsockSocket {
         let mut flags = 0;
         let mut tx = conn.tx.lock();
         let st = conn.st.lock();
-        if matches!(*st, VsockState::Connecting | VsockState::Closed) {
+        // Linux `vsock_shutdown` reports ENOTCONN only for `SS_UNCONNECTED`,
+        // and for a connectible socket returns WITHOUT latching anything.
+        // `SS_CONNECTING` and a connection that has since closed both take the
+        // else branch: the shutdown applies and the call returns 0. The one
+        // `Closed` state that is really `SS_UNCONNECTED` is a connect that
+        // never completed, which `ever_connected` distinguishes.
+        if matches!(*st, VsockState::Closed)
+            && !conn.ever_connected.load(Ordering::Acquire)
+        {
             return Err(crate::NetError::Enotconn);
         }
         if how.read() {

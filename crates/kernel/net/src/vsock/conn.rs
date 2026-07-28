@@ -101,6 +101,13 @@ pub struct VsockConn {
     pub tx: Spinlock<TxState, SockLockClass>,
     pub(super) emit: Spinlock<(), SockLockClass>,
     pub(super) accept_ready: AtomicBool,
+    /// Linux `sock->state != SS_UNCONNECTED`: latched the moment the
+    /// connection is established and never cleared, because Linux only
+    /// returns `sock->state` to `SS_UNCONNECTED` from `vsock_stream_connect`'s
+    /// FAILURE path and from `vsock_release`. It is what separates a
+    /// connection that closed (shutdown still succeeds) from one whose
+    /// connect never completed (ENOTCONN).
+    pub(crate) ever_connected: AtomicBool,
     pub(crate) credit_update_pending: AtomicBool,
     /// Socket-owned timeout retained with this outbound connection so a
     /// repeated blocking connect observes the same configured deadline.
@@ -224,6 +231,7 @@ impl VsockConn {
             }),
             emit: Spinlock::new(()),
             accept_ready: AtomicBool::new(false),
+            ever_connected: AtomicBool::new(matches!(st, VsockState::Connected)),
             credit_update_pending: AtomicBool::new(false),
             connect_timeout_ns: AtomicU64::new(super::VSOCK_CONNECT_TIMEOUT_NS),
             connect_owner: Spinlock::new(None),
