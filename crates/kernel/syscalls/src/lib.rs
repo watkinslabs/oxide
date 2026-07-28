@@ -16,6 +16,7 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+pub mod secretmem;
 // ustat(2) 136: `struct ustat` wire layout. sysfs(2) 139: the option/index
 // query over the filesystem-type registry. remap_file_pages(2) 216 /
 // fadvise64(2) 221 / mlock2(2) 325: their admission ladders. All five slot
