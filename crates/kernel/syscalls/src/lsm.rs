@@ -9,6 +9,8 @@ use syscall::errno::Errno;
 
 /// `LSM_ID_UNDEF`.
 pub const LSM_ID_UNDEF: u64 = 0;
+/// `LSM_ID_CAPABILITY` (`include/uapi/linux/lsm.h:54`).
+pub const LSM_ID_CAPABILITY: u64 = 100;
 /// `LSM_ATTR_UNDEF`.
 pub const LSM_ATTR_UNDEF: u32 = 0;
 /// `LSM_FLAG_SINGLE` — the only flag `lsm_get_self_attr` accepts.
@@ -43,6 +45,50 @@ pub fn setselfattr_precheck(attr: u32, size: u32, flags: u32) -> Result<(), Errn
     if attr == LSM_ATTR_UNDEF { return Err(Errno::Einval); }
     if size < LSM_CTX_SIZE { return Err(Errno::Einval); }
     if size > LSM_SET_MAX_SIZE { return Err(Errno::E2big); }
+    Ok(())
+}
+
+/// `sizeof(u64)` — one `lsm_list_modules` id slot.
+pub const LSM_ID_BYTES: u32 = 8;
+
+/// Linux `lsm_idlist[0..lsm_active_cnt]` — the ids `lsm_list_modules` reports.
+///
+/// `capability` is declared `LSM_ORDER_FIRST` with no `enabled` toggle and no
+/// `LSM_FLAG_EXCLUSIVE` (`security/commoncap.c:1517-1521`), so
+/// `lsm_order_append` (`security/lsm_init.c:153-190`) can never skip it: every
+/// `CONFIG_SECURITY=y` kernel reports at least this module, and reporting an
+/// empty list would be a kernel with the syscall compiled out — which answers
+/// ENOSYS, not success. oxide enforces the POSIX capability model
+/// (`sched::cap`, `capget`/`capset`, the `cap_effective` ladder every
+/// privileged syscall consults), so `capability` is the one active module.
+///
+/// `capability` supplies no `getselfattr`/`setselfattr` hook (its hook list is
+/// `capability_hooks`, `security/commoncap.c:1490-1512`), so slots 459/460
+/// still answer EOPNOTSUPP — the two facts are consistent, not contradictory.
+pub const ACTIVE_LSM_IDS: &[u64] = &[LSM_ID_CAPABILITY];
+
+/// `lsm_list_modules`' only argument rule: `flags` is reserved and must be 0
+/// (`security/lsm_syscalls.c:112-113`).
+/// # C: O(1)
+pub fn list_modules_precheck(flags: u32) -> Result<(), Errno> {
+    if flags != 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
+/// `total_size = lsm_active_cnt * sizeof(*ids)` (`lsm_syscalls.c:108`) — the
+/// byte count written back through `size` on EVERY path, success or E2BIG.
+/// # C: O(1)
+pub const fn list_modules_total_size() -> u32 {
+    ACTIVE_LSM_IDS.len() as u32 * LSM_ID_BYTES
+}
+
+/// `if (usize < total_size) return -E2BIG` (`lsm_syscalls.c:121-122`). E2BIG,
+/// not ENOSPC: the caller re-reads `size` for the required byte count and
+/// retries. The write-back happens BEFORE this check, so a too-small buffer
+/// still learns the size.
+/// # C: O(1)
+pub fn list_modules_fits(usize_bytes: u32) -> Result<(), Errno> {
+    if usize_bytes < list_modules_total_size() { return Err(Errno::E2big); }
     Ok(())
 }
 
@@ -105,5 +151,33 @@ mod tests {
     #[test]
     fn no_lsm_answer_is_eopnotsupp() {
         assert_eq!(NO_LSM_RESULT, Errno::Eopnotsupp);
+    }
+
+    #[test]
+    fn the_capability_module_is_always_reported() {
+        // `security/commoncap.c:1517` DEFINE_LSM(capability) has no `enabled`
+        // toggle and no EXCLUSIVE flag, so `lsm_active_cnt` is never 0 on a
+        // CONFIG_SECURITY=y kernel. An empty list would misreport oxide as a
+        // kernel with no capability enforcement at all.
+        assert!(ACTIVE_LSM_IDS.contains(&LSM_ID_CAPABILITY));
+        assert_eq!(list_modules_total_size(), ACTIVE_LSM_IDS.len() as u32 * 8);
+        assert!(list_modules_total_size() > 0);
+    }
+
+    #[test]
+    fn list_rejects_any_flag() {
+        assert_eq!(list_modules_precheck(1), Err(Errno::Einval));
+        assert_eq!(list_modules_precheck(0), Ok(()));
+    }
+
+    #[test]
+    fn a_short_buffer_is_e2big_not_enospc() {
+        // The sibling `lsm_set_self_attr` uses E2BIG for "too big"; this one
+        // uses E2BIG for "too small". Both come straight from the source.
+        let total = list_modules_total_size();
+        assert_eq!(list_modules_fits(0), Err(Errno::E2big));
+        assert_eq!(list_modules_fits(total - 1), Err(Errno::E2big));
+        assert_eq!(list_modules_fits(total), Ok(()));
+        assert_eq!(list_modules_fits(total + 1), Ok(()));
     }
 }

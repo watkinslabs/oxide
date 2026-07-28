@@ -321,6 +321,20 @@ pub fn set_session_and_fg(sid: u32, pgid: u32) {
     }
 }
 
+/// Linux `__tty_hangup(tty, exit_session)` on the serial console
+/// (`drivers/tty/tty_io.c:568-656`): drop the ldisc into its hung-up state
+/// (reads EOF, writes dropped), notify the driver, clear `tty->ctrl.session` /
+/// `tty->ctrl.pgrp`, and wake every parked reader and poller. The SESSION
+/// walk (ctty revocation + SIGHUP/SIGCONT to session leaders) is the caller's
+/// job — see `tty::hangup`.
+/// # C: O(W) waiters
+pub fn hangup(kind: tty::HangupKind) {
+    if let Some(t) = console() {
+        t.hangup(kind);
+        t.with_driver(|d| d.set_fg_pgrp(0));
+    }
+}
+
 /// TIOCNOTTY: release the controlling tty (clear sid + fg pgrp).
 /// # C: O(1)
 pub fn notty() {

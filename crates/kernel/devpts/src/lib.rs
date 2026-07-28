@@ -106,6 +106,13 @@ impl LockedPair {
         opens.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
+    /// Whether the master half still has an open fd. `pty_close` on the last
+    /// master fd is a permanent carrier loss; anything else is recoverable by
+    /// a fresh open. # C: O(1)
+    pub fn master_is_open(&self) -> bool {
+        self.master_opens.load(Ordering::Acquire) != 0
+    }
+
     /// Last-close release for one pty endpoint. # C: O(1)
     pub fn close_endpoint(&self, master: bool) {
         let opens = if master { &self.master_opens } else { &self.slave_opens };

@@ -45,6 +45,13 @@ pub fn sys_utimensat(args: &SyscallArgs) -> i64 {
     let flags     = args.a3;
     let _ = AT_FDCWD;
     if flags & !AT_SYMLINK_NOFOLLOW != 0 { return -(Errno::Einval.as_i32() as i64); }
+    // `do_utimes_fd` takes no flags at all (`fs/utimes.c:110-111`): the fd form
+    // rejects even AT_SYMLINK_NOFOLLOW, which is legal on the path form.
+    if crate::utimes_abi::utimes_target(dirfd, path_ptr == 0) != crate::utimes_abi::UtimesTarget::Path {
+        if let Err(e) = crate::utimes_abi::check_fd_form_flags(flags) {
+            return -(e.as_i32() as i64);
+        }
+    }
     let no_follow = flags & AT_SYMLINK_NOFOLLOW != 0;
     let (inode, mnt_id) = match resolve_target(dirfd, path_ptr, no_follow) {
         Ok(t) => t, Err(rv) => return rv,
