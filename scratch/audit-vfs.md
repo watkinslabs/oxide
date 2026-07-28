@@ -123,14 +123,47 @@ journalled image and because the images' journal-less state is itself the top fi
 | **Correction to the brief** — fanotify | `fanotify_init`/`fanotify_mark`, inode/mount/filesystem mark scopes, ignore masks, and BLOCKING permission events (`FAN_OPEN_PERM`/`FAN_ACCESS_PERM`/`FAN_OPEN_EXEC_PERM`) that wait for a `FAN_ALLOW`/`FAN_DENY` response write | All of the above genuinely implemented, including the `PERM_MARK_COUNT` fast-path gate, the pending-response queue, group-teardown auto-allow, and a correctly shaped `fanotify_event_metadata` (`vers = 3`, `metadata_len = 24`) | Not a stub. The residual gap is `FAN_REPORT_FID`/`DFID_NAME`, which need the same filename plumbing as the inotify row above | CORRECTNESS | `kernel/fs` | `fs/notify/fanotify/fanotify_user.c` | crates/kernel/fs/src/inotify/syscalls.rs:95,255; group.rs:57,114-124,221-243 |
 | `IN_UNMOUNT` | `fsnotify_unmount_inodes` fires `IN_UNMOUNT` + `IN_IGNORED` on every watched inode of a dying superblock | Not emitted | Watchers on an unmounted fs never learn their watch died | CORRECTNESS | `kernel/fs` | `fs/notify/fsnotify.c fsnotify_unmount_inodes` | absent |
 
-## 7 mount namespaces
+## 7 mounts, propagation, mount namespaces
 
 | Area | Linux mechanism | Oxide state | Gap | Severity | Owner crate | Linux ref | Oxide ref |
 |---|---|---|---|---|---|---|---|
-| mountinfo field 6 (per-mount options) | `show_mountinfo` emits `rw|ro` then each live `MNT_*` flag: `nosuid`, `nodev`, `noexec`, plus exactly one of `noatime`/`nodiratime`/`relatime`/`strictatime`, plus `lazytime` | `mountinfo_mount_options` emits `rw|ro` then an UNCONDITIONAL hardcoded `,relatime`, then the sb options. `nosuid`/`nodev`/`noexec`/`noatime`/`nodiratime`/`lazytime` are never rendered, and a `noatime` or `strictatime` mount is reported as `relatime` | Fabricated field. The flags ARE enforced (`inode_times.rs` honours `MNT_NOATIME`/`NODIRATIME`/`RELATIME`) — only the rendering lies. systemd `.mount` units compare rendered options against requested ones to decide whether a mount is in the desired state, so a unit with `Options=nosuid,nodev` never converges; `findmnt` and `mount` output are wrong | CORRECTNESS | `kernel/vfs` | `fs/proc_namespace.c show_mountinfo`, `show_mnt_opts` | crates/kernel/vfs/src/mount/render.rs:53-60 |
-| Atime policy | `atime_needs_update`/`touch_atime` honour `MNT_NOATIME`/`MNT_NODIRATIME`/`MNT_RELATIME`, `SB_*` equivalents, `S_NOATIME`, the 24 h relatime staleness window and `SB_RDONLY` | Implemented faithfully, including `RELATIME_MAX_AGE_NS` and the strictatime fallback | none — matches | — | `kernel/vfs` | `fs/inode.c relatime_need_update`, `touch_atime` | crates/kernel/vfs/src/inode_times.rs:28-40 |
-| xattr namespace gating | `xattr_permission`: `trusted.*` needs `CAP_SYS_ADMIN` and is invisible without it; `security.capability` needs `CAP_SETFCAP`; `user.*` needs write permission and is refused on non-regular/non-dir | Implemented, including the list-invisibility of `trusted.*` and `cap_convert_nscap` validation | none — matches | — | `kernel/fs` | `fs/xattr.c xattr_permission`; `security/commoncap.c` | crates/kernel/fs/src/xattr/policy.rs:53-198 |
-| `setns(CLONE_NEWNS)` re-root | `mntns_install` swaps the nsproxy AND calls `set_fs_pwd(fs, &root)` + `set_fs_root(fs, &root)` so cwd and root move to the new namespace's tree | `setns_apply`'s `NsOwner::Mnt` arm calls only `cur.replace_mount_namespace(owner)`; no `set_fs_root`/`set_fs_pwd` counterpart exists anywhere | A task that enters a mount namespace keeps resolving `/` and `.` through the OLD namespace's tree — it is nominally inside the container and factually outside it. Containment escape for anything built on `nsenter`/`setns` | SECURITY | `kernel/nscg`, `kernel/vfs` | `fs/namespace.c:6479 mntns_install`, `:6516-6517` | crates/kernel/nscg/src/proc_ns.rs:279 |
+| `setns(CLONE_NEWNS)` re-root | `mntns_install` swaps the nsproxy AND calls `set_fs_pwd(fs,&root)` + `set_fs_root(fs,&root)` so cwd and root move to the new namespace's tree | `setns_apply`'s `NsOwner::Mnt` arm calls only `replace_mount_namespace`; no counterpart exists | The joiner keeps its old root/cwd `(mnt_id, dentry)` and keeps resolving in the namespace it left — nominally inside the container, factually outside. `nsenter -m` is broken and container-join is an escape | SECURITY | `kernel/nscg` | `fs/namespace.c:6479 mntns_install`, `:6516-6517` | crates/kernel/nscg/src/proc_ns.rs:279 |
+| `MNT_LOCKED` | `lock_mnt_tree` sets `MNT_LOCKED` on every mount when a mount ns is created under a different (unprivileged) userns, so the user cannot umount an inherited mount to reveal what it covers | The constant, the clone-preservation, and FOUR consumer checks (umount, move, pivot_root, expiry) all exist — but **nothing ever sets the bit**. Grep finds only `& MNT_LOCKED` preserve-reads | Worse than absent: a reviewer grepping `is_locked()` concludes it works. Every lock check is dead, so an unprivileged user ns can umount to reveal an underlying mount | SECURITY | `kernel/vfs` | `fs/namespace.c:2439,2213-2214,4723-4725` | crates/kernel/vfs/src/mount/mnt_flags.rs:25; attach.rs:238,321 |
+| `mount(2)` flags on a FRESH mount | `path_mount` computes `mnt_flags` from the `MS_*` word and passes it to `do_new_mount` → `do_add_mount` | `sys_mount`'s final branch calls `mount_fstype_at(...)` with NO flags argument; `graft_mount` hardcodes `attach_sb_with_flags_at(..., 0, ...)` | `mount(src,tgt,"ext4",MS_RDONLY\|MS_NOSUID\|MS_NODEV\|MS_NOEXEC,…)` silently produces a rw/suid/dev/exec mount. Only a follow-up `MS_REMOUNT` or `mount_setattr` can set them | SECURITY | `kernel/syscalls` | `fs/namespace.c path_mount` | crates/kernel/syscalls/src/165_mount.rs:341; fsmount_common/mount_dispatch.rs:14 |
+| `MNT_NOSUID` / `MNT_NODEV` enforcement | `may_open` device gate + `bprm_fill_uid` setuid suppression on nosuid mounts | Bits stored, typed readback exists, reported through `statvfs` `ST_*` — ZERO consumers in exec, mknod or cred paths | Decorative. Combined with the row above, they are never set by `mount(2)` in the first place either | SECURITY | `kernel/vfs` | `fs/namei.c may_open`; `fs/exec.c bprm_fill_uid` | crates/kernel/vfs/src/mount/mnt_flags.rs:102-104 (no callers) |
+| `MNT_NOEXEC` enforcement | Rejected in `do_open_execat` on the `bprm` path | Enforced in `access(X_OK)` and in mmap `PROT_EXEC` widening — but NOT in `execve`/`execveat` | `execve()` of a binary on a `noexec` mount succeeds while `access(X_OK)` on the same file returns `EACCES`. The two answers contradict each other | SECURITY | `kernel/syscalls` | `fs/exec.c do_open_execat` | crates/kernel/syscalls/src/fs_access_common.rs:90 (absent in 059_execve/*) |
+| `MNT_NOSYMFOLLOW` | `pick_link` refuses symlinks on the mount | Bit defined, settable via `mount_setattr`, reported through `statvfs` — no namei consumer | Symlinks on a `nosymfollow` mount are still followed | SECURITY | `kernel/vfs` | `fs/namei.c pick_link` | crates/kernel/vfs/src/mount/flags.rs:15 |
+| Cross-namespace propagation | `propagate_mnt` walks the peer group and slaves across ALL namespaces | `propagation_targets` skips every mount whose `namespace_id() != ns`; peers are enumerated only from `mounts_in_ns(ns)` | Cross-namespace propagation does not exist. A shared `/` in the host never delivers a new mount into a child mount ns, or the reverse — the primary reason shared subtrees exist | CORRECTNESS | `kernel/vfs` | `fs/pnode.c:311 propagate_mnt` | crates/kernel/vfs/src/mount/propagation.rs:42,107 |
+| `copy_mnt_ns` propagation type | `copy_flags |= CL_SLAVE` ONLY when `user_ns != ns->user_ns`; otherwise the copies stay SHARED in the SAME peer group | Every shared mount is cloned as `CloneType::Slave` unconditionally | Same-userns `unshare(CLONE_NEWNS)` demotes the whole tree to slave, losing two-way peer propagation; mountinfo shows `master:` where Linux shows `shared:`. This is the mechanism systemd leans on hardest | CORRECTNESS | `kernel/vfs` | `fs/namespace.c:4262-4264` | crates/kernel/vfs/src/mount/namespace_lifecycle.rs:43-50 |
+| Shared AND slave | A mount can be both (`IS_MNT_SHARED` plus `mnt_master`), rendered `shared:X master:Y` | `Propagation` is a single-valued enum; `apply_propagation(Slave)` overwrites `peer_group` with the master's | A slave-of-a-group that is itself shared is unrepresentable, and mountinfo can never emit both tags | CORRECTNESS | `kernel/vfs` | `fs/pnode.c:93 change_mnt_propagation`; `fs/proc_namespace.c:160-165` | crates/kernel/vfs/src/mount/model.rs:4; propagation.rs:267-274 |
+| `propagate_umount` / `propagate_mount_busy` | Dedicated set-based umount propagation handling slaves and overmounts; a busy test consulting peer and slave copies | `propagate_umount` exists inline in `unregister_top` (peers only, same-ns only, resolving the mirror by path-STRING plus `descend_mountpoint`). `propagate_mount_busy` is genuinely absent | Slave mirrors are never umounted; umount of a propagated mount never consults peers | CORRECTNESS | `kernel/vfs` | `fs/pnode.c:658,423` | crates/kernel/vfs/src/mount/detach.rs:143-164; expiry.rs:50-55 |
+| MS_REC submount propagation | `propagate_mnt` runs for each mount in the recursive fan-out | `bind_submounts_rec_at` never propagates | Recursive binds do not reach peers | CORRECTNESS | `kernel/vfs` | `fs/namespace.c:2600-2603` | crates/kernel/syscalls/src/165_mount.rs:238,253 |
+| Mount lookup key | `mount_hashtable` keyed on `(mnt_parent, mnt_mountpoint)`; every lookup carries a `struct path` | `__lookup_mnt(parent,d)` is correct, but `top_mount_on(ns,d)` resolves by DENTRY POINTER ALONE, taking `max(mnt_id)` across the whole namespace | Wrong wherever bind clones share a mountpoint dentry — the repo's own documented gotcha. Affects the `umount2` target, `propagate_mount`'s source, `set_propagation{,_recursive}`, `peer_group_of`, the `has_child_mounts` EBUSY test, `parent_by_dentry`, and `mountpoint_for_root_ptr` (`d_path`/`getcwd`). `mountpoint_of()` and the by-id remount/move/setattr entries ARE keyed correctly | CORRECTNESS | `kernel/vfs` | `fs/namespace.c __lookup_mnt` | crates/kernel/vfs/src/mount/graph.rs:249-263,267-290; model.rs:286-298 |
+| umount busy detection | `do_umount`: `EBUSY` unless `propagate_mount_busy(mnt,2)`; the ns root without `MNT_DETACH` is `EBUSY` | Only `has_child_mounts()`; `unregister_top` detaches regardless of `mnt_count` or any task's cwd/root | `umount /mnt` with an open file, or a process whose cwd is inside, succeeds instead of returning `EBUSY` | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:1928,1959-1960` | crates/kernel/syscalls/src/166_umount2.rs:165-171 |
+| `MNT_FORCE` | `sb->s_op->umount_begin` plus `ns_capable(s_user_ns, CAP_SYS_ADMIN)` | Validated, then never referenced again. (`MNT_DETACH` IS partially real — SB teardown rides `mnt_count` in `unregister_mount`) | `MNT_FORCE` is a no-op with no `umount_begin` call and no per-userns capability check | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:1915,1953,2034` | crates/kernel/syscalls/src/166_umount2.rs:45-50,164 |
+| umount of a pseudo filesystem | Real detach of the procfs/sysfs/devtmpfs instance | `umount /proc`-class targets can return `0` having removed nothing (the synthetic backing is deliberately preserved) | Success reported for an unmount that did not happen; `/proc` stays visible | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:1870 do_umount` | crates/kernel/syscalls/src/166_umount2.rs:102,131,140,172-185 |
+| Bind of an unbindable mount | `__do_loopback`: `if (IS_MNT_UNBINDABLE(old)) return -EINVAL` | `register_bind_clone_under` performs no unbindable check (only the MS_REC submount walk does) | `mount --bind` of an `MS_UNBINDABLE` mount succeeds | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:2983` | crates/kernel/syscalls/src/165_mount.rs:237 |
+| `MS_SHARED`/`PRIVATE`/`SLAVE`/`UNBINDABLE` errno | `do_change_type` returns `EINVAL` when the path is not a mount root | The result is discarded (`let _ = set_propagation…`) and the branch always returns `0` | `mount(NULL, "/not/a/mount", NULL, MS_SHARED)` reports success | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:2862-2909` | crates/kernel/syscalls/src/165_mount.rs:288-293 |
+| `mount(2)` options string | Each fs parses `data` through its `fs_parameter_spec` | Parsed only for tmpfs/ramfs/autofs/fuse; DISCARDED for ext4, proc, sysfs, cgroup2, devpts and the rest | `-o errors=remount-ro,data=ordered`, devpts `-o mode=0620,gid=5`, cgroup2 `-o nsdelegate` all silently ignored. Explains the devpts ownership row in §9 | CORRECTNESS | `kernel/syscalls` | `fs/fs_context.c vfs_parse_fs_string` | crates/kernel/syscalls/src/fsmount_common/registry.rs:121-166 |
+| mountinfo MAJ:MIN (field 3) | `MAJOR(sb->s_dev):MINOR(sb->s_dev)` | Literal `0:{mnt_id}` — fabricated, even though `SuperBlock.s_dev` is real and `getattr` derives a correct maj:min from it | Every row claims major 0 with a unique minor, contradicting the same filesystem's `statx` `st_dev`. Breaks `findmnt --real`, `df` device mapping, and systemd `.device`/`.mount` correlation | CORRECTNESS | `kernel/procfs` | `fs/proc_namespace.c:142-144` | crates/kernel/procfs/src/mounts.rs:149-152 |
+| mountinfo options (field 6) and `/proc/mounts` | `show_mountinfo`/`show_vfsmnt` emit `ro`/`rw` then the live `mnt_opts[]` table: `nosuid`, `nodev`, `noexec`, `noatime`, `nodiratime`, `relatime`, `nosymfollow`, `idmapped` | Both renderers (they are independent copies) emit `rw`/`ro` then an UNCONDITIONAL hardcoded `,relatime`, then the sb options | Fabricated field. Note the atime flags ARE honoured by `inode_times.rs` — only the rendering lies, and it asserts `relatime` even for a `noatime` mount. systemd `.mount` units compare rendered options against requested ones to decide convergence, so a unit with `Options=nosuid,nodev` never settles | CORRECTNESS | `kernel/vfs`, `kernel/procfs` | `fs/proc_namespace.c:63-83,88-110` | crates/kernel/vfs/src/mount/render.rs:53-60; procfs/src/mounts.rs:78-88 |
+| mountinfo `propagate_from:` and `parent_id` | `get_dominating_id` emits `propagate_from:N` when the slave's master is outside the reader's root; field 2 is `mnt_parent->mnt_id` (self for the root mount) | `propagate_from:` never emitted; `parent_id` is a literal `0` for the ns root | Nested-container mountinfo loses the dominating-peer link; the root row's parent is `0` where Linux prints a real id | CORRECTNESS | `kernel/vfs`, `kernel/procfs` | `fs/pnode.c:56`; `fs/proc_namespace.c:142,164-167` | crates/kernel/vfs/src/mount/render.rs:64-72; procfs/src/mounts.rs:142 |
+| `/proc/<pid>/mountstats` | `show_vfsstat`: `device X mounted on Y with fstype Z` per mount | Registered as `pc_empty` — always zero bytes | The file exists and is empty; `mountstats` and nfs-utils read nothing | CORRECTNESS | `kernel/procfs` | `fs/proc_namespace.c:193` | crates/kernel/procfs/src/live/pid_dir.rs:97 |
+| `statmount` request mask | `ks->mask = kreq->param`; each `statmount_*` helper sets its bit only when requested AND filled | `req->param` is never read; a FIXED mask (`SB_BASIC\|MNT_BASIC\|MNT_ROOT\|MNT_POINT\|FS_TYPE\|MNT_NS_ID`) is returned for every call | The caller cannot select fields, and the returned mask is not derived from what was asked | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:5873` | crates/kernel/syscalls/src/457_statmount.rs:37-46,94-95 |
+| `statmount` field truth | `statmount_sb_basic` fills `sb_dev_major/minor`/`sb_flags`; `statmount_mnt_basic` fills `mnt_attr`/`propagation`/`peer_group`/`master`; `statmount_mnt_root` renders the real root path | The mask CLAIMS `SB_BASIC`+`MNT_BASIC` but only `sb_magic`, `mnt_id`, `mnt_parent_id`, `mnt_ns_id` are written; `sb_dev_major/minor`, `sb_flags`, `mnt_attr`, `mnt_propagation`, `mnt_peer_group`, `mnt_master` stay zero. `mnt_root` is the literal `"/"` for every mount including binds | The mask lies about zero-filled fields — a caller cannot distinguish "not set" from "set to zero". Bind roots are misreported | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:5304-5344` | crates/kernel/syscalls/src/457_statmount.rs:88,94-108 |
+| `statmount` unpopulated masks | `PROPAGATE_FROM`, `MNT_OPTS`, `FS_SUBTYPE`, `SB_SOURCE`, `OPT_ARRAY`, `OPT_SEC_ARRAY`, `SUPPORTED_MASK`, `MNT_UIDMAP`/`GIDMAP`; `STATMOUNT_BY_FD`; cross-ns via `req->mnt_ns_id` | None populated; `flags != 0` → `EINVAL`; `req->mnt_ns_id` ignored; a foreign-ns mount is `ENOENT` | systemd and `mountfsd` field probes see an empty capability set | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:5330-5510,5708` | crates/kernel/syscalls/src/457_statmount.rs:66,68,77-82 |
+| `listmount` | `mnt_find_id_at` tree walk from `LSMT_ROOT`/target, `is_path_reachable` subtree test, `nr_mnt_ids > 1000000` → `EOVERFLOW` | `LSMT_ROOT` and `last_mnt_id` continuation implemented; but subtree membership is a path-STRING PREFIX compare on `mount_point_str()`, ordering comes from BTreeMap iteration, there is no `EOVERFLOW` cap, and `mnt_ns_id` is ignored | String-prefix reachability disagrees with the mount tree exactly where the bind/dentry-sharing gotcha bites; `nr_mnt_ids` allocation is unbounded | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:6026-6083,6139-6140` | crates/kernel/syscalls/src/458_listmount.rs:32-35,62-76 |
+| Idmapped mounts | `MOUNT_ATTR_IDMAP` plus a userns fd installs `mnt_idmap`; `vfsuid`/`vfsgid` applied in `getattr`/`notify_change`/`inode_permission` | The `Idmap` type and `Mount.mnt_idmap` exist and are threaded into `statx`/`getattr`, but `mount_setattr` hard-rejects `MOUNT_ATTR_IDMAP` with `EINVAL` and `fsmount` excludes it — NO writer ever leaves `Idmap::identity()` | Idmapped mounts are entirely absent; the plumbing is inert | CORRECTNESS | `kernel/vfs` | `fs/namespace.c build_mount_kattr` | crates/kernel/syscalls/src/442_mount_setattr.rs:54-56; vfs/src/mount/model.rs:387 |
+| `mount_setattr` `AT_RECURSIVE` | Applies BOTH the attribute set and `change_mnt_propagation` across the subtree | Option bits recurse (with a whole-subtree writer pre-check for RDONLY, matching `mnt_hold_writers`); the propagation change is applied to the TOP mount only | `mount_setattr(AT_RECURSIVE, .propagation=MS_SLAVE)` leaves every submount shared — half-recursive | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c:4921,4952` | crates/kernel/syscalls/src/442_mount_setattr.rs:137-157 |
+| `move_mount(2)` flags | `MOVE_MOUNT_{F,T}_EMPTY_PATH`/`SYMLINKS`/`AUTOMOUNTS`, `MOVE_MOUNT_SET_GROUP`, `MOVE_MOUNT_BENEATH` | `args.a4` is read only for a debug hex dump; empty-path is inferred structurally; no flag is validated | Garbage flag bits are accepted; `SET_GROUP` and `BENEATH` are unimplemented but not rejected; symlink policy is unconfigurable | CORRECTNESS | `kernel/syscalls` | `fs/namespace.c SYSCALL_DEFINE5(move_mount)` | crates/kernel/syscalls/src/429_move_mount.rs:45,55 |
+| nsfs ioctls | `NS_GET_PARENT`, `NS_GET_USERNS`, `NS_GET_NSTYPE`, `NS_GET_OWNER_UID`, `NS_GET_MNTNS_ID` | Zero hits repo-wide; only `SIOCGSKNS` exists | A `/proc/pid/ns/mnt` fd cannot be walked to its owning userns; `lsns` and systemd-nspawn introspection are blind | CORRECTNESS | `kernel/syscalls` | `fs/nsfs.c ns_ioctl` | crates/kernel/syscalls/src/016_ioctl/netns.rs (only) |
+| `mnt_id` vs `mnt_id_unique` | A 32-bit IDR-recycled `mnt_id` plus a separate never-recycled 64-bit `mnt_id_unique` | ONE 64-bit monotonic never-recycled counter serves both; `statx` picks which to report from `request_mask` | Deliberate and documented, but `STATX_MNT_ID` returns a value wider than 32 bits, which a caller reading `stx_mnt_id` as `int` truncates | CORRECTNESS | `kernel/vfs` | `fs/namespace.c mnt_alloc_id` | crates/kernel/vfs/src/mount/model.rs:16-28; syscalls/src/statx_abi.rs:158 |
+| **Correction to the brief** — `unshare`/`clone(CLONE_NEWNS)` | `copy_mnt_ns` re-points `new_fs->root`/`pwd` onto the cloned mounts | HANDLED: `snapshot_ns_map` returns an old→new id map and `remap_task_fs_paths` → `task.remap_fs_mount_ids` translates root/pwd. `clone(CLONE_NEWNS)` funnels through the same `NamespaceChange::CloneChild` path | The re-root gap is `setns`-only, narrower than the brief's "setns/unshare/clone" | — | `kernel/syscalls` | `fs/namespace.c:4290-4300` | crates/kernel/syscalls/src/272_unshare.rs:249-256 |
+| **Correction to the brief** — new mount API | `fsopen`/`fsconfig`/`fsmount`/`open_tree`/`fspick`/`move_mount`/`mount_setattr`/`statmount`/`listmount` | All 13 syscalls are dispatch-wired with real handlers; none is `ENOSYS`. `FSCONFIG_SET_FLAG/STRING/BINARY/PATH/PATH_EMPTY/CMD_CREATE/CMD_RECONFIGURE` are real; `open_tree` honours `CLONE`/`AT_RECURSIVE`/`AT_EMPTY_PATH`/`CLOEXEC` | Gaps are field-level, not presence-level. Exceptions: `FSCONFIG_SET_FD` is always `EINVAL` (so fd-valued params, e.g. a loop fd, are impossible) and `CMD_CREATE_EXCL` is collapsed onto `CMD_CREATE` (not exclusive) | CORRECTNESS | `kernel/syscalls` | `fs/fsopen.c SYSCALL_DEFINE5(fsconfig)` | crates/kernel/syscalls/src/431_fsconfig.rs:71-75 |
+| `MNT_READONLY` vs `SB_RDONLY` | Per-mount `MNT_READONLY` distinct from superblock `SB_RDONLY`; `MS_REMOUNT\|MS_BIND` touches only the former | Modelled correctly: `remount_flags_by_id` → mount flags only; `remount_super_flags_by_id` → `reconfigure_super` plus mount flags; `mnt_want_write` returns `EROFS` on `MNT_RDONLY` | none — matches | — | `kernel/vfs` | `fs/namespace.c do_reconfigure_mnt` | crates/kernel/vfs/src/mount/attrs.rs:20-44,155 |
+| `pivot_root(2)` admission ladder | The 9-rung ladder in `path_pivot_root` | Faithful line-for-line port with hosted (ungated) ordering tests; `may_mount` uses `ns_capable(mnt_ns->user_ns, CAP_SYS_ADMIN)` | Compliant, except that its `MNT_LOCKED` rung is dead (see the `MNT_LOCKED` row) | — | `kernel/vfs` | `fs/namespace.c path_pivot_root:4701,4723` | crates/kernel/vfs/src/mount/pivot_check.rs:61-71 |
+| Atime policy | `atime_needs_update`/`touch_atime` honour `MNT_NOATIME`/`NODIRATIME`/`RELATIME`, the `SB_*` equivalents, `S_NOATIME`, the 24 h relatime staleness window and `SB_RDONLY` | Implemented faithfully, including `RELATIME_MAX_AGE_NS` and the strictatime fallback | none — matches | — | `kernel/vfs` | `fs/inode.c relatime_need_update` | crates/kernel/vfs/src/inode_times.rs:28-40 |
+| xattr namespace gating | `xattr_permission`: `trusted.*` needs `CAP_SYS_ADMIN` and is list-invisible without it; `security.capability` needs `CAP_SETFCAP`; `user.*` needs write permission and is refused on non-regular/non-dir | Implemented, including list-invisibility and `cap_convert_nscap` validation | none — matches | — | `kernel/fs` | `fs/xattr.c xattr_permission`; `security/commoncap.c` | crates/kernel/fs/src/xattr/policy.rs:53-198 |
 
 ## 8 procfs
 
@@ -199,59 +232,77 @@ By impact, highest first.
    VFS in-memory xattr store, which ext4 never populates. The root image is mkfs'd with `acl` in
    its default mount options. A named-user entry more restrictive than `other` is bypassed.
    Default-ACL inheritance does not exist either.
-4. **`setns(CLONE_NEWNS)` never re-roots** (§7) — a task enters the mount namespace but keeps
+4. **`mount(2)` drops the whole `MS_*` flag word on a fresh mount, and `nosuid`/`nodev`/`noexec`
+   are never enforced anyway** (§7) — two independent failures stacking into one hole.
+   `mount(…, MS_RDONLY|MS_NOSUID|MS_NODEV|MS_NOEXEC, …)` yields a rw/suid/dev/exec mount, and even
+   when the bits ARE set (via `mount_setattr`) nothing reads them. `execve` on a `noexec` mount
+   succeeds while `access(X_OK)` on the same file returns `EACCES`.
+5. **`MNT_LOCKED` is never set** (§7) — the constant, the clone-preservation and four consumer
+   checks all exist, so the code reads as implemented. Nothing sets the bit, so every check is
+   dead and an unprivileged user ns can umount an inherited mount to reveal what it covers.
+6. **`setns(CLONE_NEWNS)` never re-roots** (§7) — a task enters the mount namespace but keeps
    resolving `/` and `.` through the old tree. Small fix, containment-escape impact.
 
 **Then the things userspace cannot work around.**
 
-5. **inotify events carry no filename** (§6) — one field. Every directory watcher in the desktop
+7. **inotify events carry no filename** (§6) — one field. Every directory watcher in the desktop
    stack (systemd `.path` units, udev, `GFileMonitor`, Nautilus, dconf) is told THAT something
    changed but never WHICH file. Cheapest large win here.
-6. **`/dev/kmsg` returns raw console text, not devkmsg records** (§8) — journald's parser fails on
+8. **`/dev/kmsg` returns raw console text, not devkmsg records** (§8) — journald's parser fails on
    every line, so kernel-log import silently drops everything.
-7. **ext4 frees an unlinked inode's blocks while fds are still open** (§2) — the POSIX
+9. **ext4 frees an unlinked inode's blocks while fds are still open** (§2) — the POSIX
    unlink-open idiom is data corruption, not a leak. Needs the orphan list wired to `evict_inode`.
-8. **`binfmt_misc` registers rules that execve never consults** (§9) — a silent no-op that reports
+10. **`binfmt_misc` registers rules that execve never consults** (§9) — a silent no-op that reports
    success. Either wire it or return `ENOENT` honestly.
 
 **Then durability and the on-disk format.**
 
-9. **Root images ship `-O ^has_journal`** (§5) — the booted filesystem has no crash consistency at
+11. **Root images ship `-O ^has_journal`** (§5) — the booted filesystem has no crash consistency at
    all. Decide deliberately: enable the journal and fix the JBD2 format bugs below, or record the
    no-journal design as intentional. It cannot stay implicit.
-10. **JBD2 descriptor tag size wrong for 64bit** (§5) — would destroy a filesystem the moment a
+12. **JBD2 descriptor tag size wrong for 64bit** (§5) — would destroy a filesystem the moment a
    journalled image is recovered. Must land before any journal work.
-11. **htree hash ignores `s_hash_unsigned`** (§5) — an aarch64-created ext4 filesystem is hashed
+13. **htree hash ignores `s_hash_unsigned`** (§5) — an aarch64-created ext4 filesystem is hashed
     with the wrong variant: files invisible in large directories, and inserts corrupt the index.
     Directly in the path of the ARM lockstep rule.
-12. **No `data=ordered`, no revoke sequence on replay** (§5) — stale-data exposure after a crash,
+14. **No `data=ordered`, no revoke sequence on replay** (§5) — stale-data exposure after a crash,
     and recovery silently dropping legitimate later writes.
-13. **`s_wb_err` absent, no dirty throttling, no periodic writeback** (§4) — three parts of one
+15. **`s_wb_err` absent, no dirty throttling, no periodic writeback** (§4) — three parts of one
     hole: nothing ages dirty data, nothing bounds it, nothing reports a failure to write it.
 
 **Then correctness with a smaller blast radius.**
 
-14. **`i_writecount` absent** (§2) — `ETXTBSY` impossible in both directions.
-15. **`may_open` misses `noexec`/`nodev`/append-only/`O_NOATIME`** (§2) — mount options stored but
+16. **Cross-namespace mount propagation does not exist; `unshare` slaves unconditionally** (§7) —
+    shared subtrees never cross a namespace boundary, and same-userns `unshare` demotes the whole
+    tree to slave. Both are the propagation behaviour systemd depends on.
+17. **Mount lookup by dentry alone where bind clones share a dentry** (§7) — the repo's own
+    documented gotcha, still live in `umount2`, propagation, `d_path` and the EBUSY test.
+18. **`mount(2)` discards the options string for every fs except tmpfs/ramfs/autofs/fuse** (§7) —
+    `-o` is silently ignored for ext4, devpts, cgroup2, proc and sysfs. Explains the devpts
+    ownership breakage in §9.
+19. **mountinfo MAJ:MIN, options, `propagate_from:` and `parent_id` are fabricated or missing**
+    (§7) — systemd parses this file to decide whether a mount unit has converged.
+20. **`i_writecount` absent** (§2) — `ETXTBSY` impossible in both directions.
+21. **`may_open` misses `noexec`/`nodev`/append-only/`O_NOATIME`** (§2) — mount options stored but
     not enforced at open.
-16. **`d_move` has no callers and would mint a new dentry anyway** (§1) — renamed files and
+22. **`d_move` has no callers and would mint a new dentry anyway** (§1) — renamed files and
     directories render stale ` (deleted)` paths through `/proc/<pid>/fd` and `getcwd`.
-17. **procfs renders fabricated `Vm*`/`stat`/`statm`/`maps` fields** (§8) — `ps`, `top` and every
+23. **procfs renders fabricated `Vm*`/`stat`/`statm`/`maps` fields** (§8) — `ps`, `top` and every
     memory tool read zeros or VSZ-as-RSS.
-18. **seq_file regenerates the body on every `read()`** (§8) — chunked reads tear.
-19. **Lease break reaches only `open`** (§3) — truncate, unlink, rename and setattr bypass it.
-20. **`/proc/locks` empty, `vm.dirty_*` inert, `cpu.stat` zeros** (§3, §4, §9) — nodes that answer
+24. **seq_file regenerates the body on every `read()`** (§8) — chunked reads tear.
+25. **Lease break reaches only `open`** (§3) — truncate, unlink, rename and setattr bypass it.
+26. **`/proc/locks` empty, `vm.dirty_*` inert, `cpu.stat` zeros** (§3, §4, §9) — nodes that answer
     plausibly and mean nothing are worse than absent ones.
-21. **Unwritten-extent conversion zeroes the whole extent** (§5) — the concrete mechanism behind
+27. **Unwritten-extent conversion zeroes the whole extent** (§5) — the concrete mechanism behind
     journald's historical writeback cost; splitting makes it proportional to the write.
 
 **Then cost.**
 
-22. **dcache/icache never reclaimed, 256 hash buckets, ref-walk only, negative caching limited to
+28. **dcache/icache never reclaimed, 256 hash buckets, ref-walk only, negative caching limited to
     three fs types by string** (§1) — unbounded growth plus a linear scan on the hottest path in
     the kernel.
-23. **fsnotify dispatch is `O(groups × watches)` on every hooked VFS op** (§6).
-24. **No JBD2 transaction batching or commit timer** (§5) — every drain is a full checkpoint with
+29. **fsnotify dispatch is `O(groups × watches)` on every hooked VFS op** (§6).
+30. **No JBD2 transaction batching or commit timer** (§5) — every drain is a full checkpoint with
     three device flushes.
 
 ## What I could not determine
@@ -286,3 +337,17 @@ By impact, highest first.
 - `SEEK_HOLE`/`SEEK_DATA` and xattr support on tmpfs.
 - Whether `poll()` on `/proc/<pid>/*` or on sysfs attributes returns anything useful. Only PSI was
   confirmed working.
+- Whether propagation's `descend`-based mirror placement handles an OVERMOUNT at a peer's target
+  dentry. The code re-materialises the slot per target rather than adopting the source mountpoint
+  dentry as Linux does; no test covers it.
+- Whether `MS_REMOUNT|MS_BIND` matches Linux's `can_change_locked_flags` rules for unprivileged
+  remounts. There is no counterpart, but whether unprivileged `mount(2)` is reachable at all was
+  not established — the syscall gates on plain `has_cap(SYS_ADMIN)`, not `ns_capable`.
+- Whether a bind mount of a REGULAR FILE works end to end. No explicit rejection and no test were
+  found; `graft_bind_realized_with_flags` does not type-check the dentry.
+- The runtime effect of the missing cross-namespace propagation on a live systemd boot. The boot
+  reportedly works, suggesting systemd's `MS_SLAVE|MS_REC` usage masks it — inference, not
+  measurement.
+- Whether the `mnt_ns_id` `statmount` reports (the internal `identity.id()`, `0` for the initial
+  namespace) is the value systemd expects; `MntNamespace` also carries a distinct `ns_id()` that
+  looks like the better match.
