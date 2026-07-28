@@ -154,10 +154,15 @@ pub unsafe fn flush_local_va(va: u64) {
     {
         // SAFETY: `tlbi vae1is` invalidates EL1 stage-1 entries
         // matching the operand VA across the inner-shareable
-        // domain. ARM ARM D5.7. Followed by `dsb ish` + `isb` to
-        // ensure ordering before subsequent loads.
+        // domain. ARM ARM D5.7. The LEADING `dsb ishst` publishes the
+        // caller's page-table store to every other PE's table walker
+        // before the broadcast invalidate, so a peer cannot re-cache
+        // the stale descriptor after the TLBI; the trailing `dsb ish`
+        // + `isb` order the completed invalidate against subsequent
+        // loads. Linux's arm64 template, `asm/tlbflush.h`.
         unsafe {
             core::arch::asm!(
+                "dsb ishst",
                 "tlbi vae1is, {v}",
                 "dsb ish",
                 "isb",

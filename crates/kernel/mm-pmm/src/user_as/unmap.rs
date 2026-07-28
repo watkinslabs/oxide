@@ -129,9 +129,23 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
                 #[cfg(target_arch = "aarch64")]
                 <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
             }
-            // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
-            #[cfg(target_arch = "x86_64")]
-            unsafe { hal_x86_64::flush_local_va(va); }
+            // `MmuOps::unmap` does NOT invalidate on either arch (both walkers
+            // just clear the leaf), so the invalidate has to happen here,
+            // BEFORE the frame is released below (Linux `mm/mmu_gather.c`:
+            // unhook -> invalidate -> free, never reordered).
+            // aarch64 needs this at least as much as x86: `tlbi vae1is` is the
+            // ONLY invalidation ARM gets, because `shootdown_others_va` is a
+            // no-op there (arm64 has no TLB IPI — the `is` suffix broadcasts in
+            // hardware instead). Gating this on x86 left every ARM munmap /
+            // MADV_DONTNEED freeing frames with a live writable translation.
+            // SAFETY: privileged TLB invalidation legal at CPL=0/EL1; dropping
+            // a stale translation is always sound.
+            unsafe {
+                #[cfg(target_arch = "x86_64")]
+                { hal_x86_64::flush_local_va(va); }
+                #[cfg(target_arch = "aarch64")]
+                { hal_aarch64::flush_local_va(va); }
+            }
             // SMP TLB coherence (`20§5`): invalidate this VA on every OTHER
             // online CPU BEFORE the frame is freed below — a peer thread of
             // the same mm with a stale TLB entry would otherwise touch the
@@ -236,9 +250,23 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // free → munmap → unmap_pte for the if_options heap was
             // freeing pages still mapped in the grandchild's AS,
             // corrupting grandchild's view of the same struct.
-            // SAFETY: privileged TLB invalidation legal at CPL=0/EL1.
-            #[cfg(target_arch = "x86_64")]
-            unsafe { hal_x86_64::flush_local_va(va); }
+            // `MmuOps::unmap` does NOT invalidate on either arch (both walkers
+            // just clear the leaf), so the invalidate has to happen here,
+            // BEFORE the frame is released below (Linux `mm/mmu_gather.c`:
+            // unhook -> invalidate -> free, never reordered).
+            // aarch64 needs this at least as much as x86: `tlbi vae1is` is the
+            // ONLY invalidation ARM gets, because `shootdown_others_va` is a
+            // no-op there (arm64 has no TLB IPI — the `is` suffix broadcasts in
+            // hardware instead). Gating this on x86 left every ARM munmap /
+            // MADV_DONTNEED freeing frames with a live writable translation.
+            // SAFETY: privileged TLB invalidation legal at CPL=0/EL1; dropping
+            // a stale translation is always sound.
+            unsafe {
+                #[cfg(target_arch = "x86_64")]
+                { hal_x86_64::flush_local_va(va); }
+                #[cfg(target_arch = "aarch64")]
+                { hal_aarch64::flush_local_va(va); }
+            }
             // SMP TLB coherence (`20§5`): flush this VA on every OTHER online
             // CPU BEFORE the frame is freed below, so a peer thread of the
             // same mm can't touch a freed+realloc'd frame through a stale TLB
