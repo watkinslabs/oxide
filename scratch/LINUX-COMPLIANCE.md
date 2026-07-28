@@ -64,9 +64,9 @@ marks the five entries already closed. Highest value first:
 | # | Item | Size | Why |
 |---|---|---|---|
 | 1 | kuid/kgid translation (16 rows) | L | Largest single root cause. Translator exists, 2 callers. Needs a `Cred` type split so mixing a namespace-relative id with a stored one is a compile error, as Linux's `kuid_t` makes it |
-| 2 | RT + deadline classes | L | `SCHED_FIFO` is round-robined by the tick — inverts its defining guarantee; `SCHED_RR` has no quantum; no `SCHED_DEADLINE`; no RT throttling |
+| 2 | RT throttling + `SCHED_DEADLINE` | L | **FIFO non-preemption and the RR quantum are DONE** (`B1490`). Requeue-at-tail needed no work: `put_prev_task` → `enqueue` → `push_back` and `pick_highest` pops the head, so rotation is inherent — verified, not assumed. What remains: `sched_rt_runtime_us` throttling (no `rt_runtime`/`rt_period`/`rt_time` anywhere — needs per-rq accounting plus a period timer, and throttling implemented wrong wedges a boot) and a real `SCHED_DEADLINE` class |
 | 3 | aio family | L | `aio_context_t` is a small integer libaio dereferences → fio/PostgreSQL SIGSEGV rather than degrade |
-| 4 | blocking reads that never block | M | inotify/fanotify still EAGAIN/spin. **Parking them wedged the boot** — see §7 |
+| 4 | blocking reads that never block | M | inotify/fanotify still EAGAIN/spin; the wake source exists (`B1489`) but **parking wedged the boot** — a producer does not reach `enqueue_event`. Find it before writing the park. `timerfd` is NOT in this set: it already parks correctly with `park_interruptible_with_deadline` — the triage entry was stale |
 | 5 | ptrace | L | `traced_by` never reaches `wait4`; `gdb -p`/`strace -f` non-functional |
 | 6 | io_uring | L | 64-entry rings vs 32768, 15 ops, `GETEVENTS` never blocks |
 | 7 | mount flags/permission model | M | `MNT_LOCKED` set by nothing; `top_mount_on` resolves by dentry alone |
