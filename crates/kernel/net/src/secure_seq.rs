@@ -24,7 +24,7 @@
 // a PRF, not a counter; and `seq_scale`'s 64 ns timer term keeps a *reused*
 // 4-tuple from repeating its own ISN inside one boot.
 
-use sync::{NetSecret as NetSecretClass, Spinlock};
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use siphash::Key;
 
 use crate::addr::IpAddr;
@@ -37,27 +37,49 @@ pub(crate) mod scan;
 /// `siphash_aligned_key_t` = two u64.
 const SECRET_BYTES: usize = 16;
 
-/// Linux `net_secret`, filled by `net_get_random_once` on first use rather
-/// than at init: drawing later means the CSPRNG has absorbed more entropy than
-/// it had during early boot.
-static NET_SECRET: Spinlock<Option<Key>, NetSecretClass> = Spinlock::new(None);
+/// Linux `net_secret`, filled by `net_get_random_once`. Held in plain atomics,
+/// not behind a lock, because the passive-open reader runs in **softirq**
+/// context (`NetRx`, drained from the timer-ISR tail): a lock there would rank
+/// above `Crng`, and a process-context `getrandom`/`/dev/urandom` caller
+/// holding the CSPRNG lock when that ISR lands would deadlock the CPU. Linux
+/// has the same constraint and solves it the same way — the read is lock-free
+/// and only the one-time fill synchronises.
+static SECRET_LO: AtomicU64 = AtomicU64::new(0);
+static SECRET_HI: AtomicU64 = AtomicU64::new(0);
 
-/// The boot secret, drawn on first use. # C: O(1)
-fn net_secret() -> Key {
-    let mut slot = NET_SECRET.lock();
-    if let Some(key) = *slot { return key; }
+/// `SECRET_*` publication state: `UNSET` → `FILLING` (one winner) → `READY`.
+static SECRET_STATE: AtomicU8 = AtomicU8::new(SECRET_UNSET);
+const SECRET_UNSET: u8 = 0;
+const SECRET_FILLING: u8 = 1;
+const SECRET_READY: u8 = 2;
+
+/// Draw the boot secret if it is not yet published. MUST run in process
+/// context — it calls into the CSPRNG. `prime()` at every bind/reserve is what
+/// guarantees that: a SYN cannot arrive for a listener that was never bound, so
+/// the softirq reader always finds `SECRET_READY`. # C: O(1)
+pub(crate) fn prime() {
+    if SECRET_STATE.load(Ordering::Acquire) == SECRET_READY { return; }
+    if SECRET_STATE.compare_exchange(SECRET_UNSET, SECRET_FILLING,
+        Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
     let mut raw = [0u8; SECRET_BYTES];
     crng::fill(&mut raw);
     let key = Key::from_bytes(&raw);
-    *slot = Some(key);
-    key
+    SECRET_LO.store(key.k0, Ordering::Relaxed);
+    SECRET_HI.store(key.k1, Ordering::Relaxed);
+    SECRET_STATE.store(SECRET_READY, Ordering::Release);
+}
+
+/// The boot secret. Lock-free and safe from softirq. # C: O(1)
+fn net_secret() -> Key {
+    if SECRET_STATE.load(Ordering::Acquire) != SECRET_READY { prime(); }
+    Key { k0: SECRET_LO.load(Ordering::Relaxed), k1: SECRET_HI.load(Ordering::Relaxed) }
 }
 
 /// Discard the boot secret so the next call re-draws. Test-only: it is the
 /// only way to observe "same 4-tuple, different boot" in one process.
 /// # C: O(1)
 #[cfg(test)]
-pub(crate) fn reseed_secret_for_test() { *NET_SECRET.lock() = None; }
+pub(crate) fn reseed_secret_for_test() { SECRET_STATE.store(SECRET_UNSET, Ordering::Release); }
 
 /// Nanosecond clock behind `seq_scale` and the port-shuffle epoch.
 ///
