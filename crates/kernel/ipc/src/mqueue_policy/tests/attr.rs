@@ -105,3 +105,14 @@ fn only_o_nonblock_may_be_set_through_mq_setattr() {
     assert_eq!(setattr_flags(O_NONBLOCK as i64 | 1), Err(Errno::Einval));
     assert_eq!(setattr_flags(-1), Err(Errno::Einval));
 }
+
+#[test]
+fn a_sysctl_raised_past_the_hard_cap_cannot_wrap_the_charge() {
+    // `/proc/sys/fs/mqueue/msg_max` is bounded to HARD_MSGMAX, but
+    // `validate_attr` must not depend on that: a huge `maxmsg` with a tiny
+    // `msgsize` passes the `msgsize > ULONG_MAX/maxmsg` gate, so the tree
+    // overhead is where the wrap would happen.
+    let absurd = MqSysctls { msg_max: i64::MAX, msgsize_max: i64::MAX, ..ns() };
+    assert_eq!(validate_attr(Some((i64::MAX, 1)), &absurd, false), Err(Errno::Eoverflow));
+    assert_eq!(validate_attr(Some((i64::MAX / 8, 1)), &absurd, false), Err(Errno::Eoverflow));
+}

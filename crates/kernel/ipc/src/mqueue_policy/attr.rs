@@ -82,12 +82,18 @@ pub fn validate_attr(attr: Option<(i64, i64)>, ns: &MqSysctls, cap_sys_resource:
         return Err(Errno::Einval);
     }
 
+    // Every product below is `checked_*`: a sysctl raised past `HARD_MSGMAX`
+    // would otherwise wrap `maxmsg * sizeof(msg_msg)` silently in a release
+    // build and charge a huge queue almost nothing.
     let (maxmsg_u, msgsize_u) = (maxmsg as u64, msgsize as u64);
     if msgsize_u > u64::MAX / maxmsg_u { return Err(Errno::Eoverflow); }
     let prio_nodes = if maxmsg_u < MQ_PRIO_MAX as u64 { maxmsg_u } else { MQ_PRIO_MAX as u64 };
-    let treesize = maxmsg_u * MSG_MSG_BYTES as u64 + prio_nodes * MSG_TREE_NODE_BYTES as u64;
-    let bytes = maxmsg_u * msgsize_u;
-    let Some(mq_bytes) = bytes.checked_add(treesize) else { return Err(Errno::Eoverflow) };
+    let over = || Errno::Eoverflow;
+    let treesize = maxmsg_u.checked_mul(MSG_MSG_BYTES as u64).ok_or_else(over)?
+        .checked_add(prio_nodes.checked_mul(MSG_TREE_NODE_BYTES as u64).ok_or_else(over)?)
+        .ok_or_else(over)?;
+    let bytes = maxmsg_u.checked_mul(msgsize_u).ok_or_else(over)?;
+    let mq_bytes = bytes.checked_add(treesize).ok_or_else(over)?;
     Ok(MqCreate { maxmsg, msgsize, mq_bytes })
 }
 
