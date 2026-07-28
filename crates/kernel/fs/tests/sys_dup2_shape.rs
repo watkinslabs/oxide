@@ -125,10 +125,16 @@ fn sys_dup2_reserved_target_is_ebusy_and_preserves_reservation() {
 
     assert_eq!(dup2_syscall::sys_dup2(&args(old as u64, reserved as u64)), -(VfsError::Ebusy as i64));
     assert_eq!(fdt.get(reserved).unwrap_err(), VfsError::Ebadf, "reserved slot has no file installed");
-    assert_eq!(fdt.cloexec(reserved), Ok(true), "reservation flags remain intact");
+    // A reservation has no file, so the F_GETFD-shaped accessor reports EBADF —
+    // Linux `SYSCALL_DEFINE3(fcntl)` bails on `fd_empty(f)` before reading
+    // `close_on_exec` (`fs/fcntl.c`). The reservation's flag is therefore only
+    // observable after publication, which is where the invariant is asserted.
+    assert_eq!(fdt.cloexec(reserved), Err(VfsError::Ebadf), "a reserved fd is EBADF to F_GETFD");
     assert_eq!(CLONE_CALLS.load(Ordering::Acquire), 0);
     fdt.fd_install(reserved, mk_file(0x3306));
     assert!(fdt.get(reserved).is_ok());
+    assert_eq!(fdt.cloexec(reserved), Ok(true),
+        "the failed dup2 left the reservation's O_CLOEXEC intact — it did not clear the bit");
     reset();
 }
 
