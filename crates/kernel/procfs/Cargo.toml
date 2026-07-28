@@ -27,6 +27,8 @@ network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 sysfs = { path = "../sysfs" }
 cgroup = { path = "../cgroup" }
+# /proc/sys/fs/mqueue/* binds to the per-IPC-namespace values mq_open reads.
+ipc = { path = "../ipc" }
 slab = { path = "../../shared/slab" }
 kmacros = { path = "../../shared/kmacros" }
 
