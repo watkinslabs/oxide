@@ -203,6 +203,9 @@ pub trait Context: Sized {
 
 pub mod pt_walker;
 pub mod time;
+/// User-register (EFLAGS / SPSR_EL1) sanitation shared by `rt_sigreturn` and
+/// `ptrace(2)` — see the module header for why it is not per-arch-crate.
+pub mod uregs;
 pub mod zerotrap;
 
 pub mod tlb;

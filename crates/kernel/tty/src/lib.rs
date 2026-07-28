@@ -20,6 +20,9 @@ pub mod jobctl;
 
 pub mod ctty;
 
+pub mod hangup;
+pub use hangup::HangupKind;
+
 pub mod wait;
 pub use wait::TtyWait;
 

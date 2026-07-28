@@ -13,6 +13,7 @@ use crate::wait::host::HostWait;
 use crate::wait::TtyWait;
 
 mod exclusive;
+mod hangup;
 
 /// Driver that records everything written + signals raised.
 #[derive(Default)]
@@ -372,37 +373,6 @@ fn close_underflow_is_a_noop() {
 }
 
 #[test]
-fn hangup_raises_sighup_resets_ldisc_and_clears_linkage() {
-    let tty = cooked_tty();
-    tty.set_ctty(7);
-    tty.set_fg_pgrp(7);
-    tty.receive_from_driver(b"line\n"); // a cooked line waiting
-    assert!(tty.readable());
-    tty.hangup();
-    // SIGHUP raised on the fg pgrp + driver.hangup() fired.
-    tty.with_driver(|d| {
-        assert_eq!(d.signals.last(), Some(&Sig::Hup), "SIGHUP on hangup");
-        assert_eq!(d.hangups, 1, "driver.hangup() fired");
-    });
-    // Ldisc dropped to hung-up: read returns EOF (0), not the queued line.
-    assert!(tty.is_hung_up());
-    let mut buf = [0u8; 64];
-    assert_eq!(tty.read(&mut buf), super::ReadOutcome::Eof, "hung-up read → Eof");
-    // Controlling linkage cleared (Linux clears tty->session/pgrp).
-    assert_eq!(tty.sid(), 0);
-    assert_eq!(tty.fg_pgrp(), 0);
-}
-
-#[test]
-fn hangup_makes_writes_drop() {
-    let tty = cooked_tty();
-    tty.hangup();
-    let n = tty.write(b"after hangup");
-    assert_eq!(n, 12, "write reports consumed (EIO mapped at syscall layer)");
-    tty.with_driver(|d| assert!(d.out.is_empty(), "nothing reaches a hung-up driver"));
-}
-
-#[test]
 fn tcxonc_output_suspend_resume_state() {
     use super::TtyFlow;
     let tty = cooked_tty();
@@ -475,3 +445,4 @@ fn tcxonc_parked_writer_wakes_on_resume() {
         assert_eq!(n, 7, "parked write completes after TCOON");
     }
 }
+

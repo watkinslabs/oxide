@@ -19,7 +19,9 @@ pub mod tailwatch;
 mod mremap;
 pub mod anon_vma;
 pub mod file_rmap;
+pub mod mempolicy;
 pub mod migration;
+pub mod mseal;
 pub mod rmap;
 pub mod vma;
 pub mod tree;
@@ -42,7 +44,7 @@ pub use anon_vma::{AnonVma, RmapTarget};
 pub use file_rmap::FileRmap;
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
-pub use tree::VmaTree;
+pub use tree::{HomeNodeErr, VmaTree};
 pub use uffd::UffdContext;
 pub use vm_ops::{set_shm_vm_ops, VmaOpsFn};
 
