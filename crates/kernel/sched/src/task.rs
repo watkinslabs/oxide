@@ -206,6 +206,10 @@ pub struct Task {
     /// on CFS), so the class alone cannot round-trip through
     /// `sched_getscheduler(2)` / `sched_getattr(2)` / `/proc/<pid>/stat`.
     pub policy: AtomicU32,
+    /// Linux `sched_rt_entity::time_slice` — remaining ticks of this `SCHED_RR`
+    /// task's quantum. `SCHED_FIFO` never consumes it (FIFO has no timeslice);
+    /// the fair class does not use it either.
+    pub rt_time_slice: AtomicU32,
     /// Linux `task_struct::mempolicy` — the PER-THREAD NUMA policy
     /// `set_mempolicy(2)` installed, packed by `MemPolicy::to_words`. Word 0
     /// is zero when no policy is installed, which is Linux's NULL
