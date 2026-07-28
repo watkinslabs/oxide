@@ -117,9 +117,20 @@ static FLUSH_QUEUED: AtomicBool = AtomicBool::new(false);
 pub fn rx_byte(b: u8) {
     let Some(tty) = console() else { return };
     if tty.insert_flip(&[b]) == 0 { return; }
-    // Linux clears PENDING before the callback runs, so a byte staged during a
-    // drain re-queues; `flush_to_ldisc` also loops until the ring is empty, so
-    // neither ordering can strand input.
+    schedule_flush();
+}
+
+/// Queue one `flush_to_ldisc`, or note that one is already owed.
+///
+/// The flag stays set for the WHOLE life of the work item, not just until the
+/// callback starts: that is what Linux's workqueue core guarantees for a single
+/// `work_struct`, and `flush_to_ldisc` depends on it. Two flushes running at
+/// once would each take a chunk out of the ring and could hand them to the line
+/// discipline out of order — byte reordering on the console, indistinguishable
+/// from the corruption this branch is fixing.
+/// # C: O(1)
+/// # Ctx: any, including hard IRQ
+fn schedule_flush() {
     if FLUSH_QUEUED.swap(true, Ordering::AcqRel) { return; }
     if !sched::live::workqueue::queue_work(flush_input_work, 0) {
         FLUSH_QUEUED.store(false, Ordering::Release);
@@ -131,8 +142,13 @@ pub fn rx_byte(b: u8) {
 /// # C: O(staged bytes)
 /// # Ctx: process (kworker)
 fn flush_input_work(_arg: usize) {
+    let Some(tty) = console() else { FLUSH_QUEUED.store(false, Ordering::Release); return };
+    tty.flush_to_ldisc();
+    // Release the single-flush token only now, then re-check: a byte staged
+    // between the last drain and this store queued nothing (it saw the token
+    // taken), so this is the one place that can still pick it up.
     FLUSH_QUEUED.store(false, Ordering::Release);
-    if let Some(tty) = console() { tty.flush_to_ldisc(); }
+    if tty.flip_pending() > 0 { schedule_flush(); }
 }
 
 // ------------------------------------------------------------- inode ops
