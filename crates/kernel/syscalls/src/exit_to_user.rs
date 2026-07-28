@@ -92,7 +92,9 @@ fn work_flags() -> u32 {
     let Some(cur) = sched::live::current() else { return 0 };
     // `should_resched` is the ONE owner of "a reschedule is wanted AND this is
     // a safe point"; it is a pure read, so the flag is consumed only by the
-    // pass that actually schedules.
+    // pass that actually schedules. The flag it reads is `TIF_NEED_RESCHED` on
+    // THIS task (`sched::preempt::resched`), so a tick charged to whoever ran
+    // while this task was off the CPU cannot come back as another pass.
     let need_resched = sched::preempt::should_resched();
     let pending = cur.sigpending.load(Ordering::Acquire);
     let blocked = cur.sigmask.load(Ordering::Acquire);
