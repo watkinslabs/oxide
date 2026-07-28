@@ -127,11 +127,24 @@ fn project_inherit_namespace_ops_account_project_quota() {
     assert_eq!(m.state().lookup_inode_any(b"/proj/wo-src").unwrap().file_type(), FileType::CharDev);
     assert_eq!(curinodes(&sb, qid), 7, "whiteout charges the planted char device");
 
-    m.state().unlink_at(b"/proj/whiteout-dst").expect("unlink non-final regular name");
-    assert_eq!(curinodes(&sb, qid), 6, "unlink moved whiteout source releases regular inode");
-    m.state().unlink_at(b"/proj/file-hard").expect("unlink final regular name");
+    m.state().unlink_at(b"/proj/whiteout-dst").expect("unlink moved whiteout source");
+    assert_eq!(curinodes(&sb, qid), 6, "final unlink of an UNHELD inode evicts it and releases the charge");
+    m.state().unlink_at(b"/proj/file-hard").expect("unlink non-final regular name");
     assert_eq!(curinodes(&sb, qid), 6, "non-final hardlink unlink does not release regular inode");
-    m.state().unlink_at(b"/proj/fifo").expect("unlink regular");
+
+    // `/proj/fifo` names the regular file after the EXCHANGE above, and `file`
+    // is still a counted holder of it. `__ext4_unlink` (`fs/ext4/namei.c`)
+    // deletes the entry, `drop_nlink`s and `ext4_orphan_add`s — it calls no
+    // dquot function at all. The charge only comes back from
+    // `dquot_free_inode` inside `ext4_free_inode` (`fs/ext4/ialloc.c:275`),
+    // which `ext4_evict_inode` reaches on the LAST reference. That is the POSIX
+    // unlink-while-open guarantee expressed in quota terms.
+    m.state().unlink_at(b"/proj/fifo").expect("unlink final name of a still-held inode");
+    assert_eq!(m.state().lookup_path(b"/proj/fifo"), None, "the name goes immediately");
+    assert_eq!(curinodes(&sb, qid), 6, "unlink of a HELD inode keeps its charge until eviction");
+    vfs::file::iput(file);
+    assert_eq!(curinodes(&sb, qid), 5, "the last iput evicts the orphan and releases the charge");
+
     m.state().rmdir_at(b"/proj/subdir").expect("rmdir child");
     assert_eq!(curinodes(&sb, qid), 4, "cleanup leaves project dir plus retained symlink, fifo, and whiteout charged");
 }
@@ -172,8 +185,17 @@ fn project_inherit_vfs_inode_ops_account_project_quota() {
     assert_eq!(curinodes(&sb, qid), 5, "i_op hardlink does not double-charge inode");
     dir.unlink_child("file").expect("i_op unlink non-final name");
     assert_eq!(curinodes(&sb, qid), 5, "i_op non-final unlink does not release inode");
+    // `file` is still a counted holder, so the final unlink only orphans the
+    // inode: `__ext4_unlink` (`fs/ext4/namei.c`) removes the dirent,
+    // `drop_nlink`s and `ext4_orphan_add`s, with no dquot call anywhere in it.
     dir.unlink_child("file-hard").expect("i_op unlink final name");
-    assert_eq!(curinodes(&sb, qid), 4, "i_op final unlink releases inode");
+    assert!(dir.lookup("file-hard").is_err(), "the name goes immediately");
+    assert_eq!(file.nlink(), 0, "final unlink zeroes the cached link count");
+    assert_eq!(curinodes(&sb, qid), 5, "the charge survives an unlink that still has an i_count holder");
+    // `iput` → `ext4_evict_inode` → `ext4_free_inode` → `dquot_free_inode`
+    // (`fs/ext4/ialloc.c:275`) is what actually gives the charge back.
+    vfs::file::iput(file);
+    assert_eq!(curinodes(&sb, qid), 4, "eviction on the last iput releases the inode charge");
 }
 
 #[test]
@@ -321,8 +343,25 @@ fn project_inherit_write_append_and_xattr_account_project_space() {
     assert_eq!(vfs::quota_getquota(&sb, qid).expect("quota after xattr").dqb_curspace,
         base.dqb_curspace + raw_space(&m, ino));
 
+    let charged = raw_space(&m, ino);
     m.state().unlink_at(b"/space/file").expect("unlink project file");
-    let after = vfs::quota_getquota(&sb, qid).expect("quota after unlink");
+
+    // The name is gone, but `file` still holds the inode. `__ext4_unlink`
+    // (`fs/ext4/namei.c`) frees NOTHING — no truncate, no `ext4_free_inode`, no
+    // dquot call — so the data blocks and the space charge both stay live for
+    // as long as a reference exists. This is the invariant that makes an
+    // unlinked-but-open file readable and writable through its fd.
+    assert_eq!(m.state().lookup_path(b"/space/file"), None, "the name goes immediately");
+    let held = vfs::quota_getquota(&sb, qid).expect("quota after unlink while held");
+    assert_eq!(held.dqb_curspace, base.dqb_curspace + charged, "unlink-while-held keeps the space charged");
+    assert_eq!(held.dqb_curinodes, base.dqb_curinodes + 1, "unlink-while-held keeps the inode charged");
+    assert_ne!(m.state().mount.state_free_blocks(), free_blocks_before_file_data,
+        "the data and xattr blocks stay allocated until eviction");
+
+    // `ext4_evict_inode` → `ext4_free_inode` → `dquot_free_inode`
+    // (`fs/ext4/ialloc.c:275`) is the release point.
+    vfs::file::iput(file);
+    let after = vfs::quota_getquota(&sb, qid).expect("quota after eviction");
     assert_eq!(after.dqb_curspace, base.dqb_curspace);
     assert_eq!(after.dqb_curinodes, base.dqb_curinodes);
     assert_eq!(m.state().mount.state_free_blocks(), free_blocks_before_file_data);

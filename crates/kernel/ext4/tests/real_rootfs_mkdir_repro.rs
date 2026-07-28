@@ -154,7 +154,10 @@ fn real_rootfs_metadata_stress_then_journal_mkdir() {
                 for f in 0..12 {
                     let fname = alloc::format!("f_{f:02}.dat");
                     match m.unlink(victim_dir, fname.as_bytes()) {
-                        Ok(()) | Err(ext4::MountError::NotFound) => {}
+                        // No VFS above this raw-`Mount` driver, so the test is
+                        // the last reference and runs the eviction itself.
+                        Ok(out) => if out.orphaned() { let _ = m.free_orphan_inode(out.ino); },
+                        Err(ext4::MountError::NotFound) => {}
                         Err(e) => panic!("stress unlink {fname} -> {e:?}"),
                     }
                 }

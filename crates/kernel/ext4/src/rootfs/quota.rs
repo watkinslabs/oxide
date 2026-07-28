@@ -73,11 +73,6 @@ pub(crate) fn drop_existing_inode_dquots(st: &RootfsState, ino: u32) {
     if let Some(victim) = sb.ilookup(super::inode::ext4_wrap_ino(ino)) { vfs::dquot_drop(&victim); }
 }
 
-/// Pre-release final-link quota without dropping cached dquots. # C: O(1)+VFS quota
-pub(crate) fn pre_release_existing_inode_if_final(st: &RootfsState, raw: &crate::Inode) -> vfs::KResult<bool> {
-    if raw.links_count <= 1 { release_existing_inode_usage(st, raw)?; Ok(true) } else { Ok(false) }
-}
-
 /// Transfer existing inode usage to a new project quota id. # C: O(1)+VFS quota
 pub(crate) fn transfer_project_inode(st: &RootfsState, inode: &vfs::Inode, raw: &crate::Inode, projid: u32) -> vfs::KResult<()> {
     let usage = vfs::DquotUsage { space: raw.i_blocks.saturating_mul(512), reserved_space: 0, inodes: 1 };
