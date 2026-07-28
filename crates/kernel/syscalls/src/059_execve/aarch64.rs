@@ -245,6 +245,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
                 gid: creds.new.rgid, egid: creds.new.egid,
                 secure: creds.secure_exec,
             },
+            <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_min_sigstksz(),
         )
     } {
         Some(l) => l,

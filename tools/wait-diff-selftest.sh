@@ -66,6 +66,8 @@ run "$WORK/base.txt" || {
 }
 echo "wait-diff-selftest: baseline $(records "$WORK/base.txt" | wc -l) records"
 
+check fpuclobber 'sigfpu|simd_preserved'
+check fpunopat   'sigfpu|uc_fpstate'
 check eintr \
     'lock|flock_sarestart' 'lock|setlkw_sarestart' 'fd|pipe_read_sarestart' \
     'fd|unix_recv_sarestart' 'fd|tcp_recv_sarestart' 'mqueue|recv_sarestart'
