@@ -60,6 +60,10 @@ fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
 /// (`sched::cred`, Linux `fs/exec.c int suid_dumpable`); this leaf binds to
 /// that variable rather than keeping a procfs-owned copy.
 fn get_suid_dumpable() -> i64 { sched::cred::suid_dumpable() as i64 }
+fn get_perf_paranoid() -> i64 { sched::perf_sw::paranoid() as i64 }
+fn set_perf_paranoid(v: i64) { sched::perf_sw::set_paranoid(v as i32); }
+fn get_perf_sample_rate() -> i64 { sched::perf_sw::sample_rate() as i64 }
+fn set_perf_sample_rate(v: i64) { sched::perf_sw::set_sample_rate(v as i32); }
 fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
 /// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
 /// `vfs::fdtable`), so `setrlimit(RLIMIT_NOFILE)`'s EPERM ceiling and this file
@@ -173,7 +177,12 @@ const SYSCTL_TREE: &[Node] = &[
         File("printk",                Bytes(b"4\t4\t1\t7\n")),
         File("sched_rr_timeslice_ms", Int(100, Some((1, INT_MAX)))),
         File("randomize_va_space",    Int(2, Some((0, 2)))),
-        File("perf_event_paranoid",   Int(2, Some((-1, 4)))),
+        // Bound to the live value `perf_event_open` consults (`sched::perf_sw`),
+        // not a procfs-local cell — a dead cell here would let userspace loosen
+        // a gate the syscall never reads.
+        File("perf_event_paranoid",   IntHook(get_perf_paranoid, set_perf_paranoid, Some((-1, 4)))),
+        File("perf_event_max_sample_rate",
+            IntHook(get_perf_sample_rate, set_perf_sample_rate, Some((1, INT_MAX)))),
         File("dmesg_restrict",        IntHook(get_dmesg_restrict, set_dmesg_restrict, Some((0, 1)))),
         File("kptr_restrict",         Int(0, Some((0, 2)))),
         File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),
