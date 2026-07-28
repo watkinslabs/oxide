@@ -338,6 +338,7 @@ impl Task {
             cmdline:    Spinlock::new(None),
             ctty:       UnsafeCell::new(None),
             exe_path:   Spinlock::new(None),
+            exe_inode:  Spinlock::new(None),
             fs_context: Spinlock::new(Arc::new(super::FsContext::new())),
             environ:    Spinlock::new(None),
             nice:       AtomicI8::new(0),

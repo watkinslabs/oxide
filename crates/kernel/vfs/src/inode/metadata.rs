@@ -231,3 +231,56 @@ impl Inode {
         matches!(prev, Ok(n) if n <= 1)
     }
 }
+
+/// Linux `i_writecount` accessors (`include/linux/fs.h:2798-2830`). The counter
+/// is one word with two signs: `>0` writers, `<0` execs. Both directions refuse
+/// the other, which is what makes `ETXTBSY` mutual — a running binary cannot be
+/// opened for write, and a file open for write cannot be executed.
+impl super::Inode {
+    /// Linux `get_write_access` — `atomic_inc_unless_negative`. # C: O(1)
+    pub fn get_write_access(&self) -> crate::KResult<()> {
+        let mut cur = self.i_writecount.load(core::sync::atomic::Ordering::Acquire);
+        loop {
+            if cur < 0 { return Err(crate::VfsError::Etxtbsy); }
+            match self.i_writecount.compare_exchange_weak(
+                cur, cur + 1,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(seen) => cur = seen,
+            }
+        }
+    }
+
+    /// Linux `deny_write_access` — `atomic_dec_unless_positive`. # C: O(1)
+    pub fn deny_write_access(&self) -> crate::KResult<()> {
+        let mut cur = self.i_writecount.load(core::sync::atomic::Ordering::Acquire);
+        loop {
+            if cur > 0 { return Err(crate::VfsError::Etxtbsy); }
+            match self.i_writecount.compare_exchange_weak(
+                cur, cur - 1,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(seen) => cur = seen,
+            }
+        }
+    }
+
+    /// Linux `put_write_access` — unconditional decrement. # C: O(1)
+    pub fn put_write_access(&self) {
+        self.i_writecount.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// Linux `allow_write_access` — unconditional increment. # C: O(1)
+    pub fn allow_write_access(&self) {
+        self.i_writecount.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// Current `i_writecount`, for tests and `/proc` style reporting. # C: O(1)
+    pub fn writecount(&self) -> i32 {
+        self.i_writecount.load(core::sync::atomic::Ordering::Acquire)
+    }
+}

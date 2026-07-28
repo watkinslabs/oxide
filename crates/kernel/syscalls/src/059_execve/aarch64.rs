@@ -200,6 +200,15 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         if !path_str.is_empty() {
             cur.set_exe_path(Some(path_str.clone()));
             if let Some(mm) = cur.mm_ref() { mm.set_exe_path(path_str.clone()); }
+            // Linux `exe_file_deny_write_access` on the new image, released on
+            // the old one (`kernel/fork.c` `replace_mm_exe_file`). Modern Linux
+            // dropped `VM_DENYWRITE` and hangs `ETXTBSY` off the exe_file, so
+            // this retention is what stops a running binary's text being
+            // rewritten under it. The image was already opened for exec above,
+            // so a failure here means someone opened it for write in between —
+            // rare, and non-fatal: the exec has already committed, so we keep
+            // the old deny rather than unwind a live image.
+            if let Some(vp) = exec_vp.as_ref() { let _ = cur.set_exe_inode(Some(vp.inode.clone())); }
             // Linux `load_elf_binary`/`set_task_comm`: execve always resets
             // comm to the basename of the newly-exec'd file, overriding any
             // prior prctl(PR_SET_NAME) rename — a fresh program image gets a

@@ -59,6 +59,11 @@ impl Task {
     /// # Lk: takes `Namespace` (rank 75)
     /// # Sleeps: no
     pub fn mark_done(&self) {
+        // Linux `exe_file_allow_write_access` when the mm goes away. Without
+        // this the exec-time deny leaks and the binary stays permanently
+        // unwritable — every exited program would make its own file ETXTBSY
+        // forever, which is worse than the bug this fixes.
+        self.clear_exe_inode();
         self.release_network_namespace();
         self.release_namespaces();
         self.set_state(TaskState::Zombie);
