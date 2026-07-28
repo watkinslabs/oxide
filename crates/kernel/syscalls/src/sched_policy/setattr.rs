@@ -122,6 +122,16 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     // SCHED_IDLE and the RT policies leave `se.slice` alone.
     if fair_policy(policy) { t.sched_slice_ns.store(fair_slice(attr), Ordering::Release); }
     t.policy.store(policy, Ordering::Release);
+    // `__setscheduler_params` (`kernel/sched/syscalls.c:257-262`): an RT or
+    // deadline task's timer slack is ZERO for as long as it holds that policy,
+    // and returning to a fair policy restores its inherited default. Every
+    // timed wait reads the field directly, so this write is what makes an RT
+    // task's timeouts exact instead of coalesced.
+    if t.is_rt_or_dl_policy() {
+        t.timer_slack_ns.store(0, Ordering::Release);
+    } else if t.timer_slack_ns.load(Ordering::Acquire) == 0 {
+        t.timer_slack_ns.store(t.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+    }
     sched::live::runqueue::set_class(t, new_class);
 }
 

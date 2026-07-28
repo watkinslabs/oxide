@@ -18,6 +18,11 @@ Status: `OPEN` unclaimed · `CLAIMED` lane exists · `DONE` merged · `WONTFIX`.
 | OPEN | W5 nine hosted tests fail on every full-workspace run | | hosted | §6 |
 | OPEN | W6 `delayed_work` tests flake under parallel load | | hosted | §7 |
 | OPEN | W7 post-fix tick-gap distribution never re-measured | | x86 | §8 |
+| DONE | W8 every kernel timeout had a ~100 ms floor (`latency|*` records added) | `B1460-wait-deadline-timer-floor` | both | §10 |
+
+Record count is **44** since B1460 added `latency|nanosleep_short` and
+`latency|epoll_wait_short` (it was 42 after F760's `mqapi` block; the 29 below
+predates both).
 
 Differential state at `8b4c9a668` + B1456, own runs, clean builds: **29/29
 identical records on BOTH arches — zero divergences**, the first time that has
@@ -205,3 +210,34 @@ uninterruptible child and an absent interrupt. `ticks=` on the non-tick events
 is the one that cracked B1455: identical either side of a window means no timer
 interrupt arrived, which no amount of reading the accounting code would have
 shown.
+
+## 10 W8 — the ~100 ms timeout floor — DONE (B1460)
+
+`park_with_deadline` only stamped `Task::wakeup_deadline_ns`. Its sole consumer
+was `tick_wake_expired`, a registry walk registered as a **100 ms** periodic on
+the `ktimers` kthread, self-throttled to 100 ms, on a kthread that parks 100 ms
+per loop — and `next_interrupt_deadline()`, which programs the hardware
+one-shot, was fed only by the POSIX-timer wall heap and the CPU timers. No wait
+deadline ever reached the hardware. `epoll_wait(.., 1)` and `nanosleep(1ms)`
+both blocked ~100 ms, and so did every futex timeout, `poll`, `select`,
+`SO_*TIMEO` and mqueue/SysV timed wait.
+
+Fix: `sched::hrtimeout`, Linux's hrtimer range model —
+`soft = deadline`, `hard = soft + slack`, queue keyed by HARD (Linux's rbtree
+key, `include/linux/hrtimer.h:91-95`), sweep everything SOFT-due
+(`kernel/time/hrtimer.c:2093`). `next_interrupt_deadline()` folds the queue head
+into the one-shot; the arch timer dispatchers sweep on every CPU before
+re-arming. Slack is `current->timer_slack_ns` (50 us) for the generic waits and
+`select_estimate_accuracy` (0.1% of the remaining timeout, floored at the task
+slack, capped at 100 ms) for poll/select/epoll — the coalescing that keeps a
+machine full of pollers off the interrupt path.
+
+Two new records, both falsifiable: `latnowait` (ask for no wait — the
+return-immediately kernel) flips `ge_req`, `latslow` (spend 100 ms per wait —
+the defect itself) flips `within_budget`.
+
+**Interaction with W2.** W2 (`fire_due_timers` on every syscall return) is
+UNCHANGED by this lane and still open on `B1457-timers-off-syscall-return`. It
+is now less load-bearing, not more: wait expiries no longer depend on any
+syscall-return reprogram, so deleting that call can no longer lose a timeout —
+but the audit W2 asks for (which expiries would be LOST) is still W2's to do.

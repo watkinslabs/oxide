@@ -1,16 +1,26 @@
-// F169/B20: fallback walker for blocking-wait deadlines and alarm/itimer.
+// B20: coarse walker for alarm(2)/ITIMER_REAL and the CPU-time itimers.
 // POSIX timers use the architecture one-shot path in `timers::runtime`.
 //
-// Wake is `wake_if_sleeping`: flips Sleeping → Runnable, lifts
-// vruntime, enqueues. The roused task re-checks its clock / pending
-// signals after schedule() returns and surfaces -EAGAIN (SO_*TIMEO)
-// or -EINTR (SIGALRM) from the caller's blocking loop.
+// B1460 moved BLOCKING-WAIT deadlines out of here entirely. They used to be
+// found by this same registry walk, which meant every kernel timeout inherited
+// its ~100 ms cadence — the walk is a `timer::register_periodic` on the
+// `ktimers` kthread, self-throttled to 100 ms, on a kthread that parks 100 ms
+// per loop. Wait expiries now live in `sched::hrtimeout`, a deadline-ordered
+// queue the timer IRQ sweeps and the one-shot programmer reads, so a 1 ms
+// timeout costs 1 ms. Nothing here consumes `wakeup_deadline_ns` any more; a
+// second consumer of the same deadline would be exactly the shadow state that
+// lets a broken primary look healthy.
 //
-// Cost: O(N_live_tasks) per fallback scan.
+// What is left is genuinely coarse: `alarm(2)` has 1-second resolution, and
+// ITIMER_VIRTUAL/ITIMER_PROF advance only on CPU time this walk also samples.
+//
+// Wake is `ttwu_deferred`: flips Sleeping → Runnable, lifts vruntime, enqueues.
+// The roused task re-checks pending signals after schedule() returns and
+// surfaces -EINTR (SIGALRM) from the caller's blocking loop.
+//
+// Cost: O(N_live_tasks) per scan, at the 100 ms ktimers cadence.
 
 use core::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "debug-boot")]
-use core::sync::atomic::AtomicU32;
 use super::sigpend::Signum;
 
 /// Last `now_ns` the scan walked the registry. Throttles the O(N)
@@ -18,12 +28,6 @@ use super::sigpend::Signum;
 /// cadence so calling this from every timer tick stays cheap.
 static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 const SCAN_PERIOD_NS: u64 = 100_000_000;
-
-/// Bounded counterpart to `MUTTERWAIT`: confirms that the deadline scanner
-/// observed the exact compositor task before it delegates Linux-style wakeup
-/// placement to `ttwu_deferred`.
-#[cfg(feature = "debug-boot")]
-static MUTTER_DEADLINE_WAKE_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 
 fn fire_cpu_itimer(t: &crate::Task, deadline: &AtomicU64, interval: &AtomicU64, now_cpu: u64, sig: Signum) -> bool {
     let dl = deadline.load(Ordering::Acquire);
@@ -34,11 +38,10 @@ fn fire_cpu_itimer(t: &crate::Task, deadline: &AtomicU64, interval: &AtomicU64, 
     true
 }
 
-/// Walk the live task registry; wake any Sleeping task whose
-/// `wakeup_deadline_ns` is non-zero AND `<= now_ns`. Idempotent.
+/// Walk the live task registry and service expired `alarm_ns` (alarm(2) /
+/// setitimer ITIMER_REAL) plus the CPU-time itimers. Idempotent.
 ///
-/// B20: also services expired `alarm_ns` (alarm(2) / setitimer
-/// ITIMER_REAL) here. The syscall-return tail also checks alarm_ns,
+/// B20: the syscall-return tail also checks alarm_ns,
 /// but a task parked in a blocking syscall (e.g. read() on an empty
 /// pipe) issues no further syscalls, so its tail never runs — only
 /// this periodic walker can post SIGALRM and wake it. On expiry we
@@ -88,27 +91,5 @@ pub fn tick_wake_expired(now_ns: u64) {
             // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
             unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
         }
-        let dl = t.wakeup_deadline_ns.load(Ordering::Acquire);
-        if dl == 0 || dl > now_ns { continue; }
-        #[cfg(feature = "debug-boot")]
-        if t.with_exe_path(|p| p.map(|p| {
-            p.contains("gnome-shell") || p.contains("mutter")
-        }).unwrap_or(false))
-            && MUTTER_DEADLINE_WAKE_TRACE_REMAINING.fetch_update(
-                Ordering::Relaxed, Ordering::Relaxed,
-                |remaining| remaining.checked_sub(1)).is_ok()
-        {
-            klog::write_raw(b"[MUTTERWAIT wake tid=");
-            klog::write_dec_u64(t.tid as u64);
-            klog::write_raw(b" dl=");
-            klog::write_dec_u64(dl);
-            klog::write_raw(b" now=");
-            klog::write_dec_u64(now_ns);
-            klog::write_raw(b"]\n");
-        }
-        // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
-        // ttwu clears the deadline only after winning Sleeping -> Runnable;
-        // a losing scan must leave it armed for the next tick.
-        unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
     }
 }
