@@ -1,7 +1,9 @@
 // Per-CPU `Runqueue` outer struct per `13§6`.
 //
 // The atomics (`current`, `nr_running`, `preempt_count`,
-// `need_resched`) live outside the spinlock for lock-free reads.
+// `nr_running`) live outside the spinlock for lock-free reads.
+// `TIF_NEED_RESCHED` is NOT here: Linux keeps it per-TASK
+// (`preempt::resched`), never on the runqueue.
 // `RunqueueInner` (RT bitmap, CFS RB-tree, idle) sits behind the
 // `Spinlock<RunqueueInner>` (class `Runqueue`, `06§3.6`) for
 // class-list mutations.
@@ -40,11 +42,6 @@ pub struct Runqueue {
     /// section.
     pub preempt_count: AtomicU32,
 
-    /// Set by reschedule events (timer tick, wake of higher-prio,
-    /// `preempt_enable` decrement). Drained by `schedule()` /
-    /// `schedule_from_irq()`.
-    pub need_resched: AtomicBool,
-
     /// Class-list state. Lock per `13§6` / `06§3.6`.
     pub inner: Spinlock<RunqueueInner, RunqueueClass>,
 
@@ -78,7 +75,6 @@ impl Runqueue {
             current: AtomicPtr::new(idle_raw),
             nr_running: AtomicU32::new(0),
             preempt_count: AtomicU32::new(0),
-            need_resched: AtomicBool::new(false),
             inner: Spinlock::new(RunqueueInner::new(cpu, idle)),
             reap_pending: AtomicPtr::new(core::ptr::null_mut()),
             switched_from: AtomicPtr::new(core::ptr::null_mut()),

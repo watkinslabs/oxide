@@ -121,8 +121,55 @@ fn report_stall(x: u32, age_ns: u64, me: u32) {
     super::format::emit_syscall(HB_SYS[x as usize].load(Ordering::Relaxed));
     klog::write_raw(b" nr_running=");
     klog::write_dec_u64(HB_RUN[x as usize].load(Ordering::Relaxed) as u64);
+    // The snapshot above is `age_ns` STALE by construction — it was taken at
+    // the wedged CPU's last tick. These are read LIVE off that CPU's runqueue
+    // and preempt state, which nothing about the wedge stops us reading:
+    //   `now:` still the same tid  ⇒ that task never left the CPU, so the wedge
+    //                                is inside ITS kernel section;
+    //         a different tid      ⇒ the CPU switched and re-wedged, so the
+    //                                stale `last:` names the wrong task;
+    //   a raised HARDIRQ/SOFTIRQ field ⇒ wedged inside an interrupt, not a
+    //                                syscall;
+    //   `resched=1` with no progress ⇒ the request cannot be acted on.
+    // Without this the only other evidence is `[NMI-BT]`'s raw rip, which needs
+    // the matching kernel ELF to mean anything (B1476).
+    klog::write_raw(b" now: tid=");
+    klog::write_dec_u64(live_tid(x) as u64);
+    klog::write_raw(b" syscall=");
+    super::format::emit_syscall(live_syscall(x));
+    klog::write_raw(b" preempt_count=0x");
+    klog::write_hex_u64(crate::preempt::preempt_count_on(x as usize) as u64);
+    klog::write_raw(b" resched=");
+    klog::write_dec_u64(crate::preempt::need_resched_on(x as usize) as u64);
     klog::write_raw(b"\n");
 }
+
+/// Live `rq(cpu)->curr` tid (0 when that runqueue is not installed).
+/// # C: O(1)
+fn live_tid(cpu: u32) -> u32 { live_curr(cpu).map_or(0, |t| t.tid) }
+
+/// Live `rq(cpu)->curr`'s last-entered syscall (`u32::MAX` = never entered one,
+/// rendered `none`). Never cleared on syscall exit, exactly as the heartbeat
+/// snapshot's copy — so this is "the last syscall this task ever made", not
+/// "the syscall it is in".
+/// # C: O(1)
+fn live_syscall(cpu: u32) -> u32 {
+    live_curr(cpu).map_or(u32::MAX, |t| t.last_syscall_nr.load(Ordering::Relaxed))
+}
+
+/// `rq(cpu)->curr`, read cross-CPU. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn live_curr(cpu: u32) -> Option<&'static crate::Task> {
+    // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
+    // that has not completed `install_global`; the read is lock-free and the
+    // runqueue owns the `Arc` that keeps the task alive.
+    let rq = unsafe { crate::live::runqueue::global_for(cpu) }?;
+    // SAFETY: same contract as the heartbeat's own `current_ref` read.
+    Some(unsafe { rq.current_ref() })
+}
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+fn live_curr(_cpu: u32) -> Option<&'static crate::Task> { None }
 #[cfg(not(feature = "debug-watchdog"))]
 fn report_stall(_x: u32, _age_ns: u64, _me: u32) {}
 
