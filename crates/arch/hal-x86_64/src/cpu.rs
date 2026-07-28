@@ -103,6 +103,9 @@ impl CpuOps for X86CpuOps {
     fn cpu_hwcap() -> u64 { 0 }
 
     /// # C: O(1)
+    fn cpu_min_sigstksz() -> u64 { crate::min_sigstksz() as u64 }
+
+    /// # C: O(1)
     fn current_cpu() -> u32 {
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
         {

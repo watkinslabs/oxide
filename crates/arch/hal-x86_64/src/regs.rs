@@ -213,6 +213,13 @@ pub unsafe fn enable_sse() {
         // CPU without XSAVE (keeps the FXSAVE fallback). SAFETY: same
         // per-CPU-pre-userspace contract as this fn; CR4/XCR0 per-CPU.
         crate::fpu::xstate_init();
+        // Linux `fpu__init_system_mxcsr()`: cache this CPU's implemented MXCSR
+        // bits. `rt_sigreturn` rejects a user MXCSR outside them, because
+        // `fxrstor`/`xrstor64` #GP on a reserved MXCSR bit and that fault
+        // would land in the kernel. Must follow OSFXSR — it runs `fxsave`.
+        // SAFETY: same per-CPU-pre-userspace contract as this fn; CR0.TS is
+        // clear here so the `fxsave` cannot #NM.
+        crate::fpu::mxcsr_mask_init();
     }
 }
 
