@@ -239,6 +239,8 @@ void probe_syslog(void);
 void probe_inotify(void);
 void probe_sigfpu(void);
 void probe_spinsig(void);
+void probe_abortsig(void);
+void probe_groupsig(void);
 void probe_sysv_sem(void);
 void probe_sysv_msg(void);
 void probe_sysv_shm(void);

@@ -216,9 +216,22 @@ impl Task {
     /// resize interrupt every event loop. Unblockable signals always count.
     /// Lives on `Task` (not in kernel-only `live`) so every blocking path,
     /// hosted harness included, shares ONE definition of "deliverable".
+    /// Every signal pending FOR this thread — Linux's `task->pending.signal |
+    /// task->signal->shared_pending.signal`, the union `signal_pending()` and
+    /// `dequeue_signal` both work over.
+    ///
+    /// THE accessor for "does this thread have a signal waiting". Reading the
+    /// private word alone is a split source of truth: `kill(2)` posts into the
+    /// process-wide set, so a blocking wait that consulted only `sigpending`
+    /// stayed parked through a SIGTERM aimed at its process.
+    /// # C: O(1)
+    pub fn pending_signals(&self) -> u64 {
+        self.sigpending.load(Ordering::Acquire) | self.thread_group.shared_pending()
+    }
+
     /// # C: O(N_sig)
     pub fn deliverable_signals(&self) -> u64 {
-        let pending = self.sigpending.load(Ordering::Acquire);
+        let pending = self.pending_signals();
         // SIGKILL/SIGSTOP are never blockable: Linux strips them from every
         // mask install (`__set_task_blocked` -> `sigdelsetmask`), so
         // `pending & ~blocked` inherently contains them. This kernel also has

@@ -50,9 +50,11 @@ impl Task {
     pub fn sleep_wake(&self) -> SleepWake {
         use core::sync::atomic::Ordering;
         let deliverable = self.deliverable_signals();
-        let unmasked = self.sigpending.load(Ordering::Acquire)
-            & !self.sigmask.load(Ordering::Acquire);
+        let unmasked = self.pending_signals() & !self.sigmask.load(Ordering::Acquire);
         let mut ignored = unmasked & !deliverable;
+        // Both sets: an ignored PROCESS-directed signal left in
+        // `shared_pending` would keep every thread of the group from parking.
+        self.thread_group.flush_shared_mask(ignored);
         while ignored != 0 {
             let sig = ignored.trailing_zeros() + 1;
             ignored &= !(1u64 << (sig - 1));
