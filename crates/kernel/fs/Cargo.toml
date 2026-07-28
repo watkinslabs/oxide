@@ -23,6 +23,8 @@ vfs      = { path = "../vfs" }
 devfs    = { path = "../devfs" }
 procfs   = { path = "../procfs" }
 nscg     = { path = "../nscg" }
+uaccess  = { path = "../uaccess" }
+cpu      = { path = "../cpu" }
 
 [dev-dependencies]
 block = { path = "../block" }

@@ -135,6 +135,18 @@ pub struct Task {
     pub sum_exec_runtime_ns: AtomicU64,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
+    /// Linux `task_struct::min_flt` / `maj_flt` — page faults resolved without
+    /// and with a backing-store read. Feed `/proc/<pid>/stat` fields 10/12 and
+    /// `PERF_COUNT_SW_PAGE_FAULTS{,_MIN,_MAJ}`.
+    pub min_flt: AtomicU64,
+    pub maj_flt: AtomicU64,
+    /// Linux `task_struct::nvcsw` / `nivcsw` — voluntary (blocked) and
+    /// involuntary (preempted) context switches away from this task.
+    /// `PERF_COUNT_SW_CONTEXT_SWITCHES` is their sum.
+    pub nvcsw:  AtomicU64,
+    pub nivcsw: AtomicU64,
+    /// Linux `sched_entity::nr_migrations` — `PERF_COUNT_SW_CPU_MIGRATIONS`.
+    pub nr_migrations: AtomicU64,
     #[cfg(feature = "debug-getdents")]
     pub(crate) getdents: crate::diag::getdents::GetdentsState,
     #[cfg(feature = "debug-syscall-return")]
