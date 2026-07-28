@@ -287,6 +287,36 @@ impl InetSocket {
         self.write(_off, buf)
     }
 
+    /// `unix_dgram_poll`'s writability tail (`net/unix/af_unix.c:3437-3450`):
+    /// writable unless a CONNECTED, non-symmetrically-paired peer's receive
+    /// queue is full. `true` for every non-datagram kind so the caller can
+    /// evaluate this once, outside the `kind` lock.
+    /// # C: O(log N_registry) when connected, O(1) otherwise
+    fn unix_dgram_peer_writable(&self, sndbuf_cap: usize) -> bool {
+        let local = {
+            let kind = self.kind.lock();
+            match &*kind { SockKind::UnixDgram(q) => q.clone(), _ => return true }
+        };
+        // `other = unix_peer(sk)`; NULL ⇒ Linux leaves `writable` set.
+        let Some(address) = local.peer() else { return true };
+        let Some(peer) = crate::net_ns::unix_registry_for_addr_in(&self.net_namespace, &address)
+            .dgram_lookup_addr(&address) else { return true };
+        // `unix_peer(other) != sk` — a symmetrically connected pair is
+        // flow-controlled by wmem alone, so its backlog is not consulted.
+        let symmetric = match (peer.peer(), local.bound()) {
+            (Some(back), Some(mine)) => back.key == mine.key,
+            _ => false,
+        };
+        if symmetric { return true; }
+        if crate::unix_sock::dgram_peer_writable(peer.queued_bytes(), sndbuf_cap) { return true; }
+        // `unix_dgram_peer_wake_me`: register on the peer's wake list at the
+        // exact point we decide "not writable", so the peer's drain relays an
+        // EPOLLOUT to US. Our own subscribers never see the peer's activity,
+        // so without this the writer parks and nothing ever wakes it.
+        peer.register_peer_writer(&self.poll_subs);
+        false
+    }
+
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
@@ -297,6 +327,15 @@ impl InetSocket {
             if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
         };
         if let Some(l) = unix_listener { return l.poll_mask() | pending; }
+        // The SAME cap the send paths enforce (`socket::send::send_unix_blocking`,
+        // `sock_io::write_tcp_blocking`). Poll and `sendmsg` must read one
+        // number, or the writer is told "writable" and handed `EAGAIN`.
+        let sndbuf_cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+            .max(TCP_SNDBUF_DEFAULT) as usize;
+        // `unix_dgram_poll`'s connected-peer backlog arm. Resolved outside the
+        // `kind` lock: the lookup takes the per-netns unix registry lock, which
+        // must never nest under it.
+        let dgram_peer_writable = self.unix_dgram_peer_writable(sndbuf_cap);
         match &*self.kind.lock() {
             SockKind::Raw4(endpoint) => {
                 let mut mask = endpoint.poll_mask();
@@ -336,19 +375,29 @@ impl InetSocket {
             }
             SockKind::TcpConn(entry) => {
                 drain_loopback();
-                let mut mask = entry.poll_mask();
+                let mut mask = entry.poll_mask(sndbuf_cap);
                 let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
+                // `tcp_poll`: `if (!(shutdown & SEND_SHUTDOWN)) { …writeable
+                // test… } else mask |= EPOLLOUT | EPOLLWRNORM;` — a send-shut
+                // socket is unconditionally "writable" so the caller collects
+                // its EPIPE from `send` rather than sleeping forever.
+                if wr { mask |= POLL_OUT | vfs::POLL_WRNORM; }
                 if rd && wr { mask |= POLL_HUP; }
                 mask | pending
             }
             SockKind::Unix(pair, end) => {
-                pair.poll_mask(*end) | pending
+                pair.poll_mask(*end, sndbuf_cap) | pending
             }
             SockKind::UnixListener(_) => pending,
             SockKind::UnixDgram(q) => {
-                let mut mask = POLL_OUT;
+                // `unix_dgram_poll`: `writable = unix_writable(sk, state)`, then
+                // cleared when the connected peer's receive queue is full. An
+                // UNCONNECTED datagram socket has no peer to consult and stays
+                // writable, exactly as Linux leaves `writable` alone when
+                // `unix_peer(sk)` is NULL.
+                let mut mask = if dgram_peer_writable { POLL_OUT | vfs::POLL_WRNORM } else { 0 };
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
                 let rd = q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
@@ -357,7 +406,7 @@ impl InetSocket {
                 mask | pending
             }
             SockKind::UnixMsgPair(pair, end) => {
-                pair.poll_mask(*end) | pending
+                pair.poll_mask(*end, sndbuf_cap) | pending
             }
             SockKind::Packet { rx, .. } => {
                 let mut mask = POLL_OUT;

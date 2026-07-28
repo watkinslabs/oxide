@@ -71,10 +71,15 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: dispatch tail; hal owns the arch frame mechanics + uses the
-        // live saved syscall frame on this CPU's kstack.
-        if !unsafe { hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, restart, frame_mask, payload, alt) } {
-            bad_sigframe();
-        }
+        // live saved syscall frame on this CPU's kstack; `fpu_snapshot` has
+        // just synced the running task's live FPU state into the buffer.
+        let ok = unsafe {
+            with_fpu(cur, Fpu::Snapshot, |fpu| {
+                (hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, restart,
+                                                frame_mask, payload, alt, fpu), false)
+            })
+        };
+        if !ok { bad_sigframe(); }
         0
     }
     #[cfg(target_arch = "aarch64")]
@@ -91,10 +96,15 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
         // F206: prefer the per-task SVC-frame slot (race-free vs schedule());
         // fall back to the per-CPU current frame for slot-less tasks.
         let frame = current_signal_svc_frame();
-        // SAFETY: dispatch tail; `frame` is the live saved SVC frame.
-        if !unsafe { hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, restart, frame_mask, payload, alt) } {
-            bad_sigframe();
-        }
+        // SAFETY: dispatch tail; `frame` is the live saved SVC frame;
+        // `fpu_snapshot` has just synced the live FP/SIMD state into the buffer.
+        let ok = unsafe {
+            with_fpu(cur, Fpu::Snapshot, |fpu| {
+                (hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, restart,
+                                                 frame_mask, payload, alt, fpu), false)
+            })
+        };
+        if !ok { bad_sigframe(); }
         sig as u64
     }
 }
@@ -209,17 +219,22 @@ pub unsafe fn rt_sigreturn() -> i64 {
             return bad_rt_sigframe();
         }
     }
+    let cur = sched::live::current();
     #[cfg(target_arch = "x86_64")]
-    // SAFETY: rt_sigreturn dispatch tail; hal owns the arch restore.
-    let restored = unsafe { hal_x86_64::restore_signal_frame() };
+    // SAFETY: rt_sigreturn dispatch tail; hal owns the arch restore and fills
+    // the task's own FPU save area, which no other CPU may touch while this
+    // task runs.
+    let restored = unsafe { with_fpu(cur, Fpu::Reload, |fpu| { let r = hal_x86_64::restore_signal_frame(fpu);
+        let dirty = matches!(r, Some((_, _, _, true))); (r, dirty) }) };
     #[cfg(target_arch = "aarch64")]
     // SAFETY: rt_sigreturn dispatch tail; `frame` is the live saved SVC frame.
-    let restored = unsafe { hal_aarch64::restore_signal_frame(frame) };
+    let restored = unsafe { with_fpu(cur, Fpu::Reload, |fpu| { let r = hal_aarch64::restore_signal_frame(frame, fpu);
+        let dirty = matches!(r, Some((_, _, _, true))); (r, dirty) }) };
     match restored {
-        Some((sigmask, ret, alt)) => {
-            if let Some(c) = sched::live::current() {
+        Some((sigmask, ret, alt, _)) => {
+            if let Some(c) = cur {
                 c.set_current_blocked(sigmask);
-                restore_altstack(&c, alt);
+                restore_altstack(c, alt);
             }
             ret
         }
@@ -227,6 +242,82 @@ pub unsafe fn rt_sigreturn() -> i64 {
     }
 }
 
+/// Which end of the signal round trip is touching the FPU save area.
+enum Fpu {
+    /// Delivery: sync the LIVE hardware registers into the area, then let `f`
+    /// read them out into the frame.
+    Snapshot,
+    /// `rt_sigreturn`: let `f` rebuild the area from the user's frame, then
+    /// load it back into the hardware.
+    Reload,
+}
+
+/// Run `f` over the current task's per-arch FPU/SIMD save area.
+///
+/// [`Fpu::Snapshot`] first syncs the live hardware registers into it — Linux
+/// `copy_fpstate_to_sigframe` / `fpsimd_save_and_flush_current_state`. The
+/// kernel is built soft-float (`07§3`), so between syscall entry and here the
+/// user's FP registers are untouched in hardware while the buffer is stale
+/// from the last context switch; without the sync the frame would carry
+/// whatever the task's registers held when it was last descheduled.
+///
+/// [`Fpu::Reload`] loads the area back afterwards, and holds a
+/// [`PreemptGuard`] across the pair — Linux's `fpregs_lock()`, which is
+/// literally `preempt_disable()`. Without it a tick landing between "`f`
+/// rebuilt the image" and "the image reached the registers" lets `switch`'s
+/// `fpu_save` overwrite the rebuilt buffer with the HANDLER's live registers,
+/// and the task resumes with the handler's SIMD state — the exact corruption
+/// this whole path exists to prevent, in a ~10-instruction window. The
+/// delivery side needs no guard: a `fpu_save` from a preempting switch writes
+/// the same bytes (nothing has run that could change the user's registers),
+/// and guarding it would put the frame write — which may legitimately fault
+/// in a `MAP_GROWSDOWN` stack page — inside a non-preemptible section.
+///
+/// Task-less deliveries (the boot path before `init`) get an empty slice,
+/// which each HAL answers with Linux's legal "no FPU context" frame.
+/// # SAFETY: syscall dispatch tail on the running task's own kernel stack, so
+/// this CPU is the sole accessor of that task's save area (`13§5`); the FPU
+/// registers belong to the running task.
+/// # C: O(n) in the save-area size
+unsafe fn with_fpu<R>(cur: Option<&sched::Task>, mode: Fpu,
+                      f: impl FnOnce(&mut [u8]) -> (R, bool)) -> R {
+    let Some(c) = cur else { return f(&mut []).0 };
+    // SAFETY: running task on this CPU; the `fpu_state` slot is single-mutator per `13§5`, and the HAL types' layout matches `ArchFpuBuf`'s 64-byte-aligned backing.
+    let buf = unsafe { (*c.fpu_state.get()).as_mut_ptr() };
+    if let Fpu::Snapshot = mode {
+        let _g = sched::preempt::PreemptGuard::new();
+        // SAFETY: same slot; the running task owns the live FPU registers, and this is exactly the sync `ptrace_fpu::snapshot_current` performs at a ptrace stop.
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            hal_x86_64::fpu_save(buf as *mut hal_x86_64::FpuStateX86_64);
+            #[cfg(target_arch = "aarch64")]
+            hal_aarch64::fpu_save(buf as *mut hal_aarch64::FpuStateAArch64);
+        }
+    }
+    // SAFETY: `buf` is the base of a `sched::ARCH_FPU_SIZE` byte allocation owned by this task, and this CPU is its sole accessor for the duration of the dispatch tail.
+    let slice = unsafe { core::slice::from_raw_parts_mut(buf, sched::ARCH_FPU_SIZE) };
+    match mode {
+        Fpu::Snapshot => f(slice).0,
+        Fpu::Reload => {
+            let _g = sched::preempt::PreemptGuard::new();
+            let (r, reload) = f(slice);
+            // Only when `f` says the buffer now holds a validated image. On a
+            // rejected frame it may be half-written, and `xrstor64` #GPs on a
+            // malformed header — Linux likewise reaches the hardware only
+            // through its own validated path.
+            if reload {
+                // SAFETY: the image was just validated and written by the HAL restore; the guard above keeps `switch` from overwriting it before it reaches the registers.
+                unsafe {
+                    #[cfg(target_arch = "x86_64")]
+                    hal_x86_64::fpu_restore(buf as *const hal_x86_64::FpuStateX86_64);
+                    #[cfg(target_arch = "aarch64")]
+                    hal_aarch64::fpu_restore(buf as *const hal_aarch64::FpuStateAArch64);
+                }
+            }
+            r
+        }
+    }
+}
 /// Linux `restore_altstack`: re-apply the `uc_stack` the frame carried, which
 /// is how an `SS_AUTODISARM` stack comes back after its handler returns.
 /// Linux squashes every error but EFAULT here, so a nonsensical `uc_stack`

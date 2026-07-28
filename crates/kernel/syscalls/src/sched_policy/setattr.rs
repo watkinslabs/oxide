@@ -132,7 +132,7 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     } else if t.timer_slack_ns.load(Ordering::Acquire) == 0 {
         t.timer_slack_ns.store(t.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     }
-    sched::live::runqueue::set_class(t, new_class);
+    crate::sched_policy::commit::set_class(t, new_class);
 }
 
 /// Linux `__setparam_fair()` (`kernel/sched/fair.c:5951`): a non-zero

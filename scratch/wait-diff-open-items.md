@@ -175,6 +175,26 @@ CPU; nothing has exercised two CPUs arming their own deadlines.
 `mcp__qemu__qemu_start(smp=N, accel="tcg")` is the tool — some SMP timing bugs
 only reproduce under TCG.
 
+**`SMP>1` is now bootable on BOTH arches** (`B1467-smp-tlb-and-runqueue`), so
+this item is unblocked — it needs a tick-state assertion, not a working SMP
+boot. x86 smoke already defaults to `OXIDE_SMP=2`. aarch64 `OXIDE_SMP=2` — the
+config this file's `boot-smoke.sh` comment calls "BROKEN … reproducibly dies
+~11s guest with a data-abort … wild registers … an SMP concurrency defect" —
+reached `basic.target` on **3 of 3** runs after B1467 (109s attempt 1, 106s
+attempt 1, and one run needing 3 attempts, consistent with the known GRUB-hang
+flakiness). B1467 fixed two things that fit that signature exactly: every
+aarch64 `munmap`/`MADV_DONTNEED` was freeing frames with NO TLB invalidation at
+all (the local flush was `#[cfg(target_arch = "x86_64")]`-gated and ARM's
+shootdown hook is a no-op), and `set_class` could put one `Arc<Task>` on two
+runqueues. Not claimed as a proven fix for that defect — the ARM-SMP lane
+should re-verify and decide whether `boot-smoke.sh` can default arm to 2.
+
+Hosted `SMP>1` modelling is also available now without booting:
+`sched/src/live/rq_locate.rs` takes the runqueue accessor as a parameter, so a
+test can build N real `Runqueue` instances and drive cross-CPU logic
+deterministically (see `rq_locate/tests.rs`). The same shape would let the
+`NEXT_TICK_NS` / `ARMED_NS` arrays be exercised at index > 0.
+
 ## 6 W5 — the nine standing hosted failures
 
 `cargo test --workspace --no-fail-fast` at `a5791c6d3`: **7860 passed, 9 failed**,

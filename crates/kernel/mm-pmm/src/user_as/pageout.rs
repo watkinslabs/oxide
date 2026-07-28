@@ -280,16 +280,31 @@ fn rollback_replaced_mappings(ptes: &[ReclaimPte], pa: u64, entry: hal::pt_walke
 /// Reclaim owners that replace a present page with a non-present transient
 /// state must use this before copying or releasing the old frame. # C: O(CPUs)
 pub fn flush_reclaim_mapping(mm: &AddressSpace, va: u64) {
-    let current_root = sched::live::current()
-        .and_then(|task| unsafe { task.mm_ref() })
-        .map(|current_mm| current_mm.root_pa());
-    if current_root == Some(mm.root_pa()) {
-        // SAFETY: this CPU currently runs `mm`; invalidate its just-mutated VA.
-        unsafe {
-            #[cfg(target_arch = "x86_64")]
-            { hal_x86_64::flush_local_va(va); }
-            #[cfg(target_arch = "aarch64")]
-            { <hal_aarch64::mmu_ops::ArmMmu as hal::MmuOps>::flush_va(hal::Va(va)); }
+    // aarch64: `tlbi vae1is` is inner-shareable, so this single instruction
+    // invalidates `va` on EVERY CPU, and it must be issued UNCONDITIONALLY —
+    // `shootdown_others_va` below is a no-op on aarch64 (arm64 has no TLB IPI;
+    // `arch-irq::tlb` is x86-only). Reclaim normally walks a FOREIGN mm via
+    // rmap, so gating this on "this CPU runs mm" left the common case with no
+    // invalidation at all before the frame was swapped out and reused. oxide
+    // runs every address space at ASID 0, so the VA operand alone matches the
+    // foreign mm's entries (Linux passes `ASID(mm)` explicitly for this).
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: privileged TLB invalidation legal at EL1; dropping a stale
+    // translation is always sound.
+    unsafe { hal_aarch64::flush_local_va(va); }
+
+    // x86_64: `invlpg` only affects the currently-loaded CR3, so it is useful
+    // only when this CPU actually runs `mm`; peer CPUs are covered by the
+    // synchronous IPI below (Linux `flush_tlb_others`).
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: read-only borrow of the running task's mm slot.
+        let current_root = sched::live::current()
+            .and_then(|task| unsafe { task.mm_ref() })
+            .map(|current_mm| current_mm.root_pa());
+        if current_root == Some(mm.root_pa()) {
+            // SAFETY: this CPU currently runs `mm`; invalidate its just-mutated VA.
+            unsafe { hal_x86_64::flush_local_va(va); }
         }
     }
     hal::tlb::shootdown_others_va(va, mm.cpumask());
