@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
-use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64};
 
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
@@ -72,6 +72,13 @@ pub struct Inode {
     /// stores none — NOT a zero sentinel, since the epoch second is itself a
     /// legal birth time.
     pub(super) i_btime:        Option<Timespec64>,
+    /// Linux `i_writecount` (`include/linux/fs.h`): 0 idle, >0 = that many
+    /// writers hold the file open, <0 = that many execs are running it.
+    /// `get_write_access` is `atomic_inc_unless_negative`, `deny_write_access`
+    /// is `atomic_dec_unless_positive` — the two directions are what make
+    /// `ETXTBSY` mutual, so a running binary cannot be opened for write and a
+    /// file open for write cannot be executed.
+    pub(super) i_writecount:   AtomicI32,
     pub(super) i_state:        AtomicU32,
     pub(super) i_count:        AtomicU32,
     pub(super) i_version:      AtomicU64,
