@@ -289,9 +289,14 @@ CPU part\t: 0xd03\n\
 CPU revision\t: 4\n\
 \n";
 
-// Canonical static bodies retained for documentation; live impls build
-// dynamic versions above.
-pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\tautofs\nnodev\tbinfmt_misc\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
+// /proc/filesystems is generated from the live `vfs::fs` type registry —
+// see `crate::filesystems`. The hardcoded blob that used to live here was a
+// SPLIT SOURCE OF TRUTH against that registry and against `sysfs(2)`, which
+// indexes the same list: it advertised `cgroup`, `pipefs`, `sockfs`,
+// `rpc_pipefs`, `ext2`, `ext3`, `iso9660`, `vfat`, `msdos`, `fuseblk` — none
+// registered, so every mount of one failed after the probe said yes — and
+// omitted `ramfs`, `debugfs`, `tracefs`, `securityfs`, `efivarfs`, `pstore`,
+// `configfs`, `fusectl`, `hugetlbfs`, `fuse`, which do exist.
 // /proc/mounts + /proc/<pid>/mountinfo are now generated dynamically
 // from the live `vfs::mount` table — see `crate::mounts`.
 

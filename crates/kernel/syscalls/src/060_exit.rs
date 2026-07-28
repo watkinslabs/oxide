@@ -118,6 +118,12 @@ pub fn do_exit(status: i32) -> i64 {
             // cgroup so cgroup.procs / cgroup.events `populated`
             // reflect reality — systemd keys service liveness on it.
             cgroup::on_exit(task.tid as u64);
+            // Linux `do_exit` -> `acct_collect()` + `acct_process()`: BSD
+            // process accounting appends one `acct_v3` record per exit. Runs
+            // while the mm and fd table are still attached (the RSS figure and
+            // the accounting file both need them) and before the parent is
+            // notified, exactly as Linux orders it.
+            crate::acct_exit::acct_process_current(task, status);
             // F205: drop the exiting task's fd_table Arc reference
             // BEFORE waking the parent. Linux closes a process's
             // open files at exit (do_exit → exit_files → put_files_struct);

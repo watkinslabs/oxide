@@ -210,6 +210,14 @@ pub struct Task {
     /// exactly once, in the window between fork and exec.
     pub forknoexec: AtomicBool,
 
+    /// Linux `PF_SUPERPRIV`: latched the first time a capability check on this
+    /// task SUCCEEDS (`capable()` sets it on the allow path only). BSD process
+    /// accounting reports it as the `ASU` record flag — "used super-user
+    /// privileges" — which is a statement about what the task DID, not about
+    /// what it was allowed to do, so it cannot be derived from the credentials
+    /// at exit.
+    pub used_superpriv: AtomicBool,
+
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
 
