@@ -110,6 +110,16 @@ The generalisation: for any case whose success value is also what a
 DEGENERATE implementation returns, the record needs a second observable
 that the degenerate path cannot fake.
 
+The converse, from F765: that second observable must not be a duration
+the two kernels may legitimately disagree about. The SysV `signal_*`
+rows shipped a `slept=` bucket and an ARM guest recorded `slept=1` where
+the oracle had `slept=0` — the semantics (`eintr`, `sig=1`) were
+identical and the bucket was measuring the wall time between arming a
+150 ms itimer and the EINTR reaching userspace, i.e. guest wake latency.
+`slept=` now appears ONLY on rows where a real wait IS the assertion
+(a peer releases at 600 ms, a timeout expires at 400 ms); interrupted
+rows do not carry it.
+
 ## 6 Every blocking case is bounded
 
 Cases whose failure mode is "never returns" run in a child behind
