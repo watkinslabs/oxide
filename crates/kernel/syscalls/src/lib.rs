@@ -16,6 +16,11 @@ pub mod obsolete;
 pub mod unconfigured;
 mod lsm;
 mod pkey;
+// User-buffer range coverage, the decision half of `userbuf`'s access checks.
+// Ungated because `userbuf.rs` is kernel-only: the walk that replaced a
+// per-PAGE loop with a per-VMA one is exactly the kind of bound that has to be
+// tested, having wedged a CPU for 300+ s with interrupts masked (B1476).
+pub mod uaccess_range;
 pub mod secretmem;
 // execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
 // tested, and this is what glibc's stack canary + pointer guard come from.

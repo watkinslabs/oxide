@@ -132,6 +132,13 @@ pub fn pass_order() -> [u32; 4] {
 /// complaint instead of a silent hard hang with interrupts enabled. Chosen far
 /// above any legitimate pass count: the only self-feeding item is a signal, and
 /// a task cannot have more than the 64 signal slots pending at once.
+///
+/// The bound has caught exactly one such producer, and the complaint was
+/// correct both times it is worth restating: `NEED_RESCHED` used to live in a
+/// per-CPU word, so every tick that landed while this task was descheduled came
+/// back as this task's request and each pass bought exactly one more
+/// (`B1476`). The fix was to put `TIF_NEED_RESCHED` on the task, as Linux has
+/// it — NOT to raise the bound.
 pub const MAX_PASSES: u32 = 128;
 
 /// Whether the loop should keep going, folding the pass bound in.

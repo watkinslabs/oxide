@@ -382,6 +382,10 @@ mod deadline;
 pub mod tick;
 pub use deadline::install as install_timer_deadline_hook;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod tlb;
+/// TLB-shootdown round bookkeeping — the DECISION half of `tlb`, deliberately
+/// UNGATED so its tests actually compile (`tlb` is x86+kernel-only, and a test
+/// module inside it would vanish silently).
+pub mod tlb_round;
 pub mod irqstat;
 
 /// Hook for BSP timer work that belongs above the arch IRQ layer.

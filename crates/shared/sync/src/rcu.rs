@@ -303,7 +303,7 @@ pub fn synchronize_rcu() {
         if spins >= BLOCK_STALL {
             break; // bounded: a non-reporting online CPU must not hang us
         }
-        core::hint::spin_loop();
+        crate::spin_relax::relax();
     }
     // A full grace period has elapsed: publish it (monotonic GP advance) and
     // run any callbacks it now satisfies.
@@ -328,7 +328,7 @@ pub fn rcu_barrier() {
             drain_once(true);
             break;
         }
-        core::hint::spin_loop();
+        crate::spin_relax::relax();
     }
 }
 

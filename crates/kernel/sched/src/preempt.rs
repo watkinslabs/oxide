@@ -1,8 +1,9 @@
-// Preempt-count machinery per `13§9`. Per-CPU: `preempt_count` and
-// `need_resched` are each a `[_; MAX_CPUS]` slot indexed by the current
-// CPU (`13§9`/`06§4`), so two CPUs never clobber each other's count or
-// resched flag. The public API is unchanged — callers operate on "this
-// CPU" implicitly, exactly as Linux's `__preempt_count` / `TIF_NEED_RESCHED`.
+// Preempt-count machinery per `13§9`. `preempt_count` is per-CPU — a
+// `[_; MAX_CPUS]` slot indexed by the current CPU (`13§9`/`06§4`), swapped with
+// the incoming task's value at each switch, exactly as x86 Linux treats
+// `pcpu_hot.preempt_count`. `TIF_NEED_RESCHED` is NOT per-CPU: it lives on the
+// TASK (`resched`), because Linux stamps it on `rq->curr` and clears it on
+// `prev` at every `__schedule`.
 //
 // Discipline (`13§9`):
 //   - `preempt_count > 0` ⇒ no schedule() may run on this CPU.
@@ -14,20 +15,18 @@
 // `PreemptGuard` is the RAII pair: drop runs `preempt_enable()`,
 // which schedules iff count returned to zero and need_resched is set.
 
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use cpu::MAX_CPUS;
 
-/// Cacheline-padded per-CPU slot so adjacent CPUs' preempt state never
+/// Cacheline-padded per-CPU slot so adjacent CPUs' preempt count never
 /// shares a cache line (`04§6` / `06§4`).
 #[repr(C, align(64))]
 struct Pcpu<T>(T);
 
 const PC_ZERO: Pcpu<AtomicU32>  = Pcpu(AtomicU32::new(0));
-const NR_ZERO: Pcpu<AtomicBool> = Pcpu(AtomicBool::new(false));
 
 static PREEMPT_COUNT: [Pcpu<AtomicU32>;  MAX_CPUS] = [PC_ZERO; MAX_CPUS];
-static NEED_RESCHED:  [Pcpu<AtomicBool>; MAX_CPUS] = [NR_ZERO; MAX_CPUS];
 
 /// Current CPU index, clamped to `MAX_CPUS`. Reads the per-CPU base
 /// register (`gs:0` on x86, `TPIDR_EL1` on arm). Callers index a per-CPU
@@ -91,10 +90,15 @@ pub const PREEMPT_DISABLED: u32 = 1;
 #[cfg(feature = "debug-preempt")]
 pub mod debug;
 
+/// `TIF_NEED_RESCHED` — per-TASK, exactly as Linux keeps it. Owns every
+/// set / read / take of the reschedule request.
+pub mod resched;
+
+pub use resched::{need_resched, need_resched_on, set_need_resched, set_need_resched_on,
+                  take_need_resched};
+
 #[inline]
 fn preempt_count_slot() -> &'static AtomicU32 { &PREEMPT_COUNT[this_cpu()].0 }
-#[inline]
-fn need_resched_slot() -> &'static AtomicBool { &NEED_RESCHED[this_cpu()].0 }
 
 /// Live count of an ARBITRARY CPU. The per-CPU state is a plain array, so a
 /// CPU that is still ticking can read a wedged one's — which is the only way
@@ -104,15 +108,6 @@ fn need_resched_slot() -> &'static AtomicBool { &NEED_RESCHED[this_cpu()].0 }
 /// # C: O(1)
 pub fn preempt_count_on(cpu: usize) -> u32 {
     PREEMPT_COUNT.get(cpu).map_or(0, |s| s.0.load(Ordering::Acquire))
-}
-
-/// `need_resched` of an arbitrary CPU, paired with `preempt_count_on` in that
-/// dump: `need_resched=1` alongside a non-zero count on an idle CPU is the
-/// signature of a leaked field swallowing a wakeup — the work was requested
-/// and the CPU is structurally unable to take it.
-/// # C: O(1)
-pub fn need_resched_on(cpu: usize) -> bool {
-    NEED_RESCHED.get(cpu).is_some_and(|s| s.0.load(Ordering::Acquire))
 }
 
 /// Hook installed by the kernel side so `preempt_enable` can call
@@ -296,33 +291,6 @@ pub fn preempt_count_sub(n: u32) {
     debug_assert!(prev >= n, "preempt_count_sub underflow");
 }
 
-/// True iff a reschedule has been requested (set by wake_up / tick).
-/// # C: O(1)
-pub fn need_resched() -> bool { need_resched_slot().load(Ordering::Acquire) }
-
-/// Set `need_resched`. Called from wake_up paths and the tick when
-/// the running task should yield (CFS slice expired, RT preempts
-/// Normal, etc.). Idempotent.
-/// # C: O(1)
-pub fn set_need_resched() { need_resched_slot().store(true, Ordering::Release); }
-
-/// Set `need_resched` for a SPECIFIC CPU (the wake target in `resched_curr`,
-/// B2 ttwu). The target observes it on its next return-to-user / idle-loop
-/// schedule; the caller pairs this with a reschedule IPI when the target is
-/// remote. Out-of-range CPU is a no-op.
-/// # C: O(1)
-pub fn set_need_resched_on(cpu: usize) {
-    if let Some(slot) = NEED_RESCHED.get(cpu) {
-        slot.0.store(true, Ordering::Release);
-    }
-}
-
-/// Atomically take + clear `need_resched`. Returns the prior value.
-/// Used by the schedule path so a single tick→wake→schedule cycle
-/// doesn't loop on a stuck flag.
-/// # C: O(1)
-pub fn take_need_resched() -> bool { need_resched_slot().swap(false, Ordering::AcqRel) }
-
 /// The single resched decision: a reschedule was requested AND this is a
 /// safe point to take it (`preempt_count == 0`). Both the return-to-user
 /// slow path (`smp-arch.md` Phase A) and `preempt_enable` consult this — one
@@ -463,5 +431,6 @@ impl Drop for PreemptGuard {
 #[cfg(any(test, feature = "hosted"))]
 pub fn _test_reset() {
     for slot in PREEMPT_COUNT.iter() { slot.0.store(0, Ordering::Release); }
-    for slot in NEED_RESCHED.iter()  { slot.0.store(false, Ordering::Release); }
+    resched::_test_reset_anchors();
+    if let Some(t) = crate::live::current() { t.need_resched.store(false, Ordering::Release); }
 }

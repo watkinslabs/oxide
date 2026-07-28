@@ -58,7 +58,7 @@ impl<T: Copy, C: LockClass> SeqLock<T, C> {
             let s1 = self.seq.load(Ordering::Acquire);
             if s1 & 1 != 0 {
                 // Writer mid-update — its store to seq is what we wait on.
-                core::hint::spin_loop();
+                crate::spin_relax::relax();
                 continue;
             }
             // SAFETY: volatile copy of a `Copy` T; a concurrent writer may make this a torn read, which the seq re-check below detects and discards. The value never escapes unvalidated.
@@ -67,7 +67,7 @@ impl<T: Copy, C: LockClass> SeqLock<T, C> {
             // CPU could hoist the sample above it and validate the wrong window.
             fence(Ordering::Acquire);
             if self.seq.load(Ordering::Relaxed) == s1 { return v; }
-            core::hint::spin_loop();
+            crate::spin_relax::relax();
         }
     }
 

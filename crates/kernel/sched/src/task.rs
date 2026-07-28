@@ -87,6 +87,15 @@ pub struct Task {
     /// SMP `on_cpu` (Linux): true while executing on a CPU; set on switch-to,
     /// cleared in finish_task_switch after register save; remote ttwu spins on it.
     pub on_cpu:   AtomicBool,
+    /// Linux `TIF_NEED_RESCHED` (`thread_info::flags`), per-TASK — never
+    /// per-CPU. `__resched_curr` (`kernel/sched/core.c`) stamps the flag on
+    /// `rq->curr`'s thread_info, and `__schedule` clears it on `prev`
+    /// (`clear_tsk_need_resched(prev)`), so a tick that lands while THIS task
+    /// is descheduled is charged to whoever was actually running. A per-CPU
+    /// flag makes the resumed task inherit a request that was not its own —
+    /// which the return-to-user work loop then re-services on every pass,
+    /// re-scheduling immediately after being given the CPU (B1476).
+    pub need_resched: AtomicBool,
     /// cgroup v2 freezer: held off every runqueue (enqueue no-op) until thawed.
     pub frozen:   AtomicBool,
     /// Linux `sched_yield`: consumed by `schedule()` before re-enqueueing current.
