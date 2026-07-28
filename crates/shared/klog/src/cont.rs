@@ -137,6 +137,12 @@ fn drain(s: &Slot, route_override: Option<u32>) {
     // bounds check in `push`.
     let buf = unsafe { &*s.buf.get() };
     crate::flush_line(&buf[..len], lvl, route);
+    // A FORCED drain (owner change, full buffer, emergency write) publishes an
+    // unterminated fragment. Terminate it: otherwise the next line begins on
+    // the same output line and a reader sees `foo` + `bar` as `foobar` — a
+    // split that reads as a splice, which is the defect this module exists to
+    // remove. A drain on `\n` already ends the line and adds nothing.
+    if buf[len - 1] != b'\n' { crate::flush_line(b"\n", lvl, route); }
 }
 
 /// Append `bytes` (no `\n` inside) to the slot, flushing first if it would

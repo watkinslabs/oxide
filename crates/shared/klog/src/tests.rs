@@ -268,3 +268,36 @@
         clear_cpu_fn();
         assert!(DEPTH.load(Ordering::Relaxed) >= 2, "nested emit did not run");
     }
+
+/// A forced flush (caller identity changed mid-line) must TERMINATE the
+/// fragment it publishes. Without that the next caller's line continues on the
+/// same output line, so a legitimate split reads as a splice — the exact
+/// confusion this module removes.
+#[test]
+fn interrupted_line_is_terminated_not_concatenated() {
+    let _g = lock_sink();
+    let _ = drain_sink();
+    set_byte_sink(test_sink);
+    set_clock_fn(|| 0);
+    set_cpu_fn(|| 0);
+    // Two callers on ONE cpu — a hard IRQ logging while task context is
+    // mid-line. The thunk flips identity on each call so the second fragment
+    // always lands under a different owner.
+    static WHO: AtomicUsize = AtomicUsize::new(0);
+    WHO.store(0, Ordering::Relaxed);
+    set_caller_fn(|| WHO.load(Ordering::Relaxed) as u32);
+
+    write_raw(b"AAA");                       // caller 0, no newline
+    WHO.store(1, Ordering::Relaxed);
+    write_raw(b"BBB\n");                     // caller 1 displaces it
+
+    clear_caller_fn();
+    clear_cpu_fn();
+    clear_clock_fn();
+    clear_byte_sink();
+    let out = drain_sink();
+    assert!(!out.windows(6).any(|w| w == b"AAABBB"),
+            "forced flush concatenated two callers onto one line: {out:?}");
+    assert!(out.windows(4).any(|w| w == b"AAA\n"), "first fragment not terminated: {out:?}");
+    assert!(out.windows(4).any(|w| w == b"BBB\n"), "second line missing: {out:?}");
+}
