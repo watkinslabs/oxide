@@ -48,11 +48,10 @@ pub fn body(tid: u32) -> Vec<u8> {
     let group_list = c.group_list();
     let groups: &[u32] = group_list.as_deref().unwrap_or(&[]);
     let (sig_ign, sig_cgt) = sigign_sigcatch(&task);
-    // Process-DIRECTED signals land on the group leader's pending set in this
-    // kernel, which is where `signal_struct::shared_pending` lives
-    // (`ThreadGroup::leader_task`) — one source of truth, not a second queue.
-    let shd_pnd = task.thread_group.leader_task()
-        .map(|l| l.sigpending.load(Ordering::Acquire)).unwrap_or(0);
+    // Linux `/proc/pid/status`: `SigPnd` is the THREAD-private set and `ShdPnd`
+    // the process-wide one (`signal_struct::shared_pending`), which this kernel
+    // keeps on the `ThreadGroup`.
+    let shd_pnd = task.thread_group.shared_pending();
     let tracer = task.traced_by.load(Ordering::Acquire);
     let name = task.comm();
     let s = Status {

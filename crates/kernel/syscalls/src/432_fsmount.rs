@@ -26,7 +26,7 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     const MOUNT_ATTR_NOSYMFOLLOW:u64 = 0x20_0000;
     const ATTR_VALID: u64 = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV
         | MOUNT_ATTR_NOEXEC | MOUNT_ATTR__ATIME | MOUNT_ATTR_NODIRATIME | MOUNT_ATTR_NOSYMFOLLOW;
-    if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
+    if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
     // Validate the fsmount(2) flag words the old shim silently dropped (D51):
     // `flags` outside FSMOUNT_CLOEXEC → EINVAL; `attr_flags` outside the settable
     // MOUNT_ATTR_* set → EINVAL; the atime sub-field must name exactly one mode.
@@ -56,7 +56,23 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
                 (Some(sb), Some(root)) => (sb.clone(), root.clone()),
                 _ => return -(Errno::Einval.as_i32() as i64),
             };
-            let mo: InodeRef = MountObjectInode::new_realized(sb, root, ctx.fstype.clone(), attrs);
+            // Linux `do_fsmount`: `if (mount_too_revealing(fc->root->d_sb,
+            // &mnt_flags)) return -EPERM;` — the same userns visibility gate
+            // `mount(2)` gets, at the same syscall. `mnt_flags` is the MOUNT_ATTR_*
+            // request mapped into the MNT_* option space, exactly what the graft
+            // will install. The locked attributes it feeds back, plus the
+            // `create_new_namespace` `lock_mnt_tree` stamp, travel on the mount
+            // object because this tree materialises the mount at `move_mount(2)`.
+            let mnt_flags = vfs::mount::mount_attr_to_mnt(attrs);
+            let mut lock_flags = match vfs::mount::mount_too_revealing(&sb, mnt_flags) {
+                Ok(l) => l,
+                Err(_) => return -(Errno::Eperm.as_i32() as i64),
+            };
+            if crate::mount_perm::current_user_ns_differs_from_mount_ns_owner() {
+                lock_flags |= vfs::mount::lock_new_mount_bits(mnt_flags);
+            }
+            let mo: InodeRef = MountObjectInode::new_realized(sb, root, ctx.fstype.clone(), attrs,
+                lock_flags);
             return install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0);
         }
     }

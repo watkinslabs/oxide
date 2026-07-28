@@ -16,7 +16,7 @@ use crate::fsmount_common::*;
 /// # C: O(1)
 pub fn sys_fsopen(args: &SyscallArgs) -> i64 {
     const FSOPEN_CLOEXEC: u64 = 1;
-    if let Some(rv) = require_sys_admin() { return rv; }  // Linux may_mount (D49)
+    if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
     if args.a1 & !FSOPEN_CLOEXEC != 0 { return -(Errno::Einval.as_i32() as i64); }
     let fsname = match read_cstr_req(args.a0, 64) {
         Ok(s) => s, Err(rv) => return rv,

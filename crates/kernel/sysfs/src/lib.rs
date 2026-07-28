@@ -533,6 +533,11 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// SYSFS_MAGIC (linux/magic.h).
     /// # C: O(1)
     fn magic(&self) -> u64 { SYSFS_MAGIC }
+    /// Linux `fs/kernfs/mount.c` `kernfs_fill_super`: `sb->s_iflags |=
+    /// SB_I_NOEXEC | SB_I_NODEV`. Also the `required_iflags`
+    /// `mount_too_revealing` demands of every `FS_USERNS_MOUNT_RESTRICTED`
+    /// filesystem, which sysfs is (`fs/sysfs/mount.c` `.fs_flags`). # C: O(1)
+    fn s_iflags(&self) -> u64 { vfs::superblock::SB_I_USERNS_REQUIRED }
     /// Install zero-sized pseudo-fs statfs (`simple_statfs`) as this SB's `s_op`
     /// so `statfs(2)`/`df` report SYSFS_MAGIC + PAGE_SIZE, not the generic
     /// synthetic figures. # C: O(1)

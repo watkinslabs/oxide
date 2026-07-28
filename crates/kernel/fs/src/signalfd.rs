@@ -74,7 +74,7 @@ impl FileOps for SignalfdFileOps {
     fn poll(&self, inode: &Inode) -> u32 {
         let mask = match inode.private::<SignalfdData>() { Some(d) => d.mask.load(Ordering::Acquire), None => return 0 };
         let cur = sched::current();
-        let deliver = cur.as_ref().map_or(0, |c| c.sigpending.load(Ordering::Acquire)) & mask;
+        let deliver = cur.as_ref().map_or(0, |c| c.pending_signals()) & mask;
         if deliver != 0 { vfs::POLL_IN } else { 0 }
     }
     fn poll_subscribers(&self, _file: &File) -> Option<Arc<PollSubscribers>> {
@@ -83,7 +83,7 @@ impl FileOps for SignalfdFileOps {
 }
 
 fn read_one_signal(cur: &sched::Task, mask: u64, out: &mut [u8]) -> KResult<()> {
-        let pending = cur.sigpending.load(Ordering::Acquire);
+        let pending = cur.pending_signals();
         let deliver = pending & mask;
         // Empty signalfd: Linux returns EAGAIN (nonblocking) rather than a
         // 0-byte read. systemd's event loop logs "Truncated read from signal
@@ -93,13 +93,16 @@ fn read_one_signal(cur: &sched::Task, mask: u64, out: &mut [u8]) -> KResult<()> 
         if deliver == 0 { return Err(VfsError::Eagain); }
         let sig = (deliver.trailing_zeros() + 1) as u32;
         // Pop the signal + its queued siginfo through the one owner of that
-        // decision (`Task::dequeue_siginfo`), so signalfd, rt_sigtimedwait and
-        // handler delivery can never disagree about which queue backs a signal
-        // or when its pending bit clears. RT signals keep the bit set while
-        // records remain; SIGCHLD does the same over its child-event queue
-        // (systemd reads pid/status/code here); standard signals clear on take.
-        let (popped, empty) = cur.dequeue_siginfo(sig);
-        if empty { cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release); }
+        // decision (`Task::dequeue_pending`), so signalfd, rt_sigtimedwait and
+        // handler delivery can never disagree about which SET holds a signal,
+        // which queue backs it, or when its pending bit clears: thread-private
+        // first, then the process-wide `shared_pending`. RT signals keep the
+        // bit set while records remain; SIGCHLD does the same over its
+        // child-event queue (systemd reads pid/status/code here); standard
+        // signals clear on take. `None` = a concurrent consumer won the claim.
+        let Some(popped) = cur.dequeue_pending(sig) else {
+            return Err(VfsError::Eagain);
+        };
         // Fill the 128-byte signalfd_siginfo: ssi_signo always; the queued
         // record supplies ssi_code/pid/uid and either ssi_status (SIGCHLD) or
         // ssi_int/ssi_ptr (an RT sigqueue value).

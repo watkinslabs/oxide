@@ -69,6 +69,11 @@ fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
 /// owner of the randomisation policy every `execve` consults.
 fn get_randomize_va_space() -> i64 { aslr::randomize_va_space() as i64 }
 fn set_randomize_va_space(v: i64) { aslr::set_randomize_va_space(v as i32); }
+/// `vm.unprivileged_userfaultfd` binds to the mm-owned tunable
+/// `userfaultfd_syscall_allowed` consults; there is no procfs-side copy that
+/// could disagree with the gate.
+fn get_unprivileged_userfaultfd() -> i64 { vmm::uffd::unprivileged_userfaultfd() }
+fn set_unprivileged_userfaultfd(v: i64) { vmm::uffd::set_unprivileged_userfaultfd(v); }
 fn get_mmap_rnd_bits() -> i64 { aslr::tunable::mmap_rnd_bits() as i64 }
 fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max(0) as u32); }
 /// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
@@ -257,6 +262,13 @@ const SYSCTL_TREE: &[Node] = &[
         File("mmap_rnd_bits",           IntHook(get_mmap_rnd_bits, set_mmap_rnd_bits,
             Some((aslr::tunable::mmap_rnd_bits_min() as i64,
                   aslr::tunable::mmap_rnd_bits_max() as i64)))),
+        // `vm.unprivileged_userfaultfd` (`mm/userfaultfd.c` `vm_userfaultfd_table`):
+        // `proc_dointvec_minmax` over `sysctl_unprivileged_userfaultfd`, window
+        // [SYSCTL_ZERO, SYSCTL_ONE], zero-initialised. `userfaultfd(2)` reads it
+        // to decide whether an unprivileged caller may create a context able to
+        // intercept KERNEL-mode faults.
+        File("unprivileged_userfaultfd", IntHook(get_unprivileged_userfaultfd,
+            set_unprivileged_userfaultfd, Some(vmm::uffd::UNPRIVILEGED_USERFAULTFD_BOUNDS))),
     ]),
     Dir("net", &[
         Dir("core", &[

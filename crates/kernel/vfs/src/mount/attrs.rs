@@ -33,6 +33,9 @@ pub fn remount_super_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
     let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
     if !check_mnt(&m) { return Err(VfsError::Einval); }
     let (old, new) = proposed_mnt_flags(&m, flags);
+    // Linux `do_remount`: the locked-flag ladder runs BEFORE the superblock is
+    // reconfigured, so a refused relax leaves the SB untouched.
+    if !can_change_locked_flags(&m, new) { return Err(VfsError::Eperm); }
     if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
         return Err(VfsError::Ebusy);
     }
@@ -48,6 +51,10 @@ pub fn remount_super_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
 /// ([`ms_to_mnt`]) before being committed (D10). # C: O(1)
 fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
     let (old, new) = proposed_mnt_flags(m, flags);
+    // Linux `do_reconfigure_mnt`: `can_change_locked_flags` → EPERM, ahead of the
+    // writer (EBUSY) check. An unprivileged user-namespace holder therefore
+    // cannot remount away a protection its parent namespace froze.
+    if !can_change_locked_flags(m, new) { return Err(VfsError::Eperm); }
     if (new & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
         return Err(VfsError::Ebusy);
     }
@@ -58,7 +65,9 @@ fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
 
 fn proposed_mnt_flags(m: &Arc<Mount>, flags: u64) -> (u64, u64) {
     let old = m.flags.load(Ordering::Acquire);
-    let new = (old & !MNT_OPTION_MASK) | (ms_to_mnt(flags) & MNT_OPTION_MASK);
+    // MS_REMOUNT preserves the current atime mode when the request names none
+    // (Linux `path_mount`, "The default atime for remount is preservation").
+    let new = (old & !MNT_OPTION_MASK) | (ms_to_mnt_remount(flags, old) & MNT_OPTION_MASK);
     (old, new)
 }
 
@@ -106,12 +115,20 @@ fn commit_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
 /// `mnt_hold_writers` EBUSY), then commit via [`commit_mnt_attrs`]. # C: O(1)
 fn apply_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) -> KResult<()> {
     let old = m.flags.load(Ordering::Acquire);
+    if !can_change_locked_flags(m, recalc_flags(old, set_mnt, clr_mnt)) { return Err(VfsError::Eperm); }
     if (set_mnt & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0
         && m.mnt_writers.load(Ordering::Acquire) > 0 {
         return Err(VfsError::Ebusy);
     }
     commit_mnt_attrs(m, set_mnt, clr_mnt);
     Ok(())
+}
+
+/// Linux `recalc_flags`: the MNT_* option word a `mount_setattr(2)` request
+/// would install — `(current & ~attr_clr) | attr_set` — fed to
+/// [`can_change_locked_flags`] before anything is committed. # C: O(1)
+fn recalc_flags(old: u64, set_mnt: u64, clr_mnt: u64) -> u64 {
+    (old & !(clr_mnt & MNT_OPTION_MASK)) | (set_mnt & MNT_OPTION_MASK)
 }
 
 /// [D52] `mount_setattr(2)` on the mount the path walk CROSSED INTO, identified
@@ -134,6 +151,15 @@ pub fn mnt_setattr_tree_by_id(top_id: u64, set: u64, clr: u64) -> KResult<()> {
     let top = mount_by_id(top_id).ok_or(VfsError::Einval)?;
     if !check_mnt(&top) { return Err(VfsError::Einval); }
     let ids = subtree_ids(top.namespace_id(), top_id);
+    // Linux `mount_setattr` runs `can_change_locked_flags(m, recalc_flags(...))`
+    // over the WHOLE subtree in its first pass and aborts with EPERM before any
+    // mount is touched — one locked node vetoes the entire recursive request.
+    for id in &ids {
+        if let Some(m) = mount_by_id(*id) {
+            let old = m.flags.load(Ordering::Acquire);
+            if !can_change_locked_flags(&m, recalc_flags(old, set, clr)) { return Err(VfsError::Eperm); }
+        }
+    }
     if (set & MNT_RDONLY) != 0 {
         for id in &ids {
             if let Some(m) = mount_by_id(*id) {
@@ -150,10 +176,19 @@ pub fn mnt_setattr_tree_by_id(top_id: u64, set: u64, clr: u64) -> KResult<()> {
     Ok(())
 }
 
+/// Linux `__mnt_is_readonly` (`fs/namespace.c`): `(mnt_flags & MNT_READONLY) ||
+/// sb_rdonly(mnt_sb)`. BOTH halves matter — `mount -o ro` on a fresh mount sets
+/// the per-mount bit, while a read-only superblock (a RO-mounted backing device,
+/// a failed-journal ext4) makes every mount over it read-only regardless.
+/// # C: O(1)
+pub fn mnt_is_readonly(m: &Mount) -> bool {
+    (m.flags.load(Ordering::Acquire) & MNT_RDONLY) != 0 || m.sb().is_readonly()
+}
+
 /// `mnt_want_write` (Linux): begin a write on `m`, EROFS if read-only, else
 /// bump the writer count (blocks a concurrent remount-RO). # C: O(1)
 pub fn mnt_want_write(m: &Mount) -> KResult<()> {
-    if (m.flags.load(Ordering::Acquire) & MNT_RDONLY) != 0 { return Err(VfsError::Erofs); }
+    if mnt_is_readonly(m) { return Err(VfsError::Erofs); }
     m.mnt_writers.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }

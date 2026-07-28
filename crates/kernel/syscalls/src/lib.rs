@@ -48,6 +48,11 @@ pub mod mlock_policy;
 // name_to_handle_at(2) 303 / open_by_handle_at(2) 304: the `struct file_handle`
 // ABI, the AT_HANDLE_* flag masks and both admission ladders.
 pub mod handle_policy;
+// openat2(2) 437: the `struct open_how::resolve` word — its validation and its
+// mapping onto `LookupFlags` for BOTH walk phases. `257_openat.rs` is
+// kernel-gated, and dropping a RESOLVE_* bit on the O_CREAT parent walk is a
+// sandbox escape, so the decision lives here where the hosted suite reaches it.
+pub mod openat2_resolve;
 pub mod sched_policy;
 pub mod sched_attr;
 pub mod ioprio;

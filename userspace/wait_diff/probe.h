@@ -24,6 +24,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <mqueue.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -238,8 +239,11 @@ void probe_syslog(void);
 void probe_inotify(void);
 void probe_sigfpu(void);
 void probe_spinsig(void);
+void probe_abortsig(void);
+void probe_groupsig(void);
 void probe_sysv_sem(void);
 void probe_sysv_msg(void);
 void probe_sysv_shm(void);
+void probe_openat2_resolve(void);
 
 #endif

@@ -392,7 +392,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
 fn has_unmasked_signal() -> bool {
     let Some(cur) = sched::current() else { return false; };
     const FORCED: u64 = (1u64 << 8) | (1u64 << 18);
-    let pending = cur.sigpending.load(Ordering::Acquire);
+    let pending = cur.pending_signals();
     let masked = cur.sigmask.load(Ordering::Acquire);
     (pending & !masked) | (pending & FORCED) != 0
 }

@@ -31,7 +31,7 @@ pub(crate) mod hole;
 
 pub use address_space::{
     global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown,
-    live_address_spaces, AddressSpace, MIN_USER_VA, VmAccountingSnapshot,
+    live_address_spaces, AddressSpace, MIN_USER_VA, UffdVma, VmAccountingSnapshot,
 };
 pub use address_space::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
