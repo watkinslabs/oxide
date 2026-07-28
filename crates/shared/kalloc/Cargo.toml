@@ -17,6 +17,11 @@ hosted  = []
 # Diagnostic UAF localizer: poison + quarantine freed blocks (docs/02, dev-only).
 debug-heappoison = ["dep:klog"]
 debug-smp = ["dep:klog"]
+# Diagnostic-only ([HEAPWALK]): count the sorted-hole-list walk steps every
+# alloc/free pays, plus the live hole count, so the O(N) heap cost is measured
+# rather than inferred. Two counter increments on the heap path when on; nothing
+# when off (docs/02, dev-only).
+debug-heapwalk = ["dep:klog"]
 # Diagnostic-only: print the HoleListError tag before the plain (non-
 # debug-heappoison) dealloc path's invariant assert fires. Zero-cost on
 # the success path (only reads on the Err branch, right before a panic
