@@ -133,3 +133,23 @@ fn empty_card_read_is_eagain_never_zero() {
     let r = vfs::FileOps::read_file(&super::super::publication::DrmCardFileOps, &file, 0, &mut buf);
     assert!(matches!(r, Err(vfs::VfsError::Eagain)), "empty card read returned {r:?}, want Eagain");
 }
+
+/// Render minors share `drm_read` with card minors in Linux. A render fd never
+/// has events queued, so it must answer `EAGAIN`/sleep — never 0, which a GLib
+/// fd source reads as EOF. Same defect the card node carried.
+#[test]
+fn empty_render_read_is_eagain_never_zero() {
+    let card_id = 9;
+    crate::crtc::clear_card_state(card_id);
+    let inode = super::super::publication::make_render_inode(card_id);
+    static R_OPS: vfs::dentry::DentryOps = vfs::dentry::DentryOps {
+        d_dname: None, d_hash: None, d_compare: None, d_revalidate: None,
+        d_weak_revalidate: None, d_delete: None, d_release: None, d_iput: None,
+        d_init: None, d_prune: None,
+    };
+    let dentry = vfs::dcache::d_alloc_pseudo("render-test", inode.clone(), &R_OPS);
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK);
+    let mut buf = [0u8; 64];
+    let r = vfs::FileOps::read_file(&super::super::publication::DrmSinkFileOps, &file, 0, &mut buf);
+    assert!(matches!(r, Err(vfs::VfsError::Eagain)), "empty render read returned {r:?}, want Eagain");
+}

@@ -86,7 +86,20 @@ impl vfs::FileOps for DrmCardFileOps {
 /// but `handle_drm_ioctl` rejects KMS/master-only requests for render inodes.
 pub(super) struct DrmSinkFileOps;
 impl vfs::FileOps for DrmSinkFileOps {
-    fn read(&self, _inode: &vfs::Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
+    /// Render minors share `drm_read` with card minors in Linux — one
+    /// `drm_file` event path, one fops table. A render fd simply never has
+    /// events queued, so a blocking read sleeps and a non-blocking one gets
+    /// `-EAGAIN`. It must NOT return 0: that is EOF to a GLib fd source, which
+    /// tears the source down and re-dispatches it forever. Same defect the card
+    /// node carried (B1484).
+    /// # C: O(1) + park
+    fn read_file(&self, file: &File, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
+        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
+            return Err(vfs::VfsError::Einval);
+        };
+        let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
+        crate::crtc::drain_events_blocking(card_id, file_token(file), b, nonblock)
+    }
     fn write(&self, _inode: &vfs::Inode, _o: u64, _b: &[u8]) -> vfs::KResult<usize> {
         Err(vfs::VfsError::Einval)
     }
