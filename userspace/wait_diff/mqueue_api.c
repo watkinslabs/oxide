@@ -169,6 +169,43 @@ static void size_and_prio_limits(mqd_t mq) {
         errno_name(recv_small), drained, got);
 }
 
+static void read_state_line(mqd_t mq) {
+    /* `mqueue_read_file` (ipc/mqueue.c:629-656): read(2) on an mq descriptor
+     * reports the queue's state in a fixed-width line, and mqueuefs has NO
+     * write method at all, so write(2) is EINVAL. Registering AFTER the send
+     * keeps the registration alive for the read — `__do_notify` unregisters on
+     * the 0->1 transition, so arming first would report an empty owner. */
+    char m = 'r';
+    /* `mqnostate` leaves the queue empty, so QSIZE must change. */
+    int sent = mutant("mqnostate") ? -1 : (int)mq_send(mq, &m, 1, 3);
+    struct sigevent sev;
+    memset(&sev, 0, sizeof sev);
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGUSR2;
+    int armed = e(mq_notify(mq, &sev));
+    char line[128];
+    memset(line, 0, sizeof line);
+    ssize_t n = read(mq, line, sizeof line - 1);
+    unsigned long qsize = 0;
+    int notify = -1, signo = -1;
+    long pid = -1;
+    int fields = n > 0 ? sscanf(line, "QSIZE:%lu NOTIFY:%d SIGNO:%d NOTIFY_PID:%ld",
+                                &qsize, &notify, &signo, &pid) : -1;
+    errno = 0; int wr = e((int)write(mq, &m, 1));
+    mq_notify(mq, NULL);
+    char buf[API_MSGSIZE];
+    if (sent == 0) mq_receive(mq, buf, sizeof buf, NULL);
+    /* The LINE LENGTH is not deterministic — `NOTIFY_PID:%-6d` overflows its
+     * width for a 7-digit pid, and the oracle's pids are far larger than the
+     * guest's. The byte offset of the last field is: it pins every preceding
+     * `%-10lu` / `%-5d` pad without depending on any pid. */
+    const char *tail = n > 0 ? strstr(line, "NOTIFY_PID:") : NULL;
+    out("mqapi", "read_state_line",
+        "armed=%s|pid_off=%d|fields=%d|qsize=%lu|notify=%d|signo=%d|pid_is_self=%d|write=%s",
+        errno_name(armed), tail ? (int)(tail - line) : -1, fields, qsize, notify, signo,
+        pid == (long)getpid() ? 1 : 0, errno_name(wr));
+}
+
 static void access_mode(void) {
     mqd_t ro = mq_open(API_NAME, O_RDONLY);
     mqd_t wo = mq_open(API_NAME, O_WRONLY);
@@ -304,6 +341,7 @@ void probe_mqueue_api(void) {
     attr_readback(mq);
     priority_order(mq);
     size_and_prio_limits(mq);
+    read_state_line(mq);
     access_mode();
     notify_validation(mq);
     notify_signal(mq);
