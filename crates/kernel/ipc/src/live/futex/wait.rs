@@ -197,9 +197,6 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
             }
             klog::write_raw(b"\n");
         }
-        if deadline_ns != 0 {
-            cur.wakeup_deadline_ns.store(deadline_ns, core::sync::atomic::Ordering::Release);
-        }
         let raw = cur as *const Task;
         // SAFETY: cur came from sched::current() and is the running task on this CPU; bumping the strong count is sound.
         unsafe { Arc::increment_strong_count(raw); }
@@ -211,12 +208,19 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
             if unsafe { load_user_u32(uaddr) } != val {
                 drop(w);
                 drop(arc);
-                cur.wakeup_deadline_ns.store(0, core::sync::atomic::Ordering::Release);
                 return -(Errno::Eagain.as_i32() as i64);
             }
             arc.set_state(TaskState::Sleeping);
             cur.futex_uaddr.store(uaddr, core::sync::atomic::Ordering::Relaxed);
             w.push(Waiter { key, task: arc, bitset });
+        }
+        // Linux `futex_wait` arms its `hrtimer_sleeper` with
+        // `current->timer_slack_ns` (`kernel/futex/waitwake.c:747-748`), and
+        // `futex_do_wait` starts it AFTER `futex_queue` published the waiter.
+        // Arming before the task is Sleeping would let the expiry be consumed
+        // by a `claim_wake` that cannot win, losing the timeout outright.
+        if deadline_ns != 0 {
+            sched::hrtimeout::arm_current(deadline_ns, sched::hrtimeout::task_slack_ns(cur));
         }
         #[cfg(feature = "debug-futextrace")]
         if ftx_target_exe() {
@@ -229,7 +233,7 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
         cur.futex_uaddr.store(0, core::sync::atomic::Ordering::Relaxed);
-        cur.wakeup_deadline_ns.store(0, core::sync::atomic::Ordering::Release);
+        sched::hrtimeout::disarm_current();
         // Linux `__futex_wait`: "if we were woken (and unqueued), we
         // succeeded, whatever" — a real FUTEX_WAKE match takes priority over
         // a signal/timeout that also happened to land, since `wake_key`
