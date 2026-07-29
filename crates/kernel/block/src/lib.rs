@@ -3,6 +3,7 @@
 // `types.rs` — `BlockOp`, `BlockError`, `PageFlags`, `InodeId`, `PAGE_BYTES`.
 // `queue_limits.rs` — canonical block queue topology + sysfs leaf mapping.
 // `blockdev.rs` — `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing.
+// `completion.rs` — shared BlockIo softirq completion-handler registry.
 // `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
 // `fsync` / `invalidate`); `CachedPage` with `PG_*` flags.
 //
@@ -19,6 +20,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod blockdev;
+pub mod completion;
 pub mod devbridge;
 pub mod pagecache;
 pub mod queue_limits;

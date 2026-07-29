@@ -4,11 +4,6 @@ const BLK_CFG_CAPACITY_BYTES: usize = 8;
 const BLK_CFG_BLK_SIZE_BYTES: usize = 4;
 const DISK_NAME_BUF_BYTES: usize = 8;
 
-#[cfg(target_os = "oxide-kernel")]
-fn block_completion_softirq() {
-    run_completion_bottom_half();
-}
-
 fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> Option<BlkDeviceConfig> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
@@ -58,7 +53,9 @@ pub fn disk_name(index: u32) -> String {
 
 pub fn init_blk(init: BlkInit) -> u32 {
     #[cfg(target_os = "oxide-kernel")]
-    softirq::set_handler(softirq::Slot::BlockIo, block_completion_softirq);
+    if !block::completion::register(run_completion_bottom_half) {
+        return 0;
+    }
     let Some(requestq) = init.resources.require_queue(0) else {
         return 0;
     };

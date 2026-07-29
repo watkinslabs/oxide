@@ -35,7 +35,7 @@ pub(super) fn wake_all_blk_waiters() {
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
-    softirq::raise(softirq::Slot::BlockIo);
+    block::completion::raise();
 }
 
 /// Process virtio-blk completion notifications outside hard-IRQ context.

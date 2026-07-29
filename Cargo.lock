@@ -85,6 +85,7 @@ dependencies = [
  "hal",
  "klog",
  "sched",
+ "softirq",
  "sync",
  "vfs",
 ]
@@ -352,7 +353,6 @@ dependencies = [
  "klog",
  "pmm",
  "sched",
- "softirq",
  "sync",
  "virtio",
 ]
