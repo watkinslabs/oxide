@@ -38,7 +38,7 @@ mod userbuf {
     }
 }
 
-#[path = "../../syscalls/src/stat_common.rs"]
+#[path = "../../syscalls/src/stat_common/core.rs"]
 mod stat_common;
 
 #[path = "../../syscalls/src/005_fstat.rs"]
