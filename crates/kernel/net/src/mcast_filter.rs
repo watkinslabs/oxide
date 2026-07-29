@@ -10,6 +10,7 @@ use crate::stack::NetStack;
 
 #[path = "mcast_socket_gate.rs"]
 mod socket_gate;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use socket_gate::{SocketMcastGate, SocketMcastLease};
 
 pub const MCAST_EXCLUDE: u32 = 0;
