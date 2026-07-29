@@ -1,9 +1,5 @@
 use super::*;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
-// Only the write-while-free poison checks read this: the 0xCC `debug-cow` check
-// and the 0xAA `debug-watchdog` check (kernel-only — needs the HHDM mirror).
-#[cfg(any(feature = "debug-cow", all(feature = "debug-watchdog", target_os = "oxide-kernel")))]
-const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 const ALLOCATOR_INTEGRITY_RETRY_COUNT: usize = 64;
 #[cfg(feature = "debug-cow")]
 use super::metadata::cow_dbg_rmap_report;
@@ -25,63 +21,6 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
         let Some(pa) = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * PAGE_BYTES) else {
             break;
         };
-        // PAGE POISONING check (debug-watchdog): if this frame's tail still
-        // carries the 0xAA poison (so it WAS freed via free_one_frame, not
-        // boot-fresh) but some earlier byte differs, something wrote to it
-        // WHILE FREE — a use-after-free / write-while-mapped the PT-walk FWM
-        // detector can't catch (e.g. a stale TLB write). Names pa + offset.
-        // `user_as`/`sched::live` are kernel-target-only, so the gate carries
-        // `target_os` too — without it the feature does not build hosted.
-        #[cfg(all(feature = "debug-watchdog", target_os = "oxide-kernel"))]
-        {
-            let hhdm = crate::user_as::hhdm_offset();
-            if hhdm != 0 {
-                let base = (hhdm + pa) as *const u8;
-                // SAFETY: pa freshly off the free list; HHDM mirror readable; 4 KiB.
-                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(PAGE_BYTES_USIZE - 16 + i)) } == 0xAA);
-                if tail_poison {
-                    for off in 0..PAGE_BYTES_USIZE - 16 {
-                        // SAFETY: within the 4 KiB frame's HHDM mirror.
-                        let b = unsafe { core::ptr::read_volatile(base.add(off)) };
-                        if b != 0xAA {
-                            klog::write_raw(b"[POISON] write-while-free pa="); klog::write_hex_u64(pa);
-                            klog::write_raw(b" off="); klog::write_hex_u64(off as u64);
-                            klog::write_raw(b" val="); klog::write_hex_u64(b as u64);
-                            klog::write_raw(b"\n");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        // debug-cow item 3: same write-while-free check against the 0xCC
-        // poison that free_one_frame stamps. A freed frame must read back all
-        // 0xCC; the first byte that differs was written after the frame was
-        // freed = free-while-mapped (stale TLB), double-alloc, or the buddy
-        // returned a frame still in use. Tail-gated so a boot-fresh (never
-        // poisoned) frame isn't flagged.
-        #[cfg(feature = "debug-cow")]
-        {
-            let hhdm = crate::user_as::hhdm_offset();
-            if hhdm != 0 {
-                let base = (hhdm + pa) as *const u8;
-                // SAFETY: pa freshly off the free list; HHDM mirror readable; 4 KiB.
-                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(PAGE_BYTES_USIZE - 16 + i)) } == 0xCC);
-                if tail_poison {
-                    for off in 0..PAGE_BYTES_USIZE - 16 {
-                        // SAFETY: within the 4 KiB frame's HHDM mirror.
-                        let b = unsafe { core::ptr::read_volatile(base.add(off)) };
-                        if b != 0xCC {
-                            klog::write_raw(b"[POISON] frame="); klog::write_hex_u64(pa);
-                            klog::write_raw(b" dirtied-while-free off="); klog::write_hex_u64(off as u64);
-                            klog::write_raw(b" val="); klog::write_hex_u64(b as u64);
-                            klog::write_raw(b"\n");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
         if let Some(meta) = page_meta() {
             if let Some(m) = meta.get(hal::Pfn(pa / PAGE_BYTES)) {
                 let rc = m.refcount.load(Ordering::Acquire);
