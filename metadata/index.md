@@ -17,12 +17,19 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | D | 417 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
-| B | 1510 | bug fix |
+| C | 243 | tooling / deps / CI plumbing |
 | P17 | 18 | phase-17 work (tty + login) |
 
 ## Reserved (in flight)
 
-| B | 1510 | bug fix |
+`C238` was live in `wt-C238` while this file still read `next = 238`, so the
+build-warning sweep took `C239`–`C242` (cfg hygiene / trivial lints / dead-code
+triage / host-config dead_code scope) and advanced the counter to 243.
+
+The `C` row itself was LOST on 2026-07-28: a concurrent merge
+(`b72bd67e0` "merge origin/main: keep B=1510") resolved the conflict by
+duplicating the `B` row over it and dropping a third copy into this section.
+Restored here — a lost row silently hands the next lane a colliding number.
 
 `F761`–`F764` reserved 2026-07-27 for the syscall-matrix audit batches
 (xattr-at family, sched/ioprio, mempolicy/mseal, admin/misc). Counter already

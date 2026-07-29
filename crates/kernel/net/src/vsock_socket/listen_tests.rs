@@ -1,3 +1,4 @@
+#![allow(unpredictable_function_pointer_comparisons, reason = "the assertion is `the hook I just installed came back`; both sides are the same non-generic fn item in the same codegen unit, so the lint's address-uniqueness caveat cannot apply")]
 use super::*;
 
 const TEST_TRANSPORT_OWNER: u32 = 0x0D00_0010;
