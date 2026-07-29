@@ -5,12 +5,6 @@
 
 use sched::live::sigpend::Signum;
 
-/// Linux `SA_RESTORER`: user supplied the signal-return trampoline.
-/// AArch64 handlers without this flag return through the mapped vDSO entry.
-/// Consulted by `aarch64_restorer` only, hence the arch-conditional `expect`:
-/// on x86_64 nothing reads it, which is the bug the reason names.
-#[cfg_attr(not(target_arch = "aarch64"), expect(dead_code, reason = "no caller: the x86_64 arm of dispatch_pending hands p.restorer to build_signal_frame unconditionally; Linux arch/x86/kernel/signal_64.c:171 rejects the delivery (-EFAULT -> force_sigsegv) when SA_RESTORER is absent"))]
-const SA_RESTORER: u64 = 0x0400_0000;
 /// Linux `SA_RESTART`; caught handlers carrying this flag restart
 /// `ERESTARTSYS` syscalls through their preserved signal frame. The
 /// syscall-return tail (`dispatch/core.rs`) reads the same constant so the
@@ -25,18 +19,9 @@ use crate::arch_frame::UserRegs;
 const SIG_DFL: u64 = 0;
 const SIG_IGN: u64 = 1;
 
-/// Pick the Linux AArch64 signal-return continuation. `SA_RESTORER` keeps an
-/// explicit userspace trampoline; otherwise arm64 returns through the vDSO
-/// `__kernel_rt_sigreturn` mapping owned by the current mm.
-#[cfg(target_arch = "aarch64")]
-fn aarch64_restorer(p: &PendingSignal) -> Option<u64> {
-    if (p.flags & SA_RESTORER) != 0 { Some(p.restorer) }
-    else { crate::vdso::current_signal_restorer() }
-}
-
 #[cfg(target_arch = "aarch64")]
 fn deliver_aarch64(regs: *mut UserRegs, p: &PendingSignal, saved_ret: u64, restart: bool, payload: Option<hal::SigPayload>) -> u64 {
-    let Some(restorer) = aarch64_restorer(p) else {
+    let Some(restorer) = ::fs::sig_dispatch::aarch64_restorer(p.restorer, p.flags) else {
         sched::live::terminate_current_with_signal(Signum::Sigsegv.as_u8());
     };
     #[cfg(feature = "debug-zram-lifecycle")]
