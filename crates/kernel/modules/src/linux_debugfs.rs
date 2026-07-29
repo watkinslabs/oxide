@@ -121,8 +121,7 @@ pub(crate) extern "C" fn debugfs_create_file(
     data: *mut c_void,
     fops: *const LinuxFileOperations,
 ) -> *mut LinuxDentry {
-    if fops.is_null() { return null_mut(); }
-    let inode = crate::linux_debugfs_file::debug_file_inode(mode, data, fops, 0);
+    let inode = crate::linux_debugfs_file::debug_file_inode(mode, data, file_ops_or_noop(fops), 0);
     create_entry(name, parent, Some(inode), mode, false)
 }
 
@@ -134,8 +133,7 @@ extern "C" fn debugfs_create_file_size(
     fops: *const LinuxFileOperations,
     size: u64,
 ) -> *mut LinuxDentry {
-    if fops.is_null() { return null_mut(); }
-    let inode = crate::linux_debugfs_file::debug_file_inode(mode, data, fops, size);
+    let inode = crate::linux_debugfs_file::debug_file_inode(mode, data, file_ops_or_noop(fops), size);
     create_entry(name, parent, Some(inode), mode, false)
 }
 
@@ -299,12 +297,29 @@ pub(crate) fn symlink_inode(target: &[u8]) -> InodeRef {
     ).size(target.len() as u64).link(target.to_vec().into_boxed_slice()).build()
 }
 
-#[expect(dead_code, reason = "no caller: `debugfs_create_file` / `debugfs_create_file_size` bail with null_mut() when fops is NULL; Linux `__debugfs_create_file` (fs/debugfs/inode.c) substitutes `debugfs_noop_file_operations` and still creates the entry, so both should fall back to this instead of failing")]
-pub(crate) const NULL_FILE_OPS: LinuxFileOperations = LinuxFileOperations {
+fn file_ops_or_noop(fops: *const LinuxFileOperations) -> *const LinuxFileOperations {
+    if fops.is_null() { &NULL_FILE_OPS } else { fops }
+}
+
+unsafe extern "C" fn noop_read(
+    _file: *mut LinuxFile,
+    _buf: *mut c_char,
+    _len: usize,
+    _pos: *mut i64,
+) -> isize { 0 }
+
+unsafe extern "C" fn noop_write(
+    _file: *mut LinuxFile,
+    _buf: *const c_char,
+    len: usize,
+    _pos: *mut i64,
+) -> isize { len as isize }
+
+pub(crate) static NULL_FILE_OPS: LinuxFileOperations = LinuxFileOperations {
     owner: null_mut(),
     open: None,
-    read: None,
-    write: None,
+    read: Some(noop_read),
+    write: Some(noop_write),
     unlocked_ioctl: None,
     release: None,
     poll: None,
@@ -420,6 +435,38 @@ mod tests {
         assert_eq!(v, 11);
         debugfs_remove(d);
         assert!(tracefs::debug_root().lookup_path("debugfs_num").is_none());
+    }
+
+    #[test]
+    fn null_fops_create_noop_files() {
+        let name = b"debugfs_null_fops\0";
+        let d = debugfs_create_file(
+            name.as_ptr() as *const c_char,
+            0o600,
+            null_mut(),
+            null_mut(),
+            core::ptr::null(),
+        );
+        assert!(!d.is_null());
+        let inode = tracefs::debug_root().lookup_path("debugfs_null_fops").expect("debugfs null-fops file");
+        let mut buf = [0u8; 8];
+        assert_eq!(inode.read(0, &mut buf), Ok(0));
+        assert_eq!(inode.write(0, b"ignored"), Ok(7));
+        debugfs_remove(d);
+
+        let size_name = b"debugfs_null_fops_size\0";
+        let sized = debugfs_create_file_size(
+            size_name.as_ptr() as *const c_char,
+            0o400,
+            null_mut(),
+            null_mut(),
+            core::ptr::null(),
+            4096,
+        );
+        assert!(!sized.is_null());
+        let inode = tracefs::debug_root().lookup_path("debugfs_null_fops_size").expect("sized null-fops file");
+        assert_eq!(inode.size(), 4096);
+        debugfs_remove(sized);
     }
 
 }
