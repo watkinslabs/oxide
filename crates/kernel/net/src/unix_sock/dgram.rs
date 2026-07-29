@@ -238,6 +238,13 @@ impl UnixDgramQueue {
 
     /// [`try_push_from_with_rights_bounded`] carrying the sender's write-memory
     /// ownership (`skb->sk` / `skb->truesize`). # C: O(1)
+    ///
+    /// BUG (`scratch/sweep.md` item 1): `_charge` is the amount `try_push_owned`
+    /// already added to `owner.wmem`, and it is DROPPED here — the record below
+    /// stores a charge recomputed AFTER the BPF truncation, so `Drop`
+    /// (`sock_wfree`) gives back less than was taken. The `verdict == 0` arm
+    /// returns `Ok(())` without queueing anything and leaks the whole charge.
+    /// The leak is permanent, so a filtered socket eventually wedges at EAGAIN.
     fn try_push_from_with_rights_bounded_owned(&self, mut msg: UnixDgram, sender: Option<UnixAddr>,
         rights: GcRights, cap: usize, owner: Option<Arc<UnixDgramQueue>>, _charge: usize)
         -> Result<(), crate::NetError>
