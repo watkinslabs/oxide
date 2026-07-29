@@ -168,7 +168,7 @@ fn net_route_body(net_ns: u64) -> alloc::vec::Vec<u8> {
         let _ = writeln!(s,
             "{}\t{:08X}\t{:08X}\t{:04X}\t0\t0\t{}\t{:08X}\t{}\t0\t0",
             iface.name, dst_be, gateway, flags, record.metric, mask.to_le(),
-            record.mtu.unwrap_or(0),
+            record.metrics.mtu,
         );
     }
     s.into_bytes()

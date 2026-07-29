@@ -167,7 +167,7 @@
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
             dst: Some(([192, 168, 99, 0], 24)),
             gateway: None, oif_ifindex: 7777, prefsrc: None,
-            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+            metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0,
         });
         assert_eq!(route_snapshot_ns(0).len(), before + 1);
         let n = route_remove(0, RT_TABLE_MAIN as u32, Some(([192, 168, 99, 0], 24)), 7777, None);
@@ -182,7 +182,7 @@
             ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
             dst: Some(([10, 9, 8, 0], 24)), gateway: None,
-            oif_ifindex: 6543, prefsrc: None, metric: 0, mtu: None, flags: 0,
+            oif_ifindex: 6543, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0,
             weight: 1, nh_flags: 0,
         };
         let n0 = route_snapshot_ns(770).len();
@@ -259,7 +259,7 @@
             ns: NS, table: 1001, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK,
             kind: RTN_UNICAST, dst: Some(([172, 20, 0, 0], 16)),
             gateway: Some([192, 0, 2, 9]), oif_ifindex: 4401,
-            prefsrc: Some([172, 20, 0, 1]), metric: 77, mtu: Some(1400), flags: 0x20,
+            prefsrc: Some([172, 20, 0, 1]), metric: 77, metrics: net::RouteMetrics { mtu: 1400, ..net::RouteMetrics::NONE }, flags: 0x20,
             weight: 1, nh_flags: 0,
         };
         route_insert(row);
@@ -278,7 +278,7 @@
             ns: NS, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([203, 0, 113, 0], 24)),
             gateway: Some(gateway), oif_ifindex: 4402, prefsrc: None,
-            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+            metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0,
         };
         route_insert(make([192, 0, 2, 1]));
         route_insert(make([192, 0, 2, 2]));
@@ -296,7 +296,7 @@
         let row = |table, iface| RouteRow {
             ns: NS, table, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK,
             kind: RTN_UNICAST, dst: None, gateway: None, oif_ifindex: iface,
-            prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+            prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0,
         };
         route_insert(row(RT_TABLE_MAIN as u32, 4403));
         route_insert(row(1002, 4404));
@@ -428,7 +428,7 @@
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
             dst: Some(([10, 0, 2, 0], 24)), gateway: None,
             oif_ifindex: 2, prefsrc: Some([10, 0, 2, 15]),
-            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+            metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0,
         }, true);
         let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
         assert_eq!(ty, RTM_NEWROUTE);

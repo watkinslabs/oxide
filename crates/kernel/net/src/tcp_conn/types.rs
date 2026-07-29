@@ -11,6 +11,12 @@ pub struct Endpoint {
     pub port: u16,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TcpCongestionControl {
+    Reno,
+    Cubic,
+}
+
 /// One unacked segment on the retransmission queue.
 #[derive(Clone, Debug)]
 pub struct UnackedSegment {
@@ -59,9 +65,19 @@ pub struct TcpConn {
     /// uptime and letting an off-path observer correlate connections.
     pub ts_off:     u32,
     pub own_mss: u16,
+    pub congestion: TcpCongestionControl,
+    pub cc_locked: bool,
     pub cwnd:     u32,
+    pub cwnd_clamp: u32,
     pub ssthresh: u32,
     pub dup_acks: u8,
+    pub reordering: u32,
+    pub rto_min_ns: u64,
+    pub rto_min_locked: bool,
+    pub window_clamp: u32,
+    pub route_features: u32,
+    pub quickack: bool,
+    pub fastopen_no_cookie: bool,
     pub cubic_w_max:    u32,
     pub cubic_epoch_ms: u32,
     pub cubic_k_ms:     u32,

@@ -496,7 +496,7 @@ impl NetStack {
         // to the first non-loopback iface so the broadcast lands.
         // Once route tables track scope (LOCAL_BROADCAST etc.), the
         // fallback retires.
-        let (iface_id, iface, next_hop) = self.route_v4_iface_in(0, dst_ip, None)?;
+        let (route, iface, next_hop) = self.route_v4_iface_in(0, dst_ip, None)?;
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
@@ -508,7 +508,7 @@ impl NetStack {
             *s
         };
         self.xmit_ipv4_l4_on_iface(
-            iface_id, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), 0, id,
+            route, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), 0, id,
         )
     }
 }

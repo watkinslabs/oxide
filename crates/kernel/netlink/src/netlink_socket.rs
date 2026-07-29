@@ -435,7 +435,8 @@ mod tests {
             protocol: rtnetlink::RTPROT_STATIC, scope: rtnetlink::RT_SCOPE_LINK,
             kind: rtnetlink::RTN_UNICAST, dst: Some(([198, 18, 23, 0], 24)),
             gateway: None, oif_ifindex: 5511, prefsrc: None,
-            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+            metric: 0, metrics: net::RouteMetrics::NONE,
+            flags: 0, weight: 1, nh_flags: 0,
         };
         rtnetlink::route_insert(row);
         let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);

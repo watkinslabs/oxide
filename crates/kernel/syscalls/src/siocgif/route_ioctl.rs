@@ -132,7 +132,8 @@ fn record(req: Request, iface: net::NetIfaceId) -> net::RouteRecord {
             else if req.gateway.is_some() { netlink::rtnetlink::RT_SCOPE_UNIVERSE }
             else { netlink::rtnetlink::RT_SCOPE_LINK },
         kind: if reject { net::route::RTN_UNREACHABLE } else { net::route::RTN_UNICAST },
-        metric: req.metric.unwrap_or(0), mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        metric: req.metric.unwrap_or(0), metrics: net::RouteMetrics::NONE,
+        flags: 0, weight: 1, nh_flags: 0,
     }
 }
 

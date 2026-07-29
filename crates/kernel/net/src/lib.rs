@@ -49,7 +49,7 @@ pub mod ndp;
 pub mod udp;
 pub mod tcp_hdr;
 pub mod tcp_conn;
-pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
+pub use tcp_conn::{Endpoint, TcpCongestionControl, TcpConn, TcpConnError};
 
 pub mod unix_sock;
 pub use unix_sock::{
@@ -67,6 +67,7 @@ pub mod hosted_fixture;
 mod rtnl;
 pub use rtnl::RtnlGuard;
 pub mod route;
+pub mod route_metrics;
 pub mod route6;
 pub mod policy_rule;
 pub mod forwarding;
@@ -84,7 +85,8 @@ pub mod stack_diag;
 mod global;
 pub use global::global_stack;
 pub use stack::{BridgeTiming, NetStack, UdpRxQueue, stp_softirq_init, stp_raise_from_tick};
-pub use route::{RouteEntry, RouteRecord, RouteTable};
+pub use route::{ResolvedRoute, RouteEntry, RouteRecord, RouteTable};
+pub use route_metrics::RouteMetrics;
 pub use route6::{Route6Entry, Route6Origin, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
@@ -157,6 +159,8 @@ mod tests_ipv6_local;
 mod tests_ipv4_udp_errors;
 #[cfg(test)]
 mod tests_inet_netns;
+#[cfg(test)]
+mod route_metrics_tests;
 
 // Real bring-up runs through the module functions (stack init in kmain,
 // loopback/iface registration, the timer-driven TCP RTO below); there is

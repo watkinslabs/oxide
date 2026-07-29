@@ -243,7 +243,7 @@ impl Default for SockOpts {
             linger_s:    AtomicI32::new(0),
             priority:    AtomicI32::new(0),
             mark:        AtomicI32::new(0),
-            ip_ttl:      AtomicI32::new(crate::ipv4::IPV4_DEFAULT_TTL as i32),
+            ip_ttl:      AtomicI32::new(-1),
             ip_tos:      AtomicI32::new(0),
             ip_pktinfo:  AtomicI32::new(0), ip_mcast_ttl: AtomicI32::new(1), ip_mcast_loop: AtomicI32::new(1), ip_mcast_ifaddr: AtomicU32::new(0), ip_mcast_ifindex: AtomicU32::new(0),
             ip_recvttl: AtomicI32::new(0),
