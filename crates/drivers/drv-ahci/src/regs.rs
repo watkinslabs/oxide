@@ -15,7 +15,6 @@ pub const HBA_PI:   u64 = 0x0C; // Ports Implemented (bitmap)
 pub const HBA_VS:   u64 = 0x10; // Version
 
 /// GHC bits (AHCI §3.1.2).
-#[expect(dead_code, reason = "no caller: bring_up sets only GHC.AE; Linux ahci_reset_controller drives GHC.HR first")]
 pub const GHC_HR: u32 = 1 << 0;  // HBA Reset
 #[expect(dead_code, reason = "no caller: no AHCI completion-interrupt path exists; the driver busy-polls PxCI/PxTFD")]
 pub const GHC_IE: u32 = 1 << 1;  // Interrupt Enable
