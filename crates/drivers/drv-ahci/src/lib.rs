@@ -6,12 +6,11 @@
 // 0x010601 (QEMU ich9-ahci vendor 0x8086 device 0x2922), maps BAR5 (ABAR),
 // and calls `init`.
 //
-// Layering: `regs.rs` = pure register/FIS/IDENTIFY math (host-tested);
-// `port.rs` = the kernel-only MMIO + command mechanics (the `Ahci`
-// controller); `lifecycle.rs` = hosted cleanup-order proof; this file =
-// the BlockDevice impl + registration + PCI
-// bring-up glue. Mirrors drv-nvme: one synchronous in-flight request,
-// serialised by a Spinlock; per-chunk loop over a one-page bounce frame.
+// Layering: `regs.rs` = pure register/FIS/IDENTIFY math; `port.rs` = HBA/port
+// lifecycle; `command.rs` = command DMA staging; `irq.rs` = MSI hard-handler
+// endpoints; `wait.rs` = process wait mechanics; `device.rs` = BlockDevice;
+// `lifecycle.rs` = hosted cleanup-order proof; this file = registration + PCI
+// bring-up glue.
 
 #![no_std]
 
@@ -28,147 +27,32 @@ mod regs;
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod lifecycle;
 #[cfg(target_os = "oxide-kernel")]
+mod command;
+#[cfg(target_os = "oxide-kernel")]
+mod device;
+#[cfg(target_os = "oxide-kernel")]
+mod irq;
+#[cfg(target_os = "oxide-kernel")]
 mod port;
+#[cfg(target_os = "oxide-kernel")]
+mod wait;
 
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
     use alloc::string::String;
     use alloc::sync::Arc;
     use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use core::sync::atomic::{AtomicU32, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
-    use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
+    use block::BlockDevice;
+    #[cfg(feature = "debug-boot")]
+    use block::BlockRequest;
+    use crate::device::AhciBlk;
     use crate::port::Ahci;
 
     /// PCI class for an AHCI controller: base 0x01 (mass storage), subclass
     /// 0x06 (SATA), prog-if 0x01 (AHCI 1.0). # C: O(1)
     pub const AHCI_CLASS24: u32 = 0x01_06_01;
-
-    /// The registered `BlockDevice`: an `Ahci` controller behind a Spinlock
-    /// (one command slot, one in-flight command — the lock serialises every
-    /// submit, mirroring drv-nvme's NvmeBlk).
-    pub struct AhciBlk {
-        ctrl:     Spinlock<Ahci, DriverLockClass>,
-        blk_size: u32,
-        capacity: u64,
-        removed:  AtomicBool,
-    }
-
-    impl AhciBlk {
-        /// Bytes the PRDT bounce frame can carry per transfer (one page). # C: O(1)
-        fn chunk_bytes(&self) -> usize { Ahci::MAX_XFER as usize }
-
-        /// Blocks per chunk (bounce frame size / block size). # C: O(1)
-        fn chunk_blocks(&self) -> u64 {
-            (self.chunk_bytes() as u64) / (self.blk_size as u64)
-        }
-    }
-
-    impl BlockDevice for AhciBlk {
-        fn block_size(&self) -> u32 { self.blk_size }
-        fn capacity_blocks(&self) -> u64 { self.capacity }
-
-        fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
-            if self.removed.load(Ordering::Acquire) {
-                return Err(BlockError::Eio);
-            }
-            let bs = self.blk_size as usize;
-            match req.op {
-                BlockOp::Flush => {
-                    let mut c = self.ctrl.lock();
-                    if self.removed.load(Ordering::Acquire) {
-                        return Err(BlockError::Eio);
-                    }
-                    if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
-                }
-                BlockOp::Discard | BlockOp::WriteZeroes { .. } => Err(BlockError::Eopnotsupp),
-                BlockOp::Read | BlockOp::Write => {
-                    let nbytes = (req.len_blocks as usize)
-                        .checked_mul(bs).ok_or(BlockError::Einval)?;
-                    if req.op == BlockOp::Read {
-                        if req.buffer.len() < nbytes { req.buffer.resize(nbytes, 0); }
-                    } else if req.buffer.len() < nbytes {
-                        return Err(BlockError::Einval);
-                    }
-                    let write = req.op == BlockOp::Write;
-                    let cblk = self.chunk_blocks().max(1);
-                    let mut done: u64 = 0;
-                    let total = req.len_blocks as u64;
-                    while done < total {
-                        let n = core::cmp::min(cblk, total - done);
-                        let off = (done as usize) * bs;
-                        let len = (n as usize) * bs;
-                        let lba = req.start_block + done;
-                        let mut c = self.ctrl.lock();
-                        if self.removed.load(Ordering::Acquire) {
-                            return Err(BlockError::Eio);
-                        }
-                        let bva = c.bounce_va();
-                        if bva == 0 { return Err(BlockError::Eio); }
-                        let p = bva as *mut u8;
-                        if write {
-                            // Stage payload into the PRDT bounce frame.
-                            // SAFETY: HHDM-mapped bounce frame the controller
-                            // owns for this in-flight cmd (held under the ctrl
-                            // lock); `len` ≤ one page (cblk bounds it); aligned
-                            // byte stores stay within the frame.
-                            unsafe {
-                                for i in 0..len {
-                                    core::ptr::write_volatile(p.add(i), req.buffer[off + i]);
-                                }
-                            }
-                        }
-                        let ok = c.rw(write, lba, n as u16);
-                        if !ok { return Err(BlockError::Eio); }
-                        if !write {
-                            // Copy device-written data out of the bounce frame.
-                            // SAFETY: same HHDM-mapped bounce frame, now filled
-                            // by the controller; aligned byte loads within `len`
-                            // ≤ one page; still under the ctrl lock.
-                            unsafe {
-                                for i in 0..len {
-                                    req.buffer[off + i] = core::ptr::read_volatile(p.add(i));
-                                }
-                            }
-                        }
-                        drop(c);
-                        done += n;
-                    }
-                    Ok(())
-                }
-            }
-        }
-
-        fn flush(&self) -> KResult<()> {
-            if self.removed.load(Ordering::Acquire) {
-                return Err(BlockError::Eio);
-            }
-            let mut c = self.ctrl.lock();
-            if self.removed.load(Ordering::Acquire) {
-                return Err(BlockError::Eio);
-            }
-            if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
-        }
-    }
-
-    impl AhciBlk {
-        /// Remove publication before calling this, then quiesce hardware and
-        /// release AHCI DMA frames. Existing Arc holders observe EIO.
-        /// # C: O(port stop + PMM frees)
-        fn remove(&self) {
-            self.removed.store(true, Ordering::Release);
-            self.ctrl.lock().shutdown_and_free();
-        }
-
-        /// Quiesce for reboot/poweroff without unregistering the block device.
-        /// Existing Arc holders observe EIO while userspace publication stays
-        /// intact for the terminal power transition.
-        /// # C: O(port stop + PMM frees)
-        fn shutdown(&self) {
-            self.removed.store(true, Ordering::Release);
-            self.ctrl.lock().shutdown_and_free();
-        }
-    }
 
     /// Global registration-order counter for Linux SCSI disk names.
     /// Each successfully-published AHCI disk claims the next `sdX` slot.
@@ -182,6 +66,21 @@ mod imp {
     }
 
     static DEVICES: Spinlock<Vec<AhciRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+
+    fn run_completion_bottom_half() {
+        let devices: Vec<Arc<AhciBlk>> = DEVICES
+            .lock()
+            .iter()
+            .map(|record| record.dev.clone())
+            .collect();
+        for dev in devices { dev.completion_bottom_half(); }
+    }
+
+    fn unregister_completion_if_idle() {
+        if DEVICES.lock().is_empty() {
+            let _ = block::completion::unregister(run_completion_bottom_half);
+        }
+    }
 
     #[cfg(feature = "debug-boot")]
     fn key_bus(key: pci::Bdf) -> u8 { key.bus }
@@ -230,7 +129,7 @@ mod imp {
         if DEVICES.lock().iter().any(|rec| rec.device_key == device_key) {
             return 0;
         }
-        let a = match Ahci::bring_up(mmio, abar_off) { Ok(a) => a, Err(reason) => {
+        let mut a = match Ahci::bring_up(mmio, abar_off) { Ok(a) => a, Err(reason) => {
             // "no ..." = an empty HBA (e.g. the ICH9 chipset SATA controller
             // with no drive attached) — benign INFO, not a failure WARN.
             #[cfg(feature = "debug-boot")]
@@ -256,22 +155,16 @@ mod imp {
             klog::write_raw(b"\n");
         }
 
-        let dev = Arc::new(AhciBlk {
-            ctrl: Spinlock::new(a),
-            blk_size, capacity,
-            removed: AtomicBool::new(false),
-        });
-
-        // Optional bring-up self-test: read LBA 0 (proves the command-issue +
-        // PRDT path end-to-end). Logged; a failure does not block register.
-        #[cfg(feature = "debug-boot")]
-        {
-            let mut req = BlockRequest::new_read(0, 1, blk_size);
-            let ok = dev.submit_sync(&mut req).is_ok();
-            klog::write_raw(b"[INFO]  ahci: lba0 read selftest=");
-            klog::write_dec_u64(ok as u64);
-            klog::write_raw(b"\n");
+        if !block::completion::register(run_completion_bottom_half) {
+            a.shutdown_and_free();
+            return 0;
         }
+        let Some(binding) = crate::irq::bind(device_key, &a) else {
+            a.shutdown_and_free();
+            unregister_completion_if_idle();
+            return 0;
+        };
+        let dev = Arc::new(AhciBlk::new(a, binding, blk_size, capacity));
 
         let block_dev: Arc<dyn BlockDevice> = dev.clone();
         let name = sd_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
@@ -299,7 +192,22 @@ mod imp {
                 let _ = block::registry::unregister(&name);
             }
             dev.remove();
+            unregister_completion_if_idle();
             return 0;
+        }
+        // Run after DEVICES publication so the shared BlockIo bottom half can
+        // find and wake this controller's completion waiter.
+        #[cfg(feature = "debug-boot")]
+        {
+            let before = dev.irq_completion_count();
+            let mut req = BlockRequest::new_read(0, 1, blk_size);
+            let ok = dev.submit_sync(&mut req).is_ok();
+            let irqs = dev.irq_completion_count().saturating_sub(before);
+            klog::write_raw(b"[INFO]  ahci: lba0 read selftest=");
+            klog::write_dec_u64(ok as u64);
+            klog::write_raw(b" irq_completions=");
+            klog::write_dec_u64(irqs);
+            klog::write_raw(b"\n");
         }
         #[cfg(feature = "debug-boot")]
         {
@@ -328,6 +236,7 @@ mod imp {
         };
         let _ = block::registry::unregister(&rec.name);
         rec.dev.remove();
+        unregister_completion_if_idle();
         true
     }
 
@@ -360,7 +269,9 @@ mod imp {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{command_orig_for, device_key_from_bdf, init, remove, shutdown, AhciBlk, AHCI_CLASS24};
+pub use imp::{command_orig_for, device_key_from_bdf, init, remove, shutdown, AHCI_CLASS24};
+#[cfg(target_os = "oxide-kernel")]
+pub use device::AhciBlk;
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {

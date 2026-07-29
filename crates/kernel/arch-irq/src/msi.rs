@@ -261,3 +261,29 @@ mod arm {
         matches!(status, super::super::its::CmdStatus::Posted { .. })
     }
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::{alloc_pci_msi, free_pci_msi, MsiMessage, X86_APIC_MSI_ADDRESS};
+
+    #[test]
+    fn x86_allocator_exposes_the_entire_vector_pool() {
+        let mut messages: [Option<MsiMessage>; hal_x86_64::VEC_MSI_POOL_LEN] =
+            [None; hal_x86_64::VEC_MSI_POOL_LEN];
+
+        for (event_id, slot) in messages.iter_mut().enumerate() {
+            let message = alloc_pci_msi(0x1234, event_id as u32)
+                .expect("one message per advertised vector");
+            assert_eq!(message.address, X86_APIC_MSI_ADDRESS);
+            assert_eq!(message.irq, u32::from(hal_x86_64::VEC_MSI_POOL_FIRST)
+                + event_id as u32);
+            assert_eq!(message.data, message.irq);
+            *slot = Some(message);
+        }
+        assert_eq!(alloc_pci_msi(0x1234, messages.len() as u32), None);
+
+        for message in messages.into_iter().flatten() {
+            free_pci_msi(message.irq);
+        }
+    }
+}

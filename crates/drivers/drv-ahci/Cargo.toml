@@ -16,6 +16,8 @@ mmio-map = { path = "../../kernel/mmio-map" }
 sync    = { path = "../../shared/sync" }
 pmm     = { path = "../../kernel/mm-pmm" }
 block   = { path = "../../kernel/block" }
+arch-irq = { path = "../../kernel/arch-irq" }
+sched   = { path = "../../kernel/sched" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64  = { path = "../../arch/hal-x86_64" }

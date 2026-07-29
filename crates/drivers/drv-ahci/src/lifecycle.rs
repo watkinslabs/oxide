@@ -4,6 +4,19 @@ enum CleanupStep {
     DisablePciCommand,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ControllerCleanupStep {
+    MaskAndFreeIrq,
+    SynchronizeIrq,
+    ReleaseController,
+}
+
+const CONTROLLER_CLEANUP_STEPS: [ControllerCleanupStep; 3] = [
+    ControllerCleanupStep::MaskAndFreeIrq,
+    ControllerCleanupStep::SynchronizeIrq,
+    ControllerCleanupStep::ReleaseController,
+];
+
 const REMOVE_CLEANUP_STEPS: [CleanupStep; 2] = [
     CleanupStep::ReleaseController,
     CleanupStep::DisablePciCommand,
@@ -12,6 +25,11 @@ const REMOVE_CLEANUP_STEPS: [CleanupStep; 2] = [
 const PROBE_FAILURE_CLEANUP_STEPS: [CleanupStep; 1] = [
     CleanupStep::DisablePciCommand,
 ];
+
+/// AHCI-owned teardown order before PCI command restoration. # C: O(1)
+pub(crate) fn controller_cleanup_steps() -> [ControllerCleanupStep; 3] {
+    CONTROLLER_CLEANUP_STEPS
+}
 
 /// Run remove/shutdown cleanup in Linux teardown order: quiesce owned hardware
 /// and drop BAR mappings before disabling PCI command decode.
@@ -46,7 +64,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{run_probe_failure_cleanup, run_remove_cleanup};
+    use super::{
+        controller_cleanup_steps, run_probe_failure_cleanup, run_remove_cleanup,
+        ControllerCleanupStep,
+    };
+
+    #[test]
+    fn irq_is_masked_and_synchronized_before_controller_release() {
+        assert_eq!(
+            controller_cleanup_steps(),
+            [
+                ControllerCleanupStep::MaskAndFreeIrq,
+                ControllerCleanupStep::SynchronizeIrq,
+                ControllerCleanupStep::ReleaseController,
+            ],
+        );
+    }
 
     #[test]
     fn remove_cleanup_releases_controller_before_pci_command_disable() {
