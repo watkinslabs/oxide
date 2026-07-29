@@ -128,7 +128,9 @@ pub fn is_perfmon_prog_type(t: u32) -> bool {
 ///
 /// The built-in set here is exactly the set that can be *executed*:
 /// `BPF_PROG_TYPE_SOCKET_FILTER`, which `SO_ATTACH_BPF` runs on
-/// `security::bpf_interp`. `BPF_PROG_TYPE_LSM` is deliberately absent —
+/// `security::bpf_interp`, and `BPF_PROG_TYPE_CGROUP_DEVICE`, which
+/// `bpf::devcg` runs from the `inode_permission` and `mknod` device
+/// hooks. `BPF_PROG_TYPE_LSM` is deliberately absent —
 /// `security::bpf_lsm` holds a link registry whose `file_open` hook
 /// executes no program and returns "allow" unconditionally, so
 /// admitting an LSM load would hand userspace an fd standing for a MAC
@@ -136,7 +138,20 @@ pub fn is_perfmon_prog_type(t: u32) -> bool {
 /// answers those loads with the same EINVAL.
 /// # C: O(1)
 pub fn prog_type_supported(t: u32) -> bool {
-    matches!(t, uapi::prog_type::SOCKET_FILTER)
+    matches!(t, uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_DEVICE)
+}
+
+/// `is_cgroup_prog_type()` — kernel/bpf/syscall.c. The `check_atype`
+/// argument only narrows `BPF_PROG_TYPE_LSM` to `BPF_LSM_CGROUP`.
+/// # C: O(1)
+pub fn is_cgroup_prog_type(t: u32, attach_type: u32, check_atype: bool) -> bool {
+    use uapi::prog_type as p;
+    match t {
+        p::CGROUP_DEVICE | p::CGROUP_SKB | p::CGROUP_SOCK | p::CGROUP_SOCK_ADDR
+        | p::CGROUP_SOCKOPT | p::CGROUP_SYSCTL | p::SOCK_OPS => true,
+        p::LSM => !check_atype || attach_type == uapi::attach_type::LSM_CGROUP,
+        _ => false,
+    }
 }
 
 // ------------------------------------------------------------ MAP_CREATE
@@ -305,45 +320,86 @@ pub fn attach_type_to_prog_type(attach_type: u32) -> u32 {
     }
 }
 
-/// `bpf_prog_attach()` / `bpf_prog_detach()`.
-///
-/// Linux resolves the attach type, then hands the request to a
-/// per-subsystem attacher. Every attacher this kernel could reach is
-/// cgroup-BPF, and with `CONFIG_CGROUP_BPF=n` Linux's own
-/// `cgroup_bpf_prog_attach()` stub (include/linux/bpf-cgroup.h) returns
-/// `-EINVAL`. Oxide has no cgroup-BPF enforcement, so EINVAL is the
-/// honest — and Linux-identical — answer. It must not be a silent
-/// success: accepting systemd's device-policy attach while enforcing
-/// nothing claims a MAC guarantee that does not exist.
-///
-/// Returns the resolved prog type so the caller can run Linux's
-/// `bpf_prog_get_type(attr->attach_bpf_fd, ptype)` step — a bad fd is
-/// EBADF, which precedes the attacher's EINVAL.
-/// # C: O(ATTR_SIZE)
-pub fn prog_attach_check(a: &Attr) -> Result<u32, Errno> {
+/// Parsed `BPF_PROG_ATTACH` / `BPF_PROG_DETACH` request.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ProgAttach {
+    pub ptype: u32,
+    pub target_fd: u32,
+    pub attach_bpf_fd: u32,
+    pub attach_type: u32,
+    pub attach_flags: u32,
+    pub replace_bpf_fd: u32,
+    pub relative_fd: u32,
+    pub expected_revision: u64,
+}
+
+fn parse_prog_attach(a: &Attr, ptype: u32) -> ProgAttach {
     use uapi::off::prog_attach as o;
+    ProgAttach {
+        ptype,
+        target_fd:         a.u32_at(o::TARGET_FD),
+        attach_bpf_fd:     a.u32_at(o::ATTACH_BPF_FD),
+        attach_type:       a.u32_at(o::ATTACH_TYPE),
+        attach_flags:      a.u32_at(o::ATTACH_FLAGS),
+        replace_bpf_fd:    a.u32_at(o::REPLACE_BPF_FD),
+        relative_fd:       a.u32_at(o::RELATIVE_FD),
+        expected_revision: a.u64_at(o::EXPECTED_REVISION),
+    }
+}
+
+/// `bpf_prog_attach()`'s pre-resolution ladder: `CHECK_ATTR` → attach
+/// type → prog type (UNSPEC is EINVAL) → the per-family `attach_flags`
+/// mask. `bpf_mprog_supported()` is false for every prog type this
+/// kernel loads, so a request either lands in the cgroup family — which
+/// accepts `BPF_F_ATTACH_MASK_BASE | BPF_F_ATTACH_MASK_MPROG` — or in
+/// the "everything else" arm, which additionally rejects a non-zero
+/// `relative_fd`/`expected_revision`.
+/// # C: O(ATTR_SIZE)
+pub fn prog_attach_check(a: &Attr) -> Result<ProgAttach, Errno> {
+    use uapi::off::prog_attach as o;
+    use uapi::attach_flags as af;
     check_attr(a, o::LAST_END)?;
     let ptype = attach_type_to_prog_type(a.u32_at(o::ATTACH_TYPE));
     if ptype == uapi::prog_type::UNSPEC { return Err(Errno::Einval); }
-    // `bpf_mprog_supported()` is false and `is_cgroup_prog_type()` true
-    // for every type reachable here, so `attach_flags` outside
-    // BPF_F_ATTACH_MASK_BASE|MPROG is EINVAL.
-    if a.u32_at(o::ATTACH_FLAGS) & !ATTACH_MASK_BASE_MPROG != 0 { return Err(Errno::Einval); }
-    Ok(ptype)
+    let p = parse_prog_attach(a, ptype);
+    if is_cgroup_prog_type(ptype, 0, false) {
+        if p.attach_flags & !af::MASK_CGROUP != 0 { return Err(Errno::Einval); }
+    } else {
+        if p.attach_flags & !af::MASK_BASE != 0 { return Err(Errno::Einval); }
+        if p.relative_fd != 0 || p.expected_revision != 0 { return Err(Errno::Einval); }
+    }
+    Ok(p)
 }
 
-/// The attacher's verdict once the prog fd resolved. Linux dispatches
-/// to a per-subsystem attacher (`cgroup_bpf_prog_attach`,
-/// `sock_map_get_from_fd`, `tcx_prog_attach`, …); with none of those
-/// subsystems present, every arm collapses to the same `-EINVAL` the
-/// `CONFIG_*=n` stubs return. # C: O(1)
-pub fn prog_attach_verdict(_ptype: u32) -> Errno { Errno::Einval }
+/// `bpf_prog_detach()`'s ladder. Unlike attach, an unmapped attach type
+/// is not rejected up front — it falls through to the dispatch switch's
+/// `default: -EINVAL` — and the cgroup family rejects any `attach_flags`
+/// or `relative_fd` outright while still honouring `expected_revision`.
+/// # C: O(ATTR_SIZE)
+pub fn prog_detach_check(a: &Attr) -> Result<ProgAttach, Errno> {
+    use uapi::off::prog_attach as o;
+    check_attr(a, o::LAST_END)?;
+    let ptype = attach_type_to_prog_type(a.u32_at(o::ATTACH_TYPE));
+    let p = parse_prog_attach(a, ptype);
+    if is_cgroup_prog_type(ptype, 0, false) {
+        if p.attach_flags != 0 || p.relative_fd != 0 { return Err(Errno::Einval); }
+    } else if p.attach_flags != 0 || p.relative_fd != 0 || p.expected_revision != 0 {
+        return Err(Errno::Einval);
+    }
+    // `switch (ptype)`'s `default:` arm.
+    if !is_cgroup_prog_type(ptype, 0, false) { return Err(Errno::Einval); }
+    Ok(p)
+}
 
-/// `BPF_F_ATTACH_MASK_BASE | BPF_F_ATTACH_MASK_MPROG` (kernel/bpf/syscall.c):
-/// `ALLOW_OVERRIDE|ALLOW_MULTI|REPLACE|PREORDER` plus
-/// `REPLACE|BEFORE|AFTER|ID|LINK`.
-const ATTACH_MASK_BASE_MPROG: u32 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 6)
-    | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 13);
+/// `bpf_prog_attach_check_attach_type()` for the prog types this kernel
+/// loads. Both fall in the `default:` arm, which demands that the attach
+/// type map back to exactly the loaded program's type.
+/// # C: O(1)
+pub fn attach_type_matches_prog(prog_type: u32, attach_type: u32) -> Result<(), Errno> {
+    let ptype = attach_type_to_prog_type(attach_type);
+    if ptype == uapi::prog_type::UNSPEC || ptype != prog_type { return Err(Errno::Einval); }
+    Ok(())
+}
 
 // ------------------------------------------------------------ LINK_CREATE
 

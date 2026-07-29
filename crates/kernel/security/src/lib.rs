@@ -30,15 +30,21 @@ pub enum Error { Inval, Perm }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
-/// Boot-time init reporter.
+/// Boot-time init. Installs the two boundaries the cgroup device
+/// controller needs: the VFS device hook (`vfs` cannot call back into
+/// `security`) and the cgroup node-release hook (`cgroup` is a leaf).
 /// # SAFETY: caller is the boot path; pre-init; single-CPU.
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
-pub unsafe fn init() -> KResult<()> { Ok(()) }
+pub unsafe fn init() -> KResult<()> {
+    vfs::set_devcgroup_hook(bpf::devcg::vfs_hook);
+    cgroup::set_release_hook(bpf::cgstore::release);
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // SAFETY: hosted-test path; init has no side effects.
+    // SAFETY: hosted-test path; init only installs boundary hooks.
     #[test] fn init_ok() { unsafe { assert!(init().is_ok()); } }
 }

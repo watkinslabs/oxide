@@ -188,9 +188,53 @@ pub mod attach_type {
     pub const CGROUP_INET_EGRESS:  u32 = 1;
     pub const CGROUP_DEVICE:       u32 = 6;
     pub const LSM_MAC:             u32 = 27;
+    pub const LSM_CGROUP:          u32 = 43;
     /// `__MAX_BPF_ATTACH_TYPE` in v7.2.0-rc4.
     pub const MAX:                 u32 = 62;
 }
+
+/// `BPF_F_*` attach flags for `BPF_PROG_ATTACH`/`BPF_PROG_DETACH`
+/// (`include/uapi/linux/bpf.h`) plus the two masks `bpf_prog_attach()`
+/// screens with (kernel/bpf/syscall.c).
+pub mod attach_flags {
+    pub const ALLOW_OVERRIDE: u32 = 1 << 0;
+    pub const ALLOW_MULTI:    u32 = 1 << 1;
+    pub const REPLACE:        u32 = 1 << 2;
+    pub const BEFORE:         u32 = 1 << 3;
+    pub const AFTER:          u32 = 1 << 4;
+    pub const ID:             u32 = 1 << 5;
+    pub const PREORDER:       u32 = 1 << 6;
+    pub const LINK:           u32 = 1 << 13;
+    /// `BPF_F_ATTACH_MASK_BASE`.
+    pub const MASK_BASE:  u32 = ALLOW_OVERRIDE | ALLOW_MULTI | REPLACE | PREORDER;
+    /// `BPF_F_ATTACH_MASK_MPROG`.
+    pub const MASK_MPROG: u32 = REPLACE | BEFORE | AFTER | ID | LINK;
+    /// The pair `cgroup_bpf` attach types are screened against.
+    pub const MASK_CGROUP: u32 = MASK_BASE | MASK_MPROG;
+    /// Flags a cgroup attach list remembers as its mode
+    /// (`saved_flags` in `__cgroup_bpf_attach()`).
+    pub const SAVED: u32 = ALLOW_OVERRIDE | ALLOW_MULTI;
+}
+
+/// `include/linux/device_cgroup.h` — the `DEVCG_*` encoding the
+/// `bpf_cgroup_dev_ctx.access_type` word carries as
+/// `(access << 16) | dev_type`.
+pub mod devcg {
+    pub const ACC_MKNOD: u16 = 1;
+    pub const ACC_READ:  u16 = 2;
+    pub const ACC_WRITE: u16 = 4;
+    pub const DEV_BLOCK: u16 = 1;
+    pub const DEV_CHAR:  u16 = 2;
+    /// `struct bpf_cgroup_dev_ctx { u32 access_type, major, minor; }`.
+    pub const CTX_SIZE: usize = 12;
+    pub const CTX_ACCESS_TYPE: usize = 0;
+    pub const CTX_MAJOR:       usize = 4;
+    pub const CTX_MINOR:       usize = 8;
+}
+
+/// `BPF_CGROUP_MAX_PROGS` (kernel/bpf/cgroup.c) — per-cgroup, per-attach-type
+/// ceiling on directly attached programs.
+pub const CGROUP_MAX_PROGS: usize = 64;
 
 /// `BPF_F_*` map-create flags (`include/uapi/linux/bpf.h`).
 pub mod map_flags {

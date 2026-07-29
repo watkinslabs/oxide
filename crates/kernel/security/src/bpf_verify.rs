@@ -131,6 +131,24 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
 
 /// Verify the exact eBPF subset executable by the socket-filter runner. # C: O(insns)
 pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
+    verify_runnable_subset(insns)
+}
+
+/// Same admission for `BPF_PROG_TYPE_CGROUP_DEVICE`. Linux keeps a
+/// per-type `bpf_verifier_ops` whose `is_valid_access` bounds context
+/// reads to `sizeof(struct bpf_cgroup_dev_ctx)` and forbids context
+/// writes (`cgroup_dev_is_valid_access`); with no register-type tracking
+/// the equivalent here is dynamic — `bpf_interp` bounds every context
+/// read against the 12-byte context and routes stores to the stack
+/// alone, and `devcg::check_permission` denies a run that faults.
+/// # C: O(insns)
+pub fn verify_cgroup_device(insns: &[u8]) -> Result<(), VerifyError> {
+    verify_runnable_subset(insns)
+}
+
+/// Structural pass plus the opcode whitelist `bpf_interp` implements.
+/// # C: O(insns)
+fn verify_runnable_subset(insns: &[u8]) -> Result<(), VerifyError> {
     verify(insns)?;
     let n = insns.len() / BPF_INSN_SIZE;
     let mut pc = 0usize;
