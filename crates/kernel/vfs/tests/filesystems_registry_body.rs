@@ -14,6 +14,7 @@
 
 use alloc_free::*;
 mod alloc_free { pub use std::string::String; pub use std::sync::Arc; }
+use std::sync::Mutex;
 
 use vfs::fs::{FsFlags, FsType, filesystems_proc_body, register_fs, registered_filesystems,
     unregister_fs};
@@ -24,6 +25,7 @@ use vfs::VfsError;
 // with another test's registration and with the boot set.
 const NODEV_NAME: &str = "t756nodev";
 const DEV_NAME:   &str = "t756devfs";
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn ctor(_ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, _t: &str, _d: &str)
     -> Result<Arc<vfs::SuperBlock>, VfsError>
@@ -39,6 +41,7 @@ fn line_for(body: &str, name: &str) -> Option<String> {
 /// `nodev`/tab shape, and `FS_REQUIRES_DEV` is what drives the prefix.
 #[test]
 fn body_renders_the_live_registry_in_linux_shape() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     register_fs(FsType::new(NODEV_NAME, 0, FsFlags::empty(), Box::new(ctor))).expect("register nodev");
     register_fs(FsType::new(DEV_NAME, 0, FsFlags::FS_REQUIRES_DEV, Box::new(ctor))).expect("register dev");
 
@@ -64,6 +67,7 @@ fn body_renders_the_live_registry_in_linux_shape() {
 /// than a snapshot taken once at boot.
 #[test]
 fn unregistering_a_type_drops_its_line() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     const N: &str = "t756transient";
     register_fs(FsType::new(N, 0, FsFlags::empty(), Box::new(ctor))).expect("register");
     let body = filesystems_proc_body();
