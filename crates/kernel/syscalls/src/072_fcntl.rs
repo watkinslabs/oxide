@@ -18,6 +18,11 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_GETLK: u64 = 5; const F_SETLK: u64 = 6; const F_SETLKW: u64 = 7;
     const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
     const F_DUPFD_CLOEXEC: u64 = 1030;
+    /// Linux 6.10 `F_DUPFD_QUERY` (`fs/fcntl.c` `f_dupfd_query`): "do these two
+    /// descriptors refer to the same open file description?". systemd asks this
+    /// on every fd it might already hold — 182 times in one boot here — and got
+    /// EINVAL, because the command simply did not exist.
+    const F_DUPFD_QUERY: u64 = 1027;
     const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
     const F_ADD_SEALS: u64 = 1033; const F_GET_SEALS: u64 = 1034;
     const F_SEAL_SEAL: u32 = 0x0001;
@@ -58,6 +63,15 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         };
     }
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return ebadf };
+    if cmd == F_DUPFD_QUERY {
+        // `f_dupfd_query`: EBADF for an empty `arg` slot, else the pointer
+        // comparison `fd_file(f) == filp` — 1 when both descriptors name the
+        // SAME open file description (a dup, not a re-open), 0 otherwise.
+        // Identity is the `Arc<File>` here, which is exactly one open file
+        // description, so `Arc::ptr_eq` IS Linux's `struct file *` compare.
+        let other = match fdt.get(arg as i32) { Ok(f) => f, Err(_) => return ebadf };
+        return alloc::sync::Arc::ptr_eq(&file, &other) as i64;
+    }
     match cmd {
         F_GETFD => match fdt.cloexec(fd) {
             Ok(true) => 1,
