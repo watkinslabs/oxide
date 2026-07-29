@@ -1,13 +1,17 @@
 // `bpf(2)` — syscall slot 321 (x86_64) / 280 (aarch64 generic ABI),
 // per `27§R02`. Module manifest; no policy lives here.
 //
-//   uapi.rs  `enum bpf_cmd`, `union bpf_attr` offsets, BPF_F_* flags
-//   attr.rs  attr size protocol, CHECK_ATTR, capability ladders
-//            (no target gate — hosted-tested in attr/tests.rs)
-//   user.rs  user-memory access for the attr + insn + key/value copies
-//   prog.rs  PROG_LOAD, PROG_ATTACH/DETACH, LINK_CREATE
-//   map.rs   MAP_CREATE and the element/freeze commands
-//   ids.rs   pseudo-inode numbers for the three fd-backed objects
+//   uapi.rs     `enum bpf_cmd`, `union bpf_attr` offsets, BPF_F_* flags
+//   attr.rs     attr size protocol, CHECK_ATTR, capability ladders
+//               (no target gate — hosted-tested in attr/tests.rs)
+//   user.rs     user-memory access for the attr + insn + key/value copies
+//   prog.rs     PROG_LOAD, PROG_ATTACH/DETACH, LINK_CREATE
+//   map.rs      MAP_CREATE and the element/freeze commands
+//   cgattach.rs per-cgroup attach-list algebra (no target gate —
+//               hosted-tested in cgattach/tests.rs)
+//   cgstore.rs  binds those lists to live cgroup ids + program identity
+//   devcg.rs    BPF_CGROUP_DEVICE run site for the VFS device hooks
+//   ids.rs      pseudo-inode numbers for the three fd-backed objects
 //
 // Linux: kernel/bpf/syscall.c `__sys_bpf()` (linux-master v7.2.0-rc4).
 
@@ -24,6 +28,9 @@ use vfs::{FileType, InodeRef, InodeBuilder, default_inode_ops, default_file_ops,
 
 pub mod uapi;
 pub mod attr;
+pub mod cgattach;
+pub mod cgstore;
+pub mod devcg;
 mod user;
 mod prog;
 mod map;
@@ -37,21 +44,23 @@ const BPF_FD_MODE: u16 = 0o600;
 /// Re-exported for `SO_ATTACH_BPF` in the setsockopt slot.
 pub use uapi::prog_type::SOCKET_FILTER as BPF_PROG_TYPE_SOCKET_FILTER;
 
-/// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes and
-/// Linux program type stay coupled in the fd-backed inode's `i_private`.
+/// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes,
+/// Linux program type and the `bpf_prog_alloc_id()` identity stay
+/// coupled in the fd-backed inode's `i_private`.
 pub struct BpfProgInode {
     pub prog_type: u32,
+    pub id: u32,
     pub insns: Vec<u8>,
 }
 
 /// Build the `Arc<Inode>` for a loaded program (CharDev|0o600,
 /// `i_size` = bytecode length). # C: O(1)
-pub fn make_bpf_prog_inode(prog_type: u32, insns: Vec<u8>) -> InodeRef {
+pub fn make_bpf_prog_inode(prog_type: u32, id: u32, insns: Vec<u8>) -> InodeRef {
     let size = insns.len() as u64;
     InodeBuilder::new(ids::INO_PROG, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
         .size(size)
-        .private(Arc::new(BpfProgInode { prog_type, insns }))
+        .private(Arc::new(BpfProgInode { prog_type, id, insns }))
         .build()
 }
 
@@ -120,7 +129,8 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::MAP_GET_NEXT_KEY           => map::get_next_key(&a),
         cmd::MAP_FREEZE                 => map::freeze(&a),
         cmd::PROG_LOAD                  => prog::load(&a, caps),
-        cmd::PROG_ATTACH | cmd::PROG_DETACH => prog::attach(&a),
+        cmd::PROG_ATTACH                => prog::attach(&a),
+        cmd::PROG_DETACH                => prog::detach(&a),
         cmd::LINK_CREATE                => prog::link_create(&a),
         // `__sys_bpf()`'s `default: err = -EINVAL`, reached only after
         // the attr size protocol above has had its say.

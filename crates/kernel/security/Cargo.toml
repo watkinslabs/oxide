@@ -8,6 +8,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+cgroup  = { path = "../cgroup" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
 sched   = { path = "../../kernel/sched" }

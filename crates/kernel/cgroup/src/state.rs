@@ -39,6 +39,12 @@ static PID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinl
 /// `cgroup.events` change-notification: `fn(events_inode)`.
 static NOTIFY_HOOK: Spinlock<Option<fn(&vfs::InodeRef)>, TaskListClass> = Spinlock::new(None);
 
+/// Node-release notification: `fn(cgid)`, fired once the node is gone from
+/// the tree. Linux frees `cgrp->bpf` (the per-cgroup BPF attach lists) from
+/// `cgroup_bpf_release()` on the same event; the owner of that state lives
+/// outside this leaf crate, so it registers here.
+static RELEASE_HOOK: Spinlock<Option<fn(u64)>, TaskListClass> = Spinlock::new(None);
+
 /// PMM/scheduler-owned pressure transaction.  It is invoked after `TREE` is
 /// unlocked, so reclaim, throttling, and OOM selection never recurse into the
 /// hierarchy lock.  The leaf cgroup crate retains no alternate memory state.
@@ -71,6 +77,12 @@ pub fn set_pid_display_hook(f: fn(u64) -> u64) { *PID_DISPLAY_HOOK.lock() = Some
 /// Install the `cgroup.events` inotify hook. Boot path.
 /// # C: O(1)
 pub fn set_notify_hook(f: fn(&vfs::InodeRef)) { *NOTIFY_HOOK.lock() = Some(f); }
+
+/// Install the node-release hook. Boot path.
+/// # C: O(1)
+pub fn set_release_hook(f: fn(u64)) { *RELEASE_HOOK.lock() = Some(f); }
+
+pub(crate) fn release_hook() -> Option<fn(u64)> { *RELEASE_HOOK.lock() }
 
 /// Install the canonical memcg pressure owner. Boot path. # C: O(1)
 pub fn set_memory_pressure_hook(f: fn(u64, MemoryPressure) -> MemoryPressureResult) {
