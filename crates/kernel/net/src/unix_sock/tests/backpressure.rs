@@ -211,3 +211,36 @@ fn wmem_bounds_a_sender_whose_destination_is_unbounded() {
         GcRights::from_files(alloc::vec::Vec::new()), usize::MAX, &sender, SNDBUF)
         .expect("the freed charge re-opened the send");
 }
+
+// --- EOF vs EAGAIN on a shut-down receive ------------------------------------
+// Linux `__skb_wait_for_more_packets`: `if (sk->sk_shutdown & RCV_SHUTDOWN)
+// goto out_noerr` sets `*err = 0` (net/core/datagram.c). `unix_dgram_poll`
+// reports POLLIN unconditionally once the read side is shut, so a recv that
+// answers EAGAIN there spins the reader forever — which is what systemd-journald
+// was doing: 10.9M syscalls, 208s CPU, state R, epoll_wait<->recvmsg.
+
+/// The poll side promises readability on a shut-down socket. This pins the
+/// promise it is making, so the recv side has something to agree with.
+#[test]
+fn a_shutdown_reader_is_reported_readable() {
+    let _serial = test_guard();
+    let q = UnixDgramQueue::new();
+    assert!(q.msgs.lock().is_empty());
+    q.shutdown_reader();
+    assert!(q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire),
+        "shutdown_reader sets the flag poll turns into an unconditional POLLIN");
+}
+
+/// Queued datagrams still drain after shutdown — EOF is only once the queue is
+/// empty, exactly as Linux drains the receive queue before reporting it.
+#[test]
+fn shutdown_drains_before_it_reports_eof() {
+    let _serial = test_guard();
+    let q = UnixDgramQueue::new();
+    q.try_push_from_with_rights_bounded(datagram(b"last"), None,
+        GcRights::from_files(alloc::vec::Vec::new()), usize::MAX).expect("queue one");
+    q.shutdown_reader();
+    assert_eq!(q.pop().map(|m| m.payload), Some(b"last".to_vec()),
+        "shutdown preserves already-queued datagrams");
+    assert!(q.msgs.lock().is_empty(), "now empty AND shut down — the EOF case");
+}
