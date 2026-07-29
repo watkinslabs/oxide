@@ -2,6 +2,7 @@ use super::*;
 
 impl NetStack {
     /// Resolve canonical IPv4 PMTU transmit policy for one selected route. # C: O(log N)
+    #[cfg(test)]
     pub(crate) fn ipv4_pmtu_policy(&self, net_ns: u64, iface: NetIfaceId,
         dst: Ipv4Addr, link_mtu: u32, mode: i32) -> (usize, bool, bool) {
         let route = crate::ResolvedRoute {
