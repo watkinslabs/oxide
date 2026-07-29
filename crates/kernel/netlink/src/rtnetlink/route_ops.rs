@@ -7,7 +7,10 @@ use crate::{flags, Nlmsghdr};
 use super::ack::build_ack;
 use super::attrs::{put_nlattr, put_nlattr_u32};
 use super::route_state::{route_change, route_take_lowest, RouteRow};
-use super::rtnetlink_route::{parse_route_attrs, put_multipath_attr, RouteAttrError, RouteNexthop};
+use super::rtnetlink_route::{
+    parse_route_attrs, parse_route_attrs_for_delete, put_metrics_attr, put_multipath_attr,
+    route_metrics_match, RouteAttrError, RouteNexthop,
+};
 use super::uapi::{
     rta, Rtmsg, AF_INET, AF_INET6, RTM_NEWROUTE, RTN_BLACKHOLE, RTN_LOCAL, RTN_PROHIBIT,
     RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE, RTPROT_RA, RTPROT_STATIC, RT_SCOPE_HOST,
@@ -90,11 +93,7 @@ pub(crate) fn build_newroute_group_reply(
     if let Some(s) = row.prefsrc { put_nlattr(&mut body, rta::RTA_PREFSRC, &s); }
     if row.metric != 0 { put_nlattr_u32(&mut body, rta::RTA_PRIORITY, row.metric); }
     if row.table > u8::MAX as u32 { put_nlattr_u32(&mut body, rta::RTA_TABLE, row.table); }
-    if let Some(mtu) = row.mtu {
-        let mut metrics = Vec::new();
-        put_nlattr_u32(&mut metrics, 2, mtu);
-        put_nlattr(&mut body, rta::RTA_METRICS, &metrics);
-    }
+    put_metrics_attr(&mut body, row.metrics);
 
     let total = Nlmsghdr::SIZE + body.len();
     let hdr = Nlmsghdr {
@@ -270,7 +269,8 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
         rows.push(RouteRow {
             ns: net_ns, table, protocol, scope, kind, dst,
             gateway: parsed.gateway, oif_ifindex: oif, prefsrc: parsed.prefsrc,
-            metric: parsed.metric.unwrap_or(0), mtu: parsed.mtu, flags, weight: 1, nh_flags: 0,
+            metric: parsed.metric.unwrap_or(0), metrics: parsed.metrics,
+            flags, weight: 1, nh_flags: 0,
         });
     } else {
         if !route_kind_needs_oif(kind) { return build_errno_ack(req, Errno::Einval); }
@@ -279,7 +279,7 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
             rows.push(RouteRow {
                 ns: net_ns, table, protocol, scope, kind, dst,
                 gateway: nh.gateway, oif_ifindex: nh.oif, prefsrc: parsed.prefsrc,
-                metric: parsed.metric.unwrap_or(0), mtu: parsed.mtu, flags,
+                metric: parsed.metric.unwrap_or(0), metrics: parsed.metrics, flags,
                 weight: nh.hops as u16 + 1, nh_flags: nh.flags,
             });
         }
@@ -344,7 +344,7 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     if dst_len > 32 { return build_errno_ack(req, Errno::Einval); }
     if src_len != 0 || tos != 0 { return build_errno_ack(req, Errno::Eopnotsupp); }
     let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
-    let mut parsed = match parse_route_attrs(attrs) {
+    let mut parsed = match parse_route_attrs_for_delete(attrs) {
         Ok(parsed) => parsed,
         Err(RouteAttrError::Invalid) => return build_errno_ack(req, Errno::Einval),
         Err(RouteAttrError::Unsupported) => return build_errno_ack(req, Errno::Eopnotsupp),
@@ -374,6 +374,7 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
             && parsed.prefsrc.is_none_or(|src| route.src_hint
                 == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(src))))
             && parsed.metric.is_none_or(|metric| record.metric == metric)
+            && route_metrics_match(&parsed.metric_filters, record.metrics)
             && (protocol == 0 || record.protocol == protocol)
             && (scope == 0 || record.scope == scope)
             && (kind == 0 || record.kind == kind)
@@ -471,13 +472,15 @@ mod tests {
         let row = RouteRow {
             ns: 1, table: 1001, protocol: 4, scope: 0, kind: 1,
             dst: Some(([10, 0, 0, 0], 8)), gateway: None, oif_ifindex: 7,
-            prefsrc: None, metric: 99, mtu: Some(1400), flags: 0x40, weight: 1, nh_flags: 0,
+            prefsrc: None, metric: 99,
+            metrics: net::RouteMetrics { mtu: 1400, ..net::RouteMetrics::NONE },
+            flags: 0x40, weight: 1, nh_flags: 0,
         };
         let msg = build_newroute_row_reply(1, 2, row, false);
         assert_eq!(msg[Nlmsghdr::SIZE + 4], 0);
         assert_eq!(u32::from_ne_bytes(msg[Nlmsghdr::SIZE + 8..Nlmsghdr::SIZE + 12].try_into().unwrap()), 0x40);
         let attrs = &msg[Nlmsghdr::SIZE + Rtmsg::SIZE..];
         let parsed = parse_route_attrs(attrs).unwrap();
-        assert_eq!((parsed.table, parsed.metric, parsed.mtu), (Some(1001), Some(99), Some(1400)));
+        assert_eq!((parsed.table, parsed.metric, parsed.metrics.mtu), (Some(1001), Some(99), 1400));
     }
 }

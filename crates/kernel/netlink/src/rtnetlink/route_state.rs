@@ -20,7 +20,7 @@ pub struct RouteRow {
     pub oif_ifindex: u32,
     pub prefsrc: Option<[u8; 4]>,
     pub metric: u32,
-    pub mtu: Option<u32>,
+    pub metrics: net::RouteMetrics,
     pub flags: u32,
     pub weight: u16,
     pub nh_flags: u8,
@@ -41,7 +41,7 @@ pub(crate) fn to_record(row: RouteRow) -> net::RouteRecord {
         scope: row.scope,
         kind: row.kind,
         metric: row.metric,
-        mtu: row.mtu,
+        metrics: row.metrics,
         flags: row.flags,
         weight: row.weight,
         nh_flags: row.nh_flags,
@@ -61,7 +61,7 @@ pub(crate) fn from_record(ns: u64, record: net::RouteRecord) -> RouteRow {
         oif_ifindex: route.iface.raw(),
         prefsrc: route.src_hint.map(|s| s.as_u32().to_be_bytes()),
         metric: record.metric,
-        mtu: record.mtu,
+        metrics: record.metrics,
         flags: record.flags,
         weight: record.weight,
         nh_flags: record.nh_flags,
@@ -142,7 +142,8 @@ pub fn seed_default_routes_lo(lo_ifindex: u32) {
         dst: Some(([127, 0, 0, 0], 8)),
         gateway: None,
         oif_ifindex: lo_ifindex,
-        prefsrc: Some([127, 0, 0, 1]), metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        prefsrc: Some([127, 0, 0, 1]), metric: 0, metrics: net::RouteMetrics::NONE,
+        flags: 0, weight: 1, nh_flags: 0,
     });
 }
 
@@ -158,7 +159,8 @@ pub fn seed_default_routes(eth0_ifindex: u32) {
         dst: Some(([10, 0, 2, 0], 24)),
         gateway: None,
         oif_ifindex: eth0_ifindex,
-        prefsrc: Some([10, 0, 2, 15]), metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        prefsrc: Some([10, 0, 2, 15]), metric: 0, metrics: net::RouteMetrics::NONE,
+        flags: 0, weight: 1, nh_flags: 0,
     });
     route_insert(RouteRow {
         ns: 0,
@@ -169,6 +171,7 @@ pub fn seed_default_routes(eth0_ifindex: u32) {
         dst: None,
         gateway: Some([10, 0, 2, 2]),
         oif_ifindex: eth0_ifindex,
-        prefsrc: Some([10, 0, 2, 15]), metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        prefsrc: Some([10, 0, 2, 15]), metric: 0, metrics: net::RouteMetrics::NONE,
+        flags: 0, weight: 1, nh_flags: 0,
     });
 }

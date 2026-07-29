@@ -158,10 +158,36 @@ pub mod rta {
 
 /// RTAX_* nested route metric ids from Linux `linux/rtnetlink.h`.
 pub mod rtax {
-    pub const RTAX_UNSPEC:  u16 = 0;
-    pub const RTAX_LOCK:    u16 = 1;
-    pub const RTAX_MTU:     u16 = 2;
-    pub const RTAX_MAX:     u16 = 17;
+    pub const RTAX_UNSPEC:            u16 = 0;
+    pub const RTAX_LOCK:              u16 = 1;
+    pub const RTAX_MTU:               u16 = 2;
+    pub const RTAX_WINDOW:            u16 = 3;
+    pub const RTAX_RTT:               u16 = 4;
+    pub const RTAX_RTTVAR:            u16 = 5;
+    pub const RTAX_SSTHRESH:          u16 = 6;
+    pub const RTAX_CWND:              u16 = 7;
+    pub const RTAX_ADVMSS:            u16 = 8;
+    pub const RTAX_REORDERING:        u16 = 9;
+    pub const RTAX_HOPLIMIT:          u16 = 10;
+    pub const RTAX_INITCWND:          u16 = 11;
+    pub const RTAX_FEATURES:          u16 = 12;
+    pub const RTAX_RTO_MIN:           u16 = 13;
+    pub const RTAX_INITRWND:          u16 = 14;
+    pub const RTAX_QUICKACK:          u16 = 15;
+    pub const RTAX_CC_ALGO:           u16 = 16;
+    pub const RTAX_FASTOPEN_NO_COOKIE: u16 = 17;
+    pub const RTAX_MAX:               u16 = RTAX_FASTOPEN_NO_COOKIE;
+
+    pub const RTAX_FEATURE_ECN:         u32 = 1 << 0;
+    pub const RTAX_FEATURE_SACK:        u32 = 1 << 1;
+    pub const RTAX_FEATURE_TIMESTAMP:   u32 = 1 << 2;
+    pub const RTAX_FEATURE_ALLFRAG:     u32 = 1 << 3;
+    pub const RTAX_FEATURE_TCP_USEC_TS: u32 = 1 << 4;
+    pub const RTAX_FEATURE_MASK: u32 = RTAX_FEATURE_ECN
+        | RTAX_FEATURE_SACK
+        | RTAX_FEATURE_TIMESTAMP
+        | RTAX_FEATURE_ALLFRAG
+        | RTAX_FEATURE_TCP_USEC_TS;
 }
 
 /// `struct ndmsg` — Linux `linux/neighbour.h`. Precedes the NDA_* attributes

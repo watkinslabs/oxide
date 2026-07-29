@@ -89,8 +89,9 @@ fn populate(sock: &InetSocket, info: &mut TcpInfo) {
     info.tcpi_total_retrans = info.tcpi_retrans;
     info.tcpi_rtt = (c.srtt_ns / 1_000) as u32;
     info.tcpi_rttvar = (c.rttvar_ns / 1_000) as u32;
-    info.tcpi_snd_ssthresh = c.ssthresh;
+    info.tcpi_snd_ssthresh = c.ssthresh / core::cmp::max(snd_mss, 1);
     info.tcpi_snd_cwnd = c.cwnd / core::cmp::max(snd_mss, 1);
+    info.tcpi_reordering = c.reordering;
     info.tcpi_rcv_space = c.rcv_buf_cap;
 }
 

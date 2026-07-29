@@ -52,7 +52,13 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
             .or_else(|| iface_primary_ip(bound_iface.or_else(|| stack().routes.lookup_in(net_ns, dst).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
-    let mcast_loop = sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0; let ttl = if dst.is_multicast() { sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) } else { sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) } as u8;
+    let mcast_loop = sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0;
+    let ttl = if dst.is_multicast() {
+        sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) as u8
+    } else {
+        let ttl = sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire);
+        if ttl < 0 { 0 } else { ttl as u8 }
+    };
     let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8; if dst.is_multicast() && !mcast_loop && crate::sock_mcast::is_loopback_iface(bound_iface) { return Ok(payload.len()); }
     let pmtudisc = sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
     stack().send_udp_pmtu_to_bound_opts_in(

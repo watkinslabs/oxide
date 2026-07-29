@@ -2,7 +2,7 @@
 // tcp_conn.rs stays under the 1000-line cap (docs/08§7). Public
 // entry points: `on_ack`, `on_rto`, `icbrt`.
 
-use crate::tcp_conn::{TcpConn, OWN_MSS_DEFAULT, tcp_now_ms};
+use crate::tcp_conn::{TcpCongestionControl, TcpConn, OWN_MSS_DEFAULT, tcp_now_ms};
 
 /// Effective MSS for cwnd math (own_mss + peer hint). # C: O(1)
 pub fn cc_mss(c: &TcpConn) -> u32 {
@@ -23,10 +23,18 @@ pub fn icbrt(x: u64) -> u64 {
     }
 }
 
-/// CUBIC on-ACK (RFC 8312). Slow-start unchanged; CA phase uses
-/// the concave-then-convex cubic curve around W_max.
-/// # C: O(1) amortized
+/// Route-selected congestion-control ACK processing. # C: O(1) amortized
 pub fn on_ack(c: &mut TcpConn, acked: u32, payload_len: u32) {
+    match c.congestion {
+        TcpCongestionControl::Reno => reno_on_ack(c, acked, payload_len),
+        TcpCongestionControl::Cubic => cubic_on_ack(c, acked, payload_len),
+    }
+    c.cwnd = c.cwnd.min(c.cwnd_clamp);
+}
+
+/// CUBIC on-ACK (RFC 8312). Slow-start is shared with Reno; CA follows
+/// the concave-then-convex cubic curve around W_max. # C: O(1) amortized
+fn cubic_on_ack(c: &mut TcpConn, acked: u32, payload_len: u32) {
     let mss = cc_mss(c);
     if acked > 0 {
         c.dup_acks = 0;
@@ -64,10 +72,37 @@ pub fn on_ack(c: &mut TcpConn, acked: u32, payload_len: u32) {
     }
     if payload_len == 0 {
         c.dup_acks = c.dup_acks.saturating_add(1);
-        if c.dup_acks == 3 {
+        let threshold = c.reordering.clamp(1, u8::MAX as u32) as u8;
+        if c.dup_acks == threshold {
             cubic_on_loss(c);
-            c.cwnd = c.ssthresh.saturating_add(3 * mss);
-        } else if c.dup_acks > 3 {
+            c.cwnd = c.ssthresh.saturating_add(u32::from(threshold) * mss);
+        } else if c.dup_acks > threshold {
+            c.cwnd = c.cwnd.saturating_add(mss);
+        }
+    }
+}
+
+/// Reno slow start, additive increase, and duplicate-ACK recovery. # C: O(1)
+fn reno_on_ack(c: &mut TcpConn, acked: u32, payload_len: u32) {
+    let mss = cc_mss(c);
+    if acked > 0 {
+        c.dup_acks = 0;
+        if c.cwnd < c.ssthresh {
+            c.cwnd = c.cwnd.saturating_add(acked.min(mss));
+        } else {
+            let increase = (u64::from(mss) * u64::from(acked)
+                / u64::from(c.cwnd.max(1))).max(1) as u32;
+            c.cwnd = c.cwnd.saturating_add(increase);
+        }
+        return;
+    }
+    if payload_len == 0 {
+        c.dup_acks = c.dup_acks.saturating_add(1);
+        let threshold = c.reordering.clamp(1, u8::MAX as u32) as u8;
+        if c.dup_acks == threshold {
+            reno_on_loss(c);
+            c.cwnd = c.ssthresh.saturating_add(u32::from(threshold) * mss);
+        } else if c.dup_acks > threshold {
             c.cwnd = c.cwnd.saturating_add(mss);
         }
     }
@@ -84,11 +119,24 @@ fn cubic_on_loss(c: &mut TcpConn) {
     c.cubic_epoch_ms = 0;
 }
 
+/// Reno multiplicative decrease. # C: O(1)
+fn reno_on_loss(c: &mut TcpConn) {
+    let mss = cc_mss(c);
+    c.ssthresh = core::cmp::max(c.cwnd / 2, 2 * mss);
+}
+
 /// F190: ECN-Echo congestion signal. Treat as one loss event per
 /// RTT (rate-limited via ecn_last_reduce_ms). Cubic β reduction;
 /// keep cwnd ≥ ssthresh (no slow-start restart, per RFC 3168 §6.1.2).
 /// # C: O(1)
 pub fn on_ece(c: &mut TcpConn) {
+    if c.congestion == TcpCongestionControl::Reno {
+        if c.ssthresh != u32::MAX && c.cwnd <= c.ssthresh { return; }
+        reno_on_loss(c);
+        c.cwnd = c.ssthresh.min(c.cwnd_clamp);
+        c.send_cwr = true;
+        return;
+    }
     // Same-RTT echo guard: if cwnd is already at-or-below the
     // post-reduction level we'd compute now, skip — this ECE is
     // the peer still telling us about the same CE.
@@ -104,10 +152,13 @@ pub fn on_ece(c: &mut TcpConn) {
     c.send_cwr = true;
 }
 
-/// RTO loss event — CUBIC β=0.7; cwnd → MSS. # C: O(1)
+/// RTO loss event for the selected congestion algorithm; cwnd → MSS. # C: O(1)
 pub fn on_rto(c: &mut TcpConn) {
     let mss = cc_mss(c);
-    cubic_on_loss(c);
+    match c.congestion {
+        TcpCongestionControl::Reno => reno_on_loss(c),
+        TcpCongestionControl::Cubic => cubic_on_loss(c),
+    }
     c.cwnd = mss;
     c.dup_acks = 0;
 }

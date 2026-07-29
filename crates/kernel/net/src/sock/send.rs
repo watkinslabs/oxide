@@ -52,7 +52,10 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             tos: control.raw4.tos.unwrap_or(sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8),
             ttl: control.raw4.ttl.unwrap_or(if multicast {
                 sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) as u8
-            } else { sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) as u8 }),
+            } else {
+                let ttl = sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire);
+                if ttl < 0 { 0 } else { ttl as u8 }
+            }),
             pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
             broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
         };
