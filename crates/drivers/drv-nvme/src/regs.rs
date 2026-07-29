@@ -52,11 +52,16 @@ pub fn cap_dstrd(cap: u64) -> u32 { ((cap >> 32) & 0xF) as u32 }
 
 /// Decode CAP.MQES (max queue entries supported, bits 15:0; 0-based →
 /// +1 for the real maximum). # C: O(1)
-// `allow` not `expect`: the unit test below uses this, so the expectation
-// would be unfulfilled under `cfg(test)`.
-#[allow(dead_code, reason = "no caller: queue.rs hardcodes Q_ENTRIES into AQA and CREATE_IO_*Q QSIZE without clamping to CAP.MQES+1 (NVMe §3.1.8)")]
 #[inline]
 pub fn cap_mqes(cap: u64) -> u32 { ((cap & 0xFFFF) as u32) + 1 }
+
+/// Clamp a desired I/O queue depth to CAP.MQES. Admin queue depth is
+/// independently programmed through AQA and is not governed by MQES.
+/// # C: O(1)
+#[inline]
+pub fn io_queue_entries(cap: u64, desired: u32) -> u32 {
+    desired.min(cap_mqes(cap))
+}
 
 /// Decode CAP.TO (timeout, bits 31:24) in units of 500 ms — the worst-case
 /// time the controller may take to set/clear CSTS.RDY. # C: O(1)
@@ -140,6 +145,8 @@ mod tests {
     fn cap_field_decode() {
         // MQES (bits 15:0) 0-based: raw 0x3F → 64 entries.
         assert_eq!(cap_mqes(0x3F), 64);
+        assert_eq!(io_queue_entries(0x0F, 32), 16);
+        assert_eq!(io_queue_entries(0x3F, 32), 32);
         // DSTRD bits 35:32.
         assert_eq!(cap_dstrd(0x2_0000_0000), 2);
         // TO bits 31:24, units of 500ms: 0x14 → 20*500 = 10000ms.
