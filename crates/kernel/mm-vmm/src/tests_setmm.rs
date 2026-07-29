@@ -81,6 +81,19 @@ fn single_field_setter_stores_value() {
 }
 
 #[test]
+fn empty_data_interval_does_not_block_argv_rewrite() {
+    // Linux `validate_prctl_map_addr()` requires `start_data <= end_data`,
+    // unlike the strict `start_code < end_code` rule. An executable with an
+    // empty data interval must therefore still be able to relabel argv.
+    let as_ = AddressSpace::new(0).unwrap();
+    let mut m = valid_map();
+    m.end_data = m.start_data;
+    assert!(as_.apply_prctl_mm_map(&m).is_ok());
+    assert!(as_.prctl_set_field(PR_SET_MM_ARG_START, 0x5080).is_ok());
+    assert_eq!(as_.arg_start(), 0x5080);
+}
+
+#[test]
 fn ordering_violation_is_einval() {
     let as_ = AddressSpace::new(0).unwrap();
     let mut m = valid_map();

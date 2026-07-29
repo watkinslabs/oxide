@@ -282,3 +282,17 @@ use place::Placement;
 
 
 #[cfg(target_os = "oxide-kernel")] pub mod stack;
+
+/// Publish the Linux `mm_struct` layout produced by one ELF load and its
+/// initial stack build. Every exec entry path, including the kernel's PID 1
+/// bootstrap, must use this single commit point so `/proc` and `PR_SET_MM`
+/// observe the same canonical metadata.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn commit_mm_layout(as_: &AddressSpace, img: &LoadedImage, layout: &stack::StackLayout) {
+    as_.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
+    as_.set_start_brk(img.brk.as_u64());
+    as_.set_arg_env_stack(
+        layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, layout.sp,
+    );
+}
