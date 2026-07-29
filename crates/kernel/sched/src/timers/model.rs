@@ -1,7 +1,9 @@
 // Hosted POSIX timer state model. Kernel glue supplies native clock samples and signal state.
 // Clock-id decode and the per-clock callback tables belong to `posix_clock`.
 
-pub(crate) use crate::posix_clock::{ClockError, ClockSpec, CpuClock, CpuMeasure};
+pub(crate) use crate::posix_clock::ClockSpec;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub(crate) use crate::posix_clock::{ClockError, CpuClock, CpuMeasure};
 
 const INT_MAX: u64 = i32::MAX as u64;
 
