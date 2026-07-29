@@ -82,6 +82,7 @@ const DRM_IOCTL_MODE_CREATE_DUMB: u64 = 0xc020_64b2;
 const PR_SET_VMA: u64 = 0x5356_4d41;
 
 #[cfg(feature = "debug-desktop")]
+#[cfg(feature = "debug-desktop")]
 fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64,
     a3: u64, a4: u64, a5: u64, rv: Option<i64>)
 {
@@ -479,6 +480,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     crate::syscost::record(nr, __syscost);
     #[cfg(feature = "debug-startlat")]
     crate::startlat::record(nr, __startlat, rv);
+    #[cfg(feature = "debug-boot")]
+    trace_einval(nr, a0, a1, a2, rv);
     sched::diag::record_syscall(nr as u32, rv);
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {
@@ -664,4 +667,40 @@ fn trace_swapon_process(phase: &[u8], nr: u64, result: Option<i64>) {
 #[inline]
 fn restore_saved_sigmask() {
     if let Some(cur) = sched::live::current() { cur.restore_saved_sigmask(); }
+}
+
+
+/// Bounded ledger of every syscall that returns `EINVAL`, with the task that
+/// received it. A userspace event loop whose dispatch callback fails with
+/// "Invalid argument" gives no clue WHICH call failed — this names it instead
+/// of guessing at the library's internals. Capped so a chatty-but-correct
+/// EINVAL (e.g. `readlink` on a directory, which Linux also rejects) cannot
+/// flood the console. # C: O(1) until the budget is spent, then a no-op
+#[cfg(feature = "debug-boot")]
+static EINVAL_LEDGER_REMAINING: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(400);
+
+#[cfg(feature = "debug-boot")]
+fn trace_einval(nr: u64, a0: u64, a1: u64, a2: u64, rv: i64) {
+    use core::sync::atomic::Ordering as O;
+    if rv != -(syscall::errno::Errno::Einval.as_i32() as i64) { return; }
+    if EINVAL_LEDGER_REMAINING.fetch_update(O::Relaxed, O::Relaxed,
+        |remaining| remaining.checked_sub(1)).is_err() { return; }
+    let Some(cur) = sched::live::current() else { return };
+    klog::write_raw(b"[EINVAL nr=");
+    klog::write_dec_u64(nr);
+    klog::write_raw(b" tid=");
+    klog::write_dec_u64(cur.tid as u64);
+    klog::write_raw(b" a0=");
+    klog::write_hex_u64(a0);
+    klog::write_raw(b" a1=");
+    klog::write_hex_u64(a1);
+    klog::write_raw(b" a2=");
+    klog::write_hex_u64(a2);
+    klog::write_raw(b" comm=");
+    if let Some(name) = cur.try_comm_bytes() {
+        let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+        klog::write_raw(&name[..end]);
+    }
+    klog::write_raw(b"]\n");
 }
