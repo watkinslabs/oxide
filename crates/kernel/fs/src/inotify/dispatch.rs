@@ -131,9 +131,15 @@ pub fn fire_link_count(inode: &InodeRef) { fire_self(inode, FAN_ATTRIB); }
 /// # C: O(N_groups * N_watches)
 pub fn fire_open_exec(inode: &InodeRef) { fire_self(inode, FAN_OPEN_EXEC); }
 
-/// FAN_DELETE_SELF / IN_DELETE_SELF — the watched object itself was unlinked.
+/// Linux `fsnotify_inoderemove` (`include/linux/fsnotify.h`) in full: report
+/// FS_DELETE_SELF on the dying inode, THEN retire every mark attached to it
+/// (`__fsnotify_inode_delete`), which queues each freed wd's `IN_IGNORED`.
+/// The order matters — a reader must see DELETE_SELF before IGNORED.
 /// # C: O(N_groups * N_watches)
-pub fn fire_delete_self(inode: &InodeRef) { fire_self(inode, FAN_DELETE_SELF); }
+pub fn fire_delete_self(inode: &InodeRef) {
+    fire_self(inode, FAN_DELETE_SELF);
+    crate::inotify::marks::destroy_inode_marks(inode);
+}
 
 /// Rename notification triple (Linux `fsnotify_move`): FAN_MOVED_FROM on the
 /// source directory (naming the OLD entry) + FAN_MOVED_TO on the destination

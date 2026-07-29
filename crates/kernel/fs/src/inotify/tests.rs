@@ -168,8 +168,10 @@ fn inotify_remove_watch_queues_ignored_and_rejects_missing_wd() {
 #[test]
 fn inotify_queue_overflow_reports_single_overflow_event() {
     let ino = InotifyData::new(0);
-    for _ in 0..INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
-        ino.enqueue_event(Event { wd: 1, mask: IN_OPEN, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
+    // Distinct wds: identical consecutive records are MERGED into the tail
+    // (Linux `inotify_merge`), so a run of clones would never fill the queue.
+    for i in 0..INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
+        ino.enqueue_event(Event { wd: i as i32, mask: IN_OPEN, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
     }
     ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
     ino.enqueue_event(Event { wd: 1, mask: IN_ATTRIB, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
