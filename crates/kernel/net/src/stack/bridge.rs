@@ -418,25 +418,23 @@ impl NetStack {
         Err(NetError::Enodev)
     }
 
-    /// Create bridge state for a published bridge netdev. # C: O(log N)
+    /// Create bridge state for a published bridge netdev. Test-only: the live
+    /// rtnetlink path enters through `bridge_create_named`, which takes RTNL
+    /// itself. # C: O(log N)
+    #[cfg(test)]
     pub(crate) fn bridge_create_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                         net_ns: u64, mac: MacAddr) -> NetResult<()>
     {
         self.bridges.create(rtnl, bridge, net_ns, mac)
     }
 
-    /// Add a physical bridge port under RTNL. # C: O(log N)
+    /// Add a physical bridge port under RTNL. Test-only — the live path is
+    /// `bridge_add_port_named` / `bridge_add_port_ifindex`. # C: O(log N)
+    #[cfg(test)]
     pub(crate) fn bridge_add_port_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                           port: NetIfaceId) -> NetResult<()>
     {
         self.bridges.add_port(rtnl, bridge, port)
-    }
-
-    /// Remove one bridge port under RTNL. # C: O(N FDB)
-    pub(crate) fn bridge_del_port_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
-                                          port: NetIfaceId) -> NetResult<()>
-    {
-        self.bridges.del_port(rtnl, bridge, port)
     }
 
     /// Report whether a live ingress interface is currently a bridge port. # C: O(N bridges)

@@ -12,6 +12,9 @@ pub(crate) const NET_TCP6: u64 = 0xFEED_000A;
 pub(crate) const NET_UDP6: u64 = 0xFEED_000B;
 pub(crate) const NET_RAW: u64 = 0xFEED_000C;
 pub(crate) const NET_RAW6: u64 = 0xFEED_000D;
+/// Reserved for the `dyn_file` namespace-generated-body test fixture; no live
+/// `/proc` file claims it.
+#[cfg(test)]
 pub(crate) const NS_GENERATED: u64 = 0xFEED_1000;
 pub(crate) const SELF_STATUS: u64 = 0x3000_1000;
 pub(crate) const SELF_CMDLINE: u64 = 0x3000_1100;

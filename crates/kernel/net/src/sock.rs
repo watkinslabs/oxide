@@ -115,7 +115,7 @@ pub use packet_ring::*;
 pub(crate) use packet_ring_v12::*;
 pub(crate) use packet_ring_v3::*;
 pub use packet_tx::*;
-pub use packet_ring_tx::*;
+pub(crate) use packet_ring_tx::*;  // only `pub(crate)` free items live there
 pub use iface::*;
 pub use bind_admission::{admit_bind, BindAdmission};
 pub use legacy_ioctl::legacy_ioctl_errno;

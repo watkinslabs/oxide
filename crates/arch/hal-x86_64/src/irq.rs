@@ -156,7 +156,6 @@ extern "C" {
     fn oxide_irq_vec_55();
     fn oxide_irq_vec_56();
     fn oxide_irq_vec_57();
-    fn oxide_irq_resume_user() -> !;
 }
 
 /// Per-CPU slot (`gs:[24]`) holding this CPU's hardirq-stack top; 0 = unarmed.
@@ -195,6 +194,8 @@ pub fn on_irq_stack() -> bool {
 
 /// Per-CPU hardirq-stack size. Tracks `sched::kstack::KSTACK_BYTES`, which the
 /// IRQ entry asm also hardcodes as its range bound (`cmp rdx, 0x4000`).
+// Read only by `on_irq_stack`'s kernel-target arm above.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const IRQ_STACK_BYTES: u64 = 16384;
 
 /// Arm THIS CPU's hardirq stack. `top` is the 16-aligned high end of a
@@ -232,11 +233,19 @@ pub const VEC_TLB_SHOOTDOWN: u8 = 0x42;
 /// the per-vector pool. Kept so existing callers compile; new code
 /// should call `alloc_x86_vector` and use the returned vector.
 pub const VEC_MSI_0: u8 = 0x50;
+// Interior pool slots are named only by `irq_stub_addr`'s match, which exists
+// on the kernel target; the two endpoints below also define the pool bounds.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_1: u8 = 0x51;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_2: u8 = 0x52;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_3: u8 = 0x53;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_4: u8 = 0x54;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_5: u8 = 0x55;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_6: u8 = 0x56;
 pub const VEC_MSI_7: u8 = 0x57;
 pub const VEC_MSI: u8 = VEC_MSI_0;
@@ -274,15 +283,4 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { let _ = vec; }
     0
-}
-
-/// Address of the shared IRQ epilogue (`oxide_irq_resume_user`),
-/// the saved-RIP value `Context::new_kernel_with_irq_frame` parks
-/// at scaffold base. Returns 0 on host (asm symbol absent).
-/// # C: O(1)
-pub fn irq_resume_user_addr() -> u64 {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    { oxide_irq_resume_user as *const () as usize as u64 }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { 0 }
 }

@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 use net::uapi::{MSG_DONTWAIT, MSG_EOR, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
-use crate::net_common::VsockFileRef;
 use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -44,6 +43,10 @@ fn recvmsg_preflight(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize
     })
 }
 
+/// Pre-`recvmsg_preflight` entry retained for the shutdown/WAITALL unit tests,
+/// which drive the receive loop without a `RecvUser`. The syscall path enters
+/// through `recv_pinned` -> `recvmsg_preflight` -> `recv_connected_with_copy`.
+#[cfg(test)]
 fn recv_with_copy_inner<F, R>(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize,
     flags: u64, file_nonblock: bool, copy: F, retry: R) -> Result<usize, i64>
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_socket::VsockSocket>)
@@ -115,20 +118,6 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_soc
             return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) };
         }
     }
-}
-
-/// Receive through one already-retained VSOCK endpoint. # C: O(payload)
-pub(crate) fn recv_with_copy_pinned<F>(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize, flags: u64, file_nonblock: bool, copy: F) -> Result<usize, i64>
-where F: FnMut(usize, &[u8]) -> Result<usize, i64>
-{
-    recv_with_copy_inner(sock, capacity, flags, file_nonblock, copy, |_| {})
-}
-
-/// Receive through one classified retained VSOCK file. # C: O(payload)
-pub(crate) fn recv_with_copy<F>(target: &VsockFileRef, capacity: usize, flags: u64, copy: F) -> Result<usize, i64>
-where F: FnMut(usize, &[u8]) -> Result<usize, i64>
-{
-    recv_with_copy_pinned(target, capacity, flags, target.is_nonblock(), copy)
 }
 
 /// AF_VSOCK stream recvmsg through its transactional RX queue. # C: O(payload)

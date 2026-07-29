@@ -113,6 +113,10 @@ impl VirtioPciAcquisition {
     }
 }
 
+/// Probe-time record consumed only by `virtio_trace::trace_probe`, whose every
+/// read sits inside `debug_boot!` — so in a default build the record is still
+/// built and passed, but no field is ever read.
+#[cfg_attr(not(feature = "debug-boot"), allow(dead_code, reason = "every field is read by virtio_trace::trace_probe inside debug_boot!; without that feature the record is write-only"))]
 pub(crate) struct VirtioPciProbeTrace {
     pub(crate) cmd_orig: u16,
     pub(crate) cmd_new: u16,

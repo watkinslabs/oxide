@@ -462,15 +462,6 @@ impl IfaceRegistry {
             .map(|entry| entry.mcast_report.clone())
     }
 
-    /// Interface-owned multicast transition ordering. # C: O(N)
-    pub(crate) fn mcast_report(&self, id: NetIfaceId)
-        -> Option<Arc<McastReportState>> {
-        let g = self.inner.lock();
-        g.entries.iter().find(|entry| entry.id == id
-            && entry.ingress.live() && entry.ingress.ready())
-            .map(|entry| entry.mcast_report.clone())
-    }
-
     /// Init-NS lookup compatibility shim — pre-F101 callers default
     /// to ns=0 until they're updated to pass the calling task's NS.
     /// # C: O(N)

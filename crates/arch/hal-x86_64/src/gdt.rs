@@ -51,6 +51,9 @@ pub const USER_DS: u16 = 0x40 | 3;
 /// used at runtime in v1 (no compat-mode userspace) but the
 /// descriptor must be present and well-formed for sysretq's
 /// internal validation.
+// Read only when building STAR in `install_syscall_msrs` (kernel target), plus
+// the descriptor-shape tests below.
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 pub const USER_CS32: u16 = 0x38 | 3;
 
 /// Kernel data selector (sel 0x30, DPL=0) — the kernel SS too. Named so

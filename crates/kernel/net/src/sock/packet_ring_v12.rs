@@ -170,14 +170,19 @@ impl InetSocket {
         Some(result.published)
     }
 
-    /// Select exactly one ring or queue receive destination. # C: O(payload)
+    /// Select exactly one ring or queue receive destination. Test-only entry:
+    /// the live RX path holds the ring + queue locks already and calls
+    /// `route_packet_receive_locked` directly. # C: O(payload)
+    #[cfg(test)]
     pub(crate) fn route_packet_receive(&self, input: PacketRingInput<'_>, queued: PacketFrame,
                                        limit: usize, now_ns: u64) -> bool {
         let full = input.payload;
         self.route_packet_receive_full(input, queued, full, limit, now_ns)
     }
 
-    /// Route receive while retaining the unclamped packet for V1/V2 copy fallback. # C: O(payload)
+    /// Route receive while retaining the unclamped packet for V1/V2 copy
+    /// fallback. Test-only — see `route_packet_receive`. # C: O(payload)
+    #[cfg(test)]
     pub(crate) fn route_packet_receive_full(&self, input: PacketRingInput<'_>,
         queued: PacketFrame, full: &[u8], limit: usize, now_ns: u64) -> bool
     {

@@ -56,12 +56,6 @@ impl NetStack {
         mtu.map(|m| (m.saturating_sub(overhead)).min(0xFFFF) as u16).unwrap_or(0)
     }
 
-    /// Resolve the IPv6 egress interface using longest-prefix match.
-    /// # C: O(N routes)
-    pub(crate) fn route6_iface(&self, dst: Ipv6Addr) -> Option<(NetIfaceId, crate::EgressLease)> {
-        self.route6_iface_in(0, dst)
-    }
-
     /// Resolve IPv6 egress within one network namespace. # C: O(N routes + N ifaces)
     pub(crate) fn route6_iface_in(&self, net_ns: u64, dst: Ipv6Addr)
         -> Option<(NetIfaceId, crate::EgressLease)>
@@ -412,12 +406,6 @@ impl NetStack {
         alloc::vec![selected]
     }
 
-    /// Find the exact IPv4 UDP sender named by an ICMP-echoed tuple. # C: O(N_port)
-    pub(crate) fn udp_error_endpoint(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr, sport: u16,
-                                     dst: Ipv4Addr, dport: u16) -> Option<Arc<UdpRxQueue>> {
-        self.udp_demux_in(net_ns, dst, dport, src, sport, iface).pop()
-    }
-
     /// Remove exactly one IPv4 UDP endpoint, preserving port peers. # C: O(N_port)
     pub fn unbind_udp_endpoint(&self, endpoint: &Arc<UdpRxQueue>) {
         let port = endpoint.bound_port;
@@ -489,7 +477,7 @@ impl NetStack {
         self.inet_tables(0).tcp_conns.clone()
     }
 
-    /// F161: pub send_l4_over_ipv4 wrapper. # C: O(payload + route)
+    /// F161: pub TCP-over-IPv4 send wrapper. # C: O(payload + route)
     pub fn send_l4_over_ipv4_pub(&self, src: Ipv4Addr, dst: Ipv4Addr, l4: &[u8])
         -> NetResult<()>
     {

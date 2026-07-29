@@ -150,8 +150,8 @@ enum Leaf {
     /// `proc_doulongvec_minmax` over a live `AtomicU64`.
     ULong(u64, Option<(u64, u64)>),
     /// `proc_dobool` over a live `AtomicBool`.
+    #[expect(dead_code, reason = "no caller: the leaf kind is fully materialised below (Bool(def) => leaked AtomicBool) but no row in TREE declares a bool knob, so every Linux proc_dobool sysctl is absent from /proc/sys")]
     Bool(bool),
-    /// `proc_dobool` bound to a subsystem accessor pair.
     /// `proc_dostring` bound to a subsystem accessor pair.
     StrHook(fn() -> alloc::vec::Vec<u8>, fn(&[u8])),
     /// Two-u16 `proc_dointvec` bound to subsystem accessors.

@@ -38,6 +38,9 @@ pub(super) enum ShmemPage {
 }
 
 impl ShmemPage {
+    /// Production charge/uncharge sites destructure `cgid` out of the variant
+    /// they already matched; only `shmem_page_tests` needs the accessor.
+    #[cfg(test)]
     pub(super) const fn cgid(self) -> u64 {
         match self {
             Self::Resident { cgid, .. } | Self::Swapped { cgid, .. }

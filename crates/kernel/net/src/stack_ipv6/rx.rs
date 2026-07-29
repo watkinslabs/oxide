@@ -425,10 +425,6 @@ fn quoted_raw6(invoking: &[u8]) -> Option<(Ipv6Hdr, u8, &[u8])> {
     }
 }
 
-fn quoted_udp6_tuple(invoking: &[u8]) -> Option<(Ipv6Addr, u16, Ipv6Addr, u16)> {
-    quoted_udp6(invoking).map(|(src, sport, dst, dport, _)| (src, sport, dst, dport))
-}
-
 fn icmpv6_checksum_valid(payload: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> bool {
     fn add_bytes(mut sum: u32, bytes: &[u8]) -> u32 {
         let mut chunks = bytes.chunks_exact(2);

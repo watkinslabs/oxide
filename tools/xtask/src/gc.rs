@@ -224,6 +224,7 @@ fn human(bytes: u64) -> String {
 /// `bash vendor/<pkg>/build.sh <arch>` for each requested pkg BEFORE staging.
 /// Presence with no `=value` rebuilds all 46 vendor deps (every `vendor/*`
 /// with a `build.sh`). A bad pkg name errors before any build runs.
+#[expect(dead_code, reason = "no caller: image_qemu::commands cmd_grub / cmd_grub_aarch64 must call this before cmd_rootfs, so the --rebuild-vendor that qemu-mcp forwards stops being silently ignored")]
 pub(crate) fn rebuild_vendor(repo: &Path, arch: &str, rest: &[String]) -> Result<(), u8> {
     let present = rest.iter().any(|a| a == "--rebuild-vendor" || a.starts_with("--rebuild-vendor="));
     if !present { return Ok(()); }
@@ -251,6 +252,7 @@ pub(crate) fn rebuild_vendor(repo: &Path, arch: &str, rest: &[String]) -> Result
 }
 
 /// Every `vendor/*` dir carrying a `build.sh`, sorted.
+#[expect(dead_code, reason = "no caller: reachable only from rebuild_vendor, which is itself unwired")]
 fn all_vendor_pkgs(repo: &Path) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(repo.join("vendor")) {

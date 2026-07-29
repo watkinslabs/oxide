@@ -104,7 +104,10 @@ impl PacketRxQueue {
         self.frames.front().map(|frame| frame.payload.len())
     }
 
-    /// Return queued frame count. # C: O(1)
+    /// Return queued frame count. Test-only: the live paths need emptiness
+    /// (`is_empty`), the head payload size (`first_len`, SIOCINQ) or the
+    /// ring/drop counters — never the depth itself. # C: O(1)
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize { self.frames.len() }
 
     /// Report whether no frame is queued. # C: O(1)

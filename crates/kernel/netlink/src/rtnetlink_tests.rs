@@ -3,7 +3,7 @@
     use crate::{nlmsg_align, Nlmsghdr};
 
     use super::*;
-    use super::route_ops::{build_newroute_reply, route_key};
+    use super::route_ops::{build_newroute_row_reply, route_key};
     use super::rtnetlink_link::LinkStats64;
 
     struct MovingDev;
@@ -423,14 +423,13 @@
     #[test]
     fn build_newroute_reply_well_formed() {
         let _serial = crate::test_serial::fib();
-        let bytes = build_newroute_reply(
-            1, 42,
-            RT_TABLE_MAIN, RTPROT_KERNEL, RT_SCOPE_LINK, RTN_UNICAST,
-            Some(([10, 0, 2, 0], 24)),
-            None,
-            2, Some([10, 0, 2, 15]),
-            true,
-        );
+        let bytes = build_newroute_row_reply(1, 42, RouteRow {
+            ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_KERNEL,
+            scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
+            dst: Some(([10, 0, 2, 0], 24)), gateway: None,
+            oif_ifindex: 2, prefsrc: Some([10, 0, 2, 15]),
+            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        }, true);
         let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
         assert_eq!(ty, RTM_NEWROUTE);
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET);

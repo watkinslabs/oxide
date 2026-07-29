@@ -7,7 +7,11 @@ use crate::{flags, Nlmsghdr};
 pub const SOCK_DIAG_BY_FAMILY: u16 = 20;
 pub const TCPDIAG_GETSOCK: u16 = 18;
 
+// `cfg_attr(not(test))`: the unit tests below build a request naming AF_INET,
+// so the expectation only holds for the production build.
+#[cfg_attr(not(test), expect(dead_code, reason = "no caller: `handle_in` never dispatches on sdiag_family — Linux `__sock_diag_cmd` (net/core/sock_diag.c) EINVALs family >= AF_MAX and ENOENTs a family with no registered handler, so only AF_INET/AF_INET6 reach inet_diag; here `family_matches` accepts any family and answers every request with an inet dump"))]
 const AF_INET: u8 = 2;
+#[expect(dead_code, reason = "no caller: same missing sdiag_family dispatch in `handle_in` — see AF_INET above")]
 const AF_INET6: u8 = 10;
 const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;

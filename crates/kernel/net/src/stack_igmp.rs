@@ -179,11 +179,16 @@ impl NetStack {
         if groups.is_empty() { all.remove(&iface); }
     }
     /// Publish one socket's full filter and emit the resulting interface state. # C: O(N * S)
+    /// Test-only ns-0 entry: the live socket join/leave path goes through
+    /// `mcast_filter` into the `*_rtnl` form, which already holds RTNL.
+    #[cfg(test)]
     pub(crate) fn set_ipv4_multicast(&self, owner: usize, iface: NetIfaceId, group: Ipv4Addr,
                                      src: Ipv4Addr, filter: Option<&SourceFilter>) -> NetResult<()> {
         self.set_ipv4_multicast_in(0, owner, iface, group, src, filter)
     }
     /// Publish socket IGMP policy in one network namespace. # C: O(N * S)
+    /// Test-only: production callers reach the `*_rtnl` form via `mcast_filter`.
+    #[cfg(test)]
     pub(crate) fn set_ipv4_multicast_in(&self, net_ns: u64, owner: usize,
                                         iface: NetIfaceId, group: Ipv4Addr,
                                         src: Ipv4Addr, filter: Option<&SourceFilter>) -> NetResult<()> {
@@ -249,11 +254,16 @@ impl NetStack {
             driver: report, now_ns }))
     }
     /// Remove one dead socket's policy and retain only a compact failed report. # C: O(N)
+    /// Test-only ns-0 entry: the live socket join/leave path goes through
+    /// `mcast_filter` into the `*_rtnl` form, which already holds RTNL.
+    #[cfg(test)]
     pub(crate) fn release_ipv4_multicast(&self, owner: usize, iface: NetIfaceId,
                                          group: Ipv4Addr, _src: Ipv4Addr) {
         self.release_ipv4_multicast_in(0, owner, iface, group, _src)
     }
     /// Remove dead socket policy in one network namespace. # C: O(N)
+    /// Test-only: production callers reach the `*_rtnl` form via `mcast_filter`.
+    #[cfg(test)]
     pub(crate) fn release_ipv4_multicast_in(&self, net_ns: u64, owner: usize,
                                             iface: NetIfaceId, group: Ipv4Addr,
                                             _src: Ipv4Addr) {

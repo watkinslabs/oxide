@@ -38,17 +38,26 @@ use crate::pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_SYSCALL};
 const PT_REGS_VECTOR_SYSCALL_IMM: i64 = -1;
 const _: () = assert!(PT_REGS_VECTOR_SYSCALL_IMM as u64 == PT_REGS_VECTOR_SYSCALL);
 
+// MSR numbers are written only by `install_syscall_msrs`, whose body is
+// kernel-target-only; the two RFLAGS/EFER bit values below are additionally
+// pinned by the host unit tests at the bottom of this file.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const IA32_EFER:  u32 = 0xC000_0080;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const IA32_STAR:  u32 = 0xC000_0081;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const IA32_LSTAR: u32 = 0xC000_0082;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const IA32_FMASK: u32 = 0xC000_0084;
 
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const EFER_SCE: u64 = 1 << 0;
 
 /// SFMASK bits cleared in RFLAGS on syscall entry. IF (bit 9) keeps
 /// IRQs masked through the entry critical section; DF (bit 10) so
 /// `rep`/string ops have a known direction; AC (bit 18) for SMAP
 /// safety once it's enabled.
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const SFMASK_BITS: u64 = (1 << 9) | (1 << 10) | (1 << 18);
 
 /// Static scratch kernel stack for syscall entry. 4 KiB, BSS,

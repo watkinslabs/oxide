@@ -201,8 +201,10 @@ fn search_from(g: &Store, roots: &[i32], t: &TaskIds, key_type: &str, descriptio
     None
 }
 
-/// Snapshot a keyring's member serials (Linux `KEYCTL_READ` on a keyring, used
-/// by tests). `None` if the serial isn't a keyring. # C: O(members)
+/// Snapshot a keyring's member serials. `None` if the serial isn't a keyring.
+/// Test-only readback: the production `KEYCTL_READ` on a keyring already
+/// returns the same member serials from `ops::keys::read_core`. # C: O(members)
+#[cfg(test)]
 pub fn members_of(serial: i32) -> Option<Vec<i32>> {
     let g = STORE.lock();
     g.keys.get(&serial).filter(|k| k.is_keyring()).map(|k| k.members.clone())

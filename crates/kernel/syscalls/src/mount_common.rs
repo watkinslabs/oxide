@@ -25,6 +25,7 @@ fn enoent() -> i64 { -(Errno::Enoent.as_i32() as i64) }
 /// `/var/tmp`, and the sandbox itself lives under `/run/systemd/mount-rootfs`.
 /// A trace that cannot see the directory the failure is about cannot find it.
 /// # C: O(1)
+#[cfg(feature = "debug-mount")]
 pub(crate) fn traced_path(p: &str) -> bool {
     p.starts_with("/run") || p.starts_with("/tmp") || p.starts_with("/var/tmp")
 }
@@ -46,22 +47,22 @@ pub(crate) fn mnt_log(_op: &str, _path: &str, _rv: i64) {
 }
 
 /// As `mnt_log`, plus a hex value (flags) appended after `path` and before rv.
+/// Only `165_mount`'s `debug-mount` arm calls it, so the whole fn rides the
+/// feature rather than compiling to an empty body without it.
 /// # C: O(len) emit when enabled
-pub(crate) fn mnt_log_hex(_op: &str, _path: &str, _flags: u64, _rv: i64) {
-    #[cfg(feature = "debug-mount")]
-    {
-        klog::write_raw(b"[mnt] ");
-        klog::write_raw(_op.as_bytes());
-        klog::write_raw(b" ns=");
-        klog::write_dec_u64(sched::live::current_mount_ns());
-        klog::write_raw(b" path=");
-        klog::write_raw(_path.as_bytes());
-        klog::write_hex_u64(_flags);
-        klog::write_raw(b" rv=");
-        if _rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-_rv) as u64); }
-        else { klog::write_dec_u64(_rv as u64); }
-        klog::write_raw(b"\n");
-    }
+#[cfg(feature = "debug-mount")]
+pub(crate) fn mnt_log_hex(op: &str, path: &str, flags: u64, rv: i64) {
+    klog::write_raw(b"[mnt] ");
+    klog::write_raw(op.as_bytes());
+    klog::write_raw(b" ns=");
+    klog::write_dec_u64(sched::live::current_mount_ns());
+    klog::write_raw(b" path=");
+    klog::write_raw(path.as_bytes());
+    klog::write_hex_u64(flags);
+    klog::write_raw(b" rv=");
+    if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-rv) as u64); }
+    else { klog::write_dec_u64(rv as u64); }
+    klog::write_raw(b"\n");
 }
 
 /// Read a NUL-terminated user-space C string at `p` (bounded by `max`)

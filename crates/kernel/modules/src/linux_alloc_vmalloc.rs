@@ -25,7 +25,6 @@ const PAGE_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 /// Dedicated kernel VA arena, below the device BAR arena (`mmio-map`).
 const VMALLOC_VA_BASE: u64 = 0xffff_fc00_0000_0000;
 const VMALLOC_VA_BYTES: u64 = 1u64 << 40;
-const VMALLOC_VA_END: u64 = VMALLOC_VA_BASE + VMALLOC_VA_BYTES;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot { pub total: u64, pub used: u64, pub largest_free: u64, pub allocations: u64 }

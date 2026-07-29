@@ -60,6 +60,8 @@ pub unsafe fn install_user_trap_hook(h: UserTrapHook) -> UserTrapHook {
     unsafe { core::mem::transmute::<*mut (), UserTrapHook>(prev) }
 }
 
+// Sole caller is `oxide_fault_print_rust`, which only exists on the kernel target.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 fn current_user_trap_hook() -> UserTrapHook {
     let p = USER_TRAP_HOOK.load(core::sync::atomic::Ordering::Acquire);
     // SAFETY: non-null by initialisation; written only via install_user_trap_hook with valid values.
@@ -81,6 +83,8 @@ pub unsafe fn install_fault_handler(h: FaultHandler) -> FaultHandler {
     unsafe { core::mem::transmute::<*mut (), FaultHandler>(prev) }
 }
 
+// Sole caller is `oxide_fault_print_rust`, which only exists on the kernel target.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 fn current_handler() -> FaultHandler {
     let p = FAULT_HANDLER.load(core::sync::atomic::Ordering::Acquire);
     // SAFETY: non-null by initialisation; written only by `install_fault_handler` with valid `FaultHandler` values.
@@ -311,6 +315,11 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
 /// Map an Intel-SDM exception vector to a short label (Vol. 3
 /// Tab. 6-1). Returns a static byte slice; unknown vectors fall
 /// through to `"reserved"`.
+// Consumed only by the oops printer inside `oxide_fault_print_rust`, which is
+// itself gated on the kernel target plus the debug-irq / debug-watchdog emit
+// gate; the host unit tests below pin the table.
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel",
+                    any(feature = "debug-irq", feature = "debug-watchdog"))))]
 const fn vector_label(vec: u64) -> &'static [u8] {
     match vec {
          0 => b"#DE",        1 => b"#DB",        2 => b"NMI",        3 => b"#BP",
@@ -326,6 +335,9 @@ const fn vector_label(vec: u64) -> &'static [u8] {
 /// §6.15. Returns a fixed label encoding the four bits we care
 /// about: P/!P (present?), W/R (write?), U/K (user/kernel?), I
 /// (instruction fetch). Sixteen possible labels statically.
+// Same gate as `vector_label`: oops-printer-only, plus the host tests below.
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel",
+                    any(feature = "debug-irq", feature = "debug-watchdog"))))]
 const fn decode_pfec(err: u64) -> &'static [u8] {
     let p   = (err & (1 << 0)) != 0;     // 1 = protection violation, 0 = not present
     let w   = (err & (1 << 1)) != 0;     // 1 = write, 0 = read

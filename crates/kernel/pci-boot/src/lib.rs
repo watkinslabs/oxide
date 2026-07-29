@@ -13,6 +13,8 @@ extern crate alloc;
 /// kernel exclusively owns, (b) PMM ready + single-CPU + IRQs masked,
 /// (c) `pa` is 4K-aligned. Used only at boot for virtio probing.
 /// # C: O(n_pages × walk depth)
+/// Sole caller is `trace.rs`'s MSI-X table dump, itself `debug-boot`-only.
+#[cfg(feature = "debug-boot")]
 pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
     unsafe { mmio_map::map_pages(pa, n_pages) }
 }

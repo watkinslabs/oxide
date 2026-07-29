@@ -18,12 +18,15 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Detected COM I/O base (x86 port). 0 ⇒ no UART bound.
+#[cfg(target_arch = "x86_64")]
 static BASE: AtomicU64 = AtomicU64::new(0);
 static PRESENT: AtomicBool = AtomicBool::new(false);
 static RX_ENABLED: AtomicBool = AtomicBool::new(false);
 static BSP_APIC: AtomicU64 = AtomicU64::new(0);
 static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
 static IRQ_VEC: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
 static IRQ_PIN: AtomicU64 = AtomicU64::new(u64::MAX);
 /// tty-delivery callback (`fn(u8)`), stored from `init`'s parameter so
 /// the bare-`fn()` MSI handler trampoline can reach it without args.
@@ -48,6 +51,9 @@ pub fn configure_probe(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) {
     DELIVER.store(dlv as usize as u64, Ordering::Release);
 }
 
+/// Only the x86 `imp`'s bare-`fn()` IRQ trampoline needs this indirection;
+/// the non-x86 shell has no RX path.
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn deliver(b: u8) {
     let p = DELIVER.load(Ordering::Acquire);

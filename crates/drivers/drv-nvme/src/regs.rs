@@ -5,6 +5,7 @@
 
 /// Controller register byte offsets in the BAR0 register file (§3.1).
 pub const REG_CAP:    u64 = 0x00; // Controller Capabilities (64-bit)
+#[allow(dead_code, reason = "NVMe 1.4 §3.1 controller-register offset table kept complete; the version register is informational")]
 pub const REG_VS:     u64 = 0x08; // Version (32-bit)
 pub const REG_CC:     u64 = 0x14; // Controller Configuration (32-bit)
 pub const REG_CSTS:   u64 = 0x1C; // Controller Status (32-bit)
@@ -51,6 +52,9 @@ pub fn cap_dstrd(cap: u64) -> u32 { ((cap >> 32) & 0xF) as u32 }
 
 /// Decode CAP.MQES (max queue entries supported, bits 15:0; 0-based →
 /// +1 for the real maximum). # C: O(1)
+// `allow` not `expect`: the unit test below uses this, so the expectation
+// would be unfulfilled under `cfg(test)`.
+#[allow(dead_code, reason = "no caller: queue.rs hardcodes Q_ENTRIES into AQA and CREATE_IO_*Q QSIZE without clamping to CAP.MQES+1 (NVMe §3.1.8)")]
 #[inline]
 pub fn cap_mqes(cap: u64) -> u32 { ((cap & 0xFFFF) as u32) + 1 }
 

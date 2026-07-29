@@ -20,6 +20,9 @@ pub(crate) const DMA_BIDIRECTIONAL: i32 = 3;
 pub(crate) const DEFAULT_DMA_MASK: u64 = u64::MAX;
 const DMA_ADDRESS_BITS: u32 = u64::BITS;
 pub(crate) const SG_END: usize = 0x02;
+// Only `linux_dma_tests` drives `sg_miter_start`; no in-tree module maps an SG
+// list yet, so the direction flag has no production reader.
+#[cfg(test)]
 pub(crate) const SG_MITER_FROM_SG: u32 = 1 << 2;
 
 #[repr(C)]

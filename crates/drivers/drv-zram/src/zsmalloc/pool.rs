@@ -10,6 +10,7 @@ use super::handle::{Handle, ObjectHeader, ObjectLocation, RegistryEntry};
 #[cfg(test)]
 use super::limits::ZS_FULLNESS_GROUP_COUNT;
 use super::platform::{page_provider, PageProvider};
+#[cfg(test)]
 use super::migration::ZsPoolStats;
 
 pub(super) struct ZsPage {
@@ -254,7 +255,10 @@ impl ZsPool {
     }
 
     /// Replaces an object payload without changing its stable handle or class.
+    /// Test-only: the live encode path allocates and copies in one step via
+    /// `alloc`, unlike Linux's split `zs_malloc` + `zs_obj_write`.
     /// # C: O(object length)
+    #[cfg(test)]
     pub(crate) fn write_from(&mut self, handle: Handle, bytes: &[u8]) -> KResult<()> {
         let header = self.header(handle)?;
         if bytes.len() != header.length { return Err(BlockError::Einval); }
@@ -303,8 +307,11 @@ impl ZsPool {
         u64::try_from(self.page_count()).ok().and_then(|pages| pages.checked_mul(hal::PAGE_SIZE_BYTES)).ok_or(BlockError::Enomem)
     }
 
-    /// Returns canonical backend occupancy and compaction eligibility.
+    /// Test-only observation of backend occupancy and compaction eligibility.
+    /// zram's mm_stat is served by state/stats.rs over `page_count` /
+    /// `allocated_bytes` / `reclaimable_pages`, not by this.
     /// # C: O(number of zspages squared in the worst fragmented class)
+    #[cfg(test)]
     pub(super) fn stats(&self) -> ZsPoolStats {
         let zspages = self.zspages.iter().flatten().count();
         let pages = self.page_count();
@@ -314,6 +321,7 @@ impl ZsPool {
 
     /// True when a partially used zspage can be emptied into existing same-class storage.
     /// # C: O(number of zspages squared in the worst fragmented class)
+    #[cfg(test)]
     pub(super) fn can_compact(&self) -> bool {
         self.zspages.iter().enumerate().any(|(source, page)| {
             page.as_ref().is_some_and(|page| page.fullness() == Fullness::AlmostEmpty && self.can_empty_source(source))

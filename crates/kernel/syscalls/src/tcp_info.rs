@@ -30,6 +30,9 @@ struct TcpInfo {
 }
 
 const TCP_INFO_LEN: usize = core::mem::size_of::<TcpInfo>();
+/// Short-buffer boundary the copyout tests cut at: everything before
+/// `tcpi_pacing_rate` is the pre-3.15 `struct tcp_info` prefix.
+#[cfg(test)]
 const TCP_INFO_PREFIX_LEN: usize = core::mem::offset_of!(TcpInfo, tcpi_pacing_rate);
 
 fn tcp_info_bytes(info: &TcpInfo) -> &[u8] {
