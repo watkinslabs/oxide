@@ -40,22 +40,6 @@ impl NetStack {
         self.bridge_xmit_raw(bridge, &frame)
     }
 
-    /// Answer ARP for an IPv4 address owned by a bridge link. # C: O(frame + N ports)
-    #[expect(dead_code, reason = "no caller: no bridge ingress path invokes this, so a bridge holding an IPv4 address never answers ARP for it and is unreachable from the LAN — bridge RX should call it before FDB forwarding")]
-    pub(super) fn bridge_answer_arp(&self, bridge: &crate::IngressLease, frame: &[u8],
-                                    header: crate::ethernet::EthHdr) -> NetResult<()>
-    {
-        if header.ethertype != crate::eth_p::ARP { return Ok(()); }
-        let arp = match crate::arp::ArpPkt::parse(&frame[header.hdr_len..]) { Ok(arp) => arp, Err(_) => return Ok(()) };
-        let Some((address, _)) = crate::iface_addr::primary(bridge.net_ns(), bridge.iface()) else { return Ok(()) };
-        if arp.opcode != crate::arp::ARP_OP_REQUEST || arp.target_ip != address { return Ok(()); }
-        let body = crate::arp::build_reply(&arp, bridge.device().mac());
-        let mut reply = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + body.len()];
-        crate::ethernet::EthHdr::write_to(arp.sender_mac, bridge.device().mac(), crate::eth_p::ARP, &mut reply);
-        reply[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&body);
-        self.bridge_xmit_raw(bridge.iface(), &reply)
-    }
-
     /// Queue one accepted packet until this bridge next hop resolves. # C: O(N destinations)
     fn bridge_queue_neighbour(&self, bridge: NetIfaceId, next_hop: IpAddr,
                               packet: crate::Pkt) -> NetResult<(bool, u64)>
