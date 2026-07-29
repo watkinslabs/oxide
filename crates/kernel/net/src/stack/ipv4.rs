@@ -4,10 +4,31 @@ impl NetStack {
     /// Resolve canonical IPv4 PMTU transmit policy for one selected route. # C: O(log N)
     pub(crate) fn ipv4_pmtu_policy(&self, net_ns: u64, iface: NetIfaceId,
         dst: Ipv4Addr, link_mtu: u32, mode: i32) -> (usize, bool, bool) {
+        let route = crate::ResolvedRoute {
+            iface,
+            gateway: None,
+            src_hint: None,
+            table: crate::policy_rule::RT_TABLE_MAIN,
+            priority: 0,
+            metrics: crate::RouteMetrics::NONE,
+        };
+        self.ipv4_route_pmtu_policy(net_ns, route, dst, link_mtu, mode)
+    }
+
+    /// Apply configured route MTU/LOCK before learned PMTU state. # C: O(log N)
+    pub(crate) fn ipv4_route_pmtu_policy(&self, net_ns: u64, route: crate::ResolvedRoute,
+        dst: Ipv4Addr, link_mtu: u32, mode: i32) -> (usize, bool, bool) {
         let state = if crate::uapi::ip_pmtudisc_uses_interface(mode) {
             super::pmtu_cache::PmtuLookup { mtu: link_mtu, locked: false }
+        } else if route.metrics.locked(crate::route_metrics::RTAX_MTU) {
+            super::pmtu_cache::PmtuLookup {
+                mtu: route.metrics.bounded_mtu(link_mtu),
+                locked: true,
+            }
         } else {
-            self.inet_tables(net_ns).pmtu.lookup(iface, IpAddr::V4(dst), link_mtu)
+            self.inet_tables(net_ns).pmtu.lookup(
+                route.iface, IpAddr::V4(dst), route.metrics.bounded_mtu(link_mtu),
+            )
         };
         let df = mode == crate::uapi::IP_PMTUDISC_DO
             || mode == crate::uapi::IP_PMTUDISC_PROBE
@@ -29,30 +50,33 @@ impl NetStack {
         let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
         self.xmit_ipv4_l4_on_iface(
-            route.iface, iface, route.gateway.unwrap_or(dst), src, dst, proto, l4, tos, id,
+            route, iface, route.gateway.unwrap_or(dst), src, dst, proto, l4, tos, id,
         )
     }
 
     /// Emit one IPv4 L4 payload on a selected iface, fragmenting when
     /// `IP header + payload` exceeds the iface MTU. # C: O(payload)
-    pub(crate) fn xmit_ipv4_l4_on_iface(&self, iface_id: NetIfaceId,
+    pub(crate) fn xmit_ipv4_l4_on_iface(&self, route: crate::ResolvedRoute,
         iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, id: u16) -> NetResult<()>
     {
         self.xmit_ipv4_l4_on_iface_opts(
-            iface_id, iface, next_hop, src, dst, proto, l4, tos, crate::ipv4::IPV4_DEFAULT_TTL, id,
+            route, iface, next_hop, src, dst, proto, l4, tos, 0, id,
         )
     }
 
     /// Emit one IPv4 L4 payload with explicit TOS and TTL on a selected iface,
     /// fragmenting when `IP header + payload` exceeds the iface MTU. # C: O(payload)
-    pub(crate) fn xmit_ipv4_l4_on_iface_opts(&self, iface_id: NetIfaceId,
+    pub(crate) fn xmit_ipv4_l4_on_iface_opts(&self, route: crate::ResolvedRoute,
         iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16) -> NetResult<()>
     {
-        let mtu = iface.mtu() as usize;
+        let mtu = route.metrics.bounded_mtu(iface.mtu()) as usize;
+        let ttl = if ttl == 0 {
+            route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL)
+        } else { ttl };
         self.xmit_ipv4_l4_with_policy(
-            iface_id, iface, next_hop, src, dst, proto, l4, tos, ttl, id, mtu, false, true,
+            route.iface, iface, next_hop, src, dst, proto, l4, tos, ttl, id, mtu, false, true,
         )
     }
 
@@ -112,13 +136,14 @@ impl NetStack {
         dst: Ipv4Addr, l4: &[u8], tos: u8, bound: Option<NetIfaceId>, mode: i32)
         -> NetResult<()>
     {
-        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
-        let (mtu, df, may_fragment) = self.ipv4_pmtu_policy(
-            net_ns, iface_id, dst, iface.mtu(), mode,
+        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
+            net_ns, route, dst, iface.mtu(), mode,
         );
         self.xmit_ipv4_l4_with_policy(
-            iface_id, iface, next_hop, src, dst, IpProto::Tcp, l4, tos,
-            crate::ipv4::IPV4_DEFAULT_TTL, self.next_ipv4_id(), mtu, df, may_fragment,
+            route.iface, iface, next_hop, src, dst, IpProto::Tcp, l4, tos,
+            route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL),
+            self.next_ipv4_id(), mtu, df, may_fragment,
         )
     }
 
@@ -135,9 +160,9 @@ impl NetStack {
     pub fn send_udp_pmtu_to_bound_opts_in(&self, net_ns: u64, src: Ipv4Addr, src_port: u16,
         dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
-        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
-        let (mtu, df, may_fragment) = self.ipv4_pmtu_policy(
-            net_ns, iface_id, dst, iface.mtu(), mode,
+        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
+            net_ns, route, dst, iface.mtu(), mode,
         );
         let udp_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut packet = Pkt::with_capacity(0, udp_len);
@@ -145,7 +170,10 @@ impl NetStack {
         UdpHdr::build_into(src_port, dst_port, src, dst, payload, udp);
         let id = { let mut next = self.next_ip_id.lock(); *next = next.wrapping_add(1); *next };
         self.xmit_ipv4_l4_with_policy(
-            iface_id, iface, next_hop, src, dst, IpProto::Udp, packet.data(), tos, ttl, id,
+            route.iface, iface, next_hop, src, dst, IpProto::Udp, packet.data(), tos,
+            if ttl == 0 {
+                route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL)
+            } else { ttl }, id,
             mtu, df, may_fragment,
         )
     }

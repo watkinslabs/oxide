@@ -24,11 +24,15 @@ fn update_pmtu_on_iface(stack: &NetStack, net_ns: u64, iface: NetIfaceId,
 
 fn update_pmtu_v4(stack: &NetStack, net_ns: u64, dst: crate::Ipv4Addr,
                   bound: Option<NetIfaceId>, mtu: u32) -> Option<u32> {
-    let iface = match bound {
-        Some(iface) => iface,
-        None => stack.routes.lookup_result_in(net_ns, dst).ok()?.iface,
+    let route = match bound {
+        Some(iface) => stack.route_v4_on_iface_in(net_ns, dst, iface).ok().flatten()?,
+        None => stack.routes.lookup_result_in(net_ns, dst).ok()?,
     };
-    update_pmtu_on_iface(stack, net_ns, iface, IpAddr::V4(dst), mtu,
+    let link_mtu = stack.ifaces.lookup_in_ns(route.iface, net_ns)?.mtu();
+    if route.metrics.locked(crate::route_metrics::RTAX_MTU) {
+        return Some(route.metrics.bounded_mtu(link_mtu));
+    }
+    update_pmtu_on_iface(stack, net_ns, route.iface, IpAddr::V4(dst), mtu,
         crate::stack::IPV4_MIN_PMTU)
 }
 
@@ -40,18 +44,36 @@ impl NetStack {
 
     /// Effective path MTU in one network namespace. # C: O(N)
     pub fn path_mtu_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>, probe: bool) -> NetResult<u32> {
+        if let IpAddr::V4(dst) = dst {
+            let route = match bound {
+                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface)?
+                    .unwrap_or(crate::ResolvedRoute {
+                        iface,
+                        gateway: None,
+                        src_hint: None,
+                        table: crate::policy_rule::RT_TABLE_MAIN,
+                        priority: 0,
+                        metrics: crate::RouteMetrics::NONE,
+                    }),
+                None => self.routes.lookup_result_in(net_ns, dst)?,
+            };
+            let link_mtu = self.ifaces.lookup_in_ns(route.iface, net_ns)
+                .ok_or(NetError::Enetunreach)?.mtu();
+            if probe { return Ok(link_mtu); }
+            let base_mtu = route.metrics.bounded_mtu(link_mtu);
+            if route.metrics.locked(crate::route_metrics::RTAX_MTU) {
+                return Ok(base_mtu);
+            }
+            return Ok(cached_pmtu(self, net_ns, route.iface, IpAddr::V4(dst), base_mtu));
+        }
         let (iface, link_mtu) = match (dst, bound) {
             (_, Some(iface)) => (iface, self.ifaces.lookup_in_ns(iface, net_ns)
                 .ok_or(NetError::Enetunreach)?.mtu()),
-            (IpAddr::V4(dst), None) => {
-                let route = self.routes.lookup_result_in(net_ns, dst)?;
-                let mtu = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?.mtu();
-                (route.iface, mtu)
-            }
             (IpAddr::V6(dst), None) => {
                 let (iface, dev) = self.route6_iface_in(net_ns, dst).ok_or(NetError::Enetunreach)?;
                 (iface, dev.mtu())
             }
+            (IpAddr::V4(_), None) => unreachable!(),
         };
         if probe { return Ok(link_mtu); }
         Ok(cached_pmtu(self, net_ns, iface, dst, link_mtu))

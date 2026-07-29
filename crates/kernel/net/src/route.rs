@@ -10,6 +10,7 @@ use sync::{Spinlock, Socket as RouteLockClass};
 use crate::addr::{Ipv4Addr, NetIfaceId};
 use crate::netdev::{NetError, NetResult};
 use crate::policy_rule::{self, PolicyRuleTable, RT_TABLE_MAIN};
+use crate::RouteMetrics;
 
 pub const RTN_UNICAST:     u8 = 1;
 pub const RTN_LOCAL:       u8 = 2;
@@ -36,17 +37,41 @@ pub struct RouteRecord {
     pub scope: u8,
     pub kind: u8,
     pub metric: u32,
-    pub mtu: Option<u32>,
+    pub metrics: RouteMetrics,
     pub flags: u32,
     pub weight: u16,
     pub nh_flags: u8,
 }
 
+/// Selected FIB state retained through the IPv4 and TCP datapaths.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedRoute {
+    pub iface: NetIfaceId,
+    pub gateway: Option<Ipv4Addr>,
+    pub src_hint: Option<Ipv4Addr>,
+    pub table: u32,
+    pub priority: u32,
+    pub metrics: RouteMetrics,
+}
+
 impl RouteRecord {
     /// Construct a normal unicast route with Linux kernel defaults. # C: O(1)
     pub const fn kernel(route: RouteEntry) -> Self {
-        Self { route, protocol: 2, scope: 0, kind: 1, metric: 0, mtu: None, flags: 0,
+        Self { route, protocol: 2, scope: 0, kind: 1, metric: 0,
+            metrics: RouteMetrics::NONE, flags: 0,
             weight: 1, nh_flags: 0 }
+    }
+
+    /// Project one canonical FIB record into immutable datapath state. # C: O(1)
+    pub const fn resolved(self) -> ResolvedRoute {
+        ResolvedRoute {
+            iface: self.route.iface,
+            gateway: self.route.gateway,
+            src_hint: self.route.src_hint,
+            table: self.route.table,
+            priority: self.metric,
+            metrics: self.metrics,
+        }
     }
 
     /// True when records are nexthops in one Linux-visible route alias group. # C: O(1)
@@ -55,7 +80,7 @@ impl RouteRecord {
             && self.route.prefix_len == other.route.prefix_len
             && self.route.src_hint == other.route.src_hint && self.protocol == other.protocol
             && self.scope == other.scope && self.kind == other.kind && self.metric == other.metric
-            && self.mtu == other.mtu && self.flags == other.flags
+            && self.metrics == other.metrics && self.flags == other.flags
     }
 
     /// Linux FIB selector used to locate the alias replaced by RTM_NEWROUTE. # C: O(1)
@@ -98,9 +123,9 @@ fn ecmp_hash(addr: Ipv4Addr) -> u32 {
     x ^ (x >> 16)
 }
 
-fn usable_record(record: RouteRecord) -> NetResult<RouteEntry> {
+fn usable_record(record: RouteRecord) -> NetResult<ResolvedRoute> {
     match record.kind {
-        RTN_UNICAST | RTN_LOCAL => Ok(record.route),
+        RTN_UNICAST | RTN_LOCAL => Ok(record.resolved()),
         RTN_BLACKHOLE => Err(NetError::Einval),
         RTN_UNREACHABLE => Err(NetError::Ehostunreach),
         RTN_PROHIBIT => Err(NetError::Eacces),
@@ -213,7 +238,7 @@ impl RouteTable {
     }
 
     /// Policy lookup with Linux terminal route-type errors. # C: O(N rules * N routes)
-    pub fn lookup_result_in(&self, net_ns: u64, addr: Ipv4Addr) -> NetResult<RouteEntry> {
+    pub fn lookup_result_in(&self, net_ns: u64, addr: Ipv4Addr) -> NetResult<ResolvedRoute> {
         let record = self.lookup_record_in(net_ns, addr).ok_or(NetError::Enetunreach)?;
         usable_record(record)
     }
@@ -419,83 +444,5 @@ pub enum RouteChangeError { Exists, NotFound, Invalid }
 mod policy_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lookup_default_matches_anything() {
-        let t = RouteTable::new();
-        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
-        let r = t.lookup(Ipv4Addr::new(8, 8, 8, 8)).unwrap();
-        assert_eq!(r.iface, NetIfaceId::from_raw(1));
-    }
-
-    #[test]
-    fn longest_prefix_wins() {
-        let t = RouteTable::new();
-        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
-        t.add(RouteEntry::main(Ipv4Addr::new(127, 0, 0, 0), 8, NetIfaceId::from_raw(2), None, None));
-        let r = t.lookup(Ipv4Addr::LOOPBACK).unwrap();
-        assert_eq!(r.iface, NetIfaceId::from_raw(2));
-    }
-
-    #[test]
-    fn no_match_returns_none() {
-        let t = RouteTable::new();
-        t.add(RouteEntry::main(Ipv4Addr::new(10, 0, 0, 0), 8, NetIfaceId::from_raw(1), None, None));
-        assert!(t.lookup(Ipv4Addr::new(8, 8, 8, 8)).is_none());
-    }
-
-    #[test]
-    fn ecmp_equal_prefix_uses_destination_hash() {
-        let t = RouteTable::new();
-        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
-        t.add(RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(2), None, None));
-        let first = t.lookup(Ipv4Addr::new(203, 0, 113, 1)).unwrap().iface;
-        let mut saw_other = false;
-        for last in 2..=254 {
-            let r = t.lookup(Ipv4Addr::new(203, 0, 113, last)).unwrap();
-            if r.iface != first {
-                saw_other = true;
-                break;
-            }
-        }
-        assert!(saw_other);
-        assert_eq!(t.lookup(Ipv4Addr::new(203, 0, 113, 1)).unwrap().iface, first);
-    }
-
-    #[test]
-    fn lower_metric_wins_before_ecmp_selection() {
-        let t = RouteTable::new();
-        t.add_record_in(0, RouteRecord {
-            route: RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None),
-            metric: 200, ..RouteRecord::kernel(RouteEntry::main(
-                Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None))
-        });
-        t.add_record_in(0, RouteRecord {
-            route: RouteEntry::main(Ipv4Addr::ANY, 0, NetIfaceId::from_raw(2), None, None),
-            metric: 100, ..RouteRecord::kernel(RouteEntry::main(
-                Ipv4Addr::ANY, 0, NetIfaceId::from_raw(2), None, None))
-        });
-        for last in 1..=32 {
-            let record = t.lookup_record_in(0, Ipv4Addr::new(203, 0, 113, last)).unwrap();
-            assert_eq!((record.route.iface, record.metric), (NetIfaceId::from_raw(2), 100));
-        }
-    }
-
-    #[test]
-    fn equal_prefix_metric_different_aliases_do_not_form_ecmp() {
-        let t = RouteTable::new();
-        let first = RouteEntry::main(
-            Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None);
-        let second = RouteEntry::main(
-            Ipv4Addr::ANY, 0, NetIfaceId::from_raw(2), None, None);
-        t.add_record_in(0, RouteRecord::kernel(first));
-        t.add_record_in(0, RouteRecord { protocol: 99, ..RouteRecord::kernel(second) });
-        for last in 1..=254 {
-            assert_eq!(t.lookup(Ipv4Addr::new(203, 0, 113, last)).unwrap().iface,
-                NetIfaceId::from_raw(1));
-        }
-    }
-
-}
+#[path = "route_tests.rs"]
+mod tests;

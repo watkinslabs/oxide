@@ -4,16 +4,18 @@ use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::ipv4::IPV4_HDR_LEN;
 use crate::netdev::{NetError, NetResult};
 use crate::pkt::Pkt;
-use crate::route::{RouteEntry, RouteRecord, RTN_BLACKHOLE, RTN_LOCAL, RTN_PROHIBIT,
-    RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE};
+use crate::route::{ResolvedRoute, RouteRecord, RTN_BLACKHOLE, RTN_LOCAL,
+    RTN_PROHIBIT, RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE};
+#[cfg(test)]
+use crate::route::RouteEntry;
 use crate::stack::{NetStack, TcpEntry};
 
 const IPV4_TCP_OVERHEAD: u32 = 40;
 const IPV6_TCP_OVERHEAD: u32 = 60;
 
-fn usable_route(record: RouteRecord) -> NetResult<RouteEntry> {
+fn usable_route(record: RouteRecord) -> NetResult<ResolvedRoute> {
     match record.kind {
-        RTN_UNICAST | RTN_LOCAL => Ok(record.route),
+        RTN_UNICAST | RTN_LOCAL => Ok(record.resolved()),
         RTN_BLACKHOLE => Err(NetError::Einval),
         RTN_UNREACHABLE => Err(NetError::Ehostunreach),
         RTN_PROHIBIT => Err(NetError::Eacces),
@@ -23,6 +25,17 @@ fn usable_route(record: RouteRecord) -> NetResult<RouteEntry> {
 }
 
 impl NetStack {
+    /// Metrics from the exact IPv4 route selected for a new transport TCB. # C: O(N)
+    pub(crate) fn route_metrics_for_dst_in(&self, net_ns: u64, dst: IpAddr,
+        bound: Option<NetIfaceId>) -> crate::RouteMetrics {
+        let IpAddr::V4(dst) = dst else { return crate::RouteMetrics::NONE; };
+        match bound {
+            Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface)
+                .ok().flatten().map(|route| route.metrics),
+            None => self.routes.lookup_result_in(net_ns, dst).ok().map(|route| route.metrics),
+        }.unwrap_or(crate::RouteMetrics::NONE)
+    }
+
     /// Resolve a raw SO_BINDTODEVICE ifindex. 0 means unbound. # C: O(N)
     pub fn bound_iface(&self, raw: u32) -> NetResult<Option<NetIfaceId>> {
         self.bound_iface_in(0, raw)
@@ -64,8 +77,22 @@ impl NetStack {
         let overhead = if matches!(dst, IpAddr::V6(_)) {
             IPV6_TCP_OVERHEAD
         } else { IPV4_TCP_OVERHEAD };
+        let route_advmss = match dst {
+            IpAddr::V4(dst) => match bound {
+                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface)
+                    .ok().flatten().map(|route| route.metrics.advmss),
+                None => self.routes.lookup_result_in(net_ns, dst)
+                    .ok().map(|route| route.metrics.advmss),
+            }.unwrap_or(0),
+            IpAddr::V6(_) => 0,
+        };
         self.path_mtu_in(net_ns, dst, bound, probe).ok()
             .map(|mtu| mtu.saturating_sub(overhead).min(u16::MAX as u32) as u16)
+            .map(|mss| if route_advmss == 0 {
+                mss
+            } else {
+                mss.min(route_advmss.min(u16::MAX as u32) as u16)
+            })
             .unwrap_or(0)
     }
 
@@ -74,7 +101,7 @@ impl NetStack {
         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>)
         -> NetResult<()>
     {
-        self.send_udp_to_bound_opts(src_ip, src_port, dst_ip, dst_port, payload, bound, 0, crate::ipv4::IPV4_DEFAULT_TTL)
+        self.send_udp_to_bound_opts(src_ip, src_port, dst_ip, dst_port, payload, bound, 0, 0)
     }
 
     /// Build + transmit UDP/IPv4 with explicit TOS/TTL. # C: O(payload + N)
@@ -91,7 +118,7 @@ impl NetStack {
         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8) -> NetResult<()>
     {
-        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst_ip, bound)?;
+        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst_ip, bound)?;
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
@@ -99,7 +126,7 @@ impl NetStack {
         crate::udp::UdpHdr::build_into(src_port, dst_port, src_ip, dst_ip, payload, slot);
         let id = self.next_ipv4_id();
         self.xmit_ipv4_l4_on_iface_opts(
-            iface_id, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), tos, ttl, id,
+            route, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), tos, ttl, id,
         )
     }
 
@@ -191,9 +218,9 @@ impl NetStack {
     fn send_l4_over_ipv4_bound(&self, net_ns: u64, src: Ipv4Addr, dst: Ipv4Addr,
         proto: IpProto, l4: &[u8], tos: u8, bound: Option<NetIfaceId>) -> NetResult<()>
     {
-        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
         self.xmit_ipv4_l4_on_iface(
-            iface_id, iface, next_hop, src, dst, proto, l4, tos, self.next_ipv4_id(),
+            route, iface, next_hop, src, dst, proto, l4, tos, self.next_ipv4_id(),
         )
     }
 
@@ -206,20 +233,27 @@ impl NetStack {
 
     /// Resolve IPv4 egress and capture its route-selected next hop. # C: O(N)
     pub(crate) fn route_v4_iface_in(&self, net_ns: u64, dst: Ipv4Addr, bound: Option<NetIfaceId>)
-        -> NetResult<(NetIfaceId, crate::EgressLease, Ipv4Addr)>
+        -> NetResult<(ResolvedRoute, crate::EgressLease, Ipv4Addr)>
     {
         if let Some(id) = bound {
             let iface = self.ifaces.acquire_egress_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
-            let next_hop = match self.route_v4_on_iface_in(net_ns, dst, id)? {
-                Some(route) => route.gateway.unwrap_or(dst),
-                None if dst.is_broadcast() => dst,
+            let route = match self.route_v4_on_iface_in(net_ns, dst, id)? {
+                Some(route) => route,
+                None if dst.is_broadcast() => ResolvedRoute {
+                    iface: id,
+                    gateway: None,
+                    src_hint: None,
+                    table: crate::policy_rule::RT_TABLE_MAIN,
+                    priority: 0,
+                    metrics: crate::RouteMetrics::NONE,
+                },
                 None => return Err(NetError::Enetunreach),
             };
-            return Ok((id, iface, next_hop));
+            return Ok((route, iface, route.gateway.unwrap_or(dst)));
         }
         match self.routes.lookup_result_in(net_ns, dst) {
-            Ok(r) => Ok((r.iface, self.ifaces.acquire_egress_in_ns(r.iface, net_ns)
-                .ok_or(NetError::Enetunreach)?, r.gateway.unwrap_or(dst))),
+            Ok(route) => Ok((route, self.ifaces.acquire_egress_in_ns(route.iface, net_ns)
+                .ok_or(NetError::Enetunreach)?, route.gateway.unwrap_or(dst))),
             Err(NetError::Enetunreach) if dst.is_broadcast()
                 && self.routes.lookup_record_in(net_ns, dst).is_none() => {
                 let devs = self.ifaces.snapshot_devs_in_ns(net_ns);
@@ -228,14 +262,21 @@ impl NetStack {
                 }).ok_or(NetError::Enetunreach)?;
                 let iface = self.ifaces.acquire_egress_in_ns(pick.0, net_ns)
                     .ok_or(NetError::Enetunreach)?;
-                Ok((pick.0, iface, dst))
+                Ok((ResolvedRoute {
+                    iface: pick.0,
+                    gateway: None,
+                    src_hint: None,
+                    table: crate::policy_rule::RT_TABLE_MAIN,
+                    priority: 0,
+                    metrics: crate::RouteMetrics::NONE,
+                }, iface, dst))
             }
             Err(error) => Err(error),
         }
     }
 
-    fn route_v4_on_iface_in(&self, net_ns: u64, dst: Ipv4Addr, iface: NetIfaceId)
-        -> NetResult<Option<RouteEntry>>
+    pub(crate) fn route_v4_on_iface_in(&self, net_ns: u64, dst: Ipv4Addr, iface: NetIfaceId)
+        -> NetResult<Option<ResolvedRoute>>
     {
         match self.routes.lookup_result_in(net_ns, dst) {
             Ok(route) if route.iface == iface => return Ok(Some(route)),

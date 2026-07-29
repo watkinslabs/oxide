@@ -181,7 +181,8 @@ impl Raw4Endpoint {
         if remote.is_unspecified() { return Err(NetError::Eaddrnotavail); }
         let stack = crate::global_stack();
         let net_ns = self.net_ns();
-        let (route_iface, _, _) = stack.route_v4_iface_in(net_ns, remote, iface)?;
+        let (route, _, _) = stack.route_v4_iface_in(net_ns, remote, iface)?;
+        let route_iface = route.iface;
         let local = stack.routes.lookup_in(net_ns, remote)
             .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint)
             .or_else(|| crate::iface_addr::primary(net_ns, route_iface).map(|row| row.0))

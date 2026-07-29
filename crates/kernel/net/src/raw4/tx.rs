@@ -27,12 +27,20 @@ impl NetStack {
             if self.ifaces.lookup_in_ns(id, endpoint.net_ns()).is_none() { return Err(NetError::Enodev); }
         }
         let route_dst = control.options.as_ref().and_then(|opt| opt.first_hop).unwrap_or(dst);
-        let (iface_id, iface, next_hop) = if control.dont_route && bound.is_some() {
+        let (route, iface, next_hop) = if control.dont_route && bound.is_some() {
             let iface_id = bound.unwrap();
             let iface = self.ifaces.acquire_egress_in_ns(iface_id, endpoint.net_ns())
                 .ok_or(NetError::Enodev)?;
-            (iface_id, iface, route_dst)
+            (crate::ResolvedRoute {
+                iface: iface_id,
+                gateway: None,
+                src_hint: None,
+                table: crate::policy_rule::RT_TABLE_MAIN,
+                priority: 0,
+                metrics: crate::RouteMetrics::NONE,
+            }, iface, route_dst)
         } else { self.route_v4_iface_in(endpoint.net_ns(), route_dst, bound)? };
+        let iface_id = route.iface;
         if (control.dont_route && bound.is_none()
             || control.options.as_ref().is_some_and(|opt| opt.strict_route))
             && (next_hop != route_dst || !self.raw4_link_route(endpoint.net_ns(), route_dst, iface_id))
@@ -45,8 +53,8 @@ impl NetStack {
         if control.source.is_some() && !crate::iface_addr::snapshot_ns(endpoint.net_ns()).iter()
             .any(|row| row.addr == source)
         { return Err(NetError::Eaddrnotavail); }
-        let (mtu, df, may_fragment) = self.ipv4_pmtu_policy(
-            endpoint.net_ns(), iface_id, route_dst, iface.mtu(), options.pmtudisc,
+        let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
+            endpoint.net_ns(), route, route_dst, iface.mtu(), options.pmtudisc,
         );
         if dst.is_multicast() && control.multicast_loop == Some(false)
             && iface.hardware_type() == crate::uapi::ARPHRD_LOOPBACK

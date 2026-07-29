@@ -443,7 +443,8 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
             protocol: rtnetlink::RTPROT_STATIC, scope: rtnetlink::RT_SCOPE_LINK,
             kind: rtnetlink::RTN_UNICAST, dst: Some(([198, 18, 61, 0], 24)),
             gateway: None, oif_ifindex: iface.raw(), prefsrc: None,
-            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+            metric: 0, metrics: net::RouteMetrics::NONE,
+            flags: 0, weight: 1, nh_flags: 0,
         };
     let route_ticket = net::control_event::stage(&rtnl,
         net::control_event::ControlEvent::Route(net::control_event::RouteEvent {

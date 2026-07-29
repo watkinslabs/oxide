@@ -238,7 +238,8 @@ fn link_route_rule_notifications_share_one_rtnl_order() {
             ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
             dst: Some(([192, 0, 2, 0], 24)), gateway: None,
-            oif_ifindex: iface.raw(), prefsrc: None, metric: 0, mtu: None,
+            oif_ifindex: iface.raw(), prefsrc: None, metric: 0,
+            metrics: net::RouteMetrics::NONE,
             flags: 0, weight: 1, nh_flags: 0,
         };
     let _route = net::control_event::stage(&rtnl,
@@ -358,7 +359,8 @@ fn interface_teardown_does_not_merge_distinct_route_aliases_as_ecmp() {
         stack.routes.add_record_in(ns, super::route_state::to_record(RouteRow {
             ns, table: RT_TABLE_MAIN as u32, protocol, scope: RT_SCOPE_LINK,
             kind: RTN_UNICAST, dst: Some(([198, 18, 90, 0], 24)), gateway: None,
-            oif_ifindex: iface.raw(), prefsrc: None, metric: 7, mtu: None,
+            oif_ifindex: iface.raw(), prefsrc: None, metric: 7,
+            metrics: net::RouteMetrics::NONE,
             flags: 0, weight: 1, nh_flags: 0,
         }));
     }

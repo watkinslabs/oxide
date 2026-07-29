@@ -359,6 +359,8 @@ impl NetStack {
         let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
         conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
             bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode);
+        conn.apply_route_metrics(self.route_metrics_for_dst_in(
+            bind.net_ns(), remote_ip, bind.bound_iface()));
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
         let entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
