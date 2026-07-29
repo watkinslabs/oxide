@@ -258,6 +258,8 @@ Never again. Before writing ANY code for a ledger item / D-item / subsystem task
 4. **After any agent wave, before boot-verify: re-check `git -C <main-tree> rev-parse HEAD` + `git branch -a` + `git worktree list`.** The shared main tree gets reset/advanced by concurrent lanes; a stale assumption about HEAD invalidates a boot result (you may boot a different lane's kernel — see Lessons §2).
 5. **One item = one lane = one agent.** If you discover mid-task that you've duplicated a live lane, STOP, preserve your commit on a branch, and reconcile with the owning lane rather than racing it to merge.
 6. **Fan out independent work immediately.** When a task has two or more independently-owned subsystem areas, assign them to separate agents before implementation: one owner per file area, one integration owner, and explicit handoff evidence (tests + file list). Do not serialize independent investigation, implementation, or test-design work while capacity is available; do not overlap ownership merely to increase agent count.
+7. **Delegated agents have no merge authority.** Only the primary/integration owner may create or merge a PR. A subagent must not run `gh pr merge` (or an equivalent API action), even for its own lane, and an instruction not to commit, push, create a PR, or merge is a hard boundary. Delegating implementation does not delegate integration authority.
+8. **A worktree belongs to its lane owner.** No agent may remove, prune, reset, or repurpose a worktree it did not create. The primary/integration owner may remove it only after the owning agent has handed it off or finished, `git status` confirms the exact worktree is clean, and the PR is merged (or the user explicitly abandoned the branch). Remove the worktree first, then delete its local branch.
 
 ## Git workflow (mandatory)
 
@@ -324,7 +326,7 @@ Examples:
 
 **Reverting.** Always `git revert <sha>` to undo merged work. Never delete history on `main`.
 
-**Branch retention.** Delete branches on PR merge (remote via `gh pr merge --delete-branch=true`, local via `git branch -D <name>`), then remove the local worktree. Don't accumulate stale post-merge branches or parked local worktrees. Unmerged branches: keep until they're explicitly abandoned; never `git branch -D` an unmerged branch without confirmation.
+**Branch retention.** Delete branches on PR merge: delete the remote via `gh pr merge --delete-branch=true`, confirm the feature worktree is clean, remove that exact worktree, then delete the local branch via `git branch -d <name>`. Don't accumulate stale post-merge branches or parked local worktrees. Unmerged branches: keep until they're explicitly abandoned; never force-delete an unmerged branch without confirmation.
 
 ## Plans live in scratch/ (HARD RULE)
 
