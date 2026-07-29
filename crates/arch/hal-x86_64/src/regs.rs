@@ -14,9 +14,7 @@ use core::arch::asm;
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn set_data_watchpoint(va: u64) {
-    // L0=1 (bit0), GE=1 (bit9, exact data-bp), reserved bit10=1, R/W0=01
-    // (write, bits16-17), LEN0=10 (8 bytes, bits18-19).
-    let dr7: u64 = 1 | (1u64 << 9) | (1u64 << 10) | (0b01u64 << 16) | (0b10u64 << 18);
+    let dr7 = dr7_dr0_write_8();
     // SAFETY: mov to dr0/dr7 is privileged, legal at CPL=0; no memory effects.
     unsafe {
         asm!("mov dr0, {}", in(reg) va,  options(nostack, preserves_flags));
@@ -27,33 +25,32 @@ pub unsafe fn set_data_watchpoint(va: u64) {
 // DR7 bit-field constants (Intel SDM Vol. 3 §17.2.4). Named so the
 // watchpoint arming below carries no bare magic hex.
 //
-// The whole group exists for `arm_hole_watchpoint`, so it rides that fn's
-// `debug-hw-watchpoint` gate — the same gate `lib.rs` puts on its re-export.
-// (`set_data_watchpoint` above still spells its DR7 image inline; folding it
-// onto these constants is a separate change, since it is not feature-gated.)
+// DR0 fields are shared by the generic diagnostic and the HoleHdr-specific
+// one, so they use the generic kernel/test gate. DR1-only fields ride the
+// narrower `debug-hw-watchpoint` gate.
 /// DR7.L0 — local-enable DR0 (bit 0).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const DR7_L0: u64 = 1 << 0;
 /// DR7.L1 — local-enable DR1 (bit 2).
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
 const DR7_L1: u64 = 1 << 2;
 /// DR7.GE — global-exact data-breakpoint match (bit 9, recommended set).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const DR7_GE: u64 = 1 << 9;
 /// DR7 bit 10 — reserved, read-as-one; software sets it.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const DR7_RESERVED_ONE: u64 = 1 << 10;
 /// R/Wn field value: break on data WRITE only (not exec, not I/O, not r/w).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const DR7_RW_WRITE: u64 = 0b01;
 /// LENn field value: 8-byte watch length (requires 64-bit CPU support).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const DR7_LEN_8: u64 = 0b10;
 /// Shift to DR7.R/W0 (bits 16-17).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const DR7_RW0_SHIFT: u32 = 16;
 /// Shift to DR7.LEN0 (bits 18-19).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const DR7_LEN0_SHIFT: u32 = 18;
 /// Shift to DR7.R/W1 (bits 20-21).
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
@@ -61,6 +58,13 @@ const DR7_RW1_SHIFT: u32 = 20;
 /// Shift to DR7.LEN1 (bits 22-23).
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
 const DR7_LEN1_SHIFT: u32 = 22;
+
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const fn dr7_dr0_write_8() -> u64 {
+    DR7_L0 | DR7_GE | DR7_RESERVED_ONE
+        | (DR7_RW_WRITE << DR7_RW0_SHIFT)
+        | (DR7_LEN_8 << DR7_LEN0_SHIFT)
+}
 
 /// DIAG (`debug-hw-watchpoint`): arm DR0+DR1 as 8-byte WRITE data
 /// watchpoints covering a whole 16-byte `HoleHdr` at `base` — DR0 over
@@ -75,8 +79,7 @@ const DR7_LEN1_SHIFT: u32 = 22;
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
 pub unsafe fn arm_hole_watchpoint(base: u64) {
-    let dr7: u64 = DR7_L0 | DR7_L1 | DR7_GE | DR7_RESERVED_ONE
-        | (DR7_RW_WRITE << DR7_RW0_SHIFT) | (DR7_LEN_8 << DR7_LEN0_SHIFT)
+    let dr7 = dr7_dr0_write_8() | DR7_L1
         | (DR7_RW_WRITE << DR7_RW1_SHIFT) | (DR7_LEN_8 << DR7_LEN1_SHIFT);
     // SAFETY: mov to dr0/dr1/dr7 is privileged, legal at CPL=0; no memory
     // effects. DR0/DR1 hold the watched HoleHdr word addresses; DR7 enables
@@ -261,5 +264,10 @@ mod tests {
         assert_eq!(read_cr3(), 0);
         assert_eq!(read_cr4(), 0);
         assert_eq!(read_efer(), 0);
+    }
+
+    #[test]
+    fn dr0_write_watchpoint_uses_named_dr7_fields() {
+        assert_eq!(dr7_dr0_write_8(), 0x0009_0601);
     }
 }
