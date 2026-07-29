@@ -11,7 +11,7 @@ use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
 use crate::memfd_flags::{
-    MEMFD_NOEXEC_SCOPE_EXEC, MFD_NAME_MAX_LEN, MFD_NAME_PREFIX, name_scan_err, sanitize_flags, setup,
+    MFD_NAME_MAX_LEN, MFD_NAME_PREFIX, name_scan_err, sanitize_flags_for_pidns, setup,
 };
 
 #[inline]
@@ -45,11 +45,14 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     // Linux declares `unsigned int flags`; the upper half of the register
     // never reaches the handler.
     let flags = args.a1 as u32;
-    // oxide has no per-pid-namespace `vm.memfd_noexec` knob, so the scope is
-    // the Linux boot default `MEMFD_NOEXEC_SCOPE_EXEC`
-    // (`include/linux/pid_namespace.h:71`): neither MFD_EXEC nor
-    // MFD_NOEXEC_SEAL given ⇒ MFD_EXEC implied.
-    let eff = match sanitize_flags(flags, MEMFD_NOEXEC_SCOPE_EXEC) {
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return err(Errno::Ebadf),
+    };
+    let pid_namespace = match cur.namespace_owner(namespace_identity::NamespaceKind::Pid) {
+        Some(namespace) => namespace,
+        None => return err(Errno::Ebadf),
+    };
+    let eff = match sanitize_flags_for_pidns(flags, &pid_namespace) {
         Ok(f) => f,
         Err(e) => return err(e),
     };
@@ -67,9 +70,6 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
         // syscall we declined to write.
         return err(Errno::Enosys);
     }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return err(Errno::Ebadf),
-    };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return err(Errno::Ebadf),
