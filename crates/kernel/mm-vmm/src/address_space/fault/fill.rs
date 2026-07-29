@@ -469,8 +469,8 @@ impl AddressSpace {
                 // racer's retired user store and (b) free the racer's live
                 // frame (the libcap `.bss` lock-byte lost-write / frame-reuse
                 // bug). Only install into a still-empty slot.
-                // SAFETY: privileged PT read of the running task's active root.
-                if unsafe { M::translate(Va(va_page)) }.is_some() {
+                // Privileged PT read of the running task's active root.
+                if M::translate(Va(va_page)).is_some() {
                     // A racer won while we slept in read_at — free our unused
                     // fill frame and adopt the racer's install (retry the
                     // faulting instruction, which will now hit the present PTE).

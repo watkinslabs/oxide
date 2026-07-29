@@ -144,6 +144,7 @@ pub fn deliver_sigsegv_arm(esr: u64, far: u64, elr: u64) -> ! {
 /// `wait4` reaps the corpse.
 #[cfg(target_arch = "x86_64")]
 fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
+    let _ = (vec, err, rip, cr2); // consumed only by the cfg-gated dumps below
     #[cfg(feature = "debug-irq")]
     {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
@@ -253,6 +254,7 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
 /// arm minimal SIGSEGV delivery — same shape as x86 path.
 #[cfg(target_arch = "aarch64")]
 fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
+    let _ = (esr, far, elr); // consumed only by the cfg-gated dumps below
     #[cfg(any(feature = "debug-irq", feature = "debug-boot"))]
     {
         use core::sync::atomic::Ordering;

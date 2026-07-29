@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 use crate::netdev::NetError;
-use crate::sock::{InetSocket, SockKind, AF_INET6};
+use crate::sock::{InetSocket, SockKind};
 use crate::sock_io::{monotonic_ns_safe, recvfrom_opts, Received, RecvOptions};
 
 /// Blocking `recvfrom`/`recvmsg` receive core. # C: blocks until data/EOF/signal/timeout

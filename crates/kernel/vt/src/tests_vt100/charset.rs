@@ -1,7 +1,7 @@
 use crate::emulator::Emulator;
 use crate::vc::{Charset, Vc, DEC_SPECIAL_GRAPHICS};
 
-use super::{run, trimmed};
+use super::run;
 
 #[test]
 fn default_tab_stops_every_eight() {

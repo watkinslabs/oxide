@@ -23,4 +23,4 @@ mod mld;
 
 pub use types::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr, Udp6Datagram, Udp6RxQueue};
 pub(crate) use types::PendingRa;
-pub(crate) use ra::DAD_DELAY_NS;
+#[cfg(test)] pub(crate) use ra::DAD_DELAY_NS;

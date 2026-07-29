@@ -21,7 +21,7 @@ pub unsafe fn init(info: &BootInfo) {
         // while holding the gate. tick_yield reschedules + opens the IRQ window so
         // the owner's completion lands and it can release. Without this the boot
         // deadlocks in truncate_inode (CPU-STALL, nr_running=1).
-        ext4::mount::set_yield_hook(|| unsafe { sched::live::tick_yield() });
+        ext4::mount::set_yield_hook(|| sched::live::tick_yield());
         let root_dev = block::registry::by_serial("oxide-root")
             .or_else(block::registry::first_device)
             .expect("root disk (virtio-blk serial=oxide-root) not found");
@@ -190,9 +190,9 @@ fn socket_filter_cpu() -> u32 {
 fn load_keymap() {
     if let Some(blob) = ext4::rootfs::read_file(b"/etc/keymap") {
         match drv_virtio_input::keymap::load_text(&blob) {
-            Ok(name) => { debug_boot! {
+            Ok(_name) => { debug_boot! {
                 klog::write_raw(b"[INFO]  keymap loaded: ");
-                klog::write_raw(name.as_bytes());
+                klog::write_raw(_name.as_bytes());
                 klog::write_raw(b"\n");
             } }
             Err(_) => { debug_boot! {
@@ -204,6 +204,7 @@ fn load_keymap() {
 
 #[cfg(target_os = "oxide-kernel")]
 fn handoff_to_userspace(info: &BootInfo) {
+    let _ = info; // only the x86_64 handoff reads the boot info
     #[cfg(target_arch = "x86_64")]
     unsafe {
         debug_boot! { klog::write_raw(b"[INFO]  init: handoff begin\n"); }

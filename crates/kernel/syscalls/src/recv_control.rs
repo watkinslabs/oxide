@@ -1,7 +1,10 @@
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use net::uapi::{MSG_CMSG_CLOEXEC, MSG_CTRUNC};
+// `deliver` (the only fd-passing consumer) is kernel-gated.
+#[cfg(target_os = "oxide-kernel")]
+use alloc::sync::Arc;
+#[cfg(target_os = "oxide-kernel")]
 use vfs::File;
 
 use crate::recv_user::RecvUser;

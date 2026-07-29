@@ -7,6 +7,7 @@ use movable::OwnerId;
 
 use super::class::{Fullness, SizeClass};
 use super::handle::{Handle, ObjectHeader, ObjectLocation, RegistryEntry};
+#[cfg(test)]
 use super::limits::ZS_FULLNESS_GROUP_COUNT;
 use super::platform::{page_provider, PageProvider};
 use super::migration::ZsPoolStats;
@@ -231,7 +232,8 @@ impl ZsPool {
         let handle = self.allocate_handle(ObjectHeader { location: ObjectLocation { zspage, slot }, length: bytes.len(), class_bytes: class.object_bytes })?;
         let page = self.zspages[zspage].as_mut().ok_or(BlockError::Eio)?;
         let start = slot.checked_mul(class.object_bytes).ok_or(BlockError::Eio)?;
-        let end = start.checked_add(bytes.len()).ok_or(BlockError::Eio)?;
+        // Overflow guard only; `copy_in` re-derives the end from `bytes.len()`.
+        let _end = start.checked_add(bytes.len()).ok_or(BlockError::Eio)?;
         page.copy_in(self.provider.ok_or(BlockError::Enomem)?, start, bytes)?;
         page.handles[slot] = Some(handle);
         Ok(handle)
@@ -245,7 +247,8 @@ impl ZsPool {
         let page = self.zspages.get(header.location.zspage).and_then(Option::as_ref).ok_or(BlockError::Eio)?;
         self.validate_location(page, handle, header)?;
         let start = header.location.slot.checked_mul(header.class_bytes).ok_or(BlockError::Eio)?;
-        let end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
+        // Overflow guard only; `copy_out` re-derives the end from `out.len()`.
+        let _end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
         page.copy_out(self.provider.ok_or(BlockError::Enomem)?, start, out)?;
         Ok(())
     }
@@ -258,7 +261,8 @@ impl ZsPool {
         let page = self.zspages.get_mut(header.location.zspage).and_then(Option::as_mut).ok_or(BlockError::Eio)?;
         Self::validate_location_static(page, handle, header)?;
         let start = header.location.slot.checked_mul(header.class_bytes).ok_or(BlockError::Eio)?;
-        let end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
+        // Overflow guard only; `copy_in` re-derives the end from `bytes.len()`.
+        let _end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
         page.copy_in(self.provider.ok_or(BlockError::Enomem)?, start, bytes)?;
         Ok(())
     }
@@ -431,7 +435,7 @@ impl ZsPool {
         for (source_slot, handle) in source_slots {
             let (destination_page, destination_slot) = self.compact_destination(source, class).ok_or(BlockError::Eio)?;
             let source_start = source_slot.checked_mul(class.object_bytes).ok_or(BlockError::Eio)?;
-            let source_end = source_start.checked_add(class.object_bytes).ok_or(BlockError::Eio)?;
+            let _source_end = source_start.checked_add(class.object_bytes).ok_or(BlockError::Eio)?;
             let page = self.zspages.get(source).and_then(Option::as_ref).ok_or(BlockError::Eio)?;
             page.copy_out(self.provider.ok_or(BlockError::Enomem)?, source_start, &mut scratch)?;
             let destination_start = destination_slot.checked_mul(class.object_bytes).ok_or(BlockError::Eio)?;

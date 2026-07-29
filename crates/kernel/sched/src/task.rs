@@ -20,7 +20,9 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize};
+use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8};
+#[cfg(feature = "debug-task-fpu-provenance")]
+use core::sync::atomic::AtomicUsize;
 
 use sync::{Namespace, Spinlock, TaskList as TaskListClass};
 use vfs::FdTable;

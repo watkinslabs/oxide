@@ -111,7 +111,7 @@ fn netfilter_hooks_fire_on_rx_and_tx_both_families() {
     use core::sync::atomic::{AtomicU32, Ordering};
     use crate::stack::{NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN,
         NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
-    use crate::netfilter_hook::{NFPROTO_IPV4, NFPROTO_IPV6};
+    use crate::netfilter_hook::NFPROTO_IPV6;
     use crate::ipv4::{push_ipv4_header, IPV4_HDR_LEN};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::udp::{UDP_HDR_LEN, build_into_v6};

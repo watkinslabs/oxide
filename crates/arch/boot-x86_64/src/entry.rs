@@ -1,3 +1,4 @@
+#[cfg(target_os = "oxide-kernel")]
 use crate::{boot_debug, boot_info_build};
 
 /// Rust-side boot continuation. Runs on the kernel stack we

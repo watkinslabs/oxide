@@ -1,6 +1,7 @@
 // Linux `/proc/<pid>/timens_offsets` view over canonical TIME namespace state.
 
 use alloc::format;
+#[cfg(target_os = "oxide-kernel")]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 

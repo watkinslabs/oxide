@@ -90,10 +90,10 @@ fn fresh_fs_over_existing_mount_grafts_no_hijack() {
         .expect("mount procA at /proc");
 
     // The dir-level mount is recorded under (rootfs_root, /proc_dir).
-    let procA = vfs::mount::__lookup_mnt(rootfs_root_id, &proc_dir)
+    let proc_a = vfs::mount::__lookup_mnt(rootfs_root_id, &proc_dir)
         .expect("procA at (rootfs_root, /proc_dir)");
-    let procA_id = procA.mnt_id;
-    assert_ne!(procA_id, rootfs_root_id, "procA is a distinct mount, not the ns root");
+    let proc_a_id = proc_a.mnt_id;
+    assert_ne!(proc_a_id, rootfs_root_id, "procA is a distinct mount, not the ns root");
 
     // Resolve /proc AGAIN: now it follows the mount DOWN to procA's singleton
     // s_root (parentless, empty-name) — the dentry the pre-fix filter nulled.
@@ -112,16 +112,16 @@ fn fresh_fs_over_existing_mount_grafts_no_hijack() {
 
     // (1) procB grafted as a proper overmount UNDER procA: keyed
     // (procA_id, procfs_root), NOT self-rooted.
-    let procB = vfs::mount::__lookup_mnt(procA_id, &procfs_root)
+    let proc_b = vfs::mount::__lookup_mnt(proc_a_id, &procfs_root)
         .expect("procB grafted at (procA, procfs_root) — NOT self-rooted");
-    let procB_id = procB.mnt_id;
-    assert_ne!(procB_id, procA_id, "procB is a distinct mount");
-    assert_ne!(procB_id, rootfs_root_id, "procB did not hijack the ns root id");
+    let proc_b_id = proc_b.mnt_id;
+    assert_ne!(proc_b_id, proc_a_id, "procB is a distinct mount");
+    assert_ne!(proc_b_id, rootfs_root_id, "procB did not hijack the ns root id");
 
     // (2) the original dir-level mount is NOT clobbered.
-    let still_procA = vfs::mount::__lookup_mnt(rootfs_root_id, &proc_dir)
+    let still_proc_a = vfs::mount::__lookup_mnt(rootfs_root_id, &proc_dir)
         .expect("(rootfs_root, /proc_dir) still maps to a mount");
-    assert_eq!(still_procA.mnt_id, procA_id, "procA entry intact after the overmount");
+    assert_eq!(still_proc_a.mnt_id, proc_a_id, "procA entry intact after the overmount");
 
     // (3) NO ns-root hijack: the ns root mount id is unchanged.
     assert_eq!(vfs::mount::root_mount_id(ns), ns_root_before,

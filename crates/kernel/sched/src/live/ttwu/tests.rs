@@ -21,6 +21,7 @@
 // pair of CPU ids and never touches another test's slots.
 
 use super::*;
+use crate::TaskState;
 use crate::task::SchedClass;
 use alloc::vec::Vec;
 

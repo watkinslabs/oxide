@@ -35,7 +35,10 @@ impl ArchFpuBuf {
     /// `xrstor` init every component (YMM/ZMM=0), which is correct fresh state.
     /// # C: O(1)
     pub fn arch_default() -> Self {
+        #[cfg(target_arch = "x86_64")]
         let mut b = [0u8; ARCH_FPU_SIZE];
+        #[cfg(not(target_arch = "x86_64"))]
+        let b = [0u8; ARCH_FPU_SIZE];
         #[cfg(target_arch = "x86_64")]
         {
             // FXSAVE layout: FCW @0 (0x037f), MXCSR @24 (0x1f80).

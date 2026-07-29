@@ -2,7 +2,9 @@
 
 use alloc::vec::Vec;
 
-use vfs::{FileType, KResult, VfsError};
+#[cfg(target_os = "oxide-kernel")]
+use vfs::FileType;
+use vfs::{KResult, VfsError};
 
 use crate::kobject::{AttrGroup, Attribute};
 use crate::{RO_PERM, RW_PERM, WO_PERM};

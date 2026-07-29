@@ -124,5 +124,9 @@ pub fn setaffinity_decide(want: u64, cpuset: u64, active: u64, no_setaffinity: b
 
 /// Recompute `cpus_allowed` when a cgroup `cpuset.cpus` changes. The rule
 /// itself lives with the fields it composes (`sched::affinity::compose`) so the
-/// cgroup hook and this syscall cannot drift apart. # C: O(1)
+/// cgroup hook and this syscall cannot drift apart. The kernel-side caller is
+/// `sched::cgroup`, which calls `crate::affinity::compose` directly; this alias
+/// exists for the hosted tests that pin that rule against this file's decision
+/// core. # C: O(1)
+#[cfg(test)]
 pub use sched::affinity::compose as cpuset_recompute;

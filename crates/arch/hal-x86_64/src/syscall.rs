@@ -25,6 +25,9 @@
 
 use core::cell::UnsafeCell;
 
+// Consumed by the `global_asm!` entry stub (kernel target only) and by the
+// selector-pairing test below.
+#[cfg(any(all(target_arch = "x86_64", target_os = "oxide-kernel"), test))]
 use crate::gdt::{USER_CS_SELECTOR, USER_SS_SELECTOR};
 use crate::pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_SYSCALL};
 

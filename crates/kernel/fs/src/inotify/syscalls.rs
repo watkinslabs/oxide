@@ -3,15 +3,13 @@ use alloc::string::String;
 use core::sync::atomic::Ordering;
 
 use syscall::errno::Errno;
-use vfs::{FileType, InodeRef};
+use vfs::FileType;
 
 use crate::inotify::group::make_inotify_inode;
-use crate::inotify::path::{current_cred, resolve_watch_path};
+use crate::inotify::path::resolve_watch_path;
 use crate::inotify::types::{
-    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ACCESS, FAN_ALL_EVENT_BITS,
-    FAN_CLOSE, FAN_FS_ERROR, FAN_MNT_EVENTS, FAN_MODIFY, FAN_ONDIR, FAN_OPEN,
-    FAN_OPEN_EXEC, FAN_PRE_ACCESS, FAN_Q_OVERFLOW, FAN_RENAME, IN_ALL_EVENTS,
-    IN_EXCL_UNLINK, IN_IGNORED, IN_ONESHOT, IN_Q_OVERFLOW, INOTIFY_MARK_FLAGS,
+    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ALL_EVENT_BITS,
+    IN_ALL_EVENTS, IN_IGNORED, INOTIFY_MARK_FLAGS,
     MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
 use crate::inotify::validate::*;

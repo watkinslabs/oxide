@@ -9,6 +9,8 @@
 
 extern crate alloc;
 
+// Volatile MMIO accessors exist only on the aarch64 kernel target.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 

@@ -28,7 +28,6 @@ use alloc::sync::Arc;
 use core::cell::RefCell;
 use std::collections::HashMap;
 use std::thread_local;
-use std::vec::Vec;
 
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 

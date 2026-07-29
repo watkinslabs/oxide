@@ -20,7 +20,9 @@
 
 extern crate alloc;
 
-use elf::{parse, ElfError, ElfType, EM_X86_64};
+use elf::{parse, ElfError, ElfType};
+#[cfg(target_arch = "x86_64")]
+use elf::EM_X86_64;
 #[cfg(target_arch = "aarch64")]
 use elf::EM_AARCH64;
 use hal::UserVirtAddr;

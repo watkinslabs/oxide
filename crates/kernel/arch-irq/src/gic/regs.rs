@@ -10,7 +10,7 @@
 // targets ITS_BASE + GITS_TRANSLATER.
 
 #[cfg(target_arch = "aarch64")]
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
 
 // ---- Distributor offsets (shared with v2) ---------------------------------
 

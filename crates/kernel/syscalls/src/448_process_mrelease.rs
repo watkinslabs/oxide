@@ -18,7 +18,6 @@ const NO_SIG: i32 = 0;
 /// forbids releasing self. Returns 0 on success.
 /// # C: O(target_mm pages) via AS Drop→teardown
 pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     let pidfd = args.a0 as i32;
     let flags = args.a1;
 

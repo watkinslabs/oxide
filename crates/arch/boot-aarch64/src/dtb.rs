@@ -436,7 +436,7 @@ mod tests {
     fn build_pl011_fdt(freq: u32, direct: bool) -> alloc::vec::Vec<u8> {
         // Strings block: collect prop names, return offset of each.
         let mut strs: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut off = |strs: &mut alloc::vec::Vec<u8>, s: &[u8]| -> u32 {
+        let off = |strs: &mut alloc::vec::Vec<u8>, s: &[u8]| -> u32 {
             let o = strs.len() as u32; strs.extend_from_slice(s); strs.push(0); o
         };
         let o_compat = off(&mut strs, b"compatible");

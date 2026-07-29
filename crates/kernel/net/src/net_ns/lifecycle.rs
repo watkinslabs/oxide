@@ -6,7 +6,7 @@ use network_namespace::NetworkNamespaceRef;
 
 use crate::{LoopbackDev, NetStack};
 
-use super::{NET_NS, materialize_state};
+use super::materialize_state;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CreateError {

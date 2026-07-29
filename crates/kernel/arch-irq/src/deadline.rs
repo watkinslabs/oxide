@@ -1,3 +1,4 @@
+#[cfg(target_os = "oxide-kernel")]
 use hal::{Nanos, TimerOps};
 
 fn program(deadline_ns: u64) {

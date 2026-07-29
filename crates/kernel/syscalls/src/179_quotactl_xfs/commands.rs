@@ -1,7 +1,6 @@
 use super::common::*;
 use super::super::*;
 use std::sync::Arc;
-use core::any::Any;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use syscall::errno::Errno;
 

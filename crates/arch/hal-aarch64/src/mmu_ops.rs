@@ -143,7 +143,7 @@ impl MmuOps for ArmMmu {
         // appropriate to `size`.
         let r = unsafe {
             pt_walker::map_at_level::<PtWalkerArm, _>(va.0, leaf_level, leaf, hhdm,
-                || alloc_frame(unsafe { PtWalkerArm::read_pt_base(va.0) }))
+                || alloc_frame(PtWalkerArm::read_pt_base(va.0)))
         };
         let displaced = match r {
             // Empty slot, or same-pa permission rewrite (fork W-strip / shmem
@@ -159,7 +159,7 @@ impl MmuOps for ArmMmu {
                 let r2 = unsafe {
                     pt_walker::map_at_level::<PtWalkerArm, _>(
                         va.0, leaf_level, leaf, hhdm,
-                        || alloc_frame(unsafe { PtWalkerArm::read_pt_base(va.0) }),
+                        || alloc_frame(PtWalkerArm::read_pt_base(va.0)),
                     )
                 };
                 kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");

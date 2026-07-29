@@ -47,7 +47,7 @@ fn mount(disk: Arc<dyn BlockDevice>) -> (Arc<ext4::rootfs::Ext4Mount>, Arc<Super
 fn rename_dir_onto_nonempty_dir_is_enotempty_and_preserves_both() {
     let disk = shared_disk();
     let (m, sb) = mount(disk.clone());
-    let src = m.state().mount.create_dir(ROOT, b"src", 0o755, 0, 0).expect("mkdir src");
+    let _src = m.state().mount.create_dir(ROOT, b"src", 0o755, 0, 0).expect("mkdir src");
     let dst = m.state().mount.create_dir(ROOT, b"dst", 0o755, 0, 0).expect("mkdir dst");
     let keep = m.state().mount.create_dir(dst, b"keep", 0o755, 0, 0).expect("mkdir dst/keep");
     let free_inodes = m.state().mount.state_free_inodes();

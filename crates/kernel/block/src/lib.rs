@@ -33,7 +33,8 @@ pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCA
 pub use registry::{Disk, register, unregister, by_name, by_index, snapshot};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+#[cfg(target_os = "oxide-kernel")]
+use core::sync::atomic::Ordering;
 
 /// Charge a completed block I/O to the current task's cgroup io.stat.
 /// The io controller lives in block (Linux: blk-cgroup) — block reads the

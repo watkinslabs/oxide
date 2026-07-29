@@ -74,6 +74,7 @@ fn init_ps2_keyboard(_info: &BootInfo) {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn init_smp(info: &BootInfo) {
+    let _ = info; // only the x86_64 arm reads the Limine SMP response
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: kernel_main post-init; Limine SMP response in info is bootloader-owned; boot CPU is sole writer for goto_address slots.
@@ -101,10 +102,10 @@ fn init_smp(info: &BootInfo) {
         arch_irq::smp_arm::install_hooks();
         arch_irq::smp_arm::publish_madt_mpidrs();
         hal_aarch64::smp::set_percpu_alloc_hook(pmm::setup::alloc_percpu_page);
-        let started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
+        let _started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
-            klog::write_dec_u64(started as u64);
+            klog::write_dec_u64(_started as u64);
             klog::write_raw(b"\n");
         }
     }

@@ -28,7 +28,7 @@ use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 use crate::address_space::AddressSpace;
 use crate::vma::{FaultAccess, FaultKind, VmaBacking, VmaFlags, VmaProt};
-use crate::{Error, KResult};
+use crate::Error;
 
 /// Hosted PT analogue. Stores leaves keyed by VA. `map` enforces the
 /// same defensive AlreadyMapped policy the real x86 / arm walker had

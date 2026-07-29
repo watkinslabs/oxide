@@ -186,7 +186,7 @@ fn next_id() -> TimerId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicU64, Ordering};
 
     static A: AtomicU64 = AtomicU64::new(0);
     static B: AtomicU64 = AtomicU64::new(0);

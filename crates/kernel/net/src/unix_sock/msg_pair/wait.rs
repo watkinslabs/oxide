@@ -1,4 +1,6 @@
-use super::{message_charge, UnixEnd, UnixMsgKind, UnixMsgPair};
+use super::{UnixEnd, UnixMsgKind, UnixMsgPair};
+#[cfg(target_os = "oxide-kernel")]
+use super::message_charge;
 
 #[cfg(target_os = "oxide-kernel")]
 pub enum ArmMsgRead { Retry, Reset, Eof, Parked { reader_shutdown: bool } }

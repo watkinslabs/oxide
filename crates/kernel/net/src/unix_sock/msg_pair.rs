@@ -2,7 +2,6 @@ use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
-use sched;
 use vfs;
 
 #[cfg(target_os = "oxide-kernel")]

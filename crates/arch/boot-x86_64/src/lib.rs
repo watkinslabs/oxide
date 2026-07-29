@@ -30,9 +30,11 @@ pub mod uart;
 // behind `debug-boot` — UART sink install, CPU/MMU dump, byte
 // emit. Default builds emit zero log bytes; the call sites are
 // absent from the binary, not "filtered at runtime".
-#[cfg(feature = "debug-boot")]
+// (Every expansion site is inside an `#[cfg(target_os = "oxide-kernel")]`
+// entry fn, so the definition carries the same gate.)
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
 macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
-#[cfg(not(feature = "debug-boot"))]
+#[cfg(all(target_os = "oxide-kernel", not(feature = "debug-boot")))]
 macro_rules! debug_boot { ($($t:tt)*) => {} }
 
 mod boot_debug;

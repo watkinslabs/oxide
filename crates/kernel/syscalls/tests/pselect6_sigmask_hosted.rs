@@ -5,7 +5,7 @@
 
 use std::boxed::Box;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use sched::{SchedClass, Task};

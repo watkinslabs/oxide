@@ -18,9 +18,10 @@
 
 #![cfg(any(target_os = "oxide-kernel", test))]
 
+#[cfg(target_os = "oxide-kernel")]
 use syscall::SyscallArgs;
 use sched::task::restart::{RESTART_CPU_NANOSLEEP, RESTART_FUTEX, RESTART_NANOSLEEP,
-                           RESTART_NONE, RESTART_POLL};
+                           RESTART_POLL};
 
 /// Linux `do_no_restart_syscall(param)` — an unarmed (or already-consumed)
 /// block reports EINTR.
@@ -85,6 +86,7 @@ pub fn sys_restart_syscall(_args: &SyscallArgs) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sched::task::restart::RESTART_NONE;
 
     #[test]
     fn unarmed_block_is_eintr() {

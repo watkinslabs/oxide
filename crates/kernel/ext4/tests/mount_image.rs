@@ -15,9 +15,8 @@
 
 extern crate alloc;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
-use block::{BlockDevice, BlockOp, BlockRequest, KResult, MemDisk};
+use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 
 const IMAGE: &[u8] = include_bytes!("mini.img");

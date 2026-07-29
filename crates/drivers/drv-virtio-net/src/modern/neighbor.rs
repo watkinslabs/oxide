@@ -77,6 +77,7 @@ fn resolve_ipv6_next_hop_mac(
     {
         let _ = src_mac;
         let _ = src_ip;
+        let _ = observe;
         return None;
     }
 

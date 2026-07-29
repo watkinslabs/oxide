@@ -13,6 +13,8 @@
 extern crate alloc;
 
 use klog::Uart;
+// Only the host-side `outb` recorder below is lock-guarded.
+#[cfg(any(test, not(target_os = "oxide-kernel")))]
 use sync::{Spinlock, Tty as UartClass};
 
 /// COM1 base I/O port — fixed on PC platforms.

@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
-use vfs::{Kqid, MemDqblk, SuperBlock, VfsError};
+use vfs::{Kqid, MemDqblk, SuperBlock};
 
 const IMAGE: &[u8] = include_bytes!("mini-j.img");
 const SECTOR: u32 = 512;

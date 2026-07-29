@@ -358,8 +358,9 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
                 crate::setup::set_memcg_for_pa(pa, admitted_memcg.replace(cgroup::NO_MEMCG));
                 kassert!(crate::setup::admit_anon_lru(pa).is_ok(), "anon lru admission invariant");
             },
-            // SAFETY: inc_ref for KernelFrame (vvar) so AS-drop dec balances to kernel's reference.
-            |pa| unsafe { crate::setup::inc_ref(pa); },
+            // inc_ref for KernelFrame (vvar) so AS-drop dec balances to kernel's reference
+            // (unsafe context inherited from the enclosing block).
+            |pa| { crate::setup::inc_ref(pa); },
             // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
             |pa| crate::setup::can_reuse_anon_exclusive(pa),
             || {
@@ -388,8 +389,9 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
                 crate::setup::set_memcg_for_pa(pa, admitted_memcg.replace(cgroup::NO_MEMCG));
                 kassert!(crate::setup::admit_anon_lru(pa).is_ok(), "anon lru admission invariant");
             },
-            // SAFETY: inc_ref for KernelFrame (vvar); balances AS-drop dec.
-            |pa| unsafe { crate::setup::inc_ref(pa); },
+            // inc_ref for KernelFrame (vvar); balances AS-drop dec (unsafe context
+            // inherited from the enclosing block).
+            |pa| { crate::setup::inc_ref(pa); },
             // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
             |pa| crate::setup::can_reuse_anon_exclusive(pa),
             || {
@@ -414,14 +416,15 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
                     use hal::MmuOps;
                     let va_page = uva.as_u64() & !PAGE_MASK;
                     #[cfg(target_arch = "x86_64")]
-                    let mapped = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
+                    let mapped = hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page));
                     #[cfg(target_arch = "aarch64")]
-                    let mapped = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
+                    let mapped = hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page));
                     if let Some((pa, _)) = mapped {
                         let index = off.saturating_add(va_page - vma.start.as_u64()) / PAGE_BYTES;
-                        // SAFETY: successful shared-file PTE install retains this
-                        // frame; PageMeta becomes the matching file-rmap owner.
-                        unsafe { crate::setup::set_file_rmap_for_pa(pa.0 & !PAGE_MASK, rmap, index as u32); }
+                        // Successful shared-file PTE install retains this frame; PageMeta
+                        // becomes the matching file-rmap owner (unsafe context inherited
+                        // from the enclosing block).
+                        crate::setup::set_file_rmap_for_pa(pa.0 & !PAGE_MASK, rmap, index as u32);
                     }
                 }
             }
@@ -433,12 +436,12 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
         if r.is_ok() && as_.find_vma(uva).map(|v| v.flags.contains(VmaFlags::LOCKED)).unwrap_or(false) {
             use hal::MmuOps;
             let va_page = uva.as_u64() & !PAGE_MASK;
-            // SAFETY: the successful fault installed this leaf in the active
-            // current address space; this is a read-only translation.
+            // The successful fault installed this leaf in the active current
+            // address space; this is a read-only translation.
             #[cfg(target_arch = "x86_64")]
-            let mapped = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
+            let mapped = hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page));
             #[cfg(target_arch = "aarch64")]
-            let mapped = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
+            let mapped = hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page));
             if let Some((pa, _)) = mapped {
                 let _ = crate::setup::set_lru_unevictable(pa.0 & !PAGE_MASK, true);
             }

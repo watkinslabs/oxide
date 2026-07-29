@@ -2,7 +2,6 @@ use tty::ReadOutcome;
 use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 
 use crate::routing::{foreground_vt, SERIAL_INO_LB, TTY_INO_BASE};
-use crate::vt_tty;
 
 const SERIAL_CONSOLE_MODE: u16 = 0o660;
 
