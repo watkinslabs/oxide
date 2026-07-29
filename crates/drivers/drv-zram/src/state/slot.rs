@@ -13,9 +13,7 @@ pub(crate) enum Slot {
     Packed { algorithm: Compression, handle: Handle, priority: u8 },
     /// ZRAM_HUGE is raw page storage. Incompressible records an unsuccessful
     /// secondary-compressor pass independently from huge-page classification.
-    // `allow` not `expect` on `priority`: compression_priority reads it under
-    // `cfg(test)`, so an expectation would be unfulfilled there.
-    Raw { handle: Handle, incompressible: bool, #[allow(dead_code, reason = "no caller: only compression_priority reads it, and that is itself unwired (see below)")] priority: u8 },
+    Raw { handle: Handle, incompressible: bool, priority: u8 },
     Backed { page: usize, format: BackingFormat },
     Loading { page: usize, format: BackingFormat },
     Writeback { page: usize, data: Box<Slot> },
@@ -55,9 +53,6 @@ impl Slot {
     }
 
     /// # C: O(1)
-    // `allow` not `expect`: tests/foundation.rs calls this, so the expectation
-    // would be unfulfilled under `cfg(test)`.
-    #[allow(dead_code, reason = "no caller: writeback/recompress.rs must skip slots already at >= the target priority (Linux zram_drv.c zram_recompress)")]
     pub(crate) fn compression_priority(&self) -> Option<u8> {
         match self {
             Self::Packed { priority, .. } | Self::Raw { priority, .. } => Some(*priority),

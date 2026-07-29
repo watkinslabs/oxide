@@ -379,6 +379,27 @@ fn recompress_replaces_larger_secondary_object_with_selected_algorithm() {
 }
 
 #[test]
+fn recompress_skips_slot_already_at_target_priority() {
+    let zram = Zram::new();
+    zram.set_algorithm_text(DEFLATE_ALGORITHM_TEXT).unwrap();
+    zram.set_recomp_algorithm_text(RECOMP_LZ4_PRIORITY_ONE).unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    let mut data = alloc::vec![ZERO_DATA_BYTE; PAGE_BYTES];
+    for (index, byte) in data.iter_mut().enumerate() { *byte = (index % u8::MAX as usize) as u8; }
+    let blocks = PAGE_BYTES as u32 / ZRAM_BLOCK_SIZE;
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_DEVICE_BLOCK, blocks, data)).unwrap();
+    zram.recompress_text(RECOMPRESS_ONE_PAGE).unwrap();
+    zram.mark_idle_text(IDLE_ALL).unwrap();
+    assert_eq!(zram.state.lock().slots.idle(0), Some(true));
+
+    zram.recompress_text(RECOMPRESS_ONE_PAGE).unwrap();
+
+    let state = zram.state.lock();
+    assert_eq!(state.slots.idle(0), Some(true));
+    assert_eq!(state.slots.get(0).and_then(Slot::compression_priority), Some(1));
+}
+
+#[test]
 fn recompress_selects_configured_secondary_by_algorithm_name() {
     let zram = Zram::new();
     zram.set_algorithm_text(DEFLATE_ALGORITHM_TEXT).unwrap();
