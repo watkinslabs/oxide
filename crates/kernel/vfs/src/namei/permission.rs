@@ -150,11 +150,7 @@ fn posix_acl_permission(buf: &[u8], cred: &Cred, i_uid: u32, i_gid: u32, want: u
 /// ACLs / custom DAC can intercept WITHOUT every call-site changing.
 /// # C: O(ngroups)
 pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
-    inode.permission(mask, cred)?;
-    // Linux `fs/namei.c inode_permission()` consults the device
-    // controller after DAC and before the LSM hook, so a cgroup that
-    // denies `c 1:3 r` fails the open even for root.
-    crate::devcgroup::devcgroup_inode_permission(inode, mask)
+    inode.permission(mask, cred)
 }
 
 /// `may_lookup` (Linux): search permission (MAY_EXEC) on a directory before

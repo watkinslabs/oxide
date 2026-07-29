@@ -31,7 +31,7 @@ pub use fs::{mount_at, realize_tree, CgroupFs};
 pub use policy::{CpuAction, cpu_bandwidth_decision, cpulist_to_mask, cpu_weight_to_cfs};
 pub use state::{
     set_cpuset_hook, set_freeze_hook, set_notify_hook, set_pid_display_hook, set_pid_resolve_hook,
-    set_memory_pressure_hook, set_release_hook, set_signal_hook, set_weight_hook,
+    set_memory_pressure_hook, set_signal_hook, set_weight_hook,
 };
 use state::{
     SIGKILL, TREE, cpuset_hook, freeze_hook, notify_events_chain, notify_events_self, resolve_pid,
@@ -255,18 +255,8 @@ pub fn rmdir_child(parent_cgid: u64, name: &str) -> KResult<()> {
         *t.node(parent_cgid).ok_or(VfsError::Enoent)?
             .children.get(name).ok_or(VfsError::Enoent)?
     };
-    TREE.lock().remove(id)?;
-    // Linux `cgroup_bpf_release()` runs off the same teardown and drops the
-    // node's BPF attach lists; ids are monotonic here, so a missed release
-    // would leak rather than mis-bind, but systemd churns a cgroup per unit
-    // start/stop.
-    if let Some(h) = state::release_hook() { h(id); }
-    Ok(())
+    TREE.lock().remove(id)
 }
-
-/// Parent cgroup id of `cgid` (`cgroup_parent()`); `None` for the root or an
-/// unknown id. # C: O(log n)
-pub fn parent_of(cgid: u64) -> Option<u64> { TREE.lock().node(cgid).and_then(|n| n.parent) }
 
 // --- sched glue ----------------------------------------------------
 
