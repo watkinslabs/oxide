@@ -293,6 +293,23 @@ pub fn recvfrom_opts(
             })
         };
         let Some(msg) = msg else {
+            // Linux `__skb_wait_for_more_packets`: `if (sk->sk_shutdown &
+            // RCV_SHUTDOWN) goto out_noerr;`, which sets `*err = 0` — a receive
+            // on a shut-down socket reports EOF, never EAGAIN
+            // (`net/core/datagram.c`).
+            //
+            // `unix_dgram_poll` reports POLLIN UNCONDITIONALLY once the read
+            // side is shut (it is EOF, and EOF is readable), so returning
+            // EAGAIN here leaves the reader spinning epoll_wait->recvmsg
+            // forever. A live boot caught systemd-journald doing exactly that:
+            // 10.9M syscalls, 208s of CPU, state R, alternating epoll_wait and
+            // recvmsg. Same class as the STREAM and SEQPACKET arms below, whose
+            // comments record the identical "perpetually POLLIN" spin.
+            if q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) {
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None,
+                    peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None,
+                    ttl: None, packet: None });
+            }
             return Err(NetError::Eagain);
         };
         let full_len = msg.len();
@@ -339,7 +356,15 @@ pub fn recvfrom_opts(
     if let Some((pair, end)) = msgpair {
         return match pair.recv_payload(end, max_len, opts.peek) {
             Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None }),
-            None => if pair.take_reset(end) { Err(NetError::Econnreset) } else { Err(NetError::Eagain) },
+            // `is_eof` existed with no caller on this path: a drained
+            // SEQPACKET whose writer closed reported EAGAIN while poll reported
+            // POLLIN — the same spin as the DGRAM arm above.
+            None => if pair.take_reset(end) { Err(NetError::Econnreset) }
+                    else if pair.is_eof(end) {
+                        Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None,
+                            peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None,
+                            tclass: None, ttl: None, packet: None })
+                    } else { Err(NetError::Eagain) },
         };
     }
     if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
