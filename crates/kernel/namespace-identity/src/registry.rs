@@ -92,6 +92,7 @@ fn initialize(registry: &mut Registry) {
         ns_id: NamespaceKind::User.initial_ns_id(),
         nsfs_ino: NamespaceKind::User.initial_nsfs_ino(),
         owner_user_namespace: Owner::InitialUser, parent: None,
+        pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(0),
         active: core::sync::atomic::AtomicUsize::new(1), finalizers: SpinLock::new(Vec::new()),
     });
     registry.publish_lifetime(&user);
@@ -102,7 +103,8 @@ fn initialize(registry: &mut Registry) {
         let namespace = Arc::new(Namespace {
             kind, id: INIT_ID, ns_id: kind.initial_ns_id(), nsfs_ino: kind.initial_nsfs_ino(),
             owner_user_namespace: Owner::Ref(NamespacePin::from_arc(Arc::clone(&user))),
-            parent: None, active: core::sync::atomic::AtomicUsize::new(1),
+            parent: None, pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(0),
+            active: core::sync::atomic::AtomicUsize::new(1),
             finalizers: SpinLock::new(Vec::new()),
         });
         registry.publish_lifetime(&namespace);
@@ -226,10 +228,20 @@ fn allocate_inactive_inner(kind: NamespaceKind, owner: NamespacePin,
     parent: Option<NamespacePin>) -> Result<NamespacePin, AllocError>
 {
     let mut registry = REGISTRY.lock(); initialize(&mut registry);
+    let pid_memfd_noexec_scope = if kind == NamespaceKind::Pid {
+        parent.as_ref().map_or(0, |namespace| {
+            namespace.pid_memfd_noexec_scope()
+                .expect("validated PID namespace parent")
+        })
+    } else {
+        0
+    };
     let namespace = Arc::new(Namespace {
         kind, id: registry.next_id(kind)?, ns_id: registry.next_ns_id()?,
         nsfs_ino: registry.next_nsfs_ino()?, owner_user_namespace: Owner::Ref(owner),
-        parent, active: core::sync::atomic::AtomicUsize::new(0),
+        parent, pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(
+            pid_memfd_noexec_scope),
+        active: core::sync::atomic::AtomicUsize::new(0),
         finalizers: SpinLock::new(Vec::new()),
     });
     registry.publish_lifetime(&namespace);

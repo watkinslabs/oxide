@@ -17,7 +17,9 @@ mod sync;
 mod uapi;
 
 pub use identity::{Namespace, NamespaceFinalizer, NamespaceHandle, NamespaceId, NamespaceKind,
-    NamespaceRef, NamespacePin, NamespaceWeak, NsId};
+    NamespaceRef, NamespacePin, NamespaceWeak, NsId, PidMemfdNoexecError,
+    PID_MEMFD_NOEXEC_SCOPE_EXEC, PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED,
+    PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL};
 pub use registry::{active_kind_page, active_owner_page, active_page, allocate, allocate_ns_id,
     allocate_nsfs_ino, allocate_inactive, initial, live_snapshot, lookup, lookup_ns_id,
     lookup_nsfs_ino, AllocError};

@@ -19,6 +19,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use network_namespace::NetworkNamespaceRef;
+use namespace_identity::NamespaceRef;
+use vfs::{KResult, VfsError};
 
 /// One `/proc/sys` leaf's `proc_handler`: format the live value on read, and
 /// parse+validate+store it on write. `Err(())` → `EINVAL` (Linux rejects a
@@ -29,6 +31,11 @@ pub trait ProcHandler: Send + Sync {
     /// Parse + validate `src` and UPDATE the live variable (write path).
     /// # C: O(len)
     fn store(&self, src: &[u8]) -> Result<(), ()>;
+    /// Preserve a handler-specific VFS error when policy distinguishes EPERM
+    /// from malformed-value EINVAL. # C: O(len)
+    fn store_vfs(&self, src: &[u8]) -> KResult<()> {
+        self.store(src).map_err(|_| VfsError::Einval)
+    }
     /// Capture open-time state for handlers whose backing depends on the
     /// opener. `None` keeps using this inode-bound handler. # C: O(1)
     fn bind(&self) -> Option<Arc<dyn ProcHandler>> { None }
@@ -85,6 +92,41 @@ fn store_bound_i64(namespace: &NetworkNamespaceRef, key: usize,
     let value = parse_single_i64(src)?;
     if let Some((min, max)) = bounds { if value < min || value > max { return Err(()); } }
     set(namespace, key, value)
+}
+
+/// Current-PID-namespace integer binding. Linux's handler resolves
+/// `task_active_pid_ns(current)` on each read/write, while a fallible setter
+/// preserves its EPERM policy result.
+pub struct PerPidIntHook {
+    pub current_ns: fn() -> NamespaceRef,
+    pub check_write: fn(&NamespaceRef) -> KResult<()>,
+    pub get: fn(&NamespaceRef) -> Result<i64, ()>,
+    pub set: fn(&NamespaceRef, i64) -> KResult<()>,
+    pub bounds: Option<(i64, i64)>,
+}
+impl ProcHandler for PerPidIntHook {
+    fn format(&self) -> Vec<u8> {
+        fmt_i64((self.get)(&(self.current_ns)()).expect("live PID namespace sysctl state"))
+    }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        self.store_vfs(src).map_err(|_| ())
+    }
+    fn store_vfs(&self, src: &[u8]) -> KResult<()> {
+        store_pid_i64(&(self.current_ns)(), self.check_write, self.set, self.bounds, src)
+    }
+}
+
+fn store_pid_i64(namespace: &NamespaceRef,
+    check_write: fn(&NamespaceRef) -> KResult<()>,
+    set: fn(&NamespaceRef, i64) -> KResult<()>, bounds: Option<(i64, i64)>,
+    src: &[u8]) -> KResult<()>
+{
+    check_write(namespace)?;
+    let value = parse_single_i64(src).map_err(|_| VfsError::Einval)?;
+    if let Some((min, max)) = bounds {
+        if value < min || value > max { return Err(VfsError::Einval); }
+    }
+    set(namespace, value)
 }
 
 /// Per-network-namespace two-u16 vector binding. One-field writes preserve the

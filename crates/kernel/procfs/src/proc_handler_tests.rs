@@ -153,6 +153,50 @@ fn per_net_handlers_capture_namespace_and_keep_vector_validation_coherent() {
 }
 
 #[test]
+fn per_pid_handler_follows_current_namespace_and_preserves_policy_errno() {
+    static CURRENT: std::sync::Mutex<Option<NamespaceRef>> = std::sync::Mutex::new(None);
+    static STATE: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(1)];
+    static ALLOW: AtomicBool = AtomicBool::new(true);
+    fn current() -> NamespaceRef { CURRENT.lock().unwrap().as_ref().unwrap().clone() }
+    fn slot(namespace: &NamespaceRef) -> usize { usize::from(!namespace.is_initial()) }
+    fn check_write(_namespace: &NamespaceRef) -> KResult<()> {
+        if ALLOW.load(Ordering::Relaxed) { Ok(()) } else { Err(VfsError::Eperm) }
+    }
+    fn get(namespace: &NamespaceRef) -> Result<i64, ()> {
+        Ok(STATE[slot(namespace)].load(Ordering::Relaxed))
+    }
+    fn set(namespace: &NamespaceRef, value: i64) -> KResult<()> {
+        if value == 2 { return Err(VfsError::Eperm); }
+        STATE[slot(namespace)].store(value, Ordering::Relaxed);
+        Ok(())
+    }
+
+    *CURRENT.lock().unwrap() = Some(namespace_identity::initial(
+        namespace_identity::NamespaceKind::Pid));
+    let handler = PerPidIntHook {
+        current_ns: current, check_write, get, set, bounds: Some((0, 2)),
+    };
+    assert_eq!(handler.format(), b"0\n".to_vec());
+    *CURRENT.lock().unwrap() = Some(namespace_identity::allocate(
+        namespace_identity::NamespaceKind::Pid,
+        namespace_identity::initial(namespace_identity::NamespaceKind::User), None).unwrap());
+
+    assert_eq!(handler.format(), b"1\n".to_vec());
+    handler.store_vfs(b"0\n").unwrap();
+    assert_eq!(STATE[0].load(Ordering::Relaxed), 0);
+    assert_eq!(STATE[1].load(Ordering::Relaxed), 0);
+    handler.store_vfs(b"1\n").unwrap();
+    assert_eq!(STATE[1].load(Ordering::Relaxed), 1);
+    ALLOW.store(false, Ordering::Relaxed);
+    assert_eq!(handler.store_vfs(b"not-an-int"), Err(VfsError::Eperm),
+        "the namespace capability gate precedes value parsing");
+    ALLOW.store(true, Ordering::Relaxed);
+    assert_eq!(handler.store_vfs(b"2\n"), Err(VfsError::Eperm));
+    assert_eq!(handler.store_vfs(b"3\n"), Err(VfsError::Einval));
+    assert_eq!(handler.store_vfs(b"not-an-int"), Err(VfsError::Einval));
+}
+
+#[test]
 fn ulongvar_bounds() {
     static CELL: AtomicU64 = AtomicU64::new(4096);
     let h = ULongVar { cell: &CELL, bounds: Some((0, 1 << 30)) };
