@@ -161,7 +161,7 @@ impl FileOps for BoundSysctlFileOps {
     fn write(&self, inode: &Inode, off: u64, src: &[u8]) -> KResult<usize> {
         let d = inode.private::<BoundSysctlInode>().ok_or(VfsError::Einval)?;
         if off == 0 {
-            // proc_dointvec_minmax / proc_dobool / proc_dostring: parse +
+            // proc_dointvec_minmax / proc_dostring: parse +
             // validate + update the live variable; EINVAL on a bad write.
             d.h.store(src).map_err(|_| VfsError::Einval)?;
         }
