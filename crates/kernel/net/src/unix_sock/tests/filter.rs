@@ -36,6 +36,35 @@ fn pathname_datagram_filter_sees_payload_drops_zero_and_truncates_positive() {
 }
 
 #[test]
+fn owned_datagram_filter_drop_settles_the_original_wmem_charge() {
+    let _guard = test_guard();
+    install_bpf_filter_runner(verdict_runner);
+    let sender = UnixDgramQueue::new();
+    let queue = UnixDgramQueue::new_with_filter(filter(0));
+    queue.try_push_owned(
+        UnixDgram { payload: b"dropped".to_vec(), creds: (1, 2, 3), fds: Vec::new() }, None,
+        GcRights::from_files(Vec::new()), usize::MAX, &sender, 4096,
+    ).unwrap();
+    assert!(queue.pop().is_none());
+    assert_eq!(sender.wmem_alloc(), 0, "filter drop ran sock_wfree");
+}
+
+#[test]
+fn owned_datagram_filter_truncation_preserves_the_original_wmem_charge() {
+    let _guard = test_guard();
+    install_bpf_filter_runner(verdict_runner);
+    let sender = UnixDgramQueue::new();
+    let queue = UnixDgramQueue::new_with_filter(filter(3));
+    queue.try_push_owned(
+        UnixDgram { payload: b"abcdef".to_vec(), creds: (1, 2, 3), fds: Vec::new() }, None,
+        GcRights::from_files(Vec::new()), usize::MAX, &sender, 4096,
+    ).unwrap();
+    assert_eq!(sender.wmem_alloc(), 6, "BPF trim does not change skb truesize");
+    assert_eq!(queue.pop().unwrap().payload, b"abc");
+    assert_eq!(sender.wmem_alloc(), 0, "record destruction released original truesize");
+}
+
+#[test]
 fn socketpair_datagram_and_seqpacket_filters_apply_receiver_state() {
     let _guard = test_guard();
     install_bpf_filter_runner(verdict_runner);
