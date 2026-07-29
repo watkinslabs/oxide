@@ -24,6 +24,24 @@ fn rollback_swap_fork<M: MmuOps, FS: FnMut(hal::pt_walker::SwapEntry)>(
     }
 }
 
+/// Publish the child's anon and shared-file reverse-map edges after its Arc
+/// exists. Every fork implementation must use this same step. # C: O(N_vmas)
+fn attach_child_rmaps(child: &Arc<AddressSpace>) {
+    let child_weak = Arc::downgrade(child);
+    let child_tree = child.vmas.read();
+    for vma in child_tree.iter() {
+        if let Some(anon) = vma.anon_vma.as_ref() {
+            anon.attach(child_weak.clone(), vma.start.as_u64(), vma.end.as_u64());
+        }
+        if let (Some(rmap), VmaBacking::File { off, .. }) = (&vma.file_rmap, &vma.backing) {
+            rmap.attach(
+                child_weak.clone(), vma.start.as_u64(), vma.end.as_u64(),
+                off / PAGE_SIZE_BYTES, vma.may_prot.contains(VmaProt::WRITE),
+            );
+        }
+    }
+}
+
 impl AddressSpace {
     /// Clone VMA tree into a new AS with the supplied PT root.
     /// Mapped pages are NOT copied; child entries demand-page on
@@ -62,6 +80,7 @@ impl AddressSpace {
         });
         super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
         super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
+        attach_child_rmaps(&child);
         Ok(child)
     }
 
@@ -348,23 +367,8 @@ impl AddressSpace {
             pkeys: super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
         });
-        // Linux `anon_vma_fork`: each anonymous VMA in the child
-        // inherits the parent's `Arc<AnonVma>` (already cloned by
-        // `Vma::clone` above) and adds an rmap chain edge for the
-        // child's own (mm, vma_range). Without this, rmap_walk on a
-        // shared frame would only enumerate the parent — child PTEs
-        // would be invisible to migration / KSM / pageout.
-        let child_weak = Arc::downgrade(&child);
-        let child_tree = child.vmas.read();
-        for cv in child_tree.iter() {
-            if let Some(av) = cv.anon_vma.as_ref() {
-                av.attach(child_weak.clone(), cv.start.as_u64(), cv.end.as_u64());
-            }
-            if let (Some(rmap), VmaBacking::File { off, .. }) = (cv.file_rmap.as_ref(), &cv.backing) {
-                rmap.attach(child_weak.clone(), cv.start.as_u64(), cv.end.as_u64(), off / PAGE_SIZE_BYTES);
-            }
-        }
-        drop(child_tree);
+        // Linux `anon_vma_fork` plus the file `i_mmap` counterpart.
+        attach_child_rmaps(&child);
         Ok(child)
     }
 
@@ -426,7 +430,7 @@ impl AddressSpace {
             }
         }
         let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
-        Ok(Arc::new_cyclic(|w| Self {
+        let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             pt_lock: Spinlock::new(()),
             root_pa: new_root_pa,
@@ -447,7 +451,9 @@ impl AddressSpace {
             mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
             pkeys: super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
-        }))
+        });
+        attach_child_rmaps(&child);
+        Ok(child)
     }
 
 }

@@ -30,6 +30,22 @@ pub fn plan_add_seals(
     Ok(add)
 }
 
+/// Linux `memfd_check_seals_mmap`: either write seal rejects a new
+/// `MAP_SHARED|PROT_WRITE` mapping and removes `VM_MAYWRITE` from a new
+/// read-only shared mapping. Private mappings are unaffected. # C: O(1)
+pub fn plan_write_sealed_mmap(
+    seals: u32,
+    shared: bool,
+    write: bool,
+    may_write: bool,
+) -> Result<bool, Errno> {
+    if !shared || seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) == 0 {
+        return Ok(may_write);
+    }
+    if write { return Err(Errno::Eperm); }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +97,28 @@ mod tests {
     #[test]
     fn every_linux_seal_bit_is_accepted() {
         assert_eq!(plan_add_seals(true, F_ALL_SEALS, Some(0), 0), Ok(F_ALL_SEALS));
+    }
+
+    #[test]
+    fn either_write_seal_rejects_new_writable_shared_mappings() {
+        for seal in [F_SEAL_WRITE, F_SEAL_FUTURE_WRITE] {
+            assert_eq!(
+                plan_write_sealed_mmap(seal, true, true, true),
+                Err(Errno::Eperm),
+            );
+        }
+    }
+
+    #[test]
+    fn either_write_seal_strips_maywrite_from_new_read_only_shared_mappings() {
+        for seal in [F_SEAL_WRITE, F_SEAL_FUTURE_WRITE] {
+            assert_eq!(plan_write_sealed_mmap(seal, true, false, true), Ok(false));
+        }
+    }
+
+    #[test]
+    fn private_and_unsealed_mappings_keep_their_maywrite_right() {
+        assert_eq!(plan_write_sealed_mmap(F_SEAL_WRITE, false, true, true), Ok(true));
+        assert_eq!(plan_write_sealed_mmap(0, true, true, true), Ok(true));
     }
 }
