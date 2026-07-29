@@ -27,6 +27,13 @@ pub(super) const DRM_INO_CARD_MASK: vfs::Ino = 0x0000_0000_FFFF_FFFF;
 pub(super) const DRM_CARD_INO: vfs::Ino = 0x4452_4D43_0000_0000;
 pub(super) const DRM_RENDER_INO: vfs::Ino = 0x4452_4D52_0000_0000;
 
+fn read_events(file: &File, b: &mut [u8], nonblock: bool) -> vfs::KResult<usize> {
+    let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
+        return Err(vfs::VfsError::Einval);
+    };
+    crate::crtc::drain_events_blocking(card_id, file_token(file), b, nonblock)
+}
+
 pub(super) struct DrmCardFileOps;
 impl vfs::FileOps for DrmCardFileOps {
     /// read(2) on the card fd drains queued KMS events (DRM page-flip
@@ -39,11 +46,18 @@ impl vfs::FileOps for DrmCardFileOps {
     /// down and re-dispatches it forever.
     /// # C: O(events)
     fn read_file(&self, file: &File, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
-        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
-            return Err(vfs::VfsError::Einval);
-        };
         let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
-        crate::crtc::drain_events_blocking(card_id, file_token(file), b, nonblock)
+        read_events(file, b, nonblock)
+    }
+    /// Preserve per-file DRM routing on the VFS `O_NONBLOCK` dispatch path.
+    /// # C: O(events)
+    fn read_nonblock_file(
+        &self,
+        file: &File,
+        _o: u64,
+        b: &mut [u8],
+    ) -> vfs::KResult<usize> {
+        read_events(file, b, true)
     }
     fn poll_open_file(&self, file: &File) -> u32 {
         let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
@@ -91,14 +105,22 @@ impl vfs::FileOps for DrmSinkFileOps {
     /// events queued, so a blocking read sleeps and a non-blocking one gets
     /// `-EAGAIN`. It must NOT return 0: that is EOF to a GLib fd source, which
     /// tears the source down and re-dispatches it forever. Same defect the card
-    /// node carried (B1484).
+    /// node carried (B1484). B1548 also routes VFS's distinct nonblocking
+    /// dispatch through this per-file event path.
     /// # C: O(1) + park
     fn read_file(&self, file: &File, _o: u64, b: &mut [u8]) -> vfs::KResult<usize> {
-        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
-            return Err(vfs::VfsError::Einval);
-        };
         let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
-        crate::crtc::drain_events_blocking(card_id, file_token(file), b, nonblock)
+        read_events(file, b, nonblock)
+    }
+    /// Preserve per-file DRM routing on the VFS `O_NONBLOCK` dispatch path.
+    /// # C: O(1)
+    fn read_nonblock_file(
+        &self,
+        file: &File,
+        _o: u64,
+        b: &mut [u8],
+    ) -> vfs::KResult<usize> {
+        read_events(file, b, true)
     }
     fn write(&self, _inode: &vfs::Inode, _o: u64, _b: &[u8]) -> vfs::KResult<usize> {
         Err(vfs::VfsError::Einval)
@@ -279,7 +301,7 @@ mod tests {
 
     fn open_file(inode: vfs::InodeRef) -> Arc<File> {
         let dentry = Dentry::new_anon(Arc::clone(&inode));
-        File::new(inode, dentry, OpenFlags::O_RDWR)
+        File::new(inode, dentry, OpenFlags::O_RDWR | OpenFlags::O_NONBLOCK)
     }
 
     #[test]
