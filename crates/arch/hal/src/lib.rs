@@ -99,6 +99,12 @@ pub enum PageSize {
 pub const PAGE_SIZE_BYTES: u64 = 4096;
 /// log2(`PAGE_SIZE_BYTES`); use for `Pfn ↔ PhysAddr` conversion.
 pub const PAGE_SHIFT: u32 = 12;
+/// Usable bytes in every task and per-CPU hardirq stack.
+///
+/// This is Linux `THREAD_SIZE` for the supported x86_64 and aarch64 kernels.
+/// Architecture entry assembly consumes the same value as a const operand, so
+/// stack-window guards cannot drift from the scheduler's allocator.
+pub const KERNEL_STACK_BYTES: usize = 16 * 1024;
 
 bitflags::bitflags! {
     /// PTE protection bits (per 20§5 / 21§5).

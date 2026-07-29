@@ -125,7 +125,7 @@ core::arch::global_asm!(
     "    mov  x0, sp",
     "    cmp  x0, x1",                 // above the task stack's top?
     "    b.hi .Lspg_dflt_irq",
-    "    sub  x1, x1, #16384",         // KSTACK_BYTES (asserted in sched::kstack)
+    "    sub  x1, x1, #{stack_bytes}",
     "    add  x1, x1, #288",           // this frame must still fit
     "    cmp  x0, x1",
     "    b.hs .Lspg_dflt_x1",               // inside the task stack: OK
@@ -135,7 +135,7 @@ core::arch::global_asm!(
     "    cbz  x1, .Lspg_dflt_bad",
     "    cmp  x0, x1",
     "    b.hi .Lspg_dflt_bad",
-    "    sub  x1, x1, #16384",
+    "    sub  x1, x1, #{stack_bytes}",
     "    add  x1, x1, #288",
     "    cmp  x0, x1",
     "    b.lo .Lspg_dflt_bad",
@@ -153,7 +153,7 @@ core::arch::global_asm!(
     "    mrs  x3, far_el1",
     "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
     "    ldr  x5, [x7, #40]",          // top
-    "    sub  x4, x5, #16384",         // lo
+    "    sub  x4, x5, #{stack_bytes}", // lo
     "    mov  x6, #0",             // report site
     "    bl   oxide_handle_bad_stack", // never returns
     ".Lspg_dflt_x1:",
@@ -312,7 +312,7 @@ core::arch::global_asm!(
     "    mov  x0, sp",
     "    cmp  x0, x1",                 // above the task stack's top?
     "    b.hi .Lspg_sync_irq",
-    "    sub  x1, x1, #16384",         // KSTACK_BYTES (asserted in sched::kstack)
+    "    sub  x1, x1, #{stack_bytes}",
     "    add  x1, x1, #288",           // this frame must still fit
     "    cmp  x0, x1",
     "    b.hs .Lspg_sync_x1",               // inside the task stack: OK
@@ -322,7 +322,7 @@ core::arch::global_asm!(
     "    cbz  x1, .Lspg_sync_bad",
     "    cmp  x0, x1",
     "    b.hi .Lspg_sync_bad",
-    "    sub  x1, x1, #16384",
+    "    sub  x1, x1, #{stack_bytes}",
     "    add  x1, x1, #288",
     "    cmp  x0, x1",
     "    b.lo .Lspg_sync_bad",
@@ -340,7 +340,7 @@ core::arch::global_asm!(
     "    mrs  x3, far_el1",
     "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
     "    ldr  x5, [x7, #40]",          // top
-    "    sub  x4, x5, #16384",         // lo
+    "    sub  x4, x5, #{stack_bytes}", // lo
     "    mov  x6, #2",             // report site
     "    bl   oxide_handle_bad_stack", // never returns
     ".Lspg_sync_x1:",
@@ -645,7 +645,7 @@ core::arch::global_asm!(
     "    mov  x0, sp",
     "    cmp  x0, x1",                 // above the task stack's top?
     "    b.hi .Lspg_irq_irq",
-    "    sub  x1, x1, #16384",         // KSTACK_BYTES (asserted in sched::kstack)
+    "    sub  x1, x1, #{stack_bytes}",
     "    add  x1, x1, #288",           // this frame must still fit
     "    cmp  x0, x1",
     "    b.hs .Lspg_irq_x1",               // inside the task stack: OK
@@ -655,7 +655,7 @@ core::arch::global_asm!(
     "    cbz  x1, .Lspg_irq_bad",
     "    cmp  x0, x1",
     "    b.hi .Lspg_irq_bad",
-    "    sub  x1, x1, #16384",
+    "    sub  x1, x1, #{stack_bytes}",
     "    add  x1, x1, #288",
     "    cmp  x0, x1",
     "    b.lo .Lspg_irq_bad",
@@ -673,7 +673,7 @@ core::arch::global_asm!(
     "    mrs  x3, far_el1",
     "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
     "    ldr  x5, [x7, #40]",          // top
-    "    sub  x4, x5, #16384",         // lo
+    "    sub  x4, x5, #{stack_bytes}", // lo
     "    mov  x6, #1",             // report site
     "    bl   oxide_handle_bad_stack", // never returns
     ".Lspg_irq_x1:",
@@ -721,12 +721,12 @@ core::arch::global_asm!(
     // shared IRQ stack. STATELESS nesting guard: if the interrupted SP is
     // already inside this CPU's IRQ stack (nested IRQ in the do_softirq
     // sti-window), keep SP — resetting to top clobbers the outer frame.
-    // 16384 == sched::kstack::KSTACK_BYTES (reverse-asserted there).
+    // The range bound is the same shared constant as task-stack allocation.
     "    mov  x19, sp",                    // carry interrupted frame base
     "    mrs  x9,  tpidr_el1",
     "    ldr  x10, [x9, #32]",             // this CPU's IRQ-stack top (0 = unarmed)
     "    cbz  x10, .Lirq_dispatch_sp",     // unarmed (early boot, IRQs masked) → no switch
-    "    sub  x11, x10, #16384",           // IRQ-stack low bound
+    "    sub  x11, x10, #{stack_bytes}",    // IRQ-stack low bound
     "    cmp  x19, x11",
     "    b.lo .Lirq_switch_sp",            // sp below range → outermost → switch
     "    cmp  x19, x10",
@@ -780,4 +780,5 @@ core::arch::global_asm!(
     "    add  sp, sp, #288",
     "    eret",
     ".size oxide_irq_resume_user, . - oxide_irq_resume_user",
+    stack_bytes = const hal::KERNEL_STACK_BYTES,
 );

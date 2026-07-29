@@ -90,19 +90,18 @@ core::arch::global_asm!(
     // gs:[24] (this CPU's guard-paged 16 KiB hardirq-stack top) UNLESS the
     // interrupted rsp is already inside that stack (a nested IRQ during the
     // do_softirq sti-window) — resetting rsp then would clobber the outer
-    // softirq frame. Range test: (top - frame_base) <= 0x4000 ⇒ nested.
-    // 0x4000 == sched::kstack::KSTACK_BYTES == IRQ_STACK_BYTES (the hardirq
-    // stack's SIZE, not a frame-derived number): a nested entry's `PtRegs`
+    // softirq frame. Range test: (top - frame_base) <= the shared kernel-stack
+    // size ⇒ nested. A nested entry's `PtRegs`
     // lands wherever the softirq window left rsp inside [top-16K, top], and
     // growing the frame from 0x58 to 0xb0 only moves it deeper INTO that same
     // range. A non-nested entry's frame lives on an unrelated task kstack, so
-    // the unsigned difference is astronomically larger than 0x4000.
+    // the unsigned difference is astronomically larger than the stack size.
     "    mov  rcx, gs:[24]",        // this CPU's hardirq stack top (0 = unarmed)
     "    test rcx, rcx",
     "    jz   2f",                  // unarmed (early boot) -> stay on current stack
     "    mov  rdx, rcx",
     "    sub  rdx, rax",            // rdx = top - frame_base (unsigned)
-    "    cmp  rdx, 0x4000",
+    "    cmp  rdx, {stack_bytes}",
     "    jbe  2f",                  // frame_base within [top-16K, top] -> nested, no reset
     "    mov  rsp, rcx",            // switch to the fresh 16-aligned hardirq-stack top
     "2:",
@@ -141,6 +140,7 @@ core::arch::global_asm!(
     "    add rsp, 16",              // drop our vec + err
     "    iretq",
     ".size oxide_irq_resume_user, . - oxide_irq_resume_user",
+    stack_bytes = const hal::KERNEL_STACK_BYTES,
 );
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -186,17 +186,11 @@ pub fn on_irq_stack() -> bool {
         let sp: u64;
         // SAFETY: reads RSP only; no memory or flag effects.
         unsafe { core::arch::asm!("mov {v}, rsp", v = out(reg) sp, options(nomem, nostack, preserves_flags)); }
-        sp < top && sp >= top - IRQ_STACK_BYTES
+        sp < top && sp >= top - hal::KERNEL_STACK_BYTES as u64
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { false }
 }
-
-/// Per-CPU hardirq-stack size. Tracks `sched::kstack::KSTACK_BYTES`, which the
-/// IRQ entry asm also hardcodes as its range bound (`cmp rdx, 0x4000`).
-// Read only by `on_irq_stack`'s kernel-target arm above.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const IRQ_STACK_BYTES: u64 = 16384;
 
 /// Arm THIS CPU's hardirq stack. `top` is the 16-aligned high end of a
 /// guard-paged 16 KiB stack (from `sched::kstack::alloc().top()`, leaked).
