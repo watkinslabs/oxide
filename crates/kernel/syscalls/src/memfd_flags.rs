@@ -25,8 +25,7 @@ pub const MFD_HUGE_MASK:  u32 = 0x3f;
 
 /// `F_SEAL_*` (`include/uapi/linux/fcntl.h:47`). The seal word a fresh memfd
 /// carries; `F_ADD_SEALS`/`F_GET_SEALS` in `072_fcntl.rs` read the same word.
-pub const F_SEAL_SEAL: u32 = 0x0001;
-pub const F_SEAL_EXEC: u32 = 0x0020;
+pub use vfs::{F_SEAL_EXEC, F_SEAL_SEAL};
 
 /// `pidns_memfd_noexec_scope` levels (`include/linux/pid_namespace.h:21`).
 pub const MEMFD_NOEXEC_SCOPE_EXEC:            u32 = 0;
