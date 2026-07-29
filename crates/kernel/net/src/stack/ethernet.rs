@@ -29,6 +29,8 @@ impl NetStack {
         let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
         #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         crate::sock::deliver_packet_ingress_meta_in(lease, frame, metadata);
+        #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
+        let _ = metadata;
         if self.bridges.stp_bpdu_ingress(lease, header, frame) { return Ok(()); }
         if let Some(decision) = self.bridges.ingress(lease, header) {
             self.arp_observe_ethernet(decision.bridge, header, frame);
