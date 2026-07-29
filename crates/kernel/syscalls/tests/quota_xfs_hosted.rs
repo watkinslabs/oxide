@@ -79,7 +79,7 @@ mod abi;
 mod cmd;
 #[path = "../src/179_quotactl/dispatch.rs"]
 mod dispatch;
-#[path = "../src/179_quotactl_xfs.rs"]
+#[path = "../src/179_quotactl_xfs/core.rs"]
 mod xfs;
 
 struct XfsType;
