@@ -35,7 +35,7 @@ mod cmd;
 mod dispatch;
 #[path = "../src/179_quotactl/sys.rs"]
 mod sys;
-#[path = "../src/179_quotactl_xfs.rs"]
+#[path = "../src/179_quotactl_xfs/core.rs"]
 mod xfs;
 
 struct QsyncType;
