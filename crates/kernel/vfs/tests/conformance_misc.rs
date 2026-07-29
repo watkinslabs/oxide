@@ -11,7 +11,7 @@
 //! "oxide-kernel")]` end-to-end); only flag validation is exercised here.
 //!
 //! `read_timespec` (`035_nanosleep.rs`) and `clock_id_known`
-//! (`time_common.rs`) are pulled in verbatim via `#[path]` — both files
+//! (`time_common/core.rs`) are pulled in verbatim via `#[path]` — both files
 //! already carry `#[cfg(test)]` hosted stand-ins for their own
 //! `validate_user_buf`/`monotonic_ns` collaborators (pre-existing, not added
 //! by this lane), so no additional stubbing was needed. `pipe2`'s flag mask
@@ -32,7 +32,7 @@ use conformance::outcome::Outcome;
 #[path = "../../syscalls/src/035_nanosleep.rs"]
 mod nanosleep_shim;
 
-#[path = "../../syscalls/src/time_common.rs"]
+#[path = "../../syscalls/src/time_common/core.rs"]
 mod time_common_shim;
 
 fn nanosleep_negative_secs_einval() -> (Outcome, Outcome) {
