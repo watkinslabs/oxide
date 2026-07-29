@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sched  = { path = "../sched" }
+softirq = { path = "../softirq" }
 cgroup = { path = "../cgroup" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
