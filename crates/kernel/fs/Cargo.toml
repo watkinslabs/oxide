@@ -59,15 +59,5 @@ debug-syscost = []  # [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll/accept diagnosti
 debug-fdlife = ["vfs/debug-fdlife"]  # [EPBADF]/[FDHIST] identify missing epoll/listener descriptors
 # `#[cfg(any(test, feature = "hosted"))] extern crate std` in src/lib.rs.
 hosted = []
-# `tests/sys_*_shape.rs` compile `syscalls/src/NNN_*.rs` directly via
-# `#[path]`, so those sources' trace gates are resolved against THIS
-# crate's feature set. Declared (never enabled) so the shape tests do not
-# report an unexpected cfg value for a feature that `syscalls` owns.
-debug-atexit = []
-debug-stderr = []
-debug-session = []
-debug-udevdb = []
-debug-syscall = []
-
 [lints]
 workspace = true
