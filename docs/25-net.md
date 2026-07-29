@@ -1,6 +1,14 @@
 # 25 Networking
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34`. Provides:`15` socket syscalls, drivers, eBPF (phase 23).
+
+## Revision 2026-07-28 (R84)
+
+- Changed: §3 and §10 return resolved route state with separate priority and complete route metrics; §20 adds route-control and datapath differential proof.
+- Why: prior `RouteEntry { ..., mtu, metric }` shape conflated `RTA_PRIORITY` with nested `RTA_METRICS` and allowed lookup to discard configured dst/TCP policy.
+- Affected code: `net` FIB/IPv4/TCP owners, `netlink` route ABI, legacy route ioctl, `/proc/net/route`.
+- Test contract change: every metric validates and round-trips; active/passive TCP and IPv4 transmit prove selected-route effects.
+
 ## 1 Purpose
 
 IPv4 + IPv6 + AF_UNIX + AF_PACKET + AF_NETLINK + AF_VSOCK + AF_XDP. TCP + UDP + ICMP/ICMPv6. Routing, neighbor (ARP/NDP), netfilter-equivalent (basic). Driver model: `NetDev` trait with skb-equivalent buffers.
@@ -27,7 +35,7 @@ pub trait NetDev: Send+Sync {
 }
 
 pub fn register_netdev(d: Arc<dyn NetDev>) -> KR<NetIfaceId>;
-pub fn route_lookup(daddr: IpAddr) -> KR<RouteEntry>;
+pub fn route_lookup(ns: NetNsId, flow: RouteFlow) -> KR<ResolvedRoute>;
 pub fn neigh_resolve(iface: NetIfaceId, ip: IpAddr) -> KR<[u8;6]>;
 pub fn deliver_rx(iface: NetIfaceId, pkt: Pkt);   # called by driver soft-IRQ
 ```
@@ -98,9 +106,13 @@ ECHO, DEST_UNREACH, TIME_EXCEEDED, REDIRECT (v4); plus NDP (RS/RA/NS/NA/REDIRECT
 
 ## 10 Routing
 
-Per-namespace routing tables. Default: main + local. Lookup via LPM trie keyed by dest prefix. Returns `RouteEntry { iface, gateway, src_hint, mtu, metric }`.
+Per-namespace local/main/default FIBs plus policy rules. `RouteFlow` carries family, source/destination, ingress/egress constraint, mark, TOS, UID, and L3-master domain. Lookup applies rules, longest-prefix match, lowest `RTA_PRIORITY`, then deterministic weighted nexthop selection.
 
-`ip route` userspace via netlink (NETLINK_ROUTE).
+`ResolvedRoute { iface, gateway, src_hint, table, priority, metrics }` retains selected state through IPv4 output and active/passive TCP setup. `priority` is route preference; `RouteMetrics` separately retains `RTAX_LOCK`, MTU, WINDOW, RTT, RTTVAR, SSTHRESH, CWND, ADVMSS, REORDERING, HOPLIMIT, INITCWND, FEATURES, RTO_MIN, INITRWND, QUICKACK, CC_ALGO, and FASTOPEN_NO_COOKIE.
+
+NETLINK_ROUTE RTM_NEWROUTE/DELROUTE/GETROUTE validates, matches, stores, notifies, and dumps complete route state. Duplicate nested metrics resolve in wire order; dumps emit nonzero user-visible values. Legacy SIOCADDRT conversions and `/proc/net/route` project the same canonical FIB state.
+
+Configured MTU/LOCK and hoplimit govern IPv4 dst policy. TCP consumes selected WINDOW, RTT/RTTVAR, SSTHRESH/CWND, ADVMSS, REORDERING, INITCWND/INITRWND, FEATURES, RTO_MIN, QUICKACK, CC_ALGO/lock, and FASTOPEN_NO_COOKIE on both active and passive paths.
 
 ## 11 Neighbor
 
@@ -157,6 +169,8 @@ UMEM + RX/TX ring. Bypasses sk_buff path. Used by perf-critical net apps. Tracke
 - Multi-CPU SO_REUSEPORT: 4 listeners, even distribution within ±5% over 1M conns.
 - Property test on TCP state machine: random event sequences (RX/TX/timer/close); state always valid.
 - Loom on socket lookup vs close: no UAF.
+- Linux/Oxide route differential: every metric parse/validation/clamp/duplicate/match/dump rule plus legacy ioctl and `/proc/net/route` projection.
+- Packet-driven route policy: configured MTU/LOCK/hoplimit and every TCP metric affect active and passive connections; route replacement changes only later resolutions.
 - iperf3 over loopback: ≥10 GB/s on 4-CPU.
 - Acceptance: `nginx` + `curl` get a static page over loopback; over virtio-net.
 - Coverage ≥85% (driver paths in QEMU).
@@ -174,4 +188,3 @@ UMEM + RX/TX ring. Bypasses sk_buff path. Used by perf-critical net apps. Tracke
 ## 23 Cross-spec
 
 `15` (socket syscalls), `34` (PCIe/MSI for NIC IRQ), `13` (soft-IRQ scheduling), `33` (FW info for MAC at boot if random).
-
