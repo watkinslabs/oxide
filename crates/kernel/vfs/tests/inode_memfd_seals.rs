@@ -11,11 +11,11 @@
 use std::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use vfs::{FileType, InodeBuilder, InodeRef, SealCarrier, default_inode_ops, default_file_ops, mk_mode};
-
-const F_SEAL_SEAL:  u32 = 0x0001;
-const F_SEAL_WRITE: u32 = 0x0008;
-const F_SEAL_SHRINK: u32 = 0x0002;
+use vfs::{
+    ATTR_MODE, Cred, F_SEAL_EXEC, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_WRITE,
+    FileType, IDENTITY, Iattr, InodeBuilder, InodeRef, SealCarrier,
+    default_file_ops, default_inode_ops, mk_mode, notify_change,
+};
 
 /// Stand-in for the tmpfs/shmem inode-info (`TmpfsFileData`): owns the seal word
 /// in the per-fs backend, exactly where the relocation puts it.
@@ -67,4 +67,37 @@ fn non_sealable_inode_has_no_seals() {
     assert!(ino.fcntl_seals().is_none(),
         "a non-sealable inode has no seal word (syscall layer → EINVAL)");
     assert!(ino.as_seal_carrier().is_none(), "no carrier attached");
+}
+
+fn exec_sealed_inode(mode: u16) -> InodeRef {
+    let info = Arc::new(ShmemInfo { seals: AtomicU32::new(F_SEAL_EXEC) });
+    InodeBuilder::new(
+        0x5EA3,
+        mk_mode(FileType::Regular, mode),
+        default_inode_ops(),
+        default_file_ops(),
+    )
+    .seal_carrier(info)
+    .build()
+}
+
+#[test]
+fn exec_seal_rejects_adding_or_removing_execute_bits() {
+    for (before, after) in [(0o600, 0o700), (0o755, 0o644)] {
+        let inode = exec_sealed_inode(before);
+        let mut ia = Iattr { valid: ATTR_MODE, mode: after, ..Iattr::default() };
+        assert_eq!(
+            notify_change(&IDENTITY, &inode, &mut ia, &Cred::root()),
+            Err(vfs::VfsError::Eperm),
+        );
+        assert_eq!(inode.perm(), Some(before));
+    }
+}
+
+#[test]
+fn exec_seal_allows_changes_that_preserve_execute_bits() {
+    let inode = exec_sealed_inode(0o755);
+    let mut ia = Iattr { valid: ATTR_MODE, mode: 0o711, ..Iattr::default() };
+    notify_change(&IDENTITY, &inode, &mut ia, &Cred::root()).unwrap();
+    assert_eq!(inode.perm(), Some(0o711));
 }

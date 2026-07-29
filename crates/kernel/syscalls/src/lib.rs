@@ -126,6 +126,7 @@ mod s028_madvise;
 // file-type verdict. Both outside their kernel-only slot files so the rules
 // that decide a rejected call are unit-tested hosted.
 pub mod memfd_flags;
+pub mod fcntl_seal;
 pub mod execveat_at;
 
 #[cfg(target_os = "oxide-kernel")]

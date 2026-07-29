@@ -25,11 +25,6 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_DUPFD_QUERY: u64 = 1027;
     const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
     const F_ADD_SEALS: u64 = 1033; const F_GET_SEALS: u64 = 1034;
-    const F_SEAL_SEAL: u32 = 0x0001;
-    const F_SEAL_SHRINK: u32 = 0x0002;
-    const F_SEAL_GROW: u32 = 0x0004;
-    const F_SEAL_WRITE: u32 = 0x0008;
-    const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
     const F_SETSIG: u64 = 10; const F_GETSIG: u64 = 11;
     const F_SETOWN_EX: u64 = 15; const F_GETOWN_EX: u64 = 16;
@@ -123,20 +118,37 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             Some(s) => s.load(core::sync::atomic::Ordering::Acquire) as i64,
             None    => -(Errno::Einval.as_i32() as i64),
         },
-        F_ADD_SEALS => match file.inode().fcntl_seals() {
-            Some(s) => {
-                use core::sync::atomic::Ordering;
-                let requested = arg as u32;
-                let valid = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
-                if requested & !valid != 0 { return -(Errno::Einval.as_i32() as i64); }
-                let cur_seals = s.load(Ordering::Acquire);
-                // F_SEAL_SEAL already set ⇒ no further sealing (EPERM).
-                if cur_seals & F_SEAL_SEAL != 0 { return -(Errno::Eperm.as_i32() as i64); }
-                s.fetch_or(requested, Ordering::AcqRel);
-                0
+        F_ADD_SEALS => {
+            use core::sync::atomic::Ordering;
+            let writable = file.f_mode().contains(vfs::Fmode::WRITE);
+            let requested = arg as u32;
+            let seals = file.inode().fcntl_seals();
+            let mut current = seals.map(|s| s.load(Ordering::Acquire));
+            loop {
+                let add = match crate::fcntl_seal::plan_add_seals(
+                    writable,
+                    requested,
+                    current,
+                    file.inode().i_mode() as u16,
+                ) {
+                    Ok(add) => add,
+                    Err(e) => return -(e.as_i32() as i64),
+                };
+                let Some(seals) = seals else {
+                    return -(Errno::Einval.as_i32() as i64);
+                };
+                let observed = current.expect("sealable inode has a seal word");
+                match seals.compare_exchange_weak(
+                    observed,
+                    observed | add,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return 0,
+                    Err(changed) => current = Some(changed),
+                }
             }
-            None => -(Errno::Einval.as_i32() as i64),
-        },
+        }
         F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
         // F_SETOWN: record the SIGIO target AND snapshot the requesting creds
         // (Linux `f_setown` -> `__f_setown` capturing `current_cred()->uid/euid`)
