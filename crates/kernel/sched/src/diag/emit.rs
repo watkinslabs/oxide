@@ -1,9 +1,13 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(feature = "debug-watchdog")]
 use crate::Task;
 
+#[cfg(feature = "debug-watchdog")]
 use super::current_task;
+#[cfg(feature = "debug-watchdog")]
 use super::format::{col_dec, col_str, col_syscall, emit_syscall};
+#[cfg(feature = "debug-watchdog")]
 use super::ring::{dump_exit_recent, switches};
 
 const SYSRQ_ARM: u8 = 0x00;
