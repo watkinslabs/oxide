@@ -1,9 +1,12 @@
 use core::sync::atomic::Ordering;
 
+use crate::gic_trigger::icfgr_with_trigger;
+
+use super::ids::{PPI_BASE, SPI_BASE};
 use super::regs::{
     GICD_ICENABLER, GICD_ICFGR, GICD_IPRIORITYR, GICD_IROUTER, GICD_ISENABLER,
     GICD_ISPENDR, GICD_VA, GICR_IGROUPR0, GICR_IPRIORITYR, GICR_ISENABLER0,
-    GICR_SGI_OFFSET, GICR_VA,
+    GICR_ICFGR1, GICR_SGI_OFFSET, GICR_VA,
 };
 
 /// Enable an SGI/PPI/SPI INTID. SGIs/PPIs (INTID < 32) live in the
@@ -22,7 +25,7 @@ pub unsafe fn enable_intid(intid: u32) {
     if gicd == 0 || gicr == 0 { return; }
     // SAFETY: GICD/GICR are Device-attr-mapped; offsets stay within their regions.
     unsafe {
-        if intid < 32 {
+        if intid < SPI_BASE {
             // SGI/PPI: per-CPU banked in GICR SGI frame.
             let sgi_base   = gicr + GICR_SGI_OFFSET;
             let bit        = 1u32 << (intid & 31);
@@ -40,7 +43,7 @@ pub unsafe fn enable_intid(intid: u32) {
     }
 }
 
-/// Same as `enable_intid` for SPIs but marks the line as
+/// Same as `enable_intid` but marks a PPI or SPI as
 /// level-sensitive (ICFGR=0b00) instead of edge-triggered. Use for
 /// device lines that hold the line asserted while a condition is
 /// true (PL011 RX, virtio-net-mmio legacy) — edge-trigger only fires
@@ -48,7 +51,7 @@ pub unsafe fn enable_intid(intid: u32) {
 /// when the device-side line stays high through the IRQ ack.
 ///
 /// # SAFETY: caller asserts `enable` has run; runs single-CPU,
-/// IRQ-off; the chosen SPI is owned by the caller.
+/// IRQ-off; the chosen INTID is owned by the caller.
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
@@ -56,8 +59,20 @@ pub unsafe fn enable_intid_level(intid: u32) {
     let gicd = GICD_VA.load(Ordering::Acquire);
     let gicr = GICR_VA.load(Ordering::Acquire);
     if gicd == 0 || gicr == 0 { return; }
-    // SAFETY: same Device-mapped GIC bases; per-CPU PPI branch.
-    if intid < 32 { unsafe { enable_intid(intid); } return; }
+    if intid < SPI_BASE {
+        if intid >= PPI_BASE {
+            let sgi_base = gicr + GICR_SGI_OFFSET;
+            let icfgr = (sgi_base + GICR_ICFGR1 as u64) as *mut u32;
+            // SAFETY: the PPI configuration register lives in this CPU's Device-mapped SGI frame; caller owns the disabled line before enable.
+            unsafe {
+                let cur = core::ptr::read_volatile(icfgr);
+                core::ptr::write_volatile(icfgr, icfgr_with_trigger(cur, intid, true));
+            }
+        }
+        // SAFETY: same Device-mapped GIC bases; config was written before enabling the private line.
+        unsafe { enable_intid(intid); }
+        return;
+    }
     // SAFETY: GICD region is Device-attr-mapped; offset stays inside.
     unsafe { spi_enable_common(gicd, intid, /*level=*/true); }
 }
@@ -73,7 +88,7 @@ pub unsafe fn disable_intid(intid: u32) {
     if gicd == 0 || gicr == 0 { return; }
     // SAFETY: GICD/GICR are Device-attr-mapped; offsets stay within their regions.
     unsafe {
-        if intid < 32 {
+        if intid < SPI_BASE {
             let sgi_base = gicr + GICR_SGI_OFFSET;
             let icenabler = (sgi_base + GICD_ICENABLER as u64) as *mut u32;
             core::ptr::write_volatile(icenabler, 1u32 << (intid & 31));
@@ -100,12 +115,9 @@ unsafe fn spi_enable_common(gicd: u64, intid: u32, level: bool) {
         // through RX-FIFO drain (level); virtio MSI-class lines pulse
         // and clear (edge).
         let icfgr_off = (intid / 16) as u64 * 4;
-        let shift     = ((intid % 16) * 2) as u32;
         let icfgr     = (gicd + GICD_ICFGR as u64 + icfgr_off) as *mut u32;
         let cur       = core::ptr::read_volatile(icfgr);
-        let cleared   = cur & !(0b11u32 << shift);
-        let val = if level { 0b00u32 } else { 0b10u32 };
-        core::ptr::write_volatile(icfgr, cleared | (val << shift));
+        core::ptr::write_volatile(icfgr, icfgr_with_trigger(cur, intid, level));
         // IROUTER: route to CPU 0. v1 is single-CPU UP.
         let irouter = (gicd + GICD_IROUTER as u64 + (intid as u64) * 8) as *mut u64;
         core::ptr::write_volatile(irouter, 0u64);
