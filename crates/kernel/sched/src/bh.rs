@@ -129,8 +129,10 @@ impl Drop for BhGuard {
 
 #[cfg(test)]
 mod tests {
+    use alloc::sync::Arc;
     use super::*;
     use crate::preempt;
+    use std::sync::Barrier;
 
     #[test]
     fn bh_disable_enable_balances_and_marks_in_interrupt() {
@@ -169,5 +171,31 @@ mod tests {
             assert_eq!(preempt::softirq_count(), preempt::SOFTIRQ_DISABLE_OFFSET);
         }
         assert_eq!(preempt::preempt_count(), 0);
+    }
+
+    #[test]
+    fn test_reset_does_not_erase_another_cpu_bh_nesting() {
+        let disabled = Arc::new(Barrier::new(2));
+        let reset = Arc::new(Barrier::new(2));
+        let owner = {
+            let disabled = disabled.clone();
+            let reset = reset.clone();
+            std::thread::spawn(move || {
+                preempt::_test_reset();
+                local_bh_disable();
+                disabled.wait();
+                reset.wait();
+                assert_eq!(preempt::softirq_count(), preempt::SOFTIRQ_DISABLE_OFFSET);
+                // SAFETY: pairs this thread's local_bh_disable; host hook null.
+                unsafe { local_bh_enable(); }
+            })
+        };
+        let resetter = std::thread::spawn(move || {
+            disabled.wait();
+            preempt::_test_reset();
+            reset.wait();
+        });
+        owner.join().unwrap();
+        resetter.join().unwrap();
     }
 }
