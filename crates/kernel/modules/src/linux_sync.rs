@@ -16,7 +16,7 @@ type ModIrq = hal_aarch64::ArmIrqGate;
 // - this file: spinlock / mutex / rwlock / rwsem / semaphore / completion shims.
 // - `linux_sync/waitqueue.rs`: waitqueue + `prepare_to_wait_event` / `finish_wait`.
 mod waitqueue;
-pub(crate) use waitqueue::*;
+use waitqueue::*;  // items are `pub(super)`; only this module names them
 
 const WRITER: i32 = -1;
 const COMPLETE_ALL: u32 = u32::MAX;

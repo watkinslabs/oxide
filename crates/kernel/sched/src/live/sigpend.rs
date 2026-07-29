@@ -8,9 +8,6 @@
 
 use core::sync::atomic::Ordering;
 
-const SIG_DFL: u64 = 0;
-const SIG_IGN: u64 = 1;
-
 // `Signum` moved to the non-gated `crate::signum` module so the signal(7)
 // default-disposition policy is hosted-testable (`live` is kernel-only). Kept
 // re-exported here so every `sched::live::sigpend::Signum` call site resolves

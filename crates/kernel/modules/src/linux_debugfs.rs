@@ -299,6 +299,7 @@ pub(crate) fn symlink_inode(target: &[u8]) -> InodeRef {
     ).size(target.len() as u64).link(target.to_vec().into_boxed_slice()).build()
 }
 
+#[expect(dead_code, reason = "no caller: `debugfs_create_file` / `debugfs_create_file_size` bail with null_mut() when fops is NULL; Linux `__debugfs_create_file` (fs/debugfs/inode.c) substitutes `debugfs_noop_file_operations` and still creates the entry, so both should fall back to this instead of failing")]
 pub(crate) const NULL_FILE_OPS: LinuxFileOperations = LinuxFileOperations {
     owner: null_mut(),
     open: None,

@@ -13,14 +13,30 @@
 // Emits a one-line summary via `klog::write_raw` then returns; the
 // asm caller halts via `wfi` after `bl`.
 
-const EC_INSN_ABORT_LOWER: u32 = 0x20;
+// Same-EL abort classes: read both by the uaccess exception-table fixup (kernel
+// target only) and by the oops printer's DFSC decode (debug-irq/debug-watchdog).
+#[cfg(any(all(target_arch = "aarch64", target_os = "oxide-kernel"),
+          feature = "debug-irq", feature = "debug-watchdog"))]
 const EC_INSN_ABORT_SAME: u32 = 0x21;
-const EC_DATA_ABORT_LOWER: u32 = 0x24;
+#[cfg(any(all(target_arch = "aarch64", target_os = "oxide-kernel"),
+          feature = "debug-irq", feature = "debug-watchdog"))]
 const EC_DATA_ABORT_SAME: u32 = 0x25;
+
+// Lower-EL (userspace) abort classes: oops-printer only. A lower-EL abort is
+// never a candidate for the kernel fixup table, so the classifier above skips it.
+#[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
+const EC_INSN_ABORT_LOWER: u32 = 0x20;
+#[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
+const EC_DATA_ABORT_LOWER: u32 = 0x24;
+
+// Consumed by the CPACR_EL1.FPEN re-enable arm, which is kernel-target only.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const EC_FP_SIMD_TRAP: u32 = 0x07;
 
 /// Saved-`ELR_EL1` byte offset in the 288-byte exception frame. Shared by all
 /// four vector frames (SVC / software-step / undef / fault) per `vbar/asm.rs`.
+// Written only by the exception-table fixup arm (kernel target only).
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const FRAME_ELR_OFF: u64 = 176;
 
 /// Optional fault handler. Default is `default_handler` which
@@ -190,6 +206,8 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
 /// Map an `ESR_EL1.EC` value to a short label per ARM ARM
 /// D17.2.36 Tab. D17-2 (the cases we expect in v1; other classes
 /// fall through to `"unknown"`).
+// Oops-printer only; the host unit tests below pin the table.
+#[cfg(any(test, feature = "debug-irq", feature = "debug-watchdog"))]
 const fn ec_label(ec: u32) -> &'static [u8] {
     match ec {
         0x00 => b"unknown",
@@ -219,6 +237,8 @@ const fn ec_label(ec: u32) -> &'static [u8] {
 /// Decode the Data/Instruction-abort `DFSC` (ESR.ISS bits 0..5)
 /// per ARM ARM D17.2.40 Tab. D17-22. Only the cases we expect are
 /// listed; the rest fall through to `"other"`.
+// Same gate as `ec_label`: oops-printer-only, plus the host tests below.
+#[cfg(any(test, feature = "debug-irq", feature = "debug-watchdog"))]
 const fn decode_dfsc(iss: u64) -> &'static [u8] {
     match iss & 0x3f {
         0b000000 => b"address-size-l0",

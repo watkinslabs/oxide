@@ -382,7 +382,7 @@ impl InodeOps for NetIfaceOps {
         let d = inode.private::<NetIfaceData>().ok_or(VfsError::Einval)?;
         // `statistics` is a subdirectory, not a leaf attribute file.
         if name == "statistics" {
-            return Ok(net_stats::make_net_stats_inode(d.name.clone(), Arc::clone(&d.dev)));
+            return Ok(net_stats::make_net_stats_inode(Arc::clone(&d.dev)));
         }
         // `subsystem` symlink → /sys/class/net (Linux `net_class`). udev/sd-device
         // read its basename to classify the device as SUBSYSTEM=net; without it

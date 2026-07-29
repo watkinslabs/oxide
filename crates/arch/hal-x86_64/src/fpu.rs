@@ -24,6 +24,8 @@ pub const FPU_STATE_BYTES: usize = 512;
 /// and MUST be ≥ this — so, unlike an inline-in-`Task` buffer, enabling the
 /// full state costs only heap, never a by-value `Task` bloat. Linux/Redox
 /// both keep the xstate off the task struct for exactly this reason.
+// Bounds the XSAVE area inside `xstate_init`, which is kernel-target-only.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const XSAVE_MAX_BYTES: usize = 4096;
 
 /// XCR0 components the kernel context-switches, intersected with CPU-
@@ -31,6 +33,8 @@ pub const XSAVE_MAX_BYTES: usize = 4096;
 /// Hi16_ZMM(7). We save the FULL state the CPU offers so glibc's AVX/AVX512
 /// IFUNC paths — which it selects via `xgetbv(XCR0)` — are all correct
 /// across a mid-SIMD-loop preemption (the Linux way).
+// Masked against CPUID.0Dh:EAX inside `xstate_init`, which is kernel-target-only.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const XCR0_WANT: u64 = 0b1110_0111;
 
 /// True once `xstate_init` enabled XSAVE on the boot CPU (CR4.OSXSAVE +
@@ -73,15 +77,14 @@ pub unsafe fn mxcsr_mask_init() {
         // SAFETY: `fxsave` writes exactly 512 B at a 64-byte-aligned local of that size; no other reference to `fx` exists.
         unsafe { core::arch::asm!("fxsave [{s}]", s = in(reg) &mut fx as *mut FpuStateX86_64, options(nostack, preserves_flags)); }
         let mut w = [0u8; 4];
+        // Offset owned by the xstate ABI table, not restated here.
+        use crate::signal::xstate::MXCSR_MASK_OFF;
         w.copy_from_slice(&fx.bytes[MXCSR_MASK_OFF..MXCSR_MASK_OFF + 4]);
         let mask = u32::from_le_bytes(w);
         let mask = if mask == 0 { crate::signal::xstate::MXCSR_DEFAULT_FEATURE_MASK } else { mask };
         MXCSR_FEATURE_MASK.store(mask, Ordering::Release);
     }
 }
-
-/// `mxcsr_mask` offset inside the FXSAVE image (Intel SDM Vol. 1 Tab. 10-2).
-const MXCSR_MASK_OFF: usize = 28;
 
 /// True if the CPU advertises `xsave` AND it fits our buffer — i.e. the
 /// ctxsw preserves the full AVX/AVX512 state. Diagnostics / callers that

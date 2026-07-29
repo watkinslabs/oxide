@@ -28,7 +28,11 @@ pub(crate) fn classify(clk_id: u64) -> Result<ClockSpec, Errno> {
 
 pub(crate) const CLOCK_REALTIME:           u64 = sched::posix_clock::CLOCK_REALTIME as u64;
 pub(crate) const CLOCK_MONOTONIC:          u64 = sched::posix_clock::CLOCK_MONOTONIC as u64;
+// The two CPU-clock ids reach the kernel paths through `classify`, never as a
+// named u64 here; only this file's namespace tests spell them out.
+#[cfg(test)]
 pub(crate) const CLOCK_PROCESS_CPUTIME_ID: u64 = sched::posix_clock::CLOCK_PROCESS_CPUTIME_ID as u64;
+#[cfg(test)]
 pub(crate) const CLOCK_THREAD_CPUTIME_ID:  u64 = sched::posix_clock::CLOCK_THREAD_CPUTIME_ID as u64;
 pub(crate) const CLOCK_MONOTONIC_RAW:      u64 = sched::posix_clock::CLOCK_MONOTONIC_RAW as u64;
 pub(crate) const CLOCK_REALTIME_COARSE:    u64 = sched::posix_clock::CLOCK_REALTIME_COARSE as u64;

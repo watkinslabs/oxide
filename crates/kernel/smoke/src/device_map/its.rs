@@ -26,8 +26,6 @@ fn log_cmd_status(s: arch_irq::its::CmdStatus) {
         }
     }
 }
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64", not(feature = "debug-irq")))]
-fn log_cmd_status(_s: arch_irq::its::CmdStatus) {}
 
 use super::{device_flags, KERNEL_DEVICE_BASE};
 use hal::{MmuOps, Pa, PageSize, Va};

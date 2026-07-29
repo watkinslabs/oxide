@@ -10,6 +10,8 @@ use hal::{Nanos, TimerOps};
 /// "not yet calibrated"; `monotonic_ns` returns 0 in that window so
 /// callers don't divide by zero.
 static TSC_KHZ: AtomicU32 = AtomicU32::new(0);
+// Written only by `X86TimerOps::set_oneshot`'s kernel-target arm.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const IA32_TSC_DEADLINE: u32 = 0x6e0;
 
 /// Boot-time hook: stash the TSC frequency in kHz. Calibration code

@@ -4,7 +4,9 @@ use crate::pl011::{Pl011, PL011_VIRT_BASE};
 use klog::Uart;
 #[cfg(feature = "debug-boot")]
 use sync::{Spinlock, Tty as UartClass};
-#[cfg(target_os = "oxide-kernel")]
+// Sole caller is `boot_emit`, which is `debug-boot`-gated; without that gate the
+// semihosting sink is never installed.
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
 mod semihost {
     /// ARM semihosting putc per ARMv8 semihosting spec §5.5
     /// (SYS_WRITEC = 0x03). QEMU `-semihosting-config target=native`

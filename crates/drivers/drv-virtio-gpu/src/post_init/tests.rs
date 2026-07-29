@@ -16,10 +16,9 @@ fn test_ctrlq() -> virtio::VirtQueueResource {
     }
 }
 
-fn test_scanout_ctx(device_key: virtio::VirtioChildDeviceKey, bdf: u32) -> ScanoutCtx {
+fn test_scanout_ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
     ScanoutCtx {
         device_key,
-        bdf,
         cfg_va: 0,
         w: 640,
         h: 480,
@@ -55,7 +54,7 @@ fn test_gpu_dev(device_key: virtio::VirtioChildDeviceKey, bdf: u32) -> crate::Vi
 fn uninstall_scanout_removes_context_without_live_mmio_or_frames() {
     let _guard = TEST_LOCK.lock();
     CTX.lock().clear();
-    CTX.lock().push(test_scanout_ctx(key(0x0010_0000), 0x0010_0000));
+    CTX.lock().push(test_scanout_ctx(key(0x0010_0000)));
 
     assert!(uninstall_scanout(key(0x0010_0000)));
     assert!(CTX.lock().is_empty());
@@ -66,10 +65,10 @@ fn uninstall_scanout_removes_context_without_live_mmio_or_frames() {
 fn failed_probe_unwind_removes_only_matching_child_scanout() {
     let _guard = TEST_LOCK.lock();
     CTX.lock().clear();
-    let mut first = test_scanout_ctx(key(1), 0x0010_0000);
+    let mut first = test_scanout_ctx(key(1));
     first.w = 640;
     first.h = 480;
-    let mut second = test_scanout_ctx(key(2), 0x0010_0000);
+    let mut second = test_scanout_ctx(key(2));
     second.w = 800;
     second.h = 600;
     CTX.lock().push(first);
@@ -81,7 +80,6 @@ fn failed_probe_unwind_removes_only_matching_child_scanout() {
     let guard = CTX.lock();
     assert_eq!(guard.len(), 1);
     assert_eq!(guard[0].device_key, key(2));
-    assert_eq!(guard[0].bdf, 0x0010_0000);
     drop(guard);
     assert!(uninstall_scanout_after_failed_probe(key(2)));
     assert!(CTX.lock().is_empty());
@@ -108,7 +106,6 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
     assert!(!fb.owned);
     assert!(install_scanout_ctx(
         key(0x10),
-        0x0010_0000,
         32,
         16,
         0,
@@ -140,7 +137,7 @@ fn hot_remove_attempts_scanout_when_device_state_is_missing() {
     let _guard = TEST_LOCK.lock();
     CTX.lock().clear();
     crate::device::DEVICES.lock().clear();
-    CTX.lock().push(test_scanout_ctx(key(0x0010_0000), 0x0010_0000));
+    CTX.lock().push(test_scanout_ctx(key(0x0010_0000)));
 
     let result = crate::hot_remove(key(0x0010_0000));
 
@@ -155,7 +152,7 @@ fn hot_remove_attempts_device_and_scanout_cleanup() {
     CTX.lock().clear();
     crate::device::DEVICES.lock().clear();
     crate::install(test_gpu_dev(key(0x0010_0000), 0x0010_0000)).unwrap();
-    CTX.lock().push(test_scanout_ctx(key(0x0010_0000), 0x0010_0000));
+    CTX.lock().push(test_scanout_ctx(key(0x0010_0000)));
 
     let result = crate::hot_remove(key(0x0010_0000));
 

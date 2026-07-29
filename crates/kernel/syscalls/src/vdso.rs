@@ -29,26 +29,25 @@ const PF_R: u32 = 4;
 const ELF_PHOFF: usize = 32;     // e_phoff
 const ELF_PHENTSIZE: usize = 54; // e_phentsize
 const ELF_PHNUM: usize = 56;     // e_phnum
+// Section-header + dynsym facts consumed only by the aarch64 `dynsym_vaddr`
+// resolver; gated to avoid unused-const warnings on x86_64, whose vDSO exposes
+// no kernel-owned signal restorer to look up.
+#[cfg(target_arch = "aarch64")]
 const ELF_SHOFF: usize = 40;
+#[cfg(target_arch = "aarch64")]
 const ELF_SHENTSIZE: usize = 58;
+#[cfg(target_arch = "aarch64")]
 const ELF_SHNUM: usize = 60;
-const ELF_SECTION_TYPE_OFF: usize = 4;
-const ELF_SECTION_OFFSET_OFF: usize = 24;
-const ELF_SECTION_SIZE_OFF: usize = 32;
-const ELF_SECTION_LINK_OFF: usize = 40;
-const ELF_SECTION_ENTSIZE_OFF: usize = 56;
-const ELF_SYMBOL_NAME_OFF: usize = 0;
-const ELF_SYMBOL_VALUE_OFF: usize = 8;
-const ELF_SECTION_HEADER_BYTES: usize = 64;
-const ELF_SYMBOL_BYTES: usize = 24;
+#[cfg(target_arch = "aarch64")]
 const SHT_DYNSYM: u32 = 11;
-const VDSO_SIGRETURN_SYMBOL: &[u8] = b"__kernel_rt_sigreturn";
-// Consumed only by the aarch64 `dynsym_vaddr` resolver (strtab section type +
-// ELF64 Sym record stride); gated to avoid an unused-const warning on x86_64.
 #[cfg(target_arch = "aarch64")]
 const SHT_STRTAB: u32 = 3;
 #[cfg(target_arch = "aarch64")]
 const ELF64_SYM_SIZE: usize = 24;
+/// The arm64 kernel-owned signal-return trampoline arm64 glibc leaves
+/// `sa_restorer` zero for (`arch/arm64/kernel/vdso/sigreturn.S`).
+#[cfg(target_arch = "aarch64")]
+const VDSO_SIGRETURN_SYMBOL: &[u8] = b"__kernel_rt_sigreturn";
 
 /// Parse the vDSO ELF and return (max_vaddr_end, Vec<segment>) where
 /// each segment is (vaddr, filesz, memsz, p_offset, p_flags).
@@ -133,7 +132,7 @@ fn dynsym_vaddr(name: &[u8]) -> Option<u64> {
 /// # C: O(N_dynsym)
 #[cfg(target_arch = "aarch64")]
 pub fn rt_sigreturn_addr(base: u64) -> Option<u64> {
-    base.checked_add(dynsym_vaddr(b"__kernel_rt_sigreturn")?)
+    base.checked_add(dynsym_vaddr(VDSO_SIGRETURN_SYMBOL)?)
 }
 
 /// Translate ELF PF_* flags to VmaProt.
@@ -145,60 +144,13 @@ fn prot_of(p_flags: u32) -> VmaProt {
     p
 }
 
-fn read_u16(blob: &[u8], off: usize) -> Option<u16> {
-    blob.get(off..off.checked_add(2)?).and_then(|v| v.try_into().ok()).map(u16::from_le_bytes)
-}
-
-fn read_u32(blob: &[u8], off: usize) -> Option<u32> {
-    blob.get(off..off.checked_add(4)?).and_then(|v| v.try_into().ok()).map(u32::from_le_bytes)
-}
-
-fn read_u64(blob: &[u8], off: usize) -> Option<u64> {
-    blob.get(off..off.checked_add(8)?).and_then(|v| v.try_into().ok()).map(u64::from_le_bytes)
-}
-
-/// Resolve an exported vDSO symbol's load-relative ELF value. The parser uses
-/// the image's dynamic symbol table rather than a generated offset, so the
-/// kernel and vDSO cannot silently disagree when the blob changes.
-fn dynamic_symbol_value(name: &[u8]) -> Option<u64> {
-    let blob = VDSO_BLOB;
-    let shoff = read_u64(blob, ELF_SHOFF)? as usize;
-    let shentsize = read_u16(blob, ELF_SHENTSIZE)? as usize;
-    let shnum = read_u16(blob, ELF_SHNUM)? as usize;
-    if shentsize < ELF_SECTION_HEADER_BYTES { return None; }
-    for section in 0..shnum {
-        let sh = shoff.checked_add(section.checked_mul(shentsize)?)?;
-        if read_u32(blob, sh.checked_add(ELF_SECTION_TYPE_OFF)?)? != SHT_DYNSYM { continue; }
-        let symbols_off = read_u64(blob, sh.checked_add(ELF_SECTION_OFFSET_OFF)?)? as usize;
-        let symbols_len = read_u64(blob, sh.checked_add(ELF_SECTION_SIZE_OFF)?)? as usize;
-        let str_index = read_u32(blob, sh.checked_add(ELF_SECTION_LINK_OFF)?)? as usize;
-        let entsize = read_u64(blob, sh.checked_add(ELF_SECTION_ENTSIZE_OFF)?)? as usize;
-        if entsize < ELF_SYMBOL_BYTES || str_index >= shnum { return None; }
-        let str_sh = shoff.checked_add(str_index.checked_mul(shentsize)?)?;
-        let strings_off = read_u64(blob, str_sh.checked_add(ELF_SECTION_OFFSET_OFF)?)? as usize;
-        let strings_len = read_u64(blob, str_sh.checked_add(ELF_SECTION_SIZE_OFF)?)? as usize;
-        let symbol_count = symbols_len.checked_div(entsize)?;
-        for symbol in 0..symbol_count {
-            let sym = symbols_off.checked_add(symbol.checked_mul(entsize)?)?;
-            let name_off = read_u32(blob, sym.checked_add(ELF_SYMBOL_NAME_OFF)?)? as usize;
-            let name_start = strings_off.checked_add(name_off)?;
-            let name_end = blob.get(name_start..strings_off.checked_add(strings_len)?)?
-                .iter().position(|byte| *byte == 0).map(|len| name_start + len)?;
-            if &blob[name_start..name_end] == name {
-                return read_u64(blob, sym.checked_add(ELF_SYMBOL_VALUE_OFF)?);
-            }
-        }
-    }
-    None
-}
-
 /// Current task's mapped AArch64 vDSO rt_sigreturn trampoline.
 /// # C: O(dynamic-symbol count)
 #[cfg(target_arch = "aarch64")]
 pub fn current_signal_restorer() -> Option<u64> {
     let mm = unsafe { sched::live::current()?.mm_ref() }?;
     let base = mm.vdso_ehdr();
-    let value = dynamic_symbol_value(VDSO_SIGRETURN_SYMBOL)?;
+    let value = dynsym_vaddr(VDSO_SIGRETURN_SYMBOL)?;
     base.checked_add(value).filter(|addr| *addr < hal::USER_VA_END)
 }
 
@@ -266,6 +218,6 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn aarch64_vdso_exports_sigreturn() {
-        assert!(dynamic_symbol_value(VDSO_SIGRETURN_SYMBOL).is_some());
+        assert!(dynsym_vaddr(VDSO_SIGRETURN_SYMBOL).is_some());
     }
 }

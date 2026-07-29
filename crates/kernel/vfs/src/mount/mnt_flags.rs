@@ -72,7 +72,9 @@ pub const MOUNT_ATTR_NOEXEC:      u64 = 0x0000_0008;
 /// atime policy SUB-FIELD mask (Linux `MOUNT_ATTR__ATIME`); the policy is the
 /// VALUE of `attr & MOUNT_ATTR__ATIME`, not a set of independent bits.
 pub const MOUNT_ATTR__ATIME:      u64 = 0x0000_0070;
-/// relatime is encoded as the ZERO value of the atime sub-field.
+/// relatime is encoded as the ZERO value of the atime sub-field, so nothing
+/// ever matches this constant — it names the default the sub-field decodes to.
+#[allow(dead_code, reason = "complete uapi/linux/mount.h MOUNT_ATTR_* space; relatime is the zero value of the MOUNT_ATTR__ATIME sub-field and is therefore unmatchable by construction")]
 pub const MOUNT_ATTR_RELATIME:    u64 = 0x0000_0000;
 pub const MOUNT_ATTR_NOATIME:     u64 = 0x0000_0010;
 pub const MOUNT_ATTR_STRICTATIME: u64 = 0x0000_0020;

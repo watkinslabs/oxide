@@ -1,5 +1,8 @@
 use super::*;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+// Only the write-while-free poison checks read this: the 0xCC `debug-cow` check
+// and the 0xAA `debug-watchdog` check (kernel-only — needs the HHDM mirror).
+#[cfg(any(feature = "debug-cow", all(feature = "debug-watchdog", target_os = "oxide-kernel")))]
 const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 const ALLOCATOR_INTEGRITY_RETRY_COUNT: usize = 64;
 #[cfg(feature = "debug-cow")]

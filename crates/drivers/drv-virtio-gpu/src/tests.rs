@@ -1,4 +1,5 @@
 use super::*;
+use crate::device::DeviceKey;
 use alloc::{format, string::String};
 use core::sync::atomic::{AtomicU32, AtomicU64};
 use sync::{Spinlock, TaskList as DriverLockClass};

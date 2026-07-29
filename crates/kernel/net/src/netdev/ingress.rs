@@ -21,6 +21,10 @@ impl IngressGate {
     const LIVE: usize = 1usize << (usize::BITS - 1);
     const ACTIVE: usize = !Self::LIVE;
 
+    /// Immediately-live gate. Only the hosted `register_in_ns` convenience
+    /// builds one; the kernel registration path always starts from
+    /// `registration_pending` and publishes via the arm/commit handshake.
+    #[cfg(not(target_os = "oxide-kernel"))]
     pub(super) fn new(net_ns: u64, generation: u64) -> Self {
         Self { net_ns, generation, state: AtomicUsize::new(Self::LIVE),
             ready: AtomicBool::new(true), complete: AtomicBool::new(false),

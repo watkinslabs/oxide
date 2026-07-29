@@ -36,22 +36,6 @@ pub(super) fn dev_root_canon(bus: &str) -> &'static str {
     }
 }
 
-pub(super) fn dev_root_leaf(bus: &str) -> &'static str {
-    match bus {
-        "pci" => "pci0000:00",
-        "virtio" => "virtio",
-        "platform" => "platform",
-        "block" => "virtual/block",
-        "input" => "virtual/input",
-        "drm" => "virtual/drm",
-        "mem" => "virtual/mem",
-        "misc" => "virtual/misc",
-        "sound" => "virtual/sound",
-        "graphics" => "virtual/graphics",
-        _ => "platform",
-    }
-}
-
 pub(super) fn bus_devices_ino(bus: &str) -> Ino {
     match bus {
         "pci" => INO_BUS_PCI_DEV,

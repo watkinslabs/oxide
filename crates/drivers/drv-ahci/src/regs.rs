@@ -5,14 +5,19 @@
 // mechanics that USE these live in `port.rs`.
 
 /// Generic HBA (global) register byte offsets in the ABAR (AHCI §3.1).
+#[expect(dead_code, reason = "no caller: port.rs bring_up must read CAP.S64A before writing the 64-bit PxCLBU/PxFBU bases")]
 pub const HBA_CAP:  u64 = 0x00; // Host Capabilities
 pub const HBA_GHC:  u64 = 0x04; // Global Host Control
+#[expect(dead_code, reason = "no caller: no AHCI completion-interrupt path exists, so the global IS bitmap is never read or W1C'd")]
 pub const HBA_IS:   u64 = 0x08; // Interrupt Status (port bitmap)
 pub const HBA_PI:   u64 = 0x0C; // Ports Implemented (bitmap)
+#[allow(dead_code, reason = "AHCI 1.3.1 §3.1 global-register offset table kept complete; the version register is informational")]
 pub const HBA_VS:   u64 = 0x10; // Version
 
 /// GHC bits (AHCI §3.1.2).
+#[expect(dead_code, reason = "no caller: bring_up sets only GHC.AE; Linux ahci_reset_controller drives GHC.HR first")]
 pub const GHC_HR: u32 = 1 << 0;  // HBA Reset
+#[expect(dead_code, reason = "no caller: no AHCI completion-interrupt path exists; the driver busy-polls PxCI/PxTFD")]
 pub const GHC_IE: u32 = 1 << 1;  // Interrupt Enable
 pub const GHC_AE: u32 = 1 << 31; // AHCI Enable
 
@@ -27,6 +32,7 @@ pub const P_CLBU: u64 = 0x04; // Command List Base upper 32
 pub const P_FB:   u64 = 0x08; // FIS Base (256 B aligned)
 pub const P_FBU:  u64 = 0x0C; // FIS Base upper 32
 pub const P_IS:   u64 = 0x10; // Interrupt Status
+#[expect(dead_code, reason = "no caller: per-port interrupt enable is never programmed nor masked at teardown (no AHCI IRQ path)")]
 pub const P_IE:   u64 = 0x14; // Interrupt Enable
 pub const P_CMD:  u64 = 0x18; // Command and Status
 pub const P_TFD:  u64 = 0x20; // Task File Data
@@ -34,6 +40,7 @@ pub const P_SIG:  u64 = 0x24; // Signature
 pub const P_SSTS: u64 = 0x28; // SATA Status (SStatus)
 pub const P_SCTL: u64 = 0x2C; // SATA Control
 pub const P_SERR: u64 = 0x30; // SATA Error
+#[allow(dead_code, reason = "AHCI 1.3.1 §3.3 port-register offset table kept complete; PxSACT is NCQ-only and this driver issues non-queued commands")]
 pub const P_SACT: u64 = 0x34; // SATA Active
 pub const P_CI:   u64 = 0x38; // Command Issue (bit per slot)
 

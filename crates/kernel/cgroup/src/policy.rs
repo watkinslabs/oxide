@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 /// Parse a Linux cpulist (`"0-3,7,9-11"`) into a CPU bitmask (bit N ⇔
 /// CPU N), capped at 64. Empty/whitespace → `None` (no restriction).
 /// Malformed tokens are skipped (best-effort, matching how the kernel
@@ -64,8 +62,4 @@ pub fn cpu_bandwidth_decision(
     }
     let consumed = total_ns.saturating_sub(base_ns);
     if consumed >= quota_ns { CpuAction::Throttle } else { CpuAction::Continue }
-}
-
-pub(crate) fn empty_cpu_groups() -> Vec<crate::tree::CpuGroup> {
-    Vec::new()
 }

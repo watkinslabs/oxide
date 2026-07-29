@@ -156,6 +156,9 @@ impl V4IfaceGroup {
     }
     pub(crate) fn iface_generation(&self) -> u64 { self.compat.generation }
     pub(crate) fn robustness(&self) -> u8 { self.compat.robustness() }
+    /// Test-only readback: the querier-interval consumer is `IfaceCompat`'s own
+    /// `observe_general`, which reads the atomic directly.
+    #[cfg(test)]
     pub(crate) fn query_interval_ns(&self) -> u64 { self.compat.query_interval_ns() }
     pub(crate) fn observe_general_query(&self, qrv: u8, qqic: u8, max_resp_ns: u64,
                                         version: u8, now_ns: u64) {

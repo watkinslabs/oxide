@@ -7,6 +7,9 @@ use sched::live::sigpend::Signum;
 
 /// Linux `SA_RESTORER`: user supplied the signal-return trampoline.
 /// AArch64 handlers without this flag return through the mapped vDSO entry.
+/// Consulted by `aarch64_restorer` only, hence the arch-conditional `expect`:
+/// on x86_64 nothing reads it, which is the bug the reason names.
+#[cfg_attr(not(target_arch = "aarch64"), expect(dead_code, reason = "no caller: the x86_64 arm of dispatch_pending hands p.restorer to build_signal_frame unconditionally; Linux arch/x86/kernel/signal_64.c:171 rejects the delivery (-EFAULT -> force_sigsegv) when SA_RESTORER is absent"))]
 const SA_RESTORER: u64 = 0x0400_0000;
 /// Linux `SA_RESTART`; caught handlers carrying this flag restart
 /// `ERESTARTSYS` syscalls through their preserved signal frame. The

@@ -5,7 +5,10 @@ use movable::OwnerId;
 
 use super::pool::ZsPool;
 
-/// Canonical zsmalloc backend accounting, derived from live zspages only.
+/// Test-only zsmalloc backend accounting, derived from live zspages only.
+/// zram's mm_stat truth lives in state/stats.rs; this exists so the zsmalloc
+/// unit tests can observe occupancy without going through zram.
+#[cfg(test)]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct ZsPoolStats { pub(super) pages: usize, pub(super) zspages: usize, pub(super) objects: usize, pub(super) can_compact: bool }
 

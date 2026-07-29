@@ -3,7 +3,9 @@ use super::*;
 #[cfg(target_arch = "x86_64")]
 use super::fault::do_handle;
 
+#[cfg(target_arch = "x86_64")]
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+#[cfg(target_arch = "x86_64")]
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 
 #[cfg(target_arch = "x86_64")]

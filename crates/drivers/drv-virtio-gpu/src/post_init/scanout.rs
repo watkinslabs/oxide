@@ -78,7 +78,6 @@ pub fn unblank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
 
 pub(super) fn install_scanout_ctx(
     device_key: virtio::VirtioChildDeviceKey,
-    bdf: u32,
     w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_order: pmm::Order, res_id: u32,
     ctrlq: virtio::VirtQueueResource, cursorq: virtio::VirtQueueResource,
     cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
@@ -88,7 +87,7 @@ pub(super) fn install_scanout_ctx(
         return false;
     }
     ctxs.push(ScanoutCtx {
-        device_key, bdf, cfg_va, w, h, fb_va, fb_bytes, fb_order, res_id,
+        device_key, cfg_va, w, h, fb_va, fb_bytes, fb_order, res_id,
         ctrlq, cursorq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
     });
     true
@@ -323,7 +322,6 @@ mod tests {
     fn ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
         ScanoutCtx {
             device_key,
-            bdf: device_key.raw(),
             cfg_va: 0,
             w: 640,
             h: 480,

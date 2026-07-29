@@ -23,13 +23,6 @@ pub(crate) fn rollback_new_inode_charge(st: &RootfsState, parent_ino: u32, mode:
     }
 }
 
-/// Release quota for an ext4 inode that lost its final link. # C: O(1)+VFS quota
-pub(crate) fn release_existing_inode(st: &RootfsState, ino: u32, raw: &crate::Inode) -> vfs::KResult<()> {
-    release_existing_inode_usage(st, raw)?;
-    drop_existing_inode_dquots(st, ino);
-    Ok(())
-}
-
 /// Release existing inode quota after committed deletion, retrying dirty failure once. # C: O(1)+VFS quota
 pub(crate) fn release_existing_inode_retry(st: &RootfsState, ino: u32, raw: &crate::Inode) -> vfs::KResult<()> {
     match release_existing_inode_usage(st, raw) {

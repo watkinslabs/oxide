@@ -104,17 +104,6 @@ pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc:
     }
 }
 
-/// Decode a snapshotted `sockaddr_un` with Linux pathname/abstract trimming. # C: O(108)
-pub(crate) fn unix_path_from_kernel_sockaddr(addr: &[u8]) -> Result<alloc::vec::Vec<u8>, i64> {
-    if addr.len() <= 2 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    let raw = &addr[2..core::cmp::min(addr.len(), 110)];
-    if raw[0] == 0 {
-        return Ok(raw.to_vec());
-    }
-    let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
-    Ok(raw[..end].to_vec())
-}
-
 /// Read sockaddr_in (v4): (family, port_host, addr_host). # C: O(1)
 pub(crate) fn read_sockaddr_in(ptr: u64) -> Option<(u32, u16, u32)> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
@@ -124,18 +113,6 @@ pub(crate) fn read_sockaddr_in(ptr: u64) -> Option<(u32, u16, u32)> {
         let port_be = core::ptr::read_volatile((ptr + 2) as *const u16);
         let addr_be = core::ptr::read_volatile((ptr + 4) as *const u32);
         Some((family, u16::from_be(port_be), u32::from_be(addr_be)))
-    }
-}
-
-/// Write a sockaddr_in (v4) at `ptr`. # C: O(1)
-pub(crate) fn write_sockaddr_in(ptr: u64, addr_be: u32, port_be: u16) {
-    if ptr == 0 || ptr >= USER_VA_END { return; }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); 8-byte writes.
-    unsafe {
-        core::ptr::write_volatile(ptr as *mut u16, AF_INET as u16);
-        core::ptr::write_volatile((ptr + 2) as *mut u16, port_be);
-        core::ptr::write_volatile((ptr + 4) as *mut u32, addr_be);
-        core::ptr::write_volatile((ptr + 8) as *mut u64, 0);
     }
 }
 
@@ -164,22 +141,6 @@ pub(crate) fn read_sockaddr_in6_len(ptr: u64, addrlen: usize) -> Option<(u32, u1
         }
         let scope = if has_scope { core::ptr::read_volatile((ptr + 24) as *const u32) } else { 0 };
         Some((family, u16::from_be(port_be), a, scope))
-    }
-}
-
-/// Write a sockaddr_in6 (28 B) at `ptr`. # C: O(1)
-pub(crate) fn write_sockaddr_in6(ptr: u64, addr_bytes: [u8; 16], port_be: u16, scope_id: u32) {
-    if ptr == 0 || ptr >= USER_VA_END { return; }
-    if ptr.checked_add(28).map_or(true, |e| e >= USER_VA_END) { return; }
-    // SAFETY: 28 bytes inside validated range; caller's AS active.
-    unsafe {
-        core::ptr::write_volatile(ptr as *mut u16, AF_INET6 as u16);
-        core::ptr::write_volatile((ptr + 2) as *mut u16, port_be);
-        core::ptr::write_volatile((ptr + 4) as *mut u32, 0); // flowinfo
-        for i in 0..16 {
-            core::ptr::write_volatile((ptr + 8 + i as u64) as *mut u8, addr_bytes[i]);
-        }
-        core::ptr::write_volatile((ptr + 24) as *mut u32, scope_id);
     }
 }
 
@@ -251,13 +212,6 @@ pub(crate) fn encoded_sockaddr_un_path(path: Option<&[u8]>) -> EncodedSockaddr {
 }
 
 /// Encode `struct sockaddr_vm` without touching user memory. # C: O(1)
-
-/// Write a sockaddr_in6 from a genuine IPv6 source address (the recv
-/// path's `peer6`), as opposed to the V4-state synthesis above.
-/// # C: O(1)
-pub(crate) fn write_sockaddr_in6_peer(ptr: u64, ip: net::Ipv6Addr, port: u16) {
-    write_sockaddr_in6(ptr, ip.0, port.to_be(), 0);
-}
 
 /// Encode a genuine IPv6 peer address. # C: O(1)
 pub(crate) fn encoded_sockaddr_in6_peer(ip: net::Ipv6Addr, port: u16) -> EncodedSockaddr {

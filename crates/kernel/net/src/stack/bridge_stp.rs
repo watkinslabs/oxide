@@ -36,7 +36,8 @@ pub(super) struct StpPort {
 
 struct ReceivedBpdu { bpdu: StpConfigBpdu, received_ns: u64, expires_ns: u64 }
 
-pub(super) struct StpTx { pub(super) port: NetIfaceId, pub(super) net_ns: u64, pub(super) frame: Vec<u8> }
+// `pub(crate)` to match `stp_tick`, which returns `Vec<StpTx>`.
+pub(crate) struct StpTx { pub(super) port: NetIfaceId, pub(super) net_ns: u64, pub(super) frame: Vec<u8> }
 
 impl BridgeStp {
     pub(super) fn new(id: [u8; 8]) -> Self {

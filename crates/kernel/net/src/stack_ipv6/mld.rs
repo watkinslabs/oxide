@@ -54,11 +54,6 @@ impl NetStack {
         if queued { self.finish_v6_multicast(Some(V6ReportWork { owner: lease.namespace(), iface,
             iface_generation: expected_generation, driver, now_ns })); }
     }
-    fn emit_mld_policy(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, include: u8, exclude: u8,
-                       group: Ipv6Addr, filter: &SourceFilter6) -> NetResult<()> {
-        let record = match filter.mode { FilterMode::Include => include, FilterMode::Exclude => exclude };
-        self.emit_mldv2(net_ns, iface, src, &[(record, group, filter.sources.as_slice())])
-    }
     fn emit_mld_change(&self, net_ns: u64, iface: NetIfaceId, iface_generation: u64,
                        src: Ipv6Addr, group: Ipv6Addr,
                        change: &V6Change) -> NetResult<()> {
@@ -198,11 +193,16 @@ impl NetStack {
         if groups.is_empty() { all.remove(&iface); }
     }
     /// Publish one socket's full MLDv2 filter and emit resulting interface state. # C: O(N * S)
+    /// Test-only ns-0 entry: the live socket join/leave path goes through
+    /// `mcast_filter` into the `*_rtnl` form, which already holds RTNL.
+    #[cfg(test)]
     pub(crate) fn set_ipv6_multicast(&self, owner: usize, iface: NetIfaceId, group: Ipv6Addr,
                                      src: Ipv6Addr, filter: Option<&SourceFilter6>) -> NetResult<()> {
         self.set_ipv6_multicast_in(0, owner, iface, group, src, filter)
     }
     /// Publish socket MLD policy in one network namespace. # C: O(N * S)
+    /// Test-only: production callers reach the `*_rtnl` form via `mcast_filter`.
+    #[cfg(test)]
     pub(crate) fn set_ipv6_multicast_in(&self, net_ns: u64, owner: usize,
                                         iface: NetIfaceId, group: Ipv6Addr,
                                         src: Ipv6Addr, filter: Option<&SourceFilter6>) -> NetResult<()> {
@@ -268,6 +268,9 @@ impl NetStack {
             driver: report, now_ns }))
     }
     /// Remove dead socket policy and retain only a compact failed report. # C: O(N)
+    /// Test-only ns-0 entry: the live socket join/leave path goes through
+    /// `mcast_filter` into the `*_rtnl` form, which already holds RTNL.
+    #[cfg(test)]
     pub(crate) fn release_ipv6_multicast(&self, owner: usize, iface: NetIfaceId,
                                          group: Ipv6Addr, _src: Ipv6Addr) {
         let Some(net_ns) = self.ifaces.namespace(iface) else { return };

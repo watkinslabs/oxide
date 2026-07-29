@@ -139,23 +139,6 @@ pub(crate) fn read_user_path_bytes(ptr: u64) -> Result<Vec<u8>, i64> {
     Ok(bytes.to_vec())
 }
 
-/// # C: O(1)
-/// Distinct `st_dev` per filesystem, derived from the inode-number namespace
-/// each FS allocates from: ext4 stamps `EXT4_INO_MARK` (0x6E54..) in the top
-/// 32 bits; the synthetic FSes use distinct high nibbles (devfs 0x2xxx_xxxx,
-/// procfs 0x3xxx_xxxx, tmpfs 0x4xxx_xxxx+, sysfs/bpf above). systemd's
-/// mount-boundary detection compares `st_dev` across a path — with every
-/// `st_dev == 0` it cannot tell one filesystem from another, which breaks its
-/// cgroup/credentials/os-release boundary walks. Linux gives each mount its
-/// own `dev_t` (a block dev_t or an anon-bdev); this is the stable analogue.
-/// # C: O(1)
-pub(crate) fn encode_dev(major: u32, minor: u32) -> u64 {
-    ((minor & 0xff) as u64)
-        | (((major & 0xfff) as u64) << 8)
-        | (((minor & !0xff) as u64) << 12)
-        | (((major & !0xfff) as u64) << 32)
-}
-
 pub(crate) fn dev_major(dev: u64) -> u32 {
     (((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff)) as u32
 }

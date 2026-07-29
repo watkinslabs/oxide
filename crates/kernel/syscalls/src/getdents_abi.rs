@@ -43,6 +43,9 @@ pub const DIRENT_ALIGN: usize = 8;
 
 /// Widest record either layout can produce: the longest name
 /// `verify_dirent_name` admits (`PATH_MAX - 1`) plus header, NUL and pad.
+/// The packing path bounds itself by the caller's `count`, so this ceiling is
+/// only ever asserted against — see `tests::max_reclen_bounds_every_admissible_name`.
+#[cfg(test)]
 pub const MAX_RECLEN: usize = (DIRENT64_NAME_OFF + (PATH_MAX - 1) + 1 + DIRENT_ALIGN - 1)
     & !(DIRENT_ALIGN - 1);
 
@@ -158,11 +161,10 @@ impl DirentFill {
     /// # C: O(1)
     pub fn capacity(&self) -> usize { self.capacity }
 
-    /// Sticky `buf->error`. # C: O(1)
+    /// Sticky `buf->error`. Read by `getdents_abi/tests.rs`; the slot files
+    /// consume the error through `Fill::Stop` instead. # C: O(1)
+    #[cfg(test)]
     pub fn error(&self) -> Option<Errno> { self.error }
-
-    /// Record length this entry would occupy. # C: O(1)
-    pub fn reclen(&self, name_len: usize) -> usize { self.layout.reclen(name_len) }
 
     /// Offer one entry, writing it into `out` (the user buffer, already
     /// positioned at its base) at [`Self::written`]. Linux order: verify the

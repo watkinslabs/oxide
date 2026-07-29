@@ -31,8 +31,12 @@ pub fn period() -> u32 { period_slot().load(Ordering::Relaxed) }
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub(crate) fn set_period(period: u32) { period_slot().store(period, Ordering::Relaxed); }
 
+// OR'd into CNTKCTL_EL1 by `enable_el0_counter_access`, which is kernel-target-only.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const CNTKCTL_EL0PCTEN: u64 = 1 << 0;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const CNTKCTL_EL0VCTEN: u64 = 1 << 1;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const CNTKCTL_EL0_COUNTER_ACCESS: u64 = CNTKCTL_EL0PCTEN | CNTKCTL_EL0VCTEN;
 
 /// Enable EL0 reads of the architected physical/virtual counter.

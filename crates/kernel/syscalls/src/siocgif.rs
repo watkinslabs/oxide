@@ -210,11 +210,6 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     }
 }
 
-fn net_errno(result: net::NetResult<()>) -> i64 {
-    result.map(|()| 0).unwrap_or_else(|error| -(crate::net_common::errno_from_neterr(error) as i64))
-}
-
-
 fn user_range(addr: u64, len: usize) -> bool {
     addr != 0 && addr.checked_add(len as u64).is_some_and(|end| end <= USER_VA_END)
 }

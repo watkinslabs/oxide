@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::Task;
 
 use super::current_task;
-#[cfg(feature = "debug-watchdog")]
+#[cfg(feature = "debug-taskdump")]
 use super::format::emit_syscall;
 
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
@@ -48,7 +48,9 @@ pub fn record_syscall(nr: u32, ret: i64) {
     }
 }
 
-#[cfg(feature = "debug-watchdog")]
+// Gated to match its ONLY caller, `dump_exit_recent` — the opt-in
+// `debug-taskdump`, not the default-on `debug-watchdog` that implies it.
+#[cfg(feature = "debug-taskdump")]
 pub(super) fn dump_recent_for(tid: u32) {
     klog::write_raw(b"  recent syscalls (newest first):\n");
     let pos = RING_POS.load(Ordering::Relaxed);

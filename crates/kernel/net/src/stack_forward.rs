@@ -47,11 +47,6 @@ impl NetStack {
         egress.xmit_raw(&frame)
     }
 
-    /// True when this IPv4 destination belongs to the host. # C: O(N addrs)
-    pub(crate) fn ipv4_dst_is_local(&self, dst: Ipv4Addr) -> bool {
-        self.ipv4_dst_is_local_in(0, dst)
-    }
-
     /// True when `dst` belongs to one network namespace. # C: O(N addrs)
     pub(crate) fn ipv4_dst_is_local_in(&self, net_ns: u64, dst: Ipv4Addr) -> bool {
         if dst.is_loopback() || dst.is_broadcast() || dst.is_multicast() {
@@ -99,12 +94,6 @@ impl NetStack {
         p.next_hop = Some(crate::pkt::TxNextHop::V4(dst));
         if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
         Ok(())
-    }
-
-    /// Forward one IPv4 packet after PRE_ROUTING has accepted it. # C: O(N routes + len)
-    pub(crate) fn forward_ipv4(&self, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        let net_ns = self.ifaces.namespace(ingress).ok_or(NetError::Enodev)?;
-        self.forward_ipv4_in(net_ns, ingress, l3)
     }
 
     /// Forward one IPv4 packet within the ingress namespace. # C: O(N routes + len)

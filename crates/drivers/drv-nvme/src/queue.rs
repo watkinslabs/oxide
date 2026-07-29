@@ -67,7 +67,6 @@ struct Queue {
 pub struct Nvme {
     mmio:    Mapping,
     bar0_va: u64,
-    dstrd:   u32,
     admin:   Queue,
     io:      Queue,
     /// PRP bounce frame (one 4 KiB page) — the data buffer for one I/O.
@@ -157,13 +156,6 @@ impl Nvme {
         self.w32(off, (val & 0xFFFF_FFFF) as u32);
         self.w32(off + 4, (val >> 32) as u32);
     }
-    /// Read CAP (64-bit) as two halves. # C: O(1)
-    #[inline]
-    fn cap(&self) -> u64 {
-        (self.r32(regs::REG_CAP) as u64)
-            | ((self.r32(regs::REG_CAP + 4) as u64) << 32)
-    }
-
     /// Zero a freshly-allocated queue/PRP frame via HHDM. # C: O(page)
     fn zero_frame(pa: u64) {
         let h = hhdm();
@@ -185,7 +177,8 @@ impl Nvme {
         for f in [asq, acq, isq, icq, prp] { Self::zero_frame(f); }
         let bar0_va = mmio.base_va() + bar0_off;
 
-        // Pre-read DSTRD from CAP using a throwaway accessor (bar0_va direct).
+        // Pre-read DSTRD from CAP off `bar0_va` directly: the doorbell VAs it
+        // yields are baked into the queues, so no `self` exists yet to read it.
         // SAFETY: bar0_va is the Device-attr-mapped register file; aligned
         // 32-bit loads of CAP's two halves to compute the doorbell stride.
         let cap = unsafe {
@@ -208,7 +201,7 @@ impl Nvme {
         };
 
         let mut nv = Nvme {
-            mmio, bar0_va, dstrd, admin, io, prp_pa: prp,
+            mmio, bar0_va, admin, io, prp_pa: prp,
             ns_blocks: 0, blk_size: 512,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
