@@ -38,7 +38,12 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd     = args.a4 as i32;
     let mut offset = args.a5;
     let flags  = args.a3;
-    use pmm::mmap_flags::{validate_file_access, MAP_ANON, MAP_SHARED, MAP_TYPE, PROT_EXEC, PROT_READ};
+    use pmm::mmap_flags::{
+        validate_file_access, MAP_ANON, MAP_SHARED, MAP_SHARED_VALIDATE, MAP_TYPE,
+        PROT_EXEC, PROT_READ, PROT_WRITE,
+    };
+    let map_type = flags & MAP_TYPE;
+    let shared = map_type == MAP_SHARED || map_type == MAP_SHARED_VALIDATE;
     // Linux `do_mmap`: "does the application expect PROT_READ to imply
     // PROT_EXEC?" — personality(READ_IMPLIES_EXEC) upgrades any readable
     // mapping to executable, except when the backing file lives on a noexec
@@ -53,6 +58,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // `phys_base` instead of a page-cache FileBacking. Anonymous → None/None.
     let mut backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>> = None;
     let mut phys_base: Option<u64> = None;
+    let mut seal_write_reservation: Option<vmm::WritableMapReservation> = None;
     // MAP_SHARED|MAP_ANON: Linux `shmem_zero_setup` — back the mapping with a
     // fresh ANONYMOUS tmpfs (shmem) inode so its frames are owned by one
     // object that parent + child alias across fork(2). The File-backed SHARED
@@ -91,13 +97,32 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         ) {
             return e;
         }
-        if (flags & MAP_TYPE) == MAP_SHARED && !file.f_mode().contains(vfs::Fmode::WRITE) {
+        if shared && !file.f_mode().contains(vfs::Fmode::WRITE) {
             may_prot.remove(vmm::VmaProt::WRITE);
         }
         if path_noexec {
             may_prot.remove(vmm::VmaProt::EXEC);
         }
         let inode = file.inode();
+        if let Some(seals) = inode.fcntl_seals() {
+            let keep_may_write = match crate::fcntl_seal::plan_write_sealed_mmap(
+                seals.load(core::sync::atomic::Ordering::Acquire),
+                shared,
+                prot & PROT_WRITE != 0,
+                may_prot.contains(vmm::VmaProt::WRITE),
+            ) {
+                Ok(keep) => keep,
+                Err(error) => return -(error.as_i32() as i64),
+            };
+            if !keep_may_write {
+                may_prot.remove(vmm::VmaProt::WRITE);
+            } else if shared {
+                seal_write_reservation = match inode.file_rmap().reserve_writable() {
+                    Ok(reservation) => Some(reservation),
+                    Err(_) => return -(Errno::Eperm.as_i32() as i64),
+                };
+            }
+        }
         // DRM dumb buffers: the `offset` is a MODE_MAP_DUMB cookie that
         // selects the buffer. Pin the dumb handle for the VMA lifetime and map
         // it through the file-backed shared-frame path so PTE refs keep pages
@@ -172,7 +197,12 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             },
         }
     }
-    match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, offset, backing, phys_base, None, may_prot) {
+    let result = pmm::user_as::glue_mmap(
+        args.a0, args.a1, prot, args.a3, fd as i64, offset, backing, phys_base,
+        None, may_prot,
+    );
+    drop(seal_write_reservation);
+    match result {
         Ok(va)  => {
             #[cfg(feature = "debug-atexit")]
             if fd >= 0 {

@@ -42,7 +42,7 @@ pub use address_space::{
 };
 pub use address_space::pkeys;
 pub use anon_vma::{AnonVma, RmapTarget};
-pub use file_rmap::FileRmap;
+pub use file_rmap::{FileRmap, WritableMapReservation, WriteSealError};
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::{HomeNodeErr, VmaTree};
