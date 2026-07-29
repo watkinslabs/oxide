@@ -9,6 +9,7 @@ use super::*;
 
 const REQ: u64 = 0x1000;
 const OUT: u64 = 0x2000;
+const LAST_NONWRAPPING_NS_ID: u64 = LISTNS_CURRENT_USER - 1;
 static NEXT_TID: AtomicU32 = AtomicU32::new(0x7200_0000);
 
 struct FakeIo {
@@ -113,10 +114,10 @@ fn unknown_type_precedes_owner_lookup_and_zero_capacity_still_checks_cursor() {
 
     io.put_u32(REQ_OFF_NS_TYPE, UTS_NS);
     io.put_u64(REQ_OFF_USER_NS_ID, 0);
-    let last = namespace_identity::live_snapshot().into_iter()
-        .filter(|owner| owner.kind() == NamespaceKind::Uts)
-        .map(|owner| owner.ns_id().as_u64()).max().unwrap();
-    io.put_u64(REQ_OFF_NS_ID, last);
+    // Linux kernel/nstree.c do_listns() looks up last_ns_id + 1 before
+    // considering output capacity. This cursor has no possible successor and
+    // avoids racing the process-global namespace registry.
+    io.put_u64(REQ_OFF_NS_ID, LAST_NONWRAPPING_NS_ID);
     assert_eq!(sys_listns_with(&args(0, 0), &caller, &mut io), err(Errno::Enoent));
 
     io.put_u64(REQ_OFF_NS_ID, u64::MAX);
