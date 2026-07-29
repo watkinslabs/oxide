@@ -270,7 +270,10 @@ impl TxJob {
                         None => self.lease.device().xmit_observed(pkt, &mut observe) }
                 }
                 #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
-                self.lease.device().xmit(pkt)
+                {
+                    let _ = l2_dst;
+                    self.lease.device().xmit(pkt)
+                }
             }
             TxPayload::Raw { frame, origin: _origin } => {
                 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

@@ -19,6 +19,7 @@ pub use lifecycle::{
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use lifecycle::{create_namespace, materialize_loopback};
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use lifecycle::private_loopbacks;
 pub use state::{
     Ipv4ConfDev, Ipv4ConfKey, NetSysctlKey, NsNet, NsNetRef, materialize_state,
