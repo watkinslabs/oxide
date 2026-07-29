@@ -1,6 +1,7 @@
 // Architecture-neutral MSI vector allocator for virtio + future PCI
 // drivers. Device drivers own allocation at probe and release at
 // remove, matching the rest of the driver-core lifecycle.
+// `gic_trigger` owns host-testable GIC ICFGR field encoding.
 
 #![no_std]
 
@@ -14,6 +15,8 @@
 extern crate alloc;
 
 pub mod cache;
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
+mod gic_trigger;
 mod line;
 
 pub use line::LineHandler;
