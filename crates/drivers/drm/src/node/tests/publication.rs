@@ -128,9 +128,13 @@ fn empty_card_read_is_eagain_never_zero() {
         d_init: None, d_prune: None,
     };
     let dentry = vfs::dcache::d_alloc_pseudo("card-test", inode.clone(), &CARD_TEST_OPS);
-    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    let file = vfs::File::new(
+        inode,
+        dentry,
+        vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK,
+    );
     let mut buf = [0u8; 64];
-    let r = vfs::FileOps::read_file(&super::super::publication::DrmCardFileOps, &file, 0, &mut buf);
+    let r = file.read(&mut buf);
     assert!(matches!(r, Err(vfs::VfsError::Eagain)), "empty card read returned {r:?}, want Eagain");
 }
 
@@ -150,6 +154,6 @@ fn empty_render_read_is_eagain_never_zero() {
     let dentry = vfs::dcache::d_alloc_pseudo("render-test", inode.clone(), &R_OPS);
     let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK);
     let mut buf = [0u8; 64];
-    let r = vfs::FileOps::read_file(&super::super::publication::DrmSinkFileOps, &file, 0, &mut buf);
+    let r = file.read(&mut buf);
     assert!(matches!(r, Err(vfs::VfsError::Eagain)), "empty render read returned {r:?}, want Eagain");
 }
