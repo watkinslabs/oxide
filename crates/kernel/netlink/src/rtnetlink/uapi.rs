@@ -156,6 +156,14 @@ pub mod rta {
     pub const RTA_TABLE:     u16 = 15;
 }
 
+/// RTAX_* nested route metric ids from Linux `linux/rtnetlink.h`.
+pub mod rtax {
+    pub const RTAX_UNSPEC:  u16 = 0;
+    pub const RTAX_LOCK:    u16 = 1;
+    pub const RTAX_MTU:     u16 = 2;
+    pub const RTAX_MAX:     u16 = 17;
+}
+
 /// `struct ndmsg` — Linux `linux/neighbour.h`. Precedes the NDA_* attributes
 /// in every RTM_*NEIGH message.
 #[repr(C)]
