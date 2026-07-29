@@ -202,6 +202,26 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             // SAFETY: pfn..pfn+span is the just-allocated block, owned
             // by the caller; backing.page_ptr is pure ptr arithmetic.
             let p = unsafe { self.backing.page_ptr(Pfn(pfn + k)) };
+            // The setup allocator poisons order-0 frees before `free` stamps
+            // its intrusive header. Inspect the preserved body now: the zero
+            // below is the first allocator write that would erase evidence of
+            // a stale write while the page was free.
+            #[cfg(feature = "debug-watchdog")]
+            // SAFETY: p names the just-allocated, still-unzeroed page.
+            unsafe {
+                super::poison::report_watchdog_mismatch(
+                    p,
+                    (pfn + k) * PAGE_SIZE_BYTES,
+                )
+            };
+            #[cfg(feature = "debug-cow")]
+            // SAFETY: same ownership and bounds as the watchdog scan above.
+            unsafe {
+                super::poison::report_cow_mismatch(
+                    p,
+                    (pfn + k) * PAGE_SIZE_BYTES,
+                )
+            };
             // SAFETY: pointer is page-aligned and points to PAGE_SIZE_BYTES
             // of caller-owned memory; no aliasing for the duration.
             hal::zerotrap::trap((p) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
