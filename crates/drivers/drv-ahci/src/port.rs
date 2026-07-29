@@ -18,7 +18,7 @@ use mmio_map::Mapping;
 /// HHDM base for the running arch (PA→VA for HBA DMA structures + bounce).
 /// # C: O(1)
 #[inline]
-fn hhdm() -> u64 {
+pub(crate) fn hhdm() -> u64 {
     #[cfg(target_arch = "x86_64")]
     { hal_x86_64::mmu_ops::hhdm_offset() }
     #[cfg(target_arch = "aarch64")]
@@ -30,7 +30,7 @@ fn hhdm() -> u64 {
 /// Monotonic wall-clock ns (0 if unsupported) — bounds the busy/completion
 /// polls by real time rather than a CPU-speed-dependent spin count. # C: O(1)
 #[inline]
-fn now_ns() -> u64 {
+pub(crate) fn now_ns() -> u64 {
     use hal::TimerOps;
     #[cfg(target_arch = "x86_64")]
     { hal_x86_64::X86TimerOps::monotonic_ns().0 }
@@ -51,13 +51,6 @@ const HBA_RESET_TIMEOUT_NS: u64 = 1_000_000_000;
 /// Per-port SATA PHY link-up timeout after COMRESET (bounded so empty ports
 /// don't stall boot; a real link establishes in well under this).
 const LINK_TIMEOUT_NS: u64 = 200_000_000;
-
-/// Command-FIS length in dwords for an H2D Register FIS (20 bytes = 5 dwords).
-const CFL_DWORDS: u32 = 5;
-
-/// Offset of the PRDT within the command table (after the 0x80-byte CFIS +
-/// ATAPI + reserved region, AHCI §4.2.3).
-const CT_PRDT_OFF: usize = 0x80;
 
 /// Read one global HBA register before an [`Ahci`] instance exists. # C: O(1)
 #[inline]
@@ -111,11 +104,11 @@ pub struct Ahci {
     mmio:      Mapping,
     abar_va: u64,
     port:    u32,
-    clb_pa:  u64,  // command list (1 KiB, 1 KiB-aligned)
+    pub(crate) clb_pa:  u64,  // command list (1 KiB, 1 KiB-aligned)
     fb_pa:   u64,  // received FIS (256 B, 256 B-aligned)
-    ctba_pa: u64,  // command table for slot 0 (128 B header + PRDT)
+    pub(crate) ctba_pa: u64,  // command table for slot 0 (128 B header + PRDT)
     /// Bounce frame (one 4 KiB page) — the data buffer for one I/O.
-    bounce_pa: u64,
+    pub(crate) bounce_pa: u64,
     /// Disk geometry harvested at IDENTIFY.
     pub sectors:   u64,
     pub blk_size:  u32,
@@ -167,6 +160,7 @@ impl Ahci {
     /// # C: O(port stop wait + 4 frees)
     pub fn shutdown_and_free(&mut self) {
         if self.abar_va != 0 {
+            self.disable_interrupts();
             let _ = self.stop_port();
             self.pw(regs::P_CLB, 0);
             self.pw(regs::P_CLBU, 0);
@@ -186,7 +180,7 @@ impl Ahci {
 
     /// Read a 32-bit HBA/port register at ABAR + `off`. # C: O(1)
     #[inline]
-    fn r32(&self, off: u64) -> u32 {
+    pub(crate) fn r32(&self, off: u64) -> u32 {
         // SAFETY: abar_va is the Device-attr-mapped AHCI register file
         // (map_mmio_pages, 2 pages); `off` is a spec HBA/port register offset
         // within the mapped window; aligned 32-bit MMIO load.
@@ -194,7 +188,7 @@ impl Ahci {
     }
     /// Write a 32-bit HBA/port register at ABAR + `off`. # C: O(1)
     #[inline]
-    fn w32(&self, off: u64, val: u32) {
+    pub(crate) fn w32(&self, off: u64, val: u32) {
         // SAFETY: abar_va is the Device-attr-mapped AHCI register file; `off`
         // is a spec HBA/port register offset within the mapped window; aligned
         // 32-bit MMIO store to a register the driver exclusively owns.
@@ -202,10 +196,42 @@ impl Ahci {
     }
     /// Read a 32-bit per-port register of this port. # C: O(1)
     #[inline]
-    fn pr(&self, reg: u64) -> u32 { self.r32(regs::port_reg(self.port, reg)) }
+    pub(crate) fn pr(&self, reg: u64) -> u32 { self.r32(regs::port_reg(self.port, reg)) }
     /// Write a 32-bit per-port register of this port. # C: O(1)
     #[inline]
-    fn pw(&self, reg: u64, val: u32) { self.w32(regs::port_reg(self.port, reg), val); }
+    pub(crate) fn pw(&self, reg: u64, val: u32) { self.w32(regs::port_reg(self.port, reg), val); }
+
+    /// Device-mapped ABAR VA retained for hard-handler publication. # C: O(1)
+    pub(crate) fn abar_va(&self) -> u64 { self.abar_va }
+
+    /// Selected SATA port index. # C: O(1)
+    pub(crate) fn port_index(&self) -> u32 { self.port }
+
+    /// W1C the selected port cause before its global level latch. # C: O(1)
+    pub(crate) fn clear_command_interrupts(&self) {
+        self.pw(regs::P_IS, u32::MAX);
+        self.w32(regs::HBA_IS, 1 << self.port);
+        let _ = self.r32(regs::HBA_IS);
+    }
+
+    /// Enable Linux-shaped command/error port causes and global IRQs. # C: O(1)
+    pub(crate) fn enable_interrupts(&self) {
+        self.clear_command_interrupts();
+        self.pw(regs::P_IE, regs::PIS_ENABLE);
+        self.w32(
+            regs::HBA_GHC,
+            self.r32(regs::HBA_GHC) | regs::GHC_AE | regs::GHC_IE,
+        );
+        let _ = self.r32(regs::HBA_GHC);
+    }
+
+    /// Mask port/global causes and clear their retained latches. # C: O(1)
+    pub(crate) fn disable_interrupts(&self) {
+        self.pw(regs::P_IE, 0);
+        let _ = self.pr(regs::P_IE);
+        self.w32(regs::HBA_GHC, self.r32(regs::HBA_GHC) & !regs::GHC_IE);
+        self.clear_command_interrupts();
+    }
 
     /// Zero a freshly-PMM-allocated frame via HHDM. # C: O(page)
     fn zero_frame(pa: u64) {
@@ -376,118 +402,4 @@ impl Ahci {
         true
     }
 
-    /// Build the command header (slot 0) + command table for one command and
-    /// issue it on PxCI bit 0, polling for completion. `fis` is the 20-byte
-    /// H2D Register FIS; `write` selects the header W bit; `bytes` is the PRDT
-    /// byte count into/out of the bounce frame (≤ one page). Returns true on a
-    /// clean completion (PxCI bit 0 cleared, no TFD.ERR / PxIS error).
-    /// # C: O(poll until completion)
-    fn issue(&mut self, fis: &[u8; 20], write: bool, bytes: u32) -> bool {
-        let h = hhdm();
-        if h == 0 { return false; }
-        let prdtl: u32 = if bytes == 0 { 0 } else { 1 };
-
-        // Command Header slot 0 (32 bytes, AHCI §4.2.2):
-        //   dw0 = CFL|W|PRDTL, dw1 = PRDBC (0), dw2/dw3 = CTBA lo/hi.
-        let clb_va = h.wrapping_add(self.clb_pa) as *mut u32;
-        // SAFETY: HHDM-mapped command-list frame we own (1 KiB used of one
-        // page); slot 0 occupies dwords 0..8; aligned 32-bit stores publish
-        // the header before the PxCI doorbell. ctba is HBA-readable PA.
-        unsafe {
-            core::ptr::write_volatile(clb_va.add(0),
-                regs::cmd_header_dw0(CFL_DWORDS, write, prdtl));
-            core::ptr::write_volatile(clb_va.add(1), 0); // PRDBC
-            core::ptr::write_volatile(clb_va.add(2), (self.ctba_pa & 0xFFFF_FFFF) as u32);
-            core::ptr::write_volatile(clb_va.add(3), (self.ctba_pa >> 32) as u32);
-            for i in 4..8 { core::ptr::write_volatile(clb_va.add(i), 0); }
-        }
-
-        // Command Table: CFIS at byte 0, PRDT entry 0 at byte 0x80
-        //   (DBA lo, DBA hi, reserved, DBC|I where DBC = byte_count-1).
-        let ct_va = h.wrapping_add(self.ctba_pa) as *mut u8;
-        // SAFETY: HHDM-mapped command-table frame we own (128 B CFIS region +
-        // one 16-byte PRDT entry, well within one page); byte stores of the
-        // CFIS then aligned dword stores of the PRDT entry, published before
-        // the doorbell. bounce_pa is an HBA-readable/writable PA.
-        unsafe {
-            // Zero the CFIS region then copy the H2D FIS in.
-            for i in 0..CT_PRDT_OFF { core::ptr::write_volatile(ct_va.add(i), 0); }
-            for (i, b) in fis.iter().enumerate() { core::ptr::write_volatile(ct_va.add(i), *b); }
-            if prdtl != 0 {
-                let prdt = ct_va.add(CT_PRDT_OFF) as *mut u32;
-                core::ptr::write_volatile(prdt.add(0), (self.bounce_pa & 0xFFFF_FFFF) as u32);
-                core::ptr::write_volatile(prdt.add(1), (self.bounce_pa >> 32) as u32);
-                core::ptr::write_volatile(prdt.add(2), 0); // reserved
-                // DBC = byte count - 1 (bits 21:0); bit 31 = I (interrupt).
-                core::ptr::write_volatile(prdt.add(3), (bytes - 1) & 0x003F_FFFF);
-            }
-        }
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-
-        // Clear interrupt status, issue command slot 0.
-        self.pw(regs::P_IS, 0xFFFF_FFFF);
-        self.pw(regs::P_CI, 1 << 0);
-
-        // Poll PxCI bit 0 clear; bail on TFD.ERR or a fatal PxIS bit.
-        let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
-        loop {
-            let ci = self.pr(regs::P_CI);
-            let tfd = self.pr(regs::P_TFD);
-            if tfd & regs::TFD_ERR != 0 { return false; }
-            if ci & (1 << 0) == 0 {
-                // Completed: a final TFD.ERR check covers a device error that
-                // cleared CI on the same poll.
-                return self.pr(regs::P_TFD) & regs::TFD_ERR == 0;
-            }
-            if now_ns() >= deadline { return false; }
-            core::hint::spin_loop();
-        }
-    }
-
-    /// IDENTIFY DEVICE (0xEC): DMA the 512-byte (256-word) data into the
-    /// bounce frame, decode sector count + size. # C: O(one command)
-    fn identify(&mut self) -> bool {
-        let fis = regs::h2d_fis(regs::ATA_IDENTIFY, 0, 0, 0);
-        if !self.issue(&fis, false, 512) { return false; }
-        let h = hhdm();
-        let p = h.wrapping_add(self.bounce_pa) as *const u16;
-        let mut words = [0u16; 256];
-        // SAFETY: HHDM-mapped bounce frame the device just filled with the
-        // 512-byte IDENTIFY data; aligned u16 loads of all 256 words stay
-        // within the one-page frame.
-        unsafe { for i in 0..256 { words[i] = core::ptr::read_volatile(p.add(i)); } }
-        self.sectors = regs::identify_sector_count(&words);
-        self.blk_size = regs::identify_sector_size(&words);
-        let (serial, serial_len) = regs::identify_serial(&words);
-        self.serial = if serial_len == 0 {
-            None
-        } else {
-            let mut s = String::new();
-            for b in &serial[..serial_len] {
-                s.push(*b as char);
-            }
-            Some(s)
-        };
-        self.sectors > 0
-    }
-
-    /// Issue one READ (0x25) or WRITE (0x35) DMA EXT for `count` sectors at
-    /// `lba`, data through the bounce frame (≤ one page). The caller stages
-    /// writes into / copies reads out of the bounce frame around this call.
-    /// # C: O(one command)
-    pub fn rw(&mut self, write: bool, lba: u64, count: u16) -> bool {
-        let cmd = if write { regs::ATA_WRITE_DMA_EXT } else { regs::ATA_READ_DMA_EXT };
-        let fis = regs::h2d_fis(cmd, lba, count, regs::ATA_DEV_LBA);
-        let bytes = (count as u32) * self.blk_size;
-        self.issue(&fis, write, bytes)
-    }
-
-    /// FLUSH CACHE EXT (0xEA): durable-write barrier. # C: O(one command)
-    pub fn flush(&mut self) -> bool {
-        let fis = regs::h2d_fis(regs::ATA_FLUSH_EXT, 0, 0, regs::ATA_DEV_LBA);
-        self.issue(&fis, false, 0)
-    }
-
-    /// HHDM VA of the bounce frame, for staging/copying I/O payloads. # C: O(1)
-    pub fn bounce_va(&self) -> u64 { hhdm().wrapping_add(self.bounce_pa) }
 }

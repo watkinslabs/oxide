@@ -10,7 +10,7 @@
 // pending resched), then `iretq` back to whatever task we end up resuming.
 // The dispatcher does the EOI dance; there is no IRQ-tail staging.
 //
-// The 11 per-vector bodies are collapsed into thin heads (tag err+vec,
+// The per-vector bodies are collapsed into thin heads (tag err+vec,
 // jump to `oxide_irq_common`) + one common path, so the per-CPU
 // hardirq-stack switch lives in exactly one place (docs/54 "one low-level
 // path"). The switch relocates the handler + `do_softirq` re-entry off the
@@ -62,6 +62,30 @@ core::arch::global_asm!(
     ".globl oxide_irq_vec_57", ".type oxide_irq_vec_57, @function",
     "oxide_irq_vec_57:", "    push 0", "    push 0x57", "    jmp oxide_irq_common",
     ".size oxide_irq_vec_57, . - oxide_irq_vec_57",
+    ".globl oxide_irq_vec_58", ".type oxide_irq_vec_58, @function",
+    "oxide_irq_vec_58:", "    push 0", "    push 0x58", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_58, . - oxide_irq_vec_58",
+    ".globl oxide_irq_vec_59", ".type oxide_irq_vec_59, @function",
+    "oxide_irq_vec_59:", "    push 0", "    push 0x59", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_59, . - oxide_irq_vec_59",
+    ".globl oxide_irq_vec_5a", ".type oxide_irq_vec_5a, @function",
+    "oxide_irq_vec_5a:", "    push 0", "    push 0x5a", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_5a, . - oxide_irq_vec_5a",
+    ".globl oxide_irq_vec_5b", ".type oxide_irq_vec_5b, @function",
+    "oxide_irq_vec_5b:", "    push 0", "    push 0x5b", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_5b, . - oxide_irq_vec_5b",
+    ".globl oxide_irq_vec_5c", ".type oxide_irq_vec_5c, @function",
+    "oxide_irq_vec_5c:", "    push 0", "    push 0x5c", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_5c, . - oxide_irq_vec_5c",
+    ".globl oxide_irq_vec_5d", ".type oxide_irq_vec_5d, @function",
+    "oxide_irq_vec_5d:", "    push 0", "    push 0x5d", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_5d, . - oxide_irq_vec_5d",
+    ".globl oxide_irq_vec_5e", ".type oxide_irq_vec_5e, @function",
+    "oxide_irq_vec_5e:", "    push 0", "    push 0x5e", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_5e, . - oxide_irq_vec_5e",
+    ".globl oxide_irq_vec_5f", ".type oxide_irq_vec_5f, @function",
+    "oxide_irq_vec_5f:", "    push 0", "    push 0x5f", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_5f, . - oxide_irq_vec_5f",
 
     // ----- common IRQ path -------------------------------------------------
     // Save the FULL user register set, switch to the per-CPU hardirq stack
@@ -156,6 +180,14 @@ extern "C" {
     fn oxide_irq_vec_55();
     fn oxide_irq_vec_56();
     fn oxide_irq_vec_57();
+    fn oxide_irq_vec_58();
+    fn oxide_irq_vec_59();
+    fn oxide_irq_vec_5a();
+    fn oxide_irq_vec_5b();
+    fn oxide_irq_vec_5c();
+    fn oxide_irq_vec_5d();
+    fn oxide_irq_vec_5e();
+    fn oxide_irq_vec_5f();
 }
 
 /// Per-CPU slot (`gs:[24]`) holding this CPU's hardirq-stack top; 0 = unarmed.
@@ -241,7 +273,23 @@ pub const VEC_MSI_4: u8 = 0x54;
 pub const VEC_MSI_5: u8 = 0x55;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_6: u8 = 0x56;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_7: u8 = 0x57;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub const VEC_MSI_8: u8 = 0x58;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub const VEC_MSI_9: u8 = 0x59;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub const VEC_MSI_10: u8 = 0x5A;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub const VEC_MSI_11: u8 = 0x5B;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub const VEC_MSI_12: u8 = 0x5C;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub const VEC_MSI_13: u8 = 0x5D;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub const VEC_MSI_14: u8 = 0x5E;
+pub const VEC_MSI_15: u8 = 0x5F;
 pub const VEC_MSI: u8 = VEC_MSI_0;
 
 /// First / last vector in the per-vector MSI pool (F58). Each
@@ -249,7 +297,7 @@ pub const VEC_MSI: u8 = VEC_MSI_0;
 /// the arch-irq dispatcher routes each vector to its registered
 /// handler via the per-vector table.
 pub const VEC_MSI_POOL_FIRST: u8 = VEC_MSI_0;
-pub const VEC_MSI_POOL_LAST:  u8 = VEC_MSI_7;
+pub const VEC_MSI_POOL_LAST:  u8 = VEC_MSI_15;
 pub const VEC_MSI_POOL_LEN: usize =
     (VEC_MSI_POOL_LAST as usize) - (VEC_MSI_POOL_FIRST as usize) + 1;
 
@@ -271,10 +319,34 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
             VEC_MSI_5 => return oxide_irq_vec_55 as *const () as usize as u64,
             VEC_MSI_6 => return oxide_irq_vec_56 as *const () as usize as u64,
             VEC_MSI_7 => return oxide_irq_vec_57 as *const () as usize as u64,
+            VEC_MSI_8 => return oxide_irq_vec_58 as *const () as usize as u64,
+            VEC_MSI_9 => return oxide_irq_vec_59 as *const () as usize as u64,
+            VEC_MSI_10 => return oxide_irq_vec_5a as *const () as usize as u64,
+            VEC_MSI_11 => return oxide_irq_vec_5b as *const () as usize as u64,
+            VEC_MSI_12 => return oxide_irq_vec_5c as *const () as usize as u64,
+            VEC_MSI_13 => return oxide_irq_vec_5d as *const () as usize as u64,
+            VEC_MSI_14 => return oxide_irq_vec_5e as *const () as usize as u64,
+            VEC_MSI_15 => return oxide_irq_vec_5f as *const () as usize as u64,
             _ => {}
         }
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { let _ = vec; }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN};
+
+    #[test]
+    fn msi_pool_covers_sixteen_contiguous_vectors() {
+        assert_eq!(VEC_MSI_POOL_FIRST, 0x50);
+        assert_eq!(VEC_MSI_POOL_LAST, 0x5f);
+        assert_eq!(VEC_MSI_POOL_LEN, 16);
+        assert_eq!(
+            usize::from(VEC_MSI_POOL_LAST - VEC_MSI_POOL_FIRST) + 1,
+            VEC_MSI_POOL_LEN,
+        );
+    }
 }

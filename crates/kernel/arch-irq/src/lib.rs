@@ -77,16 +77,8 @@ pub fn alloc_x86_vector() -> Option<u8> {
 }
 
 #[cfg(target_arch = "x86_64")]
-static MSI_VEC_USED: [AtomicBool; hal_x86_64::VEC_MSI_POOL_LEN] = [
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-];
+static MSI_VEC_USED: [AtomicBool; hal_x86_64::VEC_MSI_POOL_LEN] =
+    [const { AtomicBool::new(false) }; hal_x86_64::VEC_MSI_POOL_LEN];
 
 /// Per-vector MSI handler table. Indexed by `vector -
 /// VEC_MSI_POOL_FIRST`. Drivers register at boot via
@@ -94,18 +86,9 @@ static MSI_VEC_USED: [AtomicBool; hal_x86_64::VEC_MSI_POOL_LEN] = [
 /// each fired vector's handler. Null = no handler installed.
 #[cfg(target_arch = "x86_64")]
 pub(crate) static MSI_HANDLERS: [core::sync::atomic::AtomicPtr<()>;
-    hal_x86_64::VEC_MSI_POOL_LEN] = {
-    [
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-    ]
-};
+    hal_x86_64::VEC_MSI_POOL_LEN] =
+    [const { core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()) };
+        hal_x86_64::VEC_MSI_POOL_LEN];
 
 /// Install `handler` as the per-vector dispatch target for IDT vector
 /// `vector` (must be in `VEC_MSI_POOL_FIRST..=VEC_MSI_POOL_LAST`).
