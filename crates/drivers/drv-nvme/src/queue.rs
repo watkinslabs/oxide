@@ -41,9 +41,8 @@ fn now_ns() -> u64 {
 /// this caps a genuinely-lost completion to EIO. 5 s is generous for QEMU.
 const IO_TIMEOUT_NS: u64 = 5_000_000_000;
 
-/// Entries per admin + I/O queue. 32 fits one 4 KiB SQ frame (32×64=2 KiB)
-/// and one CQ frame (32×16=512 B) with room to spare, and is ≤ CAP.MQES on
-/// QEMU. Power of two so head/tail wrap is a mask.
+/// Desired queue depth. 32 fits one 4 KiB SQ frame (32×64=2 KiB) and one CQ
+/// frame (32×16=512 B). Admin uses it directly; I/O is clamped to CAP.MQES.
 pub const Q_ENTRIES: u32 = 32;
 
 /// One queue pair: a submission queue (64-byte entries) and a completion
@@ -52,6 +51,7 @@ pub const Q_ENTRIES: u32 = 32;
 struct Queue {
     sq_pa:   u64,
     cq_pa:   u64,
+    entries: u32,
     sq_tail: u32,
     cq_head: u32,
     cq_phase: bool,
@@ -186,15 +186,18 @@ impl Nvme {
             | ((core::ptr::read_volatile((bar0_va + regs::REG_CAP + 4) as *const u32) as u64) << 32)
         };
         let dstrd = regs::cap_dstrd(cap);
+        let io_entries = regs::io_queue_entries(cap, Q_ENTRIES);
 
         let admin = Queue {
-            sq_pa: asq, cq_pa: acq, sq_tail: 0, cq_head: 0, cq_phase: true,
+            sq_pa: asq, cq_pa: acq, entries: Q_ENTRIES,
+            sq_tail: 0, cq_head: 0, cq_phase: true,
             sq_db_va: bar0_va + regs::doorbell_off(0, false, dstrd),
             cq_db_va: bar0_va + regs::doorbell_off(0, true,  dstrd),
             cid: 0,
         };
         let io = Queue {
-            sq_pa: isq, cq_pa: icq, sq_tail: 0, cq_head: 0, cq_phase: true,
+            sq_pa: isq, cq_pa: icq, entries: io_entries,
+            sq_tail: 0, cq_head: 0, cq_phase: true,
             sq_db_va: bar0_va + regs::doorbell_off(1, false, dstrd),
             cq_db_va: bar0_va + regs::doorbell_off(1, true,  dstrd),
             cid: 0,
@@ -214,7 +217,7 @@ impl Nvme {
         }
 
         // 2. Program admin queue attributes + base addresses.
-        nv.w32(regs::REG_AQA, regs::aqa(Q_ENTRIES));
+        nv.w32(regs::REG_AQA, regs::aqa(nv.admin.entries));
         nv.w64(regs::REG_ASQ, nv.admin.sq_pa);
         nv.w64(regs::REG_ACQ, nv.admin.cq_pa);
 
@@ -282,9 +285,9 @@ impl Nvme {
         if h == 0 { return None; }
         // Write the 64-byte command into SQ slot `slot`.
         let sq = h.wrapping_add(sq_pa) as *mut u32;
-        // SAFETY: HHDM-mapped admin/IO SQ frame we own; `slot` < Q_ENTRIES so
-        // the 16-dword command stays within the frame (32×64B = 2 KiB ≤ page);
-        // aligned 32-bit stores publish the command before the doorbell kick.
+        // SAFETY: HHDM-mapped admin/IO SQ frame we own; `slot` is below this
+        // queue's negotiated depth (at most 32), so the 16-dword command stays
+        // within the frame; aligned stores publish it before the doorbell.
         unsafe {
             let base = (slot as usize) * 16;
             for (i, w) in cmd.iter().enumerate() {
@@ -296,7 +299,7 @@ impl Nvme {
         // Advance + ring the SQ tail doorbell.
         let (sq_db, cq_pa, cq_db) = {
             let q = if qid_is_io { &mut self.io } else { &mut self.admin };
-            q.sq_tail = (q.sq_tail + 1) % Q_ENTRIES;
+            q.sq_tail = (q.sq_tail + 1) % q.entries;
             (q.sq_db_va, q.cq_pa, q.cq_db_va)
         };
         // SAFETY: sq_db is BAR0 + doorbell_off, a Device-attr MMIO doorbell;
@@ -319,14 +322,14 @@ impl Nvme {
         let cq = h.wrapping_add(cq_pa) as *const u32;
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
         loop {
-            let (head, phase) = {
+            let (head, phase, entries) = {
                 let q = if qid_is_io { &self.io } else { &self.admin };
-                (q.cq_head, q.cq_phase)
+                (q.cq_head, q.cq_phase, q.entries)
             };
             let base = (head as usize) * 4; // 16-byte CQE = 4 dwords
-            // SAFETY: HHDM-mapped CQ frame we own; `head` < Q_ENTRIES so the
-            // 4-dword CQE stays in the frame; aligned 32-bit loads of the
-            // status/CID dwords the controller wrote.
+            // SAFETY: HHDM-mapped CQ frame we own; `head` is below this
+            // queue's negotiated depth (at most 32), so the 4-dword CQE stays
+            // in the frame; aligned loads read controller-written status/CID.
             let (d2, d3) = unsafe {
                 (core::ptr::read_volatile(cq.add(base + 2)),
                  core::ptr::read_volatile(cq.add(base + 3)))
@@ -334,7 +337,7 @@ impl Nvme {
             let (cqe_phase, status_code, cqe_cid) = regs::cqe_decode(d2, d3);
             if cqe_phase == phase {
                 // Advance head; wrap toggles the expected phase.
-                let nh = (head + 1) % Q_ENTRIES;
+                let nh = (head + 1) % entries;
                 let new_phase = if nh == 0 { !phase } else { phase };
                 {
                     let q = if qid_is_io { &mut self.io } else { &mut self.admin };
@@ -399,7 +402,7 @@ impl Nvme {
         cmd[0] = regs::ADMIN_CREATE_IO_CQ as u32;
         cmd[6] = (self.io.cq_pa & 0xFFFF_FFFF) as u32;
         cmd[7] = (self.io.cq_pa >> 32) as u32;
-        cmd[10] = ((Q_ENTRIES - 1) << 16) | 1;   // QSIZE (0-based) | QID=1
+        cmd[10] = ((self.io.entries - 1) << 16) | 1; // QSIZE (0-based) | QID=1
         cmd[11] = 0x1;                           // PC=1 (no interrupts: IEN=0)
         self.submit(false, cmd) == Some(0)
     }
@@ -412,7 +415,7 @@ impl Nvme {
         cmd[0] = regs::ADMIN_CREATE_IO_SQ as u32;
         cmd[6] = (self.io.sq_pa & 0xFFFF_FFFF) as u32;
         cmd[7] = (self.io.sq_pa >> 32) as u32;
-        cmd[10] = ((Q_ENTRIES - 1) << 16) | 1;   // QSIZE (0-based) | QID=1
+        cmd[10] = ((self.io.entries - 1) << 16) | 1; // QSIZE (0-based) | QID=1
         cmd[11] = (1u32 << 16) | 0x1;            // CQID=1 | PC=1
         self.submit(false, cmd) == Some(0)
     }
