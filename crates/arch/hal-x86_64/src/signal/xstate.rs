@@ -66,7 +66,6 @@ pub const MXCSR_MASK_OFF: usize = 28;
 pub const XFEATURE_MASK_FPSSE: u64 = 0b11;
 /// Linux `XFEATURE_MASK_YMM`, joined with FP|SSE to decide when MXCSR is
 /// live and must be range-checked (`copy_uabi_to_xstate`).
-#[expect(dead_code, reason = "no caller: build_restore_image calls mxcsr_is_valid unconditionally, before it reads the header, instead of gating on `hdr.xfeatures & (FP|SSE|YMM)` the way arch/x86/kernel/fpu/xstate.c:1333-1344 does")]
 pub const XFEATURE_MASK_YMM: u64 = 1 << 2;
 /// Fallback `mxcsr_feature_mask` when the CPU reports `mxcsr_mask == 0`
 /// (`arch/x86/kernel/fpu/init.c` `fpu__init_system_mxcsr`).
@@ -214,7 +213,8 @@ pub fn header_is_valid(img: &[u8], allowed_xfeatures: u64) -> bool {
 
 /// Linux's x86_64 arm of the MXCSR check: "Reject invalid MXCSR values"
 /// (`fpu/signal.c:395-398`, `fpu/xstate.c:1343`). 32-bit masks instead; we
-/// are 64-bit, so we reject. A reserved MXCSR bit would #GP `xrstor64`.
+/// are 64-bit, so `build_restore_image` invokes this when FP, SSE, or YMM
+/// is being restored. A reserved MXCSR bit would then #GP `xrstor64`.
 /// # C: O(1)
 pub fn mxcsr_is_valid(img: &[u8], feature_mask: u32) -> bool {
     if img.len() < FXSAVE_BYTES { return false; }
@@ -237,16 +237,13 @@ pub fn build_restore_image(user: &[u8], out: &mut [u8], check: SwCheck,
                            allowed_xfeatures: u64, mxcsr_mask: u32, xsave: bool) -> bool {
     let legacy = FXSAVE_BYTES;
     if user.len() < legacy || out.len() < legacy { return false; }
-    if !mxcsr_is_valid(user, mxcsr_mask) { return false; }
-    out[..legacy].copy_from_slice(&user[..legacy]);
     if !xsave {
         // FXSAVE-only CPU: the 512-byte legacy image IS the whole state.
+        if !mxcsr_is_valid(user, mxcsr_mask) { return false; }
+        out[..legacy].copy_from_slice(&user[..legacy]);
         return true;
     }
     if out.len() < MIN_XSTATE_SIZE { return false; }
-    // Zero from the header on: components the user does not restore must be
-    // init, and `xrstor64` reads the header before anything else.
-    for b in out[legacy..].iter_mut() { *b = 0; }
     let (size, want) = match check {
         // Linux `setfx:` — FXRSTOR the legacy area, init everything else.
         SwCheck::FxOnly => (MIN_XSTATE_SIZE, XFEATURE_MASK_FPSSE),
@@ -255,14 +252,28 @@ pub fn build_restore_image(user: &[u8], out: &mut [u8], check: SwCheck,
     if size > user.len() || size > out.len() { return false; }
     let hdr_bv = match check {
         // Linux FXRSTORs the legacy image, so x87 and SSE come back from it
-        // whatever the (ignored, now zeroed) header said.
+        // whatever the ignored header said.
         SwCheck::FxOnly => want,
         SwCheck::Xstate { .. } => {
             if !header_is_valid(&user[..size], allowed_xfeatures) { return false; }
-            out[legacy..size].copy_from_slice(&user[legacy..size]);
-            read_u64(out, XFEATURES_OFF)
+            read_u64(user, XFEATURES_OFF)
         }
     };
+    // Linux `copy_uabi_to_xstate`: MXCSR is consumed only when the header
+    // restores x87, SSE, or YMM. With all three bits clear, XRSTOR
+    // initialises those components and ignores the legacy MXCSR field.
+    if hdr_bv & (XFEATURE_MASK_FPSSE | XFEATURE_MASK_YMM) != 0
+        && !mxcsr_is_valid(user, mxcsr_mask)
+    {
+        return false;
+    }
+    out[..legacy].copy_from_slice(&user[..legacy]);
+    // Zero from the header on: components the user does not restore must be
+    // init, and `xrstor64` reads the header before anything else.
+    for b in out[legacy..].iter_mut() { *b = 0; }
+    if matches!(check, SwCheck::Xstate { .. }) {
+        out[legacy..size].copy_from_slice(&user[legacy..size]);
+    }
     // `xrstor64` restores component i from the image when XSTATE_BV[i] and
     // RFBM[i], and INITIALISES it otherwise — so intersecting here reproduces
     // Linux's `xrstor_from_user_sigframe(buf, xrestore)` plus its companion
