@@ -5,6 +5,7 @@ pub const CAP_ID_MSI: u8 = 0x05;
 pub const CAP_ID_VENDOR: u8 = 0x09;
 pub const CAP_ID_PCIE: u8 = 0x10;
 pub const CAP_ID_MSIX: u8 = 0x11;
+pub const MSI_ENABLE: u32 = 1u32 << 16;
 pub const MSIX_ENABLE: u32 = 1u32 << 31;
 pub const MSIX_FUNCTION_MASK: u32 = 1u32 << 30;
 pub const MSIX_VECTOR_CONTROL_MASKED: u32 = 1;
@@ -14,6 +15,20 @@ pub const MSIX_MESSAGE_ADDR_HIGH_OFF: u64 = 4;
 pub const MSIX_MESSAGE_DATA_OFF: u64 = 8;
 pub const MSIX_VECTOR_CONTROL_OFF: u64 = 12;
 
+const MSI_MME_MASK: u32 = 0x7u32 << 20;
+const MSI_CONTROL_MMC_SHIFT: u16 = 1;
+const MSI_CONTROL_MME_SHIFT: u16 = 4;
+const MSI_CONTROL_WIDTH_MASK: u16 = 0x7;
+const MSI_CONTROL_64_BIT: u16 = 1 << 7;
+const MSI_CONTROL_PER_VECTOR_MASK: u16 = 1 << 8;
+const MSI_MESSAGE_ADDR_LOW_CFG_OFF: u8 = 4;
+const MSI_MESSAGE_ADDR_HIGH_CFG_OFF: u8 = 8;
+const MSI_32_MESSAGE_DATA_CFG_OFF: u8 = 8;
+const MSI_64_MESSAGE_DATA_CFG_OFF: u8 = 12;
+const MSI_32_MASK_BITS_CFG_OFF: u8 = 12;
+const MSI_64_MASK_BITS_CFG_OFF: u8 = 16;
+const MSI_VECTOR_ZERO_MASK: u32 = 1;
+
 /// One PCI capability descriptor as the walker observed it. Body reads
 /// (cap-specific) are left to the caller via `r.read32` at `cfg_off + 4..`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -22,6 +37,111 @@ pub struct PciCap {
     pub id: u8,
     /// Byte offset within the device's 256-byte config space.
     pub cfg_off: u8,
+}
+
+/// MSI capability shape (PCI Local Bus 3.0 §6.8.1).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct MsiCap {
+    pub enabled: bool,
+    pub multiple_message_capable: u8,
+    pub multiple_message_enabled: u8,
+    pub address_64: bool,
+    pub per_vector_mask: bool,
+}
+
+/// Decode one MSI capability header. # C: O(1)
+pub fn decode_msi_cap<R: ConfigSpaceReader>(r: &R, bdf: Bdf, cfg_off: u8) -> Option<MsiCap> {
+    let w0 = r.read32(bdf, cfg_off & 0xFC);
+    if (w0 & 0xFF) as u8 != CAP_ID_MSI { return None; }
+    let control = (w0 >> 16) as u16;
+    Some(MsiCap {
+        enabled: control & 1 != 0,
+        multiple_message_capable:
+            ((control >> MSI_CONTROL_MMC_SHIFT) & MSI_CONTROL_WIDTH_MASK) as u8,
+        multiple_message_enabled:
+            ((control >> MSI_CONTROL_MME_SHIFT) & MSI_CONTROL_WIDTH_MASK) as u8,
+        address_64: control & MSI_CONTROL_64_BIT != 0,
+        per_vector_mask: control & MSI_CONTROL_PER_VECTOR_MASK != 0,
+    })
+}
+
+/// Compute a single-message MSI control header, forcing MME=0.
+/// # C: O(1)
+pub const fn msi_single_control_value(cur: u32, enabled: bool) -> u32 {
+    let single = cur & !MSI_MME_MASK;
+    if enabled { single | MSI_ENABLE } else { single & !MSI_ENABLE }
+}
+
+/// Program one MSI address/data tuple while MSI is disabled, then enable it.
+///
+/// Rejects message data wider than the PCI field and high addresses on a
+/// 32-bit-only capability.
+/// # C: O(1)
+pub fn program_msi_single<R: ConfigSpaceReader>(
+    r: &R,
+    bdf: Bdf,
+    cfg_off: u8,
+    address: u64,
+    data: u32,
+) -> bool {
+    let Some(cap) = decode_msi_cap(r, bdf, cfg_off) else { return false; };
+    if data > u16::MAX as u32 || (!cap.address_64 && address > u32::MAX as u64) {
+        return false;
+    }
+    let off = cfg_off & 0xFC;
+    let header = r.read32(bdf, off);
+    r.write32(bdf, off, msi_single_control_value(header, false));
+    let _ = r.read32(bdf, off);
+    r.write32(
+        bdf,
+        off.wrapping_add(MSI_MESSAGE_ADDR_LOW_CFG_OFF),
+        address as u32,
+    );
+    let data_off = if cap.address_64 {
+        r.write32(
+            bdf,
+            off.wrapping_add(MSI_MESSAGE_ADDR_HIGH_CFG_OFF),
+            (address >> 32) as u32,
+        );
+        MSI_64_MESSAGE_DATA_CFG_OFF
+    } else {
+        MSI_32_MESSAGE_DATA_CFG_OFF
+    };
+    let old_data = r.read32(bdf, off.wrapping_add(data_off));
+    r.write32(
+        bdf,
+        off.wrapping_add(data_off),
+        (old_data & 0xFFFF_0000) | data,
+    );
+    let _ = r.read32(bdf, off.wrapping_add(data_off));
+    if cap.per_vector_mask {
+        let mask_off = if cap.address_64 {
+            MSI_64_MASK_BITS_CFG_OFF
+        } else {
+            MSI_32_MASK_BITS_CFG_OFF
+        };
+        let mask = r.read32(bdf, off.wrapping_add(mask_off));
+        r.write32(
+            bdf,
+            off.wrapping_add(mask_off),
+            mask & !MSI_VECTOR_ZERO_MASK,
+        );
+        let _ = r.read32(bdf, off.wrapping_add(mask_off));
+    }
+    r.write32(bdf, off, msi_single_control_value(header, true));
+    let _ = r.read32(bdf, off);
+    true
+}
+
+/// Disable one MSI capability and force MME back to the single-message value.
+/// # C: O(1)
+pub fn disable_msi<R: ConfigSpaceReader>(r: &R, bdf: Bdf, cfg_off: u8) -> bool {
+    if decode_msi_cap(r, bdf, cfg_off).is_none() { return false; }
+    let off = cfg_off & 0xFC;
+    let header = r.read32(bdf, off);
+    r.write32(bdf, off, msi_single_control_value(header, false));
+    let _ = r.read32(bdf, off);
+    true
 }
 
 /// MSI-X cap layout (PCI Local Bus 3.0 §6.8.2).
@@ -220,5 +340,69 @@ pub mod heapless_caps {
         fn default() -> Self {
             Self::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod msi_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct Config {
+        words: Mutex<[u32; 64]>,
+    }
+
+    impl Config {
+        fn new() -> Self { Self { words: Mutex::new([0; 64]) } }
+    }
+
+    impl ConfigSpaceReader for Config {
+        fn read32(&self, _bdf: Bdf, offset: u8) -> u32 {
+            self.words.lock().unwrap()[offset as usize / 4]
+        }
+        fn write32(&self, _bdf: Bdf, offset: u8, val: u32) {
+            self.words.lock().unwrap()[offset as usize / 4] = val;
+        }
+    }
+
+    const BDF: Bdf = Bdf { bus: 0, device: 1, function: 0 };
+    const CAP: u8 = 0x80;
+
+    #[test]
+    fn program_single_64_bit_msi_preserves_reserved_data_half() {
+        let cfg = Config::new();
+        cfg.write32(BDF, CAP, CAP_ID_MSI as u32 | (0x01B5u32 << 16));
+        cfg.write32(BDF, CAP + MSI_64_MESSAGE_DATA_CFG_OFF, 0xA5A5_0000);
+        cfg.write32(BDF, CAP + MSI_64_MASK_BITS_CFG_OFF, u32::MAX);
+        let cap = decode_msi_cap(&cfg, BDF, CAP).unwrap();
+        assert!(cap.enabled);
+        assert_eq!(cap.multiple_message_capable, 2);
+        assert_eq!(cap.multiple_message_enabled, 3);
+        assert!(cap.address_64);
+        assert!(cap.per_vector_mask);
+
+        assert!(program_msi_single(&cfg, BDF, CAP, 0x1_FEE0_0000, 0x51));
+        assert_eq!(cfg.read32(BDF, CAP + 4), 0xFEE0_0000);
+        assert_eq!(cfg.read32(BDF, CAP + 8), 1);
+        assert_eq!(cfg.read32(BDF, CAP + 12), 0xA5A5_0051);
+        assert_eq!(
+            cfg.read32(BDF, CAP + MSI_64_MASK_BITS_CFG_OFF),
+            u32::MAX & !MSI_VECTOR_ZERO_MASK,
+        );
+        let programmed = cfg.read32(BDF, CAP);
+        assert_ne!(programmed & MSI_ENABLE, 0);
+        assert_eq!(programmed & MSI_MME_MASK, 0);
+        assert!(disable_msi(&cfg, BDF, CAP));
+        assert_eq!(cfg.read32(BDF, CAP) & MSI_ENABLE, 0);
+    }
+
+    #[test]
+    fn program_32_bit_msi_rejects_high_address_and_wide_data() {
+        let cfg = Config::new();
+        cfg.write32(BDF, CAP, CAP_ID_MSI as u32);
+        assert!(!program_msi_single(&cfg, BDF, CAP, 1u64 << 32, 0x51));
+        assert!(!program_msi_single(&cfg, BDF, CAP, 0xFEE0_0000, 1u32 << 16));
+        assert!(program_msi_single(&cfg, BDF, CAP, 0xFEE0_0000, 0x51));
+        assert_eq!(cfg.read32(BDF, CAP + 8) & 0xFFFF, 0x51);
     }
 }
