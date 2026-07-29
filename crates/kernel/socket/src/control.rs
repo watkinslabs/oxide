@@ -23,6 +23,9 @@ pub(crate) enum UnixScm {
         /// NOT flow-controlled by the destination's receive queue, on the send
         /// side any more than in `poll`.
         symmetric: bool,
+        /// The SENDING socket's own queue — Linux's `sk`, whose
+        /// `sk_wmem_alloc` this send is charged against.
+        local: Arc<net::UnixDgramQueue>,
     },
     Stream(Scm),
 }
@@ -130,14 +133,17 @@ fn stream(_ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: 
 
 fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
     queue: Arc<net::UnixDgramQueue>, sender: Option<net::UnixAddr>, address: net::UnixAddr,
-    cap: usize)
+    cap: usize, local: &Arc<net::UnixDgramQueue>, sndbuf: usize)
     -> KResult<usize>
 {
     let creds = scm.creds.unwrap_or_else(|| ctx.creds());
     let datagram = net::UnixDgram { payload: message.payload.clone(),
         creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() };
-    queue.try_push_from_with_rights_bounded(datagram, sender,
-        net::classify_files(scm.files.clone()), cap)
+    // `sock_alloc_send_pskb` + `skb_set_owner_w`: the sender's own write memory
+    // is charged and bounds this send, which is the ONLY bound a symmetrically
+    // connected pair has (`unix_dgram_sendmsg` skips the peer recvq test there).
+    queue.try_push_owned(datagram, sender,
+        net::classify_files(scm.files.clone()), cap, local, sndbuf)
         .map_err(Error::from)?;
     net::trace_dgram_journal(&address.display, &message.payload);
     Ok(message.payload.len())
@@ -167,7 +173,7 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
                     .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
                 let symmetric = net::unix_sock::dgram_symmetric_pair(
                     queue.peer().as_ref(), local.bound().as_ref());
-                Ok(UnixScm::Datagram { scm, queue, sender, address, symmetric })
+                Ok(UnixScm::Datagram { scm, queue, sender, address, symmetric, local })
             }
         }
     })())
@@ -178,9 +184,12 @@ pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::Inet
     message: &Message, scm: &UnixScm, cap: usize, offset: usize) -> KResult<usize>
 {
     match scm {
-        UnixScm::Datagram { scm, queue, sender, address, symmetric } =>
+        // `cap` is the sender's SO_SNDBUF. It serves two distinct Linux roles:
+        // the destination's receive-queue bound (skipped when symmetric) and
+        // the sender's own `sk_wmem_alloc` watermark (never skipped).
+        UnixScm::Datagram { scm, queue, sender, address, symmetric, local } =>
             datagram(ctx, message, scm, queue.clone(), sender.clone(), address.clone(),
-                if *symmetric { usize::MAX } else { cap }),
+                if *symmetric { usize::MAX } else { cap }, local, cap),
         UnixScm::Stream(scm) => stream(ctx, socket, &message.payload[offset..], scm, cap, offset == 0),
     }
 }
@@ -191,7 +200,18 @@ pub(crate) fn wait_unix_send(socket: &Arc<net::sock::InetSocket>, scm: &UnixScm,
     len: usize, cap: usize, deadline_ns: u64) -> KResult<()>
 {
     match scm {
-        UnixScm::Datagram { queue, symmetric, .. } =>
+        // The sender's own `sk_wmem_alloc` is checked FIRST and parks on the
+        // SENDER's write-space list: for a symmetric pair it is the only bound,
+        // so parking on the destination's receive queue would spin instead.
+        UnixScm::Datagram { queue, symmetric, local, .. } => {
+            if let net::unix_sock::dgram::ArmDgramWrite::Parked =
+                local.arm_write_wmem(len, cap, deadline_ns)
+            {
+                // SAFETY: local armed current under its own message lock.
+                unsafe { sched::live::schedule::schedule(); }
+                local.writers.remove_current();
+                return Ok(());
+            }
             match queue.arm_write(len, if *symmetric { usize::MAX } else { cap }, deadline_ns) {
             net::unix_sock::dgram::ArmDgramWrite::Retry => Ok(()),
             net::unix_sock::dgram::ArmDgramWrite::PeerClosed => Err(Error::Econnrefused),
@@ -202,7 +222,7 @@ pub(crate) fn wait_unix_send(socket: &Arc<net::sock::InetSocket>, scm: &UnixScm,
                 queue.writers.remove_current();
                 Ok(())
             }
-        },
+        }},
         UnixScm::Stream(_) => {
             enum Target { Stream(Arc<net::UnixPair>, net::UnixEnd), Msg(Arc<net::UnixMsgPair>, net::UnixEnd) }
             let target = match &*socket.kind.lock() {

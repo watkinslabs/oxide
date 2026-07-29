@@ -137,3 +137,77 @@ fn poll_and_send_agree_on_the_same_cap() {
             "the recvq bound is real — it just does not apply to a symmetric pair");
     }
 }
+
+// --- sk_wmem_alloc accounting (Linux sock_alloc_send_pskb / sock_wfree) ------
+// A symmetric pair skips the destination's receive-queue bound, so the SENDER's
+// own write memory is the only thing bounding it. Charged on send, released by
+// the queued record's destructor against the SENDER.
+
+#[test]
+fn a_send_charges_the_sender_and_the_receive_releases_it() {
+    let _serial = test_guard();
+    let sender = UnixDgramQueue::new();
+    let dest = UnixDgramQueue::new();
+    const SNDBUF: usize = 4096;
+
+    assert_eq!(sender.wmem_alloc(), 0, "a fresh socket owes nothing");
+    dest.try_push_owned(datagram(b"abcd"), None, GcRights::from_files(alloc::vec::Vec::new()),
+        usize::MAX, &sender, SNDBUF).expect("send");
+    // Charged to the SENDER, not the destination — that is the whole point.
+    assert_eq!(sender.wmem_alloc(), 4, "sender charged skb->truesize");
+    assert_eq!(dest.wmem_alloc(), 0, "the destination owes nothing for a receive");
+
+    // `sock_wfree` runs from the record's destructor on receive.
+    assert_eq!(dest.pop().unwrap().payload, b"abcd");
+    assert_eq!(sender.wmem_alloc(), 0, "receive released the sender's charge");
+}
+
+/// The charge must survive every removal path, not just the happy one — the
+/// destructor is what guarantees it, so dropping the whole queue settles it too.
+#[test]
+fn dropping_an_undelivered_queue_still_releases_the_sender() {
+    let _serial = test_guard();
+    let sender = UnixDgramQueue::new();
+    {
+        let dest = UnixDgramQueue::new();
+        dest.try_push_owned(datagram(b"xyz"), None, GcRights::from_files(alloc::vec::Vec::new()),
+            usize::MAX, &sender, 4096).expect("send");
+        assert_eq!(sender.wmem_alloc(), 3);
+    }
+    assert_eq!(sender.wmem_alloc(), 0, "queue teardown released the charge");
+}
+
+/// `unix_writable`'s quarter-of-sndbuf watermark bounds a sender even when the
+/// destination is unbounded (`cap = usize::MAX`, the symmetric-pair case).
+/// Without this a socketpair would queue without limit.
+#[test]
+fn wmem_bounds_a_sender_whose_destination_is_unbounded() {
+    let _serial = test_guard();
+    let sender = UnixDgramQueue::new();
+    let dest = UnixDgramQueue::new();
+    const SNDBUF: usize = 64;                 // watermark = 64/4 = 16 bytes
+    let mut sent = 0usize;
+    for _ in 0..100 {
+        match dest.try_push_owned(datagram(b"0123456789"), None,
+            GcRights::from_files(alloc::vec::Vec::new()), usize::MAX, &sender, SNDBUF) {
+            Ok(()) => sent += 1,
+            Err(crate::NetError::Eagain) => break,
+            Err(e) => panic!("unexpected {e:?}"),
+        }
+    }
+    assert!(sent > 0, "the first send fits under the watermark");
+    assert!(sent < 100, "wmem stopped an otherwise unbounded symmetric send");
+    // Linux's watermark is tested against the CURRENT wmem in `unix_writable`
+    // (poll), while the send additionally requires the NEW charge to fit
+    // (`sock_alloc_send_pskb`). So the refusal means one more datagram would
+    // cross the line, not that the socket is already past it.
+    let charged = sender.wmem_alloc();
+    assert!(!crate::unix_sock::unix_writable(charged + 10, SNDBUF),
+        "one more datagram would cross the watermark — that is why send refused");
+    // A receive releases the charge, re-opening the window (`sk_write_space`).
+    let _ = dest.pop();
+    assert!(sender.wmem_alloc() < charged, "receive gave the sender its memory back");
+    dest.try_push_owned(datagram(b"0123456789"), None,
+        GcRights::from_files(alloc::vec::Vec::new()), usize::MAX, &sender, SNDBUF)
+        .expect("the freed charge re-opened the send");
+}
