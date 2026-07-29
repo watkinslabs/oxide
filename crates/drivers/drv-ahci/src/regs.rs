@@ -5,7 +5,6 @@
 // mechanics that USE these live in `port.rs`.
 
 /// Generic HBA (global) register byte offsets in the ABAR (AHCI §3.1).
-#[expect(dead_code, reason = "no caller: port.rs bring_up must read CAP.S64A before writing the 64-bit PxCLBU/PxFBU bases")]
 pub const HBA_CAP:  u64 = 0x00; // Host Capabilities
 pub const HBA_GHC:  u64 = 0x04; // Global Host Control
 #[expect(dead_code, reason = "no caller: no AHCI completion-interrupt path exists, so the global IS bitmap is never read or W1C'd")]
@@ -19,6 +18,9 @@ pub const GHC_HR: u32 = 1 << 0;  // HBA Reset
 #[expect(dead_code, reason = "no caller: no AHCI completion-interrupt path exists; the driver busy-polls PxCI/PxTFD")]
 pub const GHC_IE: u32 = 1 << 1;  // Interrupt Enable
 pub const GHC_AE: u32 = 1 << 31; // AHCI Enable
+
+/// CAP bits (AHCI §3.1.1).
+pub const CAP_S64A: u32 = 1 << 31; // Supports 64-bit Addressing
 
 /// Per-port register block base + stride (AHCI §3.3): port N regs live at
 /// ABAR + 0x100 + N*0x80.
@@ -82,6 +84,15 @@ pub fn port_off(n: u32) -> u64 { PORT_BASE + (n as u64) * PORT_STRIDE }
 /// Byte offset (from ABAR) of port `n`'s register `reg`. # C: O(1)
 #[inline]
 pub fn port_reg(n: u32, reg: u64) -> u64 { port_off(n) + reg }
+
+/// Whether the complete DMA range is addressable by this HBA. # C: O(1)
+#[inline]
+pub fn dma_range_fits(cap: u32, pa: u64, bytes: u64) -> bool {
+    let Some(last) = bytes.checked_sub(1).and_then(|span| pa.checked_add(span)) else {
+        return false;
+    };
+    cap & CAP_S64A != 0 || last <= u32::MAX as u64
+}
 
 /// Pack a Command Header dword0 (AHCI §4.2.2): CFL (command-FIS length in
 /// dwords, bits 4:0), `W` write bit (bit 6), PRDTL (PRD table length in
@@ -203,6 +214,16 @@ mod tests {
         assert_eq!(port_reg(3, P_CI), 0x100 + 3 * 0x80 + 0x38);
         // PxSSTS of port 1.
         assert_eq!(port_reg(1, P_SSTS), 0x180 + 0x28);
+    }
+
+    #[test]
+    fn dma_range_obeys_s64a() {
+        assert!(dma_range_fits(CAP_S64A, 1 << 40, 4096));
+        assert!(!dma_range_fits(CAP_S64A, u64::MAX, 4096));
+        assert!(dma_range_fits(0, 0xFFFF_F000, 4096));
+        assert!(!dma_range_fits(0, 0xFFFF_F001, 4096));
+        assert!(!dma_range_fits(0, 1 << 32, 1));
+        assert!(!dma_range_fits(0, 0, 0));
     }
 
     #[test]

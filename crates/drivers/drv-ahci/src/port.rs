@@ -231,6 +231,7 @@ impl Ahci {
         if !enable_ahci(abar_va) { return Err("AHCI enable failed"); }
         if !reset_hba(abar_va) { return Err("HBA reset timeout"); }
         if !enable_ahci(abar_va) { return Err("AHCI enable after reset failed"); }
+        let cap = hba_read(abar_va, regs::HBA_CAP);
 
         // Ports Implemented bitmap (AHCI §3.1.6).
         // SAFETY: Device-attr HBA register file; aligned 32-bit load of PI.
@@ -288,7 +289,12 @@ impl Ahci {
 
         // Allocate the per-port DMA structures + a bounce frame (each its own
         // PMM frame — over-aligned for the 1 KiB / 256 B requirements).
-        let [clb, fb, ct, bnc] = Self::alloc_frames()?;
+        let mut frames = Self::alloc_frames()?;
+        if !frames.iter().all(|pa| regs::dma_range_fits(cap, *pa, PAGE)) {
+            for pa in &mut frames { Self::free_frame(pa); }
+            return Err("DMA address exceeds HBA mask");
+        }
+        let [clb, fb, ct, bnc] = frames;
         for f in [clb, fb, ct, bnc] { Self::zero_frame(f); }
 
         let mut a = Ahci {
