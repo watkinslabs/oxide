@@ -78,6 +78,10 @@ pub mod timex_policy;
 // pivot_root: the `path_pivot_root()` check ladder, whose ORDER is the only
 // observable part of a rejected call.
 pub mod pivot_root_policy;
+// fsconfig(2): the per-command `_key`/`_value`/`aux` admission switch of
+// `SYSCALL_DEFINE5(fsconfig)`, including the EOPNOTSUPP-not-EINVAL default and
+// SET_FD's non-negative-aux rule. `431_fsconfig.rs` is kernel-gated.
+pub mod fsconfig_abi;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;
