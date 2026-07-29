@@ -2,6 +2,11 @@
 //! the `set_user_sigmask`/`TIF_RESTORE_SIGMASK` handshake, the timespec
 //! argument rules, the remaining-time writeback, and register-then-recheck.
 
+// This integration test compiles production modules directly via `#[path]` to
+// assert their ABI shape, and exercises only the part of each module the shape
+// under test needs. dead_code here measures the test's reach, not the kernel's
+// -- the real signal lives in `xtask kernel`, which is dead_code-clean.
+#![allow(dead_code)]
 use std::boxed::Box;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};

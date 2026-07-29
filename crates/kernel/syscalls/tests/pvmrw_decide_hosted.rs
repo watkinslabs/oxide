@@ -6,6 +6,11 @@
 //! slot files: a `#[cfg(test)] mod tests` inside `310_process_vm_readv.rs`
 //! would compile out silently while cargo still prints "ok".
 
+// This integration test compiles production modules directly via `#[path]` to
+// assert their ABI shape, and exercises only the part of each module the shape
+// under test needs. dead_code here measures the test's reach, not the kernel's
+// -- the real signal lives in `xtask kernel`, which is dead_code-clean.
+#![allow(dead_code)]
 use syscall::errno::Errno;
 
 #[path = "../src/pvmrw_common/decide.rs"]
