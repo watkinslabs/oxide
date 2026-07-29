@@ -38,8 +38,15 @@ impl FileOps for PressureFileOps {
     }
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<PressureData>().ok_or(VfsError::Einval)?;
-        // `psi_trigger_parse` rejects a bad spec / out-of-range window with EINVAL.
-        psi::add_trigger(d.res, buf).map_err(|_| VfsError::Einval)?;
+        // Linux `psi_write`: an empty write is EINVAL before anything is parsed.
+        if buf.is_empty() { return Err(VfsError::Einval); }
+        // `psi_trigger_parse` checks CAP_SYS_RESOURCE to decide whether the
+        // caller may use a window that is not a multiple of 2s (an RT-thread
+        // trigger) — without it every unprivileged spec is judged by the
+        // privileged rule.
+        let privileged = sched::current()
+            .is_some_and(|t| t.has_cap(sched::cap::SYS_RESOURCE));
+        psi::add_trigger(d.res, buf, privileged).map_err(|_| VfsError::Einval)?;
         Ok(buf.len())
     }
     /// PSI files signal readiness ONLY via `POLL_PRI` when a trigger crosses

@@ -1,6 +1,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 use vfs::{File, InodeRef, OpenFlags};
@@ -53,8 +54,16 @@ pub(crate) fn install_fd(inode: InodeRef, name: &str, cloexec: bool) -> i64 {
 
 /// # C: O(1)
 pub(crate) fn fd_inode(fd: i32) -> Option<InodeRef> {
+    fd_file(fd).map(|f| f.inode().clone())
+}
+
+/// `fget_raw(fd)` (`fs/file.c`) — the open file description behind `fd` with a
+/// reference held for the caller, O_PATH descriptions included. `fsconfig`'s
+/// `FSCONFIG_SET_FD` pins the file this way so the parameter survives the
+/// caller closing the fd mid-parse (`fs/fsopen.c`). # C: O(1)
+pub(crate) fn fd_file(fd: i32) -> Option<Arc<File>> {
     let cur = sched::live::current()?;
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    fdt.get(fd).ok().map(|f| f.inode().clone())
+    fdt.get(fd).ok()
 }

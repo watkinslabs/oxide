@@ -4,85 +4,79 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::fsconfig_abi::{self, FsconfigCmd, ValueKind};
 use crate::fsmount_common::*;
 
 /// `sys_fsconfig(fd, cmd, key, value, aux)` — slot 431. Accumulates options
 /// into the `fs_context` per the Linux command set. SET_FLAG/SET_STRING/
 /// SET_PATH/SET_PATH_EMPTY/SET_BINARY store the key/value; `source` is mirrored
-/// into the context source. SET_FD → EINVAL (no fd-valued options supported).
+/// into the context source. SET_FD pins `aux`'s open file (`fget_raw`) and
+/// hands the filesystem an `fs_value_is_file` parameter through the SAME
+/// `vfs_parse_fs_param` path the other SET_* commands use, so an fs whose
+/// parameter spec has no fd-typed key rejects it from its own parser (Linux
+/// `legacy_parse_param`) instead of the syscall refusing it blind.
 /// CMD_CREATE/CMD_CREATE_EXCL realize the tree; CMD_RECONFIGURE applies parsed
-/// changes to an fspick context. An unknown command is EINVAL (Linux
-/// `vfs_fsconfig_locked`).
+/// changes to an fspick context. Argument admission and the EOPNOTSUPP for an
+/// unknown command live in `fsconfig_abi::classify`.
 /// # C: O(1)
 pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
-    const FSCONFIG_SET_FLAG:       u64 = 0;
-    const FSCONFIG_SET_STRING:     u64 = 1;
-    const FSCONFIG_SET_BINARY:     u64 = 2;
-    const FSCONFIG_SET_PATH:       u64 = 3;
-    const FSCONFIG_SET_PATH_EMPTY: u64 = 4;
-    const FSCONFIG_SET_FD:         u64 = 5;
-    const FSCONFIG_CMD_CREATE:      u64 = 6;
-    const FSCONFIG_CMD_RECONFIGURE: u64 = 7;
-    const FSCONFIG_CMD_CREATE_EXCL: u64 = 8;
     let fd = args.a0 as i32;
-    let cmd = args.a1;
+    let aux = args.a4 as i32;
+    let cmd = match fsconfig_abi::classify(fd, args.a1, args.a2, args.a3, aux) {
+        Ok(c)  => c,
+        Err(e) => return -(e.as_i32() as i64),
+    };
     let inode = match fd_inode(fd) { Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64) };
     let ctx = match inode.private::<FsContextInode>() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
 
-    // Read the option key/value from user memory FIRST (outside any fs_context
-    // lock — never fault a user page while holding a spinlock); a SET_* command
-    // needs a non-empty key (Linux requires `key` for everything but CMD_*).
-    let is_param = matches!(cmd, FSCONFIG_SET_FLAG | FSCONFIG_SET_STRING
-        | FSCONFIG_SET_BINARY | FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY);
-    let (key, value) = if is_param {
-        let key = match read_cstr_req(args.a2, 64) {
-            Ok(k) if !k.is_empty() => k,
-            Ok(_) => return -(Errno::Einval.as_i32() as i64),
-            Err(rv) => return rv,
-        };
-        let value = if cmd == FSCONFIG_SET_FLAG { alloc::string::String::new() }
-            else if cmd == FSCONFIG_SET_PATH || cmd == FSCONFIG_SET_PATH_EMPTY {
-                match read_path_allow_empty(args.a3) {
-                    Ok(v) => v,
-                    Err(rv) => return rv,
-                }
-            } else {
-                match read_cstr_req(args.a3, 256) {
-                    Ok(v) => v,
-                    Err(rv) => return rv,
-                }
-            };
-        (key, value)
-    } else {
-        (alloc::string::String::new(), alloc::string::String::new())
+    // Copy the option key/value in from user memory FIRST (outside any
+    // fs_context lock — never fault a user page while holding a spinlock).
+    // An empty key is left for `vfs_parse_fs_param` to reject, which is where
+    // Linux reports it ("VFS: Empty parameter name").
+    let key = if cmd.takes_key() {
+        match read_cstr_req(args.a2, fsconfig_abi::KEY_MAX) { Ok(k) => k, Err(rv) => return rv }
+    } else { alloc::string::String::new() };
+    let value = match cmd.value_kind() {
+        ValueKind::None => alloc::string::String::new(),
+        ValueKind::Path { .. } => match read_path_allow_empty(args.a3) { Ok(v) => v, Err(rv) => return rv },
+        ValueKind::Str | ValueKind::Blob => match read_cstr_req(args.a3, fsconfig_abi::VALUE_MAX) {
+            Ok(v) => v, Err(rv) => return rv,
+        },
     };
+    // `param.file = fget_raw(aux); if (!param.file) ret = -EBADF;` — taken
+    // before the context lock and held across the parse, so the caller closing
+    // the fd cannot free the description underneath the filesystem.
+    let aux_file = if cmd == FsconfigCmd::SetFd {
+        match fd_file(aux) { Some(f) => Some(f), None => return -(Errno::Ebadf.as_i32() as i64) }
+    } else { None };
 
     // CONVERTED pseudo fstype: thread the command through the real
     // `vfs::fs::FsContext` (D14: params no longer dropped; D13: SB realized at
-    // CMD_CREATE; D15: CMD_RECONFIGURE). SET_FD stays EINVAL (systemd's
-    // mount_option_supported() probe). An unrecognised parameter / parse error
-    // surfaces the VFS errno.
+    // CMD_CREATE; D15: CMD_RECONFIGURE). An unrecognised parameter / parse
+    // error surfaces the VFS errno.
     {
         let mut g = ctx.fc.lock();
         if let Some(fc) = g.as_mut() {
             return match cmd {
-                FSCONFIG_SET_FD => -(Errno::Einval.as_i32() as i64),
-                FSCONFIG_CMD_CREATE | FSCONFIG_CMD_CREATE_EXCL => match vfs::fs::vfs_get_tree(fc) {
+                FsconfigCmd::CmdCreate | FsconfigCmd::CmdCreateExcl => match vfs::fs::vfs_get_tree(fc) {
                     Ok(())  => 0,
                     Err(e)  => crate::namei_common::errno_from_vfs(e),
                 },
-                FSCONFIG_CMD_RECONFIGURE => match vfs::fs::reconfigure_super(fc) {
+                FsconfigCmd::CmdReconfigure => match vfs::fs::reconfigure_super(fc) {
                     Ok(())  => 0,
                     Err(e)  => crate::namei_common::errno_from_vfs(e),
                 },
-                FSCONFIG_SET_FLAG => parse(fc, vfs::fs::FsParameter::flag(&key)),
-                FSCONFIG_SET_PATH => parse(fc, vfs::fs::FsParameter::path(&key, &value)),
-                FSCONFIG_SET_PATH_EMPTY => parse(fc, vfs::fs::FsParameter::path_empty(&key, &value)),
-                FSCONFIG_SET_BINARY => parse(fc, vfs::fs::FsParameter::blob(&key, value.as_bytes())),
-                FSCONFIG_SET_STRING => parse(fc, vfs::fs::FsParameter::string(&key, &value)),
-                _ => -(Errno::Einval.as_i32() as i64),
+                FsconfigCmd::SetFlag => parse(fc, vfs::fs::FsParameter::flag(&key)),
+                FsconfigCmd::SetPath => parse(fc, vfs::fs::FsParameter::path(&key, &value)),
+                FsconfigCmd::SetPathEmpty => parse(fc, vfs::fs::FsParameter::path_empty(&key, &value)),
+                FsconfigCmd::SetBinary => parse(fc, vfs::fs::FsParameter::blob(&key, value.as_bytes())),
+                FsconfigCmd::SetString => parse(fc, vfs::fs::FsParameter::string(&key, &value)),
+                FsconfigCmd::SetFd => match aux_file {
+                    Some(f) => parse(fc, vfs::fs::FsParameter::fd(&key, aux, f)),
+                    None    => -(Errno::Ebadf.as_i32() as i64),
+                },
             };
         }
     }

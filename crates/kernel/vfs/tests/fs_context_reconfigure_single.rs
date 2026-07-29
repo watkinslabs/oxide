@@ -16,8 +16,16 @@ mod common;
 use vfs::fs::fs_context::{vfs_get_tree, FsContext, FsParameter};
 use vfs::fs::{reconfigure_single, FileSystem};
 use vfs::superblock::{next_anon_dev, FileSystemType, SuperBlock, SB_RDONLY};
-use vfs::{FileType, InodeBuilder, InodeRef, KResult, SbStatFs, SuperOps, VfsError,
-          default_file_ops, default_inode_ops, mk_mode};
+use vfs::{Dentry, File, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, SbStatFs, SuperOps,
+          VfsError, default_file_ops, default_inode_ops, mk_mode};
+
+/// Stand-in for the description `fget_raw(aux)` pins on `FSCONFIG_SET_FD`.
+fn auxfile() -> Arc<File> {
+    let ino: InodeRef = InodeBuilder::new(0x9002, mk_mode(FileType::Regular, 0o600),
+        default_inode_ops(), default_file_ops()).build();
+    let dentry = Dentry::new(None, "auxfd".into(), Arc::clone(&ino));
+    File::new(ino, dentry, OpenFlags::O_RDONLY)
+}
 
 fn tdir() -> InodeRef {
     InodeBuilder::new(1, mk_mode(FileType::Directory, 0), default_inode_ops(), default_file_ops()).build()
@@ -100,7 +108,7 @@ fn rejected_param_fails_and_does_not_commit() {
     // An fd value has no string form a classic mount comma-blob ->mount can carry, so the
     // classic mount parse_param rejects it (EINVAL). The helper surfaces that and never
     // reaches reconfigure_super, leaving the requested SB_RDONLY UNAPPLIED.
-    let r = reconfigure_single(sb.clone(), SB_RDONLY, &[FsParameter::fd("loop", 3)]);
+    let r = reconfigure_single(sb.clone(), SB_RDONLY, &[FsParameter::fd("loop", 3, auxfile())]);
     assert_eq!(r.unwrap_err(), VfsError::Einval);
     assert!(!sb.is_readonly(), "a rejected param must not have applied SB_RDONLY");
 }
