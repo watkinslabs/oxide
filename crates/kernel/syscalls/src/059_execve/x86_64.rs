@@ -67,7 +67,6 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         Some(c) => c,
         None => return -(Errno::Einval.as_i32() as i64),
     };
-    let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
     if path_owned.is_empty() { return -(Errno::Enoent.as_i32() as i64); }
     #[cfg(feature = "debug-execload")]
     {
@@ -116,7 +115,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
             return rc;
         }
     };
-    ext4_blob = Some(v);
+    let mut ext4_blob: Option<alloc::vec::Vec<u8>> = Some(v);
     let mut blob: &[u8] = ext4_blob.as_deref().expect("just set");
     const ARG_MAX_BYTES: usize = 128 * 1024;
     const ARG_MAX_ENTRIES: usize = 1024;

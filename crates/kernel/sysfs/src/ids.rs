@@ -73,6 +73,9 @@ pub(crate) const MODULE_ROOT: u64 = 0x5100_7000;
 pub(crate) const MODULE_DIR: u64 = 0x5100_7001;
 pub(crate) const MODULE_PARAM_DIR: u64 = 0x5100_7002;
 pub(crate) const MODULE_ATTR: u64 = 0x5100_7003;
+/// Reserved for the `root.rs` drop-cached dcache-invalidation test fixture; no
+/// live `/sys` attribute claims it.
+#[cfg(test)]
 pub(crate) const STALE_UEVENT: u64 = 0x51dc_a001;
 pub(crate) const UEVENT_SEQNUM: u64 = 0x5107_0001;
 pub(crate) const ZRAM_CONTROL_ROOT: u64 = 0x5108_0001;

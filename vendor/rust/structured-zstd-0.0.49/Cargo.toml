@@ -128,3 +128,13 @@ default-features = false
 
 [dev-dependencies.rand]
 version = "0.10"
+
+[lints.rust]
+# Vendor-integration patch (oxide). structured-zstd is a path dependency, so cargo
+# treats it as local and surfaces its warnings in every build of ours. We do
+# not edit vendored logic, and the unused items are upstream API surface our
+# no_std feature selection does not reach -- dead_code warnings that no
+# oxide change can fix. Silenced HERE, at the vendored crate, so our own
+# crates keep dead_code fully enabled.
+dead_code = "allow"
+unused_imports = "allow"

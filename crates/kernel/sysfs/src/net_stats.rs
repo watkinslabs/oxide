@@ -7,7 +7,6 @@
 // the "unbacked field → 0" rule live in `net::NetStats::field` and are
 // host-tested there.
 
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -17,7 +16,6 @@ use crate::{make_body_inode, VecFmt, DIR_PERM};
 
 /// Per-inode state for the `statistics` dir (Linux `net_device` backref). # C: n/a
 struct NetStatsData {
-    name: String,
     dev:  Arc<dyn net::NetDev>,
 }
 
@@ -51,9 +49,9 @@ impl FileOps for NetStatsOps {
 
 /// Build the `/sys/class/net/<if>/statistics` dir inode (ino `0x5100_4000`).
 /// # C: O(1)
-pub fn make_net_stats_inode(name: String, dev: Arc<dyn net::NetDev>) -> InodeRef {
+pub fn make_net_stats_inode(dev: Arc<dyn net::NetDev>) -> InodeRef {
     InodeBuilder::new(crate::ids::NET_STATS_DIR, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(NetStatsOps), Arc::new(NetStatsOps))
-        .private(Arc::new(NetStatsData { name, dev }))
+        .private(Arc::new(NetStatsData { dev }))
         .build()
 }

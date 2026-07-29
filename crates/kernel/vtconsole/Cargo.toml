@@ -28,3 +28,6 @@ proptest = "1"
 default = []
 # Expose host-only assembly helpers to downstream crates' tests.
 hosted = ["tty/hosted"]
+
+[lints]
+workspace = true

@@ -12,8 +12,7 @@ mod types;
 pub use types::{recv_empty, recv_empty_with, Received, RecvOptions};
 pub(crate) use crate::sock_error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
-pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, arm_tcp_read_after_mode,
-    read_tcp_blocking, tcp_vfs_error};
+pub(crate) use tcp_read::{arm_tcp_read_after_mode, read_tcp_blocking, tcp_vfs_error};
 pub(crate) use tcp_wait::connect_wait_established;
 
 /// F164: blocking TCP write. Repeatedly tcp_send into the conn,

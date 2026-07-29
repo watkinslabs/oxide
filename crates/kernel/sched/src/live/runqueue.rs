@@ -16,7 +16,7 @@
 
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::{RunqueueInner, Task};
 use sync::{Runqueue as RunqueueClass, Spinlock};

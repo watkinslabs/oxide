@@ -32,6 +32,7 @@ impl AddressSpace {
         CA: FnMut() -> KResult<()>,
         UA: FnMut(),
     {
+            let _ = &frame_refcount; // read only by the debug-mount / debug-cow probes below
             let vma = match self.vmas.read().find_containing(va) {
                 Some(v) => v.clone(),
                 None    => return Err(Error::Inval),
@@ -40,8 +41,8 @@ impl AddressSpace {
                 return Err(Error::Inval);
             }
             let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
-            // SAFETY: va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
-            let cur = unsafe { M::translate(Va(va_page)) };
+            // va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
+            let cur = M::translate(Va(va_page));
             // DIAG (debug-mount): trace COW write to the libc lock page. If a
             // fork-shared lock page takes the fast path (refcount<=1 → flip W
             // in place) while a peer still maps it, the write corrupts the

@@ -21,7 +21,7 @@ use core::sync::atomic::Ordering;
 use sched::live::wait_list::WaitList;
 use sync::Spinlock;
 use vfs::{File, FileType, Fmode, Inode, InodeRef, KResult, VfsError};
-use vfs::{FileOps, InodeBuilder, PollSubscribers, default_inode_ops, mk_mode};
+use vfs::FileOps;
 mod eventfd;
 mod ring;
 mod smoke;

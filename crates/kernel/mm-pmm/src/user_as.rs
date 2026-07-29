@@ -44,10 +44,15 @@ pub use signal::deliver_sigsegv_arm;
 #[cfg(target_arch = "x86_64")]
 use signal::try_deliver_sigsegv_via_handler_x86;
 
-use state::{current_cpu_idx, current_mm_cpumask, HHDM_OFFSET};
+#[cfg(feature = "debug-cow")]
+use state::current_cpu_idx;
+use state::{current_mm_cpumask, HHDM_OFFSET};
 pub use state::{clone_global_arc, hhdm_offset, init, with};
 pub use foreign::{evict_foreign_pages_in_range, mprotect_pages, read_foreign_user, rmap_walk_anon_pa, write_foreign_user};
-use foreign::{read_foreign_leaf, read_foreign_leaf_pa};
+#[cfg(feature = "debug-cow")]
+use foreign::read_foreign_leaf;
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
+use foreign::read_foreign_leaf_pa;
 #[cfg(target_arch = "x86_64")]
 pub use teardown::classify_x86_pf;
 #[cfg(target_arch = "aarch64")]

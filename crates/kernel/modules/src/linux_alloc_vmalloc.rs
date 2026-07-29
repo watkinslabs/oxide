@@ -7,22 +7,24 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+#[cfg(target_os = "oxide-kernel")]
 use core::sync::atomic::Ordering;
 
+#[cfg(target_os = "oxide-kernel")]
 use cgroup::MemoryKind;
+#[cfg(target_os = "oxide-kernel")]
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 use sync::Spinlock;
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 use hal_aarch64::mmu_ops::ArmMmu;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 use hal_x86_64::mmu_ops::X86Mmu;
 
 const PAGE_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 /// Dedicated kernel VA arena, below the device BAR arena (`mmio-map`).
 const VMALLOC_VA_BASE: u64 = 0xffff_fc00_0000_0000;
 const VMALLOC_VA_BYTES: u64 = 1u64 << 40;
-const VMALLOC_VA_END: u64 = VMALLOC_VA_BASE + VMALLOC_VA_BYTES;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot { pub total: u64, pub used: u64, pub largest_free: u64, pub allocations: u64 }

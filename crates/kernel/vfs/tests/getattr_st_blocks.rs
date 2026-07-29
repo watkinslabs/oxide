@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use vfs::getattr::blocks_for;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{FileType, InodeBuilder, InodeRef, KResult, IDENTITY,
+use vfs::{FileType, InodeBuilder, KResult, IDENTITY,
           default_file_ops, default_inode_ops, mk_mode};
 
 // `st_blksize`/`st_blocks` derive the allocation unit from the owning

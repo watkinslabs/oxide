@@ -81,7 +81,6 @@ pub fn get_display_info(
         let scanout_ok = unsafe {
             setup_scanout(
                 device_key,
-                bdf_word,
                 info.modes[0].r.width, info.modes[0].r.height,
                 cfg_va, ctrlq, cursorq, cmd_buf.va, cmd_buf.pa, hhdm,
             )
@@ -115,7 +114,6 @@ pub fn get_display_info(
 /// # SAFETY: caller is the boot path; queue + notify VAs valid; PMM up.
 unsafe fn setup_scanout(
     device_key: virtio::VirtioChildDeviceKey,
-    bdf: u32,
     w: u32, h: u32,
     cfg_va: u64,
     ctrlq: virtio::VirtQueueResource,
@@ -227,7 +225,6 @@ unsafe fn setup_scanout(
     log_resp(b"flush");
     if !install_scanout_ctx(
         device_key,
-        bdf,
         w, h,
         cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, fb_order, res_id,
         ctrlq, cursorq, cmd_buf_va as u64, cmd_buf_pa, hhdm,

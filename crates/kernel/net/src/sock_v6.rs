@@ -8,7 +8,6 @@ use crate::sock::{
     InetSocket, SockKind,
     alloc_ephemeral_udp6, drain_loopback, stack,
 };
-use crate::sock_opts::apply_tcp_keepalive_opts;
 
 const IPV6_MULTICAST_SCOPE_MASK: u8 = 0x0f;
 const IPV6_SCOPE_LINK_LOCAL: u8 = 2;
@@ -51,7 +50,7 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
         match &*kind {
             SockKind::Udp => {
                 drop(kind);
-                let local_port = {
+                let _local_port = {
                     let mut slot = sock.local_port.lock();
                     if sock.released.load(core::sync::atomic::Ordering::Acquire) {
                         return Err(NetError::Einval);

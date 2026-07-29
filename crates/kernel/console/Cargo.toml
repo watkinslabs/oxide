@@ -22,3 +22,6 @@ fbcon      = { path = "../../drivers/fbcon" }
 
 [features]
 debug-trace = ["kmacros/debug-trace"]
+
+[lints]
+workspace = true

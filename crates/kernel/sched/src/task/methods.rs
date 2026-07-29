@@ -1,7 +1,9 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+#[cfg(feature = "debug-task-fpu-provenance")]
+use core::sync::atomic::AtomicUsize;
 
 use sync::Spinlock;
 use vmm::AddressSpace;

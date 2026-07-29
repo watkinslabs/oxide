@@ -14,3 +14,6 @@ modules = { path = "../../kernel/modules" }
 [features]
 default = []
 hosted = []
+
+[lints]
+workspace = true

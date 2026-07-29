@@ -15,7 +15,9 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
     }
 }
 
-/// Trim trailing NULs/spaces from a fixed CPUID byte array → &str.
+/// Trim trailing NULs/spaces from a fixed CPUID byte array → &str. Only the
+/// x86_64 `block` has ASCII CPUID fields; the aarch64 one formats MIDR_EL1 hex.
+#[cfg(target_arch = "x86_64")]
 fn trim(b: &[u8]) -> &str {
     crate::util::ascii_field_trimmed(b)
 }

@@ -39,6 +39,15 @@ mod ops;
 mod perm;
 mod store;
 mod types;
+// The complete `uapi/linux/keyctl.h` + `include/linux/key.h` number space:
+// KEY_SPEC_* special ids, KEYCTL_* opcodes, KEY_REQKEY_DEFL_* defaults,
+// KEY_NEED_*/KEY_{POS,USR,GRP,OTH}_* permission bits and the
+// KEYCTL_CAPABILITIES byte-0/1 feature bits. Entries with no reader are the
+// point: `KEYCTL_CAPS0_{DIFFIE_HELLMAN,PUBLIC_KEY,BIG_KEY}` and
+// `KEYCTL_CAPS1_NOTIFICATIONS` name features this build reports as absent, and
+// the unreached KEY_SPEC_/KEY_REQKEY_DEFL_ ids are rejected by range check
+// rather than by name. Dropping them would make the table a subset (`docs/02`).
+#[allow(dead_code, reason = "complete Linux keyctl UAPI number space; unreferenced entries are deliberate — see comment above")]
 mod uapi;
 
 pub use keyctl::sys_keyctl;
@@ -206,6 +215,7 @@ pub fn keyring_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
 /// `KEYCTL_SET_TIMEOUT`. Arch-gated so every `ops::*_core` stays cfg-free.
 /// # C: O(1)
 fn monotonic_now_ns() -> u64 {
+    #[cfg(target_os = "oxide-kernel")]
     use hal::TimerOps;
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }

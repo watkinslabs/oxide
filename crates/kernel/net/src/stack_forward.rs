@@ -4,7 +4,7 @@ use crate::icmp::{self, time_exceeded_code, unreach_code};
 use crate::ipv4::{ip_checksum, push_ipv4_header, IPV4_HDR_LEN};
 use crate::netdev::{NetError, NetResult};
 use crate::netfilter_hook::{
-        nf_hook_eval, nf_hook_eval_in, nf_output, NFPROTO_IPV4, NF_INET_FORWARD, NF_INET_POST_ROUTING,
+        nf_hook_eval_in, nf_output, NFPROTO_IPV4, NF_INET_FORWARD, NF_INET_POST_ROUTING,
 };
 use crate::pkt::Pkt;
 use crate::stack::NetStack;
@@ -45,11 +45,6 @@ impl NetStack {
         let egress = self.ifaces.acquire_egress_in_ns(lease.iface(), lease.net_ns())
             .ok_or(NetError::Enodev)?;
         egress.xmit_raw(&frame)
-    }
-
-    /// True when this IPv4 destination belongs to the host. # C: O(N addrs)
-    pub(crate) fn ipv4_dst_is_local(&self, dst: Ipv4Addr) -> bool {
-        self.ipv4_dst_is_local_in(0, dst)
     }
 
     /// True when `dst` belongs to one network namespace. # C: O(N addrs)
@@ -99,12 +94,6 @@ impl NetStack {
         p.next_hop = Some(crate::pkt::TxNextHop::V4(dst));
         if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
         Ok(())
-    }
-
-    /// Forward one IPv4 packet after PRE_ROUTING has accepted it. # C: O(N routes + len)
-    pub(crate) fn forward_ipv4(&self, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        let net_ns = self.ifaces.namespace(ingress).ok_or(NetError::Enodev)?;
-        self.forward_ipv4_in(net_ns, ingress, l3)
     }
 
     /// Forward one IPv4 packet within the ingress namespace. # C: O(N routes + len)

@@ -1,4 +1,7 @@
-use crate::addr::{Ipv6Addr, NetIfaceId};
+use crate::addr::Ipv6Addr;
+// Only the `#[cfg(test)]` RA entry points below take an iface id.
+#[cfg(test)]
+use crate::addr::NetIfaceId;
 use crate::route6::{Route6Entry, Route6Origin};
 use crate::stack::NetStack;
 
@@ -10,12 +13,16 @@ pub(super) const TWO_HOURS_SECS: u32 = 2 * 60 * 60;
 pub(crate) const DAD_DELAY_NS: u64 = NS_PER_SEC;
 
 impl NetStack {
+    /// Test-only RA entry: the live path resolves the ingress lease first and
+    /// calls `apply_router_advertisement_lease` (see `stack_ipv6/control.rs`).
+    #[cfg(test)]
     pub(crate) fn apply_router_advertisement(&self, net_ns: u64, iface: NetIfaceId,
         router: Ipv6Addr, ra: &crate::ndp::RouterAdvertisement)
     {
         self.apply_router_advertisement_ordered(net_ns, iface, router, ra, || {});
     }
 
+    #[cfg(test)]
     pub(super) fn apply_router_advertisement_ordered<F: FnOnce()>(&self, net_ns: u64,
         iface: NetIfaceId, router: Ipv6Addr, ra: &crate::ndp::RouterAdvertisement,
         routes_published: F)

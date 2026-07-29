@@ -49,6 +49,11 @@ pub const TSS_SEL: u16 = 0x50;
 pub const IST_STACK_BYTES: usize = 16 * 1024;
 
 /// Number of distinct IST stacks populated per CPU (IST1..IST4).
+// Count entry of the IST assignment table below. `setup_ist_stacks` and
+// `install_ist_gates` both name the four slots individually rather than
+// looping, so nothing reads the count — it stays as the table's declared
+// cardinality (and the `# C:` bound on `setup_ist_stacks`).
+#[allow(dead_code, reason = "cardinality entry of the IST_DF/IST_NMI/IST_DB/IST_MC assignment table; the four slots are enumerated explicitly, not looped over")]
 pub const NR_IST: usize = 4;
 
 /// IST gate-index assignments (1-based: matches the IDT gate `ist` field;
@@ -177,8 +182,11 @@ pub unsafe fn setup_ist_stacks(cpu: u16) {
     tss.ist4 = mc;  // IST_MC
 }
 
-/// Read CPU `cpu`'s TSS IST slot `ist` (1..=7). Test/diagnostic helper.
+/// Read CPU `cpu`'s TSS IST slot `ist` (1..=7). Test-only helper: not
+/// re-exported by `lib.rs`, and the kernel reads the slots through the CPU's
+/// own IST-routed entry rather than through Rust.
 /// # C: O(1)
+#[cfg(test)]
 pub fn tss_ist(cpu: usize, ist: u8) -> u64 {
     // SAFETY: read-only load of a u64 field; no concurrent writer once
     // `setup_ist_stacks` has run for this CPU (slots are write-once).

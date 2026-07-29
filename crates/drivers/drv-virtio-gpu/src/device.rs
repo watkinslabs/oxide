@@ -17,7 +17,7 @@ use crate::{
 #[cfg(target_os = "oxide-kernel")]
 use crate::post_init;
 
-type DeviceKey = virtio::VirtioChildDeviceKey;
+pub(crate) type DeviceKey = virtio::VirtioChildDeviceKey;
 
 pub struct VirtioGpuDev {
     pub device_key:           DeviceKey,

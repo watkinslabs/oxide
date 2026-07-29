@@ -28,6 +28,9 @@ impl Fullness {
 
     /// Stable index for per-class fullness group accounting.
     /// # C: O(1)
+    // `allow` not `expect`: pool.rs's cfg(test) fullness_counts_for_test calls
+    // this, so the expectation would be unfulfilled under `cfg(test)`.
+    #[allow(dead_code, reason = "no caller: the per-class fullness-group lists (Linux class->fullness_list) are never maintained; compaction rescans all zspages instead")]
     pub(super) const fn index(self) -> usize {
         match self {
             Self::Empty => 0,

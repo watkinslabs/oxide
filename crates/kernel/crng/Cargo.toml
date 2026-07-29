@@ -9,3 +9,6 @@ path = "src/lib.rs"
 
 [dependencies]
 sync = { path = "../../shared/sync" }
+
+[lints]
+workspace = true

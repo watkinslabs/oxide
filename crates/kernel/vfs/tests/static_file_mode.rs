@@ -5,7 +5,6 @@
 //! `perm()`/`i_mode()` consistent with the `EROFS` write path, plus the
 //! body read semantics (offset clamp, partial read, EOF).
 
-use vfs::inode::Inode;
 use vfs::{FileType, StaticFileInode, VfsError};
 
 const S_IFREG: u16 = 0o100000; // FileType::Regular S_IFMT bits (umode_t)

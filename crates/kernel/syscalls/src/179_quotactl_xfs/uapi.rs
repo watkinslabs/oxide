@@ -1,3 +1,9 @@
+// XFS quotactl UAPI table (`uapi/linux/dqblk_xfs.h`): the FS_DQ_* field bits
+// and their aggregate masks are transcribed complete so a `d_fieldmask` a
+// future command consults is already named here. Aggregates that no command
+// currently tests (`FS_DQ_VFS_MASK`) are unreferenced by design.
+#![allow(dead_code, reason = "complete uapi/linux/dqblk_xfs.h constant table; unreferenced aggregate masks are the point")]
+
 pub(super) const FS_DQUOT_VERSION: i8 = 1;
 pub(super) const FS_QSTAT_VERSION: i8 = 1;
 pub(super) const FS_QSTATV_VERSION1: i8 = 1;

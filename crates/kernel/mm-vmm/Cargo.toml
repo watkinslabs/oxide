@@ -15,6 +15,7 @@ bitflags  = { version = "2", default-features = false }
 
 [features]
 debug-atexit = []  # loader-corruption probes ([FILLTAIL] EOF-straddling fill trace)
+debug-watchdog = []  # demand-fault fill diagnostics in `address_space/fault/fill.rs`; undeclared before, so the blocks never compiled.
 debug-swap = []  # [AS-DROP] narrow address-space teardown trace for swap activation
 debug-faultdiag = []  # [file frame map] per-file-backed-page-fault mapping trace
 debug-as-lifetime = []  # [AS-LIFE] canonical AddressSpace ownership transition provenance
@@ -32,3 +33,6 @@ debug-no-shmem = []  # TEST: disable MAP_SHARED shared_frame path
 debug-cow = []  # [COW-CORRUPT] runtime detector: checksum RO-shared anon frames at fork_cow, re-verify at COW write-fault + at free (catch peer write to a RO-shared page = stale TLB / wrong frame)
 
 debug-shortfill = []  # [SHORT-FILE-FAULT] B240: log when File demand-fault read_at returns short for a non-EOF page (partial fill = ld.so reads zeros = exit 127)
+
+[lints]
+workspace = true

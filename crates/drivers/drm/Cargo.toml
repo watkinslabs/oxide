@@ -21,3 +21,6 @@ sched   = { path = "../../kernel/sched" }
 [features]
 debug-boot = []  # [DRMPROP] KMS plane/property ioctl trace (mutter primary-plane hunt)
 debug-desktop = []  # [DRMPROP] KMS plane/property ioctl trace (mutter primary-plane hunt) — per-ioctl, split off debug-boot per B1474
+
+[lints]
+workspace = true

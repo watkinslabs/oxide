@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::regs::{eoi, local_apic_id};
+use super::regs::eoi;
 
 /// Per-CPU tick counter incremented by the timer-IRQ dispatcher.
 #[cfg(target_arch = "x86_64")]

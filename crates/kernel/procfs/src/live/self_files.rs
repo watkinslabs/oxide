@@ -182,43 +182,10 @@ pub(crate) fn push_u64(v: &mut Vec<u8>, mut n: u64) {
 
 pub(crate) const VERSION_BODY: &[u8] = b"Linux version 5.15.0-oxide (oxide@build) #1 SMP PREEMPT\n";
 
-#[cfg(target_arch = "x86_64")]
-pub(crate) const CPUINFO_BODY: &[u8] = b"\
-processor\t: 0\n\
-vendor_id\t: GenuineIntel\n\
-cpu family\t: 6\n\
-model\t\t: 158\n\
-model name\t: Oxide CPU @ 2.00GHz\n\
-stepping\t: 0\n\
-cpu MHz\t\t: 2000.000\n\
-cache size\t: 8192 KB\n\
-physical id\t: 0\n\
-siblings\t: 1\n\
-core id\t\t: 0\n\
-cpu cores\t: 1\n\
-apicid\t\t: 0\n\
-fpu\t\t: yes\n\
-fpu_exception\t: yes\n\
-cpuid level\t: 13\n\
-wp\t\t: yes\n\
-flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm constant_tsc rep_good nopl cpuid tsc_known_freq pni pclmulqdq ssse3 cx16 sse4_1 sse4_2 popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy abm sse4a misalignsse 3dnowprefetch xsaveopt arat\n\
-bogomips\t: 4000.00\n\
-clflush size\t: 64\n\
-cache_alignment\t: 64\n\
-address sizes\t: 39 bits physical, 48 bits virtual\n\
-power management:\n\
-\n";
-#[cfg(target_arch = "aarch64")]
-pub(crate) const CPUINFO_BODY: &[u8] = b"\
-processor\t: 0\n\
-BogoMIPS\t: 100.00\n\
-Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop\n\
-CPU implementer\t: 0x41\n\
-CPU architecture: 8\n\
-CPU variant\t: 0x0\n\
-CPU part\t: 0xd03\n\
-CPU revision\t: 4\n\
-\n";
+// /proc/cpuinfo is generated per-online-CPU from CPUID / MIDR_EL1 — see
+// `crate::cpuinfo`. The two hardcoded single-block blobs that used to live
+// here were a SPLIT SOURCE OF TRUTH against that generator and hid every AP
+// behind `processor : 0`; nothing has registered them since.
 
 // /proc/filesystems is generated from the live `vfs::fs` type registry —
 // see `crate::filesystems`. The hardcoded blob that used to live here was a

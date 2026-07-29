@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use std::sync::Mutex;
 
-use crate::{IpProto, Ipv6Addr, NetIfaceId, NetStack};
+use crate::{IpProto, Ipv6Addr, NetStack};
 
 const LOCAL_PORT: u16 = 44_100;
 const REMOTE_PORT: u16 = 53;

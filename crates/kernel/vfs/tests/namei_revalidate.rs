@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use vfs::dentry::DentryOps;
 use vfs::inode::Inode;
-use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
+use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags};
 
 // GLOBAL dcache + the static counters below are process-wide: serialize.
 static SERIAL: Mutex<()> = Mutex::new(());

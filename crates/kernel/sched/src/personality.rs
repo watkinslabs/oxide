@@ -114,7 +114,7 @@ pub fn override_release(release: &[u8], out: &mut [u8]) -> usize {
     }
     let patchlevel = release_patchlevel(release);
     let mut n = 0usize;
-    let mut put = |byte: u8, out: &mut [u8], n: &mut usize| {
+    let put = |byte: u8, out: &mut [u8], n: &mut usize| {
         if *n < out.len() { out[*n] = byte; *n += 1; }
     };
     for b in b"2.6." { put(*b, out, &mut n); }

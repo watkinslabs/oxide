@@ -115,7 +115,7 @@ pub use packet_ring::*;
 pub(crate) use packet_ring_v12::*;
 pub(crate) use packet_ring_v3::*;
 pub use packet_tx::*;
-pub use packet_ring_tx::*;
+pub(crate) use packet_ring_tx::*;  // only `pub(crate)` free items live there
 pub use iface::*;
 pub use bind_admission::{admit_bind, BindAdmission};
 pub use legacy_ioctl::legacy_ioctl_errno;
@@ -123,9 +123,7 @@ pub use legacy_ioctl::legacy_ioctl_errno;
 pub use inode::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use udp::*;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-pub use raw::*;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+#[cfg(target_os = "oxide-kernel")]
 pub(crate) use raw_bind::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use shutdown::*;

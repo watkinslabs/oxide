@@ -1,3 +1,5 @@
+// DTB parsing is reached only from the `oxide-kernel` boot path below.
+#[cfg(target_os = "oxide-kernel")]
 use crate::dtb;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 use crate::selfboot;

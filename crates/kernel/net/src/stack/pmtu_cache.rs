@@ -55,7 +55,9 @@ impl PmtuCache {
         self.lookup_at(iface, dst, link_mtu, monotonic_ns_safe())
     }
 
-    /// Return effective PMTU using the canonical state lookup. # C: O(log N)
+    /// Return effective PMTU at an injected clock. Test-only: production reads
+    /// go through `get`/`lookup`, which stamp the monotonic clock. # C: O(log N)
+    #[cfg(test)]
     pub(crate) fn get_at(&self, iface: NetIfaceId, dst: IpAddr, link_mtu: u32,
                          now_ns: u64) -> u32 {
         self.lookup_at(iface, dst, link_mtu, now_ns).mtu

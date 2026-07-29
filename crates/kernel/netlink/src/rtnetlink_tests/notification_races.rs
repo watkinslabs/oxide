@@ -53,7 +53,7 @@ fn link_notifications_follow_rtnl_mutation_order() {
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
-    let ifindex = visible_ifindex(iface, ns);
+    let _ifindex = visible_ifindex(iface, ns);
     let listener = listener(&namespace, crate::mcast::grp::RTNLGRP_LINK);
     crate::mcast::block_notification(iface.raw());
     let (first_req, first_msg) = link_req(iface, ns, iff::IFF_UP, iff::IFF_UP);

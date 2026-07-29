@@ -12,7 +12,6 @@
 // reaches the module-private dispatch items.
 
 use super::*;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use vfs::{ATTR_ATIME, ATTR_CTIME, ATTR_GID, ATTR_MODE, ATTR_MTIME, ATTR_SIZE, ATTR_UID};
 use vfs::{Cred, FileType, Iattr, InodeBuilder, InodeRef, default_file_ops, default_inode_ops, mk_mode};

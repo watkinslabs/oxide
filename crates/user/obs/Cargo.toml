@@ -15,3 +15,6 @@ sync = { path = "../../shared/sync" }
 [features]
 default = []
 hosted  = []
+
+[lints]
+workspace = true

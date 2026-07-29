@@ -239,6 +239,7 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 /// `virtio_blk_req` is a type/reserved/sector tuple (Virtio 1.2 §5.2.6).
 pub(super) const VIRTIO_BLK_REQUEST_HEADER_BYTES: usize = 16;
 /// One device-written status byte follows the request header.
+#[allow(dead_code, reason = "Virtio 1.2 §5.2.6 request-layout table kept complete alongside VIRTIO_BLK_REQUEST_HEADER_BYTES; the descriptor lengths in virtio::blk::build_chain still spell 16/1 inline")]
 pub(super) const VIRTIO_BLK_REQUEST_STATUS_BYTES: usize = 1;
 pub(super) const HDR_OFF: usize = 0;
 pub(super) const STATUS_OFF: usize = HDR_OFF + VIRTIO_BLK_REQUEST_HEADER_BYTES;

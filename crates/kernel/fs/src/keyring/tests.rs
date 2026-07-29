@@ -13,7 +13,6 @@
 use super::*;
 use super::ops::Ctx;
 use super::store::{TaskIds, STORE};
-use super::uapi::*;
 
 mod keys;
 mod links;

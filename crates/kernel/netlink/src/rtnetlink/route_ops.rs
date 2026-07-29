@@ -48,20 +48,6 @@ pub(crate) fn route_oif_for_abi(net_ns: u64, internal: u32) -> u32 {
         .unwrap_or(internal)
 }
 
-/// Build one RTM_NEWROUTE reply.
-/// # C: O(N attrs)
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_newroute_reply(
-    seq: u32, pid: u32, table: u8, protocol: u8, scope: u8, kind: u8,
-    dst: Option<([u8; 4], u8)>, gateway: Option<[u8; 4]>, oif_ifindex: u32, prefsrc: Option<[u8; 4]>,
-    multi: bool,
-) -> Vec<u8> {
-    build_newroute_row_reply(seq, pid, RouteRow {
-        ns: 0, table: table as u32, protocol, scope, kind, dst, gateway,
-        oif_ifindex, prefsrc, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
-    }, multi)
-}
-
 /// Build one RTM_NEWROUTE reply from the canonical route record. # C: O(N attrs)
 pub(crate) fn build_newroute_row_reply(seq: u32, pid: u32, row: RouteRow, multi: bool) -> Vec<u8> {
     build_newroute_group_reply(seq, pid, core::slice::from_ref(&row), multi)

@@ -210,7 +210,7 @@ impl ArpCache {
 
     /// Learn one neighbour with the NUD state justified by its ARP evidence.
     /// # C: O(log N)
-    pub fn learn_at(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState, now_ns: u64)
+    pub(crate) fn learn_at(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState, now_ns: u64)
         -> Vec<crate::netdev::tx_dispatch::TxJob>
     {
         if self.closed.load(Ordering::Acquire) { return Vec::new(); }
@@ -244,7 +244,7 @@ impl ArpCache {
     }
 
     /// Remove all neighbor state when the owning interface leaves a namespace. # C: O(N)
-    pub fn clear(&self) -> Vec<crate::netdev::tx_dispatch::TxJob> {
+    pub(crate) fn clear(&self) -> Vec<crate::netdev::tx_dispatch::TxJob> {
         self.closed.store(true, Ordering::Release);
         let mut entries = self.inner.lock();
         let mut pending = Vec::new();

@@ -22,8 +22,12 @@ mod rings;
 
 pub use keys::{add_key_core, chown_core, describe_core, get_security_core, invalidate_core,
     read_core, revoke_core, set_timeout_core, setperm_core, update_core};
-pub use links::{clear_core, link_core, members_of, move_core, request_key_core, restrict_core,
+pub use links::{clear_core, link_core, move_core, request_key_core, restrict_core,
     search_core, unlink_core};
+// Keyring-membership readback has no kernel-side caller — `keyctl` walks the
+// store directly; the hosted tests are what assert link/unlink membership.
+#[cfg(test)]
+pub use links::members_of;
 pub use rings::{get_keyring_id, get_persistent, inherit_session, join_session,
     session_to_parent, set_reqkey_keyring, ParentInfo};
 

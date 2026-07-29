@@ -2,7 +2,6 @@ use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
-use sched;
 use vfs;
 
 use super::{GcNode, GcRights, UnixAddr};
@@ -240,7 +239,7 @@ impl UnixDgramQueue {
     /// [`try_push_from_with_rights_bounded`] carrying the sender's write-memory
     /// ownership (`skb->sk` / `skb->truesize`). # C: O(1)
     fn try_push_from_with_rights_bounded_owned(&self, mut msg: UnixDgram, sender: Option<UnixAddr>,
-        rights: GcRights, cap: usize, owner: Option<Arc<UnixDgramQueue>>, charge: usize)
+        rights: GcRights, cap: usize, owner: Option<Arc<UnixDgramQueue>>, _charge: usize)
         -> Result<(), crate::NetError>
     {
         if message_charge(msg.payload.len()) > cap {

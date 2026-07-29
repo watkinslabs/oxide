@@ -247,8 +247,11 @@ fn release_transport_record(rec: TransportRecord) {
     }
 }
 
-pub(crate) fn reset_failed_probe(cfg_va: u64) {
-    virtio::reset_device(cfg_va);
+/// `true` once the device confirmed status readback 0 (quiesced). The caller
+/// must not free this probe's DMA frames on `false` — see
+/// `virtio::reset_device`'s contract.
+pub(crate) fn reset_failed_probe(cfg_va: u64) -> bool {
+    virtio::reset_device(cfg_va)
 }
 
 pub(crate) fn release_failed_probe_frames(frames: &[u64]) {

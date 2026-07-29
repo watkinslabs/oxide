@@ -33,5 +33,3 @@ pub fn sys_rt_sigpending(args: &SyscallArgs) -> i64 {
     }
     0
 }
-
-use crate::signal_common::SIGSET_BYTES;

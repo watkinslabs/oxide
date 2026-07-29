@@ -108,7 +108,6 @@ impl RtnlGuard<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Barrier;

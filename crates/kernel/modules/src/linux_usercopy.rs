@@ -1,5 +1,6 @@
 // Linux uaccess KPI exports for loadable drivers.
 
+#[cfg(test)]
 use hal::USER_VA_END;
 
 const LINUX_OK: i64 = 0;
@@ -35,7 +36,7 @@ extern "C" fn copy_from_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
     // SAFETY: Linux KPI caller supplies a kernel destination valid for n bytes.
     unsafe { uaccess::raw_copy_from_user(dst, src as u64, n) }
     #[cfg(not(target_os = "oxide-kernel"))]
-    { n }
+    { let _ = src; n }
 }
 
 extern "C" fn copy_to_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
@@ -44,7 +45,7 @@ extern "C" fn copy_to_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
     // SAFETY: Linux KPI caller supplies a kernel source valid for n bytes.
     unsafe { uaccess::raw_copy_to_user(dst as u64, src, n) }
     #[cfg(not(target_os = "oxide-kernel"))]
-    { n }
+    { let _ = dst; n }
 }
 
 extern "C" fn clear_user(dst: *mut u8, n: usize) -> usize {

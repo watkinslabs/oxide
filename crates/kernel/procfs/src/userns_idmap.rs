@@ -5,6 +5,7 @@
 // write verbatim without translation.
 
 use alloc::format;
+#[cfg(target_os = "oxide-kernel")]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 

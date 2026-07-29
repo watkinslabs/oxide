@@ -11,8 +11,10 @@ use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 use net::{MacAddr, NetDev, NetError, NetIfaceId, NetStats, Pkt};
 use sync::{Modules as ModulesLockClass, Spinlock};
+#[cfg(any(target_os = "oxide-kernel", feature = "hosted", test))]
 #[path = "rx_helpers.rs"]
 mod rx_helpers;
+#[cfg(any(target_os = "oxide-kernel", feature = "hosted", test))]
 use rx_helpers::{l2_frame, l3_payload, resolved_protocol};
 
 const NETDEV_STATE_QUEUE_STOPPED: u32 = 1 << 0;
@@ -152,7 +154,7 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
     }
     #[cfg(all(not(target_os = "oxide-kernel"), not(feature = "hosted")))]
     {
-        let _ = (iface, frame, proto);
+        let _ = (iface, frame, proto, link, generation, metadata);
         NET_RX_SUCCESS
     }
 }

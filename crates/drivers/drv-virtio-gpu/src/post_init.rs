@@ -68,7 +68,6 @@ impl Drop for ProbeFramebufferRun {
 
 struct ScanoutCtx {
     device_key: virtio::VirtioChildDeviceKey,
-    bdf: u32,
     cfg_va: u64,
     w: u32,
     h: u32,

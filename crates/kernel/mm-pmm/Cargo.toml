@@ -39,6 +39,8 @@ path = "../syscall"
 
 [features]
 debug-pmm = []
+debug-watchdog = []  # [REFBUG]/[FWM] free-while-referenced + dec-underflow banners and the 0xAA free-page poison/write-while-free check (`setup/{contig,frame_alloc,refs}.rs`). Was never declared here, so kmain's `debug-watchdog` forwarded to sched only and every pmm block compiled out silently.
+debug-syscall = []  # per-syscall unmap trace in `user_as/unmap.rs`; same undeclared-gate bug as debug-watchdog above.
 default = []
 # [KALLOC] corruption-probe callback (crates/shared/kalloc's
 # CorruptionProbeFn): given a corrupted free-list node's VA, report its
@@ -71,3 +73,6 @@ debug-atexit = ["vmm/debug-atexit"]  # loader-corruption probes ([TAILZAP] senti
 debug-arm-mprotect = []  # aggregate explicit-root mprotect counters, retired-AS checkpoints, and failures
 debug-arm-mprotect-detail = ["debug-arm-mprotect"]  # full per-operation + per-present-leaf ARM mprotect trace; targeted only
 debug-arm-mprotect-pages = ["debug-arm-mprotect-detail"]  # retained compatibility alias for the detailed trace
+
+[lints]
+workspace = true

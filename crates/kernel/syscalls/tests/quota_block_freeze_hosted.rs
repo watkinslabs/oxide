@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use syscall::{errno::Errno, SyscallArgs};
 

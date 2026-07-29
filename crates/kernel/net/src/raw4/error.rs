@@ -16,7 +16,10 @@ impl Raw4Endpoint {
             && state.remote.is_none_or(|peer| peer == remote)
     }
 
-    /// Publish Linux raw-socket pending and extended error state. # C: O(1) amortized
+    /// Publish Linux raw-socket pending and extended error state. Test-only:
+    /// the live IPv4 ICMP path always routes through `publish_quoted_error`, so
+    /// it can honour `IP_HDRINCL`. # C: O(1) amortized
+    #[cfg(test)]
     pub(crate) fn publish_error(&self, entry: SocketErrorEntry, hard: bool) -> bool {
         self.publish_error_inner(entry, hard, None)
     }

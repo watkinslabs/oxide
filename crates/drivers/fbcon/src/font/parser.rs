@@ -2,20 +2,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-pub const PSF1_MAGIC: [u8; 2] = [0x36, 0x04];
 pub const PSF2_MAGIC: [u8; 4] = [0x72, 0xb5, 0x4a, 0x86];
-pub const PSF1_MODE512: u8 = 0x01;
-pub const PSF1_MODEHASTAB: u8 = 0x02;
-pub const PSF1_MODESEQ: u8 = 0x04;
 pub const PSF2_HAS_UNICODE_TABLE: u32 = 0x01;
-
-#[repr(C)]
-#[derive(Copy, Clone, Default, Debug)]
-pub struct Psf1Header {
-    pub magic: [u8; 2],
-    pub mode: u8,
-    pub charsize: u8,
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]

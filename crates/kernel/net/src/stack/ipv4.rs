@@ -15,14 +15,6 @@ impl NetStack {
         (state.mtu as usize, df, crate::uapi::ip_pmtudisc_allows_fragmentation(mode))
     }
 
-    /// Wrap an L4 segment in IPv4 + xmit it via the routing table.
-    /// # C: O(payload)
-    pub(crate) fn send_l4_over_ipv4(&self, src: Ipv4Addr, dst: Ipv4Addr,
-                          proto: IpProto, l4: &[u8]) -> NetResult<()>
-    {
-        self.send_l4_over_ipv4_tos(src, dst, proto, l4, 0)
-    }
-
     /// F190: ECN TOS variant. # C: O(payload)
     pub(crate) fn send_l4_over_ipv4_tos(&self, src: Ipv4Addr, dst: Ipv4Addr,
                           proto: IpProto, l4: &[u8], tos: u8) -> NetResult<()>

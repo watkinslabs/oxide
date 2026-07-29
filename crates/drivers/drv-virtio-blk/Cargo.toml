@@ -36,3 +36,6 @@ drv = { path = "../drv" }
 default = []
 hosted = []
 debug-boot = []
+
+[lints]
+workspace = true

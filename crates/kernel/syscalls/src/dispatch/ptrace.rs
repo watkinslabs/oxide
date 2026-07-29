@@ -31,6 +31,6 @@ pub(super) fn ptrace_syscall_stop_if_armed(rax: u64) {
     });
     crate::ptrace_fpu::snapshot_current();
     cur.sigpending.fetch_or(Signum::Sigtrap.bit(), Ordering::Release);
-    unsafe { sched::live::stop::stop_until_cont_sig(stop_code as u8); }
+    sched::live::stop::stop_until_cont_sig(stop_code as u8);
     crate::ptrace_fpu::restore_if_dirty();
 }

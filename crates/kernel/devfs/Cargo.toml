@@ -28,3 +28,6 @@ debug-boot = []
 
 [dev-dependencies]
 drv-zram = { path = "../../drivers/drv-zram", features = ["hosted"] }
+
+[lints]
+workspace = true

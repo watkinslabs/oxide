@@ -11,4 +11,5 @@ pub(super) const ZS_CLASS_DELTA_BYTES: usize = (hal::PAGE_SIZE_BYTES as usize) >
 /// Linux `ZS_FULLNESS_THRESHOLD_FRAC`: boundary for compactable zspages.
 pub(super) const ZS_FULLNESS_THRESHOLD_FRAC: usize = 4;
 /// Number of Linux zsmalloc fullness states.
+#[allow(dead_code, reason = "Linux zsmalloc limits table kept complete; the fullness-group width has no non-test consumer until the per-class fullness lists are wired (see class.rs Fullness::index)")]
 pub(super) const ZS_FULLNESS_GROUP_COUNT: usize = 5;

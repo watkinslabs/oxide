@@ -11,7 +11,7 @@
 // OP_RW sends.
 
 use alloc::{collections::VecDeque, sync::{Arc, Weak}, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use sync::{Spinlock, Socket as SockLockClass};
 use super::{hdr::*, BindReservation, SeqpacketRx};
 

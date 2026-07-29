@@ -2,8 +2,11 @@ use core::cell::UnsafeCell;
 
 use boot_info::{BootInfo, BootMemRegion};
 
+// MB2 tag parsing is reached only from the `oxide-kernel` arms below.
+#[cfg(target_os = "oxide-kernel")]
+use crate::mb2;
 use crate::{
-    limine, mb2,
+    limine,
     requests::{
         LIMINE_EXECUTABLE_FILE, LIMINE_HHDM, LIMINE_KERNEL_FILE, LIMINE_MEMMAP, LIMINE_RSDP,
         LIMINE_SMP,

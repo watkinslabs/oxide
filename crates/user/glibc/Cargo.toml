@@ -35,3 +35,6 @@ crypt = { path = "../../shared/crypt" }
 [dev-dependencies]
 libc = "0.2"
 proptest = "1"
+
+[lints]
+workspace = true

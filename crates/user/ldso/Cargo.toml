@@ -16,3 +16,6 @@ default = []
 hosted = []
 # the actual ld-linux-*.so build: emits the C-ABI entry + bootstrap
 freestanding = []
+
+[lints]
+workspace = true

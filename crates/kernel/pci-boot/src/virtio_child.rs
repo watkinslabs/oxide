@@ -228,7 +228,8 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioRngOps {
             return Err(drv::Error::ProbeFailed);
         };
         let device_key = session.device_key();
-        let seeded = match drv_virtio_rng::install(device_key, resources) {
+        // `_seeded` — read only by the `debug-boot`-gated log line below.
+        let _seeded = match drv_virtio_rng::install(device_key, resources) {
             Some(seeded) => seeded,
             None => {
                 return Err(drv::Error::ProbeFailed);
@@ -236,7 +237,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioRngOps {
         };
         debug_boot! {
             klog::write_raw(b"[INFO]  virtio-rng installed seeded=");
-            klog::write_dec_u64(seeded as u64);
+            klog::write_dec_u64(_seeded as u64);
             klog::write_raw(b" bytes\n");
         }
         Ok(())

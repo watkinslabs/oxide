@@ -45,3 +45,6 @@ debug-hw-watchpoint = []
 # dep, so the arena (which needs MmuOps) lives in `efence` and installs the
 # hooks here. Zero cost when off (docs/02, dev-only).
 debug-efence = ["dep:klog"]
+
+[lints]
+workspace = true

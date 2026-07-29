@@ -1,5 +1,3 @@
-use core::sync::atomic::Ordering;
-
 use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_TYPE_PAGES};
 
 /// EFI device-tree config-table GUID (gFdtTableGuid,

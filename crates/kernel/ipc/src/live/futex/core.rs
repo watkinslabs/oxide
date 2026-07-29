@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use sched::{Task, TaskState};
+use sched::Task;
 use sync::{Spinlock, Tty as TtyClass};
 
 pub(super) const FUTEX_WAIT: u32 = 0;

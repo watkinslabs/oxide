@@ -50,11 +50,6 @@ impl Streams {
         Ok(output)
     }
 
-    /// Release all zcomp stream work memory after the zram reset transition.
-    /// # C: O(number of possible CPUs)
-    pub(crate) fn reset(&self) {
-        for stream in &self.streams { stream.lock().dictionary = None; }
-    }
 }
 
 /// Decode one LZO1X stream into an exact zram page. # C: O(page bytes)

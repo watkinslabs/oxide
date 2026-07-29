@@ -65,12 +65,12 @@ fn transition_resident_lru(start: hal::UserVirtAddr, len: usize, locked: bool) {
     let mut va = start.as_u64();
     let end = va.saturating_add(len as u64);
     while va < end {
-        // SAFETY: mlock runs for the current task, whose active root is the
-        // same address space `populate_current_range` just resolved.
+        // mlock runs for the current task, whose active root is the same
+        // address space `populate_current_range` just resolved.
         #[cfg(target_arch = "x86_64")]
-        let present = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(Va(va)) };
+        let present = hal_x86_64::mmu_ops::X86Mmu::translate(Va(va));
         #[cfg(target_arch = "aarch64")]
-        let present = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(Va(va)) };
+        let present = hal_aarch64::mmu_ops::ArmMmu::translate(Va(va));
         if let Some((pa, _)) = present {
             let _ = pmm::setup::set_lru_unevictable(pa.0 & !(PAGE - 1), locked);
         }

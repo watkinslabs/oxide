@@ -1,7 +1,9 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use super::{ConnKey, Listener, VsockConn, VsockOwner, VsockState, VsockTable};
+use super::{Listener, VsockConn, VsockOwner, VsockState, VsockTable};
+#[cfg(test)]
+use super::ConnKey;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AcceptWait {

@@ -3,8 +3,6 @@ extern crate alloc;
 use super::*;
 use hal::Context;
 
-use super::*;
-
     #[test]
     fn layout_offsets_match_asm() {
         // `14§5.2` pins these offsets — asm uses `[rdi + 0xNN]`. Any

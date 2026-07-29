@@ -18,6 +18,13 @@
 #![cfg_attr(target_os = "oxide-kernel", no_main)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+// dead_code is meaningful for this crate ONLY on the kernel target. A large
+// part of it sits behind `cfg(target_os = "oxide-kernel")`, so a host build
+// (`cargo test`, `cargo check --workspace`) compiles a strict subset and calls
+// hundreds of live items dead. The kernel builds keep dead_code fully enabled
+// and are warning-clean, and every one of these crates links into `kmain`, so
+// nothing is hidden: real dead code still surfaces on `xtask kernel`.
+#![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
@@ -31,9 +38,11 @@ pub mod selfboot;
 // behind `debug-boot` — UART sink install, CPU/MMU dump, byte
 // emit. Default builds emit zero log bytes; the call sites are
 // absent from the binary, not "filtered at runtime".
-#[cfg(feature = "debug-boot")]
+// (Every expansion site is inside an `#[cfg(target_os = "oxide-kernel")]`
+// entry fn, so the definition carries the same gate.)
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
 macro_rules! debug_boot { ($($t:tt)*) => { $($t)* } }
-#[cfg(not(feature = "debug-boot"))]
+#[cfg(all(target_os = "oxide-kernel", not(feature = "debug-boot")))]
 macro_rules! debug_boot { ($($t:tt)*) => {} }
 
 mod boot_debug;
