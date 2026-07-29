@@ -267,7 +267,7 @@ unsafe fn spawn_user_blob_with_vpid(
     let default_argv: &[&[u8]] = &[b"/init"];
     let argv_ref: &[&[u8]] = if argv.is_empty() { default_argv } else { argv };
     // SAFETY: per-task AS just activated; build_user_stack writes through it; demand-fault resolves the new stack page.
-    let new_sp = unsafe {
+    let layout = match unsafe {
         elf_load::stack::build_user_stack(
             stack_top,
             USER_STACK_LEN,
@@ -283,7 +283,15 @@ unsafe fn spawn_user_blob_with_vpid(
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_min_sigstksz(),
             &rnd,
         )
-    }.map(|l| l.sp).unwrap_or(stack_top);
+    } {
+        Some(layout) => layout,
+        None => {
+            debug_irq! { klog::kerror!("user-blob: stack build failed"); }
+            return;
+        }
+    };
+    let new_sp = layout.sp;
+    elf_load::commit_mm_layout(&mm, &img, &layout);
     #[cfg(feature = "debug-boot")]
     klog::write_raw(b"[INFO]  user-blob: stack build ok\n");
 

@@ -411,7 +411,7 @@ fn spawn_init_from_rootfs_arm() {
     crng::fill(&mut random16);
     let argv0: &[&[u8]] = &[init_path];
     // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
-    let new_sp = unsafe {
+    let layout = match unsafe {
         elf_load::stack::build_user_stack(
             stack_top,
             INIT_STACK_LEN,
@@ -427,7 +427,15 @@ fn spawn_init_from_rootfs_arm() {
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_min_sigstksz(),
             &rnd,
         )
-    }.map(|l| l.sp).unwrap_or(stack_top);
+    } {
+        Some(layout) => layout,
+        None => {
+            debug_irq! { klog::kerror!("init-arm: stack build failed"); }
+            return;
+        }
+    };
+    let new_sp = layout.sp;
+    elf_load::commit_mm_layout(&mm, &img, &layout);
 
     // F152-2: leave TPIDR_EL0 = 0 on first user entry. musl crt1's
     // __init_tls mmaps a TCB and writes TPIDR_EL0 directly (EL0

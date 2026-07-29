@@ -166,10 +166,6 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
-    // Record the ELF code/data bounds + initial brk (Linux mm->start_code..
-    // end_data + start_brk); /proc/<pid>/stat + PR_SET_MM validation read these.
-    new_as.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
-    new_as.set_start_brk(img.brk.as_u64());
     sched::live::zap_other_threads();
     let me = { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
     new_as.mark_cpu(me);
@@ -266,11 +262,11 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         None => return -(Errno::Enomem.as_i32() as i64),
     };
     let new_sp = layout.sp;
-    // Record argv/env string-block bounds + initial sp (Linux
-    // mm->arg_start..env_end + start_stack) for /proc + PR_SET_MM baseline.
+    // Publish code/data/brk and argv/env/stack through the same commit point
+    // the kernel's PID 1 bootstrap uses.
     // SAFETY: running task on this CPU; preempt-off; no concurrent execve.
     if let Some(mm) = unsafe { cur.mm_ref() } {
-        mm.set_arg_env_stack(layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, new_sp);
+        elf_load::commit_mm_layout(mm, &img, &layout);
     }
     let _ = Ordering::Acquire;
     // SAFETY: the task-owned pointer remains tied to this exec even if loading

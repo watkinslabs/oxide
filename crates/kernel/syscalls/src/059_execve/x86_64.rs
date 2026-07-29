@@ -289,11 +289,6 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-elf-load");
-    // Record the ELF code/data bounds + initial brk (Linux mm->start_code..
-    // end_data + start_brk) so /proc/<pid>/stat + PR_SET_MM validation see
-    // real values. arg/env/stack land after the stack is built below.
-    new_as.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
-    new_as.set_start_brk(img.brk.as_u64());
     sched::live::zap_other_threads();
     use hal::MmuOps;
     let me = { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
@@ -388,12 +383,11 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let new_sp = layout.sp;
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-stack-build");
-    // Record argv/env string-block bounds + initial rsp (Linux
-    // mm->arg_start..env_end + start_stack); the source for
-    // /proc/<pid>/{cmdline,environ,stat} and the PR_SET_MM baseline.
+    // Publish code/data/brk and argv/env/stack through the same commit point
+    // the kernel's PID 1 bootstrap uses.
     // SAFETY: running task on this CPU; preempt-off; no concurrent execve.
     if let Some(mm) = unsafe { cur.mm_ref() } {
-        mm.set_arg_env_stack(layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, new_sp);
+        elf_load::commit_mm_layout(mm, &img, &layout);
     }
     // Redirect this syscall's return into the new image. Linux
     // `start_thread` + `ELF_PLAT_INIT` (`arch/x86/include/asm/elf.h`) zero
