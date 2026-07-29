@@ -55,7 +55,7 @@ pub fn vfs_parse_fs_param_source(fc: &mut FsContext, param: &FsParameter) -> KRe
             fc.source = Some(s.clone());
             Ok(())
         }
-        FsValue::Flag | FsValue::File(_) | FsValue::Filename { .. } | FsValue::Blob(_) => {
+        FsValue::Flag | FsValue::File { .. } | FsValue::Filename { .. } | FsValue::Blob(_) => {
             fc.invalf("VFS: source needs a string value")
         }
     }

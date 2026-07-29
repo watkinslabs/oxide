@@ -35,7 +35,11 @@ pub const WIN60_NS: u64 = 60_000_000_000;
 /// avg300 window in ns. # C: O(1)
 pub const WIN300_NS: u64 = 300_000_000_000;
 /// Trigger window floor (Linux `PSI_TRIG_MIN_WINDOW` 500ms). # C: O(1)
-pub const MIN_WINDOW_NS: u64 = 500_000_000;
+/// Linux `WINDOW_MAX_US` (`kernel/sched/psi.c`) — 10s. Linux has NO minimum.
+pub const WINDOW_MAX_US: u32 = 10_000_000;
+/// Linux: an unprivileged trigger's window must be a multiple of 2s so the
+/// existing averaging aggregation serves it and no RT thread is spawned.
+pub const UNPRIVILEGED_WINDOW_US: u32 = 2_000_000;
 /// Trigger window ceiling (Linux `PSI_TRIG_MAX_WINDOW` 10s). # C: O(1)
 pub const MAX_WINDOW_NS: u64 = 10_000_000_000;
 /// Resample cadence: push one ring sample per ~2s (Linux `PSI_FREQ`). # C: O(1)
@@ -67,7 +71,7 @@ struct Sample { ts: u64, some: u64, full: u64 }
 
 /// A registered pressure trigger (Linux `struct psi_trigger`): fire when the
 /// `full`/some stall growth within `window_ns` reaches `threshold_ns`. # C: O(1)
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Trigger { pub full: bool, pub threshold_ns: u64, pub window_ns: u64 }
 
 /// Per-resource accounting + trigger state. # C: O(1)
@@ -204,8 +208,8 @@ impl Psi {
     /// Register a trigger from a `<some|full> <threshold_us> <window_us>` spec
     /// (Linux `psi_trigger_parse`). `Err(())` on malformed input or an
     /// out-of-range window / `threshold > window`. # C: O(1)
-    pub fn add_trigger(&mut self, res: PsiRes, spec: &[u8]) -> Result<Trigger, ()> {
-        let trig = parse_trigger(spec)?;
+    pub fn add_trigger(&mut self, res: PsiRes, spec: &[u8], privileged: bool) -> Result<Trigger, ()> {
+        let trig = parse_trigger(spec, privileged)?;
         self.res[res.idx()].triggers.push(trig);
         Ok(trig)
     }
@@ -265,20 +269,57 @@ fn parse_u64(b: &[u8]) -> Option<u64> {
     Some(v)
 }
 
-/// Parse+validate a trigger spec `<some|full> <threshold_us> <window_us>`
-/// (Linux `psi_trigger_parse`), converting us→ns. # C: O(len)
-pub fn parse_trigger(spec: &[u8]) -> Result<Trigger, ()> {
-    let mut it = spec.split(|&c| c == b' ' || c == b'\t' || c == b'\n').filter(|t| !t.is_empty());
-    let kind = it.next().ok_or(())?;
-    let full = match kind { b"some" => false, b"full" => true, _ => return Err(()) };
-    let threshold_us = parse_u64(it.next().ok_or(())?).ok_or(())?;
-    let window_us = parse_u64(it.next().ok_or(())?).ok_or(())?;
-    if it.next().is_some() { return Err(()); }
-    let threshold_ns = threshold_us.checked_mul(NS_PER_US).ok_or(())?;
-    let window_ns = window_us.checked_mul(NS_PER_US).ok_or(())?;
-    if window_ns < MIN_WINDOW_NS || window_ns > MAX_WINDOW_NS { return Err(()); }
-    if threshold_ns == 0 || threshold_ns > window_ns { return Err(()); }
-    Ok(Trigger { full, threshold_ns, window_ns })
+/// Parse+validate a trigger spec, Linux `psi_trigger_parse`
+/// (`kernel/sched/psi.c`), converting us→ns.
+///
+/// `privileged` is `CAP_SYS_RESOURCE` on the OPENING cred, which Linux checks
+/// because an unprivileged trigger must reuse the 2s averaging aggregation
+/// rather than spawn an RT thread.
+///
+/// Linux's checks, in order, and the three ways this used to differ:
+///   * `sscanf(buf, "some %u %u")` / `"full %u %u"`, else EINVAL. sscanf stops
+///     at the first non-digit and IGNORES whatever follows — we rejected any
+///     trailing token instead, and `psi_write` NUL-terminates by overwriting
+///     the last byte (`buf[buf_size - 1] = '\0'`), so the terminator systemd
+///     sends landed inside our final token and failed to parse. That is why
+///     `write(/proc/pressure/memory, "some 200000 2000000\n", 20)` — which
+///     Linux accepts — returned EINVAL to four systemd daemons every boot.
+///   * `window_us == 0 || window_us > WINDOW_MAX_US`. There is NO minimum;
+///     the 500ms floor here was invented.
+///   * `!privileged && window_us % 2000000` → EINVAL. Was missing entirely.
+///   * `threshold_us == 0 || threshold_us > window_us`.
+/// Widths are Linux's `u32` (`%u`), not u64.
+/// # C: O(len)
+pub fn parse_trigger(spec: &[u8], privileged: bool) -> Result<Trigger, ()> {
+    // `psi_write`: `buf[buf_size - 1] = '\0'` — the final byte is the
+    // terminator and is never part of a field.
+    let body = match spec.split_last() { Some((_, rest)) => rest, None => return Err(()) };
+    let mut it = body.split(|&c| c == b' ' || c == b'\t' || c == b'\n');
+    let full = match it.next() { Some(b"some") => false, Some(b"full") => true, _ => return Err(()) };
+    // `%u`: leading digits, stopping at the first non-digit (sscanf).
+    let threshold_us = parse_u32_prefix(it.next().ok_or(())?).ok_or(())?;
+    let window_us = parse_u32_prefix(it.next().ok_or(())?).ok_or(())?;
+    // No trailing-token rejection: sscanf consumed two fields and ignores rest.
+    if window_us == 0 || window_us > WINDOW_MAX_US { return Err(()); }
+    if !privileged && window_us % UNPRIVILEGED_WINDOW_US != 0 { return Err(()); }
+    if threshold_us == 0 || threshold_us > window_us { return Err(()); }
+    Ok(Trigger { full,
+        threshold_ns: (threshold_us as u64) * NS_PER_US,
+        window_ns:    (window_us as u64) * NS_PER_US })
+}
+
+/// `sscanf("%u")`: decimal digits from the start, stopping at the first
+/// non-digit rather than rejecting the token. `None` when no digit leads or
+/// the value overflows `u32`. # C: O(len)
+fn parse_u32_prefix(tok: &[u8]) -> Option<u32> {
+    let mut acc: u32 = 0;
+    let mut any = false;
+    for &c in tok {
+        if !c.is_ascii_digit() { break; }
+        acc = acc.checked_mul(10)?.checked_add((c - b'0') as u32)?;
+        any = true;
+    }
+    if any { Some(acc) } else { None }
 }
 
 /// The live system pressure singleton. # C: O(1)
@@ -291,7 +332,7 @@ pub fn account_cpu(now: u64, some_active: bool) { SYS.lock().account_cpu(now, so
 pub fn task_stall(res: PsiRes, begin: bool, now: u64, nr_nonidle: u32) { SYS.lock().task_stall(res, begin, now, nr_nonidle); }
 
 /// Register a trigger on the live singleton (procfs write path). # C: O(1)
-pub fn add_trigger(res: PsiRes, spec: &[u8]) -> Result<Trigger, ()> { SYS.lock().add_trigger(res, spec) }
+pub fn add_trigger(res: PsiRes, spec: &[u8], privileged: bool) -> Result<Trigger, ()> { SYS.lock().add_trigger(res, spec, privileged) }
 
 /// Poll readiness for `res` on the live singleton (procfs poll path). # C: O(N)
 pub fn poll_mask(res: PsiRes, now: u64) -> u32 { SYS.lock().poll_mask(res, now) }
@@ -346,3 +387,66 @@ pub fn tick(now_ns: u64) {
 #[cfg(test)]
 #[path = "tests/psi.rs"]
 mod psi_tests;
+
+#[cfg(test)]
+mod trigger_parse_tests {
+    use super::*;
+
+    /// THE regression: the exact 20-byte write four systemd daemons make to
+    /// /proc/pressure/memory at startup. Linux accepts it; we returned EINVAL
+    /// every boot because the trailing terminator landed inside the last field.
+    #[test]
+    fn systemds_own_trigger_is_accepted() {
+        let t = parse_trigger(b"some 200000 2000000\n", false).expect("Linux accepts this");
+        assert!(!t.full);
+        assert_eq!(t.threshold_ns, 200_000 * NS_PER_US);
+        assert_eq!(t.window_ns, 2_000_000 * NS_PER_US);
+        // `psi_write` NUL-terminates by overwriting the last byte, so a NUL
+        // terminator must parse identically to a newline.
+        assert_eq!(parse_trigger(b"some 200000 2000000\0", false), Ok(t));
+    }
+
+    /// `sscanf` stops at the first non-digit and ignores everything after the
+    /// two fields it consumed. Rejecting a trailing token was our own rule.
+    #[test]
+    fn trailing_content_is_ignored_like_sscanf() {
+        assert!(parse_trigger(b"full 1000000 2000000 garbage\n", false).is_ok());
+        assert!(parse_trigger(b"some 200000 2000000extra\n", false).is_ok());
+    }
+
+    /// Linux has NO minimum window — only `window_us == 0 || > WINDOW_MAX_US`.
+    /// A privileged caller may use a sub-second window; we rejected it outright.
+    #[test]
+    fn there_is_no_minimum_window() {
+        assert!(parse_trigger(b"some 50000 100000\n", true).is_ok(), "100ms window, privileged");
+        assert!(parse_trigger(b"some 1 0\n", true).is_err(), "zero window");
+        let over = alloc::format!("some 1 {}\n", WINDOW_MAX_US as u64 + 1);
+        assert!(parse_trigger(over.as_bytes(), true).is_err(), "beyond WINDOW_MAX_US");
+        let at_max = alloc::format!("some 1 {}\n", WINDOW_MAX_US);
+        assert!(parse_trigger(at_max.as_bytes(), true).is_ok(), "exactly WINDOW_MAX_US");
+    }
+
+    /// `!privileged && window_us % 2000000` -> EINVAL. Was missing entirely, so
+    /// an unprivileged caller could register an RT-thread-grade trigger.
+    #[test]
+    fn an_unprivileged_window_must_be_a_multiple_of_two_seconds() {
+        assert!(parse_trigger(b"some 100000 1000000\n", false).is_err(), "1s, unprivileged");
+        assert!(parse_trigger(b"some 100000 1000000\n", true).is_ok(),  "1s, privileged");
+        assert!(parse_trigger(b"some 100000 4000000\n", false).is_ok(), "4s is a multiple of 2s");
+    }
+
+    #[test]
+    fn threshold_must_be_nonzero_and_within_the_window() {
+        assert!(parse_trigger(b"some 0 2000000\n", false).is_err());
+        assert!(parse_trigger(b"some 2000001 2000000\n", false).is_err());
+        assert!(parse_trigger(b"some 2000000 2000000\n", false).is_ok(), "equal is allowed");
+    }
+
+    #[test]
+    fn the_kind_field_must_be_some_or_full() {
+        assert!(parse_trigger(b"bogus 1 2000000\n", false).is_err());
+        assert!(parse_trigger(b"\n", false).is_err());
+        assert!(parse_trigger(b"", false).is_err());
+        assert!(parse_trigger(b"full 100000 2000000\n", false).unwrap().full);
+    }
+}
