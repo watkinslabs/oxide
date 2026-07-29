@@ -264,7 +264,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                 _ => return -(Errno::Enoprotoopt.as_i32() as i64),
             },
             (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
-            (IPPROTO_IP, IP_TTL) => return i32_back(s.opts.ip_ttl.load(Ordering::Acquire)),
+            (IPPROTO_IP, IP_TTL) => {
+                let ttl = s.opts.ip_ttl.load(Ordering::Acquire);
+                return i32_back(if ttl < 0 { net::ipv4::IPV4_DEFAULT_TTL as i32 } else { ttl });
+            }
             (IPPROTO_IP, IP_PKTINFO) => return i32_back(s.opts.ip_pktinfo.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_MTU_DISCOVER) => return i32_back(s.opts.ip_mtu_discover.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_MTU) => return socket_path_mtu(&s, false, &i32_back),

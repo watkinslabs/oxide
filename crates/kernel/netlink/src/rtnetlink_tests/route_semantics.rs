@@ -106,15 +106,18 @@ fn newroute_replace_selects_existing_alias_before_mutable_metadata() {
     route_insert(RouteRow { ns, table: RT_TABLE_MAIN as u32, protocol: 99,
         scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst, gateway: Some([192, 0, 2, 31]),
         oif_ifindex: iface.raw(), prefsrc: Some([198, 18, 92, 7]), metric: 0,
-        mtu: Some(1400), flags: 0, weight: 1, nh_flags: 0 });
+        metrics: net::RouteMetrics { mtu: 1400, ..net::RouteMetrics::NONE },
+        flags: 0, weight: 1, nh_flags: 0 });
     let (replace, msg) = request(RTM_NEWROUTE,
         crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_CREATE | crate::flags::NLM_F_REPLACE,
         dst, Some(ifindex), Some([192, 0, 2, 32]), &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &replace, &msg)), 0);
     let rows = rows_for(ns, dst);
     assert_eq!(rows.len(), 1);
-    assert_eq!((rows[0].protocol, rows[0].scope, rows[0].gateway, rows[0].prefsrc, rows[0].mtu),
-        (RTPROT_STATIC, RT_SCOPE_UNIVERSE, Some([192, 0, 2, 32]), None, None));
+    assert_eq!((rows[0].protocol, rows[0].scope, rows[0].gateway, rows[0].prefsrc,
+        rows[0].metrics),
+        (RTPROT_STATIC, RT_SCOPE_UNIVERSE, Some([192, 0, 2, 32]), None,
+            net::RouteMetrics::NONE));
     cleanup(ns, &[iface]);
 }
 
@@ -157,7 +160,7 @@ fn delroute_without_oif_removes_lowest_metric_matching_alias() {
         ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
         scope: RT_SCOPE_UNIVERSE, kind: RTN_UNICAST, dst,
         gateway: None, oif_ifindex: iface.raw(), prefsrc: None,
-        metric: 41, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        metric: 41, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0,
     });
     let (del, del_msg) = request(RTM_DELROUTE, crate::flags::NLM_F_REQUEST, dst, None, None, &[]);
     assert_eq!(ack_errno(&handle_delroute_in(ns, &del, &del_msg)), 0);
@@ -176,7 +179,7 @@ fn delroute_without_retained_interface_owner_does_not_mutate() {
     let stale = RouteRow {
         ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
         scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst, gateway: None,
-        oif_ifindex: u32::MAX, prefsrc: None, metric: 0, mtu: None,
+        oif_ifindex: u32::MAX, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE,
         flags: 0, weight: 1, nh_flags: 0,
     };
     net::global_stack().routes.add_record_in(ns, super::route_state::to_record(stale));

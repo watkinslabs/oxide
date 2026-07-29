@@ -8,7 +8,7 @@ use crate::rtnetlink::{self as rt, Rtmsg, RouteRow};
 fn same_ecmp_group(a: &RouteRow, b: &RouteRow) -> bool {
     a.ns == b.ns && a.table == b.table && a.protocol == b.protocol
         && a.scope == b.scope && a.kind == b.kind && a.dst == b.dst
-        && a.prefsrc == b.prefsrc && a.metric == b.metric && a.mtu == b.mtu
+        && a.prefsrc == b.prefsrc && a.metric == b.metric && a.metrics == b.metrics
         && a.flags == b.flags
 }
 
@@ -37,11 +37,7 @@ fn build_dump_row(req: &Nlmsghdr, rows: &[RouteRow]) -> Vec<u8> {
     if let Some(s) = r.prefsrc { rt::put_nlattr(&mut body, rt::rta::RTA_PREFSRC, &s); }
     if r.metric != 0 { rt::put_nlattr_u32(&mut body, rt::rta::RTA_PRIORITY, r.metric); }
     if r.table > u8::MAX as u32 { rt::put_nlattr_u32(&mut body, rt::rta::RTA_TABLE, r.table); }
-    if let Some(mtu) = r.mtu {
-        let mut metrics = Vec::new();
-        rt::put_nlattr_u32(&mut metrics, 2, mtu);
-        rt::put_nlattr(&mut body, rt::rta::RTA_METRICS, &metrics);
-    }
+    rt::rtnetlink_route::put_metrics_attr(&mut body, r.metrics);
     let total = Nlmsghdr::SIZE + body.len();
     let hdr = Nlmsghdr {
         nlmsg_len: total as u32, nlmsg_type: rt::RTM_NEWROUTE,
@@ -121,8 +117,8 @@ mod tests {
     fn lookup_prefers_longest_prefix() {
     let _serial = crate::test_serial::fib();
         let req = Nlmsghdr { nlmsg_len: 36, nlmsg_type: rt::RTM_GETROUTE, nlmsg_flags: crate::flags::NLM_F_REQUEST, nlmsg_seq: 9, nlmsg_pid: 4 };
-        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 0, 0, 0], 8)), gateway: None, oif_ifindex: 11, prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
-        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 1, 0, 0], 16)), gateway: None, oif_ifindex: 12, prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
+        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 0, 0, 0], 8)), gateway: None, oif_ifindex: 11, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
+        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 1, 0, 0], 16)), gateway: None, oif_ifindex: 12, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
         let msg = lookup_msg(&req, [10, 1, 2, 3], 32);
         let out = handle_getroute(0, &req, &msg);
         assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, Some(([10, 0, 0, 0], 8)), 11, None), 1);
@@ -140,10 +136,10 @@ mod tests {
         let _ = route_remove(0, RT_TABLE_MAIN as u32, dst, 8812, Some([192, 0, 2, 2]));
         route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst, gateway: Some([192, 0, 2, 1]),
-            oif_ifindex: 8811, prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
+            oif_ifindex: 8811, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
         route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst, gateway: Some([192, 0, 2, 2]),
-            oif_ifindex: 8812, prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
+            oif_ifindex: 8812, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
         let req = Nlmsghdr { nlmsg_len: 28, nlmsg_type: rt::RTM_GETROUTE,
             nlmsg_flags: crate::flags::NLM_F_DUMP, nlmsg_seq: 10, nlmsg_pid: 4 };
         let out = handle_getroute(0, &req, &[]);

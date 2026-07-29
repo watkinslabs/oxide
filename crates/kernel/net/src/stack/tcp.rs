@@ -479,6 +479,7 @@ impl NetStack {
             ::core::sync::atomic::Ordering::Acquire);
         new_conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
             net_ns, src_ip, bound, ip_mode, ipv6_mode);
+        new_conn.apply_route_metrics(self.route_metrics_for_dst_in(net_ns, src_ip, bound));
         let resp = match new_conn.input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
             Err(_) => {

@@ -18,8 +18,8 @@ impl TcpConn {
         let k4 = self.rttvar_ns.saturating_mul(4);
         let g  = 10_000_000u64;
         self.rto_ns = self.srtt_ns + core::cmp::max(g, k4);
-        if self.rto_ns < 200_000_000 {
-            self.rto_ns = 200_000_000;
+        if self.rto_ns < self.rto_min_ns {
+            self.rto_ns = self.rto_min_ns;
         }
         if self.rto_ns > 60_000_000_000 {
             self.rto_ns = 60_000_000_000;

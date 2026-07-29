@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::tcp_conn::{TcpConn, TcpConnError};
 use crate::tcp_state::{TcpEvent, TcpState};
-use crate::tcp_conn::types::OWN_MSS_DEFAULT;
+use crate::tcp_conn::types::{TcpCongestionControl, OWN_MSS_DEFAULT};
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
@@ -40,9 +40,19 @@ impl TcpConn {
             ts_recent:  0,
             ts_off:     0,
             own_mss:    0,
+            congestion: TcpCongestionControl::Cubic,
+            cc_locked:  false,
             cwnd:       10 * (OWN_MSS_DEFAULT as u32),
+            cwnd_clamp: u32::MAX,
             ssthresh:   u32::MAX,
             dup_acks:   0,
+            reordering: 3,
+            rto_min_ns: 200_000_000,
+            rto_min_locked: false,
+            window_clamp: u32::MAX,
+            route_features: 0,
+            quickack: false,
+            fastopen_no_cookie: false,
             rcv_buf_cap: 65_536,
             rcv_buf_max: 4 * 1024 * 1024,
             rcv_buf_locked: false,
@@ -95,9 +105,19 @@ impl TcpConn {
             ts_recent:  0,
             ts_off:     0,
             own_mss:    0,
+            congestion: TcpCongestionControl::Cubic,
+            cc_locked:  false,
             cwnd:       10 * (OWN_MSS_DEFAULT as u32),
+            cwnd_clamp: u32::MAX,
             ssthresh:   u32::MAX,
             dup_acks:   0,
+            reordering: 3,
+            rto_min_ns: 200_000_000,
+            rto_min_locked: false,
+            window_clamp: u32::MAX,
+            route_features: 0,
+            quickack: false,
+            fastopen_no_cookie: false,
             rcv_buf_cap: 65_536,
             rcv_buf_max: 4 * 1024 * 1024,
             rcv_buf_locked: false,
@@ -203,7 +223,7 @@ impl TcpConn {
     /// # C: O(1)
     pub fn current_rcv_window(&self) -> u16 {
         let free = (self.rcv_buf_cap as usize).saturating_sub(self.recv_buf.len()) as u32;
-        let scaled = free >> self.snd_wscale;
+        let scaled = core::cmp::min(free, self.window_clamp) >> self.snd_wscale;
         if scaled > u16::MAX as u32 { u16::MAX } else { scaled as u16 }
     }
 
