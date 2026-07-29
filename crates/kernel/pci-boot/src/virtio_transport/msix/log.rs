@@ -34,33 +34,3 @@ pub(super) fn binding(_bdf: pci::Bdf, _queue_vector: u16, _entry_va: u64, _msg_a
         klog::write_raw(b"\n");
     }
 }
-
-#[cfg(target_arch = "aarch64")]
-pub(super) fn its_alloc(
-    _bdf: pci::Bdf,
-    _rid: u32,
-    _device_id: u32,
-    _event_id: u32,
-    _lpi: u32,
-    _msg_addr: u64,
-) {
-    debug_boot! {
-        klog::write_raw(b"[INFO]  its-msi ");
-        klog::write_dec_u64(_bdf.bus as u64);
-        klog::write_raw(b":");
-        klog::write_dec_u64(_bdf.device as u64);
-        klog::write_raw(b".");
-        klog::write_dec_u64(_bdf.function as u64);
-        klog::write_raw(b" rid=");
-        klog::write_hex_u64(_rid as u64);
-        klog::write_raw(b" did=");
-        klog::write_hex_u64(_device_id as u64);
-        klog::write_raw(b" event=");
-        klog::write_hex_u64(_event_id as u64);
-        klog::write_raw(b" lpi=");
-        klog::write_dec_u64(_lpi as u64);
-        klog::write_raw(b" msg_addr=");
-        klog::write_hex_u64(_msg_addr);
-        klog::write_raw(b"\n");
-    }
-}

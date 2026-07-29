@@ -18,8 +18,10 @@ pub mod cache;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 mod gic_trigger;
 mod line;
+mod msi;
 
 pub use line::LineHandler;
+pub use msi::{alloc_pci_msi, free_pci_msi, register_pci_msi_handler, MsiMessage};
 #[cfg(target_arch = "x86_64")]
 pub use line::{free_irq_line_handler, invoke_x86_line_handler, register_irq_line_handler};
 #[cfg(target_arch = "aarch64")]

@@ -67,6 +67,34 @@ pub const COMMAND_IO: u16 = 1 << 0;
 pub const COMMAND_MEMORY: u16 = 1 << 1;
 /// PCI command register bit: Bus Master Enable.
 pub const COMMAND_BUS_MASTER: u16 = 1 << 2;
+/// PCI command bit: suppress legacy INTx while MSI/MSI-X is active.
+pub const COMMAND_INTX_DISABLE: u16 = 1 << 10;
+
+/// Compute the command-register INTx-disable transition. # C: O(1)
+pub const fn intx_command_value(command: u16, disabled: bool) -> u16 {
+    if disabled {
+        command | COMMAND_INTX_DISABLE
+    } else {
+        command & !COMMAND_INTX_DISABLE
+    }
+}
+
+/// Enable or disable legacy INTx while preserving every other command bit.
+/// Returns the prior command value for teardown restoration. # C: O(1)
+pub fn set_intx_disabled<R: ConfigSpaceReader>(r: &R, bdf: Bdf, disabled: bool) -> u16 {
+    let old = read_command(r, bdf);
+    let new = intx_command_value(old, disabled);
+    if new != old { write_command(r, bdf, new); }
+    old
+}
+
+/// Restore only the INTx-disable bit from a saved command value. # C: O(1)
+pub fn restore_intx_disabled<R: ConfigSpaceReader>(r: &R, bdf: Bdf, previous: u16) -> u16 {
+    let old = read_command(r, bdf);
+    let restored = (old & !COMMAND_INTX_DISABLE) | (previous & COMMAND_INTX_DISABLE);
+    if restored != old { write_command(r, bdf, restored); }
+    old
+}
 
 /// Read the low 16-bit PCI command register. # C: O(1)
 pub fn read_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
@@ -157,5 +185,23 @@ impl PciDevice {
             revision,
             header_type,
         })
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[test]
+    fn intx_transition_changes_only_owned_command_bit() {
+        let original = COMMAND_IO | COMMAND_MEMORY | COMMAND_BUS_MASTER;
+        assert_eq!(
+            intx_command_value(original, true),
+            original | COMMAND_INTX_DISABLE,
+        );
+        assert_eq!(
+            intx_command_value(original | COMMAND_INTX_DISABLE, false),
+            original,
+        );
     }
 }
