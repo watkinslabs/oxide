@@ -122,14 +122,15 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             use core::sync::atomic::Ordering;
             let writable = file.f_mode().contains(vfs::Fmode::WRITE);
             let requested = arg as u32;
-            let seals = file.inode().fcntl_seals();
+            let inode = file.inode();
+            let seals = inode.fcntl_seals();
             let mut current = seals.map(|s| s.load(Ordering::Acquire));
             loop {
                 let add = match crate::fcntl_seal::plan_add_seals(
                     writable,
                     requested,
                     current,
-                    file.inode().i_mode() as u16,
+                    inode.i_mode() as u16,
                 ) {
                     Ok(add) => add,
                     Err(e) => return -(e.as_i32() as i64),
@@ -138,15 +139,25 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                     return -(Errno::Einval.as_i32() as i64);
                 };
                 let observed = current.expect("sealable inode has a seal word");
-                match seals.compare_exchange_weak(
-                    observed,
-                    observed | add,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => return 0,
-                    Err(changed) => current = Some(changed),
+                let publish = || seals.compare_exchange(
+                    observed, observed | add, Ordering::AcqRel, Ordering::Acquire,
+                ).is_ok();
+                let needs_mapping_deny =
+                    add & vfs::F_SEAL_WRITE != 0 && observed & vfs::F_SEAL_WRITE == 0;
+                let published = if needs_mapping_deny {
+                    match inode.file_rmap().commit_write_seal(publish) {
+                        Ok(done) => done,
+                        Err(vmm::WriteSealError::Busy) => {
+                            return -(Errno::Ebusy.as_i32() as i64);
+                        }
+                    }
+                } else {
+                    publish()
+                };
+                if published {
+                    return 0;
                 }
+                current = Some(seals.load(Ordering::Acquire));
             }
         }
         F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
