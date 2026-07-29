@@ -133,8 +133,6 @@ fn percpu_line(tpidr: u64, sp_el1: u64) {
     if tpidr == 0 { return; }
     /// `vbar::PERCPU_IRQ_STACK_TOP_OFF` — slot @32 of the per-CPU page.
     const IRQ_TOP_OFF: u64 = 32;
-    /// `sched::kstack::KSTACK_BYTES`, reverse-asserted there and in the entry asm.
-    const IRQ_STACK_BYTES: u64 = 0x4000;
     // SAFETY: `tpidr` is this CPU's per-CPU page base (TPIDR_EL1, just read by
     // pe_identity); slot 0 holds the cpu id and slot 32 the IRQ-stack top.
     let (id, top) = unsafe {
@@ -148,7 +146,10 @@ fn percpu_line(tpidr: u64, sp_el1: u64) {
     if top != 0 {
         klog::write_raw(b" sp_el1-vs-irqstack=");
         if sp_el1 >= top { klog::write_raw(b"ABOVE-TOP+"); klog::write_dec_u64(sp_el1 - top); }
-        else if sp_el1 >= top - IRQ_STACK_BYTES { klog::write_raw(b"on=yes depth="); klog::write_dec_u64(top - sp_el1); }
+        else if sp_el1 >= top - hal::KERNEL_STACK_BYTES as u64 {
+            klog::write_raw(b"on=yes depth=");
+            klog::write_dec_u64(top - sp_el1);
+        }
         else { klog::write_raw(b"below (task kstack)"); }
     }
     klog::write_raw(b"\n");
