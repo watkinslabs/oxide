@@ -66,6 +66,15 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
             .map(|c| c.has_cap(sched::cap::MKNOD)).unwrap_or(false);
         if !has { return -(Errno::Eperm.as_i32() as i64); }
     }
+    // Linux `vfs_mknod`: `devcgroup_inode_mknod(mode, dev)` runs after
+    // CAP_MKNOD and before `->mknod`, so a cgroup device policy denies the
+    // node creation itself, not just later access.
+    let dev_ft = match real_ftype {
+        S_IFCHR => vfs::FileType::CharDev,
+        S_IFBLK => vfs::FileType::BlockDev,
+        _ => vfs::FileType::Regular,
+    };
+    if let Err(e) = vfs::devcgroup_inode_mknod(dev_ft, dev) { return errno_from_vfs(e); }
     let umask = sched::live::current()
         .map(|c| c.umask()).unwrap_or(0) as u16;
     // Thread the mount idmap + caller cred + umask so the new node gets the
