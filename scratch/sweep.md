@@ -47,7 +47,7 @@ Ordered by consequence. All annotated in-tree.
 
 | Status | Branch | Item | Where |
 |---|---|---|---|
-| OPEN | — | `IRQ_STACK_BYTES` defined three times, plus a fourth spelling | `hal-aarch64/src/showregs.rs:137` (`0x4000`), `hal-aarch64/src/vbar.rs:318` (`16384`), `hal-x86_64/src/irq.rs:199` (`16384`), vs `sched::kstack::KSTACK_BYTES` which `hal-x86_64/src/irq.rs:94` only *comments* is equal. One owner, imported by the rest. |
+| CLAIMED B1524-kernel-stack-size-source | B1524-kernel-stack-size-source | `IRQ_STACK_BYTES` defined three times, plus a fourth spelling | `hal-aarch64/src/showregs.rs:137` (`0x4000`), `hal-aarch64/src/vbar.rs:318` (`16384`), `hal-x86_64/src/irq.rs:199` (`16384`), vs `sched::kstack::KSTACK_BYTES` which `hal-x86_64/src/irq.rs:94` only *comments* is equal. One owner, imported by the rest. |
 | OPEN | — | DR7 field literals open-coded next to the named constants | `hal-x86_64` `set_data_watchpoint` | The `DR7_*` set exists and is now correctly arch/feature-gated, but the watchpoint arming path still builds the register from literals. |
 | DONE | #4164 | duplicate `MXCSR_MASK_OFF`; two vdso dynsym resolvers; ns-0 network helper pairs (`mcast_report`, `route6_iface`, `udp_error_endpoint`, `send_l4_over_ipv4`, `forward_ipv4`, `ipv4_dst_is_local`); `sysfs::dev_root_leaf`; duplicate `acpi::tables::decode_iort`; duplicate `restore_saved_sigmask`; `misc_common` `MPOL_*` vs `vmm::mempolicy::uapi`; `net_common` `SOCK_*` vs `net::socket_args`; `055_getsockopt` `SO_TYPE` vs `net::uapi` | — |
 
