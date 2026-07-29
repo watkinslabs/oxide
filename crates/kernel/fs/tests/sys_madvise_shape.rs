@@ -11,7 +11,7 @@ use hal::UserVirtAddr;
 use syscall::errno::Errno;
 use vmm::{FileBacking, FileBackingError, Vma, VmaBacking, VmaFlags, VmaProt};
 
-#[path = "../../syscalls/src/028_madvise.rs"]
+#[path = "../../syscalls/src/028_madvise/core.rs"]
 mod madvise_syscall;
 
 const PAGE: u64 = 0x1000;

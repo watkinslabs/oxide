@@ -114,6 +114,12 @@ pub mod tkill_common;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "219_restart_syscall.rs"] pub mod s219_restart_syscall;
 
+// madvise(2): compile its pure VMA/advice engine hosted so the canonical
+// PAGEOUT dispatch tests do not exist only as path-included phantom coverage.
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "028_madvise.rs"]
+mod s028_madvise;
+
 // memfd_create (319): the `sanitize_flags` EINVAL/EACCES ladder plus the seal
 // word / inode mode `memfd_alloc_file` derives. execveat (322): the AT_* flag
 // mask, the empty-path ENOENT rule, the dirfd-base decision and the `may_open`
