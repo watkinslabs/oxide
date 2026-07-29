@@ -261,14 +261,6 @@ impl core::fmt::Display for FmtPct {
     }
 }
 
-/// Parse one ASCII base-10 `u64`; `None` on empty / non-digit / overflow. # C: O(len)
-fn parse_u64(b: &[u8]) -> Option<u64> {
-    if b.is_empty() { return None; }
-    let mut v: u64 = 0;
-    for &c in b { if !c.is_ascii_digit() { return None; } v = v.checked_mul(10)?.checked_add((c - b'0') as u64)?; }
-    Some(v)
-}
-
 /// Parse+validate a trigger spec, Linux `psi_trigger_parse`
 /// (`kernel/sched/psi.c`), converting us→ns.
 ///

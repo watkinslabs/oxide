@@ -15,6 +15,11 @@
 //! `any(target_os = "oxide-kernel", test)` (matching `272_unshare.rs`) so this
 //! file's `test` cfg pulls in the real module via `#[path]`.
 
+// This integration test compiles production modules directly via `#[path]` to
+// assert their ABI shape, and exercises only the part of each module the shape
+// under test needs. dead_code here measures the test's reach, not the kernel's
+// -- the real signal lives in `xtask kernel`, which is dead_code-clean.
+#![allow(dead_code)]
 extern crate alloc;
 
 use std::ptr;

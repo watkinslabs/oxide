@@ -1,3 +1,8 @@
+// This integration test compiles production modules directly via `#[path]` to
+// assert their ABI shape, and exercises only the part of each module the shape
+// under test needs. dead_code here measures the test's reach, not the kernel's
+// -- the real signal lives in `xtask kernel`, which is dead_code-clean.
+#![allow(dead_code)]
 use std::sync::{Arc, Mutex, MutexGuard};
 use syscall::{errno::Errno, SyscallArgs};
 

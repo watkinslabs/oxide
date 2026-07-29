@@ -11,6 +11,7 @@ pub fn check(namespace: u64, family: u16, operation: security::network::Operatio
     Ok(())
 }
 
+#[allow(unpredictable_function_pointer_comparisons, reason = "the assertion is `the hook I just installed came back`; both sides are the same non-generic fn item in the same codegen unit, so the lint's address-uniqueness caveat cannot apply")]
 #[cfg(test)]
 mod tests {
     use super::*;
