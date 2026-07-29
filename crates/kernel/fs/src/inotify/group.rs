@@ -99,20 +99,31 @@ impl InotifyData {
     /// `true` for a `fanotify_init` group. # C: O(1)
     pub fn is_fanotify(&self) -> bool { self.fanotify }
 
-    /// Queue one notification, applying Linux's bounded per-group queue shape:
-    /// when full, drop the new event and retain one overflow marker.
+    /// Queue one notification in Linux `fsnotify_add_event` order: the overflow
+    /// arm first (`q_len >= max_events` → one retained overflow marker, the new
+    /// event dropped), otherwise the group's `merge` callback, otherwise queue.
+    ///
+    /// The merge arm is inotify's `inotify_merge` (`queue::merges_into_tail`):
+    /// a record indistinguishable from the queue tail is folded into it and
+    /// NOT queued — and, as in Linux, does not wake readers, because the tail
+    /// it merged into already did. Skipping this made every duplicate leg of a
+    /// fire path (the same bit reaching a mark twice) reach userspace twice.
+    /// fanotify has its own merge in Linux (`fanotify_merge`, keyed on a hash
+    /// over the whole event) and is left alone here.
     /// # C: O(N_queue) only while already overflowed/full
     pub(crate) fn enqueue_event(&self, ev: Event) {
         let mut q = self.events.lock();
-        if q.len() < INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
+        if q.len() >= INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
+            if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return; }
+            q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
+        } else {
+            if !self.fanotify {
+                if let Some(tail) = q.back() {
+                    if crate::inotify::queue::merges_into_tail(tail, &ev) { return; }
+                }
+            }
             q.push_back(ev);
-            drop(q);
-            self.poll_subs.notify_mask(vfs::POLL_IN);
-            self.read_waiters.wake_all();
-            return;
         }
-        if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return; }
-        q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
         drop(q);
         self.poll_subs.notify_mask(vfs::POLL_IN);
         self.read_waiters.wake_all();

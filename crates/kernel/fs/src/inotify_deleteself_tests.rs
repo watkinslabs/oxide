@@ -15,7 +15,7 @@ use vfs::{FileType, InodeRef, InodeBuilder, default_file_ops, default_inode_ops,
 
 use crate::inotify::dispatch::{fire_delete_self, fire_link_count};
 use crate::inotify::syscalls::add_or_update_watch;
-use crate::inotify::types::{inode_key, FAN_ATTRIB, FAN_DELETE_SELF, IN_ATTRIB, IN_ISDIR};
+use crate::inotify::types::{inode_key, FAN_ATTRIB, FAN_DELETE_SELF, IN_ATTRIB, IN_IGNORED, IN_ISDIR};
 
 fn mk(ft: FileType, fsid: u64, nlink: u32) -> InodeRef {
     InodeBuilder::new(0x6B00_0000 + fsid, mk_mode(ft, 0o644),
@@ -59,8 +59,10 @@ fn delete_self_on_a_directory_carries_no_isdir() {
     let d = mk(FileType::Directory, 0x6B03, 2);
     add_or_update_watch(&g, inode_key(&d), d.fsid(), FAN_DELETE_SELF).unwrap();
 
+    // `fsnotify_inoderemove` = FS_DELETE_SELF then `__fsnotify_inode_delete`,
+    // so the wd's IN_IGNORED follows in the same call.
     fire_delete_self(&d);
-    assert_eq!(masks(&g), alloc::vec![FAN_DELETE_SELF], "no IN_ISDIR on a *_SELF event");
+    assert_eq!(masks(&g), alloc::vec![FAN_DELETE_SELF, IN_IGNORED], "no IN_ISDIR on a *_SELF event");
     assert_eq!(masks(&g)[0] & IN_ISDIR, 0);
 }
 
@@ -75,6 +77,6 @@ fn the_two_legs_are_separately_maskable() {
     fire_link_count(&f);
     assert_eq!(masks(&g), Vec::<u32>::new(), "an ATTRIB leg is not a DELETE_SELF");
     fire_delete_self(&f);
-    assert_eq!(masks(&g), alloc::vec![FAN_DELETE_SELF]);
+    assert_eq!(masks(&g), alloc::vec![FAN_DELETE_SELF, IN_IGNORED]);
     assert_ne!(FAN_ATTRIB, FAN_DELETE_SELF, "distinct bits");
 }

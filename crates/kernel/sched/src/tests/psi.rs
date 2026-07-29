@@ -5,7 +5,7 @@
 
 use alloc::string::String;
 
-use crate::psi::{parse_trigger, Psi, PsiRes, MAX_WINDOW_NS, MIN_WINDOW_NS, NS_PER_US, PCT_SCALE, WIN10_NS};
+use crate::psi::{parse_trigger, Psi, PsiRes, MAX_WINDOW_NS, NS_PER_US, PCT_SCALE, WIN10_NS};
 use vfs::POLL_PRI;
 
 const S: u64 = 1_000_000_000; // one second in ns
@@ -63,35 +63,37 @@ fn format_reports_microsecond_total() {
 
 #[test]
 fn trigger_parse_valid() {
-    let t = parse_trigger(b"some 150000 1000000").unwrap();
+    let t = parse_trigger(b"some 150000 1000000\n", true).unwrap();
     assert!(!t.full);
     assert_eq!(t.threshold_ns, 150_000 * NS_PER_US);
     assert_eq!(t.window_ns, 1_000_000 * NS_PER_US);
-    let f = parse_trigger(b"full 50000 500000").unwrap();
+    let f = parse_trigger(b"full 50000 500000\n", true).unwrap();
     assert!(f.full);
-    assert_eq!(f.window_ns, MIN_WINDOW_NS);
+    assert_eq!(f.window_ns, 500_000 * NS_PER_US);
     // Max window (10s) accepted.
-    assert!(parse_trigger(b"some 100 10000000").is_ok());
-    assert_eq!(parse_trigger(b"some 100 10000000").unwrap().window_ns, MAX_WINDOW_NS);
+    assert!(parse_trigger(b"some 100 10000000\n", true).is_ok());
+    assert_eq!(parse_trigger(b"some 100 10000000\n", true).unwrap().window_ns, MAX_WINDOW_NS);
 }
 
 #[test]
 fn trigger_parse_rejects_bad() {
-    assert!(parse_trigger(b"").is_err());
-    assert!(parse_trigger(b"bad 1 1000000").is_err());          // bad kind
-    assert!(parse_trigger(b"some abc 1000000").is_err());       // non-digit
-    assert!(parse_trigger(b"some 1").is_err());                 // missing window
-    assert!(parse_trigger(b"some 1 1000000 x").is_err());       // trailing junk
-    assert!(parse_trigger(b"some 0 1000000").is_err());         // zero threshold
-    assert!(parse_trigger(b"some 100 400000").is_err());        // window < 500ms
-    assert!(parse_trigger(b"some 100 20000000").is_err());      // window > 10s
-    assert!(parse_trigger(b"some 2000000 1000000").is_err());   // threshold > window
+    assert!(parse_trigger(b"", true).is_err());
+    assert!(parse_trigger(b"bad 1 1000000\n", true).is_err());        // bad kind
+    assert!(parse_trigger(b"some abc 1000000\n", true).is_err());     // non-digit
+    assert!(parse_trigger(b"some 1\n", true).is_err());               // missing window
+    // `sscanf` consumed both fields and ignores the rest — Linux accepts this.
+    assert!(parse_trigger(b"some 1 1000000 x\n", true).is_ok());
+    assert!(parse_trigger(b"some 0 1000000\n", true).is_err());       // zero threshold
+    // Linux has NO minimum window; a privileged 400ms window is legal.
+    assert!(parse_trigger(b"some 100 400000\n", true).is_ok());
+    assert!(parse_trigger(b"some 100 20000000\n", true).is_err());    // window > 10s
+    assert!(parse_trigger(b"some 2000000 1000000\n", true).is_err()); // threshold > window
 }
 
 #[test]
 fn trigger_fires_when_stall_exceeds_threshold() {
     let mut p = Psi::new();
-    p.add_trigger(PsiRes::Cpu, b"some 150000 1000000").unwrap(); // 150ms in 1s
+    p.add_trigger(PsiRes::Cpu, b"some 150000 1000000\n", true).unwrap(); // 150ms in 1s
     p.account_cpu(0, true);
     p.maybe_sample(0);
     // Over the 1s window the CPU was fully stalled (1s >> 150ms) → POLLPRI.
@@ -101,7 +103,7 @@ fn trigger_fires_when_stall_exceeds_threshold() {
 #[test]
 fn trigger_silent_below_threshold() {
     let mut p = Psi::new();
-    p.add_trigger(PsiRes::Cpu, b"some 500000 1000000").unwrap(); // 500ms in 1s
+    p.add_trigger(PsiRes::Cpu, b"some 500000 1000000\n", true).unwrap(); // 500ms in 1s
     p.account_cpu(0, false);
     p.maybe_sample(0);
     p.account_cpu(900 * (S / 1000), true); // stalled only the last 100ms of the window
@@ -112,7 +114,7 @@ fn trigger_silent_below_threshold() {
 fn honest_zero_memory_registers_but_never_fires() {
     let mut p = Psi::new();
     // write() succeeds (this is what fixes systemd's EOPNOTSUPP)…
-    assert!(p.add_trigger(PsiRes::Memory, b"some 150000 1000000").is_ok());
+    assert!(p.add_trigger(PsiRes::Memory, b"some 150000 1000000\n", true).is_ok());
     p.maybe_sample(0);
     // …but with no reclaim events the resource is honestly idle: never fires.
     assert_eq!(p.poll_mask(PsiRes::Memory, 5 * S), 0);

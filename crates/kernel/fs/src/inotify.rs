@@ -2,6 +2,8 @@
 // - `types`: shared constants, watch/event records, global counters, and group state.
 // - `group`: inotify/fanotify group inode/file ops, read/write paths, and perm-gate checks.
 // - `dispatch`: global registry, event routing, VFS hook wiring, and fire_* helpers.
+// - `marks`: mark teardown when the watched object dies (`__fsnotify_inode_delete`).
+// - `queue`: notification-queue admission — overflow + inotify's merge rule.
 // - `layout`: `struct inotify_event` wire encoding + name padding rules.
 // - `path`: watch-path resolution through task root/cwd plus credentials.
 // - `validate`: inotify/fanotify UAPI flags and Linux argument validation.
@@ -10,7 +12,9 @@
 mod dispatch;
 mod group;
 mod layout;
+mod marks;
 mod path;
+mod queue;
 mod syscalls;
 mod types;
 mod validate;
@@ -26,6 +30,10 @@ mod deleteself_tests;
 #[cfg(test)]
 #[path = "inotify_setattr_tests.rs"]
 mod setattr_tests;
+
+#[cfg(test)]
+#[path = "inotify_mark_lifetime_tests.rs"]
+mod mark_lifetime_tests;
 
 #[cfg(test)]
 mod tests;
