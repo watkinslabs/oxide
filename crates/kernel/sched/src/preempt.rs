@@ -425,12 +425,14 @@ impl Drop for PreemptGuard {
     }
 }
 
-/// Reset all preempt state. Hosted-test-only — production never
-/// resets these atomics.
+/// Reset this simulated CPU's preempt state. Hosted-test-only — production
+/// never resets these atomics. Resetting every slot would erase nesting owned
+/// by parallel test threads, unlike a real per-CPU reset.
 /// # C: O(1)
 #[cfg(any(test, feature = "hosted"))]
 pub fn _test_reset() {
-    for slot in PREEMPT_COUNT.iter() { slot.0.store(0, Ordering::Release); }
-    resched::_test_reset_anchors();
+    let cpu = this_cpu();
+    PREEMPT_COUNT[cpu].0.store(0, Ordering::Release);
+    resched::_test_reset_anchor(cpu);
     if let Some(t) = crate::live::current() { t.need_resched.store(false, Ordering::Release); }
 }
