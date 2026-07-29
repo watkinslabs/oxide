@@ -110,7 +110,7 @@ pub fn validate_mm_map(m: &PrctlMmMap) -> bool {
     ];
     for a in addrs { if a >= USER_VA_END { return false; } }
     ord_ok(m.start_code, m.end_code, true)
-        && ord_ok(m.start_data, m.end_data, true)
+        && ord_ok(m.start_data, m.end_data, false)
         && ord_ok(m.start_brk, m.brk, false)
         && ord_ok(m.arg_start, m.arg_end, false)
         && ord_ok(m.env_start, m.env_end, false)
