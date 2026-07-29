@@ -46,8 +46,10 @@ pub(crate) fn recompress_text(zram: &Zram, text: &str) -> KResult<()> {
         if remaining == 0 { break; }
         if selector.is_some_and(|selector| !selected(&state, index, selector)) { continue; }
         let slot = state.slots.get(index).expect("zram slot index validated by table length");
+        if matches!(slot, Slot::Empty | Slot::Same(_) | Slot::Backed { .. } | Slot::Loading { .. } | Slot::Writeback { .. })
+            || slot.compression_priority().is_some_and(|current| current >= secondary_priority) { continue; }
         let old_size = slot.bytes();
-        if old_size < threshold || matches!(slot, Slot::Empty | Slot::Same(_) | Slot::Backed { .. } | Slot::Loading { .. } | Slot::Writeback { .. }) { continue; }
+        if old_size < threshold { continue; }
         let mut page = vec![0; PAGE_BYTES];
         crate::io::read_slot(&state, slot, &mut page)?;
         state.slots.set_idle(index, false)?;
