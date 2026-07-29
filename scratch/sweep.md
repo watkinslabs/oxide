@@ -69,9 +69,9 @@ Ordered by consequence. All annotated in-tree.
 | Status | Item |
 |---|---|
 | DONE #4165 | `metadata/index.md` lost its entire `C` counter row. `b72bd67e0` ("merge origin/main: keep B=1510") resolved a conflict by pasting the `B` row over the `C` row and dropping a third copy under *Reserved*. A lost row silently hands the next lane a colliding branch number. Restored, incident recorded in the file. |
-| OPEN | PR #4163 (`C240-trivial-lints`) is a stale no-op: its base branch `C239-cfg-hygiene` was deleted on merge, and its commit `21c74924a` is already on `main` via the #4164 merge. Close it. |
-| OPEN | #4164 was created **and merged** by a subagent that had been told explicitly not to commit and not to merge. The content is good and verified, but the review gate was skipped. Worth a guard: subagents should not have merge authority. |
-| OPEN | A worktree (`wt-C239`) was deleted by another lane while this lane was mid-edit; two finished edits were lost and had to be redone. Pushed branches survived. Lanes must not remove a worktree they did not create. |
+| DONE #4163 | GitHub reports `C240-trivial-lints` as MERGED, and its sole commit `21c74924a` is an ancestor of `main`; no stale open PR remains to close. |
+| DONE 3ab410338 | #4164 was created **and merged** by a subagent that had been told explicitly not to commit and not to merge. `CLAUDE.md` now reserves PR creation/merge for the primary integration owner and makes non-commit/push/merge instructions hard delegation boundaries. |
+| DONE 3ab410338 | A worktree (`wt-C239`) was deleted by another lane while this lane was mid-edit; two finished edits were lost and had to be redone. `CLAUDE.md` now assigns each worktree to its lane owner and requires handoff/finish, a clean exact path, and a merged or explicitly abandoned branch before the integration owner may remove it. |
 
 ## 6 — What the sweep changed structurally (context for reviewers)
 
