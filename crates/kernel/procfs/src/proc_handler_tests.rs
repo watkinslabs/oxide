@@ -1,4 +1,5 @@
 use super::*;
+use core::sync::atomic::AtomicBool;
 
 // proc_dointvec_minmax: read formats the live var; write reflects in it.
 #[test]
@@ -205,29 +206,6 @@ fn ulongvar_bounds() {
     assert_eq!(CELL.load(Ordering::Relaxed), 8192);
     assert!(h.store(b"99999999999\n").is_err()); // > 2^30
     assert!(h.store(b"-1\n").is_err());          // not unsigned
-}
-
-#[test]
-fn boolvar_round_trip() {
-    static CELL: AtomicBool = AtomicBool::new(false);
-    let h = BoolVar { cell: &CELL };
-    assert_eq!(h.format(), b"0\n".to_vec());
-    h.store(b"1\n").unwrap();
-    assert!(CELL.load(Ordering::Relaxed));
-    assert_eq!(h.format(), b"1\n".to_vec());
-    assert!(h.store(b"2\n").is_err());
-}
-
-#[test]
-fn boolhook_binds_external() {
-    static EXT: AtomicBool = AtomicBool::new(false);
-    fn get() -> bool { EXT.load(Ordering::Relaxed) }
-    fn set(v: bool) { EXT.store(v, Ordering::Relaxed); }
-    let h = BoolHook { get, set };
-    assert_eq!(h.format(), b"0\n".to_vec());
-    h.store(b"1").unwrap();
-    assert!(EXT.load(Ordering::Relaxed));
-    assert_eq!(h.format(), b"1\n".to_vec());
 }
 
 #[test]

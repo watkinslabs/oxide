@@ -13,8 +13,8 @@
 //   * `fs.file-max` is `proc_doulongvec_minmax` over a LIVE `AtomicU64`.
 //   * `kernel.hostname` is `proc_dostring` bound to the UTS hostname slot
 //     (`hooks::hostname`/`set_hostname`) — the backing variable EXISTS in-tree.
-//   * `net.ipv4.ip_forward` is `proc_dobool` bound to `net::forwarding` — also
-//     a real in-tree backing variable.
+//   * `net.ipv4.ip_forward` is an integer hook bound to `net::forwarding` —
+//     also a real in-tree backing variable.
 //   * `net.core.somaxconn` is bound to `net::sysctl`, shared by TCP + AF_UNIX.
 //   * Genuine read-only constants (ostype/osrelease/version, cap_last_cap, …)
 //     stay `StaticFileInode` (mode 0444 — Linux rejects writes to those too).
@@ -25,7 +25,7 @@
 // binds to it (hostname, ip_forward); a leaf whose backing does NOT exist gets
 // a procfs-OWNED live cell (the `Box::leak`ed atomic) — a real read/write
 // variable, NOT a fake constant (Linux-faithful: `data` always points at a
-// live `int`/`long`/`bool`). Cross-lane subsystems (mm VM tunables, vfs fs
+// live `int`/`long`). Cross-lane subsystems (mm VM tunables, vfs fs
 // limits, net buffer sizes) can later repoint these leaves at THEIR variable
 // by swapping the handler, without changing the tree or the path set.
 
@@ -33,12 +33,12 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
+use core::sync::atomic::{AtomicI64, AtomicU64};
 use vfs::{InodeRef, KResult, VfsError};
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    BoolVar, IntHook as HIntHook, IntVar, PerNetIntHook as HPerNetIntHook,
+    IntHook as HIntHook, IntVar, PerNetIntHook as HPerNetIntHook,
     PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
     StrHook as HStrHook, ULongVar,
@@ -176,9 +176,6 @@ enum Leaf {
         Option<(i64, i64)>),
     /// `proc_doulongvec_minmax` over a live `AtomicU64`.
     ULong(u64, Option<(u64, u64)>),
-    /// `proc_dobool` over a live `AtomicBool`.
-    #[expect(dead_code, reason = "no caller: the leaf kind is fully materialised below (Bool(def) => leaked AtomicBool) but no row in TREE declares a bool knob, so every Linux proc_dobool sysctl is absent from /proc/sys")]
-    Bool(bool),
     /// `proc_dostring` bound to a subsystem accessor pair.
     StrHook(fn() -> alloc::vec::Vec<u8>, fn(&[u8])),
     /// Two-u16 `proc_dointvec` bound to subsystem accessors.
@@ -406,10 +403,6 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
         ULong(def, bounds) => {
             let cell: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(def)));
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))
-        }
-        Bool(def) => {
-            let cell: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(def)));
-            bound_sysctl_inode(Arc::new(BoolVar { cell }))
         }
         Leaf::StrHook(get, set) => bound_sysctl_inode(Arc::new(HStrHook { get, set })),
         Leaf::PerNetU16PairHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetU16PairHook {

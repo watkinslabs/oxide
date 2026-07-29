@@ -4,12 +4,12 @@
 //! + range-checks (against `extra1`/`extra2` min/max) + UPDATES the live
 //! variable — instead of returning a fixed default string and dropping writes.
 //!
-//! Implements integer, bool, string, and retained-network-namespace handlers.
+//! Implements integer, string, and retained-network-namespace handlers.
 //!
 //! Backing-variable policy (D22): a leaf whose backing kernel variable EXISTS
-//! in-tree binds to it (`BoolHook`/`StrHook`); a leaf whose backing does NOT
-//! exist gets a procfs-OWNED live cell (`IntVar`/`ULongVar`/`BoolVar` over a
-//! `Box::leak`ed atomic) — a real read/write variable, NOT a fake constant.
+//! in-tree binds to it (`StrHook`); a leaf whose backing does NOT exist gets a
+//! procfs-OWNED live cell (`IntVar`/`ULongVar` over a `Box::leak`ed atomic) — a
+//! real read/write variable, NOT a fake constant.
 //!
 //! Kept un-`cfg`-gated (like `proc_dointvec`) so the read-format / write-parse /
 //! bounds contract is covered by `cargo test -p procfs` on the host.
@@ -17,7 +17,7 @@
 extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use network_namespace::NetworkNamespaceRef;
 use namespace_identity::NamespaceRef;
 use vfs::{KResult, VfsError};
@@ -297,30 +297,6 @@ impl ProcHandler for ULongVar {
     }
 }
 
-/// `proc_dobool`: a live `bool` cell (accepts the Linux `0`/`1` values).
-/// # C: O(1)
-pub struct BoolVar { pub cell: &'static AtomicBool }
-impl ProcHandler for BoolVar {
-    fn format(&self) -> Vec<u8> {
-        if self.cell.load(Ordering::Relaxed) { b"1\n".to_vec() } else { b"0\n".to_vec() }
-    }
-    fn store(&self, src: &[u8]) -> Result<(), ()> {
-        let v = parse_bool(src)?;
-        self.cell.store(v, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-/// `proc_dobool` bound to a subsystem accessor pair (the backing variable lives
-/// OUTSIDE procfs — e.g. `net.ipv4.ip_forward`). # C: O(1)
-pub struct BoolHook { pub get: fn() -> bool, pub set: fn(bool) }
-impl ProcHandler for BoolHook {
-    fn format(&self) -> Vec<u8> {
-        if (self.get)() { b"1\n".to_vec() } else { b"0\n".to_vec() }
-    }
-    fn store(&self, src: &[u8]) -> Result<(), ()> { (self.set)(parse_bool(src)?); Ok(()) }
-}
-
 /// `proc_dostring` bound to a subsystem accessor pair. `get` returns the value
 /// WITHOUT a trailing newline (added on format); `set` receives the raw write
 /// payload (the subsystem trims). # C: O(len)
@@ -332,13 +308,6 @@ impl ProcHandler for StrHook {
         b
     }
     fn store(&self, src: &[u8]) -> Result<(), ()> { (self.set)(src); Ok(()) }
-}
-
-/// Parse a Linux boolean sysctl write (`0`/`1`, whitespace-trimmed).
-/// # C: O(len)
-fn parse_bool(src: &[u8]) -> Result<bool, ()> {
-    let s = core::str::from_utf8(src).map_err(|_| ())?.trim();
-    match s { "0" => Ok(false), "1" => Ok(true), _ => Err(()) }
 }
 
 #[cfg(test)]
