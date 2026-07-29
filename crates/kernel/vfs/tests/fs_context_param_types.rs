@@ -14,7 +14,16 @@ use vfs::fs::fs_context::{
     vfs_parse_fs_param, FsContext, FsParameter, FsValue,
 };
 use vfs::superblock::{FileSystemType, SuperBlock};
-use vfs::{KResult, VfsError};
+use vfs::{Dentry, File, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
+          default_file_ops, default_inode_ops, mk_mode};
+
+/// Stand-in for the description `fget_raw(aux)` pins on `FSCONFIG_SET_FD`.
+fn auxfile() -> Arc<File> {
+    let ino: InodeRef = InodeBuilder::new(0x9001, mk_mode(FileType::Regular, 0o600),
+        default_inode_ops(), default_file_ops()).build();
+    let dentry = Dentry::new(None, "auxfd".into(), Arc::clone(&ino));
+    File::new(ino, dentry, OpenFlags::O_RDONLY)
+}
 
 struct Ty;
 impl FileSystemType for Ty {
@@ -28,7 +37,8 @@ fn ctx() -> FsContext { FsContext::for_mount(Arc::new(Ty), 0) }
 fn each_command_maps_to_distinct_typed_value() {
     assert_eq!(FsParameter::flag("ro").value, FsValue::Flag);
     assert_eq!(FsParameter::string("size", "64m").value, FsValue::String("64m".to_string()));
-    assert_eq!(FsParameter::fd("fd", 7).value, FsValue::File(7));
+    let f = auxfile();
+    assert_eq!(FsParameter::fd("fd", 7, Arc::clone(&f)).value, FsValue::File { fd: 7, file: f });
     assert_eq!(FsParameter::path("upperdir", "/a").value,
         FsValue::Filename { path: "/a".to_string(), empty: false });
     assert_eq!(FsParameter::path_empty("dir", "").value,
@@ -44,9 +54,15 @@ fn typed_accessors_round_trip_and_reject_wrong_type() {
     assert_eq!(s.as_path(), None);
     assert_eq!(s.as_blob(), None);
 
-    let f = FsParameter::fd("k", 11);
+    let file = auxfile();
+    let f = FsParameter::fd("k", 11, Arc::clone(&file));
     assert_eq!(f.as_fd(), Some(11));
     assert_eq!(f.as_str(), None);
+    // `param->file` travels with `param->dirfd`: the fd-typed parameter carries
+    // the PINNED description, so a filesystem that wants the file (Linux
+    // `fs/fuse/inode.c`, `fs/autofs/inode.c`) never re-looks-up the fd.
+    assert!(Arc::ptr_eq(f.as_file().expect("fd param carries its file"), &file));
+    assert!(s.as_file().is_none());
 
     let p = FsParameter::path_empty("k", "/mnt");
     assert_eq!(p.as_path(), Some(("/mnt", true)));
@@ -71,7 +87,7 @@ fn classic_mount_backend_rejects_fd_path_blob_value_types() {
     // A classic mount comma-blob `->mount` cannot parse an fd/path/binary value
     // (Linux `legacy_parse_param` default → invalf → -EINVAL).
     for p in [
-        FsParameter::fd("fd", 3),
+        FsParameter::fd("fd", 3, auxfile()),
         FsParameter::path("upperdir", "/u"),
         FsParameter::path_empty("dir", ""),
         FsParameter::blob("data", &[0xde, 0xad]),
@@ -88,7 +104,7 @@ fn source_must_be_a_string_not_fd_or_path() {
     // `source` is the generic handler's key; only a string value is a valid
     // source (Linux `vfs_parse_fs_param_source`).
     let mut fc = ctx();
-    assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::fd("source", 3)).unwrap_err(),
+    assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::fd("source", 3, auxfile())).unwrap_err(),
         VfsError::Einval);
     let mut fc2 = ctx();
     assert_eq!(vfs_parse_fs_param(&mut fc2, &FsParameter::path("source", "/dev/x")).unwrap_err(),
