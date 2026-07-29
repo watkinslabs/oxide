@@ -3,15 +3,12 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::{flags, Nlmsghdr};
+use syscall::errno::Errno;
 
 pub const SOCK_DIAG_BY_FAMILY: u16 = 20;
 pub const TCPDIAG_GETSOCK: u16 = 18;
 
-// `cfg_attr(not(test))`: the unit tests below build a request naming AF_INET,
-// so the expectation only holds for the production build.
-#[cfg_attr(not(test), expect(dead_code, reason = "no caller: `handle_in` never dispatches on sdiag_family — Linux `__sock_diag_cmd` (net/core/sock_diag.c) EINVALs family >= AF_MAX and ENOENTs a family with no registered handler, so only AF_INET/AF_INET6 reach inet_diag; here `family_matches` accepts any family and answers every request with an inet dump"))]
 const AF_INET: u8 = 2;
-#[expect(dead_code, reason = "no caller: same missing sdiag_family dispatch in `handle_in` — see AF_INET above")]
 const AF_INET6: u8 = 10;
 const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
@@ -39,10 +36,6 @@ fn parse_req(msg: &[u8]) -> Option<InetDiagReq> {
 
 fn state_matches(mask: u32, state: u8) -> bool {
     mask == 0 || (state < 32 && (mask & (1u32 << state)) != 0)
-}
-
-fn family_matches(req: u8, got: u8) -> bool {
-    req == 0 || req == got
 }
 
 #[allow(dead_code)]
@@ -85,6 +78,10 @@ fn append_diag_msg(out: &mut Vec<u8>, req: &Nlmsghdr, row: net::stack_diag::Inet
     body[60..64].copy_from_slice(&row.wqueue.to_ne_bytes());
 }
 
+fn error_reply(req: &Nlmsghdr, errno: Errno) -> Vec<u8> {
+    crate::rtnetlink::nlmsg_ack_pub(req, -errno.as_i32())
+}
+
 /// Handle SOCK_DIAG_BY_FAMILY / TCPDIAG_GETSOCK inet_diag requests.
 /// # C: O(open inet sockets)
 pub fn handle(req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
@@ -94,26 +91,33 @@ pub fn handle(req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
 /// Handle an inet-diag request in the namespace captured by its netlink socket. # C: O(N)
 pub fn handle_in(net_ns: u64, req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
     let Some(diag_req) = parse_req(msg) else {
-        return crate::rtnetlink::done_multi(req.nlmsg_seq, req.nlmsg_pid);
+        return error_reply(req, Errno::Einval);
     };
+    if req.nlmsg_type == SOCK_DIAG_BY_FAMILY {
+        match diag_req.family {
+            AF_INET | AF_INET6 => {}
+            family if u32::from(family) >= net::socket_args::AF_MAX =>
+                return error_reply(req, Errno::Einval),
+            _ => return error_reply(req, Errno::Enoent),
+        }
+    }
     let protocol = match (req.nlmsg_type, diag_req.protocol) {
         (TCPDIAG_GETSOCK, _) => IPPROTO_TCP,
         (_, IPPROTO_TCP | IPPROTO_UDP) => diag_req.protocol,
-        _ => return crate::rtnetlink::done_multi(req.nlmsg_seq, req.nlmsg_pid),
+        _ => return error_reply(req, Errno::Enoent),
     };
     let mut reply = Vec::new();
     #[cfg(target_os = "oxide-kernel")]
     {
         for row in net::sock::stack().inet_diag_snapshot_in(net_ns, protocol) {
-            if family_matches(diag_req.family, row.family) && state_matches(diag_req.states, row.state) {
+            if diag_req.family == row.family && state_matches(diag_req.states, row.state) {
                 append_diag_msg(&mut reply, req, row);
             }
         }
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     {
-        let _ = (net_ns, diag_req, protocol, family_matches as fn(u8, u8) -> bool,
-            state_matches as fn(u32, u8) -> bool);
+        let _ = (net_ns, diag_req, protocol, state_matches as fn(u32, u8) -> bool);
     }
     reply.extend_from_slice(&crate::rtnetlink::done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
@@ -122,7 +126,28 @@ pub fn handle_in(net_ns: u64, req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::msg;
     use net::{IpAddr, Ipv4Addr};
+
+    fn diag_request(family: u8, protocol: u8) -> (Nlmsghdr, Vec<u8>) {
+        let req = Nlmsghdr {
+            nlmsg_len: (Nlmsghdr::SIZE + REQ_V2_SIZE) as u32,
+            nlmsg_type: SOCK_DIAG_BY_FAMILY,
+            nlmsg_flags: flags::NLM_F_REQUEST | flags::NLM_F_DUMP,
+            nlmsg_seq: 9,
+            nlmsg_pid: 7,
+        };
+        let mut wire = alloc::vec![0; req.nlmsg_len as usize];
+        req.write_to(&mut wire);
+        wire[Nlmsghdr::SIZE] = family;
+        wire[Nlmsghdr::SIZE + 1] = protocol;
+        (req, wire)
+    }
+
+    fn reply_errno(reply: &[u8]) -> i32 {
+        assert_eq!(u16::from_ne_bytes(reply[4..6].try_into().unwrap()), msg::NLMSG_ERROR);
+        i32::from_ne_bytes(reply[16..20].try_into().unwrap())
+    }
 
     #[test]
     fn diag_msg_writes_ports_network_order() {
@@ -145,5 +170,35 @@ mod tests {
         assert_eq!(&out[22..24], &[0xab, 0xcd]);
         assert_eq!(&out[24..28], &[127, 0, 0, 1]);
         assert_eq!(&out[40..44], &[10, 0, 0, 2]);
+    }
+
+    #[test]
+    fn modern_diag_dispatches_only_registered_inet_families() {
+        for family in [AF_INET, AF_INET6] {
+            let (req, wire) = diag_request(family, IPPROTO_TCP);
+            let reply = handle_in(0, &req, &wire);
+            assert_eq!(u16::from_ne_bytes(reply[4..6].try_into().unwrap()), msg::NLMSG_DONE);
+        }
+        for family in [0, 1, 5] {
+            let (req, wire) = diag_request(family, IPPROTO_TCP);
+            assert_eq!(reply_errno(&handle_in(0, &req, &wire)), -Errno::Enoent.as_i32());
+        }
+    }
+
+    #[test]
+    fn modern_diag_rejects_out_of_range_family_and_missing_protocol() {
+        for family in [net::socket_args::AF_MAX as u8, u8::MAX] {
+            let (req, wire) = diag_request(family, IPPROTO_TCP);
+            assert_eq!(reply_errno(&handle_in(0, &req, &wire)), -Errno::Einval.as_i32());
+        }
+        let (req, wire) = diag_request(AF_INET, 1);
+        assert_eq!(reply_errno(&handle_in(0, &req, &wire)), -Errno::Enoent.as_i32());
+    }
+
+    #[test]
+    fn truncated_diag_request_is_einval() {
+        let (req, mut wire) = diag_request(AF_INET, IPPROTO_TCP);
+        wire.truncate(Nlmsghdr::SIZE + REQ_V2_SIZE - 1);
+        assert_eq!(reply_errno(&handle_in(0, &req, &wire)), -Errno::Einval.as_i32());
     }
 }
