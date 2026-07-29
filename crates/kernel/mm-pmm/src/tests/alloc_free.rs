@@ -159,3 +159,24 @@ fn corrupted_free_page_caught_on_alloc() {
     for _ in 0..64 { let _ = pmm.alloc(Order(0)).unwrap(); }
 }
 
+#[cfg(feature = "debug-watchdog")]
+#[test]
+fn watchdog_scans_poison_before_allocation_zeroes_page() {
+    let pmm = build(1);
+    let pfn = pmm.alloc(Order(0)).unwrap();
+    // SAFETY: the test owns this one-page allocation.
+    let page = unsafe { pmm.page_ptr(pfn) };
+    // SAFETY: page points to the complete caller-owned allocation.
+    unsafe { core::ptr::write_bytes(page, 0xAA, PAGE) };
+    // SAFETY: pfn is the live order-0 allocation returned above.
+    unsafe { pmm.free(pfn, Order(0)) };
+    // SAFETY: deliberately emulate a stale write into the free page body.
+    unsafe { core::ptr::write_volatile(page.add(197), 0x31) };
+
+    assert_eq!(crate::buddy::take_test_mismatch(), None);
+    let allocated = pmm.alloc(Order(0)).unwrap();
+    assert_eq!(allocated, pfn);
+    assert_eq!(crate::buddy::take_test_mismatch(), Some(197));
+    // SAFETY: allocation returned ownership and alloc_inner zeroed the page.
+    assert_eq!(unsafe { core::ptr::read(page.add(197)) }, 0);
+}
