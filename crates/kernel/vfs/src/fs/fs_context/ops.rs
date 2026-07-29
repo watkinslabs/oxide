@@ -24,7 +24,7 @@ impl FsContextOps for ClassicMountFsContextOps {
         if param.key == "source" { return Ok(ParamResult::Declined); }
         match &param.value {
             FsValue::Flag | FsValue::String(_) => {}
-            FsValue::File(_) | FsValue::Filename { .. } | FsValue::Blob(_) => {
+            FsValue::File { .. } | FsValue::Filename { .. } | FsValue::Blob(_) => {
                 return fc.invalf("VFS: classic mount: unsupported value type for parameter");
             }
         }
