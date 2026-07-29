@@ -297,7 +297,8 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                 // never-free-a-mapped-page ENFORCEMENT + free lives in the single
                 // free-on-zero choke point `release_frame_on_zero` below, shared
                 // with the object-ref drop path (no duplicated free path).
-                #[cfg(feature = "debug-watchdog")]
+                // `sched::live` is kernel-target-only; see frame_alloc.rs.
+                #[cfg(all(feature = "debug-watchdog", target_os = "oxide-kernel"))]
                 if let Some(mc) = new_mc {
                     if mc != 0 && mc < 0x8000_0000 {
                         let loc = core::panic::Location::caller();

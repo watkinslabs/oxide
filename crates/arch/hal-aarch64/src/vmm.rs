@@ -24,7 +24,6 @@ const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
 const PXN:      u64 = 1 << 53;
 const UXN:      u64 = 1 << 54;
-const AP_READ_ONLY_BIT: u64 = 1 << 7;
 const PHYS_MASK_ARM: u64 = 0x0000_ffff_ffff_f000;
 const SWAP_MARKER: u64 = 1 << 1;
 const SWAP_TYPE_SHIFT: u8 = 2;

@@ -38,6 +38,9 @@ pub(super) enum ShmemPage {
 }
 
 impl ShmemPage {
+    /// Production charge/uncharge sites destructure `cgid` out of the variant
+    /// they already matched; only `shmem_page_tests` needs the accessor.
+    #[cfg(test)]
     pub(super) const fn cgid(self) -> u64 {
         match self {
             Self::Resident { cgid, .. } | Self::Swapped { cgid, .. }
@@ -381,9 +384,9 @@ impl Drop for TmpfsFileData {
                     cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
                 }
                 ShmemPage::Swapped { entry, .. } => { let _ = pmm::swap::free_page(entry); }
-                ShmemPage::Migrating { token, .. } => {
+                ShmemPage::Migrating { token: _token, .. } => {
                     #[cfg(feature = "debug-zram-lifecycle")]
-                    super::lifetime::trace_migration(b"drop-live", self, *_idx, token);
+                    super::lifetime::trace_migration(b"drop-live", self, *_idx, _token);
                     unreachable!("tmpfs owner dropped during pageout transaction")
                 }
             }

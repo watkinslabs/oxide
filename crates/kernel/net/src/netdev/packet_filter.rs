@@ -90,7 +90,10 @@ impl PacketDeviceFilter {
         Self::snapshot(&state)
     }
 
-    /// Snapshot effective receive mode and unique addresses. # C: O(N addresses)
+    /// Snapshot effective receive mode and unique addresses. Test-only: the
+    /// live path never re-reads the filter, it consumes the snapshot each
+    /// mutator already returns and hands it to `packet_rx_mode_changed`.
+    #[cfg(test)]
     pub(crate) fn current(&self) -> PacketRxMode {
         Self::snapshot(&self.state.lock())
     }

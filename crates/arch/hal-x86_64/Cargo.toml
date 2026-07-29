@@ -36,3 +36,6 @@ debug-all = ["debug-irq", "debug-watchdog"]
 # kernel write to the free node then #DB-traps and this handler prints the
 # writer's rip. x86_64-only (aarch64 uses a different debug-register ABI).
 debug-hw-watchpoint = []
+
+[lints]
+workspace = true

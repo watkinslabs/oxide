@@ -1,7 +1,5 @@
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::errno::Errno;
-
 use super::font::handle_font_ioctl;
 use super::tioclinux::handle_tioclinux;
 

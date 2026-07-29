@@ -1,6 +1,6 @@
 use crate::emulator::Emulator;
 use crate::palette::{rgb, xterm_256_rgb};
-use crate::vc::{Attr, Vc, DEFAULT_BG, DEFAULT_BG_RGB, DEFAULT_FG, DEFAULT_FG_RGB};
+use crate::vc::{Vc, DEFAULT_BG, DEFAULT_BG_RGB, DEFAULT_FG_RGB};
 
 use super::run;
 

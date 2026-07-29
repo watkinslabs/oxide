@@ -19,3 +19,6 @@ klog    = { path = "../../shared/klog" }
 [features]
 default = []
 debug-boot = []
+
+[lints]
+workspace = true

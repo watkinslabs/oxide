@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::addr::{IpAddr, IpProto, Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::ipv4::IPV4_HDR_LEN;
-use crate::netdev::{NetDev, NetError, NetResult};
+use crate::netdev::{NetError, NetResult};
 use crate::pkt::Pkt;
 use crate::route::{RouteEntry, RouteRecord, RTN_BLACKHOLE, RTN_LOCAL, RTN_PROHIBIT,
     RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE};

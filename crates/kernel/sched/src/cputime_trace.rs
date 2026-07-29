@@ -19,6 +19,7 @@
 //
 // Feature-gated — a default build compiles the empty arms and emits nothing.
 
+#[cfg(feature = "debug-cputime")]
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Ticks between `[CPUT tick]` lines. A tick trace at full rate floods the

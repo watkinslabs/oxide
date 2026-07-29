@@ -44,11 +44,14 @@ impl VirtioProbeDevres {
             return;
         }
         let frames = self.frames.take_all();
-        reset_failed_probe(self.cfg_va);
+        let quiesced = reset_failed_probe(self.cfg_va);
         release_msix_bindings(self.bdf, &mut self.msix);
         restore_pci_command(self.bdf, self.command_orig);
         self.mappings.unmap_all();
-        release_failed_probe_frames(&frames);
+        // Unconfirmed reset ⇒ the device may still hold these frames in a
+        // descriptor; leak rather than hand them back to the buddy (the
+        // documented contract on `virtio::reset_device`).
+        if quiesced { release_failed_probe_frames(&frames); }
     }
 
     pub(crate) fn publish(&mut self, device_key: virtio::VirtioChildDeviceKey) {

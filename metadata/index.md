@@ -17,14 +17,12 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | D | 417 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
-| C | 239 | tooling / deps / CI plumbing |
+| B | 1510 | bug fix |
 | P17 | 18 | phase-17 work (tty + login) |
 
 ## Reserved (in flight)
 
-`B1504`–`B1507` reserved 2026-07-28 for the concurrent EINVAL-ledger lanes
-(fsconfig set-fd, PSI trigger parse, inotify mark lifetime). Counter advanced
-to 1508 so a later lane cannot collide with them.
+| B | 1510 | bug fix |
 
 `F761`–`F764` reserved 2026-07-27 for the syscall-matrix audit batches
 (xattr-at family, sched/ioprio, mempolicy/mseal, admin/misc). Counter already

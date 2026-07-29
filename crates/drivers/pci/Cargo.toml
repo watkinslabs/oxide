@@ -10,3 +10,11 @@ path = "src/lib.rs"
 [dependencies]
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
+
+[features]
+# `#[cfg(any(test, feature = "hosted"))] extern crate std` in src/lib.rs.
+# Used but never declared -> unexpected_cfgs.
+hosted = []
+
+[lints]
+workspace = true

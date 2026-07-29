@@ -10,7 +10,7 @@
 // targets ITS_BASE + GITS_TRANSLATER.
 
 #[cfg(target_arch = "aarch64")]
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
 
 // ---- Distributor offsets (shared with v2) ---------------------------------
 
@@ -70,6 +70,7 @@ pub(super) const GICR_ISENABLER0:  usize = 0x0100;
 #[cfg(target_arch = "aarch64")]
 pub(super) const GICR_IPRIORITYR:  usize = 0x0400;
 #[cfg(target_arch = "aarch64")]
+#[expect(dead_code, reason = "no caller: `lines.rs::enable_intid` skips PPI trigger config ('leave ICFGR alone') and `enable_intid_level` delegates PPIs to it, so a level-sensitive PPI silently stays edge — the SGI-frame branch of enable_intid_level should program GICR_ICFGR1")]
 pub(super) const GICR_ICFGR1:      usize = 0x0C04;
 
 /// WAKER bits.

@@ -45,7 +45,6 @@ fn u32_at(bytes: &[u8], off: usize) -> u32 {
 
 #[test]
 fn vnet_header_encodes_metadata_and_zeroes_num_buffers() {
-    let mut packet = [0u8; 54]; packet[14] = 0x60;
     let metadata = crate::PacketRxMetadata {
         checksum: crate::PacketChecksum::Partial,
         virtio: crate::PacketVirtioMetadata { gso_type: 4, header_len: 54,

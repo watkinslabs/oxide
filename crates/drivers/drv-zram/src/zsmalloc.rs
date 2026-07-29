@@ -11,7 +11,10 @@ pub(crate) use handle::Handle;
 pub(crate) use pool::ZsPool;
 pub(crate) use class::huge_class_size;
 pub use platform::{install_page_provider, page_provider_ready, PageProvider};
-pub(crate) use platform::{bind_owner, unbind_owner};
+// `bind_owner`'s only caller (`state::Zram::new`) is `cfg(not(any(test, hosted)))`.
+#[cfg(not(any(test, feature = "hosted")))]
+pub(crate) use platform::bind_owner;
+pub(crate) use platform::unbind_owner;
 
 #[cfg(any(test, feature = "hosted"))]
 pub(crate) use platform::install_hosted_test_provider;

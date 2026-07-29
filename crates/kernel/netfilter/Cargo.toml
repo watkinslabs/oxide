@@ -11,3 +11,6 @@ path = "src/lib.rs"
 sync    = { path = "../../shared/sync" }
 netlink = { path = "../netlink" }
 net     = { path = "../net" }
+
+[lints]
+workspace = true

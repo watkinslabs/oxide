@@ -224,8 +224,6 @@ pub struct SockOpts {
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
-#[cfg(target_os = "oxide-kernel")]
-pub use crate::sock_io::compute_deadline_ns;
 
 impl Default for SockOpts {
     fn default() -> Self {

@@ -3,7 +3,6 @@
 //! is what `ETXTBSY` is — a running binary cannot be opened for write, and a
 //! file open for write cannot be executed.
 
-use alloc::sync::Arc;
 extern crate alloc;
 
 fn reg() -> vfs::InodeRef {

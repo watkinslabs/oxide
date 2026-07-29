@@ -17,3 +17,6 @@ sync = { path = "../../shared/sync" }
 [dev-dependencies]
 proptest = "1"
 sync = { path = "../../shared/sync", features = ["hosted"] }
+
+[lints]
+workspace = true

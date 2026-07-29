@@ -1,6 +1,8 @@
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
+#[cfg(target_os = "oxide-kernel")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::NET_NS;
 use super::reaper_protocol::PendingSignal;

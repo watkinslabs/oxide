@@ -168,9 +168,9 @@ impl AddressSpace {
         let fault = match fault {
             FaultKind::Protection { access } => {
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
-                // SAFETY: va_page is in user-half; M::translate reads the
-                // active PT for the running task's CR3 / TTBR0.
-                if unsafe { M::translate(Va(va_page)) }.is_none() {
+                // va_page is in user-half; M::translate reads the active PT
+                // for the running task's CR3 / TTBR0.
+                if M::translate(Va(va_page)).is_none() {
                     FaultKind::NotPresent { access }
                 } else {
                     FaultKind::Protection { access }
@@ -218,8 +218,8 @@ impl AddressSpace {
                 let vma = g.find_containing(va).ok_or(Error::Inval)?;
                 if !vma.permits(access) { return Err(Error::Inval); }
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
-                // SAFETY: privileged PT read of the running task's active root.
-                if let Some((pa, old_fl)) = unsafe { M::translate(Va(va_page)) } {
+                // Privileged PT read of the running task's active root.
+                if let Some((pa, old_fl)) = M::translate(Va(va_page)) {
                     let mut f = vma.prot.to_page_flags();
                     if f.contains(hal::PageFlags::WRITE) && !old_fl.contains(hal::PageFlags::WRITE) {
                         f.remove(hal::PageFlags::WRITE); // keep COW W-strip

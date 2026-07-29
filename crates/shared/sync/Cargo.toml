@@ -22,3 +22,6 @@ debug-lockdep = ["dep:klog"]
 [dependencies]
 hal = { path = "../../arch/hal" }
 klog = { path = "../klog", optional = true }
+
+[lints]
+workspace = true

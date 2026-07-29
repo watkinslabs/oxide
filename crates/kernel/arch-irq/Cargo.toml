@@ -29,3 +29,6 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
 debug-wakelat = ["sched/debug-wakelat"]  # LAPIC tick period + stall probe ([WLTICK]/[WLTICKGAP]) for the gnome wakeup-latency hunt
+
+[lints]
+workspace = true

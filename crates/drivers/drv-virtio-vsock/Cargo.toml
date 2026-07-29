@@ -29,3 +29,6 @@ debug-boot = []
 
 [dev-dependencies]
 net = { path = "../../kernel/net", features = ["hosted"] }
+
+[lints]
+workspace = true

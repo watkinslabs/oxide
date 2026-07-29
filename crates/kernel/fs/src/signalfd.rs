@@ -12,7 +12,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use vfs::{File, FileType, Ino, Inode, InodeRef, KResult, PollSubscribers, VfsError};
+use vfs::{File, FileType, Inode, InodeRef, KResult, PollSubscribers, VfsError};
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 use crate::userbuf::validate_user_buf;
 

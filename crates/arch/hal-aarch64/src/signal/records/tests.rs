@@ -2,6 +2,9 @@
 // Linux writes, and the exact rejection table `parse_user_sigframe` applies.
 
 use super::*;
+// The magics this kernel rejects live in their own module so the whole table
+// carries one `dead_code` allow; the rejection test below names each entry.
+use super::unsupported_magic::*;
 
 /// A frame base and `__reserved` address that satisfy Linux's 16-alignment
 /// precondition; the real ones come from `super::RESERVED_IN_FRAME`.

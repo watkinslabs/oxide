@@ -151,7 +151,7 @@ fn delroute_without_oif_removes_lowest_metric_matching_alias() {
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
-    let ifindex = visible_ifindex(iface, ns);
+    let _ifindex = visible_ifindex(iface, ns);
     let dst = Some(([198, 18, 84, 0], 24));
     route_insert(RouteRow {
         ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,

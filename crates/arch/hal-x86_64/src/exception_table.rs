@@ -1,3 +1,6 @@
+// The table type and its scan are reached from `lookup` (kernel target only)
+// and from the host unit test at the bottom of this file.
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 #[repr(C)]
 struct Entry {
     insn: i32,
@@ -10,6 +13,7 @@ extern "C" {
     static __ex_table_end: Entry;
 }
 
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 fn lookup_range(start: *const Entry, end: *const Entry, pc: u64) -> Option<u64> {
     let bytes = (end as usize).checked_sub(start as usize)?;
     if bytes % core::mem::size_of::<Entry>() != 0 { return None; }

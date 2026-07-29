@@ -2,7 +2,6 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use hal::Context;
 use crate::{SchedClass, Task};
 
 use super::hooks::RunStats;

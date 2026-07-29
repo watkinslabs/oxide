@@ -33,3 +33,6 @@ debug-udevdb = []
 debug-zram = []
 debug-zram-lifecycle = ["drv-zram/debug-zram-lifecycle"]
 debug-displaystack = []  # [VT-POLL] tty0/active notification and read trace
+
+[lints]
+workspace = true

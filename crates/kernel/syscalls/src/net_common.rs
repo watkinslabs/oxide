@@ -11,6 +11,10 @@ mod sendmmsg_hosted;
 
 /// Socket plus the `fget`-style file pin held for the syscall duration.
 pub(crate) struct SocketFileRef {
+    /// Never read: it exists to hold the open file description alive for as
+    /// long as the classified socket is in use (Linux `fget`/`fput`). Dropping
+    /// the field would drop the pin, not just a getter.
+    #[allow(dead_code, reason = "RAII fget pin on the open file description; read by nobody by design")]
     file: Arc<vfs::File>,
     socket: Arc<InetSocket>,
 }
@@ -29,7 +33,11 @@ impl VsockFileRef {
 }
 
 impl SocketFileRef {
-    /// Snapshot `O_NONBLOCK` from the pinned open file description. # C: O(1)
+    /// Snapshot `O_NONBLOCK` from the pinned open file description. The INET
+    /// syscall paths read the flag straight off their own `Arc<vfs::File>`
+    /// (`042_connect`, `recvmsg::dispatch`), so only the hosted tests that
+    /// assert the pin carries the flag reach this. # C: O(1)
+    #[cfg(all(test, not(target_os = "oxide-kernel")))]
     pub(crate) fn is_nonblock(&self) -> bool {
         self.file.flags().contains(vfs::OpenFlags::O_NONBLOCK)
     }
@@ -47,9 +55,6 @@ impl core::ops::Deref for SocketFileRef {
 
 pub(crate) const AF_INET:     u32 = 2;
 pub(crate) const AF_INET6:    u32 = 10;
-pub(crate) const SOCK_STREAM: u32 = 1;
-pub(crate) const SOCK_DGRAM:  u32 = 2;
-pub(crate) const SOCK_SEQPACKET: u32 = 5;
 
 /// Classify an already-pinned file as INET/AF_UNIX while retaining its pin.
 /// # C: O(1)

@@ -34,7 +34,11 @@ const S_IRWXO:   u16 = 0o7;
 const S_IRWXG:   u16 = 0o70;
 const S_ISGID:   u16 = 0o2000;
 
-/// One decoded `struct posix_acl_xattr_entry`.
+/// One decoded `struct posix_acl_xattr_entry`. `id` mirrors `e_id` and is
+/// decoded for layout fidelity only: the mode fold (`equiv_mode`) needs just
+/// tag+perm, and enforcement re-parses ids straight out of the stored blob in
+/// `vfs::namei::permission::posix_acl_permission`.
+#[allow(dead_code, reason = "mirrors struct posix_acl_xattr_entry; e_id is part of the ABI record even though only tag+perm are folded here")]
 #[derive(Clone, Copy)]
 struct AclEntry { tag: u16, perm: u16, id: u32 }
 

@@ -25,3 +25,6 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 [features]
 default = []
 debug-boot = []
+
+[lints]
+workspace = true

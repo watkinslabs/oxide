@@ -657,19 +657,6 @@ fn trace_swapon_process(phase: &[u8], nr: u64, result: Option<i64>) {
     klog::write_raw(b"\n");
 }
 
-/// Linux `restore_saved_sigmask()`: a `rt_sigsuspend`/`pselect6`-style
-/// temporary mask is put back on the way to userspace, but ONLY when no
-/// handler ran — a handler must execute under the temporary mask and let
-/// `rt_sigreturn` restore the saved one from its frame. One-shot: the flag is
-/// consumed by whichever of the two paths gets there first, so calling this on
-/// every no-handler exit is safe.
-/// # C: O(1)
-#[inline]
-fn restore_saved_sigmask() {
-    if let Some(cur) = sched::live::current() { cur.restore_saved_sigmask(); }
-}
-
-
 /// Bounded ledger of every syscall that returns `EINVAL`, with the task that
 /// received it. A userspace event loop whose dispatch callback fails with
 /// "Invalid argument" gives no clue WHICH call failed — this names it instead

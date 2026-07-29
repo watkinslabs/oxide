@@ -30,8 +30,6 @@ nscg = { path = "../nscg" }
 [dev-dependencies]
 loom = "0.7.2"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 # F159: TCP retx scanner needs monotonic_ns. Per-arch HAL only links
 # in for the matching kernel target; hosted tests skip the call site
@@ -51,3 +49,6 @@ debug-scmfd = []  # [SCMW]/[SCMR] AF_UNIX SOCK_STREAM SCM_RIGHTS send/recv probe
 debug-syscost = []  # [UXWRITE] connected-socket write trace for polkit<->dbus-broker reply-delivery hunt
 debug-dbus = []  # [DBUS] dump AF_UNIX stream messages touching login1 session iface / D-Bus errors — mutter get_session_proxy failure hunt
 debug-dbus-verbose = ["debug-dbus"]  # retain the complete broker-frame stream; debug-dbus itself stays focused on login/session traffic
+
+[lints]
+workspace = true

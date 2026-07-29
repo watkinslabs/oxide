@@ -33,3 +33,6 @@ debug-boot = []
 # uses. No effect on the kernel target (which enables that surface via
 # target_os = "oxide-kernel"). Off by default.
 hosted = ["net/hosted"]
+
+[lints]
+workspace = true

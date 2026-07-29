@@ -2,8 +2,6 @@
 
 extern crate alloc;
 
-use syscall::errno::Errno;
-
 /// True if `[ptr, ptr+len)` lies wholly in the userspace VA window. Mirrors the
 /// `arg==0 || arg>=USER_VA_END` guard used across this file but for a multi-byte
 /// span (used by the TIOCLINUX struct reads/writes). # C: O(1)

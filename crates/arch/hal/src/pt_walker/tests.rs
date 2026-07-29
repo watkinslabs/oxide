@@ -30,8 +30,8 @@ use super::*;
     impl PtWalker for HostWalker {
         const PHYS_MASK: u64 = 0xffff_ffff_ffff_f000;
         unsafe fn read_pt_base(_va: u64) -> u64 {
-            // SAFETY: hosted test; FAKE_ROOT is `static mut` test state.
-            unsafe { (&raw mut FAKE_ROOT).cast::<u8>() as u64 }
+            // Hosted test; raw-ref-to-`static mut` needs no unsafe.
+            (&raw mut FAKE_ROOT).cast::<u8>() as u64
         }
         unsafe fn flush_va(_va: u64) {
             // SAFETY: hosted test; mutate the test-only counter.

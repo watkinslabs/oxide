@@ -3,7 +3,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 

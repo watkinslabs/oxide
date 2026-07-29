@@ -8,8 +8,6 @@
 
 extern crate alloc;
 
-type DeviceKey = virtio::VirtioChildDeviceKey;
-
 mod wire;
 pub use wire::*;
 

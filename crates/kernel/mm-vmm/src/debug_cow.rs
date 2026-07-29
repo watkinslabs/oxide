@@ -11,6 +11,7 @@
 // snapshot/verify variants share ONE side table keyed by frame PA; the
 // per-slot `kind` selects the log tag so the classes stay independent:
 
+#[cfg(feature = "debug-cow")]
 const PAGE_ALIGN_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
 //   1a. ANON RO-shared checksum. `record` snapshots an anon frame the
 //       moment `fork_cow` write-protects it; `check_write` re-verifies

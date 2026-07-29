@@ -41,6 +41,7 @@ impl NetStack {
     }
 
     /// Answer ARP for an IPv4 address owned by a bridge link. # C: O(frame + N ports)
+    #[expect(dead_code, reason = "no caller: no bridge ingress path invokes this, so a bridge holding an IPv4 address never answers ARP for it and is unreachable from the LAN — bridge RX should call it before FDB forwarding")]
     pub(super) fn bridge_answer_arp(&self, bridge: &crate::IngressLease, frame: &[u8],
                                     header: crate::ethernet::EthHdr) -> NetResult<()>
     {

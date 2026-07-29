@@ -45,21 +45,26 @@ pub const EXTRA_MAGIC: u32 = 0x4558_5401;
 // `HWCAP_FP | HWCAP_ASIMD` plus ISAR0 crypto bits and NOTHING else, so an SVE
 // instruction at EL0 traps. On such a CPU Linux emits no SVE/SME record and
 // its parser sends every magic below down `default: goto invalid`. Named here
-// so the rejection is visibly deliberate rather than an unlisted default.
-/// `SVE_MAGIC` — rejected: `!system_supports_sve() && !system_supports_sme()`.
-pub const SVE_MAGIC: u32 = 0x5356_4501;
-/// `ZA_MAGIC` — rejected: `!system_supports_sme()`.
-pub const ZA_MAGIC: u32 = 0x54366345;
-/// `ZT_MAGIC` — rejected: `!system_supports_sme2()`.
-pub const ZT_MAGIC: u32 = 0x5a544e01;
-/// `TPIDR2_MAGIC` — rejected: `!system_supports_tpidr2()`.
-pub const TPIDR2_MAGIC: u32 = 0x5450_4902;
-/// `FPMR_MAGIC` — rejected: `!system_supports_fpmr()`.
-pub const FPMR_MAGIC: u32 = 0x4650_4d52;
-/// `POE_MAGIC` — rejected: `!system_supports_poe()`.
-pub const POE_MAGIC: u32 = 0x504f_4530;
-/// `GCS_MAGIC` — rejected: `!system_supports_gcs()`.
-pub const GCS_MAGIC: u32 = 0x4743_5300;
+// so the rejection is visibly deliberate rather than an unlisted default;
+// `records/tests.rs` `sve_and_sme_records_are_rejected_as_they_are_on_a_non_sve_cpu`
+// pins that rejection for every entry.
+#[allow(dead_code, reason = "complete `_aarch64_ctx` magic table; these entries are the ones Linux gates behind system_supports_*() and this kernel enables none of them, so they are deliberately matched by scan_region's reject arm rather than by name")]
+pub mod unsupported_magic {
+    /// `SVE_MAGIC` — rejected: `!system_supports_sve() && !system_supports_sme()`.
+    pub const SVE_MAGIC: u32 = 0x5356_4501;
+    /// `ZA_MAGIC` — rejected: `!system_supports_sme()`.
+    pub const ZA_MAGIC: u32 = 0x54366345;
+    /// `ZT_MAGIC` — rejected: `!system_supports_sme2()`.
+    pub const ZT_MAGIC: u32 = 0x5a544e01;
+    /// `TPIDR2_MAGIC` — rejected: `!system_supports_tpidr2()`.
+    pub const TPIDR2_MAGIC: u32 = 0x5450_4902;
+    /// `FPMR_MAGIC` — rejected: `!system_supports_fpmr()`.
+    pub const FPMR_MAGIC: u32 = 0x4650_4d52;
+    /// `POE_MAGIC` — rejected: `!system_supports_poe()`.
+    pub const POE_MAGIC: u32 = 0x504f_4530;
+    /// `GCS_MAGIC` — rejected: `!system_supports_gcs()`.
+    pub const GCS_MAGIC: u32 = 0x4743_5300;
+}
 
 /// `sizeof(struct fpsimd_context)` = head + fpsr + fpcr + 32 × 16 B vregs.
 pub const FPSIMD_CONTEXT_BYTES: usize = CTX_HEAD_BYTES + 8 + 32 * 16;

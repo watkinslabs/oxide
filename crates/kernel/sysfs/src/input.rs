@@ -171,8 +171,9 @@ impl FileOps for InputDevDirOps {
             ("subsystem", FileType::Symlink),
         ];
         let d = inode.private::<InputDevDirData>().ok_or(VfsError::Einval)?;
-        let info = input_by_addr(&d.addr).ok_or(VfsError::Enoent)?;
-        let mut entries: Vec<(&str, FileType)> = BASE_ENTRIES.to_vec();
+        // Existence check only: an eventN dir whose device went away is ENOENT.
+        let _info = input_by_addr(&d.addr).ok_or(VfsError::Enoent)?;
+        let entries: Vec<(&str, FileType)> = BASE_ENTRIES.to_vec();
         let mut idx = ctx.pos as usize;
         while idx < entries.len() {
             let (name, ft) = entries[idx];

@@ -2,8 +2,6 @@
 
 extern crate alloc;
 
-use syscall::errno::Errno;
-
 /// KDFONTOP + PIO/GIO_UNIMAP — the `setfont` font + unicode-map path
 /// (Linux `con_font_op` / `con_set_unimap`). KDFONTOP loads/reads the glyph
 /// bitmaps (32 bytes/glyph buffer); the unicode map is set separately by

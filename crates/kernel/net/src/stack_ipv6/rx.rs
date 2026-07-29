@@ -4,7 +4,7 @@ use crate::netdev::NetResult;
 use crate::stack::NetStack;
 use crate::stack_ipv6::Udp6RxQueue;
 use crate::ndp;
-use crate::netfilter_hook::{nf_hook_eval, NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INET_PRE_ROUTING};
+use crate::netfilter_hook::{NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INET_PRE_ROUTING};
 
 impl NetStack {
     /// Demux IPv6 after resolving the ingress interface owner. # C: O(payload)
@@ -423,10 +423,6 @@ fn quoted_raw6(invoking: &[u8]) -> Option<(Ipv6Hdr, u8, &[u8])> {
         crate::ipv6_ext::ExtWalk::Fragment { next_header, payload, .. } =>
             Some((hdr, next_header, payload)),
     }
-}
-
-fn quoted_udp6_tuple(invoking: &[u8]) -> Option<(Ipv6Addr, u16, Ipv6Addr, u16)> {
-    quoted_udp6(invoking).map(|(src, sport, dst, dport, _)| (src, sport, dst, dport))
 }
 
 fn icmpv6_checksum_valid(payload: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> bool {

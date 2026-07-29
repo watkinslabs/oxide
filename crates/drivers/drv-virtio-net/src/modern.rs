@@ -103,6 +103,7 @@ pub use tx::{tx_frame_for, TxErr, TxOutcome, TX_MAX_BODY};
 
 mod netdev;
 pub use netdev::{register_netdev, unregister_netdev, VirtioNetDev};
+#[cfg(test)]
 use netdev::{ensure_net_runtime, net_runtime_for, remove_net_runtime, NET_RUNTIMES};
 
 mod rx;
@@ -116,8 +117,9 @@ pub use rx::{
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use rx::{poll_into_stack_for, rx_drain_softirq};
-use rx::{clear_rx_runtime, first_iface_ip_for, install_rx_runtime,
-    release_rx_shared_runtime_if_last, remove_rx_runtime_for, set_softirq_iface};
+use rx::{install_rx_runtime, release_rx_shared_runtime_if_last, remove_rx_runtime_for};
+#[cfg(test)]
+use rx::{clear_rx_runtime, first_iface_ip_for, set_softirq_iface};
 
 mod neighbor;
 #[cfg(test)]

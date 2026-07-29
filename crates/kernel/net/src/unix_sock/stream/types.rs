@@ -2,7 +2,6 @@ use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
 
-use sched;
 use vfs;
 
 use super::super::{EndCred, GcNode, GcRights};

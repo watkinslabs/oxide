@@ -37,22 +37,6 @@ mod asm;
 
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 extern "C" {
-    fn oxide_irq_resume_user() -> !;
-}
-
-/// Address of the shared IRQ epilogue (`oxide_irq_resume_user`),
-/// the saved-LR value `Context::new_kernel_with_irq_frame` parks
-/// in `Context.lr`. Returns 0 on host (asm symbol absent).
-/// # C: O(1)
-pub fn irq_resume_user_addr() -> u64 {
-    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    { oxide_irq_resume_user as *const () as usize as u64 }
-    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
-    { 0 }
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-extern "C" {
     static oxide_vector_table: u8;
 }
 
@@ -87,29 +71,63 @@ const PERCPU_KSTACK_TOP_OFF: usize = 40;
 /// `TPIDRRO_EL0`). Two scratch regs are needed to compare SP against a pair of
 /// bounds, and nothing may be pushed — SP is the value in doubt.
 /// Must match `[x0, #48]` in the entry asm.
+// Per-CPU-area offset table: slot 48 is asm-private scratch, so unlike its
+// neighbours it has no Rust accessor. Kept so the table stays complete and the
+// next slot allocation does not silently reuse it.
+#[allow(dead_code, reason = "per-CPU area offset table entry; slot 48 is written only by the entry asm (`str x1, [x0, #48]`), so no Rust caller exists by design")]
 const PERCPU_BADSTK_SCRATCH_OFF: usize = 48;
 /// Per-CPU overflow-stack top the bad-stack path switches to before reporting.
 /// 0 = unarmed ⇒ the check falls through rather than jumping to a null SP.
 /// Must match `[x1, #56]` in the entry asm.
 const PERCPU_OVERFLOW_TOP_OFF: usize = 56;
+
+// ---------------------------------------------------------------------------
+// EL0 trapped-MRS/MSR (`ESR_EL1.EC == 0x18`) ISS decode.
+//
+// Every item below feeds `oxide_arm_sysreg_trap_handler`, which exists only on
+// the kernel target. The decode half is additionally reachable from the host
+// unit tests at the bottom of this file, so it carries `test` in its gate; the
+// write-back half (`write_saved_rt` and the constants only it uses) is not
+// covered by a test and is kernel-target-only.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const AARCH64_INSN_BYTES: u64 = 4;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const ESR_EC_SHIFT: u64 = 26;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const ESR_EC_MASK: u64 = 0x3f;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const ESR_EC_SYSREG_TRAP: u64 = 0x18;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_DIR_READ: u64 = 1;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_DIR_SHIFT: u64 = 0;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_RT_SHIFT: u64 = 5;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_RT_MASK: u64 = 0x1f;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_CRN_SHIFT: u64 = 10;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_CRM_SHIFT: u64 = 1;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_OP1_SHIFT: u64 = 14;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_OP2_SHIFT: u64 = 17;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_ISS_OP0_SHIFT: u64 = 20;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_OP0_MASK: u64 = 0x3;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_OP_MASK: u64 = 0x7;
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_CR_MASK: u64 = 0xf;
+/// XZR encoding in the ISS `Rt` field: a read into it discards the value.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const SYSREG_XZR_RT: u64 = 31;
 
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct SysReg {
     op0: u64,
@@ -119,7 +137,10 @@ struct SysReg {
     op2: u64,
 }
 
+// Only the handler reads CNTFRQ_EL0; the test below decodes CNTVCT_EL0.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const SYSREG_CNTFRQ_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 0 };
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_CNTVCT_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 2 };
 
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
@@ -292,12 +313,16 @@ pub fn on_irq_stack() -> bool {
 
 /// Per-CPU IRQ-stack size. Must track `sched::kstack::KSTACK_BYTES`, which the
 /// IRQ entry asm also hardcodes as its range bound (`sub x11, x10, #16384`).
+// Read only by `on_irq_stack`'s kernel-target arm above.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const IRQ_STACK_BYTES: u64 = 16384;
 
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 fn sysreg_ec(esr: u64) -> u64 {
     (esr >> ESR_EC_SHIFT) & ESR_EC_MASK
 }
 
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 fn sysreg_iss_reg(esr: u64) -> SysReg {
     SysReg {
         op0: (esr >> SYSREG_ISS_OP0_SHIFT) & SYSREG_OP0_MASK,
@@ -308,14 +333,17 @@ fn sysreg_iss_reg(esr: u64) -> SysReg {
     }
 }
 
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 fn sysreg_iss_rt(esr: u64) -> u64 {
     (esr >> SYSREG_ISS_RT_SHIFT) & SYSREG_ISS_RT_MASK
 }
 
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 fn sysreg_iss_is_read(esr: u64) -> bool {
     ((esr >> SYSREG_ISS_DIR_SHIFT) & SYSREG_ISS_DIR_READ) == SYSREG_ISS_DIR_READ
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 fn write_saved_rt(frame: &mut SvcFrame, rt: u64, value: u64) {
     match rt {
         0..=17 => frame.gp[rt as usize] = value,

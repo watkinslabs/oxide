@@ -68,11 +68,11 @@ pub fn publish() {
     use hal::TimerOps;
     let v = match live() { Some(v) => v, None => return };
     #[cfg(target_arch = "x86_64")]
-    let (ns, khz) = (hal_x86_64::X86TimerOps::monotonic_ns().0,
-                     hal_x86_64::X86TimerOps::freq_khz());
+    let (_ns, khz) = (hal_x86_64::X86TimerOps::monotonic_ns().0,
+                      hal_x86_64::X86TimerOps::freq_khz());
     #[cfg(target_arch = "aarch64")]
-    let (ns, khz) = (hal_aarch64::ArmTimerOps::monotonic_ns().0,
-                     hal_aarch64::ArmTimerOps::freq_khz());
+    let (_ns, khz) = (hal_aarch64::ArmTimerOps::monotonic_ns().0,
+                      hal_aarch64::ArmTimerOps::freq_khz());
     // CLOCK_REALTIME tracks monotonic + the settimeofday offset; the vDSO
     // reads this coarse namespace-independent snapshot.
     let rt = timekeeper::realtime_ns();

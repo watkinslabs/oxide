@@ -12,7 +12,6 @@ pub use crate::registry::{
 
 use crate::Task;
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
 
 /// If `task` is currently `Stopped`, transition to `Runnable` and
 /// re-enqueue into the global runqueue. Used by SIGCONT delivery.

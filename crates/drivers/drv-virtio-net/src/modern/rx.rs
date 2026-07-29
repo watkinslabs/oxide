@@ -12,9 +12,12 @@ pub(super) mod assignment;
 mod metadata;
 mod runtime;
 use assignment::completion;
-pub(super) use runtime::{clear_rx_runtime, clear_softirq_ip_for_owner,
-    first_iface_ip_for, install_rx_runtime, remove_rx_runtime_for, rx_runtime_empty,
-    set_rx_generation_for_owner, set_softirq_iface, set_softirq_ip_for_owner};
+pub(super) use runtime::{clear_softirq_ip_for_owner,
+    install_rx_runtime, remove_rx_runtime_for, rx_runtime_empty,
+    set_rx_generation_for_owner, set_softirq_ip_for_owner};
+// Reached only from `modern.rs`'s `#[cfg(test)]` import and the tests module.
+#[cfg(test)]
+pub(super) use runtime::{clear_rx_runtime, first_iface_ip_for, set_softirq_iface};
 #[cfg(test)]
 pub(super) use runtime::set_softirq_ip_for_iface;
 

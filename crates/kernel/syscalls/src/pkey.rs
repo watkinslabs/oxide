@@ -25,6 +25,13 @@
 // and cannot be exercised hosted, which would leave the errno ordering — the
 // whole point of this module — untested.
 
+// UAPI table: BOTH arches' `PKEY_ACCESS_MASK` bits and `PkeyAbi` descriptors
+// are defined unconditionally so `pkey/tests.rs` can drive the non-native arch
+// explicitly (`ARCH` selects only one, so the other half — and the two
+// aarch64-exclusive mask bits it is built from — is unreferenced by the kernel
+// build by design, on whichever arch is being compiled).
+#![allow(dead_code, reason = "per-arch pkey UAPI table (mm/mprotect.c): the non-native arch's descriptor + masks are kept for the hosted differential tests")]
+
 use syscall::errno::Errno;
 use vmm::pkeys::{self, PkeyArch};
 

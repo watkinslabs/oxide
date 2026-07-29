@@ -56,6 +56,8 @@ pub const HDR_RESERVED_BYTES: usize = 48;
 /// `mxcsr` inside the FXSAVE image.
 pub const MXCSR_OFF: usize = 24;
 /// `mxcsr_mask` inside the FXSAVE image.
+// Read by `fpu::mxcsr_mask_init`'s `fxsave` probe, which is kernel-target-only.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const MXCSR_MASK_OFF: usize = 28;
 
 /// Linux `XFEATURE_MASK_FPSSE` = x87 | SSE. Always forced present in a
@@ -64,9 +66,12 @@ pub const MXCSR_MASK_OFF: usize = 28;
 pub const XFEATURE_MASK_FPSSE: u64 = 0b11;
 /// Linux `XFEATURE_MASK_YMM`, joined with FP|SSE to decide when MXCSR is
 /// live and must be range-checked (`copy_uabi_to_xstate`).
+#[expect(dead_code, reason = "no caller: build_restore_image calls mxcsr_is_valid unconditionally, before it reads the header, instead of gating on `hdr.xfeatures & (FP|SSE|YMM)` the way arch/x86/kernel/fpu/xstate.c:1333-1344 does")]
 pub const XFEATURE_MASK_YMM: u64 = 1 << 2;
 /// Fallback `mxcsr_feature_mask` when the CPU reports `mxcsr_mask == 0`
 /// (`arch/x86/kernel/fpu/init.c` `fpu__init_system_mxcsr`).
+// Consumed by `fpu::mxcsr_mask_init`, which is kernel-target-only.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const MXCSR_DEFAULT_FEATURE_MASK: u32 = 0x0000_ffbf;
 
 /// XSAVE demands a 64-byte-aligned area; `xsave64`/`xrstor64` #GP below it.

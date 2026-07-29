@@ -7,8 +7,10 @@ use movable::OwnerId;
 
 use super::class::{Fullness, SizeClass};
 use super::handle::{Handle, ObjectHeader, ObjectLocation, RegistryEntry};
+#[cfg(test)]
 use super::limits::ZS_FULLNESS_GROUP_COUNT;
 use super::platform::{page_provider, PageProvider};
+#[cfg(test)]
 use super::migration::ZsPoolStats;
 
 pub(super) struct ZsPage {
@@ -231,7 +233,8 @@ impl ZsPool {
         let handle = self.allocate_handle(ObjectHeader { location: ObjectLocation { zspage, slot }, length: bytes.len(), class_bytes: class.object_bytes })?;
         let page = self.zspages[zspage].as_mut().ok_or(BlockError::Eio)?;
         let start = slot.checked_mul(class.object_bytes).ok_or(BlockError::Eio)?;
-        let end = start.checked_add(bytes.len()).ok_or(BlockError::Eio)?;
+        // Overflow guard only; `copy_in` re-derives the end from `bytes.len()`.
+        let _end = start.checked_add(bytes.len()).ok_or(BlockError::Eio)?;
         page.copy_in(self.provider.ok_or(BlockError::Enomem)?, start, bytes)?;
         page.handles[slot] = Some(handle);
         Ok(handle)
@@ -245,20 +248,25 @@ impl ZsPool {
         let page = self.zspages.get(header.location.zspage).and_then(Option::as_ref).ok_or(BlockError::Eio)?;
         self.validate_location(page, handle, header)?;
         let start = header.location.slot.checked_mul(header.class_bytes).ok_or(BlockError::Eio)?;
-        let end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
+        // Overflow guard only; `copy_out` re-derives the end from `out.len()`.
+        let _end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
         page.copy_out(self.provider.ok_or(BlockError::Enomem)?, start, out)?;
         Ok(())
     }
 
     /// Replaces an object payload without changing its stable handle or class.
+    /// Test-only: the live encode path allocates and copies in one step via
+    /// `alloc`, unlike Linux's split `zs_malloc` + `zs_obj_write`.
     /// # C: O(object length)
+    #[cfg(test)]
     pub(crate) fn write_from(&mut self, handle: Handle, bytes: &[u8]) -> KResult<()> {
         let header = self.header(handle)?;
         if bytes.len() != header.length { return Err(BlockError::Einval); }
         let page = self.zspages.get_mut(header.location.zspage).and_then(Option::as_mut).ok_or(BlockError::Eio)?;
         Self::validate_location_static(page, handle, header)?;
         let start = header.location.slot.checked_mul(header.class_bytes).ok_or(BlockError::Eio)?;
-        let end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
+        // Overflow guard only; `copy_in` re-derives the end from `bytes.len()`.
+        let _end = start.checked_add(header.length).ok_or(BlockError::Eio)?;
         page.copy_in(self.provider.ok_or(BlockError::Enomem)?, start, bytes)?;
         Ok(())
     }
@@ -299,8 +307,11 @@ impl ZsPool {
         u64::try_from(self.page_count()).ok().and_then(|pages| pages.checked_mul(hal::PAGE_SIZE_BYTES)).ok_or(BlockError::Enomem)
     }
 
-    /// Returns canonical backend occupancy and compaction eligibility.
+    /// Test-only observation of backend occupancy and compaction eligibility.
+    /// zram's mm_stat is served by state/stats.rs over `page_count` /
+    /// `allocated_bytes` / `reclaimable_pages`, not by this.
     /// # C: O(number of zspages squared in the worst fragmented class)
+    #[cfg(test)]
     pub(super) fn stats(&self) -> ZsPoolStats {
         let zspages = self.zspages.iter().flatten().count();
         let pages = self.page_count();
@@ -310,6 +321,7 @@ impl ZsPool {
 
     /// True when a partially used zspage can be emptied into existing same-class storage.
     /// # C: O(number of zspages squared in the worst fragmented class)
+    #[cfg(test)]
     pub(super) fn can_compact(&self) -> bool {
         self.zspages.iter().enumerate().any(|(source, page)| {
             page.as_ref().is_some_and(|page| page.fullness() == Fullness::AlmostEmpty && self.can_empty_source(source))
@@ -431,7 +443,7 @@ impl ZsPool {
         for (source_slot, handle) in source_slots {
             let (destination_page, destination_slot) = self.compact_destination(source, class).ok_or(BlockError::Eio)?;
             let source_start = source_slot.checked_mul(class.object_bytes).ok_or(BlockError::Eio)?;
-            let source_end = source_start.checked_add(class.object_bytes).ok_or(BlockError::Eio)?;
+            let _source_end = source_start.checked_add(class.object_bytes).ok_or(BlockError::Eio)?;
             let page = self.zspages.get(source).and_then(Option::as_ref).ok_or(BlockError::Eio)?;
             page.copy_out(self.provider.ok_or(BlockError::Enomem)?, source_start, &mut scratch)?;
             let destination_start = destination_slot.checked_mul(class.object_bytes).ok_or(BlockError::Eio)?;

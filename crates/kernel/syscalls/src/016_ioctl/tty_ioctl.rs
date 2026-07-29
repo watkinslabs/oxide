@@ -329,7 +329,6 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
                 // tcgetpgrp(slave) returns 0 on the very first call
                 // and any job-control shell (bash, dash)
                 // kills itself with SIGTTIN before reading any input.
-                use core::sync::atomic::Ordering;
                 let pgid = cur.pgid();
                 let sid  = cur.sid();
                 pair.with_pair(|p| {
@@ -338,7 +337,6 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
                 });
                 return 0;
             }
-            use core::sync::atomic::Ordering;
             let sid  = cur.sid();
             let pgid = cur.pgid();
             // B18: when a session leader acquires its controlling

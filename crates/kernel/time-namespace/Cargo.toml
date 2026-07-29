@@ -10,3 +10,6 @@ path = "src/lib.rs"
 [dependencies]
 namespace-identity = { path = "../namespace-identity" }
 sync = { path = "../../shared/sync" }
+
+[lints]
+workspace = true

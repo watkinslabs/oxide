@@ -1,7 +1,7 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
-use crate::addr::{IpAddr, Ipv4Addr};
+use crate::addr::IpAddr;
 
 /// Endpoint = (ip, port).
 /// v1-minimum: one connection can speak both IPv4/IPv6.

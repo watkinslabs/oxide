@@ -1,4 +1,6 @@
-use crate::{BootInfo, BootMemRegion, GLOBAL_ALLOC, zerotrap_tid};
+use crate::{BootInfo, GLOBAL_ALLOC, zerotrap_tid};
+#[cfg(feature = "debug-pmm")]
+use crate::BootMemRegion;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 use crate::kthread;
 
@@ -252,10 +254,10 @@ fn init_pmm_and_arch(info: &BootInfo) {
             Err(pmm::setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
         }
     }
-    if let Ok(p) = pmm {
-        debug_pmm! { smoke::pmm::run(p); }
+    if let Ok(_p) = pmm {
+        debug_pmm! { smoke::pmm::run(_p); }
         #[cfg(feature = "debug-memtest")]
-        smoke::memtest::run(p);
+        smoke::memtest::run(_p);
         #[cfg(target_arch = "x86_64")]
         unsafe {
             hal_x86_64::mmu_ops::set_hhdm_offset(info.hhdm_offset);

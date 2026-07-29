@@ -37,27 +37,6 @@ pub(super) fn set_enabled(bdf: pci::Bdf, cfg_off: u8, enabled: bool) {
     }
 }
 
-pub(super) fn read_control_word(bdf: pci::Bdf, cfg_off: u8) -> u32 {
-    let off = cfg_off & 0xFC;
-    #[cfg(target_arch = "x86_64")]
-    {
-        hal_x86_64::pci::EcamPci::from_published()
-            .map(|r| {
-                use pci::ConfigSpaceReader as _;
-                r.read32(bdf, off)
-            })
-            .unwrap_or(0)
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        hal_aarch64::pci::EcamPci::from_published()
-            .map(|r| {
-                <hal_aarch64::pci::EcamPci as pci::ConfigSpaceReader>::read32(&r, bdf, off)
-            })
-            .unwrap_or(0)
-    }
-}
-
 pub(super) fn set_enabled_masked(bdf: pci::Bdf, cfg_off: u8) {
     let off = cfg_off & 0xFC;
     #[cfg(target_arch = "x86_64")]

@@ -2,7 +2,6 @@
 
 pub(super) const SOL_SOCKET: u64 = 1;
 pub(super) const SO_REUSEADDR: u64 = 2;
-pub(super) const SO_TYPE: u64 = 3;
 pub(super) const SO_ERROR: u64 = 4;
 pub(super) const SO_BROADCAST: u64 = 6;
 pub(super) const SO_SNDBUF: u64 = 7;

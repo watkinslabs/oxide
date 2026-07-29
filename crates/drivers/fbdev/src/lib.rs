@@ -29,8 +29,6 @@ pub use vblank::{
     VSYNC_DEADLINE_NS,
 };
 #[cfg(test)]
-use vblank::{NOW_HOOK, VBLANK_SEQ, YIELD_HOOK};
-#[cfg(not(test))]
 use vblank::VBLANK_SEQ;
 
 #[cfg(test)]

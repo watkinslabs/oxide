@@ -66,6 +66,9 @@ trait StatSink {
     fn zero(&mut self, bytes: u64);
     fn w32(&mut self, off: u64, v: u32);
     fn w64(&mut self, off: u64, v: u64);
+    /// Only `write_aarch64` has a signed 32-bit field (`st_blksize`); the
+    /// x86_64 `struct stat` widens it to `__kernel_long_t`.
+    #[cfg(any(test, target_arch = "aarch64"))]
     fn wi32(&mut self, off: u64, v: i32);
     fn wi64(&mut self, off: u64, v: i64);
 }
@@ -87,6 +90,7 @@ impl StatSink for UserSink {
         // SAFETY: caller validated the full user output range writable.
         unsafe { core::ptr::write_unaligned((self.base + off) as *mut u64, v); }
     }
+    #[cfg(any(test, target_arch = "aarch64"))]
     fn wi32(&mut self, off: u64, v: i32) {
         // SAFETY: caller validated the full user output range writable.
         unsafe { core::ptr::write_unaligned((self.base + off) as *mut i32, v); }

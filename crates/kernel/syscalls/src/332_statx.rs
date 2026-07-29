@@ -5,7 +5,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
 
 use crate::statx_abi::{cp_statx, statx_entry, statx_validate, StatxEntry, StatxPathInfo,
     AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_SYMLINK_NOFOLLOW, STATX_SIZE};

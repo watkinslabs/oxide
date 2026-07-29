@@ -1,3 +1,4 @@
+#[cfg(target_os = "oxide-kernel")]
 use crate::{boot_debug, boot_info_build, pl011};
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 use crate::selfboot;
