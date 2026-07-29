@@ -305,17 +305,11 @@ pub fn on_irq_stack() -> bool {
         let sp: u64;
         // SAFETY: reads the architectural SP only; no memory or flag effects.
         unsafe { core::arch::asm!("mov {v}, sp", v = out(reg) sp, options(nomem, nostack, preserves_flags)); }
-        sp < top && sp >= top - IRQ_STACK_BYTES
+        sp < top && sp >= top - hal::KERNEL_STACK_BYTES as u64
     }
     #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
     { false }
 }
-
-/// Per-CPU IRQ-stack size. Must track `sched::kstack::KSTACK_BYTES`, which the
-/// IRQ entry asm also hardcodes as its range bound (`sub x11, x10, #16384`).
-// Read only by `on_irq_stack`'s kernel-target arm above.
-#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-const IRQ_STACK_BYTES: u64 = 16384;
 
 #[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 fn sysreg_ec(esr: u64) -> u64 {
