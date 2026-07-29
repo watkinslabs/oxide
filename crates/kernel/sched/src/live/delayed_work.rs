@@ -118,6 +118,9 @@ pub fn tick(now_ns: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset() {
         let mut g = PENDING.lock_irqsave::<DwIrq>();
@@ -127,11 +130,17 @@ mod tests {
         EARLIEST_NS.store(u64::MAX, Ordering::Release);
     }
 
+    fn begin_test() -> MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        guard
+    }
+
     fn noop(_arg: usize) {}
 
     #[test]
     fn nothing_is_due_before_the_deadline() {
-        reset();
+        let _serial = begin_test();
         assert!(queue_delayed_work_on(0, noop, 1, 1_000, 500));
         assert_eq!(pending(), 1);
         assert_eq!(tick(1_400), 0, "not yet due");
@@ -140,7 +149,7 @@ mod tests {
 
     #[test]
     fn a_due_item_is_handed_to_the_workqueue_exactly_once() {
-        reset();
+        let _serial = begin_test();
         assert!(queue_delayed_work_on(0, noop, 2, 1_000, 500));
         assert_eq!(tick(1_500), 1, "due at exactly the deadline");
         assert_eq!(pending(), 0);
@@ -149,7 +158,7 @@ mod tests {
 
     #[test]
     fn the_earliest_deadline_gates_the_walk() {
-        reset();
+        let _serial = begin_test();
         assert!(queue_delayed_work_on(0, noop, 3, 0, 900));
         assert!(queue_delayed_work_on(0, noop, 4, 0, 100));
         // Only the 100 item is due; the 900 one stays and becomes the earliest.
@@ -160,7 +169,7 @@ mod tests {
 
     #[test]
     fn a_full_table_refuses_rather_than_dropping_silently() {
-        reset();
+        let _serial = begin_test();
         for i in 0..DELAYED_CAPACITY {
             assert!(queue_delayed_work_on(0, noop, i, 0, 1_000));
         }
