@@ -270,6 +270,7 @@ dependencies = [
 name = "drv-ahci"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
  "block",
  "drv",
  "hal",
@@ -279,6 +280,7 @@ dependencies = [
  "mmio-map",
  "pci",
  "pmm",
+ "sched",
  "sync",
 ]
 

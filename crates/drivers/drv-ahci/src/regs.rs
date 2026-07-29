@@ -7,7 +7,6 @@
 /// Generic HBA (global) register byte offsets in the ABAR (AHCI §3.1).
 pub const HBA_CAP:  u64 = 0x00; // Host Capabilities
 pub const HBA_GHC:  u64 = 0x04; // Global Host Control
-#[expect(dead_code, reason = "no caller: no AHCI completion-interrupt path exists, so the global IS bitmap is never read or W1C'd")]
 pub const HBA_IS:   u64 = 0x08; // Interrupt Status (port bitmap)
 pub const HBA_PI:   u64 = 0x0C; // Ports Implemented (bitmap)
 #[allow(dead_code, reason = "AHCI 1.3.1 §3.1 global-register offset table kept complete; the version register is informational")]
@@ -15,7 +14,6 @@ pub const HBA_VS:   u64 = 0x10; // Version
 
 /// GHC bits (AHCI §3.1.2).
 pub const GHC_HR: u32 = 1 << 0;  // HBA Reset
-#[expect(dead_code, reason = "no caller: no AHCI completion-interrupt path exists; the driver busy-polls PxCI/PxTFD")]
 pub const GHC_IE: u32 = 1 << 1;  // Interrupt Enable
 pub const GHC_AE: u32 = 1 << 31; // AHCI Enable
 
@@ -33,7 +31,6 @@ pub const P_CLBU: u64 = 0x04; // Command List Base upper 32
 pub const P_FB:   u64 = 0x08; // FIS Base (256 B aligned)
 pub const P_FBU:  u64 = 0x0C; // FIS Base upper 32
 pub const P_IS:   u64 = 0x10; // Interrupt Status
-#[expect(dead_code, reason = "no caller: per-port interrupt enable is never programmed nor masked at teardown (no AHCI IRQ path)")]
 pub const P_IE:   u64 = 0x14; // Interrupt Enable
 pub const P_CMD:  u64 = 0x18; // Command and Status
 pub const P_TFD:  u64 = 0x20; // Task File Data
@@ -55,6 +52,26 @@ pub const CMD_CR:  u32 = 1 << 15; // Command List Running
 pub const TFD_ERR: u32 = 1 << 0; // Error
 pub const TFD_DRQ: u32 = 1 << 3; // Data Request
 pub const TFD_BSY: u32 = 1 << 7; // Busy
+
+/// PxIS/PxIE bits used by Linux `DEF_PORT_IRQ` (`drivers/ata/ahci.h`).
+pub const PIS_DHRS: u32 = 1 << 0;
+pub const PIS_PSS:  u32 = 1 << 1;
+pub const PIS_DSS:  u32 = 1 << 2;
+pub const PIS_SDBS: u32 = 1 << 3;
+pub const PIS_UFS:  u32 = 1 << 4;
+pub const PIS_DPS:  u32 = 1 << 5;
+pub const PIS_PCS:  u32 = 1 << 6;
+pub const PIS_PRCS: u32 = 1 << 22;
+pub const PIS_IPMS: u32 = 1 << 23;
+pub const PIS_IFS:  u32 = 1 << 27;
+pub const PIS_HBDS: u32 = 1 << 28;
+pub const PIS_HBFS: u32 = 1 << 29;
+pub const PIS_TFES: u32 = 1 << 30;
+
+pub const PIS_ERROR: u32 =
+    PIS_UFS | PIS_PCS | PIS_PRCS | PIS_IPMS | PIS_IFS | PIS_HBDS | PIS_HBFS | PIS_TFES;
+pub const PIS_ENABLE: u32 =
+    PIS_ERROR | PIS_DPS | PIS_SDBS | PIS_DSS | PIS_PSS | PIS_DHRS;
 
 /// PxSIG value for a non-port-multiplier SATA disk (AHCI §3.3.9).
 pub const SIG_SATA_DISK: u32 = 0x0000_0101;
@@ -92,6 +109,18 @@ pub fn dma_range_fits(cap: u32, pa: u64, bytes: u64) -> bool {
         return false;
     };
     cap & CAP_S64A != 0 || last <= u32::MAX as u64
+}
+
+/// Whether one enabled port interrupt terminates slot-zero waiting. # C: O(1)
+pub fn irq_finishes_slot(pis: u32, ci: u32, tfd: u32) -> bool {
+    pis & PIS_ERROR != 0
+        || tfd & TFD_ERR != 0
+        || (pis & PIS_ENABLE != 0 && ci & 1 == 0)
+}
+
+/// Whether completion state carries a terminal command error. # C: O(1)
+pub fn irq_status_failed(pis: u32, tfd: u32) -> bool {
+    pis & PIS_ERROR != 0 || tfd & TFD_ERR != 0
 }
 
 /// Pack a Command Header dword0 (AHCI §4.2.2): CFL (command-FIS length in
@@ -224,6 +253,16 @@ mod tests {
         assert!(!dma_range_fits(0, 0xFFFF_F001, 4096));
         assert!(!dma_range_fits(0, 1 << 32, 1));
         assert!(!dma_range_fits(0, 0, 0));
+    }
+
+    #[test]
+    fn irq_completion_requires_slot_done_or_error() {
+        assert!(!irq_finishes_slot(PIS_DPS, 1, 0));
+        assert!(irq_finishes_slot(PIS_DHRS, 0, 0));
+        assert!(irq_finishes_slot(PIS_TFES, 1, 0));
+        assert!(irq_finishes_slot(PIS_DHRS, 1, TFD_ERR));
+        assert!(!irq_status_failed(PIS_DHRS, 0));
+        assert!(irq_status_failed(PIS_HBFS, 0));
     }
 
     #[test]
