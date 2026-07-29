@@ -3,6 +3,7 @@
 // `../vsock_socket_tests.rs` for the file-length cap (`08§7`); the fixtures
 // (`connection`, `namespace`, `file`, the deny hooks) come from the parent.
 
+#![allow(unpredictable_function_pointer_comparisons, reason = "the assertion is `the hook I just installed came back`; both sides are the same non-generic fn item in the same codegen unit, so the lint's address-uniqueness caveat cannot apply")]
 use super::*;
 
 #[test]

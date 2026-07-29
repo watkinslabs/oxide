@@ -61,6 +61,7 @@ pub fn counters(namespace: u64, operation: Operation) -> Option<(u64, u64)> {
     Some((entry.allowed.load(Ordering::Relaxed), entry.denied.load(Ordering::Relaxed)))
 }
 
+#[allow(unpredictable_function_pointer_comparisons, reason = "the assertion is `the hook I just installed came back`; both sides are the same non-generic fn item in the same codegen unit, so the lint's address-uniqueness caveat cannot apply")]
 #[cfg(test)]
 mod tests {
     use super::*;
