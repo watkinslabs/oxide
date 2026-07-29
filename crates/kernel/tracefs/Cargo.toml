@@ -28,3 +28,6 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 [features]
 default = []
 zram-memory-tracking = ["dep:drv-zram"]
+
+[lints]
+workspace = true

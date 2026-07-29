@@ -24,3 +24,6 @@ default = []
 # Forwards the boot-pulse trace gate to kmacros so `debug_boot!` expands
 # to a real klog line under `--features debug-boot` (else it's compiled out).
 debug-boot = ["kmacros/debug-boot"]
+
+[lints]
+workspace = true

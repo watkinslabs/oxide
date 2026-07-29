@@ -13,3 +13,6 @@ drv = { path = "../drv" }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
 arch-irq = { path = "../../kernel/arch-irq" }
+
+[lints]
+workspace = true

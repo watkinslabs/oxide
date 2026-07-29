@@ -204,7 +204,9 @@ pub unsafe fn free_one_frame(pa: u64) {
     // PAGE POISONING (debug-watchdog): fill the freed frame with 0xAA so a
     // later alloc can detect a write-while-free (use-after-free / stale-TLB
     // write that the PT-walk-based FWM detector can't see). Linux PAGE_POISONING.
-    #[cfg(feature = "debug-watchdog")]
+    // `user_as`/`sched::live` are kernel-target-only, so the gate carries
+    // `target_os` too — without it the feature does not build hosted.
+    #[cfg(all(feature = "debug-watchdog", target_os = "oxide-kernel"))]
     {
         let hhdm = crate::user_as::hhdm_offset();
         if hhdm != 0 {

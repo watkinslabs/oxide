@@ -15,3 +15,6 @@ hal        = { path = "../../arch/hal" }
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
 arch-irq   = { path = "../../kernel/arch-irq" }
 firmware   = { path = "../../kernel/firmware" }
+
+[lints]
+workspace = true

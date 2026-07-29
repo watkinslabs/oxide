@@ -96,3 +96,6 @@ debug-stack-guard = []
 # buffer identity before scheduler/ptrace raw FP state access.
 debug-task-fpu-provenance = []
 debug-as-lifetime = ["vmm/debug-as-lifetime"]  # [AS-LIFE] task-mm and lazy-TLB ownership transitions
+
+[lints]
+workspace = true

@@ -27,7 +27,9 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
         // boot-fresh) but some earlier byte differs, something wrote to it
         // WHILE FREE — a use-after-free / write-while-mapped the PT-walk FWM
         // detector can't catch (e.g. a stale TLB write). Names pa + offset.
-        #[cfg(feature = "debug-watchdog")]
+        // `user_as`/`sched::live` are kernel-target-only, so the gate carries
+        // `target_os` too — without it the feature does not build hosted.
+        #[cfg(all(feature = "debug-watchdog", target_os = "oxide-kernel"))]
         {
             let hhdm = crate::user_as::hhdm_offset();
             if hhdm != 0 {

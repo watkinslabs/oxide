@@ -40,3 +40,6 @@ syscall = { path = "../syscall" }
 default = []
 hosted  = ["net/hosted"]
 debug-modules = []
+
+[lints]
+workspace = true

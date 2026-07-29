@@ -14,5 +14,6 @@ namespace-identity = { path = "../namespace-identity" }
 [dev-dependencies]
 loom = "0.7.2"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[lints]
+workspace = true

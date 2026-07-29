@@ -15,3 +15,6 @@ hosted = []
 rpm     = { path = "../../user/rpm" }
 cpio    = { path = "../../shared/cpio" }
 inflate = { path = "../../shared/inflate" }
+
+[lints]
+workspace = true

@@ -13,3 +13,6 @@ license = "MPL-2.0"
 # layer per `52§3` (`52§7`: arch → shared → domain).
 
 [dependencies]
+
+[lints]
+workspace = true

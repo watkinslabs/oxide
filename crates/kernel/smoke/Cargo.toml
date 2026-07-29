@@ -41,3 +41,6 @@ debug-memtest = []  # in-guest full-RAM memtest pass (memtest.rs); klog-only, no
 debug-vmm    = ["kmacros/debug-vmm"]
 debug-irq    = ["kmacros/debug-irq"]
 debug-acpi   = ["kmacros/debug-acpi"]
+
+[lints]
+workspace = true
