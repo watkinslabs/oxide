@@ -33,6 +33,14 @@ fn arp_frame(dst: MacAddr, src: MacAddr, sender: crate::Ipv4Addr) -> Vec<u8> {
     frame
 }
 
+fn arp_request_frame(src: MacAddr, sender: crate::Ipv4Addr, target: crate::Ipv4Addr) -> Vec<u8> {
+    let body = crate::arp::build_request(src, sender, target);
+    let mut frame = alloc::vec![0; crate::ethernet::ETH_HDR_LEN + body.len()];
+    crate::ethernet::EthHdr::write_to(MacAddr::BROADCAST, src, crate::eth_p::ARP, &mut frame);
+    frame[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&body);
+    frame
+}
+
 #[test]
 fn bridge_learns_and_forwards_without_returning_to_the_ingress_port() {
     let stack = NetStack::new();
@@ -168,6 +176,38 @@ fn bridge_arp_learning_uses_the_l3_bridge_owner() {
     stack.deliver_ethernet(port_id, &arp_frame(bridge_dev.mac(), peer_mac, peer_ip)).unwrap();
     assert_eq!(stack.arp_lookup(bridge, peer_ip), Some(peer_mac));
     assert_eq!(stack.arp_lookup(port_id, peer_ip), None);
+}
+
+#[test]
+fn bridge_owned_ipv4_answers_arp_through_canonical_l3_ingress() {
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let net_ns = owner.id().as_u64();
+    let bridge_ip = crate::Ipv4Addr::new(192, 0, 2, 1);
+    let bridge_mac = MacAddr([2, 0, 0, 0, 5, 1]);
+    let bridge_dev = Arc::new(CaptureDev::new("br0", bridge_mac));
+    let port = Arc::new(CaptureDev::new("port0", MacAddr([2, 0, 0, 0, 5, 2])));
+    let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), net_ns);
+    let port_id = stack.ifaces.register_in_ns(port, net_ns);
+    let rtnl = stack.rtnl_lock();
+    stack.bridge_create_in_rtnl(&rtnl, bridge, net_ns, bridge_mac).unwrap();
+    stack.bridge_add_port_in_rtnl(&rtnl, bridge, port_id).unwrap();
+    drop(rtnl);
+    assert!(stack.set_primary_ipv4_in(net_ns, bridge, bridge_ip, 0));
+
+    let peer_ip = crate::Ipv4Addr::new(192, 0, 2, 9);
+    let peer_mac = MacAddr([2, 0, 0, 0, 5, 9]);
+    stack.deliver_ethernet(port_id, &arp_request_frame(peer_mac, peer_ip, bridge_ip)).unwrap();
+
+    let replies = bridge_dev.frames.lock().unwrap();
+    assert_eq!(replies.len(), 1);
+    let header = crate::ethernet::EthHdr::parse(&replies[0]).unwrap();
+    assert_eq!((header.dst, header.src, header.ethertype),
+        (peer_mac, bridge_mac, crate::eth_p::ARP));
+    let arp = crate::arp::ArpPkt::parse(&replies[0][header.hdr_len..]).unwrap();
+    assert_eq!(arp.opcode, crate::arp::ARP_OP_REPLY);
+    assert_eq!((arp.sender_mac, arp.sender_ip), (bridge_mac, bridge_ip));
+    assert_eq!((arp.target_mac, arp.target_ip), (peer_mac, peer_ip));
 }
 
 #[test]
