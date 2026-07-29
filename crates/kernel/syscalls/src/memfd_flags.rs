@@ -28,9 +28,12 @@ pub const MFD_HUGE_MASK:  u32 = 0x3f;
 pub use vfs::{F_SEAL_EXEC, F_SEAL_SEAL};
 
 /// `pidns_memfd_noexec_scope` levels (`include/linux/pid_namespace.h:21`).
-pub const MEMFD_NOEXEC_SCOPE_EXEC:            u32 = 0;
-pub const MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL:     u32 = 1;
-pub const MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED: u32 = 2;
+pub const MEMFD_NOEXEC_SCOPE_EXEC: u32 =
+    namespace_identity::PID_MEMFD_NOEXEC_SCOPE_EXEC as u32;
+pub const MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL: u32 =
+    namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL as u32;
+pub const MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED: u32 =
+    namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED as u32;
 
 /// `shmem_get_inode(..., S_IFREG | S_IRWXUGO, ...)` (`mm/shmem.c:5793`) — a
 /// memfd inode is born 0777, NOT 0644.
@@ -76,6 +79,15 @@ pub fn sanitize_flags(flags: u32, scope: u32) -> Result<u32, Errno> {
         return Err(Errno::Eacces);
     }
     Ok(eff)
+}
+
+/// Apply the effective policy owned by one active PID namespace.
+/// # C: O(PID namespace depth)
+pub fn sanitize_flags_for_pidns(flags: u32,
+    namespace: &namespace_identity::NamespaceRef) -> Result<u32, Errno>
+{
+    let scope = namespace.pid_memfd_noexec_scope().map_err(|_| Errno::Einval)?;
+    sanitize_flags(flags, u32::from(scope))
 }
 
 /// Seal word / inode mode / fd flags `memfd_alloc_file` derives from the
@@ -159,6 +171,19 @@ mod tests {
     fn enforced_scope_rejects_an_explicit_exec_request() {
         assert_eq!(sanitize_flags(MFD_EXEC, MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED), Err(Errno::Eacces));
         assert_eq!(sanitize_flags(MFD_EXEC, MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL), Ok(MFD_EXEC));
+    }
+
+    #[test]
+    fn pid_namespace_policy_drives_effective_flags() {
+        let user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+        let namespace = namespace_identity::allocate(
+            namespace_identity::NamespaceKind::Pid, user, None).unwrap();
+        namespace.set_pid_memfd_noexec_scope(
+            namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL).unwrap();
+        assert_eq!(sanitize_flags_for_pidns(0, &namespace), Ok(MFD_NOEXEC_SEAL));
+        namespace.set_pid_memfd_noexec_scope(
+            namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED).unwrap();
+        assert_eq!(sanitize_flags_for_pidns(MFD_EXEC, &namespace), Err(Errno::Eacces));
     }
 
     #[test]

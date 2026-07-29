@@ -30,6 +30,36 @@ fn all_eight_initial_kinds_are_canonical() {
 }
 
 #[test]
+fn pid_memfd_scope_is_inherited_and_retained_when_parent_lowers() {
+    let _serial = SERIAL.lock().unwrap();
+    let user = initial(NamespaceKind::User);
+    let parent = allocate(NamespaceKind::Pid, user.clone(), None).unwrap();
+    parent.set_pid_memfd_noexec_scope(PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL).unwrap();
+    let child = allocate(NamespaceKind::Pid, user, Some(parent.clone())).unwrap();
+
+    assert_eq!(child.pid_memfd_noexec_scope(), Ok(PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL));
+    parent.set_pid_memfd_noexec_scope(PID_MEMFD_NOEXEC_SCOPE_EXEC).unwrap();
+    assert_eq!(child.pid_memfd_noexec_scope(), Ok(PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL),
+        "a child retains the scope copied at PID namespace creation");
+}
+
+#[test]
+fn pid_memfd_scope_cannot_drop_below_effective_parent() {
+    let _serial = SERIAL.lock().unwrap();
+    let user = initial(NamespaceKind::User);
+    let parent = allocate(NamespaceKind::Pid, user.clone(), None).unwrap();
+    let child = allocate(NamespaceKind::Pid, user, Some(parent.clone())).unwrap();
+    parent.set_pid_memfd_noexec_scope(PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED).unwrap();
+
+    assert_eq!(child.pid_memfd_noexec_scope(), Ok(PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED));
+    assert_eq!(child.set_pid_memfd_noexec_scope(PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL),
+        Err(PidMemfdNoexecError::BelowParent));
+    assert_eq!(child.set_pid_memfd_noexec_scope(3), Err(PidMemfdNoexecError::OutOfRange));
+    assert_eq!(initial(NamespaceKind::Uts).pid_memfd_noexec_scope(),
+        Err(PidMemfdNoexecError::NotPidNamespace));
+}
+
+#[test]
 fn passive_owner_retains_lifetime_without_activity() {
     let _serial = SERIAL.lock().unwrap();
     let init_user = initial(NamespaceKind::User);
