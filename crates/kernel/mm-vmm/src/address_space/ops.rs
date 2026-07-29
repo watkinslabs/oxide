@@ -196,6 +196,19 @@ impl AddressSpace {
         fixed: bool,
     ) -> KResult<UserVirtAddr> {
         validate_len(len)?;
+        // Linux `mapping_map_writable`: reserve `VM_SHARED|VM_MAYWRITE`
+        // before address selection or MAP_FIXED teardown. The reservation
+        // stays live until the new rmap edge is attached (or this function
+        // fails), excluding a concurrent `F_SEAL_WRITE` transaction.
+        let _writable_reservation = match &backing {
+            VmaBacking::File { backing, .. }
+                if flags.contains(VmaFlags::SHARED)
+                    && may_prot.contains(VmaProt::WRITE) =>
+            {
+                backing.file_rmap().map(|rmap| rmap.reserve_writable()).transpose()?
+            }
+            _ => None,
+        };
         let (future_locked, _) = self.mlock_future_policy();
         let flags = if future_locked { flags | VmaFlags::LOCKED } else { flags };
         let len_u64 = len as u64;
@@ -259,7 +272,7 @@ impl AddressSpace {
             }
             if let (Some(rmap), VmaBacking::File { off, .. }) = (vma.file_rmap.as_ref(), &vma.backing) {
                 rmap.attach(self.self_weak.clone(), start_va.as_u64(), end_va.as_u64(),
-                    off / hal::PAGE_SIZE_BYTES);
+                    off / hal::PAGE_SIZE_BYTES, vma.may_prot.contains(VmaProt::WRITE));
             }
         }
         Ok(start_va)
@@ -335,7 +348,13 @@ impl AddressSpace {
                     av.attach(self.self_weak.clone(), v.start.as_u64(), v.end.as_u64());
                 }
                 if let (Some(rmap), VmaBacking::File { off, .. }) = (v.file_rmap.as_ref(), &v.backing) {
-                    rmap.attach(self.self_weak.clone(), v.start.as_u64(), v.end.as_u64(), off / hal::PAGE_SIZE_BYTES);
+                    rmap.attach(
+                        self.self_weak.clone(),
+                        v.start.as_u64(),
+                        v.end.as_u64(),
+                        off / hal::PAGE_SIZE_BYTES,
+                        v.may_prot.contains(VmaProt::WRITE),
+                    );
                 }
             }
         }
