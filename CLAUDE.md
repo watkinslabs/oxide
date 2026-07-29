@@ -356,6 +356,10 @@ Rules:
 
 ## Communication
 
+- **BE SUCCINCT (HARD RULE).** Answer in as few words as the answer needs. Default to a few sentences; a table or a code block beats a paragraph explaining one. No preamble, no restating the question, no summarizing what you just did at the end, no "what this means" section, no recapping earlier work the user already read.
+  - Report a result, not a narrative of reaching it. Dead ends and retracted theories get one line, not a section.
+  - Never re-list merged work. The user has the PRs.
+  - Long output is only for content the user asked for (a diff, a table of findings, a spec section) — never for explanation of it.
 - User prefers terse. Skip preamble.
 - User wants honest opinion before action when stakes are non-trivial. "Advise then act" not "ask then act."
 - When proposing changes that affect multiple specs, list the touched specs first, action second.
