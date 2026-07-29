@@ -193,6 +193,19 @@ pub fn apply_kill_priv(valid: u32, mut mode: u16) -> u16 {
 /// (the kernel `notify_change` then falls back to its metadata overlay).
 /// # C: O(1)
 pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+    // Linux `shmem_setattr` (`mm/shmem.c`): an exec-sealed memfd may change
+    // other permission bits, but no chmod path may add or remove an execute
+    // bit. Only shmem-style inodes expose a seal carrier, so keeping the gate
+    // at this common metadata-apply boundary covers every chmod/ACL caller
+    // without affecting ordinary filesystem inodes.
+    if ia.valid & ATTR_MODE != 0
+        && inode.fcntl_seals().is_some_and(|seals| {
+            seals.load(Ordering::Acquire) & crate::inode::F_SEAL_EXEC != 0
+        })
+        && (inode.i_mode() as u16 ^ ia.mode) & 0o111 != 0
+    {
+        return Err(VfsError::Eperm);
+    }
     if ia.valid & ATTR_SIZE != 0 {
         inode.truncate(ia.size)?;
         // `truncate_pagecache` (Linux `mm/truncate.c`, via `truncate_setsize`):

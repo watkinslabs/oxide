@@ -27,6 +27,20 @@ pub trait SealCarrier: Send + Sync {
     fn seal_word(&self) -> &AtomicU32;
 }
 
+/// Linux `F_SEAL_*` values (`include/uapi/linux/fcntl.h`).
+pub const F_SEAL_SEAL: u32 = 0x0001;
+pub const F_SEAL_SHRINK: u32 = 0x0002;
+pub const F_SEAL_GROW: u32 = 0x0004;
+pub const F_SEAL_WRITE: u32 = 0x0008;
+pub const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
+pub const F_SEAL_EXEC: u32 = 0x0020;
+pub const F_ALL_SEALS: u32 = F_SEAL_SEAL
+    | F_SEAL_SHRINK
+    | F_SEAL_GROW
+    | F_SEAL_WRITE
+    | F_SEAL_FUTURE_WRITE
+    | F_SEAL_EXEC;
+
 /// Backend write-through for `chown(2)` on a SYNTHESIZED inode whose owner
 /// lives in the backing store, not the in-core inode (Linux kernfs persists
 /// chown to `kernfs_node->iattr` via `->setattr`; cgroupfs/sysfs re-create the
