@@ -145,11 +145,12 @@ fn curr_of(cpu: usize) -> Option<&'static Task> {
 #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
 fn curr_of(_cpu: usize) -> Option<&'static Task> { None }
 
-/// Reset every anchor. Hosted-test hook only (`preempt::_test_reset`).
-/// # C: O(MAX_CPUS)
+/// Reset one caller-owned anchor. Hosted-test hook only
+/// (`preempt::_test_reset`).
+/// # C: O(1)
 #[cfg(any(test, feature = "hosted"))]
-pub fn _test_reset_anchors() {
-    for a in ANCHOR.iter() { a.0.store(false, Ordering::Release); }
+pub(super) fn _test_reset_anchor(cpu: usize) {
+    if let Some(a) = ANCHOR.get(cpu) { a.0.store(false, Ordering::Release); }
 }
 
 #[cfg(test)]

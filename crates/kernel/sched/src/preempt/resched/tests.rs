@@ -104,12 +104,14 @@ fn an_unrouted_cpu_falls_back_to_its_pre_task_anchor() {
     // Boot before `install_default_runqueue`, and the hosted preempt API tests:
     // there is no `rq->curr`, so the request has to live somewhere until a task
     // exists. Out-of-range CPUs are still a no-op.
-    _test_reset_anchors();
+    const TEST_CPU: usize = cpu::MAX_CPUS - 1;
+    const OTHER_CPU: usize = cpu::MAX_CPUS - 2;
+    _test_reset_anchor(TEST_CPU);
     let none = |_c: usize| -> Option<&'static Task> { None };
-    set_need_resched_on_with(none, 0);
-    assert!(need_resched_on_with(none, 0));
-    assert!(!need_resched_on_with(none, 1));
+    set_need_resched_on_with(none, TEST_CPU);
+    assert!(need_resched_on_with(none, TEST_CPU));
+    assert!(!need_resched_on_with(none, OTHER_CPU));
     set_need_resched_on_with(none, cpu::MAX_CPUS + 4);
-    _test_reset_anchors();
-    assert!(!need_resched_on_with(none, 0));
+    _test_reset_anchor(TEST_CPU);
+    assert!(!need_resched_on_with(none, TEST_CPU));
 }
