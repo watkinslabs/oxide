@@ -46,6 +46,8 @@ const PAGE: u64 = 0x1000;
 /// Worst-case wait for a command completion or a port stop. 5 s is generous
 /// for QEMU's emulated AHCI; bounds a genuinely-lost completion to EIO.
 const IO_TIMEOUT_NS: u64 = 5_000_000_000;
+/// AHCI §10.4.3 requires the global HBA reset to self-clear within one second.
+const HBA_RESET_TIMEOUT_NS: u64 = 1_000_000_000;
 /// Per-port SATA PHY link-up timeout after COMRESET (bounded so empty ports
 /// don't stall boot; a real link establishes in well under this).
 const LINK_TIMEOUT_NS: u64 = 200_000_000;
@@ -56,6 +58,51 @@ const CFL_DWORDS: u32 = 5;
 /// Offset of the PRDT within the command table (after the 0x80-byte CFIS +
 /// ATAPI + reserved region, AHCI §4.2.3).
 const CT_PRDT_OFF: usize = 0x80;
+
+/// Read one global HBA register before an [`Ahci`] instance exists. # C: O(1)
+#[inline]
+fn hba_read(abar_va: u64, off: u64) -> u32 {
+    // SAFETY: probe mapped the AHCI ABAR as Device memory; callers supply an
+    // aligned global-register offset within that mapping.
+    unsafe { core::ptr::read_volatile((abar_va + off) as *const u32) }
+}
+
+/// Write one global HBA register before an [`Ahci`] instance exists. # C: O(1)
+#[inline]
+fn hba_write(abar_va: u64, off: u64, value: u32) {
+    // SAFETY: probe mapped the AHCI ABAR as Device memory; callers supply an
+    // aligned, driver-owned global-register offset within that mapping.
+    unsafe { core::ptr::write_volatile((abar_va + off) as *mut u32, value); }
+}
+
+/// Enter AHCI mode. Linux retries this write because some controllers do not
+/// latch GHC.AE on the first attempt. # C: O(5 bounded waits)
+fn enable_ahci(abar_va: u64) -> bool {
+    for _ in 0..5 {
+        let ghc = hba_read(abar_va, regs::HBA_GHC);
+        if ghc & regs::GHC_AE != 0 { return true; }
+        hba_write(abar_va, regs::HBA_GHC, ghc | regs::GHC_AE);
+        if hba_read(abar_va, regs::HBA_GHC) & regs::GHC_AE != 0 { return true; }
+        let deadline = now_ns().saturating_add(10_000_000);
+        while now_ns() < deadline { core::hint::spin_loop(); }
+    }
+    false
+}
+
+/// Assert the global HBA reset and wait for the self-clearing bit. # C: O(1 s)
+fn reset_hba(abar_va: u64) -> bool {
+    let ghc = hba_read(abar_va, regs::HBA_GHC);
+    if ghc & regs::GHC_HR == 0 {
+        hba_write(abar_va, regs::HBA_GHC, ghc | regs::GHC_HR);
+        let _ = hba_read(abar_va, regs::HBA_GHC); // flush posted MMIO write
+    }
+    let deadline = now_ns().saturating_add(HBA_RESET_TIMEOUT_NS);
+    loop {
+        if hba_read(abar_va, regs::HBA_GHC) & regs::GHC_HR == 0 { return true; }
+        if now_ns() >= deadline { return false; }
+        core::hint::spin_loop();
+    }
+}
 
 /// The AHCI controller bring-up state for one SATA-disk port. Holds the ABAR
 /// register-file VA, the port index, the DMA-structure PAs (command list,
@@ -178,13 +225,12 @@ impl Ahci {
     /// # C: O(reset + port init + 1 IDENTIFY)
     pub fn bring_up(mmio: Mapping, abar_off: u64) -> Result<Ahci, &'static str> {
         let abar_va = mmio.base_va() + abar_off;
-        // Enable AHCI mode (GHC.AE) before touching port registers.
-        // SAFETY: abar_va is the Device-attr-mapped HBA register file; aligned
-        // 32-bit RMW of GHC to set the AE bit per AHCI §10.1.1.
-        let ghc = unsafe { core::ptr::read_volatile((abar_va + regs::HBA_GHC) as *const u32) };
-        // SAFETY: same Device-attr HBA register file; setting GHC.AE switches
-        // the HBA out of legacy IDE compatibility into AHCI register access.
-        unsafe { core::ptr::write_volatile((abar_va + regs::HBA_GHC) as *mut u32, ghc | regs::GHC_AE); }
+        // AHCI §10.4.3 / Linux ahci_reset_controller: AHCI mode is required
+        // before HOST_RESET is valid. Reset all firmware-left controller/port
+        // state, then restore AHCI mode because reset may clear GHC.AE.
+        if !enable_ahci(abar_va) { return Err("AHCI enable failed"); }
+        if !reset_hba(abar_va) { return Err("HBA reset timeout"); }
+        if !enable_ahci(abar_va) { return Err("AHCI enable after reset failed"); }
 
         // Ports Implemented bitmap (AHCI §3.1.6).
         // SAFETY: Device-attr HBA register file; aligned 32-bit load of PI.
