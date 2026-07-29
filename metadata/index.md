@@ -14,7 +14,7 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 |---|---|---|
 | F | 772 | new functionality |
 | B | 1510 | bug fix |
-| D | 417 | spec/doc edits (no code) |
+| D | 418 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
 | C | 243 | tooling / deps / CI plumbing |
