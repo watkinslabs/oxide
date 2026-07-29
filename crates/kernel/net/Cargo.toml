@@ -41,7 +41,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64", package = "hal-aarch64" }
 
 [features]
 default = []
-hosted  = []
+hosted  = ["sched/hosted"]
 debug-tcprx = []  # [TCPRX] TCP delivery wake trace — did the receiver publish itself before the peer's bytes landed?
 debug-boot = []
 debug-journal = []  # [B288 dgram] FULL journald record (every FIELD=value). debug-boot keeps only the MESSAGE= line — that one carries boot-smoke's marker; the other ~13 fields per record are machine metadata
