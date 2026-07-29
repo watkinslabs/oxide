@@ -43,3 +43,6 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 [features]
 debug-boot  = ["kmacros/debug-boot", "drv-nvme/debug-boot", "drv-ahci/debug-boot", "drv-virtio-input/debug-boot", "drv-virtio-blk/debug-boot", "drv-virtio-net/debug-boot"]
 debug-trace = ["kmacros/debug-trace"]
+
+[lints]
+workspace = true

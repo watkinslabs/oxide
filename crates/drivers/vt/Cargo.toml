@@ -16,3 +16,6 @@ tty     = { path = "../../kernel/tty" }
 
 [dev-dependencies]
 tty     = { path = "../../kernel/tty", features = ["hosted"] }
+
+[lints]
+workspace = true

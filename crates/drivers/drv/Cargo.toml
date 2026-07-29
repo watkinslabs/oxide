@@ -16,3 +16,6 @@ sync = { path = "../../shared/sync" }
 # (acyclic); the forbidden edge is drv->devfs (the cgroup->devfs->sched cycle),
 # which the DEVTMPFS_HOOK indirection avoids.
 vfs  = { path = "../../kernel/vfs" }
+
+[lints]
+workspace = true

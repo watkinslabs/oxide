@@ -14,3 +14,6 @@ sched   = { path = "../../kernel/sched" }
 sync    = { path = "../../shared/sync" }
 syscall = { path = "../../kernel/syscall" }
 vfs     = { path = "../../kernel/vfs" }
+
+[lints]
+workspace = true

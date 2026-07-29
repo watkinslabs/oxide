@@ -15,3 +15,6 @@ vfs = { path = "../vfs" }
 [features]
 default = []
 hosted = ["sched/hosted"]
+
+[lints]
+workspace = true

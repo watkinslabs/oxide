@@ -112,6 +112,8 @@ debug-zram-lifecycle = ["fs/debug-zram-lifecycle", "vfs/debug-zram-lifecycle", "
 debug-cgroup = ["kmacros/debug-cgroup"]
 debug-mount = []  # [mnt] log of mount-family syscall failures (path+errno) — 226/NAMESPACE diagnosis
 debug-atexit = []  # abandoned atexit-corruption FILEREAD/LOCKBYTE probes (kept, off)
+debug-watchdog = []  # [waitid GARBAGE] idtype/id sanity banner in `247_waitid.rs`; undeclared before, so it never compiled.
+debug-irq = []  # [ENOTSOCK] site+fd+inode-tag probe in `net_trace.rs`; undeclared before, so `trace_enotsock_at` was an unconditional no-op.
 debug-eacces = ["vfs/debug-eacces"]  # [EACCES] path+creds+owner/mode log at every openat -13 return (login-frontier permission hunt)
 debug-stderr = []  # [STDERR] echo fd==2 write(2)/writev(2) to console (lightweight; gnome-shell/mutter death-message visibility) — no ld.so DR0 machinery, boots at normal speed
 debug-session = []  # [SESSFILE] echo writes to logind session-state files (/run/systemd/{sessions,users,seats}) — session classification (Type/Class/Seat/VTNr/DISPLAY) visibility for the "no matching session" hunt
@@ -125,3 +127,6 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[lints]
+workspace = true

@@ -11,3 +11,6 @@ path = "src/lib.rs"
 boot-info = { path = "../../shared/boot-info" }
 
 [dev-dependencies]
+
+[lints]
+workspace = true

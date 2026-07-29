@@ -73,3 +73,6 @@ debug-getdents = ["kmain/debug-getdents"]
 debug-getdents-detail = ["kmain/debug-getdents-detail"]
 debug-syscall-return = ["kmain/debug-syscall-return"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]
+
+[lints]
+workspace = true

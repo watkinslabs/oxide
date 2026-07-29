@@ -17,3 +17,6 @@ hosted = []
 # reference encoder's output with ours. Neither direction is reachable from the
 # kernel build.
 structured-zstd = { path = "../../../vendor/rust/structured-zstd-0.0.49", default-features = false }
+
+[lints]
+workspace = true

@@ -7,3 +7,6 @@ publish = false
 [[bin]]
 name = "spec-lint"
 path = "src/main.rs"
+
+[lints]
+workspace = true

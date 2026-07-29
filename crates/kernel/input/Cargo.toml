@@ -10,3 +10,6 @@ path = "src/lib.rs"
 [dependencies]
 sync = { path = "../../shared/sync" }
 virtio = { path = "../../drivers/virtio" }
+
+[lints]
+workspace = true

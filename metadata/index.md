@@ -17,10 +17,14 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | D | 417 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
-| C | 238 | tooling / deps / CI plumbing |
+| C | 242 | tooling / deps / CI plumbing |
 | P17 | 18 | phase-17 work (tty + login) |
 
 ## Reserved (in flight)
+
+`C238` was already live in `wt-C238` (`C238-einval-ledger-args`) when this file
+still read `next = 238`. `C239`–`C241` reserved 2026-07-28 for the build-warning
+sweep (cfg hygiene / trivial lints / dead-code triage); counter advanced to 242.
 
 `F761`–`F764` reserved 2026-07-27 for the syscall-matrix audit batches
 (xattr-at family, sched/ioprio, mempolicy/mseal, admin/misc). Counter already

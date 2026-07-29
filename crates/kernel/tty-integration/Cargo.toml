@@ -26,3 +26,6 @@ tty       = { path = "../tty", features = ["hosted"] }
 vtconsole = { path = "../vtconsole", features = ["hosted"] }
 serialtty = { path = "../serialtty", features = ["hosted"] }
 vtdata    = { path = "../vt" }
+
+[lints]
+workspace = true

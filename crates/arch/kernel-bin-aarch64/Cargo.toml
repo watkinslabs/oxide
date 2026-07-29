@@ -19,3 +19,6 @@ debug-syscall-return = ["boot-aarch64/debug-syscall-return"]
 debug-taskdump = ["boot-aarch64/debug-taskdump"]
 debug-as-lifetime = ["boot-aarch64/debug-as-lifetime"]
 debug-task-fpu-provenance = ["boot-aarch64/debug-task-fpu-provenance"]
+
+[lints]
+workspace = true

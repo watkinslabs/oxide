@@ -17,3 +17,6 @@ klog    = { path = "../../shared/klog" }
 kmacros = { path = "../../shared/kmacros" }
 [features]
 debug-boot = ["kmacros/debug-boot"]
+
+[lints]
+workspace = true
