@@ -12,6 +12,7 @@ mod hierarchy;
 mod types;
 
 pub use controllers::{
-    ALL, CORE_FILES, CPU, CPUSET, IO, MEMORY, NONROOT_FILES, PIDS, controller_files,
+    ALL, CORE_FILES, CPU, CPUSET, FILE_SLOT_UNKNOWN, IO, MEMORY, NONROOT_FILES, PIDS,
+    controller_files, file_slot,
 };
 pub use types::{CpuGroup, KResult, MemoryCharge, MemoryEvent, MemoryEvents, MemoryKind, MemoryPressure, MemoryPressureResult, MemoryStats, Node, ROOT, Tree};

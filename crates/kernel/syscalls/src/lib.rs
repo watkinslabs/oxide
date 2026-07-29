@@ -2,6 +2,13 @@
 
 #![no_std]
 
+// dead_code is meaningful for this crate ONLY on the kernel target. A large
+// part of it sits behind `cfg(target_os = "oxide-kernel")`, so a host build
+// (`cargo test`, `cargo check --workspace`) compiles a strict subset and calls
+// hundreds of live items dead. The kernel builds keep dead_code fully enabled
+// and are warning-clean, and every one of these crates links into `kmain`, so
+// nothing is hidden: real dead code still surfaces on `xtask kernel`.
+#![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
 
 mod membarrier;
@@ -78,6 +85,10 @@ pub mod timex_policy;
 // pivot_root: the `path_pivot_root()` check ladder, whose ORDER is the only
 // observable part of a rejected call.
 pub mod pivot_root_policy;
+// fsconfig(2): the per-command `_key`/`_value`/`aux` admission switch of
+// `SYSCALL_DEFINE5(fsconfig)`, including the EOPNOTSUPP-not-EINVAL default and
+// SET_FD's non-negative-aux rule. `431_fsconfig.rs` is kernel-gated.
+pub mod fsconfig_abi;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;

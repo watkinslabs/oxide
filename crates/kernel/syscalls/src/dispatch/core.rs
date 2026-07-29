@@ -481,7 +481,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     #[cfg(feature = "debug-startlat")]
     crate::startlat::record(nr, __startlat, rv);
     #[cfg(feature = "debug-boot")]
-    trace_einval(nr, a0, a1, a2, rv);
+    trace_einval(nr, a0, a1, a2, a3, a4, a5, rv);
     sched::diag::record_syscall(nr as u32, rv);
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {
@@ -668,7 +668,7 @@ static EINVAL_LEDGER_REMAINING: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(4000);
 
 #[cfg(feature = "debug-boot")]
-fn trace_einval(nr: u64, a0: u64, a1: u64, a2: u64, rv: i64) {
+fn trace_einval(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, rv: i64) {
     use core::sync::atomic::Ordering as O;
     if rv != -(syscall::errno::Errno::Einval.as_i32() as i64) { return; }
     // Drop the two EINVALs that are CORRECT and high-volume, or they spend the
@@ -694,6 +694,24 @@ fn trace_einval(nr: u64, a0: u64, a1: u64, a2: u64, rv: i64) {
     klog::write_hex_u64(a1);
     klog::write_raw(b" a2=");
     klog::write_hex_u64(a2);
+    klog::write_raw(b" a3=");
+    klog::write_hex_u64(a3);
+    klog::write_raw(b" a4=");
+    klog::write_hex_u64(a4);
+    klog::write_raw(b" a5=");
+    klog::write_hex_u64(a5);
+    // `a0` is an fd for most of the syscalls that land here; rendering its path
+    // is what turns "write(33) failed" into "write to /run/... failed". Silent
+    // when a0 is not a live fd, which is the common case for non-fd syscalls.
+    // SAFETY: syscall-exit on the running task; the fd table has no concurrent
+    // writer here, the same contract every other dispatch-path reader uses.
+    if let Some(fdt) = unsafe { cur.fd_table_ref() } {
+        if let Ok(file) = fdt.get(a0 as i32) {
+            klog::write_raw(b" fdpath=");
+            let path = file.dentry().dentry_path(None);
+            klog::write_raw(path.as_bytes());
+        }
+    }
     klog::write_raw(b" comm=");
     if let Some(name) = cur.try_comm_bytes() {
         let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());

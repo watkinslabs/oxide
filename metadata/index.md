@@ -13,18 +13,16 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | Type | next | meaning |
 |---|---|---|
 | F | 772 | new functionality |
-| B | 1504 | bug fix |
+| B | 1510 | bug fix |
 | D | 417 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
-| C | 242 | tooling / deps / CI plumbing |
+| B | 1510 | bug fix |
 | P17 | 18 | phase-17 work (tty + login) |
 
 ## Reserved (in flight)
 
-`C238` was already live in `wt-C238` (`C238-einval-ledger-args`) when this file
-still read `next = 238`. `C239`–`C241` reserved 2026-07-28 for the build-warning
-sweep (cfg hygiene / trivial lints / dead-code triage); counter advanced to 242.
+| B | 1510 | bug fix |
 
 `F761`–`F764` reserved 2026-07-27 for the syscall-matrix audit batches
 (xattr-at family, sched/ioprio, mempolicy/mseal, admin/misc). Counter already
@@ -32,6 +30,11 @@ advanced to 765 so a concurrent lane cannot collide with them.
 
 `D406`-`D409` reserved 2026-07-27 for the Linux subsystem-audit lanes
 (mm, sched, vfs/block, net/security). Counter advanced to 410.
+
+`B1505`-`B1507` in flight 2026-07-28 — the file read `1505` while local branches
+`B1506-psi-trigger-linux-parse` and `B1507-inotify-mark-destroy` already existed
+(their bumps unmerged). `B1508` taken by the fsconfig `SET_FD` lane and the
+counter advanced to 1509 so none of the three live lanes collides.
 
 `B1459`-`B1465` reserved 2026-07-27 for the concurrent compliance-blocker
 lanes (signal frames, wait deadlines, poll subscribers, durable writes, procfs

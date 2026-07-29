@@ -11,6 +11,13 @@
 //! (`hal_aarch64::pl011::base_va`). On non-arm arches this crate is an
 //! empty shell so the workspace builds. docs/53 (kernel = glue).
 
+// dead_code is meaningful for this crate ONLY on the kernel target. A large
+// part of it sits behind `cfg(target_os = "oxide-kernel")`, so a host build
+// (`cargo test`, `cargo check --workspace`) compiles a strict subset and calls
+// hundreds of live items dead. The kernel builds keep dead_code fully enabled
+// and are warning-clean, and every one of these crates links into `kmain`, so
+// nothing is hidden: real dead code still surfaces on `xtask kernel`.
+#![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
 
 use alloc::sync::Arc;
