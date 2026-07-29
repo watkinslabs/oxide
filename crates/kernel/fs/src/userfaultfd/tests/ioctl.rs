@@ -117,7 +117,7 @@ fn register_records_the_range_and_reports_the_linux_ioctl_bitmap() {
 #[test]
 fn register_binds_the_context_to_the_ctx_mm_vmas() {
     let mm = mk_mm();
-    let inode = mk_registered(&mm);
+    let _inode = mk_registered(&mm);
     let v = mm.uffd_vma_at(UserVirtAddr::new(REGION).expect("va")).expect("vma");
     assert!(v.ctx.is_some(), "UFFDIO_REGISTER must install vm_userfaultfd_ctx");
     assert!(mm.maybe_uffd());

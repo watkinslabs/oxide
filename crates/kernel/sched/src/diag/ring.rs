@@ -4,7 +4,7 @@ use crate::Task;
 
 use super::current_task;
 #[cfg(feature = "debug-watchdog")]
-use super::{emit::dump_tasks, format::emit_syscall};
+use super::format::emit_syscall;
 
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
 

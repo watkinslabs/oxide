@@ -233,13 +233,13 @@ unsafe fn spawn_user_blob_with_vpid(
         Ok(img)
     })() {
         Ok(i)  => i,
-        Err(e) => {
+        Err(_e) => {
             #[cfg(feature = "debug-boot")]
             {
                 klog::write_raw(b"[ERROR] user-blob load failed: ");
                 klog::write_raw(name.as_bytes());
                 klog::write_raw(b" err=");
-                klog::write_raw(match e {
+                klog::write_raw(match _e {
                     elf_load::LoadError::Enoexec => b"Enoexec",
                     elf_load::LoadError::Einval => b"Einval",
                     elf_load::LoadError::Enomem => b"Enomem",

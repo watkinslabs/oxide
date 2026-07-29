@@ -35,7 +35,9 @@ const PL011_VA: u64 = KERNEL_DEVICE_BASE | (PL011_PHYS & 0xFFFF_FFFF);
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 pub fn smoke_device_map_arm(_hhdm: u64) {
     use arch_irq::gic;
-use hal_aarch64::{timer as arm_timer, pl011};
+    use hal_aarch64::pl011;
+    #[cfg(feature = "debug-irq")]
+    use hal_aarch64::timer as arm_timer;
     use hal_aarch64::mmu_ops::ArmMmu;
     // SAFETY: same contract as the x86 smoke — TTBR1_EL1 active,
     // single-CPU, IRQs off; mmu_ops state initialised.

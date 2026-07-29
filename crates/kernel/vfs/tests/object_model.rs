@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use vfs::inode::Inode;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};

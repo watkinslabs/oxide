@@ -4,8 +4,6 @@
 //! re-tear-down the subtree hanging off it. This guards idempotency (a parallel
 //! rmdir + revalidate racing two teardowns) and the non-canonical-name case.
 
-use std::sync::Arc;
-
 use vfs::dentry::Dentry;
 use vfs::{d_add, d_invalidate, d_lookup, FileType, InodeRef};
 

@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use super::{Raw4Datagram, Raw4Endpoint};
 use crate::addr::{eth_p, Ipv4Addr, NetIfaceId};
 use crate::bpf_filter::FilterContext;

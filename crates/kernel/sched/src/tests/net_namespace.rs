@@ -132,7 +132,7 @@ fn competing_swap_and_release_cannot_restore_task_membership() {
     const ROUNDS: u64 = 32;
     let _guard = test_lock();
     install_callback();
-    for round in 0..ROUNDS {
+    for _round in 0..ROUNDS {
         let task = task();
         let old = namespace();
         let old_id = old.id();

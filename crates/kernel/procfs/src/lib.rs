@@ -7,6 +7,9 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+// `kmacros`' `debug_*!` macros are consumed only by the kernel-target
+// modules below; the host build imports none of them.
+#[cfg(target_os = "oxide-kernel")]
 #[macro_use] extern crate kmacros;
 mod ids;
 pub use vfs::StaticFileInode;  // generic inode lives in vfs

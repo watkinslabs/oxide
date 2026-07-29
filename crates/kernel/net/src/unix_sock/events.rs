@@ -1,6 +1,4 @@
-use vfs;
-use sched;
-
+#[cfg(target_os = "oxide-kernel")]
 use super::{UnixEnd, UnixMsgPair, UnixPair};
 
 /// F181a: wake the PEER end's epoll subscribers (the end whose

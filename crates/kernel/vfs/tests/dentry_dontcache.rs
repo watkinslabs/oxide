@@ -3,8 +3,6 @@
 //! `retain_dentry` returns false for it — so it is killed (unhashed + forgotten)
 //! the instant it goes unused, instead of lingering cached for the shrinker.
 
-use std::sync::Arc;
-
 use vfs::dentry::Dentry;
 use vfs::{d_add, dget, dput, FileType, InodeRef};
 

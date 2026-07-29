@@ -259,8 +259,8 @@ impl AddressSpace {
             let mut va = vma.start.as_u64();
             let end = vma.end.as_u64();
             while va < end {
-                // SAFETY: M::translate reads the active PT for the parent.
-                if let Some((src_pa, _)) = unsafe { Some(M::translate(Va(va))).flatten() } {
+                // M::translate reads the active PT for the parent.
+                if let Some((src_pa, _)) = Some(M::translate(Va(va))).flatten() {
                     let pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
                     // Bump per-page refcount: child + parent both ref it.
                     inc_ref(pa);

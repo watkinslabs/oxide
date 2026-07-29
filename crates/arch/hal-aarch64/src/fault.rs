@@ -13,14 +13,6 @@
 // Emits a one-line summary via `klog::write_raw` then returns; the
 // asm caller halts via `wfi` after `bl`.
 
-// Per `04§4.0` (R06): emit-path call sites gated under `debug-irq`.
-// Default builds halt silently on a fault; the diagnostic dump rides
-// the same gate as the rest of the IRQ/exception trace surface.
-#[cfg(feature = "debug-irq")]
-macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
-#[cfg(not(feature = "debug-irq"))]
-macro_rules! debug_irq { ($($t:tt)*) => {} }
-
 const EC_INSN_ABORT_LOWER: u32 = 0x20;
 const EC_INSN_ABORT_SAME: u32 = 0x21;
 const EC_DATA_ABORT_LOWER: u32 = 0x24;
@@ -105,7 +97,12 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
     // demand-page) is normal kernel operation per `11§5` — silent in
     // production, no log line. Only log loudly when the handler can't
     // resolve and we're about to halt.
+    // `mut` only on the kernel target: the two recovery blocks below that
+    // reassign `handled` are both `#[cfg(aarch64 + oxide-kernel)]`.
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     let mut handled = (current_handler())(esr, far, elr);
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    let handled = (current_handler())(esr, far, elr);
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     if !handled && (((esr >> 26) & 0x3f) as u32) == EC_FP_SIMD_TRAP {
         // v1 keeps FP/SIMD enabled for kernel and userspace. A firmware or

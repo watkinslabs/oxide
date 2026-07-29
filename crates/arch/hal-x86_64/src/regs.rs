@@ -200,8 +200,8 @@ pub unsafe fn enable_sse() {
         let mut cr0: u64;
         asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
         cr0 &= !(1u64 << 2); // clear EM
-        cr0 |=  (1u64 << 1); // set MP
-        cr0 |=  (1u64 << 16); // set WP — CPL=0 honors user PTE RO so kernel writes to COW-shared user pages take #PF into do_wp_page instead of silently mutating the shared frame (Linux X86_CR0_WP)
+        cr0 |=  1u64 << 1; // set MP
+        cr0 |=  1u64 << 16; // set WP — CPL=0 honors user PTE RO so kernel writes to COW-shared user pages take #PF into do_wp_page instead of silently mutating the shared frame (Linux X86_CR0_WP)
         asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags));
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));

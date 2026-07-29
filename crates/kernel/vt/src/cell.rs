@@ -5,7 +5,6 @@
 // renderer reads `cell.fg`/`cell.bg` directly — no palette lookup. `flags`
 // packs the rendition bits + the wide-character occupancy bits (`57§9`).
 
-use crate::palette::xterm_256_rgb;
 use crate::vc::{DEFAULT_BG_RGB, DEFAULT_FG_RGB};
 
 /// Flag bit: bold/bright intensity (SGR 1).

@@ -1,8 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 
-use sched::TaskState;
 use syscall::errno::Errno;
 
 use super::core::{FUTEX_BITSET_MATCH_ANY, current_key, load_user_u32, store_user_u32, wake_key, WAITERS};

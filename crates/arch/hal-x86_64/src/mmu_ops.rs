@@ -119,8 +119,7 @@ pub unsafe fn resync_kernel_master() {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     let master_pa = MASTER_PML4_PA.load(Ordering::Acquire);
     if hhdm == 0 || master_pa == 0 { return; }
-    // SAFETY: privileged CR3 read at CPL=0; pure read.
-    let active_pa = unsafe { crate::regs::read_cr3() } & !PAGE_MASK;
+    let active_pa = crate::regs::read_cr3() & !PAGE_MASK;
     if active_pa == master_pa { return; } // already on the master
     // SAFETY: both PML4 frames are HHDM-mapped; single-CPU pre-AP bring-up;
     // copying only kernel-half entries (256..512), each referencing an L3
@@ -168,8 +167,7 @@ pub unsafe fn new_user_pml4() -> Option<u64> {
     // gives the new AS every kernel-half mapping the calling
     // context already has (including PCI MMIO BARs the device
     // drivers will reach for from syscall context).
-    // SAFETY: CR3 read is privileged; legal at CPL=0; pure read.
-    let src_pa = unsafe { crate::regs::read_cr3() } & !PAGE_MASK;
+    let src_pa = crate::regs::read_cr3() & !PAGE_MASK;
     if src_pa == 0 { return None; }
     let pa = alloc_frame(0)?;
     // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at
@@ -218,7 +216,7 @@ impl MmuOps for X86Mmu {
         // SAFETY: caller asserts MmuOps::map preconditions.
         let r = unsafe {
             pt_walker::map_at_level::<PtWalkerX86, _>(va.0, leaf_level, leaf, hhdm,
-                || alloc_frame(unsafe { PtWalkerX86::read_pt_base(va.0) }))
+                || alloc_frame(PtWalkerX86::read_pt_base(va.0)))
         };
         let displaced = match r {
             // Slot was empty, or already held the SAME pa (a pure permission
@@ -238,7 +236,7 @@ impl MmuOps for X86Mmu {
                 let r2 = unsafe {
                     pt_walker::map_at_level::<PtWalkerX86, _>(
                         va.0, leaf_level, leaf, hhdm,
-                        || alloc_frame(unsafe { PtWalkerX86::read_pt_base(va.0) }),
+                        || alloc_frame(PtWalkerX86::read_pt_base(va.0)),
                     )
                 };
                 kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");

@@ -3,7 +3,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::SyscallArgs;
 use sched::live::sigpend::Signum;
 
 /// Linux `SA_RESTORER`: user supplied the signal-return trampoline.

@@ -8,7 +8,6 @@
 // anywhere else (a different mount, or a subtree dentry within the old root)
 // are left untouched.
 
-use alloc::sync::Arc;
 use vfs::VfsPath;
 
 /// Linux `chroot_fs_refs(old_root, new_root)` over the live tasklist. Invoked

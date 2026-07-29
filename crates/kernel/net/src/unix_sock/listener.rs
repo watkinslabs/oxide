@@ -1,7 +1,6 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
 use sync::{Socket as UnixLockClass, Spinlock};
-use sched;
 
 use super::{GcLink, GcNode, GcPin, UnixEnd, UnixPair};
 use vfs;

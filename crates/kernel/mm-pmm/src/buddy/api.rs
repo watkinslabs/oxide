@@ -1,6 +1,8 @@
 use super::*;
 use super::double_free::{df_dump, df_note};
-use super::free_node::{read_u64, OFF_NEXT, OFF_POISON, OFF_PREV, OFF_ORDER};
+use super::free_node::{read_u64, OFF_NEXT, OFF_POISON};
+#[cfg(feature = "debug-pmm")]
+use super::free_node::{OFF_PREV, OFF_ORDER};
 use super::inner::PmmInner;
 
 /// PMM owner. Single-instance kernel-wide; constructed in the boot path

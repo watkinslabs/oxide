@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::task::PendingWake;
 use crate::live::runqueue::Runqueue;
-use crate::{Task, TaskState};
+use crate::Task;
 use super::runqueue::global_for;
 
 /// Per-CPU deferred-wake list (Linux `ttwu_queue` / `wake_list` +

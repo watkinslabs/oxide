@@ -123,9 +123,7 @@ pub use legacy_ioctl::legacy_ioctl_errno;
 pub use inode::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use udp::*;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-pub use raw::*;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+#[cfg(target_os = "oxide-kernel")]
 pub(crate) use raw_bind::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use shutdown::*;

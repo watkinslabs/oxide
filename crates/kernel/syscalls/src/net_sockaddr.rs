@@ -3,8 +3,7 @@
 // pub(crate); net.rs and net_recv.rs consume them.
 
 use hal::USER_VA_END;
-use net::sock::InetSocket;
-use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
+use crate::userbuf::validate_user_buf_readable;
 use syscall::errno::Errno;
 
 // The pure encoders + their ABI constants live in `sockaddr_encode`, which is
@@ -12,9 +11,9 @@ use syscall::errno::Errno;
 // length and byte layout. This module owns only the user-memory marshalling.
 pub(crate) use crate::sockaddr_encode::{encoded_sockaddr_for_socket, encoded_sockaddr_in,
     encoded_sockaddr_in6, encoded_sockaddr_ll, encoded_sockaddr_nl, encoded_sockaddr_un,
-    encoded_sockaddr_vm, v4_mapped_bytes, EncodedSockaddr};
-use crate::sockaddr_encode::{AF_INET, AF_INET6, AF_UNIX, SOCKADDR_IN_LEN, SOCKADDR_IN6_LEN,
-    SOCKADDR_STORAGE, SOCKADDR_UN_LEN, SOCKADDR_VM_LEN, SA_FAMILY_LEN};
+    encoded_sockaddr_vm, EncodedSockaddr};
+use crate::sockaddr_encode::{AF_INET, AF_INET6, SOCKADDR_IN_LEN, SOCKADDR_IN6_LEN,
+    SOCKADDR_VM_LEN, SA_FAMILY_LEN};
 
 /// Linux `SIN6_LEN_RFC2133` — the minimum `sockaddr_in6` length `inet6_bind`
 /// and `inet6_dgram_connect` accept (the trailing `sin6_scope_id` is optional).

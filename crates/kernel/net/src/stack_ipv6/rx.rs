@@ -4,7 +4,7 @@ use crate::netdev::NetResult;
 use crate::stack::NetStack;
 use crate::stack_ipv6::Udp6RxQueue;
 use crate::ndp;
-use crate::netfilter_hook::{nf_hook_eval, NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INET_PRE_ROUTING};
+use crate::netfilter_hook::{NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INET_PRE_ROUTING};
 
 impl NetStack {
     /// Demux IPv6 after resolving the ingress interface owner. # C: O(payload)

@@ -35,12 +35,11 @@ pub use addr_ops::{handle_deladdr, handle_deladdr_in, handle_newaddr, handle_new
 pub use attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
 pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in, handle_getlink, handle_getlink_in};
-pub(crate) use iface::ifaces_snapshot_in;
 pub use neigh::{handle_delneigh_in, handle_getneigh_in, handle_newneigh_in};
 pub(crate) use rtnetlink_link::LinkStats64;
 pub use iface::{handle_setlink, handle_setlink_in};
 pub(crate) use route_ops::{build_newroute6_reply, build_newroute_group_reply,
-    build_newroute_reply, build_newroute_row_reply, route_oif_for_abi};
+    build_newroute_row_reply, route_oif_for_abi};
 pub use route_ops::{
     handle_delroute, handle_delroute_in, handle_getroute, handle_getroute_in,
     handle_newroute, handle_newroute_in,

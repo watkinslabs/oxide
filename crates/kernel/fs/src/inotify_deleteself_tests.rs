@@ -10,7 +10,6 @@
 // Included as a child module of `inotify` via `#[path]`.
 
 use super::*;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use vfs::{FileType, InodeRef, InodeBuilder, default_file_ops, default_inode_ops, mk_mode};
 

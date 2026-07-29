@@ -9,7 +9,6 @@
 //! Single-test (no intra-binary parallelism) so the binary-global hook counters
 //! are deterministic.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vfs::dentry::{Dentry, DentryOps, D_OP_PRUNE};

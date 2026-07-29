@@ -360,7 +360,7 @@ mod tests {
     // font::glyph_bit and compare against the rendered cell. This is the
     // "login unaffected" guarantee — default cell stays 8×16, same pixels.
     #[test]
-    fn default_font_blit_A_unchanged() {
+    fn default_font_blit_a_unchanged() {
         let _g = font_guard();
         crate::font::set_default(); // ensure built-in 8×16 is active
         // Blit 'A' the new (glyph_bit) way and the OLD way (the byte-per-row

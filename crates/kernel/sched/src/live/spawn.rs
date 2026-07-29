@@ -17,7 +17,6 @@
 // Class assignment v1: every kthread is `SchedClass::Normal { weight=1024 }`
 // (Linux nice=0). RT spawn is a follow-up that wires `13§3` priorities.
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 

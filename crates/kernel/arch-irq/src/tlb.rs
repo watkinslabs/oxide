@@ -106,12 +106,11 @@ pub fn service() {
         // ACK only the round that was live when the flush was decided. A plain
         // `fetch_and` would credit whatever round happens to be live now — the
         // owner would then free a frame this CPU never invalidated for.
-        let mut stale = false;
         loop {
-            if !crate::tlb_round::ack_valid(round, ROUND.load(Ordering::Acquire)) {
-                stale = true;
-                break;
-            }
+            // Round advanced under us: abandon this ACK and retry the outer
+            // loop with a fresh round id. Every other exit returns outright,
+            // so `break` is reached only on the stale path.
+            if !crate::tlb_round::ack_valid(round, ROUND.load(Ordering::Acquire)) { break; }
             if pending & bit == 0 { return; }
             match PENDING.compare_exchange(pending, pending & !bit,
                                            Ordering::AcqRel, Ordering::Acquire) {
@@ -119,7 +118,6 @@ pub fn service() {
                 Err(p) => pending = p,
             }
         }
-        if !stale { return; }
     }
 }
 

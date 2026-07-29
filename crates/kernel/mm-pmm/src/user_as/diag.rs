@@ -1,4 +1,6 @@
+#[cfg(target_arch = "x86_64")]
 use super::*;
+#[cfg(target_arch = "x86_64")]
 use super::fault::do_handle;
 
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
@@ -61,8 +63,8 @@ pub fn diag_verify_file_pages() {
         let VmaBacking::File { ref backing, off } = vma.backing else { continue };
         let mut va = vma.start.as_u64();
         while va < vma.end.as_u64() && reported < 8 {
-            // SAFETY: privileged PT read of the current (dying) task's live root.
-            let translated = unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va)) };
+            // Privileged PT read of the current (dying) task's live root.
+            let translated = <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va));
             // Raw x86 leaf (D bit6 = written-through-since-install, A bit5 =
             // accessed, W bit1). The DECISIVE discriminator: D=0 => the frame's
             // zero content arrived WITH the frame at install (some path zeroed

@@ -206,6 +206,7 @@ pub fn keyring_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
 /// `KEYCTL_SET_TIMEOUT`. Arch-gated so every `ops::*_core` stays cfg-free.
 /// # C: O(1)
 fn monotonic_now_ns() -> u64 {
+    #[cfg(target_os = "oxide-kernel")]
     use hal::TimerOps;
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }

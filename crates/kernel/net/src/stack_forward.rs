@@ -4,7 +4,7 @@ use crate::icmp::{self, time_exceeded_code, unreach_code};
 use crate::ipv4::{ip_checksum, push_ipv4_header, IPV4_HDR_LEN};
 use crate::netdev::{NetError, NetResult};
 use crate::netfilter_hook::{
-        nf_hook_eval, nf_hook_eval_in, nf_output, NFPROTO_IPV4, NF_INET_FORWARD, NF_INET_POST_ROUTING,
+        nf_hook_eval_in, nf_output, NFPROTO_IPV4, NF_INET_FORWARD, NF_INET_POST_ROUTING,
 };
 use crate::pkt::Pkt;
 use crate::stack::NetStack;

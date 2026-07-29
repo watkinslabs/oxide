@@ -104,16 +104,18 @@ pub fn tsc_khz_from_cpuid() -> u32 {
 /// Vendor string from CPUID leaf 0 (`EBX|EDX|ECX` = 12 ASCII bytes).
 /// # C: O(1)
 pub fn vendor() -> [u8; 12] {
-    let mut v = [0u8; 12];
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
+        let mut v = [0u8; 12];
         // SAFETY: leaf 0 always present on any 64-bit-capable CPU.
         let (_, b, c, d) = unsafe { cpuid(0) };
         v[0..4].copy_from_slice(&b.to_le_bytes());
         v[4..8].copy_from_slice(&d.to_le_bytes());
         v[8..12].copy_from_slice(&c.to_le_bytes());
+        return v;
     }
-    v
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { [0u8; 12] }
 }
 
 /// `(display_family, display_model, stepping)` from CPUID leaf 1 EAX, per
@@ -144,9 +146,9 @@ pub fn family_model() -> (u32, u32, u32) {
 /// ASCII, NUL-padded). `0` if extended leaves are unsupported.
 /// # C: O(1)
 pub fn brand() -> [u8; 48] {
-    let mut buf = [0u8; 48];
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
+        let mut buf = [0u8; 48];
         // Probe support: leaf 0x80000000 returns the highest extended
         // leaf in EAX. Need ≥ 0x80000004 for the brand string.
         // SAFETY: cpuid is unprivileged at any CPL with no memory effects; leaf 0x80000000 is safe to query on any 64-bit CPU.
@@ -162,8 +164,10 @@ pub fn brand() -> [u8; 48] {
                 buf[off + 12..off + 16].copy_from_slice(&d.to_le_bytes());
             }
         }
+        return buf;
     }
-    buf
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { [0u8; 48] }
 }
 
 #[cfg(test)]

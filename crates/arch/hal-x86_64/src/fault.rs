@@ -22,22 +22,6 @@ unsafe fn read_cr2() -> u64 {
     v
 }
 
-/// Rust side of the fault handler. Called from `oxide_fault_common`
-/// with `regs = rsp after the 15 GPR pushes`. Emits a one-line fault
-/// summary on the boot UART then returns to the asm halt loop.
-///
-/// # SAFETY: caller (asm stub) passes a valid pointer to a
-/// `PtRegs` on the kernel stack.
-/// # C: O(constant)
-/// # Ctx: exception context, IRQs off
-// Per `04§4.0` (R06): emit-path call sites gated under `debug-irq`.
-// Default builds halt silently on a fault; the diagnostic dump rides
-// the same gate as the rest of the IRQ/exception trace surface.
-#[cfg(feature = "debug-irq")]
-macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
-#[cfg(not(feature = "debug-irq"))]
-macro_rules! debug_irq { ($($t:tt)*) => {} }
-
 /// Optional fault handler. Default is `default_handler` which
 /// returns `false` (= asm halts). Kernel installs a real handler
 /// via `install_fault_handler` once VMM AddressSpace integration
@@ -151,6 +135,14 @@ fn nmi_backtrace(f: &PtRegs) {
     klog::write_raw(b"\n");
 }
 
+/// Rust side of the fault handler. Called from `oxide_fault_common`
+/// with `regs = rsp after the 15 GPR pushes`. Emits a one-line fault
+/// summary on the boot UART then returns to the asm halt loop.
+///
+/// # SAFETY: caller (asm stub) passes a valid pointer to a
+/// `PtRegs` on the kernel stack.
+/// # C: O(constant)
+/// # Ctx: exception context, IRQs off
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
