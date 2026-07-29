@@ -31,15 +31,7 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
         return Err(2);
     }
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
-    // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
-    // ~50 vendor apps + rebuilding the ext4 image every boot. Kernel-only
-    // changes don't touch the rootfs, so this turns a multi-minute rebuild
-    // into a no-op. Unset (default) = always rebuild, for correctness/CI.
-    if std::env::var("OXIDE_SKIP_ROOTFS").is_ok() {
-        eprintln!("xtask grub: OXIDE_SKIP_ROOTFS set — reusing cached rootfs (no restage)");
-    } else {
-        crate::cmd_rootfs(rest)?;
-    }
+    let repo = prepare_rootfs(rest, &arch)?;
     // `debug-boot` by default — installs the UART klog sink without the
     // debug-sched/debug-vmm bring-up smokes. Those smokes (e.g. ksched RR)
     // `sti; hlt` on a deliberately-disarmed timer and deadlock — a
@@ -52,7 +44,6 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
         &kr[..]
     } else { rest };
     crate::cmd_kernel(kargs)?;
-    let repo = repo_root();
     let id = parse_arg(rest, "--id");
     if let Some(ref id) = id { crate::buildns::validate(id)?; }
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
@@ -67,6 +58,32 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     qemu_run_grub_x86_64(&repo, id.as_deref(), &iso, smp)
 }
 
+/// Rebuild requested vendor packages before staging them into the rootfs.
+fn prepare_rootfs(rest: &[String], arch: &str) -> Result<std::path::PathBuf, u8> {
+    let repo = repo_root();
+    let skip = std::env::var("OXIDE_SKIP_ROOTFS").is_ok();
+    prepare_rootfs_in(&repo, rest, arch, skip, || crate::cmd_rootfs(rest))?;
+    Ok(repo)
+}
+
+fn prepare_rootfs_in<F>(repo: &std::path::Path, rest: &[String], arch: &str,
+    skip: bool, stage: F) -> Result<(), u8>
+where
+    F: FnOnce() -> Result<(), u8>,
+{
+    crate::gc::rebuild_vendor(repo, arch, rest)?;
+    // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
+    // ~50 vendor apps + rebuilding the ext4 image every boot. Kernel-only
+    // changes don't touch the rootfs, so this turns a multi-minute rebuild
+    // into a no-op. Unset (default) = always rebuild, for correctness/CI.
+    if skip {
+        eprintln!("xtask grub: OXIDE_SKIP_ROOTFS set — reusing cached rootfs (no restage)");
+    } else {
+        stage()?;
+    }
+    Ok(())
+}
+
 /// GRUB on aarch64 (Limine-free): build the EFI-stub flat Image, stage it
 /// + a grub.cfg that `linux`-boots it, `grub2-mkrescue` an EFI ISO using
 /// the vendored arm64-efi GRUB modules (no host grub2-efi-aa64 install
@@ -78,15 +95,7 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
 /// (virtio-blk/net/gpu).
 fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
-    // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
-    // ~50 vendor apps + rebuilding the ext4 image every boot. Kernel-only
-    // changes don't touch the rootfs, so this turns a multi-minute rebuild
-    // into a no-op. Unset (default) = always rebuild, for correctness/CI.
-    if std::env::var("OXIDE_SKIP_ROOTFS").is_ok() {
-        eprintln!("xtask grub: OXIDE_SKIP_ROOTFS set — reusing cached rootfs (no restage)");
-    } else {
-        crate::cmd_rootfs(rest)?;
-    }
+    let repo = prepare_rootfs(rest, "aarch64")?;
     // debug-boot by default — UART klog sink, no bring-up smokes (parity
     // with the x86 grub path). Override with --features debug-all.
     let mut kr: Vec<String>;
@@ -97,7 +106,6 @@ fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
         &kr[..]
     } else { rest };
     crate::cmd_kernel(kargs)?;
-    let repo = repo_root();
     let id = parse_arg(rest, "--id");
     if let Some(ref id) = id { crate::buildns::validate(id)?; }
     let kernel_elf = kernel_elf_path(&repo, "aarch64", rest)?;
@@ -136,5 +144,56 @@ fn cmd_run_existing(rest: &[String], arch: &str) -> Result<(), u8> {
         "x86_64" => qemu_run_grub_x86_64(&repo, Some(&id), &iso, smp),
         "aarch64" => qemu_run_aarch64_grub(&repo, Some(&id), &iso, smp),
         _ => { eprintln!("xtask grub: arch must be x86_64 or aarch64"); Err(2) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Fixture(std::path::PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "oxide-xtask-vendor-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            let log = path.join("order.log");
+            for name in ["beta", "alpha"] {
+                std::fs::create_dir_all(path.join("vendor").join(name)).unwrap();
+                std::fs::write(
+                    path.join("vendor").join(name).join("build.sh"),
+                    format!("printf '{}:%s\\n' \"$1\" >> {:?}\n", name, log),
+                ).unwrap();
+            }
+            Self(path)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn requested_vendor_rebuild_finishes_before_rootfs_staging() {
+        let fixture = Fixture::new();
+        let log = fixture.0.join("order.log");
+        let args = vec!["--rebuild-vendor".to_string()];
+        prepare_rootfs_in(&fixture.0, &args, "aarch64", false, || {
+            assert_eq!(
+                std::fs::read_to_string(&log).unwrap(),
+                "alpha:aarch64\nbeta:aarch64\n",
+            );
+            std::fs::write(&log, "alpha:aarch64\nbeta:aarch64\nrootfs\n").map_err(|_| 1)
+        }).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(log).unwrap(),
+            "alpha:aarch64\nbeta:aarch64\nrootfs\n",
+        );
     }
 }
