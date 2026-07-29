@@ -138,6 +138,29 @@ fn a_reserved_mxcsr_bit_is_rejected() {
             "a reserved MXCSR bit must fail the sigreturn, not reach xrstor64");
 }
 
+/// Linux validates MXCSR only when the XSAVE header enables FP, SSE, or YMM.
+/// With those bits clear XRSTOR initialises the related components and never
+/// consumes the legacy MXCSR field.
+#[test]
+fn a_reserved_mxcsr_bit_is_ignored_when_related_features_are_absent() {
+    let mut img = good_image();
+    wr32(&mut img, MXCSR_OFF, 0x1f80 | 0x8000_0000);
+    let mut out = [0u8; N];
+
+    wr64(&mut img, XFEATURES_OFF, XFEATURE_MASK_YMM);
+    assert!(!build_restore_image(&img, &mut out,
+                                 SwCheck::Xstate { xstate_size: AREA, xfeatures: XCR0 },
+                                 XCR0, MXCSR_MASK, true),
+            "YMM consumes MXCSR even when FP and SSE are absent");
+
+    wr64(&mut img, XFEATURES_OFF, 0);
+    assert!(build_restore_image(&img, &mut out,
+                                SwCheck::Xstate { xstate_size: AREA, xfeatures: XCR0 },
+                                XCR0, MXCSR_MASK, true),
+            "unused MXCSR bits must not reject sigreturn");
+    assert_eq!(rd64(&out, XFEATURES_OFF), 0);
+}
+
 /// The round trip that matters: what the kernel wrote must come back
 /// byte-identical through the restore transform, or the interrupted context's
 /// SIMD registers are silently changed.
