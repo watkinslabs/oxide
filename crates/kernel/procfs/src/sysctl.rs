@@ -219,7 +219,7 @@ fn read_bound_handler(h: &dyn crate::proc_handler::ProcHandler, off: u64,
 fn write_bound_handler(h: &dyn crate::proc_handler::ProcHandler, off: u64,
     src: &[u8]) -> KResult<usize>
 {
-    if off == 0 { h.store(src).map_err(|_| VfsError::Einval)?; }
+    if off == 0 { h.store_vfs(src)?; }
     Ok(src.len())
 }
 

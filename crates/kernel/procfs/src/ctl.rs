@@ -34,11 +34,12 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
-use vfs::InodeRef;
+use vfs::{InodeRef, KResult, VfsError};
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
     BoolVar, IntHook as HIntHook, IntVar, PerNetIntHook as HPerNetIntHook,
+    PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
     StrHook as HStrHook, ULongVar,
 };
@@ -55,6 +56,27 @@ const MQ_MSGSIZE_BOUNDS: (i64, i64) =
 
 fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
     net::net_ns::current_namespace()
+}
+fn current_pid_ns() -> namespace_identity::NamespaceRef {
+    sched::current()
+        .and_then(|task| task.namespace_owner(namespace_identity::NamespaceKind::Pid))
+        .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::Pid))
+}
+fn get_memfd_noexec(namespace: &namespace_identity::NamespaceRef) -> Result<i64, ()> {
+    namespace.pid_memfd_noexec_scope().map(i64::from).map_err(|_| ())
+}
+fn check_memfd_noexec_write(namespace: &namespace_identity::NamespaceRef) -> KResult<()> {
+    let current = sched::current().ok_or(VfsError::Esrch)?;
+    if nscg::proc_ns::has_cap_for(current, &namespace.owner_user_namespace(),
+        sched::cap::SYS_ADMIN)
+    {
+        Ok(())
+    } else {
+        Err(VfsError::Eperm)
+    }
+}
+fn set_memfd_noexec(namespace: &namespace_identity::NamespaceRef, value: i64) -> KResult<()> {
+    namespace.set_pid_memfd_noexec_scope(value as u8).map_err(|_| VfsError::Einval)
 }
 /// `fs.suid_dumpable` lives with the credential code that consumes it
 /// (`sched::cred`, Linux `fs/exec.c int suid_dumpable`); this leaf binds to
@@ -146,6 +168,11 @@ enum Leaf {
     /// Fallible hook for values constrained by another live field.
     PerNetIntHook(fn(&network_namespace::NetworkNamespaceRef, usize) -> Result<i64, ()>,
         fn(&network_namespace::NetworkNamespaceRef, usize, i64) -> Result<(), ()>,
+        Option<(i64, i64)>),
+    /// PID-namespace hook with a write-time namespace capability gate.
+    PerPidIntHook(fn(&namespace_identity::NamespaceRef) -> Result<i64, ()>,
+        fn(&namespace_identity::NamespaceRef) -> KResult<()>,
+        fn(&namespace_identity::NamespaceRef, i64) -> KResult<()>,
         Option<(i64, i64)>),
     /// `proc_doulongvec_minmax` over a live `AtomicU64`.
     ULong(u64, Option<(u64, u64)>),
@@ -255,6 +282,14 @@ const SYSCTL_TREE: &[Node] = &[
         File("page-cluster",            Int(3, Some((0, INT_MAX)))),
         File("nr_hugepages",            Int(0, Some((0, INT_MAX)))),
         File("mmap_min_addr",           Int(65536, Some((0, INT_MAX)))),
+        // `vm.memfd_noexec` belongs to the active PID namespace. A child
+        // copies its parent's effective scope and cannot write below the
+        // parent's current floor; writes require CAP_SYS_ADMIN in the PID
+        // namespace's owning user namespace (`kernel/pid_sysctl.h`).
+        File("memfd_noexec", PerPidIntHook(get_memfd_noexec,
+            check_memfd_noexec_write, set_memfd_noexec,
+            Some((namespace_identity::PID_MEMFD_NOEXEC_SCOPE_EXEC as i64,
+                  namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED as i64)))),
         // `vm.mmap_rnd_bits` — the live entropy width `arch_mmap_rnd()` uses,
         // bounded by this arch's Kconfig pair (`mm/mmap.c:66-75`). Linux has a
         // `mmap_rnd_compat_bits` sibling only under `CONFIG_COMPAT`; this
@@ -363,6 +398,10 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
         Leaf::PerNetIntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HPerNetIntHook {
             current_ns: current_net_ns, key: 0, get, set, bounds,
         })),
+        Leaf::PerPidIntHook(get, check_write, set, bounds) =>
+            bound_sysctl_inode(Arc::new(HPerPidIntHook {
+                current_ns: current_pid_ns, check_write, get, set, bounds,
+            })),
         Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
         ULong(def, bounds) => {
             let cell: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(def)));

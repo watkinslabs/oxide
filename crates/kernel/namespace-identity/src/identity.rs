@@ -1,12 +1,20 @@
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::ops::Deref;
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::registry;
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum NamespaceKind { Cgroup, Ipc, Mnt, Net, Pid, Time, User, Uts }
+
+/// Linux `pidns_memfd_noexec_scope` values (`include/linux/pid_namespace.h`).
+pub const PID_MEMFD_NOEXEC_SCOPE_EXEC: u8 = 0;
+pub const PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL: u8 = 1;
+pub const PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED: u8 = 2;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PidMemfdNoexecError { NotPidNamespace, OutOfRange, BelowParent }
 
 impl NamespaceKind {
     pub(crate) const ALL: [Self; 8] = [Self::Cgroup, Self::Ipc, Self::Mnt,
@@ -117,6 +125,8 @@ pub struct Namespace {
     pub(crate) nsfs_ino: u64,
     pub(crate) owner_user_namespace: Owner,
     pub(crate) parent: Option<NamespacePin>,
+    /// `struct pid_namespace::memfd_noexec_scope`; zero for non-PID kinds.
+    pub(crate) pid_memfd_noexec_scope: AtomicU8,
     pub(crate) active: AtomicUsize,
     pub(crate) finalizers: crate::sync::SpinLock<Vec<NamespaceFinalizer>>,
 }
@@ -134,6 +144,40 @@ impl Namespace {
     }
     pub fn parent(&self) -> Option<NamespacePin> { self.parent.clone() }
     pub const fn is_initial(&self) -> bool { self.id.0 == 0 }
+    /// Effective `vm.memfd_noexec`, including every ancestor's floor.
+    /// # C: O(PID namespace depth)
+    pub fn pid_memfd_noexec_scope(&self) -> Result<u8, PidMemfdNoexecError> {
+        if self.kind != NamespaceKind::Pid {
+            return Err(PidMemfdNoexecError::NotPidNamespace);
+        }
+        let mut scope = self.pid_memfd_noexec_scope.load(Ordering::Acquire);
+        let mut parent = self.parent();
+        while let Some(namespace) = parent {
+            scope = scope.max(namespace.pid_memfd_noexec_scope.load(Ordering::Acquire));
+            parent = namespace.parent();
+        }
+        Ok(scope)
+    }
+    /// Update this PID namespace's local scope. Linux refuses values below the
+    /// effective parent scope, so descendants cannot weaken an outer policy.
+    /// # C: O(PID namespace depth)
+    pub fn set_pid_memfd_noexec_scope(&self, scope: u8)
+        -> Result<(), PidMemfdNoexecError>
+    {
+        if self.kind != NamespaceKind::Pid {
+            return Err(PidMemfdNoexecError::NotPidNamespace);
+        }
+        if scope > PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED {
+            return Err(PidMemfdNoexecError::OutOfRange);
+        }
+        if let Some(parent) = self.parent() {
+            if scope < parent.pid_memfd_noexec_scope()? {
+                return Err(PidMemfdNoexecError::BelowParent);
+            }
+        }
+        self.pid_memfd_noexec_scope.store(scope, Ordering::Release);
+        Ok(())
+    }
     pub fn register_finalizer(&self, finalizer: NamespaceFinalizer) {
         let mut finalizers = self.finalizers.lock();
         if !finalizers.iter().any(|registered| *registered as usize == finalizer as usize) {
