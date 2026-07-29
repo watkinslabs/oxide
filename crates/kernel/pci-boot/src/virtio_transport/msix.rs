@@ -8,34 +8,9 @@ mod log;
 
 const MSI_MESSAGE_ADDRESS_LOW_MASK: u64 = 0xFFFF_FFFF;
 const MSI_MESSAGE_ADDRESS_HIGH_SHIFT: u32 = 32;
-#[cfg(target_arch = "x86_64")]
-const X86_APIC_MSI_MESSAGE_ADDRESS: u64 = 0xFEE0_0000;
-#[cfg(target_arch = "aarch64")]
-const GICV2M_SETSPI_NSR_OFFSET: u64 = 0x40;
 const MSIX_VECTOR_CONTROL_UNMASKED: u32 = 0;
-
-#[cfg(target_arch = "aarch64")]
-const ITS_DEVICE_SLOTS: usize = 32;
-#[cfg(target_arch = "aarch64")]
-const ITS_ITT_FRAME_BYTES: usize = 0x1000;
-#[cfg(target_arch = "aarch64")]
-const ITS_ITT_WORD_BYTES: usize = core::mem::size_of::<u64>();
-#[cfg(target_arch = "aarch64")]
-const ITS_EVENT_ID_BITS: u32 = 4;
-#[cfg(target_arch = "aarch64")]
-const ITS_BOOT_COLLECTION: u16 = 0;
-#[cfg(target_arch = "aarch64")]
-const ITS_BOOT_RDBASE: u32 = 0;
-#[cfg(target_arch = "aarch64")]
 const PCI_BDF_BUS_SHIFT: u32 = 8;
-#[cfg(target_arch = "aarch64")]
 const PCI_BDF_DEVICE_SHIFT: u32 = 3;
-#[cfg(target_arch = "aarch64")]
-static ITS_DEVICE_IDS: [core::sync::atomic::AtomicU32; ITS_DEVICE_SLOTS] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; ITS_DEVICE_SLOTS];
-#[cfg(target_arch = "aarch64")]
-static ITS_DEVICE_ITTS: [core::sync::atomic::AtomicU64; ITS_DEVICE_SLOTS] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; ITS_DEVICE_SLOTS];
 
 #[derive(Clone, Copy)]
 pub(crate) struct MsixBinding {
@@ -73,19 +48,19 @@ pub(crate) fn bind_msix_vector(
     let page_pa = entry_pa & VIRTIO_PCI_PAGE_BASE_MASK;
     let page_off = entry_pa - page_pa;
 
-    let (id, msg_addr, msg_data) = alloc_msi_message(d.bdf, queue_vector)?;
-    if !register_msi_handler(id, handler) {
-        free_msi_id(id);
+    let message = arch_irq::alloc_pci_msi(pci_requester_id(d.bdf), queue_vector as u32)?;
+    if !arch_irq::register_pci_msi_handler(message.irq, handler) {
+        arch_irq::free_pci_msi(message.irq);
         return None;
     }
     let base_va = mappings.map_page(page_pa);
     let entry_va = base_va + page_off;
 
     arch::set_enabled_masked(d.bdf, c.cfg_off);
-    write_msix_entry(entry_va, msg_addr, msg_data);
-    log::binding(d.bdf, queue_vector, entry_va, msg_addr, msg_data);
+    write_msix_entry(entry_va, message.address, message.data);
+    log::binding(d.bdf, queue_vector, entry_va, message.address, message.data);
     Some(MsixBinding {
-        id,
+        id: message.irq,
         entry_va,
         cap_off: c.cfg_off,
         queue_vector,
@@ -168,7 +143,7 @@ pub(crate) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBindin
         pci::MsixTeardownStep::DisableMemBusMaster => {}
     });
     for binding in bindings {
-        free_msi_id(binding.id);
+        arch_irq::free_pci_msi(binding.id);
     }
 }
 
@@ -303,183 +278,8 @@ fn bdf_from_word(word: u32) -> pci::Bdf {
     }
 }
 
-fn alloc_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, u32)> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let _ = (bdf, queue_vector);
-        arch_irq::alloc_x86_vector()
-            .map(|vec| (vec as u32, X86_APIC_MSI_MESSAGE_ADDRESS, vec as u32))
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if let Some(msg) = alloc_its_msi_message(bdf, queue_vector) {
-            return Some(msg);
-        }
-        let spi = arch_irq::alloc_arm_spi()?;
-        // SAFETY: SPI was allocated from arch-irq's GICv2m MSI range.
-        unsafe {
-            arch_irq::gic::enable_intid(spi);
-        }
-        let v2m_pa = firmware::acpi::GIC_MSI_FRAME_PA
-            .load(core::sync::atomic::Ordering::Acquire);
-        if v2m_pa == 0 {
-            let _ = arch_irq::free_arm_spi(spi);
-            return None;
-        }
-        Some((spi, v2m_pa + GICV2M_SETSPI_NSR_OFFSET, spi))
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn alloc_its_msi_message(bdf: pci::Bdf, queue_vector: u16) -> Option<(u32, u64, u32)> {
-    let msg_addr = arch_irq::its::translater_pa();
-    if msg_addr == 0 {
-        return None;
-    }
-    let device_id = its_device_id(bdf);
-    ensure_its_device(device_id)?;
-    let event_id = queue_vector as u32;
-    let lpi = arch_irq::alloc_arm_lpi()?;
-    let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
-    log::its_alloc(bdf, pci_requester_id(bdf), device_id, event_id, lpi, msg_addr);
-    // SAFETY: lpis_enable published the prop table and hhdm maps it.
-    let prop_ok = unsafe {
-        arch_irq::gic::lpi_set_config(hhdm, lpi, arch_irq::gic::LPI_PROP_DEFAULT)
-    };
-    if !prop_ok {
-        let _ = arch_irq::free_arm_spi(lpi);
-        return None;
-    }
-    let mapti = arch_irq::its::cmd_mapti(device_id, event_id, lpi, ITS_BOOT_COLLECTION);
-    // SAFETY: ITS was enabled by ARM device-map bring-up before PCI virtio
-    // probing, and HHDM covers the command queue frame.
-    if !its_cmd_ok(unsafe { arch_irq::its::cmd_post(hhdm, mapti) }) {
-        let _ = arch_irq::free_arm_spi(lpi);
-        return None;
-    }
-    // SAFETY: MAPTI was posted above; INV and SYNC use the same command
-    // queue protocol and target the boot CPU collection.
-    let inv_ok = its_cmd_ok(unsafe {
-        arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_inv(device_id, event_id))
-    });
-    let sync_ok = its_cmd_ok(unsafe {
-        arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(ITS_BOOT_RDBASE))
-    });
-    if !inv_ok || !sync_ok {
-        let _ = arch_irq::free_arm_spi(lpi);
-        return None;
-    }
-    Some((lpi, msg_addr, event_id))
-}
-
-#[cfg(target_arch = "aarch64")]
-fn ensure_its_device(device_id: u32) -> Option<()> {
-    use core::sync::atomic::Ordering;
-
-    for i in 0..ITS_DEVICE_SLOTS {
-        if ITS_DEVICE_IDS[i].load(Ordering::Acquire) == device_id {
-            return (ITS_DEVICE_ITTS[i].load(Ordering::Acquire) != 0).then_some(());
-        }
-    }
-    for i in 0..ITS_DEVICE_SLOTS {
-        if ITS_DEVICE_IDS[i]
-            .compare_exchange(0, device_id, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            continue;
-        }
-        let itt_pa = match pmm::setup::alloc_one_frame() {
-            Some(pa) => pa,
-            None => {
-                ITS_DEVICE_IDS[i].store(0, Ordering::Release);
-                return None;
-            }
-        };
-        let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
-        if hhdm != 0 {
-            // SAFETY: freshly allocated frame is HHDM mapped and u64 aligned.
-            unsafe {
-                let p = hhdm.wrapping_add(itt_pa) as *mut u64;
-                for n in 0..(ITS_ITT_FRAME_BYTES / ITS_ITT_WORD_BYTES) {
-                    core::ptr::write_volatile(p.add(n), 0);
-                }
-            }
-            arch_irq::cache::clean_to_poc(hhdm.wrapping_add(itt_pa), ITS_ITT_FRAME_BYTES);
-        }
-        // SAFETY: MAPC is idempotent for ICID 0 -> boot CPU and keeps this
-        // dynamic path independent from early smoke self-test ordering.
-        let mapc_ok = its_cmd_ok(unsafe {
-            arch_irq::its::cmd_post(
-                hhdm,
-                arch_irq::its::cmd_mapc(ITS_BOOT_COLLECTION, ITS_BOOT_RDBASE),
-            )
-        });
-        // SAFETY: MAPC was posted above; SYNC targets the same boot RDbase.
-        let mapc_sync_ok = its_cmd_ok(unsafe {
-            arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(ITS_BOOT_RDBASE))
-        });
-        if !mapc_ok || !mapc_sync_ok {
-            // SAFETY: frame has not been published after failed MAPC/SYNC.
-            unsafe { pmm::setup::free_one_frame(itt_pa); }
-            ITS_DEVICE_IDS[i].store(0, Ordering::Release);
-            return None;
-        }
-        let cmd = arch_irq::its::cmd_mapd(device_id, itt_pa, ITS_EVENT_ID_BITS);
-        // SAFETY: ITS is enabled and the ITT frame is zeroed and aligned.
-        if !its_cmd_ok(unsafe { arch_irq::its::cmd_post(hhdm, cmd) }) {
-            // SAFETY: frame has not been published to users after failed MAPD.
-            unsafe { pmm::setup::free_one_frame(itt_pa); }
-            ITS_DEVICE_IDS[i].store(0, Ordering::Release);
-            return None;
-        }
-        // SAFETY: MAPD was posted above; SYNC targets the boot RDbase.
-        let mapd_sync_ok = its_cmd_ok(unsafe {
-            arch_irq::its::cmd_post(hhdm, arch_irq::its::cmd_sync(ITS_BOOT_RDBASE))
-        });
-        if !mapd_sync_ok {
-            // SAFETY: frame has not been recorded in the local device table.
-            unsafe { pmm::setup::free_one_frame(itt_pa); }
-            ITS_DEVICE_IDS[i].store(0, Ordering::Release);
-            return None;
-        }
-        ITS_DEVICE_ITTS[i].store(itt_pa, Ordering::Release);
-        return Some(());
-    }
-    None
-}
-
-#[cfg(target_arch = "aarch64")]
-fn its_device_id(bdf: pci::Bdf) -> u32 {
-    let rid = pci_requester_id(bdf);
-    firmware::acpi::iort_msi_device_id(rid).unwrap_or(rid)
-}
-
-#[cfg(target_arch = "aarch64")]
 fn pci_requester_id(bdf: pci::Bdf) -> u32 {
     ((bdf.bus as u32) << PCI_BDF_BUS_SHIFT)
         | ((bdf.device as u32) << PCI_BDF_DEVICE_SHIFT)
         | bdf.function as u32
-}
-
-#[cfg(target_arch = "aarch64")]
-fn its_cmd_ok(status: arch_irq::its::CmdStatus) -> bool {
-    matches!(status, arch_irq::its::CmdStatus::Posted { .. })
-}
-
-fn register_msi_handler(id: u32, handler: fn()) -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        arch_irq::register_msi_handler(id as u8, handler).is_ok()
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        arch_irq::register_msi_handler(id, handler).is_ok()
-    }
-}
-
-fn free_msi_id(id: u32) {
-    #[cfg(target_arch = "x86_64")]
-    let _ = arch_irq::free_x86_vector(id as u8);
-    #[cfg(target_arch = "aarch64")]
-    let _ = arch_irq::free_arm_spi(id);
 }
