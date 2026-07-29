@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::nlmsg_align;
 use crate::rtnetlink::rta;
+use crate::rtnetlink::uapi::rtax;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RouteNexthop {
@@ -25,7 +26,8 @@ pub struct RouteAttrs {
     pub multipath: Vec<RouteNexthop>,
 }
 
-const RTAX_MTU: u16 = 2;
+// Linux `net/ipv4/metrics.c` `ip_metrics_convert`.
+const RTAX_MTU_MAX: u32 = u16::MAX as u32 - 15;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RouteAttrError { Invalid, Unsupported }
@@ -35,19 +37,34 @@ fn parse_u32(payload: &[u8]) -> Option<u32> {
     Some(u32::from_ne_bytes([payload[0], payload[1], payload[2], payload[3]]))
 }
 
+// Linux `net/ipv4/metrics.c` `ip_metrics_convert` walks the complete nested
+// stream in wire order; later duplicate values replace earlier ones.
 fn parse_metrics(attrs: &[u8]) -> Result<Option<u32>, RouteAttrError> {
-    let off = 0;
+    let mut mtu = None;
+    let mut off = 0;
     while off + 4 <= attrs.len() {
         let len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
         let kind = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
         if len < 4 || off + len > attrs.len() { return Err(RouteAttrError::Invalid); }
-        if kind == RTAX_MTU {
-            return parse_u32(&attrs[off + 4..off + len]).map(Some).ok_or(RouteAttrError::Invalid);
+        if kind > rtax::RTAX_MAX { return Err(RouteAttrError::Invalid); }
+        if kind == rtax::RTAX_MTU {
+            let value = parse_u32(&attrs[off + 4..off + len])
+                .ok_or(RouteAttrError::Invalid)?;
+            mtu = Some(value.min(RTAX_MTU_MAX));
         }
-        return Err(RouteAttrError::Unsupported);
+        let raw_end = off + len;
+        let aligned_end = off + nlmsg_align(len);
+        if aligned_end > attrs.len() {
+            if attrs[raw_end..].iter().any(|byte| *byte != 0) {
+                return Err(RouteAttrError::Invalid);
+            }
+            off = attrs.len();
+        } else {
+            off = aligned_end;
+        }
     }
     if attrs[off..].iter().any(|byte| *byte != 0) { return Err(RouteAttrError::Invalid); }
-    Ok(None)
+    Ok(mtu)
 }
 
 /// Parse nested attributes in one `struct rtnexthop`. # C: O(N attrs)
@@ -145,4 +162,57 @@ pub fn put_multipath_attr(out: &mut Vec<u8>, nexthops: &[RouteNexthop]) {
         for _ in 0..pad { payload.push(0); }
     }
     crate::rtnetlink::put_nlattr(out, rta::RTA_MULTIPATH, &payload);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn put_metric(attrs: &mut Vec<u8>, kind: u16, value: u32) {
+        crate::rtnetlink::put_nlattr(attrs, kind, &value.to_ne_bytes());
+    }
+
+    #[test]
+    fn metrics_walks_past_lock_and_last_mtu_wins() {
+        let mut attrs = Vec::new();
+        put_metric(&mut attrs, rtax::RTAX_LOCK, 1 << rtax::RTAX_MTU);
+        put_metric(&mut attrs, rtax::RTAX_MTU, 1500);
+        put_metric(&mut attrs, rtax::RTAX_MTU, 1400);
+        let mut outer = Vec::new();
+        crate::rtnetlink::put_nlattr(&mut outer, rta::RTA_METRICS, &attrs);
+        assert_eq!(parse_route_attrs(&outer).unwrap().mtu, Some(1400));
+    }
+
+    #[test]
+    fn metrics_checks_bad_mtu_after_valid_mtu() {
+        let mut attrs = Vec::new();
+        put_metric(&mut attrs, rtax::RTAX_MTU, 1500);
+        attrs.extend_from_slice(&7u16.to_ne_bytes());
+        attrs.extend_from_slice(&rtax::RTAX_MTU.to_ne_bytes());
+        attrs.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(parse_metrics(&attrs), Err(RouteAttrError::Invalid));
+    }
+
+    #[test]
+    fn metrics_clamps_mtu_to_the_linux_ipv4_ceiling() {
+        let mut attrs = Vec::new();
+        put_metric(&mut attrs, rtax::RTAX_MTU, u32::MAX);
+        assert_eq!(parse_metrics(&attrs), Ok(Some(RTAX_MTU_MAX)));
+    }
+
+    #[test]
+    fn metrics_rejects_types_beyond_linux_rtax_max() {
+        let mut attrs = Vec::new();
+        put_metric(&mut attrs, rtax::RTAX_MAX + 1, 1);
+        assert_eq!(parse_metrics(&attrs), Err(RouteAttrError::Invalid));
+    }
+
+    #[test]
+    fn metrics_accepts_an_unpadded_final_unspec_attr() {
+        let mut attrs = Vec::new();
+        attrs.extend_from_slice(&5u16.to_ne_bytes());
+        attrs.extend_from_slice(&rtax::RTAX_UNSPEC.to_ne_bytes());
+        attrs.push(0xaa);
+        assert_eq!(parse_metrics(&attrs), Ok(None));
+    }
 }
