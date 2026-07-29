@@ -3,7 +3,7 @@
 // under test needs. dead_code here measures the test's reach, not the kernel's
 // -- the real signal lives in `xtask kernel`, which is dead_code-clean.
 #![allow(dead_code)]
-#[path = "../../syscalls/src/stat_common.rs"]
+#[path = "../../syscalls/src/stat_common/core.rs"]
 mod stat_common;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
