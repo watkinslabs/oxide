@@ -303,13 +303,10 @@ fn prog_load_unknown_prog_flag_bit_is_einval_before_any_eperm() {
 #[test]
 fn prog_types_without_a_runner_are_not_loadable() {
     // find_prog_type(): bpf_prog_types[type] == NULL -> -EINVAL, which is
-    // what Linux returns for any type whose CONFIG is not built in. The
-    // loadable pair is exactly the pair with a run site: SOCKET_FILTER
-    // (SO_ATTACH_BPF) and CGROUP_DEVICE (the VFS device hooks).
+    // what Linux returns for any type whose CONFIG is not built in.
     assert!(prog_type_supported(uapi::prog_type::SOCKET_FILTER));
-    assert!(prog_type_supported(uapi::prog_type::CGROUP_DEVICE));
     for t in [uapi::prog_type::UNSPEC, uapi::prog_type::XDP, uapi::prog_type::KPROBE,
-              uapi::prog_type::CGROUP_SKB, uapi::prog_type::SCHED_CLS,
+              uapi::prog_type::CGROUP_DEVICE, uapi::prog_type::SCHED_CLS,
               uapi::prog_type::TRACING, uapi::prog_type::SYSCALL] {
         assert!(!prog_type_supported(t), "type {t} must not be loadable");
     }
@@ -333,66 +330,15 @@ fn lsm_programs_are_not_loadable_because_no_hook_executes_them() {
 // ------------------------------------------------------------ PROG_ATTACH
 
 #[test]
-fn prog_attach_resolves_the_cgroup_family_and_its_fields() {
-    let a = attr_with(&[
-        (uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE),
-        (uapi::off::prog_attach::TARGET_FD, 4),
-        (uapi::off::prog_attach::ATTACH_BPF_FD, 5),
-        (uapi::off::prog_attach::ATTACH_FLAGS, uapi::attach_flags::ALLOW_MULTI),
-    ]);
-    let p = prog_attach_check(&a).expect("attach type resolves");
-    assert_eq!(p.ptype, uapi::prog_type::CGROUP_DEVICE);
-    assert_eq!(p.target_fd, 4);
-    assert_eq!(p.attach_bpf_fd, 5);
-    assert_eq!(p.attach_flags, uapi::attach_flags::ALLOW_MULTI);
-    assert!(is_cgroup_prog_type(uapi::prog_type::CGROUP_DEVICE, 0, false));
-    assert!(is_cgroup_prog_type(uapi::prog_type::CGROUP_SKB, 0, false));
-    // BPF_PROG_TYPE_LSM is a cgroup type only for BPF_LSM_CGROUP.
-    assert!(is_cgroup_prog_type(uapi::prog_type::LSM, 0, false));
-    assert!(!is_cgroup_prog_type(uapi::prog_type::LSM, uapi::attach_type::LSM_MAC, true));
-    assert!(is_cgroup_prog_type(uapi::prog_type::LSM, uapi::attach_type::LSM_CGROUP, true));
-    assert!(!is_cgroup_prog_type(uapi::prog_type::SOCKET_FILTER, 0, false));
-}
-
-#[test]
-fn prog_attach_accepts_the_mprog_mask_only_for_cgroup_types() {
-    // is_cgroup_prog_type() -> BASE|MPROG; everything else -> BASE only,
-    // with relative_fd/expected_revision forced to zero.
-    let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE),
-                        (uapi::off::prog_attach::ATTACH_FLAGS, uapi::attach_flags::AFTER),
-                        (uapi::off::prog_attach::RELATIVE_FD, 7)]);
-    assert!(prog_attach_check(&a).is_ok());
-}
-
-#[test]
-fn prog_detach_rejects_attach_flags_for_a_cgroup_type() {
-    let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE),
-                        (uapi::off::prog_attach::ATTACH_FLAGS, uapi::attach_flags::ALLOW_MULTI)]);
-    assert_eq!(prog_detach_check(&a), Err(Errno::Einval));
-    let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE),
-                        (uapi::off::prog_attach::RELATIVE_FD, 3)]);
-    assert_eq!(prog_detach_check(&a), Err(Errno::Einval));
-    // expected_revision survives detach for the cgroup family.
-    let mut a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE)]);
-    let o = uapi::off::prog_attach::EXPECTED_REVISION;
-    a.bytes[o..o + 8].copy_from_slice(&9u64.to_ne_bytes());
-    assert_eq!(prog_detach_check(&a).map(|p| p.expected_revision), Ok(9));
-}
-
-#[test]
-fn prog_detach_of_an_unmapped_attach_type_is_einval() {
-    let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::MAX)]);
-    assert_eq!(prog_detach_check(&a), Err(Errno::Einval));
-}
-
-#[test]
-fn attach_type_must_map_back_to_the_loaded_prog_type() {
-    assert!(attach_type_matches_prog(uapi::prog_type::CGROUP_DEVICE,
-                                     uapi::attach_type::CGROUP_DEVICE).is_ok());
-    assert_eq!(attach_type_matches_prog(uapi::prog_type::SOCKET_FILTER,
-                                        uapi::attach_type::CGROUP_DEVICE), Err(Errno::Einval));
-    assert_eq!(attach_type_matches_prog(uapi::prog_type::CGROUP_DEVICE,
-                                        uapi::attach_type::MAX), Err(Errno::Einval));
+fn prog_attach_never_silently_succeeds() {
+    // cgroup_bpf_prog_attach() with CONFIG_CGROUP_BPF=n returns -EINVAL
+    // (include/linux/bpf-cgroup.h); nothing here enforces a cgroup
+    // device policy, so a bare 0 would be a fabricated success.
+    let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE)]);
+    let ptype = prog_attach_check(&a).expect("attach type resolves");
+    assert_eq!(ptype, uapi::prog_type::CGROUP_DEVICE);
+    assert_eq!(prog_attach_verdict(ptype), Errno::Einval);
+    assert_eq!(prog_attach_verdict(uapi::prog_type::CGROUP_SKB), Errno::Einval);
 }
 
 #[test]
