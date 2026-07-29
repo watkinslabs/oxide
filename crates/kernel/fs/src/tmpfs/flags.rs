@@ -1,9 +1,8 @@
-/// memfd file-seal bits (`fcntl.h`).
-pub const F_SEAL_SEAL:   u32 = 0x0001;
-pub const F_SEAL_SHRINK: u32 = 0x0002;
-pub const F_SEAL_GROW:   u32 = 0x0004;
-pub const F_SEAL_WRITE:  u32 = 0x0008;
-pub const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
+/// memfd file-seal bits (`include/uapi/linux/fcntl.h`).
+pub use vfs::{
+    F_SEAL_EXEC, F_SEAL_FUTURE_WRITE, F_SEAL_GROW, F_SEAL_SEAL, F_SEAL_SHRINK,
+    F_SEAL_WRITE,
+};
 
 pub(super) const S_IFMT:  u16 = 0xF000;
 pub(super) const S_IFCHR: u16 = 0x2000;
