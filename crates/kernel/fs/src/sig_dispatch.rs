@@ -15,6 +15,8 @@
 use core::sync::atomic::Ordering;
 use sched::sigaltstack as sas;
 
+/// Linux `SA_RESTORER`: userspace supplied the signal-return trampoline.
+const SA_RESTORER: u64 = 0x0400_0000;
 /// Linux `SA_NODEFER` — do not add the delivered signal to the handler's
 /// blocked mask.
 const SA_NODEFER: u64 = 0x4000_0000;
@@ -51,6 +53,21 @@ pub unsafe fn current_user_sp(regs: *mut UserRegs) -> u64 {
     unsafe { hal_aarch64::svc_frame_user_sp(regs) }
 }
 
+/// Select Linux arm64's signal-return continuation. `SA_RESTORER` preserves
+/// the user-supplied trampoline verbatim; without it, the current mm owns the
+/// vDSO `__kernel_rt_sigreturn` address.
+#[cfg(target_arch = "aarch64")]
+pub fn aarch64_restorer(restorer: u64, sa_flags: u64) -> Option<u64> {
+    if sa_flags & SA_RESTORER != 0 { Some(restorer) }
+    else {
+        sched::live::current()
+            // SAFETY: current task's mm is stable for this dispatch tail.
+            .and_then(|c| unsafe { c.mm_ref() })
+            .map(|mm| mm.vdso_rt_sigreturn())
+            .filter(|value| *value != 0)
+    }
+}
+
 /// Arch-neutral signal delivery: pick the handler stack, compute the mask the
 /// frame records and the mask the handler runs under, then route to the
 /// per-arch frame builder. Returns `sig` on aarch64 (the dispatch retval seeds
@@ -74,6 +91,16 @@ pub unsafe fn current_user_sp(regs: *mut UserRegs) -> u64 {
 pub unsafe fn deliver_with_info(regs: *mut UserRegs, handler: u64, restorer: u64, sig: u32,
                                 saved_ret: u64, restart: bool,
                                 payload: Option<hal::SigPayload>, sa_flags: u64, sa_mask: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    if sa_flags & SA_RESTORER == 0 {
+        // Linux x64_setup_rt_frame returns -EFAULT before get_sigframe when
+        // SA_RESTORER is absent; signal_setup_done then forces SIGSEGV.
+        bad_sigframe();
+    }
+    #[cfg(target_arch = "aarch64")]
+    let restorer = aarch64_restorer(restorer, sa_flags)
+        .unwrap_or_else(|| sched::live::terminate_current_with_signal(
+            sched::live::Signum::Sigsegv.as_u8()));
     // SAFETY: caller's contract — `regs` is the live entry frame.
     let user_sp = unsafe { current_user_sp(regs) };
     let cur = sched::live::current();
@@ -103,15 +130,6 @@ pub unsafe fn deliver_with_info(regs: *mut UserRegs, handler: u64, restorer: u64
     }
     #[cfg(target_arch = "aarch64")]
     {
-        let _ = restorer; // AArch64 uses the mm-owned vDSO entry below.
-        // Linux arm64 owns the restorer in the mapped vDSO. AArch64 glibc
-        // intentionally leaves sa_restorer zero, unlike x86_64.
-        let restorer = sched::live::current()
-            // SAFETY: current task's mm is stable for this dispatch tail.
-            .and_then(|c| unsafe { c.mm_ref() })
-            .map(|mm| mm.vdso_rt_sigreturn())
-            .filter(|v| *v != 0)
-            .unwrap_or_else(|| sched::live::terminate_current_with_signal(sched::live::Signum::Sigsegv.as_u8()));
         let frame = regs;
         // SAFETY: return-to-user path; `frame` is the caller's live entry
         // frame; `fpu_snapshot` has just synced the live FP/SIMD state.

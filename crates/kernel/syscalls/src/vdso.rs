@@ -144,16 +144,6 @@ fn prot_of(p_flags: u32) -> VmaProt {
     p
 }
 
-/// Current task's mapped AArch64 vDSO rt_sigreturn trampoline.
-/// # C: O(dynamic-symbol count)
-#[cfg(target_arch = "aarch64")]
-pub fn current_signal_restorer() -> Option<u64> {
-    let mm = unsafe { sched::live::current()?.mm_ref() }?;
-    let base = mm.vdso_ehdr();
-    let value = dynsym_vaddr(VDSO_SIGRETURN_SYMBOL)?;
-    base.checked_add(value).filter(|addr| *addr < hal::USER_VA_END)
-}
-
 /// Map the vDSO into the calling task's AS, honoring per-PT_LOAD
 /// vaddr / memsz / flags. Also maps a kernel-published vvar page
 /// at `base - 0x1000` so the linker-script `_vdso_data` symbol
