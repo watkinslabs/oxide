@@ -44,13 +44,15 @@ pub struct CgFileData {
     pub file: String,
 }
 
-/// Stable inode number for a control file — derived from `(cgid, file)` so
-/// the same control file keeps one identity across lookups. cgid in the
-/// high bits, a hash of the file name in the low bits. # C: O(name)
+/// Stable inode number for a control file — `(cgid, file)` so the same control
+/// file keeps one identity across lookups: cgid in the high bits, the name's
+/// FIXED slot (`tree::file_slot`) in the low 8. The slot is an index into the
+/// control-file tables, not a hash of the name: the multiply-31 hash this
+/// replaced folded `pids.events` and `cpuset.cpus` onto one `st_ino` inside a
+/// single cgroup, which makes two distinct files indistinguishable to `stat`
+/// and to anything keyed by inode identity (inotify marks). # C: O(N_names)
 fn file_ino(cgid: u64, file: &str) -> Ino {
-    let mut h: u64 = 0;
-    for b in file.bytes() { h = h.wrapping_mul(31).wrapping_add(b as u64); }
-    (crate::ids::FILE_INO_BASE + ((cgid << 8) ^ (h & 0xff))) as Ino
+    (crate::ids::FILE_INO_BASE + ((cgid << 8) | crate::tree::file_slot(file) as u64)) as Ino
 }
 
 /// Permission bits for a control file — read-only interface files vs

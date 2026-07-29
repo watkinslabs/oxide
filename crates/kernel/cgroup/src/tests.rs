@@ -429,3 +429,26 @@ fn cgroup_control_file_truncate_zero_is_noop() {
     assert_eq!(f.truncate(0), Ok(()), "kernfs control-file O_TRUNC is admitted");
     assert_eq!(crate::write_file(ROOT, "cgroup.subtree_control", "+pids"), Ok(()));
 }
+
+/// Every control-file name must own a DISTINCT slot in its cgroup's
+/// inode-number space: the low 8 bits of a control file's ino are its slot, so
+/// a duplicate makes two files share one `st_ino` inside one cgroup. The
+/// multiply-31 name hash this replaced did exactly that for `pids.events` and
+/// `cpuset.cpus`. Also pins that the table stays inside the 8-bit field with
+/// `FILE_SLOT_UNKNOWN` reserved.
+#[test]
+fn every_control_file_name_owns_a_distinct_inode_slot() {
+    let mut names: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+    names.extend(CORE_FILES.iter().copied());
+    names.extend(NONROOT_FILES.iter().copied());
+    names.extend(controller_files(ALL));
+
+    let mut slots: alloc::vec::Vec<u8> = names.iter().map(|n| file_slot(n)).collect();
+    let total = slots.len();
+    slots.sort_unstable();
+    slots.dedup();
+    assert_eq!(slots.len(), total, "two control files share an inode slot");
+    assert!(total < FILE_SLOT_UNKNOWN as usize, "slot table outgrew the 8-bit ino field");
+    assert!(!slots.contains(&FILE_SLOT_UNKNOWN), "the unknown-name slot is reserved");
+    assert_eq!(file_slot("not.a.control.file"), FILE_SLOT_UNKNOWN);
+}
