@@ -395,7 +395,13 @@ impl InetSocket {
                 // UNCONNECTED datagram socket has no peer to consult and stays
                 // writable, exactly as Linux leaves `writable` alone when
                 // `unix_peer(sk)` is NULL.
-                let mut mask = if dgram_peer_writable { POLL_OUT | vfs::POLL_WRNORM } else { 0 };
+                // `writable = unix_writable(sk, state)` FIRST — the sender's own
+                // `sk_wmem_alloc` watermark, which is what bounds a symmetric
+                // pair — then cleared by the connected-peer backlog test, which
+                // `unix_dgram_peer_writable` already skips when symmetric.
+                let writable = crate::unix_sock::unix_writable(q.wmem_alloc(), sndbuf_cap)
+                    && dgram_peer_writable;
+                let mut mask = if writable { POLL_OUT | vfs::POLL_WRNORM } else { 0 };
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
                 let rd = q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
