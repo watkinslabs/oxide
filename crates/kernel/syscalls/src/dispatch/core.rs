@@ -678,12 +678,22 @@ fn restore_saved_sigmask() {
 /// flood the console. # C: O(1) until the budget is spent, then a no-op
 #[cfg(feature = "debug-boot")]
 static EINVAL_LEDGER_REMAINING: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(400);
+    core::sync::atomic::AtomicU32::new(4000);
 
 #[cfg(feature = "debug-boot")]
 fn trace_einval(nr: u64, a0: u64, a1: u64, a2: u64, rv: i64) {
     use core::sync::atomic::Ordering as O;
     if rv != -(syscall::errno::Errno::Einval.as_i32() as i64) { return; }
+    // Drop the two EINVALs that are CORRECT and high-volume, or they spend the
+    // budget during early boot and the interesting one — which arrives with the
+    // desktop, ~35s in — never prints. Both are probes whose EINVAL IS the
+    // answer, and Linux returns it too:
+    //   readlink(2) on a directory (libdrm/udev walking /sys), and
+    //   prctl(PR_CAPBSET_READ, cap) above CAP_LAST_CAP, which is how
+    //   `cap_last_cap` is discovered.
+    const PR_CAPBSET_READ: u64 = 23;
+    if nr == syscall::nrs::NR_READLINK || nr == syscall::nrs::NR_READLINKAT { return; }
+    if nr == syscall::nrs::NR_PRCTL && a0 == PR_CAPBSET_READ { return; }
     if EINVAL_LEDGER_REMAINING.fetch_update(O::Relaxed, O::Relaxed,
         |remaining| remaining.checked_sub(1)).is_err() { return; }
     let Some(cur) = sched::live::current() else { return };
