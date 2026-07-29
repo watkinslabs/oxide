@@ -35,8 +35,7 @@ pub struct UnixDgramRecord {
 impl Drop for UnixDgramRecord {
     fn drop(&mut self) {
         let Some(owner) = self.owner.take() else { return };
-        owner.wmem.fetch_sub(self.charge, core::sync::atomic::Ordering::AcqRel);
-        owner.wake_write_space();
+        owner.release_wmem(self.charge);
     }
 }
 
@@ -193,6 +192,12 @@ impl UnixDgramQueue {
         }
     }
 
+    /// Linux `sock_wfree`: settle one original skb allocation charge.
+    fn release_wmem(&self, charge: usize) {
+        self.wmem.fetch_sub(charge, core::sync::atomic::Ordering::AcqRel);
+        self.wake_write_space();
+    }
+
     /// Enqueue one canonical record with its optional sender address. # C: O(1)
     pub fn try_push_from_with_rights(&self, msg: UnixDgram, sender: Option<UnixAddr>, rights: GcRights) -> Result<(), crate::NetError> {
         self.try_push_from_with_rights_bounded(msg, sender, rights, usize::MAX)
@@ -223,7 +228,7 @@ impl UnixDgramQueue {
             Ok(()) => Ok(()),
             Err(e) => {
                 // The record was never queued, so no destructor will run.
-                owner.wmem.fetch_sub(charge, core::sync::atomic::Ordering::AcqRel);
+                owner.release_wmem(charge);
                 Err(e)
             }
         }
@@ -239,14 +244,13 @@ impl UnixDgramQueue {
     /// [`try_push_from_with_rights_bounded`] carrying the sender's write-memory
     /// ownership (`skb->sk` / `skb->truesize`). # C: O(1)
     ///
-    /// BUG (`scratch/sweep.md` item 1): `_charge` is the amount `try_push_owned`
-    /// already added to `owner.wmem`, and it is DROPPED here — the record below
-    /// stores a charge recomputed AFTER the BPF truncation, so `Drop`
-    /// (`sock_wfree`) gives back less than was taken. The `verdict == 0` arm
-    /// returns `Ok(())` without queueing anything and leaks the whole charge.
-    /// The leak is permanent, so a filtered socket eventually wedges at EAGAIN.
+    /// Linux `net/unix/af_unix.c` `unix_dgram_sendmsg` charges the skb through
+    /// `sock_alloc_send_pskb` before `sk_filter`; `net/core/filter.c`
+    /// `sk_filter_trim_cap` changes `skb->len`, not `skb->truesize`; and
+    /// `net/core/sock.c` `sock_wfree` releases that original `truesize` whether
+    /// the filter drops or truncates the skb.
     fn try_push_from_with_rights_bounded_owned(&self, mut msg: UnixDgram, sender: Option<UnixAddr>,
-        rights: GcRights, cap: usize, owner: Option<Arc<UnixDgramQueue>>, _charge: usize)
+        rights: GcRights, cap: usize, owner: Option<Arc<UnixDgramQueue>>, charge: usize)
         -> Result<(), crate::NetError>
     {
         if message_charge(msg.payload.len()) > cap {
@@ -258,6 +262,7 @@ impl UnixDgramQueue {
         if verdict == 0 {
             drop(rights);
             super::collect_scm_rights();
+            if let Some(owner) = owner { owner.release_wmem(charge); }
             return Ok(());
         }
         msg.payload.truncate(msg.payload.len().min(verdict as usize));
@@ -266,12 +271,12 @@ impl UnixDgramQueue {
         let mut q = self.msgs.lock();
         if self.released.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Econnrefused); }
         if self.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Epipe); }
-        let charge = message_charge(msg.payload.len());
-        if self.queued_bytes.load(core::sync::atomic::Ordering::Relaxed).saturating_add(charge) > cap {
+        let queued_charge = message_charge(msg.payload.len());
+        if self.queued_bytes.load(core::sync::atomic::Ordering::Relaxed).saturating_add(queued_charge) > cap {
             return Err(crate::NetError::Eagain);
         }
         q.push_back(UnixDgramRecord { msg, sender, rights, owner, charge });
-        self.queued_bytes.fetch_add(charge, core::sync::atomic::Ordering::Relaxed);
+        self.queued_bytes.fetch_add(queued_charge, core::sync::atomic::Ordering::Relaxed);
         drop(q);
         drop(transition);
         #[cfg(target_os = "oxide-kernel")]
