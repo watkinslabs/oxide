@@ -12,6 +12,14 @@ use syscall::errno::Errno;
 use super::attr::{self, Attr};
 use super::uapi;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CommonAttr {
+    pub log_buf: u64,
+    pub log_size: u32,
+    pub log_level: u32,
+    pub true_size_ptr: Option<u64>,
+}
+
 /// `-EFAULT` unless `[ptr, ptr+len)` lies entirely in user VA.
 /// # C: O(1)
 pub fn range_ok(ptr: u64, len: usize) -> Result<(), Errno> {
@@ -60,9 +68,8 @@ pub fn read_vec(ptr: u64, len: usize) -> Result<Vec<u8>, Errno> {
     Ok(v)
 }
 
-/// `__sys_bpf()`'s prologue: `bpf_check_uarg_tail_zero()` then
-/// `memset(&attr, 0, sizeof(attr))` + `copy_from_bpfptr(&attr, uattr,
-/// min(size, sizeof(attr)))`. Ordering is load-bearing — E2BIG for a
+/// The syscall prologue checks the user tail, zeroes its staging value,
+/// then copies the provided prefix. Ordering is load-bearing — E2BIG for a
 /// silly-large or non-zero-tail size beats every per-command errno,
 /// including the unknown-command EINVAL. # C: O(size)
 pub fn fetch_attr(ptr: u64, size: u32) -> Result<Attr, Errno> {
@@ -81,7 +88,7 @@ pub fn fetch_attr(ptr: u64, size: u32) -> Result<Attr, Errno> {
 /// The log buffer itself is a verifier-log sink this kernel has no
 /// verifier text for, so only the ABI contract is enforced.
 /// # C: O(size_common)
-pub fn check_common_attr(ptr: u64, size: u32) -> Result<(), Errno> {
+pub fn fetch_common_attr(ptr: u64, size: u32) -> Result<CommonAttr, Errno> {
     let actual = size as usize;
     if actual > uapi::ATTR_MAX_USER_SIZE { return Err(Errno::E2big); }
     if actual > uapi::COMMON_ATTR_SIZE {
@@ -89,7 +96,20 @@ pub fn check_common_attr(ptr: u64, size: u32) -> Result<(), Errno> {
         let tail_ptr = checked_user_add(ptr, uapi::COMMON_ATTR_SIZE)?;
         attr::tail_verdict(all_zero(tail_ptr, extra)?)?;
     }
-    range_ok(ptr, if actual < uapi::COMMON_ATTR_SIZE { actual } else { uapi::COMMON_ATTR_SIZE })
+    let copied = core::cmp::min(actual, uapi::COMMON_ATTR_SIZE);
+    let mut bytes = [0u8; uapi::COMMON_ATTR_SIZE];
+    read_bytes(ptr, &mut bytes[..copied])?;
+    Ok(CommonAttr {
+        log_buf: u64::from_ne_bytes(bytes[uapi::off_common::LOG_BUF..uapi::off_common::LOG_BUF + 8]
+            .try_into().unwrap()),
+        log_size: u32::from_ne_bytes(bytes[uapi::off_common::LOG_SIZE..uapi::off_common::LOG_SIZE + 4]
+            .try_into().unwrap()),
+        log_level: u32::from_ne_bytes(bytes[uapi::off_common::LOG_LEVEL..uapi::off_common::LOG_LEVEL + 4]
+            .try_into().unwrap()),
+        true_size_ptr: (actual >= uapi::COMMON_ATTR_SIZE).then(|| {
+            ptr + uapi::off_common::LOG_TRUE_SIZE as u64
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -126,5 +146,33 @@ mod tests {
         let mut destination = [0u8; 4];
         write_bytes(destination.as_mut_ptr() as u64, &source).unwrap();
         assert_eq!(destination, source);
+    }
+
+    #[test]
+    fn common_attr_uses_the_twenty_byte_extensible_boundary() {
+        let mut bytes = [0u8; uapi::COMMON_ATTR_SIZE + 1];
+        bytes[uapi::off_common::LOG_BUF..uapi::off_common::LOG_BUF + 8]
+            .copy_from_slice(&7u64.to_ne_bytes());
+        bytes[uapi::off_common::LOG_SIZE..uapi::off_common::LOG_SIZE + 4]
+            .copy_from_slice(&11u32.to_ne_bytes());
+        bytes[uapi::off_common::LOG_LEVEL..uapi::off_common::LOG_LEVEL + 4]
+            .copy_from_slice(&3u32.to_ne_bytes());
+        let common = fetch_common_attr(
+            bytes.as_ptr() as u64,
+            uapi::COMMON_ATTR_SIZE as u32,
+        ).unwrap();
+        assert_eq!(common.log_buf, 7);
+        assert_eq!(common.log_size, 11);
+        assert_eq!(common.log_level, 3);
+        assert_eq!(
+            common.true_size_ptr,
+            Some(bytes.as_ptr() as u64 + uapi::off_common::LOG_TRUE_SIZE as u64),
+        );
+
+        bytes[uapi::COMMON_ATTR_SIZE] = 1;
+        assert_eq!(
+            fetch_common_attr(bytes.as_ptr() as u64, bytes.len() as u32),
+            Err(Errno::E2big),
+        );
     }
 }
