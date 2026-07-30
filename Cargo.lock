@@ -1325,6 +1325,7 @@ dependencies = [
  "cpu",
  "crng",
  "devfs",
+ "drv",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -1516,6 +1517,7 @@ checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 name = "security"
 version = "0.1.0"
 dependencies = [
+ "cgroup",
  "hal",
  "klog",
  "sched",

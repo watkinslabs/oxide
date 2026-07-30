@@ -92,8 +92,34 @@ fn ldx_from_bad_address_rejected() {
     assert_eq!(run(&p, &[0x10, 0x20]), None);
 }
 
-fn helper_add(a: i64, b: i64, _c: i64, _d: i64, _e: i64) -> i64 { a + b }
-fn helper_const(_a: i64, _b: i64, _c: i64, _d: i64, _e: i64) -> i64 { 42 }
+fn helper_add(
+    _state: &mut HelperState,
+    a: i64,
+    b: i64,
+    _c: i64,
+    _d: i64,
+    _e: i64,
+) -> i64 { a + b }
+fn helper_const(
+    _state: &mut HelperState,
+    _a: i64,
+    _b: i64,
+    _c: i64,
+    _d: i64,
+    _e: i64,
+) -> i64 { 42 }
+fn helper_retval(
+    state: &mut HelperState,
+    a: i64,
+    _b: i64,
+    _c: i64,
+    _d: i64,
+    _e: i64,
+) -> i64 {
+    let old = state.retval;
+    state.retval = a as i32;
+    old as i64
+}
 
 #[test]
 fn call_unknown_helper_returns_none() {
@@ -113,6 +139,19 @@ fn call_passes_r1_r5_as_args() {
     let helpers = [Helper { id: 2, f: helper_add }];
     let p = cat(&[raw(0xb7, 1, 0, 0, 10), raw(0xb7, 2, 0, 0, 32), raw(0x85, 0, 0, 0, 2), raw(0x95, 0, 0, 0, 0)]);
     assert_eq!(run_with_helpers(&p, &[], &helpers), Some(42));
+}
+
+#[test]
+fn helper_state_is_shared_with_the_caller() {
+    let helpers = [Helper { id: 3, f: helper_retval }];
+    let p = cat(&[
+        raw(0xb7, 1, 0, 0, 77),
+        raw(0x85, 0, 0, 0, 3),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    let mut state = HelperState { retval: 12 };
+    assert_eq!(run_with_helpers_and_state(&p, &[], &helpers, &mut state), Some(12));
+    assert_eq!(state.retval, 77);
 }
 
 fn alu64_imm(opc: u8, a: i32, b: i32) -> Option<i64> {
@@ -138,6 +177,16 @@ fn alu32_zero_extends() {
     assert_eq!(run(&p, &[]), Some(0));
     let p2 = cat(&[raw(0xb7, 0, 0, 0, -1), raw(0x54, 0, 0, 0, -1), raw(0x95, 0, 0, 0, 0)]);
     assert_eq!(run(&p2, &[]), Some(0xFFFF_FFFF));
+}
+
+#[test]
+fn endian_conversion_uses_the_encoded_width() {
+    let p = cat(&[
+        raw(0xb7, 0, 0, 0, 0x1234),
+        raw(0xdc, 0, 0, 0, 16),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    assert_eq!(run(&p, &[]), Some(0x3412));
 }
 
 #[test]
@@ -169,6 +218,22 @@ fn stack_stx_reg_dw_roundtrips() {
 }
 
 #[test]
+fn stack_byte_and_halfword_roundtrip() {
+    let byte = cat(&[
+        raw(0x72, 10, 0, -1, 0x7a),
+        raw(0x71, 0, 10, -1, 0),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    assert_eq!(run(&byte, &[]), Some(0x7a));
+    let half = cat(&[
+        raw(0x6a, 10, 0, -2, 0x7abc),
+        raw(0x69, 0, 10, -2, 0),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    assert_eq!(run(&half, &[]), Some(0x7abc));
+}
+
+#[test]
 fn store_past_stack_top_is_rejected() {
     let p = cat(&[raw(0x62, 10, 0, 8, 1), raw(0x95, 0, 0, 0, 0)]);
     assert_eq!(run(&p, &[]), None);
@@ -184,4 +249,17 @@ fn ldx_from_ctx_still_works() {
 fn infinite_loop_hits_step_budget() {
     let p = cat(&[raw(0x05, 0, 0, -1, 0), raw(0x95, 0, 0, 0, 0)]);
     assert_eq!(run(&p, &[]), None);
+}
+
+#[test]
+fn bounded_backward_loop_executes_to_exit() {
+    let p = cat(&[
+        raw(0xb7, 0, 0, 0, 0),
+        raw(0xb7, 2, 0, 0, 0),
+        raw(0x07, 0, 0, 0, 1),
+        raw(0x07, 2, 0, 0, 1),
+        raw(0xa5, 2, 0, -3, 4),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    assert_eq!(run(&p, &[]), Some(4));
 }

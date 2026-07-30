@@ -9,6 +9,7 @@
 //! SERIAL: registers/unregisters one unique type name on a global list.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::fs::{get_fs, get_fs_type, register_fs, superblock_from_filesystem, unregister_fs, FileSystem, FsFlags, FsType};
 use vfs::{InodeBuilder, InodeRef, FileType, default_file_ops, default_inode_ops, mk_mode};
@@ -64,4 +65,26 @@ fn register_get_construct_and_unknown_is_none() {
     unregister_fs("t040ctor").expect("cleanup");
     assert!(get_fs("t040ctor").is_none(), "gone after unregister");
     assert!(get_fs_type("t040ctor").is_none(), "gone from get_fs_type too");
+}
+
+#[test]
+fn flag_aware_constructor_receives_readonly_state() {
+    let seen = Arc::new(AtomicU64::new(0));
+    let writer = Arc::clone(&seen);
+    let ty = FsType::new_with_flags(
+        "flagctor",
+        T_MAGIC,
+        FsFlags::FS_REQUIRES_DEV,
+        Box::new(move |_, _, _, _, flags| {
+            writer.store(flags, Ordering::Release);
+            Err(vfs::VfsError::Einval)
+        }),
+    );
+    assert!(ty.construct_with_flags(
+        Some("/dev/test"),
+        "/mnt",
+        "",
+        vfs::superblock::SB_RDONLY,
+    ).is_err());
+    assert_eq!(seen.load(Ordering::Acquire), vfs::superblock::SB_RDONLY);
 }

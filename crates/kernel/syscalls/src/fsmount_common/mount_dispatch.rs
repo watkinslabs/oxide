@@ -80,7 +80,8 @@ pub(crate) fn dispatch_mount(source: Option<&str>, fstype: &str, target: &str, t
         // The superblock is constructed first, so a refused mount must not leave
         // it grafted — this returns before `graft_mount`.
         if !mount_capable(ty.fs_flags(), caps) { return -(Errno::Eperm.as_i32() as i64); }
-        let sb = match ty.construct(source, target, data) {
+        let sb_flags = ms_flags & vfs::fs::SB_FLAGS_USER_MASK;
+        let sb = match ty.construct_with_flags(source, target, data, sb_flags) {
             Ok(s) => s,
             Err(e) => return crate::namei_common::errno_from_vfs(e),
         };

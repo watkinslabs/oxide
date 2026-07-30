@@ -85,23 +85,61 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
 }
 
 pub type FsConstructor = dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str) -> KResult<Arc<SuperBlock>> + Send + Sync;
+pub type FsFlagConstructor = dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str, u64) -> KResult<Arc<SuperBlock>> + Send + Sync;
+
+pub(super) enum Constructor {
+    Basic(Box<FsConstructor>),
+    Flags(Box<FsFlagConstructor>),
+}
 
 pub struct FsType {
     pub(super) name:  String,
     pub(super) magic: u64,
     pub(super) flags: FsFlags,
     self_ref:          Weak<FsType>,
-    pub(super) ctor:  Box<FsConstructor>,
+    pub(super) ctor:  Constructor,
 }
 
 impl FsType {
     pub fn new(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>) -> Arc<Self> {
-        Arc::new_cyclic(|self_ref| Self { name: name.to_string(), magic, flags, self_ref: self_ref.clone(), ctor })
+        Arc::new_cyclic(|self_ref| Self {
+            name: name.to_string(), magic, flags, self_ref: self_ref.clone(),
+            ctor: Constructor::Basic(ctor),
+        })
+    }
+    /// Register a filesystem constructor that consumes superblock flags.
+    /// # C: O(1)
+    pub fn new_with_flags(
+        name: &str,
+        magic: u64,
+        flags: FsFlags,
+        ctor: Box<FsFlagConstructor>,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|self_ref| Self {
+            name: name.to_string(), magic, flags, self_ref: self_ref.clone(),
+            ctor: Constructor::Flags(ctor),
+        })
     }
     fn as_type(&self) -> Arc<dyn FileSystemType> {
         self.self_ref.upgrade().expect("registered filesystem type self-ref") as Arc<dyn FileSystemType>
     }
-    pub fn construct(&self, source: Option<&str>, target: &str, data: &str) -> KResult<Arc<SuperBlock>> { (self.ctor)(self.as_type(), source, target, data) }
+    pub fn construct(&self, source: Option<&str>, target: &str, data: &str) -> KResult<Arc<SuperBlock>> {
+        self.construct_with_flags(source, target, data, 0)
+    }
+    /// Construct a superblock while preserving mount-derived superblock flags.
+    /// # C: O(constructor)
+    pub fn construct_with_flags(
+        &self,
+        source: Option<&str>,
+        target: &str,
+        data: &str,
+        sb_flags: u64,
+    ) -> KResult<Arc<SuperBlock>> {
+        match &self.ctor {
+            Constructor::Basic(ctor) => ctor(self.as_type(), source, target, data),
+            Constructor::Flags(ctor) => ctor(self.as_type(), source, target, data, sb_flags),
+        }
+    }
     pub fn magic(&self) -> u64 { self.magic }
     pub fn fs_flags(&self) -> FsFlags { self.flags }
 }
@@ -109,7 +147,15 @@ impl FsType {
 impl FileSystemType for FsType {
     fn name(&self) -> &str { &self.name }
     fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>> {
-        (self.ctor)(self.as_type(), src, "", opts)
+        self.construct_with_flags(src, "", opts, 0)
+    }
+    fn mount_with_flags(
+        &self,
+        src: Option<&str>,
+        opts: &str,
+        sb_flags: u64,
+    ) -> KResult<Arc<SuperBlock>> {
+        self.construct_with_flags(src, "", opts, sb_flags)
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
 }

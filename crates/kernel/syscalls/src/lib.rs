@@ -92,6 +92,8 @@ pub mod fsconfig_abi;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;
+#[cfg(target_os = "oxide-kernel")]
+mod clone_cgroup;
 // setrlimit/getrlimit/prlimit64 (097/160/302): the `do_prlimit` errno mapping
 // plus the hosted tests for the ladder all three share.
 pub mod rlimit_policy;

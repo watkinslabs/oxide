@@ -1,9 +1,6 @@
-//! eBPF verifier — first slice (structural checks).
+//! eBPF instruction verification.
 //!
-//! Linux's full verifier path-walks the program with a state
-//! machine that tracks register types, scalar bounds, and stack
-//! liveness. v1 is the structural subset Linux performs before the
-//! flow-analysis phase even runs:
+//! Common structural checks run before program-type verification:
 //!
 //!   - non-empty insn buffer, length is a multiple of 8
 //!   - insn count matches `insns.len() / 8`
@@ -14,9 +11,8 @@
 //!   - 16-byte BPF_LD_IMM64 wide loads' pseudo-insn must be the
 //!     immediately following 8-byte slot (no straddling end)
 //!
-//! Path-sensitive register/scalar tracking + JIT ride follow-up
-//! PRs. The verifier rejects programs the JIT couldn't safely
-//! lower, so failing eagerly here keeps the JIT honest.
+//! Program-type verifiers admit only instructions their matching runner
+//! executes and reject unsafe register, context, control-flow, and field use.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -27,6 +23,7 @@ pub const MAX_REG: u8 = 10;
 // BPF instruction class (low 3 bits of opcode)
 const BPF_CLASS_MASK: u8 = 0x07;
 const BPF_LD:    u8 = 0x00;
+const BPF_LDX:   u8 = 0x01;
 const BPF_JMP:   u8 = 0x05;
 const BPF_JMP32: u8 = 0x06;
 
@@ -55,12 +52,17 @@ pub enum VerifyError {
     LastNotExit,
     TruncatedWideLoad,
     UnsupportedOpcode,
+    UninitializedReg,
+    UnsafeContextAccess,
+    UnsafeStackAccess,
+    UninitializedStack,
+    UnreachableInsn,
 }
 
-const MAX_INSNS: usize = 4096;
+const MAX_INSNS: usize = 1_000_000;
 
 #[derive(Copy, Clone, Debug)]
-struct Insn { opcode: u8, dst: u8, src: u8, off: i16, _imm: i32 }
+struct Insn { opcode: u8, dst: u8, src: u8, off: i16, imm: i32 }
 
 fn decode(bytes: &[u8]) -> Insn {
     Insn {
@@ -68,7 +70,7 @@ fn decode(bytes: &[u8]) -> Insn {
         dst:    bytes[1] & 0x0f,
         src:    (bytes[1] >> 4) & 0x0f,
         off:    i16::from_le_bytes([bytes[2], bytes[3]]),
-        _imm:   i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        imm:    i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
     }
 }
 
@@ -100,8 +102,12 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
                 pc += 2;
                 continue;
             }
-            BPF_OP_EXIT => {}
-            BPF_OP_CALL => {} // helper call; arg validation rides verifier-v2
+            BPF_OP_EXIT => {
+                if insn.dst != 0 || insn.src != 0 || insn.imm != 0 {
+                    return Err(VerifyError::UnsupportedOpcode);
+                }
+            }
+            BPF_OP_CALL => {}
             _ => {}
         }
         // Jump-class insns (excluding EXIT and CALL handled above).
@@ -115,20 +121,18 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
                 return Err(VerifyError::JumpOutOfBounds);
             }
         }
-        // Suppress unused-variable warnings for now; future PR
-        // uses these on path-sensitive analysis.
+        // The common pass only classifies these fields.
         let _ = (class, BPF_LD, BPF_JA);
         pc += 1;
     }
 
-    // Final reachable insn must be EXIT. We use last-insn check as
-    // the structural proxy; path-walker upgrade comes later.
+    // Program encoding ends with the return-path terminator.
     let last = decoded[n - 1];
     if last.opcode != BPF_EXIT { return Err(VerifyError::LastNotExit); }
     Ok(())
 }
 
-/// Verify the exact eBPF subset executable by the socket-filter runner. # C: O(insns)
+/// Verify the eBPF execution domain implemented by the socket-filter runner. # C: O(insns)
 pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
     verify(insns)?;
     let n = insns.len() / BPF_INSN_SIZE;
@@ -165,6 +169,10 @@ pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
     }
     Ok(())
 }
+
+#[path = "bpf_verify/cgroup_device.rs"]
+mod cgroup_device;
+pub use cgroup_device::verify_cgroup_device;
 
 #[cfg(test)]
 mod tests {
@@ -259,4 +267,5 @@ mod tests {
         let abs = cat(&[raw(0x20, 0, 0, 0, 0), raw(0x95, 0, 0, 0, 0)]);
         assert_eq!(verify_socket_filter(&abs), Err(VerifyError::UnsupportedOpcode));
     }
+
 }
