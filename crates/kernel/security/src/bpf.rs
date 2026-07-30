@@ -30,6 +30,7 @@ mod btf;
 mod log;
 pub(crate) mod map;
 mod ids;
+mod token;
 
 use attr::Caps;
 use uapi::cmd;
@@ -62,6 +63,21 @@ pub struct BpfProgInode {
     /// Canonical program-owned map set. Relocation maps retain index order;
     /// explicit lifetime bindings append, and every entry pins its map.
     pub maps: Spinlock<Vec<InodeRef>, TaskListClass>,
+}
+
+/// Delegation token derived from a bpffs superblock.
+pub struct BpfTokenInode {
+    pub source_magic: u64,
+    pub flags: u32,
+}
+
+pub(crate) const BPF_FS_MAGIC: u64 = 0xcafe4a11;
+
+pub fn make_bpf_token_inode(token: BpfTokenInode) -> InodeRef {
+    InodeBuilder::new(ids::INO_TOKEN, mk_mode(FileType::Regular, BPF_FD_MODE),
+        default_inode_ops(), default_file_ops())
+        .private(Arc::new(token))
+        .build()
 }
 
 static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
@@ -373,6 +389,7 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::BTF_GET_FD_BY_ID           => btf::get_fd_by_id(&a, caps),
         cmd::BTF_GET_NEXT_ID            => btf::get_next_id(&a, args.a1, caps),
         cmd::OBJ_GET_INFO_BY_FD         => btf::get_info_by_fd(&a, args.a1),
+        cmd::TOKEN_CREATE                => token::create(&a),
         // `__sys_bpf()`'s `default: err = -EINVAL`, reached only after
         // the attr size protocol above has had its say.
         _ => Err(Errno::Einval),
