@@ -50,28 +50,29 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
         Ok(r) => r,
         Err(e) => return -(e.as_i32() as i64),
     };
-    let mut vp = pmm::user_as::prot_from_linux(prot);
-    // Linux `do_mprotect_pkey`'s `rier`: with personality(READ_IMPLIES_EXEC)
-    // a PROT_READ request silently gains PROT_EXEC — but only on VMAs whose
-    // VM_MAYEXEC allows it, so a range containing a non-executable mapping is
-    // left alone.
-    if (prot & pmm::mmap_flags::PROT_READ) != 0
-        && sched::personality::read_implies_exec(cur)
-        && mm.range_may(ua, len, vmm::VmaProt::EXEC)
-    {
-        vp |= vmm::VmaProt::EXEC;
-    }
-    // mseal(2): a sealed VMA in the range rejects mprotect with EPERM.
-    if mm.range_sealed(ua, len) { return -(Errno::Eperm.as_i32() as i64); }
-    match mm.mprotect(ua, len, vp) {
-        Ok(()) => {
-            // SAFETY: caller is the running task; mm matches active AS; per-AS UP + preempt-off serialises with fault path; mprotect_pages walks PT + flushes TLB so hardware enforces the new permissions.
-            unsafe { pmm::user_as::mprotect_pages(mm.root_pa(), addr, len, vp); }
-            0
+    let requested = pmm::user_as::prot_from_linux(prot);
+    let outcome = match mm.mprotect_user(
+        ua, len, requested, sched::personality::read_implies_exec(cur),
+    ) {
+        Ok(outcome) => outcome,
+        Err(_) => return -(Errno::Enomem.as_i32() as i64),
+    };
+    for step in &outcome.steps {
+        // SAFETY: each step was committed under this mm's VMA write lock; the
+        // active page tables belong to the running task and the PMM walker
+        // flushes every stale permission before returning.
+        unsafe {
+            pmm::user_as::mprotect_pages(
+                mm.root_pa(), step.start.as_u64(), step.len, step.prot,
+            );
         }
-        // Linux: an unmapped hole inside the range is ENOMEM (not EINVAL).
-        Err(vmm::Error::Access) => -(Errno::Eacces.as_i32() as i64),
-        Err(_) => -(Errno::Enomem.as_i32() as i64),
+    }
+    match outcome.error {
+        None => 0,
+        Some(vmm::Error::Access) => -(Errno::Eacces.as_i32() as i64),
+        Some(vmm::Error::Perm) => -(Errno::Eperm.as_i32() as i64),
+        // Linux: an unmapped hole inside the range is ENOMEM.
+        Some(_) => -(Errno::Enomem.as_i32() as i64),
     }
 }
 

@@ -66,6 +66,31 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         Op::CapAmbient(a) => caps::cap_ambient(&cur, a),
         Op::GetSpecCtrl(which) => decide::spec_ctrl_get(which),
         Op::SetSpecCtrl { which, ctrl } => decide::spec_ctrl_set(which, ctrl),
+        Op::SetMdwe(request) => {
+            // SAFETY: syscall dispatch holds the current task's mm slot stable.
+            let Some(mm) = (unsafe { cur.mm_ref() }) else {
+                return -(Errno::Einval.as_i32() as i64);
+            };
+            match mm.mdwe_set(request) {
+                Ok(()) => 0,
+                Err(vmm::MdweSetError::Immutable) =>
+                    -(Errno::Eperm.as_i32() as i64),
+            }
+        }
+        Op::GetMdwe => {
+            // SAFETY: syscall dispatch holds the current task's mm slot stable.
+            let Some(mm) = (unsafe { cur.mm_ref() }) else {
+                return -(Errno::Einval.as_i32() as i64);
+            };
+            match mm.mdwe_get() {
+                vmm::MdweRequest::Disabled => 0,
+                vmm::MdweRequest::RefuseExecGain =>
+                    super::uapi::PR_MDWE_REFUSE_EXEC_GAIN as i64,
+                vmm::MdweRequest::RefuseExecGainNoInherit =>
+                    (super::uapi::PR_MDWE_REFUSE_EXEC_GAIN
+                        | super::uapi::PR_MDWE_NO_INHERIT) as i64,
+            }
+        }
         Op::SetVma => crate::prctl_vma::sys_set_vma_name(&cur, args),
     }
 }

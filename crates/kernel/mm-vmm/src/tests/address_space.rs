@@ -383,10 +383,10 @@ fn mprotect_rejects_hole_inside_range() {
     let h2 = UserVirtAddr::new(0x4000_2000).unwrap();
     a.mmap(Some(h1), PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, true).unwrap();
     a.mmap(Some(h2), PAGE, VmaProt::READ, priv_anon(), VmaBacking::Anonymous, true).unwrap();
-    // Range straddles the hole between them.
+    // Linux reports ENOMEM when the requested range straddles an unmapped hole.
     assert_eq!(
         a.mprotect(h1, 3 * PAGE, r_w()),
-        Err(Error::Inval)
+        Err(Error::NoMem)
     );
 }
 

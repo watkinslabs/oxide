@@ -32,7 +32,8 @@ pub(crate) mod hole;
 
 pub use address_space::{
     global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown,
-    live_address_spaces, AddressSpace, MIN_USER_VA, UffdVma, VmAccountingSnapshot,
+    live_address_spaces, AddressSpace, MdweAdmission, MdweRequest, MdweSetError,
+    MprotectOutcome, MprotectStep, MIN_USER_VA, UffdVma, VmAccountingSnapshot,
 };
 pub use mmap::{MmapError, MmapPlacement};
 pub use address_space::{
@@ -119,6 +120,8 @@ mod tests_swap_fork;
 // apply + fork-copy of the mm layout.
 #[cfg(test)]
 mod tests_setmm;
+#[cfg(test)]
+mod tests_mdwe;
 
 // fork+COW data-isolation + refcount-accuracy reproduction (multi-AS PTs).
 #[cfg(test)]

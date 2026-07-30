@@ -57,6 +57,8 @@ pub enum Op {
     CapAmbient(Ambient),
     GetSpecCtrl(u64),
     SetSpecCtrl { which: u64, ctrl: u64 },
+    SetMdwe(vmm::MdweRequest),
+    GetMdwe,
     SetVma,
 }
 
@@ -206,6 +208,18 @@ pub fn classify(option: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Result<Op, E
             none_of(&[a4, a5])?;
             Ok(Op::SetSpecCtrl { which: a2, ctrl: a3 })
         }
+        PR_SET_MDWE => {
+            none_of(&[a3, a4, a5])?;
+            let request = match a2 {
+                0 => vmm::MdweRequest::Disabled,
+                PR_MDWE_REFUSE_EXEC_GAIN => vmm::MdweRequest::RefuseExecGain,
+                bits if bits == PR_MDWE_REFUSE_EXEC_GAIN | PR_MDWE_NO_INHERIT =>
+                    vmm::MdweRequest::RefuseExecGainNoInherit,
+                _ => return Err(Errno::Einval),
+            };
+            Ok(Op::SetMdwe(request))
+        }
+        PR_GET_MDWE => { none_of(&[a2, a3, a4, a5])?; Ok(Op::GetMdwe) }
         PR_SET_VMA => Ok(Op::SetVma),
         _ => Err(Errno::Einval),
     }
