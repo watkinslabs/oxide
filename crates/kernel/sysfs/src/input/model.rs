@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -20,7 +21,7 @@ pub(super) struct InputDevInfo {
     pub(super) addr: String,
     pub(super) dev_t: (u32, u32),
     pub(super) devname: String,
-    pub(super) model: input::VirtioInputDev,
+    pub(super) model: Box<input::VirtioInputDev>,
 }
 
 #[derive(Clone)]
@@ -70,36 +71,46 @@ impl InputDevInfo {
 /// Orphaned/mismatched records are not projected into a fabricated path.
 /// # C: O(N_devices²)
 pub(super) fn input_devs() -> Vec<InputDevInfo> {
-    drv::devices().into_iter()
-        .filter(|device| device.bus == "input")
-        .filter_map(|device| {
-            let dev_t @ (major, minor) = device.dev_t?;
-            if major != input::INPUT_MAJOR {
-                return None;
-            }
-            let devname = device.devname.clone()?;
-            let evdev_id = minor.checked_sub(input::EVENT_MINOR_BASE)?;
-            let event_name = alloc::format!("{EVENT_NAME_PREFIX}{evdev_id}");
-            if device.addr != event_name
-                || devname.strip_prefix(INPUT_DEVNAME_PREFIX) != Some(event_name.as_str())
-            {
-                return None;
-            }
-            let model = input::device(evdev_id)?;
-            if model.evdev_id != evdev_id {
-                return None;
-            }
-            let info = InputDevInfo {
-                addr: device.addr.clone(),
-                device,
-                dev_t,
-                devname,
-                model,
-            };
-            info.sysfs_parent_canon()?;
-            Some(info)
-        })
-        .collect()
+    let mut projected = Vec::new();
+    for device in drv::devices() {
+        if device.bus != "input" {
+            continue;
+        }
+        if let Some(info) = project_device(device) {
+            projected.push(info);
+        }
+    }
+    projected
+}
+
+/// Validate and join one driver-model input node to its canonical record.
+/// # C: O(N_devices + cloned device state)
+fn project_device(device: Arc<drv::Device>) -> Option<InputDevInfo> {
+    let dev_t @ (major, minor) = device.dev_t?;
+    if major != input::INPUT_MAJOR {
+        return None;
+    }
+    let devname = device.devname.clone()?;
+    let evdev_id = minor.checked_sub(input::EVENT_MINOR_BASE)?;
+    let event_name = alloc::format!("{EVENT_NAME_PREFIX}{evdev_id}");
+    if device.addr != event_name
+        || devname.strip_prefix(INPUT_DEVNAME_PREFIX) != Some(event_name.as_str())
+    {
+        return None;
+    }
+    let model = Box::new(input::device(evdev_id)?);
+    if model.evdev_id != evdev_id {
+        return None;
+    }
+    let info = InputDevInfo {
+        addr: device.addr.clone(),
+        device,
+        dev_t,
+        devname,
+        model,
+    };
+    info.sysfs_parent_canon()?;
+    Some(info)
 }
 
 /// Canonical model join by eventN address. # C: O(N_devices²)
