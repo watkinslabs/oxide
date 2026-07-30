@@ -2,6 +2,7 @@ use syscall::errno::Errno;
 
 use super::{BPF_FS_MAGIC, BpfTokenInode, install_fd, make_bpf_token_inode};
 use super::attr::Attr;
+#[cfg(test)]
 use super::uapi;
 
 const TOKEN_FLAGS: usize = 0;
