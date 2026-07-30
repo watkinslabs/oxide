@@ -47,6 +47,43 @@ pub struct GlueAdmission {
     pub len_aligned: usize,
 }
 
+/// Decode mmap's raw address argument before entering the typed VMM.
+///
+/// Linux treats an address without `MAP_FIXED{,_NOREPLACE}` as a hint:
+/// page-align a usable value, but discard a value outside the task address
+/// space and run the normal unmapped-area search. Exact requests must remain
+/// representable and page-aligned or fail instead of silently moving.
+/// # C: O(1)
+pub fn mmap_address_hint(
+    addr: u64,
+    len: u64,
+    flags: u64,
+) -> Result<Option<hal::UserVirtAddr>, i64> {
+    let exact = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+    if exact {
+        if len >= hal::USER_VA_END || addr >= hal::USER_VA_END.saturating_sub(len) {
+            return Err(-(Errno::Enomem.as_i32() as i64));
+        }
+        if addr & !PAGE_MASK != 0 {
+            return Err(-(Errno::Einval.as_i32() as i64));
+        }
+        if addr < hal::PAGE_SIZE_BYTES {
+            return Err(-(Errno::Eperm.as_i32() as i64));
+        }
+        return hal::UserVirtAddr::new(addr)
+            .map(Some)
+            .ok_or(-(Errno::Einval.as_i32() as i64));
+    }
+    if addr == 0 {
+        return Ok(None);
+    }
+    let aligned = (addr & PAGE_MASK).max(hal::PAGE_SIZE_BYTES);
+    if len >= hal::USER_VA_END || aligned >= hal::USER_VA_END.saturating_sub(len) {
+        return Ok(None);
+    }
+    Ok(hal::UserVirtAddr::new(aligned))
+}
+
 /// # C: O(1)
 pub fn validate_prot(prot: u64) -> Result<(), i64> {
     if (prot & !PROT_KNOWN) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
@@ -181,6 +218,49 @@ mod tests {
         assert_eq!(validate(MAP_SHARED_VALIDATE), Ok(()));
         let r = validate_glue_admission(MAP_SHARED_VALIDATE | MAP_ANON, 0x1000, 0, false, false);
         assert_eq!(r, Err(-(Errno::Einval.as_i32() as i64)));
+    }
+
+    #[test]
+    fn unusable_nonfixed_hint_falls_back_to_unmapped_area_search() {
+        let flags = MAP_PRIVATE | MAP_ANON;
+        assert_eq!(mmap_address_hint(0x0000_dff7_6c16_f000, 0x1000, flags), Ok(None));
+        assert_eq!(mmap_address_hint(u64::MAX, 0x1000, flags), Ok(None));
+        assert_eq!(mmap_address_hint(0, 0x1000, flags), Ok(None));
+
+        let mm = vmm::AddressSpace::new(0).unwrap();
+        let address = mm.mmap(
+            mmap_address_hint(0x0000_dff7_6c16_f000, 0x1000, flags).unwrap(),
+            hal::PAGE_SIZE_BYTES as usize,
+            vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+            vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS,
+            vmm::VmaBacking::Anonymous,
+            false,
+        ).unwrap();
+        assert_eq!(address.as_u64(), vmm::address_space::MMAP_TOP - hal::PAGE_SIZE_BYTES);
+    }
+
+    #[test]
+    fn usable_nonfixed_hint_is_linux_page_aligned() {
+        let flags = MAP_PRIVATE | MAP_ANON;
+        let aligned = mmap_address_hint(0x4000_0123, 0x1000, flags).unwrap().unwrap();
+        assert_eq!(aligned.as_u64(), 0x4000_0000);
+        let low = mmap_address_hint(1, 0x1000, flags).unwrap().unwrap();
+        assert_eq!(low.as_u64(), hal::PAGE_SIZE_BYTES);
+    }
+
+    #[test]
+    fn fixed_and_noreplace_addresses_fail_in_linux_order() {
+        let einval = Err(-(Errno::Einval.as_i32() as i64));
+        let enomem = Err(-(Errno::Enomem.as_i32() as i64));
+        let eperm = Err(-(Errno::Eperm.as_i32() as i64));
+        for fixed in [MAP_FIXED, MAP_FIXED_NOREPLACE] {
+            let flags = MAP_PRIVATE | MAP_ANON | fixed;
+            assert_eq!(mmap_address_hint(0x0000_dff7_6c16_f123, 0x1000, flags), enomem);
+            assert_eq!(mmap_address_hint(0x4000_0123, 0x1000, flags), einval);
+            assert_eq!(mmap_address_hint(0, 0x1000, flags), eperm);
+            let address = mmap_address_hint(0x4000_0000, 0x1000, flags).unwrap().unwrap();
+            assert_eq!(address.as_u64(), 0x4000_0000);
+        }
     }
 
     #[test]
