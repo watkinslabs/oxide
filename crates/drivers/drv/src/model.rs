@@ -20,7 +20,7 @@ use sync::{Spinlock, TaskList as DriverListClass};
 use crate::KResult;
 
 mod lifecycle_state;
-pub use lifecycle_state::{device_del, try_device_add};
+pub use lifecycle_state::{device_del, try_device_add, try_device_add_with_parent};
 
 /// Factory that mints the `/dev` node inode for a device (devtmpfs path).
 /// Boxed + `Arc` so the registry, the `Device`, and the `DEVTMPFS_HOOK`
@@ -57,10 +57,14 @@ pub struct Device {
     pub bus:       &'static str,
     /// Bus address, e.g. `"0000:00:03.0"` (pci) or `"virtio2"`.
     pub addr:      String,
+    /// Canonical path below the parent or bus root; `None` uses `addr`.
+    pub(crate) sysfs_relpath: Option<String>,
     /// Parent bus for child devices, e.g. a virtio device's PCI transport.
     pub parent_bus:  Option<&'static str>,
     /// Parent bus address, paired with `parent_bus`.
     pub parent_addr: Option<String>,
+    /// Exact live ancestor objects captured by device registration.
+    pub(crate) parent_chain: Spinlock<Vec<Arc<Device>>, DriverListClass>,
     /// One-way registration lifecycle: new, live, then permanently removed.
     pub(crate) lifecycle: lifecycle_state::Lifecycle,
     /// PCI vendor id (0 for synthetic virtio bus devices).
@@ -98,7 +102,8 @@ impl Device {
     /// Construct an unbound device with no `/dev` node. # C: O(1)
     pub fn new(bus: &'static str, addr: String, vendor_id: u16, device_id: u16, class: u32) -> Self {
         Self {
-            bus, addr, parent_bus: None, parent_addr: None,
+            bus, addr, sysfs_relpath: None, parent_bus: None, parent_addr: None,
+            parent_chain: Spinlock::new(Vec::new()),
             lifecycle: lifecycle_state::Lifecycle::new(),
             vendor_id, device_id, class,
             driver: Spinlock::new(None), driver_override: Spinlock::new(None),
@@ -124,6 +129,7 @@ impl Device {
     pub fn identity_eq(&self, other: &Device) -> bool {
         self.bus == other.bus
             && self.addr == other.addr
+            && self.sysfs_relpath == other.sysfs_relpath
             && self.parent_bus == other.parent_bus
             && self.parent_addr == other.parent_addr
             && self.vendor_id == other.vendor_id
@@ -141,6 +147,11 @@ impl Device {
     pub fn with_parent(mut self, bus: &'static str, addr: String) -> Self {
         self.parent_bus = Some(bus);
         self.parent_addr = Some(addr);
+        self
+    }
+    /// Builder: set the canonical relative sysfs path without changing identity. # C: O(1)
+    pub fn with_sysfs_relpath(mut self, path: String) -> Self {
+        self.sysfs_relpath = Some(path);
         self
     }
     /// Builder: declare a `/dev` node of `class` at `/dev/<name>` addressing

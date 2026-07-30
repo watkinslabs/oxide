@@ -44,8 +44,7 @@ fn handle_vt_switch(keycode: u16, pressed: bool) -> bool {
     true
 }
 
-/// Linux `ctrl_alt_del()` (`kernel/reboot.c:828-836`), reached from the VT
-/// keyboard driver's `fn_boot_it`. `C_A_D` decides the outcome:
+/// Ctrl-Alt-Delete follows the configured `C_A_D` policy:
 ///   set   -> `schedule_work(&cad_work)` -> `kernel_restart(NULL)`
 ///   clear -> `kill_cad_pid(SIGINT, 1)` — init runs an orderly shutdown.
 ///

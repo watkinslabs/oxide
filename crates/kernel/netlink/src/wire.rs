@@ -15,7 +15,7 @@ pub const NETLINK_UNCONNECTED_PORT_ID: u32 = 0;
 /// Linux's unconnected NETLINK destination multicast-group mask.
 pub const NETLINK_UNCONNECTED_GROUPS: u32 = 0;
 
-/// Linux AF_NETLINK socket-option ABI values (`include/uapi/linux/netlink.h`).
+/// AF_NETLINK socket-option ABI values.
 pub mod sockopt {
     pub const SOL_NETLINK: u64 = 270;
     pub const NETLINK_ADD_MEMBERSHIP: u64 = 1;
@@ -24,7 +24,7 @@ pub mod sockopt {
     pub const NETLINK_LIST_MEMBERSHIPS: u64 = 9;
 }
 
-/// `NETLINK_*` protocol family ids per `linux/netlink.h`.
+/// `NETLINK_*` protocol family IDs.
 pub mod proto {
     pub const NETLINK_ROUTE:          u16 =  0;
     pub const NETLINK_USERSOCK:       u16 =  2;
@@ -48,7 +48,12 @@ pub mod proto {
     pub const NETLINK_CRYPTO:         u16 = 21;
 }
 
-/// `struct nlmsghdr` flags per `linux/netlink.h`.
+/// Raw kernel-originated kobject-uevent multicast subscription mask.
+pub const KOBJECT_UEVENT_KERNEL_GROUP_MASK: u32 = 1;
+/// Cooked userspace-originated kobject-uevent multicast subscription mask.
+pub const KOBJECT_UEVENT_UDEV_GROUP_MASK: u32 = 2;
+
+/// `struct nlmsghdr` flag values.
 pub mod flags {
     pub const NLM_F_REQUEST:   u16 = 0x0001;
     pub const NLM_F_MULTI:     u16 = 0x0002;

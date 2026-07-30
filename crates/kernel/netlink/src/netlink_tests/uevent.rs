@@ -10,8 +10,8 @@ fn raw_uevent_delivers_only_to_kernel_group() {
     let namespace = crate::netlink_tests::test_namespace();
     let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
-    udevd.set_group_mask(1);
-    monitor.set_group_mask(0);
+    udevd.set_group_mask(KOBJECT_UEVENT_KERNEL_GROUP_MASK);
+    monitor.set_group_mask(NETLINK_UNCONNECTED_GROUPS);
     register_uevent_listener(&udevd);
     register_uevent_listener(&monitor);
 
@@ -26,7 +26,7 @@ fn raw_uevent_stays_level_ready_until_consumed() {
     let _serial = crate::test_serial::uevent();
     use alloc::sync::Arc;
     let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &crate::netlink_tests::test_namespace()));
-    udevd.set_group_mask(1);
+    udevd.set_group_mask(KOBJECT_UEVENT_KERNEL_GROUP_MASK);
     register_uevent_listener(&udevd);
 
     let n = emit_uevent_with_env(
@@ -49,6 +49,29 @@ fn raw_uevent_stays_level_ready_until_consumed() {
 }
 
 #[test]
+fn raw_uevent_environment_preserves_non_utf8_bytes() {
+    let _serial = crate::test_serial::uevent();
+    use alloc::sync::Arc;
+    let udevd = Arc::new(NetlinkSocket::new(
+        proto::NETLINK_KOBJECT_UEVENT,
+        &crate::netlink_tests::test_namespace(),
+    ));
+    udevd.set_group_mask(KOBJECT_UEVENT_KERNEL_GROUP_MASK);
+    register_uevent_listener(&udevd);
+    let identity = b"NAME=\"input-\x80\"";
+
+    let n = emit_uevent_with_env_bytes(
+        "add",
+        "/devices/virtual/input/input0",
+        "input",
+        &[identity],
+    );
+    assert_eq!(n, 1);
+    let (msg, _) = udevd.dequeue().expect("raw-byte uevent");
+    assert!(msg.split(|byte| *byte == 0).any(|entry| entry == identity));
+}
+
+#[test]
 fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
     let _serial = crate::test_serial::uevent();
     use alloc::sync::Arc;
@@ -57,17 +80,17 @@ fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
     let kernel_listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let worker_none = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let udev_monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
-    sender.set_group_mask(2);
-    kernel_listener.set_group_mask(1);
-    worker_none.set_group_mask(0);
-    udev_monitor.set_group_mask(2);
+    sender.set_group_mask(KOBJECT_UEVENT_UDEV_GROUP_MASK);
+    kernel_listener.set_group_mask(KOBJECT_UEVENT_KERNEL_GROUP_MASK);
+    worker_none.set_group_mask(NETLINK_UNCONNECTED_GROUPS);
+    udev_monitor.set_group_mask(KOBJECT_UEVENT_UDEV_GROUP_MASK);
     register_uevent_listener(&sender);
     register_uevent_listener(&kernel_listener);
     register_uevent_listener(&worker_none);
     register_uevent_listener(&udev_monitor);
 
     let msg = b"libudev\0ACTION=add\0SUBSYSTEM=drm\0";
-    let n = rebroadcast_cooked_uevent(msg, 2, &sender);
+    let n = rebroadcast_cooked_uevent(msg, KOBJECT_UEVENT_UDEV_GROUP_MASK, &sender);
     assert_eq!(n, 1, "only the group-2 subscriber receives it");
     assert!(sender.dequeue().is_none());
     assert!(kernel_listener.dequeue().is_none());
@@ -83,8 +106,8 @@ fn unicast_reaches_only_target_port_with_sender_stamped() {
     let manager = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let worker_a = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let worker_b = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
-    worker_a.set_group_mask(0);
-    worker_b.set_group_mask(0);
+    worker_a.set_group_mask(NETLINK_UNCONNECTED_GROUPS);
+    worker_b.set_group_mask(NETLINK_UNCONNECTED_GROUPS);
     register_uevent_listener(&manager);
     register_uevent_listener(&worker_a);
     register_uevent_listener(&worker_b);

@@ -10,7 +10,7 @@
 // - `iface`: live iface snapshot + RTM_SETLINK mutation path.
 // - `rtnetlink_addr` / `rtnetlink_link` / `rtnetlink_route`: focused helpers.
 //
-// NETLINK_ROUTE per `25§7` + Linux `linux/rtnetlink.h`. Implements the
+// NETLINK_ROUTE per `25§7`. Implements the
 // link/addr/route control plane `ip` + systemd-networkd drive.
 
 mod ack;

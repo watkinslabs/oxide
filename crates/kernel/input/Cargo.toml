@@ -9,6 +9,8 @@ path = "src/lib.rs"
 
 [dependencies]
 sync = { path = "../../shared/sync" }
+timer = { path = "../timer" }
+timekeeper = { path = "../timekeeper" }
 virtio = { path = "../../drivers/virtio" }
 
 [lints]

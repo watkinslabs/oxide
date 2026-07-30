@@ -2,8 +2,7 @@
 // served live from the iface's `net::NetDev::stats()`. Linux exposes
 // each counter as its own decimal (newline-terminated) attribute file
 // under the `statistics` subdirectory. iproute2/ethtool/networkd read
-// these; the field names + ordering come from `net::STAT_FIELDS`
-// (which mirrors `net/core/net-sysfs.c`). Per-field value mapping +
+// these; the field names + ordering come from `net::STAT_FIELDS`. Per-field value mapping +
 // the "unbacked field → 0" rule live in `net::NetStats::field` and are
 // host-tested there.
 

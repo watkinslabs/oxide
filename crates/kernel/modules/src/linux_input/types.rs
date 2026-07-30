@@ -1,5 +1,10 @@
 use crate::linux_device::types::LinuxDevice;
 use core::ffi::{c_char, c_void};
+pub(super) use input::{
+    ABS_CNT, EV_ABS, EV_CNT, EV_FF, EV_KEY, EV_LED, EV_MSC, EV_PWR, EV_REL, EV_SND,
+    EV_SW, EV_SYN, FF_CNT, INPUT_PROP_CNT, KEY_CNT, LED_CNT, MSC_CNT, REL_CNT,
+    SND_CNT, SW_CNT, SYN_REPORT,
+};
 
 pub(super) const LINUX_OK: i32 = 0;
 pub(super) const LINUX_EINVAL: i32 = 22;
@@ -7,29 +12,17 @@ pub(super) const LINUX_EBUSY: i32 = 16;
 pub(super) const LINUX_ENOMEM: i32 = 12;
 pub(super) const LINUX_ENOSPC: i32 = 28;
 
-pub(super) const INPUT_NAME_BYTES: usize = 128;
-pub(super) const INPUT_SERIAL_BYTES: usize = 128;
-pub(super) const INPUT_EV_BITS: usize = 32;
-pub(super) const INPUT_PROP_BYTES: usize = 4;
 pub(super) const BITS_PER_LONG: usize = core::mem::size_of::<usize>() * 8;
-pub(super) const EV_CNT: usize = 0x20;
-pub(super) const KEY_CNT: usize = 0x300;
-pub(super) const REL_CNT: usize = 0x10;
-pub(super) const ABS_CNT: usize = 0x40;
-pub(super) const LED_CNT: usize = 0x10;
-pub(super) const INPUT_PROP_CNT: usize = 0x20;
 pub(super) const INPUT_EV_WORDS: usize = words_for(EV_CNT);
 pub(super) const INPUT_KEY_WORDS: usize = words_for(KEY_CNT);
 pub(super) const INPUT_REL_WORDS: usize = words_for(REL_CNT);
 pub(super) const INPUT_ABS_WORDS: usize = words_for(ABS_CNT);
+pub(super) const INPUT_MSC_WORDS: usize = words_for(MSC_CNT);
+pub(super) const INPUT_SW_WORDS: usize = words_for(SW_CNT);
 pub(super) const INPUT_LED_WORDS: usize = words_for(LED_CNT);
+pub(super) const INPUT_SND_WORDS: usize = words_for(SND_CNT);
+pub(super) const INPUT_FF_WORDS: usize = words_for(FF_CNT);
 pub(super) const INPUT_PROP_WORDS: usize = words_for(INPUT_PROP_CNT);
-pub(super) const EV_SYN: u16 = 0x00;
-pub(super) const EV_KEY: u16 = 0x01;
-pub(super) const EV_REL: u16 = 0x02;
-pub(super) const EV_ABS: u16 = 0x03;
-pub(super) const EV_LED: u16 = 0x11;
-pub(super) const SYN_REPORT: u16 = 0x00;
 pub(super) const SYNTHETIC_DEVICE_KEY_BASE: u32 = 1u32 << 31;
 pub(super) const SYNTHETIC_DEVICE_KEY_MASK: u32 = !SYNTHETIC_DEVICE_KEY_BASE;
 #[cfg(test)]
@@ -83,10 +76,16 @@ pub(super) struct LinuxInputDev {
     pub(super) keybit: [usize; INPUT_KEY_WORDS],
     pub(super) relbit: [usize; INPUT_REL_WORDS],
     pub(super) absbit: [usize; INPUT_ABS_WORDS],
+    pub(super) mscbit: [usize; INPUT_MSC_WORDS],
     pub(super) ledbit: [usize; INPUT_LED_WORDS],
+    pub(super) sndbit: [usize; INPUT_SND_WORDS],
+    pub(super) ffbit: [usize; INPUT_FF_WORDS],
+    pub(super) swbit: [usize; INPUT_SW_WORDS],
     pub(super) absinfo: [LinuxInputAbsInfo; ABS_CNT],
-    pub(super) key_state: [usize; INPUT_KEY_WORDS],
-    pub(super) led_state: [usize; INPUT_LED_WORDS],
+    pub(super) key: [usize; INPUT_KEY_WORDS],
+    pub(super) led: [usize; INPUT_LED_WORDS],
+    pub(super) snd: [usize; INPUT_SND_WORDS],
+    pub(super) sw: [usize; INPUT_SW_WORDS],
     pub(super) evdev_id: u32,
     pub(super) registered: u32,
     pub(super) oxide_key: u32,

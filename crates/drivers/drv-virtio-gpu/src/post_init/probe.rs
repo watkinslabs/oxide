@@ -7,8 +7,7 @@ use super::*;
 pub fn get_display_info(
     device_key: virtio::VirtioChildDeviceKey,
     bdf_bus: u8, bdf_dev: u8, bdf_fn: u8,
-    parent_bus: &'static str,
-    parent_addr: String,
+    parent: &alloc::sync::Arc<drv::Device>,
     drv_features: u64,
     resources: virtio::VirtioResources,
 ) -> bool {
@@ -97,7 +96,7 @@ pub fn get_display_info(
         display: info,
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
-    }, Some((parent_bus, parent_addr))) {
+    }, Some(parent)) {
         Ok(_) => {}
         Err(_) => {
             if info.count_enabled > 0 {

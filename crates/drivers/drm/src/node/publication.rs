@@ -20,6 +20,8 @@ struct DrmNodePair {
 
 static DRM_NODES: Spinlock<Vec<Option<DrmNodePair>>, OpsLockClass> = Spinlock::new(Vec::new());
 
+const DRM_DEVNODE_PREFIX: &str = "dri/";
+
 // High-bits tags keep the DRM char-device inodes distinct from every other
 // device number; low 32 bits carry the stable DRM card id.
 pub(super) const DRM_INO_TAG_MASK: vfs::Ino = 0xFFFF_FFFF_0000_0000;
@@ -194,21 +196,31 @@ fn add_node(
     class: &'static str,
     dt: (u32, u32),
     factory: drv::NodeFactory,
-    parent: Option<(&'static str, alloc::string::String)>,
+    parent: Option<&Arc<drv::Device>>,
 ) -> Option<Arc<drv::Device>> {
     use alloc::string::String;
-    let mut dev = drv::Device::new(class, String::from(name), 0, 0, 0)
+    let sysname = name.strip_prefix(DRM_DEVNODE_PREFIX)?;
+    if sysname.is_empty() || sysname.contains('/') {
+        return None;
+    }
+    let mut dev = drv::Device::new(class, String::from(sysname), 0, 0, 0)
         .with_devnode(class, String::from(name), Some(dt))
         .with_node_factory(factory);
-    if let Some((bus, addr)) = parent {
-        dev = dev.with_parent(bus, addr);
+    if let Some(parent) = parent {
+        dev = dev
+            .with_parent(parent.bus, parent.addr.clone())
+            .with_sysfs_relpath(format!("{class}/{sysname}"));
     }
-    drv::try_device_add(Arc::new(dev)).ok()
+    let dev = Arc::new(dev);
+    match parent {
+        Some(parent) => drv::try_device_add_with_parent(dev, parent).ok(),
+        None => drv::try_device_add(dev).ok(),
+    }
 }
 
 /// Register DRM primary + render nodes for a stable DRM card id.
 /// # C: O(1)
-pub fn register(card_id: u32, parent: Option<(&'static str, alloc::string::String)>) -> bool {
+pub fn register(card_id: u32, parent: Option<&Arc<drv::Device>>) -> bool {
     let mut nodes = DRM_NODES.lock();
     let idx = card_id as usize;
     if nodes.len() <= idx {
@@ -225,7 +237,7 @@ pub fn register(card_id: u32, parent: Option<(&'static str, alloc::string::Strin
         "drm",
         (DRM_MAJOR, card_id),
         Arc::new(move || make_card_inode(card_id)),
-        parent.clone(),
+        parent,
     ) else {
         return false;
     };

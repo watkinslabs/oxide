@@ -17,25 +17,6 @@ pub(super) const INO_DRIVER_DIR:    Ino = 0x5102_1100;
 pub(super) const INO_ATTR:          Ino = 0x5102_2000;
 pub(super) const INO_DRIVER_ATTR:   Ino = 0x5102_3000;
 
-pub(super) fn dev_root_canon(bus: &str) -> &'static str {
-    match bus {
-        "pci" => "devices/pci0000:00",
-        "virtio" => "devices/virtio",
-        "platform" => "devices/platform",
-        // Block disks live under /sys/devices/virtual/block/<name> (60§6.3a):
-        // the uevent DEVPATH MUST resolve to a real /sys dir or udevd reads
-        // /sys<DEVPATH>/uevent → ENOENT and never processes the disk.
-        "block" => "devices/virtual/block",
-        "input" => "devices/virtual/input",
-        "drm" => "devices/virtual/drm",
-        "mem" => "devices/virtual/mem",
-        "misc" => "devices/virtual/misc",
-        "sound" => "devices/virtual/sound",
-        "graphics" => "devices/virtual/graphics",
-        _ => "devices/platform",
-    }
-}
-
 pub(super) fn bus_devices_ino(bus: &str) -> Ino {
     match bus {
         "pci" => INO_BUS_PCI_DEV,

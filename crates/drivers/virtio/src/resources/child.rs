@@ -367,7 +367,7 @@ pub trait VirtioChildDriverOps<S: VirtioChildTransportSession>: Sync {
 
     /// Install child runtime state from a live transport session.
     /// # C: O(child_probe)
-    fn probe_child(session: &mut S) -> drv::KResult<()>;
+    fn probe_child(parent: &Arc<drv::Device>, session: &mut S) -> drv::KResult<()>;
 
     /// Remove child runtime state before transport teardown.
     /// # C: O(child_remove)
@@ -409,7 +409,7 @@ where
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let session = B::begin_session(dev, O::profile())?;
-        run_child_probe(session, |session| O::probe_child(session))
+        run_child_probe(session, |session| O::probe_child(dev, session))
     }
 
     fn remove(&self, dev: &drv::Device) {

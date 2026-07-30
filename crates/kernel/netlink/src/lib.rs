@@ -10,8 +10,7 @@
 // - `inode`: VFS inode glue for netlink socket file descriptors.
 // - `rtnetlink*` / `genetlink` / `sock_diag` / `mcast`: protocol-specific code.
 //
-// Netlink socket family (`AF_NETLINK` = 16) per Linux
-// `include/uapi/linux/netlink.h`. v1 surface is the framing +
+// Netlink socket family (`AF_NETLINK` = 16). Current surface is the framing +
 // dispatch substrate that `ip(8)`, DHCP clients, nftables, and
 // any future "configure the iface" tool plug into.
 
@@ -56,8 +55,9 @@ pub use inode::{
     make_netlink_socket_inode, netlink_arc_from_inode, netlink_from_inode, NETLINK_INO_TAG,
 };
 pub use listeners::{
-    emit_uevent, emit_uevent_with_env, rebroadcast_cooked_uevent, register_rtnl_listener,
-    register_uevent_listener, rtnl_multicast, uevent_seqnum, unicast_uevent_to_port,
+    emit_uevent, emit_uevent_with_env, emit_uevent_with_env_bytes, rebroadcast_cooked_uevent,
+    register_rtnl_listener, register_uevent_listener, rtnl_multicast, uevent_seqnum,
+    unicast_uevent_to_port,
 };
 pub(crate) use handler::invoke_netfilter;
 pub use ports::bind_port_id;
@@ -66,5 +66,6 @@ pub use netlink_socket::{NETLINK_RCVBUF_DEFAULT, NETLINK_SNDBUF_DEFAULT, NETLINK
     NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
+    KOBJECT_UEVENT_KERNEL_GROUP_MASK, KOBJECT_UEVENT_UDEV_GROUP_MASK,
     NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, SOCKADDR_NL_SIZE,
     SOCKADDR_NL_PORT_ID_OFFSET, SOCKADDR_NL_GROUPS_OFFSET, Nlmsghdr, sockopt};

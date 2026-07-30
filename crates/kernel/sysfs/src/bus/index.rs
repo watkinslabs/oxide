@@ -7,8 +7,8 @@ use vfs::{mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps,
 
 use crate::DIR_PERM;
 
-use super::device::make_link_inode;
-use super::ids::{dev_root_canon, INO_SYS_DEV_BLOCK, INO_SYS_DEV_CHAR};
+use super::device::{dev_canon_exact, make_device_link_inode};
+use super::ids::{INO_SYS_DEV_BLOCK, INO_SYS_DEV_CHAR};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(super) enum DevIndexKind { Char, Block }
@@ -35,32 +35,24 @@ pub(super) fn find_dev_by_index(kind: DevIndexKind, name: &str) -> Option<Arc<dr
 /// `path_id`'s parent walk needs. Nesting-bus devices (pci/virtio/platform) use
 /// their canonical nested path; class devices keep the flat `virtual/<class>`
 /// root. # C: O(depth)
-pub(super) fn dev_devpath(dev: &drv::Device) -> String {
+pub(super) fn dev_devpath(dev: &drv::Device) -> Option<String> {
     if dev.bus == "drm" {
-        if let Some(path) = crate::drm::card_devpath(dev) {
-            return path;
-        }
-        let sysname = dev.addr.rsplit('/').next().unwrap_or(dev.addr.as_str());
-        return alloc::format!("/devices/virtual/drm/{}", sysname);
+        return crate::drm::card_devpath(dev);
     }
     if dev.bus == "input" {
-        return alloc::format!("/devices/virtual/input/{}/{}",
-            crate::input::parent_name(&dev.addr), dev.addr);
+        return crate::input::dev_devpath(dev);
     }
-    if super::device::is_nesting_bus(dev.bus) {
-        return alloc::format!("/{}", super::device::dev_canon(dev.bus, &dev.addr));
-    }
-    alloc::format!("/{}/{}", dev_root_canon(dev.bus), dev.addr)
+    Some(alloc::format!("/{}", dev_canon_exact(dev)?))
 }
 
-fn dev_index_target(dev: &drv::Device) -> Vec<u8> {
+fn dev_index_target(dev: &drv::Device) -> Option<Vec<u8>> {
     if let Some(target) = crate::drm::dev_index_target(dev) {
-        return target;
+        return Some(target);
     }
-    if let Some(target) = crate::input::dev_index_target(dev) {
-        return target;
+    if dev.bus == "input" {
+        return crate::input::dev_index_target(dev);
     }
-    alloc::format!("../../{}/{}", dev_root_canon(dev.bus), dev.addr).into_bytes()
+    Some(alloc::format!("../../{}", dev_canon_exact(dev)?).into_bytes())
 }
 
 /// `/sys/dev/char` and `/sys/dev/block` reverse dev_t indexes. Linux exposes
@@ -71,7 +63,8 @@ impl InodeOps for SysDevIndexOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let kind = inode.private::<DevIndexData>().ok_or(VfsError::Einval)?.kind;
         let dev = find_dev_by_index(kind, name).ok_or(VfsError::Enoent)?;
-        Ok(make_link_inode(dev_index_target(&dev)))
+        let target = dev_index_target(&dev).ok_or(VfsError::Enoent)?;
+        Ok(make_device_link_inode(dev, target))
     }
 }
 impl FileOps for SysDevIndexOps {
@@ -81,6 +74,7 @@ impl FileOps for SysDevIndexOps {
         for dev in drv::devices().iter() {
             let Some((major, minor)) = dev.dev_t else { continue; };
             if dev_index_kind(dev) != kind { continue; }
+            if dev_index_target(dev).is_none() { continue; }
             let name = dev_index_name(major, minor);
             if !names.iter().any(|n| n == &name) {
                 names.push(name);

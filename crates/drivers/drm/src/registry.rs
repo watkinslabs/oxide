@@ -1,4 +1,4 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -14,7 +14,7 @@ pub fn register(driver: Arc<dyn DrmDriver>) -> u32 {
 
 pub fn register_with_parent(
     driver: Arc<dyn DrmDriver>,
-    parent: Option<(&'static str, String)>,
+    parent: Option<&Arc<drv::Device>>,
 ) -> u32 {
     let mut driver = Some(driver);
     let card_id = {

@@ -398,6 +398,7 @@ dependencies = [
  "softirq",
  "sync",
  "syscall",
+ "timekeeper",
  "tty",
  "vfs",
  "virtio",
@@ -786,6 +787,8 @@ name = "input"
 version = "0.1.0"
 dependencies = [
  "sync",
+ "timekeeper",
+ "timer",
  "virtio",
 ]
 
@@ -1800,10 +1803,12 @@ version = "0.1.0"
 dependencies = [
  "block",
  "cmdline",
+ "drm",
  "drv",
  "drv-zram",
  "firmware",
  "hal",
+ "input",
  "kalloc",
  "kernfs",
  "klog",
