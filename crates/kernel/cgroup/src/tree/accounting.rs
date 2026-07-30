@@ -8,18 +8,36 @@ impl Tree {
     /// Removes it from any prior cgroup first. Page-owned memory charges do
     /// not follow task membership: PageMeta holds their allocating memcg.
     /// # C: O(log n)
-    pub fn add_proc(&mut self, cgid: u64, pid: u64) {
-        if let Some(old) = self.proc_cg.insert(pid, cgid) {
-            if old == cgid { return; }
+    pub fn add_proc(&mut self, cgid: u64, pid: u64) -> super::types::KResult<()> {
+        if !self.nodes.contains_key(&cgid) { return Err(vfs::VfsError::Enodev); }
+        let previous = self.proc_cg.insert(pid, cgid);
+        let old = previous.unwrap_or(ROOT);
+        if previous.is_some_and(|prior| prior == cgid) { return Ok(()); }
+        if previous.is_some() {
             if let Some(n) = self.nodes.get_mut(&old) { n.procs.remove(&pid); }
         }
+        let mut moved_threads = 0u64;
+        for (leader, thread_cgid) in self.thread_cg.values_mut() {
+            if *leader == pid && *thread_cgid != cgid {
+                *thread_cgid = cgid;
+                moved_threads += 1;
+            }
+        }
+        if old != cgid {
+            if let Some(n) = self.nodes.get_mut(&old) {
+                n.threads = n.threads.saturating_sub(moved_threads);
+            }
+            if let Some(n) = self.nodes.get_mut(&cgid) { n.threads += moved_threads; }
+        }
         if let Some(n) = self.nodes.get_mut(&cgid) { n.procs.insert(pid); }
+        Ok(())
     }
 
     /// Drop a process on exit. Resident and swapped pages retain their
     /// allocating memcg until their respective page/slot release paths.
     /// # C: O(log n)
     pub fn remove_proc(&mut self, pid: u64) {
+        self.exited_procs.remove(&pid);
         if let Some(old) = self.proc_cg.remove(&pid) {
             if let Some(n) = self.nodes.get_mut(&old) { n.procs.remove(&pid); }
         }
@@ -30,30 +48,95 @@ impl Tree {
     /// # C: O(log n)
     pub fn add_thread(&mut self, parent_pid: u64, tid: u64) {
         if self.thread_cg.contains_key(&tid) { return; }
-        let cg = self.cgroup_of(parent_pid);
-        self.thread_cg.insert(tid, cg);
+        let (leader, cg) = if let Some(cg) = self.proc_cg.get(&parent_pid) {
+            (parent_pid, *cg)
+        } else if let Some((leader, cg)) = self.thread_cg.get(&parent_pid) {
+            (*leader, *cg)
+        } else {
+            (parent_pid, ROOT)
+        };
+        self.thread_cg.insert(tid, (leader, cg));
         if let Some(n) = self.nodes.get_mut(&cg) { n.threads += 1; }
     }
 
     /// Uncharge a thread on exit.
     /// # C: O(log n)
     pub fn remove_thread(&mut self, tid: u64) {
-        if let Some(cg) = self.thread_cg.remove(&tid) {
+        if let Some((_leader, cg)) = self.thread_cg.remove(&tid) {
             if let Some(n) = self.nodes.get_mut(&cg) { n.threads = n.threads.saturating_sub(1); }
         }
     }
 
-    /// The cgroup id a pid belongs to (root if untracked).
+    /// Drop one task while retaining process membership until its final
+    /// thread exits. Returns the cgroup only when `populated` may transition.
+    /// # C: O(threads)
+    pub fn exit_task(&mut self, tid: u64, tgid: u64) -> Option<u64> {
+        let cgid = self.cgroup_of(tid);
+        if tid == tgid {
+            if self.thread_cg.values().any(|(leader, _)| *leader == tgid) {
+                self.exited_procs.insert(tgid);
+                None
+            } else {
+                self.remove_proc(tgid);
+                Some(cgid)
+            }
+        } else {
+            self.remove_thread(tid);
+            let has_threads = self.thread_cg.values().any(|(leader, _)| *leader == tgid);
+            if !has_threads && self.exited_procs.remove(&tgid) {
+                self.remove_proc(tgid);
+                Some(cgid)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// The cgroup id a process leader or thread belongs to (root if untracked).
     /// # C: O(log n)
     pub fn cgroup_of(&self, pid: u64) -> u64 {
-        self.proc_cg.get(&pid).copied().unwrap_or(ROOT)
+        self.proc_cg.get(&pid).copied()
+            .or_else(|| self.thread_cg.get(&pid).map(|(_, cgid)| *cgid))
+            .unwrap_or(ROOT)
+    }
+
+    /// Move one thread only. This hierarchy currently contains domain
+    /// cgroups, so Linux permits the write only when source and destination
+    /// share that same domain (the no-op case). # C: O(log n)
+    pub fn move_thread(&mut self, cgid: u64, tid: u64) -> super::types::KResult<u64> {
+        if !self.nodes.contains_key(&cgid) { return Err(vfs::VfsError::Enodev); }
+        let src = self.cgroup_of(tid);
+        if src != cgid { return Err(vfs::VfsError::Eopnotsupp); }
+        Ok(src)
+    }
+
+    /// Process leaders directly present in one cgroup. # C: O(members)
+    pub fn direct_procs(&self, cgid: u64) -> super::types::KResult<Vec<u64>> {
+        let node = self.nodes.get(&cgid).ok_or(vfs::VfsError::Enoent)?;
+        Ok(node.procs.iter().copied().collect())
+    }
+
+    /// Every live task directly present in one cgroup. # C: O(tasks)
+    pub fn direct_threads(&self, cgid: u64) -> super::types::KResult<Vec<u64>> {
+        if !self.nodes.contains_key(&cgid) { return Err(vfs::VfsError::Enoent); }
+        let mut tids = Vec::new();
+        if let Some(node) = self.nodes.get(&cgid) {
+            tids.extend(node.procs.iter()
+                .filter(|pid| !self.exited_procs.contains(pid)).copied());
+        }
+        tids.extend(self.thread_cg.iter()
+            .filter_map(|(tid, (_, owner))| (*owner == cgid).then_some(*tid)));
+        tids.sort_unstable();
+        Ok(tids)
     }
 
     /// pids.current for a node = every TASK (procs + threads) in its whole
     /// subtree (Linux pids controller counts threads, not just leaders).
     pub(super) fn subtree_proc_count(&self, id: u64) -> u64 {
         let n = match self.nodes.get(&id) { Some(n) => n, None => return 0 };
-        let mut c = n.procs.len() as u64 + n.threads;
+        let live_leaders = n.procs.iter()
+            .filter(|pid| !self.exited_procs.contains(pid)).count() as u64;
+        let mut c = live_leaders + n.threads;
         for &child in n.children.values() { c += self.subtree_proc_count(child); }
         c
     }

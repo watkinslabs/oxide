@@ -14,13 +14,17 @@ pub mod selftest;
 
 pub mod inode;
 pub mod fs;
+pub mod bpf;
 pub mod policy;
 pub mod state;
 pub mod tree;
 mod ids;
+mod membership;
 pub use fs::CGROUP2_SUPER_MAGIC;
+pub use membership::{
+    attach_into, attach_tid_into, migrate_process, migrate_thread, read_file,
+};
 
-use alloc::fmt::Write;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -31,11 +35,12 @@ pub use fs::{mount_at, realize_tree, CgroupFs};
 pub use policy::{CpuAction, cpu_bandwidth_decision, cpulist_to_mask, cpu_weight_to_cfs};
 pub use state::{
     set_cpuset_hook, set_freeze_hook, set_notify_hook, set_pid_display_hook, set_pid_resolve_hook,
-    set_memory_pressure_hook, set_signal_hook, set_weight_hook,
+    set_memory_pressure_hook, set_migrate_hook, set_signal_hook, set_tid_display_hook,
+    set_weight_hook,
 };
 use state::{
-    SIGKILL, TREE, cpuset_hook, freeze_hook, notify_events_chain, notify_events_self, resolve_pid,
-    memory_pressure_hook, signal_hook, visible_pid, weight_hook,
+    SIGKILL, TREE, cpuset_hook, freeze_hook, migrate_task, notify_events_chain,
+    notify_events_self, memory_pressure_hook, signal_hook, weight_hook,
 };
 
 /// Mount-point of the unified hierarchy.
@@ -52,7 +57,10 @@ pub const NO_MEMCG: u64 = 0;
 /// root fallback. # C: O(1)
 static KERNEL_CONTEXT_MEMCG: AtomicU64 = AtomicU64::new(ROOT_CGROUP);
 
-pub use tree::{MemoryCharge, MemoryEvent, MemoryKind, MemoryPressure, MemoryPressureResult};
+pub use tree::{
+    BpfDeviceError, BpfDeviceMode, BpfDeviceQuery, MemoryCharge, MemoryEvent, MemoryKind, MemoryPressure,
+    MemoryPressureResult,
+};
 
 /// Canonical memcg identity for a non-task allocation context. # C: O(1)
 pub fn kernel_context_memcg() -> u64 { KERNEL_CONTEXT_MEMCG.load(Ordering::Acquire) }
@@ -102,41 +110,6 @@ pub fn node_child_names(cgid: u64) -> Vec<String> { TREE.lock().child_names(cgid
 /// # C: O(1)
 pub fn is_mounted() -> bool { TREE.lock().is_mounted() }
 
-/// Read a control file `(cgid, file)`.
-/// # C: O(subtree) for populated/pids; O(members) for procs
-pub fn read_file(cgid: u64, file: &str) -> KResult<Vec<u8>> {
-    if file == "cgroup.procs" || file == "cgroup.threads" {
-        let t = TREE.lock();
-        let n = t.node(cgid).ok_or(VfsError::Enoent)?;
-        let mut out = String::new();
-        for pid in &n.procs {
-            let shown = visible_pid(*pid);
-            let _ = writeln!(out, "{shown}");
-        }
-        return Ok(out.into_bytes());
-    }
-    TREE.lock().read_file(cgid, file)
-}
-
-/// CLONE_INTO_CGROUP (clone3): place the just-cloned child `vpid` into `cgid`.
-/// Mirrors a `cgroup.procs` write but takes the vpid directly — used by the
-/// clone3 ABI shim when the caller passes a cgroup fd. systemd's pidfd_spawn
-/// relies on this to land service executors in the right cgroup v2 node.
-/// # C: O(members)
-pub fn attach_into(cgid: u64, vpid: u64) {
-    if let Some(tid) = resolve_pid(vpid) { attach_tid_into(cgid, tid); }
-}
-
-/// Place canonical task `tid` into `cgid` before it can run. Used by
-/// clone3(CLONE_INTO_CGROUP), whose child is born in the destination cgroup.
-/// # C: O(members)
-pub fn attach_tid_into(cgid: u64, tid: u64) {
-    let src = TREE.lock().cgroup_of(tid);
-    TREE.lock().add_proc(cgid, tid);
-    if src != cgid { notify_events_chain(src); }
-    notify_events_chain(cgid);
-}
-
 /// Recover the cgroup id from a cgroup2 DIRECTORY inode's `(ino, fsid)`.
 /// `None` when the inode is not a cgroup2 directory. Lets the clone3 shim
 /// resolve the caller's `CLONE_INTO_CGROUP` cgroup fd to a `cgid` without the
@@ -169,14 +142,9 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
                 klog::write_raw(b"\n");
             }
             let vpid: u64 = buf.trim().parse().map_err(|_| VfsError::Einval)?;
-            // Membership keys on the canonical tid (what `current().tid`
-            // and fork-inheritance use); the written value is a vpid in
-            // the writer's pid namespace. Translate before storing.
-            let tid = resolve_pid(vpid).ok_or(VfsError::Esrch)?;
-            // Source cgroup (before the move) may flip populated 1→0;
-            // destination may flip 0→1 — notify both chains.
-            let src = TREE.lock().cgroup_of(tid);
-            TREE.lock().add_proc(cgid, tid);
+            // The scheduler pins and serializes the live task against exit,
+            // then the cgroup tree performs one atomic membership mutation.
+            let src = migrate_task(vpid, cgid, file == "cgroup.threads")?;
             if src != cgid { notify_events_chain(src); }
             notify_events_chain(cgid);
             Ok(())
@@ -436,25 +404,23 @@ pub fn inherit(child_pid: u64, parent_pid: u64) {
     let mut t = TREE.lock();
     if !t.is_mounted() { return; }
     let cg = t.cgroup_of(parent_pid);
-    t.add_proc(cg, child_pid);
+    let _ = t.add_proc(cg, child_pid);
 }
 
-/// Drop a process from its cgroup on exit.
-/// # C: O(log n)
-pub fn on_exit(pid: u64) {
-    let cg = {
+/// Drop one task from its cgroup on exit. Process membership remains live
+/// while any sibling thread survives, including after the leader exits.
+/// # C: O(threads)
+pub fn on_exit(tid: u64, tgid: u64) {
+    let changed = {
         let mut t = TREE.lock();
         if !t.is_mounted() { return; }
-        // Capture the membership cgroup BEFORE removal so the notify
-        // walk targets the chain whose `populated` may now flip to 0.
-        let cg = t.cgroup_of(pid);
-        t.remove_proc(pid);
-        t.remove_thread(pid);
-        cg
+        t.exit_task(tid, tgid)
     };
-    // Last task leaving a cgroup flips `populated` 1→0; systemd's
-    // empty-cgroup handler is driven by this inotify event (`26§4.1`).
-    notify_events_chain(cg);
+    if let Some(cg) = changed {
+        // Last task leaving a cgroup flips `populated` 1→0; systemd's
+        // empty-cgroup handler is driven by this inotify event (`26§4.1`).
+        notify_events_chain(cg);
+    }
 }
 
 /// Charge a new thread (`CLONE_THREAD`) to its process's cgroup so

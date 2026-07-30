@@ -128,7 +128,10 @@ pub fn is_perfmon_prog_type(t: u32) -> bool {
 ///
 /// The built-in set here is exactly the set that can be *executed*:
 /// `BPF_PROG_TYPE_SOCKET_FILTER`, which `SO_ATTACH_BPF` runs on
-/// `security::bpf_interp`. `BPF_PROG_TYPE_LSM` is deliberately absent —
+/// `security::bpf_interp`, and `BPF_PROG_TYPE_CGROUP_DEVICE`, whose
+/// cgroup-owned effective arrays run at device open/mknod. CGROUP_SKB and
+/// CGROUP_SOCK_ADDR are absent because no matching execution hook is installed.
+/// `BPF_PROG_TYPE_LSM` is deliberately absent —
 /// `security::bpf_lsm` holds a link registry whose `file_open` hook
 /// executes no program and returns "allow" unconditionally, so
 /// admitting an LSM load would hand userspace an fd standing for a MAC
@@ -136,7 +139,7 @@ pub fn is_perfmon_prog_type(t: u32) -> bool {
 /// answers those loads with the same EINVAL.
 /// # C: O(1)
 pub fn prog_type_supported(t: u32) -> bool {
-    matches!(t, uapi::prog_type::SOCKET_FILTER)
+    matches!(t, uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_DEVICE)
 }
 
 // ------------------------------------------------------------ MAP_CREATE
@@ -308,13 +311,9 @@ pub fn attach_type_to_prog_type(attach_type: u32) -> u32 {
 /// `bpf_prog_attach()` / `bpf_prog_detach()`.
 ///
 /// Linux resolves the attach type, then hands the request to a
-/// per-subsystem attacher. Every attacher this kernel could reach is
-/// cgroup-BPF, and with `CONFIG_CGROUP_BPF=n` Linux's own
-/// `cgroup_bpf_prog_attach()` stub (include/linux/bpf-cgroup.h) returns
-/// `-EINVAL`. Oxide has no cgroup-BPF enforcement, so EINVAL is the
-/// honest — and Linux-identical — answer. It must not be a silent
-/// success: accepting systemd's device-policy attach while enforcing
-/// nothing claims a MAC guarantee that does not exist.
+/// per-subsystem attacher. DEVICE reaches the cgroup-owned enforcement
+/// engine; other mapped types remain unavailable and return the same EINVAL
+/// as Linux's corresponding `CONFIG_*=n` stubs.
 ///
 /// Returns the resolved prog type so the caller can run Linux's
 /// `bpf_prog_get_type(attr->attach_bpf_fd, ptype)` step — a bad fd is
@@ -332,11 +331,10 @@ pub fn prog_attach_check(a: &Attr) -> Result<u32, Errno> {
     Ok(ptype)
 }
 
-/// The attacher's verdict once the prog fd resolved. Linux dispatches
-/// to a per-subsystem attacher (`cgroup_bpf_prog_attach`,
-/// `sock_map_get_from_fd`, `tcx_prog_attach`, …); with none of those
-/// subsystems present, every arm collapses to the same `-EINVAL` the
-/// `CONFIG_*=n` stubs return. # C: O(1)
+/// Verdict for attach types that have no matching runtime engine. Linux
+/// dispatches to a per-subsystem attacher (`cgroup_bpf_prog_attach`,
+/// `sock_map_get_from_fd`, `tcx_prog_attach`, …); an unavailable subsystem
+/// returns the same `-EINVAL` as its `CONFIG_*=n` stub. # C: O(1)
 pub fn prog_attach_verdict(_ptype: u32) -> Errno { Errno::Einval }
 
 /// `BPF_F_ATTACH_MASK_BASE | BPF_F_ATTACH_MASK_MPROG` (kernel/bpf/syscall.c):
@@ -344,6 +342,47 @@ pub fn prog_attach_verdict(_ptype: u32) -> Errno { Errno::Einval }
 /// `REPLACE|BEFORE|AFTER|ID|LINK`.
 const ATTACH_MASK_BASE_MPROG: u32 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 6)
     | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 13);
+
+// ------------------------------------------------------------- PROG_QUERY
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ProgQuery {
+    pub target_fd: u32,
+    pub query_flags: u32,
+    pub prog_ids: u64,
+    pub prog_cnt: u32,
+    pub prog_attach_flags: u64,
+}
+
+/// `bpf_prog_query()`: CAP_NET_ADMIN precedes CHECK_ATTR, then query flags and
+/// attach-type dispatch. # C: O(ATTR_SIZE)
+pub fn prog_query_check(a: &Attr, caps: Caps) -> Result<ProgQuery, Errno> {
+    use uapi::off::prog_query as o;
+    if !caps.net_admin_capable() { return Err(Errno::Eperm); }
+    check_attr(a, o::LAST_END)?;
+    let query_flags = a.u32_at(o::QUERY_FLAGS);
+    if query_flags & !uapi::query_flags::EFFECTIVE != 0 { return Err(Errno::Einval); }
+    if a.u32_at(o::ATTACH_TYPE) != uapi::attach_type::CGROUP_DEVICE {
+        return Err(Errno::Einval);
+    }
+    let prog_attach_flags = a.u64_at(o::PROG_ATTACH_FLAGS);
+    Ok(ProgQuery {
+        target_fd: a.u32_at(o::TARGET_FD),
+        query_flags,
+        prog_ids: a.u64_at(o::PROG_IDS),
+        prog_cnt: a.u32_at(o::PROG_CNT),
+        prog_attach_flags,
+    })
+}
+
+/// `bpf_prog_get_fd_by_id()`: CHECK_ATTR precedes CAP_SYS_ADMIN.
+/// # C: O(ATTR_SIZE)
+pub fn prog_get_fd_by_id_check(a: &Attr, caps: Caps) -> Result<u32, Errno> {
+    use uapi::off::prog_get_fd_by_id as o;
+    check_attr(a, o::LAST_END)?;
+    if !caps.sys_admin { return Err(Errno::Eperm); }
+    Ok(a.u32_at(o::PROG_ID))
+}
 
 // ------------------------------------------------------------ LINK_CREATE
 

@@ -122,6 +122,25 @@ pub mod off {
         pub const EXPECTED_REVISION: usize = 24;
         pub const LAST_END:          usize = 32;
     }
+    /// `BPF_PROG_QUERY`; `LAST_FIELD query.revision`.
+    pub mod prog_query {
+        pub const TARGET_FD:         usize = 0;
+        pub const ATTACH_TYPE:       usize = 4;
+        pub const QUERY_FLAGS:       usize = 8;
+        pub const ATTACH_FLAGS:      usize = 12;
+        pub const PROG_IDS:          usize = 16;
+        pub const PROG_CNT:          usize = 24;
+        pub const PROG_ATTACH_FLAGS: usize = 32;
+        pub const LINK_IDS:          usize = 40;
+        pub const LINK_ATTACH_FLAGS: usize = 48;
+        pub const REVISION:          usize = 56;
+        pub const LAST_END:          usize = 64;
+    }
+    /// `BPF_PROG_GET_FD_BY_ID`; `LAST_FIELD prog_id`.
+    pub mod prog_get_fd_by_id {
+        pub const PROG_ID:  usize = 0;
+        pub const LAST_END: usize = 4;
+    }
     /// `BPF_LINK_CREATE`;
     /// `LAST_FIELD link_create.uprobe_multi.path_fd` (ends at 64).
     pub mod link_create {
@@ -182,7 +201,18 @@ pub mod prog_type {
     pub const MAX:                 u32 = 33;
 }
 
-/// `enum bpf_attach_type` — the subset this kernel names.
+/// `enum bpf_func_id` values implemented by the cgroup-device runner.
+pub mod func_id {
+    pub const KTIME_GET_NS:           u32 = 5;
+    pub const GET_SMP_PROCESSOR_ID:   u32 = 8;
+    pub const GET_CURRENT_PID_TGID:   u32 = 14;
+    pub const GET_CURRENT_UID_GID:    u32 = 15;
+    pub const GET_NUMA_NODE_ID:       u32 = 42;
+    pub const GET_CURRENT_CGROUP_ID:  u32 = 80;
+    pub const KTIME_GET_BOOT_NS:      u32 = 125;
+}
+
+/// `enum bpf_attach_type` values used by the implemented dispatch paths.
 pub mod attach_type {
     pub const CGROUP_INET_INGRESS: u32 = 0;
     pub const CGROUP_INET_EGRESS:  u32 = 1;
@@ -190,6 +220,16 @@ pub mod attach_type {
     pub const LSM_MAC:             u32 = 27;
     /// `__MAX_BPF_ATTACH_TYPE` in v7.2.0-rc4.
     pub const MAX:                 u32 = 62;
+}
+
+pub mod attach_flags {
+    pub const ALLOW_OVERRIDE: u32 = 1 << 0;
+    pub const ALLOW_MULTI:    u32 = 1 << 1;
+    pub const REPLACE:        u32 = 1 << 2;
+}
+
+pub mod query_flags {
+    pub const EFFECTIVE: u32 = 1 << 0;
 }
 
 /// `BPF_F_*` map-create flags (`include/uapi/linux/bpf.h`).

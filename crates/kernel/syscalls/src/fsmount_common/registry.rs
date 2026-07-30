@@ -19,27 +19,23 @@ pub(crate) fn fstype_ok(t: &str) -> bool {
         | "tracefs" | "fuse" | "fusectl" | "mqueue" | "hugetlbfs" | "autofs" | "binfmt_misc")
 }
 
-fn source_disk_name(source: &str) -> &str {
-    source.rsplit('/').next().unwrap_or(source)
-}
-
-fn resolve_ext4_source(source: &str) -> Option<(Arc<dyn block::BlockDevice>, Option<u64>)> {
-    if source.starts_with('/') {
-        if let Ok(vp) = crate::pathresolve::resolve_path_raw(source, false) {
-            if vp.inode.file_type() == FileType::BlockDev {
-                let rdev = vp.inode.rdev();
-                if let Some(d) = block::registry::by_dev(rdev) {
-                    return Some((d.dev.clone(), Some(rdev as u64)));
-                }
-            }
-        }
+fn resolve_ext4_source(
+    source: &str,
+    access: u32,
+) -> vfs::KResult<(Arc<dyn block::BlockDevice>, Option<u64>)> {
+    let vp = crate::pathresolve::resolve_path_raw(source, false)?;
+    if vp.inode.file_type() != FileType::BlockDev {
+        return Err(vfs::VfsError::Enotblk);
     }
-    let name = source_disk_name(source);
-    if name.is_empty() { return None; }
-    if let Some(d) = block::registry::by_name(name) {
-        return Some((d.dev.clone(), block::registry::dev_t_of(&d.name, d.index).map(|d| d as u64)));
+    if !vfs::may_open_dev(vp.mnt_id) {
+        return Err(vfs::VfsError::Eacces);
     }
-    block::registry::by_serial(name).map(|dev| (dev, None))
+    let rdev = vp.inode.rdev();
+    // Linux `lookup_bdev` checks nodev but not block-inode DAC.
+    // `bdev_file_open_by_dev` then checks device policy before ENXIO.
+    vfs::device_permission(FileType::BlockDev, rdev, access)?;
+    let disk = block::registry::by_dev(rdev).ok_or(vfs::VfsError::Enxio)?;
+    Ok((disk.dev.clone(), Some(rdev as u64)))
 }
 
 const SECURITYFS_MAGIC: u64 = 0x7363_6673;
@@ -111,10 +107,12 @@ fn register_filesystems() {
         FsFlags::FS_USERNS_MOUNT | FsFlags::FS_ALLOW_IDMAP, Box::new(tmpfs_ctor)));
     let _ = register_fs(FsType::new("ramfs", RAMFS_MAGIC,
         FsFlags::FS_USERNS_MOUNT, Box::new(ramfs_ctor)));
-    let _ = register_fs(FsType::new("ext4", EXT4_MAGIC,
-        FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, _d: &str| -> R {
+    let _ = register_fs(FsType::new_with_flags("ext4", EXT4_MAGIC,
+        FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, _d: &str, sb_flags: u64| -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
-        let (dev, dev_t) = resolve_ext4_source(source).ok_or(vfs::VfsError::Enoent)?;
+        let access = vfs::MAY_READ
+            | if sb_flags & vfs::superblock::SB_RDONLY == 0 { vfs::MAY_WRITE } else { 0 };
+        let (dev, dev_t) = resolve_ext4_source(source, access)?;
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
         mounted(ty, fs, None, source)
     })));

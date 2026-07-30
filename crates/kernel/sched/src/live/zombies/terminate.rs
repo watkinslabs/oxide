@@ -40,7 +40,7 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             task.thread_group.latch_final_exit(status);
             task.exit_status.store(status, Ordering::Release);
             crate::live::vfork_done(task); // clear + wake a parked vfork parent (signal-death)
-            ::cgroup::on_exit(task.tid as u64);
+            crate::cgroup::exit_task(task);
             // Robust-futex recovery (Linux do_exit -> exit_robust_list): a
             // thread killed by a fatal signal while holding a robust mutex must
             // mark it FUTEX_OWNER_DIED and wake a waiter, else a peer blocked on

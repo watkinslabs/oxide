@@ -65,6 +65,21 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
         let has = sched::live::current()
             .map(|c| c.has_cap(sched::cap::MKNOD)).unwrap_or(false);
         if !has { return -(Errno::Eperm.as_i32() as i64); }
+        // Linux `vfs_mknod`: CAP_MKNOD, then device-cgroup policy, then
+        // LSM/backend.  Character 0:0 is WHITEOUT_DEV and bypasses devcg.
+        if !(real_ftype == S_IFCHR && dev == 0) {
+            let kind = if real_ftype == S_IFCHR {
+                ::security::bpf::DEVCG_DEV_CHAR
+            } else {
+                ::security::bpf::DEVCG_DEV_BLOCK
+            };
+            let devt = vfs::Devt::from_raw(dev);
+            if let Err(e) = ::security::bpf::check_device_access(
+                kind, devt.major(), devt.minor(), ::security::bpf::DEVCG_ACC_MKNOD,
+            ) {
+                return -(e.as_i32() as i64);
+            }
+        }
     }
     let umask = sched::live::current()
         .map(|c| c.umask()).unwrap_or(0) as u16;

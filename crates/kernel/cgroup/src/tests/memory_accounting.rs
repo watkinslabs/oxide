@@ -108,7 +108,7 @@ fn owner_events_are_hierarchical_but_not_inferred() {
 #[test]
 fn exit_preserves_page_owned_memory_charge() {
     let (mut t, c) = memory_tree();
-    t.add_proc(c, 100);
+    t.add_proc(c, 100).unwrap();
     t.write_file(c, "memory.max", "4096").unwrap();
     assert!(t.try_charge_memcg(c, PAGE_BYTES / 4));
     assert!(t.try_charge_memcg(c, PAGE_BYTES / 2));
@@ -125,9 +125,9 @@ fn move_preserves_page_owned_memory_charge() {
     t.write_subtree_control(ROOT, "+memory").unwrap();
     let (a, _) = t.create(ROOT, "a").unwrap();
     let (b, _) = t.create(ROOT, "b").unwrap();
-    t.add_proc(a, 50);
+    t.add_proc(a, 50).unwrap();
     assert!(t.try_charge_memcg(a, PAGE_BYTES));
-    t.add_proc(b, 50);
+    t.add_proc(b, 50).unwrap();
     assert_eq!(s(&t.read_file(a, "memory.current").unwrap()), "4096\n");
     assert_eq!(s(&t.read_file(b, "memory.current").unwrap()), "0\n");
     t.uncharge_memcg(a, PAGE_BYTES);

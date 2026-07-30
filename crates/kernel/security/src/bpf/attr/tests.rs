@@ -305,9 +305,11 @@ fn prog_types_without_a_runner_are_not_loadable() {
     // find_prog_type(): bpf_prog_types[type] == NULL -> -EINVAL, which is
     // what Linux returns for any type whose CONFIG is not built in.
     assert!(prog_type_supported(uapi::prog_type::SOCKET_FILTER));
+    assert!(prog_type_supported(uapi::prog_type::CGROUP_DEVICE));
     for t in [uapi::prog_type::UNSPEC, uapi::prog_type::XDP, uapi::prog_type::KPROBE,
-              uapi::prog_type::CGROUP_DEVICE, uapi::prog_type::SCHED_CLS,
-              uapi::prog_type::TRACING, uapi::prog_type::SYSCALL] {
+              uapi::prog_type::CGROUP_SKB, uapi::prog_type::CGROUP_SOCK_ADDR,
+              uapi::prog_type::SCHED_CLS, uapi::prog_type::TRACING,
+              uapi::prog_type::SYSCALL] {
         assert!(!prog_type_supported(t), "type {t} must not be loadable");
     }
 }
@@ -330,14 +332,12 @@ fn lsm_programs_are_not_loadable_because_no_hook_executes_them() {
 // ------------------------------------------------------------ PROG_ATTACH
 
 #[test]
-fn prog_attach_never_silently_succeeds() {
-    // cgroup_bpf_prog_attach() with CONFIG_CGROUP_BPF=n returns -EINVAL
-    // (include/linux/bpf-cgroup.h); nothing here enforces a cgroup
-    // device policy, so a bare 0 would be a fabricated success.
+fn prog_attach_routes_only_the_enforced_device_type() {
     let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE)]);
     let ptype = prog_attach_check(&a).expect("attach type resolves");
     assert_eq!(ptype, uapi::prog_type::CGROUP_DEVICE);
-    assert_eq!(prog_attach_verdict(ptype), Errno::Einval);
+    // The syscall handler routes DEVICE to its cgroup-owned attachment
+    // engine. Types without runtime hooks retain the CONFIG=n verdict.
     assert_eq!(prog_attach_verdict(uapi::prog_type::CGROUP_SKB), Errno::Einval);
 }
 
@@ -356,6 +356,49 @@ fn prog_attach_rejects_trailing_garbage_and_unknown_attach_flags() {
     let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE),
                         (uapi::off::prog_attach::ATTACH_FLAGS, 1 << 20)]);
     assert_eq!(prog_attach_check(&a), Err(Errno::Einval));
+}
+
+// ------------------------------------------------------------- PROG_QUERY
+
+#[test]
+fn prog_query_needs_net_admin_before_attr_validation() {
+    use uapi::off::prog_query as o;
+    let mut a = attr_with(&[(o::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE)]);
+    a.bytes[o::LAST_END] = 1;
+    assert_eq!(prog_query_check(&a, caps_bpf()), Err(Errno::Eperm));
+    let caps = Caps { bpf: true, net_admin: true, ..Caps::default() };
+    assert_eq!(prog_query_check(&a, caps), Err(Errno::Einval));
+}
+
+#[test]
+fn prog_query_accepts_direct_and_effective_device_views_only() {
+    use uapi::off::prog_query as o;
+    let caps = Caps { net_admin: true, ..Caps::default() };
+    let direct = attr_with(&[(o::TARGET_FD, 7),
+        (o::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE), (o::PROG_CNT, 4)]);
+    assert_eq!(prog_query_check(&direct, caps).unwrap().prog_cnt, 4);
+
+    let mut effective = attr_with(&[(o::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE),
+        (o::QUERY_FLAGS, uapi::query_flags::EFFECTIVE)]);
+    attr_u64(&mut effective, o::PROG_ATTACH_FLAGS, 0x1000);
+    assert!(prog_query_check(&effective, caps).is_ok(),
+        "target fd resolution precedes the effective pointer constraint");
+    let wrong = attr_with(&[(o::ATTACH_TYPE, uapi::attach_type::CGROUP_INET_EGRESS)]);
+    assert_eq!(prog_query_check(&wrong, caps), Err(Errno::Einval));
+}
+
+#[test]
+fn prog_get_fd_by_id_checks_tail_before_sys_admin() {
+    use uapi::off::prog_get_fd_by_id as o;
+    let mut bad = attr_with(&[(o::PROG_ID, 7)]);
+    bad.bytes[o::LAST_END] = 1;
+    assert_eq!(prog_get_fd_by_id_check(&bad, caps_none()), Err(Errno::Einval));
+    let good = attr_with(&[(o::PROG_ID, 7)]);
+    assert_eq!(prog_get_fd_by_id_check(&good, caps_none()), Err(Errno::Eperm));
+    assert_eq!(
+        prog_get_fd_by_id_check(&good, Caps { sys_admin: true, ..Caps::default() }),
+        Ok(7),
+    );
 }
 
 // ------------------------------------------------------------ LINK_CREATE

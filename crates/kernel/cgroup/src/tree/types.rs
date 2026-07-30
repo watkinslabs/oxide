@@ -1,8 +1,9 @@
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use vfs::VfsError;
+use vfs::{InodeRef, VfsError};
 
 use super::controllers::ALL;
 
@@ -62,6 +63,30 @@ pub enum MemoryPressure { High, Max { limit_cgid: u64 } }
 /// uncommitted `memory.max` reservation after real memory was released.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryPressureResult { Continue, Retry }
+
+/// `struct cgroup_bpf` state for `BPF_CGROUP_DEVICE`.  The hierarchy owns
+/// both direct attachments and the immutable effective program array, so
+/// rmdir drops program references in the same transaction that offlines the
+/// cgroup.  No second registry exists in the security layer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BpfDeviceMode {
+    Single,
+    Override,
+    Multi,
+}
+
+pub struct BpfDeviceState {
+    pub(super) direct: Vec<InodeRef>,
+    pub(super) effective: Arc<[InodeRef]>,
+    pub(super) revision: u64,
+    pub(super) mode: Option<BpfDeviceMode>,
+}
+
+impl BpfDeviceState {
+    fn new() -> Self {
+        Self { direct: Vec::new(), effective: Arc::from([]), revision: 0, mode: None }
+    }
+}
 
 /// Direct resident-byte ledger for one cgroup.  `memory.current` and
 /// `memory.stat` derive from this one canonical owner-class source.
@@ -236,6 +261,7 @@ pub struct Node {
     // cpuset controller
     pub cpuset_cpus: String,
     pub cpuset_mems: String,
+    pub(super) bpf_device: BpfDeviceState,
 }
 
 impl Node {
@@ -255,6 +281,7 @@ impl Node {
             io_max: String::new(), io_weight: 100,
             io_rbytes: 0, io_wbytes: 0, io_rios: 0, io_wios: 0,
             cpuset_cpus: String::new(), cpuset_mems: String::new(),
+            bpf_device: BpfDeviceState::new(),
         }
     }
 }
@@ -264,8 +291,10 @@ pub struct Tree {
     pub(super) next_id: u64,
     /// pid → cgid membership index (for fork inheritance + /proc).
     pub(super) proc_cg: BTreeMap<u64, u64>,
-    /// thread tid → owning cgroup, for uncharge on thread exit.
-    pub(super) thread_cg: BTreeMap<u64, u64>,
+    /// thread tid → (thread-group leader, owning cgroup).
+    pub(super) thread_cg: BTreeMap<u64, (u64, u64)>,
+    /// Leaders that exited while another thread retained the process.
+    pub(super) exited_procs: BTreeSet<u64>,
     pub(super) mounted: bool,
 }
 
@@ -276,7 +305,7 @@ impl Tree {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { nodes: BTreeMap::new(), next_id: ROOT, proc_cg: BTreeMap::new(),
-               thread_cg: BTreeMap::new(), mounted: false }
+               thread_cg: BTreeMap::new(), exited_procs: BTreeSet::new(), mounted: false }
     }
 
     /// True once the root cgroup exists.

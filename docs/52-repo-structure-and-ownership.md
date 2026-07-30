@@ -88,6 +88,12 @@ must use grouped paths from day one.
    translation) resolve capability/ancestry and pass plain booleans/ids in.
    `crates/kernel/nscg` re-exports it as `nscg::user_ns` (same bridge
    pattern as `nscg::time_ns`); procfs is a thin view, never a second copy.
+9. Cgroup BPF direct attachments, effective inheritance, revisions, modes,
+   and lifetime ownership live in `crates/kernel/cgroup`. The security crate
+   owns BPF UAPI validation, verification, and execution, but consumes one
+   immutable cgroup-owned effective snapshot; it cannot keep a second
+   attachment registry. VFS and mknod paths are enforcement adapters, never
+   policy owners.
 
 ## 6 Naming rules (frozen)
 
@@ -129,6 +135,9 @@ Constraints:
 9. `crates/kernel/ipc` may depend on `netlink` for `mq_notify(SIGEV_THREAD)`
    cookie delivery, mirroring `ipc/mqueue.c`'s `netlink_getsockbyfd` /
    `netlink_sendskb`; `netlink` never depends on `ipc`.
+10. `crates/kernel/security` may depend on `cgroup` to attach, query, and
+    acquire effective cgroup BPF programs. `cgroup` stays independent of
+    security policy and retains opaque VFS program objects.
 
 ## 8 Change policy
 
@@ -174,6 +183,9 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-07-29: Made `cgroup` the single owner of cgroup BPF attachment state;
+  security verifies and executes immutable snapshots without a parallel
+  registry.
 - 2026-07-28: Added `crates/kernel/aslr` as the single owner of address-space randomization policy (budgets, mode, address math); removed `vmm::MMAP_BASE_GAP` and the fixed `PIE_LOAD_BIAS`/`INTERP_LOAD_BIAS` constants.
 - 2026-07-26: Added `crates/kernel/user-namespace` id-map engine ownership boundary (real `uid_map`/`gid_map`/`setgroups`, replacing the procfs `SysctlInode` fake).
 - 2026-07-15: Added dependency-neutral non-network/non-mount namespace identity ownership boundary.
