@@ -21,10 +21,14 @@ static NTP: SeqLock<NtpState, TimerLock> = SeqLock::new(NtpState::INIT);
 static ARMED: AtomicBool = AtomicBool::new(false);
 
 /// Outcome of a completed `adjtimex`. `state` is the `TIME_*` value the
-/// syscall returns; `clock_stepped` means the wall clock jumped, so the caller
-/// must run the absolute-deadline reprojection (`clock_was_set`).
+/// syscall returns; `clock_stepped` means a wall-domain clock jumped, while
+/// `step_mono_ns` carries the exact realtime old-domain boundary when present.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct AdjOutcome { pub state: i32, pub clock_stepped: bool }
+pub struct AdjOutcome {
+    pub state: i32,
+    pub clock_stepped: bool,
+    pub step_mono_ns: Option<u64>,
+}
 
 /// Snapshot the NTP state (diagnostics and tests). # C: O(1)
 pub fn ntp_snapshot() -> NtpState { NTP.read() }
@@ -45,11 +49,13 @@ pub fn do_adjtimex(txc: &mut Timex, capable: bool) -> Result<AdjOutcome, AdjErro
     let ts_nsec = (now_ns % NSEC_PER_SEC as u64) as i64;
 
     let mut clock_stepped = false;
+    let mut step_mono_ns = None;
     if txc.modes & ADJ_SETOFFSET != 0 {
         let nsec = if txc.modes & ADJ_NANO != 0 { txc.time_usec }
                    else { txc.time_usec * NSEC_PER_USEC };
         let delta = i128::from(txc.time_sec) * i128::from(NSEC_PER_SEC) + i128::from(nsec);
-        crate::state::inject_offset(delta).map_err(|_| AdjError::Inval)?;
+        step_mono_ns = Some(crate::state::inject_offset(delta)
+            .map_err(|_| AdjError::Inval)?);
         clock_stepped = true;
     }
 
@@ -64,7 +70,7 @@ pub fn do_adjtimex(txc: &mut Timex, capable: bool) -> Result<AdjOutcome, AdjErro
         let _ = crate::state::set_tai_offset(tai);
         clock_stepped = true;
     }
-    Ok(AdjOutcome { state, clock_stepped })
+    Ok(AdjOutcome { state, clock_stepped, step_mono_ns })
 }
 
 /// Per-tick NTP advance: run the leap/dispersion machine for each elapsed wall

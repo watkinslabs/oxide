@@ -46,7 +46,9 @@ impl TimexOps for KernelTimexOps {
             // ADJ_SETOFFSET and a TAI-offset change both move a wall-domain
             // clock, so absolute CLOCK_REALTIME/TAI deadlines must reproject —
             // the same pairing `clock_settime` and `settimeofday` already do.
-            sched::timers::clock_was_set();
+            sched::timers::clock_was_set(
+                outcome.step_mono_ns.unwrap_or_else(timekeeper::monotonic_ns),
+            );
         }
         Ok(outcome.state)
     }

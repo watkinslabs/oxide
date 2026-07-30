@@ -67,4 +67,5 @@ pub fn init() {
     truncate::install_rlimit_fsize_hook();
     pipe::install_close_hook();
     epoll::install_epoll_broadcast();
+    timerfd::install_clock_was_set_hook();
 }
