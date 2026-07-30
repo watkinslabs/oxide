@@ -17,6 +17,7 @@ pub mod debug_cow;
 #[cfg(feature = "debug-atexit")]
 pub mod tailwatch;
 mod mremap;
+mod mmap;
 pub mod anon_vma;
 pub mod file_rmap;
 pub mod mempolicy;
@@ -33,6 +34,7 @@ pub use address_space::{
     global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown,
     live_address_spaces, AddressSpace, MIN_USER_VA, UffdVma, VmAccountingSnapshot,
 };
+pub use mmap::{MmapError, MmapPlacement};
 pub use address_space::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
     PR_SET_MM_ARG_END, PR_SET_MM_ARG_START, PR_SET_MM_AUXV, PR_SET_MM_BRK,
