@@ -255,6 +255,37 @@ fn speculation_ctrl_unmitigated_kernel_answers() {
     assert_eq!(PR_SPEC_DISABLE_NOEXEC, 1 << 4);
 }
 
+// ---- Memory-Deny-Write-Execute -----------------------------------------
+
+#[test]
+fn mdwe_accepts_only_linux_bit_combinations_and_zero_tail() {
+    assert_eq!(classify(PR_SET_MDWE, 0, 0, 0, 0),
+               Ok(Op::SetMdwe(vmm::MdweRequest::Disabled)));
+    assert_eq!(classify(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 0),
+               Ok(Op::SetMdwe(vmm::MdweRequest::RefuseExecGain)));
+    assert_eq!(
+        classify(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN | PR_MDWE_NO_INHERIT,
+                 0, 0, 0),
+        Ok(Op::SetMdwe(vmm::MdweRequest::RefuseExecGainNoInherit)),
+    );
+    // NO_INHERIT without REFUSE and every unknown bit are invalid.
+    einval(classify(PR_SET_MDWE, PR_MDWE_NO_INHERIT, 0, 0, 0));
+    einval(classify(PR_SET_MDWE, 4, 0, 0, 0));
+    einval(classify(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 1, 0, 0));
+    einval(classify(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 1, 0));
+    einval(classify(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 1));
+}
+
+#[test]
+fn get_mdwe_requires_all_zero_args() {
+    assert_eq!(classify(PR_GET_MDWE, 0, 0, 0, 0), Ok(Op::GetMdwe));
+    for i in 0..4 {
+        let mut args = [0u64; 4];
+        args[i] = 1;
+        einval(classify(PR_GET_MDWE, args[0], args[1], args[2], args[3]));
+    }
+}
+
 // ---- options that carry a raw user pointer ----------------------------
 
 #[test]

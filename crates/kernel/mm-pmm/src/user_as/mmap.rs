@@ -2,6 +2,24 @@ use super::*;
 
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 
+fn mdwe_admit_current(prot: VmaProt) -> Result<vmm::MdweAdmission, i64> {
+    use syscall::errno::Errno;
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: syscall dispatch holds the current task's mm slot stable.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            return mm.mdwe_admit_new_mapping(prot)
+                .map_err(|_| -(Errno::Eacces.as_i32() as i64));
+        }
+    }
+    match with(|as_| as_.mdwe_admit_new_mapping(prot)) {
+        Some(Ok(admission)) => Ok(admission),
+        Some(Err(_)) => Err(-(Errno::Eacces.as_i32() as i64)),
+        None => Err(-(Errno::Enosys.as_i32() as i64)),
+    }
+}
+
+/// Install one Linux mmap request into the current address space.
+/// # C: O(N_vmas + len / PAGE_SIZE)
 pub fn glue_mmap(
     addr: u64,
     len: u64,
@@ -41,6 +59,7 @@ pub fn glue_mmap(
     let want_fixed = flags & MAP_FIXED != 0;
     let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
     let hint = mmap_address_hint(addr, len_aligned as u64, flags)?;
+    let requested_prot = prot_from_linux(prot);
     // Linux: MAP_STACK is a NO-OP hint (mman.h: "provided for
     // compatibility"), NOT an alias for MAP_GROWSDOWN — treating it as
     // GROWSDOWN armed the 8 MiB auto-extend under every pthread stack, so a
@@ -50,6 +69,11 @@ pub fn glue_mmap(
     // MAP_FIXED is destructive per 11§6: tear down the overlap
     // (PTEs + frames + TLB) via glue_munmap, then insert exactly through the
     // canonical VMM placement mode.
+    let mdwe_admission = if want_fixed && !want_no_replace {
+        Some(mdwe_admit_current(requested_prot)?)
+    } else {
+        None
+    };
     if want_fixed && !want_no_replace {
         // mseal(2): glue_munmap answers -EPERM for a sealed range. Discarding
         // it left the sealed VMAs mapped but let the placement below replace
@@ -94,28 +118,42 @@ pub fn glue_mmap(
     let r = if let Some(cur) = sched::live::current() {
         // SAFETY: caller is the syscall dispatcher; preempt-off; running task on this CPU is the sole writer of mm slot.
         if let Some(mm) = unsafe { cur.mm_ref() } {
-            mm.mmap_with_may_at(
-                placement,
-                len_aligned,
-                prot_from_linux(prot),
-                may_prot,
-                vma_flags,
-                vma_backing.clone(),
-            )
+            match mdwe_admission {
+                Some(admission) => mm.mmap_with_may_at_admitted(
+                    placement, len_aligned, requested_prot, may_prot,
+                    vma_flags, vma_backing.clone(), admission,
+                ),
+                None => mm.mmap_with_may_at(
+                    placement, len_aligned, requested_prot, may_prot,
+                    vma_flags, vma_backing.clone(),
+                ),
+            }
         } else {
-            match with(|as_| as_.mmap_with_may_at(
-                placement, len_aligned, prot_from_linux(prot), may_prot,
-                vma_flags, vma_backing.clone(),
-            )) {
+            match with(|as_| match mdwe_admission {
+                Some(admission) => as_.mmap_with_may_at_admitted(
+                    placement, len_aligned, requested_prot, may_prot,
+                    vma_flags, vma_backing.clone(), admission,
+                ),
+                None => as_.mmap_with_may_at(
+                    placement, len_aligned, requested_prot, may_prot,
+                    vma_flags, vma_backing.clone(),
+                ),
+            }) {
                 Some(r) => r,
                 None    => return Err(-(Errno::Enosys.as_i32() as i64)),
             }
         }
     } else {
-        match with(|as_| as_.mmap_with_may_at(
-            placement, len_aligned, prot_from_linux(prot), may_prot,
-            vma_flags, VmaBacking::Anonymous,
-        )) {
+        match with(|as_| match mdwe_admission {
+            Some(admission) => as_.mmap_with_may_at_admitted(
+                placement, len_aligned, requested_prot, may_prot,
+                vma_flags, VmaBacking::Anonymous, admission,
+            ),
+            None => as_.mmap_with_may_at(
+                placement, len_aligned, requested_prot, may_prot,
+                vma_flags, VmaBacking::Anonymous,
+            ),
+        }) {
             Some(r) => r,
             None    => return Err(-(Errno::Enosys.as_i32() as i64)),
         }
