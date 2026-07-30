@@ -7,7 +7,7 @@ fn array_is_preallocated_and_obeys_array_update_flags() {
     let inode = allocate(uapi::map_type::ARRAY, 4, 8, 2, 0).unwrap();
     let map = inode.private::<BpfMapInode>().unwrap();
     let key = 1u32.to_ne_bytes().to_vec();
-    assert_eq!(&*map.lookup_value(&key).unwrap().bytes.lock(), &[0; 8]);
+    assert_eq!(map.lookup_value(&key).unwrap().copy_out().unwrap(), &[0; 8]);
     assert_eq!(
         update_entry(map, key.clone(), 7u64.to_ne_bytes().to_vec(), uapi::elem_flags::NOEXIST),
         Err(Errno::Eexist),
@@ -17,7 +17,7 @@ fn array_is_preallocated_and_obeys_array_update_flags() {
         Ok(0),
     );
     assert_eq!(
-        u64::from_ne_bytes((*map.lookup_value(&key).unwrap().bytes.lock()).clone().try_into().unwrap()),
+        u64::from_ne_bytes(map.lookup_value(&key).unwrap().copy_out().unwrap().try_into().unwrap()),
         7,
     );
 }
@@ -47,7 +47,7 @@ fn lpm_lookup_selects_the_longest_matching_prefix() {
     update_entry(map, key(24, [10, 1, 2, 0]), 24u64.to_ne_bytes().to_vec(), 0).unwrap();
     let value = map.lookup_value(&key(32, [10, 1, 2, 99])).unwrap();
     assert_eq!(
-        u64::from_ne_bytes((*value.bytes.lock()).clone().try_into().unwrap()),
+        u64::from_ne_bytes(value.copy_out().unwrap().try_into().unwrap()),
         24,
     );
 }

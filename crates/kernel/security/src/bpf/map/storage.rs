@@ -7,13 +7,17 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::Spinlock;
 use syscall::errno::Errno;
+use vfs::AddressSpaceOps;
+use crate::bpf::{BpfMapInode, uapi};
 
-use crate::bpf::{BpfMapInode, BpfMapValue, uapi};
+#[path = "mmap.rs"]
+mod mmap;
+pub(crate) use mmap::BpfMapValue;
+use mmap::MmapArray;
 
 const FROZEN: u64 = 1 << 63;
 const WRITERS: u64 = FROZEN - 1;
 const HASH_MAX_ENTRIES: u32 = 1 << 31;
-
 struct Entry {
     key: Vec<u8>,
     iteration_key: Option<Vec<u8>>,
@@ -32,6 +36,7 @@ type LockedTable = Spinlock<Table, sync::TaskList>;
 enum Kind {
     Hash(LockedTable),
     Array(Vec<Arc<BpfMapValue>>),
+    MmapArray { values: Vec<Arc<BpfMapValue>>, mapping: Arc<MmapArray> },
     LpmTrie(LockedTable),
 }
 
@@ -63,9 +68,8 @@ fn copy_vec(bytes: &[u8]) -> Result<Vec<u8>, Errno> {
 }
 
 fn value(len: usize) -> Result<Arc<BpfMapValue>, Errno> {
-    Arc::try_new(BpfMapValue {
-        bytes: Spinlock::new(zeroed_vec(len)?),
-    }).map_err(|_| Errno::Enomem)
+    Arc::try_new(BpfMapValue::heap(zeroed_vec(len)?))
+        .map_err(|_| Errno::Enomem)
 }
 
 fn preallocated_table(
@@ -95,6 +99,20 @@ fn dynamic_table(max_entries: usize) -> Table {
 }
 
 impl MapStorage {
+    pub(crate) fn mmap_mapping(&self) -> Option<Arc<dyn AddressSpaceOps>> {
+        match &self.kind {
+            Kind::MmapArray { mapping, .. } => Some(Arc::clone(mapping) as Arc<dyn AddressSpaceOps>),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn mmap_size(&self) -> u64 {
+        match &self.kind {
+            Kind::MmapArray { mapping, .. } => mapping.size(),
+            _ => 0,
+        }
+    }
+
     /// Allocate map payload storage without invoking an infallible grow path.
     /// # C: O(max_entries × (key_size + value_size)) for preallocated maps
     pub(crate) fn allocate(
@@ -117,6 +135,15 @@ impl MapStorage {
             }
             uapi::map_type::LPM_TRIE => {
                 Kind::LpmTrie(Spinlock::new(dynamic_table(max)))
+            }
+            uapi::map_type::ARRAY if map_flags & uapi::map_flags::MMAPABLE != 0 => {
+                let mapping = MmapArray::allocate(value_size as usize, max)?;
+                let mut values = Vec::new();
+                values.try_reserve_exact(max).map_err(|_| Errno::Enomem)?;
+                for index in 0..max {
+                    values.push(mapping.value(value_size as usize, index, &mapping)?);
+                }
+                Kind::MmapArray { values, mapping }
             }
             uapi::map_type::ARRAY => {
                 (value_size as usize).checked_mul(max).ok_or(Errno::E2big)?;
@@ -164,7 +191,7 @@ impl MapStorage {
         -> Option<Arc<BpfMapValue>>
     {
         match &self.kind {
-            Kind::Array(values) => {
+            Kind::Array(values) | Kind::MmapArray { values, .. } => {
                 array_index(key, max_entries).and_then(|index| values.get(index).cloned())
             }
             Kind::Hash(table) => table.lock().entries.iter()
@@ -180,7 +207,7 @@ impl MapStorage {
     /// # C: O(1)
     pub(crate) fn array_value(&self, index: usize) -> Option<Arc<BpfMapValue>> {
         match &self.kind {
-            Kind::Array(values) => values.get(index).cloned(),
+            Kind::Array(values) | Kind::MmapArray { values, .. } => values.get(index).cloned(),
             _ => None,
         }
     }
@@ -193,12 +220,12 @@ impl MapStorage {
         bytes: Vec<u8>,
         flags: u64,
     ) -> Result<i64, Errno> {
-        if let Kind::Array(values) = &self.kind {
+        if let Kind::Array(values) | Kind::MmapArray { values, .. } = &self.kind {
             let index = array_index(&key, values.len() as u32).ok_or(Errno::E2big)?;
             let operation = flags & !uapi::elem_flags::F_LOCK;
             if operation > uapi::elem_flags::EXIST { return Err(Errno::Einval); }
             if operation == uapi::elem_flags::NOEXIST { return Err(Errno::Eexist); }
-            *values[index].bytes.lock() = bytes;
+            values[index].replace(&bytes)?;
             return Ok(0);
         }
         let mut iteration_key = None;
@@ -210,13 +237,13 @@ impl MapStorage {
         }
         let table = match &self.kind {
             Kind::Hash(table) | Kind::LpmTrie(table) => table,
-            Kind::Array(_) => unreachable!(),
+            Kind::Array(_) | Kind::MmapArray { .. } => unreachable!(),
         };
         let mut table = table.lock();
         let existing = table.entries.iter().position(|entry| entry.occupied && entry.key == key);
         crate::bpf::attr::update_presence_verdict(flags, existing.is_some())?;
         if let Some(index) = existing {
-            *table.entries[index].value.bytes.lock() = bytes;
+            table.entries[index].value.replace(&bytes)?;
             if iteration_key.is_some() {
                 table.entries[index].iteration_key = iteration_key;
             }
@@ -234,7 +261,7 @@ impl MapStorage {
                 .find(|entry| !entry.occupied && Arc::strong_count(&entry.value) == 1)
                 .ok_or(Errno::E2big)?;
             slot.key.copy_from_slice(&key);
-            *slot.value.bytes.lock() = bytes;
+            slot.value.replace(&bytes)?;
             slot.iteration_key = iteration_key;
             slot.occupied = true;
         } else {
@@ -242,8 +269,7 @@ impl MapStorage {
             table.entries.push(Entry {
                 key,
                 iteration_key,
-                value: Arc::try_new(BpfMapValue { bytes: Spinlock::new(bytes) })
-                    .map_err(|_| Errno::Enomem)?,
+                value: Arc::try_new(BpfMapValue::heap(bytes)).map_err(|_| Errno::Enomem)?,
                 occupied: true,
             });
         }
@@ -262,7 +288,7 @@ impl MapStorage {
         if map_type == uapi::map_type::LPM_TRIE { canonical_lpm(&mut canonical)?; }
         let table = match &self.kind {
             Kind::Hash(table) | Kind::LpmTrie(table) => table,
-            Kind::Array(_) => return Ok(None),
+            Kind::Array(_) | Kind::MmapArray { .. } => return Ok(None),
         };
         let mut table = table.lock();
         let Some(index) = table.entries.iter()
@@ -270,11 +296,7 @@ impl MapStorage {
             return Ok(None);
         };
         let output = if snapshot {
-            let locked = table.entries[index].value.bytes.lock();
-            let mut copy = Vec::new();
-            copy.try_reserve_exact(locked.len()).map_err(|_| Errno::Enomem)?;
-            copy.extend_from_slice(&locked);
-            Some(copy)
+            Some(table.entries[index].value.copy_out()?)
         } else {
             Some(Vec::new())
         };
@@ -292,7 +314,7 @@ impl MapStorage {
         key: Option<&[u8]>,
         max_entries: u32,
     ) -> Result<Option<Vec<u8>>, Errno> {
-        if matches!(&self.kind, Kind::Array(_)) {
+        if matches!(&self.kind, Kind::Array(_) | Kind::MmapArray { .. }) {
             let next = match key {
                 None => 0,
                 Some(raw) => array_index(raw, max_entries)
@@ -305,7 +327,7 @@ impl MapStorage {
         }
         let table = match &self.kind {
             Kind::Hash(table) | Kind::LpmTrie(table) => table,
-            Kind::Array(_) => unreachable!(),
+            Kind::Array(_) | Kind::MmapArray { .. } => unreachable!(),
         };
         let canonical = match (&self.kind, key) {
             (Kind::LpmTrie(_), Some(raw)) => {
