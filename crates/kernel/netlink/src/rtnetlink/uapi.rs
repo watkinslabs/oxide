@@ -156,7 +156,7 @@ pub mod rta {
     pub const RTA_TABLE:     u16 = 15;
 }
 
-/// RTAX_* nested route metric ids from Linux `linux/rtnetlink.h`.
+/// RTAX_* nested route metric IDs.
 pub mod rtax {
     pub const RTAX_UNSPEC:            u16 = 0;
     pub const RTAX_LOCK:              u16 = 1;
@@ -190,7 +190,7 @@ pub mod rtax {
         | RTAX_FEATURE_TCP_USEC_TS;
 }
 
-/// `struct ndmsg` — Linux `linux/neighbour.h`. Precedes the NDA_* attributes
+/// `struct ndmsg` wire shape. Precedes the NDA_* attributes
 /// in every RTM_*NEIGH message.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
@@ -233,7 +233,7 @@ impl Ndmsg {
     }
 }
 
-/// NUD_* neighbour reachability bits (`ndm_state`), Linux `linux/neighbour.h`.
+/// NUD_* neighbour reachability bits (`ndm_state`).
 pub mod nud {
     pub const NUD_INCOMPLETE: u16 = 0x01;
     pub const NUD_REACHABLE:  u16 = 0x02;
@@ -245,7 +245,7 @@ pub mod nud {
     pub const NUD_PERMANENT:  u16 = 0x80;
 }
 
-/// NDA_* neighbour attribute ids, Linux `linux/neighbour.h`.
+/// NDA_* neighbour attribute IDs.
 pub mod nda {
     pub const NDA_UNSPEC:    u16 = 0;
     pub const NDA_DST:       u16 = 1;

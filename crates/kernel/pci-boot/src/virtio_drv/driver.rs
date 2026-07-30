@@ -26,7 +26,7 @@ impl drv::Driver for VirtioPciDrv {
         ) else {
             return Err(drv::Error::NoMatch);
         };
-        drv::try_device_add(Arc::new(
+        drv::try_device_add_with_parent(Arc::new(
             drv::Device::new(
                 child.bus,
                 child.addr,
@@ -35,7 +35,7 @@ impl drv::Driver for VirtioPciDrv {
                 child.class,
             )
             .with_parent("pci", dev.addr.clone()),
-        ))?;
+        ), dev)?;
         Ok(())
     }
 

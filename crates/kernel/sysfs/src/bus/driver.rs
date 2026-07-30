@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use vfs::{mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use super::device::{dev_canon, make_link_inode};
+use super::device::{dev_canon_exact, make_device_link_inode};
 use crate::{DIR_PERM, RW_PERM};
 use super::ids::{INO_DRIVER_ATTR, INO_DRIVER_DIR};
 
@@ -21,14 +21,14 @@ impl InodeOps for DriverDirOps {
             "unbind" => return Ok(make_driver_attr_inode(data.bus, data.driver, DriverAttr::Unbind)),
             _ => {}
         }
-        let is_bound = drv::devices().into_iter().any(|d| {
+        let dev = drv::devices().into_iter().find(|d| {
             d.bus == data.bus && d.addr == name && d.bound() == Some(data.driver)
-        });
-        if !is_bound { return Err(VfsError::Enoent); }
+        }).ok_or(VfsError::Enoent)?;
+        let canon = dev_canon_exact(&dev).ok_or(VfsError::Enoent)?;
         // from /sys/bus/<bus>/drivers/<driver>/<addr>
         // to /sys/devices/<root>/<addr>
-        let t = alloc::format!("../../../../{}", dev_canon(data.bus, name));
-        Ok(make_link_inode(t.into_bytes()))
+        let t = alloc::format!("../../../../{canon}");
+        Ok(make_device_link_inode(dev, t.into_bytes()))
     }
 }
 impl FileOps for DriverDirOps {
@@ -36,7 +36,11 @@ impl FileOps for DriverDirOps {
         let data = inode.private::<DriverDirData>().ok_or(VfsError::Einval)?;
         let devs = drv::devices();
         let bound: Vec<&str> = devs.iter()
-            .filter(|d| d.bus == data.bus && d.bound() == Some(data.driver))
+            .filter(|d| {
+                d.bus == data.bus
+                    && d.bound() == Some(data.driver)
+                    && dev_canon_exact(d).is_some()
+            })
             .map(|d| d.addr.as_str())
             .collect();
         let mut idx = ctx.pos as usize;
@@ -78,6 +82,7 @@ fn drv_error_to_vfs(e: drv::Error) -> VfsError {
         drv::Error::ProbeFailed => VfsError::Eio,
         drv::Error::Removed => VfsError::Enodev,
         drv::Error::NotFound => VfsError::Enoent,
+        drv::Error::Invalid => VfsError::Einval,
     }
 }
 

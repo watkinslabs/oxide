@@ -17,6 +17,8 @@ mod af_packet_diff;
 mod wait_diff;
 // - swapfile: Linux swapfile activation smoke over the mounted ext4 root.
 mod swapfile;
+// - gnome_input_classify: opt-in Linux input discovery/classification proof.
+mod gnome_input_classify;
 // - mutter_debug: opt-in mutter/clutter debug env injection for GNOME bring-up.
 mod mutter_debug;
 
@@ -59,6 +61,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_SWAPFILE_SMOKE").is_some() {
         swapfile::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_GNOME_INPUT_CLASSIFY_SMOKE").is_some() {
+        gnome_input_classify::inject(&root_img, arch)?;
     }
     let mutter_debug = std::env::var_os("OXIDE_MUTTER_DEBUG");
     let clutter_debug = std::env::var_os("OXIDE_CLUTTER_DEBUG");

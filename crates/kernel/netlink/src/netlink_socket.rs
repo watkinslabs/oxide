@@ -37,11 +37,8 @@ fn snapshot_iov<'a>(bufs: impl Iterator<Item = &'a [u8]> + Clone) -> vfs::KResul
 
 /// AF_NETLINK socket owning its nlmsg-aligned receive queue.
 pub struct NetlinkSocket {
-    /// Linux `sk->sk_rcvtimeo`. Netlink has no setsockopt of its own for this:
-    /// it is a SOL_SOCKET option handled by the generic `sock_setsockopt`, and
-    /// `netlink_recvmsg` -> `skb_recv_datagram` ->
-    /// `__skb_wait_for_more_packets` (`net/core/datagram.c:128`) reads it back
-    /// for `sock_intr_errno(*timeo)`. `0` = unset = `MAX_SCHEDULE_TIMEOUT`.
+    /// Effective receive timeout shared by generic socket options and netlink
+    /// wait interruption. `0` means no timeout.
     pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,

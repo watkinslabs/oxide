@@ -1,19 +1,20 @@
 use crate::{
-    DEFAULT_REPEAT, EV_ABS, EV_KEY, EV_LED, EV_REL, VIRTIO_INPUT_CFG_ABS_INFO,
+    EV_ABS, EV_KEY, EV_LED, EV_MSC, EV_REL, EV_REP, EV_SND, EV_SW, VIRTIO_INPUT_CFG_ABS_INFO,
     VIRTIO_INPUT_CFG_EV_BITS, VIRTIO_INPUT_CFG_ID_DEVIDS, VIRTIO_INPUT_CFG_ID_NAME,
     VIRTIO_INPUT_CFG_ID_SERIAL, VIRTIO_INPUT_CFG_PROP_BITS,
 };
-use input::{CapBitmap, VirtioInputAbsInfo, VirtioInputDev, VirtioInputDevIds};
+#[cfg(any(target_os = "oxide-kernel", test))]
+use alloc::sync::Arc;
+use input::{VirtioInputAbsInfo, VirtioInputDev, VirtioInputDevIds};
 
 const INPUT_CFG_SELECT_OFF: u64 = 0;
 const INPUT_CFG_SUBSEL_OFF: u64 = 1;
 const INPUT_CFG_SIZE_OFF: u64 = 2;
 const INPUT_CFG_PAYLOAD_OFF: u64 = 8;
 const INPUT_CFG_PAYLOAD_MAX: usize = 128;
-const INPUT_DEVIDS_BYTES: u8 = 8;
-const INPUT_EV_TYPE_COUNT: u8 = 32;
-const INPUT_ABS_AXIS_COUNT: u8 = 64;
-const INPUT_ABS_INFO_BYTES: u8 = 20;
+const INPUT_DEVIDS_BYTES: u8 = core::mem::size_of::<VirtioInputDevIds>() as u8;
+const INPUT_ABS_AXIS_COUNT: u8 = input::ABS_CNT as u8;
+const INPUT_ABS_INFO_BYTES: u8 = core::mem::size_of::<VirtioInputAbsInfo>() as u8;
 const INPUT_ABS_INFO_MIN_OFF: u64 = 0;
 const INPUT_ABS_INFO_MAX_OFF: u64 = 4;
 const INPUT_ABS_INFO_FUZZ_OFF: u64 = 8;
@@ -22,9 +23,13 @@ const INPUT_ABS_INFO_RES_OFF: u64 = 16;
 const INPUT_DEVIDS_VENDOR_OFF: u64 = 2;
 const INPUT_DEVIDS_PRODUCT_OFF: u64 = 4;
 const INPUT_DEVIDS_VERSION_OFF: u64 = 6;
-const INPUT_U32_BYTES: usize = 4;
-const INPUT_LE16_HIGH_BYTE_OFF: u64 = 1;
-const INPUT_BYTE_BITS: u16 = 8;
+const INPUT_DEVIDS_BUSTYPE_OFF: u64 = 0;
+const INPUT_U32_BYTES: usize = core::mem::size_of::<u32>();
+const INPUT_LE16_HIGH_BYTE_OFF: u64 = core::mem::size_of::<u8>() as u64;
+const INPUT_BYTE_BITS: u16 = u8::BITS as u16;
+const VIRTIO_BUS_NAME: &str = "virtio";
+const INPUT_PHYS_FUNCTION: &str = "input0";
+pub(crate) const BUS_VIRTUAL: u16 = 0x0006;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -36,8 +41,6 @@ pub enum Error {
 }
 
 pub type KResult<T> = core::result::Result<T, Error>;
-#[cfg(any(target_os = "oxide-kernel", test))]
-pub type ModelParent = Option<(&'static str, alloc::string::String)>;
 
 unsafe fn cfg_select(cfg_va: u64, select: u8, subsel: u8) -> u8 {
     unsafe {
@@ -105,22 +108,23 @@ pub fn install_device(
         return None;
     }
     let mut cfg = MmioInputConfig { cfg_va };
-    install_device_with_config(device_key, &mut cfg)
+    install_device_with_config(device_key, &mut cfg, None)
 }
 
-/// # C: install virtio-input state and publish the owned input model node
+/// Prepare canonical input state without publishing an externally openable
+/// event node. The transport queue owner publishes only after q0/q1 install.
 #[cfg(any(target_os = "oxide-kernel", test))]
-pub fn install_device_with_parent(
+pub fn prepare_device_with_parent(
     device_key: virtio::VirtioChildDeviceKey,
     resources: virtio::VirtioResources,
-    parent: ModelParent,
+    parent: Option<&Arc<drv::Device>>,
 ) -> Option<u32> {
     let cfg_va = resources.device_cfg_va;
     if cfg_va == 0 {
         return None;
     }
     let mut cfg = MmioInputConfig { cfg_va };
-    install_device_with_config_and_parent(device_key, &mut cfg, parent)
+    prepare_device_with_config_and_parent(device_key, &mut cfg, parent)
 }
 
 #[cfg(test)]
@@ -128,57 +132,56 @@ pub(crate) fn install_device_with_config_for_tests<C: InputConfigAccess>(
     device_key: virtio::VirtioChildDeviceKey,
     cfg: &mut C,
 ) -> Option<u32> {
-    install_device_with_config(device_key, cfg)
+    install_device_with_config(device_key, cfg, None)
 }
 
 #[cfg(test)]
-pub(crate) fn install_device_with_config_and_parent_for_tests<C: InputConfigAccess>(
+pub(crate) fn prepare_device_with_config_and_parent_for_tests<C: InputConfigAccess>(
     device_key: virtio::VirtioChildDeviceKey,
     cfg: &mut C,
-    parent: ModelParent,
+    parent: Option<&Arc<drv::Device>>,
 ) -> Option<u32> {
-    install_device_with_config_and_parent(device_key, cfg, parent)
+    prepare_device_with_config_and_parent(device_key, cfg, parent)
 }
 
 #[cfg(any(target_os = "oxide-kernel", test))]
-fn install_device_with_config_and_parent<C: InputConfigAccess>(
+fn prepare_device_with_config_and_parent<C: InputConfigAccess>(
     device_key: virtio::VirtioChildDeviceKey,
     cfg: &mut C,
-    parent: ModelParent,
+    parent: Option<&Arc<drv::Device>>,
 ) -> Option<u32> {
-    let evdev_id = install_device_with_config(device_key, cfg)?;
-    if crate::devfs::register_node(evdev_id, parent) {
-        Some(evdev_id)
-    } else {
-        let _ = input::remove_device(device_key);
-        None
-    }
+    let phys = parent
+        .filter(|dev| dev.bus == VIRTIO_BUS_NAME)
+        .map(|dev| alloc::format!("{}/{INPUT_PHYS_FUNCTION}", dev.addr));
+    install_device_with_config(device_key, cfg, phys.as_deref())
+}
+
+/// Publish the prepared event node against the exact live transport parent.
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub fn publish_device_node(
+    evdev_id: u32,
+    parent: Option<&Arc<drv::Device>>,
+) -> bool {
+    crate::devfs::register_node(evdev_id, parent)
 }
 
 fn install_device_with_config<C: InputConfigAccess>(
     device_key: virtio::VirtioChildDeviceKey,
     cfg: &mut C,
+    phys: Option<&str>,
 ) -> Option<u32> {
     if input::evdev_id_for_device(device_key).is_some() { return None; }
-    let evdev_id = input::next_free_evdev_id()?;
-    let mut dev = VirtioInputDev {
-        device_key,
-        evdev_id,
-        is_pointer: false,
-        name: [0; 128],
-        name_len: 0,
-        serial: [0; 128],
-        serial_len: 0,
-        ids: VirtioInputDevIds::default(),
-        ev_bits: [0; 32],
-        key_bits: CapBitmap::default(),
-        rel_bits: CapBitmap::default(),
-        abs_bits: CapBitmap::default(),
-        led_bits: CapBitmap::default(),
-        abs_info: [None; 64],
-        prop_bits: [0; 4],
-        repeat: DEFAULT_REPEAT,
-    };
+    let mut dev = VirtioInputDev::empty(device_key);
+    dev.name_present = true;
+    dev.phys_present = phys.is_some();
+    dev.serial_present = true;
+    // Linux virtio-input defaults to BUS_VIRTUAL when DEVIDS is absent or
+    // shorter than the complete four-field payload.
+    dev.ids.bustype = BUS_VIRTUAL;
+    if let Some(phys) = phys {
+        dev.phys_len = phys.len().min(dev.phys.len());
+        dev.phys[..dev.phys_len].copy_from_slice(&phys.as_bytes()[..dev.phys_len]);
+    }
     {
         let _ = cfg.select(VIRTIO_INPUT_CFG_ID_NAME, 0);
         dev.name_len = cfg.payload(&mut dev.name);
@@ -191,7 +194,7 @@ fn install_device_with_config<C: InputConfigAccess>(
                     | ((cfg.payload_u8(o + INPUT_LE16_HIGH_BYTE_OFF) as u16) << INPUT_BYTE_BITS)
             };
             dev.ids = VirtioInputDevIds {
-                bustype: rd16(0),
+                bustype: rd16(INPUT_DEVIDS_BUSTYPE_OFF),
                 vendor: rd16(INPUT_DEVIDS_VENDOR_OFF),
                 product: rd16(INPUT_DEVIDS_PRODUCT_OFF),
                 version: rd16(INPUT_DEVIDS_VERSION_OFF),
@@ -200,28 +203,54 @@ fn install_device_with_config<C: InputConfigAccess>(
         let _ = cfg.select(VIRTIO_INPUT_CFG_PROP_BITS, 0);
         let _ = cfg.payload(&mut dev.prop_bits);
         let mut abs_sz = 0u8;
-        for ty in 0u8..INPUT_EV_TYPE_COUNT {
+        for ty in [
+            EV_KEY as u8,
+            EV_REL as u8,
+            EV_ABS as u8,
+            EV_MSC as u8,
+            EV_SW as u8,
+            EV_LED as u8,
+            EV_SND as u8,
+        ] {
             let sz = cfg.select(VIRTIO_INPUT_CFG_EV_BITS, ty);
             if sz == 0 {
                 continue;
             }
-            set_cap_bit(&mut dev.ev_bits, ty as u16);
             match ty as u16 {
                 EV_KEY => {
+                    set_cap_bit(&mut dev.ev_bits, ty as u16);
                     let _ = cfg.payload(&mut dev.key_bits.bits);
                 }
                 EV_REL => {
+                    set_cap_bit(&mut dev.ev_bits, ty as u16);
                     let _ = cfg.payload(&mut dev.rel_bits.bits);
                 }
                 EV_ABS => {
+                    set_cap_bit(&mut dev.ev_bits, ty as u16);
                     abs_sz = sz;
                     let _ = cfg.payload(&mut dev.abs_bits.bits);
                 }
+                EV_MSC => {
+                    set_cap_bit(&mut dev.ev_bits, ty as u16);
+                    let _ = cfg.payload(&mut dev.msc_bits.bits);
+                }
                 EV_LED => {
+                    set_cap_bit(&mut dev.ev_bits, ty as u16);
                     let _ = cfg.payload(&mut dev.led_bits.bits);
+                }
+                EV_SND => {
+                    set_cap_bit(&mut dev.ev_bits, ty as u16);
+                    let _ = cfg.payload(&mut dev.snd_bits.bits);
+                }
+                EV_SW => {
+                    set_cap_bit(&mut dev.ev_bits, ty as u16);
+                    let _ = cfg.payload(&mut dev.sw_bits.bits);
                 }
                 _ => {}
             }
+        }
+        if cfg.select(VIRTIO_INPUT_CFG_EV_BITS, EV_REP as u8) > 0 {
+            set_cap_bit(&mut dev.ev_bits, EV_REP);
         }
         if abs_sz > 0 {
             for axis in 0..INPUT_ABS_AXIS_COUNT {
@@ -251,7 +280,7 @@ fn install_device_with_config<C: InputConfigAccess>(
         dev.is_pointer = cap_bit_is_set(&dev.ev_bits, EV_REL)
             || cap_bit_is_set(&dev.ev_bits, EV_ABS);
     }
-    input::install(dev);
+    let (_, evdev_id) = input::install(dev)?;
     Some(evdev_id)
 }
 
@@ -259,11 +288,15 @@ fn install_device_with_config<C: InputConfigAccess>(
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub fn remove_device_with_node(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
     let evdev_id = input::evdev_id_for_device(device_key)?;
+    let removed = input::remove_device(device_key)?;
     let _ = crate::devfs::unregister_node(evdev_id);
-    input::remove_device(device_key)
+    Some(removed)
 }
 
 #[cfg(test)]
 pub(crate) fn clear_devices_for_tests() {
+    for evdev_id in 0..crate::MAX_INPUT_DEVICES as u32 {
+        let _ = crate::devfs::unregister_node(evdev_id);
+    }
     input::clear_devices_for_tests();
 }

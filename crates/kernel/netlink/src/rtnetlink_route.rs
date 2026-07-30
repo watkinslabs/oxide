@@ -27,7 +27,7 @@ pub struct RouteAttrs {
     pub multipath: Vec<RouteNexthop>,
 }
 
-// Linux `net/ipv4/metrics.c` `ip_metrics_convert`.
+// Route-metric lock-mask conversion.
 const RTAX_MTU_MAX: u32 = u16::MAX as u32 - 15;
 const RTAX_ADVMSS_MAX: u32 = u16::MAX as u32 - 40;
 
@@ -57,7 +57,7 @@ fn lookup_cc_algo(payload: &[u8]) -> Option<net::TcpCongestionControl> {
     }
 }
 
-// Linux `net/ipv4/metrics.c` `ip_metrics_convert` walks the complete nested
+// Route-metric conversion walks the complete nested
 // stream in wire order; later duplicate values replace earlier ones.
 fn parse_metrics(attrs: &[u8]) -> Result<net::RouteMetrics, RouteAttrError> {
     let mut metrics = net::RouteMetrics::NONE;
@@ -101,7 +101,7 @@ fn parse_metrics(attrs: &[u8]) -> Result<net::RouteMetrics, RouteAttrError> {
     Ok(metrics)
 }
 
-// Linux `net/ipv4/fib_semantics.c` `fib_metrics_match`: delete filters use
+// Route deletion metric filters use
 // raw wire values, compare every duplicate, and turn malformed metrics into a
 // failed match rather than an add-path validation error.
 fn parse_metric_filters(attrs: &[u8]) -> Vec<RouteMetricFilter> {

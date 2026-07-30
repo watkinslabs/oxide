@@ -3,7 +3,6 @@ use alloc::vec::Vec;
 
 use super::device::{dev_uevent_env, find_dev};
 use super::dirs::{make_bus_devices_inode, make_bus_drivers_inode, make_devices_root_inode};
-use super::ids::dev_root_canon;
 use super::index::{dev_devpath, make_sys_dev_index_inode, DevIndexKind};
 
 /// Register dynamic bus/devices directories in the sysfs tree. # C: O(1)
@@ -30,7 +29,11 @@ pub fn init() {
 
 /// drv `set_sysfs_hook` target: a device was registered. # C: O(1)
 pub fn publish_device_cb(dev: &drv::Device) {
-    let devpath = dev_devpath(dev);
+    if dev.bus == "input" {
+        crate::input::emit_device_add(dev);
+        return;
+    }
+    let Some(devpath) = dev_devpath(dev) else { return; };
     let env = dev_uevent_env(dev);
     let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
     ::netlink::emit_uevent_with_env("add", &devpath, dev.bus, &refs);
@@ -39,7 +42,14 @@ pub fn publish_device_cb(dev: &drv::Device) {
 /// drv `set_sysfs_remove_hook` target: a device is being removed while it is
 /// still visible in the model registry. # C: O(1)
 pub fn remove_device_cb(dev: &drv::Device) {
-    let devpath = dev_devpath(dev);
+    if dev.bus == "input" {
+        crate::input::emit_device_remove(dev);
+        if let Some(devpath) = dev_devpath(dev) {
+            invalidate_model_paths(dev, &devpath);
+        }
+        return;
+    }
+    let Some(devpath) = dev_devpath(dev) else { return; };
     let env = dev_uevent_env(dev);
     let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
     ::netlink::emit_uevent_with_env("remove", &devpath, dev.bus, &refs);
@@ -54,15 +64,15 @@ fn invalidate_path(path: &str) {
 fn invalidate_model_paths(dev: &drv::Device, devpath: &str) {
     invalidate_path(devpath);
     if dev.bus == "input" {
-        invalidate_path(&alloc::format!("/class/input/{}", dev.addr));
+        for path in crate::input::related_paths(dev) {
+            invalidate_path(&path);
+        }
     }
 }
 
 fn invalidate_bind_paths(bus: &str, addr: &str, driver: &'static str) {
-    let devpath = match find_dev(bus, addr) {
-        Some(dev) => dev_devpath(&dev),
-        None => alloc::format!("/{}/{}", dev_root_canon(bus), addr),
-    };
+    let Some(dev) = find_dev(bus, addr) else { return; };
+    let Some(devpath) = dev_devpath(&dev) else { return; };
     invalidate_path(&alloc::format!("{}/driver", devpath));
     invalidate_path(&alloc::format!("/bus/{}/drivers/{}/{}", bus, driver, addr));
 }
@@ -75,12 +85,9 @@ pub fn publish_driver_cb(_bus: &str, _name: &'static str) {}
 pub fn bind_device_cb(bus: &str, addr: &str, driver: &'static str, _event: drv::BindEvent) {
     invalidate_bind_paths(bus, addr, driver);
     if let Some(dev) = find_dev(bus, addr) {
-        let devpath = dev_devpath(&dev);
+        let Some(devpath) = dev_devpath(&dev) else { return; };
         let env = dev_uevent_env(&dev);
         let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
         ::netlink::emit_uevent_with_env("change", &devpath, bus, &refs);
-    } else {
-        let devpath = alloc::format!("/{}/{}", dev_root_canon(bus), addr);
-        ::netlink::emit_uevent("change", &devpath, bus);
     }
 }

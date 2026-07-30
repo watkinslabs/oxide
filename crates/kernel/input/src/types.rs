@@ -7,7 +7,7 @@ pub struct VirtioInputEvent {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Debug)]
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 pub struct VirtioInputAbsInfo {
     pub min: u32,
     pub max: u32,
