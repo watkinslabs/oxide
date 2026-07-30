@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use vfs::superblock::SuperBlock;
-use vfs::{FileType, Ino};
+use vfs::{FileType, Ino, VfsError};
 
 use crate::{PSEUDO_ROOT_INO, PseudoDir, PseudoFs, PseudoSymlink, dir_ino};
 
@@ -46,6 +46,17 @@ fn leaf_mid_path_is_none() {
     let r = root();
     r.insert_path("/a/b", PseudoSymlink::new(2, 0, b"x"));
     assert!(r.lookup_path("/a/b/c").is_none());
+}
+
+#[test]
+fn leaf_publication_owns_one_directory_entry_without_path_state() {
+    let r = root();
+    let leaf = PseudoSymlink::new(22, 0xDEAD, b"object");
+    r.insert_leaf("object", leaf.clone()).expect("publish leaf");
+    assert_eq!(r.lookup_path("object").map(|inode| inode.ino()), Some(leaf.ino()));
+    assert_eq!(r.insert_leaf("object", leaf.clone()), Err(VfsError::Eexist));
+    assert_eq!(r.remove_leaf("object").map(|inode| inode.ino()), Ok(leaf.ino()));
+    assert!(matches!(r.remove_leaf("object"), Err(VfsError::Enoent)));
 }
 
 #[test]
