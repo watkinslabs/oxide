@@ -52,6 +52,36 @@ pub(crate) fn install_fd(inode: InodeRef, name: &str, cloexec: bool) -> i64 {
     }
 }
 
+/// Install the `O_PATH` file returned by non-clone `open_tree(2)`. Linux uses
+/// `dentry_open(&path, O_PATH, current_cred())`, so the fd must retain the
+/// resolved mount id and dentry rather than becoming an anonymous inode.
+/// # C: O(1)
+pub(crate) fn install_path_fd(path: vfs::VfsPath, cloexec: bool) -> i64 {
+    let cur = match sched::live::current() {
+        Some(c) => c,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let cred = match crate::pathresolve::file_cred_for(cur) {
+        Some(c) => c,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = File::new_at(
+        path.inode, path.dentry, OpenFlags::O_PATH, path.mnt_id, cred,
+    );
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
+        Ok(fd) => {
+            if cloexec { let _ = fdt.set_cloexec(fd, true); }
+            fd as i64
+        }
+        Err(e) => -(e as i64),
+    }
+}
+
 /// # C: O(1)
 pub(crate) fn fd_inode(fd: i32) -> Option<InodeRef> {
     fd_file(fd).map(|f| f.inode().clone())

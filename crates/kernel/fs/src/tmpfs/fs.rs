@@ -127,6 +127,15 @@ impl vfs::fs::FileSystem for TmpfsFs {
     fn name(&self) -> &str { self.fsname }
     /// TMPFS_MAGIC / RAMFS_MAGIC (linux/magic.h), per instance type. # C: O(1)
     fn magic(&self) -> u64 { self.magic }
+    /// Both tmpfs and ramfs are user-namespace mountable; Linux shmem/tmpfs,
+    /// unlike ramfs, also advertises `FS_ALLOW_IDMAP`. # C: O(1)
+    fn fs_flags(&self) -> vfs::fs::FsFlags {
+        let mut flags = vfs::fs::FsFlags::FS_USERNS_MOUNT;
+        if self.magic == vfs::uapi::TMPFS_SUPER_MAGIC {
+            flags |= vfs::fs::FsFlags::FS_ALLOW_IDMAP;
+        }
+        flags
+    }
     /// tmpfs block size = page size (statfs `f_bsize`). # C: O(1)
     fn block_size(&self) -> u32 { PG as u32 }
     /// This instance's root inode (mount table per-mount root). # C: O(1)

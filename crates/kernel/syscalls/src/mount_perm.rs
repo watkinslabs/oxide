@@ -43,7 +43,7 @@ pub(crate) fn may_mount_or_eperm() -> Option<i64> {
 /// DESCENDANT of it, so a task inside a child user namespace fails this even
 /// though it holds a full capability set there — exactly what `capable()` means.
 /// # C: O(userns depth)
-fn cap_sys_admin_in_init_user_ns() -> bool {
+pub(crate) fn cap_sys_admin_in_init_user_ns() -> bool {
     let Some(cur) = sched::live::current() else { return false; };
     let init = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     nscg::proc_ns::has_cap_for(&cur, &init.pin(), sched::cap::SYS_ADMIN)

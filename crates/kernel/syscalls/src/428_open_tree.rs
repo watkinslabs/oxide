@@ -69,6 +69,7 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         let mo = MountObjectInode::new_clone_tree(tree);
         return install_fd(mo, "open_tree", cloexec);
     }
-    // Non-clone: an fd referring to the path's inode (O_PATH-ish).
-    install_fd(vp.inode, "open_tree", cloexec)
+    // Non-clone: Linux `dentry_open(&path, O_PATH, current_cred())`. Preserve
+    // the complete f_path so AT_EMPTY_PATH consumers operate on this mount.
+    install_path_fd(vp, cloexec)
 }

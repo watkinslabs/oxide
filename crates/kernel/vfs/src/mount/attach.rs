@@ -57,7 +57,27 @@ pub fn attach_sb_locked_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("attach_sb_with_flags", 0, 0, mp.as_ref(), sb.s_root().as_ref(), Some(&sb));
     graft_realized_locked(mp, sb, mnt_flags & MNT_OPTION_MASK,
-        lock_flags & (MNT_LOCK_MASK | MNT_LOCKED), parent_hint)
+        lock_flags & (MNT_LOCK_MASK | MNT_LOCKED), None, None, parent_hint)
+}
+
+/// Attach the complete property set of a deferred `fsmount`. Validation
+/// precedes all mount-table writes, then idmap/options/locks/propagation publish
+/// on the same new `Mount`. # C: O(depth)
+pub fn attach_sb_detached_at(
+    mp: Option<Arc<Dentry>>,
+    sb: Arc<SuperBlock>,
+    mnt_flags: u64,
+    lock_flags: u32,
+    idmap: Option<Arc<crate::idmap::Idmap>>,
+    propagation: Option<Propagation>,
+    parent_hint: Option<u64>,
+) -> KResult<()> {
+    if let Some(map) = idmap.as_ref() {
+        if map.is_identity() { return Err(VfsError::Einval); }
+        idmapped::can_idmap_superblock(&sb)?;
+    }
+    graft_realized_locked(mp, sb, mnt_flags & MNT_OPTION_MASK,
+        lock_flags & (MNT_LOCK_MASK | MNT_LOCKED), idmap, propagation, parent_hint)
 }
 
 /// Shared TAIL of [`attach`]/[`attach_sb`]: reserve the per-ns mount slot,
@@ -67,14 +87,15 @@ pub fn attach_sb_locked_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
 /// namespace root mount. # C: O(depth)
 fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
     parent_hint: Option<u64>) -> KResult<()> {
-    graft_realized_locked(mp, sb, mnt_flags, 0, parent_hint)
+    graft_realized_locked(mp, sb, mnt_flags, 0, None, None, parent_hint)
 }
 
 /// [`graft_realized`] with an additional kernel-internal `mnt_flags` word
 /// (`MNT_LOCK_*` / `MNT_LOCKED`) stamped alongside the option mask.
 /// # C: O(depth)
 fn graft_realized_locked(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
-    lock_flags: u32, parent_hint: Option<u64>) -> KResult<()> {
+    lock_flags: u32, idmap: Option<Arc<crate::idmap::Idmap>>,
+    propagation: Option<Propagation>, parent_hint: Option<u64>) -> KResult<()> {
     let namespace = current_namespace();
     let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
     let ns = reservation.namespace_id();
@@ -92,6 +113,8 @@ fn graft_realized_locked(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags
         // [D51] Stamp the requested option bits before the mount goes live.
         if mnt_flags != 0 { m.flags.store(mnt_flags, Ordering::Release); }
         if lock_flags != 0 { m.set_internal_flag(lock_flags); }
+        if let Some(map) = idmap { m.install_idmap(map); }
+        if let Some(kind) = propagation { propagation::apply_propagation(&m, kind); }
         // [D11] The namespace ROOT mount is a kernel-internal producer (Linux
         // marks rootfs / kern_mount mounts MNT_INTERNAL): never user-expirable.
         m.set_internal_flag(MNT_INTERNAL);
@@ -114,6 +137,8 @@ fn graft_realized_locked(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags
     // following propagate_mount peer-copy inherits them via clone_mnt.
     if mnt_flags != 0 { m.flags.store(mnt_flags, Ordering::Release); }
     if lock_flags != 0 { m.set_internal_flag(lock_flags); }
+    if let Some(map) = idmap { m.install_idmap(map); }
+    if let Some(kind) = propagation { propagation::apply_propagation(&m, kind); }
     #[cfg(feature = "debug-mnt")]
     mntcreate_log("graft", mnt_id, parent_id, Some(&d), m.mnt_root().as_ref(), Some(&m.sb));
     // struct mountpoint (dentry refcount) + intrusive parent/child links.
