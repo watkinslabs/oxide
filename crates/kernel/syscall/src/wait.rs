@@ -25,6 +25,15 @@ pub const WSTAT_CONTINUED: i32 = 0xffff;
 const WAIT4_ALLOWED:  u64 = WNOHANG | WUNTRACED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL;
 const WAITID_ALLOWED: u64 = WNOHANG | WNOWAIT | WEXITED | WSTOPPED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL;
 
+/// Truncate one argument register to the `int` the wait(2) family declares for
+/// it (`wait4`'s `int options`, `waitid`'s `int which` / `int options`). Only
+/// the low 32 bits carry the ABI value: a caller whose `int` was sign-extended
+/// into the 64-bit register — glibc passes `__WCLONE` as a negative `int`, so
+/// the register reads `0xffff_ffff_8000_0000` — is passing a valid option set,
+/// not an unknown high bit, and must not be rejected for the extension.
+/// # C: O(1)
+pub const fn int_arg_from_reg(reg: u64) -> u64 { reg as u32 as u64 }
+
 /// # C: O(1)
 pub const fn wait4_options_valid(options: u64) -> bool {
     (options & !WAIT4_ALLOWED) == 0
@@ -58,6 +67,18 @@ mod tests {
         assert!(!wait4_options_valid(WEXITED));
         assert!(!wait4_options_valid(WNOWAIT));
         assert!(!wait4_options_valid(1u64 << 40));
+    }
+
+    #[test]
+    fn a_sign_extended_int_option_set_survives_register_truncation() {
+        // glibc's `waitpid(pid, &st, __WCLONE)` reaches the kernel as a
+        // sign-extended negative int; the high half is not part of the value.
+        let reg = 0xffff_ffff_8000_0000u64;
+        assert_eq!(int_arg_from_reg(reg), __WCLONE);
+        assert!(wait4_options_valid(int_arg_from_reg(reg)));
+        assert!(!wait4_options_valid(reg));
+        assert!(waitid_options_valid(int_arg_from_reg(reg | WEXITED)));
+        assert_eq!(int_arg_from_reg(0xdead_beef_0000_0001), P_PID);
     }
 
     #[test]

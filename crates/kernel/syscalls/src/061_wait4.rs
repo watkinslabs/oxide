@@ -5,7 +5,7 @@
 
 use syscall::errno::Errno;
 use syscall::SyscallArgs;
-use syscall::wait::{wait4_options_valid, WCONTINUED, WNOHANG, WUNTRACED};
+use syscall::wait::{int_arg_from_reg, wait4_options_valid, WCONTINUED, WNOHANG, WUNTRACED};
 use sched::registry::WaitChildSnapshot;
 
 /// `sys_wait4(pid, wstatus, options, rusage)`.
@@ -13,7 +13,7 @@ use sched::registry::WaitChildSnapshot;
 pub fn sys_wait4(args: &SyscallArgs) -> i64 {
     let pid     = args.a0 as i32;
     let wstatus = args.a1;
-    let options = args.a2;
+    let options = int_arg_from_reg(args.a2);
     let rusage  = args.a3;
 
     if !wait4_options_valid(options) { return -(Errno::Einval.as_i32() as i64); }
