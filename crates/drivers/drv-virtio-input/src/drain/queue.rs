@@ -37,7 +37,6 @@ pub(super) struct QueueCtx {
     pub(super) last_used:   u16,
     pub(super) avail_idx:   u16,
     pub(super) eventq_failed: bool,
-    pub(super) is_pointer:  bool,
 }
 
 /// All installed input devices share one drain.
@@ -126,7 +125,6 @@ pub fn install_eventq(
         return Err(());
     }
     let hhdm = resources.hhdm;
-    let is_pointer = crate::is_pointer(evdev_id);
     let Some(buf_pa) = pmm::setup::alloc_raw_frame() else { return Err(()) };
     let Some(status_buf_pa) = pmm::setup::alloc_raw_frame() else {
         // SAFETY: buf_pa was allocated above and has not been published.
@@ -159,7 +157,6 @@ pub fn install_eventq(
                     last_used: 0,
                     avail_idx: event_buffers,
                     eventq_failed: false,
-                    is_pointer,
                 });
                 installed = true;
             }

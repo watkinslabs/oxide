@@ -86,7 +86,6 @@ impl Fixture {
             last_used: 0,
             avail_idx: 0,
             eventq_failed: false,
-            is_pointer: false,
         }
     }
 }

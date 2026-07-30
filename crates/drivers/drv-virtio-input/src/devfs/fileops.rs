@@ -9,9 +9,11 @@ use crate::consts::{
     EVENT_MINOR_BASE, EVDEV_FIRST_INO_OFFSET, EVDEV_NODE_PERMISSIONS, INPUT_MAJOR,
 };
 use crate::devfs::shared::{
-    current_endpoint, evdev_endpoint, evdev_open, install_open, release_open, EvdevData,
-    EvdevEndpoint, EVDEV_INO_BASE,
+    evdev_endpoint, evdev_open, install_open, release_open, EvdevData, EvdevEndpoint,
+    EVDEV_INO_BASE,
 };
+#[cfg(test)]
+use crate::devfs::shared::current_endpoint;
 use crate::evdev_queue::{output_value_from_bytes, INPUT_EVENT_BYTES};
 
 #[cfg(target_os = "oxide-kernel")]
