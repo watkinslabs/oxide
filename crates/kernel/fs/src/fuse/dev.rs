@@ -1,12 +1,8 @@
-// `/dev/fuse` — the misc char device (major 10, minor 229) that a libfuse
-// daemon `open`s to obtain a FUSE channel (`fs/fuse/dev.c` `fuse_dev_operations`).
+// `/dev/fuse` — misc character device used to obtain a FUSE channel.
 //
-// Unlike the stateless mem/misc devices, each OPEN of `/dev/fuse` is an
-// INDEPENDENT channel, so the per-open [`FuseConn`] cannot live on the shared
-// inode. It is created lazily on first access and keyed by the open `File`'s
-// allocation identity in a side table (the exact pattern `fs::pipe` uses for a
-// named FIFO's shared ring), then handed to `mount("fuse", …, "fd=N")` which
-// resolves the SAME `Arc<File>` and looks the channel up by the same key.
+// Each open is an independent channel. The registered character driver creates
+// per-open [`FuseConn`] state keyed by the open `File` identity; mount fd
+// resolution and I/O therefore share one channel without inode-private routing.
 //
 //   read(/dev/fuse)  → dequeue the next kernel request (blocks if none queued)
 //   write(/dev/fuse) → submit a reply, matched to its request by `unique`
@@ -17,10 +13,9 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
-use sync::{Spinlock, Tty as FuseClass};
-use vfs::{File, FileOps, FileType, InodeBuilder, InodeRef, KResult, PollSubscribers, VfsError};
-use vfs::{POLL_IN, POLL_OUT, mk_mode};
-use vfs::devnode::Devt;
+use sync::{Devices as DriverClass, Spinlock, Tty as FuseClass};
+use vfs::{CharDevOps, Devt, File, FileType, InodeRef, KResult, PollSubscribers, VfsError};
+use vfs::{POLL_IN, POLL_OUT};
 
 use super::conn::FuseConn;
 
@@ -29,15 +24,30 @@ mod ids {
     pub(crate) const DEV_MAJOR: u32 = 10;
     pub(crate) const DEV_MINOR: u32 = 229;
     pub(crate) const DEV_INO: u64 = 0x2000_00F0;
+    pub(crate) const DEV_COUNT: u32 = 1;
+    pub(crate) const DEV_PERM: u16 = 0o666;
 }
 pub const FUSE_DEV_MAJOR: u32 = ids::DEV_MAJOR;
 pub const FUSE_DEV_MINOR: u32 = ids::DEV_MINOR;
-/// Fixed inode number for the single `/dev/fuse` node (devfs pseudo-dev range).
+pub const FUSE_DEV_COUNT: u32 = ids::DEV_COUNT;
+pub const FUSE_DEV_PERM: u16 = ids::DEV_PERM;
+
+/// Canonical `/dev/fuse` device identity. # C: O(1)
+pub fn fuse_devt() -> Devt { Devt::new(FUSE_DEV_MAJOR, FUSE_DEV_MINOR) }
 
 /// `File` allocation identity → its channel. An entry exists from the open's
 /// first channel access until `on_release_file` (last close) removes it. # C: O(1)
 static FUSE_CONNS: Spinlock<BTreeMap<usize, Arc<FuseConn>>, FuseClass>
     = Spinlock::new(BTreeMap::new());
+
+/// The driver object installed in the character-device registry.
+static FUSE_DRIVER: Spinlock<Option<Arc<dyn CharDevOps>>, DriverClass>
+    = Spinlock::new(None);
+
+fn fuse_driver() -> Arc<dyn CharDevOps> {
+    let mut driver = FUSE_DRIVER.lock();
+    driver.get_or_insert_with(|| Arc::new(FuseDevOps)).clone()
+}
 
 /// Channel key for an open `/dev/fuse` file — its `File` allocation address. The
 /// daemon's read/write and the `mount` fd-resolution both reach the SAME
@@ -51,8 +61,7 @@ pub fn conn_for(file: &File) -> Arc<FuseConn> {
     let key = conn_key(file);
     let mut g = FUSE_CONNS.lock();
     if let Some(c) = g.get(&key) { return c.clone(); }
-    let subs = file.inode().poll_subscribers_arc()
-        .unwrap_or_else(|| Arc::new(PollSubscribers::new()));
+    let subs = Arc::new(PollSubscribers::new());
     let c = FuseConn::new(subs);
     g.insert(key, c.clone());
     c
@@ -66,23 +75,24 @@ pub fn conn_lookup(file: &File) -> Option<Arc<FuseConn>> {
     FUSE_CONNS.lock().get(&conn_key(file)).cloned()
 }
 
-/// `true` iff `file`'s data-path vtable is the `/dev/fuse` device — the check
-/// `mount` makes before trusting `fd=N` (Linux `file->f_op == &fuse_dev_ops`).
-/// # C: O(1)
-pub fn is_fuse_dev(file: &File) -> bool { file.inode().private::<FuseDevMarker>().is_some() }
+/// True when this open retained the registered FUSE driver. # C: O(1)
+pub fn is_fuse_dev(file: &File) -> bool {
+    let Some((devt, driver)) = vfs::opened_chrdev(file) else { return false };
+    devt == fuse_devt() && Arc::ptr_eq(&driver, &fuse_driver())
+}
 
-/// Zero-sized `i_private` tag marking the `/dev/fuse` inode so [`is_fuse_dev`]
-/// can identify a channel fd by inode identity. # C: O(1)
-struct FuseDevMarker;
+/// Registered FUSE character driver. # C: channel-dependent
+pub struct FuseDevOps;
+impl CharDevOps for FuseDevOps {
+    fn open_file(&self, _devt: Devt, file: &File) -> KResult<()> {
+        let _ = conn_for(file);
+        Ok(())
+    }
 
-/// `fuse_dev_operations` — the `/dev/fuse` `file_operations`. All methods take
-/// `&File` so the per-open channel is recovered by identity. # C: channel-dependent
-struct FuseDevFileOps;
-impl FileOps for FuseDevFileOps {
     /// `read(/dev/fuse)` — return the next queued kernel request, blocking until
     /// one is available (Linux `fuse_dev_read`). A deliverable signal → `Eintr`;
     /// an aborted connection → `Enodev`. # C: O(msg) + park
-    fn read_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read_file(&self, _devt: Devt, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let conn = conn_for(file);
         loop {
             match conn.dequeue(buf)? {
@@ -91,10 +101,8 @@ impl FileOps for FuseDevFileOps {
             }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // Linux `fuse_dev_do_read` (`fs/fuse/dev.c:1555`):
-                // `wait_event_interruptible_exclusive`, whose interrupted
-                // return is `prepare_to_wait_event`'s -ERESTARTSYS
-                // (`kernel/sched/wait.c:309`).
+                // A deliverable signal interrupts the channel wait before the
+                // task parks again.
                 if sched::live::deliverable_signals_self() != 0 {
                     return Err(VfsError::Erestartsys);
                 }
@@ -107,7 +115,7 @@ impl FileOps for FuseDevFileOps {
 
     /// Non-blocking `read(/dev/fuse)` (`O_NONBLOCK`): `Eagain` when no request is
     /// queued rather than parking. # C: O(msg)
-    fn read_nonblock_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+    fn read_nonblock_file(&self, _devt: Devt, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
         let conn = conn_for(file);
         match conn.dequeue(buf)? {
             0 => Err(VfsError::Eagain),
@@ -117,42 +125,54 @@ impl FileOps for FuseDevFileOps {
 
     /// `write(/dev/fuse)` — submit a daemon reply, matched to its request by the
     /// `fuse_out_header.unique` (Linux `fuse_dev_write`). # C: O(log N)
-    fn write_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
+    fn write_file(&self, _devt: Devt, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
         conn_for(file).submit_reply(buf)
     }
 
     /// Non-blocking `write(/dev/fuse)` — a reply submit never blocks. # C: O(log N)
-    fn write_nonblock_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
+    fn write_nonblock_file(&self, _devt: Devt, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
         conn_for(file).submit_reply(buf)
     }
 
     /// `poll(/dev/fuse)` — POLLIN when a request is queued (or the conn aborted),
     /// POLLOUT always (a reply can always be written). # C: O(1)
-    fn poll_open_file(&self, file: &File) -> u32 {
+    fn poll_file(&self, _devt: Devt, file: &File) -> KResult<u32> {
         let conn = conn_for(file);
         let mut mask = POLL_OUT;
         if conn.has_pending() { mask |= POLL_IN; }
-        mask
+        Ok(mask)
+    }
+
+    fn poll_subscribers_file(&self, _devt: Devt, file: &File) -> Option<Arc<PollSubscribers>> {
+        Some(conn_for(file).poll_subscribers())
     }
 
     /// Last-close of a `/dev/fuse` channel (Linux `fuse_dev_release`): abort the
     /// connection so every blocked VFS caller wakes with `ENOTCONN`, then drop
     /// the side-table entry. Runs from `File::Drop`. # C: O(N_inflight)
-    fn on_release_file(&self, file: &File) {
+    fn release_file(&self, _devt: Devt, file: &File) {
         if let Some(conn) = FUSE_CONNS.lock().remove(&conn_key(file)) { conn.abort(); }
     }
 }
 
-/// Build the single `/dev/fuse` inode: a char device (10:229) whose `i_fop` is
-/// the channel dispatcher and whose `i_private` marks it a FUSE device. A poll
-/// subscriber set is attached so an `epoll`ing daemon receives request-ready
-/// edges. # C: O(1)
+/// Build a `/dev/fuse` node through the canonical character-device dispatcher.
+/// # C: O(1)
 pub fn make_fuse_dev_inode() -> InodeRef {
-    let rdev = Devt::new(FUSE_DEV_MAJOR, FUSE_DEV_MINOR).raw();
-    InodeBuilder::new(ids::DEV_INO, mk_mode(FileType::CharDev, 0o666),
-                      vfs::default_inode_ops(), Arc::new(FuseDevFileOps))
-        .rdev(rdev)
-        .poll_subs(PollSubscribers::new())
-        .private(Arc::new(FuseDevMarker))
-        .build()
+    vfs::make_device_node_inode(
+        ids::DEV_INO,
+        FileType::CharDev,
+        fuse_devt(),
+        ids::DEV_PERM,
+        alloc::sync::Weak::new(),
+    )
+}
+
+/// Register the one-minor FUSE character-device region. # C: O(R)
+pub fn register_chrdev() -> KResult<()> {
+    vfs::register_chrdev_region(
+        FUSE_DEV_MAJOR,
+        FUSE_DEV_MINOR,
+        FUSE_DEV_COUNT,
+        fuse_driver(),
+    )
 }
