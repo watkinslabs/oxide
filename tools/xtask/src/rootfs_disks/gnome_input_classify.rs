@@ -8,6 +8,7 @@ const SERVICE_DESTINATION: &str =
 const WANTS_DIRECTORY: &str = "/etc/systemd/system/graphical.target.wants";
 const WANTS_DESTINATION: &str =
     "/etc/systemd/system/graphical.target.wants/oxide-gnome-input-classify.service";
+const CONSOLE_DEVICE: &str = "/dev/console";
 const SERVICE_TIMEOUT_SECONDS: u32 = 90;
 const UDEV_SETTLE_TIMEOUT_SECONDS: u32 = 60;
 const PROBE_FILE_MODE: &str = "0100755";
@@ -41,8 +42,7 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
 
 fn serial_device(arch: &str) -> Result<&'static str, u8> {
     match arch {
-        "x86_64" => Ok("/dev/ttyS0"),
-        "aarch64" => Ok("/dev/ttyAMA0"),
+        "x86_64" | "aarch64" => Ok(CONSOLE_DEVICE),
         _ => {
             eprintln!("xtask rootfs: unsupported arch `{arch}` for GNOME input smoke");
             Err(EXIT_UNSUPPORTED_ARCH)
@@ -324,9 +324,9 @@ mod tests {
         let x86 = service_body(serial_device("x86_64").unwrap());
         assert!(x86.contains("Before=display-manager.service\n"));
         assert!(x86.contains("After=systemd-udev-settle.service systemd-logind.service\n"));
-        assert!(x86.contains(">/dev/ttyS0 2>&1"));
+        assert!(x86.contains(">/dev/console 2>&1"));
         let arm = service_body(serial_device("aarch64").unwrap());
-        assert!(arm.contains(">/dev/ttyAMA0 2>&1"));
+        assert!(arm.contains(">/dev/console 2>&1"));
         assert_eq!(serial_device("riscv64"), Err(EXIT_UNSUPPORTED_ARCH));
     }
 
