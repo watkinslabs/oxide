@@ -7,7 +7,7 @@ use sync::RwReadGuard;
 use crate::hole::{find_hole, hole_clear};
 use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
-use crate::{Error, KResult};
+use crate::{Error, KResult, MmapError, MmapPlacement};
 
 use super::layout::{end_of, end_of_raw, is_aligned, validate_aligned, validate_len};
 use super::limits::{MMAP_TOP, STACK_GROW_MAX};
@@ -195,6 +195,30 @@ impl AddressSpace {
         backing: VmaBacking,
         fixed: bool,
     ) -> KResult<UserVirtAddr> {
+        let placement = match (fixed, hint) {
+            (true, Some(address)) => MmapPlacement::Fixed(address),
+            (true, None) => return Err(Error::Inval),
+            (false, hint) => MmapPlacement::Advisory(hint),
+        };
+        self.mmap_with_may_at(placement, len, prot, may_prot, flags, backing)
+            .map_err(|error| match error {
+                MmapError::Vmm(error) => error,
+                MmapError::Exists => Error::Inval,
+            })
+    }
+
+    /// Place one VMA using the canonical advisory/fixed/no-replace policy.
+    /// `FixedNoReplace` tests and inserts under the same VMA write lock.
+    /// # C: O(log N) exact path; O(N) advisory fallback
+    pub fn mmap_with_may_at(
+        &self,
+        placement: MmapPlacement,
+        len: usize,
+        prot: VmaProt,
+        may_prot: VmaProt,
+        flags: VmaFlags,
+        backing: VmaBacking,
+    ) -> Result<UserVirtAddr, MmapError> {
         validate_len(len)?;
         // Linux `mapping_map_writable`: reserve `VM_SHARED|VM_MAYWRITE`
         // before address selection or MAP_FIXED teardown. The reservation
@@ -215,40 +239,44 @@ impl AddressSpace {
 
         let mut tree = self.vmas.write();
 
-        let start_va = if fixed {
-            let h = hint.ok_or(Error::Inval)?;
-            validate_aligned(h)?;
-            let end = end_of(h, len_u64)?;
-            // mseal(2): MAP_FIXED tears the overlap down through the same
-            // `vms_gather_munmap_vmas` Linux uses for munmap (`mm/vma.c:1422`),
-            // so a sealed VMA refuses to be replaced. This is the check, not
-            // the pmm glue's: `glue_mmap` discarded `glue_munmap`'s return, so
-            // without it MAP_FIXED silently replaced a sealed mapping while
-            // leaving its PTEs installed — mseal's whole purpose defeated.
-            if tree.any_sealed(h, end) { return Err(Error::Perm); }
-            // MAP_FIXED clears overlap before placing per `11§6`.
-            let removed = tree.remove_range(h, end);
-            for vma in &removed { self.accounting.remove_vma(vma); }
-            h
-        } else {
-            // Try the hint first.
-            let from_hint = match hint {
-                Some(h) if is_aligned(h) => {
-                    end_of(h, len_u64).ok().and_then(|end| {
-                        if hole_clear(&tree, h, end) { Some(h) } else { None }
-                    })
+        let start_va = match placement {
+            MmapPlacement::Fixed(h) => {
+                validate_aligned(h)?;
+                let end = end_of(h, len_u64)?;
+                // mseal(2): MAP_FIXED tears the overlap down through the same
+                // `vms_gather_munmap_vmas` Linux uses for munmap (`mm/vma.c:1422`),
+                // so a sealed VMA refuses to be replaced.
+                if tree.any_sealed(h, end) { return Err(Error::Perm.into()); }
+                let removed = tree.remove_range(h, end);
+                for vma in &removed { self.accounting.remove_vma(vma); }
+                h
+            }
+            MmapPlacement::FixedNoReplace(h) => {
+                validate_aligned(h)?;
+                let end = end_of(h, len_u64)?;
+                if !hole_clear(&tree, h, end) { return Err(MmapError::Exists); }
+                h
+            }
+            MmapPlacement::Advisory(hint) => {
+                // Try the hint first.
+                let from_hint = match hint {
+                    Some(h) if is_aligned(h) => {
+                        end_of(h, len_u64).ok().and_then(|end| {
+                            if hole_clear(&tree, h, end) { Some(h) } else { None }
+                        })
+                    }
+                    _ => None,
+                };
+                match from_hint {
+                    Some(h) => h,
+                    None => {
+                        let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
+                            0 => MMAP_TOP,
+                            v => v,
+                        };
+                        find_hole(&tree, len_u64, top).ok_or(Error::NoMem)?
+                    },
                 }
-                _ => None,
-            };
-            match from_hint {
-                Some(h) => h,
-                None => {
-                    let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
-                        0 => MMAP_TOP,
-                        v => v,
-                    };
-                    find_hole(&tree, len_u64, top).ok_or(Error::NoMem)?
-                },
             }
         };
 

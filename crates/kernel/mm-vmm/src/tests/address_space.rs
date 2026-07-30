@@ -234,6 +234,70 @@ fn mmap_fixed_clears_overlap_first() {
 }
 
 #[test]
+fn mmap_fixed_noreplace_collision_is_atomic_and_never_falls_back() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    a.mmap(Some(h), 4 * PAGE, VmaProt::READ, priv_anon(),
+        VmaBacking::Anonymous, false).unwrap();
+
+    let result = a.mmap_with_may_at(
+        MmapPlacement::FixedNoReplace(h),
+        PAGE,
+        r_w(),
+        r_w(),
+        priv_anon(),
+        VmaBacking::Anonymous,
+    );
+    assert_eq!(result, Err(MmapError::Exists));
+    assert_eq!(a.vma_count(), 1);
+    assert_eq!(a.find_vma(h).unwrap().prot, VmaProt::READ);
+    a.audit().unwrap();
+}
+
+#[test]
+fn mmap_fixed_noreplace_clear_range_maps_exactly() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    let result = a.mmap_with_may_at(
+        MmapPlacement::FixedNoReplace(h),
+        PAGE,
+        r_w(),
+        r_w(),
+        priv_anon(),
+        VmaBacking::Anonymous,
+    ).unwrap();
+    assert_eq!(result, h);
+}
+
+#[test]
+fn mmap_fixed_noreplace_race_has_one_winner() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = UserVirtAddr::new(0x4000_0000).unwrap();
+    let start = Arc::new(std::sync::Barrier::new(3));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let a = Arc::clone(&a);
+        let start = Arc::clone(&start);
+        handles.push(thread::spawn(move || {
+            start.wait();
+            a.mmap_with_may_at(
+                MmapPlacement::FixedNoReplace(h),
+                PAGE,
+                r_w(),
+                r_w(),
+                priv_anon(),
+                VmaBacking::Anonymous,
+            )
+        }));
+    }
+    start.wait();
+    let results: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|result| **result == Ok(h)).count(), 1);
+    assert_eq!(results.iter().filter(|result| **result == Err(MmapError::Exists)).count(), 1);
+    assert_eq!(a.vma_count(), 1);
+}
+
+#[test]
 fn mmap_rejects_zero_length_and_misalignment() {
     let a = AddressSpace::new(0).unwrap();
     assert_eq!(
