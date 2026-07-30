@@ -27,6 +27,10 @@ struct UnixListenerState {
     backlog: usize,
     accept_q: alloc::collections::VecDeque<(Arc<UnixPair>, GcLink)>,
     owner_cred: (u32, u32, u32),
+    /// Linux `sk->sk_peer_pid` on the listening socket: copied onto every
+    /// accepted connection's server end so the client's `SO_PEERPIDFD` names
+    /// the listening process itself, not whatever holds its pid number later.
+    owner_identity: Option<Arc<sched::pid::PidIdentity>>,
     #[cfg(target_os = "oxide-kernel")]
     connect_sockets: Vec<alloc::sync::Weak<crate::sock::InetSocket>>,
 }
@@ -97,6 +101,7 @@ impl UnixListener {
                 backlog: 0,
                 accept_q: alloc::collections::VecDeque::new(),
                 owner_cred: (0, 0, 0),
+                owner_identity: None,
                 #[cfg(target_os = "oxide-kernel")]
                 connect_sockets: Vec::new(),
             }),
@@ -114,14 +119,16 @@ impl UnixListener {
     /// Queue capacity is `backlog + 1`, matching AF_UNIX connect accounting.
     /// # C: O(1)
     pub fn listen(&self, backlog: i32, somaxconn: usize) {
-        self.listen_with_cred(backlog, somaxconn, None);
+        self.listen_with_cred(backlog, somaxconn, None, None);
     }
 
     /// Publish a listener and atomically replace its peer credential snapshot.
     /// # C: O(1)
-    pub(crate) fn listen_with_cred(&self, backlog: i32, somaxconn: usize, cred: Option<(u32, u32, u32)>) {
+    pub(crate) fn listen_with_cred(&self, backlog: i32, somaxconn: usize, cred: Option<(u32, u32, u32)>,
+        identity: Option<Arc<sched::pid::PidIdentity>>) {
         let mut st = self.state.lock();
         if let Some(cred) = cred { st.owner_cred = cred; }
+        if identity.is_some() { st.owner_identity = identity; }
         st.backlog = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
         st.listening = !st.closed;
         #[cfg(target_os = "oxide-kernel")]
@@ -146,6 +153,12 @@ impl UnixListener {
     /// Credentials published by the latest successful `listen(2)`.
     /// # C: O(1)
     pub fn owner_cred(&self) -> (u32, u32, u32) { self.state.lock().owner_cred }
+
+    /// Pinned identity published by the latest successful `listen(2)`
+    /// (`init_peercred` on the listening socket). # C: O(1)
+    pub fn owner_identity(&self) -> Option<Arc<sched::pid::PidIdentity>> {
+        self.state.lock().owner_identity.clone()
+    }
 
     /// Linux listener readiness: readable only while accept can succeed.
     /// Listening sockets are not writable data endpoints. # C: O(1)
@@ -176,6 +189,7 @@ impl UnixListener {
         if st.accept_q.len() > st.backlog { return Err(UnixConnectError::Full); }
         let (pid, uid, gid) = st.owner_cred;
         pair.set_end_cred(UnixEnd::A, pid, uid, gid);
+        pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
         st.accept_q.push_back((pair.clone(), link));
         drop(st);
         #[cfg(target_os = "oxide-kernel")]
@@ -202,6 +216,7 @@ impl UnixListener {
         if st.accept_q.len() > st.backlog { return Err(crate::NetError::Eagain); }
         let (pid, uid, gid) = st.owner_cred;
         pair.set_end_cred(UnixEnd::A, pid, uid, gid);
+        pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
         use core::sync::atomic::Ordering::Acquire;
         if sock.read_shut.load(Acquire) { pair.shutdown_reader(UnixEnd::B); }
         if sock.write_shut.load(Acquire) { pair.close_writer(UnixEnd::B); }

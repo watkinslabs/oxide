@@ -25,6 +25,7 @@ pub(super) const SO_LOCK_FILTER: u64 = 44;
 pub(super) const SO_TIMESTAMP_NEW: u64 = 63;
 pub(super) const SO_TIMESTAMPNS_NEW: u64 = 64;
 pub(super) const SO_TIMESTAMPING_NEW: u64 = 65;
+pub(super) const SO_PEERPIDFD: u64 = 77;
 
 pub(super) const IPPROTO_IP: u64 = 0;
 pub(super) const IPPROTO_TCP: u64 = 6;
