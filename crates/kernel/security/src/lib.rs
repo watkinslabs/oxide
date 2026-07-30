@@ -41,7 +41,10 @@ pub type KResult<T> = core::result::Result<T, Error>;
 /// # SAFETY: caller is the boot path; pre-init; single-CPU.
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
-pub unsafe fn init() -> KResult<()> { Ok(()) }
+pub unsafe fn init() -> KResult<()> {
+    vfs::set_device_permission_hook(bpf::cgroup_device_inode_permission);
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

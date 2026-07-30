@@ -15,6 +15,7 @@ sync = { path = "../../shared/sync" }
 pmm  = { path = "../mm-pmm" }
 cpu  = { path = "../cpu" }
 block = { path = "../block" }
+drv = { path = "../../drivers/drv" }
 arch-irq = { path = "../arch-irq" }
 vfs  = { path = "../vfs" }
 net  = { path = "../net" }

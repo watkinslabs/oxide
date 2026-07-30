@@ -160,23 +160,14 @@ pub(crate) fn enforce_open_perm(
             }
         }
     }
-    // Linux `may_open` `case S_IFBLK: case S_IFCHR: if (!may_open_dev(path))
-    // return -EACCES;` (`fs/namei.c` `may_open_dev`: `!(mnt_flags & MNT_NODEV)
-    // && !(s_iflags & SB_I_NODEV)`). This runs BEFORE the `O_CREAT` bypass:
-    // Linux applies it to every open of a device node, and it is the whole
-    // content of `mount -o nodev` — without it an unprivileged user with a
-    // writable mount can mknod a `/dev/mem` alias there and read all of RAM.
+    // Linux `may_open` applies `may_open_dev(path)` BEFORE the `O_CREAT`
+    // permission bypass. The VFS helper consumes the resolved mount identity,
+    // so bind mounts of one superblock retain distinct MNT_NODEV policy.
     if mnt_id != 0
         && matches!(inode.file_type(), vfs::types::FileType::CharDev | vfs::types::FileType::BlockDev)
+        && !vfs::may_open_dev(mnt_id)
     {
-        if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
-            // `s_iflags & SB_I_NODEV` is the KERNEL-INTERNAL word procfs/sysfs/
-            // pseudo-fs stamp at fill-super; `s_flags & SB_NODEV` is the
-            // user-visible one. Linux tests the former; both are honoured here.
-            if m.is_nodev() || m.sb().is_nodev() || m.sb().is_sb_i_nodev() {
-                return Some(-(Errno::Eacces.as_i32() as i64));
-            }
-        }
+        return Some(-(Errno::Eacces.as_i32() as i64));
     }
     if created || mnt_id == 0 { return None; }
     if let Err(e) = vfs::may_open(inode, want_read, want_write, &crate::pathresolve::current_cred()) {

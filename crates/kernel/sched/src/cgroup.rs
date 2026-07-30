@@ -9,7 +9,18 @@
 // `cgroup` crate (sched->cgroup, no cycle). Linux: kernel/sched cfs_bandwidth.
 
 
+use alloc::collections::BTreeMap;
+use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
+use sync::{Spinlock, TaskList as TaskListClass};
+
+use crate::{Task, TaskState};
+
+/// Serializes task migration with exit. Values are weak lifecycle guards,
+/// not membership state; the cgroup hierarchy remains the sole membership
+/// owner.
+static CGROUP_EXITS: Spinlock<BTreeMap<u32, Weak<Task>>, TaskListClass> =
+    Spinlock::new(BTreeMap::new());
 
 fn lookup_init_pid(pid: u32) -> Option<alloc::sync::Arc<crate::Task>> {
     let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
@@ -119,13 +130,62 @@ pub fn weight_hook(pid: u64, weight: u32) {
 /// vpid → global tid for cgroup.procs/threads writes (identity fallback).
 /// # C: O(N) registry lookup
 pub fn pid_resolve_hook(vpid: u64) -> Option<u64> {
-    crate::live::registry::lookup_by_vpid(vpid as u32).map(|t| t.tid as u64)
+    crate::live::registry::lookup_by_vpid(vpid as u32)
+        .map(|t| t.tgid.load(CgOrd::Acquire) as u64)
 }
 
 /// global tid → visible pid for cgroup.procs/threads reads.
 /// # C: O(N) registry lookup
 pub fn pid_display_hook(tid: u64) -> u64 {
     crate::live::registry::display_vpid(tid as u32)
+}
+
+/// global tid → visible tid for cgroup.threads reads. # C: O(N)
+pub fn tid_display_hook(tid: u64) -> u64 {
+    crate::live::registry::display_vtid(tid as u32)
+}
+
+/// Resolve and migrate one process or thread while excluding task exit.
+/// # C: O(tasks + cgroup members)
+pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
+    let current = || crate::live::current()
+        .and_then(|task| crate::registry::lookup(task.tid));
+    let task = if vpid == 0 {
+        current()
+    } else if thread {
+        crate::registry::resolve_user_pid(vpid as u32)
+    } else {
+        crate::registry::resolve_user_pid(vpid as u32)
+            .or_else(|| crate::live::registry::lookup_by_vpid(vpid as u32))
+    }.ok_or(vfs::VfsError::Esrch)?;
+    let mut exited = CGROUP_EXITS.lock();
+    exited.retain(|_, weak| weak.strong_count() != 0);
+    if exited.contains_key(&task.tid)
+        || task.reaped.load(CgOrd::Acquire)
+        || task.state() == TaskState::Zombie {
+        return Err(vfs::VfsError::Esrch);
+    }
+    if thread {
+        cgroup::migrate_thread(cgid, task.tid as u64)
+    } else {
+        cgroup::migrate_process(cgid, task.tgid.load(CgOrd::Acquire) as u64)
+    }
+}
+
+/// Publish exit before removing canonical cgroup membership, excluding a
+/// concurrent cgroup.procs/threads migration that could resurrect the task.
+/// # C: O(exited tasks + threads)
+pub fn exit_task(task: &Task) {
+    let task_ref = crate::registry::lookup(task.tid);
+    let mut exited = CGROUP_EXITS.lock();
+    exited.retain(|_, weak| weak.strong_count() != 0);
+    if let Some(task_ref) = task_ref {
+        exited.insert(task.tid, Arc::downgrade(&task_ref));
+    }
+    cgroup::on_exit(
+        task.tid as u64,
+        task.tgid.load(CgOrd::Acquire) as u64,
+    );
 }
 
 /// Register the scheduler's cgroup controllers with the cgroup crate.
@@ -138,4 +198,6 @@ pub fn install() {
     cgroup::set_cpuset_hook(cpuset_hook);
     cgroup::set_pid_resolve_hook(pid_resolve_hook);
     cgroup::set_pid_display_hook(pid_display_hook);
+    cgroup::set_tid_display_hook(tid_display_hook);
+    cgroup::set_migrate_hook(migrate_hook);
 }

@@ -276,6 +276,15 @@ pub trait FileSystemType: Send + Sync {
     fn name(&self) -> &str;
     /// Build a superblock instance (`fill_super`). # C: FS-dependent
     fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>>;
+    /// Build with the mount context's `SB_*` flags. # C: FS-dependent
+    fn mount_with_flags(
+        &self,
+        src: Option<&str>,
+        opts: &str,
+        _sb_flags: u64,
+    ) -> KResult<Arc<SuperBlock>> {
+        self.mount(src, opts)
+    }
     /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`) — the
     /// type-level classification the new-mount-API `vfs_get_tree` consults for
     /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /

@@ -1,13 +1,13 @@
-//! eBPF interpreter — core subset.
+//! Sandboxed eBPF interpreter.
 //!
 //! Walks verified insns from `bpf_verify` against an 11-register
-//! file (R0..R10, R10 is the read-only frame pointer in Linux —
-//! v1 leaves it zero) and a 512-byte stack. Programs return R0.
+//! file (R0..R10, R10 is the read-only frame pointer in Linux) and
+//! a 512-byte stack. Programs return R0.
 //!
 //! Opcode coverage (imm + reg variants):
 //!
 //!   ALU64 / ALU (32-bit, zero-extends): MOV ADD SUB MUL DIV MOD OR AND
-//!          XOR LSH RSH ARSH NEG (DIV/MOD unsigned; /0→0, %0→dst)
+//!          XOR LSH RSH ARSH NEG END (DIV/MOD unsigned; /0→0, %0→dst)
 //!   JMP / JMP32 (compares low 32): JA JEQ JNE JSET JGT JGE JLT JLE
 //!          JSGT JSGE JSLT JSLE, EXIT
 //!   LDX:   load size B/H/W/DW from [src+off] — the 512-byte stack
@@ -17,8 +17,8 @@
 //!   CALL:  helper dispatch (R1..R5 → helper, R0 = result)
 //!
 //! Programs hitting any other opcode return None so callers see
-//! "unsupported" distinct from "ran and returned". Map-pointer helper
-//! args + the full verifier breadth ride follow-ups.
+//! "unsupported" distinct from "ran and returned". Program-type verifiers
+//! reject helper or pointer contracts that have no installed runtime owner.
 //!
 //! Step budget is 1M dispatches per call (Linux's `BPF_COMPLEXITY_
 //! LIMIT_INSNS` is also 1M); exceed it and we bail with None.
@@ -39,17 +39,23 @@ const BPF_LDX:   u8 = 0x01;
 
 const BPF_CALL: u8 = 0x85;
 
-/// Helper-call descriptor: a (helper-id, fn) pair. The interpreter
-/// hands R1..R5 to `f` and stores its return in R0. Helpers live
-/// outside the interpreter so the kernel can plug in ones that
-/// touch sched/time/per-cpu state without dragging those deps
-/// into the bpf crate.
-pub type HelperFn = fn(i64, i64, i64, i64, i64) -> i64;
+/// State shared by all programs in one cgroup effective-array run.
+///
+/// Linux's cgroup array runner carries a mutable `retval` between programs.
+/// Keeping it explicit also avoids hidden per-CPU interpreter state.
+#[derive(Default)]
+pub struct HelperState {
+    pub retval: i32,
+}
+
+/// Helper-call descriptor: a (helper-id, fn) pair. The interpreter hands
+/// R1..R5 and the cgroup run state to `f`, then stores its return in R0.
+pub type HelperFn = fn(&mut HelperState, i64, i64, i64, i64, i64) -> i64;
 pub struct Helper { pub id: u32, pub f: HelperFn }
 
-/// Context register. Linux passes the program's context (skb /
-/// xdp_md / etc.) in R1 on entry. v1 models that as "R1 is an
-/// offset into `pkt`"; any other src reg on a LDX is rejected.
+/// Context register. Linux passes the program's context in R1 on entry.
+/// The runner models R1 as an offset into `pkt`; verified pointer copies
+/// carry that synthetic address.
 
 const BPF_SRC_X: u8 = 0x08; // bit 3 — 0=use imm, 1=use src reg
 
@@ -69,6 +75,7 @@ const BPF_OP_MOD:  u8 = 0x90;
 const BPF_OP_XOR:  u8 = 0xa0;
 const BPF_OP_MOV:  u8 = 0xb0;
 const BPF_OP_ARSH: u8 = 0xc0;
+const BPF_OP_END:  u8 = 0xd0;
 
 // JMP op (bits 4..7), shared by BPF_JMP (0x05) and BPF_JMP32 (0x06).
 const BPF_OP_JA:   u8 = 0x00;
@@ -177,6 +184,26 @@ fn alu(op: u8, dst: i64, rhs: i64, is64: bool) -> Option<i64> {
     }
 }
 
+/// BPF_END converts the low 16/32/64 bits to the byte order selected by the
+/// opcode source bit, then zero-extends sub-64-bit results. # C: O(1)
+fn endian(dst: i64, width: i32, to_be: bool) -> Option<i64> {
+    Some(match width {
+        16 => {
+            let v = dst as u16;
+            (if to_be { v.to_be() } else { v.to_le() }) as i64
+        }
+        32 => {
+            let v = dst as u32;
+            (if to_be { v.to_be() } else { v.to_le() }) as i64
+        }
+        64 => {
+            let v = dst as u64;
+            (if to_be { v.to_be() } else { v.to_le() }) as i64
+        }
+        _ => return None,
+    })
+}
+
 /// Evaluate a conditional-jump predicate. `is64` false → compare low 32 bits.
 /// # C: O(1)
 fn jmp_take(op: u8, lhs: i64, rhs: i64, is64: bool) -> Option<bool> {
@@ -236,9 +263,8 @@ fn decode(bytes: &[u8]) -> Insn {
 /// unsupported opcode, step-budget exhaustion, out-of-bounds pc,
 /// or an out-of-bounds packet load. R1 is initialized to 0 and
 /// LDX_MEM with src=R1 reads pkt[r1+off..r1+off+size] (bounds-
-/// checked). LDX with any other src reg is rejected — v1 doesn't
-/// track reg types, so we can't tell a packet pointer from a
-/// scalar otherwise.
+/// checked). Each program-type verifier determines which source registers
+/// retain context provenance before this runner executes the program.
 /// # C: O(insn count × step budget)
 pub fn run(insns: &[u8], pkt: &[u8]) -> Option<i64> {
     run_with_helpers(insns, pkt, &[])
@@ -248,6 +274,18 @@ pub fn run(insns: &[u8], pkt: &[u8]) -> Option<i64> {
 /// that issue BPF_CALL with an unknown helper id return None.
 /// # C: O(insn count × step budget)
 pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<i64> {
+    run_with_helpers_and_state(insns, pkt, helpers, &mut HelperState::default())
+}
+
+/// Stateful helper variant used by cgroup effective arrays. The caller owns
+/// the state and may reuse it for each program in attachment order.
+/// # C: O(insn count × step budget)
+pub fn run_with_helpers_and_state(
+    insns: &[u8],
+    pkt: &[u8],
+    helpers: &[Helper],
+    helper_state: &mut HelperState,
+) -> Option<i64> {
     if insns.is_empty() || insns.len() % 8 != 0 { return None; }
     let n = insns.len() / 8;
 
@@ -272,7 +310,8 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
         if i.opcode == BPF_CALL {
             let id = i.imm as u32;
             let h = helpers.iter().find(|h| h.id == id)?;
-            regs[0] = (h.f)(regs[1], regs[2], regs[3], regs[4], regs[5]);
+            regs[0] = (h.f)(helper_state, regs[1], regs[2], regs[3], regs[4], regs[5]);
+            regs[1..=5].fill(0);
             pc += 1;
             continue;
         }
@@ -283,6 +322,11 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
                 let op  = i.opcode & 0xf0;
                 let src_is_reg = (i.opcode & BPF_SRC_X) != 0;
                 let dst = i.dst as usize;
+                if class == BPF_ALU && op == BPF_OP_END {
+                    regs[dst] = endian(regs[dst], i.imm, src_is_reg)?;
+                    pc += 1;
+                    continue;
+                }
                 // NEG is unary (no source operand); others take imm or src reg.
                 let rhs: i64 = if op == BPF_OP_NEG { 0 }
                                else if src_is_reg { regs[i.src as usize] }

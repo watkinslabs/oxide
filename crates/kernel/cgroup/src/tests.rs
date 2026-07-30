@@ -139,9 +139,9 @@ fn pids_limit_enforced_across_subtree() {
     let (c, _) = t.create(ROOT, "svc").unwrap();
     t.write_file(c, "pids.max", "2").unwrap();
     assert_eq!(s(&t.read_file(c, "pids.max").unwrap()), "2\n");
-    t.add_proc(c, 100);
+    t.add_proc(c, 100).unwrap();
     assert!(!t.fork_would_exceed_pids(c)); // 1 -> 2 ok
-    t.add_proc(c, 101);
+    t.add_proc(c, 101).unwrap();
     assert!(t.fork_would_exceed_pids(c));  // 2 -> 3 exceeds
     t.remove_proc(101);
     assert!(!t.fork_would_exceed_pids(c));
@@ -155,7 +155,7 @@ fn pids_limit_counts_threads() {
     t.write_subtree_control(ROOT, "+pids").unwrap();
     let (c, _) = t.create(ROOT, "svc").unwrap();
     t.write_file(c, "pids.max", "3").unwrap();
-    t.add_proc(c, 200);              // leader → 1 task
+    t.add_proc(c, 200).unwrap();     // leader → 1 task
     t.add_thread(200, 201);          // thread → 2 tasks
     assert!(!t.fork_would_exceed_pids(c)); // 2 -> 3 ok
     t.add_thread(200, 202);          // 3 tasks
@@ -168,6 +168,47 @@ fn pids_limit_counts_threads() {
 }
 
 #[test]
+fn thread_membership_moves_atomically_and_outlives_an_exited_leader() {
+    let mut t = Tree::new();
+    t.mount_root();
+    let (a, _) = t.create(ROOT, "a").unwrap();
+    let (b, _) = t.create(ROOT, "b").unwrap();
+    t.add_proc(a, 300).unwrap();
+    t.add_thread(300, 301);
+    t.add_thread(300, 302);
+
+    t.add_proc(b, 300).unwrap();
+    assert_eq!(t.cgroup_of(300), b);
+    assert_eq!(t.cgroup_of(301), b);
+    assert_eq!(t.cgroup_of(302), b);
+    assert_eq!(t.exit_task(300, 300), None);
+    assert_eq!(t.cgroup_of(301), b);
+    assert_eq!(t.remove(b), Err(vfs::VfsError::Ebusy));
+
+    assert_eq!(t.exit_task(301, 300), None);
+    assert_eq!(t.exit_task(302, 300), Some(b));
+    assert_eq!(t.cgroup_of(300), ROOT);
+    t.remove(b).unwrap();
+}
+
+#[test]
+fn first_process_attachment_moves_threads_created_in_root() {
+    let mut t = Tree::new();
+    t.mount_root();
+    t.write_subtree_control(ROOT, "+pids").unwrap();
+    let (child, _) = t.create(ROOT, "child").unwrap();
+    t.add_thread(400, 401);
+    assert_eq!(t.cgroup_of(401), ROOT);
+    assert_eq!(s(&t.read_file(ROOT, "pids.current").unwrap()), "1\n");
+
+    t.add_proc(child, 400).unwrap();
+    assert_eq!(t.cgroup_of(400), child);
+    assert_eq!(t.cgroup_of(401), child);
+    assert_eq!(s(&t.read_file(ROOT, "pids.current").unwrap()), "2\n");
+    assert_eq!(s(&t.read_file(child, "pids.current").unwrap()), "2\n");
+}
+
+#[test]
 fn procs_attach_events_and_proc_path() {
     let mut t = Tree::new();
     t.mount_root();
@@ -175,13 +216,13 @@ fn procs_attach_events_and_proc_path() {
     let (b, _) = t.create(a, "b").unwrap();
     assert_eq!(t.path_of(b), "/a/b");
     assert_eq!(s(&t.read_file(b, "cgroup.events").unwrap()), "populated 0\nfrozen 0\n");
-    t.add_proc(b, 42);
+    t.add_proc(b, 42).unwrap();
     assert_eq!(s(&t.read_file(b, "cgroup.procs").unwrap()), "42\n");
     // ancestor sees subtree populated.
     assert_eq!(s(&t.read_file(a, "cgroup.events").unwrap()), "populated 1\nfrozen 0\n");
     assert_eq!(t.cgroup_of(42), b);
     // moving reassigns membership.
-    t.add_proc(a, 42);
+    t.add_proc(a, 42).unwrap();
     assert_eq!(t.cgroup_of(42), a);
     assert_eq!(s(&t.read_file(b, "cgroup.procs").unwrap()), "");
 }
@@ -225,9 +266,9 @@ fn kill_lists_all_subtree_pids() {
     t.mount_root();
     let (a, _) = t.create(ROOT, "a").unwrap();
     let (b, _) = t.create(a, "b").unwrap();
-    t.add_proc(a, 1);
-    t.add_proc(b, 2);
-    t.add_proc(b, 3);
+    t.add_proc(a, 1).unwrap();
+    t.add_proc(b, 2).unwrap();
+    t.add_proc(b, 3).unwrap();
     let mut pids = t.subtree_pids(a);
     pids.sort_unstable();
     assert_eq!(pids, alloc::vec![1, 2, 3]);
@@ -241,8 +282,8 @@ fn io_stat_accounts_and_rolls_up() {
     t.write_subtree_control(ROOT, "+io").unwrap();
     let (a, _) = t.create(ROOT, "a").unwrap();
     let (b, _) = t.create(a, "b").unwrap();
-    t.add_proc(a, 10);
-    t.add_proc(b, 20);
+    t.add_proc(a, 10).unwrap();
+    t.add_proc(b, 20).unwrap();
     t.charge_io(10, 4096, false); // read on a
     t.charge_io(20, 8192, true);  // write on b (child)
     t.charge_io(20, 4096, false); // read on b
@@ -309,8 +350,8 @@ fn cpu_quota_groups_lists_only_capped() {
     t.write_subtree_control(ROOT, "+cpu").unwrap();
     let (capped, _) = t.create(ROOT, "capped").unwrap();
     let (free, _) = t.create(ROOT, "free").unwrap();
-    t.add_proc(capped, 11);
-    t.add_proc(free, 22);
+    t.add_proc(capped, 11).unwrap();
+    t.add_proc(free, 22).unwrap();
     t.write_file(capped, "cpu.max", "50000 100000").unwrap();
     let groups = t.cpu_quota_groups();
     assert_eq!(groups.len(), 1);

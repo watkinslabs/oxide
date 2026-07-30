@@ -6,6 +6,9 @@
 // - `files`: cgroup control-file read/write handling.
 
 mod accounting;
+#[cfg(test)]
+mod accounting_tests;
+mod bpf_device;
 mod controllers;
 mod files;
 mod hierarchy;
@@ -15,4 +18,5 @@ pub use controllers::{
     ALL, CORE_FILES, CPU, CPUSET, FILE_SLOT_UNKNOWN, IO, MEMORY, NONROOT_FILES, PIDS,
     controller_files, file_slot,
 };
-pub use types::{CpuGroup, KResult, MemoryCharge, MemoryEvent, MemoryEvents, MemoryKind, MemoryPressure, MemoryPressureResult, MemoryStats, Node, ROOT, Tree};
+pub use bpf_device::{BpfDeviceError, BpfDeviceQuery};
+pub use types::{BpfDeviceMode, CpuGroup, KResult, MemoryCharge, MemoryEvent, MemoryEvents, MemoryKind, MemoryPressure, MemoryPressureResult, MemoryStats, Node, ROOT, Tree};
