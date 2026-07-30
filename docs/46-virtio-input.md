@@ -7,11 +7,11 @@ FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50`. Provides:`d
 - Changed: §2, §6, §8–§10 bind every open file to one exact live evdev object, give each open client its own packet queue and clock, preserve host `SYN_REPORT`, and make disconnect/revoke/grab/state reconciliation match Linux.
 - Changed: §2, §8, §10, §11, §16 require both virtqueues and Linux-shaped STATUSQ output, completion, teardown, and inhibit restore behavior.
 - Changed: §7, §13–§15 correct bitmap widths, ioctl errors, MT forwarding, force-feedback advertisement, and input-core autorepeat ownership.
-- Why: Linux v7.2-rc4 `drivers/input/{evdev.c,input.c}` and `drivers/virtio/virtio_input.c` contradict the shared-stream, synthetic-SYN, cache-only-repeat, and force-feedback text.
+- Why: the defined evdev and virtio-input behavior contradicts the shared-stream, synthetic-SYN, cache-only-repeat, and force-feedback text.
 - Affected code: `input`, `drv`, `drv-virtio-input`, devfs, procfs, sysfs, netlink, PCI virtio-child handoff.
 - Test contract change: add per-open delivery/reconciliation, stale-fd disconnect, STATUSQ lifecycle, inhibit output, and QMP keyboard/pointer injection gates.
 
-Full Linux compat surface per `linux/include/uapi/linux/input.h` + `input-event-codes.h` + virtio 1.2 §5.8. No deferrals.
+Full evdev/input-event UAPI surface plus virtio 1.2 §5.8. No deferrals.
 
 ## 1 Purpose
 
@@ -169,9 +169,9 @@ Bitmap results use Linux native-word rounding and caller-length truncation: EV/R
 
 ## 13 Tablet + touchscreen + multi-touch
 
-ABS-axis devices (tablets, touchscreens) report ABS_X / ABS_Y / ABS_PRESSURE per `linux/Documentation/input/event-codes.rst`. Full ABS_INFO (min/max/fuzz/flat/res) read from config-space and forwarded via `EVIOCGABS`.
+ABS-axis devices (tablets, touchscreens) report ABS_X / ABS_Y / ABS_PRESSURE per the input-event ABI. Full ABS_INFO (min/max/fuzz/flat/res) read from config-space and forwarded via `EVIOCGABS`.
 
-Multi-touch via the Linux MT-B protocol (slotted) per `linux/Documentation/input/multi-touch-protocol.rst`:
+Multi-touch uses the slotted MT-B protocol:
 
 | Code | Meaning |
 |---|---|
@@ -187,7 +187,7 @@ Multi-touch via the Linux MT-B protocol (slotted) per `linux/Documentation/input
 
 ## 14 Force feedback (EV_FF)
 
-Linux `drivers/virtio/virtio_input.c` does not read EV_FF configuration or create an input force-feedback backend. `drv-virtio-input` therefore does not advertise EV_FF even if a nonconforming host exposes those bits. Generic evdev force-feedback UAPI belongs to input core and devices that register a real FF backend.
+Virtio-input does not register a force-feedback backend. `drv-virtio-input` therefore does not advertise EV_FF even if a nonconforming host exposes those bits. Generic evdev force-feedback UAPI belongs to input core and devices that register a real FF backend.
 
 ## 15 Autorepeat
 
