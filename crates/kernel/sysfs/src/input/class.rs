@@ -1,0 +1,77 @@
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use vfs::{
+    mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult,
+    VfsError,
+};
+
+use super::model::{input_devs, parent_name, INO_CLASS_INPUT, INO_INPUT_LINK};
+use crate::DIR_PERM;
+
+struct ClassInputOps;
+
+impl InodeOps for ClassInputOps {
+    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let info = input_devs().into_iter()
+            .find(|info| info.addr == name || parent_name(info) == name)
+            .ok_or(VfsError::Enoent)?;
+        let canon = if info.addr == name {
+            info.sysfs_event_canon()
+        } else {
+            info.sysfs_parent_canon()
+        }.ok_or(VfsError::Enoent)?;
+        Ok(crate::make_symlink_inode_ino(
+            alloc::format!("../../{canon}").into_bytes(),
+            INO_INPUT_LINK,
+        ))
+    }
+}
+
+impl FileOps for ClassInputOps {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let devices = input_devs();
+        let mut names = Vec::with_capacity(devices.len() * 2);
+        for device in devices.iter() {
+            names.push(parent_name(device));
+            names.push(device.addr.clone());
+        }
+        let mut index = ctx.pos as usize;
+        while index < names.len() {
+            let next = index as u64 + 1;
+            let ino = inode.lookup(&names[index]).map(|child| child.ino()).unwrap_or(0);
+            if !ctx.emit(&names[index], ino, FileType::Symlink, next) {
+                return Ok(());
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Register Linux input class and parentless virtual-device roots. # C: O(1)
+pub fn init() {
+    crate::register(
+        "/sys/devices/virtual/input",
+        super::topology::make_virtual_input_dir(),
+    );
+    crate::register(
+        "/sys/class/input",
+        InodeBuilder::new(
+            INO_CLASS_INPUT,
+            mk_mode(FileType::Directory, DIR_PERM),
+            Arc::new(ClassInputOps),
+            Arc::new(ClassInputOps),
+        ).build(),
+    );
+}
+
+#[cfg(test)]
+pub(super) fn make_class_input_dir() -> InodeRef {
+    InodeBuilder::new(
+        INO_CLASS_INPUT,
+        mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(ClassInputOps),
+        Arc::new(ClassInputOps),
+    ).build()
+}

@@ -40,9 +40,8 @@ impl vfs::FileOps for NetlinkFileOps {
                 crate::ReceiveState::Empty => {
                     #[cfg(target_os = "oxide-kernel")]
                     {
-                        // Linux `netlink_recvmsg` -> `skb_recv_datagram` ->
-                        // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
-                        // `sock_intr_errno(*timeo)` off `sock_rcvtimeo`.
+                        // Interrupted receives derive their errno from the
+                        // effective receive timeout.
                         if sched::live::deliverable_signals_self() != 0 {
                             return Err(net::sock_intr::sock_intr_vfs(s.recv_deadline_ns()));
                         }
@@ -142,4 +141,3 @@ pub fn netlink_from_inode(inode: &vfs::Inode) -> Option<&NetlinkSocket> {
 pub fn netlink_arc_from_inode(inode: &vfs::InodeRef) -> Option<Arc<NetlinkSocket>> {
     inode.i_private().clone().downcast::<NetlinkSocket>().ok()
 }
-

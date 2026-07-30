@@ -14,6 +14,8 @@ block = { path = "../block" }
 netlink = { path = "../netlink" }
 network-namespace = { path = "../network-namespace" }
 drv   = { path = "../../drivers/drv" }
+drm   = { path = "../../drivers/drm" }
+input = { path = "../input" }
 modules = { path = "../modules" }
 firmware = { path = "../firmware" }
 klog = { path = "../../shared/klog" }

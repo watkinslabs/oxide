@@ -1,7 +1,7 @@
 // virtio-gpu modern display setup. Called by the virtio-gpu model driver's
 // probe after virtio-pci transport init has produced queue0/config state.
 
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};

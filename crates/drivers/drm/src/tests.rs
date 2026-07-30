@@ -171,7 +171,7 @@ fn register_rolls_back_card_slot_when_node_publication_fails() {
     crate::registry::clear_cards_for_tests();
     node::unregister_all();
     let conflict = drv::try_device_add(Arc::new(
-        drv::Device::new("drm", alloc::string::String::from("dri/card0"), 0, 0, 0)
+        drv::Device::new("drm", alloc::string::String::from("card0"), 0, 0, 0)
             .with_devnode("drm", alloc::string::String::from("dri/card0"), Some((226, 0))),
     ))
     .expect("conflict device registration");

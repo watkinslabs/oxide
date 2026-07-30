@@ -1,5 +1,6 @@
 // Module manifest:
 // - `model`: device/driver registries, lifecycle, binding, publication hooks.
+// - `path`: exact ancestry and canonical live-object paths.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -9,18 +10,22 @@ extern crate alloc;
 extern crate std;
 
 pub mod model;
+mod path;
+pub use path::{
+    device_canon, device_canon_exact, device_parent_canon_exact, device_root_canon,
+};
 pub use model::{
     bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM,
     IORESOURCE_PREFETCH,
     register_driver, unregister_driver, devices, device_count, find_matching_device_identity,
-    try_device_add, device_del, rollback_devices, driver_names, driver_names_for_bus, driver_count,
-    match_driver, bind_addr, unbind,
+    try_device_add, try_device_add_with_parent, device_del, rollback_devices, driver_names,
+    driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,
     shutdown_all, set_sysfs_hook, set_sysfs_remove_hook, set_bind_hook, set_driver_hook, set_devtmpfs_hook,
     set_devtmpfs_del_hook,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error { NoMatch, NoMem, ProbeFailed, Removed, AlreadyBound, NotFound, Busy }
+pub enum Error { NoMatch, NoMem, ProbeFailed, Removed, AlreadyBound, NotFound, Busy, Invalid }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 

@@ -1,4 +1,4 @@
-//! sysfs attribute model (Linux `include/linux/sysfs.h` + `fs/sysfs/`).
+//! Sysfs attribute model.
 //! D27: the kobject `struct attribute` + `struct attribute_group` + `struct
 //! sysfs_ops { show, store }` shape. A kobject's directory is populated from an
 //! `AttrGroup` (the default attribute list) and each attribute file's contents
@@ -59,9 +59,7 @@ struct AttrFileData {
 /// stored file contents. Linux accepts `O_TRUNC` on them (including Rust's
 /// `fs::write`), so truncation is a no-op before `sysfs_ops->store`.
 ///
-/// This is kernfs's `kernfs_iop_setattr`, which runs `setattr_copy` and
-/// explicitly "ignores size changes" (`fs/kernfs/inode.c`) — so EVERY sysfs
-/// file accepts `ATTR_SIZE`, not just the ones built through
+/// Every sysfs file accepts `ATTR_SIZE`, not just the ones built through
 /// [`make_attr_inode`]. `echo add > /sys/.../uevent` and systemd's
 /// `write_string_file` both open `O_WRONLY|O_CREAT|O_TRUNC`, so a sysfs inode
 /// left on the VFS default (`truncate` → `EROFS`) fails the OPEN: that is what

@@ -374,7 +374,10 @@ impl VirtioChildDriverOps<ModelFaultSession> for ModelFaultOps {
         VirtioTransportProfile::q0(MODEL_FAULT_FEATURES, None)
     }
 
-    fn probe_child(session: &mut ModelFaultSession) -> drv::KResult<()> {
+    fn probe_child(
+        _parent: &Arc<drv::Device>,
+        session: &mut ModelFaultSession,
+    ) -> drv::KResult<()> {
         let mut state = model_fault_state().lock().unwrap();
         state.events.push(("probe", session.device_key().raw() as u64));
         if state.mode == ModelFaultMode::ChildFail {
@@ -404,6 +407,13 @@ impl VirtioChildDriverOps<ModelFaultSession> for ModelFaultOps {
 fn child_model_driver_faults_release_without_transport_publish() {
     drv::register_driver(&MODEL_FAULT_DRV);
     remove_model_fault_devices();
+    let parent = drv::try_device_add(Arc::new(drv::Device::new(
+        "pci",
+        String::from(MODEL_FAULT_PARENT),
+        VIRTIO_VENDOR_ID,
+        0,
+        0,
+    ))).expect("fault-test PCI parent");
 
     reset_model_fault_state(ModelFaultMode::BeginFail);
     let begin_fail = drv::try_device_add(model_fault_device()).unwrap();
@@ -441,4 +451,5 @@ fn child_model_driver_faults_release_without_transport_publish() {
         vec![("remove", MODEL_FAULT_KEY_RAW), ("unpublish", MODEL_FAULT_KEY_RAW)]);
 
     drv::device_del(&child_fail);
+    drv::device_del(&parent);
 }
