@@ -190,6 +190,49 @@ fn reply_completes_matching_slot() {
 }
 
 #[test]
+fn vectored_reply_preserves_one_message_across_iovecs() {
+    const HEADER_SPLIT: usize = 7;
+    const BODY_SPLIT: usize = 3;
+
+    let c = conn();
+    let slot = c.new_request(FUSE_LOOKUP, 1, b"x\0");
+    let body = [0x31u8, 0x42, 0x53, 0x64, 0x75, 0x86];
+    let msg = reply(slot.unique, 0, &body);
+    let body_start = FUSE_OUT_HEADER_SIZE + BODY_SPLIT;
+    let bufs: [&[u8]; 3] = [
+        &msg[..HEADER_SPLIT],
+        &msg[HEADER_SPLIT..body_start],
+        &msg[body_start..],
+    ];
+    assert_eq!(c.submit_reply_iter(&bufs), Ok(msg.len()));
+    assert!(slot.done.load(core::sync::atomic::Ordering::Acquire));
+    assert_eq!(&*slot.reply.lock(), &body);
+}
+
+#[test]
+fn vectored_reply_rejects_truncated_declared_message() {
+    let c = conn();
+    let slot = c.new_request(FUSE_LOOKUP, 1, b"x\0");
+    let body = [0x91u8; 8];
+    let msg = reply(slot.unique, 0, &body);
+    let bufs: [&[u8]; 2] = [&msg[..FUSE_OUT_HEADER_SIZE], &msg[FUSE_OUT_HEADER_SIZE..msg.len() - 1]];
+    assert_eq!(c.submit_reply_iter(&bufs), Err(vfs::VfsError::Einval));
+    assert!(!slot.done.load(core::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn reply_length_must_cover_the_complete_write() {
+    let c = conn();
+    let slot = c.new_request(FUSE_LOOKUP, 1, b"x\0");
+    let mut msg = reply(slot.unique, 0, &[0x72u8; 4]);
+    msg.push(0);
+    assert_eq!(c.submit_reply(&msg), Err(vfs::VfsError::Einval));
+    let bufs: [&[u8]; 2] = [&msg[..FUSE_OUT_HEADER_SIZE], &msg[FUSE_OUT_HEADER_SIZE..]];
+    assert_eq!(c.submit_reply_iter(&bufs), Err(vfs::VfsError::Einval));
+    assert!(!slot.done.load(core::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
 fn reply_unknown_unique_is_dropped() {
     let c = conn();
     let slot = c.new_request(FUSE_LOOKUP, 1, b"x\0");
