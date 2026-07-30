@@ -74,13 +74,20 @@ pub fn lock_new_mount_bits(opts: u64) -> u32 { lock_bits_for(opts) | MNT_LOCKED 
 /// into `EPERM` — Linux's errno for both `do_remount` and `do_mount_setattr`.
 /// # C: O(1)
 pub fn can_change_locked_flags(m: &Mount, new_opts: u64) -> bool {
-    let fl = m.internal_flags();
+    can_change_locked_options(m.flags(), m.internal_flags(), new_opts)
+}
+
+/// Pure locked-option admission used for a realized `fsmount` object whose
+/// `Mount` is deliberately not materialized until `move_mount`. This is the
+/// same decision as [`can_change_locked_flags`], not a second policy.
+/// # C: O(1)
+pub fn can_change_locked_options(old_opts: u64, fl: u32, new_opts: u64) -> bool {
     if fl & MNT_LOCK_READONLY != 0 && new_opts & MNT_RDONLY == 0 { return false; }
     if fl & MNT_LOCK_NODEV    != 0 && new_opts & MNT_NODEV  == 0 { return false; }
     if fl & MNT_LOCK_NOSUID   != 0 && new_opts & MNT_NOSUID == 0 { return false; }
     if fl & MNT_LOCK_NOEXEC   != 0 && new_opts & MNT_NOEXEC == 0 { return false; }
     if fl & MNT_LOCK_ATIME    != 0
-        && (m.flags() & MNT_ATIME_MASK) != (new_opts & MNT_ATIME_MASK) { return false; }
+        && (old_opts & MNT_ATIME_MASK) != (new_opts & MNT_ATIME_MASK) { return false; }
     true
 }
 

@@ -77,6 +77,7 @@ pub(super) fn clone_mnt(src: &Arc<Mount>, ty: CloneType, pg: u64, master: &Arc<M
     let clone = new_mount(sb, src.mount_point_str(), None, 0, new_id, ns);
     if let Some(root) = src.mnt_root() { *clone.mnt_root.lock() = Some(root); }
     clone.flags.store(src.flags.load(Ordering::Acquire), Ordering::Release);
+    clone.install_idmap(src.idmap()); // Linux `clone_mnt` retains it on every clone path.
     // Linux `clone_mnt`: `mnt_flags = old->mnt_flags & ~MNT_INTERNAL_FLAGS` keeps
     // every sticky MNT_LOCK_* bit (a copy may not relax what the source froze),
     // and `copy_tree` then re-raises MNT_LOCKED on each nested submount. Both are

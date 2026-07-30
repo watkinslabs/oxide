@@ -91,8 +91,10 @@ pub struct Mount {
     /// Per-mount id mapping (Linux `mnt_idmap`). Identity by default — a
     /// non-idmapped mount maps every uid/gid to itself, so stat-out and
     /// chown/create-in are byte-identical to the non-idmapped kernel.
-    /// `mount_setattr(MOUNT_ATTR_IDMAP)` would install a non-identity map.
-    pub mnt_idmap: Arc<crate::idmap::Idmap>,
+    /// `mount_setattr(MOUNT_ATTR_IDMAP)` installs a non-identity map while the
+    /// mount is detached. Readers clone the immutable map under this lock;
+    /// the pointer changes at most once for the public mount_setattr path.
+    mnt_idmap: Spinlock<Arc<crate::idmap::Idmap>, MountClass>,
 }
 
 impl Mount {
@@ -131,6 +133,16 @@ impl Mount {
 
     /// The mounted-instance superblock (Linux `mnt_sb`). # C: O(1)
     pub fn sb(&self) -> &Arc<SuperBlock> { &self.sb }
+
+    /// Snapshot this mount's immutable idmap. # C: O(1)
+    pub fn idmap(&self) -> Arc<crate::idmap::Idmap> { self.mnt_idmap.lock().clone() }
+
+    /// Install a map after the detached-mount admission pass succeeded.
+    /// Caller serializes the validate+commit transaction with `MOUNT_WRITE`.
+    /// # C: O(1)
+    pub(super) fn install_idmap(&self, map: Arc<crate::idmap::Idmap>) {
+        *self.mnt_idmap.lock() = map;
+    }
 
     /// Active writer count (Linux `mnt_writers`). # C: O(1)
     pub fn writers(&self) -> i32 { self.mnt_writers.load(Ordering::Acquire) }
@@ -396,7 +408,7 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         mnt_count: AtomicI32::new(0),
         detached: AtomicBool::new(false),
         mnt_internal_flags: AtomicU32::new(0),
-        mnt_idmap: Arc::new(crate::idmap::Idmap::identity()),
+        mnt_idmap: Spinlock::new(Arc::new(crate::idmap::Idmap::identity())),
     })
 }
 
@@ -405,6 +417,6 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
 /// (chown/create-in); identity ⇒ no-op. # C: O(log N)
 pub fn idmap_for(mnt_id: u64) -> Arc<crate::idmap::Idmap> {
     mount_by_id(mnt_id)
-        .map(|m| m.mnt_idmap.clone())
+        .map(|m| m.idmap())
         .unwrap_or_else(|| Arc::new(crate::idmap::Idmap::identity()))
 }
