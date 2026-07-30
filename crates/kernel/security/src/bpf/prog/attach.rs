@@ -395,7 +395,7 @@ fn inode_from_fd(fd: i32) -> Result<InodeRef, Errno> {
     Ok(Arc::clone(file.inode()))
 }
 
-fn prog_inode_from_fd(fd: i32) -> Result<InodeRef, Errno> {
+pub(super) fn prog_inode_from_fd(fd: i32) -> Result<InodeRef, Errno> {
     let inode = inode_from_fd(fd)?;
     if inode.private::<BpfProgInode>().is_none() { return Err(Errno::Einval); }
     Ok(inode)

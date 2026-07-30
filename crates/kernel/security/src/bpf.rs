@@ -59,9 +59,9 @@ pub struct BpfProgInode {
     /// expected CGROUP_SKB direction part of the program's attach contract.
     pub enforce_expected_attach_type: bool,
     pub insns: Vec<u8>,
-    /// Map objects referenced by relocated `BPF_LD_IMM64` instructions.
-    /// Keeping these strong references pins maps for the program lifetime.
-    pub maps: Vec<InodeRef>,
+    /// Canonical program-owned map set. Relocation maps retain index order;
+    /// explicit lifetime bindings append, and every entry pins its map.
+    pub maps: Spinlock<Vec<InodeRef>, TaskListClass>,
 }
 
 static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
@@ -256,7 +256,7 @@ pub fn make_bpf_prog_inode_with_contract(
         .size(size)
         .private(Arc::new(BpfProgInode {
             id, prog_type, expected_attach_type, enforce_expected_attach_type,
-            insns, maps,
+            insns, maps: Spinlock::new(maps),
         }))
         .build();
     PROGRAMS_BY_ID.lock().insert(id, Arc::downgrade(&inode));
@@ -364,6 +364,7 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::PROG_DETACH => prog::attach(&a, true, caps),
         cmd::PROG_QUERY                 => prog::query(&a, args.a1, args.a2 as u32, caps),
         cmd::PROG_GET_FD_BY_ID          => prog::get_fd_by_id(&a, caps),
+        cmd::PROG_BIND_MAP              => prog::bind_map(&a),
         cmd::LINK_CREATE                => prog::link_create(&a, caps),
         // `__sys_bpf()`'s `default: err = -EINVAL`, reached only after
         // the attr size protocol above has had its say.
