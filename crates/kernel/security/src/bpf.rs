@@ -7,9 +7,7 @@
 //   user.rs  user-memory access for the attr + insn + key/value copies
 //   prog.rs  PROG_LOAD, PROG_ATTACH/DETACH, LINK_CREATE
 //   map.rs   MAP_CREATE and the element/freeze commands
-//   ids.rs   pseudo-inode numbers for the three fd-backed objects
-//
-// Linux: kernel/bpf/syscall.c `__sys_bpf()` (linux-master v7.2.0-rc4).
+//   ids.rs   pseudo-inode numbers for fd-backed objects
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -28,13 +26,15 @@ mod user;
 mod prog;
 mod cgroup_device;
 mod cgroup_network;
+mod btf;
+mod log;
 pub(crate) mod map;
 mod ids;
 
 use attr::Caps;
 use uapi::cmd;
 
-const BPF_FD_MODE: u16 = 0o600;
+pub(super) const BPF_FD_MODE: u16 = 0o600;
 
 /// Re-exported for `SO_ATTACH_BPF` in the setsockopt slot.
 pub use uapi::prog_type::SOCKET_FILTER as BPF_PROG_TYPE_SOCKET_FILTER;
@@ -346,10 +346,11 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
     // so the upper half of the register is not part of it.
     let mut c = args.a0 as u32;
     let a = user::fetch_attr(args.a1, args.a2 as u32)?;
-    if c & cmd::COMMON_ATTRS != 0 {
-        user::check_common_attr(args.a3, args.a4 as u32)?;
+    let common = if c & cmd::COMMON_ATTRS != 0 {
+        let common = user::fetch_common_attr(args.a3, args.a4 as u32)?;
         c &= !cmd::COMMON_ATTRS;
-    }
+        Some(common)
+    } else { None };
     let caps = caps_now()?;
     match c {
         cmd::MAP_CREATE                 => map::create(&a, caps),
@@ -366,6 +367,12 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::PROG_GET_FD_BY_ID          => prog::get_fd_by_id(&a, caps),
         cmd::PROG_BIND_MAP              => prog::bind_map(&a),
         cmd::LINK_CREATE                => prog::link_create(&a, caps),
+        cmd::BTF_LOAD                   => btf::load(
+            &a, args.a1, args.a2 as u32, common, caps,
+        ),
+        cmd::BTF_GET_FD_BY_ID           => btf::get_fd_by_id(&a, caps),
+        cmd::BTF_GET_NEXT_ID            => btf::get_next_id(&a, args.a1, caps),
+        cmd::OBJ_GET_INFO_BY_FD         => btf::get_info_by_fd(&a, args.a1),
         // `__sys_bpf()`'s `default: err = -EINVAL`, reached only after
         // the attr size protocol above has had its say.
         _ => Err(Errno::Einval),
@@ -373,7 +380,7 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
 }
 
 /// Effective capability snapshot. `bpf_capable()` and friends fold
-/// CAP_SYS_ADMIN in (include/linux/capability.h), which [`Caps`] models.
+/// CAP_SYS_ADMIN in, which [`Caps`] models.
 /// # C: O(1)
 fn caps_now() -> Result<Caps, Errno> {
     let cur = sched::current().ok_or(Errno::Esrch)?;
@@ -385,17 +392,25 @@ fn caps_now() -> Result<Caps, Errno> {
     })
 }
 
-/// Publish a bpf object on a descriptor. Linux's `bpf_map_new_fd()`,
-/// `bpf_prog_new_fd()` and `bpf_link_create` all call
-/// `anon_inode_getfd(..., flags | O_CLOEXEC)`, so the descriptor must
-/// NOT survive `execve` (kernel/bpf/syscall.c). # C: O(fd words)
+/// Publish a BPF object on a descriptor that must not survive `execve`.
+/// # C: O(fd words)
 pub(super) fn install_fd(inode: InodeRef, name: &str) -> Result<i64, Errno> {
+    install_fd_access(inode, name, vfs::OpenFlags::O_RDWR)
+}
+
+/// Publish one descriptor with the requested access mode and close-on-exec.
+/// # C: O(fd words)
+pub(super) fn install_fd_access(
+    inode: InodeRef,
+    name: &str,
+    access: vfs::OpenFlags,
+) -> Result<i64, Errno> {
     use vfs::{File, OpenFlags};
     let cur = sched::current().ok_or(Errno::Ebadf)?;
     // SAFETY: running task on this CPU; preempt-off on the syscall path; sole reader of the fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
     let dentry = vfs::dcache::d_alloc_pseudo(name, Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
-    let file = File::new(inode, dentry, OpenFlags::O_RDWR);
+    let file = File::new(inode, dentry, access);
     // `alloc_fd_flags_below` fails only with EMFILE (RLIMIT_NOFILE),
     // matching `get_unused_fd_flags()`.
     fdt.install_limit(file, OpenFlags::O_CLOEXEC, cur.nofile_soft())

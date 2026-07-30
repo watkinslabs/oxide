@@ -1,7 +1,4 @@
-// `bpf(2)` UAPI numbers. Source: linux-master v7.2.0-rc4
-// `include/uapi/linux/bpf.h` — `enum bpf_cmd`, `union bpf_attr`,
-// `enum bpf_map_type`, `enum bpf_prog_type`, `enum bpf_attach_type`
-// and the `BPF_F_*` flag enums.
+// `bpf(2)` UAPI numbers and layouts.
 //
 // Numbers only. Every policy decision lives in `attr.rs` / `prog.rs` /
 // `map.rs` per `docs/53`.
@@ -58,12 +55,19 @@ pub mod cmd {
 /// anonymous struct: `keyring_id` at offset 164, `__aligned(8)`.
 pub const ATTR_SIZE: usize = 168;
 
-/// `bpf_check_uarg_tail_zero()`'s "silly large" ceiling is `PAGE_SIZE`
-/// (kernel/bpf/syscall.c) — a larger `size` is `-E2BIG` outright.
+/// Extensible attributes are bounded to one page; larger values are
+/// rejected with `E2BIG`.
 pub const ATTR_MAX_USER_SIZE: usize = 4096;
 
 /// `offsetofend(struct bpf_common_attr, log_true_size)`.
-pub const COMMON_ATTR_SIZE: usize = 24;
+pub const COMMON_ATTR_SIZE: usize = 20;
+
+pub mod off_common {
+    pub const LOG_BUF: usize = 0;
+    pub const LOG_SIZE: usize = 8;
+    pub const LOG_LEVEL: usize = 12;
+    pub const LOG_TRUE_SIZE: usize = 16;
+}
 
 /// `union bpf_attr` field offsets, grouped by the command that owns
 /// the anonymous struct. `LAST_END` is
@@ -147,6 +151,31 @@ pub mod off {
         pub const MAP_FD:   usize = 4;
         pub const FLAGS:    usize = 8;
         pub const LAST_END: usize = 12;
+    }
+    pub mod btf_load {
+        pub const DATA:          usize = 0;
+        pub const LOG_BUF:       usize = 8;
+        pub const DATA_SIZE:     usize = 16;
+        pub const LOG_SIZE:      usize = 20;
+        pub const LOG_LEVEL:     usize = 24;
+        pub const LOG_TRUE_SIZE: usize = 28;
+        pub const FLAGS:         usize = 32;
+        pub const TOKEN_FD:      usize = 36;
+        pub const LAST_END:      usize = 40;
+    }
+    pub mod object_id {
+        pub const START_ID: usize = 0;
+        pub const NEXT_ID:  usize = 4;
+        pub const FLAGS:    usize = 8;
+        pub const TOKEN_FD: usize = 12;
+        pub const NEXT_LAST_END: usize = 8;
+        pub const FD_LAST_END:   usize = 16;
+    }
+    pub mod object_info {
+        pub const FD:       usize = 0;
+        pub const INFO_LEN: usize = 4;
+        pub const INFO:     usize = 8;
+        pub const LAST_END: usize = 16;
     }
     /// `BPF_LINK_CREATE`;
     /// `LAST_FIELD link_create.uprobe_multi.path_fd` (ends at 64).
@@ -260,7 +289,20 @@ pub mod query_flags {
     pub const EFFECTIVE: u32 = 1 << 0;
 }
 
-/// `BPF_F_*` map-create flags (`include/uapi/linux/bpf.h`).
+pub mod btf_flags {
+    pub const TOKEN_FD: u32 = 1 << 16;
+}
+
+pub mod log_flags {
+    pub const LEVEL1: u32 = 1 << 0;
+    pub const LEVEL2: u32 = 1 << 1;
+    pub const STATS:  u32 = 1 << 2;
+    pub const FIXED:  u32 = 1 << 3;
+    pub const MASK: u32 = LEVEL1 | LEVEL2 | STATS | FIXED;
+    pub const MAX_SIZE: u32 = u32::MAX >> 2;
+}
+
+/// `BPF_F_*` map-create flags.
 pub mod map_flags {
     pub const NO_PREALLOC:   u32 = 1 << 0;
     pub const NO_COMMON_LRU: u32 = 1 << 1;
@@ -274,7 +316,7 @@ pub mod map_flags {
     pub const TOKEN_FD:      u32 = 1 << 16;
     /// `BPF_F_ACCESS_MASK`.
     pub const ACCESS_MASK:   u32 = RDONLY | WRONLY | RDONLY_PROG | WRONLY_PROG;
-    /// `HTAB_CREATE_FLAG_MASK` (kernel/bpf/hashtab.c).
+    /// Hash-map creation flag mask.
     pub const HTAB_CREATE_MASK: u32 =
         NO_PREALLOC | NO_COMMON_LRU | NUMA_NODE | ACCESS_MASK | ZERO_SEED;
     pub const ARRAY_CREATE_MASK: u32 = NUMA_NODE | ACCESS_MASK;
@@ -314,10 +356,9 @@ pub mod prog_flags {
         | TEST_REG_INVARIANTS | TOKEN_FD;
 }
 
-/// `BPF_MAXINSNS` (include/linux/filter.h) — the unprivileged ceiling.
+/// Unprivileged instruction ceiling.
 pub const MAXINSNS: u32 = 4096;
-/// `BPF_COMPLEXITY_LIMIT_INSNS` (include/linux/bpf.h) — the
-/// `bpf_capable()` ceiling.
+/// Privileged complexity ceiling.
 pub const COMPLEXITY_LIMIT_INSNS: u32 = 1_000_000;
 /// eBPF instruction width.
 pub const INSN_SIZE: u32 = 8;
