@@ -134,6 +134,12 @@ impl CharDevOps for FuseDevOps {
         conn_for(file).submit_reply(buf)
     }
 
+    /// One daemon reply may span several iovecs; preserve it as one protocol
+    /// message for both blocking and non-blocking file descriptions. # C: O(msg)
+    fn write_iter_file(&self, _devt: Devt, file: &File, _off: u64, bufs: &[&[u8]], _nonblock: bool) -> KResult<usize> {
+        conn_for(file).submit_reply_iter(bufs)
+    }
+
     /// `poll(/dev/fuse)` — POLLIN when a request is queued (or the conn aborted),
     /// POLLOUT always (a reply can always be written). # C: O(1)
     fn poll_file(&self, _devt: Devt, file: &File) -> KResult<u32> {
