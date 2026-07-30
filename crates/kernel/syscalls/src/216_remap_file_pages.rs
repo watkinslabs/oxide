@@ -93,7 +93,14 @@ pub fn sys_remap_file_pages(args: &SyscallArgs) -> i64 {
     if vma.flags.contains(vmm::VmaFlags::LOCKED) { flags |= MAP_LOCKED; }
 
     let file_off = match pgoff.checked_mul(PAGE) { Some(o) => o, None => return err(Errno::Einval) };
-    match pmm::user_as::glue_mmap(range.start, range.size, prot_bits(vma.prot), flags, -1,
+    let mut final_prot = vma.prot;
+    if final_prot.contains(vmm::VmaProt::READ)
+        && vma.may_prot.contains(vmm::VmaProt::EXEC)
+        && sched::personality::read_implies_exec(&cur)
+    {
+        final_prot |= vmm::VmaProt::EXEC;
+    }
+    match pmm::user_as::glue_mmap(range.start, range.size, prot_bits(final_prot), flags, -1,
                                   file_off, Some(backing), None, None, vma.may_prot) {
         // Linux discards the address `do_mmap` returns and reports 0.
         Ok(_)   => 0,

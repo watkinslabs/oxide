@@ -129,11 +129,20 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             }
         }
     }
+    // SAFETY: exec is the sole writer of this task's mm slot. Pin the old mm
+    // so MDWE inheritance is applied before any new stack/ELF VMA is created.
+    let old_as = unsafe { cur.mm_ref() }.cloned();
+    // SAFETY: the architecture allocator returns a new inactive user root
+    // whose TTBR0 hierarchy is ready for the new process mappings.
     let new_root = match unsafe { hal_aarch64::mmu_ops::new_user_l0() } {
         Some(r) => r,
         None => return -(Errno::Enomem.as_i32() as i64),
     };
-    let new_as = match AddressSpace::new(new_root) {
+    let new_as = match old_as.as_ref() {
+        Some(parent) => AddressSpace::new_for_exec(new_root, parent),
+        None => AddressSpace::new(new_root),
+    };
+    let new_as = match new_as {
         Ok(a) => a,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };

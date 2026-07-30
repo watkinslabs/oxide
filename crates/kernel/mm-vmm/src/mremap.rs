@@ -1,5 +1,5 @@
 // `mremap` work fn — split out of address_space.rs to keep both files
-// under the 1000-line cap (`docs/08§7`). The mremap surface is one
+// under the repository line cap (`docs/08§7`). The mremap surface is one
 // pub method on `AddressSpace`; defining it here in a fresh `impl`
 // block keeps the call site (`AddressSpace::mremap`) unchanged.
 
@@ -82,10 +82,11 @@ impl AddressSpace {
             let delta = old.as_u64() - src_vma.start.as_u64();
             let moved_backing = rebase_backing(&src_vma.backing, delta);
             let hint = new_addr;
-            let new_va = self.mmap(
+            let new_va = self.mmap_preserving_prot(
                 hint,
                 new_size,
                 src_vma.prot,
+                src_vma.may_prot,
                 src_vma.flags,
                 moved_backing,
                 fixed,
@@ -140,10 +141,11 @@ impl AddressSpace {
         let delta = old.as_u64() - src_vma.start.as_u64();
         let moved_backing = rebase_backing(&src_vma.backing, delta);
         let hint = if fixed { new_addr.or(Some(old)) } else { None };
-        let new_va = self.mmap(
+        let new_va = self.mmap_preserving_prot(
             hint,
             new_size,
             src_vma.prot,
+            src_vma.may_prot,
             src_vma.flags,
             moved_backing,
             fixed,

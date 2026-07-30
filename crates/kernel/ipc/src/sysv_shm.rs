@@ -321,6 +321,14 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
         Ok(p) => p,
         Err(e) => return -(e.as_i32() as i64),
     };
+    let mut final_prot = plan.prot;
+    // Linux shmat reaches do_mmap after ipcperms; READ_IMPLIES_EXEC therefore
+    // applies before MDWE even when userspace did not pass SHM_EXEC.
+    if final_prot.contains(vmm::VmaProt::READ)
+        && sched::personality::read_implies_exec(&cur)
+    {
+        final_prot |= vmm::VmaProt::EXEC;
+    }
     let hint = match plan.addr {
         Some(a) => match hal::UserVirtAddr::new(a) {
             Some(u) => Some(u), None => return -(Errno::Einval.as_i32() as i64),
@@ -329,7 +337,7 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
     };
     let res = mm.mmap(
         hint, plan.len,
-        plan.prot,
+        final_prot,
         // `SYSVSHM` is this kernel's `vma->vm_ops == &shm_vm_ops`: it is what
         // makes `shm_nattch` follow VMA lifetime through fork, split and
         // address-space teardown instead of only shmat/shmdt, and the mmap

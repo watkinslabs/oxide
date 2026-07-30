@@ -38,6 +38,8 @@ pub const PR_MPX_DISABLE_MANAGEMENT: u64 = 44;
 pub const PR_CAP_AMBIENT:         u64 = 47;
 pub const PR_GET_SPECULATION_CTRL: u64 = 52;
 pub const PR_SET_SPECULATION_CTRL: u64 = 53;
+pub const PR_SET_MDWE:             u64 = 65;
+pub const PR_GET_MDWE:             u64 = 66;
 pub const PR_SET_VMA:             u64 = 0x5356_4d41;
 
 /// `PR_TIMING_STATISTICAL` — the only accepted `PR_SET_TIMING` value and the
@@ -77,6 +79,10 @@ pub const PR_SPEC_ENABLE:         i64 = 1 << 1;
 pub const PR_SPEC_DISABLE:        i64 = 1 << 2;
 pub const PR_SPEC_FORCE_DISABLE:  i64 = 1 << 3;
 pub const PR_SPEC_DISABLE_NOEXEC: i64 = 1 << 4;
+
+/// `PR_SET_MDWE` mask bits.
+pub const PR_MDWE_REFUSE_EXEC_GAIN: u64 = 1 << 0;
+pub const PR_MDWE_NO_INHERIT:       u64 = 1 << 1;
 
 /// `_NSIG` (`include/uapi/asm-generic/signal.h`) — the ceiling
 /// `valid_signal()` compares against for `PR_SET_PDEATHSIG`.

@@ -4,14 +4,29 @@ use alloc::vec::Vec;
 use hal::UserVirtAddr;
 use sync::RwReadGuard;
 
-use crate::hole::{find_hole, hole_clear};
 use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
-use crate::{Error, KResult, MmapError, MmapPlacement};
+use crate::{Error, KResult};
 
-use super::layout::{end_of, end_of_raw, is_aligned, validate_aligned, validate_len};
-use super::limits::{MMAP_TOP, STACK_GROW_MAX};
+use super::layout::{end_of, end_of_raw, validate_aligned, validate_len};
+use super::limits::STACK_GROW_MAX;
 use super::AddressSpace;
+
+/// One VMA subrange whose page-table permissions must follow a successful
+/// VMA-side mprotect transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MprotectStep {
+    pub start: UserVirtAddr,
+    pub len: usize,
+    pub prot: VmaProt,
+}
+
+/// Linux mprotect may change an earlier VMA before a later VMA fails.
+#[derive(Debug, Eq, PartialEq)]
+pub struct MprotectOutcome {
+    pub steps: Vec<MprotectStep>,
+    pub error: Option<Error>,
+}
 
 impl AddressSpace {
     /// Configure Linux `mm->def_flags` locking inheritance for new mappings.
@@ -137,175 +152,6 @@ impl AddressSpace {
         self.vmas.write().set_anon_name_range(start, end, name)
     }
 
-    /// Place a new VMA per `11§3` `mmap`.
-    ///
-    /// - `hint`: candidate placement; with `fixed = true` the request
-    ///   is honored exactly (any overlap is cleared first per `11§6`
-    ///   `MAP_FIXED`); with `fixed = false` the hint is advisory and a
-    ///   first-fit hole search runs if the hint doesn't fit.
-    /// - `len`: must be a non-zero multiple of `PAGE_SIZE_BYTES`.
-    /// - returns the VMA's start VA on success.
-    ///
-    /// Returns `Err(Inval)` for misaligned / zero-length requests or
-    /// if the hint is `None` while `fixed = true`. `Err(NoMem)` if no
-    /// hole large enough exists in the user range.
-    /// # C: O(log N) hint path; O(N) hole search fallback
-    pub fn mmap(
-        &self,
-        hint: Option<UserVirtAddr>,
-        len: usize,
-        prot: VmaProt,
-        flags: VmaFlags,
-        backing: VmaBacking,
-        fixed: bool,
-    ) -> KResult<UserVirtAddr> {
-        self.mmap_with_may(hint, len, prot, VmaProt::READ | VmaProt::WRITE | VmaProt::EXEC,
-            flags, backing, fixed)
-    }
-
-    /// Linux `get_unmapped_area(NULL, 0, len, 0, 0)`: the address the top-down
-    /// arena search would hand out for `len` bytes, WITHOUT mapping anything.
-    ///
-    /// The ELF loader needs this for the two images Linux places by hint-0
-    /// mmap rather than by an explicit bias — the PT_INTERP dynamic linker
-    /// (`fs/binfmt_elf.c:686-689`) and a PIE with no interpreter
-    /// (`fs/binfmt_elf.c:1175`) — so both inherit `mmap_base`'s randomisation.
-    /// Reserving-then-unmapping to learn the same address would open a window
-    /// where another mapping lands in the hole.
-    /// # C: O(N) over VMAs
-    pub fn get_unmapped_area(&self, len: usize) -> KResult<UserVirtAddr> {
-        validate_len(len)?;
-        let tree = self.vmas.read();
-        let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
-            0 => MMAP_TOP,
-            v => v,
-        };
-        find_hole(&tree, len as u64, top).ok_or(Error::NoMem)
-    }
-
-    /// Place a new VMA with Linux `VM_MAY*` permissions.
-    /// # C: O(log N) hint path; O(N) hole search fallback
-    pub fn mmap_with_may(
-        &self,
-        hint: Option<UserVirtAddr>,
-        len: usize,
-        prot: VmaProt,
-        may_prot: VmaProt,
-        flags: VmaFlags,
-        backing: VmaBacking,
-        fixed: bool,
-    ) -> KResult<UserVirtAddr> {
-        let placement = match (fixed, hint) {
-            (true, Some(address)) => MmapPlacement::Fixed(address),
-            (true, None) => return Err(Error::Inval),
-            (false, hint) => MmapPlacement::Advisory(hint),
-        };
-        self.mmap_with_may_at(placement, len, prot, may_prot, flags, backing)
-            .map_err(|error| match error {
-                MmapError::Vmm(error) => error,
-                MmapError::Exists => Error::Inval,
-            })
-    }
-
-    /// Place one VMA using the canonical advisory/fixed/no-replace policy.
-    /// `FixedNoReplace` tests and inserts under the same VMA write lock.
-    /// # C: O(log N) exact path; O(N) advisory fallback
-    pub fn mmap_with_may_at(
-        &self,
-        placement: MmapPlacement,
-        len: usize,
-        prot: VmaProt,
-        may_prot: VmaProt,
-        flags: VmaFlags,
-        backing: VmaBacking,
-    ) -> Result<UserVirtAddr, MmapError> {
-        validate_len(len)?;
-        // Linux `mapping_map_writable`: reserve `VM_SHARED|VM_MAYWRITE`
-        // before address selection or MAP_FIXED teardown. The reservation
-        // stays live until the new rmap edge is attached (or this function
-        // fails), excluding a concurrent `F_SEAL_WRITE` transaction.
-        let _writable_reservation = match &backing {
-            VmaBacking::File { backing, .. }
-                if flags.contains(VmaFlags::SHARED)
-                    && may_prot.contains(VmaProt::WRITE) =>
-            {
-                backing.file_rmap().map(|rmap| rmap.reserve_writable()).transpose()?
-            }
-            _ => None,
-        };
-        let (future_locked, _) = self.mlock_future_policy();
-        let flags = if future_locked { flags | VmaFlags::LOCKED } else { flags };
-        let len_u64 = len as u64;
-
-        let mut tree = self.vmas.write();
-
-        let start_va = match placement {
-            MmapPlacement::Fixed(h) => {
-                validate_aligned(h)?;
-                let end = end_of(h, len_u64)?;
-                // mseal(2): MAP_FIXED tears the overlap down through the same
-                // `vms_gather_munmap_vmas` Linux uses for munmap (`mm/vma.c:1422`),
-                // so a sealed VMA refuses to be replaced.
-                if tree.any_sealed(h, end) { return Err(Error::Perm.into()); }
-                let removed = tree.remove_range(h, end);
-                for vma in &removed { self.accounting.remove_vma(vma); }
-                h
-            }
-            MmapPlacement::FixedNoReplace(h) => {
-                validate_aligned(h)?;
-                let end = end_of(h, len_u64)?;
-                if !hole_clear(&tree, h, end) { return Err(MmapError::Exists); }
-                h
-            }
-            MmapPlacement::Advisory(hint) => {
-                // Try the hint first.
-                let from_hint = match hint {
-                    Some(h) if is_aligned(h) => {
-                        end_of(h, len_u64).ok().and_then(|end| {
-                            if hole_clear(&tree, h, end) { Some(h) } else { None }
-                        })
-                    }
-                    _ => None,
-                };
-                match from_hint {
-                    Some(h) => h,
-                    None => {
-                        let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
-                            0 => MMAP_TOP,
-                            v => v,
-                        };
-                        find_hole(&tree, len_u64, top).ok_or(Error::NoMem)?
-                    },
-                }
-            }
-        };
-
-        let end_va = end_of(start_va, len_u64)?;
-        let added = Vma::new_with_may(start_va, end_va, prot, may_prot, flags, backing);
-        tree.insert(added.clone()).map_err(|_| Error::Inval)?;
-        self.accounting.add_vma(&added);
-        // A4-rmap (GAP A4-1): attach the owning-AS chain edge for the
-        // newly mapped range. Linux `anon_vma_prepare`: the originating
-        // mapping MUST be on the chain, or `rmap_walk_anon` enumerates
-        // zero targets for a never-forked page (the AS that owns it is
-        // invisible). Previously only `fork_cow_pages` attached edges,
-        // and only for the child — the parent self-edge was attached
-        // nowhere. Bind to the VMA actually in the tree at `start_va`
-        // (which may have absorbed `[start_va,end_va)` via an abutting
-        // merge), attaching only the newly added sub-range so a merged
-        // family never gets an overlapping (double-counting) edge.
-        if let Some(vma) = tree.find_containing(start_va) {
-            if let Some(av) = vma.anon_vma.as_ref() {
-                av.attach(self.self_weak.clone(), start_va.as_u64(), end_va.as_u64());
-            }
-            if let (Some(rmap), VmaBacking::File { off, .. }) = (vma.file_rmap.as_ref(), &vma.backing) {
-                rmap.attach(self.self_weak.clone(), start_va.as_u64(), end_va.as_u64(),
-                    off / hal::PAGE_SIZE_BYTES, vma.may_prot.contains(VmaProt::WRITE));
-            }
-        }
-        Ok(start_va)
-    }
-
     /// Unmap any VMAs (or VMA fragments) intersecting `[addr, addr+len)`.
     /// Per `11§6`. PT walk + TLB shootdown + page free are out of scope
     /// here; this is the VMA-side bookkeeping only.
@@ -389,10 +235,10 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Change the protection bits over `[addr, addr+len)`. Holes are
-    /// rejected with `Inval` per `11§6` ("walk affected VMAs"). VMA
-    /// tree is updated; the kernel-side caller (sys_mprotect) walks
-    /// affected PT leaves via `mprotect_pages` to flush stale PTEs.
+    /// Change the protection bits over `[addr, addr+len)`. Linux commits
+    /// complete VMA prefixes and reports `NoMem` if a later page is unmapped.
+    /// The kernel-side caller walks every returned successful subrange via
+    /// `mprotect_pages` so hardware permissions follow the VMA tree.
     /// # C: O(K log N)
     pub fn mprotect(
         &self,
@@ -400,17 +246,90 @@ impl AddressSpace {
         len: usize,
         prot: VmaProt,
     ) -> KResult<()> {
+        let outcome = self.mprotect_user(addr, len, prot, false)?;
+        match outcome.error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Apply Linux `do_mprotect_pkey`'s per-VMA permission ladder while the
+    /// VMA write lock stays held. Earlier steps remain committed if a later
+    /// hole, VM_MAY, MDWE, or mseal check fails.
+    /// # C: O(K log N)
+    pub fn mprotect_user(
+        &self,
+        addr: UserVirtAddr,
+        len: usize,
+        requested: VmaProt,
+        read_implies_exec: bool,
+    ) -> KResult<MprotectOutcome> {
         validate_len(len)?;
         validate_aligned(addr)?;
         let end = end_of(addr, len as u64)?;
         let mut tree = self.vmas.write();
-        // A4-rmap: mprotect splits VMAs at the range boundaries; keep the
-        // anon_vma chain edges in step with the new fragments.
-        self.rmap_resplit(&mut tree, addr.as_u64(), end.as_u64(), |t, s, e| {
-            t.mprotect_range(
-                UserVirtAddr::new(s).expect("uva"),
-                UserVirtAddr::new(e).expect("uva"), prot)
-        })
+        let count = tree.iter().filter(|vma| {
+            vma.end.as_u64() > addr.as_u64() && vma.start.as_u64() < end.as_u64()
+        }).count();
+        let mut steps = Vec::new();
+        steps.try_reserve(count).map_err(|_| Error::NoMem)?;
+        let mut cursor = addr.as_u64();
+        let mut error = None;
+        while cursor < end.as_u64() {
+            let Some(vma) = tree.iter().find(|vma| vma.end.as_u64() > cursor) else {
+                error = Some(Error::NoMem);
+                break;
+            };
+            if vma.start.as_u64() > cursor {
+                error = Some(Error::NoMem);
+                break;
+            }
+            let mut prot = requested;
+            if read_implies_exec && requested.contains(VmaProt::READ)
+                && vma.may_prot.contains(VmaProt::EXEC)
+            {
+                prot |= VmaProt::EXEC;
+            }
+            if !vma.may_prot.contains(prot)
+                || self.mdwe_denies_transition(vma.prot, prot)
+            {
+                error = Some(Error::Access);
+                break;
+            }
+            // Linux checks MDWE before `mprotect_fixup` checks VM_SEALED.
+            if vma.flags.contains(VmaFlags::SEALED) {
+                error = Some(Error::Perm);
+                break;
+            }
+            let step_end = vma.end.as_u64().min(end.as_u64());
+            steps.push(MprotectStep {
+                start: UserVirtAddr::new(cursor).expect("validated user range"),
+                len: (step_end - cursor) as usize,
+                prot,
+            });
+            cursor = step_end;
+        }
+
+        let mut applied = 0;
+        while applied < steps.len() {
+            let step = steps[applied];
+            let step_end = step.start.as_u64() + step.len as u64;
+            let result = self.rmap_resplit(
+                &mut tree, step.start.as_u64(), step_end,
+                |t, s, e| t.mprotect_range(
+                    UserVirtAddr::new(s).expect("validated user range"),
+                    UserVirtAddr::new(e).expect("validated user range"),
+                    step.prot,
+                ),
+            );
+            if let Err(unexpected) = result {
+                steps.truncate(applied);
+                error = Some(unexpected);
+                break;
+            }
+            applied += 1;
+        }
+        Ok(MprotectOutcome { steps, error })
     }
 
     /// True if any VMA in `[addr, addr+len)` is mseal'd. The syscall layer
