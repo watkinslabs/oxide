@@ -82,16 +82,22 @@ impl InetSocket {
 
     /// Ensure a local port is bound, allocating one endpoint if needed. # C: O(N)
     pub fn ensure_bound(&self) -> Result<u16, NetError> {
-        use core::sync::atomic::Ordering;
         let mut local_port = self.local_port.lock();
+        self.ensure_bound_locked(&mut local_port)
+    }
+
+    /// Autobind while the caller retains the socket lifecycle lock. # C: O(N)
+    pub(crate) fn ensure_bound_locked(&self, local_port: &mut Option<u16>)
+        -> Result<u16, NetError> {
+        use core::sync::atomic::Ordering;
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
         if let Some(port) = *local_port { return Ok(port); }
         let net_ns = self.net_ns();
         let iface = stack().bound_iface_in(net_ns, self.opts.bound_ifindex.load(Ordering::Acquire))?;
-        let (port, endpoint) = alloc_ephemeral_udp4(
-            net_ns, Ipv4Addr::ANY, self.error.clone(), iface,
+        let (port, endpoint) = alloc_ephemeral_udp4_owned(
+            self.owner.clone(), Ipv4Addr::ANY, self.error.clone(), iface,
             self.opts.reuseaddr.clone(), self.opts.reuseport.clone(),
-            self.opts.ip_mtu_discover.clone(), self.owner_uid,
+            self.opts.ip_mtu_discover.clone(),
             self.peer.clone(), self.bpf_filter.clone(), self.mcast.clone(),
         ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
         endpoint.register_poll_subs(&self.poll_subs);

@@ -18,7 +18,7 @@ struct Udp6RxState {
 }
 
 pub struct Udp6RxQueue {
-    pub net_ns: u64,
+    pub owner: Arc<crate::SocketOwner>,
     pub bound_ip: Ipv6Addr,
     pub bound_port: u16,
     state: Spinlock<Udp6RxState, StackLockClass>,
@@ -29,7 +29,6 @@ pub struct Udp6RxQueue {
     pub peer: Arc<Spinlock<Option<(Ipv6Addr, u16)>, StackLockClass>>,
     pub reuseaddr: Arc<core::sync::atomic::AtomicI32>,
     pub reuseport: Arc<core::sync::atomic::AtomicI32>,
-    pub owner_uid: u32,
     pub v6only: Arc<core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
@@ -130,7 +129,8 @@ impl Udp6RxQueue {
     pub fn new_with_error(bound_ip: Ipv6Addr, bound_port: u16, error: Arc<crate::SocketError>) -> Self {
         Self::new_socket(0, bound_ip, bound_port, error,
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
-            Arc::new(core::sync::atomic::AtomicI32::new(0)), 0,
+            Arc::new(core::sync::atomic::AtomicI32::new(0)),
+            crate::SocketOwner::root(network_namespace::initial(), 0),
             Arc::new(core::sync::atomic::AtomicI32::new(0)), Arc::new(Spinlock::new(None)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
@@ -138,10 +138,10 @@ impl Udp6RxQueue {
     }
 
     /// Build one socket-owned endpoint for a grouped UDP port binding. # C: O(1)
-    pub fn new_socket(net_ns: u64, bound_ip: Ipv6Addr, bound_port: u16, error: Arc<crate::SocketError>,
+    pub fn new_socket(_net_ns: u64, bound_ip: Ipv6Addr, bound_port: u16, error: Arc<crate::SocketError>,
                       reuseaddr: Arc<core::sync::atomic::AtomicI32>,
                       reuseport: Arc<core::sync::atomic::AtomicI32>,
-                      owner_uid: u32,
+                      owner: Arc<crate::SocketOwner>,
                       v6only: Arc<core::sync::atomic::AtomicI32>,
                       peer: Arc<Spinlock<Option<(Ipv6Addr, u16)>, StackLockClass>>,
                       ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
@@ -149,7 +149,7 @@ impl Udp6RxQueue {
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
-            net_ns,
+            owner,
             bound_ip,
             bound_port,
             state: Spinlock::new(Udp6RxState { accepting: true, datagrams: VecDeque::new() }),
@@ -159,7 +159,6 @@ impl Udp6RxQueue {
             peer,
             reuseaddr,
             reuseport,
-            owner_uid,
             v6only,
             ip_mtu_discover,
             ipv6_mtu_discover,
@@ -268,4 +267,10 @@ impl Udp6RxQueue {
         drop(state);
         true
     }
+}
+
+impl core::ops::Deref for Udp6RxQueue {
+    type Target = crate::SocketOwner;
+
+    fn deref(&self) -> &Self::Target { &self.owner }
 }

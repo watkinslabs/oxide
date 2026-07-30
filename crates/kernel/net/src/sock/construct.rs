@@ -7,19 +7,9 @@ use super::{InetSocket, PacketRings, PacketRxQueue, PacketTxGate, SockKind, Sock
             AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
 use crate::Ipv4Addr;
 
-#[cfg(target_os = "oxide-kernel")]
-fn current_socket_uid() -> u32 {
-    sched::live::current().map(|task| {
-        task.creds.euid.load(core::sync::atomic::Ordering::Acquire)
-    }).unwrap_or(0)
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
-fn current_socket_uid() -> u32 { 0 }
-
 impl InetSocket {
     /// Derive the short-lived namespace table key. # C: O(1)
-    pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
+    pub fn net_ns(&self) -> u64 { self.owner.net_ns() }
 
     /// # C: O(1)
     pub fn new_udp() -> Self { Self::new_udp_in(crate::net_ns::current_namespace()) }
@@ -33,6 +23,12 @@ impl InetSocket {
     fn new_in(net_namespace: NetworkNamespaceRef,
               bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
               error: Arc<crate::SocketError>, kind: SockKind) -> Self {
+        Self::new_owned(crate::SocketOwner::current(net_namespace), bpf_filter, error, kind)
+    }
+
+    fn new_owned(owner: Arc<crate::SocketOwner>,
+                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                 error: Arc<crate::SocketError>, kind: SockKind) -> Self {
         Self {
             family: core::sync::atomic::AtomicU16::new(AF_INET), local_port: Spinlock::new(None),
             local_ip: Spinlock::new(Ipv4Addr::ANY), peer: Arc::new(Spinlock::new(None)),
@@ -54,8 +50,7 @@ impl InetSocket {
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])), peer6: Arc::new(Spinlock::new(None)),
             peer6_scope: core::sync::atomic::AtomicU32::new(0),
-            net_namespace,
-            owner_uid: current_socket_uid(),
+            owner,
             receive_timestamp_ns: core::sync::atomic::AtomicU64::new(crate::sock::SOCKET_TIMESTAMP_UNSET),
             receive_timestamp_enabled: core::sync::atomic::AtomicBool::new(false),
             unix_bound: Spinlock::new(None),
@@ -91,12 +86,24 @@ impl InetSocket {
     }
 
     /// Build a TCP socket sharing all transport-owned state after accept. # C: O(1)
+    #[cfg(test)]
     pub(super) fn new_tcp_with_transport_state_in(error: Arc<crate::SocketError>,
                                         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                                         ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         net_namespace: NetworkNamespaceRef) -> Self {
         let mut sock = Self::new_in(net_namespace, bpf_filter, error, SockKind::TcpInit);
+        sock.opts.ip_mtu_discover = ip_mtu_discover;
+        sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
+        sock
+    }
+
+    fn new_tcp_with_transport_state_owned(error: Arc<crate::SocketError>,
+                                        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                        ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                                        ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                                        owner: Arc<crate::SocketOwner>) -> Self {
+        let mut sock = Self::new_owned(owner, bpf_filter, error, SockKind::TcpInit);
         sock.opts.ip_mtu_discover = ip_mtu_discover;
         sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
         sock
@@ -129,11 +136,11 @@ impl InetSocket {
         s
     }
 
-    fn new_unix_pair_end_with_filter_in(net_namespace: NetworkNamespaceRef,
+    fn new_unix_pair_end_with_filter_owned(owner: Arc<crate::SocketOwner>,
                                         pair: Arc<crate::UnixPair>, end: crate::UnixEnd,
                                         filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         let error = pair.end_error(end);
-        let s = Self::new_in(net_namespace, filter, error.clone(), SockKind::Unix(pair.clone(), end));
+        let s = Self::new_owned(owner, filter, error.clone(), SockKind::Unix(pair.clone(), end));
         s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         pair.register_end_subs(end, &s.poll_subs);
         pair.attach_end_error(end, &error);
@@ -143,16 +150,16 @@ impl InetSocket {
     /// Build one already-connected AF_UNIX stream endpoint. # C: O(1)
     pub fn new_unix_pair_end_in(net_namespace: NetworkNamespaceRef,
                                 pair: Arc<crate::UnixPair>, end: crate::UnixEnd) -> Self {
-        Self::new_unix_pair_end_with_filter_in(net_namespace, pair, end,
+        Self::new_unix_pair_end_with_filter_owned(crate::SocketOwner::current(net_namespace), pair, end,
             Arc::new(crate::bpf_filter::SocketFilter::new()))
     }
 
     /// Build the server socket for one accepted TCP transport child. # C: O(1)
     pub(super) fn from_accepted_tcp(listener: &Self,
                                     entry: Arc<crate::stack::TcpEntry>) -> Arc<Self> {
-        let sock = Arc::new(Self::new_tcp_with_transport_state_in(
+        let sock = Arc::new(Self::new_tcp_with_transport_state_owned(
             entry.error.clone(), entry.bpf_filter.clone(), entry.ip_mtu_discover.clone(),
-            entry.ipv6_mtu_discover.clone(), listener.net_namespace.clone()));
+            entry.ipv6_mtu_discover.clone(), listener.owner.clone()));
         let family = listener.family.load(core::sync::atomic::Ordering::Acquire);
         sock.family.store(family, core::sync::atomic::Ordering::Release);
         entry.register_poll_subs(&sock.poll_subs);
@@ -188,7 +195,7 @@ impl InetSocket {
     /// Build the server socket for one accepted UNIX stream child. # C: O(1)
     pub(super) fn from_accepted_unix(listener: &Self,
                                      pair: Arc<crate::UnixPair>) -> Arc<Self> {
-        Arc::new(Self::new_unix_pair_end_with_filter_in(listener.net_namespace.clone(), pair,
+        Arc::new(Self::new_unix_pair_end_with_filter_owned(listener.owner.clone(), pair,
             crate::UnixEnd::A,
             Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter))))
     }
@@ -250,5 +257,22 @@ mod tests {
             crate::uapi::IP_PMTUDISC_PROBE);
         assert_eq!(sock.opts.ipv6_mtu_discover.load(Ordering::Acquire),
             crate::uapi::IPV6_PMTUDISC_OMIT);
+    }
+
+    #[test]
+    fn accepted_tcp_socket_inherits_listener_owner() {
+        let listener = InetSocket::new_tcp();
+        let local = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK), port: 41000,
+        };
+        let remote = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 1)), port: 443,
+        };
+        let bind = Arc::new(crate::stack::TcpBindReservation::new_owned(
+            listener.owner.clone(), local, None, false, false, false));
+        let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
+            crate::TcpConn::new_client(local, remote, 1), listener.error.clone(), Some(bind)));
+        let child = InetSocket::from_accepted_tcp(&listener, entry);
+        assert!(Arc::ptr_eq(&child.owner, &listener.owner));
     }
 }

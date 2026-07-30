@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(raw6.receive(crate::raw6::Raw6RxPacket {
             net_ns: ns_a, protocol: 253, src: remote6, dst: local6,
             iface: NetIfaceId::from_raw(8), hop_limit: 64, traffic_class: 0,
-            flow_label: 0, hatype: 1, payload: b"queue",
+            flow_label: 0, hatype: 1, payload: b"queue", packet: b"queue",
         }), crate::raw6::Raw6RxDisposition::Queued);
         stack.register_raw6(&raw6);
         assert_eq!(stack.raw_diag_snapshot_in(ns_a, AF_INET6), alloc::vec![RawDiagSnapshot {

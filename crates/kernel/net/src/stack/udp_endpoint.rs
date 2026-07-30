@@ -11,26 +11,27 @@ impl UdpRxQueue {
         Self::new_socket(0, bound_ip, bound_port, error,
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
-            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 0,
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            crate::SocketOwner::root(network_namespace::initial(), 0),
             Arc::new(Spinlock::new(None)), Arc::new(crate::bpf_filter::SocketFilter::new()),
             Arc::new(crate::mcast_filter::SocketMcast::new()))
     }
 
     /// Build one socket-owned endpoint for a grouped UDP port binding. # C: O(1)
-    pub fn new_socket(net_ns: u64, bound_ip: Ipv4Addr, bound_port: u16, error: Arc<crate::SocketError>,
+    pub fn new_socket(_net_ns: u64, bound_ip: Ipv4Addr, bound_port: u16, error: Arc<crate::SocketError>,
                       reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
                       reuseport: Arc<::core::sync::atomic::AtomicI32>,
                       ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-                      owner_uid: u32,
+                      owner: Arc<crate::SocketOwner>,
                       peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
-            net_ns, bound_ip, bound_port,
+            owner, bound_ip, bound_port,
             state: Spinlock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
-            error, peer, reuseaddr, reuseport, ip_mtu_discover, owner_uid,
+            error, peer, reuseaddr, reuseport, ip_mtu_discover,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None), bpf_filter, mcast,
         }

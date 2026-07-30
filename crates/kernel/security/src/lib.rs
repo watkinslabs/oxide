@@ -9,6 +9,7 @@
 // syscall dispatch + xattr storage paths.
 
 #![no_std]
+#![feature(allocator_api)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 // dead_code is meaningful for this crate ONLY on the kernel target. A large

@@ -2,7 +2,6 @@
 // stay under the 1000-line cap (docs/08§7). All helpers are
 // pub(crate); net.rs and net_recv.rs consume them.
 
-use hal::USER_VA_END;
 use crate::userbuf::validate_user_buf_readable;
 use syscall::errno::Errno;
 
@@ -12,8 +11,7 @@ use syscall::errno::Errno;
 pub(crate) use crate::sockaddr_encode::{encoded_sockaddr_for_socket, encoded_sockaddr_in,
     encoded_sockaddr_in6, encoded_sockaddr_ll, encoded_sockaddr_nl, encoded_sockaddr_un,
     encoded_sockaddr_vm, EncodedSockaddr};
-use crate::sockaddr_encode::{AF_INET, AF_INET6, SOCKADDR_IN_LEN, SOCKADDR_IN6_LEN,
-    SOCKADDR_VM_LEN, SA_FAMILY_LEN};
+use crate::sockaddr_encode::{SOCKADDR_IN_LEN, SOCKADDR_VM_LEN};
 
 /// Linux `SIN6_LEN_RFC2133` — the minimum `sockaddr_in6` length `inet6_bind`
 /// and `inet6_dgram_connect` accept (the trailing `sin6_scope_id` is optional).
@@ -30,12 +28,6 @@ pub(crate) fn move_sockaddr_to_kernel_shape(ptr: u64, addrlen: u64) -> Result<us
     if len > 128 { return Err(err(Errno::Einval)); }
     if len != 0 { validate_user_buf_readable(ptr, len as u64, 1)?; }
     Ok(len)
-}
-
-/// Read `sa_family` after the Linux copyin-equivalent validation. # C: O(1)
-pub(crate) fn read_sa_family_checked(ptr: u64, addrlen: usize) -> Result<u16, i64> {
-    if addrlen < SA_FAMILY_LEN { return Err(err(Errno::Einval)); }
-    read_sa_family(ptr).ok_or(err(Errno::Efault))
 }
 
 /// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
@@ -67,135 +59,6 @@ pub(crate) fn copy_sockaddr_to_user(addr: u64, addrlen: u64, sa: &EncodedSockadd
         |full_len| uaccess::copy_to_user(addrlen, &full_len.to_ne_bytes()),
         |copy_len| uaccess::copy_to_user(addr, &sa.as_bytes()[..copy_len]))
     .map_or_else(err, |_| 0)
-}
-
-
-/// Read sa_family (first 2 bytes) at user pointer `ptr`. # C: O(1)
-pub(crate) fn read_sa_family(ptr: u64) -> Option<u16> {
-    if ptr == 0 || ptr >= USER_VA_END { return None; }
-    // SAFETY: ptr in user range; user page mapped (caller's AS).
-    unsafe { Some(core::ptr::read_volatile(ptr as *const u16)) }
-}
-
-/// Read sockaddr_un path. Filesystem paths are NUL-terminated; Linux
-/// abstract namespace paths preserve the addrlen-delimited leading NUL
-/// marker. # C: O(108)
-pub(crate) fn read_sockaddr_un_path_len(ptr: u64, addrlen: u64) -> Option<alloc::vec::Vec<u8>> {
-    if ptr == 0 || ptr >= USER_VA_END || addrlen <= 2 { return None; }
-    let path_len = (addrlen - 2).min(108) as usize;
-    // SAFETY: ptr in user range; caller's address space is active; read is bounded by sockaddr_un.
-    unsafe {
-        let p = (ptr + 2) as *const u8;
-        let first = core::ptr::read_volatile(p);
-        let mut bytes = alloc::vec::Vec::new();
-        if first == 0 {
-            for i in 0..path_len {
-                bytes.push(core::ptr::read_volatile(p.add(i)));
-            }
-        } else {
-            bytes.push(first);
-            for i in 1..path_len {
-                let b = core::ptr::read_volatile(p.add(i));
-                if b == 0 { break; }
-                bytes.push(b);
-            }
-        }
-        Some(bytes)
-    }
-}
-
-/// Read sockaddr_in (v4): (family, port_host, addr_host). # C: O(1)
-pub(crate) fn read_sockaddr_in(ptr: u64) -> Option<(u32, u16, u32)> {
-    if ptr == 0 || ptr >= USER_VA_END { return None; }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); 8-byte aligned read.
-    unsafe {
-        let family = core::ptr::read_volatile(ptr as *const u16) as u32;
-        let port_be = core::ptr::read_volatile((ptr + 2) as *const u16);
-        let addr_be = core::ptr::read_volatile((ptr + 4) as *const u32);
-        Some((family, u16::from_be(port_be), u32::from_be(addr_be)))
-    }
-}
-
-/// Read sockaddr_in6 (28 B). Returns (family, port_host, addr_bytes, scope_id). # C: O(1)
-pub(crate) fn read_sockaddr_in6(ptr: u64) -> Option<(u32, u16, [u8; 16], u32)> {
-    read_sockaddr_in6_len(ptr, SOCKADDR_IN6_LEN)
-}
-
-/// Read a `sockaddr_in6` whose caller-declared length may omit the trailing
-/// `sin6_scope_id` (Linux `SIN6_LEN_RFC2133` = 24). The scope defaults to 0
-/// when the declared length does not cover it, so only the validated prefix is
-/// dereferenced. # C: O(1)
-pub(crate) fn read_sockaddr_in6_len(ptr: u64, addrlen: usize) -> Option<(u32, u16, [u8; 16], u32)> {
-    if ptr == 0 || ptr >= USER_VA_END { return None; }
-    let has_scope = addrlen >= SOCKADDR_IN6_LEN;
-    let span = if has_scope { 28u64 } else { 24u64 };
-    if ptr.checked_add(span).map_or(true, |e| e >= USER_VA_END) { return None; }
-    // SAFETY: `span` bytes inside the validated user range; caller's AS active.
-    unsafe {
-        let family   = core::ptr::read_volatile(ptr as *const u16) as u32;
-        let port_be  = core::ptr::read_volatile((ptr + 2) as *const u16);
-        let _flow    = core::ptr::read_volatile((ptr + 4) as *const u32);
-        let mut a = [0u8; 16];
-        for i in 0..16 {
-            a[i] = core::ptr::read_volatile((ptr + 8 + i as u64) as *const u8);
-        }
-        let scope = if has_scope { core::ptr::read_volatile((ptr + 24) as *const u32) } else { 0 };
-        Some((family, u16::from_be(port_be), a, scope))
-    }
-}
-
-/// D3.3: read sockaddr_vm (AF_VSOCK, 16 B). Layout per Linux uapi
-/// `struct sockaddr_vm`: svm_family u16 @0, svm_reserved1 u16 @2,
-/// svm_port u32 @4, svm_cid u32 @8 (Linux CID is u32 but the wire
-/// protocol carries u64; we widen). Returns (family, port, cid).
-/// # C: O(1)
-pub(crate) fn read_sockaddr_vm(ptr: u64) -> Option<(u16, u32, u64)> {
-    if ptr == 0 || ptr >= USER_VA_END { return None; }
-    if ptr.checked_add(16).map_or(true, |e| e >= USER_VA_END) { return None; }
-    // SAFETY: 16 bytes inside validated user range; caller's AS active.
-    unsafe {
-        let family = core::ptr::read_volatile(ptr as *const u16);
-        let port   = core::ptr::read_volatile((ptr + 4) as *const u32);
-        let cid    = core::ptr::read_volatile((ptr + 8) as *const u32);
-        Some((family, port, cid as u64))
-    }
-}
-
-/// IPv4-mapped check (`::ffff:a.b.c.d`).
-/// Used to thread V6 sockets through the V4 transport for v1. # C: O(1)
-pub(crate) fn ipv4_from_v6_mapped(b: &[u8; 16]) -> Option<net::Ipv4Addr> {
-    let prefix_zeros = b[0..10].iter().all(|&x| x == 0);
-    let prefix_ff    = b[10] == 0xff && b[11] == 0xff;
-    if prefix_zeros && prefix_ff {
-        Some(net::Ipv4Addr::new(b[12], b[13], b[14], b[15]))
-    } else { None }
-}
-
-/// True for the IPv6 loopback address `::1`. # C: O(1)
-pub(crate) fn ipv6_loopback(b: &[u8; 16]) -> bool {
-    b[..15].iter().all(|&x| x == 0) && b[15] == 1
-}
-
-/// True for the IPv6 unspecified address `::`. # C: O(1)
-pub(crate) fn ipv6_unspecified(b: &[u8; 16]) -> bool {
-    b.iter().all(|&x| x == 0)
-}
-
-/// Read sockaddr_in (v4) or sockaddr_in6 (v6). Returns V4-equivalent
-/// (V4 → as-is, ::1 → 127.0.0.1, :: → ANY, ::ffff:a.b.c.d → V4 mapped).
-/// Native v6 returns None — caller routes through tcp_connect_ip. # C: O(1)
-pub(crate) fn read_sockaddr_any(ptr: u64) -> Option<(u32, net::Ipv4Addr, u16)> {
-    let fam = read_sa_family(ptr)? as u32;
-    if fam == AF_INET {
-        let (_, port, addr_host) = read_sockaddr_in(ptr)?;
-        Some((fam, net::Ipv4Addr::from_u32(addr_host), port))
-    } else if fam == AF_INET6 {
-        let (_, port, b, _) = read_sockaddr_in6(ptr)?;
-        if let Some(v4) = ipv4_from_v6_mapped(&b) { return Some((fam, v4, port)); }
-        if ipv6_loopback(&b)    { return Some((fam, net::Ipv4Addr::LOOPBACK, port)); }
-        if ipv6_unspecified(&b) { return Some((fam, net::Ipv4Addr::ANY, port)); }
-        None
-    } else { None }
 }
 
 
