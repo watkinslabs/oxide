@@ -7,8 +7,8 @@
 
 use syscall::SyscallArgs;
 use syscall::wait::{
-    waitid_code_status_from_wstat, waitid_options_valid, P_ALL, P_PGID, P_PID, P_PIDFD,
-    WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTAT_CONTINUED, WSTOPPED,
+    int_arg_from_reg, waitid_code_status_from_wstat, waitid_options_valid, P_ALL, P_PGID, P_PID,
+    P_PIDFD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTAT_CONTINUED, WSTOPPED,
 };
 
 
@@ -21,10 +21,10 @@ const SIGINFO_OFF_STATUS: u64 = 24;
 
 /// # C: same as wait4 — bounded by zombie poll
 pub fn sys_waitid(args: &SyscallArgs) -> i64 {
-    let idtype  = args.a0;
+    let idtype  = int_arg_from_reg(args.a0);
     let id      = args.a1 as i32;
     let infop   = args.a2;
-    let options = args.a3;
+    let options = int_arg_from_reg(args.a3);
     let rusage  = args.a4;
     if !waitid_options_valid(options) { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
     #[cfg(feature = "debug-displaystack")]
