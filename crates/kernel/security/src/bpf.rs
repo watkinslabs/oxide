@@ -316,6 +316,22 @@ pub(crate) fn next_map_id() -> u32 {
     }
 }
 
+pub(crate) fn map_by_id(id: u32) -> Option<InodeRef> {
+    if id == 0 { return None; }
+    let mut maps = MAPS_BY_ID.lock();
+    let inode = maps.get(&id).and_then(Weak::upgrade);
+    if inode.is_none() { maps.remove(&id); }
+    inode
+}
+
+pub(crate) fn next_live_map_id(start: u32) -> Option<u32> {
+    let mut maps = MAPS_BY_ID.lock();
+    let id = maps.range((core::ops::Bound::Excluded(start), core::ops::Bound::Unbounded))
+        .find_map(|(id, weak)| weak.upgrade().map(|_| *id));
+    maps.retain(|_, weak| weak.strong_count() != 0);
+    id
+}
+
 /// Build the `Arc<Inode>` for a freshly created BPF map. # C: O(1)
 pub fn make_bpf_map_inode(m: BpfMapInode) -> InodeRef {
     let id = m.id;
@@ -399,6 +415,8 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::MAP_LOOKUP_AND_DELETE_ELEM => map::elem(&a, map::MapOp::LookupAndDelete),
         cmd::MAP_GET_NEXT_KEY           => map::get_next_key(&a),
         cmd::MAP_FREEZE                 => map::freeze(&a),
+        cmd::MAP_GET_FD_BY_ID           => map::get_fd_by_id(&a, caps),
+        cmd::MAP_GET_NEXT_ID            => map::get_next_id(&a, args.a1, caps),
         cmd::PROG_LOAD                  => prog::load(&a, caps),
         cmd::PROG_ATTACH => prog::attach(&a, false, caps),
         cmd::PROG_DETACH => prog::attach(&a, true, caps),
