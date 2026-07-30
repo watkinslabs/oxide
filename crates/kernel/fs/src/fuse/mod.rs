@@ -1,11 +1,11 @@
 // FUSE (Filesystem in Userspace) — the `/dev/fuse` channel device + the `fuse`
 // filesystem type + the FUSE wire protocol that forwards VFS read-path ops to a
-// userspace daemon (Linux `fs/fuse/`). A libfuse daemon `open`s `/dev/fuse`,
+// userspace daemon. A libfuse daemon `open`s `/dev/fuse`,
 // `mount("fuse", target, "fuse", 0, "fd=N,rootmode=…")`, then serves requests
 // off the channel fd.
 //
 // Module map:
-//   * `proto`  — the byte-faithful `uapi/linux/fuse.h` wire codec.
+//   * `proto`  — the byte-faithful FUSE wire codec.
 //   * `conn`   — the `FuseConn` channel state machine (request queue, reply
 //                matching by `unique`, blocking-caller wakeup, abort).
 //   * `dev`    — the `/dev/fuse` misc char device `file_operations`.
@@ -28,7 +28,7 @@ mod tests;
 
 extern crate alloc;
 
-/// `FUSE_SUPER_MAGIC` (`include/uapi/linux/magic.h`) — statfs `f_type`. # C: O(1)
+/// `FUSE_SUPER_MAGIC` — statfs `f_type`. # C: O(1)
 pub const FUSE_SUPER_MAGIC: u64 = 0x6573_5546;
 /// Block size a fuse mount reports (Linux `fuse_fill_super` default). # C: O(1)
 pub const FUSE_BLKSIZE: u32 = 512;
@@ -51,8 +51,32 @@ pub const FUSE_WIRE_EIO: i32 = -5;
 /// the daemon's fd table). # C: O(depth)
 #[cfg(target_os = "oxide-kernel")]
 pub fn register() {
+    dev::register_chrdev().expect("FUSE character-device registration failed");
     let factory: devfs::NodeFactory = alloc::sync::Arc::new(|| dev::make_fuse_dev_inode());
     devfs::add_device_node("misc", "fuse", Some((dev::FUSE_DEV_MAJOR, dev::FUSE_DEV_MINOR)), Some(factory));
+}
+
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
+fn trace_mount_stage(stage: &'static [u8]) {
+    klog::write_raw(b"[FUSE-MOUNT] ");
+    klog::write_raw(stage);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(all(target_os = "oxide-kernel", not(feature = "debug-boot")))]
+fn trace_mount_stage(_stage: &'static [u8]) {}
+
+/// Build one FUSE superblock from parsed mount options and an opened channel
+/// file. Device identity is checked against the canonical character-device
+/// dispatcher before the channel is retained. # C: O(1)
+fn mount_from_opts(opts: fs::MountOpts, file: &vfs::File)
+    -> vfs::KResult<(alloc::sync::Arc<dyn vfs::fs::FileSystem>, vfs::InodeRef)> {
+    if !dev::is_fuse_dev(file) { return Err(vfs::VfsError::Einval); }
+    let conn = dev::conn_for(file);
+    let ffs = fs::build_fuse_fs(conn, opts.rootmode, opts.user_id, opts.group_id);
+    let root = ffs.root_inode();
+    let dyn_fs: alloc::sync::Arc<dyn vfs::fs::FileSystem> = ffs;
+    Ok((dyn_fs, root))
 }
 
 /// `mount("fuse", …, data)` entry — parse the `fd=N,rootmode=…,user_id=…,
@@ -63,12 +87,20 @@ pub fn register() {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn mount_from_data(data: &str) -> vfs::KResult<(alloc::sync::Arc<dyn vfs::fs::FileSystem>, vfs::InodeRef)> {
-    let opts = fs::parse_mount_opts(data)?;
-    let file = sched::proclink::proc_fd_file(None, opts.fd).ok_or(vfs::VfsError::Ebadf)?;
-    if !dev::is_fuse_dev(&file) { return Err(vfs::VfsError::Einval); }
-    let conn = dev::conn_for(&file);
-    let ffs = fs::build_fuse_fs(conn, opts.rootmode, opts.user_id, opts.group_id);
-    let root = ffs.root_inode();
-    let dyn_fs: alloc::sync::Arc<dyn vfs::fs::FileSystem> = ffs;
-    Ok((dyn_fs, root))
+    trace_mount_stage(b"parse");
+    let opts = match fs::parse_mount_opts(data) {
+        Ok(opts) => opts,
+        Err(e) => { trace_mount_stage(b"parse-fail"); return Err(e); }
+    };
+    let file = match sched::proclink::proc_fd_file(None, opts.fd) {
+        Some(file) => file,
+        None => { trace_mount_stage(b"fd-fail"); return Err(vfs::VfsError::Ebadf); }
+    };
+    let mounted = match mount_from_opts(opts, &file) {
+        Ok(mounted) => mounted,
+        Err(e) => { trace_mount_stage(b"device-fail"); return Err(e); }
+    };
+    trace_mount_stage(b"device-ok");
+    trace_mount_stage(b"construct-ok");
+    Ok(mounted)
 }
