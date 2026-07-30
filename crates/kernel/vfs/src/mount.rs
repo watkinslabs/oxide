@@ -75,9 +75,14 @@ pub use mnt_flags::{
 // (`can_change_locked_flags`). A submodule so it carries its own unit tests.
 mod locked;
 pub use locked::{
-    can_change_locked_flags, has_locked_children, lock_bits_for, lock_detached_tree,
-    lock_new_mount_bits,
+    can_change_locked_flags, can_change_locked_options, has_locked_children, lock_bits_for,
+    lock_detached_tree, lock_new_mount_bits,
 };
+
+// Idmapped mount installation is one VFS transaction over detached mount
+// state, shared by open_tree and the deferred fsmount representation.
+mod idmapped;
+pub use idmapped::{can_idmap_superblock, mnt_setattr_attached, mnt_setattr_detached_tree};
 
 // mount_too_revealing: the visibility constraint on an unprivileged user-ns
 // mount of a FS_USERNS_MOUNT_RESTRICTED filesystem (procfs/sysfs). A submodule

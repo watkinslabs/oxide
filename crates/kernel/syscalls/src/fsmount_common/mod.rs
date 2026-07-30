@@ -13,7 +13,9 @@ mod objects;
 mod registry;
 
 pub(crate) use mount_dispatch::MountCaps;
-pub(crate) use fd::{fd_file, fd_inode, install_fd, read_cstr_req, read_path_allow_empty};
+pub(crate) use fd::{
+    fd_file, fd_inode, install_fd, install_path_fd, read_cstr_req, read_path_allow_empty,
+};
 pub(crate) use mount_ops::mount_fstype_at;
 pub use objects::{FsContextInode, MountObjectInode};
 pub(crate) use registry::fstype_ok;
