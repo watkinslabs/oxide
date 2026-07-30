@@ -51,6 +51,13 @@ pub mod cmd {
     pub const COMMON_ATTRS:                u32 = 1 << 16;
 }
 
+/// `bpf_attr.file_flags` for `BPF_OBJ_GET`.
+pub mod obj_get_flags {
+    pub const RDONLY: u32 = 1 << 3;
+    pub const WRONLY: u32 = 1 << 4;
+    pub const MASK: u32 = RDONLY | WRONLY;
+}
+
 /// `sizeof(union bpf_attr)`. Largest member is the `BPF_PROG_LOAD`
 /// anonymous struct: `keyring_id` at offset 164, `__aligned(8)`.
 pub const ATTR_SIZE: usize = 168;
@@ -144,6 +151,24 @@ pub mod off {
     pub mod prog_get_fd_by_id {
         pub const PROG_ID:  usize = 0;
         pub const LAST_END: usize = 4;
+    }
+    /// `BPF_MAP_GET_FD_BY_ID`; `LAST_FIELD map_id`.
+    pub mod map_get_fd_by_id {
+        pub const MAP_ID:   usize = 0;
+        pub const LAST_END: usize = 4;
+    }
+    /// `BPF_OBJ_PIN`; pathname, descriptor, and file flags.
+    pub mod obj_pin {
+        pub const BPF_FD:     usize = 0;
+        pub const PATHNAME:   usize = 8;
+        pub const FILE_FLAGS: usize = 16;
+        pub const LAST_END:   usize = 20;
+    }
+    /// `BPF_OBJ_GET`; pathname and file flags.
+    pub mod obj_get {
+        pub const PATHNAME:   usize = 0;
+        pub const FILE_FLAGS: usize = 8;
+        pub const LAST_END:   usize = 12;
     }
     /// `BPF_PROG_BIND_MAP`; flags ends the 12-byte command payload.
     pub mod prog_bind_map {

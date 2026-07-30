@@ -31,6 +31,7 @@ mod log;
 pub(crate) mod map;
 mod ids;
 mod token;
+mod object;
 
 use attr::Caps;
 use uapi::cmd;
@@ -397,6 +398,49 @@ pub fn make_bpf_lsm_link_inode(link: BpfLsmLinkInode) -> InodeRef {
 /// # C: O(1) admit; O(log N) for map ops; O(insn_cnt) for PROG_LOAD
 pub fn sys_bpf(args: &SyscallArgs) -> i64 {
     match dispatch(args) { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
+}
+
+/// Decode the `BPF_OBJ_PIN` pathname after the common attribute protocol.
+/// The syscall shim resolves this address through the caller's mount namespace.
+/// # C: O(sizeof(bpf_attr))
+pub fn obj_pin_path(args: &SyscallArgs) -> Result<u64, Errno> {
+    let attr = object_attr(args)?;
+    attr::check_attr(&attr, uapi::off::obj_pin::LAST_END)?;
+    Ok(attr.u64_at(uapi::off::obj_pin::PATHNAME))
+}
+
+/// Decode the `BPF_OBJ_GET` pathname after the common attribute protocol.
+/// # C: O(sizeof(bpf_attr))
+pub fn obj_get_path(args: &SyscallArgs) -> Result<u64, Errno> {
+    let attr = object_attr(args)?;
+    attr::check_attr(&attr, uapi::off::obj_get::LAST_END)?;
+    Ok(attr.u64_at(uapi::off::obj_get::PATHNAME))
+}
+
+/// Whether this command must be pathname-resolved by the syscall shim.
+/// # C: O(1)
+pub fn object_path_command(args: &SyscallArgs) -> Option<u32> {
+    let c = (args.a0 as u32) & !cmd::COMMON_ATTRS;
+    matches!(c, cmd::OBJ_PIN | cmd::OBJ_GET).then_some(c)
+}
+
+/// Publish an fd-backed BPF object under an already-resolved bpffs parent.
+/// # C: O(log directory entries)
+pub fn obj_pin(args: &SyscallArgs, parent: &vfs::VfsPath, name: &str) -> Result<i64, Errno> {
+    object::pin(&object_attr(args)?, parent, name, caps_now()?)
+}
+
+/// Recover an fd for an already-resolved bpffs object.
+/// # C: O(fd words)
+pub fn obj_get(args: &SyscallArgs, object: &vfs::VfsPath) -> Result<i64, Errno> {
+    object::get(&object_attr(args)?, object, caps_now()?)
+}
+
+fn object_attr(args: &SyscallArgs) -> Result<attr::Attr, Errno> {
+    if args.a0 as u32 & cmd::COMMON_ATTRS != 0 {
+        let _ = user::fetch_common_attr(args.a3, args.a4 as u32)?;
+    }
+    user::fetch_attr(args.a1, args.a2 as u32)
 }
 
 fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {

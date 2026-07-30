@@ -2,6 +2,7 @@
 #[macro_use] extern crate kmacros;
 
 mod anon_dname;
+#[path = "321_bpf.rs"] mod s321_bpf;
 mod clock_ops;
 mod timex_ops;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
