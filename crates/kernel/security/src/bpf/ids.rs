@@ -5,3 +5,4 @@ pub(crate) const INO_PROG: Ino = INO_BASE | 0x01;
 pub(crate) const INO_MAP: Ino = INO_BASE | 0x02;
 pub(crate) const INO_LINK: Ino = INO_BASE | 0x03;
 pub(crate) const INO_BTF: Ino = INO_BASE | 0x04;
+pub(crate) const INO_TOKEN: Ino = INO_BASE | 0x05;
