@@ -19,6 +19,9 @@ use sync::{Spinlock, TaskList as DriverListClass};
 
 use crate::KResult;
 
+mod lifecycle_state;
+pub use lifecycle_state::{device_del, try_device_add};
+
 /// Factory that mints the `/dev` node inode for a device (devtmpfs path).
 /// Boxed + `Arc` so the registry, the `Device`, and the `DEVTMPFS_HOOK`
 /// callback share one closure. `InodeRef` is the only `vfs` type drv names
@@ -58,6 +61,8 @@ pub struct Device {
     pub parent_bus:  Option<&'static str>,
     /// Parent bus address, paired with `parent_bus`.
     pub parent_addr: Option<String>,
+    /// One-way registration lifecycle: new, live, then permanently removed.
+    pub(crate) lifecycle: lifecycle_state::Lifecycle,
     /// PCI vendor id (0 for synthetic virtio bus devices).
     pub vendor_id: u16,
     /// PCI device id, or virtio device-id on the virtio bus.
@@ -93,7 +98,9 @@ impl Device {
     /// Construct an unbound device with no `/dev` node. # C: O(1)
     pub fn new(bus: &'static str, addr: String, vendor_id: u16, device_id: u16, class: u32) -> Self {
         Self {
-            bus, addr, parent_bus: None, parent_addr: None, vendor_id, device_id, class,
+            bus, addr, parent_bus: None, parent_addr: None,
+            lifecycle: lifecycle_state::Lifecycle::new(),
+            vendor_id, device_id, class,
             driver: Spinlock::new(None), driver_override: Spinlock::new(None),
             dev_class: "", devname: None, dev_t: None, node_factory: None,
             uevent_env: Vec::new(), resources: Vec::new(),
@@ -178,7 +185,6 @@ static DEVICES: Spinlock<Vec<Arc<Device>>, DriverListClass> = Spinlock::new(Vec:
 static MODEL_DRIVERS: Spinlock<Vec<&'static dyn Driver>, DriverListClass> = Spinlock::new(Vec::new());
 static DEV_COUNT: AtomicUsize = AtomicUsize::new(0);
 static DRV_COUNT: AtomicUsize = AtomicUsize::new(0);
-
 /// Hook the kernel installs so this crate can publish a device into
 /// the sysfs tree without depending on the sysfs/devfs crates.
 type SysfsHook = fn(&Device);
@@ -226,18 +232,10 @@ pub fn set_devtmpfs_hook(f: DevtmpfsHook) { *DEVTMPFS_HOOK.lock() = Some(f); }
 /// # C: O(1)
 pub fn set_devtmpfs_del_hook(f: DevtmpfsDelHook) { *DEVTMPFS_DEL_HOOK.lock() = Some(f); }
 
-/// Push an enumerated device into the authoritative registry.
-/// # C: O(1) amortised
-fn push_device(d: Arc<Device>) -> Arc<Device> {
-    DEVICES.lock().push(Arc::clone(&d));
-    DEV_COUNT.fetch_add(1, Ordering::Release);
-    d
-}
-
 /// Snapshot of all registered devices. # C: O(N_devices)
 pub fn devices() -> Vec<Arc<Device>> { DEVICES.lock().clone() }
 
-/// Number of registered devices. # C: O(1)
+/// Registered-device count. # C: O(1)
 pub fn device_count() -> usize { DEV_COUNT.load(Ordering::Acquire) }
 
 /// Current device with full model identity matching `candidate`, if any. # C: O(N_devices)
@@ -250,64 +248,6 @@ pub fn find_matching_device_identity(candidate: &Device) -> Option<Arc<Device>> 
 pub fn rollback_devices(published: &[Arc<Device>]) {
     for dev in published.iter().rev() {
         device_del(dev);
-    }
-}
-
-/// Fallible unified device registration (Linux `device_add`). ONE call
-/// publishes a device to BOTH `/sys` and `/dev` from a single registration:
-///   1. reject duplicate `(bus, addr)` identities before publishing anything;
-///   2. push to the registry so sysfs can resolve the object;
-///   3. if the device declares a `/dev` node (`devname.is_some()`), fire
-///      `DEVTMPFS_HOOK` so devtmpfs mints `/dev/<devname>`;
-///   4. attach any already-registered matching driver while the device is in
-///      the registry but before the add uevent, matching Linux `device_add`
-///      probing before `KOBJ_ADD`;
-///   5. fire `SYSFS_HOOK`, which emits the Linux `add` uevent only after the
-///      devtmpfs node is visible and initial driver probe had a chance to
-///      publish child devices.
-///
-/// Deliberate oxide design (do NOT "fix" into Linux kset/kobject trees): `/sys`
-/// directories are SYNTHESISED on demand from this registry by the sysfs crate
-/// (`sysfs::bus`), so there is no eager kobject/kset dir tree or refcounting to
-/// build here — registration is the single source of truth, dirs are a view.
-/// # C: O(N_devices)
-pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
-    if DEVICES.lock().iter().any(|x| x.bus == d.bus && x.addr == d.addr) {
-        return Err(crate::Error::Busy);
-    }
-    let d = push_device(d);
-    if let Some(name) = d.devname.clone() {
-        if let Some(h) = *DEVTMPFS_HOOK.lock() { h(d.dev_class, &name, d.dev_t, d.node_factory.clone()); }
-    }
-    attach_device_to_registered_drivers(&d, false);
-    if let Some(h) = *SYSFS_HOOK.lock() { h(&d); }
-    Ok(d)
-}
-
-/// Symmetric teardown (Linux `device_del`): first detach any bound driver so
-/// the driver's `remove` owns hardware teardown, then emit `remove` while the
-/// object is still visible, remove any owned `/dev` node, and finally drop the
-/// device from the registry so `/sys` synthesis stops listing it.
-/// # C: O(N_devices + remove)
-pub fn device_del(d: &Arc<Device>) {
-    if !DEVICES.lock().iter().any(|x| Arc::ptr_eq(x, d)) {
-        return;
-    }
-    if d.bound().is_some() {
-        let _ = unbind(d);
-    }
-    if let Some(h) = *SYSFS_REMOVE_HOOK.lock() { h(d); }
-    if let Some(name) = d.devname.clone() {
-        if let Some(h) = *DEVTMPFS_DEL_HOOK.lock() { h(&name); }
-    }
-    let removed = {
-        let mut devices = DEVICES.lock();
-        let before = devices.len();
-        devices.retain(|x| !Arc::ptr_eq(x, d));
-        devices.len() != before
-    };
-    if removed {
-        DEV_COUNT.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -429,6 +369,7 @@ pub fn bind(dev: &Arc<Device>, driver_name: &'static str) -> KResult<()> {
 }
 
 fn bind_inner(dev: &Arc<Device>, driver_name: &'static str, emit_bind_event: bool) -> KResult<()> {
+    if !dev.lifecycle.is_live() { return Err(crate::Error::Removed); }
     if dev.bound().is_some() { return Err(crate::Error::AlreadyBound); }
     let driver = find_driver_on_bus(dev.bus, driver_name).ok_or(crate::Error::NotFound)?;
     if !driver_matches_device(driver, dev) { return Err(crate::Error::NoMatch); }
