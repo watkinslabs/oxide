@@ -33,23 +33,18 @@ Form: `<doc>§<sec>` (e.g., `13§4`, `02§1`, `04§1.1`). Every reference must r
 
 When user says `<doc>§<sec>`, **read that section first** before responding.
 
-## Linux source of truth (HARD RULE)
+## Semantic verification (HARD RULE)
 
-Full Linux source: **`/home/nd/oxide/linux-master`** (currently v7.2.0-rc4). Read it
-whenever you claim Linux semantics — errno values, error ORDERING, capability checks,
-struct layouts, flag masks.
+Verify externally defined behavior against complete primary reference material before
+claiming errno values, error ordering, capability checks, layouts, or flag masks.
 
-- `/usr/src/kernels/*` is the **kernel-devel** package: headers only, ~151 `.c` files.
-  `kernel/sys.c`, `kernel/signal.c`, `ipc/*.c`, `fs/open.c` are **not** there. Citing it
-  for behavior means you didn't read behavior.
-- Never assert Linux behavior from memory or man pages. Both routinely get the details
-  wrong that matter most: errno ordering, the `getpriority` 20-nice return bias,
-  `getcwd` length-includes-NUL, `flock` open-file-description sharing, whether a syscall
-  is compiled in at all. A comment claiming "Linux returns X" that was never checked is a
-  half-truth that survives review because it looks authoritative — B1434 found three such
-  claims in one file (pkey_alloc "returns ENOSYS without OSPKE"; it returns ENOSPC).
-- Cite the file you read (`mm/mprotect.c` `SYSCALL_DEFINE2(pkey_alloc)`) in the code
-  comment, so the next reader can re-verify instead of re-deriving.
+- Never assert compatibility behavior from memory or summaries. Validate the complete
+  implementation privately because ordering and configuration details routinely differ.
+- Repository comments and docs state only the resulting ABI, observable behavior,
+  invariant, or standard section. They must not name, path-link, quote, or cite external
+  implementation source files.
+- Tests are the durable provenance: encode the verified behavior and error ordering so
+  later work can re-check the contract without tying repository text to another codebase.
 
 ## Code style hard rules (`docs/07§5`)
 
