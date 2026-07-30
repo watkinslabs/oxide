@@ -46,6 +46,9 @@ pub const SB_I_NODEV: u64 = 0x0000_0004;
 /// exempts it from needing an already-visible instance AND refuses to let it
 /// serve as the already-visible instance for anything else.
 pub const SB_I_RESTRICTED_VARIANT: u64 = 0x0000_0010;
+/// `SB_I_NOIDMAP` — this filesystem instance disabled idmapped mounts even
+/// though its type generally advertises `FS_ALLOW_IDMAP`.
+pub const SB_I_NOIDMAP: u64 = 0x0000_2000;
 /// The `s_iflags` pair `mount_too_revealing` REQUIRES on any filesystem marked
 /// `FS_USERNS_MOUNT_RESTRICTED` (Linux `required_iflags`). # C: const
 pub const SB_I_USERNS_REQUIRED: u64 = SB_I_NOEXEC | SB_I_NODEV;

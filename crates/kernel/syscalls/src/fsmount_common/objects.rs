@@ -2,7 +2,7 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use sync::{Spinlock, TaskList as LockClass};
 use vfs::{Dentry, FileType, InodeBuilder, InodeRef, default_file_ops, default_inode_ops, mk_mode};
 
@@ -14,10 +14,12 @@ pub struct FsContextInode {
 }
 
 impl FsContextInode {
+    /// Allocate a mount-purpose filesystem context inode. # C: O(1)
     pub fn new(fstype: String, ty: Arc<dyn vfs::FileSystemType>) -> InodeRef {
         Self::build(fstype, Some(vfs::fs::FsContext::for_mount(ty, 0)))
     }
 
+    /// Allocate a reconfiguration filesystem context inode. # C: O(1)
     pub fn new_reconfigure(fstype: String, fc: vfs::fs::FsContext) -> InodeRef {
         Self::build(fstype, Some(fc))
     }
@@ -33,17 +35,25 @@ impl FsContextInode {
 pub struct MountObjectInode {
     pub fstype: String,
     pub realized: Option<(Arc<vfs::SuperBlock>, Arc<Dentry>)>,
-    pub mnt_attrs: AtomicU64,
-    /// Kernel-internal `mnt_flags` (`MNT_LOCK_*` / `MNT_LOCKED`) decided at
-    /// `fsmount(2)` and applied when `move_mount(2)` grafts this object. Linux
-    /// takes both decisions inside `do_fsmount` — `mount_too_revealing`'s
-    /// "preserve the locked attributes" and `create_new_namespace`'s
-    /// `lock_mnt_tree` — because it materialises the `vfsmount` there; this tree
-    /// defers mount creation to `move_mount`, so the WORD travels on the object
-    /// while the DECISION stays at the Linux syscall.
-    pub mnt_lock_flags: AtomicU32,
+    /// The single lock-protected property set of a realized mount that Oxide
+    /// defers materializing until `move_mount`. Linux has a real detached
+    /// `struct mount` here; keeping attrs, locked bits and idmap together gives
+    /// the deferred representation the same prepare/commit serialization.
+    pub mount_state: Spinlock<MountObjectState, LockClass>,
     pub clone_of: Option<(Arc<dyn vfs::fs::FileSystem>, InodeRef)>,
     pub detached_tree: Spinlock<Option<vfs::mount::DetachedMountTree>, LockClass>,
+}
+
+#[derive(Clone)]
+pub struct MountObjectState {
+    /// Raw userspace `MOUNT_ATTR_*` option bits (IDMAP lives in `idmap`).
+    pub attrs: u64,
+    /// Kernel-internal `MNT_LOCK_* | MNT_LOCKED` word.
+    pub lock_flags: u32,
+    /// Pending immutable idmap for a realized fsmount.
+    pub idmap: Option<Arc<vfs::idmap::Idmap>>,
+    /// Pending propagation transition, if mount_setattr requested one.
+    pub propagation: Option<vfs::mount::Propagation>,
 }
 
 impl Drop for MountObjectInode {
@@ -55,17 +65,38 @@ impl Drop for MountObjectInode {
 }
 
 impl MountObjectInode {
+    /// Build a deferred fsmount object around a realized superblock. # C: O(1)
     pub fn new_realized(sb: Arc<vfs::SuperBlock>, root: Arc<Dentry>, fstype: String, mnt_attrs: u64,
         mnt_lock_flags: u32) -> InodeRef {
-        Self::build(Self { fstype, realized: Some((sb, root)), mnt_attrs: AtomicU64::new(mnt_attrs), mnt_lock_flags: AtomicU32::new(mnt_lock_flags), clone_of: None, detached_tree: Spinlock::new(None) })
+        Self::build(Self {
+            fstype, realized: Some((sb, root)),
+            mount_state: Spinlock::new(MountObjectState {
+                attrs: mnt_attrs, lock_flags: mnt_lock_flags, idmap: None, propagation: None,
+            }),
+            clone_of: None, detached_tree: Spinlock::new(None),
+        })
     }
 
+    /// Build a detached legacy filesystem clone object. # C: O(1)
     pub fn new_clone(fs: Arc<dyn vfs::fs::FileSystem>, root: InodeRef) -> InodeRef {
-        Self::build(Self { fstype: String::new(), realized: None, mnt_attrs: AtomicU64::new(0), mnt_lock_flags: AtomicU32::new(0), clone_of: Some((fs, root)), detached_tree: Spinlock::new(None) })
+        Self::build(Self {
+            fstype: String::new(), realized: None,
+            mount_state: Spinlock::new(MountObjectState {
+                attrs: 0, lock_flags: 0, idmap: None, propagation: None,
+            }),
+            clone_of: Some((fs, root)), detached_tree: Spinlock::new(None),
+        })
     }
 
+    /// Build an open_tree clone object owning one detached mount tree. # C: O(1)
     pub fn new_clone_tree(tree: vfs::mount::DetachedMountTree) -> InodeRef {
-        Self::build(Self { fstype: String::new(), realized: None, mnt_attrs: AtomicU64::new(0), mnt_lock_flags: AtomicU32::new(0), clone_of: None, detached_tree: Spinlock::new(Some(tree)) })
+        Self::build(Self {
+            fstype: String::new(), realized: None,
+            mount_state: Spinlock::new(MountObjectState {
+                attrs: 0, lock_flags: 0, idmap: None, propagation: None,
+            }),
+            clone_of: None, detached_tree: Spinlock::new(Some(tree)),
+        })
     }
 
     fn build(data: Self) -> InodeRef {

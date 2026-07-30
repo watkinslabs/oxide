@@ -115,13 +115,13 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
             }
             // Graft the already-realized SB (Linux do_move_mount over a
             // fsmount object), then deliver mount propagation to the destination
-            // peer group. [D51] The `fsmount(2)` MOUNT_ATTR_* request stored on
-            // the object (`mnt_attrs`) is mapped into the MNT_* option space and
+            // peer group. [D51] The `fsmount(2)` property set stored on the
+            // object is mapped into the MNT_* option space and
             // stamped on the new mount BEFORE it goes live, so a following
             // `propagate_mount` peer-copy inherits it (clone_mnt copies src.flags).
             if let Some((sb, _root)) = mo.realized.as_ref() {
-                let mnt_flags = vfs::mount::mount_attr_to_mnt(
-                    mo.mnt_attrs.load(core::sync::atomic::Ordering::Acquire));
+                let state = mo.mount_state.lock().clone();
+                let mnt_flags = vfs::mount::mount_attr_to_mnt(state.attrs);
                 // Parent = the mount the target-dir walk crossed into, not a
                 // re-derivation from the (bind-shared) mountpoint dentry. systemd
                 // creates the sandbox apivfs at /run/systemd/namespace-X after
@@ -131,8 +131,10 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
                 // (`mount_too_revealing`'s preserved attributes +
                 // `create_new_namespace`'s `lock_mnt_tree`) is installed with the
                 // option mask, before the mount goes live.
-                let lock_flags = mo.mnt_lock_flags.load(core::sync::atomic::Ordering::Acquire);
-                return match vfs::mount::attach_sb_locked_at(Some(target_d.clone()), sb.clone(), mnt_flags, lock_flags, Some(target_mnt)) {
+                let attached = vfs::mount::attach_sb_detached_at(
+                    Some(target_d.clone()), sb.clone(), mnt_flags, state.lock_flags,
+                    state.idmap, state.propagation, Some(target_mnt));
+                return match attached {
                     Ok(()) => { let _ = vfs::mount::propagate_mount(&target_d); 0 }
                     Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
                     Err(e) => crate::namei_common::errno_from_vfs(e),

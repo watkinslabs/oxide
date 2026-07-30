@@ -1,160 +1,258 @@
-// 442 mount_setattr — one syscall, one file (docs/53 §0). Moved verbatim from fsmount.rs.
+// 442 mount_setattr — Linux `fs/namespace.c` prepare/commit shape.
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::SyscallArgs;
+use alloc::sync::Arc;
+use alloc::vec;
 use syscall::errno::Errno;
-use hal::USER_VA_END;
+use syscall::SyscallArgs;
 
 use crate::fsmount_common::*;
 
-/// `sys_mount_setattr(dirfd, path, flags, uattr, size)` — slot 442.
-/// Changes mount attributes on the mount at `path`: we honour the propagation
-/// change (`mount_attr.propagation` → MS_SHARED/PRIVATE/SLAVE/UNBINDABLE) via
-/// `vfs::mount::set_propagation`, AND [D52] the per-mount option bits
-/// (`attr_set`/`attr_clr` → RDONLY/NOSUID/NODEV/NOEXEC/atime/NODIRATIME/
-/// NOSYMFOLLOW) mapped into the MNT_* space and applied to the mount the walk
-/// crossed into (`AT_RECURSIVE` ⇒ the whole subtree). Only MNT_RDONLY has
-/// runtime enforcement today (EROFS); the rest are reported via /proc/mounts +
-/// statvfs `ST_*`. ID-mapped mounts are not implemented, so requests using
-/// `MOUNT_ATTR_IDMAP` are rejected instead of falsely advertising support to
-/// systemd. `struct mount_attr` is
-/// `{ u64 attr_set, attr_clr, propagation, userns_fd }` (32 bytes).
-/// # C: O(N_mounts)
-pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
-    use vfs::mount::Propagation;
-    const MS_UNBINDABLE: u64 = 1 << 17;
-    const MS_PRIVATE:    u64 = 1 << 18;
-    const MS_SLAVE:      u64 = 1 << 19;
-    const MS_SHARED:     u64 = 1 << 20;
-    const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
-    if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
-    // Linux `sys_mount_setattr` order: validate `uattr`/`usize` (copy_mount_setattr)
-    // BEFORE resolving `path` (user_path_at is last). So a support-probe
-    // `mount_setattr(fd, NULL, 0, NULL, 0)` must return EINVAL (usize < VER0),
-    // NOT EFAULT from reading the NULL path — systemd's mount_setattr feature
-    // detection keys on EINVAL==supported / ENOSYS==unsupported; EFAULT made it
-    // mis-detect and fall back, and diverged from Linux (67× per boot).
-    let uattr = args.a3;
-    let size  = args.a4 as usize;
-    if uattr == 0 || size < 24 || uattr >= USER_VA_END {
-        return -(Errno::Einval.as_i32() as i64);
+const PAGE_SIZE: usize = 4096;
+const MOUNT_ATTR_SIZE_VER0: usize = 32;
+
+const AT_SYMLINK_NOFOLLOW: u64 = 0x0100;
+const AT_NO_AUTOMOUNT: u64 = 0x0800;
+const AT_EMPTY_PATH: u64 = 0x1000;
+const AT_RECURSIVE: u64 = 0x8000;
+const VALID_AT_FLAGS: u64 =
+    AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_RECURSIVE;
+
+const MS_UNBINDABLE: u64 = 1 << 17;
+const MS_PRIVATE: u64 = 1 << 18;
+const MS_SLAVE: u64 = 1 << 19;
+const MS_SHARED: u64 = 1 << 20;
+const PROPAGATION_MASK: u64 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
+
+#[derive(Clone, Copy)]
+struct MountAttr {
+    attr_set: u64,
+    attr_clr: u64,
+    propagation: u64,
+    userns_fd: u64,
+}
+
+fn neg(error: Errno) -> i64 { -(error.as_i32() as i64) }
+
+fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+
+/// Linux `copy_struct_from_user`: v0 is exactly 32 bytes, a larger zero tail is
+/// accepted, and a nonzero extension byte is `E2BIG`. Size/capability order is
+/// observable by feature probes and matches `wants_mount_setattr`.
+fn copy_mount_attr(ptr: u64, size: usize) -> Result<MountAttr, i64> {
+    if size > PAGE_SIZE { return Err(neg(Errno::E2big)); }
+    if size < MOUNT_ATTR_SIZE_VER0 { return Err(neg(Errno::Einval)); }
+    if let Some(rv) = may_mount_or_eperm() { return Err(rv); }
+
+    let mut bytes = [0u8; MOUNT_ATTR_SIZE_VER0];
+    uaccess::copy_from_user(&mut bytes, ptr).map_err(|_| neg(Errno::Efault))?;
+    if size > MOUNT_ATTR_SIZE_VER0 {
+        let mut tail = vec![0u8; size - MOUNT_ATTR_SIZE_VER0];
+        let tail_ptr = ptr.checked_add(MOUNT_ATTR_SIZE_VER0 as u64)
+            .ok_or_else(|| neg(Errno::Efault))?;
+        uaccess::copy_from_user(&mut tail, tail_ptr)
+            .map_err(|_| neg(Errno::Efault))?;
+        if tail.iter().any(|byte| *byte != 0) { return Err(neg(Errno::E2big)); }
     }
-    if uattr.checked_add(size as u64).map(|end| end > USER_VA_END).unwrap_or(true) {
-        return -(Errno::Efault.as_i32() as i64);
+    Ok(MountAttr {
+        attr_set: u64_at(&bytes, 0),
+        attr_clr: u64_at(&bytes, 8),
+        propagation: u64_at(&bytes, 16),
+        userns_fd: u64_at(&bytes, 24),
+    })
+}
+
+fn propagation(raw: u64) -> Option<vfs::mount::Propagation> {
+    match raw {
+        MS_SHARED => Some(vfs::mount::Propagation::Shared),
+        MS_SLAVE => Some(vfs::mount::Propagation::Slave),
+        MS_UNBINDABLE => Some(vfs::mount::Propagation::Unbindable),
+        MS_PRIVATE => Some(vfs::mount::Propagation::Private),
+        _ => None,
     }
-    const AT_RECURSIVE: u64 = 0x8000;
-    const AT_EMPTY_PATH: u64 = 0x1000;
-    const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
-    use vfs::mount::{MNT_ATIME_MODE_MASK, MOUNT_ATTR_NOATIME, MOUNT_ATTR_SETTABLE,
-                     MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME, mount_attr_to_mnt};
-    // SAFETY: uattr+16 is covered by the validated minimum struct size.
-    let attr_set = unsafe { core::ptr::read_volatile(uattr as *const u64) };
-    // SAFETY: uattr+8 (attr_clr) is within the validated minimum 24-byte struct.
-    let attr_clr = unsafe { core::ptr::read_volatile((uattr + 8) as *const u64) };
-    if (attr_set & MOUNT_ATTR_IDMAP) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
+}
+
+fn validate_attr(attr: &MountAttr) -> Result<(), i64> {
+    use vfs::mount::{
+        MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_SETTABLE,
+        MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME,
+    };
+    if attr.propagation & !PROPAGATION_MASK != 0
+        || (attr.propagation & PROPAGATION_MASK).count_ones() > 1 {
+        return Err(neg(Errno::Einval));
     }
-    // Unknown request bits (outside the settable, non-idmap set) → EINVAL, as
-    // Linux validates the request mask before `build_mount_kattr`.
-    if (attr_set & !MOUNT_ATTR_SETTABLE) != 0 || (attr_clr & !MOUNT_ATTR_SETTABLE) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
+    if (attr.attr_set | attr.attr_clr) & !MOUNT_ATTR_SETTABLE != 0 {
+        return Err(neg(Errno::Einval));
     }
-    // atime sub-field rules (Linux): to change the atime mode the caller must
-    // clear the WHOLE MOUNT_ATTR__ATIME field, and the chosen mode in attr_set
-    // must be exactly one of relatime(0)/noatime/strictatime.
-    let atime_set = attr_set & MOUNT_ATTR__ATIME;
-    let atime_clr = attr_clr & MOUNT_ATTR__ATIME;
-    if (atime_set | atime_clr) != 0 {
-        if atime_clr != MOUNT_ATTR__ATIME { return -(Errno::Einval.as_i32() as i64); }
-        if atime_set != 0 && atime_set != MOUNT_ATTR_NOATIME && atime_set != MOUNT_ATTR_STRICTATIME {
-            return -(Errno::Einval.as_i32() as i64);
+    // mount_setattr cannot remove/replace an idmap. That replacement mode is
+    // reserved for open_tree_attr(2)'s unpublished clone transaction.
+    if attr.attr_clr & MOUNT_ATTR_IDMAP != 0 { return Err(neg(Errno::Einval)); }
+
+    let set_atime = attr.attr_set & MOUNT_ATTR__ATIME;
+    let clr_atime = attr.attr_clr & MOUNT_ATTR__ATIME;
+    if clr_atime != 0 {
+        if clr_atime != MOUNT_ATTR__ATIME { return Err(neg(Errno::Einval)); }
+        if set_atime != 0 && set_atime != MOUNT_ATTR_NOATIME
+            && set_atime != MOUNT_ATTR_STRICTATIME {
+            return Err(neg(Errno::Einval));
         }
+    } else if set_atime != 0 {
+        return Err(neg(Errno::Einval));
     }
-    // Map the request into the per-mount MNT_* option space. Direct bits map
-    // one-to-one; the atime mode is only touched when the full sub-field is
-    // cleared (else the mount keeps its current atime policy).
-    let mut set_mnt = mount_attr_to_mnt(attr_set) & !MNT_ATIME_MODE_MASK;
-    let mut clr_mnt = mount_attr_to_mnt(attr_clr) & !MNT_ATIME_MODE_MASK;
-    if atime_clr == MOUNT_ATTR__ATIME {
-        clr_mnt |= MNT_ATIME_MODE_MASK;                           // clear all 3 modes
-        set_mnt |= mount_attr_to_mnt(attr_set) & MNT_ATIME_MODE_MASK;  // set chosen
+    Ok(())
+}
+
+/// Resolve the exact nsfs user-namespace fd, enforce Linux's initial-namespace
+/// and namespace-capability gates, then snapshot its canonical maps.
+fn idmap_from_fd(fd: u64) -> Result<Arc<vfs::idmap::Idmap>, i64> {
+    if fd > i32::MAX as u64 { return Err(neg(Errno::Einval)); }
+    let file = fd_file(fd as i32).ok_or_else(|| neg(Errno::Ebadf))?;
+    let ns = file.inode().private::<nscg::NsInode>()
+        .ok_or_else(|| neg(Errno::Einval))?;
+    if ns.kind != nscg::NsKind::User { return Err(neg(Errno::Einval)); }
+    let owner = match ns.owner() {
+        nscg::NsOwner::User(owner) => owner.clone(),
+        _ => return Err(neg(Errno::Einval)),
+    };
+    if owner.is_initial() { return Err(neg(Errno::Eperm)); }
+    let current = sched::live::current().ok_or_else(|| neg(Errno::Eperm))?;
+    if !nscg::proc_ns::has_cap_for(current, &owner.pin(), sched::cap::SYS_ADMIN) {
+        return Err(neg(Errno::Eperm));
     }
-    // NB: `userns_fd` (offset 24) is deliberately NOT inspected. Linux
-    // `build_mount_kattr` reads it ONLY inside `if attr_set & MOUNT_ATTR_IDMAP`
-    // (rejected just above); for every non-idmap caller it is ignored, whatever
-    // its value. libmount/mount(8) zero-initialise `struct mount_attr`, so a
-    // mandatory `userns_fd == -1` test wrongly rejected the universal
-    // zero-filled struct (EINVAL → mount(8) exit 32 for debugfs/tracefs).
-    // Read mount_attr.propagation (third u64, offset 16).
-    // SAFETY: uattr+24 ≤ size and < USER_VA_END validated; CPL=0/EL1 reads the u64 through the caller's AS.
-    let propagation = unsafe { core::ptr::read_volatile((uattr + 16) as *const u64) };
+    nscg::user_ns::mount_idmap(&owner)
+        .map(Arc::new)
+        .map_err(|_| neg(Errno::Einval))
+}
+
+fn apply_mount_object(
+    object: &MountObjectInode,
+    attr: &MountAttr,
+    set_mnt: u64,
+    clr_mnt: u64,
+    idmap: Option<Arc<vfs::idmap::Idmap>>,
+    controls_superblock: bool,
+    prop: Option<vfs::mount::Propagation>,
+    recursive: bool,
+) -> i64 {
+    let tree = object.detached_tree.lock();
+    if let Some(tree) = tree.as_ref() {
+        return match vfs::mount::mnt_setattr_detached_tree(
+            tree, set_mnt, clr_mnt, idmap, controls_superblock, prop, recursive,
+        ) {
+            Ok(()) => 0,
+            Err(error) => crate::namei_common::errno_from_vfs(error),
+        };
+    }
+    drop(tree);
+
+    // Oxide defers materializing an fsmount's `Mount` until move_mount. Its
+    // one state lock is the anonymous-mount prepare/commit serialization.
+    let Some((sb, _)) = object.realized.as_ref() else { return neg(Errno::Einval); };
+    let mut state = object.mount_state.lock();
+    let old = vfs::mount::mount_attr_to_mnt(state.attrs);
+    let new = (old & !clr_mnt) | set_mnt;
+    if !vfs::mount::can_change_locked_options(old, state.lock_flags, new) {
+        return neg(Errno::Eperm);
+    }
+    if let Some(map) = idmap {
+        if state.idmap.is_some() { return neg(Errno::Eperm); }
+        if let Err(error) = vfs::mount::can_idmap_superblock(sb) {
+            return crate::namei_common::errno_from_vfs(error);
+        }
+        if !controls_superblock { return neg(Errno::Eperm); }
+        state.idmap = Some(map);
+    }
+    let idmap_bit = vfs::mount::MOUNT_ATTR_IDMAP;
+    state.attrs &= !(attr.attr_clr & !idmap_bit);
+    state.attrs |= attr.attr_set & !idmap_bit;
+    state.propagation = prop.or(state.propagation);
+    0
+}
+
+/// `sys_mount_setattr(dirfd, path, flags, uattr, size)` — slot 442.
+/// # C: O(path + selected mounts + userns extents)
+pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
+    if args.a2 & !VALID_AT_FLAGS != 0 { return neg(Errno::Einval); }
+    let attr = match copy_mount_attr(args.a3, args.a4 as usize) {
+        Ok(attr) => attr,
+        Err(rv) => return rv,
+    };
+    // Linux returns success for a no-op before looking up either path or
+    // userns_fd. A zero-sized support probe was rejected above, as intended.
+    if attr.attr_set == 0 && attr.attr_clr == 0 && attr.propagation == 0 {
+        return 0;
+    }
+    if let Err(rv) = validate_attr(&attr) { return rv; }
+
+    let idmap = if attr.attr_set & vfs::mount::MOUNT_ATTR_IDMAP != 0 {
+        match idmap_from_fd(attr.userns_fd) {
+            Ok(map) => Some(map),
+            Err(rv) => return rv,
+        }
+    } else {
+        None
+    };
+    // Every superblock currently carries the initial filesystem idmapping
+    // (the same invariant used by `Mount::may_suid`). Linux checks
+    // `ns_capable(sb->s_user_ns, CAP_SYS_ADMIN)` after filesystem admission.
+    let controls_superblock = crate::mount_perm::cap_sys_admin_in_init_user_ns();
+    let prop = propagation(attr.propagation);
+    let raw_path = match read_path_allow_empty(args.a1) {
+        Ok(path) => path,
+        Err(rv) => return rv,
+    };
     let dirfd = args.a0 as i32;
-    // DETACHED-object fast path (Linux `mount_setattr` on an fsmount/open_tree fd):
-    // systemd 257's per-service mount setup runs fsopen→fsconfig→fsmount→
-    // `mount_setattr(fd, "", AT_EMPTY_PATH[|AT_RECURSIVE], {MOUNT_ATTR_RDONLY})`→
-    // move_mount. The fd names a `MountObjectInode` NOT yet in any namespace tree,
-    // so there is no `path->mnt` to resolve — the attrs must be recorded ON the
-    // detached object and applied when `move_mount` attaches it. The old code
-    // resolved the empty path string against cwd → the WRONG mount, so the subtree
-    // attached read-WRITE; its /proc/self/mountinfo line stayed `rw`, so systemd's
-    // `bind_remount_recursive` convergence loop (re-reads mountinfo, retries) never
-    // settled, hit its 32-try cap, and returned EBUSY — aborting the whole mount
-    // namespace (status 226 for udevd/logind/dbus-broker → no graphical target).
-    if (args.a2 & AT_EMPTY_PATH) != 0 {
+    let recursive = args.a2 & AT_RECURSIVE != 0;
+    use vfs::mount::{mount_attr_to_mnt, MNT_ATIME_MODE_MASK, MOUNT_ATTR__ATIME};
+    let mut set_mnt = mount_attr_to_mnt(attr.attr_set) & !MNT_ATIME_MODE_MASK;
+    let mut clr_mnt = mount_attr_to_mnt(attr.attr_clr) & !MNT_ATIME_MODE_MASK;
+    if attr.attr_clr & MOUNT_ATTR__ATIME == MOUNT_ATTR__ATIME {
+        clr_mnt |= MNT_ATIME_MODE_MASK;
+        set_mnt |= mount_attr_to_mnt(attr.attr_set) & MNT_ATIME_MODE_MASK;
+    }
+
+    if raw_path.is_empty() && args.a2 & AT_EMPTY_PATH != 0 {
         if let Some(inode) = fd_inode(dirfd) {
-            if let Some(mo) = inode.private::<MountObjectInode>() {
-                // A detached clone tree holds real (unlinked) Mount objects — stamp
-                // the MNT_* change on each now, so `commit_tree_hashonly` links them
-                // already read-only (AT_RECURSIVE ⇒ the whole tree, which this is).
-                if let Some(tree) = mo.detached_tree.lock().as_ref() {
-                    for node in tree.iter() {
-                        vfs::mount::apply_mnt_attrs_detached(&node.m, set_mnt, clr_mnt);
-                    }
-                }
-                // The realized/clone/legacy attach path reads `mnt_attrs` (raw
-                // MOUNT_ATTR_* space) at move_mount: fold the request in (clr then set).
-                use core::sync::atomic::Ordering;
-                mo.mnt_attrs.fetch_and(!attr_clr, Ordering::AcqRel);
-                mo.mnt_attrs.fetch_or(attr_set, Ordering::AcqRel);
-                return 0;
+            if let Some(object) = inode.private::<MountObjectInode>() {
+                return apply_mount_object(
+                    object, &attr, set_mnt, clr_mnt, idmap, controls_superblock,
+                    prop, recursive,
+                );
             }
         }
     }
-    // Attached-mount path: resolve `path->mnt` honoring `dirfd` + AT_EMPTY_PATH
-    // (Linux `user_path_at(dfd, path, LOOKUP_EMPTY, ...)`).
-    let lf = vfs::LookupFlags {
-        empty: (args.a2 & AT_EMPTY_PATH) != 0,
-        no_follow_final: (args.a2 & AT_SYMLINK_NOFOLLOW) != 0,
+
+    let path = match crate::pathresolve::resolve_at_path(dirfd, &raw_path, vfs::LookupFlags {
+        empty: args.a2 & AT_EMPTY_PATH != 0,
+        no_follow_final: args.a2 & AT_SYMLINK_NOFOLLOW != 0,
         ..Default::default()
+    }) {
+        Ok(path) => path,
+        Err(rv) => return rv,
     };
-    let vp = match crate::pathresolve::resolve_at_lookup(dirfd, args.a1, lf) {
-        Ok(p) => p, Err(rv) => return rv,
-    };
-    let is_mount_root = vfs::mount::root_dentry_for_mount_id(vp.mnt_id)
-        .map(|root| alloc::sync::Arc::ptr_eq(&root, &vp.dentry))
-        .unwrap_or(false);
-    if !is_mount_root { return -(Errno::Einval.as_i32() as i64); }
-    if propagation != 0 {
-        let kind = if propagation & MS_UNBINDABLE != 0 { Propagation::Unbindable }
-            else if propagation & MS_SLAVE != 0 { Propagation::Slave }
-            else if propagation & MS_SHARED != 0 { Propagation::Shared }
-            else if propagation & MS_PRIVATE != 0 { Propagation::Private }
-            else { Propagation::Private };
-        // set_propagation keys on the MOUNTPOINT dentry; derive it from the mount
-        // the walk crossed into (root mounts have none → propagation is a no-op).
-        if let Some((mp, _)) = vfs::mount::mountpoint_of(vp.mnt_id) {
-            let _ = vfs::mount::set_propagation(&mp, kind);
-        }
-    }
-    // [D52] Apply the MNT_* option change to the mount the walk CROSSED INTO
-    // (Linux `do_mount_setattr` keys on `path->mnt`); AT_RECURSIVE ⇒ subtree.
-    if set_mnt != 0 || clr_mnt != 0 {
-        let r = if (args.a2 & AT_RECURSIVE) != 0 {
-            vfs::mount::mnt_setattr_tree_by_id(vp.mnt_id, set_mnt, clr_mnt)
-        } else {
-            vfs::mount::mnt_setattr_by_id(vp.mnt_id, set_mnt, clr_mnt)
+    let mounted = vfs::mount::root_dentry_for_mount_id(path.mnt_id)
+        .map(|root| Arc::ptr_eq(&root, &path.dentry)).unwrap_or(false);
+    if !mounted { return neg(Errno::Einval); }
+
+    if idmap.is_some() {
+        let Some(mount) = vfs::mount::mount_by_id(path.mnt_id) else {
+            return neg(Errno::Einval);
         };
-        if let Err(e) = r { return crate::namei_common::errno_from_vfs(e); }
+        if !mount.idmap().is_identity() { return neg(Errno::Eperm); }
+        if let Err(error) = vfs::mount::can_idmap_superblock(mount.sb()) {
+            return crate::namei_common::errno_from_vfs(error);
+        }
+        if !controls_superblock { return neg(Errno::Eperm); }
+        // Linux `can_idmap_mount`: a mount already visible in the hierarchy
+        // cannot acquire its first idmap.
+        return neg(Errno::Einval);
     }
-    0
+    match vfs::mount::mnt_setattr_attached(
+        path.mnt_id, set_mnt, clr_mnt, prop, recursive,
+    ) {
+        Ok(()) => 0,
+        Err(error) => crate::namei_common::errno_from_vfs(error),
+    }
 }

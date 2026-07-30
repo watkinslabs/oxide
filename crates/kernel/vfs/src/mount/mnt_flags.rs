@@ -79,23 +79,24 @@ pub const MOUNT_ATTR_RELATIME:    u64 = 0x0000_0000;
 pub const MOUNT_ATTR_NOATIME:     u64 = 0x0000_0010;
 pub const MOUNT_ATTR_STRICTATIME: u64 = 0x0000_0020;
 pub const MOUNT_ATTR_NODIRATIME:  u64 = 0x0000_0080;
-/// ID-mapped mount request (NOT implemented; the syscall rejects it).
+/// Install a user-namespace-derived per-mount id mapping.
 pub const MOUNT_ATTR_IDMAP:       u64 = 0x0010_0000;
 pub const MOUNT_ATTR_NOSYMFOLLOW: u64 = 0x0020_0000;
-/// Every MOUNT_ATTR_* bit we honour (idmap excluded — rejected upstream of the
-/// mapper). A request naming a bit outside this is EINVAL (Linux validates the
+/// Every valid `mount_setattr` MOUNT_ATTR_* bit. IDMAP has no MNT_* bit and is
+/// installed as the mount's separate idmap property. A bit outside this mask
+/// is EINVAL (Linux validates the
 /// request mask before `build_mount_kattr`). # C: const
 pub const MOUNT_ATTR_SETTABLE: u64 = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID
     | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC | MOUNT_ATTR__ATIME
-    | MOUNT_ATTR_NODIRATIME | MOUNT_ATTR_NOSYMFOLLOW;
+    | MOUNT_ATTR_NODIRATIME | MOUNT_ATTR_IDMAP | MOUNT_ATTR_NOSYMFOLLOW;
 
 /// Map a MOUNT_ATTR_* request mask into the per-mount MNT_* option space (Linux
 /// `build_mount_kattr`). Direct bits map one-to-one; the atime SUB-FIELD
 /// (`attr & MOUNT_ATTR__ATIME`) selects exactly one MNT atime bit, with the
 /// zero value resolving to the relatime default. Callers that change atime use
 /// the full `MOUNT_ATTR__ATIME` clear mask (Linux requires it) so the prior
-/// atime bit is cleared before the chosen one is set. IDMAP is not represented
-/// (rejected before this point). # C: O(1)
+/// atime bit is cleared before the chosen one is set. IDMAP is deliberately not
+/// represented in this option word. # C: O(1)
 pub fn mount_attr_to_mnt(attr: u64) -> u64 {
     let mut f = 0u64;
     if attr & MOUNT_ATTR_RDONLY      != 0 { f |= MNT_RDONLY; }

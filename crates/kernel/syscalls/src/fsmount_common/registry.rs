@@ -107,9 +107,12 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = rfs;
         mounted(ty, fs, Some(root), target)
     }
-    let _ = register_fs(FsType::new("tmpfs", TMPFS_MAGIC, FsFlags::empty(), Box::new(tmpfs_ctor)));
-    let _ = register_fs(FsType::new("ramfs", RAMFS_MAGIC, FsFlags::empty(), Box::new(ramfs_ctor)));
-    let _ = register_fs(FsType::new("ext4", EXT4_MAGIC, FsFlags::FS_REQUIRES_DEV, Box::new(|ty, source: Option<&str>, _t: &str, _d: &str| -> R {
+    let _ = register_fs(FsType::new("tmpfs", TMPFS_MAGIC,
+        FsFlags::FS_USERNS_MOUNT | FsFlags::FS_ALLOW_IDMAP, Box::new(tmpfs_ctor)));
+    let _ = register_fs(FsType::new("ramfs", RAMFS_MAGIC,
+        FsFlags::FS_USERNS_MOUNT, Box::new(ramfs_ctor)));
+    let _ = register_fs(FsType::new("ext4", EXT4_MAGIC,
+        FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, _d: &str| -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let (dev, dev_t) = resolve_ext4_source(source).ok_or(vfs::VfsError::Enoent)?;
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;

@@ -256,7 +256,7 @@ pub fn set_propagation_recursive(d: &Arc<Dentry>, kind: Propagation) -> KResult<
 
 /// Apply one propagation transition to a single mount (Linux
 /// `change_mnt_propagation`). # C: O(N_peers) worst case
-fn apply_propagation(m: &Arc<Mount>, kind: Propagation) {
+pub(super) fn apply_propagation(m: &Arc<Mount>, kind: Propagation) {
     match kind {
         Propagation::Shared => {
             if m.peer_group.load(Ordering::Acquire) == 0 {

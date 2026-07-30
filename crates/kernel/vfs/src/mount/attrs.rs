@@ -87,93 +87,29 @@ fn ms_to_sb(flags: u64) -> u64 {
     sb
 }
 
-/// [D52] Commit `set_mnt`/`clr_mnt` (already in the MNT_* space) onto mount `m`:
-/// `new = (old & !clr) | set`, MASKED to `MNT_OPTION_MASK` so only per-mount
-/// option bits move (internal flags untouched). No writer guard — callers that
-/// can set RDONLY gate first. # C: O(1)
-/// Apply a `mount_setattr(2)` MNT_* option change to a DETACHED mount (an
-/// `fsmount`/`open_tree` object not yet in any namespace tree). No ns/arena
-/// gate (the mount is unlinked), no writer guard (a detached mount has no
-/// writers). Used by `mount_setattr(fd,"",AT_EMPTY_PATH,...)` so systemd's
-/// fsmount→mount_setattr→move_mount sequence attaches the subtree already
-/// read-only. # C: O(1)
-pub fn apply_mnt_attrs_detached(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
-    commit_mnt_attrs(m, set_mnt, clr_mnt);
-}
-
-fn commit_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
+/// Write a prepared option update. Admission and namespace-generation changes
+/// belong to the owning transaction in `idmapped.rs`; keeping this write
+/// primitive policy-free leaves one mount-setattr prepare/commit authority.
+pub(super) fn write_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
     let old = m.flags.load(Ordering::Acquire);
     let set = set_mnt & MNT_OPTION_MASK;
     let clr = clr_mnt & MNT_OPTION_MASK;
-    let new = (old & !clr) | set;
-    m.flags.store(new, Ordering::Release);
-    mntns::bump_gen(m.namespace_id());
-}
-
-/// [D52] Apply a `mount_setattr(2)` option change to ONE mount: same EBUSY guard
-/// as [`apply_remount`] (turning RDONLY on with active writers is Linux
-/// `mnt_hold_writers` EBUSY), then commit via [`commit_mnt_attrs`]. # C: O(1)
-fn apply_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) -> KResult<()> {
-    let old = m.flags.load(Ordering::Acquire);
-    if !can_change_locked_flags(m, recalc_flags(old, set_mnt, clr_mnt)) { return Err(VfsError::Eperm); }
-    if (set_mnt & MNT_RDONLY) != 0 && (old & MNT_RDONLY) == 0
-        && m.mnt_writers.load(Ordering::Acquire) > 0 {
-        return Err(VfsError::Ebusy);
-    }
-    commit_mnt_attrs(m, set_mnt, clr_mnt);
-    Ok(())
-}
-
-/// Linux `recalc_flags`: the MNT_* option word a `mount_setattr(2)` request
-/// would install — `(current & ~attr_clr) | attr_set` — fed to
-/// [`can_change_locked_flags`] before anything is committed. # C: O(1)
-fn recalc_flags(old: u64, set_mnt: u64, clr_mnt: u64) -> u64 {
-    (old & !(clr_mnt & MNT_OPTION_MASK)) | (set_mnt & MNT_OPTION_MASK)
+    m.flags.store((old & !clr) | set, Ordering::Release);
 }
 
 /// [D52] `mount_setattr(2)` on the mount the path walk CROSSED INTO, identified
 /// by `mnt_id` (Linux `do_mount_setattr` keys on `path->mnt`, NOT a re-derived
-/// dentry — same lesson as [`remount_flags_by_id`]). `set`/`clr` are MNT_*
-/// masks (from [`mount_attr_to_mnt`]). ns-gated by `check_mnt`. # C: O(1)
+/// dentry — same lesson as [`remount_flags_by_id`]). Compatibility entry point
+/// into the single transaction owned by [`mnt_setattr_attached`]. # C: O(1)
 pub fn mnt_setattr_by_id(mnt_id: u64, set: u64, clr: u64) -> KResult<()> {
-    let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
-    if !check_mnt(&m) { return Err(VfsError::Einval); }
-    apply_mnt_attrs(&m, set, clr)
+    mnt_setattr_attached(mnt_id, set, clr, None, false)
 }
 
 /// [D52] `mount_setattr(2)` with `AT_RECURSIVE`: apply `set`/`clr` across the
-/// subtree rooted at `top_id` ([`subtree_ids`]). When turning RDONLY on, Linux
-/// holds writers across the WHOLE subtree first (`mnt_hold_writers`) and fails
-/// atomically — so this pre-checks every mount for active writers and returns
-/// EBUSY without mutating any, then commits the tree. ns-gated by `check_mnt`.
-/// # C: O(N_subtree)
+/// subtree rooted at `top_id`. Compatibility entry point into the same
+/// prepare/commit transaction as the syscall path. # C: O(N_subtree)
 pub fn mnt_setattr_tree_by_id(top_id: u64, set: u64, clr: u64) -> KResult<()> {
-    let top = mount_by_id(top_id).ok_or(VfsError::Einval)?;
-    if !check_mnt(&top) { return Err(VfsError::Einval); }
-    let ids = subtree_ids(top.namespace_id(), top_id);
-    // Linux `mount_setattr` runs `can_change_locked_flags(m, recalc_flags(...))`
-    // over the WHOLE subtree in its first pass and aborts with EPERM before any
-    // mount is touched — one locked node vetoes the entire recursive request.
-    for id in &ids {
-        if let Some(m) = mount_by_id(*id) {
-            let old = m.flags.load(Ordering::Acquire);
-            if !can_change_locked_flags(&m, recalc_flags(old, set, clr)) { return Err(VfsError::Eperm); }
-        }
-    }
-    if (set & MNT_RDONLY) != 0 {
-        for id in &ids {
-            if let Some(m) = mount_by_id(*id) {
-                let old = m.flags.load(Ordering::Acquire);
-                if (old & MNT_RDONLY) == 0 && m.mnt_writers.load(Ordering::Acquire) > 0 {
-                    return Err(VfsError::Ebusy);
-                }
-            }
-        }
-    }
-    for id in &ids {
-        if let Some(m) = mount_by_id(*id) { commit_mnt_attrs(&m, set, clr); }
-    }
-    Ok(())
+    mnt_setattr_attached(top_id, set, clr, None, true)
 }
 
 /// Linux `__mnt_is_readonly` (`fs/namespace.c`): `(mnt_flags & MNT_READONLY) ||

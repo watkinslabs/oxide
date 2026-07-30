@@ -22,7 +22,7 @@ mod common;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use vfs::fs::FileSystem;
+use vfs::fs::{FileSystem, FsFlags};
 use vfs::inode::{Inode, InodeBuilder};
 use vfs::{default_file_ops, mk_mode, Cred, Dentry, FileType, InodeOps, InodeRef, KResult, LookupFlags, VfsError};
 
@@ -61,6 +61,7 @@ impl FileSystem for RootFs {
     fn magic(&self) -> u64 { 0xEF53 }
     fn dev_id(&self) -> Option<u64> { Some(self.dev) }
     fn root(&self) -> Option<InodeRef> { Some(facdir(self.root_ino)) }
+    fn fs_flags(&self) -> FsFlags { FsFlags::FS_ALLOW_IDMAP }
 }
 
 /// Anon api-fs (`dev_id() == None` → fresh per-mount SB), e.g. procfs/sysfs.
@@ -232,6 +233,57 @@ fn detached_clone_commit_under_bind_stage_uses_walked_parent_mount() {
         "staged /dev clone parent must be the walked stage root, not original root");
     assert_eq!(vfs::mount::__lookup_mnt(root_id, &dev_d).map(|m| m.mnt_id), Some(dev_id),
         "original /dev crossing remains intact");
+}
+
+#[test]
+fn idmap_recursive_prepare_is_atomic_across_mixed_filesystems() {
+    let _g = guard();
+    let (_ns, root_id, _proc_id, _dev, _s_root, _proc_d) = setup();
+    let source = vfs::mount::mount_by_id(root_id).unwrap();
+    let tree = vfs::mount::clone_mount_tree(&source, true);
+    let root = tree.iter().find(|n| n.rel.is_empty()).expect("root clone").m.clone();
+    let proc = tree.iter().find(|n| n.rel == "/proc").expect("proc clone").m.clone();
+    let map = Arc::new(vfs::idmap::Idmap::uniform(100_000, 0, 65_536));
+
+    assert_eq!(
+        vfs::mount::mnt_setattr_detached_tree(
+            &tree, vfs::mount::MNT_RDONLY, 0, Some(map), true, None, true,
+        ),
+        Err(VfsError::Einval),
+        "recursive prepare must reject the procfs-like child without partial commit",
+    );
+    assert!(!root.is_readonly(), "root options stay unchanged after failed prepare");
+    assert!(root.idmap().is_identity(), "root idmap stays unchanged after failed prepare");
+    assert!(!proc.is_readonly(), "child options stay unchanged after failed prepare");
+    assert!(proc.idmap().is_identity(), "child idmap stays unchanged after failed prepare");
+    assert!(source.idmap().is_identity(), "detached transaction never mutates its source");
+    vfs::mount::release_clone_tree(&tree);
+}
+
+#[test]
+fn idmap_nonrecursive_changes_only_clone_root_and_cannot_be_replaced() {
+    let _g = guard();
+    let (_ns, root_id, _proc_id, _dev, _s_root, _proc_d) = setup();
+    let source = vfs::mount::mount_by_id(root_id).unwrap();
+    let tree = vfs::mount::clone_mount_tree(&source, true);
+    let root = tree.iter().find(|n| n.rel.is_empty()).expect("root clone").m.clone();
+    let proc = tree.iter().find(|n| n.rel == "/proc").expect("proc clone").m.clone();
+    let map = Arc::new(vfs::idmap::Idmap::uniform(100_000, 0, 65_536));
+
+    vfs::mount::mnt_setattr_detached_tree(
+        &tree, vfs::mount::MNT_RDONLY, 0, Some(map.clone()), true, None, false,
+    ).expect("nonrecursive idmap on supported clone root");
+    assert!(root.is_readonly(), "root option committed with its idmap");
+    assert_eq!(root.idmap().map_out_uid(100_000), 0, "root exposes mapped uid");
+    assert!(proc.idmap().is_identity(), "nonrecursive request leaves child map alone");
+    assert!(!proc.is_readonly(), "nonrecursive request leaves child options alone");
+    assert!(source.idmap().is_identity(), "source remains non-idmapped");
+    assert_eq!(
+        vfs::mount::mnt_setattr_detached_tree(&tree, 0, 0, Some(map), true, None, false),
+        Err(VfsError::Eperm),
+        "Linux permits only the first idmap installation",
+    );
+    vfs::mount::release_clone_tree(&tree);
 }
 
 #[allow(dead_code)]

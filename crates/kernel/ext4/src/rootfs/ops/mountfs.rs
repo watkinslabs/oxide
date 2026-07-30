@@ -175,7 +175,9 @@ impl Ext4Mount {
 impl vfs::fs::FileSystem for Ext4Mount {
     fn name(&self) -> &str { "ext4" }
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
-    fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
+    fn fs_flags(&self) -> vfs::fs::FsFlags {
+        vfs::fs::FsFlags::FS_REQUIRES_DEV | vfs::fs::FsFlags::FS_ALLOW_IDMAP
+    }
     fn dev_id(&self) -> Option<u64> { self.dev_t }
     fn sysfs_name(&self) -> Option<String> {
         self.dev_t.and_then(|dt| block::registry::by_dev(dt as u32).map(|d| d.name.clone()))
