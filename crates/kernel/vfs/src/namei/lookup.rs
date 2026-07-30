@@ -99,10 +99,11 @@ pub fn mountpoint_lookup_at_root_cred(
     path: &str,
     cred: Cred,
 ) -> KResult<MountTarget> {
-    if path == "/" {
+    let final_component = path.rsplit('/').find(|component| !component.is_empty());
+    if path == "/" || matches!(final_component, Some(".") | Some("..")) {
         let p = path_lookup_at_root_cred(
             start, start_mnt_id, root, root_mnt_id, path, LookupFlags::default(), cred)?;
-        return Ok(MountTarget { mountpoint: p.dentry.clone(), parent: p });
+        return Ok(mount_target_from_resolved_path(p));
     }
     let parent = path_lookup_at_root_cred(
         start, start_mnt_id, root, root_mnt_id, path,
