@@ -23,6 +23,16 @@ fn array_is_preallocated_and_obeys_array_update_flags() {
 }
 
 #[test]
+fn live_map_ids_resolve_and_enumerate_through_inode_ownership() {
+    let first = allocate(uapi::map_type::ARRAY, 4, 8, 1, 0).unwrap();
+    let first_id = first.private::<BpfMapInode>().unwrap().id;
+    let second = allocate(uapi::map_type::ARRAY, 4, 8, 1, 0).unwrap();
+    let second_id = second.private::<BpfMapInode>().unwrap().id;
+    assert_eq!(map_by_id(first_id).map(|inode| inode.ino()), Some(first.ino()));
+    assert_eq!(next_live_map_id(first_id), Some(second_id));
+}
+
+#[test]
 fn lpm_lookup_selects_the_longest_matching_prefix() {
     let inode = allocate(
         uapi::map_type::LPM_TRIE, 8, 8, 4, uapi::map_flags::NO_PREALLOC,
