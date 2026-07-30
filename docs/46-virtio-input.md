@@ -2,6 +2,15 @@
 
 FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50`. Provides:`drv-virtio-input`,`50` (VT keyboard backend),evdev `/dev/input/event*`.
 
+## Revision 2026-07-30 (R01)
+
+- Changed: §2, §6, §8–§10 bind every open file to one exact live evdev object, give each open client its own packet queue and clock, preserve host `SYN_REPORT`, and make disconnect/revoke/grab/state reconciliation match Linux.
+- Changed: §2, §8, §10, §11, §16 require both virtqueues and Linux-shaped STATUSQ output, completion, teardown, and inhibit restore behavior.
+- Changed: §7, §13–§15 correct bitmap widths, ioctl errors, MT forwarding, force-feedback advertisement, and input-core autorepeat ownership.
+- Why: Linux v7.2-rc4 `drivers/input/{evdev.c,input.c}` and `drivers/virtio/virtio_input.c` contradict the shared-stream, synthetic-SYN, cache-only-repeat, and force-feedback text.
+- Affected code: `input`, `drv`, `drv-virtio-input`, devfs, procfs, sysfs, netlink, PCI virtio-child handoff.
+- Test contract change: add per-open delivery/reconciliation, stale-fd disconnect, STATUSQ lifecycle, inhibit output, and QMP keyboard/pointer injection gates.
+
 Full Linux compat surface per `linux/include/uapi/linux/input.h` + `input-event-codes.h` + virtio 1.2 §5.8. No deferrals.
 
 ## 1 Purpose
@@ -11,33 +20,26 @@ Driver crate `drv-virtio-input` for virtio device class 18 ("input device") per 
 ## 2 Invariants (frozen)
 
 1. Driver lives in `crates/drivers/drv-virtio-input`. The virtio bus registers the child device and binds it through the `drv::Driver` probe/remove path.
-2. Two virtqueues: EVENTQ (idx=0, 64 entries, host→guest event delivery), STATUSQ (idx=1, 64 entries, guest→host status delivery e.g. LED state).
+2. Two required virtqueues: EVENTQ (idx=0, host→guest event delivery) and STATUSQ (idx=1, guest→host status delivery). EVENTQ pre-fills `min(negotiated_depth, 64)` buffers as Linux does; STATUSQ uses bounded driver-owned output buffers.
 3. Negotiated features (v1): `VIRTIO_F_VERSION_1` (32) only. No device-class-specific feature bits.
-4. Each virtio-input PCI function corresponds to ONE evdev `/dev/input/event<N>`. Multiple devices (kbd + mouse + tablet) = multiple PCI functions = multiple eventfds.
+4. Each virtio-input PCI function corresponds to one input device and one evdev `/dev/input/event<N>` character node. Multiple devices (keyboard + mouse + tablet) use distinct PCI functions and evdev nodes.
 5. The host keeps EVENTQ filled with empty `virtio_input_event` descriptors; on input the host writes one event per descriptor and signals via the queue's `used` ring. The driver re-supplies drained descriptors.
-6. `virtio_input_event` is 8 bytes (`type:le16, code:le16, value:le32`) — exactly matches Linux's `struct input_event` payload (without the timestamp; the driver stamps locally on dequeue).
-7. The driver bridges to Linux's evdev `input_event` ABI per `linux/include/uapi/linux/input.h`; userspace reads of `/dev/input/event<N>` return `input_event` records with kernel-supplied timestamps.
+6. `virtio_input_event` is 8 bytes (`type:le16, code:le16, value:le32`) and carries the non-time fields of Linux `struct input_event`.
+7. Input core validates capabilities, updates canonical state, forms packets, and supplies monotonic/realtime/boottime timestamps selected independently by each open evdev client.
 8. Configuration space (`virtio_input_config`) is 256 bytes; the driver reads device identity (`select=ID_NAME`, `ID_SERIAL`, `ID_DEVIDS`) and capability bitmaps (`select=PROP_BITS`, `EV_BITS`, `ABS_INFO`) at probe.
+9. inputN identity is monotonic and retained sysfs/devfs/proc objects bind the exact registered device object; recycled event minors never make an old inode or fd alias a replacement.
 
 ## 3 Public ifc
 
 ```rust
 // crates/drivers/drv-virtio-input/src/lib.rs
-pub fn install(cfg: InputInstall) -> bool;  // called by virtio-input Driver::probe
-pub fn uninstall();
-
-pub struct VirtioInputDev { /* eventq/statusq refs + name + caps */ }
-
-// 50 (VT) consumes:
-pub fn poll_event(dev_id: u32) -> Option<InputEvent>;   // non-blocking
-pub fn wait_event(dev_id: u32) -> InputEvent;           // blocks via WaitQueue
-pub fn enumerate() -> Vec<(u32, &'static str)>;          // (dev_id, friendly_name)
-
-// 50 + userspace evdev:
-pub fn cap_ev_bits(dev_id: u32) -> [u8; 32];   // EV_KEY / EV_REL / EV_ABS / EV_SYN bits
-pub fn cap_key_bits(dev_id: u32) -> [u8; 96];  // KEY_* bits per Linux 768-key range
-pub fn cap_abs_info(dev_id: u32, axis: u8) -> Option<AbsInfo>;
-pub fn set_led(dev_id: u32, led: u8, on: bool) -> KResult<()>;  // STATUSQ → host
+pub fn install_device_with_parent(
+    key: VirtioChildDeviceKey,
+    resources: VirtioResources,
+    parent: ModelParent,
+) -> Option<u32>;
+pub fn remove_device_with_node(key: VirtioChildDeviceKey) -> Option<u32>;
+pub fn send_status(key: VirtioChildDeviceKey, event: VirtioInputEvent) -> KResult<()>;
 ```
 
 ## 4 Wire structs (per virtio 1.2 §5.8.6)
@@ -88,16 +90,16 @@ Driver pushes one `virtio_input_event` per host-side input. Userspace reads `/de
 
 ```c
 struct input_event {
-    struct timeval time;       // CLOCK_MONOTONIC, kernel-stamped at dequeue
+    struct timeval time;       // per-client selected clock
     __u16 type;
     __u16 code;
     __s32 value;
 };
 ```
 
-`type`/`code`/`value` pass through unchanged from `virtio_input_event`. `time` is generated kernel-side from `clock::monotonic_ns` at the moment the eventq drain runs.
+Input core ignores unadvertised types/codes, duplicate KEY/SW/LED state, zero REL events, and all device-origin events while inhibited. Accepted state changes become a packet only when the device supplies `EV_SYN/SYN_REPORT`; the driver neither invents nor rewrites frame boundaries. Every eligible open client receives its own copy of each completed packet.
 
-EV_SYN frames (`type=0, code=SYN_REPORT(0), value=0`) terminate each event group exactly as in real Linux. The driver inserts `SYN_REPORT` after each batch of host events drained from one used-ring entry.
+The completed packet receives one input-core timestamp. Each client converts it to `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, or `CLOCK_BOOTTIME` according to its `EVIOCSCLOCKID` state. Client-buffer overflow drops unread data and starts recovery with `EV_SYN/SYN_DROPPED`.
 
 ## 7 ioctl set on `/dev/input/event<N>` (per docs/35 R01 evdev surface)
 
@@ -106,13 +108,18 @@ EV_SYN frames (`type=0, code=SYN_REPORT(0), value=0`) terminate each event group
 | `EVIOCGVERSION` | `0x80044501` | returns `0x010001` (kernel input ABI v1.0.1) |
 | `EVIOCGID` | `0x80084502` | bus/vendor/product/version from `ID_DEVIDS` |
 | `EVIOCGNAME(len)` | `_IOR('E', 0x06, len)` | name string from `ID_NAME` |
-| `EVIOCGUNIQ(len)` | `_IOR('E', 0x08, len)` | serial from `ID_SERIAL`; ENOENT if empty |
-| `EVIOCGBIT(ev, len)` | `_IOR('E', 0x20+ev, len)` | EV_BITS for given EV type |
+| `EVIOCGPHYS(len)` | `_IOR('E', 0x07, len)` | `virtioN/input0` |
+| `EVIOCGUNIQ(len)` | `_IOR('E', 0x08, len)` | serial string; empty virtio serial returns one NUL byte |
+| `EVIOCGPROP(len)` | `_IOR('E', 0x09, len)` | input property bitmap |
+| `EVIOCGBIT(ev, len)` | `_IOR('E', 0x20+ev, len)` | capability bitmap for event type |
 | `EVIOCGABS(axis)` | `_IOR('E', 0x40+axis, struct input_absinfo)` | ABS_INFO |
-| `EVIOCGKEY(len)` | `_IOR('E', 0x18, len)` | snapshot of currently-pressed keys |
-| `EVIOCGLED(len)` | `_IOR('E', 0x19, len)` | LED state bitmap |
-| `EVIOCSREP` | `_IOW('E', 0x03, int[2])` | autorepeat delay+rate (stored, no enforcement yet) |
-| `EVIOCGRAB` | `_IOW('E', 0x90, int)` | exclusive grab; tracks owner fd, returns EBUSY if already grabbed |
+| `EVIOCGKEY/LED/SND/SW(len)` | `_IOR('E', 0x18..0x1b, len)` | canonical state; flush same-type events only from calling client |
+| `EVIOCGREP/EVIOCSREP` | `_IOR/_IOW('E', 0x03, int[2])` | read/inject input-core repeat delay and period; `ENOSYS` without EV_REP |
+| `EVIOCGRAB` | `_IOW('E', 0x90, int)` | nonzero grabs exact client; zero ungrabs it; `EBUSY`/`EINVAL` match Linux |
+| `EVIOCREVOKE` | `_IOW('E', 0x91, int)` | zero revokes calling client; nonzero returns `EINVAL` |
+| `EVIOCSCLOCKID` | `_IOW('E', 0xa0, int)` | per-client realtime/monotonic/boottime clock |
+
+Bitmap results use Linux native-word rounding and caller-length truncation: EV/REL/ABS/MSC/SW/LED/SND/PROP = 8 bytes, KEY = 96 bytes, FF = 16 bytes on 64-bit. State ioctls use KEY = 96 bytes and LED/SND/SW = 8 bytes. Successful state copy removes pending events of that type only from the calling client; failed copy additionally queues `SYN_DROPPED`.
 
 ## 8 Probe + bring-up
 
@@ -121,25 +128,27 @@ EV_SYN frames (`type=0, code=SYN_REPORT(0), value=0`) terminate each event group
 3. Standard virtio init (ACK → DRIVER → features → FEATURES_OK → DRIVER_OK).
 4. Read config space at `select=ID_NAME` to capture friendly name.
 5. Read `ID_DEVIDS` for bus/vendor/product/version (used by EVIOCGID).
-6. Read `EV_BITS` (subsel=0) to learn supported event types; for each set bit, read `EV_BITS` again with subsel=that-type to learn supported codes.
+6. Read PROP_BITS; probe EV_REP; read EV_KEY/REL/ABS/MSC/SW for device→kernel input and EV_LED/SND for kernel→device output, matching Linux `virtinput_probe`.
 7. For each supported `ABS_*` axis, read `ABS_INFO`.
 8. Allocate evdev id (next free `0..N`), register `/dev/input/event<N>` Inode in devfs.
-9. Pre-fill EVENTQ with 64 empty `virtio_input_event` descriptors.
+9. Require EVENTQ + STATUSQ, then pre-fill EVENTQ with up to 64 empty `virtio_input_event` descriptors.
 10. Boot line: `virtio-input: bdf=0:N.0 evdev=/dev/input/event<N> name="<friendly>"`.
 
 ## 9 Concurrency
 
 - EVENTQ drain runs on the receiving CPU's MSI-X handler (allocated via `crate::msi`).
-- Per-device read-side `WaitQueue` for `wait_event` / blocking `read(/dev/input/event<N>)`.
-- Multiple readers of the same event<N> see a SHARED stream (not a copy each); first-come-first-served. Linux behaviour.
-- `EVIOCGRAB` makes the grabbing fd the only reader until close or `EVIOCGRAB(0)`.
+- Each open file owns a client queue, waiters, clock selection, event masks, revoke state, and exact endpoint reference.
+- Without a grab, every client receives every completed packet. A grab routes new packets only to its owner; other clients may drain packets already queued before the grab.
+- Close detaches only that client. Device disconnect marks the endpoint dead, wakes every client, makes reads return `ENODEV`, and makes poll report `POLLHUP|POLLERR` without aliasing a recycled event minor.
+- State-query queue reconciliation takes canonical-state lock before client-queue lock and never flushes another client.
 
 ## 10 Failure modes
 
-- EVENTQ stall (host stops delivering): no event for >5s; driver logs `virtio-input: eventq stall device=<N>` once, no recovery action.
-- STATUSQ rejection (LED set fails): propagate `EIO` to caller.
-- Grab while already grabbed: `EBUSY`.
-- Read on un-grabbed fd while another fd is grabber: `EAGAIN` (or block until ungrabbed).
+- Missing/invalid EVENTQ or STATUSQ: probe fails and publishes no input device.
+- Client queue overflow: retain `SYN_DROPPED` plus newest data so userspace resynchronizes from state ioctls.
+- STATUSQ buffer exhaustion/allocation failure: drop that best-effort device status update as Linux does; evdev write still returns accepted input-event bytes.
+- Grab by a second client: `EBUSY`; ungrab by a non-owner: `EINVAL`.
+- Revoked or disconnected client: read/write/ioctl returns `ENODEV`; poll reports `POLLHUP|POLLERR`.
 
 ## 11 Test contract (frozen)
 
@@ -147,6 +156,11 @@ EV_SYN frames (`type=0, code=SYN_REPORT(0), value=0`) terminate each event group
 - Keystroke smoke: QEMU `-device virtio-keyboard-pci`; harness sends `qemu-monitor "sendkey a"`; userspace reading `/dev/input/event0` sees `(EV_KEY, KEY_A, 1)` then `(EV_SYN, SYN_REPORT, 0)`.
 - Mouse smoke: `-device virtio-mouse-pci`; QEMU monitor `mouse_move 10 5`; reader sees `(EV_REL, REL_X, 10), (EV_REL, REL_Y, 5), (EV_SYN, SYN_REPORT, 0)`.
 - EVIOCGNAME smoke: reader retrieves device name matching what `virsh domif-getlink` shows for the host.
+- Two-open client test: both clients receive the same packet; grab routes later packets only to owner; ungrab restores fanout.
+- State reconciliation test: EVIOCGKEY/LED/SND/SW removes same-type pending events only from calling client.
+- Lifetime test: disconnect wakes all clients with HUP/ERR + ENODEV; reused event minor never revives an old fd or leaks queued data.
+- STATUSQ test: descriptor is driver-readable, completion frees its exact slot, exhaustion fails closed, and teardown frees event + status buffers.
+- Inhibit test: release keys + SYN, send active LED/SND off, filter device input, then restore LED/SND and REP on uninhibit.
 - Coverage ≥75%.
 
 ## 12 Cross-spec
@@ -169,16 +183,16 @@ Multi-touch via the Linux MT-B protocol (slotted) per `linux/Documentation/input
 | `ABS_MT_ORIENTATION` | contact rotation |
 | `BTN_TOUCH` | aggregate "any contact present" flag |
 
-`SYN_REPORT` terminates each multi-touch frame; `SYN_MT_REPORT` legacy MT-A code accepted but driver always emits MT-B.
+`SYN_REPORT` terminates each multi-touch frame. Virtio-input forwards the host protocol after input-core validation; it does not translate MT-A into MT-B.
 
 ## 14 Force feedback (EV_FF)
 
-When the device exposes `EV_FF` in its capability bitmap, `EVIOCSFF` uploads an effect, `EVIOCRMFF` removes it, and writes to the fd of `(EV_FF, effect_id, value)` start/stop playback. Effect types per `linux/include/uapi/linux/input.h`: `FF_RUMBLE`, `FF_PERIODIC` (sine/triangle/sawtooth/square), `FF_CONSTANT`, `FF_SPRING`, `FF_FRICTION`, `FF_DAMPER`, `FF_INERTIA`, `FF_RAMP`. Driver round-trips these to the host via STATUSQ.
+Linux `drivers/virtio/virtio_input.c` does not read EV_FF configuration or create an input force-feedback backend. `drv-virtio-input` therefore does not advertise EV_FF even if a nonconforming host exposes those bits. Generic evdev force-feedback UAPI belongs to input core and devices that register a real FF backend.
 
 ## 15 Autorepeat
 
-`EVIOCSREP` accepts `int[2] = [delay_ms, period_ms]`. Driver enforces the schedule kernel-side: when an `EV_KEY` press is received and not released for `delay_ms`, the driver injects synthetic `(EV_KEY, code, 2)` events at `period_ms` intervals into the read-side stream.
+`EVIOCSREP` accepts `int[2] = [delay_ms, period_ms]` and injects `EV_REP/REP_DELAY` then `EV_REP/REP_PERIOD` through canonical input core. Input core owns the timer: an unreleased key emits `(EV_KEY, code, 2)` plus `SYN_REPORT` after the delay and at each nonzero period. STATUSQ receives the accepted EV_REP updates.
 
 ## 16 LEDs
 
-Caps Lock / Num Lock / Scroll Lock LED state lives on the device. `EVIOCGLED` reads the bitmap; the VT layer (`50`) calls `set_led(dev_id, led, on)` which sends a STATUSQ event `(EV_LED, code, value)` to the host. Caps + Num + Scroll LED toggling driven by the matching modifier keys is handled in `50` (VT) so the kernel keymap layer owns the policy.
+Caps Lock / Num Lock / Scroll Lock LED state lives in canonical input core. Accepted EV_LED/EV_SND/EV_REP output is sent to the exact device through STATUSQ; duplicate LED state is suppressed. Inhibit releases pressed keys and emits `SYN_REPORT`, sends active LED/SND state off, then filters device-origin input. Uninhibit clears the filter and restores active LED/SND plus REP period then delay. Modifier policy remains in `50`.
