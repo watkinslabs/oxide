@@ -1,18 +1,20 @@
-// Authoritative driver model per `35`: bus/device/driver registries,
-// probe/remove binding, sysfs hooks, and devtmpfs publication hooks.
-// `drv::init()` reports the core ready; real probing happens through
-// `register_driver` and fallible `try_device_add` attachment.
+// Module manifest:
+// - `model`: device/driver registries, lifecycle, binding, publication hooks.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 pub mod model;
 pub use model::{
-    bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM, IORESOURCE_PREFETCH,
+    bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM,
+    IORESOURCE_PREFETCH,
     register_driver, unregister_driver, devices, device_count, find_matching_device_identity,
-    try_device_add, device_del, rollback_devices, driver_names, driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,
+    try_device_add, device_del, rollback_devices, driver_names, driver_names_for_bus, driver_count,
+    match_driver, bind_addr, unbind,
     shutdown_all, set_sysfs_hook, set_sysfs_remove_hook, set_bind_hook, set_driver_hook, set_devtmpfs_hook,
     set_devtmpfs_del_hook,
 };
