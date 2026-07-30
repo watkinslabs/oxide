@@ -17,8 +17,9 @@ use super::uapi::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ambient { ClearAll, IsSet(u32), Raise(u32), Lower(u32) }
 
-/// One resolved `prctl` option. Every variant carries arguments that already
-/// passed Linux's validation for that option.
+/// One resolved `prctl` option. Variants carry arguments that passed boundary
+/// validation, except `CapbsetDrop`: its raw capability stays intact so the
+/// capability owner can apply Linux's permission-before-validity ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     SetPdeathsig(u32),
@@ -34,7 +35,7 @@ pub enum Op {
     GetSeccomp,
     SetSeccomp { mode: u64, filter: u64 },
     CapbsetRead(u32),
-    CapbsetDrop(u32),
+    CapbsetDrop(u64),
     GetTsc(u64),
     SetTsc(u32),
     GetSecurebits,
@@ -122,8 +123,7 @@ pub fn classify(option: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Result<Op, E
             Ok(Op::CapbsetRead(a2 as u32))
         }
         PR_CAPBSET_DROP => {
-            if !cap_valid(a2) { return Err(Errno::Einval); }
-            Ok(Op::CapbsetDrop(a2 as u32))
+            Ok(Op::CapbsetDrop(a2))
         }
         // GET_TSC writes an `unsigned int` through arg2 and returns 0/-EFAULT;
         // it does NOT return the mode as the syscall value.

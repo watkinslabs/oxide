@@ -3,13 +3,16 @@
 // `kernel/sys.c` switch and owns PR_CAPBSET_*, PR_{GET,SET}_SECUREBITS,
 // PR_{GET,SET}_KEEPCAPS and PR_CAP_AMBIENT.
 //
-// Capability-number validation (`cap_valid`, i.e. `<= CAP_LAST_CAP`) is in
-// `decide`, so a bad cap number is EINVAL before any set is touched.
+// PR_CAPBSET_READ capability-number validation is in `decide`.
+// PR_CAPBSET_DROP retains the raw number here because Linux
+// `security/commoncap.c::cap_prctl_drop` checks CAP_SETPCAP first, then
+// `cap_valid`, then commits the credential change.
 
 use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 
 use super::decide::Ambient;
+use super::uapi::CAP_LAST_CAP;
 use crate::task::creds::securebits;
 use crate::task::Task;
 
@@ -21,9 +24,19 @@ pub fn capbset_read(cur: &Task, cap: u32) -> i64 {
     ((cur.creds.cap_bounding.load(Ordering::Acquire) >> cap) & 1) as i64
 }
 
-/// `PR_CAPBSET_DROP` — `cap_prctl_drop`: CAP_SETPCAP or EPERM. # C: O(1)
-pub fn capbset_drop(cur: &Task, cap: u32) -> i64 {
-    if !cur.has_cap(crate::cap::SETPCAP) { return err(Errno::Eperm); }
+fn capbset_drop_check(has_setpcap: bool, cap: u64) -> Result<u32, Errno> {
+    if !has_setpcap { return Err(Errno::Eperm); }
+    if cap > CAP_LAST_CAP { return Err(Errno::Einval); }
+    Ok(cap as u32)
+}
+
+/// `PR_CAPBSET_DROP` — Linux `security/commoncap.c::cap_prctl_drop` checks
+/// CAP_SETPCAP before validating the raw capability number. # C: O(1)
+pub fn capbset_drop(cur: &Task, cap: u64) -> i64 {
+    let cap = match capbset_drop_check(cur.has_cap(crate::cap::SETPCAP), cap) {
+        Ok(cap) => cap,
+        Err(e) => return err(e),
+    };
     cur.creds.cap_bounding.fetch_and(!(1u64 << cap), Ordering::AcqRel);
     0
 }
@@ -101,4 +114,26 @@ pub fn cap_ambient(cur: &Task, op: Ambient) -> i64 {
 /// # C: O(1)
 pub fn get_seccomp(cur: &Task) -> i64 {
     cur.seccomp_mode.load(Ordering::Acquire) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capbset_drop_permission_precedes_cap_validity() {
+        for cap in [0, CAP_LAST_CAP, CAP_LAST_CAP + 1, 63, 64, u64::MAX] {
+            assert_eq!(capbset_drop_check(false, cap), Err(Errno::Eperm));
+        }
+    }
+
+    #[test]
+    fn capbset_drop_validates_after_permission() {
+        assert_eq!(capbset_drop_check(true, 0), Ok(0));
+        assert_eq!(capbset_drop_check(true, CAP_LAST_CAP),
+                   Ok(CAP_LAST_CAP as u32));
+        for cap in [CAP_LAST_CAP + 1, 63, 64, u64::MAX] {
+            assert_eq!(capbset_drop_check(true, cap), Err(Errno::Einval));
+        }
+    }
 }
