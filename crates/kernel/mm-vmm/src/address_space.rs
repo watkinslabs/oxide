@@ -98,7 +98,10 @@ mod live_registry_tests {
 mod accounting;
 mod fault;
 mod fork;
+mod layout_state;
+mod mdwe;
 mod mempolicy;
+mod mmap_ops;
 mod layout;
 mod limits;
 mod membarrier;
@@ -108,6 +111,8 @@ mod uffd;
 pub mod pkeys;
 
 pub use limits::{MIN_USER_VA, MMAP_TOP};
+pub use mdwe::{MdweAdmission, MdweRequest, MdweSetError};
+pub use ops::{MprotectOutcome, MprotectStep};
 pub use uffd::UffdVma;
 pub use accounting::{global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown, VmAccountingSnapshot};
 pub use mmfields::{
@@ -201,6 +206,8 @@ pub struct AddressSpace {
     /// Linux `mm_struct::membarrier_state` — `membarrier(2)` registration.
     /// Bits + accessors owned by the `membarrier` child module.
     membarrier: membarrier::MembarrierState,
+    /// Linux `MMF_HAS_MDWE*`; state and VMA policy live in the `mdwe` child.
+    mdwe: mdwe::MdweState,
     /// userfaultfd fast-path guard: set true the first time any range on
     /// this AS is `UFFDIO_REGISTER`ed (see `set_uffd_missing`), never
     /// cleared. The page-fault handler checks it before the per-VMA uffd
@@ -309,6 +316,7 @@ impl AddressSpace {
             mm_layout: mmfields::MmLayout::new(),
             accounting: accounting::VmAccounting::new(root_pa),
             membarrier: membarrier::MembarrierState::new(),
+            mdwe: mdwe::MdweState::new(),
             pkeys: pkeys::PkeyContext::new(),
         });
         accounting::register_page_table_owner(root_pa, &as_.accounting);
@@ -382,33 +390,6 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn brk_max(&self) -> u64 {
         self.brk_max.load(core::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Per-AS mmap arena top per Linux `mm_struct::mmap_base`.
-    /// `execve` computes this from RLIMIT_STACK + a fixed GAP per
-    /// `arch_pick_mmap_base`. `find_hole` searches downward from
-    /// it. Zero = uninitialised; callers fall back to the legacy
-    /// global `MMAP_TOP` const.
-    /// # C: O(1)
-    pub fn set_mmap_base(&self, base: u64) {
-        self.mmap_base.store(base, core::sync::atomic::Ordering::Release);
-    }
-    /// # C: O(1)
-    pub fn mmap_base(&self) -> u64 {
-        self.mmap_base.load(core::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Publish the mapped vDSO `__kernel_rt_sigreturn` entry for this mm.
-    /// Zero means the mm has not yet completed execve vDSO installation.
-    /// # C: O(1)
-    pub fn set_vdso_rt_sigreturn(&self, addr: u64) {
-        self.vdso_rt_sigreturn.store(addr, core::sync::atomic::Ordering::Release);
-    }
-
-    /// Return the mapped vDSO `__kernel_rt_sigreturn` entry for this mm.
-    /// # C: O(1)
-    pub fn vdso_rt_sigreturn(&self) -> u64 {
-        self.vdso_rt_sigreturn.load(core::sync::atomic::Ordering::Acquire)
     }
 
     /// Try to set `brk` to `new`. Returns the post-operation brk
