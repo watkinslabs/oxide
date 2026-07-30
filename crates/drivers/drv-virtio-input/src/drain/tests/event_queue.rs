@@ -70,7 +70,6 @@ impl Fixture {
             last_used: 0,
             avail_idx: event_buffers,
             eventq_failed: false,
-            is_pointer: false,
         }
     }
 }

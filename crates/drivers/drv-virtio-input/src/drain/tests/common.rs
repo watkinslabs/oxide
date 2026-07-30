@@ -47,7 +47,6 @@ pub(super) fn ctx(device_key: virtio::VirtioChildDeviceKey) -> QueueCtx {
         last_used: 0,
         avail_idx: 0,
         eventq_failed: false,
-        is_pointer: false,
     }
 }
 
