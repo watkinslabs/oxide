@@ -435,6 +435,19 @@ pub fn prog_get_fd_by_id_check(a: &Attr, caps: Caps) -> Result<u32, Errno> {
     Ok(a.u32_at(o::PROG_ID))
 }
 
+// ---------------------------------------------------------- PROG_BIND_MAP
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ProgBindMap { pub prog_fd: u32, pub map_fd: u32 }
+
+/// Validate and decode one program-map lifetime binding. # C: O(ATTR_SIZE)
+pub fn prog_bind_map_check(a: &Attr) -> Result<ProgBindMap, Errno> {
+    use uapi::off::prog_bind_map as o;
+    check_attr(a, o::LAST_END)?;
+    if a.u32_at(o::FLAGS) != 0 { return Err(Errno::Einval); }
+    Ok(ProgBindMap { prog_fd: a.u32_at(o::PROG_FD), map_fd: a.u32_at(o::MAP_FD) })
+}
+
 // ------------------------------------------------------------ LINK_CREATE
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
