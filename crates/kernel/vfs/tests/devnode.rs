@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{BlockDevOps, CharDevOps, Devt, File, FileType, KResult, OpenFlags, VfsError, device_inode_ioctl, device_inode_open, make_device_node_inode};
+use vfs::{BlockDevOps, CharDevOps, Devt, FdTable, File, FileCred, FileType, KResult, OpenFlags, VfsError, device_inode_ioctl, device_inode_open, make_device_node_inode, opened_chrdev, opened_device_devt};
 
 struct NullType;
 impl FileSystemType for NullType {
@@ -162,4 +162,158 @@ fn failed_or_opath_block_open_never_runs_release() {
     drop(path);
     assert_eq!(rejected.releases.load(Ordering::Acquire), 0);
     vfs::unregister_blkdev(206);
+}
+
+struct TrackingChar {
+    tag: u8,
+    opens: AtomicU32,
+    reads: AtomicU32,
+    writes: AtomicU32,
+    releases: AtomicU32,
+}
+
+impl TrackingChar {
+    fn new(tag: u8) -> Self {
+        Self {
+            tag,
+            opens: AtomicU32::new(0),
+            reads: AtomicU32::new(0),
+            writes: AtomicU32::new(0),
+            releases: AtomicU32::new(0),
+        }
+    }
+}
+
+impl CharDevOps for TrackingChar {
+    fn open_file(&self, _devt: Devt, _file: &File) -> KResult<()> {
+        self.opens.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn read_file(&self, _devt: Devt, _file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        self.reads.fetch_add(1, Ordering::AcqRel);
+        buf.fill(self.tag);
+        Ok(buf.len())
+    }
+
+    fn write_file(&self, _devt: Devt, _file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
+        self.writes.fetch_add(1, Ordering::AcqRel);
+        Ok(buf.len())
+    }
+
+    fn poll_file(&self, _devt: Devt, _file: &File) -> KResult<u32> {
+        Ok(vfs::inode::POLL_IN)
+    }
+
+    fn release_file(&self, _devt: Devt, _file: &File) {
+        self.releases.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[test]
+fn opened_chrdev_keeps_its_driver_after_registry_replacement() {
+    const MAJOR: u32 = 207;
+    const MINOR: u32 = 11;
+    const FS_DEV: u64 = 5;
+    const INO: u64 = 10;
+    const MODE: u16 = 0o660;
+    const MNT_ID: u64 = 0;
+    const FD_LIMIT: usize = usize::MAX;
+    const FIRST_TAG: u8 = 0x31;
+    const REPLACEMENT_TAG: u8 = 0x72;
+    const BUFFER_LEN: usize = 4;
+
+    let first = Arc::new(TrackingChar::new(FIRST_TAG));
+    let first_registered: Arc<dyn CharDevOps> = first.clone();
+    vfs::register_chrdev(MAJOR, first_registered.clone());
+    let superblock = sb(FS_DEV);
+    let node = make_device_node_inode(
+        INO,
+        FileType::CharDev,
+        Devt::new(MAJOR, MINOR),
+        MODE,
+        Arc::downgrade(&superblock),
+    );
+    let table = FdTable::new();
+    let fd = vfs::file::install_open_at(
+        &table,
+        node.clone(),
+        vfs::dcache::d_obtain_alias(node),
+        OpenFlags::O_RDWR,
+        MNT_ID,
+        FileCred::root(),
+        FD_LIMIT,
+        None,
+    ).unwrap();
+    let file = table.get(fd).unwrap();
+    let (opened_devt, opened_ops) = opened_chrdev(&file).unwrap();
+    assert_eq!(opened_devt, Devt::new(MAJOR, MINOR));
+    assert!(Arc::ptr_eq(&opened_ops, &first_registered));
+    assert_eq!(first.opens.load(Ordering::Acquire), 1);
+
+    vfs::unregister_chrdev(MAJOR);
+    let replacement = Arc::new(TrackingChar::new(REPLACEMENT_TAG));
+    vfs::register_chrdev(MAJOR, replacement.clone());
+
+    let mut buf = [0_u8; BUFFER_LEN];
+    assert_eq!(file.read(&mut buf), Ok(BUFFER_LEN));
+    assert_eq!(buf, [FIRST_TAG; BUFFER_LEN]);
+    assert_eq!(file.write(&buf), Ok(BUFFER_LEN));
+    assert_eq!(file.poll(), vfs::inode::POLL_IN);
+    assert_eq!(first.reads.load(Ordering::Acquire), 1);
+    assert_eq!(first.writes.load(Ordering::Acquire), 1);
+    assert_eq!(replacement.opens.load(Ordering::Acquire), 0);
+    assert_eq!(replacement.reads.load(Ordering::Acquire), 0);
+    assert_eq!(replacement.writes.load(Ordering::Acquire), 0);
+
+    table.close(fd).unwrap();
+    assert_eq!(first.releases.load(Ordering::Acquire), 0);
+    drop(file);
+    assert_eq!(first.releases.load(Ordering::Acquire), 1);
+    assert_eq!(replacement.releases.load(Ordering::Acquire), 0);
+    vfs::unregister_chrdev(MAJOR);
+}
+
+#[test]
+fn opath_chrdev_never_acquires_driver_identity() {
+    const MAJOR: u32 = 208;
+    const MINOR: u32 = 12;
+    const FS_DEV: u64 = 6;
+    const INO: u64 = 11;
+    const MODE: u16 = 0o660;
+    const MNT_ID: u64 = 0;
+    const FD_LIMIT: usize = usize::MAX;
+    const DRIVER_TAG: u8 = 0x45;
+
+    let driver = Arc::new(TrackingChar::new(DRIVER_TAG));
+    vfs::register_chrdev(MAJOR, driver.clone());
+    let superblock = sb(FS_DEV);
+    let node = make_device_node_inode(
+        INO,
+        FileType::CharDev,
+        Devt::new(MAJOR, MINOR),
+        MODE,
+        Arc::downgrade(&superblock),
+    );
+    let table = FdTable::new();
+    let fd = vfs::file::install_open_at(
+        &table,
+        node.clone(),
+        vfs::dcache::d_obtain_alias(node),
+        OpenFlags::O_PATH,
+        MNT_ID,
+        FileCred::root(),
+        FD_LIMIT,
+        None,
+    ).unwrap();
+    let file = table.get(fd).unwrap();
+
+    assert_eq!(driver.opens.load(Ordering::Acquire), 0);
+    assert_eq!(opened_device_devt(&file), None);
+    let mut byte = [0_u8; 1];
+    assert_eq!(file.read(&mut byte), Err(VfsError::Ebadf));
+    table.close(fd).unwrap();
+    drop(file);
+    assert_eq!(driver.releases.load(Ordering::Acquire), 0);
+    vfs::unregister_chrdev(MAJOR);
 }

@@ -20,7 +20,7 @@ extern crate alloc;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicU32, AtomicU64};
 
 use sync::{Spinlock, TaskList as FileLinkClass};
 
@@ -86,9 +86,10 @@ pub struct File {
     /// `file->private_data` — per-fd driver/anon-inode state slot.
     /// Default 0; opaque to the VFS core.
     private_data: AtomicU64,
-    /// Device dispatcher proof that this file reached a successful driver
-    /// `->open`; final device `->release` consumes it exactly once.
-    device_opened: AtomicBool,
+    /// Exact device driver selected by a successful open. The retained driver
+    /// owns every later file operation and final release; registry changes do
+    /// not retarget an already-open description.
+    opened_device: Spinlock<Option<crate::devnode::OpenedDevice>, FileLinkClass>,
     pos:    AtomicU64,
     /// `f_pos_lock` (Linux `struct file.f_pos_lock`, set for FMODE_ATOMIC_POS
     /// files). Serializes the pos-read -> I/O -> pos-update region in

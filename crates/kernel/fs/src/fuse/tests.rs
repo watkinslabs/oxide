@@ -25,7 +25,7 @@ fn reply(unique: u64, error: i32, body: &[u8]) -> Vec<u8> {
     b
 }
 
-// ---- codec: fixed sizes match uapi/linux/fuse.h -----------------------------
+// ---- codec: fixed FUSE ABI sizes --------------------------------------------
 
 #[test]
 fn struct_sizes_match_uapi() {
@@ -259,9 +259,120 @@ fn init_negotiation_incompatible_major_fails() {
     assert!(st.done && st.failed);
 }
 
+#[test]
+fn canonical_device_routes_published_and_mknod_nodes() {
+    use super::dev;
+    use vfs::{File, FileType, OpenFlags};
+
+    const CLONE_INO: u64 = 0xF053;
+    const MOUNT_FD: i32 = 1;
+    const ROOT_MODE: u32 = 0o40_000;
+    const USER_ID: u32 = 1;
+    const GROUP_ID: u32 = 1;
+    dev::register_chrdev().unwrap();
+
+    let published_inode = dev::make_fuse_dev_inode();
+    let cloned_inode = vfs::make_device_node_inode(
+        CLONE_INO,
+        FileType::CharDev,
+        dev::fuse_devt(),
+        dev::FUSE_DEV_PERM,
+        alloc::sync::Weak::new(),
+    );
+    let published = File::new(
+        published_inode.clone(),
+        vfs::dcache::d_obtain_alias(published_inode),
+        OpenFlags::O_NONBLOCK,
+    );
+    let cloned = File::new(
+        cloned_inode.clone(),
+        vfs::dcache::d_obtain_alias(cloned_inode),
+        OpenFlags::O_NONBLOCK,
+    );
+
+    published.open_hook().unwrap();
+    cloned.open_hook().unwrap();
+    assert!(dev::is_fuse_dev(&published), "published node opens through the registered device");
+    assert!(dev::is_fuse_dev(&cloned), "mknod-shaped node opens through the same device");
+    assert_eq!(published.read(&mut [0u8; FUSE_IN_HEADER_SIZE]), Err(vfs::VfsError::Eagain));
+    assert_eq!(cloned.read(&mut [0u8; FUSE_IN_HEADER_SIZE]), Err(vfs::VfsError::Eagain));
+    assert!(Arc::ptr_eq(
+        &published.poll_subscribers().expect("published channel poll source"),
+        &dev::conn_for(&published).poll_subscribers(),
+    ));
+    assert!(Arc::ptr_eq(
+        &cloned.poll_subscribers().expect("cloned channel poll source"),
+        &dev::conn_for(&cloned).poll_subscribers(),
+    ));
+    assert!(!Arc::ptr_eq(&dev::conn_for(&published), &dev::conn_for(&cloned)),
+            "each open file description owns an independent channel");
+    let mount_data = alloc::format!(
+        "fd={MOUNT_FD},rootmode={ROOT_MODE:o},user_id={USER_ID},group_id={GROUP_ID}",
+    );
+    let opts = super::fs::parse_mount_opts(&mount_data).unwrap();
+    let (mounted, root) = super::mount_from_opts(opts, &cloned).unwrap();
+    assert_eq!(mounted.name(), "fuse");
+    assert!(Arc::ptr_eq(&mounted.root().expect("mounted root"), &root));
+
+    drop(published);
+    drop(cloned);
+    vfs::unregister_chrdev_region(dev::FUSE_DEV_MAJOR, dev::FUSE_DEV_MINOR, dev::FUSE_DEV_COUNT);
+
+    struct OtherDriver;
+    impl vfs::CharDevOps for OtherDriver {}
+    vfs::register_chrdev_region(
+        dev::FUSE_DEV_MAJOR,
+        dev::FUSE_DEV_MINOR,
+        dev::FUSE_DEV_COUNT,
+        Arc::new(OtherDriver),
+    ).unwrap();
+    let other_inode = vfs::make_device_node_inode(
+        CLONE_INO + 1,
+        FileType::CharDev,
+        dev::fuse_devt(),
+        dev::FUSE_DEV_PERM,
+        alloc::sync::Weak::new(),
+    );
+    let other = File::new(
+        other_inode.clone(),
+        vfs::dcache::d_obtain_alias(other_inode),
+        OpenFlags::empty(),
+    );
+    other.open_hook().unwrap();
+    assert!(!dev::is_fuse_dev(&other), "device number alone must not identify the FUSE driver");
+    drop(other);
+    vfs::unregister_chrdev_region(dev::FUSE_DEV_MAJOR, dev::FUSE_DEV_MINOR, dev::FUSE_DEV_COUNT);
+}
+
+#[test]
+fn parses_exact_libfuse_mount_option_forms() {
+    const FD_WITH_GROUP: i32 = 4;
+    const FD_WITHOUT_GROUP: i32 = 5;
+    const ROOT_MODE: u32 = 0o40_000;
+    const USER_ID: u32 = 1_000;
+    const GROUP_ID: u32 = 1_000;
+
+    let with_group_data = alloc::format!(
+        "fd={FD_WITH_GROUP},rootmode={ROOT_MODE:o},user_id={USER_ID},group_id={GROUP_ID}",
+    );
+    let with_group = super::fs::parse_mount_opts(&with_group_data).unwrap();
+    assert_eq!(with_group.fd, FD_WITH_GROUP);
+    assert_eq!(with_group.rootmode, ROOT_MODE);
+    assert_eq!(with_group.user_id, USER_ID);
+    assert_eq!(with_group.group_id, GROUP_ID);
+
+    let portal_data = alloc::format!(
+        "fd={FD_WITHOUT_GROUP},rootmode={ROOT_MODE:o},user_id={USER_ID},subtype=fuse.portal",
+    );
+    let portal = super::fs::parse_mount_opts(&portal_data).unwrap();
+    assert_eq!(portal.fd, FD_WITHOUT_GROUP);
+    assert_eq!(portal.rootmode, ROOT_MODE);
+    assert_eq!(portal.user_id, USER_ID);
+    assert_eq!(portal.group_id, 0, "omitted group_id uses the caller-neutral default");
+}
+
 /// F767: the `fuse_attr` seconds field is `uint64_t` on the wire, but Linux
-/// assigns it straight into a `time64_t` (`fs/fuse/inode.c`
-/// `fuse_change_attributes_common`), so it is REINTERPRETED as signed. A daemon
+/// assigns it straight into a `time64_t`, so it is REINTERPRETED as signed. A daemon
 /// reporting a pre-1970 mtime sends `(u64)(-2_000_000_000)`; that must land as
 /// second `-2_000_000_000`, not as year ~2554. Before F767 the fuse backend
 /// dropped every daemon timestamp on the floor (`build_inode` never called
@@ -276,8 +387,7 @@ fn attr_time_reinterprets_wire_seconds_as_signed() {
     assert_eq!(attr_time(0, 0), vfs::Timespec64::ZERO);
 }
 
-/// Linux CLAMPS an out-of-range daemon `*nsec` rather than rejecting it
-/// (`min_t(u32, attr->atimensec, NSEC_PER_SEC - 1)`, fs/fuse/inode.c:245).
+/// An out-of-range daemon `*nsec` is clamped rather than rejected.
 #[test]
 fn attr_time_clamps_an_out_of_range_subsecond_field() {
     use super::fs::attr_time;

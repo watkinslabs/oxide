@@ -1,4 +1,4 @@
-// The FUSE channel — `struct fuse_conn` (`fs/fuse/fuse_i.h`). One `FuseConn` is
+// The FUSE channel. One `FuseConn` is
 // shared by the `/dev/fuse` open File (the daemon's channel) and the mounted
 // superblock. It is the request/reply broker:
 //
@@ -68,10 +68,9 @@ pub struct InitState {
 /// [`FuseConn::slots`] by `unique` from `new_request` until `submit_reply` (or
 /// `abort`) completes it. # C: O(1)
 /// NO `FR_INTERRUPTED` FLAG / FUSE_INTERRUPT SUPPORT HERE — AND THE REQUEST
-/// WAIT DEPENDS ON THAT. Linux `request_wait_answer` (`fs/fuse/dev.c:696-730`)
-/// waits in TWO phases: an interruptible one (`dev.c:705`), then — if a signal
-/// arrives — it sets `FR_INTERRUPTED`, queues a FUSE_INTERRUPT request to the
-/// daemon, and waits again KILLABLY (`dev.c:721`). So an ordinary signal does
+/// WAIT DEPENDS ON THAT. Request wait has two phases: an interruptible one,
+/// then — if a signal arrives — it sets `FR_INTERRUPTED`, queues a
+/// FUSE_INTERRUPT request to the daemon, and waits again killably. An ordinary signal does
 /// NOT abandon a FUSE request; only a fatal one does, and the daemon is told.
 ///
 /// This kernel has only the first phase, so any deliverable signal abandons the
@@ -169,6 +168,9 @@ impl FuseConn {
 
     /// `true` once the daemon closed the channel (`fuse_abort_conn`). # C: O(1)
     pub fn is_aborted(&self) -> bool { self.aborted.load(Ordering::Acquire) }
+
+    /// Poll wait source owned by this channel. # C: O(1)
+    pub fn poll_subscribers(&self) -> Arc<PollSubscribers> { self.poll_subs.clone() }
 
     /// Encode a request (`fuse_in_header` + `body`) for `opcode` on `nodeid`,
     /// file it in `slots`, push it to the daemon's `pending` queue, and wake a
@@ -323,12 +325,11 @@ impl FuseConn {
                 if sched::live::deliverable_signals_self() != 0 {
                     // Drop the slot so a late reply is ignored (Linux interrupt).
                     self.slots.lock().remove(&slot.unique);
-                    // Linux `request_wait_answer` (`fs/fuse/dev.c:705`):
-                    // `wait_event_interruptible` -> -ERESTARTSYS.
+                    // The interruptible phase returns ERESTARTSYS.
                     //
-                    // GAP: Linux then runs a SECOND, killable phase
-                    // (`dev.c:721`) after setting FR_INTERRUPTED and queueing
-                    // a FUSE INTERRUPT request, so a non-fatal signal does not
+                    // GAP: the contract then runs a second, killable phase
+                    // after setting FR_INTERRUPTED and queueing a FUSE
+                    // INTERRUPT request, so a non-fatal signal does not
                     // abandon the request outright. This kernel aborts on the
                     // first phase. Tracked in the plan; the return code is
                     // correct either way.
