@@ -1,7 +1,7 @@
 extern crate alloc;
 use alloc::sync::Arc;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::Spinlock;
 
@@ -97,13 +97,13 @@ impl File {
             f_mode,
             f_cred: cred,
             private_data: AtomicU64::new(0),
-            device_opened: AtomicBool::new(false),
+            opened_device: Spinlock::new(None),
             pos:   AtomicU64::new(0),
             f_pos_lock: Spinlock::new(()),
             f_ra: Spinlock::new(FileRaState { ra_pages: DEFAULT_RA_PAGES, ..FileRaState::default() }),
             flags: AtomicU32::new(flags.bits()),
             // `filemap_sample_wb_err` / `file_sample_sb_err` at open
-            // (`fs/open.c:895-896`): an error nobody has collected yet is
+            // An error nobody has collected yet is
             // still owed to this brand-new description, which is why
             // `Errseq::sample` returns the epoch while the value is UNSEEN.
             f_wb_err: AtomicU32::new(inode_wb_err),
@@ -260,13 +260,20 @@ impl File {
     /// # C: backend-dependent
     pub fn open_hook(&self) -> crate::KResult<()> { self.f_op.on_open_file(self) }
 
-    /// Mark a device file whose driver `->open` completed successfully. The
-    /// device dispatcher consumes this exactly once at final `->release`; a
-    /// failed open and `O_PATH` file never set it. # C: O(1)
-    pub(crate) fn mark_device_opened(&self) { self.device_opened.store(true, Ordering::Release); }
+    /// Retain the exact driver whose open callback succeeded. # C: O(1)
+    pub(crate) fn retain_opened_device(&self, opened: crate::devnode::OpenedDevice) {
+        *self.opened_device.lock() = Some(opened);
+    }
 
-    /// Consume the successful-device-open marker at final `fput`. # C: O(1)
-    pub(crate) fn take_device_opened(&self) -> bool { self.device_opened.swap(false, Ordering::AcqRel) }
+    /// Clone the retained open-device identity for one operation. # C: O(1)
+    pub(crate) fn opened_device(&self) -> Option<crate::devnode::OpenedDevice> {
+        self.opened_device.lock().clone()
+    }
+
+    /// Consume the retained driver at final file release. # C: O(1)
+    pub(crate) fn take_opened_device(&self) -> Option<crate::devnode::OpenedDevice> {
+        self.opened_device.lock().take()
+    }
 
     /// `F_SET_RW_HINT` (Linux `fcntl_rw_hint`): store the `RWH_WRITE_LIFE_*`
     /// write-life hint. Advisory; forwarded to a hinting block backend. # C: O(1)
@@ -381,7 +388,7 @@ impl File {
     pub fn set_fl(&self, arg: OpenFlags) -> crate::types::KResult<OpenFlags> {
         // `if (!S_ISFIFO(inode->i_mode) && (arg & O_DIRECT) &&
         //     !(filp->f_mode & FMODE_CAN_ODIRECT)) return -EINVAL;`
-        // (`fs/fcntl.c:62-65`). The FIFO exemption is Linux's own comment:
+        // The FIFO exemption follows the packet-mode contract:
         // "Pipe packetized mode is controlled by O_DIRECT flag" — on a pipe the
         // bit means something else entirely and must keep working. Same reason
         // the open-time gate exists: turning on O_DIRECT for a backend with no

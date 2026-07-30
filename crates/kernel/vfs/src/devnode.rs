@@ -53,7 +53,7 @@ impl Devt {
 }
 
 // ---------------------------------------------------------------------------
-// Linux KERNEL `dev_t` model (`include/linux/kdev_t.h`).
+// Kernel `dev_t` model.
 //
 // Two encodings coexist in Linux and both are reproduced here, byte-faithfully:
 //   * KERNEL dev_t — a 32-bit `(major:12 << 20) | minor:20` split used in-core
@@ -63,7 +63,7 @@ impl Devt {
 //     and `st_rdev`/`st_dev` carry. `huge_encode_dev` is the kernel→user map.
 // ---------------------------------------------------------------------------
 
-/// `MINORBITS` (Linux `include/linux/kdev_t.h`) — minor occupies the low 20 bits
+/// `MINORBITS` — minor occupies the low 20 bits
 /// of a kernel `dev_t`, major the top 12.
 pub const MINORBITS: u32 = 20;
 /// `MINORMASK` — `(1 << MINORBITS) - 1`, the kernel-`dev_t` minor field mask.
@@ -77,7 +77,7 @@ pub const fn kdev_major(kdev: u32) -> u32 { kdev >> MINORBITS }
 /// `MINOR(dev)` (Linux) for a KERNEL `dev_t`. # C: O(1)
 pub const fn kdev_minor(kdev: u32) -> u32 { kdev & MINORMASK }
 
-/// `new_encode_dev` (Linux `include/linux/kdev_t.h`) — map a KERNEL `dev_t` to
+/// `new_encode_dev` — map a KERNEL `dev_t` to
 /// the 32-bit glibc/user wire form the stat ABI exposes (`st_rdev`/`st_dev`):
 /// `minor[0..8] | major[8..20] | minor[20..32]`. The high-minor split lets a
 /// minor exceed 255 without clobbering the 12-bit major. # C: O(1)
@@ -87,16 +87,15 @@ pub const fn new_encode_dev(kdev: u32) -> u32 {
     (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12)
 }
 
-/// `huge_encode_dev` (Linux `include/linux/kdev_t.h`) — the 64-bit `st_dev`
+/// `huge_encode_dev` — the 64-bit `st_dev`
 /// user form; identical to [`new_encode_dev`] widened to `u64` (the upper bits
 /// stay clear for a 32-bit-representable dev). # C: O(1)
 pub const fn huge_encode_dev(kdev: u32) -> u64 { new_encode_dev(kdev) as u64 }
 
-/// `new_decode_dev` (Linux `include/linux/kdev_t.h`) — the exact inverse of
+/// `new_decode_dev` — the exact inverse of
 /// [`new_encode_dev`]: unpack the 32-bit glibc/user wire `dev_t` a syscall
-/// ARGUMENT carries back into a KERNEL `dev_t`. `ustat(2)` takes the user form
-/// (`fs/statfs.c` `SYSCALL_DEFINE2(ustat)` calls `new_decode_dev(dev)` before
-/// `user_get_super`), so a lookup against `SuperBlock::s_dev` — which is the
+/// argument carries back into a kernel `dev_t`. `ustat(2)` takes the user form,
+/// so a lookup against `SuperBlock::s_dev` — which is the
 /// kernel form — must decode first or it never matches. # C: O(1)
 pub const fn new_decode_dev(udev: u32) -> u32 {
     let major = (udev & 0xf_ff00) >> 8;
@@ -120,6 +119,8 @@ pub trait CharDevOps: Send + Sync {
     fn read_file(&self, devt: Devt, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let _ = file; self.read(devt, off, buf)
     }
+    /// Non-blocking `cdev->read` with per-open state. # C: driver-dependent
+    fn read_nonblock_file(&self, devt: Devt, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> { self.read_file(devt, file, off, buf) }
     /// `cdev->write`. # C: driver-dependent
     fn write(&self, devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
         let _ = (devt, off, buf); Err(VfsError::Eio)
@@ -128,6 +129,8 @@ pub trait CharDevOps: Send + Sync {
     fn write_file(&self, devt: Devt, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
         let _ = file; self.write(devt, off, buf)
     }
+    /// Non-blocking `cdev->write` with per-open state. # C: driver-dependent
+    fn write_nonblock_file(&self, devt: Devt, file: &File, off: u64, buf: &[u8]) -> KResult<usize> { self.write_file(devt, file, off, buf) }
     /// `cdev->unlocked_ioctl`. # C: driver-dependent
     fn ioctl(&self, devt: Devt, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = (devt, cmd, arg); Err(VfsError::Enotty)
@@ -136,6 +139,8 @@ pub trait CharDevOps: Send + Sync {
     fn poll(&self, devt: Devt) -> KResult<u32> { let _ = devt; Ok(crate::inode::POLL_IN | crate::inode::POLL_OUT) }
     /// `cdev->poll` with per-open state. # C: driver-dependent
     fn poll_file(&self, devt: Devt, file: &File) -> KResult<u32> { let _ = file; self.poll(devt) }
+    /// Wait source for this open device description. # C: O(1)
+    fn poll_subscribers_file(&self, devt: Devt, file: &File) -> Option<Arc<PollSubscribers>> { let _ = devt; file.inode().poll_subscribers_arc() }
     /// `cdev->mmap`/shared-frame probe. # C: driver-dependent
     fn mmap_shared_frame(&self, devt: Devt, off: u64) -> KResult<Option<u64>> { let _ = (devt, off); Ok(None) }
     /// `cdev->release`. # C: driver-dependent
@@ -169,6 +174,14 @@ pub trait BlockDevOps: Send + Sync {
     fn ioctl(&self, devt: Devt, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = (devt, cmd, arg); Err(VfsError::Enotty)
     }
+}
+
+/// Driver identity retained by one successfully opened device description.
+/// Registry lookup selects it once; subsequent operations use this exact owner.
+#[derive(Clone)]
+pub(crate) enum OpenedDevice {
+    Char { devt: Devt, ops: Arc<dyn CharDevOps> },
+    Block { devt: Devt, ops: Arc<dyn BlockDevOps> },
 }
 
 /// Number of minor numbers in a major (Linux `MINORBITS == 20`, so a major
@@ -325,31 +338,37 @@ impl FileOps for DeviceFileOps {
         match d.ft {
             FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.read(d.devt, off, buf),
             FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.read(d.devt, off, buf),
-            _ => Err(VfsError::Eio),
-        }
+            _ => Err(VfsError::Eio) }
     }
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = device_data(inode)?;
         match d.ft {
             FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.write(d.devt, off, buf),
             FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.write(d.devt, off, buf),
-            _ => Err(VfsError::Eio),
-        }
+            _ => Err(VfsError::Eio) }
     }
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let d = device_data(file.inode())?;
-        match d.ft {
-            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.read_file(d.devt, file, off, buf),
-            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.read(d.devt, off, buf),
-            _ => Err(VfsError::Eio),
+        match file.opened_device().ok_or(VfsError::Enxio)? {
+            OpenedDevice::Char { devt, ops } => ops.read_file(devt, file, off, buf),
+            OpenedDevice::Block { devt, ops } => ops.read(devt, off, buf),
         }
     }
     fn write_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
-        let d = device_data(file.inode())?;
-        match d.ft {
-            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.write_file(d.devt, file, off, buf),
-            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.write(d.devt, off, buf),
-            _ => Err(VfsError::Eio),
+        match file.opened_device().ok_or(VfsError::Enxio)? {
+            OpenedDevice::Char { devt, ops } => ops.write_file(devt, file, off, buf),
+            OpenedDevice::Block { devt, ops } => ops.write(devt, off, buf),
+        }
+    }
+    fn read_nonblock_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        match file.opened_device().ok_or(VfsError::Enxio)? {
+            OpenedDevice::Char { devt, ops } => ops.read_nonblock_file(devt, file, off, buf),
+            OpenedDevice::Block { devt, ops } => ops.read(devt, off, buf),
+        }
+    }
+    fn write_nonblock_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        match file.opened_device().ok_or(VfsError::Enxio)? {
+            OpenedDevice::Char { devt, ops } => ops.write_nonblock_file(devt, file, off, buf),
+            OpenedDevice::Block { devt, ops } => ops.write(devt, off, buf),
         }
     }
     fn on_open(&self, inode: &Inode) -> KResult<()> {
@@ -362,23 +381,27 @@ impl FileOps for DeviceFileOps {
     }
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let d = device_data(file.inode())?;
-        let result = match d.ft {
-            FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.open_file(d.devt, file),
-            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.open_file(d.devt, file),
-            _ => Err(VfsError::Enodev),
+        let opened = match d.ft {
+            FileType::CharDev => {
+                let ops = lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?;
+                ops.open_file(d.devt, file)?;
+                OpenedDevice::Char { devt: d.devt, ops }
+            }
+            FileType::BlockDev => {
+                let ops = lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?;
+                ops.open_file(d.devt, file)?;
+                OpenedDevice::Block { devt: d.devt, ops }
+            }
+            _ => return Err(VfsError::Enodev),
         };
-        if result.is_ok() { file.mark_device_opened(); }
-        result
+        file.retain_opened_device(opened);
+        Ok(())
     }
     fn on_release_file(&self, file: &File) {
-        if !file.take_device_opened() { return; }
-        if let Ok(d) = device_data(file.inode()) {
-            if d.ft == FileType::CharDev {
-                if let Some(ops) = lookup_chrdev(d.devt) { ops.release_file(d.devt, file); }
-            }
-            if d.ft == FileType::BlockDev {
-                if let Some(ops) = lookup_blkdev(d.devt) { ops.release_file(d.devt, file); }
-            }
+        match file.take_opened_device() {
+            Some(OpenedDevice::Char { devt, ops }) => ops.release_file(devt, file),
+            Some(OpenedDevice::Block { devt, ops }) => ops.release_file(devt, file),
+            None => {}
         }
     }
     fn poll(&self, inode: &Inode) -> u32 {
@@ -389,10 +412,17 @@ impl FileOps for DeviceFileOps {
         }
     }
     fn poll_open_file(&self, file: &File) -> u32 {
-        let Ok(d) = device_data(file.inode()) else { return 0; };
-        match d.ft {
-            FileType::CharDev => lookup_chrdev(d.devt).and_then(|o| o.poll_file(d.devt, file).ok()).unwrap_or(0),
-            _ => self.poll(file.inode()),
+        match file.opened_device() {
+            Some(OpenedDevice::Char { devt, ops }) => ops.poll_file(devt, file).unwrap_or(0),
+            Some(OpenedDevice::Block { .. }) => 0,
+            None => 0,
+        }
+    }
+    fn poll_subscribers(&self, file: &File) -> Option<Arc<PollSubscribers>> {
+        match file.opened_device() {
+            Some(OpenedDevice::Char { devt, ops }) => ops.poll_subscribers_file(devt, file),
+            Some(OpenedDevice::Block { .. }) => file.inode().poll_subscribers_arc(),
+            None => None,
         }
     }
     fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> KResult<Option<crate::SharedFrame>> {
@@ -447,7 +477,18 @@ pub fn make_socket_inode(ino: Ino, perm: u16, sb: Weak<SuperBlock>) -> InodeRef 
 pub fn device_inode_devt(inode: &Inode) -> Option<Devt> {
     inode.private::<DeviceNodeData>().map(|d| d.devt)
 }
-
+/// Identity accepted by the canonical device open hook. # C: O(1)
+pub fn opened_device_devt(file: &File) -> Option<Devt>
+    { match file.opened_device()? {
+        OpenedDevice::Char { devt, .. } | OpenedDevice::Block { devt, .. } => Some(devt),
+    } }
+/// Character-driver identity retained by a successful open. # C: O(1)
+pub fn opened_chrdev(file: &File) -> Option<(Devt, Arc<dyn CharDevOps>)> {
+    match file.opened_device()? {
+        OpenedDevice::Char { devt, ops } => Some((devt, ops)),
+        OpenedDevice::Block { .. } => None,
+    }
+}
 /// `open(2)` routing for a device node (Linux `chrdev_open`). # C: O(log N)
 pub fn device_inode_open(inode: &Inode) -> KResult<()> { inode.on_open() }
 
