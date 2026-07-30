@@ -13,9 +13,9 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use syscall::SyscallArgs;
@@ -26,6 +26,7 @@ pub mod uapi;
 pub mod attr;
 mod user;
 mod prog;
+mod cgroup_device;
 mod map;
 mod ids;
 
@@ -36,23 +37,68 @@ const BPF_FD_MODE: u16 = 0o600;
 
 /// Re-exported for `SO_ATTACH_BPF` in the setsockopt slot.
 pub use uapi::prog_type::SOCKET_FILTER as BPF_PROG_TYPE_SOCKET_FILTER;
+pub use cgroup_device::{
+    DEVCG_ACC_MKNOD, DEVCG_ACC_READ, DEVCG_ACC_WRITE, DEVCG_DEV_BLOCK, DEVCG_DEV_CHAR,
+    check as check_device_access,
+};
+pub(crate) use cgroup_device::inode_permission as cgroup_device_inode_permission;
 
 /// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes and
 /// Linux program type stay coupled in the fd-backed inode's `i_private`.
 pub struct BpfProgInode {
+    pub id: u32,
     pub prog_type: u32,
     pub insns: Vec<u8>,
+}
+
+static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
+static PROGRAMS_BY_ID: Spinlock<BTreeMap<u32, Weak<vfs::Inode>>, TaskListClass> =
+    Spinlock::new(BTreeMap::new());
+
+impl Drop for BpfProgInode {
+    fn drop(&mut self) {
+        let mut programs = PROGRAMS_BY_ID.lock();
+        if programs.get(&self.id).is_some_and(|weak| weak.strong_count() == 0) {
+            programs.remove(&self.id);
+        }
+    }
+}
+
+fn next_prog_id() -> u32 {
+    loop {
+        let id = NEXT_PROG_ID.fetch_add(1, Ordering::Relaxed);
+        if id == 0 { continue; }
+        let mut programs = PROGRAMS_BY_ID.lock();
+        match programs.get(&id).and_then(Weak::upgrade) {
+            Some(_) => continue,
+            None => {
+                programs.remove(&id);
+                return id;
+            }
+        }
+    }
+}
+
+fn prog_by_id(id: u32) -> Option<InodeRef> {
+    if id == 0 { return None; }
+    let mut programs = PROGRAMS_BY_ID.lock();
+    let inode = programs.get(&id).and_then(Weak::upgrade);
+    if inode.is_none() { programs.remove(&id); }
+    inode
 }
 
 /// Build the `Arc<Inode>` for a loaded program (CharDev|0o600,
 /// `i_size` = bytecode length). # C: O(1)
 pub fn make_bpf_prog_inode(prog_type: u32, insns: Vec<u8>) -> InodeRef {
     let size = insns.len() as u64;
-    InodeBuilder::new(ids::INO_PROG, mk_mode(FileType::CharDev, BPF_FD_MODE),
+    let id = next_prog_id();
+    let inode = InodeBuilder::new(ids::INO_PROG, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
         .size(size)
-        .private(Arc::new(BpfProgInode { prog_type, insns }))
-        .build()
+        .private(Arc::new(BpfProgInode { id, prog_type, insns }))
+        .build();
+    PROGRAMS_BY_ID.lock().insert(id, Arc::downgrade(&inode));
+    inode
 }
 
 /// `BPF_MAP_TYPE_HASH` storage. `map_flags` is retained because
@@ -120,7 +166,10 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::MAP_GET_NEXT_KEY           => map::get_next_key(&a),
         cmd::MAP_FREEZE                 => map::freeze(&a),
         cmd::PROG_LOAD                  => prog::load(&a, caps),
-        cmd::PROG_ATTACH | cmd::PROG_DETACH => prog::attach(&a),
+        cmd::PROG_ATTACH => prog::attach(&a, false),
+        cmd::PROG_DETACH => prog::attach(&a, true),
+        cmd::PROG_QUERY                 => prog::query(&a, args.a1, args.a2 as u32, caps),
+        cmd::PROG_GET_FD_BY_ID          => prog::get_fd_by_id(&a, caps),
         cmd::LINK_CREATE                => prog::link_create(&a),
         // `__sys_bpf()`'s `default: err = -EINVAL`, reached only after
         // the attr size protocol above has had its say.

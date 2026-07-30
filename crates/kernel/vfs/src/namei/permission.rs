@@ -150,7 +150,8 @@ fn posix_acl_permission(buf: &[u8], cred: &Cred, i_uid: u32, i_gid: u32, want: u
 /// ACLs / custom DAC can intercept WITHOUT every call-site changing.
 /// # C: O(ngroups)
 pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
-    inode.permission(mask, cred)
+    inode.permission(mask, cred)?;
+    super::device_permission(inode.file_type(), inode.rdev(), mask)
 }
 
 /// `may_lookup` (Linux): search permission (MAY_EXEC) on a directory before

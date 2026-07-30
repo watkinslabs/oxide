@@ -36,6 +36,19 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
         Ok(node) => node,
         Err(error) => return crate::namei_common::errno_from_vfs(error),
     };
+    let access = vfs::MAY_READ | vfs::MAY_WRITE;
+    if matches!(node.inode.file_type(), vfs::FileType::BlockDev | vfs::FileType::CharDev)
+        && !vfs::may_open_dev(node.mnt_id)
+    {
+        return errno(Errno::Eacces);
+    }
+    if let Err(error) = vfs::inode_permission(
+        &node.inode,
+        access,
+        &crate::pathresolve::current_cred(),
+    ) {
+        return crate::namei_common::errno_from_vfs(error);
+    }
     let discard = pmm::swap::SwapDiscard::from_swapon(
         flags.discard,
         flags.discard_once,

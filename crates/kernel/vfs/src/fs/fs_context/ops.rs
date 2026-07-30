@@ -34,7 +34,7 @@ impl FsContextOps for ClassicMountFsContextOps {
 
     fn get_tree(&self, fc: &mut FsContext) -> KResult<Arc<SuperBlock>> {
         let opts = fc.classic_mount_options();
-        let sb = fc.fs_type.mount(fc.source(), &opts)?;
+        let sb = fc.fs_type.mount_with_flags(fc.source(), &opts, fc.sb_flags)?;
         apply_sb_flags(&sb, fc.sb_flags, fc.sb_flags_mask);
         Ok(sb)
     }

@@ -394,8 +394,12 @@ pub fn set_discard_max_bytes(name: &str, bytes: u64) -> KResult<()> {
 /// Look up a registered disk by publication index. # C: O(N_disks)
 pub fn by_index(index: u32) -> Option<Arc<Disk>> { TABLE.lock().iter().find(|d| d.index == index).cloned() }
 /// Look up a registered disk by serial. # C: O(N_disks)
+pub fn disk_by_serial(serial: &str) -> Option<Arc<Disk>> {
+    TABLE.lock().iter().find(|d| d.serial.as_deref() == Some(serial)).cloned()
+}
+/// Look up a registered block backend by serial. # C: O(N_disks)
 pub fn by_serial(serial: &str) -> Option<Arc<dyn BlockDevice>> {
-    TABLE.lock().iter().find(|d| d.serial.as_deref() == Some(serial)).map(|d| d.dev.clone())
+    disk_by_serial(serial).map(|d| d.dev.clone())
 }
 /// Resolve the packed Linux `dev_t` to its disk. # C: O(N_disks)
 pub fn by_dev(dev_t: u32) -> Option<Arc<Disk>> {

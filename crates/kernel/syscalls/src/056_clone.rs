@@ -270,8 +270,7 @@ pub fn sys_clone_dispatch(
     // (Linux cgroup_post_fork); a new thread charges the process's cgroup
     // so pids.current counts it.
     if (flags & CLONE_THREAD) == 0 {
-        if let Some(cg) = into_cgid { cgroup::attach_tid_into(cg, child_tid as u64); }
-        else { cgroup::inherit(child_tid as u64, cur.tid as u64); }
+        if let Some(error) = crate::clone_cgroup::attach_new_process(into_cgid, child_tid as u64, cur.tid as u64) { return error; }
     } else {
         let proc_pid = cur.tgid.load(core::sync::atomic::Ordering::Relaxed) as u64;
         cgroup::charge_thread(proc_pid, child_tid as u64);

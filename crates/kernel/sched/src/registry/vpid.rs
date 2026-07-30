@@ -142,18 +142,19 @@ pub fn live_vpids() -> Vec<u32> {
 /// # C: O(log N_tasks) via `lookup`.
 pub fn display_vpid(tid: u32) -> u64 {
     use core::sync::atomic::Ordering;
-    match lookup(tid) {
-        Some(t) => {
-            if t.reaped.load(Ordering::Acquire) { return tid as u64; }
+    if let Some(t) = lookup(tid) {
+        if !t.reaped.load(Ordering::Acquire) {
             let v = t.vtgid.load(Ordering::Acquire);
-            if v != 0 {
-                v as u64
-            } else {
-                tid as u64
-            }
+            if v != 0 { return v as u64; }
         }
-        None => tid as u64,
     }
+    let g = REG.lock_irqsave::<RegIrq>();
+    g.by_tid.values().filter_map(|weak| weak.upgrade()).find_map(|task| {
+        (!task.reaped.load(Ordering::Acquire)
+            && task.tgid.load(Ordering::Acquire) == tid)
+            .then(|| task.vtgid.load(Ordering::Acquire) as u64)
+            .filter(|vpid| *vpid != 0)
+    }).unwrap_or(tid as u64)
 }
 
 /// Namespace thread id to display for the task with internal `tid`:

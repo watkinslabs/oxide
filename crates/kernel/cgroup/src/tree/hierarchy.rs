@@ -40,14 +40,16 @@ impl Tree {
     /// # C: O(log n)
     pub fn create(&mut self, parent: u64, name: &str) -> KResult<(u64, u8)> {
         if name.is_empty() || name.contains('/') { return Err(VfsError::Einval); }
-        let avail = {
+        let (avail, inherited_bpf) = {
             let p = self.nodes.get(&parent).ok_or(VfsError::Enoent)?;
             if p.children.contains_key(name) { return Err(VfsError::Eexist); }
-            p.subtree_control
+            (p.subtree_control, alloc::sync::Arc::clone(&p.bpf_device.effective))
         };
         let id = self.next_id;
         self.next_id += 1;
-        self.nodes.insert(id, Node::new(name.to_string(), Some(parent), avail));
+        let mut node = Node::new(name.to_string(), Some(parent), avail);
+        node.bpf_device.effective = inherited_bpf;
+        self.nodes.insert(id, node);
         self.nodes.get_mut(&parent).unwrap().children.insert(name.to_string(), id);
         Ok((id, avail))
     }
@@ -59,7 +61,7 @@ impl Tree {
         if id == ROOT { return Err(VfsError::Ebusy); }
         let (parent, name) = {
             let n = self.nodes.get(&id).ok_or(VfsError::Enoent)?;
-            if !n.children.is_empty() || !n.procs.is_empty()
+            if !n.children.is_empty() || !n.procs.is_empty() || n.threads != 0
                 || n.memory.total() != 0 || n.swap_current != 0 {
                 return Err(VfsError::Ebusy);
             }

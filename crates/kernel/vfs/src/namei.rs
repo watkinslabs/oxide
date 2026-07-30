@@ -10,6 +10,7 @@
 //! - `lookup`: public lookup wrapper entry points.
 
 mod group_list;
+mod device_permission;
 mod lookup;
 mod permission;
 mod root;
@@ -19,6 +20,7 @@ mod types;
 mod walk;
 
 pub use lookup::{mount_target_from_resolved_path, mountpoint_lookup_at_root_cred, path_lookup, path_lookup_at_cred, path_lookup_at_root_cred, path_lookup_cred, path_lookup_path};
+pub use device_permission::{device_permission, may_open_dev, set_device_permission_hook, DevicePermissionHook};
 pub use permission::{chmod_sgid_strip, chown_kill_priv, generic_permission, inode_permission, may_chmod, may_chown, may_create, may_create_in_sticky, may_delete, may_link, may_link_source, may_open, may_rename, rename_flags_check, RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT};
 pub use root::{resolve_abs, resolve_path_dentry, root_dentry, set_root_dentry_provider, walk_to_mount};
 pub use group_list::GroupList;

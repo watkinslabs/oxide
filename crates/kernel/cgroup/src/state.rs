@@ -36,6 +36,13 @@ static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> Option<u64>>, TaskListClass>
 /// canonical tid → visible pid formatter for cgroup.procs reads.
 static PID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
 
+/// canonical tid → visible tid formatter for cgroup.threads reads.
+static TID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
+
+/// Scheduler-serialized task migration: `(visible id, destination, thread)`.
+static MIGRATE_HOOK: Spinlock<Option<fn(u64, u64, bool) -> vfs::KResult<u64>>, TaskListClass> =
+    Spinlock::new(None);
+
 /// `cgroup.events` change-notification: `fn(events_inode)`.
 static NOTIFY_HOOK: Spinlock<Option<fn(&vfs::InodeRef)>, TaskListClass> = Spinlock::new(None);
 
@@ -67,6 +74,14 @@ pub fn set_pid_resolve_hook(f: fn(u64) -> Option<u64>) { *PID_RESOLVE_HOOK.lock(
 /// Install the tid→visible-pid formatter. Boot path.
 /// # C: O(1)
 pub fn set_pid_display_hook(f: fn(u64) -> u64) { *PID_DISPLAY_HOOK.lock() = Some(f); }
+
+/// Install the tid→visible-tid formatter. Boot path. # C: O(1)
+pub fn set_tid_display_hook(f: fn(u64) -> u64) { *TID_DISPLAY_HOOK.lock() = Some(f); }
+
+/// Install the scheduler-serialized cgroup migration hook. Boot path. # C: O(1)
+pub fn set_migrate_hook(f: fn(u64, u64, bool) -> vfs::KResult<u64>) {
+    *MIGRATE_HOOK.lock() = Some(f);
+}
 
 /// Install the `cgroup.events` inotify hook. Boot path.
 /// # C: O(1)
@@ -123,6 +138,28 @@ pub(crate) fn visible_pid(pid: u64) -> u64 {
     match *PID_DISPLAY_HOOK.lock() {
         Some(f) => f(pid),
         None => pid,
+    }
+}
+
+/// Translate a canonical thread id to its visible namespace id.
+/// # C: O(1)
+pub(crate) fn visible_tid(tid: u64) -> u64 {
+    match *TID_DISPLAY_HOOK.lock() {
+        Some(f) => f(tid),
+        None => tid,
+    }
+}
+
+/// Migrate one thread or its entire thread group through the scheduler owner.
+/// # C: O(number of threads) for process migration, O(1) for thread migration
+pub(crate) fn migrate_task(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
+    let hook = *MIGRATE_HOOK.lock();
+    match hook {
+        Some(f) => f(vpid, cgid, thread),
+        None => {
+            let tid = resolve_pid(vpid).ok_or(vfs::VfsError::Esrch)?;
+            if thread { crate::migrate_thread(cgid, tid) } else { crate::migrate_process(cgid, tid) }
+        }
     }
 }
 
