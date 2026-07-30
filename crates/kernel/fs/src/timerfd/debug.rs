@@ -1,7 +1,7 @@
 //! Permanent, feature-gated timerfd evidence for compositor timing failures.
 
 fn is_mutter() -> bool {
-    sched::live::current()
+    sched::current()
         .map(|c| c.with_exe_path(|p| p.map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
         }).unwrap_or(false)))
@@ -23,7 +23,7 @@ fn prefix(op: &'static [u8], id: u32, clockid: u64, flags: u64) -> bool {
     if clockid != 1 { return false; }
     klog::write_raw(b"[MUTTIMER "); klog::write_raw(op);
     klog::write_raw(b" tid=");
-    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+    klog::write_dec_u64(sched::current().map(|c| c.tid as u64).unwrap_or(0));
     klog::write_raw(b" id="); klog::write_dec_u64(id as u64);
     klog::write_raw(b" clk="); klog::write_dec_u64(clockid);
     klog::write_raw(b" fl="); klog::write_hex_u64(flags);
@@ -37,7 +37,8 @@ pub(super) fn event(op: &'static [u8], id: u32, clockid: u64, flags: u64, expiry
     klog::write_raw(b" now="); klog::write_dec_u64(now); klog::write_raw(b"]\n");
 }
 
-/// Emit raw timerfd input before validation or deadline conversion. # C: O(1)
+/// Emit accepted raw input after fd/type/capability binding and before
+/// deadline conversion. # C: O(1)
 pub(super) fn spec(id: u32, clockid: u64, flags: u64,
     interval_sec: i64, interval_nsec: i64, value_sec: i64, value_nsec: i64)
 {
@@ -48,11 +49,18 @@ pub(super) fn spec(id: u32, clockid: u64, flags: u64,
     klog::write_raw(b" val_ns="); write_i64(value_nsec); klog::write_raw(b"]\n");
 }
 
-/// Emit an invalid timerfd input rejected with `EINVAL`. # C: O(1)
-pub(super) fn bad_value(id: u32, clockid: u64, flags: u64,
+/// Emit pre-fd invalid input using syscall-known fields only. Invalid flags or
+/// values precede fd lookup on Linux, so attaching an inode id/clock here would
+/// create false diagnostic ownership. # C: O(1)
+#[cfg(feature = "debug-mutter-timer-verbose")]
+pub(super) fn rejected(fd: i32, flags: u64,
     interval_sec: i64, interval_nsec: i64, value_sec: i64, value_nsec: i64)
 {
-    if !prefix(b"bad-value", id, clockid, flags) { return; }
+    if !is_mutter() { return; }
+    klog::write_raw(b"[MUTTIMER rejected tid=");
+    klog::write_dec_u64(sched::current().map(|c| c.tid as u64).unwrap_or(0));
+    klog::write_raw(b" fd="); write_i64(fd as i64);
+    klog::write_raw(b" fl="); klog::write_hex_u64(flags);
     klog::write_raw(b" int_s="); write_i64(interval_sec);
     klog::write_raw(b" int_ns="); write_i64(interval_nsec);
     klog::write_raw(b" val_s="); write_i64(value_sec);

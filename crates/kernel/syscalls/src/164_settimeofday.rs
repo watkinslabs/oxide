@@ -53,8 +53,8 @@ pub fn kernel_settimeofday(args: &SyscallArgs) -> i64 {
     }
     if let Some((sec, usec)) = tv_pair {
         let target = sec.saturating_mul(NS_PER_SEC).saturating_add(usec.saturating_mul(NSEC_PER_USEC));
-        timekeeper::set_realtime(target);
-        sched::timers::clock_was_set();
+        let step_mono_ns = timekeeper::set_realtime(target);
+        sched::timers::clock_was_set(step_mono_ns);
     }
     0
 }

@@ -35,22 +35,25 @@ pub fn boottime_ns() -> u64 { CLOCK.read().boottime(crate::platform::monotonic_n
 /// Current CLOCK_TAI using the independently owned TAI-UTC offset. # C: O(1)
 pub fn tai_ns() -> u64 { CLOCK.read().tai(crate::platform::monotonic_ns()) }
 
-/// Step CLOCK_REALTIME without changing monotonic or boottime. # C: O(1)
-pub fn set_realtime(target_ns: u64) {
+/// Step CLOCK_REALTIME and return its exact old-domain monotonic boundary.
+/// # C: O(1)
+pub fn set_realtime(target_ns: u64) -> u64 {
     // Sampled before the write so the monotonic read is not taken with IRQs
     // masked and the writer section stays as short as Linux keeps it.
     let mono = crate::platform::monotonic_ns();
     CLOCK.write::<Irq>(|c| c.set_realtime(mono, target_ns));
+    mono
 }
 
 /// Seed CLOCK_REALTIME from a persistent clock. # C: O(1)
-pub fn seed_realtime(target_ns: u64) { set_realtime(target_ns); }
+pub fn seed_realtime(target_ns: u64) { let _ = set_realtime(target_ns); }
 
 /// `ADJ_SETOFFSET`: shift CLOCK_REALTIME by a signed delta. A step, so
 /// callers must follow with the absolute-deadline reprojection. # C: O(1)
-pub fn inject_offset(delta_ns: i128) -> Result<(), TimeError> {
+pub fn inject_offset(delta_ns: i128) -> Result<u64, TimeError> {
     let mono = crate::platform::monotonic_ns();
-    CLOCK.write_with::<Irq, _>(|c| c.inject_offset(mono, delta_ns))
+    CLOCK.write_with::<Irq, _>(|c| c.inject_offset(mono, delta_ns))?;
+    Ok(mono)
 }
 
 /// Apply one NTP discipline increment to CLOCK_REALTIME. Continuous, not a

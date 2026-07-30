@@ -54,9 +54,9 @@ impl ClockOps for KernelClockOps {
     }
 
     fn set_realtime(&mut self, ns: u64) {
-        timekeeper::set_realtime(ns);
+        let step_mono_ns = timekeeper::set_realtime(ns);
         // Absolute CLOCK_REALTIME/TAI deadlines are stored against the wall
         // clock, so they must be reprojected the moment it moves.
-        sched::timers::clock_was_set();
+        sched::timers::clock_was_set(step_mono_ns);
     }
 }
