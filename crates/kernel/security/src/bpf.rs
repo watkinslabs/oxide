@@ -30,6 +30,8 @@ mod btf;
 mod log;
 pub(crate) mod map;
 mod ids;
+mod token;
+mod object;
 
 use attr::Caps;
 use uapi::cmd;
@@ -64,8 +66,26 @@ pub struct BpfProgInode {
     pub maps: Spinlock<Vec<InodeRef>, TaskListClass>,
 }
 
+/// Delegation token derived from a bpffs superblock.
+pub struct BpfTokenInode {
+    pub source_magic: u64,
+    pub flags: u32,
+}
+
+pub(crate) const BPF_FS_MAGIC: u64 = 0xcafe4a11;
+
+pub fn make_bpf_token_inode(token: BpfTokenInode) -> InodeRef {
+    InodeBuilder::new(ids::INO_TOKEN, mk_mode(FileType::Regular, BPF_FD_MODE),
+        default_inode_ops(), default_file_ops())
+        .private(Arc::new(token))
+        .build()
+}
+
 static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
 static PROGRAMS_BY_ID: Spinlock<BTreeMap<u32, Weak<vfs::Inode>>, TaskListClass> =
+    Spinlock::new(BTreeMap::new());
+static NEXT_MAP_ID: AtomicU32 = AtomicU32::new(1);
+static MAPS_BY_ID: Spinlock<BTreeMap<u32, Weak<vfs::Inode>>, TaskListClass> =
     Spinlock::new(BTreeMap::new());
 static NEXT_CGROUP_LINK_ID: AtomicU32 = AtomicU32::new(1);
 enum CgroupLinkIdSlot {
@@ -265,27 +285,66 @@ pub fn make_bpf_prog_inode_with_contract(
 
 /// Map value storage is separately locked so a helper can pin a value
 /// without holding the map's directory lock while the interpreter runs.
-pub struct BpfMapValue {
-    pub bytes: Spinlock<Vec<u8>, TaskListClass>,
-}
+pub(crate) use map::BpfMapValue;
 
 /// Implemented map storage. `map_flags` retains the descriptor and
 /// program-access contract; `MapStorage` owns the freeze/writer state.
 pub struct BpfMapInode {
+    pub id:          u32,
     pub map_type:    u32,
-    pub(crate) storage: map::MapStorage,
+    pub(crate) storage: Arc<map::MapStorage>,
     pub max_entries: u32,
     pub key_size:    u32,
     pub value_size:  u32,
     pub map_flags:   u32,
 }
 
+impl Drop for BpfMapInode {
+    fn drop(&mut self) {
+        let mut maps = MAPS_BY_ID.lock();
+        if maps.get(&self.id).is_some_and(|weak| weak.strong_count() == 0) { maps.remove(&self.id); }
+    }
+}
+
+pub(crate) fn next_map_id() -> u32 {
+    loop {
+        let id = NEXT_MAP_ID.fetch_add(1, Ordering::Relaxed);
+        if id == 0 { continue; }
+        let mut maps = MAPS_BY_ID.lock();
+        if maps.get(&id).and_then(Weak::upgrade).is_none() { maps.remove(&id); return id; }
+    }
+}
+
+pub(crate) fn map_by_id(id: u32) -> Option<InodeRef> {
+    if id == 0 { return None; }
+    let mut maps = MAPS_BY_ID.lock();
+    let inode = maps.get(&id).and_then(Weak::upgrade);
+    if inode.is_none() { maps.remove(&id); }
+    inode
+}
+
+pub(crate) fn next_live_map_id(start: u32) -> Option<u32> {
+    let mut maps = MAPS_BY_ID.lock();
+    let id = maps.range((core::ops::Bound::Excluded(start), core::ops::Bound::Unbounded))
+        .find_map(|(id, weak)| weak.upgrade().map(|_| *id));
+    maps.retain(|_, weak| weak.strong_count() != 0);
+    id
+}
+
 /// Build the `Arc<Inode>` for a freshly created BPF map. # C: O(1)
 pub fn make_bpf_map_inode(m: BpfMapInode) -> InodeRef {
-    InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, BPF_FD_MODE),
+    let id = m.id;
+    let mapping = m.storage.mmap_mapping();
+    let builder = InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
-        .private(Arc::new(m))
-        .build()
+        .size(m.storage.mmap_size())
+        .private(Arc::new(m));
+    let inode = match mapping {
+        Some(mapping) => builder.mapping(mapping).build(),
+        None => builder.build(),
+    };
+    MAPS_BY_ID.lock().insert(id, Arc::downgrade(&inode));
+    inode
 }
 
 /// fd-backed BPF LSM link. Dropping the last fd reference removes the
@@ -341,6 +400,49 @@ pub fn sys_bpf(args: &SyscallArgs) -> i64 {
     match dispatch(args) { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
 }
 
+/// Decode the `BPF_OBJ_PIN` pathname after the common attribute protocol.
+/// The syscall shim resolves this address through the caller's mount namespace.
+/// # C: O(sizeof(bpf_attr))
+pub fn obj_pin_path(args: &SyscallArgs) -> Result<u64, Errno> {
+    let attr = object_attr(args)?;
+    attr::check_attr(&attr, uapi::off::obj_pin::LAST_END)?;
+    Ok(attr.u64_at(uapi::off::obj_pin::PATHNAME))
+}
+
+/// Decode the `BPF_OBJ_GET` pathname after the common attribute protocol.
+/// # C: O(sizeof(bpf_attr))
+pub fn obj_get_path(args: &SyscallArgs) -> Result<u64, Errno> {
+    let attr = object_attr(args)?;
+    attr::check_attr(&attr, uapi::off::obj_get::LAST_END)?;
+    Ok(attr.u64_at(uapi::off::obj_get::PATHNAME))
+}
+
+/// Whether this command must be pathname-resolved by the syscall shim.
+/// # C: O(1)
+pub fn object_path_command(args: &SyscallArgs) -> Option<u32> {
+    let c = (args.a0 as u32) & !cmd::COMMON_ATTRS;
+    matches!(c, cmd::OBJ_PIN | cmd::OBJ_GET).then_some(c)
+}
+
+/// Publish an fd-backed BPF object under an already-resolved bpffs parent.
+/// # C: O(log directory entries)
+pub fn obj_pin(args: &SyscallArgs, parent: &vfs::VfsPath, name: &str) -> Result<i64, Errno> {
+    object::pin(&object_attr(args)?, parent, name, caps_now()?)
+}
+
+/// Recover an fd for an already-resolved bpffs object.
+/// # C: O(fd words)
+pub fn obj_get(args: &SyscallArgs, object: &vfs::VfsPath) -> Result<i64, Errno> {
+    object::get(&object_attr(args)?, object, caps_now()?)
+}
+
+fn object_attr(args: &SyscallArgs) -> Result<attr::Attr, Errno> {
+    if args.a0 as u32 & cmd::COMMON_ATTRS != 0 {
+        let _ = user::fetch_common_attr(args.a3, args.a4 as u32)?;
+    }
+    user::fetch_attr(args.a1, args.a2 as u32)
+}
+
 fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
     // `SYSCALL_DEFINE5(bpf, int cmd, ...)` — the command is an `int`,
     // so the upper half of the register is not part of it.
@@ -360,6 +462,8 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::MAP_LOOKUP_AND_DELETE_ELEM => map::elem(&a, map::MapOp::LookupAndDelete),
         cmd::MAP_GET_NEXT_KEY           => map::get_next_key(&a),
         cmd::MAP_FREEZE                 => map::freeze(&a),
+        cmd::MAP_GET_FD_BY_ID           => map::get_fd_by_id(&a, caps),
+        cmd::MAP_GET_NEXT_ID            => map::get_next_id(&a, args.a1, caps),
         cmd::PROG_LOAD                  => prog::load(&a, caps),
         cmd::PROG_ATTACH => prog::attach(&a, false, caps),
         cmd::PROG_DETACH => prog::attach(&a, true, caps),
@@ -373,6 +477,7 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::BTF_GET_FD_BY_ID           => btf::get_fd_by_id(&a, caps),
         cmd::BTF_GET_NEXT_ID            => btf::get_next_id(&a, args.a1, caps),
         cmd::OBJ_GET_INFO_BY_FD         => btf::get_info_by_fd(&a, args.a1),
+        cmd::TOKEN_CREATE                => token::create(&a),
         // `__sys_bpf()`'s `default: err = -EINVAL`, reached only after
         // the attr size protocol above has had its say.
         _ => Err(Errno::Einval),

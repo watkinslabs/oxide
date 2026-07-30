@@ -111,3 +111,42 @@ allocator, and per-task fault counters `acct` never read.
 **Grep call sites, not definitions.** Many "missing features" are wiring, and
 every fix so far closed the syscall-shim half while leaving the subsystem half —
 which is exactly why 193 rows still read PARTIAL.
+
+## B1565 BPF handoff — 2026-07-30
+
+Worktree: `/home/nd/oxide/kernel-B1565-bpf-token`.
+Branch: `B1565-bpf-token`; remote is current through `1da8beccb`.
+
+Validated pushed commits:
+
+| Commit | Scope | Evidence |
+|---|---|---|
+| `29f4feb4b` | Mmapable array maps use one PMM-backed object for helper, syscall, interpreter, and shared mappings. | 233 security tests; x86 smoke 64s; arm smoke 86s; both release-kernel builds. |
+| `1da8beccb` | Pseudo-directory entries retain real inode references; foundation for bpffs publication without a pathname registry. | `cargo test -p kernfs --lib`: 11 passed. |
+
+Completed bpffs/object work:
+
+- `crates/kernel/security/src/bpf/object.rs`: `pin` and `get` work functions.
+  They validate the resolved inode's BPF filesystem magic and use the parent
+  `kernfs::PseudoDir` as the only namespace owner. They retain the exact
+  fd-backed inode; no BPF object registry was added.
+- `crates/kernel/security/src/bpf/uapi.rs`: named `obj_pin`/`obj_get` layouts
+  plus a dedicated `map_get_fd_by_id` layout.
+- `crates/kernel/security/src/bpf.rs`: pathname decoding preserves the common
+  attribute protocol; typed `obj_pin` / `obj_get` work entry points retain the
+  BPF policy in `security`.
+- `crates/kernel/security/Cargo.toml` and `Cargo.lock`: add the `kernfs`
+  dependency needed by the object work function.
+- `crates/kernel/security/src/bpf/map.rs`: map-ID command uses its own UAPI
+  layout rather than program-ID offsets.
+
+- `crates/kernel/syscalls/src/321_bpf.rs`: kernel-only shim resolves only
+  `OBJ_PIN` and `OBJ_GET`; all other commands remain in `security::bpf`.
+- `crates/kernel/security/src/bpf/btf.rs`: narrow canonical BTF identity
+  predicate admits BTF objects without duplicating type checks.
+- Hosted coverage: bpffs-magic rejection, duplicate pin, lifetime after close,
+  and non-object/invalid-access `OBJ_GET` rejection.
+
+Validation: `cargo test -p security --lib` (235 passed); `cargo test -p kernfs
+--lib` (11 passed); release-kernel builds for x86_64 and aarch64; branch-local
+`make smoke-x86` and `make smoke-arm` both exited 0.
