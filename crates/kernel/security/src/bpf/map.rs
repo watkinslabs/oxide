@@ -30,10 +30,10 @@ pub(super) fn create(a: &Attr, caps: Caps) -> Result<i64, Errno> {
 }
 
 pub(super) fn get_fd_by_id(a: &Attr, caps: Caps) -> Result<i64, Errno> {
-    use uapi::off::prog_get_fd_by_id as o;
+    use uapi::off::map_get_fd_by_id as o;
     attr::check_attr(a, o::LAST_END)?;
     if !caps.sys_admin { return Err(Errno::Eperm); }
-    let inode = map_by_id(a.u32_at(o::PROG_ID)).ok_or(Errno::Enoent)?;
+    let inode = map_by_id(a.u32_at(o::MAP_ID)).ok_or(Errno::Enoent)?;
     install_fd(inode, "bpf-map")
 }
 
