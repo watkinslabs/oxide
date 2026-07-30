@@ -237,11 +237,13 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
             }
         };
         listener.register_subs(&sock.poll_subs);
-        let cred = sched::live::current().map(|c| {
+        let current = sched::live::current();
+        let cred = current.as_ref().map(|c| {
             use core::sync::atomic::Ordering;
             (c.visible_pid(), c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed))
         });
-        listener.listen_with_cred(backlog, somaxconn, cred);
+        let identity = current.as_ref().map(|c| c.thread_group.leader_pid());
+        listener.listen_with_cred(backlog, somaxconn, cred, identity);
         #[cfg(target_os = "oxide-kernel")]
         sock.connect_waiters.wake_all();
         return Ok(());

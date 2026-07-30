@@ -32,6 +32,7 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
         use core::sync::atomic::Ordering;
         candidate.set_end_cred(crate::UnixEnd::B, c.visible_pid(),
             c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
+        candidate.set_end_identity(crate::UnixEnd::B, Some(c.thread_group.leader_pid()));
     }
     let timeout = sock.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
     let deadline_ns = compute_deadline_ns(timeout);
