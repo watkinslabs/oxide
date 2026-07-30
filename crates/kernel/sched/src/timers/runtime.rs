@@ -12,9 +12,11 @@ const SI_TIMER: i32 = -2;
 pub const ACCOUNTING_TICK_NS: u64 = crate::posix_clock::TICK_NSEC;
 
 type ProgramDeadline = fn(u64);
+type ClockWasSetHook = fn(u64);
 
 static EARLIEST_WALL_NS: AtomicU64 = AtomicU64::new(u64::MAX);
 static PROGRAM_DEADLINE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static CLOCK_WAS_SET_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Per-CPU absolute expiry of the accounting tick (Linux `ts->sched_timer`).
 /// Owned by [`tick_deadline`], which only ever moves it FORWARD past a `now`
@@ -216,6 +218,21 @@ pub fn install_deadline_programmer(f: fn(u64)) {
     PROGRAM_DEADLINE.store(f as *const () as *mut (), Ordering::Release);
 }
 
+/// Install a filesystem wall-clock-step observer without introducing a
+/// scheduler → filesystem dependency. Boot owns the one-time wiring.
+/// # C: O(1)
+pub fn install_clock_was_set_hook(f: fn(u64)) {
+    CLOCK_WAS_SET_HOOK.store(f as *const () as *mut (), Ordering::Release);
+}
+
+fn notify_clock_was_set_hook(step_mono_ns: u64) {
+    let raw = CLOCK_WAS_SET_HOOK.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: the slot is written only by install_clock_was_set_hook with this signature.
+    let hook: ClockWasSetHook = unsafe { core::mem::transmute(raw) };
+    hook(step_mono_ns);
+}
+
 /// Recompute wall timers and program the earliest advancing POSIX clock. # C: O(N_tasks * SLOTS)
 pub fn reprogram_posix_timers() {
     let guard = backend::lock();
@@ -225,8 +242,10 @@ pub fn reprogram_posix_timers() {
 }
 
 /// Reproject absolute realtime/TAI timers after a wall-clock adjustment.
-/// Runs in process context; the timer IRQ only consumes the ordered queue.
-pub fn clock_was_set() {
+/// `step_mono_ns` is sampled immediately before the timekeeper mutation and
+/// remains the old-domain expiration boundary while observers are processed.
+/// # C: O(N_wall_timers)
+pub fn clock_was_set(step_mono_ns: u64) {
     let mut guard = backend::lock();
     guard.wall.reproject(|entry| {
         let owner = crate::registry::lookup(entry.owner_tid)?;
@@ -238,6 +257,7 @@ pub fn clock_was_set() {
     });
     publish_earliest(guard.wall.earliest_ns());
     drop(guard);
+    notify_clock_was_set_hook(step_mono_ns);
     program(next_interrupt_deadline());
 }
 
