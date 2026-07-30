@@ -1,21 +1,15 @@
-// NETLINK_AUDIT (proto 9) minimal handler (`docs/25`/Linux `kernel/audit.c`
-// netlink surface). libaudit — `auditctl`/`augenrules --load`
-// (audit-rules.service) and PAM's audit logging (`pam_loginuid`, session
-// accounting on the gdm-session-worker path) — opens a NETLINK_AUDIT socket and
-// BLOCKS in `audit_get_reply()` for a PROTOCOL-SPECIFIC reply: `AUDIT_GET` must
-// return a `struct audit_status` inside an `AUDIT_GET` message. A bare
-// NLMSG_ERROR ack (the generic netlink default) does not satisfy it, so
-// `augenrules` and PAM hang forever ("Job audit-rules.service running, no
-// limit"). Emit the Linux replies: AUDIT_GET → audit_status (audit off, no
-// auditd); AUDIT_GET_FEATURE → audit_features; rule/set/user ops → ack;
-// AUDIT_LIST_RULES → DONE (no rules).
+// NETLINK_AUDIT (proto 9) minimal handler (`docs/25` netlink surface).
+// Audit rule loaders and PAM session accounting require protocol-specific
+// replies rather than a generic acknowledgement: AUDIT_GET returns audit
+// status, AUDIT_GET_FEATURE returns audit features, rule/set/user operations
+// acknowledge, and AUDIT_LIST_RULES terminates an empty dump.
 
 use alloc::vec::Vec;
 
 use crate::rtnetlink;
 use crate::wire::Nlmsghdr;
 
-/// Audit netlink message types (Linux `uapi/linux/audit.h`).
+/// Audit netlink message types.
 pub const AUDIT_GET: u16 = 1000;
 pub const AUDIT_SET: u16 = 1001;
 pub const AUDIT_LIST_RULES: u16 = 1013;
@@ -27,7 +21,7 @@ pub const AUDIT_SIGNAL_INFO: u16 = 1010;
 pub const AUDIT_GET_FEATURE: u16 = 1019;
 pub const AUDIT_SET_FEATURE: u16 = 1020;
 
-/// `struct audit_status` (Linux `uapi/linux/audit.h`): 8 leading u32 + a
+/// `struct audit_status`: 8 leading u32 + a
 /// `version`/`feature_bitmap` union + `backlog_wait_time` = 40 bytes. All zero
 /// = audit disabled, no rate/backlog limits, no registered `auditd` (pid 0).
 const AUDIT_STATUS_LEN: usize = 40;

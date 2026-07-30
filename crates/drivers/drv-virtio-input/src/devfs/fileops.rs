@@ -2,15 +2,19 @@ use alloc::sync::Arc;
 
 use vfs::{
     default_inode_ops, mk_mode, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult,
-    PollSubscribers, VfsError, POLL_IN, POLL_OUT,
+    PollSubscribers, VfsError, POLL_ERR, POLL_HUP, POLL_IN, POLL_OUT,
 };
 
-use crate::devfs::shared::{
-    evdev_id, file_token, grabbed_by_other, release_grab, EvdevData, EVDEV_FILE_REVOKED,
-    EVDEV_INO_BASE, EVDEV_NODES,
+use crate::consts::{
+    EVENT_MINOR_BASE, EVDEV_FIRST_INO_OFFSET, EVDEV_NODE_PERMISSIONS, INPUT_MAJOR,
 };
-use crate::consts::{EVENT_MINOR_BASE, INPUT_MAJOR};
-use crate::evdev_queue::MAX_EVDEV;
+use crate::devfs::shared::{
+    evdev_endpoint, evdev_open, install_open, release_open, EvdevData, EvdevEndpoint,
+    EVDEV_INO_BASE,
+};
+#[cfg(test)]
+use crate::devfs::shared::current_endpoint;
+use crate::evdev_queue::{output_value_from_bytes, INPUT_EVENT_BYTES};
 
 #[cfg(target_os = "oxide-kernel")]
 fn refresh_events() { crate::drain::poll_all(); }
@@ -18,159 +22,156 @@ fn refresh_events() { crate::drain::poll_all(); }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn refresh_events() {}
 
-/// `file_operations` for an evdev node.
 struct EvdevFileOps;
 
-impl FileOps for EvdevFileOps {
-    fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        use crate::evdev_queue::INPUT_EVENT_BYTES;
-        let id = match evdev_id(inode) {
-            Some(id) => id,
-            None => return Ok(0),
-        };
-        if buf.len() < INPUT_EVENT_BYTES {
-            return Ok(0);
-        }
-        refresh_events();
-        let n = unsafe { crate::evdev_queue::queue(id).read_blocking(buf) };
-        Ok(n)
-    }
-
-    fn read_file(&self, file: &File, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        use crate::evdev_queue::INPUT_EVENT_BYTES;
-        let id = match evdev_id(file.inode()) {
-            Some(id) => id,
-            None => return Ok(0),
-        };
-        if file.private_data() & EVDEV_FILE_REVOKED != 0 {
+impl EvdevFileOps {
+    fn live_open<'a>(&self, file: &'a File) -> KResult<&'a super::shared::EvdevOpen> {
+        let opened = evdev_open(file).ok_or(VfsError::Enodev)?;
+        if !opened.is_live() {
             return Err(VfsError::Enodev);
         }
-        if buf.len() < INPUT_EVENT_BYTES {
-            return Ok(0);
-        }
-        let token = file_token(file);
+        Ok(opened)
+    }
+}
+
+impl FileOps for EvdevFileOps {
+    fn read(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> {
+        Err(VfsError::Enodev)
+    }
+
+    fn read_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let opened = self.live_open(file)?;
+        if buf.is_empty() { return Ok(0); }
+        if buf.len() < INPUT_EVENT_BYTES { return Err(VfsError::Einval); }
         loop {
+            if !opened.is_live() {
+                return Err(VfsError::Enodev);
+            }
             refresh_events();
-            if !grabbed_by_other(id, token) {
-                return Ok(unsafe { crate::evdev_queue::queue(id).read_blocking(buf) });
+            if let Some(len) = opened.try_pop_bytes(buf) { return Ok(len); }
+            // SAFETY: process-context evdev read publishes the current task before scheduling.
+            unsafe { opened.queue().waiters.park(); }
+            if !opened.is_live() || opened.has_pending() {
+                opened.queue().waiters.cancel_current_park();
+                continue;
             }
-            unsafe { crate::evdev_queue::queue(id).waiters.park(); }
             #[cfg(target_os = "oxide-kernel")]
-            unsafe {
-                sched::live::schedule::schedule();
-            }
+            // SAFETY: WaitList::park marked the running task sleeping and released all locks.
+            unsafe { sched::live::schedule::schedule(); }
             #[cfg(test)]
             return Err(VfsError::Eagain);
         }
     }
 
-    fn read_nonblock(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        use crate::evdev_queue::INPUT_EVENT_BYTES;
-        let id = match evdev_id(inode) {
-            Some(id) => id,
-            None => return Ok(0),
-        };
-        if buf.len() < INPUT_EVENT_BYTES {
-            return Ok(0);
-        }
-        refresh_events();
-        match crate::evdev_queue::queue(id).try_pop_bytes(buf) {
-            Some(n) => Ok(n),
-            None => Err(VfsError::Eagain),
-        }
+    fn read_nonblock(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> {
+        Err(VfsError::Enodev)
     }
 
-    fn read_nonblock_file(&self, file: &File, _o: u64, buf: &mut [u8]) -> KResult<usize> {
-        use crate::evdev_queue::INPUT_EVENT_BYTES;
-        let id = match evdev_id(file.inode()) {
-            Some(id) => id,
-            None => return Ok(0),
-        };
-        if file.private_data() & EVDEV_FILE_REVOKED != 0 {
+    fn read_nonblock_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let opened = self.live_open(file)?;
+        if buf.is_empty() { return Ok(0); }
+        if buf.len() < INPUT_EVENT_BYTES { return Err(VfsError::Einval); }
+        refresh_events();
+        if !opened.is_live() {
             return Err(VfsError::Enodev);
         }
-        if buf.len() < INPUT_EVENT_BYTES {
-            return Ok(0);
-        }
-        if grabbed_by_other(id, file_token(file)) {
-            return Err(VfsError::Eagain);
-        }
-        refresh_events();
-        match crate::evdev_queue::queue(id).try_pop_bytes(buf) {
-            Some(n) => Ok(n),
-            None => Err(VfsError::Eagain),
-        }
+        opened.try_pop_bytes(buf).ok_or(VfsError::Eagain)
     }
 
-    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> {
+    fn write(&self, _inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {
         Err(VfsError::Eio)
     }
 
-    fn poll(&self, inode: &Inode) -> u32 {
-        let id = match evdev_id(inode) {
-            Some(id) => id,
-            None => return POLL_OUT,
-        };
-        refresh_events();
-        if crate::evdev_queue::queue(id).is_empty() {
-            POLL_OUT
-        } else {
-            POLL_IN | POLL_OUT
+    fn write_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
+        let opened = self.live_open(file)?;
+        if buf.is_empty() {
+            return Ok(0);
         }
+        if !buf.len().is_multiple_of(INPUT_EVENT_BYTES) {
+            return Err(VfsError::Einval);
+        }
+        let requested = input::OutputBatch {
+            events: buf.chunks_exact(INPUT_EVENT_BYTES)
+                .filter_map(output_value_from_bytes)
+                .collect(),
+        };
+        let identity = opened.identity();
+        input::apply_output_by_identity(
+            identity.device_key,
+            identity.input_id,
+            identity.evdev_id,
+            &requested,
+        ).ok_or(VfsError::Enodev)?;
+        Ok(buf.len())
     }
 
+    fn write_nonblock_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.write_file(file, off, buf)
+    }
+
+    fn poll(&self, _inode: &Inode) -> u32 { POLL_ERR }
+
     fn poll_open_file(&self, file: &File) -> u32 {
-        if file.private_data() & EVDEV_FILE_REVOKED != 0 {
-            return POLL_OUT | vfs::POLL_HUP;
-        }
-        let id = match evdev_id(file.inode()) {
-            Some(id) => id,
-            None => return POLL_OUT,
-        };
+        let Some(opened) = evdev_open(file) else { return POLL_ERR | POLL_HUP; };
         refresh_events();
-        if grabbed_by_other(id, file_token(file)) || crate::evdev_queue::queue(id).is_empty() {
-            POLL_OUT
-        } else {
-            POLL_IN | POLL_OUT
+        let pending = opened.has_pending();
+        if !opened.is_live() {
+            return POLL_ERR | POLL_HUP | if pending { POLL_IN } else { 0 };
         }
+        POLL_OUT | if pending { POLL_IN } else { 0 }
+    }
+
+    fn poll_subscribers(&self, file: &File) -> Option<Arc<PollSubscribers>> {
+        Some(evdev_open(file)?.queue().poll_subscribers())
+    }
+
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        let endpoint = Arc::clone(evdev_endpoint(file.inode()).ok_or(VfsError::Enodev)?);
+        let opened = endpoint.open().ok_or(VfsError::Enodev)?;
+        install_open(file, opened);
+        Ok(())
     }
 
     fn on_release_file(&self, file: &File) {
-        if let Some(id) = evdev_id(file.inode()) {
-            release_grab(id, file_token(file));
-        }
+        release_open(file);
     }
 }
 
-pub fn make_evdev_inode(id: u32) -> InodeRef {
-    let ino = EVDEV_INO_BASE | (0x01 + id as Ino);
-    let inode = InodeBuilder::new(
+pub(crate) fn make_evdev_inode_for(endpoint: Arc<EvdevEndpoint>) -> InodeRef {
+    let id = endpoint.identity().evdev_id;
+    let ino = EVDEV_INO_BASE | (EVDEV_FIRST_INO_OFFSET + id as Ino);
+    InodeBuilder::new(
         ino,
-        mk_mode(FileType::CharDev, 0o666),
+        mk_mode(FileType::CharDev, EVDEV_NODE_PERMISSIONS),
         default_inode_ops(),
         Arc::new(EvdevFileOps),
     )
-    .private(Arc::new(EvdevData { id }))
-    // logind reads st_rdev and passes it to TakeDevice(major, minor).  This
-    // bespoke inode must therefore carry the same Linux evdev dev_t as the
-    // driver-model device, rather than the default 0:0.
+    .private(Arc::new(EvdevData { endpoint }))
     .rdev(vfs::Devt::new(INPUT_MAJOR, EVENT_MINOR_BASE + id).raw())
-    .poll_subs(PollSubscribers::new())
-    .build();
-    if (id as usize) < MAX_EVDEV {
-        EVDEV_NODES.lock()[id as usize] = Some(inode.clone());
-    }
-    inode
+    .build()
 }
 
-pub fn notify_evdev_subs(id: u32) {
-    if (id as usize) >= MAX_EVDEV {
-        return;
-    }
-    let node = EVDEV_NODES.lock()[id as usize].clone();
-    if let Some(inode) = node {
-        if let Some(subs) = inode.poll_subscribers() {
-            subs.notify();
+#[cfg(test)]
+/// Build one test inode for the current or synthesized endpoint generation.
+/// # C: O(1)
+pub fn make_evdev_inode(id: u32) -> InodeRef {
+    let model = input::device(id);
+    if let Some(endpoint) = current_endpoint(id) {
+        let identity = endpoint.identity();
+        let matches = model.as_ref().is_some_and(|dev| {
+            dev.device_key == identity.device_key
+                && dev.input_id == identity.input_id
+                && dev.evdev_id == identity.evdev_id
+        });
+        if matches || model.is_none() {
+            return make_evdev_inode_for(endpoint);
         }
+        let _ = super::shared::unpublish_endpoint(id);
     }
+    let endpoint = match model {
+        Some(dev) => EvdevEndpoint::new(dev.device_key, dev.input_id, dev.evdev_id),
+        None => super::shared::test_endpoint(id, u32::MAX - id),
+    };
+    assert!(super::shared::publish_endpoint(Arc::clone(&endpoint)));
+    make_evdev_inode_for(endpoint)
 }

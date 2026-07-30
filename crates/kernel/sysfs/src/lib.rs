@@ -19,11 +19,10 @@ mod ids;
 // (`XData`), and a `make_*_inode` constructor stamps mode + ops + data via
 // `InodeBuilder`.
 
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{default_file_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode,
+use vfs::{default_file_ops, mk_mode, FileOps, FileType, Ino, Inode,
           InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 pub mod block;
@@ -35,6 +34,7 @@ pub mod input;
 pub mod kernel;
 pub mod kobject;
 pub mod modules;
+mod net_class;
 pub mod net_stats;
 pub mod root;
 pub mod tty;
@@ -44,9 +44,8 @@ pub mod zram;
 mod net_tests;
 
 pub use root::{drop_cached, register, register_dir, sys_root, SYSFS_FSID};
-
-const ARPHRD_LOOPBACK: u16 = 772;
-const ARPHRD_ETHER:    u16 =   1;
+#[cfg(test)]
+pub(crate) use net_class::make_net_iface_inode;
 
 // sysfs perm conventions (Linux): dirs r-xr-xr-x, attr files r--r--r--,
 // writable attrs (`uevent`) rw-r--r--, symlinks rwxrwxrwx.
@@ -72,84 +71,6 @@ pub(crate) fn uevent_action(b: &[u8]) -> &str {
         .and_then(|s| s.split_whitespace().next())
         .filter(|a| !a.is_empty())
         .unwrap_or("change")
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>)> {
-    let stack = net::sock::stack();
-    stack.ifaces.snapshot_in_ns(0).into_iter().filter_map(|snap| {
-        stack.ifaces.lookup_in_ns(snap.id, 0).map(|dev| (snap.id, snap.name, dev))
-    }).collect()
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
-fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>)> {
-    Vec::new()
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn lookup_net_ifindex(name: &str) -> u32 {
-    net::sock::stack().ifaces.lookup_name(name).map(|(id, _)| id.raw()).unwrap_or(0)
-}
-
-#[cfg(not(target_os = "oxide-kernel"))]
-fn lookup_net_ifindex(_name: &str) -> u32 {
-    0
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn invalidate_netdev_paths(name: &str) {
-    for path in ["/sys/class/net/", "/sys/devices/virtual/net/"] {
-        let full = alloc::format!("{}{}", path, name);
-        drop_cached(&full);
-    }
-}
-
-// ---- /sys/class/net (directory of symlinks) -------------------------------
-
-/// `/sys/class/net` directory. `iterate` enumerates
-/// `net::sock::stack().ifaces` and emits each entry as a symlink per
-/// docs/19§2 invariant 2 (`/sys/class/<class>/<name>` → `/sys/devices/
-/// .../<name>`). `lookup(name)` returns a symlink whose readlink target is the
-/// canonical devices path; the real attribute set lives under
-/// `/sys/devices/virtual/net/<name>` and is served by the iface dir.
-struct SysClassNetOps;
-impl InodeOps for SysClassNetOps {
-    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let snap = snapshot_net_devs();
-        for (_, current, _) in snap.iter() {
-            if current == name {
-                let mut target = String::from("../../devices/virtual/net/");
-                target.push_str(name);
-                return Ok(make_symlink_inode(target.into_bytes()));
-            }
-        }
-        Err(VfsError::Enoent)
-    }
-}
-impl FileOps for SysClassNetOps {
-    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let snap = snapshot_net_devs();
-        #[cfg(feature = "debug-udevdb")]
-        if ctx.pos == 0 {
-            klog::write_raw(b"[UDEVDB class-net-walk n=");
-            klog::write_dec_u64(snap.len() as u64);
-            klog::write_raw(b"]\n");
-        }
-        let mut idx = ctx.pos as usize;
-        while idx < snap.len() {
-            let next = idx as u64 + 1;
-            let name = &snap[idx].1;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
-    }
-}
-fn make_sys_class_net_inode() -> InodeRef {
-    InodeBuilder::new(ids::ROOT, mk_mode(FileType::Directory, DIR_PERM),
-        Arc::new(SysClassNetOps), Arc::new(SysClassNetOps)).build()
 }
 
 // ---- symlink leaf (fixed readlink target) ---------------------------------
@@ -181,253 +102,6 @@ pub(crate) fn make_symlink_inode_ino(target: Vec<u8>, ino: Ino) -> InodeRef {
         Arc::new(SymlinkOps), default_file_ops())
         .size(size)
         .private(Arc::new(SymlinkData { target }))
-        .build()
-}
-
-// ---- /sys/devices/virtual/net (directory of iface dirs) -------------------
-
-/// `/sys/devices/virtual/net` directory. Same iterate/lookup as the class dir
-/// but returns the actual iface directory (the canonical home for per-iface
-/// attributes).
-struct SysDevicesVirtualNetOps;
-impl InodeOps for SysDevicesVirtualNetOps {
-    fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let snap = snapshot_net_devs();
-        for (_, current, dev) in snap.iter() {
-            if current == name {
-                return Ok(make_net_iface_inode(String::from(name), Arc::clone(dev)));
-            }
-        }
-        Err(VfsError::Enoent)
-    }
-}
-impl FileOps for SysDevicesVirtualNetOps {
-    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let snap = snapshot_net_devs();
-        #[cfg(feature = "debug-udevdb")]
-        if ctx.pos == 0 {
-            klog::write_raw(b"[UDEVDB devices-virtual-net-walk n=");
-            klog::write_dec_u64(snap.len() as u64);
-            klog::write_raw(b"]\n");
-        }
-        let mut idx = ctx.pos as usize;
-        while idx < snap.len() {
-            let next = idx as u64 + 1;
-            let name = &snap[idx].1;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
-    }
-}
-fn make_sys_devices_virtual_net_inode() -> InodeRef {
-    InodeBuilder::new(ids::CLASS, mk_mode(FileType::Directory, DIR_PERM),
-        Arc::new(SysDevicesVirtualNetOps), Arc::new(SysDevicesVirtualNetOps)).build()
-}
-
-// ---- /sys/class/net/<if> (per-iface attribute dir) ------------------------
-
-/// Per-iface state (Linux `net_device` backref). # C: n/a
-pub(crate) struct NetIfaceData {
-    pub name: String,
-    pub dev:  Arc<dyn net::NetDev>,
-}
-
-fn arphrd(name: &str) -> u16 {
-    // No NetDev::kind() in v1 — infer from name. `lo` → loopback;
-    // everything else (eth*, en*) treats as ARPHRD_ETHER.
-    if name == "lo" { ARPHRD_LOOPBACK } else { ARPHRD_ETHER }
-}
-
-fn iface_body(d: &NetIfaceData, leaf: &str) -> Option<Vec<u8>> {
-    let mut buf: Vec<u8> = Vec::with_capacity(32);
-    let hw = arphrd(&d.name);
-    match leaf {
-        "address" => {
-            let m = d.dev.mac().0;
-            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                format_args!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-                    m[0], m[1], m[2], m[3], m[4], m[5]));
-        }
-        "broadcast" => {
-            buf.extend_from_slice(b"ff:ff:ff:ff:ff:ff\n");
-        }
-        "mtu" => {
-            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                format_args!("{}\n", d.dev.mtu()));
-        }
-        "operstate" => {
-            // Linux: "up" / "down" / "unknown". Loopback reports
-            // "unknown" (no carrier abstraction); real ifaces "up".
-            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
-                b"unknown\n" } else { b"up\n" });
-        }
-        "type" => {
-            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                format_args!("{}\n", hw));
-        }
-        "flags" => {
-            // IFF_UP|IFF_BROADCAST|IFF_RUNNING|IFF_MULTICAST = 0x1003 for ether,
-            // IFF_UP|IFF_LOOPBACK|IFF_RUNNING                = 0x49   for lo.
-            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
-                b"0x49\n" } else { b"0x1003\n" });
-        }
-        "carrier" => {
-            buf.extend_from_slice(b"1\n");
-        }
-        "speed" => {
-            // Loopback returns -1 per Linux; ether reports 10000.
-            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
-                b"-1\n" } else { b"10000\n" });
-        }
-        "duplex" => {
-            buf.extend_from_slice(if hw == ARPHRD_LOOPBACK {
-                b"unknown\n" } else { b"full\n" });
-        }
-        "ifindex" => {
-            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
-                format_args!("{}\n", lookup_net_ifindex(&d.name)));
-        }
-        "tx_queue_len" => buf.extend_from_slice(b"1000\n"),
-        "addr_len"     => buf.extend_from_slice(b"6\n"),
-        // 0 = NET_ADDR_PERM: the MAC is device-provided + permanent (virtio-net
-        // with VIRTIO_NET_F_MAC; loopback's zero MAC is also permanent). udev
-        // net_setup_link / net_id read this.
-        "addr_assign_type" => buf.extend_from_slice(b"0\n"),
-        "name_assign_type" => buf.extend_from_slice(b"4\n"),
-        "dev_id"       => buf.extend_from_slice(b"0x0\n"),
-        "dev_port"     => buf.extend_from_slice(b"0\n"),
-        _ => return None,
-    }
-    Some(buf)
-}
-
-use kobject::{Attribute, AttrGroup, SysfsOps};
-
-/// The `/sys/class/net/<if>` default attribute group (Linux `net_class_attrs`).
-/// Read-only attributes plus the writable `uevent` trigger; `statistics` is a
-/// subdirectory added separately (not a leaf attribute). # C: n/a
-const NET_IFACE_ATTRS: &[Attribute] = &[
-    Attribute { name: "address",          mode: RO_PERM },
-    Attribute { name: "broadcast",        mode: RO_PERM },
-    Attribute { name: "mtu",              mode: RO_PERM },
-    Attribute { name: "operstate",        mode: RO_PERM },
-    Attribute { name: "type",             mode: RO_PERM },
-    Attribute { name: "flags",            mode: RO_PERM },
-    Attribute { name: "carrier",          mode: RO_PERM },
-    Attribute { name: "speed",            mode: RO_PERM },
-    Attribute { name: "duplex",           mode: RO_PERM },
-    Attribute { name: "ifindex",          mode: RO_PERM },
-    Attribute { name: "tx_queue_len",     mode: RO_PERM },
-    Attribute { name: "addr_len",         mode: RO_PERM },
-    Attribute { name: "addr_assign_type", mode: RO_PERM },
-    Attribute { name: "name_assign_type", mode: RO_PERM },
-    Attribute { name: "dev_id",           mode: RO_PERM },
-    Attribute { name: "dev_port",         mode: RO_PERM },
-    Attribute { name: "uevent",           mode: RW_PERM },
-];
-static NET_IFACE_GROUP: AttrGroup = AttrGroup { attrs: NET_IFACE_ATTRS };
-
-/// `sysfs_ops` for a net-iface kobject: `show` renders each attribute (the
-/// `uevent` env or a `net_device` field via `iface_body`); `store` consumes a
-/// `udevadm trigger` write to `uevent` by re-emitting the kobject uevent.
-impl SysfsOps for NetIfaceData {
-    fn show(&self, attr: &str) -> KResult<Vec<u8>> {
-        if attr == "uevent" {
-            let mut body: Vec<u8> = Vec::new();
-            // A physical/ethernet NIC emits no DEVTYPE (only virtual net devices
-            // — bridge/vlan/bond — carry one). The old empty `DEVTYPE=` was a
-            // malformed non-Linux env entry.
-            let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
-                format_args!("INTERFACE={}\nIFINDEX={}\n", self.name,
-                    lookup_net_ifindex(&self.name)));
-            return Ok(body);
-        }
-        iface_body(self, attr).ok_or(VfsError::Enoent)
-    }
-    fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
-        if attr == "uevent" {
-            #[cfg(feature = "debug-udevdb")]
-            {
-                klog::write_raw(b"[UDEVDB net-uevent-store if=");
-                klog::write_raw(self.name.as_bytes());
-                klog::write_raw(b" action=");
-                klog::write_raw(uevent_action(buf).as_bytes());
-                klog::write_raw(b"]\n");
-            }
-            let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
-            // No DEVTYPE for a physical/ethernet NIC (Linux emits it only for
-            // virtual net devices). Emitting an empty `DEVTYPE=` was malformed.
-            let iface = alloc::format!("INTERFACE={}", self.name);
-            let ifindex = alloc::format!("IFINDEX={}", lookup_net_ifindex(&self.name));
-            ::netlink::emit_uevent_with_env(
-                uevent_action(buf), &devpath, "net", &[&iface, &ifindex]);
-            return Ok(buf.len());
-        }
-        Err(VfsError::Erofs)
-    }
-}
-
-struct NetIfaceOps;
-impl NetIfaceOps {
-    /// A fresh `sysfs_ops` handle for this iface kobject (the attribute file's
-    /// backref). # C: O(1)
-    fn ops(d: &NetIfaceData) -> Arc<dyn SysfsOps> {
-        Arc::new(NetIfaceData { name: d.name.clone(), dev: Arc::clone(&d.dev) })
-    }
-}
-impl InodeOps for NetIfaceOps {
-    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let d = inode.private::<NetIfaceData>().ok_or(VfsError::Einval)?;
-        // `statistics` is a subdirectory, not a leaf attribute file.
-        if name == "statistics" {
-            return Ok(net_stats::make_net_stats_inode(Arc::clone(&d.dev)));
-        }
-        // `subsystem` symlink → /sys/class/net (Linux `net_class`). udev/sd-device
-        // read its basename to classify the device as SUBSYSTEM=net; without it
-        // `udevadm trigger` never writes the iface's `uevent`, so udevd never
-        // processes the interface and NetworkManager leaves it unmanaged (no DHCP).
-        if name == "subsystem" {
-            return Ok(crate::make_symlink_inode(b"../../../../class/net".to_vec()));
-        }
-        let attr = NET_IFACE_GROUP.find(name).ok_or(VfsError::Enoent)?;
-        let ino: Ino = if name == "uevent" { ids::UEVENT } else { ids::ATTR };
-        Ok(kobject::make_attr_inode(attr, NetIfaceOps::ops(d), ino))
-    }
-}
-impl FileOps for NetIfaceOps {
-    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        // The default attribute group, then `statistics` (a subdir) as the
-        // final entry. Offset space = group.len() attrs followed by the dir.
-        let nfiles = NET_IFACE_GROUP.attrs.len();
-        while idx < nfiles {
-            let next = idx as u64 + 1;
-            let name = NET_IFACE_GROUP.attrs[idx].name;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        if idx == nfiles {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit("statistics", ino, FileType::Directory, next) { return Ok(()); }
-        }
-        if idx == nfiles + 1 {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup("subsystem").map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit("subsystem", ino, FileType::Symlink, next) { return Ok(()); }
-        }
-        Ok(())
-    }
-}
-/// Build a `/sys/class/net/<if>` (and `/sys/devices/virtual/net/<if>`) dir
-/// inode synthesising per-iface attributes. # C: O(1)
-pub(crate) fn make_net_iface_inode(name: String, dev: Arc<dyn net::NetDev>) -> InodeRef {
-    InodeBuilder::new(ids::KOBJ_ROOT, mk_mode(FileType::Directory, DIR_PERM),
-        Arc::new(NetIfaceOps), Arc::new(NetIfaceOps))
-        .private(Arc::new(NetIfaceData { name, dev }))
         .build()
 }
 
@@ -485,10 +159,10 @@ pub fn init() {
     register_dir("/sys/kernel/config");
     kernel::init();
     modules::init();
-    register("/sys/class/net", make_sys_class_net_inode());
-    register("/sys/devices/virtual/net", make_sys_devices_virtual_net_inode());
+    register("/sys/class/net", net_class::make_sys_class_net_inode());
+    register("/sys/devices/virtual/net", net_class::make_sys_devices_virtual_net_inode());
     #[cfg(target_os = "oxide-kernel")]
-    net::netdev::set_remove_hook(invalidate_netdev_paths);
+    net::netdev::set_remove_hook(net_class::invalidate_netdev_paths);
     register("/sys/class/tty", tty::make_sys_class_tty_inode());
     register("/sys/devices/virtual/tty", tty::make_sys_devices_virtual_tty_inode());
     bus::init();
@@ -505,7 +179,7 @@ pub fn init() {
 /// /sys/class/net inode live) and fall back to ENOENT.
 pub struct SysfsFs;
 
-/// SYSFS_MAGIC (linux/magic.h) — sysfs `f_type`/`s_magic`.
+/// Sysfs `f_type`/`s_magic`.
 const SYSFS_MAGIC: u64 = 0x6265_6572;
 /// `PAGE_SIZE` — sysfs statfs `f_bsize` (kernfs `s_blocksize = PAGE_SIZE`).
 /// # C: O(1)
@@ -530,13 +204,12 @@ impl vfs::SuperOps for SysfsSuperOps {
 impl vfs::fs::FileSystem for SysfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "sysfs" }
-    /// SYSFS_MAGIC (linux/magic.h).
+    /// Sysfs filesystem magic.
     /// # C: O(1)
     fn magic(&self) -> u64 { SYSFS_MAGIC }
-    /// Linux `fs/kernfs/mount.c` `kernfs_fill_super`: `sb->s_iflags |=
-    /// SB_I_NOEXEC | SB_I_NODEV`. Also the `required_iflags`
+    /// Sysfs superblocks carry `SB_I_NOEXEC | SB_I_NODEV`. Also the `required_iflags`
     /// `mount_too_revealing` demands of every `FS_USERNS_MOUNT_RESTRICTED`
-    /// filesystem, which sysfs is (`fs/sysfs/mount.c` `.fs_flags`). # C: O(1)
+    /// filesystem, which sysfs is. # C: O(1)
     fn s_iflags(&self) -> u64 { vfs::superblock::SB_I_USERNS_REQUIRED }
     /// Install zero-sized pseudo-fs statfs (`simple_statfs`) as this SB's `s_op`
     /// so `statfs(2)`/`df` report SYSFS_MAGIC + PAGE_SIZE, not the generic

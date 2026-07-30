@@ -24,8 +24,23 @@ impl Lifecycle {
         ).is_ok()
     }
 
-    pub(super) fn is_live(&self) -> bool {
+    fn is_new(&self) -> bool {
+        self.0.load(Ordering::Acquire) == State::New as u8
+    }
+
+    /// Whether publication completed and removal has not started.
+    /// # C: O(1)
+    pub(crate) fn is_live(&self) -> bool {
         self.0.load(Ordering::Acquire) == State::Live as u8
+    }
+
+    /// Whether registry callbacks may still resolve this exact object.
+    /// # C: O(1)
+    pub(crate) fn is_visible(&self) -> bool {
+        matches!(
+            self.0.load(Ordering::Acquire),
+            value if value == State::Live as u8 || value == State::Removing as u8
+        )
     }
 
     fn begin_remove(&self) -> bool {
@@ -42,14 +57,17 @@ impl Lifecycle {
     }
 }
 
-/// Register one new device and publish every view from the same registry object.
-/// # C: O(N_devices)
-pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
+fn register_device(d: Arc<Device>, parent: Option<&Arc<Device>>) -> KResult<Arc<Device>> {
+    crate::path::validate_sysfs_relpath(&d)?;
     {
         let mut devices = DEVICES.lock();
         if devices.iter().any(|present| present.bus == d.bus && present.addr == d.addr) {
             return Err(crate::Error::Busy);
         }
+        if !d.lifecycle.is_new() {
+            return Err(crate::Error::Removed);
+        }
+        crate::path::bind_parent_chain(&devices, &d, parent)?;
         if !d.lifecycle.activate() {
             return Err(crate::Error::Removed);
         }
@@ -64,6 +82,20 @@ pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
     attach_device_to_registered_drivers(&d, false);
     if let Some(hook) = *SYSFS_HOOK.lock() { hook(&d); }
     Ok(d)
+}
+
+/// Register one new root or name-parented device and publish every view from
+/// the same registry object. # C: O(N_devices + parent depth)
+pub fn try_device_add(d: Arc<Device>) -> KResult<Arc<Device>> {
+    register_device(d, None)
+}
+
+/// Register one child against an exact live parent object. # C: O(N_devices + parent depth)
+pub fn try_device_add_with_parent(
+    d: Arc<Device>,
+    parent: &Arc<Device>,
+) -> KResult<Arc<Device>> {
+    register_device(d, Some(parent))
 }
 
 /// Claim and perform one symmetric removal while the object remains visible to
@@ -120,8 +152,10 @@ mod tests {
             worker.join().expect("removal claimant");
         }
         assert_eq!(wins.load(Ordering::Relaxed), 1);
-        lifecycle.finish_remove();
         assert!(!lifecycle.is_live());
+        assert!(lifecycle.is_visible());
+        lifecycle.finish_remove();
+        assert!(!lifecycle.is_visible());
         assert!(!lifecycle.activate());
         assert!(!lifecycle.begin_remove());
     }

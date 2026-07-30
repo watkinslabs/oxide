@@ -1,9 +1,6 @@
 use vfs::{File, InodeRef};
 
-use crate::devfs::shared::{
-    file_token, release_grab, EVDEV_FILE_REVOKED, EVDEV_GRABS, EVDEV_INO_BASE,
-};
-use crate::evdev_queue::MAX_EVDEV;
+use crate::devfs::shared::{evdev_open, EvdevIdentity, EVDEV_INO_BASE};
 
 #[inline]
 fn ioc_nr(req: u64) -> u32 {
@@ -25,6 +22,10 @@ fn ioc_dir(req: u64) -> u32 {
     ((req >> crate::IOC_DIR_SHIFT) & crate::IOC_DIR_MASK) as u32
 }
 
+const fn bitmap_bytes(bits: usize) -> usize {
+    bits.div_ceil(u8::BITS as usize)
+}
+
 unsafe fn uwrite(arg: u64, src: &[u8], cap: usize) -> i64 {
     let n = src.len().min(cap);
     unsafe {
@@ -33,15 +34,6 @@ unsafe fn uwrite(arg: u64, src: &[u8], cap: usize) -> i64 {
         }
     }
     n as i64
-}
-
-unsafe fn uzero(arg: u64, cap: usize) -> i64 {
-    unsafe {
-        for i in 0..cap {
-            core::ptr::write_volatile((arg + i as u64) as *mut u8, 0);
-        }
-    }
-    cap as i64
 }
 
 fn err(errno: syscall::errno::Errno) -> i64 {
@@ -70,6 +62,14 @@ unsafe fn uread_u32(arg: u64) -> u32 {
     u32::from_le_bytes(b)
 }
 
+fn exact_device(identity: EvdevIdentity) -> Option<input::VirtioInputDev> {
+    input::device(identity.evdev_id).filter(|dev| {
+        dev.device_key == identity.device_key
+            && dev.input_id == identity.input_id
+            && dev.evdev_id == identity.evdev_id
+    })
+}
+
 pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     let inode: &InodeRef = file.inode();
     let ino = inode.ino();
@@ -80,6 +80,13 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     if ioc_type(req) != b'E' as u32 {
         return None;
     }
+    let Some(opened) = evdev_open(file) else {
+        return Some(err(Errno::Enodev));
+    };
+    if !opened.is_live() {
+        return Some(err(Errno::Enodev));
+    }
+    let identity = opened.identity();
     let nr = ioc_nr(req);
 
     if nr == crate::EVIOCSCLOCKID_NR as u32 {
@@ -87,17 +94,22 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             return Some(err(Errno::Efault));
         }
         let clock_id = unsafe { uread_i32(arg) };
-        return Some(if clock_id == crate::EVDEV_CLOCK_MONOTONIC { 0 } else { err(Errno::Einval) });
+        return Some(if opened.set_clock(clock_id) { 0 } else { err(Errno::Einval) });
     }
 
-    let evdev_id = ((ino & crate::IOC_NR_MASK) - 1) as u32;
     if nr == crate::EVIOCREP_NR as u32 {
         if !valid_user_range(arg, crate::EVDEV_REPEAT_BYTES as u64) {
             return Some(err(Errno::Efault));
         }
         match ioc_dir(req) {
             crate::IOC_READ => {
-                let repeat = crate::repeat(evdev_id).unwrap_or(crate::DEFAULT_REPEAT);
+                let Some(repeat) = input::repeat_by_identity(
+                    identity.device_key,
+                    identity.input_id,
+                    identity.evdev_id,
+                ) else {
+                    return Some(err(Errno::Enodev));
+                };
                 let mut b = [0u8; crate::EVDEV_REPEAT_BYTES];
                 b[0..crate::EVDEV_CLOCKID_BYTES].copy_from_slice(&repeat[0].to_le_bytes());
                 b[crate::EVDEV_CLOCKID_BYTES..crate::EVDEV_REPEAT_BYTES]
@@ -107,7 +119,12 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             crate::IOC_WRITE => {
                 let delay = unsafe { uread_u32(arg) };
                 let period = unsafe { uread_u32(arg + crate::EVDEV_CLOCKID_BYTES as u64) };
-                if !crate::set_repeat(evdev_id, [delay, period]) {
+                if !input::set_repeat_by_identity(
+                    identity.device_key,
+                    identity.input_id,
+                    identity.evdev_id,
+                    [delay, period],
+                ) {
                     return Some(err(Errno::Enodev));
                 }
                 return Some(0);
@@ -117,45 +134,33 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     }
 
     if nr == crate::EVIOCGRAB_NR as u32 {
-        let token = file_token(file);
-        let slot = (evdev_id as usize).min(MAX_EVDEV - 1);
         if arg != 0 {
-            let taken = {
-                let mut grabs = EVDEV_GRABS.lock();
-                if grabs[slot] == 0 || grabs[slot] == token { grabs[slot] = token; true } else { false }
-            };
-            if !taken { return Some(err(Errno::Ebusy)); }
-            // A grab makes `poll_open_file` drop POLLIN for every OTHER open
-            // description (`grabbed_by_other`), so it is a readiness
-            // transition and needs the same wake an incoming event gets —
-            // Linux `evdev_grab` runs under the client list and the ungrabbed
-            // clients simply stop being fed. Without this the change is only
-            // observable on a rescan.
-            super::fileops::notify_evdev_subs(evdev_id);
-            return Some(0);
+            return Some(if opened.try_grab() { 0 } else { err(Errno::Ebusy) });
         }
-        release_grab(evdev_id, token);
-        super::fileops::notify_evdev_subs(evdev_id);
-        return Some(0);
+        return Some(if opened.ungrab() { 0 } else { err(Errno::Einval) });
     }
 
     if nr == crate::EVIOCREVOKE_NR as u32 {
         if arg != 0 {
-            file.set_private_data(file.private_data() | EVDEV_FILE_REVOKED);
-            release_grab(evdev_id, file_token(file));
-            // `evdev_revoke` marks the client revoked and wakes it
-            // (`drivers/input/evdev.c`): its poll flips to EPOLLHUP and every
-            // read returns ENODEV, so a parked waiter must be released.
-            super::fileops::notify_evdev_subs(evdev_id);
+            return Some(err(Errno::Einval));
         }
+        opened.revoke();
         return Some(0);
     }
 
-    if !valid_user_range(arg, 1) {
+    let size = ioc_size(req);
+    let required = match nr {
+        nr if nr == crate::EVIOCGVERSION_NR as u32 => crate::EVDEV_CLOCKID_BYTES,
+        nr if nr == crate::EVIOCGID_NR as u32 => crate::EVDEV_ID_BYTES,
+        nr if (crate::EVIOCGABS_BASE_NR as u32..crate::EVIOCGABS_END_NR as u32).contains(&nr) => {
+            crate::EVDEV_ABSINFO_BYTES
+        }
+        _ => size.max(1),
+    };
+    if !valid_user_range(arg, required as u64) {
         return Some(err(Errno::Efault));
     }
-    let size = ioc_size(req);
-    let dev = crate::device(evdev_id);
+    let dev = exact_device(identity);
 
     let rv: i64 = unsafe {
         match nr {
@@ -164,7 +169,10 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 0
             }
             nr if nr == crate::EVIOCGID_NR as u32 => {
-                let ids = dev.as_ref().map(|d| d.ids).unwrap_or_default();
+                let Some(dev) = dev.as_ref() else {
+                    return Some(err(Errno::Enodev));
+                };
+                let ids = dev.ids;
                 let mut b = [0u8; crate::EVDEV_ID_BYTES];
                 b[crate::EVDEV_ID_BUSTYPE_OFF..crate::EVDEV_ID_VENDOR_OFF]
                     .copy_from_slice(&ids.bustype.to_le_bytes());
@@ -178,61 +186,108 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 0
             }
             nr if nr == crate::EVIOCGNAME_NR as u32 => match dev.as_ref() {
-                Some(d) => {
+                Some(d) if d.name_present => {
                     let len = d.name_len.min(d.name.len());
                     let mut b = [0u8; crate::EVDEV_STR_BYTES];
                     b[..len].copy_from_slice(&d.name[..len]);
                     uwrite(arg, &b[..len + 1], size)
                 }
-                None => uzero(arg, size),
+                Some(_) => err(Errno::Enoent),
+                None => err(Errno::Enodev),
             },
-            nr if nr == crate::EVIOCGPHYS_NR as u32 => uzero(arg, size),
+            nr if nr == crate::EVIOCGPHYS_NR as u32 => match dev.as_ref() {
+                Some(d) if d.phys_present => {
+                    let len = d.phys_len.min(d.phys.len());
+                    let mut b = [0u8; crate::EVDEV_STR_BYTES];
+                    b[..len].copy_from_slice(&d.phys[..len]);
+                    uwrite(arg, &b[..len + 1], size)
+                }
+                Some(_) => err(Errno::Enoent),
+                None => err(Errno::Enodev),
+            },
             nr if nr == crate::EVIOCGUNIQ_NR as u32 => match dev.as_ref() {
-                Some(d) if d.serial_len > 0 => {
+                Some(d) if d.serial_present => {
                     let len = d.serial_len.min(d.serial.len());
                     let mut b = [0u8; crate::EVDEV_STR_BYTES];
                     b[..len].copy_from_slice(&d.serial[..len]);
                     uwrite(arg, &b[..len + 1], size)
                 }
-                _ => uzero(arg, size),
+                Some(_) => err(Errno::Enoent),
+                None => err(Errno::Enodev),
             },
             nr if nr == crate::EVIOCGPROP_NR as u32 => match dev.as_ref() {
-                Some(d) => uwrite(arg, &d.prop_bits, size),
-                None => uzero(arg, size),
+                Some(d) => uwrite(
+                    arg,
+                    &d.prop_bits[..bitmap_bytes(input::INPUT_PROP_CNT)],
+                    size,
+                ),
+                None => err(Errno::Enodev),
             },
             nr if matches!(nr,
                 x if x == crate::EVIOCGKEY_NR as u32
                     || x == crate::EVIOCGLED_NR as u32
                     || x == crate::EVIOCGSND_NR as u32
                     || x == crate::EVIOCGSW_NR as u32
-            ) => uzero(arg, size),
+            ) => {
+                let ev_type = match nr {
+                    x if x == crate::EVIOCGKEY_NR as u32 => crate::EV_KEY,
+                    x if x == crate::EVIOCGLED_NR as u32 => crate::EV_LED,
+                    x if x == crate::EVIOCGSND_NR as u32 => crate::EV_SND,
+                    _ => crate::EV_SW,
+                };
+                let mut state = [0u8; crate::EVDEV_STATE_BYTES];
+                match input::with_state_bits_by_identity(
+                    identity.device_key,
+                    identity.input_id,
+                    identity.evdev_id,
+                    ev_type,
+                    |bits| opened.copy_state_and_flush(
+                        ev_type,
+                        bits,
+                        &mut state[..size.min(crate::EVDEV_STATE_BYTES)],
+                    ),
+                ) {
+                    Some(len) => uwrite(arg, &state[..len], len),
+                    None => err(Errno::Enodev),
+                }
+            }
             nr if (crate::EVIOCGBIT_BASE_NR as u32..crate::EVIOCGABS_BASE_NR as u32).contains(&nr) => {
-                let ev = nr - crate::EVIOCGBIT_BASE_NR as u32;
-                match (dev.as_ref(), ev) {
-                    (Some(d), ev) if ev == crate::EV_SYN as u32 => uwrite(arg, &d.ev_bits, size),
-                    (Some(d), ev) if ev == crate::EV_KEY as u32 => uwrite(arg, &d.key_bits.bits, size),
-                    (Some(d), ev) if ev == crate::EV_REL as u32 => uwrite(arg, &d.rel_bits.bits, size),
-                    (Some(d), ev) if ev == crate::EV_ABS as u32 => uwrite(arg, &d.abs_bits.bits, size),
-                    (Some(d), ev) if ev == crate::EV_LED as u32 => uwrite(arg, &d.led_bits.bits, size),
-                    _ => uzero(arg, size),
+                let ev_type = (nr - crate::EVIOCGBIT_BASE_NR as u32) as u16;
+                match dev.as_ref() {
+                    Some(dev) => match dev.capability_bits(ev_type) {
+                        Some(bits) => uwrite(arg, bits, size),
+                        None => err(Errno::Einval),
+                    },
+                    None => err(Errno::Enodev),
                 }
             }
             nr if (crate::EVIOCGABS_BASE_NR as u32..crate::EVIOCGABS_END_NR as u32).contains(&nr) => {
-                let axis = (nr - crate::EVIOCGABS_BASE_NR as u32) as usize;
-                let ai = dev.as_ref().and_then(|d| d.abs_info.get(axis).copied().flatten());
+                let axis = (nr - crate::EVIOCGABS_BASE_NR as u32) as u16;
+                let Some(snapshot) = input::abs_snapshot_by_identity(
+                    identity.device_key,
+                    identity.input_id,
+                    identity.evdev_id,
+                    axis,
+                ) else {
+                    return Some(if exact_device(identity).is_some() {
+                        err(Errno::Einval)
+                    } else {
+                        err(Errno::Enodev)
+                    });
+                };
                 let mut b = [0u8; crate::EVDEV_ABSINFO_BYTES];
-                if let Some(a) = ai {
-                    b[crate::EVDEV_ABSINFO_MIN_OFF..crate::EVDEV_ABSINFO_MAX_OFF]
-                        .copy_from_slice(&a.min.to_le_bytes());
-                    b[crate::EVDEV_ABSINFO_MAX_OFF..crate::EVDEV_ABSINFO_FUZZ_OFF]
-                        .copy_from_slice(&a.max.to_le_bytes());
-                    b[crate::EVDEV_ABSINFO_FUZZ_OFF..crate::EVDEV_ABSINFO_FLAT_OFF]
-                        .copy_from_slice(&a.fuzz.to_le_bytes());
-                    b[crate::EVDEV_ABSINFO_FLAT_OFF..crate::EVDEV_ABSINFO_RES_OFF]
-                        .copy_from_slice(&a.flat.to_le_bytes());
-                    b[crate::EVDEV_ABSINFO_RES_OFF..crate::EVDEV_ABSINFO_BYTES]
-                        .copy_from_slice(&a.res.to_le_bytes());
-                }
+                b[crate::EVDEV_ABSINFO_VALUE_OFF..crate::EVDEV_ABSINFO_MIN_OFF]
+                    .copy_from_slice(&snapshot.value.to_le_bytes());
+                b[crate::EVDEV_ABSINFO_MIN_OFF..crate::EVDEV_ABSINFO_MAX_OFF]
+                    .copy_from_slice(&snapshot.parameters.min.to_le_bytes());
+                b[crate::EVDEV_ABSINFO_MAX_OFF..crate::EVDEV_ABSINFO_FUZZ_OFF]
+                    .copy_from_slice(&snapshot.parameters.max.to_le_bytes());
+                b[crate::EVDEV_ABSINFO_FUZZ_OFF..crate::EVDEV_ABSINFO_FLAT_OFF]
+                    .copy_from_slice(&snapshot.parameters.fuzz.to_le_bytes());
+                b[crate::EVDEV_ABSINFO_FLAT_OFF..crate::EVDEV_ABSINFO_RES_OFF]
+                    .copy_from_slice(&snapshot.parameters.flat.to_le_bytes());
+                b[crate::EVDEV_ABSINFO_RES_OFF..crate::EVDEV_ABSINFO_BYTES]
+                    .copy_from_slice(&snapshot.parameters.res.to_le_bytes());
                 uwrite(arg, &b, size.max(crate::EVDEV_ABSINFO_BYTES))
             }
             _ => return Some(err(Errno::Enotty)),

@@ -3,12 +3,12 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{default_file_ops, mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
-use crate::{make_symlink_inode_ino, DIR_PERM, RO_PERM, RW_PERM};
+use crate::{DIR_PERM, LNK_PERM, RO_PERM, RW_PERM};
 
-use super::ids::{dev_root_canon, INO_ATTR, INO_DEVICE_DIR, INO_SYMLINK};
+use super::ids::{INO_ATTR, INO_DEVICE_DIR, INO_SYMLINK};
 use super::index::dev_devpath;
 
 const DEV_ATTR: Attribute = Attribute { name: "dev", mode: RO_PERM };
@@ -49,13 +49,17 @@ pub(super) fn dev_uevent_env(dev: &drv::Device) -> Vec<String> {
     if let Some(name) = dev.devname.as_ref() {
         env.push(alloc::format!("DEVNAME={}", name));
     }
-    env.extend(dev.uevent_env.iter().cloned());
+    if dev.bus != "input" {
+        env.extend(dev.uevent_env.iter().cloned());
+    }
     // Block disks: udev block rules key on DEVTYPE (60§6.3a). Whole-disk nodes
     // are DEVTYPE=disk (partitions would be =partition; v1 has no partitions).
     if dev.bus == "block" {
         env.push(String::from("DEVTYPE=disk"));
     }
-    env.push(alloc::format!("MODALIAS={}", modalias(dev)));
+    if dev.bus != "input" {
+        env.push(alloc::format!("MODALIAS={}", modalias(dev)));
+    }
     if let Some(drvname) = dev.bound() {
         env.push(alloc::format!("DRIVER={}", drvname));
     }
@@ -172,15 +176,16 @@ fn dev_group(bus: &str) -> &'static AttrGroup {
 
 /// `sysfs_ops` for a `/sys/devices/.../<addr>` device kobject — `show` renders
 /// each attribute fresh from the live `drv` registry. # C: O(1)
-struct DeviceKobj { addr: String, bus: &'static str }
+struct DeviceKobj { device: Arc<drv::Device> }
 impl SysfsOps for DeviceKobj {
     fn show(&self, attr: &str) -> KResult<Vec<u8>> {
-        let dev = find_dev(self.bus, &self.addr).ok_or(VfsError::Enodev)?;
-        dev_attr(&dev, attr).ok_or(VfsError::Enoent)
+        dev_canon_exact(&self.device).ok_or(VfsError::Enodev)?;
+        dev_attr(&self.device, attr).ok_or(VfsError::Enoent)
     }
 
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
-        let dev = find_dev(self.bus, &self.addr).ok_or(VfsError::Enoent)?;
+        dev_canon_exact(&self.device).ok_or(VfsError::Enoent)?;
+        let dev = &self.device;
         match attr {
             "driver_override" => {
                 let s = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?;
@@ -194,7 +199,7 @@ impl SysfsOps for DeviceKobj {
             }
             "uevent" => {
                 let action = crate::uevent_action(buf);
-                let devpath = dev_devpath(&dev);
+                let devpath = dev_devpath(&dev).ok_or(VfsError::Enoent)?;
                 let env = dev_uevent_env(&dev);
                 let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
                 ::netlink::emit_uevent_with_env(action, &devpath, dev.bus, &refs);
@@ -205,40 +210,58 @@ impl SysfsOps for DeviceKobj {
     }
 }
 
-/// A symlink inode (under the bus tree) whose readlink target is a fixed
-/// byte string. # C: O(1)
-pub(super) fn make_link_inode(target: Vec<u8>) -> InodeRef {
-    make_symlink_inode_ino(target, INO_SYMLINK)
+struct DeviceLinkData {
+    device: Arc<drv::Device>,
+    target: Vec<u8>,
+}
+
+struct DeviceLinkOps;
+impl InodeOps for DeviceLinkOps {
+    fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
+        let data = inode.private::<DeviceLinkData>().ok_or(VfsError::Einval)?;
+        dev_canon_exact(&data.device).ok_or(VfsError::Enoent)?;
+        Ok(data.target.clone())
+    }
+}
+
+/// A device-owned symlink that dies with its exact registration. # C: O(N)
+pub(super) fn make_device_link_inode(device: Arc<drv::Device>, target: Vec<u8>) -> InodeRef {
+    InodeBuilder::new(INO_SYMLINK, mk_mode(FileType::Symlink, LNK_PERM),
+        Arc::new(DeviceLinkOps), default_file_ops())
+        .size(target.len() as u64)
+        .private(Arc::new(DeviceLinkData { device, target }))
+        .build()
 }
 
 /// Real per-device directory under `/sys/devices/<root>/<addr>`. Holds
 /// attribute files + a `driver` symlink when bound.
-struct DeviceDirData { addr: String, bus: &'static str }
+struct DeviceDirData { device: Arc<drv::Device> }
 
 struct DeviceDirOps;
 impl InodeOps for DeviceDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let data = inode.private::<DeviceDirData>().ok_or(VfsError::Einval)?;
-        let dev = find_dev(data.bus, &data.addr).ok_or(VfsError::Enoent)?;
+        let dev = &data.device;
+        let canon = dev_canon_exact(dev).ok_or(VfsError::Enoent)?;
         if name == "driver" {
             let drvname = dev.bound().ok_or(VfsError::Enoent)?;
-            let canon = dev_canon(data.bus, &data.addr);
-            let t = alloc::format!("{}bus/{}/drivers/{}", ups_prefix(&canon), data.bus, drvname);
-            return Ok(make_link_inode(t.into_bytes()));
+            let t = alloc::format!("{}bus/{}/drivers/{}", ups_prefix(&canon), dev.bus, drvname);
+            return Ok(make_device_link_inode(Arc::clone(dev), t.into_bytes()));
         }
         if name == "subsystem" {
-            let canon = dev_canon(data.bus, &data.addr);
-            let t = alloc::format!("{}bus/{}", ups_prefix(&canon), data.bus);
-            return Ok(make_link_inode(t.into_bytes()));
+            let t = alloc::format!("{}bus/{}", ups_prefix(&canon), dev.bus);
+            return Ok(make_device_link_inode(Arc::clone(dev), t.into_bytes()));
         }
         if name == "parent" {
-            let (parent_bus, parent_addr) = dev.parent().ok_or(VfsError::Enoent)?;
-            let canon = dev_canon(data.bus, &data.addr);
-            let t = alloc::format!("{}{}", ups_prefix(&canon), dev_canon(parent_bus, parent_addr));
-            return Ok(make_link_inode(t.into_bytes()));
+            let parent = drv::device_parent_canon_exact(dev).ok_or(VfsError::Enoent)?;
+            let t = alloc::format!("{}{}", ups_prefix(&canon), parent);
+            return Ok(make_device_link_inode(Arc::clone(dev), t.into_bytes()));
         }
-        if name == "drm" && crate::drm::has_parented_minors(data.bus, &data.addr) {
-            return Ok(crate::drm::make_parent_drm_inode(data.bus, data.addr.clone()));
+        if name == "drm" && crate::drm::has_parented_minors(dev.bus, &dev.addr) {
+            return Ok(crate::drm::make_parent_drm_inode(Arc::clone(dev)));
+        }
+        if name == "input" && crate::input::has_parented_inputs(dev.bus, &dev.addr) {
+            return Ok(crate::input::make_transport_input_dir(dev.bus, &dev.addr));
         }
         // Nested child-device directory: a device whose model parent is this
         // one lives *under* it (Linux sysfs topology), e.g. `virtioN` under its
@@ -247,50 +270,50 @@ impl InodeOps for DeviceDirOps {
         if let Some(child) = drv::devices().into_iter().find(|c| {
             c.addr == name
                 && is_nesting_bus(c.bus)
-                && c.parent() == Some((data.bus, data.addr.as_str()))
+                && c.parent() == Some((dev.bus, dev.addr.as_str()))
+                && dev_canon_exact(c).is_some()
         }) {
-            return Ok(make_device_dir_inode(child.addr.clone(), child.bus));
+            return Ok(make_device_dir_inode(child));
         }
         if name == "dev" {
             if dev.dev_t.is_none() { return Err(VfsError::Enoent); }
-            let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
+            let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { device: Arc::clone(dev) });
             return Ok(make_attr_inode(&DEV_ATTR, ops, INO_ATTR));
         }
-        if data.bus == "pci" {
+        if dev.bus == "pci" {
             if let Some(bar) = pci_resource_index(name) {
                 if !dev.resources.iter().any(|r| r.bar == bar) {
                     return Err(VfsError::Enoent);
                 }
-                let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
+                let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { device: Arc::clone(dev) });
                 return Ok(make_attr_inode(&PCI_RESOURCE_ATTRS[bar as usize], ops, INO_ATTR));
             }
         }
-        let attr = dev_group(data.bus).find(name).ok_or(VfsError::Enoent)?;
-        let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { addr: data.addr.clone(), bus: data.bus });
+        let attr = dev_group(dev.bus).find(name).ok_or(VfsError::Enoent)?;
+        let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { device: Arc::clone(dev) });
         Ok(make_attr_inode(attr, ops, INO_ATTR))
     }
 }
 impl FileOps for DeviceDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let data = match inode.private::<DeviceDirData>() { Some(d) => d, None => return Err(VfsError::Einval) };
-        let attrs = dev_group(data.bus).attrs;
-        let dev = find_dev(data.bus, &data.addr);
-        let bound = dev.as_ref().map(|d| d.bound().is_some()).unwrap_or(false);
-        let has_parent = dev.as_ref().map(|d| d.parent().is_some()).unwrap_or(false);
-        let has_dev = dev.as_ref().map(|d| d.dev_t.is_some()).unwrap_or(false);
+        let dev = &data.device;
+        dev_canon_exact(dev).ok_or(VfsError::Enoent)?;
+        let attrs = dev_group(dev.bus).attrs;
+        let bound = dev.bound().is_some();
+        let has_parent = dev.parent().is_some();
+        let has_dev = dev.dev_t.is_some();
         let mut entries: Vec<(&str, FileType)> = attrs.iter()
             .map(|a| (a.name, FileType::Regular))
             .collect();
         if has_dev {
             entries.push(("dev", FileType::Regular));
         }
-        if data.bus == "pci" {
-            if let Some(dev) = dev.as_ref() {
-                for attr in PCI_RESOURCE_ATTRS.iter() {
-                    if let Some(bar) = pci_resource_index(attr.name) {
-                        if dev.resources.iter().any(|r| r.bar == bar) {
-                            entries.push((attr.name, FileType::Regular));
-                        }
+        if dev.bus == "pci" {
+            for attr in PCI_RESOURCE_ATTRS.iter() {
+                if let Some(bar) = pci_resource_index(attr.name) {
+                    if dev.resources.iter().any(|r| r.bar == bar) {
+                        entries.push((attr.name, FileType::Regular));
                     }
                 }
             }
@@ -299,8 +322,11 @@ impl FileOps for DeviceDirOps {
         if has_parent {
             entries.push(("parent", FileType::Symlink));
         }
-        if crate::drm::has_parented_minors(data.bus, &data.addr) {
+        if crate::drm::has_parented_minors(dev.bus, &dev.addr) {
             entries.push(("drm", FileType::Directory));
+        }
+        if crate::input::has_parented_inputs(dev.bus, &dev.addr) {
+            entries.push(("input", FileType::Directory));
         }
         if bound {
             entries.push(("driver", FileType::Symlink));
@@ -308,7 +334,8 @@ impl FileOps for DeviceDirOps {
         // Nested child-device dirs (owned names; e.g. `virtioN` under a PCI fn).
         let child_names: Vec<String> = drv::devices().into_iter()
             .filter(|c| is_nesting_bus(c.bus)
-                && c.parent() == Some((data.bus, data.addr.as_str())))
+                && c.parent() == Some((dev.bus, dev.addr.as_str()))
+                && dev_canon_exact(c).is_some())
             .map(|c| c.addr.clone())
             .collect();
         let total = entries.len() + child_names.len();
@@ -327,10 +354,10 @@ impl FileOps for DeviceDirOps {
         Ok(())
     }
 }
-pub(super) fn make_device_dir_inode(addr: String, bus: &'static str) -> InodeRef {
+pub(super) fn make_device_dir_inode(device: Arc<drv::Device>) -> InodeRef {
     InodeBuilder::new(INO_DEVICE_DIR, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(DeviceDirOps), Arc::new(DeviceDirOps))
-        .private(Arc::new(DeviceDirData { addr, bus }))
+        .private(Arc::new(DeviceDirData { device }))
         .build()
 }
 
@@ -346,26 +373,10 @@ pub(super) fn is_nesting_bus(bus: &str) -> bool {
     matches!(bus, "pci" | "virtio" | "platform")
 }
 
-/// Canonical nested `/sys/devices/...` path (no leading slash) for a device,
-/// walking the model parent chain so a child sits under its parent's directory
-/// exactly as Linux lays sysfs out (e.g. a PCI-backed virtio function lands at
-/// `devices/pci0000:00/<bdf>/virtioN`, so `path_id`'s parent walk reaches the
-/// PCI transport). Falls back to the flat bus root when the device — or a
-/// claimed parent — is absent from the model. # C: O(depth)
-pub(crate) fn dev_canon(bus: &str, addr: &str) -> String {
-    match find_dev(bus, addr) {
-        Some(dev) => dev_canon_dev(&dev),
-        None => alloc::format!("{}/{}", dev_root_canon(bus), addr),
-    }
-}
-
-fn dev_canon_dev(dev: &drv::Device) -> String {
-    match dev.parent() {
-        Some((pb, pa)) if find_dev(pb, pa).is_some() => {
-            alloc::format!("{}/{}", dev_canon(pb, pa), dev.addr)
-        }
-        _ => alloc::format!("{}/{}", dev_root_canon(dev.bus), dev.addr),
-    }
+/// Canonical path for one exact model object. Missing or replaced objects and
+/// incomplete ancestry fail closed. # C: O(N_devices + depth)
+pub(crate) fn dev_canon_exact(dev: &drv::Device) -> Option<String> {
+    drv::device_canon_exact(dev)
 }
 
 /// `../` sequence that climbs from a device directory at `canon` back to

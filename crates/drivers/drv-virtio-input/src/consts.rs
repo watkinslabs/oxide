@@ -1,10 +1,12 @@
-/// Wire constants per linux/include/uapi/linux/virtio_input.h
-/// + virtio 1.2 §5.8.
+/// Virtio-input wire and userspace ABI constants.
 
 pub const VIRTIO_ID_INPUT: u16 = 18;
 pub(crate) const PROC_INPUT_DEVICES_INO: u64 = 0x494e_5054_0000_0001;
-pub(crate) const INPUT_MAJOR: u32 = 13;
-pub(crate) const EVENT_MINOR_BASE: u32 = 64;
+pub use input::{EVENT_MINOR_BASE, INPUT_MAJOR};
+pub(crate) const EVDEV_FIRST_INO_OFFSET: u64 = 1;
+pub(crate) const EVDEV_NODE_PERMISSIONS: u16 = 0o666;
+pub(crate) const EVDEV_STATE_BYTES: usize =
+    input::KEY_CNT.div_ceil(u8::BITS as usize);
 
 /// Driver-model identity for virtio-input child binding.
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
@@ -17,16 +19,36 @@ pub const VIRTIO_F_VERSION_1: u32 = 32;
 const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
 pub const MAX_INPUT_DEVICES: usize = 8;
 
+/// Feature mask accepted by the input transport.
+/// # C: O(1)
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Queue and configuration contract required by the input transport.
+/// # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     #[cfg(target_os = "oxide-kernel")]
     let eventq_irq = Some(crate::drain::raise_drain as fn());
     #[cfg(not(target_os = "oxide-kernel"))]
     let eventq_irq = None;
-    virtio::VirtioTransportProfile::q0_device_cfg(wanted_features(), eventq_irq)
+    // Virtio 1.2 §5.8.2 requires eventq (0), statusq (1), and device config.
+    virtio::VirtioTransportProfile::new(
+        wanted_features(),
+        eventq_irq,
+        [
+            None,
+            Some(virtio::VirtioQueuePlan::new(1, eventq_irq, true)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        virtio::resources::VirtioEarlyPayloadPolicy::None,
+        virtio::VirtioChildRequirements::q0_q1_device_cfg(),
+    )
 }
 
 pub const VIRTIO_INPUT_CFG_UNSET: u8 = 0;
@@ -64,6 +86,7 @@ pub const EVDEV_ID_VENDOR_OFF: usize = 2;
 pub const EVDEV_ID_PRODUCT_OFF: usize = 4;
 pub const EVDEV_ID_VERSION_OFF: usize = 6;
 pub const EVDEV_ABSINFO_BYTES: usize = 24;
+pub const EVDEV_ABSINFO_VALUE_OFF: usize = 0;
 pub const EVDEV_ABSINFO_MIN_OFF: usize = 4;
 pub const EVDEV_ABSINFO_MAX_OFF: usize = 8;
 pub const EVDEV_ABSINFO_FUZZ_OFF: usize = 12;
@@ -73,7 +96,9 @@ pub const EVDEV_STR_BYTES: usize = 129;
 pub const EVDEV_REPEAT_BYTES: usize = 8;
 pub const EVDEV_CLOCKID_BYTES: usize = 4;
 pub const EVDEV_FF_EFFECT_BYTES: usize = 44;
+pub const EVDEV_CLOCK_REALTIME: i32 = 0;
 pub const EVDEV_CLOCK_MONOTONIC: i32 = 1;
+pub const EVDEV_CLOCK_BOOTTIME: i32 = 7;
 
 pub const IOC_NR_MASK: u64 = 0xFF;
 pub const IOC_TYPE_SHIFT: u32 = 8;

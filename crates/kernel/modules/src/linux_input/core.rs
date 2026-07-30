@@ -10,6 +10,9 @@ use input::VirtioChildDeviceKey;
 
 static NEXT_SYNTHETIC_KEY: AtomicU32 = AtomicU32::new(1);
 
+#[cfg(test)]
+mod test_constants;
+
 /// Register Linux input KPI symbols.
 /// # C: O(1)
 pub(super) fn export_symbols() {
@@ -45,10 +48,16 @@ extern "C" fn input_allocate_device() -> *mut LinuxInputDev {
             keybit: [0; INPUT_KEY_WORDS],
             relbit: [0; INPUT_REL_WORDS],
             absbit: [0; INPUT_ABS_WORDS],
+            mscbit: [0; INPUT_MSC_WORDS],
             ledbit: [0; INPUT_LED_WORDS],
+            sndbit: [0; INPUT_SND_WORDS],
+            ffbit: [0; INPUT_FF_WORDS],
+            swbit: [0; INPUT_SW_WORDS],
             absinfo: [LinuxInputAbsInfo::default(); ABS_CNT],
-            key_state: [0; INPUT_KEY_WORDS],
-            led_state: [0; INPUT_LED_WORDS],
+            key: [0; INPUT_KEY_WORDS],
+            led: [0; INPUT_LED_WORDS],
+            snd: [0; INPUT_SND_WORDS],
+            sw: [0; INPUT_SW_WORDS],
             evdev_id: MAX_INPUT_DEVICES as u32,
             registered: 0,
             oxide_key: 0,
@@ -69,15 +78,27 @@ unsafe extern "C" fn input_free_device(dev: *mut LinuxInputDev) {
 unsafe extern "C" fn input_register_device(dev: *mut LinuxInputDev) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
     if unsafe { (*dev).registered } != 0 { return -LINUX_EBUSY; }
-    let Some(evdev_id) = lowest_free_evdev_id() else { return -LINUX_ENOSPC; };
+    // This KPI does not yet expose input_ff_create()/ff_device callbacks.
+    // Reject an incomplete FF device instead of publishing capabilities that
+    // EVIOCSFF cannot service.
+    // SAFETY: input_register_device validated dev is a live LinuxInputDev pointer.
+    if unsafe { test_bit(&(*dev).evbit, EV_FF) } {
+        return -LINUX_EINVAL;
+    }
     let key = next_device_key();
+    // SAFETY: input_register_device exclusively initializes the unregistered device.
     unsafe {
-        (*dev).evdev_id = evdev_id;
         (*dev).oxide_key = key.raw();
     }
     let model = unsafe { input_to_model(dev) };
-    input::install(model);
-    if !input::publish_evdev(evdev_id, None) {
+    let Some((_input_id, evdev_id)) = input::install(model) else {
+        // SAFETY: registration still owns the live unregistered LinuxInputDev.
+        unsafe { (*dev).oxide_key = 0; }
+        return -LINUX_ENOSPC;
+    };
+    // SAFETY: successful canonical install assigned this device's evdev identity.
+    unsafe { (*dev).evdev_id = evdev_id; }
+    if !input::publish_evdev(evdev_id) {
         let _ = input::remove_device(key);
         return -LINUX_ENOMEM;
     }
@@ -94,7 +115,7 @@ unsafe extern "C" fn input_unregister_device(dev: *mut LinuxInputDev) {
     unsafe { drop(Box::from_raw(dev)); }
 }
 
-unsafe extern "C" fn input_set_capability(dev: *mut LinuxInputDev, ev_type: u16, code: u16) {
+unsafe extern "C" fn input_set_capability(dev: *mut LinuxInputDev, ev_type: u32, code: u32) {
     if dev.is_null() { return; }
     unsafe { set_capability(&mut *dev, ev_type, code); }
 }
@@ -109,7 +130,7 @@ unsafe extern "C" fn input_set_abs_params(
 ) {
     if dev.is_null() || axis as usize >= ABS_CNT { return; }
     unsafe {
-        set_capability(&mut *dev, EV_ABS, axis);
+        set_capability(&mut *dev, u32::from(EV_ABS), u32::from(axis));
         (*dev).absinfo[axis as usize] = LinuxInputAbsInfo {
             value: 0,
             minimum: min,
@@ -123,14 +144,16 @@ unsafe extern "C" fn input_set_abs_params(
 
 unsafe extern "C" fn input_event(dev: *mut LinuxInputDev, ev_type: u16, code: u16, value: i32) {
     if dev.is_null() { return; }
-    unsafe { update_state(&mut *dev, ev_type, code, value); }
-    if unsafe { (*dev).registered } == 0 { return; }
+    if unsafe { (*dev).registered } == 0 {
+        unsafe { update_state(&mut *dev, ev_type, code, value); }
+        return;
+    }
     let id = unsafe { (*dev).evdev_id };
-    input::push_evdev_event(id, ev_type, code, value);
+    let _ = input::push_evdev_event(id, ev_type, code, value);
 }
 
 unsafe extern "C" fn input_report_key(dev: *mut LinuxInputDev, code: u16, value: i32) {
-    unsafe { input_event(dev, EV_KEY, code, value); }
+    unsafe { input_event(dev, EV_KEY, code, i32::from(value != 0)); }
 }
 
 unsafe extern "C" fn input_report_abs(dev: *mut LinuxInputDev, code: u16, value: i32) {
@@ -166,39 +189,69 @@ unsafe fn unregister_live(dev: *mut LinuxInputDev) {
     }
 }
 
-fn lowest_free_evdev_id() -> Option<u32> {
-    let devs = input::devices_snapshot();
-    for id in 0..MAX_INPUT_DEVICES as u32 {
-        if devs.iter().all(|d| d.evdev_id != id) {
-            return Some(id);
-        }
-    }
-    None
-}
-
 fn next_device_key() -> VirtioChildDeviceKey {
     let seq = NEXT_SYNTHETIC_KEY.fetch_add(1, Ordering::Relaxed) & SYNTHETIC_DEVICE_KEY_MASK;
     VirtioChildDeviceKey::from_raw(SYNTHETIC_DEVICE_KEY_BASE | seq)
 }
 
-fn set_capability(dev: &mut LinuxInputDev, ev_type: u16, code: u16) {
-    set_bit(&mut dev.evbit, ev_type);
+fn capability_code_count(ev_type: u32) -> Option<usize> {
+    match ev_type {
+        ty if ty == u32::from(EV_KEY) => Some(KEY_CNT),
+        ty if ty == u32::from(EV_REL) => Some(REL_CNT),
+        ty if ty == u32::from(EV_ABS) => Some(ABS_CNT),
+        ty if ty == u32::from(EV_MSC) => Some(MSC_CNT),
+        ty if ty == u32::from(EV_SW) => Some(SW_CNT),
+        ty if ty == u32::from(EV_LED) => Some(LED_CNT),
+        ty if ty == u32::from(EV_SND) => Some(SND_CNT),
+        ty if ty == u32::from(EV_FF) => Some(FF_CNT),
+        _ => None,
+    }
+}
+
+fn set_capability(dev: &mut LinuxInputDev, ev_type: u32, code: u32) {
+    // Validate type and code before mutating either capability map.
+    if ev_type == u32::from(EV_PWR) {
+        set_bit(&mut dev.evbit, EV_PWR);
+        return;
+    }
+    let Some(count) = capability_code_count(ev_type) else { return; };
+    if code >= count as u32 { return; }
+    let ev_type = ev_type as u16;
+    let code = code as u16;
     match ev_type {
         EV_KEY => set_bit(&mut dev.keybit, code),
         EV_REL => set_bit(&mut dev.relbit, code),
         EV_ABS => set_bit(&mut dev.absbit, code),
+        EV_MSC => set_bit(&mut dev.mscbit, code),
         EV_LED => set_bit(&mut dev.ledbit, code),
-        _ => {}
+        EV_SND => set_bit(&mut dev.sndbit, code),
+        EV_FF => set_bit(&mut dev.ffbit, code),
+        EV_SW => set_bit(&mut dev.swbit, code),
+        _ => return,
     }
+    set_bit(&mut dev.evbit, ev_type);
 }
 
 fn update_state(dev: &mut LinuxInputDev, ev_type: u16, code: u16, value: i32) {
+    let supported = match ev_type {
+        EV_KEY => test_bit(&dev.keybit, code),
+        EV_ABS => test_bit(&dev.absbit, code),
+        EV_SW => test_bit(&dev.swbit, code),
+        EV_LED => test_bit(&dev.ledbit, code),
+        EV_SND => test_bit(&dev.sndbit, code),
+        _ => false,
+    };
+    if !supported { return; }
     match ev_type {
-        EV_KEY if value == 0 => clear_bit(&mut dev.key_state, code),
-        EV_KEY => set_bit(&mut dev.key_state, code),
+        EV_KEY if value == 0 => clear_bit(&mut dev.key, code),
+        EV_KEY => set_bit(&mut dev.key, code),
         EV_ABS if (code as usize) < ABS_CNT => dev.absinfo[code as usize].value = value,
-        EV_LED if value == 0 => clear_bit(&mut dev.led_state, code),
-        EV_LED => set_bit(&mut dev.led_state, code),
+        EV_SW if value == 0 => clear_bit(&mut dev.sw, code),
+        EV_SW => set_bit(&mut dev.sw, code),
+        EV_LED if value == 0 => clear_bit(&mut dev.led, code),
+        EV_LED => set_bit(&mut dev.led, code),
+        EV_SND if value == 0 => clear_bit(&mut dev.snd, code),
+        EV_SND => set_bit(&mut dev.snd, code),
         _ => {}
     }
 }
@@ -206,16 +259,59 @@ fn update_state(dev: &mut LinuxInputDev, ev_type: u16, code: u16, value: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::test_constants::*;
     use core::ffi::c_char;
 
-    const KEY_A: u16 = 30;
-    const ABS_X: u16 = 0;
-    const LED_NUML: u16 = 0;
-    static NAME: &[u8] = b"kpi-input\0";
+    fn assert_subtype_capabilities_empty(dev: &LinuxInputDev) {
+        assert!(dev.keybit.iter().all(|word| *word == 0));
+        assert!(dev.relbit.iter().all(|word| *word == 0));
+        assert!(dev.absbit.iter().all(|word| *word == 0));
+        assert!(dev.mscbit.iter().all(|word| *word == 0));
+        assert!(dev.swbit.iter().all(|word| *word == 0));
+        assert!(dev.ledbit.iter().all(|word| *word == 0));
+        assert!(dev.sndbit.iter().all(|word| *word == 0));
+        assert!(dev.ffbit.iter().all(|word| *word == 0));
+    }
+
+    fn assert_capabilities_empty(dev: &LinuxInputDev) {
+        assert!(dev.evbit.iter().all(|word| *word == 0));
+        assert_subtype_capabilities_empty(dev);
+    }
+
+    fn subtype_bit(dev: &LinuxInputDev, ev_type: u16, code: u16) -> bool {
+        match ev_type {
+            EV_KEY => test_bit(&dev.keybit, code),
+            EV_REL => test_bit(&dev.relbit, code),
+            EV_ABS => test_bit(&dev.absbit, code),
+            EV_MSC => test_bit(&dev.mscbit, code),
+            EV_SW => test_bit(&dev.swbit, code),
+            EV_LED => test_bit(&dev.ledbit, code),
+            EV_SND => test_bit(&dev.sndbit, code),
+            EV_FF => test_bit(&dev.ffbit, code),
+            _ => false,
+        }
+    }
+
+    fn model_bit(bits: &[u8], code: u16) -> bool {
+        bits[(code / u8::BITS as u16) as usize] & (1 << (code % u8::BITS as u16)) != 0
+    }
 
     #[test]
     fn input_event_abi_is_linux_compatible() {
         assert_eq!(core::mem::size_of::<LinuxInputEvent>(), INPUT_EVENT_BYTES);
+    }
+
+    #[test]
+    fn input_device_mirror_matches_kpi_header_layout() {
+        assert_eq!(core::mem::size_of::<LinuxInputDev>(), INPUT_DEV_ABI_BYTES);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, propbit), PROPBIT_OFFSET);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, mscbit), MSCBIT_OFFSET);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, sndbit), SNDBIT_OFFSET);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, ffbit), FFBIT_OFFSET);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, swbit), SWBIT_OFFSET);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, absinfo), ABSINFO_OFFSET);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, snd), SND_STATE_OFFSET);
+        assert_eq!(core::mem::offset_of!(LinuxInputDev, sw), SW_STATE_OFFSET);
     }
 
     #[test]
@@ -224,27 +320,164 @@ mod tests {
         assert!(!dev.is_null());
         unsafe {
             (*dev).name = NAME.as_ptr() as *const c_char;
-            (*dev).id.bustype = 6;
+            (*dev).phys = PHYS.as_ptr() as *const c_char;
+            (*dev).id.bustype = TEST_BUS;
             (*dev).id.vendor = input::VIRTIO_PCI_VENDOR_ID;
-            (*dev).id.product = 0x1045;
-            input_set_capability(dev, EV_KEY, KEY_A);
-            input_set_capability(dev, EV_LED, LED_NUML);
-            input_set_abs_params(dev, ABS_X, -10, 10, 1, 2);
+            (*dev).id.product = TEST_PRODUCT;
+            input_set_capability(dev, u32::from(EV_KEY), u32::from(KEY_A));
+            input_set_capability(dev, u32::from(EV_MSC), u32::from(MSC_SCAN));
+            input_set_capability(dev, u32::from(EV_LED), u32::from(LED_NUML));
+            input_set_capability(dev, u32::from(EV_SND), u32::from(SND_BELL));
+            input_set_capability(dev, u32::from(EV_SW), u32::from(SW_LID));
+            input_set_abs_params(
+                dev, ABS_X, ABS_MINIMUM, ABS_MAXIMUM, ABS_FUZZ, ABS_FLAT,
+            );
+            input_report_key(dev, KEY_A, STATE_ACTIVE);
+            input_event(dev, EV_LED, LED_NUML, STATE_ACTIVE);
+            input_event(dev, EV_SND, SND_BELL, STATE_ACTIVE);
+            input_event(dev, EV_SW, SW_LID, STATE_ACTIVE);
             assert_eq!(input_register_device(dev), LINUX_OK);
             let id = (*dev).evdev_id;
             let model = input::device(id).expect("registered input model");
             assert_eq!(model.name_len, NAME.len() - 1);
             assert_eq!(&model.name[..model.name_len], &NAME[..NAME.len() - 1]);
+            assert_eq!(model.phys_len, PHYS.len() - 1);
+            assert_eq!(&model.phys[..model.phys_len], &PHYS[..PHYS.len() - 1]);
             assert!(model.is_pointer);
-            assert_ne!(model.key_bits.bits[(KEY_A / 8) as usize] & (1u8 << (KEY_A % 8)), 0);
-            assert_ne!(model.led_bits.bits[(LED_NUML / 8) as usize] & (1u8 << (LED_NUML % 8)), 0);
+            assert!(model_bit(&model.key_bits.bits, KEY_A));
+            assert!(model_bit(&model.msc_bits.bits, MSC_SCAN));
+            assert!(model_bit(&model.led_bits.bits, LED_NUML));
+            assert!(model_bit(&model.snd_bits.bits, SND_BELL));
+            assert!(!model_bit(&model.ff_bits.bits, FF_RUMBLE));
+            assert!(model_bit(&model.sw_bits.bits, SW_LID));
             assert!(model.abs_info[ABS_X as usize].is_some());
-            input_report_key(dev, KEY_A, 1);
-            assert!(test_bit(&(*dev).key_state, KEY_A));
-            input_event(dev, EV_LED, LED_NUML, 1);
-            assert!(test_bit(&(*dev).led_state, LED_NUML));
+            assert!(model_bit(model.state_bits(EV_KEY).expect("key state"), KEY_A));
+            assert_ne!(
+                model.state_bits(EV_LED).expect("led state")[0] & (1u8 << LED_NUML),
+                0,
+            );
+            assert_ne!(
+                model.state_bits(EV_SND).expect("sound state")[0] & (1u8 << SND_BELL),
+                0,
+            );
+            assert_ne!(
+                model.state_bits(EV_SW).expect("switch state")[0] & (1u8 << SW_LID),
+                0,
+            );
+            input_report_key(dev, KEY_A, STATE_INACTIVE);
+            input_event(dev, EV_LED, LED_NUML, STATE_INACTIVE);
+            let model = input::device(id).expect("live input state");
+            assert!(!model_bit(model.state_bits(EV_KEY).expect("key state"), KEY_A));
+            assert_eq!(
+                model.state_bits(EV_LED).expect("led state")[0] & (1u8 << LED_NUML),
+                0,
+            );
+            let key = VirtioChildDeviceKey::from_raw((*dev).oxide_key);
+            assert!(
+                input::set_inhibited_by_identity(key, model.input_id, id, true).is_some(),
+            );
+            input_report_key(dev, KEY_A, STATE_ACTIVE);
+            let model = input::device(id).expect("inhibited input state");
+            assert!(!model_bit(model.state_bits(EV_KEY).expect("key state"), KEY_A));
             input_unregister_device(dev);
             assert!(input::device(id).is_none());
+        }
+    }
+
+    #[test]
+    fn register_rejects_force_feedback_without_ff_backend() {
+        let dev = input_allocate_device();
+        assert!(!dev.is_null());
+        unsafe {
+            (*dev).name = NAME.as_ptr() as *const c_char;
+            input_set_capability(dev, u32::from(EV_FF), u32::from(FF_RUMBLE));
+            assert_eq!(input_register_device(dev), -LINUX_EINVAL);
+            assert_eq!((*dev).registered, 0);
+            input_free_device(dev);
+        }
+    }
+
+    #[test]
+    fn input_set_capability_rejects_invalid_codes_without_partial_mutation() {
+        let invalid = [
+            (EV_KEY, KEY_CNT),
+            (EV_REL, REL_CNT),
+            (EV_ABS, ABS_CNT),
+            (EV_MSC, MSC_CNT),
+            (EV_SW, SW_CNT),
+            (EV_LED, LED_CNT),
+            (EV_SND, SND_CNT),
+            (EV_FF, FF_CNT),
+        ];
+        for (ev_type, count) in invalid {
+            let dev = input_allocate_device();
+            assert!(!dev.is_null());
+            // SAFETY: input_allocate_device returned this uniquely owned live object.
+            unsafe {
+                input_set_capability(dev, u32::from(ev_type), count as u32);
+                assert_capabilities_empty(&*dev);
+                input_free_device(dev);
+            }
+        }
+    }
+
+    #[test]
+    fn input_set_capability_rejects_unknown_or_truncated_aliases() {
+        let dev = input_allocate_device();
+        assert!(!dev.is_null());
+        // SAFETY: input_allocate_device returned this uniquely owned live object.
+        unsafe {
+            input_set_capability(dev, UNKNOWN_EVENT_TYPE, 0);
+            input_set_capability(
+                dev,
+                u32::from(EV_KEY) | WIDE_ALIAS_BIT,
+                u32::from(KEY_A),
+            );
+            input_set_capability(
+                dev,
+                u32::from(EV_KEY),
+                u32::from(KEY_A) | WIDE_ALIAS_BIT,
+            );
+            assert_capabilities_empty(&*dev);
+            input_free_device(dev);
+        }
+    }
+
+    #[test]
+    fn input_set_capability_accepts_linux_max_codes() {
+        let dev = input_allocate_device();
+        assert!(!dev.is_null());
+        let valid = [
+            (EV_KEY, KEY_CNT),
+            (EV_REL, REL_CNT),
+            (EV_ABS, ABS_CNT),
+            (EV_MSC, MSC_CNT),
+            (EV_SW, SW_CNT),
+            (EV_LED, LED_CNT),
+            (EV_SND, SND_CNT),
+            (EV_FF, FF_CNT),
+        ];
+        // SAFETY: input_allocate_device returned this uniquely owned live object.
+        unsafe {
+            for (ev_type, count) in valid {
+                input_set_capability(dev, u32::from(ev_type), count as u32 - 1);
+                assert!(test_bit(&(*dev).evbit, ev_type));
+                assert!(subtype_bit(&*dev, ev_type, (count - 1) as u16));
+            }
+            input_free_device(dev);
+        }
+    }
+
+    #[test]
+    fn input_set_capability_accepts_power_without_subtype_mutation() {
+        let dev = input_allocate_device();
+        assert!(!dev.is_null());
+        // SAFETY: input_allocate_device returned this uniquely owned live object.
+        unsafe {
+            input_set_capability(dev, u32::from(EV_PWR), u32::MAX);
+            assert!(test_bit(&(*dev).evbit, EV_PWR));
+            assert_subtype_capabilities_empty(&*dev);
+            input_free_device(dev);
         }
     }
 }

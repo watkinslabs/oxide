@@ -12,6 +12,7 @@
 
 #define BUS_HOST        0x19
 #define BUS_VIRTUAL     0x06
+#define INPUT_MAJOR     13
 
 struct input_id {
     __u16 bustype;
@@ -49,10 +50,16 @@ struct input_dev {
     unsigned long keybit[BITS_TO_LONGS(KEY_CNT)];
     unsigned long relbit[BITS_TO_LONGS(REL_CNT)];
     unsigned long absbit[BITS_TO_LONGS(ABS_CNT)];
+    unsigned long mscbit[BITS_TO_LONGS(MSC_CNT)];
     unsigned long ledbit[BITS_TO_LONGS(LED_CNT)];
+    unsigned long sndbit[BITS_TO_LONGS(SND_CNT)];
+    unsigned long ffbit[BITS_TO_LONGS(FF_CNT)];
+    unsigned long swbit[BITS_TO_LONGS(SW_CNT)];
     struct input_absinfo absinfo[ABS_CNT];
-    unsigned long key_state[BITS_TO_LONGS(KEY_CNT)];
-    unsigned long led_state[BITS_TO_LONGS(LED_CNT)];
+    unsigned long key[BITS_TO_LONGS(KEY_CNT)];
+    unsigned long led[BITS_TO_LONGS(LED_CNT)];
+    unsigned long snd[BITS_TO_LONGS(SND_CNT)];
+    unsigned long sw[BITS_TO_LONGS(SW_CNT)];
     unsigned int evdev_id;
     unsigned int registered;
     unsigned int oxide_key;

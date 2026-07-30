@@ -272,7 +272,7 @@ pub fn install_with_drm(dev: VirtioGpuDev) -> KResult<u32> {
 /// # C: O(1)
 pub fn install_with_drm_parent(
     mut dev: VirtioGpuDev,
-    parent: Option<(&'static str, String)>,
+    parent: Option<&alloc::sync::Arc<drv::Device>>,
 ) -> KResult<u32> {
     let device_key = dev.device_key;
     let bdf = dev.bdf;

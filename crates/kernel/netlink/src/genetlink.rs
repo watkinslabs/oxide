@@ -1,4 +1,4 @@
-// NETLINK_GENERIC (genetlink) per Linux `linux/genetlink.h`. The
+// NETLINK_GENERIC (genetlink). The
 // CTRL family (id=0x10, name="nlctrl") is the bootstrap — clients
 // query family ids by name via CTRL_CMD_GETFAMILY, then send
 // per-family messages directly with `nlmsghdr.nlmsg_type = family_id`.
