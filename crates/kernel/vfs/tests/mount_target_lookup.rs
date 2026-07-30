@@ -60,3 +60,30 @@ fn mount_target_keeps_walked_parent_mount_identity_for_shared_dentry() {
     assert_eq!(target.parent.mnt_id, stage_proc_id,
         "mount-target lookup must return the walked bind mount parent, not the source /proc parent");
 }
+
+#[test]
+fn mount_target_accepts_resolved_dot_components() {
+    let _g = guard();
+    let ns = 0x7a13_1001;
+    set_ns(ns);
+    vfs::mount::set_current_ns_provider(cur_ns);
+    common::install();
+
+    let root = common::dentry("/");
+    let root_inode = root.inode().expect("root inode");
+    common::register("/", fs("rootfs", root_inode)).expect("root mount");
+    let root_id = vfs::mount::root_mount_id(common::namespace_id(ns)).expect("root id");
+
+    let work = common::dentry("/work");
+    let dot = vfs::mountpoint_lookup_at_root_cred(
+        work.clone(), root_id, root.clone(), root_id, ".", Cred::root(),
+    ).expect("relative dot mount target");
+    assert_eq!(dot.parent.mnt_id, root_id);
+    assert!(Arc::ptr_eq(&dot.mountpoint, &work));
+
+    let dotdot = vfs::mountpoint_lookup_at_root_cred(
+        work, root_id, root.clone(), root_id, "..", Cred::root(),
+    ).expect("relative dotdot mount target");
+    assert_eq!(dotdot.parent.mnt_id, root_id);
+    assert!(Arc::ptr_eq(&dotdot.mountpoint, &root));
+}
