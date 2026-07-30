@@ -7,7 +7,7 @@ fn array_is_preallocated_and_obeys_array_update_flags() {
     let inode = allocate(uapi::map_type::ARRAY, 4, 8, 2, 0).unwrap();
     let map = inode.private::<BpfMapInode>().unwrap();
     let key = 1u32.to_ne_bytes().to_vec();
-    assert_eq!(&*map.lookup_value(&key).unwrap().bytes.lock(), &[0; 8]);
+    assert_eq!(map.lookup_value(&key).unwrap().copy_out().unwrap(), &[0; 8]);
     assert_eq!(
         update_entry(map, key.clone(), 7u64.to_ne_bytes().to_vec(), uapi::elem_flags::NOEXIST),
         Err(Errno::Eexist),
@@ -17,9 +17,19 @@ fn array_is_preallocated_and_obeys_array_update_flags() {
         Ok(0),
     );
     assert_eq!(
-        u64::from_ne_bytes((*map.lookup_value(&key).unwrap().bytes.lock()).clone().try_into().unwrap()),
+        u64::from_ne_bytes(map.lookup_value(&key).unwrap().copy_out().unwrap().try_into().unwrap()),
         7,
     );
+}
+
+#[test]
+fn live_map_ids_resolve_and_enumerate_through_inode_ownership() {
+    let first = allocate(uapi::map_type::ARRAY, 4, 8, 1, 0).unwrap();
+    let first_id = first.private::<BpfMapInode>().unwrap().id;
+    let second = allocate(uapi::map_type::ARRAY, 4, 8, 1, 0).unwrap();
+    let second_id = second.private::<BpfMapInode>().unwrap().id;
+    assert_eq!(map_by_id(first_id).map(|inode| inode.ino()), Some(first.ino()));
+    assert_eq!(next_live_map_id(first_id), Some(second_id));
 }
 
 #[test]
@@ -37,7 +47,7 @@ fn lpm_lookup_selects_the_longest_matching_prefix() {
     update_entry(map, key(24, [10, 1, 2, 0]), 24u64.to_ne_bytes().to_vec(), 0).unwrap();
     let value = map.lookup_value(&key(32, [10, 1, 2, 99])).unwrap();
     assert_eq!(
-        u64::from_ne_bytes((*value.bytes.lock()).clone().try_into().unwrap()),
+        u64::from_ne_bytes(value.copy_out().unwrap().try_into().unwrap()),
         24,
     );
 }

@@ -89,7 +89,7 @@ pub(super) fn dispatch_route_a(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_IO_PGETEVENTS => crate::aio::sys_io_pgetevents(args),
         syscall::nrs::NR_IO_CANCEL => crate::aio::sys_io_cancel(args),
         syscall::nrs::NR_SECCOMP => security::seccomp::sys_seccomp(args),
-        syscall::nrs::NR_BPF => security::bpf::sys_bpf(args),
+        syscall::nrs::NR_BPF => crate::s321_bpf::sys_bpf(args),
         syscall::nrs::NR_LANDLOCK_CREATE_RULESET => crate::s444_landlock_create_ruleset::sys_landlock_create_ruleset(args),
         syscall::nrs::NR_LANDLOCK_ADD_RULE => crate::s445_landlock_add_rule::sys_landlock_add_rule(args),
         syscall::nrs::NR_LANDLOCK_RESTRICT_SELF => crate::s446_landlock_restrict_self::sys_landlock_restrict_self(args),

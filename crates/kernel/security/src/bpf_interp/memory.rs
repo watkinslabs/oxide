@@ -71,7 +71,7 @@ impl<'a> RunMemory<'a> {
     }
 
     fn pin_value(&mut self, value: Arc<BpfMapValue>, flags: u32, offset: usize) -> Option<i64> {
-        if offset >= value.bytes.lock().len() || offset as u64 >= VALUE_STRIDE { return None; }
+        if offset >= value.len() || offset as u64 >= VALUE_STRIDE { return None; }
         let slot = self.values.len();
         self.values.try_reserve(1).ok()?;
         self.values.push(ValueRef {
@@ -88,7 +88,7 @@ impl<'a> RunMemory<'a> {
         let slot = usize::try_from(relative / VALUE_STRIDE).ok()?;
         let offset = usize::try_from(relative % VALUE_STRIDE).ok()?;
         let value = self.values.get(slot)?;
-        (offset.checked_add(size)? <= value.value.bytes.lock().len()).then_some((value, offset))
+        (offset.checked_add(size)? <= value.value.len()).then_some((value, offset))
     }
 
     fn stack_location(addr: u64, size: usize) -> Option<usize> {
@@ -114,8 +114,7 @@ impl<'a> RunMemory<'a> {
         }
         if let Some((value, offset)) = self.value_location(raw, out.len()) {
             if !value.readable { return None; }
-            out.copy_from_slice(&value.value.bytes.lock()[offset..offset + out.len()]);
-            return Some(());
+            return value.value.read_range(offset, out);
         }
         let offset = usize::try_from(addr).ok()?;
         let context = self.context.bytes();
@@ -141,8 +140,7 @@ impl<'a> RunMemory<'a> {
         }
         if let Some((entry, offset)) = self.value_location(raw, size) {
             if !entry.writable { return None; }
-            entry.value.bytes.lock()[offset..offset + size].copy_from_slice(&bytes[..size]);
-            return Some(());
+            return entry.value.write_range(offset, &bytes[..size]);
         }
         let offset = usize::try_from(addr).ok()?;
         let Context::ReadWrite(context) = &mut self.context else { return None; };
@@ -156,21 +154,7 @@ impl<'a> RunMemory<'a> {
     pub(super) fn atomic_add(&mut self, addr: i64, size: usize, add: i64) -> Option<()> {
         let (entry, offset) = self.value_location(addr as u64, size)?;
         if !entry.readable || !entry.writable { return None; }
-        let mut bytes = entry.value.bytes.lock();
-        match size {
-            4 => {
-                let old = u32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?);
-                bytes[offset..offset + 4]
-                    .copy_from_slice(&old.wrapping_add(add as u32).to_le_bytes());
-            }
-            8 => {
-                let old = u64::from_le_bytes(bytes[offset..offset + 8].try_into().ok()?);
-                bytes[offset..offset + 8]
-                    .copy_from_slice(&old.wrapping_add(add as u64).to_le_bytes());
-            }
-            _ => return None,
-        }
-        Some(())
+        entry.value.atomic_add(offset, size, add)
     }
 
     /// Implement helper 1 map lookup and return a pinned value pointer.

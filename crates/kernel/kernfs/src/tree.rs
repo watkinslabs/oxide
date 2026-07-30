@@ -210,6 +210,32 @@ impl PseudoDir {
         }
     }
 
+    /// Publish one object inode under this directory.  The tree retains the
+    /// only namespace reference; callers keep object lifetime in the inode.
+    /// # C: O(log N)
+    pub fn insert_leaf(&self, name: &str, inode: InodeRef) -> KResult<()> {
+        if name.is_empty() || name.contains('/') { return Err(VfsError::Einval); }
+        let mut children = self.children.lock();
+        if children.contains_key(name) { return Err(VfsError::Eexist); }
+        children.insert(String::from(name), PseudoEntry::Leaf(inode));
+        Ok(())
+    }
+
+    /// Remove one non-directory object inode from this directory.
+    /// # C: O(log N)
+    pub fn remove_leaf(&self, name: &str) -> KResult<InodeRef> {
+        let mut children = self.children.lock();
+        match children.get(name) {
+            None => return Err(VfsError::Enoent),
+            Some(PseudoEntry::Dir(_)) => return Err(VfsError::Eisdir),
+            Some(PseudoEntry::Leaf(_)) => {}
+        }
+        match children.remove(name) {
+            Some(PseudoEntry::Leaf(inode)) => Ok(inode),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn ensure_dir_path(self: &Arc<PseudoDir>, path: &str) {
         let comps = components(path);
         let mut dir = Arc::clone(self);
