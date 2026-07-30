@@ -291,7 +291,8 @@ pub fn run_program_with_state(
     helpers: &[Helper],
     helper_state: &mut HelperState,
 ) -> Option<i64> {
-    let memory = RunMemory::new(Context::ReadOnly(context), packet, &prog.maps);
+    let maps = prog.maps.lock();
+    let memory = RunMemory::new(Context::ReadOnly(context), packet, &maps);
     run_inner(&prog.insns, helpers, helper_state, memory)
 }
 
@@ -303,7 +304,8 @@ pub fn run_program_mut_with_state(
     helpers: &[Helper],
     helper_state: &mut HelperState,
 ) -> Option<i64> {
-    let memory = RunMemory::new(Context::ReadWrite(context), &[], &prog.maps);
+    let maps = prog.maps.lock();
+    let memory = RunMemory::new(Context::ReadWrite(context), &[], &maps);
     run_inner(&prog.insns, helpers, helper_state, memory)
 }
 

@@ -15,8 +15,11 @@ use super::user;
 use super::{install_fd, make_bpf_prog_inode_with_contract};
 
 mod attach;
+mod bind_map;
 #[cfg(test)]
 mod attach_tests;
+#[cfg(test)]
+mod bind_map_tests;
 #[cfg(test)]
 mod link_tests;
 #[cfg(test)]
@@ -165,6 +168,11 @@ pub(super) fn query(a: &Attr, uattr: u64, uattr_size: u32, caps: Caps) -> Result
 /// `bpf_prog_get_fd_by_id()`. # C: O(log programs)
 pub(super) fn get_fd_by_id(a: &Attr, caps: Caps) -> Result<i64, Errno> {
     attach::get_fd_by_id(a, caps)
+}
+
+/// Bind a map lifetime to a loaded program. # C: O(program map count)
+pub(super) fn bind_map(a: &Attr) -> Result<i64, Errno> {
+    bind_map::bind(a)
 }
 
 /// `bpf_link_create()`. # C: O(descendants * programs)

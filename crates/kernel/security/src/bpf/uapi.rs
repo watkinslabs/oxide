@@ -141,6 +141,13 @@ pub mod off {
         pub const PROG_ID:  usize = 0;
         pub const LAST_END: usize = 4;
     }
+    /// `BPF_PROG_BIND_MAP`; flags ends the 12-byte command payload.
+    pub mod prog_bind_map {
+        pub const PROG_FD:  usize = 0;
+        pub const MAP_FD:   usize = 4;
+        pub const FLAGS:    usize = 8;
+        pub const LAST_END: usize = 12;
+    }
     /// `BPF_LINK_CREATE`;
     /// `LAST_FIELD link_create.uprobe_multi.path_fd` (ends at 64).
     pub mod link_create {
