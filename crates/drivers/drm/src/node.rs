@@ -333,7 +333,10 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             }
         }
         DRM_IOCTL_MODE_ATOMIC => {
-            if !is_master(card_id, token) || !client_cap_atomic(file) {
+            if !is_master(card_id, token) {
+                return Some(-(Errno::Eacces.as_i32() as i64));
+            }
+            if !client_cap_atomic(file) {
                 return Some(-(Errno::Einval.as_i32() as i64));
             }
             match driver.as_ref() {

@@ -224,7 +224,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
         let atomic_arg = atomic.as_mut_ptr() as u64;
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, atomic_arg),
-            Some(-(Errno::Einval.as_i32() as i64))
+            Some(-(Errno::Eacces.as_i32() as i64))
         );
 
         assert_eq!(handle_drm_ioctl(&card, DRM_IOCTL_SET_MASTER, 0), Some(0));
