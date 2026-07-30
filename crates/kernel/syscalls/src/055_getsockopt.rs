@@ -10,6 +10,8 @@ use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from
 mod multicast;
 #[path = "055_getsockopt/packet.rs"]
 mod packet;
+#[path = "055_getsockopt/peerpidfd.rs"]
+mod peerpidfd;
 #[path = "055_getsockopt/packet_abi.rs"]
 mod packet_abi;
 #[path = "055_getsockopt/uapi.rs"]
@@ -141,6 +143,12 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     if level == net::uapi::SOL_PACKET {
         return packet::packet_getsockopt(&sock, optname, optval, optlen_p);
     }
+    if level == SOL_SOCKET && optname == SO_PEERPIDFD
+       && optval != 0 && optval < USER_VA_END
+       && optlen_p != 0 && optlen_p < USER_VA_END
+    {
+        return peerpidfd::get(&sock, optval, optlen_p);
+    }
     if level == SOL_SOCKET && optname == SO_PEERCRED
        && optval != 0 && optval < USER_VA_END
        && optlen_p != 0 && optlen_p < USER_VA_END
@@ -148,7 +156,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         // Real peer creds for a connected AF_UNIX fd (snapshotted at
         // socketpair/connect/accept); falls back to the caller's own
         // {pid,euid,egid} for non-unix/unconnected sockets.
-        let (pid, uid, gid) = peercred_for_socket(&sock).unwrap_or_else(|| {
+        let snapshot = peercred_for_socket(&sock);
+        let (pid, uid, gid) = snapshot.unwrap_or_else(|| {
             use core::sync::atomic::Ordering;
             sched::live::current()
                 .map(|c| (c.visible_pid(),
@@ -168,11 +177,14 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             klog::write_dec_u64(pid as u64);
             klog::write_raw(b" uid=");
             klog::write_dec_u64(uid as u64);
+            klog::write_raw(b" src=");
+            klog::write_raw(if snapshot.is_some() { b"pair" } else { b"self" });
             klog::write_raw(b" by=");
             if let Some(c) = sched::live::current() {
                 klog::write_dec_u64(c.tid as u64);
                 klog::write_raw(b"/");
-                klog::write_raw(c.name.as_bytes());
+                let comm = c.comm_bytes();
+                klog::write_raw(sched::Task::comm_trim(&comm).as_bytes());
             }
             klog::write_raw(b"]\n");
         }
