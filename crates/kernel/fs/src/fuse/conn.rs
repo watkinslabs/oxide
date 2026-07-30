@@ -28,6 +28,22 @@ use vfs::{Inode, InodeRef, PollSubscribers};
 use super::proto;
 use super::FUSE_WIRE_ENOTCONN;
 
+fn copy_iov(bufs: &[&[u8]], mut skip: usize, mut out: &mut [u8]) -> bool {
+    for buf in bufs {
+        if skip >= buf.len() {
+            skip -= buf.len();
+            continue;
+        }
+        let src = &buf[skip..];
+        let n = src.len().min(out.len());
+        out[..n].copy_from_slice(&src[..n]);
+        out = &mut out[n..];
+        skip = 0;
+        if out.is_empty() { return true; }
+    }
+    out.is_empty()
+}
+
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
 
@@ -235,12 +251,40 @@ impl FuseConn {
     /// consumed (the daemon's whole write). # C: O(log N_inflight)
     pub fn submit_reply(&self, buf: &[u8]) -> Result<usize, vfs::VfsError> {
         let oh = proto::OutHeader::decode(buf).ok_or(vfs::VfsError::Einval)?;
-        if (oh.len as usize) < proto::FUSE_OUT_HEADER_SIZE || oh.len as usize > buf.len() {
+        if oh.len as usize != buf.len() {
             return Err(vfs::VfsError::Einval);
         }
         let body = &buf[proto::FUSE_OUT_HEADER_SIZE..oh.len as usize];
+        self.complete_reply(oh, body, buf.len())
+    }
+
+    /// `writev(/dev/fuse)` core. Header and body may cross arbitrary iovec
+    /// boundaries but remain one reply transaction. # C: O(sum lens + log N)
+    pub fn submit_reply_iter(&self, bufs: &[&[u8]]) -> Result<usize, vfs::VfsError> {
+        let total = bufs.iter().try_fold(0usize, |n, buf| n.checked_add(buf.len()))
+            .ok_or(vfs::VfsError::Einval)?;
+        let mut header = [0u8; proto::FUSE_OUT_HEADER_SIZE];
+        if !copy_iov(bufs, 0, &mut header) { return Err(vfs::VfsError::Einval); }
+        let oh = proto::OutHeader::decode(&header).ok_or(vfs::VfsError::Einval)?;
+        let msg_len = oh.len as usize;
+        if msg_len != total {
+            return Err(vfs::VfsError::Einval);
+        }
+        let mut body = Vec::new();
+        body.try_reserve_exact(msg_len - proto::FUSE_OUT_HEADER_SIZE)
+            .map_err(|_| vfs::VfsError::Enomem)?;
+        body.resize(msg_len - proto::FUSE_OUT_HEADER_SIZE, 0);
+        if !copy_iov(bufs, proto::FUSE_OUT_HEADER_SIZE, &mut body) {
+            return Err(vfs::VfsError::Einval);
+        }
+        self.complete_reply(oh, &body, total)
+    }
+
+    fn complete_reply(&self, oh: proto::OutHeader, body: &[u8], consumed: usize)
+        -> Result<usize, vfs::VfsError>
+    {
         let slot = self.slots.lock().remove(&oh.unique);
-        let slot = match slot { Some(s) => s, None => return Ok(buf.len()) };
+        let slot = match slot { Some(s) => s, None => return Ok(consumed) };
         if slot.opcode == proto::FUSE_INIT && oh.error == 0 {
             self.apply_init_reply(body);
         }
@@ -248,7 +292,7 @@ impl FuseConn {
         slot.error.store(oh.error, Ordering::Release);
         slot.done.store(true, Ordering::Release);
         self.reply_wait.wake_all();
-        Ok(buf.len())
+        Ok(consumed)
     }
 
     /// Decode a `FUSE_INIT` reply body and publish the negotiated version/flags/

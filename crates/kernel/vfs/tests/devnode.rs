@@ -317,3 +317,108 @@ fn opath_chrdev_never_acquires_driver_identity() {
     assert_eq!(driver.releases.load(Ordering::Acquire), 0);
     vfs::unregister_chrdev(MAJOR);
 }
+
+struct VectorChar {
+    vector_calls: AtomicU32,
+    scalar_calls: AtomicU32,
+    seen_nonblock: Mutex<bool>,
+    seen_parts: Mutex<Vec<Vec<u8>>>,
+}
+
+impl CharDevOps for VectorChar {
+    fn write_file(&self, _devt: Devt, _file: &File, _off: u64, _buf: &[u8]) -> KResult<usize> {
+        self.scalar_calls.fetch_add(1, Ordering::AcqRel);
+        Err(VfsError::Eio)
+    }
+
+    fn write_iter_file(&self, _devt: Devt, _file: &File, _off: u64, bufs: &[&[u8]], nonblock: bool) -> KResult<usize> {
+        self.vector_calls.fetch_add(1, Ordering::AcqRel);
+        *self.seen_nonblock.lock().unwrap() = nonblock;
+        *self.seen_parts.lock().unwrap() = bufs.iter().map(|buf| buf.to_vec()).collect();
+        Ok(bufs.iter().map(|buf| buf.len()).sum())
+    }
+}
+
+#[test]
+fn chrdev_write_iter_preserves_one_driver_transaction() {
+    const MAJOR: u32 = 209;
+    const MINOR: u32 = 13;
+    const FS_DEV: u64 = 7;
+    const INO: u64 = 12;
+    const MODE: u16 = 0o660;
+
+    let driver = Arc::new(VectorChar {
+        vector_calls: AtomicU32::new(0),
+        scalar_calls: AtomicU32::new(0),
+        seen_nonblock: Mutex::new(false),
+        seen_parts: Mutex::new(Vec::new()),
+    });
+    vfs::register_chrdev(MAJOR, driver.clone());
+    let superblock = sb(FS_DEV);
+    let node = make_device_node_inode(
+        INO,
+        FileType::CharDev,
+        Devt::new(MAJOR, MINOR),
+        MODE,
+        Arc::downgrade(&superblock),
+    );
+    let file = File::new(
+        node.clone(),
+        vfs::dcache::d_obtain_alias(node),
+        OpenFlags::O_WRONLY | OpenFlags::O_NONBLOCK,
+    );
+    assert_eq!(file.open_hook(), Ok(()));
+    let parts: [&[u8]; 2] = [b"header", b"body"];
+    assert_eq!(file.write_iter(&parts), Ok(parts.iter().map(|part| part.len()).sum()));
+    assert_eq!(driver.vector_calls.load(Ordering::Acquire), 1);
+    assert_eq!(driver.scalar_calls.load(Ordering::Acquire), 0);
+    assert!(*driver.seen_nonblock.lock().unwrap());
+    assert_eq!(&*driver.seen_parts.lock().unwrap(), &[b"header".to_vec(), b"body".to_vec()]);
+    drop(file);
+    vfs::unregister_chrdev(MAJOR);
+}
+
+struct StreamChar {
+    calls: AtomicU32,
+    offsets: Mutex<Vec<u64>>,
+}
+
+impl CharDevOps for StreamChar {
+    fn write_file(&self, _devt: Devt, _file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.offsets.lock().unwrap().push(off);
+        let call = self.calls.fetch_add(1, Ordering::AcqRel);
+        if call == 1 { return Ok(1); }
+        Ok(buf.len())
+    }
+}
+
+#[test]
+fn chrdev_default_write_iter_retains_scalar_short_write_semantics() {
+    const MAJOR: u32 = 210;
+    const MINOR: u32 = 14;
+    const FS_DEV: u64 = 8;
+    const INO: u64 = 13;
+    const MODE: u16 = 0o660;
+    const START: u64 = 17;
+
+    let driver = Arc::new(StreamChar { calls: AtomicU32::new(0), offsets: Mutex::new(Vec::new()) });
+    vfs::register_chrdev(MAJOR, driver.clone());
+    let superblock = sb(FS_DEV);
+    let node = make_device_node_inode(
+        INO,
+        FileType::CharDev,
+        Devt::new(MAJOR, MINOR),
+        MODE,
+        Arc::downgrade(&superblock),
+    );
+    let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::O_WRONLY);
+    assert_eq!(file.open_hook(), Ok(()));
+    file.set_pos(START);
+    let parts: [&[u8]; 3] = [b"abc", b"def", b"ghi"];
+    assert_eq!(file.write_iter(&parts), Ok(4));
+    assert_eq!(driver.calls.load(Ordering::Acquire), 2);
+    assert_eq!(&*driver.offsets.lock().unwrap(), &[START, START + parts[0].len() as u64]);
+    assert_eq!(file.pos(), START + 4);
+    drop(file);
+    vfs::unregister_chrdev(MAJOR);
+}
