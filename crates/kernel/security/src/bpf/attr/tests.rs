@@ -306,12 +306,29 @@ fn prog_types_without_a_runner_are_not_loadable() {
     // what Linux returns for any type whose CONFIG is not built in.
     assert!(prog_type_supported(uapi::prog_type::SOCKET_FILTER));
     assert!(prog_type_supported(uapi::prog_type::CGROUP_DEVICE));
+    assert!(prog_type_supported(uapi::prog_type::CGROUP_SKB));
+    assert!(prog_type_supported(uapi::prog_type::CGROUP_SOCK_ADDR));
     for t in [uapi::prog_type::UNSPEC, uapi::prog_type::XDP, uapi::prog_type::KPROBE,
-              uapi::prog_type::CGROUP_SKB, uapi::prog_type::CGROUP_SOCK_ADDR,
               uapi::prog_type::SCHED_CLS, uapi::prog_type::TRACING,
               uapi::prog_type::SYSCALL] {
         assert!(!prog_type_supported(t), "type {t} must not be loadable");
     }
+}
+
+#[test]
+fn expected_attach_contract_accepts_arbitrary_device_and_socket_values() {
+    assert_eq!(
+        expected_attach_type_check(uapi::prog_type::CGROUP_DEVICE, 0xfeed),
+        Ok(()),
+    );
+    assert_eq!(
+        expected_attach_type_check(uapi::prog_type::SOCKET_FILTER, 0xbeef),
+        Ok(()),
+    );
+    assert_eq!(
+        expected_attach_type_check(uapi::prog_type::CGROUP_SKB, uapi::attach_type::MAX),
+        Err(Errno::Einval),
+    );
 }
 
 #[test]
@@ -332,13 +349,15 @@ fn lsm_programs_are_not_loadable_because_no_hook_executes_them() {
 // ------------------------------------------------------------ PROG_ATTACH
 
 #[test]
-fn prog_attach_routes_only_the_enforced_device_type() {
+fn prog_attach_routes_implemented_cgroup_types() {
     let a = attr_with(&[(uapi::off::prog_attach::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE)]);
     let ptype = prog_attach_check(&a).expect("attach type resolves");
     assert_eq!(ptype, uapi::prog_type::CGROUP_DEVICE);
-    // The syscall handler routes DEVICE to its cgroup-owned attachment
-    // engine. Types without runtime hooks retain the CONFIG=n verdict.
-    assert_eq!(prog_attach_verdict(uapi::prog_type::CGROUP_SKB), Errno::Einval);
+    let skb = attr_with(&[(
+        uapi::off::prog_attach::ATTACH_TYPE,
+        uapi::attach_type::CGROUP_INET_EGRESS,
+    )]);
+    assert_eq!(prog_attach_check(&skb), Ok(uapi::prog_type::CGROUP_SKB));
 }
 
 #[test]
@@ -358,6 +377,18 @@ fn prog_attach_rejects_trailing_garbage_and_unknown_attach_flags() {
     assert_eq!(prog_attach_check(&a), Err(Errno::Einval));
 }
 
+#[test]
+fn prog_attach_accepts_cgroup_revision_ordering_flag_surface() {
+    use uapi::attach_flags as f;
+    use uapi::off::prog_attach as o;
+    let flags = f::ALLOW_MULTI | f::BEFORE | f::ID | f::PREORDER;
+    let a = attr_with(&[
+        (o::ATTACH_TYPE, uapi::attach_type::CGROUP_INET_EGRESS),
+        (o::ATTACH_FLAGS, flags), (o::RELATIVE_FD, 17),
+    ]);
+    assert_eq!(prog_attach_check(&a), Ok(uapi::prog_type::CGROUP_SKB));
+}
+
 // ------------------------------------------------------------- PROG_QUERY
 
 #[test]
@@ -371,7 +402,7 @@ fn prog_query_needs_net_admin_before_attr_validation() {
 }
 
 #[test]
-fn prog_query_accepts_direct_and_effective_device_views_only() {
+fn prog_query_accepts_implemented_cgroup_attach_views() {
     use uapi::off::prog_query as o;
     let caps = Caps { net_admin: true, ..Caps::default() };
     let direct = attr_with(&[(o::TARGET_FD, 7),
@@ -384,7 +415,10 @@ fn prog_query_accepts_direct_and_effective_device_views_only() {
     assert!(prog_query_check(&effective, caps).is_ok(),
         "target fd resolution precedes the effective pointer constraint");
     let wrong = attr_with(&[(o::ATTACH_TYPE, uapi::attach_type::CGROUP_INET_EGRESS)]);
-    assert_eq!(prog_query_check(&wrong, caps), Err(Errno::Einval));
+    assert_eq!(
+        prog_query_check(&wrong, caps).unwrap().attach_type,
+        uapi::attach_type::CGROUP_INET_EGRESS,
+    );
 }
 
 #[test]
@@ -404,17 +438,26 @@ fn prog_get_fd_by_id_checks_tail_before_sys_admin() {
 // ------------------------------------------------------------ LINK_CREATE
 
 #[test]
-fn link_create_requires_a_known_attach_type_and_zero_flags() {
+fn link_create_decodes_cgroup_ordering_and_revision_union() {
     use uapi::off::link_create as o;
-    let a = attr_with(&[(o::ATTACH_TYPE, uapi::attach_type::LSM_MAC), (o::TARGET_BTF_ID, 1)]);
+    let flags = uapi::attach_flags::BEFORE | uapi::attach_flags::ID
+        | uapi::attach_flags::PREORDER | uapi::attach_flags::LINK;
+    let mut a = attr_with(&[
+        (o::PROG_FD, 3), (o::TARGET_FD, 4),
+        (o::ATTACH_TYPE, uapi::attach_type::CGROUP_DEVICE),
+        (o::FLAGS, flags), (o::CGROUP_RELATIVE_FD, 9),
+    ]);
+    attr_u64(&mut a, o::CGROUP_EXPECTED_REVISION, 27);
     assert_eq!(link_create_check(&a), Ok(LinkCreate {
-        prog_fd: 0, target_fd: 0, attach_type: uapi::attach_type::LSM_MAC, target_btf_id: 1 }));
+        prog_fd: 3, target_fd: 4, attach_type: uapi::attach_type::CGROUP_DEVICE,
+        flags, target_btf_id: 9, relative_fd: 9, expected_revision: 27,
+    }));
+    assert_eq!(cgroup_link_flags_check(flags), Ok(()));
 
-    let bad = attr_with(&[(o::ATTACH_TYPE, uapi::attach_type::MAX)]);
-    assert_eq!(link_create_check(&bad), Err(Errno::Einval));
-
-    let flagged = attr_with(&[(o::ATTACH_TYPE, uapi::attach_type::LSM_MAC), (o::FLAGS, 1)]);
-    assert_eq!(link_create_check(&flagged), Err(Errno::Einval));
+    assert_eq!(
+        cgroup_link_flags_check(flags | uapi::attach_flags::ALLOW_MULTI),
+        Err(Errno::Einval),
+    );
 }
 
 #[test]

@@ -74,14 +74,32 @@ pub fn alloc_ephemeral_udp4(net_ns: u64, bind_ip: Ipv4Addr,
                             mcast: Arc<crate::mcast_filter::SocketMcast>)
     -> Result<(u16, Arc<UdpRxQueue>), NetError>
 {
+    let namespace = if net_ns == 0 { network_namespace::initial() }
+        else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
+    alloc_ephemeral_udp4_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
+        error, iface, reuseaddr, reuseport, ip_mtu_discover, peer, bpf_filter, mcast)
+}
+
+/// Allocate IPv4 UDP state retaining one socket's canonical owner. # C: O(N tries * N_port)
+pub fn alloc_ephemeral_udp4_owned(owner: Arc<crate::SocketOwner>, bind_ip: Ipv4Addr,
+                            error: Arc<crate::SocketError>, iface: Option<NetIfaceId>,
+                            reuseaddr: Arc<core::sync::atomic::AtomicI32>,
+                            reuseport: Arc<core::sync::atomic::AtomicI32>,
+                            ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>>,
+                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                            mcast: Arc<crate::mcast_filter::SocketMcast>)
+    -> Result<(u16, Arc<UdpRxQueue>), NetError>
+{
+    let net_ns = owner.net_ns();
     // Linux `udp_lib_get_port`: `first = reciprocal_scale(get_random_u32(),
     // remaining) + low`. The old sequential counter from a fixed base made a
     // client's source port predictable, which is half of an off-path spoof.
     let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
     for p in crate::secure_seq::bind_port_scan(range.start, range.count()) {
-        if let Ok(endpoint) = crate::global_stack().bind_udp_socket_in(
-            net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
-            ip_mtu_discover.clone(), owner_uid,
+        if let Ok(endpoint) = crate::global_stack().bind_udp_socket_owned(
+            owner.clone(), bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
+            ip_mtu_discover.clone(),
             peer.clone(), bpf_filter.clone(), mcast.clone(),
         ) {
             return Ok((p, endpoint));
@@ -126,11 +144,32 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
                             mcast: Arc<crate::mcast_filter::SocketMcast>)
     -> Result<(u16, Arc<crate::stack_ipv6::Udp6RxQueue>), NetError>
 {
+    let namespace = if net_ns == 0 { network_namespace::initial() }
+        else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
+    alloc_ephemeral_udp6_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
+        error, iface, reuseaddr, reuseport, v6only, peer, ip_mtu_discover,
+        ipv6_mtu_discover, bpf_filter, mcast)
+}
+
+/// Allocate IPv6 UDP state retaining one socket's canonical owner. # C: O(N tries * N_port)
+pub fn alloc_ephemeral_udp6_owned(owner: Arc<crate::SocketOwner>, bind_ip: crate::Ipv6Addr,
+                            error: Arc<crate::SocketError>, iface: Option<NetIfaceId>,
+                            reuseaddr: Arc<core::sync::atomic::AtomicI32>,
+                            reuseport: Arc<core::sync::atomic::AtomicI32>,
+                            v6only: Arc<core::sync::atomic::AtomicI32>,
+                            peer: Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
+                            ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                            mcast: Arc<crate::mcast_filter::SocketMcast>)
+    -> Result<(u16, Arc<crate::stack_ipv6::Udp6RxQueue>), NetError>
+{
+    let net_ns = owner.net_ns();
     // Linux `udp_lib_get_port`, IPv6 side — same randomized start.
     let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
     for p in crate::secure_seq::bind_port_scan(range.start, range.count()) {
-        if let Ok(endpoint) = crate::global_stack().bind_udp6_socket_in(
-            net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(), owner_uid,
+        if let Ok(endpoint) = crate::global_stack().bind_udp6_socket_owned(
+            owner.clone(), bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
             v6only.clone(),
             peer.clone(), ip_mtu_discover.clone(), ipv6_mtu_discover.clone(),
             bpf_filter.clone(), mcast.clone(),

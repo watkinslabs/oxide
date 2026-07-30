@@ -90,11 +90,12 @@ fn trace_uev_bind(nl_groups: u32, via: &[u8]) {
 /// (`ip monitor`, systemd-networkd). `nl_pid` claims one canonical live port
 /// ID in the socket's namespace and protocol domain.
 /// # C: O(1)
-pub fn bind(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
+pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
     const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
-    if addrlen < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
-    let mut address = [0u8; ::netlink::SOCKADDR_NL_SIZE];
-    if uaccess::copy_from_user(&mut address, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let address = storage.as_bytes();
+    if address.len() < ::netlink::SOCKADDR_NL_SIZE {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
     if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
     let port_id = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_PORT_ID_OFFSET
@@ -117,12 +118,11 @@ pub fn bind(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
 /// `connect(fd, sockaddr_nl, addrlen)` for Netlink. Linux persists the
 /// destination in the socket, selects only the first multicast group, and
 /// clears both fields for AF_UNSPEC. # C: O(1)
-pub fn connect(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
+pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
     const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
-    if addrlen < SOCKADDR_FAMILY_BYTES { return -(Errno::Einval.as_i32() as i64); }
-    let mut family = [0u8; SOCKADDR_FAMILY_BYTES];
-    if uaccess::copy_from_user(&mut family, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
-    let family = u16::from_ne_bytes(family);
+    let address = storage.as_bytes();
+    if address.len() < SOCKADDR_FAMILY_BYTES { return -(Errno::Einval.as_i32() as i64); }
+    let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
     let socket = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Connect)
@@ -131,9 +131,9 @@ pub fn connect(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
         return socket.disconnect_destination().map_or_else(crate::net_common::errno_from_neterr, |_| 0);
     }
     if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
-    if addrlen < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
-    let mut address = [0u8; ::netlink::SOCKADDR_NL_SIZE];
-    if uaccess::copy_from_user(&mut address, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    if address.len() < ::netlink::SOCKADDR_NL_SIZE {
+        return -(Errno::Einval.as_i32() as i64);
+    }
     let port_id = u32::from_ne_bytes(address[4..8].try_into().unwrap());
     let groups = u32::from_ne_bytes(address[8..12].try_into().unwrap());
     socket.connect_destination(port_id, groups).map_or_else(crate::net_common::errno_from_neterr, |_| 0)

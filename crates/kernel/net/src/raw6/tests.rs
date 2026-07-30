@@ -46,7 +46,7 @@ fn verdict(_kind: FilterKind, insns: &[u8], ctx: FilterContext<'_>) -> u32 {
 fn packet<'a>(protocol: u8, src: Ipv6Addr, dst: Ipv6Addr, payload: &'a [u8]) -> Raw6RxPacket<'a> {
     Raw6RxPacket {
         net_ns: NET_NS, protocol, src, dst, iface: IFACE, hop_limit: 63,
-        traffic_class: 0x2e, flow_label: 0x12345, hatype: 1, payload,
+        traffic_class: 0x2e, flow_label: 0x12345, hatype: 1, payload, packet: payload,
     }
 }
 

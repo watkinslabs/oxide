@@ -11,8 +11,8 @@ impl InetSocket {
     /// Build a raw IPv4 socket retaining an explicit owner. # C: O(N)
     pub fn new_raw4_in(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
         let sock = Self::new_udp_in(net_namespace);
-        let endpoint = crate::raw4::Raw4Endpoint::new_with_pmtudisc(
-            protocol, sock.net_namespace.clone(),
+        let endpoint = crate::raw4::Raw4Endpoint::new_owned_with_pmtudisc(
+            protocol, sock.owner.clone(),
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
             sock.opts.ip_mtu_discover.clone(),
         );
@@ -32,8 +32,8 @@ impl InetSocket {
     pub fn new_raw6_in(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
         let sock = Self::new_udp_in(net_namespace);
         sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
-        let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new(
-            sock.net_namespace.clone(), protocol,
+        let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new_owned(
+            sock.owner.clone(), protocol,
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
         ));
         endpoint.register_poll_subs(&sock.poll_subs);

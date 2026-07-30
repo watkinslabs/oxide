@@ -144,20 +144,23 @@ pub mod off {
     /// `BPF_LINK_CREATE`;
     /// `LAST_FIELD link_create.uprobe_multi.path_fd` (ends at 64).
     pub mod link_create {
-        pub const PROG_FD:       usize = 0;
-        pub const TARGET_FD:     usize = 4;
-        pub const ATTACH_TYPE:   usize = 8;
-        pub const FLAGS:         usize = 12;
-        pub const TARGET_BTF_ID: usize = 16;
-        pub const LAST_END:      usize = 64;
+        pub const PROG_FD:                 usize = 0;
+        pub const TARGET_FD:               usize = 4;
+        pub const ATTACH_TYPE:             usize = 8;
+        pub const FLAGS:                   usize = 12;
+        pub const TARGET_BTF_ID:           usize = 16;
+        pub const CGROUP_RELATIVE_FD:      usize = 16;
+        pub const CGROUP_EXPECTED_REVISION: usize = 24;
+        pub const LAST_END:                usize = 64;
     }
 }
 
 /// `enum bpf_map_type`.
 pub mod map_type {
-    pub const UNSPEC: u32 = 0;
-    pub const HASH:   u32 = 1;
-    pub const ARRAY:  u32 = 2;
+    pub const UNSPEC:   u32 = 0;
+    pub const HASH:     u32 = 1;
+    pub const ARRAY:    u32 = 2;
+    pub const LPM_TRIE: u32 = 11;
     /// `__MAX_BPF_MAP_TYPE` in v7.2.0-rc4.
     pub const MAX:    u32 = 46;
 }
@@ -203,6 +206,7 @@ pub mod prog_type {
 
 /// `enum bpf_func_id` values implemented by the cgroup-device runner.
 pub mod func_id {
+    pub const MAP_LOOKUP_ELEM:       u32 = 1;
     pub const KTIME_GET_NS:           u32 = 5;
     pub const GET_SMP_PROCESSOR_ID:   u32 = 8;
     pub const GET_CURRENT_PID_TGID:   u32 = 14;
@@ -210,6 +214,10 @@ pub mod func_id {
     pub const GET_NUMA_NODE_ID:       u32 = 42;
     pub const GET_CURRENT_CGROUP_ID:  u32 = 80;
     pub const KTIME_GET_BOOT_NS:      u32 = 125;
+    pub const KTIME_GET_COARSE_NS:    u32 = 160;
+    pub const GET_RETVAL:             u32 = 186;
+    pub const SET_RETVAL:             u32 = 187;
+    pub const SKB_LOAD_BYTES:         u32 = 26;
 }
 
 /// `enum bpf_attach_type` values used by the implemented dispatch paths.
@@ -217,6 +225,10 @@ pub mod attach_type {
     pub const CGROUP_INET_INGRESS: u32 = 0;
     pub const CGROUP_INET_EGRESS:  u32 = 1;
     pub const CGROUP_DEVICE:       u32 = 6;
+    pub const CGROUP_INET4_BIND:   u32 = 8;
+    pub const CGROUP_INET6_BIND:   u32 = 9;
+    pub const CGROUP_INET4_CONNECT: u32 = 10;
+    pub const CGROUP_INET6_CONNECT: u32 = 11;
     pub const LSM_MAC:             u32 = 27;
     /// `__MAX_BPF_ATTACH_TYPE` in v7.2.0-rc4.
     pub const MAX:                 u32 = 62;
@@ -226,6 +238,15 @@ pub mod attach_flags {
     pub const ALLOW_OVERRIDE: u32 = 1 << 0;
     pub const ALLOW_MULTI:    u32 = 1 << 1;
     pub const REPLACE:        u32 = 1 << 2;
+    pub const BEFORE:         u32 = 1 << 3;
+    pub const AFTER:          u32 = 1 << 4;
+    pub const ID:             u32 = 1 << 5;
+    pub const PREORDER:       u32 = 1 << 6;
+    pub const LINK:           u32 = 1 << 13;
+    pub const BASE_MASK: u32 = ALLOW_OVERRIDE | ALLOW_MULTI | REPLACE | PREORDER;
+    pub const ORDER_MASK: u32 = REPLACE | BEFORE | AFTER | ID | LINK;
+    pub const CGROUP_MASK: u32 = BASE_MASK | ORDER_MASK;
+    pub const CGROUP_LINK_MASK: u32 = ID | BEFORE | AFTER | PREORDER | LINK;
 }
 
 pub mod query_flags {
@@ -242,12 +263,21 @@ pub mod map_flags {
     pub const ZERO_SEED:     u32 = 1 << 6;
     pub const RDONLY_PROG:   u32 = 1 << 7;
     pub const WRONLY_PROG:   u32 = 1 << 8;
+    pub const MMAPABLE:      u32 = 1 << 10;
     pub const TOKEN_FD:      u32 = 1 << 16;
     /// `BPF_F_ACCESS_MASK`.
     pub const ACCESS_MASK:   u32 = RDONLY | WRONLY | RDONLY_PROG | WRONLY_PROG;
     /// `HTAB_CREATE_FLAG_MASK` (kernel/bpf/hashtab.c).
     pub const HTAB_CREATE_MASK: u32 =
         NO_PREALLOC | NO_COMMON_LRU | NUMA_NODE | ACCESS_MASK | ZERO_SEED;
+    pub const ARRAY_CREATE_MASK: u32 = NUMA_NODE | ACCESS_MASK;
+    pub const LPM_CREATE_MASK: u32 = NO_PREALLOC | NUMA_NODE | ACCESS_MASK;
+}
+
+/// `src_reg` tags on `BPF_LD_IMM64` map relocations.
+pub mod pseudo {
+    pub const MAP_FD:    u8 = 1;
+    pub const MAP_VALUE: u8 = 2;
 }
 
 /// map element-op `attr.flags` values (the `BPF_ANY` enum).

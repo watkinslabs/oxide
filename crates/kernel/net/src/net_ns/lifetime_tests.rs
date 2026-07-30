@@ -156,6 +156,7 @@ fn private_loopback_snapshot_pins_owner_through_packet_dispatch() {
     rejected.put(1).unwrap()[0] = 1;
     assert_eq!(loopback.xmit(rejected), Err(crate::NetError::Enodev));
     assert_eq!(loopback.rx_len(), 0);
+    drop(endpoint);
     assert!(network_namespace::lookup(id).is_none(), "owner releases after dispatch returns");
     let claimed = network_namespace::take_dead_namespace_ids();
     assert!(claimed.contains(&id));

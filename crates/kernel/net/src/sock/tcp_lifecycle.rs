@@ -19,9 +19,8 @@ pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
     };
     let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
     let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
-    let bind = stack().tcp_reserve_in(sock.net_ns(),
-        ip, requested_port, iface, reuseaddr, reuseport,
-        sock.owner_uid, tcp_v6only(sock, ip))?;
+    let bind = stack().tcp_reserve_owned(sock.owner.clone(), ip, requested_port, iface,
+        reuseaddr, reuseport, tcp_v6only(sock, ip))?;
     *local_port = Some(bind.local.port);
     match ip {
         crate::IpAddr::V4(addr) => *sock.local_ip.lock() = addr,
@@ -43,10 +42,10 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
     let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
     let v6only = tcp_v6only(sock, local_ip);
     let bind = match peer {
-        Some(peer) => stack().tcp_reserve_connect_in(sock.net_ns(), local_ip, 0, iface,
-            reuseaddr, reuseport, sock.owner_uid, v6only, peer)?,
-        None => stack().tcp_reserve_in(sock.net_ns(), local_ip, 0, iface,
-            reuseaddr, reuseport, sock.owner_uid, v6only)?,
+        Some(peer) => stack().tcp_reserve_connect_owned(sock.owner.clone(), local_ip, 0, iface,
+            reuseaddr, reuseport, v6only, peer)?,
+        None => stack().tcp_reserve_owned(sock.owner.clone(), local_ip, 0, iface,
+            reuseaddr, reuseport, v6only)?,
     };
     *local_port = Some(bind.local.port);
     *sock.tcp_bind.lock() = Some(bind.clone());
@@ -82,12 +81,11 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
     Ok(())
 }
 
-fn connect_tcp(sock: &alloc::sync::Arc<InetSocket>, local_ip: crate::IpAddr,
-               remote_ip: crate::IpAddr, remote_port: u16, nonblock: bool)
-    -> Result<(), NetError> {
-    let mut local_port = sock.local_port.lock();
+fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate::IpAddr,
+               remote_ip: crate::IpAddr, remote_port: u16)
+    -> Result<Arc<crate::stack::TcpEntry>, NetError> {
     if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
-    let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, Some((remote_ip, remote_port)))?;
+    let bind = ensure_tcp_bind(sock, local_ip, local_port, Some((remote_ip, remote_port)))?;
     let entry = stack().tcp_connect_reserved_filter_pmtu_modes(
         &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
         sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),
@@ -100,14 +98,12 @@ fn connect_tcp(sock: &alloc::sync::Arc<InetSocket>, local_ip: crate::IpAddr,
         crate::IpAddr::V4(ip) => *sock.peer.lock() = Some((ip, remote_port)),
         crate::IpAddr::V6(ip) => *sock.peer6.lock() = Some((ip, remote_port)),
     }
-    drop(local_port);
-    if nonblock { return Err(NetError::Einprogress); }
-    crate::sock_io::connect_wait_established(sock, &entry)
+    Ok(entry)
 }
 
 /// Select IPv4 source and perform one reservation-backed active open. # C: O(N + RTT)
-pub(super) fn connect_tcp4(sock: &alloc::sync::Arc<InetSocket>, dst_ip: Ipv4Addr,
-                           remote_port: u16, nonblock: bool) -> Result<(), NetError> {
+pub(crate) fn connect_tcp4_locked(sock: &InetSocket, local_port: &mut Option<u16>,
+    dst_ip: Ipv4Addr, remote_port: u16) -> Result<Arc<crate::stack::TcpEntry>, NetError> {
     let net_ns = sock.net_ns();
     let configured = *sock.local_ip.lock();
     let local_ip = if configured != Ipv4Addr::ANY {
@@ -120,12 +116,40 @@ pub(super) fn connect_tcp4(sock: &alloc::sync::Arc<InetSocket>, dst_ip: Ipv4Addr
             .or_else(|| iface_primary_ip(iface.or_else(|| stack().routes.lookup_in(net_ns, dst_ip).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
-    connect_tcp(sock, crate::IpAddr::V4(local_ip), crate::IpAddr::V4(dst_ip), remote_port, nonblock)
+    connect_tcp(sock, local_port, crate::IpAddr::V4(local_ip),
+        crate::IpAddr::V4(dst_ip), remote_port)
+}
+
+/// Perform a mapped TCP6 active open through the retained IPv4 owner. # C: O(N + RTT)
+pub(crate) fn connect_tcp4_mapped_locked(sock: &InetSocket, local_port: &mut Option<u16>,
+    dst_ip: Ipv4Addr, remote_port: u16) -> Result<Arc<crate::stack::TcpEntry>, NetError> {
+    let configured6 = *sock.local_ip6.lock();
+    let configured = match configured6.to_v4_mapped() {
+        Some(ip) => ip,
+        None if configured6 == crate::Ipv6Addr::ANY => Ipv4Addr::ANY,
+        None => return Err(NetError::Eaddrnotavail),
+    };
+    let net_ns = sock.net_ns();
+    let local_ip = if configured != Ipv4Addr::ANY {
+        configured
+    } else if dst_ip.is_loopback() {
+        Ipv4Addr::LOOPBACK
+    } else {
+        let iface = bound_iface(sock)?;
+        stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint)
+            .or_else(|| iface_primary_ip(iface.or_else(|| {
+                stack().routes.lookup_in(net_ns, dst_ip).map(|route| route.iface)
+            })))
+            .unwrap_or(Ipv4Addr::LOOPBACK)
+    };
+    connect_tcp(sock, local_port, crate::IpAddr::V4(local_ip),
+        crate::IpAddr::V4(dst_ip), remote_port)
 }
 
 /// Select IPv6 source and perform one reservation-backed active open. # C: O(N + RTT)
-pub(crate) fn connect_tcp6(sock: &alloc::sync::Arc<InetSocket>, dst_ip: crate::Ipv6Addr,
-                           remote_port: u16, nonblock: bool) -> Result<(), NetError> {
+pub(crate) fn connect_tcp6_locked(sock: &InetSocket, local_port: &mut Option<u16>,
+    dst_ip: crate::Ipv6Addr, remote_port: u16)
+    -> Result<Arc<crate::stack::TcpEntry>, NetError> {
     let configured = *sock.local_ip6.lock();
     let local_ip = if configured != crate::Ipv6Addr::ANY {
         configured
@@ -134,5 +158,6 @@ pub(crate) fn connect_tcp6(sock: &alloc::sync::Arc<InetSocket>, dst_ip: crate::I
     } else {
         crate::Ipv6Addr::ANY
     };
-    connect_tcp(sock, crate::IpAddr::V6(local_ip), crate::IpAddr::V6(dst_ip), remote_port, nonblock)
+    connect_tcp(sock, local_port, crate::IpAddr::V6(local_ip),
+        crate::IpAddr::V6(dst_ip), remote_port)
 }

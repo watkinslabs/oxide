@@ -57,19 +57,15 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                 if local_port.is_some() || sock.udp4.lock().is_some() { return Err(NetError::Einval); }
                 let iface = bound_iface(sock)?;
                 let (port, endpoint) = if port == 0 {
-                    alloc_ephemeral_udp4(sock.net_ns(),
-                                         ip, sock.error.clone(), iface,
+                    alloc_ephemeral_udp4_owned(sock.owner.clone(), ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                                          sock.opts.ip_mtu_discover.clone(),
-                                         sock.owner_uid,
                                          sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
-                    (port, stack().bind_udp_socket_in(
-                        sock.net_ns(),
-                        ip, port, iface, sock.error.clone(),
+                    (port, stack().bind_udp_socket_owned(
+                        sock.owner.clone(), ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                         sock.opts.ip_mtu_discover.clone(),
-                        sock.owner_uid,
                         sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };
@@ -91,20 +87,16 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                 if local_port.is_some() || sock.udp6.lock().is_some() { return Err(NetError::Einval); }
                 let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
                 let (port, endpoint) = if port == 0 {
-                    alloc_ephemeral_udp6(sock.net_ns(),
-                                         ip, sock.error.clone(), iface,
+                    alloc_ephemeral_udp6_owned(sock.owner.clone(), ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
-                                         sock.owner_uid,
                                          sock.opts.ipv6_v6only.clone(),
                                          sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                                          sock.opts.ipv6_mtu_discover.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
-                    (port, stack().bind_udp6_socket_in(
-                        sock.net_ns(),
-                        ip, port, iface, sock.error.clone(),
+                    (port, stack().bind_udp6_socket_owned(
+                        sock.owner.clone(), ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
-                        sock.owner_uid,
                         sock.opts.ipv6_v6only.clone(),
                         sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                         sock.opts.ipv6_mtu_discover.clone(),
@@ -142,17 +134,16 @@ fn disconnect_tcp(entry: &alloc::sync::Arc<TcpEntry>) {
 
 /// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
 pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: bool) -> Result<(), NetError> {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Connect,
-    };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
+    let admission = super::admit_connect(sock)?;
+    connect_admitted(sock, addr, nonblock, admission)
+}
+
+/// Connect after canonical generic security admission. # C: O(1) or O(wait)
+pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: bool,
+                        admission: ConnectAdmission) -> Result<(), NetError> {
     match addr {
         RemoteAddr::Unspec => {
+            let _lifecycle = sock.local_port.lock();
             enum Disc {
                 Udp,
                 UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
@@ -204,35 +195,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
             }
         }
         RemoteAddr::Unix(addr) => super::unix::connect(sock, addr, nonblock),
-        RemoteAddr::Inet { ip: dst_ip, port } => {
-            if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
-                let iface = bound_iface(sock)?;
-                if dst_ip.is_broadcast() && sock.opts.broadcast.load(
-                    core::sync::atomic::Ordering::Acquire) == 0 { return Err(NetError::Eacces); }
-                return endpoint.connect_routed(dst_ip, iface);
-            }
-            {
-                let kind = sock.kind.lock();
-                match &*kind {
-                    SockKind::Udp => {
-                        drop(kind);
-                        sock.ensure_bound()?;
-                        *sock.peer.lock() = Some((dst_ip, port));
-                        return Ok(());
-                    }
-                    SockKind::TcpConn(e) => {
-                        let st = e.conn.lock().state;
-                        if st == crate::tcp_state::TcpState::Established { return Err(NetError::Eisconn); }
-                        return Err(NetError::Ealready);
-                    }
-                    SockKind::TcpListener(_) => return Err(NetError::Einval),
-                    _ => {}
-                }
-            }
-            super::tcp_lifecycle::connect_tcp4(sock, dst_ip, port, nonblock)
-        }
-        RemoteAddr::Inet6 { ip, port, scope_id } =>
-            crate::sock_v6::connect_v6(sock, ip, port, scope_id, nonblock),
+        addr @ (RemoteAddr::Inet { .. } | RemoteAddr::Inet6 { .. }) =>
+            super::preflight_connect_admitted(sock, admission)?.commit(addr, nonblock),
     }
 }
 

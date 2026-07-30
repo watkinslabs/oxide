@@ -25,6 +25,10 @@
 
 extern crate alloc;
 
+#[path = "bpf_interp/memory.rs"]
+mod memory;
+use memory::{Context, RunMemory};
+
 pub const NUM_REGS: usize = 11;
 pub const STACK_BYTES: usize = 512;
 pub const STEP_BUDGET: u32 = 1_000_000;
@@ -107,38 +111,6 @@ fn mem_size(opcode: u8) -> Option<usize> {
     Some(match (opcode >> 3) & 0x03 { 0 => 4, 1 => 2, 2 => 1, 3 => 8, _ => return None })
 }
 
-/// Read `size` bytes from a BPF address — the stack or the read-only ctx
-/// (pkt) — zero-extended to i64. None on OOB. # C: O(size)
-fn mem_read(addr: i64, size: usize, stack: &[u8], pkt: &[u8]) -> Option<i64> {
-    let a = addr as u64;
-    let (buf, off): (&[u8], usize) = if a >= crate::bpf_layout::STACK_BASE && a < crate::bpf_layout::STACK_BASE + STACK_SIZE as u64 {
-        (stack, (a - crate::bpf_layout::STACK_BASE) as usize)
-    } else {
-        (pkt, usize::try_from(addr).ok()?)
-    };
-    if off.checked_add(size)? > buf.len() { return None; }
-    Some(match size {
-        1 => buf[off] as i64,
-        2 => u16::from_le_bytes([buf[off], buf[off + 1]]) as i64,
-        4 => u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]) as i64,
-        8 => u64::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3],
-                                 buf[off+4], buf[off+5], buf[off+6], buf[off+7]]) as i64,
-        _ => return None,
-    })
-}
-
-/// Write `size` bytes of `val` to a BPF stack address. Only the stack is
-/// writable — a store to ctx is rejected. None on OOB. # C: O(size)
-fn mem_write(addr: i64, size: usize, val: i64, stack: &mut [u8]) -> Option<()> {
-    let a = addr as u64;
-    if a < crate::bpf_layout::STACK_BASE || a >= crate::bpf_layout::STACK_BASE + STACK_SIZE as u64 { return None; }
-    let off = (a - crate::bpf_layout::STACK_BASE) as usize;
-    if off.checked_add(size)? > stack.len() { return None; }
-    let v = val as u64;
-    for k in 0..size { stack[off + k] = (v >> (k * 8)) as u8; }
-    Some(())
-}
-
 /// Apply an ALU op. `is64` false → 32-bit (operate on low 32, zero-extend).
 /// DIV/MOD are UNSIGNED (eBPF); div-by-0 → 0, mod-by-0 → dst (Linux). NEG is
 /// unary. # C: O(1)
@@ -182,6 +154,13 @@ fn alu(op: u8, dst: i64, rhs: i64, is64: bool) -> Option<i64> {
         };
         Some(r as i64) // 32-bit results are zero-extended to 64
     }
+}
+
+/// Constant-folding hook shared with the verifier. This never executes a
+/// program; it only avoids discarding scalar constants unnecessarily.
+/// # C: O(1)
+pub(crate) fn verify_alu(op: u8, dst: i64, rhs: i64, is64: bool) -> Option<i64> {
+    alu(op, dst, rhs, is64)
 }
 
 /// BPF_END converts the low 16/32/64 bits to the byte order selected by the
@@ -246,6 +225,11 @@ fn jmp_take(op: u8, lhs: i64, rhs: i64, is64: bool) -> Option<bool> {
     Some(take)
 }
 
+/// Preserve exact scalar branch feasibility for verifier path states. # C: O(1)
+pub(crate) fn verify_jump(op: u8, lhs: i64, rhs: i64, is64: bool) -> Option<bool> {
+    jmp_take(op, lhs, rhs, is64)
+}
+
 #[derive(Copy, Clone)]
 struct Insn { opcode: u8, dst: u8, src: u8, off: i16, imm: i32 }
 
@@ -257,6 +241,13 @@ fn decode(bytes: &[u8]) -> Insn {
         off:    i16::from_le_bytes([bytes[2], bytes[3]]),
         imm:    i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
     }
+}
+
+fn coarse_monotonic_ns() -> i64 {
+    #[cfg(target_os = "oxide-kernel")]
+    { sched::live::timer_list::now_ns() as i64 }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
 }
 
 /// Run an eBPF program. Returns `Some(r0)` on EXIT, `None` on
@@ -286,6 +277,42 @@ pub fn run_with_helpers_and_state(
     helpers: &[Helper],
     helper_state: &mut HelperState,
 ) -> Option<i64> {
+    let memory = RunMemory::new(Context::ReadOnly(pkt), pkt, &[]);
+    run_inner(insns, helpers, helper_state, memory)
+}
+
+/// Run a loaded program with its relocated maps and a distinct read-only
+/// program context and packet backing `bpf_skb_load_bytes`.
+/// # C: O(insn count × step budget)
+pub fn run_program_with_state(
+    prog: &crate::bpf::BpfProgInode,
+    context: &[u8],
+    packet: &[u8],
+    helpers: &[Helper],
+    helper_state: &mut HelperState,
+) -> Option<i64> {
+    let memory = RunMemory::new(Context::ReadOnly(context), packet, &prog.maps);
+    run_inner(&prog.insns, helpers, helper_state, memory)
+}
+
+/// Mutable-context variant for `BPF_PROG_TYPE_CGROUP_SOCK_ADDR`.
+/// # C: O(insn count × step budget)
+pub fn run_program_mut_with_state(
+    prog: &crate::bpf::BpfProgInode,
+    context: &mut [u8],
+    helpers: &[Helper],
+    helper_state: &mut HelperState,
+) -> Option<i64> {
+    let memory = RunMemory::new(Context::ReadWrite(context), &[], &prog.maps);
+    run_inner(&prog.insns, helpers, helper_state, memory)
+}
+
+fn run_inner(
+    insns: &[u8],
+    helpers: &[Helper],
+    helper_state: &mut HelperState,
+    mut memory: RunMemory<'_>,
+) -> Option<i64> {
     if insns.is_empty() || insns.len() % 8 != 0 { return None; }
     let n = insns.len() / 8;
 
@@ -309,8 +336,19 @@ pub fn run_with_helpers_and_state(
         }
         if i.opcode == BPF_CALL {
             let id = i.imm as u32;
-            let h = helpers.iter().find(|h| h.id == id)?;
-            regs[0] = (h.f)(helper_state, regs[1], regs[2], regs[3], regs[4], regs[5]);
+            regs[0] = match id {
+                crate::bpf::uapi::func_id::MAP_LOOKUP_ELEM => {
+                    memory.map_lookup(regs[1], regs[2], &stack)
+                }
+                crate::bpf::uapi::func_id::SKB_LOAD_BYTES => {
+                    memory.skb_load_bytes(regs[2], regs[3], regs[4], &mut stack)
+                }
+                crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS => coarse_monotonic_ns(),
+                _ => {
+                    let h = helpers.iter().find(|h| h.id == id)?;
+                    (h.f)(helper_state, regs[1], regs[2], regs[3], regs[4], regs[5])
+                }
+            };
             regs[1..=5].fill(0);
             pc += 1;
             continue;
@@ -354,30 +392,43 @@ pub fn run_with_helpers_and_state(
                 // or read-only ctx (R1/pkt) per the address range.
                 let size = mem_size(i.opcode)?;
                 let addr = regs[i.src as usize].wrapping_add(i.off as i64);
-                regs[i.dst as usize] = mem_read(addr, size, &stack, pkt)?;
+                regs[i.dst as usize] = memory.read(addr, size, &stack)?;
                 pc += 1;
             }
             BPF_STX => {
-                // Store src_reg to [dst_reg + off] (writable stack only).
-                let size = mem_size(i.opcode)?;
                 let addr = regs[i.dst as usize].wrapping_add(i.off as i64);
-                mem_write(addr, size, regs[i.src as usize], &mut stack)?;
+                if i.opcode & 0xe0 == 0xc0 {
+                    let size = match (i.opcode >> 3) & 3 {
+                        0 => 4,
+                        3 => 8,
+                        _ => return None,
+                    };
+                    if i.imm != 0 { return None; }
+                    memory.atomic_add(addr, size, regs[i.src as usize])?;
+                } else {
+                    let size = mem_size(i.opcode)?;
+                    memory.write(addr, size, regs[i.src as usize], &mut stack)?;
+                }
                 pc += 1;
             }
             BPF_ST => {
                 // Store imm to [dst_reg + off] (writable stack only).
                 let size = mem_size(i.opcode)?;
                 let addr = regs[i.dst as usize].wrapping_add(i.off as i64);
-                mem_write(addr, size, i.imm as i64, &mut stack)?;
+                memory.write(addr, size, i.imm as i64, &mut stack)?;
                 pc += 1;
             }
             BPF_LD => {
                 if i.opcode != BPF_LD_IMM_DW { return None; }
                 if pc + 1 >= n { return None; }
                 let nxt = decode(&insns[(pc + 1) * 8 .. (pc + 2) * 8]);
-                let lo = i.imm as u32 as u64;
-                let hi = nxt.imm as u32 as u64;
-                regs[i.dst as usize] = ((hi << 32) | lo) as i64;
+                regs[i.dst as usize] = if i.src == 0 {
+                    let lo = i.imm as u32 as u64;
+                    let hi = nxt.imm as u32 as u64;
+                    ((hi << 32) | lo) as i64
+                } else {
+                    memory.pseudo(i.src, i.imm, nxt.imm)?
+                };
                 pc += 2;
             }
             _ => return None,

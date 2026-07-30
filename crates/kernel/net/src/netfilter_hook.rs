@@ -67,6 +67,7 @@ pub(crate) fn swap_nf_hook(hook: Option<NfHookFn>) -> Option<NfHookFn> {
 /// Returns NF_ACCEPT (1) when no hook is installed so the default-accept
 /// path still works without netfilter wired.
 /// # C: O(1) when no hook; otherwise O(eval)
+#[cfg(any(test, feature = "hosted"))]
 pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
     nf_hook_eval_in(0, hook_id, pkt, family)
 }
@@ -112,14 +113,19 @@ pub const NF_INET_POST_ROUTING: u32 = 4;
 /// matching Linux NF_DROP.
 /// # C: O(eval) ×2
 pub(crate) fn nf_output(p: &Pkt, family: u8) -> bool {
+    nf_output_in(crate::netdev::current_net_ns(), p, family)
+}
+
+/// Netfilter output under the retained socket namespace. # C: O(eval) ×2
+pub(crate) fn nf_output_in(namespace: u64, p: &Pkt, family: u8) -> bool {
     let context = security::network::Context {
-        namespace: crate::netdev::current_net_ns(),
+        namespace,
         family: family as u16, socket_type: 0, protocol: 0,
         operation: security::network::Operation::Send,
     };
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return false;
     }
-    nf_hook_eval(NF_INET_LOCAL_OUT, p.data(), family) != 0
-        && nf_hook_eval(NF_INET_POST_ROUTING, p.data(), family) != 0
+    nf_hook_eval_in(namespace, NF_INET_LOCAL_OUT, p.data(), family) != 0
+        && nf_hook_eval_in(namespace, NF_INET_POST_ROUTING, p.data(), family) != 0
 }
