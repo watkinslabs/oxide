@@ -32,6 +32,9 @@ impl NetStack {
                 let Some(typ) = full.get(normalized.ihl_bytes()) else { continue };
                 if !endpoint.accepts_icmp_type(*typ) { continue; }
             }
+            if !crate::cgroup_bpf::ingress(
+                &endpoint.owner, full, eth_p::IPV4, iface,
+            ) { continue; }
             let verdict = endpoint.bpf_filter.verdict_with_context(FilterContext {
                 packet: full,
                 protocol: eth_p::IPV4,

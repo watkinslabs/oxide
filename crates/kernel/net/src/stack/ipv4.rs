@@ -78,33 +78,40 @@ impl NetStack {
         } else { ttl };
         self.xmit_ipv4_l4_with_policy(
             route.iface, iface, next_hop, src, dst, proto, l4, tos, ttl, id, mtu, false, true,
-        )
+            None,
+        ).map(|_| ())
     }
 
     fn xmit_ipv4_l4_with_policy(&self, iface_id: NetIfaceId,
         iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize, df: bool,
-        may_fragment: bool) -> NetResult<()>
+        may_fragment: bool, owner: Option<&crate::SocketOwner>)
+        -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
-        if l4.len() + IPV4_HDR_LEN <= mtu {
-            let total = IPV4_HDR_LEN + l4.len();
-            let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
-            p.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
-            if df {
-                const IPV4_DF: u16 = 0x4000;
-                crate::ipv4::push_ipv4_header_tos_ttl_frag(
-                    &mut p, src, dst, proto, id, tos, ttl, IPV4_DF,
-                ).map_err(|_| NetError::Enobufs)?;
-            } else {
-                crate::ipv4::push_ipv4_header_tos_ttl_frag(
-                    &mut p, src, dst, proto, id, tos, ttl, 0,
-                ).map_err(|_| NetError::Enobufs)?;
-            }
-            p.proto = crate::addr::eth_p::IPV4;
-            p.iface = Some(iface_id);
-            p.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
-            if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
-            return iface.xmit(p);
+        let total = IPV4_HDR_LEN + l4.len();
+        let mut full = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
+        full.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
+        let flags = if df { 0x4000 } else { 0 };
+        crate::ipv4::push_ipv4_header_tos_ttl_frag(
+            &mut full, src, dst, proto, id, tos, ttl, flags,
+        ).map_err(|_| NetError::Enobufs)?;
+        full.proto = crate::addr::eth_p::IPV4;
+        full.iface = Some(iface_id);
+        full.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
+        let net_ns = owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns);
+        if !crate::netfilter_hook::nf_output_in(net_ns, &full, NFPROTO_IPV4) {
+            return Ok(crate::cgroup_bpf::EgressVerdict::Allow);
+        }
+        let verdict = if let Some(owner) = owner {
+            crate::cgroup_bpf::egress(
+                owner, full.data(), crate::addr::eth_p::IPV4, iface_id,
+            )?
+        } else {
+            crate::cgroup_bpf::EgressVerdict::Allow
+        };
+        if total <= mtu {
+            iface.xmit(full)?;
+            return Ok(verdict);
         }
 
         if !may_fragment { return Err(NetError::Emsgsize); }
@@ -124,18 +131,17 @@ impl NetStack {
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);
             p.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
-            if nf_output(&p, NFPROTO_IPV4) {
-                iface.xmit(p)?;
-            }
+            iface.xmit(p)?;
             off += take;
         }
-        Ok(())
+        Ok(verdict)
     }
 
     /// Transmit one TCP/IPv4 segment using the selected socket PMTU mode. # C: O(payload + N)
     pub(super) fn send_tcp_ipv4_segment_in(&self, net_ns: u64, src: Ipv4Addr,
-        dst: Ipv4Addr, l4: &[u8], tos: u8, bound: Option<NetIfaceId>, mode: i32)
-        -> NetResult<()>
+        dst: Ipv4Addr, l4: &[u8], tos: u8, bound: Option<NetIfaceId>, mode: i32,
+        owner: Option<&crate::SocketOwner>)
+        -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
         let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
         let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
@@ -144,7 +150,7 @@ impl NetStack {
         self.xmit_ipv4_l4_with_policy(
             route.iface, iface, next_hop, src, dst, IpProto::Tcp, l4, tos,
             route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL),
-            self.next_ipv4_id(), mtu, df, may_fragment,
+            self.next_ipv4_id(), mtu, df, may_fragment, owner,
         )
     }
 
@@ -161,6 +167,22 @@ impl NetStack {
     pub fn send_udp_pmtu_to_bound_opts_in(&self, net_ns: u64, src: Ipv4Addr, src_port: u16,
         dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
+        self.send_udp_pmtu_to_bound_opts_owner(None, net_ns, src, src_port, dst, dst_port,
+            payload, bound, tos, ttl, mode)
+    }
+
+    /// Build and transmit socket-owned UDP/IPv4. # C: O(payload + N)
+    pub fn send_udp_pmtu_to_bound_opts_owned(&self, owner: &crate::SocketOwner,
+        src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16, payload: &[u8],
+        bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
+        self.send_udp_pmtu_to_bound_opts_owner(Some(owner), owner.net_ns(), src, src_port,
+            dst, dst_port, payload, bound, tos, ttl, mode)
+    }
+
+    fn send_udp_pmtu_to_bound_opts_owner(&self, owner: Option<&crate::SocketOwner>,
+        net_ns: u64, src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16,
+        payload: &[u8], bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32)
+        -> NetResult<()> {
         let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
         let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
             net_ns, route, dst, iface.mtu(), mode,
@@ -175,8 +197,8 @@ impl NetStack {
             if ttl == 0 {
                 route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL)
             } else { ttl }, id,
-            mtu, df, may_fragment,
-        )
+            mtu, df, may_fragment, owner,
+        ).map(|_| ())
     }
 
     // F180b: send_l4 in stack_ipv6.rs.
@@ -204,21 +226,31 @@ impl NetStack {
         if total > l3.len() { return Err(NetError::Einval); }
         let frag_payload = &l3[hdr.ihl_bytes() .. total];
         let assembled;
+        let reassembled_packet;
         let mf = (hdr.flags_frag & 0x2000) != 0;
         let off8 = (hdr.flags_frag & 0x1FFF) as usize;
-        let payload: &[u8] = if mf || off8 != 0 {
+        let (payload, full_packet): (&[u8], &[u8]) = if mf || off8 != 0 {
             self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns());
             let k = crate::ipv4_reasm::ReasmKey {
                 net_ns, domain: 0, iface: Some(iface), src: hdr.src, dst: hdr.dst,
                 proto: hdr.proto, id: hdr.id,
             };
-            match self.ipv4_reasm.push(k, net_now_ns(), off8 * 8, frag_payload, mf) {
-                Some(b) => { assembled = b; &assembled[..] }
+            let prefix = (off8 == 0).then_some(&l3[..hdr.ihl_bytes()]);
+            match self.ipv4_reasm.push_with_prefix(
+                k, net_now_ns(), off8 * 8, prefix, frag_payload, mf,
+            ) {
+                Some((header, b)) => {
+                    assembled = b;
+                    let Some(packet) = crate::cgroup_bpf::reassembled_ipv4(&header, &assembled)
+                        else { return Err(NetError::Einval); };
+                    reassembled_packet = packet;
+                    (&assembled[..], &reassembled_packet[..])
+                }
                 None    => return Ok(()),
             }
         } else {
             self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns());
-            frag_payload
+            (frag_payload, &l3[..total])
         };
         match hdr.proto {
             p if p == IpProto::Icmp as u8 => {
@@ -262,6 +294,9 @@ impl NetStack {
                     if hdr.dst.is_multicast() {
                         if !q.mcast.accept_v4(iface, hdr.dst, hdr.src) { continue; }
                     }
+                    if !crate::cgroup_bpf::ingress(
+                        &q.owner, full_packet, crate::addr::eth_p::IPV4, iface,
+                    ) { continue; }
                     let packet = &payload[..udp.length as usize];
                     let body = &packet[crate::udp::UDP_HDR_LEN..];
                     let Some(keep) = crate::bpf_filter::retained_payload_len(
@@ -281,6 +316,9 @@ impl NetStack {
                     self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface)
                 } else { Vec::new() };
                 for q in endpoints6 {
+                    if !crate::cgroup_bpf::ingress(
+                        &q.owner, full_packet, crate::addr::eth_p::IPV4, iface,
+                    ) { continue; }
                     let packet = &payload[..udp.length as usize];
                     let body = &packet[crate::udp::UDP_HDR_LEN..];
                     let Some(keep) = crate::bpf_filter::retained_payload_len(
@@ -300,7 +338,8 @@ impl NetStack {
                 }
             }
             p if p == IpProto::Tcp as u8 =>
-                self.deliver_tcp(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst), payload)?,
+                self.deliver_tcp_packet(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
+                    payload, full_packet)?,
             p if p == IpProto::Igmp as u8 => {
                 if hdr.ttl == 1 && ipv4_has_router_alert(&l3[IPV4_HDR_LEN..hdr.ihl_bytes()]) {
                     self.handle_igmp(iface, hdr.src, hdr.dst, payload)?;

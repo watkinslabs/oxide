@@ -1075,6 +1075,7 @@ name = "net"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "cgroup",
  "crng",
  "hal",
  "hal-aarch64",
@@ -1523,6 +1524,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "uaccess",
  "vfs",
 ]
 

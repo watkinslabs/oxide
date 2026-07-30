@@ -15,6 +15,7 @@
 //! executes and reject unsafe register, context, control-flow, and field use.
 
 extern crate alloc;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 pub const BPF_INSN_SIZE: usize = 8;
@@ -42,6 +43,9 @@ const BPF_JA:   u8 = 0x05; // BPF_JMP | BPF_JA  = 0x05<<4 | 0x05 ? — see notes
 const BPF_OP_EXIT: u8 = 0x95;
 const BPF_OP_CALL: u8 = 0x85;
 
+#[path = "bpf_verify/loops.rs"]
+mod loops;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VerifyError {
     Empty,
@@ -57,6 +61,7 @@ pub enum VerifyError {
     UnsafeStackAccess,
     UninitializedStack,
     UnreachableInsn,
+    NoMemory,
 }
 
 const MAX_INSNS: usize = 1_000_000;
@@ -74,6 +79,30 @@ fn decode(bytes: &[u8]) -> Insn {
     }
 }
 
+fn try_vec<T>(capacity: usize) -> Result<Vec<T>, VerifyError> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|_| VerifyError::NoMemory)?;
+    Ok(values)
+}
+
+fn try_filled_vec<T: Clone>(len: usize, value: T) -> Result<Vec<T>, VerifyError> {
+    let mut values = try_vec(len)?;
+    values.resize(len, value);
+    Ok(values)
+}
+
+fn try_queue<T>(capacity: usize) -> Result<VecDeque<T>, VerifyError> {
+    let mut queue = VecDeque::new();
+    queue.try_reserve_exact(capacity).map_err(|_| VerifyError::NoMemory)?;
+    Ok(queue)
+}
+
+fn decode_all(insns: &[u8]) -> Result<Vec<Insn>, VerifyError> {
+    let mut decoded = try_vec(insns.len() / BPF_INSN_SIZE)?;
+    decoded.extend(insns.chunks_exact(BPF_INSN_SIZE).map(decode));
+    Ok(decoded)
+}
+
 /// Run the structural verifier on a raw insn buffer (little-endian
 /// 8-byte slots). Returns Ok on accept, Err on reject. No mutation.
 /// # C: O(insn_cnt)
@@ -83,13 +112,10 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
     let n = insns.len() / BPF_INSN_SIZE;
     if n > MAX_INSNS { return Err(VerifyError::TooManyInsns); }
 
-    let decoded: Vec<Insn> = (0..n)
-        .map(|i| decode(&insns[i * BPF_INSN_SIZE .. (i + 1) * BPF_INSN_SIZE]))
-        .collect();
-
     let mut pc = 0usize;
     while pc < n {
-        let insn = decoded[pc];
+        let start = pc * BPF_INSN_SIZE;
+        let insn = decode(&insns[start..start + BPF_INSN_SIZE]);
         if insn.dst > MAX_REG || insn.src > MAX_REG {
             return Err(VerifyError::BadReg);
         }
@@ -126,9 +152,13 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
         pc += 1;
     }
 
-    // Program encoding ends with the return-path terminator.
-    let last = decoded[n - 1];
-    if last.opcode != BPF_EXIT { return Err(VerifyError::LastNotExit); }
+    // Linux permits a final JMP as well as EXIT (verifier.c
+    // `check_cfg()`); clang uses a final backward JA to share an EXIT block.
+    let last = decode(&insns[(n - 1) * BPF_INSN_SIZE..n * BPF_INSN_SIZE]);
+    if last.opcode != BPF_EXIT
+        && (last.opcode & BPF_CLASS_MASK != BPF_JMP || last.opcode == BPF_OP_CALL) {
+        return Err(VerifyError::LastNotExit);
+    }
     Ok(())
 }
 
@@ -136,15 +166,21 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
 pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
     verify(insns)?;
     let n = insns.len() / BPF_INSN_SIZE;
+    let decoded = decode_all(insns)?;
+    let mut pseudo_slots = try_filled_vec(n, false)?;
     let mut pc = 0usize;
     while pc < n {
-        let insn = decode(&insns[pc * BPF_INSN_SIZE..(pc + 1) * BPF_INSN_SIZE]);
+        let insn = decoded[pc];
         if insn.opcode == BPF_LD_IMM_DW {
-            if insn.src != 0 { return Err(VerifyError::UnsupportedOpcode); }
+            if !matches!(insn.src, 0 | crate::bpf::uapi::pseudo::MAP_FD
+                | crate::bpf::uapi::pseudo::MAP_VALUE) {
+                return Err(VerifyError::UnsupportedOpcode);
+            }
             let pseudo = decode(&insns[(pc + 1) * BPF_INSN_SIZE..(pc + 2) * BPF_INSN_SIZE]);
             if pseudo.opcode != 0 || pseudo.dst != 0 || pseudo.src != 0 || pseudo.off != 0 {
                 return Err(VerifyError::UnsupportedOpcode);
             }
+            pseudo_slots[pc + 1] = true;
             pc += 2;
             continue;
         }
@@ -156,7 +192,11 @@ pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
                 | 0x60 | 0x70 | 0x80 | 0x90 | 0xa0 | 0xb0 | 0xc0)
                 && (op != 0x80 || src == 0),
             BPF_JMP | BPF_JMP32 => {
-                insn.opcode == BPF_OP_EXIT || (insn.opcode != BPF_OP_CALL
+                insn.opcode == BPF_OP_EXIT
+                    || (insn.opcode == BPF_OP_CALL
+                        && insn.dst == 0 && insn.src == 0 && insn.off == 0
+                        && insn.imm == crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS as i32)
+                    || (insn.opcode != BPF_OP_CALL
                     && matches!(op, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50
                         | 0x60 | 0x70 | 0xa0 | 0xb0 | 0xc0 | 0xd0)
                     && (op != 0 || src == 0))
@@ -167,12 +207,16 @@ pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
         if !supported { return Err(VerifyError::UnsupportedOpcode); }
         pc += 1;
     }
-    Ok(())
+    loops::validate(&decoded, &pseudo_slots)
 }
 
 #[path = "bpf_verify/cgroup_device.rs"]
 mod cgroup_device;
 pub use cgroup_device::verify_cgroup_device;
+
+#[path = "bpf_verify/cgroup_network.rs"]
+mod cgroup_network;
+pub use cgroup_network::verify_cgroup_network;
 
 #[cfg(test)]
 mod tests {
@@ -194,6 +238,14 @@ mod tests {
     #[test]
     fn empty_program_rejected() {
         assert_eq!(verify(&[]), Err(VerifyError::Empty));
+    }
+
+    #[test]
+    fn verifier_workspace_capacity_failure_is_reported() {
+        assert!(matches!(
+            try_vec::<u8>(usize::MAX),
+            Err(VerifyError::NoMemory),
+        ));
     }
 
     #[test]
@@ -261,11 +313,32 @@ mod tests {
     }
 
     #[test]
-    fn socket_filter_rejects_helper_call_and_unsupported_load_at_load_time() {
+    fn socket_filter_accepts_coarse_time_and_rejects_other_helpers() {
+        let coarse = cat(&[
+            raw(0x85, 0, 0, 0, crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS as i32),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(verify_socket_filter(&coarse), Ok(()));
         let call = cat(&[raw(0x85, 0, 0, 0, 1), raw(0x95, 0, 0, 0, 0)]);
         assert_eq!(verify_socket_filter(&call), Err(VerifyError::UnsupportedOpcode));
+    }
+
+    #[test]
+    fn socket_filter_rejects_unsupported_load_at_load_time() {
         let abs = cat(&[raw(0x20, 0, 0, 0, 0), raw(0x95, 0, 0, 0, 0)]);
         assert_eq!(verify_socket_filter(&abs), Err(VerifyError::UnsupportedOpcode));
+    }
+
+    #[test]
+    fn socket_filter_rejects_an_unproved_backward_cycle() {
+        let infinite = cat(&[
+            raw(0x05, 0, 0, -1, 0),
+            raw(0x95, 0, 0, 0, 0),
+        ]);
+        assert_eq!(
+            verify_socket_filter(&infinite),
+            Err(VerifyError::UnsupportedOpcode),
+        );
     }
 
 }

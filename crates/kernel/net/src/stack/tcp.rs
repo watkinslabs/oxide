@@ -3,46 +3,6 @@ use super::*;
 use super::tcp_tx::TcpTxPolicy;
 
 impl NetStack {
-    /// Open an active TCP connection from `local` to `remote`.
-    /// Emits the SYN, parks the half-open conn in the demux table.
-    /// Caller (`sock::connect`) parks on `entry.rx_waiters` for the
-    /// SYN-ACK; `tcp_retx_tick` handles SYN retransmission on RTO.
-    /// # C: O(log N) demux insert + 1 segment xmit
-    pub fn tcp_connect(&self, local_ip: Ipv4Addr, local_port: u16,
-                        remote_ip: Ipv4Addr, remote_port: u16)
-        -> NetResult<Arc<TcpEntry>>
-    {
-        self.tcp_connect_ip(
-            IpAddr::V4(local_ip), local_port,
-            IpAddr::V4(remote_ip), remote_port,
-        )
-    }
-
-    /// F180b: address-family-aware active open (v4+v6). # C: O(log N).
-    pub fn tcp_connect_ip(&self, local_ip: IpAddr, local_port: u16,
-                           remote_ip: IpAddr, remote_port: u16)
-        -> NetResult<Arc<TcpEntry>>
-    {
-        self.tcp_connect_ip_bound(local_ip, local_port, remote_ip, remote_port, None,
-            Arc::new(crate::SocketError::new()))
-    }
-
-    /// Remove a connected TCP entry from the demux table. # C: O(log N)
-    pub fn tcp_disconnect_entry(&self, entry: &Arc<TcpEntry>) {
-        let key = {
-            let c = entry.conn.lock();
-            TcpKey {
-                local_ip: c.local.ip, local_port: c.local.port,
-                remote_ip: c.remote.ip, remote_port: c.remote.port,
-            }
-        };
-        let tables = self.inet_tables(entry.net_ns());
-        super::tcp_listener::remove_tcp_entry_exact(&tables, &key, entry);
-        if let Some(bind) = entry.bind.as_ref() {
-            bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
-        }
-    }
-
     /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain
     /// when full. # C: O(data + N segments)
     pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool, cork: bool)
@@ -311,8 +271,8 @@ impl NetStack {
     /// instantiate a new connection from it. Drives the matched
     /// TcpConn's `input`; xmit any returned response segment.
     /// # C: O(log N) lookup + O(payload) handler
-    pub(crate) fn deliver_tcp(&self, net_ns: u64, iface: NetIfaceId,
-                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8])
+    pub(crate) fn deliver_tcp_packet(&self, net_ns: u64, iface: NetIfaceId,
+                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8])
         -> NetResult<()>
     {
         if seg.len() < TCP_HDR_MIN_LEN { return Err(NetError::Einval); }
@@ -341,6 +301,9 @@ impl NetStack {
                 IpAddr::V4(_) => crate::addr::eth_p::IPV4,
                 IpAddr::V6(_) => crate::addr::eth_p::IPV6,
             };
+            if !crate::cgroup_bpf::ingress(&entry.owner, packet, protocol, iface) {
+                return Ok(());
+            }
             let Some(keep) = crate::bpf_filter::retained_tcp_len(
                 filter.verdict_with_context(crate::bpf_filter::FilterContext {
                     packet: seg, protocol, ifindex: Some(iface.raw()),
@@ -450,6 +413,9 @@ impl NetStack {
             IpAddr::V4(_) => crate::addr::eth_p::IPV4,
             IpAddr::V6(_) => crate::addr::eth_p::IPV6,
         };
+        if !crate::cgroup_bpf::ingress(&listener.owner, packet, protocol, iface) {
+            return Ok(());
+        }
         let Some(keep) = crate::bpf_filter::retained_tcp_len(
             listener.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
                 packet: seg, protocol, ifindex: Some(iface.raw()),
@@ -503,7 +469,7 @@ impl NetStack {
         }
         if let Some(r) = resp {
             if let Err(error) = self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, bound,
-                TcpTxPolicy::Listener(&listener))
+                TcpTxPolicy::Entry(&new_entry))
             {
                 super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &new_entry);
                 new_entry.release_backlog();

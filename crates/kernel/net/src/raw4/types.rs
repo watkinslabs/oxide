@@ -71,7 +71,7 @@ impl Default for Raw4TxOptions {
 
 pub struct Raw4Endpoint {
     protocol: u8,
-    net_namespace: network_namespace::NetworkNamespaceRef,
+    pub owner: Arc<crate::SocketOwner>,
     state: Spinlock<EndpointState, LockClass>,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
@@ -94,9 +94,17 @@ impl Raw4Endpoint {
     pub fn new_with_pmtudisc(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef,
                bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
+        Self::new_owned_with_pmtudisc(protocol, crate::SocketOwner::root(net_namespace, 0),
+            bpf, mcast, error, ip_mtu_discover)
+    }
+
+    /// Build one endpoint retaining the socket's canonical owner. # C: O(1)
+    pub fn new_owned_with_pmtudisc(protocol: u8, owner: Arc<crate::SocketOwner>,
+               bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
+               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
-            net_namespace,
+            owner,
             state: Spinlock::new(EndpointState {
                 local: Ipv4Addr::ANY,
                 explicit_local: false,
@@ -134,11 +142,11 @@ impl Raw4Endpoint {
     }
 
     /// Network namespace owning this endpoint and its registry entry. # C: O(1)
-    pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
+    pub fn net_ns(&self) -> u64 { self.owner.net_ns() }
 
     /// Clone the concrete namespace owner retained by this endpoint. # C: O(1)
     pub fn network_namespace(&self) -> network_namespace::NetworkNamespaceRef {
-        self.net_namespace.clone()
+        self.owner.net_namespace.clone()
     }
 
     /// Atomically publish local-address and optional device binding. # C: O(1)

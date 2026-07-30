@@ -58,8 +58,9 @@ pub const NO_MEMCG: u64 = 0;
 static KERNEL_CONTEXT_MEMCG: AtomicU64 = AtomicU64::new(ROOT_CGROUP);
 
 pub use tree::{
-    BpfDeviceError, BpfDeviceMode, BpfDeviceQuery, MemoryCharge, MemoryEvent, MemoryKind, MemoryPressure,
-    MemoryPressureResult,
+    BpfAttachAnchor, BpfAttachError, BpfAttachMode, BpfAttachOrder, BpfAttachPosition, BpfAttachQuery,
+    BpfDeviceError, BpfDeviceMode, BpfDeviceQuery, CgroupBpfAttachType, CgroupBpfRuntime,
+    MAX_BPF_ATTACH_PROGS, MemoryCharge, MemoryEvent, MemoryKind, MemoryPressure, MemoryPressureResult,
 };
 
 /// Canonical memcg identity for a non-task allocation context. # C: O(1)

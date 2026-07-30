@@ -169,6 +169,32 @@ impl NetStack {
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         mcast: Arc<crate::mcast_filter::SocketMcast>,
     ) -> NetResult<Arc<Udp6RxQueue>> {
+        let namespace = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
+        self.bind_udp6_socket_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
+            port, iface, error, reuseaddr, reuseport, v6only, peer, ip_mtu_discover,
+            ipv6_mtu_discover, bpf_filter, mcast)
+    }
+
+    /// Bind an IPv6 UDP endpoint retaining one socket's canonical owner. # C: O(N_port)
+    pub fn bind_udp6_socket_owned(
+        &self,
+        owner: Arc<crate::SocketOwner>,
+        bind_ip: Ipv6Addr,
+        port: u16,
+        iface: Option<NetIfaceId>,
+        error: Arc<crate::SocketError>,
+        reuseaddr: Arc<core::sync::atomic::AtomicI32>,
+        reuseport: Arc<core::sync::atomic::AtomicI32>,
+        v6only: Arc<core::sync::atomic::AtomicI32>,
+        peer: Arc<sync::Spinlock<Option<(Ipv6Addr, u16)>, sync::Socket>>,
+        ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        mcast: Arc<crate::mcast_filter::SocketMcast>,
+    ) -> NetResult<Arc<Udp6RxQueue>> {
+        let net_ns = owner.net_ns();
+        let owner_uid = owner.owner_uid;
         let reuseport_member = reuseport.load(core::sync::atomic::Ordering::Acquire) != 0;
         let v6only_at_bind = v6only.load(core::sync::atomic::Ordering::Acquire) != 0;
         let tables = self.inet_tables(net_ns);
@@ -211,7 +237,7 @@ impl NetStack {
         let q = Arc::new(Udp6RxQueue::new_socket(
             net_ns, bind_ip, port, error, reuseaddr,
             Arc::new(core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
-            owner_uid, Arc::new(core::sync::atomic::AtomicI32::new(i32::from(v6only_at_bind))),
+            owner, Arc::new(core::sync::atomic::AtomicI32::new(i32::from(v6only_at_bind))),
             peer, ip_mtu_discover, ipv6_mtu_discover, bpf_filter, mcast,
         ));
         q.bound_ifindex
@@ -316,7 +342,7 @@ impl NetStack {
     /// Remove exactly one IPv6 UDP endpoint, preserving port peers. # C: O(N_port)
     pub fn unbind_udp6_endpoint(&self, endpoint: &Arc<Udp6RxQueue>) {
         let port = endpoint.bound_port;
-        let Some(tables) = self.try_inet_tables(endpoint.net_ns) else {
+        let Some(tables) = self.try_inet_tables(endpoint.net_ns()) else {
             endpoint.deactivate();
             return;
         };
@@ -332,7 +358,7 @@ impl NetStack {
     /// Atomically change one endpoint's device scope after conflict validation. # C: O(N_port)
     pub fn rebind_udp6_endpoint_iface(&self, endpoint: &Arc<Udp6RxQueue>, iface: Option<NetIfaceId>)
         -> NetResult<()> {
-        let tables = self.inet_tables(endpoint.net_ns);
+        let tables = self.inet_tables(endpoint.net_ns());
         let map4 = tables.udp.lock();
         let map = tables.udp6.lock();
         let group = map.get(&endpoint.bound_port).ok_or(NetError::Einval)?;

@@ -34,6 +34,7 @@ struct Flow {
     frags: Vec<Frag>,
     total: Option<usize>,
     last_ns: u64,
+    prefix: Option<Vec<u8>>,
 }
 
 fn conflicts(flow: &Flow, offset: usize, end: usize, terminal: bool) -> bool {
@@ -67,6 +68,21 @@ impl ReasmTable {
         payload: &[u8],
         more_fragments: bool,
     ) -> Option<Vec<u8>> {
+        self.push_with_prefix(
+            key, now_ns, offset_bytes, None, payload, more_fragments,
+        ).map(|(_, payload)| payload)
+    }
+
+    /// Reassemble while retaining the offset-zero packet's unfragmentable prefix. # C: O(N frags)
+    pub fn push_with_prefix(
+        &self,
+        key: ReasmKey,
+        now_ns: u64,
+        offset_bytes: usize,
+        prefix: Option<&[u8]>,
+        payload: &[u8],
+        more_fragments: bool,
+    ) -> Option<(Vec<u8>, Vec<u8>)> {
         let end = offset_bytes.checked_add(payload.len())?;
         if end > REASM_MAX_BYTES { return None; }
         if more_fragments && (payload.len() & 7) != 0 { return None; }
@@ -83,8 +99,12 @@ impl ReasmTable {
             frags: Vec::new(),
             total: None,
             last_ns: now_ns,
+            prefix: None,
         });
         flow.last_ns = now_ns;
+        if offset_bytes == 0 {
+            if let Some(prefix) = prefix { flow.prefix = Some(prefix.to_vec()); }
+        }
         flow.frags.push(Frag { offset: offset_bytes, bytes: payload.to_vec() });
         if !more_fragments {
             flow.total = Some(end);
@@ -103,8 +123,9 @@ impl ReasmTable {
         for frag in &flow.frags {
             out[frag.offset..frag.offset + frag.bytes.len()].copy_from_slice(&frag.bytes);
         }
+        let prefix = flow.prefix.clone().unwrap_or_default();
         g.remove(&key);
-        Some(out)
+        Some((prefix, out))
     }
 
     /// # C: O(N flows)
@@ -153,6 +174,27 @@ mod tests {
         assert!(t.push(key(1), 1, 8, b"world", false).is_none());
         let r = t.push(key(1), 1, 0, b"hello---", true).unwrap();
         assert_eq!(r, b"hello---world");
+    }
+
+    #[test]
+    fn out_of_order_completion_retains_only_offset_zero_prefix() {
+        let t = ReasmTable::new();
+        let mut first = alloc::vec![0u8; 48];
+        first[0] = 0x6a;
+        first[7] = 31;
+        first[40..48].copy_from_slice(b"firsthdr");
+        let mut completing = alloc::vec![0u8; 48];
+        completing[0] = 0x61;
+        completing[7] = 2;
+        completing[40..48].copy_from_slice(b"lasthdr!");
+        assert!(t.push_with_prefix(
+            key(30), 1, 8, Some(&completing), b"tail", false,
+        ).is_none());
+        let (prefix, payload) = t.push_with_prefix(
+            key(30), 2, 0, Some(&first), b"head----", true,
+        ).unwrap();
+        assert_eq!(prefix, first);
+        assert_eq!(payload, b"head----tail");
     }
 
     #[test]

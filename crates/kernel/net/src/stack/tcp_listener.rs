@@ -97,8 +97,9 @@ impl TcpListenEntry {
                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                            ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                            ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> Self {
+        let owner = bind.owner.clone();
         Self {
-            accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
+            owner, accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
             ip_mtu_discover, ipv6_mtu_discover,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),

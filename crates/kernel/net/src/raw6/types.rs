@@ -70,7 +70,7 @@ pub(super) struct Raw6State {
 
 /// Protocol-owned raw IPv6 endpoint; canonical tables retain weak references.
 pub struct Raw6Endpoint {
-    net_namespace: network_namespace::NetworkNamespaceRef,
+    pub owner: Arc<crate::SocketOwner>,
     protocol: u8,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
@@ -85,8 +85,16 @@ impl Raw6Endpoint {
     /// Build an endpoint sharing its owning socket's common state. # C: O(1)
     pub fn new(net_namespace: network_namespace::NetworkNamespaceRef, protocol: u8, bpf_filter: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>) -> Self {
+        Self::new_owned(crate::SocketOwner::root(net_namespace, 0), protocol, bpf_filter,
+            mcast, error)
+    }
+
+    /// Build an endpoint retaining the socket's canonical owner. # C: O(1)
+    pub fn new_owned(owner: Arc<crate::SocketOwner>, protocol: u8,
+               bpf_filter: Arc<SocketFilter>, mcast: Arc<SocketMcast>,
+               error: Arc<SocketError>) -> Self {
         Self {
-            net_namespace, protocol, bpf_filter, mcast, error,
+            owner, protocol, bpf_filter, mcast, error,
             state: Spinlock::new(Raw6State {
                 accepting: true, local: Raw6Address::UNSPECIFIED, explicit_local: false, peer: None,
                 bound_iface: None, datagrams: VecDeque::new(), queued_bytes: 0,
@@ -104,11 +112,11 @@ impl Raw6Endpoint {
     pub const fn protocol(&self) -> u8 { self.protocol }
 
     /// Network namespace owning this endpoint and its table entry. # C: O(1)
-    pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
+    pub fn net_ns(&self) -> u64 { self.owner.net_ns() }
 
     /// Clone the concrete namespace owner retained by this endpoint. # C: O(1)
     pub fn network_namespace(&self) -> network_namespace::NetworkNamespaceRef {
-        self.net_namespace.clone()
+        self.owner.net_namespace.clone()
     }
 
     /// Build a self-contained endpoint for hosted stack users. # C: O(1)

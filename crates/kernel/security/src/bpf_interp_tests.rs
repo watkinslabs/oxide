@@ -128,9 +128,18 @@ fn call_unknown_helper_returns_none() {
 }
 
 #[test]
+fn coarse_time_helper_is_a_builtin_socket_filter_helper() {
+    let p = cat(&[
+        raw(0x85, 0, 0, 0, crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS as i32),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    assert!(run(&p, &[]).is_some());
+}
+
+#[test]
 fn call_known_helper_stores_result_in_r0() {
-    let helpers = [Helper { id: 1, f: helper_const }];
-    let p = cat(&[raw(0x85, 0, 0, 0, 1), raw(0x95, 0, 0, 0, 0)]);
+    let helpers = [Helper { id: 100, f: helper_const }];
+    let p = cat(&[raw(0x85, 0, 0, 0, 100), raw(0x95, 0, 0, 0, 0)]);
     assert_eq!(run_with_helpers(&p, &[], &helpers), Some(42));
 }
 
@@ -243,6 +252,24 @@ fn store_past_stack_top_is_rejected() {
 fn ldx_from_ctx_still_works() {
     let p = cat(&[raw(0x71, 0, 1, 1, 0), raw(0x95, 0, 0, 0, 0)]);
     assert_eq!(run(&p, &[0xaa, 0xbb, 0xcc]), Some(0xbb));
+}
+
+#[test]
+fn skb_load_bytes_fault_zeroes_the_full_destination() {
+    let p = cat(&[
+        raw(0x62, 10, 0, -4, 0x7f7f_7f7f),
+        raw(0xb7, 2, 0, 0, 99),
+        raw(0xbf, 3, 10, 0, 0),
+        raw(0x07, 3, 0, 0, -4),
+        raw(0xb7, 4, 0, 0, 4),
+        raw(0x85, 0, 0, 0, crate::bpf::uapi::func_id::SKB_LOAD_BYTES as i32),
+        raw(0xbf, 6, 0, 0, 0),
+        raw(0x61, 0, 10, -4, 0),
+        raw(0x55, 0, 0, 1, 0),
+        raw(0xbf, 0, 6, 0, 0),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    assert_eq!(run(&p, &[1, 2, 3]), Some(-(syscall::errno::Errno::Efault.as_i32() as i64)));
 }
 
 #[test]
