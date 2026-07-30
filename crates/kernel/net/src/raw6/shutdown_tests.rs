@@ -61,7 +61,7 @@ fn queued_datagram_drains_before_shutdown_eof() {
     assert_eq!(endpoint.receive(Raw6RxPacket {
         net_ns: 0, protocol: 143, src: Ipv6Addr::LOOPBACK,
         dst: Ipv6Addr::LOOPBACK, iface, hop_limit: 64, traffic_class: 0,
-        flow_label: 0, hatype: 0, payload: &payload,
+        flow_label: 0, hatype: 0, payload: &payload, packet: &payload,
     }), Raw6RxDisposition::Queued);
 
     endpoint.shutdown_read(&read_shut);

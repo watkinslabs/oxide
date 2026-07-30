@@ -1,40 +1,133 @@
-//! Public bridge to the cgroup-owned device-program state.
-//!
-//! Keeping these wrappers beside the hierarchy interface makes cgroup the
-//! single owner of direct and effective attachment arrays.
+//! Public bridge to cgroup-owned direct and effective BPF state.
 
 use alloc::sync::Arc;
 
 use vfs::InodeRef;
 
 use crate::state::TREE;
-use crate::tree::{BpfDeviceError, BpfDeviceMode, BpfDeviceQuery};
+use crate::tree::{
+    BpfAttachError, BpfAttachMode, BpfAttachOrder, BpfAttachQuery, BpfDeviceError,
+    BpfDeviceMode, BpfDeviceQuery, CgroupBpfAttachType, CgroupBpfRuntime,
+};
 
 /// Cgroup target whose online state was checked at fd-resolution ordering.
-///
-/// Linux's retained cgroup/css reference does not make `rmdir` return EBUSY.
-/// Oxide likewise permits removal after this check; the later hierarchy
-/// mutation/query revalidates online state atomically and returns `Offline`
-/// rather than acting on a stale identity.
-pub struct DeviceTarget {
+pub struct CgroupBpfTarget {
     cgid: u64,
 }
 
-impl DeviceTarget {
-    /// Canonical hierarchy id of the pinned target. # C: O(1)
+impl CgroupBpfTarget {
+    /// Canonical hierarchy id of the checked target. # C: O(1)
     pub fn cgid(&self) -> u64 { self.cgid }
 }
 
-/// Resolve an online cgroup identity at Linux's `cgroup_get_from_fd()` point.
+pub type DeviceTarget = CgroupBpfTarget;
+
+/// Resolve an online cgroup identity at `cgroup_get_from_fd()` ordering.
 /// # C: O(log nodes)
-pub fn device_target(cgid: u64) -> Result<DeviceTarget, BpfDeviceError> {
-    TREE.lock().bpf_device_require_online(cgid)?;
-    Ok(DeviceTarget { cgid })
+pub fn target(cgid: u64) -> Result<CgroupBpfTarget, BpfAttachError> {
+    TREE.lock().bpf_require_online(cgid)?;
+    Ok(CgroupBpfTarget { cgid })
 }
 
-/// Attach a verified `BPF_PROG_TYPE_CGROUP_DEVICE` object directly to one
-/// online cgroup.  The hierarchy retains the inode reference after the
-/// userspace program fd closes. # C: O(descendants * effective programs)
+/// Validate an optimistic direct-list revision before relative-anchor lookup.
+/// # C: O(log nodes)
+pub fn check_revision(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+    expected_revision: u64,
+) -> Result<(), BpfAttachError> {
+    TREE.lock().bpf_check_revision(cgid, attach_type, expected_revision)
+}
+
+/// Attach one verified program to one online cgroup/type direct list.
+/// # C: O(descendants * effective programs)
+pub fn attach(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+    prog: InodeRef,
+    mode: BpfAttachMode,
+    order: BpfAttachOrder<'_>,
+    replace: Option<&InodeRef>,
+    expected_revision: u64,
+) -> Result<(), BpfAttachError> {
+    TREE.lock().bpf_attach(
+        cgid, attach_type, prog, mode, order, replace, expected_revision,
+    )
+}
+
+/// Attach one fd-backed link identity to one online cgroup/type direct list.
+/// # C: O(descendants * effective programs)
+pub fn attach_link(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+    link_id: u64,
+    prog: InodeRef,
+    order: BpfAttachOrder<'_>,
+    expected_revision: u64,
+) -> Result<(), BpfAttachError> {
+    TREE.lock().bpf_attach_link(
+        cgid, attach_type, link_id, prog, order, expected_revision,
+    )
+}
+
+/// Detach one exact program from one online cgroup/type direct list.
+/// # C: O(descendants * effective programs)
+pub fn detach(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+    prog: Option<&InodeRef>,
+    expected_revision: u64,
+) -> Result<(), BpfAttachError> {
+    TREE.lock().bpf_detach(cgid, attach_type, prog, expected_revision)
+}
+
+/// Detach one exact fd-backed link identity. # C: O(descendants * effective programs)
+pub fn detach_link(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+    link_id: u64,
+) -> Result<(), BpfAttachError> {
+    TREE.lock().bpf_detach_link(cgid, attach_type, link_id)
+}
+
+/// Snapshot one online cgroup/type effective array. # C: O(log nodes)
+pub fn effective(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+) -> Option<Arc<[InodeRef]>> {
+    TREE.lock().bpf_effective(cgid, attach_type)
+}
+
+/// Snapshot direct metadata and one effective array. # C: O(direct)
+pub fn query(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+) -> Result<BpfAttachQuery, BpfAttachError> {
+    TREE.lock().bpf_query(cgid, attach_type)
+}
+
+/// Pin one online cgroup's live effective-state owner. # C: O(log nodes)
+pub fn runtime_for_cgid(cgid: u64) -> Result<Arc<CgroupBpfRuntime>, BpfAttachError> {
+    TREE.lock().bpf_runtime(cgid)
+}
+
+/// Pin task membership and runtime under one hierarchy lock, falling back to ROOT.
+/// # C: O(log nodes)
+pub fn runtime_for_task(tid: u64) -> Arc<CgroupBpfRuntime> {
+    TREE.lock().bpf_runtime_for_task(tid)
+}
+
+/// Pin the canonical ROOT runtime for hosted or no-current construction.
+/// # C: O(log nodes)
+pub fn root_runtime() -> Arc<CgroupBpfRuntime> {
+    TREE.lock().bpf_root_runtime()
+}
+
+/// Compatibility target resolution for `BPF_CGROUP_DEVICE`. # C: O(log nodes)
+pub fn device_target(cgid: u64) -> Result<DeviceTarget, BpfDeviceError> { target(cgid) }
+
+/// Compatibility attach for append-only device programs.
+/// # C: O(descendants * effective programs)
 pub fn device_attach(
     cgid: u64,
     prog: InodeRef,
@@ -42,35 +135,32 @@ pub fn device_attach(
     replace: Option<&InodeRef>,
     expected_revision: u64,
 ) -> Result<(), BpfDeviceError> {
-    TREE.lock().bpf_device_attach(cgid, prog, mode, replace, expected_revision)
+    attach(
+        cgid, CgroupBpfAttachType::Device, prog, mode,
+        BpfAttachOrder::DEFAULT, replace, expected_revision,
+    )
 }
 
-/// Detach one exact device program from an online cgroup.
-/// # C: O(descendants * effective programs)
+/// Compatibility device-program detach. # C: O(descendants * effective programs)
 pub fn device_detach(
     cgid: u64,
     prog: Option<&InodeRef>,
     expected_revision: u64,
 ) -> Result<(), BpfDeviceError> {
-    TREE.lock().bpf_device_detach(cgid, prog, expected_revision)
+    detach(cgid, CgroupBpfAttachType::Device, prog, expected_revision)
 }
 
-/// Immutable effective device-program array for a task's current cgroup.
-/// # C: O(log nodes)
+/// Compatibility device-program effective snapshot. # C: O(log nodes)
 pub fn device_effective(cgid: u64) -> Option<Arc<[InodeRef]>> {
-    TREE.lock().bpf_device_effective(cgid)
+    effective(cgid, CgroupBpfAttachType::Device)
 }
 
-/// Resolve a task membership and pin its effective device policy under one
-/// hierarchy lock, so migration/removal cannot produce a torn snapshot.
-/// # C: O(log nodes)
+/// Compatibility task device-program effective snapshot. # C: O(log nodes)
 pub fn device_effective_for_task(tid: u64) -> Option<Arc<[InodeRef]>> {
-    let tree = TREE.lock();
-    let cgid = tree.cgroup_of(tid);
-    tree.bpf_device_effective(cgid)
+    Some(runtime_for_task(tid).effective(CgroupBpfAttachType::Device))
 }
 
-/// Direct/effective device-program query snapshot. # C: O(direct)
+/// Compatibility device-program query. # C: O(direct)
 pub fn device_query(cgid: u64) -> Result<BpfDeviceQuery, BpfDeviceError> {
-    TREE.lock().bpf_device_query(cgid)
+    query(cgid, CgroupBpfAttachType::Device)
 }

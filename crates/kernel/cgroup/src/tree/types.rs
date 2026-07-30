@@ -1,10 +1,10 @@
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use vfs::{InodeRef, VfsError};
+use vfs::VfsError;
 
+use super::bpf_types::CgroupBpfState;
 use super::controllers::ALL;
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
@@ -63,30 +63,6 @@ pub enum MemoryPressure { High, Max { limit_cgid: u64 } }
 /// uncommitted `memory.max` reservation after real memory was released.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryPressureResult { Continue, Retry }
-
-/// `struct cgroup_bpf` state for `BPF_CGROUP_DEVICE`.  The hierarchy owns
-/// both direct attachments and the immutable effective program array, so
-/// rmdir drops program references in the same transaction that offlines the
-/// cgroup.  No second registry exists in the security layer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BpfDeviceMode {
-    Single,
-    Override,
-    Multi,
-}
-
-pub struct BpfDeviceState {
-    pub(super) direct: Vec<InodeRef>,
-    pub(super) effective: Arc<[InodeRef]>,
-    pub(super) revision: u64,
-    pub(super) mode: Option<BpfDeviceMode>,
-}
-
-impl BpfDeviceState {
-    fn new() -> Self {
-        Self { direct: Vec::new(), effective: Arc::from([]), revision: 0, mode: None }
-    }
-}
 
 /// Direct resident-byte ledger for one cgroup.  `memory.current` and
 /// `memory.stat` derive from this one canonical owner-class source.
@@ -261,11 +237,11 @@ pub struct Node {
     // cpuset controller
     pub cpuset_cpus: String,
     pub cpuset_mems: String,
-    pub(super) bpf_device: BpfDeviceState,
+    pub(super) bpf: CgroupBpfState,
 }
 
 impl Node {
-    pub(super) fn new(name: String, parent: Option<u64>, avail: u8) -> Self {
+    pub(super) fn new(cgid: u64, name: String, parent: Option<u64>, avail: u8) -> Self {
         Self {
             name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
             uid: 0, gid: 0, file_uid: 0, file_gid: 0, file_owner: BTreeMap::new(),
@@ -281,7 +257,7 @@ impl Node {
             io_max: String::new(), io_weight: 100,
             io_rbytes: 0, io_wbytes: 0, io_rios: 0, io_wios: 0,
             cpuset_cpus: String::new(), cpuset_mems: String::new(),
-            bpf_device: BpfDeviceState::new(),
+            bpf: CgroupBpfState::new(cgid),
         }
     }
 }
@@ -308,7 +284,7 @@ impl Tree {
                thread_cg: BTreeMap::new(), exited_procs: BTreeSet::new(), mounted: false }
     }
 
-    /// True once the root cgroup exists.
+    /// True once the hierarchy is mounted.
     /// # C: O(1)
     pub fn is_mounted(&self) -> bool { self.mounted }
 
@@ -316,7 +292,7 @@ impl Tree {
     /// # C: O(1)
     pub fn mount_root(&mut self) -> bool {
         if self.mounted { return false; }
-        self.nodes.insert(ROOT, Node::new(String::new(), None, ALL));
+        self.nodes.entry(ROOT).or_insert_with(|| Node::new(ROOT, String::new(), None, ALL));
         self.next_id = ROOT + 1;
         self.mounted = true;
         true

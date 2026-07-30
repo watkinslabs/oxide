@@ -8,8 +8,43 @@ use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
 use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, fd_file, inode_as_inet_socket, vsock_from_file};
 
-/// `connect(fd, sockaddr, addrlen)` slot 42. Parses user sockaddr →
-/// `net::sock::RemoteAddr` then calls `net::sock::connect`.
+fn copy_sockaddr(addr_p: u64, len: usize) -> Result<net::SockaddrStorage, i64> {
+    let mut bytes = [0u8; net::sockaddr::SOCKADDR_STORAGE_LEN];
+    if uaccess::copy_from_user(&mut bytes[..len], addr_p).is_err() {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    net::SockaddrStorage::from_bytes(&bytes[..len])
+        .ok_or(-(Errno::Einval.as_i32() as i64))
+}
+
+fn run_connect_hook(sock: &net::sock::InetSocket, storage: &mut net::SockaddrStorage,
+                    transport: Option<(u32, u32)>,
+                    op: net::cgroup_bpf::SockAddrOp) -> Result<(), i64> {
+    let fields = match op {
+        net::cgroup_bpf::SockAddrOp::Connect4 => storage.bpf_fields_v4(),
+        net::cgroup_bpf::SockAddrOp::Connect6 => storage.bpf_fields_v6(),
+        _ => None,
+    };
+    let Some((user_ip4, user_ip6, user_port)) = fields
+        else { return Err(-(Errno::Einval.as_i32() as i64)); };
+    let mut context = net::cgroup_bpf::SockAddr {
+        user_family: storage.family().unwrap_or_default() as u32,
+        user_ip4, user_ip6, user_port,
+    };
+    net::cgroup_bpf::run_sock_addr_preflight(sock, transport, op, &mut context)
+        .map_err(|error| -(error as i64))?;
+    match op {
+        net::cgroup_bpf::SockAddrOp::Connect4 =>
+            storage.apply_bpf_fields_v4(context.user_ip4, context.user_port),
+        net::cgroup_bpf::SockAddrOp::Connect6 =>
+            storage.apply_bpf_fields_v6(context.user_ip6, context.user_port),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `connect(fd, sockaddr, addrlen)` slot 42. Copies one sockaddr then commits
+/// through protocol-owned connect work.
 /// # C: O(1) UDP/UNIX, O(SYN-ACK RTT) TCP.
 pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
@@ -23,12 +58,16 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Ok(n) => n,
         Err(e) => return e,
     };
+    let mut storage = match copy_sockaddr(addr_p, copied_len) {
+        Ok(storage) => storage,
+        Err(error) => return error,
+    };
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
-        return crate::netlink_fd::connect(&target, addr_p, copied_len);
+        return crate::netlink_fd::connect(&target, &storage);
     }
     if let Some(vs) = vsock_from_file(file.clone()) {
         if let Err(e) = require_sockaddr_vm(copied_len) { return e; }
-        let (fam, port, cid) = match read_sockaddr_vm(addr_p) {
+        let (fam, port, cid) = match storage.vsock() {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };
         if fam == net::socket_args::AF_UNSPEC as u16 {
@@ -84,13 +123,67 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let sock = match inode_as_inet_socket(file.inode()) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"connect"); return -(Errno::Enotsock.as_i32() as i64); }
     };
-    let family = match read_sa_family_checked(addr_p, copied_len) {
-        Ok(f) => f as u32, Err(e) => return e,
+    let admission = match net::sock::admit_connect(&sock) {
+        Ok(admission) => admission,
+        Err(error) => return errno_from_neterr(error),
     };
+    let family = match storage.family() {
+        Some(family) if copied_len >= 2 => family as u32,
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
+    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
     let addr = if family == net::socket_args::AF_UNSPEC {
         net::sock::RemoteAddr::Unspec
+    } else if sock_fam == AF_INET || sock_fam == AF_INET6 {
+        let transaction = match net::sock::preflight_connect_admitted(&sock, admission) {
+            Ok(transaction) => transaction,
+            Err(error) => return errno_from_neterr(error),
+        };
+        let transport = transaction.transport();
+        let ipv6_v6only = transaction.ipv6_v6only();
+        let hook = match net::cgroup_bpf::connect_op(
+            sock_fam as u16, family as u16, transport, ipv6_v6only,
+        ) {
+            Ok(hook) => hook,
+            Err(error) => return errno_from_neterr(error),
+        };
+        if hook == Some(net::cgroup_bpf::SockAddrOp::Connect4) {
+            if let Err(error) = require_sockaddr_in(copied_len) { return error; }
+        } else if hook == Some(net::cgroup_bpf::SockAddrOp::Connect6) {
+            if let Err(error) = require_sockaddr_in6(copied_len) { return error; }
+        }
+        if let Some(op) = hook {
+            if let Err(error) = run_connect_hook(&sock, &mut storage, transport, op) {
+                return error;
+            }
+        }
+        if let Err(error) = net::cgroup_bpf::validate_connect_family(
+            sock_fam as u16, family as u16, transport, ipv6_v6only,
+        ) {
+            return errno_from_neterr(error);
+        }
+        let addr = if family == AF_INET {
+            if let Err(error) = require_sockaddr_in(copied_len) { return error; }
+            let Some((ip, port)) = storage.inet4() else {
+                return -(Errno::Einval.as_i32() as i64);
+            };
+            net::sock::RemoteAddr::Inet { ip, port }
+        } else {
+            if let Err(error) = require_sockaddr_in6(copied_len) { return error; }
+            let Some((ip, port, scope_id)) = storage.inet6() else {
+                return -(Errno::Einval.as_i32() as i64);
+            };
+            net::sock::RemoteAddr::Inet6 { ip, port, scope_id }
+        };
+        return match transaction.commit(
+            addr, file.flags().contains(vfs::OpenFlags::O_NONBLOCK),
+        ) {
+            Ok(()) => { net::bind_file(&file, &sock); 0 }
+            Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
+            Err(error) => errno_from_neterr(error),
+        };
     } else if family == net::socket_args::AF_UNIX {
-        let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
+        let path = match storage.unix_path() {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
         let addr = match crate::namei_common::resolve_unix_addr(path) {
@@ -98,41 +191,12 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
             Err(e) => return e,
         };
         net::sock::RemoteAddr::Unix(addr)
-    } else if family == AF_INET || family == AF_INET6 {
-        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
-        // F180b: native v6 dst routes through connect_v6 (UDP stashes
-        // the v6 peer, TCP runs tcp_connect_ip). Only the v4-mapped
-        // form (::ffff:a.b.c.d) falls through to the v4 path for
-        // dual-stack semantics — ::1 / :: / global are genuine v6 and
-        // must NOT be mis-stashed as a v4 peer.
-        if family == AF_INET6 {
-            if let Err(e) = require_sockaddr_in6(copied_len) { return e; }
-            if sock_fam != AF_INET6 { return -(Errno::Eafnosupport.as_i32() as i64); }
-            if let Some((_, port, bytes, scope_id)) = read_sockaddr_in6_len(addr_p, copied_len) {
-                let v4_mapped = ipv4_from_v6_mapped(&bytes).is_some();
-                if !v4_mapped {
-                    return match net::sock::connect(&sock, net::sock::RemoteAddr::Inet6 {
-                        ip: net::Ipv6Addr(bytes), port, scope_id,
-                    }, file.flags().contains(vfs::OpenFlags::O_NONBLOCK)) {
-                        Ok(()) => 0,
-                        Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
-                        Err(e) => errno_from_neterr(e),
-                    };
-                }
-            }
-        } else if let Err(e) = require_sockaddr_in(copied_len) {
-            return e;
-        } else if sock_fam != AF_INET {
-            return -(Errno::Eafnosupport.as_i32() as i64);
-        }
-        let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
-            Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
-        };
-        net::sock::RemoteAddr::Inet { ip, port }
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
-    match net::sock::connect(&sock, addr, file.flags().contains(vfs::OpenFlags::O_NONBLOCK)) {
+    match net::sock::connect_admitted(
+        &sock, addr, file.flags().contains(vfs::OpenFlags::O_NONBLOCK), admission,
+    ) {
         Ok(()) => { net::bind_file(&file, &sock); 0 }
         Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
         Err(e) => errno_from_neterr(e),

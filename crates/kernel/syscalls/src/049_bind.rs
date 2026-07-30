@@ -53,6 +53,40 @@ fn remove_unix_sock_node(n: &UnixSockNode) {
     vfs::fire_dirent_delete(&n.parent.inode, &n.name, false);
 }
 
+fn copy_sockaddr(addr_p: u64, len: usize) -> Result<net::SockaddrStorage, i64> {
+    let mut bytes = [0u8; net::sockaddr::SOCKADDR_STORAGE_LEN];
+    if uaccess::copy_from_user(&mut bytes[..len], addr_p).is_err() {
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    net::SockaddrStorage::from_bytes(&bytes[..len])
+        .ok_or(-(Errno::Einval.as_i32() as i64))
+}
+
+fn run_bind_hook(sock: &net::sock::InetSocket, storage: &mut net::SockaddrStorage,
+                 op: net::cgroup_bpf::SockAddrOp) -> Result<bool, i64> {
+    let fields = match op {
+        net::cgroup_bpf::SockAddrOp::Bind4 => storage.bpf_fields_v4(),
+        net::cgroup_bpf::SockAddrOp::Bind6 => storage.bpf_fields_v6(),
+        _ => None,
+    };
+    let Some((user_ip4, user_ip6, user_port)) = fields
+        else { return Err(-(Errno::Einval.as_i32() as i64)); };
+    let mut context = net::cgroup_bpf::SockAddr {
+        user_family: storage.family().unwrap_or_default() as u32,
+        user_ip4, user_ip6, user_port,
+    };
+    let verdict = net::cgroup_bpf::run_sock_addr(sock, op, &mut context)
+        .map_err(|error| -(error as i64))?;
+    match op {
+        net::cgroup_bpf::SockAddrOp::Bind4 =>
+            storage.apply_bpf_fields_v4(context.user_ip4, context.user_port),
+        net::cgroup_bpf::SockAddrOp::Bind6 =>
+            storage.apply_bpf_fields_v6(context.user_ip6, context.user_port),
+        _ => {}
+    }
+    Ok(verdict)
+}
+
 /// Linux privileged-port admission for explicit INET binds. # C: O(1)
 fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool {
     let net_ns = &sock.net_namespace;
@@ -75,39 +109,90 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    enum Target {
+        Netlink(crate::netlink_fd::NetlinkFileRef),
+        Vsock(crate::net_common::VsockFileRef),
+        Inet(crate::net_common::SocketFileRef),
+    }
+    let target = if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        Target::Netlink(target)
+    } else if let Some(target) = vsock_from_file(file.clone()) {
+        Target::Vsock(target)
+    } else if let Some(target) = socket_from_file(file) {
+        Target::Inet(target)
+    } else {
+        trace_enotsock_at(fd, b"bind");
+        return -(Errno::Enotsock.as_i32() as i64);
+    };
     let copied_len = match move_sockaddr_to_kernel_shape(addr_p, addrlen) {
         Ok(n) => n,
         Err(error) => return error,
     };
-    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
-        return crate::netlink_fd::bind(&target, addr_p, addrlen as usize);
+    let mut storage = match copy_sockaddr(addr_p, copied_len) {
+        Ok(storage) => storage,
+        Err(error) => return error,
+    };
+    if let Target::Netlink(target) = &target {
+        return crate::netlink_fd::bind(target, &storage);
     }
     // D3.3: AF_VSOCK bind — record the local CID/port; listen() registers
     // the owner-keyed listener in the table.
-    if let Some(vs) = vsock_from_file(file.clone()) {
-        if let Err(e) = require_sockaddr_vm(addrlen as usize) { return e; }
-        let (family, port, cid) = match read_sockaddr_vm(addr_p) {
-            Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
+    if let Target::Vsock(vs) = &target {
+        if let Err(e) = require_sockaddr_vm(copied_len) { return e; }
+        let (family, port, cid) = match storage.vsock() {
+            Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
         };
         return match vs.bind(family, port, cid) {
             Ok(()) => 0,
             Err(e) => errno_from_neterr(e),
         };
     }
-    let sock   = match socket_from_file(file) {
-        Some(s) => s, None => { trace_enotsock_at(fd, b"bind"); return -(Errno::Enotsock.as_i32() as i64); }
-    };
-    let family = match read_sa_family(addr_p) {
-        Some(f) => f, None => return -(Errno::Efault.as_i32() as i64),
+    let sock = match &target {
+        Target::Inet(sock) => sock,
+        _ => unreachable!(),
     };
     let admission = match net::sock::admit_bind(&sock) {
         Ok(admission) => admission,
         Err(error) => return errno_from_neterr(error),
     };
+    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    if sock_fam == AF_INET as u16 {
+        if let Err(error) = require_sockaddr_in(copied_len) { return error; }
+    } else if sock_fam == AF_INET6 as u16 {
+        if let Err(error) = require_sockaddr_in6(copied_len) { return error; }
+    } else if copied_len < core::mem::size_of::<u16>() {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let family = match storage.family() {
+        Some(family) => family,
+        None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let hook = net::cgroup_bpf::bind_op(sock_fam, family);
+    if hook == Some(net::cgroup_bpf::SockAddrOp::Bind4) {
+        if let Err(error) = require_sockaddr_in(copied_len) { return error; }
+    } else if hook == Some(net::cgroup_bpf::SockAddrOp::Bind6) {
+        if let Err(error) = require_sockaddr_in6(copied_len) { return error; }
+    }
+    let bypass_cap = if let Some(op) = hook {
+        match run_bind_hook(&sock, &mut storage, op) {
+            Ok(value) => value,
+            Err(error) => return error,
+        }
+    } else {
+        false
+    };
+    if sock_fam == AF_INET as u16
+        && family != AF_INET as u16 && family != net::socket_args::AF_UNSPEC as u16
+    {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
+    if sock_fam == AF_INET6 as u16 && family != AF_INET6 as u16 {
+        return -(Errno::Eafnosupport.as_i32() as i64);
+    }
     // Parse the user sockaddr into the typed BoundAddr enum.
     let mut unix_node: Option<UnixSockNode> = None;
     let addr = if family == net::sock::AF_UNIX {
-        let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
+        let path = match storage.unix_path() {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
         // If the socket is already SOCK_DGRAM, pass its queue along.
@@ -129,12 +214,11 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         // the family comparison, and a sufficient-length family mismatch is
         // EAFNOSUPPORT (not EINVAL).
         if let Err(e) = require_sockaddr_in(copied_len) { return e; }
-        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
         if family != sock_fam { return -(Errno::Eafnosupport.as_i32() as i64); }
-        let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
-            Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
+        let (ip, port) = match storage.inet4() {
+            Some(value) => value, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
-        if privileged_inet_port_denied(&sock, port) {
+        if !bypass_cap && privileged_inet_port_denied(&sock, port) {
             return -(Errno::Eacces.as_i32() as i64);
         }
         net::sock::BoundAddr::Inet { ip, port }
@@ -143,39 +227,35 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         // `inet6_bind` requires SIN6_LEN_RFC2133 (24) before the family check,
         // and a sufficient-length mismatch is EAFNOSUPPORT.
         if let Err(e) = require_sockaddr_in6(copied_len) { return e; }
-        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
         if family != sock_fam { return -(Errno::Eafnosupport.as_i32() as i64); }
-        let (_fam, port, bytes, scope_id) = match read_sockaddr_in6_len(addr_p, copied_len) {
-            Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
+        let (ip, port, scope_id) = match storage.inet6() {
+            Some(value) => value, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
-        if privileged_inet_port_denied(&sock, port) {
+        if !bypass_cap && privileged_inet_port_denied(&sock, port) {
             return -(Errno::Eacces.as_i32() as i64);
         }
-        net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port, scope_id }
+        net::sock::BoundAddr::Inet6 { ip, port, scope_id }
     } else if family == net::socket_args::AF_UNSPEC as u16 {
         // Linux `__inet_bind` compatibility: AF_UNSPEC is accepted as an
         // AF_INET bind only for a v4 socket whose address is INADDR_ANY; a v6
         // socket (`inet6_bind`) has no such exception.
         if let Err(e) = require_sockaddr_in(copied_len) { return e; }
-        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
         if sock_fam != AF_INET as u16 { return -(Errno::Eafnosupport.as_i32() as i64); }
-        let (_fam, port, addr_host) = match read_sockaddr_in(addr_p) {
-            Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
+        let (ip, port) = match storage.inet4() {
+            Some(value) => value, None => return -(Errno::Efault.as_i32() as i64),
         };
-        if addr_host != net::Ipv4Addr::ANY.as_u32() {
+        if ip != net::Ipv4Addr::ANY {
             return -(Errno::Eafnosupport.as_i32() as i64);
         }
-        if privileged_inet_port_denied(&sock, port) {
+        if !bypass_cap && privileged_inet_port_denied(&sock, port) {
             return -(Errno::Eacces.as_i32() as i64);
         }
         net::sock::BoundAddr::Inet { ip: net::Ipv4Addr::ANY, port }
     } else if family == net::sock::AF_PACKET {
         // F131: sockaddr_ll = u16 family + u16 proto_be + i32 ifindex + tail.
         // SAFETY: addr_p validated < USER_VA_END above; sockaddr_ll spans +0..+20.
-        let (proto_be, ifindex) = unsafe {
-            let p = core::ptr::read_volatile((addr_p + 2) as *const u16);
-            let i = core::ptr::read_volatile((addr_p + 4) as *const i32);
-            (p, i)
+        let (proto_be, ifindex) = match storage.packet() {
+            Some(value) => value, None => return -(Errno::Einval.as_i32() as i64),
         };
         if ifindex < 0 { return -(Errno::Enodev.as_i32() as i64); }
         if ifindex != 0 {

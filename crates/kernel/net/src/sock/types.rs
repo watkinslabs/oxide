@@ -96,11 +96,8 @@ pub struct InetSocket {
     pub connect_waiters: sched::live::WaitList,
     /// F181: per-fd epoll subscribers.
     pub poll_subs: Arc<vfs::PollSubscribers>,
-    /// Concrete network namespace owner snapshotted at socket creation.
-    /// Numeric IDs are derived only while accessing namespace-keyed tables.
-    pub net_namespace: network_namespace::NetworkNamespaceRef,
-    /// Effective UID captured when Linux creates the socket.
-    pub owner_uid: u32,
+    /// Immutable creation identity shared with every asynchronous transport owner.
+    pub owner: Arc<crate::SocketOwner>,
     /// Linux `sk_stamp`: timestamp of the most recently delivered receive
     /// record. `SOCKET_TIMESTAMP_UNSET` is the in-kernel representation of Linux's unset
     /// `SK_DEFAULT_STAMP` and is never exposed to userspace.
@@ -111,6 +108,12 @@ pub struct InetSocket {
     /// AF_UNIX stream address reserved by `bind(2)`, independent of whether
     /// this socket later listens or actively connects.
     pub unix_bound: Spinlock<Option<Arc<crate::UnixListener>>, SockLockClass>,
+}
+
+impl core::ops::Deref for InetSocket {
+    type Target = crate::SocketOwner;
+
+    fn deref(&self) -> &Self::Target { &self.owner }
 }
 
 impl InetSocket {

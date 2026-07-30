@@ -31,12 +31,14 @@ impl NetStack {
         let payload = &l3[crate::ipv6::IPV6_HDR_LEN..payload_end];
         let mld_router_alert = hbh_has_mld_router_alert(hdr.next_header, payload);
         let assembled;
-        let (next_header, payload) = match crate::ipv6_ext::walk(hdr.next_header, payload)
+        let reassembled_packet;
+        let (next_header, payload, full_packet) = match crate::ipv6_ext::walk(hdr.next_header, payload)
             .map_err(|_| crate::netdev::NetError::Einval)?
         {
-            crate::ipv6_ext::ExtWalk::Done { next_header, payload } => (next_header, payload),
+            crate::ipv6_ext::ExtWalk::Done { next_header, payload } =>
+                (next_header, payload, &l3[..payload_end]),
             crate::ipv6_ext::ExtWalk::Fragment {
-                next_header,
+                next_header: fragment_next_header,
                 offset,
                 more,
                 id,
@@ -46,17 +48,30 @@ impl NetStack {
                     net_ns, iface: Some(iface),
                     src: hdr.src,
                     dst: hdr.dst,
-                    next_header,
+                    next_header: fragment_next_header,
                     id,
                 };
-                match self.ipv6_reasm.push(k, crate::stack::net_now_ns(), offset, payload, more) {
-                    Some(bytes) => {
+                let prefix = if offset == 0 {
+                    Some(crate::cgroup_bpf::ipv6_fragment_prefix(
+                        &l3[..payload_end], fragment_next_header,
+                    ).ok_or(crate::netdev::NetError::Einval)?)
+                } else {
+                    None
+                };
+                match self.ipv6_reasm.push_with_prefix(
+                    k, crate::stack::net_now_ns(), offset, prefix.as_deref(), payload, more,
+                ) {
+                    Some((prefix, bytes)) => {
                         assembled = bytes;
-                        match crate::ipv6_ext::walk(next_header, &assembled[..])
+                        match crate::ipv6_ext::walk(fragment_next_header, &assembled[..])
                             .map_err(|_| crate::netdev::NetError::Einval)?
                         {
                             crate::ipv6_ext::ExtWalk::Done { next_header, payload } => {
-                                (next_header, payload)
+                                let Some(packet) = crate::cgroup_bpf::reassembled_ipv6(
+                                    &prefix, &assembled,
+                                ) else { return Err(crate::netdev::NetError::Einval); };
+                                reassembled_packet = packet;
+                                (next_header, payload, &reassembled_packet[..])
                             }
                             crate::ipv6_ext::ExtWalk::Fragment { .. } => {
                                 return Err(crate::netdev::NetError::Einval);
@@ -70,6 +85,7 @@ impl NetStack {
         self.deliver_rx_ipv6_payload(
             net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
             hdr.flow_label, mld_router_alert, next_header, payload,
+            full_packet,
         )
     }
 
@@ -93,13 +109,14 @@ impl NetStack {
         mld_router_alert: bool,
         next_header: u8,
         payload: &[u8],
+        packet: &[u8],
     ) -> NetResult<()> {
         let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
             .map_or(0, |dev| dev.hardware_type());
         for endpoint in self.inet_tables(net_ns).raw6.endpoints(next_header) {
             let _ = endpoint.receive(crate::raw6::Raw6RxPacket {
                 net_ns, protocol: next_header, src, dst, iface, hop_limit,
-                traffic_class, flow_label, hatype, payload,
+                traffic_class, flow_label, hatype, payload, packet,
             });
         }
         match next_header {
@@ -115,6 +132,9 @@ impl NetStack {
                 };
                 let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface);
                 for q in endpoints {
+                    if !crate::cgroup_bpf::ingress(
+                        &q.owner, packet, crate::addr::eth_p::IPV6, iface,
+                    ) { continue; }
                     let packet = &payload[..udp.length as usize];
                     let body = &packet[crate::udp::UDP_HDR_LEN..];
                     let Some(keep) = crate::bpf_filter::retained_payload_len(
@@ -135,7 +155,7 @@ impl NetStack {
             n if n == IpProto::Tcp as u8 => {
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
-                let _ = self.deliver_tcp(net_ns, iface, src, dst, payload);
+                let _ = self.deliver_tcp_packet(net_ns, iface, src, dst, payload, packet);
             }
             _ => {}
         }

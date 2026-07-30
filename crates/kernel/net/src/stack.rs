@@ -8,9 +8,11 @@
 // - core: constructor, iface, UDP, and listener setup helpers.
 // - lifecycle: RTNL-serialized interface retire, destroy, and namespace return.
 // - udp_endpoint: IPv4 UDP endpoint queue, errors, and close linearization.
+// - udp_bind: IPv4 UDP bind admission and endpoint publication.
 // - tcp_bind: TCP local bind reservations and lifecycle transitions.
 // - tcp_listener: TCP listener publication, accept, and passive-child teardown.
 // - tcp: TCP active open, send/recv/close, retry, and demux.
+// - tcp_open: public active-open and disconnect entry points.
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
@@ -59,10 +61,12 @@ pub(crate) use pmtu_cache::IPV4_MIN_PMTU;
 mod core;
 mod lifecycle;
 mod udp_endpoint;
+mod udp_bind;
 mod tcp_bind;
 pub(crate) mod tcp_listener;
 pub use tcp_listener::TcpAcceptWait;
 mod tcp;
+mod tcp_open;
 pub(crate) mod tcp_writable;
 pub(crate) mod tcp_rx_trace;
 mod tcp_tx;

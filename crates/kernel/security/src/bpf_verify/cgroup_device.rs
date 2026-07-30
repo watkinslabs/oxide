@@ -92,71 +92,8 @@ fn valid_context_access(off: i16, size: usize) -> bool {
     (off < 4 && off + size as i32 <= 4) || (size == 4 && matches!(off, 4 | 8))
 }
 
-fn writes_reg(insn: Insn, reg: u8) -> bool {
-    let class = insn.opcode & BPF_CLASS_MASK;
-    matches!(class, ALU | ALU64 | BPF_LDX) && insn.dst == reg
-        || insn.opcode == BPF_LD_IMM_DW && insn.dst == reg
-}
-
-/// Prove a deliberately small, canonical constant-counter loop. The counter
-/// is initialized immediately before the body, updated once immediately
-/// before the latch, and no branch/call may occur in the body.
-fn loop_cost(decoded: &[Insn], pc: usize, target: usize) -> Result<u64, VerifyError> {
-    if target == 0 || pc < target + 1 { return Err(VerifyError::UnsupportedOpcode); }
-    let latch = decoded[pc];
-    let class = latch.opcode & BPF_CLASS_MASK;
-    let op = latch.opcode & 0xf0;
-    if !matches!(class, BPF_JMP | BPF_JMP32) || latch.opcode & 0x08 != 0
-        || !matches!(op, 0x20 | 0x30 | 0x50 | 0xa0 | 0xb0) {
-        return Err(VerifyError::UnsupportedOpcode);
-    }
-    let counter = latch.dst;
-    let init = decoded[target - 1];
-    let update = decoded[pc - 1];
-    let alu_class = if class == BPF_JMP { ALU64 } else { ALU };
-    if init.opcode != alu_class | 0xb0 || init.dst != counter || init.src != 0 || init.off != 0
-        || update.opcode & BPF_CLASS_MASK != alu_class || update.dst != counter
-        || update.opcode & 0x08 != 0 || update.src != 0 || update.off != 0
-        || !matches!(update.opcode & 0xf0, 0x00 | 0x10) || update.imm <= 0 {
-        return Err(VerifyError::UnsupportedOpcode);
-    }
-    for insn in decoded.iter().take(pc - 1).skip(target) {
-        if matches!(insn.opcode & BPF_CLASS_MASK, BPF_JMP | BPF_JMP32)
-            || writes_reg(*insn, counter) {
-            return Err(VerifyError::UnsupportedOpcode);
-        }
-    }
-    if init.imm < 0 || latch.imm < 0 { return Err(VerifyError::UnsupportedOpcode); }
-    let start = init.imm as u64;
-    let bound = latch.imm as u64;
-    let step = update.imm as u64;
-    let add = update.opcode & 0xf0 == 0;
-    let iterations = match (add, op) {
-        (true, 0xa0) if start < bound => (bound - start).div_ceil(step),
-        (true, 0xa0) => 1,
-        (true, 0xb0) if start <= bound => (bound - start) / step + 1,
-        (true, 0x50) if bound > start && (bound - start) % step == 0 => {
-            (bound - start) / step
-        }
-        (false, 0x20) if start > bound => (start - bound).div_ceil(step),
-        (false, 0x30) if start >= bound => (start - bound) / step + 1,
-        (false, 0x50) if start > bound && (start - bound) % step == 0 => {
-            (start - bound) / step
-        }
-        _ => return Err(VerifyError::UnsupportedOpcode),
-    };
-    let travel = iterations.checked_mul(step).ok_or(VerifyError::UnsupportedOpcode)?;
-    if (!add && travel > start)
-        || (add && class == BPF_JMP32 && start.checked_add(travel).is_none_or(|v| v > u32::MAX as u64))
-        || (add && class == BPF_JMP && start.checked_add(travel).is_none()) {
-        return Err(VerifyError::UnsupportedOpcode);
-    }
-    iterations.checked_mul((pc - target + 1) as u64)
-        .ok_or(VerifyError::UnsupportedOpcode)
-}
-
 fn validate_wide_and_loops(decoded: &[Insn]) -> Result<Vec<bool>, VerifyError> {
-    let mut pseudo = alloc::vec![false; decoded.len()];
+    let mut pseudo = try_filled_vec(decoded.len(), false)?;
     let mut pc = 0;
     while pc < decoded.len() {
         if decoded[pc].opcode == BPF_LD_IMM_DW {
@@ -171,40 +108,7 @@ fn validate_wide_and_loops(decoded: &[Insn]) -> Result<Vec<bool>, VerifyError> {
             pc += 1;
         }
     }
-    let mut loop_dispatches = 0u64;
-    let mut cross_checks = 0u64;
-    for (at, insn) in decoded.iter().enumerate() {
-        let class = insn.opcode & BPF_CLASS_MASK;
-        if !matches!(class, BPF_JMP | BPF_JMP32)
-            || matches!(insn.opcode, BPF_OP_EXIT | BPF_OP_CALL) {
-            continue;
-        }
-        let target = (at as i64 + 1 + insn.off as i64) as usize;
-        if pseudo[target] { return Err(VerifyError::UnsupportedOpcode); }
-        if target <= at {
-            for (src, other) in decoded.iter().enumerate() {
-                if cross_checks >= STEP_BUDGET {
-                    return Err(VerifyError::UnsupportedOpcode);
-                }
-                cross_checks += 1;
-                let other_class = other.opcode & BPF_CLASS_MASK;
-                if src == at || !matches!(other_class, BPF_JMP | BPF_JMP32)
-                    || matches!(other.opcode, BPF_OP_EXIT | BPF_OP_CALL) {
-                    continue;
-                }
-                let other_target = src as i64 + 1 + other.off as i64;
-                if (src < target || src > at)
-                    && (target as i64..=at as i64).contains(&other_target) {
-                    return Err(VerifyError::UnsupportedOpcode);
-                }
-            }
-            loop_dispatches = loop_dispatches.checked_add(loop_cost(decoded, at, target)?)
-                .ok_or(VerifyError::UnsupportedOpcode)?;
-        }
-    }
-    if loop_dispatches.checked_add(decoded.len() as u64).is_none_or(|n| n > STEP_BUDGET) {
-        return Err(VerifyError::UnsupportedOpcode);
-    }
+    super::loops::validate(decoded, &pseudo)?;
     Ok(pseudo)
 }
 
@@ -220,6 +124,7 @@ fn merge(
     let merged = states[pc].map_or(state, |old| old.intersect(state));
     if states[pc] != Some(merged) {
         states[pc] = Some(merged);
+        queue.try_reserve(1).map_err(|_| VerifyError::NoMemory)?;
         queue.push_back(pc);
     }
     Ok(())
@@ -229,10 +134,10 @@ fn merge(
 /// surface executed by the cgroup-device runner. # C: O(insns × state updates)
 pub fn verify_cgroup_device(insns: &[u8]) -> Result<(), VerifyError> {
     verify(insns)?;
-    let decoded: Vec<Insn> = insns.chunks_exact(BPF_INSN_SIZE).map(decode).collect();
+    let decoded = decode_all(insns)?;
     let pseudo = validate_wide_and_loops(&decoded)?;
-    let mut states = alloc::vec![None; decoded.len()];
-    let mut queue = VecDeque::new();
+    let mut states = try_filled_vec(decoded.len(), None)?;
+    let mut queue = try_queue(decoded.len())?;
     states[0] = Some(State::entry());
     queue.push_back(0);
     let mut processed = 0u64;

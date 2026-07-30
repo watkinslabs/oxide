@@ -425,3 +425,16 @@ fn ipv6_sockname_consults_the_v4_mapped_source() {
     assert!(source.contains("v6_name_is_v4_mapped"),
         "the AF_INET6 branch routes through the shared name-source rule");
 }
+
+#[test]
+fn connect_security_precedes_family_parse_and_unix_lookup_once() {
+    let source = include_str!("042_connect.rs");
+    let body = &source[source.find("pub fn sys_connect").expect("connect slot")..];
+    let admission = body.find("net::sock::admit_connect").expect("generic admission");
+    let family = body.find("let family = match storage.family()").expect("family parse");
+    let unix_lookup = body.find("resolve_unix_addr").expect("UNIX lookup");
+    assert!(admission < family && admission < unix_lookup);
+    assert_eq!(body.matches("net::sock::admit_connect").count(), 1);
+    assert!(body.contains("preflight_connect_admitted(&sock, admission)"));
+    assert!(body.contains("connect_admitted("));
+}

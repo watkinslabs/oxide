@@ -18,7 +18,7 @@ pub(crate) struct BridgePending {
 }
 
 pub struct UdpRxQueue {
-    pub net_ns: u64,
+    pub owner: Arc<crate::SocketOwner>,
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
     /// Datagrams waiting for a reader: (src, sport, dst, iface, ttl, payload).
@@ -35,7 +35,6 @@ pub struct UdpRxQueue {
     pub reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
     pub reuseport: Arc<::core::sync::atomic::AtomicI32>,
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-    pub owner_uid: u32,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
@@ -49,6 +48,12 @@ impl UdpRxQueue {
     pub(crate) fn reuseport_member(&self) -> bool {
         self.reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0
     }
+}
+
+impl ::core::ops::Deref for UdpRxQueue {
+    type Target = crate::SocketOwner;
+
+    fn deref(&self) -> &Self::Target { &self.owner }
 }
 
 
@@ -83,34 +88,42 @@ pub enum TcpConnectWait {
 
 /// One socket's canonical TCP local-name reservation.
 pub struct TcpBindReservation {
-    pub namespace: network_namespace::NetworkNamespaceRef,
+    pub owner: Arc<crate::SocketOwner>,
     pub local: Endpoint,
     pub(crate) bound_ifindex: ::core::sync::atomic::AtomicU32,
     pub(crate) reuseaddr: bool,
     pub(crate) reuseport: bool,
-    pub(crate) owner_uid: u32,
     pub(crate) v6only: bool,
     pub(crate) role: ::core::sync::atomic::AtomicU8,
 }
 
 impl TcpBindReservation {
     /// Build a reservation before registry publication. # C: O(1)
+    #[cfg(test)]
     pub(crate) fn new(namespace: network_namespace::NetworkNamespaceRef, local: Endpoint,
                       iface: Option<NetIfaceId>, reuseaddr: bool,
                       reuseport: bool, owner_uid: u32, v6only: bool) -> Self {
+        Self::new_owned(crate::SocketOwner::root(namespace, owner_uid), local, iface,
+            reuseaddr, reuseport, v6only)
+    }
+
+    /// Build a reservation retaining the socket's canonical owner. # C: O(1)
+    pub(crate) fn new_owned(owner: Arc<crate::SocketOwner>, local: Endpoint,
+                      iface: Option<NetIfaceId>, reuseaddr: bool,
+                      reuseport: bool, v6only: bool) -> Self {
         Self {
-            namespace,
+            owner,
             local,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(
                 iface.map(|id| id.raw()).unwrap_or(0),
             ),
-            reuseaddr, reuseport, owner_uid, v6only,
+            reuseaddr, reuseport, v6only,
             role: ::core::sync::atomic::AtomicU8::new(TCP_BIND_BOUND),
         }
     }
 
     /// Derive the short-lived namespace table key. # C: O(1)
-    pub fn net_ns(&self) -> u64 { self.namespace.id().as_u64() }
+    pub fn net_ns(&self) -> u64 { self.owner.net_ns() }
 
     /// Current SO_BINDTODEVICE scope. # C: O(1)
     pub fn bound_iface(&self) -> Option<NetIfaceId> {
@@ -121,10 +134,18 @@ impl TcpBindReservation {
     }
 }
 
+impl ::core::ops::Deref for TcpBindReservation {
+    type Target = crate::SocketOwner;
+
+    fn deref(&self) -> &Self::Target { &self.owner }
+}
+
 /// Stack-owned per-connection record. Wraps the TcpConn TCB in
 /// its own Spinlock so demux + app calls don't contend with the
 /// listener table lock. Cheap to clone the Arc.
 pub struct TcpEntry {
+    /// Socket identity retained across asynchronous transport processing.
+    pub owner: Arc<crate::SocketOwner>,
     pub conn: Spinlock<TcpConn, StackLockClass>,
     /// Canonical Linux `sk_err`, shared with the owning socket.
     pub error: Arc<crate::SocketError>,
@@ -208,7 +229,10 @@ impl TcpEntry {
                                  ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>) -> Self {
         let syn_backlog_reserved = passive_listener.is_some();
+        let owner = bind.as_ref().map(|bind| bind.owner.clone())
+            .unwrap_or_else(|| crate::SocketOwner::root(network_namespace::initial(), 0));
         Self {
+            owner,
             conn: Spinlock::new(conn),
             error,
             ip_mtu_discover,
@@ -333,6 +357,8 @@ pub(crate) fn stamp_last_sent_public(entry: &TcpEntry, n: usize) {
 }
 
 pub struct TcpListenEntry {
+    /// Listening socket identity inherited by passive children.
+    pub owner: Arc<crate::SocketOwner>,
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
     pub bind: Arc<TcpBindReservation>,
     /// Live listening-socket filter; passive children snapshot this state.
@@ -396,109 +422,5 @@ pub struct NetStack {
 impl Default for NetStack { fn default() -> Self { Self::new() } }
 
 #[cfg(test)]
-mod socket_error_tests {
-    use alloc::sync::Arc;
-
-    use super::{NetStack, TcpEntry, UdpRxQueue, tcp_send_closed, tcp_transmit_ready};
-    use crate::addr::{IpAddr, Ipv4Addr};
-    use crate::tcp_conn::{Endpoint, TcpConn};
-
-    /// `max(SO_SNDBUF, TCP_SNDBUF_DEFAULT)` — the cap `InetSocket::poll`
-    /// passes down, so these masks are the ones userspace sees.
-    const TEST_SNDBUF: usize = crate::sock::TCP_SNDBUF_DEFAULT as usize;
-
-    #[test]
-    fn entry_and_socket_owner_share_canonical_error() {
-        let error = Arc::new(crate::SocketError::new());
-        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40000 };
-        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
-        let entry = TcpEntry::new_with_error(TcpConn::new_client(local, remote, 1), error.clone());
-
-        assert!(Arc::ptr_eq(&entry.error, &error));
-        entry.set_error(syscall::errno::Errno::Econnreset as i32);
-        assert_eq!(error.take(), syscall::errno::Errno::Econnreset as i32);
-    }
-
-    #[test]
-    fn udp_queue_and_socket_owner_share_canonical_error() {
-        let error = Arc::new(crate::SocketError::new());
-        let queue = UdpRxQueue::new_with_error(Ipv4Addr::ANY, 40001, error.clone());
-
-        assert!(Arc::ptr_eq(&queue.error, &error));
-        queue.set_error(syscall::errno::Errno::Econnrefused as i32);
-        assert_eq!(error.take(), syscall::errno::Errno::Econnrefused as i32);
-        assert!(!queue.error.has());
-    }
-
-    #[test]
-    fn failed_initial_syn_drops_canonical_error_owner() {
-        let stack = NetStack::new();
-        let error = Arc::new(crate::SocketError::new());
-        let result = stack.tcp_connect_ip_bound(
-            IpAddr::V4(Ipv4Addr::LOOPBACK), 40003,
-            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 80,
-            None, error.clone(),
-        );
-
-        assert!(result.is_err());
-        assert!(stack.inet_tables(0).tcp_conns.lock().is_empty());
-        assert!(!error.has());
-    }
-
-    #[test]
-    fn syn_sent_is_not_writable_until_connect_completes() {
-        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40002 };
-        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
-        let mut conn = TcpConn::new_client(local, remote, 2);
-        conn.active_open().unwrap();
-        let entry = TcpEntry::new(conn);
-
-        assert_eq!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_OUT, 0);
-        entry.conn.lock().state = crate::tcp_state::TcpState::Established;
-        assert_ne!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_OUT, 0);
-    }
-
-    #[test]
-    fn peer_name_rejects_syn_sent_and_closed_but_accepts_established() {
-        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40006 };
-        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
-        let mut conn = TcpConn::new_client(local, remote, 5);
-        conn.active_open().expect("fresh client enters SYN-SENT");
-        let entry = TcpEntry::new(conn);
-
-        assert!(!entry.peer_name_connected());
-        entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
-        assert!(!entry.peer_name_connected());
-        entry.conn.lock().state = crate::tcp_state::TcpState::Established;
-        assert!(entry.peer_name_connected());
-    }
-
-    #[test]
-    fn tcp_close_wakes_poll_subscribers() {
-        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40005 };
-        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
-        let entry = TcpEntry::new(TcpConn::new_client(local, remote, 4));
-        let poll = Arc::new(vfs::PollSubscribers::new());
-        entry.register_poll_subs(&poll);
-        let before = poll.generation();
-
-        entry.close_and_wake();
-        assert!(poll.generation() > before);
-        assert_ne!(entry.poll_mask(TEST_SNDBUF) & vfs::POLL_HUP, 0);
-    }
-
-    #[test]
-    fn transmit_wait_recheck_tracks_exact_send_buffer_capacity() {
-        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40004 };
-        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
-        let mut conn = TcpConn::new_client(local, remote, 3);
-        assert!(tcp_transmit_ready(&conn, 2));
-        conn.send_buf.extend([1, 2]);
-        assert!(!tcp_transmit_ready(&conn, 2));
-        conn.send_buf.pop_front();
-        assert!(tcp_transmit_ready(&conn, 2));
-        assert!(tcp_send_closed(crate::tcp_state::TcpState::FinWait1));
-        assert!(!tcp_send_closed(crate::tcp_state::TcpState::Established));
-    }
-
-}
+#[path = "types_tests.rs"]
+mod tests;

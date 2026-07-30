@@ -16,6 +16,7 @@ pub struct Raw6RxPacket<'a> {
     pub flow_label: u32,
     pub hatype: u16,
     pub payload: &'a [u8],
+    pub packet: &'a [u8],
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -37,6 +38,9 @@ impl Raw6Endpoint {
         {
             return Raw6RxDisposition::PolicyDrop;
         }
+        if !crate::cgroup_bpf::ingress(
+            &self.owner, packet.packet, eth_p::IPV6, packet.iface,
+        ) { return Raw6RxDisposition::PolicyDrop; }
         if self.protocol() == crate::icmpv6::IPPROTO_ICMPV6 {
             let Some(typ) = packet.payload.first() else { return Raw6RxDisposition::PolicyDrop };
             if !state.icmp_filter.accepts(*typ) { return Raw6RxDisposition::PolicyDrop; }

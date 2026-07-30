@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 
 use vfs::VfsError;
 
+use super::bpf_types::CgroupBpfAttachType;
 use super::controllers::{CORE_FILES, NONROOT_FILES, controller_files, ctrl_bit};
 use super::types::{KResult, Node, ROOT, Tree};
 
@@ -40,17 +41,18 @@ impl Tree {
     /// # C: O(log n)
     pub fn create(&mut self, parent: u64, name: &str) -> KResult<(u64, u8)> {
         if name.is_empty() || name.contains('/') { return Err(VfsError::Einval); }
-        let (avail, inherited_bpf) = {
+        let avail = {
             let p = self.nodes.get(&parent).ok_or(VfsError::Enoent)?;
             if p.children.contains_key(name) { return Err(VfsError::Eexist); }
-            (p.subtree_control, alloc::sync::Arc::clone(&p.bpf_device.effective))
+            p.subtree_control
         };
         let id = self.next_id;
         self.next_id += 1;
-        let mut node = Node::new(name.to_string(), Some(parent), avail);
-        node.bpf_device.effective = inherited_bpf;
-        self.nodes.insert(id, node);
+        self.nodes.insert(id, Node::new(id, name.to_string(), Some(parent), avail));
         self.nodes.get_mut(&parent).unwrap().children.insert(name.to_string(), id);
+        for attach_type in CgroupBpfAttachType::ALL {
+            self.rebuild_bpf_attach(id, attach_type);
+        }
         Ok((id, avail))
     }
 

@@ -123,7 +123,9 @@ fn vsock_epipe_uses_the_shared_sigpipe_completion_owner() {
 #[test]
 fn vsock_bind_syscall_only_validates_copies_and_calls_endpoint_owner() {
     let bind = include_str!("../049_bind.rs");
-    assert!(bind.contains("require_sockaddr_vm(addrlen as usize)"));
+    assert!(bind.contains("require_sockaddr_vm(copied_len)"));
+    assert!(bind.contains("storage.vsock()"));
     assert!(bind.contains("vs.bind(family, port, cid)"));
+    assert!(!bind.contains("read_sockaddr_vm(addr_p)"));
     assert!(!bind.contains("*vs.kind.lock()"));
 }

@@ -6,7 +6,7 @@ use crate::netdev::{NetError, NetResult};
 use crate::send_control::Raw6Control;
 use crate::stack::NetStack;
 
-use super::tx::{emit_ipv6, push_ipv6_raw_header};
+use super::tx::{admit_ipv6_owned, emit_ipv6_fragment, push_ipv6_raw_header};
 
 const NH_HOP: u8 = 0;
 const NH_ROUTING: u8 = 43;
@@ -70,13 +70,19 @@ impl NetStack {
             return Ok(());
         }
         if prepared.mode == crate::raw6::Raw6SendMode::CallerHeader {
+            let mut p = crate::pkt::Pkt::with_capacity(0, prepared.bytes.len());
+            p.put(prepared.bytes.len()).map_err(|_| NetError::Enobufs)?
+                .copy_from_slice(&prepared.bytes);
+            if !admit_ipv6_owned(&endpoint.owner, iface_id, next_hop, prepared.src, p)? {
+                return Ok(());
+            }
             if prepared.bytes.len() > core::cmp::min(iface.mtu() as usize, mtu) {
                 return Err(NetError::Emsgsize);
             }
             let mut p = crate::pkt::Pkt::with_capacity(0, prepared.bytes.len());
             p.put(prepared.bytes.len()).map_err(|_| NetError::Enobufs)?
                 .copy_from_slice(&prepared.bytes);
-            return emit_ipv6(iface_id, iface, next_hop, prepared.src, p);
+            return emit_ipv6_fragment(iface_id, iface, next_hop, prepared.src, p);
         }
         let hop = match control.hop_limit { Some(value) if value >= 0 => value as u8, _ => hop_limit };
         let flowinfo = control.flowinfo.unwrap_or(0);
@@ -87,12 +93,13 @@ impl NetStack {
         let flow = flowinfo & 0x000f_ffff;
         let may_fragment = crate::uapi::ipv6_pmtudisc_allows_fragmentation(pmtudisc)
             && control.dontfrag != Some(true);
-        self.xmit_raw6_controlled(iface_id, iface, next_hop, prepared.src, final_dst,
+        self.xmit_raw6_controlled(endpoint, iface_id, iface, next_hop, prepared.src, final_dst,
             route_dst, prepared.next_header, &prepared.bytes, hop, tclass, flow, mtu,
             may_fragment, control)
     }
 
-    fn xmit_raw6_controlled(&self, iface_id: NetIfaceId, iface: crate::EgressLease,
+    fn xmit_raw6_controlled(&self, endpoint: &crate::raw6::Raw6Endpoint,
+        iface_id: NetIfaceId, iface: crate::EgressLease,
         next_hop: Ipv6Addr, src: Ipv6Addr, final_dst: Ipv6Addr, base_dst: Ipv6Addr,
         upper: u8, payload: &[u8], hop: u8, tclass: u8, flow: u32, policy_mtu: usize,
         may_fragment: bool, control: &Raw6Control) -> NetResult<()>
@@ -100,9 +107,13 @@ impl NetStack {
         let mtu = core::cmp::min(iface.mtu() as usize, policy_mtu);
         let (base_next, wire) = wire_payload(control, final_dst, upper, payload, None)?;
         if wire.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
+        let full = build_packet(src, base_dst, base_next, &wire, hop, tclass, flow)?;
+        if !admit_ipv6_owned(&endpoint.owner, iface_id, next_hop, src, full)? {
+            return Ok(());
+        }
         if IPV6_HDR_LEN + wire.len() <= mtu {
-            return emit_packet(iface_id, iface, next_hop, src, base_dst, base_next,
-                &wire, hop, tclass, flow);
+            return emit_packet_fragment(iface_id, iface, next_hop, src, base_dst,
+                base_next, &wire, hop, tclass, flow);
         }
         if !may_fragment { return Err(NetError::Emsgsize); }
         let nonfrag_len = nonfragment_len(control);
@@ -125,7 +136,7 @@ impl NetStack {
             fragment.extend_from_slice(&id.to_be_bytes());
             fragment.extend_from_slice(&fragmentable[off..off + take]);
             let (base_next, wire) = wire_payload(control, final_dst, NH_FRAGMENT, &fragment, Some(false))?;
-            emit_packet(iface_id, iface.clone(), next_hop, src, base_dst, base_next,
+            emit_packet_fragment(iface_id, iface.clone(), next_hop, src, base_dst, base_next,
                 &wire, hop, tclass, flow)?;
             off += take;
         }
@@ -221,9 +232,8 @@ fn post_fragment_chain_len(control: &Raw6Control, mut next: u8, mut payload: &[u
     }
 }
 
-fn emit_packet(iface_id: NetIfaceId, iface: crate::EgressLease, next_hop: Ipv6Addr,
-    src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8], hop: u8, tclass: u8,
-    flow: u32) -> NetResult<()>
+fn build_packet(src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8],
+    hop: u8, tclass: u8, flow: u32) -> NetResult<crate::pkt::Pkt>
 {
     if payload.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
     let mut p = crate::pkt::Pkt::with_capacity(IPV6_HDR_LEN, IPV6_HDR_LEN + payload.len());
@@ -231,5 +241,12 @@ fn emit_packet(iface_id: NetIfaceId, iface: crate::EgressLease, next_hop: Ipv6Ad
     push_ipv6_raw_header(&mut p, src, dst, next, hop, tclass)?;
     let bits = (6u32 << 28) | ((tclass as u32) << 20) | flow;
     p.data_mut()[..4].copy_from_slice(&bits.to_be_bytes());
-    emit_ipv6(iface_id, iface, next_hop, src, p)
+    Ok(p)
+}
+
+fn emit_packet_fragment(iface_id: NetIfaceId, iface: crate::EgressLease,
+    next_hop: Ipv6Addr, src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8],
+    hop: u8, tclass: u8, flow: u32) -> NetResult<()> {
+    let p = build_packet(src, dst, next, payload, hop, tclass, flow)?;
+    emit_ipv6_fragment(iface_id, iface, next_hop, src, p)
 }

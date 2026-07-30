@@ -98,24 +98,6 @@ pub(crate) fn inode_permission(
     check(dev_type, dev.major(), dev.minor(), access).map_err(|_| vfs::VfsError::Eperm)
 }
 
-pub(super) fn attach(
-    cgid: u64,
-    prog: InodeRef,
-    mode: cgroup::BpfDeviceMode,
-    replace: Option<&InodeRef>,
-    expected_revision: u64,
-) -> Result<(), Errno> {
-    cgroup::bpf::device_attach(cgid, prog, mode, replace, expected_revision).map_err(map_error)
-}
-
-pub(super) fn detach(
-    cgid: u64,
-    prog: Option<&InodeRef>,
-    expected_revision: u64,
-) -> Result<(), Errno> {
-    cgroup::bpf::device_detach(cgid, prog, expected_revision).map_err(map_error)
-}
-
 pub(super) fn map_error(error: cgroup::BpfDeviceError) -> Errno {
     match error {
         cgroup::BpfDeviceError::Offline => Errno::Enoent,
