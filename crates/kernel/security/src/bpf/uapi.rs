@@ -319,7 +319,7 @@ pub mod map_flags {
     /// Hash-map creation flag mask.
     pub const HTAB_CREATE_MASK: u32 =
         NO_PREALLOC | NO_COMMON_LRU | NUMA_NODE | ACCESS_MASK | ZERO_SEED;
-    pub const ARRAY_CREATE_MASK: u32 = NUMA_NODE | ACCESS_MASK;
+    pub const ARRAY_CREATE_MASK: u32 = NUMA_NODE | ACCESS_MASK | MMAPABLE;
     pub const LPM_CREATE_MASK: u32 = NO_PREALLOC | NUMA_NODE | ACCESS_MASK;
 }
 

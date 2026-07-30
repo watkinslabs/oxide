@@ -284,16 +284,14 @@ pub fn make_bpf_prog_inode_with_contract(
 
 /// Map value storage is separately locked so a helper can pin a value
 /// without holding the map's directory lock while the interpreter runs.
-pub struct BpfMapValue {
-    pub bytes: Spinlock<Vec<u8>, TaskListClass>,
-}
+pub(crate) use map::BpfMapValue;
 
 /// Implemented map storage. `map_flags` retains the descriptor and
 /// program-access contract; `MapStorage` owns the freeze/writer state.
 pub struct BpfMapInode {
     pub id:          u32,
     pub map_type:    u32,
-    pub(crate) storage: map::MapStorage,
+    pub(crate) storage: Arc<map::MapStorage>,
     pub max_entries: u32,
     pub key_size:    u32,
     pub value_size:  u32,
@@ -335,10 +333,15 @@ pub(crate) fn next_live_map_id(start: u32) -> Option<u32> {
 /// Build the `Arc<Inode>` for a freshly created BPF map. # C: O(1)
 pub fn make_bpf_map_inode(m: BpfMapInode) -> InodeRef {
     let id = m.id;
-    let inode = InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, BPF_FD_MODE),
+    let mapping = m.storage.mmap_mapping();
+    let builder = InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
-        .private(Arc::new(m))
-        .build();
+        .size(m.storage.mmap_size())
+        .private(Arc::new(m));
+    let inode = match mapping {
+        Some(mapping) => builder.mapping(mapping).build(),
+        None => builder.build(),
+    };
     MAPS_BY_ID.lock().insert(id, Arc::downgrade(&inode));
     inode
 }

@@ -1,12 +1,10 @@
 // `BPF_MAP_CREATE` + the element/freeze commands.
 //
-// Linux: kernel/bpf/syscall.c `map_create()`, `map_lookup_elem()`,
-// `map_update_elem()`, `map_delete_elem()`, `map_get_next_key()`,
-// `map_lookup_and_delete_elem()`, `map_freeze()`; kernel/bpf/hashtab.c
-// for the BPF_MAP_TYPE_HASH element semantics. Every errno decision
-// lives in `attr.rs`; this file resolves fds and moves bytes.
+// Every errno decision lives in `attr.rs`; this file resolves descriptors and
+// moves map values through their canonical backing object.
 
 extern crate alloc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -19,7 +17,7 @@ use super::{BpfMapInode, install_fd, make_bpf_map_inode, map_by_id, next_live_ma
 
 #[path = "map/storage.rs"]
 mod storage;
-pub(crate) use storage::MapStorage;
+pub(crate) use storage::{BpfMapValue, MapStorage};
 
 /// `map_create()`.
 /// # C: O(max_entries × (key_size + value_size)) for preallocated maps
@@ -57,9 +55,9 @@ pub(crate) fn allocate(
     max_entries: u32,
     map_flags: u32,
 ) -> Result<InodeRef, Errno> {
-    let storage = MapStorage::allocate(
+    let storage = Arc::new(MapStorage::allocate(
         map_type, key_size, value_size, max_entries, map_flags,
-    )?;
+    )?);
     Ok(make_bpf_map_inode(BpfMapInode {
         id: next_map_id(),
         map_type,
@@ -165,7 +163,7 @@ pub(super) fn elem(a: &Attr, op: MapOp) -> Result<i64, Errno> {
 
 fn lookup_to_user(m: &BpfMapInode, key: &[u8], value_ptr: u64) -> Result<i64, Errno> {
     let value = m.lookup_value(key).ok_or(Errno::Enoent)?;
-    user::write_bytes(value_ptr, &value.bytes.lock())?;
+    value.copy_to_user(value_ptr)?;
     Ok(0)
 }
 
