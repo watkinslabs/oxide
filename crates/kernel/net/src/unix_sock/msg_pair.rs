@@ -149,6 +149,23 @@ impl UnixMsgPair {
         }
     }
 
+    /// Pin the identity of the process owning `end` (`SO_PEERPIDFD` source).
+    /// # C: O(1)
+    pub fn set_end_identity(&self, end: crate::UnixEnd, identity: Option<Arc<sched::pid::PidIdentity>>) {
+        match end {
+            crate::UnixEnd::A => self.cred_a.set_identity(identity),
+            crate::UnixEnd::B => self.cred_b.set_identity(identity),
+        }
+    }
+
+    /// The PEER's pinned identity as seen from `end`. # C: O(1)
+    pub fn peer_identity(&self, end: crate::UnixEnd) -> Option<Arc<sched::pid::PidIdentity>> {
+        match end {
+            crate::UnixEnd::A => self.cred_b.identity(),
+            crate::UnixEnd::B => self.cred_a.identity(),
+        }
+    }
+
     /// F181a: register an end's subscribers (mirrors `UnixPair`).
     /// # C: O(1)
     pub fn register_end_subs(&self, end: UnixEnd, subs: &Arc<vfs::PollSubscribers>) {

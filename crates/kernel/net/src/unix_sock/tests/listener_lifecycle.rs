@@ -150,7 +150,7 @@ fn listener_publishes_only_fully_initialized_pairs() {
     let path = "\0listener-initialized-pair";
     let addr = UnixAddr::from_abstract_or_test_path(String::from(path));
     let listener = registry.bind_addr(addr.clone()).unwrap();
-    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((10, 20, 30)));
+    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((10, 20, 30)), None);
     let client = UnixPair::new();
     client.set_end_cred(UnixEnd::B, 40, 50, 60);
 
@@ -161,7 +161,7 @@ fn listener_publishes_only_fully_initialized_pairs() {
     assert_eq!(accepted.peer_cred(UnixEnd::A), (40, 50, 60));
     assert_eq!(accepted.peer_cred(UnixEnd::B), (10, 20, 30));
 
-    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((11, 21, 31)));
+    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((11, 21, 31)), None);
     let next = UnixPair::new();
     next.set_end_cred(UnixEnd::B, 41, 51, 61);
     registry.connect_pair_addr(&addr, next).unwrap();
@@ -201,4 +201,43 @@ fn listener_close_resets_all_unaccepted_clients() {
         client.abort_unaccepted();
         assert!(client.reset_pending(UnixEnd::B), "repeat close preserves pending reset");
     }
+}
+
+#[test]
+fn accepted_pairs_carry_the_pinned_peer_identity_both_ways() {
+    // SO_PEERPIDFD's whole point: the identity, not the number, is what the
+    // pair retains, so a descriptor minted later still names the process that
+    // actually connected even after its pid number has been recycled.
+    let _serial = test_guard();
+    let registry = UnixRegistry::new();
+    let path = "\0listener-peer-identity";
+    let addr = UnixAddr::from_abstract_or_test_path(String::from(path));
+    let server = Arc::new(sched::pid::PidIdentity::new(10));
+    let client_id = Arc::new(sched::pid::PidIdentity::new(40));
+    let listener = registry.bind_addr(addr.clone()).unwrap();
+    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((10, 20, 30)),
+        Some(Arc::clone(&server)));
+    let client = UnixPair::new();
+    client.set_end_cred(UnixEnd::B, 40, 50, 60);
+    client.set_end_identity(UnixEnd::B, Some(Arc::clone(&client_id)));
+
+    registry.connect_pair_addr(&addr, client.clone()).unwrap();
+    let (accepted, _pin) = listener.accept().unwrap();
+
+    let seen_by_server = accepted.peer_identity(UnixEnd::A).expect("client identity");
+    let seen_by_client = accepted.peer_identity(UnixEnd::B).expect("server identity");
+    assert!(Arc::ptr_eq(&seen_by_server, &client_id));
+    assert!(Arc::ptr_eq(&seen_by_client, &server));
+    assert_eq!(accepted.peer_cred(UnixEnd::A).0, seen_by_server.tid);
+}
+
+#[test]
+fn a_pair_with_no_snapshot_reports_no_peer_identity() {
+    // The ENODATA case: nothing pinned the connection, so there is no identity
+    // to hand out — distinct from handing out a stale pid number.
+    let _serial = test_guard();
+    let pair = UnixPair::new();
+    pair.set_end_cred(UnixEnd::B, 40, 50, 60);
+    assert!(pair.peer_identity(UnixEnd::A).is_none());
+    assert!(pair.peer_identity(UnixEnd::B).is_none());
 }
