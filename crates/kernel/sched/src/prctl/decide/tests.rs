@@ -88,7 +88,7 @@ fn get_no_new_privs_requires_all_zero_args() {
 // ---- capability options -----------------------------------------------
 
 #[test]
-fn capbset_rejects_above_cap_last_cap_not_just_above_63() {
+fn capbset_read_rejects_above_cap_last_cap_not_just_above_63() {
     assert_eq!(CAP_LAST_CAP, 40, "CAP_LAST_CAP == CAP_CHECKPOINT_RESTORE");
     assert_eq!(classify(PR_CAPBSET_READ, 0, 0, 0, 0), Ok(Op::CapbsetRead(0)));
     assert_eq!(classify(PR_CAPBSET_READ, CAP_LAST_CAP, 0, 0, 0),
@@ -96,7 +96,8 @@ fn capbset_rejects_above_cap_last_cap_not_just_above_63() {
     // 41..63 are unassigned: Linux answers EINVAL, not "bit is clear".
     for cap in [CAP_LAST_CAP + 1, 50, 63, 64, u64::MAX] {
         einval(classify(PR_CAPBSET_READ, cap, 0, 0, 0));
-        einval(classify(PR_CAPBSET_DROP, cap, 0, 0, 0));
+        assert_eq!(classify(PR_CAPBSET_DROP, cap, 0, 0, 0),
+                   Ok(Op::CapbsetDrop(cap)));
     }
 }
 
