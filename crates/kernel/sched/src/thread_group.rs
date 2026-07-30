@@ -171,6 +171,11 @@ impl ThreadGroup {
     /// O(1), no registry lock and no scan. # C: O(1)
     pub fn leader_task(&self) -> Option<Arc<Task>> { self.leader.task() }
 
+    /// Linux `task_tgid()`: the group's pinned pid identity, which outlives the
+    /// leader `Task` and is what a peer-credential snapshot must retain to name
+    /// the process after its numeric pid is recycled. # C: O(1)
+    pub fn leader_pid(&self) -> Arc<PidIdentity> { self.leader.clone() }
+
     /// `prctl(PR_GET_CHILD_SUBREAPER)`. # C: O(1)
     pub fn is_child_subreaper(&self) -> bool { self.is_child_subreaper.load(Ordering::Acquire) }
 
