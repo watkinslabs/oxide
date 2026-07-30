@@ -8,7 +8,6 @@ const SERVICE_DESTINATION: &str =
 const WANTS_DIRECTORY: &str = "/etc/systemd/system/graphical.target.wants";
 const WANTS_DESTINATION: &str =
     "/etc/systemd/system/graphical.target.wants/oxide-gnome-input-classify.service";
-const CONSOLE_DEVICE: &str = "/dev/console";
 const SERVICE_TIMEOUT_SECONDS: u32 = 90;
 const UDEV_SETTLE_TIMEOUT_SECONDS: u32 = 60;
 const PROBE_FILE_MODE: &str = "0100755";
@@ -40,9 +39,9 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     Ok(())
 }
 
-fn serial_device(arch: &str) -> Result<&'static str, u8> {
+fn validate_arch(arch: &str) -> Result<(), u8> {
     match arch {
-        "x86_64" | "aarch64" => Ok(CONSOLE_DEVICE),
+        "x86_64" | "aarch64" => Ok(()),
         _ => {
             eprintln!("xtask rootfs: unsupported arch `{arch}` for GNOME input smoke");
             Err(EXIT_UNSUPPORTED_ARCH)
@@ -65,21 +64,21 @@ fn write_probe() -> Result<PathBuf, u8> {
 }
 
 fn write_service(arch: &str) -> Result<PathBuf, u8> {
-    let serial = serial_device(arch)?;
+    validate_arch(arch)?;
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|err| {
         eprintln!("xtask rootfs: mkdir GNOME input smoke dir failed: {err}");
         EXIT_OPERATION_FAILED
     })?;
     let path = dir.join(SERVICE_NAME);
-    std::fs::write(&path, service_body(serial)).map_err(|err| {
+    std::fs::write(&path, service_body()).map_err(|err| {
         eprintln!("xtask rootfs: write GNOME input service failed: {err}");
         EXIT_OPERATION_FAILED
     })?;
     Ok(path)
 }
 
-fn service_body(serial: &str) -> String {
+fn service_body() -> String {
     format!(
         "[Unit]\n\
 Description=Oxide GNOME input classification smoke\n\
@@ -91,7 +90,9 @@ Before=display-manager.service\n\
 Type=oneshot\n\
 User=root\n\
 TimeoutStartSec={SERVICE_TIMEOUT_SECONDS}\n\
-ExecStart=/bin/sh -c 'exec {PROBE_DESTINATION} >{serial} 2>&1'\n\
+ExecStart={PROBE_DESTINATION}\n\
+StandardOutput=journal+console\n\
+StandardError=journal+console\n\
 \n\
 [Install]\n\
 WantedBy=graphical.target\n"
@@ -321,13 +322,14 @@ mod tests {
 
     #[test]
     fn service_orders_classification_before_the_display_manager() {
-        let x86 = service_body(serial_device("x86_64").unwrap());
-        assert!(x86.contains("Before=display-manager.service\n"));
-        assert!(x86.contains("After=systemd-udev-settle.service systemd-logind.service\n"));
-        assert!(x86.contains(">/dev/console 2>&1"));
-        let arm = service_body(serial_device("aarch64").unwrap());
-        assert!(arm.contains(">/dev/console 2>&1"));
-        assert_eq!(serial_device("riscv64"), Err(EXIT_UNSUPPORTED_ARCH));
+        let service = service_body();
+        assert!(service.contains("Before=display-manager.service\n"));
+        assert!(service.contains("After=systemd-udev-settle.service systemd-logind.service\n"));
+        assert!(service.contains("ExecStart=/usr/local/bin/oxide-gnome-input-classify\n"));
+        assert!(service.contains("StandardOutput=journal+console\n"));
+        assert_eq!(validate_arch("x86_64"), Ok(()));
+        assert_eq!(validate_arch("aarch64"), Ok(()));
+        assert_eq!(validate_arch("riscv64"), Err(EXIT_UNSUPPORTED_ARCH));
     }
 
     #[test]
