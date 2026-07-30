@@ -83,6 +83,9 @@ pub fn make_bpf_token_inode(token: BpfTokenInode) -> InodeRef {
 static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
 static PROGRAMS_BY_ID: Spinlock<BTreeMap<u32, Weak<vfs::Inode>>, TaskListClass> =
     Spinlock::new(BTreeMap::new());
+static NEXT_MAP_ID: AtomicU32 = AtomicU32::new(1);
+static MAPS_BY_ID: Spinlock<BTreeMap<u32, Weak<vfs::Inode>>, TaskListClass> =
+    Spinlock::new(BTreeMap::new());
 static NEXT_CGROUP_LINK_ID: AtomicU32 = AtomicU32::new(1);
 enum CgroupLinkIdSlot {
     Unsettled,
@@ -288,6 +291,7 @@ pub struct BpfMapValue {
 /// Implemented map storage. `map_flags` retains the descriptor and
 /// program-access contract; `MapStorage` owns the freeze/writer state.
 pub struct BpfMapInode {
+    pub id:          u32,
     pub map_type:    u32,
     pub(crate) storage: map::MapStorage,
     pub max_entries: u32,
@@ -296,12 +300,31 @@ pub struct BpfMapInode {
     pub map_flags:   u32,
 }
 
+impl Drop for BpfMapInode {
+    fn drop(&mut self) {
+        let mut maps = MAPS_BY_ID.lock();
+        if maps.get(&self.id).is_some_and(|weak| weak.strong_count() == 0) { maps.remove(&self.id); }
+    }
+}
+
+pub(crate) fn next_map_id() -> u32 {
+    loop {
+        let id = NEXT_MAP_ID.fetch_add(1, Ordering::Relaxed);
+        if id == 0 { continue; }
+        let mut maps = MAPS_BY_ID.lock();
+        if maps.get(&id).and_then(Weak::upgrade).is_none() { maps.remove(&id); return id; }
+    }
+}
+
 /// Build the `Arc<Inode>` for a freshly created BPF map. # C: O(1)
 pub fn make_bpf_map_inode(m: BpfMapInode) -> InodeRef {
-    InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, BPF_FD_MODE),
+    let id = m.id;
+    let inode = InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(m))
-        .build()
+        .build();
+    MAPS_BY_ID.lock().insert(id, Arc::downgrade(&inode));
+    inode
 }
 
 /// fd-backed BPF LSM link. Dropping the last fd reference removes the

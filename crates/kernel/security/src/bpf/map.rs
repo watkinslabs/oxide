@@ -15,7 +15,7 @@ use vfs::InodeRef;
 use super::attr::{self, Access, Attr, Caps};
 use super::uapi;
 use super::user;
-use super::{BpfMapInode, install_fd, make_bpf_map_inode};
+use super::{BpfMapInode, install_fd, make_bpf_map_inode, next_map_id};
 
 #[path = "map/storage.rs"]
 mod storage;
@@ -44,6 +44,7 @@ pub(crate) fn allocate(
         map_type, key_size, value_size, max_entries, map_flags,
     )?;
     Ok(make_bpf_map_inode(BpfMapInode {
+        id: next_map_id(),
         map_type,
         storage,
         max_entries,
