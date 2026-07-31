@@ -442,9 +442,19 @@ pub(super) fn epoll_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<E
     epoll_data_of_inode(file.inode())
 }
 
+/// "Is this an epoll file?" is Linux `is_file_epoll` — a comparison against the
+/// one `eventpoll_fops`, so nothing but an epoll file can ever answer yes. The
+/// inode NUMBER cannot stand in for that: a number space is shared with every
+/// other subsystem that mints inodes, and `/dev/input/eventN` picks its own
+/// numbers out of the same range. Guessing by number let an evdev fd resolve to
+/// a live, unrelated epoll instance, so `epoll_ctl` mutated it and every evdev
+/// ioctl was answered by `ep_eventpoll_ioctl` with EINVAL. Identity is the
+/// inode's own `EpollData`, which only `make_epoll_inode` installs.
+/// # C: O(1)
 fn epoll_data_of_inode(inode: &vfs::InodeRef) -> Option<Arc<EpollData>> {
-    let ino = inode.ino();
-    if (ino & !ids::INO_MASK) != ids::INO_BASE { return None; }
-    let id = (ino & ids::INO_MASK) as usize;
-    EPOLLS.lock().get(id).and_then(|e| e.as_ref().cloned())
+    inode.i_private().clone().downcast::<EpollData>().ok()
 }
+
+#[cfg(test)]
+#[path = "epoll/identity_tests.rs"]
+mod identity_tests;
