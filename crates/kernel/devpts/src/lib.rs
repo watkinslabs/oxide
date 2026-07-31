@@ -202,6 +202,18 @@ pub fn pair_for(pts_num: u32) -> Option<Arc<LockedPair>> {
     g.get(pts_num as usize).cloned()
 }
 
+/// Whether `ino` names a Unix98 PTY master. # C: O(1)
+pub fn is_master_inode(ino: Ino) -> bool {
+    (ino & ids::PTY_INO_KIND_MASK) == ids::PTY_MASTER_INO_BASE
+}
+
+/// Resolve the backing pair for either Unix98 PTY endpoint inode. # C: O(1)
+pub fn pair_for_inode(ino: Ino) -> Option<Arc<LockedPair>> {
+    let kind = ino & ids::PTY_INO_KIND_MASK;
+    if kind != ids::PTY_MASTER_INO_BASE && kind != ids::PTY_SLAVE_INO_BASE { return None; }
+    pair_for((ino & ids::PTY_INO_INDEX_MASK) as u32)
+}
+
 /// Allocate a fresh PTY pair. Registers a slave inode at
 /// `/dev/pts/<n>` and returns the master inode + pts number.
 /// Called from sys_open's special-case for `/dev/ptmx`.

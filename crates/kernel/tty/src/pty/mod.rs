@@ -7,7 +7,11 @@ mod termios;
 mod pair;
 mod readiness;
 
-pub use pair::{Pair, Ring};
+pub use pair::{
+    Pair, Ring, TIOCPKT_DATA, TIOCPKT_DOSTOP, TIOCPKT_FLUSHREAD,
+    TIOCPKT_FLUSHWRITE, TIOCPKT_IOCTL, TIOCPKT_NOSTOP, TIOCPKT_START,
+    TIOCPKT_STOP,
+};
 pub use termios::{
     cc, default_termios, iflag, lflag, oflag, read_iflag, read_lflag, read_oflag,
     read_termios_u32, read_vintr, Winsize, DEFAULT_IFLAG, DEFAULT_LFLAG, DEFAULT_OFLAG,

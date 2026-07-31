@@ -121,7 +121,22 @@ pub struct Pair {
     /// Set when c_cc[VQUIT] (^\\, default) hits master_write under
     /// ISIG. Kernel-side adapter posts SIGQUIT (sig 3) to fg pgrp.
     pub pending_sigquit: bool,
+    /// `TIOCPKT` state on the Unix98 master. Packet-mode reads prefix normal
+    /// slave output with `TIOCPKT_DATA` and deliver queued status bytes alone.
+    pub master_packet: bool,
+    /// Pending packet-mode status for the master read stream.
+    pub packet_status: u8,
 }
+
+/// `TIOCPKT_DATA`: the leading byte for ordinary master-read payload.
+pub const TIOCPKT_DATA: u8 = 0;
+pub const TIOCPKT_FLUSHREAD: u8 = 1;
+pub const TIOCPKT_FLUSHWRITE: u8 = 2;
+pub const TIOCPKT_STOP: u8 = 4;
+pub const TIOCPKT_START: u8 = 8;
+pub const TIOCPKT_NOSTOP: u8 = 16;
+pub const TIOCPKT_DOSTOP: u8 = 32;
+pub const TIOCPKT_IOCTL: u8 = 64;
 
 impl Pair {
     /// Convenience accessor for the c_lflag field.
@@ -159,6 +174,8 @@ impl Pair {
             pending_sighup: false,
             pending_sigtstp: false,
             pending_sigquit: false,
+            master_packet: false,
+            packet_status: TIOCPKT_DATA,
         }
     }
 
@@ -166,7 +183,9 @@ impl Pair {
     /// slave→master ring has data) OR the pair is hung up (read → EOF).
     /// Used by `poll(POLLIN)` and the adapter's yield-loop exit.
     /// # C: O(1)
-    pub fn master_readable(&self) -> bool { !self.s_to_m.is_empty() || self.hung_up }
+    pub fn master_readable(&self) -> bool {
+        !self.s_to_m.is_empty() || self.packet_status != TIOCPKT_DATA || self.hung_up
+    }
 
     /// True iff `slave_read` would return at least one byte OR EOF
     /// (pending_eof + empty queue, OR hung up). Under ICANON requires a
@@ -189,6 +208,23 @@ impl Pair {
             self.winsize = ws;
             self.pending_sigwinch = true;
         }
+    }
+
+    /// Install a Linux termios image and notify a packet-mode master of the
+    /// changed line settings. # C: O(1)
+    pub fn set_termios(&mut self, termios: [u8; TERMIOS_BYTES]) {
+        let old_flow = self.iflag() & iflag::IXON != 0;
+        let old_stop = self.termios[TERMIOS_OFF_CC + cc::VSTOP];
+        let old_start = self.termios[TERMIOS_OFF_CC + cc::VSTART];
+        let new_iflag = read_iflag(&termios);
+        let new_flow = new_iflag & iflag::IXON != 0;
+        let new_stop = termios[TERMIOS_OFF_CC + cc::VSTOP];
+        let new_start = termios[TERMIOS_OFF_CC + cc::VSTART];
+        self.termios = termios;
+        if old_flow != new_flow || old_stop != new_stop || old_start != new_start {
+            self.packet_event(if new_flow { TIOCPKT_DOSTOP } else { TIOCPKT_NOSTOP });
+        }
+        self.packet_event(TIOCPKT_IOCTL);
     }
 
     /// Master writes input (keystrokes). c_iflag pre-processes the
@@ -230,19 +266,17 @@ impl Pair {
                 let vstart = self.termios[TERMIOS_OFF_CC + cc::VSTART];
                 let ixany  = (iflag_v & iflag::IXANY) != 0;
                 if vstop != 0 && b == vstop {
-                    self.output_stopped = true;
+                    self.flow_output(true);
                     consumed += 1;
                     continue;
                 }
                 if vstart != 0 && b == vstart {
-                    self.output_stopped = false;
-                    self.flush_out_hold();
+                    self.flow_output(false);
                     consumed += 1;
                     continue;
                 }
                 if self.output_stopped && ixany {
-                    self.output_stopped = false;
-                    self.flush_out_hold();
+                    self.flow_output(false);
                     // fall through: this byte is still input.
                 }
             }
@@ -406,7 +440,42 @@ impl Pair {
     /// Master reads program output. Returns 0 (EOF) once hung up and the
     /// slave→master queue has drained.
     /// # C: O(N)
-    pub fn master_read(&mut self, dst: &mut [u8]) -> usize { self.s_to_m.read(dst) }
+    pub fn master_read(&mut self, dst: &mut [u8]) -> usize {
+        if !self.master_packet { return self.s_to_m.read(dst); }
+        if dst.is_empty() { return 0; }
+        if self.packet_status != TIOCPKT_DATA {
+            dst[0] = self.packet_status;
+            self.packet_status = TIOCPKT_DATA;
+            return 1;
+        }
+        if self.s_to_m.is_empty() { return 0; }
+        dst[0] = TIOCPKT_DATA;
+        1 + self.s_to_m.read(&mut dst[1..])
+    }
+
+    /// Enable or disable `TIOCPKT` on the master endpoint. # C: O(1)
+    pub fn set_master_packet(&mut self, enabled: bool) {
+        self.master_packet = enabled;
+        self.packet_status = TIOCPKT_DATA;
+    }
+
+    /// Packet-mode state returned by `TIOCGPKT`. # C: O(1)
+    pub fn master_packet_enabled(&self) -> bool { self.master_packet }
+
+    /// Queue one packet-mode control byte for the master. # C: O(1)
+    pub fn packet_event(&mut self, event: u8) {
+        if self.master_packet { self.packet_status |= event; }
+    }
+
+    /// Bytes available to a `TIOCINQ` caller on this endpoint. # C: O(1)
+    pub fn readable_bytes(&self, master: bool) -> usize {
+        if master { self.s_to_m.len() } else { self.m_to_s.len() }
+    }
+
+    /// Bytes queued for transmission by this endpoint (`TIOCOUTQ`). # C: O(1)
+    pub fn output_bytes(&self, master: bool) -> usize {
+        if master { self.m_to_s.len() } else { self.s_to_m.len() + self.out_hold.len() }
+    }
 
     /// TCFLSH from the SLAVE side (where login/bash/ssh run). TCIFLUSH
     /// drops the slave's unread input (`m_to_s` — keystrokes the master
@@ -414,8 +483,8 @@ impl Pair {
     /// untransmitted output (`s_to_m` + IXON-withheld `out_hold`). Mirrors
     /// Linux `tty_buffer_flush` on a pts. # C: O(N) dropped
     pub fn flush_slave(&mut self, input: bool, output: bool) {
-        if input { self.m_to_s.clear(); self.pending_eof = false; }
-        if output { self.s_to_m.clear(); self.out_hold.clear(); }
+        if input { self.m_to_s.clear(); self.pending_eof = false; self.packet_event(TIOCPKT_FLUSHREAD); }
+        if output { self.s_to_m.clear(); self.out_hold.clear(); self.packet_event(TIOCPKT_FLUSHWRITE); }
     }
 
     /// TCXONC output flow control from the SLAVE side. `stop=true` (TCOOFF)
@@ -428,6 +497,7 @@ impl Pair {
     pub fn flow_output(&mut self, stop: bool) -> bool {
         let changed = self.output_stopped != stop;
         self.output_stopped = stop;
+        if changed { self.packet_event(if stop { TIOCPKT_STOP } else { TIOCPKT_START }); }
         if !stop { self.flush_out_hold(); }
         changed
     }

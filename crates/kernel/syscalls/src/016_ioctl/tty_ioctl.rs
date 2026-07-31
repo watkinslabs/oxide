@@ -3,38 +3,46 @@
 use syscall::errno::Errno;
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use tty::ioctl::req as tty_req;
 
 use super::vt::handle_vt_ioctl;
 
-const TCGETS:     u64 = 0x5401;
-const TCSETS:     u64 = 0x5402;
-const TCSETSW:    u64 = 0x5403; // TCSETS after pending output drains; v1 == TCSETS
-const TCSETSF:    u64 = 0x5404; // TCSETS + flush unread input
-const TCXONC:     u64 = 0x540A; // tcflow(): 0=TCOOFF 1=TCOON 2=TCIOFF 3=TCION
-const TCFLSH:     u64 = 0x540B; // tcflush(): arg 0=TCIFLUSH 1=TCOFLUSH 2=TCIOFLUSH
-const TIOCEXCL:   u64 = 0x540C;
-const TIOCNXCL:   u64 = 0x540D;
-const TIOCGEXCL:  u64 = 0x80045440;
-const TIOCGWINSZ: u64 = 0x5413;
-const TIOCSWINSZ: u64 = 0x5414;
-const TIOCGPTN:   u64 = 0x80045430;
-const TIOCSPTLCK: u64 = 0x40045431;
-const TIOCGPTLCK: u64 = 0x80045439;
-const TIOCGPTPEER: u64 = 0x5441;
-const TIOCGPGRP:  u64 = 0x540F;
-const TIOCSPGRP:  u64 = 0x5410;
-const TIOCSCTTY:  u64 = 0x540E;
-const TIOCNOTTY:  u64 = 0x5422;
-const TIOCGSID:   u64 = 0x5429;
+const TCGETS: u64 = tty_req::TCGETS as u64;
+const TCSETS: u64 = tty_req::TCSETS as u64;
+const TCSETSW: u64 = tty_req::TCSETSW as u64;
+const TCSETSF: u64 = tty_req::TCSETSF as u64;
+const TCXONC: u64 = tty_req::TCXONC as u64;
+const TCFLSH: u64 = tty_req::TCFLSH as u64;
+const TIOCEXCL: u64 = tty_req::TIOCEXCL as u64;
+const TIOCNXCL: u64 = tty_req::TIOCNXCL as u64;
+const TIOCGEXCL: u64 = tty_req::TIOCGEXCL as u64;
+const TIOCGWINSZ: u64 = tty_req::TIOCGWINSZ as u64;
+const TIOCSWINSZ: u64 = tty_req::TIOCSWINSZ as u64;
+const TIOCGPTN: u64 = tty_req::TIOCGPTN as u64;
+const TIOCSPTLCK: u64 = tty_req::TIOCSPTLCK as u64;
+const TIOCPKT: u64 = tty_req::TIOCPKT as u64;
+const TIOCGPKT: u64 = tty_req::TIOCGPKT as u64;
+const TIOCGPTLCK: u64 = tty_req::TIOCGPTLCK as u64;
+const TIOCGPTPEER: u64 = tty_req::TIOCGPTPEER as u64;
+const TIOCSIG: u64 = tty_req::TIOCSIG as u64;
+const TIOCOUTQ: u64 = tty_req::TIOCOUTQ as u64;
+const FIONREAD: u64 = tty_req::FIONREAD as u64;
+const TIOCSETD: u64 = tty_req::TIOCSETD as u64;
+const TIOCGETD: u64 = tty_req::TIOCGETD as u64;
+const TIOCGPGRP: u64 = tty_req::TIOCGPGRP as u64;
+const TIOCSPGRP: u64 = tty_req::TIOCSPGRP as u64;
+const TIOCSCTTY: u64 = tty_req::TIOCSCTTY as u64;
+const TIOCNOTTY: u64 = tty_req::TIOCNOTTY as u64;
+const TIOCGSID: u64 = tty_req::TIOCGSID as u64;
 // Modem-control bits (DTR/RTS/CD/RI/DSR/CTS). The serial/VT console
 // models a software modem register (TIOCMGET reflects prior
 // TIOCMSET/BIS/BIC; carrier strapped active). A pty has no modem
 // lines → ENOTTY (Linux `pty` has no `tiocmget`/`tiocmset`). getty
 // issues TIOCMGET to confirm carrier-detect before the login banner.
-const TIOCMGET:   u64 = 0x5415;
-const TIOCMBIS:   u64 = 0x5416;
-const TIOCMBIC:   u64 = 0x5417;
-const TIOCMSET:   u64 = 0x5418;
+const TIOCMGET: u64 = tty_req::TIOCMGET as u64;
+const TIOCMBIS: u64 = tty_req::TIOCMBIS as u64;
+const TIOCMBIC: u64 = tty_req::TIOCMBIC as u64;
+const TIOCMSET: u64 = tty_req::TIOCMSET as u64;
 // Linux TCGETS/TCSETS use the kernel UAPI `struct termios`, not glibc's
 // public 60-byte `struct termios`. On x86_64 the ioctl payload is:
 // c_iflag/c_oflag/c_cflag/c_lflag (4*4), c_line (1), c_cc[19] = 36 B.
@@ -54,9 +62,8 @@ pub(super) fn handle_tty_ioctl(
         return rv;
     }
     let ino = file.inode().ino();
-    let pty_pair = if (ino & 0xFFFF_0000) == 0x6000_0000 {
-        devpts::pair_for((ino & 0x7FFF) as u32)
-    } else { None };
+    let pty_pair = devpts::pair_for_inode(ino);
+    let pty_master = devpts::is_master_inode(ino);
 
     match req {
         TIOCGWINSZ => {
@@ -158,7 +165,7 @@ pub(super) fn handle_tty_ioctl(
                 }
             }
             if let Some(pair) = &pty_pair {
-                pair.with_pair(|p| p.termios = buf);
+                pair.with_pair(|p| p.set_termios(buf));
                 // TCSETSF also discards unread input (Linux `tcsetattr`
                 // TCSAFLUSH). agetty sets the line params with TCSETSF to
                 // drop any type-ahead/answerback before the login prompt.
@@ -198,7 +205,7 @@ pub(super) fn handle_tty_ioctl(
         TIOCEXCL | TIOCNXCL => {
             let on = req == TIOCEXCL;
             if let Some(pair) = &pty_pair {
-                pair.set_exclusive((ino & 0x8000) == 0, on);
+                pair.set_exclusive(pty_master, on);
             } else {
                 match console::route(ino) {
                     console::TtyTarget::Serial => console::static_console::set_exclusive(on),
@@ -210,7 +217,7 @@ pub(super) fn handle_tty_ioctl(
         TIOCGEXCL => {
             if let Err(rv) = validate_user_buf_writable(arg, 4, 4) { return rv; }
             let excl = if let Some(pair) = &pty_pair {
-                pair.exclusive((ino & 0x8000) == 0)
+                pair.exclusive(pty_master)
             } else {
                 match console::route(ino) {
                     console::TtyTarget::Serial => console::static_console::exclusive(),
@@ -250,16 +257,16 @@ pub(super) fn handle_tty_ioctl(
             0
         }
         TIOCGPTN => {
-            if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
-            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf_writable(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
             // SAFETY: arg validated 4-byte aligned; CPL=0 writes through caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut u32, (ino & 0x7FFF) as u32); }
+            unsafe { core::ptr::write_volatile(arg as *mut u32, pty_pair.as_ref().map(|p| p.pts_num()).unwrap_or_default()); }
             0
         }
         TIOCSPTLCK => {
             // Master-side pts lock toggle (glibc/musl unlockpt = arg 0).
-            if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
-            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
             // SAFETY: arg validated 4-byte aligned; CPL=0 read through caller's AS.
             let v = unsafe { core::ptr::read_volatile(arg as *const i32) };
             match &pty_pair {
@@ -268,8 +275,8 @@ pub(super) fn handle_tty_ioctl(
             }
         }
         TIOCGPTLCK => {
-            if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
-            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
+            if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf_writable(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
             let locked = match &pty_pair {
                 Some(pair) => pair.is_locked(),
                 None => return -(Errno::Enotty.as_i32() as i64),
@@ -278,13 +285,82 @@ pub(super) fn handle_tty_ioctl(
             unsafe { core::ptr::write_volatile(arg as *mut i32, locked as i32); }
             0
         }
+        TIOCPKT => {
+            // Packet mode is a Unix98 MASTER-only ioctl. VTE enables it
+            // before creating the child so control events and ordinary
+            // terminal bytes share one race-free read stream.
+            if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
+            // SAFETY: arg validated readable for one Linux int input.
+            let enabled = unsafe { core::ptr::read_volatile(arg as *const i32) } != 0;
+            match &pty_pair {
+                Some(pair) => { pair.with_pair(|p| p.set_master_packet(enabled)); 0 }
+                None => -(Errno::Eio.as_i32() as i64),
+            }
+        }
+        TIOCGPKT => {
+            if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
+            if let Err(rv) = validate_user_buf_writable(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
+            let enabled = match &pty_pair {
+                Some(pair) => pair.with_pair(|p| p.master_packet_enabled()),
+                None => return -(Errno::Eio.as_i32() as i64),
+            };
+            // SAFETY: arg is a validated writable Linux int buffer.
+            unsafe { core::ptr::write_volatile(arg as *mut i32, enabled as i32); }
+            0
+        }
+        TIOCSIG => {
+            if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
+            let sig = match arg as u8 {
+                v if v == sched::Signum::Sigint as u8 => sched::Signum::Sigint,
+                v if v == sched::Signum::Sigquit as u8 => sched::Signum::Sigquit,
+                v if v == sched::Signum::Sigtstp as u8 => sched::Signum::Sigtstp,
+                _ => return -(Errno::Einval.as_i32() as i64),
+            };
+            let fg = match &pty_pair {
+                Some(pair) => pair.with_pair(|p| p.foreground_pgid),
+                None => return -(Errno::Eio.as_i32() as i64),
+            };
+            if fg != 0 {
+                use core::sync::atomic::Ordering;
+                for task in sched::live::registry::tasks_in_pgrp(fg) {
+                    task.sigpending.fetch_or(sig.bit(), Ordering::Release);
+                    sched::live::signal_wake_up(&task);
+                }
+            }
+            0
+        }
+        FIONREAD | TIOCOUTQ => {
+            if let Err(rv) = validate_user_buf_writable(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
+            let count = match &pty_pair {
+                Some(pair) if req == FIONREAD => pair.with_pair(|p| p.readable_bytes(pty_master)),
+                Some(pair) => pair.with_pair(|p| p.output_bytes(pty_master)),
+                None => return -(Errno::Enotty.as_i32() as i64),
+            };
+            // SAFETY: arg is a validated writable Linux int buffer.
+            unsafe { core::ptr::write_volatile(arg as *mut i32, count as i32); }
+            0
+        }
+        TIOCGETD => {
+            if let Err(rv) = validate_user_buf_writable(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
+            // SAFETY: arg is a validated writable Linux int buffer.
+            unsafe { core::ptr::write_volatile(arg as *mut u32, tty_req::N_TTY); }
+            0
+        }
+        TIOCSETD => {
+            if let Err(rv) = validate_user_buf(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
+            // SAFETY: arg is a validated readable Linux int buffer.
+            let ldisc = unsafe { core::ptr::read_volatile(arg as *const u32) };
+            if ldisc != tty_req::N_TTY { return -(Errno::Einval.as_i32() as i64); }
+            0
+        }
         TIOCGPTPEER => {
             // `TIOCGPTPEER` opens the slave belonging to THIS Unix98 master
             // without resolving `/dev/pts/<n>` in the caller's mount namespace.
             // Terminal emulators use it to create a pty safely before the
             // child changes namespaces; returning ENOTTY here aborts terminal
             // launch before the shell is ever spawned.
-            if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
+            if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
             let pair = match &pty_pair {
                 Some(pair) => pair,
                 None => return -(Errno::Eio.as_i32() as i64),
