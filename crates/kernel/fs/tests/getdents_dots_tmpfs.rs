@@ -184,3 +184,18 @@ fn paginated_read_reconstructs_the_directory_exactly_once() {
     assert_eq!(seen.len(), 9, ". + .. + 7 children");
     assert!(seen.contains(&String::from(".")) && seen.contains(&String::from("..")));
 }
+
+/// `stx_btime`: Linux `shmem_get_inode` stamps `i_crtime` at creation and
+/// `shmem_getattr` reports `STATX_BTIME` unconditionally, so `stat -c %w` on a
+/// tmpfs file answers with a real birth time. Every /tmp, /run and /dev/shm
+/// inode reported no creation time at all before this.
+#[test]
+fn tmpfs_inodes_carry_a_creation_time() {
+    let (_fs, _root, dir) = fixture();
+    // Device nodes are built by the shared VFS device-node path, not by tmpfs,
+    // so they are out of scope here.
+    for name in ["sub", "file", "link", "fifo"] {
+        let ino = dir.lookup(name).expect(name);
+        assert!(ino.btime().is_some(), "{name}: tmpfs must supply stx_btime");
+    }
+}

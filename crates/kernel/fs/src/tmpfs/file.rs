@@ -186,6 +186,7 @@ pub(super) fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u3
         let mut b = InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
             Arc::new(TmpfsFileInodeOps), Arc::new(TmpfsFileOps))
             .owner(uid, gid)
+            .btime(super::birth_time())
             .fsid(fsid_of(&sb2))
             .mapping(mapping)
             .xattrs(vfs::SimpleXattrs::new())
