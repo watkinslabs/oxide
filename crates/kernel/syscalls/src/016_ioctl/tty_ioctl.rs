@@ -491,17 +491,19 @@ pub(super) fn handle_tty_ioctl(
             }
         }
         _ => {
-            #[cfg(feature = "debug-syscall")]
+            #[cfg(feature = "debug-boot")]
             {
-                klog::write_raw(b"[ioctl] char ENOTTY fd=");
+                klog::write_raw(b"[pty ENOTTY] fd=");
                 klog::write_dec_u64(_fd as u64);
                 klog::write_raw(b" req=");
                 klog::write_hex_u64(req);
                 klog::write_raw(b" ino=");
                 klog::write_dec_u64(file.inode().ino());
-                klog::write_raw(b" path=");
-                let p = file.dentry().absolute_path();
-                klog::write_raw(&p);
+                if let Some(cur) = sched::live::current() {
+                    klog::write_raw(b" comm=");
+                    let comm = cur.comm_bytes();
+                    klog::write_raw(sched::Task::comm_trim(&comm).as_bytes());
+                }
                 klog::write_raw(b"\n");
             }
             -(Errno::Enotty.as_i32() as i64)
