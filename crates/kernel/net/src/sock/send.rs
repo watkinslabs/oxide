@@ -35,6 +35,11 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
     }
     if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
         if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
+        let probe;
+        let payload = if endpoint.is_ping() {
+            probe = crate::ping::prepare_v4(endpoint, payload, control.oob)?;
+            &probe[..]
+        } else { payload };
         let dst = match dest {
             Some(RemoteAddr::Inet { ip, .. }) => ip,
             None => endpoint.snapshot().remote.ok_or(NetError::Edestaddrreq)?,
@@ -72,6 +77,11 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
     }
     if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
         if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
+        let probe;
+        let payload = if endpoint.is_ping() {
+            probe = crate::ping::prepare_v6(endpoint, payload, control.oob)?;
+            &probe[..]
+        } else { payload };
         let (dst, protocol, scope_id) = match dest {
             Some(RemoteAddr::Inet6 { ip, port, scope_id }) => (ip, Some(port), scope_id),
             None => {

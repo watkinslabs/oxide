@@ -154,6 +154,7 @@ pub struct NsNet {
     pub unix: UnixRegistry,
     pub(crate) sysctls: NetSysctls,
     pub(crate) ports: crate::ephemeral::State,
+    pub(crate) ping_group: crate::ping::GroupRange,
     pub(crate) loopback: Spinlock<Option<(crate::NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>,
 }
 
@@ -179,7 +180,8 @@ impl NsNet {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             unix: UnixRegistry::new(), sysctls: NetSysctls::new(),
-            ports: crate::ephemeral::State::new(), loopback: Spinlock::new(None),
+            ports: crate::ephemeral::State::new(),
+            ping_group: crate::ping::GroupRange::new(), loopback: Spinlock::new(None),
         })
     }
 }

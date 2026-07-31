@@ -341,8 +341,7 @@ pub fn send_io<I: MessageIo>(ctx: &SendContext<'_>, flags: u32, io: &mut I)
     if !target.is_socket() { return Err(Error::Enotsock); }
     let mode = match target.kind() {
         SendKind::Inet(socket) if flags as u64 & net::uapi::MSG_OOB != 0
-            && matches!(*socket.kind.lock(), net::sock::SockKind::Raw4(_)
-                | net::sock::SockKind::Raw6(_)) => ImportMode::RawOobEnvelope,
+            && raw_envelope_socket(socket) => ImportMode::RawOobEnvelope,
         SendKind::Vsock(_) if flags as u64 & net::uapi::MSG_OOB != 0 => ImportMode::RawOobEnvelope,
         _ => ImportMode::Full,
     };
@@ -368,6 +367,17 @@ pub fn send_io<I: MessageIo>(ctx: &SendContext<'_>, flags: u32, io: &mut I)
     send_retained(ctx, &target, io.import(mode)?, flags, unresolved_address())
 }
 
+/// Whether a socket discards an out-of-band send without importing its payload.
+/// A raw socket does; an ICMP datagram endpoint does not, because it screens the
+/// message length before it reports the absent out-of-band channel. # C: O(1)
+fn raw_envelope_socket(socket: &Arc<net::sock::InetSocket>) -> bool {
+    match &*socket.kind.lock() {
+        net::sock::SockKind::Raw4(endpoint) => !endpoint.is_ping(),
+        net::sock::SockKind::Raw6(endpoint) => !endpoint.is_ping(),
+        _ => false,
+    }
+}
+
 /// Send one fully imported message through a retained target. # C: backend-dependent
 pub(crate) fn send_retained(ctx: &SendContext<'_>, target: &SendFile, message: Message, flags: u32,
     _resolved: ResolvedAddress)
@@ -376,8 +386,7 @@ pub(crate) fn send_retained(ctx: &SendContext<'_>, target: &SendFile, message: M
     if !target.is_socket() { return Err(Error::Enotsock); }
     let envelope_only_oob = match target.kind() {
         SendKind::Vsock(_) => true,
-        SendKind::Inet(socket) => matches!(*socket.kind.lock(),
-            net::sock::SockKind::Raw4(_) | net::sock::SockKind::Raw6(_)),
+        SendKind::Inet(socket) => raw_envelope_socket(socket),
         _ => false,
     };
     if flags as u64 & net::uapi::MSG_OOB != 0 && envelope_only_oob {

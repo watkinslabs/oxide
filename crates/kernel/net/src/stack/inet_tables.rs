@@ -4,6 +4,7 @@ use super::*;
 pub(crate) struct InetTables {
     pub(crate) raw4: Arc<crate::raw4::Raw4Table>,
     pub(crate) raw6: Arc<crate::raw6::Raw6Table>,
+    pub(crate) ping: Arc<crate::ping::PingTable>,
     pub(crate) udp: Arc<Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass>>,
     pub(crate) udp6: Arc<Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass>>,
     pub(crate) tcp_conns: Arc<Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>>,
@@ -29,6 +30,7 @@ impl InetTables {
         Self {
             raw4: Arc::new(crate::raw4::Raw4Table::new()),
             raw6: Arc::new(crate::raw6::Raw6Table::new()),
+            ping: Arc::new(crate::ping::PingTable::new()),
             udp: Arc::new(Spinlock::new(BTreeMap::new())),
             udp6: Arc::new(Spinlock::new(BTreeMap::new())),
             tcp_conns: Arc::new(Spinlock::new(BTreeMap::new())),
@@ -42,6 +44,7 @@ impl InetTables {
     pub(crate) fn teardown(&self) {
         self.raw4.teardown();
         self.raw6.teardown();
+        self.ping.teardown();
         for endpoints in ::core::mem::take(&mut *self.udp.lock()).into_values() {
             for endpoint in endpoints { endpoint.deactivate(); }
         }

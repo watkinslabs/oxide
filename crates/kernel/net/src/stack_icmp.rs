@@ -256,6 +256,13 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
             endpoint.publish_quoted_error(raw_entry.clone(), hard, orig_ip);
         }
     }
+    if orig_hdr.proto == IpProto::Icmp as u8 {
+        // The quoted probe carries the echo identifier this kernel stamped, so
+        // an error reaches the endpoint that originated it.
+        let quoted = &orig_ip[orig_l4_off..];
+        stack.report_ping_error_v4(net_ns, iface, orig_hdr.src, quoted, raw_entry.clone(), hard,
+            orig_ip);
+    }
     if kind == crate::icmp::ICMP_TYPE_DEST_UNREACH && code == 4
         && orig_hdr.proto == IpProto::Tcp as u8
     {

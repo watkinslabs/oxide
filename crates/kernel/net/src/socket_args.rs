@@ -35,6 +35,11 @@ const IPPROTO_MAX:        u32 = 256;
 const IPPROTO_IP:         u32 = 0;
 const IPPROTO_TCP:        u32 = 6;
 const IPPROTO_UDP:        u32 = 17;
+/// The two ICMP protocol numbers that register a datagram endpoint alongside
+/// UDP: an echo-probe socket, admitted by group membership rather than by the
+/// raw-network capability.
+pub const IPPROTO_ICMP:   u32 = 1;
+pub const IPPROTO_ICMPV6: u32 = 58;
 pub const IPPROTO_RAW:    u32 = 255;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -70,7 +75,7 @@ pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw:
         typ
     };
     match family {
-        AF_INET | AF_INET6 => validate_inet(typ, protocol, has_net_raw)?,
+        AF_INET | AF_INET6 => validate_inet(family, typ, protocol, has_net_raw)?,
         AF_UNIX           => validate_unix(typ, protocol)?,
         AF_NETLINK        => validate_netlink(typ, protocol)?,
         AF_PACKET         => validate_packet(typ, has_net_raw)?,
@@ -97,14 +102,16 @@ pub fn parse_accept_flags(flags: u64) -> Result<AcceptFlags, Errno> {
     })
 }
 
-fn validate_inet(typ: u32, protocol: u32, has_net_raw: bool) -> Result<(), Errno> {
+fn validate_inet(family: u32, typ: u32, protocol: u32, has_net_raw: bool) -> Result<(), Errno> {
     if protocol >= IPPROTO_MAX { return Err(Errno::Einval); }
     match typ {
         SOCK_STREAM => {
             if protocol == IPPROTO_IP || protocol == IPPROTO_TCP { Ok(()) } else { Err(Errno::Eprotonosupport) }
         }
         SOCK_DGRAM => {
-            if protocol == IPPROTO_IP || protocol == IPPROTO_UDP { Ok(()) } else { Err(Errno::Eprotonosupport) }
+            if protocol == IPPROTO_IP || protocol == IPPROTO_UDP { return Ok(()); }
+            if is_ping_protocol(family, protocol) { return Ok(()); }
+            Err(Errno::Eprotonosupport)
         }
         SOCK_RAW => {
             // The type/protocol lookup runs before the capability screen, so a
@@ -116,6 +123,14 @@ fn validate_inet(typ: u32, protocol: u32, has_net_raw: bool) -> Result<(), Errno
         }
         _ => Err(Errno::Esocktnosupport),
     }
+}
+
+/// Whether this family/protocol pair names the ICMP datagram endpoint class.
+/// The creation-time group admission runs afterwards, so an unadmitted caller
+/// sees the permission result rather than a missing-protocol one. # C: O(1)
+pub const fn is_ping_protocol(family: u32, protocol: u32) -> bool {
+    (family == AF_INET && protocol == IPPROTO_ICMP)
+        || (family == AF_INET6 && protocol == IPPROTO_ICMPV6)
 }
 
 fn validate_unix(typ: u32, protocol: u32) -> Result<(), Errno> {
@@ -252,6 +267,25 @@ mod tests {
         assert_eq!(parse_accept_flags((1u64 << 32) | SOCK_CLOEXEC as u64).unwrap(),
             AcceptFlags { cloexec: true, nonblock: false });
         assert_eq!(parse_accept_flags(u64::MAX).unwrap_err(), Errno::Einval);
+    }
+
+    // The echo-probe datagram endpoint is registered for exactly one protocol
+    // per family, and its admission is NOT the raw-network capability — an
+    // unprivileged caller reaches the group-membership screen that follows.
+    #[test]
+    fn icmp_datagram_endpoints_register_per_family_without_the_raw_capability() {
+        assert!(parse_socket_args(AF_INET, SOCK_DGRAM, IPPROTO_ICMP, false).is_ok());
+        assert!(parse_socket_args(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6, false).is_ok());
+        assert_eq!(parse_socket_args(AF_INET, SOCK_DGRAM, IPPROTO_ICMPV6, true),
+            Err(Errno::Eprotonosupport));
+        assert_eq!(parse_socket_args(AF_INET6, SOCK_DGRAM, IPPROTO_ICMP, true),
+            Err(Errno::Eprotonosupport));
+        // The pair is a datagram registration only; the stream table is unchanged.
+        assert_eq!(parse_socket_args(AF_INET, SOCK_STREAM, IPPROTO_ICMP, true),
+            Err(Errno::Eprotonosupport));
+        assert!(is_ping_protocol(AF_INET, IPPROTO_ICMP));
+        assert!(is_ping_protocol(AF_INET6, IPPROTO_ICMPV6));
+        assert!(!is_ping_protocol(AF_INET, IPPROTO_UDP));
     }
 
     #[test]
