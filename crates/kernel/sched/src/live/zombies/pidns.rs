@@ -103,7 +103,6 @@ pub fn zap_pid_namespace(task: &Task) {
         if tid == self_tid { continue; }
         let Some(t) = registry::lookup(tid) else { continue };
         if pid_namespace_id(&t) != Some(ns) { continue; }
-        t.sigpending.fetch_or(crate::signum::Signum::Sigkill.bit(), Ordering::Release);
-        crate::live::signal_wake_up(&t);
+        crate::live::send_sig_priv_group(&t, crate::signum::Signum::Sigkill as u32);
     }
 }

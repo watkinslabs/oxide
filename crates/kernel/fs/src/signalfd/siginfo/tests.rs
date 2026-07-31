@@ -5,7 +5,7 @@
 use super::*;
 
 fn rec(signo: u32, code: i32) -> SigInfo {
-    SigInfo { signo, code, pid: 0, uid: 0, value: 0, sys: None }
+    SigInfo { signo, code, pid: 0, uid: 0, value: 0, sys: None, fault: None }
 }
 
 fn enc(signo: u32, r: &SigInfo) -> [u8; SIGINFO_SIZE] {
@@ -180,6 +180,32 @@ fn the_fault_arm_renders_an_address_and_no_sender() {
     assert_eq!(u64_at(&out, SSI_ADDR), 0x0000_7fff_dead_beef);
     assert_eq!(u32_at(&out, SSI_PID), 0, "SIGSEGV never has a sender pid");
     assert_eq!(u32_at(&out, SSI_UID), 0);
+}
+
+// A real `force_sig_fault` record carries the `_sigfault` arm, and THAT is
+// what signalfd must report — the pid/uid reconstruction above is only the
+// fallback for a record that has no arm. This is the end of the chain that
+// starts at the arch fault classifier: a SIGSEGV taken on a wild pointer is
+// now readable from a signalfd with its real si_addr and si_code.
+#[test]
+fn a_forced_fault_record_reports_its_own_si_addr_not_the_overlaid_words() {
+    let mut r = rec(SIGSEGV, 2);
+    r.pid = 0xdead_beef; r.uid = 0x0000_7fff;
+    r.fault = Some(hal::SigFault { addr: 0x7fff_1234_5000, addr_lsb: 0 });
+    let out = enc(SIGSEGV, &r);
+    assert_eq!(u64_at(&out, SSI_ADDR), 0x7fff_1234_5000);
+    assert_eq!(i32_at(&out, SSI_CODE), 2, "SEGV_ACCERR survives the round trip");
+    assert_eq!(u32_at(&out, SSI_PID), 0);
+}
+
+#[test]
+fn a_forced_mceerr_record_reports_its_own_addr_lsb() {
+    let mut r = rec(SIGBUS, BUS_MCEERR_AR);
+    r.value = 0;
+    r.fault = Some(hal::SigFault { addr: 0x4000, addr_lsb: 21 });
+    let out = enc(SIGBUS, &r);
+    assert_eq!(u64_at(&out, SSI_ADDR), 0x4000);
+    assert_eq!(u16_at(&out, SSI_ADDR_LSB), 21);
 }
 
 #[test]

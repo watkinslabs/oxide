@@ -121,11 +121,10 @@ pub(super) fn handle_tty_ioctl(
                 },
             };
             if changed && fg != 0 {
-                // SIGWINCH is the canonical window-size notification signal.
-                use core::sync::atomic::Ordering;
+                // Linux `tty_do_resize` -> `kill_pgrp(pgrp, SIGWINCH, 1)`:
+                // kernel-generated, PROCESS-directed.
                 for t in sched::live::registry::tasks_in_pgrp(fg) {
-                    t.sigpending.fetch_or(sched::Signum::Sigwinch.bit(), Ordering::Release);
-                    sched::live::signal_wake_up(&t);
+                    sched::live::send_sig_priv_group(&t, sched::Signum::Sigwinch as u32);
                 }
             }
             0
@@ -322,10 +321,10 @@ pub(super) fn handle_tty_ioctl(
                 None => return -(Errno::Eio.as_i32() as i64),
             };
             if fg != 0 {
-                use core::sync::atomic::Ordering;
+                // Linux `n_tty_ioctl_helper`'s TIOCSTI/flush signal arms ->
+                // `kill_pgrp(..., 1)`.
                 for task in sched::live::registry::tasks_in_pgrp(fg) {
-                    task.sigpending.fetch_or(sig.bit(), Ordering::Release);
-                    sched::live::signal_wake_up(&task);
+                    sched::live::send_sig_priv_group(&task, sig.as_u8() as u32);
                 }
             }
             0
@@ -515,10 +514,9 @@ pub(super) fn handle_tty_ioctl(
                     // (`tty_jobctrl.c:277-286`, `on_exit == 0` so both go out).
                     let fg = crate::tty_hangup::foreground_pgrp(t);
                     if fg != 0 {
-                        let bits = sched::Signum::Sighup.bit() | sched::Signum::Sigcont.bit();
                         for task in sched::live::registry::tasks_in_pgrp(fg) {
-                            task.sigpending.fetch_or(bits, Ordering::Release);
-                            sched::live::signal_wake_up(&task);
+                            sched::live::send_sig_priv_group(&task, sched::Signum::Sighup as u32);
+                            sched::live::send_sig_priv_group(&task, sched::Signum::Sigcont as u32);
                         }
                     }
                     // (2) clear tty->ctrl.session / tty->ctrl.pgrp — detach, do

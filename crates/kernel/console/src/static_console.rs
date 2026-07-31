@@ -47,9 +47,13 @@ impl serialtty::FgSignal for KernelFgSignal {
         if pgrp == 0 {
             return;
         }
-        let Some(bit) = sched::bit_for(signo) else { return; };
+        if sched::bit_for(signo).is_none() { return; }
+        // Linux n_tty `__isig` -> `kill_pgrp(..., SEND_SIG_PRIV)`: the ^C/^\/^Z
+        // signals are kernel-generated and PROCESS-directed, and they must WAKE
+        // the target — the bit-only post this replaced left a shell parked in
+        // `read()` until something else happened to wake it.
         for t in sched::live::registry::tasks_in_pgrp(pgrp) {
-            t.sigpending.fetch_or(bit, Ordering::Release);
+            sched::live::send_sig_priv_group(&t, signo);
         }
     }
 }

@@ -1,112 +1,124 @@
-// 062 kill — one syscall, one file (docs/53 §0). Moved verbatim from signal.rs.
+// 062 kill — one syscall, one file (docs/53 §0).
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
+
+use syscall::errno::Errno;
 use syscall::SyscallArgs;
+use sched::sigsend::{SigSource, SigTarget};
+
+use crate::kill_policy::{classify, signal_valid, BroadcastFold, PgrpFold, PidClass};
 use crate::signal_common::*;
 
-/// `sys_kill(pid, sig)` — slot 62. pgrp-aware per `28§4`:
-///   pid > 0 — signal that tid via the registry.
-///   pid == 0 — fan to caller's pgrp.
-///   pid == -1 — not implemented; -EPERM.
-///   pid <  -1 — fan to pgrp `(-pid)`.
-/// `sig == 0` is a permission probe.
-/// # C: O(N_tasks) on pgrp fan; O(N_tasks) lookup for non-self pid
+/// `sys_kill(pid, sig)` — slot 62. Linux `kill_something_info`.
+///
+///   `pid > 0`  — that process (PIDTYPE_TGID: the group's shared pending set,
+///                never one thread's private one).
+///   `pid == 0` — every process in the caller's process group.
+///   `pid == -1`— every process the caller may signal except init and its own
+///                thread group, with EPERM swallowed (see `BroadcastFold`).
+///   `pid < -1` — every process in group `-pid`.
+///
+/// `sig == 0` is the permission probe: every check runs, nothing is sent.
+///
+/// Error ORDER is Linux's, and it is not the obvious one: the target is
+/// resolved FIRST, so a `kill(2)` naming a nonexistent pid answers ESRCH even
+/// when the signal number is also invalid. EINVAL and EPERM both come out of
+/// `check_kill_permission`, which only runs once a target exists.
+/// # C: O(N_tasks) on a group fan; O(log N) for a single pid
 pub fn sys_kill(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-
     let pid = args.a0 as i32;
     let sig = args.a1 as i32;
-    if !(0..=64).contains(&sig) { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    let Some(cur) = sched::live::current() else {
+        return -(Errno::Esrch.as_i32() as i64);
     };
-    let namespace = match cur.namespace_owner(namespace_identity::NamespaceKind::Pid) {
-        Some(namespace) => namespace,
-        None => return -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    // Linux `prepare_kill_siginfo`: `kill(2)` sends SEND_SIG_NOINFO, which
+    // `__send_signal_locked` expands into si_code = SI_USER plus the SENDER's
+    // pid and uid. Posting `None` (the prior behaviour) left an SA_SIGINFO
+    // handler and every `signalfd`/`rt_sigtimedwait` consumer reading
+    // si_pid == 0, si_uid == 0 — systemd's `sd_event` signal handlers key on
+    // si_pid to tell a child's death from an operator's `systemctl kill`.
+    let src = SigSource::User {
+        pid: cur.vtgid.load(Ordering::Acquire),
+        uid: cur.creds.ruid.load(Ordering::Acquire),
     };
-    if pid > 0 {
-        // Self fast-path: a task signalling its own VPID (the value getpid()/
-        // gettid() report). Still PROCESS-directed — Linux's `kill(2)` is
-        // `PIDTYPE_TGID` even when the target is the caller — so it goes to the
-        // group's shared set, not the caller's private one. (Was `== cur.tid`,
-        // the internal tid, which userspace never passes.)
-        let p = pid as u32;
-        if p == cur.vtgid.load(Ordering::Acquire) || p == cur.vtid.load(Ordering::Acquire) {
-            if sig != 0 { sched::live::sigpend::post_group_signal(cur, sig as u32, None); }
-            return 0;
-        }
-        // F109: cross-NS pid translation. Caller in non-init pid_ns
-        // means `pid` is a vpid in their NS, not a global tid.
-        match sched::registry::lookup_in_namespace(&namespace, pid as u32) {
-            Some(t) => {
-                if !sig_perm_check(cur, &t, sig) {
-                    return -(syscall::errno::Errno::Eperm.as_i32() as i64);
-                }
-                if sig != 0 { sched::live::sigpend::post_group_signal(&t, sig as u32, None); }
-                0
+    match classify(pid) {
+        PidClass::NoSuchGroup => -(Errno::Esrch.as_i32() as i64),
+        PidClass::Process(vpid) => {
+            let namespace = match cur.namespace_owner(namespace_identity::NamespaceKind::Pid) {
+                Some(namespace) => namespace,
+                None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            match sched::registry::lookup_in_namespace(&namespace, vpid) {
+                Some(t) => post_one(cur, &t, sig, src),
+                None => -(Errno::Esrch.as_i32() as i64),
             }
-            None => -(syscall::errno::Errno::Esrch.as_i32() as i64),
         }
-    } else if pid == 0 {
-        let pgid = cur.pgid();
-        let n = post_pgrp(pgid, sig);
-        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
-    } else if pid == -1 {
-        // Broadcast: signal every process the caller may signal, EXCEPT itself
-        // and init (pid 1) — Linux `kill(-1)`. Used by `killall5` and systemd's
-        // final SIGTERM/SIGKILL sweep at shutdown/reboot. Returns 0 if it
-        // signalled at least one, else ESRCH.
-        let n = post_broadcast(cur, sig);
-        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
-    } else {
-        let n = post_pgrp((-pid) as u32, sig);
-        if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
+        PidClass::CallerPgrp => post_pgrp(cur, cur.pgid(), sig, src),
+        PidClass::Pgrp(pgid) => post_pgrp(cur, pgid, sig, src),
+        PidClass::Broadcast  => post_broadcast(cur, sig, src),
     }
 }
 
-/// `kill(-1)` fan-out: post `sig` to every real user process the caller may
-/// signal, excluding itself, init (vtgid 1), and kernel threads (vtgid 0).
-/// Mirrors `post_pgrp`'s permission + wake handling over the whole task set.
-fn post_broadcast(cur: &sched::Task, sig: i32) -> usize {
-    use core::sync::atomic::Ordering;
-    let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return 0 };
-    let mut n = 0usize;
+/// Linux `group_send_sig_info`: `check_kill_permission` (EINVAL then EPERM),
+/// then `do_send_sig_info(..., PIDTYPE_TGID)` — but only when `sig != 0`.
+/// # C: O(N_threads)
+fn post_one(cur: &sched::Task, t: &Arc<sched::Task>, sig: i32, src: SigSource) -> i64 {
+    if !signal_valid(sig) { return -(Errno::Einval.as_i32() as i64); }
+    if !sig_perm_check(cur, t, sig) { return -(Errno::Eperm.as_i32() as i64); }
+    if sig == 0 { return 0; }
+    match sched::live::send_signal(t, sig as u32, src, SigTarget::Process) {
+        Ok(()) => 0,
+        // `kill(2)` is documented never to fail with EAGAIN, and the enqueue
+        // agrees: a standard signal overrides the pending ceiling and an RT
+        // signal from `kill(2)` loses its record rather than failing. This arm
+        // therefore cannot be reached from here — it exists so a future caller
+        // that DOES pass a queued record gets the right errno rather than 0.
+        Err(sched::live::SendErr::Again) => -(Errno::Eagain.as_i32() as i64),
+    }
+}
+
+/// `kill(-1)` fan-out. Linux visits every process with `task_pid_vnr(p) > 1`
+/// that is not in the caller's thread group — note it does NOT skip a
+/// permission-denied target, it counts it and swallows the EPERM.
+/// # C: O(N_tasks)
+fn post_broadcast(cur: &sched::Task, sig: i32, src: SigSource) -> i64 {
+    let Some(tasks) = sched::registry::try_snapshot() else {
+        return -(Errno::Esrch.as_i32() as i64);
+    };
+    let cur_tgid = cur.tgid.load(Ordering::Acquire);
+    let mut fold = BroadcastFold::new();
     for t in &tasks {
         if t.reaped.load(Ordering::Acquire) { continue; }
         let vtgid = t.vtgid.load(Ordering::Acquire);
-        if vtgid == 0 || vtgid == 1 { continue; } // skip kthreads + init(pid 1)
-        if !is_group_leader(t) { continue; }       // one visit per PROCESS
-        if t.tid == cur.tid { continue; }          // skip self
-        if !sig_perm_check(cur, t, sig) { continue; }
-        if sig != 0 { sched::live::sigpend::post_group_signal(t, sig as u32, None); }
-        n += 1;
+        // vpid 0 is a kernel thread (no user pid at all); vpid 1 is init, which
+        // Linux excludes from the broadcast by the `> 1` test.
+        if vtgid <= 1 { continue; }
+        // `__kill_pgrp_info`-style one-visit-per-PROCESS: the pid hash holds
+        // only group leaders, so a per-thread walk would run the send N times.
+        if !is_group_leader(t) { continue; }
+        // Linux `!same_thread_group(p, current)` — the whole calling process is
+        // excluded, not merely the calling thread.
+        if t.tgid.load(Ordering::Acquire) == cur_tgid { continue; }
+        fold.visit(post_one(cur, t, sig, src));
     }
-    n
+    fold.finish()
 }
 
 /// Linux hashes only group leaders into `PIDTYPE_PGID`, so `__kill_pgrp_info`
-/// visits each PROCESS once. Signalling a group is idempotent on the shared
-/// bitmap, but a per-thread walk would run `complete_signal` N times and
-/// inflate the count `kill(2)` turns into ESRCH-vs-0.
+/// visits each PROCESS once.
 /// # C: O(1)
 fn is_group_leader(t: &sched::Task) -> bool {
-    use core::sync::atomic::Ordering;
     t.tid == t.tgid.load(Ordering::Acquire)
 }
 
-fn post_pgrp(pgid: u32, sig: i32) -> usize {
-    let tasks = sched::live::registry::tasks_in_pgrp(pgid);
-    let mut n = 0usize;
-    let cur = sched::live::current();
-    for t in &tasks {
+/// Linux `__kill_pgrp_info`. # C: O(N_tasks)
+fn post_pgrp(cur: &sched::Task, pgid: u32, sig: i32, src: SigSource) -> i64 {
+    let mut fold = PgrpFold::new();
+    for t in &sched::live::registry::tasks_in_pgrp(pgid) {
         if !is_group_leader(t) { continue; }
-        let allowed = match cur {
-            Some(c) => sig_perm_check(c, t, sig),
-            None    => true,
-        };
-        if !allowed { continue; }
-        if sig != 0 { sched::live::sigpend::post_group_signal(t, sig as u32, None); }
-        n += 1;
+        fold.visit(post_one(cur, t, sig, src));
     }
-    n
+    fold.finish()
 }

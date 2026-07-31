@@ -116,6 +116,10 @@ pub fn enqueue_zombie(task: Arc<Task>) {
                 p.sigq_reserve(signo);
                 let _ = p.sigq_push(child_exit_info(&task, signo));
             }
+            // `do_notify_parent`'s own ignore/autoreap decision already ran
+            // (`exit_notify_decision`), and the record is queued above. The bit
+            // is published directly for the same reason as `live::stop`: SIGCHLD
+            // child events live in a per-thread queue with no shared-set slot.
             if let Some(bit) = crate::bit_for(signo) { p.sigpending.fetch_or(bit, Ordering::Release); }
             signal_parent = true;
         }

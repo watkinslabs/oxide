@@ -15,6 +15,39 @@ pub struct SigInfo {
     /// `_sifields` bytes `pid`/`uid`/`value` use, so the delivery path must
     /// pick one arm; `hal::write_siginfo` does.
     pub sys: Option<hal::Sigsys>,
+    /// `_sigfault` union arm (`force_sig_fault`, `kernel/signal.c`) — `Some`
+    /// for every synchronous fault signal. Carries si_addr / si_addr_lsb, which
+    /// OVERLAY `pid`/`uid`/`value` in `siginfo_t`, so the delivery path and
+    /// `copy_siginfo_to_user` must pick this arm when it is present.
+    pub fault: Option<hal::SigFault>,
+}
+
+impl SigInfo {
+    /// Render this record as the arch-neutral `hal::SigPayload` the ONE
+    /// `siginfo_t` writer (`hal::write_siginfo`) consumes.
+    ///
+    /// The `_sifields` arms OVERLAP, so exactly one must be selected: a
+    /// `_sigsys` record (seccomp) and a `_sigfault` record (every synchronous
+    /// fault) both alias si_pid/si_uid/si_value. Selecting here — once — is what
+    /// keeps the signal-frame builder and the `rt_sigtimedwait`/`waitid`
+    /// copy-out from disagreeing about which bytes mean what.
+    ///
+    /// `sig` is the signal actually being delivered; SIGCHLD selects the
+    /// `_sigchld` arm, whose `si_status` is an `int` where `_rt`'s `si_value`
+    /// is a full 8-byte `sigval_t`.
+    /// # C: O(1)
+    pub fn payload(&self, sig: u32) -> hal::SigPayload {
+        hal::SigPayload {
+            code: self.code,
+            pid: self.pid as i32,
+            uid: self.uid,
+            status: self.value as i32,
+            value: self.value,
+            chld_arm: sig == crate::signum::Signum::Sigchld as u32,
+            sigsys: self.sys,
+            fault: self.fault,
+        }
+    }
 }
 
 /// Per-signal RT queue depth cap. Drops new arrivals past this

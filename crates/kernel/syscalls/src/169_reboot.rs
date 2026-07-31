@@ -14,7 +14,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
@@ -95,8 +94,7 @@ fn reboot_child_pid_ns(cur: &sched::Task, cmd: u32) -> i64 {
     };
     sched::live::set_pid_namespace_reboot(cur, signal.signo());
     if let Some(reaper) = sched::live::namespace_child_reaper(cur) {
-        reaper.sigpending.fetch_or(sched::Signum::Sigkill.bit(), Ordering::Release);
-        sched::live::signal_wake_up(&reaper);
+        sched::live::send_sig_priv_group(&reaper, sched::Signum::Sigkill as u32);
     }
     crate::s060_exit::do_exit(0)
 }

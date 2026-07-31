@@ -115,6 +115,18 @@ impl SigActions {
         }
     }
 
+    /// Linux `force_sig_info_to_task`'s `action->sa.sa_handler = SIG_DFL`:
+    /// overwrite one slot with the default disposition, bypassing
+    /// `set_action`'s user-facing validation. A forced signal must reach its
+    /// default action even when the process installed SIG_IGN or a handler,
+    /// which is what keeps a wild pointer fatal instead of an infinite fault
+    /// loop.
+    /// # C: O(1)
+    pub fn force_default(&self, sig: u32) {
+        if sig == 0 || sig as usize > SIGACTION_COUNT { return; }
+        self.table.lock()[(sig - 1) as usize] = SaHandler::default();
+    }
+
     /// Linux do_sigaction core: validate, snapshot old, sanitize, install.
     /// # C: O(1) plus ignored-signal flush below.
     pub fn set_action(&self, sig: usize, act: Option<SaHandler>) -> Result<SaHandler, ()> {

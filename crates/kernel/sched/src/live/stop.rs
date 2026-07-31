@@ -71,8 +71,14 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32) {
             pid:   cur.vtgid.load(Ordering::Acquire),
             uid:   cur.creds.ruid.load(Ordering::Acquire),
             value: status_sig as u64,
-            sys:   None,
+            sys:   None, fault: None
         });
+        // SIGCHLD keeps its own producer/consumer pair (`child_sigq`), which is
+        // per-THREAD by construction — `signum::sigq_index` has no slot for it,
+        // so the shared set cannot hold a child-exit record. Routing this
+        // through `live::send` would publish a shared bit with no record behind
+        // it. Making SIGCHLD process-directed needs the shared queue to own
+        // child events; tracked as a whole-subsystem change, not a stop-path one.
         parent.sigpending.fetch_or(crate::Signum::Sigchld.bit(), Ordering::Release);
     }
     // wait4 wake BEFORE the signal wake: `wake_wait4_parent` only claims a

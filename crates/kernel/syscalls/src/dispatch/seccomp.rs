@@ -88,17 +88,20 @@ fn queue_sigsys(s: &Sigsys) {
     // `SECCOMP_FILTER_FLAG_LOG` bit. Only RET_LOG and the RET_KILL_* pair are
     // logged unconditionally under the default `seccomp_actions_logged`.
     let Some(cur) = sched::live::current() else { return };
-    let sig = Signum::Sigsys as u32;
-    cur.sigq_reserve(sig);
-    cur.sigq_push(sched::SigInfo {
-        signo: sig,
+    let Some(cur) = sched::registry::lookup(cur.tid) else { return };
+    // Linux `force_sig_seccomp(..., force_coredump = false)` — `HANDLER_CURRENT`:
+    // an installed SIGSYS handler still runs, but a BLOCKED or SIG_IGN'd SIGSYS
+    // is forcibly unblocked and reset to SIG_DFL. The open-coded push this
+    // replaced let a filtered process block SIGSYS and sail past every RET_TRAP.
+    let info = sched::SigInfo {
+        signo: Signum::Sigsys as u32,
         code:  SYS_SECCOMP,
         pid:   0,
         uid:   0,
         value: 0,
-        sys:   Some(*s),
-    });
-    cur.sigpending.fetch_or(Signum::Sigsys.bit(), Ordering::Release);
+        sys:   Some(*s), fault: None
+    };
+    sched::live::force_sig_info_to_task(&cur, info, sched::sigsend::ForceMode::Current);
 }
 
 /// `ptrace_event(PTRACE_EVENT_SECCOMP, data)` — stop and report the event
@@ -117,10 +120,10 @@ fn trace_stop(nr: u64, data: u16) -> Option<u64> {
         signo: Signum::Sigtrap as u32,
         code:  stop_code,
         pid:   cur.traced_by.load(Ordering::Acquire),
-        uid:   0, value: 0, sys: None,
+        uid:   0, value: 0, sys: None, fault: None
     });
     crate::ptrace_fpu::snapshot_current();
-    cur.sigpending.fetch_or(Signum::Sigtrap.bit(), Ordering::Release);
+    sched::live::send_signal_self(Signum::Sigtrap);
     // Parks THIS task until the tracer resumes it, exactly as
     // `ptrace_syscall_stop_if_armed` does from the same dispatch head.
     sched::live::stop::stop_until_cont_sig(stop_code as u8);

@@ -25,9 +25,6 @@
 
 use core::sync::atomic::Ordering;
 
-/// SIGTRAP per `27§3` Linux ABI table — signal number 5; sigpending
-/// bitmask uses 0-indexed bit (sig - 1).
-const SIGTRAP: u32 = 5;
 /// RFLAGS.TF (Trap Flag) — single-step on x86.
 #[cfg(target_arch = "x86_64")]
 const RFLAGS_TF: u64 = 0x100;
@@ -40,6 +37,10 @@ const SPSR_SS: u64 = 1 << 21;
 const FRAME_X0_OFF:   usize = 0x00;
 #[cfg(target_arch = "aarch64")]
 const FRAME_SPSR_OFF: usize = 0xb8;
+/// Saved ELR_EL1 — the EL0 PC the exception was taken from, which is the
+/// `si_addr` an undefined-instruction SIGILL reports.
+#[cfg(target_arch = "aarch64")]
+const FRAME_ELR_OFF:  usize = 0xb0;
 
 /// Asm-callable hook from `oxide_syscall_entry`'s sysretq prologue.
 /// Reads `Task.singlestep` and ORs RFLAGS.TF into `*rflags_ptr` if
@@ -72,10 +73,17 @@ pub unsafe extern "C" fn oxide_x86_arm_singlestep(rflags_ptr: *mut u64) {
 fn x86_user_trap_hook(regs: &mut hal_x86_64::PtRegs) -> bool {
     if regs.vector != 1 { return false; }
     regs.rflags &= !RFLAGS_TF;
+    // Linux `exc_debug_user` -> `send_sigtrap` -> `force_sig_fault(SIGTRAP,
+    // TRAP_TRACE, pc)`: the step report is a `_sigfault` record, so a debugger
+    // reading si_code can tell a single-step from a breakpoint. The raw bit-set
+    // this replaced queued nothing at all.
     if let Some(cur) = sched::current() {
-        cur.sigpending.fetch_or(1u64 << (SIGTRAP - 1), Ordering::Release);
         cur.singlestep.store(0, Ordering::Release);
+        let _ = cur;
     }
+    #[cfg(target_os = "oxide-kernel")]
+    sched::live::force_sig_fault(sched::signum::Signum::Sigtrap,
+                                 hal::siginfo::code::TRAP_TRACE, regs.rip, 0);
     true
 }
 
@@ -147,35 +155,35 @@ pub unsafe extern "C" fn oxide_arm_software_step_handler(frame_ptr: *mut u8) -> 
             options(nostack, preserves_flags),
         );
     }
-    if let Some(cur) = sched::current() {
-        cur.sigpending.fetch_or(1u64 << (SIGTRAP - 1), Ordering::Release);
-        cur.singlestep.store(0, Ordering::Release);
-    }
+    if let Some(cur) = sched::current() { cur.singlestep.store(0, Ordering::Release); }
+    // Linux `send_user_sigtrap` -> `arm64_force_sig_fault(SIGTRAP, TRAP_TRACE,
+    // pc)`. Delivered by the return-to-user loop the softstep block now runs.
+    // SAFETY: `frame_ptr` is the live 288 B frame; ELR slot at FRAME_ELR_OFF.
+    let pc = unsafe { core::ptr::read_volatile(frame_ptr.add(FRAME_ELR_OFF) as *const u64) };
+    sched::live::force_sig_fault(sched::signum::Signum::Sigtrap,
+                                 hal::siginfo::code::TRAP_TRACE, pc, 0);
     orig_x0
 }
 
-/// SIGILL (signal 4) — Linux delivers a catchable SIGILL on an EL0
-/// undefined instruction. openssl 3.0's `OPENSSL_cpuid_setup`
-/// (.init_array, runs at libcrypto.so load) SIGILL-probes armv8.2
-/// crypto insns the CPU may lack; without catchable delivery the trap
-/// has no handler to run and the kernel halts → libcrypto unloadable.
-#[cfg(target_arch = "aarch64")]
-const SIGILL: u32 = 4;
-/// sa_handler SIG_DFL / SIG_IGN sentinels (Linux uapi). Per `07§5`,
-/// never inline bare 0/1.
-#[cfg(target_arch = "aarch64")]
-const SIG_DFL_H: u64 = 0;
-#[cfg(target_arch = "aarch64")]
-const SIG_IGN_H: u64 = 1;
-
-/// aarch64 undefined-instruction (EL0 ESR.EC=0) trap hook. Called from
+/// aarch64 undefined-instruction (EL0 ESR.EC=0) trap hook, called from
 /// `oxide_undef_save_block` with a fully-saved 288 B SVC-shaped frame.
-/// Delivers a CATCHABLE SIGILL when the task registered a handler
-/// (rewrites the saved frame so the post-restore `eret` enters the
-/// handler; openssl's probe handler siglongjmps past the bad insn).
-/// With no handler, SIGILL's default action terminates the task.
-/// Returns the value the asm stores into the retval slot → user x0 at
-/// handler entry (= SIGILL per AAPCS64).
+///
+/// Linux `el0_undef` -> `do_el0_undef` -> `force_sig_fault(SIGILL, ILL_ILLOPC,
+/// pc)`: the signal is QUEUED, and the vector epilogue's return-to-user work
+/// loop delivers it through the one signal path. openssl 3.0's
+/// `OPENSSL_cpuid_setup` SIGILL-probes armv8.2 crypto insns the CPU may lack
+/// and `siglongjmp`s out of its handler, so the delivery must carry a real
+/// `rt_sigframe` (full ucontext + si_addr), not a hand-built stub.
+///
+/// This previously called `deliver_with_info` directly with a NULL siginfo
+/// payload and, with no handler installed, terminated the task with SIGSEGV —
+/// reporting the wrong `WTERMSIG` to the parent for every undefined
+/// instruction. Both are gone: `force_sig_fault` resolves SIG_DFL through
+/// `signum::default_action`, which is SIGILL/Core.
+///
+/// Returns the saved user x0 so the shared restore block's
+/// `ldr x0, [sp, #0xc8]` is a no-op; the work loop re-seeds gp[0] itself when
+/// it builds a handler frame.
 ///
 /// # SAFETY: caller is the undef-instruction asm; `frame_ptr` points at
 /// a fully-saved 288 B SVC frame on the current task's kernel stack.
@@ -185,29 +193,19 @@ const SIG_IGN_H: u64 = 1;
 #[no_mangle]
 pub unsafe extern "C" fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64 {
     // Point the SVC-frame accessors at THIS fault frame. The per-task
-    // svc_frame slot still holds the last *syscall's* frame (F206), so
-    // deliver_arm would otherwise rewrite the wrong frame.
+    // svc_frame slot still holds the last *syscall's* frame (F206), so the
+    // work loop's frame builder would otherwise rewrite the wrong frame.
     hal_aarch64::set_current_svc_frame(frame_ptr as u64);
-    let cur = match sched::current() { Some(c) => c, None => return 0 };
+    let Some(cur) = sched::current() else { return 0 };
     cur.svc_frame.store(frame_ptr as u64, Ordering::Release);
-    let sa = cur.sigactions_ref().get(SIGILL);
-    if sa.handler != SIG_DFL_H && sa.handler != SIG_IGN_H {
-        // Saved user x0 at fault — restored into x0 on rt_sigreturn.
-        // SAFETY: frame_ptr is the 288 B frame; x0 slot at offset 0.
-        let saved_x0 = unsafe {
-            core::ptr::read_volatile(frame_ptr.add(FRAME_X0_OFF) as *const u64)
-        };
-        // SAFETY: dispatch from fault context; svc_frame now points at
-        // this frame; deliver rewrites only the saved frame + user sig stack.
-        unsafe { crate::sig_dispatch::deliver_with_info(frame_ptr as *mut crate::sig_dispatch::UserRegs,
-                                                        sa.handler, sa.restorer, SIGILL, saved_x0,
-                                                        false, None, sa.flags, sa.mask); }
-        return SIGILL as u64;   // retval slot → x0 = SIGILL at handler entry
-    }
-    // No handler: SIGILL default action = terminate (core). Reuse the
-    // SIGSEGV terminator (kills the task + coredumps); the wstatus
-    // signal number refinement to 4 is a follow-up.
-    pmm::user_as::deliver_sigsegv_arm(0, 0, 0)
+    // SAFETY: frame_ptr is the 288 B frame; x0 at offset 0, ELR at FRAME_ELR_OFF.
+    let (saved_x0, elr) = unsafe {
+        (core::ptr::read_volatile(frame_ptr.add(FRAME_X0_OFF) as *const u64),
+         core::ptr::read_volatile(frame_ptr.add(FRAME_ELR_OFF) as *const u64))
+    };
+    sched::live::force_sig_fault(sched::signum::Signum::Sigill,
+                                 hal::siginfo::code::ILL_ILLOPC, elr, 0);
+    saved_x0
 }
 
 /// Install the per-arch user-trap hook so #DB / Software-Step traps

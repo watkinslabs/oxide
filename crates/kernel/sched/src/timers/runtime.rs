@@ -56,9 +56,13 @@ fn pending(current: &Task, notify: Notify) -> bool {
 fn post_to(target: &Task, event: Expiration, wake: bool) {
     if crate::signum::is_realtime(event.signo) {
         let _ = target.sigq_push(SigInfo {
-            signo: event.signo, code: SI_TIMER, pid: 0, uid: 0, value: event.value, sys: None,
+            signo: event.signo, code: SI_TIMER, pid: 0, uid: 0, value: event.value, sys: None, fault: None
         });
     }
+    // Same timer-IRQ allocation constraint as `tick_deadline`: the record above
+    // is pushed into an already-reserved slot, and the bit is published here
+    // rather than through `live::send`, so `prepare_signal` does not run for a
+    // POSIX-timer expiry.
     if let Some(bit) = crate::bit_for(event.signo) {
         target.sigpending.fetch_or(bit, Ordering::Release);
     }

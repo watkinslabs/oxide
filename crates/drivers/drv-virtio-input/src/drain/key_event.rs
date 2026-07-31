@@ -73,9 +73,10 @@ fn handle_ctrl_alt_del(keycode: u16, pressed: bool) -> bool {
         }
         power::CadAction::SignalInit => {
             if let Some(init) = sched::live::initial_init_task() {
-                init.sigpending.fetch_or(sched::Signum::Sigint.bit(),
-                    core::sync::atomic::Ordering::Release);
-                sched::live::signal_wake_up(&init);
+                // Linux `ctrl_alt_del` -> `kill_cad_pid(SIGINT, 1)`, i.e.
+                // `kill_pid(..., priv = 1)` = SEND_SIG_PRIV: init cannot ignore
+                // the Ctrl-Alt-Del request away.
+                sched::live::send_sig_priv_group(&init, sched::Signum::Sigint as u32);
             }
         }
     }

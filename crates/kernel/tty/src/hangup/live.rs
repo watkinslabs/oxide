@@ -38,15 +38,19 @@ pub fn hangup_session(tty_ino: vfs::Ino, tty_sid: u32) -> usize {
             task.set_ctty(None);
             refs += 1;
         }
+        // Linux `__group_send_sig_info(SIGHUP/SIGCONT, SEND_SIG_PRIV, p)`:
+        // kernel-generated and PROCESS-directed, so a session leader that
+        // blocked SIGHUP in its main thread still loses the terminal, and the
+        // SIGCONT arm runs `prepare_signal`'s stop-flush + group resume rather
+        // than merely setting a bit on one thread.
         if action.sighup {
-            task.sigpending.fetch_or(sched::Signum::Sighup.bit(), Ordering::Release);
+            sched::live::send_sig_priv_group(&task, sched::Signum::Sighup as u32);
         }
         if action.sigcont {
             // SIGCONT accompanies the SIGHUP so a stopped leader resumes and
-            // can act on it (`tty_jobctrl.c:218-219`).
-            task.sigpending.fetch_or(sched::Signum::Sigcont.bit(), Ordering::Release);
+            // can act on it.
+            sched::live::send_sig_priv_group(&task, sched::Signum::Sigcont as u32);
         }
-        if action.sighup || action.sigcont { sched::live::signal_wake_up(&task); }
     }
     refs
 }
