@@ -42,7 +42,7 @@ mod open;
 mod readahead;
 mod fsync;
 
-pub use async_notify::{fasync_register, fasync_registered, fasync_unregister, kill_fasync, set_sigio_hook};
+pub use async_notify::{band_for, deliver as deliver_fasync, fasync_register, fasync_registered, fasync_unregister, kill_fasync, reason, reason_for_mask, set_sigio_hook, sicode_for, AsyncSignal};
 pub use cred::FileCred;
 pub use epoll::FileEpollLink;
 pub use hooks::{fire_clone_hook, fire_dirent_create, fire_delete_self_hook, fire_dirent_delete, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook};
@@ -129,6 +129,10 @@ pub struct File {
     /// `F_SETSIG`/`F_GETSIG` (Linux `f_owner.signum`): the signal delivered on
     /// async-I/O readiness; `0` = the default `SIGIO` (data) / `SIGURG` (OOB).
     f_sig: ::core::sync::atomic::AtomicI32,
+    /// `fasync_struct.fa_fd` — the descriptor number `O_ASYNC` was enabled on,
+    /// delivered to the handler as `si_fd`. Linux records it in
+    /// `fasync_insert_entry` from the `f_op->fasync` argument; `-1` until then.
+    fa_fd: ::core::sync::atomic::AtomicI32,
     /// `F_SETLEASE`/`F_GETLEASE` lease type held on this open file description
     /// (Linux `fl->fl_type` of the `FL_LEASE` lock): `F_RDLCK`(0) read lease,
     /// `F_WRLCK`(1) write lease, `F_UNLCK`(2) = no lease. Default `F_UNLCK`.

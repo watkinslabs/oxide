@@ -84,9 +84,9 @@ impl SigSource {
 pub fn build_info(sig: u32, src: SigSource) -> SigInfo {
     match src {
         SigSource::User { pid, uid } =>
-            SigInfo { signo: sig, code: SI_USER, pid, uid, value: 0, sys: None, fault: None },
+            SigInfo { signo: sig, code: SI_USER, pid, uid, value: 0, sys: None, fault: None, poll: None },
         SigSource::Kernel =>
-            SigInfo { signo: sig, code: SI_KERNEL, pid: 0, uid: 0, value: 0, sys: None, fault: None },
+            SigInfo { signo: sig, code: SI_KERNEL, pid: 0, uid: 0, value: 0, sys: None, fault: None, poll: None },
         SigSource::Info(mut i) => { i.signo = sig; i }
     }
 }
@@ -212,7 +212,7 @@ pub fn overflow_is_eagain(sig: u32, src: &SigSource) -> bool {
 pub fn fault_info(sig: u32, code: i32, addr: u64, addr_lsb: i16) -> SigInfo {
     SigInfo {
         signo: sig, code, pid: 0, uid: 0, value: 0, sys: None,
-        fault: Some(hal::SigFault { addr, addr_lsb }),
+        fault: Some(hal::SigFault { addr, addr_lsb }), poll: None,
     }
 }
 

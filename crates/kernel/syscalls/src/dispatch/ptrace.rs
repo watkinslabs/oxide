@@ -27,7 +27,7 @@ pub(super) fn ptrace_syscall_stop_if_armed(rax: u64) {
     let stop_code = Signum::Sigtrap as i32 | if sysgood { SYSCALL_TRAP_BIT } else { 0 };
     let tracer = cur.traced_by.load(Ordering::Acquire);
     *cur.ptrace_siginfo.lock() = Some(sched::SigInfo {
-        signo: Signum::Sigtrap as u32, code: stop_code, pid: tracer, uid: 0, value: 0, sys: None, fault: None
+        signo: Signum::Sigtrap as u32, code: stop_code, pid: tracer, uid: 0, value: 0, sys: None, fault: None, poll: None
     });
     crate::ptrace_fpu::snapshot_current();
     sched::live::send_signal_self(Signum::Sigtrap);

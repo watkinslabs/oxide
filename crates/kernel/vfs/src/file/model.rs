@@ -112,6 +112,7 @@ impl File {
             owner: ::core::sync::atomic::AtomicI32::new(0),
             owner_creds: AtomicU64::new(0),
             f_sig: ::core::sync::atomic::AtomicI32::new(0),
+            fa_fd: ::core::sync::atomic::AtomicI32::new(-1),
             // F_UNLCK (2) = no lease held (Linux `F_GETLEASE` default).
             lease: core::sync::atomic::AtomicI32::new(2),
             dnotify_mask: AtomicU32::new(0),
@@ -249,10 +250,13 @@ impl File {
     /// Generic `fasync_helper` state transition for async-capable backends.
     /// Unsupported files never reach this; their `f_op->fasync` default returns
     /// `ENOTTY`, so no registry entry is published by accident. # C: O(1)
-    pub fn set_fasync_state(self: &Arc<Self>, on: bool) {
+    pub fn set_fasync_state(self: &Arc<Self>, fd: i32, on: bool) {
         let mut fl = self.flags();
         let async_flag = OpenFlags::from_bits_retain(O_ASYNC);
         if on {
+            // `fasync_insert_entry` records the descriptor BEFORE the list link,
+            // so the first readiness signal already reports the right `si_fd`.
+            self.set_fasync_fd(fd);
             fl |= async_flag;
             self.set_flags(fl);
             fasync_register(self);

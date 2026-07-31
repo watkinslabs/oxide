@@ -144,9 +144,16 @@ pub fn encode(signo: u32, rec: Option<&SigInfo>, out: &mut [u8]) {
         }
         SigLayout::Poll => {
             // `_sigpoll`: `long si_band` covers both `_kill` words, `int
-            // si_fd` follows in the `si_value` slot.
-            put_u32(out, SSI_BAND, r.pid);
-            put_i32(out, SSI_FD, r.value as i32);
+            // si_fd` follows in the `si_value` slot. A record produced by the
+            // async-I/O path carries the real `_sigpoll` arm; the overlaid
+            // reconstruction is the fallback for a record that predates it (a
+            // user-forged `rt_sigqueueinfo` whose si_code selects this layout).
+            let (band, fd) = match r.poll {
+                Some(q) => (q.band as u32, q.fd),
+                None    => (r.pid, r.value as i32),
+            };
+            put_u32(out, SSI_BAND, band);
+            put_i32(out, SSI_FD, fd);
         }
         SigLayout::Fault | SigLayout::FaultBnderr | SigLayout::FaultPkuerr
         | SigLayout::FaultPerfEvent => {

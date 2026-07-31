@@ -119,3 +119,9 @@ pub const POLL_WRNORM: u32 = 0x0100;
 pub const POLL_ERR:   u32 = 0x0008;
 pub const POLL_PRI:   u32 = 0x0002;
 pub const POLL_RDHUP: u32 = 0x2000;
+/// `EPOLLRDBAND` — priority-band read data; part of the `POLL_PRI` si_band.
+pub const POLL_RDBAND: u32 = 0x0080;
+/// `EPOLLWRBAND` — priority-band write room; part of the `POLL_OUT` si_band.
+pub const POLL_WRBAND: u32 = 0x0200;
+/// `EPOLLMSG` — STREAMS message available; part of the `POLL_MSG` si_band.
+pub const POLL_MSG:    u32 = 0x0400;
