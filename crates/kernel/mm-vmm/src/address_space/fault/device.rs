@@ -22,8 +22,13 @@ impl AddressSpace {
         DR: FnMut(u64),
         IR: FnMut(u64),
     {
-        // Shared kernel frame (vvar); inc_ref balances AS-drop dec.
+        // Shared kernel frame (vvar, io_uring ring, aio completion ring);
+        // inc_ref balances AS-drop dec. `pa` names the FIRST frame of a
+        // physically contiguous, refcounted run, so the page at VMA offset O
+        // is `pa + O` — a single-page region is the O == 0 case. Ignoring the
+        // offset would alias every page of a multi-page ring onto its header.
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
+        let pa = pa + (va_page - vma.start.as_u64());
         let pte_flags = vma.prot.to_page_flags();
         // SAFETY: pa is a kernel-owned frame whose lifetime exceeds every user mapping; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
         // F157-A1: dec_ref any frame displaced by a stale present leaf

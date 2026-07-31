@@ -76,6 +76,14 @@ pub fn make_eventfd_inode(initial: u64, semaphore: bool) -> InodeRef {
         .build()
 }
 
+/// Whether an inode really is an eventfd. `eventfd_ctx_fdget` answers EINVAL —
+/// not EBADF — for a live fd whose file is something else, so any caller that
+/// takes an eventfd as a parameter (aio `IOCB_FLAG_RESFD`) needs this to
+/// separate the two verdicts. Identity comes from the private counter object,
+/// not the ino: ino ranges are per-filesystem and would alias.
+/// # C: O(1)
+pub fn is_eventfd(inode: &InodeRef) -> bool { inode.private::<EventfdData>().is_some() }
+
 /// `i_fop` for an eventfd inode. # C: O(1)
 struct EventfdFileOps;
 impl FileOps for EventfdFileOps {
