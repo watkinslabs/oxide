@@ -1,10 +1,10 @@
 use core::sync::atomic::Ordering;
 use vtdata::Emulator;
 
-use crate::kernel::shared::{DIRTY, READY, VT_STATE};
+use crate::kernel::shared::{lock_vt, try_lock_vt, DIRTY, READY};
 
 pub fn console_dims() -> Option<(u16, u16)> {
-    VT_STATE.lock().as_ref().map(|st| (st.rows, st.cols))
+    lock_vt().as_ref().map(|st| (st.rows, st.cols))
 }
 
 pub fn force_repaint() {
@@ -12,7 +12,7 @@ pub fn force_repaint() {
         return;
     }
     {
-        let mut guard = VT_STATE.lock();
+        let mut guard = lock_vt();
         if let Some(st) = guard.as_mut() {
             let fg = st.fg as usize;
             if st.graphics[fg] {
@@ -32,7 +32,7 @@ pub fn scrolldelta(lines: isize) {
         return;
     }
     {
-        let mut guard = VT_STATE.lock();
+        let mut guard = lock_vt();
         if let Some(st) = guard.as_mut() {
             let fg = st.fg as usize;
             if st.graphics[fg] {
@@ -54,7 +54,7 @@ pub fn scrolldelta(lines: isize) {
 
 pub fn screen_dump(with_attr: bool) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::new();
-    let guard = VT_STATE.lock();
+    let guard = lock_vt();
     let st = match guard.as_ref() {
         Some(s) => s,
         None => return out,
@@ -89,7 +89,7 @@ pub fn resize_vt(vt: u8, cols: u16, rows: u16) -> bool {
     }
     let mut blitted = false;
     {
-        let mut guard = VT_STATE.lock();
+        let mut guard = lock_vt();
         let st = match guard.as_mut() {
             Some(s) => s,
             None => return false,
@@ -116,11 +116,11 @@ pub fn resize_vt(vt: u8, cols: u16, rows: u16) -> bool {
 }
 
 pub fn foreground() -> u8 {
-    VT_STATE.lock().as_ref().map(|st| st.fg).unwrap_or(0)
+    lock_vt().as_ref().map(|st| st.fg).unwrap_or(0)
 }
 
 fn fg_em_mode(f: impl Fn(&Emulator) -> bool) -> bool {
-    if let Some(mut g) = VT_STATE.try_lock() {
+    if let Some(mut g) = try_lock_vt() {
         if let Some(st) = g.as_mut() {
             let i = st.ensure(st.fg);
             if let Some(cell) = st.vc_cons[i].as_ref() {

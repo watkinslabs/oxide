@@ -1,6 +1,8 @@
 extern crate alloc;
 
 mod query;
+#[cfg(test)]
+mod tests;
 mod runtime;
 mod shared;
 

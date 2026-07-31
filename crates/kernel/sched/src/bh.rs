@@ -31,7 +31,14 @@ pub fn local_bh_disable() {
 /// # C: O(1) + drain
 pub unsafe fn local_bh_enable() {
     debug_assert!(preempt::softirq_count() >= SOFTIRQ_DISABLE_OFFSET, "local_bh_enable without disable");
-    if preempt::softirq_count() == SOFTIRQ_DISABLE_OFFSET && softirq::pending() {
+    // A hard-IRQ handler may bh-disable to touch a softirq-shared lock (the
+    // console sink runs in every context there is). Its matching enable must
+    // NOT drain here: a drain from an interrupt handler runs softirq work on
+    // the interrupt stack and, worse, reaches the reschedule check below on a
+    // stack that cannot be switched away from. The IRQ tail runs the drain
+    // once the handler returns, so nothing is lost by skipping it.
+    let interrupt = preempt::hardirq_count() != 0;
+    if !interrupt && preempt::softirq_count() == SOFTIRQ_DISABLE_OFFSET && softirq::pending() {
         // Drop the disable portion but keep one SOFTIRQ_OFFSET: in_serving =
         // true, preempt still off, while we drain (Linux keeps preempt off
         // across the do_softirq call in __local_bh_enable_ip).
@@ -42,8 +49,23 @@ pub unsafe fn local_bh_enable() {
     } else {
         preempt::preempt_count_sub(SOFTIRQ_DISABLE_OFFSET);
     }
+    if interrupt { return; }
     // SAFETY: caller asserted a safe schedule point.
     unsafe { preempt::preempt_check_resched(); }
+}
+
+/// Linux `__local_bh_enable`: drop the disable without draining. For a caller
+/// that may hold an unrelated lock, or that runs in a context it does not
+/// control — the console sink is reachable from anywhere, including from inside
+/// another subsystem's critical section — running softirq handlers inline on
+/// the way out is the wrong trade. Pending work stays pending and the next IRQ
+/// tail or `ksoftirqd` pass takes it.
+/// # SAFETY: must pair a prior [`local_bh_disable`].
+/// # C: O(1)
+#[inline]
+pub unsafe fn local_bh_enable_no_drain() {
+    debug_assert!(preempt::softirq_count() >= SOFTIRQ_DISABLE_OFFSET, "local_bh_enable without disable");
+    preempt::preempt_count_sub(SOFTIRQ_DISABLE_OFFSET);
 }
 
 /// Linux `do_softirq`: drain THIS CPU's pending softirqs. No-op if already in a
@@ -127,6 +149,32 @@ impl Drop for BhGuard {
     }
 }
 
+/// [`BhGuard`] for a caller that cannot afford the inline drain — see
+/// [`local_bh_enable_no_drain`].
+pub struct BhGuardNoDrain {
+    _private: (),
+}
+
+impl BhGuardNoDrain {
+    /// `local_bh_disable`. # C: O(1)
+    pub fn new() -> Self {
+        local_bh_disable();
+        Self { _private: () }
+    }
+}
+
+impl Default for BhGuardNoDrain {
+    fn default() -> Self { Self::new() }
+}
+
+impl Drop for BhGuardNoDrain {
+    fn drop(&mut self) {
+        // SAFETY: pairs this guard's own local_bh_disable; no drain, so no
+        // handler runs here and no lock the caller holds can be re-entered.
+        unsafe { local_bh_enable_no_drain(); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
@@ -161,6 +209,33 @@ mod tests {
         assert_eq!(preempt::softirq_count(), preempt::SOFTIRQ_OFFSET);
         preempt::preempt_count_sub(preempt::SOFTIRQ_OFFSET);
         assert_eq!(preempt::preempt_count(), 0);
+    }
+
+    /// A hard-IRQ handler that bh-disables to touch a softirq-shared lock must
+    /// not drain softirq work when it re-enables: the drain belongs to the IRQ
+    /// tail, which runs once the handler returns.
+    #[test]
+    fn enable_from_hard_irq_defers_the_drain_to_the_irq_tail() {
+        static RAN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        fn handler() { RAN.fetch_add(1, core::sync::atomic::Ordering::Relaxed); }
+        preempt::_test_reset();
+        RAN.store(0, core::sync::atomic::Ordering::Relaxed);
+        softirq::set_handler(softirq::Slot::Tasklet, handler);
+        preempt::preempt_count_add(preempt::HARDIRQ_OFFSET);
+        local_bh_disable();
+        softirq::raise(softirq::Slot::Tasklet);
+        // SAFETY: pairs the disable above; host test in simulated IRQ context.
+        unsafe { local_bh_enable(); }
+        assert_eq!(RAN.load(core::sync::atomic::Ordering::Relaxed), 0);
+        assert!(softirq::pending(), "work stays pending for the IRQ tail");
+        preempt::preempt_count_sub(preempt::HARDIRQ_OFFSET);
+        // Out of interrupt context the same enable does drain it.
+        local_bh_disable();
+        // SAFETY: pairs the disable above; process context, no lock held.
+        unsafe { local_bh_enable(); }
+        assert_eq!(RAN.load(core::sync::atomic::Ordering::Relaxed), 1);
+        softirq::clear_handler(softirq::Slot::Tasklet);
+        preempt::_test_reset();
     }
 
     #[test]
