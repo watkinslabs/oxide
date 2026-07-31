@@ -115,7 +115,20 @@ bitflags::bitflags! {
         /// table, so the marker is a flag. It is what makes `shm_nattch`
         /// track VMA lifetime (`crate::vm_ops`) and what `shmdt` matches on.
         const SYSVSHM = 1 << 15;
+        /// mlock2(MLOCK_ONFAULT) / mlockall(MCL_ONFAULT) (Linux
+        /// `VM_LOCKONFAULT`): the range is locked, but pages are pinned as
+        /// they fault in rather than being prefaulted. Only ever set
+        /// alongside `LOCKED`; the pair is [`VmaFlags::LOCKED_MASK`].
+        const LOCKONFAULT = 1 << 16;
     }
+}
+
+impl VmaFlags {
+    /// Linux `VM_LOCKED_MASK` — the mlock-family flag pair. Every mlock
+    /// transition clears the whole mask before adding the new state, and
+    /// fork/mremap drop the mask outright, so a stale `LOCKONFAULT` can never
+    /// survive a plain `mlock()` over the same range.
+    pub const LOCKED_MASK: VmaFlags = VmaFlags::LOCKED.union(VmaFlags::LOCKONFAULT);
 }
 
 /// Flag set for the user-stack VMA installed by `sys_execve` per
