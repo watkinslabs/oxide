@@ -7,7 +7,6 @@
 // Master (`/dev/ptmx`) is nobody's controlling terminal
 // (`drivers/tty/tty_io.c:2166-2167`), so it is never gated.
 
-use core::sync::atomic::Ordering;
 
 use vfs::{FileOps, Inode, Ino, KResult, VfsError};
 
@@ -203,9 +202,14 @@ fn slave_read_freed_master_space(pair: &LockedPair) { pair.wake_subs(true, vfs::
 pub(crate) fn post_signal_pgrp(pgid: u32, bits: u64) -> usize {
     let tasks = sched::live::registry::tasks_in_pgrp(pgid);
     let n = tasks.len();
-    for t in tasks {
-        t.sigpending.fetch_or(bits, Ordering::Release);
-        sched::live::signal_wake_up(&t);
+    // Linux n_tty `__isig` -> `kill_pgrp(pgrp, sig, 1)`: kernel-generated and
+    // PROCESS-directed, one `send_signal` per signal in the mask so
+    // `prepare_signal`'s stop/cont flush runs for SIGTSTP.
+    let mut rest = bits;
+    while rest != 0 {
+        let signo = rest.trailing_zeros() + 1;
+        rest &= rest - 1;
+        for t in &tasks { sched::live::send_sig_priv_group(t, signo); }
     }
     n
 }

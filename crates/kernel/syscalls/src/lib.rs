@@ -91,6 +91,8 @@ pub mod pivot_root_policy;
 pub mod fsconfig_abi;
 mod fcntl_dup;
 mod exec_time;
+mod pidfd_signal_policy;
+mod kill_policy;
 mod perm_common;
 #[cfg(target_os = "oxide-kernel")]
 mod clone_cgroup;

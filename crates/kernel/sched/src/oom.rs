@@ -94,9 +94,13 @@ fn eligible_group_member(task: &Task) -> bool {
 
 fn post_kill(task: &Arc<Task>) -> bool {
     if !task.try_claim_oom_victim() { return false; }
-    task.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
+    // Linux `oom_kill_process` -> `do_send_sig_info(SIGKILL, SEND_SIG_PRIV, p,
+    // PIDTYPE_TGID)`: the WHOLE process dies, not the one thread the raw
+    // bit-set this replaced happened to name.
     #[cfg(target_os = "oxide-kernel")]
-    crate::live::signal_wake_up(task);
+    crate::live::send_sig_priv_group(task, Signum::Sigkill.as_u8() as u32);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    task.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
     true
 }
 

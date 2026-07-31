@@ -1,84 +1,136 @@
-// 424 pidfd_send_signal — one syscall, one file (docs/53 §0). Moved verbatim from pidfd.rs.
+// 424 pidfd_send_signal — one syscall, one file (docs/53 §0).
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
+
+use syscall::errno::Errno;
+use sched::sigsend::{SigSource, SigTarget};
+
+use crate::pidfd_signal_policy::{
+    classify_target, scope_for, siginfo_forgery_rejected, validate_flags, Scope, Target,
+};
+use crate::signal_common::{read_user_siginfo, KERNEL_SIGINFO_BYTES, SI_SIGNO};
+
 /// `sys_pidfd_send_signal(pidfd, sig, info, flags)` — slot 424.
-/// Resolves the pidfd's bound tid via the inode marker and posts
-/// the signal bit into that task's sigpending.
-/// # C: O(N_tasks)
+///
+/// Linux order:
+///   1. unknown flag bits → EINVAL; more than one scope flag → EINVAL.
+///   2. `PIDFD_SELF_THREAD` / `PIDFD_SELF_THREAD_GROUP` short-circuit the fd
+///      table entirely; anything else is looked up (EBADF) and must be a pidfd
+///      (EBADF from `pidfd_to_pid`).
+///   3. scope: an explicit flag wins, else a `PIDFD_THREAD` pidfd is
+///      thread-scoped and every other pidfd is process-scoped.
+///   4. with `info`: copy it in (EFAULT), `sig != si_signo` → EINVAL, and a
+///      kernel-origin `si_code` aimed anywhere but yourself → EPERM.
+///      Without `info`: synthesise `SI_USER` + the sender's identity.
+///   5. deliver, or ESRCH when the pidfd's process has already been reaped.
+/// # C: O(N_tasks) for a process-group send; O(log N) otherwise
 pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    use syscall::errno::Errno;
-    use sched::Signum;
-    const PIDFD_SIGNAL_THREAD:        u64 = 1 << 0;
-    const PIDFD_SIGNAL_THREAD_GROUP:  u64 = 1 << 1;
-    const PIDFD_SIGNAL_PROCESS_GROUP: u64 = 1 << 2;
-    const PIDFD_SIGNAL_FLAGS: u64 = PIDFD_SIGNAL_THREAD | PIDFD_SIGNAL_THREAD_GROUP | PIDFD_SIGNAL_PROCESS_GROUP;
-    let fd  = args.a0 as i32;
-    let sig = args.a1 as i32;
-    let info = args.a2;
-    let flags = args.a3;
+    let fd    = args.a0 as i32;
+    let sig   = args.a1 as i32;
+    let info  = args.a2;
+    let flags = args.a3 as u32;
     if !(0..=64).contains(&sig) { return -(Errno::Einval.as_i32() as i64); }
-    if (flags & !PIDFD_SIGNAL_FLAGS) != 0 { return -(Errno::Einval.as_i32() as i64); }
-    if (flags & PIDFD_SIGNAL_FLAGS).count_ones() > 1 { return -(Errno::Einval.as_i32() as i64); }
-    if info != 0 {
-        if let Err(rv) = crate::userbuf::validate_user_buf(info, 32, 1) { return rv; }
-        // SAFETY: info validated readable for leading siginfo_t fields; si_signo is the first i32.
-        let signo = unsafe { core::ptr::read_unaligned(info as *const i32) };
-        if signo != sig { return -(Errno::Einval.as_i32() as i64); }
-    }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let file = match fdt.get(fd) {
-        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let identity = match pidfd::identity_from_inode(&file.inode()) {
-        Some(identity) => identity,
-        None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let task = match identity.task() {
-        Some(task) => task,
-        None => return -(Errno::Esrch.as_i32() as i64),
-    };
-    if task.reaped.load(Ordering::Acquire) {
-        return -(Errno::Esrch.as_i32() as i64);
-    }
-    let scope = if (flags & PIDFD_SIGNAL_THREAD) != 0
-        || ((flags & PIDFD_SIGNAL_FLAGS) == 0 && file.flags().contains(vfs::OpenFlags::O_EXCL)) {
-        PIDFD_SIGNAL_THREAD
-    } else if (flags & PIDFD_SIGNAL_PROCESS_GROUP) != 0 {
-        PIDFD_SIGNAL_PROCESS_GROUP
-    } else {
-        PIDFD_SIGNAL_THREAD_GROUP
-    };
-    let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
-    let mut live = 0usize;
-    let mut permitted = 0usize;
-    let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
-    for t in &tasks {
-        if t.reaped.load(Ordering::Acquire) { continue; }
-        let hit = if scope == PIDFD_SIGNAL_THREAD {
-            t.tid == task.tid
-        } else if scope == PIDFD_SIGNAL_PROCESS_GROUP {
-            t.pgid() == task.pgid()
-        } else {
-            t.vtgid.load(Ordering::Acquire) == task.vtgid.load(Ordering::Acquire)
-        };
-        if !hit { continue; }
-        live += 1;
-        if !crate::signal::sig_perm_check(cur, t, sig) { continue; }
-        permitted += 1;
-        if sig != 0 {
-            t.sigpending.fetch_or(bit, Ordering::Release);
-            if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
-            sched::live::signal_wake_up(t);
+    if let Err(rv) = validate_flags(flags) { return rv; }
+    let Some(cur) = sched::live::current() else { return -(Errno::Esrch.as_i32() as i64) };
+    let (task, default_scope) = match classify_target(fd) {
+        // `PIDFD_SELF*` needs no fd at all — a process that has exhausted its
+        // fd table can still signal itself, which is the whole point.
+        Target::SelfTask(scope) => {
+            let Some(t) = sched::registry::lookup(cur.tid) else {
+                return -(Errno::Esrch.as_i32() as i64);
+            };
+            (t, scope)
         }
+        Target::Fd(fd) => match resolve_pidfd(cur, fd) {
+            Ok(pair) => pair,
+            Err(rv) => return rv,
+        },
+    };
+    if task.reaped.load(Ordering::Acquire) { return -(Errno::Esrch.as_i32() as i64); }
+    let scope = scope_for(flags, default_scope);
+    let targets_self = task.tid == cur.tid
+        || task.tgid.load(Ordering::Acquire) == cur.tgid.load(Ordering::Acquire);
+    let src = match build_source(cur, sig, info, targets_self, scope) {
+        Ok(src) => src,
+        Err(rv) => return rv,
+    };
+    if !crate::signal::sig_perm_check(cur, &task, sig) {
+        return -(Errno::Eperm.as_i32() as i64);
     }
-    if live == 0 { -(Errno::Esrch.as_i32() as i64) }
-    else if permitted == 0 { -(Errno::Eperm.as_i32() as i64) }
-    else { 0 }
+    // `sig == 0` is the permission probe: everything above ran, nothing is sent.
+    if sig == 0 { return 0; }
+    match scope {
+        Scope::Thread => send_one(&task, sig, src, SigTarget::Thread),
+        Scope::ThreadGroup => send_one(&task, sig, src, SigTarget::Process),
+        Scope::ProcessGroup => send_pgrp(cur, &task, sig, src),
+    }
+}
+
+/// Resolve a real pidfd to its task plus the scope its own kind implies.
+/// # C: O(log N)
+fn resolve_pidfd(cur: &sched::Task, fd: i32) -> Result<(Arc<sched::Task>, Scope), i64> {
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return Err(-(Errno::Ebadf.as_i32() as i64)),
+    };
+    let file = fdt.get(fd).map_err(|_| -(Errno::Ebadf.as_i32() as i64))?;
+    // Linux `pidfd_to_pid` returns `-EBADF` for a non-pidfd file, not EINVAL:
+    // the fd is open but is not the kind of object this call accepts.
+    let Some(identity) = pidfd::identity_from_inode(&file.inode()) else {
+        return Err(-(Errno::Ebadf.as_i32() as i64));
+    };
+    let Some(task) = identity.task() else { return Err(-(Errno::Esrch.as_i32() as i64)) };
+    // `PIDFD_THREAD` is `O_EXCL` on the pidfd (`include/uapi/linux/pidfd.h`).
+    let scope = if file.flags().contains(vfs::OpenFlags::O_EXCL) { Scope::Thread }
+                else { Scope::ThreadGroup };
+    Ok((task, scope))
+}
+
+/// Linux's `if (info) { copy_siginfo_from_user_any(...) } else {
+/// prepare_kill_siginfo(...) }` arm, including the forgery gate.
+/// # C: O(1)
+fn build_source(cur: &sched::Task, sig: i32, info: u64, targets_self: bool, scope: Scope)
+    -> Result<SigSource, i64>
+{
+    if info == 0 {
+        return Ok(SigSource::User {
+            pid: cur.vtgid.load(Ordering::Acquire),
+            uid: cur.creds.ruid.load(Ordering::Acquire),
+        });
+    }
+    crate::userbuf::validate_user_buf(info, KERNEL_SIGINFO_BYTES, 1)?;
+    // SAFETY: info validated readable for KERNEL_SIGINFO_BYTES; si_signo is the leading i32.
+    let signo = unsafe { core::ptr::read_unaligned((info + SI_SIGNO) as *const i32) };
+    if signo != sig { return Err(-(Errno::Einval.as_i32() as i64)); }
+    let rec = read_user_siginfo(info, sig as u32);
+    if siginfo_forgery_rejected(rec.code, targets_self, scope) {
+        return Err(-(Errno::Eperm.as_i32() as i64));
+    }
+    Ok(SigSource::Info(rec))
+}
+
+/// # C: O(N_threads)
+fn send_one(t: &Arc<sched::Task>, sig: i32, src: SigSource, target: SigTarget) -> i64 {
+    match sched::live::send_signal(t, sig as u32, src, target) {
+        Ok(()) => 0,
+        Err(sched::live::SendErr::Again) => -(Errno::Eagain.as_i32() as i64),
+    }
+}
+
+/// `PIDFD_SIGNAL_PROCESS_GROUP` — Linux `kill_pgrp_info`, which folds exactly
+/// like `kill(2)`'s process-group arm.
+/// # C: O(N_tasks)
+fn send_pgrp(cur: &sched::Task, task: &Arc<sched::Task>, sig: i32, src: SigSource) -> i64 {
+    let mut fold = crate::kill_policy::PgrpFold::new();
+    for t in &sched::live::registry::tasks_in_pgrp(task.pgid()) {
+        if t.tid != t.tgid.load(Ordering::Acquire) { continue; }
+        if !crate::signal::sig_perm_check(cur, t, sig) {
+            fold.visit(-(Errno::Eperm.as_i32() as i64));
+            continue;
+        }
+        fold.visit(if sig == 0 { 0 } else { send_one(t, sig, src, SigTarget::Process) });
+    }
+    fold.finish()
 }

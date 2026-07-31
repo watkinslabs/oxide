@@ -52,9 +52,13 @@ impl<'a> SendContext<'a> {
 }
 
 /// Apply shared stream SIGPIPE completion semantics. # C: O(1)
-pub(crate) fn complete(ctx: &SendContext<'_>, flags: u32, result: KResult<usize>) -> KResult<usize> {
+pub(crate) fn complete(_ctx: &SendContext<'_>, flags: u32, result: KResult<usize>) -> KResult<usize> {
     if result == Err(Error::Epipe) && flags & net::uapi::MSG_NOSIGNAL as u32 == 0 {
-        ctx.task.sigpending.fetch_or(Signum::Sigpipe.bit(), Ordering::Release);
+        // Linux `sk_stream_wait_connect`/`tcp_sendmsg` -> `send_sig(SIGPIPE,
+        // current, 0)`: the write-side EPIPE report is a signal on the CALLING
+        // thread, queued with `si_code = SI_KERNEL`. The bit-only post this
+        // replaced was invisible to `signalfd` and carried no record.
+        sched::live::send_signal_self(Signum::Sigpipe);
     }
     result
 }
