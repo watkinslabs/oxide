@@ -61,7 +61,14 @@ fn sys_inotify_init_flags(flags: u32) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = make_inotify_inode(InotifyData::new(flags));
+    // `inotify_new_group`: the per-user instance ceiling is charged BEFORE the
+    // fd is minted, and its failure is EMFILE — not the ENFILE/EMFILE the fd
+    // table would raise. `InotifyData::Drop` releases the charge.
+    let uid = current_euid();
+    if !vfs::fsnotify::inc_ucount(uid, vfs::fsnotify::Ucount::InotifyInstances) {
+        return -(Errno::Emfile.as_i32() as i64);
+    }
+    let inode = make_inotify_inode(InotifyData::new_owned(flags, false, uid));
     let dentry = vfs::dcache::d_alloc_pseudo("inotify", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & IN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
@@ -85,6 +92,12 @@ fn current_has_cap(cap: u32) -> bool {
     sched::current().map(|c| c.has_cap(cap)).unwrap_or(false)
 }
 
+/// `current_euid()` — the ucount key a group's instance/mark charges are held
+/// against. # C: O(1)
+fn current_euid() -> u32 {
+    sched::current().map(|c| c.creds.euid.load(Ordering::Acquire)).unwrap_or(0)
+}
+
 /// `sys_fanotify_init(flags, event_f_flags)`. Allocates a fanotify GROUP fd
 /// whose read() yields `fanotify_event_metadata`. `flags` carries the class
 /// (NOTIF/CONTENT/PRE_CONTENT), FAN_CLOEXEC/FAN_NONBLOCK and the report-fid
@@ -98,7 +111,6 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
         flags,
         event_f_flags,
         current_has_cap(sched::cap::SYS_ADMIN),
-        current_has_cap(sched::cap::AUDIT_WRITE),
     );
     if e != 0 { return -(e as i64); }
     let cur = match sched::current() {
@@ -108,7 +120,17 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let inode = make_inotify_inode(InotifyData::new_fanotify(flags));
+    // `inc_ucount(UCOUNT_FANOTIFY_GROUPS)` sits between the argument checks and
+    // the group-construction checks, so an exhausted user sees EMFILE even for
+    // a flag word the later checks would have rejected.
+    let uid = current_euid();
+    if !vfs::fsnotify::inc_ucount(uid, vfs::fsnotify::Ucount::FanotifyGroups) {
+        return -(Errno::Emfile.as_i32() as i64);
+    }
+    let data = InotifyData::new_owned(flags, true, uid);
+    let e = validate_fanotify_init_post_charge(flags, current_has_cap(sched::cap::AUDIT_WRITE));
+    if e != 0 { return -(e as i64); }
+    let inode = make_inotify_inode(data);
     let dentry = vfs::dcache::d_alloc_pseudo("[fanotify]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDWR;
     if (flags & FAN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
@@ -182,7 +204,10 @@ pub(crate) fn add_or_update_watch(
             return Ok(w.wd);
         }
     }
+    // `inotify_new_watch`: the wd is allocated first, then the per-user watch
+    // ceiling is charged; failing it unwinds the wd and reports ENOSPC.
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
+    if !inotify.charge_mark() { return Err(Errno::Enospc); }
     g.push(Watch { wd, inode_key: key, fsid, scope: MarkScope::Inode, mask: event_mask, flags: mark_flags, ignored: 0 });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     Ok(wd)
@@ -196,6 +221,8 @@ pub(crate) fn remove_watch(inotify: &Arc<InotifyData>, wd: i32) -> Result<(), Er
         return Err(Errno::Einval);
     };
     g.remove(pos);
+    drop(g);
+    inotify.release_marks(1);
     MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
     inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
     Ok(())
@@ -235,10 +262,15 @@ pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usiz
         if g[i].mask == 0 && g[i].ignored == 0 {
             g.remove(i);
             MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
+            drop(g);
+            inotify.release_marks(1);
         }
         return 0;
     }
     if !add { return -(Errno::Enoent.as_i32() as i64); }
+    // `fanotify_add_new_mark`: the per-user mark ceiling is charged before the
+    // mark exists; over it, ENOSPC.
+    if !inotify.charge_mark() { return -(Errno::Enospc.as_i32() as i64); }
     let (mask, ign) = if ignored { (0, bits) } else { (bits, 0) };
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
     g.push(Watch { wd, inode_key: key, fsid, scope, mask, flags: 0, ignored: ign });
@@ -278,8 +310,10 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
             if w.scope == scope { removed += 1; if w.mask & PERM_BITS != 0 { perms += 1; } false }
             else { true }
         });
+        drop(g);
         if removed > 0 { MARK_COUNT.fetch_sub(removed, Ordering::AcqRel); }
         if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
+        inotify.release_marks(removed);
         return 0;
     }
     let bits = mask & FAN_ALL_EVENT_BITS;

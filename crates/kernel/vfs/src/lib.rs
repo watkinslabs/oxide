@@ -51,6 +51,7 @@ pub mod timespec;
 pub mod types;
 pub mod uapi;
 pub mod poll_subs;
+pub mod fsnotify;
 pub mod quota;
 pub mod xattr;
 

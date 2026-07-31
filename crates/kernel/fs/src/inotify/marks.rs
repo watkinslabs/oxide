@@ -34,7 +34,7 @@ use core::sync::atomic::Ordering;
 use vfs::InodeRef;
 
 use crate::inotify::dispatch::instances;
-use crate::inotify::types::{inode_key, perm_delta, Event, MarkScope, IN_IGNORED, MARK_COUNT};
+use crate::inotify::types::{inode_key, perm_delta, Event, MarkScope, IN_IGNORED, IN_UNMOUNT, MARK_COUNT};
 
 /// Linux `fsnotify_clear_marks_by_inode`: retire every INODE-scope mark on
 /// `inode` across every live group. inotify groups additionally get the
@@ -66,8 +66,54 @@ pub(crate) fn destroy_inode_marks(inode: &InodeRef) {
                 MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
             }
         }
+        arc.release_marks(freed.len());
         if arc.is_fanotify() { continue; }
         for wd in freed {
+            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
+        }
+    }
+}
+
+/// Linux `fsnotify_unmount_inodes` + the mark teardown that follows it when a
+/// superblock goes away: every inode on the dying filesystem that carries marks
+/// is reported `FS_UNMOUNT`, and then its marks are destroyed — which for an
+/// inotify group means an `IN_IGNORED` record per freed wd.
+///
+/// `IN_UNMOUNT` is NOT filtered on the mark's mask. `inotify_arg_to_mask` seeds
+/// every mark with `FS_UNMOUNT` before OR-ing in whatever the caller asked for,
+/// so a watch set up for `IN_MODIFY` alone still receives the unmount notice;
+/// that record is a watcher's only signal that the object it was following is
+/// unreachable rather than merely quiet.
+///
+/// Ordering is user-visible and matches the delete-self path: `IN_UNMOUNT`
+/// first, `IN_IGNORED` second, both for the same wd, and the wd is gone
+/// afterwards (a later `inotify_rm_watch` on it is `EINVAL`).
+///
+/// Mount- and filesystem-scope fanotify marks key on the same `fsid` and are
+/// retired here too, silently — fanotify has no `freeing_mark` record.
+/// # C: O(N_groups * N_watches)
+pub(crate) fn unmount_fs_marks(fsid: u64) {
+    if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
+    if fsid == 0 { return; }
+    let g = instances().lock();
+    for w in g.iter() {
+        let arc = match w.upgrade() { Some(a) => a, None => continue };
+        let mut freed: Vec<i32> = Vec::new();
+        {
+            let mut watches = arc.watches.lock();
+            let mut i = 0usize;
+            while i < watches.len() {
+                if watches[i].fsid != fsid { i += 1; continue; }
+                perm_delta(watches[i].mask, 0);
+                freed.push(watches[i].wd);
+                watches.remove(i);
+                MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        arc.release_marks(freed.len());
+        if arc.is_fanotify() { continue; }
+        for wd in freed {
+            arc.enqueue_event(Event { wd, mask: IN_UNMOUNT, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
             arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
         }
     }

@@ -2,14 +2,18 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use vfs::fsnotify::Ucount;
 use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, PollSubscribers, VfsError};
 
 use crate::inotify::dispatch::register_instance;
+use crate::inotify::fan_layout;
 use crate::inotify::layout::{encode_event, event_record_len};
 use crate::inotify::types::{
-    inode_key, InotifyData, PermEvent, FAN_ACCESS_PERM, FAN_ALLOW, FAN_DENY, FAN_OPEN_EXEC_PERM, FAN_OPEN_PERM,
-    Event, INOTIFY_DEFAULT_MAX_QUEUED_EVENTS, INOTIFY_INO_BASE, IN_Q_OVERFLOW, PERM_MARK_COUNT,
+    InotifyData, FAN_ALLOW, FAN_DENY,
+    Event, INOTIFY_INO_BASE, IN_Q_OVERFLOW, MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
+use crate::inotify::validate::{FAN_REPORT_DIR_FID, FAN_REPORT_FID, FAN_REPORT_NAME,
+    FAN_UNLIMITED_MARKS, FAN_UNLIMITED_QUEUE};
 
 /// `signal_pending(current)` — Linux breaks the read loop with `-ERESTARTSYS`
 /// on a deliverable signal. Hosted builds install no scheduler and never take
@@ -24,16 +28,32 @@ impl InotifyData {
     /// write hook can find this inotify when an inode it watches is
     /// modified. Drop unregisters.
     /// # C: O(1)
-    pub fn new(flags: u32) -> Arc<Self> { Self::new_kind(flags, false) }
+    pub fn new(flags: u32) -> Arc<Self> { Self::new_kind(flags, false, 0) }
 
     /// `fanotify_init` group (read() yields `fanotify_event_metadata`).
     /// # C: O(1)
-    pub fn new_fanotify(flags: u32) -> Arc<Self> { Self::new_kind(flags, true) }
+    pub fn new_fanotify(flags: u32) -> Arc<Self> { Self::new_kind(flags, true, 0) }
 
-    fn new_kind(flags: u32, fanotify: bool) -> Arc<Self> {
+    /// Group owned by `uid`, whose instance/group ucount charge the caller has
+    /// ALREADY taken — `Drop` releases it. # C: O(1)
+    pub(crate) fn new_owned(flags: u32, fanotify: bool, uid: u32) -> Arc<Self> {
+        Self::new_kind(flags, fanotify, uid)
+    }
+
+    fn new_kind(flags: u32, fanotify: bool, uid: u32) -> Arc<Self> {
+        // `group->max_events = <sysctl>` — snapshot, not a live read, so a
+        // later sysctl write never resizes a running group's queue.
+        let max_events = if fanotify {
+            if flags & FAN_UNLIMITED_QUEUE != 0 { usize::MAX }
+            else { vfs::fsnotify::fanotify_max_queued_events().max(0) as usize }
+        } else {
+            vfs::fsnotify::max_queued_events().max(0) as usize
+        };
         let arc = Arc::new(Self {
             flags,
             next_wd: core::sync::atomic::AtomicI32::new(1),
+            uid,
+            max_events,
             fanotify,
             watches: sync::Spinlock::new(Vec::new()),
             events: sync::Spinlock::new(alloc::collections::VecDeque::new()),
@@ -59,45 +79,122 @@ impl InotifyData {
         fdt.alloc_limit(file, cur.nofile_soft()).unwrap_or(-1)
     }
 
-    /// Drain queued events as Linux `struct fanotify_event_metadata` (24 B):
-    /// {event_len u32, vers u8=3, reserved u8, metadata_len u16=24, mask u64,
-    /// fd i32, pid i32}. Each event installs a fresh O_RDONLY fd to its object
-    /// (FAN_NOFD=-1 if unavailable). EAGAIN on an empty queue (no EOF).
+    /// Drain queued events as `struct fanotify_event_metadata`, each optionally
+    /// followed by the info record the group's report mode asks for (`fan_layout`).
+    /// A legacy group installs a fresh O_RDONLY fd to the event's object; a
+    /// FID-mode group reports `FAN_NOFD` and a file handle instead. `EAGAIN` on
+    /// an empty queue (no EOF); `EINVAL` when the FIRST event does not fit.
     /// # C: O(events drained)
     pub(crate) fn read_fanotify(&self, buf: &mut [u8]) -> KResult<usize> {
-        const META: usize = 24;
-        const FAN_METADATA_VERSION: u8 = 3;
-        let emit = |s: &mut [u8], mask: u32, fd: i32, pid: u32| {
-            s[0..4].copy_from_slice(&(META as u32).to_le_bytes());
-            s[4] = FAN_METADATA_VERSION;
-            s[5] = 0;
-            s[6..8].copy_from_slice(&(META as u16).to_le_bytes());
-            s[8..16].copy_from_slice(&(mask as u64).to_le_bytes());
-            s[16..20].copy_from_slice(&fd.to_le_bytes());
-            s[20..24].copy_from_slice(&(pid as i32).to_le_bytes());
-        };
         let mut written = 0;
-        while written + META <= buf.len() {
+        // Permission events first: an accessor is parked on each one, so a
+        // daemon must be able to see them without draining the whole queue.
+        loop {
+            let need = fan_layout::FAN_EVENT_METADATA_LEN;
+            if written + need > buf.len() { break; }
             let pev = { self.perm_queue.lock().pop_front() };
             let pev = match pev { Some(p) => p, None => break };
             let fd = Self::install_obj_fd(&pev.obj);
             self.perm_pending.lock().push((fd, pev.clone()));
-            emit(&mut buf[written..written + META], pev.mask, fd, pev.pid);
-            written += META;
+            fan_layout::encode_metadata(&mut buf[written..written + need], need, pev.mask, fd, pev.pid);
+            written += need;
         }
-        let mut q = self.events.lock();
-        while written + META <= buf.len() {
-            let ev = match q.pop_front() { Some(e) => e, None => break };
-            let fd = match &ev.obj { Some(o) => Self::install_obj_fd(o), None => -1 };
-            emit(&mut buf[written..written + META], ev.mask, fd, ev.pid);
-            written += META;
+        loop {
+            match self.get_one_fan_event(buf.len() - written) {
+                Some(Ok(ev)) => written += self.emit_fan_event(&mut buf[written..], &ev),
+                // `get_one_event` returns `ERR_PTR(-EINVAL)` when the head's
+                // whole record cannot fit the caller's remaining count; the
+                // tail rule turns a non-empty copy into a byte count, so EINVAL
+                // only surfaces when nothing was delivered at all.
+                Some(Err(e)) => return if written != 0 { Ok(written) } else { Err(e) },
+                None => break,
+            }
         }
         if written == 0 { return Err(VfsError::Eagain); }
         Ok(written)
     }
 
+    /// `FAN_REPORT_DIR_FID` — the group can carry an entry name in a
+    /// `DFID_NAME` record, so the fire path records it. # C: O(1)
+    pub(crate) fn reports_dir_fid(&self) -> bool { self.flags & FAN_REPORT_DIR_FID != 0 }
+
+    /// The group's `FANOTIFY_INFO_MODES` triple. # C: O(1)
+    fn fid_mode(&self) -> (bool, bool, bool) {
+        (self.flags & FAN_REPORT_FID != 0,
+         self.flags & FAN_REPORT_DIR_FID != 0,
+         self.flags & FAN_REPORT_NAME != 0)
+    }
+
+    /// Bytes `ev` will occupy in a reader's buffer under this group's report
+    /// mode. # C: O(1)
+    fn fan_event_len(&self, ev: &Event) -> usize {
+        let (fid, dfid, nm) = self.fid_mode();
+        let ty = fan_layout::info_type_for(fid, dfid, nm, !ev.name.is_empty());
+        fan_layout::event_len(ty, fan_layout::FILEID_INO32_GEN_LEN, ev.name.len())
+    }
+
+    /// fanotify's `get_one_event`: peek, size-check against the caller's
+    /// remaining count, and only then pop — all under one lock hold, so the
+    /// popped event is the one that was measured. # C: O(1)
+    fn get_one_fan_event(&self, count: usize) -> Option<KResult<Event>> {
+        let mut q = self.events.lock();
+        let need = self.fan_event_len(q.front()?);
+        if need > count { return Some(Err(VfsError::Einval)); }
+        q.pop_front().map(Ok)
+    }
+
+    /// Write one event: the metadata record, then the group's info record when
+    /// it is in a FID mode. A FID-mode group reports NO descriptor — Linux
+    /// records a file handle instead of a path for such a group, so there is
+    /// nothing to open and `metadata.fd` is `FAN_NOFD`.
+    /// # C: O(name.len())
+    fn emit_fan_event(&self, dst: &mut [u8], ev: &Event) -> usize {
+        let (fid, dfid, nm) = self.fid_mode();
+        let ty = fan_layout::info_type_for(fid, dfid, nm, !ev.name.is_empty());
+        let total = self.fan_event_len(ev);
+        let fd = match ty {
+            Some(_) => fan_layout::FAN_NOFD,
+            None => match &ev.obj { Some(o) => Self::install_obj_fd(o), None => fan_layout::FAN_NOFD },
+        };
+        let meta = fan_layout::FAN_EVENT_METADATA_LEN;
+        fan_layout::encode_metadata(&mut dst[..meta], total, ev.mask, fd, ev.pid);
+        if let Some(t) = ty {
+            let (s_dev, ino) = match &ev.obj { Some(o) => (o.fsid(), o.ino()), None => (0, 0) };
+            let fh = fan_layout::ino32_gen_handle(ino, 0);
+            fan_layout::encode_fid_info(&mut dst[meta..total], t, s_dev,
+                                        fan_layout::FILEID_INO32_GEN, &fh, &ev.name);
+        }
+        total
+    }
+
     /// `true` for a `fanotify_init` group. # C: O(1)
     pub fn is_fanotify(&self) -> bool { self.fanotify }
+
+    /// Which per-user ceiling one of this group's marks is charged against.
+    /// # C: O(1)
+    pub(crate) fn mark_ucount(&self) -> Ucount {
+        if self.fanotify { Ucount::FanotifyMarks } else { Ucount::InotifyWatches }
+    }
+
+    /// `FAN_UNLIMITED_MARKS` exempts a group's marks from the per-user mark
+    /// ceiling entirely — such a group contributes nothing to the account, so
+    /// neither its charges nor its releases are taken. # C: O(1)
+    pub(crate) fn marks_are_charged(&self) -> bool {
+        !(self.fanotify && self.flags & FAN_UNLIMITED_MARKS != 0)
+    }
+
+    /// Charge one mark to the owning user, or report the ceiling was reached
+    /// (`inotify_add_watch` → `ENOSPC`, `fanotify_mark` → `ENOSPC`). # C: O(N_users)
+    pub(crate) fn charge_mark(&self) -> bool {
+        if !self.marks_are_charged() { return true; }
+        vfs::fsnotify::inc_ucount(self.uid, self.mark_ucount())
+    }
+
+    /// Release `n` mark charges. # C: O(N_users)
+    pub(crate) fn release_marks(&self, n: usize) {
+        if n == 0 || !self.marks_are_charged() { return; }
+        vfs::fsnotify::dec_ucount(self.uid, self.mark_ucount(), n as i64);
+    }
 
     /// Queue one notification in Linux `fsnotify_add_event` order: the overflow
     /// arm first (`q_len >= max_events` → one retained overflow marker, the new
@@ -113,7 +210,7 @@ impl InotifyData {
     /// # C: O(N_queue) only while already overflowed/full
     pub(crate) fn enqueue_event(&self, ev: Event) {
         let mut q = self.events.lock();
-        if q.len() >= INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
+        if q.len() >= self.max_events {
             if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return; }
             q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(), obj: None, pid: 0 });
         } else {
@@ -307,56 +404,24 @@ impl InotifyData {
     pub(crate) fn on_release(&self) { if self.fanotify { self.release_perms(); } }
 }
 
-/// FAN_OPEN_PERM hook for the open path. # C: O(1) fast / O(groups)+park
-pub fn check_open_perm(inode: &InodeRef) -> bool { check_perm(inode, FAN_OPEN_PERM) }
-
-/// FAN_ACCESS_PERM hook for the read path. # C: O(1) fast / O(groups)+park
-pub fn check_access_perm(inode: &InodeRef) -> bool { check_perm(inode, FAN_ACCESS_PERM) }
-
-/// FAN_OPEN_EXEC_PERM hook for the execve path. # C: O(1) fast / O(groups)+park
-pub fn check_open_exec_perm(inode: &InodeRef) -> bool { check_perm(inode, FAN_OPEN_EXEC_PERM) }
-
-/// Boot fast-path gate: `true` iff any `FAN_*_PERM` mark is armed anywhere.
-/// Lets the execve perm-gate skip its inode resolve entirely at boot (no perm
-/// marks → byte-identical to the pre-gate path). # C: O(1)
-pub fn perm_marks_present() -> bool { PERM_MARK_COUNT.load(Ordering::Acquire) != 0 }
-
-/// Permission-event core. Returns `true` to allow, `false` to deny (caller
-/// returns -EACCES). Fast-paths to allow when no FAN_*_PERM marks exist
-/// anywhere (zero overhead on the open/read hot paths — never blocks boot).
-/// Otherwise queues a perm event (tagged `perm_mask`) to each matching group
-/// and parks until a verdict arrives.
-/// # C: O(1) fast path; else O(groups) + park
-fn check_perm(inode: &InodeRef, perm_mask: u32) -> bool {
-    if PERM_MARK_COUNT.load(Ordering::Acquire) == 0 { return true; }
-    let key = inode_key(inode);
-    let fsid = inode.fsid();
-    #[cfg(target_os = "oxide-kernel")]
-    let pid = sched::current().map(|t| t.tgid.load(Ordering::Relaxed)).unwrap_or(0);
-    #[cfg(not(target_os = "oxide-kernel"))]
-    let pid = 0u32;
-    let ev = Arc::new(PermEvent { obj: inode.clone(), pid, mask: perm_mask, response: core::sync::atomic::AtomicU32::new(0) });
-    let mut queued = false;
-    {
-        let g = crate::inotify::dispatch::instances().lock();
-        for w in g.iter() {
-            let arc = match w.upgrade() { Some(a) => a, None => continue };
-            if !arc.fanotify { continue; }
-            let hit = arc.watches.lock().iter().any(|wi|
-                wi.applies(key, fsid) && (wi.mask & perm_mask) != 0 && (wi.ignored & perm_mask) == 0);
-            if hit { arc.perm_queue.lock().push_back(ev.clone()); arc.poll_subs.notify_mask(vfs::POLL_IN); arc.read_waiters.wake_all(); queued = true; }
-        }
-    }
-    if !queued { return true; }
-    loop {
-        let r = ev.response.load(Ordering::Acquire);
-        if r != 0 { return r == FAN_ALLOW; }
-        #[cfg(target_os = "oxide-kernel")]
-        // SAFETY: open syscall context; runqueue installed; yield until the
-        // fanotify daemon writes a verdict or the group closes.
-        unsafe { sched::live::tick_yield(); }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return true;
+/// Releasing the last reference to a group returns every resource it holds to
+/// the owning user's account (Linux `fsnotify_destroy_group` →
+/// `dec_ucount(group->*_data.ucounts)` plus each mark's own release). Without
+/// this a process that opens and closes inotify fds in a loop exhausts its
+/// `max_user_instances` permanently and every later `inotify_init` is EMFILE.
+/// # C: O(N_users)
+impl Drop for InotifyData {
+    fn drop(&mut self) {
+        let (held, perms) = {
+            let g = self.watches.lock();
+            (g.len(), g.iter().filter(|w| w.mask & PERM_BITS != 0).count())
+        };
+        self.release_marks(held);
+        if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
+        let group_kind = if self.fanotify { Ucount::FanotifyGroups } else { Ucount::InotifyInstances };
+        vfs::fsnotify::dec_ucount(self.uid, group_kind, 1);
+        // The live marks the group still held are gone with it.
+        if held > 0 { MARK_COUNT.fetch_sub(held, Ordering::AcqRel); }
     }
 }
 
