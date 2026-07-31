@@ -288,9 +288,13 @@ fn install_device_with_config<C: InputConfigAccess>(
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub fn remove_device_with_node(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
     let evdev_id = input::evdev_id_for_device(device_key)?;
-    let removed = input::remove_device(device_key)?;
+    // Linux order: release tracked state through the live handler, tear the
+    // driver-model objects down (which emits the remove uevents and drops the
+    // cached `inputN`/`eventN`/class paths), and only then drop the canonical
+    // record those teardown steps read.
+    input::disconnect_device(device_key)?;
     let _ = crate::devfs::unregister_node(evdev_id);
-    Some(removed)
+    input::remove_device(device_key)
 }
 
 #[cfg(test)]

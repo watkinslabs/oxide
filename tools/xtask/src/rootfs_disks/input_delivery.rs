@@ -175,10 +175,29 @@ node_for()
     return 1
 }
 
+# Dumped when a phase cannot classify a node. Distinguishes "udev never ran"
+# from "udev ran against a stale sysfs path": the class symlink target, the
+# capability attributes udev reads to classify, and the saved property set.
+diagnose()
+{
+    printf '%s: DIAG phase=%s class=%s\n' "$tag" "$1" "$(ls /sys/class/input 2>&1 | tr '\n' ' ')"
+    printf '%s: DIAG phase=%s queue=%s\n' "$tag" "$1" "$(cat /run/udev/queue 2>&1 | od -An -tx1 | tr -d '\n')"
+    for class in /sys/class/input/event*
+    do
+        [ -e "$class" ] || continue
+        printf '%s: DIAG node=%s link=%s\n' "$tag" "$class" "$(readlink -f "$class" 2>&1)"
+        printf '%s: DIAG node=%s ev=%s\n' "$tag" "$class" \
+            "$(cat "$class"/device/capabilities/ev 2>&1) rel=$(cat "$class"/device/capabilities/rel 2>&1)"
+        printf '%s: DIAG node=%s props<<%s>>\n' "$tag" "$class" \
+            "$(/usr/bin/udevadm info --query=property --path="$class" 2>&1 | tr '\n' '|')"
+    done
+    printf '%s: DIAG data=%s\n' "$tag" "$(ls -l /run/udev/data 2>&1 | tr '\n' ' ')"
+}
+
 resolve()
 {
-    pointer=$(node_for ID_INPUT_MOUSE) || fail "$1-pointer-node"
-    keyboard=$(node_for ID_INPUT_KEYBOARD) || fail "$1-keyboard-node"
+    pointer=$(node_for ID_INPUT_MOUSE) || { diagnose "$1"; fail "$1-pointer-node"; }
+    keyboard=$(node_for ID_INPUT_KEYBOARD) || { diagnose "$1"; fail "$1-keyboard-node"; }
     [ -c "$pointer" ] || fail "$1-pointer-char node=$pointer"
     [ -c "$keyboard" ] || fail "$1-keyboard-char node=$keyboard"
 }
@@ -321,6 +340,17 @@ mod tests {
         assert!(body.contains("$driver/bind"));
         assert!(body.contains("resolve rebound"));
         assert!(body.contains("observe rebound"));
+    }
+
+    #[test]
+    fn an_unclassified_node_dumps_the_sysfs_state_udev_classifies_from() {
+        let body = probe_body(Mode::Rebind);
+        // A stale class symlink, absent capability attributes, and an empty
+        // property set are the three shapes this gate has actually hit.
+        assert!(body.contains("diagnose \"$1\"; fail \"$1-pointer-node\""));
+        assert!(body.contains("readlink -f \"$class\""));
+        assert!(body.contains("/device/capabilities/ev"));
+        assert!(body.contains("DIAG data="));
     }
 
     #[test]

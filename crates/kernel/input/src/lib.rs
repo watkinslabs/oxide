@@ -25,7 +25,8 @@ mod uapi;
 pub use identity::{format_bitmap, modalias, uevent_env, uevent_env_for};
 pub use registry::{
     abs_snapshot_by_identity, apply_output_by_identity, clear_devices_for_tests, count,
-    device, devices_snapshot, evdev_id_for_device, inhibited_by_identity, install,
+    device, devices_snapshot, disconnect_device, evdev_id_for_device, inhibited_by_identity,
+    install,
     is_pointer, name_of, publish_evdev, push_evdev_event, remove_device,
     repeat_by_identity, set_evdev_hooks, set_inhibited_by_identity, set_output_hook,
     set_repeat_by_identity, unpublish_evdev, AbsSnapshot, CapBitmap, EvdevHooks,

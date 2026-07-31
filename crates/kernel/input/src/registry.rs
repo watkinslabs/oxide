@@ -269,19 +269,35 @@ pub fn devices_snapshot() -> Vec<Box<VirtioInputDev>> {
     DEVICES.lock().clone()
 }
 
+/// Release tracked key/MT state through the still-attached handler and cancel
+/// autorepeat, leaving the canonical record installed. Linux runs this while
+/// evdev clients and the driver-model object are both still live, so the
+/// release report reaches readers and sysfs teardown can still project the
+/// object. Idempotent.
 /// # C: O(N_devices + KEY_CNT + pending packet)
-pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+pub fn disconnect_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
     let (evdev_id, is_pointer, packet) = {
         let mut devices = DEVICES.lock();
-        let idx = devices.iter().position(|dev| dev.device_key == device_key)?;
-        let packet = release_state(&mut devices[idx], false);
-        let is_pointer = devices[idx].is_pointer;
-        let evdev_id = devices.remove(idx).evdev_id;
-        (evdev_id, is_pointer, packet)
+        let dev = devices.iter_mut().find(|dev| dev.device_key == device_key)?;
+        let packet = release_state(dev, false);
+        (dev.evdev_id, dev.is_pointer, packet)
     };
     if let Some(values) = packet {
         dispatch_values(evdev_id, is_pointer, &values);
     }
+    Some(evdev_id)
+}
+
+/// Drop the canonical record. Callers that also own a driver-model node must
+/// tear that node down first: sysfs projection, the remove uevent, and cached
+/// path invalidation all read this record, so removing it first silently skips
+/// them and leaves stale `inputN` paths behind.
+/// # C: O(N_devices + KEY_CNT + pending packet)
+pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+    let evdev_id = disconnect_device(device_key)?;
+    let mut devices = DEVICES.lock();
+    let idx = devices.iter().position(|dev| dev.device_key == device_key)?;
+    devices.remove(idx);
     Some(evdev_id)
 }
 
