@@ -43,10 +43,18 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
     if sock.released.load(core::sync::atomic::Ordering::Acquire) {
         return Err(NetError::Einval);
     }
+    let iface = scoped_iface(sock, dst_ip, scope_id)?;
+    // Linux's mapped-IPv4 connect uses the IPv4 route and publishes its
+    // selected source as a mapped IPv6 socket name before getsockname can
+    // observe the socket. Leaving this as `::` violates getaddrinfo's
+    // AF_INET-over-AF_INET6 conversion invariant.
+    let mapped_source = dst_ip.to_v4_mapped()
+        .map(|ip| mapped_v4_source(sock, ip, iface))
+        .transpose()?;
     if local_port.is_none() {
         let (port, endpoint) = alloc_ephemeral_udp6_owned(
-            sock.owner.clone(), crate::Ipv6Addr::ANY, sock.error.clone(),
-            scoped_iface(sock, dst_ip, scope_id)?,
+            sock.owner.clone(), mapped_source.map(crate::Ipv6Addr::from_v4_mapped)
+                .unwrap_or(crate::Ipv6Addr::ANY), sock.error.clone(), iface,
             sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
             sock.opts.ipv6_v6only.clone(),
             sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
@@ -56,6 +64,9 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
         endpoint.register_poll_subs(&sock.poll_subs);
         *sock.udp6.lock() = Some(endpoint);
         *local_port = Some(port);
+    }
+    if let Some(source) = mapped_source {
+        *sock.local_ip6.lock() = crate::Ipv6Addr::from_v4_mapped(source);
     }
     *sock.peer6.lock() = Some((dst_ip, port));
     sock.peer6_scope.store(scope_id, core::sync::atomic::Ordering::Release);
@@ -191,24 +202,7 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
     } else {
         crate::sock::bound_iface(sock)?
     };
-    let local = *sock.local_ip6.lock();
-    let src_ip = if let Some(ip) = local.to_v4_mapped() {
-        ip
-    } else if local != crate::Ipv6Addr::ANY {
-        return Err(NetError::Eaddrnotavail);
-    } else if dst_ip.is_multicast() {
-        crate::sock_mcast::src_ip(sock, dst_ip, bound)
-    } else if dst_ip.is_loopback() {
-        crate::Ipv4Addr::LOOPBACK
-    } else {
-        let net_ns = sock.net_ns();
-        stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint)
-            .or_else(|| crate::sock::iface_primary_ip(
-                bound.or_else(|| stack().routes.lookup_in(net_ns, dst_ip)
-                    .map(|route| route.iface)),
-            ))
-            .unwrap_or(crate::Ipv4Addr::LOOPBACK)
-    };
+    let src_ip = mapped_v4_source(sock, dst_ip, bound)?;
     let multicast_loop = sock.opts.ip_mcast_loop.load(
         core::sync::atomic::Ordering::Acquire,
     ) != 0;
@@ -230,6 +224,23 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
     )?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }
     Ok(payload.len())
+}
+
+/// Choose the IPv4 source shared by mapped IPv6 `connect` and `sendto`.
+/// # C: O(route lookup)
+fn mapped_v4_source(sock: &InetSocket, dst_ip: crate::Ipv4Addr,
+                    bound: Option<crate::NetIfaceId>) -> Result<crate::Ipv4Addr, NetError> {
+    let local = *sock.local_ip6.lock();
+    if let Some(ip) = local.to_v4_mapped() { return Ok(ip); }
+    if local != crate::Ipv6Addr::ANY { return Err(NetError::Eaddrnotavail); }
+    if dst_ip.is_multicast() { return Ok(crate::sock_mcast::src_ip(sock, dst_ip, bound)); }
+    if dst_ip.is_loopback() { return Ok(crate::Ipv4Addr::LOOPBACK); }
+    let net_ns = sock.net_ns();
+    Ok(stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint)
+        .or_else(|| crate::sock::iface_primary_ip(
+            bound.or_else(|| stack().routes.lookup_in(net_ns, dst_ip).map(|route| route.iface)),
+        ))
+        .unwrap_or(crate::Ipv4Addr::LOOPBACK))
 }
 
 /// F180b: AF_INET6 datagram sendto. Allocates an ephemeral src port

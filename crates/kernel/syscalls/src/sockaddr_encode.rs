@@ -130,14 +130,12 @@ pub(crate) fn encoded_sockaddr_vm(port: u32, cid: u64) -> EncodedSockaddr {
     out
 }
 
-/// `::ffff:a.b.c.d` for an IPv4 address, `::` for the unspecified one —
-/// Linux `ipv6_addr_set_v4mapped`. # C: O(1)
+/// `::ffff:a.b.c.d` for every IPv4 address, including `0.0.0.0` — Linux
+/// `ipv6_addr_set_v4mapped`. # C: O(1)
 pub(crate) fn v4_mapped_bytes(ip: net::Ipv4Addr) -> [u8; 16] {
     let mut b = [0u8; 16];
-    if ip != net::Ipv4Addr::ANY {
-        b[10] = 0xff; b[11] = 0xff;
-        b[12..16].copy_from_slice(&ip.as_u32().to_be_bytes());
-    }
+    b[10] = 0xff; b[11] = 0xff;
+    b[12..16].copy_from_slice(&ip.as_u32().to_be_bytes());
     b
 }
 

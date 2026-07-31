@@ -56,8 +56,9 @@ fn inet_and_inet6_lengths_match_their_structs() {
 
 #[test]
 fn v4_mapped_bytes_match_ipv6_addr_set_v4mapped() {
-    assert_eq!(v4_mapped_bytes(net::Ipv4Addr::ANY), [0u8; 16],
-        "the unspecified v4 address maps to `::`, not `::ffff:0.0.0.0`");
+    assert_eq!(v4_mapped_bytes(net::Ipv4Addr::ANY),
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 0, 0, 0],
+        "the unspecified v4 address remains a v4-mapped IPv6 address");
     // 127.0.0.1 is `::ffff:127.0.0.1` — NOT `::1`. Collapsing it to the IPv6
     // loopback reports an address the peer never used and that no
     // v4-mapped comparison in userspace will match.
