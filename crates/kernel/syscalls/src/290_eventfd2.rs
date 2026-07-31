@@ -1,4 +1,6 @@
-// 290 eventfd2 — one syscall, one file (docs/53 §0). Moved verbatim from anonfd.rs.
+// 284 eventfd / 290 eventfd2 — one syscall, one file (docs/53 §0). ABI shim
+// only: parse, validate, build the anon fd. Counter arithmetic and flag
+// admission live in `fs::pipe::eventfd::counter`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -6,24 +8,25 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
-/// `sys_eventfd2(initval, flags)` — slot 290.
+use ::fs::pipe::eventfd::counter::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE, LEGACY_FLAGS,
+    flags_valid};
+
+/// `sys_eventfd(initval)` — slot 284. The legacy form has no flags word.
 /// # C: O(1)
 pub fn sys_eventfd(args: &SyscallArgs) -> i64 {
-    sys_eventfd_common(args, 0)
+    sys_eventfd_common(args, LEGACY_FLAGS)
 }
 
+/// `sys_eventfd2(initval, flags)` — slot 290. # C: O(1)
 pub fn sys_eventfd2(args: &SyscallArgs) -> i64 {
     sys_eventfd_common(args, args.a1)
 }
 
 fn sys_eventfd_common(args: &SyscallArgs, flags: u64) -> i64 {
-    const EFD_SEMAPHORE: u64 = 1;
-    const EFD_NONBLOCK:  u64 = 0o0_004_000;
-    const EFD_CLOEXEC:   u64 = 0o2_000_000;
-    let initval = args.a0;
-    if flags & !(EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    // `initval` is an `unsigned int`; a 64-bit register's high half is not
+    // part of the argument and must not seed the counter.
+    let initval = args.a0 as u32 as u64;
+    if !flags_valid(flags) { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };

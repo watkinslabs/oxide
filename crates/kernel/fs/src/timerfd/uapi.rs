@@ -7,6 +7,8 @@ const ITIMERSPEC_SIZE: usize = FIELD_SIZE * 4;
 
 pub(super) const TFD_TIMER_ABSTIME: u64 = 1;
 pub(super) const TFD_TIMER_CANCEL_ON_SET: u64 = 2;
+/// Every flag `timerfd_settime` accepts.
+pub(super) const TFD_SETTIME_FLAGS: u64 = TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET;
 pub(super) const TFD_NONBLOCK: u64 = 0o0_004_000;
 pub(super) const TFD_CLOEXEC: u64 = 0o2_000_000;
 
@@ -47,7 +49,7 @@ pub(super) fn prepare_itimerspec(
     flags: u64,
     raw: RawItimerspec,
 ) -> Result<Itimerspec, Errno> {
-    if flags & !(TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET) != 0 {
+    if flags & !TFD_SETTIME_FLAGS != 0 {
         return Err(Errno::Einval);
     }
     let interval_ns = syscall::time::timespec_to_ns(raw.interval_sec, raw.interval_nsec)?;
