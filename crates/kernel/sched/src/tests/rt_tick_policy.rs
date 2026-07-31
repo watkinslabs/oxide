@@ -7,7 +7,24 @@
 //! exactly the bug this covers, and one that inverts FIFO's defining guarantee
 //! that it runs until it blocks or yields.
 
-use crate::sched_enc::{rt_tick_wants_resched, SCHED_FIFO, SCHED_RR};
+use crate::sched_enc::{rt_tick_wants_resched, RR_TIMESLICE_NS, RR_TIMESLICE_TICKS,
+                       SCHED_FIFO, SCHED_RR};
+
+/// The RR quantum on the reference scheduler is `100 * HZ / 1000` ticks, i.e.
+/// 100 ms whatever HZ is, and `sched_rr_get_interval(2)` converts that SAME
+/// tick count to a timespec. So there is exactly one number, and the enforced
+/// quantum equals the reported one by construction.
+const REFERENCE_RR_QUANTUM_NS: u64 = 100_000_000;
+
+#[test]
+fn the_enforced_rr_quantum_is_the_reported_one() {
+    assert_eq!(RR_TIMESLICE_NS, REFERENCE_RR_QUANTUM_NS);
+    // The tick count is the SAME quantum, not a second constant that happens
+    // to be near it: enforcing 100 ticks of a 10 ms tick while reporting
+    // 100 ms handed SCHED_RR tasks a 1 s slice.
+    assert_eq!(RR_TIMESLICE_TICKS as u64 * crate::posix_clock::TICK_NSEC, RR_TIMESLICE_NS);
+    assert_eq!(RR_TIMESLICE_TICKS, 10, "10 ms tick, 100 ms quantum");
+}
 
 #[test]
 fn fifo_never_yields_to_the_tick() {
