@@ -83,11 +83,6 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
     }
 }
 
-/// `EPIOCSPARAMS` — `_IOW(EPOLL_IOC_TYPE, 0x01, struct epoll_params)`.
-pub const EPIOCSPARAMS: u64 = 0x4008_8A01;
-/// `EPIOCGPARAMS` — `_IOR(EPOLL_IOC_TYPE, 0x02, struct epoll_params)`.
-pub const EPIOCGPARAMS: u64 = 0x8008_8A02;
-
 const BUDGET_OFF: u64 = 4;
 const PREFER_OFF: u64 = 6;
 const PAD_OFF: u64 = 7;
@@ -101,11 +96,10 @@ const PAD_OFF: u64 = 7;
 pub fn handle_epoll_ioctl(file: &Arc<File>, req: u64, arg: u64) -> Option<i64> {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
-    use super::policy::{validate_epoll_params, EPOLL_PARAMS_BYTES};
+    use super::policy::{epoll_ioctl, validate_epoll_params, EpollIoctl, EPOLL_PARAMS_BYTES};
     let ep = super::epoll_inode_of(file)?;
-    let einval = -(Errno::Einval.as_i32() as i64);
-    match req {
-        EPIOCSPARAMS => {
+    match epoll_ioctl(req) {
+        EpollIoctl::SetParams => {
             if let Err(rv) = crate::userbuf::validate_user_buf(arg, EPOLL_PARAMS_BYTES, 1) { return Some(rv); }
             // SAFETY: arg validated readable for one struct epoll_params.
             let (usecs, budget, prefer, pad) = unsafe {
@@ -123,7 +117,7 @@ pub fn handle_epoll_ioctl(file: &Arc<File>, req: u64, arg: u64) -> Option<i64> {
             ep.prefer_busy_poll.store(prefer as u32, Ordering::Relaxed);
             Some(0)
         }
-        EPIOCGPARAMS => {
+        EpollIoctl::GetParams => {
             if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, EPOLL_PARAMS_BYTES, 1) { return Some(rv); }
             // SAFETY: arg validated writable for one struct epoll_params.
             unsafe {
@@ -134,6 +128,6 @@ pub fn handle_epoll_ioctl(file: &Arc<File>, req: u64, arg: u64) -> Option<i64> {
             }
             Some(0)
         }
-        _ => Some(einval),
+        EpollIoctl::Invalid => Some(-(Errno::Einval.as_i32() as i64)),
     }
 }

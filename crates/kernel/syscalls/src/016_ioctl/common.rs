@@ -7,8 +7,10 @@ use super::uapi::*;
 
 const INODE_BLOCK_BYTES: u64 = 512;
 
-/// Linux `do_vfs_ioctl` common cases that run before driver/file-specific
-/// `unlocked_ioctl`. # C: O(1)
+/// Linux `do_vfs_ioctl`: the generic stage. Answers ONLY the commands
+/// [`super::ioctl_owner`] assigns to it; everything else returns `None`
+/// (Linux `-ENOIOCTLCMD`) so the file's own operations answer. It never
+/// invents `ENOTTY` on a file's behalf. # C: O(1)
 pub(super) fn handle_common_ioctl(
     cur: &sched::Task,
     file: &alloc::sync::Arc<vfs::File>,
@@ -17,6 +19,9 @@ pub(super) fn handle_common_ioctl(
     req: u64,
     arg: u64,
 ) -> Option<i64> {
+    if super::ioctl_owner(req, super::ioctl_file(file)) == super::IoctlOwner::FileOps {
+        return None;
+    }
     match req {
         FIOCLEX => Some(match fdt.set_cloexec(fd, true) {
             Ok(()) => 0,
@@ -33,25 +38,21 @@ pub(super) fn handle_common_ioctl(
         FICLONE => Some(ioctl_file_clone(file, fdt, arg as i64, 0, 0, 0)),
         FICLONERANGE => Some(ioctl_file_clone_range(file, fdt, arg)),
         FIDEDUPERANGE => Some(ioctl_file_dedupe_range(cur, file, fdt, arg)),
-        FIBMAP if file.inode().file_type() == vfs::FileType::Regular => Some(ioctl_fibmap(cur, file, arg)),
-        FS_IOC_RESVSP | FS_IOC_RESVSP64 if file.inode().file_type() == vfs::FileType::Regular => {
-            Some(ioctl_preallocate(cur, file, 0, arg))
-        }
-        FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 if file.inode().file_type() == vfs::FileType::Regular => {
+        // Type/anon guards already passed in `ioctl_owner`; reaching an arm
+        // here means the generic stage owns the command for this file.
+        FIBMAP => Some(ioctl_fibmap(cur, file, arg)),
+        FS_IOC_RESVSP | FS_IOC_RESVSP64 => Some(ioctl_preallocate(cur, file, 0, arg)),
+        FS_IOC_UNRESVSP | FS_IOC_UNRESVSP64 => {
             Some(ioctl_preallocate(cur, file, vfs::uapi::FALLOC_FL_PUNCH_HOLE, arg))
         }
-        FS_IOC_ZERO_RANGE if file.inode().file_type() == vfs::FileType::Regular => {
-            Some(ioctl_preallocate(cur, file, vfs::uapi::FALLOC_FL_ZERO_RANGE, arg))
-        }
+        FS_IOC_ZERO_RANGE => Some(ioctl_preallocate(cur, file, vfs::uapi::FALLOC_FL_ZERO_RANGE, arg)),
         FS_IOC_GETFLAGS => Some(super::fileattr::ioctl_getflags(file, arg)),
         FS_IOC_SETFLAGS => Some(super::fileattr::ioctl_setflags(cur, file, arg)),
         FS_IOC_FSGETXATTR => Some(super::fileattr::ioctl_fsgetxattr(file, arg)),
         FS_IOC_FSSETXATTR => Some(super::fileattr::ioctl_fssetxattr(cur, file, arg)),
         FS_IOC_GETFSUUID => Some(ioctl_getfsuuid(file, arg)),
         FS_IOC_GETFSSYSFSPATH => Some(ioctl_getfssysfspath(file, arg)),
-        FIONREAD if file.inode().file_type() == vfs::FileType::Regular => {
-            Some(ioctl_regular_fionread(file, arg))
-        }
+        FIONREAD => Some(ioctl_regular_fionread(file, arg)),
         _ => None,
     }
 }
@@ -150,12 +151,13 @@ fn socket_owner_cred() -> vfs::Cred { crate::pathresolve::current_cred() }
 #[cfg(test)]
 fn socket_owner_cred() -> vfs::Cred { vfs::Cred::root() }
 
-/// Linux `FIOQSIZE`: dirs, regular files, and symlinks copy `loff_t` bytes.
-/// # C: O(1)
+/// Linux `FIOQSIZE`: dirs, symlinks, and non-anon regular files copy `loff_t`
+/// bytes. Every other shape is `ENOTTY` FROM THIS STAGE — the one generic
+/// command that answers for a file it cannot measure instead of handing the
+/// call to the file's own operations. # C: O(1)
 fn ioctl_fioqsize(file: &vfs::File, arg: u64) -> i64 {
-    match file.inode().file_type() {
-        vfs::FileType::Directory | vfs::FileType::Regular | vfs::FileType::Symlink => {}
-        _ => return -(Errno::Enotty.as_i32() as i64),
+    if !super::ioctl_file(file).has_allocated_size() {
+        return -(Errno::Enotty.as_i32() as i64);
     }
     if let Err(rv) = validate_user_buf_writable(arg, LOFF_BYTES, 1) { return rv; }
     let bytes = file.inode().blocks() * INODE_BLOCK_BYTES;

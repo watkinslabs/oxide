@@ -9,8 +9,6 @@ use alloc::format;
 use alloc::string::String;
 use vfs::dentry::{Dentry, DentryOps};
 
-/// Linux `anon_inodefs_dname`: render `anon_inode:<d_name>`. # C: O(name.len())
-fn anon_inode_dname(d: &Dentry) -> String { format!("anon_inode:{}", d.name()) }
 /// Linux pipefs `pipefs_dname`: render `pipe:[<ino>]`. # C: O(1)
 fn pipe_dname(d: &Dentry) -> String { let ino = d.inode().map(|i| i.ino()).unwrap_or(0); format!("pipe:[{ino}]") }
 /// Linux sockfs `sockfs_dname`: render `socket:[<ino>]`. # C: O(1)
@@ -19,12 +17,10 @@ fn socket_dname(d: &Dentry) -> String { let ino = d.inode().map(|i| i.ino()).unw
 /// where `<name>` is the `memfd:` token. # C: O(name.len())
 fn memfd_dname(d: &Dentry) -> String { format!("/{} (deleted)", d.name()) }
 
-/// `d_op` for `anon_inode_getfd`-style pseudo fds: `anon_inode:<token>`.
-pub static ANON_INODE_OPS: DentryOps = DentryOps {
-    d_dname: Some(anon_inode_dname),
-    d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None,
-    d_delete: None, d_release: None, d_iput: None, d_init: None, d_prune: None,
-};
+/// Every `anon_inode_getfd` fd in the kernel shares ONE `d_op` table, owned by
+/// the VFS: `d_alloc_pseudo` recognises it by pointer identity to set
+/// `S_ANON_INODE`, which a per-crate copy would defeat.
+pub use vfs::dcache::ANON_INODE_OPS;
 /// `d_op` for pipefs anonymous pipe ends: `pipe:[ino]`.
 pub static PIPE_OPS: DentryOps = DentryOps {
     d_dname: Some(pipe_dname),

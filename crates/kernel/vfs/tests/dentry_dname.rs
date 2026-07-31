@@ -62,6 +62,30 @@ fn anon_inode_pseudo_renders_linux_form() {
 }
 
 #[test]
+fn the_shared_anon_op_marks_the_inode_and_the_other_pseudo_ops_do_not() {
+    // `IS_ANON_FILE`: `d_alloc_pseudo` sets it for the ONE kernel-wide
+    // anon-inodefs `d_op` and for nothing else, so the generic ioctl stage can
+    // tell an epoll/eventfd fd from a pipe, socket, or memfd — all of which are
+    // pseudo dentries too, but all of which DO have a filesystem behind them.
+    let anon = reg(21);
+    let _ = d_alloc_pseudo("[eventfd]", anon.clone(), &vfs::dcache::ANON_INODE_OPS);
+    assert!(anon.is_anon_file(), "the shared anon_inodefs d_op marks the inode");
+
+    let piped = fifo(22);
+    let _ = d_alloc_pseudo("pipe", piped.clone(), &PIPE_OPS);
+    assert!(!piped.is_anon_file(), "pipefs is a real filesystem");
+
+    // A private copy of the same table is NOT the shared one; the marker is
+    // pointer identity, which is why the three per-crate copies were collapsed.
+    let copied = reg(23);
+    let _ = d_alloc_pseudo("[eventfd]", copied.clone(), &ANON_INODE_OPS);
+    assert!(!copied.is_anon_file());
+
+    let plain = reg(24);
+    assert!(!plain.is_anon_file(), "an ordinary inode is never anon");
+}
+
+#[test]
 fn ordinary_dentry_has_no_d_dname_and_parent_walks() {
     // No d_op → no d_dname → ordinary reconstruction (and no presence bit).
     let root = Dentry::new(None, String::from(""), reg(1));

@@ -119,6 +119,11 @@ pub mod unshare_policy;
 // `poll(2)`/`select(2)` lands on, so the rules compile hosted and are
 // unit-tested without a boot.
 pub mod pselect_ppoll;
+// `sys_ioctl` (16) ABI constants and the `do_vfs_ioctl`-vs-`f_op->unlocked_ioctl`
+// ownership rule. Ungated: the `016_ioctl` module itself is kernel-target-only,
+// so its decision logic has to live where tests can reach it.
+pub(crate) mod ioctl_uapi;
+pub(crate) mod ioctl_owner;
 // tkill(2)/tgkill(2) share one `do_tkill`; the pid/tgid admission rules are the
 // only user-visible part of a rejected call, so they compile hosted.
 #[cfg(any(target_os = "oxide-kernel", test))]

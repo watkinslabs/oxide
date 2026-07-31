@@ -124,6 +124,19 @@ fn op_has_event_is_false_only_for_del() {
 }
 
 #[test]
+fn every_command_but_the_two_busy_poll_ones_is_einval_on_an_epoll_file() {
+    assert_eq!(epoll_ioctl(EPIOCSPARAMS), EpollIoctl::SetParams);
+    assert_eq!(epoll_ioctl(EPIOCGPARAMS), EpollIoctl::GetParams);
+    // FIONREAD, TCGETS, FIGETBSZ, FS_IOC_GETVERSION: commands another file
+    // kind answers. An epoll file rejects them with EINVAL, NOT the ENOTTY a
+    // generic "no handler" stage would produce — the epoll inode is anon, so
+    // the generic stage hands the command straight here.
+    for req in [0x541Bu64, 0x5401, 0x2000_6602, 0x8008_7601, 0] {
+        assert_eq!(epoll_ioctl(req), EpollIoctl::Invalid, "req {req:#x}");
+    }
+}
+
+#[test]
 fn epoll_params_validation_matches_the_ioctl_contract() {
     assert_eq!(validate_epoll_params(0, 0, 0, 0, false), Ok(()));
     assert_eq!(validate_epoll_params(0, 0, 0, 1, false), Err(Errno::Einval), "pad byte must be zero");

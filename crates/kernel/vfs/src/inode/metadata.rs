@@ -80,6 +80,14 @@ impl Inode {
     pub fn mark_public_device(&self) { self.i_flags.fetch_or(I_PUBLIC_DEV, Ordering::Relaxed); }
     /// True iff [`mark_public_device`] was set. # C: O(1)
     pub fn is_public_device(&self) -> bool { self.i_flags.load(Ordering::Relaxed) & I_PUBLIC_DEV != 0 }
+    /// Mark this an `anon_inode_getfd` inode (`S_ANON_INODE`). Set by
+    /// [`crate::dcache::d_alloc_pseudo`] for the shared anon-inode `d_op`, so
+    /// exactly the fds Linux's `alloc_anon_inode` produces carry it. # C: O(1)
+    pub fn mark_anon_file(&self) { self.i_flags.fetch_or(super::flags::S_ANON_INODE, Ordering::Relaxed); }
+    /// `IS_ANON_FILE(inode)`. # C: O(1)
+    pub fn is_anon_file(&self) -> bool {
+        self.i_flags.load(Ordering::Relaxed) & super::flags::S_ANON_INODE != 0
+    }
     /// `i_rdev` packed `dev_t`. # C: O(1)
     pub fn rdev(&self) -> u32 { self.i_rdev }
     /// `i_generation`. # C: O(1)
