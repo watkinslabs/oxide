@@ -9,6 +9,7 @@ mod parser;
 pub use console::{xterm_256, Console, VGA_PALETTE};
 pub use parser::{step, Action, CsiState, ParserState};
 
+pub mod damage;
 pub mod font;
 pub mod vcrender;
 
