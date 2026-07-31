@@ -64,6 +64,63 @@ pub fn send_signal(t: &Arc<Task>, sig: u32, src: SigSource, target: SigTarget)
     Ok(())
 }
 
+/// `send_signal` for a producer running in HARD-IRQ context — POSIX timer
+/// expiry off the timer tick and the one-shot deadline IRQ.
+///
+/// Same decisions, same queues, same publication order as [`send_signal`];
+/// what differs is what a hard IRQ may touch (`06§3.1`):
+///
+/// * the record slot is NOT reserved here. Linux allocates a POSIX timer's
+///   `struct sigqueue` once at `timer_create` (`sigqueue_alloc`) so expiry
+///   never allocates; this kernel reserves the same bounded slot at
+///   `timer_create` for exactly that reason, and `queues_push`'s debug
+///   assertion is what proves the reservation is still there.
+/// * the `prepare_signal` flush covers this task's private set and the
+///   process' shared set, not the whole thread group — a sibling walk needs
+///   the registry lock a hard IRQ may not take.
+/// * no wake is issued here. `true` means the bit was published and the caller
+///   owes the target a wake through the deferred wake list — never
+///   `try_to_wake_up`'s runqueue lock and never `complete_signal`'s registry
+///   walk. A process-directed signal is visible to every thread through the
+///   shared set regardless of which one is roused.
+/// # C: O(1)
+/// # Ctx: IRQ
+pub fn send_signal_irq(t: &Task, info: SigInfo, target: SigTarget) -> bool {
+    let sig = info.signo;
+    let Some(bit) = signum::bit_for(sig) else { return false };
+    let src = SigSource::Info(info);
+    let flush = sigsend::prepare_flush(sig);
+    if flush != 0 { flush_local(t, flush); }
+    if sig_ignored_for(t, sig, &src) { return false; }
+    if legacy_collapse(t, sig, target) { return false; }
+    // A dropped record is Linux's silent "loss of information": the bit is
+    // still published, so the signal is delivered without its `siginfo_t`.
+    let _queued = match target {
+        SigTarget::Process => t.thread_group.push_shared_prealloc(info),
+        SigTarget::Thread  => t.sigq_push(info),
+    };
+    match target {
+        // `SignalPending::fetch_or` raises the signalfd `POLLIN` edge itself.
+        SigTarget::Thread  => { t.sigpending.fetch_or(bit, Ordering::Release); }
+        SigTarget::Process => t.thread_group.publish_shared(sig),
+    }
+    true
+}
+
+/// `prepare_signal`'s flush without the sibling walk — this task's private set
+/// plus the process' shared one. # C: O(|mask|)
+/// # Ctx: IRQ
+fn flush_local(t: &Task, mask: u64) {
+    t.thread_group.flush_shared_mask(mask);
+    let cleared = t.sigpending.fetch_and(!mask, Ordering::AcqRel) & mask;
+    let mut rest = cleared;
+    while rest != 0 {
+        let sig = rest.trailing_zeros() + 1;
+        rest &= rest - 1;
+        t.flush_pending_signal(sig as usize);
+    }
+}
+
 /// Linux `force_sig_info_to_task`: deliver a signal the receiver cannot dodge.
 /// A blocked signal is unblocked, a SIG_IGN (or any, under `HANDLER_EXIT`)
 /// disposition is reset to SIG_DFL, and the record goes on the THREAD's private
@@ -164,10 +221,7 @@ fn legacy_collapse(t: &Task, sig: u32, target: SigTarget) -> bool {
 fn push_record(t: &Task, info: SigInfo, target: SigTarget) -> bool {
     match target {
         SigTarget::Process => t.thread_group.post_shared_record(info),
-        SigTarget::Thread => {
-            if info.signo == Signum::Sigchld as u32 { t.child_sigq_push(info); true }
-            else { t.sigq_reserve(info.signo); t.sigq_push(info) }
-        }
+        SigTarget::Thread => { t.sigq_reserve(info.signo); t.sigq_push(info) }
     }
 }
 
@@ -182,7 +236,16 @@ fn publish(t: &Arc<Task>, sig: u32, bit: u64, target: SigTarget) {
         }
         SigTarget::Process => {
             t.thread_group.publish_shared(sig);
-            super::sigpend::complete_signal(t.tgid.load(Ordering::Acquire), sig);
+            let leader = t.tgid.load(Ordering::Acquire);
+            // `complete_signal` deliberately skips a thread that BLOCKS the
+            // signal, because it cannot run a handler. A `signalfd` /
+            // `sigwaitinfo` consumer is precisely such a thread, so a process
+            // whose every thread blocks the signal would otherwise sleep
+            // through it until some unrelated wake happened — the shape of a
+            // PID 1 parked in `epoll_wait` on its SIGCHLD signalfd.
+            if !super::sigpend::complete_signal(leader, sig) {
+                super::sigpend::signalfd_notify(leader, sig);
+            }
         }
     }
 }

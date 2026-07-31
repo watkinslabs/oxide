@@ -112,14 +112,17 @@ pub const fn is_realtime(sig: u32) -> bool {
 /// differs: standard signals collapse to one record (`legacy_queue`),
 /// real-time signals keep up to `RT_QUEUE_CAP`.
 ///
-/// SIGCHLD is the single exception: its child-exit records live in
-/// `Task::child_sigq`, which has its own producer (`do_notify_parent`) and
-/// drop-oldest overflow rule. One owner per record class — a SIGCHLD slot
-/// here would be a second, disagreeing source of truth.
+/// SIGCHLD is NOT an exception. It used to be — its child-exit records lived
+/// in a per-THREAD `Task::child_sigq` with no slot here, which meant the
+/// process-wide shared set could not hold a child event at all: a threaded
+/// supervisor whose leader blocks SIGCHLD could never hand it to a worker,
+/// and no sibling thread could observe a child exit through `signalfd` or
+/// `rt_sigtimedwait`. `do_notify_parent` is `__group_send_sig_info`, so the
+/// record belongs in the same shared queue every other process-directed
+/// signal uses.
 /// # C: O(1)
 pub const fn sigq_index(sig: u32) -> Option<usize> {
-    if sig == 0 || sig > RT_SIGNAL_MAX || sig == Signum::Sigchld as u32 { None }
-    else { Some((sig - 1) as usize) }
+    if sig == 0 || sig > RT_SIGNAL_MAX { None } else { Some((sig - 1) as usize) }
 }
 
 pub const fn rt_index(sig: u32) -> Option<usize> {

@@ -39,10 +39,17 @@ fn notification(event: Option<sigevent::Sigevent>, current: &Task, id: usize)
     sigevent::notify_for(event, id, |tid| thread_id_target(current, tid)).map_err(err)
 }
 
+/// Linux `sigqueue_alloc` at `timer_create` time: a POSIX timer owns its
+/// `struct sigqueue` from creation so expiry — which runs from a timer
+/// interrupt here — never allocates. The reservation must land on the SAME set
+/// the expiry posts to, or the IRQ producer allocates after all:
+/// `SIGEV_THREAD_ID` posts to the named thread's private set, everything else
+/// to the process' shared set.
+/// # C: O(RT_QUEUE_CAP)
 fn reserve_notification(notify: Notify, owner: &Task) {
     let Notify::Signal { signo, target_tid, .. } = notify else { return };
-    let target = if target_tid == 0 { None } else { crate::registry::lookup(target_tid) };
-    target.as_deref().unwrap_or(owner).sigq_reserve(signo);
+    if target_tid == 0 { owner.thread_group.reserve_shared(signo); return; }
+    if let Some(target) = crate::registry::lookup(target_tid) { target.sigq_reserve(signo); }
 }
 
 /// Linux timer_create work function. # C: O(SLOTS + N_tasks)
@@ -96,7 +103,7 @@ pub fn sys_timer_settime(args: &SyscallArgs) -> i64 {
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let id = match slot_id(slots, args.a0) { Ok(id) => id, Err(error) => return error };
     let timer = &mut slots[id];
-    let old = runtime::setting(timer, owner.task());
+    let old = runtime::setting(timer, id, owner.task());
     let absolute = args.a1 & uapi::TIMER_ABSTIME != 0;
     let domain = arm_domain(timer.clock, absolute);
     let deadline = if new.value_ns == 0 {
@@ -130,7 +137,7 @@ pub fn sys_timer_gettime(args: &SyscallArgs) -> i64 {
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let id = match slot_id(slots, args.a0) { Ok(id) => id, Err(error) => return error };
     let timer = &mut slots[id];
-    let setting = runtime::setting(timer, owner.task());
+    let setting = runtime::setting(timer, id, owner.task());
     runtime::sync_wall_locked(&mut guard, owner.task().tid, id, timer, owner.weak());
     drop(guard);
     runtime::reprogram_posix_timers();
@@ -148,7 +155,7 @@ pub fn sys_timer_getoverrun(args: &SyscallArgs) -> i64 {
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let id = match slot_id(slots, args.a0) { Ok(id) => id, Err(error) => return error };
     let timer = &mut slots[id];
-    let overrun = runtime::overrun(timer, owner.task());
+    let overrun = runtime::overrun(timer, id, owner.task());
     runtime::sync_wall_locked(&mut guard, owner.task().tid, id, timer, owner.weak());
     drop(guard);
     runtime::reprogram_posix_timers();

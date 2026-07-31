@@ -36,7 +36,7 @@ pub use reparent::{reap_orphans, reparent_children};
 pub use pidns::{in_initial_pid_namespace, initial_init_task, namespace_child_reaper, pid_namespace_chain, zap_pid_namespace};
 pub use ns_reboot::{apply_pid_namespace_reboot_status, set_pid_namespace_reboot};
 pub use terminate::terminate_current_with_signal;
-use notify::{accrue_child_time, child_exit_info, exit_notify_decision, push_child_event};
+use notify::{accrue_child_time, child_exit_info, exit_notify_decision, reparent_child_event, send_child_event};
 #[cfg(test)]
 mod tests;
 
@@ -103,36 +103,39 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     // removing it after would race a concurrent reaper, so an autoreaped child
     // is never published.
     if !decision.autoreap { ZOMBIES.lock().push(Arc::clone(&task)); }
-    let mut signal_parent = false;
-    if let Some(ref p) = parent {
+    // A clone(2) `exit_signal` other than SIGCHLD carries the same full
+    // `do_notify_parent` siginfo in Linux (si_pid / si_uid / si_status /
+    // CLD_*), standard or real-time alike — one record shape for every
+    // notification signal.
+    let notify = parent.as_ref().and_then(|p| {
         accrue_child_time(&task, p);
-        if let Some(signo) = decision.signal {
-            if signo == super::sigpend::Signum::Sigchld.as_u8() as u32 {
-                p.child_sigq_push(child_exit_info(&task, signo));
-            } else {
-                // A clone(2) `exit_signal` other than SIGCHLD still carries the
-                // full `do_notify_parent` siginfo in Linux (si_pid / si_uid /
-                // si_status / CLD_*), standard or real-time alike.
-                p.sigq_reserve(signo);
-                let _ = p.sigq_push(child_exit_info(&task, signo));
-            }
-            // `do_notify_parent`'s own ignore/autoreap decision already ran
-            // (`exit_notify_decision`), and the record is queued above. The bit
-            // is published directly for the same reason as `live::stop`: SIGCHLD
-            // child events live in a per-thread queue with no shared-set slot.
-            if let Some(bit) = crate::bit_for(signo) { p.sigpending.fetch_or(bit, Ordering::Release); }
-            signal_parent = true;
-        }
-    }
+        decision.signal.map(|signo| (signo, child_exit_info(&task, signo)))
+    });
     if decision.autoreap { registry::mark_reaped(&task); }
     // A newly childless process group may have just been orphaned with stopped
     // jobs still in it (Linux `exit_notify` -> `kill_orphaned_pgrp(group_leader,
     // NULL)`), so POSIX 3.2.2.2's SIGHUP+SIGCONT is owed before the parent runs.
     orphan::kill_orphaned_pgrp(&task, None);
+    // `do_notify_parent` is `__group_send_sig_info(sig, &info, parent)` —
+    // PROCESS-directed. The shared set is where the record belongs, so a
+    // threaded supervisor whose leader blocks SIGCHLD can hand the child event
+    // to a worker thread, and `signalfd`/`rt_sigtimedwait` on any thread of the
+    // process observes it.
+    //
+    // Publication order is strict and the send comes FIRST: `sys_wait4` drops a
+    // pending SIGCHLD once it reaps the last zombie, so a parent roused by the
+    // `wait4` wake below could reap, clear, and only then receive this send —
+    // leaving a SIGCHLD with no child behind it, whose handler re-waits, gets
+    // ECHILD, and corrupts the shell's `$?` (F237). The reverse order costs at
+    // most a `WAITERS` entry the dedup guard in `park_for_wait4` already
+    // tolerates.
+    if let (Some(p), Some((signo, info))) = (parent, notify) {
+        let _ = super::send::send_signal(&p, signo,
+            crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
+    }
     // `wake_parent` covers the autoreap case: a parent blocked in `wait4` must
     // still be roused so it can observe that no child remains and return ECHILD.
     if decision.wake_parent || !decision.autoreap { wake_wait4_parent(parent_tid); }
-    if signal_parent { if let Some(p) = parent { wake_task_for_signal(&p); } }
 }
 
 
@@ -269,29 +272,6 @@ pub(crate) fn take_wait4_waiters(waiters: &mut Vec<Arc<Task>>, parent_tid: u32) 
         }
     }
     woken
-}
-
-/// Wake `task` from an interruptible sleep (epoll_wait/poll on a
-/// signalfd, blocking read, etc.) because a signal was just posted to
-/// it: CAS `Sleeping → Runnable` and enqueue so its wait loop re-runs,
-/// re-scans, and observes the pending signal. Linux wakes interruptible
-/// sleeps on signal delivery; without this, PID1 (systemd) parked in
-/// `epoll_wait` on its SIGCHLD signalfd never notices a child exit while
-/// otherwise idle — so the console getty never respawns after logout.
-///
-/// No-op if the CAS fails (the task is running/runnable, or
-/// `wake_wait4_parent` already made it Runnable) — which is what keeps
-/// this from double-enqueueing a wait4-parked parent. Call AFTER
-/// `wake_wait4_parent`.
-/// # C: O(1)
-/// # Lk: runqueue inner
-fn wake_task_for_signal(task: &Arc<Task>) {
-    // Route through the canonical waker so a signal-wake of a task still
-    // finishing its context-switch-off on another CPU is deferred through that
-    // CPU's wake-list (on_cpu) instead of enqueued live. try_to_wake_up does
-    // the Sleeping->Runnable CAS claim itself, so a non-Sleeping task is a
-    // no-op — matching the old cas_state guard.
-    super::signal_wake_up(task);
 }
 
 /// Reap one Zombie child matching the `wait4` filter

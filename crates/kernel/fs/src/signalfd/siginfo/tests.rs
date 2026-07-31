@@ -243,3 +243,22 @@ fn utime_and_stime_are_reserved_and_never_aliased() {
         assert_eq!(u64_at(&out, SSI_STIME), 0, "code {code}");
     }
 }
+
+#[test]
+fn a_timer_expiry_renders_its_id_and_overrun_not_zeros() {
+    // `ssi_tid` / `ssi_overrun` read back as 0 for every `timer_create(2)`
+    // expiry until the producer started carrying a real `_timer` record: the
+    // arm overlays `_kill`, so si_tid occupies si_pid's bytes and si_overrun
+    // occupies si_uid's, and a producer that left those two words zero left
+    // a supervisor unable to tell WHICH of its timers fired.
+    let mut r = rec(SIGRTMIN, SI_TIMER);
+    r.pid = 5;          // si_tid
+    r.uid = 17;         // si_overrun
+    r.value = 0x1122_3344_5566_7788;
+    let out = enc(SIGRTMIN, &r);
+    assert_eq!(u32_at(&out, SSI_TID), 5);
+    assert_eq!(u32_at(&out, SSI_OVERRUN), 17);
+    assert_eq!(u64_at(&out, SSI_PTR), 0x1122_3344_5566_7788, "si_value.sival_ptr");
+    assert_eq!(i32_at(&out, SSI_INT), 0x5566_7788u32 as i32, "si_value.sival_int");
+    assert_eq!(u32_at(&out, SSI_PID), 0, "the _timer arm names no sender");
+}

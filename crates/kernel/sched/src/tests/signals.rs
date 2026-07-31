@@ -70,23 +70,36 @@ fn realtime_queue_is_capped_and_drops_the_overflow() {
 }
 
 #[test]
-fn sigchld_has_no_slot_so_child_sigq_stays_the_only_owner() {
-    assert_eq!(signum::sigq_index(SIGCHLD), None);
+fn sigchld_records_use_the_same_queue_every_other_signal_does() {
+    // SIGCHLD used to be routed to a per-THREAD `child_sigq` with no slot in
+    // this table, which is why the PROCESS-wide shared set could not hold a
+    // child event at all. `do_notify_parent` is `__group_send_sig_info`, so a
+    // child record must live where every other process-directed record does.
+    assert_eq!(signum::sigq_index(SIGCHLD), Some((SIGCHLD - 1) as usize));
     let t = task(13);
-    assert!(!t.sigq_push(info(SIGCHLD, 0, 1)), "SIGCHLD must not reach the shared array");
-    t.child_sigq_push(info(SIGCHLD, 1, 0x1234));
+    t.sigq_reserve(SIGCHLD);
+    assert!(t.sigq_push(info(SIGCHLD, 1, 0x1234)));
     let (rec, empty) = t.dequeue_siginfo(SIGCHLD);
     assert_eq!(rec.map(|r| r.value), Some(0x1234));
-    assert!(empty);
+    assert!(empty, "SIGCHLD is a standard signal: one record, cleared on take");
+    // The shared set holds it too, which is what lets a sibling thread collect
+    // a child exit its group leader has blocked.
+    let (leader, worker) = thread_group();
+    let g = &leader.thread_group;
+    assert!(g.post_shared_record(info(SIGCHLD, 1, 0x99)));
+    g.publish_shared(SIGCHLD);
+    assert_ne!(g.shared_pending() & (1u64 << (SIGCHLD - 1)), 0);
+    assert_ne!(worker.pending_signals() & (1u64 << (SIGCHLD - 1)), 0,
+        "a sibling thread sees the child event in the shared set");
+    assert_eq!(worker.dequeue_pending(SIGCHLD).flatten().map(|r| r.value), Some(0x99));
 }
 
 #[test]
-fn sigq_index_covers_every_signal_but_sigchld() {
+fn sigq_index_covers_every_signal_including_sigchld() {
     assert_eq!(signum::sigq_index(0), None);
     assert_eq!(signum::sigq_index(65), None);
     for sig in 1..=64u32 {
-        let want = if sig == SIGCHLD { None } else { Some((sig - 1) as usize) };
-        assert_eq!(signum::sigq_index(sig), want, "sig={sig}");
+        assert_eq!(signum::sigq_index(sig), Some((sig - 1) as usize), "sig={sig}");
     }
 }
 

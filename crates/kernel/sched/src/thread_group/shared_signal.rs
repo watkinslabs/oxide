@@ -47,9 +47,9 @@ impl ThreadGroup {
     /// # C: O(1) amortized
     /// # Ctx: process — reserves queue capacity
     pub fn post_shared(&self, sig: u32, info: Option<SigInfo>) {
-        let Some(bit) = crate::signum::bit_for(sig) else { return };
+        if crate::signum::bit_for(sig).is_none() { return; }
         if let Some(rec) = info { self.post_shared_record(rec); }
-        self.shared_pending.fetch_or(bit, Ordering::Release);
+        self.publish_shared(sig);
     }
 
     /// Queue one record on the shared set WITHOUT publishing its pending bit —
@@ -65,11 +65,34 @@ impl ThreadGroup {
         crate::sigqueue::queues_push(&self.shared_sigqueue, rec)
     }
 
+    /// `post_shared_record` for a producer that may not allocate: the slot was
+    /// reserved in process context (`reserve_shared`), so this only takes the
+    /// queue lock and pushes. `false` = the bounded queue was full.
+    /// # C: O(1)
+    /// # Ctx: IRQ
+    pub fn push_shared_prealloc(&self, rec: SigInfo) -> bool {
+        crate::sigqueue::queues_push(&self.shared_sigqueue, rec)
+    }
+
+    /// Reserve the shared record slot for `signo` so an IRQ-context producer
+    /// can publish without allocating — Linux `sigqueue_alloc` at
+    /// `timer_create` time. # C: O(RT_QUEUE_CAP)
+    /// # Ctx: process
+    pub fn reserve_shared(&self, signo: u32) {
+        crate::sigqueue::queues_reserve(&self.shared_sigqueue, signo)
+    }
+
     /// Publish `sig`'s shared pending bit — the bitmap half of `post_shared`.
     /// # C: O(1)
     pub fn publish_shared(&self, sig: u32) {
         let Some(bit) = crate::signum::bit_for(sig) else { return };
-        self.shared_pending.fetch_or(bit, Ordering::Release);
+        let prior = self.shared_pending.fetch_or(bit, Ordering::Release);
+        // A signalfd reads `private | shared`, so a shared publish owes the
+        // process' readiness source the same `POLLIN` edge `SignalPending`
+        // raises for a private one. Without it a service manager parked in
+        // `epoll_wait` on its SIGCHLD signalfd slept through every child exit:
+        // the fd would have read as ready, but nothing told epoll to look.
+        if bit & !prior != 0 { self.signalfd_poll.notify_mask(vfs::POLL_IN); }
     }
 
     /// Linux `__dequeue_signal(&tsk->signal->shared_pending, …)`: claim `sig`

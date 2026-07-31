@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use vfs::{Cred, Dentry, File, FileType, InodeBuilder, InodeRef, OpenFlags,
+use vfs::{Dentry, File, FileType, InodeBuilder, InodeRef, OpenFlags,
           default_file_ops, default_inode_ops, mk_mode};
 
 /// Default `SIGIO` number (asm-generic, both arches) — the signal `fasync`
@@ -48,13 +48,6 @@ fn file() -> Arc<File> {
     File::new(ino, dentry, OpenFlags::O_RDONLY)
 }
 
-/// A non-root cred used to prove the owner credentials are snapshotted.
-fn user(uid: u32) -> Cred {
-    let mut c = Cred::root();
-    c.uid = uid;
-    c
-}
-
 #[test]
 fn fresh_file_has_no_owner_no_sig() {
     let f = file();
@@ -66,11 +59,12 @@ fn fresh_file_has_no_owner_no_sig() {
 #[test]
 fn setown_records_target_and_creds() {
     let f = file();
-    f.f_setown(4321, &user(1000));
+    f.f_setown(4321, 1000, 1001);
     assert_eq!(f.f_getown(), 4321, "F_GETOWN returns the F_SETOWN target");
-    assert_eq!(f.f_owner_creds(), (1000, 1000), "uid/euid snapshot from the setter's cred");
+    assert_eq!(f.f_owner_creds(), (1000, 1001),
+        "real and effective uid are snapshotted SEPARATELY — sigio_perm reads them differently");
     // Negative target = process group, faithfully round-tripped.
-    f.f_setown(-77, &user(1000));
+    f.f_setown(-77, 1000, 1001);
     assert_eq!(f.f_getown(), -77, "negative target (-pgrp) preserved");
 }
 
@@ -79,7 +73,7 @@ fn setown_target_is_owner_field_used_by_syscall() {
     // The legacy `owner` field the fcntl shim writes/reads must stay in sync
     // with the model setter (single pid source of truth).
     let f = file();
-    f.f_setown(99, &Cred::root());
+    f.f_setown(99, 0, 0);
     assert_eq!(f.owner.load(std::sync::atomic::Ordering::Acquire), 99);
 }
 
@@ -127,7 +121,7 @@ fn kill_fasync_delivers_to_owner_via_hook() {
     let _g = GATE.lock().unwrap();
     vfs::file::set_sigio_hook(capture_hook);
     let f = file();
-    f.f_setown(1234, &user(1000));
+    f.f_setown(1234, 1000, 1000);
     // No O_ASYNC yet: kill_fasync is a no-op (Linux only signals FASYNC fds).
     GOT_FIRES.store(0, Ordering::Release);
     f.kill_fasync(SIGIO);

@@ -33,9 +33,13 @@ pub struct SignalPending {
 }
 
 impl SignalPending {
-    /// Empty pending set with a fresh signal wait source. # C: O(1)
-    pub fn new() -> Self {
-        Self { bits: AtomicU64::new(0), poll: Arc::new(PollSubscribers::new()) }
+    /// Empty pending set on the PROCESS' `signalfd` readiness source (Linux
+    /// `sighand->signalfd_wqh`, owned by `ThreadGroup`). Never a private list:
+    /// a signalfd reads `private | shared`, so an edge raised by any thread —
+    /// or by a process-directed publish, which has no thread of its own to
+    /// raise it on — must reach every signalfd in the group. # C: O(1)
+    pub fn with_poll(poll: Arc<PollSubscribers>) -> Self {
+        Self { bits: AtomicU64::new(0), poll }
     }
 
     /// Atomic pending-set snapshot. # C: O(1)
@@ -53,10 +57,6 @@ impl SignalPending {
 
     /// Clone the source signalfd inodes expose to epoll. # C: O(1)
     pub fn poll_subscribers(&self) -> Arc<PollSubscribers> { Arc::clone(&self.poll) }
-}
-
-impl Default for SignalPending {
-    fn default() -> Self { Self::new() }
 }
 
 /// Linux `struct sigaction` core fields per `27§3`.
@@ -343,8 +343,21 @@ impl Task {
     pub fn flush_pending_signal(&self, sig: usize) {
         if sig == 0 || sig > SIGACTION_COUNT { return; }
         self.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-        if sig == Signum::Sigchld as usize { self.child_sigq.lock().clear(); }
         if let Some(idx) = crate::signum::sigq_index(sig as u32) { self.sigqueue.lock()[idx].clear(); }
+    }
+
+    /// `flush_sigqueue_mask` over BOTH pending sets this thread can see — its
+    /// own private one and the PROCESS-wide shared one. A process-directed
+    /// signal (`kill(2)`, a POSIX timer, `do_notify_parent`'s SIGCHLD) lands in
+    /// the shared set, so clearing only the private one leaves it pending; that
+    /// is the shape of the `wait4` post-reap SIGCHLD drop, which exists so a
+    /// handler cannot fire after the last zombie is already gone.
+    /// # C: O(1)
+    pub fn flush_pending_signal_shared(&self, sig: usize) {
+        self.flush_pending_signal(sig);
+        if let Some(bit) = crate::signum::bit_for(sig as u32) {
+            self.thread_group.flush_shared_mask(bit);
+        }
     }
 
     /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;

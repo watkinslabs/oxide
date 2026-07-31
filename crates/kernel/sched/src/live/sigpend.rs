@@ -104,6 +104,33 @@ pub fn complete_signal(leader_tid: u32, sig: u32) -> bool {
     false
 }
 
+/// Linux `signalfd_notify(t, sig)`: a signal that no thread can take by
+/// HANDLER is still an event for the process' `signalfd` / `sigwaitinfo` /
+/// `rt_sigtimedwait` consumers — and those are exactly the threads that BLOCK
+/// it, which is why `complete_signal`'s `wants_signal` filter skips them.
+///
+/// Linux keeps a dedicated `sighand->signalfd_wqh` waitqueue and wakes it on
+/// every send. This kernel's signalfd readers park as ordinary interruptible
+/// sleepers, so the equivalent is to rouse the blocking threads themselves;
+/// they re-check their queues and re-park if the signal was not theirs.
+///
+/// Runs only when `complete_signal` woke nobody: a thread that can take the
+/// signal outright has already been roused, and a signalfd consumer in the
+/// same process is reached by that thread's own delivery work.
+/// # C: O(N_threads)
+pub fn signalfd_notify(leader_tid: u32, sig: u32) {
+    let Some(bit) = crate::signum::bit_for(sig) else { return };
+    let notify = |t: &alloc::sync::Arc<crate::Task>| {
+        if t.sigmask.load(Ordering::Acquire) & bit == 0 { return; }
+        wake_if_sleeping(t);
+    };
+    if let Some(l) = crate::registry::lookup(leader_tid) { notify(&l); }
+    for (_vtid, tid) in crate::registry::thread_entries(leader_tid) {
+        if tid == leader_tid { continue; }
+        if let Some(t) = crate::registry::lookup(tid) { notify(&t); }
+    }
+}
+
 /// Process-directed pending bits visible to `task` — Linux
 /// `signal->shared_pending.signal`, owned by the thread group
 /// (`thread_group/shared_signal.rs`). Identical for every thread of a process,
@@ -211,14 +238,16 @@ pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
 ///                 pid namespace, mirroring how `F_SETOWN` records a pid.
 ///   `owner < 0` — every member of process group `-owner`.
 ///   `owner == 0` — no target; no-op.
-/// `_uid`/`_euid` are the `F_SETOWN`-time credential snapshot reserved for the
-/// `sigio_perm` check (deliver only if the owner could `kill(2)` the target);
-/// the basic post path delivers unconditionally for now (the perm gate rides
-/// the same follow-up as the cross-NS owner translation). Installed into the
-/// VFS via `set_sigio_hook` so `vfs` need not depend on `sched`. # C: O(N_tasks)
-/// for a pgrp fan; O(1) for a single owner.
-pub fn send_sigio(owner: i32, sig: i32, _uid: u32, _euid: u32) {
+/// `uid`/`euid` are the `F_SETOWN`-time credential snapshot Linux gates every
+/// delivery on (`sigio_perm`): `F_SETOWN` lets one process name ANOTHER as the
+/// recipient, so without the gate any unprivileged process could point a pipe's
+/// `O_ASYNC` owner at a root daemon and drive SIGIO — or, with `F_SETSIG`, a
+/// signal of its choosing — into it. The ladder itself is ungated in
+/// `crate::sigio`. Installed into the VFS via `set_sigio_hook` so `vfs` need not
+/// depend on `sched`. # C: O(N_tasks) for a pgrp fan; O(1) for a single owner.
+pub fn send_sigio(owner: i32, sig: i32, uid: u32, euid: u32) {
     if owner == 0 || !(1..=64).contains(&sig) { return; }
+    let creds = crate::sigio::FileOwnerCreds { uid, euid };
     // Linux `send_sigio` -> `do_send_sig_info(sig, SEND_SIG_PRIV, p, type)`:
     // kernel-generated, so `si_code = SI_KERNEL` and a SIG_IGN disposition does
     // not swallow it. The raw bit-set this replaced queued no record at all, so
@@ -228,13 +257,27 @@ pub fn send_sigio(owner: i32, sig: i32, _uid: u32, _euid: u32) {
         if let Some(t) = crate::registry::lookup_in_namespace(&namespace, owner as u32)
             .or_else(|| crate::registry::lookup(owner as u32))
         {
-            super::send::send_sig_priv_group(&t, sig as u32);
+            send_sigio_to_task(&t, sig as u32, creds);
         }
     } else {
+        // `kill_pgrp` fans out per member, and `sigio_perm` is per RECIPIENT —
+        // one unsignalable member of the group does not suppress the rest.
         for t in crate::registry::tasks_in_pgrp((-owner) as u32) {
-            super::send::send_sig_priv_group(&t, sig as u32);
+            send_sigio_to_task(&t, sig as u32, creds);
         }
     }
+}
+
+/// Linux `send_sigio_to_task`: `sigio_perm` first, then the send. # C: O(N_threads)
+fn send_sigio_to_task(t: &alloc::sync::Arc<crate::Task>, sig: u32,
+    creds: crate::sigio::FileOwnerCreds)
+{
+    let target = crate::sigio::TargetCreds {
+        uid:  t.creds.ruid.load(Ordering::Acquire),
+        suid: t.creds.suid.load(Ordering::Acquire),
+    };
+    if !crate::sigio::sigio_perm(creds, target) { return; }
+    super::send::send_sig_priv_group(t, sig);
 }
 
 /// Install [`send_sigio`] as the VFS fasync delivery hook (idempotent; a plain

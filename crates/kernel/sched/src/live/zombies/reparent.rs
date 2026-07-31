@@ -33,10 +33,10 @@ pub fn reap_orphans() {
     }
     for (zombie, reaper) in adopted {
         attach_to(&zombie, &reaper);
-        super::push_child_event(&zombie, &reaper);
-        reaper.sigpending.fetch_or(super::super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
+        // Send before the `wait4` wake, as `zombies::enqueue_zombie` does: the
+        // reaper must never be roused ahead of the event it will inspect.
+        super::send_child_event(&reaper, super::reparent_child_event(&zombie));
         super::wake_wait4_parent(reaper.tid);
-        super::wake_task_for_signal(&reaper);
     }
 }
 
@@ -139,7 +139,7 @@ pub fn reparent_children(dying_tid: u32) {
     // A threaded reparent (the reaper is another thread of the SAME group)
     // notifies nobody: nothing observable changed for the process.
     let threaded = reaper.tgid.load(Ordering::Acquire) == dying_tgid;
-    let mut reparented_zombie = false;
+    let mut reparented: alloc::vec::Vec<crate::task::SigInfo> = alloc::vec::Vec::new();
     for tid in registry::live_tids() {
         let Some(t) = registry::lookup(tid) else { continue };
         if t.parent_tid.load(Ordering::Acquire) != dying_tid { continue; }
@@ -160,17 +160,16 @@ pub fn reparent_children(dying_tid: u32) {
         if threaded { continue; }
         // Linux `reparent_leader`: "We don't want people slaying init."
         t.exit_signal.store(super::super::sigpend::Signum::Sigchld.as_u8(), Ordering::Release);
-        if matches!(t.state(), TaskState::Zombie) {
-            super::push_child_event(&t, &reaper);
-            reparented_zombie = true;
-        }
+        if matches!(t.state(), TaskState::Zombie) { reparented.push(super::reparent_child_event(&t)); }
         // The child's process group may have just lost its last outside
         // connection (POSIX 3.2.2.2).
         super::orphan::kill_orphaned_pgrp(&t, Some(&dying));
     }
-    if reparented_zombie {
-        reaper.sigpending.fetch_or(super::super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
+    if !reparented.is_empty() {
+        // Each adopted zombie owes its own `do_notify_parent`; SIGCHLD's
+        // `legacy_queue` collapse then keeps the FIRST record, exactly as a
+        // burst of real child exits would.
+        for info in reparented { super::send_child_event(&reaper, info); }
         super::wake_wait4_parent(reaper.tid);
-        super::wake_task_for_signal(&reaper);
     }
 }
