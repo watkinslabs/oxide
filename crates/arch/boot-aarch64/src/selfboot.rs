@@ -26,7 +26,7 @@
 
 #![cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 /// HHDM offset the trampoline installs (TTBR1 0xFFFF_8000… -> phys 0).
 /// Mirrors the x86 `MB2_HHDM`; reported as `BootInfo.hhdm_offset` and
@@ -56,6 +56,19 @@ pub static SB_LOAD_BASE: AtomicU64 = AtomicU64::new(0);
 /// and CPUs can't be counted. Limine used to surface this; we lost it.
 #[no_mangle]
 pub static EFI_RSDP_PA: AtomicU64 = AtomicU64::new(0);
+
+/// Max command-line bytes captured from the EFI loaded-image protocol's
+/// `LoadOptions`. Sized to the kernel's cmdline storage bound.
+pub const EFI_CMDLINE_MAX: usize = 2048;
+/// UTF-8 command-line bytes decoded from `LoadOptions` by `efi_stub_setup`,
+/// and their length. This is the ONLY transport carrying the bootloader
+/// command line on the EFI arm path: the firmware publishes no device tree,
+/// so there is no `/chosen/bootargs` for the bootloader to write into, and a
+/// kernel that reads only the device tree silently ignores every parameter.
+/// Zero length = the firmware supplied no load options.
+pub static EFI_CMDLINE_LEN: AtomicU64 = AtomicU64::new(0);
+pub static EFI_CMDLINE: [AtomicU8; EFI_CMDLINE_MAX] =
+    [const { AtomicU8::new(0) }; EFI_CMDLINE_MAX];
 
 /// Max `EfiConventionalMemory` regions captured from the EFI memory map by
 /// `efi_stub_setup` for the no-DTB PMM memmap (QEMU EDK2 in ACPI mode hands

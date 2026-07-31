@@ -1,4 +1,4 @@
-use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_TYPE_PAGES};
+use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_TYPE_PAGES};
 
 /// EFI device-tree config-table GUID (gFdtTableGuid,
 /// b1b621d5-f19c-41a5-830b-d9152c69aae0) in EFI mixed-endian byte order:
@@ -17,6 +17,64 @@ const ACPI_20_TABLE_GUID: [u8; 16] = [
     0x71, 0xe8, 0x68, 0x88, 0xf1, 0xe4, 0xd3, 0x11,
     0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81,
 ];
+
+/// EFI loaded-image protocol GUID (gEfiLoadedImageProtocolGuid,
+/// 5b1b31a1-9562-11d2-8e3f-00a0c969723b) in EFI mixed-endian byte order.
+/// Its interface carries the command line the bootloader passed us.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const LOADED_IMAGE_GUID: [u8; 16] = [
+    0xa1, 0x31, 0x1b, 0x5b, 0x62, 0x95, 0xd2, 0x11,
+    0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
+];
+
+/// `EFI_BOOT_SERVICES.HandleProtocol` slot (UEFI 2.x table order).
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const BS_HANDLE_PROTOCOL: usize = 0x98;
+/// `EFI_LOADED_IMAGE_PROTOCOL.LoadOptionsSize` (UINT32) and `.LoadOptions`
+/// (pointer) field offsets under LP64 natural alignment.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const LOADED_IMAGE_OPTIONS_SIZE: usize = 0x30;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const LOADED_IMAGE_OPTIONS: usize = 0x38;
+
+/// Capture the bootloader command line from the loaded-image protocol's
+/// UTF-16 `LoadOptions` into `EFI_CMDLINE`, decoded to UTF-8.
+///
+/// Must run while boot services are alive (before `ExitBootServices`) — the
+/// protocol lookup is a boot-services call and the options buffer is
+/// firmware-owned memory that need not survive the exit, so the bytes are
+/// copied out here rather than referenced later.
+///
+/// # SAFETY: called once from `efi_stub_setup` with the firmware `handle` and
+/// a live `boot_services` table; writes only the two boot-owned statics.
+/// # C: O(load_options_size)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+unsafe fn capture_load_options(boot_services: *const u8, handle: u64) {
+    // SAFETY: boot_services is the live EFI_BOOT_SERVICES table; the
+    // HandleProtocol slot holds an AAPCS64 fn pointer per UEFI 2.x.
+    unsafe {
+        type HandleProtocolFn = extern "C" fn(u64, *const u8, *mut *const u8) -> u64;
+        let handle_protocol: HandleProtocolFn =
+            core::mem::transmute(*(boot_services.add(BS_HANDLE_PROTOCOL) as *const u64));
+        let mut image: *const u8 = core::ptr::null();
+        if handle_protocol(handle, LOADED_IMAGE_GUID.as_ptr(), &mut image) != 0 { return; }
+        if image.is_null() { return; }
+        let size = *(image.add(LOADED_IMAGE_OPTIONS_SIZE) as *const u32);
+        let options = *(image.add(LOADED_IMAGE_OPTIONS) as *const *const u16);
+        if options.is_null() { return; }
+        let count = crate::efi_cmdline::load_options_units(size);
+        if count == 0 { return; }
+        let units = core::slice::from_raw_parts(options, count);
+        let mut n = 0usize;
+        crate::efi_cmdline::utf16_to_utf8(units, |b| {
+            if n >= EFI_CMDLINE_MAX { return false; }
+            EFI_CMDLINE[n].store(b, core::sync::atomic::Ordering::Release);
+            n += 1;
+            true
+        });
+        EFI_CMDLINE_LEN.store(n as u64, core::sync::atomic::Ordering::Release);
+    }
+}
 
 /// EFI-stub bring-up, called from `_arm_entry` when entered MMU-on (GRUB
 /// `linux` / UEFI LoadImage). Walks the EFI configuration table for the
@@ -66,6 +124,11 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
         }
         // Publish the RSDP for build_boot_info (FDT goes back in x0).
         EFI_RSDP_PA.store(rsdp, core::sync::atomic::Ordering::Release);
+
+        // Command line, while boot services still answer protocol lookups.
+        // SAFETY: same firmware contract as this fn's caller; boot services
+        // are alive until the ExitBootServices below returns.
+        capture_load_options(boot_services, handle);
 
         // GetMemoryMap @ bs+0x38, ExitBootServices @ bs+0xE8.
         type GetMemoryMapFn =
