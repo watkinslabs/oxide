@@ -13,16 +13,34 @@ use core::sync::atomic::{AtomicI64, Ordering};
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as TaskListClass};
 
+/// Bytes of the interest record itself on a 64-bit target: the tree/ready/
+/// overflow links, the `{file, fd}` key, the owning-instance and watched-file
+/// backlinks, the wakeup-source slot, and the stored `epoll_event`.
+const EP_ITEM_BYTES: u64 = 120;
+/// Bytes of the wait-queue registration one interest installs on its target:
+/// the interest backlink, the wait-queue entry, and the queue head pointer.
+const EP_POLL_ENTRY_BYTES: u64 = 64;
+
 /// Bytes one live interest is charged against when deriving the default
-/// ceiling: the interest record plus the wait-queue entry it registers.
-const EP_ITEM_COST: u64 = 128 + 72;
+/// ceiling. This is deliberately the SAME cost basis Linux uses — the interest
+/// record plus the wait-queue entry, 184 bytes on both 64-bit targets — and not
+/// oxide's own structure sizes. `fs.epoll.max_user_watches` is a published
+/// default that programs and tuning guides read; deriving it from a different
+/// basis would shift the number userspace sees for no observable benefit, while
+/// the ceiling's job (bounding a share of memory) is served either way. The
+/// admission arithmetic below is what actually enforces the limit, and it is
+/// independent of this constant.
+const EP_ITEM_COST: u64 = EP_ITEM_BYTES + EP_POLL_ENTRY_BYTES;
 
 /// Fraction of addressable RAM a single user's interests may occupy: the top
 /// 4% of low memory.
 const EP_RAM_DIVISOR: u64 = 25;
 
-/// Ceiling used until the PMM reports the machine's RAM.
-pub const EPOLL_DEFAULT_MAX_USER_WATCHES: i64 = 4 * 1024 * 1024 / (EP_ITEM_COST as i64);
+/// Ceiling used between boot and the point the PMM can report the machine's
+/// size. Never observed by userspace: `fs::init` overwrites it from real RAM
+/// before any process exists.
+pub const EPOLL_DEFAULT_MAX_USER_WATCHES: i64 =
+    ((1024 * 1024 * 1024) / EP_RAM_DIVISOR / EP_ITEM_COST) as i64;
 
 /// Boot-time `max_user_watches`: 4% of addressable RAM divided by the per-item
 /// cost. Pure arithmetic so the derivation is checkable without a machine of
@@ -131,8 +149,23 @@ mod tests {
     #[test]
     fn the_default_is_four_percent_of_ram_over_the_item_cost() {
         assert_eq!(watches_max_for_ram(0), 0);
-        // 4% of 1 GiB divided by the per-item cost.
-        assert_eq!(watches_max_for_ram(1 << 30), ((1u64 << 30) / 25) / EP_ITEM_COST);
+        assert_eq!(watches_max_for_ram(1 << 30), 233_422, "4% of 1 GiB / 184 bytes");
+        assert_eq!(watches_max_for_ram(4 << 30), 933_688, "and it scales with the machine");
         assert!(watches_max_for_ram(4 << 30) > watches_max_for_ram(1 << 30));
+    }
+
+    #[test]
+    fn the_cost_basis_is_the_one_the_published_default_is_derived_from() {
+        // The interest record plus the wait-queue entry it installs, on a
+        // 64-bit target. Both 64-bit arches land on the same total: the key and
+        // the stored event are packed on x86_64, and naturally aligned to the
+        // same size on aarch64.
+        assert_eq!(EP_ITEM_BYTES, 120);
+        assert_eq!(EP_POLL_ENTRY_BYTES, 64);
+        assert_eq!(EP_ITEM_COST, 184);
+        assert_eq!(EP_RAM_DIVISOR, 25, "the top 4% of low memory, per user");
+        // The bootstrap value is the same formula at a nominal 1 GiB, so it is
+        // never an out-of-family number if anything ever reads it early.
+        assert_eq!(EPOLL_DEFAULT_MAX_USER_WATCHES as u64, watches_max_for_ram(1 << 30));
     }
 }

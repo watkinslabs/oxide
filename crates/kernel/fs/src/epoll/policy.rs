@@ -104,6 +104,34 @@ pub fn nesting_admits(down_depth: usize, up_depth: usize) -> bool {
 /// `struct epoll_params` byte length (`__u32 + __u16 + __u8 + __u8`).
 pub const EPOLL_PARAMS_BYTES: u64 = 8;
 
+/// `EPIOCSPARAMS` — `_IOW(EPOLL_IOC_TYPE, 0x01, struct epoll_params)`.
+pub const EPIOCSPARAMS: u64 = 0x4008_8A01;
+/// `EPIOCGPARAMS` — `_IOR(EPOLL_IOC_TYPE, 0x02, struct epoll_params)`.
+pub const EPIOCGPARAMS: u64 = 0x8008_8A02;
+
+/// What `ep_eventpoll_ioctl` does with a command that reached an epoll file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EpollIoctl {
+    /// Store the busy-poll parameters.
+    SetParams,
+    /// Report the busy-poll parameters.
+    GetParams,
+    /// `EINVAL` — an epoll file's operations reject every other command,
+    /// including the ones a chardev or a regular file would answer. This is
+    /// only reachable because the generic ioctl stage hands an anon-inode fd
+    /// straight to its own operations.
+    Invalid,
+}
+
+/// `ep_eventpoll_ioctl`'s command decode. # C: O(1)
+pub fn epoll_ioctl(req: u64) -> EpollIoctl {
+    match req {
+        EPIOCSPARAMS => EpollIoctl::SetParams,
+        EPIOCGPARAMS => EpollIoctl::GetParams,
+        _ => EpollIoctl::Invalid,
+    }
+}
+
 /// `NAPI_POLL_WEIGHT` — the budget above which `EPIOCSPARAMS` needs
 /// `CAP_NET_ADMIN`.
 pub const NAPI_POLL_WEIGHT: u16 = 64;

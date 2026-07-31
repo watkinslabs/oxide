@@ -1,4 +1,6 @@
 extern crate alloc;
+use alloc::format;
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::dentry::Dentry;
@@ -7,6 +9,18 @@ use crate::superblock::SuperBlock;
 
 use super::hash::{DENTRY_HASHTABLE, RcuProbe};
 use super::lifecycle::d_drop;
+
+/// Linux `anon_inodefs_dname`: render `anon_inode:<d_name>`. # C: O(name.len())
+fn anon_inode_dname(d: &Dentry) -> String { format!("anon_inode:{}", d.name()) }
+
+/// `d_op` for EVERY `anon_inode_getfd`-style pseudo fd, kernel-wide. One static
+/// so [`d_alloc_pseudo`] can recognise the family by pointer identity and set
+/// `S_ANON_INODE`; three per-crate copies of this table could not be compared.
+pub static ANON_INODE_OPS: crate::dentry::DentryOps = crate::dentry::DentryOps {
+    d_dname: Some(anon_inode_dname),
+    d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None,
+    d_delete: None, d_release: None, d_iput: None, d_init: None, d_prune: None,
+};
 
 /// Allocate the root dentry for `sb`, install it as `s_root`, and record the
 /// inode alias. # C: O(1)
@@ -45,6 +59,11 @@ pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
 /// the static fallback `d_name`. Records the inode alias when the inode has an
 /// owning SB, mirroring the other instantiating builders. # C: O(name.len())
 pub fn d_alloc_pseudo(name: &str, inode: InodeRef, d_op: &'static crate::dentry::DentryOps) -> Arc<Dentry> {
+    // `alloc_anon_inode` sets `S_ANON_INODE`; the anon-inodefs `d_op` is what
+    // distinguishes those fds from the pipefs/sockfs/tmpfs pseudo dentries that
+    // DO have a filesystem behind them. Marking here keeps one owner for the
+    // answer instead of a flag each factory could forget to pass.
+    if core::ptr::eq(d_op, &ANON_INODE_OPS) { inode.mark_anon_file(); }
     let d = Dentry::new_pseudo(name, inode.clone(), d_op);
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &d); }
     d.grab_inode_hold(); // D3/D37: pseudo dentry counts its inode hold
