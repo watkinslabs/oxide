@@ -48,7 +48,13 @@ pub(crate) const IN_Q_OVERFLOW:  u32 = 0x0000_4000;
 pub(crate) const IN_EXCL_UNLINK: u32 = 0x0400_0000;
 pub(crate) const IN_ONESHOT:     u32 = 0x8000_0000;
 pub(crate) const INOTIFY_MARK_FLAGS: u32 = IN_EXCL_UNLINK | IN_ONESHOT;
-pub(crate) const INOTIFY_DEFAULT_MAX_QUEUED_EVENTS: usize = 16_384;
+/// `IN_UNMOUNT` — the filesystem holding the watched object was unmounted.
+/// Never requestable: `inotify_arg_to_mask` seeds every mark's mask with it, so
+/// a watch receives it regardless of what the caller asked for.
+pub(crate) const IN_UNMOUNT: u32 = 0x0000_2000;
+#[cfg(test)]
+pub(crate) const INOTIFY_DEFAULT_MAX_QUEUED_EVENTS: usize =
+    vfs::fsnotify::INOTIFY_DEFAULT_MAX_QUEUED_EVENTS as usize;
 
 // fanotify event-mask bits (`linux/fanotify.h`). The low bits coincide with the
 // matching IN_* values, so the shared fire path treats a fanotify mask and an
@@ -178,6 +184,13 @@ pub(crate) struct Event {
 pub struct InotifyData {
     pub flags:   u32,
     pub next_wd: AtomicI32,
+    /// euid that created the group — the ucount key its instance/watch charges
+    /// are released against when the group dies (Linux `group->*_data.ucounts`).
+    pub(crate) uid: u32,
+    /// `group->max_events`: the notification-queue depth, SNAPSHOT from the
+    /// `max_queued_events` sysctl at group creation. A later sysctl write does
+    /// not resize a live group, exactly as Linux.
+    pub(crate) max_events: usize,
     /// `true` for a `fanotify_init` group: read() emits the 24-byte
     /// `fanotify_event_metadata` (+ an object fd) instead of `inotify_event`.
     pub(crate) fanotify: bool,
