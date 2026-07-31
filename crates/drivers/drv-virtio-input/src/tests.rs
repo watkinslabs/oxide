@@ -8,8 +8,10 @@ use crate::{
 
 use crate::registry::InputConfigAccess;
 
-const TEST_DEVICE_KEY_RAW: u32 = 0x0010_0000;
-const SECOND_TEST_DEVICE_KEY_RAW: u32 = 0x0020_0000;
+mod rebind;
+
+pub(super) const TEST_DEVICE_KEY_RAW: u32 = 0x0010_0000;
+pub(super) const SECOND_TEST_DEVICE_KEY_RAW: u32 = 0x0020_0000;
 const TEST_NAME: &[u8] = b"oxide keyboard";
 const TEST_SERIAL: &[u8] = b"input-serial";
 const TEST_BUS_TYPE: u16 = 0x0003;
@@ -32,21 +34,21 @@ const TEST_ABS_FLAT: u32 = 4;
 const TEST_ABS_RES: u32 = 5;
 const TEST_BYTE_BITS: u16 = 8;
 const TEST_REPEAT_SETTINGS: input::RepeatSettings = [400, 40];
-const TEST_TRANSPORT_VENDOR: u16 = 0x1af4;
-const TEST_VIRTIO_INPUT_DEVICE_ID: u16 = 18;
+pub(super) const TEST_TRANSPORT_VENDOR: u16 = 0x1af4;
+pub(super) const TEST_VIRTIO_INPUT_DEVICE_ID: u16 = 18;
 
-fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
+pub(super) fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
     virtio::VirtioChildDeviceKey::from_raw(raw)
 }
 
-fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> alloc::boxed::Box<VirtioInputDev> {
+pub(super) fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> alloc::boxed::Box<VirtioInputDev> {
     VirtioInputDev::empty_boxed(device_key)
 }
 
 // `crate::registry` is a process-global device table: these tests call
 // `clear_devices_for_tests()` then assert exact `count()`/lookup results, so
 // one test's clear lands inside another's measurement window.
-static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(super) static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn event_layout() {
@@ -153,7 +155,7 @@ fn repeat_state_is_keyed_by_evdev_device() {
     crate::registry::clear_devices_for_tests();
 }
 
-struct FakeInputConfig {
+pub(super) struct FakeInputConfig {
     select: u8,
     subsel: u8,
     selections: alloc::vec::Vec<(u8, u8)>,

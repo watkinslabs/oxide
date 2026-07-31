@@ -4,10 +4,11 @@
 //! instead of reading its subtree back out of the global devfs registry.
 //! `overlay = false` — there is no on-disk `/sys` to merge.
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use kernfs::PseudoDir;
 use sync::{Spinlock, TaskList as LockClass};
-use vfs::InodeRef;
+use vfs::{Dentry, InodeRef, SuperBlock};
 
 /// sysfs filesystem identity for stat(2) `st_dev` (distinct from devfs so
 /// `/sys` and `/dev` no longer alias the same `st_dev`).
@@ -45,18 +46,48 @@ pub fn register_dir(full_path: &str) {
     sys_root().ensure_dir_path(rel(full_path));
 }
 
-/// Drop a cached sysfs dentry subtree by walking only under sysfs's own
-/// superblock root. `full_path` may be absolute `/sys/...` or sysfs-root
-/// relative `/...`; no global root lookup, mount traversal, or slow fs lookup
-/// is performed. # C: O(components)
+/// Every live sysfs superblock. `/sys` is mounted more than once — each mount
+/// realizes a fresh superblock over the same kernfs tree and owns its own
+/// dentry cache — and the kernfs root retains only the most recent one for
+/// inode construction. Invalidation that consults that single slot walks a
+/// dentry tree nobody is using and silently drops nothing, so the set is
+/// tracked here and every live mount is invalidated.
+static SYS_SUPERS: Spinlock<Vec<Weak<SuperBlock>>, LockClass> = Spinlock::new(Vec::new());
+
+/// Record one realized sysfs superblock. Called from `SysfsFs::set_sb`.
+/// # C: O(N_sysfs_mounts)
+pub(crate) fn record_super(sb: Weak<SuperBlock>) {
+    let mut supers = SYS_SUPERS.lock();
+    supers.retain(|entry| entry.strong_count() != 0);
+    if !supers.iter().any(|entry| Weak::ptr_eq(entry, &sb)) {
+        supers.push(sb);
+    }
+}
+
+/// Root dentry of every live sysfs mount. # C: O(N_sysfs_mounts)
+fn sysfs_roots() -> Vec<Arc<Dentry>> {
+    let live: Vec<Arc<SuperBlock>> = {
+        let mut supers = SYS_SUPERS.lock();
+        supers.retain(|entry| entry.strong_count() != 0);
+        supers.iter().filter_map(|entry| entry.upgrade()).collect()
+    };
+    live.iter().filter_map(|sb| sb.s_root()).collect()
+}
+
+/// Drop a cached sysfs dentry subtree by walking only sysfs's own superblock
+/// roots. `full_path` may be absolute `/sys/...` or sysfs-root relative
+/// `/...`; no global root lookup, mount traversal, or slow fs lookup is
+/// performed. # C: O(N_sysfs_mounts * components)
 pub fn drop_cached(full_path: &str) {
     let rel = rel(full_path);
     if rel.is_empty() { return; }
-    let root_inode = sys_root().as_inode();
-    let mut cur = match root_inode.i_sb().and_then(|sb| sb.s_root()) {
-        Some(d) => d,
-        None => return,
-    };
+    for root in sysfs_roots() {
+        drop_cached_under(root, rel);
+    }
+}
+
+fn drop_cached_under(root: Arc<Dentry>, rel: &str) {
+    let mut cur = root;
     let mut comps = rel.split('/').filter(|c| !c.is_empty()).peekable();
     while let Some(comp) = comps.next() {
         if comps.peek().is_none() {
@@ -78,14 +109,56 @@ mod tests {
     use vfs::superblock::FileSystemType;
     use vfs::LookupFlags;
 
+    // Both tests realize sysfs superblocks, and realizing one resets the kernfs
+    // root's cached inodes for every mount, so they cannot overlap.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct SysfsType;
     impl FileSystemType for SysfsType {
         fn name(&self) -> &str { "sysfs" }
         fn mount(&self, _src: Option<&str>, _opts: &str) -> vfs::KResult<Arc<vfs::SuperBlock>> { Err(vfs::VfsError::Enodev) }
     }
 
+    fn realize(name: &str) -> Arc<vfs::SuperBlock> {
+        let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(crate::SysfsFs);
+        vfs::fs::superblock_from_filesystem(
+            Arc::new(SysfsType), fs, crate::SysfsFs.root(), String::from(name),
+        ).expect("realize sysfs")
+    }
+
+    fn cache_leaf(sb: &Arc<vfs::SuperBlock>, parent_path: &str, path: &str) -> Arc<vfs::Dentry> {
+        let root = sb.s_root().expect("sysfs root dentry");
+        let (_, parent) = vfs::path_lookup(
+            root.clone(), root.clone(), parent_path, LookupFlags::default(),
+        ).expect("parent cached");
+        vfs::path_lookup(root.clone(), root, path, LookupFlags::default())
+            .expect("leaf cached");
+        assert!(vfs::d_lookup(&parent, "leaf").is_some(), "leaf cached before invalidation");
+        parent
+    }
+
+    // A later `/sys` mount replaces the kernfs root's superblock slot, so an
+    // invalidation that consulted only that slot dropped nothing from the
+    // dentry cache the earlier mount is still serving.
+    #[test]
+    fn drop_cached_invalidates_every_live_sysfs_mount() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let path = "/sys/drop-cache-multi/leaf";
+        crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), crate::ids::STALE_UEVENT));
+        let first = realize("sysfs-multi-first");
+        let second = realize("sysfs-multi-second");
+        let first_parent = cache_leaf(&first, "/drop-cache-multi", "/drop-cache-multi/leaf");
+        let second_parent = cache_leaf(&second, "/drop-cache-multi", "/drop-cache-multi/leaf");
+
+        super::drop_cached(path);
+
+        assert!(vfs::d_lookup(&first_parent, "leaf").is_none(), "first mount kept a stale leaf");
+        assert!(vfs::d_lookup(&second_parent, "leaf").is_none(), "second mount kept a stale leaf");
+    }
+
     #[test]
     fn drop_cached_invalidates_under_sysfs_root_without_global_walk() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let path = "/sys/drop-cache-test/leaf";
         crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), crate::ids::STALE_UEVENT));
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(crate::SysfsFs);
