@@ -60,15 +60,17 @@ impl File {
         // cursor (Linux `__fdget_pos`). `None` for non-seekable files.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
-        // D31: advance the per-open readahead window on the buffered read path
-        // (Linux `page_cache_sync_readahead`). Regular files only; the window
-        // state drives the block lane's page-cache fill. Pure state update — the
-        // byte count returned is still bounded by `buf`, so there is no
-        // over-read past EOF.
+        // Advance the per-open readahead window AND SUBMIT it (Linux
+        // `page_cache_sync_readahead` -> `page_cache_ra_unbounded`). Regular
+        // files only. Discarding the window — which is what this did — is why
+        // `posix_fadvise(SEQUENTIAL)` and `(RANDOM)` had no I/O effect at all:
+        // `ra_pages` was faithfully maintained and nothing ever read it into a
+        // fill. The byte count returned is still bounded by `buf`, so submitting
+        // the window cannot over-read past EOF into the caller.
         if !f.contains(OpenFlags::O_NONBLOCK) && matches!(self.inode.file_type(), FileType::Regular) {
             let index = pos / PAGE_SIZE;
             let req = (((buf.len() as u64) + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
-            let _ = self.ra_ondemand(index, req, false);
+            self.submit_readahead(index, req);
         }
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
         let n = if f.contains(OpenFlags::O_NONBLOCK) {
@@ -384,14 +386,14 @@ impl File {
         // `__fdget_pos`), so the cursor advances atomically over all buffers.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
         let pos = self.pos.load(Ordering::Acquire);
-        // D31: advance the readahead window once for the whole vectored read
-        // (Linux `page_cache_sync_readahead`). Regular files only; the request
-        // size is the grand total of the destination buffers. Pure state update.
+        // Advance and SUBMIT the readahead window once for the whole vectored
+        // read (Linux `page_cache_sync_readahead`). Regular files only; the
+        // request size is the grand total of the destination buffers.
         if !nonblock && matches!(self.inode.file_type(), FileType::Regular) {
             let bytes: u64 = bufs.iter().map(|b| b.len() as u64).sum();
             let index = pos / PAGE_SIZE;
             let req = ((bytes + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
-            let _ = self.ra_ondemand(index, req, false);
+            self.submit_readahead(index, req);
         }
         let mut total: u64 = 0;
         for buf in bufs.iter_mut() {

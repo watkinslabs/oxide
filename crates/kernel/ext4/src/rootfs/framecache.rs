@@ -126,19 +126,42 @@ impl Ext4FrameStore {
         self.fill_window(&dinode, idx)
     }
 
+    /// Pages fetched in ONE coalesced device read. 64 KiB, Linux-conservative.
+    const READAHEAD_WINDOW_PAGES: u64 = 16;
+
+    /// Populate `nr_pages` pages from `start` without copying anything out —
+    /// the submit half of readahead (Linux `page_cache_ra_unbounded`). Issued
+    /// as coalesced window-sized device reads, so a sequential window is a
+    /// handful of block requests rather than one per page. Best-effort: a
+    /// failure stops the fill and leaves the demand fault to report it.
+    /// # C: O(nr_pages / window) device reads
+    pub fn readahead(&self, start: u64, nr_pages: u64) {
+        if nr_pages == 0 { return; }
+        let Ok(dinode) = self.st.mount.read_inode(self.ino) else { return };
+        if !dinode.is_reg() { return; }
+        let total = self.size.load(Ordering::Acquire);
+        let last_page = (total + PG as u64 - 1) / PG as u64;
+        let end = (start + nr_pages).min(last_page);
+        let mut idx = start;
+        while idx < end {
+            if self.pages.lock().contains_key(&idx) { idx += 1; continue; }
+            if self.fill_window(&dinode, idx).is_err() { return; }
+            idx += Self::READAHEAD_WINDOW_PAGES;
+        }
+    }
+
     /// Fill page `start_idx` AND a readahead window (Linux page-cache readahead)
     /// in ONE coalesced device read: a contiguous executable/library maps to one
     /// physical run, so the whole window is a single virtio-blk request instead
     /// of one serialized per-page read — the cold process-startup bottleneck.
     /// Returns `start_idx`'s frame; the window is best-effort. # C: O(window)
     fn fill_window(&self, dinode: &crate::Inode, start_idx: u64) -> KResult<u64> {
-        const WINDOW_PAGES: u64 = 16; // 64 KiB, Linux-conservative readahead
         let bs = self.st.mount.sb.block_size.max(1) as u64;
         let bpp = (PG as u64 / bs).max(1);
         // Clamp to the file's last page so no past-EOF page is ever cached.
         let total = self.size.load(Ordering::Acquire);
         let last_page = (total + PG as u64 - 1) / PG as u64;
-        let window = WINDOW_PAGES.min(last_page.saturating_sub(start_idx)).max(1);
+        let window = Self::READAHEAD_WINDOW_PAGES.min(last_page.saturating_sub(start_idx)).max(1);
         let first_blk = start_idx.saturating_mul(bpp) as u32;
         let n_blks = window.saturating_mul(bpp) as u32;
         let mut buf = self.st.mount.read_file_range(dinode, first_blk, n_blks).map_err(|_| VfsError::Eio)?;
