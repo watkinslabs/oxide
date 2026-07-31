@@ -15,6 +15,7 @@
 // - session: setpgid/setsid/getpgid/getsid/getppid error ladder + personality query.
 // - signals: per-signal queue depth, shared-vs-private pending, saved sigmask.
 // - timing: rlimit, clock, preempt, and RCU helper behavior.
+// - ucounts: per-user RLIMIT_NPROC charge, fork EAGAIN gate, deferred execve.
 // - umask: fs_struct-owned umask(2) sharing across CLONE_FS / fork / unshare.
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
@@ -36,5 +37,6 @@ mod session;
 mod signals;
 mod task;
 mod timing;
+mod ucounts;
 mod umask;
 mod wake_list;

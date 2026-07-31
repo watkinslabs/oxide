@@ -57,6 +57,8 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         Some(c) => c,
         None => return -(Errno::Einval.as_i32() as i64),
     };
+    // Linux runs this before `alloc_bprm`, so a refused exec touches nothing.
+    if let Some(rc) = crate::execve_common::nproc_admits(&cur) { return rc; }
     // Linux `do_open_execat`: the MAY_EXEC / noexec / file-type gate runs HERE,
     // before anything is committed, and `exec_vp` carries the very inode+mount
     // it ran against into the credential transition below.

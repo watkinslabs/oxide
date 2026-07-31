@@ -64,6 +64,10 @@ impl Task {
         // unwritable — every exited program would make its own file ETXTBSY
         // forever, which is worse than the bug this fixes.
         self.clear_exe_inode();
+        // Linux `__exit_signal`: the task's `RLIMIT_NPROC` charge is released
+        // as it dies. Before the namespace teardown below, because the charge
+        // is keyed on the user namespace this task was charged in.
+        crate::ucounts::uncharge_task(self);
         self.release_network_namespace();
         self.release_namespaces();
         self.set_state(TaskState::Zombie);
