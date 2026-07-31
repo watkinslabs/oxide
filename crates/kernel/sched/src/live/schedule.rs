@@ -2,6 +2,7 @@
 // - `active_mm` owns per-CPU lazy-TLB `active_mm` tracking + parked-mm handoff.
 // - `hooks` owns sched_switch tracing and teardown stats surface.
 // - `lifecycle` owns runqueue install/current-task helpers and teardown glue.
+// - `migrate` owns switch-time affinity eviction of the outgoing task.
 // - `switch` owns the context-switch engine, finish-task-switch tail, and yield path.
 // - `ownership` owns the post-mortem for the `on_cpu` ownership assertion.
 // - `ctxprobe` (aarch64, debug-armctx) owns the fatal-fault register-corruption
@@ -12,6 +13,7 @@ mod active_mm;
 pub mod ctxprobe;
 mod hooks;
 mod lifecycle;
+pub mod migrate;
 mod ownership;
 mod switch;
 
