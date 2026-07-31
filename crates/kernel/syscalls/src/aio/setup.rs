@@ -75,7 +75,11 @@ pub fn sys_io_setup(nr_events: u32, ctxp: u64) -> i64 {
         avail: Spinlock::new(plan.nr_events.saturating_sub(1)),
         active: Spinlock::new(Vec::new()),
         waiters: Arc::new(vfs::PollSubscribers::new()),
+        waker: Spinlock::new(None),
     });
+    // The wait-queue callback holds a Weak back to the context, so it can only
+    // be built once the context is behind its Arc.
+    *c.waker.lock() = Some(Arc::new(ctx::AioPollWaker { ctx: Arc::downgrade(&c) }));
     let id = ctx::table_insert(c.clone());
     c.id.store(id, Ordering::Release);
     ctx::seed_header(kva, id, plan.nr_events);
@@ -109,6 +113,11 @@ pub fn teardown(c: &Arc<AioContext>) {
     // the caller's buffers. Read/write/fsync submissions have already
     // completed by the time their `io_submit` returned; the poll requests are
     // the only ones left, and dropping them here is what resolves them.
+    // Dropping the wait-queue callback drops the last strong reference to it,
+    // so every polled file's subscriber list prunes this context's entry on its
+    // next wake — no per-file unsubscribe bookkeeping to get wrong.
+    let waker = c.waker.lock().take();
+    drop(waker);
     let dropped = { let mut a = c.active.lock(); let n = a.len() as u32; a.clear(); n };
     c.put_reqs(dropped);
     // Wake anything parked in io_getevents on this context so it re-checks and

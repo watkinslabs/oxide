@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -36,6 +37,7 @@
 #define IOCB_CMD_PREAD  0
 #define IOCB_CMD_POLL   5
 #define IOCB_CMD_NOOP   6
+#define IOCB_FLAG_RESFD 1
 
 #define AIO_RING_MAGIC  0xa10a10a1u
 
@@ -141,6 +143,9 @@ int main(void) {
 
     /* A zero timeout on an empty ring returns 0, not a block. */
     struct { long sec, nsec; } zero_ts = { 0, 0 };
+    /* Cancellation completion is asynchronous on Linux (a workqueue posts it),
+     * so the reap that collects it must be allowed to block briefly. */
+    struct { long sec, nsec; } wait_ts = { 2, 0 };
     rc = syscall(NR_IO_GETEVENTS, ctx, (long)1, (long)1, &ev, &zero_ts);
     if (rc != 0) FAIL("empty getevents rc=%ld\n", rc);
 
@@ -166,8 +171,9 @@ int main(void) {
         FAIL("NOOP not EINVAL\n");
 
     /* An outstanding poll request is cancellable and reports EINPROGRESS. */
-    int pfd[2];
+    int pfd[2], pfd2[2];
     if (pipe(pfd) != 0) FAIL("pipe\n");
+    if (pipe(pfd2) != 0) FAIL("pipe2\n");
     struct iocb pl;
     memset(&pl, 0, sizeof pl);
     pl.aio_data       = 0x5150u;
@@ -179,6 +185,13 @@ int main(void) {
     if (rc != 1) FAIL("poll submit FAIL rc=%ld\n", rc);
     if (syscall(NR_IO_CANCEL, ctx, &pl, &ev) != -1 || errno != EINPROGRESS)
         FAIL("poll cancel not EINPROGRESS (errno=%d)\n", errno);
+    /* Cancellation still DELIVERS the iocb's event, with res == 0 because the
+     * condition never came true; every submission is accounted for. */
+    memset(&ev, 0, sizeof ev);
+    rc = syscall(NR_IO_GETEVENTS, ctx, (long)1, (long)1, &ev, &wait_ts);
+    if (rc != 1) FAIL("cancelled poll not reaped rc=%ld\n", rc);
+    if (ev.data != 0x5150u) FAIL("cancelled poll data=%llx\n", (unsigned long long)ev.data);
+    if (ev.res != 0) FAIL("cancelled poll res=%lld\n", (long long)ev.res);
 
     /* A poll request whose condition already holds completes at submit. */
     if (write(pfd[1], "x", 1) != 1) FAIL("pipe write\n");
@@ -194,6 +207,39 @@ int main(void) {
     if (rc != 1) FAIL("ready poll reap rc=%ld\n", rc);
     if (ev.data != 0x5151u) FAIL("ready poll data=%llx\n", (unsigned long long)ev.data);
     if ((ev.res & POLLIN) == 0) FAIL("ready poll res=%lld\n", (long long)ev.res);
+
+    /* An IOCB_CMD_POLL request must complete FROM THE WAKEUP, not from a
+     * reap: an event loop that submits a poll iocb and then waits only on the
+     * aio_resfd eventfd never calls io_getevents, so a reaper-driven
+     * completion would hang it. Submit a poll on an empty pipe, make the pipe
+     * readable, and require the eventfd to have been signalled and the ring
+     * tail to have advanced with NO io_getevents in between. */
+    int efd = eventfd(0, EFD_NONBLOCK);
+    if (efd < 0) FAIL("eventfd\n");
+    unsigned before_tail = ring->tail;
+    memset(&pl, 0, sizeof pl);
+    pl.aio_data       = 0x5152u;
+    pl.aio_lio_opcode = IOCB_CMD_POLL;
+    pl.aio_fildes     = (uint32_t)pfd2[0];
+    pl.aio_buf        = POLLIN;
+    pl.aio_flags      = IOCB_FLAG_RESFD;
+    pl.aio_resfd      = (uint32_t)efd;
+    rc = syscall(NR_IO_SUBMIT, ctx, (long)1, &plp);
+    if (rc != 1) FAIL("resfd poll submit rc=%ld\n", rc);
+    if (ring->tail != before_tail) FAIL("resfd poll completed early\n");
+    uint64_t ecount = 0;
+    if (read(efd, &ecount, 8) != -1) FAIL("eventfd signalled before readiness\n");
+    if (write(pfd2[1], "z", 1) != 1) FAIL("pipe2 write\n");
+    /* No io_getevents here — the wakeup itself must have done the work. */
+    if (ring->tail == before_tail) FAIL("wakeup did not complete the poll iocb\n");
+    if (read(efd, &ecount, 8) != 8) FAIL("aio_resfd eventfd not signalled\n");
+    if (ecount != 1) FAIL("eventfd count=%llu\n", (unsigned long long)ecount);
+    memset(&ev, 0, sizeof ev);
+    rc = syscall(NR_IO_GETEVENTS, ctx, (long)1, (long)1, &ev, &zero_ts);
+    if (rc != 1) FAIL("resfd poll reap rc=%ld\n", rc);
+    if (ev.data != 0x5152u) FAIL("resfd poll data=%llx\n", (unsigned long long)ev.data);
+    if ((ev.res & POLLIN) == 0) FAIL("resfd poll res=%lld\n", (long long)ev.res);
+    close(efd);
 
     if (syscall(NR_IO_DESTROY, ctx) != 0) FAIL("io_destroy\n");
     /* The context is gone: a second destroy is EINVAL. */

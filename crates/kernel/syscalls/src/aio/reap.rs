@@ -9,14 +9,12 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use crate::aio_abi::events::{until_from_timespec, validate_reap_counts, Until};
 use crate::aio_abi::ring::read_plan;
 use crate::aio_abi::uapi::{IOEV_SIZE, RING_OFF_HEAD, RING_OFF_TAIL};
 use crate::aio::ctx::AioContext;
-use crate::aio::submit::finish_active;
 use crate::poll::poll_common::{monotonic_ns, PollWaiter};
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
@@ -68,36 +66,6 @@ fn drain(c: &Arc<AioContext>, nr: i64, events: u64) -> i64 {
     total as i64
 }
 
-/// Complete any outstanding poll request whose condition now holds. Returns
-/// how many completions were published.
-/// # C: O(N_active)
-fn service_active(c: &Arc<AioContext>) -> u32 {
-    let ready: Vec<_> = {
-        let mut act = c.active.lock();
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < act.len() {
-            let mask = act[i].file.poll() as u32 & act[i].events;
-            if mask != 0 { out.push((act.remove(i), mask)); } else { i += 1; }
-        }
-        out
-    };
-    let n = ready.len() as u32;
-    for (req, mask) in ready { finish_active(c, &req, mask as i64); }
-    n
-}
-
-/// Subscribe `w` to every outstanding poll request's wait queue so a readiness
-/// transition wakes this reaper. Returns the queues to unsubscribe from.
-/// # C: O(N_active)
-fn subscribe_active(c: &Arc<AioContext>, w: &Arc<PollWaiter>) -> Vec<Arc<vfs::PollSubscribers>> {
-    let mut subs = Vec::new();
-    for req in c.active.lock().iter() {
-        if let Some(s) = req.file.poll_subscribers() { w.subscribe(&s); subs.push(s); }
-    }
-    subs
-}
-
 /// The blocking reap shared by both slots. `signalled` reports whether a
 /// deliverable signal is pending, which the callers fold into their own
 /// (different) interrupted return.
@@ -113,13 +81,17 @@ pub fn read_events(ctx_id: u64, min_nr: i64, nr: i64, events: u64, until: Until)
         Until::Immediate => Some(0u64),
         Until::Relative(ns) => Some(monotonic_ns().saturating_add(ns)),
     };
+    // Completions — from a submit, or from a poll request's wait-queue
+    // callback — notify this list, so the reaper needs no registration on the
+    // polled files themselves.
     let waiter = PollWaiter::new();
     waiter.subscribe(&c.waiters);
-    let mut subs = subscribe_active(&c, &waiter);
     let mut got: i64 = 0;
     let rv = loop {
         let observed = waiter.generation();
-        service_active(&c);
+        // Safety net for a source that emits no wake at all; the wait-queue
+        // callback is what normally completes a poll request.
+        crate::aio::ctx::service_ready(&c, 0);
         if got < nr {
             let r = drain(&c, nr - got, events + got as u64 * IOEV_SIZE);
             if r < 0 { break if got > 0 { got } else { r }; }
@@ -132,14 +104,9 @@ pub fn read_events(ctx_id: u64, min_nr: i64, nr: i64, events: u64, until: Until)
         if timed_out { break got; }
         // A context destroyed underneath us must not park forever.
         if crate::aio::ctx::lookup(ctx_id).is_none() { break got; }
-        // Re-subscribe: a poll request submitted since the last pass has a
-        // wait queue this reaper is not yet on.
-        for s in &subs { waiter.unsubscribe(s); }
-        subs = subscribe_active(&c, &waiter);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
         unsafe { waiter.park_until(observed, deadline.unwrap_or(0)); }
     };
-    for s in &subs { waiter.unsubscribe(s); }
     waiter.unsubscribe(&c.waiters);
     // The ring's tail word is the kernel's publication point; keep the shared
     // copy in step for a userspace reaper that bypasses this syscall.

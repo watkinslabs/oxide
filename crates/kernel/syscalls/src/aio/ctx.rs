@@ -93,7 +93,64 @@ pub struct AioContext {
     pub active: Spinlock<Vec<ActiveReq>, AioLockClass>,
     /// Wakes tasks parked in `io_getevents` on this context.
     pub waiters: Arc<vfs::PollSubscribers>,
+    /// Callback registered on every polled file's wait queue. Set once, right
+    /// after the context is behind an `Arc` (it holds a `Weak` back here).
+    /// Dropping it with the context prunes the registrations.
+    pub waker: Spinlock<Option<Arc<AioPollWaker>>, AioLockClass>,
 }
+
+/// Wait-queue callback for this context's `IOCB_CMD_POLL` requests. A poll
+/// request completes FROM THE WAKEUP, not from a reap: an event loop that
+/// submits a poll iocb and then blocks on the `aio_resfd` eventfd — never
+/// calling `io_getevents` — must still be woken, which is the whole point of
+/// the opcode.
+pub struct AioPollWaker { pub ctx: Weak<AioContext> }
+
+impl vfs::EpollNotify for AioPollWaker {
+    /// Keyless wake: the source could not name the transition, so the ready
+    /// requests are found by re-polling.
+    /// # C: O(N_active)
+    fn notify(&self) { self.notify_events(0); }
+    /// Keyed wake: complete straight from the mask the source published, with
+    /// no re-poll — so nothing this callback touches can re-enter the source's
+    /// own subscriber lock.
+    /// # C: O(N_active)
+    fn notify_events(&self, events: u32) {
+        if let Some(c) = self.ctx.upgrade() { service_ready(&c, events); }
+    }
+}
+
+/// Complete every outstanding poll request whose condition now holds.
+///
+/// `key` is the mask the source published, or `0` for a keyless wake — the one
+/// case that has to ask the file. Callers reach this from three places: the
+/// wait-queue callback above, the initial readiness check at submit, and once
+/// per reap pass as a safety net for a source that emits no wake at all.
+/// Returns how many completions were published.
+/// # C: O(N_active)
+pub fn service_ready(c: &Arc<AioContext>, key: u32) -> u32 {
+    let ready = {
+        let mut act = c.active.lock();
+        let mut out: alloc::vec::Vec<(ActiveReq, u32)> = alloc::vec::Vec::new();
+        let mut i = 0;
+        while i < act.len() {
+            // A keyed wake reports only the bits the source named; a keyless
+            // one is the single case that has to read the file again.
+            let live = if key != 0 { 0 } else { act[i].file.poll() as u32 };
+            let m = crate::aio_abi::poll::wake_mask(key, live, act[i].events);
+            if m != 0 { out.push((act.remove(i), m)); } else { i += 1; }
+        }
+        out
+    };
+    let n = ready.len() as u32;
+    for (req, mask) in ready { c.complete_active(&req, mask as i64); }
+    n
+}
+
+/// High bits marking an aio context's entry in a file's subscriber list.
+/// epoll uses raw instance ids and poll/select use `0x8000_0000 | tid`, so the
+/// three spaces have to stay disjoint.
+const AIO_SUBSCRIBER_TAG: u32 = 0xA100_0000;
 
 /// Process-wide context table. The index is what `aio_ring.id` carries, so a
 /// lookup costs one user read plus one array index.
@@ -132,6 +189,25 @@ impl AioContext {
         }
         self.waiters.notify();
     }
+
+    /// Publish an outstanding poll request's completion and signal its
+    /// eventfd. The eventfd write is skipped when it would target the very
+    /// file whose wakeup got us here: signalling an eventfd notifies its own
+    /// subscriber list, and this can run inside that list's lock.
+    /// # C: O(1)
+    pub fn complete_active(&self, req: &ActiveReq, res: i64) {
+        self.complete(IoEvent { data: req.data, obj: req.obj, res, res2: 0 });
+        let Some(f) = req.resfd.as_ref() else { return };
+        if Arc::ptr_eq(f.inode(), req.file.inode()) { return; }
+        let one = 1u64.to_ne_bytes();
+        let _ = f.inode().write(0, &one);
+    }
+
+    /// Key this context uses in a polled file's subscriber list. The tag keeps
+    /// it out of epoll's instance-id space and out of poll/select's tid space,
+    /// which share the same lists.
+    /// # C: O(1)
+    pub fn subscriber_id(&self) -> u32 { AIO_SUBSCRIBER_TAG | self.id.load(Ordering::Acquire) }
 
     /// Read one `aio_ring` header word. # C: O(1)
     pub fn load_hdr(&self, off: u64) -> u32 {
