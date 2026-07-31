@@ -20,6 +20,7 @@ pub struct GroupRange { packed: AtomicU64 }
 const fn pack(low: u32, high: u32) -> u64 { (low as u64) << 32 | high as u64 }
 
 impl GroupRange {
+    /// The compiled default window, which admits nobody. # C: O(1)
     pub const fn new() -> Self { Self { packed: AtomicU64::new(pack(DISABLED_LOW, DISABLED_HIGH)) } }
 
     /// Snapshot the coherent `(low, high)` pair. # C: O(1)

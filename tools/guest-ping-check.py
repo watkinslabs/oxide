@@ -69,16 +69,16 @@ def wait_for(pattern, seconds):
         pump(1)
     return False
 
-def run(cmd, seconds=90):
-    tag = f"OXMARK{int(time.time()*1000)%100000}"
+def run(cmd, settle=25):
+    """Send one command and collect everything the line produces.
+
+    The completion marker cannot be matched against the buffer, because the
+    shell echoes the command line that contains it. Read for a fixed settle
+    window instead, which also covers the kernel log interleaved on this line.
+    """
     start = len(buf)
-    conn.sendall(f"\n{cmd}; echo {tag}-rc=$?\n".encode())
-    end = time.time() + seconds
-    while time.time() < end:
-        pump(1)
-        text = buf[start:].decode("utf-8", "replace")
-        if f"{tag}-rc=" in text and not f"echo {tag}" in text.split(f"{tag}-rc=")[-1]:
-            return text
+    conn.sendall(f"\n{cmd}\n".encode())
+    pump(settle)
     return buf[start:].decode("utf-8", "replace")
 
 ok = True
@@ -90,7 +90,7 @@ try:
     # into printing a prompt before issuing anything that matters.
     conn.sendall(b"\n")
     pump(5)
-    probe = run("echo SHELL_ALIVE", 60)
+    probe = run("echo SHELL_ALIVE", 15)
     if "SHELL_ALIVE" not in probe:
         print("guest-ping-check: FAIL — no serial shell responded", flush=True)
         print(probe[-2000:], flush=True)
