@@ -5,14 +5,22 @@
 //! - `state`: the sole lock-protected timer transaction state.
 //! - `syscalls`: Linux ABI transactions and errno ordering.
 //! - `uapi`: native itimerspec copies and TFD flags.
+//! - `ioctl`: `TFD_IOC_SET_TICKS`.
+//! - `fdinfo`: `/proc/<pid>/fdinfo/<n>` body.
 //! - `debug`: feature-gated compositor diagnostics.
 
 #[cfg(any(feature = "debug-desktop", feature = "debug-mutter-timer-verbose"))]
 #[path = "timerfd/debug.rs"]
 mod debug;
 
+#[path = "timerfd/fdinfo.rs"]
+mod fdinfo;
+
 #[path = "timerfd/file.rs"]
 mod file;
+
+#[path = "timerfd/ioctl.rs"]
+mod ioctl;
 
 #[path = "timerfd/model.rs"]
 mod model;
@@ -28,6 +36,7 @@ mod uapi;
 
 #[cfg(target_os = "oxide-kernel")]
 pub use model::install_clock_was_set_hook;
+pub use ioctl::handle_timerfd_ioctl;
 pub use syscalls::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
 
 #[cfg(test)]
@@ -55,3 +64,7 @@ mod tests;
 #[cfg(test)]
 #[path = "timerfd/state_tests.rs"]
 mod state_tests;
+
+#[cfg(test)]
+#[path = "timerfd/fdinfo_tests.rs"]
+mod fdinfo_tests;

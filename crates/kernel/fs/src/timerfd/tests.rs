@@ -175,7 +175,7 @@ fn invalid_new_leaves_old_output_and_timer_state_untouched() {
         clock_generation_seen: 9,
         cancel_enabled: true,
         cancel_pending: false,
-        realtime_absolute: false,
+        realtime_absolute: false, settime_flags: 0,
         realtime_projection_ns: 0,
     };
     *fixture.data().state.lock() = initial;
@@ -267,7 +267,7 @@ fn realtime_absolute_state_reprojects_and_counts_wall_step_expirations() {
     let mut state = TimerfdState {
         expiry_ns: 100,
         interval_ns: 10,
-        realtime_absolute: true,
+        realtime_absolute: true, settime_flags: 0,
         ..TimerfdState::new(0)
     };
     assert_eq!(state.projected_expiry(20, 80), 40);
@@ -281,7 +281,7 @@ fn realtime_absolute_state_reprojects_and_counts_wall_step_expirations() {
 #[test]
 fn crossed_realtime_expiration_survives_a_backward_clock_step() {
     let mut state = TimerfdState::new(0);
-    let (_, canceled) = state.install(20, 80, 100, 0, false, true);
+    let (_, canceled) = state.install(20, 80, 100, 0, false, true, 0);
     assert!(!canceled);
     assert_eq!(state.realtime_projection_ns, 40);
 
@@ -302,12 +302,12 @@ fn clock_step_serializes_before_or_after_settime_state_lock() {
         ..TimerfdState::new(0)
     };
     assert!(hook_first.note_clock_was_set(1, 0, 0, 0));
-    let (_, canceled) = hook_first.install(0, 0, 10, 0, true, true);
+    let (_, canceled) = hook_first.install(0, 0, 10, 0, true, true, 0);
     assert!(canceled);
     assert!(!hook_first.cancel_pending);
 
     let mut settime_first = TimerfdState::new(0);
-    let (_, canceled) = settime_first.install(0, 0, 10, 0, true, true);
+    let (_, canceled) = settime_first.install(0, 0, 10, 0, true, true, 0);
     assert!(!canceled);
     assert!(settime_first.note_clock_was_set(1, 0, 0, 0));
     let mut output = [0u8; 8];

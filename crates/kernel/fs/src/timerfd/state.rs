@@ -15,6 +15,8 @@ pub(super) struct TimerfdState {
     pub cancel_enabled:      bool,
     pub cancel_pending:      bool,
     pub realtime_absolute:   bool,
+    /// `TFD_SETTIME_FLAGS` retained from the last arm, for `fdinfo` only.
+    pub settime_flags:       u16,
     /// Derived host-monotonic deadline retained across a wall-clock step so
     /// an already-crossed expiration cannot be lost by backward reprojection.
     pub realtime_projection_ns: u64,
@@ -37,8 +39,22 @@ impl TimerfdState {
             cancel_enabled: false,
             cancel_pending: false,
             realtime_absolute: false,
+            settime_flags: 0,
             realtime_projection_ns: 0,
         }
+    }
+
+    /// Linux `TFD_IOC_SET_TICKS`: inject an expiration count without touching
+    /// the armed deadline. A pending clock-step cancellation is consumed and
+    /// reported instead — the count would be meaningless across a step.
+    /// # C: O(1)
+    pub fn set_ticks(&mut self, ticks: u64) -> Result<(), VfsError> {
+        if self.cancel_pending {
+            self.cancel_pending = false;
+            return Err(VfsError::Ecanceled);
+        }
+        self.ticks = ticks;
+        Ok(())
     }
 
     /// Materialize through the exact old-domain step boundary, then reproject
@@ -170,6 +186,7 @@ impl TimerfdState {
         interval_ns: u64,
         cancel_enabled: bool,
         realtime_absolute: bool,
+        settime_flags: u16,
     ) -> (uapi::Itimerspec, bool) {
         let pending_cancel = self.cancel_pending;
         let replacement = Self {
@@ -180,6 +197,7 @@ impl TimerfdState {
             cancel_enabled,
             cancel_pending: cancel_enabled && pending_cancel && expiry_ns == 0,
             realtime_absolute,
+            settime_flags,
             realtime_projection_ns: if realtime_absolute && expiry_ns != 0 {
                 super::model::realtime_deadline(expiry_ns, now_mono, now_real)
             } else { 0 },

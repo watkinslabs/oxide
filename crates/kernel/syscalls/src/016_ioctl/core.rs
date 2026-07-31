@@ -51,6 +51,11 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         }
         return rv;
     }
+    // timerfd `TFD_IOC_SET_TICKS`: route before the CharDev gate; a timerfd
+    // inode is tagged CharDev but has no device backend to dispatch to.
+    if let Some(rv) = ::fs::timerfd::handle_timerfd_ioctl(&file.inode(), req, arg) {
+        return rv;
+    }
     // userfaultfd / perf ioctls: route through the dedicated handlers
     // before the CharDev gate (those inodes are tagged Regular).
     if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5546_4644_0000_0000 {

@@ -198,6 +198,29 @@ pub fn default_action(sig: u32) -> DefaultAction {
     DefaultAction::Term
 }
 
+/// Linux `SYNCHRONOUS_MASK` — the signals a fault raises on the very thread
+/// that caused it. A dequeue takes one of these ahead of ANY other pending
+/// signal, even a lower-numbered one, so the fault report is not overtaken by
+/// an unrelated asynchronous signal that happens to number lower.
+pub const SYNCHRONOUS_MASK: u64 = Signum::Sigsegv.bit() | Signum::Sigbus.bit()
+    | Signum::Sigill.bit() | Signum::Sigtrap.bit() | Signum::Sigfpe.bit()
+    | Signum::Sigsys.bit();
+
+/// Linux `next_signal`: which pending signal a dequeue claims, given the set
+/// the caller will accept. Lowest-numbered wins, EXCEPT that a pending
+/// synchronous fault signal outranks every non-synchronous one.
+///
+/// One owner for the rule, shared by `signalfd` and `rt_sigtimedwait` — the
+/// two consumers of the same queues, which must never disagree about which
+/// signal a dequeue takes.
+/// # C: O(1)
+pub fn next_signal(pending: u64, accepted: u64) -> Option<u32> {
+    let mut x = pending & accepted;
+    if x == 0 { return None; }
+    if x & SYNCHRONOUS_MASK != 0 { x &= SYNCHRONOUS_MASK; }
+    Some(x.trailing_zeros() + 1)
+}
+
 /// Bitmask of the unblockable signals (SIGKILL | SIGSTOP).
 const UNBLOCKABLE_MASK: u64 = Signum::Sigkill.bit() | Signum::Sigstop.bit();
 
@@ -331,5 +354,57 @@ mod tests {
             assert_eq!(c & 0x7f, s as i32, "{:?}", s);
             assert_ne!(c & WSTATUS_CORE, 0, "{:?}", s);
         }
+    }
+}
+
+#[cfg(test)]
+mod next_signal_tests {
+    use super::*;
+
+    const SIGHUP: u32 = Signum::Sighup as u32;
+    const SIGILL: u32 = Signum::Sigill as u32;
+    const SIGSEGV: u32 = Signum::Sigsegv as u32;
+    const SIGUSR1: u32 = Signum::Sigusr1 as u32;
+
+    #[test]
+    fn nothing_pending_in_the_accepted_set_is_none() {
+        assert_eq!(next_signal(0, u64::MAX), None);
+        assert_eq!(next_signal(Signum::Sighup.bit(), 0), None);
+        assert_eq!(next_signal(Signum::Sighup.bit(), Signum::Sigint.bit()), None);
+    }
+
+    #[test]
+    fn among_asynchronous_signals_the_lowest_number_wins() {
+        let set = Signum::Sighup.bit() | Signum::Sigusr1.bit() | Signum::Sigterm.bit();
+        assert_eq!(next_signal(set, u64::MAX), Some(SIGHUP));
+        // Restricting the accepted set changes the answer, not the rule.
+        assert_eq!(next_signal(set, !Signum::Sighup.bit()), Some(SIGUSR1));
+    }
+
+    #[test]
+    fn a_synchronous_fault_signal_outranks_a_lower_numbered_one() {
+        // SIGHUP is 1 and SIGSEGV is 11, yet the fault report goes first.
+        let set = Signum::Sighup.bit() | Signum::Sigsegv.bit();
+        assert_eq!(next_signal(set, u64::MAX), Some(SIGSEGV));
+    }
+
+    #[test]
+    fn among_synchronous_signals_the_lowest_number_wins() {
+        let set = Signum::Sighup.bit() | Signum::Sigill.bit() | Signum::Sigsegv.bit();
+        assert_eq!(next_signal(set, u64::MAX), Some(SIGILL));
+    }
+
+    #[test]
+    fn a_synchronous_signal_outside_the_accepted_set_does_not_preempt() {
+        let set = Signum::Sighup.bit() | Signum::Sigsegv.bit();
+        assert_eq!(next_signal(set, !Signum::Sigsegv.bit()), Some(SIGHUP));
+    }
+
+    #[test]
+    fn the_synchronous_mask_is_exactly_the_six_fault_signals() {
+        let expect = Signum::Sigill.bit() | Signum::Sigtrap.bit() | Signum::Sigbus.bit()
+            | Signum::Sigfpe.bit() | Signum::Sigsegv.bit() | Signum::Sigsys.bit();
+        assert_eq!(SYNCHRONOUS_MASK, expect);
+        assert_eq!(SYNCHRONOUS_MASK.count_ones(), 6);
     }
 }

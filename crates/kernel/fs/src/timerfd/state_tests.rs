@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn delayed_backward_step_hook_does_not_invent_an_old_domain_expiration() {
     let mut state = TimerfdState::new(0);
-    let (_, canceled) = state.install(20, 80, 100, 10, true, true);
+    let (_, canceled) = state.install(20, 80, 100, 10, true, true, 0);
     assert!(!canceled);
     assert_eq!(state.realtime_projection_ns, 40);
 
@@ -23,7 +23,7 @@ fn delayed_backward_step_hook_does_not_invent_an_old_domain_expiration() {
 #[test]
 fn canceled_crossed_periodic_timer_stays_inactive_after_a_backward_step() {
     let mut state = TimerfdState::new(0);
-    let (_, canceled) = state.install(20, 80, 100, 10, true, true);
+    let (_, canceled) = state.install(20, 80, 100, 10, true, true, 0);
     assert!(!canceled);
 
     assert!(state.note_clock_was_set(1, 45, 45, 50));
@@ -39,7 +39,7 @@ fn canceled_crossed_periodic_timer_stays_inactive_after_a_backward_step() {
 #[test]
 fn canceled_forward_step_expirations_do_not_rearm_a_periodic_timer() {
     let mut state = TimerfdState::new(0);
-    let (_, canceled) = state.install(20, 80, 100, 10, true, true);
+    let (_, canceled) = state.install(20, 80, 100, 10, true, true, 0);
     assert!(!canceled);
 
     assert!(state.note_clock_was_set(1, 30, 30, 125));
@@ -61,7 +61,7 @@ fn locked_state_snapshots_never_mix_transaction_fields() {
         clock_generation_seen: 40,
         cancel_enabled: true,
         cancel_pending: false,
-        realtime_absolute: false,
+        realtime_absolute: false, settime_flags: 0,
         realtime_projection_ns: 0,
     };
     let b = TimerfdState {
@@ -71,7 +71,7 @@ fn locked_state_snapshots_never_mix_transaction_fields() {
         clock_generation_seen: 80,
         cancel_enabled: false,
         cancel_pending: true,
-        realtime_absolute: true,
+        realtime_absolute: true, settime_flags: 0,
         realtime_projection_ns: 90,
     };
     let state = Arc::new(Spinlock::<TimerfdState, TimerLockClass>::new(a));
