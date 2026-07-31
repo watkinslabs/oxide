@@ -19,6 +19,8 @@ mod wait_diff;
 mod swapfile;
 // - gnome_input_classify: opt-in Linux input discovery/classification proof.
 mod gnome_input_classify;
+// - input_delivery: opt-in proof that injected host events reach the evdev nodes.
+mod input_delivery;
 // - mutter_debug: opt-in mutter/clutter debug env injection for GNOME bring-up.
 mod mutter_debug;
 
@@ -64,6 +66,12 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_GNOME_INPUT_CLASSIFY_SMOKE").is_some() {
         gnome_input_classify::inject(&root_img, arch)?;
+    }
+    // Rebind supersedes plain delivery: it asserts the same contract twice.
+    if std::env::var_os("OXIDE_VIRTIO_INPUT_REBIND_SMOKE").is_some() {
+        input_delivery::inject(&root_img, arch, input_delivery::Mode::Rebind)?;
+    } else if std::env::var_os("OXIDE_INPUT_DELIVERY_SMOKE").is_some() {
+        input_delivery::inject(&root_img, arch, input_delivery::Mode::Delivery)?;
     }
     let mutter_debug = std::env::var_os("OXIDE_MUTTER_DEBUG");
     let clutter_debug = std::env::var_os("OXIDE_CLUTTER_DEBUG");

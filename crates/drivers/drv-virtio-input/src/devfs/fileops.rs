@@ -22,6 +22,24 @@ fn refresh_events() { crate::drain::poll_all(); }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn refresh_events() {}
 
+/// Does the reader carry an unblocked pending signal? A blocking evdev read
+/// that ignores this is unkillable — it survives even SIGKILL, because the
+/// only other thing that ends the sleep is an input event that may never come.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn signal_pending() -> bool {
+    use core::sync::atomic::Ordering;
+    match sched::live::current() {
+        Some(task) => {
+            task.pending_signals() & !task.sigmask.load(Ordering::Acquire) != 0
+        }
+        None => false,
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn signal_pending() -> bool { false }
+
 struct EvdevFileOps;
 
 impl EvdevFileOps {
@@ -49,9 +67,10 @@ impl FileOps for EvdevFileOps {
             }
             refresh_events();
             if let Some(len) = opened.try_pop_bytes(buf) { return Ok(len); }
+            if signal_pending() { return Err(VfsError::Eintr); }
             // SAFETY: process-context evdev read publishes the current task before scheduling.
             unsafe { opened.queue().waiters.park(); }
-            if !opened.is_live() || opened.has_pending() {
+            if !opened.is_live() || opened.has_pending() || signal_pending() {
                 opened.queue().waiters.cancel_current_park();
                 continue;
             }

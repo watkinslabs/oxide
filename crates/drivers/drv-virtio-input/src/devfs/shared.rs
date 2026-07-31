@@ -198,6 +198,16 @@ impl EvdevOpen {
 
     /// # C: O(queued)
     pub(crate) fn set_clock(&self, clock_id: i32) -> bool { self.queue.set_clock(clock_id) }
+
+    /// # C: O(out)
+    pub(crate) fn mask_get(&self, ev_type: u32, out: &mut [u8]) -> Option<usize> {
+        self.queue.mask_get(ev_type, out)
+    }
+
+    /// # C: O(mask bytes)
+    pub(crate) fn mask_set(&self, ev_type: u32, bytes: &[u8]) -> bool {
+        self.queue.mask_set(ev_type, bytes)
+    }
 }
 
 impl Drop for EvdevOpen {

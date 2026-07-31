@@ -1,3 +1,7 @@
+// Module manifest: this file owns evdev command dispatch and the fixed-length
+// transfers; `mask` owns the two variable-length event-mask commands.
+mod mask;
+
 use vfs::{File, InodeRef};
 
 use crate::devfs::shared::{evdev_open, EvdevIdentity};
@@ -44,6 +48,22 @@ fn valid_user_range(arg: u64, bytes: u64) -> bool {
     arg != 0
         && arg < hal::USER_VA_END
         && arg.checked_add(bytes).is_some_and(|end| end <= hal::USER_VA_END)
+}
+
+unsafe fn uread(arg: u64, dst: &mut [u8]) {
+    unsafe {
+        for (i, slot) in dst.iter_mut().enumerate() {
+            *slot = core::ptr::read_volatile((arg + i as u64) as *const u8);
+        }
+    }
+}
+
+unsafe fn uzero(arg: u64, len: usize) {
+    unsafe {
+        for i in 0..len {
+            core::ptr::write_volatile((arg + i as u64) as *mut u8, 0u8);
+        }
+    }
 }
 
 unsafe fn uread_i32(arg: u64) -> i32 {
@@ -178,6 +198,10 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         // SAFETY: arg validated inside user VA for the one int this command writes.
         unsafe { uwrite(arg, &0i32.to_le_bytes(), crate::EVDEV_CLOCKID_BYTES); }
         return Some(0);
+    }
+
+    if nr == crate::EVIOCGMASK_NR as u32 || nr == crate::EVIOCSMASK_NR as u32 {
+        return Some(mask::handle_mask(opened, nr, arg));
     }
 
     let size = ioc_size(req);

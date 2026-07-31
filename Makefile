@@ -369,7 +369,14 @@ smoke-ps2-rebind-arm: arm
 	./tools/boot-smoke-ps2-rebind.sh arm $(PS2_REBIND_SMOKE_TIMEOUT)
 smoke-ps2-rebind: smoke-ps2-rebind-x86 smoke-ps2-rebind-arm
 
-VIRTIO_INPUT_REBIND_SMOKE_TIMEOUT ?= 600
+INPUT_DELIVERY_SMOKE_TIMEOUT ?= 900
+smoke-mouse-x86: x86
+	./tools/boot-smoke-mouse.sh x86 $(INPUT_DELIVERY_SMOKE_TIMEOUT)
+smoke-mouse-arm: arm
+	./tools/boot-smoke-mouse.sh arm $(INPUT_DELIVERY_SMOKE_TIMEOUT)
+smoke-mouse: smoke-mouse-x86 smoke-mouse-arm
+
+VIRTIO_INPUT_REBIND_SMOKE_TIMEOUT ?= 900
 smoke-virtio-input-rebind-x86: x86
 	./tools/boot-smoke-virtio-input-rebind.sh x86 $(VIRTIO_INPUT_REBIND_SMOKE_TIMEOUT)
 smoke-virtio-input-rebind-arm: arm

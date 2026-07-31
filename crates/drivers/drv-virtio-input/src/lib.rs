@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 mod consts;
+mod evdev_mask;
 mod registry;
 mod types;
 
