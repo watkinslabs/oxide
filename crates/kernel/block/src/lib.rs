@@ -4,6 +4,7 @@
 // `queue_limits.rs` — canonical block queue topology + sysfs leaf mapping.
 // `blockdev.rs` — `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing.
 // `completion.rs` — shared BlockIo softirq completion-handler registry.
+// `elevator.rs` — I/O-priority dispatch order for requests that had to wait.
 // `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
 // `fsync` / `invalidate`); `CachedPage` with `PG_*` flags.
 //
@@ -22,6 +23,7 @@ extern crate std;
 pub mod blockdev;
 pub mod completion;
 pub mod devbridge;
+pub mod elevator;
 pub mod pagecache;
 pub mod queue_limits;
 pub mod registry;

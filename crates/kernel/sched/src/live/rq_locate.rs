@@ -54,14 +54,26 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
 
 /// Enqueue `task` onto `cpu`'s runqueue, keeping the `nr_running` mirror in
 /// step. Idle tasks are never queued (`13§2` invariant 7).
+///
+/// Returns whether the task was actually placed. `false` means `cpu` has no
+/// installed runqueue and the task was NOT queued — a caller that had already
+/// dequeued it holds the last reference to a runnable task that is now on no
+/// runqueue at all, and must put it somewhere. The result is `#[must_use]`
+/// because ignoring it loses the task silently: it simply never runs again,
+/// with no fault and no log line.
 /// # C: O(log N)
-pub fn enqueue_on_with<'a, F>(get_rq: &F, cpu: u32, task: Arc<Task>)
+#[must_use]
+pub fn enqueue_on_with<'a, F>(get_rq: &F, cpu: u32, task: Arc<Task>) -> bool
 where F: Fn(u32) -> Option<&'a Runqueue> {
-    if matches!(task.sched_class(), crate::SchedClass::Idle) { return; }
-    if let Some(rq) = get_rq(cpu) {
-        let mut inner = rq.inner.lock();
-        inner.enqueue(task);
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    if matches!(task.sched_class(), crate::SchedClass::Idle) { return true; }
+    match get_rq(cpu) {
+        Some(rq) => {
+            let mut inner = rq.inner.lock();
+            inner.enqueue(task);
+            rq.nr_running.store(inner.nr_running(), Ordering::Release);
+            true
+        }
+        None => false,
     }
 }
 
@@ -82,7 +94,8 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             // `task_rq(p)`, which the held rq lock kept from changing. Moving
             // it to the caller's CPU here would be a migration the affinity
             // mask never authorised.
-            enqueue_on_with(get_rq, cpu, dequeued);
+            // Same rq it was just dequeued from, so placement cannot fail.
+            let _ = enqueue_on_with(get_rq, cpu, dequeued);
         }
         None => task.set_sched_class(new),
     }

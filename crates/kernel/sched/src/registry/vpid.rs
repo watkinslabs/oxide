@@ -40,6 +40,32 @@ pub fn lookup_in_namespace(ns: &NamespaceRef, vpid: u32) -> Option<Arc<Task>> {
     })
 }
 
+/// Linux `task_pid_vnr(p)`: the thread number `t` carries inside `ns`, or
+/// `None` when `ns` does not number `t` at all — Linux's `0`, which every
+/// PRIO_USER / IOPRIO_WHO_USER walk uses to skip tasks the caller cannot name.
+///
+/// The initial namespace numbers every task, so it falls back to the vtid (or
+/// the internal tid for a task that never got one stamped) exactly as
+/// [`lookup_in_namespace`]'s init-NS shortcut does; without that fallback a
+/// system that never published pid mappings would report every task invisible.
+/// # C: O(depth)
+pub fn vnr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    if let Some(nr) = t.pid.visible_tid(ns) { return Some(nr); }
+    if !ns.is_initial() { return None; }
+    let vtid = t.vtid.load(Ordering::Acquire);
+    Some(if vtid != 0 { vtid } else { t.tid })
+}
+
+/// The caller's pid namespace, snapshotted once so a target-set walk does not
+/// re-resolve it per task. `None` outside a live task (kthread bring-up,
+/// hosted fixtures), which callers treat as the initial namespace.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn caller_pid_ns() -> Option<NamespaceRef> {
+    crate::live::current()?.namespace_owner(NamespaceKind::Pid)
+}
+
 /// Resolve a USERSPACE-supplied pid/tid (the value getpid/gettid/fork return)
 /// to a Task, interpreted in the CALLER's pid namespace. THIS is the correct
 /// primitive for any syscall whose pid arg comes from userspace (kill,

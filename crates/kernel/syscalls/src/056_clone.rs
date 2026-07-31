@@ -3,6 +3,7 @@
 // fork/vfork/clone/clone3 — see body for honored CLONE_* flag bits.
 // Module manifest:
 // - namespaces: task namespace inheritance and clone-time publication.
+// - io_context: CLONE_IO sharing of the I/O priority context.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -15,6 +16,8 @@ mod namespaces;
 mod publication;
 #[path = "056_clone/fd_table.rs"]
 mod fd_table;
+#[path = "056_clone/io_context.rs"]
+mod io_context;
 
 pub(crate) const CSIGNAL:              u64 = 0xff;
 pub(crate) const CLONE_VM:             u64 = 0x100;
@@ -33,6 +36,7 @@ pub(crate) const CLONE_DETACHED:       u64 = 0x400000;
 pub(crate) const CLONE_CHILD_SETTID:   u64 = 0x1000000;
 pub(crate) const CLONE_NEWUSER:        u64 = 0x10000000;
 pub(crate) const CLONE_NEWPID:         u64 = 0x20000000;
+pub(crate) const CLONE_IO:             u64 = 0x80000000;
 pub(crate) const CLONE_CLEAR_SIGHAND:  u64 = 1u64 << 32;
 pub(crate) const CLONE_INTO_CGROUP:    u64 = 1u64 << 33;
 pub(crate) const CLONE_LEGACY_FLAGS:   u64 = 0xffff_ffff;
@@ -342,6 +346,7 @@ pub fn sys_clone_dispatch(
     }
 
     fd_table::inherit(cur, &child, flags);
+    io_context::inherit(cur, &child, flags);
 
     let child_sigactions = if (flags & CLONE_CLEAR_SIGHAND) != 0 {
         alloc::sync::Arc::new(sched::SigActions::new())

@@ -69,6 +69,12 @@ pub mod openat2_resolve;
 pub mod sched_policy;
 pub mod sched_attr;
 pub mod ioprio;
+// getpriority/setpriority (140/141) + ioprio_set/ioprio_get (251/252) share one
+// which/who target-set walk. Its RULES — the `who == 0` aliases, the
+// user-namespace uid mapping of `who`, and the pid-namespace visibility test
+// that keeps a PRIO_USER sweep inside the caller's namespace — live here,
+// ungated, because the live walk in `priority_common` is kernel-only.
+pub mod priority_target;
 // rename(2)/renameat2(2): the `filename_renameat2` errno LADDER (EXDEV before
 // EBUSY, the NOREPLACE EEXIST override, the ancestor-trap EINVAL/ENOTEMPTY
 // split, trailing-slash ENOTDIR) — order is the whole contract, so it lives

@@ -25,7 +25,7 @@ const V2_VERSION_V1: u32 = 1;
 fn shared_disk_from(image: Vec<u8>) -> Arc<dyn BlockDevice> {
     let cap = (image.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image, ..Default::default() };
     disk.submit_sync(&mut req).expect("seed memdisk");
     disk
 }
@@ -34,11 +34,11 @@ fn patch_u32(disk: &Arc<dyn BlockDevice>, offset: usize, value: u32) {
     let start_block = (offset / SECTOR as usize) as u64;
     let in_block = offset % SECTOR as usize;
     let mut buffer = vec![0u8; SECTOR as usize];
-    let mut req = BlockRequest { op: BlockOp::Read, start_block, len_blocks: 1, buffer };
+    let mut req = BlockRequest { op: BlockOp::Read, start_block, len_blocks: 1, buffer, ..Default::default() };
     disk.submit_sync(&mut req).expect("read fixture sector");
     buffer = req.buffer;
     buffer[in_block..in_block + 4].copy_from_slice(&value.to_le_bytes());
-    let mut req = BlockRequest { op: BlockOp::Write, start_block, len_blocks: 1, buffer };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block, len_blocks: 1, buffer, ..Default::default() };
     disk.submit_sync(&mut req).expect("write fixture sector");
 }
 

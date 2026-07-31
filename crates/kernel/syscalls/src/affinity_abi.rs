@@ -86,8 +86,14 @@ pub fn setaffinity_permitted(same_owner: bool, cap_sys_nice: bool) -> bool {
 /// cpus_allowed)` where `cpus_allowed` is `cpuset_cpus_allowed(p)`. The mask
 /// STORED is the requested one narrowed by the cpuset — NOT narrowed by the
 /// active mask, so a CPU that is merely offline stays in the mask and becomes
-/// usable again the moment it comes online. # C: O(1)
-pub fn effective_mask(want: u64, cpuset: u64) -> u64 { want & cpuset }
+/// usable again the moment it comes online.
+///
+/// The composition rule itself is owned by `sched::affinity` — the same owner
+/// the cgroup `cpuset.cpus` writer uses, under the other [`MaskChange`] arm —
+/// so the two writers of `cpus_allowed` cannot drift apart. # C: O(1)
+pub fn effective_mask(want: u64, cpuset: u64) -> u64 {
+    sched::affinity::compose(cpuset, want, sched::affinity::MaskChange::UserRequest)
+}
 
 /// Linux `__set_cpus_allowed_ptr_locked`:
 /// `cpumask_any_and_distribute(new_mask, cpu_valid_mask) >= nr_cpu_ids` is
@@ -125,8 +131,10 @@ pub fn setaffinity_decide(want: u64, cpuset: u64, active: u64, no_setaffinity: b
 /// Recompute `cpus_allowed` when a cgroup `cpuset.cpus` changes. The rule
 /// itself lives with the fields it composes (`sched::affinity::compose`) so the
 /// cgroup hook and this syscall cannot drift apart. The kernel-side caller is
-/// `sched::cgroup`, which calls `crate::affinity::compose` directly; this alias
-/// exists for the hosted tests that pin that rule against this file's decision
-/// core. # C: O(1)
+/// `sched::cgroup`, which calls that same owner with the cpuset arm; this
+/// wrapper exists for the hosted tests that pin the two arms against each
+/// other and against this file's decision core. # C: O(1)
 #[cfg(test)]
-pub use sched::affinity::compose as cpuset_recompute;
+pub fn cpuset_recompute(cpuset: u64, user: u64) -> u64 {
+    sched::affinity::compose(cpuset, user, sched::affinity::MaskChange::CpusetUpdate)
+}

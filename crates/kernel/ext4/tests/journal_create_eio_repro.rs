@@ -25,7 +25,7 @@ fn open_vfs() -> Option<(Arc<ext4::rootfs::Ext4Mount>, Arc<vfs::SuperBlock>)> {
     eprintln!("loaded {} ({} bytes)", path, bytes.len());
     let cap = (bytes.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes, ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     let m = ext4::rootfs::Ext4Mount::open(disk).expect("open real rootfs (VFS layer)");
     // The boot mounts with cross-op batching enabled.

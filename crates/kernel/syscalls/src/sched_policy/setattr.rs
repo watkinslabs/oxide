@@ -121,6 +121,16 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     // `__setscheduler_params` calls `__setparam_fair` for NORMAL/BATCH only —
     // SCHED_IDLE and the RT policies leave `se.slice` alone.
     if fair_policy(policy) { t.sched_slice_ns.store(fair_slice(attr), Ordering::Release); }
+    // The RT timeslice is a full quantum whenever a task holds an RT policy —
+    // upstream seeds it at fork and only ever reloads it with the whole
+    // quantum, so it is never observed part-spent by a task that was not just
+    // running as SCHED_RR. Without this reset a task promoted to SCHED_RR
+    // resumes on whatever residue its last RR stint (or a stale quantum in
+    // different units) left behind, and gets an arbitrary fraction of its
+    // first slice.
+    if rt_policy(policy) {
+        t.rt_time_slice.store(sched::sched_enc::RR_TIMESLICE_TICKS, Ordering::Release);
+    }
     t.policy.store(policy, Ordering::Release);
     // `__setscheduler_params` (`kernel/sched/syscalls.c:257-262`): an RT or
     // deadline task's timer slack is ZERO for as long as it holds that policy,

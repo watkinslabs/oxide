@@ -376,6 +376,10 @@ pub(super) struct PendingRequest {
 /// does; the only difference is that no DMA allocation exists yet.
 pub(super) struct DeferredRequest {
     pub(super) request: BlockRequest,
+    /// Monotonic nanoseconds at which this request started waiting for a free
+    /// descriptor chain. The dispatch order reads it to age out a request
+    /// whose class keeps losing to a busier one.
+    pub(super) queued_ns: u64,
     pub(super) completion: BlockCompletion,
     pub(super) type_: u32,
     pub(super) sector: u64,

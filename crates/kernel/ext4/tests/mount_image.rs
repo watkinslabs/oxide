@@ -33,8 +33,7 @@ fn build_disk() -> Arc<dyn BlockDevice> {
         op: BlockOp::Write,
         start_block: 0,
         len_blocks: cap as u32,
-        buffer: IMAGE.to_vec(),
-    };
+        buffer: IMAGE.to_vec(), ..Default::default() };
     disk.submit_sync(&mut req).expect("memdisk write");
     disk
 }
@@ -119,7 +118,7 @@ fn open_refuses_unsupported_incompat_feature() {
     img[1024 + 0x60 + 1] |= 0x80; // s_feature_incompat |= 0x8000
     let cap = (img.len() as u64) / (BLOCK_SIZE as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img, ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     let disk: Arc<dyn BlockDevice> = disk;
     assert!(matches!(ext4::Mount::open(disk), Err(ext4::MountError::UnsupportedFeature)),
@@ -134,7 +133,7 @@ fn open_refuses_unsupported_ro_compat_feature() {
     img[1024 + 0x64 + 1] |= 0x02; // s_feature_ro_compat |= 0x0200
     let cap = (img.len() as u64) / (BLOCK_SIZE as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: img, ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     let disk: Arc<dyn BlockDevice> = disk;
     assert!(matches!(ext4::Mount::open(disk), Err(ext4::MountError::UnsupportedFeature)),

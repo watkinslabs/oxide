@@ -49,6 +49,14 @@ impl RunqueueInner {
     /// `self.idle` and never appear on the RT/CFS lists per `13§2`.
     /// # C: O(log N) (CFS) / O(1) (RT)
     pub fn enqueue(&mut self, task: Arc<Task>) {
+        self.enqueue_at(task, crate::sched_enc::requeue::wake_pos())
+    }
+
+    /// [`RunqueueInner::enqueue`] with an explicit real-time insertion end.
+    /// The fair and idle classes ignore `pos` — vruntime, not queue position,
+    /// orders them.
+    /// # C: O(log N) (CFS) / O(1) (RT)
+    pub fn enqueue_at(&mut self, task: Arc<Task>, pos: crate::sched_enc::requeue::RequeuePos) {
         // cgroup v2 freezer: a frozen task is held off every runqueue here
         // (the single enqueue chokepoint), so wake/yield/fork can't run it
         // until `cgroup.freeze=0` thaws it + re-enqueues.
@@ -63,7 +71,7 @@ impl RunqueueInner {
         if task.on_rq.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
         task.cpu.store(self.cpu, core::sync::atomic::Ordering::Release);
         match task.sched_class() {
-            SchedClass::Rt { .. }     => self.rt.enqueue(task),
+            SchedClass::Rt { .. }     => self.rt.enqueue_at(task, pos),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
             SchedClass::Idle          => panic!("RunqueueInner::enqueue: idle"),
         }
@@ -76,7 +84,16 @@ impl RunqueueInner {
     /// under this same rq lock, and its `on_rq` is published BEFORE `on_cpu`
     /// drops (see [`RunqueueInner::pick_next_task_claim`] for the pairing).
     /// # C: O(log N) (CFS) / O(1) (RT)
-    pub fn put_prev_task(&mut self, task: Arc<Task>) { self.enqueue(task) }
+    pub fn put_prev_task(&mut self, task: Arc<Task>) {
+        // A running task is OFF its queue here, so the end it goes back on is
+        // a policy decision, not bookkeeping: a task preempted against its
+        // will keeps its place, and only a spent SCHED_RR quantum or an
+        // explicit yield sends it behind its equal-priority peers. Consuming
+        // the request here (rather than reading it) means one preemption
+        // rotates the task once.
+        let gave_up = task.rt_requeue_tail.swap(false, core::sync::atomic::Ordering::AcqRel);
+        self.enqueue_at(task, crate::sched_enc::requeue::put_prev_pos(gave_up));
+    }
 
     /// Linux `yield_task()` class hook for the current runnable task before
     /// `schedule()` re-enqueues it. # C: O(log N)
@@ -87,7 +104,12 @@ impl RunqueueInner {
                 let floor = self.cfs.max_vruntime().saturating_add(1);
                 task.lift_vruntime(floor);
             }
-            SchedClass::Rt { .. } => {}
+            // A real-time task that yields gives up its turn explicitly, so
+            // it goes behind its equal-priority peers. This is the only other
+            // producer of the tail request besides a spent RR quantum.
+            SchedClass::Rt { .. } => {
+                task.rt_requeue_tail.store(true, core::sync::atomic::Ordering::Release);
+            }
             SchedClass::Idle => {}
         }
     }

@@ -22,6 +22,21 @@ pub struct BlockRequest {
     pub start_block:  u64,
     pub len_blocks:   u32,
     pub buffer:       Vec<u8>,
+    /// I/O priority carried by this request, in the packed `ioprio_set(2)`
+    /// encoding. Stamped once at submission from the submitting task's
+    /// effective priority when it is still unset, and read by the queue when
+    /// it has to choose which of several waiting requests to start next.
+    pub ioprio:       i32,
+}
+
+impl Default for BlockRequest {
+    /// A zero-length read at block 0 with an unset priority. Exists so a
+    /// struct literal naming only the fields it cares about stays valid as
+    /// the request grows.
+    /// # C: O(1)
+    fn default() -> Self {
+        Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT }
+    }
 }
 
 /// Completion ownership for one submitted request. The request returns to its
@@ -39,6 +54,7 @@ impl BlockRequest {
             op: BlockOp::Read,
             start_block, len_blocks,
             buffer: alloc::vec![0u8; bytes],
+            ..Default::default()
         }
     }
 
@@ -46,7 +62,7 @@ impl BlockRequest {
     /// caller wants on disk.
     /// # C: O(1)
     pub fn new_write(start_block: u64, len_blocks: u32, buffer: Vec<u8>) -> Self {
-        Self { op: BlockOp::Write, start_block, len_blocks, buffer }
+        Self { op: BlockOp::Write, start_block, len_blocks, buffer, ..Default::default() }
     }
 
     /// Construct a Linux `WRITE_ZEROES` request. The operation has no data
@@ -54,20 +70,20 @@ impl BlockRequest {
     /// deallocation.
     /// # C: O(1)
     pub fn new_write_zeroes(start_block: u64, len_blocks: u32, no_unmap: bool) -> Self {
-        Self { op: BlockOp::WriteZeroes { no_unmap }, start_block, len_blocks, buffer: Vec::new() }
+        Self { op: BlockOp::WriteZeroes { no_unmap }, start_block, len_blocks, buffer: Vec::new(), ..Default::default() }
     }
 
     /// Construct a Discard request. Discard carries no write payload; the
     /// target releases or zeroes the specified logical block range.
     /// # C: O(1)
     pub fn new_discard(start_block: u64, len_blocks: u32) -> Self {
-        Self { op: BlockOp::Discard, start_block, len_blocks, buffer: Vec::new() }
+        Self { op: BlockOp::Discard, start_block, len_blocks, buffer: Vec::new(), ..Default::default() }
     }
 
     /// Construct a Flush request — empty buffer, transfer length 0.
     /// # C: O(1)
     pub fn new_flush() -> Self {
-        Self { op: BlockOp::Flush, start_block: 0, len_blocks: 0, buffer: Vec::new() }
+        Self { op: BlockOp::Flush, start_block: 0, len_blocks: 0, buffer: Vec::new(), ..Default::default() }
     }
 }
 

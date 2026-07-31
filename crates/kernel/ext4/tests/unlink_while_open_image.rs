@@ -33,8 +33,7 @@ fn build_disk() -> (Arc<dyn BlockDevice>, u64) {
     let cap = (IMAGE.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
     let mut req = BlockRequest {
-        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: IMAGE.to_vec(),
-    };
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: IMAGE.to_vec(), ..Default::default() };
     disk.submit_sync(&mut req).expect("seed memdisk");
     (disk, cap)
 }
@@ -69,8 +68,7 @@ fn phys_blocks(m: &ext4::rootfs::Ext4Mount, ino: u32) -> Vec<u64> {
 fn dump_disk(disk: &Arc<dyn BlockDevice>, cap: u64) -> Vec<u8> {
     let mut req = BlockRequest {
         op: BlockOp::Read, start_block: 0, len_blocks: cap as u32,
-        buffer: alloc::vec![0u8; (cap as usize) * SECTOR as usize],
-    };
+        buffer: alloc::vec![0u8; (cap as usize) * SECTOR as usize], ..Default::default() };
     disk.submit_sync(&mut req).expect("read back");
     req.buffer
 }

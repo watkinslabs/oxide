@@ -254,6 +254,15 @@ pub fn set_class(task: &Arc<Task>, new: crate::SchedClass) {
 /// # C: O(1)
 pub fn has_rt_peer_at_same_level(t: &Task) -> bool {
     let crate::SchedClass::Rt { prio, .. } = t.sched_class() else { return false };
-    let Some(rq) = global() else { return false };
+    // The task's OWN runqueue, not the caller's. `global()` here answered the
+    // question about whichever CPU asked, so a remote-tick / cross-CPU caller
+    // could requeue an RR task on the strength of a peer that lives on another
+    // CPU's rt tree entirely — or miss the peer that is actually queued behind
+    // it. Falls back to the local rq only when the task has never been placed.
+    let owner = t.cpu.load(Ordering::Acquire);
+    let rq = if owner == u16::MAX { global() }
+             // SAFETY: `global_for` is sound for any index and yields `None` for a CPU that has not completed `install_global`.
+             else { unsafe { global_for(owner as u32) } };
+    let Some(rq) = rq else { return false };
     rq.inner.lock().rt.has_peer_at(prio)
 }
