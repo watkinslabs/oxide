@@ -1,9 +1,10 @@
 // RT runqueue per `13§3` / `13§7`: 100 priority buckets (`1..=99` plus
 // the unused 0 slot) + a `nonempty` bitmap for O(1) `pick_highest`.
 // `pick_next` returns the highest-priority task at the front of its
-// bucket; FIFO order within priority. SCHED_RR is identical at the
-// runqueue level — quantum exhaustion is the timer-tick's concern
-// (out of scope here).
+// bucket; FIFO order within priority. Insertion end is the caller's
+// choice (`enqueue_at`): a wakeup joins at the tail, a preempted task
+// rejoins at the head, and only a spent SCHED_RR quantum or an explicit
+// yield sends a running task to the tail.
 
 extern crate alloc;
 use alloc::collections::VecDeque;
@@ -11,6 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use crate::sched_enc::requeue::RequeuePos;
 use crate::task::{SchedClass, Task};
 
 /// RT priorities per `13§3`: 1..=99. Slot 0 is unused; keeps indexing
@@ -41,16 +43,30 @@ impl RtRunqueue {
     /// # C: O(1)
     pub fn has_runnable(&self) -> bool { self.nonempty != 0 }
 
-    /// Insert at the tail of the priority's FIFO per `SCHED_FIFO`/`RR`
-    /// semantics (`13§3`).
+    /// Insert at the tail of the priority's FIFO — the wakeup position
+    /// (`13§3`).
     /// # C: O(1)
     pub fn enqueue(&mut self, task: Arc<Task>) {
+        self.enqueue_at(task, RequeuePos::Tail)
+    }
+
+    /// Insert at either end of the priority's FIFO.
+    ///
+    /// The end is not cosmetic: a running task is off the queue here, so a
+    /// preempted task that is pushed to the TAIL has silently been demoted
+    /// behind its equal-priority peers. `SCHED_FIFO` requires that it is not —
+    /// see `sched_enc::requeue` for which caller passes which end.
+    /// # C: O(1)
+    pub fn enqueue_at(&mut self, task: Arc<Task>, pos: RequeuePos) {
         let prio = match task.sched_class() {
             SchedClass::Rt { prio, .. } => prio as usize,
             _ => panic!("RtRunqueue::enqueue: non-RT task"),
         };
         debug_assert!(prio < RT_PRIO_COUNT);
-        self.queues[prio].push_back(task);
+        match pos {
+            RequeuePos::Tail => self.queues[prio].push_back(task),
+            RequeuePos::Head => self.queues[prio].push_front(task),
+        }
         self.nonempty |= 1u128 << prio;
         self.nr_running += 1;
     }

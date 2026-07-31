@@ -215,6 +215,13 @@ pub struct Task {
     /// task's quantum. `SCHED_FIFO` never consumes it (FIFO has no timeslice);
     /// the fair class does not use it either.
     pub rt_time_slice: AtomicU32,
+
+    /// Pending "requeue to the tail" request for a real-time task, set when it
+    /// gives up its turn — a spent `SCHED_RR` quantum or an explicit
+    /// `sched_yield` — and consumed by `put_prev_task`. Absent it, a preempted
+    /// task rejoins its priority queue at the HEAD, which is what makes
+    /// `SCHED_FIFO` differ from `SCHED_RR` at all.
+    pub rt_requeue_tail: AtomicBool,
     /// Linux `task_struct::mempolicy` — the PER-THREAD NUMA policy
     /// `set_mempolicy(2)` installed, packed by `MemPolicy::to_words`. Word 0
     /// is zero when no policy is installed, which is Linux's NULL

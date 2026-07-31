@@ -113,6 +113,7 @@ pub const SCHED_IDLE: u32 = 5;
 pub const SCHED_DEADLINE: u32 = 6;
 
 /// Wakeup-preemption decision (`wakeup_preempt` and the per-class hooks).
+pub mod requeue;
 pub mod wakeup;
 
 /// The `task_tick` decision as a pure function — Linux `task_tick_rt`

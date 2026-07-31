@@ -124,7 +124,8 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     // The destination went away between the park and here: keep the task
     // runnable on this CPU rather than stranding it.
     let dest = if get_rq(target).is_some() { target } else { cpu };
-    crate::live::rq_locate::enqueue_on_with(get_rq, dest, task);
+    // `dest` was just confirmed installed, so this cannot fail.
+    let _ = crate::live::rq_locate::enqueue_on_with(get_rq, dest, task);
     Some(dest)
 }
 

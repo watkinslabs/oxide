@@ -235,7 +235,7 @@ fn unpark_returns_the_task_for_local_requeue() {
     let t = running_on(3010, HERE, 1u64 << THERE);
     assert!(migrate::park(HERE, &t, THERE));
     let back = migrate::unpark(HERE).expect("parked task returned");
-    enqueue_on_with(&|c| cpus.get(c), HERE, back);
+    assert!(enqueue_on_with(&|c| cpus.get(c), HERE, back));
     assert_eq!(cpus.holder(3010), Some(HERE));
 }
 
@@ -248,7 +248,7 @@ fn a_queued_task_relocates_off_a_forbidden_cpu() {
     const THERE: u32 = 46;
     let cpus = Cpus::new(&[HERE, THERE]);
     let t = running_on(3011, HERE, u64::MAX);
-    enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t));
+    assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
     assert_eq!(cpus.holder(3011), Some(HERE));
 
     // The mask writer's new mask, then the relocation it performs.
@@ -259,7 +259,7 @@ fn a_queued_task_relocates_off_a_forbidden_cpu() {
     assert!(!moved.on_rq.load(Ordering::Acquire), "the dequeue clears on_rq");
     let target = select_task_rq_with(&|c| cpus.get(c), HERE, &moved);
     assert_eq!(target, THERE, "placement honours the new mask");
-    enqueue_on_with(&|c| cpus.get(c), target, moved);
+    assert!(enqueue_on_with(&|c| cpus.get(c), target, moved));
     assert_eq!(cpus.holder(3011), Some(THERE));
 }
 
@@ -271,7 +271,88 @@ fn a_queued_task_still_permitted_stays_put() {
     const THERE: u32 = 48;
     let cpus = Cpus::new(&[HERE, THERE]);
     let t = running_on(3012, HERE, (1u64 << HERE) | (1u64 << THERE));
-    enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t));
+    assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
     assert!(migrate::cpu_permitted(t.cpus_allowed.load(Ordering::Acquire), HERE));
     assert_eq!(cpus.holder(3012), Some(HERE));
+}
+
+// ---------------------------------------------------------------------------
+// relocate_for_affinity — the mask-change entry point itself
+// ---------------------------------------------------------------------------
+
+/// A task sitting QUEUED on a CPU its new mask forbids is moved by the mask
+/// change itself, without waiting to be scheduled. This half of
+/// `relocate_for_affinity` had no coverage at all, which is how the running
+/// half stayed broken for as long as it did.
+#[test]
+fn a_queued_task_on_a_forbidden_cpu_is_moved_by_the_mask_change() {
+    const HERE: u32 = 30;
+    const THERE: u32 = 31;
+    let cpus = Cpus::new(&[HERE, THERE]);
+    let t = running_on(4001, HERE, 1 << HERE);
+    assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
+    assert_eq!(cpus.holder(t.tid), Some(HERE));
+
+    let allowed = 1u64 << THERE;
+    t.cpus_allowed.store(allowed, Ordering::Release);
+    crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
+
+    assert_eq!(cpus.holder(t.tid), Some(THERE), "must leave the forbidden CPU");
+    assert_eq!(t.cpu.load(Ordering::Acquire), THERE as u16);
+}
+
+/// A queued task whose mask still contains its current CPU is left alone —
+/// relocation must not churn tasks it has no reason to move.
+#[test]
+fn a_queued_task_on_a_permitted_cpu_is_not_moved() {
+    const HERE: u32 = 30;
+    const THERE: u32 = 31;
+    let cpus = Cpus::new(&[HERE, THERE]);
+    let t = running_on(4002, HERE, u64::MAX);
+    assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
+
+    let allowed = (1u64 << HERE) | (1u64 << THERE);
+    t.cpus_allowed.store(allowed, Ordering::Release);
+    crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
+
+    assert_eq!(cpus.holder(t.tid), Some(HERE));
+}
+
+/// The RUNNING task on a forbidden CPU is not dequeued by the mask change —
+/// it owns that CPU's register context and cannot be touched from here. It is
+/// nudged, and `schedule()` is what actually evicts it.
+#[test]
+fn a_running_task_on_a_forbidden_cpu_is_left_for_schedule_to_evict() {
+    const HERE: u32 = 30;
+    const THERE: u32 = 31;
+    let cpus = Cpus::new(&[HERE, THERE]);
+    let t = running_on(4003, HERE, 1 << HERE);
+    // Running means: current on HERE, queued nowhere.
+    let rq = cpus.get(HERE).unwrap();
+    rq.current.store(Arc::as_ptr(&t) as *mut Task, Ordering::Release);
+
+    let allowed = 1u64 << THERE;
+    t.cpus_allowed.store(allowed, Ordering::Release);
+    crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
+
+    assert_eq!(cpus.holder(t.tid), None, "a running task is not enqueued anywhere");
+    // The eviction decision `schedule()` will reach for it.
+    assert_eq!(migrate::evict_target_with(&|c| cpus.get(c), HERE, &t), Some(THERE));
+    rq.current.store(core::ptr::null_mut(), Ordering::Release);
+}
+
+/// A mask naming no CPU that exists leaves the task where it is rather than
+/// dequeueing it into nowhere.
+#[test]
+fn a_mask_naming_no_installed_cpu_strands_nothing() {
+    const HERE: u32 = 30;
+    let cpus = Cpus::new(&[HERE]);
+    let t = running_on(4004, HERE, 1 << HERE);
+    assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
+
+    let allowed = 1u64 << 5;
+    t.cpus_allowed.store(allowed, Ordering::Release);
+    crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
+
+    assert_eq!(cpus.holder(t.tid), Some(HERE), "affinity is broken before a task is lost");
 }
