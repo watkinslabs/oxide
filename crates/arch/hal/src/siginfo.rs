@@ -32,6 +32,27 @@ pub struct SigPayload {
     pub chld_arm: bool,
     /// `_sigsys` arm — `Some` only for a seccomp-raised `SIGSYS`.
     pub sigsys: Option<Sigsys>,
+    /// `_sigfault` arm — `Some` for every synchronous fault signal
+    /// (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGTRAP). Overrides `_kill`/`_rt` the same
+    /// way `sigsys` does: the arms overlap at `_sifields`.
+    pub fault: Option<SigFault>,
+}
+
+/// `siginfo_t::_sifields._sigfault` — the arm SIGSEGV, SIGBUS, SIGILL, SIGFPE
+/// and SIGTRAP select (`include/uapi/asm-generic/siginfo.h`).
+///
+/// `addr` is the faulting instruction / memory reference. `addr_lsb` is the
+/// `short` that follows it, meaningful for the SIGBUS machine-check codes; the
+/// remaining inner-union members (`_addr_bnd`, `_addr_pkey`, `_perf`) start
+/// past it and are written by their own producers.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SigFault {
+    /// `si_addr`.
+    pub addr: u64,
+    /// `si_addr_lsb` — log2 of the reported page size for the SIGBUS
+    /// machine-check codes; 0 everywhere else.
+    pub addr_lsb: i16,
 }
 
 /// `siginfo_t::_sifields._sigsys` (`include/uapi/asm-generic/siginfo.h`),
@@ -55,6 +76,70 @@ pub struct Sigsys {
     pub errno: i32,
 }
 
+/// `si_code` values for the `_sigfault` signals (`asm-generic/siginfo.h`).
+/// The ONE owner: every fault classifier and every test names a constant here
+/// instead of open-coding `1`/`2` (`07§5`).
+pub mod code {
+    /// SIGSEGV — address not mapped to object.
+    pub const SEGV_MAPERR: i32 = 1;
+    /// SIGSEGV — invalid permissions for mapped object.
+    pub const SEGV_ACCERR: i32 = 2;
+    /// SIGSEGV — failed address bound checks.
+    pub const SEGV_BNDERR: i32 = 3;
+    /// SIGSEGV — failed protection-key check.
+    pub const SEGV_PKUERR: i32 = 4;
+    /// SIGSEGV — control-protection fault (shadow stack / indirect branch).
+    pub const SEGV_CPERR: i32 = 10;
+    /// SIGBUS — invalid address alignment.
+    pub const BUS_ADRALN: i32 = 1;
+    /// SIGBUS — non-existent physical address.
+    pub const BUS_ADRERR: i32 = 2;
+    /// SIGBUS — object-specific hardware error (SIGBUS past EOF on a file map).
+    pub const BUS_OBJERR: i32 = 3;
+    /// SIGILL — illegal opcode.
+    pub const ILL_ILLOPC: i32 = 1;
+    /// SIGILL — illegal operand.
+    pub const ILL_ILLOPN: i32 = 2;
+    /// SIGILL — illegal addressing mode.
+    pub const ILL_ILLADR: i32 = 3;
+    /// SIGILL — illegal trap.
+    pub const ILL_ILLTRP: i32 = 4;
+    /// SIGILL — privileged opcode.
+    pub const ILL_PRVOPC: i32 = 5;
+    /// SIGILL — privileged register.
+    pub const ILL_PRVREG: i32 = 6;
+    /// SIGILL — coprocessor error.
+    pub const ILL_COPROC: i32 = 7;
+    /// SIGILL — internal stack error.
+    pub const ILL_BADSTK: i32 = 8;
+    /// SIGFPE — integer divide by zero.
+    pub const FPE_INTDIV: i32 = 1;
+    /// SIGFPE — integer overflow.
+    pub const FPE_INTOVF: i32 = 2;
+    /// SIGFPE — floating-point divide by zero.
+    pub const FPE_FLTDIV: i32 = 3;
+    /// SIGFPE — floating-point overflow.
+    pub const FPE_FLTOVF: i32 = 4;
+    /// SIGFPE — floating-point underflow.
+    pub const FPE_FLTUND: i32 = 5;
+    /// SIGFPE — floating-point inexact result.
+    pub const FPE_FLTRES: i32 = 6;
+    /// SIGFPE — floating-point invalid operation.
+    pub const FPE_FLTINV: i32 = 7;
+    /// SIGFPE — subscript out of range.
+    pub const FPE_FLTSUB: i32 = 8;
+    /// SIGFPE — undiagnosed floating-point exception.
+    pub const FPE_FLTUNK: i32 = 14;
+    /// SIGTRAP — process breakpoint (`int3` / `brk`).
+    pub const TRAP_BRKPT: i32 = 1;
+    /// SIGTRAP — single-step / trace trap.
+    pub const TRAP_TRACE: i32 = 2;
+    /// SIGTRAP — hardware breakpoint / watchpoint.
+    pub const TRAP_HWBKPT: i32 = 4;
+    /// SIGTRAP — undiagnosed trap.
+    pub const TRAP_UNK: i32 = 5;
+}
+
 /// siginfo_t field offsets (`asm-generic/siginfo.h`) — identical on x86_64 and
 /// aarch64, so both frame builders share one writer.
 const SI_SIGNO: usize = 0;
@@ -73,6 +158,10 @@ const SI_VALUE: usize = 24;
 const SI_CALL_ADDR: usize = 16;
 const SI_SYSCALL:   usize = 24;
 const SI_ARCH:      usize = 28;
+/// `_sigfault._addr` — also at `_sifields`, overlapping si_pid/si_call_addr.
+const SI_ADDR:      usize = 16;
+/// `_sigfault._addr_lsb`, the `short` in the inner union right after `_addr`.
+const SI_ADDR_LSB:  usize = 24;
 
 /// Fill a signal frame's 128-byte `siginfo_t` from an arch-neutral payload.
 /// Shared by both `build_signal_frame`s so the two arches cannot drift on the
@@ -87,6 +176,11 @@ pub fn write_siginfo(info: &mut [u8; 128], sig: u32, payload: Option<SigPayload>
         info[SI_CALL_ADDR..SI_CALL_ADDR + 8].copy_from_slice(&s.call_addr.to_ne_bytes());
         info[SI_SYSCALL..SI_SYSCALL + 4].copy_from_slice(&s.syscall.to_ne_bytes());
         info[SI_ARCH..SI_ARCH + 4].copy_from_slice(&s.arch.to_ne_bytes());
+        return;
+    }
+    if let Some(f) = p.fault {
+        info[SI_ADDR..SI_ADDR + 8].copy_from_slice(&f.addr.to_ne_bytes());
+        info[SI_ADDR_LSB..SI_ADDR_LSB + 2].copy_from_slice(&f.addr_lsb.to_ne_bytes());
         return;
     }
     info[SI_PID..SI_PID + 4].copy_from_slice(&p.pid.to_ne_bytes());
@@ -114,7 +208,7 @@ mod tests {
     fn write_siginfo_sigchld_arm_writes_a_four_byte_si_status() {
         let mut info = [0u8; 128];
         let p = SigPayload { code: 1, pid: 42, uid: 7, status: -9, value: u64::MAX, chld_arm: true,
-                             sigsys: None };
+                             sigsys: None, fault: None };
         write_siginfo(&mut info, 17, Some(p));
         assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), 1);
         assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 42);
@@ -128,7 +222,7 @@ mod tests {
         let mut info = [0u8; 128];
         let ptr = 0x7fff_dead_beefu64;
         let p = SigPayload { code: -1, pid: 42, uid: 7, status: 0, value: ptr, chld_arm: false,
-                             sigsys: None };
+                             sigsys: None, fault: None };
         write_siginfo(&mut info, 34, Some(p));
         assert_eq!(u64::from_ne_bytes(info[24..32].try_into().unwrap()), ptr,
                    "truncating si_value to 4 bytes loses a sigqueue(3) sival_ptr");
@@ -142,7 +236,7 @@ mod tests {
         let mut info = [0u8; 128];
         let s = Sigsys { call_addr: 0x7fff_1234_5678, syscall: 257, arch: 0xc000_003e, errno: 0xbeef };
         let p = SigPayload { code: 1, pid: 42, uid: 7, status: -9, value: u64::MAX, chld_arm: true,
-                             sigsys: Some(s) };
+                             sigsys: Some(s), fault: None };
         write_siginfo(&mut info, 31, Some(p));
         assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 31);
         assert_eq!(i32::from_ne_bytes(info[4..8].try_into().unwrap()), 0xbeef);
@@ -152,6 +246,35 @@ mod tests {
         assert_eq!(u32::from_ne_bytes(info[28..32].try_into().unwrap()), 0xc000_003e);
     }
 
+    // A synchronous fault signal's whole point is si_addr; without the
+    // `_sigfault` arm a SIGSEGV handler reads si_addr == 0 and cannot tell
+    // which address faulted.
+    #[test]
+    fn write_siginfo_sigfault_arm_writes_si_addr_and_si_addr_lsb() {
+        let mut info = [0u8; 128];
+        let f = SigFault { addr: 0x7fff_dead_b000, addr_lsb: 12 };
+        let p = SigPayload { code: code::SEGV_MAPERR, pid: 0, uid: 0, status: 0, value: 0,
+                             chld_arm: false, sigsys: None, fault: Some(f) };
+        write_siginfo(&mut info, 11, Some(p));
+        assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 11);
+        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), code::SEGV_MAPERR);
+        assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), 0x7fff_dead_b000);
+        assert_eq!(i16::from_ne_bytes(info[24..26].try_into().unwrap()), 12);
+    }
+
+    // `_sigfault` overlaps `_kill`/`_rt` at byte 16, so si_pid/si_uid/si_value
+    // must not be written over si_addr.
+    #[test]
+    fn the_sigfault_arm_excludes_the_pid_uid_and_value_fields() {
+        let mut info = [0u8; 128];
+        let f = SigFault { addr: u64::MAX, addr_lsb: 0 };
+        let p = SigPayload { code: code::SEGV_ACCERR, pid: 0x4242, uid: 0x77, status: -9,
+                             value: u64::MAX, chld_arm: false, sigsys: None, fault: Some(f) };
+        write_siginfo(&mut info, 11, Some(p));
+        assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), u64::MAX);
+        assert!(info[26..].iter().all(|b| *b == 0), "nothing past si_addr_lsb is written");
+    }
+
     // The `_sigsys` arm OVERLAPS `_kill`/`_sigchld`: si_pid and si_call_addr
     // share offset 16. Writing both would corrupt si_call_addr's low half.
     #[test]
@@ -159,7 +282,7 @@ mod tests {
         let mut info = [0u8; 128];
         let s = Sigsys { call_addr: u64::MAX, syscall: 0, arch: 0, errno: 0 };
         let p = SigPayload { code: 1, pid: 0x4242, uid: 0x77, status: -9, value: 0, chld_arm: false,
-                             sigsys: Some(s) };
+                             sigsys: Some(s), fault: None };
         write_siginfo(&mut info, 31, Some(p));
         assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), u64::MAX,
                    "si_pid/si_uid must not be written over si_call_addr");

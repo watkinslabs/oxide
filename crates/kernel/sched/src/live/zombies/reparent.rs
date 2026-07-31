@@ -143,10 +143,18 @@ pub fn reparent_children(dying_tid: u32) {
     for tid in registry::live_tids() {
         let Some(t) = registry::lookup(tid) else { continue };
         if t.parent_tid.load(Ordering::Acquire) != dying_tid { continue; }
+        // Linux `forget_original_parent` -> `group_send_sig_info(pdeath_signal,
+        // SEND_SIG_NOINFO, p, PIDTYPE_TGID)`: PROCESS-directed, and the record
+        // names the parent that just died so an `SA_SIGINFO` handler can tell
+        // which death it is reporting. The raw bit-set this replaced queued no
+        // record and posted to one thread's private set.
         let pds = t.pdeathsig.load(Ordering::Acquire);
-        if let Some(bit) = crate::bit_for(pds as u32) {
-            t.sigpending.fetch_or(bit, Ordering::Release);
-            crate::live::signal_wake_up(&t);
+        if crate::bit_for(pds as u32).is_some() {
+            let src = crate::sigsend::SigSource::User {
+                pid: dying.vtgid.load(Ordering::Acquire),
+                uid: dying.creds.ruid.load(Ordering::Acquire),
+            };
+            let _ = crate::live::sigpend::post_group_signal(&t, pds as u32, src);
         }
         attach_to(&t, &reaper);
         if threaded { continue; }

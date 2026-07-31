@@ -114,7 +114,16 @@ fn pdeathsig_fires_on_the_children_of_the_dying_parent() {
     dying.set_state(TaskState::Zombie);
     reparent_children(dying.tid);
 
-    assert_ne!(child.sigpending.load(Ordering::Acquire) & Signum::Sigterm.bit(), 0);
+    // PROCESS-directed (Linux `group_send_sig_info(..., PIDTYPE_TGID)`), so it
+    // lands in the shared set — read the union `dequeue_signal` reads.
+    assert_ne!(child.pending_signals() & Signum::Sigterm.bit(), 0);
+    // ...and it carries the dying parent's identity, which is the whole point
+    // of an `SA_SIGINFO` PR_SET_PDEATHSIG handler.
+    let rec = child.dequeue_pending(Signum::Sigterm as u32)
+        .expect("the pdeathsig must be claimable")
+        .expect("and it must carry a record, not just a bit");
+    assert_eq!(rec.code, crate::signum::SI_USER);
+    assert_eq!(rec.pid, dying.vtgid.load(Ordering::Acquire));
 }
 
 /// Install a `SIGCHLD` disposition on `t` and read it back the way

@@ -158,7 +158,7 @@ pub fn encode(signo: u32, rec: Option<&SigInfo>, out: &mut [u8]) {
         }
         SigLayout::FaultMceerr => {
             put_u64(out, SSI_ADDR, fault_addr(r));
-            put_u16(out, SSI_ADDR_LSB, r.value as u16);
+            put_u16(out, SSI_ADDR_LSB, fault_addr_lsb(r));
         }
         SigLayout::Chld => {
             put_u32(out, SSI_PID, r.pid);
@@ -189,7 +189,20 @@ pub fn encode(signo: u32, rec: Option<&SigInfo>, out: &mut [u8]) {
 /// `_sigpoll.si_band`, `_sigsys._call_addr`) is exactly the two 4-byte words
 /// joined low half first.
 /// # C: O(1)
-fn fault_addr(r: &SigInfo) -> u64 { (r.pid as u64) | ((r.uid as u64) << 32) }
+/// `_sigfault._addr`. A record produced by `force_sig_fault` carries the real
+/// `_sigfault` arm; the pid/uid reconstruction is the fallback for a record
+/// that predates it (a user-forged `rt_sigqueueinfo` whose si_code happens to
+/// select a fault layout), where those two words ARE the overlaid si_addr.
+/// # C: O(1)
+fn fault_addr(r: &SigInfo) -> u64 {
+    match r.fault { Some(f) => f.addr, None => (r.pid as u64) | ((r.uid as u64) << 32) }
+}
+
+/// `_sigfault._addr_lsb` — the `short` the SIGBUS machine-check codes carry.
+/// # C: O(1)
+fn fault_addr_lsb(r: &SigInfo) -> u16 {
+    match r.fault { Some(f) => f.addr_lsb as u16, None => r.value as u16 }
+}
 
 #[cfg(test)]
 mod tests;

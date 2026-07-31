@@ -44,6 +44,7 @@ pub mod workqueue;
 pub mod wait_event;
 pub mod wait_list;
 pub mod zombies;
+pub mod send;
 pub mod sigpend;
 pub mod sb_freeze;
 pub mod quota_wait;
@@ -80,6 +81,8 @@ pub use delayed_work::queue_delayed_work_on;
 pub use tasklet::TaskletFn;
 pub use timer_list::TimerFn;
 pub use threaded_irq::{request as request_threaded_irq, free as free_threaded_irq};
+pub use send::{force_fatal_sig, force_sig_fault, force_sig_info_to_task, send_sig_priv_group,
+               send_sig_priv_self, send_signal, SendErr};
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, send_signal_self, signal_wake_up,
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,

@@ -48,6 +48,12 @@ pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> bool {
             if interval != 0 { now_ns.saturating_add(interval) } else { 0 },
             Ordering::Release,
         );
+        // NOT routed through `live::send`: this runs in TIMER-IRQ context and
+        // the enqueue reserves record-queue capacity, i.e. allocates. Linux
+        // arms `alarm(2)` on a hrtimer whose callback runs in process context
+        // and calls `kill_pid_info(SIGALRM, SEND_SIG_PRIV, …)`; matching that
+        // needs the expiry moved off the tick, which is a timer-subsystem
+        // change. Until then the bit is set without an `SI_KERNEL` record.
         t.sigpending.fetch_or(Signum::Sigalrm.bit(), Ordering::Release);
         fired = true;
     }
@@ -63,6 +69,7 @@ fn fire_cpu_itimer(t: &crate::Task, deadline: &AtomicU64, interval: &AtomicU64, 
     if dl == 0 || dl > now_cpu { return false; }
     let intv = interval.load(Ordering::Acquire);
     deadline.store(if intv != 0 { now_cpu.saturating_add(intv) } else { 0 }, Ordering::Release);
+    // Same timer-IRQ allocation constraint as the `alarm(2)` arm above.
     t.sigpending.fetch_or(sig.bit(), Ordering::Release);
     true
 }

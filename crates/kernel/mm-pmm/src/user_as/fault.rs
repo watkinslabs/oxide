@@ -60,7 +60,13 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
             // SAFETY: live PtRegs published by oxide_fault_print_rust on the kernel stack; we only read cs to check CPL.
             let cs = unsafe { (*frame_ptr).cs };
             if cs & 3 == 3 {
-                deliver_sigsegv_x86(vec, err, _rip, cr2);
+                // Linux `do_error_trap`/`exc_general_protection`: a synchronous
+                // trap from CPL=3 becomes the signal the ARCHITECTURE names
+                // (SIGILL for #UD, SIGFPE for #DE, SIGBUS for #AC, …), queued
+                // with its `_sigfault` record. Reporting every one as a
+                // terminating SIGSEGV made a handled SIGFPE unhandleable.
+                signal::trace_user_fault_x86(vec, err, _rip, cr2);
+                return force_user_fault_x86(vec, err, _rip, cr2);
             }
         }
         return false;
@@ -120,15 +126,14 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     // refused it). Dump the failing VA + VMA + PTE/frame before SIGSEGV.
     #[cfg(feature = "debug-cow")]
     segv_dump(_rip, cr2, err);
-    // Unhandled fault from user mode. F158: try Linux-style
-    // catchable SIGSEGV — rewrite the live PtRegs to call
-    // the user-installed handler. If no handler is installed
-    // (SIG_DFL), fall back to terminate via deliver_sigsegv.
+    // Unhandled fault from user mode. Linux `bad_area` -> `force_sig_fault`:
+    // queue the classified signal (SEGV_MAPERR for an absent mapping,
+    // SEGV_ACCERR for a protection violation) against this thread and return
+    // to the vector epilogue, whose return-to-user work loop delivers it
+    // through the ONE signal path.
     if err & 0x4 != 0 {
-        if try_deliver_sigsegv_via_handler_x86(cr2) {
-            return true;   // asm iretqs to user handler with rewritten frame
-        }
-        deliver_sigsegv_x86(vec, err, _rip, cr2);
+        signal::trace_user_fault_x86(vec, err, _rip, cr2);
+        return force_user_fault_x86(vec, err, _rip, cr2);
     }
     false
 }
@@ -209,7 +214,8 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     // same-EL (kernel-side). Only terminate the task on the EL0 case.
     let ec = (esr >> 26) & 0x3F;
     if matches!(ec, 0x20 | 0x24) {
-        deliver_sigsegv_arm(esr, far, _elr);
+        signal::trace_user_fault_arm(esr, far, _elr);
+        return force_user_fault_arm(esr, far, _elr);
     }
     false
 }

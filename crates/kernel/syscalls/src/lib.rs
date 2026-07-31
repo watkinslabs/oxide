@@ -101,6 +101,8 @@ pub mod move_mount_policy;
 pub mod fspick_policy;
 mod fcntl_dup;
 mod exec_time;
+mod pidfd_signal_policy;
+mod kill_policy;
 mod perm_common;
 #[cfg(target_os = "oxide-kernel")]
 mod clone_cgroup;

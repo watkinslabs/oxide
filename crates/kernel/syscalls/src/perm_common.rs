@@ -20,7 +20,13 @@
 pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
     use core::sync::atomic::Ordering;
     use sched::Signum;
+    // Linux `check_kill_permission`: `!same_thread_group(current, t)` gates the
+    // credential test, so a thread may always signal a SIBLING regardless of
+    // whose credentials each thread carries. Testing only `tid == tid` denied a
+    // `pthread_kill` issued after one thread ran `setresuid`, which is exactly
+    // how glibc's `__nptl_setxid` broadcast works.
     if cur.tid == target.tid { return true; }
+    if cur.tgid.load(Ordering::Acquire) == target.tgid.load(Ordering::Acquire) { return true; }
     // F118: CAP_KILL must be held in a NS that's an ancestor of (or
     // equal to) the target's user_ns. Init-NS callers pass through.
     if target.namespace_owner(namespace_identity::NamespaceKind::User).as_ref()

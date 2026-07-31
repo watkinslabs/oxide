@@ -89,7 +89,6 @@ fn init_smp(info: &BootInfo) {
         unsafe {
             sched::live::install_default_runqueue();
             sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
-            pmm::user_as::set_coredump_hook(fs::coredump::write_for_current);
             arch_irq::tlb::install();
         }
         if started > 0 { smp_ipi_smoke(info); }
@@ -201,9 +200,12 @@ fn init_runtime_subsystems() {
 fn init_vt_and_drv_hooks() {
     let _ = unsafe { vt::init() };
     vt::set_signal_hook(|pid, signo| {
+        // VT_SETMODE's acquire/release signals are kernel-generated and
+        // PROCESS-directed (Linux `vt_ioctl` -> `kill_pid(..., priv = 1)`), and
+        // the bit-only post this replaced never woke the console owner.
         if let Some(t) = sched::live::registry::lookup_by_vpid(pid) {
-            if let Some(bit) = sched::bit_for(signo as u32) {
-                t.sigpending.fetch_or(bit, core::sync::atomic::Ordering::Release);
+            if sched::bit_for(signo as u32).is_some() {
+                sched::live::send_sig_priv_group(&t, signo as u32);
             }
         }
     });

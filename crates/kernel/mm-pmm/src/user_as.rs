@@ -35,14 +35,11 @@ mod mmap;
 mod unmap;
 mod diag;
 
-pub use signal::{CoredumpFn, set_coredump_hook};
 pub use accounting::{oom_memory, range_memory_stats, RangeMemoryStats};
 #[cfg(target_arch = "x86_64")]
-pub use signal::deliver_sigsegv_x86;
+pub use signal::force_user_fault_x86;
 #[cfg(target_arch = "aarch64")]
-pub use signal::deliver_sigsegv_arm;
-#[cfg(target_arch = "x86_64")]
-use signal::try_deliver_sigsegv_via_handler_x86;
+pub use signal::force_user_fault_arm;
 
 #[cfg(feature = "debug-cow")]
 use state::current_cpu_idx;

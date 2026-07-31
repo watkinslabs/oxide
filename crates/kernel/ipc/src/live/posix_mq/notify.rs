@@ -2,7 +2,6 @@
 // (`ipc/mqueue.c:1266-1385`) and the delivery half `__do_notify` (`:777-836`).
 
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 
 use syscall::errno::Errno;
 
@@ -77,17 +76,20 @@ fn queue_mesgq_signal(reg: &MqNotifyReg, signo: u32, sender_vpid: u32, sender_ui
     let Some(bit) = sched::signum::bit_for(signo) else { return };
     let Some(target) = sched::live::registry::lookup(reg.owner_tgid) else { return };
     target.sigq_reserve(signo);
-    target.sigq_push(sched::SigInfo {
+    // Linux `__do_notify` -> `do_send_sig_info(sig, &sig_i, task, PIDTYPE_TGID)`:
+    // the `mq_notify(SIGEV_SIGNAL)` delivery is PROCESS-directed, so any thread
+    // of the registrant that has not blocked the signal can take it.
+    let _ = bit;
+    let info = sched::SigInfo {
         signo,
         code: sched::signum::SI_MESGQ,
         pid: sender_vpid,
         uid: sender_uid,
         value: reg.value,
-        sys: None,
-    });
-    target.sigpending.fetch_or(bit, Ordering::Release);
-    sched::live::registry::wake_if_stopped(&target);
-    sched::live::signal_wake_up(&target);
+        sys: None, fault: None
+    };
+    let _ = sched::live::send_signal(&target, signo, sched::sigsend::SigSource::Info(info),
+                                     sched::sigsend::SigTarget::Process);
 }
 
 /// Read the `struct sigevent` prefix `mq_notify` consumes.

@@ -303,11 +303,9 @@ fn vt_apply_winsize(rows: u16, cols: u16) {
     let changed = tty.set_winsize(ws);
     let fg = tty.fg_pgrp();
     if changed && fg != 0 {
-        use core::sync::atomic::Ordering;
-        // SIGWINCH is the canonical window-size notification signal.
+        // Linux `vt_do_resize` -> `kill_pgrp(pgrp, SIGWINCH, 1)`.
         for t in sched::live::registry::tasks_in_pgrp(fg) {
-            t.sigpending.fetch_or(sched::Signum::Sigwinch.bit(), Ordering::Release);
-            sched::live::signal_wake_up(&t);
+            sched::live::send_sig_priv_group(&t, sched::Signum::Sigwinch as u32);
         }
     }
 }

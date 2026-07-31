@@ -1,149 +1,86 @@
-// SIGSEGV / fault-to-signal delivery split out of user_as.rs per
-// `08§7` file-length cap. F158 catchable-signal rewrite + the
-// arch-specific terminate paths live here; user_as routes
-// unhandled user-mode faults through `deliver_sigsegv_<arch>`.
+// Synchronous-fault -> signal delivery, split out of user_as.rs per `08§7`.
+//
+// This file used to hand-write a `siginfo_t` onto the user stack and rewrite
+// the live fault frame to jump straight at the handler — a SECOND, parallel
+// signal path that never touched the pending queue. Consequences: `signalfd`
+// and `rt_sigtimedwait` could never observe a fault signal, si_code was always
+// SEGV_MAPERR whatever the fault was, the frame carried no ucontext so a
+// handler that returned resumed with garbage registers, and the `force_sig_info`
+// ladder (a blocked or ignored fault signal must be forcibly unblocked and reset
+// to SIG_DFL, not dropped) never ran.
+//
+// Now there is ONE path: classify the trap (`hal::fault_class`), queue it via
+// `sched::live::force_sig_fault` (Linux `force_sig_fault`), and let the fault
+// vector's existing `oxide_irq_exit_to_user` epilogue run the return-to-user
+// work loop, which builds a real `rt_sigframe` through the same builder every
+// other signal uses. The `coredump_then_terminate` path below survives only for
+// the callers that have no live user frame to return through.
 
-/// Hook installed at boot from `fs::coredump::write_for_current`.
-/// Avoids vmm→fs cycle.
-pub type CoredumpFn = fn(i32);
-
-/// Span the fault-path SIGSEGV frame occupies on the user stack: siginfo
-/// (128 B) + zeroed ucontext stub (128 B) + the restorer quadword.
-#[cfg(target_arch = "x86_64")]
-const FAULT_FRAME_BYTES: u64 = 0x108;
-/// `SIGSEGV` as the handler's first argument (Linux `regs->di = sig`).
-#[cfg(target_arch = "x86_64")]
-const SIGSEGV_SIGNO: u64 = sched::signum::Signum::Sigsegv.as_u8() as u64;
-/// RFLAGS a fault-path handler entry runs with: IF=1 plus the always-set
-/// reserved bit 1, with DF/TF/RF clear per Linux `handle_signal`.
-#[cfg(target_arch = "x86_64")]
-const HANDLER_ENTRY_RFLAGS: u64 = 0x202;
-static COREDUMP_HOOK: core::sync::atomic::AtomicPtr<()> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-/// # C: O(1) — atomic store.
-pub fn set_coredump_hook(f: CoredumpFn) {
-    COREDUMP_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
-}
-
-/// Write a best-effort core and enter the scheduler-owned fatal-exit path.
-/// # C: coredump cost + task-exit teardown
-fn coredump_then_terminate(sig: sched::signum::Signum) -> ! {
-    let p = COREDUMP_HOOK.load(core::sync::atomic::Ordering::Acquire);
-    if !p.is_null() {
-        // SAFETY: hook ptr installed from a function matching CoredumpFn; Acquire pairs with setter Release.
-        let f: CoredumpFn = unsafe { core::mem::transmute(p) };
-        f(sig.as_u8() as i32);
-    }
-    sched::live::terminate_current_with_signal(sig.as_u8())
-}
-
-/// Public wrapper for SIGSEGV delivery. F158: tries Linux-style
-/// catchable signal first — if the user task has installed a
-/// SIGSEGV handler via rt_sigaction, rewrite the live PtRegs
-/// so iretq lands at the handler with `sig=11` in rdi and a
-/// minimal siginfo on the user stack. Falls back to terminate
-/// when SIG_DFL or no live frame.
-/// # SAFETY: caller is in fault / IRQ-off context with the
-/// runqueue installed (else no current task to terminate).
-/// # C: O(1) — diverges OR returns through dispatch
-#[cfg(target_arch = "x86_64")]
-pub fn deliver_sigsegv_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
-    sigsegv_terminate_x86(vec, err, rip, cr2);
-}
-
-/// F158: rewrite the live PtRegs so iretq lands at the user's
-/// SIGSEGV handler with `sig=11` in rdi (passed via fault asm
-/// scratch slot). siginfo + ucontext stub pushed on user stack.
-/// # SAFETY: caller is in fault dispatch, IRQs off.
+/// Linux `force_sig_fault(sig, code, addr)` for an unresolved USER-MODE
+/// exception: classify the trap, queue the signal with its full `_sigfault`
+/// record against the faulting thread, and return so the fault vector's
+/// `oxide_irq_exit_to_user` epilogue delivers it through the ONE
+/// return-to-user work loop.
+///
+/// `vec` is the IDT vector, `err` its error code (`#PF` bits, else 0) and `pc`
+/// the faulting RIP. Returns `true` unconditionally — "resume to user mode",
+/// which is what lets the work loop run. The signal is already pending, so
+/// either a handler frame is built or the SIG_DFL fatal action ends the group;
+/// neither outcome comes back here.
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
-pub(super) fn try_deliver_sigsegv_via_handler_x86(cr2: u64) -> bool {
-    let cur = match sched::live::current() { Some(c) => c, None => return false };
-    let sa = cur.sigactions_ref().get(11);
-    if sa.handler == 0 || sa.handler == 1 { return false; }
-    let frame_ptr = hal_x86_64::current_fault_frame();
-    if frame_ptr.is_null() { return false; }
-    // F203: log the catchable-signal dispatch so we can see which
-    // user-space RIP keeps faulting under handler-installed cover
-    // (dropbear's sigsegv_handler is the canonical case — without
-    // this trace the kernel-side fault is invisible because the
-    // terminate path's [FAULT] block doesn't run).
-    #[cfg(feature = "debug-irq")]
-    {
-        // SAFETY: frame published on kernel stack by oxide_fault_print_rust; read-only.
-        let f = unsafe { &*frame_ptr };
-        klog::write_raw(b"[FAULT] catchable-sigsegv tid=");
-        klog::write_dec_u64(cur.tid as u64);
-        klog::write_raw(b" rip=");      klog::write_hex_u64(f.rip);
-        klog::write_raw(b" rsp=");      klog::write_hex_u64(f.rsp);
-        klog::write_raw(b" cr2=");      klog::write_hex_u64(cr2);
-        klog::write_raw(b" handler="); klog::write_hex_u64(sa.handler);
-        klog::write_raw(b"\n");
-    }
-    // SAFETY: frame_ptr is the live PtRegs for this PF, exposed by oxide_fault_print_rust on the kernel stack; mutable borrow is sound under fault dispatch context (single-CPU, IRQs off).
-    let frame = unsafe { &mut *frame_ptr };
-    // User stack layout (top → bottom):
-    //   [old_rsp - 0x10]  restorer    ← ret addr from handler
-    //   [old_rsp - 0x88]  ucontext stub (zeroed, 128 B)
-    //   [old_rsp - 0x108] siginfo_t   (128 B; si_signo/si_addr/si_code)
-    // The whole span is FAULT_FRAME_BYTES wide; the last write is the
-    // restorer quadword at `new_sp + 0x100`.
-    let new_sp = frame.rsp.saturating_sub(FAULT_FRAME_BYTES);
-    // Linux `get_sigframe`'s `access_ok` covers the WHOLE frame, not just its
-    // base: the writes below run up to `new_sp + FAULT_FRAME_BYTES`, so
-    // bounding only the base leaves the tail landing above USER_VA_END
-    // (non-canonical → #GP inside the fault handler). B1459.
-    if new_sp == 0 { return false; }
-    match new_sp.checked_add(FAULT_FRAME_BYTES) {
-        Some(end) if end <= hal::USER_VA_END => {}
-        _ => return false,
-    }
-    let si  = new_sp;                   // siginfo at base
-    let uc  = new_sp + 0x80;            // ucontext above
-    let ret = new_sp + 0x100;           // restorer addr above ucontext
-    // SAFETY: user stack pages faulted in by user code; CPL=0 writes through active CR3.
-    unsafe {
-        core::ptr::write_volatile( si        as *mut i32, 11);
-        core::ptr::write_volatile((si +  4)  as *mut i32, 0);
-        core::ptr::write_volatile((si +  8)  as *mut i32, 1);    // SEGV_MAPERR
-        core::ptr::write_volatile((si + 16)  as *mut u64, cr2);
-        core::ptr::write_bytes((si + 24) as *mut u8, 0, 0x80 - 24);
-        core::ptr::write_bytes(uc as *mut u8, 0, 0x80);
-        core::ptr::write_volatile(ret as *mut u64, sa.restorer);
-    }
-    frame.rip    = sa.handler;
-    frame.rsp    = ret;
-    frame.rflags = HANDLER_ENTRY_RFLAGS;
-    // F158: the argument registers oxide_fault_common restores before its
-    // iretq, so the user handler sees the Linux ABI:
-    //   rdi = sig num (11)
-    //   rsi = ptr to siginfo_t (only meaningful with SA_SIGINFO)
-    //   rdx = ptr to ucontext_t (only meaningful with SA_SIGINFO)
-    // Named fields on the entry frame — these were raw `frame_ptr - 0x28`
-    // stack pokes back when the fault path had its own ad-hoc save layout.
-    frame.rdi = SIGSEGV_SIGNO;
-    frame.rsi = si;
-    frame.rdx = uc;
-    let _ = sa.flags;
+pub fn force_user_fault_x86(vec: u64, err: u64, pc: u64, cr2: u64) -> bool {
+    use hal::fault_class::x86_64 as fc;
+    let (cls, addr) = if vec == fc::TRAP_PF { (fc::page_fault(err), cr2) }
+                      else { (fc::trap(vec), fc::trap_addr(vec, pc)) };
+    raise(cls, addr);
     true
 }
 
-/// arm wrapper for SIGSEGV delivery. Same shape as the x86 form.
-/// # SAFETY: caller is in fault / IRQ-off context with the
-/// runqueue installed.
-/// # C: O(1) — diverges
+/// aarch64 form. `esr` is ESR_EL1, `far` FAR_EL1 (the faulting address for the
+/// abort classes) and `elr` the faulting PC.
+/// # C: O(1)
 #[cfg(target_arch = "aarch64")]
-pub fn deliver_sigsegv_arm(esr: u64, far: u64, elr: u64) -> ! {
-    sigsegv_terminate_arm(esr, far, elr);
+pub fn force_user_fault_arm(esr: u64, far: u64, elr: u64) -> bool {
+    use hal::fault_class::aarch64 as fc;
+    let cls = fc::sync(esr);
+    // The abort classes report FAR_EL1; every other synchronous EL0 exception
+    // (BRK, illegal state, FP) names the instruction that raised it.
+    let addr = if fc::from_el0(esr) || matches!(fc::ec(esr), fc::EC_PC_ALIGN | fc::EC_SP_ALIGN)
+               { far } else { elr };
+    raise(cls, addr);
+    true
 }
 
-/// Minimal SIGSEGV (signal 11) delivery per docs/27 v1: log the
-/// fault, mark the current user task `Zombie` with `exit_status =
-/// 11` (POSIX wstatus low 7 bits = signal number), park to the
-/// zombie registry, `schedule()` away. Diverges. Parent's
-/// `wait4` reaps the corpse.
+/// Queue one classified fault signal. A signo the classifier could not map
+/// still becomes SIGSEGV rather than nothing — an unhandled user-mode
+/// exception that raised no signal would spin the faulting instruction forever.
+/// # C: O(1)
+fn raise(cls: hal::fault_class::FaultSignal, addr: u64) {
+    let sig = signum_from(cls.signo);
+    sched::live::force_sig_fault(sig, cls.code, addr, 0);
+}
+
+/// Map a classifier signo onto the typed `Signum`. The classifier only ever
+/// produces the five `_sigfault` signals; anything else is a bug in the table
+/// and is reported as SIGSEGV rather than silently dropped.
+/// # C: O(1)
+fn signum_from(signo: u8) -> sched::signum::Signum {
+    use sched::signum::Signum;
+    match signo {
+        s if s == Signum::Sigill.as_u8()  => Signum::Sigill,
+        s if s == Signum::Sigtrap.as_u8() => Signum::Sigtrap,
+        s if s == Signum::Sigbus.as_u8()  => Signum::Sigbus,
+        s if s == Signum::Sigfpe.as_u8()  => Signum::Sigfpe,
+        _ => Signum::Sigsegv,
+    }
+}
+
+/// Diagnostic dump for an unresolved user-mode fault. Runs BEFORE the signal
+/// is queued so a crash under a debug build still names the faulting register
+/// state; the fault itself is reported through `force_user_fault_x86`.
 #[cfg(target_arch = "x86_64")]
-fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
+pub(super) fn trace_user_fault_x86(vec: u64, err: u64, rip: u64, cr2: u64) {
     let _ = (vec, err, rip, cr2); // consumed only by the cfg-gated dumps below
     #[cfg(feature = "debug-irq")]
     {
@@ -248,12 +185,11 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
             }
         }
     }
-    coredump_then_terminate(sched::signum::Signum::Sigsegv)
 }
 
-/// arm minimal SIGSEGV delivery — same shape as x86 path.
+/// aarch64 form of [`trace_user_fault_x86`].
 #[cfg(target_arch = "aarch64")]
-fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
+pub(super) fn trace_user_fault_arm(esr: u64, far: u64, elr: u64) {
     let _ = (esr, far, elr); // consumed only by the cfg-gated dumps below
     #[cfg(any(feature = "debug-irq", feature = "debug-boot"))]
     {
@@ -288,5 +224,4 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
         klog::write_raw(b" sp=");       klog::write_hex_u64(sp_el0);
         klog::write_raw(b"\n");
     }
-    coredump_then_terminate(sched::signum::Signum::Sigsegv)
 }

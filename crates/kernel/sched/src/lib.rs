@@ -49,6 +49,7 @@ pub mod session;
 pub mod ucounts;
 pub mod runqueue;
 pub mod task;
+pub mod sigsend;
 pub mod signum;
 pub mod sigaltstack;
 pub use signum::{bit_for, clone_exit_signal, Signum};

@@ -484,6 +484,18 @@ core::arch::global_asm!(
     "    mov  x0, sp",
     "    bl   oxide_arm_software_step_handler",
     "    str  x0,       [sp, #0xc8]",
+    // The synchronous EL0 traps that are NOT syscalls reach userspace through
+    // this block, which — unlike the SVC path — never ran the return-to-user
+    // work loop. A SIGILL/SIGTRAP the hook above queued therefore waited for
+    // the task's NEXT kernel entry, which for a `siglongjmp`-style probe
+    // handler is never. Linux `el0_undef`/`el0_dbg` both end in
+    // `arm64_exit_to_user_mode(regs)`; so do we now. The x0 slot is refreshed
+    // from the frame afterwards because a delivered signal re-seeds gp[0] with
+    // the handler's first AAPCS64 argument.
+    "    mov  x0,  sp",
+    "    bl   oxide_irq_exit_to_user",
+    "    ldr  x0,       [sp, #0x00]",
+    "    str  x0,       [sp, #0xc8]",
     "oxide_lower_sync_restore:",
     // F51: arm SS bits if Task.singlestep is set. Hook ORs (1<<21)
     // into the saved SPSR slot at [sp+0xb8] and writes MDSCR_EL1.SS.
@@ -559,6 +571,18 @@ core::arch::global_asm!(
     "    str  x10, [x9, #24]",
     "    mov  x0, sp",
     "    bl   oxide_arm_undef_handler",
+    "    str  x0,       [sp, #0xc8]",
+    // The synchronous EL0 traps that are NOT syscalls reach userspace through
+    // this block, which — unlike the SVC path — never ran the return-to-user
+    // work loop. A SIGILL/SIGTRAP the hook above queued therefore waited for
+    // the task's NEXT kernel entry, which for a `siglongjmp`-style probe
+    // handler is never. Linux `el0_undef`/`el0_dbg` both end in
+    // `arm64_exit_to_user_mode(regs)`; so do we now. The x0 slot is refreshed
+    // from the frame afterwards because a delivered signal re-seeds gp[0] with
+    // the handler's first AAPCS64 argument.
+    "    mov  x0,  sp",
+    "    bl   oxide_irq_exit_to_user",
+    "    ldr  x0,       [sp, #0x00]",
     "    str  x0,       [sp, #0xc8]",
     "    b    oxide_lower_sync_restore",
     "oxide_sysreg_save_block:",
