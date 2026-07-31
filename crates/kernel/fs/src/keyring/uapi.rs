@@ -118,15 +118,17 @@ pub const KEYCTL_CAPS1_NS_KEYRING_NAME:   u8 = 0x01;
 pub const KEYCTL_CAPS1_NS_KEY_TAG:        u8 = 0x02;
 pub const KEYCTL_CAPS1_NOTIFICATIONS:     u8 = 0x04;
 
-/// `keyrings_capabilities[]` for this kernel's configuration: persistent
-/// keyrings, `KEYCTL_INVALIDATE`, `KEYCTL_RESTRICT_KEYRING` and `KEYCTL_MOVE`
-/// are implemented; Diffie-Hellman, asymmetric (public-key) operations,
-/// `big_key` and key notifications are not built in, exactly as a
-/// `CONFIG_KEY_DH_OPERATIONS=n CONFIG_ASYMMETRIC_KEY_TYPE=n CONFIG_BIG_KEYS=n
-/// CONFIG_KEY_NOTIFICATIONS=n` Linux reports them.
+/// `keyrings_capabilities[]` for this kernel: persistent keyrings, the
+/// `big_key` type, `KEYCTL_INVALIDATE`, `KEYCTL_RESTRICT_KEYRING` and
+/// `KEYCTL_MOVE` are implemented and advertised. The Diffie-Hellman, public-key
+/// and key-notification bits stay clear because those command families are not
+/// implemented — the advertised bits and the commands' answers must agree, or a
+/// caller that probes capabilities before use is told to expect a facility that
+/// is not there.
 pub const KEYRINGS_CAPABILITIES: [u8; 2] = [
     KEYCTL_CAPS0_CAPABILITIES
         | KEYCTL_CAPS0_PERSISTENT_KEYRINGS
+        | KEYCTL_CAPS0_BIG_KEY
         | KEYCTL_CAPS0_INVALIDATE
         | KEYCTL_CAPS0_RESTRICT_KEYRING
         | KEYCTL_CAPS0_MOVE,
@@ -141,6 +143,23 @@ pub const KEY_MAX_DESC_SIZE: usize = 4096;
 pub const KEY_MAX_PAYLOAD: u64 = 1024 * 1024 - 1;
 /// `strndup_user(_callout_info, PAGE_SIZE)` in `request_key`.
 pub const KEY_CALLOUT_MAX: usize = 4096;
+/// `keyctl_update_key` bounds its payload at one page, NOT at the 1 MiB
+/// `add_key` accepts — a longer update payload is EINVAL before any copy.
+pub const KEYCTL_UPDATE_MAX_PAYLOAD: u64 = 4096;
+/// `KEYCTL_READ` on a keyring hands back an array of 4-byte serials, so a
+/// buffer length that is not a multiple of that is EINVAL.
+pub const KEY_SERIAL_SIZE: u64 = 4;
+
+/// Per-uid key quota defaults, settable through `/proc/sys/kernel/keys/`:
+/// `key_quota_maxkeys` / `key_quota_maxbytes` for an ordinary uid and
+/// `key_quota_root_maxkeys` / `key_quota_root_maxbytes` for uid 0. Crossing
+/// either ceiling is EDQUOT.
+pub const KEY_QUOTA_MAXKEYS:       u64 = 200;
+pub const KEY_QUOTA_MAXBYTES:      u64 = 20_000;
+pub const KEY_QUOTA_ROOT_MAXKEYS:  u64 = 1_000_000;
+pub const KEY_QUOTA_ROOT_MAXBYTES: u64 = 25_000_000;
+/// The uid the root quota ceilings apply to.
+pub const ROOT_UID: u32 = 0;
 
 /// Linux `INVALID_GID` as seen through `from_kgid_munged`: the user/user-session
 /// keyrings are allocated with no group, so their group perm byte never applies.
