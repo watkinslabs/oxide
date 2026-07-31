@@ -128,6 +128,10 @@ fn probe_body(mode: Mode) -> String {
 const PROBE_TEMPLATE: &str = r#"#!/bin/sh
 set -u
 
+# The verdict must reach the harness over the serial console even when the
+# journal is not forwarding, so claim the console for the whole run.
+[ -w /dev/console ] && exec > /dev/console 2>&1
+
 tag=input_delivery
 mode=@MODE@
 settle=@SETTLE@
@@ -184,16 +188,19 @@ observe()
 {
     phase=$1
     /usr/bin/rm -f "$work/pointer.bin" "$work/keyboard.bin"
-    /usr/bin/timeout "$window" /usr/bin/dd if="$pointer" of="$work/pointer.bin" \
+    # dd writes each record as it reads it, so the capture files hold whatever
+    # arrived even when the window closes on a reader that is still blocked.
+    /usr/bin/dd if="$pointer" of="$work/pointer.bin" \
         bs=@EVENT_BYTES@ count="$records" 2>/dev/null &
     pointer_reader=$!
-    /usr/bin/timeout "$window" /usr/bin/dd if="$keyboard" of="$work/keyboard.bin" \
+    /usr/bin/dd if="$keyboard" of="$work/keyboard.bin" \
         bs=@EVENT_BYTES@ count="$records" 2>/dev/null &
     keyboard_reader=$!
     printf '%s: READY phase=%s pointer=%s keyboard=%s window=%s\n' \
         "$tag" "$phase" "$pointer" "$keyboard" "$window"
-    wait "$pointer_reader"
-    wait "$keyboard_reader"
+    sleep "$window"
+    kill "$pointer_reader" "$keyboard_reader" 2>/dev/null
+    sleep 1
     [ -f "$work/pointer.bin" ] || fail "$phase-pointer-capture"
     [ -f "$work/keyboard.bin" ] || fail "$phase-keyboard-capture"
     motion=$(count_type "$work/pointer.bin" @EV_REL@)
