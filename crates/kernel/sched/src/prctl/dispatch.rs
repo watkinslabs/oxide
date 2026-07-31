@@ -2,11 +2,13 @@
 // switch. Argument validation already happened in `decide::classify`, so
 // every arm here is a call into the owner of that piece of task state.
 
+use core::sync::atomic::Ordering;
+
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use super::decide::{self, Op};
-use super::{caps, name, task_state};
+use super::{apply, caps, futex_hash, name, rseq_slice, task_state};
 
 /// `sys_prctl(option, arg2, arg3, arg4, arg5)` — slot 157.
 ///
@@ -59,6 +61,24 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         Op::GetChildSubreaper(p) => task_state::get_child_subreaper(&cur, p),
         Op::SetNoNewPrivs => task_state::set_no_new_privs(&cur),
         Op::GetNoNewPrivs => task_state::get_no_new_privs(&cur),
+        // Yama records the relation against the caller's THREAD GROUP LEADER:
+        // the exemption is process-level, and a thread that sets it must not
+        // create a relation only its own tid satisfies.
+        Op::ClearPtracer => { crate::yama::ptracer_del(cur.tgid.load(Ordering::Acquire)); 0 }
+        Op::SetPtracer(tracer) => {
+            let tracee = cur.tgid.load(Ordering::Acquire);
+            match tracer {
+                None => { crate::yama::ptracer_add(tracee, None); 0 }
+                // `find_get_task_by_vpid(arg2)`: an unknown pid is EINVAL.
+                Some(vpid) => match crate::registry::lookup_by_vpid(vpid) {
+                    Some(t) => {
+                        crate::yama::ptracer_add(tracee, Some(t.tgid.load(Ordering::Acquire)));
+                        0
+                    }
+                    None => -(Errno::Einval.as_i32() as i64),
+                },
+            }
+        }
         Op::GetTidAddress(p) => task_state::get_tid_address(&cur, p),
         Op::SetThpDisable { disable, except_advised } =>
             task_state::set_thp_disable(&cur, disable, except_advised),
@@ -92,5 +112,12 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
             }
         }
         Op::SetVma => crate::prctl_vma::sys_set_vma_name(&cur, args),
+        Op::SetIoFlusher { a2, a3, a4, a5 } => apply::set_io_flusher(&cur, a2, a3, a4, a5),
+        Op::GetIoFlusher { a2, a3, a4, a5 } => apply::get_io_flusher(&cur, a2, a3, a4, a5),
+        Op::SetSyscallUserDispatch(cfg) => apply::set_syscall_user_dispatch(&cur, &cfg),
+        Op::GetAuxv { ptr, len } => apply::get_auxv(&cur, ptr, len),
+        Op::TimerCreateRestoreIds(op) => apply::timer_create_restore_ids(&cur, op),
+        Op::FutexHash { cmd, slots, a4 } => futex_hash::decide(cmd, slots, a4),
+        Op::RseqSliceExtension { cmd, ctrl, a4, a5 } => rseq_slice::decide(cmd, ctrl, a4, a5),
     }
 }

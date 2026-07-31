@@ -51,7 +51,16 @@ pub struct StackLayout {
     pub arg_end:   u64,
     pub env_start: u64,
     pub env_end:   u64,
+    /// The auxiliary vector written onto the stack, for the mm's
+    /// `saved_auxv` copy (Linux `fs/binfmt_elf.c` fills `mm->saved_auxv`
+    /// FIRST and copies it to the stack from there). `prctl(PR_GET_AUXV)`
+    /// and `/proc/<pid>/auxv` serve that copy, so it has to survive here.
+    pub auxv:      [(u64, u64); AUXV_SLOTS],
+    pub auxv_len:  usize,
 }
+
+/// Entries `build_user_stack` can carry into `StackLayout::auxv`.
+pub const AUXV_SLOTS: usize = 24;
 
 /// Build the initial user stack in `[stack_top - stack_len, stack_top)`.
 /// `argv`/`envp` are slices of NUL-free byte strings; the builder
@@ -217,7 +226,10 @@ pub unsafe fn build_user_stack(
     };
     let (arg_start, arg_end) = bounds(&argv_vas, argv);
     let (env_start, env_end) = bounds(&envp_vas, envp);
-    Some(StackLayout { sp, arg_start, arg_end, env_start, env_end })
+    let mut saved = [(0u64, 0u64); AUXV_SLOTS];
+    let n = core::cmp::min(auxv.len(), AUXV_SLOTS);
+    saved[..n].copy_from_slice(&auxv[..n]);
+    Some(StackLayout { sp, arg_start, arg_end, env_start, env_end, auxv: saved, auxv_len: n })
 }
 
 /// Push a byte slice to the user stack at `*cursor`, decrementing

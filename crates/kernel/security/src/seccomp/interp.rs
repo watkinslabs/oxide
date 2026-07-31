@@ -134,10 +134,10 @@ pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
 /// way `__secure_computing` only calls `__seccomp_filter` in
 /// `SECCOMP_MODE_FILTER`.
 /// # C: O(F x I)
-pub fn run_chain(chain: &[alloc::vec::Vec<u64>], data: &SeccompData) -> u32 {
+pub fn run_chain(chain: &[sched::seccomp_filter::SeccompFilter], data: &SeccompData) -> u32 {
     let mut ret = SECCOMP_RET_ALLOW;
     for f in chain.iter() {
-        let cur = run_filter(f, data);
+        let cur = run_filter(&f.prog, data);
         if ((cur & SECCOMP_RET_ACTION_FULL) as i32) < ((ret & SECCOMP_RET_ACTION_FULL) as i32) {
             ret = cur;
         }

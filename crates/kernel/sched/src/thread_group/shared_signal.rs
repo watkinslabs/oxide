@@ -28,6 +28,7 @@
 use core::sync::atomic::Ordering;
 
 use super::ThreadGroup;
+use crate::sigqueue::Charge;
 use crate::task::SigInfo;
 
 impl ThreadGroup {
@@ -46,9 +47,9 @@ impl ThreadGroup {
     /// exactly as Linux's bitmap-only path works.
     /// # C: O(1) amortized
     /// # Ctx: process — reserves queue capacity
-    pub fn post_shared(&self, sig: u32, info: Option<SigInfo>) {
+    pub fn post_shared(&self, sig: u32, info: Option<SigInfo>, charge: Charge) {
         if crate::signum::bit_for(sig).is_none() { return; }
-        if let Some(rec) = info { self.post_shared_record(rec); }
+        if let Some(rec) = info { self.post_shared_record(rec, charge); }
         self.publish_shared(sig);
     }
 
@@ -60,9 +61,21 @@ impl ThreadGroup {
     /// `false` = the bounded queue was full and the record was dropped.
     /// # C: O(1) amortized
     /// # Ctx: process — reserves queue capacity
-    pub fn post_shared_record(&self, rec: SigInfo) -> bool {
+    pub fn post_shared_record(&self, rec: SigInfo, charge: Charge) -> bool {
         crate::sigqueue::queues_reserve(&self.shared_sigqueue, rec.signo);
-        crate::sigqueue::queues_push(&self.shared_sigqueue, rec)
+        crate::sigqueue::queues_push(&self.shared_sigqueue, rec, charge)
+    }
+
+    /// Records the PROCESS-wide set currently holds for `signo`. # C: O(1)
+    pub fn shared_sigq_len(&self, signo: u32) -> usize {
+        crate::sigqueue::queues_len(&self.shared_sigqueue, signo)
+    }
+
+    /// Non-destructive view of the PROCESS-wide queued records, for
+    /// `PTRACE_PEEKSIGINFO` with `PTRACE_PEEKSIGINFO_SHARED`.
+    /// # C: O(SIGQ_SLOTS + queued)
+    pub fn shared_sigq_snapshot(&self) -> alloc::vec::Vec<SigInfo> {
+        crate::sigqueue::queues_snapshot(&self.shared_sigqueue)
     }
 
     /// `post_shared_record` for a producer that may not allocate: the slot was
@@ -71,7 +84,7 @@ impl ThreadGroup {
     /// # C: O(1)
     /// # Ctx: IRQ
     pub fn push_shared_prealloc(&self, rec: SigInfo) -> bool {
-        crate::sigqueue::queues_push(&self.shared_sigqueue, rec)
+        crate::sigqueue::queues_push(&self.shared_sigqueue, rec, Charge::Prealloc)
     }
 
     /// Reserve the shared record slot for `signo` so an IRQ-context producer

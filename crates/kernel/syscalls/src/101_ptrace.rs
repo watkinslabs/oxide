@@ -9,6 +9,13 @@
 //   101_ptrace/mem.rs    PEEK/POKE text, data and user area (kernel-only)
 //   101_ptrace/regset.rs GETREGS/SETREGS/GETREGSET/SETREGSET (kernel-only)
 //   101_ptrace/sig.rs    options, siginfo, sigmask, INTERRUPT, LISTEN (kernel-only)
+//   101_ptrace/event.rs  PTRACE_EVENT_* policy: which event, is it enabled,
+//                        what a new child inherits, EXITKILL
+//   101_ptrace/sysinfo.rs `struct ptrace_syscall_info` layout + validation
+//   101_ptrace/stop.rs   ptrace_notify/ptrace_event/ptrace_init_task/
+//                        exit_ptrace — the live event-stop producers
+//   101_ptrace/info.rs   PEEKSIGINFO, GET/SET_SYSCALL_INFO, SECCOMP_GET_*,
+//                        GET_RSEQ_CONFIGURATION (kernel-only)
 //
 // Order of checks follows `SYSCALL_DEFINE4(ptrace)`: TRACEME first (no
 // target), then pid lookup (ESRCH), then ATTACH/SEIZE (their own gate), then
@@ -27,6 +34,8 @@ use crate::s101_ptrace_uapi as uapi;
 use crate::s101_ptrace_decide as decide;
 use crate::s101_ptrace_perm as perm;
 
+#[path = "101_ptrace/stop.rs"]   pub mod stop;
+#[path = "101_ptrace/info.rs"]   pub mod info;
 #[path = "101_ptrace/frame.rs"]  pub mod frame;
 #[path = "101_ptrace/mem.rs"]    pub mod mem;
 #[path = "101_ptrace/regset.rs"] pub mod regset;
@@ -55,6 +64,10 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         return attach(&cur, &target, request, addr, data).map(|_| 0);
     }
     perm::check_attach(&cur, &target, !decide::ignores_stop_state(request))?;
+    // A request this architecture's `arch_ptrace` does not own falls through
+    // to `ptrace_request`'s EIO default — checked here so the arm below cannot
+    // answer a request the running arch has no ABI struct for.
+    if decide::unsupported_on_arch(request, frame::ARCH) { return Err(Errno::Eio); }
 
     match request {
         uapi::PEEKTEXT | uapi::PEEKDATA => mem::peek(&target, addr, data).map(|_| 0),
@@ -75,13 +88,22 @@ fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         uapi::SETSIGMASK  => sig::setsigmask(&target, addr, data).map(|_| 0),
         uapi::INTERRUPT   => sig::interrupt(&target).map(|_| 0),
         uapi::LISTEN      => sig::listen(&target).map(|_| 0),
+        uapi::PEEKSIGINFO => info::peeksiginfo(&target, addr, data),
+        uapi::GET_SYSCALL_INFO => info::get_syscall_info(&target, addr, data),
+        uapi::SET_SYSCALL_INFO => info::set_syscall_info(&target, addr, data),
+        uapi::SECCOMP_GET_FILTER   => info::seccomp_get_filter(&cur, &target, addr, data),
+        uapi::SECCOMP_GET_METADATA => info::seccomp_get_metadata(&cur, &target, addr, data),
+        uapi::GET_RSEQ_CONFIGURATION => info::get_rseq_configuration(&target, addr, data),
+        uapi::GET_SYSCALL_USER_DISPATCH_CONFIG => info::get_sud_config(&target, addr, data),
+        uapi::SET_SYSCALL_USER_DISPATCH_CONFIG => info::set_sud_config(&target, addr, data),
         uapi::CONT | uapi::SYSCALL | uapi::SINGLESTEP =>
             resume(&target, request, data).map(|_| 0),
         uapi::DETACH => detach(&target, data).map(|_| 0),
         uapi::KILL   => { kill(&target); Ok(0) }
-        // `ptrace_request` seeds -EIO and its default arm leaves it there;
-        // PTRACE_PEEKSIGINFO and the seccomp/rseq/syscall-info requests are
-        // not implemented and land here honestly rather than faking success.
+        // `ptrace_request` seeds -EIO and its default arm leaves it there.
+        // PTRACE_GETFDPIC is CONFIG_BINFMT_ELF_FDPIC-only (no-MMU targets) and
+        // is absent from the switch on every arch this port builds for, so EIO
+        // is the answer Linux itself gives.
         _ => Err(Errno::Eio),
     }
 }
@@ -97,6 +119,9 @@ fn traceme(cur: &sched::Task) -> Result<(), Errno> {
     if cur.traced_by.load(Ordering::Acquire) != 0 { return Err(Errno::Eperm); }
     let parent = cur.parent_tid.load(Ordering::Acquire);
     if parent == 0 { return Err(Errno::Eperm); }
+    // `security_ptrace_traceme(current->parent)` — Yama's two highest scopes
+    // refuse even a volunteered trace.
+    if let Some(p) = sched::live::registry::lookup(parent) { perm::may_traceme(&p)?; }
     cur.traced_by.store(parent, Ordering::Release);
     cur.ptrace_seized.store(false, Ordering::Release);
     Ok(())
@@ -112,7 +137,8 @@ fn attach(cur: &sched::Task, target: &Arc<sched::Task>, request: u64, addr: u64,
     // reported as EIO even to a caller that could not have attached.
     let opts = if seize {
         let seccomp = security::seccomp::mode_of_current() != 0;
-        decide::check_seize(addr, data, cur.has_cap(sched::cap::SYS_ADMIN), seccomp)?
+        let suspended = cur.ptrace_options.load(Ordering::Acquire) & uapi::O_SUSPEND_SECCOMP != 0;
+        decide::check_seize_full(addr, data, cur.has_cap(sched::cap::SYS_ADMIN), seccomp, suspended)?
     } else { 0 };
     // A task with no user address space is Linux's PF_KTHREAD.
     let is_kthread = target.clone_mm().is_none();
@@ -130,40 +156,46 @@ fn attach(cur: &sched::Task, target: &Arc<sched::Task>, request: u64, addr: u64,
 }
 
 /// PTRACE_CONT / PTRACE_SYSCALL / PTRACE_SINGLESTEP.
+///
+/// `data` does NOT queue a signal. Linux's `ptrace_resume` publishes it in
+/// `child->exit_code` and wakes the tracee; the tracee reads it back out of
+/// `ptrace_stop` and — depending on which kind of stop it was in — DELIVERS it
+/// in place of the signal it reported (a signal-delivery stop), or re-posts it
+/// (a syscall stop's `ptrace_report_syscall` does `send_sig(signr, current,
+/// 1)`), or drops it (an event stop, whose `ptrace_event` discards the return).
+/// Queuing it here instead made every value an EXTRA signal on top of the one
+/// the tracee reported, so a tracer could never suppress or replace a signal —
+/// only add to it.
 fn resume(target: &Arc<sched::Task>, request: u64, data: u64) -> Result<(), Errno> {
     // Linux `ptrace_resume` rejects an out-of-range signal with EIO before
     // touching any state.
     if !decide::valid_signal(data) { return Err(Errno::Eio); }
-    let sig = data as u32;
-    if sig != 0 {
-        // Linux `ptrace_resume`'s injection: the tracer re-delivers the signal
-        // the tracee stopped for, as a kernel-generated PRIVATE send on that
-        // thread (`send_sig_info(..., PIDTYPE_PID)`).
-        let _ = sched::live::send_signal(target, sig, sched::sigsend::SigSource::Kernel,
-                                         sched::sigsend::SigTarget::Thread);
-    }
     target.singlestep.store(u32::from(request == uapi::SINGLESTEP), Ordering::Release);
     target.ptrace_syscall_armed.store(request == uapi::SYSCALL, Ordering::Release);
-    *target.ptrace_siginfo.lock() = None;
+    // `child->exit_code = data` — the cell `stop_code` already is. The
+    // tracee's `last_siginfo` is NOT cleared here: `PTRACE_SETSIGINFO` may
+    // have rewritten the record this very resume is about to deliver, and the
+    // tracee clears it itself once it has read it (Linux `ptrace_stop`'s tail).
+    target.stop_code.store(data as u32, Ordering::Release);
     sched::live::registry::wake_if_stopped(target);
     Ok(())
 }
 
-/// PTRACE_DETACH. Same `valid_signal` gate as resume.
+/// PTRACE_DETACH. Same `valid_signal` gate as resume, and the same
+/// publish-then-wake handoff: `ptrace_detach` sets `child->exit_code = data`
+/// before `__ptrace_detach`, so a detach can deliver a parting signal through
+/// the stop the tracee is sitting in.
 fn detach(target: &Arc<sched::Task>, data: u64) -> Result<(), Errno> {
     if !decide::valid_signal(data) { return Err(Errno::Eio); }
+    target.stop_code.store(data as u32, Ordering::Release);
     target.traced_by.store(0, Ordering::Release);
     target.ptrace_seized.store(false, Ordering::Release);
     target.ptrace_options.store(0, Ordering::Release);
     target.ptrace_syscall_armed.store(false, Ordering::Release);
     target.singlestep.store(0, Ordering::Release);
-    *target.ptrace_siginfo.lock() = None;
     // Drop the ATTACH-induced SIGSTOP unless the tracer asked for a signal.
     if data == 0 {
         target.sigpending.fetch_and(!Signum::Sigstop.bit(), Ordering::Release);
-    } else {
-        let _ = sched::live::send_signal(target, data as u32, sched::sigsend::SigSource::Kernel,
-                                         sched::sigsend::SigTarget::Thread);
     }
     sched::live::registry::wake_if_stopped(target);
     Ok(())

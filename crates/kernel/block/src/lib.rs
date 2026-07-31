@@ -28,6 +28,7 @@ pub mod pagecache;
 pub mod queue_limits;
 pub mod registry;
 pub mod stats;
+pub mod task_io;
 pub mod types;
 pub mod uapi;
 

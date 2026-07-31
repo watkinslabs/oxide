@@ -14,6 +14,8 @@
 //              action precedence and `__secure_computing_strict`.
 //   install  — the install permission ladder and `seccomp_may_assign_mode`.
 //   user     — user-memory copies for the install path (EFAULT only).
+//   ptrace_read — PTRACE_SECCOMP_GET_FILTER / _GET_METADATA: the caller gate
+//              and the chain indexing those two requests need.
 //   entry    — the running-task glue: `__secure_computing`, `do_seccomp`,
 //              `prctl_set_seccomp`, `seccomp_sync_threads`.
 //
@@ -30,10 +32,12 @@ pub mod action;
 pub mod install;
 mod user;
 mod entry;
+pub mod ptrace_read;
 
 pub use action::{more_restrictive, strict_allows, Sigsys, Verdict};
 pub use entry::{check, do_seccomp, mode_of_current, prctl_seccomp_op, prctl_set_seccomp, sys_seccomp};
 pub use insn::{SeccompData, SockFilter};
+pub use ptrace_read::{filter_read_allowed, nth_filter, nth_filter_flags};
 pub use uapi::*;
 
 #[cfg(test)]

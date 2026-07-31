@@ -78,6 +78,22 @@ pub unsafe fn do_signal_or_restart(regs: *mut UserRegs, rv: i64, from_syscall: b
     debug_ssh! { crate::signal_trace::deliver_taken(&p); }
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_deliver(&p);
+    // Linux `get_signal`: the ptrace arm sits BETWEEN `dequeue_signal` and the
+    // disposition switch, so the tracer sees the signal before any handler,
+    // SIG_IGN or job-control stop acts on it — and whatever it names on resume
+    // is what the switch below then acts on.
+    let p = match ptrace_signal(p) {
+        Some(p) => p,
+        // `if (!signr) continue;` — the tracer cancelled it, or it had to be
+        // re-posted. Nothing is delivered on this pass; the return-to-user work
+        // loop re-reads the pending set and dequeues the next signal, which is
+        // what Linux's `continue` does inside `get_signal`'s own loop.
+        None => {
+            restore_saved_sigmask();
+            // SAFETY: forwarded contract — `regs` is the live entry frame.
+            return unsafe { no_handler_restart(regs, rv, from_syscall) };
+        }
+    };
     if takes_jobctl_stop(p.sig, p.handler) {
         restore_saved_sigmask();
         sched::live::stop::stop_until_cont_sig(p.sig as u8);
@@ -123,6 +139,45 @@ pub unsafe fn do_signal_or_restart(regs: *mut UserRegs, rv: i64, from_syscall: b
     // all here (a fatal default action exits the thread group).
     // SAFETY: forwarded contract — the live entry frame is owned here.
     unsafe { no_handler_restart(regs, rv, from_syscall) }
+}
+
+/// Linux `get_signal`'s ptrace arm plus `ptrace_signal`.
+///
+/// Fast path: one relaxed-ordering read of `traced_by`. An untraced task —
+/// every task on a normal system — allocates nothing and takes one
+/// never-taken branch, which is why the whole thing is behind a single
+/// `stops_for_tracer` test rather than a call.
+///
+/// `None` = deliver nothing this pass (the tracer cancelled the signal, or it
+/// was re-posted because it is now blocked or the task is dying).
+/// # Sleeps: yes when the task is traced — it parks in the stop.
+/// # C: O(1) untraced; O(N_schedule) traced
+fn ptrace_signal(p: crate::signal::PendingSignal) -> Option<crate::signal::PendingSignal> {
+    use core::sync::atomic::Ordering;
+    let Some(cur) = sched::live::current() else { return Some(p) };
+    let traced = cur.traced_by.load(Ordering::Relaxed) != 0;
+    if !crate::s101_ptrace_sigstop::stops_for_tracer(traced, p.sig) { return Some(p); }
+    let (outcome, info) = crate::ptrace::stop::signal_stop(p.sig, p.info);
+    match outcome {
+        crate::s101_ptrace_sigstop::Outcome::Suppress => None,
+        crate::s101_ptrace_sigstop::Outcome::Requeue { sig } => {
+            // `send_signal_locked(signr, info, current, type)` — the signal is
+            // not lost, it is put back for a pass on which it is deliverable.
+            let src = match info {
+                Some(i) => sched::sigsend::SigSource::Info(i),
+                None => sched::sigsend::SigSource::Kernel,
+            };
+            sched::live::send_sig_self_info(sig, src);
+            None
+        }
+        // The disposition must be re-read for a SUBSTITUTED signal: the
+        // handler, flags, sa_mask and restorer of the signal the tracer named
+        // are what runs, not those of the one the tracee reported.
+        crate::s101_ptrace_sigstop::Outcome::Deliver { sig, substituted } => {
+            if !substituted { return Some(crate::signal::PendingSignal { info, ..p }); }
+            Some(crate::signal::pending_for(sig, info))
+        }
+    }
 }
 
 /// Linux `arch_do_signal_or_restart`'s no-handler tail: apply the restart

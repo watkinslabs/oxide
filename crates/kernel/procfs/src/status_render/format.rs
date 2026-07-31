@@ -8,10 +8,10 @@ use alloc::vec::Vec;
 const CHUNKSZ: u32 = 32;
 
 /// # C: O(b.len())
-pub(super) fn push(v: &mut Vec<u8>, b: &[u8]) { v.extend_from_slice(b); }
+pub(crate) fn push(v: &mut Vec<u8>, b: &[u8]) { v.extend_from_slice(b); }
 
 /// # C: O(log10 n)
-pub(super) fn push_dec(v: &mut Vec<u8>, mut n: u64) {
+pub(crate) fn push_dec(v: &mut Vec<u8>, mut n: u64) {
     if n == 0 { v.push(b'0'); return; }
     let mut buf = [0u8; 20];
     let mut i = 0;

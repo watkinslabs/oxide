@@ -117,6 +117,21 @@ pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
     out
 }
 
+/// Every live task `tracer_tid` is the ptrace tracer of — Linux's
+/// `tracer->ptraced` list, which this tree does not thread onto the task
+/// struct, so the relation is recovered by scanning `traced_by`. `exit_ptrace`
+/// is the caller: a dying tracer must detach (and, under
+/// `PTRACE_O_EXITKILL`, kill) each of them.
+/// # C: O(N_tasks)
+pub fn tasks_traced_by(tracer_tid: u32) -> Vec<Arc<Task>> {
+    if tracer_tid == 0 { return Vec::new(); }
+    let g = REG.lock_irqsave::<RegIrq>();
+    g.by_tid.values()
+        .filter_map(|w| w.upgrade())
+        .filter(|t| t.traced_by.load(Ordering::Acquire) == tracer_tid)
+        .collect()
+}
+
 /// # C: O(N_tasks)
 pub(super) fn snapshot_tasks_for_pid_lookup() -> Vec<Arc<Task>> {
     REG.lock_irqsave::<RegIrq>().by_tid.values().filter_map(|w| w.upgrade()).collect()

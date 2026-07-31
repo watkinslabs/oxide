@@ -239,7 +239,7 @@ fn generic_getsockopt_matches_canonical_socket_option_constants() {
         assert!(!source.contains(&alloc::format!("(SOL_SOCKET, {owned})")));
         assert!(!source.contains(&alloc::format!("(SOL_SOCKET, net::uapi::{owned})")));
     }
-    let table = include_str!("../../net/src/sock_opts/sol_socket/get.rs");
+    let table = include_str!("../../net/src/sol_socket/get.rs");
     for owned in ["SO_TYPE", "SO_ACCEPTCONN", "SO_DOMAIN", "SO_PROTOCOL"] {
         assert!(table.contains(&alloc::format!("{owned} =>")), "{owned}");
     }

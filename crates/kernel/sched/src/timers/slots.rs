@@ -23,6 +23,35 @@ pub fn allocate_id(slots: &mut alloc::vec::Vec<PosixTimer>) -> Option<usize> {
     Some(slots.len() - 1)
 }
 
+/// Outcome of a `PR_TIMER_CREATE_RESTORE_IDS` id reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reserve {
+    /// The requested id was free and is now this timer's.
+    Taken(usize),
+    /// Linux `posix_timer_add_at()` failure: the id names a live timer.
+    Busy,
+    /// The id is outside the table this process can hold. Linux's answer when
+    /// no timer id could be allocated is EAGAIN, and the same slot ceiling
+    /// already produces it for ordinary `timer_create`.
+    NoSpace,
+}
+
+/// Reserve one EXACT id for `timer_create` while
+/// `PR_TIMER_CREATE_RESTORE_IDS` is armed. Grows the table so a restore can
+/// land above the current working set, which is the whole point of the
+/// option — a checkpoint's ids are not dense from zero.
+/// # C: O(id - SLOTS) on growth, else O(1)
+pub fn allocate_id_at(slots: &mut alloc::vec::Vec<PosixTimer>, id: u32) -> Reserve {
+    let id = id as usize;
+    if id >= MAX_SLOTS { return Reserve::NoSpace; }
+    if let Some(timer) = slots.get(id) {
+        if timer.allocated { return Reserve::Busy; }
+        return Reserve::Taken(id);
+    }
+    slots.resize(id + 1, PosixTimer::default());
+    Reserve::Taken(id)
+}
+
 /// Resolve a user `timer_t`. Linux `lock_timer()` rejects any id outside
 /// `0..=INT_MAX` before the hash lookup, and an id that names no timer of the
 /// caller's own process is EINVAL.
@@ -67,6 +96,24 @@ mod tests {
         }
         assert_eq!(slots.len(), MAX_SLOTS);
         assert_eq!(allocate_id(&mut slots), None, "cap reports Linux's EAGAIN");
+    }
+
+    #[test]
+    fn restore_ids_reserve_an_exact_slot_and_grow_the_table_to_reach_it() {
+        let mut slots = table(PosixTimer::SLOTS);
+        // A sparse id above the working set is reachable — a checkpoint's
+        // timer ids are not dense.
+        let high = PosixTimer::SLOTS + 500;
+        assert_eq!(allocate_id_at(&mut slots, high as u32), Reserve::Taken(high));
+        assert_eq!(slots.len(), high + 1);
+        slots[high] = live();
+        assert_eq!(allocate_id_at(&mut slots, high as u32), Reserve::Busy,
+                   "a live id is EBUSY, never silently re-used");
+        // A free slot inside the grown table is still reservable.
+        assert_eq!(allocate_id_at(&mut slots, 7), Reserve::Taken(7));
+        // Past the per-process ceiling there is no id to hand out.
+        assert_eq!(allocate_id_at(&mut slots, MAX_SLOTS as u32), Reserve::NoSpace);
+        assert_eq!(allocate_id_at(&mut slots, u32::MAX), Reserve::NoSpace);
     }
 
     #[test]

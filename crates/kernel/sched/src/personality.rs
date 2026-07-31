@@ -54,6 +54,29 @@ pub fn linux32(cur: &Task) -> bool { base_domain(get(cur)) == PER_LINUX32 }
 pub const PER_CLEAR_ON_SETID: u32 =
     READ_IMPLIES_EXEC | ADDR_NO_RANDOMIZE | ADDR_COMPAT_LAYOUT | MMAP_PAGE_ZERO;
 
+/// Bits `SET_PERSONALITY` clears on EVERY exec, privileged or not.
+///
+/// Both targets are 64-bit-only, and both arches' `SET_PERSONALITY` macro
+/// drops `READ_IMPLIES_EXEC` — x86_64 through `set_personality_64bit`, arm64
+/// inline. Neither resets the execution-domain byte: each overrides the
+/// generic macro that would fold it back to `PER_LINUX`, so a `PER_LINUX32`
+/// persona survives `execve` and keeps `uname(2)` reporting the compat machine.
+///
+/// The complementary rule is that nothing SETS `READ_IMPLIES_EXEC` at exec:
+/// `elf_read_implies_exec` is `mmap_is_ia32() && …` on x86 and undefined on
+/// arm64 (so the generic `0`). The "missing PT_GNU_STACK ⇒ exec-all" row of
+/// both arch tables is the 32-bit column only, which no target here has —
+/// a 64-bit image with no `PT_GNU_STACK` gets a non-executable stack and
+/// PROT_READ mappings that are not implicitly executable.
+pub const PER_CLEAR_ON_EXEC: u32 = READ_IMPLIES_EXEC;
+
+/// Persona bits whose only Linux consumer is a 32-bit address-space layout —
+/// `ADDR_LIMIT_3GB` moves `IA32_PAGE_OFFSET`, which `TASK_SIZE` reads only
+/// under `TIF_ADDR32`, and `ADDR_LIMIT_32BIT` is arm32's `STACK_TOP`. Neither
+/// has any effect on a task that is not 32-bit compat, on Linux or here, so
+/// storing them without acting on them is upstream behaviour rather than a gap.
+pub const PER_COMPAT_ONLY: u32 = ADDR_LIMIT_3GB | ADDR_LIMIT_32BIT;
+
 /// `personality(0xffffffff)` reads the persona without setting it — the only
 /// argument value that is a pure query. Linux `SYSCALL_DEFINE1(personality)`:
 /// `if (personality != 0xffffffff) set_personality(personality);`
@@ -189,5 +212,31 @@ mod tests {
     #[test]
     fn per_clear_on_setid_matches_uapi() {
         assert_eq!(PER_CLEAR_ON_SETID, 0x0400000 | 0x0040000 | 0x0200000 | 0x0100000);
+    }
+
+    #[test]
+    fn every_exec_drops_read_implies_exec_and_keeps_the_domain() {
+        // SET_PERSONALITY on both 64-bit arches: READ_IMPLIES_EXEC goes, the
+        // execution-domain byte and every other behaviour flag stay.
+        let before = PER_LINUX32 | READ_IMPLIES_EXEC | UNAME26 | MMAP_PAGE_ZERO
+            | STICKY_TIMEOUTS | ADDR_NO_RANDOMIZE;
+        let after = before & !PER_CLEAR_ON_EXEC;
+        assert_eq!(after & READ_IMPLIES_EXEC, 0);
+        assert_eq!(base_domain(after), PER_LINUX32, "the domain survives execve");
+        assert_eq!(after, before & !READ_IMPLIES_EXEC, "nothing else is touched");
+    }
+
+    #[test]
+    fn a_privileged_exec_clears_strictly_more_than_a_plain_one() {
+        assert_eq!(PER_CLEAR_ON_EXEC & PER_CLEAR_ON_SETID, PER_CLEAR_ON_EXEC);
+        assert!(PER_CLEAR_ON_SETID & !PER_CLEAR_ON_EXEC != 0);
+    }
+
+    #[test]
+    fn the_compat_only_bits_are_the_two_address_size_limits() {
+        assert_eq!(PER_COMPAT_ONLY, 0x8000000 | 0x0800000);
+        // They are not security-relevant on a 64-bit-only kernel, which is why
+        // upstream leaves them out of the setuid clear mask too.
+        assert_eq!(PER_COMPAT_ONLY & PER_CLEAR_ON_SETID, 0);
     }
 }

@@ -35,8 +35,10 @@ mod mmap;
 mod unmap;
 mod diag;
 mod prefault;
+mod rlimit_as;
 
 pub use accounting::{oom_memory, range_memory_stats, RangeMemoryStats};
+pub use rlimit_as::{admit_as_growth, admit_current_as_growth, stack_growth_caps};
 #[cfg(target_arch = "x86_64")]
 pub use signal::force_user_fault_x86;
 #[cfg(target_arch = "aarch64")]

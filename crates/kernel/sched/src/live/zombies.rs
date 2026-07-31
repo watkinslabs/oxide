@@ -76,9 +76,46 @@ pub fn signal_child_exit(_task: &Task) {
 /// kernel stack, transfer ownership here so reap_one can release it.
 /// Parent publication order is strict: ZOMBIES first, queued siginfo second,
 /// pending bit and signalfd notification third, waiter wakeups last. # C: O(1)
-pub fn enqueue_zombie(task: Arc<Task>) {
-    let parent = task.parent();
+/// Linux `do_notify_parent(tsk, tsk->exit_signal)` re-run for the REAL parent
+/// after a tracer's `wait` released a reparented tracee (`wait_task_zombie`'s
+/// EXIT_TRACE arm). The zombie stays queued; this only re-posts the SIGCHLD
+/// and rouses a parked `wait4`.
+/// # C: O(N_threads)
+pub fn notify_real_parent_of_zombie(task: &Arc<Task>) {
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
+    if let Some(p) = task.parent() {
+        let decision = exit_notify_decision(task, Some(&p));
+        if let Some(signo) = decision.signal {
+            let info = child_exit_info(task, signo);
+            let _ = super::send::send_signal(&p, signo,
+                crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
+        }
+    }
+    wake_wait4_parent(parent_tid);
+}
+
+/// Linux `task_struct::parent` — the tracer while one is attached, the real
+/// parent otherwise. `__ptrace_link`/`__ptrace_unlink` maintain that field;
+/// here it is derived from the ptrace link itself, so clearing `traced_by`
+/// restores the real parent with no second field to forget.
+/// # C: O(log N_tasks)
+fn effective_parent(task: &Task) -> Option<(u32, Arc<Task>)> {
+    let tracer = task.traced_by.load(Ordering::Acquire);
+    if tracer != 0 {
+        if let Some(t) = registry::lookup(tracer) { return Some((tracer, t)); }
+    }
+    task.parent().map(|p| (task.parent_tid.load(Ordering::Acquire), p))
+}
+
+pub fn enqueue_zombie(task: Arc<Task>) {
+    // Linux `exit_notify` notifies `tsk->parent`, which a ptrace attach
+    // redirected to the tracer. The real parent is still the wait owner and is
+    // roused separately below, exactly as Linux runs `do_notify_parent` for the
+    // tracer and leaves the real parent's `wait4` to the EXIT_TRACE hand-back.
+    let (parent_tid, parent) = match effective_parent(&task) {
+        Some((tid, p)) => (tid, Some(p)),
+        None => (task.parent_tid.load(Ordering::Acquire), None),
+    };
     #[cfg(feature = "debug-displaystack")]
     {
         klog::write_raw(b"[zombie publish] child=");
@@ -296,12 +333,15 @@ use crate::wait_select::{Candidate, Waiter};
 /// # C: O(N_tasks)
 fn zombie_candidate(t: &Task) -> Candidate {
     let parent_tid = t.parent_tid.load(Ordering::Acquire);
-    let parent_tgid = registry::lookup(parent_tid)
+    let tracer_tid = t.traced_by.load(Ordering::Acquire);
+    let tgid_of = |tid: u32| registry::lookup(tid)
         .map(|p| p.tgid.load(Ordering::Acquire))
         .unwrap_or(0);
     Candidate {
         parent_tid,
-        parent_tgid,
+        parent_tgid: tgid_of(parent_tid),
+        tracer_tid,
+        tracer_tgid: tgid_of(tracer_tid),
         vpid:        t.vtgid.load(Ordering::Acquire),
         pgid:        t.pgid(),
         exit_signal: t.exit_signal.load(Ordering::Acquire),
@@ -349,6 +389,31 @@ pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
     }
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     let pos = q.iter().position(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))?;
+    // Linux `wait_task_zombie`'s EXIT_TRACE arm. A tracer reaping a tracee it
+    // did NOT fork must not consume the zombie: the real parent is still owed
+    // its `wait4`. Linux reports the status to the tracer, then `ptrace_unlink`s
+    // and re-runs `do_notify_parent(p, p->exit_signal)`, leaving the zombie for
+    // the real parent. Removing it here instead would give the shell that
+    // spawned the process an ECHILD the moment anything straced it.
+    let reparented_tracee = {
+        let c = zombie_candidate(&q[pos]);
+        crate::wait_select::ptrace_scope_matches(c, waiter, options)
+            && c.parent_tgid != c.tracer_tgid
+    };
+    if reparented_tracee {
+        let t = alloc::sync::Arc::clone(&q[pos]);
+        let child = WaitChildSnapshot::from_task(&t);
+        let code = crate::exit::wait_status(&t);
+        drop(q);
+        // `ptrace_unlink(p)` — the tracer is done with it.
+        t.traced_by.store(0, Ordering::Release);
+        t.ptrace_options.store(0, Ordering::Release);
+        t.ptrace_seized.store(false, Ordering::Release);
+        // `do_notify_parent(p, p->exit_signal)` again, now that `parent` has
+        // reverted to `real_parent`.
+        notify_real_parent_of_zombie(&t);
+        return Some((child, code));
+    }
     let t = q.remove(pos);
     // Return the child's vpid (vtgid) — the PID userspace waited on — NOT the
     // opaque internal tid. Single pid identity (Linux): waitpid returns the

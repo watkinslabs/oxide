@@ -36,8 +36,8 @@ pub use pidfd::{
     PidfdAcquireError, PidfdKind,
 };
 pub use snapshot::{
-    kernel_stack_bytes_snapshot, live_counts, live_tids, next_live_tid_after, thread_entries,
-    try_snapshot,
+    kernel_stack_bytes_snapshot, live_counts, live_tids, next_live_tid_after, tasks_traced_by,
+    thread_entries, try_snapshot,
 };
 #[cfg(any(test, feature = "hosted"))]
 pub use tid::clear_for_tests;
@@ -51,6 +51,6 @@ pub use vpid::{
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use wait::wait_candidate_matches;
 pub use wait::{
-    child_stop_event, has_children, has_wait_children, task_rusage_both, task_rusage_self,
+    child_stop_event, has_children, has_wait_children, task_rusage_both, task_rusage_self, task_rusage_thread,
     tasks_in_pgrp, WaitChildSnapshot,
 };

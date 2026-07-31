@@ -174,7 +174,7 @@ fn attach(cur: &sched::Task, prog: Vec<u64>, flags: u64) -> Result<i64, Errno> {
             return Ok(vpid as i64);
         }
     }
-    cur.seccomp_filters.lock().push(prog);
+    cur.seccomp_filters.lock().push(sched::seccomp_filter::SeccompFilter::new(prog, flags));
     cur.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
     if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 { sync_threads(cur); }
     Ok(0)
@@ -190,7 +190,7 @@ fn chain_insns(cur: &sched::Task) -> usize {
 /// caller's chain BEFORE the new filter joins it. Returns the vpid of the
 /// first thread that cannot be synchronised, or `None` when all can.
 fn can_sync_threads(cur: &sched::Task) -> Option<u32> {
-    let mine: Vec<Vec<u64>> = cur.seccomp_filters.lock().clone();
+    let mine: Vec<sched::seccomp_filter::SeccompFilter> = cur.seccomp_filters.lock().clone();
     for (vtid, tid) in sched::registry::thread_entries(cur.tgid.load(Ordering::Acquire)) {
         if tid == cur.tid { continue; }
         let Some(t) = sched::registry::lookup(tid) else { continue };
@@ -210,7 +210,7 @@ fn can_sync_threads(cur: &sched::Task) -> Option<u32> {
 /// whole chain, the caller's `no_new_privs`, and `SECCOMP_MODE_FILTER` if it
 /// was previously unconfined. Eligibility was settled by `can_sync_threads`.
 fn sync_threads(cur: &sched::Task) {
-    let mine: Vec<Vec<u64>> = cur.seccomp_filters.lock().clone();
+    let mine: Vec<sched::seccomp_filter::SeccompFilter> = cur.seccomp_filters.lock().clone();
     let nnp = cur.no_new_privs.load(Ordering::Acquire);
     let tgid = cur.tgid.load(Ordering::Acquire);
     for (_vtid, tid) in sched::registry::thread_entries(tgid) {

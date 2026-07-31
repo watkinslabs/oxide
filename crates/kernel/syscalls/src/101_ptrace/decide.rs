@@ -23,11 +23,21 @@ pub fn valid_signal(data: u64) -> bool { data <= uapi::NSIG }
 pub fn check_options(data: u64, cap_sys_admin: bool, caller_seccomp: bool)
     -> Result<u32, Errno>
 {
+    check_options_full(data, cap_sys_admin, caller_seccomp, false)
+}
+
+/// `caller_suspended` is the tracer's OWN `PT_SUSPEND_SECCOMP`: a tracer whose
+/// own filtering some other tracer already suspended may not suspend a third
+/// party's, or the privilege chains without bound.
+/// # C: O(1)
+pub fn check_options_full(data: u64, cap_sys_admin: bool, caller_seccomp: bool,
+                          caller_suspended: bool) -> Result<u32, Errno>
+{
     if data & !(uapi::O_MASK as u64) != 0 { return Err(Errno::Einval); }
     let opts = data as u32;
     if opts & uapi::O_SUSPEND_SECCOMP != 0 {
         if !cap_sys_admin { return Err(Errno::Eperm); }
-        if caller_seccomp { return Err(Errno::Eperm); }
+        if caller_seccomp || caller_suspended { return Err(Errno::Eperm); }
     }
     Ok(opts)
 }
@@ -40,9 +50,16 @@ pub fn check_options(data: u64, cap_sys_admin: bool, caller_seccomp: bool)
 pub fn check_seize(addr: u64, flags: u64, cap_sys_admin: bool, caller_seccomp: bool)
     -> Result<u32, Errno>
 {
+    check_seize_full(addr, flags, cap_sys_admin, caller_seccomp, false)
+}
+
+/// # C: O(1)
+pub fn check_seize_full(addr: u64, flags: u64, cap_sys_admin: bool, caller_seccomp: bool,
+                        caller_suspended: bool) -> Result<u32, Errno>
+{
     if addr != 0 { return Err(Errno::Eio); }
     if flags & !(uapi::O_MASK as u64) != 0 { return Err(Errno::Eio); }
-    check_options(flags, cap_sys_admin, caller_seccomp)
+    check_options_full(flags, cap_sys_admin, caller_seccomp, caller_suspended)
 }
 
 /// What `PTRACE_PEEKUSER`/`POKEUSER` at byte offset `addr` addresses inside
@@ -111,6 +128,50 @@ pub fn ignores_stop_state(request: u64) -> bool {
     request == uapi::KILL || request == uapi::INTERRUPT
 }
 
+/// Requests that exist ONLY through an architecture's `arch_ptrace` switch,
+/// and therefore fall through to `ptrace_request`'s EIO default on every other
+/// architecture.
+///
+/// x86_64's `arch_ptrace` owns `PEEKUSR`/`POKEUSR` (`struct user` access) and
+/// the four whole-register-file requests. arm64's owns only the two MTE tag
+/// requests, so a tracer that issues `PTRACE_GETREGS` on arm64 gets **EIO**
+/// and is expected to use `PTRACE_GETREGSET`+`NT_PRSTATUS` instead. Answering
+/// it anyway would hand an arm64 tracer a `struct user_regs_struct` view that
+/// no arm64 userspace knows how to read, and would make a `#ifdef`-free tracer
+/// silently take the x86 path.
+/// # C: O(1)
+pub fn unsupported_on_arch(request: u64, arch: Arch) -> bool {
+    let x86_only = matches!(request,
+        uapi::PEEKUSER | uapi::POKEUSER
+        | uapi::GETREGS | uapi::SETREGS | uapi::GETFPREGS | uapi::SETFPREGS);
+    x86_only && arch != Arch::X86_64
+}
+
+/// A validated `struct ptrace_peeksiginfo_args`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PeekSigInfo {
+    /// Index of the first queued record to copy.
+    pub off:    u64,
+    /// Read the PROCESS-wide queue rather than this thread's own.
+    pub shared: bool,
+    /// How many records to copy. Zero is legal and copies nothing.
+    pub nr:     u32,
+}
+
+/// Linux `ptrace_peek_siginfo`'s argument ladder, in order: an unknown flag
+/// bit is EINVAL, a NEGATIVE count is EINVAL, and a count of zero is accepted
+/// (the loop simply never runs and the call returns 0).
+///
+/// Linux's `arg.off > ULONG_MAX` guard is a 32-bit compat check that cannot
+/// fire on a 64-bit `unsigned long`, so no offset is rejected here either — a
+/// past-the-end offset finds no record and returns 0 rather than an error.
+/// # C: O(1)
+pub fn peeksiginfo_args(off: u64, flags: u32, nr: i32) -> Result<PeekSigInfo, Errno> {
+    if flags & !uapi::PEEKSIGINFO_SHARED != 0 { return Err(Errno::Einval); }
+    if nr < 0 { return Err(Errno::Einval); }
+    Ok(PeekSigInfo { off, shared: flags & uapi::PEEKSIGINFO_SHARED != 0, nr: nr as u32 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +197,14 @@ mod tests {
             | uapi::O_TRACECLONE | uapi::O_TRACEEXEC | uapi::O_TRACEVFORKDONE
             | uapi::O_TRACEEXIT | uapi::O_TRACESECCOMP | uapi::O_EXITKILL;
         assert_eq!(check_options(all as u64, false, false), Ok(all));
+    }
+
+    #[test]
+    fn a_tracer_whose_own_seccomp_is_already_suspended_cannot_suspend_another() {
+        let o = uapi::O_SUSPEND_SECCOMP as u64;
+        assert_eq!(check_options_full(o, true, false, true), Err(Errno::Eperm));
+        assert_eq!(check_options_full(o, true, false, false), Ok(uapi::O_SUSPEND_SECCOMP));
+        assert_eq!(check_seize_full(0, o, true, false, true), Err(Errno::Eperm));
     }
 
     #[test]
@@ -195,6 +264,44 @@ mod tests {
         assert_eq!(regset_len(uapi::NT_PRSTATUS, Arch::X86_64, 4096), Ok(216));
         assert_eq!(regset_len(uapi::NT_PRSTATUS, Arch::X86_64, 8), Ok(8));
         assert_eq!(regset_len(uapi::NT_PRSTATUS, Arch::Aarch64, 4096), Ok(272));
+    }
+
+    #[test]
+    fn the_struct_user_and_whole_regfile_requests_are_x86_only() {
+        for r in [uapi::PEEKUSER, uapi::POKEUSER, uapi::GETREGS, uapi::SETREGS,
+                  uapi::GETFPREGS, uapi::SETFPREGS] {
+            assert!(!unsupported_on_arch(r, Arch::X86_64));
+            assert!(unsupported_on_arch(r, Arch::Aarch64),
+                "arm64 has no arch_ptrace arm for {r:#x}; it must be EIO, not answered");
+        }
+    }
+
+    #[test]
+    fn the_arch_neutral_requests_are_available_everywhere() {
+        for r in [uapi::PEEKTEXT, uapi::POKEDATA, uapi::CONT, uapi::SYSCALL, uapi::SINGLESTEP,
+                  uapi::GETREGSET, uapi::SETREGSET, uapi::GETSIGINFO, uapi::SETOPTIONS,
+                  uapi::GETEVENTMSG, uapi::PEEKSIGINFO, uapi::GET_SYSCALL_INFO,
+                  uapi::SET_SYSCALL_INFO, uapi::SECCOMP_GET_FILTER, uapi::SECCOMP_GET_METADATA,
+                  uapi::GET_RSEQ_CONFIGURATION, uapi::DETACH, uapi::KILL, uapi::ATTACH,
+                  uapi::SEIZE, uapi::INTERRUPT, uapi::LISTEN] {
+            for a in [Arch::X86_64, Arch::Aarch64] { assert!(!unsupported_on_arch(r, a)); }
+        }
+    }
+
+    #[test]
+    fn peeksiginfo_rejects_unknown_flags_and_a_negative_count() {
+        assert_eq!(peeksiginfo_args(0, 2, 1), Err(Errno::Einval));
+        assert_eq!(peeksiginfo_args(0, u32::MAX, 1), Err(Errno::Einval));
+        assert_eq!(peeksiginfo_args(0, 0, -1), Err(Errno::Einval));
+        assert_eq!(peeksiginfo_args(0, 0, i32::MIN), Err(Errno::Einval));
+    }
+
+    #[test]
+    fn peeksiginfo_accepts_a_zero_count_and_any_offset() {
+        assert_eq!(peeksiginfo_args(0, 0, 0),
+                   Ok(PeekSigInfo { off: 0, shared: false, nr: 0 }));
+        assert_eq!(peeksiginfo_args(u64::MAX, uapi::PEEKSIGINFO_SHARED, 4),
+                   Ok(PeekSigInfo { off: u64::MAX, shared: true, nr: 4 }));
     }
 
     #[test]

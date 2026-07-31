@@ -53,6 +53,14 @@ static MIN_PAGES: AtomicU64 = AtomicU64::new(0);
 static LOW_PAGES: AtomicU64 = AtomicU64::new(0);
 static HIGH_PAGES: AtomicU64 = AtomicU64::new(0);
 
+/// Linux `current->flags & PF_MEMALLOC_NOIO` — the running task asked, via
+/// `prctl(PR_SET_IO_FLUSHER)`, that its allocations never issue IO.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn current_is_io_flusher() -> bool {
+    sched::live::current().is_some_and(|c| c.io_flusher.get())
+}
+
 /// Apply allocation-side watermark policy before the buddy takes ownership of
 /// a frame. The direct path is kernel-only because hosted PMM fixtures have no
 /// address-space/swap owner; both paths use the same LRU transaction.
@@ -81,7 +89,14 @@ pub(crate) fn before_allocation(free_pages: u64, requested_pages: u64) {
                 // Apply it together with making those handlers allocation-free.
                 // The park itself is already refused by `schedule()`'s
                 // `in_atomic` check, so the corruption route is closed either way.
-                crate::kswapd::direct_reclaim_once();
+                //
+                // Linux `PF_MEMALLOC_NOIO` (`prctl(PR_SET_IO_FLUSHER)`) DOES
+                // apply here: direct reclaim descends pageout -> swap -> the
+                // block layer, and a userspace block server that re-enters its
+                // own device from an allocation deadlocks. Such a task gets the
+                // background wakeup above and nothing else, exactly as Linux
+                // strips `__GFP_IO` for it.
+                if !current_is_io_flusher() { crate::kswapd::direct_reclaim_once(); }
             }
         }
     }

@@ -390,7 +390,9 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
     // Linear search; ~250 entries, called per-syscall on arm — still
     // cheaper than a thousand-element jump table at this size.
     for &(arm, x86) in MAP { if arm == nr { return x86; } }
-    if arm_nr_is_unassigned(nr) { return NO_AARCH64_SLOT; }
+    // Below the shared base the two numberings are unrelated, so an unmapped
+    // number is unassigned on arm64 and must be ENOSYS, never an x86 index.
+    if nr < SHARED_NR_BASE { return NO_AARCH64_SLOT; }
     nr
 }
 
@@ -399,21 +401,33 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
 /// `-ENOSYS` — which is exactly what arm64 Linux returns for these numbers.
 pub const NO_AARCH64_SLOT: u64 = u64::MAX;
 
+/// First syscall number shared by every architecture. From this number on,
+/// `include/uapi/asm-generic/unistd.h` and the x86_64 table assign the SAME
+/// number to the same syscall, so an unmapped number at or above it is a
+/// syscall newer than `MAP` rather than a mis-numbered one, and passing it
+/// through is correct.
+pub const SHARED_NR_BASE: u64 = 424;
+
 /// True for aarch64 numbers that carry no syscall on a 64-bit asm-generic ABI.
 ///
-/// `include/uapi/asm-generic/unistd.h`:
-///   * `/* 295 through 402 are unassigned to sync up with generic numbers,
-///      don't use */`
-///   * 403..=423 are the `*_time64` variants, compiled only under
-///     `defined(__SYSCALL_COMPAT) || __BITS_PER_LONG == 32` — never on arm64.
+/// BELOW `SHARED_NR_BASE` the two numberings are unrelated, so ANY number
+/// `MAP` does not translate is unassigned on arm64 and must be ENOSYS. The
+/// unassigned blocks are `include/uapi/asm-generic/unistd.h`'s
+/// `arch_specific_syscall` reservation (244..=259, used by riscv and not by
+/// arm64), the `/* 295 through 402 are unassigned to sync up with generic
+/// numbers, don't use */` hole, and 403..=423, the `*_time64` variants
+/// compiled only for 32-bit ABIs.
 ///
 /// Without this guard the unmapped-pass-through arm sends those numbers
-/// straight into the x86_64 table, where 295..=336 *are* real syscalls: an
-/// aarch64 `syscall(335)` would run `sys_uretprobe` (SIGILL) and `syscall(300)`
-/// would run x86's `fanotify_mark`. That is the same class of silent
-/// cross-architecture mis-dispatch that put `nfsservctl` on x86's `connect`.
+/// straight into the x86_64 table, where they *are* real syscalls: an
+/// aarch64 `syscall(247)` would run x86's `waitid`, `syscall(257)` would run
+/// `openat`, `syscall(259)` would run `mknodat`, `syscall(335)` would run
+/// `sys_uretprobe` (SIGILL) and `syscall(300)` would run `fanotify_mark`.
+/// That is the same class of silent cross-architecture mis-dispatch that put
+/// `nfsservctl` on x86's `connect`. Restricting the guard to two explicit
+/// ranges left 244..=259 dispatching real x86 syscalls.
 /// # C: O(1)
-pub fn arm_nr_is_unassigned(nr: u64) -> bool { (295..=423).contains(&nr) }
+pub fn arm_nr_is_unassigned(nr: u64) -> bool { aarch64_nr_to_x86(nr) == NO_AARCH64_SLOT }
 
 #[cfg(test)]
 mod tests;

@@ -141,6 +141,8 @@ fn set_mq_msgsize_default(v: i64) { ipc::live::posix_mq::sysctl::set_msgsize_def
 fn get_modules_disabled() -> i64 { modules::admission::modules_disabled() as i64 }
 fn set_modules_disabled(value: i64) { let _ = modules::admission::set_modules_disabled(value); }
 fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
+fn get_ptrace_scope() -> i64 { sched::yama::scope() as i64 }
+fn set_ptrace_scope(value: i64) { let _ = sched::yama::set_scope(value); }
 fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
     let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
     net::sysctl::value(namespace, key).ok_or(())
@@ -252,8 +254,14 @@ const SYSCTL_TREE: &[Node] = &[
         File("core_pipe_limit",       Int(0, Some((0, INT_MAX)))),
         File("core_uses_pid",         Int(1, Some((0, 1)))),
         File("sysrq",                 Int(16, Some((0, 511)))),
+        // Bound to the live cell `__ptrace_may_access`'s LSM tail consults,
+        // not a procfs-local copy: a dead cell here would report a hardening
+        // level that no attach path applies. Writes are one-way (the scope
+        // may be raised, never lowered), which is why the setter is a hook
+        // rather than a bounded `Int`.
         Dir("yama", &[
-            File("ptrace_scope",      Int(1, Some((0, 3)))),
+            File("ptrace_scope",      IntHook(get_ptrace_scope, set_ptrace_scope,
+                                              Some((0, sched::yama::SCOPE_MAX as i64)))),
         ]),
     ]),
     Dir("fs", &[

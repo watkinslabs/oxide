@@ -226,6 +226,12 @@ pub mod setns_flags;
 #[path = "101_ptrace/perm.rs"] pub mod s101_ptrace_perm;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "101_ptrace/regs.rs"] pub mod s101_ptrace_regs;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "101_ptrace/event.rs"] pub mod s101_ptrace_event;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "101_ptrace/sysinfo.rs"] pub mod s101_ptrace_sysinfo;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "101_ptrace/sigstop.rs"] pub mod s101_ptrace_sigstop;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "103_syslog.rs"] pub mod s103_syslog;
 

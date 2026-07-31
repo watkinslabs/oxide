@@ -21,6 +21,7 @@ fn unprivileged() -> Status<'static> {
         cpus_allowed: 0xf, nr_cpus: 4,
         mems_allowed: 1, nr_nodes: 1,
         nvcsw: 41, nivcsw: 7,
+        mem_rows: b"",
     }
 }
 

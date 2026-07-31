@@ -8,6 +8,7 @@
 mod core;
 mod ptrace;
 mod seccomp;
+mod user_dispatch;
 pub(crate) mod restart;
 mod route_a;
 mod route_b;

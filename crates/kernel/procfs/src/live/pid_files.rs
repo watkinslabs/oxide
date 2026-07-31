@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use super::io_files::io_body_for_task;
 use super::pid_ino;
-use super::self_files::{push, push_hex, push_u64};
+use super::self_files::{push, push_hex};
 use vfs::InodeRef;
 
 fn pid_status_body(tid: u32) -> Vec<u8> {
@@ -165,6 +165,28 @@ pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
 use crate::pid_sched::pid_sched_body;
 pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
 pid_gated_ctor!(make_pid_personality, pid_personality_body, 0x2e, "personality");
+pid_gated_ctor!(make_pid_auxv, pid_auxv_body, 0x2f, "auxv");
+
+/// Linux `auxv_read`: serve the mm's `saved_auxv` array, truncated at the
+/// `AT_NULL` terminator (`do { nwords += 2; } while (saved_auxv[nwords-2])`).
+/// It was 16 hardcoded zero bytes, so every runtime that reads `/proc/self/auxv`
+/// instead of walking its own stack — libcap, CRIU, Go's cgo bootstrap,
+/// `LD_SHOW_AUXV` consumers — saw a process with no auxiliary vector.
+/// # C: O(SAVED_AUXV_BYTES)
+fn pid_auxv_body(tid: u32) -> Vec<u8> {
+    let Some(task) = sched::live::registry::lookup(tid) else { return Vec::new() };
+    // SAFETY: the registry reference keeps the task alive; the mm slot is read under that reference only.
+    let Some(mm) = (unsafe { task.mm_ref() }) else { return Vec::new() };
+    let Some(blob) = mm.auxv() else { return Vec::new() };
+    // Stop after the AT_NULL pair; the array's tail is zero fill, not data.
+    let mut end = 0usize;
+    while end + 16 <= blob.len() {
+        let key = u64::from_ne_bytes(blob[end..end + 8].try_into().unwrap());
+        end += 16;
+        if key == 0 { break; }
+    }
+    blob[..end].to_vec()
+}
 
 /// Linux `proc_pid_personality`: `seq_printf(m, "%08x\n", task->personality)`.
 /// It was a hardcoded `00000000`, so `setarch`/`personality(2)` state was
@@ -223,24 +245,14 @@ pub fn limits_body_for_task(task: &sched::Task) -> Vec<u8> {
     crate::limits_render::limits_body_for_table(&task.all_rlimits())
 }
 
+// `statm`'s `resident` used to be the MAPPED extent — the same number as
+// `size` — so every reader saw a process that had faulted in nothing report
+// 100% residency. It now shares `/proc/<pid>/status`'s per-mm counters.
 fn pid_statm_body(tid: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(48);
-    let task = match sched::live::registry::lookup(tid) {
-        Some(t) => t,
-        None => return out,
-    };
-    // task is a foreign task (arbitrary tid): clone_mm pins against a
-    // concurrent exit/execve mm replacement on another CPU.
-    let pages = match task.clone_mm() {
-        Some(mm) => mm.snapshot_vmas().iter().map(|v| (v.end.as_u64() - v.start.as_u64()) / 4096).sum::<u64>(),
-        None => 0,
-    };
-    push_u64(&mut out, pages);
-    out.push(b' ');
-    push_u64(&mut out, pages);
-    out.push(b' ');
-    push(&mut out, b"0 0 0 0 0\n");
-    out
+    match sched::live::registry::lookup(tid) {
+        Some(t) => crate::pid_mem::statm_body(&t),
+        None    => Vec::new(),
+    }
 }
 
 fn pid_comm_body(tid: u32) -> Vec<u8> {
