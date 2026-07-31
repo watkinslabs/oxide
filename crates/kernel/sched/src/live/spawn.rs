@@ -153,7 +153,7 @@ pub unsafe fn spawn_kernel_thread(
     {
         let mut inner = rq.inner.lock();
         inner.enqueue(Arc::clone(&arc));
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        rq.publish_nr_running(inner.nr_running());
     }
     // Per `13§9` wake→resched: a freshly-runnable task may
     // outrank the current; flag a reschedule so the next
@@ -261,7 +261,7 @@ pub unsafe fn spawn_user_thread_with_vpid(
     {
         let mut inner = rq.inner.lock();
         inner.enqueue(Arc::clone(&arc));
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        rq.publish_nr_running(inner.nr_running());
     }
     // Per `13§9` wake→resched: same rule for user-thread spawn.
     crate::preempt::set_need_resched();

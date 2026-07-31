@@ -52,7 +52,7 @@ fn pop_to_running(parent: &Arc<Task>) {
     {
         let mut inner = rq.inner.lock();
         let _ = inner.remove(parent.tid);
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        rq.publish_nr_running(inner.nr_running());
     }
     parent.on_rq.store(false, Ordering::Release);
     parent.on_cpu.store(true, Ordering::Release);
