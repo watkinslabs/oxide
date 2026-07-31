@@ -75,8 +75,7 @@ pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw:
         typ
     };
     match family {
-        AF_INET  => validate_inet(family, typ, protocol, has_net_raw)?,
-        AF_INET6 => validate_inet(family, typ, protocol, has_net_raw)?,
+        AF_INET | AF_INET6 => validate_inet(family, typ, protocol, has_net_raw)?,
         AF_UNIX           => validate_unix(typ, protocol)?,
         AF_NETLINK        => validate_netlink(typ, protocol)?,
         AF_PACKET         => validate_packet(typ, has_net_raw)?,

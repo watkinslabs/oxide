@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicI32, AtomicU16, Ordering};
 
 use sync::{Socket as LockClass, Spinlock};
 
-use crate::addr::{Ipv4Addr, Ipv6Addr, NetIfaceId};
+use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::netdev::NetError;
 
 use super::validate::PingFamily;
@@ -88,7 +88,7 @@ pub struct PingTable {
 }
 
 impl PingTable {
-    /// # C: O(1)
+    /// An empty identifier table for one network namespace. # C: O(1)
     pub fn new() -> Self {
         Self { entries: Spinlock::new(BTreeMap::new()), rover: AtomicU16::new(0) }
     }
@@ -200,18 +200,18 @@ impl PingTable {
     /// Drop every published identifier while a namespace is torn down. # C: O(N)
     pub fn teardown(&self) { self.entries.lock().clear(); }
 
+    /// Live owners of one identifier. # C: O(N)
     #[cfg(test)]
     pub(crate) fn holders(&self, ident: u16) -> usize { self.owners(ident).len() }
 }
 
 impl Default for PingTable { fn default() -> Self { Self::new() } }
 
-/// The unspecified IPv4 receive address an unbound endpoint matches on.
-pub const ANY_V4: Ipv4Addr = Ipv4Addr::ANY;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::addr::Ipv4Addr;
 
     fn ident(reuse: bool) -> Arc<PingIdent> {
         PingIdent::new(PingFamily::V4, Arc::new(AtomicI32::new(i32::from(reuse))))
