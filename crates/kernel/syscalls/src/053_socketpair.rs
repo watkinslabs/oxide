@@ -28,16 +28,21 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
         None => return -(Errno::Esrch.as_i32() as i64),
     };
     let reserve_flags = if extra & SOCK_CLOEXEC != 0 { vfs::OpenFlags::O_CLOEXEC } else { vfs::OpenFlags::empty() };
+    let has_net_raw = nscg::has_net_raw_for(cur, &net_namespace);
     crate::fd_pair::install_fd_pair(&fdt, cur.nofile_soft(), reserve_flags,
         |index, fd| write_user_i32(svp + index as u64 * 4, fd),
-        || create_files(domain, raw_type, protocol, cur, net_namespace))
+        || create_files(domain, raw_type, protocol, has_net_raw, cur, net_namespace))
 }
 
-fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
+fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cur: &sched::Task,
                 net_namespace: network_namespace::NetworkNamespaceRef)
     -> Result<(Arc<vfs::File>, Arc<vfs::File>), i64>
 {
-    let spec = parse_socket_args(domain, raw_type, protocol, true).map_err(|e| -(e.as_i32() as i64))?;
+    // Linux creates both sockets before asking the protocol for a pair, so the
+    // per-family creation gates (including the raw-socket capability) outrank
+    // the missing `socketpair` operation.
+    let spec = parse_socket_args(domain, raw_type, protocol, has_net_raw)
+        .map_err(|e| -(e.as_i32() as i64))?;
     if spec.family != AF_UNIX { return Err(-(Errno::Eopnotsupp.as_i32() as i64)); }
     // Linux unix_create maps AF_UNIX SOCK_RAW onto SOCK_DGRAM before its
     // socketpair operation. Preserve that one protocol personality for both
