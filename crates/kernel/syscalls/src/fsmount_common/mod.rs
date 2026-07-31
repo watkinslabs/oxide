@@ -18,6 +18,5 @@ pub(crate) use fd::{
 };
 pub(crate) use mount_ops::mount_fstype_at;
 pub use objects::{FsContextInode, MountObjectInode};
-pub(crate) use registry::fstype_ok;
 pub(crate) use crate::mount_perm::may_mount_or_eperm;
 pub use registry::ensure_filesystems_registered;
