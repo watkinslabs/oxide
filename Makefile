@@ -40,6 +40,8 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
+        stack-gate stack-gate-x86 stack-gate-arm \
+        stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
 
 all: build
@@ -175,6 +177,45 @@ frame-gate-arm:
 	python3 tools/frame-size-gate.py target/artifacts/aarch64/kernel.elf \
 	  --baseline tools/frame-size-baseline-aarch64.txt
 frame-gate: frame-gate-x86 frame-gate-arm
+
+# Stack-DEPTH gate: worst-case bytes along a static call path, not per-function.
+# Catches what frame-gate structurally cannot — a chain of individually-legal
+# frames that sums past the 16 KiB kernel stack (the virtio child-probe
+# overflow was 8448 + 6064 with an 8192 per-function ceiling in force, and
+# frame-gate passed on that binary).
+#
+# Ceiling 13000 B of the 16384 B stack; paths already over it are recorded with
+# a reason in tools/stack-depth-allow-<arch>.txt and tolerated at or below the
+# recorded budget, so a NEW or DEEPER path fails. Same artifact requirement as
+# frame-gate: `make x86 && cargo run -p xtask -- artifacts --arch x86_64`.
+STACK_DEPTH_CEILING ?= 13000
+stack-gate-x86:
+	python3 tools/stack-depth-gate.py --self-test
+	python3 tools/stack-depth-gate.py target/artifacts/x86_64/kernel.elf \
+	  --arch x86_64 --fail $(STACK_DEPTH_CEILING) \
+	  --allowlist tools/stack-depth-allow-x86_64.txt
+stack-gate-arm:
+	python3 tools/stack-depth-gate.py target/artifacts/aarch64/kernel.elf \
+	  --arch aarch64 --fail $(STACK_DEPTH_CEILING) \
+	  --allowlist tools/stack-depth-allow-aarch64.txt
+stack-gate: stack-gate-x86 stack-gate-arm
+
+# Regenerate the allowlists. Reasons must be edited in by hand afterwards —
+# the gate refuses an entry that is not under a `#` reason block.
+stack-gate-baseline-x86:
+	python3 tools/stack-depth-gate.py target/artifacts/x86_64/kernel.elf \
+	  --arch x86_64 --fail $(STACK_DEPTH_CEILING) \
+	  --allowlist tools/stack-depth-allow-x86_64.txt --write-allowlist
+stack-gate-baseline-arm:
+	python3 tools/stack-depth-gate.py target/artifacts/aarch64/kernel.elf \
+	  --arch aarch64 --fail $(STACK_DEPTH_CEILING) \
+	  --allowlist tools/stack-depth-allow-aarch64.txt --write-allowlist
+
+# The deepest paths, frame by frame — the debugging view. `make stack-report ARCH=aarch64`
+ARCH ?= x86_64
+stack-report:
+	python3 tools/stack-depth-gate.py target/artifacts/$(ARCH)/kernel.elf \
+	  --arch $(ARCH) --fail 99999 --top 20 --show-path
 
 DRIVER_PATH_SMOKE_TIMEOUT ?= 900
 smoke-driver-path-x86: x86
