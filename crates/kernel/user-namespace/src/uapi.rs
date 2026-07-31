@@ -6,6 +6,12 @@
 /// container maps fit in one write). # C: O(1)
 pub const UID_GID_MAP_MAX_EXTENTS: usize = 340;
 
+/// Linux `INVALID_UID`/`INVALID_GID` (`include/linux/uidgid.h`) — `(uid_t)-1`.
+/// `make_kuid` yields it for an id no extent covers, and the initial
+/// namespace's identity extent deliberately stops one id short so the
+/// sentinel is unmapped there too. # C: O(1)
+pub const INVALID_ID: u32 = u32::MAX;
+
 /// Linux `overflowuid` default (`kernel/sys.c`) — the id an unmapped uid
 /// translates to at the namespace boundary. # C: O(1)
 pub const OVERFLOW_UID: u32 = 65534;

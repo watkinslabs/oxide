@@ -430,10 +430,9 @@ pub(super) fn handle_tty_ioctl(
             let cur = match sched::live::current() {
                 Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
             };
-            // F200: store the inode on the calling task so /dev/tty
-            // open can redirect to it.
-            // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer to ctty.
-            unsafe { *cur.ctty.get() = Some(file.inode().clone()); }
+            // F200: store the inode on the calling PROCESS so /dev/tty
+            // open can redirect to it from any of its threads.
+            cur.set_ctty(Some(file.inode().clone()));
             if let Some(pair) = &pty_pair {
                 // F215: TIOCSCTTY must seed the slave's foreground
                 // pgid with the calling session leader's pgid — Linux
@@ -502,8 +501,7 @@ pub(super) fn handle_tty_ioctl(
                 Some(c) => c, None => return -(Errno::Enotty.as_i32() as i64),
             };
             use core::sync::atomic::Ordering;
-            // SAFETY: `ctty` is single-mutator per `13§5` — the running task on this CPU is its sole writer; this is a read in syscall context.
-            let ctty_ino = unsafe { (*cur.ctty.get()).as_ref().map(|i| i.ino()) };
+            let ctty_ino = cur.ctty_ino();
             if ctty_ino != Some(ino) { return -(Errno::Enotty.as_i32() as i64); }
             let target = crate::tty_hangup::resolve(ino);
             // `disassociate_ctty(0)` returns immediately for a non-leader
@@ -532,8 +530,7 @@ pub(super) fn handle_tty_ioctl(
                 tty::hangup::clear_session_ctty(ino, my_sid);
             }
             // `proc_clear_tty(tsk)` — unconditional, leader or not.
-            // SAFETY: single-mutator per `13§5` — the running task on this CPU is the sole writer of its own ctty slot.
-            unsafe { *cur.ctty.get() = None; }
+            cur.set_ctty(None);
             0
         }
         TIOCMGET => {

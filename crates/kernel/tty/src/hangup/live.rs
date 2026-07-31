@@ -28,15 +28,14 @@ pub fn hangup_session(tty_ino: vfs::Ino, tty_sid: u32) -> usize {
     for tid in sched::live::registry::live_tids() {
         let Some(task) = sched::live::registry::lookup(tid) else { continue };
         if task.sid() != tty_sid { continue; }
-        // SAFETY: `ctty` is single-mutator per `13§5` — only the owning task on its own CPU writes it, and a hangup runs in syscall context on one CPU.
-        let owns = unsafe { (*task.ctty.get()).as_ref().map(|i| i.ino()) } == Some(tty_ino);
+        let owns = task.ctty_ino() == Some(tty_ino);
         // `p->signal->leader`: the session leader is the thread group whose
         // leader's pid IS the session id.
         let leader = task.tgid.load(Ordering::Acquire) == tty_sid;
         let action = session_member_action(owns, leader);
         if action.clear_ctty {
-            // SAFETY: same single-mutator slot as the read above; the hangup is the revoke Linux performs with `p->signal->tty = NULL`, and no other CPU writes this task's ctty.
-            unsafe { *task.ctty.get() = None; }
+            // Linux's `p->signal->tty = NULL` revoke.
+            task.set_ctty(None);
             refs += 1;
         }
         if action.sighup {
@@ -64,11 +63,8 @@ pub fn clear_session_ctty(tty_ino: vfs::Ino, sid: u32) -> usize {
     for tid in sched::live::registry::live_tids() {
         let Some(task) = sched::live::registry::lookup(tid) else { continue };
         if task.sid() != sid { continue; }
-        // SAFETY: `ctty` is single-mutator per `13§5` — only the owning task on its own CPU writes it, and this runs in syscall context on one CPU.
-        let owns = unsafe { (*task.ctty.get()).as_ref().map(|i| i.ino()) } == Some(tty_ino);
-        if !owns { continue; }
-        // SAFETY: same single-mutator slot; Linux performs the identical clear in `proc_clear_tty` for each session member.
-        unsafe { *task.ctty.get() = None; }
+        if task.ctty_ino() != Some(tty_ino) { continue; }
+        task.set_ctty(None);
         cleared += 1;
     }
     cleared

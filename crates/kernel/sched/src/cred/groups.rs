@@ -8,17 +8,23 @@
 //              -> per-element EFAULT/EINVAL, left to right.
 // `setgroups` sorts ASCENDING before installing (Linux `groups_sort`), which
 // is why `getgroups` hands back a sorted list and `groups_search` may binary
-// search it.
+// search it. The list holds INTERNAL gids and is sorted by those, so what
+// `getgroups` renders through `from_kgid_munged` is ascending in internal
+// order — Linux's own ordering, not necessarily ascending in the namespace's
+// numbering.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use user_namespace::IdMapKind;
 
 use crate::Task;
 use crate::Creds;
-use super::limits::{gidsetsize, id_valid};
+use super::gid::gid_out;
+use super::limits::gidsetsize;
+use super::userns;
 
 /// # C: O(1)
 fn eperm() -> i64 { -(Errno::Eperm.as_i32() as i64) }
@@ -50,7 +56,7 @@ pub(crate) fn may_setgroups(cur: &Task) -> bool {
 /// `size == 0` is a pure query: it returns the count and never inspects the
 /// pointer, so `getgroups(0, NULL)` succeeds. A too-small non-zero size is
 /// `EINVAL` and is reported BEFORE any user access is attempted.
-/// # C: O(ngroups); # Lk: TaskList
+/// # C: O(ngroups * extents); # Lk: TaskList
 pub(crate) fn getgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
     let size = gidsetsize(args.a0);
     if size < 0 { return einval(); }
@@ -65,12 +71,13 @@ pub(crate) fn getgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
             Some(slot) => slot,
             None => return efault(),
         };
+        let gid = gid_out(cur, *gid);
         if uaccess::copy_to_user(slot, &gid.to_ne_bytes()).is_err() { return efault(); }
     }
     groups.len() as i64
 }
 
-/// `sys_getgroups(size, list)` — slot 115. # C: O(ngroups)
+/// `sys_getgroups(size, list)` — slot 115. # C: O(ngroups * extents)
 pub fn sys_getgroups(args: &SyscallArgs) -> i64 {
     match crate::live::current() { Some(c) => getgroups_on(&c, args), None => 0 }
 }
@@ -79,8 +86,11 @@ pub fn sys_getgroups(args: &SyscallArgs) -> i64 {
 /// The privilege gate runs FIRST — an unprivileged caller gets `EPERM` even
 /// for an out-of-range size or a bad pointer. The list is built in kernel
 /// memory and only installed once every element has been read and validated,
-/// so a mid-array fault leaves the previous list intact.
-/// # C: O(n log n); # Lk: TaskList
+/// so a mid-array fault leaves the previous list intact. Each element is
+/// read, then mapped through the caller's user namespace (`make_kgid`) — so
+/// a bad POINTER is `EFAULT` and an unmapped gid at that same index is
+/// `EINVAL`, in that order.
+/// # C: O(n log n + n*extents); # Lk: TaskList
 pub(crate) fn setgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
     if !may_setgroups(cur) { return eperm(); }
     let size = gidsetsize(args.a0);
@@ -99,8 +109,8 @@ pub(crate) fn setgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
         };
         let mut bytes = [0u8; GID_SIZE];
         if uaccess::copy_from_user(&mut bytes, slot).is_err() { return efault(); }
-        let gid = u32::from_ne_bytes(bytes);
-        if !id_valid(gid) { return einval(); }
+        let Some(gid) = userns::to_host(cur, IdMapKind::Gid, u32::from_ne_bytes(bytes))
+            else { return einval(); };
         groups.push(gid);
     }
     groups.sort_unstable();
@@ -108,7 +118,7 @@ pub(crate) fn setgroups_on(cur: &Task, args: &SyscallArgs) -> i64 {
     0
 }
 
-/// `sys_setgroups(size, list)` — slot 116. # C: O(n log n)
+/// `sys_setgroups(size, list)` — slot 116. # C: O(n log n + n*extents)
 pub fn sys_setgroups(args: &SyscallArgs) -> i64 {
     match crate::live::current() { Some(c) => setgroups_on(&c, args), None => 0 }
 }

@@ -111,6 +111,22 @@ pub struct ThreadGroup {
     /// records behind `shared_pending`, same per-signal shape and depth policy
     /// as the thread-private set (`crate::sigqueue::SigQueues`).
     shared_sigqueue: crate::sigqueue::SigQueues,
+    /// Linux `signal_struct::tty` — the CONTROLLING TERMINAL, POSIX
+    /// §11.1.3. A controlling terminal belongs to the process (and through
+    /// its session, to every process in that session): `setsid(2)` drops it
+    /// process-wide via `proc_clear_tty(group_leader)`, `TIOCSCTTY` claims it
+    /// process-wide, and a hangup revokes it process-wide. Holding it
+    /// per-`Task` gave each `CLONE_THREAD` sibling a private copy — the same
+    /// split source of truth `pgid`/`sid` above were moved here to fix:
+    /// `setsid` in one thread left its siblings still pointing at the old
+    /// terminal, and `/dev/tty` then resolved differently per thread of one
+    /// process.
+    ///
+    /// Spinlock rather than the old `UnsafeCell`: the hangup walk clears an
+    /// ARBITRARY process's terminal from whichever CPU processed the hangup,
+    /// so the single-mutator argument that held for a per-task cell does not
+    /// hold for shared process state.
+    ctty: Spinlock<Option<vfs::InodeRef>, TaskListClass>,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
 }
@@ -141,6 +157,7 @@ impl ThreadGroup {
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             shared_pending: AtomicU64::new(0),
             shared_sigqueue: crate::sigqueue::new_queues(),
+            ctty: Spinlock::new(None),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
@@ -183,6 +200,23 @@ impl ThreadGroup {
     /// `me->signal->is_child_subreaper = !!arg2`. # C: O(1)
     pub fn set_child_subreaper(&self, on: bool) {
         self.is_child_subreaper.store(on, Ordering::Release);
+    }
+
+    /// The process's controlling terminal (Linux `signal_struct::tty`).
+    /// # C: O(1); # Lk: TaskList
+    pub fn ctty(&self) -> Option<vfs::InodeRef> { self.ctty.lock().clone() }
+
+    /// Inode number of the controlling terminal, without cloning the
+    /// reference — the shape every "do I own THIS tty?" test wants.
+    /// # C: O(1); # Lk: TaskList
+    pub fn ctty_ino(&self) -> Option<u64> { self.ctty.lock().as_ref().map(|i| i.ino()) }
+
+    /// Install or drop the process's controlling terminal. The displaced
+    /// reference is released AFTER the lock, so an inode teardown never runs
+    /// underneath it. # C: O(1); # Lk: TaskList
+    pub fn set_ctty(&self, tty: Option<vfs::InodeRef>) {
+        let previous = core::mem::replace(&mut *self.ctty.lock(), tty);
+        drop(previous);
     }
 
     /// Commit one fully initialized clone-thread member. # C: O(1)

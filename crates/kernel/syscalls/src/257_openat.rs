@@ -324,8 +324,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         } else if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_TTY_RDEV) {
             // F200: caller's controlling terminal; ENXIO when none.
             match sched::live::current() {
-                // SAFETY: single-mutator per `13§5` — current task on this CPU.
-                Some(t) => match unsafe { (*t.ctty.get()).clone() } {
+                Some(t) => match t.ctty() {
                     Some(i) => (i, vp.mnt_id, vp.dentry, false, display),
                     None    => return -(Errno::Enxio.as_i32() as i64),
                 },

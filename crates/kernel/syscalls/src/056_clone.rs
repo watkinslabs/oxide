@@ -287,11 +287,10 @@ pub fn sys_clone_dispatch(
     // goes through the lock since cur is a real, possibly-foreign-observed
     // task (prlimit64/sched_setattr can target it from another CPU).
     child.set_all_rlimits(cur.all_rlimits());
-    // F200: ctty inherits across fork(2) per POSIX §11.1.3.
-    // SAFETY: child is unpublished and therefore the sole writer to this slot; ctty is self-only elsewhere (never foreign-written).
-    unsafe {
-        *child.ctty.get() = (*cur.ctty.get()).clone();
-    }
+    // F200: ctty inherits across fork(2) per POSIX §11.1.3. A CLONE_THREAD
+    // child SHARES the parent's thread group and therefore already sees the
+    // same terminal, so this only ever seeds a freshly forked process.
+    child.set_ctty(cur.ctty());
     // umask lives on the shared `fs_struct` owner (Linux) — `inherit_fs_context_from`
     // already shares it for CLONE_FS and snapshot-copies it otherwise.
     // Linux `dup_task_struct` copies `task_struct::personality` wholesale, so a

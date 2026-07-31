@@ -150,8 +150,7 @@ pub fn setpgid(cur: &Task, pid: i32, pgid: i32) -> Result<(), Errno> {
 /// process group numbered with the caller's pid already exists — the latter is
 /// the "caller is already a process group leader" case, since a process group
 /// is only ever numbered after its leader.
-/// # C: O(N_tasks) (pgrp-existence scan)
-/// # Ctx: `cur` must be the running task on this CPU (`ctty` single-mutator).
+/// # C: O(N_tasks) (pgrp-existence scan); # Lk: TaskList
 pub fn setsid(cur: &Task) -> Result<u32, Errno> {
     let session = process_vpid(cur);
     if cur.thread_group.is_session_leader() { return Err(Errno::Eperm); }
@@ -161,10 +160,9 @@ pub fn setsid(cur: &Task) -> Result<u32, Errno> {
     cur.set_sid(session);
     cur.set_pgid(session);
     // Linux `proc_clear_tty(group_leader)`: a new session starts with no
-    // controlling terminal.
-    // SAFETY: `ctty` is written only by the running task on its own CPU per the
-    // `13§5` single-mutator invariant; this is that task's own syscall path.
-    unsafe { *cur.ctty.get() = None; }
+    // controlling terminal, for EVERY thread of the process — the terminal
+    // lives on the thread group, as it does on Linux's `signal_struct`.
+    cur.set_ctty(None);
     Ok(session)
 }
 

@@ -34,15 +34,13 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     let my_pid = if vpid != 0 { vpid } else { cur.tid };
     let sid = cur.sid();
     let is_leader = sid != 0 && sid == my_pid;
-    // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
-    let has_ctty = unsafe { (*cur.ctty.get()).is_some() };
+    let has_ctty = cur.ctty_ino().is_some();
     let tty_sid = pair.with_pair(|p| p.session_pid);
     if !should_acquire_ctty(kind_can_be_ctty(kind), o_noctty, is_leader, has_ctty, tty_sid != 0) {
         return;
     }
     let pgid = cur.pgid();
-    // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
-    unsafe { *cur.ctty.get() = Some(Arc::clone(inode)); }
+    cur.set_ctty(Some(Arc::clone(inode)));
     // `__proc_set_tty` claims the tty for the leader's session AND seeds the
     // foreground process group with the leader's, without which `tcgetpgrp`
     // reads 0 and every subsequent job-control decision is unanchored.
