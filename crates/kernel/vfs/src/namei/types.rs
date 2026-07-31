@@ -27,6 +27,10 @@ pub const MAY_READ:  u32 = 0x04;
 pub const S_ISUID: u16 = 0o4000;
 pub const S_ISGID: u16 = 0o2000;
 pub const S_IXGRP: u16 = 0o0010;
+/// `S_IALLUGO` — the caller-settable half of `i_mode`: set-user-ID,
+/// set-group-ID, sticky, and the nine rwx bits. `chmod` replaces exactly these
+/// and preserves the file-type half, so no mode change can retype an inode.
+pub const S_IALLUGO: u16 = 0o7777;
 
 /// Resolution modifiers (`openat2(2)` RESOLVE_* + LOOKUP_* + O_NOFOLLOW).
 #[derive(Clone, Copy, Default)]

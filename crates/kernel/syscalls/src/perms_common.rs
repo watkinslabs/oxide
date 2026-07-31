@@ -132,31 +132,36 @@ pub(crate) fn notify_change(inode: &InodeRef, mnt_id: u64, mut ia: vfs::Iattr) -
     }
 }
 
-/// `chmod` work-fn shared by chmod/fchmod/fchmodat(2): routes through
-/// `notify_change` (EROFS, owner-or-FOWNER, S_ISGID strip, apply). # C: O(N_path)
-///
-/// A symlink inode only reaches here via fchmodat/fchmodat2 with
-/// AT_SYMLINK_NOFOLLOW (an `lchmod`); no filesystem implements chmod on a
-/// symlink, so Linux returns EOPNOTSUPP (D40) — there is no symlink i_op->setattr.
+/// `chmod` ABI shim shared by chmod/fchmod/fchmodat(2). The mode change itself
+/// is `fs::chattr::chmod_common`; the symlink EOPNOTSUPP, EROFS, immutable
+/// EPERM, owner-or-FOWNER and S_ISGID rules all live under `notify_change`.
+/// # C: O(N_path)
 pub(crate) fn do_chmod(inode: &InodeRef, mnt_id: u64, mode: u16) -> i64 {
-    if matches!(inode.file_type(), vfs::FileType::Symlink) {
-        return -(Errno::Eopnotsupp.as_i32() as i64);
+    match ::fs::chattr::chmod_common(inode, mnt_id, mode, &crate::pathresolve::current_cred()) {
+        Ok(())  => 0,
+        Err(e)  => -(e as i64),
     }
-    notify_change(inode, mnt_id, vfs::Iattr { valid: vfs::ATTR_MODE, mode: mode & 0o7777, ..Default::default() })
 }
 
-/// `chown` work-fn shared by chown/fchown/fchownat: routes through
-/// `notify_change` (EROFS, CAP_CHOWN / owner+group rules, `(uid_t)-1` leave-
-/// alone, set-uid/set-gid drop on a non-directory — set unconditionally for a
-/// non-dir, matching Linux `chown_common`). # C: O(N_path)
+/// `chown` ABI shim shared by chown/lchown/fchown/fchownat. Translates the two
+/// uid/gid ARGUMENTS out of the caller's user namespace (Linux `chown_common`
+/// opens with `make_kuid`/`make_kgid`), resolving the `(uid_t)-1` sentinel to
+/// "leave alone" FIRST — `-1` is deliberately unmapped in every namespace, so
+/// testing it after the translation would turn every `chown(path,-1,-1)` into
+/// `EINVAL`. An id the namespace does not map is `EINVAL` (Linux
+/// `setattr_vfsuid` refusing an `INVALID_UID`), reported before any mutation.
+/// # C: O(N_path)
 pub(crate) fn do_chown(inode: &InodeRef, mnt_id: u64, uid_arg: u32, gid_arg: u32) -> i64 {
-    let mut valid = 0u32;
-    if uid_arg != u32::MAX { valid |= vfs::ATTR_UID; }
-    if gid_arg != u32::MAX { valid |= vfs::ATTR_GID; }
-    // Linux drops S_ISUID and (group-exec) S_ISGID on any chown of a non-dir,
-    // including the no-op `chown(-1,-1)`.
-    if !matches!(inode.file_type(), vfs::FileType::Directory) {
-        valid |= vfs::ATTR_KILL_SUID | vfs::ATTR_KILL_SGID;
+    const LEAVE_ALONE: u32 = u32::MAX;
+    let einval = -(Errno::Einval.as_i32() as i64);
+    let uid = if uid_arg == LEAVE_ALONE { None } else {
+        match sched::cred::make_kuid(uid_arg) { Some(k) => Some(k), None => return einval }
+    };
+    let gid = if gid_arg == LEAVE_ALONE { None } else {
+        match sched::cred::make_kgid(gid_arg) { Some(k) => Some(k), None => return einval }
+    };
+    match ::fs::chattr::chown_common(inode, mnt_id, uid, gid, &crate::pathresolve::current_cred()) {
+        Ok(())  => 0,
+        Err(e)  => -(e as i64),
     }
-    notify_change(inode, mnt_id, vfs::Iattr { valid, uid: uid_arg, gid: gid_arg, ..Default::default() })
 }

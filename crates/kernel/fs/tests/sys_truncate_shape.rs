@@ -204,3 +204,59 @@ fn growth_past_rlimit_fsize_is_efbig_and_shrinking_is_never_limited() {
         "RLIM_INFINITY imposes no cap");
     clear_current();
 }
+
+// Linux `vfs_truncate` takes `get_write_access(inode)` after the permission
+// and append checks: while any task is EXECUTING the inode, `exec` holds a
+// `deny_write_access` (a NEGATIVE `i_writecount`) and every truncate — path
+// form and descriptor form alike — reports ETXTBSY rather than re-shaping a
+// running binary's text under it. Releasing the exec hold restores both.
+//
+// Fails-before: no `i_writecount` participation at all, so truncating a
+// running executable silently succeeded.
+#[test]
+fn truncating_a_running_executable_is_etxtbsy() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_current();
+    let f = fixture();
+    let bin = f.root.create_child("prog", 0o755, &CreateCtx::root()).expect("create");
+    assert_eq!(do_truncate(&bin, ANON_MNT, GROW_LEN, 0, &Cred::root()), 0);
+
+    // `exec` of this image: deny_write_access.
+    bin.deny_write_access().expect("no writer holds the inode yet");
+
+    let etxtbsy = -(Errno::Etxtbsy.as_i32() as i64);
+    assert_eq!(vfs_truncate(&path_of(&bin), 0, &Cred::root()), etxtbsy,
+        "truncate(2) of a running executable is ETXTBSY");
+    assert_eq!(do_ftruncate(&description(&bin, OpenFlags::O_RDWR), 0, &Cred::root()), etxtbsy,
+        "ftruncate(2) of a running executable is ETXTBSY");
+    assert_eq!(bin.size(), GROW_LEN, "a refused truncate must not change i_size");
+
+    // Process exit / re-exec: allow_write_access, and both forms work again.
+    bin.allow_write_access();
+    assert_eq!(vfs_truncate(&path_of(&bin), 0, &Cred::root()), 0);
+    assert_eq!(bin.size(), 0);
+}
+
+// An immutable inode (`chattr +i`) refuses every size change with EPERM, for
+// root as well as for the owner: `inode_permission(MAY_WRITE)` rejects the flag
+// ahead of the DAC dispatch, so no capability lifts it. The descriptor form
+// reaches the same answer through `setattr_prepare`'s own MAY_WRITE gate.
+//
+// Fails-before: `inode_permission` never consulted S_IMMUTABLE, so truncating
+// an immutable file succeeded.
+#[test]
+fn immutable_inode_rejects_every_size_change_with_eperm() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    clear_current();
+    let f = fixture();
+    let file = f.root.create_child("locked", FILE_MODE, &CreateCtx::root()).expect("create");
+    assert_eq!(do_truncate(&file, ANON_MNT, GROW_LEN, 0, &Cred::root()), 0);
+    file.set_i_flags(vfs::S_IMMUTABLE);
+
+    assert_eq!(vfs_truncate(&path_of(&file), 0, &Cred::root()), eperm());
+    assert_eq!(vfs_truncate(&path_of(&file), 0, &unprivileged()), eperm());
+    assert_eq!(file.size(), GROW_LEN, "a refused truncate must not change i_size");
+
+    file.set_i_flags(0);
+    assert_eq!(vfs_truncate(&path_of(&file), 0, &Cred::root()), 0);
+}

@@ -29,6 +29,8 @@ pub mod flock;
 pub mod posix_lock;
 /// `truncate(2)`/`ftruncate(2)` size-change work-fns (Linux `fs/open.c`).
 pub mod truncate;
+pub mod chattr;
+pub mod mknod;
 /// `getcwd(2)`/`chdir(2)`/`fchdir(2)` pwd work-fns (Linux `fs/d_path.c`, `fs/open.c`).
 pub mod cwd;
 /// `fsync(2)`/`fdatasync(2)` + `sync_file_range(2)` work-fns (Linux `fs/sync.c`).
