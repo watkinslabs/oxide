@@ -25,9 +25,11 @@ pub const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
 mod uapi;
 pub use uapi::{
     DrmModeCreateDumb,
+    DrmModeCloseFb,
     DrmModeDestroyDumb,
     DrmModeFbCmd,
     DrmModeFbCmd2,
+    DrmGemClose,
     DrmModeMapDumb,
 };
 
@@ -61,11 +63,12 @@ pub use tables::{
     DumbTables,
     FbObj,
     TABLES,
+    replace_bound_fb,
 };
-use tables::release_scanout_resource;
 
 mod ioctl;
-pub use ioctl::{addfb, addfb2, create_dumb, destroy_dumb, map_dumb, rmfb};
+pub use ioctl::{addfb, addfb2, addfb_for_token, addfb2_for_token, closefb, create_dumb, destroy_dumb, gem_close,
+                map_dumb, release_file, rmfb};
 
 #[cfg(test)]
 mod tests;

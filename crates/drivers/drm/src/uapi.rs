@@ -85,6 +85,7 @@ pub const DRM_IOCTL_MODE_CURSOR2:           u64 = 0xc02464bb;
 pub const DRM_IOCTL_MODE_ATOMIC:            u64 = 0xc03864bc;
 pub const DRM_IOCTL_MODE_CREATEPROPBLOB:    u64 = 0xc01064bd;
 pub const DRM_IOCTL_MODE_DESTROYPROPBLOB:   u64 = 0xc00464be;
+pub const DRM_IOCTL_MODE_CLOSEFB:           u64 = 0xc00864d0;
 
 // Sync-object ioctls (per `47§19`)
 pub const DRM_IOCTL_SYNCOBJ_CREATE:          u64 = 0xc00864bf;
