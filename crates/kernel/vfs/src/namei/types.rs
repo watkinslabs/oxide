@@ -55,6 +55,12 @@ pub struct LookupFlags {
     pub empty: bool,
     /// RESOLVE_NO_SYMLINKS: any symlink anywhere → ELOOP.
     pub no_symlinks: bool,
+    /// `AT_NO_AUTOMOUNT` — the walk must NOT fire an automount trigger
+    /// (`d_automount`) on a component that has one; the trigger dentry is
+    /// traversed as the plain directory it already is. Inverted sense so the
+    /// default (`false`) keeps LOOKUP_AUTOMOUNT behaviour for every existing
+    /// caller. `open_tree`/`fspick`/`statx` expose this bit directly.
+    pub no_automount: bool,
     /// Confined-root marker (chroot, wired by `pathresolve::resolution_root`):
     /// the walk is scoped to `root`, so `..` cannot ascend above it and an
     /// absolute path / absolute symlink target restarts AT `root` (the clamp is

@@ -383,6 +383,26 @@ fn descend_nocross(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 /// SB active refs balance). The caller stores the result in its mount-object fd
 /// and either commits it ([`commit_tree_hashonly`] at `move_mount`) or releases
 /// it ([`release_clone_tree`] at fd close). # C: O(N_subtree × depth)
+/// Linux `__do_loopback`'s admission ladder, shared by the recursive bind and
+/// `open_tree(OPEN_TREE_CLONE)`. Three rungs, in this order — the order is the
+/// only observable part when more than one applies:
+///
+///   1. an UNBINDABLE source is never copied            -> EINVAL
+///   2. a source outside the caller's mount namespace   -> EINVAL
+///   3. a NON-recursive copy whose source has LOCKED children mounted at or
+///      under `base` would reveal what those children cover -> EINVAL
+///
+/// Rung 3 is skipped for a recursive copy because the locked children come
+/// along, still covering. # C: O(children)
+pub fn may_clone_mount_tree(src: &Arc<Mount>, base: &Arc<Dentry>, recursive: bool) -> KResult<()> {
+    if Propagation::from_u8(src.propagation.load(Ordering::Acquire)) == Propagation::Unbindable {
+        return Err(VfsError::Einval);
+    }
+    if !check_mnt(src) { return Err(VfsError::Einval); }
+    if !recursive && locked::has_locked_children(src, base) { return Err(VfsError::Einval); }
+    Ok(())
+}
+
 pub fn clone_mount_tree(src: &Arc<Mount>, recursive: bool) -> DetachedMountTree {
     let namespace = current_namespace();
     let ns = namespace.id();

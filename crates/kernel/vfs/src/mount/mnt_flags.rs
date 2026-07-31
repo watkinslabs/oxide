@@ -55,6 +55,20 @@ pub const MNT_UMOUNT: u32 = 0x800_0000;
 /// still unmarked-cleared by use. Top bit, disjoint from every real value.
 pub const MNT_EXPIRE_MARK: u32 = 0x8000_0000;
 
+// `umount2(2)`'s flag word. A DIFFERENT space from the `MNT_*` option bits
+// above — the numbers collide, and confusing them silently turns a lazy
+// unmount into a forced one.
+/// `MNT_FORCE` — abort operations holding the filesystem before detaching.
+pub const MNT_FORCE: u64 = 0x1;
+/// `MNT_DETACH` — lazy unmount: detach now, tear down when the last user goes.
+pub const MNT_DETACH: u64 = 0x2;
+/// `MNT_EXPIRE` — two-pass idle unmount; mutually exclusive with the pair above.
+pub const MNT_EXPIRE: u64 = 0x4;
+/// `UMOUNT_NOFOLLOW` — do not follow a trailing symlink in the target path.
+pub const UMOUNT_NOFOLLOW: u64 = 0x8;
+/// Every bit `umount2(2)` accepts; anything else is `EINVAL`.
+pub const UMOUNT_VALID: u64 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
 /// Per-mount atime update policy (Linux `__atime_needs_update`), derived from
 /// the MS_*-valued option mask. Default since 2.6.30 is relatime.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

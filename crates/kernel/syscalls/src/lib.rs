@@ -89,6 +89,13 @@ pub mod pivot_root_policy;
 // `SYSCALL_DEFINE5(fsconfig)`, including the EOPNOTSUPP-not-EINVAL default and
 // SET_FD's non-negative-aux rule. `431_fsconfig.rs` is kernel-gated.
 pub mod fsconfig_abi;
+// The new mount API's flag words. Each rejected call reports EINVAL from a rule
+// that is NOT a plain unknown-bit mask (open_tree's AT_RECURSIVE-needs-CLONE,
+// move_mount's BENEATH-xor-SET_GROUP), and each accepted call SELECTS the walk
+// (follow/automount/empty) — none of which a kernel-gated slot file can test.
+pub mod open_tree_policy;
+pub mod move_mount_policy;
+pub mod fspick_policy;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;

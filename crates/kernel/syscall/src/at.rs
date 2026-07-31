@@ -10,6 +10,8 @@ pub const AT_REMOVEDIR: u32 = 0x0200;
 pub const AT_SYMLINK_FOLLOW: u32 = 0x0400;
 pub const AT_NO_AUTOMOUNT: u32 = 0x0800;
 pub const AT_EMPTY_PATH: u32 = 0x1000;
+/// `AT_RECURSIVE` — apply to the whole subtree (`open_tree`, `mount_setattr`).
+pub const AT_RECURSIVE: u32 = 0x8000;
 
 /// The pair every `*at` metadata syscall accepts: operate on the symlink, or
 /// on the dirfd itself. Linux `path_setxattrat` / `file_getattr` reject

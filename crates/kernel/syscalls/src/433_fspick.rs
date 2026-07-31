@@ -17,19 +17,33 @@ use crate::fsmount_common::*;
 /// `FSPICK_CLOEXEC = 1`.
 /// # C: O(N_mounts)
 pub fn sys_fspick(args: &SyscallArgs) -> i64 {
-    const FSPICK_CLOEXEC: u64 = 1;
     if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
-    if args.a2 & !FSPICK_CLOEXEC != 0 { return -(Errno::Einval.as_i32() as i64); }
-    let path = match read_cstr_req(args.a1, 256) {
-        Ok(s) => s, Err(rv) => return rv,
-    };
-    let picked = match crate::pathresolve::resolve_path_raw(&path, false) {
-        Ok(p) => p,
-        Err(e) => return crate::namei_common::errno_from_vfs(e),
+    let f = match crate::fspick_policy::parse(args.a2) { Ok(f) => f, Err(rv) => return rv };
+    // `dirfd` is honoured (the old shim resolved `path` against the cwd
+    // regardless) and the pathname is read through the ordinary `*at` reader
+    // rather than a 256-byte private cap that turned a long-but-legal path into
+    // ENAMETOOLONG.
+    let picked = match crate::pathresolve::resolve_at_lookup(args.a0 as i32, args.a1,
+        vfs::LookupFlags {
+            empty: f.empty,
+            follow: f.follow,
+            no_follow_final: !f.follow,
+            no_automount: !f.automount,
+            ..Default::default()
+        }) {
+        Ok(p) => p, Err(rv) => return rv,
     };
     let mnt = match vfs::mount::mount_by_id(picked.mnt_id) {
         Some(m) => m, None => return -(Errno::Enoent.as_i32() as i64),
     };
+    // Linux `fspick`: `if (target.mnt->mnt_root != target.dentry) -> EINVAL`.
+    // The target must be a mount ROOT — reconfiguring "some directory inside a
+    // filesystem" is not a thing, and the old shim silently accepted it and
+    // handed back a context bound to the whole superblock.
+    match mnt.mnt_root() {
+        Some(root) if alloc::sync::Arc::ptr_eq(&root, &picked.dentry) => {}
+        _ => return -(Errno::Einval.as_i32() as i64),
+    }
     // Bind a FOR_RECONFIGURE context to the picked mount's live SB + root dentry.
     // Seed `sb_flags` with the SB's CURRENT user-settable bits (Linux fspick seeds
     // `dentry->d_sb->s_flags`) so a RECONFIGURE with no flag delta is a no-op and a
@@ -41,5 +55,5 @@ pub fn sys_fspick(args: &SyscallArgs) -> i64 {
     let sb_flags = sb.s_flags();
     let fc = vfs::fs::FsContext::for_reconfigure(sb, root, sb_flags, vfs::fs::SB_FLAGS_USER_MASK);
     let inode: InodeRef = FsContextInode::new_reconfigure(mnt.sb().s_type.name().to_string(), fc);
-    install_fd(inode, "[fscontext]", (args.a2 & FSPICK_CLOEXEC) != 0)
+    install_fd(inode, "[fscontext]", f.cloexec)
 }
