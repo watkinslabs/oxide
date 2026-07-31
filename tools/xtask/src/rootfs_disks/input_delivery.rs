@@ -111,8 +111,13 @@ WantedBy=multi-user.target\n"
     )
 }
 
+/// Serial consoles the harness bridges, in the order the probe tries them:
+/// the x86 UART, the arm PL011, then whatever `console=` last selected.
+const SERIAL_DEVICES: &str = "/dev/ttyS0 /dev/ttyAMA0 /dev/console";
+
 fn probe_body(mode: Mode) -> String {
     PROBE_TEMPLATE
+        .replace("@SERIAL_DEVICES@", SERIAL_DEVICES)
         .replace("@MODE@", mode.token())
         .replace("@SETTLE@", &UDEV_SETTLE_TIMEOUT_SECONDS.to_string())
         .replace("@WINDOW@", &OBSERVE_WINDOW_SECONDS.to_string())
@@ -128,9 +133,17 @@ fn probe_body(mode: Mode) -> String {
 const PROBE_TEMPLATE: &str = r#"#!/bin/sh
 set -u
 
-# The verdict must reach the harness over the serial console even when the
-# journal is not forwarding, so claim the console for the whole run.
-[ -w /dev/console ] && exec > /dev/console 2>&1
+# The verdict must reach the harness over the SERIAL line: the journal is not
+# forwarding, and /dev/console follows the last console= on the command line,
+# which is the graphical VT. Claim the UART the harness is bridging instead.
+for serial in @SERIAL_DEVICES@
+do
+    if [ -w "$serial" ]
+    then
+        exec > "$serial" 2>&1
+        break
+    fi
+done
 
 tag=input_delivery
 mode=@MODE@
@@ -308,6 +321,13 @@ mod tests {
         assert!(body.contains("$driver/bind"));
         assert!(body.contains("resolve rebound"));
         assert!(body.contains("observe rebound"));
+    }
+
+    #[test]
+    fn probe_claims_a_serial_line_rather_than_the_graphical_console() {
+        let body = probe_body(Mode::Delivery);
+        assert!(body.contains("for serial in /dev/ttyS0 /dev/ttyAMA0 /dev/console"));
+        assert!(body.contains("exec > \"$serial\" 2>&1"));
     }
 
     #[test]
