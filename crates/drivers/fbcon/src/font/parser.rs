@@ -111,11 +111,7 @@ pub fn parse_psf2(data: &'static [u8]) -> Option<Font> {
             uni.push((i as u32, i as u16));
         }
     }
-    // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): the `dedup_by_key` below
-    // keeps the FIRST pair for a codepoint, so a unimap that maps one
-    // codepoint twice resolves by input order.
-    uni.sort_by_key(|&(c, _)| c);
-    uni.dedup_by_key(|&mut (c, _)| c);
+    crate::font::unimap::sort_dedup_by_codepoint(&mut uni);
     let fallback = match uni.binary_search_by_key(&0x3f, |&(c, _)| c) {
         Ok(i) => uni[i].1,
         Err(_) => 0,
@@ -191,11 +187,7 @@ pub fn set_font_with_map(
     width: u32, height: u32, count: u32, stride: usize, data: &[u8],
     mut uni: Vec<(u32, u16)>, fallback: u16,
 ) {
-    // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): the `dedup_by_key` below
-    // keeps the FIRST pair for a codepoint, so a unimap that maps one
-    // codepoint twice resolves by input order.
-    uni.sort_by_key(|&(c, _)| c);
-    uni.dedup_by_key(|&mut (c, _)| c);
+    crate::font::unimap::sort_dedup_by_codepoint(&mut uni);
     if let Ok(font) = build_font(width, height, count, stride, data, uni, fallback) {
         crate::font::runtime::install(font);
     }

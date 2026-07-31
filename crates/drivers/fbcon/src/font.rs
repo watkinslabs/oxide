@@ -2,6 +2,7 @@ extern crate alloc;
 
 mod parser;
 mod runtime;
+mod unimap;
 
 pub use parser::{parse_psf2, Font, Psf2Header};
 pub use runtime::{
