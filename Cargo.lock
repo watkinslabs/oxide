@@ -1506,6 +1506,7 @@ dependencies = [
  "timekeeper",
  "timer",
  "uaccess",
+ "ucounts",
  "user-namespace",
  "vfs",
  "vmm",
@@ -1968,6 +1969,14 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "syscall",
+]
+
+[[package]]
+name = "ucounts"
+version = "0.1.0"
+dependencies = [
+ "namespace-identity",
+ "sync",
 ]
 
 [[package]]

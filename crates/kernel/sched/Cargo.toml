@@ -21,6 +21,7 @@ uaccess = { path = "../uaccess" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 user-namespace = { path = "../user-namespace" }
+ucounts = { path = "../ucounts" }
 time-namespace = { path = "../time-namespace" }
 timekeeper = { path = "../timekeeper" }
 
