@@ -81,8 +81,7 @@ fn submit_discard(dev: &dyn BlockDevice, off: u64, len: u64) -> BlockResult<()> 
     while left != 0 {
         let n = core::cmp::min(left, u32::MAX as u64) as u32;
         let mut req = BlockRequest {
-            op: BlockOp::Discard, start_block: block, len_blocks: n, buffer: Vec::new(),
-        };
+            op: BlockOp::Discard, start_block: block, len_blocks: n, buffer: Vec::new(), ..Default::default() };
         dev.submit_sync(&mut req)?;
         block += n as u64;
         left -= n as u64;

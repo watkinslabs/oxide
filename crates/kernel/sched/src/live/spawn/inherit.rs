@@ -37,8 +37,10 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     for i in 0..task.mempolicy.len() {
         task.mempolicy[i].store(parent.mempolicy[i].load(Ordering::Acquire), Ordering::Release);
     }
-    // ioprio_set/get(2): I/O priority is inherited across fork.
-    task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
+    // I/O priority is inherited across fork. This is the UNSHARED copy;
+    // `CLONE_IO` replaces it with the parent's own context afterwards, since
+    // the clone flags do not reach the spawn path.
+    task.set_io_context(crate::ioprio::copy_io(&parent.io_context(), false));
     // /proc/<pid>/exe is inherited across fork until the child execs (Linux
     // dup_mm carries exe_file). Also lets the wedge / [EXIT] dumps name a
     // pre-exec fork-child by the program that forked it.

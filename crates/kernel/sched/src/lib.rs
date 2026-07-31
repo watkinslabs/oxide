@@ -44,6 +44,7 @@ pub mod registry;
 pub mod exit;
 pub mod personality;
 pub mod rlimit;
+pub mod ioprio;
 pub mod rt;
 pub mod session;
 pub mod ucounts;
@@ -67,6 +68,7 @@ pub use preempt::{rcu_read_lock, rcu_read_unlock};
 pub use sync::{call_rcu, note_qs as rcu_note_qs, rcu_barrier, rcu_process_callbacks, synchronize_rcu};
 
 pub use cfs::CfsRunqueue;
+pub use task::current_ioprio;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use registry::kernel_stack_bytes_snapshot;

@@ -285,6 +285,7 @@ impl BlkState {
             }
             ring.deferred.push(DeferredRequest {
                 request, completion, type_, sector, is_in, is_flush, data_len,
+                queued_ns: timekeeper::monotonic_ns(),
             });
             return Ok(());
         }
@@ -398,8 +399,13 @@ impl BlkState {
     }
 
     /// Post deferred owned requests while descriptor chains are available.
-    /// A queue-full condition simply leaves the request in FIFO order; only a
-    /// real transport or PMM error reaches its completion.
+    /// A queue-full condition simply leaves the request queued; only a real
+    /// transport or PMM error reaches its completion.
+    ///
+    /// Which of several waiting requests goes next is the block layer's
+    /// I/O-priority dispatch order, not arrival order: this is the one point
+    /// where the queue is congested and a priority can therefore matter. With
+    /// a single class waiting the order it produces IS arrival order.
     fn start_deferred_requests(&self) {
         loop {
             let deferred = {
@@ -407,7 +413,13 @@ impl BlkState {
                 if ring.busy || ring.free_heads.is_empty() || ring.deferred.is_empty() {
                     return;
                 }
-                ring.deferred.remove(0)
+                let now = timekeeper::monotonic_ns();
+                let waiting: alloc::vec::Vec<block::elevator::Waiting> = ring.deferred.iter()
+                    .map(|d| block::elevator::Waiting { ioprio: d.request.ioprio, queued_ns: d.queued_ns })
+                    .collect();
+                let Some(idx) = block::elevator::select(&waiting, now,
+                    block::elevator::PRIO_AGING_EXPIRE_NS) else { return; };
+                ring.deferred.remove(idx)
             };
             if let Err((request, completion, error)) = self.post_owned_request_inner(
                 deferred.request,

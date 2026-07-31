@@ -26,8 +26,7 @@ fn shared_disk_from(image: Vec<u8>) -> Arc<dyn BlockDevice> {
     let cap = (image.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
     let mut req = BlockRequest {
-        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image,
-    };
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image, ..Default::default() };
     disk.submit_sync(&mut req).expect("seed memdisk");
     disk
 }

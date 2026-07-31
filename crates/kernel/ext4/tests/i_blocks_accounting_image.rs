@@ -31,8 +31,7 @@ fn build_disk(image: &[u8]) -> (Arc<dyn BlockDevice>, u64) {
     let cap = (image.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
     let mut req = BlockRequest {
-        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image.to_vec(),
-    };
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image.to_vec(), ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     (disk, cap)
 }

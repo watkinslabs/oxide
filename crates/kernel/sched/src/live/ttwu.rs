@@ -9,6 +9,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use crate::sched_enc::wakeup::{cand_of, wakeup_preempt};
 use crate::task::PendingWake;
 use crate::live::runqueue::Runqueue;
 use crate::Task;
@@ -149,6 +150,10 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     if drained.is_empty() { return false; }
     let mut deferred: Vec<Arc<Task>> = Vec::new();
     let mut placed = false;
+    let mut preempt = false;
+    // SAFETY: `current` is this CPU's running task, kept alive by the runqueue's
+    // strong reference for the duration of this drain.
+    let curr = if current.is_null() { None } else { Some(cand_of(unsafe { &*current })) };
     {
         let mut inner = rq.inner.lock();
         for task in drained {
@@ -158,6 +163,10 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 PendingWake::Ready => {
                     // Sleeper credit on wake (F211).
                     task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+                    // Decided AFTER the vruntime lift and BEFORE the enqueue
+                    // hands the Arc away, so the fair comparison sees the
+                    // position the task was actually queued at.
+                    preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                     inner.enqueue(task);
                     placed = true;
                 }
@@ -175,7 +184,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
         wake_list_push(target, task);
         resched_curr(target);
     }
-    if placed { resched_curr(cpu); }
+    if placed && preempt { resched_curr(cpu); }
     placed
 }
 
@@ -258,21 +267,50 @@ pub fn resched_curr(cpu: u32) {
 }
 
 /// Honor a changed `cpus_allowed` (sched_setaffinity / cpuset): move `task`
-/// off any disallowed CPU. A task QUEUED (on_rq, not currently running) on a
-/// now-disallowed CPU is safely dequeued and re-placed via `select_task_rq`
-/// (it isn't executing, so no cross-CPU race). A task RUNNING (rq.current) on
-/// a disallowed CPU is nudged with need_resched + a reschedule IPI; fully
-/// evicting a running task needs the `on_cpu` migration handshake (the target
-/// must wait until it stops running on the source) — that lands with the
-/// Phase C cross-CPU hardening. UP / single CPU: no-op (allowed == local).
+/// off any disallowed CPU.
+///
+/// A task QUEUED (on_rq, not currently running) on a now-disallowed CPU is
+/// dequeued here and re-placed by `select_task_rq` — it is not executing, so
+/// there is no cross-CPU race. A task RUNNING on a disallowed CPU is only
+/// nudged with need_resched plus a reschedule IPI: it cannot be moved while it
+/// still owns a CPU's register context. The eviction itself happens when that
+/// nudge lands in `schedule()`, which parks the task and lets the incoming
+/// task's `finish_task_switch` place it once `on_cpu` has cleared
+/// (`live::schedule::migrate`). UP / single CPU: no-op (allowed == local).
 /// # C: O(N_cpus · log N)
 pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
+    // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
+    // that has not completed `install_global`, which the walk skips.
+    relocate_for_affinity_with(&|c| unsafe { global_for(c) }, task, allowed)
+}
+
+/// Place `task` on `target`, falling back to `fallback` when `target` has no
+/// installed runqueue. Returns whether `target` took it.
+/// # C: O(log N)
+fn enqueue_on_with_fallback<'a, F>(get_rq: &F, target: u32, fallback: u32, task: Arc<Task>) -> bool
+where F: Fn(u32) -> Option<&'a Runqueue> {
+    if get_rq(target).is_some() {
+        return super::rq_locate::enqueue_on_with(get_rq, target, task);
+    }
+    let _ = super::rq_locate::enqueue_on_with(get_rq, fallback, task);
+    false
+}
+
+/// [`relocate_for_affinity`] over an injected CPU->runqueue accessor, so the
+/// relocation is exercised by hosted tests against real `Runqueue` instances
+/// on more than one CPU. Same split [`select_task_rq_with`] uses, and for the
+/// same reason: the un-split version reaches only the live per-CPU globals,
+/// which off-target exist for CPU 0 alone — that is how the running-task half
+/// of this function shipped untested.
+/// # C: O(N_cpus · log N)
+pub fn relocate_for_affinity_with<'a, F>(get_rq: &F, task: &Arc<Task>, allowed: u64)
+where F: Fn(u32) -> Option<&'a Runqueue> {
+
     let tid = task.tid;
     for cpu in 0..cpu::MAX_CPUS as u32 {
         // Skip CPUs the task is allowed on.
         if cpu < 64 && (allowed & (1u64 << cpu)) != 0 { continue; }
-        // SAFETY: global_for is sound for any index; None unless that CPU is scheduling.
-        let rq = match unsafe { global_for(cpu) } { Some(r) => r, None => continue };
+        let rq = match get_rq(cpu) { Some(r) => r, None => continue };
         // Try to dequeue it from this disallowed CPU's runqueue (queued, not
         // running). One rq lock at a time — no nesting, no ordering hazard.
         let removed = {
@@ -284,15 +322,18 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
         if let Some(moved) = removed {
             moved.on_rq.store(false, Ordering::Release);
             // Re-place on an allowed CPU (select_task_rq filters by the mask).
-            let target = select_task_rq(&moved);
-            // SAFETY: `global_for` is sound for any index; skipped when the
-            // target CPU has not installed its runqueue yet.
-            super::rq_locate::enqueue_on_with(&|c| unsafe { global_for(c) }, target, moved);
-            resched_curr(target);
+            // When the mask names no CPU with an installed runqueue the
+            // placement fails, and the task must go back where it came from:
+            // affinity is broken before a runnable task is stranded, which is
+            // what dropping it here would do — silently and permanently.
+            let target = select_task_rq_with(get_rq, this_cpu(), &moved);
+            let dest = if enqueue_on_with_fallback(get_rq, target, cpu, moved) { target } else { cpu };
+            resched_curr(dest);
         } else {
             // Not queued here — is it the RUNNING task on this disallowed CPU?
-            // Nudge it to reschedule (it re-enqueues elsewhere on its next
-            // sleep/yield). Synchronous eviction = Phase C on_cpu handshake.
+            // It cannot be moved while it owns this CPU's register context, so
+            // it is nudged instead; `schedule()` parks it and the incoming
+            // task's `finish_task_switch` places it on an allowed CPU.
             let cur = rq.current.load(Ordering::Acquire);
             // SAFETY: rq.current is non-null after install; the pointee is kept
             // alive by the rq's strong ref; reading the tid field is sound.
@@ -394,6 +435,11 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
                    else if get_rq(me).is_some() { me }
                    else { wake_list_push(target, task); return; };
         wake_list_push(tcpu, task);
+        // Unconditional, and NOT a preemption decision: the target drains its
+        // wake list from `schedule()`, so without this the task would never
+        // reach a runqueue at all. The preemption decision is made on the
+        // drain side, once the task is enqueued and `curr` is known there
+        // (`sched_ttwu_pending`).
         resched_curr(tcpu);
         return;
     }
@@ -403,14 +449,25 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     // `on_cpu` until we enqueue; the `on_cpu == false` check above therefore
     // can't race a fresh switch-on.
     if let Some(rq) = get_rq(me) {
+        let curr = rq.current.load(Ordering::Acquire);
+        // SAFETY: `current` is non-null after `Runqueue::new`; the runqueue holds
+        // the strong reference, so this snapshot read is sound.
+        let curr = if curr.is_null() { None } else { Some(cand_of(unsafe { &*curr })) };
+        let preempt;
         {
             let mut inner = rq.inner.lock();
             // Sleeper credit on wake (F211).
             task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+            // Linux `ttwu_do_activate` -> `wakeup_preempt`: the wake only takes
+            // the CPU away from the running task when the class/policy/priority
+            // comparison says it should. Resching unconditionally here made
+            // SCHED_FIFO lose the CPU to an equal-priority peer and let a
+            // SCHED_BATCH / SCHED_IDLE wakee preempt a SCHED_NORMAL task.
+            preempt = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
             inner.enqueue(task);
             rq.nr_running.store(inner.nr_running(), Ordering::Release);
         }
-        resched_curr(me);
+        if preempt { resched_curr(me); }
     }
 }
 

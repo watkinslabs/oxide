@@ -21,7 +21,7 @@ fn open_real() -> Option<(Arc<dyn BlockDevice>, ext4::Mount)> {
     eprintln!("loaded {} ({} bytes)", path, bytes.len());
     let cap = (bytes.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes, ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     let dev: Arc<dyn BlockDevice> = disk;
     let m = ext4::Mount::open(dev.clone()).expect("open real rootfs ext4");
@@ -201,7 +201,7 @@ fn real_rootfs_vfs_path_journald_workload() {
     let bytes = match std::fs::read(&path) { Ok(b) => b, Err(_) => { eprintln!("SKIP: image unreadable"); return; } };
     let cap = (bytes.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes, ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     let m = ext4::rootfs::Ext4Mount::open(disk).expect("open real rootfs (VFS layer)");
     let st = m.state();
@@ -281,7 +281,7 @@ fn real_hwdb_tmpfile_publish() {
     let bytes = match std::fs::read(&path) { Ok(b) => b, Err(_) => { eprintln!("SKIP: image unreadable"); return; } };
     let cap = (bytes.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes, ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     let m = ext4::rootfs::Ext4Mount::open(disk).expect("open real rootfs");
     m.state().mount.begin_batch();

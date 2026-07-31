@@ -54,9 +54,10 @@ pub fn sys_sched_setaffinity(args: &SyscallArgs) -> i64 {
     // re-applies it instead of erasing it.
     t.user_cpus_allowed.store(want, Ordering::Release);
     t.cpus_allowed.store(eff, Ordering::Release);
-    // Honor the new mask now: relocate the task off any disallowed CPU — a
-    // queued task moves immediately; a running one is nudged to reschedule
-    // (full running-task eviction is the Phase C on_cpu handshake).
+    // Honor the new mask now: relocate the task off any disallowed CPU. A
+    // queued task moves immediately; a RUNNING one is nudged to reschedule and
+    // the switch itself re-queues it on an allowed CPU rather than back on the
+    // forbidden one, so a CPU-bound thread leaves without having to block.
     sched::live::relocate_for_affinity(&t, eff);
     0
 }

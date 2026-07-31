@@ -115,7 +115,7 @@ pub fn cpuset_hook(pid: u64, mask: u64) {
     if let Some(t) = lookup_init_pid(pid as u32) {
         t.cpuset_cpus_allowed.store(mask, CgOrd::Release);
         let user = t.user_cpus_allowed.load(CgOrd::Acquire);
-        let eff = crate::affinity::compose(mask, user);
+        let eff = crate::affinity::compose(mask, user, crate::affinity::MaskChange::CpusetUpdate);
         t.cpus_allowed.store(eff, CgOrd::Release);
         crate::live::relocate_for_affinity(&t, eff);
     }

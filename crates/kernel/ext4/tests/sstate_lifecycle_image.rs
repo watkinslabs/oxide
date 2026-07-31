@@ -32,8 +32,7 @@ fn shared_disk() -> Arc<dyn BlockDevice> {
     let cap = (IMAGE.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
     let mut req = BlockRequest {
-        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: IMAGE.to_vec(),
-    };
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: IMAGE.to_vec(), ..Default::default() };
     disk.submit_sync(&mut req).expect("seed memdisk");
     disk
 }
@@ -41,8 +40,7 @@ fn shared_disk() -> Arc<dyn BlockDevice> {
 /// Read `(s_state, s_mnt_count)` straight off the backing device.
 fn read_sb(disk: &Arc<dyn BlockDevice>) -> (u16, u16) {
     let mut req = BlockRequest {
-        op: BlockOp::Read, start_block: 0, len_blocks: 4, buffer: alloc::vec![0u8; 2048],
-    };
+        op: BlockOp::Read, start_block: 0, len_blocks: 4, buffer: alloc::vec![0u8; 2048], ..Default::default() };
     disk.submit_sync(&mut req).expect("read sb");
     let b = &req.buffer;
     let state = u16::from_le_bytes([b[SB_BYTE + OFF_STATE], b[SB_BYTE + OFF_STATE + 1]]);

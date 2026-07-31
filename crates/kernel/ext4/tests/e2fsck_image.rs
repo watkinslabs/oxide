@@ -21,8 +21,7 @@ fn build_disk(image: &[u8]) -> (Arc<dyn BlockDevice>, u64) {
     let cap = (image.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
     let mut req = BlockRequest {
-        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image.to_vec(),
-    };
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image.to_vec(), ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     (disk, cap)
 }
@@ -349,7 +348,7 @@ fn htree_create_split_and_root_grow_stays_e2fsck_clean() {
 
     let cap = (bytes.len() as u64) / (SECTOR as u64);
     let disk: std::sync::Arc<block::MemDisk<sync::TaskList>> = block::MemDisk::new(SECTOR, cap);
-    let mut req = block::BlockRequest { op: block::BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes };
+    let mut req = block::BlockRequest { op: block::BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: bytes, ..Default::default() };
     use block::BlockDevice as _;
     disk.submit_sync(&mut req).unwrap();
     let dev: std::sync::Arc<dyn block::BlockDevice> = disk.clone();
