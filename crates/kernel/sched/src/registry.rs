@@ -51,6 +51,5 @@ pub use vpid::{
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use wait::wait_candidate_matches;
 pub use wait::{
-    has_children, has_wait_children, peek_child_stop_event, take_child_stop_event,
-    tasks_in_pgrp, WaitChildSnapshot,
+    child_stop_event, has_children, has_wait_children, tasks_in_pgrp, WaitChildSnapshot,
 };

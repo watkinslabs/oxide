@@ -12,6 +12,9 @@
 // `at.rs` — `AT_*` dirfd/`*at` flag numbers (`uapi/linux/fcntl.h`).
 // `getrandom.rs` — `GRND_*` flags + flag-validation for `sys_getrandom`.
 // `time.rs` — shared timespec→ns decode + `ktime_set`-style clamp.
+// `wait.rs` — wait(2)-family option masks, event-class gating, idtype
+// mapping, wstatus→siginfo decode. `rusage.rs` — `struct rusage` layout,
+// `who` selector, and the one encoder every producer shares.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -27,6 +30,7 @@ pub mod getrandom;
 pub mod nrs;
 pub mod restart;
 pub mod rseq;
+pub mod rusage;
 pub mod sigset;
 pub mod time;
 pub mod tracepoint;

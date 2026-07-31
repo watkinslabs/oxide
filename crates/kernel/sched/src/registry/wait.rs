@@ -2,12 +2,15 @@
 // stop/continue event scan. `parent_tgid_locked` is a tid-keyed point lookup
 // (now O(log N) via `by_tid`, was an O(N) linear scan) — it runs once per
 // candidate inside the O(N)/O(N²) walkers below, so this alone turns
-// `has_wait_children`/`take_child_stop_event`/`peek_child_stop_event` from
+// `has_wait_children`/`child_stop_event` from
 // O(N²) into O(N log N).
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+
+use syscall::rusage::{bytes_to_blocks, Rusage};
+use syscall::wait::WaitEventKind;
 
 use super::core::{RegIrq, REG, Registry};
 use crate::wait_select::{self, Candidate, Waiter};
@@ -19,18 +22,50 @@ pub struct WaitChildSnapshot {
     pub uid:      u32,
     pub utime_ns: u64,
     pub stime_ns: u64,
+    /// The `rusage` the wait-family out-param reports: the child's own
+    /// counters folded with the counters it had already accumulated from its
+    /// own reaped children (`RUSAGE_BOTH`), so `time`-style callers see a
+    /// whole subtree, not just the immediate child.
+    pub rusage:   Rusage,
 }
 
 impl WaitChildSnapshot {
     /// # C: O(1)
     pub fn from_task(t: &Task) -> Self {
+        let own = Rusage {
+            utime_ns:  t.utime_ns.load(Ordering::Acquire),
+            stime_ns:  t.stime_ns.load(Ordering::Acquire),
+            maxrss_kb: 0,
+            minflt:    t.min_flt.load(Ordering::Relaxed),
+            majflt:    t.maj_flt.load(Ordering::Relaxed),
+            inblock:   bytes_to_blocks(t.io_read_bytes.load(Ordering::Relaxed)),
+            oublock:   bytes_to_blocks(t.io_write_bytes.load(Ordering::Relaxed)),
+            nvcsw:     t.nvcsw.load(Ordering::Relaxed),
+            nivcsw:    t.nivcsw.load(Ordering::Relaxed),
+        };
+        let children = Rusage {
+            utime_ns: t.cumulative_child_utime_ns.load(Ordering::Acquire),
+            stime_ns: t.cumulative_child_stime_ns.load(Ordering::Acquire),
+            ..Rusage::default()
+        };
         Self {
             vpid:     t.vtgid.load(Ordering::Acquire),
             uid:      t.creds.ruid.load(Ordering::Acquire),
-            utime_ns: t.utime_ns.load(Ordering::Acquire),
-            stime_ns: t.stime_ns.load(Ordering::Acquire),
+            utime_ns: own.utime_ns,
+            stime_ns: own.stime_ns,
+            rusage:   Rusage::both(own, children),
         }
     }
+}
+
+/// True when this wait reaches `t` through a tracer relationship — the waiter
+/// is `t`'s tracer, or a thread of the tracer's group. A traced tracee's stop
+/// is visible to that waiter regardless of `WUNTRACED`, and reports
+/// `CLD_TRAPPED` rather than `CLD_STOPPED`.
+/// # C: O(log N_tasks)
+fn is_ptrace_wait(g: &Registry, t: &Task, w: Waiter) -> bool {
+    let tracer = t.traced_by.load(Ordering::Acquire);
+    tracer != 0 && (tracer == w.tid || parent_tgid_locked(g, tracer) == w.tgid)
 }
 
 /// # C: O(log N_tasks)
@@ -59,13 +94,18 @@ pub(crate) fn wait_candidate_matches(c: Candidate, waiter: Waiter, pid: i32, opt
     wait_select::eligible(c, waiter, pid, options)
 }
 
-/// wait4(WUNTRACED/WCONTINUED) helper: take first pending stop/cont. `pid`
-/// follows wait4 semantics (-1/0/+pid/-pgid). Returns (tid, kind, sig) where
-/// kind: 1 = stopped, 2 = continued. `parent_pgid` is the waiter's process
-/// group (for the `pid==0` form).
+/// wait4(WUNTRACED/WCONTINUED) / waitid(WSTOPPED/WCONTINUED) helper: take the
+/// first pending stop/cont event. `pid` follows wait4 semantics
+/// (-1/0/+pid/-pgid); `parent_pgid` is the waiter's process group (the
+/// `pid==0` form). `consume` false leaves the event pending — the `WNOWAIT`
+/// contract. Returns the child snapshot, the event kind, and the stop code.
+///
+/// A tracer sees its tracee's stop even without `WUNTRACED`, and that event
+/// reports as a trap, not a job-control stop; `want_stop` gates only the
+/// non-traced job-control case.
 /// # C: O(N_tasks log N_tasks)
 /// # Lk: REG.lock
-pub fn take_child_stop_event(
+pub fn child_stop_event(
     parent: u32,
     parent_tgid: u32,
     pid: i32,
@@ -73,7 +113,8 @@ pub fn take_child_stop_event(
     options: u64,
     want_stop: bool,
     want_cont: bool,
-) -> Option<(WaitChildSnapshot, u8, u32)> {
+    consume: bool,
+) -> Option<(WaitChildSnapshot, WaitEventKind, u32)> {
     let g = REG.lock_irqsave::<RegIrq>();
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     for (_, w) in g.by_tid.iter() {
@@ -81,47 +122,22 @@ pub fn take_child_stop_event(
         if !wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options) {
             continue;
         }
-        if want_stop && t.stop_pending.swap(false, Ordering::AcqRel) {
-            let sig = t.stop_signal.load(Ordering::Acquire);
-            return Some((WaitChildSnapshot::from_task(&t), 1, sig as u32));
+        let trapped = is_ptrace_wait(&g, &t, waiter);
+        if (want_stop || trapped) && take_flag(&t.stop_pending, consume) {
+            let sig  = t.stop_signal.load(Ordering::Acquire);
+            let kind = if trapped { WaitEventKind::Trapped } else { WaitEventKind::Stopped };
+            return Some((WaitChildSnapshot::from_task(&t), kind, sig as u32));
         }
-        if want_cont && t.cont_pending.swap(false, Ordering::AcqRel) {
-            return Some((WaitChildSnapshot::from_task(&t), 2, 0));
+        if want_cont && take_flag(&t.cont_pending, consume) {
+            return Some((WaitChildSnapshot::from_task(&t), WaitEventKind::Continued, 0));
         }
     }
     None
 }
 
-/// waitid(WNOWAIT|WSTOPPED/WCONTINUED) helper: observe the first pending
-/// stop/cont event without consuming it. Same scan/filter/order as
-/// `take_child_stop_event`.
-/// # C: O(N_tasks log N_tasks)
-/// # Lk: REG.lock
-pub fn peek_child_stop_event(
-    parent: u32,
-    parent_tgid: u32,
-    pid: i32,
-    parent_pgid: u32,
-    options: u64,
-    want_stop: bool,
-    want_cont: bool,
-) -> Option<(WaitChildSnapshot, u8, u32)> {
-    let g = REG.lock_irqsave::<RegIrq>();
-    let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
-    for (_, w) in g.by_tid.iter() {
-        let Some(t) = w.upgrade() else { continue };
-        if !wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options) {
-            continue;
-        }
-        if want_stop && t.stop_pending.load(Ordering::Acquire) {
-            let sig = t.stop_signal.load(Ordering::Acquire);
-            return Some((WaitChildSnapshot::from_task(&t), 1, sig as u32));
-        }
-        if want_cont && t.cont_pending.load(Ordering::Acquire) {
-            return Some((WaitChildSnapshot::from_task(&t), 2, 0));
-        }
-    }
-    None
+/// # C: O(1)
+fn take_flag(f: &core::sync::atomic::AtomicBool, consume: bool) -> bool {
+    if consume { f.swap(false, Ordering::AcqRel) } else { f.load(Ordering::Acquire) }
 }
 
 /// Returns true if any live task has `parent_tid == parent`.

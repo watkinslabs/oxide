@@ -8,7 +8,7 @@ pub use crate::registry::caller_pid_ns;
 pub use crate::registry::{
     acquire_pidfd_in_namespace, display_vpid, display_vtid, has_children, has_wait_children, insert,
     live_counts, live_tids, live_vpids, lookup, lookup_by_vpid, lookup_in_namespace, mark_reaped, parent_vpid,
-    peek_child_stop_event, pidfd_exit_ready, resolve_user_pid, take_child_stop_event, tasks_in_pgrp,
+    child_stop_event, pidfd_exit_ready, resolve_user_pid, tasks_in_pgrp,
     thread_entries, try_wake_stopped, vnr_in, PidfdAcquireError, PidfdKind,
 };
 
