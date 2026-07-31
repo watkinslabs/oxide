@@ -20,6 +20,8 @@
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
 
+pub mod rx;
+
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -143,27 +145,28 @@ mod imp {
         }
     }
 
-    fn drain_rx(dlv: fn(u8)) {
-        let va = base(); if va == 0 { return; }
-        let mut n = 0;
-        while n < 16 {
-            // SAFETY: FR read through the PL011 Device VA.
-            let fr = unsafe { core::ptr::read_volatile((va + PL011_FR) as *const u32) };
-            if (fr & FR_RXFE) != 0 { break; }
-            // SAFETY: DR read through the PL011 Device VA.
-            let b = unsafe { core::ptr::read_volatile((va + PL011_DR) as *const u32) } as u8;
-            dlv(b);
-            n += 1;
-        }
-    }
-
-    /// RX interrupt drain.
+    /// RX interrupt service: drain the FIFO empty, then re-check the masked
+    /// interrupt status and drain again while it is still asserted. The RX and
+    /// RX-timeout interrupts are cleared by emptying the FIFO, so nothing here
+    /// writes the interrupt-clear register — doing that after a drain discards
+    /// the indication for bytes that arrived during it, which silently wedges
+    /// the input line (see `crate::rx`).
     /// # C: O(bytes pending)
     pub fn rx_isr(dlv: fn(u8)) {
         if !super::rx_enabled() { return; }
-        drain_rx(dlv);
-        // SAFETY: called from the GIC dispatcher for PL011 INTID 33.
-        unsafe { hal_aarch64::pl011::ack_rx_irq(); }
+        let va = base(); if va == 0 { return; }
+        crate::rx::service_rx(
+            || {
+                // SAFETY: FR/DR reads through the published PL011 Device VA.
+                unsafe {
+                    if (core::ptr::read_volatile((va + PL011_FR) as *const u32) & FR_RXFE) != 0 { return None; }
+                    Some(core::ptr::read_volatile((va + PL011_DR) as *const u32) as u8)
+                }
+            },
+            // SAFETY: masked interrupt-status read through the published PL011 Device VA.
+            || unsafe { hal_aarch64::pl011::rx_irq_pending() },
+            dlv,
+        );
     }
 
     fn rx_isr_irq() { rx_isr(super::deliver); }
