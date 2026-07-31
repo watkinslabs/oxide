@@ -36,8 +36,8 @@ fn unlink_resolves_special_child() {
 #[test]
 fn linking_a_cycle_is_edeadlk() {
     let t = ctx(1040, 6300);
-    let a = add_key_core(&t, "keyring", "cycle-a", alloc::vec![], 0) as i32;
-    let b = add_key_core(&t, "keyring", "cycle-b", alloc::vec![], 0) as i32;
+    let a = add_key_core(&t, "keyring", "cycle-a", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let b = add_key_core(&t, "keyring", "cycle-b", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
     assert_eq!(link_core(&t, a, a), err(Errno::Edeadlk), "self-link");
     assert_eq!(link_core(&t, b, a), 0);
     assert_eq!(link_core(&t, a, b), err(Errno::Edeadlk), "a -> b -> a");
@@ -47,9 +47,9 @@ fn linking_a_cycle_is_edeadlk() {
 #[test]
 fn move_transfers_membership() {
     let t = ctx(1041, 6301);
-    let from = add_key_core(&t, "keyring", "move-from", alloc::vec![], 0) as i32;
-    let to   = add_key_core(&t, "keyring", "move-to", alloc::vec![], 0) as i32;
-    let k    = add_key_core(&t, "user", "moving-key", alloc::vec![1], from) as i32;
+    let from = add_key_core(&t, "keyring", "move-from", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let to   = add_key_core(&t, "keyring", "move-to", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let k    = add_key_core(&t, "user", "moving-key", alloc::vec![1], true, from) as i32;
     assert_eq!(move_core(&t, k, from, to, 0), 0);
     assert!(!members_of(from).expect("keyring").contains(&k));
     assert!(members_of(to).expect("keyring").contains(&k));
@@ -60,10 +60,10 @@ fn move_transfers_membership() {
 #[test]
 fn move_excl_refuses_a_colliding_destination() {
     let t = ctx(1042, 6302);
-    let from = add_key_core(&t, "keyring", "excl-from", alloc::vec![], 0) as i32;
-    let to   = add_key_core(&t, "keyring", "excl-to", alloc::vec![], 0) as i32;
-    let a = add_key_core(&t, "user", "collide", alloc::vec![1], from) as i32;
-    let _b = add_key_core(&t, "user", "collide", alloc::vec![2], to) as i32;
+    let from = add_key_core(&t, "keyring", "excl-from", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let to   = add_key_core(&t, "keyring", "excl-to", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let a = add_key_core(&t, "user", "collide", alloc::vec![1], true, from) as i32;
+    let _b = add_key_core(&t, "user", "collide", alloc::vec![2], true, to) as i32;
     assert_eq!(move_core(&t, a, from, to, KEYCTL_MOVE_EXCL), err(Errno::Eexist));
     assert_eq!(move_core(&t, a, from, to, 0), 0);
     // An undefined flag bit is EINVAL.
@@ -74,8 +74,8 @@ fn move_excl_refuses_a_colliding_destination() {
 #[test]
 fn clear_empties_a_keyring_and_rejects_a_plain_key() {
     let t = ctx(1043, 6303);
-    let ring = add_key_core(&t, "keyring", "clear-me", alloc::vec![], 0) as i32;
-    let k = add_key_core(&t, "user", "clear-member", alloc::vec![], ring) as i32;
+    let ring = add_key_core(&t, "keyring", "clear-me", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let k = add_key_core(&t, "user", "clear-member", alloc::vec![7u8], true, ring) as i32;
     assert!(members_of(ring).expect("keyring").contains(&k));
     assert_eq!(clear_core(&t, k), err(Errno::Enotdir), "a plain key is not a keyring");
     assert_eq!(clear_core(&t, ring), 0);
@@ -87,8 +87,8 @@ fn clear_empties_a_keyring_and_rejects_a_plain_key() {
 #[test]
 fn restrict_reject_blocks_further_links() {
     let t = ctx(1044, 6304);
-    let ring = add_key_core(&t, "keyring", "restricted", alloc::vec![], 0) as i32;
-    let k = add_key_core(&t, "user", "restrict-child", alloc::vec![], 0) as i32;
+    let ring = add_key_core(&t, "keyring", "restricted", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let k = add_key_core(&t, "user", "restrict-child", alloc::vec![7u8], true, KEY_SPEC_SESSION_KEYRING) as i32;
     assert_eq!(restrict_core(&t, ring, None), 0);
     assert_eq!(link_core(&t, k, ring), eperm(), "restrict_link_reject refuses every link");
     assert_eq!(restrict_core(&t, ring, None), err(Errno::Eexist));
@@ -100,10 +100,10 @@ fn restrict_reject_blocks_further_links() {
 #[test]
 fn restrict_named_type_is_enoent_and_unknown_is_enokey() {
     let t = ctx(1045, 6305);
-    let ring = add_key_core(&t, "keyring", "restrict-named", alloc::vec![], 0) as i32;
+    let ring = add_key_core(&t, "keyring", "restrict-named", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
     assert_eq!(restrict_core(&t, ring, Some("keyring")), err(Errno::Enoent));
     assert_eq!(restrict_core(&t, ring, Some("no-such-type")), enokey());
-    let k = add_key_core(&t, "user", "restrict-nonring", alloc::vec![], 0) as i32;
+    let k = add_key_core(&t, "user", "restrict-nonring", alloc::vec![7u8], true, KEY_SPEC_SESSION_KEYRING) as i32;
     assert_eq!(restrict_core(&t, k, None), err(Errno::Enotdir));
 }
 
@@ -114,7 +114,7 @@ fn restrict_named_type_is_enoent_and_unknown_is_enokey() {
 fn search_is_scoped_to_the_named_keyring_tree() {
     let owner = ctx(1046, 6306);
     let stranger = ctx(1047, 6307);
-    let k = add_key_core(&owner, "user", "scoped-search", alloc::vec![5], 0) as i32;
+    let k = add_key_core(&owner, "user", "scoped-search", alloc::vec![5], true, KEY_SPEC_SESSION_KEYRING) as i32;
     force_perm(k, KEY_PERM_VALID);
     let stranger_ring = get_keyring_id(&stranger, KEY_SPEC_SESSION_KEYRING, true) as i32;
     assert_eq!(search_core(&stranger, stranger_ring, "user", "scoped-search", 0), enokey(),
@@ -128,8 +128,8 @@ fn search_is_scoped_to_the_named_keyring_tree() {
 fn search_descends_into_nested_keyrings() {
     let t = ctx(1048, 6308);
     let outer = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
-    let inner = add_key_core(&t, "keyring", "nested-ring", alloc::vec![], 0) as i32;
-    let k = add_key_core(&t, "user", "nested-key", alloc::vec![6], inner) as i32;
+    let inner = add_key_core(&t, "keyring", "nested-ring", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let k = add_key_core(&t, "user", "nested-key", alloc::vec![6], true, inner) as i32;
     assert_eq!(search_core(&t, outer, "user", "nested-key", 0), k as i64);
 }
 
@@ -138,8 +138,8 @@ fn search_descends_into_nested_keyrings() {
 fn search_links_the_hit_into_the_destination() {
     let t = ctx(1049, 6309);
     let ring = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
-    let dest = add_key_core(&t, "keyring", "search-dest", alloc::vec![], 0) as i32;
-    let k = add_key_core(&t, "user", "search-linked", alloc::vec![7], 0) as i32;
+    let dest = add_key_core(&t, "keyring", "search-dest", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
+    let k = add_key_core(&t, "user", "search-linked", alloc::vec![7], true, KEY_SPEC_SESSION_KEYRING) as i32;
     assert_eq!(search_core(&t, ring, "user", "search-linked", dest), k as i64);
     assert!(members_of(dest).expect("keyring").contains(&k));
 }
@@ -151,12 +151,11 @@ fn search_links_the_hit_into_the_destination() {
 fn request_key_searches_only_the_callers_cred_keyrings() {
     let owner = ctx(1050, 6310);
     let stranger = ctx(1051, 6311);
-    let k = add_key_core(&owner, "user", "reqkey-scope", alloc::vec![8], 0) as i32;
+    let k = add_key_core(&owner, "user", "reqkey-scope", alloc::vec![8], true, KEY_SPEC_SESSION_KEYRING) as i32;
     force_perm(k, KEY_PERM_VALID);
     assert_eq!(request_key_core(&stranger, "user", "reqkey-scope", 0), enokey());
     assert_eq!(request_key_core(&owner, "user", "reqkey-scope", 0), k as i64);
-    let thread_key = add_key_core(&owner, "user", "reqkey-thread", alloc::vec![9],
-        KEY_SPEC_THREAD_KEYRING) as i32;
+    let thread_key = add_key_core(&owner, "user", "reqkey-thread", alloc::vec![9], true, KEY_SPEC_THREAD_KEYRING) as i32;
     assert_eq!(request_key_core(&owner, "user", "reqkey-thread", 0), thread_key as i64);
 }
 
@@ -175,8 +174,8 @@ fn request_key_miss_and_unknown_type_are_enokey() {
 fn revoked_and_expired_keys_are_invisible_to_search() {
     let t = ctx(1053, 6313);
     let ring = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
-    let a = add_key_core(&t, "user", "search-revoked", alloc::vec![1], 0) as i32;
-    let b = add_key_core(&t, "user", "search-expired", alloc::vec![1], 0) as i32;
+    let a = add_key_core(&t, "user", "search-revoked", alloc::vec![1], true, KEY_SPEC_SESSION_KEYRING) as i32;
+    let b = add_key_core(&t, "user", "search-expired", alloc::vec![1], true, KEY_SPEC_SESSION_KEYRING) as i32;
     assert_eq!(search_core(&t, ring, "user", "search-revoked", 0), a as i64);
     assert_eq!(revoke_core(&t, a), 0);
     assert_eq!(search_core(&t, ring, "user", "search-revoked", 0), enokey());

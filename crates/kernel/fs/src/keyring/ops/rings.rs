@@ -4,7 +4,7 @@
 
 use super::{e, Ctx};
 use super::super::perm::{check_perm, Lookup};
-use super::super::store::STORE;
+use super::super::store::{Quota, STORE};
 use super::super::uapi::*;
 use syscall::errno::Errno;
 
@@ -17,8 +17,14 @@ use syscall::errno::Errno;
 /// keyring. Returns its serial. # C: O(N)
 pub fn join_session(c: &Ctx, name: Option<&str>) -> i64 {
     let mut g = STORE.lock();
+    // A task that already has a session keyring is charged IN_QUOTA for the
+    // replacement (it can EDQUOT); the very first one is charged OVERRUN so a
+    // task can always be given credentials.
+    let mode = if g.session.contains_key(&c.t.tid) { Quota::InQuota } else { Quota::Overrun };
     let serial = match name {
-        None => g.new_keyring("_ses", c.t.fsuid, c.t.fsgid, SESSION_KEYRING_PERM),
+        None => match g.new_keyring("_ses", c.t.fsuid, c.t.fsgid, SESSION_KEYRING_PERM, mode) {
+            Ok(s) => s, Err(err) => return e(err),
+        },
         Some(n) => {
             let found = g.keys.values()
                 .find(|k| k.is_keyring() && k.description == n && !k.revoked && !k.invalidated)
@@ -30,11 +36,16 @@ pub fn join_session(c: &Ctx, name: Option<&str>) -> i64 {
                     }
                     s
                 }
-                None => g.new_keyring(n, c.t.fsuid, c.t.fsgid, NAMED_SESSION_KEYRING_PERM),
+                // A named session keyring is always charged IN_QUOTA.
+                None => match g.new_keyring(n, c.t.fsuid, c.t.fsgid, NAMED_SESSION_KEYRING_PERM, Quota::InQuota) {
+                    Ok(s) => s, Err(err) => return e(err),
+                },
             }
         }
     };
     g.session.insert(c.t.tid, serial);
+    // The session keyring the task just left may now be unreferenced.
+    g.collect();
     serial as i64
 }
 
@@ -45,19 +56,24 @@ pub fn join_session(c: &Ctx, name: Option<&str>) -> i64 {
 /// # C: O(N)
 pub fn get_keyring_id(c: &Ctx, id: i32, create: bool) -> i64 {
     let mut g = STORE.lock();
-    if id < 0 && !create {
+    // Without `create`, a special keyring that does not exist yet is ENOKEY
+    // rather than being minted. This only covers the ids that name a real
+    // keyring; every other negative id keeps whatever the resolver says about
+    // it (EINVAL for an undefined id, ENOKEY for the authorisation-key ids),
+    // so an undefined id is not silently reported as a missing keyring.
+    if !create {
         let t = &c.t;
         let present = match id {
-            KEY_SPEC_THREAD_KEYRING       => g.thread.contains_key(&t.tid),
-            KEY_SPEC_PROCESS_KEYRING      => g.process.contains_key(&t.tgid),
-            KEY_SPEC_SESSION_KEYRING      => g.session.contains_key(&t.tid),
-            KEY_SPEC_USER_KEYRING         => g.user.contains_key(&t.fsuid),
-            KEY_SPEC_USER_SESSION_KEYRING => g.usersess.contains_key(&t.fsuid),
-            _ => false,
+            KEY_SPEC_THREAD_KEYRING       => Some(g.thread.contains_key(&t.tid)),
+            KEY_SPEC_PROCESS_KEYRING      => Some(g.process.contains_key(&t.tgid)),
+            KEY_SPEC_SESSION_KEYRING      => Some(g.session.contains_key(&t.tid)),
+            KEY_SPEC_USER_KEYRING         => Some(g.user.contains_key(&t.fsuid)),
+            KEY_SPEC_USER_SESSION_KEYRING => Some(g.usersess.contains_key(&t.fsuid)),
+            _ => None,
         };
-        if !present { return e(Errno::Enokey); }
+        if present == Some(false) { return e(Errno::Enokey); }
     }
-    let serial = match g.resolve(id, &c.t) { Some(s) => s, None => return e(Errno::Enokey) };
+    let serial = match g.resolve(id, &c.t) { Ok(s) => s, Err(err) => return e(err) };
     if id >= 0 {
         if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SEARCH, Lookup::Full, c.now_ns) {
             return rv;
@@ -74,9 +90,9 @@ pub fn get_keyring_id(c: &Ctx, id: i32, create: bool) -> i64 {
 pub fn get_persistent(c: &Ctx, uid: i32, destid: i32) -> i64 {
     if uid != -1 && uid as u32 != c.t.fsuid && !c.sys_admin { return e(Errno::Eperm); }
     let mut g = STORE.lock();
-    let ring = match g.resolve(KEY_SPEC_USER_KEYRING, &c.t) { Some(s) => s, None => return e(Errno::Enokey) };
+    let ring = match g.resolve(KEY_SPEC_USER_KEYRING, &c.t) { Ok(s) => s, Err(err) => return e(err) };
     if destid != 0 {
-        let dest = match g.resolve(destid, &c.t) { Some(d) => d, None => return e(Errno::Enokey) };
+        let dest = match g.resolve(destid, &c.t) { Ok(d) => d, Err(err) => return e(err) };
         if let Err(rv) = check_perm(&g, dest, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
         if let Err(err) = g.link(dest, ring) { return e(err); }
     }
@@ -95,8 +111,8 @@ pub fn set_reqkey_keyring(c: &Ctx, reqkey_defl: i32) -> i64 {
     let old = *g.jit.get(&c.t.tid).unwrap_or(&KEY_REQKEY_DEFL_THREAD_KEYRING);
     if reqkey_defl == KEY_REQKEY_DEFL_NO_CHANGE { return old as i64; }
     match reqkey_defl {
-        KEY_REQKEY_DEFL_THREAD_KEYRING  => { g.resolve(KEY_SPEC_THREAD_KEYRING, &c.t); }
-        KEY_REQKEY_DEFL_PROCESS_KEYRING => { g.resolve(KEY_SPEC_PROCESS_KEYRING, &c.t); }
+        KEY_REQKEY_DEFL_THREAD_KEYRING  => { let _ = g.resolve(KEY_SPEC_THREAD_KEYRING, &c.t); }
+        KEY_REQKEY_DEFL_PROCESS_KEYRING => { let _ = g.resolve(KEY_SPEC_PROCESS_KEYRING, &c.t); }
         KEY_REQKEY_DEFL_DEFAULT
         | KEY_REQKEY_DEFL_SESSION_KEYRING
         | KEY_REQKEY_DEFL_USER_KEYRING
@@ -117,7 +133,7 @@ pub fn set_reqkey_keyring(c: &Ctx, reqkey_defl: i32) -> i64 {
 /// eligible parent. # C: O(N)
 pub fn session_to_parent(c: &Ctx, parent: Option<ParentInfo>) -> i64 {
     let mut g = STORE.lock();
-    let mine = match g.resolve(KEY_SPEC_SESSION_KEYRING, &c.t) { Some(s) => s, None => return e(Errno::Enokey) };
+    let mine = match g.resolve(KEY_SPEC_SESSION_KEYRING, &c.t) { Ok(s) => s, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, mine, &c.t, KEY_NEED_LINK, Lookup::Full, c.now_ns) { return rv; }
     let p = match parent { Some(p) => p, None => return e(Errno::Eperm) };
     if p.vpid <= 1 || !p.has_mm || !p.single_threaded { return e(Errno::Eperm); }

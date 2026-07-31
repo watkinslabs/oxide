@@ -34,8 +34,12 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             ops::join_session(&c, name.as_deref())
         }
         KEYCTL_UPDATE => {
+            // `keyctl_update_key` bounds the update payload at ONE PAGE, an
+            // order of magnitude below what `add_key` accepts, and rejects a
+            // longer one before any copy.
+            if args.a3 > KEYCTL_UPDATE_MAX_PAYLOAD { return err(Errno::Einval); }
             let payload = match read_user_bytes(args.a2, args.a3) { Ok(v) => v, Err(rv) => return rv };
-            ops::update_core(&c, args.a1 as i32, payload)
+            ops::update_core(&c, args.a1 as i32, payload, args.a2 != 0)
         }
         KEYCTL_REVOKE => ops::revoke_core(&c, args.a1 as i32),
         KEYCTL_CHOWN => ops::chown_core(&c, args.a1 as i32, args.a2 as u32, args.a3 as u32),
@@ -53,7 +57,11 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             ops::search_core(&c, args.a1 as i32, &key_type, &description, args.a4 as i32)
         }
         KEYCTL_READ => {
-            let bytes = match ops::read_core(&c, args.a1 as i32) { Ok(b) => b, Err(rv) => return rv };
+            // A NULL buffer is a length query, and the read method is then
+            // asked for the length with a zero buffer length — which is what
+            // the keyring type's 4-byte-alignment rule is applied to.
+            let buflen = if args.a2 == 0 { 0 } else { args.a3 };
+            let bytes = match ops::read_core(&c, args.a1 as i32, buflen) { Ok(b) => b, Err(rv) => return rv };
             write_user_capped(args.a2, args.a3, &bytes)
         }
         KEYCTL_SET_REQKEY_KEYRING => ops::set_reqkey_keyring(&c, args.a1 as i32),
