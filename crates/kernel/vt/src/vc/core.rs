@@ -1,7 +1,7 @@
 use alloc::collections::VecDeque;
 use alloc::vec;
 
-use super::{default_palette, default_tab_stops, AltScreen, Attr, Charset, Cell, Vc};
+use super::{DEFAULT_PALETTE, default_tab_stops, AltScreen, Attr, Charset, Cell, Vc};
 use super::{DEFAULT_BG_RGB, DEFAULT_FG_RGB};
 
 impl Vc {
@@ -41,7 +41,7 @@ impl Vc {
             history: VecDeque::new(),
             view_offset: 0,
             alt_screen: None,
-            palette: default_palette(),
+            palette: DEFAULT_PALETTE,
             default_fg: DEFAULT_FG_RGB,
             default_bg: DEFAULT_BG_RGB,
         }
@@ -83,7 +83,7 @@ impl Vc {
     pub fn reset_palette(&mut self, idx: Option<u8>) {
         match idx {
             Some(i) => self.palette[i as usize] = crate::palette::xterm_256_rgb(i as u32),
-            None => self.palette = default_palette(),
+            None => self.palette = DEFAULT_PALETTE,
         }
     }
 

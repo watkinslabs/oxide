@@ -45,7 +45,19 @@ struct TxQueue {
     jobs: Vec<Option<TxJob>>,
 }
 
-pub(crate) struct TxJob {
+/// One admitted transmit, held BEHIND a box.
+///
+/// A job is moved by value at every step of the dispatch loop: into `enqueue`,
+/// into the ring, back out of it, into neighbour admission and back out of it
+/// inside an `ArpResolution`, through the L2 fill-in, and finally into
+/// `transmit`. Each of those moves materialises another copy of the record in
+/// the caller's frame, and the record is ~160 B — which is why `enqueue`, on
+/// one of the deepest paths in the kernel, reserved most of a kilobyte. Boxed,
+/// every one of those moves is a pointer. Linux hands an `sk_buff *` down the
+/// same path for the same reason.
+pub(crate) struct TxJob(alloc::boxed::Box<TxJobRecord>);
+
+struct TxJobRecord {
     lease: EgressLease,
     payload: TxPayload,
     /// Absent once the neighbour queue owns this packet: Linux
@@ -97,7 +109,7 @@ impl TxDispatch {
 
     fn enqueue(&self, job: TxJob) -> NetResult<()> {
         let _bh = exclude_local_softirq();
-        let Some(done) = job.done.clone() else { return Ok(()); };
+        let Some(done) = job.0.done.clone() else { return Ok(()); };
         let drain = {
             let mut queue = tx_lock!(self.queue);
             if queue.full() { return Err(NetError::Enobufs); }
@@ -125,7 +137,7 @@ impl TxDispatch {
                 }
                 Err(crate::arp::ArpResolution::Send { job, mac }) => job.with_l2(mac),
             };
-            let done = job.done.clone();
+            let done = job.0.done.clone();
             let result = {
                 let _hardware = tx_lock!(self.hardware);
                 job.transmit()
@@ -140,7 +152,7 @@ impl TxDispatch {
 
     /// Resume one neighbour-resolved job under this generation's hardware serialiser. # C: O(packet)
     pub(crate) fn resume(&self, job: TxJob) {
-        let done = job.done.clone();
+        let done = job.0.done.clone();
         let result = {
             let _bh = exclude_local_softirq();
             let _hardware = tx_lock!(self.hardware);
@@ -215,42 +227,41 @@ impl TxQueue {
 
 impl TxJob {
     fn new(lease: EgressLease, payload: TxPayload) -> Self {
-        Self { lease, payload, done: Some(Arc::new(TxCompletion {
-            result: Spinlock::new(None),
-        })) }
+        Self(alloc::boxed::Box::new(TxJobRecord { lease, payload,
+            done: Some(Arc::new(TxCompletion { result: Spinlock::new(None) })) }))
     }
 
     /// Retained packet/frame byte count for neighbour queue accounting. # C: O(1)
     pub(crate) fn packet_len(&self) -> usize {
-        match &self.payload {
+        match &self.0.payload {
             TxPayload::Packet { pkt, .. } => pkt.len(),
             TxPayload::Raw { frame, .. } => frame.len(),
         }
     }
 
     /// Exact interface generation retained by this deferred dispatch. # C: O(1)
-    pub(crate) fn lease(&self) -> EgressLease { self.lease.clone() }
+    pub(crate) fn lease(&self) -> EgressLease { self.0.lease.clone() }
 
     /// Re-enter the exact dispatcher retained by this job's interface generation. # C: O(packet)
-    pub(crate) fn resume(self) { self.lease.clone().resume_arp_job(self); }
+    pub(crate) fn resume(self) { self.0.lease.clone().resume_arp_job(self); }
 
     /// Complete the original synchronous transmit admission exactly once.
     /// A job the neighbour queue already acknowledged has no sender left. # C: O(1)
     pub(crate) fn complete(self, result: NetResult<()>) {
-        if let Some(done) = self.done { done.complete(result); }
+        if let Some(done) = self.0.done { done.complete(result); }
     }
 
     /// Take this job's sender admission before the neighbour queue owns it. # C: O(1)
-    pub(crate) fn detach_ack(&mut self) -> Option<TxAck> { self.done.take() }
+    pub(crate) fn detach_ack(&mut self) -> Option<TxAck> { self.0.done.take() }
 
     fn with_l2(mut self, dst: crate::MacAddr) -> Self {
-        if let TxPayload::Packet { l2_dst, .. } = &mut self.payload { *l2_dst = Some(dst); }
+        if let TxPayload::Packet { l2_dst, .. } = &mut self.0.payload { *l2_dst = Some(dst); }
         self
     }
 
     fn admit_arp(self) -> Result<Self, crate::arp::ArpResolution> {
-        let (next_hop, source) = match &self.payload {
-            TxPayload::Packet { pkt, .. } if self.lease.device().hardware_type() == crate::uapi::ARPHRD_ETHER
+        let (next_hop, source) = match &self.0.payload {
+            TxPayload::Packet { pkt, .. } if self.0.lease.device().hardware_type() == crate::uapi::ARPHRD_ETHER
                 && pkt.proto == crate::addr::eth_p::IPV4 => match pkt.next_hop {
                     Some(crate::pkt::TxNextHop::V4(next_hop)) => (next_hop, ipv4_source(pkt.data())),
                     _ => return Ok(self),
@@ -258,11 +269,11 @@ impl TxJob {
             _ => return Ok(self),
         };
         if next_hop.is_broadcast() {
-            let dst = self.lease.device().broadcast();
+            let dst = self.0.lease.device().broadcast();
             return Ok(self.with_l2(dst));
         }
         if next_hop.is_multicast() { return Ok(self.with_l2(ipv4_multicast_mac(next_hop))); }
-        let lease = self.lease.clone();
+        let lease = self.0.lease.clone();
         match lease.arp_cache().resolve_or_queue(next_hop, source, self, crate::stack::net_now_ns()) {
             crate::arp::ArpResolution::Send { job, mac } => Ok(job.with_l2(mac)),
             deferred => Err(deferred),
@@ -270,34 +281,35 @@ impl TxJob {
     }
 
     fn transmit(self) -> NetResult<()> {
-        match self.payload {
+        let TxJobRecord { lease, payload, .. } = *self.0;
+        match payload {
             TxPayload::Packet { pkt, l2_dst } => {
                 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
                 {
                     let mut observe = |bytes: &[u8], protocol: u16, link_header_len: usize| {
-                        crate::sock::deliver_packet_egress_in(&self.lease, bytes, protocol,
+                        crate::sock::deliver_packet_egress_in(&lease, bytes, protocol,
                             link_header_len, None);
                     };
-                    match l2_dst { Some(dst) => self.lease.device().xmit_l2_observed(pkt, dst, &mut observe),
-                        None => self.lease.device().xmit_observed(pkt, &mut observe) }
+                    match l2_dst { Some(dst) => lease.device().xmit_l2_observed(pkt, dst, &mut observe),
+                        None => lease.device().xmit_observed(pkt, &mut observe) }
                 }
                 #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
                 {
                     let _ = l2_dst;
-                    self.lease.device().xmit(pkt)
+                    lease.device().xmit(pkt)
                 }
             }
             TxPayload::Raw { frame, origin: _origin } => {
                 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
                 {
-                    crate::sock::deliver_packet_egress_in(&self.lease, &frame,
+                    crate::sock::deliver_packet_egress_in(&lease, &frame,
                         u16::from_be_bytes([frame[12], frame[13]]), crate::ethernet::ETH_HDR_LEN,
                         _origin);
-                    if self.lease.device().hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
-                        crate::sock::deliver_packet_loopback_frame_in(&self.lease, &frame);
+                    if lease.device().hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
+                        crate::sock::deliver_packet_loopback_frame_in(&lease, &frame);
                     }
                 }
-                self.lease.device().xmit_raw(&frame)
+                lease.device().xmit_raw(&frame)
             }
         }
     }
