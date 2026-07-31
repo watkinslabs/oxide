@@ -5,22 +5,25 @@ use vfs::{FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsErr
 
 use crate::uapi::{CTL_MAGIC, PCM_MAGIC};
 
-/// High-32 tag ('Snd\0') + card/minor in the low bits — routes the shared
-/// ioctl dispatcher to sound nodes while `i_private` carries the owner key.
-const MINOR_CONTROL: u64 = 0x00;
+// Device minor within one card. Carried in `i_private` (what routes the
+// dispatch) and mirrored into the low bits of the inode number under sound's
+// declared tag, where it names nothing and decides nothing.
+pub(crate) const MINOR_CONTROL: u64 = 0x00;
 pub(crate) const MINOR_PCM_P: u64 = 0x10;
-const MINOR_PCM_C: u64 = 0x11;
-const MINOR_DSP: u64 = 0x20;
-const MINOR_AUDIO: u64 = 0x21;
-const MINOR_MIXER: u64 = 0x22;
+pub(crate) const MINOR_PCM_C: u64 = 0x11;
+pub(crate) const MINOR_DSP: u64 = 0x20;
+pub(crate) const MINOR_AUDIO: u64 = 0x21;
+pub(crate) const MINOR_MIXER: u64 = 0x22;
+/// Bit position of the card number in the low half of a sound inode number.
+const INO_CARD_SHIFT: u32 = 8;
 
 /// Backend-private state (`i_private`) for a sound node: the owning card key
 /// plus the device minor that routes `controlC0`/`pcmC0D0p`/… dispatch.
 /// # C: O(1)
-struct SndData {
-    owner: crate::SoundOwnerKey,
-    card: u32,
-    minor: u64,
+pub(crate) struct SndData {
+    pub(crate) owner: crate::SoundOwnerKey,
+    pub(crate) card: u32,
+    pub(crate) minor: u64,
 }
 
 /// `file_operations` for every `/dev/snd/*` + OSS node.
@@ -58,8 +61,8 @@ impl FileOps for SndFileOps {
 
 /// Build a `/dev/snd/*` (or OSS) char-device inode for `minor`.
 /// # C: O(1)
-fn make_snd_inode(owner: crate::SoundOwnerKey, card: u32, minor: u64) -> InodeRef {
-    InodeBuilder::new(crate::ids::INO_TAG | ((card as Ino) << 8) | minor, mk_mode(FileType::CharDev, 0o666),
+pub(crate) fn make_snd_inode(owner: crate::SoundOwnerKey, card: u32, minor: u64) -> InodeRef {
+    InodeBuilder::new(crate::ids::INO_TAG | ((card as Ino) << INO_CARD_SHIFT) | minor, mk_mode(FileType::CharDev, 0o666),
                       default_inode_ops(), Arc::new(SndFileOps))
         .private(Arc::new(SndData { owner, card, minor }))
         .build()
@@ -199,17 +202,22 @@ pub(crate) fn publish_card_nodes(owner: crate::SoundOwnerKey, card: u32, has_pla
     Some(published)
 }
 
+/// Is this inode a sound node, and which one? Linux answers by the file's
+/// `snd_*_f_ops`; the inode NUMBER cannot. Gating on the tag first and reading
+/// the backend state second CONSUMED the ioctl with EINVAL for any inode that
+/// merely carried the tag, instead of letting the dispatch chain reach the
+/// stage that owns it. `make_snd_inode` is the only place that installs
+/// [`SndData`]. # C: O(1)
+pub(crate) fn snd_data_of(inode: &InodeRef) -> Option<&SndData> {
+    inode.private::<SndData>()
+}
+
 /// Sound-node ioctl entry point for the shared `sys_ioctl` dispatch chain.
 /// Routes by the node minor + ioctl magic. Returns `Some(rv)` for sound
 /// nodes, `None` otherwise.
 /// # C: O(1) excluding a blocking PCM transfer
 pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
-    let ino = inode.ino();
-    if ino & crate::ids::INO_MASK != crate::ids::INO_TAG { return None; }
-    let data = match inode.private::<SndData>() {
-        Some(data) => data,
-        None => return Some(-(syscall::errno::Errno::Einval.as_i32() as i64)),
-    };
+    let data = match snd_data_of(inode) { Some(data) => data, None => return None };
     let group = (req >> 8) & 0xFF;
     let nr = req & 0xFF;
     Some(match data.minor {

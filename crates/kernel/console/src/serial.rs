@@ -1,13 +1,12 @@
 use tty::ReadOutcome;
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{FileOps, Ino, Inode, InodeRef, KResult, VfsError};
 
-use crate::routing::{foreground_vt, SERIAL_INO_LB, TTY_INO_BASE};
-
-const SERIAL_CONSOLE_MODE: u16 = 0o660;
+use crate::ids;
+use crate::routing::foreground_vt;
 
 /// `/dev/ttyS0` inode number. # C: O(1)
 fn serial_ino() -> Ino {
-    TTY_INO_BASE | SERIAL_INO_LB as Ino
+    ids::tty_ino(ids::SERIAL_INO_LB)
 }
 
 pub(crate) const fn serial_rdev() -> u32 {
@@ -65,7 +64,7 @@ pub(crate) fn serial_write(buf: &[u8]) -> KResult<usize> {
     Ok(crate::static_console::write(buf))
 }
 
-struct SerialFileOps;
+pub(crate) struct SerialFileOps;
 
 impl FileOps for SerialFileOps {
     fn on_open(&self, _i: &Inode) -> KResult<()> {
@@ -103,18 +102,6 @@ impl FileOps for SerialFileOps {
     }
 }
 
-pub fn make_serial_inode() -> InodeRef {
-    InodeBuilder::new(
-        serial_ino(),
-        mk_mode(FileType::CharDev, SERIAL_CONSOLE_MODE),
-        default_inode_ops(),
-        alloc::sync::Arc::new(SerialFileOps),
-    )
-    .fsid(devfs::DEVFS_FSID)
-    .rdev(serial_rdev())
-    .build()
-}
-
 /// Keyboard byte for the foreground VT. Staged rather than cooked inline —
 /// this runs in the virtio-input SOFTIRQ, on the per-CPU hardirq stack; see
 /// `crate::vt_input`.
@@ -132,5 +119,5 @@ pub fn vt_reply_sink(vt: u8, bytes: &[u8]) {
 }
 
 pub fn system_console_inode() -> InodeRef {
-    crate::vt_console::make_system_console_inode()
+    crate::nodes::make_system_console_inode()
 }

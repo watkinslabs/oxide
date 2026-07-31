@@ -319,7 +319,10 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // as `/dev/ptmx`. O_PATH remains a pure path fd and never runs the
         // device-open side effect (PTY allocation / controlling-tty lookup).
         if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_PTMX_RDEV) {
-            let (master, _n) = devpts::allocate_pair();
+            let (master, _n) = match devpts::allocate_pair() {
+                Ok(v) => v,
+                Err(e) => return crate::namei_common::errno_from_vfs(e),
+            };
             (master, vp.mnt_id, vp.dentry, false, display)
         } else if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_TTY_RDEV) {
             // F200: caller's controlling terminal; ENXIO when none.

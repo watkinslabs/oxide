@@ -11,10 +11,13 @@ use vfs::{File, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, PollS
 use super::siginfo;
 use super::uapi::SIGINFO_SIZE;
 
-mod ids {
-    use vfs::Ino;
-    pub(crate) const INO_BASE: Ino = 0x7200_0000;
-}
+/// Every signalfd used to carry the SAME number, the base of its range. Linux
+/// gives each anon inode its own, and userspace tells two descriptions apart by
+/// `(st_dev, st_ino)` — `lsof`, `ss` and `/proc/<pid>/fdinfo` collapsed every
+/// signalfd in the system into one identity. Each instance now draws its own
+/// number, wrapping inside the range rather than escaping it.
+static NEXT_SIGNALFD_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::SIGNALFD);
 
 /// Per-inode signalfd state (Linux `signalfd_ctx`): the accepted signal mask.
 /// Stored in POSITIVE form (bits set = signals this fd drains), which is also
@@ -25,7 +28,7 @@ pub struct SignalfdData {
 
 /// Build a signalfd pseudo-inode owning `mask`. # C: O(1)
 pub fn make_signalfd_inode(mask: u64) -> InodeRef {
-    InodeBuilder::new(ids::INO_BASE, mk_mode(FileType::CharDev, 0),
+    InodeBuilder::new(NEXT_SIGNALFD_INO.alloc(), mk_mode(FileType::CharDev, 0),
         default_inode_ops(), Arc::new(SignalfdFileOps))
         .private(Arc::new(SignalfdData { mask: AtomicU64::new(mask) }))
         .build()

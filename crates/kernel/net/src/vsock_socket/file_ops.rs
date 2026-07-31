@@ -2,11 +2,11 @@
 
 use alloc::sync::Arc;
 
-use super::{VsockSocket, VSOCK_INO_ID_MASK, VSOCK_INO_TAG};
+use super::{VsockSocket, NEXT_VSOCK_INO};
 
 /// Build the `Arc<Inode>` wrapping an AF_VSOCK socket fd. # C: O(1)
 pub fn make_vsock_socket_inode(sock: Arc<VsockSocket>) -> vfs::InodeRef {
-    let ino = VSOCK_INO_TAG | (Arc::as_ptr(&sock) as u64 & VSOCK_INO_ID_MASK);
+    let ino = NEXT_VSOCK_INO.alloc();
     let subs = sock.poll_subs.clone();
     vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), Arc::new(VsockFileOps))
@@ -71,5 +71,44 @@ impl vfs::FileOps for VsockFileOps {
     }
     fn on_release_file(&self, file: &vfs::File) {
         if let Some(socket) = file.inode().private::<VsockSocket>() { socket.release_file(); }
+    }
+}
+
+#[cfg(test)]
+mod ino_tests {
+    use super::*;
+
+    // The id used to be `Arc::as_ptr(&sock)`, which the heap allocator hands
+    // back the moment a socket is freed, so two live AF_VSOCK sockets could
+    // report the same `st_ino`.
+
+    fn a_vsock() -> Arc<VsockSocket> { Arc::new(VsockSocket::new()) }
+
+    #[test]
+    fn two_live_vsock_sockets_get_different_inode_numbers() {
+        let a = make_vsock_socket_inode(a_vsock());
+        let b = make_vsock_socket_inode(a_vsock());
+        assert_ne!(a.ino(), b.ino());
+    }
+
+    /// Each socket is dropped before the next is built, so the allocator may
+    /// place them at one address — the case the pointer id could not survive.
+    #[test]
+    fn vsock_numbers_are_not_reused_after_a_socket_is_freed() {
+        let mut seen = alloc::collections::BTreeSet::new();
+        for _ in 0..256 {
+            let ino = make_vsock_socket_inode(a_vsock()).ino();
+            assert!(vfs::pseudo_ino::VSOCK.contains(ino), "{ino:#x} left the vsock region");
+            assert!(seen.insert(ino), "reused st_ino {ino:#x}");
+        }
+    }
+
+    /// Identity still comes from `i_private`, not the number.
+    #[test]
+    fn vsock_identity_still_comes_from_the_private_socket() {
+        let sock = a_vsock();
+        let inode = make_vsock_socket_inode(Arc::clone(&sock));
+        let got = vsock_arc_from_inode(&inode).expect("socket resolves from i_private");
+        assert!(Arc::ptr_eq(&got, &sock));
     }
 }

@@ -3,9 +3,8 @@
 extern crate alloc;
 
 mod autofs_ids {
-    pub(crate) const ROOT_INO: u64 = 0x0187_0001;
-    pub(crate) const CONTROL_INO_BASE: u64 = 0x0187_1000;
-    pub(crate) const CONTROL_INO_MASK: u64 = 0x0fff;
+    /// One autofs root today; the region reserves room for more.
+    pub(crate) const ROOT_INO: u64 = vfs::pseudo_ino::AUTOFS_ROOT.start() + 1;
 }
 
 use alloc::collections::BTreeMap;
@@ -123,8 +122,10 @@ pub struct AutofsCtlInode {
 
 /// `make_autofs_ctl_inode(state)` — a CharDev ioctl-only inode. # C: O(1)
 fn make_autofs_ctl_inode(state: Arc<AutofsState>) -> InodeRef {
-    let ino = autofs_ids::CONTROL_INO_BASE
-        | (state.dev.load(Ordering::Acquire) & autofs_ids::CONTROL_INO_MASK);
+    // The control node's number is its misc device number folded into the
+    // range `vfs::pseudo_ino` reserves for autofs, so a device number wider
+    // than the range wraps inside it instead of landing on a neighbour.
+    let ino = vfs::pseudo_ino::AUTOFS_CONTROL.at(state.dev.load(Ordering::Acquire));
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(AutofsCtlInode { state }))

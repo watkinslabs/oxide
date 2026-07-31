@@ -469,3 +469,6 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
     assert!(b.dequeue().is_none(), "other network namespace must not receive rtnetlink multicast");
     let _ = net::global_stack().ifaces.unregister(iface);
 }
+
+#[path = "netlink_tests/ino.rs"]
+mod ino;

@@ -26,8 +26,8 @@ const NAME_MAX: usize = 255;
 const DEFAULT_ATTR_MODE: u16 = 0o644;
 const CONFIG_PATH_MAGIC: u32 = 0x4346_5350;
 
-static NEXT_INO: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0x6c00_0000);
+static NEXT_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::CONFIGFS);
 static LOCK: Spinlock<(), ModulesLockClass> = Spinlock::new(());
 
 type ShowFn = unsafe extern "C" fn(*mut ConfigItem, *mut c_char) -> isize;
@@ -323,7 +323,7 @@ pub(super) fn unregister_default_groups(parent_item: *mut ConfigItem) {
 fn attr_inode(mode: u16, data: AttrData) -> InodeRef {
     let perm = if mode == 0 { DEFAULT_ATTR_MODE } else { mode & 0o777 };
     InodeBuilder::new(
-        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        NEXT_INO.alloc(),
         mk_mode(FileType::Regular, perm),
         default_inode_ops(),
         Arc::new(AttrOps),
@@ -333,7 +333,7 @@ fn attr_inode(mode: u16, data: AttrData) -> InodeRef {
 fn bin_attr_inode(mode: u16, data: BinAttrData) -> InodeRef {
     let perm = if mode == 0 { DEFAULT_ATTR_MODE } else { mode & 0o777 };
     InodeBuilder::new(
-        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        NEXT_INO.alloc(),
         mk_mode(FileType::Regular, perm),
         default_inode_ops(),
         Arc::new(BinAttrOps),
@@ -342,7 +342,7 @@ fn bin_attr_inode(mode: u16, data: BinAttrData) -> InodeRef {
 
 fn symlink_inode(target: &[u8]) -> InodeRef {
     InodeBuilder::new(
-        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        NEXT_INO.alloc(),
         mk_mode(FileType::Symlink, 0o777),
         default_inode_ops(),
         vfs::default_file_ops(),

@@ -111,18 +111,17 @@ pub fn node_child_names(cgid: u64) -> Vec<String> { TREE.lock().child_names(cgid
 /// # C: O(1)
 pub fn is_mounted() -> bool { TREE.lock().is_mounted() }
 
-/// Recover the cgroup id from a cgroup2 DIRECTORY inode's `(ino, fsid)`.
-/// `None` when the inode is not a cgroup2 directory. Lets the clone3 shim
-/// resolve the caller's `CLONE_INTO_CGROUP` cgroup fd to a `cgid` without the
-/// shim depending on cgroup-internal inode constants. # C: O(1)
-pub fn cgid_from_dir_inode(ino: u64, fsid: u64) -> Option<u64> {
-    // Mirrors inode.rs: CgDir::ino() = DIR_INO_BASE + cgid; fsid = CGROUP2_FSID.
-    if fsid == crate::CGROUP2_SUPER_MAGIC && ino >= crate::ids::DIR_INO_BASE
-        && ino < crate::ids::DIR_INO_BASE + 0x0100_0000 {
-        Some(ino - crate::ids::DIR_INO_BASE)
-    } else {
-        None
-    }
+/// Recover the cgroup id from a cgroup2 DIRECTORY inode. `None` when the inode
+/// is not one — the answer comes from the `CgDirData` cgroupfs installs in
+/// `i_private` when it synthesizes the directory (`inode::make_cg_dir`), which
+/// only cgroupfs can mint, so no other filesystem's inode can be mistaken for
+/// one. Recovering the id by subtracting a base from `st_ino` (guarded only by
+/// `fsid`) claimed every inode whose number happened to land in the range —
+/// including devpts' PTY masters, which shared the base. Lets the clone3 shim
+/// and the bpf cgroup-attach path resolve a cgroup fd to a `cgid` without
+/// depending on cgroup-internal inode constants. # C: O(1)
+pub fn cgid_from_dir_inode(inode: &vfs::Inode) -> Option<u64> {
+    inode.private::<inode::CgDirData>().map(|d| d.cgid)
 }
 
 /// Write a control file. Handles the cross-subsystem files

@@ -1,19 +1,20 @@
 // An evdev file is identified by the backend state its inode owns, never by
-// the inode NUMBER. Pseudo-inode ranges are not partitioned across subsystems —
-// `/dev/input/event0` and epoll's first instance both land on 0x7400_0001 — and
-// a numeric test let a foreign inode into this handler, where the file's
-// unrelated `private_data` word would be read back as an `EvdevOpen`.
+// the inode NUMBER. A numeric test let a foreign inode into this handler,
+// where the file's unrelated `private_data` word would be read back as an
+// `EvdevOpen`. The numbers themselves used to collide with epoll's — both minted
+// from 0x7400_0000, so `/dev/input/event0` and epoll's first instance reported
+// the same `st_ino` — and now come from evdev's own declared region.
 
 use alloc::sync::Arc;
+use vfs::pseudo_ino::{EPOLL, EVDEV};
 use vfs::{default_file_ops, default_inode_ops, mk_mode, Dentry, File, FileType, Ino,
           InodeBuilder, OpenFlags};
 
 use super::*;
 use crate::devfs::handle_evdev_ioctl;
 
-/// The number `make_evdev_inode_for` gives `/dev/input/event0`, and equally the
-/// number epoll's instance 1 carries.
-const SHARED_INO: Ino = 0x7400_0001;
+/// The number `make_evdev_inode_for` gives `/dev/input/event0`.
+const EVENT0_INO: Ino = EVDEV.start() + crate::EVDEV_FIRST_INO_OFFSET;
 
 struct ForeignState;
 
@@ -27,18 +28,40 @@ fn foreign_file(ino: Ino) -> Arc<File> {
 }
 
 #[test]
+fn evdev_numbers_no_longer_alias_epoll_s() {
+    // `stat` on `/dev/input/event0` and on an epoll fd reported the same
+    // `st_ino` while both bases were 0x7400_0000. Identity never depended on
+    // the number, but two owners minting the same one is its own defect.
+    assert!(EVDEV.contains(EVENT0_INO));
+    assert!(!EPOLL.contains(EVENT0_INO));
+    assert!(!EPOLL.contains(EVDEV.start()));
+    assert!(!EPOLL.contains(EVDEV.end()));
+}
+
+#[test]
+fn a_published_evdev_inode_number_falls_inside_the_evdev_region() {
+    const REQUESTED_ID: u32 = 11;
+    let key = test_dev(REQUESTED_ID).device_key;
+    let _ = crate::remove_device(key);
+    let (_, id) = crate::install(test_dev(REQUESTED_ID)).expect("install identity model");
+    let ino = crate::devfs::make_evdev_inode(id).ino();
+    assert!(EVDEV.contains(ino), "{ino:#x} outside {}", EVDEV.name());
+    assert_eq!(crate::remove_device(key), Some(id));
+}
+
+#[test]
 fn a_foreign_inode_sharing_evdev_s_number_is_declined() {
     // EVIOCGBIT(0, 8) — libinput's first question of any device.
     let request = evio_read(crate::EVIOCGBIT_BASE_NR as u32, 8);
     let mut out = [0u8; 8];
-    let file = foreign_file(SHARED_INO);
+    let file = foreign_file(EVENT0_INO);
     assert_eq!(handle_evdev_ioctl(&file, request, out.as_mut_ptr() as u64), None);
 }
 
 #[test]
 fn every_evdev_number_shape_is_declined_for_a_foreign_inode() {
     let mut out = [0u8; crate::EVDEV_STATE_BYTES];
-    for ino in [SHARED_INO, 0x7400_0002, 0x7400_00FF, 0x7400_0000] {
+    for ino in [EVENT0_INO, EVDEV.start(), EVDEV.start() + 2, EVDEV.end()] {
         let file = foreign_file(ino);
         for nr in [crate::EVIOCGVERSION_NR, crate::EVIOCGID_NR, crate::EVIOCGNAME_NR,
                    crate::EVIOCGBIT_BASE_NR, crate::EVIOCGABS_BASE_NR] {

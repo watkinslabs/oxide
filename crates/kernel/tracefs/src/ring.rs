@@ -10,7 +10,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::format;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as TraceClass};
 use vfs::inode::{Inode, InodeBuilder};
@@ -32,7 +32,8 @@ pub(crate) static FILTER_SYS_EXIT:    FilterSlot = FilterSlot::new(crate::eventf
 /// Linux default: tracing_on = 1 (recording enabled; the `nop` tracer just
 /// doesn't generate function events — trace_marker still records).
 static TRACING_ON: AtomicBool = AtomicBool::new(true);
-static NEXT_INO: AtomicU64 = AtomicU64::new(0x3700_0000);
+static NEXT_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::TRACEFS_RING);
 
 /// Read-side serialization: `trace`/`trace_pipe` readers + clear take this so
 /// concurrent drains don't double-consume. The PRODUCER side (record) is
@@ -297,7 +298,7 @@ fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
     n
 }
 
-fn alloc_ino() -> Ino { NEXT_INO.fetch_add(1, Ordering::Relaxed) }
+fn alloc_ino() -> Ino { NEXT_INO.alloc() }
 
 pub(crate) fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
 pub(crate) fn sys_enter_on() -> bool { SYS_ENTER_ON.load(Ordering::Acquire) }

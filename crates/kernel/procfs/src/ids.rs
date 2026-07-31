@@ -67,7 +67,6 @@ pub(crate) const CPU_TOPOLOGY_ATTR: u64 = 0x3000_1F00;
 pub(crate) const PRESSURE_CPU: u64 = 0x3000_1A00;
 pub(crate) const PRESSURE_MEMORY: u64 = 0x3000_1A01;
 pub(crate) const PRESSURE_IO: u64 = 0x3000_1A02;
-pub(crate) const LIVE_INO_BASE: u64 = 0x3000_0000;
 pub(crate) const PROC_ROOT: u64 = 0x3000_0001;
 /// `/proc/self` magic symlink. # C: O(1)
 pub(crate) const PROC_SELF_LINK: u64 = 0x3000_0002;

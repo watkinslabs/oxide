@@ -2,7 +2,6 @@
 // `perf_fops` (`perf_read`, `__perf_read`, `perf_poll`).
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileOps, Inode, InodeBuilder, InodeRef, KResult, default_inode_ops, mk_mode, VfsError};
 
@@ -10,15 +9,13 @@ use super::counter::{format_group, format_one, read_size, MemberRead};
 use super::event::PerfEvent;
 use super::uapi::fmt;
 
-/// Inode-number tag distinguishing perf fds from the other anon-inode families.
-pub const INO_TAG:     vfs::Ino = 0x5045_5246_0000_0000;
-pub const INO_ID_MASK: vfs::Ino = 0xFFFF_FFFF;
-
-static NEXT_PERF_INO: AtomicU64 = AtomicU64::new(1);
+/// perf's reserved inode-number range, owned by `vfs::pseudo_ino`.
+static NEXT_PERF_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::PERF);
 
 /// Build the anon inode backing one `perf_event_open` fd. # C: O(1)
 pub fn make_perf_event_inode(ev: Arc<PerfEvent>) -> InodeRef {
-    let ino = INO_TAG | (NEXT_PERF_INO.fetch_add(1, Ordering::Relaxed) & INO_ID_MASK);
+    let ino = NEXT_PERF_INO.alloc();
     InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
         default_inode_ops(), Arc::new(PerfFileOps))
         .private(ev)
@@ -30,8 +27,14 @@ pub fn event_of(inode: &InodeRef) -> Option<Arc<PerfEvent>> {
     inode.i_private().clone().downcast::<PerfEvent>().ok()
 }
 
-/// True when `inode` is a perf-event fd (`is_perf_file()`). # C: O(1)
-pub fn is_perf_inode(inode: &InodeRef) -> bool { inode.ino() & !INO_ID_MASK == INO_TAG }
+/// True when `inode` is a perf-event fd — Linux `is_perf_file()`, a comparison
+/// against the one `perf_fops`. The inode NUMBER cannot stand in for that:
+/// numbers are only reserved per owner, never proof of who minted one, and the
+/// gate sat two lines below an `event_of` that already answered from state.
+/// A foreign inode reusing a perf number would have had its unrelated private
+/// word taken for a `PerfEvent` by the ioctl handler this gate admits to.
+/// # C: O(1)
+pub fn is_perf_inode(inode: &InodeRef) -> bool { event_of(inode).is_some() }
 
 struct PerfFileOps;
 

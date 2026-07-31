@@ -2,68 +2,20 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 
 use tty::ReadOutcome;
-use vfs::{default_inode_ops, mk_mode, Dentry, FdTable, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError};
+use vfs::{Dentry, FdTable, File, FileOps, Ino, Inode, InodeRef, KResult, OpenFlags, VfsError};
 
 use crate::devnum;
-use crate::routing::{foreground_vt, FG_VT_INO_LB, TTY_ALIAS_INO_LB, TTY_INO_BASE};
+use crate::ids;
+use crate::identity::ConsoleData;
+use crate::routing::foreground_vt;
 use crate::serial;
 use crate::vt_tty;
 
-/// Backend-private state (`i_private`) for a VT console inode: which VT it
-/// pins. `vt == 0` = foreground video VT (`/dev/tty0`), resolved at I/O
-/// time; `vt 1..=N_VT` pin a specific VT.
-pub struct ConsoleData {
-    pub(crate) vt: u8,
-}
-
-const CONSOLE_MODE: u16 = 0o666;
-const VT_MODE: u16 = 0o620;
-const SYSTEM_CONSOLE_MODE: u16 = 0o600;
-
-/// Distinct inode numbers per VT so VFS-level introspection (`stat`/
-/// `getdents` ino fields) reflects the underlying device. vt=0 = the
-/// foreground-VT alias (low byte 0xFD); vt N = that VT (low byte N). # C: O(1)
-pub(crate) fn console_ino(vt: u8) -> Ino {
-    if vt == 0 {
-        TTY_INO_BASE | FG_VT_INO_LB as Ino
-    } else {
-        TTY_INO_BASE | vt as Ino
-    }
-}
-
+/// Device number of the VT device pinned to `vt`. # C: O(1)
 pub(crate) fn console_rdev(vt: u8) -> u32 { devnum::vt_rdev(vt) }
 
-pub(crate) fn console_perm(vt: u8) -> u16 {
-    if vt == 0 { CONSOLE_MODE } else { VT_MODE }
-}
-
-/// Build a VT console inode pinned to `vt`. Use 0 for `/dev/tty0`, the
-/// foreground-VT device (Linux `4:0`); 1..=N_VT for the per-VT slots.
-/// # C: O(1)
-pub fn make_console_inode(vt: u8) -> InodeRef {
-    make_vt_inode(vt, console_ino(vt), console_rdev(vt))
-}
-
-/// Build the `/dev/tty` controlling-terminal alias (Linux `5:0`).  It has a
-/// distinct VFS identity from `/dev/tty0` so openat can apply the alias's
-/// per-process `ctty` resolution without changing direct `/dev/tty0` opens.
-/// # C: O(1)
-pub fn make_tty_alias_inode() -> InodeRef {
-    make_vt_inode(0, TTY_INO_BASE | TTY_ALIAS_INO_LB as Ino, devnum::tty_alias_rdev())
-}
-
-fn make_vt_inode(vt: u8, ino: Ino, rdev: u32) -> InodeRef {
-    InodeBuilder::new(
-        ino,
-        mk_mode(FileType::CharDev, console_perm(vt)),
-        default_inode_ops(),
-        Arc::new(ConsoleFileOps),
-    )
-    .fsid(devfs::DEVFS_FSID)
-    .rdev(rdev)
-    .private(Arc::new(ConsoleData { vt }))
-    .build()
-}
+/// `st_ino` of the VT device pinned to `vt`. # C: O(1)
+pub(crate) fn console_ino(vt: u8) -> Ino { ids::vt_ino(vt) }
 
 /// Blocking read of VT `vt` (vt 0 → foreground VT). `ino` is the device's own
 /// inode number (job-control gate). # C: backend-dependent
@@ -134,11 +86,11 @@ pub(crate) fn vt_write(vt: u8, ino: Ino, buf: &[u8]) -> KResult<usize> {
     Ok(n)
 }
 
-struct ConsoleFileOps;
+pub(crate) struct ConsoleFileOps;
 
 impl FileOps for ConsoleFileOps {
     fn on_open_file(&self, file: &File) -> KResult<()> {
-        let vt = console_data(file.inode())?.vt;
+        let vt = console_vt(file.inode())?;
         let v = if vt == 0 { foreground_vt() } else { vt };
         let cap = sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false);
         vt_tty::vt_tty(v).open_with_cap_sys_admin(cap)?;
@@ -153,20 +105,20 @@ impl FileOps for ConsoleFileOps {
     }
 
     fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let vt = console_data(inode)?.vt;
+        let vt = console_vt(inode)?;
         vt_read(vt, inode.ino(), buf)
     }
 
     fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let vt = console_data(inode)?.vt;
+        let vt = console_vt(inode)?;
         vt_read_nonblock(vt, inode.ino(), buf)
     }
 
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
-        match console_data(inode) {
-            Ok(d) => vt_poll(d.vt),
+        match console_vt(inode) {
+            Ok(vt) => vt_poll(vt),
             Err(_) => vfs::POLL_ERR,
         }
     }
@@ -178,21 +130,24 @@ impl FileOps for ConsoleFileOps {
     /// stamping `poll_subs` on the inode is what keeps `/dev/tty0` correct
     /// across a VT switch — one list, owned by the tty. # C: O(1)
     fn poll_subscribers(&self, file: &File) -> Option<Arc<vfs::PollSubscribers>> {
-        let vt = console_data(file.inode()).ok()?.vt;
+        let vt = console_vt(file.inode()).ok()?;
         Some(vt_tty::vt_tty(if vt == 0 { foreground_vt() } else { vt }).poll_subs_arc())
     }
 
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
-        let vt = console_data(inode)?.vt;
+        let vt = console_vt(inode)?;
         vt_write(vt, inode.ino(), buf)
     }
 }
 
-fn console_data(inode: &Inode) -> KResult<&ConsoleData> {
-    inode.private::<ConsoleData>().ok_or(VfsError::Einval)
+/// The VT a `ConsoleFileOps` inode pins, in the `0 = foreground` form. These
+/// operations are only ever installed on a VT device, so anything else means
+/// the inode was built outside `crate::nodes`. # C: O(1)
+fn console_vt(inode: &Inode) -> KResult<u8> {
+    inode.private::<ConsoleData>().and_then(|d| d.vt()).ok_or(VfsError::Einval)
 }
 
-struct SystemConsoleFileOps;
+pub(crate) struct SystemConsoleFileOps;
 
 impl FileOps for SystemConsoleFileOps {
     fn on_open_file(&self, file: &File) -> KResult<()> {
@@ -262,19 +217,6 @@ impl FileOps for SystemConsoleFileOps {
             cmdline::ConsoleKind::Vt(_) => Some(vt_tty::vt_tty(foreground_vt()).poll_subs_arc()),
         }
     }
-}
-
-/// Build the `/dev/console` (preferred-console, 5:1) inode. # C: O(1)
-pub fn make_system_console_inode() -> InodeRef {
-    InodeBuilder::new(
-        TTY_INO_BASE | crate::routing::SYSTEM_CONSOLE_INO_LB as Ino,
-        mk_mode(FileType::CharDev, SYSTEM_CONSOLE_MODE),
-        default_inode_ops(),
-        Arc::new(SystemConsoleFileOps),
-    )
-    .fsid(devfs::DEVFS_FSID)
-    .rdev(devnum::system_console_rdev())
-    .build()
 }
 
 /// Build the `init`-process fd table with fd 0/1/2 all pointing at

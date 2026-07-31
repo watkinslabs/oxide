@@ -34,7 +34,7 @@ use auth::{
     drop_master_owner, file_magic, file_token, ioctl_takes_user_ptr, is_master, set_master_owner,
     set_unique_ready, unique_ready, valid_user_range,
 };
-use publication::{drm_inode_parts, DRM_CARD_INO, DRM_RENDER_INO};
+use publication::{drm_inode_parts, DrmNodeKind};
 use uapi::{
     DrmSetVersion, DrmUnique, DrmVersion, DRM_IF_MAJOR, DRM_IF_MINOR,
     FALLBACK_DATE, FALLBACK_DESC, FALLBACK_NAME, FALLBACK_UNIQUE,
@@ -77,14 +77,14 @@ fn render_allowed(req: u64) -> bool {
 /// by tests/diagnostics; production mmap should prefer `pin_mmap_backing` so
 /// VMA lifetime pins the dumb buffer. # C: O(n)
 pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
-    let Some((DRM_CARD_INO, card_id)) = drm_inode_parts(inode) else { return None; };
+    let Some((DrmNodeKind::Card, card_id)) = drm_inode_parts(inode) else { return None; };
     crate::dumb::mmap_backing(card_id, offset)
 }
 
 /// Pin a DRM dumb buffer for a userspace VMA. The returned pin owns a mmap ref
 /// until `dumb::unpin_mmap` is called by the VMA backing's Drop path. # C: O(n)
 pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dumb::DumbMmapPin> {
-    let Some((DRM_CARD_INO, card_id)) = drm_inode_parts(inode) else { return None; };
+    let Some((DrmNodeKind::Card, card_id)) = drm_inode_parts(inode) else { return None; };
     let pin = crate::dumb::pin_mmap(card_id, offset);
     // A dumb buffer must be selected by the MODE_MAP_DUMB cookie before its
     // VMA can be installed. Retain this feature-gated miss/hit trace so an
@@ -107,9 +107,9 @@ pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dum
 /// # C: O(1)
 pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     let inode = file.inode();
-    let (tag, card_id) = drm_inode_parts(inode)?;
+    let (kind, card_id) = drm_inode_parts(inode)?;
     use syscall::errno::Errno;
-    if tag == DRM_RENDER_INO && !render_allowed(req) {
+    if kind == DrmNodeKind::Render && !render_allowed(req) {
         // Render-node rejections occur before the general ioctl trace below.
         // Keep this independently visible under the DRM bring-up flag: Mesa
         // otherwise degrades a missing render UAPI into a silent black frame.
@@ -131,7 +131,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMIOCTL req="); klog::write_hex_u64(req);
       klog::write_raw(b" card="); klog::write_dec_u64(card_id as u64);
-      klog::write_raw(b" tag="); klog::write_hex_u64(tag);
+      klog::write_raw(b" render="); klog::write_dec_u64((kind == DrmNodeKind::Render) as u64);
       klog::write_raw(b" drv="); klog::write_dec_u64(driver.is_some() as u64);
       // The KMS lease arrives through logind's SCM_RIGHTS handoff.  Preserve
       // the file-object identity and current master decision in debug-desktop

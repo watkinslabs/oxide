@@ -1,6 +1,7 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::idmap::Idmap;
+use crate::pseudo_ino::{RegionAllocator, VFS_ANON};
 use crate::namei::{Cred, S_ISGID, S_IXGRP};
 use crate::timespec::Timespec64;
 use crate::types::{FileType, KResult, S_IFMT, S_IFDIR, S_IFLNK, Umode, VfsError};
@@ -11,13 +12,15 @@ use super::flags::{
 };
 use super::model::Inode;
 
-/// `get_next_ino`. # C: O(1)
+/// `get_next_ino` — the anon-inode counter for the families with no number
+/// range of their own (pidfd, POSIX message queues, the io_uring low half).
+/// It draws from [`VFS_ANON`] rather than from 1: counting up from 1 walked
+/// straight through the console tty band and then every other low-space
+/// region, so a long-lived system eventually handed a pidfd the number
+/// `/dev/tty1` had already taken. # C: O(1)
 pub fn get_next_ino() -> u32 {
-    static LAST_INO: AtomicU32 = AtomicU32::new(0);
-    loop {
-        let next = LAST_INO.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        if next != 0 { return next; }
-    }
+    static NEXT_ANON_INO: RegionAllocator = RegionAllocator::new(&VFS_ANON);
+    NEXT_ANON_INO.alloc() as u32
 }
 
 pub fn is_immutable(inode: &Inode) -> bool { inode.i_flags() & S_IMMUTABLE != 0 }
