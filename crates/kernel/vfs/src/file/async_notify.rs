@@ -8,7 +8,6 @@ use sync::Spinlock;
 
 use crate::inode::InodeRef;
 
-use crate::namei::Cred;
 
 use super::File;
 
@@ -90,14 +89,21 @@ pub fn kill_fasync(inode: &InodeRef, dfl: i32) {
 }
 
 impl File {
-    /// `F_SETOWN` (Linux `f_setown`): set the SIGIO/SIGURG delivery target
-    /// (`>0` a task, `<0` a `-pgrp`, `0` clears) AND snapshot the requesting
-    /// credentials for the later delivery permission check. Stores the bare id
-    /// in `owner` (what `F_GETOWN` returns) and the packed uid/euid in
-    /// `owner_creds`. # C: O(1)
-    pub fn f_setown(&self, id: i32, cred: &Cred) {
+    /// `F_SETOWN` (Linux `f_setown` -> `__f_setown` -> `f_modown`): set the
+    /// SIGIO/SIGURG delivery target (`>0` a task, `<0` a `-pgrp`, `0` clears)
+    /// AND snapshot the requesting credentials for the later `sigio_perm`
+    /// check. Stores the bare id in `owner` (what `F_GETOWN` returns) and the
+    /// packed (uid, euid) in `owner_creds`.
+    ///
+    /// The two ids are taken SEPARATELY — `fown->uid = current_uid()` and
+    /// `fown->euid = current_euid()` — because `sigio_perm` treats them
+    /// differently: only the effective id grants the root bypass. Packing the
+    /// real uid into both slots, which is what this did before, silently handed
+    /// that bypass to any process whose real uid was 0.
+    /// # C: O(1)
+    pub fn f_setown(&self, id: i32, uid: u32, euid: u32) {
         self.owner.store(id, Ordering::Release);
-        self.owner_creds.store(((cred.uid as u64) << 32) | cred.uid as u64, Ordering::Release);
+        self.owner_creds.store(((uid as u64) << 32) | euid as u64, Ordering::Release);
     }
 
     /// `F_GETOWN` (Linux `f_getown`): the delivery target id. # C: O(1)

@@ -211,3 +211,73 @@ fn relative_realtime_timers_are_immune_to_a_wall_clock_step() {
     assert_eq!(slots[abs].domain, ClockSpec::Realtime,
         "an absolute CLOCK_REALTIME timer stays on the wall clock and is reprojected");
 }
+
+// --- the `_timer` siginfo the expiry delivers (`posix_timer_queue_signal` +
+//     `posixtimer_rearm`) -------------------------------------------------
+
+/// A task owning a real `ThreadGroup` timer table, which is what
+/// `posixtimer_rearm` resolves `si_tid` against.
+fn owner_task() -> alloc::sync::Arc<crate::Task> {
+    let t = alloc::sync::Arc::new(crate::Task::new(4001, "tmr",
+        crate::task::SchedClass::Normal { weight: 1024 }));
+    t.pid.attach(&t);
+    t
+}
+
+/// The process' timer slots, the same `UnsafeCell` the syscalls reach.
+fn owner_slots(t: &crate::Task) -> &mut Vec<PosixTimer> {
+    // SAFETY: hosted single-threaded test owns this task exclusively; matches the backend lock contract.
+    unsafe { &mut *t.thread_group.posix_timers.get() }
+}
+
+#[test]
+fn a_dequeued_timer_record_reports_the_same_overrun_timer_getoverrun_does() {
+    // Linux fills `si_overrun` in `posixtimer_rearm` from `it_overrun_last` —
+    // the exact field `timer_getoverrun(2)` returns. Two readers, one
+    // accumulator; a record stamped from anywhere else would be a second,
+    // disagreeing source of truth.
+    let owner = owner_task();
+    let id = {
+        let slots = owner_slots(&owner);
+        let id = create_rt(slots, ClockSpec::Monotonic, SIGRTMIN);
+        // Periodic every 10ns, first expiry at 1ns, signal finally taken at
+        // 45ns: four intervals were missed while it sat pending.
+        settime(&mut slots[id], 0, true, 1, 10);
+        assert!(slots[id].expire(1, false).is_some());
+        assert_eq!(slots[id].overrun_last(45, false), 4, "four missed periods");
+        id
+    };
+    let mut rec = super::signal::timer_record(SIGRTMIN, id, 0xabc);
+    assert_eq!(super::signal::timer_id(&rec), id, "si_tid names the timer that fired");
+    super::runtime::posixtimer_rearm(&owner, &mut rec);
+    let stamped = rec.uid as i64;
+    let slots = owner_slots(&owner);
+    let again = super::runtime::overrun(&mut slots[id], id, &owner);
+    assert_eq!(stamped, again, "si_overrun and timer_getoverrun read one accumulator");
+    assert_eq!(stamped, 4, "the stamp is the settled count, not a fresh clock read");
+}
+
+#[test]
+fn a_record_that_is_not_a_timer_expiry_is_left_alone() {
+    let owner = owner_task();
+    let mut rec = crate::task::SigInfo { signo: SIGRTMIN, code: crate::signum::SI_QUEUE,
+        pid: 1234, uid: 1000, value: 7, sys: None, fault: None };
+    super::runtime::posixtimer_rearm(&owner, &mut rec);
+    assert_eq!((rec.pid, rec.uid), (1234, 1000),
+        "an `sigqueue(3)` record's si_pid/si_uid must not be rewritten as si_tid/si_overrun");
+}
+
+#[test]
+fn a_timer_record_naming_a_freed_slot_is_not_stamped() {
+    // `timer_delete` between the expiry and the dequeue: the slot is no longer
+    // allocated, so there is no accumulator to read and the record is handed
+    // over as-is rather than picking up a recycled timer's count.
+    let owner = owner_task();
+    let mut rec = super::signal::timer_record(SIGRTMIN, PosixTimer::SLOTS - 1, 0);
+    super::runtime::posixtimer_rearm(&owner, &mut rec);
+    assert_eq!(rec.uid, 0);
+    let mut past_end = super::signal::timer_record(SIGRTMIN, PosixTimer::SLOTS + 99, 0);
+    past_end.uid = 5;
+    super::runtime::posixtimer_rearm(&owner, &mut past_end);
+    assert_eq!(past_end.uid, 5, "an out-of-range si_tid must not index the slot table");
+}

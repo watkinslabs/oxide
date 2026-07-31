@@ -80,9 +80,11 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     // One owner for "which set holds this signal, which queue backs it, and
     // when does its pending bit clear" (`sigpend::dequeue_signal`): private
     // set first then shared, RT signals keep the bit while records remain,
-    // SIGCHLD does the same over its child-event queue so a reaper handling N
-    // exits sees N deliveries, standard signals clear on take but still
-    // surrender the single `legacy_queue` record an SA_SIGINFO handler reads.
+    // standard signals clear on take but still surrender the single
+    // `legacy_queue` record an SA_SIGINFO handler reads. SIGCHLD is one of
+    // those: N children exiting in a burst produce ONE delivery carrying the
+    // first child's record, which is why a reaper must loop
+    // `waitpid(-1, WNOHANG)` rather than count signals.
     // `None` = a concurrent consumer won the claim, which is Linux's
     // `get_signal` seeing `dequeue_signal` return 0.
     let info = sched::live::sigpend::dequeue_signal(&cur, sig)?;

@@ -507,12 +507,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // below looks for one. The expiry policy itself is owned by
     // `sched::live::service_task_timers`, shared with the tick's registry walk
     // — this used to be an open-coded second copy of the same rules.
-    if let Some(cur) = sched::live::current() {
+    {
         #[cfg(target_arch = "x86_64")]
         let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
         #[cfg(target_arch = "aarch64")]
         let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
-        let _ = sched::live::service_task_timers(&cur, now);
+        sched::live::service_current_timers(now);
     }
     // Linux `syscall_exit_to_user_mode_prepare` -> `exit_to_user_mode_loop`:
     // reschedule, deliver signals and apply the restart decision, LOOPING while
