@@ -230,10 +230,13 @@ impl PseudoDir {
             Some(PseudoEntry::Dir(_)) => return Err(VfsError::Eisdir),
             Some(PseudoEntry::Leaf(_)) => {}
         }
-        match children.remove(name) {
-            Some(PseudoEntry::Leaf(inode)) => Ok(inode),
+        let removed = match children.remove(name) {
+            Some(PseudoEntry::Leaf(inode)) => inode,
             _ => unreachable!(),
-        }
+        };
+        drop(children);
+        crate::reval::forget_detached(self, core::slice::from_ref(&removed));
+        Ok(removed)
     }
 
     pub fn ensure_dir_path(self: &Arc<PseudoDir>, path: &str) {
@@ -310,6 +313,7 @@ impl PseudoDir {
     pub fn remove_subtree_inodes(self: &Arc<PseudoDir>, path: &str) -> Vec<InodeRef> {
         let mut out = Vec::new();
         if let Some(entry) = self.remove_entry(path) { entry.collect_inodes(&mut out); }
+        crate::reval::forget_detached(self, &out);
         out
     }
 

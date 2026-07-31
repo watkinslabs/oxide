@@ -13,6 +13,13 @@ impl InodeOps for PseudoDirOps {
         pdir(inode)?.op_lookup(name)
     }
 
+    /// Linux `kernfs_dops`: every cached child of a pseudo-fs directory carries
+    /// the revalidating vector, so a node the tree removed or republished stops
+    /// resolving to the previous object. # C: O(1)
+    fn child_d_op(&self, _inode: &Inode, _name: &str) -> Option<&'static vfs::dentry::DentryOps> {
+        Some(&crate::reval::KERNFS_DENTRY_OPS)
+    }
+
     fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         pdir(inode)?.op_mkdir(name, mode, ctx)
     }

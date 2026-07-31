@@ -10,6 +10,12 @@
 //! last ext4-overlay user (`/etc`); `/dev` lost its overlay at D17. The
 //! synthetic dirs no longer merge on-disk rootfs entries — the rootfs ext4
 //! mount serves `/etc` (and any other real dir) directly.
+//!
+//! Module manifest:
+//! - `tree`: the `PseudoDir`/`PseudoSymlink` node tree and its `op_*` bodies.
+//! - `dir_ops`: the `i_op`/`f_op` vectors that adapt the tree to the VFS.
+//! - `reval`: `d_revalidate` + removal-time cache invalidation (`kernfs_dops`).
+//! - `fs`: the standalone `PseudoFs` `FileSystem` wrapper.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -20,9 +26,11 @@ extern crate std;
 
 mod dir_ops;
 mod fs;
+mod reval;
 mod tree;
 
 pub use fs::{PseudoFs, PSEUDO_ROOT_INO};
+pub use reval::KERNFS_DENTRY_OPS;
 pub use tree::{PseudoDir, PseudoDirHooks, PseudoSymlink, dir_ino};
 
 #[cfg(test)]

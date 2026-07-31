@@ -213,13 +213,16 @@ pub fn instance() -> &'static dyn vfs::fs::FileSystem { &DevfsFs }
 extern crate std;
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 mod fs_tests {
     // These tests mutate the process-global devfs tree AND the global driver
     // registry (`drv::set_devtmpfs_hook` + `drv::devices()`): one test removes
     // `/dev/null` and asserts it is gone, while a sibling repopulates the same
     // defaults. Both singletons are kernel-wide by design, so the tests cannot
     // own them. Measured at 4/12 full-binary failures before serialising.
-    static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::tests::TEST_SERIAL;
 
     use super::*;
     use alloc::boxed::Box;
