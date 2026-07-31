@@ -259,6 +259,31 @@ pub struct Task {
     /// exactly once, in the window between fork and exec.
     pub forknoexec: AtomicBool,
 
+    /// Linux `PF_NPROC_EXCEEDED`: armed by a `set*uid` that moved this task
+    /// into an account already at its `RLIMIT_NPROC`, and consumed by the
+    /// next `execve(2)`, which then fails EAGAIN. The failure is deferred to
+    /// exec rather than reported by `setuid` because too much software
+    /// ignores `setuid`'s return value — a silent success there would hand
+    /// the caller the identity without the quota.
+    pub nproc_exceeded: AtomicBool,
+
+    /// Whether this task currently holds a `RLIMIT_NPROC` charge against
+    /// [`Self::ucounts_ns`]/[`Self::ucounts_uid`]. Latched so a task that
+    /// reaches its terminal state twice releases its charge exactly once —
+    /// an over-release would hand the account permanent free capacity.
+    pub nproc_charged: AtomicBool,
+
+    /// The user namespace half of the account this task's `RLIMIT_NPROC`
+    /// charge sits in (Linux `cred->ucounts->ns`). Latched at charge time,
+    /// not recomputed at release: namespace membership is dropped before a
+    /// task reaches its terminal state, so a recomputed key would release
+    /// the charge against the wrong account and leak the real one.
+    pub ucounts_ns: AtomicU64,
+
+    /// The uid half of that account (Linux `cred->ucounts->uid`) — the REAL
+    /// uid, which is the id `RLIMIT_NPROC` is accounted against.
+    pub ucounts_uid: AtomicU32,
+
     /// Linux `PF_SUPERPRIV`: latched the first time a capability check on this
     /// task SUCCEEDS (`capable()` sets it on the allow path only). BSD process
     /// accounting reports it as the `ASU` record flag — "used super-user
