@@ -323,7 +323,7 @@ pub unsafe fn schedule() {
     let (next_arc, already_owned) = inner.pick_next_task_claim();
     hal::kassert!(!next_arc.on_rq.load(Ordering::Acquire),
         "schedule picked task still marked on_rq");
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    rq.publish_nr_running(inner.nr_running());
     // Linux `picked:` in `__schedule` — `clear_tsk_need_resched(prev)`, run
     // BEFORE the `prev != next` test so a re-pick of `prev` also consumes the
     // request. The flag is per-TASK, so clearing it here (rather than leaving a
@@ -637,10 +637,13 @@ pub unsafe fn sched_yield() {
 pub unsafe fn park_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract and has parked Sleeping; delegated wholesale.
     unsafe { schedule(); }
-    // Other runnable work queued on this CPU (excludes current + idle)?
-    // Then return without halting so the ready set drains at full speed.
+    // Other runnable work QUEUED on this CPU? Then return without halting so
+    // the ready set drains at full speed. `nr_queued`, not `nr_running`: the
+    // latter counts the task now installed as `current` — which after the
+    // `schedule()` above is this very caller — so it is never zero here and
+    // the halt below would be unreachable.
     let others = crate::live::runqueue::global()
-        .map(|rq| rq.nr_running.load(Ordering::Acquire))
+        .map(|rq| rq.nr_queued.load(Ordering::Acquire))
         .unwrap_or(0);
     if others != 0 { return; }
     // Nothing else to run: halt with IRQs on so the wake/data/timer IRQ can

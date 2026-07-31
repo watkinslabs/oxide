@@ -284,8 +284,14 @@ pub fn halt_forever() -> ! {
         // lock — entering idle is a QS (Linux `rcu_idle_enter`). One atomic
         // bump before parking lets a grace period complete on the UP runtime.
         sync::note_qs();
+        // Linux touches the soft-lockup watchdog on the idle path: a CPU
+        // parked here owes no heartbeat, so the cross-CPU stall detector must
+        // not read its silence as a wedge. Cleared the instant the park
+        // returns, so everything else in this loop stays covered.
+        diag::percpu::idle_enter();
         #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
         #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
+        diag::percpu::idle_exit();
     }
 }
 

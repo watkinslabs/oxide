@@ -65,6 +65,45 @@ pub unsafe extern "C" fn oxide_ap_entry_64(percpu_base: u64, logical_cpu_id: u64
     unsafe { ap_main_x86(percpu_base, logical_cpu_id as u32) }
 }
 
+/// AP bring-up progress stamp, per logical CPU. Written by the AP itself at
+/// each stage; read + rendered by the BSP after the online wait. A plain
+/// relaxed store is the ONLY thing an AP may do before its GS base, IDT and
+/// LAPIC exist — `klog` takes a lock whose implementation reads per-CPU state
+/// through `gs`, so logging from the AP any earlier than [`AP_STAGE_IDTR`]
+/// faults with no IDT installed and triple-faults the machine.
+static AP_STAGE: [core::sync::atomic::AtomicU32; cpu::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; cpu::MAX_CPUS];
+
+/// Ordered AP bring-up stages. `AP_STAGE[cpu]` holds the highest one reached,
+/// so a stalled AP is named by the stage it never left.
+pub const AP_STAGE_ENTRY:    u32 = 1;  // 64-bit landing pad, trampoline stack
+pub const AP_STAGE_GDT:      u32 = 2;  // kernel GDT loaded
+pub const AP_STAGE_MSRS:     u32 = 3;  // syscall MSRs installed
+pub const AP_STAGE_SSE:      u32 = 4;  // CR0/CR4 SSE bits on
+pub const AP_STAGE_GSBASE:   u32 = 5;  // per-CPU page stamped, GS_BASE set
+pub const AP_STAGE_IDTR:     u32 = 6;  // IDTR loaded (faults now vector)
+pub const AP_STAGE_LAPIC:    u32 = 7;  // local APIC software-enabled
+pub const AP_STAGE_RQ:       u32 = 8;  // per-CPU runqueue + idle task installed
+pub const AP_STAGE_TSS:      u32 = 9;  // TSS + IST + syscall/hardirq kstacks
+pub const AP_STAGE_TIMER:    u32 = 10; // local timer armed
+pub const AP_STAGE_ONLINE:   u32 = 11; // marked online in the cpu bitmap
+pub const AP_STAGE_IDLE:     u32 = 12; // IRQs on, entered the idle/schedule loop
+
+/// Highest bring-up stage `cpu` reached (0 = never entered the landing pad).
+/// # C: O(1)
+pub fn ap_stage_of(cpu: u32) -> u32 {
+    AP_STAGE.get(cpu as usize)
+        .map_or(0, |s| s.load(core::sync::atomic::Ordering::Acquire))
+}
+
+/// Stamp this AP's progress. Lock-free and per-CPU-state-free by construction.
+/// # C: O(1)
+fn ap_stage(cpu: u32, stage: u32) {
+    if let Some(s) = AP_STAGE.get(cpu as usize) {
+        s.store(stage, core::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Shared AP bring-up body: enable FSGSBASE, stamp logical cpu_id + GS_BASE,
 /// load IDTR, enable the LAPIC, install the per-CPU runqueue, mark
 /// online, arm the LAPIC timer, then park in the `sti; hlt` idle
@@ -76,6 +115,7 @@ pub unsafe extern "C" fn oxide_ap_entry_64(percpu_base: u64, logical_cpu_id: u64
 unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     let ctx = ApContext { percpu_base };
     let ctx = &ctx;
+    ap_stage(logical_cpu_id, AP_STAGE_ENTRY);
 
     // B3.4: load the shared kernel GDT FIRST. The SIPI trampoline left this
     // AP on its own minimal 4-entry GDT (CS=0x18); kernel CS/DS (0x28/0x30)
@@ -87,6 +127,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // SAFETY: AP at CPL=0, long mode, kernel master CR3; BSP completed
     // install_kernel_gdt; we only reload to descriptors present in it.
     unsafe { hal_x86_64::load_kernel_gdt_for_ap(); }
+    ap_stage(logical_cpu_id, AP_STAGE_GDT);
 
     // Configure THIS AP's `syscall`/`sysret` MSRs (EFER.SCE, STAR, LSTAR,
     // SFMASK). The SIPI trampoline set only EFER.LME|NXE, so SCE is OFF and
@@ -98,6 +139,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // SAFETY: AP at CPL=0, long mode, kernel GDT loaded above; install_syscall_msrs
     // writes only privileged MSRs from kernel-controlled constants matching that GDT.
     unsafe { hal_x86_64::install_syscall_msrs(); }
+    ap_stage(logical_cpu_id, AP_STAGE_MSRS);
 
     // Enable SSE/SSE2 on this AP (CR0.MP + clear CR0.EM, CR4.OSFXSR|OSXMMEXCPT).
     // CR0/CR4 are per-CPU: the SIPI trampoline leaves the AP without these, so
@@ -108,6 +150,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // SAFETY: AP at CPL=0, long mode; privileged CR0/CR4 writes legal; this AP
     // is the sole writer of its own CR0/CR4 (the regs are per-CPU).
     unsafe { hal_x86_64::enable_sse(); }
+    ap_stage(logical_cpu_id, AP_STAGE_SSE);
 
     // Enable CR4.FSGSBASE on this AP (Limine leaves it off per-AP).
     // SAFETY: AP runs CPL=0 here; CR4 write is legal; bit 16 enables rd/wrgsbase which we use immediately below.
@@ -126,6 +169,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         use hal::CpuOps;
         hal_x86_64::X86CpuOps::set_percpu_base(ctx.percpu_base as *mut u8);
     }
+    ap_stage(logical_cpu_id, AP_STAGE_GSBASE);
 
     // Install IDTR on this AP so it can vector exceptions through
     // the BSP-populated IDT. The IDT array itself is shared; only
@@ -134,6 +178,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // load_idtr_for_ap reads only IDT.as_ptr() to build the IDTR
     // operand and issues `lidt`. Legal at CPL=0.
     unsafe { hal_x86_64::load_idtr_for_ap(); }
+    ap_stage(logical_cpu_id, AP_STAGE_IDTR);
 
     // Software-enable this AP's LAPIC + set IA32_APIC_BASE.E. The
     // LAPIC MMIO virtual address (LAPIC_BASE_VA, set by the BSP)
@@ -144,6 +189,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // CPU is at CPL=0 IRQs masked; sole writer for this CPU's
     // SVR + IA32_APIC_BASE MSR.
     let _ = unsafe { crate::lapic::enable_for_ap() };
+    ap_stage(logical_cpu_id, AP_STAGE_LAPIC);
 
     // B3.4: AP scheduling participation. The per-CPU foundation is in place
     // (per-CPU TSS RSP0 = B3.2, per-CPU syscall slots = B3.3), so the AP can
@@ -155,6 +201,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         //    logical CPU id, so install_default_runqueue populates GLOBALS[cpu].
         //    own slot (register_timers + schedule-hook are idempotent).
         sched::live::install_default_runqueue();
+        ap_stage(logical_cpu_id, AP_STAGE_RQ);
         // 2. Load THIS AP's TSS (selector TSS_SEL + cpu*0x10) so a user
         //    task scheduled here lands ring3→ring0 on this CPU's RSP0.
         hal_x86_64::install_tss_for_cpu(logical_cpu_id as u16);
@@ -184,7 +231,9 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         }
         // 4. Arm this AP's LAPIC timer (same period as the BSP's elf path) so
         //    it preempts + wakes from idle. The LAPIC MMIO VA aliases per-CPU.
+        ap_stage(logical_cpu_id, AP_STAGE_TSS);
         let _ = crate::lapic::timer_periodic(1_000_000);
+        ap_stage(logical_cpu_id, AP_STAGE_TIMER);
         // 5. Mark ourselves online only after the per-CPU scheduler and timer
         //    state exists. The BSP may send a resched IPI immediately after
         //    observing online_count reach the target.
@@ -194,11 +243,13 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         // LAPIC + IDT are live so the AP can actually service a shootdown IPI.
         // This AP is the sole writer for its own online bit.
         ::cpu::smp::mark_online(logical_cpu_id as u32);
+        ap_stage(logical_cpu_id, AP_STAGE_ONLINE);
         // 6. Enter the idle→schedule loop with IRQs on (sti) — replaces the
         //    cli;hlt park. The AP runs its idle task until ttwu (B2) migrates
         //    a task onto its runqueue and IPIs it.
         core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
     }
+    ap_stage(logical_cpu_id, AP_STAGE_IDLE);
     sched::halt_forever()
 }
 
@@ -335,14 +386,11 @@ pub fn reserve_trampoline_page() {
 #[allow(unreachable_code, unused_variables, unused_unsafe, unused_mut)]
 pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
-    // ENABLED (F428): INIT/SIPI bring-up brings each AP to long mode +
-    // online (LAPIC). Blocker (1) — TRAMP_PA not reserved from the PMM —
-    // is fixed by `reserve_trampoline_page()` (called from kmain right
-    // after PMM init). The AP then PARKS quiescent in `ap_main_x86`
-    // (cli;hlt): online + counted, but NOT yet a scheduling target —
-    // blocker (2), AP scheduling participation, lands next (per-CPU TSS +
-    // syscall slots + runqueue/timer/idle integration). So an un-gated AP
-    // here does NOT schedule and cannot wedge the BSP via blocker (2).
+    // INIT/SIPI bring-up takes each AP to long mode, then `ap_main_x86`
+    // makes it a full scheduling target (per-CPU TSS + IST + syscall slots +
+    // runqueue + local timer) and it enters the idle->schedule loop. Progress
+    // is stamped in `AP_STAGE` because the AP cannot log for itself until its
+    // GS base and IDT exist.
     let hhdm = pmm::user_as::hhdm_offset();
     if hhdm == 0 { return 0; }
     if AP_PERCPU_BYTES != hal::PAGE_SIZE_BYTES as usize { return 0; }
@@ -438,8 +486,27 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
         }
         if ::cpu::smp::online_count() > before {
             started += 1;
-        } else {
         }
+        // Always report where this AP got to. An AP that never reaches
+        // `AP_STAGE_ONLINE` is invisible in `aps_started` alone, and the AP
+        // cannot log for itself before its IDT + GS base exist.
+        report_ap_stage(i as u32);
     }
     started
 }
+
+/// Render one AP's furthest bring-up stage from the BSP. # C: O(1)
+#[cfg(feature = "debug-percpu")]
+fn report_ap_stage(cpu: u32) {
+    let s = ap_stage_of(cpu);
+    klog::write_raw(b"[AP] cpu=");
+    klog::write_dec_u64(cpu as u64);
+    klog::write_raw(b" stage=");
+    klog::write_dec_u64(s as u64);
+    klog::write_raw(b"/");
+    klog::write_dec_u64(AP_STAGE_IDLE as u64);
+    klog::write_raw(if s >= AP_STAGE_IDLE { b" scheduling\n" } else { b" STALLED\n" });
+}
+/// # C: O(1)
+#[cfg(not(feature = "debug-percpu"))]
+fn report_ap_stage(_cpu: u32) {}

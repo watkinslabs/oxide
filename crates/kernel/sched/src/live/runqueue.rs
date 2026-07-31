@@ -16,7 +16,7 @@
 
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::{RunqueueInner, Task};
 use sync::{Runqueue as RunqueueClass, Spinlock};
@@ -55,6 +55,20 @@ pub struct Runqueue {
     /// and each switch drains before the next, so it holds at most one.
     pub reap_pending: AtomicPtr<Task>,
 
+    /// This CPU's idle task, as a raw pointer, so `current` can be compared
+    /// against it lock-free. Written once by [`Runqueue::new`]; the idle
+    /// `Arc` is owned by `inner` for the runqueue's whole life.
+    pub idle: AtomicPtr<Task>,
+
+    /// Class-tree count last published by [`Runqueue::publish_nr_running`] —
+    /// the single source of truth `nr_running` is derived from.
+    pub nr_queued: AtomicU32,
+
+    /// Linux `rq->nr_switches` — context switches performed BY this CPU
+    /// (`/proc/schedstat`). Per-CPU by construction, so a non-zero value on a
+    /// secondary CPU is the proof that the CPU ran something.
+    pub nr_switches: AtomicU64,
+
     /// SMP `on_cpu` handoff slot: `schedule()` stores the task it switched
     /// AWAY from here (raw borrow — kept alive by the switcher's frame); the
     /// INCOMING task's `finish_task_switch` clears that task's `on_cpu` AFTER
@@ -75,10 +89,50 @@ impl Runqueue {
             current: AtomicPtr::new(idle_raw),
             nr_running: AtomicU32::new(0),
             preempt_count: AtomicU32::new(0),
+            idle: AtomicPtr::new(idle_raw),
+            nr_queued: AtomicU32::new(0),
+            nr_switches: AtomicU64::new(0),
             inner: Spinlock::new(RunqueueInner::new(cpu, idle)),
             reap_pending: AtomicPtr::new(core::ptr::null_mut()),
             switched_from: AtomicPtr::new(core::ptr::null_mut()),
         }
+    }
+
+    /// Is this CPU idle right now — i.e. is `current` the idle task?
+    /// # C: O(1)
+    pub fn curr_is_idle(&self) -> bool {
+        let c = self.current.load(Ordering::Acquire);
+        c.is_null() || c == self.idle.load(Ordering::Relaxed)
+    }
+
+    /// Publish `rq->nr_running` from the class-tree count.
+    ///
+    /// Linux counts the RUNNING task in `rq->nr_running` (`activate_task` /
+    /// `deactivate_task` own the counter, and `curr` stays activated for its
+    /// whole timeslice). `RunqueueInner::nr_running` counts only what is IN
+    /// the RT/CFS trees, and `pick_next_task` REMOVES the task it picks — so
+    /// the tree count alone reports a CPU running a task flat-out as load 0.
+    ///
+    /// That divergence is not cosmetic: every load consumer reads this field.
+    /// `select_task_rq`'s prev-CPU fast path keeps a wakee on `prev` when
+    /// `prev` reads 0, and `balance_once` / `newidle_balance` compare CPUs by
+    /// it — so with the tree-only count every CPU looks permanently idle,
+    /// every wakeup stays on the boot CPU, and no task is ever migrated. That
+    /// is what left the secondary CPU running nothing but its idle task.
+    /// # C: O(1)
+    pub fn publish_nr_running(&self, queued: u32) {
+        self.nr_queued.store(queued, Ordering::Release);
+        self.refresh_nr_running();
+    }
+
+    /// Recompute `nr_running` from the last-published tree count plus whether
+    /// this CPU is currently running a non-idle task. Called on every switch
+    /// so the derived value tracks `current` and not just tree membership.
+    /// # C: O(1)
+    fn refresh_nr_running(&self) {
+        let running = if self.curr_is_idle() { 0 } else { 1 };
+        self.nr_running.store(self.nr_queued.load(Ordering::Acquire) + running,
+            Ordering::Release);
     }
 
     /// Read the current task. Returns a borrowed `&Task` valid for
@@ -115,6 +169,12 @@ impl Runqueue {
         // strong ref we conceptually held in `current`.
         let prev = unsafe { Arc::from_raw(prev_raw) };
         prev.debug_check_canary("swap_current_prev");
+        // Linux `rq->nr_switches++` in `__schedule`, and the `nr_running`
+        // refresh that makes the load view follow `current`: the task just
+        // installed is off the class trees, so without this a CPU that is
+        // flat-out running a task advertises the load of an idle one.
+        self.nr_switches.fetch_add(1, Ordering::Relaxed);
+        self.refresh_nr_running();
         prev
     }
 }

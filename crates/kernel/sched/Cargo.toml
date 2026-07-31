@@ -68,6 +68,10 @@ debug-armctx = []
 # serial-sysrq task dump. Emits zero bytes unless a stall fires or sysrq is
 # triggered — no steady-state trace noise, so timing is unperturbed.
 debug-watchdog = []
+# Per-CPU SMP liveness ledger (`[SMP-LIVE]`, every 5 s: ticks / nr_running /
+# current tid per online CPU) + the x86/arm AP bring-up stage markers. The
+# proof surface for "work actually runs on the secondary CPU". Default-off.
+debug-percpu = []
 # Linux `CONFIG_DEBUG_PREEMPT` subset (`preempt/debug.rs`): reports an
 # `irq_exit` with the HARDIRQ field already clear, and a CPU parking in the
 # idle loop with `in_interrupt()` still true. Both are one-shot per CPU, so a
