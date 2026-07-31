@@ -38,6 +38,7 @@ debug-boot = []
 debug-irq  = ["hal-aarch64/debug-irq"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`); rides kmain.
 debug-watchdog = ["kmain/debug-watchdog", "hal-aarch64/debug-watchdog"]
+debug-percpu = ["kmain/debug-percpu"]
 debug-preempt = ["kmain/debug-preempt"]
 # Periodic retained task-state dump for deadlock triage; no output until enabled.
 debug-taskdump = ["kmain/debug-taskdump"]

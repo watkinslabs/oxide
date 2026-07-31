@@ -326,3 +326,71 @@ fn class_order_decides_across_classes() {
     assert!(wake_asks_for_resched(46, &idle, fair_task(3014, SCHED_IDLE, u64::MAX)),
         "the idle task must always give the CPU up");
 }
+
+// ---- load-aware placement (`nr_running` counts the RUNNING task) ----
+//
+// `pick_next_task` takes the task it picks OFF the class trees, so a CPU
+// running flat out has an EMPTY tree. Publishing the tree count alone as
+// `rq->nr_running` therefore advertised every busy CPU as load 0, and the
+// prev-CPU fast path below — "keep prev only if prev is idle" — read that as
+// "prev is idle" every single time. Every wakeup stayed on the waker's CPU
+// and the secondary CPU ran nothing but its idle task for the whole boot.
+
+/// A task RUNNING on a CPU with an empty class tree must still make that CPU
+/// read as loaded. This is the accounting the placement decisions depend on.
+#[test]
+fn a_running_task_counts_towards_its_cpus_load() {
+    const CPU: u32 = 50;
+    let cpus = Cpus::new(&[CPU]);
+    let rq = cpus.get(CPU).expect("just installed");
+
+    rq.publish_nr_running(0);
+    assert_eq!(rq.nr_running.load(Ordering::Acquire), 0,
+        "an idle CPU with an empty tree is load 0");
+
+    make_current(rq, &fair_task(5001, SCHED_NORMAL, 0), CPU);
+    assert!(!rq.curr_is_idle());
+    assert_eq!(rq.nr_running.load(Ordering::Acquire), 1,
+        "a CPU executing a task is load 1 even though the task is off the tree");
+
+    rq.publish_nr_running(3);
+    assert_eq!(rq.nr_running.load(Ordering::Acquire), 4,
+        "queued tasks and the running task both count");
+}
+
+/// THE BUG SHAPE. `prev` is busy running a task; a second CPU is idle. The
+/// wakee must go to the idle CPU. Against the tree-only count `prev` read as
+/// load 0 and the fast path returned it, which is exactly why `-smp 2` bought
+/// no parallelism.
+#[test]
+fn a_wakee_leaves_a_prev_cpu_that_is_running_something() {
+    const BUSY: u32 = 51;
+    const IDLE: u32 = 52;
+    let cpus = Cpus::new(&[BUSY, IDLE]);
+    let busy = cpus.get(BUSY).expect("just installed");
+
+    // BUSY is executing a task with nothing queued behind it — the state the
+    // boot CPU is in nearly all the time.
+    make_current(busy, &fair_task(5002, SCHED_NORMAL, 0), BUSY);
+    busy.publish_nr_running(0);
+    cpus.get(IDLE).expect("just installed").publish_nr_running(0);
+
+    let wakee = settled_sleeper(5003, BUSY);
+    assert_eq!(select_task_rq_with(&|c| cpus.get(c), BUSY, &wakee), IDLE,
+        "a wakee whose prev CPU is busy belongs on the idle CPU");
+}
+
+/// The wake-affine tie-break survives: when prev really is idle the wakee
+/// stays there (cache-warm), so the fix does not turn every wake into a
+/// migration.
+#[test]
+fn a_wakee_stays_on_a_prev_cpu_that_is_genuinely_idle() {
+    const A: u32 = 53;
+    const B: u32 = 54;
+    let cpus = Cpus::new(&[A, B]);
+    cpus.get(A).expect("just installed").publish_nr_running(0);
+    cpus.get(B).expect("just installed").publish_nr_running(0);
+
+    let wakee = settled_sleeper(5004, A);
+    assert_eq!(select_task_rq_with(&|c| cpus.get(c), B, &wakee), A);
+}

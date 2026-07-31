@@ -92,6 +92,7 @@ debug-syscall-return = ["kmain/debug-syscall-return"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`). Rides the
 # kmain feature graph so xtask `--features debug-watchdog` reaches sched.
 debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]
+debug-percpu = ["kmain/debug-percpu"]
 debug-preempt = ["kmain/debug-preempt"]
 # Periodic retained task-state dump for deadlock triage; no output until enabled.
 debug-taskdump = ["kmain/debug-taskdump"]

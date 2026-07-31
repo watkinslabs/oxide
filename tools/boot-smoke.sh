@@ -130,25 +130,15 @@ trap cleanup EXIT
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
 #
-# SMP per arch, both -smp 2 to exercise the AP bring-up + per-CPU paths
-# every push. arm SMP=2 now boots → systemd → login (#1564 fixed the
-# AttrIdx-Device page-attr bug + #1552 PSCI AP bring-up). Note arm -smp 2
-# under single-threaded TCG ~halves throughput (emulated idle AP), so the
-# arm boot budget is larger. Override with OXIDE_SMP=N.
-# arm defaults to SMP=1: the arm SMP=2 boot is BROKEN (tracked in state.md).
-# It reproducibly dies ~11s guest with a data-abort taken while running on the
-# per-CPU IRQ stack — and NOT from stack exhaustion (the post-mortem shows
-# ~15 KiB headroom free). The registers are wild instead: one instance branched
-# to a kernel HEAP page (elr == x30 == 0xffffffff847xxxxx), another dereferenced
-# far=0xb8d. That is an SMP concurrency defect, not the exception path: the same
-# kernel at SMP=1 boots to basic.target in 115s with zero faults, and every
-# single-CPU boot this session was clean. Gating arm at 1 CPU keeps the arch
-# gate honest and usable while the SMP=2 defect is fixed on its own lane —
-# override with OXIDE_SMP=2 to reproduce it.
-case "$ARCH" in
-    arm) OXIDE_SMP="${OXIDE_SMP:-1}" ;;
-    *)   OXIDE_SMP="${OXIDE_SMP:-2}" ;;
-esac
+# Both arches default to SMP=2. The old arm SMP=1 default was there for a
+# data-abort ~11s into an SMP=2 boot; that is fixed and three consecutive arm
+# SMP=2 boots now reach basic.target in 68-88s with real work on both CPUs.
+# Gating arm at one CPU is worse than the boot cost: an SMP defect cannot
+# reproduce in a uniprocessor gate, which is exactly how the secondary CPU
+# came to run nothing but its idle task for an entire release. Override with
+# OXIDE_SMP=N.
+OXIDE_SMP="${OXIDE_SMP:-2}"
+
 
 # On timeout, ask the wedged kernel to self-report before we kill it:
 # feed the serial-sysrq sequence (`<NUL> t` = task dump, `<NUL> w` =

@@ -8,6 +8,7 @@
 // exactly what `global_for` does in production.
 
 use super::*;
+use core::sync::atomic::Ordering;
 use crate::runqueue::RunqueueInner;
 use crate::task::{SchedClass, SchedPolicy, Task};
 use alloc::vec::Vec;
@@ -51,7 +52,7 @@ fn enqueue_on(cpus: &Cpus, cpu: u32, task: Arc<Task>) {
     let rq = cpus.get(cpu).expect("test cpu installed");
     let mut inner = rq.inner.lock();
     inner.enqueue(task);
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    rq.publish_nr_running(inner.nr_running());
 }
 
 #[test]

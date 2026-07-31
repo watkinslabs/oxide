@@ -88,7 +88,7 @@ fn pop_one_cfs(rq: &Runqueue) -> Option<Arc<Task>> {
     if let Some(ref tk) = t {
         let _ = tk;
     }
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    rq.publish_nr_running(inner.nr_running());
     t
 }
 
@@ -122,7 +122,7 @@ fn push_to(rq: &Runqueue, task: Arc<Task>) {
     // Same reasoning as `pop_one_cfs`: reached from the idle-loop balancer.
     let mut inner = rq.inner.lock_irqsave::<RqIrq>();
     inner.enqueue(task);
-    rq.nr_running.store(inner.nr_running(), Ordering::Release);
+    rq.publish_nr_running(inner.nr_running());
 }
 
 /// One pass of the load balancer. Returns the number of tasks
