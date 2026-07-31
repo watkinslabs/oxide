@@ -1,0 +1,98 @@
+# Static call paths at or over the stack-depth ceiling when the gate landed
+# (x86_64). Tolerated at or below the recorded budget ONLY — a new or deeper
+# path FAILS. Each block states why that family is legitimately deep; the
+# gate refuses an entry that is not under a reason block.
+#
+# Burn this down. Regenerate with:
+#   make stack-gate-baseline-x86
+
+# Boot path, and NOT on a task stack. `_start` -> `kernel_main` runs on the
+# static boot stack before any `Task` exists, and `kstack::alloc` has not yet
+# handed out a 16 KiB guard-paged stack. The depth is real but the budget is
+# a different one; re-check this block if the boot stack is ever resized.
+19760	_start
+19744	_start_rust
+19600	_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main
+16400	_RNvNtNtCseQ963CMHBD6_5kmain5kmain6rootfs4init
+
+# Syscall entry and dispatch. These are the ROOTS of every syscall, so the
+# walker's longest path is the max over all ~400 of them at once — no single
+# call reaches this. Useful only as a ceiling on the deepest syscall; the
+# individual syscalls below are the numbers to actually drive down.
+17384	oxide_syscall_entry
+17200	oxide_syscall_dispatch
+
+# The network TX chain: write/writev/sendmsg/sendto/sendmmsg -> socket::send
+# -> NetStack xmit -> raw4/ipv6 framing. Every entry here is a prefix of the
+# same chain, which is why they cluster. This is the deepest live path in the
+# kernel and the top follow-up candidate — it is genuinely one call sequence,
+# not a longest-path artifact.
+16752	_RNvNtCsbEeol4str2r_8syscalls13s307_sendmmsg12sys_sendmmsg
+16336	_RNvNtCsbEeol4str2r_8syscalls12s296_pwritev12sys_pwritev2
+16256	_RNvNtCsbEeol4str2r_8syscalls11s020_writev10sys_writev
+16064	_RNvNtCskZTdGDbJfb1_6socket4send6writev
+16032	_RNvNtCsbEeol4str2r_8syscalls12s046_sendmsg11sys_sendmsg
+16016	_RNvNtCsbEeol4str2r_8syscalls10s001_write9sys_write
+15872	_RNvNtCsbEeol4str2r_8syscalls11s044_sendto10sys_sendto
+15744	_RNvNtCskZTdGDbJfb1_6socket4send13send_retained
+15536	_RNvNtNtCs8v4E1Pnq2Eu_3net4sock3ops16connect_admitted
+15264	_RNvMNtNtCs8v4E1Pnq2Eu_3net4sock17connect_admissionNtB2_18ConnectTransaction6commit
+15184	_RNvNtCskZTdGDbJfb1_6socket4send13send_prepared
+14848	_RNvXNtNtCs8v4E1Pnq2Eu_3net4sock5inodeNtB2_11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps15write_iter_file
+14784	_RNvNtNtCs8v4E1Pnq2Eu_3net4sock13tcp_lifecycle11connect_tcp
+14768	_RNvYNtNtNtCs8v4E1Pnq2Eu_3net4sock5inode11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps10write_fileB8_
+14768	_RNvXNtNtCs8v4E1Pnq2Eu_3net4sock5inodeNtB2_11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps5write
+14704	_RNvMNtNtCs8v4E1Pnq2Eu_3net4sock2ioNtNtB4_5types10InetSocket5write
+14480	_RNvYNtNtNtCs8v4E1Pnq2Eu_3net4sock5inode11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps9read_fileB8_
+14480	_RNvXNtNtCs8v4E1Pnq2Eu_3net4sock5inodeNtB2_11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps4read
+14448	_RNvYNtNtNtCs8v4E1Pnq2Eu_3net4sock5inode11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps18read_nonblock_fileB8_
+14448	_RNvXNtNtCs8v4E1Pnq2Eu_3net4sock5inodeNtB2_11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps13read_nonblock
+14416	_RNvMNtNtCs8v4E1Pnq2Eu_3net4sock2ioNtNtB4_5types10InetSocket4read
+14384	_RNvMNtNtCs8v4E1Pnq2Eu_3net4sock2ioNtNtB4_5types10InetSocket13read_nonblock
+14304	_RNvNtNtCs8v4E1Pnq2Eu_3net4sock4send6sendto
+14080	_RNvNtCs8v4E1Pnq2Eu_3net9sock_recv13recv_blocking
+14000	_RNvNtCs8v4E1Pnq2Eu_3net7sock_io13recvfrom_opts
+13936	_RNvNtCs8v4E1Pnq2Eu_3net7sock_v611sendto_raw6
+13744	_RNvCs8v4E1Pnq2Eu_3net14tcp_retx_timer
+13712	_RNvMNtNtCs8v4E1Pnq2Eu_3net10stack_ipv67controlNtNtNtB6_5stack5types8NetStack17ipv6_control_tick
+13696	_RNvYNtNtNtCs8v4E1Pnq2Eu_3net4sock5inode11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps19write_nonblock_fileB8_
+13696	_RNvXNtNtCs8v4E1Pnq2Eu_3net4sock5inodeNtB2_11InetFileOpsNtNtCsgPScBKsxLKw_3vfs8file_ops7FileOps14write_nonblock
+13632	_RNvMNtNtCs8v4E1Pnq2Eu_3net4sock2ioNtNtB4_5types10InetSocket14write_nonblock
+13616	_RNvNtCs8v4E1Pnq2Eu_3net7sock_v69sendto_v6
+13536	_RNvNtNtCs8v4E1Pnq2Eu_3net4sock8shutdown12shutdown_raw
+13504	_RINvMNtNtCs8v4E1Pnq2Eu_3net5stack3tcpNtNtB5_5types8NetStack24tcp_recv_with_offset_oobINtNtCsdrD4wSIDh9q_5alloc3vec3VechEuNCNvNtB7_7sock_io13recvfrom_optss0_0EB7_
+13456	_RNvNtNtCs8v4E1Pnq2Eu_3net4sock3udp13socket_sendto
+13440	_RNvMNtNtCs8v4E1Pnq2Eu_3net5stack3tcpNtNtB4_5types8NetStack8tcp_send
+13440	_RNvMNtNtCs8v4E1Pnq2Eu_3net5stack3tcpNtNtB4_5types8NetStack12tcp_shutdown
+13408	_RNvMNtNtCs8v4E1Pnq2Eu_3net5stack3tcpNtNtB4_5types8NetStack15tcp_send_urgent
+13280	_RNvMs_NtNtCs8v4E1Pnq2Eu_3net5stack6tcp_txNtNtB6_5types8NetStack19send_tcp_segment_in
+13216	_RNvMNtNtCs8v4E1Pnq2Eu_3net5stack4ipv4NtNtB4_5types8NetStack33send_udp_pmtu_to_bound_opts_owner
+13168	_RNvMNtNtCs8v4E1Pnq2Eu_3net4raw42txNtNtNtB6_5stack5types8NetStack9send_raw4
+
+# Socket RX and control syscalls: read/readv/recvfrom/recvmsg/recvmmsg and
+# connect/shutdown/setsockopt. They share the socket layer and the NetStack
+# tail with the TX chain above, so they move together and are one follow-up.
+16160	_RNvNtCsbEeol4str2r_8syscalls12s042_connect11sys_connect
+15568	_RNvNtCsbEeol4str2r_8syscalls13s299_recvmmsg12sys_recvmmsg
+15536	_RNvNtCsbEeol4str2r_8syscalls10s019_readv9sys_readv
+15456	_RNvNtCsbEeol4str2r_8syscalls12s047_recvmsg11sys_recvmsg
+15424	_RNvNtCsbEeol4str2r_8syscalls9s000_read8sys_read
+15408	_RNvNtCsbEeol4str2r_8syscalls8net_recv12sys_recvfrom
+15216	_RNvNtNtCsbEeol4str2r_8syscalls7recvmsg8dispatch4recv
+13680	_RNvNtCsbEeol4str2r_8syscalls13s048_shutdown12sys_shutdown
+13664	_RNvNtNtCsbEeol4str2r_8syscalls15s054_setsockopt4main14sys_setsockopt
+
+# Batched-submission syscalls. io_uring_enter / io_submit inline one op's
+# whole handler, so their depth is that of the deepest op they can dispatch.
+16752	_RNvNtNtCsbEeol4str2r_8syscalls3aio6submit13sys_io_submit
+16544	_RNvNtCsbEeol4str2r_8syscalls19s426_io_uring_enter18sys_io_uring_enter
+
+# fork/clone. Builds the child task, address space and fd table on the
+# PARENT's stack before the child has one of its own.
+14304	_RNvNtCsbEeol4str2r_8syscalls11s435_clone310sys_clone3
+13936	_RNvNtCsbEeol4str2r_8syscalls5clone18sys_clone_dispatch
+
+# virtio-net child probe. Same shape as the virtio-input probe that overflowed
+# (B1613): a big transport session live across the child's own bring-up.
+# Fix candidate, not a permanent resident.
+15048	_RNvXs5_NtNtCs9IRfSLnXgC5_6virtio9resources5childINtB5_17VirtioChildDriverNtNtCs7aUhulpgWPJ_8pci_boot12virtio_child17PciVirtioChildBusNtB1b_12VirtioNetOpsENtNtCs41xDJckoIHG_3drv5model6Driver5probeB1d_
