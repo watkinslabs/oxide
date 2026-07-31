@@ -7,27 +7,16 @@
 #   make stack-gate-baseline-x86
 #
 # B1618 removed the whole network TX/RX/socket-control family from this file.
-# It is now under the ceiling and must stay there — a net change that trips
-# the gate is a regression, not a candidate for a new entry here.
+# B1620 removed the fork/clone family and, with it, the syscall entry/dispatch
+# roots — with the deepest syscall under the ceiling the roots are under it
+# too. Only the boot path is left. Anything that trips the gate now is a
+# regression, not a candidate for a new entry here.
 
 # Boot path, and NOT on a task stack. `_start` -> `kernel_main` runs on the
 # static boot stack before any `Task` exists, and `kstack::alloc` has not yet
 # handed out a 16 KiB guard-paged stack. The depth is real but the budget is
 # a different one; re-check this block if the boot stack is ever resized.
-19760	_start
-19744	_start_rust
-19600	_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main
-16400	_RNvNtNtCseQ963CMHBD6_5kmain5kmain6rootfs4init
-
-# Syscall entry and dispatch. These are the ROOTS of every syscall, so the
-# walker's longest path is the max over all ~400 of them at once — no single
-# call reaches this. Useful only as a ceiling on the deepest syscall; the
-# individual syscalls are the numbers to actually drive down.
-14936	oxide_syscall_entry
-14752	oxide_syscall_dispatch
-
-# fork/clone. Builds the child task, address space and fd table on the
-# PARENT's stack before the child has one of its own. With the network chain
-# fixed this is the deepest real call sequence left, and the next candidate.
-14304	_RNvNtCsbEeol4str2r_8syscalls11s435_clone310sys_clone3
-13936	_RNvNtCsbEeol4str2r_8syscalls5clone18sys_clone_dispatch
+19728	_start
+19712	_start_rust
+19568	_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main
+16368	_RNvNtNtCseQ963CMHBD6_5kmain5kmain6rootfs4init
