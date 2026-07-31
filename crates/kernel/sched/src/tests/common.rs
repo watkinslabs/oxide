@@ -20,7 +20,7 @@ pub(super) fn idle(tid: u32) -> Arc<Task> {
 
 // Registry is a process-global; serialise the registry tests so parallel
 // cargo-test execution doesn't observe each other's clear_for_tests().
-pub(super) fn registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }

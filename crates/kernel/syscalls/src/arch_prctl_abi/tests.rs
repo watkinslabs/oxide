@@ -82,3 +82,61 @@ fn unknown_sub_code_is_einval() {
         assert_eq!(classify(code, 0), Err(Errno::Einval), "code {code:#x}");
     }
 }
+
+#[test]
+fn xcomp_get_codes_classify_and_bypass_the_task_size_rule() {
+    // These carry a user POINTER, not a base, so the EPERM address rule that
+    // guards ARCH_SET_FS/GS must not be applied to them.
+    for code in [nrs::ARCH_GET_XCOMP_PERM, nrs::ARCH_GET_XCOMP_GUEST_PERM] {
+        assert_eq!(classify(code, TASK_SIZE_MAX + 1), Ok(ArchOp::GetXcompPerm(TASK_SIZE_MAX + 1)));
+    }
+    assert_eq!(classify(nrs::ARCH_GET_XCOMP_SUPP, 0x1000), Ok(ArchOp::GetXcompSupp(0x1000)));
+    for code in [nrs::ARCH_REQ_XCOMP_PERM, nrs::ARCH_REQ_XCOMP_GUEST_PERM] {
+        assert_eq!(classify(code, 18), Ok(ArchOp::ReqXcompPerm(18)));
+    }
+}
+
+#[test]
+fn xcomp_supported_falls_back_to_x87_sse_without_xsave() {
+    assert_eq!(xcomp_supported(false, 0), XFEATURE_MASK_FPSSE);
+    assert_eq!(xcomp_supported(false, 0b1110_0111), XFEATURE_MASK_FPSSE,
+               "a stale XCR0 must not be reported by an FXSAVE-only kernel");
+    // With XSAVE on, the live XCR0 is the answer, always including x87+SSE.
+    assert_eq!(xcomp_supported(true, 0b1110_0111), 0b1110_0111);
+    assert_eq!(xcomp_supported(true, 0b1110_0100), 0b1110_0111);
+}
+
+#[test]
+fn xcomp_request_is_einval_out_of_range_and_eopnotsupp_otherwise() {
+    let einval = -(Errno::Einval.as_i32() as i64);
+    let enotsup = -(Errno::Eopnotsupp.as_i32() as i64);
+    // `idx >= XFEATURE_MAX` is the ONLY EINVAL.
+    for idx in [XFEATURE_MAX, XFEATURE_MAX + 1, u64::MAX] {
+        assert_eq!(xcomp_request(idx, u64::MAX), einval);
+    }
+    // Every in-range index that names no dynamic facility is EOPNOTSUPP,
+    // NOT EINVAL and NOT success.
+    for idx in 0..XFEATURE_MAX {
+        if idx == 18 { continue; }
+        assert_eq!(xcomp_request(idx, u64::MAX), enotsup, "idx {idx}");
+    }
+    // XTILE_DATA is the one facility with a mask, and it is refused unless
+    // BOTH tile components are supported.
+    assert_eq!(xcomp_request(18, 0b1110_0111), enotsup,
+               "no AMX in the supported mask -> EOPNOTSUPP");
+    assert_eq!(xcomp_request(18, (1 << 17) | (1 << 18)), 0);
+    assert_eq!(xcomp_request(18, 1 << 18), enotsup,
+               "XTILE_CFG missing -> the facility is not fully supported");
+}
+
+#[test]
+fn unimplemented_arch_prctl_groups_are_einval() {
+    // ARCH_MAP_VDSO_{X32,32,64} and the CONFIG_ADDRESS_MASKING (LAM) group:
+    // ARCH_GET_UNTAG_MASK / ARCH_ENABLE_TAGGED_ADDR / ARCH_GET_MAX_TAG_BITS /
+    // ARCH_FORCE_TAGGED_SVA. This port maps no LAM bits into CR3, so EINVAL
+    // is the answer a kernel without address masking gives.
+    for code in [0x2001, 0x2002, 0x2003, 0x4001, 0x4002, 0x4003, 0x4004,
+                 0x1026, 0x3001, 0x5006, 0, u64::MAX] {
+        assert_eq!(classify(code, 0), Err(Errno::Einval), "code {code:#x}");
+    }
+}

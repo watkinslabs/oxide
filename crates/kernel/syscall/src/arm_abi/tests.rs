@@ -36,8 +36,32 @@ fn same_shape_essentials() {
 }
 
 #[test]
-fn unknown_passes_through() {
+fn unknown_passes_through_only_in_the_shared_numbering_region() {
+    // At/above 424 every architecture agrees on the number, so an unmapped
+    // one is simply newer than MAP and passes through.
     assert_eq!(aarch64_nr_to_x86(999_999), 999_999);
+    assert_eq!(aarch64_nr_to_x86(super::SHARED_NR_BASE), super::SHARED_NR_BASE);
+}
+
+#[test]
+fn unassigned_arm_numbers_never_reach_the_x86_table() {
+    // The `arch_specific_syscall` reservation: arm64 assigns nothing here,
+    // but x86 does — 246 kexec_load, 247 waitid, 257 openat, 259 mknodat.
+    // Passing them through ran a real, WRONG syscall for an aarch64 caller.
+    for nr in 244..=259u64 {
+        assert_eq!(aarch64_nr_to_x86(nr), super::NO_AARCH64_SLOT, "arm nr {nr} is unassigned");
+    }
+    // The documented 295..402 hole and the 32-bit-only *_time64 block.
+    for nr in [295, 300, 335, 402, 403, 423] {
+        assert_eq!(aarch64_nr_to_x86(nr), super::NO_AARCH64_SLOT);
+    }
+    // Nothing below the shared base is ever handed to the x86 table under its
+    // OWN number: the two numberings are unrelated there, so an identity
+    // result would mean a raw pass-through rather than a translation.
+    for nr in 0..super::SHARED_NR_BASE {
+        let x = aarch64_nr_to_x86(nr);
+        assert_ne!(x, nr, "arm nr {nr} fell through to x86 slot {nr} verbatim");
+    }
 }
 
 #[test]

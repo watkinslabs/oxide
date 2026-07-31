@@ -58,6 +58,30 @@ pub fn runs_user_handler(p: &PendingSignal) -> bool {
     p.handler != SIG_DFL && p.handler != SIG_IGN
 }
 
+/// Build a `PendingSignal` for a signal that was NOT dequeued — the one a
+/// tracer substituted through `PTRACE_CONT(data)`. Linux reaches the same
+/// place by re-indexing `sighand->action[signr-1]` after `ptrace_signal`
+/// returned a different number, so the disposition that runs belongs to the
+/// signal the tracer named, not to the one the tracee reported.
+///
+/// The unblockable-signal clamp is the same one `take_lowest_pending` applies:
+/// a tracer that substitutes SIGKILL or SIGSTOP cannot route it through a
+/// handler.
+/// # C: O(1)
+pub fn pending_for(sig: u32, info: Option<sched::SigInfo>) -> PendingSignal {
+    let cur = sched::live::current();
+    let h = match &cur {
+        Some(c) => c.sigactions_ref().get(sig),
+        None => return PendingSignal { sig, handler: SIG_DFL, flags: 0, restorer: 0, mask: 0, info },
+    };
+    let (handler, flags, restorer, mask) = if sched::signum::is_unblockable(sig) {
+        (SIG_DFL, 0, 0, 0)
+    } else {
+        (h.handler, h.flags, h.restorer, h.mask)
+    };
+    PendingSignal { sig, handler, flags, restorer, mask, info }
+}
+
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
 /// take the lowest pending. For RT signals (33..=64) also pop one
 /// siginfo from the per-signal queue and only clear the bitmap bit

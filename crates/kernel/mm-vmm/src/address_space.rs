@@ -96,6 +96,7 @@ mod live_registry_tests {
 }
 
 mod accounting;
+pub mod rss;
 mod fault;
 mod fork;
 mod layout_state;
@@ -107,12 +108,14 @@ mod limits;
 mod membarrier;
 mod mlock;
 mod mmfields;
+mod saved_auxv;
 mod ops;
 mod uffd;
 pub mod pkeys;
 
 pub use limits::{MIN_USER_VA, MMAP_TOP};
 pub use mdwe::{MdweAdmission, MdweRequest, MdweSetError};
+pub use saved_auxv::{saved_auxv_blob, SAVED_AUXV_BYTES};
 pub use ops::{MprotectOutcome, MprotectStep};
 pub use mlock::{LockedSpan, MlockOutcome};
 pub use uffd::UffdVma;

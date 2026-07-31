@@ -300,6 +300,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-elf-load");
+    // Linux `load_elf_binary` tail: SVr4 `MMAP_PAGE_ZERO` emulation, mapped
+    // after every PT_LOAD so a segment can never be displaced by it.
+    crate::exec_persona::map_page_zero(&cur, &new_as, creds.per_clear);
     sched::live::zap_other_threads();
     use hal::MmuOps;
     let me = { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
@@ -466,5 +469,6 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         klog::write_hex_u64(bad_op);
         klog::write_raw(b"\n");
     }
+    crate::execve_common::ptrace_exec_event(cur);
     0
 }

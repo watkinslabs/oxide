@@ -120,6 +120,11 @@ pub fn glue_mmap(
             len_aligned as u64, mm_locked, limit, cur.has_cap(sched::cap::IPC_LOCK));
         if let Err(e) = e { return Err(-(e.as_i32() as i64)); }
     }
+    // Linux `__mmap_region` -> `may_expand_vm`: RLIMIT_AS bounds the mm's TOTAL
+    // mapped size. Run after the MAP_FIXED teardown above, so what is charged
+    // is the NET growth (`map->pglen - vms->nr_pages`) and re-mapping a range
+    // over itself is free.
+    admit_current_as_growth(len_aligned as u64)?;
     let vma_backing = match (kframe, phys_base, backing) {
         // Refcounted shared kernel RAM frame (single page, io_uring ring):
         // map_kernel_frame inc_ref's on fault, AS-teardown dec's — so the

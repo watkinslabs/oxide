@@ -83,6 +83,15 @@ impl crate::task::Task {
     }
 }
 
+/// Whether `policy` is served by the real-time class — `SCHED_FIFO` or
+/// `SCHED_RR`, the two policies whose `task_tick_rt` runs Linux's
+/// `RLIMIT_RTTIME` watchdog. `SCHED_DEADLINE` is excluded: it has its own
+/// overrun accounting (`dl_overrun`) and is not charged against `RLIMIT_RTTIME`.
+/// # C: O(1)
+pub const fn is_rt_class_policy(policy: u32) -> bool {
+    matches!(policy, SCHED_FIFO | SCHED_RR)
+}
+
 /// The `SCHED_RR` quantum, in nanoseconds. ONE value backs both halves of the
 /// contract: what the periodic tick actually enforces ([`RR_TIMESLICE_TICKS`])
 /// and what `sched_rr_get_interval(2)` reports. Upstream has the same single

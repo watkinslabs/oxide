@@ -20,6 +20,23 @@ use crate::userbuf::validate_user_buf_writable;
 #[cfg(target_arch = "x86_64")]
 const CPUID_FAULT_SUPPORTED: bool = false;
 
+/// Linux `put_user(v, (unsigned long __user *)arg2)` — the only failure of an
+/// `ARCH_GET_*` sub-code.
+#[cfg(target_arch = "x86_64")]
+fn put_user_u64(ptr: u64, v: u64) -> i64 {
+    if let Err(rv) = validate_user_buf_writable(ptr, 8, 1) { return rv; }
+    // SAFETY: ptr byte range validated writable above; Linux put_user accepts unaligned storage.
+    unsafe { core::ptr::write_unaligned(ptr as *mut u64, v); }
+    0
+}
+
+/// The xstate feature mask this kernel actually saves and restores for user
+/// state, taken from the live XCR0 the FPU owner programmed at boot.
+#[cfg(target_arch = "x86_64")]
+fn xcomp_mask() -> u64 {
+    arch_prctl_abi::xcomp_supported(hal_x86_64::xsave_active(), hal_x86_64::xsave_xcr0())
+}
+
 /// `arch_prctl(code, arg2)` — slot 158, x86_64 only (aarch64 has no such
 /// syscall: nothing in `syscall::arm_abi` maps to 158, so the aarch64
 /// dispatcher answers ENOSYS for it, which is what Linux/arm64 does).
@@ -55,12 +72,9 @@ pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
             0
         }
         ArchOp::GetFs(ptr) => {
-            if let Err(rv) = validate_user_buf_writable(ptr, 8, 1) { return rv; }
             // SAFETY: rdmsr IA32_FS_BASE is privileged; no memory effect.
             let base = unsafe { hal_x86_64::get_user_fs_base() };
-            // SAFETY: ptr byte range validated writable; Linux put_user accepts unaligned storage.
-            unsafe { core::ptr::write_unaligned(ptr as *mut u64, base); }
-            0
+            put_user_u64(ptr, base)
         }
         // ARCH_SET_GS / ARCH_GET_GS. This port runs the no-swapgs model: GS
         // base is the kernel per-CPU area at all times (the syscall entry stub
@@ -77,5 +91,11 @@ pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
         ArchOp::GetCpuid => arch_prctl_abi::get_cpuid_mode(),
         ArchOp::SetCpuid(_) => arch_prctl_abi::set_cpuid_mode(CPUID_FAULT_SUPPORTED),
         ArchOp::Shstk => arch_prctl_abi::shstk_prctl_unsupported(),
+        // The supported and the permitted masks are the same value here:
+        // permission only ever differs from support for a DYNAMICALLY enabled
+        // component (AMX behind XFD), and this port enables none — so every
+        // feature it saves is one every thread may already use.
+        ArchOp::GetXcompSupp(ptr) | ArchOp::GetXcompPerm(ptr) => put_user_u64(ptr, xcomp_mask()),
+        ArchOp::ReqXcompPerm(idx) => arch_prctl_abi::xcomp_request(idx, xcomp_mask()),
     }
 }

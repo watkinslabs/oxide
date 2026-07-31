@@ -69,6 +69,15 @@ pub(super) fn write_itimerspec(p: u64, spec: crate::timer_model::TimerSetting) -
     uaccess::copy_to_user(p, &bytes).map_err(|_| efault())
 }
 
+/// Read the `timer_t __user *` OUT parameter as an IN parameter, which is
+/// what `timer_create` does while `PR_TIMER_CREATE_RESTORE_IDS` is armed.
+pub(super) fn read_timer_id(p: u64) -> Result<i32, i64> {
+    user_range(p, core::mem::size_of::<i32>() as u64)?;
+    let mut raw = [0u8; 4];
+    uaccess::copy_from_user(&mut raw, p).map_err(|_| efault())?;
+    Ok(i32::from_ne_bytes(raw))
+}
+
 pub(super) fn write_timer_id(p: u64, id: i32) -> Result<(), i64> {
     user_range(p, core::mem::size_of::<i32>() as u64)?;
     uaccess::copy_to_user(p, &id.to_ne_bytes()).map_err(|_| efault())

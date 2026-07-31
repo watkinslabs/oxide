@@ -32,13 +32,34 @@ fn attach_by_different_uid_without_cap_is_eperm() {
     assert_eq!(may_attach(&cur, &target, false, false), Err(Errno::Eperm));
 }
 
+/// Matching credentials clear the `__ptrace_may_access` ladder but NOT the
+/// `security_ptrace_access_check` tail: Yama's default scope is RELATIONAL,
+/// under which an unrelated same-uid tracer is refused. This is the behaviour
+/// a default-configured distribution actually has, and the reason
+/// `gdb -p <pid>` on an unrelated pid needs either a relation or
+/// CAP_SYS_PTRACE.
 #[test]
-fn attach_by_same_uid_succeeds() {
-    let cur = task(1); let target = task(2);
+fn same_uid_alone_does_not_defeat_the_default_yama_scope() {
+    let cur = task(1001); let target = task(1002);
     set_uids(&cur, 1000, 1000, 1000);
     set_uids(&target, 1000, 1000, 1000);
     drop_caps(&cur);
+    sched::yama::ptracer_del(1002);
+    assert_eq!(sched::yama::scope(), sched::yama::SCOPE_RELATIONAL);
+    assert_eq!(may_attach(&cur, &target, false, false), Err(Errno::Eperm));
+}
+
+/// The same attach with a `PR_SET_PTRACER_ANY` exemption in place — the
+/// documented way a crash handler lets an unrelated same-uid tracer in.
+#[test]
+fn attach_by_same_uid_succeeds_with_a_ptracer_exemption() {
+    let cur = task(1011); let target = task(1012);
+    set_uids(&cur, 1000, 1000, 1000);
+    set_uids(&target, 1000, 1000, 1000);
+    drop_caps(&cur);
+    sched::yama::ptracer_add(1012, None);
     assert_eq!(may_attach(&cur, &target, false, false), Ok(()));
+    sched::yama::ptracer_del(1012);
 }
 
 /// REALCREDS compares the caller's REAL uid, not its effective one. A

@@ -17,7 +17,9 @@ const SIGSET_BYTES: u64 = 8;
 /// # C: O(1)
 pub fn setoptions(cur: &Task, target: &Task, data: u64) -> Result<(), Errno> {
     let seccomp = security::seccomp::mode_of_current() != 0;
-    let opts = crate::s101_ptrace_decide::check_options(data, cur.has_cap(sched::cap::SYS_ADMIN), seccomp)?;
+    let suspended = cur.ptrace_options.load(Ordering::Acquire) & uapi::O_SUSPEND_SECCOMP != 0;
+    let opts = crate::s101_ptrace_decide::check_options_full(
+        data, cur.has_cap(sched::cap::SYS_ADMIN), seccomp, suspended)?;
     target.ptrace_options.store(opts, Ordering::Release);
     Ok(())
 }

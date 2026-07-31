@@ -71,11 +71,31 @@ pub fn sys_timer_create(args: &SyscallArgs) -> i64 {
     if posix_clock::needs_wake_alarm(clock) && !current.has_cap(crate::cap::WAKE_ALARM) {
         return err(Errno::Eperm);
     }
+    // `prctl(PR_TIMER_CREATE_RESTORE_IDS)`: while armed, the `timer_t __user *`
+    // OUT parameter is read as an IN parameter naming the id the caller wants
+    // this timer to get. The read and its 0..INT_MAX validity test happen
+    // BEFORE any timer state is allocated, so a checkpoint restoring a bad id
+    // leaves nothing behind.
+    let req_id = if current.thread_group.timer_create_restore_ids.load(Ordering::Acquire) {
+        let raw = match uapi::read_timer_id(args.a2) { Ok(raw) => raw, Err(error) => return error };
+        match crate::prctl::timer_ids::valid_requested_id(raw) {
+            Ok(id) => Some(id),
+            Err(errno) => return err(errno),
+        }
+    } else { None };
     let owner = clock::timer_owner(current);
     let _guard = backend::lock();
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
-    let Some(id) = slots::allocate_id(slots) else { return err(Errno::Eagain) };
+    let id = match req_id {
+        // `posix_timer_add_at()` failing means the id names a live timer.
+        Some(want) => match slots::allocate_id_at(slots, want) {
+            slots::Reserve::Taken(id) => id,
+            slots::Reserve::Busy => return err(Errno::Ebusy),
+            slots::Reserve::NoSpace => return err(Errno::Eagain),
+        },
+        None => match slots::allocate_id(slots) { Some(id) => id, None => return err(Errno::Eagain) },
+    };
     let notify = match notification(event, current, id) {
         Ok(notify) => notify, Err(error) => return error,
     };

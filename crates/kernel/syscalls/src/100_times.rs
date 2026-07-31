@@ -1,17 +1,25 @@
-// 100 times — one syscall, one file (docs/53 §0). Moved verbatim from proc.rs.
+// 100 times — one syscall, one file (docs/53 §0). The `struct tms` layout,
+// the NULL-buffer rule and the return-value contract are pure and live in
+// `syscall::rusage`, which is where they are asserted.
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+use syscall::rusage::{times_wants_tms, Tms, TMS_BYTES};
 use crate::userbuf::validate_user_buf_writable;
 
-/// `sys_times(tms)` — slot 100. tms_utime/tms_stime are the caller's
-/// tick-sampled user/kernel CPU time in CLK_TCK ticks; tms_cutime/
-/// tms_cstime are the reaped children's cumulative user/kernel CPU time,
-/// shared process-wide so a sibling thread's reap is visible here.
-/// Return value = monotonic wall-clock in CLK_TCK ticks.
+/// `sys_times(tms)` — slot 100.
+///
+/// `tms_utime`/`tms_stime` are the calling PROCESS's user/kernel CPU time —
+/// the whole thread group, so a `time` builtin sees what its worker threads
+/// spent and keeps seeing it after they exit. `tms_cutime`/`tms_cstime` are
+/// the reaped children's cumulative time, likewise process-wide so a sibling
+/// thread's reap is visible here. All four are CLK_TCK ticks, the same
+/// `AT_CLKTCK` the auxv advertises to `sysconf(_SC_CLK_TCK)`.
+///
+/// A NULL `tms` is legal: the copy-out is skipped and the tick count is still
+/// returned. The return is a tick count, never a status.
 /// # C: O(1)
 pub fn sys_times(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     use hal::TimerOps;
     let buf = args.a0;
     let now = {
@@ -20,28 +28,24 @@ pub fn sys_times(args: &SyscallArgs) -> i64 {
         #[cfg(target_arch = "aarch64")]
         { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     };
-    let (utime_ns, stime_ns, cutime_ns, cstime_ns) = match sched::live::current() {
-        Some(c) => (
-            c.utime_ns.load(Ordering::Acquire),
-            c.stime_ns.load(Ordering::Acquire),
-            c.thread_group.child_acct().cpu_ns().0,
-            c.thread_group.child_acct().cpu_ns().1,
-        ),
-        None => (0, 0, 0, 0),
-    };
-    let utime_ticks  = sched::clock::ns_to_clk_tck(utime_ns);
-    let stime_ticks  = sched::clock::ns_to_clk_tck(stime_ns);
-    let cutime_ticks = sched::clock::ns_to_clk_tck(cutime_ns);
-    let cstime_ticks = sched::clock::ns_to_clk_tck(cstime_ns);
-    if buf != 0 {
-        if let Err(rv) = validate_user_buf_writable(buf, 32, 1) { return rv; }
-        // SAFETY: validated 32-byte writable user buf; CPL=0 writes through caller's AS.
-        unsafe {
-            core::ptr::write_unaligned( buf       as *mut u64, utime_ticks);
-            core::ptr::write_unaligned((buf + 8)  as *mut u64, stime_ticks);
-            core::ptr::write_unaligned((buf + 16) as *mut u64, cutime_ticks);
-            core::ptr::write_unaligned((buf + 24) as *mut u64, cstime_ticks);
-        }
+    if times_wants_tms(buf) {
+        let t = match sched::live::current() {
+            Some(c) => {
+                let (utime_ns, stime_ns) = c.thread_group.cpu_sample();
+                let (cutime_ns, cstime_ns) = c.thread_group.child_acct().cpu_ns();
+                Tms {
+                    utime_ticks:  sched::clock::ns_to_clk_tck(utime_ns),
+                    stime_ticks:  sched::clock::ns_to_clk_tck(stime_ns),
+                    cutime_ticks: sched::clock::ns_to_clk_tck(cutime_ns),
+                    cstime_ticks: sched::clock::ns_to_clk_tck(cstime_ns),
+                }
+            }
+            None => Tms::default(),
+        };
+        if let Err(rv) = validate_user_buf_writable(buf, TMS_BYTES as u64, 1) { return rv; }
+        let bytes = t.encode();
+        // SAFETY: validated writable user buf of exactly TMS_BYTES; CPL=0 write through the caller's AS.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, TMS_BYTES); }
     }
     sched::clock::ns_to_clk_tck(now) as i64
 }

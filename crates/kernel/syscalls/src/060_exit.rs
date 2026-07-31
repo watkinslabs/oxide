@@ -55,6 +55,12 @@ pub fn do_group_exit(requested: i32) -> i64 {
 /// # C: O(N_tasks) reparent + O(log N) schedule
 pub fn do_exit(status: i32) -> i64 {
     use core::sync::atomic::Ordering;
+    // Linux `do_exit`: `ptrace_event(PTRACE_EVENT_EXIT, code)` is the FIRST
+    // thing after the group-exit arbitration, before any resource is torn
+    // down — that is the whole point of the event, a tracer inspecting a task
+    // that is about to die while its mm, fds and registers are still intact.
+    // The message is the exit code as `wait` will report it.
+    crate::ptrace::stop::ptrace_event(crate::s101_ptrace_uapi::EVENT_EXIT, status as u32 as u64);
     // No runqueue (arm direct drop_to_el0 pre-P2-13e): nothing
     // to Zombie. Pre-P2-22 fallthrough behavior.
     if sched::live::global().is_none() {
@@ -113,6 +119,16 @@ pub fn do_exit(status: i32) -> i64 {
             // Linux `do_exit`: the last thread of global init dying is
             // unrecoverable; a pid-namespace init takes only its namespace.
             init_exit_check(task);
+            // Linux `exit_ptrace(tracer, &dead)`: a dying TRACER detaches every
+            // task it traces, killing first the ones whose link carries
+            // PTRACE_O_EXITKILL. Without it a tracee stays attached to a tid
+            // that no longer exists — `ptrace_check_attach` then answers ESRCH
+            // for every request and a tracee parked in a ptrace stop can never
+            // be resumed by anyone.
+            crate::ptrace::stop::exit_ptrace(task.tid);
+            // Yama `yama_task_free`: drop every PR_SET_PTRACER relation naming
+            // this task, so a recycled tid cannot inherit its exemption.
+            sched::yama::task_free(task.tid);
             sched::live::vfork_done(task); // F156 vfork: clear + wake parent
             // cgroup v2 (`26§4`): drop the exiting task from its
             // cgroup so cgroup.procs / cgroup.events `populated`

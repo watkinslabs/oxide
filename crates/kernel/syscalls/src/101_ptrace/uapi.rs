@@ -36,6 +36,34 @@ pub const LISTEN:      u64 = 0x4208;
 pub const PEEKSIGINFO: u64 = 0x4209;
 pub const GETSIGMASK:  u64 = 0x420a;
 pub const SETSIGMASK:  u64 = 0x420b;
+pub const SECCOMP_GET_FILTER:   u64 = 0x420c;
+pub const SECCOMP_GET_METADATA: u64 = 0x420d;
+pub const GET_SYSCALL_INFO:     u64 = 0x420e;
+pub const GET_RSEQ_CONFIGURATION: u64 = 0x420f;
+pub const SET_SYSCALL_USER_DISPATCH_CONFIG: u64 = 0x4210;
+pub const GET_SYSCALL_USER_DISPATCH_CONFIG: u64 = 0x4211;
+pub const SET_SYSCALL_INFO:     u64 = 0x4212;
+
+/// `PTRACE_O_TRACESYSGOOD`'s marker bit, OR-ed into the reported stop signal.
+pub use syscall::ptrace::SYSCALL_STOP_BIT as SYSCALL_TRAP_BIT;
+
+/// `PTRACE_PEEKSIGINFO_SHARED` — read from the process-wide queue instead of
+/// the tracee thread's own.
+pub const PEEKSIGINFO_SHARED: u32 = 1;
+/// `sizeof(struct ptrace_peeksiginfo_args)`: `u64 off; u32 flags; s32 nr`.
+pub const PEEKSIGINFO_ARGS_BYTES: u64 = 16;
+/// `sizeof(siginfo_t)` — the stride `PTRACE_PEEKSIGINFO` advances `data` by.
+pub const SIGINFO_BYTES: u64 = 128;
+
+/// `sizeof(struct ptrace_rseq_configuration)`: `u64 rseq_abi_pointer; u32
+/// rseq_abi_size; u32 signature; u32 flags; u32 pad`.
+pub const RSEQ_CONFIGURATION_BYTES: usize = 24;
+
+/// `sizeof(struct seccomp_metadata)`: `u64 filter_off; u64 flags`.
+pub const SECCOMP_METADATA_BYTES: usize = 16;
+/// `sizeof(struct sock_filter)` — the stride `PTRACE_SECCOMP_GET_FILTER`
+/// writes its classic-BPF instructions at.
+pub const SOCK_FILTER_BYTES: usize = 8;
 
 /// `PTRACE_O_*` option bits.
 pub const O_TRACESYSGOOD:    u32 = 1;
@@ -58,6 +86,9 @@ pub use syscall::ptrace::{
     event_of_stop_code, event_stop_code, syscall_stop_code, EVENT_CLONE, EVENT_EXEC, EVENT_EXIT,
     EVENT_FORK, EVENT_SECCOMP, EVENT_STOP, EVENT_VFORK, EVENT_VFORK_DONE,
 };
+/// The bare `SIGTRAP` stop code — a real trap, distinct from a syscall stop
+/// (`SIGTRAP | 0x80`) and from every `SIGTRAP | (event << 8)` event stop.
+pub use syscall::ptrace::SIGTRAP as SIGTRAP_CODE;
 
 /// `NT_*` regset note types (`include/uapi/linux/elf.h`). `PTRACE_GETREGSET`
 /// takes one of these in `addr`.

@@ -177,6 +177,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
+    // Linux `load_elf_binary` tail: SVr4 `MMAP_PAGE_ZERO` emulation, mapped
+    // after every PT_LOAD so a segment can never be displaced by it.
+    crate::exec_persona::map_page_zero(&cur, &new_as, creds.per_clear);
     sched::live::zap_other_threads();
     let me = { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
     new_as.mark_cpu(me);
@@ -323,5 +326,6 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         klog::write_hex_u64(bad_op);
         klog::write_raw(b"\n");
     }
+    crate::execve_common::ptrace_exec_event(cur);
     0
 }

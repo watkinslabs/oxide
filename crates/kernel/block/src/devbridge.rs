@@ -65,6 +65,10 @@ pub fn write_at(dev: &dyn BlockDevice, off: u64, data: &[u8]) -> KResult<usize> 
     rmw.buffer[inner .. inner + len].copy_from_slice(&data[..len]);
     let mut wreq = BlockRequest::new_write(first, n, rmw.buffer);
     dev.submit_sync(&mut wreq).map_err(|_| VfsError::Eio)?;
+    // A write(2) straight at a block device is the caller's own output, so it
+    // is billed to the caller — unlike a buffered filesystem write, whose
+    // pages a kernel writeback thread submits later.
+    crate::task_io::account_write(len as u64);
     Ok(len)
 }
 

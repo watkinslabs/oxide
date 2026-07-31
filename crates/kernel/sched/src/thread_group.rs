@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 pub mod child_acct;
+pub mod group_acct;
 pub mod shared_signal;
 
 use crate::pid::PidIdentity;
@@ -66,6 +67,13 @@ pub struct ThreadGroup {
     /// Spinlock-protected: `prlimit64(2)` and `sched_setattr(2)` read/write an
     /// ARBITRARY target's limits from the caller's own CPU.
     pub rlimits: Spinlock<[(u64, u64); crate::rlimit::rlim::COUNT], TaskListClass>,
+    /// Linux `signal_struct::timer_create_restore_ids`
+    /// (`prctl(PR_TIMER_CREATE_RESTORE_IDS)`). While set, `timer_create(2)`
+    /// reads its `timer_t __user *` OUT parameter as an IN parameter — the id
+    /// the caller wants the new timer to receive — which is how
+    /// checkpoint/restore recreates a process' timers under their old ids.
+    /// Process-wide, and reset to 0 by execve exactly as Linux resets it.
+    pub timer_create_restore_ids: AtomicBool,
     /// POSIX process-group id (Linux `PIDTYPE_PGID` on `task->signal`). Every
     /// thread of a process is in ONE process group — `setpgid(2)` moves the
     /// whole process, never a single thread — so this is process-wide state,
@@ -147,6 +155,9 @@ pub struct ThreadGroup {
     /// use. Process-wide: whichever thread reaps a child, all its siblings'
     /// `getrusage(RUSAGE_CHILDREN)` / `times(2)` must see the cost.
     child_acct: child_acct::ChildAcct,
+    /// Linux `signal_struct`'s own-process fault / block-I/O / context-switch
+    /// counters — the `RUSAGE_SELF` half that is not CPU time.
+    group_acct: group_acct::GroupAcct,
 }
 
 struct ThreadGroupState {
@@ -167,6 +178,7 @@ impl ThreadGroup {
             leader,
             posix_timers: UnsafeCell::new(alloc::vec![PosixTimer::default(); PosixTimer::SLOTS]),
             rlimits: Spinlock::new(crate::rlimit::DEFAULT_RLIMITS),
+            timer_create_restore_ids: AtomicBool::new(false),
             pgid: AtomicU32::new(seed),
             sid:  AtomicU32::new(seed),
             session_leader: AtomicBool::new(false),
@@ -181,6 +193,7 @@ impl ThreadGroup {
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
             child_acct: child_acct::ChildAcct::new(),
+            group_acct: group_acct::GroupAcct::new(),
         }
     }
 
@@ -192,6 +205,10 @@ impl ThreadGroup {
 
     /// Accumulated resource use of every child this process reaped. # C: O(1)
     pub fn child_acct(&self) -> &child_acct::ChildAcct { &self.child_acct }
+
+    /// This process's own fault / block-I/O / context-switch counters,
+    /// covering live and already-exited threads alike. # C: O(1)
+    pub fn group_acct(&self) -> &group_acct::GroupAcct { &self.group_acct }
 
     /// Process group id shared by every thread of this process. # C: O(1)
     pub fn pgid(&self) -> u32 { self.pgid.load(Ordering::Acquire) }

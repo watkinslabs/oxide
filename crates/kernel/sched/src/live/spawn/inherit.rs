@@ -61,6 +61,14 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
         .store(parent.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
     // PR_MCE_KILL policy lives in `task_struct::flags`, copied by fork.
     task.mce_kill.store(parent.mce_kill.load(Ordering::Acquire), Ordering::Release);
+    // PR_SET_IO_FLUSHER is `PF_MEMALLOC_NOIO | PF_LOCAL_THROTTLE`, also in
+    // `task_struct::flags`: `copy_process` clears only PF_SUPERPRIV/WQ_WORKER/
+    // IDLE/NO_SETAFFINITY, so a forked helper of a block server inherits the
+    // no-IO-reclaim promise its parent made.
+    task.io_flusher.set(parent.io_flusher.get());
+    // `PR_SET_SYSCALL_USER_DISPATCH` is NOT inherited: `copy_process` runs
+    // `clear_syscall_work_syscall_user_dispatch(tsk)`, so a fork child starts
+    // with dispatch off (a fresh `Task` already does).
     // PR_SET_NO_NEW_PRIVS is INHERITED across fork/clone and never cleared
     // (Linux `dup_task_struct` copies the PFA bit; `copy_seccomp` re-asserts
     // it). Without this a no-new-privs sandbox could fork and the child
