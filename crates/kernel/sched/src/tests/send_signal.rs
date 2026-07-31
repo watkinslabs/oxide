@@ -369,3 +369,33 @@ fn an_irq_expiry_honours_the_same_ignore_ladder_as_every_other_send() {
     assert!(!send::send_signal_irq(&t, rec, SigTarget::Process));
     assert_eq!(t.pending_signals() & (1u64 << (SIGRTMIN - 1)), 0);
 }
+
+#[test]
+fn a_process_directed_send_raises_the_signalfd_readiness_edge() {
+    // A signalfd's epoll subscribers hang off `Task::sigpending`, and a
+    // signalfd reads `private | shared` — so a signal that becomes pending
+    // ONLY on the shared set still owes every thread's source a POLLIN edge.
+    // Without it a service manager parked in `epoll_wait` on its SIGCHLD
+    // signalfd slept through every child exit: the fd would have read as
+    // ready, but nothing ever told epoll to look.
+    let (leader, worker) = threaded(730);
+    install(&leader, SIGCHLD, HANDLER);
+    let before = (leader.sigpending.poll_subscribers().generation(),
+                  worker.sigpending.poll_subscribers().generation());
+    assert_eq!(send::send_signal(&leader, SIGCHLD, SigSource::Info(child_exit(1, 9, 0)),
+        SigTarget::Process), Ok(()));
+    assert!(leader.sigpending.poll_subscribers().generation() > before.0);
+    assert!(worker.sigpending.poll_subscribers().generation() > before.1,
+        "a sibling's signalfd is watching the same shared set");
+}
+
+#[test]
+fn an_irq_expiry_raises_the_readiness_edge_on_the_task_it_publishes_from() {
+    let t = task(734);
+    install(&t, SIGRTMIN, HANDLER);
+    t.thread_group.reserve_shared(SIGRTMIN);
+    let before = t.sigpending.poll_subscribers().generation();
+    let rec = crate::timers::signal::timer_record(SIGRTMIN, 0, 0);
+    assert!(send::send_signal_irq(&t, rec, SigTarget::Process));
+    assert!(t.sigpending.poll_subscribers().generation() > before);
+}
