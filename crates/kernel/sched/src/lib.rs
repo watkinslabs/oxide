@@ -30,6 +30,8 @@ pub mod cputime_trace;
 pub mod perf_sw;
 /// `__ptrace_may_access` — the credential predicate ptrace/kcmp/pidfd_getfd/perf share.
 pub mod ptrace_access;
+pub mod yama;
+pub mod seccomp_filter;
 pub mod loadavg;
 pub mod psi;
 pub mod diag;
@@ -40,6 +42,7 @@ pub mod preempt;
 pub mod exit_to_user;
 pub mod pid;
 pub mod thread_group;
+pub mod rusage_charge;
 pub mod registry;
 pub mod exit;
 pub mod personality;
@@ -188,7 +191,7 @@ pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod cred;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod prctl;
+pub mod prctl;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_set_mm;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_vma;
 #[cfg(target_os = "oxide-kernel")] pub mod membarrier;

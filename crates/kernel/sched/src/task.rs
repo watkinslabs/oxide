@@ -363,7 +363,8 @@ pub struct Task {
     /// one bounded queue per signal number (64 slots indexed by `sig - 1`, see
     /// `signum::sigq_index`). RT signals (33..=64) preserve multiplicity per
     /// POSIX: every `sigqueue(SIGRTn, val)` enqueues a distinct
-    /// (signo,val,pid,uid,code) record, capped at `RT_QUEUE_CAP`. Standard
+    /// (signo,val,pid,uid,code) record, bounded by the per-user
+    /// `RLIMIT_SIGPENDING` count each record carries. Standard
     /// signals collapse to ONE record (Linux `legacy_queue`) but still carry
     /// it — `sigqueue(3)`/`timer_create(2)`/`tgkill(2)` set si_code/si_value
     /// for them, and handlers (glibc SIGCANCEL/SIGSETXID) test those fields.
@@ -371,7 +372,7 @@ pub struct Task {
     /// child-exit record is queued on the PROCESS' shared set by
     /// `do_notify_parent`, so any thread can collect it.
     /// # C: O(1) push / O(1) pop
-    pub sigqueue: Spinlock<[VecDeque<SigInfo>; 64], TaskListClass>,
+    pub sigqueue: Spinlock<[VecDeque<crate::sigqueue::Queued>; 64], TaskListClass>,
 
     /// Per-task signal mask per `27§3`. Bit i set ⇔ signal i+1
     /// blocked. `rt_sigprocmask` writes; signal-delivery checks.
@@ -519,6 +520,15 @@ pub struct Task {
     pub itimer_prof_ns: AtomicU64,
     /// ITIMER_PROF period in combined CPU ns. `0` = one-shot.
     pub itimer_prof_interval_ns: AtomicU64,
+    /// Linux `sched_rt_entity::timeout`, the quantity `RLIMIT_RTTIME` bounds:
+    /// CPU time charged to this thread while it ran under a real-time policy.
+    /// Linux counts whole ticks and converts with `USEC_PER_SEC / HZ`; this
+    /// kernel's tick period is not fixed, so the charged nanoseconds are
+    /// accumulated directly and the µs conversion is exact.
+    ///
+    /// Cumulative, exactly as Linux is: it is zeroed at fork and when the task
+    /// leaves a real-time policy, and NOT when the thread blocks.
+    pub rt_timeout_ns: AtomicU64,
 
     /// CLONE_CHILD_CLEARTID address per set_tid_address(2). Linux stores the
     /// user pointer and, on thread exit (`do_exit` → `mm_release`), writes 0
@@ -593,7 +603,7 @@ pub struct Task {
     /// under `siglock`), so the owning task is not the only writer and a
     /// bare cell would let a sibling's `Vec` realloc race the owner's
     /// per-syscall walk of it.
-    pub seccomp_filters: Spinlock<alloc::vec::Vec<alloc::vec::Vec<u64>>, TaskListClass>,
+    pub seccomp_filters: Spinlock<alloc::vec::Vec<crate::seccomp_filter::SeccompFilter>, TaskListClass>,
 
     /// Linux `task_struct::seccomp.mode` — `SECCOMP_MODE_{DISABLED,STRICT,
     /// FILTER,DEAD}`. `prctl(PR_GET_SECCOMP)` returns it verbatim, so STRICT
@@ -665,6 +675,17 @@ pub struct Task {
     /// parent exits. `0` means "no signal". Cleared by execve when
     /// uid/gid change or setuid bits fire.
     pub pdeathsig: AtomicU32,
+
+    /// Linux `PF_MEMALLOC_NOIO | PF_LOCAL_THROTTLE` (`prctl(PR_SET_IO_FLUSHER)`).
+    /// Read by the page allocator's reclaim decision so a userspace block
+    /// server never re-enters IO through its own allocations.
+    pub io_flusher: crate::prctl::io_flusher::IoFlusher,
+
+    /// Linux `task_struct::syscall_dispatch`
+    /// (`prctl(PR_SET_SYSCALL_USER_DISPATCH)`). Consumed by the syscall
+    /// dispatch head, which rolls the call back and raises SIGSYS for every
+    /// syscall the registration claims.
+    pub syscall_dispatch: crate::prctl::sud::SyscallUserDispatch,
 
     /// `personality(2)` execution domain. 0 = PER_LINUX, the v1 default.
     /// Stored per-task; `personality()` returns the previous value and

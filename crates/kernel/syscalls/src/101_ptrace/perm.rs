@@ -30,6 +30,24 @@ pub fn may_access(cur: &Task, target: &Task) -> Result<(), Errno> {
     sched::ptrace_access::may_access(cur, target).map_err(|_| Errno::Eperm)
 }
 
+/// The ATTACH-class form: the credential ladder plus
+/// `security_ptrace_access_check`, which is where
+/// `/proc/sys/kernel/yama/ptrace_scope` is enforced. `PTRACE_ATTACH` and
+/// `PTRACE_SEIZE` are ATTACH-class; nothing else in the request table is.
+/// # C: O(N_relations + depth)
+pub fn may_attach_access(cur: &Task, target: &Task) -> Result<(), Errno> {
+    use sched::ptrace_access::{Access, Mode};
+    sched::ptrace_access::may_access_full(cur, target, Mode::RealCreds, Access::Attach)
+        .map_err(|_| Errno::Eperm)
+}
+
+/// Linux `ptrace_traceme` calls `security_ptrace_traceme(current->parent)`
+/// under the tasklist lock; Yama refuses on its two highest scopes.
+/// # C: O(1)
+pub fn may_traceme(parent: &Task) -> Result<(), Errno> {
+    sched::yama::ptrace_traceme(parent).map_err(|()| Errno::Eperm)
+}
+
 /// Linux `ptrace_attach` gate, in Linux's order. `is_kthread` is the
 /// `PF_KTHREAD` test (a task with no user address space); `already_traced`
 /// is `task->ptrace`; `exiting` is `task->exit_state`. Every failure is
@@ -42,7 +60,7 @@ pub fn may_attach(cur: &Task, target: &Task, is_kthread: bool, exiting: bool)
     if cur.tgid.load(Ordering::Acquire) == target.tgid.load(Ordering::Acquire) {
         return Err(Errno::Eperm);
     }
-    may_access(cur, target)?;
+    may_attach_access(cur, target)?;
     if exiting { return Err(Errno::Eperm); }
     if target.traced_by.load(Ordering::Acquire) != 0 { return Err(Errno::Eperm); }
     Ok(())

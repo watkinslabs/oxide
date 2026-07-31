@@ -10,7 +10,7 @@
 
 use alloc::vec::Vec;
 
-mod format;
+pub(crate) mod format;
 #[cfg(test)] mod tests;
 
 use format::{push, push_dec, push_hex16, push_octal, push_cpumask, push_cpulist};
@@ -77,6 +77,9 @@ pub struct Status<'a> {
     pub nr_nodes: u32,
     pub nvcsw:  u64,
     pub nivcsw: u64,
+    /// The pre-rendered `Vm*`/`Rss*` block (`crate::mem_render`). Empty for a
+    /// task with no address space — Linux emits the whole block or none of it.
+    pub mem_rows: &'a [u8],
 }
 
 /// Render the body in Linux's exact field order. # C: O(ngroups + nr_cpus)
@@ -108,6 +111,14 @@ pub fn render(s: &Status) -> Vec<u8> {
     push(&mut o, b"\nNSsid:\t"); push_dec(&mut o, s.ns_sid);
     push(&mut o, b"\nKthread:\t"); o.push(if s.kthread { b'1' } else { b'0' });
     push(&mut o, b"\nThreads:\t"); push_dec(&mut o, s.threads);
+    // Linux `proc_pid_status` emits `task_mem`'s block here, between the
+    // task-state rows and the signal rows, and only when the task has an mm.
+    // Every row above opens with its own '\n' and leaves none trailing, so the
+    // block's own trailing newline is dropped to keep that invariant.
+    if !s.mem_rows.is_empty() {
+        o.push(b'\n');
+        push(&mut o, s.mem_rows.strip_suffix(b"\n").unwrap_or(s.mem_rows));
+    }
     push(&mut o, b"\nSigQ:\t"); push_dec(&mut o, s.sig_queued);
     o.push(b'/'); push_dec(&mut o, s.sig_limit);
     push(&mut o, b"\nSigPnd:\t"); push_hex16(&mut o, s.sig_pnd);

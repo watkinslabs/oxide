@@ -8,7 +8,7 @@ use super::ns_dir::make_proc_pid_ns_dir;
 use super::pid_attr::make_proc_pid_attr_dir;
 use super::{make_pid_oom_score, make_pid_oom_score_adj};
 use super::pid_files::{
-    make_pid_cmdline, make_pid_comm, make_pid_environ, make_pid_io, make_pid_limits, make_pid_maps,
+    make_pid_auxv, make_pid_cmdline, make_pid_comm, make_pid_environ, make_pid_io, make_pid_limits, make_pid_maps,
     make_pid_personality, make_pid_sched, make_pid_stat, make_pid_statm, make_pid_status,
 };
 use super::pid_ino;
@@ -54,7 +54,7 @@ fn pc_mountinfo(t: u32, is_self: bool) -> InodeRef {
     crate::mounts::make_proc_mountinfo(if is_self { None } else { Some(t) })
 }
 fn pc_cgroup(t: u32, _s: bool) -> InodeRef { crate::make_proc_cgroup(Some(t)) }
-fn pc_auxv(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(&[0u8; 16]) }
+fn pc_auxv(t: u32, _s: bool) -> InodeRef { make_pid_auxv(t) }
 fn pc_timerslack(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"50000\n") }
 fn pc_coredump_filter(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000033\n") }
 fn pc_timens_offsets(t: u32, _s: bool) -> InodeRef { crate::timens_offsets::make(t) }

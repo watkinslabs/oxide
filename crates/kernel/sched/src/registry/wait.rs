@@ -42,14 +42,25 @@ impl WaitChildSnapshot {
     }
 }
 
-/// A task's own resource counters — Linux `RUSAGE_SELF` for a single-threaded
-/// process. # C: O(1)
-pub fn task_rusage_self(t: &Task) -> Rusage {
+/// Peak resident set of `t`'s process, in KiB. Folds the process's latched
+/// peak (surviving execve and thread exit) with the live `mm`'s own peak —
+/// Linux reads `signal_struct::maxrss` then applies `setmax_mm_hiwater_rss`
+/// against the current `mm` for exactly this reason. # C: O(1); # Lk: mm_pin
+fn maxrss_kb(t: &Task) -> u64 {
+    let latched = t.thread_group.group_acct().hiwater_rss_pages();
+    let live = t.clone_mm().map(|mm| mm.accounting_snapshot().hiwater_rss_pages).unwrap_or(0);
+    vmm::RssPages::kib(vmm::rss::hiwater_rss(latched, live))
+}
+
+/// Linux `RUSAGE_THREAD`: the CALLING THREAD's counters alone, with the
+/// process-wide resident-set peak (Linux takes `maxrss` from `signal_struct`
+/// on this path too — RSS is a property of the mm, which threads share).
+/// # C: O(1)
+pub fn task_rusage_thread(t: &Task) -> Rusage {
     Rusage {
         utime_ns:  t.utime_ns.load(Ordering::Acquire),
         stime_ns:  t.stime_ns.load(Ordering::Acquire),
-        // No RSS high-water accounting exists to source `ru_maxrss` from.
-        maxrss_kb: 0,
+        maxrss_kb: maxrss_kb(t),
         minflt:    t.min_flt.load(Ordering::Relaxed),
         majflt:    t.maj_flt.load(Ordering::Relaxed),
         inblock:   bytes_to_blocks(t.io_read_bytes.load(Ordering::Relaxed)),
@@ -59,8 +70,18 @@ pub fn task_rusage_self(t: &Task) -> Rusage {
     }
 }
 
-/// Linux `RUSAGE_BOTH` for `t`: its own counters folded with everything its
-/// process already accumulated from ITS reaped children. This is what a
+/// Linux `RUSAGE_SELF`: the WHOLE THREAD GROUP — every live thread plus the
+/// residue of every thread that already exited. Reporting the calling thread
+/// alone made a threaded process under-report its own cost by however much its
+/// siblings had spent, and made a `time` builtin read zero after the worker
+/// thread that did the work exited. # C: O(1)
+pub fn task_rusage_self(t: &Task) -> Rusage {
+    let (utime_ns, stime_ns) = t.thread_group.cpu_sample();
+    Rusage { utime_ns, stime_ns, maxrss_kb: maxrss_kb(t), ..t.thread_group.group_acct().snapshot() }
+}
+
+/// Linux `RUSAGE_BOTH` for `t`: its process's counters folded with everything
+/// that process already accumulated from ITS reaped children. This is what a
 /// wait-family `rusage` out-param reports, and what a dying task contributes
 /// to its parent — so a whole subtree's cost reaches the ancestor measuring
 /// it, not just the immediate child. # C: O(1)
@@ -68,14 +89,18 @@ pub fn task_rusage_both(t: &Task) -> Rusage {
     Rusage::both(task_rusage_self(t), t.thread_group.child_acct().snapshot())
 }
 
-/// True when this wait reaches `t` through a tracer relationship — the waiter
-/// is `t`'s tracer, or a thread of the tracer's group. A traced tracee's stop
-/// is visible to that waiter regardless of `WUNTRACED`, and reports
-/// `CLD_TRAPPED` rather than `CLD_STOPPED`.
+/// True when this wait reaches `t` through the tracer link rather than the
+/// real-parent one — Linux's `ptrace_do_wait` list. Such a stop is visible to
+/// the waiter regardless of `WUNTRACED` and reports `CLD_TRAPPED` rather than
+/// `CLD_STOPPED`.
+///
+/// The predicate is `wait_select::ptrace_scope_matches`, the same one
+/// `eligible` admitted the candidate with — asking a second, differently
+/// worded question here is how a candidate could be admitted as a tracee and
+/// then reported as a job-control stop.
 /// # C: O(log N_tasks)
-fn is_ptrace_wait(g: &Registry, t: &Task, w: Waiter) -> bool {
-    let tracer = t.traced_by.load(Ordering::Acquire);
-    tracer != 0 && (tracer == w.tid || parent_tgid_locked(g, tracer) == w.tgid)
+fn is_ptrace_wait(g: &Registry, t: &Task, w: Waiter, options: u64) -> bool {
+    wait_select::ptrace_scope_matches(candidate_locked(g, t), w, options)
 }
 
 /// # C: O(log N_tasks)
@@ -90,9 +115,12 @@ fn parent_tgid_locked(g: &Registry, parent_tid: u32) -> u32 {
 /// # C: O(log N_tasks)
 fn candidate_locked(g: &Registry, t: &Task) -> Candidate {
     let parent_tid = t.parent_tid.load(Ordering::Acquire);
+    let tracer_tid = t.traced_by.load(Ordering::Acquire);
     Candidate {
         parent_tid,
         parent_tgid: parent_tgid_locked(g, parent_tid),
+        tracer_tid,
+        tracer_tgid: parent_tgid_locked(g, tracer_tid),
         vpid:        t.vtgid.load(Ordering::Acquire),
         pgid:        t.pgid(),
         exit_signal: t.exit_signal.load(Ordering::Acquire),
@@ -132,11 +160,18 @@ pub fn child_stop_event(
         if !wait_candidate_matches(candidate_locked(&g, &t), waiter, pid, options) {
             continue;
         }
-        let trapped = is_ptrace_wait(&g, &t, waiter);
-        if (want_stop || trapped) && take_flag(&t.stop_pending, consume) {
+        let trapped = is_ptrace_wait(&g, &t, waiter, options);
+        // Linux `wait_task_stopped` reads `*p_code` and bails on zero
+        // (`if (!exit_code) goto unlock_sig;`) BEFORE consuming the event. Zero
+        // is not a stop code: a tracer that resumed its tracee without waiting
+        // wrote its `data` there and the tracee then cleared it, so reporting
+        // it would hand userspace a `WIFSTOPPED` status with signal 0.
+        if (want_stop || trapped) && t.stop_pending.load(Ordering::Acquire) {
             let code = t.stop_code.load(Ordering::Acquire);
-            let kind = if trapped { WaitEventKind::Trapped } else { WaitEventKind::Stopped };
-            return Some((WaitChildSnapshot::from_task(&t), kind, code));
+            if code != 0 && take_flag(&t.stop_pending, consume) {
+                let kind = if trapped { WaitEventKind::Trapped } else { WaitEventKind::Stopped };
+                return Some((WaitChildSnapshot::from_task(&t), kind, code));
+            }
         }
         if want_cont && take_flag(&t.cont_pending, consume) {
             return Some((WaitChildSnapshot::from_task(&t), WaitEventKind::Continued, 0));

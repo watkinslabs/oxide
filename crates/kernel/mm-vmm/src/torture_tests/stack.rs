@@ -1,5 +1,9 @@
 use super::*;
 
+/// `RLIM_INFINITY` translated into the byte caps `try_grow_stack` applies —
+/// the rlimit tests are exercised separately, below.
+const NO_CAP: u64 = u64::MAX;
+
 // ---------------------------------------------------------------
 // F158: stack auto-grow (MAP_GROWSDOWN)
 // ---------------------------------------------------------------
@@ -14,7 +18,7 @@ fn growsdown_extends_within_guard_gap() {
         VmaBacking::Anonymous, true).unwrap();
     // Fault at one page below stack_start — within guard gap.
     let fault_va = uva(0x4000_1000);
-    assert!(a.try_grow_stack(fault_va), "extend within guard");
+    assert!(a.try_grow_stack(fault_va, NO_CAP, NO_CAP), "extend within guard");
     let v = a.find_vma(fault_va).expect("VMA now covers fault");
     assert_eq!(v.start.as_u64(), 0x4000_1000);
     assert_eq!(v.end.as_u64(), stack_top);
@@ -32,8 +36,45 @@ fn growsdown_rejects_beyond_guard_gap() {
     // frame. Pre-D32 cap was 64 KiB — dhcpcd's musl-init wide
     // frame (~140 KiB on first resolver call) tripped it.
     let fault_va = uva(0x3000_0000); // 0x1000_0000 below = 256 MiB
-    assert!(!a.try_grow_stack(fault_va), "beyond cap rejects");
+    assert!(!a.try_grow_stack(fault_va, NO_CAP, NO_CAP), "beyond cap rejects");
     assert!(a.find_vma(fault_va).is_none());
+}
+
+/// Linux `acct_stack_growth`: `if (size > rlimit(RLIMIT_STACK)) return -ENOMEM`,
+/// where `size` is the WHOLE post-growth VMA (`vm_end - address`) — not the
+/// increment. A 4-page stack under a 4-page limit cannot take a fifth page.
+#[test]
+fn growsdown_refuses_past_the_stack_size_cap() {
+    let a = AddressSpace::new(0).unwrap();
+    let stack_start = uva(0x4000_2000);
+    a.mmap(Some(stack_start), 4 * PAGE, r_w(),
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
+        VmaBacking::Anonymous, true).unwrap();
+    let fault_va = uva(0x4000_1000);
+    let four_pages = 4 * PAGE as u64;
+    assert!(!a.try_grow_stack(fault_va, four_pages, NO_CAP),
+        "the whole 5-page VMA is over a 4-page RLIMIT_STACK");
+    assert!(a.find_vma(fault_va).is_none());
+    assert!(a.try_grow_stack(fault_va, 5 * PAGE as u64, NO_CAP),
+        "a limit that admits the whole post-growth VMA grows it");
+    assert_eq!(a.find_vma(fault_va).unwrap().start.as_u64(), 0x4000_1000);
+}
+
+/// Linux `acct_stack_growth`'s first test, `may_expand_vm(mm, …, grow)`: the
+/// INCREMENT is what RLIMIT_AS charges, so a mm with no address-space headroom
+/// left cannot grow its stack even when RLIMIT_STACK is generous.
+#[test]
+fn growsdown_refuses_without_address_space_headroom() {
+    let a = AddressSpace::new(0).unwrap();
+    let stack_start = uva(0x4000_2000);
+    a.mmap(Some(stack_start), 4 * PAGE, r_w(),
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
+        VmaBacking::Anonymous, true).unwrap();
+    let fault_va = uva(0x4000_1000);
+    assert!(!a.try_grow_stack(fault_va, NO_CAP, 0), "no headroom, no growth");
+    assert!(!a.try_grow_stack(fault_va, NO_CAP, PAGE as u64 - 1));
+    assert!(a.try_grow_stack(fault_va, NO_CAP, PAGE as u64),
+        "one page of headroom buys exactly one page of stack");
 }
 
 #[test]
@@ -45,7 +86,7 @@ fn growsdown_skips_non_growsdown_vmas() {
         VmaBacking::Anonymous, true).unwrap();
     // Fault below — must NOT extend.
     let fault_va = uva(0x4000_1000);
-    assert!(!a.try_grow_stack(fault_va));
+    assert!(!a.try_grow_stack(fault_va, NO_CAP, NO_CAP));
 }
 
 #[test]
@@ -62,7 +103,7 @@ fn growsdown_blocked_by_lower_neighbor() {
     // Fault at 0x4000_1000 (in the gap) — stack would need to
     // extend down INTO the lower neighbor. Linux blocks this.
     let fault_va = uva(0x4000_0500);
-    assert!(!a.try_grow_stack(fault_va));
+    assert!(!a.try_grow_stack(fault_va, NO_CAP, NO_CAP));
 }
 
 // ---------------------------------------------------------------
@@ -168,7 +209,7 @@ fn growsdown_within_one_page_of_lower_neighbor() {
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS | VmaFlags::GROWSDOWN,
         VmaBacking::Anonymous, true).unwrap();
     let fault = uva(0x4000_1000);
-    assert!(a.try_grow_stack(fault), "abutting extension allowed");
+    assert!(a.try_grow_stack(fault, NO_CAP, NO_CAP), "abutting extension allowed");
 }
 
 // ---------------------------------------------------------------

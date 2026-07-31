@@ -59,7 +59,7 @@ mod fileattr_common;
 mod write_common;
 #[path = "290_eventfd2.rs"] pub mod s290_eventfd2; #[path = "319_memfd_create.rs"] pub mod s319_memfd_create;
 mod affinity_common; #[path = "203_sched_setaffinity.rs"] pub mod s203_sched_setaffinity; #[path = "204_sched_getaffinity.rs"] pub mod s204_sched_getaffinity;
-mod execve_common; mod exec_transition; #[path = "059_execve/mod.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;
+mod execve_common; mod exec_transition; mod exec_persona; #[path = "059_execve/mod.rs"] pub mod s059_execve; #[path = "322_execveat.rs"] pub mod s322_execveat;
 #[path = "425_io_uring_setup.rs"] pub mod s425_io_uring_setup; #[path = "426_io_uring_enter.rs"] pub mod s426_io_uring_enter; #[path = "427_io_uring_register.rs"] pub mod s427_io_uring_register;
 #[path = "447_memfd_secret.rs"] pub mod s447_memfd_secret;
 #[path = "462_mseal.rs"] pub mod s462_mseal;

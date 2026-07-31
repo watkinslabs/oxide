@@ -101,6 +101,14 @@ pub fn charge_current_tick(from_user: bool) {
         if from_user { t.utime_ns.fetch_add(delta, Ordering::Relaxed); }
         else         { t.stime_ns.fetch_add(delta, Ordering::Relaxed); }
         t.thread_group.charge_cpu(from_user, delta);
+        // Linux `watchdog` (`kernel/sched/rt.c`) bumps `p->rt.timeout` from
+        // `task_tick_rt`, i.e. only while a real-time task is the running one.
+        // Charging the real delta here rather than counting ticks keeps
+        // RLIMIT_RTTIME exact under this kernel's variable tick period. Two
+        // relaxed atomics, no lock — this is hard-IRQ context.
+        if crate::sched_enc::is_rt_class_policy(t.policy.load(Ordering::Relaxed)) {
+            t.rt_timeout_ns.fetch_add(delta, Ordering::Relaxed);
+        }
         crate::cputime_trace::tick(t, from_user, delta);
         crate::timers::account_cpu_tick(t);
     }

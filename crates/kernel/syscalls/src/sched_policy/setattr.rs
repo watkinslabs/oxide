@@ -131,6 +131,13 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     if rt_policy(policy) {
         t.rt_time_slice.store(sched::sched_enc::RR_TIMESLICE_TICKS, Ordering::Release);
     }
+    // `__sched_setscheduler`: `if (rt_prio(oldprio)) p->rt.timeout = 0` — a
+    // task LEAVING the real-time class starts its RLIMIT_RTTIME accounting over,
+    // so a later promotion back to SCHED_FIFO/RR is not killed by run time it
+    // accrued in a previous RT stint.
+    if !sched::sched_enc::is_rt_class_policy(policy) {
+        t.rt_timeout_ns.store(0, Ordering::Release);
+    }
     t.policy.store(policy, Ordering::Release);
     // `__setscheduler_params` (`kernel/sched/syscalls.c:257-262`): an RT or
     // deadline task's timer slack is ZERO for as long as it holds that policy,

@@ -140,19 +140,23 @@ fn a_pending_stop_is_preferred_over_a_pending_continue_on_the_same_child() {
 fn the_wait_rusage_folds_the_childs_own_counters_with_its_accumulated_children() {
     let _g = registry_test_lock();
     let (_p, c) = fixture();
+    // Charge through the SAME entry points the fault / block / switch paths
+    // use, so the test cannot pass against counters production never writes.
     c.utime_ns.store(2_000_000_000, Ordering::Release);
     c.stime_ns.store(1_000_000_000, Ordering::Release);
+    c.thread_group.charge_cpu(true,  2_000_000_000);
+    c.thread_group.charge_cpu(false, 1_000_000_000);
     c.thread_group.child_acct().accrue(Rusage {
         utime_ns: 500_000_000, stime_ns: 250_000_000, minflt: 5, majflt: 1,
         inblock: 2, oublock: 3, nvcsw: 4, nivcsw: 6, maxrss_kb: 0,
     });
-    c.min_flt.store(120, Ordering::Relaxed);
-    c.maj_flt.store(4, Ordering::Relaxed);
-    c.nvcsw.store(31, Ordering::Relaxed);
-    c.nivcsw.store(9, Ordering::Relaxed);
+    for _ in 0..120 { crate::rusage_charge::fault(&c, false); }
+    for _ in 0..4   { crate::rusage_charge::fault(&c, true); }
+    for _ in 0..31  { crate::rusage_charge::ctxsw(&c, true); }
+    for _ in 0..9   { crate::rusage_charge::ctxsw(&c, false); }
     // Block-I/O counters are 512-byte sectors, not byte counts.
-    c.io_read_bytes.store(8192, Ordering::Relaxed);
-    c.io_write_bytes.store(1024, Ordering::Relaxed);
+    crate::rusage_charge::io_read(&c, 8192);
+    crate::rusage_charge::io_write(&c, 1024);
 
     let s = WaitChildSnapshot::from_task(&c);
     assert_eq!(s.rusage.utime_ns, 2_500_000_000, "own + already-reaped grandchildren");
@@ -188,12 +192,14 @@ fn a_dying_childs_whole_subtree_cpu_time_reaches_the_parents_children_counters()
     let (p, c) = fixture();
     c.utime_ns.store(700, Ordering::Release);
     c.stime_ns.store(300, Ordering::Release);
-    c.min_flt.store(9, Ordering::Relaxed);
-    c.maj_flt.store(3, Ordering::Relaxed);
-    c.nvcsw.store(8, Ordering::Relaxed);
-    c.nivcsw.store(2, Ordering::Relaxed);
-    c.io_read_bytes.store(2048, Ordering::Relaxed);
-    c.io_write_bytes.store(512, Ordering::Relaxed);
+    c.thread_group.charge_cpu(true,  700);
+    c.thread_group.charge_cpu(false, 300);
+    for _ in 0..9 { crate::rusage_charge::fault(&c, false); }
+    for _ in 0..3 { crate::rusage_charge::fault(&c, true); }
+    for _ in 0..8 { crate::rusage_charge::ctxsw(&c, true); }
+    for _ in 0..2 { crate::rusage_charge::ctxsw(&c, false); }
+    crate::rusage_charge::io_read(&c, 2048);
+    crate::rusage_charge::io_write(&c, 512);
     // What the child had already accumulated from ITS own exited children.
     c.thread_group.child_acct().accrue(Rusage {
         utime_ns: 70, stime_ns: 30, minflt: 2, majflt: 1, ..Rusage::default()
@@ -227,7 +233,8 @@ fn a_childs_cost_is_visible_to_every_thread_of_the_reaping_process() {
     crate::registry::insert(&sib);
 
     c.utime_ns.store(1_234, Ordering::Release);
-    c.min_flt.store(7, Ordering::Relaxed);
+    c.thread_group.charge_cpu(true, 1_234);
+    for _ in 0..7 { crate::rusage_charge::fault(&c, false); }
     crate::live::enqueue_zombie(Arc::clone(&c));
 
     // getrusage(RUSAGE_CHILDREN) from the sibling must see it: the counters
@@ -257,4 +264,159 @@ fn a_ptrace_event_stop_code_survives_the_registry_and_the_status_encoder() {
     assert_eq!(wstat & 0xff, 0x7f, "WIFSTOPPED");
     assert_eq!((wstat >> 8) & 0xff, syscall::ptrace::SIGTRAP, "WSTOPSIG == SIGTRAP");
     assert_eq!(((wstat >> 16) & 0xff) as u32, syscall::ptrace::EVENT_EXEC);
+}
+
+// ---- getrusage `who` aggregation -------------------------------------------
+// RUSAGE_SELF is the whole thread group; RUSAGE_THREAD is the calling thread
+// alone. Reporting the calling thread for both made a threaded process
+// under-report its own cost by whatever its siblings had spent.
+
+/// A second thread of `leader`'s process (Linux `CLONE_THREAD`).
+fn sibling_thread(leader: &Arc<Task>, tid: u32) -> Arc<Task> {
+    let mut s = Task::new(tid, "t", SchedClass::Normal { weight: 1024 });
+    s.join_thread_group(Arc::clone(&leader.thread_group));
+    s.tgid.store(leader.tid, Ordering::Release);
+    let s = Arc::new(s);
+    crate::registry::insert(&s);
+    s
+}
+
+#[test]
+fn rusage_self_sums_every_thread_while_rusage_thread_reports_only_the_caller() {
+    let _g = registry_test_lock();
+    let (p, _c) = fixture();
+    let sib = sibling_thread(&p, PARENT + 11);
+
+    for _ in 0..5 { crate::rusage_charge::fault(&p, false); }
+    for _ in 0..2 { crate::rusage_charge::fault(&sib, false); }
+    for _ in 0..1 { crate::rusage_charge::fault(&sib, true); }
+    crate::rusage_charge::ctxsw(&p, true);
+    crate::rusage_charge::ctxsw(&sib, false);
+    crate::rusage_charge::io_read(&p, 1024);
+    crate::rusage_charge::io_read(&sib, 1024);
+
+    let both_threads = crate::registry::task_rusage_self(&p);
+    assert_eq!(both_threads.minflt, 7, "SELF covers the sibling's faults too");
+    assert_eq!(both_threads.majflt, 1);
+    assert_eq!(both_threads.nvcsw, 1);
+    assert_eq!(both_threads.nivcsw, 1);
+    assert_eq!(both_threads.inblock, 4, "2048 bytes over both threads, in sectors");
+
+    // Same answer no matter WHICH thread of the process asks.
+    assert_eq!(crate::registry::task_rusage_self(&sib), both_threads);
+
+    let caller_only = crate::registry::task_rusage_thread(&p);
+    assert_eq!(caller_only.minflt, 5);
+    assert_eq!(caller_only.majflt, 0);
+    assert_eq!(caller_only.nvcsw, 1);
+    assert_eq!(caller_only.nivcsw, 0);
+    assert_eq!(caller_only.inblock, 2);
+}
+
+#[test]
+fn an_exited_threads_cost_still_counts_toward_the_processes_rusage_self() {
+    let _g = registry_test_lock();
+    let (p, _c) = fixture();
+    let sib = sibling_thread(&p, PARENT + 12);
+    for _ in 0..9 { crate::rusage_charge::fault(&sib, false); }
+
+    // The thread goes away entirely — the registry holds only a Weak, so
+    // dropping the last Arc destroys its per-task counters. Linux keeps the
+    // residue on signal_struct; so does the group accumulator.
+    drop(sib);
+
+    assert_eq!(crate::registry::task_rusage_self(&p).minflt, 9,
+        "a dead thread's faults must not vanish from the process total");
+    assert_eq!(crate::registry::task_rusage_thread(&p).minflt, 0,
+        "...but they were never the surviving thread's own");
+}
+
+#[test]
+fn rusage_children_stays_separate_from_the_processes_own_counters() {
+    let _g = registry_test_lock();
+    let (p, _c) = fixture();
+    for _ in 0..3 { crate::rusage_charge::fault(&p, false); }
+    p.thread_group.child_acct().accrue(Rusage { minflt: 50, ..Rusage::default() });
+
+    assert_eq!(crate::registry::task_rusage_self(&p).minflt, 3,
+        "SELF must not absorb what reaped children cost");
+    assert_eq!(p.thread_group.child_acct().snapshot().minflt, 50);
+    // RUSAGE_BOTH — what the wait-family out-param reports — is the sum.
+    assert_eq!(crate::registry::task_rusage_both(&p).minflt, 53);
+}
+
+/// A tracer that is NOT the tracee's parent must be able to `wait` for it.
+/// Before the ptrace link joined the candidate matcher, the real-parent filter
+/// rejected the tracee outright, so every stop it reported was invisible to the
+/// only task that could resume it — `strace -p <unrelated pid>` wedged its
+/// target permanently.
+#[test]
+fn a_tracer_outside_the_parent_chain_sees_its_tracees_stop() {
+    let _g = registry_test_lock();
+    let (real_parent, c) = fixture();
+    let tracer = published(PARENT + 700);
+    c.traced_by.store(tracer.tid, Ordering::Release);
+    c.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
+    c.stop_pending.store(true, Ordering::Release);
+
+    // WNOWAIT-style peek so both waiters can be checked against one event.
+    let (_, kind, got) = scan(&tracer, false, false, false)
+        .expect("the tracer reaches its tracee through the ptrace link");
+    assert_eq!(kind, WaitEventKind::Trapped, "a tracer's wait reports CLD_TRAPPED");
+    assert_eq!(got, Signum::Sigstop as u32);
+
+    // The real parent keeps its own view: the two lists are independent, and a
+    // job-control stop still needs WUNTRACED there.
+    assert!(scan(&real_parent, false, false, false).is_none());
+    let (_, kind, _) = scan(&real_parent, true, false, true)
+        .expect("the real parent still sees the stop under WUNTRACED");
+    assert_eq!(kind, WaitEventKind::Stopped);
+}
+
+/// The ptrace list bypasses the clone selector (`eligible_child`'s
+/// `if (ptrace || __WALL) return 1;`), so a tracer's plain `waitpid(-1)` sees a
+/// tracee whose `exit_signal` is not SIGCHLD — every thread it attached to.
+#[test]
+fn a_tracer_sees_a_clone_child_without_wclone() {
+    let _g = registry_test_lock();
+    let (_p, c) = fixture();
+    let tracer = published(PARENT + 710);
+    c.exit_signal.store(0, Ordering::Release);
+    c.traced_by.store(tracer.tid, Ordering::Release);
+    c.stop_code.store(Signum::Sigtrap as u32, Ordering::Release);
+    c.stop_pending.store(true, Ordering::Release);
+    let (_, kind, _) = scan(&tracer, false, false, true)
+        .expect("a ptrace wait is not filtered by __WCLONE");
+    assert_eq!(kind, WaitEventKind::Trapped);
+}
+
+/// A stranger must not reach the tracee through either link.
+#[test]
+fn an_unrelated_task_still_cannot_wait_for_someone_elses_tracee() {
+    let _g = registry_test_lock();
+    let (_p, c) = fixture();
+    let tracer = published(PARENT + 720);
+    let stranger = published(PARENT + 721);
+    c.traced_by.store(tracer.tid, Ordering::Release);
+    c.stop_code.store(Signum::Sigstop as u32, Ordering::Release);
+    c.stop_pending.store(true, Ordering::Release);
+    assert!(scan(&stranger, true, true, true).is_none());
+}
+
+/// Zero is not a stop code. A tracer that resumed its tracee without waiting
+/// wrote its `data` into the same cell and the tracee then cleared it; Linux's
+/// `wait_task_stopped` bails on zero before consuming the event rather than
+/// reporting `WIFSTOPPED` with signal 0.
+#[test]
+fn a_cleared_stop_code_is_not_reported_and_does_not_consume_the_event() {
+    let _g = registry_test_lock();
+    let (p, c) = fixture();
+    c.stop_code.store(0, Ordering::Release);
+    c.stop_pending.store(true, Ordering::Release);
+    assert!(scan(&p, true, false, true).is_none());
+    // The flag survives, so the real stop that follows is still reportable.
+    assert!(c.stop_pending.load(Ordering::Acquire));
+    c.stop_code.store(Signum::Sigtstp as u32, Ordering::Release);
+    let (_, _, got) = scan(&p, true, false, true).expect("the next real stop reports");
+    assert_eq!(got, Signum::Sigtstp as u32);
 }

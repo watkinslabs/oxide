@@ -45,6 +45,8 @@ pub use address_space::{
     PR_SET_MM_START_CODE, PR_SET_MM_START_DATA, PR_SET_MM_START_STACK,
 };
 pub use address_space::pkeys;
+pub use address_space::{saved_auxv_blob, SAVED_AUXV_BYTES};
+pub use address_space::rss::{self, RssPages};
 pub use anon_vma::{AnonVma, RmapTarget};
 pub use file_rmap::{FileRmap, WritableMapReservation, WriteSealError};
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};

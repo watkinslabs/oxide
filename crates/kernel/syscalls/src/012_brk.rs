@@ -37,6 +37,11 @@ pub fn sys_brk(args: &SyscallArgs) -> i64 {
     let old_page = match page_align(cur_brk) { Some(v) => v, None => return cur_brk as i64 };
     let new_page = match page_align(req)     { Some(v) => v, None => return cur_brk as i64 };
     if new_page > old_page {
+        // Linux `do_brk_flags` -> `may_expand_vm`: RLIMIT_AS bounds the heap
+        // growth too, and a refusal is `brk`'s "return the old break".
+        if pmm::user_as::admit_as_growth(&mm, new_page - old_page).is_err() {
+            return cur_brk as i64;
+        }
         mm.try_set_brk(req) as i64
     } else if new_page < old_page {
         let out = mm.try_set_brk(req);

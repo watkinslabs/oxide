@@ -1,0 +1,59 @@
+// The persona half of `execve`: Linux's `SET_PERSONALITY2` /
+// `elf_read_implies_exec` (`fs/binfmt_elf.c:1016-1018`) and the
+// `MMAP_PAGE_ZERO` emulation at the tail of `load_elf_binary` (`:1349-1361`).
+//
+// Both arches this kernel targets are 64-bit-only, which fixes both halves of
+// the READ_IMPLIES_EXEC decision:
+//   * `SET_PERSONALITY` CLEARS `READ_IMPLIES_EXEC` on x86_64
+//     (`set_personality_64bit`) and on arm64 alike, so a caller cannot arm it
+//     and have the next image inherit it;
+//   * `elf_read_implies_exec` never SETS it — x86 gates on `mmap_is_ia32()`,
+//     and arm64 defines only the `compat_` form, leaving the generic
+//     `#define elf_read_implies_exec(ex, stk) 0`. The `PT_GNU_STACK`-absent
+//     "exec-all" row of the arch tables belongs to the 32-bit columns only.
+// Neither arch resets the execution-domain byte at exec: both override the
+// generic `SET_PERSONALITY` macro that would have folded it back to PER_LINUX.
+
+#![cfg(target_os = "oxide-kernel")]
+
+use hal::UserVirtAddr;
+use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+
+/// Linux `SET_PERSONALITY(ex)` for a 64-bit native image. Runs at the same
+/// point the credential transition commits, so a failed `execve` leaves the
+/// caller's persona untouched.
+/// # C: O(1)
+pub(crate) fn set_personality(cur: &sched::Task) {
+    sched::personality::clear(cur, sched::personality::PER_CLEAR_ON_EXEC);
+}
+
+/// Linux `load_elf_binary`'s SVR4 emulation:
+///
+/// ```text
+/// if (current->personality & MMAP_PAGE_ZERO)
+///         error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,
+///                         MAP_FIXED | MAP_PRIVATE, 0);
+/// ```
+///
+/// `per_clear` is the exec's `bprm->per_clear`, which carries `MMAP_PAGE_ZERO`
+/// for a privileged image — a caller must not be able to pre-arm a readable
+/// page 0 under a setuid binary. Linux applies it in `begin_new_exec`, before
+/// this test; this kernel commits credentials later, so it is folded in here
+/// exactly as `exec_transition::exec_rnd` folds it into the ASLR decision.
+///
+/// The result is deliberately unchecked, as Linux leaves it: a system that
+/// refuses low mappings simply gets no page 0, and the exec proceeds.
+/// # C: O(log N_vmas)
+pub(crate) fn map_page_zero(cur: &sched::Task, new_as: &AddressSpace, per_clear: u32) {
+    let persona = sched::personality::get(cur) & !per_clear;
+    if persona & sched::personality::MMAP_PAGE_ZERO == 0 { return; }
+    let Some(zero) = UserVirtAddr::new(0) else { return };
+    let _ = new_as.mmap(
+        Some(zero),
+        hal::PAGE_SIZE_BYTES as usize,
+        VmaProt::READ | VmaProt::EXEC,
+        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
+        VmaBacking::Anonymous,
+        true,
+    );
+}

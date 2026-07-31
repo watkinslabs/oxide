@@ -421,6 +421,12 @@ impl Task {
         let _pin = self.mm_pin_lock.lock();
         // SAFETY: see fn-level contract; single-mutator on this CPU.
         let old = unsafe { core::mem::replace(&mut *self.mm.get(), new) };
+        // Linux latches `signal_struct::maxrss` from the departing mm, so an
+        // `execve(2)` does not reset the process's `ru_maxrss` to the new
+        // image's residency.
+        if let Some(m) = old.as_ref() {
+            crate::rusage_charge::latch_hiwater_rss(self, m.accounting_snapshot().hiwater_rss_pages);
+        }
         #[cfg(target_os = "oxide-kernel")]
         if let Some(m) = old {
             m.debug_lifetime_event(b"task-replace-mm-old");

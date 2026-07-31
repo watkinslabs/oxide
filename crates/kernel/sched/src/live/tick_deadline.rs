@@ -58,6 +58,11 @@ pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> u64 {
     let s = t.stime_ns.load(Ordering::Acquire);
     due |= fire_cpu_itimer(&t.itimer_virtual_ns, &t.itimer_virtual_interval_ns, u, Signum::Sigvtalrm);
     due |= fire_cpu_itimer(&t.itimer_prof_ns, &t.itimer_prof_interval_ns, u.saturating_add(s), Signum::Sigprof);
+    // Linux checks `RLIMIT_CPU` and `RLIMIT_RTTIME` from the same periodic
+    // sweep as the CPU-time itimers (`check_process_timers` /
+    // `check_thread_timers`), and posts their SIGXCPU/SIGKILL through the same
+    // process-directed enqueue the caller runs below.
+    due |= super::cpu_rlimit::check_cpu_rlimits(t);
     due
 }
 

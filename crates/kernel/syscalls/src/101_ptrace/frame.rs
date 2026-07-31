@@ -109,6 +109,77 @@ pub fn set_user_regs(t: &Task, u: &[u64; REGS_N]) -> Result<(), Errno> {
     match write(t, &f) { Some(()) => Ok(()), None => Err(Errno::Esrch) }
 }
 
+/// The syscall-stop register view `PTRACE_GET_SYSCALL_INFO` reports:
+/// `syscall_get_nr`, `syscall_get_arguments`, `instruction_pointer`,
+/// `user_stack_pointer` and the ABI return register.
+/// # C: O(1)
+pub fn syscall_regs(t: &Task) -> Option<crate::s101_ptrace_sysinfo::Regs> {
+    use crate::s101_ptrace_sysinfo::Regs;
+    let f = read(t)?;
+    let rval = t.ptrace_stop_rax.load(Ordering::Acquire) as i64;
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::s101_ptrace_regs::x86::*;
+        Some(Regs {
+            nr: f[F_ORIG_RAX],
+            args: [f[F_RDI], f[F_RSI], f[F_RDX], f[F_R10], f[F_R8], f[F_R9]],
+            ip: f[F_RIP], sp: f[F_RSP], rval,
+        })
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::s101_ptrace_regs::arm64::*;
+        Some(Regs {
+            // The generic arm64 ABI passes the syscall number in x8 and the
+            // six arguments in x0..x5.
+            nr: f[F_X0 + 8],
+            args: [f[F_X0], f[F_X0 + 1], f[F_X0 + 2], f[F_X0 + 3], f[F_X0 + 4], f[F_X0 + 5]],
+            ip: f[F_ELR], sp: f[F_SP_EL0], rval,
+        })
+    }
+}
+
+/// `syscall_set_nr` + `syscall_set_arguments`. `set_args` is false when the
+/// tracer cancelled the call with `nr == -1`, where writing the argument
+/// registers would clobber the return register on an ABI that shares them.
+/// # C: O(1)
+pub fn set_syscall_entry(t: &Task, nr: i64, args: &[u64; 6], set_args: bool)
+    -> Result<(), Errno>
+{
+    let mut f = read(t).ok_or(Errno::Esrch)?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::s101_ptrace_regs::x86::*;
+        f[F_ORIG_RAX] = nr as u64;
+        if set_args {
+            f[F_RDI] = args[0]; f[F_RSI] = args[1]; f[F_RDX] = args[2];
+            f[F_R10] = args[3]; f[F_R8]  = args[4]; f[F_R9]  = args[5];
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::s101_ptrace_regs::arm64::*;
+        f[F_X0 + 8] = nr as u64;
+        if set_args { for i in 0..6 { f[F_X0 + i] = args[i]; } }
+    }
+    write(t, &f).ok_or(Errno::Esrch)
+}
+
+/// `syscall_set_return_value`. The value lands in the same slot
+/// `PTRACE_GETREGS` reports, which is the task-side `ptrace_stop_rax` cell
+/// rather than the frame word holding the syscall number.
+/// # C: O(1)
+pub fn set_syscall_return(t: &Task, rval: i64) -> Result<(), Errno> {
+    t.ptrace_stop_rax.store(rval as u64, Ordering::Release);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut f = read(t).ok_or(Errno::Esrch)?;
+        f[crate::s101_ptrace_regs::arm64::F_RETVAL] = rval as u64;
+        write(t, &f).ok_or(Errno::Esrch)?;
+    }
+    Ok(())
+}
+
 /// Segment state the entry frame does not carry. `cs`/`ss` are this port's
 /// fixed user selectors; `fs_base` comes from the tracee's saved `ArchCtx`;
 /// `gs_base` is always 0 (no ARCH_SET_GS on this port).

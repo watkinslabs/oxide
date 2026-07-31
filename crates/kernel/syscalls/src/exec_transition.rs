@@ -160,6 +160,9 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // ADDR_NO_RANDOMIZE / READ_IMPLIES_EXEC / MMAP_PAGE_ZERO / ADDR_COMPAT_LAYOUT
     // that the caller pre-armed.
     sched::personality::clear(cur, t.per_clear);
+    // `SET_PERSONALITY2(*elf_ex, &arch_state)` — the arch half, which on both
+    // 64-bit targets clears READ_IMPLIES_EXEC unconditionally.
+    crate::exec_persona::set_personality(cur);
     cur.dumpable.store(t.dumpable, Ordering::Release);
 }
 

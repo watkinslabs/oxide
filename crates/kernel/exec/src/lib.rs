@@ -295,4 +295,5 @@ pub fn commit_mm_layout(as_: &AddressSpace, img: &LoadedImage, layout: &stack::S
     as_.set_arg_env_stack(
         layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, layout.sp,
     );
+    as_.save_exec_auxv(&layout.auxv[..layout.auxv_len]);
 }

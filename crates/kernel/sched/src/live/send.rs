@@ -57,7 +57,7 @@ pub fn send_signal(t: &Arc<Task>, sig: u32, src: SigSource, target: SigTarget)
         // record. Nothing else to do — the bit is already set.
         return Ok(());
     } else {
-        push_record(t, info, target)
+        push_record(t, info, target, &src)
     };
     if !queued && sigsend::overflow_is_eagain(sig, &src) { return Err(SendErr::Again); }
     publish(t, sig, bit, target);
@@ -97,7 +97,11 @@ pub fn send_signal_irq(t: &Task, info: SigInfo, target: SigTarget) -> bool {
     // still published, so the signal is delivered without its `siginfo_t`.
     let _queued = match target {
         SigTarget::Process => t.thread_group.push_shared_prealloc(info),
-        SigTarget::Thread  => t.sigq_push(info),
+        // `Charge::Prealloc`: a hard IRQ must not touch the per-user account
+        // table, which process context holds with IRQs enabled (`06§3.1`).
+        // Linux's expiry path is allocation- and charge-free for the same
+        // reason — its record was accounted at `timer_create`.
+        SigTarget::Thread  => t.sigq_push(info, crate::sigqueue::Charge::Prealloc),
     };
     match target {
         // `SignalPending::fetch_or` raises the signalfd `POLLIN` edge itself.
@@ -179,6 +183,22 @@ pub fn send_sig_priv_self(sig: Signum) {
     super::sigpend::signal_wake_up(&cur);
 }
 
+/// Linux `send_signal_locked(sig, info, current, PIDTYPE_PID)` — re-post a
+/// signal to the RUNNING task by number, carrying a caller-supplied record.
+///
+/// `send_sig_priv_self` cannot serve: it takes the typed `Signum` (so it
+/// cannot carry a real-time signal a tracer named) and always synthesises an
+/// `SI_KERNEL` record, which would erase the `siginfo_t` a re-posted signal
+/// must keep. `ptrace_signal`'s requeue arm is the caller — a signal the
+/// tracer allowed through but which is blocked now goes back on the queue with
+/// its own record intact rather than being lost or re-attributed.
+/// # C: O(1)
+pub fn send_sig_self_info(sig: u32, src: SigSource) {
+    let Some(cur) = current_arc() else { return };
+    let _ = send_signal(&cur, sig, src, SigTarget::Thread);
+    super::sigpend::signal_wake_up(&cur);
+}
+
 /// Linux `group_send_sig_info(sig, SEND_SIG_PRIV, p, PIDTYPE_TGID)` — a
 /// kernel-generated PROCESS-directed signal (tty job control, the OOM killer,
 /// cgroup kill, orphaned-pgrp SIGHUP/SIGCONT).
@@ -215,13 +235,20 @@ fn legacy_collapse(t: &Task, sig: u32, target: SigTarget) -> bool {
     sigsend::legacy_queue(sig, pending)
 }
 
-/// Queue the record on the selected set. `false` = the bounded queue was full,
-/// which is Linux's `sigqueue_alloc` returning NULL.
-/// # C: O(1)
-fn push_record(t: &Task, info: SigInfo, target: SigTarget) -> bool {
+/// Queue the record on the selected set. `false` = the record was refused,
+/// which is Linux's `sigqueue_alloc` returning NULL — either `legacy_queue`'s
+/// single-record rule or `RLIMIT_SIGPENDING`.
+///
+/// The charge is taken against the TARGET task's account and tested against the
+/// TARGET's limit (Linux `sig_get_ucounts(t, ...)` / `task_rlimit(t, ...)`),
+/// never the sender's, so a privileged sender cannot spend a victim's budget
+/// under its own limit. `override_rlimit` is `sigsend::override_rlimit`.
+/// # C: O(chain * log N)
+fn push_record(t: &Task, info: SigInfo, target: SigTarget, src: &SigSource) -> bool {
+    let charge = t.sigq_charge(sigsend::override_rlimit(info.signo, src));
     match target {
-        SigTarget::Process => t.thread_group.post_shared_record(info),
-        SigTarget::Thread => { t.sigq_reserve(info.signo); t.sigq_push(info) }
+        SigTarget::Process => t.thread_group.post_shared_record(info, charge),
+        SigTarget::Thread => { t.sigq_reserve(info.signo); t.sigq_push(info, charge) }
     }
 }
 

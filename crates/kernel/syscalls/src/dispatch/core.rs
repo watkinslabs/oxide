@@ -425,8 +425,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // compiled for arm64 miss every `nr` comparison and fall through to its
     // default action — SCMP_ACT_KILL or a blanket errno — which kills or
     // corrupts any confined process on aarch64 while behaving on x86_64.
+    // Syscall user dispatch runs FIRST — before ptrace and before seccomp.
+    // A dispatched call's ABI is whatever foreign personality the userspace
+    // handler emulates, so neither a tracer nor a cBPF filter compiled for
+    // THIS ABI may be shown its arguments.
+    if let Some(rv) = super::user_dispatch::user_dispatch_gate(orig_nr) { return rv; }
     if let Some(rv) = super::seccomp::seccomp_gate(orig_nr, &[a0, a1, a2, a3, a4, a5]) { return rv; }
-    ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP);
+    ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP, true);
     #[cfg(feature = "debug-syscost")]
     let __syscost = crate::syscost::start();
     #[cfg(feature = "debug-startlat")]
@@ -497,7 +502,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_RSEQ);
     }
-    ptrace_syscall_stop_if_armed(rv as u64);
+    // A syscall rolled back by user dispatch never reached the kernel's ABI,
+    // so its exit-side tracer work is skipped for the same reason the entry
+    // side was.
+    if !super::user_dispatch::rolled_back_this_syscall() {
+        ptrace_syscall_stop_if_armed(rv as u64, false);
+    }
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_PTRACE);

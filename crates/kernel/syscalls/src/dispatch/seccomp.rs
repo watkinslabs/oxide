@@ -99,7 +99,7 @@ fn queue_sigsys(s: &Sigsys) {
         pid:   0,
         uid:   0,
         value: 0,
-        sys:   Some(*s), fault: None, poll: None
+        sys:   Some(*s), fault: None
     };
     sched::live::force_sig_info_to_task(&cur, info, sched::sigsend::ForceMode::Current);
 }
@@ -113,21 +113,13 @@ fn queue_sigsys(s: &Sigsys) {
 /// tracer DENIES a `SECCOMP_RET_TRACE` call.
 fn trace_stop(nr: u64, data: u16) -> Option<u64> {
     let cur = sched::live::current()?;
-    cur.ptrace_eventmsg.store(data as u64, Ordering::Release);
-    let stop_code = Signum::Sigtrap as i32
-        | ((ptrace_uapi::EVENT_SECCOMP as i32) << 8);
-    *cur.ptrace_siginfo.lock() = Some(sched::SigInfo {
-        signo: Signum::Sigtrap as u32,
-        code:  stop_code,
-        pid:   cur.traced_by.load(Ordering::Acquire),
-        uid:   0, value: 0, sys: None, fault: None, poll: None
-    });
-    crate::ptrace_fpu::snapshot_current();
-    sched::live::send_signal_self(Signum::Sigtrap);
-    // Parks THIS task until the tracer resumes it, exactly as
-    // `ptrace_syscall_stop_if_armed` does from the same dispatch head.
-    sched::live::stop::stop_until_cont_sig(stop_code as u8);
-    crate::ptrace_fpu::restore_if_dirty();
+    // One producer for every PTRACE_EVENT_* stop (`101_ptrace/stop.rs`): it
+    // records the message, publishes `last_siginfo` and parks. Open-coding it
+    // here truncated the stop code to a byte — `SIGTRAP | (EVENT_SECCOMP << 8)`
+    // is 0x705, so the event byte was lost and the tracer's wait status read as
+    // a bare SIGTRAP — and queued a real SIGTRAP that outlived the resume.
+    crate::ptrace::stop::notify(ptrace_uapi::event_stop_code(ptrace_uapi::EVENT_SECCOMP),
+                                data as u64);
     // "The delivery of a fatal signal during event notification may silently
     // skip tracer notification ... we just force the syscall to be skipped."
     if cur.sigpending.load(Ordering::Acquire) & Signum::Sigkill.bit() != 0 {
