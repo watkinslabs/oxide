@@ -53,6 +53,18 @@ fn new_file(target: Arc<sched::pid::PidIdentity>, options: OpenOptions) -> Arc<F
     File::new(inode, dentry, flags)
 }
 
+/// Build a process descriptor for `pid` as seen from `viewer`'s pid namespace,
+/// WITHOUT installing it anywhere. The caller places it in whichever descriptor
+/// table it owns — the coredump helper needs one in a table that is not its
+/// own, which the installing entry points cannot express.
+/// # C: O(N_tasks)
+pub fn file_for_pid(viewer: &sched::Task, pid: u32) -> Option<Arc<File>> {
+    let namespace = viewer.namespace_owner(namespace_identity::NamespaceKind::Pid)?;
+    let target = sched::registry::acquire_pidfd_in_namespace(
+        &namespace, pid, PidfdKind::Process).ok()?;
+    Some(new_file(target, OpenOptions::default()))
+}
+
 /// Reserve a pidfd slot for an already-created but unpublished identity.
 /// Dropping the result rolls the reservation back. # C: O(N_fds)
 pub fn prepare(

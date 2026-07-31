@@ -8,7 +8,7 @@ use vmm::AddressSpace;
 /// the switch path is the bit the sender targets. Host builds are UP -> 0.
 /// # C: O(1)
 #[inline]
-pub(super) fn sched_current_cpu() -> usize {
+pub(crate) fn sched_current_cpu() -> usize {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]

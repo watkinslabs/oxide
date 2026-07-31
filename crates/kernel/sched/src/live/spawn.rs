@@ -79,6 +79,17 @@ pub fn next_tid() -> u32 {
     }
 }
 
+/// Namespace-visible pid source. 1 belongs to the initial task, so allocation
+/// starts at 2. Every new PROCESS draws from here — a fork, and equally a
+/// helper process the kernel starts itself — so there is one pid space, not a
+/// per-creator one.
+static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
+
+/// Draw the next namespace-visible pid. # C: O(1)
+pub fn alloc_vpid() -> u32 {
+    NEXT_VPID.fetch_add(1, core::sync::atomic::Ordering::AcqRel)
+}
+
 /// Errors `spawn_kernel_thread` can return.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SpawnError {
@@ -255,6 +266,69 @@ pub unsafe fn spawn_user_thread_with_vpid(
     // Per `13§9` wake→resched: same rule for user-thread spawn.
     crate::preempt::set_need_resched();
     Ok(arc)
+}
+
+/// Build a user task that is NOT yet visible: no registry entry, no runqueue
+/// entry, and no entry point armed. The caller finishes construction — the
+/// descriptor table, the credential set, the fs context, the program image —
+/// then calls [`arm_user_entry`], [`publish_new_task`] and [`wake_new_task`] in
+/// that order.
+///
+/// The kernel -> userspace helper path needs this shape: it runs on a worker
+/// thread with interrupts enabled, so a task made runnable before its
+/// descriptor table exists could reach user mode and fail its first write. The
+/// boot spawn avoids that window by keeping interrupts masked, which a worker
+/// cannot do across an address-space load.
+///
+/// # SAFETY: kernel context with the allocator and per-arch HAL up. The caller
+/// owns the returned task until it publishes it, and must not let any other
+/// CPU observe it before then.
+/// # C: O(stack_size) zero-fill
+/// # Ctx: process
+pub unsafe fn new_user_task_unpublished(
+    tid: u32,
+    vpid_tgid: u32,
+    vpid_tid: u32,
+    name: &'static str,
+    mm: Arc<AddressSpace>,
+) -> Result<Arc<Task>, SpawnError> {
+    if super::runqueue::global().is_none() { return Err(SpawnError::NoRunqueue); }
+    let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
+    let mut task = Task::new_user(tid, name, class, mm);
+    if vpid_tgid != 0 {
+        task.vtgid.store(vpid_tgid, Ordering::Release);
+        task.set_pgid(vpid_tgid);
+        task.set_sid(vpid_tgid);
+    }
+    if vpid_tid != 0 { task.vtid.store(vpid_tid, Ordering::Release); }
+    // SAFETY: `task` is local; no concurrent reader of kernel_stack exists yet.
+    if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
+    if !task.try_charge_kernel_stack(cgroup::kernel_context_memcg()) {
+        return Err(SpawnError::NoMem);
+    }
+    let start_boottime_ns = monotonic_ns();
+    task.start_boottime_ns = start_boottime_ns;
+    let arc = Arc::new(task);
+    arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
+    Ok(arc)
+}
+
+/// Arm an unpublished user task's entry point and stack pointer, writing the
+/// synthetic frame the scheduler's return epilogue drops into user mode
+/// through. Separate from construction so the image can be loaded — and the
+/// entry point therefore known — after the task exists.
+///
+/// # SAFETY: `task` must be unpublished (no registry entry, no runqueue entry,
+/// never scheduled), so this is the sole writer of its arch context;
+/// `entry_va` and `user_sp` must lie in that task's own address space.
+/// # C: O(1)
+pub unsafe fn arm_user_entry(task: &Task, entry_va: u64, user_sp: u64) {
+    let stack_top = task.kernel_stack.load(Ordering::Acquire);
+    // SAFETY: stack_top is the task's installed top-of-stack; the task is unpublished so nothing can be mid-switch on it; the synthetic frame uses USER selectors / EL0 SPSR so the shared epilogue lands at CPL=3 / EL0.
+    unsafe {
+        let p = task.arch_ctx_ptr::<ArchCtx>();
+        core::ptr::write(p, build_user_arch_ctx(stack_top, entry_va, user_sp));
+    }
 }
 
 /// Fork-specific user-task spawn (P5-10): identical to

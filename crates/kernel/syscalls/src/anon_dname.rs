@@ -9,8 +9,6 @@ use alloc::format;
 use alloc::string::String;
 use vfs::dentry::{Dentry, DentryOps};
 
-/// Linux pipefs `pipefs_dname`: render `pipe:[<ino>]`. # C: O(1)
-fn pipe_dname(d: &Dentry) -> String { let ino = d.inode().map(|i| i.ino()).unwrap_or(0); format!("pipe:[{ino}]") }
 /// Linux sockfs `sockfs_dname`: render `socket:[<ino>]`. # C: O(1)
 fn socket_dname(d: &Dentry) -> String { let ino = d.inode().map(|i| i.ino()).unwrap_or(0); format!("socket:[{ino}]") }
 /// Linux shmem memfd: an unlinked tmpfs dentry renders `/<name> (deleted)`
@@ -21,12 +19,9 @@ fn memfd_dname(d: &Dentry) -> String { format!("/{} (deleted)", d.name()) }
 /// the VFS: `d_alloc_pseudo` recognises it by pointer identity to set
 /// `S_ANON_INODE`, which a per-crate copy would defeat.
 pub use vfs::dcache::ANON_INODE_OPS;
-/// `d_op` for pipefs anonymous pipe ends: `pipe:[ino]`.
-pub static PIPE_OPS: DentryOps = DentryOps {
-    d_dname: Some(pipe_dname),
-    d_hash: None, d_compare: None, d_revalidate: None, d_weak_revalidate: None,
-    d_delete: None, d_release: None, d_iput: None, d_init: None, d_prune: None,
-};
+/// `d_op` for anonymous pipe ends, owned by the pipe itself, so every creator
+/// of a pipe end renders the same name.
+pub use ::fs::anon_dname::PIPE_OPS;
 /// `d_op` for sockfs socket fds: `socket:[ino]`.
 pub static SOCKET_OPS: DentryOps = DentryOps {
     d_dname: Some(socket_dname),

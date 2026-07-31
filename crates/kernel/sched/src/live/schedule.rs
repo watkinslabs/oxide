@@ -18,6 +18,7 @@ mod ownership;
 mod switch;
 
 pub use active_mm::park_active_mm;
+pub(crate) use active_mm::sched_current_cpu;
 pub use hooks::{install_sched_switch_hook, RunStats, SchedSwitchFn};
 pub use lifecycle::{
     current, current_chroot_root, current_mount_ns, install_default_runqueue,

@@ -24,6 +24,9 @@ use core::sync::atomic::Ordering;
 
 use sync::{KthreadPark as ParkGateClass, Spinlock};
 
+mod use_mm;
+pub use use_mm::{kthread_unuse_mm, kthread_use_mm};
+
 use crate::Task;
 use super::WaitList;
 

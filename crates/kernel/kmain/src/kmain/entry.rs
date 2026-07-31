@@ -25,6 +25,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kerror!("fatal: kworker spawn failed");
         sched::halt_forever();
     }
+    // The kernel -> userspace helper runs its exec on a worker thread, so its
+    // backend is installed once the workers exist. The gate stays CLOSED here:
+    // no helper may run until userspace is up, which is what `enable` below
+    // marks. `docs/53`.
+    if umh::spawn::init().is_err() {
+        klog::kerror!("fatal: khelper spawn failed");
+        sched::halt_forever();
+    }
     if pmm::spawn_kswapd().is_err() {
         klog::kerror!("fatal: kswapd spawn failed");
         sched::halt_forever();

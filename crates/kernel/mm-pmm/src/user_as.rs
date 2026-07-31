@@ -7,7 +7,7 @@
 // `fault` owns arch fault dispatch and demand-page resolution.
 // `mmap` owns mmap syscall glue.
 // `unmap` owns madvise/munmap page eviction glue.
-// `diag` owns stack prefault and file-page diagnostic helpers.
+// `diag` owns file-page diagnostics; `prefault` owns eager range population.
 // `signal` owns SIGSEGV delivery.
 // `swap_in` owns the one authoritative swap-PTE-to-RAM restoration path.
 // `swapoff` owns live-area drain orchestration across all address spaces.
@@ -34,6 +34,7 @@ mod fault;
 mod mmap;
 mod unmap;
 mod diag;
+mod prefault;
 
 pub use accounting::{oom_memory, range_memory_stats, RangeMemoryStats};
 #[cfg(target_arch = "x86_64")]
@@ -70,4 +71,5 @@ pub use pageout::{flush_reclaim_mapping, pageout_anon_range};
 pub use crate::munmap_range::validate_munmap_range;
 pub use unmap::{evict_pages_in_range, glue_munmap};
 #[cfg(target_arch = "x86_64")]
-pub use diag::{diag_verify_file_pages, prefault_stack};
+pub use diag::diag_verify_file_pages;
+pub use prefault::prefault_stack;
