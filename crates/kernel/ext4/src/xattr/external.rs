@@ -66,7 +66,7 @@ pub fn encode_block(entries: &[(String, Vec<u8>)], bs: usize) -> Result<Vec<u8>,
         }
     }
     if sorted.is_empty() { return Err(()); }
-    sorted.sort_by(|a, b| a.0.cmp(&b.0)
+    sorted.sort_unstable_by(|a, b| a.0.cmp(&b.0)
         .then(a.1.len().cmp(&b.1.len()))
         .then(a.1.cmp(&b.1)));
 

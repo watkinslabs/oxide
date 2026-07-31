@@ -212,7 +212,7 @@ impl<'m> ExtentLogReader<'m> {
                 ext.push((e.block, e.start_lba(), e.len as u32));
             }
         }
-        ext.sort_by_key(|&(lb, _, _)| lb);
+        ext.sort_unstable_by_key(|&(lb, _, _)| lb);
         Ok(Self { mount, extents: ext })
     }
 

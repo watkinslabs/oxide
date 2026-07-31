@@ -69,6 +69,9 @@ impl Raw4Reassembly {
         if !more { flow.total = Some(end); }
         let payload_len = flow.total?;
         let header = flow.first_header.as_ref()?;
+        // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): a peer may send two
+        // fragments at the same offset; which one the reassembled datagram
+        // keeps is decided by arrival order, so that order must survive.
         flow.fragments.sort_by_key(|fragment| fragment.offset);
         let mut covered = 0usize;
         for fragment in &flow.fragments {

@@ -147,7 +147,7 @@ fn encode_shm_info(segs: &[alloc::sync::Arc<ShmSegment>], ns: namespace_identity
 
 fn ns_segments(ns: namespace_identity::NamespaceId) -> Vec<alloc::sync::Arc<ShmSegment>> {
     let mut v: Vec<_> = REG.segs.lock().iter().filter(|s| s.ns == ns).cloned().collect();
-    v.sort_by_key(|s| s.id);
+    v.sort_unstable_by_key(|s| s.id);
     v
 }
 

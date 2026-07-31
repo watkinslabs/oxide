@@ -26,7 +26,7 @@ impl Mount {
                 }
             }
         }
-        out.sort_by_key(|r| r.0);
+        out.sort_unstable_by_key(|r| r.0);
         Ok(out)
     }
 
@@ -83,7 +83,7 @@ impl Mount {
                 }
             }
         }
-        out.sort_by_key(|r| r.logical);
+        out.sort_unstable_by_key(|r| r.logical);
         Ok(out)
     }
 
