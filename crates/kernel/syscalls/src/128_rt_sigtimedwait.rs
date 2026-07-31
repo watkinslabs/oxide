@@ -141,9 +141,10 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
 /// pending, or when a concurrent consumer won the claim (caller re-loops).
 /// # C: O(1)
 fn dequeue_wanted(cur: &sched::Task, wanted: u64) -> Option<(u32, Option<sched::SigInfo>)> {
-    let arrived = sched::live::sigpend::all_pending(cur) & wanted;
-    if arrived == 0 { return None; }
-    let sig = arrived.trailing_zeros() + 1;
+    let pending = sched::live::sigpend::all_pending(cur);
+    // Same selection rule signalfd uses (`next_signal`): lowest-numbered,
+    // except a pending synchronous fault signal is taken first.
+    let sig = sched::signum::next_signal(pending, wanted)?;
     sched::live::sigpend::dequeue_signal(cur, sig).map(|rec| (sig, rec))
 }
 
