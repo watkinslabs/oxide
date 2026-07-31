@@ -26,11 +26,10 @@ impl WaitList {
     }
 }
 
-mod ids {
-    use vfs::Ino;
-    pub(super) const INO_BASE: Ino = 0x7300_0000;
-    pub(super) const INO_MASK: Ino = 0x00FF_FFFF;
-}
+/// timerfd's reserved inode-number range. bpf minted from this same base until
+/// it was moved off; the range now says who owns it and the build fails if a
+/// second owner claims it.
+use vfs::pseudo_ino::TIMERFD as INO_REGION;
 
 pub(super) const CLOCK_REALTIME:       u64 = 0;
 pub(super) const CLOCK_MONOTONIC:      u64 = 1;
@@ -127,7 +126,7 @@ pub(super) fn make_timerfd_inode(clockid: u64) -> InodeRef {
         watchers.retain(|watcher| watcher.strong_count() != 0);
         watchers.push(Arc::downgrade(&data));
     }
-    InodeBuilder::new(ids::INO_BASE | (id as Ino & ids::INO_MASK),
+    InodeBuilder::new(INO_REGION.at(id as Ino),
         mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(TimerfdFileOps))
         .private(data)
         .poll_subs_arc(poll_subscribers)

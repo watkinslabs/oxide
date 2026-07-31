@@ -14,7 +14,7 @@ use vfs::File;
 
 use crate::io_uring_abi::ops::{op_supported, OP_COUNT};
 use crate::io_uring_abi::register_op::*;
-use super::ring::{IoUringInode, INO_TAG_MASK, IO_URING_INO_TAG};
+use super::ring::IoUringInode;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -69,7 +69,7 @@ pub fn unregister_buffers(inode: &IoUringInode) -> i64 {
 fn resolve_slot(fdt: &Arc<vfs::FdTable>, raw: i32) -> Result<Option<Arc<File>>, i64> {
     if raw < 0 { return Ok(None); }
     let f = match fdt.get(raw) { Ok(f) => f, Err(_) => return Err(err(Errno::Ebadf)) };
-    if (f.inode().ino() & INO_TAG_MASK) == IO_URING_INO_TAG { return Err(err(Errno::Ebadf)); }
+    crate::io_uring_identity::admit_fixed_file(&f).map_err(err)?;
     Ok(Some(f))
 }
 

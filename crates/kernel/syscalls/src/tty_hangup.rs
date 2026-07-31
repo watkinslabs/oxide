@@ -22,20 +22,14 @@ pub(crate) enum CttyTarget {
     Pts(Arc<devpts::LockedPair>),
 }
 
-/// Inode band devpts allocates its pty inodes from (`016_ioctl/tty_ioctl.rs`
-/// applies the same split).
-const PTS_INO_BAND: u64 = 0x6000_0000;
-const PTS_INO_BAND_MASK: u64 = 0xFFFF_0000;
-const PTS_INDEX_MASK: u64 = 0x7FFF;
-
-/// Resolve a controlling-terminal inode to its tty object.
+/// Resolve a controlling-terminal inode to its tty object. Each owner
+/// classifies only the inodes it built (`i_private`); this file used to carry a
+/// THIRD private copy of the devpts band constants, whose mask
+/// (`0xFFFF_0000`) did not even agree with devpts' own (`0xFFFF_8000`).
 /// # C: O(1)
-pub(crate) fn resolve(ino: u64) -> Option<CttyTarget> {
-    if ino & PTS_INO_BAND_MASK == PTS_INO_BAND {
-        return devpts::pair_for((ino & PTS_INDEX_MASK) as u32).map(CttyTarget::Pts);
-    }
-    if !console::is_console_tty_ino(ino) { return None; }
-    Some(match console::route(ino) {
+pub(crate) fn resolve(inode: &vfs::Inode) -> Option<CttyTarget> {
+    if let Some(pair) = devpts::pair_for_inode(inode) { return Some(CttyTarget::Pts(pair)); }
+    Some(match console::route(inode)? {
         console::TtyTarget::Serial => CttyTarget::Serial,
         console::TtyTarget::Vt(vt) => CttyTarget::Vt(vt),
     })
@@ -125,8 +119,9 @@ pub fn disassociate_ctty_on_exit(task: &sched::Task) {
 /// # C: O(N_tasks)
 pub(crate) fn disassociate_ctty(task: &sched::Task, cause: tty::hangup::DisassociateCause) {
     use tty::hangup::CttyFacts;
-    let ctty_ino = task.ctty_ino();
-    let target = ctty_ino.and_then(resolve);
+    let ctty = task.ctty();
+    let ctty_ino = ctty.as_ref().map(|i| i.ino());
+    let target = ctty.as_ref().and_then(|i| resolve(i));
     let facts = ctty_ino.map(|_| match &target {
         Some(t) => CttyFacts { is_pty: is_pty(t), fg_pgrp: foreground_pgrp(t) },
         // The terminal inode names no device we can reach any more. There is

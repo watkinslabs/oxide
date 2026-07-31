@@ -10,7 +10,21 @@
 
 use vfs::{FileOps, Inode, Ino, KResult, VfsError};
 
-use crate::{pair_of, LockedPair};
+use crate::identity::endpoint_of;
+use crate::pair::LockedPair;
+
+/// The pair backing a pty endpoint inode. These vectors are only ever
+/// installed on one, so `Einval` here means the inode was built elsewhere.
+/// # C: O(1)
+fn pair_of(inode: &Inode) -> KResult<&LockedPair> {
+    endpoint_of(inode).map(|d| &**d.pair()).ok_or(VfsError::Einval)
+}
+
+/// Whether the calling task holds `CAP_SYS_ADMIN` — the `TTY_EXCLUSIVE`
+/// override in `tty_reopen`. # C: O(1)
+fn current_has_sys_admin() -> bool {
+    sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false)
+}
 
 /// Linux `job_control`/`tty_check_change` for the slave half. Snapshots the
 /// pair's job-control state and releases the pair lock BEFORE the check: the
@@ -26,7 +40,7 @@ pub(crate) struct PtyMasterFileOps;
 impl FileOps for PtyMasterFileOps {
     fn on_open(&self, inode: &Inode) -> KResult<()> {
         let pair = pair_of(inode)?;
-        pair.open_endpoint(true, crate::current_has_sys_admin())
+        pair.open_endpoint(true, current_has_sys_admin())
     }
 
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -124,7 +138,7 @@ impl FileOps for PtySlaveFileOps {
     fn on_open(&self, inode: &Inode) -> KResult<()> {
         let pair = pair_of(inode)?;
         if pair.is_locked() { return Err(VfsError::Eio); }
-        pair.open_endpoint(false, crate::current_has_sys_admin())?;
+        pair.open_endpoint(false, current_has_sys_admin())?;
         // Linux `tty_open` ends with `clear_bit(TTY_HUPPED, &tty->flags)`
         // (`drivers/tty/tty_io.c:2161`), so a `vhangup(2)` revokes the OPEN
         // descriptors and a fresh open revives the line. A hangup that came

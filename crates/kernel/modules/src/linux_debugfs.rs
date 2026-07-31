@@ -14,8 +14,8 @@ const DEBUGFS_ROOT: u8 = 1;
 const DEFAULT_FILE_MODE: u16 = 0o600;
 const DEFAULT_DIR_MODE: u16 = 0o755;
 
-static NEXT_INO: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0x6d00_0000);
+static NEXT_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::DEBUGFS);
 static LOCK: Spinlock<(), ModulesLockClass> = Spinlock::new(());
 
 #[repr(C)]
@@ -256,7 +256,7 @@ fn regular_inode(mode: u16, ops: Arc<dyn FileOps>, data: Arc<dyn core::any::Any 
 pub(crate) fn regular_inode_size(mode: u16, ops: Arc<dyn FileOps>, data: Arc<dyn core::any::Any + Send + Sync>, size: u64) -> InodeRef {
     let perm = if mode == 0 { DEFAULT_FILE_MODE } else { mode & 0o777 };
     InodeBuilder::new(
-        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        NEXT_INO.alloc(),
         mk_mode(FileType::Regular, perm),
         default_inode_ops(),
         ops,
@@ -290,7 +290,7 @@ pub(crate) fn cstr(ptr: *const c_char, max: usize) -> Option<String> {
 
 pub(crate) fn symlink_inode(target: &[u8]) -> InodeRef {
     InodeBuilder::new(
-        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        NEXT_INO.alloc(),
         mk_mode(FileType::Symlink, 0o777),
         default_inode_ops(),
         vfs::default_file_ops(),

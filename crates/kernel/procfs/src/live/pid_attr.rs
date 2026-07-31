@@ -1,9 +1,8 @@
 use alloc::sync::Arc;
 
-use core::sync::atomic::Ordering;
 use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
 
-use super::{NEXT_INO, pid_ino};
+use super::{next_ino, pid_ino};
 
 const ATTR_CURRENT: &[u8] = b"kernel\n";
 const ATTR_EMPTY: &[u8] = b"";
@@ -98,7 +97,7 @@ impl FileOps for ProcPidAttrApparmorDirOps {
 }
 
 fn make_proc_pid_attr_apparmor_dir() -> InodeRef {
-    let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+    let ino = next_ino();
     InodeBuilder::new(
         ino,
         mk_mode(FileType::Directory, 0o555),

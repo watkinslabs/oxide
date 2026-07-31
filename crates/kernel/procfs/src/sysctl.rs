@@ -16,12 +16,11 @@ use alloc::sync::Arc;
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-use core::sync::atomic::Ordering;
 use crate::dyn_file::read_at;
 
 const SYSCTL_RW_MODE: u16 = 0o644;
 const SYSCTL_RO_MODE: u16 = 0o444;
-use crate::live::NEXT_INO;
+use crate::live::next_ino;
 
 /// `i_private` for a mutable sysctl value (KEYSTONE struct-`Inode`). Stored
 /// verbatim (callers write e.g. "1\n" or "1"); reads return exactly the
@@ -105,7 +104,7 @@ impl SysctlInode {
 
     /// # C: O(len default)
     fn new_inner(default: &[u8], bounds: Option<(i64, i64)>) -> InodeRef {
-        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+        let ino = next_ino();
         InodeBuilder::new(ino, mk_mode(FileType::Regular, SYSCTL_RW_MODE), Arc::new(SysctlInodeOps), Arc::new(SysctlFileOps))
             .private(Arc::new(SysctlInode { val: Spinlock::new(default.to_vec()), bounds }))
             .build()
@@ -138,7 +137,7 @@ pub struct IpForwardInode;
 impl IpForwardInode {
     /// New `/proc/sys/net/ipv4/ip_forward` inode. # C: O(1)
     pub fn new() -> InodeRef {
-        let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+        let ino = next_ino();
         InodeBuilder::new(ino, mk_mode(FileType::Regular, SYSCTL_RW_MODE), Arc::new(SysctlInodeOps), Arc::new(IpForwardFileOps))
             .build()
     }
@@ -233,7 +232,7 @@ fn write_bound_handler(h: &dyn crate::proc_handler::ProcHandler, off: u64,
 /// `proc_handler` model. Writable leaves are `0o644`, read-only `0o444`.
 /// # C: O(1)
 pub fn bound_sysctl_inode(h: Arc<dyn crate::proc_handler::ProcHandler>) -> InodeRef {
-    let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+    let ino = next_ino();
     let perm = if h.writable() { SYSCTL_RW_MODE } else { SYSCTL_RO_MODE };
     InodeBuilder::new(ino, mk_mode(FileType::Regular, perm), Arc::new(SysctlInodeOps), Arc::new(BoundSysctlFileOps))
         .private(Arc::new(BoundSysctlInode { h }))

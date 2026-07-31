@@ -2,7 +2,7 @@ use vfs::Ino;
 
 use core::sync::atomic::AtomicU64;
 
-pub(super) const INO_ALLOC_BASE: u64 = 0x4000_0000;
+pub(super) const INO_ALLOC_BASE: u64 = vfs::pseudo_ino::TMPFS.start();
 pub(super) static NEXT_INO: AtomicU64 = AtomicU64::new(INO_ALLOC_BASE);
 
 pub(super) const PG: usize = 4096;

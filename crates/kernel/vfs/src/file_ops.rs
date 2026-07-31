@@ -331,6 +331,10 @@ pub trait FileOps: Send + Sync {
     /// calling into a backend. # C: O(1)
     fn supports_remap_file_range(&self) -> bool { false }
 
+    /// Linux `io_is_uring_fops`: `f_op` identity for the one vtable io_uring
+    /// installs — rationale in `syscalls::io_uring_identity`. # C: O(1)
+    fn is_io_uring(&self) -> bool { false }
+
     /// `f_op->remap_file_range` — clone/dedupe `[src_off, src_off+len)` from
     /// this source open file into `dst` at `dst_off`. `flags` carries Linux
     /// `REMAP_FILE_*`. Default `Eopnotsupp`; filesystems with reflink support

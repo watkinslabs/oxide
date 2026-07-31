@@ -167,3 +167,53 @@ fn failed_publication_and_table_drop_release_synchronously() {
         assert_released(&installed);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Inode NUMBERS. The id used to be `Arc::as_ptr(&sock)`: the heap allocator
+// hands a freed socket's address straight back to the next allocation, so two
+// live sockets carried the same `st_ino` — and `ss`, `lsof` and
+// `/proc/net/unix` all identify a socket by `st_ino`.
+// ---------------------------------------------------------------------------
+
+/// Two live sockets never share a number.
+#[test]
+fn two_live_sockets_get_different_inode_numbers() {
+    let a = make_inet_socket_inode(inet());
+    let b = make_inet_socket_inode(inet());
+    assert_ne!(a.ino(), b.ino());
+}
+
+/// The case the pointer-derived id could not survive: a socket freed, then a
+/// second one created, which the allocator may well place at the same address.
+#[test]
+fn a_socket_created_after_another_is_freed_gets_a_different_number() {
+    let first = make_inet_socket_inode(inet()).ino();
+    let mut seen = alloc::collections::BTreeSet::new();
+    seen.insert(first);
+    for _ in 0..256 {
+        // Each iteration drops its socket before the next is built, so the
+        // allocator is free to reuse the address.
+        let ino = make_inet_socket_inode(inet()).ino();
+        assert!(seen.insert(ino), "reused st_ino {ino:#x}");
+    }
+}
+
+/// Every number stays inside the range reserved for AF_INET-family sockets.
+#[test]
+fn socket_numbers_stay_inside_their_region() {
+    let r = &vfs::pseudo_ino::INET_SOCK;
+    for _ in 0..64 { assert!(r.contains(make_inet_socket_inode(unix()).ino())); }
+    for n in [0u64, 1, r.len() - 1, r.len(), r.len() * 5 + 2, u64::MAX] {
+        assert!(r.contains(r.at(n)), "index {n} left the inet-sock region");
+    }
+}
+
+/// Identity still comes from `i_private`, not the number: a socket resolves,
+/// and it resolves to itself.
+#[test]
+fn identity_still_comes_from_the_private_socket() {
+    let sock = inet();
+    let inode = make_inet_socket_inode(Arc::clone(&sock));
+    let got = inet_arc_from_inode(&inode).expect("socket resolves from i_private");
+    assert!(Arc::ptr_eq(&got, &sock));
+}

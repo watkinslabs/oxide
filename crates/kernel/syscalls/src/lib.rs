@@ -112,6 +112,9 @@ pub mod mount_flags_policy;
 pub mod open_tree_policy;
 pub mod move_mount_policy;
 pub mod fspick_policy;
+// io_uring identity: which description is a ring, and each caller's errno when
+// it is not. Ungated so it is testable — `io_uring.rs` is kernel-only.
+pub mod io_uring_identity;
 mod fcntl_dup;
 mod exec_time;
 mod pidfd_signal_policy;

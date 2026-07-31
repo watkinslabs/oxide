@@ -9,14 +9,13 @@ extern crate alloc;
 
 mod ids {
     pub(crate) const MAGIC: u64 = 0x4249_4e4d;
-    pub(crate) const INO_BASE: u64 = 0x4249_0000;
 }
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as LockClass};
 use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
@@ -24,7 +23,11 @@ use vfs::{DirContext, FileOps, InodeBuilder, mk_mode};
 
 pub const BINFMT_MISC_MAGIC: u64 = ids::MAGIC;
 
-static NEXT_INO: AtomicU64 = AtomicU64::new(ids::INO_BASE);
+/// binfmt_misc's reserved inode-number range, owned by `vfs::pseudo_ino`. The
+/// bare counter it replaces started at the range's base and counted on past it
+/// into whatever was declared above.
+static NEXT_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::BINFMT_MISC);
 
 #[derive(Clone)]
 struct Rule {
@@ -93,7 +96,7 @@ pub struct BinfmtMiscFs {
 impl BinfmtMiscFs {
     pub fn new() -> Arc<Self> {
         let state = State::new();
-        let root = make_binfmt_root(state, NEXT_INO.fetch_add(1, Ordering::Relaxed));
+        let root = make_binfmt_root(state, NEXT_INO.alloc());
         Arc::new(Self { root })
     }
 }
@@ -137,15 +140,15 @@ impl InodeOps for BinfmtRootInodeOps {
         let d = inode.private::<BinfmtRootData>().ok_or(VfsError::Einval)?;
         match name {
             "status" => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Status,
-                NEXT_INO.fetch_add(1, Ordering::Relaxed), 8)),
+                NEXT_INO.alloc(), 8)),
             "register" => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Register,
-                NEXT_INO.fetch_add(1, Ordering::Relaxed), 0)),
+                NEXT_INO.alloc(), 0)),
             _ => {
                 let rules = d.state.rules.lock();
                 if let Some(r) = rules.get(name) {
                     let size = r.line.len() as u64 + 16;
                     Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Rule(name.to_string()),
-                        NEXT_INO.fetch_add(1, Ordering::Relaxed), size))
+                        NEXT_INO.alloc(), size))
                 } else {
                     Err(VfsError::Enoent)
                 }

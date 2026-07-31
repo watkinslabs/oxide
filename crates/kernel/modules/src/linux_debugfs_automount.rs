@@ -12,9 +12,6 @@ use crate::linux_debugfs::LinuxDentry;
 
 const VFSMOUNT_MAGIC: u32 = 0x5646_534d;
 
-static NEXT_INO: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(crate::linux_debugfs_ids::AUTOMOUNT_INO_BASE);
-
 type DebugfsAutomount = unsafe extern "C" fn(*mut LinuxDentry, *mut c_void) -> *mut LinuxVfsmount;
 
 /// Opaque `struct vfsmount` handed back by a `d_automount` callback. Carries the
@@ -82,7 +79,7 @@ pub extern "C" fn debugfs_create_automount(
     let path = match crate::linux_debugfs::entry_path(parent, name) { Some(p) => p, None => return null_mut() };
     let private = Arc::new(AutomountData { path: path.clone(), cb, data: data as usize });
     let inode = InodeBuilder::new(
-        NEXT_INO.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+        crate::linux_debugfs_ids::NEXT_AUTOMOUNT_INO.alloc(),
         mk_mode(FileType::Directory, 0o755),
         Arc::new(AutomountOps),
         default_file_ops(),

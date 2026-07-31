@@ -65,12 +65,17 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = ::fs::epoll::handle_epoll_ioctl(&file, req, arg) {
         return rv;
     }
-    // userfaultfd / perf ioctls: route through the dedicated handlers
-    // before the CharDev gate (those inodes are tagged Regular).
-    if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5546_4644_0000_0000 {
+    // userfaultfd / perf ioctls: route through the dedicated handlers before
+    // the CharDev gate (those inodes are tagged Regular). Each handler's file
+    // is recognised by the backend state its inode owns, as Linux compares
+    // `f_op` against `userfaultfd_fops` / `perf_fops`. The literal high-half
+    // number tests these replace routed any foreign inode reusing those bits
+    // into a handler that then read its unrelated private word as its own
+    // state, and consumed the command before the real owner was consulted.
+    if ::fs::userfaultfd::is_uffd_inode(&file.inode()) {
         return ::fs::userfaultfd::handle_uffd_ioctl(file.inode(), req, arg);
     }
-    if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5045_5246_0000_0000 {
+    if ::fs::perf::is_perf_inode(&file.inode()) {
         return ::fs::perf::handle_perf_ioctl(file.inode(), req, arg);
     }
     // evdev ioctls. The handler recognises its own files by the backend state

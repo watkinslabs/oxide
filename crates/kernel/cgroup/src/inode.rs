@@ -46,13 +46,13 @@ pub struct CgFileData {
 
 /// Stable inode number for a control file — `(cgid, file)` so the same control
 /// file keeps one identity across lookups: cgid in the high bits, the name's
-/// FIXED slot (`tree::file_slot`) in the low 8. The slot is an index into the
-/// control-file tables, not a hash of the name: the multiply-31 hash this
+/// FIXED slot (`tree::file_slot`) in the low bits. The slot is an index into
+/// the control-file tables, not a hash of the name: the multiply-31 hash this
 /// replaced folded `pids.events` and `cpuset.cpus` onto one `st_ino` inside a
 /// single cgroup, which makes two distinct files indistinguishable to `stat`
 /// and to anything keyed by inode identity (inotify marks). # C: O(N_names)
 fn file_ino(cgid: u64, file: &str) -> Ino {
-    (crate::ids::FILE_INO_BASE + ((cgid << 8) | crate::tree::file_slot(file) as u64)) as Ino
+    crate::ids::file_ino(cgid, crate::tree::file_slot(file))
 }
 
 /// Permission bits for a control file — read-only interface files vs
@@ -213,7 +213,7 @@ impl OwnerPersist for CgFileOwner {
 /// the live hierarchy (`tree.rs`); the owner is read back from the hierarchy so
 /// a delegated (chowned) subtree keeps its uid across re-synthesis. # C: O(log n)
 pub fn make_cg_dir(cgid: u64) -> InodeRef {
-    let ino = (crate::ids::DIR_INO_BASE + cgid) as Ino;
+    let ino = crate::ids::dir_ino(cgid);
     let (uid, gid) = crate::node_dir_owner(cgid);
     InodeBuilder::new(ino, mk_mode(FileType::Directory, CG_DIR_MODE), Arc::new(CgDirOps), Arc::new(CgDirFileOps))
         .fsid(crate::CGROUP2_SUPER_MAGIC)
