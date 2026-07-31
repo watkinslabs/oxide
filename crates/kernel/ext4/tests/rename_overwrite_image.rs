@@ -24,7 +24,7 @@ const BLOCK_SIZE: u32 = 512;
 fn disk() -> Arc<dyn BlockDevice> {
     let cap = (MINI.len() as u64) / (BLOCK_SIZE as u64);
     let d: Arc<MemDisk<TaskList>> = MemDisk::new(BLOCK_SIZE, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: MINI.to_vec() };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: MINI.to_vec(), ..Default::default() };
     d.submit_sync(&mut req).expect("memdisk write");
     d
 }

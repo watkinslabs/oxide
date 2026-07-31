@@ -20,7 +20,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// # C: O(1)
 fn effective(t: &sched::Task) -> i32 {
     let policy = crate::sched_policy::task_policy(t);
-    ioprio::effective(t.ioprio.load(Ordering::Acquire) as i32,
+    ioprio::effective(t.raw_ioprio(),
                       t.nice.load(Ordering::Acquire) as i32,
                       crate::sched_policy::idle_policy(policy),
                       crate::sched_policy::rt_policy(policy) || crate::sched_policy::dl_policy(policy))
@@ -35,7 +35,7 @@ pub fn sys_ioprio_get(args: &SyscallArgs) -> i64 {
     let raw = which == ioprio::WHO_PROCESS;
     let mut best: Option<i32> = None;
     crate::priority::priority_common::for_each_target(base, who, |t| {
-        let v = if raw { t.ioprio.load(Ordering::Acquire) as i32 } else { effective(t) };
+        let v = if raw { t.raw_ioprio() } else { effective(t) };
         best = Some(match best { None => v, Some(b) => ioprio::best(b, v) });
     });
     // The return is an `int`, so a raw value with the sign bit set comes back

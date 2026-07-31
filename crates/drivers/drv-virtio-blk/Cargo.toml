@@ -20,6 +20,7 @@ klog     = { path = "../../shared/klog" }
 pmm      = { path = "../../kernel/mm-pmm" }
 sched    = { path = "../../kernel/sched" }
 sync     = { path = "../../shared/sync" }
+timekeeper = { path = "../../kernel/timekeeper" }
 virtio   = { path = "../virtio" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

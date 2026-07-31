@@ -359,7 +359,7 @@ impl Task {
             fs_context: Spinlock::new(Arc::new(super::FsContext::new())),
             environ:    Spinlock::new(None),
             nice:       AtomicI8::new(0),
-            ioprio:     AtomicU32::new(0),
+            io_context: Spinlock::new(crate::ioprio::IoContext::new(crate::ioprio::DEFAULT)),
             spawn_ns:   AtomicU64::new(0),
             start_boottime_ns: 0,
             wakeup_deadline_ns: AtomicU64::new(0),

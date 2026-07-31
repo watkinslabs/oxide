@@ -2,7 +2,7 @@
 // `ioprio_set(which, who, ioprio)`: Linux `block/ioprio.c:65`. Thin shim over
 // `crate::ioprio` (Linux `ioprio_check_cap`) and `priority_common` for the
 // which/who target set; the stored value is the raw `int`, as
-// `io_context::ioprio` holds it.
+// the task's `io_context` holds it, so a CLONE_IO sibling observes the write.
 #![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::Ordering;
@@ -49,7 +49,7 @@ pub fn sys_ioprio_set(args: &SyscallArgs) -> i64 {
             ret = err(Errno::Eperm);
             return;
         }
-        t.ioprio.store(prio as u32, Ordering::Release);
+        t.set_ioprio(prio);
         ret = 0;
     });
     ret

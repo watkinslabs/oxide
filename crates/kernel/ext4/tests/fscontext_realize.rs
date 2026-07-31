@@ -28,8 +28,7 @@ fn build_disk() -> Arc<dyn BlockDevice> {
         op: BlockOp::Write,
         start_block: 0,
         len_blocks: cap as u32,
-        buffer: IMAGE.to_vec(),
-    };
+        buffer: IMAGE.to_vec(), ..Default::default() };
     disk.submit_sync(&mut req).expect("memdisk write");
     disk
 }

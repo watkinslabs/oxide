@@ -23,7 +23,7 @@ const V2_VERSION_V1: u32 = 1;
 fn shared_disk_from(image: Vec<u8>) -> Arc<dyn BlockDevice> {
     let cap = (image.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: image, ..Default::default() };
     disk.submit_sync(&mut req).expect("seed memdisk");
     disk
 }
@@ -32,11 +32,11 @@ fn patch_u32(disk: &Arc<dyn BlockDevice>, offset: usize, value: u32) {
     let start_block = (offset / SECTOR as usize) as u64;
     let in_block = offset % SECTOR as usize;
     let mut buffer = vec![0u8; SECTOR as usize];
-    let mut req = BlockRequest { op: BlockOp::Read, start_block, len_blocks: 1, buffer };
+    let mut req = BlockRequest { op: BlockOp::Read, start_block, len_blocks: 1, buffer, ..Default::default() };
     disk.submit_sync(&mut req).expect("read fixture sector");
     buffer = req.buffer;
     buffer[in_block..in_block + 4].copy_from_slice(&value.to_le_bytes());
-    let mut req = BlockRequest { op: BlockOp::Write, start_block, len_blocks: 1, buffer };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block, len_blocks: 1, buffer, ..Default::default() };
     disk.submit_sync(&mut req).expect("write fixture sector");
 }
 
@@ -70,15 +70,14 @@ fn read_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32) -> Vec<u8
     let sectors = fs_bs / SECTOR;
     let mut req = BlockRequest {
         op: BlockOp::Read, start_block: fs_lba * sectors as u64,
-        len_blocks: sectors, buffer: vec![0u8; fs_bs as usize],
-    };
+        len_blocks: sectors, buffer: vec![0u8; fs_bs as usize], ..Default::default() };
     disk.submit_sync(&mut req).expect("read fs block");
     req.buffer
 }
 
 fn write_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32, buffer: Vec<u8>) {
     let sectors = fs_bs / SECTOR;
-    let mut req = BlockRequest { op: BlockOp::Write, start_block: fs_lba * sectors as u64, len_blocks: sectors, buffer };
+    let mut req = BlockRequest { op: BlockOp::Write, start_block: fs_lba * sectors as u64, len_blocks: sectors, buffer, ..Default::default() };
     disk.submit_sync(&mut req).expect("write fs block");
 }
 
