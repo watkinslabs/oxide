@@ -14,14 +14,17 @@
 // What is left is genuinely coarse: `alarm(2)` has 1-second resolution, and
 // ITIMER_VIRTUAL/ITIMER_PROF advance only on CPU time this walk also samples.
 //
-// Wake is `ttwu_deferred`: flips Sleeping → Runnable, lifts vruntime, enqueues.
-// The roused task re-checks pending signals after schedule() returns and
-// surfaces -EINTR (SIGALRM) from the caller's blocking loop.
+// Delivery goes through the ONE enqueue (`live::send`), which publishes the
+// pending bit and wakes a thread that can take the signal. The roused task
+// re-checks pending signals after schedule() returns and surfaces -EINTR
+// (SIGALRM) from the caller's blocking loop.
 //
 // Cost: O(N_live_tasks) per scan, at the 100 ms ktimers cadence.
 
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 use super::sigpend::Signum;
+use crate::sigsend::{SigSource, SigTarget};
 
 /// Last `now_ns` the scan walked the registry. Throttles the O(N)
 /// allocation-free registry walk to a ~100 ms
@@ -30,17 +33,18 @@ static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 const SCAN_PERIOD_NS: u64 = 100_000_000;
 
 /// Service ONE task's expired `alarm(2)`/`ITIMER_REAL` deadline and its
-/// CPU-time itimers, posting SIGALRM / SIGVTALRM / SIGPROF and re-arming by
-/// interval (or clearing for a one-shot). Returns whether anything was posted,
-/// so a caller that must also wake the task can.
+/// CPU-time itimers, re-arming by interval (or clearing for a one-shot).
+/// Returns the MASK of signals that came due — the caller owns the send, so
+/// the deadline bookkeeping stays separate from the enqueue and a caller
+/// holding only a `&Task` never pays for an `Arc` resolve it does not need.
 ///
 /// ONE owner for the expiry policy: the registry walk below runs it for every
 /// live task, and the return-to-user path runs it for the current task so a
 /// timer that came due inside the last syscall is not held for up to a full
 /// scan period. Before this the syscall tail carried its own open-coded copy.
 /// # C: O(1)
-pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> bool {
-    let mut fired = false;
+pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> u64 {
+    let mut due = 0u64;
     let adl = t.alarm_ns.load(Ordering::Acquire);
     if adl != 0 && adl <= now_ns {
         let interval = t.alarm_interval_ns.load(Ordering::Acquire);
@@ -48,30 +52,54 @@ pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> bool {
             if interval != 0 { now_ns.saturating_add(interval) } else { 0 },
             Ordering::Release,
         );
-        // NOT routed through `live::send`: this runs in TIMER-IRQ context and
-        // the enqueue reserves record-queue capacity, i.e. allocates. Linux
-        // arms `alarm(2)` on a hrtimer whose callback runs in process context
-        // and calls `kill_pid_info(SIGALRM, SEND_SIG_PRIV, …)`; matching that
-        // needs the expiry moved off the tick, which is a timer-subsystem
-        // change. Until then the bit is set without an `SI_KERNEL` record.
-        t.sigpending.fetch_or(Signum::Sigalrm.bit(), Ordering::Release);
-        fired = true;
+        due |= Signum::Sigalrm.bit();
     }
     let u = t.utime_ns.load(Ordering::Acquire);
     let s = t.stime_ns.load(Ordering::Acquire);
-    fired
-        | fire_cpu_itimer(t, &t.itimer_virtual_ns, &t.itimer_virtual_interval_ns, u, Signum::Sigvtalrm)
-        | fire_cpu_itimer(t, &t.itimer_prof_ns, &t.itimer_prof_interval_ns, u.saturating_add(s), Signum::Sigprof)
+    due |= fire_cpu_itimer(&t.itimer_virtual_ns, &t.itimer_virtual_interval_ns, u, Signum::Sigvtalrm);
+    due |= fire_cpu_itimer(&t.itimer_prof_ns, &t.itimer_prof_interval_ns, u.saturating_add(s), Signum::Sigprof);
+    due
 }
 
-fn fire_cpu_itimer(t: &crate::Task, deadline: &AtomicU64, interval: &AtomicU64, now_cpu: u64, sig: Signum) -> bool {
+fn fire_cpu_itimer(deadline: &AtomicU64, interval: &AtomicU64, now_cpu: u64, sig: Signum) -> u64 {
     let dl = deadline.load(Ordering::Acquire);
-    if dl == 0 || dl > now_cpu { return false; }
+    if dl == 0 || dl > now_cpu { return 0; }
     let intv = interval.load(Ordering::Acquire);
     deadline.store(if intv != 0 { now_cpu.saturating_add(intv) } else { 0 }, Ordering::Release);
-    // Same timer-IRQ allocation constraint as the `alarm(2)` arm above.
-    t.sigpending.fetch_or(sig.bit(), Ordering::Release);
-    true
+    sig.bit()
+}
+
+/// Post the signals `service_task_timers` found due, through the ONE enqueue.
+///
+/// Linux runs all three from process context — `it_real_fn` is an hrtimer
+/// callback calling `kill_pid_info(SIGALRM, SEND_SIG_PRIV, …)`, and
+/// `check_cpu_itimer` calls `__group_send_sig_info(signo, SEND_SIG_PRIV, tsk)`
+/// — so every one of them is PROCESS-directed and carries an `SI_KERNEL`
+/// record. Both call sites here are process context too: the walk below runs
+/// on the `ktimers` kthread (never the hard tick, which may not take the
+/// registry or runqueue locks, `06§3.1`) and the other is the syscall-return
+/// tail. Producers that set the bit directly lost the record and put a
+/// process-directed signal into one thread's private set.
+/// # C: O(N_threads) per due signal
+pub fn post_expired_timer_signals(t: &Arc<crate::Task>, due: u64) {
+    let mut rest = due;
+    while rest != 0 {
+        let sig = rest.trailing_zeros() + 1;
+        rest &= rest - 1;
+        let _ = super::send::send_signal(t, sig, SigSource::Kernel, SigTarget::Process);
+    }
+}
+
+/// Service + post for the RUNNING task, at the syscall-return tail. The `Arc`
+/// resolve happens only when something actually came due, so the common
+/// "nothing expired" return costs one atomic load per timer.
+/// # C: O(1) when nothing is due
+pub fn service_current_timers(now_ns: u64) {
+    let Some(cur) = super::current() else { return };
+    let due = service_task_timers(cur, now_ns);
+    if due == 0 { return; }
+    let Some(arc) = crate::registry::lookup(cur.tid) else { return };
+    post_expired_timer_signals(&arc, due);
 }
 
 /// Walk the live task registry and service expired `alarm_ns` (alarm(2) /
@@ -96,20 +124,16 @@ pub fn tick_wake_expired(now_ns: u64) {
     // 100 ms throttle means the driving tick stalled (H3).
     #[cfg(feature = "debug-wakelat")]
     super::wakelat::note_scan(now_ns);
-    // This runs from the timer IRQ.  Do not materialize a Vec snapshot here:
-    // global allocation in hard-IRQ context can re-enter allocator state while
-    // an interrupted task owns it.  Advance one registry tid at a time, with
-    // the registry lock released before `lookup`/wake work.
+    // Registered as a `ktimers` periodic (`sched::register_timers`), so this is
+    // PROCESS context and the send below may take the registry and runqueue
+    // locks. Still no Vec snapshot: advance one registry tid at a time with the
+    // registry lock released before `lookup` / send work, so the walk never
+    // holds REG across an enqueue.
     let mut after = 0;
     while let Some(tid) = crate::registry::next_live_tid_after(after) {
         after = tid;
         let t = match crate::registry::lookup(tid) { Some(t) => t, None => continue };
-        if service_task_timers(&t, now_ns) {
-            // Timer-ISR (IF=0): defer placement to the target's wake_list so the
-            // tick never blocks on a contended rq lock and never enqueues a task
-            // still on_cpu elsewhere.
-            // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
-            unsafe { super::ttwu::ttwu_deferred(alloc::sync::Arc::clone(&t)); }
-        }
+        let due = service_task_timers(&t, now_ns);
+        if due != 0 { post_expired_timer_signals(&t, due); }
     }
 }
