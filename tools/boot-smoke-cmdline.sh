@@ -118,15 +118,36 @@ fi
 #    from `systemd.debug_shell=` on the very line under test, so reaching it
 #    is itself a use of the line.
 wait_for "Started debug-shell.service" "the debug shell (systemd.debug_shell=)"
-sleep 3
-printf '\n' >&9
-sleep 1
-# The wrapper prefix cannot collide with the kernel's own echo of the line.
-printf 'echo PROCCMDLINE=$(cat /proc/cmdline)\n' >&9
-wait_for "PROCCMDLINE=.*$MARKER" "marker '$MARKER' in the guest's /proc/cmdline"
+
+# `sed` rather than a command substitution: the prefix has to come from the
+# file's own line so it cannot be confused with the kernel's echo, and the
+# command stays short. Long lines get truncated on the way in — the emulated
+# UART shares this wire with the kernel log and drops RX under that load — so
+# type it in small chunks and re-send if the reply does not come back.
+send_slowly() {
+    local text="$1" i=0
+    while [ "$i" -lt "${#text}" ]; do
+        printf '%s' "${text:$i:8}" >&9
+        i=$(( i + 8 ))
+        sleep 0.3
+    done
+    printf '\n' >&9
+}
+
+PROBE='sed s@^@PROCCMDLINE=@ /proc/cmdline'
+attempt=0
+until grep -aq "PROCCMDLINE=.*$MARKER" "$LOG" 2>/dev/null; do
+    attempt=$(( attempt + 1 ))
+    [ "$attempt" -gt 6 ] && fail "guest never echoed /proc/cmdline (shell on the serial console did not answer in $attempt tries)"
+    [ "$(date +%s)" -ge "$deadline" ] && fail "timeout reading /proc/cmdline in the guest"
+    printf '\n' >&9
+    sleep 1
+    send_slowly "$PROBE"
+    sleep 15
+done
 
 echo "boot-smoke-cmdline: kernel line: $(grep -a 'Kernel command line:' "$LOG" | tail -n 1)"
-echo "boot-smoke-cmdline: guest /proc/cmdline: $(grep -a 'PROCCMDLINE=' "$LOG" | grep -av 'echo PROCCMDLINE' | tail -n 1)"
+echo "boot-smoke-cmdline: guest /proc/cmdline: $(grep -a "PROCCMDLINE=.*$MARKER" "$LOG" | tail -n 1)"
 elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
 echo "boot-smoke-cmdline: PASS — $ARCH bootloader cmdline reached the kernel and /proc/cmdline in ${elapsed}s"
 exit 0
