@@ -261,6 +261,27 @@ pub(crate) fn evdev_endpoint(inode: &Inode) -> Option<&Arc<EvdevEndpoint>> {
     inode.private::<EvdevData>().map(|data| &data.endpoint)
 }
 
+/// The event index a `/dev/input/eventN` node addresses, from its device
+/// NUMBER. `None` for any inode that is not an evdev node. # C: O(1)
+pub(crate) fn node_evdev_id(rdev: u32) -> Option<u32> {
+    let devt = vfs::Devt::from_raw(rdev);
+    if devt.major() != crate::consts::INPUT_MAJOR { return None; }
+    let id = devt.minor().checked_sub(crate::consts::EVENT_MINOR_BASE)?;
+    if id as usize >= MAX_EVDEV { return None; }
+    Some(id)
+}
+
+/// The endpoint an `open(2)` of this node must attach to (Linux `chrdev_open`:
+/// the device NUMBER selects the live driver object, never a pointer the node
+/// captured when it was created). A node cached, bind-mounted, or cloned into
+/// another mount namespace before a driver rebind therefore opens the CURRENT
+/// device instead of the dead one it was minted against; an already-open file
+/// description keeps the endpoint it attached to and stays dead.
+/// # C: O(1)
+pub(crate) fn open_endpoint(inode: &Inode) -> Option<Arc<EvdevEndpoint>> {
+    current_endpoint(node_evdev_id(inode.rdev())?)
+}
+
 pub(crate) fn install_open(file: &File, opened: EvdevOpen) {
     let raw = Box::into_raw(Box::new(opened)) as u64;
     file.set_private_data(raw);

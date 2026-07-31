@@ -29,6 +29,7 @@ fn foreign_file(ino: Ino) -> Arc<File> {
 
 #[test]
 fn evdev_numbers_no_longer_alias_epoll_s() {
+    let _serial = super::serialize();
     // `stat` on `/dev/input/event0` and on an epoll fd reported the same
     // `st_ino` while both bases were 0x7400_0000. Identity never depended on
     // the number, but two owners minting the same one is its own defect.
@@ -40,6 +41,7 @@ fn evdev_numbers_no_longer_alias_epoll_s() {
 
 #[test]
 fn a_published_evdev_inode_number_falls_inside_the_evdev_region() {
+    let _serial = super::serialize();
     const REQUESTED_ID: u32 = 11;
     let key = test_dev(REQUESTED_ID).device_key;
     let _ = crate::remove_device(key);
@@ -51,6 +53,7 @@ fn a_published_evdev_inode_number_falls_inside_the_evdev_region() {
 
 #[test]
 fn a_foreign_inode_sharing_evdev_s_number_is_declined() {
+    let _serial = super::serialize();
     // EVIOCGBIT(0, 8) — libinput's first question of any device.
     let request = evio_read(crate::EVIOCGBIT_BASE_NR as u32, 8);
     let mut out = [0u8; 8];
@@ -60,6 +63,7 @@ fn a_foreign_inode_sharing_evdev_s_number_is_declined() {
 
 #[test]
 fn every_evdev_number_shape_is_declined_for_a_foreign_inode() {
+    let _serial = super::serialize();
     let mut out = [0u8; crate::EVDEV_STATE_BYTES];
     for ino in [EVENT0_INO, EVDEV.start(), EVDEV.start() + 2, EVDEV.end()] {
         let file = foreign_file(ino);
@@ -74,6 +78,7 @@ fn every_evdev_number_shape_is_declined_for_a_foreign_inode() {
 
 #[test]
 fn a_real_evdev_file_answers_the_capability_query() {
+    let _serial = super::serialize();
     // The exact request the boot showed failing: EVIOCGBIT(0, 8), "which event
     // types does this device support". A device that answers it reports the
     // number of capability bytes copied, never an error.
@@ -93,6 +98,7 @@ fn a_real_evdev_file_answers_the_capability_query() {
 
 #[test]
 fn an_unknown_evdev_command_is_einval_not_enotty() {
+    let _serial = super::serialize();
     // `evdev_do_ioctl` ends in `return -EINVAL`; ENOTTY is not an errno evdev
     // produces, and returning it would also hand the command to a later
     // dispatch stage that has no business answering for this device.
@@ -113,6 +119,7 @@ fn an_unknown_evdev_command_is_einval_not_enotty() {
 
 #[test]
 fn a_non_evdev_command_group_still_falls_through() {
+    let _serial = super::serialize();
     // Only the 'E' group belongs to evdev; the generic VFS commands stay with
     // the stage that owns them.
     let file = test_file(0);
