@@ -165,8 +165,7 @@ fn run_rw(op: AioOp, io: &Iocb, file: &Arc<File>) -> Result<i64, i64> {
             return Err(err(Errno::Efault));
         }
     }
-    let _ = eff;
-    Ok(dispatch_rw(op, io))
+    Ok(dispatch_rw(op, io, file, eff))
 }
 
 /// Hand the request to the syscall work fn that owns this transfer shape.
@@ -174,13 +173,25 @@ fn run_rw(op: AioOp, io: &Iocb, file: &Arc<File>) -> Result<i64, i64> {
 /// splits the offset across two words on x86_64 and takes it whole on aarch64,
 /// so packing it wrongly truncates any aio transfer past 4 GiB.
 /// # C: O(bytes)
-fn dispatch_rw(op: AioOp, io: &Iocb) -> i64 {
+fn dispatch_rw(op: AioOp, io: &Iocb, file: &Arc<File>, eff: crate::rwf::RwEffect) -> i64 {
     let off = io.offset as u64;
+    let one = SyscallArgs { a0: io.fildes as u64, a1: io.buf, a2: io.nbytes, a3: off, a4: 0, a5: 0 };
     match op {
-        AioOp::Pread => crate::s017_pread64::sys_pread64(
-            &SyscallArgs { a0: io.fildes as u64, a1: io.buf, a2: io.nbytes, a3: off, a4: 0, a5: 0 }),
-        AioOp::Pwrite => crate::s018_pwrite64::sys_pwrite64(
-            &SyscallArgs { a0: io.fildes as u64, a1: io.buf, a2: io.nbytes, a3: off, a4: 0, a5: 0 }),
+        // The unvectored pair takes no flags word, so the two per-operation
+        // effects the RWF admission produced are applied here: a non-blocking
+        // read goes through the description's no-wait path, and a durable
+        // write is synced after the bytes land.
+        AioOp::Pread if eff.nowait => nowait_read(io, file),
+        AioOp::Pread => crate::s017_pread64::sys_pread64(&one),
+        AioOp::Pwrite => {
+            let n = crate::s018_pwrite64::sys_pwrite64(&one);
+            if n <= 0 || !eff.dsync { return n; }
+            let extra = vfs::SyncMode { dsync: eff.dsync, sync: eff.sync };
+            match file.generic_write_sync(off.saturating_add(n as u64), n as usize, extra) {
+                Ok(()) => n,
+                Err(e) => -(e as i64),
+            }
+        }
         AioOp::Preadv | AioOp::Pwritev => {
             #[cfg(target_arch = "x86_64")]
             let (a3, a4) = (off & 0xffff_ffff, off >> 32);
@@ -192,6 +203,21 @@ fn dispatch_rw(op: AioOp, io: &Iocb) -> i64 {
             else { crate::s295_preadv::sys_preadv2(&a) }
         }
         _ => err(Errno::Einval),
+    }
+}
+
+/// `RWF_NOWAIT` unvectored read: the description's no-wait transfer, with the
+/// same destination validation the blocking slot applies.
+/// # C: O(bytes)
+fn nowait_read(io: &Iocb, file: &Arc<File>) -> i64 {
+    let cnt = crate::userbuf::clamp_rw_count(io.nbytes as usize);
+    if cnt == 0 { return 0; }
+    if let Err(rv) = validate_user_buf_writable(io.buf, cnt as u64, 1) { return rv; }
+    // SAFETY: [buf, buf+cnt) validated writable below USER_VA_END in the caller's active address space; CPL=0 fills it through that mapping.
+    let dst: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(io.buf as *mut u8, cnt) };
+    match file.pread_nowait(dst, io.offset) {
+        Ok(n) => n as i64,
+        Err(e) => crate::namei_common::errno_from_vfs(e),
     }
 }
 

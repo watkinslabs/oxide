@@ -70,18 +70,20 @@ struct aio_ring {
     struct io_event io_events[];
 };
 
-#define FAIL(...) do { printf("aio_probe: " __VA_ARGS__); return 1; } while (0)
+/* Every rejection must contain the literal "FAIL": the boot gate greps for
+ * "aio_probe: FAIL" and would otherwise wait out its whole timeout. */
+#define FAIL(...) do { printf("aio_probe: FAIL "); printf(__VA_ARGS__); return 1; } while (0)
 
 int main(void) {
     const char *path = "/tmp/aio_probe.dat";
     const char payload[] = "AIODATA0";       /* 8 bytes, no NUL read-back */
     int wfd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-    if (wfd < 0) FAIL("open-w FAIL\n");
-    if (write(wfd, payload, 8) != 8) FAIL("write FAIL\n");
+    if (wfd < 0) FAIL("open-w\n");
+    if (write(wfd, payload, 8) != 8) FAIL("write\n");
     close(wfd);
 
     int fd = open(path, O_RDONLY);
-    if (fd < 0) FAIL("open-r FAIL\n");
+    if (fd < 0) FAIL("open-r\n");
 
     unsigned long ctx = 0;                    /* MUST be zero on entry */
     long rc = syscall(NR_IO_SETUP, 8u, &ctx);
@@ -165,7 +167,7 @@ int main(void) {
 
     /* An outstanding poll request is cancellable and reports EINPROGRESS. */
     int pfd[2];
-    if (pipe(pfd) != 0) FAIL("pipe FAIL\n");
+    if (pipe(pfd) != 0) FAIL("pipe\n");
     struct iocb pl;
     memset(&pl, 0, sizeof pl);
     pl.aio_data       = 0x5150u;
@@ -179,7 +181,7 @@ int main(void) {
         FAIL("poll cancel not EINPROGRESS (errno=%d)\n", errno);
 
     /* A poll request whose condition already holds completes at submit. */
-    if (write(pfd[1], "x", 1) != 1) FAIL("pipe write FAIL\n");
+    if (write(pfd[1], "x", 1) != 1) FAIL("pipe write\n");
     memset(&pl, 0, sizeof pl);
     pl.aio_data       = 0x5151u;
     pl.aio_lio_opcode = IOCB_CMD_POLL;
@@ -193,7 +195,7 @@ int main(void) {
     if (ev.data != 0x5151u) FAIL("ready poll data=%llx\n", (unsigned long long)ev.data);
     if ((ev.res & POLLIN) == 0) FAIL("ready poll res=%lld\n", (long long)ev.res);
 
-    if (syscall(NR_IO_DESTROY, ctx) != 0) FAIL("io_destroy FAIL\n");
+    if (syscall(NR_IO_DESTROY, ctx) != 0) FAIL("io_destroy\n");
     /* The context is gone: a second destroy is EINVAL. */
     if (syscall(NR_IO_DESTROY, ctx) != -1 || errno != EINVAL) FAIL("double destroy not EINVAL\n");
 
