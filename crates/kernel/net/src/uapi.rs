@@ -113,13 +113,9 @@ pub const TP_STATUS_TS_RAW_HARDWARE: u32 = 1 << 31;
 pub const SOF_TIMESTAMPING_SOFTWARE: i32 = 1 << 4;
 pub const SOF_TIMESTAMPING_RAW_HARDWARE: i32 = 1 << 6;
 
-/// Linux socket option ABI values used by typed VSOCK option policy.
-pub const SOL_SOCKET: u64 = 1;
-pub const SO_TYPE: u64 = 3;
-pub const SO_ACCEPTCONN: u64 = 30;
-pub const SO_PROTOCOL: u64 = 38;
-pub const SO_DOMAIN: u64 = 39;
-pub const SO_OOBINLINE: u64 = 10;
+// Socket-level option numbers have one owner: the generic SOL_SOCKET table.
+pub use crate::sock_opts::sol_socket::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_OOBINLINE,
+    SO_PROTOCOL, SO_TYPE};
 
 /// Linux AF_VSOCK socket-option ABI values (`include/uapi/linux/vm_sockets.h`).
 pub const SOL_VSOCK: u64 = 287;

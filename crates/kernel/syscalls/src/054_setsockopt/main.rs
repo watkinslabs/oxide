@@ -61,6 +61,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     }
     if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
     let optlen = signed_optlen as u32;
+    if level == SOL_SOCKET {
+        if optname == SO_BINDTODEVICE { return bind_to_device(&sock, optval, optlen); }
+        return super::sol_socket::set(&sock, optname, optval, optlen);
+    }
     if level == net::uapi::SOL_PACKET {
         return packet_setsockopt(&sock, optname, optval, optlen);
     }
@@ -115,80 +119,6 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         })
     };
     match (level, optname) {
-        (SOL_SOCKET, SO_REUSEADDR) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.reuseaddr.store(v, Ordering::Release);
-        },
-        (SOL_SOCKET, SO_REUSEPORT) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.reuseport.store(v, Ordering::Release);
-        },
-        (SOL_SOCKET, SO_KEEPALIVE) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.keepalive.store(v, Ordering::Release);
-            refresh_tcp_keepalive(&sock);
-        }
-        (SOL_SOCKET, SO_BROADCAST) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.broadcast.store(v, Ordering::Release);
-        },
-        (SOL_SOCKET, net::uapi::SO_OOBINLINE) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.oobinline.store((v != 0) as i32, Ordering::Release);
-        },
-        (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
-            { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-              sock.opts.sndbuf.store(sk_buf_value(v, SOCK_MIN_SNDBUF), Ordering::Release); },
-        (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
-            { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-              let stored = sk_buf_value(v, SOCK_MIN_RCVBUF);
-              sock.opts.rcvbuf.store(stored, Ordering::Release);
-              // Linux `__sock_set_rcvbuf` sets `SOCK_RCVBUF_LOCK`, which stops
-              // `tcp_rcv_space_adjust` autotuning: from here the advertised
-              // window follows the caller's number. Without the lock TCP kept
-              // autotuning up to 4 MiB and an application that asked for a
-              // small receive buffer never got backpressure.
-              sock.opts.rcvbuf_locked.store(true, Ordering::Release);
-              sync_raw_rcvbuf(&sock, stored);
-              sync_tcp_rcvbuf(&sock, stored); },
-        (SOL_SOCKET, SO_PASSCRED) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.passcred.store(v, Ordering::Release);
-        }
-        (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
-        | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
-        | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.timestamping.store(v, Ordering::Release);
-        }
-        (SOL_SOCKET, SO_PRIORITY) => { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e }; priority_store(&sock, Some(v)); },
-        (SOL_SOCKET, SO_MARK) => { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e }; mark_store(&sock, Some(v)); },
-        (SOL_SOCKET, SO_BINDTODEVICE) => {
-            let rc = bind_to_device(&sock, optval, optlen);
-            if rc != 0 { return rc; }
-        }
-        (SOL_SOCKET, SO_LINGER) => {
-            if optlen < 8 { return -(Errno::Einval.as_i32() as i64); }
-            let mut bytes = [0u8; 8];
-            if uaccess::copy_from_user(&mut bytes, optval).is_err() {
-                return -(Errno::Efault.as_i32() as i64);
-            }
-            sock.opts.linger_on.store(i32::from_ne_bytes(bytes[..4].try_into().unwrap()), Ordering::Release);
-            sock.opts.linger_s.store(i32::from_ne_bytes(bytes[4..].try_into().unwrap()), Ordering::Release);
-        }
-        (SOL_SOCKET, SO_SNDTIMEO) | (SOL_SOCKET, SO_RCVTIMEO) => {
-            if optlen < 16 { return -(Errno::Einval.as_i32() as i64); }
-            let mut bytes = [0u8; 16];
-            if uaccess::copy_from_user(&mut bytes, optval).is_err() {
-                return -(Errno::Efault.as_i32() as i64);
-            }
-            let s = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
-            let u = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
-            let ns = (s.max(0) as i128 * 1_000_000_000 + u.max(0) as i128 * 1_000)
-                .min(i64::MAX as i128) as i64;
-            let slot = if optname == SO_SNDTIMEO { &sock.opts.sndtimeo_ns } else { &sock.opts.rcvtimeo_ns };
-            slot.store(ns, Ordering::Release);
-        }
         (IPPROTO_IP, IP_TOS) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.ip_tos.store(v & 0xff, Ordering::Release);
@@ -399,15 +329,11 @@ fn refresh_tcp_keepalive(sock: &Arc<net::sock::InetSocket>) {
 
 /// Linux `SOCK_MIN_RCVBUF`/`SOCK_MIN_SNDBUF` for this ABI (measured against the
 /// reference kernel: 2304 / 4608).
-const SOCK_MIN_RCVBUF: i32 = 2304;
-const SOCK_MIN_SNDBUF: i32 = 4608;
 
-/// Linux `__sock_set_rcvbuf`/`sndbuf`: clamp the request to `INT_MAX/2`, double
-/// it (the metadata-overhead reservation), then floor at the protocol minimum.
-/// The `rmem_max`/`wmem_max` sysctl cap is not yet modelled, so an explicit
-/// request above that ceiling is not clamped down.
-fn sk_buf_value(val: i32, min: i32) -> i32 {
-    val.min(i32::MAX / 2).saturating_mul(2).max(min)
+/// Publish a new receive-buffer size on the live transport. # C: O(1)
+pub(super) fn sync_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
+    sync_raw_rcvbuf(sock, value);
+    sync_tcp_rcvbuf(sock, value);
 }
 
 fn sync_raw_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
@@ -428,29 +354,28 @@ fn sync_tcp_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
 }
 
 fn bind_to_device(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
-    const IFNAMSIZ: usize = 16;
-    if optlen as usize > IFNAMSIZ { return -(Errno::Einval.as_i32() as i64); }
-    if optlen == 0 { return sock.set_bound_iface(None).map_or_else(errno_from_neterr, |_| 0); }
+    use net::sock_opts::sol_socket::set::{IFNAMSIZ, bind_device_allowed, device_name_len};
+    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire) != 0;
+    if let Err(error) = bind_device_allowed(super::sol_socket::caps_for(sock), bound) {
+        return -(error.as_i32() as i64);
+    }
+    // Linux truncates an over-long option to `IFNAMSIZ - 1` instead of
+    // rejecting it, and an empty name clears the binding.
+    let n = device_name_len(optlen);
     let mut name = [0u8; IFNAMSIZ];
-    let n = optlen as usize;
-    if uaccess::copy_from_user(&mut name[..n], optval).is_err() {
+    if n != 0 && uaccess::copy_from_user(&mut name[..n], optval).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
     let end = name[..n].iter().position(|b| *b == 0).unwrap_or(n);
-    let iface = if end == 0 {
-        None
-    } else {
-        let s = match core::str::from_utf8(&name[..end]) {
-            Ok(s) => s,
-            Err(_) => return -(Errno::Einval.as_i32() as i64),
-        };
-        let net_ns = sock.net_ns();
-        match net::sock::stack().ifaces.lookup_name_in_ns(s, net_ns) {
-            Some((id, _)) => Some(id),
-            None => return -(Errno::Enodev.as_i32() as i64),
-        }
+    if end == 0 { return sock.set_bound_iface(None).map_or_else(errno_from_neterr, |_| 0); }
+    let Ok(text) = core::str::from_utf8(&name[..end]) else {
+        return -(Errno::Enodev.as_i32() as i64);
     };
-    match sock.set_bound_iface(iface) { Ok(()) => 0, Err(e) => errno_from_neterr(e) }
+    let net_ns = sock.net_ns();
+    match net::sock::stack().ifaces.lookup_name_in_ns(text, net_ns) {
+        Some((id, _)) => super::sol_socket::bind_to_ifindex(sock, id.raw() as i32),
+        None => -(Errno::Enodev.as_i32() as i64),
+    }
 }
 
 fn errno(error: Errno) -> i64 { -(error.as_i32() as i64) }
@@ -539,12 +464,3 @@ pub(super) fn classic_filter_program(header: (usize, u64)) -> Result<net::bpf_fi
     })
 }
 
-/// Store SO_PRIORITY when a value is present. # C: O(1)
-fn priority_store(s: &Arc<net::sock::InetSocket>, v: Option<i32>) {
-    if let Some(v) = v { s.opts.priority.store(v, Ordering::Release); }
-}
-
-/// Store SO_MARK when a value is present. # C: O(1)
-fn mark_store(s: &Arc<net::sock::InetSocket>, v: Option<i32>) {
-    if let Some(v) = v { s.opts.mark.store(v, Ordering::Release); }
-}

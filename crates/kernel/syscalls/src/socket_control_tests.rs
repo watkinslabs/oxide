@@ -224,17 +224,24 @@ fn packet_getsockopt_uses_one_linux_ordered_copyout_transaction() {
     assert!(source.find("packet_statistics(sock)").unwrap() < length);
 }
 
+// The socket-level identity options are answered from one canonical table,
+// and their option numbers have exactly one definition in the tree.
 #[test]
 fn generic_getsockopt_matches_canonical_socket_option_constants() {
+    use net::sock_opts::sol_socket as sol;
+    assert_eq!((net::uapi::SO_TYPE, net::uapi::SO_ACCEPTCONN, net::uapi::SO_DOMAIN,
+        net::uapi::SO_PROTOCOL, net::uapi::SO_OOBINLINE, net::uapi::SOL_SOCKET),
+        (sol::SO_TYPE, sol::SO_ACCEPTCONN, sol::SO_DOMAIN, sol::SO_PROTOCOL,
+         sol::SO_OOBINLINE, sol::SOL_SOCKET));
     let source = include_str!("055_getsockopt.rs");
-    for (qualified, unqualified) in [
-        ("(SOL_SOCKET, net::uapi::SO_TYPE)", "(SOL_SOCKET, SO_TYPE)"),
-        ("(SOL_SOCKET, net::uapi::SO_ACCEPTCONN)", "(SOL_SOCKET, SO_ACCEPTCONN)"),
-        ("(SOL_SOCKET, net::uapi::SO_DOMAIN)", "(SOL_SOCKET, SO_DOMAIN)"),
-        ("(SOL_SOCKET, net::uapi::SO_PROTOCOL)", "(SOL_SOCKET, SO_PROTOCOL)"),
-    ] {
-        assert!(source.contains(qualified));
-        assert!(!source.contains(unqualified));
+    assert!(source.contains("sol_socket::read(&s, optname, optval, optlen_p)"));
+    for owned in ["SO_TYPE", "SO_ACCEPTCONN", "SO_DOMAIN", "SO_PROTOCOL"] {
+        assert!(!source.contains(&alloc::format!("(SOL_SOCKET, {owned})")));
+        assert!(!source.contains(&alloc::format!("(SOL_SOCKET, net::uapi::{owned})")));
+    }
+    let table = include_str!("../../net/src/sock_opts/sol_socket/get.rs");
+    for owned in ["SO_TYPE", "SO_ACCEPTCONN", "SO_DOMAIN", "SO_PROTOCOL"] {
+        assert!(table.contains(&alloc::format!("{owned} =>")), "{owned}");
     }
 }
 
@@ -283,12 +290,19 @@ fn netlink_connect_runs_one_admission_before_destination_state() {
     assert!(!owner.contains("security::network::Operation::Connect"));
 }
 
+// SO_OOBINLINE stores Linux's normalized boolean, and the normalization lives
+// in the canonical table rather than the ABI shim.
 #[test]
 fn oobinline_setsockopt_normalizes_linux_boolean_values() {
-    let source = include_str!("054_setsockopt/main.rs");
-    assert!(source.contains(
-        "sock.opts.oobinline.store((v != 0) as i32, Ordering::Release)"
-    ));
+    use net::sock_opts::sol_socket::set::{Action, Arg, admit};
+    let sock = net::sock_opts::sol_socket::OptSock::default();
+    let caps = net::sock_opts::sol_socket::OptCaps::default();
+    assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(42), sock, caps, false),
+        Ok(Action::Oobinline(1)));
+    assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(0), sock, caps, false),
+        Ok(Action::Oobinline(0)));
+    assert!(include_str!("054_setsockopt/sol_socket.rs")
+        .contains("Action::Oobinline(v) => sock.opts.oobinline.store(v, Ordering::Release)"));
 }
 
 // B1376: IPV6_TCLASS / IPV6_RECVTCLASS carry the Linux optname values and

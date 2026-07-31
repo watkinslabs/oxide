@@ -1,18 +1,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
-pub(super) const SOL_SOCKET: u64 = 1;
-pub(super) const SO_REUSEADDR: u64 = 2;
-pub(super) const SO_BROADCAST: u64 = 6;
-pub(super) const SO_SNDBUF: u64 = 7;
-pub(super) const SO_RCVBUF: u64 = 8;
-pub(super) const SO_KEEPALIVE: u64 = 9;
-pub(super) const SO_PRIORITY: u64 = 12;
-pub(super) const SO_LINGER: u64 = 13;
-pub(super) const SO_REUSEPORT: u64 = 15;
-pub(super) const SO_PASSCRED: u64 = 16;
-pub(super) const SO_RCVTIMEO: u64 = 20;
-pub(super) const SO_SNDTIMEO: u64 = 21;
-pub(super) const SO_BINDTODEVICE: u64 = 25;
+// SOL_SOCKET option numbers live in `net::sock_opts::sol_socket`.
+pub(super) use net::sock_opts::sol_socket::{SOL_SOCKET, SO_BINDTODEVICE};
 pub(super) const SO_ATTACH_FILTER: u64 = 26;
 pub(super) const SO_DETACH_FILTER: u64 = 27;
 pub(super) const SO_LOCK_FILTER: u64 = 44;
@@ -22,15 +11,6 @@ pub(super) const SOCK_FPROG_SIZE: u32 = 16;
 pub(super) const SOCK_FPROG_FILTER_OFFSET: u64 = 8;
 pub(super) const BPF_INSN_SIZE: usize = 8;
 pub(super) const BPF_MAXINSNS: usize = 4096;
-pub(super) const SO_TIMESTAMP_OLD: u64 = 29;
-pub(super) const SO_SNDBUFFORCE: u64 = 32;
-pub(super) const SO_RCVBUFFORCE: u64 = 33;
-pub(super) const SO_TIMESTAMPNS_OLD: u64 = 35;
-pub(super) const SO_MARK: u64 = 36;
-pub(super) const SO_TIMESTAMPING_OLD: u64 = 37;
-pub(super) const SO_TIMESTAMP_NEW: u64 = 63;
-pub(super) const SO_TIMESTAMPNS_NEW: u64 = 64;
-pub(super) const SO_TIMESTAMPING_NEW: u64 = 65;
 
 pub(super) const IPPROTO_IP: u64 = 0;
 pub(super) const IP_TOS: u64 = 1;

@@ -37,8 +37,9 @@ impl InetSocket {
         self.release_packet_rings();
         let _lifecycle = self.local_port.lock();
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
-            let linger_on = self.opts.linger_on.load(Ordering::Acquire) != 0;
-            let linger_s  = self.opts.linger_s.load(Ordering::Acquire);
+            use crate::sock_opts::sol_socket::{Scalar, flag};
+            let linger_on = self.opts.generic.flag(flag::LINGER);
+            let linger_s  = self.opts.generic.scalar(Scalar::LingerSeconds);
             let (seg, src, dst, tos) = {
                 let mut c = entry.conn.lock();
                 // F194: SO_LINGER on + timeout=0 = abortive close (RST)
