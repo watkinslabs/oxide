@@ -208,6 +208,32 @@ pub(crate) fn trace_create_resolve_eacces(op: &[u8], path: &str) {
     klog::write_raw(b"\"\n");
 }
 
+/// Resolve a namespace-mutation target's parent and apply the caller's
+/// leaf-kind verdict (Linux `last_type`). Each family disagrees on what a
+/// `.`/`..`/root leaf means, so the verdict is a parameter and the walk is
+/// shared. # C: O(N parent components)
+fn resolve_leaf_at(
+    dirfd: i32, raw: &str,
+    verdict: fn(crate::path_ops_policy::LastKind) -> Result<(), Errno>,
+) -> Result<(vfs::VfsPath, String), i64> {
+    use crate::path_ops_policy::LastKind;
+    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    let kind = match vp.last_type() {
+        vfs::LastType::Norm   => LastKind::Norm,
+        vfs::LastType::Dot    => LastKind::Dot,
+        vfs::LastType::Dotdot => LastKind::Dotdot,
+        vfs::LastType::Root   => LastKind::Root,
+    };
+    let deny = |k| -(verdict(k).err().unwrap_or(Errno::Ebusy).as_i32() as i64);
+    if verdict(kind).is_err() { return Err(deny(kind)); }
+    // A `LAST_NORM` leaf always has text; treat its absence as the root case
+    // rather than inventing a name.
+    match vp.last_component.clone() {
+        Some(name) => Ok((vp, name)),
+        None => Err(deny(LastKind::Root)),
+    }
+}
+
 /// Resolve the PARENT directory of absolute `p` through the engine
 /// Resolve a create target's parent through the real `*at` base, preserving the
 /// walked parent `(mnt,dentry)` as authority and returning only the final leaf
@@ -215,30 +241,14 @@ pub(crate) fn trace_create_resolve_eacces(op: &[u8], path: &str) {
 /// create family (`filename_create` seeds `-EEXIST` before `LAST_NORM` check).
 /// # C: O(N parent components)
 pub(crate) fn resolve_create_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
-    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
-    match vp.last_type() {
-        vfs::LastType::Norm => match vp.last_component.clone() {
-            Some(name) => Ok((vp, name)),
-            None => Err(-(Errno::Einval.as_i32() as i64)),
-        },
-        vfs::LastType::Dot | vfs::LastType::Dotdot => Err(-(Errno::Eexist.as_i32() as i64)),
-        vfs::LastType::Root => Err(-(Errno::Eexist.as_i32() as i64)),
-    }
+    resolve_leaf_at(dirfd, raw, crate::path_ops_policy::check_create_leaf_kind)
 }
 
 /// Resolve a hardlink destination parent. Existing directory/root/dot targets
 /// are EEXIST for Linux link(2), not the create-family legacy EINVAL-on-root.
 /// # C: O(N parent components)
 pub(crate) fn resolve_link_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
-    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
-    match vp.last_type() {
-        vfs::LastType::Norm => match vp.last_component.clone() {
-            Some(name) => Ok((vp, name)),
-            None => Err(-(Errno::Eexist.as_i32() as i64)),
-        },
-        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
-            Err(-(Errno::Eexist.as_i32() as i64)),
-    }
+    resolve_leaf_at(dirfd, raw, crate::path_ops_policy::check_create_leaf_kind)
 }
 
 /// Resolve an unlink target's parent without collapsing the authority back into
@@ -246,29 +256,13 @@ pub(crate) fn resolve_link_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsP
 /// before backend `unlink("."/"..")` can manufacture filesystem-specific ENOENT.
 /// # C: O(N parent components)
 pub(crate) fn resolve_unlink_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
-    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
-    match vp.last_type() {
-        vfs::LastType::Norm => match vp.last_component.clone() {
-            Some(name) => Ok((vp, name)),
-            None => Err(-(Errno::Eisdir.as_i32() as i64)),
-        },
-        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
-            Err(-(Errno::Eisdir.as_i32() as i64)),
-    }
+    resolve_leaf_at(dirfd, raw, crate::path_ops_policy::check_unlink_leaf_kind)
 }
 
 /// Resolve an rmdir target's parent. The raw `.`/`..` split is handled by
 /// `rmdir_dot_errno`; removing the root is Linux EBUSY. # C: O(N parent components)
 pub(crate) fn resolve_rmdir_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
-    let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
-    match vp.last_type() {
-        vfs::LastType::Norm => match vp.last_component.clone() {
-            Some(name) => Ok((vp, name)),
-            None => Err(-(Errno::Ebusy.as_i32() as i64)),
-        },
-        vfs::LastType::Root => Err(-(Errno::Ebusy.as_i32() as i64)),
-        vfs::LastType::Dot | vfs::LastType::Dotdot => Err(-(Errno::Einval.as_i32() as i64)),
-    }
+    resolve_leaf_at(dirfd, raw, crate::path_ops_policy::check_rmdir_leaf_kind)
 }
 
 /// Resolve a rename side's parent and report the final component's Linux
@@ -404,11 +398,26 @@ pub(crate) fn last_component(raw: &str) -> &str {
 /// (the `LAST_DOT` / `LAST_DOTDOT` cases). Checked on the raw path before
 /// resolution, which would otherwise normalise the dots away. # C: O(N)
 pub(crate) fn rmdir_dot_errno(raw: &str) -> Option<i64> {
-    match last_component(raw) {
-        "."  => Some(-(Errno::Einval.as_i32() as i64)),
-        ".." => Some(-(Errno::Enotempty.as_i32() as i64)),
-        _    => None,
-    }
+    use crate::path_ops_policy::{check_rmdir_leaf_kind, LastKind};
+    let kind = match last_component(raw) {
+        "."  => LastKind::Dot,
+        ".." => LastKind::Dotdot,
+        _    => return None,
+    };
+    check_rmdir_leaf_kind(kind).err().map(|e| -(e.as_i32() as i64))
+}
+
+/// The create family's post-lookup leaf verdict, in `filename_create`'s
+/// order: an occupied name is `EEXIST`, and a free name under a pathname whose
+/// trailing slash demands a directory is `ENOENT` for everything but `mkdir`.
+/// Both precede EROFS / EXDEV / permission. # C: O(1) + fs lookup
+pub(crate) fn check_create_leaf(parent: &vfs::VfsPath, leaf: &str, raw: &str,
+    kind: crate::path_ops_policy::CreateKind) -> Result<(), i64>
+{
+    let exists = child_exists(parent, leaf)?;
+    crate::path_ops_policy::check_create_leaf(
+        exists, crate::path_ops_policy::has_trailing_slash(raw), kind)
+        .map_err(|e| -(e.as_i32() as i64))
 }
 
 /// Strip a trailing `/` for the PARENT-SPLIT of create ops (`mkdir`/`mkdirat`):

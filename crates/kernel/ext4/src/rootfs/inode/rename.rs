@@ -19,10 +19,6 @@ use super::super::ops::{dirent_dt, project_inherit_allows_child};
 use super::super::state::RootfsState;
 use crate::mount::Mount;
 
-/// `EXT4_LINK_MAX` (`fs/ext4/ext4.h`): the `i_links_count` ceiling a directory
-/// may reach by gaining child `..` back-references.
-const EXT4_LINK_MAX: u16 = 65000;
-
 /// ext4 whiteout inode: `S_IFCHR` with `WHITEOUT_MODE` (0) permission bits and
 /// `WHITEOUT_DEV` (0) — Linux `ext4_whiteout_for_rename`.
 const WHITEOUT_MODE: u16 = crate::inode::S_IFCHR;
@@ -142,7 +138,10 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
     } else if src_is_dir && dest_raw.is_none() && s.to_p != s.from_p {
         // A directory gaining a new parent adds a `..` back-reference to it.
         let to_dir = mount.read_inode(s.to_p).map_err(|_| VfsError::Eio)?;
-        if to_dir.links_count >= EXT4_LINK_MAX { return Err(VfsError::Emlink); }
+        if super::links::dir_link_max_reached(
+            to_dir.links_count, to_dir.i_flags, mount.sb.feature_ro_compat) {
+            return Err(VfsError::Emlink);
+        }
     }
 
     // The overwritten destination keeps its quota charge and its blocks until

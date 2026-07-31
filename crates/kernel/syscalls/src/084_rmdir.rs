@@ -39,12 +39,13 @@ pub(crate) fn do_rmdir_at(dirfd: i32, raw: &str) -> i64 {
         return -(syscall::errno::Errno::Erofs.as_i32() as i64);
     }
     if let Some(d) = victim.as_ref() {
-        if let Some(inode) = d.inode() {
-            let cred = crate::pathresolve::current_cred();
-            if let Err(e) = vfs::namei::may_delete(&parent.inode, &inode, true, &cred) {
-                return errno_from_vfs(e);
-            }
+        let cred = crate::pathresolve::current_cred();
+        if let Err(e) = vfs::namei::may_delete_dentry(&parent.inode, d, true, &cred) {
+            return errno_from_vfs(e);
         }
+        // `vfs_rmdir`'s `is_local_mountpoint` gate: a directory that something
+        // is mounted on top of keeps its name until the mount goes away.
+        if d.is_mounted() { return -(syscall::errno::Errno::Ebusy.as_i32() as i64); }
     }
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend rmdir (Linux
     // `do_rmdir` locks the parent); dropped before the dcache invalidate below.

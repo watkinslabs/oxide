@@ -13,17 +13,33 @@ pub(crate) fn link_inode_at(src: vfs::InodeRef, src_mnt_id: u64, dirfd: i32, raw
     let (parent, name) = match resolve_link_parent_at(dirfd, raw_link) {
         Ok(x) => x, Err(rv) => return rv,
     };
-    if let Err(rv) = crate::landlock::check_parent(&parent,
-        ::security::landlock::access::MAKE_REG) { return rv; }
+    // `filename_create` decides the destination name first: an occupied name is
+    // EEXIST and a trailing slash on a free one is ENOENT, both AHEAD of the
+    // read-only mount, the cross-mount test and every permission check. So
+    // `link(a, existing)` reports EEXIST even on a read-only mount, and even
+    // when the source and destination are on different mounts.
+    if let Err(rv) = crate::namei_common::check_create_leaf(
+        &parent, &name, raw_link, crate::path_ops_policy::CreateKind::NonDir) { return rv; }
     if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);
     }
-    let cred = crate::pathresolve::current_cred();
-    if let Err(e) = vfs::may_create(&parent.inode, &cred) {
-        return errno_from_vfs(e);
-    }
+    // Cross-mount hardlinks are EXDEV even when both sides share a superblock:
+    // the name would escape the mount the caller reached the inode through.
     if src_mnt_id != parent.mnt_id {
         return -(Errno::Exdev.as_i32() as i64);
+    }
+    let cred = crate::pathresolve::current_cred();
+    // `may_linkat` — the hardlink-protection gate. Linux runs it at the syscall
+    // layer BEFORE the destination directory's create permission, so a caller
+    // barred from linking an unsafe source sees EPERM rather than the EACCES /
+    // EMLINK it would hit a step later.
+    if let Err(e) = vfs::may_linkat(&src, &cred) {
+        return errno_from_vfs(e);
+    }
+    if let Err(rv) = crate::landlock::check_parent(&parent,
+        ::security::landlock::access::MAKE_REG) { return rv; }
+    if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+        return errno_from_vfs(e);
     }
     if let Err(e) = vfs::may_link_source(&src, &cred) {
         return errno_from_vfs(e);
