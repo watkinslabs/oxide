@@ -189,6 +189,23 @@ pub fn split_legacy_flags(raw: u64) -> (u64, u32) {
     ((raw & !CSIGNAL) & CLONE_LEGACY_FLAGS, (raw & CSIGNAL) as u32)
 }
 
+/// Which caller-nominated destination a clone request must be able to write
+/// BEFORE the child is created.
+///
+/// Only the `CLONE_PIDFD` slot qualifies. The descriptor stored there is the
+/// caller's sole handle on the child, so an unwritable destination has to fail
+/// the call. The three tid destinations — `CLONE_PARENT_SETTID`,
+/// `CLONE_CHILD_SETTID`, `CLONE_CHILD_CLEARTID` — are recorded WITHOUT
+/// validation and published through the faulting user-write path, where a
+/// failure is dropped: by the time any of them is written the child exists, and
+/// a store that faults cannot un-create it. A null tid destination is therefore
+/// legal and simply produces no notification.
+/// # C: O(1)
+pub fn clone_dest_ok(flags: u64, pidfd_writable: bool) -> Result<(), Errno> {
+    if (flags & CLONE_PIDFD) != 0 && !pidfd_writable { return Err(Errno::Efault); }
+    Ok(())
+}
+
 /// Facts about the CALLER that two of the rules below need, gathered by the
 /// slot file and passed in so the rules stay testable.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]

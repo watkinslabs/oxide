@@ -227,8 +227,12 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
 fn publish_forked_child_tid() {
     let Some(cur) = crate::live::current() else { return };
     let Some((addr, tid)) = cur.take_set_child_tid() else { return };
-    // SAFETY: the address was range-checked against the user window at clone time and this CPU is running on the child's own page tables, so the store lands in the address space that owns the mapping; a copy-on-write fault here resolves normally in process context.
-    unsafe { core::ptr::write_volatile(addr as *mut i32, tid as i32); }
+    // This CPU runs on the child's own page tables here, so the store lands in
+    // the address space that owns the mapping and a copy-on-write fault
+    // resolves normally in process context. The address is caller-supplied and
+    // never validated, so it goes through the faulting path and an unwritable
+    // destination is dropped rather than turned into a fault.
+    let _ = uaccess::copy_to_user(addr, &(tid as i32).to_le_bytes());
 }
 
 /// This CPU's architectural stack pointer, for the scheduling-while-atomic

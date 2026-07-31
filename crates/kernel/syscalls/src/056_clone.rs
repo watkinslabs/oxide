@@ -26,6 +26,16 @@ pub(crate) use crate::clone_abi::{
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// Publish a tid into a user `int` that the caller nominated through one of the
+/// `CLONE_*_SETTID` flags. Best-effort by contract: the address is never
+/// pre-validated and a fault is swallowed, so a caller that names an
+/// unwritable — or null — destination still gets its child.
+/// # C: O(1)
+fn put_tid_best_effort(uaddr: u64, tid: u32) {
+    if uaddr == 0 { return; }
+    let _ = uaccess::copy_to_user(uaddr, &(tid as i32).to_le_bytes());
+}
+
 /// Facts about the running task the shared validation ladder needs.
 /// # C: O(pid-ns depth)
 fn caller_facts(cur: &sched::Task) -> CloneCaller {
@@ -98,10 +108,9 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     {
         return errno(e);
     }
-    if (flags & CLONE_PARENT_SETTID) != 0 && !user_i32_ptr_ok(ptid) { return errno(Errno::Efault); }
-    if (flags & CLONE_PIDFD) != 0 && !user_i32_ptr_ok(pidfd_ptr) { return errno(Errno::Efault); }
-    if (flags & CLONE_CHILD_SETTID) != 0 && !user_i32_ptr_ok(ctid) { return errno(Errno::Efault); }
-    if (flags & CLONE_CHILD_CLEARTID) != 0 && ctid >= hal::USER_VA_END { return errno(Errno::Efault); }
+    if let Err(e) = crate::clone_abi::clone_dest_ok(flags, user_i32_ptr_ok(pidfd_ptr)) {
+        return errno(e);
+    }
     // SAFETY: we are the running task on this CPU; no concurrent writer to our mm; preempt-off through the syscall handler.
     let parent_mm = match unsafe { cur.mm_ref() } {
         Some(m) => m,
@@ -390,10 +399,10 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     child.sigmask.store(cur.sigmask.load(Ordering::Acquire), Ordering::Release);
     // CLONE_PARENT_SETTID: write child tid in caller's AS.
     if (flags & CLONE_PARENT_SETTID) != 0 {
-        // SAFETY: ptid validated < USER_VA_END; CPL=0 writes in caller's AS.
-        // Linux writes the child's TID (the vtid userspace sees), not the
-        // opaque internal tid.
-        unsafe { core::ptr::write_volatile(ptid as *mut i32, child.vtid.load(Ordering::Acquire) as i32); }
+        // The child's TID as userspace numbers it (the vtid), not the opaque
+        // internal one. The child already exists at this point, so a store that
+        // faults cannot un-create it and must not fail the call.
+        put_tid_best_effort(ptid, child.vtid.load(Ordering::Acquire));
     }
     // CLONE_CHILD_SETTID writes the child's TID into the CHILD's address
     // space. Only a CLONE_VM child shares the caller's page tables, so the
@@ -411,8 +420,9 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // child's thread group.
     if (flags & CLONE_CHILD_SETTID) != 0 {
         if (flags & CLONE_VM) != 0 {
-            // SAFETY: ctid validated inside the user range; the address space is shared (CLONE_VM) so this store lands in the child's mapping; CPL=0.
-            unsafe { core::ptr::write_volatile(ctid as *mut i32, child.vtid.load(Ordering::Acquire) as i32); }
+            // The address space is shared, so the store lands in the child's
+            // mapping and can be made from here.
+            put_tid_best_effort(ctid, child.vtid.load(Ordering::Acquire));
         } else {
             child.set_child_tid.store(ctid, Ordering::Release);
         }
