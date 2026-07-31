@@ -83,8 +83,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     let my_pid = if vpid != 0 { vpid } else { cur.tid };
     let sid = cur.sid();
     let is_leader = sid != 0 && sid == my_pid;
-    // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
-    let has_ctty = unsafe { (*cur.ctty.get()).is_some() };
+    let has_ctty = cur.ctty_ino().is_some();
     let tty_sid = match route(ino) {
         TtyTarget::Serial => serial::session(),
         TtyTarget::Vt(vt) => vt_tty::vt_tty(vt).sid(),
@@ -99,8 +98,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
         return;
     }
     let pgid = cur.pgid();
-    // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
-    unsafe { *cur.ctty.get() = Some(Arc::clone(inode)); }
+    cur.set_ctty(Some(Arc::clone(inode)));
     match route(ino) {
         TtyTarget::Serial => serial::set_session_and_fg(sid, pgid),
         TtyTarget::Vt(vt) => vt_tty::set_session_and_fg(vt, sid, pgid),

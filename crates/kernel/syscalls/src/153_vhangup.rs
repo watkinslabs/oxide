@@ -28,7 +28,7 @@ pub fn sys_vhangup(_args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let cap = cur.has_cap(sched::cap::SYS_TTY_CONFIG);
     // SAFETY: `ctty` is single-mutator per `13§5` — the running task on this CPU is its sole writer, and this read stays in syscall context.
-    let ctty_ino = unsafe { (*cur.ctty.get()).as_ref().map(|i| i.ino()) };
+    let ctty_ino = cur.ctty_ino();
     match tty::hangup::vhangup_decision(cap, ctty_ino.is_some()) {
         tty::hangup::VhangupOutcome::Eperm => -(Errno::Eperm.as_i32() as i64),
         // `get_current_tty()` returned NULL: `tty_vhangup_self` returns without
