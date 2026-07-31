@@ -112,4 +112,4 @@ pub const AIO_SIGSET_SIZE: u64 = 16;
 /// event `i` sits one whole `io_event` past the array base — which is exactly
 /// the end of the 32-byte header.
 /// # C: O(1)
-pub fn event_byte_off(idx: u32) -> u64 { AIO_RING_HDR_SIZE + idx as u64 * IOEV_SIZE }
+pub const fn event_byte_off(idx: u32) -> u64 { AIO_RING_HDR_SIZE + idx as u64 * IOEV_SIZE }

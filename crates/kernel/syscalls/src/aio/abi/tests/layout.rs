@@ -2,7 +2,9 @@
 // on, identical on x86_64 and aarch64 (no compat form is in play — both are
 // 64-bit LP64 and the structures carry explicit fixed-width fields).
 
+use crate::aio_abi::layout::{AioRingAbi, AioSigsetAbi, IoEventAbi, IocbAbi};
 use crate::aio_abi::uapi::*;
+use core::mem::{offset_of, size_of};
 
 #[test]
 fn iocb_field_offsets_and_size() {
@@ -77,4 +79,22 @@ fn flag_bits_and_sigset_layout() {
     assert_eq!(AIO_SIGSET_OFF_SIGSETSIZE, 8);
     assert_eq!(AIO_SIGSET_SIZE, 16);
     assert_eq!(KIOCB_KEY, 0);
+}
+
+#[test]
+fn repr_c_mirrors_agree_with_the_constants() {
+    // The const assertions in `aio_abi::layout` make this claim on BOTH kernel
+    // targets at compile time; this repeats it at runtime so a reader sees the
+    // binding, and so a constant edited without touching the mirror fails here
+    // as well as in the aarch64 build.
+    assert_eq!(size_of::<IocbAbi>(), IOCB_SIZE as usize);
+    assert_eq!(offset_of!(IocbAbi, aio_reserved2), IOCB_OFF_RESERVED2 as usize);
+    assert_eq!(offset_of!(IocbAbi, aio_resfd), IOCB_OFF_RESFD as usize);
+    assert_eq!(size_of::<IoEventAbi>(), IOEV_SIZE as usize);
+    assert_eq!(offset_of!(IoEventAbi, res2), IOEV_OFF_RES2 as usize);
+    assert_eq!(size_of::<AioRingAbi>(), AIO_RING_HDR_SIZE as usize);
+    assert_eq!(offset_of!(AioRingAbi, header_length), RING_OFF_HEADER_LENGTH as usize);
+    assert_eq!(size_of::<AioSigsetAbi>(), AIO_SIGSET_SIZE as usize);
+    // Slot 0 abuts the header: no padding, on any target.
+    assert_eq!(event_byte_off(0), size_of::<AioRingAbi>() as u64);
 }

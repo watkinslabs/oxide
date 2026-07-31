@@ -22,8 +22,6 @@ use crate::userbuf::{validate_user_buf, validate_user_buf_readable, validate_use
 const PTR_SIZE: u64 = 8;
 /// Bytes of one `struct iovec`.
 const IOVEC_SIZE: u64 = 16;
-/// Poll conditions always reported regardless of the requested mask.
-const POLL_ALWAYS: u32 = vfs::POLL_ERR | vfs::POLL_HUP;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -221,22 +219,42 @@ fn nowait_read(io: &Iocb, file: &Arc<File>) -> i64 {
     }
 }
 
-/// `IOCB_CMD_POLL`: complete straight away when the condition already holds,
-/// otherwise keep the request outstanding so a reaper (or `io_cancel`) can
-/// resolve it. # C: O(1)
+/// `IOCB_CMD_POLL`: arm the file's wait queue, then read its mask once. A
+/// condition that already holds completes here; otherwise the request stays
+/// outstanding and is completed BY THE WAKEUP (or by `io_cancel`), never by a
+/// reap — an event loop that waits only on the `aio_resfd` eventfd must be
+/// woken without ever calling `io_getevents`.
+/// # C: O(N_active)
 fn start_poll(c: &Arc<AioContext>, uiocb: u64, io: &Iocb, file: Arc<File>,
               resfd: Option<Arc<File>>) -> Result<(), i64>
 {
-    let mask = validate_poll(io).map_err(err)? as u32;
+    let mask = validate_poll(io).map_err(err)?;
     // A file with no wait queue cannot support a pollable request.
-    if file.poll_subscribers().is_none() { return Err(err(Errno::Einval)); }
-    let events = mask | POLL_ALWAYS;
-    let ready = file.poll() as u32 & events;
-    if ready != 0 {
-        finish(c, uiocb, io, ready as i64, resfd.as_ref());
-        return Ok(());
+    let subs = match file.poll_subscribers() { Some(s) => s, None => return Err(err(Errno::Einval)) };
+    let events = crate::aio_abi::poll::request_events(mask as u16);
+    // Publish the request BEFORE registering and before the first readiness
+    // read: the wait-queue callback only ever completes requests it finds on
+    // this list, and it removes each one under the same lock, so a wake that
+    // races this submit completes the request exactly once instead of losing
+    // it in the window between the check and the registration.
+    let ino = file.inode().ino();
+    let interest = {
+        let mut act = c.active.lock();
+        act.push(ActiveReq { obj: uiocb, data: io.data, file, events, resfd });
+        // One subscriber entry per (context, file), so its interest must be the
+        // UNION over every request this context has on that file — a second
+        // request replacing the first one's mask would leave the first
+        // unreachable from a keyed wake.
+        act.iter().filter(|r| r.file.inode().ino() == ino).fold(0u32, |m, r| m | r.events)
+    };
+    if let Some(w) = c.waker.lock().as_ref() {
+        let weak: alloc::sync::Weak<dyn vfs::EpollNotify> =
+            Arc::downgrade(&(Arc::clone(w) as Arc<dyn vfs::EpollNotify>));
+        subs.subscribe_mask(c.subscriber_id(), weak, interest);
     }
-    c.active.lock().push(ActiveReq { obj: uiocb, data: io.data, file, events, resfd });
+    // Linux reads the file's mask once after arming the wait entry; a
+    // condition that already holds completes right here.
+    crate::aio::ctx::service_ready(c, 0);
     Ok(())
 }
 
@@ -246,8 +264,3 @@ pub(crate) fn finish(c: &AioContext, uiocb: u64, io: &Iocb, res: i64, resfd: Opt
     if let Some(f) = resfd { signal_resfd(f); }
 }
 
-/// Complete an outstanding poll request. # C: O(1)
-pub(crate) fn finish_active(c: &AioContext, req: &ActiveReq, res: i64) {
-    c.complete(IoEvent { data: req.data, obj: req.obj, res, res2: 0 });
-    if let Some(f) = req.resfd.as_ref() { signal_resfd(f); }
-}

@@ -73,6 +73,11 @@ pub fn sys_io_pgetevents(args: &SyscallArgs) -> i64 {
 /// `EINPROGRESS`; anything already complete — which is every read, write and
 /// sync, because those finish inside their submit — is `EINVAL`.
 ///
+/// A cancelled request is NOT dropped: cancellation still delivers its
+/// `io_event`, with `res` = 0 because the condition never became true. A caller
+/// that reaps after a successful cancel therefore sees one event per cancelled
+/// iocb, which is what lets it account for every submission it made.
+///
 /// The `result` argument is not used: completions are delivered through the
 /// ring, never written back here.
 /// # C: O(N_active)
@@ -88,9 +93,9 @@ pub fn sys_io_cancel(args: &SyscallArgs) -> i64 {
         act.iter().position(|r| r.obj == uiocb).map(|i| act.remove(i))
     };
     match taken {
-        // The cancelled request will never post a completion, so give its ring
-        // slot back.
-        Some(_) => { c.put_reqs(1); err(Errno::Einprogress) }
+        // The reserved ring slot is consumed by this completion, so it is not
+        // returned here — the reap that collects the event returns it.
+        Some(req) => { c.complete_active(&req, 0); err(Errno::Einprogress) }
         None => err(Errno::Einval),
     }
 }
