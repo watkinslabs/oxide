@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use vfs::fs::fs_context::{
-    vfs_parse_fs_param, FsContext, FsParameter, FsValue,
+    vfs_parse_fs_param, FsContext, FsParameter, FsValue, AT_FDCWD,
 };
 use vfs::superblock::{FileSystemType, SuperBlock};
 use vfs::{Dentry, File, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
@@ -40,9 +40,9 @@ fn each_command_maps_to_distinct_typed_value() {
     let f = auxfile();
     assert_eq!(FsParameter::fd("fd", 7, Arc::clone(&f)).value, FsValue::File { fd: 7, file: f });
     assert_eq!(FsParameter::path("upperdir", "/a").value,
-        FsValue::Filename { path: "/a".to_string(), empty: false });
+        FsValue::Filename { path: "/a".to_string(), dirfd: AT_FDCWD, empty: false });
     assert_eq!(FsParameter::path_empty("dir", "").value,
-        FsValue::Filename { path: String::new(), empty: true });
+        FsValue::Filename { path: String::new(), dirfd: AT_FDCWD, empty: true });
     assert_eq!(FsParameter::blob("data", &[1, 2, 3]).value, FsValue::Blob(vec![1, 2, 3]));
 }
 
@@ -65,7 +65,7 @@ fn typed_accessors_round_trip_and_reject_wrong_type() {
     assert!(s.as_file().is_none());
 
     let p = FsParameter::path_empty("k", "/mnt");
-    assert_eq!(p.as_path(), Some(("/mnt", true)));
+    assert_eq!(p.as_path(), Some(("/mnt", AT_FDCWD, true)));
     assert_eq!(p.as_fd(), None);
 
     let b = FsParameter::blob("k", b"raw");
