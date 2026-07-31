@@ -183,6 +183,9 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
             Err(error) => errno_from_neterr(error),
         };
     } else if family == net::socket_args::AF_UNIX {
+        if let Err(error) = net::sockaddr::validate_unix_addr(family as u16, copied_len) {
+            return -(error.as_i32() as i64);
+        }
         let path = match storage.unix_path() {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };

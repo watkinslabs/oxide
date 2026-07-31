@@ -192,6 +192,9 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     // Parse the user sockaddr into the typed BoundAddr enum.
     let mut unix_node: Option<UnixSockNode> = None;
     let addr = if family == net::sock::AF_UNIX {
+        if let Err(error) = net::sockaddr::validate_unix_addr(family, copied_len) {
+            return -(error.as_i32() as i64);
+        }
         let path = match storage.unix_path() {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };

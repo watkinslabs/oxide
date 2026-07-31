@@ -1,5 +1,11 @@
 // Socket option helpers split out of sock.rs to keep the socket wrapper under
 // the per-file size cap.
+//
+// Module manifest:
+// - this file: security admission plus the TCP keepalive option application.
+// - `sol_socket`: the generic SOL_SOCKET option table (slots 54/55).
+
+pub mod sol_socket;
 
 use crate::sock::InetSocket;
 use crate::stack::TcpEntry;
@@ -95,4 +101,22 @@ pub fn apply_tcp_keepalive_opts(sock: &InetSocket, entry: &TcpEntry) {
     c.ka_cnt_max = sock.opts.tcp_keepcnt.load(Ordering::Acquire).max(1) as u32;
     c.ka_count = 0;
     c.next_ka_ns = 0;
+}
+
+/// Socket personality the generic SOL_SOCKET table branches on. # C: O(1)
+pub fn describe(sock: &InetSocket) -> sol_socket::OptSock {
+    use core::sync::atomic::Ordering;
+    use crate::sock::SockKind;
+    let family = sock.family.load(Ordering::Acquire);
+    let inet = family == crate::sock::AF_INET || family == crate::sock::AF_INET6;
+    let (tcp, udp) = match &*sock.kind.lock() {
+        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => (inet, false),
+        SockKind::Udp => (false, inet),
+        _ => (false, false),
+    };
+    sol_socket::OptSock {
+        family, tcp, udp,
+        // Linux gives `set_peek_off` to the AF_UNIX protocol operations only.
+        peek_off_capable: family == crate::sock::AF_UNIX,
+    }
 }

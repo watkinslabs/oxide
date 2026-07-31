@@ -14,6 +14,11 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Netlink protocol operations carry `sock_no_listen`, so a listen on a
+    // real netlink socket is EOPNOTSUPP rather than "not a socket".
+    if crate::netlink_fd::from_file(file.clone()).is_some() {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
     // D3.3: AF_VSOCK listen — register the bound port in the vsock
     // connection table so inbound OP_REQUESTs are accepted + queued.
     if let Some(vs) = vsock_from_file(file.clone()) {

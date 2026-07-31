@@ -86,9 +86,10 @@ pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw:
     })
 }
 
-/// Linux `__sys_accept4_file` flag gate. # C: O(1)
+/// Linux `__sys_accept4_file` flag gate. The syscall's flag operand is an
+/// `int`, so the register's upper half never reaches the check. # C: O(1)
 pub fn parse_accept_flags(flags: u64) -> Result<AcceptFlags, Errno> {
-    let flags = u32::try_from(flags).map_err(|_| Errno::Einval)?;
+    let flags = flags as u32;
     if flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return Err(Errno::Einval); }
     Ok(AcceptFlags {
         cloexec:  flags & SOCK_CLOEXEC != 0,
@@ -106,8 +107,12 @@ fn validate_inet(typ: u32, protocol: u32, has_net_raw: bool) -> Result<(), Errno
             if protocol == IPPROTO_IP || protocol == IPPROTO_UDP { Ok(()) } else { Err(Errno::Eprotonosupport) }
         }
         SOCK_RAW => {
+            // The type/protocol lookup runs before the capability screen, so a
+            // raw socket asking for the wildcard protocol reports the missing
+            // protocol even to an unprivileged caller.
+            if protocol == IPPROTO_IP { return Err(Errno::Eprotonosupport); }
             if !has_net_raw { return Err(Errno::Eperm); }
-            if protocol == IPPROTO_IP { Err(Errno::Eprotonosupport) } else { Ok(()) }
+            Ok(())
         }
         _ => Err(Errno::Esocktnosupport),
     }
@@ -222,6 +227,31 @@ mod tests {
         assert_eq!(parse_socket_args(AF_INET, SOCK_RAW, IPPROTO_IP, true), Err(Errno::Eprotonosupport));
         assert_eq!(parse_socket_args(AF_INET6, SOCK_RAW, IPPROTO_IP, true), Err(Errno::Eprotonosupport));
         assert_eq!(parse_socket_args(AF_PACKET, SOCK_RAW, 0, false), Err(Errno::Eperm));
+    }
+
+    // The INET families resolve the type/protocol pair before the raw-socket
+    // capability screen, so the missing protocol outranks the missing
+    // capability. AF_PACKET screens the capability first instead.
+    #[test]
+    fn inet_protocol_lookup_outranks_the_raw_capability_screen() {
+        assert_eq!(parse_socket_args(AF_INET, SOCK_RAW, IPPROTO_IP, false),
+            Err(Errno::Eprotonosupport));
+        assert_eq!(parse_socket_args(AF_INET6, SOCK_RAW, IPPROTO_IP, false),
+            Err(Errno::Eprotonosupport));
+        assert_eq!(parse_socket_args(AF_INET, SOCK_RAW, IPPROTO_MAX, false), Err(Errno::Einval));
+        assert_eq!(parse_socket_args(AF_INET, SOCK_RDM, 0, false), Err(Errno::Esocktnosupport));
+        assert_eq!(parse_socket_args(AF_PACKET, SOCK_SEQPACKET, 0, false), Err(Errno::Eperm));
+    }
+
+    // `accept4`'s flag operand is an `int`; the upper half of the register is
+    // discarded before the flag screen, exactly as the C prototype demands.
+    #[test]
+    fn accept4_flags_truncate_to_the_c_int_operand() {
+        assert_eq!(parse_accept_flags(1u64 << 32).unwrap(),
+            AcceptFlags { cloexec: false, nonblock: false });
+        assert_eq!(parse_accept_flags((1u64 << 32) | SOCK_CLOEXEC as u64).unwrap(),
+            AcceptFlags { cloexec: true, nonblock: false });
+        assert_eq!(parse_accept_flags(u64::MAX).unwrap_err(), Errno::Einval);
     }
 
     #[test]
