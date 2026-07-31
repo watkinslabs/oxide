@@ -95,7 +95,20 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
     super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(sock, &entry);
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     match remote_ip {
-        crate::IpAddr::V4(ip) => *sock.peer.lock() = Some((ip, remote_port)),
+        crate::IpAddr::V4(ip) => {
+            *sock.peer.lock() = Some((ip, remote_port));
+            if sock.family.load(Ordering::Acquire) == AF_INET6 {
+                let local = match local_ip {
+                    crate::IpAddr::V4(local) => local,
+                    crate::IpAddr::V6(_) => return Err(NetError::Einval),
+                };
+                // Linux's mapped-v4 connect path updates both IPv6 name
+                // fields. `getsockname`/`getpeername` must therefore expose
+                // mapped values to glibc instead of an unspecified `::`.
+                *sock.local_ip6.lock() = crate::Ipv6Addr::from_v4_mapped(local);
+                *sock.peer6.lock() = Some((crate::Ipv6Addr::from_v4_mapped(ip), remote_port));
+            }
+        }
         crate::IpAddr::V6(ip) => *sock.peer6.lock() = Some((ip, remote_port)),
     }
     Ok(entry)
