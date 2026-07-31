@@ -112,6 +112,8 @@ impl File {
             owner: ::core::sync::atomic::AtomicI32::new(0),
             owner_creds: AtomicU64::new(0),
             f_sig: ::core::sync::atomic::AtomicI32::new(0),
+            f_created: ::core::sync::atomic::AtomicBool::new(false),
+            owner_type: ::core::sync::atomic::AtomicI32::new(super::async_notify::owner_type::F_OWNER_PID),
             fa_fd: ::core::sync::atomic::AtomicI32::new(-1),
             // F_UNLCK (2) = no lease held (Linux `F_GETLEASE` default).
             lease: core::sync::atomic::AtomicI32::new(2),
@@ -175,8 +177,18 @@ impl File {
         }
     }
 
-    /// `f_mode` (FMODE_* capability bits). # C: O(1)
-    pub fn f_mode(&self) -> Fmode { self.f_mode }
+    /// `f_mode` (FMODE_* capability bits), including `FMODE_CREATED` when this
+    /// open created the file. # C: O(1)
+    pub fn f_mode(&self) -> Fmode {
+        if self.f_created.load(Ordering::Acquire) { self.f_mode | Fmode::CREATED }
+        else { self.f_mode }
+    }
+
+    /// Publish `FMODE_CREATED` (Linux `do_dentry_open`'s `FMODE_CREATED` for an
+    /// `O_CREAT` that hit the negative-dentry path). Called by the open syscall
+    /// once the description exists; `fcntl(F_CREATED_QUERY)` reads it back.
+    /// # C: O(1)
+    pub fn set_created(&self) { self.f_created.store(true, Ordering::Release); }
 
     /// `f_op` — the vtable this open file description was bound to at open
     /// (Linux `file->f_op`, which a `f_op->open` may have swapped away from

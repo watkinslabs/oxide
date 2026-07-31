@@ -23,12 +23,27 @@ use super::File;
 /// tests, early boot). # C: O(1)
 pub(crate) static SIGIO_HOOK: AtomicU64 = AtomicU64::new(0);
 
+/// `f_owner_ex.type` / Linux `enum pid_type` as `F_SETOWN_EX` names it
+/// (`include/uapi/asm-generic/fcntl.h`). The ONE owner of these values.
+pub mod owner_type {
+    /// `F_OWNER_TID` — Linux `PIDTYPE_PID`: one thread.
+    pub const F_OWNER_TID:  i32 = 0;
+    /// `F_OWNER_PID` — Linux `PIDTYPE_TGID`: every thread of one process.
+    pub const F_OWNER_PID:  i32 = 1;
+    /// `F_OWNER_PGRP` — Linux `PIDTYPE_PGID`: every process in a group.
+    pub const F_OWNER_PGRP: i32 = 2;
+}
+
 /// One async-I/O readiness notification, as `send_sigio_to_task` consumes it.
 /// POD so the hook can cross the vfs→sched boundary as a plain `fn` pointer.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct AsyncSignal {
-    /// `f_owner.pid` — `>0` a task, `<0` a `-pgrp`, `0` no target.
+    /// `f_owner.pid` — the recorded id, always non-negative for a live owner
+    /// (`0` = no target). A process group is named by `ty`, not by a sign.
     pub owner: i32,
+    /// `f_owner.pid_type` — see [`owner_type`]. Decides whether the signal goes
+    /// to one thread, one process, or a whole process group.
+    pub ty: i32,
     /// The signal actually delivered: the `F_SETSIG` value, else `SIGIO`/`SIGURG`.
     pub sig: i32,
     /// `fown->uid` — the `F_SETOWN`-time real uid, for `sigio_perm`.
@@ -179,13 +194,22 @@ impl File {
     /// real uid into both slots, which is what this did before, silently handed
     /// that bypass to any process whose real uid was 0.
     /// # C: O(1)
-    pub fn f_setown(&self, id: i32, uid: u32, euid: u32) {
+    pub fn f_setown(&self, id: i32, ty: i32, uid: u32, euid: u32) {
         self.owner.store(id, Ordering::Release);
+        self.owner_type.store(ty, Ordering::Release);
         self.owner_creds.store(((uid as u64) << 32) | euid as u64, Ordering::Release);
     }
 
-    /// `F_GETOWN` (Linux `f_getown`): the delivery target id. # C: O(1)
-    pub fn f_getown(&self) -> i32 { self.owner.load(Ordering::Acquire) }
+    /// `F_GETOWN` (Linux `f_getown`): the delivery target id, with a process
+    /// group reported as a NEGATIVE pgid — the legacy `F_GETOWN` encoding that
+    /// predates `F_GETOWN_EX`. # C: O(1)
+    pub fn f_getown(&self) -> i32 {
+        let id = self.owner.load(Ordering::Acquire);
+        if self.owner_type.load(Ordering::Acquire) == owner_type::F_OWNER_PGRP { -id } else { id }
+    }
+
+    /// `f_owner.pid_type` — which kind of id `f_owner` names. # C: O(1)
+    pub fn f_owner_type(&self) -> i32 { self.owner_type.load(Ordering::Acquire) }
 
     /// `f_owner` credential snapshot `(uid, euid)` from the last `F_SETOWN`
     /// (Linux `struct fown_struct.uid/.euid`). # C: O(1)
@@ -255,6 +279,7 @@ impl File {
             owner, sig, uid, euid,
             code: sicode_for(sig, reason),
             band: band_for(reason),
+            ty:   self.owner_type.load(Ordering::Acquire),
             fd:   self.fa_fd.load(Ordering::Acquire),
             queued: chosen != 0,
         });

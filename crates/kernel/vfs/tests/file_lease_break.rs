@@ -53,7 +53,7 @@ fn conflicting_open_breaks_lease_and_signals_holder() {
     let holder = file_on(&ino);
     // Holder takes a write lease and is registered (what F_SETLEASE does).
     holder.set_lease(F_WRLCK);
-    holder.f_setown(4321, 0, 0);
+    holder.f_setown(4321, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     vfs::file::lease_register(&holder);
     assert_eq!(vfs::file::lease_registered(), 1, "one registered lease holder");
 
@@ -84,7 +84,7 @@ fn read_lease_only_breaks_on_write_open() {
     let ino = reg_inode();
     let holder = file_on(&ino);
     holder.set_lease(F_RDLCK);
-    holder.f_setown(10, 0, 0);
+    holder.f_setown(10, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     vfs::file::lease_register(&holder);
     // A read open does NOT break a read lease; a write open does.
     assert!(!vfs::file::lease_conflict(&ino, false), "read lease + read open: no conflict");
@@ -110,7 +110,7 @@ fn dir_mutation_fires_dnotify_oneshot() {
     let dir = dir_inode();
     let watch = file_on(&dir);
     watch.set_dnotify(vfs::file::DN_CREATE);
-    watch.f_setown(777, 0, 0);
+    watch.f_setown(777, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     vfs::file::dnotify_register(&watch);
     assert_eq!(vfs::file::dnotify_registered(), 1, "one armed watch");
 
@@ -136,7 +136,7 @@ fn dnotify_mask_filters_events_and_multishot_persists() {
     let watch = file_on(&dir);
     const DN_MULTISHOT: u32 = 0x8000_0000;
     watch.set_dnotify(vfs::file::DN_DELETE | DN_MULTISHOT);
-    watch.f_setown(55, 0, 0);
+    watch.f_setown(55, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     vfs::file::dnotify_register(&watch);
 
     // A non-matching event (DN_CREATE) does not fire a DN_DELETE-only watch.

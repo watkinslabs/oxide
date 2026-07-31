@@ -515,6 +515,10 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         file_cred, nofile, fifo_fop)
     {
         Ok(fd)  => {
+            // `FMODE_CREATED` (Linux `do_dentry_open`): this open is the one
+            // that created the file. `fcntl(F_CREATED_QUERY)` reads it back;
+            // before this the bit was defined but never set by any path.
+            if created { if let Ok(f) = fdt.get(fd) { f.set_created(); } }
             if let Some(i) = created_ref { vfs::file::iput(i); }
             #[cfg(feature = "debug-atexit")]
             if let Some(pino) = probe_ino {

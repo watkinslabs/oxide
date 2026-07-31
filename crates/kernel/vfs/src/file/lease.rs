@@ -239,6 +239,7 @@ impl File {
             owner, sig, uid, euid,
             code: sicode_for(sig, reason::POLL_MSG),
             band: band_for(reason::POLL_MSG),
+            ty:   self.f_owner_type(),
             fd:   self.fasync_fd(),
             queued: chosen != 0,
         });
