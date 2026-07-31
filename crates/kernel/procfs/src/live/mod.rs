@@ -20,6 +20,7 @@ mod pid_attr;
 mod pid_dir;
 mod pid_access;
 mod pid_files;
+mod pid_reval;
 mod root;
 mod self_files;
 

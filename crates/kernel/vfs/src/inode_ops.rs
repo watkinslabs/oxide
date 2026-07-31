@@ -13,7 +13,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::dentry::Dentry;
+use crate::dentry::{Dentry, DentryOps};
 use crate::xattr::XattrError;
 
 use crate::idmap::Idmap;
@@ -73,6 +73,15 @@ pub trait InodeOps: Send + Sync {
     fn lookup(&self, _inode: &Inode, _name: &str) -> KResult<InodeRef> {
         Err(VfsError::Enotdir)
     }
+
+    /// `dentry_operations` this directory hands to a child dentry the dcache is
+    /// about to cache (Linux `d_splice_alias_ops` / `d_set_d_op` at the tail of
+    /// `->lookup`). `None` ⇒ the child inherits the parent's vector, which is
+    /// how a whole subtree acquires one vector from its root. A fs whose cached
+    /// children can go stale — a per-pid `/proc` entry whose task may `setuid()`
+    /// or exit — MUST answer here, or the dcache serves the first lookup's inode
+    /// forever. # C: O(1)
+    fn child_d_op(&self, _inode: &Inode, _name: &str) -> Option<&'static DentryOps> { None }
 
     /// Whether this inode can trigger `automount`. # C: O(1)
     fn is_automount(&self, _inode: &Inode) -> bool { false }

@@ -95,3 +95,36 @@ pub fn dump_owner(kthread: bool, euid: u32, egid: u32, dumpable: u8,
 pub fn is_world_searchable_dir(is_dir: bool, mode: u16) -> bool {
     is_dir && mode == MODE_DIR_RUGO
 }
+
+/// The live facts a cached per-pid node's revalidation needs about its task.
+pub struct TaskOwner { pub kthread: bool, pub euid: u32, pub egid: u32, pub dumpable: u8 }
+
+/// `S_ISUID | S_ISGID` — cleared from every per-pid node.
+const SUID_SGID: u16 = 0o6000;
+
+/// Linux `pid_revalidate` + `pid_update_inode` for one CACHED per-pid node.
+///
+/// A per-pid node's ownership is a snapshot of credentials that change under it:
+/// the task may `setuid()` (systemd's per-user manager drops to the session uid
+/// between the fork that populates the dcache and the exec that uses it), or die
+/// and have its pid recycled. Serving the cached inode without this re-stamp
+/// hands the new credentials the OLD owner — `/proc/self/fd` stays root-owned
+/// after the drop, and `opendir` on the task's own fd directory fails `EACCES`.
+///
+/// `None` ⇒ the task is gone; the caller drops the dentry so the next lookup
+/// rebuilds it (Linux returns 0 from `d_revalidate`). `Some((uid, gid, mode))`
+/// ⇒ re-stamp; only ownership and the suid bits move, never the table mode.
+/// # C: O(1)
+pub fn revalidate_pid_inode(task: Option<TaskOwner>, is_dir: bool, mode: u16)
+    -> Option<(u32, u32, u16)>
+{
+    let t = task?;
+    let searchable = is_world_searchable_dir(is_dir, mode & 0o7777);
+    let (uid, gid) = dump_owner(t.kthread, t.euid, t.egid, t.dumpable, searchable);
+    Some((uid, gid, mode & !SUID_SGID))
+}
+
+/// Linux `pid_delete_dentry`: a dead task's per-pid dentries never reach the
+/// LRU. Keeping them is what lets a RECYCLED pid inherit the previous task's
+/// cached inode. # C: O(1)
+pub fn delete_pid_dentry(task_alive: bool) -> bool { !task_alive }
