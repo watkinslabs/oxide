@@ -41,6 +41,22 @@ pub fn process_vpid(t: &Task) -> u32 {
     if v != 0 { v } else { t.tgid.load(Ordering::Acquire) }
 }
 
+/// Linux `signal_struct::leader`: is this process the leader of its session?
+///
+/// ONE definition, shared by the `setsid`/`setpgid` error ladders, the hangup
+/// walk and the exit-time terminal disassociation — a session-leader test that
+/// disagrees between those paths hangs up the wrong session.
+///
+/// `setsid(2)` is the only thing that ever sets the flag, so the identity form
+/// (`sid == our own process id`, which only a session leader can satisfy) also
+/// counts: a process that acquired leadership before the flag existed for it —
+/// the boot-time initial task — is still a leader, and a leader that is not
+/// recognised as one skips the SIGHUP its session is owed.
+/// # C: O(1)
+pub fn is_session_leader(t: &Task) -> bool {
+    t.thread_group.is_session_leader() || t.sid() == process_vpid(t)
+}
+
 /// Whether `a` and `b` are threads of one process (Linux `same_thread_group`).
 /// # C: O(1)
 fn same_thread_group(a: &Task, b: &Task) -> bool {
