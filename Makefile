@@ -36,6 +36,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         test lint stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
+        smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
@@ -149,6 +150,16 @@ smoke-arm: arm
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
 
 smoke: smoke-x86 smoke-arm
+
+# Boot-cmdline propagation gate — asserts the BOOTLOADER's command line
+# reaches /proc/cmdline on both arches (different transport per arch:
+# multiboot2 tag on x86_64, EFI LoadOptions on aarch64).
+CMDLINE_SMOKE_TIMEOUT ?= 900
+smoke-cmdline-x86: x86
+	./tools/boot-smoke-cmdline.sh x86 $(CMDLINE_SMOKE_TIMEOUT)
+smoke-cmdline-arm: arm
+	./tools/boot-smoke-cmdline.sh arm $(CMDLINE_SMOKE_TIMEOUT)
+smoke-cmdline: smoke-cmdline-x86 smoke-cmdline-arm
 
 # Stack-frame size gate (Linux CONFIG_FRAME_WARN; `skizm.md` Step 6). Reads
 # prologue reservations out of an already-built kernel ELF, so it needs no
