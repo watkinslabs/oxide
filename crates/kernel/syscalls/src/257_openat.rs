@@ -450,8 +450,19 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
             klog::write_raw(path_str.as_bytes());
             klog::write_raw(b"\" flags=");
             klog::write_hex_u64(flags as u64);
-            klog::write_raw(b" tid=");
-            klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+            // The denied caller's own identity, not just its tid: a `/proc`
+            // denial is only readable next to the vpid whose directory it is and
+            // the euid/dumpable pair `task_dump_owner` stamps the node from.
+            if let Some(c) = sched::live::current() {
+                klog::write_raw(b" tid=");
+                klog::write_dec_u64(c.tid as u64);
+                klog::write_raw(b" vpid=");
+                klog::write_dec_u64(sched::live::registry::display_vpid(c.tid) as u64);
+                klog::write_raw(b" euid=");
+                klog::write_dec_u64(c.creds.euid.load(core::sync::atomic::Ordering::Acquire) as u64);
+                klog::write_raw(b" dumpable=");
+                klog::write_dec_u64(c.dumpable.load(core::sync::atomic::Ordering::Acquire) as u64);
+            }
             klog::write_raw(b"\n");
         }
         return rv;
