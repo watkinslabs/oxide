@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
-use sync::Inode as InodeClass;
+use sync::{Inode as InodeClass, Spinlock};
 
 type Disk = MemDisk<InodeClass>;
 
@@ -112,8 +112,7 @@ fn memdisk_discard_zeros_range() {
     let mut w = BlockRequest::new_write(0, 2, payload);
     d.submit_sync(&mut w).unwrap();
     let mut disc = BlockRequest {
-        op: BlockOp::Discard, start_block: 0, len_blocks: 1, buffer: Vec::new(),
-    };
+        op: BlockOp::Discard, start_block: 0, len_blocks: 1, buffer: Vec::new(), ..Default::default() };
     d.submit_sync(&mut disc).unwrap();
     let mut r = BlockRequest::new_read(0, 2, 512);
     d.submit_sync(&mut r).unwrap();
@@ -277,4 +276,51 @@ fn pagecache_concurrent_readers_share_one_page() {
     let first = ptrs[0];
     assert!(ptrs.iter().all(|&p| p == first), "concurrent readers diverged: {ptrs:?}");
     assert_eq!(pc.cached_count(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// I/O priority reaches the request
+// ---------------------------------------------------------------------------
+
+/// Records the priority of every request the registry hands down, so the test
+/// can assert what the device actually received rather than what was built.
+struct PrioSpy {
+    inner: Arc<Disk>,
+    seen: Spinlock<Vec<i32>, InodeClass>,
+}
+
+impl BlockDevice for PrioSpy {
+    fn block_size(&self) -> u32 { self.inner.block_size() }
+    fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+    fn submit_sync(&self, req: &mut BlockRequest) -> crate::types::KResult<()> {
+        self.seen.lock().push(req.ioprio);
+        self.inner.submit_sync(req)
+    }
+    fn flush(&self) -> crate::types::KResult<()> { Ok(()) }
+}
+
+#[test]
+fn an_explicit_request_priority_survives_the_registry_submit_path() {
+    let spy = Arc::new(PrioSpy { inner: Disk::new(512, 64), seen: Spinlock::new(Vec::new()) });
+    let idx = crate::registry::register("prio-explicit", spy.clone());
+    let disk = crate::registry::by_index(idx).expect("registered disk");
+    let want = sched::ioprio::prio_value(sched::ioprio::CLASS_RT, 2);
+    let mut req = BlockRequest { op: BlockOp::Read, start_block: 0, len_blocks: 1,
+        buffer: vec![0u8; 512], ioprio: want };
+    disk.dev.submit_sync(&mut req).unwrap();
+    // The submission path must not overwrite a priority its caller chose.
+    assert_eq!(spy.seen.lock().as_slice(), &[want]);
+}
+
+#[test]
+fn an_unset_request_is_stamped_at_submission() {
+    let spy = Arc::new(PrioSpy { inner: Disk::new(512, 64), seen: Spinlock::new(Vec::new()) });
+    let idx = crate::registry::register("prio-unset", spy.clone());
+    let disk = crate::registry::by_index(idx).expect("registered disk");
+    let mut req = BlockRequest::new_read(0, 1, 512);
+    assert_eq!(req.ioprio, sched::ioprio::DEFAULT);
+    disk.dev.submit_sync(&mut req).unwrap();
+    // Hosted builds have no running task, so the stamp is the unset default;
+    // the point under test is that the path stamps rather than drops the field.
+    assert_eq!(spy.seen.lock().as_slice(), &[sched::current_ioprio()]);
 }

@@ -126,7 +126,8 @@ impl BlockDevice for AdmissionDev {
     }
     fn supports_discard(&self) -> bool { self.inner.supports_discard() }
     fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
-    fn submit(&self, request: BlockRequest, completion: BlockCompletion) {
+    fn submit(&self, mut request: BlockRequest, completion: BlockCompletion) {
+        request.ioprio = crate::elevator::stamp(request.ioprio, sched::current_ioprio());
         let token = match self.admit() {
             Ok(token) => token,
             Err(error) => { completion(request, Err(error)); return; }
@@ -144,6 +145,7 @@ impl BlockDevice for AdmissionDev {
         }));
     }
     fn submit_sync(&self, request: &mut BlockRequest) -> KResult<()> {
+        request.ioprio = crate::elevator::stamp(request.ioprio, sched::current_ioprio());
         let token = self.admit()?;
         let result = if request.op == crate::BlockOp::Discard {
             self.submit_discard_sync(request)

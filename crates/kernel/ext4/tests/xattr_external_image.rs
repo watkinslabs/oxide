@@ -17,8 +17,7 @@ fn build_disk() -> (Arc<dyn BlockDevice>, u64) {
     let cap = (MINI.len() as u64) / (SECTOR as u64);
     let disk: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
     let mut req = BlockRequest {
-        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: MINI.to_vec(),
-    };
+        op: BlockOp::Write, start_block: 0, len_blocks: cap as u32, buffer: MINI.to_vec(), ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     (disk, cap)
 }
@@ -27,8 +26,7 @@ fn read_fs_block(disk: &Arc<dyn BlockDevice>, fs_lba: u64, fs_bs: u32) -> std::v
     let sectors = fs_bs / SECTOR;
     let mut req = BlockRequest {
         op: BlockOp::Read, start_block: fs_lba * sectors as u64, len_blocks: sectors,
-        buffer: std::vec![0u8; fs_bs as usize],
-    };
+        buffer: std::vec![0u8; fs_bs as usize], ..Default::default() };
     disk.submit_sync(&mut req).unwrap();
     req.buffer
 }

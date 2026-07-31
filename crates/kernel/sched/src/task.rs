@@ -12,6 +12,7 @@
 // - namespaces: atomic concrete namespace-set ownership and lifetime operations.
 // - net_namespace: owned network-namespace membership slot operations.
 // - fs_context: Linux-shaped shared root/pwd ownership and snapshots.
+// - io_context: I/O priority context accessors + the effective-priority rule.
 // - cap: Linux CAP_* constants.
 // - restart: per-task `restart_block` for `restart_syscall(2)`.
 // - uapi: TASK_COMM_LEN / SUID_DUMP_* constants.
@@ -39,6 +40,7 @@ mod proc_strings;
 mod rlimits;
 mod fd_table;
 mod fs_context;
+mod io_context;
 mod lifetime;
 mod mempolicy;
 mod methods;
@@ -53,6 +55,7 @@ mod uapi;
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::{securebits, Creds, GroupList};
 pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
+pub use io_context::current_ioprio;
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
@@ -467,13 +470,17 @@ pub struct Task {
     /// /proc/<pid>/stat field 19.
     pub nice: AtomicI8,
 
-    /// Linux `io_context::ioprio` — the RAW `int` ioprio_set(2) stored, which
+    /// I/O priority context. Holds the RAW `int` `ioprio_set(2)` stored, which
     /// `ioprio_get(IOPRIO_WHO_PROCESS)` reports verbatim so userspace can tell
-    /// "never set" (`IOPRIO_CLASS_NONE`) from an explicit value. Class =
-    /// `(ioprio >> 13) & 7`, hint = bits [12:3], level = bits [2:0].
-    /// Inherited on fork; `__get_task_ioprio` derives class+level from nice
-    /// whenever the class is NONE.
-    pub ioprio: AtomicU32,
+    /// "never set" from an explicit value; the effective priority derives
+    /// class and level from nice whenever the stored class is unset.
+    ///
+    /// A shared object rather than a field because `CLONE_IO` makes the child
+    /// share the parent's, so a later `ioprio_set` on either is seen by both.
+    /// The pointer is guarded because the clone path installs the shared
+    /// context after the child task already exists; reach it through
+    /// `Task::io_context()` / `Task::set_io_context()`.
+    pub(crate) io_context: Spinlock<alloc::sync::Arc<crate::ioprio::IoContext>, TaskListClass>,
 
     /// Monotonic ns at spawn; getrusage/times/proc-stat utime
     /// derived as `monotonic_ns() - spawn_ns`. 0 in hosted tests.
