@@ -142,8 +142,9 @@ OXIDE_SMP="${OXIDE_SMP:-2}"
 
 # On timeout, ask the wedged kernel to self-report before we kill it:
 # feed the serial-sysrq sequence (`<NUL> t` = task dump, `<NUL> w` =
-# current/switch summary, `<NUL> c` = per-CPU heartbeat) into qemu's stdin FIFO. The guest's timer tick
-# polls the UART RX even in a parked late-boot wedge, so the drv-serial
+# current/switch summary, `<NUL> c` = per-CPU heartbeat) into qemu's stdin FIFO.
+# UART RX is interrupt-driven and a parked late-boot wedge still takes
+# interrupts, so the drv-serial
 # prefilter fires and the (default-on) `debug-watchdog` dump lands in the
 # log — turning an opaque "did not reach login" into a task-state dump
 # (who's Runnable/Sleeping, last syscall) for the SMP late-boot race.
@@ -156,6 +157,42 @@ inject_sysrq() {
     sleep 2
     printf '\000c' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 2
+}
+
+# Serial RX gate. Booting proves the console TX path; it proves nothing about
+# RX, and an unreachable RX path is invisible to every other marker in this
+# script — an interrupt that never reaches the dispatcher looks exactly like a
+# quiet console. It stayed broken on one arch for months precisely because
+# nothing typed at it.
+#
+# The probe is the serial-sysrq unknown-key sequence (<NUL> then '?'), because
+# it exercises the whole RX chain — UART FIFO, interrupt delivery, driver
+# drain, the drv-serial prefilter — inside the kernel, with no getty, shell, or
+# userspace of any kind involved. The kernel answers with its sysrq key list.
+# Set SMOKE_RX_MARKER='' to skip (e.g. a profile built without the diag).
+RX_MARKER="${SMOKE_RX_MARKER-\[sysrq\] keys:}"
+RX_TIMEOUT="${SMOKE_RX_TIMEOUT:-30}"
+
+check_serial_rx() {
+    [ -n "$RX_MARKER" ] || return 0
+    if [ -z "${SYSRQ_WFD:-}" ]; then
+        echo "boot-smoke: no writable serial FIFO — cannot verify serial RX" >&2
+        return 1
+    fi
+    echo "boot-smoke: probing serial RX (<NUL>? -> '$RX_MARKER')"
+    local rx_deadline
+    rx_deadline=$(( $(date +%s) + RX_TIMEOUT ))
+    while [ "$(date +%s)" -lt "$rx_deadline" ]; do
+        printf '\000?' >&"$SYSRQ_WFD" 2>/dev/null || true
+        sleep 2
+        if grep -qaE "$RX_MARKER" "$LOG" 2>/dev/null; then
+            echo "boot-smoke: serial RX OK — guest answered the typed sysrq probe"
+            return 0
+        fi
+    done
+    echo "boot-smoke: FAIL — $ARCH booted but typed serial input never reached the kernel" >&2
+    echo "boot-smoke: (nothing matched '$RX_MARKER' within ${RX_TIMEOUT}s of typing)" >&2
+    return 1
 }
 
 # Run one boot; return 0 if `oxide login:` appears within TIMEOUT.
@@ -199,6 +236,12 @@ attempt_boot() {
         fi
         if grep -qF "$MARKER" "$LOG" 2>/dev/null; then
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
+            echo "boot-smoke: $ARCH reached marker '$MARKER' in ${elapsed}s (attempt $1)"
+            if ! check_serial_rx; then
+                keep_log_copy "$1" "no-serial-rx"
+                close_sysrq
+                return 1
+            fi
             echo "boot-smoke: PASS — $ARCH reached marker '$MARKER' in ${elapsed}s (attempt $1)"
             keep_log_copy "$1" "pass"
             close_sysrq
