@@ -5,6 +5,10 @@
 // `getresuid(NULL, NULL, NULL)` is `EFAULT`, never success. The writes go
 // through `uaccess` so an in-range but unmapped page returns `EFAULT`
 // through the exception table instead of faulting in the kernel.
+//
+// Each id leaves through `from_kuid_munged`/`from_kgid_munged`, so a task in
+// a user namespace reads back the numbers it can name, and an id its
+// namespace does not map reads back as the overflow id.
 
 use core::sync::atomic::Ordering;
 
@@ -12,6 +16,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::Task;
+use super::gid::gid_out;
+use super::uid::uid_out;
 
 /// # C: O(1)
 fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
@@ -30,26 +36,26 @@ fn put3(pa: u64, a: u32, pb: u64, b: u32, pc: u64, c: u32) -> i64 {
     0
 }
 
-/// Linux `getresuid`. # C: O(1)
+/// Linux `getresuid`. # C: O(extents)
 pub(crate) fn getresuid_on(cur: &Task, args: &SyscallArgs) -> i64 {
-    put3(args.a0, cur.creds.ruid.load(Ordering::Acquire),
-         args.a1, cur.creds.euid.load(Ordering::Acquire),
-         args.a2, cur.creds.suid.load(Ordering::Acquire))
+    put3(args.a0, uid_out(cur, cur.creds.ruid.load(Ordering::Acquire)),
+         args.a1, uid_out(cur, cur.creds.euid.load(Ordering::Acquire)),
+         args.a2, uid_out(cur, cur.creds.suid.load(Ordering::Acquire)))
 }
 
-/// `sys_getresuid(ruid_out, euid_out, suid_out)` — slot 118. # C: O(1)
+/// `sys_getresuid(ruid_out, euid_out, suid_out)` — slot 118. # C: O(extents)
 pub fn sys_getresuid(args: &SyscallArgs) -> i64 {
     match crate::live::current() { Some(c) => getresuid_on(&c, args), None => 0 }
 }
 
-/// Linux `getresgid`. # C: O(1)
+/// Linux `getresgid`. # C: O(extents)
 pub(crate) fn getresgid_on(cur: &Task, args: &SyscallArgs) -> i64 {
-    put3(args.a0, cur.creds.rgid.load(Ordering::Acquire),
-         args.a1, cur.creds.egid.load(Ordering::Acquire),
-         args.a2, cur.creds.sgid.load(Ordering::Acquire))
+    put3(args.a0, gid_out(cur, cur.creds.rgid.load(Ordering::Acquire)),
+         args.a1, gid_out(cur, cur.creds.egid.load(Ordering::Acquire)),
+         args.a2, gid_out(cur, cur.creds.sgid.load(Ordering::Acquire)))
 }
 
-/// `sys_getresgid(rgid_out, egid_out, sgid_out)` — slot 120. # C: O(1)
+/// `sys_getresgid(rgid_out, egid_out, sgid_out)` — slot 120. # C: O(extents)
 pub fn sys_getresgid(args: &SyscallArgs) -> i64 {
     match crate::live::current() { Some(c) => getresgid_on(&c, args), None => 0 }
 }
