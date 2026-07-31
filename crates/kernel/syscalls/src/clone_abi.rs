@@ -289,6 +289,41 @@ impl CloneRequest<'_> {
     pub fn pidfd_aliases_parent_tid(&self) -> bool { self.pidfd == self.parent_tid }
 }
 
+/// Which of `clone(2)`'s last two register arguments carries `tls`.
+///
+/// Linux declares `sys_clone` twice. The default order is
+/// `(flags, newsp, parent_tid, child_tid, tls)`; the "backwards" order —
+/// selected by a subset of architectures, aarch64 among them — swaps the last
+/// two into `(flags, newsp, parent_tid, tls, child_tid)`. x86_64 takes the
+/// default order; only the 32-bit x86 ABI is backwards. Reading both arches
+/// as backwards pointed `CLONE_SETTLS` at the C library's `&pd->tid` on
+/// x86_64, so every `clone(2)`-spawned thread ran with FS_BASE displaced by
+/// `offsetof(struct pthread, tid)` and read its whole static TLS block from
+/// the wrong place (a NULL locale pointer, SIGSEGV in the first ctype setup).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum LegacyCloneOrder {
+    /// `(flags, newsp, parent_tid, child_tid, tls)`.
+    ChildTidThenTls,
+    /// `(flags, newsp, parent_tid, tls, child_tid)`.
+    TlsThenChildTid,
+}
+
+/// The order this build's target uses.
+pub const LEGACY_CLONE_ORDER: LegacyCloneOrder = if cfg!(target_arch = "aarch64") {
+    LegacyCloneOrder::TlsThenChildTid
+} else {
+    LegacyCloneOrder::ChildTidThenTls
+};
+
+/// Split `clone(2)`'s 4th/5th register arguments into `(child_tid, tls)`.
+/// # C: O(1)
+pub fn legacy_clone_tid_tls(order: LegacyCloneOrder, a3: u64, a4: u64) -> (u64, u64) {
+    match order {
+        LegacyCloneOrder::ChildTidThenTls => (a3, a4),
+        LegacyCloneOrder::TlsThenChildTid => (a4, a3),
+    }
+}
+
 /// Highest pid number a task can be given, one past the largest legal value.
 pub const PID_MAX_LIMIT: u32 = 4_194_304;
 
