@@ -66,7 +66,7 @@ fn drm_minors() -> Vec<DrmMinor> {
             device: dev,
         });
     }
-    minors.sort_by(|a, b| a.minor.cmp(&b.minor).then_with(|| a.name.cmp(&b.name)));
+    minors.sort_unstable_by(|a, b| a.minor.cmp(&b.minor).then_with(|| a.name.cmp(&b.name)));
     minors
 }
 

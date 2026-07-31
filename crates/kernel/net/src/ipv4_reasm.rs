@@ -91,6 +91,9 @@ impl ReasmTable {
         // Try to finalize.
         let total = flow.total?;
         // Sort + verify contiguous coverage [0, total).
+        // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): a peer may send two
+        // fragments at the same offset; which one the reassembled datagram
+        // keeps is decided by arrival order, so that order must survive.
         flow.frags.sort_by_key(|f| f.offset);
         let mut cur = 0usize;
         for f in &flow.frags {

@@ -32,6 +32,9 @@ impl Verdict {
 pub fn eval(hook_id: u32, pkt: &[u8], family: u8) -> Verdict {
     let mut chains: Vec<NftChain> = CHAINS.lock().clone();
     chains.retain(|c| c.hook == Some(hook_id));
+    // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): equal hook priorities are
+    // ordinary, and chains registered at the same priority must run in
+    // registration order.
     chains.sort_by_key(|c| c.priority);
     let rules_snap = RULES.lock().clone();
     for c in chains.iter() {
