@@ -264,38 +264,32 @@ impl Proc {
     fn fchmod(&self, fd: i32, mode: u16) -> KResult<()> {
         self.enter();
         let f = self.fds[fd as usize].as_ref().expect("fd");
-        vfs::may_chmod(&f.p.inode, &self.cred)?;
-        f.p.inode.set_perm(vfs::chmod_sgid_strip(mode, &f.p.inode, &self.cred))
+        fs::chattr::chmod_common(&f.p.inode, 0, mode, &self.cred)
     }
     fn chmod(&self, path: &str, mode: u16) -> KResult<()> {
         let p = self.lookup(AT_FDCWD, path, LookupFlags::default())?;
-        vfs::may_chmod(&p.inode, &self.cred)?;
-        p.inode.set_perm(vfs::chmod_sgid_strip(mode, &p.inode, &self.cred))
+        fs::chattr::chmod_common(&p.inode, 0, mode, &self.cred)
     }
     fn chmodat_flags(&self, path: &str, mode: u16, flags: u32) -> KResult<()> {
         if flags & !AT_CHMOD_CHOWN_VALID != 0 { return Err(VfsError::Einval); }
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         let p = self.lookup(AT_FDCWD, path, LookupFlags { no_follow_final: !follow, follow, ..Default::default() })?;
-        vfs::may_chmod(&p.inode, &self.cred)?;
-        p.inode.set_perm(vfs::chmod_sgid_strip(mode, &p.inode, &self.cred))
+        fs::chattr::chmod_common(&p.inode, 0, mode, &self.cred)
     }
     fn fchown(&self, fd: i32, uid: u32, gid: u32) -> KResult<()> {
         self.enter();
         let f = self.fds[fd as usize].as_ref().expect("fd");
-        vfs::may_chown(&f.p.inode, Some(uid), Some(gid), &self.cred)?;
-        f.p.inode.set_owner(uid, gid)
+        fs::chattr::chown_common(&f.p.inode, 0, Some(uid), Some(gid), &self.cred)
     }
     fn chown(&self, path: &str, uid: u32, gid: u32) -> KResult<()> {
         let p = self.lookup(AT_FDCWD, path, LookupFlags::default())?;
-        vfs::may_chown(&p.inode, Some(uid), Some(gid), &self.cred)?;
-        p.inode.set_owner(uid, gid)
+        fs::chattr::chown_common(&p.inode, 0, Some(uid), Some(gid), &self.cred)
     }
     fn chownat_flags(&self, path: &str, uid: u32, gid: u32, flags: u32) -> KResult<()> {
         if flags & !AT_CHMOD_CHOWN_VALID != 0 { return Err(VfsError::Einval); }
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         let p = self.lookup(AT_FDCWD, path, LookupFlags { no_follow_final: !follow, follow, ..Default::default() })?;
-        vfs::may_chown(&p.inode, Some(uid), Some(gid), &self.cred)?;
-        p.inode.set_owner(uid, gid)
+        fs::chattr::chown_common(&p.inode, 0, Some(uid), Some(gid), &self.cred)
     }
     fn renameat(&self, olddir: i32, old: &str, newdir: i32, new: &str) -> KResult<()> {
         self.enter();

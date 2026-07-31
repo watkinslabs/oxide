@@ -1,11 +1,14 @@
-// 133 mknod — one syscall, one file (docs/53 §0). Moved verbatim from namei.rs.
-// Hosts the shared mknod_impl core (also used by 259_mknodat).
+// 133 mknod — one syscall, one file (docs/53 §0). Hosts the shared ABI shim
+// core (also used by 259_mknodat): path resolution, the security ladder, the
+// backend call and the dcache update. The type/mode/capability DECISION is
+// `fs::mknod` (Linux `may_mknod` + the type-dependent half of `vfs_mknod`).
 
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::string::String;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use ::fs::mknod::{may_mknod, MayMknod, NodeType};
 use crate::namei_common::{
     read_user_path, errno_from_vfs, resolve_create_parent_at, render_child_path,
     child_exists, parent_mount_readonly, drop_child_cache,
@@ -21,26 +24,26 @@ pub fn sys_mknod(args: &SyscallArgs) -> i64 {
     mknod_impl(crate::pathresolve::AT_FDCWD, raw, args.a1 as u16, args.a2 as u32)
 }
 
+/// Landlock right the new node's type consumes. # C: O(1)
+fn landlock_right(t: NodeType) -> u64 {
+    use ::security::landlock::access;
+    match t {
+        NodeType::Reg  => access::MAKE_REG,
+        NodeType::Chr  => access::MAKE_CHAR,
+        NodeType::Blk  => access::MAKE_BLOCK,
+        NodeType::Fifo => access::MAKE_FIFO,
+        NodeType::Sock => access::MAKE_SOCK,
+    }
+}
+
 /// # C: O(N parent entries)
 pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
-    const S_IFMT:  u16 = 0xF000;
-    const S_IFREG: u16 = 0x8000;
-    const S_IFCHR: u16 = 0x2000;
-    const S_IFDIR: u16 = 0x4000;
-    const S_IFBLK: u16 = 0x6000;
-    const S_IFIFO: u16 = 0x1000;
-    const S_IFSOCK: u16 = 0xC000;
-    let ftype = mode & S_IFMT;
-    // POSIX: mknod with no type bits ⇒ regular file (≡ create).
-    let real_ftype = if ftype == 0 { S_IFREG } else { ftype };
-    let la = match real_ftype {
-        S_IFREG  => ::security::landlock::access::MAKE_REG,
-        S_IFCHR  => ::security::landlock::access::MAKE_CHAR,
-        S_IFBLK  => ::security::landlock::access::MAKE_BLOCK,
-        S_IFIFO  => ::security::landlock::access::MAKE_FIFO,
-        S_IFSOCK => ::security::landlock::access::MAKE_SOCK,
-        S_IFDIR  => return -(Errno::Eperm.as_i32() as i64),
-        _        => return -(Errno::Einval.as_i32() as i64),
+    // Linux `may_mknod` runs BEFORE `filename_create`: a bad type reports its
+    // errno without regard to whether the path exists or the parent is writable.
+    let ntype = match may_mknod(mode) {
+        MayMknod::Ok(t)  => t,
+        MayMknod::Eperm  => return -(Errno::Eperm.as_i32() as i64),
+        MayMknod::Einval => return -(Errno::Einval.as_i32() as i64),
     };
     let (parent, name) = match resolve_create_parent_at(dirfd, &raw) {
         Ok(x) => x, Err(rv) => return rv,
@@ -54,31 +57,29 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
     if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);
     }
-    if let Err(rv) = crate::landlock::check_parent(&parent, la) { return rv; }
+    if let Err(rv) = crate::landlock::check_parent(&parent, landlock_right(ntype)) { return rv; }
     let cred = crate::pathresolve::current_cred();
     if let Err(e) = vfs::may_create(&parent.inode, &cred) {
         return errno_from_vfs(e);
     }
-    // Linux may_mknod / vfs_mknod: device nodes require CAP_MKNOD; FIFO,
-    // socket and regular files do not (D24).
-    if matches!(real_ftype, S_IFCHR | S_IFBLK) {
+    // Linux `vfs_mknod`: CAP_MKNOD (device nodes only, and never the `0:0`
+    // character whiteout), then device-cgroup policy, then LSM/backend.
+    if ntype.needs_cap_mknod(dev) {
         let has = sched::live::current()
             .map(|c| c.has_cap(sched::cap::MKNOD)).unwrap_or(false);
         if !has { return -(Errno::Eperm.as_i32() as i64); }
-        // Linux `vfs_mknod`: CAP_MKNOD, then device-cgroup policy, then
-        // LSM/backend.  Character 0:0 is WHITEOUT_DEV and bypasses devcg.
-        if !(real_ftype == S_IFCHR && dev == 0) {
-            let kind = if real_ftype == S_IFCHR {
-                ::security::bpf::DEVCG_DEV_CHAR
-            } else {
-                ::security::bpf::DEVCG_DEV_BLOCK
-            };
-            let devt = vfs::Devt::from_raw(dev);
-            if let Err(e) = ::security::bpf::check_device_access(
-                kind, devt.major(), devt.minor(), ::security::bpf::DEVCG_ACC_MKNOD,
-            ) {
-                return -(e.as_i32() as i64);
-            }
+    }
+    if ntype.needs_devcg(dev) {
+        let kind = if ntype == NodeType::Chr {
+            ::security::bpf::DEVCG_DEV_CHAR
+        } else {
+            ::security::bpf::DEVCG_DEV_BLOCK
+        };
+        let (major, minor) = NodeType::dev_major_minor(dev);
+        if let Err(e) = ::security::bpf::check_device_access(
+            kind, major, minor, ::security::bpf::DEVCG_ACC_MKNOD,
+        ) {
+            return -(e.as_i32() as i64);
         }
     }
     let umask = sched::live::current()
@@ -88,20 +89,22 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create/mknod (Linux
     // `filename_create` → `->create`/`->mknod`); dropped before the dcache update.
-    let node_dev = if matches!(real_ftype, S_IFIFO | S_IFSOCK) { 0 } else { dev };
+    let perm = mode & !::fs::mknod::S_IFMT;
     let r = {
         let _g = parent.inode.inode_lock();
-        if real_ftype == S_IFREG {
+        if ntype == NodeType::Reg {
             // POSIX-compat: mknod-with-regular-type = open(O_CREAT) equivalent.
-            parent.inode.create_child(&name, (mode & 0x0FFF) as u32, &ctx).map(|_| ())
+            parent.inode.create_child(&name, perm as u32, &ctx).map(|_| ())
         } else {
-            parent.inode.mknod_child(&name, (real_ftype | (mode & 0x0FFF)) as u16, node_dev, &ctx)
+            parent.inode.mknod_child(&name, ntype.ifmt() | perm, ntype.node_dev(dev), &ctx)
         }
     };
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);
-            vfs::fire_dirent_create(&parent.inode, &name, real_ftype == S_IFDIR);
+            // `mknod` never creates a directory (`S_IFDIR` is EPERM above), so
+            // the create notification is always the non-directory form.
+            vfs::fire_dirent_create(&parent.inode, &name, false);
             0
         }
         Err(e)  => {

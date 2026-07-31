@@ -148,8 +148,18 @@ fn posix_acl_permission(buf: &[u8], cred: &Cred, i_uid: u32, i_gid: u32, want: u
 /// check routes through. Dispatches to the inode's `i_op->permission` override
 /// (`Inode::permission`, default `generic_permission`), so a filesystem with
 /// ACLs / custom DAC can intercept WITHOUT every call-site changing.
+///
+/// "Nobody gets write access to an immutable file" (Linux `inode_permission`):
+/// the S_IMMUTABLE reject stands AHEAD of the DAC dispatch, so it is EPERM for
+/// every caller including root — a capability grants permission, not the right
+/// to ignore the flag. This is what makes `chattr +i` refuse `open(O_WRONLY)`,
+/// `truncate`, and every other write-intent path from one place instead of
+/// each of them re-testing the flag.
 /// # C: O(ngroups)
 pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()> {
+    if mask & MAY_WRITE != 0 && inode.i_flags() & crate::inode::S_IMMUTABLE != 0 {
+        return Err(VfsError::Eperm);
+    }
     inode.permission(mask, cred)?;
     super::device_permission(inode.file_type(), inode.rdev(), mask)
 }
@@ -381,63 +391,6 @@ pub fn may_rename(
         }
     }
     Ok(())
-}
-
-/// `chmod` ownership check (Linux `setattr_prepare`): the caller must own the
-/// inode (`fsuid == i_uid`) or hold CAP_FOWNER, else `EPERM`. Owner is read
-/// from the per-fs `uid()` (consistent with `inode_permission`). # C: O(1)
-pub fn may_chmod(inode: &InodeRef, cred: &Cred) -> KResult<()> {
-    let owner = inode.uid().unwrap_or(0);
-    if cred.uid == owner || cred.cap_fowner { Ok(()) } else { Err(VfsError::Eperm) }
-}
-
-/// `chown` ownership check (Linux `setattr_prepare` / `chown_common`).
-/// `new_uid`/`new_gid` are `None` for the `(uid_t)-1` "leave unchanged"
-/// sentinel. Changing the uid requires CAP_CHOWN; changing the gid requires
-/// either CAP_CHOWN or (owning the file AND being a member of the target
-/// group). `EPERM` otherwise. # C: O(ngroups)
-pub fn may_chown(
-    inode: &InodeRef,
-    new_uid: Option<u32>,
-    new_gid: Option<u32>,
-    cred: &Cred,
-) -> KResult<()> {
-    let cur_uid = inode.uid().unwrap_or(0);
-    let cur_gid = inode.gid().unwrap_or(0);
-    if let Some(nu) = new_uid {
-        if nu != cur_uid && !cred.cap_chown { return Err(VfsError::Eperm); }
-    }
-    if let Some(ng) = new_gid {
-        if ng != cur_gid {
-            let owner_member = cred.uid == cur_uid && cred.in_group(ng);
-            if !owner_member && !cred.cap_chown { return Err(VfsError::Eperm); }
-        }
-    }
-    Ok(())
-}
-
-/// Adjust a chmod target `mode`: strip `S_ISGID` when the caller is not in the
-/// file's owning group and lacks CAP_FSETID (Linux `setattr_prepare`). Prevents
-/// a non-member from setting set-group-ID. # C: O(ngroups)
-pub fn chmod_sgid_strip(mode: u16, inode: &InodeRef, cred: &Cred) -> u16 {
-    let gid = inode.gid().unwrap_or(0);
-    if mode & S_ISGID != 0 && !cred.cap_fsetid && !cred.in_group(gid) {
-        mode & !S_ISGID
-    } else {
-        mode
-    }
-}
-
-/// New mode after a chown drops the set-user-ID bit and (when group-executable)
-/// the set-group-ID bit, for a non-directory (Linux `chown_common` sets
-/// `ATTR_KILL_SUID|ATTR_KILL_SGID`). Returns `None` when nothing changes.
-/// # C: O(1)
-pub fn chown_kill_priv(mode: u16, is_dir: bool) -> Option<u16> {
-    if is_dir { return None; }
-    let mut m = mode;
-    m &= !S_ISUID;
-    if m & S_IXGRP != 0 { m &= !S_ISGID; }
-    if m != mode { Some(m) } else { None }
 }
 
 #[cfg(test)]
