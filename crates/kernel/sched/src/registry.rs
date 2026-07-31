@@ -42,9 +42,11 @@ pub use snapshot::{
 #[cfg(any(test, feature = "hosted"))]
 pub use tid::clear_for_tests;
 pub use tid::{insert, lookup, try_wake_stopped, LOOKUPS};
+#[cfg(target_os = "oxide-kernel")]
+pub use vpid::caller_pid_ns;
 pub use vpid::{
     display_vpid, display_vtid, lookup_by_vpid, lookup_in_namespace, live_vpids, parent_vpid,
-    resolve_user_pid,
+    resolve_user_pid, vnr_in,
 };
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use wait::wait_candidate_matches;

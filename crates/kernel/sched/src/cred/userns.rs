@@ -64,12 +64,14 @@ fn identity_to_host(ns_id: u32) -> Option<u32> {
     if ns_id == user_namespace::INVALID_ID { None } else { Some(ns_id) }
 }
 
-/// Linux `make_kuid(current_user_ns(), id)` for a uid ARGUMENT that names a
-/// FILESYSTEM owner (the `chown(2)` family) rather than a process credential.
-/// `None` is `INVALID_UID`, which `setattr_vfsuid` reports as `EINVAL` — an id
-/// the caller's user namespace does not map has no internal identity and must
-/// never be stored as an owner. The `(uid_t)-1` "leave unchanged" sentinel is
-/// resolved by the caller BEFORE this point.
+/// Linux `make_kuid(current_user_ns(), id)` for a uid ARGUMENT that is not a
+/// credential to install: a FILESYSTEM owner (the `chown(2)` family) or the
+/// `who` of a target-set search (setpriority/getpriority/ioprio_set/
+/// ioprio_get). `None` is `INVALID_UID` — an id the caller's user namespace
+/// does not map has no internal identity, so it can never be stored as an
+/// owner and can never name a task. `chown` reports that as `EINVAL`; a search
+/// reports it as an empty target set. The `(uid_t)-1` "leave unchanged"
+/// sentinel is resolved by the caller BEFORE this point.
 /// # C: O(extents); # Lk: Namespace
 pub fn make_kuid(ns_id: u32) -> Option<u32> {
     match crate::current() { Some(cur) => to_host(cur, IdMapKind::Uid, ns_id), None => identity_to_host(ns_id) }
