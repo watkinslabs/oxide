@@ -86,26 +86,38 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
     rv
 }
 
+/// Linux `getname_maybe_null(name, AT_EMPTY_PATH)` reduced to a string: an
+/// empty result means "operate on the descriptor". Without `empty_ok` a NULL
+/// pointer is `EFAULT` and an empty string stays empty only long enough for
+/// the caller's `ENOENT`. # C: O(len)
+fn maybe_null_path(ptr: u64, empty_ok: bool) -> Result<alloc::string::String, i64> {
+    if ptr == 0 {
+        if empty_ok { return Ok(alloc::string::String::new()); }
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    let s = read_path_allow_empty(ptr)?;
+    if s.is_empty() && !empty_ok { return Err(-(Errno::Enoent.as_i32() as i64)); }
+    Ok(s)
+}
+
 fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
     // Flag word FIRST (Linux `SYSCALL_DEFINE5(move_mount)`: may_mount, then the
     // MOVE_MOUNT__MASK and BENEATH-xor-SET_GROUP rejects, then either pathname).
     let f = match crate::move_mount_policy::parse(args.a4) { Ok(f) => f, Err(rv) => return rv };
     let from_fd = args.a0 as i32;
-    let from_path = match read_path_allow_empty(args.a1) {
+    // Linux `getname_maybe_null`: with the side's `_EMPTY_PATH` bit, a NULL
+    // pointer OR an empty string yields a NULL `struct filename`, which is how
+    // the call is told to operate on the descriptor itself. Without the bit
+    // neither shortcut applies — NULL is EFAULT and `""` is ENOENT. This is why
+    // reading both pathnames unconditionally was wrong: a NULL `to_pathname`
+    // with MOVE_MOUNT_T_EMPTY_PATH is legal and was reported EFAULT.
+    let from_path = match maybe_null_path(args.a1, f.from.empty) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let to_path = match read_path_allow_empty(args.a3) {
+    let to_path = match maybe_null_path(args.a3, f.to.empty) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    // An EMPTY pathname is only "operate on the dirfd" when its side's
-    // `_EMPTY_PATH` bit is set; without the bit it is the ordinary ENOENT an
-    // empty pathname always is. Previously the FROM side selected the
-    // attach-a-detached-mount mode purely because the string was empty, so a
-    // caller that passed `""` by accident silently grafted whatever `from_dfd`
-    // happened to be.
-    if to_path.is_empty() && !f.to.empty { return -(Errno::Enoent.as_i32() as i64); }
-    if from_path.is_empty() && !f.from.empty { return -(Errno::Enoent.as_i32() as i64); }
     let (target_mt, target) = if to_path.is_empty() {
         // MOVE_MOUNT_T_EMPTY_PATH: the destination IS `to_dfd` itself.
         let p = match crate::pathresolve::resolve_at_or_dirfd(
