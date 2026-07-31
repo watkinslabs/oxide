@@ -83,6 +83,7 @@ pub mod bpf_filter;
 pub mod mcast_filter;
 pub mod raw4;
 pub mod raw6;
+pub mod ping;
 mod mcast_state;
 pub mod stack;
 pub mod stack_binddev;

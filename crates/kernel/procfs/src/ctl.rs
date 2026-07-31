@@ -41,6 +41,7 @@ use crate::proc_handler::{
     IntHook as HIntHook, IntVar, PerNetIntHook as HPerNetIntHook,
     PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
+    PerNetGroupRangeHook as HPerNetGroupRangeHook,
     StrHook as HStrHook, ULongVar,
 };
 
@@ -162,6 +163,16 @@ fn set_local_port_range(namespace: &network_namespace::NetworkNamespaceRef,
 {
     net::ephemeral::set_range_for(namespace, start, end)
 }
+fn ping_group_range(namespace: &network_namespace::NetworkNamespaceRef)
+    -> Result<(u32, u32), ()>
+{
+    net::ping::group_range_for(namespace).ok_or(())
+}
+fn set_ping_group_range(namespace: &network_namespace::NetworkNamespaceRef,
+    low: u32, high: u32) -> Result<(), ()>
+{
+    net::ping::set_group_range_for(namespace, low, high)
+}
 fn unprivileged_port_start(namespace: &network_namespace::NetworkNamespaceRef,
     _key: usize) -> Result<i64, ()>
 {
@@ -198,6 +209,9 @@ enum Leaf {
     /// Two-u16 `proc_dointvec` bound to subsystem accessors.
     PerNetU16PairHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()>,
         fn(&network_namespace::NetworkNamespaceRef, u16, u16) -> Result<(), ()>),
+    /// Two-value group window bound to subsystem accessors.
+    PerNetGroupRangeHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u32, u32), ()>,
+        fn(&network_namespace::NetworkNamespaceRef, u32, u32) -> Result<(), ()>),
     /// `proc_dointvec` free byte slot (multi-field / not a single int).
     Bytes(&'static [u8]),
     /// Read-only constant (`StaticFileInode`, mode 0444).
@@ -363,6 +377,10 @@ const SYSCTL_TREE: &[Node] = &[
             File("ip_unprivileged_port_start", PerNetIntHook(unprivileged_port_start,
                 set_unprivileged_port_start, Some((0, 65_535)))),
             File("icmp_echo_ignore_all", NetInt(net::net_ns::NetSysctlKey::IcmpEchoIgnoreAll, Some((0, 1)))),
+            // The group window that admits an ICMP datagram endpoint. The
+            // compiled default `1 0` admits nobody; distributions open it at
+            // boot so an echo-probe tool needs no capability.
+            File("ping_group_range", PerNetGroupRangeHook(ping_group_range, set_ping_group_range)),
         ]),
         Dir("ipv6", &[
             Dir("conf", &[
@@ -445,6 +463,9 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))
         }
         Leaf::StrHook(get, set) => bound_sysctl_inode(Arc::new(HStrHook { get, set })),
+        Leaf::PerNetGroupRangeHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetGroupRangeHook {
+            current_ns: current_net_ns, get, set,
+        })),
         Leaf::PerNetU16PairHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetU16PairHook {
             current_ns: current_net_ns, get, set,
         })),

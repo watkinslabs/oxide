@@ -224,10 +224,13 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         }
         match (level, optname) {
             (IPPROTO_IP, IP_HDRINCL) => match &*s.kind.lock() {
-                SockKind::Raw4(endpoint) => return i32_back(i32::from(endpoint.hdrincl())),
+                SockKind::Raw4(endpoint) if !endpoint.is_ping() =>
+                    return i32_back(i32::from(endpoint.hdrincl())),
                 _ => return -(Errno::Enoprotoopt.as_i32() as i64),
             },
             (IPPROTO_RAW, ICMP_FILTER) => match &*s.kind.lock() {
+                SockKind::Raw4(endpoint) if endpoint.is_ping() =>
+                    return -(Errno::Enoprotoopt.as_i32() as i64),
                 SockKind::Raw4(endpoint) if endpoint.protocol() == IPPROTO_ICMP => {
                     let value = endpoint.icmp_filter().to_ne_bytes();
                     return bytes_back(&value);
@@ -250,14 +253,18 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_group_filter_get(&s, optval, optlen_p),
             (IPPROTO_IPV6, IPV6_V6ONLY) => return i32_back(s.opts.ipv6_v6only.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_HDRINCL) => match &*s.kind.lock() {
-                SockKind::Raw6(endpoint) => return i32_back(i32::from(endpoint.header_included())),
+                SockKind::Raw6(endpoint) if !endpoint.is_ping() =>
+                    return i32_back(i32::from(endpoint.header_included())),
                 _ => return -(Errno::Enoprotoopt.as_i32() as i64),
             },
             (IPPROTO_IPV6, IPV6_CHECKSUM) | (IPPROTO_RAW, IPV6_CHECKSUM) => match &*s.kind.lock() {
-                SockKind::Raw6(endpoint) => return i32_back(endpoint.checksum().linux_value()),
+                SockKind::Raw6(endpoint) if !endpoint.is_ping() =>
+                    return i32_back(endpoint.checksum().linux_value()),
                 _ => return -(Errno::Enoprotoopt.as_i32() as i64),
             },
             (SOL_ICMPV6, ICMP6_FILTER) => match &*s.kind.lock() {
+                SockKind::Raw6(endpoint) if endpoint.is_ping() =>
+                    return -(Errno::Enoprotoopt.as_i32() as i64),
                 SockKind::Raw6(endpoint) if endpoint.protocol() == IPPROTO_ICMPV6 => {
                     let words = endpoint.icmp_filter().words();
                     // SAFETY: eight initialized u32 words occupy exactly 32 readable bytes.

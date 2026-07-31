@@ -41,11 +41,13 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let raw = match &*sock.kind.lock() {
         SockKind::Raw4(endpoint) => {
             let state = endpoint.snapshot();
-            Some(encoded_sockaddr_in(state.local.as_u32().to_be(), 0))
+            Some(encoded_sockaddr_in(state.local.as_u32().to_be(),
+                endpoint.ping_ident().to_be()))
         }
         SockKind::Raw6(endpoint) => {
             let local = endpoint.local();
-            Some(encoded_sockaddr_in6(local.addr.0, 0, local.scope_id))
+            Some(encoded_sockaddr_in6(local.addr.0, endpoint.ping_ident().to_be(),
+                local.scope_id))
         }
         _ => None,
     };

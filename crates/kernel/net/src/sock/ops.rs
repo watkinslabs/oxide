@@ -48,7 +48,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             Ok(())
         }
         BoundAddr::Inet { ip, port } => {
-            if let Some(result) = bind_raw4(sock, ip) { return result; }
+            if let Some(result) = bind_raw4(sock, ip, port) { return result; }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {
@@ -78,7 +78,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port, None)
         }
         BoundAddr::Inet6 { ip, port, scope_id } => {
-            if let Some(result) = bind_raw6(sock, ip, scope_id) { return result; }
+            if let Some(result) = bind_raw6(sock, ip, scope_id, port) { return result; }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {

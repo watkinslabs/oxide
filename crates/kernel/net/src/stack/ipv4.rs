@@ -275,6 +275,10 @@ impl NetStack {
                         .ok_or(NetError::Enetunreach)?;
                     // ICMP echo reply is kernel-generated → LOCAL_OUT + POST_ROUTING.
                     if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
+                } else if crate::ping::is_reply(crate::ping::PingFamily::V4, echo.typ) {
+                    let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
+                        .map_or(0, |dev| dev.hardware_type());
+                    self.deliver_ping_v4(net_ns, iface, &hdr, payload, full_packet, hatype);
                 } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH
                     || echo.typ == icmp::ICMP_TYPE_TIME_EXC || echo.typ == 12
                 {

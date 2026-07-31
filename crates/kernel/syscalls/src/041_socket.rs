@@ -6,8 +6,8 @@ use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 use net::sock::InetSocket;
 use net::socket_args::{
-    parse_socket_args, AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, AF_UNIX, AF_VSOCK,
-    SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM,
+    is_ping_protocol, parse_socket_args, AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, AF_UNIX,
+    AF_VSOCK, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM,
 };
 
 /// `socket(domain, type, protocol)` slot 41. # C: O(1)
@@ -42,6 +42,17 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     if spec.family == AF_VSOCK && spec.typ == SOCK_DGRAM && !net::vsock::driver_up() {
         return -(Errno::Enodev.as_i32() as i64);
     }
+    // The ICMP datagram endpoint class is admitted by group membership in the
+    // socket's own network namespace, which is why an unprivileged echo-probe
+    // tool needs no capability at all.
+    if spec.typ == SOCK_DGRAM && is_ping_protocol(spec.family, spec.protocol) {
+        let egid = cur.creds.egid.load(core::sync::atomic::Ordering::Acquire);
+        let groups = cur.creds.group_list();
+        let supplementary: &[u32] = groups.as_ref().map_or(&[], |list| &list[..]);
+        if !net::ping::admits(&net_namespace, net::ping::CallerGroups { egid, supplementary }) {
+            return -(Errno::Eacces.as_i32() as i64);
+        }
+    }
     if spec.family == AF_VSOCK && spec.typ == SOCK_SEQPACKET
         && !net::vsock::driver_supports_seqpacket()
     { return -(Errno::Esocktnosupport.as_i32() as i64); }
@@ -67,6 +78,10 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         ::netlink::make_netlink_socket_inode(sock)
     } else {
         let inet = match (spec.family, spec.typ) {
+            (AF_INET,  SOCK_DGRAM) if is_ping_protocol(AF_INET, spec.protocol) =>
+                InetSocket::new_ping4_in(net_namespace.clone()),
+            (AF_INET6, SOCK_DGRAM) if is_ping_protocol(AF_INET6, spec.protocol) =>
+                InetSocket::new_ping6_in(net_namespace.clone()),
             (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp_in(net_namespace.clone()),
             (AF_INET,  SOCK_STREAM) => InetSocket::new_tcp_in(net_namespace.clone()),
             (AF_INET,  SOCK_RAW)    => InetSocket::new_raw4_in(spec.protocol as u8, net_namespace.clone()),

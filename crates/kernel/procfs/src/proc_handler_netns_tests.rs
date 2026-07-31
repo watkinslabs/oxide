@@ -49,3 +49,61 @@ fn opened_net_sysctls_retain_owner_after_task_namespace_switch() {
         Some(net::sysctl::DEFAULT_SOMAXCONN as i64));
     assert_eq!(net::forwarding::ipv4_enabled_for(&switched_to), Some(false));
 }
+
+fn group_range(namespace: &NetworkNamespaceRef) -> Result<(u32, u32), ()> {
+    net::ping::group_range_for(namespace).ok_or(())
+}
+
+fn set_group_range(namespace: &NetworkNamespaceRef, low: u32, high: u32) -> Result<(), ()> {
+    net::ping::set_group_range_for(namespace, low, high)
+}
+
+fn group_leaf(namespace: &NetworkNamespaceRef) -> Arc<dyn ProcHandler> {
+    *CURRENT.lock().unwrap() = Some(Arc::clone(namespace));
+    super::PerNetGroupRangeHook { current_ns: current, get: group_range, set: set_group_range }
+        .bind().unwrap()
+}
+
+// The window is a two-value vector leaf: it reads back tab separated, a
+// one-value write keeps the live upper bound, an inverted pair disables the
+// endpoint class outright, and the reserved-invalid group is refused.
+#[test]
+fn ping_group_range_leaf_round_trips_the_window() {
+    let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    let namespace = network_namespace::allocate(initial_user).unwrap();
+    net::net_ns::materialize_state(&namespace);
+    let leaf = group_leaf(&namespace);
+
+    assert_eq!(leaf.format(), b"1\t0\n".to_vec());
+    leaf.store(b"0 2147483647\n").unwrap();
+    assert_eq!(leaf.format(), b"0\t2147483647\n".to_vec());
+    assert_eq!(net::ping::group_range_for(&namespace), Some((0, 2_147_483_647)));
+
+    leaf.store(b"100\n").unwrap();
+    assert_eq!(leaf.format(), b"100\t2147483647\n".to_vec());
+
+    leaf.store(b"200 100\n").unwrap();
+    assert_eq!(leaf.format(), b"1\t0\n".to_vec());
+
+    leaf.store(b"5 10\n").unwrap();
+    assert_eq!(leaf.store(b"0 4294967295\n"), Err(()));
+    assert_eq!(leaf.store(b"nonsense\n"), Err(()));
+    assert_eq!(leaf.store(b"-1 5\n"), Err(()));
+    assert_eq!(leaf.format(), b"5\t10\n".to_vec(), "a refused write leaves the window alone");
+}
+
+#[test]
+fn ping_group_range_windows_are_private_to_their_namespace() {
+    let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    let first = network_namespace::allocate(initial_user.clone()).unwrap();
+    let second = network_namespace::allocate(initial_user).unwrap();
+    net::net_ns::materialize_state(&first);
+    net::net_ns::materialize_state(&second);
+    let leaf = group_leaf(&first);
+    leaf.store(b"0 4000\n").unwrap();
+    // The leaf keeps the namespace it was opened in even after a task switch.
+    *CURRENT.lock().unwrap() = Some(Arc::clone(&second));
+    leaf.store(b"0 5000\n").unwrap();
+    assert_eq!(net::ping::group_range_for(&first), Some((0, 5000)));
+    assert_eq!(net::ping::group_range_for(&second), Some((1, 0)));
+}

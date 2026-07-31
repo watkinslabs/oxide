@@ -121,6 +121,14 @@ impl NetStack {
         }
         match next_header {
             n if n == IpProto::Icmpv6 as u8 => {
+                if !payload.is_empty()
+                    && crate::ping::is_reply(crate::ping::PingFamily::V6, payload[0])
+                {
+                    self.deliver_ping_v6(crate::ping::Reply6 {
+                        net_ns, iface, src, dst, hop_limit, traffic_class, flow_label,
+                        hatype, message: payload,
+                    });
+                }
                 self.deliver_rx_icmpv6(
                     net_ns, iface, src, dst, hop_limit, mld_router_alert, payload,
                 )?;
