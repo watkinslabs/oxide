@@ -1,6 +1,6 @@
 use vfs::{File, InodeRef};
 
-use crate::devfs::shared::{evdev_open, EvdevIdentity, EVDEV_INO_BASE};
+use crate::devfs::shared::{evdev_open, EvdevIdentity};
 
 #[inline]
 fn ioc_nr(req: u64) -> u32 {
@@ -70,13 +70,26 @@ fn exact_device(identity: EvdevIdentity) -> Option<input::VirtioInputDev> {
     })
 }
 
+/// Is this open file an evdev client? Linux answers with the file's own
+/// `evdev_fops`; the inode NUMBER cannot, because the pseudo-inode ranges other
+/// subsystems mint from overlap this one, and a foreign inode reaching the body
+/// below would have its unrelated `private_data` word read back as an
+/// `EvdevOpen`. The inode's own `EvdevData` is installed by exactly one place.
+/// # C: O(1)
+pub(crate) fn is_evdev_inode(inode: &InodeRef) -> bool {
+    crate::devfs::shared::evdev_endpoint(inode).is_some()
+}
+
 pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     let inode: &InodeRef = file.inode();
-    let ino = inode.ino();
-    if (ino & !crate::IOC_NR_MASK) != EVDEV_INO_BASE || (ino & crate::IOC_NR_MASK) == 0 {
+    if !is_evdev_inode(inode) {
         return None;
     }
     use syscall::errno::Errno;
+    // Every 'E' command belongs to this device from here on. Linux
+    // `evdev_do_ioctl` ends in `return -EINVAL`, so an evdev file answers its
+    // own command space itself and never hands an unrecognised one back to a
+    // later stage — which would report ENOTTY, an errno evdev never produces.
     if ioc_type(req) != b'E' as u32 {
         return None;
     }
@@ -129,7 +142,9 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 }
                 return Some(0);
             }
-            _ => return Some(err(Errno::Enotty)),
+            // Neither EVIOCGREP nor EVIOCSREP: not a command evdev names, so
+            // it lands on the trailing EINVAL like any other unknown.
+            _ => return Some(err(Errno::Einval)),
         }
     }
 
@@ -145,6 +160,23 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             return Some(err(Errno::Einval));
         }
         opened.revoke();
+        return Some(0);
+    }
+
+    // Force feedback. Effect upload and erase are refused by the input core
+    // before they reach a driver whenever the device has no force-feedback
+    // engine, and the errno for that is ENOSYS — no virtio-input device carries
+    // one. The effect-slot count is the same question asked non-destructively,
+    // and its answer for such a device is zero, not an error.
+    if nr == crate::EVIOCSFF_NR as u32 || nr == crate::EVIOCRMFF_NR as u32 {
+        return Some(err(Errno::Enosys));
+    }
+    if nr == crate::EVIOCGEFFECTS_NR as u32 {
+        if !valid_user_range(arg, crate::EVDEV_CLOCKID_BYTES as u64) {
+            return Some(err(Errno::Efault));
+        }
+        // SAFETY: arg validated inside user VA for the one int this command writes.
+        unsafe { uwrite(arg, &0i32.to_le_bytes(), crate::EVDEV_CLOCKID_BYTES); }
         return Some(0);
     }
 
@@ -290,7 +322,9 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                     .copy_from_slice(&snapshot.parameters.res.to_le_bytes());
                 uwrite(arg, &b, size.max(crate::EVDEV_ABSINFO_BYTES))
             }
-            _ => return Some(err(Errno::Enotty)),
+            // Linux `evdev_do_ioctl` falls off its multi-number handlers into
+            // `return -EINVAL`; ENOTTY is not in evdev's vocabulary.
+            _ => return Some(err(Errno::Einval)),
         }
     };
     Some(rv)
