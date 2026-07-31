@@ -216,6 +216,8 @@ pub fn make_proc_self_environ() -> InodeRef { crate::dyn_file::make_gen_file(cra
 /// trailing newline; write updates the slot.
 struct HostnameFileOps;
 impl FileOps for HostnameFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let mut body = crate::hooks::hostname();
         body.push(b'\n');
@@ -338,6 +340,8 @@ impl InodeOps for ProcSelfFdOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { fd_lookup_for(self.tid, name) }
 }
 impl FileOps for ProcSelfFdOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, _inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let fds = sched::proclink::proc_fd_list(self.tid);
         let mut idx = ctx.pos as usize;

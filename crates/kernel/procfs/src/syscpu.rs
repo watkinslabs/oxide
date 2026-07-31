@@ -144,6 +144,8 @@ impl InodeOps for SysCpuNOps {
     }
 }
 impl FileOps for SysCpuNOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let mut idx = ctx.pos as usize;
         let total = CPUN_FILES.len() + 1; // + topology dir
@@ -218,6 +220,8 @@ impl InodeOps for SysCpuTopologyOps {
     }
 }
 impl FileOps for SysCpuTopologyOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let mut idx = ctx.pos as usize;
         while idx < TOPO_FILES.len() {

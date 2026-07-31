@@ -205,6 +205,10 @@ impl CharDevOps for LinuxCharOps {
         checked_size(unsafe { ioctl(&mut file, cmd, arg) })
     }
 
+    /// The registered `file_operations` answers directly: a module that left
+    /// `.poll` NULL is not epoll-able. # C: O(1)
+    fn can_poll(&self, _devt: Devt) -> bool { self.ops().and_then(|o| o.poll).is_some() }
+
     fn poll(&self, _devt: Devt) -> vfs::KResult<u32> {
         let poll = self.ops().and_then(|o| o.poll).ok_or(VfsError::Einval)?;
         let mut file = file_for_call(self.cdev, None);

@@ -239,6 +239,8 @@ impl FileOps for UffdFileOps {
     /// not reproducible here because `FileOps::poll` sees only the inode, not
     /// the open-file flags.
     /// # C: O(1)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         let Some(d) = inode.private::<UfData>() else { return 0 };
         if !policy::is_initialized(d.features.load(Ordering::Acquire)) { return vfs::POLL_ERR; }

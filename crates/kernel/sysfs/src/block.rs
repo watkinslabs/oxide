@@ -218,6 +218,8 @@ impl InodeOps for SysBlockOps {
     }
 }
 impl FileOps for SysBlockOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let disks = block::registry::snapshot();
         let mut idx = ctx.pos as usize;
@@ -405,6 +407,8 @@ impl InodeOps for SysClassBlockOps {
     }
 }
 impl FileOps for SysClassBlockOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let disks = block::registry::snapshot();
         let mut idx = ctx.pos as usize;

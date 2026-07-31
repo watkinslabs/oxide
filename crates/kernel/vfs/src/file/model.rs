@@ -214,6 +214,13 @@ impl File {
         self.f_op.poll_deadline_ns(self)
     }
 
+    /// `file_can_poll(file)` — does this description have a readiness
+    /// operation at all? `epoll_ctl(2)` rejects a target without one.
+    /// # C: O(1)
+    pub fn can_poll(&self) -> bool {
+        self.f_op.can_poll(self)
+    }
+
     /// `file_operations->fasync` dispatch for this open file description.
     /// Backends that support async notification adjust `FASYNC` themselves,
     /// matching Linux's `f_op->fasync` ownership of the flag transition.

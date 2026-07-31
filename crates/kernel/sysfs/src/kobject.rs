@@ -79,6 +79,8 @@ pub fn attr_inode_ops() -> Arc<dyn InodeOps> { Arc::new(AttrInodeOps) }
 /// This matters for command-like read attributes such as zram-control/hot_add.
 struct AttrFileOps;
 impl FileOps for AttrFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<AttrFileData>().ok_or(VfsError::Einval)?;
         let body = d.ops.show(d.name)?;

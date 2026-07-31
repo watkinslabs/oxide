@@ -80,6 +80,8 @@ struct FilterData { slot: &'static FilterSlot }
 /// EINVAL with the prior filter kept (Linux); valid → store + apply.
 struct FilterFileOps;
 impl FileOps for FilterFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<FilterData>().ok_or(VfsError::Einval)?;
         Ok(d.slot.read_into(off, buf))
@@ -106,6 +108,8 @@ struct AggFilterData { val: Spinlock<Vec<u8>, TraceClass> }
 
 struct AggFilterFileOps;
 impl FileOps for AggFilterFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<AggFilterData>().ok_or(VfsError::Einval)?;
         let body = d.val.lock();
@@ -139,6 +143,8 @@ struct AggEnableData { subsys: Option<&'static str> }
 /// agrees, else "X" (Linux `system_enable_read`); write 0/1 toggles them all.
 struct AggEnableFileOps;
 impl FileOps for AggEnableFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<AggEnableData>().ok_or(VfsError::Einval)?;
         let snap = snapshot();
@@ -193,6 +199,8 @@ impl AvailableEventsFileOps {
     }
 }
 impl FileOps for AvailableEventsFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let body = Self::render();
         let off = off as usize;

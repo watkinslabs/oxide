@@ -37,6 +37,8 @@ impl InodeOps for TransportInputOps {
 }
 
 impl FileOps for TransportInputOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let parent = inode.private::<TransportInputData>().ok_or(VfsError::Einval)?;
         let children = children(&parent.bus, &parent.addr);
@@ -82,6 +84,8 @@ impl InodeOps for VirtualInputOps {
 }
 
 impl FileOps for VirtualInputOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let devices: Vec<InputDevInfo> = input_devs().into_iter()
             .filter(|info| info.device.parent().is_none())

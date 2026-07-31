@@ -68,6 +68,8 @@ impl InodeOps for SysDevIndexOps {
     }
 }
 impl FileOps for SysDevIndexOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let kind = inode.private::<DevIndexData>().ok_or(VfsError::Einval)?.kind;
         let mut names: Vec<String> = Vec::new();

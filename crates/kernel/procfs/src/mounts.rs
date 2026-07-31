@@ -204,6 +204,8 @@ fn read_body(data: &[u8], off: u64, buf: &mut [u8]) -> usize {
 /// `i_fop` for `/proc/mounts` — renders the live mount table on each read.
 struct MountsFileOps;
 impl FileOps for MountsFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let d = file.inode().private::<ProcMountsData>().ok_or(VfsError::Einval)?;
         file.set_private_data(alloc_snapshot(d.tid_opt).ok_or(VfsError::Enoent)?);
@@ -251,6 +253,8 @@ impl FileOps for MountinfoFileOps {
     }
     /// POLLPRI|POLLERR when the mount generation advanced since the last poll
     /// (always POLLIN — mountinfo is always readable). # C: O(1)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, _inode: &Inode) -> u32 { vfs::POLL_IN }
     fn poll_open_file(&self, file: &File) -> u32 {
         poll_snapshot(file.private_data()).unwrap_or_else(|| self.poll(file.inode()))

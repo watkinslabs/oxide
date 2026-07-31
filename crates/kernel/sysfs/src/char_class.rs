@@ -113,6 +113,8 @@ struct CharUeventData {
 
 struct CharUeventOps;
 impl FileOps for CharUeventOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<CharUeventData>().ok_or(VfsError::Einval)?;
         Ok(crate::read_window(&uevent_body(&d.info), off, buf))
@@ -220,6 +222,8 @@ impl InodeOps for VirtualClassOps {
     }
 }
 impl FileOps for VirtualClassOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let class = inode
             .private::<VirtualClassData>()
@@ -268,6 +272,8 @@ impl InodeOps for SysClassOps {
     }
 }
 impl FileOps for SysClassOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let class = inode.private::<SysClassData>().ok_or(VfsError::Einval)?.class;
         let devs = char_devs(class);

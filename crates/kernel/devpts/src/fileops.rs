@@ -78,6 +78,8 @@ impl FileOps for PtyMasterFileOps {
     /// `n_tty_poll` for the master half; the mask itself is
     /// `tty::Pair::master_poll_mask` (unit-tested in the `tty` crate, which is
     /// not target-gated).
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return vfs::POLL_ERR };
         pair.inner.lock().master_poll_mask()
@@ -178,6 +180,8 @@ impl FileOps for PtySlaveFileOps {
     }
     /// `n_tty_poll` for the slave half; the mask itself is
     /// `tty::Pair::slave_poll_mask` (unit-tested in the `tty` crate).
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return vfs::POLL_ERR };
         pair.inner.lock().slave_poll_mask()

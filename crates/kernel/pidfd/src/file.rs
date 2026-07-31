@@ -49,6 +49,8 @@ impl FileOps for PidfdFileOps {
         Err(VfsError::Einval)
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         let Some(target) = inode.private::<PidfdInode>().map(|state| &state.target) else {
             return vfs::POLL_HUP;

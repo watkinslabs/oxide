@@ -13,6 +13,8 @@ pub(super) struct TimerfdFileOps;
 impl FileOps for TimerfdFileOps {
     /// Report POLLIN only when expiration or cancellation is observable.
     /// # C: O(1)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         let d = match inode.private::<TimerfdData>() { Some(d) => d, None => return 0 };
         let mut state = d.state.lock();
