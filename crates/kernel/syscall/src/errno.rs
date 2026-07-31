@@ -41,6 +41,9 @@ pub enum Errno {
     Erofs   = 30,
     Enospc  = 28,
     Epipe   = 32,
+    /// `EDOM`: a value outside the option's domain, e.g. a `SO_RCVTIMEO`
+    /// microsecond field that is not normalized into `0..1_000_000`.
+    Edom    = 33,
     Erange  = 34,
     /// `EDEADLK`/`EDEADLOCK`: Linux `posix_locks_deadlock` (`fs/locks.c:1101`)
     /// rejecting an `fcntl(F_SETLKW)` that would close a wait cycle.

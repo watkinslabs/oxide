@@ -8,6 +8,8 @@ use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from
 
 #[path = "055_getsockopt/multicast.rs"]
 mod multicast;
+#[path = "055_getsockopt/sol_socket.rs"]
+mod sol_socket;
 #[path = "055_getsockopt/packet.rs"]
 mod packet;
 #[path = "055_getsockopt/peerpidfd.rs"]
@@ -143,16 +145,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     if level == net::uapi::SOL_PACKET {
         return packet::packet_getsockopt(&sock, optname, optval, optlen_p);
     }
-    if level == SOL_SOCKET && optname == SO_PEERPIDFD
-       && optval != 0 && optval < USER_VA_END
-       && optlen_p != 0 && optlen_p < USER_VA_END
-    {
+    if level == SOL_SOCKET && optname == SO_PEERPIDFD {
         return peerpidfd::get(&sock, optval, optlen_p);
     }
-    if level == SOL_SOCKET && optname == SO_PEERCRED
-       && optval != 0 && optval < USER_VA_END
-       && optlen_p != 0 && optlen_p < USER_VA_END
-    {
+    if level == SOL_SOCKET && optname == SO_PEERCRED {
         // Real peer creds for a connected AF_UNIX fd (snapshotted at
         // socketpair/connect/accept); falls back to the caller's own
         // {pid,euid,egid} for non-unix/unconnected sockets.
@@ -221,48 +217,12 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() { return -(Errno::Efault.as_i32() as i64); }
             0
         };
+        if level == SOL_SOCKET {
+            // The interface name has its own `ERANGE`-bounded copyout shape.
+            if optname == SO_BINDTODEVICE { return bind_to_device_name(&s, optval, optlen_p); }
+            return sol_socket::read(&s, optname, optval, optlen_p);
+        }
         match (level, optname) {
-            (SOL_SOCKET, SO_REUSEADDR) => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_REUSEPORT) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_KEEPALIVE) => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_BROADCAST) => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
-            (SOL_SOCKET, net::uapi::SO_OOBINLINE) =>
-                return i32_back(s.opts.oobinline.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
-                return i32_back(s.opts.sndbuf.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
-                return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_PASSCRED) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_LINGER) => {
-                let mut value = [0u8; 8];
-                value[..4].copy_from_slice(&s.opts.linger_on.load(Ordering::Acquire).to_ne_bytes());
-                value[4..].copy_from_slice(&s.opts.linger_s.load(Ordering::Acquire).to_ne_bytes());
-                return bytes_back(&value);
-            }
-            (SOL_SOCKET, SO_RCVTIMEO) | (SOL_SOCKET, SO_SNDTIMEO) => {
-                let ns = if optname == SO_SNDTIMEO {
-                    s.opts.sndtimeo_ns.load(Ordering::Acquire)
-                } else {
-                    s.opts.rcvtimeo_ns.load(Ordering::Acquire)
-                };
-                let mut value = [0u8; 16];
-                let sec = ns / 1_000_000_000;
-                let usec = (ns % 1_000_000_000) / 1_000;
-                value[..8].copy_from_slice(&sec.to_ne_bytes());
-                value[8..].copy_from_slice(&usec.to_ne_bytes());
-                return bytes_back(&value);
-            }
-            (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
-            | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
-            | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) =>
-                return i32_back(s.opts.timestamping.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_PRIORITY) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_MARK) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
-            (SOL_SOCKET, net::uapi::SO_TYPE) => return i32_back(socket_type(&s)),
-            (SOL_SOCKET, net::uapi::SO_ACCEPTCONN) => return i32_back(socket_acceptconn(&s)),
-            (SOL_SOCKET, net::uapi::SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
-            (SOL_SOCKET, net::uapi::SO_PROTOCOL) => return i32_back(socket_protocol(&s)),
-            (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
             (IPPROTO_IP, IP_HDRINCL) => match &*s.kind.lock() {
                 SockKind::Raw4(endpoint) => return i32_back(i32::from(endpoint.hdrincl())),
                 _ => return -(Errno::Enoprotoopt.as_i32() as i64),
@@ -435,7 +395,7 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
     0
 }
 
-fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
+pub(crate) fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     use core::sync::atomic::Ordering;
     // Explicit SO_TYPE override (AF_UNIX SOCK_SEQPACKET listener — see
     // sys_socket): the byte-ring SockKind can't encode the SEQPACKET shape.
@@ -454,14 +414,14 @@ fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     }
 }
 
-fn socket_acceptconn(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
+pub(crate) fn socket_acceptconn(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     match &*s.kind.lock() {
         SockKind::TcpListener(_) | SockKind::UnixListener(_) => 1,
         _ => 0,
     }
 }
 
-fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
+pub(crate) fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     use core::sync::atomic::Ordering;
     if s.family.load(Ordering::Acquire) == net::sock::AF_UNIX {
         return 0;
