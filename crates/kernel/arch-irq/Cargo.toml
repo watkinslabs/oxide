@@ -28,6 +28,7 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
+debug-percpu = ["sched/debug-percpu"]  # [AP] bring-up stage markers on the secondary CPU
 debug-wakelat = ["sched/debug-wakelat"]  # LAPIC tick period + stall probe ([WLTICK]/[WLTICKGAP]) for the gnome wakeup-latency hunt
 
 [lints]

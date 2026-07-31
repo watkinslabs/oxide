@@ -172,7 +172,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 }
             }
         }
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
+        rq.publish_nr_running(inner.nr_running());
     }
     // Re-queue still-executing tasks to their owner CPU, outside the rq lock so
     // no reschedule IPI is ever sent from under it.
@@ -316,7 +316,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
         let removed = {
             let mut inner = rq.inner.lock();
             let r = inner.remove(tid);
-            if r.is_some() { rq.nr_running.store(inner.nr_running(), Ordering::Release); }
+            if r.is_some() { rq.publish_nr_running(inner.nr_running()); }
             r
         };
         if let Some(moved) = removed {
@@ -465,7 +465,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             // SCHED_BATCH / SCHED_IDLE wakee preempt a SCHED_NORMAL task.
             preempt = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
             inner.enqueue(task);
-            rq.nr_running.store(inner.nr_running(), Ordering::Release);
+            rq.publish_nr_running(inner.nr_running());
         }
         if preempt { resched_curr(me); }
     }
