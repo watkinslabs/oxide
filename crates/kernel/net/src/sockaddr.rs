@@ -3,6 +3,21 @@
 use alloc::vec::Vec;
 
 pub const SOCKADDR_STORAGE_LEN: usize = 128;
+/// `sizeof(struct sockaddr_un)` — two family bytes plus a 108-byte path.
+pub const SOCKADDR_UN_LEN: usize = 110;
+/// `offsetof(struct sockaddr_un, sun_path)`.
+pub const SOCKADDR_UN_PATH_OFFSET: usize = 2;
+
+/// `unix_validate_addr`: the caller length must reach past `sun_family` and
+/// must not exceed `struct sockaddr_un`, and the family must be AF_UNIX.
+/// # C: O(1)
+pub fn validate_unix_addr(family: u16, addrlen: usize) -> Result<(), syscall::errno::Errno> {
+    if addrlen <= SOCKADDR_UN_PATH_OFFSET || addrlen > SOCKADDR_UN_LEN {
+        return Err(syscall::errno::Errno::Einval);
+    }
+    if family != crate::socket_args::AF_UNIX as u16 { return Err(syscall::errno::Errno::Einval); }
+    Ok(())
+}
 
 pub struct SockaddrStorage {
     bytes: [u8; SOCKADDR_STORAGE_LEN],
@@ -117,6 +132,23 @@ impl SockaddrStorage {
 
 #[cfg(test)]
 mod tests {
+    // `unix_validate_addr` bounds: an address that only covers `sun_family`
+    // carries no name, and one longer than `struct sockaddr_un` is rejected
+    // outright rather than truncated to the embedded path.
+    #[test]
+    fn unix_addresses_are_bounded_by_the_sockaddr_un_shape() {
+        use syscall::errno::Errno;
+        let unix = super::super::socket_args::AF_UNIX as u16;
+        assert_eq!(super::validate_unix_addr(unix, 0), Err(Errno::Einval));
+        assert_eq!(super::validate_unix_addr(unix, 2), Err(Errno::Einval));
+        assert_eq!(super::validate_unix_addr(unix, 3), Ok(()));
+        assert_eq!(super::validate_unix_addr(unix, super::SOCKADDR_UN_LEN), Ok(()));
+        assert_eq!(super::validate_unix_addr(unix, super::SOCKADDR_UN_LEN + 1), Err(Errno::Einval));
+        // The length screen outranks the family comparison.
+        assert_eq!(super::validate_unix_addr(0, 128), Err(Errno::Einval));
+        assert_eq!(super::validate_unix_addr(0, 8), Err(Errno::Einval));
+    }
+
     use super::SockaddrStorage;
 
     #[test]

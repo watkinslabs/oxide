@@ -232,6 +232,16 @@ mod tests {
 
         let bind = include_str!("049_bind.rs");
         assert!(bind.contains("move_sockaddr_to_kernel_shape(addr_p, addrlen)"));
+        // AF_UNIX names are bounded by `struct sockaddr_un` on both the bind
+        // and connect routes, not silently truncated to the embedded path.
+        for source in [bind, include_str!("042_connect.rs")] {
+            assert!(source.contains("net::sockaddr::validate_unix_addr("));
+        }
+        // socketpair applies the real creation capability, so a raw-socket
+        // request fails the way an ordinary `socket` call would.
+        let socketpair = include_str!("053_socketpair.rs");
+        assert!(socketpair.contains("nscg::has_net_raw_for(cur, &net_namespace)"));
+        assert!(!socketpair.contains("parse_socket_args(domain, raw_type, protocol, true)"));
 
         let sockaddr = include_str!("net_sockaddr.rs");
         let address_copy = sockaddr.find("|copy_len| uaccess::copy_to_user(addr, &sa.as_bytes()").unwrap();
