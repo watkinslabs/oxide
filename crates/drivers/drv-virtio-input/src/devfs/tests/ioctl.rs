@@ -180,12 +180,26 @@ fn evdev_identity_and_capability_ioctls_project_canonical_model() {
 
 #[test]
 fn evdev_force_feedback_ioctl_is_not_absinfo_alias() {
+    // EVIOCSFF's number sits one past the absinfo range, so it must not be
+    // decoded as an axis query. A device with no force-feedback engine refuses
+    // effect upload and erase with ENOSYS, and reports zero effect slots.
     let file = test_file(0);
     let mut effect = [0u8; crate::EVDEV_FF_EFFECT_BYTES];
     assert_eq!(
         handle_evdev_ioctl(&file, crate::EVIOCSFF, effect.as_mut_ptr() as u64),
-        Some(-(syscall::errno::Errno::Enotty.as_i32() as i64))
+        Some(-(syscall::errno::Errno::Enosys.as_i32() as i64))
     );
+    let mut id = 0i32;
+    assert_eq!(
+        handle_evdev_ioctl(&file, crate::EVIOCRMFF, (&mut id as *mut i32) as u64),
+        Some(-(syscall::errno::Errno::Enosys.as_i32() as i64))
+    );
+    let mut effects = -1i32;
+    assert_eq!(
+        handle_evdev_ioctl(&file, crate::EVIOCGEFFECTS, (&mut effects as *mut i32) as u64),
+        Some(0)
+    );
+    assert_eq!(effects, 0);
 }
 
 #[test]

@@ -73,7 +73,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == 0x5045_5246_0000_0000 {
         return ::fs::perf::handle_perf_ioctl(file.inode(), req, arg);
     }
-    // evdev ioctls.
+    // evdev ioctls. The handler recognises its own files by the backend state
+    // their inode owns, so a foreign inode that happens to reuse an evdev
+    // inode NUMBER falls through here untouched.
     if let Some(rv) = drv_virtio_input::devfs::handle_evdev_ioctl(&file, req, arg) {
         return rv;
     }
