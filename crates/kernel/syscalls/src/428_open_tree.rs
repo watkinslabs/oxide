@@ -13,12 +13,26 @@ use crate::fsmount_common::*;
 /// for `RootDirectory=`/sandbox setup.
 /// # C: O(N_mounts)
 pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
-    const OPEN_TREE_CLONE:   u64 = 1;
-    const OPEN_TREE_CLOEXEC: u64 = 0o2_000_000;     // O_CLOEXEC
-    const AT_RECURSIVE:      u64 = 0x8000;          // clone the whole subtree
-    const AT_EMPTY_PATH:     u64 = 0x1000;
+    match crate::open_tree_policy::parse(args.a2) {
+        Ok(f) => open_tree_decided(args, f),
+        Err(rv) => rv,
+    }
+}
+
+/// The flag word is already decoded + validated (`open_tree_policy`), so the
+/// only work left is the walk and the fd. Split out so `open_tree_attr(2)`
+/// reuses the identical decision without re-parsing.
+/// # C: O(N_mounts)
+pub fn open_tree_decided(args: &SyscallArgs, f: crate::open_tree_policy::OpenTree) -> i64 {
+    // `OPEN_TREE_CLONE` demands `may_mount()` BEFORE the walk (Linux
+    // `vfs_open_tree`), so an unprivileged caller naming a nonexistent path is
+    // told EPERM, not ENOENT. The plain O_PATH-like form stays unprivileged.
+    if f.clone_tree { if let Some(rv) = may_mount_or_eperm() { return rv; } }
     let vp = match crate::pathresolve::resolve_at_lookup(args.a0 as i32, args.a1, vfs::LookupFlags {
-        empty: (args.a2 & AT_EMPTY_PATH) != 0,
+        empty: f.empty,
+        follow: f.follow,
+        no_follow_final: !f.follow,
+        no_automount: !f.automount,
         ..Default::default()
     }) {
         Ok(p) => p, Err(rv) => return rv,
@@ -31,22 +45,18 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
         klog::write_raw(b"[MNTCREATE] syscall=open_tree flags=0x");
         klog::write_hex_u64(args.a2);
         klog::write_raw(b" recursive=");
-        klog::write_raw(if args.a2 & AT_RECURSIVE != 0 { b"true" } else { b"false" });
+        klog::write_raw(if f.recursive { b"true" } else { b"false" });
         klog::write_raw(b" source="); klog::write_raw(display.as_bytes());
         klog::write_raw(b" target=<none>\n");
     }
-    let cloexec = (args.a2 & OPEN_TREE_CLOEXEC) != 0;
-    if (args.a2 & OPEN_TREE_CLONE) != 0 {
-        // OPEN_TREE_CLONE creates a detached mount → requires CAP_SYS_ADMIN
-        // (Linux open_detached_copy/may_mount); the non-clone O_PATH-like form
-        // below is unprivileged (D49).
-        if let Some(rv) = may_mount_or_eperm() { return rv; }
+    let cloexec = f.cloexec;
+    if f.clone_tree {
         // D24 Stage 1a: RECURSIVELY clone the mount SUBTREE rooted at `abs`
         // (AT_RECURSIVE ⇒ whole bindable subtree; else root-only) into a
         // DETACHED node list stored in the mount-object fd. `move_mount` later
         // commits it hash-only; fd-close releases it. This replaces the prior
         // single-(fs,root) capture that never replicated submounts.
-        let recursive = (args.a2 & AT_RECURSIVE) != 0;
+        let recursive = f.recursive;
         let mnt = match vfs::mount::mount_by_id(vp.mnt_id) {
             Some(m) => m,
             None => {
@@ -54,6 +64,11 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enoent.as_i32() as i64);
             }
         };
+        // Linux `__do_loopback`: unbindable / cross-namespace / locked-children
+        // rungs, all EINVAL, before anything is copied.
+        if let Err(e) = vfs::mount::may_clone_mount_tree(&mnt, &vp.dentry, recursive) {
+            return crate::namei_common::errno_from_vfs(e);
+        }
         let tree = vfs::mount::clone_mount_tree(&mnt, recursive);
         if tree.is_empty() { return -(Errno::Einval.as_i32() as i64); }
         // Linux `fs/namespace.c` `create_new_namespace` (reached from

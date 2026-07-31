@@ -117,7 +117,13 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     let source_p = args.a0;
     let target_p = args.a1;
     let fstype_p = args.a2;
-    let flags    = args.a3;
+    // Linux `path_mount`'s preamble: discard the pre-2.4 magic prefix, then
+    // reject the kernel-internal MS_NOUSER. Both ran before this shim's first
+    // branch in Linux and neither ran here at all, so a legacy libmount call
+    // arrived carrying 0xC0ED0000 worth of flags nobody requested.
+    let flags = match crate::mount_flags_policy::normalize(args.a3) {
+        Ok(f) => f, Err(rv) => return rv,
+    };
     let data_p   = args.a4;
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),

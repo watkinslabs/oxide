@@ -352,7 +352,7 @@ impl Nameidata {
             // Automount triggers run before ordinary mount crossing. The hook
             // may graft a mount onto `child`, after which `follow_mount_down`
             // crosses it through the same generic mount path as explicit mounts.
-            if child_inode.i_op().is_automount(&child_inode) {
+            if !self.flags.no_automount && child_inode.i_op().is_automount(&child_inode) {
                 if self.rcu && !self.unlazy_walk(&child, cseq, m_seq) { return Ok(WalkOutcome::Restart); }
                 child_inode.i_op().automount(&child_inode, &child, self.cur_mnt_id)?;
             }

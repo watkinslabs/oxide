@@ -12,7 +12,23 @@ fn trim_move_path(raw: &str) -> Result<&str, i64> {
     if trimmed.is_empty() { Ok("/") } else { Ok(trimmed) }
 }
 
-fn resolve_move_target_at(dirfd: i32, raw: &str) -> Result<(vfs::MountTarget, alloc::string::String), i64> {
+/// `LookupFlags` for one `move_mount(2)` pathname. `move_mount` is the one
+/// member of the `*at` family that walks WITHOUT `LOOKUP_FOLLOW` by default —
+/// symlinks and automounts are opted into per side by
+/// `MOVE_MOUNT_{F,T}_SYMLINKS` / `_AUTOMOUNTS`. # C: O(1)
+fn side_lookup(side: crate::move_mount_policy::Side, parent: bool) -> vfs::LookupFlags {
+    vfs::LookupFlags {
+        parent,
+        empty: side.empty,
+        follow: side.follow,
+        no_follow_final: !side.follow,
+        no_automount: !side.automount,
+        ..Default::default()
+    }
+}
+
+fn resolve_move_target_at(dirfd: i32, raw: &str, side: crate::move_mount_policy::Side)
+    -> Result<(vfs::MountTarget, alloc::string::String), i64> {
     let raw = trim_move_path(raw)?;
     if let Some(p) = crate::pathresolve::procfd_path(raw) {
         let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
@@ -20,12 +36,12 @@ fn resolve_move_target_at(dirfd: i32, raw: &str) -> Result<(vfs::MountTarget, al
         return Ok((target, display));
     }
     if raw == "/" {
-        let p = crate::pathresolve::resolve_at_path(dirfd, raw, vfs::LookupFlags::default())?;
+        let p = crate::pathresolve::resolve_at_path(dirfd, raw, side_lookup(side, false))?;
         let target = vfs::MountTarget { parent: p.clone(), mountpoint: p.dentry.clone() };
         let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
         return Ok((target, display));
     }
-    let parent = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
+    let parent = crate::pathresolve::resolve_parent_at_flags(dirfd, raw, side_lookup(side, true))?;
     if parent.last_type() != vfs::LastType::Norm { return Err(-(Errno::Einval.as_i32() as i64)); }
     let name = parent.last_component.as_deref().ok_or(-(Errno::Einval.as_i32() as i64))?;
     let pi = parent.dentry.inode().ok_or(-(Errno::Enoent.as_i32() as i64))?;
@@ -70,17 +86,50 @@ pub fn sys_move_mount(args: &SyscallArgs) -> i64 {
     rv
 }
 
+/// Linux `getname_maybe_null(name, AT_EMPTY_PATH)` reduced to a string: an
+/// empty result means "operate on the descriptor". Without `empty_ok` a NULL
+/// pointer is `EFAULT` and an empty string stays empty only long enough for
+/// the caller's `ENOENT`. # C: O(len)
+fn maybe_null_path(ptr: u64, empty_ok: bool) -> Result<alloc::string::String, i64> {
+    if ptr == 0 {
+        if empty_ok { return Ok(alloc::string::String::new()); }
+        return Err(-(Errno::Efault.as_i32() as i64));
+    }
+    let s = read_path_allow_empty(ptr)?;
+    if s.is_empty() && !empty_ok { return Err(-(Errno::Enoent.as_i32() as i64)); }
+    Ok(s)
+}
+
 fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
+    // Flag word FIRST (Linux `SYSCALL_DEFINE5(move_mount)`: may_mount, then the
+    // MOVE_MOUNT__MASK and BENEATH-xor-SET_GROUP rejects, then either pathname).
+    let f = match crate::move_mount_policy::parse(args.a4) { Ok(f) => f, Err(rv) => return rv };
     let from_fd = args.a0 as i32;
-    let from_path = match read_path_allow_empty(args.a1) {
+    // Linux `getname_maybe_null`: with the side's `_EMPTY_PATH` bit, a NULL
+    // pointer OR an empty string yields a NULL `struct filename`, which is how
+    // the call is told to operate on the descriptor itself. Without the bit
+    // neither shortcut applies — NULL is EFAULT and `""` is ENOENT. This is why
+    // reading both pathnames unconditionally was wrong: a NULL `to_pathname`
+    // with MOVE_MOUNT_T_EMPTY_PATH is legal and was reported EFAULT.
+    let from_path = match maybe_null_path(args.a1, f.from.empty) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let to_path = match read_path_allow_empty(args.a3) {
+    let to_path = match maybe_null_path(args.a3, f.to.empty) {
         Ok(s) => s, Err(rv) => return rv,
     };
-    let (target_mt, target) = match resolve_move_target_at(args.a2 as i32, &to_path) {
-        Ok(t) => t, Err(rv) => return rv,
+    let (target_mt, target) = if to_path.is_empty() {
+        // MOVE_MOUNT_T_EMPTY_PATH: the destination IS `to_dfd` itself.
+        let p = match crate::pathresolve::resolve_at_or_dirfd(
+            args.a2 as i32, args.a3, syscall::at::AT_EMPTY_PATH) {
+            Ok(p) => p, Err(rv) => return rv,
+        };
+        let display = vfs::mount::render_path_for_mount(p.mnt_id, &p.dentry);
+        (vfs::mount_target_from_resolved_path(p), display)
+    } else {
+        match resolve_move_target_at(args.a2 as i32, &to_path, f.to) {
+            Ok(t) => t, Err(rv) => return rv,
+        }
     };
     let target_d = target_mt.mountpoint.clone();
     let target_mnt = target_mt.parent.mnt_id;
@@ -105,13 +154,22 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
             // boot stays green this stage). TAKE it so the inode's Drop does not
             // also release the now-committed clones.
             if let Some(tree) = mo.detached_tree.lock().take() {
-                let _ = vfs::mount::commit_tree_hashonly_at(tree, &target_d, target_mnt);
+                // A commit that spliced NOTHING is a failed graft, not a
+                // success: reporting 0 here left the caller believing its
+                // detached tree was attached while the fd had already given it
+                // up (the `take()` above), leaking the clone.
+                let n = vfs::mount::commit_tree_hashonly_at(tree, &target_d, target_mnt);
+                if n == 0 { return -(Errno::Einval.as_i32() as i64); }
                 return 0;
             }
             // open_tree clone (legacy non-recursive): bind the captured (fs, root).
             if let Some((fs, root)) = mo.clone_of.as_ref() {
-                let _ = vfs::mount::register_bind_at(Some(target_d.clone()), fs.clone(), root.clone(), Some(target_mnt));
-                return 0;
+                return match vfs::mount::register_bind_at(
+                    Some(target_d.clone()), fs.clone(), root.clone(), Some(target_mnt)) {
+                    Ok(_) => 0,
+                    Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+                    Err(e) => crate::namei_common::errno_from_vfs(e),
+                };
             }
             // Graft the already-realized SB (Linux do_move_mount over a
             // fsmount object), then deliver mount propagation to the destination
@@ -147,9 +205,40 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
     // Mode (b): relocate an existing mount.
     // Source mount = the `mnt_id` the walk crossed into (Linux `path->mnt`), not
     // a re-derived dentry (which resolves onto the moved mount's shared root).
-    let from_vp = match crate::pathresolve::resolve_at_path(from_fd, &from_path, vfs::LookupFlags::default()) {
+    let from_vp = match crate::pathresolve::resolve_at_path(from_fd, &from_path,
+        side_lookup(f.from, false)) {
         Ok(p) => p, Err(rv) => return rv,
     };
+    // MOVE_MOUNT_SET_GROUP relocates nothing — it makes the DESTINATION mount
+    // join the source's sharing group (Linux `do_set_group`). Both sides must
+    // be mount roots, which is what `path_mounted` asks of each resolved path.
+    if f.set_group {
+        let (Some(from_m), Some(to_m)) = (vfs::mount::mount_by_id(from_vp.mnt_id),
+                                          vfs::mount::mount_by_id(target_mt.parent.mnt_id)) else {
+            return -(Errno::Einval.as_i32() as i64);
+        };
+        let from_at_root = vfs::mount::root_dentry_for_mount_id(from_vp.mnt_id)
+            .map(|r| alloc::sync::Arc::ptr_eq(&r, &from_vp.dentry)).unwrap_or(false);
+        let to_at_root = vfs::mount::root_dentry_for_mount_id(target_mt.parent.mnt_id)
+            .map(|r| alloc::sync::Arc::ptr_eq(&r, &target_d)).unwrap_or(false);
+        return match vfs::mount::set_group(&from_m, from_at_root, &to_m, to_at_root) {
+            Ok(()) => 0,
+            Err(e) => crate::namei_common::errno_from_vfs(e),
+        };
+    }
+    // MOVE_MOUNT_BENEATH slides the source UNDER the mount already at the
+    // target, so the target path must BE that mount's root; anything else has
+    // no top mount to go beneath.
+    if f.beneath {
+        let top_id = target_mt.parent.mnt_id;
+        let at_root = vfs::mount::root_dentry_for_mount_id(top_id)
+            .map(|r| alloc::sync::Arc::ptr_eq(&r, &target_d)).unwrap_or(false);
+        if !at_root { return -(Errno::Einval.as_i32() as i64); }
+        return match vfs::mount::move_mount_beneath(from_vp.mnt_id, top_id) {
+            Ok(()) => 0,
+            Err(e) => crate::namei_common::errno_from_vfs(e),
+        };
+    }
     // Destination mount id from the walk: disambiguates a `to` sitting in a bind
     // mount (shared dentries defeat `parent_by_dentry`). Falls back to `target_d`.
     match vfs::mount::move_mount_by_id_to_rendered(from_vp.mnt_id, Some(target_mnt), &target_d, target) {
