@@ -63,3 +63,20 @@ const ROOT_NS_ID: u32 = 0;
 fn identity_to_host(ns_id: u32) -> Option<u32> {
     if ns_id == user_namespace::INVALID_ID { None } else { Some(ns_id) }
 }
+
+/// Linux `make_kuid(current_user_ns(), id)` for a uid ARGUMENT that names a
+/// FILESYSTEM owner (the `chown(2)` family) rather than a process credential.
+/// `None` is `INVALID_UID`, which `setattr_vfsuid` reports as `EINVAL` — an id
+/// the caller's user namespace does not map has no internal identity and must
+/// never be stored as an owner. The `(uid_t)-1` "leave unchanged" sentinel is
+/// resolved by the caller BEFORE this point.
+/// # C: O(extents); # Lk: Namespace
+pub fn make_kuid(ns_id: u32) -> Option<u32> {
+    match crate::current() { Some(cur) => to_host(cur, IdMapKind::Uid, ns_id), None => identity_to_host(ns_id) }
+}
+
+/// `make_kgid(current_user_ns(), id)` — the gid half of [`make_kuid`].
+/// # C: O(extents); # Lk: Namespace
+pub fn make_kgid(ns_id: u32) -> Option<u32> {
+    match crate::current() { Some(cur) => to_host(cur, IdMapKind::Gid, ns_id), None => identity_to_host(ns_id) }
+}

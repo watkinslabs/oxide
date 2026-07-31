@@ -217,6 +217,11 @@ pub enum VfsError {
     Ecanceled = 125,
     /// EDQUOT — quota hard limit exceeded.
     Edquot  = 122,
+    /// EOVERFLOW — an owner id that cannot be represented on the target: a
+    /// chown whose uid/gid has no mapping back through the mount idmap into
+    /// the filesystem's namespace, or any change to an inode whose existing
+    /// owner has no mapping in the caller's view (Linux `notify_change`).
+    Eoverflow = 75,
     /// Linux `ERESTARTSYS` (`include/linux/errno.h:12`) — NOT an errno, and it
     /// never reaches userspace. `prepare_to_wait_event` returns it for every
     /// interrupted interruptible sleep (`kernel/sched/wait.c:309`), so it is

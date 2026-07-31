@@ -9,8 +9,17 @@
 //! and chown/create target ids are stored as fs ids (`idmap.map_in_*`),
 //! so an identity-mapped (non-idmapped) mount behaves exactly as before.
 
+//!
+//! Module manifest:
+//!   gate.rs — `may_setattr`, `chown_ok`/`chgrp_ok`, the `ATTR_TOUCH` /
+//!             `ATTR_TIMES_SET` classification, and the owner-mapping
+//!             (`EOVERFLOW`) rule.
+
 extern crate alloc;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+mod gate;
+pub use gate::{attr_times_set, attr_touch, check_owner_mappings, chgrp_ok, chown_ok, may_setattr};
 
 use crate::idmap::Idmap;
 use crate::inode::{Inode, InodeRef, inode_owner_or_capable};
@@ -103,23 +112,41 @@ pub fn inode_newsize_ok(inode: &Inode, offset: u64) -> KResult<()> {
 /// any mutation. Mutates `ia` to strip a disallowed S_ISGID (chmod) and to set
 /// the S_ISUID/S_ISGID kill flags (chown of a non-directory). # C: O(ngroups)
 pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
-    // Linux `may_setattr` order: the append-only reject stands ahead of
-    // `ATTR_FORCE` (`vfs_truncate`: `error = -EPERM; if (IS_APPEND(inode))`,
-    // `do_ftruncate`: `if (IS_APPEND(file_inode(file))) return -EPERM;`) — an
-    // append-only file can only ever grow at its end, and no capability lifts
-    // that. Then `if (ia_valid & ATTR_FORCE) return 0;`: the caller has already
+    // `may_setattr` runs first (Linux calls it at the top of `notify_change`,
+    // ahead of this function): an immutable or append-only inode refuses every
+    // mode / owner / explicit-timestamp change with EPERM, and the "set both
+    // times to now" form is the sole attribute change a non-owner with write
+    // access may make. Keeping it here rather than only in `notify_change`
+    // means a direct `setattr_prepare` caller (`file_setattr`, a backend
+    // `->setattr`) cannot skip the flag gate.
+    may_setattr(idmap, inode, ia.valid, cred)?;
+    // Linux: the size constraints "can't be overridden using ATTR_FORCE", so
+    // they run ahead of it. The append-only reject on a size change lives in
+    // the truncate callers (`vfs_truncate`: `error = -EPERM; if
+    // (IS_APPEND(inode))`, `do_ftruncate`: `if (IS_APPEND(file_inode(file)))
+    // return -EPERM;`) and is repeated here so an `O_TRUNC` open or a
+    // `file_setattr` size change cannot reach a backend behind `ATTR_FORCE`.
+    if ia.valid & ATTR_SIZE != 0 {
+        inode_newsize_ok(inode, ia.size)?;
+        if inode.i_flags() & S_APPEND != 0 { return Err(VfsError::Eperm); }
+    }
+    // `if (ia_valid & ATTR_FORCE) goto kill_priv;`: the caller has already
     // established authority for this change and the DAC gate below must not
     // re-derive — and wrongly re-fail — it. `truncate(2)` reaches here having
     // run `inode_permission(MAY_WRITE)`, `ftruncate(2)` having required
     // `FMODE_WRITE`, and both then carry `ATTR_MTIME | ATTR_CTIME` meaning
     // "now", which is NOT the owner-gated specific-time form.
-    if ia.valid & ATTR_SIZE != 0 {
-        inode_newsize_ok(inode, ia.size)?;
-        if inode.i_flags() & S_APPEND != 0 { return Err(VfsError::Eperm); }
-    }
     if ia.valid & ATTR_FORCE != 0 { return Ok(()); }
-    let vfsuid = idmap.map_out_uid(inode.uid().unwrap_or(0));
-    let vfsgid = idmap.map_out_gid(inode.gid().unwrap_or(0));
+
+    // Linux order: chown, then chgrp, then chmod, then the timestamp gate.
+    // A combined iattr reports the FIRST of those that is refused.
+    if ia.valid & ATTR_UID != 0 && !chown_ok(idmap, inode, ia.uid, cred) {
+        return Err(VfsError::Eperm);
+    }
+    if ia.valid & ATTR_GID != 0 && !chgrp_ok(idmap, inode, ia.gid, cred) {
+        return Err(VfsError::Eperm);
+    }
+
     // `inode_owner_or_capable` (Linux), NOT the open-coded `uid == vfsuid ||
     // cap_fowner`: on an idmapped mount whose extents do not cover the inode's
     // fs owner, the vfsuid is INVALID and the CAP_FOWNER path must be DENIED
@@ -128,25 +155,16 @@ pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &C
     // granted it — the correctness edge this helper exists to close.
     let is_owner = inode_owner_or_capable(idmap, inode.as_ref(), cred);
 
-    // chmod: owner or CAP_FOWNER, then S_ISGID strip for a non-member.
+    // chmod: owner or CAP_FOWNER, then S_ISGID strip for a non-member. The
+    // group the membership test names is the one the file will END UP in — the
+    // incoming `ia.gid` when this same change also sets the group, otherwise
+    // the inode's current vfsgid.
     if ia.valid & ATTR_MODE != 0 {
         if !is_owner { return Err(VfsError::Eperm); }
+        let vfsgid = if ia.valid & ATTR_GID != 0 { ia.gid }
+                     else { idmap.map_out_gid(inode.gid().unwrap_or(0)) };
         if ia.mode & S_ISGID != 0 && !cred.cap_fsetid && !cred.in_group(vfsgid) {
             ia.mode &= !S_ISGID;
-        }
-    }
-
-    // chown: CAP_CHOWN for uid; CAP_CHOWN or (owner AND target-group member)
-    // for gid. The ATTR_KILL_SUID/SGID priv-drop flags are set by the chown
-    // caller (Linux `chown_common`), not here, so `chown(-1,-1)` still drops
-    // them; `apply_kill_priv` folds them into the final mode at apply time.
-    if ia.valid & (ATTR_UID | ATTR_GID) != 0 {
-        if ia.valid & ATTR_UID != 0 && ia.uid != vfsuid && !cred.cap_chown {
-            return Err(VfsError::Eperm);
-        }
-        if ia.valid & ATTR_GID != 0 && ia.gid != vfsgid {
-            let owner_member = cred.uid == vfsuid && cred.in_group(ia.gid);
-            if !owner_member && !cred.cap_chown { return Err(VfsError::Eperm); }
         }
     }
 
@@ -156,34 +174,26 @@ pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &C
     // reject already ran above, ahead of the `ATTR_FORCE` short-circuit.
     if ia.valid & ATTR_SIZE != 0 { inode_permission(inode, MAY_WRITE, cred)?; }
 
-    // utimes (Linux fs/utimes.c `utimes_common` + fs/attr.c `setattr_prepare`):
-    // owner/CAP_FOWNER (EPERM) is required for any *explicit* `times[]` that is
-    // not "set BOTH to now". Linux marks that case with `ATTR_TIMES_SET` (set
-    // whenever `times != NULL` and not both UTIME_NOW). The sole MAY_WRITE/owner
-    // (EACCES) path is setting BOTH atime AND mtime to now (NULL `times` or both
-    // UTIME_NOW), which always arrives as `ATTR_ATIME | ATTR_MTIME` with no
-    // `*_SET` bit. The equivalent signal here is: a *specific* time (`*_SET`),
-    // OR a per-field selection touching only one of atime/mtime (the other
-    // UTIME_OMIT) — e.g. `{UTIME_NOW, UTIME_OMIT}`, which Linux still gates on
-    // ownership even though the live field is "now". A non-owner with mere write
-    // access may only set BOTH timestamps to now.
-    if ia.valid & (ATTR_ATIME | ATTR_MTIME) != 0 {
-        let both_now = ia.valid & (ATTR_ATIME | ATTR_MTIME) == ATTR_ATIME | ATTR_MTIME
-            && ia.valid & (ATTR_ATIME_SET | ATTR_MTIME_SET) == 0;
-        if !both_now {
-            if !is_owner { return Err(VfsError::Eperm); }
-        } else if !is_owner {
-            inode_permission(inode, MAY_WRITE, cred)?;
-        }
-    }
+    // utimes (Linux `setattr_prepare`): owner/CAP_FOWNER (EPERM) for any
+    // *explicit* `times[]` that is not "set BOTH to now" — a specific instant
+    // (`*_SET`) or a per-field selection touching only one of atime/mtime (the
+    // other UTIME_OMIT), which Linux gates on ownership even though the live
+    // field's value is "now". The "both to now" form's own gate is the
+    // MAY_WRITE fallback inside `may_setattr` above.
+    if attr_times_set(ia.valid) && !is_owner { return Err(VfsError::Eperm); }
     Ok(())
 }
 
-/// Fold the ATTR_KILL_SUID/SGID flags into a concrete mode given the current
-/// `cur` perm bits (Linux `setattr_copy` priv-drop). # C: O(1)
+/// Fold the ATTR_KILL_SUID/SGID flags into a concrete mode (Linux
+/// `notify_change`'s `ATTR_KILL_S*ID` → `ATTR_MODE` rewrite). The flags are
+/// already a DECISION: whoever set them ([`setattr_should_drop_suidgid`] for
+/// the write/truncate path, [`setattr_should_drop_sgid`] for chown) applied
+/// the S_IXGRP / group-membership rule. Re-testing S_IXGRP here silently
+/// undid the chown case, where a bare S_ISGID must drop for a caller outside
+/// the file's group. # C: O(1)
 pub fn apply_kill_priv(valid: u32, mut mode: u16) -> u16 {
     if valid & ATTR_KILL_SUID != 0 { mode &= !S_ISUID; }
-    if valid & ATTR_KILL_SGID != 0 && (mode & S_IXGRP != 0) { mode &= !S_ISGID; }
+    if valid & ATTR_KILL_SGID != 0 { mode &= !S_ISGID; }
     mode
 }
 
@@ -283,8 +293,24 @@ pub fn setattr_should_drop_sgid(idmap: &Idmap, inode: &Inode, cred: &Cred) -> u3
 /// precision the filesystem cannot persist. Inodes without an `i_sb`
 /// (anon/pseudo) keep full-ns values — their granularity is implicitly 1 ns.
 pub fn notify_change(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
+    reject_symlink_mode(inode, ia.valid)?;
     setattr_prepare(idmap, inode, ia, cred)?;
+    check_owner_mappings(idmap, inode, ia.valid, ia.uid, ia.gid)?;
     notify_change_applied(idmap, inode, ia)
+}
+
+/// Linux `notify_change`: "Don't allow changing the mode of symlinks". The VFS
+/// ignores a symlink's mode during permission checking and no filesystem
+/// implements the change, so it is `EOPNOTSUPP` for every caller — reachable
+/// only through `fchmodat2(AT_SYMLINK_NOFOLLOW)` and `file_setattr` on an
+/// `O_PATH|O_NOFOLLOW` descriptor. It sits AFTER the mount read-only gate and
+/// the immutable/append gate, so a symlink on a read-only mount answers
+/// `EROFS`. # C: O(1)
+fn reject_symlink_mode(inode: &InodeRef, valid: u32) -> KResult<()> {
+    if valid & ATTR_MODE != 0 && matches!(inode.file_type(), FileType::Symlink) {
+        return Err(VfsError::Eopnotsupp);
+    }
+    Ok(())
 }
 
 /// Mount-aware `notify_change` — the form every attribute-changing syscall
@@ -310,7 +336,9 @@ pub fn notify_change_mnt(inode: &InodeRef, mnt_id: u64, ia: &mut Iattr, cred: &C
         }
     }
     let idmap = crate::mount::idmap_for(mnt_id);
+    reject_symlink_mode(inode, ia.valid)?;
     setattr_prepare(&idmap, inode, ia, cred)?;
+    check_owner_mappings(&idmap, inode, ia.valid, ia.uid, ia.gid)?;
     if inode.is_public_device() && ia.valid & (ATTR_UID | ATTR_GID | ATTR_MODE) != 0 {
         return Ok(());
     }

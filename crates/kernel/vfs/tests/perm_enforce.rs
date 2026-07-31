@@ -1,12 +1,37 @@
 //! D4 permission-enforcement tests for the pure VFS decision functions
-//! (`inode_permission`, `may_open`, `may_create`, `may_chmod`, `may_chown`,
-//! `chmod_sgid_strip`, `chown_kill_priv`). Synthetic `Inode` impls carrying
-//! explicit POSIX mode/uid/gid — no real filesystem, no `sched`.
+//! (`inode_permission`, `may_open`, `may_create`, and the chmod/chown half of
+//! `setattr_prepare`). Synthetic `Inode` impls carrying explicit POSIX
+//! mode/uid/gid — no real filesystem, no `sched`.
+//!
+//! The chmod/chown assertions used to run against a SECOND set of predicates
+//! (`may_chmod`/`may_chown`/`chmod_sgid_strip`/`chown_kill_priv`) that no
+//! syscall ever called, so they could — and did — drift from the ladder the
+//! kernel actually runs. They now drive `setattr_prepare` itself.
 
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
 use vfs::{Cred, FileType, InodeRef, VfsError};
-use vfs::{inode_permission, may_open, may_create, may_chmod, may_chown,
-    chmod_sgid_strip, chown_kill_priv, MAY_EXEC, MAY_READ, MAY_WRITE};
+use vfs::{inode_permission, may_open, may_create, MAY_EXEC, MAY_READ, MAY_WRITE};
+use vfs::{setattr_prepare, apply_kill_priv, setattr_should_drop_sgid, Iattr, Idmap};
+use vfs::{ATTR_CTIME, ATTR_GID, ATTR_KILL_SGID, ATTR_KILL_SUID, ATTR_MODE, ATTR_UID};
+
+/// Non-idmapped mount — every id passes through unchanged. # C: O(1)
+fn nomap() -> Idmap { Idmap::identity() }
+
+/// Run the real chmod gate and report the mode it would apply (S_ISGID may be
+/// stripped in place) or the errno it refuses with.
+fn try_chmod(f: &InodeRef, mode: u16, c: &Cred) -> Result<u16, VfsError> {
+    let mut ia = Iattr { valid: ATTR_MODE | ATTR_CTIME, mode, ..Default::default() };
+    setattr_prepare(&nomap(), f, &mut ia, c).map(|()| ia.mode)
+}
+
+/// Run the real chown gate. `None` is the `(uid_t)-1` leave-alone sentinel.
+fn try_chown(f: &InodeRef, uid: Option<u32>, gid: Option<u32>, c: &Cred) -> Result<(), VfsError> {
+    let mut valid = ATTR_CTIME;
+    if uid.is_some() { valid |= ATTR_UID; }
+    if gid.is_some() { valid |= ATTR_GID; }
+    let mut ia = Iattr { valid, uid: uid.unwrap_or(0), gid: gid.unwrap_or(0), ..Default::default() };
+    setattr_prepare(&nomap(), f, &mut ia, c)
+}
 
 /// Regular file with explicit perm/uid/gid (default ops — only the permission
 /// decision functions are exercised, never `lookup`).
@@ -119,18 +144,18 @@ fn supplementary_group_grants_group_access() {
     assert_eq!(inode_permission(&f, MAY_READ, &user(1000, 1000)).err(), Some(VfsError::Eacces));
 }
 
-// ---- may_chmod -----------------------------------------------------------
+// ---- chmod gate ----------------------------------------------------------
 
 #[test]
 fn chmod_non_owner_denied() {
     let f = pfile(0o644, 0, 0);
-    assert_eq!(may_chmod(&f, &user(1000, 1000)).err(), Some(VfsError::Eperm));
+    assert_eq!(try_chmod(&f, 0o600, &user(1000, 1000)).err(), Some(VfsError::Eperm));
 }
 
 #[test]
 fn chmod_owner_ok() {
     let f = pfile(0o644, 1000, 1000);
-    assert!(may_chmod(&f, &user(1000, 1000)).is_ok());
+    assert_eq!(try_chmod(&f, 0o600, &user(1000, 1000)), Ok(0o600));
 }
 
 #[test]
@@ -138,16 +163,16 @@ fn chmod_cap_fowner_ok() {
     let f = pfile(0o644, 0, 0);
     let mut c = user(1000, 1000);
     c.cap_fowner = true;
-    assert!(may_chmod(&f, &c).is_ok());
+    assert_eq!(try_chmod(&f, 0o600, &c), Ok(0o600));
 }
 
-// ---- may_chown -----------------------------------------------------------
+// ---- chown gate ----------------------------------------------------------
 
 #[test]
 fn chown_uid_change_without_cap_denied() {
     let f = pfile(0o644, 1000, 1000);
-    // owner tries to give the file to uid 0 without CAP_CHOWN → EPERM.
-    assert_eq!(may_chown(&f, Some(0), None, &user(1000, 1000)).err(), Some(VfsError::Eperm));
+    // owner tries to give the file to uid 0 without CAP_CHOWN -> EPERM.
+    assert_eq!(try_chown(&f, Some(0), None, &user(1000, 1000)).err(), Some(VfsError::Eperm));
 }
 
 #[test]
@@ -155,14 +180,22 @@ fn chown_uid_change_with_cap_ok() {
     let f = pfile(0o644, 1000, 1000);
     let mut c = user(1000, 1000);
     c.cap_chown = true;
-    assert!(may_chown(&f, Some(0), None, &c).is_ok());
+    assert!(try_chown(&f, Some(0), None, &c).is_ok());
 }
 
 #[test]
 fn chown_noop_uid_minus_one_ok() {
-    // (uid_t)-1 → None → no uid change → allowed even without CAP_CHOWN.
+    // (uid_t)-1 -> None -> no uid change -> allowed even without CAP_CHOWN.
     let f = pfile(0o644, 1000, 1000);
-    assert!(may_chown(&f, None, None, &user(1000, 1000)).is_ok());
+    assert!(try_chown(&f, None, None, &user(1000, 1000)).is_ok());
+}
+
+// The owner may name the id the file already has; a stranger may not.
+#[test]
+fn chown_to_current_owner_is_owner_only() {
+    let f = pfile(0o644, 1000, 1000);
+    assert!(try_chown(&f, Some(1000), None, &user(1000, 1000)).is_ok());
+    assert_eq!(try_chown(&f, Some(1000), None, &user(2000, 2000)).err(), Some(VfsError::Eperm));
 }
 
 #[test]
@@ -170,23 +203,22 @@ fn chown_gid_to_member_group_by_owner_ok() {
     let f = pfile(0o644, 1000, 1000);
     let mut c = user(1000, 1000);
     c.groups = vfs::GroupList::from_slice(&[50]);
-    assert!(may_chown(&f, None, Some(50), &c).is_ok());
+    assert!(try_chown(&f, None, Some(50), &c).is_ok());
 }
 
 #[test]
 fn chown_gid_to_nonmember_group_denied() {
     let f = pfile(0o644, 1000, 1000);
-    assert_eq!(may_chown(&f, None, Some(50), &user(1000, 1000)).err(), Some(VfsError::Eperm));
+    assert_eq!(try_chown(&f, None, Some(50), &user(1000, 1000)).err(), Some(VfsError::Eperm));
 }
 
 // ---- suid/sgid stripping -------------------------------------------------
 
 #[test]
 fn chmod_strips_sgid_for_nonmember() {
-    // setting 0o2755 on a file in group 50 by a non-member non-FSETID → sgid cleared.
+    // setting 0o2755 on a file in group 50 by a non-member non-FSETID -> sgid cleared.
     let f = pfile(0o644, 1000, 50);
-    let stripped = chmod_sgid_strip(0o2755, &f, &user(1000, 1000));
-    assert_eq!(stripped, 0o0755);
+    assert_eq!(try_chmod(&f, 0o2755, &user(1000, 1000)), Ok(0o0755));
 }
 
 #[test]
@@ -194,17 +226,28 @@ fn chmod_keeps_sgid_for_member() {
     let f = pfile(0o644, 1000, 50);
     let mut c = user(1000, 1000);
     c.groups = vfs::GroupList::from_slice(&[50]);
-    assert_eq!(chmod_sgid_strip(0o2755, &f, &c), 0o2755);
+    assert_eq!(try_chmod(&f, 0o2755, &c), Ok(0o2755));
 }
 
+// The kill flags a chown of a non-directory raises, and the mode they produce.
+// A GROUP-EXECUTABLE set-group-ID always dies; a BARE one dies only for a
+// caller outside the file's group (Linux `setattr_should_drop_sgid`), which is
+// the distinction an unconditional kill mask erases.
 #[test]
 fn chown_kills_suid_and_group_exec_sgid() {
-    // 0o6755 (suid+sgid+rwxr-xr-x) on a regular file → suid+sgid dropped.
-    assert_eq!(chown_kill_priv(0o6755, false), Some(0o0755));
-    // sgid without group-exec is preserved (only suid dropped).
-    assert_eq!(chown_kill_priv(0o4644, false), Some(0o0644));
-    // directories are untouched.
-    assert_eq!(chown_kill_priv(0o6755, true), None);
-    // nothing to strip → None.
-    assert_eq!(chown_kill_priv(0o0644, false), None);
+    let ge = pfile(0o6755, 1000, 50);
+    let outsider = user(1000, 1000);
+    let kill = ATTR_KILL_SUID | setattr_should_drop_sgid(&nomap(), ge.as_ref(), &outsider);
+    assert_eq!(kill, ATTR_KILL_SUID | ATTR_KILL_SGID);
+    assert_eq!(apply_kill_priv(kill, 0o6755), 0o0755);
+
+    let bare = pfile(0o4644 | 0o2000, 1000, 50);
+    let mut member = user(1000, 1000);
+    member.groups = vfs::GroupList::from_slice(&[50]);
+    let kill = ATTR_KILL_SUID | setattr_should_drop_sgid(&nomap(), bare.as_ref(), &member);
+    assert_eq!(kill, ATTR_KILL_SUID, "an in-group caller keeps the mandatory-lock mark");
+    assert_eq!(apply_kill_priv(kill, 0o6644), 0o2644);
+    // …and an outsider drops it.
+    let kill = ATTR_KILL_SUID | setattr_should_drop_sgid(&nomap(), bare.as_ref(), &outsider);
+    assert_eq!(apply_kill_priv(kill, 0o6644), 0o0644);
 }
