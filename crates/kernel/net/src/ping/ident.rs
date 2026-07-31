@@ -22,7 +22,7 @@ pub const UNBOUND: u16 = 0;
 
 /// Kernel-owned identifier state attached to one ICMP datagram endpoint.
 pub struct PingIdent {
-    pub family: PingFamily,
+    family: PingFamily,
     ident: AtomicU16,
     /// Shared with the owning socket so the address-reuse rule reads the live
     /// option rather than a copy taken at creation.
@@ -40,6 +40,9 @@ impl PingIdent {
 
     /// # C: O(1)
     pub fn is_bound(&self) -> bool { self.ident() != UNBOUND }
+
+    /// The family this endpoint was created for. # C: O(1)
+    pub fn family(&self) -> PingFamily { self.family }
 
     /// # C: O(1)
     fn reuse(&self) -> bool { self.reuse.load(Ordering::Acquire) != 0 }
@@ -98,6 +101,9 @@ impl PingTable {
         -> Result<u16, NetError>
     {
         if owner.is_bound() { return Err(NetError::Einval); }
+        let consistent = matches!((owner.family(), &sock),
+            (PingFamily::V4, PingSock::V4(_)) | (PingFamily::V6, PingSock::V6(_)));
+        if !consistent { return Err(NetError::Eafnosupport); }
         let mut all = self.entries.lock();
         let chosen = if requested == UNBOUND {
             let mut candidate = self.rover.load(Ordering::Relaxed);
@@ -255,6 +261,22 @@ mod tests {
         let shared_b_sock = endpoint();
         assert_eq!(table.bind(&shared_b, PingSock::V4(Arc::downgrade(&shared_b_sock)), 777), Ok(777));
         assert_eq!(table.holders(777), 2);
+    }
+
+    // The identifier table steers by family, so an owner may only publish the
+    // endpoint shape it was created for.
+    #[test]
+    fn an_owner_cannot_publish_an_endpoint_of_the_other_family() {
+        let table = PingTable::new();
+        let owner = ident(false);
+        let namespace = crate::net_ns::test_support::allocate_namespace();
+        crate::net_ns::materialize_state(&namespace);
+        let v6 = Arc::new(crate::raw6::Raw6Endpoint::standalone(namespace,
+            crate::icmpv6::IPPROTO_ICMPV6));
+        assert_eq!(owner.family(), PingFamily::V4);
+        assert_eq!(table.bind(&owner, PingSock::V6(Arc::downgrade(&v6)), 1),
+            Err(NetError::Eafnosupport));
+        assert!(!owner.is_bound());
     }
 
     #[test]

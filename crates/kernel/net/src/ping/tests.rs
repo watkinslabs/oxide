@@ -216,6 +216,34 @@ fn the_ipv6_endpoint_uses_the_same_identifier_contract() {
 }
 
 #[test]
+fn an_ipv6_error_quoting_a_probe_reaches_its_originating_endpoint() {
+    let owner = namespace();
+    let stack = crate::global_stack();
+    let endpoint = ping6(&owner);
+    endpoint.error.set_recverr6(true);
+    let mut message = alloc::vec![128u8, 0, 0, 0, 0, 0, 0, 1];
+    message.extend_from_slice(b"probe");
+    let sent = crate::ping::prepare_v6(&endpoint, &message, false).unwrap();
+    let local = crate::Ipv6Addr([0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let entry = crate::SocketErrorEntry {
+        errno: syscall::errno::Errno::Ehostunreach as i32,
+        origin: crate::socket_error::SO_EE_ORIGIN_ICMP6,
+        kind: 1, code: 3, info: 0, data: 0,
+        offender: crate::addr::IpAddr::V6(local),
+        destination: crate::addr::IpAddr::V6(local),
+        destination_port: 0, ifindex: IFACE, payload: sent.clone(),
+    };
+    assert!(stack.report_ping_error_v6(owner.id().as_u64(), NetIfaceId::from_raw(IFACE), local,
+        &sent, entry.clone(), true));
+    assert_ne!(endpoint.error.take(), 0);
+    // A quoted neighbour-discovery message is not an echo probe of ours.
+    let mut foreign = sent.clone();
+    foreign[0] = 135;
+    assert!(!stack.report_ping_error_v6(owner.id().as_u64(), NetIfaceId::from_raw(IFACE), local,
+        &foreign, entry, true));
+}
+
+#[test]
 fn closing_an_endpoint_frees_its_identifier_for_the_next_caller() {
     let owner = namespace();
     let endpoint = ping4(&owner);

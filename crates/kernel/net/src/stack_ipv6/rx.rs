@@ -370,6 +370,11 @@ impl NetStack {
                 endpoint.publish_error(entry.clone(), hard);
             }
         }
+        if protocol == crate::icmpv6::IPPROTO_ICMPV6 {
+            // The quoted probe carries the echo identifier this kernel stamped,
+            // so an error reaches the endpoint that originated it.
+            self.report_ping_error_v6(net_ns, iface, hdr.src, body, entry, hard);
+        }
     }
 }
 
