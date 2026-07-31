@@ -95,6 +95,7 @@ debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]
 debug-preempt = ["kmain/debug-preempt"]
 # Periodic retained task-state dump for deadlock triage; no output until enabled.
 debug-taskdump = ["kmain/debug-taskdump"]
+debug-umh = ["kmain/debug-umh"]
 debug-stack-guard = ["kmain/debug-stack-guard"]  # C213 kernel-stack-overflow probe (canary at every ctx switch)
 debug-all  = ["debug-boot", "debug-irq", "debug-trace", "debug-watchdog"]
 

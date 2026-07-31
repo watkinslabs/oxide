@@ -1,26 +1,10 @@
 #[cfg(target_arch = "x86_64")]
 use super::*;
 #[cfg(target_arch = "x86_64")]
-use super::fault::do_handle;
-
-#[cfg(target_arch = "x86_64")]
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 #[cfg(target_arch = "x86_64")]
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 
-#[cfg(target_arch = "x86_64")]
-pub fn prefault_stack(as_: &AddressSpace, top: u64, len: u64) {
-    let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
-    let mut va = top.saturating_sub(len) & !PAGE_MASK;
-    while va < top {
-        if let Some(uva) = UserVirtAddr::new(va) {
-            // Kernel-initiated prefault, so Linux's `FAULT_FLAG_USER` is clear
-            // (only the arch fault vector sets it).
-            let _ = do_handle(as_, uva, FaultKind::NotPresent { access: FaultAccess::Write }, hhdm, false);
-        }
-        va += PAGE_BYTES;
-    }
-}
 
 /// DIAG (worktree-only, do not merge): on an exit(127), while the dying
 /// task's page tables are still live, compare every PRESENT page of every

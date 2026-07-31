@@ -72,8 +72,7 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // Namespace publication runs after this allocation. Seed a visible PID;
     // clone namespace work replaces it with 1 when the child becomes a
     // new PID namespace's init task.
-    static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
-    let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
+    let v = super::alloc_vpid();
     task.vtgid.store(v, Ordering::Release);
     task.vtid.store(v, Ordering::Release);
     // Seccomp is INHERITED across fork/clone and PRESERVED across execve
