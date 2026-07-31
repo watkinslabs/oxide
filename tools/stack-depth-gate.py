@@ -50,6 +50,27 @@ register, so the reservation is the whole cost and nothing is added.
 Reservations are SUMMED across the prologue: a frame larger than a page is
 emitted as a sequence of probed `sub`s (stack-clash protection) with a store
 between them, so taking the max reads an 8 KiB frame as 4096.
+
+THE BLOCKING TAIL
+-----------------
+Most syscalls sleep. A path that reaches a scheduling point pays, on top of
+whatever it had already spent getting there, the whole cost of `schedule()`
+and everything `schedule()` calls before the CPU leaves this stack. Left to
+itself the walker under-reports that, because `schedule()` closes a cycle
+(it re-enters the tree it was called from), and a back edge is cut: whichever
+callers happen to be grey when the cut lands lose the tail entirely.
+
+So the scheduling point is REPLACED by a synthetic sink whose cost is its own
+measured subtree depth, computed first, from a walk rooted at it, before any
+other function has coloured the graph. As a sink it closes no cycle, so no
+edge into it is ever cut, and — being a leaf — it can appear at most once on
+any path. A function that can block at four different sites is therefore
+charged one tail, not four; a function whose deepest path never blocks keeps
+that path, because the walker still takes the maximum over both.
+
+`--no-blocking-tail` turns this off. A missing scheduling point is a hard
+error rather than a silent pass: the symbol moving is exactly how this
+accounting would rot back into the number that motivated it.
 """
 
 import argparse
@@ -97,6 +118,37 @@ def is_fatal(sym):
         or "slice_end_index" in sym
         or "slice_start_index" in sym
     )
+
+
+# The one scheduling point: `sched::live::schedule::switch::schedule`. Both
+# manglings embed the path with its component lengths, so one substring finds
+# it either way. Its wrappers (`park_yield`, `tick_yield`, `sched_yield`) call
+# it directly and need no entry of their own — they are ordinary frames on the
+# way to the sink.
+SCHEDULE_POINT = "5sched4live8schedule6switch8schedule"
+
+
+def blocking_points(frames):
+    """-> sorted symbols that park the caller and run `schedule()`."""
+    return sorted(f for f in frames if SCHEDULE_POINT in f)
+
+
+def with_blocking_tail(frames, calls, indirect, points):
+    """-> (frames, calls, tails) with each scheduling point turned into a sink.
+
+    Its cost is its own subtree depth, measured from a walk rooted at it so
+    nothing else has coloured the graph first. Collapsing it to a leaf is what
+    makes the tail land on every path that can reach it, exactly once.
+    """
+    tails = {}
+    for point in points:
+        tails[point] = Walker(frames, calls, indirect).walk(point)
+    frames = dict(frames)
+    calls = dict(calls)
+    for point, tail in tails.items():
+        frames[point] = tail
+        calls[point] = set()
+    return frames, calls, tails
 
 
 def _imm(m):
@@ -328,6 +380,10 @@ def main():
     ap.add_argument("--include-fatal", action="store_true",
                     help="follow calls into panic/abort handlers too (see is_fatal); "
                          "off by default because panic=abort means those paths never return")
+    ap.add_argument("--no-blocking-tail", action="store_true",
+                    help="do NOT charge paths that reach a scheduling point for the "
+                         "cost of schedule() (see THE BLOCKING TAIL); the number then "
+                         "describes only a path that never sleeps")
     ap.add_argument("--show-path", action="store_true",
                     help="print the frame-by-frame chain for each reported function")
     ap.add_argument("--allowlist",
@@ -350,6 +406,17 @@ def main():
     if not frames:
         print(f"stack-depth-gate: no functions found in {args.elf} — wrong file?", file=sys.stderr)
         return 2
+
+    tails = {}
+    if not args.no_blocking_tail:
+        points = blocking_points(frames)
+        if not points:
+            print("stack-depth-gate: no scheduling point matching "
+                  f"{SCHEDULE_POINT!r} in {args.elf}. Every blocking path would be "
+                  "reported without the schedule() tail it really pays; fix the "
+                  "match or pass --no-blocking-tail deliberately.", file=sys.stderr)
+            return 2
+        frames, calls, tails = with_blocking_tail(frames, calls, indirect, points)
 
     w = Walker(frames, calls, indirect)
     depth = w.walk_all()
@@ -379,6 +446,9 @@ def main():
     print(f"  unresolved indirect: {sum(1 for v in indirect.values() if v)} function(s) "
           "— their true depth is larger than reported")
     print(f"  recursive          : {len(w.recursive)} function(s) — depth is a lower bound")
+    for point, tail in tails.items():
+        print(f"  blocking tail      : {tail} B charged once to every path reaching "
+              f"{point}")
     print(f"  >= ceiling ({args.fail}B): {len(over)}")
     shown = ranked[: args.top]
     names = demangle([n for n, _ in shown])
@@ -443,6 +513,61 @@ SELF_TEST_X86 = """
   206009: ret
 """
 
+# A blocking path, shaped like the real one: `schedule` closes a cycle back
+# into its own subtree, two different call sites reach it, and a sibling
+# branch never sleeps. Costs include the 8 B x86_64 return address.
+SELF_TEST_BLOCK = """
+0000000000401000 <sleeper>:
+  401000: sub    $0x100,%rsp
+  401007: call   0000000000402000 <waiter>
+  40100c: call   0000000000405000 <cold_leaf>
+  401011: ret
+
+0000000000402000 <waiter>:
+  402000: sub    $0x10,%rsp
+  402004: call   0000000000403000 <_ZN5sched4live8schedule6switch8schedule17habcE>
+  402009: call   0000000000402100 <waiter2>
+  40200e: ret
+
+0000000000402100 <waiter2>:
+  402100: sub    $0x10,%rsp
+  402104: call   0000000000403000 <_ZN5sched4live8schedule6switch8schedule17habcE>
+  402109: ret
+
+0000000000403000 <_ZN5sched4live8schedule6switch8schedule17habcE>:
+  403000: sub    $0x20,%rsp
+  403004: call   0000000000404000 <switch_tail>
+  403009: ret
+
+0000000000404000 <switch_tail>:
+  404000: sub    $0x200,%rsp
+  404007: call   0000000000404100 <blocked_helper>
+  40400c: ret
+
+0000000000404100 <blocked_helper>:
+  404100: sub    $0x40,%rsp
+  404104: call   0000000000403000 <_ZN5sched4live8schedule6switch8schedule17habcE>
+  404109: ret
+
+0000000000408000 <reaper>:
+  408000: sub    $0x80,%rsp
+  408007: call   0000000000404100 <blocked_helper>
+  40800c: ret
+
+0000000000405000 <cold_leaf>:
+  405000: sub    $0x30,%rsp
+  405004: ret
+
+0000000000406000 <chooser>:
+  406000: call   0000000000402000 <waiter>
+  406005: call   0000000000407000 <huge_leaf>
+  40600a: ret
+
+0000000000407000 <huge_leaf>:
+  407000: sub    $0x400,%rsp
+  407007: ret
+"""
+
 SELF_TEST_ARM = """
 0000000000301000 <arm_root>:
   301000: stp     x29, x30, [sp, #-0x20]!
@@ -484,8 +609,38 @@ def self_test():
     wa.walk_all()
     assert wa.depth["arm_root"] == 0x20 + 0x400 + 16, wa.depth["arm_root"]
 
+    fb, cb, ib = parse(SELF_TEST_BLOCK, "x86_64")
+    sched = [f for f in fb if SCHEDULE_POINT in f]
+    assert blocking_points(fb) == sched and len(sched) == 1, sched
+    sched = sched[0]
+    plain = Walker(fb, cb, ib)
+    plain.walk_all()
+    fb2, cb2, tails = with_blocking_tail(fb, cb, ib, [sched])
+    # 8 + 0x20, then the switch tail and the helper it re-enters; the helper's
+    # edge back into `schedule` is the cycle, cut once and flagged.
+    assert tails[sched] == (8 + 0x20) + (8 + 0x200) + (8 + 0x40), tails
+    assert cb2[sched] == set(), "the scheduling point must become a sink"
+
+    wb = Walker(fb2, cb2, ib)
+    wb.walk_all()
+    tail = tails[sched]
+    # `waiter` reaches the tail directly AND through `waiter2`. It pays for one.
+    assert wb.depth["waiter"] == (8 + 0x10) + (8 + 0x10) + tail, wb.depth["waiter"]
+    assert wb.depth["sleeper"] == (8 + 0x100) + wb.depth["waiter"], wb.depth["sleeper"]
+    # The tail is what a blocking path costs, not a tax on every path: a branch
+    # that never sleeps keeps its own depth ...
+    assert wb.depth["cold_leaf"] == 8 + 0x30, wb.depth["cold_leaf"]
+    # ... and a caller whose deepest branch never sleeps keeps THAT branch.
+    assert wb.depth["chooser"] == 8 + (8 + 0x400), wb.depth["chooser"]
+    # The whole point. `blocked_helper` sits INSIDE the scheduling point's own
+    # subtree, so its edge back to `schedule` is the back edge the plain walker
+    # cuts — and every other caller of it, `reaper` here, inherits a depth with
+    # no tail in it at all. That is the number this accounting exists to fix.
+    assert plain.depth["reaper"] == (8 + 0x80) + (8 + 0x40), plain.depth["reaper"]
+    assert wb.depth["reaper"] == (8 + 0x80) + (8 + 0x40) + tail, wb.depth["reaper"]
+
     print("stack-depth-gate: self-test PASS (x86_64 + aarch64, probe-split, "
-          "recursion, indirect)")
+          "recursion, indirect, blocking tail)")
     return 0
 
 

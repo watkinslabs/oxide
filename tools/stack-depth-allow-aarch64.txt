@@ -6,16 +6,10 @@
 # Burn this down. Regenerate with:
 #   make stack-gate-baseline-arm
 #
-# B1618 removed the whole network TX/RX/socket-control family from this file.
-# It is now under the ceiling and must stay there — a net change that trips
-# the gate is a regression, not a candidate for a new entry here.
-
-# Syscall entry and dispatch. These are the ROOTS of every syscall, so the
-# walker's longest path is the max over all ~400 of them at once — no single
-# call reaches this. Useful only as a ceiling on the deepest syscall; the
-# individual syscalls are the numbers to actually drive down.
-# B1620 lowered both by the fork/clone `Task`-on-the-parent-stack fix. What is
-# left over the ceiling here is the `sendmmsg`/`io_submit` arm of the dispatch
-# fan-out, not fork/clone — aarch64's clone3 was never in this file.
-13600	oxide_svc_save_block
-13312	oxide_syscall_dispatch
+# EMPTY, and it stays that way. B1618 removed the network TX/RX/socket-control
+# family; B1620 removed fork/clone; B1621 took the last two — `oxide_svc_save_block`
+# and `oxide_syscall_dispatch`, the roots of the whole syscall fan-out — under
+# the ceiling by boxing the transmit job the dispatch loop moves by value.
+# Every aarch64 path the linker can see is now under 13000 B with the
+# schedule() blocking tail already charged, so ANY entry added here is a
+# regression to fix, not a budget to record.

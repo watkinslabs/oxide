@@ -215,7 +215,14 @@ pub struct Vc {
 }
 
 /// The xterm/VGA-default 256-entry palette. # C: O(256).
-fn default_palette() -> [u32; 256] {
+/// The 256 xterm defaults, resolved at COMPILE time.
+///
+/// As a function returning `[u32; 256]` this built a 1024 B array in the
+/// CALLER's frame and then copied it into the console — 1232 B of frame in
+/// `OSC 104` handling, on a path any klog call can reach. A const table is
+/// copied straight out of rodata into its destination.
+/// # C: const.
+pub(crate) const DEFAULT_PALETTE: [u32; 256] = {
     let mut p = [0u32; 256];
     let mut i = 0;
     while i < 256 {
@@ -223,7 +230,7 @@ fn default_palette() -> [u32; 256] {
         i += 1;
     }
     p
-}
+};
 
 /// Saved MAIN-screen state captured on alt-screen entry. # C: O(cols*rows).
 #[derive(Clone, Debug)]
