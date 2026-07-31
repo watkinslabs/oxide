@@ -65,6 +65,9 @@ impl From<vfs::VfsError> for Error {
             vfs::VfsError::Ehostdown => Self::Ehostdown, vfs::VfsError::Ehostunreach => Self::Ehostunreach,
             vfs::VfsError::Euclean => Self::Euclean, vfs::VfsError::Edquot => Self::Edquot,
             vfs::VfsError::Ecanceled => Self::Ecanceled,
+            // No socket path produces an owner-mapping overflow; report the
+            // generic invalid-argument rather than inventing a socket errno.
+            vfs::VfsError::Eoverflow => Self::Einval,
         }
     }
 }
