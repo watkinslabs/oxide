@@ -98,6 +98,9 @@ pub(crate) const FILE_DEDUPE_RANGE_DIFFERS: i32 = 1;
 // `FS_*_FL` / `FS_XFLAG_*` and the `include/linux/fileattr.h` masks are owned
 // by `vfs::inode::flags` (the fileattr state they describe lives there); this
 // module re-exports rather than re-declaring, so the two can never disagree.
+// The consumer (`016_ioctl`) is kernel-gated, so a hosted build re-exports
+// these without a user.
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(unused_imports))]
 pub(crate) use vfs::inode::{
     FS_APPEND_FL, FS_CASEFOLD_FL, FS_DAX_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_NODUMP_FL,
     FS_PROJINHERIT_FL, FS_SYNC_FL, FS_VERITY_FL,
