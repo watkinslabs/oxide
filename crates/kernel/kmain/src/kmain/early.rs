@@ -28,6 +28,23 @@ fn klog_caller_id() -> u32 {
     match sched::live::current() { Some(c) => c.tid, None => CALLER_ID_MASK | klog_cpu_id() }
 }
 
+/// Echo the boot command line the way Linux does at `start_kernel`. This is
+/// the only boot-time evidence that distinguishes "the bootloader's line
+/// arrived" from "the arch default was installed because the transport
+/// dropped it" — a distinction otherwise invisible, since a kernel that
+/// ignores every parameter still boots and looks healthy.
+/// # C: O(cmdline length)
+#[cfg(target_os = "oxide-kernel")]
+fn log_boot_cmdline() {
+    // Label and line go out through the same raw route so they assemble into
+    // ONE log line: the level macros terminate their record, which would put
+    // the command line on a line of its own and break both reading and
+    // grepping it. The slot already ends in '\n' (Linux `/proc/cmdline`
+    // convention), so this record is terminated.
+    klog::write_raw(b"Kernel command line: ");
+    klog::write_raw(crate::boot_cmdline::get());
+}
+
 /// Early boot bring-up before runtime device and filesystem init.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
 /// # C: not measured (one-shot init)
@@ -80,6 +97,7 @@ pub unsafe fn init(info: &BootInfo) {
     drv::set_devtmpfs_del_hook(devfs::del_device_node);
     // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
     unsafe { crate::boot_cmdline::install_arch_default(); }
+    log_boot_cmdline();
     console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
     syscalls::init_wall_clock_from_rtc();
     fs::tmpfs::init(); fs::fuse::register(); tracefs::init(); drv_virtio_input::devfs::init();
