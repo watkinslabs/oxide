@@ -187,7 +187,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         }
         return -(Errno::Enotty.as_i32() as i64);
     }
-    handle_tty_ioctl(&file, fd, req, arg)
+    handle_tty_ioctl(cur, &file, &fdt, fd, req, arg)
 }
 
 fn sioc_socket_net_namespace(file: &vfs::File) -> Option<network_namespace::NetworkNamespaceRef> {
