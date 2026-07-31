@@ -139,8 +139,24 @@ pub(crate) fn sendto_raw6(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoin
             None => None,
         }
     } else { None };
-    let hop = resolve_v6_hop_limit(sock, dst_ip);
-    let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    xmit_raw6_with_sticky(sock, endpoint, dst_ip, protocol_override, scope_id, payload, control)?;
+    // Transmit and receive must not share a frame: the loopback pass below re-enters the
+    // whole receive stack, and the sticky-option merge above holds a cloned `Raw6Control`
+    // plus the transmit argument block the whole way down.
+    drain_loopback();
+    Ok(payload.len())
+}
+
+/// Apply the socket's sticky IPv6 options to one message's control block.
+///
+/// `#[inline(never)]`: cloning a `Raw6Control` materialises four optional
+/// extension-header vectors, and those temporaries have no business living in the
+/// transmit frame that follows.
+/// # C: O(control bytes)
+#[inline(never)]
+fn merge_sticky_raw6_control(sock: &InetSocket, control: &crate::send_control::Raw6Control)
+    -> crate::send_control::Raw6Control
+{
     let mut effective = control.clone();
     if effective.multicast_loop.is_none() {
         effective.multicast_loop = Some(
@@ -154,13 +170,26 @@ pub(crate) fn sendto_raw6(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoin
         let sticky = sock.opts.ipv6_tclass.load(core::sync::atomic::Ordering::Acquire);
         if sticky >= 0 { effective.traffic_class = Some(sticky); }
     }
+    effective
+}
+
+/// Merge sticky socket options into the per-message control block and transmit.
+/// Split out of `sendto_raw6` so the merged control never occupies the frame that
+/// continues into the loopback receive pass (Linux `noinline_for_stack`).
+/// # C: O(payload)
+#[inline(never)]
+fn xmit_raw6_with_sticky(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint,
+    dst_ip: crate::Ipv6Addr, protocol_override: Option<u8>, scope_id: u32,
+    payload: &[u8], control: &crate::send_control::Raw6Control) -> Result<(), NetError>
+{
+    let hop = resolve_v6_hop_limit(sock, dst_ip);
+    let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    let effective = merge_sticky_raw6_control(sock, control);
     let scoped = if control.iface.is_some() && scope_id == 0 {
         crate::sock::bound_iface(sock)?
     } else { scoped_iface(sock, dst_ip, scope_id)? };
     stack().send_raw6(endpoint, dst_ip, scoped,
-        protocol_override, payload, hop, pmtudisc, &effective)?;
-    drain_loopback();
-    Ok(payload.len())
+        protocol_override, payload, hop, pmtudisc, &effective)
 }
 
 fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)

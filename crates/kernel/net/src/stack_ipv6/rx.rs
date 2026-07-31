@@ -125,33 +125,8 @@ impl NetStack {
                     net_ns, iface, src, dst, hop_limit, mld_router_alert, payload,
                 )?;
             }
-            n if n == IpProto::Udp as u8 => {
-                let udp = match crate::udp::parse_v6(payload, src, dst) {
-                    Ok(h) => h,
-                    Err(_) => return Ok(()),
-                };
-                let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface);
-                for q in endpoints {
-                    if !crate::cgroup_bpf::ingress(
-                        &q.owner, packet, crate::addr::eth_p::IPV6, iface,
-                    ) { continue; }
-                    let packet = &payload[..udp.length as usize];
-                    let body = &packet[crate::udp::UDP_HDR_LEN..];
-                    let Some(keep) = crate::bpf_filter::retained_payload_len(
-                        q.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
-                            packet, protocol: crate::addr::eth_p::IPV6,
-                            ifindex: Some(iface.raw()),
-                            pay_offset: crate::udp::UDP_HDR_LEN as u32,
-                            hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                                .map_or(0, |dev| dev.hardware_type()),
-                        }), body.len(),
-                    ) else { continue; };
-                    let _ = q.enqueue((
-                        src, udp.src_port, dst, iface, hop_limit, traffic_class,
-                        body[..keep].to_vec(),
-                    ));
-                }
-            }
+            n if n == IpProto::Udp as u8 => self.deliver_rx_udp6(
+                net_ns, iface, src, dst, hop_limit, traffic_class, payload, packet),
             n if n == IpProto::Tcp as u8 => {
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
@@ -160,6 +135,44 @@ impl NetStack {
             _ => {}
         }
         Ok(())
+    }
+
+    /// UDP receive demultiplex for one IPv6 datagram.
+    ///
+    /// `#[inline(never)]` and separate from `deliver_rx_ipv6_payload`: the header parse,
+    /// the endpoint vector and the per-socket filter context were all locals of the
+    /// protocol switch, so the TCP arm — the one that continues into transmit — carried
+    /// them without ever touching them. Linux splits its receive arms the same way.
+    /// # C: O(N endpoints * payload)
+    #[inline(never)]
+    fn deliver_rx_udp6(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, dst: Ipv6Addr,
+        hop_limit: u8, traffic_class: u8, payload: &[u8], packet: &[u8])
+    {
+        let udp = match crate::udp::parse_v6(payload, src, dst) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface);
+        for q in endpoints {
+            if !crate::cgroup_bpf::ingress(
+                &q.owner, packet, crate::addr::eth_p::IPV6, iface,
+            ) { continue; }
+            let packet = &payload[..udp.length as usize];
+            let body = &packet[crate::udp::UDP_HDR_LEN..];
+            let Some(keep) = crate::bpf_filter::retained_payload_len(
+                q.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
+                    packet, protocol: crate::addr::eth_p::IPV6,
+                    ifindex: Some(iface.raw()),
+                    pay_offset: crate::udp::UDP_HDR_LEN as u32,
+                    hatype: self.ifaces.lookup_in_ns(iface, net_ns)
+                        .map_or(0, |dev| dev.hardware_type()),
+                }), body.len(),
+            ) else { continue; };
+            let _ = q.enqueue((
+                src, udp.src_port, dst, iface, hop_limit, traffic_class,
+                body[..keep].to_vec(),
+            ));
+        }
     }
 
     fn deliver_rx_icmpv6(

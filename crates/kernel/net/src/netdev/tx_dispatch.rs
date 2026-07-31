@@ -120,12 +120,7 @@ impl TxDispatch {
             let job = match job.admit_arp() {
                 Ok(job) => job,
                 Err(crate::arp::ArpResolution::Deferred { probe, dropped, queued }) => {
-                    // Linux `neigh_resolve_output` hands the packet to the
-                    // neighbour queue and reports success to the sender; the
-                    // evicted oldest packets were acknowledged the same way.
-                    for dropped in dropped { dropped.complete(Err(NetError::Enobufs)); }
-                    if let Some(queued) = queued { queued.complete(Ok(())); }
-                    if let Some(probe) = probe { let _ = Self::emit_arp_probe(probe); }
+                    Self::finish_deferred_neighbour(probe, dropped, queued);
                     continue;
                 }
                 Err(crate::arp::ArpResolution::Send { job, mac }) => job.with_l2(mac),
@@ -152,6 +147,23 @@ impl TxDispatch {
             job.transmit()
         };
         if let Some(done) = done { done.complete(result); }
+    }
+
+    /// Acknowledge one job the neighbour queue took ownership of, and probe for it.
+    ///
+    /// `#[inline(never)]`: Linux `neigh_resolve_output` hands the packet to the neighbour
+    /// queue and reports success to the sender; the evicted oldest packets are
+    /// acknowledged the same way. All of that is locals — a probe, a vector of evicted
+    /// acknowledgements — that the ordinary resolved-neighbour path never touches, and
+    /// that path is the one carrying a transmit chain.
+    /// # C: O(evicted)
+    #[inline(never)]
+    fn finish_deferred_neighbour(probe: Option<crate::arp::ArpProbe>,
+        dropped: alloc::vec::Vec<TxJob>, queued: Option<TxAck>)
+    {
+        for dropped in dropped { dropped.complete(Err(NetError::Enobufs)); }
+        if let Some(queued) = queued { queued.complete(Ok(())); }
+        if let Some(probe) = probe { let _ = Self::emit_arp_probe(probe); }
     }
 
     pub(crate) fn emit_arp_probe(probe: crate::arp::ArpProbe) -> NetResult<()> {

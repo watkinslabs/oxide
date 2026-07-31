@@ -25,6 +25,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod addr;
+pub mod ordered;
 pub mod pkt;
 pub mod tcp_state;
 pub mod netdev;
