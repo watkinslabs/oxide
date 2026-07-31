@@ -33,7 +33,7 @@ mod pidns;
 mod ns_reboot;
 mod terminate;
 pub use reparent::{reap_orphans, reparent_children};
-pub use pidns::{in_initial_pid_namespace, initial_init_task, namespace_child_reaper, pid_namespace_chain, zap_pid_namespace};
+pub use pidns::{in_initial_pid_namespace, is_namespace_init, initial_init_task, namespace_child_reaper, pid_namespace_chain, zap_pid_namespace};
 pub use ns_reboot::{apply_pid_namespace_reboot_status, set_pid_namespace_reboot};
 pub use terminate::terminate_current_with_signal;
 use notify::{accrue_child_time, child_exit_info, exit_notify_decision, reparent_child_event, send_child_event};

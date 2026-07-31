@@ -90,6 +90,14 @@ pub fn alloc_vpid() -> u32 {
     NEXT_VPID.fetch_add(1, core::sync::atomic::Ordering::AcqRel)
 }
 
+/// Retire every pid number up to and including `vpid` from the ordinary
+/// allocator, so a caller that named its child's pid explicitly cannot have
+/// that number handed to some later task as well.
+/// # C: O(1)
+pub fn reserve_vpid(vpid: u32) {
+    NEXT_VPID.fetch_max(vpid.saturating_add(1), core::sync::atomic::Ordering::AcqRel);
+}
+
 /// Errors `spawn_kernel_thread` can return.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SpawnError {
