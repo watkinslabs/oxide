@@ -50,7 +50,10 @@ where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
 pub fn get_tree_keyed<F>(fc: &mut fs_context::FsContext, key: &str, fill: F) -> KResult<Arc<SuperBlock>>
 where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
     let fs_name = fc.fs_type().name().to_string();
-    if let Some(sb) = sget_probe(&fs_name, key) { return Ok(sb); }
+    if let Some(sb) = sget_probe(&fs_name, key) {
+        if fc.create_exclusive() { return Err(crate::types::VfsError::Ebusy); }
+        return Ok(sb);
+    }
     let sb = fill(fc)?;
     stamp_sb_flags(&sb, fc);
     let mut list = SHARED_SUPERS.lock();
@@ -58,7 +61,10 @@ where F: FnOnce(&mut fs_context::FsContext) -> KResult<Arc<SuperBlock>> {
     for e in list.iter() {
         if e.fs_name == fs_name && e.key == key {
             if let Some(shared) = e.sb.upgrade() {
-                if shared.grab_active() { return Ok(shared); }
+                if shared.grab_active() {
+                    if fc.create_exclusive() { return Err(crate::types::VfsError::Ebusy); }
+                    return Ok(shared);
+                }
             }
         }
     }

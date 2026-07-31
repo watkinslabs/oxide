@@ -94,6 +94,13 @@ pub fn vfs_get_tree(fc: &mut FsContext) -> KResult<()> {
     Ok(())
 }
 
+/// `FSCONFIG_CMD_CREATE_EXCL`: create a tree without sharing an existing
+/// matching superblock. # C: O(filesystem get_tree)
+pub fn vfs_get_tree_exclusive(fc: &mut FsContext) -> KResult<()> {
+    fc.set_create_exclusive(true);
+    vfs_get_tree(fc)
+}
+
 pub fn reconfigure_super(fc: &mut FsContext) -> KResult<()> {
     if fc.purpose != FsContextPurpose::Reconfigure { return Err(VfsError::Einval); }
     let sb = fc.sb.clone().ok_or(VfsError::Einval)?;
