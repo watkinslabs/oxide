@@ -133,6 +133,13 @@ pub struct ThreadGroup {
     /// so the single-mutator argument that held for a per-task cell does not
     /// hold for shared process state.
     ctty: Spinlock<Option<vfs::InodeRef>, TaskListClass>,
+    /// Linux `signal_struct::tty_old_pgrp`: the foreground process group this
+    /// session's terminal had at the moment it was hung up under us, 0 when
+    /// none was saved. Recorded for session LEADERS only, by the hangup walk.
+    /// The one reader is a leader's exit with no controlling terminal left,
+    /// which owes that group SIGHUP+SIGCONT — without it a job stopped at the
+    /// instant of a carrier drop stays stopped with nothing able to resume it.
+    tty_old_pgrp: AtomicU32,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
 }
@@ -165,6 +172,7 @@ impl ThreadGroup {
             shared_sigqueue: crate::sigqueue::new_queues(),
             signalfd_poll: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
             ctty: Spinlock::new(None),
+            tty_old_pgrp: AtomicU32::new(0),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
@@ -230,6 +238,16 @@ impl ThreadGroup {
     pub fn set_ctty(&self, tty: Option<vfs::InodeRef>) {
         let previous = core::mem::replace(&mut *self.ctty.lock(), tty);
         drop(previous);
+    }
+
+    /// The foreground group saved when this session's terminal was hung up
+    /// under it (Linux `signal_struct::tty_old_pgrp`), 0 when none.
+    /// # C: O(1)
+    pub fn tty_old_pgrp(&self) -> u32 { self.tty_old_pgrp.load(Ordering::Acquire) }
+
+    /// Record (or, with 0, forget) the saved foreground group. # C: O(1)
+    pub fn set_tty_old_pgrp(&self, pgrp: u32) {
+        self.tty_old_pgrp.store(pgrp, Ordering::Release);
     }
 
     /// Commit one fully initialized clone-thread member. # C: O(1)

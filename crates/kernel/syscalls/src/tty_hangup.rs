@@ -41,6 +41,14 @@ pub(crate) fn resolve(ino: u64) -> Option<CttyTarget> {
     })
 }
 
+/// Whether the target is a pty slave. A session leader's exit hangs a REAL
+/// terminal up but never a pty: the pty dies with its master, and revoking it
+/// from the slave side tears down a line the master may still be draining.
+/// # C: O(1)
+pub(crate) fn is_pty(target: &CttyTarget) -> bool {
+    matches!(target, CttyTarget::Pts(_))
+}
+
 /// `tty->ctrl.session` — the session this tty is the controlling terminal of,
 /// or 0 when it is nobody's.
 /// # C: O(1)
@@ -82,8 +90,8 @@ pub(crate) fn hangup(target: &CttyTarget, kind: HangupKind) {
 }
 
 /// `disassociate_ctty`'s `tty->ctrl.session = NULL; tty->ctrl.pgrp = NULL`
-/// (`drivers/tty/tty_jobctrl.c:305-311`) WITHOUT revoking the line — TIOCNOTTY
-/// detaches the terminal from the session, it does not hang it up.
+/// WITHOUT revoking the line — TIOCNOTTY detaches the terminal from the
+/// session, it does not hang it up.
 /// # C: O(1)
 pub(crate) fn clear_linkage(target: &CttyTarget) {
     match target {
@@ -94,4 +102,63 @@ pub(crate) fn clear_linkage(target: &CttyTarget) {
             p.foreground_pgid = 0;
         }),
     }
+}
+
+/// `disassociate_ctty(1)` for a dying process, in the shape
+/// `sched::live::set_disassociate_ctty_hook` installs. The group-dead test is
+/// the hook's; a `pthread_exit` from a non-final thread never reaches here.
+/// # Ctx: exit path, `task` running on this CPU.
+/// # C: O(N_tasks)
+pub fn disassociate_ctty_on_exit(task: &sched::Task) {
+    disassociate_ctty(task, tty::hangup::DisassociateCause::Exit);
+}
+
+/// `disassociate_ctty(on_exit)` — drop `task`'s session's controlling
+/// terminal. The ONE implementation behind both callers: the last thread of a
+/// process exiting (`DisassociateCause::Exit`) and the `TIOCNOTTY` ioctl
+/// (`DisassociateCause::Notty`).
+///
+/// Every rule comes from `tty::hangup::disassociate_ctty` (host-tested); this
+/// fn only resolves the device, supplies the live facts, and performs the
+/// actions the rule selected, in the order it lists them.
+/// # Ctx: syscall / exit path, `task` running on this CPU.
+/// # C: O(N_tasks)
+pub(crate) fn disassociate_ctty(task: &sched::Task, cause: tty::hangup::DisassociateCause) {
+    use tty::hangup::CttyFacts;
+    let ctty_ino = task.ctty_ino();
+    let target = ctty_ino.and_then(resolve);
+    let facts = ctty_ino.map(|_| match &target {
+        Some(t) => CttyFacts { is_pty: is_pty(t), fg_pgrp: foreground_pgrp(t) },
+        // The terminal inode names no device we can reach any more. There is
+        // nothing to revoke or signal, but the session still loses it — the
+        // pty-shaped facts select exactly that (no vhangup, no foreground
+        // group), so the clears below still run.
+        None => CttyFacts { is_pty: true, fg_pgrp: 0 },
+    });
+    let saved_pgrp = task.thread_group.tty_old_pgrp();
+    let act = tty::hangup::disassociate_ctty(
+        cause, sched::session::is_session_leader(task), facts, saved_pgrp);
+
+    if act.vhangup_session {
+        if let (Some(ino), Some(t)) = (ctty_ino, target.as_ref()) {
+            // The session walk runs BEFORE the tty state change: it reads
+            // `tty->ctrl.session` and `tty->ctrl.pgrp`, which the hangup then
+            // clears. `SessionExit` is what carries the foreground group's
+            // SIGHUP, so the rule leaves `fg_pgrp` unset on this branch.
+            let sid = session(t);
+            let fg = foreground_pgrp(t);
+            tty::hangup::hangup_session(ino, sid, fg);
+            hangup(t, HangupKind::SessionExit);
+        }
+    }
+    if let Some(f) = facts { tty::hangup::signal_pgrp(f.fg_pgrp, act.fg_pgrp); }
+    tty::hangup::signal_pgrp(saved_pgrp, act.old_pgrp);
+    if act.clear_linkage {
+        if let Some(t) = target.as_ref() { clear_linkage(t); }
+    }
+    if act.clear_old_pgrp { task.thread_group.set_tty_old_pgrp(0); }
+    if act.clear_session_ctty {
+        if let Some(ino) = ctty_ino { tty::hangup::clear_session_ctty(ino, task.sid()); }
+    }
+    if act.clear_own_ctty { task.set_ctty(None); }
 }

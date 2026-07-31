@@ -61,7 +61,14 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             let tg = task.tgid.load(Ordering::Acquire);
             crate::live::run_sysvsem_exit(if vtg != 0 { vtg } else { tg });
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
-            unsafe { task.replace_fd_table(None); task.replace_mm(None); super::reparent_children(task.tid); }
+            unsafe { task.replace_fd_table(None); task.replace_mm(None); }
+            // Linux `do_exit`: `if (group_dead) disassociate_ctty(1)`. A
+            // session leader killed by a fatal signal owes its session the
+            // same hangup as one that called `exit(2)` — the SIGSEGV of a
+            // login shell must still SIGHUP its foreground job and revoke the
+            // line, or the next session inherits a live handle on it.
+            crate::live::run_disassociate_ctty(task);
+            super::reparent_children(task.tid);
             crate::live::mark_done(task);
             // A non-leader thread is auto-released in the switch tail. The
             // group leader publishes the process exit and SIGCHLD once the

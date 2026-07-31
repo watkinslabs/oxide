@@ -40,7 +40,8 @@ pub fn sys_vhangup(_args: &SyscallArgs) -> i64 {
             // Signal + revoke the session BEFORE the tty state change: the walk
             // needs `tty->ctrl.session`, which `__tty_hangup` then clears.
             let sid = crate::tty_hangup::session(&target);
-            tty::hangup::hangup_session(ino, sid);
+            let fg = crate::tty_hangup::foreground_pgrp(&target);
+            tty::hangup::hangup_session(ino, sid, fg);
             crate::tty_hangup::hangup(&target, tty::HangupKind::Vhangup);
             0
         }
