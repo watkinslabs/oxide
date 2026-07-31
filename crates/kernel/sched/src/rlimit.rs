@@ -39,8 +39,17 @@ pub const DEFAULT_RLIMITS: [(u64, u64); rlim::COUNT] = {
     a[rlim::STACK] = (8 * 1024 * 1024, INFINITY);
     a[rlim::NOFILE] = (1024, 4096);  // Linux _RLIM_NOFILE / NR_OPEN_DEFAULT
     a[rlim::CORE]   = (0, INFINITY);  // disabled by default
+    a[rlim::MEMLOCK] = (MLOCK_LIMIT, MLOCK_LIMIT);
     a
 };
+
+/// Linux `MLOCK_LIMIT` (`include/uapi/linux/resource.h`), the RLIMIT_MEMLOCK
+/// default for both the soft and hard limit. Leaving MEMLOCK unlimited would
+/// make the whole mlock(2)/mlock2(2)/mlockall(2) admission ladder unreachable —
+/// EPERM and ENOMEM would never fire — and would let any unprivileged process
+/// pin arbitrary memory. CAP_IPC_LOCK still bypasses it, so a privileged init
+/// is unaffected.
+pub const MLOCK_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// Why `do_prlimit` rejected a `setrlimit(2)` / `prlimit64(2)` request.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
