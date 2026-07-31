@@ -92,23 +92,38 @@ try:
     # into printing a prompt before issuing anything that matters.
     conn.sendall(b"\n")
     pump(5)
-    probe = ""
-    for _ in range(8):
-        probe = run("echo SHELL_ALIVE", SETTLE)
-        if "SHELL_ALIVE" in probe:
+    # The debug shell appears on this line some time after the boot target,
+    # and on an emulated guest that delay is long and variable. Retry the whole
+    # round rather than judging the first one: a round that produced no shell
+    # response proves nothing.
+    rounds = 1 if ARCH == "x86" else 6
+    outstanding = list(CHECKS)
+    for round_index in range(rounds):
+        probe = ""
+        for _ in range(4):
+            probe = run("echo SHELL_ALIVE", SETTLE)
+            if "SHELL_ALIVE" in probe:
+                break
+        if "SHELL_ALIVE" not in probe:
+            print(f"guest-ping-check: no serial shell yet (round {round_index + 1})", flush=True)
+            continue
+        remaining = []
+        for label, cmd, want in outstanding:
+            out = run(cmd, SETTLE)
+            if re.search(want, out):
+                print(f"guest-ping-check: {label} OK", flush=True)
+            else:
+                remaining.append((label, cmd, want))
+                if round_index == rounds - 1:
+                    print(f"guest-ping-check: FAIL — {label} (wanted /{want}/)", flush=True)
+                    print(out[-3000:], flush=True)
+        outstanding = remaining
+        if not outstanding:
             break
-    if "SHELL_ALIVE" not in probe:
-        print("guest-ping-check: FAIL — no serial shell responded", flush=True)
-        print(probe[-2000:], flush=True)
-        sys.exit(1)
-    for label, cmd, want in CHECKS:
-        out = run(cmd, SETTLE)
-        if re.search(want, out):
-            print(f"guest-ping-check: {label} OK", flush=True)
-        else:
-            ok = False
-            print(f"guest-ping-check: FAIL — {label} (wanted /{want}/)", flush=True)
-            print(out[-3000:], flush=True)
+    if outstanding:
+        ok = False
+        for label, _, _ in outstanding:
+            print(f"guest-ping-check: FAIL — {label}", flush=True)
 finally:
     try:
         conn.close()
