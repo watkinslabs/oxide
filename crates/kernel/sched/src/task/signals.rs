@@ -33,15 +33,11 @@ pub struct SignalPending {
 }
 
 impl SignalPending {
-    /// Empty pending set with a fresh signal wait source. # C: O(1)
-    pub fn new() -> Self {
-        Self { bits: AtomicU64::new(0), poll: Arc::new(PollSubscribers::new()) }
-    }
-
-    /// Empty pending set sharing the PROCESS' `signalfd` readiness source
-    /// (Linux `sighand->signalfd_wqh`) rather than owning a private one, so an
-    /// edge raised by any thread — or by a process-directed publish that has no
-    /// thread at all — reaches every signalfd in the group. # C: O(1)
+    /// Empty pending set on the PROCESS' `signalfd` readiness source (Linux
+    /// `sighand->signalfd_wqh`, owned by `ThreadGroup`). Never a private list:
+    /// a signalfd reads `private | shared`, so an edge raised by any thread —
+    /// or by a process-directed publish, which has no thread of its own to
+    /// raise it on — must reach every signalfd in the group. # C: O(1)
     pub fn with_poll(poll: Arc<PollSubscribers>) -> Self {
         Self { bits: AtomicU64::new(0), poll }
     }
@@ -61,10 +57,6 @@ impl SignalPending {
 
     /// Clone the source signalfd inodes expose to epoll. # C: O(1)
     pub fn poll_subscribers(&self) -> Arc<PollSubscribers> { Arc::clone(&self.poll) }
-}
-
-impl Default for SignalPending {
-    fn default() -> Self { Self::new() }
 }
 
 /// Linux `struct sigaction` core fields per `27§3`.
