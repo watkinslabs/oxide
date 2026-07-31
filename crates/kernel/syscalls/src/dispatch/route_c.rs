@@ -2,6 +2,21 @@
 
 use syscall::SyscallArgs;
 
+/// `fork(2)` and `vfork(2)` are fixed clone requests: no user pointers, no
+/// cgroup target, `SIGCHLD` on exit.
+/// # C: O(1)
+fn legacy_clone_request(flags: u64, child_stack: u64, parent_tid: u64, child_tid: u64, tls: u64)
+    -> crate::clone_abi::CloneRequest<'static>
+{
+    crate::clone_abi::CloneRequest {
+        flags,
+        exit_signal: crate::clone_abi::FORK_EXIT_SIGNAL,
+        child_stack, parent_tid, pidfd: 0, child_tid, tls,
+        into_cgroup: None,
+        set_tid: &[],
+    }
+}
+
 pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
     Some(match nr {
         syscall::nrs::NR_SOCKET => crate::s041_socket::sys_socket(args),
@@ -82,23 +97,27 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_DUP => crate::s032_dup::sys_dup(args),
         syscall::nrs::NR_DUP2 => crate::s033_dup2::sys_dup2(args),
         syscall::nrs::NR_DUP3 => crate::s292_dup3::sys_dup3(args),
-        syscall::nrs::NR_FORK => crate::clone::sys_clone_dispatch(args, 0x11, 0, 0, 0, 0, 0, None),
-        syscall::nrs::NR_VFORK => crate::clone::sys_clone_dispatch(args, 0x4111, 0, 0, 0, 0, 0, None),
+        syscall::nrs::NR_FORK => crate::clone::sys_clone_dispatch(legacy_clone_request(0, 0, 0, 0, 0)),
+        syscall::nrs::NR_VFORK => crate::clone::sys_clone_dispatch(
+            legacy_clone_request(crate::clone_abi::VFORK_FLAGS, 0, 0, 0, 0)),
         syscall::nrs::NR_CLONE => {
-            #[cfg(target_arch = "x86_64")] let (ctid, tls) = (args.a3, args.a4);
-            #[cfg(target_arch = "aarch64")] let (ctid, tls) = (args.a4, args.a3);
-            let flags = args.a0;
-            if (flags & (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID))
-                == (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID) {
-                return Some(-(syscall::errno::Errno::Einval.as_i32() as i64));
-            }
-            if (flags & crate::clone::CLONE_PIDFD) != 0
-                && (args.a2 == 0 || args.a2.checked_add(4).map_or(true, |e| e > hal::USER_VA_END)) {
-                return Some(-(syscall::errno::Errno::Efault.as_i32() as i64));
-            }
-            crate::clone::sys_clone_dispatch(
-                args, flags, args.a1, args.a2, args.a2, ctid, tls, None,
-            )
+            // Both supported arches take the argument order that puts `tls`
+            // ahead of `child_tid`: (flags, stack, parent_tid, tls, child_tid).
+            // A legacy caller has ONE pointer register for both the
+            // `CLONE_PARENT_SETTID` destination and the `CLONE_PIDFD`
+            // descriptor slot, which is why requesting both is refused.
+            let (flags, exit_signal) = crate::clone_abi::split_legacy_flags(args.a0);
+            crate::clone::sys_clone_dispatch(crate::clone_abi::CloneRequest {
+                flags,
+                exit_signal,
+                child_stack: args.a1,
+                parent_tid: args.a2,
+                pidfd: args.a2,
+                child_tid: args.a4,
+                tls: args.a3,
+                into_cgroup: None,
+                set_tid: &[],
+            })
         }
         syscall::nrs::NR_EXECVE => crate::execve::sys_execve(args),
         syscall::nrs::NR_EXECVEAT => crate::execve::sys_execveat(args),

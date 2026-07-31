@@ -45,7 +45,7 @@ pub mod exec_creds;
 pub mod swap_abi;
 // vhangup(2) 153 + the TIOCNOTTY ioctl share ONE controlling-terminal
 // resolver so they cannot disagree about which tty the caller holds.
-mod tty_hangup;
+pub mod tty_hangup;
 pub mod utimes_abi;
 pub mod utimensat_abi;
 // ustat(2) 136: `struct ustat` wire layout. sysfs(2) 139: the option/index
@@ -66,6 +66,12 @@ pub mod handle_policy;
 // kernel-gated, and dropping a RESOLVE_* bit on the O_CREAT parent walk is a
 // sandbox escape, so the decision lives here where the hosted suite reaches it.
 pub mod openat2_resolve;
+// clone(2) 56 / fork(2) 57 / vfork(2) 58 / clone3(2) 435: the `CLONE_*` bit
+// names, the versioned `struct clone_args` layout and BOTH entry points'
+// validation ladders. The slot files are kernel-gated, and every rule here is
+// observable only as an errno or an errno ORDER, so it lives where the hosted
+// suite reaches it (docs/53, CLAUDE.md phantom-test rule).
+pub mod clone_abi;
 pub mod sched_policy;
 pub mod sched_attr;
 pub mod ioprio;

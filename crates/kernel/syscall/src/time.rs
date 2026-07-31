@@ -48,9 +48,31 @@ pub fn timespec_to_ns(secs: i64, nsec: i64) -> Result<u64, Errno> {
     Ok((secs as u64) * NSEC_PER_SEC + nsec as u64)
 }
 
+/// Nanoseconds per microsecond — the `timespec`→`timeval` reduction factor.
+pub const NSEC_PER_USEC: u64 = 1_000;
+
+/// Split a ns count into `{ tv_sec, tv_nsec }`. # C: O(1)
+pub const fn ns_to_timespec(ns: u64) -> (u64, u64) { (ns / NSEC_PER_SEC, ns % NSEC_PER_SEC) }
+
+/// Split a ns count into `{ tv_sec, tv_usec }` — the `struct rusage` /
+/// `gettimeofday` form. Truncates sub-microsecond remainder, as Linux
+/// `ns_to_kernel_old_timeval` does. # C: O(1)
+pub const fn ns_to_timeval(ns: u64) -> (u64, u64) {
+    let (s, n) = ns_to_timespec(ns);
+    (s, n / NSEC_PER_USEC)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeval_split_truncates_sub_microsecond_remainder() {
+        assert_eq!(ns_to_timeval(0), (0, 0));
+        assert_eq!(ns_to_timeval(1_500_000_999), (1, 500_000));
+        assert_eq!(ns_to_timespec(1_500_000_999), (1, 500_000_999));
+        assert_eq!(ns_to_timeval(999), (0, 0));
+    }
 
     #[test]
     fn typical_relative_value_round_trips_exactly() {

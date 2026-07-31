@@ -324,6 +324,52 @@ fn a_forked_child_inherits_the_terminal_but_no_longer_shares_the_slot() {
 }
 
 #[test]
+fn session_leadership_is_one_test_shared_by_every_path_that_needs_it() {
+    // The terminal-hangup walk and the exit-time disassociation both ask "is
+    // this process a session leader?". Two spellings of that question drifting
+    // apart hangs the wrong session up, so there is exactly one answer.
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let parent = published(400);
+    let child = child_of(&parent, 401);
+    // A forked child inherits its parent's session and leads nothing.
+    assert!(!session::is_session_leader(&child));
+    assert_eq!(session::setsid(&child), Ok(401));
+    assert!(session::is_session_leader(&child), "setsid makes it the leader");
+    // Leadership is process-wide, so a sibling thread answers the same.
+    let worker = thread_in(&child, 402);
+    assert!(session::is_session_leader(&worker));
+    // The parent still leads its own session and is unaffected.
+    assert!(session::is_session_leader(&parent));
+}
+
+#[test]
+fn a_member_of_someone_elses_session_is_never_a_leader() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let leader = published(500);
+    let member = child_of(&leader, 501);
+    assert_eq!(member.sid(), leader.sid());
+    assert!(!session::is_session_leader(&member));
+}
+
+#[test]
+fn the_saved_foreground_group_is_process_wide_and_starts_unset() {
+    // `tty_old_pgrp` lives on the thread group for the same reason the
+    // terminal does: an exiting leader reads what the hangup walk recorded,
+    // and either may be a different thread of the same process.
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let leader = published(600);
+    let worker = thread_in(&leader, 601);
+    assert_eq!(leader.thread_group.tty_old_pgrp(), 0, "nothing saved yet");
+    leader.thread_group.set_tty_old_pgrp(77);
+    assert_eq!(worker.thread_group.tty_old_pgrp(), 77);
+    leader.thread_group.set_tty_old_pgrp(0);
+    assert_eq!(worker.thread_group.tty_old_pgrp(), 0, "cleared once consumed");
+}
+
+#[test]
 fn setsid_twice_is_eperm() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();

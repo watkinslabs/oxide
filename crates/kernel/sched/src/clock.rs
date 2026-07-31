@@ -30,13 +30,8 @@ pub fn ns_to_clk_tck(ns: u64) -> u64 { ns / 10_000_000 }
 
 /// Split a wall-clock ns count into `(sec, nsec)` per timespec.
 /// # C: O(1)
-pub fn ns_to_timespec(ns: u64) -> (u64, u64) {
-    (ns / 1_000_000_000, ns % 1_000_000_000)
-}
+pub fn ns_to_timespec(ns: u64) -> (u64, u64) { syscall::time::ns_to_timespec(ns) }
 
 /// Split into `(sec, usec)` per timeval.
 /// # C: O(1)
-pub fn ns_to_timeval(ns: u64) -> (u64, u64) {
-    let (s, n) = ns_to_timespec(ns);
-    (s, n / 1000)
-}
+pub fn ns_to_timeval(ns: u64) -> (u64, u64) { syscall::time::ns_to_timeval(ns) }

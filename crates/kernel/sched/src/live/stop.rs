@@ -27,11 +27,13 @@ pub fn stop_until_cont() {
 }
 
 /// Variant of `stop_until_cont` recording the originating stop signal
-/// (SIGSTOP=19/SIGTSTP=20/SIGTTIN=21/SIGTTOU=22) for wait4(WUNTRACED).
+/// (SIGSTOP=19/SIGTSTP=20/SIGTTIN=21/SIGTTOU=22) as the stop code
+/// `wait4(WUNTRACED)` reports. A job-control stop's code IS its signal; the
+/// wider ptrace event codes come from `syscall::ptrace`.
 /// # C: O(N_schedule) until cont
 pub fn stop_until_cont_sig(sig: u8) {
     let cur = match crate::live::current() { Some(c) => c, None => return };
-    cur.stop_signal.store(sig, Ordering::Release);
+    cur.stop_code.store(sig as u32, Ordering::Release);
     cur.stop_pending.store(true, Ordering::Release);
     cur.set_state(TaskState::Stopped);
     notify_parent_cldstop(cur, Cldstop::Stopped, sig as u32);

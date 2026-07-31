@@ -6,7 +6,8 @@ use crate::userbuf::validate_user_buf_writable;
 
 /// `sys_times(tms)` — slot 100. tms_utime/tms_stime are the caller's
 /// tick-sampled user/kernel CPU time in CLK_TCK ticks; tms_cutime/
-/// tms_cstime are reaped children's cumulative user/kernel CPU time.
+/// tms_cstime are the reaped children's cumulative user/kernel CPU time,
+/// shared process-wide so a sibling thread's reap is visible here.
 /// Return value = monotonic wall-clock in CLK_TCK ticks.
 /// # C: O(1)
 pub fn sys_times(args: &SyscallArgs) -> i64 {
@@ -23,8 +24,8 @@ pub fn sys_times(args: &SyscallArgs) -> i64 {
         Some(c) => (
             c.utime_ns.load(Ordering::Acquire),
             c.stime_ns.load(Ordering::Acquire),
-            c.cumulative_child_utime_ns.load(Ordering::Acquire),
-            c.cumulative_child_stime_ns.load(Ordering::Acquire),
+            c.thread_group.child_acct().cpu_ns().0,
+            c.thread_group.child_acct().cpu_ns().1,
         ),
         None => (0, 0, 0, 0),
     };

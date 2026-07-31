@@ -11,7 +11,14 @@ pub(super) fn prepare_pidfd(
     user_ptr: u64,
 ) -> Result<Option<pidfd::Prepared>, i64> {
     if flags & CLONE_PIDFD == 0 { return Ok(None); }
-    let prepared = pidfd::prepare(current, Arc::clone(&child.pid), pidfd::OpenOptions::default())
+    // A CLONE_THREAD child's descriptor names the THREAD, not the process it
+    // joined; anything else would hand back a descriptor for a task the caller
+    // did not create.
+    let options = pidfd::OpenOptions {
+        thread: crate::clone_abi::pidfd_is_thread(flags),
+        ..pidfd::OpenOptions::default()
+    };
+    let prepared = pidfd::prepare(current, Arc::clone(&child.pid), options)
         .map_err(open_error)?;
     let fd = prepared.fd().to_ne_bytes();
     uaccess::copy_to_user(user_ptr, &fd)
