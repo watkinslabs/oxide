@@ -38,6 +38,8 @@ pub struct FsContext {
     pub(super) fs_private:    Arc<dyn Any + Send + Sync>,
     pub(super) log:           Vec<String>,
     pub(super) security:      Option<Arc<dyn FsContextSecurity>>,
+    /// `FSCONFIG_CMD_CREATE_EXCL`: reject reuse of a matching shared super.
+    pub(super) create_exclusive: bool,
 }
 
 pub const FC_LOG_MAX: usize = 8;
@@ -72,7 +74,7 @@ impl FsContext {
         Self {
             ops: Arc::new(ClassicMountFsContextOps),
             fs_type, purpose, phase, sb_flags, sb_flags_mask,
-            source: None, params: Vec::new(), root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None,
+            source: None, params: Vec::new(), root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None, create_exclusive: false,
         }
     }
 
@@ -91,6 +93,11 @@ impl FsContext {
     pub fn fs_private(&self) -> &Arc<dyn Any + Send + Sync> { &self.fs_private }
     pub fn set_source(&mut self, src: &str) { self.source = Some(src.to_string()); }
     pub fn set_fs_private(&mut self, p: Arc<dyn Any + Send + Sync>) { self.fs_private = p; }
+    /// Select `CMD_CREATE_EXCL` superblock admission for the pending create.
+    /// # C: O(1)
+    pub fn set_create_exclusive(&mut self, exclusive: bool) { self.create_exclusive = exclusive; }
+    /// Whether the pending create must not reuse an existing superblock. # C: O(1)
+    pub fn create_exclusive(&self) -> bool { self.create_exclusive }
     pub fn fail(&mut self) { self.phase = FsContextPhase::Failed; }
 
     pub fn classic_mount_options(&self) -> String {
