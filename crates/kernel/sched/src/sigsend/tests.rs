@@ -45,7 +45,7 @@ fn only_user_originated_sends_face_the_permission_check() {
     assert!(!SigSource::Kernel.from_user());
     // SI_QUEUE (a negative, app-supplied code) is user-originated.
     let q = SigInfo { signo: SIGTERM, code: signum::SI_QUEUE, pid: 1, uid: 0, value: 0,
-                      sys: None, fault: None };
+                      sys: None, fault: None, poll: None };
     assert!(SigSource::Info(q).from_user());
     // SI_KERNEL is not.
     let k = SigInfo { code: SI_KERNEL, ..q };
@@ -152,7 +152,7 @@ fn only_a_user_queued_realtime_signal_can_fail_with_eagain() {
     assert!(!overflow_is_eagain(SIGRTMIN, &SigSource::User { pid: 1, uid: 0 }),
             "kill(2) of an RT signal loses the record rather than failing");
     let queued = SigInfo { signo: SIGRTMIN, code: signum::SI_QUEUE, pid: 1, uid: 0, value: 0,
-                           sys: None, fault: None };
+                           sys: None, fault: None, poll: None };
     assert!(overflow_is_eagain(SIGRTMIN, &SigSource::Info(queued)),
             "sigqueue(3) of an RT signal reports EAGAIN on overflow");
 }

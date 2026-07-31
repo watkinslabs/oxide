@@ -35,7 +35,7 @@ pub fn timer_record(signo: u32, timer_id: usize, value: u64) -> SigInfo {
         uid: 0,
         value,
         sys: None,
-        fault: None,
+        fault: None, poll: None,
     }
 }
 
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn a_non_timer_record_is_never_rearmed() {
         let rec = SigInfo { signo: SIGALRM, code: crate::signum::SI_USER, pid: 9, uid: 1000,
-            value: 0, sys: None, fault: None };
+            value: 0, sys: None, fault: None, poll: None };
         assert!(!is_timer_record(&rec), "an SI_USER kill(2) must not be mistaken for an expiry");
     }
 }

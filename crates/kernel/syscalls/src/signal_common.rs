@@ -45,7 +45,7 @@ pub(crate) fn read_user_siginfo(info_ptr: u64, signo: u32) -> sched::SigInfo {
         // Linux `__copy_siginfo_from_user` overwrites si_signo with the
         // syscall's `sig` argument — the sender cannot make the two disagree.
         // `rt_sigqueueinfo` cannot forge a seccomp `_sigsys` arm.
-        sched::SigInfo { signo, code, pid, uid, value, sys: None, fault: None }
+        sched::SigInfo { signo, code, pid, uid, value, sys: None, fault: None, poll: None }
     }
 }
 
@@ -66,7 +66,7 @@ pub(crate) fn write_user_siginfo(info_ptr: u64, sig: u32, rec: Option<sched::Sig
     // si_pid/si_uid = 0.
     let rec = rec.unwrap_or(sched::SigInfo {
         signo: sig, code: sched::signum::SI_USER, pid: 0, uid: 0, value: 0,
-        sys: None, fault: None,
+        sys: None, fault: None, poll: None,
     });
     let mut buf = [0u8; SIGINFO_BYTES as usize];
     hal::write_siginfo(&mut buf, sig, Some(rec.payload(sig)));

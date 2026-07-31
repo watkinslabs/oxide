@@ -32,7 +32,7 @@ fn thread_group() -> (Arc<Task>, Arc<Task>) {
 }
 
 fn info(signo: u32, code: i32, value: u64) -> SigInfo {
-    SigInfo { signo, code, pid: 7, uid: 0, value, sys: None, fault: None }
+    SigInfo { signo, code, pid: 7, uid: 0, value, sys: None, fault: None, poll: None }
 }
 
 // --- queue depth policy (Linux `legacy_queue` vs POSIX RT) -------------------

@@ -8,7 +8,7 @@
 //!     DN_MULTISHOT.
 //!   * `F_GET/SET_RW_HINT` round-trip on the `File`.
 
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vfs::{Dentry, File, FileType, InodeBuilder, InodeRef, OpenFlags,
@@ -24,11 +24,13 @@ static GATE: Mutex<()> = Mutex::new(());
 
 static GOT_OWNER: AtomicI32 = AtomicI32::new(0);
 static GOT_SIG: AtomicI32 = AtomicI32::new(0);
+static GOT_BAND: AtomicI64 = AtomicI64::new(0);
 static GOT_FIRES: AtomicU32 = AtomicU32::new(0);
 
-fn capture_hook(owner: i32, sig: i32, _uid: u32, _euid: u32) {
-    GOT_OWNER.store(owner, Ordering::Release);
-    GOT_SIG.store(sig, Ordering::Release);
+fn capture_hook(ev: vfs::file::AsyncSignal) {
+    GOT_OWNER.store(ev.owner, Ordering::Release);
+    GOT_SIG.store(ev.sig, Ordering::Release);
+    GOT_BAND.store(ev.band, Ordering::Release);
     GOT_FIRES.fetch_add(1, Ordering::Release);
 }
 
@@ -65,6 +67,9 @@ fn conflicting_open_breaks_lease_and_signals_holder() {
     assert_eq!(GOT_FIRES.load(Ordering::Acquire), 1, "holder signalled once");
     assert_eq!(GOT_OWNER.load(Ordering::Acquire), 4321, "signal routed to f_owner");
     assert_eq!(GOT_SIG.load(Ordering::Acquire), SIGIO, "default SIGIO (no F_SETSIG)");
+    assert_eq!(GOT_BAND.load(Ordering::Acquire),
+               vfs::file::band_for(vfs::file::reason::POLL_MSG),
+               "a lease break names POLL_MSG as its si_band");
 
     // Holder never downgrades → the break-timeout force-breaks the lease.
     vfs::file::lease_force_break(&ino, true);
