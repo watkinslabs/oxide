@@ -38,6 +38,8 @@ pub struct SysctlInode {
 /// write (offset 0) validates against `bounds` then replaces them.
 struct SysctlFileOps;
 impl FileOps for SysctlFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<SysctlInode>().ok_or(VfsError::Einval)?;
         let body = d.val.lock();
@@ -114,6 +116,8 @@ impl SysctlInode {
 /// flag; write parses a boolean and sets it.
 struct IpForwardFileOps;
 impl FileOps for IpForwardFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let body: &[u8] = if net::forwarding::ipv4_enabled() { b"1\n" } else { b"0\n" };
         Ok(read_at(body, off, buf))
@@ -153,6 +157,8 @@ pub struct BoundSysctlInode { h: Arc<dyn crate::proc_handler::ProcHandler> }
 /// write parses+validates+stores it.
 struct BoundSysctlFileOps;
 impl FileOps for BoundSysctlFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<BoundSysctlInode>().ok_or(VfsError::Einval)?;
         let body = d.h.format();

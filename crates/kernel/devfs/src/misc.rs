@@ -110,6 +110,8 @@ impl FileOps for KmsgFileOps {
     /// (`File::pos`) is behind the ring head (unread messages). Without this,
     /// the default always-`POLL_IN` poll() busy-looped journald's epoll on
     /// /dev/kmsg ("Looping too fast"). # C: O(1)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll_file(&self, _i: &Inode, pos: u64) -> u32 {
         let mut mask = vfs::POLL_OUT;
         if (pos as usize) < klog::ring_total() { mask |= vfs::POLL_IN; }
@@ -251,6 +253,8 @@ pub fn random_fill(b: &mut [u8]) { crng::fill(b); }
 /// is up.
 struct RandomFileOps;
 impl FileOps for RandomFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _i: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
         random_fill(b);
         Ok(b.len())

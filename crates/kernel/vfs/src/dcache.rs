@@ -21,7 +21,7 @@ mod reclaim;
 mod rename;
 
 pub use alias::{d_obtain_alias, d_splice_alias};
-pub use alloc::{d_add, d_add_negative, d_alloc, d_alloc_pseudo, d_drop_child, d_instantiate, d_lookup, d_lookup_reval, d_make_root, d_weak_revalidate};
+pub use alloc::{ANON_INODE_OPS, d_add, d_add_negative, d_alloc, d_alloc_pseudo, d_drop_child, d_instantiate, d_lookup, d_lookup_reval, d_make_root, d_weak_revalidate};
 pub use invalidate::d_invalidate;
 pub use lifecycle::{d_delete, d_drop, d_unlink, dget, dput};
 pub use parallel::{d_alloc_parallel, d_lookup_done, DParLookup};

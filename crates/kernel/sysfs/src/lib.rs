@@ -113,6 +113,8 @@ pub(crate) struct BodyData { pub body: Vec<u8> }
 /// `f_op` for a read-only attribute: windowed `read`, `write` → `EROFS`.
 pub(crate) struct BodyFileOps;
 impl FileOps for BodyFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<BodyData>().ok_or(VfsError::Einval)?;
         Ok(read_window(&d.body, off, buf))

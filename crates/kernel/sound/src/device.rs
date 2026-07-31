@@ -26,6 +26,8 @@ struct SndData {
 /// `file_operations` for every `/dev/snd/*` + OSS node.
 struct SndFileOps;
 impl FileOps for SndFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, _o: u64, b: &mut [u8]) -> KResult<usize> {
         let data = match inode.private::<SndData>() { Some(d) => d, None => return Err(VfsError::Einval) };
         if b.is_empty() { return Ok(0); }

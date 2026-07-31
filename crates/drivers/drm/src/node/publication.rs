@@ -61,6 +61,8 @@ impl vfs::FileOps for DrmCardFileOps {
     ) -> vfs::KResult<usize> {
         read_events(file, b, true)
     }
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll_open_file(&self, file: &File) -> u32 {
         let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
             return vfs::POLL_ERR;
@@ -104,6 +106,8 @@ impl vfs::FileOps for DrmCardFileOps {
 /// but `handle_drm_ioctl` rejects KMS/master-only requests for render inodes.
 pub(super) struct DrmSinkFileOps;
 impl vfs::FileOps for DrmSinkFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     /// Render minors share `drm_read` with card minors in Linux — one
     /// `drm_file` event path, one fops table. A render fd simply never has
     /// events queued, so a blocking read sleeps and a non-blocking one gets

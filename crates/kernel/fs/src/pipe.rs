@@ -87,6 +87,8 @@ impl FileOps for PipeFileOps {
         if nonblock { p.write_iter_nb(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
         else { p.write_iter_blocking(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
     }
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 { pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0) }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(pipe_data(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocoutqnsd | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
     fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
@@ -187,6 +189,8 @@ impl FileOps for FifoFileOps {
         if nonblock { p.write_iter_nb(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
         else { p.write_iter_blocking(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
     }
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 { fifo_pipe_lookup(inode).map(|p| p.poll_mask()).unwrap_or(0) }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocoutqnsd | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
     fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }

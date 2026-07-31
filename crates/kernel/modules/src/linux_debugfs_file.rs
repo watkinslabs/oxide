@@ -112,6 +112,8 @@ impl FileOps for DebugFileOps {
         checked_size(unsafe { write(&mut opened.file, buf.as_ptr() as *const c_char, buf.len(), &mut pos) })
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll_open_file(&self, file: &File) -> u32 {
         let Ok(active) = active_file(file) else { return 0 };
         let Some(ops) = linux_ops(active.ops) else { return 0 };

@@ -93,6 +93,12 @@ pub const S_SWAPFILE:  u32 = 1 << 8;
 pub const S_DAX:       u32 = 1 << 13;
 pub const S_ENCRYPTED: u32 = 1 << 14;
 pub const S_CASEFOLD:  u32 = 1 << 15;
+/// `S_ANON_INODE` — this inode came from an `anon_inode_getfd`-style factory
+/// (epoll, eventfd, signalfd, timerfd, inotify, fanotify, userfaultfd, perf,
+/// io_uring, landlock, bpf). It carries a file type tag for `fstat` but has no
+/// filesystem behind it, so the generic `ioctl` owner must not run its
+/// regular-file paths on it and must let the fd's own operations answer.
+pub const S_ANON_INODE: u32 = 1 << 19;
 pub const S_VERITY:    u32 = 1 << 16;
 /// oxide-internal `i_flags` bit (like `I_PUBLIC_DEV` in `inode/metadata.rs`).
 /// Linux's `inode->i_flags` has no `NODUMP` — `FS_NODUMP_FL` "does not require

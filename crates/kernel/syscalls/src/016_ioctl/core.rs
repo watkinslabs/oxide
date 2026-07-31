@@ -30,12 +30,16 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Stage 1 — `do_vfs_ioctl`: the generic commands the VFS owns for THIS
+    // file. Anything it declines falls through to the file's own operations,
+    // exactly like Linux's `-ENOIOCTLCMD` → `vfs_ioctl` hand-off. The
+    // filesystem's own `unlocked_ioctl` (the version/label/trim set) is NOT
+    // part of this stage — running it here shadowed every anon fd's handler
+    // for those command numbers.
     if let Some(rv) = handle_common_ioctl(cur, &file, &fdt, fd, req, arg) {
         return rv;
     }
-    if let Some(rv) = handle_file_ioctl(cur, &file, req, arg) {
-        return rv;
-    }
+    // Stage 2 — `f_op->unlocked_ioctl`, per file kind.
     // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
     // systemd verifies a forked service is its child via this ioctl;
     // ENOTTY makes it SIGKILL the child (console-getty respawn).
@@ -54,6 +58,11 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // timerfd `TFD_IOC_SET_TICKS`: route before the CharDev gate; a timerfd
     // inode is tagged CharDev but has no device backend to dispatch to.
     if let Some(rv) = ::fs::timerfd::handle_timerfd_ioctl(&file.inode(), req, arg) {
+        return rv;
+    }
+    // `ep_eventpoll_ioctl` (EPIOCSPARAMS/EPIOCGPARAMS, and EINVAL for anything
+    // else reaching an epoll file).
+    if let Some(rv) = ::fs::epoll::handle_epoll_ioctl(&file, req, arg) {
         return rv;
     }
     // userfaultfd / perf ioctls: route through the dedicated handlers
@@ -79,6 +88,15 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = sound::handle_ioctl(file.inode(), req, arg) { return rv; }
     if let Some(rv) = handle_autofs_dev_ioctl(file.inode(), req, arg) {
         return rv;
+    }
+    // The filesystem's own `unlocked_ioctl` (`ext4_ioctl`): inode version,
+    // filesystem label, FITRIM. Runs AFTER every fd-kind handler above, and
+    // never for an anon inode, which has no filesystem to answer for and whose
+    // own operations already had their turn.
+    if super::fs_unlocked_ioctl_applies(super::ioctl_file(&file)) {
+        if let Some(rv) = handle_file_ioctl(cur, &file, req, arg) {
+            return rv;
+        }
     }
     // SIOCGSKNS (linux/sockios.h): "get the network namespace fd of this
     // socket". systemd's sd-device-monitor probes its NETLINK_KOBJECT_UEVENT

@@ -168,6 +168,8 @@ impl InodeOps for SysClassDrmOps {
     }
 }
 impl FileOps for SysClassDrmOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let minors: Vec<DrmMinor> = drm_minors().into_iter()
             .filter(|minor| drm_device_path(minor).is_some())
@@ -201,6 +203,8 @@ impl InodeOps for SysDevicesVirtualDrmOps {
     }
 }
 impl FileOps for SysDevicesVirtualDrmOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let minors = unparented_minors();
         let mut idx = ctx.pos as usize;
@@ -236,6 +240,8 @@ impl InodeOps for ParentDrmOps {
     }
 }
 impl FileOps for ParentDrmOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ParentDrmData>().ok_or(VfsError::Einval)?;
         drv::device_canon_exact(&d.parent).ok_or(VfsError::Enoent)?;
@@ -287,6 +293,8 @@ impl InodeOps for DrmDeviceOps {
     }
 }
 impl FileOps for DrmDeviceOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         const BASE_ENTRIES: &[(&str, FileType)] = &[
             ("dev", FileType::Regular), ("uevent", FileType::Regular),
@@ -327,6 +335,8 @@ impl DrmUeventData {
 
 struct DrmUeventFileOps;
 impl FileOps for DrmUeventFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<DrmUeventData>().ok_or(VfsError::Einval)?;
         d.devpath().ok_or(VfsError::Enoent)?;

@@ -119,6 +119,8 @@ struct TimensOffsetsOps;
 
 #[cfg(target_os = "oxide-kernel")]
 impl FileOps for TimensOffsetsOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<TimensOffsets>().ok_or(VfsError::Einval)?;
         let target = target(data.tid)?;

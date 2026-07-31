@@ -124,6 +124,8 @@ pid_gated_ctor!(make_pid_maps, pid_maps_body, 0x23, "maps");
 struct CommFileOps;
 
 impl vfs::FileOps for CommFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         let d = inode.private::<crate::dyn_file::PidGenData>().ok_or(vfs::VfsError::Einval)?;
         Ok(crate::dyn_file::read_at(&(d.gen)(d.tid), off, buf))

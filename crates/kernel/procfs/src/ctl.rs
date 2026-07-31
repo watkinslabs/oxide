@@ -108,6 +108,8 @@ fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0)
 /// `struct mq_attr` against (`ipc/mq_sysctl.c`), so raising a ceiling here and
 /// the EINVAL the syscall reports can never disagree. Every leaf is
 /// namespace-scoped: Linux's `set_lookup` resolves `current`'s `ipc_ns`.
+fn get_ep_max_watches() -> i64 { vfs::epoll_limits::max_user_watches() }
+fn set_ep_max_watches(v: i64) { vfs::epoll_limits::set_max_user_watches(v) }
 fn get_in_max_watches() -> i64 { vfs::fsnotify::max_user_watches() }
 fn set_in_max_watches(v: i64) { vfs::fsnotify::set_max_user_watches(v) }
 fn get_in_max_instances() -> i64 { vfs::fsnotify::max_user_instances() }
@@ -282,6 +284,11 @@ const SYSCTL_TREE: &[Node] = &[
         // the per-group queue depth snapshotted at group creation. Bound here,
         // not constants: a `Const` leaf let a watcher set a limit and observe
         // nothing enforce it.
+        // `eventpoll_sysctls_init` registers this against the live ceiling
+        // `epoll_ctl(EPOLL_CTL_ADD)` charges each interest against (ENOSPC).
+        Dir("epoll", &[
+            File("max_user_watches",   IntHook(get_ep_max_watches, set_ep_max_watches, Some((0, INT_MAX)))),
+        ]),
         Dir("inotify", &[
             File("max_user_watches",   IntHook(get_in_max_watches, set_in_max_watches, Some((0, INT_MAX)))),
             File("max_user_instances", IntHook(get_in_max_instances, set_in_max_instances, Some((0, INT_MAX)))),

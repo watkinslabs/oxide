@@ -162,6 +162,8 @@ impl FileOps for ConsoleFileOps {
         vt_read_nonblock(vt, inode.ino(), buf)
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         match console_data(inode) {
             Ok(d) => vt_poll(d.vt),
@@ -241,6 +243,8 @@ impl FileOps for SystemConsoleFileOps {
         self.write(inode, off, buf)
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, _i: &Inode) -> u32 {
         match cmdline::preferred_console() {
             cmdline::ConsoleKind::Serial => serial::poll(),

@@ -18,6 +18,8 @@ pub struct ProcCgroupInode { pub tid: Option<u32> }
 /// `i_fop` for `/proc/<pid>/cgroup` — renders the task's cgroup path at read.
 struct CgroupFileOps;
 impl FileOps for CgroupFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<ProcCgroupInode>().ok_or(VfsError::Einval)?;
         let tid = d.tid

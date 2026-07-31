@@ -119,6 +119,8 @@ impl vfs::FileOps for InetFileOps {
         for buf in bufs { message.extend_from_slice(buf); }
         if nonblock { sock.write_nonblock(off, &message) } else { sock.write(off, &message) }
     }
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     #[cfg(target_os = "oxide-kernel")]
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<InetSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)

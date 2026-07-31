@@ -89,6 +89,8 @@ impl vfs::FileOps for NetlinkFileOps {
         socket.write_iter(bufs)
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<NetlinkSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }

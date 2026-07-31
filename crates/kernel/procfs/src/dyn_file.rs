@@ -27,6 +27,8 @@ pub struct GenData { pub gen: fn() -> Vec<u8> }
 
 struct GenFileOps;
 impl FileOps for GenFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<GenData>().ok_or(VfsError::Einval)?;
         Ok(read_at(&(d.gen)(), off, buf))
@@ -48,6 +50,8 @@ pub struct NsGenData { pub current_ns: fn() -> u64, pub gen: fn(u64) -> Vec<u8> 
 
 struct NsGenFileOps;
 impl FileOps for NsGenFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<NsGenData>().ok_or(VfsError::Einval)?;
         let ns = (d.current_ns)();
@@ -104,6 +108,8 @@ pub struct PidGenData { pub tid: u32, pub gen: fn(u32) -> Vec<u8> }
 
 struct PidGenFileOps;
 impl FileOps for PidGenFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<PidGenData>().ok_or(VfsError::Einval)?;
         Ok(read_at(&(d.gen)(d.tid), off, buf))
@@ -124,6 +130,8 @@ pub struct OwnedData { pub body: Vec<u8> }
 
 struct OwnedFileOps;
 impl FileOps for OwnedFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<OwnedData>().ok_or(VfsError::Einval)?;
         Ok(read_at(&d.body, off, buf))

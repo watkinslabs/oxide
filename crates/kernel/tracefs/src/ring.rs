@@ -420,6 +420,8 @@ impl FileOps for TraceFileOps {
         }
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         match trace_data(inode) {
             Ok(d) => match &d.file {
