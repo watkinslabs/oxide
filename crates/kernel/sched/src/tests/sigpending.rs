@@ -38,7 +38,7 @@ fn task(tid: u32, uid: u32) -> Arc<Task> {
 }
 
 fn info(signo: u32, value: u64) -> SigInfo {
-    SigInfo { signo, code: signum::SI_QUEUE, pid: 7, uid: 0, value, sys: None, fault: None }
+    SigInfo { signo, code: signum::SI_QUEUE, pid: 7, uid: 0, value, sys: None, fault: None, poll: None }
 }
 
 /// The charge a process-context send builds, `override_rlimit` included.
