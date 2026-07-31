@@ -56,19 +56,25 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
     }
     if let Some(d) = victim.as_ref() {
         if let Some(inode) = d.inode() {
-            if vfs::path::requires_dir(raw) {
-                let rv = if matches!(inode.file_type(), vfs::FileType::Directory) {
-                    -(Errno::Eisdir.as_i32() as i64)
-                } else {
-                    -(Errno::Enotdir.as_i32() as i64)
-                };
+            if let Err(e) = crate::path_ops_policy::check_unlink_trailing_slash(
+                vfs::path::requires_dir(raw),
+                matches!(inode.file_type(), vfs::FileType::Directory)) {
+                let rv = -(e.as_i32() as i64);
                 #[cfg(feature = "debug-udevdb")]
                 crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
                 return rv;
             }
             let cred = crate::pathresolve::current_cred();
-            if let Err(e) = vfs::namei::may_delete(&parent.inode, &inode, false, &cred) {
+            if let Err(e) = vfs::namei::may_delete_dentry(&parent.inode, d, false, &cred) {
                 let rv = errno_from_vfs(e);
+                #[cfg(feature = "debug-udevdb")]
+                crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
+                return rv;
+            }
+            // `vfs_unlink`'s `is_local_mountpoint` gate: a file that something
+            // is mounted over (a bind-mounted file) keeps its name.
+            if d.is_mounted() {
+                let rv = -(Errno::Ebusy.as_i32() as i64);
                 #[cfg(feature = "debug-udevdb")]
                 crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
                 return rv;

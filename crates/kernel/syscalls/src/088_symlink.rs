@@ -9,7 +9,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
     errno_from_vfs, read_user_path, read_user_path_bytes, resolve_create_parent_at,
-    render_child_path, child_exists, parent_mount_readonly, drop_child_cache,
+    render_child_path, parent_mount_readonly, drop_child_cache,
 };
 
 /// `symlink(target, linkpath)` slot 88.
@@ -28,11 +28,8 @@ pub(crate) fn symlink_impl(dirfd: i32, target: Vec<u8>, link: String) -> i64 {
         Ok(x) => x, Err(rv) => return rv,
     };
     let l = render_child_path(&parent, &name);
-    match child_exists(&parent, &name) {
-        Ok(true) => return -(Errno::Eexist.as_i32() as i64),
-        Ok(false) => {}
-        Err(rv) => return rv,
-    }
+    if let Err(rv) = crate::namei_common::check_create_leaf(
+        &parent, &name, &link, crate::path_ops_policy::CreateKind::NonDir) { return rv; }
     if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);
     }

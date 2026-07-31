@@ -78,6 +78,19 @@ impl InodeOps for Ext4StatInodeOps {
     fn mkdir(&self, inode: &Inode, name: &str, mode: u32, ctx: &vfs::CreateCtx) -> KResult<InodeRef> {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
+        // `ext4_mkdir` opens with the subdirectory ceiling, ahead of the
+        // existence test: a full parent reports EMLINK even for a name that is
+        // already taken. The in-core link count answers it for every ordinary
+        // directory; only one at the ceiling needs the on-disk flags, which
+        // decide whether this filesystem lets a large htree directory stop
+        // counting subdirectories and so has no ceiling at all.
+        if !super::links::dir_link_headroom(inode.nlink()) {
+            let pdir = d.st.mount.read_inode(d.ino).map_err(super::regular::vfs_error_from_mount)?;
+            if super::links::dir_link_max_reached(
+                pdir.links_count, pdir.i_flags, d.st.mount.sb.feature_ro_compat) {
+                return Err(VfsError::Emlink);
+            }
+        }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
@@ -178,6 +191,9 @@ impl InodeOps for Ext4StatInodeOps {
         let ino = ext4_file_ino(target).ok_or(VfsError::Exdev)?;
         let src = d.st.mount.read_inode(ino).map_err(super::regular::vfs_error_from_mount)?;
         if src.is_dir() { return Err(VfsError::Eperm); }
+        // `ext4_link`'s own ceiling — ext4 publishes no `s_max_links`, so the
+        // generic `vfs_link` ceiling never fires and this is the only one.
+        if super::links::link_max_reached(src.links_count) { return Err(VfsError::Emlink); }
         match d.st.lookup_child_ino_result(d.ino, name) {
             Ok(_) => return Err(VfsError::Eexist),
             Err(crate::MountError::NotFound) => {}

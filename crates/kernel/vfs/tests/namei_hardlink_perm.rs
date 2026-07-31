@@ -101,3 +101,53 @@ fn superblock_max_links_is_emlink() {
         .sb(Arc::downgrade(&sb)).owner(0, 0).nlink(2).build();
     assert_eq!(vfs::may_link(&parent, &src, &user(0)), Err(VfsError::Emlink));
 }
+
+// ---- ordering: `may_linkat` runs at the syscall layer, ahead of everything
+// `vfs_link` does. A caller barred by the hardlink-protection rule must see
+// that EPERM even when a later leg would also have refused.
+
+#[test]
+fn protection_eperm_outranks_the_link_ceiling() {
+    // Non-owner, unsafe source (setuid), AND already at the ceiling. Linux
+    // decides protection first, so the caller learns it may not link this file
+    // at all rather than that the file is merely full.
+    let parent = dir(0o777);
+    let sb = test_sb();
+    sb.s_max_links.store(2, Ordering::Relaxed);
+    let src = InodeBuilder::new(4, mk_mode(FileType::Regular, 0o4755),
+        default_inode_ops(), default_file_ops())
+        .sb(Arc::downgrade(&sb)).owner(0, 0).nlink(2).build();
+    assert_eq!(vfs::may_link(&parent, &src, &user(1000)), Err(VfsError::Eperm));
+    // The owner passes protection and then meets the ceiling.
+    assert_eq!(vfs::may_link(&parent, &src, &user(0)), Err(VfsError::Emlink));
+}
+
+#[test]
+fn protection_eperm_outranks_an_unwritable_destination() {
+    // Destination directory denies the caller too; protection still answers.
+    let parent = dir(0o555);
+    let src = reg(0o4755, 0);
+    assert_eq!(vfs::may_link(&parent, &src, &user(1000)), Err(VfsError::Eperm));
+    // A safe source under the same unwritable directory reports EACCES, which
+    // is what makes the previous assertion an ordering claim and not a
+    // coincidence.
+    assert_eq!(vfs::may_link(&parent, &reg(0o666, 0), &user(1000)), Err(VfsError::Eacces));
+}
+
+#[test]
+fn unrepresentable_source_owner_is_eoverflow() {
+    let parent = dir(0o777);
+    let src = InodeBuilder::new(5, mk_mode(FileType::Regular, 0o644),
+        default_inode_ops(), default_file_ops()).owner(u32::MAX, 0).build();
+    assert_eq!(vfs::may_link(&parent, &src, &user(0)), Err(VfsError::Eoverflow),
+        "the link count cannot be written back for an owner the fs cannot express");
+}
+
+#[test]
+fn directory_source_is_eperm() {
+    let parent = dir(0o777);
+    let src = InodeBuilder::new(6, mk_mode(FileType::Directory, 0o755),
+        default_inode_ops(), default_file_ops()).owner(0, 0).build();
+    assert_eq!(vfs::may_link(&parent, &src, &user(0)), Err(VfsError::Eperm),
+        "no filesystem permits a second name for a directory");
+}

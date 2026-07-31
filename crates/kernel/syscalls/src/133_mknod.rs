@@ -11,7 +11,7 @@ use syscall::errno::Errno;
 use ::fs::mknod::{may_mknod, MayMknod, NodeType};
 use crate::namei_common::{
     read_user_path, errno_from_vfs, resolve_create_parent_at, render_child_path,
-    child_exists, parent_mount_readonly, drop_child_cache,
+    parent_mount_readonly, drop_child_cache,
 };
 
 /// `mknod(path, mode, dev)` slot 133.
@@ -49,11 +49,8 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
         Ok(x) => x, Err(rv) => return rv,
     };
     let p = render_child_path(&parent, &name);
-    match child_exists(&parent, &name) {
-        Ok(true) => return -(Errno::Eexist.as_i32() as i64),
-        Ok(false) => {}
-        Err(rv) => return rv,
-    }
+    if let Err(rv) = crate::namei_common::check_create_leaf(
+        &parent, &name, &raw, crate::path_ops_policy::CreateKind::NonDir) { return rv; }
     if parent_mount_readonly(&parent) {
         return -(Errno::Erofs.as_i32() as i64);
     }
