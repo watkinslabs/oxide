@@ -203,11 +203,11 @@ fn unregister_drops_only_that_card_runtime_state() {
     crate::crtc::queue_flip_event(card0, 0x1000, crtc_id_for(0), 0xaaaa);
     crate::crtc::queue_flip_event(card1, 0x2000, crtc_id_for(0), 0xbbbb);
     crate::dumb::TABLES.lock().fbs.push(crate::dumb::FbObj {
-        card_id: card0, fb_id: 77, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
+        card_id: card0, fb_id: 77, owner_token: 0, bound: false, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
         handles: [0; 4], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 0,
     });
     crate::dumb::TABLES.lock().fbs.push(crate::dumb::FbObj {
-        card_id: card1, fb_id: 88, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
+        card_id: card1, fb_id: 88, owner_token: 0, bound: false, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
         handles: [0; 4], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 0,
     });
 

@@ -27,6 +27,22 @@ pub struct DrmModeDestroyDumb {
     pub handle: u32,
 }
 
+/// Framebuffer ownership-release request. # C: ABI
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeCloseFb {
+    pub fb_id: u32,
+    pub pad:   u32,
+}
+
+/// Buffer-handle ownership-release request. # C: ABI
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmGemClose {
+    pub handle: u32,
+    pub pad:    u32,
+}
+
 /// `struct drm_mode_fb_cmd2` — 104 bytes. # C: ABI
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
