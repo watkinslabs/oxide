@@ -34,7 +34,7 @@ pub(super) fn child_exit_info(child: &Task, signo: u32) -> crate::task::SigInfo 
         pid:   child.vtgid.load(Ordering::Acquire),
         uid:   child.creds.ruid.load(Ordering::Acquire),
         value: status as u64,
-        sys:   None,
+        sys:   None, fault: None
     }
 }
 

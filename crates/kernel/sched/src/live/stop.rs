@@ -71,7 +71,7 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32) {
             pid:   cur.vtgid.load(Ordering::Acquire),
             uid:   cur.creds.ruid.load(Ordering::Acquire),
             value: status_sig as u64,
-            sys:   None,
+            sys:   None, fault: None
         });
         parent.sigpending.fetch_or(crate::Signum::Sigchld.bit(), Ordering::Release);
     }

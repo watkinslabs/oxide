@@ -116,18 +116,21 @@ mod live {
     fn queue_si_tkill(cur: &sched::Task, t: &alloc::sync::Arc<sched::Task>, sig: i32) {
         let spid = cur.vtgid.load(Ordering::Acquire);
         let spid = if spid != 0 { spid } else { cur.tgid.load(Ordering::Acquire) };
-        t.sigq_reserve(sig as u32);
-        t.sigq_push(sched::SigInfo {
+        let info = sched::SigInfo {
             signo: sig as u32,
             code: sched::signum::SI_TKILL,
             pid: spid,
             uid: cur.creds.ruid.load(Ordering::Relaxed),
             value: 0,
-            sys:   None,
-        });
-        t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
-        if sig == sched::Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
-        sched::live::signal_wake_up(t);
+            sys:   None, fault: None
+        };
+        // THE enqueue (`send_signal_locked`), `PIDTYPE_PID` — the thread's own
+        // pending set, which is what makes `tgkill(2)` address a specific
+        // thread rather than the process. The open-coded push/bit-set/wake this
+        // replaced skipped `prepare_signal`, so a `tgkill(SIGCONT)` did not
+        // flush a pending stop and a SIG_IGN disposition still queued a record.
+        let _ = sched::live::send_signal(t, sig as u32, sched::sigsend::SigSource::Info(info),
+                                         sched::sigsend::SigTarget::Thread);
     }
 }
 

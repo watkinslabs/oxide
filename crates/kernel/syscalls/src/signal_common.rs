@@ -35,6 +35,10 @@ pub(crate) const SI_VALUE: u64 = 24;
 pub(crate) const SI_CALL_ADDR: u64 = 16;
 pub(crate) const SI_SYSCALL:   u64 = 24;
 pub(crate) const SI_ARCH:      u64 = 28;
+/// `_sigfault` arm: `si_addr` also aliases si_pid/si_uid, and the `short`
+/// `si_addr_lsb` follows it where si_value would be.
+pub(crate) const SI_ADDR:      u64 = 16;
+pub(crate) const SI_ADDR_LSB:  u64 = 24;
 
 /// Decode the leading `kernel_siginfo` fields of a user `siginfo_t`.
 /// Caller must have validated `info_ptr` readable for `KERNEL_SIGINFO_BYTES`.
@@ -50,7 +54,7 @@ pub(crate) fn read_user_siginfo(info_ptr: u64, signo: u32) -> sched::SigInfo {
         // Linux `__copy_siginfo_from_user` overwrites si_signo with the
         // syscall's `sig` argument — the sender cannot make the two disagree.
         // `rt_sigqueueinfo` cannot forge a seccomp `_sigsys` arm.
-        sched::SigInfo { signo, code, pid, uid, value, sys: None }
+        sched::SigInfo { signo, code, pid, uid, value, sys: None, fault: None }
     }
 }
 
@@ -63,7 +67,7 @@ pub(crate) fn write_user_siginfo(info_ptr: u64, sig: u32, rec: Option<sched::Sig
     // Linux `collect_signal`'s fallback for a pending signal with no queued
     // record (`kill(2)` queues nothing): si_code = SI_USER, si_pid/si_uid = 0.
     let rec = rec.unwrap_or(sched::SigInfo {
-        signo: sig, code: sched::signum::SI_USER, pid: 0, uid: 0, value: 0, sys: None,
+        signo: sig, code: sched::signum::SI_USER, pid: 0, uid: 0, value: 0, sys: None, fault: None
     });
     // SAFETY: caller validated info_ptr writable for SIGINFO_BYTES, which covers
     // the zero-fill and every field offset written below.
@@ -75,6 +79,15 @@ pub(crate) fn write_user_siginfo(info_ptr: u64, sig: u32, rec: Option<sched::Sig
         // OVERLAYS si_pid/si_uid; writing the `_kill` arm too would corrupt
         // it. `rt_sigtimedwait`/`waitid` copy-out must agree with the frame
         // builder in `hal::write_siginfo`.
+        // A synchronous fault signal selects `_sigfault`, whose `si_addr`
+        // OVERLAYS si_pid/si_uid. `sigwaitinfo`/`signalfd` must report the
+        // faulting address, not a zeroed sender identity.
+        if let Some(f) = rec.fault {
+            core::ptr::write_unaligned((info_ptr + SI_ERRNO)    as *mut i32, 0);
+            core::ptr::write_unaligned((info_ptr + SI_ADDR)     as *mut u64, f.addr);
+            core::ptr::write_unaligned((info_ptr + SI_ADDR_LSB) as *mut i16, f.addr_lsb);
+            return;
+        }
         if let Some(s) = rec.sys {
             core::ptr::write_unaligned((info_ptr + SI_ERRNO)     as *mut i32, s.errno);
             core::ptr::write_unaligned((info_ptr + SI_CALL_ADDR) as *mut u64, s.call_addr);
@@ -99,7 +112,6 @@ pub(crate) fn write_user_siginfo(info_ptr: u64, sig: u32, rec: Option<sched::Sig
 /// in `do_rt_sigqueueinfo` against the pid ARGUMENT, not the resolved task.
 /// # C: O(1) after the registry lookup
 pub(crate) fn sigqueue_to(vpid: u32, sig: u32, info: sched::SigInfo) -> i64 {
-    use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     if sig > sched::signum::RT_SIGNAL_MAX { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
@@ -112,11 +124,18 @@ pub(crate) fn sigqueue_to(vpid: u32, sig: u32, info: sched::SigInfo) -> i64 {
         return -(Errno::Eperm.as_i32() as i64);
     }
     // `sig == 0` is the permission probe: every check above ran, nothing is sent.
-    let Some(bit) = sched::signum::bit_for(sig) else { return 0 };
-    target.sigq_reserve(sig);
-    target.sigq_push(info);
-    target.sigpending.fetch_or(bit, Ordering::Release);
-    sched::live::registry::wake_if_stopped(&target);
-    sched::live::signal_wake_up(&target);
-    0
+    if sig == 0 { return 0; }
+    // Linux `do_send_sig_info(sig, info, p, PIDTYPE_TGID)`: `sigqueue(3)` is
+    // PROCESS-directed, so any thread of the target that has not blocked the
+    // signal can take it. The open-coded private-set push this replaced meant a
+    // `sigqueue()` aimed at a process whose main thread blocked the signal was
+    // never seen by the worker that unblocked it.
+    match sched::live::send_signal(&target, sig, sched::sigsend::SigSource::Info(info),
+                                   sched::sigsend::SigTarget::Process) {
+        Ok(()) => 0,
+        // `__send_signal_locked`'s queue-overflow arm: a real-time signal from
+        // a user queueing mechanism reports EAGAIN rather than losing its
+        // record. POSIX requires it — `sigqueue(3)` documents EAGAIN.
+        Err(sched::live::SendErr::Again) => -(Errno::Eagain.as_i32() as i64),
+    }
 }

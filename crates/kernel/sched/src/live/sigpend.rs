@@ -14,16 +14,12 @@ use core::sync::atomic::Ordering;
 // unchanged.
 pub use crate::signum::Signum;
 
-/// Raise `sig` against the currently-running task. No-op if no
-/// task is current (boot path, no runqueue installed). Default
-/// disposition + handler dispatch happen in the per-syscall-return
-/// sig path; this only sets the pending bit.
+/// Raise a kernel-generated, thread-directed `sig` against the running task —
+/// Linux `send_sig(sig, current, 1)` (`SEND_SIG_PRIV`). The SIGPIPE / SIGXFSZ
+/// producers. Routed through the ONE enqueue so the record carries
+/// `si_code = SI_KERNEL` and a SIG_IGN disposition cannot swallow it.
 /// # C: O(1)
-pub fn send_signal_self(sig: Signum) {
-    if let Some(cur) = super::schedule::current() {
-        cur.sigpending.fetch_or(sig.bit(), Ordering::Release);
-    }
-}
+pub fn send_signal_self(sig: Signum) { super::send::send_sig_priv_self(sig); }
 
 /// Linux `zap_other_threads` (kernel/signal.c): on `exit_group(2)` or a
 /// fatal signal, EVERY thread in the caller's thread-group dies — the whole
@@ -62,22 +58,17 @@ pub fn zap_other_threads() {
     }
 }
 
-/// Linux `group_send_sig_info` / `__kill_pgrp_info`'s per-process half: queue
-/// `sig` on the TARGET PROCESS' shared pending set (never on one thread's
-/// private set), then run `complete_signal` to wake a thread that can take it.
-/// `target` may be any thread of that process — the group is what is signalled.
+/// Linux `group_send_sig_info(sig, info, p, PIDTYPE_TGID)`: queue `sig` on the
+/// TARGET PROCESS' shared pending set (never on one thread's private set) and
+/// wake a thread that can take it. `target` may be any thread of that process —
+/// the group is what is signalled.
 ///
-/// One owner for "post a process-directed signal", so `kill(2)`, the pgrp fan
-/// and the broadcast cannot drift from each other.
+/// A thin spelling of `send::send_signal` with the process target pinned, kept
+/// because `kill(2)`, the pgrp fan and the broadcast all name it.
 /// # C: O(N_threads)
-pub fn post_group_signal(target: &crate::Task, sig: u32, info: Option<crate::SigInfo>) {
-    let leader_tid = target.tgid.load(Ordering::Acquire);
-    // Linux `prepare_signal`: SIGCONT resumes EVERY stopped thread of the
-    // group before the signal is even queued — a stopped thread must not be
-    // left behind because `complete_signal` picked a different one.
-    if sig == Signum::Sigcont as u32 { resume_group(leader_tid); }
-    target.thread_group.post_shared(sig, info);
-    complete_signal(leader_tid, sig);
+pub fn post_group_signal(target: &alloc::sync::Arc<crate::Task>, sig: u32,
+                         src: crate::sigsend::SigSource) -> Result<(), super::send::SendErr> {
+    super::send::send_signal(target, sig, src, crate::sigsend::SigTarget::Process)
 }
 
 /// Linux `complete_signal` (`kernel/signal.c`): once a process-directed signal
@@ -111,14 +102,6 @@ pub fn complete_signal(leader_tid: u32, sig: u32) -> bool {
         if let Some(t) = crate::registry::lookup(tid) { if wake(&t) { return true; } }
     }
     false
-}
-
-/// `prepare_signal`'s SIGCONT arm: wake every job-control-stopped member.
-/// # C: O(N_threads)
-fn resume_group(leader_tid: u32) {
-    for (_vtid, tid) in crate::registry::thread_entries(leader_tid) {
-        if let Some(t) = super::registry::lookup(tid) { super::registry::wake_if_stopped(&t); }
-    }
 }
 
 /// Process-directed pending bits visible to `task` — Linux
@@ -236,19 +219,20 @@ pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
 /// for a pgrp fan; O(1) for a single owner.
 pub fn send_sigio(owner: i32, sig: i32, _uid: u32, _euid: u32) {
     if owner == 0 || !(1..=64).contains(&sig) { return; }
-    let bit = 1u64 << (sig - 1);
+    // Linux `send_sigio` -> `do_send_sig_info(sig, SEND_SIG_PRIV, p, type)`:
+    // kernel-generated, so `si_code = SI_KERNEL` and a SIG_IGN disposition does
+    // not swallow it. The raw bit-set this replaced queued no record at all, so
+    // an `SA_SIGINFO` SIGIO handler read si_code 0 / si_fd 0.
     if owner > 0 {
         let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
         if let Some(t) = crate::registry::lookup_in_namespace(&namespace, owner as u32)
             .or_else(|| crate::registry::lookup(owner as u32))
         {
-            t.sigpending.fetch_or(bit, Ordering::Release);
-            signal_wake_up(&t);
+            super::send::send_sig_priv_group(&t, sig as u32);
         }
     } else {
         for t in crate::registry::tasks_in_pgrp((-owner) as u32) {
-            t.sigpending.fetch_or(bit, Ordering::Release);
-            signal_wake_up(&t);
+            super::send::send_sig_priv_group(&t, sig as u32);
         }
     }
 }

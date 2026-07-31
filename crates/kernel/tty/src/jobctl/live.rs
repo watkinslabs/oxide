@@ -72,9 +72,11 @@ pub fn check(
             // member out of its interruptible sleep; without the wake, a
             // sibling already parked in a blocking wait keeps the pending bit
             // and never reaches the dispatch tail that stops it.
+            // Linux `kill_pgrp(task_pgrp(current), sig, 1)` — `SEND_SIG_PRIV`,
+            // process-directed, one send per process.
+            let _ = bit;
             for t in sched::live::registry::tasks_in_pgrp(pgid) {
-                t.sigpending.fetch_or(bit, Ordering::Release);
-                sched::live::signal_wake_up(&t);
+                sched::live::send_sig_priv_group(&t, signo as u32);
             }
             Err(Decision::Stop.vfs_err().unwrap_or(VfsError::Erestartsys))
         }

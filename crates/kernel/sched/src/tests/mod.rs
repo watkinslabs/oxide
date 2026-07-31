@@ -33,6 +33,7 @@ mod queues;
 mod registry;
 mod rlimit_prio;
 mod session;
+mod send_signal;
 mod signals;
 mod task;
 mod timing;

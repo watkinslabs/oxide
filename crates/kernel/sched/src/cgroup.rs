@@ -87,9 +87,11 @@ use core::sync::atomic::Ordering as CgOrd;
 /// # C: O(N) registry lookup
 pub fn kill_hook(pid: u64, sig: i32) {
     if !(1..=64).contains(&sig) { return; }
+    // Linux `cgroup_kill` -> `group_send_sig_info(SIGKILL, SEND_SIG_PRIV, task,
+    // PIDTYPE_TGID)` — process-directed and kernel-generated, so it reaches a
+    // thread that has not blocked it and a SIG_IGN disposition cannot eat it.
     if let Some(t) = lookup_init_pid(pid as u32) {
-        t.sigpending.fetch_or(1u64 << (sig - 1), CgOrd::Release);
-        crate::live::signal_wake_up(&t);
+        crate::live::send_sig_priv_group(&t, sig as u32);
     }
 }
 

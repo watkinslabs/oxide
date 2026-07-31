@@ -124,8 +124,7 @@ fn attach(cur: &sched::Task, target: &Arc<sched::Task>, request: u64, addr: u64,
     if !seize {
         // ATTACH posts SIGSTOP so the tracee stops at its next signal-delivery
         // point; SEIZE attaches without any stop (the tracer uses INTERRUPT).
-        target.sigpending.fetch_or(Signum::Sigstop.bit(), Ordering::Release);
-        sched::live::signal_wake_up(target);
+        sched::live::send_sig_priv_group(target, Signum::Sigstop as u32);
     }
     Ok(())
 }
@@ -137,8 +136,11 @@ fn resume(target: &Arc<sched::Task>, request: u64, data: u64) -> Result<(), Errn
     if !decide::valid_signal(data) { return Err(Errno::Eio); }
     let sig = data as u32;
     if sig != 0 {
-        target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
-        sched::live::signal_wake_up(target);
+        // Linux `ptrace_resume`'s injection: the tracer re-delivers the signal
+        // the tracee stopped for, as a kernel-generated PRIVATE send on that
+        // thread (`send_sig_info(..., PIDTYPE_PID)`).
+        let _ = sched::live::send_signal(target, sig, sched::sigsend::SigSource::Kernel,
+                                         sched::sigsend::SigTarget::Thread);
     }
     target.singlestep.store(u32::from(request == uapi::SINGLESTEP), Ordering::Release);
     target.ptrace_syscall_armed.store(request == uapi::SYSCALL, Ordering::Release);
@@ -160,7 +162,8 @@ fn detach(target: &Arc<sched::Task>, data: u64) -> Result<(), Errno> {
     if data == 0 {
         target.sigpending.fetch_and(!Signum::Sigstop.bit(), Ordering::Release);
     } else {
-        target.sigpending.fetch_or(1u64 << (data - 1), Ordering::Release);
+        let _ = sched::live::send_signal(target, data as u32, sched::sigsend::SigSource::Kernel,
+                                         sched::sigsend::SigTarget::Thread);
     }
     sched::live::registry::wake_if_stopped(target);
     Ok(())
@@ -168,6 +171,5 @@ fn detach(target: &Arc<sched::Task>, data: u64) -> Result<(), Errno> {
 
 /// PTRACE_KILL — Linux sends SIGKILL and returns 0 regardless of stop state.
 fn kill(target: &Arc<sched::Task>) {
-    target.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
-    sched::live::signal_wake_up(target);
+    sched::live::send_sig_priv_group(target, Signum::Sigkill as u32);
 }

@@ -15,6 +15,11 @@ pub struct SigInfo {
     /// `_sifields` bytes `pid`/`uid`/`value` use, so the delivery path must
     /// pick one arm; `hal::write_siginfo` does.
     pub sys: Option<hal::Sigsys>,
+    /// `_sigfault` union arm (`force_sig_fault`, `kernel/signal.c`) — `Some`
+    /// for every synchronous fault signal. Carries si_addr / si_addr_lsb, which
+    /// OVERLAY `pid`/`uid`/`value` in `siginfo_t`, so the delivery path and
+    /// `copy_siginfo_to_user` must pick this arm when it is present.
+    pub fault: Option<hal::SigFault>,
 }
 
 /// Per-signal RT queue depth cap. Drops new arrivals past this

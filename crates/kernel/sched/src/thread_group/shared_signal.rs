@@ -38,6 +38,8 @@ impl ThreadGroup {
     /// Linux `__send_signal_locked` with `type > PIDTYPE_PID`: reserve the
     /// bounded record queue, queue `info`, then publish the pending bit. The
     /// bit is set LAST so a consumer that observes it always finds the record.
+    /// `false` from the record push is Linux's `sigqueue_alloc` returning NULL,
+    /// which `live::send` turns into EAGAIN or a silent record loss.
     ///
     /// `info` is `None` for a sender that queues nothing (`kill(2)` from a
     /// context with no siginfo to carry); the bit alone is then the signal,
@@ -46,10 +48,27 @@ impl ThreadGroup {
     /// # Ctx: process — reserves queue capacity
     pub fn post_shared(&self, sig: u32, info: Option<SigInfo>) {
         let Some(bit) = crate::signum::bit_for(sig) else { return };
-        if let Some(rec) = info {
-            crate::sigqueue::queues_reserve(&self.shared_sigqueue, sig);
-            crate::sigqueue::queues_push(&self.shared_sigqueue, rec);
-        }
+        if let Some(rec) = info { self.post_shared_record(rec); }
+        self.shared_pending.fetch_or(bit, Ordering::Release);
+    }
+
+    /// Queue one record on the shared set WITHOUT publishing its pending bit —
+    /// the record half of `post_shared`, so `live::send` can run the whole
+    /// `__send_signal_locked` ladder (legacy-queue collapse, overflow reporting)
+    /// between the two halves. The bit is published last so a consumer that
+    /// observes it always finds the record.
+    /// `false` = the bounded queue was full and the record was dropped.
+    /// # C: O(1) amortized
+    /// # Ctx: process — reserves queue capacity
+    pub fn post_shared_record(&self, rec: SigInfo) -> bool {
+        crate::sigqueue::queues_reserve(&self.shared_sigqueue, rec.signo);
+        crate::sigqueue::queues_push(&self.shared_sigqueue, rec)
+    }
+
+    /// Publish `sig`'s shared pending bit — the bitmap half of `post_shared`.
+    /// # C: O(1)
+    pub fn publish_shared(&self, sig: u32) {
+        let Some(bit) = crate::signum::bit_for(sig) else { return };
         self.shared_pending.fetch_or(bit, Ordering::Release);
     }
 

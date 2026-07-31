@@ -34,11 +34,13 @@ fn members(pgid: u32) -> Vec<PgrpMember> {
         .collect()
 }
 
-/// Post `sig` to every member of `pgid` and wake it. # C: O(N_tasks)
+/// Linux `__kill_pgrp_info(sig, SEND_SIG_PRIV, pgrp)`: post `sig` to every
+/// PROCESS in `pgid`. Kernel-generated, so the orphaned-pgrp SIGHUP/SIGCONT
+/// pair cannot be swallowed by a SIG_IGN disposition, and the SIGCONT arm runs
+/// `prepare_signal`'s stop-flush + resume. # C: O(N_tasks)
 fn kill_pgrp(pgid: u32, sig: Signum) {
     for t in registry::tasks_in_pgrp(pgid) {
-        t.sigpending.fetch_or(sig.bit(), Ordering::Release);
-        crate::live::signal_wake_up(&t);
+        crate::live::send_sig_priv_group(&t, sig.as_u8() as u32);
     }
 }
 
