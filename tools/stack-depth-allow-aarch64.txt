@@ -14,5 +14,8 @@
 # walker's longest path is the max over all ~400 of them at once — no single
 # call reaches this. Useful only as a ceiling on the deepest syscall; the
 # individual syscalls are the numbers to actually drive down.
-13632	oxide_svc_save_block
-13344	oxide_syscall_dispatch
+# B1620 lowered both by the fork/clone `Task`-on-the-parent-stack fix. What is
+# left over the ceiling here is the `sendmmsg`/`io_submit` arm of the dispatch
+# fan-out, not fork/clone — aarch64's clone3 was never in this file.
+13600	oxide_svc_save_block
+13312	oxide_syscall_dispatch
