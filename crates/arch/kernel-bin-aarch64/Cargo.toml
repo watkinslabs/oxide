@@ -17,6 +17,7 @@ debug-getdents = ["boot-aarch64/debug-getdents"]
 debug-getdents-detail = ["boot-aarch64/debug-getdents-detail"]
 debug-syscall-return = ["boot-aarch64/debug-syscall-return"]
 debug-taskdump = ["boot-aarch64/debug-taskdump"]
+debug-umh = ["boot-aarch64/debug-umh"]
 debug-as-lifetime = ["boot-aarch64/debug-as-lifetime"]
 debug-task-fpu-provenance = ["boot-aarch64/debug-task-fpu-provenance"]
 

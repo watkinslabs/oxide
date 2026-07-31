@@ -65,6 +65,7 @@ pub use schedule::{
     install_default_runqueue, runqueue_active, RunStats,
     install_sched_switch_hook, SchedSwitchFn,
 };
+pub use spawn::{alloc_vpid, arm_user_entry, new_user_task_unpublished};
 pub use spawn::{next_tid, publish_new_task, spawn_kernel_thread, spawn_user_thread,
     spawn_user_thread_for_fork, spawn_user_thread_with_vpid, wake_new_task, SpawnError};
 pub mod timer_driver;
@@ -75,7 +76,7 @@ pub use wait_list::WaitList;
 pub use wait_event::{wait_event, wait_event_interruptible, wait_event_interruptible_until,
                      wait_event_killable};
 pub use mutex::{Mutex, MutexGuard};
-pub use kthread::{should_stop as kthread_should_stop, stop as kthread_stop};
+pub use kthread::{kthread_unuse_mm, kthread_use_mm, should_stop as kthread_should_stop, stop as kthread_stop};
 pub use workqueue::{queue_work, queue_work_on, WorkFn};
 pub use delayed_work::queue_delayed_work_on;
 pub use tasklet::TaskletFn;
