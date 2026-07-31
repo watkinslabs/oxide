@@ -113,9 +113,15 @@ pub const TP_STATUS_TS_RAW_HARDWARE: u32 = 1 << 31;
 pub const SOF_TIMESTAMPING_SOFTWARE: i32 = 1 << 4;
 pub const SOF_TIMESTAMPING_RAW_HARDWARE: i32 = 1 << 6;
 
-// Socket-level option numbers have one owner: the generic SOL_SOCKET table.
-pub use crate::sock_opts::sol_socket::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_OOBINLINE,
-    SO_PROTOCOL, SO_TYPE};
+// Socket-level option numbers. The generic SOL_SOCKET table carries `sock`'s
+// gate, but ungated callers (`vsock_socket`) need these, so the numbers are
+// owned here per the UAPI-is-not-policy rule and re-exported by that table.
+pub const SOL_SOCKET: u64 = 1;
+pub const SO_TYPE: u64 = 3;
+pub const SO_OOBINLINE: u64 = 10;
+pub const SO_ACCEPTCONN: u64 = 30;
+pub const SO_PROTOCOL: u64 = 38;
+pub const SO_DOMAIN: u64 = 39;
 
 /// Linux AF_VSOCK socket-option ABI values (`include/uapi/linux/vm_sockets.h`).
 pub const SOL_VSOCK: u64 = 287;
