@@ -69,12 +69,12 @@ impl PolicyRuleTable {
     pub fn snapshot_effective(&self, ns: u64, family: u8) -> Vec<PolicyRule> {
         let mut state = self.state.lock();
         Self::initialize(&mut state, ns, family);
-        let mut rows: Vec<PolicyRule> = state.rows.iter()
-            .filter(|r| r.ns == ns && r.family == family).copied().collect();
-        // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): rules may share a
-        // priority, and equal-priority rules are evaluated in insertion order.
-        rows.sort_by_key(|r| r.priority);
-        rows
+        // STABLE ON PURPOSE: rules may share a priority, and equal-priority rules are
+        // evaluated in insertion order. Ordered insertion rather than `sort_by_key`
+        // keeps the packet path off `driftsort`'s 4 KiB scratch frame (`ordered`).
+        crate::ordered::collect_stable_by_key(
+            state.rows.iter().filter(|r| r.ns == ns && r.family == family).copied(),
+            |r| r.priority)
     }
 
     /// Check custom-rule identity under owning stack RTNL. # Lk: stack RTNL held. # C: O(N)
