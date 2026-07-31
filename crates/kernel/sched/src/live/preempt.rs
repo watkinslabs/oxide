@@ -47,6 +47,13 @@ pub fn task_tick() {
         cur.rt_time_slice.store(crate::sched_enc::RR_TIMESLICE_TICKS, core::sync::atomic::Ordering::Release);
     }
     let peer = crate::live::runqueue::has_rt_peer_at_same_level(cur);
+    // A spent SCHED_RR quantum is the one tick outcome that ROTATES the task:
+    // mark it so `put_prev_task` returns it behind its equal-priority peers
+    // instead of ahead of them. Nothing else — a SCHED_FIFO task has no
+    // quantum and must keep its place across any number of preemptions.
+    if crate::sched_enc::requeue::tick_gives_up_turn(policy, left, peer) {
+        cur.rt_requeue_tail.store(true, core::sync::atomic::Ordering::Release);
+    }
     if crate::sched_enc::rt_tick_wants_resched(policy, left, peer) {
         crate::preempt::set_need_resched();
     }

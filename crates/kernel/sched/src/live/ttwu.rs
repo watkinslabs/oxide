@@ -267,21 +267,50 @@ pub fn resched_curr(cpu: u32) {
 }
 
 /// Honor a changed `cpus_allowed` (sched_setaffinity / cpuset): move `task`
-/// off any disallowed CPU. A task QUEUED (on_rq, not currently running) on a
-/// now-disallowed CPU is safely dequeued and re-placed via `select_task_rq`
-/// (it isn't executing, so no cross-CPU race). A task RUNNING (rq.current) on
-/// a disallowed CPU is nudged with need_resched + a reschedule IPI; fully
-/// evicting a running task needs the `on_cpu` migration handshake (the target
-/// must wait until it stops running on the source) — that lands with the
-/// Phase C cross-CPU hardening. UP / single CPU: no-op (allowed == local).
+/// off any disallowed CPU.
+///
+/// A task QUEUED (on_rq, not currently running) on a now-disallowed CPU is
+/// dequeued here and re-placed by `select_task_rq` — it is not executing, so
+/// there is no cross-CPU race. A task RUNNING on a disallowed CPU is only
+/// nudged with need_resched plus a reschedule IPI: it cannot be moved while it
+/// still owns a CPU's register context. The eviction itself happens when that
+/// nudge lands in `schedule()`, which parks the task and lets the incoming
+/// task's `finish_task_switch` place it once `on_cpu` has cleared
+/// (`live::schedule::migrate`). UP / single CPU: no-op (allowed == local).
 /// # C: O(N_cpus · log N)
 pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
+    // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
+    // that has not completed `install_global`, which the walk skips.
+    relocate_for_affinity_with(&|c| unsafe { global_for(c) }, task, allowed)
+}
+
+/// Place `task` on `target`, falling back to `fallback` when `target` has no
+/// installed runqueue. Returns whether `target` took it.
+/// # C: O(log N)
+fn enqueue_on_with_fallback<'a, F>(get_rq: &F, target: u32, fallback: u32, task: Arc<Task>) -> bool
+where F: Fn(u32) -> Option<&'a Runqueue> {
+    if get_rq(target).is_some() {
+        return super::rq_locate::enqueue_on_with(get_rq, target, task);
+    }
+    let _ = super::rq_locate::enqueue_on_with(get_rq, fallback, task);
+    false
+}
+
+/// [`relocate_for_affinity`] over an injected CPU->runqueue accessor, so the
+/// relocation is exercised by hosted tests against real `Runqueue` instances
+/// on more than one CPU. Same split [`select_task_rq_with`] uses, and for the
+/// same reason: the un-split version reaches only the live per-CPU globals,
+/// which off-target exist for CPU 0 alone — that is how the running-task half
+/// of this function shipped untested.
+/// # C: O(N_cpus · log N)
+pub fn relocate_for_affinity_with<'a, F>(get_rq: &F, task: &Arc<Task>, allowed: u64)
+where F: Fn(u32) -> Option<&'a Runqueue> {
+
     let tid = task.tid;
     for cpu in 0..cpu::MAX_CPUS as u32 {
         // Skip CPUs the task is allowed on.
         if cpu < 64 && (allowed & (1u64 << cpu)) != 0 { continue; }
-        // SAFETY: global_for is sound for any index; None unless that CPU is scheduling.
-        let rq = match unsafe { global_for(cpu) } { Some(r) => r, None => continue };
+        let rq = match get_rq(cpu) { Some(r) => r, None => continue };
         // Try to dequeue it from this disallowed CPU's runqueue (queued, not
         // running). One rq lock at a time — no nesting, no ordering hazard.
         let removed = {
@@ -293,15 +322,18 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
         if let Some(moved) = removed {
             moved.on_rq.store(false, Ordering::Release);
             // Re-place on an allowed CPU (select_task_rq filters by the mask).
-            let target = select_task_rq(&moved);
-            // SAFETY: `global_for` is sound for any index; skipped when the
-            // target CPU has not installed its runqueue yet.
-            super::rq_locate::enqueue_on_with(&|c| unsafe { global_for(c) }, target, moved);
-            resched_curr(target);
+            // When the mask names no CPU with an installed runqueue the
+            // placement fails, and the task must go back where it came from:
+            // affinity is broken before a runnable task is stranded, which is
+            // what dropping it here would do — silently and permanently.
+            let target = select_task_rq_with(get_rq, this_cpu(), &moved);
+            let dest = if enqueue_on_with_fallback(get_rq, target, cpu, moved) { target } else { cpu };
+            resched_curr(dest);
         } else {
             // Not queued here — is it the RUNNING task on this disallowed CPU?
-            // Nudge it to reschedule (it re-enqueues elsewhere on its next
-            // sleep/yield). Synchronous eviction = Phase C on_cpu handshake.
+            // It cannot be moved while it owns this CPU's register context, so
+            // it is nudged instead; `schedule()` parks it and the incoming
+            // task's `finish_task_switch` places it on an allowed CPU.
             let cur = rq.current.load(Ordering::Acquire);
             // SAFETY: rq.current is non-null after install; the pointee is kept
             // alive by the rq's strong ref; reading the tid field is sound.

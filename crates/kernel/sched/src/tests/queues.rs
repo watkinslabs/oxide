@@ -355,3 +355,95 @@ fn claiming_pick_of_an_empty_runqueue_claims_idle() {
     assert!(!already);
     assert!(id.on_cpu.load(Ordering::Acquire));
 }
+
+// ---------------------------------------------------------------------------
+// put_prev_task position: what separates SCHED_FIFO from SCHED_RR
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_preempted_rt_task_resumes_ahead_of_its_equal_priority_peers() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let current = rt(1, 50);
+    rq.enqueue(rt(2, 50));
+    rq.enqueue(rt(3, 50));
+
+    // Involuntary preemption: nothing marked the task as having given up its
+    // turn, so it must come back at the HEAD and be picked again first.
+    rq.put_prev_task(Arc::clone(&current));
+
+    assert_eq!(rq.pick_next_task().tid, 1);
+    assert_eq!(rq.pick_next_task().tid, 2);
+    assert_eq!(rq.pick_next_task().tid, 3);
+}
+
+#[test]
+fn repeated_preemption_never_demotes_a_fifo_task() {
+    // The regression: every put_prev_task used to push to the tail, so N
+    // preemptions moved a FIFO task N places back through its peers.
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let current = rt(1, 50);
+    rq.enqueue(rt(2, 50));
+
+    for _ in 0..50 {
+        rq.put_prev_task(Arc::clone(&current));
+        assert_eq!(rq.pick_next_task().tid, 1);
+    }
+    assert_eq!(rq.pick_next_task().tid, 2);
+}
+
+#[test]
+fn a_spent_round_robin_quantum_rotates_the_task() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let current = rt(1, 50);
+    rq.enqueue(rt(2, 50));
+    rq.enqueue(rt(3, 50));
+
+    // What the tick sets when an RR quantum runs out with a peer present.
+    current.rt_requeue_tail.store(true, Ordering::Release);
+    rq.put_prev_task(Arc::clone(&current));
+
+    assert_eq!(rq.pick_next_task().tid, 2);
+    assert_eq!(rq.pick_next_task().tid, 3);
+    assert_eq!(rq.pick_next_task().tid, 1);
+}
+
+#[test]
+fn the_rotation_request_is_consumed_by_one_requeue() {
+    // A single spent quantum must rotate the task once, not forever.
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let current = rt(1, 50);
+    rq.enqueue(rt(2, 50));
+
+    current.rt_requeue_tail.store(true, Ordering::Release);
+    rq.put_prev_task(Arc::clone(&current));
+    assert!(!current.rt_requeue_tail.load(Ordering::Acquire));
+    assert_eq!(rq.pick_next_task().tid, 2);
+
+    // Next preemption is involuntary again, so the task keeps its place.
+    rq.put_prev_task(Arc::clone(&current));
+    assert_eq!(rq.pick_next_task().tid, 1);
+}
+
+#[test]
+fn a_woken_rt_task_joins_behind_an_equal_priority_task_already_waiting() {
+    // The head position is for a preempted task only; a fresh wakeup must not
+    // jump ahead of a peer that has been waiting.
+    let mut rq = RunqueueInner::new(0, idle(0));
+    rq.enqueue(rt(2, 50));
+    rq.enqueue(rt(3, 50));
+
+    assert_eq!(rq.pick_next_task().tid, 2);
+    assert_eq!(rq.pick_next_task().tid, 3);
+}
+
+#[test]
+fn priority_still_beats_position() {
+    let mut rq = RunqueueInner::new(0, idle(0));
+    let current = rt(1, 50);
+    rq.enqueue(rt(2, 60));
+
+    // Head-of-its-own-bucket does not promote a task above a higher priority.
+    rq.put_prev_task(Arc::clone(&current));
+    assert_eq!(rq.pick_next_task().tid, 2);
+    assert_eq!(rq.pick_next_task().tid, 1);
+}
