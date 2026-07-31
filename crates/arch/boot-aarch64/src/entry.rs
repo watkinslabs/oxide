@@ -80,10 +80,18 @@ unsafe extern "C" fn _start_rust() -> ! {
         boot_debug::log_cpu_info();
     }
 
+    // Boot command line, in bootloader-transport priority order. The EFI
+    // path's load options come first because the firmware behind GRUB
+    // publishes no device tree, so `/chosen/bootargs` does not exist there
+    // and only the load options carry the line. Each is a no-op once the
+    // slot is filled, and an empty slot falls through to
+    // install_arch_default.
+    // SAFETY: boot-only single-writer; both read bootloader-owned state
+    // captured before ExitBootServices and publish via cmdline::set.
+    unsafe { boot_info_build::capture_cmdline_from_efi(); }
     // SAFETY: boot-only single-writer; capture_cmdline_from_dtb reads
     // the DTB /chosen/bootargs and publishes it via cmdline::set, or
-    // no-ops if the DTB lacks bootargs (the kernel then falls back to
-    // install_arch_default).
+    // no-ops if the DTB lacks bootargs.
     unsafe { boot_info_build::capture_cmdline_from_dtb(); }
     // SAFETY: boot path, pre-SMP; publishes the PSCI AP-startup params (page
     // table phys + DTB /cpus MPIDRs) for the kernel's bring_up_aps_psci.

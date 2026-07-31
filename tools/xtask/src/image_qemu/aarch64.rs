@@ -70,15 +70,17 @@ pub(super) fn build_grub_arm_iso(
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(image, stage.join("boot/oxide-aarch64.Image")).map_err(|_| 1u8)?;
     // GRUB's arm64 serial console differs from x86; use the firmware
-    // console (OVMF routes it to the PL011 → -serial). Keep ttyAMA0 as the
-    // last console= entry: Linux console ordering makes that the preferred
-    // /dev/console, so early systemd and headless conformance output reach
-    // QEMU's serial transport while the VT remains registered for graphics.
-    // `linux` boots our PE Image as an EFI application.
-    let cfg = "set timeout=0\nset default=0\nterminal_input console\nterminal_output console\n\n\
-               menuentry \"oxide (EFI-stub)\" {\n    \
-               linux /boot/oxide-aarch64.Image console=tty0 console=ttyAMA0,115200\n    \
-               boot\n}\n";
+    // console (OVMF routes it to the PL011 → -serial).
+    // `linux` boots our PE Image as an EFI application, handing these
+    // parameters to it as UCS-2 `LoadOptions` on the loaded-image protocol
+    // (this firmware publishes no FDT, so there is no `/chosen/bootargs`).
+    // Parameters come from the shared builder so both arches stay identical.
+    let args = super::bootargs::kernel_cmdline("aarch64", "/boot/oxide-aarch64.Image");
+    let cfg = format!(
+        "set timeout=0\nset default=0\nterminal_input console\nterminal_output console\n\n\
+         menuentry \"oxide (EFI-stub)\" {{\n    \
+         linux /boot/oxide-aarch64.Image {args}\n    \
+         boot\n}}\n");
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = crate::buildns::iso_path(repo, id, "aarch64");
     let _ = fs::remove_file(&iso);
