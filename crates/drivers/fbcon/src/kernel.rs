@@ -10,6 +10,7 @@ pub use query::{
     console_dims, fg_app_cursor, fg_bracketed_paste, force_repaint, foreground, resize_vt,
     screen_dump, scrolldelta,
 };
+pub use crate::damage::FlushRect;
 pub use shared::{FlushFn, ReplyFn};
 pub use runtime::{
     drain_answerback, kernel_init, kernel_unregister, set_reply_sink, set_vt_graphics_mode,

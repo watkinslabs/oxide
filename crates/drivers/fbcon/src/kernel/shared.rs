@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use sync::{Spinlock, Tty as TtyClass};
 use vtdata::{Emulator, Vc, N_VT};
 
+use crate::damage::FlushRect;
 use crate::vcrender::VcRenderer;
 
 pub(crate) struct VcCell {
@@ -100,7 +101,12 @@ pub(crate) fn pixels_as_bytes(px: &[u32]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(px.as_ptr() as *const u8, px.len() * 4) }
 }
 
-pub type FlushFn = fn(pixels: &[u8]);
+/// Sink for a repaint: `pixels` is the WHOLE 0x00RRGGBB surface as bytes,
+/// `rect` names the only part of it that changed. The sink must upload just
+/// `rect`, indexing `pixels` at `rect.stride_px` — that is what keeps one
+/// changed console line from costing a whole-frame copy plus a whole-screen
+/// device round-trip.
+pub type FlushFn = fn(pixels: &[u8], rect: FlushRect);
 pub(crate) static FLUSH_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 pub type ReplyFn = crate::answerback::ReplyFn;
@@ -110,20 +116,25 @@ pub(crate) static DIRTY: AtomicBool = AtomicBool::new(false);
 
 /// The `FbconFlush` handler. Runs in softirq context, where bottom halves are
 /// already accounted for on this processor, so the plain acquisition is the
-/// correct one — and the only one in the file. # C: O(framebuffer)
+/// correct one — and the only one in the file. # C: O(damaged region)
 pub(crate) fn flush_softirq() {
     if !DIRTY.swap(false, Ordering::AcqRel) {
         return;
     }
-    blit(VT_STATE.lock().as_ref());
+    let mut g = VT_STATE.lock();
+    blit(g.as_mut());
 }
 
-/// Process-context repaint (console bring-up). # C: O(framebuffer)
+/// Process-context repaint (console bring-up). # C: O(damaged region)
 pub(crate) fn repaint() {
-    blit(lock_vt().as_ref());
+    let mut g = lock_vt();
+    blit(g.as_mut());
 }
 
-fn blit(st: Option<&VtState>) {
+/// Hand the accumulated damage to the flush sink, then forget it. The take
+/// happens only once a sink exists to consume it, so a repaint raised before
+/// `kernel_init` installs one is deferred rather than dropped.
+fn blit(st: Option<&mut VtState>) {
     let raw = FLUSH_FN.load(Ordering::Acquire);
     if raw.is_null() {
         return;
@@ -132,7 +143,9 @@ fn blit(st: Option<&VtState>) {
     // cast through `*mut ()`; the reverse cast restores that exact signature.
     let f: FlushFn = unsafe { core::mem::transmute::<*mut (), FlushFn>(raw) };
     if let Some(st) = st {
-        f(pixels_as_bytes(st.renderer.pixels()));
+        if let Some(rect) = st.renderer.take_damage() {
+            f(pixels_as_bytes(st.renderer.pixels()), rect);
+        }
     }
 }
 
