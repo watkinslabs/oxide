@@ -22,6 +22,19 @@ use sync::{Spinlock, TaskList as PollLockClass};
 /// alive past its fd's close.
 pub trait EpollNotify: Send + Sync {
     fn notify(&self);
+    /// Wake carrying the readiness mask that fired, the "poll key" a source
+    /// passes to its wait queue. `0` means the source could not name the
+    /// transition (a keyless wake); a subscriber that needs a truthful mask
+    /// must re-poll the file in that case.
+    ///
+    /// Subscribers that only latch "something happened" (epoll marks the
+    /// epitem ready and re-polls in `epoll_wait`; poll/select bump a
+    /// generation) need no override. A subscriber that must PRODUCE the mask
+    /// inside the wake — aio's `IOCB_CMD_POLL`, which completes the request
+    /// from the wakeup itself — overrides this and avoids re-polling under the
+    /// source's subscriber lock.
+    /// # C: O(1)
+    fn notify_events(&self, events: u32) { let _ = events; self.notify(); }
 }
 
 /// One subscriber entry: epoll instance id + wake callback ref +
@@ -129,7 +142,7 @@ impl PollSubscribers {
         let mut g = self.subs.lock();
         g.retain(|s| s.wake.upgrade().is_some());
         for s in g.iter() {
-            if let Some(a) = s.wake.upgrade() { a.notify(); }
+            if let Some(a) = s.wake.upgrade() { a.notify_events(0); }
         }
     }
 
@@ -163,7 +176,7 @@ impl PollSubscribers {
                 if woke_exclusive { continue; }
                 woke_exclusive = true;
             }
-            if let Some(a) = s.wake.upgrade() { a.notify(); }
+            if let Some(a) = s.wake.upgrade() { a.notify_events(events); }
         }
     }
 

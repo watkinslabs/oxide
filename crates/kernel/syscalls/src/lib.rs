@@ -166,6 +166,16 @@ mod stat_common;
 #[path = "io_uring/abi/mod.rs"]
 pub mod io_uring_abi;
 
+// libaio(2) 206-210/333: the `struct iocb`/`struct io_event`/`struct aio_ring`
+// wire forms, io_setup's nr_events rounding + fs.aio-max-nr admission, the
+// submit validation ladder and the completion-ring index arithmetic. `aio.rs`
+// and its children are kernel-gated, so every decision left in them is
+// invisible to `cargo test` (CLAUDE.md phantom-test rule); the slots
+// parse/validate/call/encode around this module (docs/53).
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "aio/abi/mod.rs"]
+pub mod aio_abi;
+
 // statfs(2) wire encoding and uname(2) personality overrides: pure ABI logic,
 // compiled into the kernel and into the hosted test build so the struct layout
 // and the Linux override rules are unit-testable without a boot.
