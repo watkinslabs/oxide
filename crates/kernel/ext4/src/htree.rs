@@ -255,7 +255,13 @@ impl Mount {
             true
         }).map_err(MountError::Dir)?;
         ents.push((dirhash_major(new_name, hash_version, seed), new_ino, new_ft, new_name.to_vec()));
-        ents.sort_by_key(|e| e.0);
+        // Total order: hash, then name. Equal major hashes are ordinary in an
+        // htree (that is what the collision bit exists for), so hash alone
+        // leaves the order of a collision run to the sort's stability. Naming
+        // the tie explicitly makes the split deterministic AND lets this use
+        // the unstable sort, whose 4 KiB scratch frame the stable one would
+        // otherwise put on an ext4 write path.
+        ents.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.3.cmp(&b.3)));
 
         // Split near the middle, keeping equal-hash entries together (the new
         // dx boundary hash must not fall inside a run of identical hashes).

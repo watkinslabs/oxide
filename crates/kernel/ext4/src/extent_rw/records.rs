@@ -77,7 +77,7 @@ impl Mount {
             }
         }
         extents.push(new_extent);
-        extents.sort_by_key(|e| e.block);
+        extents.sort_unstable_by_key(|e| e.block);
 
         let mut merged: Vec<Extent> = Vec::with_capacity(extents.len());
         for e in extents.iter().copied() {
@@ -102,7 +102,7 @@ impl Mount {
         for i in 0..hdr.entries {
             extents.push(inode::parse_inline_extent(i_block, hdr, i).ok_or(MountError::NotFound)?);
         }
-        extents.sort_by_key(|e| e.block);
+        extents.sort_unstable_by_key(|e| e.block);
         Ok(extents)
     }
 
@@ -111,7 +111,7 @@ impl Mount {
         for i in 0..hdr.entries {
             extents.push(inode::parse_inline_extent_slice(buf, hdr, i).ok_or(MountError::NotFound)?);
         }
-        extents.sort_by_key(|e| e.block);
+        extents.sort_unstable_by_key(|e| e.block);
         Ok(extents)
     }
 
@@ -120,7 +120,7 @@ impl Mount {
         for i in 0..hdr.entries {
             idxs.push(inode::parse_extent_idx(i_block, hdr, i).ok_or(MountError::NotFound)?);
         }
-        idxs.sort_by_key(|idx| idx.block);
+        idxs.sort_unstable_by_key(|idx| idx.block);
         Ok(idxs)
     }
 
@@ -129,7 +129,7 @@ impl Mount {
         for i in 0..hdr.entries {
             idxs.push(inode::parse_extent_idx_slice(buf, hdr, i).ok_or(MountError::NotFound)?);
         }
-        idxs.sort_by_key(|idx| idx.block);
+        idxs.sort_unstable_by_key(|idx| idx.block);
         Ok(idxs)
     }
 

@@ -174,7 +174,7 @@ pub fn encode_ibody(ino_bytes: &mut [u8], hdr_off: usize, isize: usize,
         // Nothing on-disk-expressible; leave the (already zeroed) no-magic region.
         return Ok(());
     }
-    sorted.sort_by(|a, b| a.0.cmp(&b.0)
+    sorted.sort_unstable_by(|a, b| a.0.cmp(&b.0)
         .then(a.1.len().cmp(&b.1.len()))
         .then(a.1.cmp(&b.1)));
 

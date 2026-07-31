@@ -71,6 +71,8 @@ impl PolicyRuleTable {
         Self::initialize(&mut state, ns, family);
         let mut rows: Vec<PolicyRule> = state.rows.iter()
             .filter(|r| r.ns == ns && r.family == family).copied().collect();
+        // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): rules may share a
+        // priority, and equal-priority rules are evaluated in insertion order.
         rows.sort_by_key(|r| r.priority);
         rows
     }

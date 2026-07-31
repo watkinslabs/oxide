@@ -43,6 +43,10 @@ impl Mount {
         // Match the virtio-blk single-request data cap (BOUNCE_DATA_BYTES) so
         // one coalesced write is one device op; a larger run splits here.
         let max_blocks = ((super::DATA_WRITE_CLUSTER_BYTES as u64) / bs).max(1);
+        // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): two pending writes to the
+        // SAME block are last-write-wins, and the caller's submission order is
+        // the only thing that says which is last. An unstable sort could swap
+        // them and persist the stale buffer.
         pending.sort_by_key(|(p, _)| *p);
         let mut i = 0usize;
         while i < pending.len() {

@@ -26,7 +26,7 @@ impl Mount {
         if let Some(right) = child.split {
             idxs.push(right);
         }
-        idxs.sort_by_key(|idx| idx.block);
+        idxs.sort_unstable_by_key(|idx| idx.block);
 
         let mut extra_meta_sectors = child.extra_meta_sectors;
         if idxs.len() <= hdr.max as usize {
@@ -202,7 +202,7 @@ impl Mount {
         if let Some(right) = child.split {
             idxs.push(right);
         }
-        idxs.sort_by_key(|idx| idx.block);
+        idxs.sort_unstable_by_key(|idx| idx.block);
 
         let mut extra_meta_sectors = child.extra_meta_sectors;
         if idxs.len() <= hdr.max as usize {
