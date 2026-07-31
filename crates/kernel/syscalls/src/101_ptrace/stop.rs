@@ -39,7 +39,7 @@ use crate::s101_ptrace_uapi as uapi;
 pub fn notify(stop_code: i32, message: u64) -> u32 {
     notify_with(stop_code, message, sched::SigInfo {
         signo: Signum::Sigtrap as u32, code: stop_code,
-        pid: 0, uid: 0, value: 0, sys: None, fault: None,
+        pid: 0, uid: 0, value: 0, sys: None, fault: None, poll: None,
     }).0
 }
 
@@ -119,7 +119,7 @@ pub fn signal_stop(sig: u32, info: Option<sched::SigInfo>)
         return (sigstop::Outcome::Deliver { sig, substituted: false }, info);
     };
     let reported = info.unwrap_or(sched::SigInfo {
-        signo: sig, code: 0, pid: 0, uid: 0, value: 0, sys: None, fault: None,
+        signo: sig, code: 0, pid: 0, uid: 0, value: 0, sys: None, fault: None, poll: None,
     });
     let (resume_sig, edited) = notify_with(sig as i32, 0, reported);
     let blocked = cur.sigmask.load(Ordering::Acquire);
@@ -138,7 +138,7 @@ pub fn signal_stop(sig: u32, info: Option<sched::SigInfo>)
                 .map(|t| t.vtgid.load(Ordering::Acquire)).unwrap_or(0);
             Some(sched::SigInfo {
                 signo: new, code: sigstop::SI_USER, pid: vpid, uid,
-                value: 0, sys: None, fault: None,
+                value: 0, sys: None, fault: None, poll: None,
             })
         }
         _ => edited,
@@ -179,7 +179,7 @@ pub fn init_task(parent: &Task, child: &Arc<Task>, reported_event: Option<u32>) 
     child.stop_code.store(code as u32, Ordering::Release);
     *child.ptrace_siginfo.lock() = Some(sched::SigInfo {
         signo: Signum::Sigtrap as u32, code,
-        pid: inherited.tracer, uid: 0, value: 0, sys: None, fault: None,
+        pid: inherited.tracer, uid: 0, value: 0, sys: None, fault: None, poll: None,
     });
     // A SEIZED child is trapped by `JOBCTL_TRAP_STOP`, which has no signal
     // behind it; a classic attach adds SIGSTOP to the child's pending set and
