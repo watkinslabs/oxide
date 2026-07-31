@@ -41,10 +41,18 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
     let value = match cmd.value_kind() {
         ValueKind::None => alloc::string::String::new(),
         ValueKind::Path { .. } => match read_path_allow_empty(args.a3) { Ok(v) => v, Err(rv) => return rv },
-        ValueKind::Str | ValueKind::Blob => match read_cstr_req(args.a3, fsconfig_abi::VALUE_MAX) {
+        ValueKind::Str => match read_cstr_req(args.a3, fsconfig_abi::VALUE_MAX) {
             Ok(v) => v, Err(rv) => return rv,
         },
+        ValueKind::Blob => alloc::string::String::new(),
     };
+    let blob = if cmd == FsconfigCmd::SetBinary {
+        let mut bytes = alloc::vec![0u8; aux as usize];
+        if uaccess::copy_from_user(&mut bytes, args.a3).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        Some(bytes)
+    } else { None };
     // `param.file = fget_raw(aux); if (!param.file) ret = -EBADF;` — taken
     // before the context lock and held across the parse, so the caller closing
     // the fd cannot free the description underneath the filesystem.
@@ -60,7 +68,11 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
         let mut g = ctx.fc.lock();
         if let Some(fc) = g.as_mut() {
             return match cmd {
-                FsconfigCmd::CmdCreate | FsconfigCmd::CmdCreateExcl => match vfs::fs::vfs_get_tree(fc) {
+                FsconfigCmd::CmdCreate => match vfs::fs::vfs_get_tree(fc) {
+                    Ok(())  => 0,
+                    Err(e)  => crate::namei_common::errno_from_vfs(e),
+                },
+                FsconfigCmd::CmdCreateExcl => match vfs::fs::vfs_get_tree_exclusive(fc) {
                     Ok(())  => 0,
                     Err(e)  => crate::namei_common::errno_from_vfs(e),
                 },
@@ -69,9 +81,12 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
                     Err(e)  => crate::namei_common::errno_from_vfs(e),
                 },
                 FsconfigCmd::SetFlag => parse(fc, vfs::fs::FsParameter::flag(&key)),
-                FsconfigCmd::SetPath => parse(fc, vfs::fs::FsParameter::path(&key, &value)),
-                FsconfigCmd::SetPathEmpty => parse(fc, vfs::fs::FsParameter::path_empty(&key, &value)),
-                FsconfigCmd::SetBinary => parse(fc, vfs::fs::FsParameter::blob(&key, value.as_bytes())),
+                FsconfigCmd::SetPath => parse(fc, vfs::fs::FsParameter::path_at(&key, &value, aux, false)),
+                FsconfigCmd::SetPathEmpty => parse(fc, vfs::fs::FsParameter::path_at(&key, &value, aux, true)),
+                FsconfigCmd::SetBinary => match blob {
+                    Some(bytes) => parse(fc, vfs::fs::FsParameter::blob(&key, &bytes)),
+                    None => -(Errno::Einval.as_i32() as i64),
+                },
                 FsconfigCmd::SetString => parse(fc, vfs::fs::FsParameter::string(&key, &value)),
                 FsconfigCmd::SetFd => match aux_file {
                     Some(f) => parse(fc, vfs::fs::FsParameter::fd(&key, aux, f)),
