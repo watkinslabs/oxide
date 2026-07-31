@@ -25,8 +25,8 @@ pub(crate) const FAN_NONBLOCK:          u32 = 0x0000_0002;
 pub(crate) const FAN_CLASS_CONTENT:     u32 = 0x0000_0004;
 pub(crate) const FAN_CLASS_PRE_CONTENT: u32 = 0x0000_0008;
 pub(super) const FAN_ALL_CLASS_BITS:    u32 = FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT;
-const FAN_UNLIMITED_QUEUE:   u32 = 0x0000_0010;
-const FAN_UNLIMITED_MARKS:   u32 = 0x0000_0020;
+pub(crate) const FAN_UNLIMITED_QUEUE: u32 = 0x0000_0010;
+pub(crate) const FAN_UNLIMITED_MARKS: u32 = 0x0000_0020;
 pub(crate) const FAN_ENABLE_AUDIT:      u32 = 0x0000_0040;
 const FAN_REPORT_PIDFD:      u32 = 0x0000_0080;
 const FAN_REPORT_TID:        u32 = 0x0000_0100;
@@ -88,7 +88,6 @@ pub(crate) fn validate_fanotify_init_args(
     flags: u32,
     event_f_flags: u32,
     has_sys_admin: bool,
-    has_audit_write: bool,
 ) -> i32 {
     let fid_mode = flags & FANOTIFY_FID_BITS;
     let class = flags & FAN_ALL_CLASS_BITS;
@@ -98,7 +97,6 @@ pub(crate) fn validate_fanotify_init_args(
         return Errno::Eperm.as_i32();
     }
     if flags & !FAN_INIT_KNOWN != 0 { return Errno::Einval.as_i32(); }
-    if class == FAN_ALL_CLASS_BITS { return Errno::Einval.as_i32(); }
     if (flags & FAN_REPORT_MNT) != 0 {
         if class != 0 { return Errno::Einval.as_i32(); }
         if flags & (FANOTIFY_FID_BITS | FAN_REPORT_FD_ERROR) != 0 {
@@ -115,6 +113,18 @@ pub(crate) fn validate_fanotify_init_args(
         && ((fid_mode & FAN_REPORT_NAME) == 0 || (fid_mode & FAN_REPORT_FID) == 0) {
         return Errno::Einval.as_i32();
     }
+    0
+}
+
+/// The two `fanotify_init` checks Linux runs while BUILDING the group, i.e.
+/// after the per-user group ucount has already been charged: the class selector
+/// has no `default:` arm before the group is allocated, so a flag word naming
+/// BOTH classes only fails there, and `FAN_ENABLE_AUDIT`'s `CAP_AUDIT_WRITE`
+/// gate is the last check of all. Ordering is user-visible: a user at their
+/// group ceiling gets `EMFILE` for those two inputs, not `EINVAL`/`EPERM`.
+/// # C: O(1)
+pub(crate) fn validate_fanotify_init_post_charge(flags: u32, has_audit_write: bool) -> i32 {
+    if flags & FAN_ALL_CLASS_BITS == FAN_ALL_CLASS_BITS { return Errno::Einval.as_i32(); }
     if (flags & FAN_ENABLE_AUDIT) != 0 && !has_audit_write { return Errno::Eperm.as_i32(); }
     0
 }
@@ -123,7 +133,9 @@ pub(crate) fn validate_fanotify_init_args(
 /// # C: O(1)
 #[cfg(test)]
 pub(crate) fn validate_fanotify_init(flags: u32) -> i32 {
-    validate_fanotify_init_args(flags, 0, true, true)
+    let e = validate_fanotify_init_args(flags, 0, true);
+    if e != 0 { return e; }
+    validate_fanotify_init_post_charge(flags, true)
 }
 
 /// Linux `inotify_add_watch` rejects unknown masks and a zero valid mask before

@@ -108,6 +108,19 @@ fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0)
 /// `struct mq_attr` against (`ipc/mq_sysctl.c`), so raising a ceiling here and
 /// the EINVAL the syscall reports can never disagree. Every leaf is
 /// namespace-scoped: Linux's `set_lookup` resolves `current`'s `ipc_ns`.
+fn get_in_max_watches() -> i64 { vfs::fsnotify::max_user_watches() }
+fn set_in_max_watches(v: i64) { vfs::fsnotify::set_max_user_watches(v) }
+fn get_in_max_instances() -> i64 { vfs::fsnotify::max_user_instances() }
+fn set_in_max_instances(v: i64) { vfs::fsnotify::set_max_user_instances(v) }
+fn get_in_max_queued() -> i64 { vfs::fsnotify::max_queued_events() }
+fn set_in_max_queued(v: i64) { vfs::fsnotify::set_max_queued_events(v) }
+fn get_fan_max_groups() -> i64 { vfs::fsnotify::fanotify_max_user_groups() }
+fn set_fan_max_groups(v: i64) { vfs::fsnotify::set_fanotify_max_user_groups(v) }
+fn get_fan_max_marks() -> i64 { vfs::fsnotify::fanotify_max_user_marks() }
+fn set_fan_max_marks(v: i64) { vfs::fsnotify::set_fanotify_max_user_marks(v) }
+fn get_fan_max_queued() -> i64 { vfs::fsnotify::fanotify_max_queued_events() }
+fn set_fan_max_queued(v: i64) { vfs::fsnotify::set_fanotify_max_queued_events(v) }
+
 fn get_mq_queues_max() -> i64 { ipc::live::posix_mq::sysctl::queues_max() }
 fn set_mq_queues_max(v: i64) { ipc::live::posix_mq::sysctl::set_queues_max(v) }
 fn get_mq_msg_max() -> i64 { ipc::live::posix_mq::sysctl::msg_max() }
@@ -262,10 +275,22 @@ const SYSCTL_TREE: &[Node] = &[
             File("msg_default",      IntHook(get_mq_msg_default, set_mq_msg_default, Some(MQ_MSG_BOUNDS))),
             File("msgsize_default",  IntHook(get_mq_msgsize_default, set_mq_msgsize_default, Some(MQ_MSGSIZE_BOUNDS))),
         ]),
+        // `fs/notify/inotify/inotify_user.c` + `fs/notify/fanotify/
+        // fanotify_user.c` register these against LIVE variables — the two
+        // `max_user_*` leaves are the user-namespace ucount ceilings the add
+        // paths charge against (ENOSPC/EMFILE), the `max_queued_events` leaf is
+        // the per-group queue depth snapshotted at group creation. Bound here,
+        // not constants: a `Const` leaf let a watcher set a limit and observe
+        // nothing enforce it.
         Dir("inotify", &[
-            File("max_user_watches",  Const(b"65536\n")),
-            File("max_user_instances", Const(b"128\n")),
-            File("max_queued_events", Const(b"16384\n")),
+            File("max_user_watches",   IntHook(get_in_max_watches, set_in_max_watches, Some((0, INT_MAX)))),
+            File("max_user_instances", IntHook(get_in_max_instances, set_in_max_instances, Some((0, INT_MAX)))),
+            File("max_queued_events",  IntHook(get_in_max_queued, set_in_max_queued, Some((0, INT_MAX)))),
+        ]),
+        Dir("fanotify", &[
+            File("max_user_groups",   IntHook(get_fan_max_groups, set_fan_max_groups, Some((0, INT_MAX)))),
+            File("max_user_marks",    IntHook(get_fan_max_marks, set_fan_max_marks, Some((0, INT_MAX)))),
+            File("max_queued_events", IntHook(get_fan_max_queued, set_fan_max_queued, Some((0, INT_MAX)))),
         ]),
     ]),
     Dir("vm", &[
