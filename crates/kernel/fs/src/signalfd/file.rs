@@ -17,8 +17,8 @@ mod ids {
 }
 
 /// Per-inode signalfd state (Linux `signalfd_ctx`): the accepted signal mask.
-/// Stored in POSITIVE form (bits set = signals this fd drains); the syscall
-/// layer takes the caller's set verbatim, and `fdinfo` re-complements it.
+/// Stored in POSITIVE form (bits set = signals this fd drains), which is also
+/// the form `fdinfo` reports.
 pub struct SignalfdData {
     pub mask: AtomicU64,
 }
@@ -122,8 +122,8 @@ fn read_records(inode: &Inode, buf: &mut [u8], nonblock: bool) -> KResult<usize>
     Ok(total)
 }
 
-/// Linux `signalfd_dequeue`: claim the lowest-numbered pending signal inside
-/// `mask`. Blocking waits until one arrives; `ERESTARTSYS` when a signal
+/// Linux `signalfd_dequeue`: claim one pending signal inside `mask`, selected
+/// by `next_signal`. Blocking waits until one arrives; `ERESTARTSYS` when a signal
 /// OUTSIDE the mask becomes deliverable first (Linux restarts the read rather
 /// than reporting EINTR, so an `SA_RESTART` handler resumes it).
 /// # C: O(1) per attempt
@@ -131,9 +131,7 @@ fn dequeue(cur: &sched::Task, mask: u64, blocking: bool)
     -> Result<(u32, Option<sched::SigInfo>), VfsError>
 {
     loop {
-        let arrived = all_pending(cur) & mask;
-        if arrived != 0 {
-            let sig = arrived.trailing_zeros() + 1;
+        if let Some(sig) = sched::signum::next_signal(all_pending(cur), mask) {
             // One owner of the private-then-shared claim protocol, shared with
             // `rt_sigtimedwait` and handler delivery. `None` = a concurrent
             // consumer won the claim; re-loop.
