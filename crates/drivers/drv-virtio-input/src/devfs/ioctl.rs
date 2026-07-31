@@ -82,7 +82,7 @@ unsafe fn uread_u32(arg: u64) -> u32 {
     u32::from_le_bytes(b)
 }
 
-fn exact_device(identity: EvdevIdentity) -> Option<input::VirtioInputDev> {
+fn exact_device(identity: EvdevIdentity) -> Option<alloc::boxed::Box<input::VirtioInputDev>> {
     input::device(identity.evdev_id).filter(|dev| {
         dev.device_key == identity.device_key
             && dev.input_id == identity.input_id

@@ -86,13 +86,13 @@ fn real_vfs_resolves_physical_input_projections_and_invalidates_remove() {
 
     let dummy_key = input::VirtioChildDeviceKey::from_raw(DUMMY_KEY_RAW);
     let (dummy_input_id, dummy_evdev_id) = input::install(
-        input::VirtioInputDev::empty(dummy_key),
+        input::VirtioInputDev::empty_boxed(dummy_key),
     ).expect("reserve first input identities");
     assert_eq!((dummy_input_id, dummy_evdev_id), (0, 0));
     assert_eq!(input::remove_device(dummy_key), Some(dummy_evdev_id));
 
     let device_key = input::VirtioChildDeviceKey::from_raw(DEVICE_KEY_RAW);
-    let mut model = input::VirtioInputDev::empty(device_key);
+    let mut model = input::VirtioInputDev::empty_boxed(device_key);
     let name = b"hosted physical keyboard";
     model.name[..name.len()].copy_from_slice(name);
     model.name_len = name.len();

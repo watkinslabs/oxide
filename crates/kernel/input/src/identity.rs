@@ -184,6 +184,6 @@ pub fn uevent_env_for(dev: &VirtioInputDev) -> Vec<Vec<u8>> {
 pub fn uevent_env(evdev_id: u32) -> Vec<Vec<u8>> {
     crate::registry::device(evdev_id)
         .as_ref()
-        .map(uevent_env_for)
+        .map(|dev| uevent_env_for(dev))
         .unwrap_or_default()
 }

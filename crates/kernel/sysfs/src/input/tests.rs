@@ -35,7 +35,7 @@ fn install_named_model(
     name: &[u8],
 ) -> (input::VirtioChildDeviceKey, u32, u32) {
     let key = input::VirtioChildDeviceKey::from_raw(key_raw);
-    let mut model = input::VirtioInputDev::empty(key);
+    let mut model = input::VirtioInputDev::empty_boxed(key);
     model.name[..name.len()].copy_from_slice(name);
     model.name_len = name.len();
     model.name_present = true;

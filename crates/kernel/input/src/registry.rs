@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -93,8 +94,19 @@ pub struct VirtioInputDev {
 }
 
 impl VirtioInputDev {
+    /// Build one empty record directly in its heap home. Every kernel caller
+    /// uses this: the record is kilobytes wide, and the bind path that builds
+    /// one is already several frames deep inside a syscall, so materializing
+    /// it on the stack overflows the kernel stack.
     /// # C: O(KEY_CNT + ABS_CNT)
-    pub fn empty(device_key: virtio::VirtioChildDeviceKey) -> Self {
+    pub fn empty_boxed(device_key: virtio::VirtioChildDeviceKey) -> Box<Self> {
+        Box::new(Self::empty_inline(device_key))
+    }
+
+    /// Private: the only caller is `empty_boxed`, which moves the result
+    /// straight to the heap. Nothing else may put a record on a stack.
+    /// # C: O(KEY_CNT + ABS_CNT)
+    fn empty_inline(device_key: virtio::VirtioChildDeviceKey) -> Self {
         Self {
             device_key,
             input_id: UNASSIGNED_ID,
@@ -134,9 +146,14 @@ impl VirtioInputDev {
             mt_state: None,
         }
     }
+
 }
 
-pub(crate) static DEVICES: Spinlock<Vec<VirtioInputDev>, DriverLockClass> = Spinlock::new(Vec::new());
+/// Device records are kilobytes wide, so the registry owns them through a
+/// pointer and never stores them inline: a `Vec<VirtioInputDev>` would put a
+/// whole record in every caller's stack frame on the way in and out.
+pub(crate) static DEVICES: Spinlock<Vec<Box<VirtioInputDev>>, DriverLockClass> =
+    Spinlock::new(Vec::new());
 static EVDEV_HOOKS: Spinlock<EvdevHooks, DriverLockClass> = Spinlock::new(NO_EVDEV_HOOKS);
 static OUTPUT_HOOK: Spinlock<Option<PushOutputFn>, DriverLockClass> = Spinlock::new(None);
 static NEXT_INPUT_ID: AtomicU32 = AtomicU32::new(0);
@@ -214,7 +231,7 @@ fn release_state(dev: &mut VirtioInputDev, release_mt: bool) -> Option<Vec<Input
     dev.flush_synthetic_report()
 }
 
-fn lowest_free_evdev_id(devs: &[VirtioInputDev]) -> Option<u32> {
+fn lowest_free_evdev_id(devs: &[Box<VirtioInputDev>]) -> Option<u32> {
     for id in 0..MAX_INPUT_DEVICES as u32 {
         if devs.iter().all(|d| d.evdev_id != id) {
             return Some(id);
@@ -226,7 +243,7 @@ fn lowest_free_evdev_id(devs: &[VirtioInputDev]) -> Option<u32> {
 /// Atomically allocate Linux inputN/eventN identities and publish one model.
 /// inputN is monotonic and never recycled; eventN is a bounded evdev minor.
 /// # C: O(N_devices)
-pub fn install(mut dev: VirtioInputDev) -> Option<(u32, u32)> {
+pub fn install(mut dev: Box<VirtioInputDev>) -> Option<(u32, u32)> {
     let mut devices = DEVICES.lock();
     if devices.iter().any(|present| present.device_key == dev.device_key) {
         return None;
@@ -248,7 +265,7 @@ pub fn count() -> usize {
 }
 
 /// # C: O(N_devices + cloned device state)
-pub fn devices_snapshot() -> Vec<VirtioInputDev> {
+pub fn devices_snapshot() -> Vec<Box<VirtioInputDev>> {
     DEVICES.lock().clone()
 }
 
@@ -283,7 +300,7 @@ pub fn name_of(evdev_id: u32) -> Option<[u8; INPUT_NAME_BYTES]> {
 }
 
 /// # C: O(N_devices + cloned device state)
-pub fn device(evdev_id: u32) -> Option<VirtioInputDev> {
+pub fn device(evdev_id: u32) -> Option<Box<VirtioInputDev>> {
     DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).cloned()
 }
 

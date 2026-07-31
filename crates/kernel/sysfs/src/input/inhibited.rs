@@ -84,7 +84,7 @@ mod tests {
         input::clear_devices_for_tests();
         let key = input::VirtioChildDeviceKey::from_raw(TEST_DEVICE_KEY_RAW);
         let (input_id, evdev_id) =
-            input::install(input::VirtioInputDev::empty(key)).expect("input model");
+            input::install(input::VirtioInputDev::empty_boxed(key)).expect("input model");
         let dev = Arc::new(
             drv::Device::new("input", alloc::format!("event{evdev_id}"), 0, 0, evdev_id)
                 .with_sysfs_relpath(alloc::format!(
