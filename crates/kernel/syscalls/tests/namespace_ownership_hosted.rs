@@ -20,6 +20,17 @@ extern crate self as sched;
 
 pub use sched_crate::{task, SchedClass, Task};
 
+/// `sched::ucounts` facade: `272_unshare.rs` records a new user namespace's
+/// per-user accounting link, which this test's shadowed `sched` must forward.
+pub mod ucounts {
+    pub fn register_user_namespace(creator: &sched_crate::Task, ns: u64) {
+        sched_crate::ucounts::register_user_namespace(creator, ns);
+    }
+    pub fn forget_user_namespace(ns: u64) {
+        sched_crate::ucounts::forget_user_namespace(ns);
+    }
+}
+
 pub mod live {
     pub fn current() -> Option<&'static sched_crate::Task> { sched_crate::current() }
 }

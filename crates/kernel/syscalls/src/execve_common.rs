@@ -14,6 +14,29 @@
 
 use syscall::errno::Errno;
 
+/// Linux `bprm_execve`'s deferred `RLIMIT_NPROC` failure:
+///
+/// ```text
+/// if ((current->flags & PF_NPROC_EXCEEDED) &&
+///     is_rlimit_overlimit(current_ucounts(), UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC)))
+///         return -EAGAIN;
+/// current->flags &= ~PF_NPROC_EXCEEDED;
+/// ```
+///
+/// The failure `setuid(2)` could not report — because too much software
+/// ignores its return value — lands here instead, on the first `execve` the
+/// task attempts while its new account is over quota. A task that came back
+/// under the limit in the meantime is let through and disarmed, so a
+/// transient overrun does not poison every later exec.
+///
+/// Returns `Some(-EAGAIN)` when the exec must be refused, before ANY of the
+/// image is opened or committed.
+/// # C: O(user namespace depth)
+pub(crate) fn nproc_admits(cur: &sched::Task) -> Option<i64> {
+    if sched::ucounts::execve_admits(cur) { return None; }
+    Some(-(Errno::Eagain.as_i32() as i64))
+}
+
 /// B46: reset caught signal handlers to SIG_DFL per execve(2) ABI.
 /// "All signals that were being caught by the calling thread (set
 /// to a value other than SIG_DFL and SIG_IGN) are reset to the

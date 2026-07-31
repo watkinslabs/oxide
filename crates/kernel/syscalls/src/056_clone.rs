@@ -315,6 +315,17 @@ pub fn sys_clone_dispatch(
     if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret) {
         return errno(e);
     }
+    // Linux `copy_creds` charges the new task to its account, then
+    // `copy_process` decides on the resulting count — the task being admitted
+    // is INSIDE the number it is judged against, which is what makes the
+    // limit a ceiling on live tasks rather than on tasks-plus-one. Runs after
+    // the namespace publication above because the account is keyed on the
+    // child's user namespace, which that call installs.
+    sched::ucounts::charge_task(&child);
+    if !sched::ucounts::fork_admits(&child, cur) {
+        sched::ucounts::uncharge_task(&child);
+        return errno(Errno::Eagain);
+    }
     // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
     // inherits the caller's parent link; otherwise the caller becomes parent.
     if (flags & CLONE_PARENT) != 0 {
