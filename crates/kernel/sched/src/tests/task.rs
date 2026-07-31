@@ -293,3 +293,17 @@ fn fork_copies_fs_owner_without_clone_fs() {
     assert_eq!(child.fs_context_snapshot().cwd(), parent.fs_context_snapshot().cwd());
     assert_eq!(child.fs_context_snapshot().root(), parent.fs_context_snapshot().root());
 }
+
+#[test]
+fn parked_child_tid_write_is_claimed_exactly_once() {
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    // Nothing parked: every return to user mode asks and gets nothing.
+    assert_eq!(t.take_set_child_tid(), None);
+    t.vtid.store(4242, Ordering::Release);
+    t.set_child_tid.store(0x7fff_0000, Ordering::Release);
+    // The value published is the tid userspace sees, not the internal one.
+    assert_eq!(t.take_set_child_tid(), Some((0x7fff_0000, 4242)));
+    // A second return must not write again.
+    assert_eq!(t.take_set_child_tid(), None);
+    assert_eq!(t.set_child_tid.load(Ordering::Acquire), 0);
+}

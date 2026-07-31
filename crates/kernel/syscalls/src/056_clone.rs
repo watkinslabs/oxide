@@ -7,7 +7,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 #[path = "056_clone/namespaces.rs"]
@@ -19,51 +18,63 @@ mod fd_table;
 #[path = "056_clone/io_context.rs"]
 mod io_context;
 
-pub(crate) const CSIGNAL:              u64 = 0xff;
-pub(crate) const CLONE_VM:             u64 = 0x100;
-pub(crate) const CLONE_FS:             u64 = 0x200;
-pub(crate) const CLONE_FILES:          u64 = 0x400;
-pub(crate) const CLONE_SIGHAND:        u64 = 0x800;
-pub(crate) const CLONE_PIDFD:          u64 = 0x1000;
-pub(crate) const CLONE_VFORK:          u64 = 0x4000;
-pub(crate) const CLONE_PARENT:         u64 = 0x8000;
-pub(crate) const CLONE_THREAD:         u64 = 0x10000;
-pub(crate) const CLONE_NEWNS:          u64 = 0x20000;
-pub(crate) const CLONE_SETTLS:         u64 = 0x80000;
-pub(crate) const CLONE_PARENT_SETTID:  u64 = 0x100000;
-pub(crate) const CLONE_CHILD_CLEARTID: u64 = 0x200000;
-pub(crate) const CLONE_DETACHED:       u64 = 0x400000;
-pub(crate) const CLONE_CHILD_SETTID:   u64 = 0x1000000;
-pub(crate) const CLONE_NEWUSER:        u64 = 0x10000000;
-pub(crate) const CLONE_NEWPID:         u64 = 0x20000000;
-pub(crate) const CLONE_IO:             u64 = 0x80000000;
-pub(crate) const CLONE_CLEAR_SIGHAND:  u64 = 1u64 << 32;
-pub(crate) const CLONE_INTO_CGROUP:    u64 = 1u64 << 33;
-pub(crate) const CLONE_LEGACY_FLAGS:   u64 = 0xffff_ffff;
+pub(crate) use crate::clone_abi::{
+    CloneCaller, CloneRequest, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID,
+    CLONE_CLEAR_SIGHAND, CLONE_FS, CLONE_PARENT, CLONE_PARENT_SETTID, CLONE_PIDFD,
+    CLONE_SETTLS, CLONE_SIGHAND, CLONE_THREAD, CLONE_VFORK, CLONE_VM,
+};
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// # C: O(1)
-pub(crate) fn validate_clone_core(flags: u64) -> Result<(), Errno> {
-    let exit_signal = (flags & CSIGNAL) as u8;
-    if exit_signal != 0 && sched::clone_exit_signal(exit_signal).is_none() { return Err(Errno::Einval); }
-    if (flags & (CLONE_NEWNS | CLONE_FS)) == (CLONE_NEWNS | CLONE_FS) { return Err(Errno::Einval); }
-    if (flags & (CLONE_NEWUSER | CLONE_FS)) == (CLONE_NEWUSER | CLONE_FS) { return Err(Errno::Einval); }
-    if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 { return Err(Errno::Einval); }
-    if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 { return Err(Errno::Einval); }
-    // Linux requires a shared mm for vfork: the parent is suspended while
-    // the child temporarily runs in that same address space.
-    if (flags & CLONE_VFORK) != 0 && (flags & CLONE_VM) == 0 { return Err(Errno::Einval); }
-    if (flags & CLONE_THREAD) != 0 && (flags & (CLONE_NEWUSER | CLONE_NEWPID)) != 0 { return Err(Errno::Einval); }
-    if (flags & CLONE_THREAD) != 0 && (flags & CLONE_PIDFD) != 0 { return Err(Errno::Einval); }
-    if (flags & (CLONE_THREAD | CLONE_PARENT)) != 0 && exit_signal != 0 { return Err(Errno::Einval); }
-    if (flags & CLONE_PIDFD) != 0 && (flags & CLONE_DETACHED) != 0 { return Err(Errno::Einval); }
-    if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_CLEAR_SIGHAND) != 0 { return Err(Errno::Einval); }
+/// Facts about the running task the shared validation ladder needs.
+/// # C: O(pid-ns depth)
+fn caller_facts(cur: &sched::Task) -> CloneCaller {
+    CloneCaller { is_ns_init: sched::live::zombies::is_namespace_init(cur) }
+}
+
+/// `clone3` `set_tid[]` admission: every requested pid must be a usable pid
+/// number, must not already name a live task in the namespace it applies to,
+/// and the caller must hold the privilege that lets it pick one. Reserving the
+/// number here keeps the ordinary allocator from handing the same one out
+/// later.
+/// # C: O(N_requested × N_tasks)
+pub(crate) fn set_requested_pids_ok(requested: &[u32]) -> Result<(), Errno> {
+    use namespace_identity::NamespaceKind;
+    let cur = sched::live::current().ok_or(Errno::Esrch)?;
+    let mut level = cur.namespace_owner(NamespaceKind::Pid).map(|ns| ns.pin());
+    let mut depth = 0usize;
+    while let Some(ns) = level {
+        depth += 1;
+        level = ns.parent();
+    }
+    // The child is one level deeper than the caller when it is the init of a
+    // pid namespace this very call creates.
+    crate::clone_abi::set_tid_values_ok(requested, depth + 1)?;
+    let user_ns = cur.namespace_owner(NamespaceKind::User).ok_or(Errno::Esrch)?;
+    if !nscg::proc_ns::has_cap_for(cur, &user_ns.pin(), sched::cap::SYS_ADMIN) {
+        return Err(Errno::Eperm);
+    }
+    // A number already naming a live task in the namespace it applies to
+    // cannot be handed out twice. Levels are walked outward from the caller's
+    // own pid namespace, which is the one the child's innermost entry lands in
+    // unless this call also creates a deeper one.
+    let mut level = cur.namespace_owner(NamespaceKind::Pid);
+    for pid in requested {
+        let Some(here) = level else { break };
+        if sched::registry::lookup_in_namespace(&here, *pid).is_some() {
+            return Err(Errno::Eexist);
+        }
+        level = here.parent().and_then(|parent| parent.get_active());
+    }
+    if let Some(inner) = requested.first().copied() {
+        // Keep the ordinary allocator from re-issuing a number the caller took.
+        sched::live::spawn::reserve_vpid(inner);
+    }
     Ok(())
 }
 
 fn user_i32_ptr_ok(p: u64) -> bool {
-    p != 0 && p.checked_add(core::mem::size_of::<i32>() as u64).map_or(false, |e| e <= hal::USER_VA_END)
+    p != 0 && uaccess::access_ok(p, core::mem::size_of::<i32>())
 }
 
 /// `sys_clone_dispatch` — unified clone path for fork/vfork/
@@ -74,26 +85,23 @@ fn user_i32_ptr_ok(p: u64) -> bool {
 /// CLONE_CHILD_SETTID / CLONE_CHILD_CLEARTID.
 ///
 /// # C: O(parent VMAs) for COW; O(1) for CLONE_VM
-pub fn sys_clone_dispatch(
-    _args: &SyscallArgs,
-    flags: u64,
-    child_stack: u64,
-    ptid: u64,
-    pidfd_ptr: u64,
-    ctid: u64,
-    tls: u64,
-    into_cgid: Option<u64>,
-) -> i64 {
+pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     use core::sync::atomic::Ordering;
-    if let Err(e) = validate_clone_core(flags) { return errno(e); }
-    if (flags & CLONE_PARENT_SETTID) != 0 && !user_i32_ptr_ok(ptid) { return errno(Errno::Efault); }
-    if (flags & CLONE_PIDFD) != 0 && !user_i32_ptr_ok(pidfd_ptr) { return errno(Errno::Efault); }
-    if (flags & CLONE_CHILD_SETTID) != 0 && !user_i32_ptr_ok(ctid) { return errno(Errno::Efault); }
-    if (flags & CLONE_CHILD_CLEARTID) != 0 && ctid >= hal::USER_VA_END { return errno(Errno::Efault); }
+    let CloneRequest { flags, exit_signal, child_stack, parent_tid: ptid, pidfd: pidfd_ptr,
+                       child_tid: ctid, tls, into_cgroup: into_cgid, set_tid } = req;
     let cur = match sched::live::current() {
         Some(c) => c,
         None    => return errno(Errno::Einval),
     };
+    if let Err(e) = crate::clone_abi::validate_clone(
+        flags, exit_signal, caller_facts(cur), req.pidfd_aliases_parent_tid())
+    {
+        return errno(e);
+    }
+    if (flags & CLONE_PARENT_SETTID) != 0 && !user_i32_ptr_ok(ptid) { return errno(Errno::Efault); }
+    if (flags & CLONE_PIDFD) != 0 && !user_i32_ptr_ok(pidfd_ptr) { return errno(Errno::Efault); }
+    if (flags & CLONE_CHILD_SETTID) != 0 && !user_i32_ptr_ok(ctid) { return errno(Errno::Efault); }
+    if (flags & CLONE_CHILD_CLEARTID) != 0 && ctid >= hal::USER_VA_END { return errno(Errno::Efault); }
     // SAFETY: we are the running task on this CPU; no concurrent writer to our mm; preempt-off through the syscall handler.
     let parent_mm = match unsafe { cur.mm_ref() } {
         Some(m) => m,
@@ -241,8 +249,16 @@ pub fn sys_clone_dispatch(
     if !child.try_charge_kernel_stack(stack_memcg) { return errno(Errno::Enomem); }
     // The vpid (vtid) to return to the parent — captured now, before the
     // `child` Arc may be dropped at the end. spawn stamped it.
+    // `clone3` `set_tid[]`: the caller picked the child's pid in its own pid
+    // namespace. Admission already reserved the number, so stamping it here —
+    // before publication, before any mapping is configured — is the one point
+    // where the child has no other identity yet.
+    if let Some(inner) = set_tid.first().copied() {
+        child.vtid.store(inner, Ordering::Release);
+        child.vtgid.store(inner, Ordering::Release);
+    }
     let child_vpid_ret = child.vtid.load(Ordering::Acquire);
-    child.exit_signal.store((flags & CSIGNAL) as u8, Ordering::Release);
+    child.exit_signal.store(exit_signal as u8, Ordering::Release);
 
     // CLONE_THREAD: the new task joins the caller's thread group.
     // Without it the child is its own process leader and tgid==tid.
@@ -316,7 +332,7 @@ pub fn sys_clone_dispatch(
         child.rseq_len.store(cur.rseq_len.load(Ordering::Acquire), Ordering::Release);
         child.rseq_sig.store(cur.rseq_sig.load(Ordering::Acquire), Ordering::Release);
     }
-    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret) {
+    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret, set_tid) {
         return errno(e);
     }
     // Linux `copy_creds` charges the new task to its account, then
@@ -379,19 +395,27 @@ pub fn sys_clone_dispatch(
         // opaque internal tid.
         unsafe { core::ptr::write_volatile(ptid as *mut i32, child.vtid.load(Ordering::Acquire) as i32); }
     }
-    // CLONE_CHILD_SETTID: writes happen in child AS — for CLONE_VM
-    // the AS is shared with parent so the write is visible directly;
-    // for non-CLONE_VM the child's freshly forked AS still has the
-    // page COW-mapped from parent (write-fault on its first store
-    // splits per P2-15c). The write here goes through the parent's
-    // active CR3, which only matches the child for CLONE_VM. Skip
-    // it otherwise — a real impl would queue the write for the
-    // child's first instruction.
-    if (flags & CLONE_CHILD_SETTID) != 0 && (flags & CLONE_VM) != 0
-    {
-        // SAFETY: ctid validated < USER_VA_END; AS shared (CLONE_VM); CPL=0.
-        // Child's TID = its vtid (what gettid() returns), not internal tid.
-        unsafe { core::ptr::write_volatile(ctid as *mut i32, child.vtid.load(Ordering::Acquire) as i32); }
+    // CLONE_CHILD_SETTID writes the child's TID into the CHILD's address
+    // space. Only a CLONE_VM child shares the caller's page tables, so the
+    // write can be done here; a forked child's copy of that page is
+    // COW-mapped read-only and belongs to a page-table root this CPU is not
+    // running on. The write is therefore recorded on the child and performed
+    // by the child itself at its first return to user mode, where the store
+    // takes an ordinary COW fault in the right address space.
+    //
+    // This is not cosmetic: a C library caches its thread id in the thread
+    // control block and populates it through exactly this flag on every
+    // `fork()`. Dropping the write left a forked child holding its PARENT's
+    // thread id, so `raise()`/`abort()` in the child — which target
+    // (own pid, cached tid) — addressed a thread that does not exist in the
+    // child's thread group.
+    if (flags & CLONE_CHILD_SETTID) != 0 {
+        if (flags & CLONE_VM) != 0 {
+            // SAFETY: ctid validated inside the user range; the address space is shared (CLONE_VM) so this store lands in the child's mapping; CPL=0.
+            unsafe { core::ptr::write_volatile(ctid as *mut i32, child.vtid.load(Ordering::Acquire) as i32); }
+        } else {
+            child.set_child_tid.store(ctid, Ordering::Release);
+        }
     }
     // CLONE_CHILD_CLEARTID: stash for thread-exit FUTEX_WAKE path.
     if (flags & CLONE_CHILD_CLEARTID) != 0 {

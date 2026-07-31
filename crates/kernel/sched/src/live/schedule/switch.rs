@@ -213,6 +213,22 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
         }
     }
     crate::preempt::preempt_enable_no_check();
+    // Linux `schedule_tail`'s trailing `put_user(task_pid_vnr(current),
+    // current->set_child_tid)`: the ONE point at which a freshly forked child
+    // is running on its OWN page tables and can service the copy-on-write fault
+    // its C library's thread-control-block store takes. Deliberately after the
+    // preempt-enable above, since the store may sleep on that fault. Costs one
+    // relaxed load per switch for every task that is not a fork return.
+    publish_forked_child_tid();
+}
+
+/// Perform the parked `CLONE_CHILD_SETTID` store, if this task owes one.
+/// # C: O(1)
+fn publish_forked_child_tid() {
+    let Some(cur) = crate::live::current() else { return };
+    let Some((addr, tid)) = cur.take_set_child_tid() else { return };
+    // SAFETY: the address was range-checked against the user window at clone time and this CPU is running on the child's own page tables, so the store lands in the address space that owns the mapping; a copy-on-write fault here resolves normally in process context.
+    unsafe { core::ptr::write_volatile(addr as *mut i32, tid as i32); }
 }
 
 /// This CPU's architectural stack pointer, for the scheduling-while-atomic

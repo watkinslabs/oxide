@@ -533,6 +533,15 @@ pub struct Task {
     /// pthread_join is served entirely by that wake.
     pub clear_child_tid: AtomicU64,
 
+    /// `CLONE_CHILD_SETTID` address, when the write could not be done by the
+    /// creator. A `CLONE_VM` child shares the creator's page tables, so the
+    /// creator stores the tid directly; a forked child's copy of that page
+    /// lives behind its own page-table root, so the address is parked here and
+    /// the CHILD performs the store at its first return to user mode — where
+    /// the copy-on-write fault resolves in the address space that owns it.
+    /// Taken exactly once, mirroring Linux's fork-return-only write.
+    pub set_child_tid: AtomicU64,
+
     /// Linux `task_struct::restart_block` — the continuation
     /// `restart_syscall(2)` resumes through after ERESTART_RESTARTBLOCK.
     pub restart_block: restart::RestartBlock,

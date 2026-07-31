@@ -4,7 +4,7 @@ use syscall::errno::Errno;
 /// Inherit one retained namespace set and publish clone-time replacements.
 /// # C: O(snapshotted mount entries)
 pub(super) fn inherit_and_publish(parent: &sched::Task, child: &sched::Task, flags: u64,
-    parent_visible_tid: u32)
+    parent_visible_tid: u32, set_tid: &[u32])
     -> Result<(), Errno>
 {
     let snapshot = parent.namespace_snapshot().ok_or(Errno::Esrch)?;
@@ -27,5 +27,9 @@ pub(super) fn inherit_and_publish(parent: &sched::Task, child: &sched::Task, fla
     let mut numbers = Vec::with_capacity(depth);
     numbers.push(inner);
     numbers.resize(depth, parent_visible_tid);
+    // `clone3` `set_tid[]` names the child's pid at each level, innermost
+    // first, replacing the number this kernel would otherwise pick. Levels the
+    // caller did not name keep the inherited value.
+    for (slot, requested) in numbers.iter_mut().zip(set_tid.iter()) { *slot = *requested; }
     child.configure_pid_mappings(&numbers).map_err(|_| Errno::Eio)
 }
