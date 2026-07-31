@@ -145,7 +145,7 @@ pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_
 /// Linux BO and MOVE operations; CURSOR2 additionally preserves hotspot
 /// coordinates. Cursor backing is held independently of the user handle for
 /// as long as the device can scan it out.
-fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, flags: u32, crtc_id: u32,
+fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, crtc_id: u32,
     x: i32, y: i32, width: u32, height: u32, handle: u32, hot_x: i32, hot_y: i32) -> i64 {
     if flags == 0 || flags & !(DRM_MODE_CURSOR_BO | DRM_MODE_CURSOR_MOVE) != 0 {
         return einval();
@@ -165,7 +165,7 @@ fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, flags: u32, crtc_id: u32,
         || hot_x as u32 >= width || hot_y as u32 >= height {
         return einval();
     }
-    let (pa, buf_w, buf_h, pitch) = match crate::dumb::cursor_source(card_id, handle) {
+    let (pa, buf_w, buf_h, pitch) = match crate::dumb::cursor_source(card_id, token, handle) {
         Some(source) => source,
         None => return einval(),
     };
@@ -174,7 +174,7 @@ fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, flags: u32, crtc_id: u32,
     if buf_w != width || buf_h != height || pitch != width.saturating_mul(4) {
         return einval();
     }
-    if !crate::dumb::ref_cursor_handle(card_id, handle) { return einval(); }
+    if !crate::dumb::ref_cursor_handle(card_id, token, handle) { return einval(); }
     let Some(res_id) = (ops.create_from_pa)(ops.driver_key, pa, width, height, DRM_FORMAT_ARGB8888) else {
         crate::dumb::unref_cursor_handle(card_id, handle);
         return einval();
@@ -195,18 +195,18 @@ fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, flags: u32, crtc_id: u32,
 }
 
 /// `MODE_CURSOR` legacy cursor ioctl. # C: O(n) table lookup + device work.
-pub fn cursor(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
+pub fn cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCursor>() as u64) { return einval(); }
     let cursor = unsafe { core::ptr::read_volatile(arg as *const DrmModeCursor) };
-    set_cursor(card_id, card, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
+    set_cursor(card_id, card, token, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
         cursor.width, cursor.height, cursor.handle, 0, 0)
 }
 
 /// `MODE_CURSOR2` cursor ioctl with a hotspot. # C: O(n) + device work.
-pub fn cursor2(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
+pub fn cursor2(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCursor2>() as u64) { return einval(); }
     let cursor = unsafe { core::ptr::read_volatile(arg as *const DrmModeCursor2) };
-    set_cursor(card_id, card, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
+    set_cursor(card_id, card, token, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
         cursor.width, cursor.height, cursor.handle, cursor.hot_x, cursor.hot_y)
 }
 
