@@ -17,7 +17,10 @@ fn proc_root_lookup(d: &ProcRootInode, name: &str) -> KResult<InodeRef> {
         return Ok(i.clone());
     }
     if name == "self" {
-        return Ok(make_proc_pid_dir(0, true, true));
+        return Ok(crate::proc_links::make_proc_self_link());
+    }
+    if name == "thread-self" {
+        return Ok(crate::proc_links::make_proc_thread_self_link());
     }
     if let Some(i) = crate::reg::proc_reg().lookup_path(name) {
         return Ok(i);
@@ -50,15 +53,17 @@ impl FileOps for ProcRootOps {
             idx += 1;
         }
         let vpids = sched::live::registry::live_vpids();
-        let total = nstat + 1 + vpids.len();
+        let total = nstat + 2 + vpids.len();
         while idx < total {
             let dyn_idx = idx - nstat;
             let next = idx as u64 + 1;
             let mut buf = [0u8; 11];
             let s: &str = if dyn_idx == 0 {
                 "self"
+            } else if dyn_idx == 1 {
+                "thread-self"
             } else {
-                let mut t = vpids[dyn_idx - 1];
+                let mut t = vpids[dyn_idx - 2];
                 let mut n = 0;
                 if t == 0 {
                     buf[0] = b'0';
@@ -74,7 +79,9 @@ impl FileOps for ProcRootOps {
                 crate::util::decimal_str(&buf, n)
             };
             let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(s, ino, FileType::Directory, next) {
+            // `self`/`thread-self` are magic symlinks, not directories.
+            let ft = if dyn_idx <= 1 { FileType::Symlink } else { FileType::Directory };
+            if !ctx.emit(s, ino, ft, next) {
                 return Ok(());
             }
             idx += 1;
