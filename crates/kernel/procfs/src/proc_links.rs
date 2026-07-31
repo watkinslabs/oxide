@@ -13,6 +13,12 @@ pub enum ProcSpecialLink {
     Exe,
     Cwd,
     Root,
+    /// `/proc/self` — Linux resolves it to the CALLER's pid at readlink time.
+    /// A fixed target (or a pid-dir built for tid 0) binds every per-pid file
+    /// to a task that does not exist, so every read/write under it is ENOENT.
+    SelfPid,
+    /// `/proc/thread-self` — `<tgid>/task/<tid>` for the calling thread.
+    ThreadSelf,
 }
 
 /// `i_private` for a procfs magic symlink (KEYSTONE struct-`Inode`). Either a
@@ -45,6 +51,8 @@ impl InodeOps for ProcLinkOps {
             Some((tid_opt, ProcSpecialLink::Exe)) => sched::proclink::task_exe_path(tid_opt),
             Some((tid_opt, ProcSpecialLink::Cwd)) => sched::proclink::task_cwd_path(tid_opt),
             Some((tid_opt, ProcSpecialLink::Root)) => sched::proclink::task_root_path(tid_opt),
+            Some((_, ProcSpecialLink::SelfPid)) => Ok(self_pid_target()),
+            Some((_, ProcSpecialLink::ThreadSelf)) => Ok(thread_self_target()),
         }
     }
 
@@ -86,6 +94,37 @@ fn make_proc_link(ino: Ino, size: u64, data: ProcLinkData) -> InodeRef {
         .size(size)
         .private(Arc::new(data))
         .build()
+}
+
+/// `/proc/self` target: the calling task's pid as seen from its own namespace.
+/// # C: O(1)
+fn self_pid_target() -> Vec<u8> {
+    let tid = match sched::live::current() { Some(t) => t.tid, None => return b"self".to_vec() };
+    let vtgid = sched::live::registry::display_vpid(tid);
+    alloc::format!("{vtgid}").into_bytes()
+}
+
+/// `/proc/thread-self` target: `<tgid>/task/<tid>` for the calling thread.
+/// # C: O(1)
+fn thread_self_target() -> Vec<u8> {
+    let cur = match sched::live::current() { Some(t) => t, None => return b"thread-self".to_vec() };
+    let vtid = sched::live::registry::display_vpid(cur.tid);
+    let vtgid = sched::live::registry::display_vpid(cur.tgid.load(core::sync::atomic::Ordering::Acquire));
+    alloc::format!("{vtgid}/task/{vtid}").into_bytes()
+}
+
+/// `/proc/self` — a symlink to the caller's own pid directory. # C: O(1)
+pub fn make_proc_self_link() -> InodeRef {
+    make_proc_link(crate::ids::PROC_SELF_LINK, 0, ProcLinkData {
+        special: Some((None, ProcSpecialLink::SelfPid)), target: Vec::new(), jump_fd: None,
+    })
+}
+
+/// `/proc/thread-self` — a symlink to the calling thread's directory. # C: O(1)
+pub fn make_proc_thread_self_link() -> InodeRef {
+    make_proc_link(crate::ids::PROC_THREAD_SELF_LINK, 0, ProcLinkData {
+        special: Some((None, ProcSpecialLink::ThreadSelf)), target: Vec::new(), jump_fd: None,
+    })
 }
 
 /// `/proc/self/exe` symlink — resolves to the current task's `mm.exe_path`
