@@ -28,15 +28,16 @@ pub fn sys_vhangup(_args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
     let cap = cur.has_cap(sched::cap::SYS_TTY_CONFIG);
     // SAFETY: `ctty` is single-mutator per `13§5` — the running task on this CPU is its sole writer, and this read stays in syscall context.
-    let ctty_ino = cur.ctty_ino();
-    match tty::hangup::vhangup_decision(cap, ctty_ino.is_some()) {
+    let ctty = cur.ctty();
+    match tty::hangup::vhangup_decision(cap, ctty.is_some()) {
         tty::hangup::VhangupOutcome::Eperm => -(Errno::Eperm.as_i32() as i64),
         // `get_current_tty()` returned NULL: `tty_vhangup_self` returns without
         // doing anything and the syscall still succeeds.
         tty::hangup::VhangupOutcome::NoControllingTty => 0,
         tty::hangup::VhangupOutcome::Hangup => {
-            let ino = match ctty_ino { Some(i) => i, None => return 0 };
-            let Some(target) = crate::tty_hangup::resolve(ino) else { return 0 };
+            let inode = match ctty.as_ref() { Some(i) => i, None => return 0 };
+            let ino = inode.ino();
+            let Some(target) = crate::tty_hangup::resolve(inode) else { return 0 };
             // Signal + revoke the session BEFORE the tty state change: the walk
             // needs `tty->ctrl.session`, which `__tty_hangup` then clears.
             let sid = crate::tty_hangup::session(&target);

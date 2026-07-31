@@ -52,7 +52,7 @@ pub mod sock_diag;
 
 pub use handler::{install_netfilter_handler, ProtoHandler};
 pub use inode::{
-    make_netlink_socket_inode, netlink_arc_from_inode, netlink_from_inode, NETLINK_INO_TAG,
+    make_netlink_socket_inode, netlink_arc_from_inode, netlink_from_inode,
 };
 pub use listeners::{
     emit_uevent, emit_uevent_with_env, emit_uevent_with_env_bytes, rebroadcast_cooked_uevent,

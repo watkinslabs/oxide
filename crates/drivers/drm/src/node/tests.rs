@@ -12,6 +12,8 @@ use vfs::{Dentry, File, OpenFlags};
 mod client_cap;
 #[path = "tests/get_cap.rs"]
 mod get_cap;
+#[path = "tests/identity.rs"]
+mod identity;
 #[path = "tests/publication.rs"]
 mod publication;
 
@@ -154,16 +156,16 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
     }
 
     #[test]
-    fn drm_inode_tags_encode_stable_card_id() {
+    fn drm_inodes_carry_their_own_minor_and_stable_card_id() {
         let _guard = crate::TEST_LOCK.lock();
         for card_id in [0u32, 7, 0x7ffe] {
             assert_eq!(
                 super::publication::drm_inode_parts(&make_card_inode(card_id)),
-                Some((super::publication::DRM_CARD_INO, card_id))
+                Some((super::publication::DrmNodeKind::Card, card_id))
             );
             assert_eq!(
                 super::publication::drm_inode_parts(&make_render_inode(card_id)),
-                Some((super::publication::DRM_RENDER_INO, card_id))
+                Some((super::publication::DrmNodeKind::Render, card_id))
             );
         }
     }

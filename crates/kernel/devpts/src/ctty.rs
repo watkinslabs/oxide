@@ -16,7 +16,7 @@ use core::sync::atomic::Ordering;
 use tty::ctty::{kind_can_be_ctty, should_acquire_ctty, TtyKind};
 use vfs::{InodeRef, OpenFlags};
 
-use crate::LockedPair;
+use crate::identity::endpoint_of;
 
 /// Linux `tty_open` ctty acquisition for a pty inode. Called from the open(2)
 /// path alongside `console::acquire_ctty_on_open`, which owns the console
@@ -26,8 +26,9 @@ use crate::LockedPair;
 /// needs `TIOCSCTTY`).
 /// # C: O(1)
 pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
-    let Some(pair) = inode.private::<LockedPair>() else { return; };
-    let kind = if inode.ino() == pair.ino_slave { TtyKind::PtySlave } else { TtyKind::PtyMaster };
+    let Some(ep) = endpoint_of(inode) else { return; };
+    let pair = ep.pair();
+    let kind = if ep.is_master() { TtyKind::PtyMaster } else { TtyKind::PtySlave };
     let o_noctty = flags & OpenFlags::O_NOCTTY.bits() != 0;
     let Some(cur) = sched::live::current() else { return; };
     let vpid = cur.vtgid.load(Ordering::Acquire);

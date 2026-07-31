@@ -114,6 +114,7 @@ fn put_u64(buf: &mut [u8], off: usize, value: u64) { buf[off..off + 8].copy_from
 fn get_u64(buf: &[u8], off: usize) -> u64 { u64::from_le_bytes(buf[off..off + 8].try_into().unwrap()) }
 fn key(raw: u32) -> crate::SoundOwnerKey { crate::SoundOwnerKey::from_raw(raw).unwrap() }
 
+mod identity;
 mod pcm_info;
 
 #[test]

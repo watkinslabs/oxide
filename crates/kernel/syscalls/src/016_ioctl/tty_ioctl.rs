@@ -7,6 +7,11 @@ use tty::ioctl::req as tty_req;
 
 use super::vt::handle_vt_ioctl;
 
+// Module manifest:
+// - `session`: TIOCSCTTY / TIOCGSID / TIOCNOTTY + the modem-control family.
+#[path = "tty_ioctl/session.rs"]
+mod session;
+
 const TCGETS: u64 = tty_req::TCGETS as u64;
 const TCSETS: u64 = tty_req::TCSETS as u64;
 const TCSETSW: u64 = tty_req::TCSETSW as u64;
@@ -48,6 +53,14 @@ const TIOCMSET: u64 = tty_req::TIOCMSET as u64;
 // c_iflag/c_oflag/c_cflag/c_lflag (4*4), c_line (1), c_cc[19] = 36 B.
 const KERNEL_TERMIOS_BYTES: usize = tty::pty::TERMIOS_OFF_CC + tty::pty::NCCS;
 
+/// The resolved console tty, or an immediate ENOTTY return. Re-checks rather
+/// than unwrapping so no branch can fall back to a fabricated VT.
+macro_rules! con_tty {
+    ($con:expr) => {
+        match $con { Some(t) => t, None => return -(Errno::Enotty.as_i32() as i64) }
+    };
+}
+
 pub(super) fn handle_tty_ioctl(
     cur: &sched::Task,
     file: &vfs::File,
@@ -61,9 +74,19 @@ pub(super) fn handle_tty_ioctl(
     if let Some(rv) = handle_vt_ioctl(file.inode(), req, arg) {
         return rv;
     }
-    let ino = file.inode().ino();
-    let pty_pair = devpts::pair_for_inode(ino);
-    let pty_master = devpts::is_master_inode(ino);
+    let inode = file.inode();
+    let pty_pair = devpts::pair_for_inode(inode);
+    let pty_master = devpts::is_master_inode(inode);
+    // Linux reaches `tty_ioctl` only through `tty_fops`; a description whose
+    // `f_op` has no `->unlocked_ioctl` gets `-ENOTTY` from `vfs_ioctl`, and
+    // `signalfd`/`eventfd` declare none while `timerfd`/`inotify` return
+    // `-ENOTTY` from their handler's default arm. This handler is the ioctl
+    // dispatcher's unclaimed-CharDev fallback, so it must apply that rule
+    // itself: an inode that is neither a pty endpoint nor a console tty is not
+    // a terminal, whatever its number. It used to be answered from a video VT
+    // derived from the inode's low byte.
+    let con = console::route(inode);
+    if pty_pair.is_none() && con.is_none() { return -(Errno::Enotty.as_i32() as i64); }
 
     match req {
         TIOCGWINSZ => {
@@ -74,7 +97,7 @@ pub(super) fn handle_tty_ioctl(
             // 24×80 default until the per-VT screen buffers land.
             let ws = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| p.winsize),
-                None => match console::route(ino) {
+                None => match con_tty!(con) {
                     // Serial line: its own winsize (80×24 until the remote
                     // resizes). Video VT: the framebuffer cell grid.
                     console::TtyTarget::Serial => console::static_console::winsize_get(),
@@ -109,7 +132,7 @@ pub(super) fn handle_tty_ioctl(
                 }),
                 // Store on the resolved tty + raise SIGWINCH on its live fg
                 // pgrp when it changed. Serial and video VT are independent.
-                None => match console::route(ino) {
+                None => match con_tty!(con) {
                     console::TtyTarget::Serial => {
                         let ch = console::static_console::winsize_set(ws);
                         (ch, console::static_console::foreground_pgid())
@@ -131,14 +154,11 @@ pub(super) fn handle_tty_ioctl(
         }
         TCGETS => {
             if let Err(rv) = validate_user_buf_writable(arg, KERNEL_TERMIOS_BYTES as u64, 4) { return rv; }
-            // For pty fds copy the pair's termios image; for the
-            // boot UART /dev/console + /dev/tty<N> read the per-VT
-            // termios state. The vt id is the inode number — devfs
-            // assigns ino=1 for the foreground alias and ino=N for
-            // /dev/ttyN, matching `ConsoleInode::new(vt)` in dev_console.rs.
+            // For pty fds copy the pair's termios image; for the serial line
+            // and /dev/tty<N> read the resolved tty's own termios state.
             let snap = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| p.termios),
-                None => match console::route(ino) {
+                None => match con_tty!(con) {
                     console::TtyTarget::Serial => console::static_console::termios_get(),
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).termios(),
                 },
@@ -172,7 +192,7 @@ pub(super) fn handle_tty_ioctl(
             } else {
                 // login ECHO-off + bash raw mode must reach the resolved
                 // tty's N_TTY ldisc. TCSETSF also flushes input.
-                match console::route(ino) {
+                match con_tty!(con) {
                     console::TtyTarget::Serial => {
                         console::static_console::termios_set(&buf);
                         if req == TCSETSF { console::static_console::flush(tty::TtyFlush::Input); }
@@ -194,7 +214,7 @@ pub(super) fn handle_tty_ioctl(
             if let Some(pair) = &pty_pair {
                 pair.with_pair(|p| p.flush_slave(sel.input(), sel.output()));
             } else {
-                match console::route(ino) {
+                match con_tty!(con) {
                     console::TtyTarget::Serial => console::static_console::flush(sel),
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).flush(sel),
                 }
@@ -206,7 +226,7 @@ pub(super) fn handle_tty_ioctl(
             if let Some(pair) = &pty_pair {
                 pair.set_exclusive(pty_master, on);
             } else {
-                match console::route(ino) {
+                match con_tty!(con) {
                     console::TtyTarget::Serial => console::static_console::set_exclusive(on),
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).set_exclusive(on),
                 }
@@ -218,7 +238,7 @@ pub(super) fn handle_tty_ioctl(
             let excl = if let Some(pair) = &pty_pair {
                 pair.exclusive(pty_master)
             } else {
-                match console::route(ino) {
+                match con_tty!(con) {
                     console::TtyTarget::Serial => console::static_console::exclusive(),
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).exclusive(),
                 }
@@ -248,7 +268,7 @@ pub(super) fn handle_tty_ioctl(
                     tty::TtyFlow::InputOff | tty::TtyFlow::InputOn => {}
                 }
             } else {
-                match console::route(ino) {
+                match con_tty!(con) {
                     console::TtyTarget::Serial => console::static_console::flow(action),
                     console::TtyTarget::Vt(vt) => { console::vt_tty::vt_tty(vt).flow(action); }
                 }
@@ -401,7 +421,7 @@ pub(super) fn handle_tty_ioctl(
                     pair.with_pair(|p| p.foreground_pgid = pgid);
                 }
             } else {
-                let tgt = console::route(ino);
+                let tgt = con_tty!(con);
                 if req == TIOCGPGRP {
                     let pgid = match tgt {
                         console::TtyTarget::Serial => console::static_console::foreground_pgid(),
@@ -422,124 +442,8 @@ pub(super) fn handle_tty_ioctl(
             }
             0
         }
-        TIOCSCTTY => {
-            // Make this fd's tty the controlling terminal for the
-            // caller's session. v1 records sid on the VT but doesn't
-            // enforce session-match checks on subsequent TIOCSPGRP.
-            let cur = match sched::live::current() {
-                Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
-            };
-            // F200: store the inode on the calling PROCESS so /dev/tty
-            // open can redirect to it from any of its threads.
-            cur.set_ctty(Some(file.inode().clone()));
-            if let Some(pair) = &pty_pair {
-                // F215: TIOCSCTTY must seed the slave's foreground
-                // pgid with the calling session leader's pgid — Linux
-                // POSIX: when a session leader acquires a controlling
-                // terminal, the foreground process group is set to
-                // the leader's process group. Without this,
-                // tcgetpgrp(slave) returns 0 on the very first call
-                // and any job-control shell (bash, dash)
-                // kills itself with SIGTTIN before reading any input.
-                let pgid = cur.pgid();
-                let sid  = cur.sid();
-                pair.with_pair(|p| {
-                    p.foreground_pgid = pgid;
-                    p.session_pid = sid;
-                });
-                return 0;
-            }
-            let sid  = cur.sid();
-            let pgid = cur.pgid();
-            // B18: when a session leader acquires its controlling
-            // terminal, the foreground process group MUST be seeded with
-            // the leader's pgrp. Without this, tcgetpgrp(0) returns 0, the
-            // shell decides it's a background job, every stdin read trips
-            // SIGTTIN, and the shell stops itself right after login's
-            // execvp — login passes PAM then respawns getty forever.
-            match console::route(ino) {
-                console::TtyTarget::Serial => console::static_console::set_session_and_fg(sid, pgid),
-                console::TtyTarget::Vt(vt) => console::vt_tty::set_session_and_fg(vt, sid, pgid),
-            }
-            0
-        }
-        TIOCGSID => {
-            // B40: getty calls `tcgetsid(STDIN_FILENO)` to
-            // decide whether to TIOCSCTTY-steal. Linux returns the
-            // session id that owns the tty, or ENOTTY when none does.
-            // We track sid per VT (set on TIOCSCTTY); pty pairs track
-            // it on the pair. Return 0/ENOTTY (rather than -EFAULT)
-            // when no session has claimed yet so getty falls through
-            // to the TIOCSCTTY path.
-            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
-            let sid: u32 = if let Some(pair) = &pty_pair {
-                pair.with_pair(|p| p.session_pid)
-            } else {
-                match console::route(ino) {
-                    console::TtyTarget::Serial => console::static_console::session(),
-                    console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).sid(),
-                }
-            };
-            if sid == 0 { return -(Errno::Enotty.as_i32() as i64); }
-            // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut u32, sid); }
-            0
-        }
-        TIOCNOTTY => {
-            // Linux `tty_jobctrl_ioctl` TIOCNOTTY (`drivers/tty/tty_jobctrl.c:578-582`):
-            //     if (current->signal->tty != tty) return -ENOTTY;
-            //     no_tty();   /* = disassociate_ctty(0) + proc_clear_tty(current) */
-            //
-            // The `proc_clear_tty(current)` half is what agetty depends on: it
-            // runs TIOCNOTTY, closes every fd, then calls vhangup(2), and
-            // expects the vhangup to be a NO-OP because it no longer holds a
-            // controlling terminal. Clearing only the tty's sid slot — as this
-            // handler used to — left `task.ctty` populated, so the following
-            // vhangup revoked a console nobody asked it to touch.
-            let cur = match sched::live::current() {
-                Some(c) => c, None => return -(Errno::Enotty.as_i32() as i64),
-            };
-            if cur.ctty_ino() != Some(ino) { return -(Errno::Enotty.as_i32() as i64); }
-            // `disassociate_ctty(0)`: SIGHUP+SIGCONT the foreground group,
-            // detach the terminal from the session WITHOUT revoking the line,
-            // and clear it from every session member. A non-leader gets none
-            // of that. The ladder is shared with the exit-time form so the two
-            // cannot disagree about what a session leader owes its terminal.
-            crate::tty_hangup::disassociate_ctty(&cur, tty::hangup::DisassociateCause::Notty);
-            // `proc_clear_tty(tsk)` — unconditional, leader or not.
-            cur.set_ctty(None);
-            0
-        }
-        TIOCMGET => {
-            // Linux: only a driver with `tiocmget` answers. Serial console
-            // has one (software MCR); VT (vt.c) + pty have none → ENOTTY.
-            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
-            if pty_pair.is_some() { return -(Errno::Enotty.as_i32() as i64); }
-            let bits = match console::route(ino) {
-                console::TtyTarget::Serial => console::static_console::modem_get(),
-                console::TtyTarget::Vt(_)  => return -(Errno::Enotty.as_i32() as i64),
-            };
-            // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut u32, bits); }
-            0
-        }
-        TIOCMSET | TIOCMBIS | TIOCMBIC => {
-            if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
-            if pty_pair.is_some() { return -(Errno::Enotty.as_i32() as i64); }
-            match console::route(ino) {
-                console::TtyTarget::Serial => {
-                    // SAFETY: arg validated 4-byte aligned; CPL=0 read through caller's AS.
-                    let v = unsafe { core::ptr::read_volatile(arg as *const u32) };
-                    match req {
-                        TIOCMSET => console::static_console::modem_set(v),
-                        TIOCMBIS => console::static_console::modem_bis(v),
-                        _        => console::static_console::modem_bic(v),
-                    }
-                    0
-                }
-                console::TtyTarget::Vt(_) => -(Errno::Enotty.as_i32() as i64),
-            }
-        }
+        TIOCSCTTY | TIOCGSID | TIOCNOTTY | TIOCMGET | TIOCMSET | TIOCMBIS | TIOCMBIC =>
+            session::handle(file, con, &pty_pair, req, arg),
         _ => {
             #[cfg(feature = "debug-boot")]
             {

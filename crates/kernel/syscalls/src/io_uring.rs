@@ -37,7 +37,6 @@ pub mod register;
 pub(crate) use dispatch::dispatch_op;
 pub use ring::{
     make_io_uring_inode, mmap_backing, ring_of, IoUring, IoUringInode, IoUringReg,
-    INO_TAG_MASK, IO_URING_INO_TAG,
 };
 
 // The three io_uring syscall handlers live in per-syscall files per docs/53§0;

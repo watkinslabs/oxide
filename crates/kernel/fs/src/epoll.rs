@@ -35,11 +35,9 @@ pub use syscalls::{sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll
 #[cfg(target_os = "oxide-kernel")]
 pub use fileops::handle_epoll_ioctl;
 
-mod ids {
-    use vfs::Ino;
-    pub(crate) const INO_BASE: Ino = 0x7400_0000;
-    pub(crate) const INO_MASK: Ino = 0x00FF_FFFF;
-}
+/// epoll's reserved inode-number range. An instance's number is its slot index
+/// folded into that range, so it can never become a neighbouring owner's.
+use vfs::pseudo_ino::EPOLL as INO_REGION;
 
 // Park / wake plumbing lives in `sched::live` so net/IPC layers
 // (which don't depend on `fs`) can trigger epoll wakeups without a
@@ -430,7 +428,7 @@ pub fn make_epoll_inode() -> InodeRef {
         if g.len() <= id as usize { g.resize_with(id as usize + 1, || None); }
         g[id as usize] = Some(Arc::clone(&data));
     }
-    InodeBuilder::new(ids::INO_BASE | (id as Ino & ids::INO_MASK),
+    InodeBuilder::new(INO_REGION.at(id as Ino),
         mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(fileops::EpollFileOps))
         .poll_subs_arc(poll_subs)
         .private(data)

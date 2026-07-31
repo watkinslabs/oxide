@@ -150,19 +150,16 @@ impl UfData {
     pub(crate) fn mm(&self) -> Option<Arc<vmm::AddressSpace>> { self.mm.upgrade() }
 }
 
-/// UfData ino tag (high bits distinct from socket/io_uring/pipe).
-mod ids {
-    pub(crate) const INO_TAG: vfs::Ino = 0x5546_4644_0000_0000;
-    pub(crate) const INO_ID_MASK: vfs::Ino = 0xFFFF_FFFF;
-}
-static NEXT_UFFD_INO: AtomicU64 = AtomicU64::new(1);
+/// userfaultfd's reserved inode-number range, owned by `vfs::pseudo_ino`.
+static NEXT_UFFD_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::USERFAULTFD);
 
 /// `make_userfaultfd_inode(flags, mm)` — a Regular pseudo-inode whose `read`
 /// drains queued `uffd_msg` events and whose `poll` reports POLLIN when
 /// events are queued. `mm` is Linux's `ctx->mm = current->mm` + `mmgrab`.
 /// # C: O(1)
 pub fn make_userfaultfd_inode(flags: u32, mm: Weak<vmm::AddressSpace>) -> InodeRef {
-    let ino = ids::INO_TAG | (NEXT_UFFD_INO.fetch_add(1, Ordering::Relaxed) & ids::INO_ID_MASK);
+    let ino = NEXT_UFFD_INO.alloc();
     let poll = Arc::new(PollSubscribers::new());
     InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
         default_inode_ops(), Arc::new(UffdFileOps))
@@ -372,3 +369,10 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
 fn as_uffd(inode: &vfs::InodeRef) -> Option<Arc<UfData>> {
     inode.i_private().clone().downcast::<UfData>().ok()
 }
+
+/// Whether an inode really is a userfaultfd — Linux's comparison against the
+/// one `userfaultfd_fops`. The ioctl router used the inode NUMBER's high half
+/// instead, which reserves a range but proves no ownership: any inode reusing
+/// that half was routed here, and the handler then took its unrelated
+/// `i_private` for a `UfData`. # C: O(1)
+pub fn is_uffd_inode(inode: &vfs::InodeRef) -> bool { as_uffd(inode).is_some() }

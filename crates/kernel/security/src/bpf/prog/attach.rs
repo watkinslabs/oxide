@@ -414,6 +414,6 @@ fn typed_prog_inode_from_fd(fd: i32, ptype: u32) -> Result<InodeRef, Errno> {
 fn cgroup_from_fd(fd: i32) -> Result<cgroup::bpf::DeviceTarget, Errno> {
     let inode = inode_from_fd(fd)?;
     if inode.file_type() != vfs::FileType::Directory { return Err(Errno::Ebadf); }
-    let cgid = cgroup::cgid_from_dir_inode(inode.ino(), inode.fsid()).ok_or(Errno::Ebadf)?;
+    let cgid = cgroup::cgid_from_dir_inode(&inode).ok_or(Errno::Ebadf)?;
     cgroup::bpf::device_target(cgid).map_err(super::super::cgroup_device::map_error)
 }

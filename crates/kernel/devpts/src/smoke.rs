@@ -2,6 +2,10 @@ use alloc::format;
 use alloc::sync::Arc;
 
 use super::*;
+use crate::fs::devpts_fs;
+use crate::inodes::allocate_pair;
+use crate::pair::pair_for;
+use vfs::{FileType, SuperBlock};
 
 struct DevptsType;
 impl vfs::FileSystemType for DevptsType {
@@ -12,10 +16,11 @@ impl vfs::FileSystemType for DevptsType {
 pub fn smoke_test() {
     use hal::kassert;
 
-    let (master, n) = allocate_pair();
+    let (master, n) = allocate_pair().expect("pty index space");
     let ino = master.ino();
-    kassert!((ino & 0xFFFF_8000) == 0x6000_0000, "master ino marker");
-    kassert!((ino & 0x7FFF) as u32 == n, "master ino encodes pts_num");
+    kassert!(vfs::pseudo_ino::DEVPTS.contains(ino), "master ino inside the devpts region");
+    kassert!(crate::is_master_inode(&master), "master inode resolves as the master half");
+    kassert!(crate::pair_for_inode(&master).is_some(), "master inode resolves its pair");
 
     let mut name: alloc::string::String = alloc::string::String::with_capacity(8);
     push_dec(&mut name, n);
@@ -57,7 +62,7 @@ fn devpts_fs_smoke() {
     kassert!(ptmx.file_type() == FileType::CharDev, "pts/ptmx is chardev");
     kassert!(ptmx.fsid() == DEVPTS_FSID, "pts/ptmx on devpts fsid");
 
-    let (_m, n) = allocate_pair();
+    let (_m, n) = allocate_pair().expect("pty index space");
     let name = format!("{}", n);
     let slave = fs.root_dir().lookup_path(&name).expect("slave mirrored in devpts root");
     kassert!(slave.file_type() == FileType::CharDev, "mirrored slave is chardev");
@@ -86,7 +91,7 @@ fn sigint_chain_smoke() {
     fake.set_pgid(fake_tid);
     sched::live::registry::insert(&fake);
 
-    let (master, n) = allocate_pair();
+    let (master, n) = allocate_pair().expect("pty index space");
     let pair = pair_for(n).expect("pair_for");
     pair.with_pair(|p| {
         kassert!(p.lflag() != 0, "cooked default");
@@ -126,7 +131,7 @@ fn sigint_chain_smoke() {
 fn termios_winsize_smoke() {
     use hal::kassert;
 
-    let (_master, n) = allocate_pair();
+    let (_master, n) = allocate_pair().expect("pty index space");
     let pair = pair_for(n).expect("pair_for");
 
     pair.with_pair(|p| {

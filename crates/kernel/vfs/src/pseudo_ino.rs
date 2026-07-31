@@ -57,7 +57,11 @@ pub const CONSOLE_TTY: Region = Region::new("console-tty", 0x0000_7400, 0x0000_7
 pub const CONSOLE_VCS: Region = Region::new("console-vcs", 0x0000_7600, 0x0000_76FF);
 /// `/dev/vcsa*`.
 pub const CONSOLE_VCSA: Region = Region::new("console-vcsa", 0x0000_7700, 0x0000_77FF);
-/// `/dev/autofs` control node, keyed by the misc device number.
+/// autofs filesystem roots.
+pub const AUTOFS_ROOT: Region = Region::new("autofs-root", 0x0187_0000, 0x0187_0FFF);
+/// `/dev/autofs` control node, keyed by the misc device number. A separate
+/// region from [`AUTOFS_ROOT`]: folding a device number into one shared band
+/// would let the control node land on a root's number.
 pub const AUTOFS_CONTROL: Region = Region::new("autofs-control", 0x0187_1000, 0x0187_1FFF);
 /// `get_next_ino()` — the shared counter for anon inodes with no family of
 /// their own (pidfd, POSIX message queues, the io_uring low half).
@@ -65,13 +69,21 @@ pub const VFS_ANON: Region = Region::new("vfs-anon", 0x0200_0000, 0x02FF_FFFF);
 /// `pipe(2)` / `mkfifo` pseudo-inodes.
 pub const PIPE: Region = Region::new("pipe", 0x1000_0000, 0x1FFF_FFFF);
 /// procfs entries with a fixed identity (`/proc/meminfo`, `/proc/self/status`).
-pub const PROCFS_STATIC: Region = Region::new("procfs-static", 0x3000_0000, 0x37FF_FFFF);
+pub const PROCFS_STATIC: Region = Region::new("procfs-static", 0x3000_0000, 0x30FF_FFFF);
+/// `make_static_file_inode` — fixed-body files, most of them procfs's, minted
+/// from a counter onto the same `s_dev` as [`PROCFS_STATIC`]'s fixed ids.
+pub const VFS_STATIC_FILE: Region = Region::new("vfs-static-file", 0x3100_0000, 0x36FF_FFFF);
+/// tracefs ring-buffer files.
+pub const TRACEFS_RING: Region = Region::new("tracefs-ring", 0x3700_0000, 0x37FF_FFFF);
 /// procfs entries minted from a counter at runtime.
 pub const PROCFS_DYNAMIC: Region = Region::new("procfs-dynamic", 0x3800_0000, 0x3FFF_FFFF);
-/// `eventfd(2)`.
-pub const EVENTFD: Region = Region::new("eventfd", 0x4000_0000, 0x4248_FFFF);
-/// `/proc/sys/fs/binfmt_misc` entries.
-pub const BINFMT_MISC: Region = Region::new("binfmt-misc", 0x4249_0000, 0x4249_FFFF);
+/// tmpfs, `/dev/shm`, and every other in-memory filesystem instance.
+pub const TMPFS: Region = Region::new("tmpfs", 0x4000_0000, 0x4FFF_FFFF);
+/// `/proc/sys/fs/binfmt_misc` entries. Moved off `0x4249_0000`, inside the span
+/// [`TMPFS`]'s counter walks.
+pub const BINFMT_MISC: Region = Region::new("binfmt-misc", 0x5000_0000, 0x5000_FFFF);
+/// `eventfd(2)`. Moved off `0x4000_0000`, which [`TMPFS`] also claimed.
+pub const EVENTFD: Region = Region::new("eventfd", 0x5100_0000, 0x51FF_FFFF);
 /// cgroup2 directories, one per cgroup id.
 pub const CGROUP_DIR: Region = Region::new("cgroup-dir", 0x6000_0000, 0x60FF_FFFF);
 /// cgroup2 control files, `(cgid, file-slot)`.
@@ -80,6 +92,10 @@ pub const CGROUP_FILE: Region = Region::new("cgroup-file", 0x6100_0000, 0x68FF_F
 /// which [`CGROUP_DIR`] also claimed — a cgroup directory inode with a small
 /// cgroup id decoded as a PTY master.
 pub const DEVPTS: Region = Region::new("devpts", 0x6900_0000, 0x6900_FFFF);
+/// configfs items, groups and attributes.
+pub const CONFIGFS: Region = Region::new("configfs", 0x6C00_0000, 0x6CFF_FFFF);
+/// debugfs files and directories.
+pub const DEBUGFS: Region = Region::new("debugfs", 0x6D00_0000, 0x6D0F_FFFF);
 /// debugfs automount points.
 pub const DEBUGFS_AUTOMOUNT: Region = Region::new("debugfs-automount", 0x6D10_0000, 0x6D1F_FFFF);
 /// `inotify_init(2)`.
@@ -140,10 +156,11 @@ pub const EXT4: Region = tag_region("ext4", 0x6E54_0000);
 /// Every declared region. Adding an owner means adding it here — that is what
 /// subjects it to the overlap check. # C: O(1)
 pub const REGIONS: &[Region] = &[
-    CONSOLE_TTY, CONSOLE_VCS, CONSOLE_VCSA, AUTOFS_CONTROL, VFS_ANON, PIPE,
-    PROCFS_STATIC, PROCFS_DYNAMIC, EVENTFD, BINFMT_MISC, CGROUP_DIR, CGROUP_FILE,
-    DEVPTS, DEBUGFS_AUTOMOUNT, INOTIFY, SIGNALFD, TIMERFD, EPOLL, BPF, EVDEV,
-    ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
+    CONSOLE_TTY, CONSOLE_VCS, CONSOLE_VCSA, AUTOFS_ROOT, AUTOFS_CONTROL, VFS_ANON, PIPE,
+    PROCFS_STATIC, VFS_STATIC_FILE, TRACEFS_RING, PROCFS_DYNAMIC, TMPFS,
+    BINFMT_MISC, EVENTFD, CGROUP_DIR, CGROUP_FILE,
+    DEVPTS, CONFIGFS, DEBUGFS, DEBUGFS_AUTOMOUNT, INOTIFY, SIGNALFD, TIMERFD,
+    EPOLL, BPF, EVDEV, ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
     PROCFS_PID, DRM_CARD, DRM_RENDER, IO_URING, NETLINK, PERF, INET_SOCK, SOUND,
     USERFAULTFD, VSOCK, EXT4,
 ];

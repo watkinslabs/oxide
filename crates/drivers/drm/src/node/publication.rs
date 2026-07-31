@@ -22,15 +22,31 @@ static DRM_NODES: Spinlock<Vec<Option<DrmNodePair>>, OpsLockClass> = Spinlock::n
 
 const DRM_DEVNODE_PREFIX: &str = "dri/";
 
-// High-bits tags keep the DRM char-device inodes distinct from every other
-// device number; low 32 bits carry the stable DRM card id.
-pub(super) const DRM_INO_TAG_MASK: vfs::Ino = 0xFFFF_FFFF_0000_0000;
-pub(super) const DRM_INO_CARD_MASK: vfs::Ino = 0x0000_0000_FFFF_FFFF;
-pub(super) const DRM_CARD_INO: vfs::Ino = 0x4452_4D43_0000_0000;
-pub(super) const DRM_RENDER_INO: vfs::Ino = 0x4452_4D52_0000_0000;
+// First number in each DRM node family's reserved range, from the one owner of
+// pseudo-inode number space. The low 32 bits carry the stable DRM card id. The
+// number is `stat` output; it decides nothing — see `DrmNodeData`.
+pub(super) const DRM_CARD_INO: vfs::Ino = vfs::pseudo_ino::DRM_CARD.start();
+pub(super) const DRM_RENDER_INO: vfs::Ino = vfs::pseudo_ino::DRM_RENDER.start();
+
+/// Which DRM minor an inode is. Linux separates primary from render by the
+/// `drm_minor` the open file points at. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(super) enum DrmNodeKind { Card, Render }
+
+/// Backend-private state (`i_private`) for one `/dev/dri/*` inode: the stable
+/// DRM card id plus which minor family this node is. `make_card_inode` and
+/// `make_render_inode` are the only places that install it, so it answers
+/// "is this a DRM node, and whose" the way Linux's fops comparison does — where
+/// decoding the inode NUMBER answered it for any inode that happened to carry
+/// the same high 32 bits, and then drove event drain, poll, release and mmap
+/// against the card id read out of a stranger's low bits.
+pub(super) struct DrmNodeData {
+    pub card_id: u32,
+    pub kind: DrmNodeKind,
+}
 
 fn read_events(file: &File, b: &mut [u8], nonblock: bool) -> vfs::KResult<usize> {
-    let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
+    let Some((_, card_id)) = drm_inode_parts(file.inode()) else {
         return Err(vfs::VfsError::Einval);
     };
     crate::crtc::drain_events_blocking(card_id, file_token(file), b, nonblock)
@@ -64,7 +80,7 @@ impl vfs::FileOps for DrmCardFileOps {
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll_open_file(&self, file: &File) -> u32 {
-        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
+        let Some((_, card_id)) = drm_inode_parts(file.inode()) else {
             return vfs::POLL_ERR;
         };
         let mut mask = vfs::POLL_OUT;
@@ -83,7 +99,7 @@ impl vfs::FileOps for DrmCardFileOps {
     /// stays untouched.
     /// MUST NOT panic or block. # C: O(1) + O(scanout repaint).
     fn on_release_file(&self, file: &File) {
-        let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) else {
+        let Some((_, card_id)) = drm_inode_parts(file.inode()) else {
             return;
         };
         let token = file_token(file);
@@ -136,23 +152,18 @@ impl vfs::FileOps for DrmSinkFileOps {
     fn on_release_file(&self, file: &File) {
         let token = file_token(file);
         release_file_magic(token);
-        if let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) {
+        if let Some((_, card_id)) = drm_inode_parts(file.inode()) {
             release_unique_ready(card_id, token);
             crate::dumb::release_file(card_id, token);
         }
     }
 }
 
-pub(super) fn drm_inode_parts_raw(ino: vfs::Ino) -> Option<(vfs::Ino, u32)> {
-    let tag = ino & DRM_INO_TAG_MASK;
-    if tag != DRM_CARD_INO && tag != DRM_RENDER_INO {
-        return None;
-    }
-    Some((tag, (ino & DRM_INO_CARD_MASK) as u32))
-}
-
-pub(super) fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(vfs::Ino, u32)> {
-    drm_inode_parts_raw(inode.ino())
+/// `(minor family, card id)` for a DRM node, or `None` for any other inode.
+/// Resolved from the inode's own [`DrmNodeData`], never from its number.
+/// # C: O(1)
+pub(super) fn drm_inode_parts(inode: &vfs::InodeRef) -> Option<(DrmNodeKind, u32)> {
+    inode.private::<DrmNodeData>().map(|d| (d.kind, d.card_id))
 }
 
 /// Build a `/dev/dri/cardN` inode (`S_IFCHR|DRM_NODE_MODE`, card tag, card f_op).
@@ -166,6 +177,7 @@ pub(super) fn make_card_inode(card_id: u32) -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_CARD_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
                            vfs::default_inode_ops(), Arc::new(DrmCardFileOps))
         .poll_subs_arc(card_poll_subs(card_id))
+        .private(Arc::new(DrmNodeData { card_id, kind: DrmNodeKind::Card }))
         .rdev(vfs::Devt::new(DRM_MAJOR, card_id).raw()).build()
 }
 
@@ -190,6 +202,7 @@ static CARD_POLL: Spinlock<Vec<(u32, Arc<vfs::PollSubscribers>)>, OpsLockClass> 
 pub(super) fn make_render_inode(card_id: u32) -> vfs::InodeRef {
     vfs::InodeBuilder::new(DRM_RENDER_INO | card_id as vfs::Ino, vfs::mk_mode(vfs::FileType::CharDev, DRM_NODE_MODE),
                            vfs::default_inode_ops(), Arc::new(DrmSinkFileOps))
+        .private(Arc::new(DrmNodeData { card_id, kind: DrmNodeKind::Render }))
         .rdev(vfs::Devt::new(DRM_MAJOR, crate::uapi::DRM_RENDER_MINOR_BASE + card_id).raw()).build()
 }
 

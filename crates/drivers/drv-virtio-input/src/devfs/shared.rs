@@ -8,7 +8,12 @@ use vfs::{File, Ino, Inode};
 
 use crate::evdev_queue::{EvdevClientQueue, EventTimes, MAX_EVDEV};
 
-pub(crate) const EVDEV_INO_BASE: Ino = 0x7400_0000;
+/// First number in evdev's reserved range. Sourced from the one owner of
+/// pseudo-inode number space so no other subsystem can mint into it: this base
+/// used to be `0x7400_0000`, which `epoll_create(2)` also claimed, and
+/// `/dev/input/event0` and epoll's first instance reported the same `st_ino`.
+/// # C: O(1)
+pub(crate) const EVDEV_INO_BASE: Ino = vfs::pseudo_ino::EVDEV.start();
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EvdevIdentity {

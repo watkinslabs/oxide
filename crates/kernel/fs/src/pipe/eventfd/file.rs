@@ -18,7 +18,6 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 
 use sync::Spinlock;
 use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
@@ -53,23 +52,21 @@ pub struct EventfdData {
 struct EventfdGate;
 impl sync::LockClass for EventfdGate { fn rank() -> u16 { 94 } fn name() -> &'static str { "EventfdGate" } }
 
-mod ids {
-    pub(crate) const EVENTFD_INO_BASE: u64 = 0x4000_0000;
-}
-
-static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(ids::EVENTFD_INO_BASE);
+/// eventfd inode numbers come out of the one range `vfs::pseudo_ino` reserves
+/// for them, and wrap inside it rather than counting on into binfmt_misc's.
+static NEXT_EVENTFD_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::EVENTFD);
 
 /// `make_eventfd_inode(initial, semaphore)` — a Fifo pseudo-inode whose counter
 /// drains on read and accumulates on write. # C: O(1)
 pub fn make_eventfd_inode(initial: u64, semaphore: bool) -> InodeRef {
-    let ino = NEXT_EVENTFD_INO.fetch_add(1, Ordering::Relaxed);
+    let ino = NEXT_EVENTFD_INO.alloc();
     InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(EventfdFileOps))
         .poll_subs(PollSubscribers::new())
         .private(Arc::new(EventfdData {
             counter: Spinlock::new(initial),
             semaphore,
-            id: (ino - ids::EVENTFD_INO_BASE) as u32,
+            id: (ino - vfs::pseudo_ino::EVENTFD.start()) as u32,
             read_waiters: WaitList::new(),
             write_waiters: WaitList::new(),
         }))
