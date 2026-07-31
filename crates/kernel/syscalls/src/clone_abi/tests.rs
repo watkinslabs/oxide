@@ -275,3 +275,47 @@ fn plain_fork_needs_no_writable_destination() {
     assert_eq!(clone_dest_ok(0, false), Ok(()));
     assert_eq!(clone_dest_ok(VFORK_FLAGS, false), Ok(()));
 }
+
+// `clone(2)`'s 4th/5th register arguments. The default Linux prototype is
+// (flags, newsp, parent_tidptr, child_tidptr, tls); the "backwards" one used
+// by aarch64 (and 32-bit x86) is (flags, newsp, parent_tidptr, tls,
+// child_tidptr). A thread library passes `&pd->tid` as child_tidptr and `pd`
+// as tls, so reading the wrong register puts the thread pointer at
+// `&pd->tid` — every static-TLS access is then displaced by
+// offsetof(struct pthread, tid) and the first locale pointer reads NULL.
+const A3: u64 = 0x7fff_0000_02d0;
+const A4: u64 = 0x7fff_0000_0000;
+
+#[test]
+fn default_clone_order_takes_child_tid_before_tls() {
+    assert_eq!(
+        legacy_clone_tid_tls(LegacyCloneOrder::ChildTidThenTls, A3, A4),
+        (A3, A4),
+    );
+}
+
+#[test]
+fn backwards_clone_order_takes_tls_before_child_tid() {
+    assert_eq!(
+        legacy_clone_tid_tls(LegacyCloneOrder::TlsThenChildTid, A3, A4),
+        (A4, A3),
+    );
+}
+
+#[test]
+fn each_target_uses_its_own_clone_argument_order() {
+    let expected = if cfg!(target_arch = "aarch64") {
+        LegacyCloneOrder::TlsThenChildTid
+    } else {
+        LegacyCloneOrder::ChildTidThenTls
+    };
+    assert_eq!(LEGACY_CLONE_ORDER, expected);
+    // The thread pointer must be the block base a C library allocated, never
+    // the tid slot inside it.
+    let (child_tid, tls) = legacy_clone_tid_tls(LEGACY_CLONE_ORDER, A3, A4);
+    if cfg!(target_arch = "aarch64") {
+        assert_eq!((child_tid, tls), (A4, A3));
+    } else {
+        assert_eq!((child_tid, tls), (A3, A4));
+    }
+}
