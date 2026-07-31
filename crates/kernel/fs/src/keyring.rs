@@ -7,10 +7,13 @@
 // Module manifest:
 // - uapi:    Linux keyctl/key constants — command codes, special ids, perm
 //            bit layout, capability bytes, size limits. Numbers only.
-// - types:   the registered `key_type` table, its `vet_description` rules and
-//            the `KEY_PERM_UNDEF` default-perm computation.
+// - types:   the registered `key_type` table — each type's read/update
+//            methods, its `preparse` payload contract and quota charge, its
+//            `vet_description` rule, and the `KEY_PERM_UNDEF` default-perm
+//            computation.
 // - store:   `struct key` state, the serial space, the special-keyring maps,
-//            and the raw mint/resolve/link primitives.
+//            the per-uid `key_user` quota, the gc, and the raw
+//            mint/resolve/link primitives.
 // - perm:    `key_task_permission` + `key_validate` — THE choke-point every op
 //            passes through. No op reads `perm`/`uid`/`gid`/`revoked` directly.
 // - ops:     the per-op cores (rings / keys / links), each taking an explicit
@@ -87,6 +90,16 @@ fn read_user_key_type(p: u64) -> Result<String, i64> {
 fn read_user_key_desc(p: u64) -> Result<String, i64> {
     let b = read_user_key_cstr(p, KEY_MAX_DESC_SIZE)?;
     Ok(key_string_from_bytes(&b))
+}
+
+/// `add_key`/`request_key` description read. A NULL pointer is NOT a fault
+/// here: the description is optional at the ABI, and an absent (or empty) one
+/// leaves the type to generate one — which none of the registered types does,
+/// so the create path answers EINVAL. Returning EFAULT instead would report a
+/// bad pointer for an argument that was legitimately omitted.
+fn read_user_key_desc_optional(p: u64) -> Result<String, i64> {
+    if p == 0 { return Ok(String::new()); }
+    read_user_key_desc(p)
 }
 
 fn read_user_bytes(p: u64, len: u64) -> Result<Vec<u8>, i64> {
@@ -174,16 +187,24 @@ fn parent_info() -> Option<ops::ParentInfo> {
     })
 }
 
-/// `sys_add_key(type, desc, payload, plen, keyring)` — slot 248. Linux checks
-/// the payload length BEFORE it copies anything (`plen > 1024*1024-1` is
-/// EINVAL), so an absurd length is rejected rather than attempted.
+/// `sys_add_key(type, desc, payload, plen, keyring)` — slot 248, in the order
+/// the syscall applies its checks:
+///   1. `plen > 1024*1024-1` is EINVAL BEFORE anything is copied, so an absurd
+///      length is rejected rather than attempted;
+///   2. the type name is read (empty EINVAL, `.`-prefixed EPERM);
+///   3. the description is read — a NULL or empty one is not a fault, it just
+///      leaves the create path to answer EINVAL — and a `.`-prefixed
+///      description for the `keyring` type is EPERM here, ahead of the payload
+///      copy, so a bad payload pointer cannot mask it;
+///   4. the payload is copied (EFAULT).
 /// # C: O(N)
 pub fn sys_add_key(args: &SyscallArgs) -> i64 {
     if args.a3 > KEY_MAX_PAYLOAD { return err(Errno::Einval); }
     let key_type = match read_user_key_type(args.a0) { Ok(s) => s, Err(rv) => return rv };
-    let description = match read_user_key_desc(args.a1) { Ok(s) => s, Err(rv) => return rv };
+    let description = match read_user_key_desc_optional(args.a1) { Ok(s) => s, Err(rv) => return rv };
+    if types::dot_reserved(&key_type, &description) { return err(Errno::Eperm); }
     let payload = match read_user_bytes(args.a2, args.a3) { Ok(v) => v, Err(rv) => return rv };
-    ops::add_key_core(&cur_ctx(), &key_type, &description, payload, args.a4 as i32)
+    ops::add_key_core(&cur_ctx(), &key_type, &description, payload, args.a2 != 0, args.a4 as i32)
 }
 
 /// `sys_request_key(type, desc, callout, dest)` — slot 249. The callout string

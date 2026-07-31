@@ -55,15 +55,34 @@ fn special_keyrings_are_distinct() {
 
 // `KEY_SPEC_USER_SESSION_KEYRING` and `KEY_SPEC_GROUP_KEYRING` are NOT the
 // same ring: Linux never implemented group keyrings, so `-6` resolves to
-// nothing at all (`lookup_user_key`'s `default: goto invalid_key` → ENOKEY),
-// while `-5` is the real user-session keyring. Folding `-6` onto `-5` handed
-// callers a keyring Linux says does not exist.
+// nothing at all — group keyrings were never implemented, so the id resolver
+// answers EINVAL — while `-5` is the real user-session keyring. Folding `-6`
+// onto `-5` handed callers a keyring that does not exist; answering ENOKEY
+// instead would say the facility exists but is empty.
 #[test]
 fn group_keyring_is_not_the_user_session_keyring() {
     let t = ctx(1024, 1024);
     assert!(get_keyring_id(&t, KEY_SPEC_USER_SESSION_KEYRING, true) >= FIRST_SERIAL as i64);
-    assert_eq!(get_keyring_id(&t, KEY_SPEC_GROUP_KEYRING, true), enokey(),
-        "group keyrings were never implemented in Linux");
+    assert_eq!(get_keyring_id(&t, KEY_SPEC_GROUP_KEYRING, true), einval(),
+        "group keyrings were never implemented");
+}
+
+// Every id the resolver does NOT define is EINVAL, and the two
+// authorisation-key ids are ENOKEY — they name objects that exist only inside
+// a `request_key` upcall. An id of 0 is EINVAL, NOT a shorthand for the
+// session keyring: a caller's uninitialised keyring argument must be refused,
+// not quietly turned into a successful insertion.
+#[test]
+fn undefined_keyring_ids_are_einval_and_authkey_ids_are_enokey() {
+    let t = ctx(1044, 1044);
+    assert_eq!(get_keyring_id(&t, 0, true), einval(), "id 0 is not the session keyring");
+    assert_eq!(get_keyring_id(&t, -9, true), einval());
+    assert_eq!(get_keyring_id(&t, i32::MIN, true), einval());
+    assert_eq!(get_keyring_id(&t, KEY_SPEC_REQKEY_AUTH_KEY, true), enokey(),
+        "no upcall in flight, so no authorisation key exists");
+    assert_eq!(get_keyring_id(&t, KEY_SPEC_REQUESTOR_KEYRING, true), enokey());
+    assert_eq!(add_key_core(&t, "user", "no-dest", alloc::vec![1], true, 0), einval(),
+        "add_key's destination keyring is mandatory");
 }
 
 // GET_KEYRING_ID(create=false) on a never-referenced keyring is ENOKEY (no
