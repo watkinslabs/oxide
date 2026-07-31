@@ -37,15 +37,12 @@ pub fn sys_umount2(args: &SyscallArgs) -> i64 {
 fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // Linux ksys_umount flag gate (D53): reject unknown bits, and MNT_EXPIRE is
     // mutually exclusive with MNT_FORCE/MNT_DETACH — both before the path walk.
-    const MNT_FORCE:        u64 = 1;
-    const MNT_DETACH_BIT:   u64 = 2;
-    const MNT_EXPIRE:       u64 = 4;
-    const UMOUNT_NOFOLLOW:  u64 = 8;
+    use vfs::mount::{MNT_DETACH, MNT_EXPIRE, MNT_FORCE, UMOUNT_NOFOLLOW, UMOUNT_VALID};
     let flags = args.a1;
-    if flags & !(MNT_FORCE | MNT_DETACH_BIT | MNT_EXPIRE | UMOUNT_NOFOLLOW) != 0 {
+    if flags & !UMOUNT_VALID != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    if (flags & MNT_EXPIRE) != 0 && (flags & (MNT_FORCE | MNT_DETACH_BIT)) != 0 {
+    if (flags & MNT_EXPIRE) != 0 && (flags & (MNT_FORCE | MNT_DETACH)) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
     let cur = match sched::live::current() {
@@ -76,8 +73,34 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         None => return -(Errno::Esrch.as_i32() as i64),
     };
     let ns = namespace.id();
-    const MNT_DETACH: u64 = 2;
-    let lazy = (args.a1 & MNT_DETACH) != 0;
+    let lazy = (flags & MNT_DETACH) != 0;
+
+    // Linux `do_umount`'s admission ladder over the resolved mount. The three
+    // rungs this had never applied: MNT_EXPIRE's two-pass grace (an autofs
+    // expiry that unmounts on the FIRST call tears mounts down the moment they
+    // go briefly idle), MNT_LOCKED (an unprivileged user namespace must not
+    // reveal what a locked mount covers), and `check_mnt`.
+    let root_mnt = cur.fs_context_snapshot().root_vfs().map(|r| r.mnt_id);
+    if let Some(facts) = vfs::mount::umount_facts(
+        resolved.mnt_id, flags, root_mnt, cur.has_cap(sched::cap::SYS_ADMIN)) {
+        match vfs::mount::umount_check(flags, &facts) {
+            Err(vfs::mount::UmountRefusal::Einval) => return -(Errno::Einval.as_i32() as i64),
+            Err(vfs::mount::UmountRefusal::Ebusy) => return -(Errno::Ebusy.as_i32() as i64),
+            Err(vfs::mount::UmountRefusal::Eagain) => return -(Errno::Eagain.as_i32() as i64),
+            Err(vfs::mount::UmountRefusal::Eperm) => return -(Errno::Eperm.as_i32() as i64),
+            Ok(vfs::mount::Umount::RemountRootReadonly) => {
+                // Linux `do_umount_root`: "unmounting" the caller's own root
+                // reconfigures the superblock read-only rather than detaching
+                // it — there is nothing underneath to expose.
+                return match vfs::mount::mnt_setattr_attached(
+                    resolved.mnt_id, vfs::mount::MNT_RDONLY, 0, None, false) {
+                    Ok(()) => 0,
+                    Err(e) => crate::namei_common::errno_from_vfs(e),
+                };
+            }
+            Ok(_) => {}
+        }
+    }
 
     // Linux `do_umount` semantics (fs/namespace.c), NO path blacklist:
     //

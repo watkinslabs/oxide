@@ -11,14 +11,6 @@ use vfs::FileType;
 pub(crate) static NEXT_FSCTX_INO: AtomicU64 = AtomicU64::new(0x4600_0000);
 
 /// # C: O(1)
-pub(crate) fn fstype_ok(t: &str) -> bool {
-    matches!(t,
-        "tmpfs" | "ramfs" | "proc" | "sysfs" | "devtmpfs" | "devpts" | "cgroup2"
-        | "ext4"
-        | "securityfs" | "efivarfs" | "pstore" | "bpf" | "configfs" | "debugfs"
-        | "tracefs" | "fuse" | "fusectl" | "mqueue" | "hugetlbfs" | "autofs" | "binfmt_misc")
-}
-
 fn resolve_ext4_source(
     source: &str,
     access: u32,
