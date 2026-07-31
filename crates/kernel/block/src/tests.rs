@@ -6,7 +6,7 @@ use alloc::boxed::Box;
 use crate::blockdev::{BlockDevice, BlockRequest, MemDisk};
 use crate::pagecache::{CachedPage, PageCache};
 use crate::types::{BlockError, BlockOp, InodeId, PageFlags, PAGE_BYTES};
-use crate::QueueLimits;
+use crate::{QueueLimits, MAX_DISCARD_SECTORS};
 
 use alloc::sync::Arc;
 use alloc::vec;
@@ -31,7 +31,9 @@ fn memdisk_capacity_matches_construction() {
 fn default_queue_limits_are_canonical_single_block_topology() {
     let d = Disk::new(512, 64);
     let limits = d.queue_limits().unwrap();
-    assert_eq!(limits, QueueLimits::new(512, 512, 512, 0).unwrap());
+    assert_eq!(limits, QueueLimits::new(512, 512, 512, 0).unwrap()
+        .with_discard(MAX_DISCARD_SECTORS, MAX_DISCARD_SECTORS, 512).unwrap());
+    assert_eq!(limits.discard_granularity(), 512);
     assert_eq!(limits.sysfs_value("logical_block_size"), Some(512));
     assert_eq!(limits.sysfs_value("physical_block_size"), Some(512));
     assert_eq!(limits.sysfs_value("minimum_io_size"), Some(512));
