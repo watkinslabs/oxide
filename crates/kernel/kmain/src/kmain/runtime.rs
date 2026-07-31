@@ -185,6 +185,11 @@ fn init_runtime_subsystems() {
     // fault must still have its registered semaphore adjustments applied, or
     // peers blocked on those semaphores never run again.
     sched::live::set_sysvsem_exit_hook(ipc::sysv::sem::exit_sem);
+    // Controlling-terminal disassociation, same arrangement: resolving a
+    // terminal inode to its console / devpts device is above `sched` in the
+    // crate graph, so the exit paths reach it through this hook. Without it a
+    // session leader's death leaves its terminal owned by a dead session.
+    sched::live::set_disassociate_ctty_hook(syscalls::tty_hangup::disassociate_ctty_on_exit);
     // Linux `shm_vm_ops`: shm_nattch follows VMA lifetime, not shmat/shmdt.
     vmm::set_shm_vm_ops(ipc::sysv_shm::shm_vma_open, ipc::sysv_shm::shm_vma_close);
     let _ = unsafe { nscg::init() };

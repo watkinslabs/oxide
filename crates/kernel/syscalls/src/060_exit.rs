@@ -192,7 +192,15 @@ pub fn do_exit(status: i32) -> i64 {
             }
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
-            unsafe { task.replace_fd_table(None); task.replace_mm(None); sched::live::reparent_children(task.tid); }
+            unsafe { task.replace_fd_table(None); task.replace_mm(None); }
+            // Linux `do_exit`: `if (group_dead) disassociate_ctty(1)`, after
+            // the files and fs are gone and BEFORE the parent is notified. A
+            // session leader's last thread hangs its terminal up — foreground
+            // group SIGHUP'd, line revoked, every session member's terminal
+            // cleared. The hook's own group-dead test keeps a `pthread_exit`
+            // from touching the session.
+            sched::live::run_disassociate_ctty(task);
+            sched::live::reparent_children(task.tid);
             sched::live::mark_done(task);
             debug_sched! {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");

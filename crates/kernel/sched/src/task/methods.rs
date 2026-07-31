@@ -108,6 +108,17 @@ impl Task {
     /// # C: O(1); # Lk: TaskList
     pub fn set_ctty(&self, tty: Option<vfs::InodeRef>) { self.thread_group.set_ctty(tty); }
 
+    /// Claim the parked `CLONE_CHILD_SETTID` address, and the tid to store
+    /// there, exactly once. Every later return to user mode sees `None`, so a
+    /// task that has already published its tid never writes it again — which is
+    /// what makes it safe to ask on EVERY return instead of only the first.
+    /// # C: O(1)
+    pub fn take_set_child_tid(&self) -> Option<(u64, u32)> {
+        let addr = self.set_child_tid.swap(0, Ordering::AcqRel);
+        if addr == 0 { return None; }
+        Some((addr, self.vtid.load(Ordering::Acquire)))
+    }
+
     /// Debug-smp Task lifetime sentinel. Trips when a stale `Task*` is used after
     /// its allocation was freed/reused, before the later victim object faults.
     /// The task-identity canary (`dbg_canary_head`/`tail`) needs `debug-smp`
@@ -371,11 +382,8 @@ impl Task {
             spawn_ns:   AtomicU64::new(0),
             start_boottime_ns: 0,
             wakeup_deadline_ns: AtomicU64::new(0),
-            cumulative_child_ns: AtomicU64::new(0),
             utime_ns:   AtomicU64::new(0),
             stime_ns:   AtomicU64::new(0),
-            cumulative_child_utime_ns: AtomicU64::new(0),
-            cumulative_child_stime_ns: AtomicU64::new(0),
             alarm_ns:   AtomicU64::new(0),
             alarm_interval_ns: AtomicU64::new(0),
             itimer_virtual_ns: AtomicU64::new(0),
@@ -383,6 +391,7 @@ impl Task {
             itimer_prof_ns: AtomicU64::new(0),
             itimer_prof_interval_ns: AtomicU64::new(0),
             clear_child_tid: AtomicU64::new(0),
+            set_child_tid: AtomicU64::new(0),
             restart_block: super::restart::RestartBlock::new(),
             vfork_pending: AtomicBool::new(false),
             namespaces:      Spinlock::new(Some(TaskNamespaces::initial())),
@@ -423,7 +432,7 @@ impl Task {
             ptrace_stop_rax: AtomicU64::new(0),
             stop_pending:    AtomicBool::new(false),
             cont_pending:    AtomicBool::new(false),
-            stop_signal:     AtomicU8::new(0),
+            stop_code:       AtomicU32::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),

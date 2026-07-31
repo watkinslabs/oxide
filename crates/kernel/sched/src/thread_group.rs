@@ -4,6 +4,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
+pub mod child_acct;
 pub mod shared_signal;
 
 use crate::pid::PidIdentity;
@@ -133,8 +134,19 @@ pub struct ThreadGroup {
     /// so the single-mutator argument that held for a per-task cell does not
     /// hold for shared process state.
     ctty: Spinlock<Option<vfs::InodeRef>, TaskListClass>,
+    /// Linux `signal_struct::tty_old_pgrp`: the foreground process group this
+    /// session's terminal had at the moment it was hung up under us, 0 when
+    /// none was saved. Recorded for session LEADERS only, by the hangup walk.
+    /// The one reader is a leader's exit with no controlling terminal left,
+    /// which owes that group SIGHUP+SIGCONT — without it a job stopped at the
+    /// instant of a carrier drop stays stopped with nothing able to resume it.
+    tty_old_pgrp: AtomicU32,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
+    /// Linux `signal_struct`'s `c*` counters — every reaped child's resource
+    /// use. Process-wide: whichever thread reaps a child, all its siblings'
+    /// `getrusage(RUSAGE_CHILDREN)` / `times(2)` must see the cost.
+    child_acct: child_acct::ChildAcct,
 }
 
 struct ThreadGroupState {
@@ -165,8 +177,10 @@ impl ThreadGroup {
             shared_sigqueue: crate::sigqueue::new_queues(),
             signalfd_poll: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
             ctty: Spinlock::new(None),
+            tty_old_pgrp: AtomicU32::new(0),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
+            child_acct: child_acct::ChildAcct::new(),
         }
     }
 
@@ -175,6 +189,9 @@ impl ThreadGroup {
     pub fn signalfd_poll(&self) -> alloc::sync::Arc<vfs::PollSubscribers> {
         alloc::sync::Arc::clone(&self.signalfd_poll)
     }
+
+    /// Accumulated resource use of every child this process reaped. # C: O(1)
+    pub fn child_acct(&self) -> &child_acct::ChildAcct { &self.child_acct }
 
     /// Process group id shared by every thread of this process. # C: O(1)
     pub fn pgid(&self) -> u32 { self.pgid.load(Ordering::Acquire) }
@@ -230,6 +247,16 @@ impl ThreadGroup {
     pub fn set_ctty(&self, tty: Option<vfs::InodeRef>) {
         let previous = core::mem::replace(&mut *self.ctty.lock(), tty);
         drop(previous);
+    }
+
+    /// The foreground group saved when this session's terminal was hung up
+    /// under it (Linux `signal_struct::tty_old_pgrp`), 0 when none.
+    /// # C: O(1)
+    pub fn tty_old_pgrp(&self) -> u32 { self.tty_old_pgrp.load(Ordering::Acquire) }
+
+    /// Record (or, with 0, forget) the saved foreground group. # C: O(1)
+    pub fn set_tty_old_pgrp(&self, pgrp: u32) {
+        self.tty_old_pgrp.store(pgrp, Ordering::Release);
     }
 
     /// Commit one fully initialized clone-thread member. # C: O(1)

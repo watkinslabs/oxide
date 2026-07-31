@@ -25,8 +25,10 @@ pub unsafe extern "C" fn clone(
         "mov [rsi+8], rcx",    // [sp+8] = arg
         "mov rdi, rdx",        // syscall arg1 = flags
         "mov rdx, r8",         // syscall arg3 = ptid
-        "mov r10, [rsp+8]",    // syscall arg4 = ctid (7th C arg on the stack)
-        "mov r8, r9",          // syscall arg5 = tls
+        // Both supported arches take tls ahead of child_tid:
+        // (flags, stack, parent_tid, tls, child_tid).
+        "mov r10, r9",         // syscall arg4 = tls
+        "mov r8, [rsp+8]",     // syscall arg5 = ctid (7th C arg on the stack)
         "mov eax, 56",         // SYS_clone
         "syscall",
         "test rax, rax",

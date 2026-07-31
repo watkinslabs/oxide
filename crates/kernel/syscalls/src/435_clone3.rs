@@ -1,138 +1,107 @@
-// 435 clone3 — one syscall, one file (docs/53 §0). Moved verbatim from proc.rs.
+// 435 clone3 — one syscall, one file (docs/53 §0). ABI shim only: copy the
+// versioned `struct clone_args`, run the ladders in `clone_abi`, resolve the
+// `CLONE_INTO_CGROUP` descriptor, hand off to the shared clone core.
 #![cfg(target_os = "oxide-kernel")]
 
+use syscall::errno::Errno;
 use syscall::SyscallArgs;
 
-/// `sys_clone3(cl_args, size)` — slot 435. Reads the user
-/// `struct clone_args` (Linux ABI; size is the user's view of the
-/// struct so future fields can be detected via short-write probe)
-/// and routes through the unified clone path. Returns the child
-/// tid in the parent, 0 in the child (the spawn machinery wires
-/// the child's rax via `ArchCtx::new_user_for_fork`).
-///
-/// `struct clone_args` layout (Linux v5.5+):
-///   u64 flags          — CLONE_* bits, low byte = exit_signal.
-///                        clone3 places exit_signal in `exit_signal`
-///                        instead of the bottom byte (kernel ANDs it
-///                        in at entry); we OR them back together.
-///   u64 pidfd          — pidfd writeback.
-///   u64 child_tid      — *ctid (CLONE_CHILD_SETTID/CLEARTID).
-///   u64 parent_tid     — *ptid (CLONE_PARENT_SETTID).
-///   u64 exit_signal
-///   u64 stack          — child stack base.
-///   u64 stack_size     — for stacks-grow-down archs we use top = stack+size.
-///   u64 tls            — CLONE_SETTLS payload.
-///   u64 set_tid        — pid namespace tid array.
-///   u64 set_tid_size
-///   u64 cgroup         — cgroup fd.
-///
-/// # C: O(parent VMAs) | O(1) for CLONE_VM
-pub fn sys_clone3(args: &SyscallArgs) -> i64 {
-    use syscall::errno::Errno;
-    const CLONE3_KNOWN_HIGH: u64 = crate::clone::CLONE_CLEAR_SIGHAND | crate::clone::CLONE_INTO_CGROUP;
-    const CLONE3_KNOWN_FLAGS: u64 = crate::clone::CLONE_LEGACY_FLAGS | CLONE3_KNOWN_HIGH;
-    const PAGE_SIZE: usize = 4096;
-    let cl_args = args.a0;
-    let size    = args.a1 as usize;
-    if size < 64 { return -(Errno::Einval.as_i32() as i64); }
-    if size > PAGE_SIZE { return -(Errno::E2big.as_i32() as i64); }
-    if cl_args == 0 || cl_args >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    if cl_args.checked_add(size as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    if size > 88 {
-        let mut off = 88usize;
+use crate::clone_abi::{
+    self, CloneArgs, CLONE_ARGS_SIZE_VER2, CLONE_INTO_CGROUP, CLONE_PIDFD,
+};
+
+fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// Copy the caller's `struct clone_args` into a full-size, zero-extended
+/// buffer. A caller-declared size shorter than this kernel's struct leaves the
+/// unknown fields zero; a longer one has its unknown tail checked for zero, and
+/// the verdict is returned so the field ladder can turn it into `E2BIG` in the
+/// right order. A fault anywhere is `EFAULT` and outranks both.
+/// # C: O(size)
+fn copy_clone_args(uptr: u64, size: usize) -> Result<(CloneArgs, bool), Errno> {
+    let mut raw = [0u8; CLONE_ARGS_SIZE_VER2];
+    let known = core::cmp::min(size, CLONE_ARGS_SIZE_VER2);
+    uaccess::copy_from_user(&mut raw[..known], uptr)?;
+    let mut tail_zero = true;
+    if size > CLONE_ARGS_SIZE_VER2 {
+        let mut off = CLONE_ARGS_SIZE_VER2;
+        let mut chunk = [0u8; 64];
         while off < size {
-            // SAFETY: cl_args+size validated above; byte tail is within the user-supplied clone_args extension area.
-            if unsafe { core::ptr::read_volatile((cl_args + off as u64) as *const u8) } != 0 {
-                return -(Errno::E2big.as_i32() as i64);
-            }
-            off += 1;
+            let n = core::cmp::min(chunk.len(), size - off);
+            uaccess::copy_from_user(&mut chunk[..n], uptr + off as u64)?;
+            if chunk[..n].iter().any(|b| *b != 0) { tail_zero = false; break; }
+            off += n;
         }
     }
-    // SAFETY: cl_args+size validated above; clone_args struct fields are 8-byte aligned per Linux ABI; CPL=0 reads via caller's AS.
-    let (flags, pidfd_uptr, child_tid, parent_tid, exit_signal, stack, stack_size, tls) = unsafe {
-        let p = cl_args as *const u64;
-        (
-            core::ptr::read_volatile(p.add(0)),
-            core::ptr::read_volatile(p.add(1)),
-            core::ptr::read_volatile(p.add(2)),
-            core::ptr::read_volatile(p.add(3)),
-            core::ptr::read_volatile(p.add(4)),
-            core::ptr::read_volatile(p.add(5)),
-            core::ptr::read_volatile(p.add(6)),
-            core::ptr::read_volatile(p.add(7)),
-        )
+    let mut words = [0u64; CLONE_ARGS_SIZE_VER2 / 8];
+    for (i, w) in words.iter_mut().enumerate() {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&raw[i * 8..i * 8 + 8]);
+        *w = u64::from_le_bytes(b);
+    }
+    Ok((CloneArgs::from_slots(&words), tail_zero))
+}
+
+/// Resolve `clone_args::cgroup` to the cgroup the child is created inside.
+/// # C: O(1)
+fn resolve_cgroup(fd: i32) -> Result<u64, Errno> {
+    let cur = sched::live::current().ok_or(Errno::Esrch)?;
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?;
+    let file = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
+    let inode = file.inode();
+    if inode.file_type() != vfs::FileType::Directory { return Err(Errno::Einval); }
+    cgroup::cgid_from_dir_inode(inode.ino(), inode.fsid()).ok_or(Errno::Einval)
+}
+
+/// `sys_clone3(cl_args, size)` — slot 435. Returns the child's pid in the
+/// parent and 0 in the child.
+/// # C: O(parent VMAs) | O(1) for CLONE_VM
+pub fn sys_clone3(args: &SyscallArgs) -> i64 {
+    let uptr = args.a0;
+    let size = args.a1 as usize;
+    if let Err(e) = clone_abi::clone3_size_ok(size) { return errno(e); }
+    let (cl, tail_zero) = match copy_clone_args(uptr, size) {
+        Ok(v) => v,
+        Err(e) => return errno(e),
     };
-    if (flags & !CLONE3_KNOWN_FLAGS) != 0 { return -(Errno::Einval.as_i32() as i64); }
-    if (flags & crate::clone::CSIGNAL) != 0 { return -(Errno::Einval.as_i32() as i64); }
-    // clone3 keeps exit_signal out of flags; reject values which cannot be
-    // represented in clone(2)'s low-byte CSIGNAL field before merging.
-    if exit_signal > crate::clone::CSIGNAL { return -(Errno::Einval.as_i32() as i64); }
-    if (flags & (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID))
-        == (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID) && pidfd_uptr == parent_tid {
-        return -(Errno::Einval.as_i32() as i64);
+    if let Err(e) = clone_abi::clone3_fields_ok(&cl, size, tail_zero) { return errno(e); }
+    let mut requested = [0u32; clone_abi::MAX_PID_NS_LEVEL];
+    let requested_len = cl.set_tid_size as usize;
+    if requested_len != 0 {
+        let n = requested_len;
+        let mut bytes = [0u8; clone_abi::MAX_PID_NS_LEVEL * 4];
+        if let Err(e) = uaccess::copy_from_user(&mut bytes[..n * 4], cl.set_tid) { return errno(e); }
+        for i in 0..n {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&bytes[i * 4..i * 4 + 4]);
+            requested[i] = u32::from_le_bytes(b);
+        }
+        if let Err(e) = crate::clone::set_requested_pids_ok(&requested[..n]) { return errno(e); }
     }
-    if let Err(e) = crate::clone::validate_clone_core(flags) {
-        return -(e.as_i32() as i64);
-    }
-    if stack == 0 {
-        if stack_size != 0 { return -(Errno::Einval.as_i32() as i64); }
-    } else if stack_size == 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    } else if stack.checked_add(stack_size).map_or(true, |e| e > hal::USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    if (flags & crate::clone::CLONE_PIDFD) != 0
-        && (pidfd_uptr == 0 || pidfd_uptr.checked_add(4).map_or(true, |e| e > hal::USER_VA_END)) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    if size >= 80 {
-        // SAFETY: cl_args+size validated >=80; u64 #9 (offset 72) is in range
-        // and 8-byte aligned; CPL=0 read via caller's AS.
-        let set_tid_size = unsafe { core::ptr::read_volatile((cl_args as *const u64).add(9)) };
-        if set_tid_size != 0 { return -(Errno::Einval.as_i32() as i64); }
-    }
-    // CLONE_INTO_CGROUP (Linux 5.7+): clone_args.cgroup is an fd to a cgroup v2
-    // directory; the child is created directly inside it. systemd's pidfd_spawn
-    // uses this to place service executors in the right cgroup — ignoring it
-    // left children in PID1's cgroup and desynced systemd's cgroup bookkeeping
-    // (the executor's later cg_attach then raced the empty-cgroup cleanup). The
-    // cgroup field is at struct offset 80 (u64 #10); present only when the
-    // caller's `size` covers it.
-    let into_cgid = if (flags & crate::clone::CLONE_INTO_CGROUP) != 0 {
-        if size < 88 { return -(Errno::Einval.as_i32() as i64); }
-        // SAFETY: cl_args+size validated ≥88 above; u64 #10 (offset 80) is in
-        // range and 8-byte aligned; CPL=0 read via caller's AS.
-        let cg_fd = unsafe { core::ptr::read_volatile((cl_args as *const u64).add(10)) } as i32;
-        if cg_fd < 0 { return -(Errno::Ebadf.as_i32() as i64); }
-        let cur = match sched::live::current() {
-            Some(c) => c,
-            None => return -(Errno::Esrch.as_i32() as i64),
-        };
-        // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-        let fdt = match unsafe { cur.fd_table_ref() } {
-            Some(f) => f,
-            None => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        let file = match fdt.get(cg_fd) {
-            Ok(f) => f,
-            Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-        };
-        let inode = file.inode();
-        if inode.file_type() != vfs::FileType::Directory { return -(Errno::Einval.as_i32() as i64); }
-        match cgroup::cgid_from_dir_inode(inode.ino(), inode.fsid()) {
-            Some(id) => Some(id),
-            None => return -(Errno::Einval.as_i32() as i64),
+    let stack_ok = cl.stack == 0
+        || uaccess::access_ok(cl.stack, cl.stack_size as usize);
+    if let Err(e) = clone_abi::clone3_flags_ok(&cl, stack_ok) { return errno(e); }
+    let into_cgid = if (cl.flags & CLONE_INTO_CGROUP) != 0 {
+        match resolve_cgroup(cl.cgroup as i32) {
+            Ok(id) => Some(id),
+            Err(e) => return errno(e),
         }
     } else {
         None
     };
-    let user_sp = stack + stack_size;
-    let merged_flags = flags | exit_signal;
-    crate::clone::sys_clone_dispatch(
-        args, merged_flags, user_sp, parent_tid, pidfd_uptr, child_tid, tls, into_cgid,
-    )
+    if (cl.flags & CLONE_PIDFD) != 0 && !uaccess::access_ok(cl.pidfd, core::mem::size_of::<i32>()) {
+        return errno(Errno::Efault);
+    }
+    crate::clone::sys_clone_dispatch(clone_abi::CloneRequest {
+        flags: cl.flags,
+        exit_signal: cl.exit_signal as u32,
+        child_stack: clone_abi::clone3_child_sp(&cl),
+        parent_tid: cl.parent_tid,
+        pidfd: cl.pidfd,
+        child_tid: cl.child_tid,
+        tls: cl.tls,
+        into_cgroup: into_cgid,
+        set_tid: &requested[..requested_len],
+    })
 }

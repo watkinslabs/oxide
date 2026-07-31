@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use super::CLONE_FILES;
+use crate::clone_abi::CLONE_FILES;
 
 /// Inherit the caller's descriptor table under Linux clone semantics.
 /// # C: O(open fds) without `CLONE_FILES`; O(1) with it

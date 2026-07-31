@@ -499,34 +499,13 @@ pub(super) fn handle_tty_ioctl(
             let cur = match sched::live::current() {
                 Some(c) => c, None => return -(Errno::Enotty.as_i32() as i64),
             };
-            use core::sync::atomic::Ordering;
-            let ctty_ino = cur.ctty_ino();
-            if ctty_ino != Some(ino) { return -(Errno::Enotty.as_i32() as i64); }
-            let target = crate::tty_hangup::resolve(ino);
-            // `disassociate_ctty(0)` returns immediately for a non-leader
-            // (`tty_jobctrl.c:269-270`); only `proc_clear_tty` runs for it.
-            let my_pid = { let v = cur.vtgid.load(Ordering::Acquire);
-                if v != 0 { v } else { cur.tgid.load(Ordering::Acquire) } };
-            let my_sid = cur.sid();
-            if my_sid != 0 && my_sid == my_pid {
-                if let Some(t) = &target {
-                    // (1) SIGHUP + SIGCONT to the tty's foreground process group
-                    // (`tty_jobctrl.c:277-286`, `on_exit == 0` so both go out).
-                    let fg = crate::tty_hangup::foreground_pgrp(t);
-                    if fg != 0 {
-                        for task in sched::live::registry::tasks_in_pgrp(fg) {
-                            sched::live::send_sig_priv_group(&task, sched::Signum::Sighup as u32);
-                            sched::live::send_sig_priv_group(&task, sched::Signum::Sigcont as u32);
-                        }
-                    }
-                    // (2) clear tty->ctrl.session / tty->ctrl.pgrp — detach, do
-                    // NOT revoke: TIOCNOTTY is not a hangup.
-                    crate::tty_hangup::clear_linkage(t);
-                }
-                // (3) `session_clear_tty(task_session(current))`: every member
-                // of the session loses this terminal.
-                tty::hangup::clear_session_ctty(ino, my_sid);
-            }
+            if cur.ctty_ino() != Some(ino) { return -(Errno::Enotty.as_i32() as i64); }
+            // `disassociate_ctty(0)`: SIGHUP+SIGCONT the foreground group,
+            // detach the terminal from the session WITHOUT revoking the line,
+            // and clear it from every session member. A non-leader gets none
+            // of that. The ladder is shared with the exit-time form so the two
+            // cannot disagree about what a session leader owes its terminal.
+            crate::tty_hangup::disassociate_ctty(&cur, tty::hangup::DisassociateCause::Notty);
             // `proc_clear_tty(tsk)` — unconditional, leader or not.
             cur.set_ctty(None);
             0

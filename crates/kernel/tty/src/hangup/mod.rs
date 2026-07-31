@@ -13,18 +13,25 @@
 // terminal.
 //
 // Module manifest:
-// - `decide`: pure per-task rule + the syscall's own admission ladder.
-// - `live`:   the session walk (needs `sched::live`), kernel-gated.
-// - `tests`:  hosted tests for both.
+// - `decide`:      pure per-task rule + the syscall's own admission ladder.
+// - `disassociate`: pure `disassociate_ctty` ladder — a session leader's exit
+//                  and TIOCNOTTY.
+// - `live`:        the session walk + pgrp signalling (needs `sched::live`),
+//                  kernel-gated.
+// - `tests`:       hosted tests for the decide/vhangup halves.
 
 mod decide;
 pub use decide::{session_member_action, vhangup_decision, HangupKind, SessionMemberAction,
     VhangupOutcome};
 
+pub mod disassociate;
+pub use disassociate::{disassociate_ctty, CttyFacts, DisassociateActions, DisassociateCause,
+    PgrpSignal};
+
 #[cfg(target_os = "oxide-kernel")]
 mod live;
 #[cfg(target_os = "oxide-kernel")]
-pub use live::{clear_session_ctty, hangup_session};
+pub use live::{clear_session_ctty, hangup_session, signal_pgrp};
 
 #[cfg(test)]
 mod tests;

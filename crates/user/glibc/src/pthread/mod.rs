@@ -60,7 +60,9 @@ core::arch::global_asm!(
     ".globl __oxide_clone",
     ".type __oxide_clone,@function",
     "__oxide_clone:",
-    "  mov r10, rcx",        // ctid -> syscall arg4
+    // x86_64 clone: flags, stack, ptid, tls, ctid — tls precedes ctid.
+    "  mov r10, r8",         // tls  -> syscall arg4
+    "  mov r8, rcx",         // ctid -> syscall arg5
     "  mov eax, 56",         // SYS_clone
     "  syscall",
     "  test rax, rax",

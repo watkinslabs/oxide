@@ -33,10 +33,10 @@ mod pidns;
 mod ns_reboot;
 mod terminate;
 pub use reparent::{reap_orphans, reparent_children};
-pub use pidns::{in_initial_pid_namespace, initial_init_task, namespace_child_reaper, pid_namespace_chain, zap_pid_namespace};
+pub use pidns::{in_initial_pid_namespace, is_namespace_init, initial_init_task, namespace_child_reaper, pid_namespace_chain, zap_pid_namespace};
 pub use ns_reboot::{apply_pid_namespace_reboot_status, set_pid_namespace_reboot};
 pub use terminate::terminate_current_with_signal;
-use notify::{accrue_child_time, child_exit_info, exit_notify_decision, reparent_child_event, send_child_event};
+use notify::{accrue_child_rusage, child_exit_info, exit_notify_decision, reparent_child_event, send_child_event};
 #[cfg(test)]
 mod tests;
 
@@ -108,7 +108,7 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     // CLD_*), standard or real-time alike — one record shape for every
     // notification signal.
     let notify = parent.as_ref().and_then(|p| {
-        accrue_child_time(&task, p);
+        accrue_child_rusage(&task, p);
         decision.signal.map(|signo| (signo, child_exit_info(&task, signo)))
     });
     if decision.autoreap { registry::mark_reaped(&task); }

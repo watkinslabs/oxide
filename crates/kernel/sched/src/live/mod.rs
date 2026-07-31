@@ -267,3 +267,37 @@ pub fn run_sysvsem_exit(tgid: u32) {
     let f: SysvSemExitFn = unsafe { core::mem::transmute(p) };
     f(tgid);
 }
+
+/// Controlling-terminal disassociation for the last thread of a dying process
+/// (Linux `do_exit`'s `disassociate_ctty(1)`), installed at boot by kmain.
+///
+/// Same hook shape and same reason as `RobustExitFn`: resolving a terminal
+/// inode to its device needs the console / devpts drivers, which already
+/// depend on `sched`, so a direct dependency the other way would cycle.
+///
+/// Both exit paths drive it — the `exit`/`exit_group` syscalls and the
+/// fatal-signal path — because a session leader killed by SIGSEGV owes its
+/// session exactly the same hangup as one that called `exit(2)`. Without it a
+/// terminal keeps a dead session's id, its foreground group never gets SIGHUP,
+/// and every task left in the session still points at a terminal nothing owns.
+pub type DisassociateCttyFn = fn(&crate::Task);
+static DISASSOCIATE_CTTY_HOOK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1)
+pub fn set_disassociate_ctty_hook(f: DisassociateCttyFn) {
+    DISASSOCIATE_CTTY_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Disassociate `task`'s controlling terminal, if it is the last thread of its
+/// process. No-op if the hook is unset (early boot) or the process still has
+/// live threads — a `pthread_exit` never hangs its session up.
+/// # C: O(N_tasks) via the installed walk
+pub fn run_disassociate_ctty(task: &crate::Task) {
+    if !task.thread_group.is_single_member() { return; }
+    let p = DISASSOCIATE_CTTY_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: hook installed via set_disassociate_ctty_hook with the documented DisassociateCttyFn signature; Acquire load pairs with the Release store in the setter; ptr is a valid 'static fn address.
+    let f: DisassociateCttyFn = unsafe { core::mem::transmute(p) };
+    f(task);
+}

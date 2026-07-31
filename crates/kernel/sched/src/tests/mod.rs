@@ -17,6 +17,7 @@
 // - timing: rlimit, clock, preempt, and RCU helper behavior.
 // - ucounts: per-user RLIMIT_NPROC charge, fork EAGAIN gate, deferred execve.
 // - umask: fs_struct-owned umask(2) sharing across CLONE_FS / fork / unshare.
+// - wait_events: wait(2) child stop/continue selection + wait-rusage folding.
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
 mod affinity;
@@ -40,4 +41,5 @@ mod task;
 mod timing;
 mod ucounts;
 mod umask;
+mod wait_events;
 mod wake_list;

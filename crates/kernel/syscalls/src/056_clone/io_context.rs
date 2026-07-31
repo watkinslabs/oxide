@@ -1,4 +1,4 @@
-use super::CLONE_IO;
+use crate::clone_abi::CLONE_IO;
 
 /// Inherit the caller's I/O priority context under Linux clone semantics.
 ///

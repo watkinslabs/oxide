@@ -47,6 +47,14 @@ pub fn pid_namespace_chain(task: &Task) -> alloc::vec::Vec<u64> {
     out
 }
 
+/// Whether `task` is the init of its own pid namespace — the task signals it
+/// did not ask for cannot kill. Such a task must not gain siblings: nothing
+/// would reap them.
+/// # C: O(1)
+pub fn is_namespace_init(task: &Task) -> bool {
+    task.vtgid.load(core::sync::atomic::Ordering::Acquire) == 1
+}
+
 /// Whether `task` lives in the INITIAL pid namespace — the qualifier that
 /// turns "vpid 1" into Linux's `is_global_init`. # C: O(1)
 pub fn in_initial_pid_namespace(task: &Task) -> bool {
