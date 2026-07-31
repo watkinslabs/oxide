@@ -71,14 +71,46 @@ pub(crate) unsafe fn kernel_stack_top() -> *mut u8 {
 pub(super) static DTB_PHYS_ADDR: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0);
 
-/// Bootloader cmdline storage (mirrors x86_64). Holds the FDT
-/// /chosen/bootargs bytes copied out of the bootloader region.
+/// Bootloader cmdline storage (mirrors x86_64). Holds the bytes copied out of
+/// whichever bootloader transport carried them — EFI `LoadOptions` or the FDT
+/// `/chosen/bootargs`.
 const CMDLINE_BUF_LEN: usize = 4096;
 #[repr(C, align(8))]
 struct CmdlineStorage(UnsafeCell<[u8; CMDLINE_BUF_LEN]>);
 unsafe impl Sync for CmdlineStorage {}
 static CMDLINE_STORAGE: CmdlineStorage =
     CmdlineStorage(UnsafeCell::new([0u8; CMDLINE_BUF_LEN]));
+
+/// Publish the command line the EFI stub decoded from the loaded-image
+/// protocol's `LoadOptions`. No-op when we did not boot via EFI or the
+/// firmware supplied none, leaving the DTB path (and then the arch default)
+/// to run.
+///
+/// Ordering: EFI load options outrank `/chosen/bootargs`, matching how the
+/// arm64 EFI boot protocol treats them — a bootloader that sets both means
+/// the load options, and this firmware publishes no device tree at all, so
+/// the load options are usually the only line in existence.
+/// # SAFETY: called once from the boot path; CMDLINE_STORAGE is a
+/// single-writer 'static slot and no procfs read can race it yet.
+/// # C: O(cmdline_len)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) unsafe fn capture_cmdline_from_efi() {
+    if !cmdline::get().is_empty() { return; }
+    let n = selfboot::EFI_CMDLINE_LEN.load(core::sync::atomic::Ordering::Acquire) as usize;
+    let n = n.min(selfboot::EFI_CMDLINE_MAX);
+    if n == 0 { return; }
+    // SAFETY: dst is the 'static CMDLINE_STORAGE; sole writer here.
+    let dst = unsafe { &mut *CMDLINE_STORAGE.0.get() };
+    let n = n.min(CMDLINE_BUF_LEN - 1);
+    for i in 0..n { dst[i] = selfboot::EFI_CMDLINE[i].load(core::sync::atomic::Ordering::Acquire); }
+    let mut total = n;
+    // Linux convention: /proc/cmdline ends with '\n'.
+    if total < CMDLINE_BUF_LEN - 1 { dst[total] = b'\n'; total += 1; }
+    // SAFETY: dst[..total] is initialised and 'static.
+    let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts(dst.as_ptr(), total) };
+    // SAFETY: cmdline::set is boot-only single-writer.
+    unsafe { cmdline::set(bytes); }
+}
 
 /// Parse the DTB blob's /chosen/bootargs property and publish it via
 /// `cmdline::set`. No-op if the DTB is missing/invalid or `bootargs`

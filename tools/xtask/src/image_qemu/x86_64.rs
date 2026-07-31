@@ -17,10 +17,11 @@ pub(super) fn build_grub_iso(
     let _ = fs::remove_dir_all(&stage);
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(kernel_elf, stage.join(format!("boot/oxide-{arch}"))).map_err(|_| 1u8)?;
+    let args = super::bootargs::kernel_cmdline(arch, &format!("/boot/oxide-{arch}"));
     let cfg = format!(
         "set timeout=0\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
          menuentry \"oxide (multiboot2)\" {{\n    \
-         multiboot2 /boot/oxide-{arch} BOOT_IMAGE=/boot/oxide-{arch} root=/dev/oxide0 rw quiet console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.debug_shell=ttyS0\n    \
+         multiboot2 /boot/oxide-{arch} {args}\n    \
          boot\n}}\n");
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = crate::buildns::iso_path(repo, id, arch);
