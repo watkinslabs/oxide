@@ -77,11 +77,13 @@ pub fn sys_fadvise64(args: &SyscallArgs) -> i64 {
             // populate anything.
             let size = mapping.size();
             let end = core::cmp::min((endbyte as u64).saturating_add(1), size);
-            let mut off = (offset as u64) & !(PAGE - 1);
-            let mut page = alloc::vec![0u8; PAGE as usize];
-            while off < end {
-                if !mapping.mincore_page(off) { let _ = mapping.read_at(off, &mut page); }
-                off = match off.checked_add(PAGE) { Some(n) => n, None => break };
+            let first = (offset as u64) / PAGE;
+            if end > first * PAGE {
+                let nr = (end - first * PAGE).div_ceil(PAGE);
+                // ONE call, so a backend that can fetch a run in a single device
+                // operation does. The page-at-a-time `read_at` loop this replaces
+                // also copied every page into a scratch buffer it threw away.
+                mapping.readahead(first, nr);
             }
         }
         POSIX_FADV_DONTNEED => {

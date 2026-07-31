@@ -364,6 +364,18 @@ impl File {
         (ra.start, ra.size, ra.async_size)
     }
 
+    /// Advance the readahead window and hand it to the address space to fill
+    /// (Linux `page_cache_sync_readahead` -> `page_cache_ra_unbounded`). This
+    /// is the ONE place the window computed by [`File::ra_ondemand`] becomes
+    /// I/O; without it `ra_pages` — and therefore every `posix_fadvise` hint
+    /// that sets it — is dead state.
+    /// # C: O(window) on a miss
+    pub fn submit_readahead(&self, index: u64, req: u32) {
+        let (start, size, _async_size) = self.ra_ondemand(index, req, false);
+        if size == 0 { return; } // FADV_RANDOM: no readahead for this open
+        if let Some(m) = self.inode.i_mapping() { m.readahead(start, size as u64); }
+    }
+
     /// Per-close flush (Linux `file_operations->flush`, fired by
     /// `filp_close` on every `close(2)`/`dup2`-replace/cloexec drop —
     /// NOT only the last). Dispatches through this open file description's

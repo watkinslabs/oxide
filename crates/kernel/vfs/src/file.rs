@@ -39,7 +39,7 @@ mod lifetime;
 mod model;
 mod mode;
 mod open;
-mod readahead;
+pub(crate) mod readahead;
 mod fsync;
 
 pub use async_notify::{band_for, owner_type, deliver as deliver_fasync, fasync_register, fasync_registered, fasync_unregister, kill_fasync, reason, reason_for_mask, set_sigio_hook, sicode_for, AsyncSignal};
