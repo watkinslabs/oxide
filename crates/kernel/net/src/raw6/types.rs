@@ -72,6 +72,9 @@ pub(super) struct Raw6State {
 pub struct Raw6Endpoint {
     pub owner: Arc<crate::SocketOwner>,
     protocol: u8,
+    /// Kernel-owned echo identifier, present only on an ICMP datagram endpoint.
+    /// `None` is a raw endpoint, which demultiplexes by next header instead.
+    pub ping: Option<Arc<crate::ping::PingIdent>>,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
     pub error: Arc<SocketError>,
@@ -93,8 +96,23 @@ impl Raw6Endpoint {
     pub fn new_owned(owner: Arc<crate::SocketOwner>, protocol: u8,
                bpf_filter: Arc<SocketFilter>, mcast: Arc<SocketMcast>,
                error: Arc<SocketError>) -> Self {
+        Self::new_inner(owner, protocol, None, bpf_filter, mcast, error)
+    }
+
+    /// Build one ICMP datagram endpoint whose identifier the kernel owns. # C: O(1)
+    pub fn new_ping(owner: Arc<crate::SocketOwner>, bpf_filter: Arc<SocketFilter>,
+               mcast: Arc<SocketMcast>, error: Arc<SocketError>,
+               reuse: Arc<core::sync::atomic::AtomicI32>) -> Self {
+        let ident = crate::ping::new_ident(crate::ping::PingFamily::V6, reuse);
+        Self::new_inner(owner, crate::icmpv6::IPPROTO_ICMPV6, Some(ident), bpf_filter, mcast, error)
+    }
+
+    fn new_inner(owner: Arc<crate::SocketOwner>, protocol: u8,
+               ping: Option<Arc<crate::ping::PingIdent>>,
+               bpf_filter: Arc<SocketFilter>, mcast: Arc<SocketMcast>,
+               error: Arc<SocketError>) -> Self {
         Self {
-            owner, protocol, bpf_filter, mcast, error,
+            owner, protocol, ping, bpf_filter, mcast, error,
             state: Spinlock::new(Raw6State {
                 accepting: true, local: Raw6Address::UNSPECIFIED, explicit_local: false, peer: None,
                 bound_iface: None, datagrams: VecDeque::new(), queued_bytes: 0,
@@ -110,6 +128,28 @@ impl Raw6Endpoint {
 
     /// Exact IPv6 Next Header selected at socket creation. # C: O(1)
     pub const fn protocol(&self) -> u8 { self.protocol }
+
+    /// Whether this endpoint is an ICMP datagram endpoint rather than a raw
+    /// one: it owns an echo identifier and rejects the raw-only options. # C: O(1)
+    pub fn is_ping(&self) -> bool { self.ping.is_some() }
+
+    /// The kernel-assigned echo identifier, zero while unbound. # C: O(1)
+    pub fn ping_ident(&self) -> u16 {
+        self.ping.as_ref().map_or(0, |ident| ident.ident())
+    }
+
+    /// Publish one already-matched receive record. # C: O(payload)
+    pub(crate) fn enqueue(&self, datagram: Raw6Datagram) -> bool {
+        let mut state = self.state.lock();
+        if !state.accepting { return false; }
+        let bytes = datagram.payload.len();
+        if state.queued_bytes.saturating_add(bytes) > state.rcvbuf { return false; }
+        state.datagrams.push_back(datagram);
+        state.queued_bytes += bytes;
+        drop(state);
+        self.notify_receive();
+        true
+    }
 
     /// Network namespace owning this endpoint and its table entry. # C: O(1)
     pub fn net_ns(&self) -> u64 { self.owner.net_ns() }
@@ -133,8 +173,9 @@ impl Raw6Endpoint {
         state.bound_iface = iface;
     }
 
-    /// Validate native IPv6 namespace/device ownership before binding. # C: O(N)
-    pub fn bind_checked(&self, local: Raw6Address, iface: Option<NetIfaceId>) -> crate::netdev::NetResult<()> {
+    /// Validate native IPv6 namespace/device ownership of a candidate local
+    /// address without publishing it. # C: O(N)
+    pub fn check_local(&self, local: Raw6Address, iface: Option<NetIfaceId>) -> crate::netdev::NetResult<()> {
         if local.addr.to_v4_mapped().is_some() { return Err(crate::netdev::NetError::Eaddrnotavail); }
         let net_ns = self.net_ns();
         if !local.addr.is_unspecified() && !crate::global_stack().v6_addr_snapshot_in(net_ns)
@@ -142,6 +183,12 @@ impl Raw6Endpoint {
         {
             return Err(crate::netdev::NetError::Eaddrnotavail);
         }
+        Ok(())
+    }
+
+    /// Validate native IPv6 namespace/device ownership before binding. # C: O(N)
+    pub fn bind_checked(&self, local: Raw6Address, iface: Option<NetIfaceId>) -> crate::netdev::NetResult<()> {
+        self.check_local(local, iface)?;
         self.bind(local, iface);
         Ok(())
     }

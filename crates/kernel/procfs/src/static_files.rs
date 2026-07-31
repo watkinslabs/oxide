@@ -228,6 +228,8 @@ pub fn register_static_files() {
     crate::reg::register("/proc/net/unix", crate::net::make_proc_net_unix());
     crate::reg::register("/proc/net/raw", crate::net_raw::make_proc_net_raw());
     crate::reg::register("/proc/net/raw6", crate::net_raw::make_proc_net_raw6());
+    crate::reg::register("/proc/net/icmp", crate::net_icmp::make_proc_net_icmp());
+    crate::reg::register("/proc/net/icmp6", crate::net_icmp::make_proc_net_icmp6());
     crate::reg::register(
         "/proc/net/netlink",
         StaticFileInode::new(

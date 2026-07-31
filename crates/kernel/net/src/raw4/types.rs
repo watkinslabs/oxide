@@ -72,6 +72,9 @@ impl Default for Raw4TxOptions {
 pub struct Raw4Endpoint {
     protocol: u8,
     pub owner: Arc<crate::SocketOwner>,
+    /// Kernel-owned echo identifier, present only on an ICMP datagram endpoint.
+    /// `None` is a raw endpoint, which demultiplexes by protocol instead.
+    pub ping: Option<Arc<crate::ping::PingIdent>>,
     state: Spinlock<EndpointState, LockClass>,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
@@ -102,9 +105,27 @@ impl Raw4Endpoint {
     pub fn new_owned_with_pmtudisc(protocol: u8, owner: Arc<crate::SocketOwner>,
                bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
+        Self::new_inner(protocol, owner, None, bpf, mcast, error, ip_mtu_discover)
+    }
+
+    /// Build one ICMP datagram endpoint whose identifier the kernel owns. # C: O(1)
+    pub fn new_ping(owner: Arc<crate::SocketOwner>, bpf: Arc<SocketFilter>,
+               mcast: Arc<SocketMcast>, error: Arc<SocketError>,
+               reuse: Arc<core::sync::atomic::AtomicI32>,
+               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
+        let ident = crate::ping::new_ident(crate::ping::PingFamily::V4, reuse);
+        Self::new_inner(crate::addr::IpProto::Icmp as u8, owner, Some(ident), bpf, mcast, error,
+            ip_mtu_discover)
+    }
+
+    fn new_inner(protocol: u8, owner: Arc<crate::SocketOwner>,
+               ping: Option<Arc<crate::ping::PingIdent>>, bpf: Arc<SocketFilter>,
+               mcast: Arc<SocketMcast>, error: Arc<SocketError>,
+               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
             owner,
+            ping,
             state: Spinlock::new(EndpointState {
                 local: Ipv4Addr::ANY,
                 explicit_local: false,
@@ -130,6 +151,15 @@ impl Raw4Endpoint {
 
     /// Exact IPv4 protocol selected at socket creation. # C: O(1)
     pub fn protocol(&self) -> u8 { self.protocol }
+
+    /// Whether this endpoint is an ICMP datagram endpoint rather than a raw
+    /// one: it owns an echo identifier and rejects the raw-only options. # C: O(1)
+    pub fn is_ping(&self) -> bool { self.ping.is_some() }
+
+    /// The kernel-assigned echo identifier, zero while unbound. # C: O(1)
+    pub fn ping_ident(&self) -> u16 {
+        self.ping.as_ref().map_or(0, |ident| ident.ident())
+    }
 
     /// Whether the endpoint still accepts traffic from its network namespace. # C: O(1)
     pub fn is_accepting(&self) -> bool { self.state.lock().accepting }
@@ -159,8 +189,9 @@ impl Raw4Endpoint {
         Ok(())
     }
 
-    /// Validate namespace/device ownership before publishing a local bind. # C: O(N)
-    pub fn bind_checked(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
+    /// Validate namespace/device ownership of a candidate local address without
+    /// publishing it. # C: O(N)
+    pub fn check_local(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
         if !local.is_unspecified() {
             let net_ns = self.net_ns();
             let owned = crate::iface_addr::snapshot_ns(net_ns).into_iter()
@@ -171,6 +202,12 @@ impl Raw4Endpoint {
                 });
             if !owned { return Err(NetError::Eaddrnotavail); }
         }
+        Ok(())
+    }
+
+    /// Validate namespace/device ownership before publishing a local bind. # C: O(N)
+    pub fn bind_checked(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
+        self.check_local(local, iface)?;
         self.bind(local, iface)
     }
 

@@ -9,6 +9,21 @@ use super::uapi::*;
 pub(super) fn raw_setsockopt(sock: &Arc<net::sock::InetSocket>, level: u64,
                             optname: u64, optval: u64, optlen: u32) -> Option<i64> {
     let kind = sock.kind.lock();
+    // An ICMP datagram endpoint is not a raw socket: the caller-supplied-header
+    // and message-filter options are not registered for it at any level.
+    let ping = match &*kind {
+        net::sock::SockKind::Raw4(endpoint) => endpoint.is_ping(),
+        net::sock::SockKind::Raw6(endpoint) => endpoint.is_ping(),
+        _ => false,
+    };
+    if ping {
+        return match (level, optname) {
+            (IPPROTO_IP, IP_HDRINCL) | (IPPROTO_RAW, ICMP_FILTER)
+            | (IPPROTO_IPV6, IPV6_HDRINCL) | (IPPROTO_IPV6 | IPPROTO_RAW, IPV6_CHECKSUM)
+            | (SOL_ICMPV6, ICMP6_FILTER) => Some(errno(Errno::Enoprotoopt)),
+            _ => None,
+        };
+    }
     match (&*kind, level, optname) {
         (net::sock::SockKind::Raw4(endpoint), IPPROTO_IP, IP_HDRINCL) => {
             let value = match copy_u8_or_i32(optval, optlen) {

@@ -41,6 +41,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
+        smoke-ping smoke-ping-x86 smoke-ping-arm \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
 
@@ -157,6 +158,16 @@ smoke: smoke-x86 smoke-arm
 # reaches /proc/cmdline on both arches (different transport per arch:
 # multiboot2 tag on x86_64, EFI LoadOptions on aarch64).
 CMDLINE_SMOKE_TIMEOUT ?= 900
+# Echo-probe gate — runs the distribution's own ping(8) inside the guest as an
+# ordinary user with no capabilities, over the serial debug shell (no guest
+# networking, no sshd). A pass proves the ICMP datagram endpoint class end to
+# end: group admission, kernel-assigned identifier, and reply demultiplexing.
+smoke-ping-x86:
+	python3 tools/guest-ping-check.py x86 $(SMOKE_TIMEOUT)
+smoke-ping-arm:
+	python3 tools/guest-ping-check.py arm $(SMOKE_TIMEOUT)
+smoke-ping: smoke-ping-x86 smoke-ping-arm
+
 smoke-cmdline-x86: x86
 	./tools/boot-smoke-cmdline.sh x86 $(CMDLINE_SMOKE_TIMEOUT)
 smoke-cmdline-arm: arm
