@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::namei_common::{
     read_user_path, errno_from_vfs, strip_trailing_slash, resolve_create_parent_at,
-    render_child_path, child_exists, parent_mount_readonly, drop_child_cache,
+    render_child_path, parent_mount_readonly, drop_child_cache,
 };
 
 /// `mkdir(path, mode)` slot 83.
@@ -43,15 +43,18 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
         return rv;
     }
-    match child_exists(&parent, &name) {
-        Ok(true) => {
+    // `filename_mkdirat` asks the walker for a directory, so a trailing
+    // slash agrees with the request and only the EEXIST leg applies.
+    match crate::namei_common::check_create_leaf(
+        &parent, &name, raw, crate::path_ops_policy::CreateKind::Dir) {
+        Ok(()) => {}
+        Err(rv) if rv == -(Errno::Eexist.as_i32() as i64) => {
             #[cfg(feature = "debug-udevdb")]
             crate::namei_common::trace_udevdb_path(b"mkdir", &p, -(Errno::Eexist.as_i32() as i64));
             #[cfg(feature = "debug-mount")]
             if p.contains("/run/systemd/journal") { crate::mount_common::mnt_log("mkdir_eexist", &p, -(Errno::Eexist.as_i32() as i64)); }
-            return -(Errno::Eexist.as_i32() as i64);
+            return rv;
         }
-        Ok(false) => {}
         Err(rv) => {
             #[cfg(feature = "debug-udevdb")]
             crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);

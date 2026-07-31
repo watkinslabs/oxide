@@ -173,6 +173,31 @@ pub fn readlink(p: &Path) -> (Outcome, Option<String>) {
     (Outcome::ok(rv as i64), Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
+/// `readlinkat(2)` through the RAW syscall with a caller-chosen `bufsiz`.
+/// glibc's wrapper takes a `size_t`, which cannot express the negative value
+/// the kernel's signed `bufsiz` gate rejects, so the raw form is the only way
+/// to observe that rule — and the only way to observe truncation at an exact
+/// buffer size. Returns the kernel's own return value (the copied length).
+pub fn readlink_bufsiz(p: &Path, bufsiz: i32) -> Outcome {
+    let c = cpath(p);
+    let mut buf = vec![0u8; bufsiz.max(0) as usize + 1];
+    // SAFETY: c is a live CString; buf is a local Vec at least `bufsiz` long;
+    // syscall(2) with SYS_readlinkat's exact 4-argument signature.
+    let rv = unsafe {
+        libc::syscall(libc::SYS_readlinkat, libc::AT_FDCWD, c.as_ptr(),
+                      buf.as_mut_ptr() as *mut libc::c_char, bufsiz as libc::c_int)
+    };
+    Outcome::from_host(rv)
+}
+
+/// `mknod(2)` — FIFOs and sockets need no privilege, so a `S_IFIFO` node is
+/// the portable way to exercise the create family's non-directory leg.
+pub fn mknod(p: &Path, mode: u32, dev: u64) -> Outcome {
+    let c = cpath(p);
+    // SAFETY: c is a NUL-terminated CString kept alive for this call.
+    Outcome::from_host(unsafe { libc::mknod(c.as_ptr(), mode as libc::mode_t, dev as libc::dev_t) } as i64)
+}
+
 /// `mode_t` bits actually relevant here; `st_mode & S_IFMT` for a directory
 /// check, `errno` on failure. Kept minimal — full stat-struct differential
 /// is out of this lane's scope (see README "not covered").
