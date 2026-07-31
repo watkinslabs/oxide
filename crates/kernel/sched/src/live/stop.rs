@@ -72,16 +72,18 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32) {
         value: status_sig as u64,
         sys:   None, fault: None
     };
-    // wait4 wake BEFORE the signal wake: `wake_wait4_parent` only claims a
-    // waiter it observes as `Sleeping`, so a generic signal wake first would
-    // leave the WAITERS entry stale (`zombies::claim_wake`). `send_signal`
-    // wakes as part of publishing, so the send has to come second.
-    if n.wake_parent { crate::live::zombies::wake_wait4_parent(parent.tid); }
     // `do_notify_parent_cldstop` is `__group_send_sig_info(SIGCHLD, &info,
     // parent)` — PROCESS-directed, so any thread of a threaded supervisor can
     // collect the stop event even when its leader blocks SIGCHLD.
+    //
+    // The send comes BEFORE the `wait4` wake, the same order `zombies` uses: a
+    // waiter must never be roused ahead of the event it will inspect. The cost
+    // is a `WAITERS` entry that stays parked because `wake_wait4_parent` only
+    // claims a waiter it still observes as `Sleeping`, which the dedup guard in
+    // `park_for_wait4` already handles.
     if n.signal {
         let _ = crate::live::send::send_signal(&parent, crate::Signum::Sigchld as u32,
             crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
     }
+    if n.wake_parent { crate::live::zombies::wake_wait4_parent(parent.tid); }
 }

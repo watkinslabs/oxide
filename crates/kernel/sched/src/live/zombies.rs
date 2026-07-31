@@ -116,20 +116,26 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     // jobs still in it (Linux `exit_notify` -> `kill_orphaned_pgrp(group_leader,
     // NULL)`), so POSIX 3.2.2.2's SIGHUP+SIGCONT is owed before the parent runs.
     orphan::kill_orphaned_pgrp(&task, None);
-    // `wake_parent` covers the autoreap case: a parent blocked in `wait4` must
-    // still be roused so it can observe that no child remains and return ECHILD.
-    // It runs BEFORE the send for the reason `live::stop` documents:
-    // `wake_wait4_parent` only claims a waiter it observes as `Sleeping`.
-    if decision.wake_parent || !decision.autoreap { wake_wait4_parent(parent_tid); }
     // `do_notify_parent` is `__group_send_sig_info(sig, &info, parent)` —
     // PROCESS-directed. The shared set is where the record belongs, so a
     // threaded supervisor whose leader blocks SIGCHLD can hand the child event
     // to a worker thread, and `signalfd`/`rt_sigtimedwait` on any thread of the
     // process observes it.
+    //
+    // Publication order is strict and the send comes FIRST: `sys_wait4` drops a
+    // pending SIGCHLD once it reaps the last zombie, so a parent roused by the
+    // `wait4` wake below could reap, clear, and only then receive this send —
+    // leaving a SIGCHLD with no child behind it, whose handler re-waits, gets
+    // ECHILD, and corrupts the shell's `$?` (F237). The reverse order costs at
+    // most a `WAITERS` entry the dedup guard in `park_for_wait4` already
+    // tolerates.
     if let (Some(p), Some((signo, info))) = (parent, notify) {
         let _ = super::send::send_signal(&p, signo,
             crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
     }
+    // `wake_parent` covers the autoreap case: a parent blocked in `wait4` must
+    // still be roused so it can observe that no child remains and return ECHILD.
+    if decision.wake_parent || !decision.autoreap { wake_wait4_parent(parent_tid); }
 }
 
 

@@ -120,7 +120,7 @@ pub fn complete_signal(leader_tid: u32, sig: u32) -> bool {
 /// # C: O(N_threads)
 pub fn signalfd_notify(leader_tid: u32, sig: u32) {
     let Some(bit) = crate::signum::bit_for(sig) else { return };
-    let mut notify = |t: &alloc::sync::Arc<crate::Task>| {
+    let notify = |t: &alloc::sync::Arc<crate::Task>| {
         if t.sigmask.load(Ordering::Acquire) & bit == 0 { return; }
         wake_if_sleeping(t);
     };
