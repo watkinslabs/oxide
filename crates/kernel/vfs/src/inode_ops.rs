@@ -85,45 +85,47 @@ pub trait InodeOps: Send + Sync {
 
     /// `i_op->create` — create a regular child `name` (`mode` = full umode_t).
     /// `ctx` carries the mount idmap + caller cred + umask for owner/mode.
-    /// Default `Erofs`. # C: backend-dependent
+    /// Default `Eperm`: A filesystem with no such slot answers `EPERM`, not `EROFS`: `EROFS` is the read-only-MOUNT verdict, decided a layer up. # C: backend-dependent
     fn create(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
-        Err(VfsError::Erofs)
+        Err(VfsError::Eperm)
     }
 
     /// `i_op->mkdir` — create a child directory `name`. `ctx` carries the mount
-    /// idmap + caller cred + umask. Default `Erofs`. # C: backend-dependent
+    /// idmap + caller cred + umask. Default `Eperm` (see `create`).
+    /// # C: backend-dependent
     fn mkdir(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
-        Err(VfsError::Erofs)
+        Err(VfsError::Eperm)
     }
 
-    /// `i_op->rmdir` — remove the empty child directory `name`. Default `Erofs`.
-    /// # C: backend-dependent
-    fn rmdir(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Erofs) }
+    /// `i_op->rmdir` — remove the empty child directory `name`. Default `Eperm`
+    /// (see `create`). # C: backend-dependent
+    fn rmdir(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Eperm) }
 
     /// `i_op->mknod` — create a device/FIFO/socket child. `mode` carries the
     /// `S_IF*` + perm bits, `rdev` the packed `dev_t`. `ctx` carries the mount
-    /// idmap + caller cred + umask. Default `Erofs`. # C: backend-dependent
+    /// idmap + caller cred + umask. Default `Eperm` (see `create`).
+    /// # C: backend-dependent
     fn mknod(&self, _inode: &Inode, _name: &str, _mode: u16, _rdev: u32, _ctx: &CreateCtx) -> KResult<()> {
-        Err(VfsError::Erofs)
+        Err(VfsError::Eperm)
     }
 
     /// `i_op->symlink` — create a symlink child `name` with body `target`.
     /// `ctx` carries the mount idmap + caller cred (symlinks ignore umask).
-    /// Default `Erofs`. # C: backend-dependent
+    /// Default `Eperm` (see `create`). # C: backend-dependent
     fn symlink(&self, _inode: &Inode, _name: &str, _target: &[u8], _ctx: &CreateCtx) -> KResult<()> {
-        Err(VfsError::Erofs)
+        Err(VfsError::Eperm)
     }
 
     /// `i_op->link` — hard-link `target` into this directory as `name`. `ctx`
     /// carries the caller cred (the linked inode keeps its own owner). Default
-    /// `Erofs`. # C: backend-dependent
+    /// `Eperm` (see `create`). # C: backend-dependent
     fn link(&self, _inode: &Inode, _target: &InodeRef, _name: &str, _ctx: &CreateCtx) -> KResult<()> {
-        Err(VfsError::Erofs)
+        Err(VfsError::Eperm)
     }
 
-    /// `i_op->unlink` — remove the child file `name`. Default `Erofs`.
-    /// # C: backend-dependent
-    fn unlink(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Erofs) }
+    /// `i_op->unlink` — remove the child file `name`. Default `Eperm`
+    /// (see `create`). # C: backend-dependent
+    fn unlink(&self, _inode: &Inode, _name: &str) -> KResult<()> { Err(VfsError::Eperm) }
 
     /// `i_op->rename` — rename/exchange/whiteout `old_name` (in this dir) with
     /// `new_name` in `new_dir`. `flags` is Linux `RENAME_*`; `ctx` carries the

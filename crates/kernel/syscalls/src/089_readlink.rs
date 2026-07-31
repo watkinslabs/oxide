@@ -12,8 +12,11 @@ use syscall::errno::Errno;
 pub fn sys_readlink(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf_ptr  = args.a1;
-    let bufsize  = args.a2;
-    if bufsize == 0 { return -(Errno::Einval.as_i32() as i64); }
+    let bufsiz = args.a2 as i32;
+    if let Err(e) = crate::path_ops_policy::check_readlink_bufsiz(bufsiz) {
+        return -(e.as_i32() as i64);
+    }
+    let bufsize = bufsiz as u64;
     // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
     let path = match crate::namei_common::read_user_path(path_ptr) {
         Ok(s)   => s,
@@ -69,7 +72,7 @@ pub(crate) fn readlink_resolved(vp: vfs::VfsPath, empty_path: bool, buf_ptr: u64
 /// Copy a symlink target into the caller's `buf` (truncated to `bufsize`),
 /// returning the byte count — shared by `readlink`/`readlinkat`. # C: O(n)
 pub(crate) fn write_link_target(target: &[u8], buf_ptr: u64, bufsize: u64) -> i64 {
-    let n = (target.len() as u64).min(bufsize) as usize;
+    let n = crate::path_ops_policy::readlink_copy_len(target.len(), bufsize as i32);
     if n != 0 {
         if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf_ptr, n as u64, 1) { return rv; }
     }

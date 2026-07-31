@@ -6,9 +6,11 @@
 // - `special`: directory/symlink/device inode/file ops + builder.
 // - `meta`: shared `ext4_setattr` — in-core apply + on-disk metadata writeback.
 // - `rename`: `ext4_rename2` — plain/EXCHANGE/WHITEOUT, `..` + nlink fixups.
+// - `links`: the `i_links_count` ceilings shared by mkdir / link / rename.
 
 mod ids;
 mod data;
+mod links;
 mod fallocate;
 mod meta;
 mod regular;
