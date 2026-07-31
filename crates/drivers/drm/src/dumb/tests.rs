@@ -1,7 +1,7 @@
 use super::*;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-mod addfb2_modifiers; mod addfb_packed_rgb;
+mod addfb2_modifiers; mod addfb_packed_rgb; mod lifetime;
 
 static DESTROYED_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 static DESTROYED_RES_ID: AtomicU32 = AtomicU32::new(0);
@@ -83,6 +83,7 @@ fn fb_plane_bounds_validation() {
     let buf = DumbBuf {
         card_id: 0,
         handle: 1,
+        owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
         order: 0,
@@ -124,6 +125,7 @@ fn table_insert_lookup_ref_unref() {
     t.insert_buf(DumbBuf {
         card_id: 0,
         handle: 1,
+        owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
         order: 0,
@@ -154,6 +156,8 @@ fn fb_table_insert_lookup() {
     t.fbs.push(FbObj {
         card_id: 0,
         fb_id: 1,
+        owner_token: 0,
+        bound: false,
         w: 640,
         h: 480,
         pixel_format: DRM_FORMAT_XRGB8888,
@@ -198,6 +202,7 @@ fn insert_global_buf(size: u64) {
     TABLES.lock().insert_buf(DumbBuf {
         card_id: 0,
         handle: 1,
+        owner_token: 0,
         pa: 0x10_0000,
         size,
         order: 0,
@@ -354,6 +359,7 @@ fn card_state_isolated() {
     t.insert_buf(DumbBuf {
         card_id: 0,
         handle: 1,
+        owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
         order: 0,
@@ -368,6 +374,7 @@ fn card_state_isolated() {
     t.insert_buf(DumbBuf {
         card_id: 1,
         handle: 1,
+        owner_token: 0,
         pa: 0x20_0000,
         size: 4096,
         order: 0,
@@ -382,6 +389,8 @@ fn card_state_isolated() {
     t.fbs.push(FbObj {
         card_id: 0,
         fb_id: 7,
+        owner_token: 0,
+        bound: false,
         w: 4,
         h: 4,
         pixel_format: DRM_FORMAT_XRGB8888,
@@ -393,6 +402,8 @@ fn card_state_isolated() {
     t.fbs.push(FbObj {
         card_id: 1,
         fb_id: 7,
+        owner_token: 0,
+        bound: false,
         w: 8,
         h: 8,
         pixel_format: DRM_FORMAT_ARGB8888,
@@ -418,6 +429,7 @@ fn card_remove_returns_scanout_resources() {
     t.insert_buf(DumbBuf {
         card_id: 0,
         handle: 1,
+        owner_token: 0,
         pa: 0x10_0000,
         size: 4096,
         order: 0,
@@ -432,6 +444,8 @@ fn card_remove_returns_scanout_resources() {
     t.fbs.push(FbObj {
         card_id: 0,
         fb_id: 7,
+        owner_token: 0,
+        bound: false,
         w: 4,
         h: 4,
         pixel_format: DRM_FORMAT_XRGB8888,
@@ -444,61 +458,4 @@ fn card_remove_returns_scanout_resources() {
     assert_eq!(t.remove_card(0), (alloc::vec![(0x10_0000, 0)], alloc::vec![42]));
     assert!(t.find_fb(0, 7).is_none());
     assert!(t.find_buf(0, 1).is_none());
-}
-
-#[test]
-fn clear_card_state_releases_bound_scanout_resource() {
-    let _guard = crate::TEST_LOCK.lock();
-    reset_global_tables();
-    crate::node::clear_scanout_ops(3);
-    DESTROYED_DRIVER_KEY.store(0, Ordering::Release);
-    DESTROYED_RES_ID.store(0, Ordering::Release);
-    crate::node::set_scanout_ops(3, crate::node::ScanoutOps {
-        driver_key: scanout_key(0x3003), create_from_pa: test_create, destroy_resource: record_destroy,
-        set_scanout: test_set_scanout, set_cursor: test_set_cursor, move_cursor: test_move_cursor,
-        restore_console: test_restore, boot_res_id: test_boot,
-    });
-    TABLES.lock().fbs.push(FbObj {
-        card_id: 3, fb_id: 9, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
-        handles: [0; 4], pitches: [16, 0, 0, 0], offsets: [0; 4], scanout_res_id: 77,
-    });
-    clear_card_state(3);
-    assert_eq!(DESTROYED_DRIVER_KEY.load(Ordering::Acquire), 0x3003);
-    assert_eq!(DESTROYED_RES_ID.load(Ordering::Acquire), 77);
-    assert!(TABLES.lock().find_fb(3, 9).is_none());
-    crate::node::clear_scanout_ops(3);
-    reset_global_tables();
-}
-
-#[test]
-fn mmap_pin_survives_card_remove_until_unpin() {
-    let mut t = DumbTables::new();
-    t.insert_buf(DumbBuf {
-        card_id: 0,
-        handle: 1,
-        pa: 0x10_0000,
-        size: 4096,
-        order: 0,
-        w: 4,
-        h: 4,
-        pitch: 16,
-        bpp: 32,
-        refcnt: 1,
-        mmap_refs: 0,
-        deleted: false,
-    });
-    let pin = t.pin_mmap(0, 1).unwrap();
-    assert_eq!(pin.pa, 0x10_0000);
-    assert_eq!(t.find_buf(0, 1).unwrap().refcnt, 2);
-    assert_eq!(t.find_buf(0, 1).unwrap().mmap_refs, 1);
-
-    assert_eq!(t.remove_card(0), (Vec::<(u64, u8)>::new(), Vec::new()));
-    assert!(t.find_buf(0, 1).is_none());
-    assert_eq!(t.bufs.len(), 1);
-    assert!(t.bufs[0].deleted);
-    assert_eq!(t.bufs[0].refcnt, 1);
-    assert_eq!(t.bufs[0].mmap_refs, 1);
-
-    assert_eq!(t.unpin_mmap(0, 1), Some((0x10_0000, 0)));
-    assert!(t.bufs.is_empty());
 }

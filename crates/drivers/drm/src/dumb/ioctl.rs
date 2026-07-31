@@ -10,7 +10,7 @@ fn user_ok(ptr: u64, len: u64) -> bool {
     ptr != 0 && ptr < hal::USER_VA_END && ptr.checked_add(len).is_some_and(|end| end <= hal::USER_VA_END)
 }
 
-pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
+pub fn create_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCreateDumb>() as u64) { return einval(); }
     let mut req: DrmModeCreateDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeCreateDumb) };
     let pitch = match dumb_pitch(req.width, req.bpp) { Some(p) => p, None => return einval() };
@@ -46,7 +46,7 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     }
     let handle = alloc_dumb_handle();
     TABLES.lock().insert_buf(DumbBuf {
-        card_id, handle, pa, size, order,
+        card_id, handle, owner_token: token, pa, size, order,
         w: req.width, h: req.height, pitch, bpp: req.bpp, refcnt: 1,
         mmap_refs: 0, deleted: false,
     });
@@ -71,28 +71,29 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     0
 }
 
-pub fn map_dumb(card_id: u32, arg: u64) -> i64 {
+pub fn map_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeMapDumb>() as u64) { return einval(); }
     let mut req: DrmModeMapDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeMapDumb) };
-    if TABLES.lock().find_buf(card_id, req.handle).is_none() { return einval(); }
+    if TABLES.lock().find_buf_owned(card_id, token, req.handle).is_none() { return einval(); }
     req.offset = cookie_for(req.handle);
     unsafe { core::ptr::write_volatile(arg as *mut DrmModeMapDumb, req); }
     0
 }
 
-pub fn destroy_dumb(card_id: u32, arg: u64) -> i64 {
+pub fn destroy_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeDestroyDumb>() as u64) { return einval(); }
     let req: DrmModeDestroyDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeDestroyDumb) };
     let freed = {
         let mut t = TABLES.lock();
-        if t.find_buf(card_id, req.handle).is_none() { return einval(); }
-        t.unref_handle(card_id, req.handle)
+        match t.close_handle(card_id, token, req.handle) { Ok(freed) => freed, Err(()) => return einval() }
     };
     if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
     0
 }
 
-pub fn addfb2(card_id: u32, arg: u64) -> i64 {
+pub fn addfb2(card_id: u32, arg: u64) -> i64 { addfb2_for_token(card_id, 0, arg) }
+
+pub fn addfb2_for_token(card_id: u32, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd2>() as u64) { return einval(); }
     let mut req: DrmModeFbCmd2 = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd2) };
     // Accept the explicit-modifier path (DRM_MODE_FB_MODIFIERS) now that IN_FORMATS
@@ -116,7 +117,7 @@ pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     if req.offsets[1..].iter().any(|o| *o != 0) { return einval(); }
     {
         let t = TABLES.lock();
-        let Some(buf) = t.find_buf(card_id, req.handles[0]) else { return einval(); };
+        let Some(buf) = t.find_buf_owned(card_id, token, req.handles[0]) else { return einval(); };
         if !fb_plane_fits_buf(
             req.width,
             req.height,
@@ -131,9 +132,9 @@ pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     let fb_id = alloc_fb_id();
     {
         let mut t = TABLES.lock();
-        t.ref_handle(card_id, req.handles[0]);
+        if !t.ref_handle_owned(card_id, token, req.handles[0]) { return einval(); }
         t.fbs.push(FbObj {
-            card_id, fb_id, w: req.width, h: req.height, pixel_format: req.pixel_format,
+            card_id, fb_id, owner_token: token, bound: false, w: req.width, h: req.height, pixel_format: req.pixel_format,
             handles: req.handles, pitches: req.pitches, offsets: req.offsets, scanout_res_id: 0,
         });
     }
@@ -142,7 +143,9 @@ pub fn addfb2(card_id: u32, arg: u64) -> i64 {
     0
 }
 
-pub fn addfb(card_id: u32, arg: u64) -> i64 {
+pub fn addfb(card_id: u32, arg: u64) -> i64 { addfb_for_token(card_id, 0, arg) }
+
+pub fn addfb_for_token(card_id: u32, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd>() as u64) { return einval(); }
     let mut req: DrmModeFbCmd = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd) };
     if req.width == 0 || req.height == 0 || req.handle == 0 { return einval(); }
@@ -153,7 +156,7 @@ pub fn addfb(card_id: u32, arg: u64) -> i64 {
     };
     {
         let t = TABLES.lock();
-        let Some(buf) = t.find_buf(card_id, req.handle) else { return einval(); };
+        let Some(buf) = t.find_buf_owned(card_id, token, req.handle) else { return einval(); };
         if !fb_plane_fits_buf(req.width, req.height, fourcc, req.pitch, 0, buf) {
             return einval();
         }
@@ -161,9 +164,9 @@ pub fn addfb(card_id: u32, arg: u64) -> i64 {
     let fb_id = alloc_fb_id();
     {
         let mut t = TABLES.lock();
-        t.ref_handle(card_id, req.handle);
+        if !t.ref_handle_owned(card_id, token, req.handle) { return einval(); }
         t.fbs.push(FbObj {
-            card_id, fb_id, w: req.width, h: req.height, pixel_format: fourcc,
+            card_id, fb_id, owner_token: token, bound: false, w: req.width, h: req.height, pixel_format: fourcc,
             handles: [req.handle, 0, 0, 0], pitches: [req.pitch, 0, 0, 0], offsets: [0; 4],
             scanout_res_id: 0,
         });
@@ -173,22 +176,48 @@ pub fn addfb(card_id: u32, arg: u64) -> i64 {
     0
 }
 
-pub fn rmfb(card_id: u32, arg: u64) -> i64 {
+pub fn rmfb(card_id: u32, token: u64, arg: u64) -> i64 {
     if !user_ok(arg, 4) { return einval(); }
     let fb_id: u32 = unsafe { core::ptr::read_volatile(arg as *const u32) };
-    let (to_free, scanout_res_id) = {
-        let mut t = TABLES.lock();
-        let idx = match t.fbs.iter().position(|f| f.card_id == card_id && f.fb_id == fb_id) { Some(i) => i, None => return einval() };
-        let fb = t.fbs.remove(idx);
-        let scanout_res_id = fb.scanout_res_id;
-        let mut freed: [Option<(u64, u8)>; 4] = [None; 4];
-        for (i, &h) in fb.handles.iter().enumerate() {
-            if h != 0 { freed[i] = t.unref_handle(card_id, h); }
-        }
-        (freed, scanout_res_id)
-    };
+    let retired = match TABLES.lock().remove_owned_fb(card_id, token, fb_id) { Ok(v) => v, Err(()) => return einval() };
     crate::crtc::detach_fb(card_id, fb_id);
-    release_scanout_resource(card_id, scanout_res_id);
-    for f in to_free.iter().flatten() { free_buf_pages(f.0, f.1); }
+    super::tables::release_fb(card_id, retired);
     0
+}
+
+pub fn closefb(card_id: u32, token: u64, arg: u64) -> i64 {
+    if !user_ok(arg, core::mem::size_of::<DrmModeCloseFb>() as u64) { return einval(); }
+    let req: DrmModeCloseFb = unsafe { core::ptr::read_volatile(arg as *const DrmModeCloseFb) };
+    match TABLES.lock().close_fb(card_id, token, req.fb_id) {
+        Ok(Some(retired)) => super::tables::release_fb(card_id, retired),
+        Ok(None) => {}
+        Err(()) => return einval(),
+    }
+    0
+}
+
+pub fn gem_close(card_id: u32, token: u64, arg: u64) -> i64 {
+    if !user_ok(arg, core::mem::size_of::<DrmGemClose>() as u64) { return einval(); }
+    let req: DrmGemClose = unsafe { core::ptr::read_volatile(arg as *const DrmGemClose) };
+    let freed = match TABLES.lock().close_handle(card_id, token, req.handle) { Ok(v) => v, Err(()) => return einval() };
+    if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
+    0
+}
+
+pub fn release_file(card_id: u32, token: u64) {
+    let (retired, handles) = {
+        let mut t = TABLES.lock();
+        let ids = t.owned_fb_ids(card_id, token);
+        let mut retired = Vec::new();
+        for id in ids {
+            if let Ok(Some(fb)) = t.close_fb(card_id, token, id) { retired.push(fb); }
+        }
+        let handles = t.owned_handles(card_id, token);
+        (retired, handles)
+    };
+    for fb in retired { super::tables::release_fb(card_id, fb); }
+    for handle in handles {
+        let freed = TABLES.lock().close_handle(card_id, token, handle).ok().flatten();
+        if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
+    }
 }

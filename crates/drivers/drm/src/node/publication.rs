@@ -94,7 +94,9 @@ impl vfs::FileOps for DrmCardFileOps {
                 (ops.restore_console)(ops.driver_key);
             }
             crate::crtc::clear_owner(card_id);
+            crate::crtc::set_current_fb(card_id, 0);
         }
+        crate::dumb::release_file(card_id, token);
     }
 }
 
@@ -132,6 +134,7 @@ impl vfs::FileOps for DrmSinkFileOps {
         release_file_magic(token);
         if let Some((_, card_id)) = drm_inode_parts_raw(file.inode().ino()) {
             release_unique_ready(card_id, token);
+            crate::dumb::release_file(card_id, token);
         }
     }
 }

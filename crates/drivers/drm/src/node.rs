@@ -55,7 +55,7 @@ use crate::{
     DRM_IOCTL_MODE_GETCONNECTOR,
     DRM_IOCTL_MODE_CREATE_DUMB, DRM_IOCTL_MODE_MAP_DUMB,
     DRM_IOCTL_MODE_DESTROY_DUMB, DRM_IOCTL_MODE_ADDFB2,
-    DRM_IOCTL_MODE_ADDFB, DRM_IOCTL_MODE_RMFB,
+    DRM_IOCTL_MODE_ADDFB, DRM_IOCTL_MODE_CLOSEFB, DRM_IOCTL_MODE_RMFB,
     DRM_IOCTL_MODE_SETCRTC, DRM_IOCTL_MODE_PAGE_FLIP,
     DRM_IOCTL_MODE_SETPLANE, DRM_IOCTL_MODE_DIRTYFB,
     DRM_IOCTL_MODE_OBJ_SETPROPERTY, DRM_IOCTL_MODE_SETPROPERTY,
@@ -344,12 +344,13 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         DRM_IOCTL_MODE_CREATEPROPBLOB => Some(crate::atomic::create_blob(arg)),
         DRM_IOCTL_MODE_DESTROYPROPBLOB => Some(crate::atomic::destroy_blob(arg)),
         // ---- D5b-1 dumb buffers + ADDFB2 (offscreen; no scanout) ----
-        DRM_IOCTL_MODE_CREATE_DUMB  => Some(crate::dumb::create_dumb(card_id, arg)),
-        DRM_IOCTL_MODE_MAP_DUMB     => Some(crate::dumb::map_dumb(card_id, arg)),
-        DRM_IOCTL_MODE_DESTROY_DUMB => Some(crate::dumb::destroy_dumb(card_id, arg)),
-        DRM_IOCTL_MODE_ADDFB2       => Some(crate::dumb::addfb2(card_id, arg)),
-        DRM_IOCTL_MODE_ADDFB        => Some(crate::dumb::addfb(card_id, arg)),
-        DRM_IOCTL_MODE_RMFB         => Some(crate::dumb::rmfb(card_id, arg)),
+        DRM_IOCTL_MODE_CREATE_DUMB  => Some(crate::dumb::create_dumb(card_id, token, arg)),
+        DRM_IOCTL_MODE_MAP_DUMB     => Some(crate::dumb::map_dumb(card_id, token, arg)),
+        DRM_IOCTL_MODE_DESTROY_DUMB => Some(crate::dumb::destroy_dumb(card_id, token, arg)),
+        DRM_IOCTL_MODE_ADDFB2       => Some(crate::dumb::addfb2_for_token(card_id, token, arg)),
+        DRM_IOCTL_MODE_ADDFB        => Some(crate::dumb::addfb_for_token(card_id, token, arg)),
+        DRM_IOCTL_MODE_CLOSEFB      => Some(crate::dumb::closefb(card_id, token, arg)),
+        DRM_IOCTL_MODE_RMFB         => Some(crate::dumb::rmfb(card_id, token, arg)),
         // ---- D5b-2 SETCRTC / PAGE_FLIP (real scanout) ----
         // Token = the open file description, matching Linux's file-scoped
         // DRM master/KMS ownership. Card required (no GPU → set_crtc
@@ -393,14 +394,14 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         DRM_IOCTL_MODE_CURSOR => {
             if !is_master(card_id, token) { return Some(-(Errno::Eacces.as_i32() as i64)); }
             match driver.as_ref() {
-                Some(d) => Some(crate::kms_ext::cursor(card_id, d, arg)),
+                Some(d) => Some(crate::kms_ext::cursor(card_id, d, token, arg)),
                 None => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
         DRM_IOCTL_MODE_CURSOR2 => {
             if !is_master(card_id, token) { return Some(-(Errno::Eacces.as_i32() as i64)); }
             match driver.as_ref() {
-                Some(d) => Some(crate::kms_ext::cursor2(card_id, d, arg)),
+                Some(d) => Some(crate::kms_ext::cursor2(card_id, d, token, arg)),
                 None => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
@@ -431,7 +432,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             None    => Some(-(Errno::Einval.as_i32() as i64)),
         },
         DRM_IOCTL_MODE_GETFB => Some(crate::kms_ext::get_fb(card_id, arg)),
-        DRM_IOCTL_GEM_CLOSE => Some(-(Errno::Einval.as_i32() as i64)),
+        DRM_IOCTL_GEM_CLOSE => Some(crate::dumb::gem_close(card_id, token, arg)),
         DRM_IOCTL_PRIME_HANDLE_TO_FD | DRM_IOCTL_PRIME_FD_TO_HANDLE => {
             Some(-(Errno::Einval.as_i32() as i64))
         }

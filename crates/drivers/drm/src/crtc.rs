@@ -112,7 +112,10 @@ pub(crate) fn set_current_fb(card_id: u32, fb_id: u32) {
     if current.len() <= idx {
         current.resize(idx + 1, 0);
     }
+    let old_id = current[idx];
     current[idx] = fb_id;
+    drop(current);
+    crate::dumb::replace_bound_fb(card_id, old_id, fb_id);
 }
 
 #[cfg(test)]
