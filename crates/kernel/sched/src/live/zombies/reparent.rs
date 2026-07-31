@@ -33,11 +33,10 @@ pub fn reap_orphans() {
     }
     for (zombie, reaper) in adopted {
         attach_to(&zombie, &reaper);
-        let info = super::reparent_child_event(&zombie);
-        // `wake_wait4_parent` first — it only claims a waiter it observes as
-        // `Sleeping`, and the send below wakes as part of publishing.
+        // Send before the `wait4` wake, as `zombies::enqueue_zombie` does: the
+        // reaper must never be roused ahead of the event it will inspect.
+        super::send_child_event(&reaper, super::reparent_child_event(&zombie));
         super::wake_wait4_parent(reaper.tid);
-        super::send_child_event(&reaper, info);
     }
 }
 
@@ -167,10 +166,10 @@ pub fn reparent_children(dying_tid: u32) {
         super::orphan::kill_orphaned_pgrp(&t, Some(&dying));
     }
     if !reparented.is_empty() {
-        super::wake_wait4_parent(reaper.tid);
         // Each adopted zombie owes its own `do_notify_parent`; SIGCHLD's
         // `legacy_queue` collapse then keeps the FIRST record, exactly as a
         // burst of real child exits would.
         for info in reparented { super::send_child_event(&reaper, info); }
+        super::wake_wait4_parent(reaper.tid);
     }
 }
