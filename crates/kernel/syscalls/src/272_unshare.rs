@@ -54,6 +54,11 @@ pub(crate) fn ns_bits_from_flags(flags: u64) -> u64 {
     bits
 }
 
+/// Release a dead user namespace's account link. # C: O(log N)
+fn forget_ucounts_link(kind: NamespaceKind, id: namespace_identity::NamespaceId) {
+    if kind == NamespaceKind::User { sched::ucounts::forget_user_namespace(id.as_u64()); }
+}
+
 fn identity_error(error: namespace_identity::AllocError) -> Errno {
     match error {
         namespace_identity::AllocError::IdExhausted => Errno::Enospc,
@@ -163,6 +168,15 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     if has_bit(bits, USER_BIT) {
         snapshot.user = allocate_identity(NamespaceKind::User, &current_user,
             Some(current_user.clone()))?;
+        // Linux `create_user_ns`: the new namespace remembers the account
+        // that made it and the `RLIMIT_NPROC` ceiling that account was under
+        // (`set_userns_rlimit_max(ns, UCOUNT_RLIMIT_NPROC, enforced_nproc_rlimit())`).
+        // Without the link, `unshare(CLONE_NEWUSER)` would zero the caller's
+        // process count and be a one-line way out of its own quota.
+        if let Some(creator) = sched::live::current() {
+            sched::ucounts::register_user_namespace(&creator, snapshot.user.id().as_u64());
+        }
+        snapshot.user.register_finalizer(forget_ucounts_link);
     }
     let owner_user = snapshot.user.clone();
 

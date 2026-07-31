@@ -45,3 +45,10 @@ pub use groups::{sys_getgroups, sys_setgroups};
 pub use resid::{sys_getresgid, sys_getresuid};
 pub use snapshot::{current_vfs_cred, current_vfs_file_cred};
 pub use uid::{sys_geteuid, sys_getuid, sys_setresuid, sys_setreuid, sys_setuid};
+
+/// `__sys_setuid` against an explicit task — the hosted-test entry point for
+/// the accounting a real `setuid(2)` triggers. # C: O(extents)
+#[cfg(test)]
+pub(crate) fn sys_setuid_on_for_tests(task: &crate::Task, uid: u32) -> i64 {
+    uid::setuid_on(task, uid)
+}

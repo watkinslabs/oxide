@@ -6,6 +6,12 @@
 // Without this a process that drops privileges stays `SUID_DUMP_USER`, so a
 // `ptrace`/`/proc/PID/mem` attacher that would be rejected on real Linux is
 // admitted here — the exact hole `commit_creds`' `smp_wmb()` comment names.
+//
+// It also carries the `RLIMIT_NPROC` charge from the old account to the new
+// one. That transfer is UNCONDITIONAL in Linux and must run even when the
+// dumpability block below decides nothing observable changed: `setreuid(r,
+// -1)` moves the real uid — the id the charge is keyed on — without touching
+// a single field the dumpability test looks at.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
@@ -54,6 +60,7 @@ impl CredIdentity {
 /// A task with no mm (kernel thread) keeps the shared init dumpability.
 /// # C: O(1); # Lk: TaskList
 pub(super) fn commit_creds(cur: &Task, old: CredIdentity) {
+    crate::ucounts::recharge_after_setuid(cur);
     let now = CredIdentity::capture(cur);
     let changed = now.euid != old.euid
         || now.egid != old.egid
