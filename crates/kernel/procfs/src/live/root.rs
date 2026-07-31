@@ -37,6 +37,14 @@ impl InodeOps for ProcRootOps {
         let d = inode.private::<ProcRootInode>().ok_or(VfsError::Einval)?;
         proc_root_lookup(d, name)
     }
+
+    /// The per-pid directories — and, by `d_op` inheritance, everything under
+    /// them — carry `pid_dentry_operations`. `/proc`'s static children and the
+    /// `self`/`thread-self` magic symlinks (which recompute their target on
+    /// every read) do not. # C: O(name.len())
+    fn child_d_op(&self, _inode: &Inode, name: &str) -> Option<&'static vfs::dentry::DentryOps> {
+        if name.parse::<u32>().is_ok() { Some(&super::pid_reval::PID_DENTRY_OPS) } else { None }
+    }
 }
 
 impl FileOps for ProcRootOps {

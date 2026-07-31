@@ -68,9 +68,15 @@ impl Dentry {
     }
 
     /// Construct a child dentry under `parent`, inheriting `d_sb` and `d_op`.
+    /// The parent directory may claim the child instead (`i_op->child_d_op`,
+    /// Linux `d_splice_alias_ops`): that is how a `/proc/<pid>` subtree gets the
+    /// revalidating vector while `/proc`'s static children keep the default.
     /// # C: O(name.len())
     pub fn new_child(parent: &Arc<Dentry>, name: &str, inode: Option<InodeRef>) -> Arc<Self> {
-        Self::build(Some(parent.clone()), name, inode, parent.sb.clone(), parent.d_op, 0)
+        let d_op = parent.inode()
+            .and_then(|i| i.i_op().child_d_op(&i, name))
+            .or(parent.d_op);
+        Self::build(Some(parent.clone()), name, inode, parent.sb.clone(), d_op, 0)
     }
 
     /// Construct a superblock root dentry. # C: O(1)

@@ -82,3 +82,61 @@ fn a_non_dumpable_task_hands_its_files_but_not_its_directory_to_root() {
     assert_eq!(dump_owner(false, 1000, 1000, SUID_DUMP_DISABLE, true), (1000, 1000),
                "the per-pid directory keeps the task's euid");
 }
+
+/// `S_IFDIR` — the type bits `revalidate_pid_inode` must preserve.
+const S_IFDIR: u16 = 0o040000;
+
+fn user_task(euid: u32) -> Option<TaskOwner> {
+    Some(TaskOwner { kthread: false, euid, egid: euid, dumpable: SUID_DUMP_USER })
+}
+
+#[test]
+fn a_cached_fd_directory_follows_the_task_across_a_setuid() {
+    // The failure this hook exists for: a process populates its own
+    // `/proc/<pid>/fd` dentry while still root (systemd closes inherited fds by
+    // walking that directory), then drops to uid 1000 and execs the per-user
+    // manager, which walks it again. Serving the cached root-owned inode makes
+    // the task's own 0500 fd directory unreadable to it — EACCES, and the user
+    // manager exits 1 before it can reach its notify socket.
+    let mode = S_IFDIR | MODE_DIR_RUSR;
+    assert_eq!(revalidate_pid_inode(user_task(0), true, mode), Some((0, 0, mode)));
+    assert_eq!(revalidate_pid_inode(user_task(1000), true, mode), Some((1000, 1000, mode)),
+               "re-stamped from the task's CURRENT euid, not the cached one");
+}
+
+#[test]
+fn revalidation_reports_a_dead_task_stale() {
+    // Linux `pid_revalidate` returns 0 with no task, which drops the dentry —
+    // the only thing stopping a recycled pid from inheriting the previous
+    // task's cached per-pid inodes.
+    assert_eq!(revalidate_pid_inode(None, true, S_IFDIR | MODE_DIR_RUSR), None);
+    assert_eq!(revalidate_pid_inode(None, false, MODE_RUGO), None);
+}
+
+#[test]
+fn revalidation_keeps_the_table_mode_and_clears_the_setid_bits() {
+    // `pid_update_inode` moves ownership and clears S_ISUID|S_ISGID; the
+    // `tgid_base_stuff` mode column is not the dcache's to rewrite.
+    let (_, _, mode) = revalidate_pid_inode(user_task(1000), false, MODE_RUGO_WUSR).unwrap();
+    assert_eq!(mode, MODE_RUGO_WUSR, "table mode survives revalidation");
+    let (_, _, mode) = revalidate_pid_inode(user_task(1000), false, 0o6444).unwrap();
+    assert_eq!(mode, 0o444, "S_ISUID|S_ISGID cleared");
+}
+
+#[test]
+fn revalidation_applies_the_non_dumpable_clamp_per_node() {
+    // Same task, two nodes: the world-searchable per-pid directory keeps the
+    // euid, everything else goes to root once the task stopped being dumpable.
+    let t = || Some(TaskOwner { kthread: false, euid: 1000, egid: 1000, dumpable: 0 });
+    assert_eq!(revalidate_pid_inode(t(), true, S_IFDIR | MODE_DIR_RUGO),
+               Some((1000, 1000, S_IFDIR | MODE_DIR_RUGO)));
+    assert_eq!(revalidate_pid_inode(t(), true, S_IFDIR | MODE_DIR_RUSR),
+               Some((0, 0, S_IFDIR | MODE_DIR_RUSR)));
+    assert_eq!(revalidate_pid_inode(t(), false, MODE_RUSR), Some((0, 0, MODE_RUSR)));
+}
+
+#[test]
+fn only_a_dead_tasks_dentries_are_killed_on_the_final_put() {
+    assert!(delete_pid_dentry(false), "a dead task's dentry never reaches the LRU");
+    assert!(!delete_pid_dentry(true), "a live task's dentry stays cached");
+}

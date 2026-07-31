@@ -1,5 +1,5 @@
 use alloc::format;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 
 use core::sync::atomic::Ordering;
 use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
@@ -19,6 +19,11 @@ pub struct ProcPidDirInode {
     pub tid: u32,
     pub is_self: bool,
     pub allow_task_dir: bool,
+    /// The task this directory WAS built for (Linux: the inode's `struct pid`).
+    /// Identity, not a lookup key: `d_revalidate`/`d_delete` upgrade it to ask
+    /// "is my task still alive" without the registry lock and without trusting a
+    /// tid that may since have been recycled onto a different task.
+    pub task: Weak<sched::Task>,
 }
 
 type PidCtor = fn(u32, bool) -> InodeRef;
@@ -184,7 +189,10 @@ pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool) -> Inode
         Arc::new(ProcPidDirOps),
         Arc::new(ProcPidDirOps),
     )
-    .private(Arc::new(ProcPidDirInode { tid, is_self, allow_task_dir }))
+    .private(Arc::new(ProcPidDirInode {
+        tid, is_self, allow_task_dir,
+        task: sched::live::registry::lookup(tid).map(|t| Arc::downgrade(&t)).unwrap_or_default(),
+    }))
     .build();
     // `task_dump_owner` exempts the `S_IFDIR|S_IRUGO|S_IXUGO` per-pid directory
     // from the non-dumpable clamp: `stat /proc/<pid>` reports the task's euid
@@ -195,6 +203,9 @@ pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool) -> Inode
 
 pub struct ProcPidTaskDirInode {
     pub tgid: u32,
+    /// The thread-group leader this `task/` directory belongs to; see
+    /// [`ProcPidDirInode::task`].
+    pub task: Weak<sched::Task>,
 }
 
 fn proc_pid_task_dir_lookup(d: &ProcPidTaskDirInode, name: &str) -> KResult<InodeRef> {
@@ -254,7 +265,10 @@ pub fn make_proc_pid_task_dir(tgid: u32) -> InodeRef {
         Arc::new(ProcPidTaskDirOps),
         Arc::new(ProcPidTaskDirOps),
     )
-    .private(Arc::new(ProcPidTaskDirInode { tgid }))
+    .private(Arc::new(ProcPidTaskDirInode {
+        tgid,
+        task: sched::live::registry::lookup(tgid).map(|t| Arc::downgrade(&t)).unwrap_or_default(),
+    }))
     .build()
 }
 
