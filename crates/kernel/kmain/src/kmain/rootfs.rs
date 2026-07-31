@@ -205,6 +205,11 @@ fn load_keymap() {
 #[cfg(target_os = "oxide-kernel")]
 fn handoff_to_userspace(info: &BootInfo) {
     let _ = info; // only the x86_64 handoff reads the boot info
+    // Userspace exists from here on, so a kernel -> userspace helper may run.
+    // Before this point the gate refuses every request: there is nothing to
+    // exec into, and a helper started against a half-built root would fail in
+    // ways no caller could interpret.
+    umh::usermodehelper_enable();
     #[cfg(target_arch = "x86_64")]
     unsafe {
         debug_boot! { klog::write_raw(b"[INFO]  init: handoff begin\n"); }

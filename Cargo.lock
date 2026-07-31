@@ -645,12 +645,15 @@ dependencies = [
  "klog",
  "namespace-identity",
  "nscg",
+ "pidfd",
  "pmm",
  "procfs",
  "sched",
  "sync",
  "syscall",
+ "timekeeper",
  "uaccess",
+ "umh",
  "vfs",
  "vmm",
 ]
@@ -922,6 +925,7 @@ dependencies = [
  "timer",
  "tracefs",
  "tty",
+ "umh",
  "vfs",
  "virtio",
  "vmm",
@@ -1978,6 +1982,25 @@ version = "0.1.0"
 dependencies = [
  "namespace-identity",
  "sync",
+]
+
+[[package]]
+name = "umh"
+version = "0.1.0"
+dependencies = [
+ "aslr",
+ "crng",
+ "elf-load",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "pmm",
+ "sched",
+ "sync",
+ "syscall",
+ "vfs",
+ "vmm",
 ]
 
 [[package]]
