@@ -189,6 +189,12 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
         unsafe { finish_switched_from(rq); }
         // SAFETY: the switcher acquired rq.inner via lock() and mem::forget'd the guard; this is the matching 1:1 release on the incoming stack.
         unsafe { rq.inner.raw_unlock(); }
+        // Place any task the switch we just completed evicted for affinity.
+        // Here — not in `schedule()` — because here the outgoing task's
+        // `on_cpu` is clear (so no other CPU can pick a task this one is still
+        // executing) and this CPU holds no runqueue lock (so taking the
+        // destination's lock nests nothing).
+        super::migrate::place_parked(sched_current_cpu() as u32);
         let current = rq.current.load(Ordering::Acquire);
         super::super::ttwu::sched_ttwu_pending(rq.cpu as u32, current, rq);
         let raw = rq.reap_pending.swap(core::ptr::null_mut(), Ordering::AcqRel);
@@ -297,7 +303,17 @@ pub unsafe fn schedule() {
             unsafe { Arc::increment_strong_count(raw); }
             // SAFETY: same raw -> matching Arc::from_raw reclaims that bumped strong ref into a fresh Arc.
             let cloned = unsafe { Arc::from_raw(raw) };
-            inner.put_prev_task(cloned);
+            // `cpus_allowed` may have lost this CPU while prev was running
+            // (sched_setaffinity / cpuset). Re-queueing it here would put it
+            // back on a CPU it may not use and the next pick would run it
+            // there again — the mask writer's need_resched nudge undone. Park
+            // it for placement by the incoming task's finish_task_switch,
+            // which runs with no rq lock held and after prev's `on_cpu`
+            // clears; only if parking is refused does it go back on this rq.
+            let evict = super::migrate::evict_target(me_cpu, prev_ref)
+                .map(|t| super::migrate::park(me_cpu, &cloned, t))
+                .unwrap_or(false);
+            if !evict { inner.put_prev_task(cloned); }
         }
     }
     // Linux `pick_next_task` + `prepare_task(next)`: ownership is published
@@ -323,6 +339,10 @@ pub unsafe fn schedule() {
     let next_raw = Arc::as_ptr(&next_arc) as *mut Task;
     let prev_raw = rq.current.load(Ordering::Acquire);
     if next_raw == prev_raw {
+        // No switch, so nothing will drain a parked eviction — take it back and
+        // re-queue locally. Unreachable in practice (a parked task is not in
+        // the tree, so the pick cannot return it), and cheap: one atomic load.
+        if let Some(t) = super::migrate::unpark(me_cpu) { inner.put_prev_task(t); }
         drop(inner);
         crate::preempt::preempt_enable_no_check();
         // SAFETY: restores the IRQ state this fn saved at entry; no switch.
