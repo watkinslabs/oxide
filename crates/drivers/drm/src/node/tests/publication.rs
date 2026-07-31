@@ -103,7 +103,7 @@ fn register_publishes_card_and_render_metadata_per_stable_slot() {
     );
     let inode = dev.node_factory.as_ref().expect("drm card factory")();
     assert_eq!(inode.file_type(), vfs::FileType::CharDev);
-    assert_eq!(super::super::publication::drm_inode_parts(&inode), Some((super::super::publication::DRM_CARD_INO, card_id)));
+    assert_eq!(super::super::publication::drm_inode_parts(&inode), Some((super::super::publication::DrmNodeKind::Card, card_id)));
 
     let render_minor = DRM_RENDER_MINOR_BASE + card_id;
     let render_addr = format!("renderD{render_minor}");
@@ -111,7 +111,7 @@ fn register_publishes_card_and_render_metadata_per_stable_slot() {
     assert_eq!(render.dev_t, Some((crate::DRM_MAJOR, render_minor)));
     let inode = render.node_factory.as_ref().expect("drm render factory")();
     assert_eq!(inode.file_type(), vfs::FileType::CharDev);
-    assert_eq!(super::super::publication::drm_inode_parts(&inode), Some((super::super::publication::DRM_RENDER_INO, card_id)));
+    assert_eq!(super::super::publication::drm_inode_parts(&inode), Some((super::super::publication::DrmNodeKind::Render, card_id)));
 
     unregister(card_id);
 }

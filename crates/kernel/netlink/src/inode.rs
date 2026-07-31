@@ -4,10 +4,13 @@ use alloc::sync::Arc;
 
 use crate::NetlinkSocket;
 
-/// `ino()` high tag identifying a netlink socket inode (so its inode numbers
-/// don't collide with fs / AF_INET socket inode space). # C: O(1)
-pub const NETLINK_INO_TAG: u64 = 0x4E4C_534B_0000_0000;
-pub const NETLINK_INO_ID_MASK: u64 = 0xFFFF_FFFF;
+/// Netlink socket inode numbers, from the one range `vfs::pseudo_ino` reserves
+/// for them. The id used to be the socket's own heap ADDRESS, which the
+/// allocator reuses the moment a socket is freed, so two live netlink sockets
+/// could carry the same `st_ino` — the key `lsof` and `ss` identify a socket
+/// by. Each socket now draws its own number. # C: O(1)
+static NEXT_NETLINK_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::NETLINK);
 
 /// `file_operations` for a netlink-socket inode — delegates the data path to
 /// the `NetlinkSocket` stored in `i_private`.
@@ -120,7 +123,7 @@ impl vfs::FileOps for NetlinkFileOps {
 /// # C: O(1)
 pub fn make_netlink_socket_inode(sock: Arc<NetlinkSocket>) -> vfs::InodeRef {
     crate::register_port_id(&sock);
-    let ino = NETLINK_INO_TAG | (Arc::as_ptr(&sock) as u64 & NETLINK_INO_ID_MASK);
+    let ino = NEXT_NETLINK_INO.alloc();
     let subs = sock.poll_subs.clone();
     vfs::InodeBuilder::new(
         ino,

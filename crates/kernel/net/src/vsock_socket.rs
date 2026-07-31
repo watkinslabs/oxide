@@ -1,18 +1,18 @@
 // Module manifest: lifecycle owns bind/connect/teardown, io owns payload I/O,
 // and file_ops owns inode and VFS adaptation.
 // AF_VSOCK per-fd socket object — a vfs::Inode like InetSocket, but
-// backed by the vsock connection table in `crate::vsock`. Its ino()
-// upper bits carry a distinct tag (0x56534F43 = "VSOC") so the syscall
-// layer's `vsock_from_fd` can recognize it without an Any downcast,
-// mirroring InetSocket's 0x534F434B ("SOCK") tag.
+// backed by the vsock connection table in `crate::vsock`. Its number comes
+// out of the AF_VSOCK range; what identifies it is the `VsockSocket` in
+// `i_private`, which `vsock_from_inode` downcasts to.
 
 use alloc::sync::Arc;
 use sync::{Spinlock, Socket as SockLockClass};
 use crate::vsock::{self, VsockConn, VsockState};
 
-/// ino() high-word tag identifying an AF_VSOCK socket inode. # C: O(1)
-pub const VSOCK_INO_TAG: u64 = 0x5653_4F43_0000_0000;
-pub const VSOCK_INO_ID_MASK: u64 = 0xFFFF_FFFF;
+/// AF_VSOCK inode numbers. The id was the socket's own heap ADDRESS, which the
+/// allocator reuses on free, so two live sockets could share `st_ino`.
+pub(crate) static NEXT_VSOCK_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::VSOCK);
 
 /// Immutable AF_VSOCK protocol personality selected by `socket(2)`.
 /// This is distinct from [`VsockKind`]: the latter is a mutable lifecycle

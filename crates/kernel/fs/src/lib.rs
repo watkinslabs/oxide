@@ -47,6 +47,8 @@ pub mod xattr;
 pub mod fileattr;
 pub mod keyring;
 pub mod perf;
+/// Identity vs numbering for this crate's anon-inode families.
+pub mod pseudo_ino_identity;
 pub mod tmpfs;
 pub mod fuse;
 pub mod autofs;

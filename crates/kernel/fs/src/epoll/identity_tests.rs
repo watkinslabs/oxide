@@ -8,12 +8,13 @@
 use alloc::sync::Arc;
 use vfs::{default_inode_ops, mk_mode, FileType, Ino, InodeBuilder, InodeRef};
 
-use super::{epoll_data_of_inode, ids, make_epoll_inode};
+use super::{epoll_data_of_inode, make_epoll_inode, INO_REGION};
 
-/// The inode number a `/dev/input/event0` node carries. Named here, not
-/// imported, so the driver crate stays out of this crate's dependency graph:
-/// the point of the test is that this NUMBER falls inside epoll's range.
-const EVDEV_EVENT0_INO: Ino = 0x7400_0001;
+/// The inode number `/dev/input/event0` carried while evdev minted from
+/// epoll's base — the number that made a numeric test report an evdev fd as a
+/// live epoll instance. Named here, not imported, so the driver crate stays
+/// out of this crate's dependency graph.
+const EVDEV_EVENT0_INO_BEFORE_THE_SPLIT: Ino = 0x7400_0001;
 
 struct ForeignState;
 
@@ -25,11 +26,24 @@ fn foreign_inode(ino: Ino) -> InodeRef {
         .build()
 }
 
+/// evdev now declares its own range, so the two no longer share numbers — but
+/// that is a numbering guarantee, not an identity one, and the tests below
+/// still hold when it is withdrawn.
 #[test]
-fn evdev_inode_number_lies_inside_the_epoll_range() {
-    // The precondition the whole bug rests on: the ranges are not disjoint, so
-    // no arithmetic on `ino` can separate the two owners.
-    assert_eq!(EVDEV_EVENT0_INO & !ids::INO_MASK, ids::INO_BASE);
+fn epoll_and_evdev_declare_disjoint_ranges() {
+    assert!(!vfs::pseudo_ino::overlaps(&INO_REGION, &vfs::pseudo_ino::EVDEV));
+    // The state the bug was found in: evdev's first device number sat squarely
+    // inside epoll's range.
+    assert!(INO_REGION.contains(EVDEV_EVENT0_INO_BEFORE_THE_SPLIT));
+}
+
+/// Every number epoll can mint stays inside its own range, however many
+/// instances a process opens.
+#[test]
+fn minted_numbers_stay_inside_the_region() {
+    for id in [0u64, 1, 7, INO_REGION.len() - 1, INO_REGION.len(), INO_REGION.len() * 3 + 5] {
+        assert!(INO_REGION.contains(INO_REGION.at(id)), "id {id} left the region");
+    }
 }
 
 #[test]
@@ -44,7 +58,7 @@ fn an_evdev_inode_never_resolves_as_epoll() {
     // occupied — the exact state in which the numeric test handed an evdev fd
     // somebody else's epoll.
     let _live = make_epoll_inode();
-    assert!(epoll_data_of_inode(&foreign_inode(EVDEV_EVENT0_INO)).is_none());
+    assert!(epoll_data_of_inode(&foreign_inode(EVDEV_EVENT0_INO_BEFORE_THE_SPLIT)).is_none());
 }
 
 #[test]

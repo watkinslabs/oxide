@@ -31,16 +31,18 @@ fn vt_is_ui_caller() -> bool {
 /// the existing tty-line-discipline path.
 /// # C: O(1)
 pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
-    if inode.file_type() != vfs::FileType::CharDev { return None; }
-    // /dev/console + /dev/tty0 (ConsoleInode vt=0) carry the FG-alias low
-    // byte (FG_VT_INO_LB) and act on the ACTIVE VT — Linux: a VT/KD ioctl on
-    // the controlling console operates on `fg_console`. /dev/tty<N> carries
-    // its own low byte N and acts on VT N specifically. (The old test
-    // `ino_low == 1` was a dead branch: the alias low byte is 0xFD, never 1,
-    // so VT/KD ioctls on /dev/console never resolved — and /dev/tty1 wrongly
-    // targeted the active VT instead of VT 1.)
-    let ino_low = (inode.ino() & 0xFF) as u8;
-    let vt_target = if ino_low == console::FG_VT_INO_LB { vt::active() } else { ino_low };
+    // Which VT comes from the inode's OWN console binding, never from
+    // `ino & 0xFF`: that read a timerfd whose id happened to be 5
+    // (`0x7300_0005`) or a bpf fd as "VT 5" and executed KD_*/VT_* against a
+    // real video terminal. `/dev/tty0`, `/dev/tty` and `/dev/console` act on
+    // the ACTIVE VT — Linux: a VT/KD ioctl on the controlling console operates
+    // on `fg_console`; `/dev/tty<N>` acts on VT N specifically. The serial line
+    // and every non-console inode decline.
+    let vt_target = match console::binding_of(inode)? {
+        console::TtyBinding::Vt(n) => n,
+        console::TtyBinding::ForegroundVt | console::TtyBinding::PreferredConsole => vt::active(),
+        console::TtyBinding::Serial => return None,
+    };
     // debug-boot: trace VT ioctls by the display stack (gdm/logind/mutter). A
     // gdm-wayland greeter session gets a seat from logind ONLY if it holds a
     // valid VT: gdm allocates one via VT_OPENQRY + opens /dev/ttyN + VT_ACTIVATE.

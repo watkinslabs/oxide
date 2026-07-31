@@ -2,15 +2,8 @@
 //! crates/kernel/procfs (target-clean); the kernel-side mounting
 //! and per-pid wiring stays here.
 
-use core::sync::atomic::AtomicU64;
-
-use vfs::Ino;
-
-pub static NEXT_INO: AtomicU64 = AtomicU64::new(crate::ids::LIVE_INO_BASE);
-
-pub(crate) fn pid_ino(tag: u64, id: u32) -> Ino {
-    crate::ids::LIVE_INO_TAG | (tag << 32) | id as u64
-}
+pub use crate::ino::next_ino;
+pub(crate) use crate::ino::pid_ino;
 
 mod boot;
 mod io_files;

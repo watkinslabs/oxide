@@ -1,14 +1,17 @@
 use super::*;
 
-/// `ino()` high tag identifying an AF_INET/AF_UNIX/AF_PACKET socket inode (so
-/// its inode numbers don't collide with fs inode space). # C: O(1)
-pub const INET_INO_TAG: u64 = 0x534F_434B_0000_0000;
-pub const INET_INO_ID_MASK: u64 = 0xFFFF_FFFF;
-pub const INET_INO_TAG_MASK: u64 = 0xffff_ffff_0000_0000;
+/// AF_INET/AF_UNIX/AF_PACKET socket inode numbers, from the one range
+/// `vfs::pseudo_ino` reserves for them. The id used to be the socket's own
+/// heap ADDRESS: a freed socket's address is handed straight back to the next
+/// allocation, so two live sockets carried the same `st_ino` — and `ss`,
+/// `lsof` and `/proc/net/unix` all key a socket on `st_ino`, so one entry
+/// stood in for two connections. Each socket now draws its own number.
+static NEXT_INET_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::INET_SOCK);
 
 /// Build the `Arc<Inode>` wrapping an AF_INET-family socket fd. The socket
-/// lives in `i_private` (recover it with [`inet_from_inode`]); `ino()` carries
-/// [`INET_INO_TAG`] OR'd with the socket pointer's low bits.
+/// lives in `i_private` (recover it with [`inet_from_inode`]), which is what
+/// identifies it; `ino()` is a number drawn from the AF_INET socket range.
 ///
 /// NOTE (kp2 follow-up): the socket's own `poll_subs` (`Arc<PollSubscribers>`,
 /// referenced by the TCP/UDP stack entries for targeted epoll wakes) is NOT
@@ -17,7 +20,7 @@ pub const INET_INO_TAG_MASK: u64 = 0xffff_ffff_0000_0000;
 /// Arc<PollSubscribers>)`, `inode.poll_subscribers()` is `None` and epoll on a
 /// socket fd falls back to the global broadcast. # C: O(1)
 pub fn make_inet_socket_inode(sock: Arc<InetSocket>) -> vfs::InodeRef {
-    let ino = INET_INO_TAG | (Arc::as_ptr(&sock) as u64 & INET_INO_ID_MASK);
+    let ino = NEXT_INET_INO.alloc();
     // Share the socket's OWN poll_subs into the inode so `inode.poll_subscribers()`
     // (what epoll_ctl(ADD) subscribes to) is the SAME list the socket's write/recv
     // paths notify (`wake_peer_subs`, stack targeted wakes). Without this the inode

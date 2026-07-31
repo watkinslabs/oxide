@@ -18,9 +18,15 @@ impl ReadWaiters {
     pub(crate) unsafe fn park(&self) { unreachable!("inotify wait under hosted") }
 }
 
-use vfs::{Ino, InodeRef};
+use vfs::InodeRef;
 
-pub(crate) const INOTIFY_INO_BASE: Ino = 0x7100_0000;
+/// Every inotify/fanotify group used to carry the SAME number, the base of its
+/// range. Linux gives each anon inode its own; userspace separates two
+/// descriptions by `(st_dev, st_ino)`, so every group in the system reported
+/// one identity to `lsof` and `/proc/<pid>/fdinfo`. Each group now draws its
+/// own number, wrapping inside the range rather than escaping it.
+pub(crate) static NEXT_INOTIFY_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::INOTIFY);
 
 /// Linux IN_* event masks (subset).
 pub const IN_ACCESS:        u32 = 0x0001;

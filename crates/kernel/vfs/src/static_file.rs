@@ -7,13 +7,15 @@
 // read-from-body / `Erofs`-write data path is one shared `i_fop`
 // (`StaticFileOps`), and `make_static_file_inode` stamps `S_IFREG|0o444`.
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 use crate::{FileType, InodeRef, KResult, VfsError};
 use crate::inode::InodeBuilder;
 use crate::inode_ops::default_inode_ops;
 use crate::file_ops::FileOps;
 
-static NEXT_INO: AtomicU64 = AtomicU64::new(0x3100_0000);
+/// Static-file inode numbers land on the same `s_dev` as procfs's fixed ids,
+/// so the counter needs a stated bound rather than a bare base it can walk off.
+static NEXT_INO: crate::pseudo_ino::RegionAllocator
+    = crate::pseudo_ino::RegionAllocator::new(&crate::pseudo_ino::VFS_STATIC_FILE);
 
 /// `0o444` — world-readable, no write bit. A static body is fixed and `write`
 /// is unconditionally `Erofs`, so the reported mode must NOT advertise a write
@@ -55,7 +57,7 @@ impl FileOps for StaticFileOps {
 /// goes through: `S_IFREG|0o444`, `i_size = body.len()`, the body in
 /// `i_private`, the shared read-only `i_fop`. # C: O(1)
 pub fn make_static_file_inode(body: &'static [u8]) -> InodeRef {
-    let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
+    let ino = NEXT_INO.alloc();
     let mode = (FileType::Regular.to_ifmt() as u32) | (STATIC_PERM as u32);
     InodeBuilder::new(ino, mode, default_inode_ops(), Arc::new(StaticFileOps))
         .size(body.len() as u64)

@@ -269,16 +269,14 @@ impl PipeData {
     pub(super) fn queued_bytes(&self) -> usize { self.buf.lock().len }
 }
 
-mod ids {
-    pub(super) const PIPE_INO_BASE: u64 = 0x1000_0000;
-}
-
-static NEXT_PIPE_INO: core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(ids::PIPE_INO_BASE);
+/// Pipe inode numbers come out of the one range `vfs::pseudo_ino` reserves for
+/// them, and wrap inside it rather than counting on into the next owner's.
+static NEXT_PIPE_INO: vfs::pseudo_ino::RegionAllocator
+    = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::PIPE);
 
 /// `make_pipe_inode()` — a Fifo pseudo-inode backing both ends of an anonymous pipe. # C: O(1)
 pub fn make_pipe_inode() -> InodeRef {
-    let ino = NEXT_PIPE_INO.fetch_add(1, Ordering::Relaxed);
+    let ino = NEXT_PIPE_INO.alloc();
     InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(PipeFileOps))
         .poll_subs(PollSubscribers::new())
         .private(Arc::new(PipeData::new(ino)))

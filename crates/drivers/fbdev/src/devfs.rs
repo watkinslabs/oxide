@@ -35,11 +35,10 @@ fn write_user_u16(arg: u64, value: u16) -> Result<(), ()> {
     uaccess::copy_to_user(arg, &value.to_ne_bytes()).map_err(|_| ())
 }
 
-// NOT 0x7001_0000: pidfd owns the whole 0x70xx_xxxx space (PIDFD_INO_MARKER
-// 0x7000_0000, masked 0xFF00_0000), and the pidfd ioctl handler runs BEFORE
-// fbdev in the dispatch — so a 0x70-prefixed fb inode had every FBIO* ioctl
-// stolen by the pidfd path. Use the 0xFB ("FB") top byte, outside pidfd's range.
-pub const FB0_INO_BASE: Ino = 0xFB00_0000;
+/// First number in fbdev's reserved range, from the one owner of pseudo-inode
+/// number space. A number is a number, not an identity: `/dev/fb<idx>` is
+/// identified by the [`FbData`] its inode owns. # C: O(1)
+pub const FB0_INO_BASE: Ino = vfs::pseudo_ino::FBDEV.start();
 pub const FBDEV_MAJOR: u32 = 29;
 
 /// Backend-private state (`i_private`) for `/dev/fb<idx>`: the framebuffer
@@ -82,8 +81,9 @@ impl FileOps for FbFileOps {
     }
 }
 
-/// Build the `/dev/fb<idx>` inode: `S_IFCHR|0o666`, `ino = FB0_INO_BASE | idx`
-/// (the routing tag the ioctl + mmap paths read), `i_size = smem_len` (best
+/// Build the `/dev/fb<idx>` inode: `S_IFCHR|0o666`, `ino = FB0_INO_BASE | idx`,
+/// `i_private = FbData { idx }` (what the ioctl + mmap paths route on — the
+/// number routes nothing), `i_size = smem_len` (best
 /// effort at build — `cat /sys`-style size queries; `fbset` uses
 /// FBIOGET_FSCREENINFO, not `i_size`), the shared `FbFileOps` data path,
 /// lookup → `ENOTDIR` (default i_op). # C: O(1)
@@ -95,19 +95,23 @@ pub fn make_fb_inode(idx: u32) -> InodeRef {
         .build()
 }
 
+/// Which framebuffer this inode IS, or `None` when it is not an fbdev node.
+/// Linux answers by the file's `fb_fops`; the inode NUMBER cannot, because the
+/// earlier test masked only the low 32 bits, so any inode whose low half
+/// happened to read `0xFB00_xxxx` took every FBIO* ioctl and the mmap backing
+/// away from its real owner — and then indexed the fb registry with the
+/// stranger's low bits. `make_fb_inode` is the only place that installs
+/// [`FbData`]. # C: O(1)
+fn fb_index_of(inode: &InodeRef) -> Option<u32> {
+    inode.private::<FbData>().map(|d| d.idx)
+}
+
 /// FBIO* ioctl handler. Returns `Some(rv)` if the ioctl is one of
 /// FBIOGET_VSCREENINFO / FBIOGET_FSCREENINFO etc; falls back to
 /// `None` for unknown commands so the generic CharDev path runs.
 /// # C: O(1)
 pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
-    // F199: precedence-safe parens. The earlier form
-    // `tag != FB0_INO_BASE & MASK` evaluated as
-    // `tag != (FB0_INO_BASE & MASK)` = `tag != 0`, so every inode
-    // with zero top-32 bits (including pty slaves, ino 0x60008003)
-    // fell into this branch and got EFAULT from the arg==NULL gate
-    // below. Compare against the upper-16-bit base instead.
-    if (inode.ino() & 0xFFFF_0000) != FB0_INO_BASE { return None; }
-    let idx = (inode.ino() & 0xFFFF) as u32;
+    let idx = match fb_index_of(inode) { Some(idx) => idx, None => return None };
     use syscall::errno::Errno;
     let efault = || Some(-(Errno::Efault.as_i32() as i64));
     let user_ok = |p: u64, len: u64| {
@@ -278,8 +282,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 /// draws to the real framebuffer. `None` if the fb has no real backing.
 /// # C: O(1)
 pub fn mmap_backing(inode: &InodeRef) -> Option<(u64, u64)> {
-    if (inode.ino() & 0xFFFF_0000) != FB0_INO_BASE { return None; }
-    crate::backing_of((inode.ino() & 0xFFFF) as u32)
+    crate::backing_of(fb_index_of(inode)?)
 }
 
 /// Boot-time directory setup. Framebuffer nodes are not fabricated here:
@@ -329,6 +332,10 @@ pub(crate) fn unregister_all_nodes() {
         let _ = unregister_node(idx);
     }
 }
+
+#[cfg(test)]
+#[path = "devfs/identity_tests.rs"]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {

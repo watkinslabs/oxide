@@ -10,7 +10,7 @@ use crate::inotify::fan_layout;
 use crate::inotify::layout::{encode_event, event_record_len};
 use crate::inotify::types::{
     InotifyData, FAN_ALLOW, FAN_DENY,
-    Event, INOTIFY_INO_BASE, IN_Q_OVERFLOW, MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
+    Event, NEXT_INOTIFY_INO, IN_Q_OVERFLOW, MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
 use crate::inotify::validate::{FAN_REPORT_DIR_FID, FAN_REPORT_FID, FAN_REPORT_NAME,
     FAN_UNLIMITED_MARKS, FAN_UNLIMITED_QUEUE};
@@ -430,7 +430,7 @@ impl Drop for InotifyData {
 /// the global instance list (the vfs write-hook walks it). # C: O(1)
 pub fn make_inotify_inode(data: Arc<InotifyData>) -> InodeRef {
     let subs = Arc::clone(&data.poll_subs);
-    InodeBuilder::new(INOTIFY_INO_BASE, mk_mode(FileType::CharDev, 0),
+    InodeBuilder::new(NEXT_INOTIFY_INO.alloc(), mk_mode(FileType::CharDev, 0),
         default_inode_ops(), Arc::new(InotifyFileOps))
         .private(data)
         .poll_subs_arc(subs)

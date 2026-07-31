@@ -25,10 +25,10 @@ use crate::io_uring_abi::layout::{
 };
 use crate::io_uring_abi::uapi::{CQE_SIZE, SQE_SIZE};
 
-/// io_uring ino high-bits tag (`"IOUR"`), distinct from socket/ext4/pipe inodes.
-pub const IO_URING_INO_TAG: u64 = 0x494F_5552_0000_0000;
-/// Mask selecting the tag bits of an ino.
-pub const INO_TAG_MASK: u64 = 0xFFFF_FFFF_0000_0000;
+/// io_uring's reserved inode-number range, owned by `vfs::pseudo_ino`. A ring's
+/// number comes out of here; what makes a file a ring is the `IoUringInode` it
+/// owns, not the number.
+use vfs::pseudo_ino::IO_URING as INO_REGION;
 
 /// One io_uring instance — owns the rings frame and the SQEs frame.
 pub struct IoUring {
@@ -242,6 +242,9 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
 /// # C: O(1)
 struct IoUringFileOps;
 impl FileOps for IoUringFileOps {
+    /// The one vtable io_uring installs — Linux `io_is_uring_fops` compares
+    /// `f_op` against exactly this. # C: O(1)
+    fn is_io_uring(&self) -> bool { true }
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
@@ -252,18 +255,17 @@ impl FileOps for IoUringFileOps {
 /// `IoUringInode`, the ino is tagged `"IOUR"` | a process-wide anon ino.
 /// # C: O(1)
 pub fn make_io_uring_inode(data: Arc<IoUringInode>) -> InodeRef {
-    let ino = IO_URING_INO_TAG | get_next_ino() as u64;
+    let ino = INO_REGION.at(get_next_ino() as u64);
     InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), Arc::new(IoUringFileOps))
         .size(hal::PAGE_SIZE_BYTES)
         .private(data)
         .build()
 }
 
-/// Recover the ring state behind an fd's inode, verifying the io_uring ino
-/// tag. Linux `io_uring_ctx_get_file()` answers `EOPNOTSUPP` — not `EINVAL` —
-/// for an fd that is not an io_uring instance. # C: O(1)
+/// Recover the ring state behind an fd's inode. Identity and the errno for a
+/// live fd that is not a ring both live in `crate::io_uring_identity`, which
+/// is the one place all three callers ask. # C: O(1)
 pub fn ring_of(file: &Arc<File>) -> Result<InodeRef, syscall::errno::Errno> {
-    use syscall::errno::Errno;
-    if (file.inode().ino() & INO_TAG_MASK) != IO_URING_INO_TAG { return Err(Errno::Eopnotsupp); }
+    crate::io_uring_identity::admit_ring_fd(file)?;
     Ok(file.inode().clone())
 }

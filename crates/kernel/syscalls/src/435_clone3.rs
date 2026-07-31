@@ -51,7 +51,7 @@ fn resolve_cgroup(fd: i32) -> Result<u64, Errno> {
     let file = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
     let inode = file.inode();
     if inode.file_type() != vfs::FileType::Directory { return Err(Errno::Einval); }
-    cgroup::cgid_from_dir_inode(inode.ino(), inode.fsid()).ok_or(Errno::Einval)
+    cgroup::cgid_from_dir_inode(&inode).ok_or(Errno::Einval)
 }
 
 /// `sys_clone3(cl_args, size)` — slot 435. Returns the child's pid in the
