@@ -35,7 +35,13 @@ Reachability is stated as of `96ef4d2d4`.
 | devpts slave / devpts ptmx | `0x6000_FFFE`, `0x6000_FFFF` | needs 32766 ptys | slave index `0x7FFE`/`0x7FFF` alias `PTMX_MOUNT_INO`/`PTMX_ROOT_INO`. |
 | procfs dynamic counter / procfs fixed identities | `0x3000_0000` counter vs `0x3000_0D01`, `0x3000_1000`, … | after ~3300 allocations | the runtime counter starts minting numbers that are already a live `/proc` file's identity. |
 | `get_next_ino()` (pidfd, POSIX mq, io_uring low half) / console tty band | counter from 1 runs through `0x7400..0x74FF`, `0x7600`, `0x7700` | after ~29696 anon inodes | numeric aliasing with `/dev/console`, `/dev/tty*`, `/dev/vcs*`. |
+| tmpfs / eventfd | both based at `0x4000_0000` | separate `st_dev` saves it | tmpfs was never registered anywhere; the two counters walk the same numbers. |
 | eventfd counter / binfmt_misc | `0x4000_0000` counter vs `0x4249_0000` | needs ~38M eventfds | — |
+| `make_static_file_inode` (`0x3100_0000`) and tracefs ring (`0x3700_0000`) / procfs | inside the procfs band, same `s_dev` | after enough allocations | neither was registered. |
+| debugfs (`0x6D00_0000`) / debugfs automount (`0x6D10_0000`) | counter runs into the automount band after ~1M files | — | — |
+| `/dev/console` / `/dev/tty1` | both `0x7401` | **yes, always** | the same `st_ino` on the same `st_dev`: nothing could tell the two nodes apart by inode identity. |
+| every signalfd / every other signalfd | all shared `0x7200_0000` | **yes, always** | one constant for every instance. Same for inotify groups (`0x7100_0000`). |
+| two live sockets | `TAG \| (Arc::as_ptr(sock) & 0xFFFF_FFFF)` | **yes** | a freed socket's address is reused, so two live sockets could carry one `st_ino` — and `ss`, `lsof` and `/proc/net/unix` key on it. |
 | cgroup file / debugfs automount | `0x6100_0000 + (cgid<<8)` vs `0x6D10_0000` | needs ~786k cgroups | — |
 
 ## Identity-by-arithmetic sites (independent of whether a range collides)
@@ -70,6 +76,14 @@ nothing keys off the values:
 |---|---|---|
 | evdev | `0x7400_0000` | `0x7600_0000` |
 | bpf | `0x7300_0000` | `0x7500_0000` |
-| devpts | `0x6000_0000` | `0x6900_0000` |
+| devpts | `0x6000_0000` | `0x6900_0000`, with a 14-bit index and a kind field so the ptmx sentinels cannot alias a slave |
+| binfmt_misc | `0x4249_0000` | `0x5000_0000` |
+| eventfd | `0x4000_0000` | `0x5100_0000` |
 | procfs dynamic counter | `0x3000_0000` | `0x3800_0000` |
 | `get_next_ino()` | `1` | `0x0200_0000` |
+| `/dev/console` | `0x7401` (same as `/dev/tty1`) | `0x74FB` |
+| signalfd, inotify | one constant per family | one number per instance |
+| AF_INET/UNIX/PACKET, AF_VSOCK, netlink | socket pointer bits | per-family allocator |
+
+Unchanged: epoll, timerfd, pipe, cgroup, tmpfs, autofs, debugfs, ext4, and every
+tag family.
