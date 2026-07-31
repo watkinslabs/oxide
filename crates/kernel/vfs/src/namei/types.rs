@@ -59,7 +59,8 @@ pub struct LookupFlags {
     /// (`d_automount`) on a component that has one; the trigger dentry is
     /// traversed as the plain directory it already is. Inverted sense so the
     /// default (`false`) keeps LOOKUP_AUTOMOUNT behaviour for every existing
-    /// caller. `open_tree`/`fspick`/`statx` expose this bit directly.
+    /// caller. `open_tree`, `move_mount`, `fspick` and `mount_setattr` map
+    /// their `AT_NO_AUTOMOUNT` / `_AUTOMOUNTS` request onto it.
     pub no_automount: bool,
     /// Confined-root marker (chroot, wired by `pathresolve::resolution_root`):
     /// the walk is scoped to `root`, so `..` cannot ascend above it and an
