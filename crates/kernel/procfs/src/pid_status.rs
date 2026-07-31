@@ -54,6 +54,7 @@ pub fn body(tid: u32) -> Vec<u8> {
     let shd_pnd = task.thread_group.shared_pending();
     let tracer = task.traced_by.load(Ordering::Acquire);
     let name = task.comm();
+    let mem_rows = crate::pid_mem::status_rows(&task);
     let s = Status {
         name:   &name,
         umask:  task.umask(),
@@ -103,6 +104,7 @@ pub fn body(tid: u32) -> Vec<u8> {
         nr_nodes: 1,
         nvcsw:  task.nvcsw.load(Ordering::Relaxed),
         nivcsw: task.nivcsw.load(Ordering::Relaxed),
+        mem_rows: &mem_rows,
     };
     render(&s)
 }

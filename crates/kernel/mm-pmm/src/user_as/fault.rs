@@ -282,7 +282,8 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
     // demand-page resolves it normally.
     if matches!(fault, FaultKind::NotPresent { .. }) {
         if as_.find_vma(uva).is_none() {
-            as_.try_grow_stack(uva);
+            let (max_size, max_grow) = stack_growth_caps(as_);
+            as_.try_grow_stack(uva, max_size, max_grow);
         }
     }
     // A swap PTE is neither an absent mapping nor a userfaultfd-MISSING
@@ -564,8 +565,7 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
     };
     if matches!(r, Some(Ok(()))) {
         if let Some(c) = cur.as_ref() {
-            let counter = if major { &c.maj_flt } else { &c.min_flt };
-            counter.fetch_add(1, Ordering::Relaxed);
+            sched::rusage_charge::fault(c, major);
             let kind = if major { sched::perf_sw::CpuSw::MajFlt } else { sched::perf_sw::CpuSw::MinFlt };
             sched::perf_sw::charge(kind, c.cpu.load(Ordering::Acquire) as usize, 1);
         }

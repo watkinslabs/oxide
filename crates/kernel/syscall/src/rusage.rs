@@ -56,8 +56,9 @@ pub const fn bytes_to_blocks(bytes: u64) -> u64 { bytes >> IO_BLOCK_SHIFT }
 pub struct Rusage {
     pub utime_ns:  u64,
     pub stime_ns:  u64,
-    /// Peak resident set, KiB. No RSS high-water accounting exists, so every
-    /// producer passes 0 today; the field is here so the layout stays honest.
+    /// Peak resident set, KiB — the mm's resident-page high-water mark scaled
+    /// from pages, which is what makes it a PROCESS property rather than a
+    /// per-thread one.
     pub maxrss_kb: u64,
     pub minflt:    u64,
     pub majflt:    u64,
@@ -111,6 +112,44 @@ impl Rusage {
 fn put(b: &mut [u8; RUSAGE_BYTES], off: usize, v: u64) {
     b[off..off + 8].copy_from_slice(&v.to_le_bytes());
 }
+
+/// `sizeof(struct tms)` — four `clock_t`, which is `long` on both LP64 arches.
+pub const TMS_BYTES: usize = 32;
+
+/// `times(2)` in clock ticks: the calling PROCESS's user/system CPU time, and
+/// its reaped children's. `tms_utime`/`tms_stime` cover the whole thread group
+/// (Linux `thread_group_cputime_adjusted`), not the calling thread.
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct Tms {
+    pub utime_ticks:  u64,
+    pub stime_ticks:  u64,
+    pub cutime_ticks: u64,
+    pub cstime_ticks: u64,
+}
+
+impl Tms {
+    /// Serialize to the 32-byte user `struct tms`. # C: O(1)
+    pub fn encode(&self) -> [u8; TMS_BYTES] {
+        let mut b = [0u8; TMS_BYTES];
+        for (i, v) in [self.utime_ticks, self.stime_ticks, self.cutime_ticks, self.cstime_ticks]
+            .iter().enumerate()
+        {
+            b[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        b
+    }
+}
+
+/// `times(2)` accepts a NULL `tms` and still returns the tick count — it does
+/// NOT report EFAULT. Only a non-NULL pointer is validated. # C: O(1)
+pub const fn times_wants_tms(ptr: u64) -> bool { ptr != 0 }
+
+/// `times(2)`'s return value is a tick count, not a status: the kernel forces
+/// a successful return so a legitimately large tick count is never mistaken
+/// for an errno. Only the exact `(clock_t)-1` bit pattern is the error report,
+/// and a monotonic tick count reaches it only after the counter wraps.
+/// # C: O(1)
+pub const fn times_return_is_error(rv: i64) -> bool { rv == -1 }
 
 #[cfg(test)]
 mod tests {
@@ -184,5 +223,32 @@ mod tests {
         assert_eq!(bytes_to_blocks(511), 0);
         assert_eq!(bytes_to_blocks(512), 1);
         assert_eq!(bytes_to_blocks(4096), 8);
+    }
+
+    #[test]
+    fn tms_members_land_in_declaration_order_as_four_longs() {
+        let b = Tms { utime_ticks: 11, stime_ticks: 22, cutime_ticks: 33, cstime_ticks: 44 }.encode();
+        assert_eq!(b.len(), TMS_BYTES);
+        let at = |i: usize| u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap());
+        assert_eq!((at(0), at(1), at(2), at(3)), (11, 22, 33, 44));
+    }
+
+    #[test]
+    fn times_with_a_null_buffer_succeeds_rather_than_faulting() {
+        // The classic divergence: `times(NULL)` is legal and still returns the
+        // tick count, so a NULL pointer must skip the copy-out, not EFAULT.
+        assert!(!times_wants_tms(0));
+        assert!(times_wants_tms(0x7fff_0000));
+    }
+
+    #[test]
+    fn only_the_exact_minus_one_tick_count_reads_as_an_error() {
+        assert!(times_return_is_error(-1));
+        assert!(!times_return_is_error(0));
+        assert!(!times_return_is_error(-2));
+        // A tick count deep in the range a plain errno check would reject is
+        // still a valid result, because the return is forced successful.
+        assert!(!times_return_is_error(-4095i64 & 0x7fff_ffff_ffff_ffff));
+        assert!(!times_return_is_error(i64::MAX));
     }
 }

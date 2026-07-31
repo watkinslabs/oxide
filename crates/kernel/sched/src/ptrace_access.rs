@@ -30,6 +30,13 @@ pub enum Mode {
     FsCreds,
 }
 
+/// Which class of access the ladder is judging. The distinction matters only
+/// to the LSM tail: the ATTACH modes are the ones a security module is allowed
+/// to restrict further, while the READ modes (`/proc/<pid>/maps` and friends)
+/// pass the credential ladder alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access { Read, Attach }
+
 /// `__ptrace_may_access(task, PTRACE_MODE_*_REALCREDS)`.
 ///
 /// REALCREDS compares the caller's **real** uid/gid (Linux `cred->uid` /
@@ -38,9 +45,30 @@ pub enum Mode {
 /// real ids are what userspace depends on) against all three of the target's
 /// uids and all three of its gids. CAP_SYS_PTRACE bypasses the comparison; the
 /// dumpability gate is then applied on top of either path.
+///
+/// READ-class: `security_ptrace_access_check` is still called by Linux, but
+/// every restriction it can add keys on `PTRACE_MODE_ATTACH`, so a read-only
+/// probe reaches the same answer with or without the tail.
 /// # C: O(1)
 pub fn may_access(cur: &Task, target: &Task) -> Result<(), Denied> {
     may_access_mode(cur, target, Mode::RealCreds)
+}
+
+/// `__ptrace_may_access(task, mode)` INCLUDING the
+/// `security_ptrace_access_check` tail, which is the half that enforces
+/// `/proc/sys/kernel/yama/ptrace_scope`. Every ATTACH-class caller —
+/// `PTRACE_ATTACH`, `PTRACE_SEIZE`, `process_vm_readv`, `pidfd_getfd`,
+/// `kcmp` — must come through here rather than through `may_access_mode`,
+/// which stops at the credential ladder.
+/// # C: O(N_relations + depth)
+pub fn may_access_full(cur: &Task, target: &Task, mode: Mode, access: Access)
+    -> Result<(), Denied>
+{
+    may_access_mode(cur, target, mode)?;
+    if access == Access::Attach {
+        crate::yama::ptrace_access_check(cur, target).map_err(|()| Denied)?;
+    }
+    Ok(())
 }
 
 /// `__ptrace_may_access(task, mode)`. The only difference between the two modes

@@ -116,6 +116,14 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
         }
         let _ = pmm::user_as::glue_munmap(new_addr, new_size as u64);
     }
+    // Linux `resize_is_valid` -> `may_expand_vm(mm, …, vrm->delta)`: only the
+    // GROWTH is charged against RLIMIT_AS. `MREMAP_DONTUNMAP` is the exception
+    // (`move_vma`): the source stays mapped, so the whole `old_len` is new
+    // address space even though the size did not change.
+    let as_delta = if dontunmap { new_size as u64 } else {
+        (new_size as u64).saturating_sub(old_size as u64)
+    };
+    if let Err(rv) = pmm::user_as::admit_as_growth(&mm, as_delta) { return rv; }
     match mm.mremap_full(old_ua, old_size, new_size,
                     (flags & MREMAP_MAYMOVE) != 0,
                     (flags & MREMAP_FIXED) != 0,

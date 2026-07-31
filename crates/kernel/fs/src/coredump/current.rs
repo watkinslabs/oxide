@@ -10,6 +10,11 @@ use super::pattern::{self, CoreContext, CoreKind};
 /// Nanoseconds per second, for the wall-clock stamp a pattern can interpolate.
 const NS_PER_SEC: u64 = 1_000_000_000;
 
+/// Granularity `RLIMIT_CORE` truncates on. Linux emits the memory half of a
+/// dump one page at a time (`dump_user_range`), so the limit binds at a page
+/// boundary rather than mid-page.
+const DUMP_CHUNK: usize = hal::PAGE_SIZE_BYTES as usize;
+
 /// Dump the running process, killed by `signo`.
 ///
 /// Best-effort: the process is already terminating, so a failure to deliver the
@@ -23,14 +28,21 @@ pub fn write_for_current(signo: i32) {
     let kind = pattern::kind_of(trim(&raw));
 
     // A program collects the dump itself and is not subject to the size limit —
-    // nothing is written to a filesystem. A file destination is: a zero limit is
-    // how a system says it does not want core files.
-    if kind == CoreKind::File && cx.rlimit_core == 0 { return; }
+    // nothing is written to a filesystem, and Linux overwrites `cprm->limit`
+    // with RLIM_INFINITY once the helper is chosen. A file destination is
+    // bounded: a zero limit is how a system says it does not want core files.
+    if kind == CoreKind::File && !sched::rlimit::dump::file_dump_enabled(cx.rlimit_core) { return; }
 
     let body = super::elf::build_coredump(signo, &cur.comm(), cx.vpid);
     match kind {
         CoreKind::Pipe => { super::pipe::dump_to_program(trim(&raw), &cx, &body); }
-        CoreKind::File => write_to_file(&pattern::file_path(&raw, &cx), &body),
+        // Linux `dump_emit` refuses the first chunk that would cross the limit,
+        // so an over-limit dump is TRUNCATED rather than dropped — a partial
+        // core is still worth having, and gdb reads it.
+        CoreKind::File => {
+            let n = sched::rlimit::dump::prefix_len(body.len(), cx.rlimit_core, DUMP_CHUNK);
+            write_to_file(&pattern::file_path(&raw, &cx), &body[..n]);
+        }
         // A socket destination needs a connection to a listener that this
         // kernel has no path to yet, so nothing is delivered. Writing a file
         // instead would put the dump somewhere the operator did not ask for.

@@ -29,6 +29,24 @@ pub struct VmAccountingSnapshot {
     pub page_table_frames: u64,
     pub faults: u64,
     pub mlock_transitions: u64,
+    /// Peak `RssPages::total()` this mm has reached, in pages. Already folded
+    /// with the live total per Linux `get_mm_hiwater_rss`, so a reader uses it
+    /// directly.
+    pub hiwater_rss_pages: u64,
+}
+
+impl VmAccountingSnapshot {
+    /// This mm's resident page classes. Sole source for `ru_maxrss`,
+    /// `/proc/<pid>/status`'s `Vm*`/`Rss*` rows and `/proc/<pid>/statm`.
+    /// # C: O(1)
+    pub fn rss_pages(&self) -> super::rss::RssPages {
+        super::rss::RssPages {
+            anon:     self.anon_pte_mappings,
+            file:     self.file_pte_mappings,
+            shmem:    self.kernel_pte_mappings,
+            swapents: self.swap_pte_mappings,
+        }
+    }
 }
 
 pub(super) struct VmAccounting {
@@ -43,6 +61,9 @@ pub(super) struct VmAccounting {
     page_table_frames: AtomicU64,
     faults: AtomicU64,
     mlock_transitions: AtomicU64,
+    /// Linux `mm_struct::hiwater_rss`, latched by `update_hiwater_rss` at the
+    /// residency-growth boundary. Readers fold it with the live total.
+    hiwater_rss_pages: AtomicU64,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +78,7 @@ impl VmAccounting {
             root_page_table_frames: AtomicU64::new(u64::from(root_pa != 0)),
             page_table_frames: AtomicU64::new(u64::from(root_pa != 0)),
             faults: AtomicU64::new(0), mlock_transitions: AtomicU64::new(0),
+            hiwater_rss_pages: AtomicU64::new(0),
         }
     }
 
@@ -67,7 +89,15 @@ impl VmAccounting {
     }
 
     pub(super) fn snapshot(&self) -> VmAccountingSnapshot {
+        let mut s = self.raw_snapshot();
+        s.hiwater_rss_pages = super::rss::hiwater_rss(
+            self.hiwater_rss_pages.load(Ordering::Relaxed), s.rss_pages().total());
+        s
+    }
+
+    fn raw_snapshot(&self) -> VmAccountingSnapshot {
         VmAccountingSnapshot {
+            hiwater_rss_pages: 0,
             committed_virtual_bytes: self.committed_virtual_bytes.load(Ordering::Acquire),
             locked_virtual_bytes: self.locked_virtual_bytes.load(Ordering::Acquire),
             anon_pte_mappings: self.anon_pte_mappings.load(Ordering::Acquire),
@@ -109,6 +139,9 @@ impl VmAccounting {
     fn page_table_frame_released(&self) { self.page_table_frames.fetch_sub(1, Ordering::AcqRel); }
     pub(super) fn install_pte(&self, vma: &Vma) {
         if let Some(c) = self.counter(Self::pte_kind(vma)) { c.fetch_add(1, Ordering::AcqRel); }
+        // Linux `update_hiwater_rss`: residency only ever grows here, so this
+        // is the one transition that can raise the peak.
+        self.hiwater_rss_pages.fetch_max(self.raw_snapshot().rss_pages().total(), Ordering::AcqRel);
     }
     pub(super) fn remove_pte(&self, vma: &Vma) {
         if let Some(c) = self.counter(Self::pte_kind(vma)) { c.fetch_sub(1, Ordering::AcqRel); }
@@ -205,6 +238,7 @@ pub fn global_accounting_snapshot() -> VmAccountingSnapshot {
         out.page_table_frames = out.page_table_frames.saturating_add(next.page_table_frames);
         out.faults = out.faults.saturating_add(next.faults);
         out.mlock_transitions = out.mlock_transitions.saturating_add(next.mlock_transitions);
+        out.hiwater_rss_pages = out.hiwater_rss_pages.saturating_add(next.hiwater_rss_pages);
     }
     out
 }

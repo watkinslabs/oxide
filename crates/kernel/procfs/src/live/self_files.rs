@@ -143,10 +143,10 @@ pub fn make_proc_self_stat() -> InodeRef { crate::dyn_file::make_gen_file(crate:
 /// renderer carrying its own `Uid:\t0\t0\t0\t0` / `CapPrm = 000001ffffffffff`
 /// constants and its own `Threads`/`Sig*`/`Cpus_allowed` tail, so the two
 /// paths could — and did — disagree about the same task's credentials. It also
-/// reported `VmRSS` as the total MAPPED size, which is not RSS; that number is
-/// gone rather than propagated to the per-pid file, since no RSS accounting
-/// exists to source it from (`scratch/audit-vfs.md` §8 keeps the `Vm*` row
-/// open). # C: as `pid_status::body`
+/// reported `VmRSS` as the total MAPPED size, which is not RSS; the shared
+/// renderer sources the whole `Vm*`/`Rss*` block from the per-mm resident-page
+/// counters instead, so this file, `/proc/<pid>/statm` and `ru_maxrss` cannot
+/// disagree. # C: as `pid_status::body`
 fn self_status_body() -> Vec<u8> {
     match sched::live::current() {
         Some(c) => crate::pid_status::body(c.tid),

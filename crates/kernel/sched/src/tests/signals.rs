@@ -9,7 +9,10 @@ use core::sync::atomic::Ordering;
 
 use crate::live::sigpend;
 use crate::signum::{self, Signum};
-use crate::task::{SchedClass, SigInfo, Task, RT_QUEUE_CAP};
+use crate::rlimit::rlim;
+use crate::sigqueue::Charge;
+use crate::sigsend::SigSource;
+use crate::task::{SchedClass, SigInfo, Task};
 
 const SIGUSR1: u32 = Signum::Sigusr1 as u32;
 const SIGCHLD: u32 = Signum::Sigchld as u32;
@@ -35,14 +38,30 @@ fn info(signo: u32, code: i32, value: u64) -> SigInfo {
     SigInfo { signo, code, pid: 7, uid: 0, value, sys: None, fault: None, poll: None }
 }
 
+/// The charge a process-context send to `t` takes, with Linux's
+/// `override_rlimit` predicate applied to the record — the same pair
+/// `live::send::push_record` builds.
+fn charge(t: &Task, rec: &SigInfo) -> Charge {
+    t.sigq_charge(crate::sigsend::override_rlimit(rec.signo, &SigSource::Info(*rec)))
+}
+
+/// `Task::sigq_push` with that charge. # C: O(1)
+fn push(t: &Task, rec: SigInfo) -> bool { let c = charge(t, &rec); t.sigq_push(rec, c) }
+
+/// `ThreadGroup::post_shared_record` with that charge.
+fn push_shared(t: &Task, rec: SigInfo) -> bool {
+    let c = charge(t, &rec);
+    t.thread_group.post_shared_record(rec, c)
+}
+
 // --- queue depth policy (Linux `legacy_queue` vs POSIX RT) -------------------
 
 #[test]
 fn standard_signals_keep_one_queued_record_like_legacy_queue() {
     let t = task(10);
     t.sigq_reserve(SIGUSR1);
-    assert!(t.sigq_push(info(SIGUSR1, signum::SI_QUEUE, 0xaa)));
-    assert!(!t.sigq_push(info(SIGUSR1, signum::SI_QUEUE, 0xbb)),
+    assert!(push(&t, info(SIGUSR1, signum::SI_QUEUE, 0xaa)));
+    assert!(!push(&t, info(SIGUSR1, signum::SI_QUEUE, 0xbb)),
             "a second standard-signal record is dropped, not queued");
     let (rec, empty) = t.sigq_pop(SIGUSR1);
     assert_eq!(rec.map(|r| r.value), Some(0xaa));
@@ -53,7 +72,7 @@ fn standard_signals_keep_one_queued_record_like_legacy_queue() {
 fn realtime_signals_queue_multiple_records_in_arrival_order() {
     let t = task(11);
     t.sigq_reserve(SIGRTMIN);
-    for n in 0..3u64 { assert!(t.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, n))); }
+    for n in 0..3u64 { assert!(push(&t, info(SIGRTMIN, signum::SI_QUEUE, n))); }
     for n in 0..3u64 {
         let (rec, empty) = t.sigq_pop(SIGRTMIN);
         assert_eq!(rec.map(|r| r.value), Some(n));
@@ -62,12 +81,22 @@ fn realtime_signals_queue_multiple_records_in_arrival_order() {
 }
 
 #[test]
-fn realtime_queue_is_capped_and_drops_the_overflow() {
+fn realtime_queue_is_bounded_by_rlimit_sigpending_not_a_constant() {
+    // Linux puts NO per-signal cap on a real-time queue: `RLIMIT_SIGPENDING`
+    // is the only bound, so a task whose limit is above the old constant can
+    // queue past it and one whose limit is below cannot reach it.
     let t = task(12);
     t.sigq_reserve(SIGRTMIN);
-    for n in 0..RT_QUEUE_CAP as u64 { assert!(t.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, n))); }
-    assert!(!t.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, 999)));
+    t.set_rlimit(rlim::SIGPENDING, (3, 3));
+    for n in 0..3u64 { assert!(push(&t, info(SIGRTMIN, signum::SI_QUEUE, n))); }
+    assert!(!push(&t, info(SIGRTMIN, signum::SI_QUEUE, 999)), "the 4th record is over the limit");
+    t.set_rlimit(rlim::SIGPENDING, (5, 5));
+    assert!(push(&t, info(SIGRTMIN, signum::SI_QUEUE, 4)), "raising the limit admits more");
+    drain(&t, SIGRTMIN);
 }
+
+/// Pop every queued record for `signo`, releasing their charges.
+fn drain(t: &Task, signo: u32) { while t.sigq_pop(signo).0.is_some() {} }
 
 #[test]
 fn sigchld_records_use_the_same_queue_every_other_signal_does() {
@@ -78,7 +107,7 @@ fn sigchld_records_use_the_same_queue_every_other_signal_does() {
     assert_eq!(signum::sigq_index(SIGCHLD), Some((SIGCHLD - 1) as usize));
     let t = task(13);
     t.sigq_reserve(SIGCHLD);
-    assert!(t.sigq_push(info(SIGCHLD, 1, 0x1234)));
+    assert!(push(&t, info(SIGCHLD, 1, 0x1234)));
     let (rec, empty) = t.dequeue_siginfo(SIGCHLD);
     assert_eq!(rec.map(|r| r.value), Some(0x1234));
     assert!(empty, "SIGCHLD is a standard signal: one record, cleared on take");
@@ -86,7 +115,7 @@ fn sigchld_records_use_the_same_queue_every_other_signal_does() {
     // a child exit its group leader has blocked.
     let (leader, worker) = thread_group();
     let g = &leader.thread_group;
-    assert!(g.post_shared_record(info(SIGCHLD, 1, 0x99)));
+    assert!(push_shared(&leader, info(SIGCHLD, 1, 0x99)));
     g.publish_shared(SIGCHLD);
     assert_ne!(g.shared_pending() & (1u64 << (SIGCHLD - 1)), 0);
     assert_ne!(worker.pending_signals() & (1u64 << (SIGCHLD - 1)), 0,
@@ -107,11 +136,11 @@ fn sigq_index_covers_every_signal_including_sigchld() {
 fn dequeue_siginfo_clears_a_standard_signal_but_holds_a_draining_rt_queue() {
     let t = task(14);
     t.sigq_reserve(SIGUSR1);
-    t.sigq_push(info(SIGUSR1, signum::SI_QUEUE, 1));
+    push(&t, info(SIGUSR1, signum::SI_QUEUE, 1));
     assert_eq!(t.dequeue_siginfo(SIGUSR1).1, true, "standard signals clear on take");
     t.sigq_reserve(SIGRTMIN);
-    t.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, 1));
-    t.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, 2));
+    push(&t, info(SIGRTMIN, signum::SI_QUEUE, 1));
+    push(&t, info(SIGRTMIN, signum::SI_QUEUE, 2));
     assert_eq!(t.dequeue_siginfo(SIGRTMIN).1, false, "RT bit stays set while records remain");
     assert_eq!(t.dequeue_siginfo(SIGRTMIN).1, true);
 }
@@ -120,7 +149,7 @@ fn dequeue_siginfo_clears_a_standard_signal_but_holds_a_draining_rt_queue() {
 fn flush_pending_signal_drops_the_queued_record_too() {
     let t = task(15);
     t.sigq_reserve(SIGUSR1);
-    t.sigq_push(info(SIGUSR1, signum::SI_QUEUE, 1));
+    push(&t, info(SIGUSR1, signum::SI_QUEUE, 1));
     t.sigpending.fetch_or(Signum::Sigusr1.bit(), Ordering::Release);
     t.flush_pending_signal(SIGUSR1 as usize);
     assert_eq!(t.sigpending.load(Ordering::Acquire) & Signum::Sigusr1.bit(), 0);
@@ -149,7 +178,7 @@ fn a_thread_directed_signal_never_becomes_process_directed() {
 fn every_thread_sees_a_process_directed_pending_signal() {
     let (leader, worker) = thread_group();
     // `kill(getpid(), SIGUSR1)` — `PIDTYPE_TGID`, so it lands in the shared set.
-    leader.thread_group.post_shared(SIGUSR1, None);
+    leader.thread_group.post_shared(SIGUSR1, None, Charge::Prealloc);
     assert_eq!(worker.sigpending.load(Ordering::Acquire), 0, "not thread-private");
     assert_eq!(sigpend::shared_pending(&worker), Signum::Sigusr1.bit());
     assert_eq!(sigpend::shared_pending(&leader), Signum::Sigusr1.bit());
@@ -163,7 +192,7 @@ fn a_worker_can_take_a_process_signal_its_leader_blocks() {
     // glib/GIO program), so `kill(pid, SIGTERM)` must still be deliverable.
     let (leader, worker) = thread_group();
     leader.set_current_blocked(Signum::Sigterm.bit());
-    leader.thread_group.post_shared(Signum::Sigterm as u32, None);
+    leader.thread_group.post_shared(Signum::Sigterm as u32, None, Charge::Prealloc);
     let leader_mask = leader.sigmask.load(Ordering::Acquire);
     assert_eq!(signum::next_deliverable(sigpend::all_pending(&leader), leader_mask), None,
                "blocked in the thread that blocked it");
@@ -180,7 +209,7 @@ fn a_worker_can_take_a_process_signal_its_leader_blocks() {
 #[test]
 fn deliverable_signals_sees_a_process_directed_signal_in_a_non_leader_thread() {
     let (_leader, worker) = thread_group();
-    worker.thread_group.post_shared(Signum::Sigterm as u32, None);
+    worker.thread_group.post_shared(Signum::Sigterm as u32, None, Charge::Prealloc);
     assert_ne!(worker.deliverable_signals() & Signum::Sigterm.bit(), 0);
     // ...and the worker can actually CONSUME it, so the wake is not spurious:
     // waking on a signal the delivery path cannot dequeue would spin a
@@ -193,10 +222,10 @@ fn deliverable_signals_sees_a_process_directed_signal_in_a_non_leader_thread() {
 #[test]
 fn deliverable_signals_excludes_an_ignored_disposition_but_never_sigkill() {
     let (leader, _worker) = thread_group();
-    leader.thread_group.post_shared(Signum::Sigwinch as u32, None);
+    leader.thread_group.post_shared(Signum::Sigwinch as u32, None, Charge::Prealloc);
     assert_eq!(leader.deliverable_signals() & Signum::Sigwinch.bit(), 0);
     leader.set_current_blocked(u64::MAX);
-    leader.thread_group.post_shared(Signum::Sigkill as u32, None);
+    leader.thread_group.post_shared(Signum::Sigkill as u32, None, Charge::Prealloc);
     assert_ne!(leader.deliverable_signals() & Signum::Sigkill.bit(), 0,
                "a fully masked task must still be killable");
 }
@@ -204,7 +233,7 @@ fn deliverable_signals_excludes_an_ignored_disposition_but_never_sigkill() {
 #[test]
 fn all_pending_unions_both_sets() {
     let (leader, worker) = thread_group();
-    leader.thread_group.post_shared(SIGUSR1, None);
+    leader.thread_group.post_shared(SIGUSR1, None, Charge::Prealloc);
     worker.sigpending.fetch_or(Signum::Sigusr2.bit(), Ordering::Release);
     assert_eq!(sigpend::all_pending(&worker), Signum::Sigusr1.bit() | Signum::Sigusr2.bit());
 }
@@ -213,9 +242,9 @@ fn all_pending_unions_both_sets() {
 fn dequeue_signal_prefers_the_thread_private_record() {
     let (_leader, worker) = thread_group();
     worker.sigq_reserve(SIGRTMIN);
-    worker.sigq_push(info(SIGRTMIN, signum::SI_QUEUE, 0x11));
+    push(&worker, info(SIGRTMIN, signum::SI_QUEUE, 0x11));
     worker.sigpending.fetch_or(1 << (SIGRTMIN - 1), Ordering::Release);
-    worker.thread_group.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 0x22)));
+    worker.thread_group.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 0x22)), Charge::Prealloc);
     let got = sigpend::dequeue_signal(&worker, SIGRTMIN).flatten();
     assert_eq!(got.map(|r| r.value), Some(0x11), "private queue first, like __dequeue_signal");
 }
@@ -223,7 +252,7 @@ fn dequeue_signal_prefers_the_thread_private_record() {
 #[test]
 fn dequeue_signal_falls_back_to_the_process_directed_set_and_consumes_it() {
     let (leader, worker) = thread_group();
-    leader.thread_group.post_shared(SIGUSR1, None);
+    leader.thread_group.post_shared(SIGUSR1, None, Charge::Prealloc);
     assert_eq!(sigpend::dequeue_signal(&worker, SIGUSR1), Some(None),
                "bitmap-only signal claimed with a synthesised siginfo");
     assert_eq!(sigpend::shared_pending(&leader) & Signum::Sigusr1.bit(), 0,
@@ -233,7 +262,7 @@ fn dequeue_signal_falls_back_to_the_process_directed_set_and_consumes_it() {
 #[test]
 fn a_bitmap_only_signal_is_claimed_by_exactly_one_consumer() {
     let (leader, worker) = thread_group();
-    leader.thread_group.post_shared(SIGUSR1, None);
+    leader.thread_group.post_shared(SIGUSR1, None, Charge::Prealloc);
     assert!(sigpend::dequeue_signal(&worker, SIGUSR1).is_some());
     assert!(sigpend::dequeue_signal(&leader, SIGUSR1).is_none(),
             "the loser of the claim gets nothing, never a duplicate delivery");
@@ -245,8 +274,8 @@ fn a_process_directed_record_survives_until_its_queue_drains() {
     // follows: the pending bit clears only when the last record is popped.
     let (leader, worker) = thread_group();
     let tg = &leader.thread_group;
-    tg.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 1)));
-    tg.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 2)));
+    tg.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 1)), Charge::Prealloc);
+    tg.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 2)), Charge::Prealloc);
     assert_eq!(sigpend::dequeue_signal(&worker, SIGRTMIN).flatten().map(|r| r.value), Some(1));
     assert_ne!(tg.shared_pending() & (1 << (SIGRTMIN - 1)), 0, "second record still queued");
     assert_eq!(sigpend::dequeue_signal(&leader, SIGRTMIN).flatten().map(|r| r.value), Some(2),
@@ -257,7 +286,7 @@ fn a_process_directed_record_survives_until_its_queue_drains() {
 #[test]
 fn flush_shared_mask_drops_the_bit_and_the_queued_record() {
     let (leader, worker) = thread_group();
-    leader.thread_group.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 9)));
+    leader.thread_group.post_shared(SIGRTMIN, Some(info(SIGRTMIN, signum::SI_QUEUE, 9)), Charge::Prealloc);
     leader.thread_group.flush_shared_mask(1 << (SIGRTMIN - 1));
     assert_eq!(sigpend::shared_pending(&worker), 0);
     assert_eq!(sigpend::dequeue_signal(&worker, SIGRTMIN), None,

@@ -31,9 +31,17 @@ pub fn stop_until_cont() {
 /// `wait4(WUNTRACED)` reports. A job-control stop's code IS its signal; the
 /// wider ptrace event codes come from `syscall::ptrace`.
 /// # C: O(N_schedule) until cont
-pub fn stop_until_cont_sig(sig: u8) {
+pub fn stop_until_cont_sig(sig: u8) { stop_until_cont_code(sig as u32) }
+
+/// The full-width form. A ptrace event stop's code is `SIGTRAP | (event <<
+/// 8)`, which does not fit the byte a job-control stop uses — passing it
+/// through `stop_until_cont_sig` truncated the event byte away and every
+/// event stop reported as a bare SIGTRAP.
+/// # C: O(N_schedule) until cont
+pub fn stop_until_cont_code(code: u32) {
     let cur = match crate::live::current() { Some(c) => c, None => return };
-    cur.stop_code.store(sig as u32, Ordering::Release);
+    let sig = (code & 0xff) as u8;
+    cur.stop_code.store(code, Ordering::Release);
     cur.stop_pending.store(true, Ordering::Release);
     cur.set_state(TaskState::Stopped);
     notify_parent_cldstop(cur, Cldstop::Stopped, sig as u32);

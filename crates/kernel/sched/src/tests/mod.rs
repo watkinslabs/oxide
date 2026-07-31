@@ -11,8 +11,10 @@
 // - task: Task construction, state, identity, and proc-facing task helpers.
 // - procfs: argv/cmdline, tid registry, process-group, and pid-visibility helpers.
 // - registry: tid/vpid BTreeMap index correctness, scale, and concurrency (B1429).
+// - rlimit_cpu: RLIMIT_CPU/RLIMIT_RTTIME SIGXCPU-then-SIGKILL enforcement.
 // - rlimit_prio: getpriority(2) return bias, RLIMIT_NICE units, process-wide rlimits.
 // - session: setpgid/setsid/getpgid/getsid/getppid error ladder + personality query.
+// - sigpending: per-user RLIMIT_SIGPENDING charge/release symmetry.
 // - signals: per-signal queue depth, shared-vs-private pending, saved sigmask.
 // - timing: rlimit, clock, preempt, and RCU helper behavior.
 // - ucounts: per-user RLIMIT_NPROC charge, fork EAGAIN gate, deferred execve.
@@ -21,7 +23,7 @@
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
 mod affinity;
-mod common;
+pub(crate) mod common;
 mod cpu_nanosleep;
 mod exit_notify;
 mod net_namespace;
@@ -33,9 +35,11 @@ mod rt_tick_policy;
 mod procfs;
 mod queues;
 mod registry;
+mod rlimit_cpu;
 mod rlimit_prio;
 mod session;
 mod send_signal;
+mod sigpending;
 mod signals;
 mod task;
 mod timing;

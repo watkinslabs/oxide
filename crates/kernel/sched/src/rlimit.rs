@@ -1,6 +1,19 @@
 // Per-task rlimit clamping + validity per POSIX setrlimit(2). Pure
 // logic; the kernel-side syscall glue calls into this module to
 // enforce the rules.
+//
+// Child modules own one ENFORCEMENT contract each — the decision the limit
+// actually makes, kept ungated so it is hosted-testable, with the live-state
+// glue in the subsystem that owns the state:
+//   `vm`      — RLIMIT_AS admission + the RLIMIT_STACK growth bound.
+//   `cputime` — RLIMIT_CPU / RLIMIT_RTTIME SIGXCPU-then-SIGKILL ladder.
+//   `dump`    — RLIMIT_CORE dump-size truncation.
+//   `pending` — RLIMIT_SIGPENDING per-user queued-record admission.
+
+pub mod cputime;
+pub mod dump;
+pub mod pending;
+pub mod vm;
 
 /// Linux RLIMIT_* indices.
 pub mod rlim {
@@ -40,8 +53,21 @@ pub const DEFAULT_RLIMITS: [(u64, u64); rlim::COUNT] = {
     a[rlim::NOFILE] = (1024, 4096);  // Linux _RLIM_NOFILE / NR_OPEN_DEFAULT
     a[rlim::CORE]   = (0, INFINITY);  // disabled by default
     a[rlim::MEMLOCK] = (MLOCK_LIMIT, MLOCK_LIMIT);
+    a[rlim::SIGPENDING] = (THREADS_MAX / 2, THREADS_MAX / 2);
     a
 };
+
+/// Linux `max_threads` — `kernel.threads-max`, the value `procfs`'s sysctl leaf
+/// renders. Owned here because `fork_init` derives an rlimit default from it and
+/// a second copy could disagree with what the sysctl reports.
+pub const THREADS_MAX: u64 = 32768;
+
+/// `INIT_RLIMITS` leaves `RLIMIT_SIGPENDING` at `{0, 0}` and `fork_init`
+/// immediately overwrites it with `max_threads / 2` (`kernel/fork.c`), so the
+/// zero in the table is never observable. Leaving it at `RLIM_INFINITY` instead
+/// would make the queued-record limit unenforceable, and an unbounded real-time
+/// queue is a memory-exhaustion path any unprivileged process can drive.
+pub const DEFAULT_SIGPENDING: u64 = THREADS_MAX / 2;
 
 /// Linux `MLOCK_LIMIT` (`include/uapi/linux/resource.h`), the RLIMIT_MEMLOCK
 /// default for both the soft and hard limit. Leaving MEMLOCK unlimited would

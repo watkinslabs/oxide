@@ -51,9 +51,15 @@ pub fn body(tid: u32) -> Vec<u8> {
         _ => 0,
     };
     let policy = task.policy.load(Ordering::Acquire) as u64;
+    // Field 25 (rsslim): `sig->rlim[RLIMIT_RSS].rlim_cur`. This is the ONLY
+    // place upstream reads RLIMIT_RSS — nothing enforces it — so a hardcoded 0
+    // was the limit reading as "no resident pages allowed" to every tool that
+    // parses it.
+    let rsslim = task.rlimit(sched::rlimit::rlim::RSS).0;
     for f in 5u32..=52 {
         if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
         else if f == 22 { push(&mut out, b" "); push_u64(&mut out, starttime); }
+        else if f == 25 { push(&mut out, b" "); push_u64(&mut out, rsslim); }
         else if f == 40 { push(&mut out, b" "); push_u64(&mut out, rt_priority); }
         else if f == 41 { push(&mut out, b" "); push_u64(&mut out, policy); }
         else if let Some(v) = mm_field(f) { push(&mut out, b" "); push_u64(&mut out, v); }

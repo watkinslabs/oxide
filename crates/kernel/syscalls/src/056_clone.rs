@@ -26,6 +26,10 @@ pub(crate) use crate::clone_abi::{
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// `PTRACE_EVENT_VFORK_DONE`, named through the ptrace UAPI owner rather than
+/// inline so the two spellings cannot drift.
+fn uapi_event_vfork_done() -> u32 { crate::s101_ptrace_uapi::EVENT_VFORK_DONE }
+
 /// Publish a tid into a user `int` that the caller nominated through one of the
 /// `CLONE_*_SETTID` flags. Best-effort by contract: the address is never
 /// pre-validated and a fault is swallowed, so a caller that names an
@@ -487,6 +491,19 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         child.vfork_pending.store(true, Ordering::Release);
     }
 
+    // Linux `copy_process(..., trace, ...)` -> `ptrace_init_task`: decide the
+    // event BEFORE publication and auto-attach the child to the same tracer,
+    // so a child that runs the instant it is published is already linked and
+    // already destined to stop. Deciding after publication would race a fast
+    // child past its own attach point.
+    let traced_event = crate::s101_ptrace_event::clone_event_reported(
+        flags, exit_signal as u64, cur.traced_by.load(Ordering::Acquire) != 0,
+        cur.ptrace_options.load(Ordering::Acquire));
+    crate::ptrace::stop::init_task(cur, &child, traced_event);
+    // The message `PTRACE_GETEVENTMSG` reports for a fork/vfork/clone event is
+    // the CHILD's pid as the tracer's pid namespace numbers it.
+    let child_event_msg = child.vtid.load(Ordering::Acquire) as u64;
+
     // Linux `wake_up_new_task`: the child is now fully built — vtgid, fd
     // table, sigmask, CLONE_SETTLS FS_BASE, and the set_child_tid writes are
     // all final. ONLY now make it schedulable, so no CPU (SMP) can pick it up
@@ -494,6 +511,12 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // FS_BASE / an unfinished vtgid (which aliased the creator's TLS and made
     // GCond signals target the wrong futex word — the greeter/SMP wedge).
     publication::commit(&child, (flags & CLONE_THREAD) != 0, prepared_pidfd);
+
+    // Linux `_do_fork`: "forking complete and child started to run, tell
+    // ptracer" — the fork/vfork/clone event stop is reported AFTER
+    // `wake_up_new_task`, so a tracer that resumes us on the event finds the
+    // child already alive and already stopped at its own attach point.
+    if let Some(ev) = traced_event { crate::ptrace::stop::ptrace_event(ev, child_event_msg); }
 
     // F156: CLONE_VFORK suspension. Linux semantic — parent blocks
     // until child execve(2)s or _exit(2)s. With CLONE_VM the two
@@ -530,6 +553,11 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
             unsafe { sched::live::schedule(); }
         }
         drop(watch);
+        // Linux `if (!wait_for_vfork_done(p, &vfork)) ptrace_event_pid(
+        // PTRACE_EVENT_VFORK_DONE, pid)`: the parent reports a SECOND event
+        // once the child released it, so a tracer can tell "vfork issued" from
+        // "vfork's address-space borrow is over".
+        crate::ptrace::stop::ptrace_event(uapi_event_vfork_done(), child_event_msg);
     } else {
         // Drop our local Arc; runqueue's enqueue clone keeps the
         // child alive until it Zombies + parks.

@@ -112,7 +112,9 @@ fn an_unverified_program_never_fails_open() {
 #[test]
 fn the_chain_keeps_the_least_permissive_action() {
     let d = data(0, [0; 6]);
-    let ret = |v: u32| p(&[(BPF_RET | BPF_K, 0, 0, v)]);
+    // `run_chain` walks installed filters, so each program is wrapped in the
+    // `SeccompFilter` record the chain stores (flags are irrelevant here).
+    let ret = |v: u32| sched::seccomp_filter::SeccompFilter::new(p(&[(BPF_RET | BPF_K, 0, 0, v)]), 0);
     let chain = alloc::vec![ret(SECCOMP_RET_ALLOW), ret(SECCOMP_RET_ERRNO | 1), ret(SECCOMP_RET_LOG)];
     assert_eq!(run_chain(&chain, &d), SECCOMP_RET_ERRNO | 1);
 
@@ -127,7 +129,8 @@ fn the_chain_keeps_the_least_permissive_action() {
 #[test]
 fn an_all_allow_chain_allows() {
     let d = data(0, [0; 6]);
-    let chain = alloc::vec![p(&[(BPF_RET | BPF_K, 0, 0, SECCOMP_RET_ALLOW)]); 3];
+    let chain = alloc::vec![sched::seccomp_filter::SeccompFilter::new(
+        p(&[(BPF_RET | BPF_K, 0, 0, SECCOMP_RET_ALLOW)]), 0); 3];
     assert_eq!(run_chain(&chain, &d), SECCOMP_RET_ALLOW);
 }
 

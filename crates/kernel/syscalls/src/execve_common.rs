@@ -85,6 +85,15 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     cur.rseq_sig.store(0, Ordering::Release);
     // parent-death signal cleared — handler would be in the old text.
     cur.pdeathsig.store(0, Ordering::Release);
+    // Linux `begin_new_exec`: `clear_syscall_work_syscall_user_dispatch(me)`.
+    // The registration names a code range and a selector byte in the OLD
+    // image; carrying it across execve would test the new program's PC
+    // against the old dispatcher's window and SIGSYS it at random.
+    cur.syscall_dispatch.clear();
+    // Linux `exec_task_namespaces`/`begin_new_exec` path resets
+    // `signal->timer_create_restore_ids`: the option exists to restore a
+    // checkpoint's timer ids, and the new image is not that checkpoint.
+    cur.thread_group.timer_create_restore_ids.store(false, Ordering::Release);
     // `PR_SET_KEEPCAPS` is the SECBIT_KEEP_CAPS compatibility interface;
     // Linux clears that setting on every successful execve.
     cur.clear_keep_caps_after_exec();
@@ -100,6 +109,19 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
         let mut g = cur.sigqueue.lock();
         for q in g.iter_mut() { q.clear(); }
     }
+}
+
+/// Linux `begin_new_exec`'s tail: `ptrace_event(PTRACE_EVENT_EXEC, old_vpid)`.
+/// A tracer that set `PTRACE_O_TRACEEXEC` stops here with the pre-exec pid as
+/// the event message; a classically-attached tracee whose tracer did not set
+/// it gets the legacy bare `SIGTRAP` instead. Runs at the very end of the
+/// arch execve so the tracer inspects the FULLY installed image.
+/// # Sleeps: yes when the tracer is listening.
+/// # C: O(N_schedule) when the event is reported
+pub(crate) fn ptrace_exec_event(cur: &sched::Task) {
+    use core::sync::atomic::Ordering;
+    let old_vpid = cur.vtgid.load(Ordering::Acquire) as u64;
+    crate::ptrace::stop::ptrace_event(crate::s101_ptrace_uapi::EVENT_EXEC, old_vpid);
 }
 
 /// Linux `PATH_MAX` (`limits.h`): the largest pathname execve accepts,

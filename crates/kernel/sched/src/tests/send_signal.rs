@@ -129,7 +129,15 @@ fn a_queued_realtime_overflow_reports_eagain_only_for_a_user_queueing_sender() {
         signo: SIGRTMIN, code: signum::SI_QUEUE, pid: 1, uid: 0, value: v,
         sys: None, fault: None, poll: None,
     };
-    for v in 0..crate::task::RT_QUEUE_CAP as u64 {
+    // The overflow point is `RLIMIT_SIGPENDING`, the per-user count of queued
+    // records — Linux puts no per-signal cap on a real-time queue. A private
+    // account keeps this test independent of whatever else is charged.
+    const UID: u32 = 82_708;
+    t.creds.ruid.store(UID, core::sync::atomic::Ordering::Release);
+    crate::ucounts::charge_task(&t);
+    const DEPTH: u64 = 4;
+    t.set_rlimit(crate::rlimit::rlim::SIGPENDING, (DEPTH, DEPTH));
+    for v in 0..DEPTH {
         assert_eq!(send::send_signal(&t, SIGRTMIN, SigSource::Info(queued(v)),
                                      SigTarget::Process), Ok(()));
     }

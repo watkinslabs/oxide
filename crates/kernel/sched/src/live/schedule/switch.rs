@@ -473,8 +473,7 @@ pub unsafe fn schedule() {
     // runnable. `PERF_COUNT_SW_CONTEXT_SWITCHES` reports their sum, and
     // `/proc/<pid>/status` reports them separately.
     if let Some(p) = prev_arc_opt.as_ref() {
-        if matches!(p.state(), TaskState::Runnable) { p.nivcsw.fetch_add(1, Ordering::Relaxed); }
-        else                                        { p.nvcsw .fetch_add(1, Ordering::Relaxed); }
+        crate::rusage_charge::ctxsw(p, !matches!(p.state(), TaskState::Runnable));
         crate::perf_sw::charge(crate::perf_sw::CpuSw::ContextSwitch, me, 1);
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);

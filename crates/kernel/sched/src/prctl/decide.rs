@@ -52,6 +52,10 @@ pub enum Op {
     GetChildSubreaper(u64),
     SetNoNewPrivs,
     GetNoNewPrivs,
+    /// `PR_SET_PTRACER`. `None` is `PR_SET_PTRACER_ANY`; the zero form is
+    /// classified as `ClearPtracer` instead.
+    SetPtracer(Option<u32>),
+    ClearPtracer,
     GetTidAddress(u64),
     SetThpDisable { disable: bool, except_advised: bool },
     GetThpDisable,
@@ -61,6 +65,16 @@ pub enum Op {
     SetMdwe(vmm::MdweRequest),
     GetMdwe,
     SetVma,
+    /// `PR_SET_IO_FLUSHER` / `PR_GET_IO_FLUSHER` carry their raw arguments:
+    /// the CAP_SYS_RESOURCE test runs BEFORE argument validation, so the
+    /// ladder cannot be split across `classify` (which has no credentials).
+    SetIoFlusher { a2: u64, a3: u64, a4: u64, a5: u64 },
+    GetIoFlusher { a2: u64, a3: u64, a4: u64, a5: u64 },
+    SetSyscallUserDispatch(super::sud::Config),
+    GetAuxv { ptr: u64, len: u64 },
+    TimerCreateRestoreIds(super::timer_ids::RestoreIds),
+    FutexHash { cmd: u64, slots: u64, a4: u64 },
+    RseqSliceExtension { cmd: u64, ctrl: u64, a4: u64, a5: u64 },
 }
 
 /// Linux `if (arg2 || arg3 || arg4 || arg5) return -EINVAL;` and its shorter
@@ -171,6 +185,15 @@ pub fn classify(option: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Result<Op, E
             Ok(Op::SetNoNewPrivs)
         }
         PR_GET_NO_NEW_PRIVS => { none_of(&[a2, a3, a4, a5])?; Ok(Op::GetNoNewPrivs) }
+        // Yama `yama_task_prctl`: 0 removes the relation, `PR_SET_PTRACER_ANY`
+        // (and the truncated `(int)arg2 == -1` spelling) names every process,
+        // anything else names one vpid. The remaining arguments are unused and
+        // Yama does not inspect them.
+        PR_SET_PTRACER => {
+            if a2 == 0 { return Ok(Op::ClearPtracer); }
+            if a2 == PR_SET_PTRACER_ANY || a2 as i32 == -1 { return Ok(Op::SetPtracer(None)); }
+            Ok(Op::SetPtracer(Some(a2 as u32)))
+        }
         PR_GET_TID_ADDRESS => Ok(Op::GetTidAddress(a2)),
         PR_SET_THP_DISABLE => {
             none_of(&[a4, a5])?;
@@ -221,6 +244,26 @@ pub fn classify(option: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Result<Op, E
         }
         PR_GET_MDWE => { none_of(&[a2, a3, a4, a5])?; Ok(Op::GetMdwe) }
         PR_SET_VMA => Ok(Op::SetVma),
+        // The IO-flusher pair keeps its raw arguments: Linux tests
+        // CAP_SYS_RESOURCE first and only then the arguments, so an
+        // unprivileged caller gets EPERM even for a malformed call.
+        PR_SET_IO_FLUSHER => Ok(Op::SetIoFlusher { a2, a3, a4, a5 }),
+        PR_GET_IO_FLUSHER => Ok(Op::GetIoFlusher { a2, a3, a4, a5 }),
+        // `set_syscall_user_dispatch(arg2, arg3, arg4, arg5)` — no tail rule
+        // in the switch; the mode arm owns every argument.
+        PR_SET_SYSCALL_USER_DISPATCH =>
+            super::sud::classify_set(a2, a3, a4, a5).map(Op::SetSyscallUserDispatch),
+        PR_GET_AUXV => {
+            super::auxv::validate_tail(a4, a5)?;
+            Ok(Op::GetAuxv { ptr: a2, len: a3 })
+        }
+        PR_TIMER_CREATE_RESTORE_IDS => {
+            none_of(&[a3, a4, a5])?;
+            super::timer_ids::classify(a2).map(Op::TimerCreateRestoreIds)
+        }
+        // `futex_hash_prctl(arg2, arg3, arg4)` — arg5 is not read at all.
+        PR_FUTEX_HASH => Ok(Op::FutexHash { cmd: a2, slots: a3, a4 }),
+        PR_RSEQ_SLICE_EXTENSION => Ok(Op::RseqSliceExtension { cmd: a2, ctrl: a3, a4, a5 }),
         _ => Err(Errno::Einval),
     }
 }
@@ -300,3 +343,7 @@ pub fn spec_ctrl_set(which: u64, ctrl: u64) -> i64 {
 #[cfg(test)]
 #[path = "decide/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "decide/tests_options.rs"]
+mod tests_options;

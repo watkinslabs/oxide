@@ -64,6 +64,15 @@ impl StatsDev {
         (dev, stats)
     }
 
+    /// Bill this request's payload to the SUBMITTING task, before it is handed
+    /// to the driver — the completion may run on any CPU in any context.
+    /// # C: O(1)
+    fn account_task_io(req: &BlockRequest, block_size: u32) {
+        if crate::task_io::charges_read(req.op) {
+            crate::task_io::account_read(crate::task_io::request_bytes(req.len_blocks, block_size));
+        }
+    }
+
     fn account_done(stats: &DiskStats, block_size: u32, req: &BlockRequest, result: &KResult<()>) {
         if result.is_err() { return; }
         // Convert the request's block_size-sized run to 512-byte sectors.
@@ -96,6 +105,7 @@ impl BlockDevice for StatsDev {
         self.stats.in_flight.fetch_add(1, Ordering::Relaxed);
         let stats = Arc::clone(&self.stats);
         let block_size = self.inner.block_size();
+        Self::account_task_io(&request, block_size);
         self.inner.submit(request, Box::new(move |request, result| {
             stats.in_flight.fetch_sub(1, Ordering::Relaxed);
             Self::account_done(&stats, block_size, &request, &result);
@@ -105,6 +115,7 @@ impl BlockDevice for StatsDev {
 
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
         self.stats.in_flight.fetch_add(1, Ordering::Relaxed);
+        Self::account_task_io(req, self.inner.block_size());
         let r = self.inner.submit_sync(req);
         self.stats.in_flight.fetch_sub(1, Ordering::Relaxed);
         Self::account_done(&self.stats, self.inner.block_size(), req, &r);

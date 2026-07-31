@@ -253,6 +253,17 @@ impl AddressSpace {
     /// # C: O(len) move
     pub fn set_auxv(&self, blob: Vec<u8>) { *self.mm_layout.auxv.lock() = Some(blob); }
 
+    /// Save the auxiliary vector the ELF loader just wrote onto the new user
+    /// stack, in the fixed-size, zero-padded form `saved_auxv` has.
+    ///
+    /// Without this the mm's copy stays empty after a plain execve, and both
+    /// `prctl(PR_GET_AUXV)` and `/proc/<pid>/auxv` report nothing for a
+    /// process that plainly has an auxiliary vector.
+    /// # C: O(SAVED_AUXV_BYTES)
+    pub fn save_exec_auxv(&self, entries: &[(u64, u64)]) {
+        self.set_auxv(super::saved_auxv_blob(entries));
+    }
+
     /// Record the vDSO ELF header address installed during exec.
     /// # C: O(1)
     pub fn set_vdso_ehdr(&self, addr: u64) { self.mm_layout.vdso_ehdr.store(addr, Ordering::Release); }

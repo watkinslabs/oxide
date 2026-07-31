@@ -84,18 +84,32 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
-    /// Try to extend a `MAP_GROWSDOWN` VMA. D32: cap = 8 MiB
-    /// (Linux RLIMIT_STACK default); was 64 KiB which SIGSEGV'd
-    /// musl's wide init frames.
+    /// Try to extend a `MAP_GROWSDOWN` VMA, Linux `expand_downwards`.
+    ///
+    /// `max_size` is the largest the WHOLE post-growth VMA may be and
+    /// `max_grow` the largest increment this mm may still absorb — both
+    /// precomputed by the caller from the faulting task's live `RLIMIT_STACK`
+    /// and `RLIMIT_AS` (`acct_stack_growth`'s two rlimit tests). Passing the
+    /// caps rather than the limits keeps the `RLIM_INFINITY` sentinel and the
+    /// page truncation with the rlimit owner, so this stays mechanism.
+    ///
+    /// `STACK_GROW_MAX` remains the distance below the VMA a fault may land
+    /// and still be read as a stack access (Linux's stack guard gap); it is
+    /// NOT a growth cap, which is what `max_size` now is.
     /// # C: O(log N)
-    pub fn try_grow_stack(&self, va: UserVirtAddr) -> bool {
+    pub fn try_grow_stack(&self, va: UserVirtAddr, max_size: u64, max_grow: u64) -> bool {
         let mut tree = self.vmas.write();
-        let cur_start = match tree.find_growsdown_above(va, STACK_GROW_MAX) {
-            Some(v) => v.start,
+        let (cur_start, cur_end) = match tree.find_growsdown_above(va, STACK_GROW_MAX) {
+            Some(v) => (v.start, v.end),
             None    => return false,
         };
         let new_start = UserVirtAddr::new(va.as_u64() & !(hal::PAGE_SIZE_BYTES - 1))
             .expect("va in user range");
+        // `acct_stack_growth`: `size` is `vma->vm_end - address`, the whole
+        // stack after the growth, and `grow` is the increment charged against
+        // the address-space limit.
+        if cur_end.as_u64().saturating_sub(new_start.as_u64()) > max_size { return false; }
+        if cur_start.as_u64().saturating_sub(new_start.as_u64()) > max_grow { return false; }
         tree.extend_growsdown_start(cur_start, new_start).is_ok()
     }
 
