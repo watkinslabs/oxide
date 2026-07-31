@@ -22,6 +22,14 @@ pub mod req {
     pub const TCSETSW: u32 = 0x5403;
     /// Set termios + flush input (== TCSETS for us).
     pub const TCSETSF: u32 = 0x5404;
+    /// Send a break condition.
+    pub const TCSBRK: u32 = 0x5409;
+    /// Suspend/resume terminal flow.
+    pub const TCXONC: u32 = 0x540A;
+    /// Flush terminal input/output queues.
+    pub const TCFLSH: u32 = 0x540B;
+    pub const TIOCEXCL: u32 = 0x540C;
+    pub const TIOCNXCL: u32 = 0x540D;
     /// Get window size (`struct winsize`).
     pub const TIOCGWINSZ: u32 = 0x5413;
     /// Set window size.
@@ -30,14 +38,47 @@ pub mod req {
     pub const TIOCGPGRP: u32 = 0x540F;
     /// Set foreground pgrp.
     pub const TIOCSPGRP: u32 = 0x5410;
+    /// Bytes waiting in the terminal output queue.
+    pub const TIOCOUTQ: u32 = 0x5411;
+    pub const TIOCMGET: u32 = 0x5415;
+    pub const TIOCMBIS: u32 = 0x5416;
+    pub const TIOCMBIC: u32 = 0x5417;
+    pub const TIOCMSET: u32 = 0x5418;
+    /// Bytes available to read (`TIOCINQ` is this same request).
+    pub const FIONREAD: u32 = 0x541B;
+    pub const TIOCINQ: u32 = FIONREAD;
     /// Make this the controlling tty.
     pub const TIOCSCTTY: u32 = 0x540E;
     /// Get exclusive open mode state.
     pub const TIOCGEXCL: u32 = 0x80045440;
     /// Give up the controlling tty.
     pub const TIOCNOTTY: u32 = 0x5422;
+    /// Set the line discipline.
+    pub const TIOCSETD: u32 = 0x5423;
+    /// Get the line discipline.
+    pub const TIOCGETD: u32 = 0x5424;
     /// Get controlling session id.
     pub const TIOCGSID: u32 = 0x5429;
+    /// Enable packet mode on a Unix98 PTY master.
+    pub const TIOCPKT: u32 = 0x5420;
+    /// Send an allowed job-control signal across a PTY.
+    pub const TIOCSIG: u32 = 0x40045436;
+    /// Read packet-mode state from a Unix98 PTY master.
+    pub const TIOCGPKT: u32 = 0x80045438;
+    /// Read a Unix98 PTY number from its master.
+    pub const TIOCGPTN: u32 = 0x80045430;
+    /// Lock or unlock a Unix98 PTY slave.
+    pub const TIOCSPTLCK: u32 = 0x40045431;
+    /// Read the Unix98 PTY slave lock.
+    pub const TIOCGPTLCK: u32 = 0x80045439;
+    /// Open the slave belonging to a Unix98 PTY master.
+    pub const TIOCGPTPEER: u32 = 0x5441;
+    /// N_TTY is the default line discipline.
+    pub const N_TTY: u32 = 0;
+    /// Linux `struct winsize` payload bytes.
+    pub const WINSIZE_BYTES: u64 = 8;
+    /// Linux `int` ioctl payload bytes and alignment.
+    pub const INT_BYTES: u64 = 4;
 }
 
 /// Outcome of a core ioctl: the syscall layer turns this into a return
