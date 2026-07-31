@@ -207,3 +207,42 @@ fn handler_exit_mode_strips_a_handler_that_was_neither_blocked_nor_ignored() {
     assert_eq!(t.sigactions_ref().get(Signum::Sigsys as u32).handler, 0,
                "a seccomp KILL action is not catchable");
 }
+
+// --- SigInfo -> siginfo_t union-arm selection --------------------------------
+//
+// One selector serves BOTH the signal-frame builder and the syscall copy-out
+// (`rt_sigtimedwait`, `waitid`). These pin the arm each record kind picks, so a
+// future producer cannot quietly make a handler and a `sigwaitinfo` disagree.
+
+#[test]
+fn a_fault_record_selects_the_sigfault_arm_and_renders_si_addr() {
+    let rec = crate::sigsend::fault_info(SIGSEGV, hal::siginfo::code::SEGV_ACCERR,
+                                         0x7fff_0000_1000, 0);
+    let mut buf = [0u8; 128];
+    hal::write_siginfo(&mut buf, SIGSEGV, Some(rec.payload(SIGSEGV)));
+    assert_eq!(i32::from_ne_bytes(buf[0..4].try_into().unwrap()), SIGSEGV as i32);
+    assert_eq!(i32::from_ne_bytes(buf[8..12].try_into().unwrap()),
+               hal::siginfo::code::SEGV_ACCERR);
+    assert_eq!(u64::from_ne_bytes(buf[16..24].try_into().unwrap()), 0x7fff_0000_1000);
+}
+
+#[test]
+fn a_kill_record_selects_the_rt_arm_and_renders_the_sender() {
+    let rec = crate::sigsend::build_info(SIGTERM, SigSource::User { pid: 99, uid: 12 });
+    let mut buf = [0u8; 128];
+    hal::write_siginfo(&mut buf, SIGTERM, Some(rec.payload(SIGTERM)));
+    assert_eq!(u32::from_ne_bytes(buf[16..20].try_into().unwrap()), 99);
+    assert_eq!(u32::from_ne_bytes(buf[20..24].try_into().unwrap()), 12);
+}
+
+#[test]
+fn a_sigchld_record_selects_the_four_byte_si_status_arm() {
+    let rec = crate::task::SigInfo {
+        signo: SIGCHLD, code: 1, pid: 5, uid: 0, value: u64::MAX, sys: None, fault: None,
+    };
+    let mut buf = [0u8; 128];
+    hal::write_siginfo(&mut buf, SIGCHLD, Some(rec.payload(SIGCHLD)));
+    // `_sigchld.si_status` is an int; bytes 28..32 must stay clear where an
+    // `_rt` si_value's high half would be.
+    assert!(buf[28..32].iter().all(|b| *b == 0));
+}
