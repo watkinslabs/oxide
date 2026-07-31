@@ -8,7 +8,7 @@ const REL_VALUE: i32 = 1;
 fn native_and_kpi_events_share_canonical_inhibit_filter() {
     let _guard = TEST_LOCK.lock();
     let device_key = key(DEVICE_KEY_RAW);
-    let mut model = input::VirtioInputDev::empty(device_key);
+    let mut model = input::VirtioInputDev::empty_boxed(device_key);
     model.ev_bits[(crate::EV_REL / u8::BITS as u16) as usize] |=
         1 << (crate::EV_REL % u8::BITS as u16);
     model.rel_bits.bits[(REL_CODE / u8::BITS as u16) as usize] |=

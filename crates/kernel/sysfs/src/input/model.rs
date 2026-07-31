@@ -98,7 +98,7 @@ fn project_device(device: Arc<drv::Device>) -> Option<InputDevInfo> {
     {
         return None;
     }
-    let model = Box::new(input::device(evdev_id)?);
+    let model = input::device(evdev_id)?;
     if model.evdev_id != evdev_id {
         return None;
     }

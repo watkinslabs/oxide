@@ -28,10 +28,10 @@ pub(super) fn clear_bit(bits: &mut [usize], bit: u16) {
     }
 }
 
-pub(super) unsafe fn input_to_model(dev: *const LinuxInputDev) -> VirtioInputDev {
+pub(super) unsafe fn input_to_model(dev: *const LinuxInputDev) -> alloc::boxed::Box<VirtioInputDev> {
     // SAFETY: caller validates dev points at a live LinuxInputDev.
     let d = unsafe { &*dev };
-    let mut model = VirtioInputDev::empty(VirtioChildDeviceKey::from_raw(d.oxide_key));
+    let mut model = VirtioInputDev::empty_boxed(VirtioChildDeviceKey::from_raw(d.oxide_key));
     model.is_pointer = test_bit(&d.evbit, EV_REL) || test_bit(&d.evbit, EV_ABS);
     model.name_present = !d.name.is_null();
     model.phys_present = !d.phys.is_null();

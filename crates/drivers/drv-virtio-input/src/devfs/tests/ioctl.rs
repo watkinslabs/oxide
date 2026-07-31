@@ -263,7 +263,7 @@ fn evdev_write_commits_output_through_exact_canonical_identity() {
     let key = virtio::VirtioChildDeviceKey::from_raw(DEVICE_KEY_RAW);
     let _ = crate::remove_device(key);
     input::set_output_hook(accept_test_output);
-    let mut model = crate::VirtioInputDev::empty(key);
+    let mut model = crate::VirtioInputDev::empty_boxed(key);
     model.ev_bits[(crate::EV_LED / u8::BITS as u16) as usize] |=
         1 << (crate::EV_LED % u8::BITS as u16);
     model.led_bits.bits[(LED_CODE / u8::BITS as u16) as usize] |=
