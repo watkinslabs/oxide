@@ -99,7 +99,7 @@ fn queue_sigsys(s: &Sigsys) {
         pid:   0,
         uid:   0,
         value: 0,
-        sys:   Some(*s), fault: None
+        sys:   Some(*s), fault: None, poll: None
     };
     sched::live::force_sig_info_to_task(&cur, info, sched::sigsend::ForceMode::Current);
 }
