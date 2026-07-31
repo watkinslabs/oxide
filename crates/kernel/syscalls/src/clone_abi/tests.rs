@@ -244,3 +244,34 @@ fn args_decode_from_slots_in_struct_order() {
     assert_eq!(a.set_tid_size, 10);
     assert_eq!(a.cgroup, 11);
 }
+
+// The tid destinations are best-effort; only the pidfd slot can fail the call.
+// A forked child is created before any of the three tid stores is attempted, so
+// an unwritable — or null — tid destination must NOT be turned into EFAULT.
+// Pre-validating `child_tid` broke every `clone(2)` that sets
+// CLONE_CHILD_SETTID with a null pointer, which is a legal request.
+
+#[test]
+fn tid_destinations_never_fault_the_call() {
+    for f in [CLONE_PARENT_SETTID, CLONE_CHILD_SETTID, CLONE_CHILD_CLEARTID,
+              CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID] {
+        // `pidfd_writable` is irrelevant when CLONE_PIDFD is not requested.
+        assert_eq!(clone_dest_ok(f, false), Ok(()));
+        assert_eq!(clone_dest_ok(f, true), Ok(()));
+    }
+}
+
+#[test]
+fn unwritable_pidfd_destination_is_efault() {
+    assert_eq!(clone_dest_ok(CLONE_PIDFD, false), Err(Errno::Efault));
+    assert_eq!(clone_dest_ok(CLONE_PIDFD, true), Ok(()));
+    // The tid flags riding along do not change the verdict either way.
+    assert_eq!(clone_dest_ok(CLONE_PIDFD | CLONE_CHILD_SETTID, false), Err(Errno::Efault));
+    assert_eq!(clone_dest_ok(CLONE_PIDFD | CLONE_CHILD_SETTID, true), Ok(()));
+}
+
+#[test]
+fn plain_fork_needs_no_writable_destination() {
+    assert_eq!(clone_dest_ok(0, false), Ok(()));
+    assert_eq!(clone_dest_ok(VFORK_FLAGS, false), Ok(()));
+}
