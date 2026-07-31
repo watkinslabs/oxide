@@ -178,6 +178,19 @@ impl PingTable {
         })
     }
 
+    /// Snapshot every published owner with its identifier, in identifier
+    /// order. # C: O(N)
+    pub fn published(&self) -> Vec<(u16, PingSock)> {
+        let mut all = self.entries.lock();
+        let mut out = Vec::new();
+        all.retain(|ident, bucket| {
+            bucket.retain(Entry::live);
+            out.extend(bucket.iter().map(|entry| (*ident, entry.sock.clone())));
+            !bucket.is_empty()
+        });
+        out
+    }
+
     /// Drop every published identifier while a namespace is torn down. # C: O(N)
     pub fn teardown(&self) { self.entries.lock().clear(); }
 

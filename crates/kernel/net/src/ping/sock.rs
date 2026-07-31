@@ -89,3 +89,58 @@ pub fn new_ident(family: PingFamily, reuse: Arc<core::sync::atomic::AtomicI32>)
 {
     PingIdent::new(family, reuse)
 }
+
+/// One published ICMP datagram endpoint, as the diagnostic export renders it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PingDiag {
+    pub family: u8,
+    pub ident: u16,
+    pub local_ip: crate::addr::IpAddr,
+    pub remote_ip: crate::addr::IpAddr,
+    pub ifindex: u32,
+    pub rqueue: u32,
+    pub drops: u32,
+}
+
+impl NetStack {
+    /// Snapshot the ICMP datagram endpoints one namespace publishes, in
+    /// identifier order. # C: O(N)
+    pub fn ping_diag_snapshot_in(&self, net_ns: u64, family: u8) -> alloc::vec::Vec<PingDiag> {
+        let mut out = alloc::vec::Vec::new();
+        let Some(table) = self.ping_table(net_ns) else { return out };
+        for (ident, sock) in table.published() {
+            match (family, sock) {
+                (crate::socket_args::AF_INET_RULE, PingSock::V4(weak)) => {
+                    let Some(endpoint) = weak.upgrade() else { continue };
+                    let state = endpoint.snapshot();
+                    if !state.accepting { continue; }
+                    out.push(PingDiag {
+                        family, ident,
+                        local_ip: crate::addr::IpAddr::V4(state.local),
+                        remote_ip: crate::addr::IpAddr::V4(
+                            state.remote.unwrap_or(crate::addr::Ipv4Addr::ANY)),
+                        ifindex: state.bound_iface.map_or(0, |id| id.raw()),
+                        rqueue: state.queued_bytes.min(u32::MAX as usize) as u32,
+                        drops: state.drops,
+                    });
+                }
+                (crate::socket_args::AF_INET6_RULE, PingSock::V6(weak)) => {
+                    let Some(endpoint) = weak.upgrade() else { continue };
+                    let state = endpoint.snapshot();
+                    if !state.accepting { continue; }
+                    out.push(PingDiag {
+                        family, ident,
+                        local_ip: crate::addr::IpAddr::V6(state.local.addr),
+                        remote_ip: crate::addr::IpAddr::V6(
+                            state.peer.map_or(crate::addr::Ipv6Addr::ANY, |peer| peer.addr)),
+                        ifindex: state.bound_iface.map_or(0, |id| id.raw()),
+                        rqueue: state.queued_bytes.min(u32::MAX as usize) as u32,
+                        drops: 0,
+                    });
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}

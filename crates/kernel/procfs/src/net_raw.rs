@@ -9,7 +9,7 @@ use vfs::{Ino, InodeRef};
 const AF_INET: u8 = 2;
 const AF_INET6: u8 = 10;
 
-fn ipv6_hex(ip: Ipv6Addr) -> String {
+pub(crate) fn ipv6_hex(ip: Ipv6Addr) -> String {
     let o = ip.0;
     let a = u32::from_be_bytes([o[0], o[1], o[2], o[3]]).to_be();
     let b = u32::from_be_bytes([o[4], o[5], o[6], o[7]]).to_be();

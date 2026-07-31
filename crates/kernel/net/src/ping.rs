@@ -25,7 +25,7 @@ pub use group::{CallerGroups, GroupRange};
 pub use ident::{PingIdent, PingSock, PingTable, ReplyTuple, UNBOUND};
 pub use rx::Reply6;
 pub use sock::{
-    admits, autobind_v4, autobind_v6, bind_v4, bind_v6, group_range_for, new_ident, release,
+    admits, PingDiag, autobind_v4, autobind_v6, bind_v4, bind_v6, group_range_for, new_ident, release,
     set_group_range_for,
 };
 pub use tx::{prepare_v4, prepare_v6};
