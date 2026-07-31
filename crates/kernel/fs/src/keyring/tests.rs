@@ -9,6 +9,8 @@
 //          SET_TIMEOUT/READ/DESCRIBE.
 // - links: LINK/UNLINK/MOVE/CLEAR/RESTRICT and the SEARCH / request_key scope.
 // - perm:  the `key_task_permission` chokepoint itself.
+// - payload: per-type payload contracts and the type table's read/update methods.
+// - quota: the per-uid `key_user` key/byte quota, EDQUOT and the gc refund.
 
 use super::*;
 use super::ops::Ctx;
@@ -16,7 +18,9 @@ use super::store::{TaskIds, STORE};
 
 mod keys;
 mod links;
+mod payload;
 mod perm;
+mod quota;
 mod rings;
 
 /// A caller with fsuid == fsgid == `uid` and no supplementary groups.

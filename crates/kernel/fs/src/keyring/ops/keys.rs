@@ -12,29 +12,39 @@ use super::super::store::STORE;
 use super::super::types;
 use super::super::uapi::*;
 
-/// `add_key(2)` core — Linux `key_create_or_update`:
-///   * the type must be registered, else ENODEV;
-///   * a `logon` description must have `subsystem:key` form
-///     (`logon_vet_description`);
-///   * an empty description is EINVAL, and a `keyring` whose description
-///     starts with `.` is EPERM (reserved for kernel-internal keyrings);
-///   * the destination keyring needs `KEY_NEED_WRITE`, checked BEFORE the key
-///     is minted;
-///   * **if a key of the same type+description is already in that keyring and
-///     the type is updatable, the payload is written into THAT key and its
-///     existing serial returned** — `add_key` is create-OR-UPDATE, so a daemon
-///     re-adding its key does not accumulate duplicates.
-/// # C: O(N)
-pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, dest: i32) -> i64 {
+/// `add_key(2)` core — Linux `key_create_or_update`, in ITS order:
+///   1. the type must be registered, else ENODEV;
+///   2. an empty/absent description is EINVAL;
+///   3. the destination must be a keyring (ENOTDIR);
+///   4. the type's `preparse` vets the payload — a `keyring` takes none, a
+///      `user`/`logon` payload is 1..=32767 bytes, a `big_key` up to 1 MiB, and
+///      a NULL payload pointer is EINVAL rather than an empty payload;
+///   5. the destination keyring needs `KEY_NEED_WRITE`;
+///   6. **if a key of the same type+description is already in that keyring and
+///      the type is updatable, the payload is written into THAT key and its
+///      existing serial returned** — `add_key` is create-OR-UPDATE, so a daemon
+///      re-adding its key does not accumulate duplicates. A `keyring` has no
+///      update method, so adding one twice mints two distinct keyrings;
+///   7. `key_alloc` vets a `logon` description and charges the owner's quota,
+///      which is where EDQUOT comes from.
+///
+/// The `.`-prefixed `keyring` EPERM and the payload length ceiling are applied
+/// by the syscall entry, ahead of all of this. # C: O(N)
+pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_payload_ptr: bool,
+    dest: i32) -> i64
+{
     let ty = match types::lookup(key_type) { Some(t) => t, None => return e(Errno::Enodev) };
     if desc.is_empty() { return e(Errno::Einval); }
-    if ty.is_keyring && desc.starts_with('.') { return e(Errno::Eperm); }
-    if let Err(err) = types::vet_description(ty, desc) { return e(err); }
     let mut g = STORE.lock();
-    let ring_id = if dest == 0 { KEY_SPEC_SESSION_KEYRING } else { dest };
-    let ring = match g.resolve(ring_id, &c.t) { Some(r) => r, None => return e(Errno::Enokey) };
-    if let Err(rv) = check_perm(&g, ring, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
+    // The destination keyring is MANDATORY: an id of 0 is not shorthand for
+    // the session keyring, it is EINVAL out of the id resolver. Treating it as
+    // the session keyring turns a caller's uninitialised keyring argument into
+    // a silently successful key insertion.
+    let ring = match g.resolve(dest, &c.t) { Ok(r) => r, Err(err) => return e(err) };
     if g.keys.get(&ring).map(|k| !k.is_keyring()).unwrap_or(true) { return e(Errno::Enotdir); }
+    if let Err(err) = types::vet_payload(ty, payload.len() as u64, have_payload_ptr) { return e(err); }
+    if let Err(rv) = check_perm(&g, ring, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
+    let quota = types::payload_quota(ty, payload.len() as u64);
     if ty.updatable {
         let existing = g.keys[&ring].members.iter().copied().find(|s| {
             g.keys.get(s).map(|k| core::ptr::eq(k.key_type, ty) && k.description == desc
@@ -42,26 +52,35 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, dest:
         });
         if let Some(s) = existing {
             if let Err(rv) = check_perm(&g, s, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
+            if let Err(err) = g.payload_reserve(s, quota) { return e(err); }
             g.keys.get_mut(&s).expect("membership proved existence under the held lock").payload = payload;
             return s as i64;
         }
     }
-    let serial = g.mint(ty, desc, payload, c.t.fsuid, c.t.fsgid);
+    if let Err(err) = types::vet_description(ty, desc) { return e(err); }
+    let serial = match g.mint(ty, desc, payload, c.t.fsuid, c.t.fsgid, quota) {
+        Ok(s) => s, Err(err) => return e(err),
+    };
     match g.link(ring, serial) {
         Ok(()) => serial as i64,
-        Err(err) => { g.keys.remove(&serial); e(err) }
+        Err(err) => { g.destroy(serial); e(err) }
     }
 }
 
-/// `KEYCTL_UPDATE` core: `KEY_NEED_WRITE` on the key, and the type must have
-/// an `update` method (Linux returns EOPNOTSUPP when it does not).
-/// # C: O(payload)
-pub fn update_core(c: &Ctx, serial: i32, payload: Vec<u8>) -> i64 {
+/// `KEYCTL_UPDATE` core — Linux `key_update`: `KEY_NEED_WRITE` on the key, then
+/// EOPNOTSUPP if the type has no `update` method (a `keyring` has none), then
+/// the type's `preparse` payload contract, then the quota delta, which is where
+/// a growing payload can EDQUOT. # C: O(payload)
+pub fn update_core(c: &Ctx, serial: i32, payload: Vec<u8>, have_payload_ptr: bool) -> i64 {
     let mut g = STORE.lock();
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
-    let k = g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock");
-    if !k.key_type.updatable { return e(Errno::Eopnotsupp); }
-    k.payload = payload;
+    let ty = g.keys.get(&serial).expect("check_perm proved existence under the same held lock").key_type;
+    if !ty.updatable { return e(Errno::Eopnotsupp); }
+    if let Err(err) = types::vet_payload(ty, payload.len() as u64, have_payload_ptr) { return e(err); }
+    if let Err(err) = g.payload_reserve(serial, types::payload_quota(ty, payload.len() as u64)) {
+        return e(err);
+    }
+    g.keys.get_mut(&serial).expect("presence proved under the same held lock").payload = payload;
     0
 }
 
@@ -87,6 +106,9 @@ pub fn invalidate_core(c: &Ctx, serial: i32) -> i64 {
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SEARCH, Lookup::Full, c.now_ns) { return rv; }
     g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock").invalidated = true;
     for k in g.keys.values_mut() { k.members.retain(|&m| m != serial); }
+    // Unlinked from everything, the key has no references left: the gc
+    // collects it and hands its quota charge back to its owner.
+    g.collect();
     0
 }
 
@@ -152,17 +174,26 @@ const NS_PER_SEC: u64 = 1_000_000_000;
 /// (`if (!is_key_possessed(key_ref)) return -EACCES;`). Returns the raw bytes
 /// (keyring: native-endian 4-byte member serials; else the payload).
 /// # C: O(payload/members)
-pub fn read_core(c: &Ctx, serial: i32) -> Result<Vec<u8>, i64> {
+pub fn read_core(c: &Ctx, serial: i32, buflen: u64) -> Result<Vec<u8>, i64> {
     let g = STORE.lock();
+    // `keyctl_read_key` collapses EVERY lookup failure — no such serial, and
+    // equally a revoked or expired key — to a flat ENOKEY, so READ is the one
+    // command that never distinguishes them.
     let k = g.keys.get(&serial).ok_or(e(Errno::Enokey))?;
-    super::super::perm::key_validate(k, c.now_ns).map_err(e)?;
-    if !k.key_type.readable { return Err(e(Errno::Eopnotsupp)); }
+    super::super::perm::key_validate(k, c.now_ns).map_err(|_| e(Errno::Enokey))?;
+    // Access is decided BEFORE the type is asked whether it can be read at
+    // all, so a `logon` key the caller may not touch is EACCES, not the
+    // EOPNOTSUPP that would leak that the payload is write-only.
     if check_perm(&g, serial, &c.t, KEY_NEED_READ, Lookup::Full, c.now_ns).is_err()
         && !super::super::perm::is_possessed(&g, serial, &c.t)
     {
         return Err(e(Errno::Eacces));
     }
     let k = g.keys.get(&serial).expect("presence proved under the same held lock");
+    if !k.key_type.readable { return Err(e(Errno::Eopnotsupp)); }
+    // A keyring reads out as an array of 4-byte serials, so a buffer length
+    // that cannot hold a whole number of them is EINVAL.
+    if k.is_keyring() && buflen % KEY_SERIAL_SIZE != 0 { return Err(e(Errno::Einval)); }
     Ok(if k.is_keyring() {
         let mut v = Vec::with_capacity(k.members.len() * 4);
         for &m in &k.members { v.extend_from_slice(&m.to_ne_bytes()); }

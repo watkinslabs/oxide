@@ -20,8 +20,8 @@ use super::super::uapi::*;
 /// available". # C: O(N)
 pub fn link_core(c: &Ctx, child: i32, ring: i32) -> i64 {
     let mut g = STORE.lock();
-    let ch = match g.resolve(child, &c.t) { Some(x) => x, None => return e(Errno::Enokey) };
-    let r  = match g.resolve(ring, &c.t)  { Some(x) => x, None => return e(Errno::Enokey) };
+    let ch = match g.resolve(child, &c.t) { Ok(x) => x, Err(err) => return e(err) };
+    let r  = match g.resolve(ring, &c.t)  { Ok(x) => x, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, ch, &c.t, KEY_NEED_LINK, Lookup::Full, c.now_ns) { return rv; }
     if let Err(rv) = check_perm(&g, r, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     match g.link(r, ch) { Ok(()) => 0, Err(err) => e(err) }
@@ -34,14 +34,18 @@ pub fn link_core(c: &Ctx, child: i32, ring: i32) -> i64 {
 /// not a member, matching `key_unlink`. # C: O(members)
 pub fn unlink_core(c: &Ctx, child: i32, ring: i32) -> i64 {
     let mut g = STORE.lock();
-    let ch = match g.resolve(child, &c.t) { Some(x) => x, None => return e(Errno::Enokey) };
-    let r  = match g.resolve(ring, &c.t)  { Some(x) => x, None => return e(Errno::Enokey) };
+    let ch = match g.resolve(child, &c.t) { Ok(x) => x, Err(err) => return e(err) };
+    let r  = match g.resolve(ring, &c.t)  { Ok(x) => x, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, r, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     match g.keys.get_mut(&r) {
         Some(k) if k.is_keyring() => {
             let before = k.members.len();
             k.members.retain(|&m| m != ch);
-            if k.members.len() == before { e(Errno::Enoent) } else { 0 }
+            if k.members.len() == before { return e(Errno::Enoent); }
+            // Dropping the last link drops the last reference: the gc collects
+            // the key and refunds its quota charge to its owner.
+            g.collect();
+            0
         }
         Some(_) => e(Errno::Enotdir),
         None => e(Errno::Enokey),
@@ -57,9 +61,9 @@ pub fn unlink_core(c: &Ctx, child: i32, ring: i32) -> i64 {
 pub fn move_core(c: &Ctx, id: i32, from_ring: i32, to_ring: i32, flags: u32) -> i64 {
     if flags & !KEYCTL_MOVE_EXCL != 0 { return e(Errno::Einval); }
     let mut g = STORE.lock();
-    let key = match g.resolve(id, &c.t) { Some(x) => x, None => return e(Errno::Enokey) };
-    let from = match g.resolve(from_ring, &c.t) { Some(x) => x, None => return e(Errno::Enokey) };
-    let to = match g.resolve(to_ring, &c.t) { Some(x) => x, None => return e(Errno::Enokey) };
+    let key = match g.resolve(id, &c.t) { Ok(x) => x, Err(err) => return e(err) };
+    let from = match g.resolve(from_ring, &c.t) { Ok(x) => x, Err(err) => return e(err) };
+    let to = match g.resolve(to_ring, &c.t) { Ok(x) => x, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, key, &c.t, KEY_NEED_LINK, Lookup::Full, c.now_ns) { return rv; }
     if let Err(rv) = check_perm(&g, from, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     if let Err(rv) = check_perm(&g, to, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
@@ -82,10 +86,10 @@ fn has_matching_member(g: &Store, ring: i32, key: i32) -> bool {
 /// resolved keyring, ENOTDIR if it is not one. # C: O(members)
 pub fn clear_core(c: &Ctx, ring_id: i32) -> i64 {
     let mut g = STORE.lock();
-    let r = match g.resolve(ring_id, &c.t) { Some(r) => r, None => return e(Errno::Enokey) };
+    let r = match g.resolve(ring_id, &c.t) { Ok(r) => r, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, r, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     match g.keys.get_mut(&r) {
-        Some(k) if k.is_keyring() => { k.members.clear(); 0 }
+        Some(k) if k.is_keyring() => { k.members.clear(); g.collect(); 0 }
         Some(_) => e(Errno::Enotdir),
         None => e(Errno::Enokey),
     }
@@ -101,7 +105,7 @@ pub fn clear_core(c: &Ctx, ring_id: i32) -> i64 {
 /// # C: O(log N)
 pub fn restrict_core(c: &Ctx, ring_id: i32, key_type: Option<&str>) -> i64 {
     let mut g = STORE.lock();
-    let r = match g.resolve(ring_id, &c.t) { Some(r) => r, None => return e(Errno::Enokey) };
+    let r = match g.resolve(ring_id, &c.t) { Ok(r) => r, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, r, &c.t, KEY_NEED_SETATTR, Lookup::Full, c.now_ns) { return rv; }
     if g.keys.get(&r).map(|k| !k.is_keyring()).unwrap_or(true) { return e(Errno::Enotdir); }
     if let Some(name) = key_type {
@@ -125,10 +129,10 @@ pub fn restrict_core(c: &Ctx, ring_id: i32, key_type: Option<&str>) -> i64 {
 pub fn search_core(c: &Ctx, ring_id: i32, key_type: &str, description: &str, dest: i32) -> i64 {
     let ty = match types::lookup(key_type) { Some(t) => t, None => return e(Errno::Enokey) };
     let mut g = STORE.lock();
-    let ring = match g.resolve(ring_id, &c.t) { Some(r) => r, None => return e(Errno::Enokey) };
+    let ring = match g.resolve(ring_id, &c.t) { Ok(r) => r, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, ring, &c.t, KEY_NEED_SEARCH, Lookup::Full, c.now_ns) { return rv; }
     let dest_ring = if dest == 0 { None } else {
-        let d = match g.resolve(dest, &c.t) { Some(d) => d, None => return e(Errno::Enokey) };
+        let d = match g.resolve(dest, &c.t) { Ok(d) => d, Err(err) => return e(err) };
         if let Err(rv) = check_perm(&g, d, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
         Some(d)
     };
@@ -156,7 +160,7 @@ pub fn request_key_core(c: &Ctx, key_type: &str, description: &str, dest: i32) -
     let ty = match types::lookup(key_type) { Some(t) => t, None => return e(Errno::Enokey) };
     let mut g = STORE.lock();
     let dest_ring = if dest == 0 { None } else {
-        let d = match g.resolve(dest, &c.t) { Some(d) => d, None => return e(Errno::Enokey) };
+        let d = match g.resolve(dest, &c.t) { Ok(d) => d, Err(err) => return e(err) };
         if let Err(rv) = check_perm(&g, d, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
         Some(d)
     };
