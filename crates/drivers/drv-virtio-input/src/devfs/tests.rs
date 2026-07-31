@@ -13,7 +13,7 @@ use common::*;
 static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Hold the evdev-table lock for the duration of one test. # C: O(1)
-pub(super) fn serialize() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn serialize() -> std::sync::MutexGuard<'static, ()> {
     TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 

@@ -222,7 +222,11 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// `PseudoDir::lookup` + the dynamic `SysClassNetOps::lookup`.
     /// # C: O(1)
     fn root(&self) -> Option<InodeRef> { sys_root().lookup_path("") }
-    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) -> vfs::KResult<()> { sys_root().set_sb(sb); Ok(()) }
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) -> vfs::KResult<()> {
+        sys_root().set_sb(sb.clone());
+        root::record_super(sb);
+        Ok(())
+    }
 }
 
 /// Singleton accessor for the mount table.
