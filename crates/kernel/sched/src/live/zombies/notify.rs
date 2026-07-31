@@ -56,8 +56,11 @@ pub(super) fn send_child_event(reaper: &alloc::sync::Arc<Task>, info: crate::tas
 
 /// Roll the dying child's CPU time into the parent's cumulative-children
 /// counters for `getrusage(RUSAGE_CHILDREN)` / `times().tms_c[us]time`:
-/// the child's tick-sampled user/kernel time (`utime_ns`/`stime_ns`) and,
-/// for back-compat, its wall-clock elapsed into `cumulative_child_ns`.
+/// the child's tick-sampled user/kernel time (`utime_ns`/`stime_ns`), the
+/// time the child had ALREADY accumulated from its own exited children (so a
+/// whole subtree's CPU reaches the ancestor that measures it — a shell's
+/// `time` over a pipeline, not just its immediate child), and, for
+/// back-compat, its wall-clock elapsed into `cumulative_child_ns`.
 /// Called once per child from `signal_child_exit` (the live exit path).
 /// # C: O(1)
 pub(super) fn accrue_child_time(child: &Task, parent: &Task) {
@@ -68,10 +71,12 @@ pub(super) fn accrue_child_time(child: &Task, parent: &Task) {
     let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let elapsed = now.saturating_sub(child.spawn_ns.load(Ordering::Acquire));
     parent.cumulative_child_ns.fetch_add(elapsed, Ordering::AcqRel);
-    parent.cumulative_child_utime_ns
-        .fetch_add(child.utime_ns.load(Ordering::Acquire), Ordering::AcqRel);
-    parent.cumulative_child_stime_ns
-        .fetch_add(child.stime_ns.load(Ordering::Acquire), Ordering::AcqRel);
+    let utime = child.utime_ns.load(Ordering::Acquire)
+        .saturating_add(child.cumulative_child_utime_ns.load(Ordering::Acquire));
+    let stime = child.stime_ns.load(Ordering::Acquire)
+        .saturating_add(child.cumulative_child_stime_ns.load(Ordering::Acquire));
+    parent.cumulative_child_utime_ns.fetch_add(utime, Ordering::AcqRel);
+    parent.cumulative_child_stime_ns.fetch_add(stime, Ordering::AcqRel);
 }
 
 /// Linux `exit_notify` for `task`, resolved against its real parent's live
