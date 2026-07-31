@@ -76,6 +76,7 @@ fn raise_sigsys(nr: u64, pc: u64) {
             call_addr: pc, syscall: nr as i32, arch: native_audit_arch(), errno: 0,
         }),
         fault: None,
+        poll:  None,
     };
     // `force_sig_info` semantics: an installed handler still runs, but a
     // BLOCKED or SIG_IGN'd SIGSYS is unblocked and reset to SIG_DFL, so a
