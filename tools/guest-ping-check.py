@@ -106,6 +106,9 @@ try:
                 break
         if "SHELL_ALIVE" not in probe:
             print(f"guest-ping-check: no serial shell yet (round {round_index + 1})", flush=True)
+            if round_index == rounds - 1:
+                print("--- last serial output ---", flush=True)
+                print(buf.decode("utf-8", "replace")[-6000:], flush=True)
             continue
         remaining = []
         for label, cmd, want in outstanding:
