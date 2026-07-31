@@ -32,30 +32,40 @@ pub struct WaitChildSnapshot {
 impl WaitChildSnapshot {
     /// # C: O(1)
     pub fn from_task(t: &Task) -> Self {
-        let own = Rusage {
-            utime_ns:  t.utime_ns.load(Ordering::Acquire),
-            stime_ns:  t.stime_ns.load(Ordering::Acquire),
-            maxrss_kb: 0,
-            minflt:    t.min_flt.load(Ordering::Relaxed),
-            majflt:    t.maj_flt.load(Ordering::Relaxed),
-            inblock:   bytes_to_blocks(t.io_read_bytes.load(Ordering::Relaxed)),
-            oublock:   bytes_to_blocks(t.io_write_bytes.load(Ordering::Relaxed)),
-            nvcsw:     t.nvcsw.load(Ordering::Relaxed),
-            nivcsw:    t.nivcsw.load(Ordering::Relaxed),
-        };
-        let children = Rusage {
-            utime_ns: t.cumulative_child_utime_ns.load(Ordering::Acquire),
-            stime_ns: t.cumulative_child_stime_ns.load(Ordering::Acquire),
-            ..Rusage::default()
-        };
         Self {
             vpid:     t.vtgid.load(Ordering::Acquire),
             uid:      t.creds.ruid.load(Ordering::Acquire),
-            utime_ns: own.utime_ns,
-            stime_ns: own.stime_ns,
-            rusage:   Rusage::both(own, children),
+            utime_ns: t.utime_ns.load(Ordering::Acquire),
+            stime_ns: t.stime_ns.load(Ordering::Acquire),
+            rusage:   task_rusage_both(t),
         }
     }
+}
+
+/// A task's own resource counters — Linux `RUSAGE_SELF` for a single-threaded
+/// process. # C: O(1)
+pub fn task_rusage_self(t: &Task) -> Rusage {
+    Rusage {
+        utime_ns:  t.utime_ns.load(Ordering::Acquire),
+        stime_ns:  t.stime_ns.load(Ordering::Acquire),
+        // No RSS high-water accounting exists to source `ru_maxrss` from.
+        maxrss_kb: 0,
+        minflt:    t.min_flt.load(Ordering::Relaxed),
+        majflt:    t.maj_flt.load(Ordering::Relaxed),
+        inblock:   bytes_to_blocks(t.io_read_bytes.load(Ordering::Relaxed)),
+        oublock:   bytes_to_blocks(t.io_write_bytes.load(Ordering::Relaxed)),
+        nvcsw:     t.nvcsw.load(Ordering::Relaxed),
+        nivcsw:    t.nivcsw.load(Ordering::Relaxed),
+    }
+}
+
+/// Linux `RUSAGE_BOTH` for `t`: its own counters folded with everything its
+/// process already accumulated from ITS reaped children. This is what a
+/// wait-family `rusage` out-param reports, and what a dying task contributes
+/// to its parent — so a whole subtree's cost reaches the ancestor measuring
+/// it, not just the immediate child. # C: O(1)
+pub fn task_rusage_both(t: &Task) -> Rusage {
+    Rusage::both(task_rusage_self(t), t.thread_group.child_acct().snapshot())
 }
 
 /// True when this wait reaches `t` through a tracer relationship — the waiter
@@ -124,9 +134,9 @@ pub fn child_stop_event(
         }
         let trapped = is_ptrace_wait(&g, &t, waiter);
         if (want_stop || trapped) && take_flag(&t.stop_pending, consume) {
-            let sig  = t.stop_signal.load(Ordering::Acquire);
+            let code = t.stop_code.load(Ordering::Acquire);
             let kind = if trapped { WaitEventKind::Trapped } else { WaitEventKind::Stopped };
-            return Some((WaitChildSnapshot::from_task(&t), kind, sig as u32));
+            return Some((WaitChildSnapshot::from_task(&t), kind, code));
         }
         if want_cont && take_flag(&t.cont_pending, consume) {
             return Some((WaitChildSnapshot::from_task(&t), WaitEventKind::Continued, 0));

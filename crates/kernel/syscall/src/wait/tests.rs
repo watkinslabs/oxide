@@ -128,3 +128,44 @@ fn a_stopped_wait_status_is_never_decoded_as_a_signal_death() {
     // what keeps the two apart, which is why the engine carries it.
     assert_eq!(siginfo_from_event(WaitEventKind::Stopped, st), (CLD_STOPPED, 19));
 }
+
+#[test]
+fn a_ptrace_event_stop_status_carries_the_event_byte_intact() {
+    use crate::ptrace::{event_of_stop_code, event_stop_code, EVENT_CLONE, EVENT_EXEC, EVENT_EXIT,
+                        EVENT_FORK, EVENT_SECCOMP, EVENT_STOP, EVENT_VFORK, EVENT_VFORK_DONE,
+                        SIGTRAP};
+    for e in [EVENT_FORK, EVENT_VFORK, EVENT_CLONE, EVENT_EXEC, EVENT_VFORK_DONE, EVENT_EXIT,
+              EVENT_SECCOMP, EVENT_STOP] {
+        let code  = event_stop_code(e);
+        let wstat = stopped_wstatus(code);
+        // Userspace's view: WIFSTOPPED, WSTOPSIG == SIGTRAP, status >> 16 == event.
+        assert_eq!(wstat & 0xff, 0x7f, "event {e} must still be WIFSTOPPED");
+        assert_eq!((wstat >> 8) & 0xff, SIGTRAP, "event {e} reports as SIGTRAP");
+        assert_eq!(((wstat >> 16) & 0xff) as u32, e, "event {e} lands in the third byte");
+        // Kernel's view: the full code round-trips, and si_status is the whole
+        // code — masking it to a byte would erase the event.
+        assert_eq!(wstatus_stop_code(wstat), code);
+        assert_eq!(event_of_stop_code(wstatus_stop_code(wstat)), e);
+        assert_eq!(siginfo_from_event(WaitEventKind::Trapped, wstat), (CLD_TRAPPED, code));
+    }
+}
+
+#[test]
+fn a_syscall_stop_status_round_trips_the_tracesysgood_bit() {
+    use crate::ptrace::{syscall_stop_code, SIGTRAP, SYSCALL_STOP_BIT};
+    let wstat = stopped_wstatus(syscall_stop_code());
+    assert_eq!(wstat & 0xff, 0x7f);
+    assert_eq!((wstat >> 8) & 0xff, SIGTRAP | SYSCALL_STOP_BIT);
+    assert_eq!(wstatus_stop_code(wstat), 0x85);
+    assert_eq!(siginfo_from_event(WaitEventKind::Trapped, wstat), (CLD_TRAPPED, 0x85));
+}
+
+#[test]
+fn a_job_control_stop_code_is_unchanged_by_the_widened_encoding() {
+    for sig in [17i32, 19, 20, 21, 22] {
+        let wstat = stopped_wstatus(sig);
+        assert_eq!(wstat, (sig << 8) | 0x7f);
+        assert_eq!(wstatus_stop_code(wstat), sig);
+        assert_eq!(siginfo_from_event(WaitEventKind::Stopped, wstat), (CLD_STOPPED, sig));
+    }
+}

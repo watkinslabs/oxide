@@ -51,15 +51,13 @@ pub const O_SUSPEND_SECCOMP: u32 = 1 << 21;
 /// Linux `PTRACE_O_MASK` = `0x000000ff | EXITKILL | SUSPEND_SECCOMP`.
 pub const O_MASK: u32 = 0x0000_00ff | O_EXITKILL | O_SUSPEND_SECCOMP;
 
-/// `PTRACE_EVENT_*` codes reported in the high byte of a wait status.
-pub const EVENT_FORK:       u32 = 1;
-pub const EVENT_VFORK:      u32 = 2;
-pub const EVENT_CLONE:      u32 = 3;
-pub const EVENT_EXEC:       u32 = 4;
-pub const EVENT_VFORK_DONE: u32 = 5;
-pub const EVENT_EXIT:       u32 = 6;
-pub const EVENT_SECCOMP:    u32 = 7;
-pub const EVENT_STOP:       u32 = 128;
+// `PTRACE_EVENT_*` codes plus the stop-code composition live in the ABI crate
+// (`syscall::ptrace`) because the wait-status encoder needs them too; a second
+// copy here would be a split source of truth.
+pub use syscall::ptrace::{
+    event_of_stop_code, event_stop_code, syscall_stop_code, EVENT_CLONE, EVENT_EXEC, EVENT_EXIT,
+    EVENT_FORK, EVENT_SECCOMP, EVENT_STOP, EVENT_VFORK, EVENT_VFORK_DONE,
+};
 
 /// `NT_*` regset note types (`include/uapi/linux/elf.h`). `PTRACE_GETREGSET`
 /// takes one of these in `addr`.

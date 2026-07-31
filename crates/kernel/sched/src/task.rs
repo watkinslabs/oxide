@@ -490,22 +490,15 @@ pub struct Task {
     pub start_boottime_ns: u64,
     /// F169 WaitList::park_with_deadline; 0 = indefinite.
     pub wakeup_deadline_ns: AtomicU64,
-    /// Cumulative ns of exited children's CPU; read by
-    /// getrusage(RUSAGE_CHILDREN).
-    pub cumulative_child_ns: AtomicU64,
-
     /// Per-task user-mode CPU time (ns), tick-sampled at the timer IRQ
     /// (Linux CONFIG_TICK_CPU_ACCOUNTING); read by getrusage/times/proc-stat.
     pub utime_ns: AtomicU64,
     /// Per-task kernel-mode CPU time (ns), tick-sampled at the timer IRQ
     /// (Linux CONFIG_TICK_CPU_ACCOUNTING); read by getrusage/times/proc-stat.
     pub stime_ns: AtomicU64,
-    /// Cumulative user-mode CPU time (ns) of reaped children; read by
-    /// getrusage(RUSAGE_CHILDREN).ru_utime + times().tms_cutime.
-    pub cumulative_child_utime_ns: AtomicU64,
-    /// Cumulative kernel-mode CPU time (ns) of reaped children; read by
-    /// getrusage(RUSAGE_CHILDREN).ru_stime + times().tms_cstime.
-    pub cumulative_child_stime_ns: AtomicU64,
+    // Reaped children's accumulated resource use is PROCESS-wide state and
+    // lives on `ThreadGroup` (`thread_group::child_acct`), like `rlimits` and
+    // `pgid` — any thread may reap, and every sibling must see the result.
 
     /// alarm(2)/setitimer ITIMER_REAL deadline in monotonic ns.
     /// `0` = no alarm pending. Dispatch tail compares against
@@ -700,8 +693,13 @@ pub struct Task {
     /// syscall-entry stop, the result at a syscall-exit stop — is recorded
     /// here by the stop hook instead of being reconstructed from the frame.
     pub ptrace_stop_rax: AtomicU64,
-    /// wait4 WUNTRACED/WCONTINUED flags + stop signal.
-    pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_signal: AtomicU8,
+    /// wait4/waitid WUNTRACED/WCONTINUED flags plus the pending stop code.
+    /// `stop_code` is Linux's `exit_code` for a stop, which is 16 bits wide,
+    /// not a bare signal number: a ptrace event stop carries
+    /// `SIGTRAP | (PTRACE_EVENT_* << 8)` and a syscall stop carries
+    /// `SIGTRAP | 0x80`. `syscall::ptrace` composes and decodes it; the wait
+    /// status is `syscall::wait::stopped_wstatus(stop_code)`.
+    pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_code: AtomicU32,
 
     /// `rseq(2)` registration pointer — per-THREAD user pointer to a
     /// `struct rseq`. Non-zero means every exit to user republishes the ids

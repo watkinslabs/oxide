@@ -101,8 +101,12 @@ fn resolve_pidfd(fd: i32, options: u64) -> Result<(i32, bool), Errno> {
         Err(pidfd::ResolveError::Released) => return Err(Errno::Echild),
         Err(pidfd::ResolveError::BadFd | pidfd::ResolveError::NotPidfd) => return Err(Errno::Ebadf),
     };
-    // A thread pidfd resolves to PIDTYPE_PID, which no untraced thread-group
-    // wait can match — the observable result is ECHILD.
+    // A pidfd naming a THREAD (now producible: CLONE_THREAD|CLONE_PIDFD) is a
+    // thread-level pid. A wait keyed on it looks the target up as a thread
+    // GROUP, finds nothing for a non-leader, and falls through to "no eligible
+    // child" — ECHILD. Only a tracer of that exact thread could match it, and
+    // a pidfd is never how a tracer reaches its tracee. So ECHILD here is the
+    // whole observable behaviour, not a shortcut around one.
     if !target.pid.is_group_leader() { return Err(Errno::Echild); }
     let forced = flags.contains(vfs::OpenFlags::O_NONBLOCK) && (options & WNOHANG) == 0;
     Ok((sched::live::registry::display_vpid(target.tid) as i32, forced))

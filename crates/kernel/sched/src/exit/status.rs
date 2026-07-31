@@ -61,9 +61,13 @@ pub const fn wait_status(internal: i32) -> i32 {
     else { (internal & WSTATUS_LOW_MASK) << WSTATUS_EXIT_SHIFT }
 }
 
-/// `wait_task_stopped`: `wo->wo_stat = (exit_code << 8) | 0x7f`. # C: O(1)
-pub const fn stopped_status(sig: i32) -> i32 {
-    (sig << WSTATUS_EXIT_SHIFT) | WSTATUS_STOPPED
+/// `wait_task_stopped`: `wo->wo_stat = (exit_code << 8) | 0x7f`. `stop_code`
+/// is the full 16-bit stop code (`Task::stop_code`), not a bare signal — a
+/// ptrace event stop carries `SIGTRAP | (event << 8)`. The encoding itself is
+/// owned by the ABI crate so the pure decoder cannot drift from it.
+/// # C: O(1)
+pub const fn stopped_status(stop_code: i32) -> i32 {
+    syscall::wait::stopped_wstatus(stop_code)
 }
 
 /// `wait_task_continued`: `wo->wo_stat = 0xffff`. # C: O(1)
