@@ -8,7 +8,8 @@ use super::model::{
     timerfd_realtime_clock,
 };
 use super::uapi::{
-    self, TFD_CLOEXEC, TFD_NONBLOCK, TFD_TIMER_ABSTIME, TFD_TIMER_CANCEL_ON_SET,
+    self, TFD_CLOEXEC, TFD_NONBLOCK, TFD_SETTIME_FLAGS, TFD_TIMER_ABSTIME,
+    TFD_TIMER_CANCEL_ON_SET,
 };
 
 /// `sys_timerfd_create(clockid, flags)`. # C: O(N_fds)
@@ -128,7 +129,8 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
             monotonic_deadline_from_value(flags, host_value, now_mono)
         };
         let (old_spec, canceled) = state.install(now_mono, now_real, expiry,
-            prepared.interval_ns, cancel_enabled, realtime_absolute);
+            prepared.interval_ns, cancel_enabled, realtime_absolute,
+            (flags & TFD_SETTIME_FLAGS) as u16);
         let projected_expiry = state.projected_expiry(now_mono, now_real);
         (old_spec, canceled, projected_expiry, now_mono)
     };
