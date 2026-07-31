@@ -89,7 +89,12 @@ pub(super) fn handle_socket_owner_ioctl(file: &vfs::File, req: u64, arg: u64) ->
             let owner = unsafe { core::ptr::read_volatile(arg as *const i32) };
             install_sigio_hook();
             let (uid, euid) = socket_owner_creds();
-            file.f_setown(owner, uid, euid);
+            // Linux `sock_ioctl` routes these through `f_setown(.., who, ..)`,
+            // so a negative id names a process GROUP exactly as `F_SETOWN` does.
+            use vfs::file::owner_type::{F_OWNER_PGRP, F_OWNER_PID};
+            let (id, ty) = if owner < 0 { (owner.saturating_neg(), F_OWNER_PGRP) }
+                           else { (owner, F_OWNER_PID) };
+            file.f_setown(id, ty, uid, euid);
             Some(0)
         }
         FIOGETOWN | SIOCGPGRP => {

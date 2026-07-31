@@ -73,13 +73,47 @@ fn fresh_file_has_no_owner_no_sig() {
 #[test]
 fn setown_records_target_and_creds() {
     let f = file();
-    f.f_setown(4321, 1000, 1001);
+    f.f_setown(4321, vfs::file::owner_type::F_OWNER_PID, 1000, 1001);
     assert_eq!(f.f_getown(), 4321, "F_GETOWN returns the F_SETOWN target");
     assert_eq!(f.f_owner_creds(), (1000, 1001),
         "real and effective uid are snapshotted SEPARATELY — sigio_perm reads them differently");
     // Negative target = process group, faithfully round-tripped.
-    f.f_setown(-77, 1000, 1001);
+    f.f_setown(-77, vfs::file::owner_type::F_OWNER_PID, 1000, 1001);
     assert_eq!(f.f_getown(), -77, "negative target (-pgrp) preserved");
+}
+
+// `F_SETOWN_EX` records a `pid_type`; `F_GETOWN_EX` must report the SAME one.
+// Inferring the type from the id's sign — which is what this did — collapses
+// F_OWNER_TID and F_OWNER_PID into one value, so a thread-directed owner came
+// back as process-directed and the signal went to the wrong pending set.
+#[test]
+fn owner_type_round_trips_and_tid_is_distinct_from_pid() {
+    use vfs::file::owner_type::{F_OWNER_PGRP, F_OWNER_PID, F_OWNER_TID};
+    let f = file();
+    assert_eq!(f.f_owner_type(), F_OWNER_PID, "default pid_type is PIDTYPE_TGID");
+    f.f_setown(42, F_OWNER_TID, 0, 0);
+    assert_eq!(f.f_owner_type(), F_OWNER_TID, "TID is not folded into PID");
+    assert_eq!(f.f_getown(), 42, "a thread owner is reported positive");
+    f.f_setown(42, F_OWNER_PID, 0, 0);
+    assert_eq!(f.f_owner_type(), F_OWNER_PID);
+    // Legacy `F_GETOWN` reports a process group as a NEGATIVE pgid; the stored
+    // id itself stays positive so delivery does not have to un-negate it.
+    f.f_setown(77, F_OWNER_PGRP, 0, 0);
+    assert_eq!(f.f_owner_type(), F_OWNER_PGRP);
+    assert_eq!(f.f_getown(), -77, "F_GETOWN's legacy negative-pgid encoding");
+}
+
+// `FMODE_CREATED` was defined and asserted in a bit-layout test, but no path
+// ever SET it and no path ever read it — `fcntl(F_CREATED_QUERY)` is its
+// consumer and did not exist.
+#[test]
+fn fmode_created_is_off_until_the_open_path_publishes_it() {
+    use vfs::Fmode;
+    let f = file();
+    assert!(!f.f_mode().contains(Fmode::CREATED), "a plain open did not create the file");
+    f.set_created();
+    assert!(f.f_mode().contains(Fmode::CREATED), "F_CREATED_QUERY reads this back");
+    assert!(f.f_mode().contains(Fmode::READ), "folding CREATED in preserves the access bits");
 }
 
 #[test]
@@ -87,7 +121,7 @@ fn setown_target_is_owner_field_used_by_syscall() {
     // The legacy `owner` field the fcntl shim writes/reads must stay in sync
     // with the model setter (single pid source of truth).
     let f = file();
-    f.f_setown(99, 0, 0);
+    f.f_setown(99, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     assert_eq!(f.owner.load(std::sync::atomic::Ordering::Acquire), 99);
 }
 
@@ -154,7 +188,7 @@ fn kill_fasync_delivers_to_owner_via_hook() {
     let _g = GATE.lock().unwrap();
     vfs::file::set_sigio_hook(capture_hook);
     let f = file();
-    f.f_setown(1234, 1000, 1000);
+    f.f_setown(1234, vfs::file::owner_type::F_OWNER_PID, 1000, 1000);
     // No O_ASYNC yet: kill_fasync is a no-op (Linux only signals FASYNC fds).
     GOT_FIRES.store(0, Ordering::Release);
     f.kill_fasync(SIGIO, POLL_IN);
@@ -189,7 +223,7 @@ fn setsig_delivery_carries_the_sigpoll_band_and_fd() {
     let _g = GATE.lock().unwrap();
     vfs::file::set_sigio_hook(capture_hook);
     let f = file();
-    f.f_setown(1234, 0, 0);
+    f.f_setown(1234, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     f.set_sig(SIGRTMIN);
     // `fasync_insert_entry` records fa_fd from the `f_op->fasync` argument.
     f.set_fasync_state(11, true);
@@ -214,7 +248,7 @@ fn a_readiness_wake_delivers_to_the_sources_fasync_holders() {
     let _g = GATE.lock().unwrap();
     vfs::file::set_sigio_hook(capture_hook);
     let f = file();
-    f.f_setown(1234, 0, 0);
+    f.f_setown(1234, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     f.set_sig(SIGRTMIN);
     f.set_fasync_state(3, true);
     GOT_FIRES.store(0, Ordering::Release);
@@ -233,7 +267,7 @@ fn urgent_readiness_is_sigurg_and_is_suppressed_without_setsig() {
     let _g = GATE.lock().unwrap();
     vfs::file::set_sigio_hook(capture_hook);
     let f = file();
-    f.f_setown(1234, 0, 0);
+    f.f_setown(1234, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     f.set_fasync_state(5, true);
     GOT_FIRES.store(0, Ordering::Release);
     f.kill_fasync(SIGURG, POLL_PRI);

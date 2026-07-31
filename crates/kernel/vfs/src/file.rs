@@ -42,7 +42,7 @@ mod open;
 mod readahead;
 mod fsync;
 
-pub use async_notify::{band_for, deliver as deliver_fasync, fasync_register, fasync_registered, fasync_unregister, kill_fasync, reason, reason_for_mask, set_sigio_hook, sicode_for, AsyncSignal};
+pub use async_notify::{band_for, owner_type, deliver as deliver_fasync, fasync_register, fasync_registered, fasync_unregister, kill_fasync, reason, reason_for_mask, set_sigio_hook, sicode_for, AsyncSignal};
 pub use cred::FileCred;
 pub use epoll::FileEpollLink;
 pub use hooks::{fire_clone_hook, fire_dirent_create, fire_delete_self_hook, fire_dirent_delete, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook};
@@ -80,6 +80,12 @@ pub struct File {
     /// `f_mode` (FMODE_*), derived from the open access mode once at
     /// construction. Immutable for the life of the open description.
     f_mode: Fmode,
+    /// `FMODE_CREATED` — this open is the one that CREATED the file. Linux
+    /// sets it inside `do_dentry_open`; here the create decision is known one
+    /// frame up in the open syscall, so it is published separately and folded
+    /// back into [`File::f_mode`], which stays the single reported `f_mode`.
+    /// `fcntl(F_CREATED_QUERY)` is its consumer.
+    f_created: ::core::sync::atomic::AtomicBool,
     /// `f_cred` — opener's credentials snapshot (Linux `file->f_cred`).
     /// Lets a deferred read/write enforce without re-reading task creds.
     f_cred: FileCred,
@@ -120,6 +126,12 @@ pub struct File {
     /// (Linux `f_owner.pid`). SIGIO/SIGURG routes here on fasync; the credential
     /// snapshot lives in `owner_creds`, the delivery signal in `f_sig`.
     pub owner: ::core::sync::atomic::AtomicI32,
+    /// `f_owner.pid_type` — which kind of id `owner` names, so `F_GETOWN_EX`
+    /// round-trips what `F_SETOWN_EX` stored and delivery targets the right
+    /// set. `0` = `F_OWNER_TID` (one thread), `1` = `F_OWNER_PID` (the whole
+    /// process), `2` = `F_OWNER_PGRP`. Inferring it from `owner`'s sign, which
+    /// is what this did before, cannot distinguish TID from PID at all.
+    owner_type: ::core::sync::atomic::AtomicI32,
     /// `f_owner` credential snapshot (Linux `struct fown_struct.uid/.euid`)
     /// captured at `F_SETOWN`, so a deferred SIGIO permission-checks against
     /// the credentials that requested ownership, not those current when the
