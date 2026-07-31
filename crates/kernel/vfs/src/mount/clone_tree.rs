@@ -163,7 +163,11 @@ pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, base_mp: &Arc<Dentr
         if rel.is_empty() { continue; }
         out.push(CloneNode { m: clone_mnt(&m, CloneType::Private, 0, src, ns), rel, mp: Some(mp) });
     }
-    out.sort_by_key(|n| n.rel.len());
+    // Shortest relative path first, so a parent is always attached before the
+    // children mounted under it. Ties are broken by the path itself — unique
+    // within one subtree — which makes the order total and the resulting
+    // mount-id assignment reproducible instead of sort-stability-dependent.
+    out.sort_unstable_by(|a, b| a.rel.len().cmp(&b.rel.len()).then_with(|| a.rel.cmp(&b.rel)));
     out
 }
 

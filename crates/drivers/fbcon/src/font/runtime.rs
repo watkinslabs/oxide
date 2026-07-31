@@ -51,6 +51,9 @@ pub fn set_default() {
 pub fn set_unimap(pairs: &[(u32, u16)]) {
     let cur = active();
     let mut uni: Vec<(u32, u16)> = pairs.to_vec();
+    // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): the `dedup_by_key` below
+    // keeps the FIRST pair for a codepoint, so a unimap that maps one
+    // codepoint twice resolves by input order.
     uni.sort_by_key(|&(c, _)| c);
     uni.dedup_by_key(|&mut (c, _)| c);
     let fallback = match uni.binary_search_by_key(&0x3f, |&(c, _)| c) {

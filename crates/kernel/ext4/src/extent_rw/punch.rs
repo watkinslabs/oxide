@@ -86,7 +86,7 @@ impl Mount {
             if is > es { out.push(mk_extent(es, r.phys, is - es, r.unwritten)); }
             if ie < ee { out.push(mk_extent(ie, r.phys + (ie - es) as u64, ee - ie, r.unwritten)); }
         }
-        out.sort_by_key(|e| e.block);
+        out.sort_unstable_by_key(|e| e.block);
         let (old_sectors, sectors) = self.write_extent_tree(ino, &mut ibytes, &out)?;
         for b in data_to_free.into_iter().chain(meta_to_free.into_iter()) {
             if let Err(e) = self.free_block(b) {
