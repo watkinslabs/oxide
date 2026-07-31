@@ -20,6 +20,7 @@
 #![cfg(test)]
 
 mod mapping;
+mod mlock;
 mod mseal;
 mod stack;
 mod stress;

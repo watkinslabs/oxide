@@ -53,8 +53,8 @@ fn the_rendered_defaults_track_default_rlimits_not_a_stale_blob() {
         "NR_OPEN_DEFAULT 1024/4096: {t}");
     assert!(t.contains("Max core file size       0                    unlimited            bytes"),
         "cores disabled by default: {t}");
-    assert!(t.contains("Max locked memory        unlimited"),
-        "MEMLOCK is unlimited here, NOT the old blob's 65536: {t}");
+    assert!(t.contains("Max locked memory        8388608              8388608              bytes"),
+        "MLOCK_LIMIT is 8 MiB soft AND hard, not unlimited and not the old blob's 65536: {t}");
     assert!(t.contains("Max msgqueue size        unlimited"),
         "MSGQUEUE is unlimited here, NOT the old blob's 819200: {t}");
 }
