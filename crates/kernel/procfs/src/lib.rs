@@ -102,6 +102,8 @@ pub mod swaps;
 pub mod net;
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod net_raw;
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod net_icmp;
 
 #[cfg(target_os = "oxide-kernel")] pub mod pid_stat;
 #[cfg(target_os = "oxide-kernel")] pub mod pid_status;

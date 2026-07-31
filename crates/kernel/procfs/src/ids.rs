@@ -12,6 +12,8 @@ pub(crate) const NET_TCP6: u64 = 0xFEED_000A;
 pub(crate) const NET_UDP6: u64 = 0xFEED_000B;
 pub(crate) const NET_RAW: u64 = 0xFEED_000C;
 pub(crate) const NET_RAW6: u64 = 0xFEED_000D;
+pub(crate) const NET_ICMP: u64 = 0xFEED_000E;
+pub(crate) const NET_ICMP6: u64 = 0xFEED_000F;
 /// Reserved for the `dyn_file` namespace-generated-body test fixture; no live
 /// `/proc` file claims it.
 #[cfg(test)]
