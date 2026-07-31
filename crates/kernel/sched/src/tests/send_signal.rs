@@ -246,3 +246,126 @@ fn a_sigchld_record_selects_the_four_byte_si_status_arm() {
     // `_rt` si_value's high half would be.
     assert!(buf[28..32].iter().all(|b| *b == 0));
 }
+
+// --- SIGCHLD is a PROCESS-directed signal like any other --------------------
+
+/// A leader plus one sibling thread sharing its `ThreadGroup`, as `clone(2)`
+/// with CLONE_THREAD builds them.
+fn threaded(leader_tid: u32) -> (Arc<Task>, Arc<Task>) {
+    let leader = task(leader_tid);
+    let mut worker = Task::new(leader_tid + 1, "send-worker", SchedClass::Normal { weight: 1024 });
+    worker.join_thread_group(Arc::clone(&leader.thread_group));
+    let worker = Arc::new(worker);
+    worker.pid.attach(&worker);
+    (leader, worker)
+}
+
+/// `do_notify_parent`'s record: si_pid = child vpid, si_uid = child ruid,
+/// si_status = the wait-encoded status, si_code = CLD_*.
+fn child_exit(code: i32, vpid: u32, status: u64) -> crate::task::SigInfo {
+    crate::task::SigInfo { signo: SIGCHLD, code, pid: vpid, uid: 0, value: status,
+        sys: None, fault: None }
+}
+
+#[test]
+fn a_child_event_reaches_a_sibling_thread_when_the_leader_blocks_sigchld() {
+    // The divergence this closes: child events used to live in a per-THREAD
+    // queue with no slot in the shared set, so a threaded supervisor whose
+    // leader blocks SIGCHLD could never hand it to a worker — the shape of
+    // every ordinary threaded supervisor.
+    let (leader, worker) = threaded(710);
+    install(&leader, SIGCHLD, HANDLER);
+    leader.set_current_blocked(Signum::Sigchld.bit());
+    const CLD_EXITED: i32 = 1;
+    assert_eq!(send::send_signal(&leader, SIGCHLD,
+        SigSource::Info(child_exit(CLD_EXITED, 4242, 7)), SigTarget::Process), Ok(()));
+    assert_ne!(worker.pending_signals() & Signum::Sigchld.bit(), 0,
+        "the sibling sees the child event in the shared set");
+    let rec = worker.dequeue_pending(SIGCHLD).unwrap().expect("the full child record");
+    assert_eq!((rec.code, rec.pid, rec.value), (CLD_EXITED, 4242, 7));
+    assert_eq!(leader.pending_signals() & Signum::Sigchld.bit(), 0,
+        "one consumer claims it, not both");
+}
+
+#[test]
+fn a_default_disposition_parent_drops_the_child_event_at_send_time() {
+    // `sig_ignored`: SIGCHLD's default action is Ignore, so an untouched parent
+    // never accumulates child records. wait4 is unaffected — it reads the
+    // zombie list, not this queue.
+    let t = task(712);
+    assert_eq!(send::send_signal(&t, SIGCHLD, SigSource::Info(child_exit(1, 9, 0)),
+        SigTarget::Process), Ok(()));
+    assert_eq!(t.pending_signals() & Signum::Sigchld.bit(), 0);
+}
+
+#[test]
+fn a_blocked_sigchld_is_queued_even_with_the_default_disposition() {
+    // What makes a `signalfd(SIGCHLD)` supervisor work: block first, and the
+    // default-ignore disposition no longer drops the send.
+    let t = task(714);
+    t.set_current_blocked(Signum::Sigchld.bit());
+    assert_eq!(send::send_signal(&t, SIGCHLD, SigSource::Info(child_exit(1, 55, 3)),
+        SigTarget::Process), Ok(()));
+    let rec = t.dequeue_pending(SIGCHLD).unwrap().expect("record, not a bare bit");
+    assert_eq!((rec.pid, rec.value), (55, 3));
+}
+
+#[test]
+fn a_burst_of_child_exits_collapses_onto_the_first_record() {
+    // SIGCHLD is a standard signal, so `legacy_queue` keeps the FIRST record
+    // and drops the rest — which is exactly why a supervisor must loop
+    // `waitpid(-1, WNOHANG)` rather than count signals.
+    let t = task(716);
+    install(&t, SIGCHLD, HANDLER);
+    for vpid in [11u32, 12, 13] {
+        assert_eq!(send::send_signal(&t, SIGCHLD, SigSource::Info(child_exit(1, vpid, 0)),
+            SigTarget::Process), Ok(()));
+    }
+    assert_eq!(t.dequeue_pending(SIGCHLD).unwrap().map(|r| r.pid), Some(11));
+    assert_eq!(t.dequeue_pending(SIGCHLD), None, "only one record was queued");
+}
+
+// --- POSIX timer expiry from IRQ context -----------------------------------
+
+#[test]
+fn a_timer_expiry_queues_its_record_without_reserving() {
+    // `send_signal_irq` is the hard-IRQ producer: the slot was reserved at
+    // `timer_create`, so the expiry only pushes. A group-directed timer signal
+    // is `PIDTYPE_TGID`, so it lands on the shared set where any thread can
+    // take it — posting it into whichever thread the tick interrupted hid it
+    // from every sibling.
+    let (leader, worker) = threaded(720);
+    install(&leader, SIGRTMIN, HANDLER);
+    leader.thread_group.reserve_shared(SIGRTMIN);
+    let rec = crate::timers::signal::timer_record(SIGRTMIN, 3, 0xfeed);
+    assert!(send::send_signal_irq(&leader, rec, SigTarget::Process));
+    assert_ne!(worker.pending_signals() & (1u64 << (SIGRTMIN - 1)), 0);
+    let got = worker.dequeue_pending(SIGRTMIN).unwrap().expect("the _timer record");
+    assert_eq!(got.code, crate::timers::signal::SI_TIMER);
+    assert_eq!(crate::timers::signal::timer_id(&got), 3, "si_tid names the timer");
+    assert_eq!(got.value, 0xfeed, "si_value is the sigev_value the creator registered");
+}
+
+#[test]
+fn a_sigev_thread_id_expiry_stays_on_that_threads_private_set() {
+    let (leader, worker) = threaded(724);
+    install(&worker, SIGRTMIN, HANDLER);
+    worker.sigq_reserve(SIGRTMIN);
+    let rec = crate::timers::signal::timer_record(SIGRTMIN, 0, 0);
+    assert!(send::send_signal_irq(&worker, rec, SigTarget::Thread));
+    assert_ne!(worker.sigpending.load(Ordering::Acquire) & (1u64 << (SIGRTMIN - 1)), 0);
+    assert_eq!(leader.thread_group.shared_pending() & (1u64 << (SIGRTMIN - 1)), 0,
+        "SIGEV_THREAD_ID is PIDTYPE_PID — no sibling may steal it");
+}
+
+#[test]
+fn an_irq_expiry_honours_the_same_ignore_ladder_as_every_other_send() {
+    // The old producer set the pending bit directly, so `prepare_signal` never
+    // ran for a timer expiry: a SIG_IGN disposition still woke the target.
+    let t = task(728);
+    install(&t, SIGRTMIN, SIG_IGN);
+    t.thread_group.reserve_shared(SIGRTMIN);
+    let rec = crate::timers::signal::timer_record(SIGRTMIN, 1, 0);
+    assert!(!send::send_signal_irq(&t, rec, SigTarget::Process));
+    assert_eq!(t.pending_signals() & (1u64 << (SIGRTMIN - 1)), 0);
+}

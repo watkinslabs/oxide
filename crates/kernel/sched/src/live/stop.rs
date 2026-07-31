@@ -64,26 +64,24 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32) {
     let Some(parent) = cur.parent() else { return };
     let act = parent.sigactions_ref().get(crate::Signum::Sigchld as u32);
     let n = cldstop_notify(why, ParentSigchld { handler: act.handler, flags: act.flags });
-    if n.signal {
-        parent.child_sigq_push(crate::task::SigInfo {
-            signo: crate::Signum::Sigchld as u32,
-            code:  n.si_code,
-            pid:   cur.vtgid.load(Ordering::Acquire),
-            uid:   cur.creds.ruid.load(Ordering::Acquire),
-            value: status_sig as u64,
-            sys:   None, fault: None
-        });
-        // SIGCHLD keeps its own producer/consumer pair (`child_sigq`), which is
-        // per-THREAD by construction — `signum::sigq_index` has no slot for it,
-        // so the shared set cannot hold a child-exit record. Routing this
-        // through `live::send` would publish a shared bit with no record behind
-        // it. Making SIGCHLD process-directed needs the shared queue to own
-        // child events; tracked as a whole-subsystem change, not a stop-path one.
-        parent.sigpending.fetch_or(crate::Signum::Sigchld.bit(), Ordering::Release);
-    }
+    let info = crate::task::SigInfo {
+        signo: crate::Signum::Sigchld as u32,
+        code:  n.si_code,
+        pid:   cur.vtgid.load(Ordering::Acquire),
+        uid:   cur.creds.ruid.load(Ordering::Acquire),
+        value: status_sig as u64,
+        sys:   None, fault: None
+    };
     // wait4 wake BEFORE the signal wake: `wake_wait4_parent` only claims a
     // waiter it observes as `Sleeping`, so a generic signal wake first would
-    // leave the WAITERS entry stale (`zombies::claim_wake`).
+    // leave the WAITERS entry stale (`zombies::claim_wake`). `send_signal`
+    // wakes as part of publishing, so the send has to come second.
     if n.wake_parent { crate::live::zombies::wake_wait4_parent(parent.tid); }
-    if n.signal { crate::live::signal_wake_up(&parent); }
+    // `do_notify_parent_cldstop` is `__group_send_sig_info(SIGCHLD, &info,
+    // parent)` — PROCESS-directed, so any thread of a threaded supervisor can
+    // collect the stop event even when its leader blocks SIGCHLD.
+    if n.signal {
+        let _ = crate::live::send::send_signal(&parent, crate::Signum::Sigchld as u32,
+            crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
+    }
 }

@@ -49,6 +49,7 @@ pub mod session;
 pub mod ucounts;
 pub mod runqueue;
 pub mod task;
+pub mod sigio;
 pub mod sigsend;
 pub mod signum;
 pub mod sigaltstack;
@@ -205,7 +206,7 @@ fn mount_expiry_tick(_now_ns: u64) { let _ = vfs::mount::sweep_expired_mounts();
 
 /// B1344: fn(u64) adapter so the arg-less orphan-zombie subreaper can register
 /// as a ktimers periodic — moved off the hard-IRQ tick because it takes
-/// REG/ZOMBIES/child_sigq/rq.inner plain locks (`06§3.1`).
+/// REG/ZOMBIES/sigqueue/rq.inner plain locks (`06§3.1`).
 /// # C: O(N_zombies · N_tasks)
 #[cfg(target_os = "oxide-kernel")]
 fn reap_orphans_tick(_now_ns: u64) { live::zombies::reap_orphans(); }
@@ -223,7 +224,7 @@ pub fn register_timers() {
     timer::register_periodic(P, live::balance::balance_tick);
     // B1344: zombie subreap (B14) + SO_*TIMEO/alarm deadline walker (F169/B20)
     // run HERE (ktimers process context), NOT in the hard-IRQ tick. They take
-    // REG/ZOMBIES/child_sigq plain locks — and reap_orphans→wake_wait4_parent
+    // REG/ZOMBIES/sigqueue plain locks — and reap_orphans→wake_wait4_parent
     // takes the runqueue rq.inner lock — that process context also holds with
     // IRQs enabled; a hard-IRQ handler spinning on such a lock self-deadlocks
     // the CPU (`06§3.1`). tick_wake_expired self-throttles to this 100 ms

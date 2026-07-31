@@ -87,7 +87,8 @@ pub(super) fn handle_socket_owner_ioctl(file: &vfs::File, req: u64, arg: u64) ->
             // SAFETY: arg was validated readable for Linux's one-int owner input.
             let owner = unsafe { core::ptr::read_volatile(arg as *const i32) };
             install_sigio_hook();
-            file.f_setown(owner, &socket_owner_cred());
+            let (uid, euid) = socket_owner_creds();
+            file.f_setown(owner, uid, euid);
             Some(0)
         }
         FIOGETOWN | SIOCGPGRP => {
@@ -140,15 +141,21 @@ fn install_sigio_hook() {
 #[cfg(test)]
 fn install_sigio_hook() {}
 
-/// `f_setown` captures the caller's credentials for deferred SIGIO checks.
-/// Hosted shape tests have no syscall credential module, so they use root
-/// solely to exercise the VFS owner-state transaction. # C: O(1)
+/// `f_setown` captures the caller's (real, effective) uid for the deferred
+/// `sigio_perm` check — Linux `f_modown(…, current_uid(), current_euid(), …)`.
+/// Hosted shape tests have no running task, so they use root solely to
+/// exercise the VFS owner-state transaction. # C: O(1)
 #[cfg(not(test))]
-fn socket_owner_cred() -> vfs::Cred { crate::pathresolve::current_cred() }
+fn socket_owner_creds() -> (u32, u32) {
+    use core::sync::atomic::Ordering;
+    sched::live::current()
+        .map(|t| (t.creds.ruid.load(Ordering::Acquire), t.creds.euid.load(Ordering::Acquire)))
+        .unwrap_or((0, 0))
+}
 
 /// # C: O(1)
 #[cfg(test)]
-fn socket_owner_cred() -> vfs::Cred { vfs::Cred::root() }
+fn socket_owner_creds() -> (u32, u32) { (0, 0) }
 
 /// Linux `FIOQSIZE`: dirs, regular files, and symlinks copy `loff_t` bytes.
 /// # C: O(1)

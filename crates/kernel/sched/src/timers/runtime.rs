@@ -6,7 +6,6 @@ use crate::{SigInfo, Task};
 
 use super::{backend, clock};
 
-const SI_TIMER: i32 = -2;
 /// One owner for the tick period: `clock_getres` reports it for the COARSE
 /// clocks, so the two can never disagree.
 pub const ACCOUNTING_TICK_NS: u64 = crate::posix_clock::TICK_NSEC;
@@ -53,36 +52,43 @@ fn pending(current: &Task, notify: Notify) -> bool {
         task.pending_signals() & bit != 0).unwrap_or(false)
 }
 
-fn post_to(target: &Task, event: Expiration, wake: bool) {
-    if crate::signum::is_realtime(event.signo) {
-        let _ = target.sigq_push(SigInfo {
-            signo: event.signo, code: SI_TIMER, pid: 0, uid: 0, value: event.value, sys: None, fault: None
-        });
-    }
-    // Same timer-IRQ allocation constraint as `tick_deadline`: the record above
-    // is pushed into an already-reserved slot, and the bit is published here
-    // rather than through `live::send`, so `prepare_signal` does not run for a
-    // POSIX-timer expiry.
-    if let Some(bit) = crate::bit_for(event.signo) {
-        target.sigpending.fetch_or(bit, Ordering::Release);
-    }
-    if wake {
-        if let Some(target) = crate::registry::lookup(target.tid) {
-            // SAFETY: timer tick is an IRQ wake site and the registry Arc pins target.
-            unsafe { crate::live::ttwu::ttwu_deferred(target); }
+/// Linux `posix_timer_queue_signal`'s send: the record the timer has owned
+/// since `timer_create` goes onto the target set through the ONE enqueue.
+///
+/// `SIGEV_THREAD_ID` names a thread, which is Linux's `PIDTYPE_PID` — the
+/// thread's private set. Every other notification is `PIDTYPE_TGID`, so the
+/// record belongs on the PROCESS' shared set: a group-directed timer signal
+/// may be taken by any thread, and posting it into whichever thread the tick
+/// happened to interrupt hid it from every sibling.
+/// # C: O(1)
+/// # Ctx: IRQ
+fn post(current: &Task, event: Expiration, timer_id: usize, wake: bool) {
+    let info = super::signal::timer_record(event.signo, timer_id, event.value);
+    let (target, tid) = if event.target_tid == 0 {
+        (current, current.tid)
+    } else {
+        match crate::registry::lookup(event.target_tid) {
+            Some(t) => {
+                if crate::live::send::send_signal_irq(&t, info, crate::sigsend::SigTarget::Thread)
+                    && wake
+                {
+                    // SAFETY: timer tick is an IRQ wake site and the registry Arc pins the target.
+                    unsafe { crate::live::ttwu::ttwu_deferred(t); }
+                }
+                return;
+            }
+            None => return,
         }
+    };
+    if !crate::live::send::send_signal_irq(target, info, crate::sigsend::SigTarget::Process) { return; }
+    if !wake { return; }
+    if let Some(t) = crate::registry::lookup(tid) {
+        // SAFETY: timer tick is an IRQ wake site and the registry Arc pins the target.
+        unsafe { crate::live::ttwu::ttwu_deferred(t); }
     }
 }
 
-fn post(current: &Task, event: Expiration, wake: bool) {
-    if event.target_tid == 0 {
-        post_to(current, event, wake);
-    } else if let Some(target) = crate::registry::lookup(event.target_tid) {
-        post_to(&target, event, wake);
-    }
-}
-
-fn service_wake(timer: &mut PosixTimer, current: &Task, wake: bool) {
+fn service_wake(timer: &mut PosixTimer, timer_id: usize, current: &Task, wake: bool) {
     // `now_ns_for`, not `now_ns`: this runs from `account_cpu_tick` in hard-IRQ
     // context, where `registry::lookup` is forbidden (`06§3.1`) and where a
     // failed lookup would silently skip the wake forever.
@@ -100,7 +106,7 @@ fn service_wake(timer: &mut PosixTimer, current: &Task, wake: bool) {
         return;
     }
     if let Some(event) = timer.expire(now, pending(current, timer.notify)) {
-        post(current, event, wake);
+        post(current, event, timer_id, wake);
     }
 }
 
@@ -135,20 +141,55 @@ pub(super) fn sync_wall_locked(state: &mut backend::State, owner_tid: u32,
     state.wall.upsert(wall_entry(owner_tid, timer_id, timer, owner), owner_tid, timer_id);
 }
 
-pub(super) fn service(timer: &mut PosixTimer, current: &Task) {
-    service_wake(timer, current, false);
+pub(super) fn service(timer: &mut PosixTimer, timer_id: usize, current: &Task) {
+    service_wake(timer, timer_id, current, false);
 }
 
-pub(super) fn setting(timer: &mut PosixTimer, current: &Task) -> crate::timer_model::TimerSetting {
-    service(timer, current);
+pub(super) fn setting(timer: &mut PosixTimer, timer_id: usize, current: &Task)
+    -> crate::timer_model::TimerSetting
+{
+    service(timer, timer_id, current);
     let now = clock::now_ns(timer.domain).unwrap_or(0);
     timer.setting(now, pending(current, timer.notify))
 }
 
-pub(super) fn overrun(timer: &mut PosixTimer, current: &Task) -> i64 {
-    service(timer, current);
+pub(super) fn overrun(timer: &mut PosixTimer, timer_id: usize, current: &Task) -> i64 {
+    service(timer, timer_id, current);
     let now = clock::now_ns(timer.domain).unwrap_or(0);
     timer.overrun_last(now, pending(current, timer.notify))
+}
+
+/// Linux `posixtimer_rearm`: a `SI_TIMER` record being handed to a consumer
+/// (`SA_SIGINFO` delivery, `rt_sigtimedwait`, a `signalfd` read) names its
+/// timer in `si_tid`. Settle that timer's delivery — which is what computes
+/// the overrun for THIS delivery and re-arms a periodic timer — and stamp the
+/// count into `si_overrun`.
+///
+/// One accumulator, so `si_overrun` and `timer_getoverrun(2)` can never
+/// disagree: both read `PosixTimer::overrun_last` after the same
+/// `reconcile_delivery`. Called with NO signal-queue lock held (the record is
+/// already popped), which is what keeps the timer lock out of the dequeue's
+/// lock order.
+/// # C: O(1)
+/// # Ctx: process
+pub fn posixtimer_rearm(owner: &Task, rec: &mut SigInfo) {
+    if !super::signal::is_timer_record(rec) { return; }
+    let id = super::signal::timer_id(rec);
+    let guard = backend::lock();
+    // SAFETY: backend STATE serializes every process timer slot access.
+    let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
+    let Some(timer) = slots.get_mut(id) else { return };
+    if !timer.allocated { return; }
+    let now = clock::now_ns(timer.domain).unwrap_or(0);
+    // `false`: the record is being TAKEN right now, so the delivery is no
+    // longer pending no matter what the bitmap still says.
+    let overrun = timer.overrun_last(now, false);
+    super::signal::stamp_overrun(rec, overrun);
+    drop(guard);
+    // `reconcile_delivery` may have forwarded a periodic deadline; the wall
+    // table is re-synced by `fire_due_timers` on the very syscall return this
+    // dequeue is part of, and by `wall_timer_interrupt`'s own restart, so there
+    // is no second place holding a stale copy.
 }
 
 /// Service every POSIX timer owned by the current thread group. # C: O(SLOTS)
@@ -159,7 +200,7 @@ pub fn fire_due_timers() {
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     for (timer_id, timer) in slots.iter_mut().enumerate().filter(|(_, timer)| timer.allocated) {
-        service(timer, owner.task());
+        service(timer, timer_id, owner.task());
         sync_wall_locked(&mut guard, owner.task().tid, timer_id, timer, owner.weak());
     }
     drop(guard);
@@ -186,10 +227,10 @@ pub fn account_cpu_tick(current: &Task) {
     let Some(_guard) = backend::try_lock() else { return };
     // SAFETY: STATE try-lock serializes process timer slots without blocking IRQ context.
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
-    for timer in slots.iter_mut().filter(|timer|
+    for (timer_id, timer) in slots.iter_mut().enumerate().filter(|(_, timer)|
         timer.allocated && cpu_clock_runs_for(timer.domain, current))
     {
-        service_wake(timer, current, true);
+        service_wake(timer, timer_id, current, true);
     }
 }
 
@@ -302,7 +343,7 @@ pub fn wall_timer_interrupt() {
         let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
         let Some(timer) = slots.get_mut(entry.timer_id) else { continue };
         if !timer.allocated || super::cpu_nanosleep::is_cpu_clock(timer.domain) { continue; }
-        service_wake(timer, &owner, true);
+        service_wake(timer, entry.timer_id, &owner, true);
         if let Some(restart) =
             wall_entry(entry.owner_tid, entry.timer_id, timer, entry.owner.clone())
         {

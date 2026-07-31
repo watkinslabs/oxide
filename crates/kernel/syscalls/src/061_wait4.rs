@@ -62,10 +62,13 @@ where
             // calls waitpid(-1, WNOHANG) which returns -1/ECHILD
             // and corrupts the shell's $? to 255.
             if !sched::live::has_wait_zombies(parent_tid, parent_tgid, pid, parent_pgid, options) {
-                use core::sync::atomic::Ordering;
                 if let Some(cur) = sched::live::current() {
-                    let bit = sched::live::sigpend::Signum::Sigchld.bit();
-                    cur.sigpending.fetch_and(!bit, Ordering::Release);
+                    // `do_notify_parent` queues the child record on the PROCESS'
+                    // shared set, so the private bit alone is not the whole
+                    // pending SIGCHLD — dropping only that left the record and
+                    // the shared bit behind for a later handler run.
+                    cur.flush_pending_signal_shared(
+                        sched::live::sigpend::Signum::Sigchld.as_u8() as usize);
                 }
             }
             debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }

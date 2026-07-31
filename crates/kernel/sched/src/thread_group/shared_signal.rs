@@ -65,6 +65,23 @@ impl ThreadGroup {
         crate::sigqueue::queues_push(&self.shared_sigqueue, rec)
     }
 
+    /// `post_shared_record` for a producer that may not allocate: the slot was
+    /// reserved in process context (`reserve_shared`), so this only takes the
+    /// queue lock and pushes. `false` = the bounded queue was full.
+    /// # C: O(1)
+    /// # Ctx: IRQ
+    pub fn push_shared_prealloc(&self, rec: SigInfo) -> bool {
+        crate::sigqueue::queues_push(&self.shared_sigqueue, rec)
+    }
+
+    /// Reserve the shared record slot for `signo` so an IRQ-context producer
+    /// can publish without allocating — Linux `sigqueue_alloc` at
+    /// `timer_create` time. # C: O(RT_QUEUE_CAP)
+    /// # Ctx: process
+    pub fn reserve_shared(&self, signo: u32) {
+        crate::sigqueue::queues_reserve(&self.shared_sigqueue, signo)
+    }
+
     /// Publish `sig`'s shared pending bit — the bitmap half of `post_shared`.
     /// # C: O(1)
     pub fn publish_shared(&self, sig: u32) {

@@ -343,7 +343,6 @@ impl Task {
             fd_table_pin_lock: Spinlock::new(()),
             sigpending: SignalPending::new(),
             sigqueue: Spinlock::new(core::array::from_fn(|_| VecDeque::new())),
-            child_sigq: Spinlock::new(VecDeque::new()),
             sigmask:    AtomicU64::new(0),
             saved_sigmask:   AtomicU64::new(0),
             restore_sigmask: core::sync::atomic::AtomicBool::new(false),

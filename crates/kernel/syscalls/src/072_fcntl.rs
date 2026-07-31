@@ -7,6 +7,19 @@ use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
 
+/// Linux `f_modown`'s `fown->uid = current_uid()` — the REAL uid, not the
+/// fsuid the VFS `Cred` carries for DAC. # C: O(1)
+fn fowner_uid() -> u32 {
+    use core::sync::atomic::Ordering;
+    sched::live::current().map(|t| t.creds.ruid.load(Ordering::Acquire)).unwrap_or(0)
+}
+
+/// Linux `f_modown`'s `fown->euid = current_euid()`. # C: O(1)
+fn fowner_euid() -> u32 {
+    use core::sync::atomic::Ordering;
+    sched::live::current().map(|t| t.creds.euid.load(Ordering::Acquire)).unwrap_or(0)
+}
+
 /// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_DUPFD_CLOEXEC /
 /// F_GETFD / F_SETFD / F_GETFL / F_SETFL / F_GETPIPE_SZ /
 /// F_SETPIPE_SZ / F_GETOWN / F_SETOWN; F_SETLK / F_SETLKW / F_GETLK
@@ -168,7 +181,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         // sched SIGIO delivery hook is installed.
         F_SETOWN => {
             sched::live::sigpend::install_sigio_hook();
-            file.f_setown(arg as i32, &crate::pathresolve::current_cred());
+            file.f_setown(arg as i32, fowner_uid(), fowner_euid());
             0
         }
         // F_GETSIG/F_SETSIG (Linux f_owner.signum): the signal delivered on
@@ -210,7 +223,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             sched::live::sigpend::install_sigio_hook();
             // Capture the requesting creds too (same as F_SETOWN); TID is routed
             // as PID (no per-thread fasync queue yet).
-            file.f_setown(stored, &crate::pathresolve::current_cred());
+            file.f_setown(stored, fowner_uid(), fowner_euid());
             0
         }
         // F_GETLEASE (Linux `fcntl_getlease`): the lease type held on the open
@@ -239,7 +252,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             } else {
                 if file.owner.load(core::sync::atomic::Ordering::Acquire) == 0 {
                     let tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as i32;
-                    file.f_setown(tgid, &crate::pathresolve::current_cred());
+                    file.f_setown(tgid, fowner_uid(), fowner_euid());
                 }
                 sched::live::sigpend::install_sigio_hook();
                 vfs::file::lease_register(&file);
@@ -269,7 +282,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                 file.set_dnotify(file.dnotify() | mask);
                 if file.owner.load(core::sync::atomic::Ordering::Acquire) == 0 {
                     let tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as i32;
-                    file.f_setown(tgid, &crate::pathresolve::current_cred());
+                    file.f_setown(tgid, fowner_uid(), fowner_euid());
                 }
                 sched::live::sigpend::install_sigio_hook();
                 vfs::file::dnotify_register(&file);

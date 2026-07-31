@@ -1,7 +1,6 @@
-// Per-task signal-queue methods (queued `SigInfo` records + SIGCHLD
-// child-exit events), split out of task.rs per `08§7` file-length cap. These
-// are `impl Task` methods; the `sigqueue` / `child_sigq` fields + their init
-// live in task.rs alongside the rest of the struct.
+// Per-task signal-queue methods (queued `SigInfo` records), split out of
+// task.rs per `08§7` file-length cap. These are `impl Task` methods; the
+// `sigqueue` field + its init live in task.rs alongside the rest of the struct.
 //
 // Linux `struct sigpending` carries one `sigqueue` list for the whole set;
 // this kernel keeps one bounded queue per signal number (`signum::sigq_index`)
@@ -99,8 +98,7 @@ impl Task {
     /// Enqueue `info` on the per-task queue for `info.signo`. Returns true if
     /// accepted, false if dropped by the per-signal cap (Linux drops silently
     /// and still sets the pending bit). Caller is also responsible for setting
-    /// the pending bit on `sigpending`. SIGCHLD MUST use `child_sigq_push` —
-    /// it has no slot here.
+    /// the pending bit on `sigpending`.
     /// # C: O(1)
     pub fn sigq_push(&self, info: SigInfo) -> bool { queues_push(&self.sigqueue, info) }
 
@@ -111,31 +109,6 @@ impl Task {
     /// real-time signal's pending bit only when its queue drains.
     /// # C: O(1)
     pub fn sigq_pop(&self, signo: u32) -> (Option<SigInfo>, bool) { queues_pop(&self.sigqueue, signo) }
-
-    /// B117: enqueue a SIGCHLD child-exit `info` (pid=child VPID,
-    /// code=CLD_*, value=exit status). Caller sets the pending bit.
-    /// Capped at `RT_QUEUE_CAP`; drop oldest on overflow. Pop is the
-    /// inverse (`child_sigq.lock().pop_front()` at the delivery site).
-    /// # C: O(1)
-    pub fn child_sigq_push(&self, info: SigInfo) {
-        let mut g = self.child_sigq.lock();
-        if g.len() >= RT_QUEUE_CAP { g.pop_front(); }
-        g.push_back(info);
-    }
-
-    /// Pop the oldest queued SIGCHLD child-exit siginfo (pid=child VPID,
-    /// code=CLD_*, value=wait-encoded status). Returns the record (`None`
-    /// if none queued → caller synthesises signo-only) plus whether the
-    /// queue is empty after the pop, so SIGCHLD's collapsed pending bit
-    /// clears only when the last child event drains — the inverse of
-    /// `child_sigq_push`, mirroring `sigq_pop`. Used by signalfd read and
-    /// SA_SIGINFO SIGCHLD delivery. # C: O(1)
-    pub fn child_sigq_pop(&self) -> (Option<SigInfo>, bool) {
-        let mut g = self.child_sigq.lock();
-        let info = g.pop_front();
-        let empty = g.is_empty();
-        (info, empty)
-    }
 
     /// Linux `dequeue_signal`: consume `sig` for this thread, trying the
     /// thread-private set first and then the process-wide `shared_pending`,
@@ -150,6 +123,32 @@ impl Task {
     /// copy that could disagree about which set was consumed.
     /// # C: O(1)
     pub fn dequeue_pending(&self, sig: u32) -> Option<Option<SigInfo>> {
+        let mut claimed = self.claim_pending(sig)?;
+        // Linux `dequeue_signal` -> `posixtimer_rearm(&ksig->info)`: a POSIX
+        // timer's record is completed at the moment it is taken, not when it is
+        // queued, because `si_overrun` counts the expirations missed while it
+        // sat pending. Runs with no queue lock held — the record is already
+        // popped — so the timer lock never enters the dequeue's lock order.
+        if let Some(rec) = claimed.as_mut() { self.rearm_timer_record(rec); }
+        Some(claimed)
+    }
+
+    /// [`crate::timers::posixtimer_rearm`], where the POSIX timer table exists.
+    /// # C: O(1)
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    fn rearm_timer_record(&self, rec: &mut SigInfo) { crate::timers::posixtimer_rearm(self, rec) }
+
+    /// Builds without the timer table (`sched` as a plain dependency) have no
+    /// POSIX timer to rearm, so a queued record is handed over unchanged.
+    /// # C: O(1)
+    #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
+    fn rearm_timer_record(&self, _rec: &mut SigInfo) {}
+
+    /// The claim protocol itself: private set first, then the process-wide
+    /// shared one. Split from [`Task::dequeue_pending`] so the `posixtimer_rearm`
+    /// stamp runs strictly after both queue locks are released.
+    /// # C: O(1)
+    fn claim_pending(&self, sig: u32) -> Option<Option<SigInfo>> {
         let bit = signum::bit_for(sig)?;
         if self.sigpending.load(core::sync::atomic::Ordering::Acquire) & bit != 0 {
             let (rec, empty) = self.dequeue_siginfo(sig);
@@ -173,8 +172,7 @@ impl Task {
     /// `signalfd` can never disagree about it.
     /// # C: O(1)
     pub fn dequeue_siginfo(&self, signo: u32) -> (Option<SigInfo>, bool) {
-        if signo == crate::signum::Signum::Sigchld as u32 { self.child_sigq_pop() }
-        else if signum::is_realtime(signo) { self.sigq_pop(signo) }
+        if signum::is_realtime(signo) { self.sigq_pop(signo) }
         else { (self.sigq_pop(signo).0, true) }
     }
 }

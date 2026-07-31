@@ -357,18 +357,11 @@ pub struct Task {
     /// signals collapse to ONE record (Linux `legacy_queue`) but still carry
     /// it — `sigqueue(3)`/`timer_create(2)`/`tgkill(2)` set si_code/si_value
     /// for them, and handlers (glibc SIGCANCEL/SIGSETXID) test those fields.
-    /// SIGCHLD has no slot: `child_sigq` owns its records.
+    /// SIGCHLD uses this table like every other standard signal; a
+    /// child-exit record is queued on the PROCESS' shared set by
+    /// `do_notify_parent`, so any thread can collect it.
     /// # C: O(1) push / O(1) pop
     pub sigqueue: Spinlock<[VecDeque<SigInfo>; 64], TaskListClass>,
-
-    /// B117: per-parent SIGCHLD child-exit event queue (`27§5`,
-    /// siginfo(7)). SIGCHLD(17) collapses in `sigpending`, but an
-    /// SA_SIGINFO handler still needs the child's si_pid/si_status/
-    /// si_code. Each child pushes one `SigInfo`: `pid`=child VPID
-    /// (vtgid, NOT internal tid), `code`=CLD_*, `value`=exit status.
-    /// Delivery pops the oldest record; empty ⇒ zeroed siginfo.
-    /// # C: O(1) push / O(1) pop
-    pub child_sigq: Spinlock<VecDeque<SigInfo>, TaskListClass>,
 
     /// Per-task signal mask per `27§3`. Bit i set ⇔ signal i+1
     /// blocked. `rt_sigprocmask` writes; signal-delivery checks.

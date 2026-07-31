@@ -38,10 +38,20 @@ pub(super) fn child_exit_info(child: &Task, signo: u32) -> crate::task::SigInfo 
     }
 }
 
-/// Queue a reparented child as SIGCHLD for init. Linux reparenting changes the
-/// wait parent and uses the reaper's SIGCHLD notification contract. # C: O(1)
-pub(super) fn push_child_event(child: &Task, parent: &Task) {
-    parent.child_sigq_push(child_exit_info(child, crate::live::sigpend::Signum::Sigchld.as_u8() as u32));
+/// The reparented child's SIGCHLD record. Linux reparenting changes the wait
+/// parent and re-runs the reaper's `do_notify_parent` contract, so the reaper
+/// gets the same PROCESS-directed record any other child exit produces; the
+/// caller sends it after its `wait4` wake. # C: O(1)
+pub(super) fn reparent_child_event(child: &Task) -> crate::task::SigInfo {
+    child_exit_info(child, crate::live::sigpend::Signum::Sigchld.as_u8() as u32)
+}
+
+/// `do_notify_parent`'s send half for a reparented zombie: SIGCHLD on the
+/// reaper's shared set. Split from the record build so the caller can order it
+/// after `wake_wait4_parent`. # C: O(N_threads)
+pub(super) fn send_child_event(reaper: &alloc::sync::Arc<Task>, info: crate::task::SigInfo) {
+    let _ = crate::live::send::send_signal(reaper, info.signo,
+        crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
 }
 
 /// Roll the dying child's CPU time into the parent's cumulative-children

@@ -32,7 +32,7 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
     // B1344: `reap_orphans` (B14 zombie subreap) and `tick_wake_expired`
     // (F169/B20 SO_*TIMEO + alarm/itimer deadline walker) moved OFF this
     // hard-IRQ tick into the ktimers process-context kthread
-    // (`sched::register_timers`). Both take REG/ZOMBIES/child_sigq plain
+    // (`sched::register_timers`). Both take REG/ZOMBIES/sigqueue plain
     // (non-irqsave) locks — and `reap_orphans`→`wake_wait4_parent` even takes
     // the runqueue `rq.inner` lock — that process context (fork/exit/wait4/
     // procfs/cgroup::tick) also holds with IRQs enabled. Running them in the
