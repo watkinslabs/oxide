@@ -67,6 +67,32 @@ fn pair_slave_writes_appear_on_master_reads() {
 }
 
 #[test]
+fn packet_mode_prefixes_master_payload_with_data_byte() {
+    let mut p = Pair::new(1);
+    p.set_master_packet(true);
+    p.slave_write(b"ok");
+    let mut buf = [0xff; 8];
+    assert_eq!(p.master_read(&mut buf), 3);
+    assert_eq!(&buf[..3], &[TIOCPKT_DATA, b'o', b'k']);
+}
+
+#[test]
+fn packet_mode_reports_flow_and_termios_events() {
+    let mut p = Pair::new(0);
+    p.set_master_packet(true);
+    p.flow_output(true);
+    let mut event = [0u8; 1];
+    assert_eq!(p.master_read(&mut event), 1);
+    assert_eq!(event, [TIOCPKT_STOP]);
+
+    let mut termios = default_termios();
+    termios[TERMIOS_OFF_CC + cc::VSTOP] = 0;
+    p.set_termios(termios);
+    assert_eq!(p.master_read(&mut event), 1);
+    assert_eq!(event[0] & (TIOCPKT_NOSTOP | TIOCPKT_IOCTL), TIOCPKT_NOSTOP | TIOCPKT_IOCTL);
+}
+
+#[test]
 fn pair_directions_are_independent() {
     let mut p = Pair::new(2);
     p.master_write(b"in");
