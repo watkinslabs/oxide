@@ -169,6 +169,33 @@ pub trait AddressSpaceOps: Send + Sync {
         self.writeback()
     }
 
+    /// Populate the cache for `nr_pages` pages starting at page index `start`,
+    /// WITHOUT copying anything out (Linux `page_cache_ra_unbounded` /
+    /// `force_page_cache_readahead`). This is the submit half of readahead: the
+    /// window [`crate::File::ra_ondemand`] computes, and what
+    /// `POSIX_FADV_WILLNEED` / `readahead(2)` ask for.
+    ///
+    /// The default fills page by page through [`AddressSpaceOps::read_at`] into
+    /// a scratch buffer it discards — correct, and exactly what the callers used
+    /// to open-code. A backend that can fetch a run in one device operation
+    /// overrides this; that is the whole point of having the window.
+    ///
+    /// Best-effort: a failure to populate is not reported, because readahead is
+    /// a hint and the demand fault will surface any real error.
+    /// # C: O(nr_pages) reads
+    fn readahead(&self, start: u64, nr_pages: u64) {
+        if nr_pages == 0 { return; }
+        let pg = crate::file::readahead::PAGE_SIZE;
+        let size = self.size();
+        let mut scratch = alloc::vec![0u8; pg as usize];
+        for i in 0..nr_pages {
+            let off = (start + i).saturating_mul(pg);
+            if off >= size { break; }
+            if self.mincore_page(off) { continue; }
+            if self.read_at(off, &mut scratch).is_err() { break; }
+        }
+    }
+
     /// Non-faulting `mincore(2)` query for a page-aligned file offset. This is
     /// the Linux `filemap_get_entry()` leg: report already-resident cache pages
     /// without allocating or reading from backing storage. # C: O(log N_pages)

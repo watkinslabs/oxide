@@ -86,7 +86,7 @@ fn queue_mesgq_signal(reg: &MqNotifyReg, signo: u32, sender_vpid: u32, sender_ui
         pid: sender_vpid,
         uid: sender_uid,
         value: reg.value,
-        sys: None, fault: None
+        sys: None, fault: None, poll: None
     };
     let _ = sched::live::send_signal(&target, signo, sched::sigsend::SigSource::Info(info),
                                      sched::sigsend::SigTarget::Process);

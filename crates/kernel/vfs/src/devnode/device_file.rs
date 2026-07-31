@@ -30,6 +30,18 @@ impl FileOps for DeviceFileOps {
             _ => Err(VfsError::Eio) }
     }
 
+    /// Linux `blkdev_fsync` (`block/fops.c`): write back the block device's
+    /// page cache, then `blkdev_issue_flush`. `datasync` is not consulted —
+    /// a raw block device has no metadata to elide, which is why Linux gives
+    /// `fsync` and `fdatasync` the same slot here. A character device keeps
+    /// the generic answer (`EINVAL` unless its own f_op says otherwise).
+    fn fsync(&self, file: &File, _datasync: bool) -> KResult<()> {
+        match file.opened_device().ok_or(VfsError::Enxio)? {
+            OpenedDevice::Block { devt, ops } => ops.flush_cache(devt),
+            OpenedDevice::Char { .. } => Err(VfsError::Einval),
+        }
+    }
+
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
         match file.opened_device().ok_or(VfsError::Enxio)? {
             OpenedDevice::Char { devt, ops } => ops.read_file(devt, file, off, buf),

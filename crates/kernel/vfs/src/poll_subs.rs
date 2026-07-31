@@ -70,6 +70,12 @@ const ALWAYS_WAKE: u32 = crate::inode::POLL_ERR | crate::inode::POLL_HUP;
 /// SMP-ready when SMP lands).
 pub struct PollSubscribers {
     subs: Spinlock<Vec<Subscription>, PollLockClass>,
+    /// Linux `pipe->fasync_readers` / `socket_wq->fasync_list`: the open file
+    /// descriptions with `O_ASYNC` that want a SIGIO when THIS source becomes
+    /// ready. It hangs off the same queue as the pollers precisely so every
+    /// readiness site drives both without a second registry to keep in sync.
+    /// `Weak<File>` so a closed description drops out on its own.
+    fasync: Spinlock<Vec<Weak<crate::File>>, PollLockClass>,
     /// Monotonic notification counter for diagnostics and source-level tests.
     /// Epoll edge delivery does not consult this counter: the registered
     /// per-epitem callback itself is the edge identity.
@@ -79,7 +85,72 @@ pub struct PollSubscribers {
 impl PollSubscribers {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { subs: Spinlock::new(Vec::new()), gen: AtomicU64::new(0) }
+        Self { subs: Spinlock::new(Vec::new()), fasync: Spinlock::new(Vec::new()),
+               gen: AtomicU64::new(0) }
+    }
+
+    /// Link an `O_ASYNC` description onto this source's fasync list (Linux
+    /// `fasync_insert_entry`). Idempotent; prunes dead entries. # C: O(N)
+    pub fn fasync_add(&self, file: &alloc::sync::Arc<crate::File>) {
+        let mut l = self.fasync.lock();
+        let p = alloc::sync::Arc::as_ptr(file);
+        l.retain(|w| w.upgrade().is_some());
+        if !l.iter().any(|w| w.upgrade().is_some_and(|f| alloc::sync::Arc::as_ptr(&f) == p)) {
+            l.push(alloc::sync::Arc::downgrade(file));
+        }
+    }
+
+    /// Unlink a description from the fasync list (Linux `fasync_remove_entry`).
+    /// # C: O(N)
+    pub fn fasync_del(&self, file: &crate::File) {
+        let mut l = self.fasync.lock();
+        let p = file as *const crate::File;
+        l.retain(|w| w.upgrade().is_some_and(|f| alloc::sync::Arc::as_ptr(&f) != p));
+    }
+
+    /// Live fasync registrations on this source (prunes dead entries). # C: O(N)
+    pub fn fasync_len(&self) -> usize {
+        let mut l = self.fasync.lock();
+        l.retain(|w| w.upgrade().is_some());
+        l.len()
+    }
+
+    /// Snapshot the live fasync holders, releasing the list lock — the signal
+    /// hook takes sched locks and must not run under it. # C: O(N)
+    fn fasync_snapshot(&self) -> Vec<alloc::sync::Arc<crate::File>> {
+        let mut l = self.fasync.lock();
+        l.retain(|w| w.upgrade().is_some());
+        l.iter().filter_map(|w| w.upgrade()).collect()
+    }
+
+    /// `kill_fasync(&list, sig, band)` for this source. # C: O(N)
+    pub fn kill_fasync(&self, sig: i32, reason: i32) {
+        let snapshot = self.fasync_snapshot();
+        if snapshot.is_empty() { return; }
+        crate::file::deliver_fasync(snapshot, sig, reason);
+    }
+
+    /// The fasync half of a readiness wake. `events` is the mask that fired;
+    /// `0` (a keyless wake) means the site could not name the transition, so
+    /// each holder's own `poll` supplies it — the same re-poll an epoll
+    /// subscriber performs for a keyless wake.
+    ///
+    /// Linux picks `SIGURG` for out-of-band readiness and `SIGIO` for every
+    /// other reason (`sk_wake_async(SOCK_WAKE_URG, POLL_PRI)` vs the rest).
+    /// # C: O(N)
+    fn fasync_notify(&self, events: u32) {
+        /// `SIGIO` (== `SIGPOLL`, `asm-generic/signal.h`).
+        const SIGIO: i32 = 29;
+        /// `SIGURG`.
+        const SIGURG: i32 = 23;
+        let snapshot = self.fasync_snapshot();
+        if snapshot.is_empty() { return; }
+        for f in snapshot {
+            let mask = if events != 0 { events } else { f.poll() };
+            let Some(reason) = crate::file::reason_for_mask(mask) else { continue };
+            let dfl = if reason == crate::file::reason::POLL_PRI { SIGURG } else { SIGIO };
+            f.kill_fasync(dfl, reason);
+        }
     }
 
     /// Current source-notification generation. # C: O(1)
@@ -144,6 +215,8 @@ impl PollSubscribers {
         for s in g.iter() {
             if let Some(a) = s.wake.upgrade() { a.notify_events(0); }
         }
+        drop(g);
+        self.fasync_notify(0);
     }
 
     /// Wake only subscribers whose interest intersects `events`, plus
@@ -178,6 +251,8 @@ impl PollSubscribers {
             }
             if let Some(a) = s.wake.upgrade() { a.notify_events(events); }
         }
+        drop(g);
+        self.fasync_notify(events);
     }
 
     /// True iff at least one live subscriber is registered.

@@ -91,7 +91,7 @@ impl FileOps for PipeFileOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 { pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0) }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(pipe_data(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocoutqnsd | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
-    fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
+    fn fasync_file(&self, fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(fd, on); Ok(()) }
 }
 
 // Named FIFO (S_IFIFO) — Linux `fs/pipe.c` `fifo_open` + `pipefifo_fops`.
@@ -193,7 +193,7 @@ impl FileOps for FifoFileOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 { fifo_pipe_lookup(inode).map(|p| p.poll_mask()).unwrap_or(0) }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocoutqnsd | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
-    fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
+    fn fasync_file(&self, fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(fd, on); Ok(()) }
     /// Last-close of THIS FIFO open description (Linux `pipe_release`): drop the
     /// reader and/or writer count this open took in `fifo_open` (per its
     /// `f_mode`), wake the opposite side so a peer sees EOF / EPIPE, and GC the

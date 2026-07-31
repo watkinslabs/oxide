@@ -9,7 +9,7 @@
 
 pub mod fault_class;
 pub mod siginfo;
-pub use siginfo::{write_siginfo, SigFault, SigPayload, Sigsys};
+pub use siginfo::{write_siginfo, SigFault, SigPayload, SigPoll, Sigsys};
 
 use core::time::Duration;
 

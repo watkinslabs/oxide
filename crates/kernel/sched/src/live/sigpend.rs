@@ -245,39 +245,60 @@ pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
 /// signal of its choosing — into it. The ladder itself is ungated in
 /// `crate::sigio`. Installed into the VFS via `set_sigio_hook` so `vfs` need not
 /// depend on `sched`. # C: O(N_tasks) for a pgrp fan; O(1) for a single owner.
-pub fn send_sigio(owner: i32, sig: i32, uid: u32, euid: u32) {
-    if owner == 0 || !(1..=64).contains(&sig) { return; }
-    let creds = crate::sigio::FileOwnerCreds { uid, euid };
-    // Linux `send_sigio` -> `do_send_sig_info(sig, SEND_SIG_PRIV, p, type)`:
-    // kernel-generated, so `si_code = SI_KERNEL` and a SIG_IGN disposition does
-    // not swallow it. The raw bit-set this replaced queued no record at all, so
-    // an `SA_SIGINFO` SIGIO handler read si_code 0 / si_fd 0.
-    if owner > 0 {
-        let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
-        if let Some(t) = crate::registry::lookup_in_namespace(&namespace, owner as u32)
-            .or_else(|| crate::registry::lookup(owner as u32))
-        {
-            send_sigio_to_task(&t, sig as u32, creds);
-        }
-    } else {
+pub fn send_sigio(ev: vfs::file::AsyncSignal) {
+    use vfs::file::owner_type::{F_OWNER_PGRP, F_OWNER_TID};
+    if ev.owner <= 0 || !(1..=64).contains(&ev.sig) { return; }
+    let creds = crate::sigio::FileOwnerCreds { uid: ev.uid, euid: ev.euid };
+    // Linux `send_sigio_to_task`: the record is a full `_sigpoll` siginfo —
+    // si_code = the POLL_* reason, si_band = `band_table[reason - POLL_IN]`,
+    // si_fd = the `fasync_struct.fa_fd` recorded when `O_ASYNC` was enabled.
+    // Without it an `F_SETSIG` handler cannot tell WHICH descriptor fired,
+    // which is the only reason to ask for a queued signal instead of SIGIO.
+    let info = crate::task::SigInfo {
+        signo: ev.sig as u32, code: ev.code, pid: 0, uid: 0, value: 0,
+        sys: None, fault: None,
+        poll: if ev.queued { Some(hal::SigPoll { band: ev.band, fd: ev.fd }) } else { None },
+    };
+    if ev.ty == F_OWNER_PGRP {
         // `kill_pgrp` fans out per member, and `sigio_perm` is per RECIPIENT —
         // one unsignalable member of the group does not suppress the rest.
-        for t in crate::registry::tasks_in_pgrp((-owner) as u32) {
-            send_sigio_to_task(&t, sig as u32, creds);
+        for t in crate::registry::tasks_in_pgrp(ev.owner as u32) {
+            send_sigio_to_task(&t, info, creds, false);
         }
+        return;
+    }
+    let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
+    if let Some(t) = crate::registry::lookup_in_namespace(&namespace, ev.owner as u32)
+        .or_else(|| crate::registry::lookup(ev.owner as u32))
+    {
+        // `PIDTYPE_PID` (`F_OWNER_TID`) is THREAD-directed: the record joins
+        // that one thread's private set, so a sibling cannot consume it.
+        send_sigio_to_task(&t, info, creds, ev.ty == F_OWNER_TID);
     }
 }
 
 /// Linux `send_sigio_to_task`: `sigio_perm` first, then the send. # C: O(N_threads)
-fn send_sigio_to_task(t: &alloc::sync::Arc<crate::Task>, sig: u32,
-    creds: crate::sigio::FileOwnerCreds)
+fn send_sigio_to_task(t: &alloc::sync::Arc<crate::Task>, info: crate::task::SigInfo,
+    creds: crate::sigio::FileOwnerCreds, thread_directed: bool)
 {
     let target = crate::sigio::TargetCreds {
         uid:  t.creds.ruid.load(Ordering::Acquire),
         suid: t.creds.suid.load(Ordering::Acquire),
     };
     if !crate::sigio::sigio_perm(creds, target) { return; }
-    super::send::send_sig_priv_group(t, sig);
+    // `switch (signum)`: `case 0` (no `F_SETSIG`) is a bare `SEND_SIG_PRIV`
+    // SIGIO with no queued record; the `default` arm queues the `_sigpoll`
+    // record and, if the queue rejects it, FALLS THROUGH to that same bare
+    // SIGIO so readiness is never lost outright.
+    let target = if thread_directed { crate::sigsend::SigTarget::Thread }
+                 else { crate::sigsend::SigTarget::Process };
+    if info.poll.is_some() {
+        let queued = super::send::send_signal(t, info.signo,
+            crate::sigsend::SigSource::Info(info), target);
+        if queued.is_ok() { return; }
+    }
+    let _ = super::send::send_signal(t, crate::signum::Signum::Sigio as u32,
+        crate::sigsend::SigSource::Kernel, target);
 }
 
 /// Install [`send_sigio`] as the VFS fasync delivery hook (idempotent; a plain

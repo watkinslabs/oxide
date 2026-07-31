@@ -38,9 +38,16 @@ pub fn advice_known(advice: i32) -> bool {
 }
 
 /// True for the advice values that set persistent per-file readahead STATE
-/// (`f_ra.ra_pages`, `FMODE_RANDOM`, `FMODE_NOREUSE`) rather than acting on
-/// page-cache residency. Separated so the slot file records the state Linux
-/// records and treats only the residency hints as advisory.
+/// rather than acting on page-cache residency: they change what a later read
+/// prefetches and never move a page. The slot dispatches on this, so the two
+/// halves of `generic_fadvise` cannot drift.
+///
+/// The state is one word, `f_ra.ra_pages`: Linux's `FMODE_RANDOM` is expressed
+/// here as `ra_pages == 0` so there is a single representation of "no
+/// readahead". `POSIX_FADV_NOREUSE` records nothing — its only Linux effect is
+/// a reclaim bias (`vma_has_recency`) on a reference-sampling path this kernel
+/// does not yet have, and recording a flag no code reads would be worse than
+/// the honest no-op.
 /// # C: O(1)
 pub fn advice_sets_readahead_state(advice: i32) -> bool {
     matches!(advice, POSIX_FADV_NORMAL | POSIX_FADV_RANDOM | POSIX_FADV_SEQUENTIAL | POSIX_FADV_NOREUSE)
@@ -115,6 +122,9 @@ mod tests {
 
     /// The four state-setting hints are exactly the ones Linux records on the
     /// file; WILLNEED and DONTNEED act on residency instead. # C: O(1)
+    // NOTE: this predicate must stay wired into `sys_fadvise64` — an unused
+    // classifier documenting behaviour the slot does not implement is how the
+    // "NOREUSE sets FMODE_NOREUSE" claim above survived with no such bit.
     #[test]
     fn readahead_state_hints_are_the_four_linux_records() {
         for a in [POSIX_FADV_NORMAL, POSIX_FADV_RANDOM, POSIX_FADV_SEQUENTIAL, POSIX_FADV_NOREUSE] {

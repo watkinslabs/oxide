@@ -63,9 +63,9 @@ struct AsyncOps {
 impl InodeOps for AsyncOps {}
 
 impl FileOps for AsyncOps {
-    fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> {
+    fn fasync_file(&self, fd: i32, file: &Arc<File>, on: bool) -> KResult<()> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        file.set_fasync_state(on);
+        file.set_fasync_state(fd, on);
         Ok(())
     }
 }
@@ -109,7 +109,8 @@ fn mk_async_file(flags: OpenFlags, ops: Arc<AsyncOps>) -> Arc<File> {
     let i_op: Arc<dyn InodeOps> = ops.clone();
     let f_op: Arc<dyn FileOps> = ops;
     let ino: InodeRef = InodeBuilder::new(NEXT_INO.fetch_add(1, Ordering::Relaxed),
-        mk_mode(FileType::Socket, 0o600), i_op, f_op).build();
+        mk_mode(FileType::Socket, 0o600), i_op, f_op)
+        .poll_subs(vfs::PollSubscribers::new()).build();
     File::new(Arc::clone(&ino), Dentry::new_root(ino), flags)
 }
 
@@ -124,8 +125,8 @@ fn context(file: Arc<File>) -> (Arc<FdTable>, i32, &'static Task) {
 fn fioasync_unsupported_state_change_returns_enotty_without_side_effects() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
-    let before = vfs::file::fasync_registered();
     let file = mk_default_file(FileType::Regular, OpenFlags::O_RDONLY);
+    let before = vfs::file::fasync_registered(file.inode());
     let (fdt, fd, task) = context(Arc::clone(&file));
     let on: i32 = 1;
 
@@ -133,7 +134,7 @@ fn fioasync_unsupported_state_change_returns_enotty_without_side_effects() {
         Some(-(Errno::Enotty.as_i32() as i64)));
 
     assert_eq!(file.flags().bits() & O_ASYNC, 0);
-    assert_eq!(vfs::file::fasync_registered(), before);
+    assert_eq!(vfs::file::fasync_registered(file.inode()), before);
     assert_eq!(userbuf::READABLE_CALLS.load(Ordering::SeqCst), 1);
     reset();
 }
@@ -179,20 +180,20 @@ fn fioasync_same_state_is_noop_even_without_backend_fasync() {
 fn fioasync_supported_backend_toggles_fasync_state() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
-    let before = vfs::file::fasync_registered();
     let ops = Arc::new(AsyncOps::default());
     let file = mk_async_file(OpenFlags::O_RDWR, Arc::clone(&ops));
+    let before = vfs::file::fasync_registered(file.inode());
     let (fdt, fd, task) = context(Arc::clone(&file));
     let on: i32 = 1;
     let off: i32 = 0;
 
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FIOASYNC, &on as *const i32 as u64), Some(0));
     assert_ne!(file.flags().bits() & O_ASYNC, 0);
-    assert_eq!(vfs::file::fasync_registered(), before + 1);
+    assert_eq!(vfs::file::fasync_registered(file.inode()), before + 1);
 
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FIOASYNC, &off as *const i32 as u64), Some(0));
     assert_eq!(file.flags().bits() & O_ASYNC, 0);
-    assert_eq!(vfs::file::fasync_registered(), before);
+    assert_eq!(vfs::file::fasync_registered(file.inode()), before);
     assert_eq!(ops.calls.load(Ordering::SeqCst), 2);
     reset();
 }

@@ -112,6 +112,9 @@ impl File {
             owner: ::core::sync::atomic::AtomicI32::new(0),
             owner_creds: AtomicU64::new(0),
             f_sig: ::core::sync::atomic::AtomicI32::new(0),
+            f_created: ::core::sync::atomic::AtomicBool::new(false),
+            owner_type: ::core::sync::atomic::AtomicI32::new(super::async_notify::owner_type::F_OWNER_PID),
+            fa_fd: ::core::sync::atomic::AtomicI32::new(-1),
             // F_UNLCK (2) = no lease held (Linux `F_GETLEASE` default).
             lease: core::sync::atomic::AtomicI32::new(2),
             dnotify_mask: AtomicU32::new(0),
@@ -174,8 +177,18 @@ impl File {
         }
     }
 
-    /// `f_mode` (FMODE_* capability bits). # C: O(1)
-    pub fn f_mode(&self) -> Fmode { self.f_mode }
+    /// `f_mode` (FMODE_* capability bits), including `FMODE_CREATED` when this
+    /// open created the file. # C: O(1)
+    pub fn f_mode(&self) -> Fmode {
+        if self.f_created.load(Ordering::Acquire) { self.f_mode | Fmode::CREATED }
+        else { self.f_mode }
+    }
+
+    /// Publish `FMODE_CREATED` (Linux `do_dentry_open`'s `FMODE_CREATED` for an
+    /// `O_CREAT` that hit the negative-dentry path). Called by the open syscall
+    /// once the description exists; `fcntl(F_CREATED_QUERY)` reads it back.
+    /// # C: O(1)
+    pub fn set_created(&self) { self.f_created.store(true, Ordering::Release); }
 
     /// `f_op` — the vtable this open file description was bound to at open
     /// (Linux `file->f_op`, which a `f_op->open` may have swapped away from
@@ -249,10 +262,13 @@ impl File {
     /// Generic `fasync_helper` state transition for async-capable backends.
     /// Unsupported files never reach this; their `f_op->fasync` default returns
     /// `ENOTTY`, so no registry entry is published by accident. # C: O(1)
-    pub fn set_fasync_state(self: &Arc<Self>, on: bool) {
+    pub fn set_fasync_state(self: &Arc<Self>, fd: i32, on: bool) {
         let mut fl = self.flags();
         let async_flag = OpenFlags::from_bits_retain(O_ASYNC);
         if on {
+            // `fasync_insert_entry` records the descriptor BEFORE the list link,
+            // so the first readiness signal already reports the right `si_fd`.
+            self.set_fasync_fd(fd);
             fl |= async_flag;
             self.set_flags(fl);
             fasync_register(self);
@@ -346,6 +362,18 @@ impl File {
             ra.async_size = if ra.size > req { ra.size - req } else { ra.size };
         }
         (ra.start, ra.size, ra.async_size)
+    }
+
+    /// Advance the readahead window and hand it to the address space to fill
+    /// (Linux `page_cache_sync_readahead` -> `page_cache_ra_unbounded`). This
+    /// is the ONE place the window computed by [`File::ra_ondemand`] becomes
+    /// I/O; without it `ra_pages` — and therefore every `posix_fadvise` hint
+    /// that sets it — is dead state.
+    /// # C: O(window) on a miss
+    pub fn submit_readahead(&self, index: u64, req: u32) {
+        let (start, size, _async_size) = self.ra_ondemand(index, req, false);
+        if size == 0 { return; } // FADV_RANDOM: no readahead for this open
+        if let Some(m) = self.inode.i_mapping() { m.readahead(start, size as u64); }
     }
 
     /// Per-close flush (Linux `file_operations->flush`, fired by

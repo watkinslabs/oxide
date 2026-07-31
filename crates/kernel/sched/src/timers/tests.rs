@@ -261,7 +261,7 @@ fn a_dequeued_timer_record_reports_the_same_overrun_timer_getoverrun_does() {
 fn a_record_that_is_not_a_timer_expiry_is_left_alone() {
     let owner = owner_task();
     let mut rec = crate::task::SigInfo { signo: SIGRTMIN, code: crate::signum::SI_QUEUE,
-        pid: 1234, uid: 1000, value: 7, sys: None, fault: None };
+        pid: 1234, uid: 1000, value: 7, sys: None, fault: None, poll: None };
     super::runtime::posixtimer_rearm(&owner, &mut rec);
     assert_eq!((rec.pid, rec.uid), (1234, 1000),
         "an `sigqueue(3)` record's si_pid/si_uid must not be rewritten as si_tid/si_overrun");

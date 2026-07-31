@@ -110,8 +110,8 @@ impl vfs::FileOps for NetlinkFileOps {
         }
     }
 
-    fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
-        file.set_fasync_state(on);
+    fn fasync_file(&self, fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
+        file.set_fasync_state(fd, on);
         Ok(())
     }
 }

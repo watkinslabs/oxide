@@ -36,6 +36,27 @@ pub struct SigPayload {
     /// (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGTRAP). Overrides `_kill`/`_rt` the same
     /// way `sigsys` does: the arms overlap at `_sifields`.
     pub fault: Option<SigFault>,
+    /// `_sigpoll` arm — `Some` for an async-I/O readiness signal raised by
+    /// `fcntl(F_SETOWN)`/`O_ASYNC` (and by `F_SETSIG`'s chosen signal).
+    /// Overlaps `_kill`/`_rt`/`_sigfault` at `_sifields`.
+    pub poll: Option<SigPoll>,
+}
+
+/// `siginfo_t::_sifields._sigpoll` — the arm `SIGPOLL`/`SIGIO` (and any
+/// `F_SETSIG` replacement) selects (`include/uapi/asm-generic/siginfo.h`).
+///
+/// `si_band` is an `__ARCH_SI_BAND_T` = `long` on both x86_64 and aarch64, so
+/// it covers the two 4-byte words `si_pid`/`si_uid` occupy, and `si_fd` follows
+/// in `si_value`'s first 4 bytes. Without this arm an `SA_SIGINFO` SIGIO
+/// handler reads `si_fd == 0` and cannot tell WHICH descriptor became ready —
+/// the whole reason `F_SETSIG` exists.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SigPoll {
+    /// `si_band` — the poll mask that fired, per Linux's `band_table`.
+    pub band: i64,
+    /// `si_fd` — the descriptor number recorded when `O_ASYNC` was enabled.
+    pub fd: i32,
 }
 
 /// `siginfo_t::_sifields._sigfault` — the arm SIGSEGV, SIGBUS, SIGILL, SIGFPE
@@ -162,6 +183,10 @@ const SI_ARCH:      usize = 28;
 const SI_ADDR:      usize = 16;
 /// `_sigfault._addr_lsb`, the `short` in the inner union right after `_addr`.
 const SI_ADDR_LSB:  usize = 24;
+/// `_sigpoll._band` (`long`) — also at `_sifields`, overlapping si_pid/si_uid.
+const SI_BAND:      usize = 16;
+/// `_sigpoll._fd` (`int`), immediately after the 8-byte `_band`.
+const SI_FD:        usize = 24;
 
 /// Fill a signal frame's 128-byte `siginfo_t` from an arch-neutral payload.
 /// Shared by both `build_signal_frame`s so the two arches cannot drift on the
@@ -181,6 +206,11 @@ pub fn write_siginfo(info: &mut [u8; 128], sig: u32, payload: Option<SigPayload>
     if let Some(f) = p.fault {
         info[SI_ADDR..SI_ADDR + 8].copy_from_slice(&f.addr.to_ne_bytes());
         info[SI_ADDR_LSB..SI_ADDR_LSB + 2].copy_from_slice(&f.addr_lsb.to_ne_bytes());
+        return;
+    }
+    if let Some(q) = p.poll {
+        info[SI_BAND..SI_BAND + 8].copy_from_slice(&q.band.to_ne_bytes());
+        info[SI_FD..SI_FD + 4].copy_from_slice(&q.fd.to_ne_bytes());
         return;
     }
     info[SI_PID..SI_PID + 4].copy_from_slice(&p.pid.to_ne_bytes());
@@ -208,7 +238,7 @@ mod tests {
     fn write_siginfo_sigchld_arm_writes_a_four_byte_si_status() {
         let mut info = [0u8; 128];
         let p = SigPayload { code: 1, pid: 42, uid: 7, status: -9, value: u64::MAX, chld_arm: true,
-                             sigsys: None, fault: None };
+                             sigsys: None, fault: None, poll: None };
         write_siginfo(&mut info, 17, Some(p));
         assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), 1);
         assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 42);
@@ -222,7 +252,7 @@ mod tests {
         let mut info = [0u8; 128];
         let ptr = 0x7fff_dead_beefu64;
         let p = SigPayload { code: -1, pid: 42, uid: 7, status: 0, value: ptr, chld_arm: false,
-                             sigsys: None, fault: None };
+                             sigsys: None, fault: None, poll: None };
         write_siginfo(&mut info, 34, Some(p));
         assert_eq!(u64::from_ne_bytes(info[24..32].try_into().unwrap()), ptr,
                    "truncating si_value to 4 bytes loses a sigqueue(3) sival_ptr");
@@ -236,7 +266,7 @@ mod tests {
         let mut info = [0u8; 128];
         let s = Sigsys { call_addr: 0x7fff_1234_5678, syscall: 257, arch: 0xc000_003e, errno: 0xbeef };
         let p = SigPayload { code: 1, pid: 42, uid: 7, status: -9, value: u64::MAX, chld_arm: true,
-                             sigsys: Some(s), fault: None };
+                             sigsys: Some(s), fault: None, poll: None };
         write_siginfo(&mut info, 31, Some(p));
         assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 31);
         assert_eq!(i32::from_ne_bytes(info[4..8].try_into().unwrap()), 0xbeef);
@@ -254,7 +284,7 @@ mod tests {
         let mut info = [0u8; 128];
         let f = SigFault { addr: 0x7fff_dead_b000, addr_lsb: 12 };
         let p = SigPayload { code: code::SEGV_MAPERR, pid: 0, uid: 0, status: 0, value: 0,
-                             chld_arm: false, sigsys: None, fault: Some(f) };
+                             chld_arm: false, sigsys: None, fault: Some(f), poll: None };
         write_siginfo(&mut info, 11, Some(p));
         assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 11);
         assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), code::SEGV_MAPERR);
@@ -269,10 +299,28 @@ mod tests {
         let mut info = [0u8; 128];
         let f = SigFault { addr: u64::MAX, addr_lsb: 0 };
         let p = SigPayload { code: code::SEGV_ACCERR, pid: 0x4242, uid: 0x77, status: -9,
-                             value: u64::MAX, chld_arm: false, sigsys: None, fault: Some(f) };
+                             value: u64::MAX, chld_arm: false, sigsys: None, fault: Some(f), poll: None };
         write_siginfo(&mut info, 11, Some(p));
         assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), u64::MAX);
         assert!(info[26..].iter().all(|b| *b == 0), "nothing past si_addr_lsb is written");
+    }
+
+    // `F_SETSIG`'s whole point is telling the handler WHICH fd fired. si_band is
+    // a `long` covering both `_kill` words, so si_pid/si_uid must not be written
+    // over it and si_fd must land in the `si_value` slot.
+    #[test]
+    fn write_siginfo_sigpoll_arm_writes_si_band_and_si_fd() {
+        let mut info = [0u8; 128];
+        let q = SigPoll { band: 0x41, fd: 7 };
+        let p = SigPayload { code: 1, pid: 0x4242, uid: 0x77, status: -9, value: u64::MAX,
+                             chld_arm: false, sigsys: None, fault: None, poll: Some(q) };
+        write_siginfo(&mut info, 29, Some(p));
+        assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 29);
+        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), 1, "si_code = POLL_IN");
+        assert_eq!(i64::from_ne_bytes(info[16..24].try_into().unwrap()), 0x41,
+                   "si_band is a long; si_pid/si_uid must not be written over it");
+        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 7, "si_fd");
+        assert!(info[28..].iter().all(|b| *b == 0), "nothing past si_fd is written");
     }
 
     // The `_sigsys` arm OVERLAPS `_kill`/`_sigchld`: si_pid and si_call_addr
@@ -282,7 +330,7 @@ mod tests {
         let mut info = [0u8; 128];
         let s = Sigsys { call_addr: u64::MAX, syscall: 0, arch: 0, errno: 0 };
         let p = SigPayload { code: 1, pid: 0x4242, uid: 0x77, status: -9, value: 0, chld_arm: false,
-                             sigsys: Some(s), fault: None };
+                             sigsys: Some(s), fault: None, poll: None };
         write_siginfo(&mut info, 31, Some(p));
         assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), u64::MAX,
                    "si_pid/si_uid must not be written over si_call_addr");

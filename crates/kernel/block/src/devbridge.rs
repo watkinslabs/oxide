@@ -173,6 +173,9 @@ impl BlockDevOps for DiskBlkOps {
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
         write_at(self.disk.dev.as_ref(), off, buf)
     }
+    fn flush_cache(&self, _devt: Devt) -> KResult<()> {
+        self.disk.dev.flush().map_err(|_| VfsError::Eio)
+    }
 }
 
 /// Register the disk's canonical number → its stats-wrapped `dev` into the VFS
