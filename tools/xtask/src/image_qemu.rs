@@ -1,9 +1,11 @@
 // `xtask image`, `xtask grub` per `07§8`.
 //
-// This is a manifest. Shared path/QEMU helpers, command dispatch, aarch64 GRUB
-// booting, and x86_64 GRUB booting live in separate modules.
+// This is a manifest. The shared boot cmdline, shared path/QEMU helpers,
+// command dispatch, aarch64 GRUB booting, and x86_64 GRUB booting live in
+// separate modules.
 
 mod aarch64;
+mod bootargs;
 mod commands;
 mod common;
 mod x86_64;
