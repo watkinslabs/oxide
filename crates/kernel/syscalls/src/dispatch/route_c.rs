@@ -101,20 +101,23 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_VFORK => crate::clone::sys_clone_dispatch(
             legacy_clone_request(crate::clone_abi::VFORK_FLAGS, 0, 0, 0, 0)),
         syscall::nrs::NR_CLONE => {
-            // Both supported arches take the argument order that puts `tls`
-            // ahead of `child_tid`: (flags, stack, parent_tid, tls, child_tid).
-            // A legacy caller has ONE pointer register for both the
-            // `CLONE_PARENT_SETTID` destination and the `CLONE_PIDFD`
-            // descriptor slot, which is why requesting both is refused.
+            // The 4th/5th register arguments swap roles per architecture; see
+            // `clone_abi::LEGACY_CLONE_ORDER`. A legacy caller has ONE pointer
+            // register for both the `CLONE_PARENT_SETTID` destination and the
+            // `CLONE_PIDFD` descriptor slot, which is why requesting both is
+            // refused.
             let (flags, exit_signal) = crate::clone_abi::split_legacy_flags(args.a0);
+            let (child_tid, tls) = crate::clone_abi::legacy_clone_tid_tls(
+                crate::clone_abi::LEGACY_CLONE_ORDER, args.a3, args.a4,
+            );
             crate::clone::sys_clone_dispatch(crate::clone_abi::CloneRequest {
                 flags,
                 exit_signal,
                 child_stack: args.a1,
                 parent_tid: args.a2,
                 pidfd: args.a2,
-                child_tid: args.a4,
-                tls: args.a3,
+                child_tid,
+                tls,
                 into_cgroup: None,
                 set_tid: &[],
             })
