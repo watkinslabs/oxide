@@ -111,6 +111,12 @@ pub struct ThreadGroup {
     /// records behind `shared_pending`, same per-signal shape and depth policy
     /// as the thread-private set (`crate::sigqueue::SigQueues`).
     shared_sigqueue: crate::sigqueue::SigQueues,
+    /// Linux `sighand_struct::signalfd_wqh` — the ONE readiness source every
+    /// `signalfd` in this process waits on. Per PROCESS, not per thread,
+    /// because a signalfd reads `private | shared`: an edge raised on one
+    /// thread's private send must reach a sibling's poller, and a
+    /// process-directed send has no thread of its own to raise it on.
+    signalfd_poll: alloc::sync::Arc<vfs::PollSubscribers>,
     /// Linux `signal_struct::tty` — the CONTROLLING TERMINAL, POSIX
     /// §11.1.3. A controlling terminal belongs to the process (and through
     /// its session, to every process in that session): `setsid(2)` drops it
@@ -157,10 +163,17 @@ impl ThreadGroup {
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             shared_pending: AtomicU64::new(0),
             shared_sigqueue: crate::sigqueue::new_queues(),
+            signalfd_poll: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
             ctty: Spinlock::new(None),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
+    }
+
+    /// The process' `signalfd` readiness source, handed to every thread's
+    /// `SignalPending` so both pending sets raise edges on one list. # C: O(1)
+    pub fn signalfd_poll(&self) -> alloc::sync::Arc<vfs::PollSubscribers> {
+        alloc::sync::Arc::clone(&self.signalfd_poll)
     }
 
     /// Process group id shared by every thread of this process. # C: O(1)

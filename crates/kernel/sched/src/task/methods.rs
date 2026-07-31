@@ -77,6 +77,10 @@ impl Task {
     pub fn join_thread_group(&mut self, group: Arc<crate::thread_group::ThreadGroup>) {
         self.pid.join_group();
         crate::cputime_trace::join(self.tid, &group);
+        // A fresh thread has nothing pending, so adopting the group's
+        // `signalfd` readiness source loses nothing and is what puts every
+        // thread of the process on ONE list (Linux `sighand->signalfd_wqh`).
+        self.sigpending = SignalPending::with_poll(group.signalfd_poll());
         self.thread_group = group;
     }
 
@@ -259,6 +263,10 @@ impl Task {
     ) -> Self {
         let pid = Arc::new(crate::pid::PidIdentity::new(tid));
         let thread_group = Arc::new(crate::thread_group::ThreadGroup::new(Arc::clone(&pid)));
+        // Taken before the group is moved into the struct: every thread of a
+        // process shares ONE signalfd readiness source (Linux
+        // `sighand->signalfd_wqh`).
+        let signalfd_poll = thread_group.signalfd_poll();
         let fpu_state = ArchFpuBuf::arch_default();
         #[cfg(feature = "debug-task-fpu-provenance")]
         let dbg_fpu_state_expected = fpu_state.debug_ptr_bits();
@@ -341,7 +349,7 @@ impl Task {
             used_superpriv: AtomicBool::new(false),
             fd_table: UnsafeCell::new(None),
             fd_table_pin_lock: Spinlock::new(()),
-            sigpending: SignalPending::new(),
+            sigpending: SignalPending::with_poll(signalfd_poll),
             sigqueue: Spinlock::new(core::array::from_fn(|_| VecDeque::new())),
             sigmask:    AtomicU64::new(0),
             saved_sigmask:   AtomicU64::new(0),

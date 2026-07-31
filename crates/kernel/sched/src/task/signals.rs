@@ -38,6 +38,14 @@ impl SignalPending {
         Self { bits: AtomicU64::new(0), poll: Arc::new(PollSubscribers::new()) }
     }
 
+    /// Empty pending set sharing the PROCESS' `signalfd` readiness source
+    /// (Linux `sighand->signalfd_wqh`) rather than owning a private one, so an
+    /// edge raised by any thread — or by a process-directed publish that has no
+    /// thread at all — reaches every signalfd in the group. # C: O(1)
+    pub fn with_poll(poll: Arc<PollSubscribers>) -> Self {
+        Self { bits: AtomicU64::new(0), poll }
+    }
+
     /// Atomic pending-set snapshot. # C: O(1)
     pub fn load(&self, order: Ordering) -> u64 { self.bits.load(order) }
 
@@ -47,14 +55,6 @@ impl SignalPending {
         if bits & !prior != 0 { self.poll.notify_mask(vfs::POLL_IN); }
         prior
     }
-
-    /// Raise the `POLLIN` edge without touching the bitmap — what a
-    /// PROCESS-directed signal needs, since it becomes pending on the thread
-    /// group's shared set and never passes through this task's `fetch_or`.
-    /// A signalfd's readiness is `private | shared`, so the edge belongs on
-    /// every thread's source even though only the group's set changed.
-    /// # C: O(N_subscribers)
-    pub fn notify_pollers(&self) { self.poll.notify_mask(vfs::POLL_IN); }
 
     /// Clear pending bits without producing a readiness event. # C: O(1)
     pub fn fetch_and(&self, bits: u64, order: Ordering) -> u64 { self.bits.fetch_and(bits, order) }
