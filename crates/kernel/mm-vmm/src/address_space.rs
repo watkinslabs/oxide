@@ -105,6 +105,7 @@ mod mmap_ops;
 mod layout;
 mod limits;
 mod membarrier;
+mod mlock;
 mod mmfields;
 mod ops;
 mod uffd;
@@ -113,6 +114,7 @@ pub mod pkeys;
 pub use limits::{MIN_USER_VA, MMAP_TOP};
 pub use mdwe::{MdweAdmission, MdweRequest, MdweSetError};
 pub use ops::{MprotectOutcome, MprotectStep};
+pub use mlock::{LockedSpan, MlockOutcome};
 pub use uffd::UffdVma;
 pub use accounting::{global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown, VmAccountingSnapshot};
 pub use mmfields::{

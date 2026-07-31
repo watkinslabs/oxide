@@ -106,8 +106,12 @@ fn build_from_mm(mm: &vmm::AddressSpace) -> Vec<u8> {
         if vma.prot.contains(vmm::VmaProt::WRITE)       { push(&mut out, b" wr"); }
         if vma.prot.contains(vmm::VmaProt::EXEC)        { push(&mut out, b" ex"); }
         if vma.flags.contains(vmm::VmaFlags::SHARED)    { push(&mut out, b" sh"); }
-        if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) { push(&mut out, b" gd"); }
         if !vma.flags.contains(vmm::VmaFlags::SHARED) { push(&mut out, b" mr mw me"); } // can-mremap-in-place
+        if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) { push(&mut out, b" gd"); }
+        // mlock state: `lo` = VM_LOCKED, `lf` = VM_LOCKONFAULT. Tags are
+        // emitted in Linux's bit order, which is the order tools parse.
+        if vma.flags.contains(vmm::VmaFlags::LOCKED)      { push(&mut out, b" lo"); }
+        if vma.flags.contains(vmm::VmaFlags::LOCKONFAULT) { push(&mut out, b" lf"); }
         if is_anon                                      { push(&mut out, b" ac"); }
         out.push(b'\n');
     }

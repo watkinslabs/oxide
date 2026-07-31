@@ -104,6 +104,22 @@ pub fn glue_mmap(
     // and ld.so's main stack).
     if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
     if (flags & MAP_LOCKED) != 0 { vma_flags |= VmaFlags::LOCKED; }
+    // Linux `do_mmap`: MAP_LOCKED needs `can_do_mlock()`, and any mapping that
+    // ends up VM_LOCKED — including one that only inherits it from an
+    // `mlockall(MCL_FUTURE)` `def_flags` policy — is charged against
+    // RLIMIT_MEMLOCK before the VMA exists.
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: syscall dispatcher context; the running task on this CPU is the sole writer of its mm slot.
+        let mm = unsafe { cur.mm_ref() };
+        let future_locked = mm.map(|m| m.mlock_future_policy().0).unwrap_or(false);
+        let mm_locked = mm.map(|m| m.accounting_snapshot().locked_virtual_bytes).unwrap_or(0);
+        let (limit, _max) = cur.rlimit(sched::rlimit::rlim::MEMLOCK);
+        let e = crate::mmap_flags::mmap_lock_admission(
+            (flags & MAP_LOCKED) != 0,
+            vma_flags.contains(VmaFlags::LOCKED) || future_locked,
+            len_aligned as u64, mm_locked, limit, cur.has_cap(sched::cap::IPC_LOCK));
+        if let Err(e) = e { return Err(-(e.as_i32() as i64)); }
+    }
     let vma_backing = match (kframe, phys_base, backing) {
         // Refcounted shared kernel RAM frame (single page, io_uring ring):
         // map_kernel_frame inc_ref's on fault, AS-teardown dec's — so the

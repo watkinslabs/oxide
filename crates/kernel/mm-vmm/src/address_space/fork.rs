@@ -4,7 +4,7 @@ use hal::{MmuOps, Pa, PageSize, Va, PAGE_SIZE_BYTES};
 use sync::{RwLock, Spinlock};
 
 use crate::tree::VmaTree;
-use crate::vma::{VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
 use super::AddressSpace;
@@ -22,6 +22,18 @@ fn rollback_swap_fork<M: MmuOps, FS: FnMut(hal::pt_walker::SwapEntry)>(
         let cleared = unsafe { M::clear_swap_at(root_pa, Va(*va), *entry) };
         if cleared { release(*entry); }
     }
+}
+
+/// Linux `dup_mmap` drops `VM_LOCKED_MASK` from every inherited VMA: mlock(2)
+/// and mlockall(2) state is per-mm and is NOT inherited across fork(2), so a
+/// child of an `mlockall(MCL_CURRENT)` parent starts with nothing locked and
+/// nothing charged to its RLIMIT_MEMLOCK. Cloning the flags verbatim would let
+/// a process multiply its locked footprint by forking.
+/// # C: O(1)
+fn child_vma(vma: &Vma) -> Vma {
+    let mut c = vma.clone();
+    c.flags.remove(VmaFlags::LOCKED_MASK);
+    c
 }
 
 /// Publish the child's anon and shared-file reverse-map edges after its Arc
@@ -53,7 +65,7 @@ impl AddressSpace {
         let src = self.vmas.read();
         let mut dst = VmaTree::new();
         for vma in src.iter() {
-            dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+            dst.insert(child_vma(vma)).map_err(|_| Error::NoMem)?;
         }
         let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         let child = Arc::new_cyclic(|w| Self {
@@ -176,7 +188,7 @@ impl AddressSpace {
             // MADV_DONTFORK (Linux VM_DONTCOPY): the child does not
             // inherit this VMA at all.
             if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
-            dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+            dst.insert(child_vma(vma)).map_err(|_| Error::NoMem)?;
         }
         // A child PTE owns a separate reference to the canonical swap slot.
         // Copy these first: a recoverable table-allocation failure then rolls
@@ -389,7 +401,7 @@ impl AddressSpace {
         let src = self.vmas.read();
         let mut dst = VmaTree::new();
         for vma in src.iter() {
-            dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+            dst.insert(child_vma(vma)).map_err(|_| Error::NoMem)?;
         }
         for vma in src.iter() {
             // Copy mapped pages for any writable VMA, regardless of

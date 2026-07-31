@@ -1,15 +1,17 @@
-// 149 mlock / 150 munlock / 151 mlockall / 152 munlockall (docs/53 §0).
-// Linux VM_LOCKED policy and resident-page materialization.
+// 149 mlock / 150 munlock / 151 mlockall / 152 munlockall / 325 mlock2
+// (docs/53 §0). ABI shim only: round arguments (`crate::mlock_policy`), run the
+// RLIMIT_MEMLOCK ladder, hand the VMA transition to the VMM
+// (`AddressSpace::apply_vma_lock_flags` / `apply_mlockall_flags`), then
+// prefault and pin what came back.
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use vmm::{LockedSpan, VmaFlags};
+
+use crate::mlock_policy as policy;
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
-// mlockall(2) flags (uapi asm-generic/mman.h).
-const MCL_CURRENT: u64 = 1;
-const MCL_FUTURE:  u64 = 2;
-const MCL_ONFAULT: u64 = 4;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -20,40 +22,10 @@ fn current_mm() -> Result<alloc::sync::Arc<vmm::AddressSpace>, Errno> {
     Ok(mm.clone())
 }
 
-fn locked_range(addr: u64, len: u64) -> Result<Option<(hal::UserVirtAddr, usize)>, Errno> {
-    if len == 0 { return Ok(None); }
-    let start = addr & !(PAGE - 1);
-    let end = match addr.checked_add(len).and_then(|e| e.checked_add(PAGE - 1)) {
-        Some(e) => e & !(PAGE - 1),
-        None    => return Err(Errno::Einval),
-    };
-    if end > hal::USER_VA_END || end < start { return Err(Errno::Enomem); }
-    let start = hal::UserVirtAddr::new(start).ok_or(Errno::Enomem)?;
-    Ok(Some((start, (end - start.as_u64()) as usize)))
-}
-
-fn validate_mapped(mm: &vmm::AddressSpace, start: hal::UserVirtAddr, len: usize) -> Result<(), Errno> {
-    let mut va = start.as_u64();
-    let end = va + len as u64;
-    while va < end {
-        let p = hal::UserVirtAddr::new(va).ok_or(Errno::Enomem)?;
-        if mm.find_vma(p).is_none() { return Err(Errno::Enomem); }
-        va += PAGE;
-    }
-    Ok(())
-}
-
-fn populate_locked_range(mm: &vmm::AddressSpace, start: hal::UserVirtAddr, len: usize) -> Result<(), Errno> {
-    let end = start.as_u64().checked_add(len as u64).ok_or(Errno::Enomem)?;
-    for vma in mm.snapshot_vmas() {
-        let seg_start = core::cmp::max(start.as_u64(), vma.start.as_u64());
-        let seg_end = core::cmp::min(end, vma.end.as_u64());
-        if seg_start >= seg_end { continue; }
-        let uva = hal::UserVirtAddr::new(seg_start).ok_or(Errno::Enomem)?;
-        pmm::user_as::populate_current_range(uva, (seg_end - seg_start) as usize, vma.prot)
-            .map_err(|_| Errno::Enomem)?;
-    }
-    Ok(())
+/// Map a VMM VMA-walk failure onto the mlock errno domain.
+/// # C: O(1)
+fn walk_errno(e: vmm::Error) -> Errno {
+    match e { vmm::Error::Inval => Errno::Einval, _ => Errno::Enomem }
 }
 
 /// Apply the PMM-side mlock transition to present LRU pages in a VMA range.
@@ -78,12 +50,24 @@ fn transition_resident_lru(start: hal::UserVirtAddr, len: usize, locked: bool) {
     }
 }
 
-fn lock_current_mappings(mm: &vmm::AddressSpace, onfault: bool) -> Result<(), Errno> {
-    for vma in mm.snapshot_vmas() {
-        let len = (vma.end.as_u64() - vma.start.as_u64()) as usize;
-        if !onfault { populate_locked_range(mm, vma.start, len)?; }
-        mm.update_flags_range(vma.start, len, vmm::VmaFlags::LOCKED, vmm::VmaFlags::empty());
-        if !onfault { transition_resident_lru(vma.start, len, true); }
+/// Linux `__mm_populate` over the spans an mlock transition actually locked.
+/// `MLOCK_ONFAULT` spans are skipped: their pages are pinned as they fault in,
+/// which is the entire point of the flag. Every populated span then has its
+/// resident pages moved to the unevictable LRU.
+/// # C: O(sum(len)/PAGE)
+fn populate_spans(mm: &vmm::AddressSpace, spans: &[LockedSpan]) -> Result<(), Errno> {
+    for span in spans {
+        if span.onfault { continue; }
+        let end = span.start.as_u64().saturating_add(span.len as u64);
+        for vma in mm.snapshot_vmas() {
+            let s = core::cmp::max(span.start.as_u64(), vma.start.as_u64());
+            let e = core::cmp::min(end, vma.end.as_u64());
+            if s >= e { continue; }
+            let uva = hal::UserVirtAddr::new(s).ok_or(Errno::Enomem)?;
+            pmm::user_as::populate_current_range(uva, (e - s) as usize, vma.prot)
+                .map_err(|_| Errno::Enomem)?;
+        }
+        transition_resident_lru(span.start, span.len, true);
     }
     Ok(())
 }
@@ -94,58 +78,51 @@ fn lock_current_mappings(mm: &vmm::AddressSpace, onfault: bool) -> Result<(), Er
 /// same memory by picking the other slot. Decision logic is
 /// `crate::mlock_policy` (hosted-tested); this reads the live task state.
 /// # C: O(N_vmas)
-fn memlock_admission(mm: &vmm::AddressSpace, start: hal::UserVirtAddr, len: usize) -> Result<(), Errno> {
+fn memlock_admission(mm: &vmm::AddressSpace, start: hal::UserVirtAddr, len: usize)
+    -> Result<(), Errno>
+{
     let cur = sched::live::current().ok_or(Errno::Einval)?;
     let has_ipc_lock = cur.has_cap(sched::cap::IPC_LOCK);
     let (limit, _max) = cur.rlimit(sched::rlimit::rlim::MEMLOCK);
-    if !crate::mlock_policy::can_do_mlock(limit, has_ipc_lock) { return Err(Errno::Eperm); }
     let mm_locked = mm.accounting_snapshot().locked_virtual_bytes;
     let already = mm.locked_bytes_in_range(start, len);
-    crate::mlock_policy::memlock_admits(len as u64, mm_locked, already, limit, has_ipc_lock)
+    policy::memlock_admits(len as u64, mm_locked, already, limit, has_ipc_lock)
+}
+
+/// Whether the running task may lock any memory at all — Linux `can_do_mlock`,
+/// which `do_mlock` and `mlockall` both evaluate BEFORE looking at their
+/// arguments, so an EPERM answer is not disturbed by a malformed range.
+/// # C: O(1)
+fn can_do_mlock() -> Result<(), Errno> {
+    let cur = sched::live::current().ok_or(Errno::Einval)?;
+    let (limit, _max) = cur.rlimit(sched::rlimit::rlim::MEMLOCK);
+    if policy::can_do_mlock(limit, cur.has_cap(sched::cap::IPC_LOCK)) { Ok(()) }
+    else { Err(Errno::Eperm) }
 }
 
 /// Linux `do_mlock(start, len, flags)` — the body mlock(2) and mlock2(2) share.
-/// `onfault` is mlock2's `MLOCK_ONFAULT` (Linux `VM_LOCKONFAULT`): the VMA is
-/// marked locked but pages are NOT prefaulted, so they are pinned as they fault
-/// in instead. # C: O(len/PAGE)
+/// Ordering is Linux's and is observable: EPERM (may not lock at all) precedes
+/// the argument rounding, which precedes the RLIMIT_MEMLOCK ENOMEM, which
+/// precedes the VMA walk. The walk applies flags VMA by VMA and does NOT undo
+/// them when it meets a hole, so a range with a gap in the middle reports
+/// ENOMEM with everything before the gap left locked.
+/// # C: O(len/PAGE)
 fn do_mlock(addr: u64, len_arg: u64, onfault: bool) -> i64 {
-    let Some((start, len)) = (match locked_range(addr, len_arg) {
-        Ok(v) => v,
-        Err(e) => return err(e),
-    }) else {
-        return 0;
+    if let Err(e) = can_do_mlock() { return err(e); }
+    let (start, len) = match policy::mlock_range(addr, len_arg, PAGE) {
+        Ok(Some(r)) => r,
+        Ok(None)    => return 0,
+        Err(e)      => return err(e),
     };
-    let mm = match current_mm() {
-        Ok(m) => m, Err(e) => return err(e),
-    };
-    if let Err(e) = validate_mapped(&mm, start, len) { return err(e); }
-    if let Err(e) = memlock_admission(&mm, start, len) { return err(e); }
-    if !onfault {
-        // Linux applies the VMA flags first and populates after dropping the
-        // mmap lock; a populate failure is remapped by
-        // `__mlock_posix_error_return` (EFAULT->ENOMEM, ENOMEM->EAGAIN).
-        if let Err(e) = populate_locked_range(&mm, start, len) {
-            return err(crate::mlock_policy::posix_error_return(e));
-        }
-    }
-    mm.update_flags_range(start, len, vmm::VmaFlags::LOCKED, vmm::VmaFlags::empty());
-    if !onfault { transition_resident_lru(start, len, true); }
-    0
-}
-
-fn munlock_range(args: &SyscallArgs) -> i64 {
-    let Some((start, len)) = (match locked_range(args.a0, args.a1) {
-        Ok(v) => v,
-        Err(e) => return err(e),
-    }) else {
-        return 0;
-    };
-    let mm = match current_mm() {
-        Ok(m) => m, Err(e) => return err(e),
-    };
-    if let Err(e) = validate_mapped(&mm, start, len) { return err(e); }
-    transition_resident_lru(start, len, false);
-    mm.update_flags_range(start, len, vmm::VmaFlags::empty(), vmm::VmaFlags::LOCKED);
+    let Some(start) = hal::UserVirtAddr::new(start) else { return err(Errno::Enomem) };
+    let mm = match current_mm() { Ok(m) => m, Err(e) => return err(e) };
+    if let Err(e) = memlock_admission(&mm, start, len as usize) { return err(e); }
+    let add = if onfault { VmaFlags::LOCKED_MASK } else { VmaFlags::LOCKED };
+    let out = mm.apply_vma_lock_flags(start, len as usize, add);
+    if let Some(e) = out.error { return err(walk_errno(e)); }
+    // Linux populates after dropping the mmap lock and remaps the failure
+    // through `__mlock_posix_error_return` (EFAULT->ENOMEM, ENOMEM->EAGAIN).
+    if let Err(e) = populate_spans(&mm, &out.spans) { return err(policy::posix_error_return(e)); }
     0
 }
 
@@ -159,41 +136,57 @@ pub fn sys_mlock(args: &SyscallArgs) -> i64 { do_mlock(args.a0, args.a1, false) 
 /// ladder, so a bad flag reports EINVAL regardless of RLIMIT_MEMLOCK.
 /// # C: O(len/PAGE)
 pub fn sys_mlock2(args: &SyscallArgs) -> i64 {
-    match crate::mlock_policy::mlock2_flags_check(args.a2) {
+    match policy::mlock2_flags_check(args.a2) {
         Ok(onfault) => do_mlock(args.a0, args.a1, onfault),
         Err(e)      => err(e),
     }
 }
 
-/// `munlock(addr, len)` — slot 150. Validate mapped range, then clear VM_LOCKED.
+/// `munlock(addr, len)` — slot 150. Linux `SYSCALL_DEFINE2(munlock)` rounds the
+/// same way mlock does and then clears `VM_LOCKED_MASK`; it runs NO capability
+/// or RLIMIT_MEMLOCK check, because giving memory back is never denied.
 /// # C: O(len/PAGE)
-pub fn sys_munlock(args: &SyscallArgs) -> i64 { munlock_range(args) }
+pub fn sys_munlock(args: &SyscallArgs) -> i64 {
+    let (start, len) = match policy::mlock_range(args.a0, args.a1, PAGE) {
+        Ok(Some(r)) => r,
+        Ok(None)    => return 0,
+        Err(e)      => return err(e),
+    };
+    let Some(start) = hal::UserVirtAddr::new(start) else { return err(Errno::Enomem) };
+    let mm = match current_mm() { Ok(m) => m, Err(e) => return err(e) };
+    transition_resident_lru(start, len as usize, false);
+    let out = mm.apply_vma_lock_flags(start, len as usize, VmaFlags::empty());
+    match out.error { Some(e) => err(walk_errno(e)), None => 0 }
+}
 
-/// `mlockall(flags)` — slot 151. Locks current VMAs and/or persists the
-/// policy to future mappings. `MCL_ONFAULT` is valid only with one of those
-/// two actions, matching Linux. # C: O(current mapped pages)
+/// `mlockall(flags)` — slot 151. Flags first (EINVAL), then `can_do_mlock`
+/// (EPERM), then the whole-address-space RLIMIT_MEMLOCK charge that only
+/// `MCL_CURRENT` incurs (ENOMEM). `MCL_FUTURE` writes `mm->def_flags`, which
+/// later mmap(2)s inherit; the write is unconditional, so an `mlockall` WITHOUT
+/// `MCL_FUTURE` clears a policy an earlier call installed. Population failures
+/// are ignored, matching Linux's unchecked `mm_populate` tail.
+/// # C: O(current mapped pages)
 pub fn sys_mlockall(args: &SyscallArgs) -> i64 {
-    let flags = args.a0;
-    let known = MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT;
-    if flags == 0 || (flags & !known) != 0 || flags == MCL_ONFAULT { return err(Errno::Einval); }
+    let (current, future, onfault) = match policy::mlockall_flags_check(args.a0) {
+        Ok(v) => v, Err(e) => return err(e),
+    };
     let mm = match current_mm() { Ok(mm) => mm, Err(e) => return err(e) };
-    let onfault = (flags & MCL_ONFAULT) != 0;
-    if (flags & MCL_CURRENT) != 0 {
-        if let Err(e) = lock_current_mappings(&mm, onfault) { return err(e); }
+    let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Einval) };
+    let has_ipc_lock = cur.has_cap(sched::cap::IPC_LOCK);
+    let (limit, _max) = cur.rlimit(sched::rlimit::rlim::MEMLOCK);
+    if let Err(e) = policy::mlockall_admits(current, mm.total_mapped_bytes(), limit, has_ipc_lock) {
+        return err(e);
     }
-    if (flags & MCL_FUTURE) != 0 { mm.set_mlock_future(true, onfault); }
+    let spans = mm.apply_mlockall_flags(future, current, onfault);
+    let _ = populate_spans(&mm, &spans);
     0
 }
 
-/// `munlockall()` — slot 152. Clears current VM_LOCKED state and future
-/// inheritance. # C: O(number of VMAs)
+/// `munlockall()` — slot 152. Linux `apply_mlockall_flags(0)`: drop the
+/// `MCL_FUTURE` policy from `mm->def_flags` AND clear `VM_LOCKED_MASK` from
+/// every VMA, including the `VM_LOCKONFAULT` half. # C: O(number of VMAs)
 pub fn sys_munlockall(_args: &SyscallArgs) -> i64 {
     let mm = match current_mm() { Ok(mm) => mm, Err(e) => return err(e) };
-    for vma in mm.snapshot_vmas() {
-        let len = (vma.end.as_u64() - vma.start.as_u64()) as usize;
-        transition_resident_lru(vma.start, len, false);
-        mm.update_flags_range(vma.start, len, vmm::VmaFlags::empty(), vmm::VmaFlags::LOCKED);
-    }
-    mm.set_mlock_future(false, false);
+    for span in mm.munlock_all() { transition_resident_lru(span.start, span.len, false); }
     0
 }

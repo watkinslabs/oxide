@@ -34,6 +34,7 @@ pub use address_space::{
     global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown,
     live_address_spaces, AddressSpace, MdweAdmission, MdweRequest, MdweSetError,
     MprotectOutcome, MprotectStep, MIN_USER_VA, UffdVma, VmAccountingSnapshot,
+    LockedSpan, MlockOutcome,
 };
 pub use mmap::{MmapError, MmapPlacement};
 pub use address_space::{

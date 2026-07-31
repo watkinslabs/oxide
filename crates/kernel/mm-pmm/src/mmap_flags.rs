@@ -196,6 +196,26 @@ pub fn should_populate(flags: u64) -> bool {
     (flags & MAP_LOCKED) != 0 || (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE
 }
 
+/// Linux `do_mmap`'s mlock gate: an explicit `MAP_LOCKED` first needs
+/// `can_do_mlock()` (EPERM), and then ANY mapping that will end up `VM_LOCKED`
+/// — whether from `MAP_LOCKED` or from an `mlockall(MCL_FUTURE)` policy folded
+/// in through `mm->def_flags` — is charged against RLIMIT_MEMLOCK by
+/// `mlock_future_ok`, which reports **EAGAIN**, not the ENOMEM `mlock(2)` uses
+/// for the same overrun.
+///
+/// `vma_locked` is the post-`def_flags` answer, so an `mlockall(MCL_FUTURE)`
+/// process is limit-checked on every mmap even when it passes no map flag.
+/// Without this, `mlockall(MCL_FUTURE)` is an unbounded lock-everything hole
+/// that RLIMIT_MEMLOCK never sees.
+/// # C: O(1)
+pub fn mmap_lock_admission(map_locked: bool, vma_locked: bool, len: u64, mm_locked: u64,
+                           limit: u64, has_ipc_lock: bool) -> Result<(), Errno>
+{
+    if map_locked && limit == 0 && !has_ipc_lock { return Err(Errno::Eperm); }
+    if !vma_locked || has_ipc_lock { return Ok(()); }
+    if len.saturating_add(mm_locked) <= limit { Ok(()) } else { Err(Errno::Eagain) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +364,46 @@ mod tests {
         assert_eq!(validate_prot(0x1 | PROT_WRITE | PROT_EXEC | PROT_SEM), Ok(()));
         assert_eq!(validate_prot(PROT_GROWSDOWN | PROT_GROWSUP), Err(-(Errno::Einval.as_i32() as i64)));
         assert_eq!(validate_prot(0x8000_0000), Err(-(Errno::Einval.as_i32() as i64)));
+    }
+
+    const PAGE: u64 = 4096;
+
+    /// A mapping that will not be locked is never limit-checked, however small
+    /// RLIMIT_MEMLOCK is. # C: O(1)
+    #[test]
+    fn unlocked_mappings_are_not_charged() {
+        assert_eq!(mmap_lock_admission(false, false, 1 << 40, 0, 0, false), Ok(()));
+    }
+
+    /// `MAP_LOCKED` with a zero RLIMIT_MEMLOCK and no CAP_IPC_LOCK is EPERM —
+    /// `can_do_mlock()` — and that answer precedes the size check.
+    #[test]
+    fn map_locked_without_permission_is_eperm() {
+        assert_eq!(mmap_lock_admission(true, true, PAGE, 0, 0, false), Err(Errno::Eperm));
+        assert_eq!(mmap_lock_admission(true, true, PAGE, 0, 0, true), Ok(()));
+        // No MAP_LOCKED flag: a zero limit is not EPERM here, just a tight
+        // limit the mapping happens to fit under (it is unlocked).
+        assert_eq!(mmap_lock_admission(false, false, PAGE, 0, 0, false), Ok(()));
+    }
+
+    /// Over the limit, mmap reports **EAGAIN** where mlock(2) reports ENOMEM
+    /// for the same overrun. Returning ENOMEM here is the easy mistake.
+    #[test]
+    fn over_the_limit_is_eagain_not_enomem() {
+        assert_eq!(mmap_lock_admission(true, true, 2 * PAGE, 0, 2 * PAGE, false), Ok(()));
+        assert_eq!(mmap_lock_admission(true, true, 3 * PAGE, 0, 2 * PAGE, false), Err(Errno::Eagain));
+        assert_eq!(mmap_lock_admission(true, true, PAGE, 2 * PAGE, 2 * PAGE, false), Err(Errno::Eagain),
+            "already-locked bytes count toward the limit");
+        assert_eq!(mmap_lock_admission(true, true, 1 << 40, 0, PAGE, true), Ok(()),
+            "CAP_IPC_LOCK bypasses the charge");
+    }
+
+    /// An `mlockall(MCL_FUTURE)` process is charged on every mmap even though
+    /// it passes no map flag — that inherited lock is the whole reason the
+    /// check is on the mmap path and not only on mlock(2).
+    #[test]
+    fn inherited_future_lock_is_charged_without_map_locked() {
+        assert_eq!(mmap_lock_admission(false, true, 3 * PAGE, 0, 2 * PAGE, false), Err(Errno::Eagain));
+        assert_eq!(mmap_lock_admission(false, true, PAGE, 0, 2 * PAGE, false), Ok(()));
     }
 }

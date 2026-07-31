@@ -160,8 +160,15 @@ impl AddressSpace {
         mdwe: MdweMode,
     ) -> Result<UserVirtAddr, MmapError> {
         validate_len(len)?;
-        let (future_locked, _) = self.mlock_future_policy();
-        let flags = if future_locked { flags | VmaFlags::LOCKED } else { flags };
+        // Linux `mmap_region`: `vm_flags |= mm->def_flags`, so an
+        // `mlockall(MCL_FUTURE)` policy — including its `MCL_ONFAULT` half —
+        // lands on every subsequently created VMA.
+        let (future_locked, future_onfault) = self.mlock_future_policy();
+        let flags = match (future_locked, future_onfault) {
+            (false, _)    => flags,
+            (true, false) => flags | VmaFlags::LOCKED,
+            (true, true)  => flags | VmaFlags::LOCKED_MASK,
+        };
         let len_u64 = len as u64;
 
         let mut tree = self.vmas.write();
