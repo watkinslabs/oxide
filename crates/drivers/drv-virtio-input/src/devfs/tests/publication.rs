@@ -9,6 +9,7 @@ const VIRTIO_INPUT_DEVICE_ID: u16 = 18;
 
 #[test]
 fn register_node_is_idempotent_without_republishing() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 1) as u32;
     let _ = unregister_node(id);
 
@@ -26,6 +27,7 @@ fn register_node_is_idempotent_without_republishing() {
 
 #[test]
 fn evdev_inode_reports_linux_input_dev_t() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 1) as u32;
     let inode = make_evdev_inode(id);
     assert_eq!(
@@ -36,6 +38,7 @@ fn evdev_inode_reports_linux_input_dev_t() {
 
 #[test]
 fn register_node_records_exact_parent_and_owned_sysfs_path() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 4) as u32;
     let addr = alloc::format!("event{id}");
     let parent_addr = String::from("virtio-input-parent0");
@@ -64,6 +67,7 @@ fn register_node_records_exact_parent_and_owned_sysfs_path() {
 
 #[test]
 fn register_node_rejects_removed_exact_parent() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 5) as u32;
     let _ = unregister_node(id);
     let parent = drv::try_device_add(Arc::new(drv::Device::new(
@@ -81,6 +85,7 @@ fn register_node_rejects_removed_exact_parent() {
 
 #[test]
 fn register_node_rejects_parent_with_removed_transitive_ancestor() {
+    let _serial = super::serialize();
     const PCI_DEVICE_ID: u16 = 0x1052;
 
     let id = (MAX_EVDEV - 6) as u32;
@@ -112,6 +117,7 @@ fn register_node_rejects_parent_with_removed_transitive_ancestor() {
 
 #[test]
 fn unregister_then_register_restores_model_owned_event_node() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 3) as u32;
     let addr = alloc::format!("event{id}");
     let _ = unregister_node(id);
@@ -133,6 +139,7 @@ fn unregister_then_register_restores_model_owned_event_node() {
 
 #[test]
 fn register_node_leaves_slot_free_when_model_publication_conflicts() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 2) as u32;
     let _ = unregister_node(id);
     let addr = alloc::format!("event{id}");

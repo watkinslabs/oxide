@@ -1,10 +1,12 @@
 // Driver unbind/rebind of one evdev child, end to end through the model.
 //
-// A rebind republishes `/dev/input/eventN` under the SAME name and the same
-// inode number, but the node it publishes must address the NEW endpoint: the
-// previous generation is disconnected and every file description opened against
-// it keeps reporting `ENODEV` — Linux does not silently retarget an open file
-// description at a replacement device.
+// A rebind republishes `/dev/input/eventN` under the same name and the same
+// device number. Two Linux contracts have to hold at once:
+//   * `open(2)` resolves the live device by NUMBER, so ANY node addressing that
+//     event index — including the inode the previous binding minted — attaches
+//     to the NEW device.
+//   * an ALREADY-OPEN file description keeps the endpoint it attached to and
+//     goes on reporting `ENODEV`; it is never retargeted at the replacement.
 
 use alloc::sync::Arc;
 
@@ -58,6 +60,7 @@ fn push_current(id: u32) {
 
 #[test]
 fn a_rebound_child_publishes_a_node_addressing_the_new_endpoint() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 7) as u32;
     let _ = unregister_node(id);
 
@@ -81,17 +84,19 @@ fn a_rebound_child_publishes_a_node_addressing_the_new_endpoint() {
     push_current(id);
     let mut bytes = [0u8; INPUT_EVENT_BYTES * PACKET_EVENT_COUNT];
     assert_eq!(live.read(&mut bytes).unwrap(), INPUT_EVENT_BYTES * PACKET_EVENT_COUNT);
-    assert_eq!(
-        try_open_node(first_node).err(),
-        Some(VfsError::Enodev),
-        "the previous binding's node is not openable — the exact live-boot symptom",
-    );
+    // A node addresses its device by NUMBER (Linux `chrdev_open`), so even the
+    // inode minted for the previous binding opens onto the LIVE device — a node
+    // cached, bind-mounted, or cloned before the rebind still works.
+    let via_old_node = open_node(first_node);
+    push_current(id);
+    assert_eq!(via_old_node.read(&mut bytes).unwrap(), INPUT_EVENT_BYTES * PACKET_EVENT_COUNT);
 
     assert!(unregister_node(id));
 }
 
 #[test]
 fn a_file_opened_before_the_unbind_keeps_reporting_enodev_after_the_rebind() {
+    let _serial = super::serialize();
     let id = (MAX_EVDEV - 8) as u32;
     let _ = unregister_node(id);
 

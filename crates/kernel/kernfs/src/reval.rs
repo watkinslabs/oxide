@@ -30,43 +30,39 @@ pub static KERNFS_DENTRY_OPS: DentryOps = DentryOps {
 /// The pseudo-fs directory backing `inode`, if it is one. # C: O(1)
 fn pseudo_dir(inode: &Inode) -> Option<&PseudoDir> { inode.private::<PseudoDir>() }
 
-/// The inode `i_op->lookup` would currently resolve `name` to under `dir`,
-/// WITHOUT taking the `iget` reference a real lookup owes. Mirrors the cache-hit
-/// half of `iget` for an SB-bearing tree so the comparison below sees the same
-/// object identity a walk would install. # C: O(log N_children)
-pub(crate) fn peek_child(dir: &PseudoDir, name: &str) -> Option<InodeRef> {
-    let entry = {
-        let children = dir.children.lock();
-        match children.get(name)? {
-            PseudoEntry::Dir(child) => Ok(Arc::clone(child)),
-            PseudoEntry::Leaf(inode) => Err(InodeRef::clone(inode)),
-        }
-    };
-    let inode = match entry { Ok(child) => child.as_inode(), Err(leaf) => leaf };
-    match dir.sb.lock().upgrade() {
-        Some(sb) => Some(sb.ilookup(inode.ino()).unwrap_or(inode)),
-        None => Some(inode),
-    }
-}
-
 /// Drop the inode-cache slots of entries a removal detached from `dir`'s tree,
 /// so a later re-registration under the same inode number resolves to the NEW
 /// object instead of the evicted one. No-op for a tree with no superblock (the
-/// devtmpfs/sysfs shape), which caches nothing by inode number. # C: O(N)
+/// devtmpfs shape), which caches nothing by inode number. # C: O(N)
 pub(crate) fn forget_detached(dir: &PseudoDir, detached: &[InodeRef]) {
-    let Some(sb) = dir.sb.lock().upgrade() else { return };
+    let sb = dir.sb.lock().clone();
+    let Some(sb) = sb.upgrade() else { return };
     for inode in detached { sb.iforget(inode.ino()); }
 }
 
-/// Whether `cached` is still the object the tree publishes at `name` under
-/// `dir`. `None` for `cached` is a negative dentry, valid only while the name
-/// is still absent. Removal, replacement, rename, and move all change the
-/// answer, which is the Linux `kernfs_dop_revalidate` question set.
+/// Whether `cached` still names the tree NODE published at `name` under `dir`.
+///
+/// Node identity, never inode identity: a directory's `vfs::Inode` is a
+/// rebuildable view of its node (the inode cache holds only a weak slot, so an
+/// eviction mints a fresh inode for the same live directory), while the node
+/// itself lives as long as the tree publishes it. Comparing inodes would report
+/// a live, mounted-on directory as stale and unhash it, orphaning the mount.
+/// Removal, replacement, rename, and move all change the node under a name,
+/// which is the Linux `kernfs_dop_revalidate` question set. `None` for `cached`
+/// is a negative dentry, valid only while the name is still absent.
 /// # C: O(log N_children)
 pub(crate) fn entry_is_current(dir: &PseudoDir, name: &str, cached: Option<&InodeRef>) -> bool {
-    match (peek_child(dir, name), cached) {
+    enum Node { Dir(Arc<PseudoDir>), Leaf(InodeRef) }
+    let published = dir.children.lock().get(name).map(|entry| match entry {
+        PseudoEntry::Dir(child)  => Node::Dir(Arc::clone(child)),
+        PseudoEntry::Leaf(inode) => Node::Leaf(InodeRef::clone(inode)),
+    });
+    match (published, cached) {
         (None, None) => true,
-        (Some(current), Some(cached)) => Arc::ptr_eq(&current, cached),
+        (Some(Node::Dir(child)), Some(cached)) => cached
+            .private::<PseudoDir>()
+            .is_some_and(|node| core::ptr::eq(node, Arc::as_ptr(&child))),
+        (Some(Node::Leaf(leaf)), Some(cached)) => Arc::ptr_eq(&leaf, cached),
         _ => false,
     }
 }
@@ -86,9 +82,21 @@ fn kernfs_revalidate(d: &Arc<Dentry>, _reval: bool) -> bool {
 mod tests {
     use super::*;
     use crate::tree::dir_ino;
-    use alloc::string::String;
 
     const TEST_FSID: u64 = 0x5000_0000_0000_00ff;
+    const TEST_MAGIC: u64 = 0x5245_5641;
+
+    fn test_superblock(fs: &Arc<crate::PseudoFs>) -> Arc<vfs::superblock::SuperBlock> {
+        use vfs::fs::{FileSystem, FsFlags, FsType};
+        let ty: Arc<dyn vfs::FileSystemType> = FsType::new(
+            "kernfs", TEST_MAGIC, FsFlags::empty(),
+            alloc::boxed::Box::new(|_, _, _, _| unreachable!("not mounted through ->mount")),
+        );
+        vfs::fs::superblock_from_filesystem(
+            ty, Arc::clone(fs) as Arc<dyn FileSystem>, fs.root(),
+            alloc::string::String::from("kernfs"),
+        ).expect("kernfs test superblock")
+    }
 
     fn leaf(ino: u64) -> InodeRef {
         vfs::InodeBuilder::new(
@@ -162,12 +170,31 @@ mod tests {
         assert!(!entry_is_current(&dir, "input", Some(&child)));
     }
 
+    /// The inode cache holds only a weak slot, so an eviction makes the next
+    /// `i_op->lookup` mint a FRESH inode for the same live directory. Comparing
+    /// inodes here reported `/sys/fs` stale, unhashed it, and orphaned the
+    /// cgroup2 mount beneath it — every service then failed to create its
+    /// cgroup. The node, not its inode view, is the identity.
+    #[test]
+    fn a_directory_whose_inode_view_was_rebuilt_is_still_current() {
+        let fs = crate::PseudoFs::new("kernfs", TEST_MAGIC);
+        let root = Arc::clone(fs.root_dir());
+        root.ensure_dir_path("fs");
+        let sb = test_superblock(&fs);
+        let first = root.lookup_path("fs").expect("directory view");
+        sb.iforget(first.ino()); // cache pressure drops the weak slot
+        let second = root.lookup_path("fs").expect("rebuilt directory view");
+        assert!(!Arc::ptr_eq(&first, &second), "eviction mints a new inode view");
+        assert!(entry_is_current(&root, "fs", Some(&first)),
+            "a live directory stays current across an inode-cache eviction");
+        assert!(entry_is_current(&root, "fs", Some(&second)));
+    }
+
     #[test]
     fn an_unrelated_name_never_matches_a_cached_inode() {
         let dir = root();
         dir.insert_path("event0", leaf(6));
         assert!(!entry_is_current(&dir, "event0", Some(&leaf(6))),
             "identity, not inode number, decides");
-        let _ = String::new();
     }
 }

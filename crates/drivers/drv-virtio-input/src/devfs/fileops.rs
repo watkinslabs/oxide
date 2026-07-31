@@ -9,7 +9,7 @@ use crate::consts::{
     EVENT_MINOR_BASE, EVDEV_FIRST_INO_OFFSET, EVDEV_NODE_PERMISSIONS, INPUT_MAJOR,
 };
 use crate::devfs::shared::{
-    evdev_endpoint, evdev_open, install_open, release_open, EvdevData, EvdevEndpoint,
+    evdev_open, install_open, open_endpoint, release_open, EvdevData, EvdevEndpoint,
     EVDEV_INO_BASE,
 };
 #[cfg(test)]
@@ -147,7 +147,7 @@ impl FileOps for EvdevFileOps {
     }
 
     fn on_open_file(&self, file: &File) -> KResult<()> {
-        let endpoint = Arc::clone(evdev_endpoint(file.inode()).ok_or(VfsError::Enodev)?);
+        let endpoint = open_endpoint(file.inode()).ok_or(VfsError::Enodev)?;
         let opened = endpoint.open().ok_or(VfsError::Enodev)?;
         install_open(file, opened);
         Ok(())

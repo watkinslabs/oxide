@@ -11,6 +11,7 @@ fn accept_test_output(
 
 #[test]
 fn evdev_clockid_ioctl_accepts_supported_clocks() {
+    let _serial = super::serialize();
     const UNSUPPORTED_CLOCK_ID: i32 = 6;
 
     let file = test_file(0);
@@ -42,6 +43,7 @@ fn evdev_clockid_ioctl_accepts_supported_clocks() {
 
 #[test]
 fn evdev_repeat_ioctl_round_trips_real_device_state() {
+    let _serial = super::serialize();
     const REQUESTED_ID: u32 = 4;
     const REQUESTED_REPEAT: [u32; input::REP_CNT] = [300, 45];
 
@@ -70,6 +72,7 @@ fn evdev_repeat_ioctl_round_trips_real_device_state() {
 
 #[test]
 fn evdev_identity_and_capability_ioctls_project_canonical_model() {
+    let _serial = super::serialize();
     const REQUESTED_ID: u32 = 5;
     const KEY_CODE: u16 = 30;
     const LED_CODE: u16 = 2;
@@ -180,6 +183,7 @@ fn evdev_identity_and_capability_ioctls_project_canonical_model() {
 
 #[test]
 fn evdev_force_feedback_ioctl_is_not_absinfo_alias() {
+    let _serial = super::serialize();
     // EVIOCSFF's number sits one past the absinfo range, so it must not be
     // decoded as an axis query. A device with no force-feedback engine refuses
     // effect upload and erase with ENOSYS, and reports zero effect slots.
@@ -204,6 +208,7 @@ fn evdev_force_feedback_ioctl_is_not_absinfo_alias() {
 
 #[test]
 fn evdev_grab_is_per_open_file_description() {
+    let _serial = super::serialize();
     const EVDEV_ID: u32 = 1;
     const KEY_CODE: u16 = 30;
 
@@ -229,6 +234,7 @@ fn evdev_grab_is_per_open_file_description() {
 
 #[test]
 fn evdev_grab_is_released_on_last_close() {
+    let _serial = super::serialize();
     const EVDEV_ID: u32 = 2;
 
     let owner = test_file(EVDEV_ID);
@@ -241,6 +247,7 @@ fn evdev_grab_is_released_on_last_close() {
 
 #[test]
 fn evdev_revoke_disables_current_open_file() {
+    let _serial = super::serialize();
     const EVDEV_ID: u32 = 3;
 
     let file = test_file(EVDEV_ID);
@@ -256,6 +263,7 @@ fn evdev_revoke_disables_current_open_file() {
 
 #[test]
 fn evdev_write_commits_output_through_exact_canonical_identity() {
+    let _serial = super::serialize();
     const DEVICE_KEY_RAW: u32 = 0x7000_0020;
     const LED_CODE: u16 = 2;
     const LED_VALUE: i32 = 1;
