@@ -101,6 +101,8 @@ mod probe;
 pub use probe::get_display_info;
 use probe::submit_one;
 
+mod damage;
+
 mod scanout;
 pub use scanout::{
     blank_scanout_for_key,
