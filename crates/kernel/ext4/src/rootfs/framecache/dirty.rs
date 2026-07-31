@@ -80,19 +80,36 @@ pub(super) fn register(s: &Arc<Ext4FrameStore>) {
 /// ANY store's writeback failed — every store is still attempted (POSIX msync
 /// flushes what it can), but the caller must surface `EIO` like `fsync`, not
 /// silently swallow the loss. # C: O(N_stores · N_dirty)
-pub fn flush_all_dirty() -> Result<(), ()> {
+pub fn flush_all_dirty() -> Result<(), ()> { flush_dirty(None) }
+
+/// Flush the registered frame stores belonging to ONE mount — the
+/// per-superblock scope `sync_fs` needs. `None` flushes every mount
+/// (`msync(2)`, which names no filesystem).
+///
+/// `DIRTY_STORES` is process-wide across every ext4 mount, so the unscoped walk
+/// made `syncfs(fd on /home)` write back `/`'s dirty frames and then commit
+/// whichever mount happened to be first in the list — a different filesystem
+/// from the one the caller named, and a different one from the `commit_batch`
+/// its own `sync_fs` goes on to run.
+/// # C: O(N_stores · N_dirty)
+pub fn flush_dirty(only: Option<&alloc::sync::Arc<crate::Mount>>) -> Result<(), ()> {
     let snapshot: Vec<Weak<Ext4FrameStore>> = { DIRTY_STORES.lock().iter().cloned().collect() };
     let mut failed = false;
-    let mut mount: Option<alloc::sync::Arc<crate::Mount>> = None;
+    let mut mounts: Vec<alloc::sync::Arc<crate::Mount>> = Vec::new();
     for w in &snapshot {
-        if let Some(s) = w.upgrade() {
-            if mount.is_none() { mount = Some(s.st.mount.clone()); }
-            if s.writeback().is_err() { failed = true; }
+        let Some(s) = w.upgrade() else { continue };
+        if let Some(m) = only {
+            if !alloc::sync::Arc::ptr_eq(&s.st.mount, m) { continue; }
         }
+        if !mounts.iter().any(|m| alloc::sync::Arc::ptr_eq(m, &s.st.mount)) {
+            mounts.push(s.st.mount.clone());
+        }
+        if s.writeback().is_err() { failed = true; }
     }
     DIRTY_STORES.lock().retain(|w| w.strong_count() > 0);
-    // Durability point (sync/syncfs/msync): drain the running batch to disk so
-    // the metadata the writebacks just staged is actually committed.
-    if let Some(m) = mount { if m.commit_batch().is_err() { failed = true; } }
+    // Durability point (sync/syncfs/msync): drain the running batch of EVERY
+    // mount whose frames were just staged — one arbitrary mount is not enough
+    // when the walk covered several.
+    for m in &mounts { if m.commit_batch().is_err() { failed = true; } }
     if failed { Err(()) } else { Ok(()) }
 }

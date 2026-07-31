@@ -20,6 +20,7 @@ pub(super) fn make_tmpfs_sock_inode(perm: u16, uid: u32, gid: u32, sb: Weak<Supe
         let mut b = InodeBuilder::new(ino, mk_mode(FileType::Socket, perm),
             default_inode_ops(), Arc::new(TmpfsErrFileOps))
             .owner(uid, gid)
+            .btime(super::birth_time())
             .xattrs(vfs::SimpleXattrs::new())
             .fsid(fsid_of(&sb2));
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
@@ -37,6 +38,7 @@ pub(super) fn make_tmpfs_special_inode(ft: FileType, perm: u16, rdev: u32, uid: 
         let mut b = InodeBuilder::new(ino, mk_mode(ft, perm),
             default_inode_ops(), Arc::new(TmpfsErrFileOps))
             .owner(uid, gid)
+            .btime(super::birth_time())
             .rdev(rdev)
             .xattrs(vfs::SimpleXattrs::new())
             .fsid(fsid_of(&sb2));

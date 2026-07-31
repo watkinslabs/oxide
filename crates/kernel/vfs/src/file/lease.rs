@@ -214,21 +214,34 @@ impl File {
     pub fn dnotify(&self) -> u32 { self.dnotify_mask.load(Ordering::Acquire) }
 
     /// Deliver a lease-break / dnotify signal to this description's `f_owner`
-    /// (Linux `lease->fl_lmops->lm_break` → `kill_fasync` and `send_sigio`).
+    /// (Linux `lease->fl_lmops->lm_break` → `kill_fasync(.., SIGIO, POLL_MSG)`
+    /// and dnotify's `send_sigio(fown, dn->dn_fd, POLL_MSG)`). Both name
+    /// `POLL_MSG` as the reason, so the `_sigpoll` record an `F_SETSIG` handler
+    /// reads carries that band and the watched descriptor.
+    ///
     /// Unlike `kill_fasync`, a lease/dnotify holder need NOT be `O_ASYNC` — the
     /// `F_SETLEASE`/`F_NOTIFY` arm IS the delivery registration. Sends the
     /// `F_SETSIG` signal or the default `SIGIO`, with the captured owner creds,
     /// via the installed hook. No-op without an owner or hook. # C: O(1)
     pub fn notify_lease_break(&self) {
+        use super::async_notify::{band_for, reason, sicode_for, AsyncSignal};
         let owner = self.owner.load(Ordering::Acquire);
         if owner == 0 { return; }
         let h = SIGIO_HOOK.load(Ordering::Acquire);
         if h == 0 { return; }
+        let chosen = self.sig();
         let sig = self.fasync_signal(SIGIO_DFL);
         let (uid, euid) = self.f_owner_creds();
         // SAFETY: h installed by `set_sigio_hook` with the documented
-        // fn(i32,i32,u32,u32) signature; the cast round-trips that exact type.
-        let f: fn(i32, i32, u32, u32) = unsafe { core::mem::transmute(h) };
-        f(owner, sig, uid, euid);
+        // fn(AsyncSignal) signature; the cast round-trips that exact type.
+        let f: fn(AsyncSignal) = unsafe { core::mem::transmute(h) };
+        f(AsyncSignal {
+            owner, sig, uid, euid,
+            code: sicode_for(sig, reason::POLL_MSG),
+            band: band_for(reason::POLL_MSG),
+            ty:   self.f_owner_type(),
+            fd:   self.fasync_fd(),
+            queued: chosen != 0,
+        });
     }
 }

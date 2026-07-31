@@ -122,7 +122,7 @@ mod live {
             pid: spid,
             uid: cur.creds.ruid.load(Ordering::Relaxed),
             value: 0,
-            sys:   None, fault: None
+            sys:   None, fault: None, poll: None
         };
         // THE enqueue (`send_signal_locked`), `PIDTYPE_PID` — the thread's own
         // pending set, which is what makes `tgkill(2)` address a specific

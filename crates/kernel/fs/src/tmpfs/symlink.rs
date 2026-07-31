@@ -35,6 +35,7 @@ pub(super) fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: We
         let mut b = InodeBuilder::new(ino, mk_mode(FileType::Symlink, 0o777),
             Arc::new(TmpfsSymlinkOps), vfs::default_file_ops())
             .owner(uid, gid)
+            .btime(super::birth_time())
             .size(target.len() as u64)
             .fsid(fsid_of(&sb2))
             .xattrs(vfs::SimpleXattrs::new())

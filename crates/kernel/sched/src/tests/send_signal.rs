@@ -127,7 +127,7 @@ fn a_queued_realtime_overflow_reports_eagain_only_for_a_user_queueing_sender() {
     let t = task(708);
     let queued = |v: u64| crate::task::SigInfo {
         signo: SIGRTMIN, code: signum::SI_QUEUE, pid: 1, uid: 0, value: v,
-        sys: None, fault: None,
+        sys: None, fault: None, poll: None,
     };
     for v in 0..crate::task::RT_QUEUE_CAP as u64 {
         assert_eq!(send::send_signal(&t, SIGRTMIN, SigSource::Info(queued(v)),
@@ -238,7 +238,7 @@ fn a_kill_record_selects_the_rt_arm_and_renders_the_sender() {
 #[test]
 fn a_sigchld_record_selects_the_four_byte_si_status_arm() {
     let rec = crate::task::SigInfo {
-        signo: SIGCHLD, code: 1, pid: 5, uid: 0, value: u64::MAX, sys: None, fault: None,
+        signo: SIGCHLD, code: 1, pid: 5, uid: 0, value: u64::MAX, sys: None, fault: None, poll: None,
     };
     let mut buf = [0u8; 128];
     hal::write_siginfo(&mut buf, SIGCHLD, Some(rec.payload(SIGCHLD)));
@@ -264,7 +264,7 @@ fn threaded(leader_tid: u32) -> (Arc<Task>, Arc<Task>) {
 /// si_status = the wait-encoded status, si_code = CLD_*.
 fn child_exit(code: i32, vpid: u32, status: u64) -> crate::task::SigInfo {
     crate::task::SigInfo { signo: SIGCHLD, code, pid: vpid, uid: 0, value: status,
-        sys: None, fault: None }
+        sys: None, fault: None, poll: None }
 }
 
 #[test]

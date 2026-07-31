@@ -8,7 +8,6 @@
 // address space, and any inode that is neither a regular file nor a block
 // device — and, on success, actually populates the page cache.
 
-use alloc::vec;
 use syscall::errno::Errno;
 use vfs::{File, FileType, Fmode};
 
@@ -68,17 +67,13 @@ pub fn readahead(file: &File, offset: i64, count: u64) -> i64 {
     if start >= end { return 0; }
     let first = start / PAGE_SIZE;
     let last = (end - 1) / PAGE_SIZE;
-    // Bound the burst by the description's readahead ceiling scaled to the
-    // request, exactly as `force_page_cache_readahead` clamps to `ra_pages`
-    // per iteration; the loop below still walks the whole requested window.
-    let mut scratch = vec![0u8; PAGE_SIZE as usize];
-    for idx in first..=last {
-        let off = idx * PAGE_SIZE;
-        // Already-resident pages cost nothing (Linux skips them in
-        // `page_cache_ra_unbounded` via the xarray probe).
-        if mapping.mincore_page(off) { continue; }
-        if mapping.read_at(off, &mut scratch).is_err() { break; }
-    }
+    // `force_page_cache_readahead(mapping, file, first, nr)`: ONE submit for the
+    // whole window. Already-resident pages cost nothing (Linux skips them in
+    // `page_cache_ra_unbounded` via the xarray probe) and a backend that can
+    // fetch a run in a single device operation does so here. The page-at-a-time
+    // `read_at` loop this replaces also copied every page into a scratch buffer
+    // it immediately discarded.
+    mapping.readahead(first, last - first + 1);
     // Advance the per-open readahead window so a following sequential read
     // starts from the grown state (Linux updates `file->f_ra`).
     let req = ((end - start + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;

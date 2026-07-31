@@ -20,6 +20,11 @@ pub struct SigInfo {
     /// OVERLAY `pid`/`uid`/`value` in `siginfo_t`, so the delivery path and
     /// `copy_siginfo_to_user` must pick this arm when it is present.
     pub fault: Option<hal::SigFault>,
+    /// `_sigpoll` union arm (`send_sigio_to_task`, `fs/fcntl.c`) — `Some` for an
+    /// `O_ASYNC`/`F_SETSIG` readiness signal. Carries si_band / si_fd, which
+    /// OVERLAY `pid`/`uid`/`value`, so the delivery path must pick this arm when
+    /// it is present.
+    pub poll: Option<hal::SigPoll>,
 }
 
 impl SigInfo {
@@ -46,6 +51,7 @@ impl SigInfo {
             chld_arm: sig == crate::signum::Signum::Sigchld as u32,
             sigsys: self.sys,
             fault: self.fault,
+            poll: self.poll,
         }
     }
 }

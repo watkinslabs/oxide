@@ -129,8 +129,8 @@ impl vfs::FileOps for InetFileOps {
     fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
         match file.inode().private::<InetSocket>() { Some(s) => s.ioctl_int(cmd), None => Err(vfs::VfsError::Einval) }
     }
-    fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
-        file.set_fasync_state(on);
+    fn fasync_file(&self, fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
+        file.set_fasync_state(fd, on);
         Ok(())
     }
     fn on_release_file(&self, file: &vfs::File) {

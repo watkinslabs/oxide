@@ -36,19 +36,28 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     /// on every fd it might already hold — 182 times in one boot here — and got
     /// EINVAL, because the command simply did not exist.
     const F_DUPFD_QUERY: u64 = 1027;
+    /// Linux 6.12 `F_CREATED_QUERY` (`fs/fcntl.c` `f_created_query`): "did the
+    /// open that produced this fd CREATE the file?". Reads `FMODE_CREATED`,
+    /// which this kernel defined and tested but never set nor read.
+    const F_CREATED_QUERY: u64 = 1028;
+    /// `F_GETOWNER_UIDS` — copy out `f_owner.uid` / `f_owner.euid`, the pair
+    /// `F_SETOWN` snapshots and `sigio_perm` gates delivery on. Without this
+    /// command the snapshot was write-only.
+    const F_GETOWNER_UIDS: u64 = 17;
     const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
     const F_ADD_SEALS: u64 = 1033; const F_GET_SEALS: u64 = 1034;
     const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
     const F_SETSIG: u64 = 10; const F_GETSIG: u64 = 11;
     const F_SETOWN_EX: u64 = 15; const F_GETOWN_EX: u64 = 16;
-    // f_owner_ex.type (Linux fcntl.h): TID / PID / PGRP.
-    const F_OWNER_TID: i32 = 0; const F_OWNER_PID: i32 = 1; const F_OWNER_PGRP: i32 = 2;
+    use vfs::file::owner_type::{F_OWNER_PGRP, F_OWNER_PID, F_OWNER_TID};
     // F_*LEASE / F_NOTIFY (Linux fcntl.h, asm-generic).
     const F_SETLEASE: u64 = 1024; const F_GETLEASE: u64 = 1025; const F_NOTIFY: u64 = 1026;
     // F_{GET,SET}_RW_HINT + the per-file variants (Linux fcntl.h). arg is a
     // pointer to a u64 RWH_WRITE_LIFE_* value (NOT_SET=0 … EXTREME=5).
+    // F_{GET,SET}_RW_HINT. The per-file variants (1037/1038) were removed from
+    // Linux's `do_fcntl` and now fall to its `default:` EINVAL, so they are not
+    // accepted here either — the uapi numbers survive only for source compat.
     const F_GET_RW_HINT: u64 = 1035; const F_SET_RW_HINT: u64 = 1036;
-    const F_GET_FILE_RW_HINT: u64 = 1037; const F_SET_FILE_RW_HINT: u64 = 1038;
     const RWH_WRITE_LIFE_EXTREME: u64 = 5;
     const O_ASYNC: u64 = 0o20000;
     // Lease types (== the l_type record-lock values): read / write / unlock.
@@ -71,6 +80,10 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         };
     }
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return ebadf };
+    if cmd == F_CREATED_QUERY {
+        // `!!(filp->f_mode & FMODE_CREATED)`.
+        return file.f_mode().contains(vfs::Fmode::CREATED) as i64;
+    }
     if cmd == F_DUPFD_QUERY {
         // `f_dupfd_query`: EBADF for an empty `arg` slot, else the pointer
         // comparison `fd_file(f) == filp` — 1 when both descriptors name the
@@ -173,15 +186,36 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                 current = Some(seals.load(Ordering::Acquire));
             }
         }
-        F_GETOWN => file.owner.load(core::sync::atomic::Ordering::Acquire) as i64,
+        // `f_getown`: a process-group owner is reported as a NEGATIVE pgid,
+        // the legacy encoding `F_GETOWN_EX` exists to replace.
+        F_GETOWN => file.f_getown() as i64,
         // F_SETOWN: record the SIGIO target AND snapshot the requesting creds
         // (Linux `f_setown` -> `__f_setown` capturing `current_cred()->uid/euid`)
         // so a later async signal is permission-checked against the credentials
         // that asked for ownership, not those current when it fires. Ensure the
         // sched SIGIO delivery hook is installed.
         F_SETOWN => {
+            let who = arg as i32;
+            // `if (who == INT_MIN) return -EINVAL;` — negating it overflows.
+            if who == i32::MIN { return -(Errno::Einval.as_i32() as i64); }
+            let (id, ty) = if who < 0 { (-who, F_OWNER_PGRP) } else { (who, F_OWNER_PID) };
+            // `find_vpid(who)` returning NULL is `ESRCH`: naming a target that
+            // does not exist is an error, not a silently stored id.
+            if id != 0 && !owner_exists(id, ty) { return -(Errno::Esrch.as_i32() as i64); }
             sched::live::sigpend::install_sigio_hook();
-            file.f_setown(arg as i32, fowner_uid(), fowner_euid());
+            file.f_setown(id, ty, fowner_uid(), fowner_euid());
+            0
+        }
+        // `F_GETOWNER_UIDS`: copy out the `f_owner` credential snapshot as two
+        // consecutive `uid_t`. `f_setown` captured them; this reads them back.
+        F_GETOWNER_UIDS => {
+            if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
+            let (uid, euid) = file.f_owner_creds();
+            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
+            unsafe {
+                core::ptr::write_unaligned(arg as *mut u32, uid);
+                core::ptr::write_unaligned((arg + 4) as *mut u32, euid);
+            }
             0
         }
         // F_GETSIG/F_SETSIG (Linux f_owner.signum): the signal delivered on
@@ -193,12 +227,13 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             file.set_sig(sig);
             0
         }
-        // F_GETOWN_EX: write f_owner_ex { i32 type; i32 pid } (8 B). A negative
-        // stored owner is a process group (Linux convention) (D36).
+        // F_GETOWN_EX: write f_owner_ex { i32 type; i32 pid } (8 B). The stored
+        // `pid_type` is reported verbatim, so an `F_OWNER_TID` owner does not
+        // come back as `F_OWNER_PID` (D36).
         F_GETOWN_EX => {
             if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
-            let raw = file.owner.load(core::sync::atomic::Ordering::Acquire);
-            let (ty, pid) = if raw < 0 { (F_OWNER_PGRP, -raw) } else { (F_OWNER_PID, raw) };
+            let ty = file.f_owner_type();
+            let pid = file.owner.load(core::sync::atomic::Ordering::Acquire);
             // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
             unsafe {
                 core::ptr::write_unaligned(arg as *mut i32, ty);
@@ -215,15 +250,16 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                 (core::ptr::read_unaligned(arg as *const i32),
                  core::ptr::read_unaligned((arg + 4) as *const i32))
             };
-            let stored = match ty {
-                F_OWNER_TID | F_OWNER_PID => pid,
-                F_OWNER_PGRP              => -pid,
-                _ => return -(Errno::Einval.as_i32() as i64),
-            };
+            if !matches!(ty, F_OWNER_TID | F_OWNER_PID | F_OWNER_PGRP) {
+                return -(Errno::Einval.as_i32() as i64);
+            }
+            // `find_vpid(owner.pid)` NULL for a non-zero pid is `ESRCH`.
+            if pid != 0 && !owner_exists(pid, ty) { return -(Errno::Esrch.as_i32() as i64); }
             sched::live::sigpend::install_sigio_hook();
-            // Capture the requesting creds too (same as F_SETOWN); TID is routed
-            // as PID (no per-thread fasync queue yet).
-            file.f_setown(stored, fowner_uid(), fowner_euid());
+            // Capture the requesting creds too (same as F_SETOWN). The type is
+            // STORED, so delivery reaches one thread / one process / a group as
+            // asked and `F_GETOWN_EX` reports back what was set.
+            file.f_setown(pid, ty, fowner_uid(), fowner_euid());
             0
         }
         // F_GETLEASE (Linux `fcntl_getlease`): the lease type held on the open
@@ -252,7 +288,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             } else {
                 if file.owner.load(core::sync::atomic::Ordering::Acquire) == 0 {
                     let tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as i32;
-                    file.f_setown(tgid, fowner_uid(), fowner_euid());
+                    file.f_setown(tgid, F_OWNER_PID, fowner_uid(), fowner_euid());
                 }
                 sched::live::sigpend::install_sigio_hook();
                 vfs::file::lease_register(&file);
@@ -282,7 +318,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
                 file.set_dnotify(file.dnotify() | mask);
                 if file.owner.load(core::sync::atomic::Ordering::Acquire) == 0 {
                     let tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as i32;
-                    file.f_setown(tgid, fowner_uid(), fowner_euid());
+                    file.f_setown(tgid, F_OWNER_PID, fowner_uid(), fowner_euid());
                 }
                 sched::live::sigpend::install_sigio_hook();
                 vfs::file::dnotify_register(&file);
@@ -291,7 +327,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         }
         // F_GET_RW_HINT / F_GET_FILE_RW_HINT (Linux `fcntl_rw_hint`): write the
         // stored RWH_WRITE_LIFE_* hint to the u64 the caller points `arg` at.
-        F_GET_RW_HINT | F_GET_FILE_RW_HINT => {
+        F_GET_RW_HINT => {
             if let Err(rv) = validate_user_buf(arg, 8, 8) { return rv; }
             // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
             unsafe { core::ptr::write_unaligned(arg as *mut u64, file.rw_hint()); }
@@ -299,7 +335,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         }
         // F_SET_RW_HINT / F_SET_FILE_RW_HINT: read the u64 hint, reject any value
         // above RWH_WRITE_LIFE_EXTREME (Linux `rw_hint_valid`), then store it.
-        F_SET_RW_HINT | F_SET_FILE_RW_HINT => {
+        F_SET_RW_HINT => {
             if let Err(rv) = validate_user_buf(arg, 8, 8) { return rv; }
             // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 reads through caller's AS.
             let hint = unsafe { core::ptr::read_unaligned(arg as *const u64) };
@@ -313,6 +349,18 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         }
         _ => -(Errno::Einval.as_i32() as i64),
     }
+}
+
+/// Whether the id an `F_SETOWN`/`F_SETOWN_EX` names resolves to something
+/// live — Linux `find_vpid(who)`, which yields `ESRCH` when it does not. The
+/// vpid is read in the caller's pid namespace, which is the namespace
+/// `F_SETOWN` records in.
+/// # C: O(log N) for a task; O(N_tasks) for a process group
+fn owner_exists(id: i32, ty: i32) -> bool {
+    use vfs::file::owner_type::F_OWNER_PGRP;
+    if id <= 0 { return false; }
+    if ty == F_OWNER_PGRP { return !sched::registry::tasks_in_pgrp(id as u32).is_empty(); }
+    sched::registry::lookup_by_vpid(id as u32).is_some()
 }
 
 /// F_SETLK / F_SETLKW / F_GETLK + F_OFD_* ABI shim (`docs/53`): validate the

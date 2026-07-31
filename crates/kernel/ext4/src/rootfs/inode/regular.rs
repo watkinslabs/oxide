@@ -371,6 +371,11 @@ impl AddressSpaceOps for Ext4FileMapping {
 
     fn mincore_page(&self, off: u64) -> bool { self.data.frames.mincore_page(off) }
 
+    /// One coalesced device read per window instead of the generic
+    /// page-at-a-time loop: a contiguous file maps to one physical run, so the
+    /// caller's whole readahead window is a single block request.
+    fn readahead(&self, start: u64, nr_pages: u64) { self.data.frames.readahead(start, nr_pages); }
+
     fn invalidate_range(&self, start: u64, end: u64) -> usize {
         self.data.frames.invalidate_range(start, end)
     }

@@ -5,7 +5,7 @@
 use super::*;
 
 fn rec(signo: u32, code: i32) -> SigInfo {
-    SigInfo { signo, code, pid: 0, uid: 0, value: 0, sys: None, fault: None }
+    SigInfo { signo, code, pid: 0, uid: 0, value: 0, sys: None, fault: None, poll: None }
 }
 
 fn enc(signo: u32, r: &SigInfo) -> [u8; SIGINFO_SIZE] {
