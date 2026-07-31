@@ -14,6 +14,8 @@
 // - resid:    getresuid/getresgid user writeback.
 // - fsid:     setfsuid/setfsgid (never fail; return the previous id).
 // - groups:   getgroups/setgroups + `may_setgroups` policy.
+// - userns:   `make_kuid`/`from_kuid_munged` — the one place a uid/gid
+//             crosses between userspace numbering and internal ids.
 // - snapshot: the one `current_cred()` -> `vfs::Cred` construction site.
 // - dispatch: cred slot table for `syscall_glue.rs`.
 // - caps:     capget/capset user-memory marshalling + target resolution.
@@ -32,6 +34,7 @@ mod limits;
 mod resid;
 mod snapshot;
 mod uid;
+mod userns;
 #[cfg(test)] mod tests;
 
 pub use commit::{set_suid_dumpable, suid_dumpable};

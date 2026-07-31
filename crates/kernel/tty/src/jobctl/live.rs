@@ -42,7 +42,7 @@ pub fn check(
         None => return Ok(()),
     };
     // SAFETY: single-mutator per `13§5`; current task on this CPU, ctty read-only here.
-    let ctty_ino = unsafe { (*cur.ctty.get()).as_ref().map(|i| i.ino()) };
+    let ctty_ino = cur.ctty_ino();
     let is_ctty = ctty_ino == Some(this_ino);
     let pgid = cur.pgid();
     let sig = match access {

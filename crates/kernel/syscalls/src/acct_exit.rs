@@ -93,7 +93,7 @@ fn collect(task: &sched::Task, internal_status: i32) -> AcctFacts {
 
     // `ac->ac_tty = tty ? old_encode_dev(tty_devnum(tty)) : 0`.
     // SAFETY: ctty slot single-mutator per `13§5`; the exiting task on this CPU is the sole writer.
-    f.tty = unsafe { (*task.ctty.get()).as_ref() }
+    f.tty = task.ctty().as_ref()
         .map(|t| ::fs::acct::record::old_encode_dev(t.rdev()))
         .unwrap_or(0);
 

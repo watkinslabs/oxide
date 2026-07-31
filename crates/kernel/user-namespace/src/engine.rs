@@ -107,6 +107,24 @@ pub fn snapshot_map<H: core::ops::Deref<Target = Namespace>>(owner: &H, kind: Id
     Ok(states.get(&owner.id()).and_then(|s| map_field(s, kind).clone()).unwrap_or_default())
 }
 
+/// Run `f` over the owner's live map WITHOUT copying it. `snapshot_map`
+/// allocates a `Vec` per call, which the credential syscalls (`getuid`,
+/// `getgroups`, every `set*id`) cannot afford on their hot path. The
+/// immortal initial namespace never reaches the lock: its map is the fixed
+/// identity extent. # C: O(log N + f)
+pub(crate) fn with_map<H: core::ops::Deref<Target = Namespace>, R>(owner: &H, kind: IdMapKind,
+    f: impl FnOnce(&[IdMapExtent]) -> R) -> Result<R, UserNsError>
+{
+    owner_id(owner)?;
+    if owner.is_initial() {
+        return Ok(f(&[IdMapExtent {
+            ns_id: INITIAL_NS_ID, host_id: INITIAL_HOST_ID, count: INITIAL_COUNT }]));
+    }
+    let states = STATE.lock();
+    let map = states.get(&owner.id()).and_then(|s| map_field(s, kind).as_deref());
+    Ok(f(map.unwrap_or(&[])))
+}
+
 /// Snapshot the current `setgroups` policy. The initial user namespace is
 /// permanently `Allow` (Linux never exposes a deny path for it). # C: O(log N)
 pub fn setgroups_policy<H: core::ops::Deref<Target = Namespace>>(owner: &H)

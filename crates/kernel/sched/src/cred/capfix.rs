@@ -31,12 +31,17 @@ const FS_CAP_MASK: u64 = (1u64 << crate::cap::CHOWN)
 pub(super) struct UidTriple { pub r: u32, pub e: u32, pub s: u32 }
 
 impl UidTriple {
+    /// Whether ANY of the three ids is the namespace's superuser. A namespace
+    /// that maps no id 0 has no superuser at all, so no id can match.
     /// # C: O(1)
-    fn has_root(&self) -> bool { self.r == ROOT_UID || self.e == ROOT_UID || self.s == ROOT_UID }
+    fn has_root(&self, root: Option<u32>) -> bool {
+        root.is_some_and(|k| self.r == k || self.e == k || self.s == k)
+    }
 }
 
-/// Linux `make_kuid(ns, 0)` — the superuser id inside the task's user ns.
-const ROOT_UID: u32 = 0;
+/// Whether `id` is the superuser of the namespace whose root maps to `root`.
+/// # C: O(1)
+fn is_root(id: u32, root: Option<u32>) -> bool { root == Some(id) }
 
 /// True when `SECBIT_NO_SETUID_FIXUP` suppresses every capability juggle.
 /// # C: O(1)
@@ -50,10 +55,14 @@ fn fixup_suppressed(cur: &Task) -> bool {
 /// openssh's `permanently_set_uid` safety probe (`setuid(0)` after
 /// `setresuid(uid,uid,uid)`) would succeed and sshd aborts with
 /// `was able to restore old [e]uid`.
+/// `root` is Linux `make_kuid(old->user_ns, 0)`: the INTERNAL id that is uid
+/// 0 inside the task's user namespace, not the literal 0. A task whose
+/// namespace maps 0 to host 100000 drops its capabilities on leaving 100000,
+/// and leaving host 0 — which it cannot even name — is not a root exit.
 /// # C: O(1)
-pub(super) fn task_fix_setuid(cur: &Task, old: UidTriple, new: UidTriple) {
+pub(super) fn task_fix_setuid(cur: &Task, old: UidTriple, new: UidTriple, root: Option<u32>) {
     if fixup_suppressed(cur) { return; }
-    if old.has_root() && !new.has_root() {
+    if old.has_root(root) && !new.has_root(root) {
         if cur.creds.securebits.load(Ordering::Acquire) & SECBIT_KEEP_CAPS == 0 {
             cur.creds.cap_permitted.store(0, Ordering::Release);
             cur.creds.cap_effective.store(0, Ordering::Release);
@@ -62,9 +71,9 @@ pub(super) fn task_fix_setuid(cur: &Task, old: UidTriple, new: UidTriple) {
         // transition, `SECURE_KEEP_CAPS` included.
         cur.creds.cap_ambient.store(0, Ordering::Release);
     }
-    if old.e == ROOT_UID && new.e != ROOT_UID {
+    if is_root(old.e, root) && !is_root(new.e, root) {
         cur.creds.cap_effective.store(0, Ordering::Release);
-    } else if old.e != ROOT_UID && new.e == ROOT_UID {
+    } else if !is_root(old.e, root) && is_root(new.e, root) {
         let permitted = cur.creds.cap_permitted.load(Ordering::Acquire);
         cur.creds.cap_effective.store(permitted, Ordering::Release);
     }
@@ -72,13 +81,14 @@ pub(super) fn task_fix_setuid(cur: &Task, old: UidTriple, new: UidTriple) {
 
 /// Linux `cap_task_fix_setuid(LSM_SETID_FS)` — `cap_drop_fs_set` when the
 /// fsuid leaves root, `cap_raise_fs_set` when it returns.
+/// `root` is `make_kuid(old->user_ns, 0)`, as in [`task_fix_setuid`].
 /// # C: O(1)
-pub(super) fn task_fix_setfsuid(cur: &Task, old_fsuid: u32, new_fsuid: u32) {
+pub(super) fn task_fix_setfsuid(cur: &Task, old_fsuid: u32, new_fsuid: u32, root: Option<u32>) {
     if fixup_suppressed(cur) { return; }
     let effective = cur.creds.cap_effective.load(Ordering::Acquire);
-    if old_fsuid == ROOT_UID && new_fsuid != ROOT_UID {
+    if is_root(old_fsuid, root) && !is_root(new_fsuid, root) {
         cur.creds.cap_effective.store(effective & !FS_CAP_MASK, Ordering::Release);
-    } else if old_fsuid != ROOT_UID && new_fsuid == ROOT_UID {
+    } else if !is_root(old_fsuid, root) && is_root(new_fsuid, root) {
         let permitted = cur.creds.cap_permitted.load(Ordering::Acquire);
         cur.creds.cap_effective.store(effective | (permitted & FS_CAP_MASK), Ordering::Release);
     }

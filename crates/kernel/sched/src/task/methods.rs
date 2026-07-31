@@ -93,6 +93,17 @@ impl Task {
     /// Move this task's whole process into session `sid`. # C: O(1)
     pub fn set_sid(&self, sid: u32) { self.thread_group.set_sid(sid); }
 
+    /// Controlling terminal of this task's PROCESS (Linux
+    /// `current->signal->tty`). # C: O(1); # Lk: TaskList
+    pub fn ctty(&self) -> Option<vfs::InodeRef> { self.thread_group.ctty() }
+
+    /// Inode number of the controlling terminal. # C: O(1); # Lk: TaskList
+    pub fn ctty_ino(&self) -> Option<u64> { self.thread_group.ctty_ino() }
+
+    /// Install or drop the whole process's controlling terminal.
+    /// # C: O(1); # Lk: TaskList
+    pub fn set_ctty(&self, tty: Option<vfs::InodeRef>) { self.thread_group.set_ctty(tty); }
+
     /// Debug-smp Task lifetime sentinel. Trips when a stale `Task*` is used after
     /// its allocation was freed/reused, before the later victim object faults.
     /// The task-identity canary (`dbg_canary_head`/`tail`) needs `debug-smp`
@@ -338,7 +349,6 @@ impl Task {
             sigactions: UnsafeCell::new(Arc::new(SigActions::new())),
             parent_arc: Spinlock::new(None),
             cmdline:    Spinlock::new(None),
-            ctty:       UnsafeCell::new(None),
             exe_path:   Spinlock::new(None),
             exe_inode:  Spinlock::new(None),
             rt_time_slice: AtomicU32::new(crate::sched_enc::RR_TIMESLICE_TICKS),
