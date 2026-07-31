@@ -29,6 +29,8 @@ impl InodeOps for ClassInputOps {
 }
 
 impl FileOps for ClassInputOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let devices = input_devs();
         let mut names = Vec::with_capacity(devices.len() * 2);

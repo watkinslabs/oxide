@@ -109,6 +109,8 @@ impl FileOps for EvdevFileOps {
         self.write_file(file, off, buf)
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, _inode: &Inode) -> u32 { POLL_ERR }
 
     fn poll_open_file(&self, file: &File) -> u32 {

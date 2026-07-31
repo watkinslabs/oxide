@@ -277,6 +277,8 @@ pub fn smoke_test() {
 /// (the real factory work is the open-path special-case → `allocate_pair`).
 struct PtmxSentinelFileOps;
 impl FileOps for PtmxSentinelFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _i: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Eio) }
     fn write(&self, _i: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }

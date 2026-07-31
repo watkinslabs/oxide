@@ -88,6 +88,8 @@ impl FileOps for MqFileOps {
     }
 
     /// Linux `mqueue_poll_file` (`ipc/mqueue.c:670-687`). # C: O(1)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll_file(&self, inode: &Inode, _pos: u64) -> u32 {
         let Some(p) = inode.private::<super::model::MqInodePrivate>() else { return 0 };
         let q = &p.queue;

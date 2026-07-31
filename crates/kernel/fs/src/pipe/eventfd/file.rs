@@ -91,6 +91,8 @@ impl FileOps for EventfdFileOps {
     /// fit, POLLERR once the counter sits at its overflow sentinel. Default
     /// always-ready poll busy-looped an sd-event epoll — see signalfd::poll.
     /// # C: O(1)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         let v = match inode.private::<EventfdData>() { Some(d) => *d.counter.lock(), None => return 0 };
         counter::poll_mask(v)

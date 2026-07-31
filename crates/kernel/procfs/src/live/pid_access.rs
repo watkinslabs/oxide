@@ -65,6 +65,8 @@ struct GatedData { tid: u32, entry: &'static str, gen: fn(u32) -> Vec<u8> }
 struct GatedFileOps;
 
 impl FileOps for GatedFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<GatedData>().ok_or(VfsError::Einval)?;
         if needs_ptrace_gate(d.entry) { ptrace_may_access(d.tid)?; }

@@ -91,6 +91,8 @@ fn ensure_open(file: &File) -> KResult<u64> {
 /// `i_fop` for a fuse inode — the data-path ops forwarded to the daemon.
 pub struct FuseFileOps;
 impl FileOps for FuseFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     /// `FUSE_READ` — read `buf.len()` bytes at `off` through this open's `fh`
     /// (lazily opened on first read). The reply body IS the raw file data
     /// (Linux `fuse_read_fill`). # C: O(bytes) + rtt

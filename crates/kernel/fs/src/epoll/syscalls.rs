@@ -2,11 +2,11 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use super::{
-    epoll_inode_of, make_epoll_inode, EpItem, EPOLLEXCLUSIVE, EPOLL_CTL_ADD,
-    EPOLL_CTL_DEL, EPOLL_CTL_MOD, EPOLL_DATA_OFF, EPOLL_EVENT_SIZE, EPOLLET,
-    EPOLLWAKEUP,
+    epoll_inode_of, make_epoll_inode, EpItem, EPOLL_CTL_ADD,
+    EPOLL_CTL_DEL, EPOLL_CTL_MOD, EPOLL_DATA_OFF, EPOLL_EVENT_SIZE,
     NEXT_SUB_ID,
 };
+use super::policy::{ctl_precheck, op_has_event, CtlTarget};
 use super::scan::{scan_once, validate_events_out};
 use crate::userbuf::validate_user_buf;
 
@@ -79,7 +79,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
     // BEFORE either fd is resolved, so a bad `event` pointer reports EFAULT
     // even against a bad `epfd`/`fd`; `do_epoll_ctl` then resolves `epfd`
     // then `fd` (both EBADF) before any EINVAL check runs.
-    let (events, data) = if op == EPOLL_CTL_DEL {
+    let (events, data) = if !op_has_event(op) {
         (0u32, 0u64)
     } else {
         if let Err(rv) = validate_user_buf(evp, EPOLL_EVENT_SIZE as u64, 1) { return rv; }
@@ -106,33 +106,23 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             return -(Errno::Ebadf.as_i32() as i64);
         }
     };
-    let ep = match epoll_inode_of(&epfile) {
-        Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
+    let ep_opt = epoll_inode_of(&epfile);
+    let target_ep = epoll_inode_of(&target_file);
+    let target = CtlTarget {
+        can_poll: target_file.can_poll(),
+        is_epoll: target_ep.is_some(),
+        is_self:  Arc::ptr_eq(&target_file, &epfile),
     };
-    if op != EPOLL_CTL_DEL {
-        if Arc::ptr_eq(&target_file, &epfile) { return -(Errno::Einval.as_i32() as i64); }
-    }
-    if events & EPOLLEXCLUSIVE != 0 {
-        // Linux `do_epoll_ctl_file`: EPOLLEXCLUSIVE only registers a
-        // wait-queue callback at ADD time, so EPOLL_CTL_MOD is always
-        // EINVAL regardless of the target's current registration; nesting
-        // an EPOLLEXCLUSIVE interest under another epoll fd is never
-        // supported; and the mask must stay within `EPOLLEXCLUSIVE_OK_BITS`
-        // (`EPOLLIN|EPOLLOUT|EPOLLERR|EPOLLHUP|EPOLLWAKEUP|EPOLLET|EPOLLEXCLUSIVE` —
-        // notably NOT `EPOLLPRI`).
-        const EXCLUSIVE_OK_BITS: u32 = vfs::POLL_IN | vfs::POLL_OUT
-            | vfs::POLL_ERR | vfs::POLL_HUP | EPOLLET | EPOLLWAKEUP | EPOLLEXCLUSIVE;
-        if op == EPOLL_CTL_MOD
-            || (op == EPOLL_CTL_ADD
-                && (epoll_inode_of(&target_file).is_some() || events & !EXCLUSIVE_OK_BITS != 0))
-        {
-            return -(Errno::Einval.as_i32() as i64);
-        }
-    }
+    let may_block_suspend = cur.has_cap(sched::cap::BLOCK_SUSPEND);
+    let events = match ctl_precheck(op, ep_opt.is_some(), target, events, may_block_suspend) {
+        Ok(e) => e,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    let ep = match ep_opt { Some(i) => i, None => return -(Errno::Einval.as_i32() as i64) };
     match op {
         EPOLL_CTL_ADD => {
-            if let Some(child) = epoll_inode_of(&target_file) {
-                if nested_reaches(&child, ep.id, 0).is_err() {
+            if let Some(child) = target_ep.as_ref() {
+                if !super::nest::loop_check(&ep, child) {
                     return -(Errno::Eloop.as_i32() as i64);
                 }
             }
@@ -155,6 +145,12 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
                     klog::write_raw(b"]\n");
                 }
             }
+            // `ep_alloc_epitem`: the per-user interest budget is charged
+            // BEFORE the item exists, so a user at the ceiling gets ENOSPC
+            // rather than an interest the accounting never saw.
+            if !vfs::epoll_limits::charge_watch(ep.owner_uid) {
+                return -(Errno::Enospc.as_i32() as i64);
+            }
             let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
             let poll_source = target_file.poll_subscribers();
             let item = EpItem::new(&ep, fd, sub_id, events, data, target_file.clone(), poll_source);
@@ -170,7 +166,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             entries.push(Arc::clone(&item));
             target_file.epoll_link(sub_id, item.file_link());
             if let Some(subs) = item.poll_source.as_ref() {
-                if events & EPOLLEXCLUSIVE != 0 { subs.subscribe_exclusive(sub_id, item.callback(), events); }
+                if events & super::EPOLLEXCLUSIVE != 0 { subs.subscribe_exclusive(sub_id, item.callback(), events); }
                 else { subs.subscribe_mask(sub_id, item.callback(), events); }
             }
             if item.ready(events) != 0 { EpItem::queue(&item, true); }
@@ -183,7 +179,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             let Some(item) = item else { return -(Errno::Enoent.as_i32() as i64); };
             {
                 let mut state = item.state.lock();
-                if state.events & EPOLLEXCLUSIVE != 0 {
+                if state.events & super::EPOLLEXCLUSIVE != 0 {
                     return -(Errno::Einval.as_i32() as i64);
                 }
                 state.events = events;
@@ -191,8 +187,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
                 state.armed = true;
             }
             if let Some(subs) = item.poll_source.as_ref() {
-                if events & EPOLLEXCLUSIVE != 0 { subs.subscribe_exclusive(item.sub_id, item.callback(), events); }
-                else { subs.subscribe_mask(item.sub_id, item.callback(), events); }
+                subs.subscribe_mask(item.sub_id, item.callback(), events);
             }
             if item.ready(events) != 0 { EpItem::queue(&item, true); }
             0
@@ -210,22 +205,6 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
     }
 }
 
-const EP_MAX_NESTS: usize = 4;
-
-/// Reject epoll cycles and Linux-excessive nesting before publishing an item.
-/// # C: O(N_epoll_graph)
-fn nested_reaches(start: &Arc<super::EpollData>, needle: u32, depth: usize) -> Result<(), ()> {
-    if start.id == needle { return Err(()); }
-    if depth >= EP_MAX_NESTS { return Err(()); }
-    let entries = start.entries.lock().clone();
-    for item in entries {
-        let Some(file) = item.file.upgrade() else { continue; };
-        let Some(child) = epoll_inode_of(&file) else { continue; };
-        if child.id == needle { return Err(()); }
-        nested_reaches(&child, needle, depth + 1)?;
-    }
-    Ok(())
-}
 
 /// `sys_epoll_wait(epfd, events*, maxevents, timeout)`. # C: O(N_entries)
 pub fn sys_epoll_wait(args: &syscall::SyscallArgs) -> i64 {
@@ -241,18 +220,23 @@ pub fn sys_epoll_pwait(args: &syscall::SyscallArgs) -> i64 {
     sys_epoll_wait_sigmask(args, timeout_ns, args.a4, args.a5)
 }
 
+/// `struct __kernel_timespec` byte length — identical on both arches.
+const TIMESPEC_BYTES: u64 = 16;
+/// `tv_nsec` offset inside it.
+const TIMESPEC_NSEC_OFF: u64 = 8;
+
 /// `sys_epoll_pwait2(epfd, events*, maxevents, timeout*, sigmask, sigsetsize)`.
 pub fn sys_epoll_pwait2(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let timeout_ns = if args.a3 == 0 {
         None
     } else {
-        if let Err(rv) = validate_user_buf(args.a3, 16, 1) { return rv; }
+        if let Err(rv) = validate_user_buf(args.a3, TIMESPEC_BYTES, 1) { return rv; }
         // SAFETY: timeout pointer validated readable for one timespec.
         let (sec, nsec) = unsafe {
             (
                 core::ptr::read_unaligned(args.a3 as *const i64),
-                core::ptr::read_unaligned((args.a3 + 8) as *const i64),
+                core::ptr::read_unaligned((args.a3 + TIMESPEC_NSEC_OFF) as *const i64),
             )
         };
         // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
@@ -265,22 +249,30 @@ pub fn sys_epoll_pwait2(args: &syscall::SyscallArgs) -> i64 {
     sys_epoll_wait_sigmask(args, timeout_ns, args.a4, args.a5)
 }
 
+/// `do_epoll_pwait`: `set_user_sigmask` — install the caller's temporary mask
+/// with `TIF_RESTORE_SIGMASK` armed — then wait, then
+/// `restore_saved_sigmask_unless(error == -EINTR)`.
+///
+/// The armed flag is what makes the interrupted case correct: an interrupted
+/// wait KEEPS the temporary mask so the handler runs under it and
+/// `rt_sigreturn` drops back to the caller's original mask. Restoring the
+/// original mask immediately on return — before any handler dispatch — is the
+/// exact race `epoll_pwait` exists to close, because a signal the caller
+/// blocked for the duration of the wait would then be delivered under the
+/// caller's own mask instead. # C: O(1) + wait
 fn sys_epoll_wait_sigmask(args: &syscall::SyscallArgs, timeout_ns: Option<u64>, sigmask_ptr: u64, sigsetsize: u64) -> i64 {
-    use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     if sigmask_ptr == 0 { return sys_epoll_wait_timeout(args, timeout_ns); }
-    if sigsetsize != 8 { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf(sigmask_ptr, 8, 1) { return rv; }
+    if sigsetsize != syscall::sigset::SIGSET_BYTES { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = validate_user_buf(sigmask_ptr, syscall::sigset::SIGSET_BYTES, 1) { return rv; }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     // SAFETY: sigmask_ptr validated as a readable 8-byte kernel_sigset_t.
-    let new_mask = unsafe { core::ptr::read_unaligned(sigmask_ptr as *const u64) }
-        & !(sched::signum::Signum::Sigkill.bit()
-          | sched::signum::Signum::Sigstop.bit());
-    let saved = cur.sigmask.swap(new_mask, Ordering::AcqRel);
+    let new_mask = unsafe { core::ptr::read_unaligned(sigmask_ptr as *const u64) };
+    cur.arm_saved_sigmask(new_mask);
     let rv = sys_epoll_wait_timeout(args, timeout_ns);
-    cur.sigmask.store(saved, Ordering::Release);
+    if rv != -(Errno::Eintr.as_i32() as i64) { cur.restore_saved_sigmask(); }
     rv
 }
 

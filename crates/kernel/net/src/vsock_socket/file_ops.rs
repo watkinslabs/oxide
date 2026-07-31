@@ -36,6 +36,8 @@ impl vfs::FileOps for VsockFileOps {
     fn write_nonblock(&self, inode: &vfs::Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         inode.private::<VsockSocket>().ok_or(vfs::VfsError::Einval)?.write_nonblock(off, buf)
     }
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<VsockSocket>().map(VsockSocket::poll).unwrap_or(vfs::POLL_OUT)
     }

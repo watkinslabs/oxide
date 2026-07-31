@@ -34,6 +34,8 @@ struct InputUeventData { identity: InputIdentity }
 struct InputUeventOps;
 
 impl FileOps for InputUeventOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<InputUeventData>().ok_or(VfsError::Einval)?;
         let info = input_by_identity(&data.identity).ok_or(VfsError::Enoent)?;
@@ -76,6 +78,8 @@ struct InputParentUeventData { identity: InputIdentity }
 struct InputParentUeventOps;
 
 impl FileOps for InputParentUeventOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<InputParentUeventData>().ok_or(VfsError::Einval)?;
         let info = input_by_identity(&data.identity).ok_or(VfsError::Enoent)?;

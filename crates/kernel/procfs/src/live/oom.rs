@@ -38,6 +38,8 @@ fn may_write_adjustment(target: &sched::Task, next: i32) -> KResult<()> {
 
 struct OomTaskFileOps;
 impl FileOps for OomTaskFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<OomTaskFile>().ok_or(VfsError::Einval)?;
         let task = task(data.tid)?;

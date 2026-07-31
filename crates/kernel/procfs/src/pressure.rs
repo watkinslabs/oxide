@@ -51,6 +51,8 @@ impl FileOps for PressureFileOps {
     }
     /// PSI files signal readiness ONLY via `POLL_PRI` when a trigger crosses
     /// (Linux `psi_fop_poll`) — never `POLL_IN`/`POLL_OUT`. # C: O(N_trig)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         match inode.private::<PressureData>() { Some(d) => psi::poll_mask(d.res, now_ns()), None => 0 }
     }

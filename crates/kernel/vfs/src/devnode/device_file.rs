@@ -119,6 +119,15 @@ impl FileOps for DeviceFileOps {
         }
     }
 
+    /// Block devices have no readiness operation at all; a character device
+    /// answers for its own driver. # C: O(1)
+    fn can_poll(&self, file: &File) -> bool {
+        match file.opened_device() {
+            Some(OpenedDevice::Char { devt, ops }) => ops.can_poll(devt),
+            Some(OpenedDevice::Block { .. }) | None => false,
+        }
+    }
+
     fn poll_subscribers(&self, file: &File) -> Option<Arc<PollSubscribers>> {
         match file.opened_device() {
             Some(OpenedDevice::Char { devt, ops }) => ops.poll_subscribers_file(devt, file),
