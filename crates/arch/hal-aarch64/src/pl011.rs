@@ -30,6 +30,18 @@ const PL011_CR:    usize = 0x30;
 const PL011_ICR:   usize = 0x44;
 #[cfg(target_os = "oxide-kernel")]
 const PL011_IMSC:  usize = 0x38;
+/// Masked interrupt status (`UARTMIS`) — raw status ANDed with `UARTIMSC`.
+#[cfg(target_os = "oxide-kernel")]
+const PL011_MIS:   usize = 0x40;
+
+/// `UARTIMSC`/`UARTMIS` bit 4: receive interrupt (FIFO at its trigger level).
+#[cfg(target_os = "oxide-kernel")]
+const IMSC_RXIM: u32 = 1 << 4;
+/// `UARTIMSC`/`UARTMIS` bit 6: receive-timeout interrupt (FIFO non-empty and
+/// idle for 32 bit-periods) — how a typed line shorter than the trigger level
+/// is reported at all.
+#[cfg(target_os = "oxide-kernel")]
+const IMSC_RTIM: u32 = 1 << 6;
 
 #[cfg(target_os = "oxide-kernel")]
 const FR_TXFF: u32 = 1 << 5;
@@ -127,7 +139,7 @@ pub unsafe fn enable_rx_irq() {
     // SAFETY: per fn contract; aligned u32 RMW within the 4 KiB Device-nGnRnE PL011 register page.
     unsafe {
         let cur = read_reg(va, PL011_IMSC);
-        write_reg(va, PL011_IMSC, cur | (1 << 4) | (1 << 6));
+        write_reg(va, PL011_IMSC, cur | IMSC_RXIM | IMSC_RTIM);
     }
 }
 
@@ -143,23 +155,27 @@ pub unsafe fn disable_rx_irq() {
     // SAFETY: per fn contract; aligned u32 RMW within the PL011 register page.
     unsafe {
         let cur = read_reg(va, PL011_IMSC);
-        write_reg(va, PL011_IMSC, cur & !((1 << 4) | (1 << 6)));
+        write_reg(va, PL011_IMSC, cur & !(IMSC_RXIM | IMSC_RTIM));
     }
 }
 
-/// Acknowledge PL011 RX + RX-timeout IRQs by writing 1s to the
-/// matching bits in `UARTICR` (offset 0x44). Called from the IRQ
-/// dispatcher after the FIFO has been drained.
+/// Masked RX + RX-timeout interrupt status (`UARTMIS`, offset 0x40): true
+/// while the device is still asking to be serviced. The IRQ handler re-checks
+/// this after draining the FIFO instead of writing `UARTICR` — both interrupts
+/// are cleared by emptying the FIFO, and a post-drain write to `UARTICR`
+/// discards the indication for bytes that arrived during the drain, leaving
+/// data in the FIFO that nothing will ever report.
 ///
 /// # SAFETY: caller is the IRQ dispatcher; `enable` has run.
 /// # C: O(1)
 /// # Ctx: IRQ
 #[cfg(target_os = "oxide-kernel")]
-pub unsafe fn ack_rx_irq() {
+pub unsafe fn rx_irq_pending() -> bool {
     let va = PL011_BASE_VA.load(Ordering::Acquire);
-    if va == 0 { return; }
-    // SAFETY: per fn contract; UARTICR (0x44) is within the mapped 4 KiB page; W1C of RXIC|RTIC.
-    unsafe { write_reg(va, PL011_ICR, (1 << 4) | (1 << 6)); }
+    if va == 0 { return false; }
+    // SAFETY: per fn contract; UARTMIS (0x40) is within the mapped 4 KiB Device-nGnRnE page.
+    let mis = unsafe { read_reg(va, PL011_MIS) };
+    (mis & (IMSC_RXIM | IMSC_RTIM)) != 0
 }
 
 /// klog `LogSink` thunk. No-op if `enable` hasn't run yet.
