@@ -41,6 +41,7 @@ fn key_mask(code: u16) -> [u8; KEY_MASK_BYTES] {
 
 #[test]
 fn unset_mask_reads_back_as_every_code_admitted() {
+    let _serial = super::serialize();
     const TAIL_BYTES: usize = 16;
 
     let file = test_file(EVDEV_ID);
@@ -53,6 +54,7 @@ fn unset_mask_reads_back_as_every_code_admitted() {
 
 #[test]
 fn a_written_mask_reads_back_byte_for_byte() {
+    let _serial = super::serialize();
     let file = test_file(EVDEV_ID);
     let wanted = key_mask(KEY_A);
     let set = descriptor_in(u32::from(crate::EV_KEY), &wanted);
@@ -66,6 +68,7 @@ fn a_written_mask_reads_back_byte_for_byte() {
 
 #[test]
 fn a_short_read_buffer_truncates_rather_than_failing() {
+    let _serial = super::serialize();
     const MARKER: u8 = 0xa5;
 
     let file = test_file(EVDEV_ID);
@@ -82,6 +85,7 @@ fn a_short_read_buffer_truncates_rather_than_failing() {
 
 #[test]
 fn a_write_buffer_that_is_not_whole_words_is_refused() {
+    let _serial = super::serialize();
     const ODD_BYTES: usize = 5;
 
     let file = test_file(EVDEV_ID);
@@ -92,6 +96,7 @@ fn a_write_buffer_that_is_not_whole_words_is_refused() {
 
 #[test]
 fn a_type_with_no_mask_is_accepted_on_write_and_zeroed_on_read() {
+    let _serial = super::serialize();
     const ODD_BYTES: usize = 5;
 
     let file = test_file(EVDEV_ID);
@@ -107,6 +112,7 @@ fn a_type_with_no_mask_is_accepted_on_write_and_zeroed_on_read() {
 
 #[test]
 fn a_zero_length_buffer_needs_no_valid_pointer() {
+    let _serial = super::serialize();
     let file = test_file(EVDEV_ID);
     let get = descriptor_raw(u32::from(crate::EV_KEY), 0, 0);
     assert_eq!(handle_evdev_ioctl(&file, crate::EVIOCGMASK, get.as_ptr() as u64), Some(0));
@@ -116,6 +122,7 @@ fn a_zero_length_buffer_needs_no_valid_pointer() {
 
 #[test]
 fn unreadable_descriptor_and_code_buffers_fault() {
+    let _serial = super::serialize();
     let file = test_file(EVDEV_ID);
     assert_eq!(handle_evdev_ioctl(&file, crate::EVIOCGMASK, 0), efault());
     assert_eq!(handle_evdev_ioctl(&file, crate::EVIOCSMASK, 0), efault());
@@ -127,6 +134,7 @@ fn unreadable_descriptor_and_code_buffers_fault() {
 
 #[test]
 fn masks_are_per_open_file_description() {
+    let _serial = super::serialize();
     let first = test_file(EVDEV_ID);
     let second = test_file(EVDEV_ID);
     let wanted = key_mask(KEY_A);
@@ -141,6 +149,7 @@ fn masks_are_per_open_file_description() {
 
 #[test]
 fn a_masked_open_still_delivers_admitted_events_end_to_end() {
+    let _serial = super::serialize();
     const DELIVERY_ID: u32 = 7;
 
     let file = test_file(DELIVERY_ID);

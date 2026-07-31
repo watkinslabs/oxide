@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use vfs::{Dentry, File, OpenFlags, POLL_ERR, POLL_HUP, POLL_IN};
 
 use crate::devfs::fileops::make_evdev_inode_for;
-use crate::devfs::shared::{evdev_open, test_endpoint};
+use crate::devfs::shared::{evdev_open, publish_endpoint, test_endpoint, unpublish_exact};
 use crate::evdev_queue::{EventTimes, INPUT_EVENT_BYTES};
 
 const EVENT_TYPE_OFF: usize = core::mem::size_of::<u64>() * 2;
@@ -16,6 +16,13 @@ const KEY_VALUE: i32 = 1;
 const PACKET_EVENT_COUNT: usize = 2;
 const KEY_STATE_BYTE: usize = KEY_CODE as usize / u8::BITS as usize;
 const KEY_STATE_MASK: u8 = 1 << (KEY_CODE % u8::BITS as u16);
+
+/// Publish `endpoint` for its event index. `open(2)` resolves the live device
+/// by NUMBER, so an endpoint that is not the published one for its index is not
+/// openable at all — the Linux `chrdev_open` contract.
+fn publish(endpoint: &Arc<crate::devfs::shared::EvdevEndpoint>) {
+    assert!(publish_endpoint(Arc::clone(endpoint)), "publish endpoint for its event index");
+}
 
 fn open(endpoint: Arc<crate::devfs::shared::EvdevEndpoint>) -> Arc<File> {
     let inode = make_evdev_inode_for(endpoint);
@@ -63,10 +70,12 @@ fn record(bytes: &[u8], index: usize) -> (u16, u16, i32) {
 
 #[test]
 fn state_reconciliation_flushes_only_querying_client() {
+    let _serial = super::serialize();
     const EVDEV_ID: u32 = 6;
     const INPUT_ID: u32 = 60;
 
     let endpoint = test_endpoint(EVDEV_ID, INPUT_ID);
+    publish(&endpoint);
     let first = open(Arc::clone(&endpoint));
     let second = open(Arc::clone(&endpoint));
 
@@ -97,15 +106,18 @@ fn state_reconciliation_flushes_only_querying_client() {
         (crate::EV_KEY, KEY_CODE, KEY_VALUE),
     );
     assert_eq!(record(&second_bytes, 1), (crate::EV_SYN, 0, 0));
+    assert!(unpublish_exact(&endpoint));
 }
 
 #[test]
 fn reused_event_number_cannot_retarget_old_open_file() {
+    let _serial = super::serialize();
     const EVDEV_ID: u32 = 7;
     const OLD_INPUT_ID: u32 = 70;
     const REPLACEMENT_INPUT_ID: u32 = 71;
 
     let old_endpoint = test_endpoint(EVDEV_ID, OLD_INPUT_ID);
+    publish(&old_endpoint);
     let old_generation = old_endpoint.identity().generation;
     let old_file = open(Arc::clone(&old_endpoint));
     let old_subs = old_file.poll_subscribers().expect("old client poll source");
@@ -114,9 +126,10 @@ fn reused_event_number_cannot_retarget_old_open_file() {
         value(crate::EV_KEY, KEY_CODE, KEY_VALUE),
         value(crate::EV_SYN, crate::SYN_REPORT, 0),
     ], times());
-    old_endpoint.disconnect();
+    assert!(unpublish_exact(&old_endpoint));
 
     let replacement = test_endpoint(EVDEV_ID, REPLACEMENT_INPUT_ID);
+    publish(&replacement);
     assert_ne!(replacement.identity().generation, old_generation);
     let replacement_file = open(Arc::clone(&replacement));
     replacement.push_packet(&[
@@ -138,4 +151,5 @@ fn reused_event_number_cannot_retarget_old_open_file() {
         record(&replacement_bytes, 0),
         (crate::EV_KEY, REPLACEMENT_KEY_CODE, KEY_VALUE),
     );
+    assert!(unpublish_exact(&replacement));
 }
