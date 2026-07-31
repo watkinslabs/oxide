@@ -352,7 +352,14 @@ impl FileOps for Ext4StatFileOps {
                     let name = ext4_dirent_name(e.name);
                     if !name.is_empty() {
                         let dt = crate::dir::dirent_dtype(has_filetype, e.file_type);
-                        if !ctx.emit_dt(&name, e.inode as u64, dt, cookie) { return Ok(()); }
+                        // `d_ino` must be the SAME number `stat` reports. Every
+                        // ext4 VFS inode is built with `ext4_wrap_ino`, so the
+                        // raw on-disk number here disagreed with `st_ino` on
+                        // every entry — which breaks `find -inum`, `getcwd(3)`'s
+                        // `..`-walk fallback, and tar/rsync hardlink detection,
+                        // all of which compare the two.
+                        let d_ino = super::ids::ext4_wrap_ino(e.inode);
+                        if !ctx.emit_dt(&name, d_ino, dt, cookie) { return Ok(()); }
                     }
                 }
                 off = next;

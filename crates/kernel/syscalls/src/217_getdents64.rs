@@ -157,13 +157,18 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
     #[cfg(feature = "debug-getdents-detail")]
     trace_getdents(GETDENTS_STAGE_VALIDATED, fd, &file, file.pos(), count, None);
 
-    // readdir cursor validity (file D32): a fresh cursor (pos==0) stamps
-    // `f_version` from the inode's change-cookie; a non-zero cursor whose
-    // directory has changed since this open last read it is stale → drop it
-    // (restart from 0) and re-stamp (Linux `file->f_version` invalidation).
-    let mut start = file.pos();
+    // `f_version` is a per-description CACHE cookie, not a cursor: a backend
+    // that memoises a position (ext4's htree cache, seq_file's) compares it to
+    // the inode's change counter and re-primes its own state. `iterate_dir`
+    // NEVER moves `f_pos` because of it.
+    //
+    // Rewinding the cursor to 0 on a version change — which is what this did —
+    // is worse than the staleness it chased: a `chmod`/`utimes`/`FS_IOC_SETFLAGS`
+    // on an ext4 directory bumps `i_version`, so the very next `getdents` re-emits
+    // the whole prefix (a guaranteed duplicate listing) and silently discards a
+    // `seekdir(3)` cookie the caller had just set. Stamp it, do not act on it.
+    let start = file.pos();
     if start == 0 || file.dir_version_changed() {
-        if start != 0 { start = 0; }
         file.set_f_version(vfs::inode::inode_query_iversion(&inode));
     }
 

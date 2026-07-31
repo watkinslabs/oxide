@@ -115,6 +115,38 @@ fn blockdev_node_forwards_to_memdisk() {
     vfs::unregister_blkdev(8);
 }
 
+// `fsync(2)` on a block-device fd must issue a device cache flush (Linux
+// `blkdev_fsync` -> `blkdev_issue_flush`). The generic file-ops default answers
+// `Ok(())` for a block device, so before this the call reported durability the
+// hardware was never asked for: writes to /dev/sdX are write-through to the
+// controller but sit in its volatile cache.
+struct FlushBlk { flushes: AtomicU32 }
+impl BlockDevOps for FlushBlk {
+    fn open_file(&self, _devt: Devt, _file: &File) -> KResult<()> { Ok(()) }
+    fn flush_cache(&self, _devt: Devt) -> KResult<()> {
+        self.flushes.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+#[test]
+fn blockdev_fsync_issues_a_device_cache_flush() {
+    let ops = Arc::new(FlushBlk { flushes: AtomicU32::new(0) });
+    vfs::register_blkdev(206, ops.clone());
+    let s = sb(9);
+    let node = make_device_node_inode(21, FileType::BlockDev, Devt::new(206, 0), 0o660,
+                                      Arc::downgrade(&s));
+    let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::O_RDWR);
+    assert_eq!(file.open_hook(), Ok(()));
+    assert_eq!(file.vfs_fsync_range(0, vfs::SYNC_TO_EOF, false), Ok(()));
+    assert_eq!(ops.flushes.load(Ordering::Acquire), 1, "fsync reached the device");
+    // A raw block device has no metadata to elide, so Linux gives fsync and
+    // fdatasync the same slot — both flush.
+    assert_eq!(file.vfs_fsync_range(0, vfs::SYNC_TO_EOF, true), Ok(()));
+    assert_eq!(ops.flushes.load(Ordering::Acquire), 2, "fdatasync flushes too");
+    vfs::unregister_blkdev(206);
+}
+
 struct LifecycleBlk { opens: AtomicU32, releases: AtomicU32 }
 impl BlockDevOps for LifecycleBlk {
     fn open_file(&self, _devt: Devt, _file: &File) -> KResult<()> {

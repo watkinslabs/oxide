@@ -72,8 +72,11 @@ impl vfs::SuperOps for Ext4SuperOps {
         // writes sit dirty in the page cache until writeback) before the
         // journal tx + device flush. fsync/msync flush per-inode; this is the
         // whole-fs pass.
+        // Scoped to THIS mount: `syncfs(2)` syncs the filesystem containing the
+        // fd, never a peer ext4 mount the caller did not name.
         #[cfg(feature = "ext4-frame-cache")]
-        crate::flush_all_dirty().map_err(|_| vfs::VfsError::Eio)?;
+        crate::rootfs::framecache::flush_dirty(Some(&self.st.mount))
+            .map_err(|_| vfs::VfsError::Eio)?;
         // Drain the running batched transaction (Linux `sync_fs` IS the
         // per-superblock durability point). `flush_pending_tx` is a no-op —
         // under cross-op batching the metadata sits in `MountState.shadow`
