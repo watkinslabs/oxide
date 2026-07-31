@@ -46,6 +46,7 @@ pub mod personality;
 pub mod rlimit;
 pub mod rt;
 pub mod session;
+pub mod ucounts;
 pub mod runqueue;
 pub mod task;
 pub mod signum;

@@ -18,6 +18,12 @@ impl Drop for Task {
             klog::write_hex_u64(len);
             klog::write_raw(b"\n");
         }
+        // Backstop for the `RLIMIT_NPROC` charge, in the same shape as the
+        // kernel-stack uncharge below. `mark_done` releases it at Linux's
+        // timing (`__exit_signal`); this catches a task that never got that
+        // far — a clone refused after the charge, or a hosted fixture — and
+        // is a no-op for one that did, because the release is latched.
+        crate::ucounts::uncharge_task(self);
         let cgid = self.kernel_stack_memcg.swap(cgroup::NO_MEMCG, Ordering::AcqRel);
         let bytes = self.kernel_stack_charge_bytes.swap(0, Ordering::AcqRel);
         if cgid != cgroup::NO_MEMCG && bytes != 0 {
