@@ -153,6 +153,10 @@ impl Mount {
     /// Long-lived external reference count (Linux `mnt_count`). # C: O(1)
     pub fn mnt_count(&self) -> i32 { self.mnt_count.load(Ordering::Acquire) }
 
+    /// `!list_empty(&mnt->mnt_mounts)` — does anything sit under this mount?
+    /// The `umount(2)` busy test and the expiry sweep both ask this. # C: O(1)
+    pub fn has_child_mounts(&self) -> bool { !self.mnt_mounts.lock().is_empty() }
+
     /// True once unlinked from its namespace tree by an umount (Linux
     /// `MNT_DETACHED`). The final [`mntput`] on a detached mount runs the
     /// deferred superblock teardown. # C: O(1)

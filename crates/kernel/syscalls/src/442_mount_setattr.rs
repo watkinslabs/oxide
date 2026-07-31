@@ -174,8 +174,20 @@ fn apply_mount_object(
 /// `sys_mount_setattr(dirfd, path, flags, uattr, size)` — slot 442.
 /// # C: O(path + selected mounts + userns extents)
 pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
-    if args.a2 & !VALID_AT_FLAGS != 0 { return neg(Errno::Einval); }
-    let attr = match copy_mount_attr(args.a3, args.a4 as usize) {
+    mount_setattr_at(args.a0 as i32, None, args.a1, args.a2, args.a3, args.a4 as usize)
+}
+
+/// `mount_setattr(2)` with the pathname optionally already in kernel memory, so
+/// `open_tree_attr(2)` can apply the same attribute block to the descriptor it
+/// just created without round-tripping a string through userspace. When `path`
+/// is `None` the pathname is read from `path_ptr` at exactly the point Linux
+/// reads it — AFTER the flag word and the attribute block — so a call that is
+/// wrong in both its flags and its pathname pointer still reports the flag
+/// error. # C: O(path + selected mounts + userns extents)
+pub fn mount_setattr_at(dirfd: i32, path: Option<&str>, path_ptr: u64, at_flags: u64,
+                        uattr: u64, size: usize) -> i64 {
+    if at_flags & !VALID_AT_FLAGS != 0 { return neg(Errno::Einval); }
+    let attr = match copy_mount_attr(uattr, size) {
         Ok(attr) => attr,
         Err(rv) => return rv,
     };
@@ -199,12 +211,6 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
     // `ns_capable(sb->s_user_ns, CAP_SYS_ADMIN)` after filesystem admission.
     let controls_superblock = crate::mount_perm::cap_sys_admin_in_init_user_ns();
     let prop = propagation(attr.propagation);
-    let raw_path = match read_path_allow_empty(args.a1) {
-        Ok(path) => path,
-        Err(rv) => return rv,
-    };
-    let dirfd = args.a0 as i32;
-    let recursive = args.a2 & AT_RECURSIVE != 0;
     use vfs::mount::{mount_attr_to_mnt, MNT_ATIME_MODE_MASK, MOUNT_ATTR__ATIME};
     let mut set_mnt = mount_attr_to_mnt(attr.attr_set) & !MNT_ATIME_MODE_MASK;
     let mut clr_mnt = mount_attr_to_mnt(attr.attr_clr) & !MNT_ATIME_MODE_MASK;
@@ -213,7 +219,17 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
         set_mnt |= mount_attr_to_mnt(attr.attr_set) & MNT_ATIME_MODE_MASK;
     }
 
-    if raw_path.is_empty() && args.a2 & AT_EMPTY_PATH != 0 {
+    let owned;
+    let raw_path = match path {
+        Some(p) => p,
+        None => match read_path_allow_empty(path_ptr) {
+            Ok(p) => { owned = p; owned.as_str() }
+            Err(rv) => return rv,
+        },
+    };
+    let recursive = at_flags & AT_RECURSIVE != 0;
+
+    if raw_path.is_empty() && at_flags & AT_EMPTY_PATH != 0 {
         if let Some(inode) = fd_inode(dirfd) {
             if let Some(object) = inode.private::<MountObjectInode>() {
                 return apply_mount_object(
@@ -224,9 +240,10 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
         }
     }
 
-    let path = match crate::pathresolve::resolve_at_path(dirfd, &raw_path, vfs::LookupFlags {
-        empty: args.a2 & AT_EMPTY_PATH != 0,
-        no_follow_final: args.a2 & AT_SYMLINK_NOFOLLOW != 0,
+    let path = match crate::pathresolve::resolve_at_path(dirfd, raw_path, vfs::LookupFlags {
+        empty: at_flags & AT_EMPTY_PATH != 0,
+        no_follow_final: at_flags & AT_SYMLINK_NOFOLLOW != 0,
+        no_automount: at_flags & AT_NO_AUTOMOUNT != 0,
         ..Default::default()
     }) {
         Ok(path) => path,

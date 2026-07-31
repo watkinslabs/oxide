@@ -10,6 +10,7 @@
 //! - `namespace`: pivot/bind/move namespace-tree mutations.
 //! - `namespace_lifecycle`: mount refcount, namespace copy, and namespace reap.
 //! - `attrs`: remount, mount_setattr, write pins, and inode lookup helpers.
+//! - `beneath`: `move_mount(MOVE_MOUNT_BENEATH)` slot swap + its admission ladder.
 //! - `propagation`: peer/slave propagation fan-out.
 //! - `detach`: umount/detach tear-down.
 //! - `pivot_check`: `pivot_root(2)` admission ladder and its errno order.
@@ -44,7 +45,7 @@ pub use crate::mntns::{
 // Mount-propagation engine (peer/slave fan-out) lives in a submodule to hold
 // the line cap; its public surface stays `vfs::mount::*` verbatim.
 mod propagation;
-pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propagation, set_propagation_recursive};
+pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_group, set_propagation, set_propagation_recursive};
 
 // Umount / detach tear-down (umount(2), d_invalidate detach, propagate_umount)
 // lives in a submodule to hold the line cap; public surface stays `vfs::mount::*`.
@@ -68,7 +69,13 @@ pub use mnt_flags::{
     MNT_LOCK_READONLY,
     MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_RDONLY, MOUNT_ATTR_SETTABLE,
     MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME, mount_attr_to_mnt,
+    MNT_DETACH, MNT_EXPIRE, MNT_FORCE, UMOUNT_NOFOLLOW, UMOUNT_VALID,
 };
+
+// umount2(2)'s admission ladder as a pure decision over sampled facts, so its
+// ORDER (and MNT_EXPIRE's two-pass EAGAIN grace) is a hosted unit test.
+mod umount_check;
+pub use umount_check::{umount_check, umount_facts, Umount, UmountFacts, UmountRefusal, EXPIRE_REQUIRED_REFS};
 
 // Locked mount flags: the MNT_LOCK_*/MNT_LOCKED stamp an unprivileged user-ns
 // copy inherits (`lock_mnt_tree`) and the ladder that refuses to relax it
@@ -116,3 +123,4 @@ include!("mount/recursive.rs");
 include!("mount/namespace.rs");
 include!("mount/namespace_lifecycle.rs");
 include!("mount/attrs.rs");
+include!("mount/beneath.rs");

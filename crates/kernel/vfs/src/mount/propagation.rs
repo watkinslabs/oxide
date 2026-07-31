@@ -208,6 +208,59 @@ fn unlink_from_master(m: &Arc<Mount>) {
     *m.mnt_master.lock() = Weak::new();
 }
 
+/// `move_mount(MOVE_MOUNT_SET_GROUP)` — Linux `do_set_group`. Instead of
+/// relocating anything, `to` JOINS `from`'s sharing group: it takes `from`'s
+/// peer group when `from` is shared, and `from`'s master when `from` is a
+/// slave. Both can apply at once (a shared-and-slave `from`).
+///
+/// The admission ladder is the whole contract, and every rung is EINVAL:
+///
+///   1. both paths must name a mount ROOT (`path_mounted`)
+///   2. same superblock
+///   3. `to`'s root must lie at or under `from`'s root (`from` is the WIDER
+///      view, so the group it shares is a superset of what `to` exposes)
+///   4. `from` must have no LOCKED child mounted where `to`'s root sits
+///   5. `to` must currently be PRIVATE — never already shared or a slave
+///   6. `from` must NOT be private — a private mount has no group to give
+///
+/// `at_root` is the caller's `path_mounted` answer for each side, sampled by
+/// the syscall shim from its resolved path. # C: O(children)
+pub fn set_group(from: &Arc<Mount>, from_at_root: bool, to: &Arc<Mount>, to_at_root: bool)
+    -> KResult<()> {
+    if !from_at_root || !to_at_root { return Err(VfsError::Einval); }
+    if !Arc::ptr_eq(&from.sb, &to.sb) { return Err(VfsError::Einval); }
+    let (Some(from_root), Some(to_root)) = (from.mnt_root(), to.mnt_root()) else {
+        return Err(VfsError::Einval);
+    };
+    if !to_root.is_subdir_of(&from_root) { return Err(VfsError::Einval); }
+    if super::has_locked_children(from, &to_root) { return Err(VfsError::Einval); }
+    let to_kind = Propagation::from_u8(to.propagation.load(Ordering::Acquire));
+    if to_kind == Propagation::Shared || to_kind == Propagation::Slave {
+        return Err(VfsError::Einval);
+    }
+    let from_kind = Propagation::from_u8(from.propagation.load(Ordering::Acquire));
+    if from_kind != Propagation::Shared && from_kind != Propagation::Slave {
+        return Err(VfsError::Einval);
+    }
+    if from_kind == Propagation::Slave {
+        let master = from.mnt_master.lock().upgrade();
+        match master {
+            Some(master) => {
+                master.mnt_slave_list.lock().push(Arc::downgrade(to));
+                *to.mnt_master.lock() = Arc::downgrade(&master);
+            }
+            None => *to.mnt_master.lock() = Weak::new(),
+        }
+        to.propagation.store(Propagation::Slave as u8, Ordering::Release);
+    }
+    if from_kind == Propagation::Shared {
+        to.peer_group.store(from.peer_group.load(Ordering::Acquire), Ordering::Release);
+        to.propagation.store(Propagation::Shared as u8, Ordering::Release);
+    }
+    mntns::bump_gen(to.namespace_id());
+    Ok(())
+}
+
 /// Retune the propagation type of the mount at dentry `d` (`docs/16§6`),
 /// faithful to Linux `change_mnt_propagation`: MS_SHARED assigns/keeps a peer
 /// group; MS_SLAVE/MS_PRIVATE/MS_UNBINDABLE all funnel through [`do_make_slave`]
