@@ -49,6 +49,7 @@ pub(super) fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: 
         let mut b = InodeBuilder::new(ino, mk_mode(FileType::Directory, perm),
             Arc::new(TmpfsDirOps), Arc::new(TmpfsDirFileOps))
             .owner(uid, gid)
+            .btime(super::birth_time())
             .fsid(fsid_of(&sb2))
             .xattrs(vfs::SimpleXattrs::new())
             .private(Arc::new(TmpfsDirData {

@@ -56,15 +56,19 @@ pub fn sys_fadvise64(args: &SyscallArgs) -> i64 {
     // without acting — not to `!mapping`.
     if let Err(e) = fadvise_check(is_fifo, true, offset, len, advice) { return err(e); }
 
-    match advice {
-        POSIX_FADV_NORMAL     => { file.ra_set_normal();     return 0; }
-        POSIX_FADV_SEQUENTIAL => { file.ra_set_sequential(); return 0; }
-        POSIX_FADV_RANDOM     => { file.ra_set_random();     return 0; }
-        _ => {}
+    // The state-setting half of `generic_fadvise`: these change what a later
+    // read PREFETCHES (`File::submit_readahead` is what turns `ra_pages` into
+    // I/O) and never touch residency. POSIX_FADV_NOREUSE is in this class and
+    // records nothing — see `fadvise_policy::advice_sets_readahead_state`.
+    if crate::fadvise_policy::advice_sets_readahead_state(advice) {
+        match advice {
+            POSIX_FADV_NORMAL     => file.ra_set_normal(),
+            POSIX_FADV_SEQUENTIAL => file.ra_set_sequential(),
+            POSIX_FADV_RANDOM     => file.ra_set_random(),
+            _ => {}
+        }
+        return 0;
     }
-    // POSIX_FADV_NOREUSE sets FMODE_NOREUSE in Linux, which only biases folio
-    // activation during reclaim — no residency change, no error. Falls through
-    // to the 0 below with the other non-residency advice.
     let mapping = match inode.i_mapping() { Some(m) => m, None => return 0 };
     let endbyte = endbyte_of(offset, len);
 

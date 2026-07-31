@@ -44,6 +44,16 @@ mod uapi;
 #[cfg(test)]
 mod tests;
 
+/// `stx_btime` for a newly created tmpfs inode. Linux `shmem_get_inode` sets
+/// `info->i_crtime` from the inode's mtime at creation and `shmem_getattr`
+/// reports `STATX_BTIME` unconditionally, so `stat -c %w` on a tmpfs file
+/// answers with a real birth time. Without it every /tmp, /run and /dev/shm
+/// file reported no creation time at all. # C: O(1)
+pub(crate) fn birth_time() -> vfs::Timespec64 {
+    let ns = vfs::inode_times::realtime_now_ns();
+    vfs::Timespec64 { sec: (ns / 1_000_000_000) as i64, nsec: (ns % 1_000_000_000) as u32 }
+}
+
 pub use accounting::TmpfsSb;
 pub use uapi::RAMFS_MAGIC;
 pub use file::{tmpfs_anon_file, tmpfs_sealable_file, TmpfsFileData};
