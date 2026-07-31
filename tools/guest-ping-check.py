@@ -9,6 +9,8 @@ import os, re, select, socket, subprocess, sys, time
 
 ARCH = sys.argv[1] if len(sys.argv) > 1 else "x86"
 BOOT_TIMEOUT = int(sys.argv[2]) if len(sys.argv) > 2 else 600
+# Emulated aarch64 runs the shell far slower than the accelerated x86 guest.
+SETTLE = 25 if ARCH == "x86" else 60
 SOCK = f"/tmp/oxide-ping-uart-{ARCH}-{os.getpid()}.sock"
 LOG = f"/tmp/oxide-ping-uart-{ARCH}-{os.getpid()}.log"
 
@@ -90,13 +92,17 @@ try:
     # into printing a prompt before issuing anything that matters.
     conn.sendall(b"\n")
     pump(5)
-    probe = run("echo SHELL_ALIVE", 15)
+    probe = ""
+    for _ in range(8):
+        probe = run("echo SHELL_ALIVE", SETTLE)
+        if "SHELL_ALIVE" in probe:
+            break
     if "SHELL_ALIVE" not in probe:
         print("guest-ping-check: FAIL — no serial shell responded", flush=True)
         print(probe[-2000:], flush=True)
         sys.exit(1)
     for label, cmd, want in CHECKS:
-        out = run(cmd)
+        out = run(cmd, SETTLE)
         if re.search(want, out):
             print(f"guest-ping-check: {label} OK", flush=True)
         else:
