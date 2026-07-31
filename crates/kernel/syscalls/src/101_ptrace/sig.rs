@@ -100,11 +100,13 @@ pub fn setsigmask(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
 /// # C: O(1)
 pub fn interrupt(target: &Arc<Task>) -> Result<(), Errno> {
     if !target.ptrace_seized.load(Ordering::Acquire) { return Err(Errno::Eio); }
-    target.stop_signal.store(sched::Signum::Sigstop as u8, Ordering::Release);
+    // A SEIZE-mode interrupt is a PTRACE_EVENT_STOP: the wait status a tracer
+    // reads must carry the event byte, not a bare SIGSTOP.
+    target.stop_code.store(uapi::event_stop_code(uapi::EVENT_STOP) as u32, Ordering::Release);
     target.stop_pending.store(true, Ordering::Release);
     *target.ptrace_siginfo.lock() = Some(sched::SigInfo {
         signo: sched::Signum::Sigtrap as u32,
-        code: ((uapi::EVENT_STOP << 8) | sched::Signum::Sigtrap as u32) as i32,
+        code: uapi::event_stop_code(uapi::EVENT_STOP),
         pid: 0, uid: 0, value: 0, sys: None, fault: None
     });
     sched::live::send_sig_priv_group(target, sched::Signum::Sigstop as u32);
@@ -117,7 +119,7 @@ pub fn interrupt(target: &Arc<Task>) -> Result<(), Errno> {
 pub fn listen(target: &Task) -> Result<(), Errno> {
     if !target.ptrace_seized.load(Ordering::Acquire) { return Err(Errno::Eio); }
     let in_event_stop = target.ptrace_siginfo.lock().as_ref()
-        .map(|si| ((si.code >> 8) as u32) == uapi::EVENT_STOP)
+        .map(|si| uapi::event_of_stop_code(si.code) == uapi::EVENT_STOP)
         .unwrap_or(false);
     if !in_event_stop { return Err(Errno::Eio); }
     target.cont_pending.store(false, Ordering::Release);

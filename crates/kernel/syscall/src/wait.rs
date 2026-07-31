@@ -36,6 +36,9 @@ pub const WSTAT_LOW_MASK:   i32 = 0xff;
 pub const WSTAT_STOPPED:    i32 = 0x7f;
 pub const WSTAT_CONTINUED:  i32 = 0xffff;
 pub const WSTAT_EXIT_SHIFT: u32 = 8;
+/// A stop code is 16 bits wide, not 8: a ptrace event stop carries
+/// `SIGTRAP | (event << 8)`, so masking it to a byte would erase the event.
+pub const WSTAT_STOP_CODE_MASK: i32 = 0xffff;
 
 const WAIT4_ALLOWED:  u64 = WNOHANG | WUNTRACED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL;
 const WAITID_ALLOWED: u64 = WNOHANG | WNOWAIT | WEXITED | WSTOPPED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL;
@@ -123,10 +126,19 @@ pub const fn waitid_target(idtype: u64, id: i32) -> WaitTarget {
 /// # C: O(1)
 pub const fn wait4_upid_is_esrch(upid: i32) -> bool { upid == i32::MIN }
 
-/// wait-status for a terminated child, from the exit code / signal.
+/// Wait status for a stopped/trapped child. `stop_code` is the full 16-bit
+/// code, not just a signal number: a job-control stop passes the stop signal,
+/// a ptrace syscall stop passes `SIGTRAP|0x80`, and a ptrace event stop passes
+/// `SIGTRAP | (event << 8)`.
 /// # C: O(1)
 pub const fn stopped_wstatus(stop_code: i32) -> i32 {
-    (stop_code << WSTAT_EXIT_SHIFT) | WSTAT_STOPPED
+    ((stop_code & WSTAT_STOP_CODE_MASK) << WSTAT_EXIT_SHIFT) | WSTAT_STOPPED
+}
+
+/// Recover the stop code from a stopped/trapped wait status. Inverse of
+/// `stopped_wstatus`. # C: O(1)
+pub const fn wstatus_stop_code(wstat: i32) -> i32 {
+    (wstat >> WSTAT_EXIT_SHIFT) & WSTAT_STOP_CODE_MASK
 }
 
 /// `(si_code, si_status)` for the reported event. `si_status` is the RAW value
@@ -137,8 +149,8 @@ pub const fn stopped_wstatus(stop_code: i32) -> i32 {
 pub const fn siginfo_from_event(kind: WaitEventKind, wstat: i32) -> (i32, i32) {
     match kind {
         WaitEventKind::Continued => (CLD_CONTINUED, SIGCONT),
-        WaitEventKind::Stopped   => (CLD_STOPPED, (wstat >> WSTAT_EXIT_SHIFT) & WSTAT_LOW_MASK),
-        WaitEventKind::Trapped   => (CLD_TRAPPED, (wstat >> WSTAT_EXIT_SHIFT) & WSTAT_LOW_MASK),
+        WaitEventKind::Stopped   => (CLD_STOPPED, wstatus_stop_code(wstat)),
+        WaitEventKind::Trapped   => (CLD_TRAPPED, wstatus_stop_code(wstat)),
         WaitEventKind::Exited    => {
             if (wstat & WSTAT_SIG_MASK) == 0 {
                 (CLD_EXITED, (wstat >> WSTAT_EXIT_SHIFT) & WSTAT_LOW_MASK)
