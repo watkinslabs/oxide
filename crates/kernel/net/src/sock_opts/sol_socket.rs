@@ -9,6 +9,10 @@
 //
 // No target gate: the decision logic must run under hosted `cargo test`.
 
+// The six numbers `vsock_socket` also needs live in the crate's ungated UAPI
+// owner; re-exported here so this table stays the single place to look.
+pub use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_OOBINLINE, SO_PROTOCOL, SO_TYPE};
+
 pub mod set;
 pub mod get;
 #[cfg(test)]
@@ -16,18 +20,15 @@ mod tests;
 
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
 
-pub const SOL_SOCKET: u64 = 1;
 
 pub const SO_DEBUG: u64 = 1;
 pub const SO_REUSEADDR: u64 = 2;
-pub const SO_TYPE: u64 = 3;
 pub const SO_ERROR: u64 = 4;
 pub const SO_DONTROUTE: u64 = 5;
 pub const SO_BROADCAST: u64 = 6;
 pub const SO_SNDBUF: u64 = 7;
 pub const SO_RCVBUF: u64 = 8;
 pub const SO_KEEPALIVE: u64 = 9;
-pub const SO_OOBINLINE: u64 = 10;
 pub const SO_NO_CHECK: u64 = 11;
 pub const SO_PRIORITY: u64 = 12;
 pub const SO_LINGER: u64 = 13;
@@ -44,7 +45,6 @@ pub const SO_ATTACH_FILTER: u64 = 26;
 pub const SO_DETACH_FILTER: u64 = 27;
 pub const SO_PEERNAME: u64 = 28;
 pub const SO_TIMESTAMP_OLD: u64 = 29;
-pub const SO_ACCEPTCONN: u64 = 30;
 pub const SO_PEERSEC: u64 = 31;
 pub const SO_SNDBUFFORCE: u64 = 32;
 pub const SO_RCVBUFFORCE: u64 = 33;
@@ -52,8 +52,6 @@ pub const SO_PASSSEC: u64 = 34;
 pub const SO_TIMESTAMPNS_OLD: u64 = 35;
 pub const SO_MARK: u64 = 36;
 pub const SO_TIMESTAMPING_OLD: u64 = 37;
-pub const SO_PROTOCOL: u64 = 38;
-pub const SO_DOMAIN: u64 = 39;
 pub const SO_RXQ_OVFL: u64 = 40;
 pub const SO_WIFI_STATUS: u64 = 41;
 pub const SO_PEEK_OFF: u64 = 42;
