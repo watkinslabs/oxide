@@ -140,6 +140,9 @@ impl CharDevOps for FuseDevOps {
         conn_for(file).submit_reply_iter(bufs)
     }
 
+    /// # C: O(1)
+    fn can_poll(&self, _devt: Devt) -> bool { true }
+
     /// `poll(/dev/fuse)` — POLLIN when a request is queued (or the conn aborted),
     /// POLLOUT always (a reply can always be written). # C: O(1)
     fn poll_file(&self, _devt: Devt, file: &File) -> KResult<u32> {

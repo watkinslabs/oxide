@@ -84,6 +84,8 @@ impl FileOps for SerialFileOps {
         serial_read_nonblock(buf)
     }
 
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, _i: &Inode) -> u32 {
         crate::static_console::poll()
     }

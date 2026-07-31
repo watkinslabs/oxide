@@ -242,6 +242,8 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
 /// # C: O(1)
 struct IoUringFileOps;
 impl FileOps for IoUringFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
 }

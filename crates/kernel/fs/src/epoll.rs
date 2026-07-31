@@ -12,14 +12,28 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
-use vfs::{File, FileType, Ino, Inode, InodeRef, KResult, VfsError};
-use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
+use vfs::{File, FileType, Ino, InodeRef};
+use vfs::{InodeBuilder, default_inode_ops, mk_mode};
 
+// Module manifest:
+//   policy   — pure epoll_ctl / ioctl decision rules (ungated, hosted-tested)
+//   nest     — ep_loop_check graph walks feeding policy::nesting_admits
+//   scan     — ready-list drain + level requeue for one epoll_wait batch
+//   fileops  — the epoll inode's i_fop: release, poll, fdinfo, EPIOC* ioctls
+//   syscalls — the six ABI entry points: fd resolution, usercopy, mutation
+#[path = "epoll/policy.rs"]
+pub mod policy;
+#[path = "epoll/nest.rs"]
+mod nest;
 #[path = "epoll/scan.rs"]
 mod scan;
+#[path = "epoll/fileops.rs"]
+mod fileops;
 #[path = "epoll/syscalls.rs"]
 mod syscalls;
 pub use syscalls::{sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2, sys_epoll_wait};
+#[cfg(target_os = "oxide-kernel")]
+pub use fileops::handle_epoll_ioctl;
 
 mod ids {
     use vfs::Ino;
@@ -44,10 +58,6 @@ pub(super) static EPOLL_DIAG_N: core::sync::atomic::AtomicU32 = core::sync::atom
 pub(super) fn diag_slot() -> bool {
     EPOLL_DIAG_N.fetch_add(1, Ordering::Relaxed) < 1_024
 }
-
-pub(super) const EPOLL_CTL_ADD: i32 = 1;
-pub(super) const EPOLL_CTL_DEL: i32 = 2;
-pub(super) const EPOLL_CTL_MOD: i32 = 3;
 
 #[cfg(target_arch = "x86_64")]
 pub(super) const EPOLL_EVENT_SIZE: usize = 12;
@@ -79,6 +89,9 @@ pub struct EpItem {
     /// caller's table; fd reuse after ADD must not retarget the interest.
     pub file: Weak<File>,
     pub poll_source: Option<Arc<vfs::PollSubscribers>>,
+    /// Uid whose `max_user_watches` budget this interest is charged against;
+    /// released exactly once, by `detach`.
+    charged_uid: u32,
     pub state: Spinlock<EpItemState, TaskListClass>,
     pub queued: AtomicBool,
     /// `debug-displaystack` records only interests created by Mutter.  The
@@ -138,6 +151,7 @@ impl EpItem {
             .unwrap_or(false);
         Arc::new_cyclic(|item| Self {
             fd, sub_id, file: Arc::downgrade(&file), poll_source,
+            charged_uid: ep.owner_uid,
             state: Spinlock::new(EpItemState { events, data, active: true, armed: true }),
             queued: AtomicBool::new(false),
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-displaystack"))]
@@ -202,6 +216,7 @@ impl EpItem {
             state.active = false;
             state.armed = false;
         }
+        vfs::epoll_limits::release_watches(item.charged_uid, 1);
         if let Some(subs) = item.poll_source.as_ref() { subs.unsubscribe(item.sub_id); }
         if let Some(file) = item.file.upgrade() { file.epoll_unlink(item.sub_id); }
         if let Some(ep) = item.ep.upgrade() {
@@ -212,15 +227,20 @@ impl EpItem {
     }
 }
 
-/// EPOLLET — edge-triggered (Linux `EPOLLET` = 1<<31).
-pub(super) const EPOLLET: u32 = 0x8000_0000;
-pub(super) const EPOLLONESHOT: u32 = 0x4000_0000;
-pub(super) const EPOLLWAKEUP: u32 = 0x2000_0000;
-pub(super) const EPOLLEXCLUSIVE: u32 = 0x1000_0000;
+pub(super) use policy::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT,
+                        EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
 
 /// Per-inode epoll state (Linux `i_private`).
 pub struct EpollData {
     pub id:      u32,
+    /// Real uid the interests of this instance are charged to. Linux keys the
+    /// `max_user_watches` counter on the `user_struct` captured at
+    /// `epoll_create`, not on the caller of each `epoll_ctl`.
+    pub owner_uid: u32,
+    /// `EPIOCSPARAMS`/`EPIOCGPARAMS` busy-poll parameters.
+    pub busy_poll_usecs:  AtomicU32,
+    pub busy_poll_budget: AtomicU32,
+    pub prefer_busy_poll: AtomicU32,
     pub entries: Spinlock<Vec<Arc<EpItem>>, TaskListClass>,
     pub ready:   Spinlock<VecDeque<Arc<EpItem>>, TaskListClass>,
     poll_subs:   Arc<vfs::PollSubscribers>,
@@ -341,6 +361,13 @@ impl EpollData {
 static EPOLLS: Spinlock<Vec<Option<Arc<EpollData>>>, TaskListClass>
     = Spinlock::new(Vec::new());
 
+/// Every live epoll instance. The nesting walks need to find the epolls that
+/// watch a given instance, which is the reverse of the interest list.
+/// # C: O(N_epoll_instances)
+pub(super) fn epolls_snapshot() -> Vec<Arc<EpollData>> {
+    EPOLLS.lock().iter().filter_map(|e| e.as_ref().cloned()).collect()
+}
+
 /// F181: broadcast wake registered with sched at boot via
 /// `install_epoll_broadcast`. Walks every live EpollData and
 /// wakes its per-instance waitlist. Kernel-only — hosted tests
@@ -384,8 +411,14 @@ pub(super) static NEXT_SUB_ID: AtomicU32 = AtomicU32::new(1);
 pub fn make_epoll_inode() -> InodeRef {
     let id = NEXT_EPOLL_ID.fetch_add(1, Ordering::Relaxed);
     let poll_subs = Arc::new(vfs::PollSubscribers::new());
+    let owner_uid = sched::current()
+        .map(|c| c.creds.ruid.load(Ordering::Acquire)).unwrap_or(0);
     let data = Arc::new(EpollData {
         id,
+        owner_uid,
+        busy_poll_usecs:  AtomicU32::new(0),
+        busy_poll_budget: AtomicU32::new(0),
+        prefer_busy_poll: AtomicU32::new(0),
         entries: Spinlock::new(Vec::new()),
         ready: Spinlock::new(VecDeque::new()),
         poll_subs: Arc::clone(&poll_subs),
@@ -398,46 +431,10 @@ pub fn make_epoll_inode() -> InodeRef {
         g[id as usize] = Some(Arc::clone(&data));
     }
     InodeBuilder::new(ids::INO_BASE | (id as Ino & ids::INO_MASK),
-        mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(EpollFileOps))
+        mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(fileops::EpollFileOps))
         .poll_subs_arc(poll_subs)
         .private(data)
         .build()
-}
-
-/// `i_fop` for an epoll inode. # C: O(1)
-struct EpollFileOps;
-impl FileOps for EpollFileOps {
-    fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> KResult<usize> { Err(VfsError::Einval) }
-    fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
-    /// Linux `eventpoll_release_file`: closing an epoll fd removes every epitem,
-    /// unregisters callbacks from watched wait queues, and drops the pinned file
-    /// descriptions. # C: O(N_entries)
-    fn on_release_file(&self, file: &File) {
-        let Some(ep) = epoll_data_of_inode(file.inode()) else { return; };
-        let drained: Vec<Arc<EpItem>> = {
-            let mut list = ep.entries.lock();
-            list.drain(..).collect()
-        };
-        for e in drained.iter() { EpItem::detach(e); }
-        {
-            let mut g = EPOLLS.lock();
-            if let Some(slot) = g.get_mut(ep.id as usize) { *slot = None; }
-        }
-        #[cfg(target_os = "oxide-kernel")]
-        ep.waiters.wake_all();
-        drop(drained);
-    }
-    /// A nested epoll fd is readable while its ready list contains an active,
-    /// currently-ready item. # C: O(N_ready)
-    fn poll(&self, inode: &Inode) -> u32 {
-        let d = match inode.private::<EpollData>() { Some(d) => d, None => return 0 };
-        let ready = d.ready.lock().clone();
-        for item in ready {
-            let state = item.state.lock();
-            if state.active && state.armed { return vfs::POLL_IN; }
-        }
-        0
-    }
 }
 
 /// # C: O(1)

@@ -67,6 +67,8 @@ impl FileOps for SignalfdFileOps {
     /// spin: a service manager registers a signalfd, so an always-ready poll
     /// busy-looped `epoll_pwait` forever.
     /// # C: O(1)
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         let mask = match inode.private::<SignalfdData>() {
             Some(d) => d.mask.load(Ordering::Acquire), None => return 0,

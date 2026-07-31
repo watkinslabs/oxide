@@ -86,6 +86,8 @@ impl InodeOps for SysClassNetOps {
 }
 
 impl FileOps for SysClassNetOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let snap = snapshot_net_devs();
         #[cfg(feature = "debug-udevdb")]
@@ -127,6 +129,8 @@ impl InodeOps for SysDevicesVirtualNetOps {
 }
 
 impl FileOps for SysDevicesVirtualNetOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let snap = snapshot_net_devs();
         #[cfg(feature = "debug-udevdb")]
@@ -313,6 +317,8 @@ impl InodeOps for NetIfaceOps {
 }
 
 impl FileOps for NetIfaceOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let mut idx = ctx.pos as usize;
         let attr_count = NET_IFACE_GROUP.attrs.len();

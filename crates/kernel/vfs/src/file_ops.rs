@@ -280,6 +280,17 @@ pub trait FileOps: Send + Sync {
     /// # C: O(1)
     fn poll_deadline_ns(&self, _file: &File) -> Option<u64> { None }
 
+    /// `file_can_poll` — does this description implement a readiness op?
+    /// `epoll_ctl(2)` is the ONLY caller: a target that cannot poll is `EPERM`
+    /// there, while `poll(2)`/`select(2)` keep the always-ready default mask
+    /// for the same file. Regular files and directories therefore stay usable
+    /// with `poll`/`select` and stay rejected by `epoll_ctl`, so an event loop
+    /// falls back to blocking I/O instead of watching a descriptor that can
+    /// never deliver an edge. Default answers by wait source; backends whose
+    /// readiness moves with no subscriber list override to `true`.
+    /// # C: O(1)
+    fn can_poll(&self, file: &File) -> bool { self.poll_subscribers(file).is_some() }
+
     /// `f_op->fasync` — backend admission for `FIOASYNC`/`F_SETFL(O_ASYNC)`.
     /// Default means no fasync op installed; async-capable stream backends call
     /// [`File::set_fasync_state`] to link/unlink the open description.

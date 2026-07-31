@@ -36,6 +36,8 @@ pub fn is_perf_inode(inode: &InodeRef) -> bool { inode.ino() & !INO_ID_MASK == I
 struct PerfFileOps;
 
 impl FileOps for PerfFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     /// `perf_read` → `__perf_read`: the payload is fully determined by
     /// `attr.read_format`, and a buffer smaller than `event->read_size` is
     /// `-ENOSPC` (not a short read).

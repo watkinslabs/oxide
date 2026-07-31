@@ -69,6 +69,9 @@ pub fn init() {
     if let Some(p) = pmm::setup::pmm_static() {
         let bytes = p.snapshot().managed_pages.saturating_mul(hal::PAGE_SIZE_BYTES);
         vfs::fsnotify::init_watches_max_from_ram(bytes);
+        // `eventpoll_init` derives `fs.epoll.max_user_watches` from the same
+        // `si_meminfo()` snapshot.
+        vfs::epoll_limits::init_watches_max_from_ram(bytes);
     }
     inotify::install_write_hook();
     truncate::install_rlimit_fsize_hook();

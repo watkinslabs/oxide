@@ -129,6 +129,8 @@ fn fdinfo_body(d: &ProcFdInfoInode) -> Vec<u8> {
 /// (plus fd-type extras) at read time off the live open-file.
 struct FdInfoFileOps;
 impl FileOps for FdInfoFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<ProcFdInfoInode>().ok_or(VfsError::Einval)?;
         Ok(crate::dyn_file::read_at(&fdinfo_body(d), off, buf))

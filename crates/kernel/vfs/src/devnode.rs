@@ -155,6 +155,10 @@ pub trait CharDevOps: Send + Sync {
     fn poll_file(&self, devt: Devt, file: &File) -> KResult<u32> { let _ = file; self.poll(devt) }
     /// Wait source for this open device description. # C: O(1)
     fn poll_subscribers_file(&self, devt: Devt, file: &File) -> Option<Arc<PollSubscribers>> { let _ = devt; file.inode().poll_subscribers_arc() }
+    /// Does this driver supply `cdev->poll`? `epoll_ctl(2)` rejects a target
+    /// without one with EPERM; `poll(2)`/`select(2)` keep the default mask.
+    /// # C: O(1)
+    fn can_poll(&self, devt: Devt) -> bool { let _ = devt; false }
     /// `cdev->mmap`/shared-frame probe. # C: driver-dependent
     fn mmap_shared_frame(&self, devt: Devt, off: u64) -> KResult<Option<u64>> { let _ = (devt, off); Ok(None) }
     /// `cdev->release`. # C: driver-dependent
@@ -346,6 +350,8 @@ impl InodeOps for SpecialInodeOps {
 /// always `ENXIO` (a socket fd is born from `socket(2)`); no data op.
 struct SocketFileOps;
 impl FileOps for SocketFileOps {
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &File) -> bool { true }
     fn on_open(&self, _inode: &Inode) -> KResult<()> { Err(VfsError::Enxio) }
 }
 

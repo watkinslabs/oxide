@@ -146,6 +146,8 @@ impl FileOps for CgDirFileOps {
 /// hierarchy keyed by `(cgid, file)`.
 struct CgFileFileOps;
 impl FileOps for CgFileFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<CgFileData>().ok_or(VfsError::Einval)?;
         let data = crate::read_file(d.cgid, &d.file)?;

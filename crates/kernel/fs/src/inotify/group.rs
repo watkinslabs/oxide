@@ -451,6 +451,8 @@ impl FileOps for InotifyFileOps {
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         match inode.private::<InotifyData>() { Some(d) => d.write(off, buf), None => Err(VfsError::Einval) }
     }
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 {
         inode.private::<InotifyData>().map_or(0, |d| d.poll())
     }

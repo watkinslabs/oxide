@@ -145,6 +145,8 @@ struct UidGidMapOps;
 
 #[cfg(target_os = "oxide-kernel")]
 impl FileOps for UidGidMapOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<UidGidMap>().ok_or(VfsError::Einval)?;
         let task = target(data.tid)?;
@@ -181,6 +183,8 @@ struct SetgroupsOps;
 
 #[cfg(target_os = "oxide-kernel")]
 impl FileOps for SetgroupsOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<SetgroupsFile>().ok_or(VfsError::Einval)?;
         let task = target(data.tid)?;

@@ -75,6 +75,8 @@ impl vfs::InodeOps for ZramDeviceOps {
     }
 }
 impl FileOps for ZramDeviceOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         if ctx.pos != 0 { return Ok(()); }
         let leaf = inode.lookup(BLOCK_STATE_LEAF)?;
@@ -87,6 +89,8 @@ impl FileOps for ZramDeviceOps {
 struct BlockStateData { zram: Arc<drv_zram::Zram> }
 struct BlockStateOps;
 impl FileOps for BlockStateOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<BlockStateData>().ok_or(VfsError::Einval)?;
         let body = render_block_state(&data.zram)?;

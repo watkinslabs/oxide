@@ -44,8 +44,13 @@ mod userbuf {
     }
 }
 
-#[path = "../../syscalls/src/016_ioctl/uapi.rs"]
-mod uapi;
+#[path = "../../syscalls/src/ioctl_uapi.rs"]
+mod ioctl_uapi;
+use ioctl_uapi as uapi;
+#[path = "../../syscalls/src/ioctl_owner.rs"]
+mod ioctl_owner_mod;
+use ioctl_owner_mod::{ioctl_file, ioctl_owner, IoctlOwner};
+
 #[path = "../../syscalls/src/016_ioctl/blk.rs"]
 mod blk;
 #[path = "../../syscalls/src/016_ioctl/fileattr.rs"]

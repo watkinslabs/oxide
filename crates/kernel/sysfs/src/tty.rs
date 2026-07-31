@@ -109,6 +109,8 @@ impl InodeOps for SysClassTtyOps {
     }
 }
 impl FileOps for SysClassTtyOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let mut idx = ctx.pos as usize;
         while idx < TTY_DEVICES.len() {
@@ -135,6 +137,8 @@ impl InodeOps for SysDevicesVirtualTtyOps {
     }
 }
 impl FileOps for SysDevicesVirtualTtyOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let mut idx = ctx.pos as usize;
         while idx < TTY_DEVICES.len() {
@@ -185,6 +189,8 @@ impl InodeOps for TtyDeviceOps {
     }
 }
 impl FileOps for TtyDeviceOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = match inode.private::<TtyDeviceData>() { Some(d) => d, None => return Ok(()) };
         let entries = tty_dev_attrs(&d.name);
@@ -241,6 +247,8 @@ impl FileOps for TtyActiveFileOps {
         }
         Ok(())
     }
+    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll_open_file(&self, file: &File) -> u32 {
         let Some(d) = file.inode().private::<TtyActiveData>() else { return POLL_IN; };
         if !d.is_vt { return POLL_IN; }
@@ -279,6 +287,8 @@ struct TtyUeventData { name: String, major: u32, minor: u32 }
 
 struct TtyUeventFileOps;
 impl FileOps for TtyUeventFileOps {
+    /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<TtyUeventData>().ok_or(VfsError::Einval)?;
         let body = alloc::format!(
