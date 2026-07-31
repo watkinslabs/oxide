@@ -49,7 +49,7 @@ fn activate_switches_and_allocates() {
     assert!(slot(3).unwrap().allocated);
 }
 
-fn flush_stub(_pixels: &[u8]) {}
+fn flush_stub(_pixels: &[u8], _rect: fbcon::kernel::FlushRect) {}
 
 #[test]
 fn activate_publishes_single_foreground_to_tty_and_fbcon() {

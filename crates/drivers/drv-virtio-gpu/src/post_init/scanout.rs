@@ -15,37 +15,79 @@ pub(super) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
     }
 }
 
-/// Copy `pixels` into the live framebuffer, then issue transfer+flush.
-pub fn fbcon_flush_pixels(pixels: &[u8]) {
+/// Copy the damaged part of `pixels` into the live framebuffer, then issue
+/// transfer+flush for exactly that rectangle.
+///
+/// Scope is the whole cost here. Every console write reaches this path, and
+/// uploading the whole frame for one changed line meant a multi-megabyte copy
+/// under the `CTX` spinlock (interrupts masked) plus two whole-screen device
+/// commands, each of which spin-waits for the used ring. The console tells us
+/// which scanlines actually changed, so all three shrink together.
+///
+/// An earlier fix cut the copy's constant factor — it had been a byte-by-byte
+/// `write_volatile` loop whose IRQ-masked window stalled the timer tick for
+/// seconds — but left it whole-frame; this cuts the extent.
+pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     let g = CTX.lock();
     let owner = match console_owner_key() { Some(key) => key, None => return };
     let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
     }
-    let n = (ctx.fb_bytes as usize).min(pixels.len());
-    unsafe {
-        // Bulk copy the frame into the GPU resource backing (guest RAM, WB — not
-        // MMIO, so no per-byte volatile needed). The old byte-by-byte
-        // `write_volatile` loop ran millions of volatile stores per flush with the
-        // CTX lock held (IRQ-masked), so a burst of console output (every systemd
-        // log line renders here) stalled the LAPIC timer for seconds — surfacing
-        // as multi-second scheduler wake gaps that serialized sysinit. A single
-        // `copy_nonoverlapping` (memcpy) is ~1-2 orders of magnitude faster and
-        // keeps the IRQ-masked window short.
-        core::ptr::copy_nonoverlapping(pixels.as_ptr(), ctx.fb_va as *mut u8, n);
-    }
+    let plan = match damage::plan_copy(rect, ctx.w, ctx.h, pixels.len(), ctx.fb_bytes as usize) {
+        Some(p) => p,
+        // Nothing of the damage lands on this resource: no copy, no command.
+        None => return,
+    };
+    // SAFETY: copy_damage into the GPU resource backing at ctx.fb_va, whose
+    // length ctx.fb_bytes bounded the plan above, from `pixels` whose length
+    // bounded it likewise; the plan's last touched byte is inside both.
+    unsafe { copy_damage(pixels, ctx.fb_va as *mut u8, &plan); }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let res_id = ctx.res_id;
-    let w = ctx.w;
-    let h = ctx.h;
+    let (x, y, w, h, off) = (plan.x, plan.y, plan.w, plan.h, plan.dst_off);
     unsafe {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
-            |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
+            |buf| crate::encode_transfer_to_host_2d(buf, res_id, x, y, w, h, off),
             ctx.ctrlq, ctx.hhdm);
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
-            |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
+            |buf| crate::encode_resource_flush(buf, res_id, x, y, w, h),
             ctx.ctrlq, ctx.hhdm);
+    }
+}
+
+/// Copy the planned scanlines from `src` into the resource backing at `dst`.
+/// Guest RAM on both sides (write-back, not MMIO), so plain `memcpy` moves —
+/// no per-byte volatile.
+///
+/// # Safety
+/// `dst` must be the base of a backing at least as long as the `dst_len`
+/// `plan` was built against, and `src` at least its `src_len`.
+/// # C: O(plan.bytes())
+unsafe fn copy_damage(src: &[u8], dst: *mut u8, plan: &damage::CopyPlan) {
+    if plan.is_contiguous() {
+        // SAFETY: plan_copy proved src_off..+bytes() is inside src and
+        // dst_off..+bytes() inside the backing; contiguity means the rows are
+        // adjacent in both, so this is the same extent as the loop below.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src.as_ptr().add(plan.src_off),
+                dst.add(plan.dst_off as usize),
+                plan.bytes(),
+            );
+        }
+        return;
+    }
+    for row in 0..plan.h as usize {
+        // SAFETY: plan_copy bounded the last row's end against both buffer
+        // lengths, so every row offset derived here is in range of each.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src.as_ptr().add(plan.src_off + row * plan.src_stride_b),
+                dst.add(plan.dst_off as usize + row * plan.dst_stride_b),
+                plan.row_bytes,
+            );
+        }
     }
 }
 
