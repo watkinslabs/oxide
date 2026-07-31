@@ -5,31 +5,14 @@
 #
 # Burn this down. Regenerate with:
 #   make stack-gate-baseline-arm
+#
+# B1618 removed the whole network TX/RX/socket-control family from this file.
+# It is now under the ceiling and must stay there — a net change that trips
+# the gate is a regression, not a candidate for a new entry here.
 
 # Syscall entry and dispatch. These are the ROOTS of every syscall, so the
 # walker's longest path is the max over all ~400 of them at once — no single
 # call reaches this. Useful only as a ceiling on the deepest syscall; the
-# individual syscalls below are the numbers to actually drive down.
-14448	oxide_svc_save_block
-14160	oxide_syscall_dispatch
-
-# The network TX chain: write/writev/sendmsg/sendto/sendmmsg -> socket::send
-# -> NetStack xmit -> raw4/ipv6 framing. Every entry here is a prefix of the
-# same chain, which is why they cluster. This is the deepest live path in the
-# kernel and the top follow-up candidate — it is genuinely one call sequence,
-# not a longest-path artifact.
-13728	_RNvNtCshbkh59xwSwY_8syscalls13s307_sendmmsg12sys_sendmmsg
-13296	_RNvNtCshbkh59xwSwY_8syscalls12s296_pwritev12sys_pwritev2
-13216	_RNvNtCshbkh59xwSwY_8syscalls11s020_writev10sys_writev
-13040	_RNvNtCscVwxWUH72qP_6socket4send6writev
-13008	_RNvNtCshbkh59xwSwY_8syscalls12s046_sendmsg11sys_sendmsg
-
-# Socket RX and control syscalls: read/readv/recvfrom/recvmsg/recvmmsg and
-# connect/shutdown/setsockopt. They share the socket layer and the NetStack
-# tail with the TX chain above, so they move together and are one follow-up.
-13008	_RNvNtCshbkh59xwSwY_8syscalls12s042_connect11sys_connect
-
-# Batched-submission syscalls. io_uring_enter / io_submit inline one op's
-# whole handler, so their depth is that of the deepest op they can dispatch.
-13664	_RNvNtNtCshbkh59xwSwY_8syscalls3aio6submit13sys_io_submit
-13520	_RNvNtCshbkh59xwSwY_8syscalls19s426_io_uring_enter18sys_io_uring_enter
+# individual syscalls are the numbers to actually drive down.
+13632	oxide_svc_save_block
+13344	oxide_syscall_dispatch

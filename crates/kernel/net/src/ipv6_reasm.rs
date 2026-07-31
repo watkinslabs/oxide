@@ -105,16 +105,18 @@ impl ReasmTable {
         if offset_bytes == 0 {
             if let Some(prefix) = prefix { flow.prefix = Some(prefix.to_vec()); }
         }
-        flow.frags.push(Frag { offset: offset_bytes, bytes: payload.to_vec() });
+        // Queue ordered by offset the way Linux orders its fragment queue at insert
+        // time, instead of re-sorting on every arrival. Equal offsets keep arrival
+        // order: a peer may send two fragments at the same offset, and which one the
+        // reassembled datagram keeps is decided by arrival order.
+        crate::ordered::insert_stable_by_key(&mut flow.frags,
+            Frag { offset: offset_bytes, bytes: payload.to_vec() }, |f| f.offset);
         if !more_fragments {
             flow.total = Some(end);
         }
 
         let total = flow.total?;
-        // STABLE ON PURPOSE (costs a 4 KiB `driftsort` scratch frame): a peer may send two
-        // fragments at the same offset; which one the reassembled datagram
-        // keeps is decided by arrival order, so that order must survive.
-        flow.frags.sort_by_key(|f| f.offset);
+        // The queue is already offset-ordered; only coverage remains to check.
         let mut cur = 0usize;
         for frag in &flow.frags {
             if frag.offset != cur { return None; }

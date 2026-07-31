@@ -30,12 +30,11 @@ impl NetStack {
         if let Some(id) = bound {
             if self.ifaces.lookup_in_ns(id, endpoint.net_ns()).is_none() { return Err(NetError::Enodev); }
         }
-        let controlled_route = if let Some(id) = control.iface {
-            Some(self.routes6.snapshot_in(endpoint.net_ns()).into_iter()
-                .filter(|route| route.iface == id && route.matches(route_dst))
-                .reduce(|best, route| if route.prefix_len > best.prefix_len { route } else { best })
-                .ok_or(NetError::Enetunreach)?)
-        } else { None };
+        let controlled_route = match control.iface {
+            Some(id) => Some(self.longest_prefix_route6_on_iface(endpoint.net_ns(), id, route_dst)
+                .ok_or(NetError::Enetunreach)?),
+            None => None,
+        };
         let (iface_id, iface, next_hop) = if let Some(route) = controlled_route {
             let iface = self.ifaces.acquire_egress_in_ns(route.iface, endpoint.net_ns())
                 .ok_or(NetError::Enetunreach)?;
@@ -70,19 +69,8 @@ impl NetStack {
             return Ok(());
         }
         if prepared.mode == crate::raw6::Raw6SendMode::CallerHeader {
-            let mut p = crate::pkt::Pkt::with_capacity(0, prepared.bytes.len());
-            p.put(prepared.bytes.len()).map_err(|_| NetError::Enobufs)?
-                .copy_from_slice(&prepared.bytes);
-            if !admit_ipv6_owned(&endpoint.owner, iface_id, next_hop, prepared.src, p)? {
-                return Ok(());
-            }
-            if prepared.bytes.len() > core::cmp::min(iface.mtu() as usize, mtu) {
-                return Err(NetError::Emsgsize);
-            }
-            let mut p = crate::pkt::Pkt::with_capacity(0, prepared.bytes.len());
-            p.put(prepared.bytes.len()).map_err(|_| NetError::Enobufs)?
-                .copy_from_slice(&prepared.bytes);
-            return emit_ipv6_fragment(iface_id, iface, next_hop, prepared.src, p);
+            return emit_raw6_caller_header(&endpoint.owner, iface_id, iface, next_hop,
+                prepared.src, &prepared.bytes, mtu);
         }
         let hop = match control.hop_limit { Some(value) if value >= 0 => value as u8, _ => hop_limit };
         let flowinfo = control.flowinfo.unwrap_or(0);
@@ -96,6 +84,21 @@ impl NetStack {
         self.xmit_raw6_controlled(endpoint, iface_id, iface, next_hop, prepared.src, final_dst,
             route_dst, prepared.next_header, &prepared.bytes, hop, tclass, flow, mtu,
             may_fragment, control)
+    }
+
+    /// Best route to `dst` restricted to one interface, longest prefix wins.
+    ///
+    /// `#[inline(never)]`: this materialises the whole route table snapshot, and only a
+    /// message carrying an explicit `IPV6_PKTINFO` interface takes it. Every other raw
+    /// send would otherwise reserve the vector on a frame deep in the transmit chain.
+    /// # C: O(N routes)
+    #[inline(never)]
+    fn longest_prefix_route6_on_iface(&self, net_ns: u64, id: NetIfaceId, dst: Ipv6Addr)
+        -> Option<crate::route6::Route6Entry>
+    {
+        self.routes6.snapshot_in(net_ns).into_iter()
+            .filter(|route| route.iface == id && route.matches(dst))
+            .reduce(|best, route| if route.prefix_len > best.prefix_len { route } else { best })
     }
 
     fn xmit_raw6_controlled(&self, endpoint: &crate::raw6::Raw6Endpoint,
@@ -248,5 +251,25 @@ fn emit_packet_fragment(iface_id: NetIfaceId, iface: crate::EgressLease,
     next_hop: Ipv6Addr, src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8],
     hop: u8, tclass: u8, flow: u32) -> NetResult<()> {
     let p = build_packet(src, dst, next, payload, hop, tclass, flow)?;
+    emit_ipv6_fragment(iface_id, iface, next_hop, src, p)
+}
+
+/// Transmit an `IPV6_HDRINCL` message whose caller already built the whole packet.
+///
+/// `#[inline(never)]`: this arm builds two `Pkt` buffers that the kernel-header arm —
+/// the one every ordinary raw send takes, already deep in a transmit chain — never
+/// touches, and LLVM otherwise reserves both sets of locals in one frame.
+/// # C: O(packet)
+#[inline(never)]
+fn emit_raw6_caller_header(owner: &crate::SocketOwner, iface_id: NetIfaceId,
+    iface: crate::EgressLease, next_hop: Ipv6Addr, src: Ipv6Addr, bytes: &[u8], mtu: usize)
+    -> NetResult<()>
+{
+    let mut p = crate::pkt::Pkt::with_capacity(0, bytes.len());
+    p.put(bytes.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(bytes);
+    if !admit_ipv6_owned(owner, iface_id, next_hop, src, p)? { return Ok(()); }
+    if bytes.len() > core::cmp::min(iface.mtu() as usize, mtu) { return Err(NetError::Emsgsize); }
+    let mut p = crate::pkt::Pkt::with_capacity(0, bytes.len());
+    p.put(bytes.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(bytes);
     emit_ipv6_fragment(iface_id, iface, next_hop, src, p)
 }

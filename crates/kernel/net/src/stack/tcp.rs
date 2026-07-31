@@ -389,98 +389,13 @@ impl NetStack {
             }
             return Ok(());
         }
-        // Listener path: only SYNs spawn new conns.
-        if (hdr.flags & tcp_flags::SYN) == 0 { return Ok(()); }
-        let bucket = {
-            let g = tables.tcp_listens.lock();
-            super::tcp_listener::lookup_listen_bucket(&g, dst_ip, hdr.dst_port)
-        };
-        let Some(bucket) = bucket else { return Ok(()); };
-        // F192: SO_REUSEPORT hash distribute by 4-tuple. Single-entry
-        // bucket -> idx 0.
-        let idx = super::tcp_listener::select_reuseport_listener(
-            src_ip, hdr.src_port, hdr.dst_port, bucket.len());
-        let mut listener = None;
-        for off in 0..bucket.len() {
-            let cand = bucket[(idx + off) % bucket.len()].clone();
-            if cand.bound_iface().is_none_or(|id| id == iface) {
-                listener = Some(cand);
-                break;
-            }
-        }
-        let Some(listener) = listener else { return Ok(()); };
-        let protocol = match dst_ip {
-            IpAddr::V4(_) => crate::addr::eth_p::IPV4,
-            IpAddr::V6(_) => crate::addr::eth_p::IPV6,
-        };
-        if !crate::cgroup_bpf::ingress(&listener.owner, packet, protocol, iface) {
-            return Ok(());
-        }
-        let Some(keep) = crate::bpf_filter::retained_tcp_len(
-            listener.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
-                packet: seg, protocol, ifindex: Some(iface.raw()),
-                pay_offset: hdr.payload_offset() as u32,
-                hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                    .map_or(0, |dev| dev.hardware_type()),
-            }), seg,
-        ) else { return Ok(()); };
-        let seg = &seg[..keep];
-        // F180b: synthesise a per-conn local endpoint that pins the
-        // wildcard listener to the actual delivery dst — so outbound
-        // segments carry a real src, not 0.0.0.0/::.
-        let mut local_ep = listener.local;
-        if local_ep.ip == IpAddr::V4(Ipv4Addr::ANY) || local_ep.ip == IpAddr::V6(Ipv6Addr::ANY) {
-            local_ep.ip = dst_ip;
-        }
-        // F192: enforce listen backlog. Drop the SYN on the floor
-        // when accept_q is already at cap — peer retries naturally
-        // via SYN retx.
-        if !listener.reserve_backlog() { return Ok(()); }
-        let mut new_conn = TcpConn::new_listener(local_ep);
-        // F184: SYN-ACK we're about to build advertises our MSS too.
-        let bound = listener.bound_iface();
-        let ip_mode = listener.ip_mtu_discover.load(
-            ::core::sync::atomic::Ordering::Acquire);
-        let ipv6_mode = listener.ipv6_mtu_discover.load(
-            ::core::sync::atomic::Ordering::Acquire);
-        new_conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
-            net_ns, src_ip, bound, ip_mode, ipv6_mode);
-        new_conn.apply_route_metrics(self.route_metrics_for_dst_in(net_ns, src_ip, bound));
-        let resp = match new_conn.input_prevalidated(src_ip, dst_ip, seg) {
-            Ok(resp) => resp,
-            Err(_) => {
-                listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
-                return Err(NetError::Einval);
-            }
-        };
-        let child_filter = Arc::new(crate::bpf_filter::SocketFilter::inherited(
-            &listener.bpf_filter));
-        let child_ip_pmtu = Arc::new(::core::sync::atomic::AtomicI32::new(
-            listener.ip_mtu_discover.load(::core::sync::atomic::Ordering::Acquire)));
-        let child_ipv6_pmtu = Arc::new(::core::sync::atomic::AtomicI32::new(
-            listener.ipv6_mtu_discover.load(::core::sync::atomic::Ordering::Acquire)));
-        let new_entry = Arc::new(TcpEntry::new_bound_with_filter_listener(
-            new_conn, Arc::new(crate::SocketError::new()), Some(listener.bind.clone()), child_filter,
-            child_ip_pmtu, child_ipv6_pmtu,
-            Some(Arc::downgrade(&listener)),
-        ));
-        if !super::tcp_listener::publish_passive_child(&tables, &listener, key, &new_entry) {
-            return Ok(());
-        }
-        if let Some(r) = resp {
-            if let Err(error) = self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, bound,
-                TcpTxPolicy::Entry(&new_entry))
-            {
-                super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &new_entry);
-                new_entry.release_backlog();
-                new_entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
-                return Err(error);
-            }
-        }
-        Ok(())
+        // B1618: the passive-open branch lives in its own function so its locals —
+        // a whole `TcpConn`, the child filter/PMTU arcs, the reuseport bucket — do not
+        // share a frame with the established-connection branch above, which is the one
+        // that continues into transmit. Linux splits the same way (`noinline_for_stack`).
+        self.deliver_tcp_to_listener(net_ns, iface, src_ip, dst_ip, seg, packet, &hdr, key, &tables)
     }
 }
-
 #[cfg(test)]
 #[path = "tcp_timer_tests.rs"]
 mod timer_tests;
