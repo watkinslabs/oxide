@@ -39,8 +39,8 @@ fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
     virtio::VirtioChildDeviceKey::from_raw(raw)
 }
 
-fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> VirtioInputDev {
-    VirtioInputDev::empty(device_key)
+fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> alloc::boxed::Box<VirtioInputDev> {
+    VirtioInputDev::empty_boxed(device_key)
 }
 
 // `crate::registry` is a process-global device table: these tests call

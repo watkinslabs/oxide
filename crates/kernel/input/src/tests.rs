@@ -23,8 +23,8 @@ fn advertise(bits: &mut [u8], code: u16) {
     bits[(code / u8::BITS as u16) as usize] |= 1 << (code % u8::BITS as u16);
 }
 
-fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> VirtioInputDev {
-    let mut dev = VirtioInputDev::empty(device_key);
+fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> alloc::boxed::Box<VirtioInputDev> {
+    let mut dev = VirtioInputDev::empty_boxed(device_key);
     dev.is_pointer = true;
     dev.name[..TEST_NAME.len()].copy_from_slice(TEST_NAME);
     dev.name_len = TEST_NAME.len();
@@ -74,4 +74,18 @@ fn record_output(key: virtio::VirtioChildDeviceKey, batch: &crate::OutputBatch) 
         .collect();
     OUTPUT_BATCHES.lock().unwrap_or_else(|err| err.into_inner())
         .push((key.raw(), events));
+}
+
+/// One device record must never be cheap to put on a kernel stack: it is
+/// kilobytes wide, and the bind path that builds one already sits several
+/// frames deep inside a syscall. Copies of it are what overflowed the 16 KiB
+/// kernel stack when a virtio-input child was rebound through sysfs.
+#[test]
+fn a_device_record_is_far_too_wide_for_a_kernel_stack_frame() {
+    const KERNEL_STACK_BYTES: usize = 16 * 1024;
+    let width = core::mem::size_of::<VirtioInputDev>();
+    assert!(
+        width > KERNEL_STACK_BYTES / 8,
+        "record width {width} no longer justifies the heap-only rule",
+    );
 }

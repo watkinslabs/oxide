@@ -21,8 +21,8 @@ pub(super) fn test_file_with_flags(id: u32, flags: OpenFlags) -> Arc<File> {
     file
 }
 
-pub(super) fn test_dev(id: u32) -> crate::VirtioInputDev {
-    crate::VirtioInputDev::empty(
+pub(super) fn test_dev(id: u32) -> alloc::boxed::Box<crate::VirtioInputDev> {
+    crate::VirtioInputDev::empty_boxed(
         virtio::VirtioChildDeviceKey::from_raw(TEST_DEVICE_KEY_BASE + id),
     )
 }

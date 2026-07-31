@@ -14,7 +14,7 @@ fn install_applies_linux_capability_normalization_once() {
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
     crate::registry::clear_devices_for_tests();
     let device_key = key(NORMALIZE_DEVICE_KEY);
-    let mut dev = VirtioInputDev::empty(device_key);
+    let mut dev = VirtioInputDev::empty_boxed(device_key);
     dev.ev_bits[0] = EV_KEY_REL_MASK;
     advertise(&mut dev.ev_bits, crate::EV_FF);
     advertise(&mut dev.key_bits.bits, crate::KEY_RESERVED);
@@ -59,7 +59,7 @@ fn install_applies_linux_capability_normalization_once() {
 
 #[test]
 fn modalias_excludes_linux_max_sentinel_codes() {
-    let mut dev = VirtioInputDev::empty(key(MODALIAS_DEVICE_KEY));
+    let mut dev = VirtioInputDev::empty_boxed(key(MODALIAS_DEVICE_KEY));
     advertise(&mut dev.ev_bits, crate::EV_MAX);
     advertise(&mut dev.key_bits.bits, crate::KEY_MAX);
     advertise(&mut dev.rel_bits.bits, crate::REL_MAX);
@@ -74,7 +74,7 @@ fn uevent_identity_preserves_non_utf8_bytes_exactly() {
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
     crate::registry::clear_devices_for_tests();
     let device_key = key(UEEVENT_DEVICE_KEY);
-    let mut dev = VirtioInputDev::empty(device_key);
+    let mut dev = VirtioInputDev::empty_boxed(device_key);
     let name = b"input-\x80-name";
     let phys = b"virtio\xfe/input0";
     let uniq = b"seat-\xff";

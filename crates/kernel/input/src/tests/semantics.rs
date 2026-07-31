@@ -11,7 +11,7 @@ const KEY_PRESSED: i32 = 1;
 const KEY_REPEAT: i32 = 2;
 const SYNTHETIC_SYNC: i32 = 1;
 
-fn install_hooked(mut dev: VirtioInputDev) -> (u32, u32) {
+fn install_hooked(mut dev: alloc::boxed::Box<VirtioInputDev>) -> (u32, u32) {
     advertise(&mut dev.ev_bits, crate::EV_SYN);
     crate::set_evdev_hooks(EvdevHooks {
         register: None,
@@ -75,7 +75,7 @@ fn absolute_values_are_defuzzed_and_unchanged_values_are_suppressed() {
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
     reset_events();
     let device_key = key(ABS_DEVICE_KEY);
-    let mut dev = VirtioInputDev::empty(device_key);
+    let mut dev = VirtioInputDev::empty_boxed(device_key);
     advertise(&mut dev.ev_bits, crate::EV_ABS);
     advertise(&mut dev.abs_bits.bits, ABS_X);
     dev.abs_info[ABS_X as usize] = Some(VirtioInputAbsInfo {
@@ -122,7 +122,7 @@ fn type_b_multitouch_stages_slots_and_inhibit_releases_contacts() {
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
     reset_events();
     let device_key = key(MT_DEVICE_KEY);
-    let mut dev = VirtioInputDev::empty(device_key);
+    let mut dev = VirtioInputDev::empty_boxed(device_key);
     advertise(&mut dev.ev_bits, crate::EV_ABS);
     for code in [crate::ABS_MT_SLOT, crate::ABS_MT_TRACKING_ID] {
         advertise(&mut dev.abs_bits.bits, code);
@@ -278,7 +278,7 @@ fn exact_identity_snapshots_and_output_reject_recycled_evdev_ids() {
     reset_events();
     OUTPUT_BATCHES.lock().unwrap_or_else(|err| err.into_inner()).clear();
     let device_key = key(OUTPUT_DEVICE_KEY);
-    let mut dev = VirtioInputDev::empty(device_key);
+    let mut dev = VirtioInputDev::empty_boxed(device_key);
     for ev_type in [crate::EV_ABS, crate::EV_LED, crate::EV_SND, crate::EV_REP] {
         advertise(&mut dev.ev_bits, ev_type);
     }

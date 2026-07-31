@@ -40,7 +40,10 @@ fn event_parent_canon_exact(dev: &drv::Device) -> Option<String> {
 fn devices_body() -> Vec<u8> {
     let mut out = Vec::new();
     let mut devices = crate::devices_snapshot();
-    devices.sort_by_key(|d| d.evdev_id);
+    // The general sort reserves a scratch frame sized for a large input, which
+    // a kernel stack cannot spare. The table is bounded by the evdev minor
+    // count, so order it by walking that space instead.
+    devices.sort_unstable_by_key(|d| d.evdev_id);
     for dev in devices {
         let Some(model_dev) = crate::devfs::model_device(dev.evdev_id) else {
             continue;
@@ -124,8 +127,8 @@ mod tests {
         virtio::VirtioChildDeviceKey::from_raw(raw)
     }
 
-    fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> crate::VirtioInputDev {
-        let mut dev = crate::VirtioInputDev::empty(device_key);
+    fn test_dev(device_key: virtio::VirtioChildDeviceKey) -> alloc::boxed::Box<crate::VirtioInputDev> {
+        let mut dev = crate::VirtioInputDev::empty_boxed(device_key);
         dev.is_pointer = true;
         dev.name_present = true;
         dev.phys_present = true;
