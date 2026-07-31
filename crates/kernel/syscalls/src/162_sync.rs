@@ -17,7 +17,12 @@ pub fn sys_sync(_args: &SyscallArgs) -> i64 {
         let key = alloc::sync::Arc::as_ptr(sb) as *const ();
         if synced.contains(&key) { continue; }
         synced.push(key);
-        let _ = sb.sync_filesystem();
+        // `sync(2)` itself always reports 0, but a failed pass must not vanish:
+        // Linux records the failure into `s_wb_err` (via the writeback path's
+        // `mapping_set_error`) so the NEXT `syncfs`/`fsync` on that filesystem
+        // reports it exactly once. Dropping the `Err` here — which is what this
+        // did — made a failed whole-system sync invisible to every later call.
+        if let Err(e) = sb.sync_filesystem() { sb.s_wb_err.set(e as u32); }
     }
     // Commit the ext4 root running journal transaction (cross-op batching): the
     // per-sb sync flushed dirty pages into the running txn; sync(2) must make it
@@ -68,7 +73,10 @@ pub fn sys_syncfs(args: &SyscallArgs) -> i64 {
     // writeback failure was simply invisible to `syncfs`.
     let deferred = file.check_and_advance_sb_err();
     match (ret, deferred) {
-        (Err(_), _) => -(Errno::Eio.as_i32() as i64),
+        // The backend's own errno, not a blanket EIO: an ENOSPC from the
+        // journal commit is not an I/O error and `syncfs(2)` propagates
+        // whatever `sync_filesystem` returned.
+        (Err(e), _) => -(e as i64),
         (Ok(()), Err(e)) => -(e as i64),
         (Ok(()), Ok(())) => 0,
     }

@@ -192,6 +192,12 @@ pub trait BlockDevOps: Send + Sync {
     fn ioctl(&self, devt: Devt, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = (devt, cmd, arg); Err(VfsError::Enotty)
     }
+    /// `blkdev_issue_flush` — force the device's volatile write cache to
+    /// stable media. `fsync(2)` on a block-device fd is required to issue it;
+    /// the generic file-ops default answers `Ok(())` for a block device, which
+    /// reports durability the hardware was never asked for.
+    /// # C: driver-dependent; sleeps
+    fn flush_cache(&self, devt: Devt) -> KResult<()> { let _ = devt; Ok(()) }
 }
 
 /// Driver identity retained by one successfully opened device description.

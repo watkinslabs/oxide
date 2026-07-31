@@ -88,6 +88,22 @@ fn ext4_reports_the_on_disk_d_type_per_entry() {
     }
 }
 
+/// `getdents` `d_ino` and `stat` `st_ino` must be the SAME number. ext4 wraps
+/// every VFS inode number (`ext4_wrap_ino`), so emitting the raw on-disk number
+/// from readdir made the two disagree on every entry — `find -inum`,
+/// `getcwd(3)`'s `..`-walk fallback and tar/rsync hardlink detection all
+/// compare them directly.
+#[test]
+fn d_ino_matches_the_st_ino_stat_reports() {
+    let (_m, dir, sink) = listing();
+    for name in ["sub", "file", "link"] {
+        let child = dir.lookup(name).expect("lookup");
+        assert_eq!(sink.find(name).expect(name).ino, child.ino(),
+                   "{name}: getdents d_ino must equal stat st_ino");
+    }
+    assert_eq!(sink.find(".").expect(".").ino, dir.ino(), "'.' names this directory");
+}
+
 /// ext4's own `.`/`..` records are used; the VFS must not prepend a second
 /// pair.
 #[test]
