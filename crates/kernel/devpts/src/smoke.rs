@@ -1,6 +1,5 @@
 use alloc::format;
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
 
 use super::*;
 
@@ -104,10 +103,13 @@ fn sigint_chain_smoke() {
     ).expect("master write");
     kassert!(n1 == 3, "all three control chars consumed");
 
-    let pending = fake.sigpending.load(Ordering::Acquire);
-    kassert!(pending & (1u64 << 1) != 0, "SIGINT delivered");
-    kassert!(pending & (1u64 << 2) != 0, "SIGQUIT delivered");
-    kassert!(pending & (1u64 << 19) != 0, "SIGTSTP delivered");
+    // PROCESS-directed (`kill_pgrp(..., SEND_SIG_PRIV)`), so the signals land
+    // in the thread group's shared set — read the union `dequeue_signal` reads,
+    // not the private word alone.
+    let pending = fake.pending_signals();
+    kassert!(pending & sched::Signum::Sigint.bit() != 0, "SIGINT delivered");
+    kassert!(pending & sched::Signum::Sigquit.bit() != 0, "SIGQUIT delivered");
+    kassert!(pending & sched::Signum::Sigtstp.bit() != 0, "SIGTSTP delivered");
 
     pair.with_pair(|p| {
         kassert!(!p.pending_sigint, "pending_sigint cleared");
