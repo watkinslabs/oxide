@@ -173,8 +173,6 @@ pub struct SockOpts {
     pub rcvbuf_locked: core::sync::atomic::AtomicBool,
     pub sndtimeo_ns: core::sync::atomic::AtomicI64,
     pub rcvtimeo_ns: core::sync::atomic::AtomicI64,
-    pub linger_on: core::sync::atomic::AtomicI32,
-    pub linger_s:  core::sync::atomic::AtomicI32,
     pub priority:  core::sync::atomic::AtomicI32,
     pub mark:      core::sync::atomic::AtomicI32,
     pub ip_ttl:    core::sync::atomic::AtomicI32,
@@ -224,6 +222,8 @@ pub struct SockOpts {
     /// MUST report SOCK_SEQPACKET so `sd_is_socket()` socket-activation
     /// checks (systemd-udevd control socket) pass. `0` = derive from kind.
     pub so_type: core::sync::atomic::AtomicU8,
+    /// Generic SOL_SOCKET flag/scalar state (`sock_opts::sol_socket`).
+    pub generic: crate::sock_opts::sol_socket::GenericSockOpts,
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
@@ -242,8 +242,6 @@ impl Default for SockOpts {
             rcvbuf_locked: core::sync::atomic::AtomicBool::new(false),
             sndtimeo_ns: AtomicI64::new(0),
             rcvtimeo_ns: AtomicI64::new(0),
-            linger_on:   AtomicI32::new(0),
-            linger_s:    AtomicI32::new(0),
             priority:    AtomicI32::new(0),
             mark:        AtomicI32::new(0),
             ip_ttl:      AtomicI32::new(-1),
@@ -270,6 +268,7 @@ impl Default for SockOpts {
             passcred: AtomicI32::new(0),
             timestamping: AtomicI32::new(0),
             so_type: AtomicU8::new(0),
+            generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
         }
     }
 }
