@@ -48,6 +48,14 @@ impl SignalPending {
         prior
     }
 
+    /// Raise the `POLLIN` edge without touching the bitmap — what a
+    /// PROCESS-directed signal needs, since it becomes pending on the thread
+    /// group's shared set and never passes through this task's `fetch_or`.
+    /// A signalfd's readiness is `private | shared`, so the edge belongs on
+    /// every thread's source even though only the group's set changed.
+    /// # C: O(N_subscribers)
+    pub fn notify_pollers(&self) { self.poll.notify_mask(vfs::POLL_IN); }
+
     /// Clear pending bits without producing a readiness event. # C: O(1)
     pub fn fetch_and(&self, bits: u64, order: Ordering) -> u64 { self.bits.fetch_and(bits, order) }
 

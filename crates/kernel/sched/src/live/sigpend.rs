@@ -131,6 +131,26 @@ pub fn signalfd_notify(leader_tid: u32, sig: u32) {
     }
 }
 
+/// The epoll/poll readiness edge a newly pending PROCESS-directed signal owes
+/// every `signalfd` in the group.
+///
+/// A signalfd's poll subscribers hang off `Task::sigpending`, and
+/// `SignalPending::fetch_or` raises `POLLIN` as part of setting a bit. The
+/// shared set is a plain atomic on the thread group with no subscriber list of
+/// its own, so publishing there produced NO readiness edge: a service manager
+/// parked in `epoll_wait` on its SIGCHLD signalfd kept sleeping through every
+/// child exit even though the fd would have read as ready. Raise the edge on
+/// each thread's own source instead — one list per thread is what the signalfd
+/// registered against.
+/// # C: O(N_threads)
+pub fn notify_shared_pollers(leader_tid: u32) {
+    if let Some(l) = crate::registry::lookup(leader_tid) { l.sigpending.notify_pollers(); }
+    for (_vtid, tid) in crate::registry::thread_entries(leader_tid) {
+        if tid == leader_tid { continue; }
+        if let Some(t) = crate::registry::lookup(tid) { t.sigpending.notify_pollers(); }
+    }
+}
+
 /// Process-directed pending bits visible to `task` — Linux
 /// `signal->shared_pending.signal`, owned by the thread group
 /// (`thread_group/shared_signal.rs`). Identical for every thread of a process,

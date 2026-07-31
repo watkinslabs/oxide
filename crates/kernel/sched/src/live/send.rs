@@ -100,8 +100,16 @@ pub fn send_signal_irq(t: &Task, info: SigInfo, target: SigTarget) -> bool {
         SigTarget::Thread  => t.sigq_push(info),
     };
     match target {
+        // `SignalPending::fetch_or` raises the signalfd `POLLIN` edge itself.
         SigTarget::Thread  => { t.sigpending.fetch_or(bit, Ordering::Release); }
-        SigTarget::Process => t.thread_group.publish_shared(sig),
+        SigTarget::Process => {
+            t.thread_group.publish_shared(sig);
+            // The shared set has no subscriber list; raise the edge on this
+            // task's own source. A hard IRQ may not walk the registry, so the
+            // siblings' signalfds are reached by the woken task's delivery work
+            // rather than by a group walk here.
+            t.sigpending.notify_pollers();
+        }
     }
     true
 }
@@ -236,6 +244,9 @@ fn publish(t: &Arc<Task>, sig: u32, bit: u64, target: SigTarget) {
         SigTarget::Process => {
             t.thread_group.publish_shared(sig);
             let leader = t.tgid.load(Ordering::Acquire);
+            // The shared set has no poll-subscriber list of its own; a signalfd
+            // registers against each thread's `sigpending`.
+            super::sigpend::notify_shared_pollers(leader);
             // `complete_signal` deliberately skips a thread that BLOCKS the
             // signal, because it cannot run a handler. A `signalfd` /
             // `sigwaitinfo` consumer is precisely such a thread, so a process
