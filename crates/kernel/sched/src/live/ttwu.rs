@@ -9,6 +9,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use crate::sched_enc::wakeup::{cand_of, wakeup_preempt};
 use crate::task::PendingWake;
 use crate::live::runqueue::Runqueue;
 use crate::Task;
@@ -149,6 +150,10 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     if drained.is_empty() { return false; }
     let mut deferred: Vec<Arc<Task>> = Vec::new();
     let mut placed = false;
+    let mut preempt = false;
+    // SAFETY: `current` is this CPU's running task, kept alive by the runqueue's
+    // strong reference for the duration of this drain.
+    let curr = if current.is_null() { None } else { Some(cand_of(unsafe { &*current })) };
     {
         let mut inner = rq.inner.lock();
         for task in drained {
@@ -158,6 +163,10 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 PendingWake::Ready => {
                     // Sleeper credit on wake (F211).
                     task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+                    // Decided AFTER the vruntime lift and BEFORE the enqueue
+                    // hands the Arc away, so the fair comparison sees the
+                    // position the task was actually queued at.
+                    preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                     inner.enqueue(task);
                     placed = true;
                 }
@@ -175,7 +184,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
         wake_list_push(target, task);
         resched_curr(target);
     }
-    if placed { resched_curr(cpu); }
+    if placed && preempt { resched_curr(cpu); }
     placed
 }
 
@@ -394,6 +403,11 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
                    else if get_rq(me).is_some() { me }
                    else { wake_list_push(target, task); return; };
         wake_list_push(tcpu, task);
+        // Unconditional, and NOT a preemption decision: the target drains its
+        // wake list from `schedule()`, so without this the task would never
+        // reach a runqueue at all. The preemption decision is made on the
+        // drain side, once the task is enqueued and `curr` is known there
+        // (`sched_ttwu_pending`).
         resched_curr(tcpu);
         return;
     }
@@ -403,14 +417,25 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     // `on_cpu` until we enqueue; the `on_cpu == false` check above therefore
     // can't race a fresh switch-on.
     if let Some(rq) = get_rq(me) {
+        let curr = rq.current.load(Ordering::Acquire);
+        // SAFETY: `current` is non-null after `Runqueue::new`; the runqueue holds
+        // the strong reference, so this snapshot read is sound.
+        let curr = if curr.is_null() { None } else { Some(cand_of(unsafe { &*curr })) };
+        let preempt;
         {
             let mut inner = rq.inner.lock();
             // Sleeper credit on wake (F211).
             task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+            // Linux `ttwu_do_activate` -> `wakeup_preempt`: the wake only takes
+            // the CPU away from the running task when the class/policy/priority
+            // comparison says it should. Resching unconditionally here made
+            // SCHED_FIFO lose the CPU to an equal-priority peer and let a
+            // SCHED_BATCH / SCHED_IDLE wakee preempt a SCHED_NORMAL task.
+            preempt = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
             inner.enqueue(task);
             rq.nr_running.store(inner.nr_running(), Ordering::Release);
         }
-        resched_curr(me);
+        if preempt { resched_curr(me); }
     }
 }
 

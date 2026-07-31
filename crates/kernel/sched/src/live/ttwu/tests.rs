@@ -231,3 +231,98 @@ fn select_task_rq_honours_the_affinity_mask() {
 
     assert_eq!(select_task_rq_with(&|c| cpus.get(c), ME, &t), ALLOWED);
 }
+
+// ---- wakeup preemption (`wakeup_preempt` applied at the enqueue) ----
+//
+// A wake places a task; whether it also TAKES the CPU is a separate question,
+// and answering it "always yes" is what made SCHED_FIFO, SCHED_BATCH and
+// SCHED_IDLE behave identically to SCHED_NORMAL. These drive the real
+// `place_runnable_with` and read the reschedule request it left behind.
+
+use crate::sched_enc::{SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL};
+use crate::task::SchedPolicy;
+
+/// Install `t` as CPU `cpu`'s running task and clear any pending request, so
+/// the assertion afterwards can only observe what the wake itself asked for.
+fn make_current(rq: &Runqueue, t: &Arc<Task>, cpu: u32) {
+    // SAFETY: hosted model runqueue owned by this test; no switch is in flight.
+    let _ = unsafe { rq.swap_current(Arc::clone(t)) };
+    t.on_cpu.store(true, Ordering::Release);
+    t.cpu.store(cpu as u16, Ordering::Release);
+    let _ = crate::preempt::resched::clear_tsk_need_resched(t);
+}
+
+fn fifo_task(tid: u32, prio: u8) -> Arc<Task> {
+    let t = Arc::new(Task::new(tid, "rt", SchedClass::Rt { prio, policy: SchedPolicy::Fifo }));
+    t.policy.store(SCHED_FIFO, Ordering::Release);
+    t
+}
+
+fn fair_task(tid: u32, policy: u32, vruntime: u64) -> Arc<Task> {
+    let t = Arc::new(Task::new(tid, "fair", SchedClass::Normal { weight: 1024 }));
+    t.policy.store(policy, Ordering::Release);
+    t.vruntime.store(vruntime, Ordering::Release);
+    t
+}
+
+/// Wake `wakee` on CPU `cpu` where `curr` is running; report whether the wake
+/// asked that CPU to reschedule.
+///
+/// The request is read from the per-CPU anchor rather than from `curr`:
+/// `resched_curr` routes through the process-global runqueue array, which a
+/// hosted test cannot install into, so it lands on the anchor for `cpu`. Every
+/// caller therefore passes a CPU id no other test uses, and the anchor starts
+/// clear.
+fn wake_asks_for_resched(cpu: u32, curr: &Arc<Task>, wakee: Arc<Task>) -> bool {
+    let cpus = Cpus::new(&[cpu]);
+    let rq = cpus.get(cpu).expect("just installed");
+    make_current(rq, curr, cpu);
+    wakee.cpu.store(cpu as u16, Ordering::Release);
+    wakee.on_cpu.store(false, Ordering::Release);
+    wakee.set_state(TaskState::Sleeping);
+    assert!(wakee.claim_wake());
+    assert!(!crate::preempt::need_resched_on(cpu as usize), "anchor must start clear");
+    place_runnable_with(&|c| cpus.get(c), cpu, wakee, false);
+    crate::preempt::need_resched_on(cpu as usize)
+}
+
+/// THE FIFO GUARANTEE. A running SCHED_FIFO task keeps the CPU when a peer
+/// wakes at its own priority; only a strictly higher priority takes it away.
+#[test]
+fn fifo_is_not_preempted_by_an_equal_priority_wake() {
+    let curr = fifo_task(3001, 50);
+    assert!(!wake_asks_for_resched(40, &curr, fifo_task(3002, 50)),
+        "an equal-priority RT wake must not preempt a running SCHED_FIFO task");
+
+    let curr = fifo_task(3003, 50);
+    assert!(wake_asks_for_resched(41, &curr, fifo_task(3004, 51)),
+        "a higher-priority RT wake must preempt");
+}
+
+/// SCHED_BATCH and SCHED_IDLE are defined by NOT taking the CPU. Before the
+/// decision existed they were indistinguishable from SCHED_NORMAL here.
+#[test]
+fn batch_and_idle_wakes_do_not_preempt_a_normal_task() {
+    let curr = fair_task(3005, SCHED_NORMAL, 1_000);
+    assert!(!wake_asks_for_resched(42, &curr, fair_task(3006, SCHED_BATCH, 0)));
+
+    let curr = fair_task(3007, SCHED_NORMAL, 1_000);
+    assert!(!wake_asks_for_resched(43, &curr, fair_task(3008, SCHED_IDLE, 0)));
+
+    // Control: the same wake as SCHED_NORMAL does preempt, so the two above
+    // are the policy answering, not the harness failing to wake anything.
+    let curr = fair_task(3009, SCHED_NORMAL, 1_000);
+    assert!(wake_asks_for_resched(44, &curr, fair_task(3010, SCHED_NORMAL, 0)));
+}
+
+/// An RT wake always outranks a fair current task, and the idle task always
+/// yields.
+#[test]
+fn class_order_decides_across_classes() {
+    let curr = fair_task(3011, SCHED_NORMAL, 0);
+    assert!(wake_asks_for_resched(45, &curr, fifo_task(3012, 1)));
+
+    let idle = Arc::new(Task::new(3013, "idle-curr", SchedClass::Idle));
+    assert!(wake_asks_for_resched(46, &idle, fair_task(3014, SCHED_IDLE, u64::MAX)),
+        "the idle task must always give the CPU up");
+}

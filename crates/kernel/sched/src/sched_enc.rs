@@ -83,17 +83,37 @@ impl crate::task::Task {
     }
 }
 
-/// Linux `sysctl_sched_rr_timeslice` — 100 ms expressed in ticks. This is the
-/// value `sched_rr_get_interval` reports, and until the tick became class-aware
-/// nothing enforced it.
-pub const RR_TIMESLICE_TICKS: u32 = 100;
+/// The `SCHED_RR` quantum, in nanoseconds. ONE value backs both halves of the
+/// contract: what the periodic tick actually enforces ([`RR_TIMESLICE_TICKS`])
+/// and what `sched_rr_get_interval(2)` reports. Upstream has the same single
+/// truth — the quantum is stored in ticks and the syscall converts that same
+/// count to a timespec — so an enforced quantum that differs from the reported
+/// one is not a tuning choice, it is a bug.
+pub const RR_TIMESLICE_NS: u64 = 100_000_000;
 
+/// [`RR_TIMESLICE_NS`] counted in periodic ticks — the unit `task_tick`
+/// decrements. DERIVED from the live tick period, never written by hand: the
+/// two were independent literals in different units in different crates, and
+/// the enforced quantum was ten times the reported one.
+pub const RR_TIMESLICE_TICKS: u32 = (RR_TIMESLICE_NS / crate::posix_clock::TICK_NSEC) as u32;
+
+/// `SCHED_NORMAL` == `SCHED_OTHER`.
+pub const SCHED_NORMAL: u32 = 0;
 /// `SCHED_FIFO` (`include/uapi/linux/sched.h`).
 pub const SCHED_FIFO: u32 = 1;
 /// `SCHED_RR`.
 pub const SCHED_RR: u32 = 2;
+/// `SCHED_BATCH`.
+pub const SCHED_BATCH: u32 = 3;
+/// `SCHED_IDLE`. Distinct from [`SchedClass::Idle`], which is the per-CPU idle
+/// task's class: a `SCHED_IDLE` task is a fair-class task carrying the minimum
+/// weight.
+pub const SCHED_IDLE: u32 = 5;
 /// `SCHED_DEADLINE`.
 pub const SCHED_DEADLINE: u32 = 6;
+
+/// Wakeup-preemption decision (`wakeup_preempt` and the per-class hooks).
+pub mod wakeup;
 
 /// The `task_tick` decision as a pure function — Linux `task_tick_rt`
 /// (`kernel/sched/rt.c`). Split out so it is testable without a runqueue: the

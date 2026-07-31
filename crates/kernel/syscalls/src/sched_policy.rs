@@ -18,18 +18,11 @@
 
 use syscall::errno::Errno;
 
-/// `SCHED_NORMAL` == `SCHED_OTHER`.
-pub const SCHED_NORMAL: u32 = 0;
-/// `SCHED_FIFO`.
-pub const SCHED_FIFO: u32 = 1;
-/// `SCHED_RR`.
-pub const SCHED_RR: u32 = 2;
-/// `SCHED_BATCH`.
-pub const SCHED_BATCH: u32 = 3;
-/// `SCHED_IDLE`.
-pub const SCHED_IDLE: u32 = 5;
-/// `SCHED_DEADLINE`.
-pub const SCHED_DEADLINE: u32 = 6;
+// The policy numbering is owned by the scheduler, not by the syscall shim —
+// re-exported rather than restated so a slot and the class that enforces it can
+// never disagree about what a policy code means.
+pub use sched::sched_enc::{SCHED_BATCH, SCHED_DEADLINE, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL,
+                           SCHED_RR};
 /// `SCHED_EXT`. Not a valid `sched_setscheduler` policy here (oxide has no
 /// sched_ext class, i.e. Linux `CONFIG_SCHED_CLASS_EXT=n`), but Linux's
 /// `sched_get_priority_{max,min}` switch accepts it unconditionally.
@@ -46,8 +39,12 @@ pub const RT_PRIO_MIN: u32 = 1;
 /// sentinel `sched_setparam(2)` passes down.
 pub const SETPARAM_POLICY: i32 = -1;
 
-/// Linux `RR_TIMESLICE` = `100 * HZ / 1000` jiffies = 100 ms.
-pub const SCHED_RR_TIMESLICE_NS: u64 = 100_000_000;
+/// The `SCHED_RR` quantum reported by `sched_rr_get_interval(2)`. Re-exported
+/// from the scheduler, which is the side that ENFORCES it: a locally declared
+/// copy here reported 100 ms while the tick enforced 1000 ms, because the two
+/// constants were written in different units in different crates and nothing
+/// tied them together.
+pub const SCHED_RR_TIMESLICE_NS: u64 = sched::sched_enc::RR_TIMESLICE_NS;
 /// Linux `sysctl_sched_base_slice` — the CFS slice reported by
 /// `get_rr_interval_fair` for a loaded runqueue.
 pub const SCHED_BASE_SLICE_NS: u64 = 3_000_000;

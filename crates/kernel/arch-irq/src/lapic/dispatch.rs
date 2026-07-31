@@ -168,8 +168,15 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             crate::irqstat::hit_resched();
             // Cross-CPU resched IPI: another CPU asked us to pick a new
             // task. Set need_resched; the IRQ-exit slow path
-            // (`oxide_irq_exit_to_user` → the work loop) does the switch.
-            sched::live::preempt::task_tick();
+            // (`oxide_irq_exit_to_user` → the work loop) does the switch,
+            // which is also what drains this CPU's deferred wake list.
+            //
+            // NOT the periodic tick: `task_tick` is the timeslice accountant,
+            // so running it here charged a tick of the running SCHED_RR task's
+            // quantum to every unrelated cross-CPU wakeup or balance IPI, and
+            // conversely refused the reschedule the sender asked for when the
+            // running task was SCHED_FIFO.
+            sched::preempt::set_need_resched();
             // `membarrier(2)` rides this same IPI (Linux `ipi_mb` is just a
             // full barrier — no private vector needed). No-op unless this CPU
             // is a target of an in-flight round.

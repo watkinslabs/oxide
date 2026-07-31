@@ -172,3 +172,38 @@ fn get_params_reports_the_live_state_keep_params_would_reuse() {
     assert_eq!(out.priority, 31);
     assert_eq!(out.runtime, 0);
 }
+
+// --- the SCHED_RR quantum ---------------------------------------------------
+
+/// The quantum `sched_rr_get_interval(2)` reports is the one the periodic tick
+/// enforces — one number, not two constants in two crates. They were written
+/// in different units (ticks vs. nanoseconds) with nothing tying them together,
+/// so a SCHED_RR task was reported a 100 ms slice and given a 1 s one.
+#[test]
+fn the_reported_rr_interval_is_the_enforced_quantum() {
+    assert_eq!(SCHED_RR_TIMESLICE_NS, 100_000_000, "RR quantum is 100 ms");
+    assert_eq!(rr_interval_ns(SCHED_RR, false), SCHED_RR_TIMESLICE_NS);
+    assert_eq!(SCHED_RR_TIMESLICE_NS,
+               sched::sched_enc::RR_TIMESLICE_TICKS as u64 * sched::posix_clock::TICK_NSEC,
+               "reported interval must equal the ticks the quantum is enforced in");
+}
+
+/// Becoming a real-time task hands over a WHOLE quantum. The field is only
+/// ever loaded with the full slice upstream, so a task must never resume on
+/// the residue an earlier stint (or an older quantum in different units) left
+/// behind and get an arbitrary fraction of its first slice.
+#[test]
+fn entering_an_rt_policy_reloads_a_full_quantum() {
+    let caller = root_caller();
+    let t = normal(2, 0);
+    t.rt_time_slice.store(1, Ordering::Release);
+
+    assert_eq!(setattr(&caller, &t, &attr(SCHED_RR, 40, 0)), 0);
+    assert_eq!(t.rt_time_slice.load(Ordering::Acquire), sched::sched_enc::RR_TIMESLICE_TICKS);
+
+    // Draining the quantum and switching away then back re-arms it in full.
+    t.rt_time_slice.store(1, Ordering::Release);
+    assert_eq!(setattr(&caller, &t, &attr(SCHED_NORMAL, 0, 0)), 0);
+    assert_eq!(setattr(&caller, &t, &attr(SCHED_FIFO, 40, 0)), 0);
+    assert_eq!(t.rt_time_slice.load(Ordering::Acquire), sched::sched_enc::RR_TIMESLICE_TICKS);
+}

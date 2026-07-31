@@ -156,12 +156,24 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // was inside the `is_bsp` block, so APs never programmed a deadline
             // and a task running on an AP got no one-shot at all.
             crate::deadline::rearm_local();
+            // Linux `scheduler_tick` -> `curr->sched_class->task_tick`. Scoped
+            // to the TIMER interrupt: it is the timeslice accountant, and
+            // running it for every acknowledged INTID charged a tick of the
+            // running SCHED_RR task's quantum to each unrelated device IRQ and
+            // forced a reschedule on every one of them.
+            sched::live::preempt::task_tick();
         }
-        sched::live::preempt::task_tick();
-        // `membarrier(2)` rides the resched SGI (Linux `ipi_mb` is just a full
-        // barrier — no private SGI to enable per-redistributor). No-op unless
-        // this CPU is a target of an in-flight round.
-        sched::membarrier::service();
+        if intid == super::sgi::RESCHED_SGI {
+            // Cross-CPU resched IPI: the sender already stamped this CPU's
+            // running task, but the switch happens at IRQ exit, and that same
+            // switch is what drains this CPU's deferred wake list — so the
+            // request is (re)asserted here rather than inferred from a tick.
+            sched::preempt::set_need_resched();
+            // `membarrier(2)` rides the resched SGI (Linux `ipi_mb` is just a
+            // full barrier — no private SGI to enable per-redistributor).
+            // No-op unless this CPU is a target of an in-flight round.
+            sched::membarrier::service();
+        }
     }
     // Linux `irq_exit`: drop the hardirq field FIRST, then drain softirqs
     // (Linux `invoke_softirq`) — `do_softirq`'s `in_interrupt` guard must see
