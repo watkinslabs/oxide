@@ -171,7 +171,7 @@ fn install_device_with_config<C: InputConfigAccess>(
     phys: Option<&str>,
 ) -> Option<u32> {
     if input::evdev_id_for_device(device_key).is_some() { return None; }
-    let mut dev = VirtioInputDev::empty(device_key);
+    let mut dev = VirtioInputDev::empty_boxed(device_key);
     dev.name_present = true;
     dev.phys_present = phys.is_some();
     dev.serial_present = true;

@@ -121,7 +121,7 @@ fn sys_dev_char_indexes_virtual_char_class_devices() {
         drv::Device::new("graphics", String::from("fb8"), 0, 0, 0)
             .with_devnode("graphics", String::from("fb8"), Some(TEST_GRAPHICS_DEVT)));
     let input_key = input::VirtioChildDeviceKey::from_raw(TEST_INPUT_KEY_RAW);
-    let (input_id, evdev_id) = input::install(input::VirtioInputDev::empty(input_key))
+    let (input_id, evdev_id) = input::install(input::VirtioInputDev::empty_boxed(input_key))
         .expect("test input model");
     let input_minor = input::EVENT_MINOR_BASE + evdev_id;
     let input = Arc::new(

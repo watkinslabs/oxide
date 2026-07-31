@@ -212,7 +212,7 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner());
         input::clear_devices_for_tests();
         let key = input::VirtioChildDeviceKey::from_raw(TEST_DEVICE_KEY_RAW);
-        let mut model = input::VirtioInputDev::empty(key);
+        let mut model = input::VirtioInputDev::empty_boxed(key);
         let name = b"oxide keyboard";
         model.name[..name.len()].copy_from_slice(name);
         model.name_len = name.len();
