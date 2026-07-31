@@ -12,6 +12,7 @@ use sched::live::wait_list::WaitList;
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{PollSubscribers, POLL_ERR, POLL_HUP, POLL_IN, POLL_OUT};
 
+use crate::evdev_mask::admit_values;
 use crate::{
     EVDEV_CLOCK_BOOTTIME as CLOCK_BOOTTIME,
     EVDEV_CLOCK_MONOTONIC as CLOCK_MONOTONIC,
@@ -57,6 +58,7 @@ const EVENT_VALUE_OFF: usize = EVENT_CODE_OFF + core::mem::size_of::<u16>();
 struct ClientBuffer {
     events: VecDeque<InputEvent>,
     ready: usize,
+    masks: crate::evdev_mask::EvdevMasks,
 }
 
 /// Queue and wait sources owned by one evdev open file description.
@@ -73,7 +75,11 @@ impl EvdevClientQueue {
     /// # C: O(1)
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
-            buf: Spinlock::new(ClientBuffer { events: VecDeque::new(), ready: 0 }),
+            buf: Spinlock::new(ClientBuffer {
+                events: VecDeque::new(),
+                ready: 0,
+                masks: crate::evdev_mask::EvdevMasks::new(),
+            }),
             revoked: AtomicBool::new(false),
             disconnected: AtomicBool::new(false),
             clock_id: AtomicI32::new(CLOCK_REALTIME),
@@ -117,6 +123,14 @@ impl EvdevClientQueue {
         {
             return;
         }
+        let admitted;
+        let values: &[input::InputValue] = if g.masks.any() {
+            admitted = admit_values(&g.masks, values);
+            if admitted.is_empty() { return; }
+            &admitted
+        } else {
+            values
+        };
         let ns = match self.clock_id.load(Ordering::Acquire) {
             CLOCK_MONOTONIC => times.monotonic,
             CLOCK_BOOTTIME => times.boottime,
@@ -221,6 +235,24 @@ impl EvdevClientQueue {
             });
         }
         true
+    }
+
+    /// Copy this client's mask for `ev_type` into `out`, truncating to the
+    /// shorter of the two. `None` means no mask is installed for that type.
+    /// # C: O(out)
+    pub(crate) fn mask_get(&self, ev_type: u32, out: &mut [u8]) -> Option<usize> {
+        let g = self.buf.lock();
+        let mask = g.masks.get(ev_type)?;
+        let n = mask.len().min(out.len());
+        out[..n].copy_from_slice(&mask[..n]);
+        Some(n)
+    }
+
+    /// Install this client's mask for `ev_type`.
+    /// # C: O(mask bytes)
+    pub(crate) fn mask_set(&self, ev_type: u32, bytes: &[u8]) -> bool {
+        let mut g = self.buf.lock();
+        g.masks.set(ev_type, bytes)
     }
 
     /// # C: O(queued)
