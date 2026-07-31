@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 use vtdata::Consw;
 
 use crate::kernel::shared::{
-    queue_answerback, DIRTY, FLUSH_FN, READY, ReplyFn, VcCell, VtState, VT_STATE,
+    lock_vt, queue_answerback, try_lock_vt, DIRTY, FLUSH_FN, READY, ReplyFn, VcCell, VtState,
     FlushFn, flush_softirq,
 };
 
@@ -30,7 +30,7 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     let mut vc_cons: [Option<alloc::boxed::Box<VcCell>>; crate::kernel::shared::N_SLOTS] =
         [const { None }; crate::kernel::shared::N_SLOTS];
     vc_cons[1] = Some(sys);
-    *VT_STATE.lock() = Some(VtState {
+    *lock_vt() = Some(VtState {
         vc_cons,
         graphics: [false; crate::kernel::shared::N_SLOTS],
         fg: 1,
@@ -49,14 +49,14 @@ pub fn kernel_unregister() {
     DIRTY.store(false, Ordering::Release);
     FLUSH_FN.store(core::ptr::null_mut(), Ordering::Release);
     crate::answerback::clear_sink();
-    *VT_STATE.lock() = None;
+    *lock_vt() = None;
 }
 
 pub fn vt_console_sink(bytes: &[u8]) {
     if !READY.load(Ordering::Acquire) {
         return;
     }
-    if let Some(mut g) = VT_STATE.try_lock() {
+    if let Some(mut g) = try_lock_vt() {
         if let Some(st) = g.as_mut() {
             let i = st.ensure(st.fg);
             if let Some(cell) = st.vc_cons[i].as_mut() {
@@ -93,7 +93,7 @@ pub fn vt_write(vt: u8, bytes: &[u8]) {
     let mut blitted = false;
     let mut reply: Option<vtdata::ReplyBytes> = None;
     {
-        let mut guard = VT_STATE.lock();
+        let mut guard = lock_vt();
         if let Some(st) = guard.as_mut() {
             let i = st.ensure(vt);
             let is_fg = i == st.fg as usize;
@@ -125,7 +125,7 @@ pub fn switch_vt(n: u8) {
         return;
     }
     {
-        let mut guard = VT_STATE.lock();
+        let mut guard = lock_vt();
         if let Some(st) = guard.as_mut() {
             let i = st.ensure(n);
             st.fg = i as u8;
@@ -147,7 +147,7 @@ pub fn set_vt_graphics_mode(n: u8, graphics: bool) {
     }
     let mut repaint = false;
     {
-        let mut guard = VT_STATE.lock();
+        let mut guard = lock_vt();
         if let Some(st) = guard.as_mut() {
             let i = st.ensure(n);
             st.graphics[i] = graphics;

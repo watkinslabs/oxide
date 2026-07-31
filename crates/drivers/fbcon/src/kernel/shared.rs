@@ -36,7 +36,65 @@ impl VtState {
     }
 }
 
+// `VT_STATE` is shared between PROCESS context (every console write, VT switch
+// and query below) and the `FbconFlush` SOFTIRQ (`flush_softirq` -> `repaint`).
+// A process-context holder must therefore exclude this CPU's bottom halves
+// (Linux `spin_lock_bh`): without that, an interrupt landing inside the
+// critical section runs the softirq drain on its way out, `repaint` spins for a
+// lock the interrupted context on the SAME processor already holds, and that
+// processor never makes progress again.
+//
+// This only bites where interrupts are actually unmasked. A syscall runs with
+// them masked, so userspace-driven console traffic could never expose it; a
+// kernel thread does not, so the first in-kernel writer to reach the console
+// wedged the machine. Every process-context acquisition goes through
+// [`lock_vt`] / [`try_lock_vt`]; the softirq's own acquisition stays plain,
+// because it is already running with bottom halves accounted for.
 pub(crate) static VT_STATE: Spinlock<Option<VtState>, TtyClass> = Spinlock::new(None);
+
+/// The bottom-half gate `spin_lock_bh` needs. `sync` sits below `sched` and
+/// cannot reach the preempt count itself, so the gate arrives as a type.
+type Bh = sched::bh::SchedBh;
+
+/// Process-context acquisition of [`VT_STATE`], Linux `spin_lock_bh`.
+/// # C: O(contention)
+pub(crate) fn lock_vt() -> sync::LockBhGuard<'static, Option<VtState>, TtyClass, Bh> {
+    VT_STATE.lock_bh::<Bh>()
+}
+
+/// Non-blocking process-context acquisition, for callers that must never wait
+/// on the console (the klog sink, mode queries). Bottom halves stay disabled
+/// for as long as the returned guard lives.
+///
+/// Re-enabling does NOT drain: this is the acquisition the log sink uses, and
+/// the log sink is reachable from inside any other subsystem's critical
+/// section, so running softirq handlers on the way out could re-enter a lock
+/// the caller already holds. The sink re-raises `FbconFlush` regardless, so the
+/// repaint is deferred, never dropped.
+/// # C: O(1)
+pub(crate) fn try_lock_vt() -> Option<VtBhGuard> {
+    let bh = sched::bh::BhGuardNoDrain::new();
+    match VT_STATE.try_lock() {
+        // Field order is the drop order: the lock releases before bottom
+        // halves come back.
+        Some(inner) => Some(VtBhGuard { inner, _bh: bh }),
+        None => None,
+    }
+}
+
+/// A held [`VT_STATE`] plus the bottom-half disable that guards it.
+pub(crate) struct VtBhGuard {
+    inner: sync::Guard<'static, Option<VtState>, TtyClass>,
+    _bh: sched::bh::BhGuardNoDrain,
+}
+
+impl core::ops::Deref for VtBhGuard {
+    type Target = Option<VtState>;
+    fn deref(&self) -> &Option<VtState> { &self.inner }
+}
+impl core::ops::DerefMut for VtBhGuard {
+    fn deref_mut(&mut self) -> &mut Option<VtState> { &mut self.inner }
+}
 
 pub(crate) fn pixels_as_bytes(px: &[u32]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(px.as_ptr() as *const u8, px.len() * 4) }
@@ -50,21 +108,30 @@ pub type ReplyFn = crate::answerback::ReplyFn;
 pub(crate) static READY: AtomicBool = AtomicBool::new(false);
 pub(crate) static DIRTY: AtomicBool = AtomicBool::new(false);
 
+/// The `FbconFlush` handler. Runs in softirq context, where bottom halves are
+/// already accounted for on this processor, so the plain acquisition is the
+/// correct one — and the only one in the file. # C: O(framebuffer)
 pub(crate) fn flush_softirq() {
     if !DIRTY.swap(false, Ordering::AcqRel) {
         return;
     }
-    repaint();
+    blit(VT_STATE.lock().as_ref());
 }
 
+/// Process-context repaint (console bring-up). # C: O(framebuffer)
 pub(crate) fn repaint() {
+    blit(lock_vt().as_ref());
+}
+
+fn blit(st: Option<&VtState>) {
     let raw = FLUSH_FN.load(Ordering::Acquire);
     if raw.is_null() {
         return;
     }
+    // SAFETY: FLUSH_FN is only ever stored by `kernel_init` from a `FlushFn`
+    // cast through `*mut ()`; the reverse cast restores that exact signature.
     let f: FlushFn = unsafe { core::mem::transmute::<*mut (), FlushFn>(raw) };
-    let guard = VT_STATE.lock();
-    if let Some(st) = guard.as_ref() {
+    if let Some(st) = st {
         f(pixels_as_bytes(st.renderer.pixels()));
     }
 }
