@@ -399,10 +399,6 @@ pub struct Task {
     /// torn-`String`-read UAF shape as `exe_path` (B1326/B1329).
     pub cmdline: Spinlock<Option<alloc::string::String>, TaskListClass>,
 
-    /// F200: controlling terminal (POSIX §11.1.3). None = no ctty.
-    /// Cleared at setsid(2); set at TIOCSCTTY; inherited at fork(2).
-    pub ctty: UnsafeCell<Option<vfs::InodeRef>>,
-
     /// Absolute path passed to the most recent `sys_execve(path,…)`,
     /// per Linux `/proc/<pid>/exe`. Distinct from `cmdline` (which
     /// stores argv[0..]; argv[0] is conventionally the basename
