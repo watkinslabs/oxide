@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use super::regs::{
-    CTLR_ARE_NS, CTLR_ENGRP0, CTLR_ENGRP1, GICD_CTLR, GICD_IIDR, GICD_TYPER, GICD_VA,
+    CTLR_ARE_NS, CTLR_ENGRP0, CTLR_ENGRP1, GICD_CTLR, GICD_IGROUPR, GICD_IIDR, GICD_TYPER, GICD_VA,
     GICR_TYPER, GICR_VA, GICR_WAKER, WAKER_CHILDREN_ASLEEP, WAKER_PROCESSOR_SLEEP,
 };
 
@@ -26,6 +26,16 @@ pub unsafe fn enable(gicd_va: u64, gicr_va: u64) -> GicStatus {
     }
     // SAFETY: VAs freshly Device-nGnRnE mapped; single-CPU pre-init; sole writer to GIC state during boot.
     unsafe {
+        // 0. Declare every implemented SPI Non-secure Group 1, BEFORE the group
+        //    enables go on. On a single-security-state GICv3 the reset group is
+        //    Group 0, which is signalled as FIQ — an SPI left at reset never
+        //    reaches the IRQ vector at all, however correctly it is enabled,
+        //    routed, prioritised and configured afterwards.
+        let typer_pre = core::ptr::read_volatile((gicd_va + GICD_TYPER as u64) as *const u32);
+        for off in crate::gic_group::spi_igroupr_offsets(typer_pre) {
+            core::ptr::write_volatile((gicd_va + GICD_IGROUPR as u64 + off as u64) as *mut u32, u32::MAX);
+        }
+
         // 1. Distributor: ARE_NS=1, both group enables on.
         let gicd_ctlr = (gicd_va + GICD_CTLR as u64) as *mut u32;
         let cur = core::ptr::read_volatile(gicd_ctlr);
