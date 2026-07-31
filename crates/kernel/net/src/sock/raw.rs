@@ -43,3 +43,39 @@ impl InetSocket {
         sock
     }
 }
+
+impl InetSocket {
+    /// Build an IPv4 ICMP datagram socket. The endpoint stays out of the raw
+    /// protocol table: replies reach it through its kernel-owned echo
+    /// identifier, never through protocol fanout. # C: O(1)
+    pub fn new_ping4_in(net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
+        let sock = Self::new_udp_in(net_namespace);
+        let endpoint = crate::raw4::Raw4Endpoint::new_ping(
+            sock.owner.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
+            sock.error.clone(), sock.opts.reuseaddr.clone(),
+            sock.opts.ip_mtu_discover.clone(),
+        );
+        endpoint.register_poll_subs(&sock.poll_subs);
+        *sock.kind.lock() = SockKind::Raw4(endpoint);
+        sock.opts.so_type.store(crate::socket_args::SOCK_DGRAM as u8,
+            core::sync::atomic::Ordering::Release);
+        sock
+    }
+
+    /// Build an IPv6 ICMP datagram socket. The address family is single-stack
+    /// by construction, matching the endpoint class. # C: O(1)
+    pub fn new_ping6_in(net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
+        let sock = Self::new_udp_in(net_namespace);
+        sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
+        sock.opts.ipv6_v6only.store(1, core::sync::atomic::Ordering::Release);
+        let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new_ping(
+            sock.owner.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
+            sock.error.clone(), sock.opts.reuseaddr.clone(),
+        ));
+        endpoint.register_poll_subs(&sock.poll_subs);
+        *sock.kind.lock() = SockKind::Raw6(endpoint);
+        sock.opts.so_type.store(crate::socket_args::SOCK_DGRAM as u8,
+            core::sync::atomic::Ordering::Release);
+        sock
+    }
+}

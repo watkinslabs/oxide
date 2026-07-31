@@ -83,8 +83,12 @@ impl NetStack {
     /// Unpublish and deactivate one exact raw endpoint. # C: O(N)
     pub fn unregister_raw4(&self, endpoint: &Arc<Raw4Endpoint>) {
         endpoint.close();
-        if let Some(tables) = self.try_inet_tables(endpoint.net_ns()) {
-            tables.raw4.unregister(endpoint);
+        let Some(tables) = self.try_inet_tables(endpoint.net_ns()) else { return };
+        // An ICMP datagram endpoint never entered the protocol table; releasing
+        // its echo identifier is what unpublishes it.
+        match endpoint.ping.as_ref() {
+            Some(ident) => tables.ping.unbind(ident),
+            None => tables.raw4.unregister(endpoint),
         }
     }
 }

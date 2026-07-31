@@ -1,29 +1,37 @@
 use super::*;
 
 /// Bind a raw IPv4 socket while excluding device changes and close. # C: O(N)
-pub(crate) fn bind_raw4(sock: &InetSocket, ip: Ipv4Addr) -> Option<Result<(), NetError>> {
+pub(crate) fn bind_raw4(sock: &InetSocket, ip: Ipv4Addr, port: u16)
+    -> Option<Result<(), NetError>>
+{
     let _lifecycle = sock.local_port.lock();
-    bind_raw4_locked(sock, ip)
+    bind_raw4_locked(sock, ip, port)
 }
 
-fn bind_raw4_locked(sock: &InetSocket, ip: Ipv4Addr) -> Option<Result<(), NetError>> {
+fn bind_raw4_locked(sock: &InetSocket, ip: Ipv4Addr, port: u16) -> Option<Result<(), NetError>> {
     use core::sync::atomic::Ordering;
     let kind = sock.kind.lock();
     let SockKind::Raw4(endpoint) = &*kind else { return None };
     if sock.released.load(Ordering::Acquire) { return Some(Err(NetError::Einval)); }
     let iface = match bound_iface(sock) { Ok(iface) => iface, Err(error) => return Some(Err(error)) };
-    Some(endpoint.bind_checked(ip, iface))
+    if !endpoint.is_ping() { return Some(endpoint.bind_checked(ip, iface)); }
+    // An ICMP datagram endpoint binds an echo identifier, not a port. The
+    // address is screened first, then the identifier is claimed, and only a
+    // complete claim publishes the local address.
+    if let Err(error) = endpoint.check_local(ip, iface) { return Some(Err(error)); }
+    if let Err(error) = crate::ping::bind_v4(endpoint, port) { return Some(Err(error)); }
+    Some(endpoint.bind(ip, iface))
 }
 
 /// Bind a raw IPv6 socket while excluding device changes and close. # C: O(N)
-pub(crate) fn bind_raw6(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32)
+pub(crate) fn bind_raw6(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32, port: u16)
     -> Option<Result<(), NetError>>
 {
     let _lifecycle = sock.local_port.lock();
-    bind_raw6_locked(sock, ip, scope_id)
+    bind_raw6_locked(sock, ip, scope_id, port)
 }
 
-fn bind_raw6_locked(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32)
+fn bind_raw6_locked(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32, port: u16)
     -> Option<Result<(), NetError>>
 {
     use core::sync::atomic::Ordering;
@@ -33,7 +41,12 @@ fn bind_raw6_locked(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32)
     let iface = match scoped_iface(sock, ip, scope_id) {
         Ok(iface) => iface, Err(error) => return Some(Err(error)),
     };
-    Some(endpoint.bind_checked(crate::raw6::Raw6Address::new(ip, scope_id), iface))
+    let local = crate::raw6::Raw6Address::new(ip, scope_id);
+    if !endpoint.is_ping() { return Some(endpoint.bind_checked(local, iface)); }
+    if let Err(error) = endpoint.check_local(local, iface) { return Some(Err(error)); }
+    if let Err(error) = crate::ping::bind_v6(endpoint, port) { return Some(Err(error)); }
+    endpoint.bind(local, iface);
+    Some(Ok(()))
 }
 
 fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u32)
@@ -53,7 +66,7 @@ enum TryRawBind { Contended, NotRaw, Complete }
 #[cfg(test)]
 fn try_bind_raw4(sock: &InetSocket, ip: Ipv4Addr) -> Result<TryRawBind, NetError> {
     let Some(_lifecycle) = sock.local_port.try_lock() else { return Ok(TryRawBind::Contended) };
-    match bind_raw4_locked(sock, ip) {
+    match bind_raw4_locked(sock, ip, 0) {
         Some(result) => result.map(|()| TryRawBind::Complete), None => Ok(TryRawBind::NotRaw),
     }
 }
@@ -63,7 +76,7 @@ fn try_bind_raw6(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32)
     -> Result<TryRawBind, NetError>
 {
     let Some(_lifecycle) = sock.local_port.try_lock() else { return Ok(TryRawBind::Contended) };
-    match bind_raw6_locked(sock, ip, scope_id) {
+    match bind_raw6_locked(sock, ip, scope_id, 0) {
         Some(result) => result.map(|()| TryRawBind::Complete), None => Ok(TryRawBind::NotRaw),
     }
 }
@@ -108,7 +121,7 @@ mod tests {
             assert!(matches!(try_bind_raw4(&sock, Ipv4Addr::ANY), Ok(TryRawBind::Contended)));
             release.send(()).unwrap();
             setter.join().unwrap().unwrap();
-            assert_eq!(bind_raw4(&sock, Ipv4Addr::ANY).unwrap(), Ok(()));
+            assert_eq!(bind_raw4(&sock, Ipv4Addr::ANY, 0).unwrap(), Ok(()));
             assert_eq!(endpoint.snapshot().bound_iface, next);
             assert_eq!(sock.opts.bound_ifindex.load(Ordering::Acquire), next.map(NetIfaceId::raw).unwrap_or(0));
         }
@@ -131,7 +144,7 @@ mod tests {
             assert!(matches!(try_bind_raw6(&sock, crate::Ipv6Addr::ANY, 0), Ok(TryRawBind::Contended)));
             release.send(()).unwrap();
             setter.join().unwrap().unwrap();
-            assert_eq!(bind_raw6(&sock, crate::Ipv6Addr::ANY, 0).unwrap(), Ok(()));
+            assert_eq!(bind_raw6(&sock, crate::Ipv6Addr::ANY, 0, 0).unwrap(), Ok(()));
             assert_eq!(endpoint.snapshot().bound_iface, next);
             assert_eq!(sock.opts.bound_ifindex.load(Ordering::Acquire), next.map(NetIfaceId::raw).unwrap_or(0));
         }

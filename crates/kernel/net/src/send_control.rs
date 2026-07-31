@@ -8,6 +8,10 @@ use crate::{Ipv4Addr, Ipv6Addr, NetIfaceId};
 pub struct SendControl {
     pub raw4: Raw4Control,
     pub raw6: Raw6Control,
+    /// Message-level out-of-band request. The ICMP datagram endpoint class has
+    /// no out-of-band channel and reports that before it screens the message
+    /// type, so the flag has to reach the transport.
+    pub oob: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -48,6 +52,7 @@ impl SendControl {
     /// Apply message flags whose semantics belong to raw transmit. # C: O(1)
     pub fn apply_flags(&mut self, flags: u64) {
         self.raw4.dont_route = flags & crate::uapi::MSG_DONTROUTE != 0;
+        self.oob = flags & crate::uapi::MSG_OOB != 0;
     }
 }
 

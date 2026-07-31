@@ -165,6 +165,55 @@ impl ProcHandler for BoundPerNetU16PairHook {
     }
 }
 
+/// Per-network-namespace group-window binding. The parse, the reserved-invalid
+/// group screen, and the inverted-window reset all belong to the subsystem that
+/// owns the window, so this handler never re-decides them.
+pub struct PerNetGroupRangeHook {
+    pub current_ns: fn() -> NetworkNamespaceRef,
+    pub get: fn(&NetworkNamespaceRef) -> Result<(u32, u32), ()>,
+    pub set: fn(&NetworkNamespaceRef, u32, u32) -> Result<(), ()>,
+}
+struct BoundPerNetGroupRangeHook {
+    namespace: NetworkNamespaceRef,
+    get: fn(&NetworkNamespaceRef) -> Result<(u32, u32), ()>,
+    set: fn(&NetworkNamespaceRef, u32, u32) -> Result<(), ()>,
+}
+impl ProcHandler for PerNetGroupRangeHook {
+    fn format(&self) -> Vec<u8> {
+        net::ping::group::format((self.get)(&(self.current_ns)())
+            .expect("live network namespace group window"))
+    }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_group_range(&(self.current_ns)(), self.get, self.set, src)
+    }
+    fn bind(&self) -> Option<Arc<dyn ProcHandler>> {
+        Some(Arc::new(BoundPerNetGroupRangeHook {
+            namespace: (self.current_ns)(), get: self.get, set: self.set,
+        }))
+    }
+}
+impl ProcHandler for BoundPerNetGroupRangeHook {
+    fn format(&self) -> Vec<u8> {
+        net::ping::group::format((self.get)(&self.namespace)
+            .expect("retained network namespace group window"))
+    }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_group_range(&self.namespace, self.get, self.set, src)
+    }
+}
+
+fn store_group_range(namespace: &NetworkNamespaceRef,
+    get: fn(&NetworkNamespaceRef) -> Result<(u32, u32), ()>,
+    set: fn(&NetworkNamespaceRef, u32, u32) -> Result<(), ()>, src: &[u8]) -> Result<(), ()>
+{
+    let live = get(namespace)?;
+    let Some((low, high)) = net::ping::group::parse_write(src, live)? else { return Ok(()) };
+    match net::ping::group::validate(low, high) {
+        net::ping::group::RangeWrite::Accept(low, high) => set(namespace, low, high),
+        net::ping::group::RangeWrite::Invalid => Err(()),
+    }
+}
+
 fn format_u16_pair(pair: (u16, u16)) -> Vec<u8> {
     alloc::format!("{}\t{}\n", pair.0, pair.1).into_bytes()
 }

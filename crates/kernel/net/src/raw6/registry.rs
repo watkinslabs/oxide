@@ -20,8 +20,12 @@ impl NetStack {
     /// Remove and close one exact raw IPv6 endpoint. # C: O(N)
     pub fn unregister_raw6(&self, endpoint: &Arc<Raw6Endpoint>) {
         endpoint.close();
-        if let Some(tables) = self.try_inet_tables(endpoint.net_ns()) {
-            tables.raw6.unregister(endpoint);
+        let Some(tables) = self.try_inet_tables(endpoint.net_ns()) else { return };
+        // An ICMP datagram endpoint never entered the protocol table; releasing
+        // its echo identifier is what unpublishes it.
+        match endpoint.ping.as_ref() {
+            Some(ident) => tables.ping.unbind(ident),
+            None => tables.raw6.unregister(endpoint),
         }
     }
 }
