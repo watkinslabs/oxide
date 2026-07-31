@@ -20,6 +20,7 @@ const TIOCSWINSZ: u64 = 0x5414;
 const TIOCGPTN:   u64 = 0x80045430;
 const TIOCSPTLCK: u64 = 0x40045431;
 const TIOCGPTLCK: u64 = 0x80045439;
+const TIOCGPTPEER: u64 = 0x5441;
 const TIOCGPGRP:  u64 = 0x540F;
 const TIOCSPGRP:  u64 = 0x5410;
 const TIOCSCTTY:  u64 = 0x540E;
@@ -39,7 +40,14 @@ const TIOCMSET:   u64 = 0x5418;
 // c_iflag/c_oflag/c_cflag/c_lflag (4*4), c_line (1), c_cc[19] = 36 B.
 const KERNEL_TERMIOS_BYTES: usize = tty::pty::TERMIOS_OFF_CC + tty::pty::NCCS;
 
-pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -> i64 {
+pub(super) fn handle_tty_ioctl(
+    cur: &sched::Task,
+    file: &vfs::File,
+    fdt: &vfs::FdTable,
+    _fd: i32,
+    req: u64,
+    arg: u64,
+) -> i64 {
     // KD_*/VT_* ioctls on /dev/tty<N> + /dev/tty0 + /dev/console
     // route through the vt crate.
     if let Some(rv) = handle_vt_ioctl(file.inode(), req, arg) {
@@ -269,6 +277,36 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
             // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
             unsafe { core::ptr::write_volatile(arg as *mut i32, locked as i32); }
             0
+        }
+        TIOCGPTPEER => {
+            // `TIOCGPTPEER` opens the slave belonging to THIS Unix98 master
+            // without resolving `/dev/pts/<n>` in the caller's mount namespace.
+            // Terminal emulators use it to create a pty safely before the
+            // child changes namespaces; returning ENOTTY here aborts terminal
+            // launch before the shell is ever spawned.
+            if (ino & 0xFFFF_8000) != 0x6000_0000 { return -(Errno::Enotty.as_i32() as i64); }
+            let pair = match &pty_pair {
+                Some(pair) => pair,
+                None => return -(Errno::Eio.as_i32() as i64),
+            };
+            if pair.is_locked() { return -(Errno::Eio.as_i32() as i64); }
+            let flags = vfs::OpenFlags::from_bits_truncate(arg as u32);
+            let slave = devpts::make_slave_inode(alloc::sync::Arc::clone(pair));
+            devpts::acquire_ctty_on_open(&slave, flags.bits());
+            let cred = match crate::pathresolve::file_cred_for(cur) {
+                Some(cred) => cred,
+                None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            let dentry = vfs::dcache::d_alloc_pseudo("[pts]", slave.clone(), &crate::anon_dname::ANON_INODE_OPS);
+            let file = vfs::File::new_at(slave, dentry, flags - vfs::OpenFlags::O_CLOEXEC, file.mnt_id(), cred);
+            if let Err(error) = file.open_hook() { return -(error as i64); }
+            match fdt.alloc_limit(file, cur.nofile_soft()) {
+                Ok(fd) => {
+                    if flags.contains(vfs::OpenFlags::O_CLOEXEC) { let _ = fdt.set_cloexec(fd, true); }
+                    fd as i64
+                }
+                Err(error) => -(error as i64),
+            }
         }
         TIOCGPGRP | TIOCSPGRP => {
             if let Err(rv) = validate_user_buf(arg, 4, 4) { return rv; }
