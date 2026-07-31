@@ -22,6 +22,7 @@ use core::sync::atomic::Ordering;
 
 use hal::{Context, TimerOps};
 use crate::{SchedClass, Task};
+use crate::task::dup;
 use vmm::AddressSpace;
 
 mod inherit;
@@ -133,12 +134,13 @@ pub unsafe fn spawn_kernel_thread(
         None    => return Err(SpawnError::NoRunqueue),
     };
 
-    // 1. Build the Task carrier (no stack, default vruntime).
+    // 1. Build the Task carrier (no stack, default vruntime) inside its Arc.
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
-    let mut task = Task::new(tid, name, class);
+    let mut arc = dup::new_kthread_arc(tid, name, class);
+    let task = dup::unique_mut(&mut arc);
 
     // 2. Allocate + install the guard-paged kernel stack (CONFIG_VMAP_STACK).
-    // SAFETY: `task` is local; no concurrent reader of kernel_stack exists yet.
+    // SAFETY: `task` is unpublished; no concurrent reader of kernel_stack exists yet.
     if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     if !task.try_charge_kernel_stack(cgroup::kernel_context_memcg()) {
         return Err(SpawnError::NoMem);
@@ -152,10 +154,9 @@ pub unsafe fn spawn_kernel_thread(
         core::ptr::write(p, ArchCtx::new_kernel_with_irq_frame(stack_top, entry, arg));
     }
 
-    // 4. Wrap, enqueue, return.
+    // 4. Enqueue, return.
     let start_boottime_ns = monotonic_ns();
     task.start_boottime_ns = start_boottime_ns;
-    let arc = Arc::new(task);
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
     {
@@ -228,10 +229,11 @@ pub unsafe fn spawn_user_thread_with_vpid(
     };
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
-    let mut task = Task::new_user(tid, name, class, mm);
+    let mut arc = dup::new_user_arc(tid, name, class, mm);
+    let task = dup::unique_mut(&mut arc);
 
-    // F153-1: stamp namespace-visible pids on the local Task before
-    // it's wrapped in Arc + made visible via registry/runqueue.
+    // F153-1: stamp namespace-visible pids on the Task before
+    // it's made visible via registry/runqueue.
     if vpid_tgid != 0 { task.vtgid.store(vpid_tgid, Ordering::Release); }
     if vpid_tid  != 0 { task.vtid.store(vpid_tid,   Ordering::Release); }
     // B118: pgid/sid live in VPID space, not the opaque internal tid.
@@ -263,7 +265,6 @@ pub unsafe fn spawn_user_thread_with_vpid(
 
     let start_boottime_ns = monotonic_ns();
     task.start_boottime_ns = start_boottime_ns;
-    let arc = Arc::new(task);
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
     {
@@ -302,21 +303,21 @@ pub unsafe fn new_user_task_unpublished(
 ) -> Result<Arc<Task>, SpawnError> {
     if super::runqueue::global().is_none() { return Err(SpawnError::NoRunqueue); }
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
-    let mut task = Task::new_user(tid, name, class, mm);
+    let mut arc = dup::new_user_arc(tid, name, class, mm);
+    let task = dup::unique_mut(&mut arc);
     if vpid_tgid != 0 {
         task.vtgid.store(vpid_tgid, Ordering::Release);
         task.set_pgid(vpid_tgid);
         task.set_sid(vpid_tgid);
     }
     if vpid_tid != 0 { task.vtid.store(vpid_tid, Ordering::Release); }
-    // SAFETY: `task` is local; no concurrent reader of kernel_stack exists yet.
+    // SAFETY: `task` is unpublished; no concurrent reader of kernel_stack exists yet.
     if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     if !task.try_charge_kernel_stack(cgroup::kernel_context_memcg()) {
         return Err(SpawnError::NoMem);
     }
     let start_boottime_ns = monotonic_ns();
     task.start_boottime_ns = start_boottime_ns;
-    let arc = Arc::new(task);
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     Ok(arc)
 }
@@ -374,7 +375,8 @@ pub unsafe fn spawn_user_thread_for_fork(
     };
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
-    let mut task = Task::new_user(tid, name, class, mm);
+    let mut arc = dup::new_user_arc(tid, name, class, mm);
+    let task = dup::unique_mut(&mut arc);
     if let Some(group) = thread_group {
         task.join_thread_group(group);
     }
@@ -385,10 +387,10 @@ pub unsafe fn spawn_user_thread_for_fork(
     // Fork/clone state the child inherits from its parent — one owner for
     // both arches (`spawn/inherit.rs`), so an addition cannot land on x86_64
     // and be forgotten on aarch64 the way `ioprio` and `exe_path` were.
-    inherit::inherit_from_parent(&mut task);
+    inherit::inherit_from_parent(task);
 
-    // SAFETY: task is local; no concurrent reader. install_stack allocates a
-    // guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
+    // SAFETY: task is unpublished; no concurrent reader. install_stack allocates
+    // a guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
     if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
@@ -416,7 +418,6 @@ pub unsafe fn spawn_user_thread_for_fork(
 
     let start_boottime_ns = monotonic_ns();
     task.start_boottime_ns = start_boottime_ns;
-    let arc = Arc::new(task);
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     // The caller publishes only after every fallible clone step completes.
     Ok(arc)
@@ -466,7 +467,8 @@ pub unsafe fn spawn_user_thread_for_fork(
     };
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
-    let mut task = Task::new_user(tid, name, class, mm);
+    let mut arc = dup::new_user_arc(tid, name, class, mm);
+    let task = dup::unique_mut(&mut arc);
     if let Some(group) = thread_group {
         task.join_thread_group(group);
     }
@@ -474,10 +476,10 @@ pub unsafe fn spawn_user_thread_for_fork(
     // Fork/clone state the child inherits from its parent — one owner for
     // both arches (`spawn/inherit.rs`), so an addition cannot land on x86_64
     // and be forgotten on aarch64 the way `ioprio` and `exe_path` were.
-    inherit::inherit_from_parent(&mut task);
+    inherit::inherit_from_parent(task);
 
-    // SAFETY: task is local; no concurrent reader. install_stack allocates a
-    // guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
+    // SAFETY: task is unpublished; no concurrent reader. install_stack allocates
+    // a guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
     if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
@@ -489,7 +491,6 @@ pub unsafe fn spawn_user_thread_for_fork(
 
     let start_boottime_ns = monotonic_ns();
     task.start_boottime_ns = start_boottime_ns;
-    let arc = Arc::new(task);
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     // The caller publishes only after every fallible clone step completes.
     Ok(arc)

@@ -3,6 +3,8 @@
 // Module map:
 // - types: signal info, scheduling policy/class, task state.
 // - creds: POSIX credentials and capability helpers.
+// - dup: refcounted Task allocation (`dup_task_struct` shape) — construct into
+//   the Arc, never onto the creator's kernel stack.
 // - signals: sigaction storage plus mm/rlimit accessors.
 // - arch: opaque arch context/FPU buffers and POSIX timer slot type.
 // - methods: constructors, fd-table, stack, context, state, and pid helpers.
@@ -33,6 +35,7 @@ use network_namespace::NetworkNamespaceRef;
 mod arch;
 pub mod cap;
 mod comm;
+pub mod dup;
 pub(crate) mod creds;
 mod exe_path;
 mod parent_arc;
