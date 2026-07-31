@@ -28,7 +28,7 @@ mod smoke;
 mod splice_ops;
 #[cfg(test)]
 mod fifo_tests;
-pub use eventfd::{EventfdData, make_eventfd_inode};
+pub use eventfd::{EventfdData, is_eventfd, make_eventfd_inode};
 pub use ring::{make_pipe_inode, pipe_data, pipe_size, set_pipe_size, PipeData};
 /// `splice`/`tee`/`vmsplice` pipe-side primitives (Linux `fs/splice.c`).
 pub use splice_ops::{advance, fill, ipipe_prep, link_pipe, opipe_prep, peek, pipe_info,

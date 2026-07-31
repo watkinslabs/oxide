@@ -9,4 +9,4 @@ pub mod file;
 
 pub use counter::{EFD_CLOEXEC, EFD_FLAGS_SET, EFD_NONBLOCK, EFD_SEMAPHORE, EVENTFD_RECORD,
     LEGACY_FLAGS, flags_valid};
-pub use file::{EventfdData, make_eventfd_inode};
+pub use file::{EventfdData, is_eventfd, make_eventfd_inode};
