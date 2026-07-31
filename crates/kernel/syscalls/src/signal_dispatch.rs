@@ -38,32 +38,22 @@ fn deliver_aarch64(regs: *mut UserRegs, p: &PendingSignal, saved_ret: u64, resta
     unsafe { ::fs::sig_dispatch::deliver_with_info(regs, p.handler, restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) }
 }
 
-/// Build the `hal::SigPayload` siginfo payload from a dequeued
-/// `sched::SigInfo`, selecting the `siginfo_t` union arm by signal: SIGCHLD
-/// gets `_sigchld` (si_status, an `int`), everything else gets `_rt`
-/// (si_value, a full 8-byte `sigval_t` — truncating that to 4 bytes loses the
-/// `sival_ptr` a `sigqueue(3)` sender passed).
+/// The SA_SIGINFO payload for a dequeued signal.
+///
+/// The union-arm selection lives on `sched::SigInfo` (`SigInfo::payload`), one
+/// owner shared with the `rt_sigtimedwait`/`waitid` copy-out — the arms overlap
+/// at `_sifields`, so two independent selectors would eventually disagree about
+/// which bytes a handler is reading.
 ///
 /// EVERY signal with a queued record gets one, not just SIGCHLD and the RT
 /// range: glibc's `__nptl_setxid_sighandler` (SIGSETXID) rejects the signal
-/// unless `si_pid == getpid() && si_code == SI_TKILL`, so a zeroed siginfo
-/// made it return without applying the setxid or acking — `setgid()` in a
-/// multithreaded process (gdm-session-worker) then hung in `__nptl_setxid`.
-/// Standard signals sent by `sigqueue(3)`/`tgkill(2)` carry the same fields.
+/// unless `si_pid == getpid() && si_code == SI_TKILL`, so a zeroed siginfo made
+/// it return without applying the setxid or acking — `setgid()` in a
+/// multithreaded process then hung in `__nptl_setxid`.
 /// # C: O(1)
 #[inline]
 fn siginfo_payload(p: &PendingSignal) -> Option<hal::SigPayload> {
-    let i = p.info?;
-    let chld_arm = p.sig as u8 == Signum::Sigchld as u8;
-    Some(hal::SigPayload {
-        code: i.code, pid: i.pid as i32, uid: i.uid,
-        status: i.value as i32, value: i.value, chld_arm,
-        // A seccomp-raised SIGSYS selects the `_sigsys` arm and a synchronous
-        // fault signal the `_sigfault` arm; both overlay si_pid/si_uid/si_value
-        // on the same `_sifields` bytes. `hal::write_siginfo` picks.
-        sigsys: i.sys,
-        fault: i.fault,
-    })
+    Some(p.info?.payload(p.sig))
 }
 
 /// Dispatch one PendingSignal at the syscall-return tail. Returns

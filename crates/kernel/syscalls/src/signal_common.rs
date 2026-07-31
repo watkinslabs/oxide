@@ -20,25 +20,16 @@ pub(crate) const KERNEL_SIGINFO_BYTES: u64 = 48;
 /// `copy_siginfo_to_user` writes out.
 pub(crate) const SIGINFO_BYTES: u64 = 128;
 
-/// siginfo_t field offsets shared by every signal syscall that reads or writes
-/// one (`asm-generic/siginfo.h`). `SI_VALUE` is the `_rt` union arm's
-/// `sigval_t`, a full 8 bytes — the `_sigchld` arm's `si_status` aliases its
-/// low half.
+/// `siginfo_t` field offsets the READ side needs (`asm-generic/siginfo.h`).
+/// The write side has no table of its own — it renders through
+/// `hal::write_siginfo`, the one owner of the union arms.
 pub(crate) const SI_SIGNO: u64 = 0;
-pub(crate) const SI_ERRNO: u64 = 4;
 pub(crate) const SI_CODE:  u64 = 8;
 pub(crate) const SI_PID:   u64 = 16;
 pub(crate) const SI_UID:   u64 = 20;
+/// The `_rt` arm's `sigval_t`, a full 8 bytes — the `_sigchld` arm's
+/// `si_status` aliases its low half.
 pub(crate) const SI_VALUE: u64 = 24;
-/// `_sigsys` arm (`force_sig_seccomp`): `_call_addr` aliases si_pid/si_uid,
-/// `_syscall` and `_arch` alias si_value's two halves.
-pub(crate) const SI_CALL_ADDR: u64 = 16;
-pub(crate) const SI_SYSCALL:   u64 = 24;
-pub(crate) const SI_ARCH:      u64 = 28;
-/// `_sigfault` arm: `si_addr` also aliases si_pid/si_uid, and the `short`
-/// `si_addr_lsb` follows it where si_value would be.
-pub(crate) const SI_ADDR:      u64 = 16;
-pub(crate) const SI_ADDR_LSB:  u64 = 24;
 
 /// Decode the leading `kernel_siginfo` fields of a user `siginfo_t`.
 /// Caller must have validated `info_ptr` readable for `KERNEL_SIGINFO_BYTES`.
@@ -59,47 +50,28 @@ pub(crate) fn read_user_siginfo(info_ptr: u64, signo: u32) -> sched::SigInfo {
 }
 
 /// Write a dequeued signal into a user `siginfo_t` (Linux
-/// `copy_siginfo_to_user`): zero all 128 bytes, then fill si_signo, si_errno,
-/// si_code and the `_rt` arm. Caller must have validated `info_ptr` writable
-/// for `SIGINFO_BYTES`.
+/// `copy_siginfo_to_user`).
+///
+/// Renders through `hal::write_siginfo` — the SAME writer the per-arch signal
+/// frame builders use — so the union arm a handler reads and the one
+/// `rt_sigtimedwait`/`waitid` copies out can never disagree. A second offset
+/// table here is exactly the split source of truth that let a `_sigfault`
+/// record copy out as a `_kill` one.
+///
+/// Caller must have validated `info_ptr` writable for `SIGINFO_BYTES`.
 /// # C: O(1)
 pub(crate) fn write_user_siginfo(info_ptr: u64, sig: u32, rec: Option<sched::SigInfo>) {
     // Linux `collect_signal`'s fallback for a pending signal with no queued
-    // record (`kill(2)` queues nothing): si_code = SI_USER, si_pid/si_uid = 0.
+    // record (`kill(2)` from a context that queues nothing): si_code = SI_USER,
+    // si_pid/si_uid = 0.
     let rec = rec.unwrap_or(sched::SigInfo {
-        signo: sig, code: sched::signum::SI_USER, pid: 0, uid: 0, value: 0, sys: None, fault: None
+        signo: sig, code: sched::signum::SI_USER, pid: 0, uid: 0, value: 0,
+        sys: None, fault: None,
     });
-    // SAFETY: caller validated info_ptr writable for SIGINFO_BYTES, which covers
-    // the zero-fill and every field offset written below.
-    unsafe {
-        core::ptr::write_bytes(info_ptr as *mut u8, 0, SIGINFO_BYTES as usize);
-        core::ptr::write_unaligned((info_ptr + SI_SIGNO) as *mut i32, sig as i32);
-        core::ptr::write_unaligned((info_ptr + SI_CODE)  as *mut i32, rec.code);
-        // A seccomp-raised SIGSYS selects `_sigsys`, whose `_call_addr`
-        // OVERLAYS si_pid/si_uid; writing the `_kill` arm too would corrupt
-        // it. `rt_sigtimedwait`/`waitid` copy-out must agree with the frame
-        // builder in `hal::write_siginfo`.
-        // A synchronous fault signal selects `_sigfault`, whose `si_addr`
-        // OVERLAYS si_pid/si_uid. `sigwaitinfo`/`signalfd` must report the
-        // faulting address, not a zeroed sender identity.
-        if let Some(f) = rec.fault {
-            core::ptr::write_unaligned((info_ptr + SI_ERRNO)    as *mut i32, 0);
-            core::ptr::write_unaligned((info_ptr + SI_ADDR)     as *mut u64, f.addr);
-            core::ptr::write_unaligned((info_ptr + SI_ADDR_LSB) as *mut i16, f.addr_lsb);
-            return;
-        }
-        if let Some(s) = rec.sys {
-            core::ptr::write_unaligned((info_ptr + SI_ERRNO)     as *mut i32, s.errno);
-            core::ptr::write_unaligned((info_ptr + SI_CALL_ADDR) as *mut u64, s.call_addr);
-            core::ptr::write_unaligned((info_ptr + SI_SYSCALL)   as *mut i32, s.syscall);
-            core::ptr::write_unaligned((info_ptr + SI_ARCH)      as *mut u32, s.arch);
-            return;
-        }
-        core::ptr::write_unaligned((info_ptr + SI_ERRNO) as *mut i32, 0);
-        core::ptr::write_unaligned((info_ptr + SI_PID)   as *mut u32, rec.pid);
-        core::ptr::write_unaligned((info_ptr + SI_UID)   as *mut u32, rec.uid);
-        core::ptr::write_unaligned((info_ptr + SI_VALUE) as *mut u64, rec.value);
-    }
+    let mut buf = [0u8; SIGINFO_BYTES as usize];
+    hal::write_siginfo(&mut buf, sig, Some(rec.payload(sig)));
+    // SAFETY: caller validated info_ptr writable for SIGINFO_BYTES, which is exactly this buffer's length.
+    unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), info_ptr as *mut u8, buf.len()); }
 }
 
 /// Linux `do_rt_sigqueueinfo` / `do_rt_tgsigqueueinfo` tail: queue an
