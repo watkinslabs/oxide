@@ -47,6 +47,14 @@ fn dir(ino: u64, mode: u16, uid: u32, kids: &[(&'static str, InodeRef)]) -> Inod
 
 fn errno(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// Both halves of `fanotify_init` argument validation in the order the syscall
+/// runs them, with the per-user group charge (which sits between them) elided.
+fn init_args(flags: u32, event_f_flags: u32, admin: bool, audit: bool) -> i32 {
+    let e = crate::inotify::validate::validate_fanotify_init_args(flags, event_f_flags, admin);
+    if e != 0 { return e; }
+    crate::inotify::validate::validate_fanotify_init_post_charge(flags, audit)
+}
+
 fn path_err(r: Result<InodeRef, i64>) -> i64 {
     match r {
         Ok(_) => 0,
@@ -186,21 +194,21 @@ fn fanotify_init_validation_matches_linux_ordering_units() {
     let einval = syscall::errno::Errno::Einval.as_i32();
     let eperm = syscall::errno::Errno::Eperm.as_i32();
 
-    assert_eq!(validate_fanotify_init_args(0, 0, false, false), eperm);
+    assert_eq!(init_args(0, 0, false, false), eperm);
     assert_eq!(validate_fanotify_init(FAN_REPORT_DIR_FID), 0);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_DIR_FID, 0, false, false), 0);
-    assert_eq!(validate_fanotify_init_args(FAN_CLASS_CONTENT, 0, false, false), eperm);
+    assert_eq!(init_args(FAN_REPORT_DIR_FID, 0, false, false), 0);
+    assert_eq!(init_args(FAN_CLASS_CONTENT, 0, false, false), eperm);
 
-    assert_eq!(validate_fanotify_init_args(0x8000_0000, 0, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT, 0, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_NAME, 0, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_DIR_FID | FAN_REPORT_NAME, 0, true, true), 0);
+    assert_eq!(init_args(0x8000_0000, 0, true, true), einval);
+    assert_eq!(init_args(FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT, 0, true, true), einval);
+    assert_eq!(init_args(FAN_REPORT_NAME, 0, true, true), einval);
+    assert_eq!(init_args(FAN_REPORT_DIR_FID | FAN_REPORT_NAME, 0, true, true), 0);
     assert_eq!(
-        validate_fanotify_init_args(FAN_REPORT_DIR_FID | FAN_REPORT_NAME | FAN_REPORT_TARGET_FID, 0, true, true),
+        init_args(FAN_REPORT_DIR_FID | FAN_REPORT_NAME | FAN_REPORT_TARGET_FID, 0, true, true),
         einval,
     );
     assert_eq!(
-        validate_fanotify_init_args(
+        init_args(
             FAN_REPORT_DIR_FID | FAN_REPORT_NAME | FAN_REPORT_FID | FAN_REPORT_TARGET_FID,
             0,
             true,
@@ -209,16 +217,16 @@ fn fanotify_init_validation_matches_linux_ordering_units() {
         0,
     );
 
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_MNT | FAN_CLASS_CONTENT, 0, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_MNT | FAN_REPORT_FID, 0, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_MNT | FAN_REPORT_FD_ERROR, 0, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_MNT, 0, false, false), 0);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_DIR_FID | FAN_ENABLE_AUDIT, 0, true, false), eperm);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_DIR_FID | FAN_ENABLE_AUDIT, 0, true, true), 0);
+    assert_eq!(init_args(FAN_REPORT_MNT | FAN_CLASS_CONTENT, 0, true, true), einval);
+    assert_eq!(init_args(FAN_REPORT_MNT | FAN_REPORT_FID, 0, true, true), einval);
+    assert_eq!(init_args(FAN_REPORT_MNT | FAN_REPORT_FD_ERROR, 0, true, true), einval);
+    assert_eq!(init_args(FAN_REPORT_MNT, 0, false, false), 0);
+    assert_eq!(init_args(FAN_REPORT_DIR_FID | FAN_ENABLE_AUDIT, 0, true, false), eperm);
+    assert_eq!(init_args(FAN_REPORT_DIR_FID | FAN_ENABLE_AUDIT, 0, true, true), 0);
 
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_DIR_FID, 0o3, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_DIR_FID, 0x8000_0000, true, true), einval);
-    assert_eq!(validate_fanotify_init_args(FAN_REPORT_DIR_FID, 0o4000 | 0o2, true, true), 0);
+    assert_eq!(init_args(FAN_REPORT_DIR_FID, 0o3, true, true), einval);
+    assert_eq!(init_args(FAN_REPORT_DIR_FID, 0x8000_0000, true, true), einval);
+    assert_eq!(init_args(FAN_REPORT_DIR_FID, 0o4000 | 0o2, true, true), 0);
 }
 
 #[test]

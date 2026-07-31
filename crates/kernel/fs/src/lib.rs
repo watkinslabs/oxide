@@ -63,6 +63,13 @@ mod userbuf;
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn init() {
+    // `inotify_user_setup`/`fanotify_user_setup` derive the per-user watch and
+    // mark ceilings from `si_meminfo()` at init time. Seeded here because the
+    // PMM only knows the machine's size after boot memory setup.
+    if let Some(p) = pmm::setup::pmm_static() {
+        let bytes = p.snapshot().managed_pages.saturating_mul(hal::PAGE_SIZE_BYTES);
+        vfs::fsnotify::init_watches_max_from_ram(bytes);
+    }
     inotify::install_write_hook();
     truncate::install_rlimit_fsize_hook();
     pipe::install_close_hook();

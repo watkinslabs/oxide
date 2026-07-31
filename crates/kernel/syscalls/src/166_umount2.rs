@@ -175,7 +175,22 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // Detach from the unified mount table only. A non-mounted descendant such
     // as `/proc/sys/fs/binfmt_misc` must report EINVAL; returning success there
     // makes systemd's automount cleanup spin on umount2 forever.
+    // `s_dev` of the filesystem this mount exposes, captured while the mount is
+    // still in the table so the post-detach "was that the last one?" test below
+    // has something to compare against.
+    let doomed_fsid = vfs::mount::mount_by_id(resolved.mnt_id).map(|m| m.sb().s_dev).unwrap_or(0);
     let removed_tab = vfs::mount::unregister_top(&target_d, recursive);
+    // Linux reports `FS_UNMOUNT` (and then frees every mark) when the
+    // SUPERBLOCK is torn down — `generic_shutdown_super` →
+    // `fsnotify_unmount_inodes`/`evict_inodes` — not on each detach. A bind or a
+    // second namespace's copy keeps the filesystem alive, so the notice is owed
+    // only once no mount refers to it any more. Without it a watcher on a file
+    // under an unmounted filesystem is never told, and its `wd` stays live
+    // forever pointing at an unreachable object.
+    if removed_tab > 0 && doomed_fsid != 0
+        && !vfs::mount::all_mounts().iter().any(|m| m.sb().s_dev == doomed_fsid) {
+        fs::inotify::fire_unmount(doomed_fsid);
+    }
     // A pseudo-fs umount that matched no removable mount instance is a
     // successful no-op (Linux detaches the initial /proc; a synthetic root with
     // no separate instance has nothing to remove) — never surface EINVAL there.
