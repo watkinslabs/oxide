@@ -160,6 +160,34 @@ fn a_worker_can_take_a_process_signal_its_leader_blocks() {
                "deliverable in the thread that did not");
 }
 
+// `rt_sigtimedwait` and `rt_sigsuspend` both wake on `deliverable_signals`, so
+// if that read only the thread-private set a non-leader thread would sleep
+// through every `kill(2)` aimed at its process — the exact hang these two
+// syscalls exist to avoid.
+#[test]
+fn deliverable_signals_sees_a_process_directed_signal_in_a_non_leader_thread() {
+    let (_leader, worker) = thread_group();
+    worker.thread_group.post_shared(Signum::Sigterm as u32, None);
+    assert_ne!(worker.deliverable_signals() & Signum::Sigterm.bit(), 0);
+    // ...and the worker can actually CONSUME it, so the wake is not spurious:
+    // waking on a signal the delivery path cannot dequeue would spin a
+    // `while (!flag) sigsuspend()` loop forever.
+    assert!(worker.dequeue_pending(Signum::Sigterm as u32).is_some());
+}
+
+// A default-ignored disposition must not count as a reason to wake: a SIGWINCH
+// resize would otherwise interrupt every `sigsuspend`/`ppoll` event loop.
+#[test]
+fn deliverable_signals_excludes_an_ignored_disposition_but_never_sigkill() {
+    let (leader, _worker) = thread_group();
+    leader.thread_group.post_shared(Signum::Sigwinch as u32, None);
+    assert_eq!(leader.deliverable_signals() & Signum::Sigwinch.bit(), 0);
+    leader.set_current_blocked(u64::MAX);
+    leader.thread_group.post_shared(Signum::Sigkill as u32, None);
+    assert_ne!(leader.deliverable_signals() & Signum::Sigkill.bit(), 0,
+               "a fully masked task must still be killable");
+}
+
 #[test]
 fn all_pending_unions_both_sets() {
     let (leader, worker) = thread_group();
