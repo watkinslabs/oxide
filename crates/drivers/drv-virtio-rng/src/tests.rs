@@ -312,6 +312,69 @@ fn uninstall_then_republish_restores_single_hwrng_model_device() {
     assert_eq!(RNGS.lock().active_key, None);
 }
 
+/// A handle cloned out of the registry outlives the removal, so `uninstall`
+/// must disarm the record before its bounce frame goes back to the PMM.
+/// Without that, the in-flight clone programs a freed frame as a
+/// device-WRITE descriptor and the device DMAs into reallocated memory.
+#[test]
+fn uninstall_disarms_a_handle_cloned_before_removal() {
+    let _guard = TEST_LOCK.lock();
+    cleanup_hwrng_devices();
+    {
+        let mut registry = RNGS.lock();
+        registry.records.clear();
+        registry.active_key = None;
+    }
+    let key0 = key(0x0060_0000);
+    let mut desc = [0u64; 2];
+    let mut avail = [0u16; 4];
+    let mut used = [0u16; 6];
+    let mut notify = 0u16;
+    let mut bounce = [0xc3u8; 32];
+    {
+        let mut registry = RNGS.lock();
+        registry.records.push(ready_queue_record(
+            key0, &mut desc, &mut avail, &mut used, &mut notify, &mut bounce));
+        registry.active_key = Some(key0);
+    }
+    // Model the racing reader: it has the handle before uninstall runs.
+    let inflight = find_handle(key0).expect("handle cloned before removal");
+
+    assert!(uninstall(key0));
+
+    assert_eq!(inflight.lock().bounce_pa, 0);
+    assert!(inflight.lock().shutdown);
+    let mut out = [0u8; 32];
+    assert_eq!(crate::fill::fill_record(&inflight, &mut out), 0);
+    assert_eq!(out, [0u8; 32]);
+    assert_eq!(avail[1], 0);
+
+    RNGS.lock().active_key = None;
+}
+
+/// `uninstall` on a record whose transport never mapped a common-cfg window
+/// must not write through the null base. `virtio::reset_device` refuses a
+/// zero `cfg_va`; a raw store to `cfg_va + status_off` would not.
+#[test]
+fn uninstall_without_a_config_window_writes_nothing() {
+    let _guard = TEST_LOCK.lock();
+    cleanup_hwrng_devices();
+    {
+        let mut registry = RNGS.lock();
+        registry.records.clear();
+        registry.active_key = None;
+    }
+    let key0 = key(0x0070_0000);
+    {
+        let mut registry = RNGS.lock();
+        registry.records.push(test_record(key0, false));
+        registry.active_key = Some(key0);
+    }
+
+    assert!(uninstall(key0));
+    assert_eq!(RNGS.lock().active_key, None);
+}
+
 #[test]
 fn uninstall_active_promotes_next_live_hwrng_provider() {
     let _guard = TEST_LOCK.lock();

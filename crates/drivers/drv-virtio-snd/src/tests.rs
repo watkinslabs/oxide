@@ -145,6 +145,20 @@ mod prepost;
         sound_owner(device_key).expect("test device key must map to sound owner")
     }
 
+    /// `prepost_eventq` writes one 16-byte descriptor AND one EVENT_SIZE
+    /// buffer per accepted eventq slot, each into a single frame. The install
+    /// cap must therefore respect BOTH frames: sizing it from the event
+    /// buffers alone lets a device advertise a queue whose descriptor writes
+    /// run off the end of the descriptor frame.
+    #[test]
+    fn accepted_eventq_size_fits_the_descriptor_frame_as_well_as_the_event_frame() {
+        let descs = MAX_EVENTQ_DESCS as usize;
+
+        assert!(descs * crate::lifecycle::VIRTQ_DESC_ENTRY_BYTES <= SND_FRAME_BYTES);
+        assert!(descs * EVENT_SIZE <= SND_FRAME_BYTES);
+        assert!(descs > 0);
+    }
+
     #[test]
     fn transport_profile_carries_child_feature_mask() {
         let profile = transport_profile();

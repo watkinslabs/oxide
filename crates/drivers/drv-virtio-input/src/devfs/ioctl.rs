@@ -30,14 +30,22 @@ const fn bitmap_bytes(bits: usize) -> usize {
     bits.div_ceil(u8::BITS as usize)
 }
 
-unsafe fn uwrite(arg: u64, src: &[u8], cap: usize) -> i64 {
+// Every transfer below crosses the user/kernel boundary through `uaccess`,
+// never a raw dereference of `arg`. A user pointer that passes the range check
+// can still be unmapped or read-only: `uaccess` recovers such a fault through
+// the exception table and reports it, where an inline volatile store would
+// take an unrecoverable kernel fault on an address any unprivileged caller
+// picks. Bytes zeroed per `clear_user` chunk when a tail must be blanked.
+const UZERO_CHUNK_BYTES: usize = 64;
+
+/// Bytes transferred, or the negated errno the ioctl must return.
+/// # C: O(min(src.len(), cap))
+fn uwrite(arg: u64, src: &[u8], cap: usize) -> i64 {
     let n = src.len().min(cap);
-    unsafe {
-        for i in 0..n {
-            core::ptr::write_volatile((arg + i as u64) as *mut u8, src[i]);
-        }
+    match uaccess::copy_to_user(arg, &src[..n]) {
+        Ok(()) => n as i64,
+        Err(errno) => err(errno),
     }
-    n as i64
 }
 
 fn err(errno: syscall::errno::Errno) -> i64 {
@@ -50,36 +58,37 @@ fn valid_user_range(arg: u64, bytes: u64) -> bool {
         && arg.checked_add(bytes).is_some_and(|end| end <= hal::USER_VA_END)
 }
 
-unsafe fn uread(arg: u64, dst: &mut [u8]) {
-    unsafe {
-        for (i, slot) in dst.iter_mut().enumerate() {
-            *slot = core::ptr::read_volatile((arg + i as u64) as *const u8);
+/// # C: O(dst.len())
+fn uread(arg: u64, dst: &mut [u8]) -> bool {
+    uaccess::copy_from_user(dst, arg).is_ok()
+}
+
+/// # C: O(len)
+fn uzero(arg: u64, len: usize) -> bool {
+    let zeros = [0u8; UZERO_CHUNK_BYTES];
+    let mut done = 0usize;
+    while done < len {
+        let n = (len - done).min(UZERO_CHUNK_BYTES);
+        if uaccess::copy_to_user(arg + done as u64, &zeros[..n]).is_err() {
+            return false;
         }
+        done += n;
     }
+    true
 }
 
-unsafe fn uzero(arg: u64, len: usize) {
-    unsafe {
-        for i in 0..len {
-            core::ptr::write_volatile((arg + i as u64) as *mut u8, 0u8);
-        }
-    }
+/// # C: O(1)
+fn uread_i32(arg: u64) -> Option<i32> {
+    let mut b = [0u8; core::mem::size_of::<i32>()];
+    uaccess::copy_from_user(&mut b, arg).ok()?;
+    Some(i32::from_le_bytes(b))
 }
 
-unsafe fn uread_i32(arg: u64) -> i32 {
-    let mut b = [0u8; 4];
-    for (i, slot) in b.iter_mut().enumerate() {
-        *slot = unsafe { core::ptr::read_volatile((arg + i as u64) as *const u8) };
-    }
-    i32::from_le_bytes(b)
-}
-
-unsafe fn uread_u32(arg: u64) -> u32 {
-    let mut b = [0u8; 4];
-    for (i, slot) in b.iter_mut().enumerate() {
-        *slot = unsafe { core::ptr::read_volatile((arg + i as u64) as *const u8) };
-    }
-    u32::from_le_bytes(b)
+/// # C: O(1)
+fn uread_u32(arg: u64) -> Option<u32> {
+    let mut b = [0u8; core::mem::size_of::<u32>()];
+    uaccess::copy_from_user(&mut b, arg).ok()?;
+    Some(u32::from_le_bytes(b))
 }
 
 fn exact_device(identity: EvdevIdentity) -> Option<alloc::boxed::Box<input::VirtioInputDev>> {
@@ -126,7 +135,9 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         if !valid_user_range(arg, crate::EVDEV_CLOCKID_BYTES as u64) {
             return Some(err(Errno::Efault));
         }
-        let clock_id = unsafe { uread_i32(arg) };
+        let Some(clock_id) = uread_i32(arg) else {
+            return Some(err(Errno::Efault));
+        };
         return Some(if opened.set_clock(clock_id) { 0 } else { err(Errno::Einval) });
     }
 
@@ -147,11 +158,15 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 b[0..crate::EVDEV_CLOCKID_BYTES].copy_from_slice(&repeat[0].to_le_bytes());
                 b[crate::EVDEV_CLOCKID_BYTES..crate::EVDEV_REPEAT_BYTES]
                     .copy_from_slice(&repeat[1].to_le_bytes());
-                return Some(unsafe { uwrite(arg, &b, crate::EVDEV_REPEAT_BYTES) });
+                return Some(uwrite(arg, &b, crate::EVDEV_REPEAT_BYTES));
             }
             crate::IOC_WRITE => {
-                let delay = unsafe { uread_u32(arg) };
-                let period = unsafe { uread_u32(arg + crate::EVDEV_CLOCKID_BYTES as u64) };
+                let (Some(delay), Some(period)) = (
+                    uread_u32(arg),
+                    uread_u32(arg + crate::EVDEV_CLOCKID_BYTES as u64),
+                ) else {
+                    return Some(err(Errno::Efault));
+                };
                 if !input::set_repeat_by_identity(
                     identity.device_key,
                     identity.input_id,
@@ -195,9 +210,8 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         if !valid_user_range(arg, crate::EVDEV_CLOCKID_BYTES as u64) {
             return Some(err(Errno::Efault));
         }
-        // SAFETY: arg validated inside user VA for the one int this command writes.
-        unsafe { uwrite(arg, &0i32.to_le_bytes(), crate::EVDEV_CLOCKID_BYTES); }
-        return Some(0);
+        let written = uwrite(arg, &0i32.to_le_bytes(), crate::EVDEV_CLOCKID_BYTES);
+        return Some(if written < 0 { written } else { 0 });
     }
 
     if nr == crate::EVIOCGMASK_NR as u32 || nr == crate::EVIOCSMASK_NR as u32 {
@@ -218,7 +232,7 @@ pub fn handle_evdev_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     }
     let dev = exact_device(identity);
 
-    let rv: i64 = unsafe {
+    let rv: i64 = {
         match nr {
             nr if nr == crate::EVIOCGVERSION_NR as u32 => {
                 uwrite(arg, &crate::EVDEV_VERSION.to_le_bytes(), size.max(crate::EVDEV_CLOCKID_BYTES));

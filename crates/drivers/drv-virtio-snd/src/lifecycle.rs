@@ -6,7 +6,7 @@ const SND_CFG_JACKS_OFF: u64 = 0;
 const SND_CFG_STREAMS_OFF: u64 = 4;
 const SND_CFG_CHMAPS_OFF: u64 = 8;
 const SND_CFG_CONTROLS_OFF: u64 = 12;
-const VIRTQ_DESC_ENTRY_BYTES: usize = 16;
+pub(super) const VIRTQ_DESC_ENTRY_BYTES: usize = 16;
 const VIRTQ_DESC_LEN_OFF: usize = 8;
 const VIRTQ_DESC_FLAGS_OFF: usize = 12;
 const VIRTQ_DESC_NEXT_OFF: usize = 14;
@@ -22,6 +22,9 @@ pub(super) fn read_device_config(resources: virtio::VirtioResources) -> Option<S
     if cfg == 0 {
         return None;
     }
+    // SAFETY: `device_cfg_va` is the Device-attr virtio_snd_config window the
+    // transport mapped for this child (rejected as 0 above); the four counts
+    // are aligned u32 fields at the head of that window.
     let (jacks, streams, chmaps, controls) = unsafe {
         (
             core::ptr::read_volatile((cfg + SND_CFG_JACKS_OFF) as *const u32),
@@ -86,20 +89,30 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
             continue;
         }
         let va = p.resources.hhdm.wrapping_add(pa) as *mut u8;
+        // SAFETY: HHDM view of a frame `SndProbeFrames::alloc` just took from
+        // the PMM, still owned solely by this probe and named by no descriptor
+        // yet; the loop clears exactly the one frame that was allocated.
         unsafe { for i in 0..SND_FRAME_BYTES { core::ptr::write_volatile(va.add(i), 0); } }
     }
     let used = p.resources.hhdm.wrapping_add(controlq.device_pa) as *const u16;
+    // SAFETY: HHDM-mapped controlq used ring (require_queue accepted
+    // device_pa); aligned u16 load of used.idx at index 1.
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
     let event_used = p.resources.hhdm.wrapping_add(eventq.device_pa) as *const u16;
+    // SAFETY: HHDM-mapped eventq used ring, same accepted-resource argument;
+    // aligned u16 load of used.idx at index 1 seeds the drain cursor.
     let event_used_seen = unsafe { core::ptr::read_volatile(event_used.add(1)) };
     let event_avail_idx = event_used_seen.wrapping_add(eventq.size);
-    prepost_eventq(p.resources.hhdm, eventq, frames.event_buf_pa, event_avail_idx);
     let tx_used_seen = if let Some(txq) = txq {
         let txu = p.resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
+        // SAFETY: reached only for a txq `require_queue` accepted, so device_pa
+        // is an HHDM-mapped used ring; aligned u16 load of used.idx.
         unsafe { core::ptr::read_volatile(txu.add(1)) }
     } else { 0 };
     let rx_used_seen = if let Some(rxq) = rxq {
         let rxu = p.resources.hhdm.wrapping_add(rxq.device_pa) as *const u16;
+        // SAFETY: reached only for an rxq `require_queue` accepted, so
+        // device_pa is an HHDM-mapped used ring; aligned u16 load of used.idx.
         unsafe { core::ptr::read_volatile(rxu.add(1)) }
     } else { 0 };
     let mut g = CTX.lock();
@@ -145,6 +158,11 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     });
     frames.disarm();
     drop(g);
+    // Pre-post the eventq only once the Ctx owns the frames. Publishing WRITE
+    // descriptors over `event_buf_pa` and kicking the device earlier would let
+    // the losing side of a same-key install race drop its probe — returning a
+    // frame the device already holds descriptors for straight to the PMM.
+    prepost_eventq(p.resources.hhdm, eventq, frames.event_buf_pa, event_avail_idx);
     softirq::set_handler(softirq::Slot::SndEvent, event_softirq);
     let (out, input) = match pcm_info_scan(p.device_key) {
         Some(split) => split,
@@ -229,6 +247,14 @@ pub(super) fn prepost_eventq(
 ) {
     let qsize = eventq.size as usize;
     let desc_va = hhdm.wrapping_add(eventq.desc_pa) as *mut u8;
+    // Every slot i gets { addr=event_buf_pa + i*EVENT_SIZE, len=EVENT_SIZE,
+    // WRITE }: the device fills the driver's own event frame, nothing else.
+    // `install` capped eventq.size at MAX_EVENTQ_DESCS — the smaller of what
+    // one event frame and one descriptor frame hold — so slot i and buffer i
+    // both stay in-frame, and the fence orders the ring ahead of idx.
+    // SAFETY: HHDM-mapped eventq descriptor and avail rings plus the
+    // Device-attr notify window, all handed over by the transport; every
+    // store is aligned and bounded by the queue-size cap named above.
     unsafe {
         for i in 0..qsize {
             let entry_pa = event_buf_pa.wrapping_add((i as u64) * EVENT_SIZE as u64);
