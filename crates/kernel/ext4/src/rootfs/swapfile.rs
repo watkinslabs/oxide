@@ -29,10 +29,14 @@ pub struct SwapFileDevice {
 pub struct SwapFileBacking { pub name: String, pub device: Arc<dyn BlockDevice> }
 
 /// Return the inode-stable PMM area identity for an ext4 regular file.
+///
+/// Named on the filesystem's STABLE UUID identity, not its `st_dev`: a swap
+/// area has to resolve to the same name across mounts, and `st_dev` is
+/// assigned afresh each time the filesystem is mounted.
 /// # C: O(1)
 pub fn swapfile_name(inode: &Inode) -> Option<String> {
     let file = inode.private::<Ext4FileData>()?;
-    Some(alloc::format!("ext4:{}:{}", file.st.fsid(), file.ino))
+    Some(alloc::format!("ext4:{}:{}", file.st.uuid_fsid(), file.ino))
 }
 
 impl Drop for SwapFileDevice {
