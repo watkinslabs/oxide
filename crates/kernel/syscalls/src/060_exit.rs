@@ -224,6 +224,14 @@ pub fn do_exit(status: i32) -> i64 {
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); }
+            // SysV shm creator teardown (Linux do_exit -> exit_shm, ordered
+            // after exit_mm). Per-TASK, not per-group: `shmget` records the
+            // creating thread, so a `pthread_exit` orphans exactly the segments
+            // that thread created. Running after the mm is gone means this
+            // task's own attachments are already off `shm_nattch`, so a segment
+            // it created and never shared is reclaimed here rather than leaking
+            // until an explicit `IPC_RMID` that never comes.
+            ipc::sysv_shm::exit_shm(task);
             // Linux `do_exit`: `if (group_dead) disassociate_ctty(1)`, after
             // the files and fs are gone and BEFORE the parent is notified. A
             // session leader's last thread hangs its terminal up — foreground

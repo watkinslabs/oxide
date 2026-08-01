@@ -80,6 +80,13 @@ pub(super) fn set_fan_max_marks(v: i64) { vfs::fsnotify::set_fanotify_max_user_m
 pub(super) fn get_fan_max_queued() -> i64 { vfs::fsnotify::fanotify_max_queued_events() }
 pub(super) fn set_fan_max_queued(v: i64) { vfs::fsnotify::set_fanotify_max_queued_events(v) }
 
+/// `kernel.shm_rmid_forced` binds to the SysV shm registry's own per-IPC-namespace
+/// flag — the value `shm_may_destroy` reads on every detach and creator exit.
+/// The write side is Linux's `proc_ipc_dointvec_minmax_orphans`: setting it also
+/// sweeps the namespace's already orphaned segments, so the knob reclaims
+/// segments created before the write.
+pub(super) fn get_shm_rmid_forced() -> i64 { ipc::sysv_shm::shm_rmid_forced() }
+pub(super) fn set_shm_rmid_forced(v: i64) { ipc::sysv_shm::set_shm_rmid_forced(v) }
 pub(super) fn get_mq_queues_max() -> i64 { ipc::live::posix_mq::sysctl::queues_max() }
 pub(super) fn set_mq_queues_max(v: i64) { ipc::live::posix_mq::sysctl::set_queues_max(v) }
 pub(super) fn get_mq_msg_max() -> i64 { ipc::live::posix_mq::sysctl::msg_max() }

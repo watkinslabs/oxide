@@ -4,19 +4,30 @@
 
 #![allow(dead_code)]
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as ShmLockClass};
 
+// Module manifest:
+//   rules        — pure `shm_may_destroy` / creator-exit destroy predicate
+//   creator      — `shm_creator` back-reference + `exit_shm`
+//   rmid_forced  — `kernel.shm_rmid_forced` per-namespace flag + orphan sweep
+//   shmctl       — `shmctl(2)` commands
+//   shmdt        — `shmdt(2)` attachment geometry
+pub mod creator;
+pub mod rmid_forced;
+pub mod rules;
 mod shmctl;
 mod shmdt;
+pub use self::creator::exit_shm;
+pub use self::rmid_forced::{set_shm_rmid_forced, shm_rmid_forced, RMID_FORCED_BOUNDS};
 pub use self::shmctl::sys_shmctl;
 pub use self::shmdt::sys_shmdt;
 
-const IPC_PRIVATE: i32 = 0;
+pub(super) const IPC_PRIVATE: i32 = 0;
 const IPC_CREAT: u64 = 0o1000;
 const IPC_EXCL: u64 = 0o2000;
 const IPC_MODE_MASK: u64 = 0o777;
@@ -56,6 +67,10 @@ pub struct ShmSegment {
     pub cpid:  u32,
     /// Current attach count (shm_nattch); bumped on shmat.
     pub nattch: core::sync::atomic::AtomicI64,
+    /// `shm_creator`: the task that created this segment, cleared by
+    /// `exit_shm` when that task dies. `None` therefore means "orphaned" —
+    /// the state `kernel.shm_rmid_forced`'s sweep selects on (`creator.rs`).
+    pub creator: Spinlock<Option<Weak<sched::Task>>, ShmLockClass>,
     /// The shared shmem backing (one anon-tmpfs inode). Created by the syscalls
     /// shim (which can reach tmpfs); the ipc registry only holds + maps it.
     pub backing: Arc<dyn vmm::FileBacking>,
@@ -90,6 +105,7 @@ pub(super) static REG: ShmRegistry = ShmRegistry {
 
 pub(crate) fn reap_namespace(ns: NamespaceId) {
     REG.segs.lock().retain(|segment| segment.ns != ns);
+    self::rmid_forced::reap_namespace(ns);
 }
 
 /// `shmget` registry entry. The syscalls shim passes a lazy `make_backing`
@@ -149,6 +165,7 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
         cgid: cred.egid,
         cpid,
         nattch: core::sync::atomic::AtomicI64::new(0),
+        creator: Spinlock::new(self::creator::current_creator()),
         backing: make_backing(),
     });
     g.push(seg);
@@ -207,22 +224,25 @@ pub fn shm_vma_close(backing: &Arc<dyn vmm::FileBacking>) {
     if let Some(seg) = lookup_segment_by_backing(backing) { release_detached(&seg); }
 }
 
-/// Linux `shm_close` accounting: one attachment went away. A segment whose
-/// `IPC_RMID` already set `SHM_DEST` is destroyed by the last detach — until
-/// then `rmid_segment` only marks it, so an existing attacher keeps working
-/// exactly as it does on Linux.
+/// Linux `shm_close` accounting: one attachment went away, and the segment is
+/// destroyed if `shm_may_destroy` now holds — either `IPC_RMID` already set
+/// `SHM_DEST` (until the last detach `rmid_segment` only marks it, so an
+/// existing attacher keeps working exactly as it does on Linux) or the
+/// namespace forces reclaim. Also Linux's `out_nattch` tail: the guard
+/// reference `sys_shmat` takes across its mmap is released through here.
 /// # C: O(N_segments)
 pub(super) fn release_detached(seg: &Arc<ShmSegment>) {
     let left = seg.nattch.fetch_sub(1, Ordering::AcqRel) - 1;
     if left > 0 { return; }
+    let forced = self::rmid_forced::is_forced(seg.ns);
     // The last reference is dropped OUTSIDE the registry lock: this runs from
     // `shm_vma_close` with the address space's VMA lock held, and destroying
     // the backing object under a second lock is how lock orders get invented.
     let doomed = {
         let mut g = REG.segs.lock();
         match g.iter().position(|s| Arc::ptr_eq(s, seg)) {
-            Some(pos) if (g[pos].mode & SHM_DEST) != 0
-                && g[pos].nattch.load(Ordering::Acquire) <= 0 => Some(g.remove(pos)),
+            Some(pos) if self::rules::shm_may_destroy(
+                g[pos].nattch.load(Ordering::Acquire), forced, g[pos].mode) => Some(g.remove(pos)),
             _ => None,
         }
     };
@@ -335,6 +355,13 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
         },
         None => None,
     };
+    // Linux `do_shmat` bumps `shm_nattch` BEFORE `do_mmap` and drops that
+    // guard reference at `out_nattch`. Without it a concurrent `IPC_RMID`
+    // seeing `nattch == 0` destroys the segment between the lookup above and
+    // the mapping below, and the attachment that lands afterwards is counted
+    // against a segment no longer in the registry — invisible to `shmdt` and
+    // never reclaimed.
+    seg.nattch.fetch_add(1, Ordering::AcqRel);
     let res = mm.mmap(
         hint, plan.len,
         final_prot,
@@ -346,6 +373,7 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
         VmaBacking::File { backing: seg.backing.clone(), off: 0 },
         plan.fixed,
     );
+    release_detached(&seg);
     match res {
         Ok(va)  => va.as_u64() as i64,
         Err(e)  => {
