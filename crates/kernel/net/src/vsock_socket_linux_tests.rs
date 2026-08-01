@@ -43,9 +43,37 @@ fn blocked_scalar_io_observes_shutdown_at_retry_boundary() {
     *read_sock.read_retry_hook.lock() = Some(shut_read);
     assert_eq!(read_sock.read(0, &mut [0u8; 1]), Ok(0));
 
+    // A transport must exist for the send to reach its retry boundary at all:
+    // without one the connection reports ENOTCONN and the hook never runs, so
+    // this half would assert nothing.
+    let write_owner = owner(0x0b00_0002);
+    let _ = vsock::driver_uninstall(write_owner);
+    assert!(vsock::driver_install(write_owner, 3, tx_ok, rx_noop));
     let (write_sock, _) = connected(0x0b00_0002, 62_002);
     *write_sock.write_retry_hook.lock() = Some(shut_write);
     assert_eq!(write_sock.write(0, b"blocked"), Err(vfs::VfsError::Epipe));
+    assert!(vsock::driver_uninstall(write_owner));
+}
+
+#[test]
+fn a_connected_socket_without_a_transport_reports_enotconn_not_epipe() {
+    let _guard = serial();
+    // Transport absent: ENOTCONN, the same answer as a socket that never
+    // reached the established state. EPIPE is reserved for a shut direction.
+    let (no_transport, _) = connected(0x0b00_0021, 62_021);
+    assert_eq!(no_transport.write_nonblock(0, b"payload"), Err(vfs::VfsError::Enotconn));
+    assert_eq!(no_transport.write(0, b"payload"), Err(vfs::VfsError::Enotconn));
+
+    // Transport present but the peer has advertised no room: the send is
+    // admissible and merely cannot proceed yet, so a non-blocking caller gets
+    // EAGAIN. The two conditions must never collapse into one errno.
+    let transport = owner(0x0b00_0022);
+    let _ = vsock::driver_uninstall(transport);
+    assert!(vsock::driver_install(transport, 3, tx_ok, rx_noop));
+    let (starved, conn) = connected(0x0b00_0022, 62_022);
+    assert_eq!(conn.tx.lock().credit.peer_credit(), 0);
+    assert_eq!(starved.write_nonblock(0, b"payload"), Err(vfs::VfsError::Eagain));
+    assert!(vsock::driver_uninstall(transport));
 }
 
 #[test]
