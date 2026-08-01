@@ -549,6 +549,19 @@ pub unsafe fn schedule() {
         }
     }
 
+    // `prctl(PR_SET_TSC)` is per-THREAD but the trap it asks for is a CPU
+    // control register, so it only holds while its task is on the CPU. Linux
+    // re-asserts it from `__switch_to_xtra` (x86 `CR4.TSD`) and
+    // `cntkctl_thread_switch` (arm64 `CNTKCTL_EL1`); this is the same edge —
+    // one compare on an unchanged mode, a register write only on a change.
+    // Without it a sandboxed thread's trap would silently evaporate the first
+    // time anything else ran on its CPU.
+    {
+        // SAFETY: rq.current is the incoming task, just published by swap_current.
+        let next_armed = crate::prctl::tsc::denied(unsafe { rq.current_ref() });
+        crate::prctl::tsc::switch_to(crate::prctl::tsc::denied(prev_ref), next_armed);
+    }
+
     core::mem::forget(inner);
 
     // debug-armctx: record the callee-saved state about to be restored into the

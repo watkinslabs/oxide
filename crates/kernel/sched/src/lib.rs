@@ -47,6 +47,7 @@ pub mod thread_group;
 pub mod rusage_charge;
 pub mod registry;
 pub mod exit;
+pub mod exec_flush;
 pub mod personality;
 pub mod rlimit;
 pub mod ioprio;

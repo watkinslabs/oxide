@@ -276,10 +276,13 @@ _arm_entry:
     movz    x0, #0xFF04
     msr     mair_el1, x0
     /* TCR: T0SZ=T1SZ=16, 4 KiB granule both, WB/WA, inner-shareable,
-       IPS=48-bit -> 0x5_B510_3510                                    */
+       IPS=48-bit, TBI0 (bit 37, top-byte-ignore for TTBR0/EL0) -> the
+       hal-aarch64 TCR_EL1_KERNEL constant, 0x25_B510_3510. The lanes are
+       pinned by hal-aarch64's `kernel_tcr_lane_immediates` test; TBI0 is
+       what gives prctl(PR_SET_TAGGED_ADDR_CTRL) real hardware behaviour.  */
     movz    x0, #0x3510
     movk    x0, #0xB510, lsl #16
-    movk    x0, #0x0005, lsl #32
+    movk    x0, #0x0025, lsl #32
     msr     tcr_el1, x0
     adrp    x0, _sb_ttbr0_l0
     add     x0, x0, #:lo12:_sb_ttbr0_l0

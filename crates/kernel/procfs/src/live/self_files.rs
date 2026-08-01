@@ -27,9 +27,9 @@ fn maps_body() -> Vec<u8> {
         Some(m) => m.clone(),
         None => return out,
     };
-    let brk_lo = mm.brk_max().saturating_sub(0);
-    let brk_hi = mm.brk();
-    let _ = brk_lo;
+    let start_brk = mm.start_brk();
+    let brk = mm.brk();
+    let start_stack = mm.start_stack();
     for vma in mm.snapshot_vmas() {
         push_hex(&mut out, vma.start.as_u64());
         out.push(b'-');
@@ -42,21 +42,25 @@ fn maps_body() -> Vec<u8> {
         out.push(if p.contains(vmm::VmaProt::EXEC) { b'x' } else { b'-' });
         out.push(if vma.flags.contains(vmm::VmaFlags::SHARED) { b's' } else { b'p' });
         push(&mut out, b" 00000000 00:00 0 ");
-        // F158: synthesise pathname pseudo-tags Linux emits for unnamed VMAs.
-        // [stack] for GROWSDOWN; [heap] for the anon VMA covering brk.
-        if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) {
-            push(&mut out, b"[stack]");
-        } else if let Some(name) = vma.anon_name.as_ref() {
-            push(&mut out, b"[anon:");
-            push(&mut out, name.as_bytes());
-            push(&mut out, b"]");
-        } else if vma.start.as_u64() <= brk_hi
-            && vma.end.as_u64() > 0
-            && brk_hi > 0
-            && vma.end.as_u64() > brk_hi.saturating_sub(0x10000)
-            && matches!(vma.backing, vmm::VmaBacking::Anonymous)
-        {
-            push(&mut out, b"[heap]");
+        // Linux `get_vma_name` precedence, shared with the other maps
+        // renderer so the two cannot disagree: [heap], then [stack], then the
+        // name prctl(PR_SET_VMA_ANON_NAME) attached.
+        match crate::maps_name::tag_for(crate::maps_name::VmaFacts {
+            initial_heap: matches!(vma.backing, vmm::VmaBacking::Anonymous)
+                && crate::maps_name::is_initial_heap(
+                    vma.start.as_u64(), vma.end.as_u64(), start_brk, brk),
+            initial_stack: crate::maps_name::is_initial_stack(
+                vma.start.as_u64(), vma.end.as_u64(), start_stack),
+            has_anon_name: vma.anon_name.is_some(),
+        }) {
+            crate::maps_name::VmaTag::Heap => push(&mut out, b"[heap]"),
+            crate::maps_name::VmaTag::Stack => push(&mut out, b"[stack]"),
+            crate::maps_name::VmaTag::AnonName => {
+                push(&mut out, b"[anon:");
+                if let Some(name) = vma.anon_name.as_ref() { push(&mut out, name.as_bytes()); }
+                push(&mut out, b"]");
+            }
+            crate::maps_name::VmaTag::None => {}
         }
         out.push(b'\n');
     }
