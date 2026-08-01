@@ -136,6 +136,7 @@ pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_
         Some(v) => v, None => return einval(),
     };
     if !(ops.set_scanout)(ops.driver_key, res_id, width, height) { return einval(); }
+    crate::diag::record(crate::diag::Present::Flip, fb_id, res_id);
     crate::crtc::set_current_fb(card_id, fb_id);
     crate::crtc::set_owner(card_id, token);
     0
@@ -231,6 +232,7 @@ pub fn dirty_fb(card_id: u32, arg: u64) -> i64 {
     };
     // set_scanout re-issues SET_SCANOUT + TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
     if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
+    crate::diag::record(crate::diag::Present::Dirty, d.fb_id, res_id);
     0
 }
 
