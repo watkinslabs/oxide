@@ -116,6 +116,12 @@ impl PacketRxQueue {
     /// Report whether Linux's clear-on-read drop counter is nonzero. # C: O(1)
     pub(crate) fn has_drops(&self) -> bool { self.drops != 0 }
 
+    /// Charged receive-queue bytes (`sk_rmem_alloc`). # C: O(1)
+    pub(crate) fn charged_bytes(&self) -> usize { self.bytes }
+
+    /// Frames dropped for want of receive space (`sk_drops`). # C: O(1)
+    pub(crate) fn drop_count(&self) -> u32 { self.drops }
+
     /// Account one receive-ring publication attempt. # C: O(1)
     pub(crate) fn account_ring(&mut self, published: bool) {
         if published { self.packets = self.packets.wrapping_add(1); }

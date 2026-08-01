@@ -100,6 +100,28 @@ mod tests {
         assert_eq!(fdt.get_unused_fd_flags(OpenFlags::empty(), 8), Ok(0));
     }
 
+    /// `socketpair(2)` reserves and PUBLISHES both descriptor numbers before it
+    /// asks the family to build anything, so a rejected family/type/protocol
+    /// still leaves the caller's array written — the values just name no open
+    /// file. A constructor that ran first would leave the array untouched.
+    #[test]
+    fn rejected_socket_arguments_still_perturb_the_callers_array() {
+        let fdt = FdTable::new();
+        let out = core::cell::Cell::new([-1i32, -1]);
+        let copied_before_create = AtomicBool::new(false);
+        let rv = install_fd_pair(&fdt, 8, OpenFlags::empty(),
+            |index, fd| { let mut v = out.get(); v[index] = fd; out.set(v); Ok(()) },
+            || {
+                copied_before_create.store(out.get() == [0, 1], Ordering::Release);
+                Err(-(Errno::Eafnosupport.as_i32() as i64))
+            });
+        assert_eq!(rv, -(Errno::Eafnosupport.as_i32() as i64));
+        assert!(copied_before_create.load(Ordering::Acquire),
+            "construction must follow the copyout");
+        assert_eq!(out.get(), [0, 1]);
+        assert!(fdt.live_fds().is_empty());
+    }
+
     #[test]
     fn constructor_error_after_copy_releases_both_without_publication() {
         let fdt = FdTable::new();

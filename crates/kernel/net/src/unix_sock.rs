@@ -1,7 +1,7 @@
 // AF_UNIX socket primitives for kernel networking and hosted builds.
 //
 // Module manifest:
-// - types.rs     : shared public types (`UnixEnd`, `EndCred`).
+// - types.rs     : shared public types (`UnixEnd`, `EndCred`, `PeerCred`).
 // - events.rs    : helper wake-notification routines for epoll/read waiters.
 // - stream.rs    : stream socketpair implementation (`UnixPair`).
 // - msg_pair.rs  : seqpacket/datagram socketpair implementation (`UnixMsgPair`).
@@ -33,7 +33,7 @@ pub(crate) mod test_support;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) use events::{wake_msgpair_peer_subs, wake_peer_subs};
 
-pub use types::{EndCred, UnixEnd};
+pub use types::{EndCred, PeerCred, UnixEnd};
 
 pub use stream::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};
 pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing, UnixMsgSendError};

@@ -23,10 +23,10 @@ impl NetStack {
             super::tcp_listener::lookup_listen_bucket(&g, dst_ip, hdr.dst_port)
         };
         let Some(bucket) = bucket else { return Ok(()); };
-        // F192: SO_REUSEPORT hash distribute by 4-tuple. Single-entry
-        // bucket -> idx 0.
-        let idx = super::tcp_listener::select_reuseport_listener(
-            src_ip, hdr.src_port, hdr.dst_port, bucket.len());
+        // F192: an attached SO_REUSEPORT program picks the listener; without
+        // one the 4-tuple hash distributes. Single-entry bucket -> idx 0.
+        let idx = super::tcp_listener::select_listener_index(
+            &bucket, src_ip, hdr.src_port, hdr.dst_port, seg);
         let mut listener = None;
         for off in 0..bucket.len() {
             let cand = bucket[(idx + off) % bucket.len()].clone();

@@ -41,6 +41,9 @@ pub struct UdpRxQueue {
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// Socket multicast state shared before and after bind.
     pub mcast: Arc<crate::mcast_filter::SocketMcast>,
+    /// SO_REUSEPORT group reached from the bind table on the delivery path.
+    /// Published by bind-time join; the owning socket's cell holds membership.
+    pub reuseport_group: crate::reuseport::ReuseportSlot,
 }
 
 impl UdpRxQueue {
@@ -380,6 +383,9 @@ pub struct TcpListenEntry {
     pub accept_waiters: sched::live::WaitList,
     /// F181a: per-fd epoll subscribers (POLL_IN on accept_q growth).
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
+    /// SO_REUSEPORT group reached from the listen table on the delivery path.
+    /// Published by listen-time join; the owning socket's cell holds membership.
+    pub reuseport_group: crate::reuseport::ReuseportSlot,
 }
 
 pub(crate) struct ArpNeighbor {

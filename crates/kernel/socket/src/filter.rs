@@ -73,6 +73,12 @@ impl FilterFile {
         self.filter.attach(program).map_err(change_error)
     }
 
+    /// Whether any program is attached. # C: O(1)
+    pub fn is_attached(&self) -> bool { self.filter.is_attached() }
+
+    /// The retained classic program blocks `SO_GET_FILTER` dumps. # C: O(program bytes)
+    pub fn classic_insns(&self) -> Option<alloc::vec::Vec<u8>> { self.filter.classic_insns() }
+
     /// Detach the current filter with Linux absent/locked distinction. # C: O(1)
     pub fn detach(&self) -> Result<(), FilterError> {
         self.filter.detach().map_err(change_error)

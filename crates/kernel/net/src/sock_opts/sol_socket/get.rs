@@ -27,6 +27,9 @@ pub struct SockView {
     pub protocol: i32,
     pub netns_cookie: u64,
     pub socket_cookie: u64,
+    /// `sk_napi_id` recorded by the receive path. Identifiers below
+    /// `MIN_NAPI_ID` are reserved and aggregate to zero on the way out.
+    pub napi_id: u32,
 }
 
 /// One SOL_SOCKET read result plus the natural Linux length. # C: O(1)
@@ -88,7 +91,8 @@ pub fn encode(value: &Value, out: &mut [u8; 16]) -> usize {
 /// screen. Options with their own copyout shape (`SO_ERROR`, `SO_PEERCRED`,
 /// `SO_PEERPIDFD`, `SO_BINDTODEVICE`, `SO_PEERNAME`, `SO_PEERSEC`,
 /// `SO_PEERGROUPS`, `SO_MEMINFO`, `SO_GET_FILTER`, `SO_LOCK_FILTER`) are the
-/// caller's responsibility and reach this table as `ENOPROTOOPT`. # C: O(1)
+/// caller's responsibility and reach this table as `ENOPROTOOPT`.
+/// `SO_BUSY_POLL_BUDGET` has no read direction. # C: O(1)
 pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockView)
     -> Result<Value, Errno>
 {
@@ -175,6 +179,9 @@ pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockV
         SO_BPF_EXTENSIONS => Value::Int(BPF_EXTENSIONS),
         SO_SELECT_ERR_QUEUE => flag_int(flag::SELECT_ERR_QUEUE),
         SO_BUSY_POLL => Value::Int(state.scalar(Scalar::BusyPoll)),
+        SO_PREFER_BUSY_POLL => flag_int(flag::PREFER_BUSY_POLL),
+        SO_INCOMING_NAPI_ID =>
+            Value::Int(if view.napi_id >= MIN_NAPI_ID { view.napi_id as i32 } else { 0 }),
         SO_MAX_PACING_RATE => {
             // The 64-bit form is used only when the caller offers room for it.
             let rate = state.max_pacing_rate();

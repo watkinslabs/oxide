@@ -39,6 +39,9 @@ pub struct Udp6RxQueue {
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// Socket multicast state shared before and after bind.
     pub mcast: Arc<crate::mcast_filter::SocketMcast>,
+    /// SO_REUSEPORT group reached from the bind table on the delivery path.
+    /// Published by bind-time join; the owning socket's cell holds membership.
+    pub reuseport_group: crate::reuseport::ReuseportSlot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +169,7 @@ impl Udp6RxQueue {
             poll_subs: Spinlock::new(None),
             bpf_filter,
             mcast,
+            reuseport_group: crate::reuseport::new_slot(),
         }
     }
 

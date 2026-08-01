@@ -120,3 +120,58 @@ pub fn describe(sock: &InetSocket) -> sol_socket::OptSock {
         peek_off_capable: family == crate::sock::AF_UNIX,
     }
 }
+
+/// `sk_get_meminfo`: the live memory report `SO_MEMINFO` publishes. The
+/// receive and send charges come from the same queues `SIOCINQ` / `SIOCOUTQ`
+/// count, so the two interfaces can never disagree. # C: O(queued frames)
+pub fn meminfo(sock: &InetSocket) -> sol_socket::varlen::MemInfo {
+    use core::sync::atomic::Ordering;
+    use crate::sock::SockKind;
+    let mut info = sol_socket::varlen::MemInfo {
+        rcvbuf: sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as u32,
+        sndbuf: sock.opts.sndbuf.load(Ordering::Acquire).max(0) as u32,
+        ..Default::default()
+    };
+    let (rmem, wmem, drops) = match &*sock.kind.lock() {
+        SockKind::TcpConn(entry) => {
+            let c = entry.conn.lock();
+            let retx: usize = c.retx_q.iter().map(|s| s.payload.len()).sum();
+            (c.recv_buf.len(), c.send_buf.len() + retx, 0)
+        }
+        SockKind::TcpListener(listener) => (listener.accept_q.lock().len(), 0, 0),
+        SockKind::Udp => {
+            let queued = if let Some(q) = sock.udp6.lock().as_ref() { q.queued_bytes() }
+                else if let Some(q) = sock.udp4.lock().as_ref() { q.queued_bytes() } else { 0 };
+            (queued, 0, 0)
+        }
+        SockKind::Raw4(endpoint) => {
+            let state = endpoint.snapshot();
+            (state.queued_bytes, 0, state.drops)
+        }
+        SockKind::Raw6(endpoint) => (endpoint.snapshot().queued_bytes, 0, 0),
+        SockKind::Unix(pair, end) => match end {
+            crate::UnixEnd::A => (pair.b_to_a.lock().buf.len(), pair.a_to_b.lock().buf.len(), 0),
+            crate::UnixEnd::B => (pair.a_to_b.lock().buf.len(), pair.b_to_a.lock().buf.len(), 0),
+        },
+        SockKind::UnixDgram(q) => (q.queued_bytes(), 0, 0),
+        SockKind::UnixMsgPair(pair, end) => {
+            let (rx, tx) = match end {
+                crate::UnixEnd::A => (pair.b_to_a.lock(), pair.a_to_b.lock()),
+                crate::UnixEnd::B => (pair.a_to_b.lock(), pair.b_to_a.lock()),
+            };
+            let rx_bytes = rx.msgs.iter().map(|m| m.payload.len()).sum::<usize>();
+            let tx_bytes = tx.msgs.iter().map(|m| m.payload.len()).sum::<usize>();
+            (rx_bytes, tx_bytes, 0)
+        }
+        SockKind::Packet { rx, .. } => {
+            let q = rx.lock();
+            (q.charged_bytes(), 0, q.drop_count())
+        }
+        SockKind::TcpInit | SockKind::UnixUnbound(_, _) | SockKind::UnixListener(_) => (0, 0, 0),
+    };
+    info.rmem_alloc = rmem.min(u32::MAX as usize) as u32;
+    info.wmem_alloc = wmem.min(u32::MAX as usize) as u32;
+    info.wmem_queued = info.wmem_alloc;
+    info.drops = drops;
+    info
+}

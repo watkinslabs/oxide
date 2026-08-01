@@ -34,6 +34,9 @@ pub(super) fn view(sock: &Arc<InetSocket>) -> SockView {
         protocol: super::socket_protocol(sock),
         netns_cookie: sock.net_ns(),
         socket_cookie: sock.opts.generic.cookie(net::sock_opts::sol_socket::next_cookie) as u64,
+        // No receive path in this stack runs inside a NAPI context, so no
+        // socket ever records a valid identifier and the option reads zero.
+        napi_id: 0,
     }
 }
 

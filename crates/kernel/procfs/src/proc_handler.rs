@@ -94,6 +94,38 @@ fn store_bound_i64(namespace: &NetworkNamespaceRef, key: usize,
     set(namespace, key, value)
 }
 
+/// A `net/core` leaf whose backing variable is GLOBAL, not per-namespace: the
+/// value is shared by every network namespace and only the initial one may
+/// write it. A write from any other namespace is refused, which is what a
+/// caller in a container observes.
+pub struct NetGlobalIntHook {
+    pub current_ns: fn() -> NetworkNamespaceRef,
+    pub get: fn() -> i64,
+    pub set: fn(i64),
+    pub bounds: Option<(i64, i64)>,
+}
+
+impl NetGlobalIntHook {
+    /// # C: O(1)
+    fn writer_is_initial(&self) -> bool {
+        (self.current_ns)().id() == network_namespace::initial().id()
+    }
+}
+
+impl ProcHandler for NetGlobalIntHook {
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)()) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> { self.store_vfs(src).map_err(|_| ()) }
+    fn store_vfs(&self, src: &[u8]) -> KResult<()> {
+        if !self.writer_is_initial() { return Err(VfsError::Eacces); }
+        let value = parse_single_i64(src).map_err(|_| VfsError::Einval)?;
+        if let Some((min, max)) = self.bounds {
+            if value < min || value > max { return Err(VfsError::Einval); }
+        }
+        (self.set)(value);
+        Ok(())
+    }
+}
+
 /// Current-PID-namespace integer binding. Linux's handler resolves
 /// `task_active_pid_ns(current)` on each read/write, while a fallible setter
 /// preserves its EPERM policy result.

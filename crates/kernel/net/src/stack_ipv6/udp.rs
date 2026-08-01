@@ -250,12 +250,14 @@ impl NetStack {
     #[cfg(test)]
     pub(crate) fn udp6_demux(&self, src: Ipv6Addr, sport: u16, dst: Ipv6Addr,
                              dport: u16, iface: NetIfaceId) -> Vec<Arc<Udp6RxQueue>> {
-        self.udp6_demux_in(0, src, sport, dst, dport, iface)
+        self.udp6_demux_in(0, src, sport, dst, dport, iface, &[])
     }
 
-    /// Select endpoints in the ingress interface's network namespace. # C: O(N_port)
+    /// Select endpoints in the ingress interface's network namespace. `payload`
+    /// is the received datagram body, which a reuseport selection program
+    /// classifies. # C: O(N_port)
     pub(crate) fn udp6_demux_in(&self, net_ns: u64, src: Ipv6Addr, sport: u16, dst: Ipv6Addr,
-                             dport: u16, iface: NetIfaceId) -> Vec<Arc<Udp6RxQueue>> {
+                             dport: u16, iface: NetIfaceId, payload: &[u8]) -> Vec<Arc<Udp6RxQueue>> {
         let tables = self.inet_tables(net_ns);
         let group = tables.udp6.lock().get(&dport).cloned().unwrap_or_default();
         let mut matched = Vec::new();
@@ -288,7 +290,10 @@ impl NetStack {
         });
         let mut hash = u32::from(sport) ^ u32::from(dport);
         for byte in src.0.iter().chain(dst.0.iter()) { hash = hash.rotate_left(5) ^ u32::from(*byte); }
-        let selected = matched.swap_remove(hash as usize % matched.len());
+        let index = crate::reuseport::slot::group(&winner.reuseport_group)
+            .and_then(|group| group.select(hash, matched.len(), payload))
+            .unwrap_or(hash as usize % matched.len());
+        let selected = matched.swap_remove(index);
         alloc::vec![selected]
     }
 
@@ -297,12 +302,13 @@ impl NetStack {
     pub(crate) fn udp6_demux_v4(&self, src: crate::Ipv4Addr, sport: u16,
                                 dst: crate::Ipv4Addr, dport: u16, iface: NetIfaceId)
         -> Vec<Arc<Udp6RxQueue>> {
-        self.udp6_demux_v4_in(0, src, sport, dst, dport, iface)
+        self.udp6_demux_v4_in(0, src, sport, dst, dport, iface, &[])
     }
 
     /// Select dual-stack endpoints in one network namespace. # C: O(N_port)
     pub(crate) fn udp6_demux_v4_in(&self, net_ns: u64, src: crate::Ipv4Addr, sport: u16,
-                                dst: crate::Ipv4Addr, dport: u16, iface: NetIfaceId)
+                                dst: crate::Ipv4Addr, dport: u16, iface: NetIfaceId,
+                                payload: &[u8])
         -> Vec<Arc<Udp6RxQueue>> {
         if dst.is_multicast() { return Vec::new(); }
         let src6 = Ipv6Addr::from_v4_mapped(src);
@@ -335,7 +341,10 @@ impl NetStack {
         });
         let mut hash = src.as_u32().rotate_left(7) ^ dst.as_u32().rotate_left(19);
         hash ^= u32::from(sport).rotate_left(11) ^ u32::from(dport);
-        let selected = matched.swap_remove(hash as usize % matched.len());
+        let index = crate::reuseport::slot::group(&winner.reuseport_group)
+            .and_then(|group| group.select(hash, matched.len(), payload))
+            .unwrap_or(hash as usize % matched.len());
+        let selected = matched.swap_remove(index);
         alloc::vec![selected]
     }
 
@@ -351,6 +360,7 @@ impl NetStack {
             group.retain(|q| !Arc::ptr_eq(q, endpoint));
             if group.is_empty() { map.remove(&port); }
         }
+        crate::reuseport::slot::set_endpoint_group(&endpoint.reuseport_group, None);
         endpoint.deactivate();
     }
 

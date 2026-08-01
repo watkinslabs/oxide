@@ -9,6 +9,7 @@
 // - lifecycle: RTNL-serialized interface retire, destroy, and namespace return.
 // - udp_endpoint: IPv4 UDP endpoint queue, errors, and close linearization.
 // - udp_bind: IPv4 UDP bind admission and endpoint publication.
+// - reuseport_join: bind-key SO_REUSEPORT group join against the bind tables.
 // - tcp_bind: TCP local bind reservations and lifecycle transitions.
 // - tcp_listener: TCP listener publication, accept, and passive-child teardown.
 // - tcp: TCP active open, send/recv/close, retry, and demux.
@@ -62,6 +63,7 @@ mod core;
 mod lifecycle;
 mod udp_endpoint;
 mod udp_bind;
+mod reuseport_join;
 mod tcp_bind;
 pub(crate) mod tcp_listener;
 pub use tcp_listener::TcpAcceptWait;

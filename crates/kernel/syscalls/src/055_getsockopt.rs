@@ -18,6 +18,8 @@ mod peerpidfd;
 mod packet_abi;
 #[path = "055_getsockopt/uapi.rs"]
 mod uapi;
+#[path = "055_getsockopt/varlen.rs"]
+mod varlen;
 use multicast::{ipv4_group_filter_get, ipv4_msfilter_get, ipv6_group_filter_get, scalar_get};
 use uapi::*;
 
@@ -102,7 +104,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         let pending = target.take_error();
         return i32_back(pending);
     }
-    if level == SOL_SOCKET && optname == SO_LOCK_FILTER {
+    if level == SOL_SOCKET && matches!(optname, SO_LOCK_FILTER | SO_GET_FILTER) {
         let target = match socket::FilterFile::from_file(file.clone()) {
             Some(target) => target,
             None => return -(Errno::Enotsock.as_i32() as i64),
@@ -111,6 +113,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         if let Err(error) = net::security_admission::check(namespace, family,
             security::network::Operation::Option)
         { return errno_from_neterr(error); }
+        if optname == SO_GET_FILTER { return varlen::get_filter(&target, optval, optlen_p); }
         return i32_back(i32::from(target.is_locked()));
     }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
@@ -148,11 +151,24 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     if level == SOL_SOCKET && optname == SO_PEERPIDFD {
         return peerpidfd::get(&sock, optval, optlen_p);
     }
+    if level == SOL_SOCKET {
+        match optname {
+            SO_MEMINFO => return varlen::meminfo(&sock, optval, optlen_p),
+            SO_PEERGROUPS => {
+                let groups = peercred_for_socket(&sock)
+                    .map(|cred| cred.groups.as_deref().unwrap_or(&[]).to_vec());
+                return varlen::peergroups(groups, optval, optlen_p);
+            }
+            SO_PEERNAME => return varlen::peername(&sock, optval, optlen_p),
+            SO_PEERSEC => return varlen::peersec(&sock, optval, optlen_p),
+            _ => {}
+        }
+    }
     if level == SOL_SOCKET && optname == SO_PEERCRED {
         // Real peer creds for a connected AF_UNIX fd (snapshotted at
         // socketpair/connect/accept); falls back to the caller's own
         // {pid,euid,egid} for non-unix/unconnected sockets.
-        let snapshot = peercred_for_socket(&sock);
+        let snapshot = peercred_for_socket(&sock).map(|cred| cred.ids());
         let (pid, uid, gid) = snapshot.unwrap_or_else(|| {
             use core::sync::atomic::Ordering;
             sched::live::current()
@@ -329,7 +345,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
 }
 
 fn peercred_for_socket(sock: &alloc::sync::Arc<net::sock::InetSocket>)
-    -> Option<(u32, u32, u32)>
+    -> Option<net::PeerCred>
 {
     match &*sock.kind.lock() {
         SockKind::Unix(pair, end) => Some(pair.peer_cred(*end)),

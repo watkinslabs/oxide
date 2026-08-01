@@ -68,6 +68,10 @@ pub struct InetSocket {
     pub tcp_bind:   Spinlock<Option<Arc<crate::stack::TcpBindReservation>>, SockLockClass>,
     /// Socket-owned filter exists before bind and is shared with its endpoint.
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+    /// Linux `sk_reuseport_cb`: the SO_REUSEPORT group this socket joined.
+    /// Group membership is held weakly through this cell, so dropping the
+    /// socket removes it from the group.
+    pub reuseport_group: crate::reuseport::ReuseportSlot,
     pub mcast: Arc<crate::mcast_filter::SocketMcast>,
     pub(crate) packet_memberships: crate::sock::PacketMemberships,
     pub(crate) packet_fanout: Spinlock<Option<Arc<PacketFanoutMember>>, SockLockClass>,
