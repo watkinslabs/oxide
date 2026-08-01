@@ -372,6 +372,10 @@ Examples:
 - Skip hooks (`--no-verify`).
 - Skip signing (`--no-gpg-sign`) if signing is configured.
 - Direct commits to `main` outside an explicit emergency-fix-then-PR cycle.
+- `git reset --soft` / `--hard` onto a REMOTE ref (`origin/main`, `origin/<branch>`) from a
+  feature branch. When the remote has advanced, this silently converts every other lane's
+  merged work into a staged revert — ~130 files in the incident that produced this rule.
+  Rebase, or reset onto your own merge-base, and always read `git status --short` before staging.
 - **Add `Co-Authored-By:` trailer of any kind to any commit, ever.** Author is the human committer; period. No `Co-Authored-By: Claude`, no `Co-Authored-By: <model>`, no AI attribution trailers. CI lint rejects commits with `Co-Authored-By:` lines.
 
 **Tags.**
