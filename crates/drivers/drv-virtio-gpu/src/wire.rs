@@ -257,16 +257,6 @@ pub fn encode_get_display_info(buf: &mut [u8]) -> usize {
     encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, 0, 0)
 }
 
-/// Encode `CMD_GET_EDID` request for a given scanout. Writes 32
-/// bytes (24-byte hdr + scanout + padding).
-/// # C: O(1)
-pub fn encode_get_edid(buf: &mut [u8], scanout: u32) -> usize {
-    encode_hdr_only(buf, VIRTIO_GPU_CMD_GET_EDID, 0, 0);
-    write_u32_le(buf, 24, scanout);
-    write_u32_le(buf, 28, 0);
-    32
-}
-
 /// Encode `CMD_RESOURCE_CREATE_2D`. Writes 40 bytes.
 /// # C: O(1)
 pub fn encode_resource_create_2d(buf: &mut [u8], res_id: u32, fmt: u32, w: u32, h: u32) -> usize {
@@ -409,19 +399,6 @@ pub fn parse_display_info(resp: &[u8]) -> KResult<DisplayInfo> {
     }
     info.count_enabled = count;
     Ok(info)
-}
-
-/// Parse a `CMD_GET_EDID` response into the 1024-byte EDID block.
-/// # C: O(1) — fixed-size copy.
-pub fn parse_edid(resp: &[u8]) -> KResult<[u8; 1024]> {
-    if resp.len() < 24 + 8 + 1024 { return Err(Error::Inval); }
-    let ty = read_u32_le(resp, 0);
-    if ty != VIRTIO_GPU_RESP_OK_EDID {
-        return Err(Error::BadResp(ty));
-    }
-    let mut out = [0u8; 1024];
-    out.copy_from_slice(&resp[32..32 + 1024]);
-    Ok(out)
 }
 
 /// Parse a generic OK/ERROR response (24-byte hdr only) and return

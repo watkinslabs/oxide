@@ -310,7 +310,10 @@ pub const DRM_MODE_SUBPIXEL_UNKNOWN: u32 = 1;
 pub const DRM_MODE_TYPE_PREFERRED: u32 = 1 << 3;
 pub const DRM_MODE_TYPE_DRIVER:    u32 = 1 << 6;
 pub const DRM_MODE_FLAG_PHSYNC:    u32 = 1 << 0;
+pub const DRM_MODE_FLAG_NHSYNC:    u32 = 1 << 1;
 pub const DRM_MODE_FLAG_PVSYNC:    u32 = 1 << 2;
+pub const DRM_MODE_FLAG_NVSYNC:    u32 = 1 << 3;
+pub const DRM_MODE_FLAG_INTERLACE: u32 = 1 << 4;
 
 // fourcc pixel formats (drm_fourcc.h)
 pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258; // 'XR24'

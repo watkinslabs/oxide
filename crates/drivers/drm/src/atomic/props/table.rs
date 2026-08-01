@@ -23,6 +23,7 @@ pub const PROP_CONN_DPMS: u32 = 6;
 pub const PROP_CONN_LINK_STATUS: u32 = 7;
 pub const PROP_CONN_NON_DESKTOP: u32 = 8;
 pub const PROP_CONN_TILE: u32 = 9;
+pub const PROP_CONN_EDID: u32 = 10;
 pub const PROP_PLANE_TYPE: u32 = 16;
 pub const PROP_PLANE_IN_FORMATS: u32 = 17;
 pub const PROP_PLANE_CRTC_ID: u32 = 18;
@@ -42,6 +43,28 @@ pub const PROP_PLANE_HOTSPOT_Y: u32 = 32;
 /// Blob id backing every plane's immutable `IN_FORMATS` value; served by
 /// `modeset::get_prop_blob`.
 pub const IN_FORMATS_BLOB_ID: u32 = 0x50;
+
+/// Blob id of connector `idx`'s EDID is `EDID_BLOB_ID_BASE + idx`. Driver-owned
+/// blob ids sit below the user-blob range so the two can never collide.
+pub const EDID_BLOB_ID_BASE: u32 = 0x60;
+/// Connectors whose EDID blob id fits the reserved driver-blob range.
+pub const EDID_BLOB_ID_MAX_CONNECTORS: u32 = 0x10;
+
+/// Blob id of connector `idx`'s EDID, or `None` past the reserved range.
+/// # C: O(1)
+pub fn edid_blob_id(idx: usize) -> Option<u32> {
+    let idx = idx as u32;
+    if idx >= EDID_BLOB_ID_MAX_CONNECTORS { return None; }
+    Some(EDID_BLOB_ID_BASE + idx)
+}
+
+/// Connector index a driver-owned EDID blob id names, or `None` when the id is
+/// outside the reserved EDID range. # C: O(1)
+pub fn edid_blob_idx(blob_id: u32) -> Option<usize> {
+    let off = blob_id.checked_sub(EDID_BLOB_ID_BASE)?;
+    if off >= EDID_BLOB_ID_MAX_CONNECTORS { return None; }
+    Some(off as usize)
+}
 
 /// `IN_FENCE_FD`'s value is always -1: Linux attaches it with -1 and
 /// `drm_atomic_plane_get_property` hard-codes -1 (drm_atomic_uapi.c).
@@ -125,6 +148,7 @@ pub fn desc(id: u32) -> Option<PropDesc> {
         PROP_CONN_NON_DESKTOP =>
             desc_of(b"non-desktop", DRM_MODE_PROP_RANGE | DRM_MODE_PROP_IMMUTABLE, &BOOL_RANGE, &[]),
         PROP_CONN_TILE => desc_of(b"TILE", DRM_MODE_PROP_BLOB | DRM_MODE_PROP_IMMUTABLE, &[], &[]),
+        PROP_CONN_EDID => desc_of(b"EDID", DRM_MODE_PROP_BLOB | DRM_MODE_PROP_IMMUTABLE, &[], &[]),
         PROP_PLANE_TYPE =>
             desc_of(b"type", DRM_MODE_PROP_ENUM | DRM_MODE_PROP_IMMUTABLE, &[], &PLANE_TYPE_ENUMS),
         PROP_PLANE_IN_FORMATS =>
@@ -157,14 +181,13 @@ pub fn desc(id: u32) -> Option<PropDesc> {
 pub const CRTC_PROPS: [u32; 4] = [
     PROP_CRTC_ACTIVE, PROP_CRTC_MODE_ID, PROP_CRTC_OUT_FENCE_PTR, PROP_CRTC_VRR_ENABLED,
 ];
-// Connector: __drm_connector_init (drm_connector.c). EDID is deliberately
-// absent — Linux skips drm_connector_attach_edid_property for
-// DRM_MODE_CONNECTOR_VIRTUAL, and virtio-gpu re-attaches it only when
-// VIRTIO_GPU_F_EDID was negotiated (virtgpu_display.c `vgdev->has_edid`),
-// which our transport does not yet do.
-pub const CONN_PROPS: [u32; 5] = [
-    PROP_CONN_DPMS, PROP_CONN_LINK_STATUS, PROP_CONN_NON_DESKTOP, PROP_CONN_TILE,
-    PROP_CONN_CRTC_ID,
+// Connector: __drm_connector_init (drm_connector.c), which attaches EDID first
+// on a connector whose display can be interrogated. The property is always
+// attached; its value is the blob id, which is zero on a connector whose
+// display published nothing — the same answer Linux gives before a probe.
+pub const CONN_PROPS: [u32; 6] = [
+    PROP_CONN_EDID, PROP_CONN_DPMS, PROP_CONN_LINK_STATUS, PROP_CONN_NON_DESKTOP,
+    PROP_CONN_TILE, PROP_CONN_CRTC_ID,
 ];
 // Plane: drm_universal_plane_init (drm_plane.c) under DRIVER_ATOMIC. virtio-gpu
 // creates neither a rotation nor a zpos property, so neither is exposed.
