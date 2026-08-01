@@ -51,7 +51,7 @@ pub fn write_for_current(signo: i32) {
     // bounded: a zero limit is how a system says it does not want core files.
     if kind == CoreKind::File && !sched::rlimit::dump::file_dump_enabled(cx.rlimit_core) { return; }
 
-    let body = super::elf::build_coredump(signo, &cur.comm(), cx.vpid);
+    let body = build_image(&cx);
     match kind {
         CoreKind::Pipe => { super::pipe::dump_to_program(trim(&raw), &cx, &body); }
         // Linux `dump_emit` refuses the first chunk that would cross the limit,
@@ -66,6 +66,39 @@ pub fn write_for_current(signo: i32) {
         // instead would put the dump somewhere the operator did not ask for.
         CoreKind::Socket => {}
     }
+}
+
+/// Assemble the image from what the pattern snapshot already carries.
+///
+/// The register block and the mapping list still arrive empty here: capturing
+/// them needs the dying thread's saved frame and a walk of its address space,
+/// which this path does not reach yet. Everything downstream of the assembler
+/// is wired, so filling these two inputs is all that stands between this and a
+/// dump a debugger can open.
+fn build_image(cx: &CoreContext) -> Vec<u8> {
+    use super::elf::{
+        build_core_image, CoreArch, CoreIdentity, CoreImageInput, CoreState, CoreThread, CoreTimes,
+    };
+    let arch = CoreArch::native();
+    let regs = alloc::vec![0u8; arch.gregset_bytes()];
+    let threads = [CoreThread { tid: cx.vtid as i32, regs: &regs, fpregs: None, xstate: None }];
+    let input = CoreImageInput {
+        arch,
+        identity: CoreIdentity {
+            pid: cx.vpid as i32, ppid: 0, pgrp: 0, sid: 0,
+            uid: cx.uid, gid: cx.gid,
+            signo: cx.signo, sigpend: 0, sighold: 0,
+            state: CoreState::Running, nice: 0, flag: 0,
+            comm: &cx.comm, psargs: &cx.comm,
+            times: CoreTimes::default(),
+        },
+        threads: &threads,
+        segments: &[],
+        auxv: &[],
+        siginfo: None,
+    };
+    let mut nothing = |_va: u64, _buf: &mut [u8]| 0usize;
+    build_core_image(&input, &mut nothing).unwrap_or_default()
 }
 
 fn trim(p: &[u8]) -> &[u8] {
