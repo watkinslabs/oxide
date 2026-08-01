@@ -41,6 +41,24 @@ fn clear_swap_entry(as_: &AddressSpace, va: u64) -> Option<hal::pt_walker::SwapE
     cleared
 }
 
+/// Retire one present leaf (or migration marker, which this kernel accounts as
+/// still-resident until it resolves) from the resident-set counters of the
+/// address space this zap loop walks. Linux does the same inside
+/// `zap_pte_range` via `add_mm_rss_vec`; without it `anon_pte_mappings` and
+/// `file_pte_mappings` only ever grow, so `VmRSS`, `statm` and `ru_maxrss`
+/// drift upward without bound for any process that unmaps anything.
+/// Resolution mirrors `clear_current_swap_entry`: the running task's mm is
+/// authoritative, and the boot address space is the pre-installation fallback.
+/// # C: O(log N_vmas)
+fn account_present_removed(va: u64) {
+    let Some(uva) = hal::UserVirtAddr::new(va) else { return; };
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: syscall context is the current task's sole address-space writer.
+        if let Some(mm) = unsafe { cur.mm_ref() } { mm.account_pte_remove_at(uva); return; }
+    }
+    let _ = with(|as_| as_.account_pte_remove_at(uva));
+}
+
 /// Resolve the active task's authoritative address space, falling back only
 /// before task-mm installation to the boot address space used by syscall glue.
 /// # C: O(walk depth)
@@ -171,6 +189,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
+            account_present_removed(va);
         } else if let Some(entry) = clear_current_swap_entry(va) {
             // Swap PTEs are non-present and therefore invisible to `translate`.
             // Clear the exact leaf before dropping its slot reference so a fault
@@ -179,6 +198,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             let _ = crate::swap::free_page(entry);
         } else if let Some(marker) = clear_current_migration_entry(va) {
             hal::tlb::shootdown_others_va(va, mask);
+            account_present_removed(va);
             if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
                 // SAFETY: removing this marker tears down precisely one
                 // original resident PTE reference recorded by its token.
@@ -296,6 +316,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
+            account_present_removed(va);
         } else if let Some(entry) = clear_current_swap_entry(va) {
             // `munmap` must release a non-present swap leaf exactly as it
             // releases a present anonymous leaf; otherwise memory.swap.current
@@ -304,6 +325,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             let _ = crate::swap::free_page(entry);
         } else if let Some(marker) = clear_current_migration_entry(va) {
             hal::tlb::shootdown_others_va(va, mask);
+            account_present_removed(va);
             if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
                 // SAFETY: marker removal transfers this original PTE ref.
                 unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }

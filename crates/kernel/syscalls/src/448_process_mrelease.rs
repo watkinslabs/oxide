@@ -76,14 +76,12 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     // (and does) invalidate every CPU in the mm's cpumask before releasing a
     // frame — Linux `__oom_reap_task_mm` reaps under an mmu_gather for the
     // same reason.
-    let root = mm.root_pa();
-    let cpumask = mm.cpumask();
     let guard = mm.vmas_for_test();
     for vma in guard.iter() {
         if matches!(vma.backing, vmm::VmaBacking::Anonymous) {
             let start = vma.start.as_u64();
             let len = vma.end.as_u64().saturating_sub(start);
-            if len != 0 { pmm::user_as::evict_foreign_pages_in_range(root, cpumask, start, len); }
+            if len != 0 { pmm::user_as::evict_foreign_pages_in_range(&mm, start, len); }
         }
     }
     0

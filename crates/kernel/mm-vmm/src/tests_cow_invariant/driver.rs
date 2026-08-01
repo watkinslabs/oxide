@@ -20,6 +20,15 @@ pub(super) struct AsSlot {
     pub(super) mm: Arc<AddressSpace>,
 }
 
+impl AsSlot {
+    /// Registering here is what lets `check_rss` compare this mm's own
+    /// counters against a walk of its leaves after every op.
+    pub(super) fn new(root: u64, mm: Arc<AddressSpace>) -> Self {
+        MMS.with(|m| { m.borrow_mut().insert(root, Arc::clone(&mm)); });
+        Self { root, mm }
+    }
+}
+
 /// Enumerate a random page VA inside any VMA of `mm`. Returns (va, prot_w).
 pub(super) fn pick_page(mm: &AddressSpace, rng: &mut Xorshift) -> Option<(u64, bool)> {
     let tree = mm.vmas_for_test();
@@ -84,6 +93,9 @@ pub(super) fn do_munmap(slot: &AsSlot, addr: u64, len: u64) {
         // SAFETY: hosted; unmap-before-dec per glue_munmap leaf order.
         unsafe { MultiMmu::unmap(Va(va), PageSize::P4K); }
         rc_dec(pa);
+        // Mirrors `glue_munmap`'s per-leaf `account_present_removed`, which
+        // must run while the VMA still exists (below) to classify the leaf.
+        if let Some(uva) = hal::UserVirtAddr::new(va) { slot.mm.account_pte_remove_at(uva); }
     }
     if let Some(a) = hal::UserVirtAddr::new(addr) {
         let _ = slot.mm.munmap(a, len as usize);
@@ -98,6 +110,7 @@ pub(super) fn do_exit(slot: &AsSlot) {
     });
     for pa in pages { rc_dec(pa); }
     ROOTS.with(|r| { r.borrow_mut().remove(&slot.root); });
+    MMS.with(|r| { r.borrow_mut().remove(&slot.root); });
 }
 
 pub(super) fn map_region(slot: &AsSlot, kind: Kind, len: u64) {
@@ -142,7 +155,7 @@ pub(super) fn run(seed: u64, iters: usize) {
     for _ in 0..2 {
         let root = next_root; next_root += 0x1000_0000;
         let mm = AddressSpace::new(root).expect("AS::new");
-        let s = AsSlot { root, mm };
+        let s = AsSlot::new(root, mm);
         map_region(&s, Kind::Anon, 8 * PAGE);
         map_region(&s, Kind::FilePriv, 4 * PAGE);
         map_region(&s, Kind::FileShared, 4 * PAGE);
@@ -155,7 +168,7 @@ pub(super) fn run(seed: u64, iters: usize) {
         if slots.is_empty() {
             let root = next_root; next_root += 0x1000_0000;
             let mm = AddressSpace::new(root).expect("AS::new");
-            let s = AsSlot { root, mm };
+            let s = AsSlot::new(root, mm);
             map_region(&s, Kind::Anon, 8 * PAGE);
             slots.push(s);
         }
@@ -190,7 +203,7 @@ pub(super) fn run(seed: u64, iters: usize) {
                     if let Ok(child) = slots[si].mm
                         .fork_cow_pages::<MultiMmu, _>(child_root, 0, rc_inc)
                     {
-                        slots.push(AsSlot { root: child_root, mm: child });
+                        slots.push(AsSlot::new(child_root, child));
                     }
                 }
             }

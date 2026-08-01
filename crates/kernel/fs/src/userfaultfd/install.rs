@@ -55,8 +55,9 @@ fn flush_local(va: u64) {
 /// "user read-write" default. A COPY landing outside any VMA is refused before
 /// this is called (`policy::check_dst_vma`).
 /// # C: O(len/PAGE) walks + frame allocs
-pub fn install_pages(root: u64, dst0: u64, src0: Option<u64>, len: u64, flags: PageFlags)
+pub fn install_pages(mm: &vmm::AddressSpace, dst0: u64, src0: Option<u64>, len: u64, flags: PageFlags)
     -> (u64, Option<Errno>) {
+    let root = mm.root_pa();
     let hhdm = pmm::user_as::hhdm_offset();
     let mut done = 0u64;
     while done < len {
@@ -81,6 +82,13 @@ pub fn install_pages(root: u64, dst0: u64, src0: Option<u64>, len: u64, flags: P
             unsafe { pmm::setup::rmap_aware_dec_and_maybe_free(old.0); }
         }
         flush_local(dst);
+        // A monitor-filled page is as resident as a demand-faulted one; Linux
+        // `mfill_atomic_install_pte` charges `mm_counter` here for exactly
+        // that reason. A displaced leaf (the lost-race arm above) was already
+        // counted, so its replacement is a net zero and must not double-count.
+        if displaced.is_none() {
+            if let Some(uva) = hal::UserVirtAddr::new(dst) { mm.account_pte_install_at(uva); }
+        }
         done += PAGE;
     }
     (done, None)
