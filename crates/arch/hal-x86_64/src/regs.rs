@@ -228,6 +228,25 @@ pub unsafe fn enable_sse() {
     }
 }
 
+/// Per-CPU architectural enablement that must run on the BSP and on every AP,
+/// in that order. [`enable_sse`] does the unconditional part; this adds the
+/// features whose availability the BSP decides once and every AP then follows.
+///
+/// `is_bsp` is what makes the follow work: only the BSP consults CPUID, so a
+/// package where some CPU lacks protection keys cannot end up with half its
+/// CPUs enforcing keys and half ignoring them.
+///
+/// # SAFETY: privileged CR0/CR4 writes, legal at CPL=0; called once per CPU
+/// before that CPU runs user code, and the control registers are per-CPU.
+/// # C: O(1)
+pub unsafe fn enable_cpu_features(is_bsp: bool) {
+    // SAFETY: per fn-level contract — each call is this CPU's own single pre-userspace enablement.
+    unsafe {
+        enable_sse();
+        crate::pkru::setup_pku(is_bsp);
+    }
+}
+
 /// Read IA32_EFER MSR (long-mode + NX enable).
 /// # C: O(1)
 pub fn read_efer() -> u64 {

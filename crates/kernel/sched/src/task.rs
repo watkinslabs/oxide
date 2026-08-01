@@ -611,6 +611,21 @@ pub struct Task {
     /// across fork, cleared at exec (`arch_setup_new_exec`).
     pub nocpuid: AtomicBool,
 
+    /// This thread's protection-key rights register (Linux `thread.pkru` on
+    /// x86, `thread.por_el0` on arm64 — ONE field here, because the policy
+    /// around it is identical and two would drift).
+    ///
+    /// Per-THREAD, and writable from user mode by an unprivileged `WRPKRU`, so
+    /// this field is a SNAPSHOT the switch path refreshes by reading the live
+    /// register on the way out; it is never treated as authoritative while the
+    /// thread is running. Cleared to the restrictive default at exec, and
+    /// inherited across fork so a thread that opened a key keeps it.
+    ///
+    /// Held at 64 bits because that is the wider of the two: x86's PKRU is 32
+    /// bits of 2-bit fields, arm64's POR_EL0 is 64 bits of 4-bit fields.
+    /// Meaningless where the register does not exist, and every read answers 0.
+    pub pkey_rights: AtomicU64,
+
     /// Linux `thread.features` / `thread.features_locked` — the CET
     /// shadow-stack facilities (`ARCH_SHSTK_SHSTK`, `ARCH_SHSTK_WRSS`) this
     /// thread has enabled, and those whose state may no longer change.
