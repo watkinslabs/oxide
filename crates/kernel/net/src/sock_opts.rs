@@ -145,6 +145,55 @@ pub fn describe(sock: &InetSocket) -> sol_socket::OptSock {
     }
 }
 
+/// Socket personality the `IPPROTO_IP` option table branches on. # C: O(1)
+pub fn describe_ip(sock: &InetSocket) -> sol_ip::set::IpSock {
+    use core::sync::atomic::Ordering;
+    use crate::sock::SockKind;
+    let (stream, dgram, raw, inet_num) = match &*sock.kind.lock() {
+        SockKind::Udp => (false, true, false, sock.local_port.lock().unwrap_or(0)),
+        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) =>
+            (true, false, false, sock.local_port.lock().unwrap_or(0)),
+        // A raw socket's `inet_num` is its protocol number, which is what the
+        // protocol read and the router-alert screen both consult.
+        SockKind::Raw4(endpoint) => (false, false, true, endpoint.protocol() as u16),
+        SockKind::Raw6(endpoint) => (false, false, true, endpoint.protocol() as u16),
+        _ => (false, false, false, 0),
+    };
+    sol_ip::set::IpSock {
+        stream, dgram, raw, inet_num,
+        on_ra_chain: sock.opts.ip.flag(sol_ip::flag::RTALERT),
+        bound_if: sock.opts.bound_ifindex.load(Ordering::Acquire) as i32,
+    }
+}
+
+/// Socket personality the `IPPROTO_IPV6` option table branches on.
+/// # C: O(1)
+pub fn describe_ipv6(sock: &InetSocket) -> sol_ipv6::set::Ipv6Sock {
+    use core::sync::atomic::Ordering;
+    use crate::sock::SockKind;
+    let (stream, dgram, raw, protocol) = match &*sock.kind.lock() {
+        SockKind::Udp => (false, true, false, crate::sock_opts::sol_ipv6::uapi::IPPROTO_UDP),
+        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) =>
+            (true, false, false, crate::sock_opts::sol_ipv6::uapi::IPPROTO_TCP),
+        SockKind::Raw4(endpoint) => (false, false, true, endpoint.protocol()),
+        SockKind::Raw6(endpoint) => (false, false, true, endpoint.protocol()),
+        _ => (false, false, false, 0),
+    };
+    let peer6 = *sock.peer6.lock();
+    sol_ipv6::set::Ipv6Sock {
+        stream, dgram, raw, protocol,
+        inet_num: sock.local_port.lock().unwrap_or(0),
+        v6only: sock.opts.ipv6_v6only.load(Ordering::Acquire) != 0,
+        established: peer6.is_some() || sock.peer.lock().is_some(),
+        daddr_v4mapped: peer6.is_some_and(|(ip, _)| ip.to_v4_mapped().is_some()),
+        // No send is ever left half-committed across a socket option call in
+        // this stack, so a conversion never races one.
+        send_pending: false,
+        bound_if: sock.opts.bound_ifindex.load(Ordering::Acquire) as i32,
+        on_ra_chain: sock.opts.ipv6.flag(sol_ipv6::flag::RTALERT),
+    }
+}
+
 /// `sk_get_meminfo`: the live memory report `SO_MEMINFO` publishes. The
 /// receive and send charges come from the same queues `SIOCINQ` / `SIOCOUTQ`
 /// count, so the two interfaces can never disagree. # C: O(queued frames)

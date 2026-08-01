@@ -305,32 +305,30 @@ fn oobinline_setsockopt_normalizes_linux_boolean_values() {
         .contains("Action::Oobinline(v) => sock.opts.oobinline.store(v, Ordering::Release)"));
 }
 
-// B1376: IPV6_TCLASS / IPV6_RECVTCLASS carry the Linux optname values and
-// route through named UAPI constants (never inline literals). TCLASS is a
-// range-validated (-1..=255) sticky store; RECVTCLASS is a boolean store —
-// each the exact twin of its HOPLIMIT counterpart.
+// B1376: IPV6_TCLASS / IPV6_RECVTCLASS carry the Linux optname values, and
+// each is the exact twin of its HOPLIMIT counterpart — TCLASS a
+// range-validated sticky store whose route sentinel resolves at write time,
+// RECVTCLASS a boolean receive bit. The behaviour is asserted against the one
+// ungated owner rather than against shim source text, so moving the shim
+// cannot make the guarantee silently stop being checked.
 #[test]
 fn ipv6_tclass_recvtclass_use_linux_optnames_and_twin_shapes() {
-    for uapi in [include_str!("054_setsockopt/uapi.rs"), include_str!("055_getsockopt/uapi.rs")] {
-        assert!(uapi.contains("IPV6_TCLASS: u64 = 67"));
-        assert!(uapi.contains("IPV6_RECVTCLASS: u64 = 66"));
-    }
-    let set = include_str!("054_setsockopt/ipv6.rs");
-    let tclass = set.find("IPV6_TCLASS =>").unwrap();
-    assert!(set[tclass..].contains("require_v6(sock)"));
-    assert!(set[tclass..].contains("if !(-1..=255).contains(&v)"));
-    assert!(set[tclass..].contains("sock.opts.ipv6_tclass.store(v, Ordering::Release)"));
-    let recvtclass = set.find("IPV6_RECVTCLASS =>").unwrap();
-    assert!(set[recvtclass..]
-        .contains("sock.opts.ipv6_recvtclass.store(if v != 0 { 1 } else { 0 }, Ordering::Release)"));
-
-    let get = include_str!("055_getsockopt/ipv6.rs");
-    let get_tclass = get.find("IPV6_TCLASS =>").unwrap();
-    // Unset (-1) sticky resolves to 0 on read, matching the TX path.
-    assert!(get[get_tclass..].contains("if t < 0 { 0 } else { t }"));
-    assert!(get.contains(
-        "IPV6_RECVTCLASS => out.i32(sock.opts.ipv6_recvtclass.load(Ordering::Acquire))"
-    ));
+    use net::sock_opts::sol_ipv6::set::{self, Action, Ipv6Sock, RECVHOPLIMIT, RECVTCLASS};
+    use net::sock_opts::sol_ipv6::uapi::{IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS, IPV6_TCLASS};
+    use net::sock_opts::sol_socket::OptCaps;
+    assert_eq!((IPV6_TCLASS, IPV6_RECVTCLASS), (67, 66));
+    let sock = Ipv6Sock { dgram: true, ..Default::default() };
+    let admit = |name, val| set::admit(name, val, 4, sock, OptCaps::default());
+    // The sticky class takes the route sentinel and the full byte window.
+    assert_eq!(admit(IPV6_TCLASS, -1), Ok(Action::Tclass(0)));
+    assert_eq!(admit(IPV6_TCLASS, 255), Ok(Action::Tclass(255)));
+    assert_eq!(admit(IPV6_TCLASS, 256), Err(syscall::errno::Errno::Einval));
+    assert_eq!(admit(IPV6_TCLASS, -2), Err(syscall::errno::Errno::Einval));
+    // Both receive bits are booleans, and they are distinct bits.
+    assert_eq!(admit(IPV6_RECVTCLASS, 42), Ok(Action::Flag { bit: RECVTCLASS, on: true }));
+    assert_eq!(admit(IPV6_RECVTCLASS, 0), Ok(Action::Flag { bit: RECVTCLASS, on: false }));
+    assert_ne!(RECVTCLASS, RECVHOPLIMIT);
+    assert_eq!(admit(IPV6_RECVHOPLIMIT, 1), Ok(Action::Flag { bit: RECVHOPLIMIT, on: true }));
 }
 
 // B1376: recvmsg emits the IPV6_TCLASS ancillary from the captured

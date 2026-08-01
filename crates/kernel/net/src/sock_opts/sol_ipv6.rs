@@ -1,8 +1,25 @@
-/// `IPPROTO_IPV6` option state and validation — the ungated owner of every decision
-/// the slot-54/55 shims make at this level (option numbers, operand widths,
-/// value windows, capability ladders, errno ordering). The shims parse,
-/// validate through this module, call one work function, and encode.
+// `IPPROTO_IPV6` option level (slots 54/55) — the ungated owner of every
+// decision the shims make here: option numbers, operand widths, value windows,
+// capability ladders, errno ordering.
+//
+// Module manifest:
+// - `uapi`: option numbers, value windows, structure sizes.
+// - `state`: per-socket storage (`Ipv6Opts`).
+// - `set`: Linux-ordered admission for every write.
+// - `get`: Linux value/length table for every read.
+// - `hdr`: sticky extension-header shape screen.
+// - `flowlabel`: the per-namespace flow-label table `IPV6_FLOWLABEL_MGR` leases from.
+// - `tests`: hosted coverage for the ordering, capability and length rules.
+//
+// No target gate: the decision logic must run under hosted `cargo test`.
 
-/// Per-socket `IPPROTO_IPV6` option state.
-#[derive(Debug, Default)]
-pub struct Ipv6Opts {}
+pub mod uapi;
+pub mod state;
+pub mod set;
+pub mod get;
+pub mod hdr;
+pub mod flowlabel;
+#[cfg(test)]
+mod tests;
+
+pub use state::{Ipv6Opts, Sticky, flag};
