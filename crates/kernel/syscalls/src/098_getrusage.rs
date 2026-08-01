@@ -19,17 +19,17 @@ use syscall::SyscallArgs;
 /// # C: O(1)
 pub fn sys_getrusage(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
-    use syscall::rusage::{getrusage_who_valid, RUSAGE_CHILDREN, RUSAGE_THREAD};
+    use syscall::rusage::{getrusage_source, RusageSource};
     let who = args.a0 as i32;
     let buf = args.a1;
-    if !getrusage_who_valid(who) { return -(Errno::Einval.as_i32() as i64); }
+    let Some(source) = getrusage_source(who) else { return -(Errno::Einval.as_i32() as i64) };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let r = match who {
-        RUSAGE_CHILDREN => cur.thread_group.child_acct().snapshot(),
-        RUSAGE_THREAD   => sched::registry::task_rusage_thread(&cur),
-        _               => sched::registry::task_rusage_self(&cur),
+    let r = match source {
+        RusageSource::ReapedChildren => cur.thread_group.child_acct().snapshot(),
+        RusageSource::Thread         => sched::registry::task_rusage_thread(&cur),
+        RusageSource::ThreadGroup    => sched::registry::task_rusage_self(&cur),
     };
     // `buf == 0` is a genuine EFAULT here, unlike the wait-family's optional
     // out-param, so validate before handing the pointer to the shared writer.

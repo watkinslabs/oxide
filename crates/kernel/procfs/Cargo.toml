@@ -21,6 +21,7 @@ vfs  = { path = "../vfs" }
 net  = { path = "../net" }
 modules = { path = "../modules" }
 sched = { path = "../sched" }
+syscall = { path = "../syscall" }
 vmm   = { path = "../mm-vmm" }
 devfs = { path = "../devfs" }
 # `/proc/sys/kernel/random/uuid` regenerates per read from the ONE kernel

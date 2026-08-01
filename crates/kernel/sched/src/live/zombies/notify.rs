@@ -57,17 +57,27 @@ pub(super) fn send_child_event(reaper: &alloc::sync::Arc<Task>, info: crate::tas
         crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
 }
 
-/// Fold the dying child's `RUSAGE_BOTH` — its own CPU time, page faults,
-/// block I/O and context switches, PLUS everything it had already accumulated
-/// from its own reaped children — into the parent PROCESS's child-accounting
+/// Fold a REAPED child's `RUSAGE_BOTH` — its own CPU time, page faults, block
+/// I/O and context switches, PLUS everything it had already accumulated from
+/// its own reaped children — into the reaping PROCESS's child-accounting
 /// totals, which `getrusage(RUSAGE_CHILDREN)` and `times().tms_c[us]time`
 /// read. Folding the child's own totals is what makes a whole subtree's cost
 /// reach the ancestor measuring it (a shell's `time` over a pipeline), not
 /// just the immediate child.
-/// Called once per child from `signal_child_exit` (the live exit path).
+///
+/// Called from the ONE reap path that actually consumes the zombie, never at
+/// exit: `RUSAGE_CHILDREN` is defined over children "that have terminated and
+/// been waited for", and Linux does this work in `wait_task_zombie` under
+/// `state == EXIT_DEAD && thread_group_leader(p)`. Accumulating at exit made a
+/// still-unreaped zombie, a `WNOWAIT` peek, and an auto-reaped child
+/// (`SIGCHLD` ignored / `SA_NOCLDWAIT`, which Linux never accounts at all) all
+/// show up in `times(2)` early or wrongly.
+///
+/// `r` is the snapshot the wait already computed for its `rusage` out-param —
+/// the same `RUSAGE_BOTH` value — so the reap reports and accounts one number.
 /// # C: O(1)
-pub(super) fn accrue_child_rusage(child: &Task, parent: &Task) {
-    parent.thread_group.child_acct().accrue(crate::registry::task_rusage_both(child));
+pub(super) fn accrue_child_rusage(reaper: &Task, r: syscall::rusage::Rusage) {
+    reaper.thread_group.child_acct().accrue(r);
 }
 
 /// Linux `exit_notify` for `task`, resolved against its real parent's live

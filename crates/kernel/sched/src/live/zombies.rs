@@ -144,8 +144,9 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     // `do_notify_parent` siginfo in Linux (si_pid / si_uid / si_status /
     // CLD_*), standard or real-time alike — one record shape for every
     // notification signal.
+    // No child-rusage accounting here: `RUSAGE_CHILDREN` covers children that
+    // have terminated AND been waited for, so the fold belongs to `reap_one`.
     let notify = parent.as_ref().and_then(|p| {
-        accrue_child_rusage(&task, p);
         decision.signal.map(|signo| (signo, child_exit_info(&task, signo, p)))
     });
     if decision.autoreap { registry::mark_reaped(&task); }
@@ -421,7 +422,20 @@ pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
     // same value fork() returned.
     let child = WaitChildSnapshot::from_task(&t);
     let code = crate::exit::wait_status(&t);
+    let is_leader = t.pid.is_group_leader();
     drop(q);
+    // Linux `wait_task_zombie`, `state == EXIT_DEAD && thread_group_leader(p)`:
+    // this is the ONLY arm that consumes the zombie, so it is the only one that
+    // accumulates. The `WNOWAIT` peek and the `EXIT_TRACE` hand-back above both
+    // leave the child waitable and must not account it — the real parent's
+    // later reap will. The credit goes to the REAPER's process (`current->
+    // signal`), which is `parent` here by construction, so a child reparented
+    // to the subreaper is accounted to whoever actually waited for it.
+    if is_leader {
+        if let Some(reaper) = registry::lookup(parent) {
+            accrue_child_rusage(&reaper, child.rusage);
+        }
+    }
     // Linux release_task: a reaped process leaves /proc immediately, even if a
     // pidfd still pins the task_struct. Mark it so procfs enumeration drops it —
     // otherwise a pidfd-pinned reaped child lingers as a visible zombie in

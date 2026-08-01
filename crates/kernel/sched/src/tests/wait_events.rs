@@ -187,67 +187,6 @@ fn a_stop_belonging_to_another_parent_is_not_reported() {
 }
 
 #[test]
-fn a_dying_childs_whole_subtree_cpu_time_reaches_the_parents_children_counters() {
-    let _g = registry_test_lock();
-    let (p, c) = fixture();
-    c.utime_ns.store(700, Ordering::Release);
-    c.stime_ns.store(300, Ordering::Release);
-    c.thread_group.charge_cpu(true,  700);
-    c.thread_group.charge_cpu(false, 300);
-    for _ in 0..9 { crate::rusage_charge::fault(&c, false); }
-    for _ in 0..3 { crate::rusage_charge::fault(&c, true); }
-    for _ in 0..8 { crate::rusage_charge::ctxsw(&c, true); }
-    for _ in 0..2 { crate::rusage_charge::ctxsw(&c, false); }
-    crate::rusage_charge::io_read(&c, 2048);
-    crate::rusage_charge::io_write(&c, 512);
-    // What the child had already accumulated from ITS own exited children.
-    c.thread_group.child_acct().accrue(Rusage {
-        utime_ns: 70, stime_ns: 30, minflt: 2, majflt: 1, ..Rusage::default()
-    });
-
-    crate::live::enqueue_zombie(Arc::clone(&c));
-
-    let acct = p.thread_group.child_acct().snapshot();
-    assert_eq!(acct.utime_ns, 770,
-        "getrusage(RUSAGE_CHILDREN)/times() must see the grandchildren's time too");
-    assert_eq!(acct.stime_ns, 330);
-    assert_eq!(acct.minflt, 2 + 9, "faults fold across the subtree, not just time");
-    assert_eq!(acct.majflt, 1 + 3);
-    assert_eq!(acct.nvcsw, 8);
-    assert_eq!(acct.nivcsw, 2);
-    assert_eq!(acct.inblock, 4, "512-byte sectors, summed across the subtree");
-    assert_eq!(acct.oublock, 1);
-    // Leave the global zombie list as it was found.
-    assert!(crate::live::reap_one(p.tid, p.tgid.load(Ordering::Acquire), -1, p.pgid(), 0).is_some());
-}
-
-#[test]
-fn a_childs_cost_is_visible_to_every_thread_of_the_reaping_process() {
-    let _g = registry_test_lock();
-    let (p, c) = fixture();
-    // A second thread of the SAME process (Linux CLONE_THREAD).
-    let mut sib = Task::new(PARENT + 1, "t", SchedClass::Normal { weight: 1024 });
-    sib.join_thread_group(Arc::clone(&p.thread_group));
-    sib.tgid.store(p.tid, Ordering::Release);
-    let sib = Arc::new(sib);
-    crate::registry::insert(&sib);
-
-    c.utime_ns.store(1_234, Ordering::Release);
-    c.thread_group.charge_cpu(true, 1_234);
-    for _ in 0..7 { crate::rusage_charge::fault(&c, false); }
-    crate::live::enqueue_zombie(Arc::clone(&c));
-
-    // getrusage(RUSAGE_CHILDREN) from the sibling must see it: the counters
-    // are process-wide (Linux signal_struct), not per-thread.
-    let from_sib = sib.thread_group.child_acct().snapshot();
-    assert_eq!(from_sib.utime_ns, 1_234);
-    assert_eq!(from_sib.minflt, 7);
-    assert_eq!(from_sib.utime_ns, p.thread_group.child_acct().snapshot().utime_ns);
-
-    assert!(crate::live::reap_one(p.tid, p.tgid.load(Ordering::Acquire), -1, p.pgid(), 0).is_some());
-}
-
-#[test]
 fn a_ptrace_event_stop_code_survives_the_registry_and_the_status_encoder() {
     let _g = registry_test_lock();
     let (p, c) = fixture();

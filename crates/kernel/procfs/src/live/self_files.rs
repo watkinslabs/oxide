@@ -273,7 +273,7 @@ pub fn make_proc_meminfo() -> InodeRef { crate::dyn_file::make_gen_file(crate::i
 /// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
 fn uptime_body() -> Vec<u8> {
     let mut body = Vec::with_capacity(48);
-    let idle_ns = sched::cpustat::snapshot().2.saturating_mul(10_000_000);
+    let idle_ns = sched::cpustat::snapshot().2.saturating_mul(syscall::rusage::NS_PER_USER_TICK);
     let (ns, idle_ns) = crate::proc_clock::ReaderClock::current().uptime(uptime_ns(), idle_ns);
     push_uptime(&mut body, ns);
     body.push(b' ');
@@ -297,7 +297,7 @@ fn uptime_ns() -> u64 {
 }
 
 fn push_uptime(out: &mut Vec<u8>, ns: u64) {
-    let total_cs = ns / 10_000_000;
+    let total_cs = syscall::rusage::ns_to_clock_t(ns);
     let secs = total_cs / 100;
     let cs = total_cs % 100;
     push_u64(out, secs);
