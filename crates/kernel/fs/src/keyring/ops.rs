@@ -17,6 +17,10 @@
 //          request_key upcalls.
 // - instantiate: INSTANTIATE, INSTANTIATE_IOV, NEGATE, REJECT,
 //          ASSUME_AUTHORITY — the family gated on the authorisation token.
+// - pkey:  the PKEY_* family — the information string, the key it reads, the
+//          per-command length rules, and the errno each public-key failure
+//          surfaces as. Owns the fact that the family is implemented, which is
+//          where the reported capability bit comes from.
 // - dh:    DH_COMPUTE — the three key payloads it reads, the parameter
 //          admission rules, the modular exponentiation and the counter-mode
 //          derivation. Owns the fact that the command is implemented at all,
@@ -28,6 +32,7 @@ pub mod dh;
 mod instantiate;
 mod keys;
 mod links;
+pub mod pkey;
 mod rings;
 pub(super) mod search;
 

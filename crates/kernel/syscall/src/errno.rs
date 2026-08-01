@@ -60,6 +60,7 @@ pub enum Errno {
     Enonet  = 64,
     Eproto  = 71,
     Ehostdown = 112,
+    Ebadmsg           = 74,
     Eoverflow         = 75,
     Ebadfd            = 77,
     Eusers            = 87,

@@ -1,6 +1,7 @@
 // `keyctl(2)` command dispatch — parse args, marshal user memory, call the
 // `ops::*_core` that owns the command. No policy here.
 
+use ::pkey::Operation;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -11,6 +12,7 @@ use super::{cur_ctx, err, read_user_bytes, read_user_key_desc, read_user_key_typ
     write_user_capped, write_user_exact};
 
 mod dh;
+mod pkey;
 
 /// `sys_keyctl(op, arg2..arg5)` — slot 250.
 ///
@@ -99,12 +101,15 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         KEYCTL_MOVE => ops::move_core(&c, args.a1 as i32, args.a2 as i32, args.a3 as i32, args.a4 as u32),
         KEYCTL_CAPABILITIES => capabilities(args.a1, args.a2),
         KEYCTL_DH_COMPUTE => dh::dh_compute(&c, args),
-        // The public-key and key-notification command families are not built
-        // here yet; the `KEYCTL_CAPABILITIES` bits below are computed from the
-        // same facts, so a caller that probes before use is told exactly what
-        // it will get.
-        KEYCTL_PKEY_QUERY | KEYCTL_PKEY_ENCRYPT | KEYCTL_PKEY_DECRYPT
-        | KEYCTL_PKEY_SIGN | KEYCTL_PKEY_VERIFY | KEYCTL_WATCH_KEY => err(Errno::Eopnotsupp),
+        KEYCTL_PKEY_QUERY => pkey::query(&c, args),
+        KEYCTL_PKEY_ENCRYPT => pkey::eds(&c, Operation::Encrypt, args),
+        KEYCTL_PKEY_DECRYPT => pkey::eds(&c, Operation::Decrypt, args),
+        KEYCTL_PKEY_SIGN => pkey::eds(&c, Operation::Sign, args),
+        KEYCTL_PKEY_VERIFY => pkey::verify(&c, args),
+        // The key-notification family is not built here yet; the
+        // `KEYCTL_CAPABILITIES` bits below are computed from the same facts, so
+        // a caller that probes before use is told exactly what it will get.
+        KEYCTL_WATCH_KEY => err(Errno::Eopnotsupp),
         _ => err(Errno::Eopnotsupp),
     }
 }
@@ -124,6 +129,7 @@ pub(super) fn keyrings_capabilities() -> [u8; KEYCTL_CAPS_BYTES] {
         | KEYCTL_CAPS0_MOVE;
     let b1 = KEYCTL_CAPS1_NS_KEYRING_NAME | KEYCTL_CAPS1_NS_KEY_TAG;
     if ops::dh::SUPPORTED { b0 |= KEYCTL_CAPS0_DIFFIE_HELLMAN; }
+    if ops::pkey::SUPPORTED { b0 |= KEYCTL_CAPS0_PUBLIC_KEY; }
     [b0, b1]
 }
 

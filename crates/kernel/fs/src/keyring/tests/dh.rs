@@ -180,8 +180,7 @@ fn capability_bit_tracks_the_implementation() {
     assert_eq!(caps[0] & KEYCTL_CAPS0_DIFFIE_HELLMAN != 0, dh::SUPPORTED,
         "the reported bit is the implementing module's own answer");
     assert_ne!(caps[0] & KEYCTL_CAPS0_CAPABILITIES, 0);
-    // The families still absent keep their bits clear, so probing stays honest
-    // in both directions.
-    assert_eq!(caps[0] & KEYCTL_CAPS0_PUBLIC_KEY, 0);
+    // A family that is still absent keeps its bit clear, so probing stays
+    // honest in both directions.
     assert_eq!(caps[1] & KEYCTL_CAPS1_NOTIFICATIONS, 0);
 }
