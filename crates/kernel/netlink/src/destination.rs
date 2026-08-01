@@ -2,7 +2,8 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::{NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, NetlinkSocket};
+use crate::sockaddr::{first_group, NlDest};
+use crate::NetlinkSocket;
 
 impl NetlinkSocket {
     /// Store one Linux AF_NETLINK connected destination. A connected Netlink
@@ -17,16 +18,19 @@ impl NetlinkSocket {
     /// Clear one Linux AF_UNSPEC Netlink connection after connect admission.
     /// # C: O(1)
     pub fn disconnect_destination(&self) -> Result<(), net::NetError> {
-        self.dst_port_id.store(NETLINK_UNCONNECTED_PORT_ID, Ordering::Release);
-        self.dst_groups.store(NETLINK_UNCONNECTED_GROUPS, Ordering::Release);
+        self.dst_port_id.store(NlDest::UNCONNECTED.port_id, Ordering::Release);
+        self.dst_groups.store(NlDest::UNCONNECTED.group, Ordering::Release);
         self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
     /// Snapshot the only destination used by a destination-less sendmsg and
     /// reported by getpeername. # C: O(1)
-    pub fn destination(&self) -> (u32, u32) {
-        (self.dst_port_id.load(Ordering::Acquire), self.dst_groups.load(Ordering::Acquire))
+    pub fn destination(&self) -> NlDest {
+        NlDest {
+            port_id: self.dst_port_id.load(Ordering::Acquire),
+            group: self.dst_groups.load(Ordering::Acquire),
+        }
     }
 
     /// Determine whether a local unicast sender is admitted by this connected
@@ -36,7 +40,3 @@ impl NetlinkSocket {
             || self.dst_port_id.load(Ordering::Acquire) == source_port_id
     }
 }
-
-/// Linux `ffs(nl_groups)` retains only the least-significant group when a
-/// sockaddr_nl connects an AF_NETLINK socket. # C: O(1)
-fn first_group(groups: u32) -> u32 { groups & groups.wrapping_neg() }

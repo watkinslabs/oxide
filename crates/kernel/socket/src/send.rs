@@ -97,26 +97,21 @@ pub fn writev(ctx: &SendContext<'_>, file: Arc<vfs::File>, bufs: &[&[u8]]) -> KR
     complete(ctx, 0, result)
 }
 
-fn family(name: &[u8]) -> KResult<u16> {
-    if name.len() < 2 { return Err(Error::Einval); }
-    Ok(u16::from_ne_bytes(name[..2].try_into().unwrap()))
+/// Resolve one netlink send destination: the supplied `msg_name`, else the
+/// socket's connected destination. # C: O(1)
+fn netlink_address(socket: &netlink::NetlinkSocket, message: &Message)
+    -> KResult<netlink::NlDest>
+{
+    match message.name.as_deref() {
+        None => Ok(socket.destination()),
+        Some(name) => netlink::parse_dest(name).map_err(Error::from),
+    }
 }
 
-fn netlink_address(socket: &netlink::NetlinkSocket, message: &Message) -> KResult<(u32, u32)> {
-    let (groups, pid) = if message.name.is_none() { socket.destination() } else {
-        let name = message.name.as_deref().unwrap();
-        if name.len() < netlink::SOCKADDR_NL_SIZE { return Err(Error::Einval); }
-        if family(name)? != netlink::AF_NETLINK { return Err(Error::Eafnosupport); }
-        (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
-            u32::from_ne_bytes(name[4..8].try_into().unwrap()))
-    };
-    Ok((groups, pid))
-}
-
-fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, groups: u32, pid: u32)
+fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, dest: netlink::NlDest)
     -> KResult<usize>
 {
-    socket.send_to(&message.payload, groups, pid).map_err(Error::from)
+    socket.send_to(&message.payload, dest).map_err(Error::from)
 }
 
 pub(crate) enum InetPrepared {
@@ -126,7 +121,7 @@ pub(crate) enum InetPrepared {
 }
 
 pub(crate) enum PreparedSend {
-    Netlink { groups: u32, pid: u32 },
+    Netlink(netlink::NlDest),
     Vsock,
     Inet(InetPrepared),
 }
@@ -144,9 +139,9 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             if flags as u64 & net::uapi::MSG_OOB != 0 { return Err(Error::Eopnotsupp); }
             if message.requested_len == 0 { return Err(Error::Enodata); }
             crate::control::validate_non_unix(ctx, &message.control)?;
-            let (groups, pid) = netlink_address(socket, message)?;
+            let dest = netlink_address(socket, message)?;
             socket.preflight_send(message.requested_len).map_err(Error::from)?;
-            Ok(PreparedSend::Netlink { groups, pid })
+            Ok(PreparedSend::Netlink(dest))
         }
         SendKind::Vsock(socket) => {
             if message.name.is_some() {
@@ -409,9 +404,9 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
 {
     let requested = message.requested_len;
     let bytes = match (target.kind(), prepared) {
-        (SendKind::Netlink(socket), PreparedSend::Netlink { groups, pid }) => {
+        (SendKind::Netlink(socket), PreparedSend::Netlink(dest)) => {
             if message.payload_faulted { return Err(Error::Efault); }
-            send_netlink(socket, &message, groups, pid)
+            send_netlink(socket, &message, dest)
         }
         (SendKind::Vsock(socket), PreparedSend::Vsock) => {
             if message.payload_faulted && message.payload.is_empty() { return Err(Error::Efault); }
