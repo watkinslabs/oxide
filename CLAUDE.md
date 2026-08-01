@@ -349,9 +349,12 @@ concurrent lane the same answer. Three lanes drew `B1667` on one day and a whole
 signal-report implementation was discarded as the duplicate.
 
 Never invent a number (`F30` produces garbage, non-sortable names that collide
-with real history), and never hand-pick one to "avoid" a collision. `metadata/index.md`
-remains a slow-moving backstop for offline use and is no longer the thing that
-makes a number yours; `tools/next-branch.sh --check` reports when it has drifted.
+with real history), and never hand-pick one to "avoid" a collision. Git — branch
+refs, merge subjects and `claim/*` refs — is the only source of truth for which
+numbers are taken. `metadata/index.md` keeps the HISTORY of past reservations and
+collisions (not derivable from git) but no longer carries a `next` table: a second
+place to record a number git already knows fell behind on nearly every parallel
+wave. `make counters` prints the next free number per type.
 
 **Short-lived feature branches (HARD RULE).** Every feature / bug / doc change gets its own fresh branch from current `origin/main`; no omnibus branches and no long-running catch-all worktrees. Finish one feature, commit it, push it, open/merge the PR, then delete the local branch and worktree before starting the next feature. Refactors are features too: isolate them on their own branch instead of mixing cleanup with driver work, and never continue piling new work onto a dirty or conflicted branch. If a branch becomes misshapen, stop, preserve it with an archive tag, and cherry-pick the still-valuable commits onto clean one-feature branches.
 
