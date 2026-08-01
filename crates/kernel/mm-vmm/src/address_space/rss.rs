@@ -8,6 +8,8 @@
 // the arithmetic below is what `ru_maxrss`, `/proc/<pid>/status` and
 // `/proc/<pid>/statm` all agree on, so it is pure and asserted here.
 
+use crate::vma::VmaBacking;
+
 /// Bytes per resident page. `ru_maxrss` and the `Vm*` rows are KiB.
 pub const PAGE_BYTES: u64 = 4096;
 const BYTES_PER_KIB: u64 = 1024;
@@ -39,6 +41,53 @@ impl RssPages {
     pub const fn kib(pages: u64) -> u64 { pages.saturating_mul(PAGE_BYTES / BYTES_PER_KIB) }
 }
 
+/// Which `RssPages` member one present leaf moves, decided from the VMA
+/// backing alone (Linux `mm_counter`/`mm_counter_file`, which asks the folio
+/// the same question). A `PhysRange` leaf is `VM_PFNMAP`-class device memory
+/// with no `struct page`, and a `Special` leaf has no frame at all, so neither
+/// is resident to anybody.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RssClass { Anon, File, Shmem, Device, Untracked }
+
+/// `# C: O(1)`
+pub const fn class_of(backing: &VmaBacking) -> RssClass {
+    match backing {
+        VmaBacking::Anonymous => RssClass::Anon,
+        // A private file mapping's COW copy stays file-class until Linux
+        // splits it; both it and a shared file page are `MM_FILEPAGES`. A
+        // `KernelBytes` VMA is the same shape (a copy of kernel-owned bytes
+        // faulted in per page), so it shares the class.
+        VmaBacking::File { .. } | VmaBacking::KernelBytes { .. } => RssClass::File,
+        VmaBacking::KernelFrame { .. } => RssClass::Shmem,
+        VmaBacking::PhysRange { .. } => RssClass::Device,
+        VmaBacking::Special => RssClass::Untracked,
+    }
+}
+
+/// Running per-class tally of leaves an operation installed. `fork` copies the
+/// parent's present leaves one at a time and must hand the child a count that
+/// matches, or the child under-reports its residency for its whole life.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RssTally {
+    pub pages: RssPages,
+    pub device: u64,
+}
+
+impl RssTally {
+    /// # C: O(1)
+    pub fn add(&mut self, class: RssClass) {
+        match class {
+            RssClass::Anon      => self.pages.anon += 1,
+            RssClass::File      => self.pages.file += 1,
+            RssClass::Shmem     => self.pages.shmem += 1,
+            RssClass::Device    => self.device += 1,
+            RssClass::Untracked => {}
+        }
+    }
+    /// # C: O(1)
+    pub fn add_swap(&mut self) { self.pages.swapents += 1; }
+}
+
 /// Linux `get_mm_hiwater_rss` = `max(mm->hiwater_rss, get_mm_rss(mm))`. The
 /// latched mark can lag the live total whenever residency grew since the last
 /// `update_hiwater_rss`, so a reader must fold both — reporting the latch
@@ -50,6 +99,33 @@ pub const fn hiwater_rss(latched: u64, live: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_backing_maps_to_the_counter_linux_charges_it_to() {
+        assert_eq!(class_of(&VmaBacking::Anonymous), RssClass::Anon);
+        assert_eq!(class_of(&VmaBacking::KernelBytes { data: alloc::sync::Arc::from(&[0u8][..]), off: 0 }), RssClass::File);
+        assert_eq!(class_of(&VmaBacking::KernelFrame { pa: 0x1000 }), RssClass::Shmem);
+        // `VM_PFNMAP` device memory has no `struct page`, so it is nobody's
+        // resident set; a `Special` leaf has no frame at all.
+        assert_eq!(class_of(&VmaBacking::PhysRange { base_pa: 0x1000 }), RssClass::Device);
+        assert_eq!(class_of(&VmaBacking::Special), RssClass::Untracked);
+    }
+
+    #[test]
+    fn a_tally_routes_each_class_to_its_own_member() {
+        let mut t = RssTally::default();
+        t.add(RssClass::Anon); t.add(RssClass::Anon);
+        t.add(RssClass::File);
+        t.add(RssClass::Shmem);
+        t.add(RssClass::Device);
+        t.add(RssClass::Untracked);
+        t.add_swap();
+        assert_eq!(t.pages, RssPages { anon: 2, file: 1, shmem: 1, swapents: 1 });
+        assert_eq!(t.device, 1);
+        // Device leaves and swap entries are not resident; only the three
+        // resident classes reach `VmRSS`.
+        assert_eq!(t.pages.total(), 4);
+    }
 
     #[test]
     fn resident_set_excludes_swapped_out_pages() {

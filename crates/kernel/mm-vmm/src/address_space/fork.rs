@@ -8,6 +8,7 @@ use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
 use super::AddressSpace;
+use super::rss::{class_of, RssTally};
 
 /// Undo every swap leaf installed in an unpublished child root and return its
 /// matching PMM slot reference.  The PTE is cleared before release so no page
@@ -194,6 +195,12 @@ impl AddressSpace {
         // Copy these first: a recoverable table-allocation failure then rolls
         // back all slot references before any present-page refcount changes.
         let mut cloned_swaps = alloc::vec::Vec::<(u64, hal::pt_walker::SwapEntry)>::new();
+        // Linux `copy_page_range` charges the CHILD's `rss_stat` per copied
+        // leaf. The child root is unpublished until this returns, so the
+        // counts accumulate here and land in one `seed_ptes` below; without
+        // them a forked process under-reports its residency for its whole
+        // life, since nothing ever installs the leaves it already holds.
+        let mut tally = RssTally::default();
         for vma in src.iter() {
             if vma.flags.contains(VmaFlags::DONTFORK)
                 || (vma.flags.contains(VmaFlags::WIPEONFORK)
@@ -227,6 +234,7 @@ impl AddressSpace {
                     return Err(Error::NoMem);
                 }
                 cloned_swaps.push((va, entry));
+                tally.add_swap();
                 va += PAGE_SIZE_BYTES;
             }
         }
@@ -318,6 +326,7 @@ impl AddressSpace {
                     unsafe {
                         M::map_at(new_root_pa, Va(va), Pa(pa), child_flags, PageSize::P4K);
                     }
+                    tally.add(class_of(&vma.backing));
                     // If parent's PTE was writable, remap RO so the
                     // next parent write also triggers COW split. The
                     // M::map writes through the active CR3 (parent's
@@ -358,6 +367,7 @@ impl AddressSpace {
         // cpumask) per Linux flush_tlb_others — not every online CPU.
         hal::tlb::shootdown_others_all(self.cpumask());
         let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
+        accounting.seed_ptes(&tally);
         let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             pt_lock: Spinlock::new(()),
@@ -381,6 +391,14 @@ impl AddressSpace {
             pkeys: super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
         });
+        // A child that never joins these directories is invisible to every
+        // owner that routes by page-table root: its page-table frames are
+        // never counted, `swapoff` never finds its swap leaves, and the
+        // system-wide fold silently omits it. Since COW fork is how every
+        // process after init comes into existence, omitting the registration
+        // here meant those owners saw one address space, not all of them.
+        super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
+        super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
         // Linux `anon_vma_fork` plus the file `i_mmap` counterpart.
         attach_child_rmaps(&child);
         Ok(child)
@@ -403,6 +421,7 @@ impl AddressSpace {
         for vma in src.iter() {
             dst.insert(child_vma(vma)).map_err(|_| Error::NoMem)?;
         }
+        let mut tally = RssTally::default();
         for vma in src.iter() {
             // Copy mapped pages for any writable VMA, regardless of
             // backing. KernelBytes-backed PT_LOAD-with-write segments
@@ -420,6 +439,7 @@ impl AddressSpace {
                 _                           => false,
             };
             if !copy_backing { continue; }
+            let class = class_of(&vma.backing);
             let mut va = vma.start.as_u64();
             let end = vma.end.as_u64();
             while va < end {
@@ -439,11 +459,13 @@ impl AddressSpace {
                     unsafe {
                         M::map_at(new_root_pa, Va(va), Pa(dst_pa), pte_flags, PageSize::P4K);
                     }
+                    tally.add(class);
                 }
                 va += PAGE_SIZE_BYTES;
             }
         }
         let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
+        accounting.seed_ptes(&tally);
         let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
             pt_lock: Spinlock::new(()),
@@ -467,6 +489,8 @@ impl AddressSpace {
             pkeys: super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
         });
+        super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
+        super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
         attach_child_rmaps(&child);
         Ok(child)
     }
