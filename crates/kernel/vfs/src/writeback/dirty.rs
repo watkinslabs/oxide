@@ -47,7 +47,9 @@ pub fn mark_inode_dirty_on(sb: Option<&crate::superblock::SuperBlock>, inode: &I
 }
 
 /// `sync_lazytime(inode)` (Linux fs/fs-writeback.c) — force a deferred timestamp
-/// out of the lazy state. Returns false when nothing was pending.
+/// out of the lazy state, against the superblock that owns the inode (see
+/// [`mark_inode_dirty_on`] for why the owner is passed rather than read off the
+/// inode). Returns false when nothing was pending.
 ///
 /// The conversion runs through [`mark_inode_dirty`] with `I_DIRTY_SYNC` so it
 /// takes exactly the supersede path a real metadata change would: the backend's
@@ -59,14 +61,6 @@ pub fn mark_inode_dirty_on(sb: Option<&crate::superblock::SuperBlock>, inode: &I
 /// end with the stamp on disk, which is the only property lazytime may not
 /// trade away.
 /// # C: O(1) + one backend inode write
-pub fn sync_lazytime(inode: &InodeRef, now_ns: u64) -> bool {
-    let sb = inode.i_sb();
-    sync_lazytime_on(sb.as_deref(), inode, now_ns)
-}
-
-/// [`sync_lazytime`] against an EXPLICIT superblock — see
-/// [`mark_inode_dirty_on`] for why the owner cannot always be read back off the
-/// inode. # C: O(1) + one backend inode write
 pub fn sync_lazytime_on(sb: Option<&crate::superblock::SuperBlock>, inode: &InodeRef, now_ns: u64)
     -> bool
 {

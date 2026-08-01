@@ -74,7 +74,7 @@ pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER, dirent_pack, d
 pub use readdir::readdir_dots;
 pub use readdir_cookie::{emit_by_cookie, name_cookie, CookieEntry};
 pub use atime::{file_accessed, touch_atime};
-pub use writeback::{dirtytime_expire_pass, inode_update_time, mark_inode_dirty, sync_lazytime, DIRTYTIME_EXPIRE_SECS};
+pub use writeback::{dirtytime_expire_pass, inode_update_time, mark_inode_dirty, DIRTYTIME_EXPIRE_SECS};
 pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX, set_file_ref_drop_hook};
 pub use file::{File, FileCred, FileEpollLink, Fmode, SeekFrom, SyncMode, SYNC_TO_EOF, iocb_sync_mode, fsync_slot_present, clear_file_lock_wait_hooks, file_lock_interrupted, file_lock_park, file_lock_schedule, file_lock_wake, fire_clone_hook, fire_dirent_create, fire_delete_self_hook, fire_dirent_delete, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_drop_hook, set_file_lock_wait_hooks, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook};

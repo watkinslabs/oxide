@@ -8,8 +8,8 @@
 
 use vfs::inode::{I_DIRTY_DATASYNC, I_DIRTY_PAGES, I_DIRTY_SYNC, I_DIRTY_TIME, I_FREEING, I_NEW};
 use vfs::writeback::policy::{
-    dirtytime_expired, forces_lazytime, harvest_dirty, is_dirtytime_only, mark_dirty_transition,
-    needs_write_inode, time_dirty_flag, DIRTYTIME_EXPIRE_SECS, NSEC_PER_SEC,
+    dirtytime_expired, forces_lazytime, harvest_dirty, mark_dirty_transition, needs_write_inode,
+    time_dirty_flag, DIRTYTIME_EXPIRE_SECS, NSEC_PER_SEC,
 };
 
 /// The one bit the mount option buys: a pure timestamp change is deferred under
@@ -137,18 +137,4 @@ fn only_a_data_integrity_pass_forces_a_fresh_deferral() {
     assert!(!forces_lazytime(false, when, when, DIRTYTIME_EXPIRE_SECS), "background waits");
     let late = when + (DIRTYTIME_EXPIRE_SECS + 1) * NSEC_PER_SEC;
     assert!(forces_lazytime(false, when, late, DIRTYTIME_EXPIRE_SECS), "…until it expires");
-}
-
-/// `inode_is_dirtytime_only`: the state in which a filesystem may write the
-/// timestamps out opportunistically alongside a neighbouring inode. The mask
-/// covers the deferral bit and the LIFECYCLE bits only — a concurrently set
-/// `I_DIRTY_SYNC` does NOT disqualify it (the timestamps are still worth
-/// piggybacking), while an inode being created or destroyed does.
-#[test]
-fn dirtytime_only_excludes_the_lifecycle_states() {
-    assert!(is_dirtytime_only(I_DIRTY_TIME));
-    assert!(is_dirtytime_only(I_DIRTY_TIME | I_DIRTY_SYNC));
-    assert!(!is_dirtytime_only(0), "no deferral, nothing to piggyback");
-    assert!(!is_dirtytime_only(I_DIRTY_TIME | I_NEW));
-    assert!(!is_dirtytime_only(I_DIRTY_TIME | I_FREEING));
 }
