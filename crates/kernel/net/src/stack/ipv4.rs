@@ -362,8 +362,8 @@ impl NetStack {
                 }
             }
             p if p == IpProto::Tcp as u8 =>
-                self.deliver_tcp_packet(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
-                    payload, full_packet)?,
+                self.deliver_tcp_packet_hop(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
+                    payload, full_packet, hdr.ttl)?,
             p if p == IpProto::Igmp as u8 => {
                 if hdr.ttl == 1 && ipv4_has_router_alert(&l3[IPV4_HDR_LEN..hdr.ihl_bytes()]) {
                     self.handle_igmp(iface, hdr.src, hdr.dst, payload)?;

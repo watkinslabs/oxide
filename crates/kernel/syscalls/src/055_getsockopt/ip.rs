@@ -39,7 +39,7 @@ fn view(sock: &Arc<InetSocket>) -> IpGetState {
         mc_loop: sock.opts.ip_mcast_loop.load(Ordering::Acquire) != 0,
         ttl: sock.opts.ip_ttl.load(Ordering::Acquire),
         default_ttl: net::ipv4::IPV4_DEFAULT_TTL as i32,
-        min_ttl: sock.opts.ip.min_ttl(),
+        min_ttl: sock.opts.min_hop.ttl(),
         mcast_ttl: sock.opts.ip_mcast_ttl.load(Ordering::Acquire),
         tos: sock.opts.ip_tos.load(Ordering::Acquire),
         pmtudisc: sock.opts.ip_mtu_discover.load(Ordering::Acquire),

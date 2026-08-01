@@ -228,6 +228,9 @@ pub struct SockOpts {
     pub so_type: core::sync::atomic::AtomicU8,
     /// Generic SOL_SOCKET flag/scalar state (`sock_opts::sol_socket`).
     pub generic: crate::sock_opts::sol_socket::GenericSockOpts,
+    /// `IP_MINTTL` / `IPV6_MINHOPCOUNT`, shared with the transport entry the
+    /// receive path reaches so the option has exactly one home.
+    pub min_hop: Arc<crate::min_hop::MinHop>,
     /// `IPPROTO_IP` option state (`sock_opts::sol_ip`).
     pub ip: crate::sock_opts::sol_ip::IpOpts,
     /// `IPPROTO_IPV6` option state (`sock_opts::sol_ipv6`).
@@ -284,6 +287,7 @@ impl Default for SockOpts {
             timestamping: AtomicI32::new(0),
             so_type: AtomicU8::new(0),
             generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
+            min_hop: Arc::new(crate::min_hop::MinHop::new()),
             ip: crate::sock_opts::sol_ip::IpOpts::default(),
             ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts::default(),
             tcp: crate::sock_opts::sol_tcp::TcpOpts::default(),

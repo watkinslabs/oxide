@@ -13,9 +13,11 @@ impl NetStack {
     /// Passive open: match a listener for a SYN and instantiate the child connection.
     /// # C: O(bucket) select + O(segment) handler
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn deliver_tcp_to_listener(&self, net_ns: u64, iface: NetIfaceId,
         src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8],
-        hdr: &crate::tcp_hdr::TcpHdr, key: TcpKey, tables: &super::inet_tables::InetTables) -> NetResult<()>
+        hdr: &crate::tcp_hdr::TcpHdr, key: TcpKey, tables: &super::inet_tables::InetTables,
+        hop: u8, ipv6: bool) -> NetResult<()>
     {
         if (hdr.flags & tcp_flags::SYN) == 0 { return Ok(()); }
         let bucket = {
@@ -30,6 +32,9 @@ impl NetStack {
         let mut listener = None;
         for off in 0..bucket.len() {
             let cand = bucket[(idx + off) % bucket.len()].clone();
+            // A listener demanding a hop-limit minimum drops the connection
+            // request silently, exactly as an established socket does.
+            if cand.min_hop.refuses(hop, ipv6) { continue; }
             if cand.bound_iface().is_none_or(|id| id == iface) {
                 listener = Some(cand);
                 break;
@@ -119,7 +124,7 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16,
     let mut conn = TcpConn::new_listener(local_ep);
     conn.own_mss = own_mss;
     conn.apply_route_metrics(metrics);
-    Arc::new(TcpEntry::new_bound_with_filter_listener(
+    Arc::new(TcpEntry::new_bound_full(
         conn, Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
         Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)),
         Arc::new(::core::sync::atomic::AtomicI32::new(
@@ -127,5 +132,9 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16,
         Arc::new(::core::sync::atomic::AtomicI32::new(
             listener.ipv6_mtu_discover.load(::core::sync::atomic::Ordering::Acquire))),
         Some(Arc::downgrade(listener)),
+        // The hop-limit minimums stay SHARED with the listener rather than
+        // snapshotted: a later write reaches every child, which is what a
+        // socket option inherited from a listening socket does.
+        listener.min_hop.clone(),
     ))
 }

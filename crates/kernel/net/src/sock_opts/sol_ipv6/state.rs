@@ -49,7 +49,6 @@ impl Sticky { pub const COUNT: usize = 4; }
 /// Per-socket `IPPROTO_IPV6` option state. # C: O(1)
 pub struct Ipv6Opts {
     flags: AtomicU64,
-    min_hopcount: AtomicI32,
     /// `IPV6_MTU`: caller-named fragmentation size, zero to follow the path.
     frag_size: AtomicI32,
     /// `IPV6_USE_MIN_MTU`: -1 unset, 0 path MTU, 1 the IPv6 minimum.
@@ -75,7 +74,6 @@ impl Default for Ipv6Opts {
     fn default() -> Self {
         Self {
             flags: AtomicU64::new(0),
-            min_hopcount: AtomicI32::new(0),
             frag_size: AtomicI32::new(0),
             use_min_mtu: AtomicI32::new(-1),
             unicast_if: AtomicU32::new(0),
@@ -110,11 +108,6 @@ impl Ipv6Opts {
 
     /// `IPV6_MULTICAST_ALL`. # C: O(1)
     pub fn multicast_all(&self) -> bool { !self.flag(flag::MC_ALL_OFF) }
-
-    /// # C: O(1)
-    pub fn min_hopcount(&self) -> i32 { self.min_hopcount.load(Ordering::Acquire) }
-    /// # C: O(1)
-    pub fn set_min_hopcount(&self, v: i32) { self.min_hopcount.store(v, Ordering::Release); }
 
     /// # C: O(1)
     pub fn frag_size(&self) -> i32 { self.frag_size.load(Ordering::Acquire) }

@@ -295,6 +295,18 @@ impl NetStack {
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_reserved_min_hop(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Publish a listener sharing the socket's hop-limit minimums too.
+    /// # C: O(N)
+    pub fn tcp_listen_reserved_min_hop(&self, bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        min_hop: Arc<crate::min_hop::MinHop>) -> NetResult<Arc<TcpListenEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -323,8 +335,8 @@ impl NetStack {
             });
             if conflict { return Err(NetError::Eaddrinuse); }
         }
-        let entry = Arc::new(TcpListenEntry::new_with_filter(
-            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover));
+        let entry = Arc::new(TcpListenEntry::new_with_min_hop(
+            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop));
         let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
         listeners.entry(key).or_default().push(entry.clone());
         bind.role.store(TCP_BIND_LISTEN, Ordering::Release);
@@ -368,6 +380,21 @@ impl NetStack {
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpEntry>>
     {
+        self.tcp_connect_reserved_min_hop(bind, local_ip, remote_ip, remote_port, error,
+            bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Active-open while sharing the socket's hop-limit minimums too.
+    /// # C: O(log N + xmit)
+    #[allow(clippy::too_many_arguments)]
+    pub fn tcp_connect_reserved_min_hop(&self, bind: &Arc<TcpBindReservation>,
+        local_ip: IpAddr, remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        min_hop: Arc<crate::min_hop::MinHop>) -> NetResult<Arc<TcpEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -393,9 +420,9 @@ impl NetStack {
         conn.apply_route_metrics(self.route_metrics_for_dst_in(
             bind.net_ns(), remote_ip, bind.bound_iface()));
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
+        let entry = Arc::new(TcpEntry::new_bound_full(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover));
+            ipv6_mtu_discover, None, min_hop));
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(

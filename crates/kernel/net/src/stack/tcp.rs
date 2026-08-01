@@ -314,6 +314,20 @@ impl NetStack {
                     src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8])
         -> NetResult<()>
     {
+        // A hop limit of the maximum admits every socket, which is what an
+        // adapter with no header in hand must supply.
+        self.deliver_tcp_packet_hop(net_ns, iface, src_ip, dst_ip, seg, packet, u8::MAX)
+    }
+
+    /// Demultiplex one TCP segment, carrying the hop limit its IP header
+    /// arrived with so a socket demanding a minimum can refuse it.
+    /// # C: O(log N + payload)
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn deliver_tcp_packet_hop(&self, net_ns: u64, iface: NetIfaceId,
+                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8], hop: u8)
+        -> NetResult<()>
+    {
+        let ipv6 = matches!(dst_ip, IpAddr::V6(_));
         if seg.len() < TCP_HDR_MIN_LEN { return Err(NetError::Einval); }
         let hdr = match crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip) {
             Ok(h) => h, Err(_) => return Ok(()),
@@ -330,6 +344,9 @@ impl NetStack {
         };
         if let Some(entry) = entry {
             if entry.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }
+            // The generalized hop-limit check runs before the segment reaches
+            // the state machine, and drops silently.
+            if entry.min_hop.refuses(hop, ipv6) { return Ok(()); }
             let observed_state = entry.conn.lock().state;
             let passive_listener = if observed_state == crate::tcp_state::TcpState::SynRecv {
                 entry.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade)
@@ -460,7 +477,8 @@ impl NetStack {
         // a whole `TcpConn`, the child filter/PMTU arcs, the reuseport bucket — do not
         // share a frame with the established-connection branch above, which is the one
         // that continues into transmit. Linux splits the same way (`noinline_for_stack`).
-        self.deliver_tcp_to_listener(net_ns, iface, src_ip, dst_ip, seg, packet, &hdr, key, &tables)
+        self.deliver_tcp_to_listener(net_ns, iface, src_ip, dst_ip, seg, packet, &hdr, key,
+            &tables, hop, ipv6)
     }
 }
 #[cfg(test)]
