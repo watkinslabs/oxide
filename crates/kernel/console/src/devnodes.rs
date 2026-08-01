@@ -46,8 +46,28 @@ pub fn try_register_devnodes() -> drv::KResult<()> {
 }
 
 pub fn register_devnodes() {
-    if let Err(e) = try_register_devnodes() {
-        panic!("console tty device registration failed: {:?}", e);
+    if let Err(e) = try_register_devnodes() { registration_fatal(e); }
+}
+
+/// Boot-fatal: `/dev/console`, `/dev/tty*` and the vcs nodes must exist before
+/// init runs, so a partial publish is not recoverable.
+///
+/// Per-variant literal rather than `panic!("… {:?}", e)`: `07§5` requires
+/// `panic!` messages to be interned `&'static str`, because kernel profiles are
+/// `panic="abort"` and must not drag `core::fmt` into the abort path.
+/// # C: O(1)
+#[cold]
+fn registration_fatal(e: drv::Error) -> ! {
+    use drv::Error as E;
+    match e {
+        E::NoMatch      => panic!("console tty device registration failed: no matching driver"),
+        E::NoMem        => panic!("console tty device registration failed: out of memory"),
+        E::ProbeFailed  => panic!("console tty device registration failed: probe failed"),
+        E::Removed      => panic!("console tty device registration failed: device removed"),
+        E::AlreadyBound => panic!("console tty device registration failed: already bound"),
+        E::NotFound     => panic!("console tty device registration failed: not found"),
+        E::Busy         => panic!("console tty device registration failed: busy"),
+        E::Invalid      => panic!("console tty device registration failed: invalid argument"),
     }
 }
 
