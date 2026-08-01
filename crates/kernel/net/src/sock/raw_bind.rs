@@ -14,11 +14,12 @@ fn bind_raw4_locked(sock: &InetSocket, ip: Ipv4Addr, port: u16) -> Option<Result
     let SockKind::Raw4(endpoint) = &*kind else { return None };
     if sock.released.load(Ordering::Acquire) { return Some(Err(NetError::Einval)); }
     let iface = match bound_iface(sock) { Ok(iface) => iface, Err(error) => return Some(Err(error)) };
-    if !endpoint.is_ping() { return Some(endpoint.bind_checked(ip, iface)); }
+    let nonlocal = super::nonlocal::permission(sock);
+    if !endpoint.is_ping() { return Some(endpoint.bind_checked(ip, iface, nonlocal)); }
     // An ICMP datagram endpoint binds an echo identifier, not a port. The
     // address is screened first, then the identifier is claimed, and only a
     // complete claim publishes the local address.
-    if let Err(error) = endpoint.check_local(ip, iface) { return Some(Err(error)); }
+    if let Err(error) = endpoint.check_local(ip, iface, nonlocal) { return Some(Err(error)); }
     if let Err(error) = crate::ping::bind_v4(endpoint, port) { return Some(Err(error)); }
     Some(endpoint.bind(ip, iface))
 }
@@ -42,8 +43,9 @@ fn bind_raw6_locked(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32, port:
         Ok(iface) => iface, Err(error) => return Some(Err(error)),
     };
     let local = crate::raw6::Raw6Address::new(ip, scope_id);
-    if !endpoint.is_ping() { return Some(endpoint.bind_checked(local, iface)); }
-    if let Err(error) = endpoint.check_local(local, iface) { return Some(Err(error)); }
+    let nonlocal = super::nonlocal::permission(sock);
+    if !endpoint.is_ping() { return Some(endpoint.bind_checked(local, iface, nonlocal)); }
+    if let Err(error) = endpoint.check_local(local, iface, nonlocal) { return Some(Err(error)); }
     if let Err(error) = crate::ping::bind_v6(endpoint, port) { return Some(Err(error)); }
     endpoint.bind(local, iface);
     Some(Ok(()))
