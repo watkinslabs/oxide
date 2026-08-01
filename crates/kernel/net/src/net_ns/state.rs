@@ -73,6 +73,10 @@ impl Ipv4ConfKey {
 pub enum NetSysctlKey {
     Somaxconn, OptmemMax, TcpSyncookies, TcpTwReuse, TcpFinTimeout,
     TcpKeepaliveTime, IcmpEchoIgnoreAll, Ipv6DisableAll, Ipv6DisableDefault,
+    /// `net.ipv4.ip_nonlocal_bind` / `net.ipv6.ip_nonlocal_bind` — the
+    /// namespace-wide half of the nonlocal-bind screen `crate::bind_screen`
+    /// applies; the per-socket half is `IP_FREEBIND` / `IP_TRANSPARENT`.
+    Ipv4NonlocalBind, Ipv6NonlocalBind,
     /// `net.ipv4.tcp_wmem` / `net.ipv4.tcp_rmem` — a three-value window per
     /// namespace, not a scalar: `Min` is the floor the transport may moderate
     /// down to, `Default` is what a new TCP socket starts with, `Max` is the
@@ -96,7 +100,7 @@ impl BufWindow {
 }
 
 impl NetSysctlKey {
-    const WMEM_BASE: usize = 9;
+    const WMEM_BASE: usize = 11;
     const RMEM_BASE: usize = Self::WMEM_BASE + BufWindow::COUNT;
     const BASE_COUNT: usize = Self::RMEM_BASE + BufWindow::COUNT;
     const COUNT: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
@@ -108,6 +112,7 @@ impl NetSysctlKey {
             Self::TcpFinTimeout => 4, Self::TcpKeepaliveTime => 5,
             Self::IcmpEchoIgnoreAll => 6, Self::Ipv6DisableAll => 7,
             Self::Ipv6DisableDefault => 8,
+            Self::Ipv4NonlocalBind => 9, Self::Ipv6NonlocalBind => 10,
             Self::TcpWmem(slot) => Self::WMEM_BASE + slot.index(),
             Self::TcpRmem(slot) => Self::RMEM_BASE + slot.index(),
             Self::Ipv4Conf(dev, key) => Self::BASE_COUNT
@@ -124,6 +129,7 @@ impl NetSysctlKey {
             4 => Self::TcpFinTimeout, 5 => Self::TcpKeepaliveTime,
             6 => Self::IcmpEchoIgnoreAll, 7 => Self::Ipv6DisableAll,
             8 => Self::Ipv6DisableDefault,
+            9 => Self::Ipv4NonlocalBind, 10 => Self::Ipv6NonlocalBind,
             _ if index < Self::RMEM_BASE => match BufWindow::from_index(index - Self::WMEM_BASE) {
                 Some(slot) => Self::TcpWmem(slot), None => return None,
             },

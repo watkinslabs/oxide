@@ -74,6 +74,7 @@ mod lifecycle;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod raw_bind;
 mod bind_admission;
+pub mod nonlocal;
 mod connect_security;
 #[cfg(target_os = "oxide-kernel")]
 mod connect_admission;
@@ -123,6 +124,7 @@ pub use packet_tx::*;
 pub(crate) use packet_ring_tx::*;  // only `pub(crate)` free items live there
 pub use iface::*;
 pub use bind_admission::{admit_bind, BindAdmission};
+pub use nonlocal::permission as nonlocal_permission;
 pub use connect_security::{admit_connect, ConnectAdmission};
 #[cfg(target_os = "oxide-kernel")]
 pub use connect_admission::{

@@ -189,25 +189,19 @@ impl Raw4Endpoint {
         Ok(())
     }
 
-    /// Validate namespace/device ownership of a candidate local address without
-    /// publishing it. # C: O(N)
-    pub fn check_local(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
-        if !local.is_unspecified() {
-            let net_ns = self.net_ns();
-            let owned = crate::iface_addr::snapshot_ns(net_ns).into_iter()
-                .any(|row| row.addr == local && iface.is_none_or(|id| id == row.iface))
-                || crate::global_stack().routes.lookup_in(net_ns, local).is_some_and(|route| {
-                    route.table == crate::policy_rule::RT_TABLE_LOCAL && route.src_hint == Some(local)
-                        && iface.is_none_or(|id| id == route.iface)
-                });
-            if !owned { return Err(NetError::Eaddrnotavail); }
-        }
-        Ok(())
+    /// Screen a candidate local address without publishing it, through the one
+    /// owner of the rule. # C: O(N)
+    pub fn check_local(&self, local: Ipv4Addr, iface: Option<NetIfaceId>,
+        nonlocal: crate::bind_screen::SockNonlocal) -> NetResult<()>
+    {
+        crate::bind_screen::screen_v4(self.net_ns(), local, iface, nonlocal)
     }
 
-    /// Validate namespace/device ownership before publishing a local bind. # C: O(N)
-    pub fn bind_checked(&self, local: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
-        self.check_local(local, iface)?;
+    /// Screen before publishing a local bind. # C: O(N)
+    pub fn bind_checked(&self, local: Ipv4Addr, iface: Option<NetIfaceId>,
+        nonlocal: crate::bind_screen::SockNonlocal) -> NetResult<()>
+    {
+        self.check_local(local, iface, nonlocal)?;
         self.bind(local, iface)
     }
 
