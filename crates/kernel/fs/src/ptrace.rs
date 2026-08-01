@@ -79,7 +79,7 @@ fn x86_user_trap_hook(regs: &mut hal_x86_64::PtRegs) -> bool {
     // `TRAP_HWBKPT` for one of the four hardware breakpoint slots. Reading and
     // clearing DR6 here is also what stops the next #DB from re-reporting a
     // hit the tracee already consumed.
-    #[allow(unused_mut)]
+    #[allow(unused_mut, unused_assignments)]
     let mut code = hal::siginfo::code::TRAP_TRACE;
     if let Some(cur) = sched::current() {
         cur.singlestep.store(0, Ordering::Release);
@@ -90,6 +90,7 @@ fn x86_user_trap_hook(regs: &mut hal_x86_64::PtRegs) -> bool {
             code = unsafe { sched::debugreg::x86::take_trap(cur) };
         }
     }
+    let _ = code;
     #[cfg(target_os = "oxide-kernel")]
     sched::live::force_sig_fault(sched::signum::Signum::Sigtrap, code, regs.rip, 0);
     true
