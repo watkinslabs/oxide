@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use elf::{self, ElfType, PFlags};
 use hal::UserVirtAddr;
-use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+use vmm::{AddressSpace, FileBacking, VmaBacking, VmaFlags, VmaProt};
 
 use crate::place::{self, Placement};
 use crate::{ARCH_MACHINE, LoadError, LoadStaging, LoadedImage, PAGE};
@@ -12,12 +12,18 @@ pub(crate) fn place_image(
     as_: &AddressSpace,
     placement: Placement,
     apply_self_relocs: bool,
+    file: Option<&Arc<dyn FileBacking>>,
 ) -> Result<LoadedImage, LoadError> {
     let parsed = elf::parse(blob, ARCH_MACHINE)?;
     if !matches!(parsed.elf_type, ElfType::Dyn | ElfType::Exec) {
         return Err(LoadError::Enoexec);
     }
     let bias = place::resolve(placement, parsed.elf_type, &parsed.loads, as_)?;
+    // Relocating the image before it runs means editing its bytes, which a
+    // mapping of the unmodified file cannot express. That case keeps the
+    // kernel-byte backing; see `crate::relocs_precede_file_backing`.
+    let file = if crate::relocs_precede_file_backing(apply_self_relocs, parsed.elf_type, bias)
+        { None } else { file };
 
     let mut max_end: u64 = 0;
     // Linux `mm->start_code`..`end_data`: first executable PT_LOAD is
@@ -40,9 +46,19 @@ pub(crate) fn place_image(
             .ok_or(LoadError::Einval)?;
         let head_pad = (vaddr - vstart) as usize;
         let buf_len = (vend - vstart) as usize;
-        let copy_n = buf_len.min(head_pad + raw_data.len());
-        let mut padded = alloc::vec![0u8; buf_len];
-        padded[head_pad..copy_n].copy_from_slice(&raw_data[..copy_n - head_pad]);
+        let sp = crate::layout::split(
+            vstart, vend, vaddr, seg.file_off, seg.file_sz, seg.mem_sz, PAGE, file.is_some());
+        // Only the part of the segment that is not a mapping of the file needs
+        // a kernel-owned copy: an image mapped from its file to the last page
+        // costs no bytes here at all.
+        let tail_from = (sp.file_end - vstart) as usize;
+        let mut padded = alloc::vec![0u8; buf_len - tail_from];
+        let copy_lo = tail_from.max(head_pad);
+        let copy_hi = buf_len.min(head_pad + raw_data.len());
+        if copy_hi > copy_lo {
+            padded[copy_lo - tail_from..copy_hi - tail_from]
+                .copy_from_slice(&raw_data[copy_lo - head_pad..copy_hi - head_pad]);
+        }
 
         let mut prot = VmaProt::empty();
         if seg.flags.contains(PFlags::R) {
@@ -64,7 +80,10 @@ pub(crate) fn place_image(
         if prot.contains(VmaProt::WRITE) && start_data == 0 {
             start_data = vstart; end_data = vend;
         }
-        staging.push(LoadStaging { vstart, vend, prot, padded, head_pad });
+        staging.push(LoadStaging {
+            vstart, vend, prot, padded, head_pad,
+            file_end: sp.file_end, file_pgoff: sp.file_pgoff,
+        });
     }
 
     if apply_self_relocs && matches!(parsed.elf_type, ElfType::Dyn) && bias != 0 {
@@ -72,18 +91,36 @@ pub(crate) fn place_image(
     }
 
     for s in staging {
-        let data: Arc<[u8]> = as_.stash_bytes(s.padded.into_boxed_slice());
-        let hint = UserVirtAddr::new(s.vstart).ok_or(LoadError::Einval)?;
-        let _ = as_
-            .mmap(
-                Some(hint),
-                (s.vend - s.vstart) as usize,
-                s.prot,
-                VmaFlags::PRIVATE,
-                VmaBacking::KernelBytes { data, off: 0 },
-                true,
-            )
-            .map_err(|_| LoadError::Enomem)?;
+        // Linux `vm_file` on a PT_LOAD: the mapping names the file it came
+        // from, so the segment classifies as file-backed everywhere a mapping
+        // is classified by what stands behind it.
+        if let (Some(b), true) = (file, s.file_end > s.vstart) {
+            let hint = UserVirtAddr::new(s.vstart).ok_or(LoadError::Einval)?;
+            let _ = as_
+                .mmap(
+                    Some(hint),
+                    (s.file_end - s.vstart) as usize,
+                    s.prot,
+                    VmaFlags::PRIVATE,
+                    VmaBacking::File { backing: Arc::clone(b), off: s.file_pgoff },
+                    true,
+                )
+                .map_err(|_| LoadError::Enomem)?;
+        }
+        if s.vend > s.file_end {
+            let data: Arc<[u8]> = as_.stash_bytes(s.padded.into_boxed_slice());
+            let hint = UserVirtAddr::new(s.file_end).ok_or(LoadError::Einval)?;
+            let _ = as_
+                .mmap(
+                    Some(hint),
+                    (s.vend - s.file_end) as usize,
+                    s.prot,
+                    VmaFlags::PRIVATE,
+                    VmaBacking::KernelBytes { data, off: 0 },
+                    true,
+                )
+                .map_err(|_| LoadError::Enomem)?;
+        }
         let _ = s.head_pad;
     }
 
@@ -196,8 +233,11 @@ fn apply_relative_relocs_into(
         }
         let mut placed = false;
         for s in staging.iter_mut() {
-            if dst_va >= s.vstart && dst_va + 8 <= s.vend {
-                let off = (dst_va - s.vstart) as usize;
+            // `padded` starts at `file_end`, not at the segment start: the
+            // bytes below it are a mapping of the file and are not the
+            // loader's to edit.
+            if dst_va >= s.file_end && dst_va + 8 <= s.vend {
+                let off = (dst_va - s.file_end) as usize;
                 if off + 8 > s.padded.len() {
                     return Err(LoadError::Einval);
                 }
