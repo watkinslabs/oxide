@@ -23,6 +23,7 @@ pub mod io;
 pub mod sack;
 pub mod segment;
 pub mod syn_opts;
+pub mod fastopen;
 pub mod timing;
 pub mod route_policy;
 pub mod reqsk;
