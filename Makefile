@@ -33,7 +33,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 
 .PHONY: all build x86 arm \
         build-debug x86-debug arm-debug \
-        test lint stats ci \
+        test lint lint-ratchet lint-ratchet-update stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
@@ -75,6 +75,22 @@ test:
 lint:
 	$(XTASK) spec-lint
 
+# Ratchet gate (~0.8 s). `make lint` reports a 2696-finding historical backlog,
+# so it cannot gate a push today; what CAN gate is the derivative. The baseline
+# in `tools/spec-lint/baseline.tsv` holds the count per (crate, rule) and the
+# gate fails when any key exceeds it — a new violation in a crate that already
+# has 500 still fails, because nothing is compared tree-wide.
+#
+# `make lint` stays the full report and stays the target to run while burning the
+# backlog down. The baseline only ever shrinks: `--update` writes
+# `min(current, baseline)` per key and refuses to raise one without
+# `--allow-growth`, which prints every loosened key.
+lint-ratchet:
+	$(CARGO) run --quiet -p spec-lint -- ratchet
+
+lint-ratchet-update:
+	$(CARGO) run --quiet -p spec-lint -- ratchet --update
+
 stats:
 	$(XTASK) stats $(STATS_ARGS)
 
@@ -85,7 +101,12 @@ counters:
 
 # Mirror of the PR-time gate per `docs/40§2`: spec-lint clean, hosted tests
 # green, both arches build default AND with debug-all on.
-ci: lint matrix-gate hosted-gate test build build-debug
+#
+# `lint-ratchet`, not `lint`: the full spec-lint has a 2696-finding backlog
+# (C255), so `make ci` has been unconditionally red and therefore unread. The
+# ratchet holds the line while the backlog is burned down; swap it back to
+# `lint` once the count reaches zero.
+ci: lint-ratchet matrix-gate hosted-gate test build build-debug
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
