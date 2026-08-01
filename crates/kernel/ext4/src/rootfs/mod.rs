@@ -18,6 +18,7 @@ mod ops;
 mod quota;
 mod mountquota;
 mod framecache;
+mod params;
 mod swapfile;
 
 pub use state::RootfsState;
@@ -25,6 +26,7 @@ pub(crate) use inode::ext4_state_of;
 pub use inode::{EXT4_INO_MARK, EXT4_INO_MASK,
     ext4_wrap_ino, is_ext4_ino, ext4_unwrap_ino};
 pub use ops::Ext4Mount;
+pub use params::EXT4_PARAMS;
 pub use framecache::flush_all_dirty;
 pub use swapfile::{SwapFileBacking, swapfile_backing, swapfile_name};
 

@@ -388,6 +388,20 @@ pub trait FileSystemType: Send + Sync {
     ) -> KResult<Arc<SuperBlock>> {
         self.mount(src, opts)
     }
+    /// Build for a `mount(2)` request, which — unlike `fsopen(2)` — already
+    /// names the target pathname. A backend whose superblock identity is
+    /// derived from the target reads it here; the default ignores it, because
+    /// `fsopen(2)`/`fsmount(2)` genuinely have no target to give.
+    /// # C: FS-dependent
+    fn mount_at(
+        &self,
+        src: Option<&str>,
+        _target: &str,
+        opts: &str,
+        sb_flags: u64,
+    ) -> KResult<Arc<SuperBlock>> {
+        self.mount_with_flags(src, opts, sb_flags)
+    }
     /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`) — the
     /// type-level classification the new-mount-API `vfs_get_tree` consults for
     /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /
