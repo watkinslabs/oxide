@@ -188,6 +188,11 @@ pub fn read(optname: u64, len: usize, env: GetEnv<'_>) -> Result<Read, Errno> {
             Err(Errno::Enoprotoopt)
         }
         TCP_AO_GET_KEYS | TCP_AO_INFO => Err(Errno::Enoprotoopt),
+        // The zero-copy receive never reaches this table: it carries an
+        // optlen-versioned operand and publishes in place, so the shim answers
+        // it before the generic value screen runs
+        // (`sol_tcp::zerocopy`). Reaching here means that route was lost.
+        TCP_ZEROCOPY_RECEIVE => Err(Errno::Einval),
         // Multipath extension segments are not negotiated by this transport,
         // so no connection is ever carried by it.
         TCP_IS_MPTCP => int(0),

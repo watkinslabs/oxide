@@ -217,6 +217,13 @@ pub trait FileBacking: Send + Sync {
     /// Device-owned frame installed directly for either mapping type. # C: O(1)
     fn direct_frame(&self, _off: u64) -> Option<u64> { None }
 
+    /// The concrete backing object behind this mapping, for a subsystem that
+    /// must recognise one of ITS OWN mappings by identity rather than by
+    /// address — the equivalent of Linux comparing `vma->vm_ops` against the
+    /// subsystem's own operations table. `None` (default) = the backing
+    /// publishes no such identity. # C: O(1)
+    fn as_object(&self) -> Option<&(dyn core::any::Any + 'static)> { None }
+
     /// Flush dirty cache pages overlapping `[start,end)` to the backing store.
     /// Default no-op covers shmem/memfd-style backings where mapped pages are
     /// already the store. # C: O(N_dirty in range)

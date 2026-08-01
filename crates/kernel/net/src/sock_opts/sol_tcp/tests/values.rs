@@ -278,9 +278,13 @@ fn the_timestamp_read_carries_the_clock_resolution_in_its_low_bit() {
 #[test]
 fn an_unknown_read_is_enoprotoopt_and_the_unsupported_reads_say_so() {
     assert_eq!(get::read(9999, 4, genv()), Err(Errno::Enoprotoopt));
-    for optname in [TCP_ZEROCOPY_RECEIVE, TCP_AO_GET_KEYS, TCP_AO_INFO] {
+    for optname in [TCP_AO_GET_KEYS, TCP_AO_INFO] {
         assert_eq!(get::read(optname, 64, genv()), Err(Errno::Enoprotoopt), "{optname}");
     }
+    // The zero-copy receive is answered before this table, by the shim that
+    // owns its versioned operand. A caller reaching the table means that route
+    // was lost, so the table refuses rather than reporting the option absent.
+    assert_eq!(get::read(TCP_ZEROCOPY_RECEIVE, 64, genv()), Err(Errno::Einval));
     // The authentication repair read still runs the capability ladder first.
     assert_eq!(get::read(TCP_AO_REPAIR, 64, genv()), Err(Errno::Eperm));
     assert_eq!(get::read(TCP_AO_REPAIR, 64, GetEnv { net_admin: true, ..genv() }),
