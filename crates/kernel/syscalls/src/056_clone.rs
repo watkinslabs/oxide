@@ -250,6 +250,9 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     let spawn = clone_spawn_arch(child_tid, child_stack, child_mm, thread_group);
     let child = match spawn {
         Ok(t)  => t,
+        // A `SCHED_DEADLINE` parent cannot fork: the child would inherit an
+        // admitted bandwidth reservation that was granted to exactly one task.
+        Err(sched::live::spawn::SpawnError::Again) => return errno(Errno::Eagain),
         Err(_) => return errno(Errno::Enomem),
     };
     // The child cannot run yet, so charge the concrete stack to the cgroup it

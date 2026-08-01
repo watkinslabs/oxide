@@ -16,6 +16,19 @@ use crate::task::{SchedClass, Task};
 /// `SCHED_NORMAL` / `SCHED_OTHER`.
 const SCHED_NORMAL: u32 = 0;
 
+/// A `SCHED_DEADLINE` task cannot fork.
+///
+/// The child would inherit a reservation that was admitted once, for one task;
+/// letting it through would duplicate admitted bandwidth on every clone and
+/// silently invalidate every other deadline task's guarantee. Setting
+/// `SCHED_RESET_ON_FORK` first is the supported way to fork one: the child then
+/// drops to `SCHED_NORMAL` and carries no reservation at all.
+/// # C: O(1)
+pub fn dl_fork_refused(parent: &Task) -> bool {
+    matches!(parent.sched_class(), SchedClass::Deadline)
+        && !parent.sched_reset_on_fork.load(Ordering::Acquire)
+}
+
 /// Copy the parent's scheduling parameters onto a not-yet-published child and
 /// apply `sched_reset_on_fork`.
 ///
@@ -31,6 +44,16 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
         SchedClass::Idle => SchedClass::Normal { weight: NICE_0_WEIGHT },
         c => c,
     };
+
+    // A deadline child never carries the parent's reservation: it is either
+    // refused outright (`dl_fork_refused`) or reset to the fair class here, and
+    // its entity starts empty either way.
+    child.dl.clear();
+    if matches!(class, SchedClass::Deadline) {
+        policy = SCHED_NORMAL;
+        nice = 0;
+        class = SchedClass::Normal { weight: NICE_0_WEIGHT };
+    }
 
     if reset {
         if matches!(class, SchedClass::Rt { .. }) {

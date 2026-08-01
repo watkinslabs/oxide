@@ -50,6 +50,18 @@ pub fn sys_sched_setaffinity(args: &SyscallArgs) -> i64 {
     );
     let eff = match decided { Ok(m) => m, Err(e) => return -(e.as_i32() as i64) };
 
+    // A `SCHED_DEADLINE` task's reservation was admitted against the whole span
+    // the class schedules over. Confining it to fewer CPUs would leave that
+    // reservation booked against capacity it can no longer reach, so the
+    // request is refused as a CAPACITY answer (`EBUSY`), after the argument and
+    // permission answers above.
+    if let Err(rv) = crate::sched_policy::dl::setaffinity_allowed(
+        crate::sched_policy::dl_policy(crate::sched_policy::task_policy(&t)),
+        sched::deadline::span(), eff)
+    {
+        return rv;
+    }
+
     // Linux parks the raw request in `user_cpus_ptr` so a later cpuset change
     // re-applies it instead of erasing it.
     t.user_cpus_allowed.store(want, Ordering::Release);

@@ -35,22 +35,29 @@ pub(crate) fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
     // `p->policy`. Sourced from the task, never hardcoded — `chrt` changes
     // must be visible here.
     push(&mut out, b"prio                                         : ");
-    push_u64(&mut out, task_prio(&task)); out.push(b'\n');
+    let prio = task_prio(&task);
+    if prio < 0 { out.push(b'-'); }
+    push_u64(&mut out, prio.unsigned_abs()); out.push(b'\n');
     push(&mut out, b"policy                                       : ");
     push_u64(&mut out, task.policy.load(Ordering::Acquire) as u64); out.push(b'\n');
     out
 }
 
-/// Linux `task_prio()`: RT tasks land in `0..=98` (`MAX_RT_PRIO-1 - rt_prio`),
-/// fair tasks in `100 + nice + 20` (`MAX_RT_PRIO + NICE_WIDTH/2` at nice 0).
+/// `p->prio`: deadline tasks are `-1` (below every real-time priority), RT
+/// tasks land in `0..=98` (`MAX_RT_PRIO-1 - rt_prio`), fair tasks in
+/// `100 + nice + 20`. SIGNED — a deadline task's priority is negative by
+/// construction, and reporting it unsigned renders it as a huge number.
 /// # C: O(1)
-fn task_prio(task: &sched::Task) -> u64 {
-    /// Linux `MAX_RT_PRIO`.
+fn task_prio(task: &sched::Task) -> i64 {
+    /// Largest RT priority band value plus one.
     const MAX_RT_PRIO: i32 = 100;
-    /// Linux `DEFAULT_PRIO` = `MAX_RT_PRIO + NICE_WIDTH / 2`.
+    /// Fair-class priority at nice 0.
     const DEFAULT_PRIO: i32 = MAX_RT_PRIO + 20;
+    /// The single priority value the deadline class occupies, below every RT one.
+    const DL_PRIO: i64 = -1;
     match task.sched_class() {
-        sched::SchedClass::Rt { prio, .. } => (MAX_RT_PRIO - 1 - prio as i32) as u64,
-        _ => (DEFAULT_PRIO + task.nice.load(Ordering::Acquire) as i32) as u64,
+        sched::SchedClass::Deadline => DL_PRIO,
+        sched::SchedClass::Rt { prio, .. } => (MAX_RT_PRIO - 1 - prio as i32) as i64,
+        _ => (DEFAULT_PRIO + task.nice.load(Ordering::Acquire) as i32) as i64,
     }
 }

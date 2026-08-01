@@ -6,6 +6,7 @@
 // Module manifest:
 //   this file  — predicates, parameter validation, permission ladder, the
 //                `sched_param`-shaped entry, fork inheritance.
+//   tests/deadline.rs — `SCHED_DEADLINE` admission, reporting and fork rules.
 //   tests/setattr.rs — end-to-end `sched_setattr(2)` flag/uclamp/slice rules.
 //                      (`#[path]` is mandatory: nested modules of a
 //                      `#[path]`-declared file resolve against
@@ -13,6 +14,7 @@
 //                      IMPLEMENTATION module — a bare `mod setattr;` silently
 //                      compiles that a second time and contributes no tests.)
 #[path = "tests/setattr.rs"] mod setattr_e2e;
+#[path = "tests/deadline.rs"] mod deadline;
 
 use super::*;
 use alloc::sync::Arc;
@@ -23,7 +25,6 @@ use syscall::errno::Errno;
 
 const EINVAL: i64 = -(Errno::Einval as i32 as i64);
 const EPERM: i64 = -(Errno::Eperm as i32 as i64);
-const EOPNOTSUPP: i64 = -(Errno::Eopnotsupp as i32 as i64);
 
 /// Unprivileged task owned by `uid`, running `policy`.
 fn task(tid: u32, uid: u32, class: SchedClass, policy: u32) -> Arc<Task> {
@@ -347,20 +348,6 @@ fn setparam_sentinel_keeps_the_current_policy() {
     assert_eq!(setscheduler(&caller, &i, SETPARAM_POLICY, 1, 0), EINVAL);
     assert_eq!(setscheduler(&caller, &i, SETPARAM_POLICY, 0, 0), 0);
     assert_eq!(task_policy(&i), SCHED_IDLE);
-}
-
-#[test]
-fn deadline_is_rejected_never_silently_run_as_normal() {
-    let caller = normal(1, 0);
-    privileged(&caller);
-    let t = normal(2, 0);
-    // sched_setscheduler(2) path: no DL parameters ⇒ EINVAL, like Linux.
-    assert_eq!(setscheduler(&caller, &t, SCHED_DEADLINE as i32, 0, 0), EINVAL);
-    // sched_setattr(2) path with well-formed DL parameters: this scheduler has
-    // no deadline class, so it refuses rather than recording a policy it would
-    // then run as SCHED_NORMAL.
-    assert_eq!(setattr(&caller, &t, &dl(1_000_000, 10_000_000, 10_000_000)), EOPNOTSUPP);
-    assert_eq!(task_policy(&t), SCHED_NORMAL);
 }
 
 // --- fork inheritance ------------------------------------------------------

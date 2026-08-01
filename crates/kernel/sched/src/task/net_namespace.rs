@@ -70,6 +70,11 @@ impl Task {
         crate::ucounts::uncharge_task(self);
         self.release_network_namespace();
         self.release_namespaces();
+        // A dying `SCHED_DEADLINE` task stops contending for good, so its
+        // admitted bandwidth is released here. Leaving it booked would make the
+        // machine permanently less admissible with every deadline task that has
+        // ever exited.
+        crate::deadline::live::leave_class(self);
         self.set_state(TaskState::Zombie);
         crate::registry::publish_pidfd_exit(self);
     }

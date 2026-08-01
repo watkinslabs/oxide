@@ -21,6 +21,8 @@ extern crate std;
 
 pub mod bh;
 pub mod cfs;
+pub mod deadline;
+pub mod dl;
 pub mod clock;
 pub mod cmdline;
 pub mod cputime;
@@ -72,6 +74,8 @@ pub use preempt::{rcu_read_lock, rcu_read_unlock};
 pub use sync::{call_rcu, note_qs as rcu_note_qs, rcu_barrier, rcu_process_callbacks, synchronize_rcu};
 
 pub use cfs::CfsRunqueue;
+pub use dl::DlRunqueue;
+pub use deadline::{DlEntity, DlParams};
 pub use task::current_ioprio;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
