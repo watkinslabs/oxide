@@ -6,11 +6,6 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-pub(crate) fn stub(name: &str, awaiting_spec: &str) -> Result<(), u8> {
-    eprintln!("xtask {name}: not yet implemented (awaiting `{awaiting_spec}` freeze + crate scaffold)");
-    Err(64)
-}
-
 // ---------------------------------------------------------------------------
 // spec-lint
 // ---------------------------------------------------------------------------

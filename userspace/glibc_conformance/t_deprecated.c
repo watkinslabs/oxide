@@ -15,7 +15,9 @@ extern int profil(unsigned short *, size_t, size_t, unsigned int);
 extern int sprofil(void *, int, void *, unsigned int);
 extern void monstartup(unsigned long, unsigned long);
 extern void moncontrol(int);
-extern void mcount(void);
+/* `mcount` is an x86_64-only weak alias; `_mcount` is the name every glibc
+   port exports. Use the portable one so the aarch64 cross-link resolves. */
+extern void _mcount(void);
 #ifdef __x86_64__
 extern int modify_ldt(int, void *, unsigned long);
 extern int iopl(int);
@@ -34,7 +36,7 @@ int main(void) {
     errno = 0; show("sprofil", sprofil(NULL, 0, NULL, 0));
     monstartup(0, 0);
     moncontrol(0);
-    mcount();
+    _mcount();
     printf("gmon=ok\n");
 #ifdef __x86_64__
     /* modify_ldt(0=read, buf, 0) reads 0 bytes of the LDT — succeeds with 0. */

@@ -223,7 +223,7 @@ debugfs -w -R 'symlink /etc/systemd/system/default.target /usr/lib/systemd/syste
 # Do not inject or boot an artifact after a host check failure: doing so would
 # retain a guest result without the Linux control required by N22.
 begin_preqemu_phase host-oracle
-cargo run -q -p xtask -- glibc-test --arch "$ARCH" --tests "$TESTS" --inject "$TESTS" --id "$ID"
+cargo run -q -p xtask -- conformance --arch "$ARCH" --tests "$TESTS" --inject "$TESTS" --id "$ID"
 
 # The lifecycle corpus needs root and its exact target-only contract is more
 # directly validated as a systemd oneshot than through an SSH transport. Boot
