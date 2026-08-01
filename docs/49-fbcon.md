@@ -2,12 +2,6 @@
 
 FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50`. Provides:graphical console glyph backend for `50` (VT).
 
-## Revision 2026-06-11 (R01)
-
-§5 table completed to match the §2.5 "full vt102/xterm" mandate (the table was an incomplete subset): added `CSI L`/`M` (insert/delete lines), `CSI X` (ECH — erase chars), and the alternate-screen modes `CSI ?47`/`?1047`/`?1049` (smcup/rmcup). These were already required by §2.5; the table now lists them. No contract change.
-
----
-
 Full Linux fbcon-equivalent surface per `linux/drivers/video/console/fbcon.c` + `linux/drivers/tty/vt/vt.c` console code paths. No deferrals.
 
 ## 1 Purpose

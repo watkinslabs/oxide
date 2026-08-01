@@ -141,7 +141,7 @@ pub trait Context: Sized {
     /// `Context.{rsp,sp}` pointing at a saved RIP/LR equal to the per-arch
     /// `oxide_irq_resume_user` resume label. Lets the IRQ epilogue of one
     /// task `Context::switch` directly into a fresh task and `iretq`/`eret`
-    /// from there. Frame layout pinned in `14§R07`.
+    /// from there. Frame layout pinned in `14§5.6`/`14§6.5`.
     /// # C: O(1)
     fn new_kernel_with_irq_frame(stack_top: *mut u8, entry: extern "C" fn(usize) -> !, arg: usize) -> Self;
 

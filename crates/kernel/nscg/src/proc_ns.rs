@@ -1,4 +1,4 @@
-// `/proc/<pid>/ns/<type>` real Inode (NsInode). Per `26§R01`.
+// `/proc/<pid>/ns/<type>` real Inode (NsInode). Per `26§5`.
 //
 // open(/proc/self/ns/uts) yields a fd whose inode is an NsInode;
 // setns(fd, nstype) downcasts via Inode::as_any, validates kind
@@ -199,7 +199,7 @@ pub fn user_ns_is_ancestor(ancestor: &NamespacePin, descendant: &NamespacePin) -
     false
 }
 
-/// Per-user-NS cap check (`27§R01`). Returns true when `cur` holds
+/// Per-user-NS cap check (`27§4`). Returns true when `cur` holds
 /// `cap` in its effective set AND `target_user_ns` is `cur.user_ns`
 /// or a descendant of it.
 /// # C: O(depth)
@@ -212,7 +212,7 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -
 /// Linux `ns_capable(ns->parent, cap)` (`kernel/user_namespace.c`
 /// `map_write`) — the writer must hold `cap` in `target_user_ns`'s PARENT
 /// (or an ancestor of the parent), not merely in `target_user_ns` itself.
-/// Gates uid_map/gid_map writes (`27§R01`). The initial user namespace has
+/// Gates uid_map/gid_map writes (`27§4`). The initial user namespace has
 /// no parent, so this is never satisfied for it. # C: O(depth)
 pub fn has_cap_in_parent_of(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
     match target_user_ns.parent() {

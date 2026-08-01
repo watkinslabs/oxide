@@ -24,7 +24,7 @@ pub fn set_drop_hook(f: fn(usize, &InodeRef)) {
     FLOCK_RELEASE_HOOK.store(f as u64, Ordering::Release);
 }
 
-/// Close-hook slot count per `16§R02`. Multiple subsystems register a
+/// Close-hook slot count per `16§2`. Multiple subsystems register a
 /// close hook (inotify IN_CLOSE_*, pipe writer/reader-count tracking,
 /// posix-lock cleanup, ext4 orphan reap); every occupied slot fires in
 /// `File::Drop`. Fixed N=4 covers the in-kernel consumers; extend if a new

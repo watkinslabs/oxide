@@ -2,28 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
-## Revision 2026-05-03 (R06)
-
-- Changed: §3 + §4 lock in the **klog-must-be-gated** invariant. Every `klog::*` call site (macros `kinfo!`/`kdebug!`/`kerror!`/`kfatal!`/`klog!` and the byte-emit helpers `write_raw`/`write_hex_u64`/`write_dec_u64`/`set_byte_sink`) MUST be inside a per-subsystem `#[cfg(feature = "debug-<sub>")]` gate or one of the `debug_<sub>!` per-crate macros that erase to `()` when the feature is off. Default builds emit zero log bytes; the call site is absent from the binary, not "filtered at runtime".
-- Why: the runtime level filter described in §4 still costs a load+branch per call site and pulls the format-string entry into `.klog_strings`. For a kernel-class hot path (timer ISR, syscall fast-path, PMM alloc), even that is too much. A user-reported drift on the boot trace (PMM stress dumps + ACPI walks unconditionally compiled in even when nobody wanted them) made it concrete: gating policy belongs at the call site, not inside the logger.
-- Added: `debug-boot` feature for the operational-pulse trace (`init started`, `pmm: ready`, `gic: enabled`, `lapic: enabled`, `boot: kernel ready`, `pl011: switched klog sink`, etc.) so even those lines disappear in production. `debug-all` aggregate adds it.
-- Affected code: `kernel/Cargo.toml` features list; `kernel/src/lib.rs` + every kernel-side `klog::*` call site; per-crate `debug_<sub>!` macro pairs (cfg-on → body, cfg-off → `()`).
-- Test contract: spec-lint adds `code/klog-ungated` rule — flags any `klog::` use whose enclosing scope is not under one of the allowed `cfg(feature = "debug-...")` forms (direct `cfg`, the macro pair pattern, or a function/module that itself carries a matching cfg attr). Initial sweep done in branch `D03-klog-must-be-gated`; lint enforcement lands alongside.
-
-## Revision 2026-05-03 (R05)
-
-- Changed: §3 feature list adds `debug-acpi` (RSDP/XSDT/MADT/HPET/SPCR/MCFG/GTDT decoder traces) and folds it into `debug-all`. The existing `debug-pmm`/`debug-vmm`/`debug-irq` buckets stay; ACPI table walking is its own surface and needed its own gate.
-- Why: aarch64 + x86_64 boot-time bring-up needed per-subsystem trace gates so a developer chasing an IRQ-routing bug isn't paying for PMM stress dumps + ACPI walks + memmap pretty-print on every boot. Single `debug-boot` would have collapsed signals across subsystems and is rejected.
-- Affected code: `kernel/Cargo.toml` features; `kernel/src/lib.rs` call-site `cfg(feature=…)`-elided diagnostic blocks (PMM smoke + memmap dump under `debug-pmm`; HPET-cap + GICD-typer device-map dumps under `debug-vmm`; LAPIC/GIC enable diags + polled-timer + IRQ stress under `debug-irq`; ACPI walk under `debug-acpi`).
-- Test contract change: none. CI matrix in `40` already runs no-features + `debug-all`; the new `debug-acpi` rides the same matrix.
-
-## Revision 2026-05-02 (R04)
-
-- Changed: §4 backend description tightened. Adds the frozen invariant **"klog producer-side macros are safe in any context"** (process, IRQ, NMI, spinlock-held, preempt-disabled, RCU read-side); pins the per-CPU lockless ring + deferred-drain design so callers don't have to context-audit every call site.
-- Why: Linux's `printk` discipline. Without this contract, every klog call site needs review for "is my caller holding a spinlock? am I in NMI? am I in IRQ?" — which scales linearly with the call graph and silently rots. Locking it down at the producer-API level eliminates the audit burden and matches `printk` semantics.
-- Affected code: `crates/klog/` re-implements the producer + per-CPU ring + drainer kthread once `crates/sync/percpu.rs` lands. Existing call sites stay valid (already pure macro use). Boot-path UART sink unchanged.
-- Test contract change: §4 adds a loom MPSC test (P-ctx + IRQ + NMI producers per CPU) + a stress drop-counter test.
-
 Sister of `03`. Modernity = what; this = how-fast. Perf is design constraint, not tuning phase. Debug per-feature, free-when-off. One logger, structured, per-target levels.
 
 ## 1 Hot paths (frozen budgets)
@@ -110,7 +88,7 @@ CI matrix: release no-features, release `debug-all`, dev each `debug-*` solo.
 
 One logger. `klog`. Not `println!`/`log`/three traits.
 
-### 4.0 Call-site gating (frozen, R06)
+### 4.0 Call-site gating (frozen)
 
 **Every `klog::*` call site is `cfg`-elidable.** Default builds emit zero log bytes. The runtime per-target level filter (§4.5) layers on top — it is *not* a substitute for compile-time elision. Specifically:
 
@@ -245,4 +223,3 @@ Per-subsystem spec frozen-section inherits these.
 ## 8 Changelog
 
 (none)
-

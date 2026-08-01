@@ -29,8 +29,8 @@ const _: () = assert!(
 extern crate kmacros;
 
 // Per `04§4.0` R06: trace-only modules are cfg-gated at decl.
-// ACPI walker = `crates/firmware` (`33§R01`); ns inodes =
-// `crates/nscg` (`26§R01`). Re-exports keep call sites stable.
+// ACPI walker = `crates/firmware` (`33§4`); ns inodes =
+// `crates/nscg` (`26§5`). Re-exports keep call sites stable.
 pub use firmware::acpi;
 #[cfg(target_os = "oxide-kernel")]
 pub use nscg::proc_ns as dev_proc_ns;

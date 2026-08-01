@@ -216,7 +216,7 @@ impl Context for ContextX86_64 {
     /// synthetic entry frame matching what the IRQ epilogue
     /// (`oxide_irq_resume_user`) pops. Lets the scheduler `Context::switch`
     /// directly into a fresh task and `iretq` from the same epilogue.
-    /// Layout pinned in `14§R07`; scaffold = saved-RIP + one `PtRegs` =
+    /// Layout pinned in `14§5.6`; scaffold = saved-RIP + one `PtRegs` =
     /// 8 + 0xb0 = 184 B starting at `Context.rsp`, growing toward
     /// `stack_top`:
     ///

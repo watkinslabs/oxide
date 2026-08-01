@@ -1,0 +1,9 @@
+# D451-flatten-revision-blocks — findings
+
+| Status | Item | Evidence |
+|---|---|---|
+| OPEN | `docs/30` R01 recorded an io_uring implementation subset (register = silent-0, no shared ring mmap, opcode list) that contradicts the `30` body, which specifies the full Linux surface. Block deleted as stale status, not spec. Whether the code still matches that subset is unverified by this lane. | `30§2` invariants + `30§?` register-buffers text vs the deleted R01 text |
+| OPEN | `docs/27` R02 recorded a cBPF-only `bpf(2)` subset with "eBPF + verifier + JIT tracked as phase 23"; `27§5` body still says seccomp filter mode returns ENOSYS with BPF "phase 23". Deferral framing survives in the body and conflicts with the no-v2 rule (`02§9` rule 8). Not fixed here (spec-content change, out of scope for a flattening PR). | `27§5` lines "Now: returns ENOSYS for filter mode (BPF tracked as phase 23)" |
+| OPEN | `docs/26` R84 recorded a known gap kept out of the body: `getuid` family, `stat`/`chown` owner munging, `setresuid`/`setresgid` bound checks and `/proc` cross-ns visibility still operate on host ids with no user-ns translation step, so `26§2` invariant 6 is not enforced at those call sites. Engine + procfs views are complete; the call-site wiring is not. | deleted `26` R84 block; `crates/kernel/user-namespace` has the engine, callers do not use it |
+| OPEN | `docs/14` R07 pinned an aarch64 scaffold of 192 B; the shipped code is 288 B (extra `sp_el0`/pad/`x19..x28`) and the x86 scaffold is 184 B, not 136 B. The revision block had drifted from the code. `14§5.6`/`14§6.5` now state the code's layout. | `crates/arch/hal-{x86_64,aarch64}/src/context.rs` doc-comments |
+| INFO | No boot run: this PR changes only markdown and Rust comments (`git diff crates/` has zero non-comment lines). | `git diff crates/ \| grep -v '^[+-]\s*//'` empty |
