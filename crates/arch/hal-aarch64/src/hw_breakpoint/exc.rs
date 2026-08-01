@@ -154,7 +154,7 @@ pub fn watch_distance(addr: u64, val: u64, bas: u8) -> u64 {
     if bas == 0 { return u64::MAX; }
     let low = val.wrapping_add(bas.trailing_zeros() as u64);
     let high = val.wrapping_add((u8::BITS - 1 - bas.leading_zeros()) as u64);
-    if addr < low { low - addr } else if addr > high { addr - high } else { 0 }
+    if addr < low { low - addr } else { addr.saturating_sub(high) }
 }
 
 /// Armed DBGWVR/DBGWCR slot the reported data address belongs to.
