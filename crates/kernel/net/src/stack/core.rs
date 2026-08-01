@@ -10,7 +10,6 @@ impl NetStack {
             routes6: Route6Table::new(),
             arp_proxy: crate::arp::proxy::ProxyTable::new(),
             bridges: crate::stack::bridge::BridgeTable::new(),
-            arp:        Spinlock::new(BTreeMap::new()),
             bridge_pending: Spinlock::new(BTreeMap::new()),
             inet: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),

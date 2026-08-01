@@ -12,7 +12,9 @@ impl NetStack {
     pub(crate) fn bridge_xmit_l3(&self, bridge: NetIfaceId, packet: crate::Pkt) -> NetResult<()> {
         let next_hop = packet.next_hop.ok_or(NetError::Edestaddrreq)?;
         let destination = match next_hop {
-            crate::pkt::TxNextHop::V4(target) => self.arp_lookup(bridge, target),
+            crate::pkt::TxNextHop::V4(target) => self.ifaces.acquire_ingress(bridge)
+                .and_then(|lease| self.ifaces.arp_cache_in_ns(bridge, lease.net_ns()))
+                .and_then(|cache| cache.lookup(target)),
             crate::pkt::TxNextHop::V6 { addr, .. } => self.ndp_lookup(bridge, addr),
         };
         let Some(destination) = destination else {
