@@ -359,45 +359,33 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // unscoped here let `openat2(dirfd, "/etc/x", O_CREAT, {RESOLVE_IN_ROOT})`
         // create at the REAL /etc: the scoped full-path walk clamps and returns
         // ENOENT, then this branch re-walked from the process root.
-        let parent_flags = crate::openat2_resolve::parent_lookup_flags(&extra);
-        // A create whose final component is a DANGLING symlink creates what the
-        // link points at, not the link's own name — the whole-path walk above
-        // already followed the link and returned ENOENT for its missing target,
-        // so reaching here with a symlink in the parent means exactly that.
-        // Creating at the link's name instead fails EEXIST, which is only ever
-        // correct for O_EXCL, and made `/etc/resolv.conf` (shipped as such a
-        // link) unwritable by anything. O_EXCL and O_NOFOLLOW keep the link
-        // itself as the target, as the reference does.
-        let follow_final_link = (flags & (O_EXCL | O_NOFOLLOW)) == 0;
-        let mut link_hops: u32 = 0;
-        let mut create_at = alloc::string::String::from(s);
-        let (parent, name) = loop {
-            let parent = match crate::pathresolve::resolve_parent_at_flags(
-                args.a0 as i32, create_at.as_str(), parent_flags)
-            {
-                Ok(x) => x,
-                Err(rv) => {
-                    #[cfg(feature = "debug-eacces")]
-                    if rv == -(Errno::Eacces.as_i32() as i64) {
-                        crate::namei_common::trace_create_resolve_eacces(b"openat-create", s);
-                    }
-                    return rv;
+        // A create whose final component is a symlink acts on what the link
+        // points at, not on the link's own name — the ONE LOOKUP_FOLLOW bit the
+        // shared parent resolver already understands. O_EXCL and O_NOFOLLOW
+        // clear it and keep the link itself as the subject; O_EXCL outranks
+        // O_NOFOLLOW because its EEXIST is decided before the permission step
+        // that reports ELOOP for a bare O_NOFOLLOW.
+        let mut parent_flags = crate::openat2_resolve::parent_lookup_flags(&extra);
+        parent_flags.follow = matches!(
+            crate::pathresolve::final_symlink_action(
+                (flags & O_EXCL) != 0, (flags & O_NOFOLLOW) != 0),
+            crate::pathresolve::FinalLink::Follow);
+        parent_flags.no_follow_final = !parent_flags.follow;
+        let parent = match crate::pathresolve::resolve_parent_at_flags(
+            args.a0 as i32, s, parent_flags)
+        {
+            Ok(x) => x,
+            Err(rv) => {
+                #[cfg(feature = "debug-eacces")]
+                if rv == -(Errno::Eacces.as_i32() as i64) {
+                    crate::namei_common::trace_create_resolve_eacces(b"openat-create", s);
                 }
-            };
-            let name = match parent.last_component.clone() {
-                Some(n) => n,
-                None    => return -(Errno::Einval.as_i32() as i64),
-            };
-            if !follow_final_link { break (parent, name); }
-            let Ok(existing) = parent.inode.lookup(&name) else { break (parent, name) };
-            if existing.file_type() != vfs::FileType::Symlink { break (parent, name); }
-            let Ok(target) = existing.readlink() else { break (parent, name) };
-            let Ok(target) = core::str::from_utf8(&target) else { break (parent, name) };
-            link_hops += 1;
-            if link_hops > crate::create_follow::MAX_CREATE_LINK_HOPS {
-                return -(Errno::Eloop.as_i32() as i64);
+                return rv;
             }
-            create_at = crate::create_follow::next_create_path(create_at.as_str(), target);
+        };
+        let name = match parent.last_component.clone() {
+            Some(n) => n,
+            None    => return -(Errno::Einval.as_i32() as i64),
         };
         let Some(mnt) = vfs::mount::mount_by_id(parent.mnt_id) else { return -(Errno::Enoent.as_i32() as i64); };
         if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {

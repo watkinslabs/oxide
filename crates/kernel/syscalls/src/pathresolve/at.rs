@@ -105,8 +105,30 @@ pub fn resolve_at_path_cred(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, 
 /// create-path exception in `fs/namei.c` `path_openat`).
 /// # C: O(components × dir-lookup) + O(symlinks)
 pub fn resolve_parent_at_flags(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
-    if flags.confines_to_dirfd() { return resolve_confined(dirfd, raw, flags); }
-    resolve_at_path(dirfd, raw, flags)
+    let mut at = alloc::string::String::from(raw);
+    let mut hops: u32 = 0;
+    loop {
+        let vp = if flags.confines_to_dirfd() { resolve_confined(dirfd, at.as_str(), flags)? }
+                 else { resolve_at_path(dirfd, at.as_str(), flags)? };
+        // LOOKUP_FOLLOW on a parent walk means exactly what it means in the
+        // reference: a symlink as the FINAL component is resolved, so the
+        // caller acts on what the link points at rather than on the link's own
+        // name. It is the single bit that separates the create family (clear —
+        // an existing final component is EEXIST) from `open(O_CREAT)` (set —
+        // the create lands on the link's target). One walk, one flag; there is
+        // no second resolver for either.
+        if !flags.follow { return Ok(vp); }
+        let Some(name) = vp.last_component.clone() else { return Ok(vp) };
+        let Ok(existing) = vp.inode.lookup(&name) else { return Ok(vp) };
+        if existing.file_type() != vfs::FileType::Symlink { return Ok(vp); }
+        let Ok(target) = existing.readlink() else { return Ok(vp) };
+        let Ok(target) = core::str::from_utf8(&target) else { return Ok(vp) };
+        hops += 1;
+        if hops > super::trailing_link::MAX_CREATE_LINK_HOPS {
+            return Err(-(Errno::Eloop.as_i32() as i64));
+        }
+        at = super::trailing_link::next_create_path(at.as_str(), target);
+    }
 }
 
 /// Unscoped parent resolve — the `mknodat`/`linkat`/`symlinkat` family, which

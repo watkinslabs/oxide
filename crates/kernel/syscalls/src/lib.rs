@@ -72,10 +72,6 @@ pub mod handle_policy;
 // kernel-gated, and dropping a RESOLVE_* bit on the O_CREAT parent walk is a
 // sandbox escape, so the decision lives here where the hosted suite reaches it.
 pub mod openat2_resolve;
-// Where an O_CREAT open lands when its final component is a dangling symlink.
-// The slot file is kernel-gated and the answer is observable only as a created
-// path or an errno, so the rule lives here where the hosted suite reaches it.
-pub mod create_follow;
 // clone(2) 56 / fork(2) 57 / vfork(2) 58 / clone3(2) 435: the `CLONE_*` bit
 // names, the versioned `struct clone_args` layout and BOTH entry points'
 // validation ladders. The slot files are kernel-gated, and every rule here is
