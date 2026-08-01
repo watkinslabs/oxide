@@ -15,6 +15,19 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         Some(i)
     }
 
+    /// Mint the next `i_generation` for an inode this instance builds with no
+    /// backend-supplied one. Never returns [`crate::export::GENERATION_ANY`],
+    /// which is the "unversioned" wildcard a handle matches unconditionally —
+    /// handing it out would silently disable recycle detection for whichever
+    /// inode drew it.
+    /// # C: O(1)
+    pub fn next_inode_generation(&self) -> u32 {
+        let g = self.s_next_generation.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if g == crate::export::GENERATION_ANY {
+            self.s_next_generation.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        } else { g }
+    }
+
     /// Upgrade the icache `Weak` for `ino` UNCONDITIONALLY (dying slots too) —
     /// the raw accessor behind the per-ino `i_state`/`i_nlink` helpers. # C: O(log N_ino)
     fn icache_upgrade(&self, ino: Ino) -> Option<InodeRef> {
@@ -79,6 +92,9 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         if inode.nlink() != 0 { let _ = self.s_op.write_inode(&inode, true); }
         inode.set_state(I_FREEING, I_WILL_FREE);
         self.s_op.evict_inode(&inode); // default: clear_inode (I_FREEING|I_CLEAR)
+        // The inode is leaving the cache. A mark that asked not to pin its
+        // object leaves with it; one that did not is unaffected.
+        crate::file::fire_inode_evict_hook(&inode);
         self.wb_forget(ino); // dirty bits gone → drop the writeback pin
         self.icache.lock().remove(&ino);
     }

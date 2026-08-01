@@ -1,14 +1,15 @@
-// name_to_handle_at(2) per `15§5` / `16`. Linux exportable file handles:
-// encode inode identity so userspace can test two paths for same-inode-ness
-// without holding fds open. systemd uses it in mountpoint detection and chroot
-// checks, comparing the FID plus the returned mount id.
+// name_to_handle_at(2) per `15§5` / `16`. Exportable file handles: encode an
+// object's identity so userspace can compare two paths for same-object-ness
+// without holding fds open, and so `open_by_handle_at(2)` (304) can reopen it
+// with no path walk at all.
 //
-// The handle we emit is the 8-byte inode number (FILEID-style); the returned
-// mount id is the resolved `struct path` mount id. Same inode + same mount id
-// means userspace sees the same mounted object. open_by_handle_at (the reverse)
-// is 304_open_by_handle_at.rs, decoding this same FID.
+// The handle carries `(ino, i_generation)`, never a bare inode number: an inode
+// number alone is reusable, so a handle minted against a deleted file would
+// silently open whatever later inherited its number. `AT_HANDLE_CONNECTABLE`
+// additionally encodes the PARENT's identity for a non-directory, which is what
+// lets 304 hand back a dentry with a real name instead of an anonymous alias.
 //
-// ABI constants, flag masks and the capacity protocol live in
+// ABI constants, flag masks, the FID codec and the capacity protocol live in
 // `crate::handle_policy` (hosted-tested); this file is the shim (docs/53).
 
 #![cfg(target_os = "oxide-kernel")]
@@ -16,8 +17,8 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::handle_policy::{FID_LEN, FILEID_IS_CONNECTABLE, FILEID_IS_DIR, HANDLE_HDR,
-    HANDLE_TYPE_INO, handle_capacity_check, name_to_handle_flags_check};
+use crate::handle_policy::{FID_LEN_PARENT, FILEID_IS_CONNECTABLE, FILEID_IS_DIR, Fid, HANDLE_HDR,
+    encode_fid, encoded_fid_len, handle_capacity_check, name_to_handle_flags_check};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 #[cfg(feature = "debug-mount")]
@@ -34,9 +35,10 @@ fn log_runtime_handle(op: &'static str, dirfd: i32, path_ptr: u64, rv: i64) {
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// Write `handle_bytes` back and report EOVERFLOW — Linux's grow-and-retry
-/// protocol (`do_sys_name_to_handle`: on `FILEID_INVALID` it stores the size
-/// the encoder needs, copies out only the fixed header, and returns EOVERFLOW).
+/// Write `handle_bytes` back and report EOVERFLOW — the grow-and-retry
+/// protocol: on an undersized buffer the kernel stores the size the encoder
+/// needs, copies out only the fixed header, and fails, so the caller can
+/// reallocate and retry.
 /// # C: O(1)
 fn overflow(handle_ptr: u64, needed: u32) -> i64 {
     if let Err(rv) = validate_user_buf_writable(handle_ptr, 4, 1) { return rv; }
@@ -47,13 +49,15 @@ fn overflow(handle_ptr: u64, needed: u32) -> i64 {
 
 /// `sys_name_to_handle_at(dirfd, path, handle, mount_id, flags)` — slot 303.
 /// Resolves the target inode (AT_EMPTY_PATH ⇒ dirfd; else path, following the
-/// final symlink only with AT_SYMLINK_FOLLOW), then writes an 8-byte inode FID
-/// into `handle->f_handle` with `handle_type = 1` and the mount id into
-/// `*mount_id` (a `u64` under AT_HANDLE_MNT_ID_UNIQUE, otherwise an `int`).
+/// final symlink only with AT_SYMLINK_FOLLOW), writes its `(ino, generation)`
+/// FID into `handle->f_handle` — plus the parent's under AT_HANDLE_CONNECTABLE
+/// for a non-directory — and the mount id into `*mount_id` (a `u64` under
+/// AT_HANDLE_MNT_ID_UNIQUE, otherwise an `int`).
 /// Errors: EINVAL (bad/conflicting flags, `handle_bytes > MAX_HANDLE_SZ`),
-/// whatever the path walk reports, EOVERFLOW (buffer too small — with the
-/// needed size written back, and for AT_HANDLE_CONNECTABLE, which this
-/// encoder cannot satisfy), EFAULT.
+/// EOPNOTSUPP (the filesystem cannot decode what it would encode), whatever the
+/// path walk reports, EOVERFLOW (buffer too small, with the needed size written
+/// back), ESTALE (a connectable request for an object with no reachable
+/// parent), EFAULT.
 /// # C: O(N_path)
 pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     let dirfd = args.a0 as i32;
@@ -72,48 +76,69 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
         follow: opts.follow,
         ..Default::default()
     };
-    let (inode, mount_id) = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
-        Ok(p)  => (p.inode, p.mnt_id),
+    let path = match crate::pathresolve::resolve_at_lookup(dirfd, path_ptr, lf) {
+        Ok(p)  => p,
         Err(rv) => {
             #[cfg(feature = "debug-mount")]
             log_runtime_handle("name_to_handle_resolve", dirfd, path_ptr, rv);
             return rv;
         }
     };
+    let inode = path.inode.clone();
+    let mount_id = path.mnt_id;
+    let is_dir = inode.file_type() == vfs::FileType::Directory;
+
+    // A filesystem that cannot turn its own handles back into inodes must not
+    // mint one a caller will later fail to open (`exportfs_can_encode_fh`).
+    if let Some(sb) = inode.i_sb() {
+        if !sb.s_op.export_can_decode_fh() { return err(Errno::Eopnotsupp); }
+    }
 
     // handle->handle_bytes is the caller-supplied capacity; the header is read
     // then written back, so the struct must be readable here and writable below.
     if let Err(rv) = validate_user_buf(handle_ptr, HANDLE_HDR, 1) { return rv; }
     // SAFETY: handle_ptr validated readable for HANDLE_HDR bytes in the caller's AS by validate_user_buf; unaligned u32 read of the handle_bytes field.
     let cap = unsafe { core::ptr::read_unaligned(handle_ptr as *const u32) };
-    match handle_capacity_check(cap) {
+    let needed = encoded_fid_len(opts.connectable, is_dir);
+    match handle_capacity_check(cap, needed) {
         Err(e)          => return err(e),
         Ok(Err(needed)) => return overflow(handle_ptr, needed),
         Ok(Ok(()))      => {}
     }
-    // A connectable handle must encode the PARENT as well, so the decoded fd
-    // has a known path. This encoder emits an inode-only FID and has no parent
-    // to add, which is exactly Linux's `FILEID_INVALID` case — and Linux maps
-    // that to EOVERFLOW, with the needed size written back.
-    if opts.connectable { return overflow(handle_ptr, FID_LEN); }
 
-    let fid = inode.ino().to_le_bytes();
-    // 303 marks a directory handle so 304 can tell one from a disconnected
-    // non-directory alias (Linux stores FILEID_IS_DIR in the same field).
-    let htype = if inode.file_type() == vfs::FileType::Directory {
-        HANDLE_TYPE_INO | FILEID_IS_DIR
-    } else {
-        HANDLE_TYPE_INO
-    };
-    let _ = FILEID_IS_CONNECTABLE; // never set: see the `opts.connectable` arm above
-    if let Err(rv) = validate_user_buf_writable(handle_ptr, HANDLE_HDR + FID_LEN as u64, 1) {
+    // A connectable NON-directory needs its parent's identity in the handle;
+    // a directory does not, because it has exactly one dentry and decode
+    // reconnects it by walking `..`. AT_EMPTY_PATH is already rejected
+    // alongside AT_HANDLE_CONNECTABLE, so the resolved dentry always has a
+    // parent here unless it is a filesystem root.
+    let parent = if opts.connectable && !is_dir {
+        let pi = path.dentry.parent().and_then(|p| p.inode());
+        match pi {
+            Some(p) => Some((p.ino(), p.i_generation())),
+            None    => return err(Errno::Estale),
+        }
+    } else { None };
+
+    let mut fid_buf = [0u8; FID_LEN_PARENT as usize];
+    let (fid_len, fid_type) = encode_fid(&Fid {
+        ino: inode.ino(), generation: inode.i_generation(), parent }, &mut fid_buf);
+    // The user flags ride in `handle_type` so 304 knows how to decode without
+    // out-of-band state: CONNECTABLE says "reconnect me", IS_DIR says which of
+    // the two reconnect shapes applies.
+    let mut htype = fid_type;
+    if opts.connectable {
+        htype |= FILEID_IS_CONNECTABLE;
+        if is_dir { htype |= FILEID_IS_DIR; }
+    }
+
+    if let Err(rv) = validate_user_buf_writable(handle_ptr, HANDLE_HDR + fid_len as u64, 1) {
         return rv;
     }
-    // SAFETY: handle_ptr validated writable for header+FID bytes in the caller's AS; unaligned field writes of handle_bytes, handle_type, then the 8-byte inode FID.
+    // SAFETY: handle_ptr validated writable for header+FID bytes in the caller's AS; unaligned field writes of handle_bytes, handle_type, then the FID payload.
     unsafe {
-        core::ptr::write_unaligned(handle_ptr as *mut u32, FID_LEN);
+        core::ptr::write_unaligned(handle_ptr as *mut u32, fid_len);
         core::ptr::write_unaligned((handle_ptr + 4) as *mut i32, htype);
-        for (i, b) in fid.iter().enumerate() {
+        for (i, b) in fid_buf[..fid_len as usize].iter().enumerate() {
             core::ptr::write_unaligned((handle_ptr + HANDLE_HDR + i as u64) as *mut u8, *b);
         }
     }
