@@ -177,10 +177,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpio"
-version = "0.1.0"
-
-[[package]]
 name = "cpu"
 version = "0.1.0"
 dependencies = [
@@ -197,10 +193,6 @@ version = "0.1.0"
 dependencies = [
  "sync",
 ]
-
-[[package]]
-name = "crt1"
-version = "0.1.0"
 
 [[package]]
 name = "crypt"
@@ -233,14 +225,6 @@ dependencies = [
  "sync",
  "tty",
  "vfs",
-]
-
-[[package]]
-name = "dl"
-version = "0.1.0"
-dependencies = [
- "elf",
- "modules",
 ]
 
 [[package]]
@@ -625,10 +609,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "folded-stub"
-version = "0.1.0"
-
-[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -708,16 +688,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glibc"
-version = "0.1.0"
-dependencies = [
- "crypt",
- "libc",
- "nss",
- "proptest",
-]
-
-[[package]]
 name = "hal"
 version = "0.1.0"
 dependencies = [
@@ -790,10 +760,6 @@ dependencies = [
  "serde",
  "serde_core",
 ]
-
-[[package]]
-name = "inflate"
-version = "0.1.0"
 
 [[package]]
 name = "input"
@@ -955,13 +921,6 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-
-[[package]]
-name = "ldso"
-version = "0.1.0"
-dependencies = [
- "elf",
-]
 
 [[package]]
 name = "leb128fmt"
@@ -1179,10 +1138,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nss"
-version = "0.1.0"
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1201,27 +1156,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "obs"
-version = "0.1.0"
-dependencies = [
- "hal",
- "klog",
- "sync",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "pam"
-version = "0.1.0"
-dependencies = [
- "crypt",
- "nss",
-]
 
 [[package]]
 name = "pci"
@@ -1286,15 +1224,6 @@ version = "0.1.0"
 dependencies = [
  "crypt",
  "mpi",
-]
-
-[[package]]
-name = "pkg"
-version = "0.1.0"
-dependencies = [
- "cpio",
- "inflate",
- "rpm",
 ]
 
 [[package]]
@@ -1490,10 +1419,6 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
-
-[[package]]
-name = "rpm"
-version = "0.1.0"
 
 [[package]]
 name = "rustix"
@@ -1740,10 +1665,6 @@ version = "0.1.0"
 [[package]]
 name = "structured-zstd"
 version = "0.0.49"
-
-[[package]]
-name = "svc"
-version = "0.1.0"
 
 [[package]]
 name = "syn"
