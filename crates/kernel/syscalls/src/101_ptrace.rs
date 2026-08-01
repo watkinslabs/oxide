@@ -14,6 +14,7 @@
 //   101_ptrace/sysinfo.rs `struct ptrace_syscall_info` layout + validation
 //   101_ptrace/stop.rs   ptrace_notify/ptrace_event/ptrace_init_task/
 //                        exit_ptrace — the live event-stop producers
+//   dispatch/entry_order.rs `syscall_trace_enter`'s phase order (ungated)
 //   101_ptrace/info.rs   PEEKSIGINFO, GET/SET_SYSCALL_INFO, SECCOMP_GET_*,
 //                        GET_RSEQ_CONFIGURATION (kernel-only)
 //
