@@ -62,6 +62,20 @@ impl MsgCred {
     #[cfg(not(target_os = "oxide-kernel"))]
     pub fn of_current(fallback: (u32, u32, u32)) -> Self { Self::from_ids(fallback) }
 
+    /// Whether two stamps name the same writer, which is what decides if a
+    /// stream receive may glue their bytes into one read. Two pinned
+    /// identities are the same writer only when they are the same process —
+    /// equal pid NUMBERS are not enough, since two pid namespaces number
+    /// different processes alike. # C: O(1)
+    pub fn same_sender(&self, other: &Self) -> bool {
+        if self.uid != other.uid || self.gid != other.gid { return false; }
+        match (&self.identity, &other.identity) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => self.pid == other.pid,
+            _ => false,
+        }
+    }
+
     /// The `{pid,uid,gid}` triple to hand the reader running now, with the pid
     /// expressed in that reader's pid namespace. A sender the reader's
     /// namespace does not number at all reports pid 0, which is what a

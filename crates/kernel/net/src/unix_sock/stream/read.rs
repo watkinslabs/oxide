@@ -17,41 +17,60 @@ pub enum ReadOutcome {
 
 impl UnixPair {
     /// Drain up to `max` bytes from the ring `end` reads from, as a
-    /// plain `read(2)`/`recvfrom(2)` with no control buffer.
-    ///
-    /// S8: this path has NO ancillary buffer, so any SCM_RIGHTS fds
-    /// riding the drained bytes are DROPPED (Linux discards an skb's
-    /// `fp` fds on a read without msg_control). It is byte-identical to
-    /// the pre-fd behaviour for the caller: it drains all available
-    /// bytes up to `max` (never caps at an fd boundary) and only returns
-    /// empty when the ring is empty - so the blocking read path's
-    /// park/wake timing is UNCHANGED and cannot lose a wakeup. Dropped
-    /// fds are released AFTER the ring lock is dropped (fput may take
-    /// other locks - never under the ring spinlock).
+    /// plain `read(2)`/`recvfrom(2)` with no control buffer and no
+    /// credential passing.
     /// # C: O(min(max, queue))
     pub fn read(&self, end: UnixEnd, max: usize) -> Vec<u8> {
+        self.read_passcred(end, max, false)
+    }
+
+    /// `read` for a receiver whose socket may pass credentials.
+    ///
+    /// This path has NO ancillary buffer, so any SCM_RIGHTS descriptors
+    /// riding the drained bytes are DISCARDED — the receiver is told
+    /// nothing about them beyond the truncation it cannot observe here.
+    /// The boundaries they create are still honoured: the receive stops
+    /// after a descriptor-bearing segment, and, when `passcred`, before a
+    /// segment stamped by a different writer. Discarded descriptors are
+    /// released AFTER the ring lock is dropped (closing a file may take
+    /// other locks — never under the ring spinlock).
+    /// # C: O(min(max, queue) + segments)
+    pub fn read_passcred(&self, end: UnixEnd, max: usize, passcred: bool) -> Vec<u8> {
         let mut rights_later: Vec<GcRights> = Vec::new();
         let out = {
             let mut g = match end {
                 UnixEnd::A => self.b_to_a.lock(),
                 UnixEnd::B => self.a_to_b.lock(),
             };
-            let take = core::cmp::min(max, g.buf.len());
+            let stop = super::coalesce::coalesce_stop(
+                g.ancillary.iter().map(|(off, rights, cred)| super::coalesce::Segment {
+                    off: *off, has_rights: !rights.is_empty(), cred,
+                }), g.consumed, g.produced, passcred);
+            let allowed = stop.saturating_sub(g.consumed) as usize;
+            let take = core::cmp::min(core::cmp::min(max, allowed), g.buf.len());
             let mut out = Vec::with_capacity(take);
             for _ in 0..take {
                 out.push(g.buf.pop_front().unwrap());
             }
             g.consumed += take as u64;
-            // Discard every burst whose first byte is now behind the
-            // cursor (it rode bytes we just handed over without a cmsg).
+            // A segment gives up its descriptors as soon as ANY of its bytes
+            // has been handed over without a cmsg, and is retired once its
+            // last byte is gone. A partly-drained segment stays so the bytes
+            // still queued keep naming their sender.
             loop {
-                match g.ancillary.front() {
-                    Some((off, _, _)) if *off < g.consumed => {
-                        let (_, f, _) = g.ancillary.pop_front().unwrap();
-                        rights_later.push(f);
-                    }
-                    _ => break,
+                let Some((off, _, _)) = g.ancillary.front() else { break };
+                if *off >= g.consumed { break; }
+                let segment_end = g.ancillary.get(1).map(|(next, _, _)| *next).unwrap_or(g.produced);
+                if segment_end <= g.consumed {
+                    let (_, f, _) = g.ancillary.pop_front().unwrap();
+                    rights_later.push(f);
+                    continue;
                 }
+                let Some((_, rights, _)) = g.ancillary.front_mut() else { break };
+                if !rights.is_empty() {
+                    rights_later.push(core::mem::replace(rights, GcRights::from_files(Vec::new())));
+                }
+                break;
             }
             out
         };
@@ -78,7 +97,7 @@ impl UnixPair {
     /// MUST `schedule()` after a `Parked` return (the ring lock is released
     /// here). # C: O(min(max, queue))
     #[cfg(target_os = "oxide-kernel")]
-    pub fn read_or_park(&self, end: UnixEnd, max: usize, deadline_ns: u64) -> ReadOutcome {
+    pub fn read_or_park(&self, end: UnixEnd, max: usize, deadline_ns: u64, passcred: bool) -> ReadOutcome {
         let read_ring = match end {
             UnixEnd::A => &self.b_to_a,
             UnixEnd::B => &self.a_to_b,
@@ -86,7 +105,7 @@ impl UnixPair {
         let g = read_ring.lock();
         if !g.buf.is_empty() {
             drop(g);
-            return ReadOutcome::Data(self.read(end, max));
+            return ReadOutcome::Data(self.read_passcred(end, max, passcred));
         }
         if self.take_reset(end) {
             drop(g);

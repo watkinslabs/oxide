@@ -45,6 +45,7 @@ fn test_gpu_dev(device_key: virtio::VirtioChildDeviceKey, bdf: u32) -> crate::Vi
         ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
         features_negotiated: 0,
         display: crate::DisplayInfo::default(),
+        edid: None,
         resource_id_alloc: core::sync::atomic::AtomicU32::new(1),
         blob_uuid_alloc: core::sync::atomic::AtomicU64::new(1),
         capset_count: 0,

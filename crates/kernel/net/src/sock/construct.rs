@@ -29,7 +29,17 @@ impl InetSocket {
     fn new_owned(owner: Arc<crate::SocketOwner>,
                  bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                  error: Arc<crate::SocketError>, kind: SockKind) -> Self {
-        Self {
+        // Linux seeds every socket from `wmem_default`/`rmem_default` and lets
+        // the protocol replace them when it initialises, which is why a fresh
+        // TCP socket reports a much smaller send buffer than a fresh datagram
+        // or AF_UNIX one.
+        let personality = match kind {
+            SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) =>
+                crate::sysctl::BufPersonality::Tcp,
+            _ => crate::sysctl::BufPersonality::Generic,
+        };
+        let (sndbuf, rcvbuf) = crate::sysctl::initial_bufs(&owner.net_namespace, personality);
+        let sock = Self {
             family: core::sync::atomic::AtomicU16::new(AF_INET), local_port: Spinlock::new(None),
             local_ip: Spinlock::new(Ipv4Addr::ANY), peer: Arc::new(Spinlock::new(None)),
             udp4: Spinlock::new(None), udp6: Spinlock::new(None), tcp_bind: Spinlock::new(None),
@@ -55,7 +65,10 @@ impl InetSocket {
             receive_timestamp_ns: core::sync::atomic::AtomicU64::new(crate::sock::SOCKET_TIMESTAMP_UNSET),
             receive_timestamp_enabled: core::sync::atomic::AtomicBool::new(false),
             unix_bound: Spinlock::new(None),
-        }
+        };
+        sock.opts.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
+        sock.opts.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
+        sock
     }
 
     /// # C: O(1)
@@ -223,6 +236,11 @@ impl InetSocket {
     /// Build a packet socket retaining an explicit owner. # C: O(1)
     pub fn new_packet_in(proto: u16, sock_type: u8, net_namespace: NetworkNamespaceRef) -> Self {
         let s = Self::new_tcp_in(net_namespace); s.family.store(AF_PACKET, core::sync::atomic::Ordering::Release);
+        // A packet socket is not TCP: it keeps the generic buffer defaults.
+        let (sndbuf, rcvbuf) = crate::sysctl::initial_bufs(&s.owner.net_namespace,
+            crate::sysctl::BufPersonality::Generic);
+        s.opts.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
+        s.opts.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
         *s.kind.lock() = SockKind::Packet {
             ifindex: core::sync::atomic::AtomicU32::new(0),
             protocol: core::sync::atomic::AtomicU16::new(proto),

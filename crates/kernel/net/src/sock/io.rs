@@ -1,11 +1,19 @@
 use super::*;
 
+// Readiness, the integer ioctls and the queue-length answers they report,
+// split out at the per-file size cutoff.
+mod poll;
+
+/// The running task's sender credentials for an unsolicited AF_UNIX
+/// credential stamp: the REAL uid/gid, which is what a receiver reads back
+/// from `SCM_CREDENTIALS` (`SO_PEERCRED` is the effective-pair interface).
+/// # C: O(1)
 fn current_sender_creds() -> SenderCreds {
     match sched::live::current() {
         Some(t) => SenderCreds {
             pid: t.visible_pid(),
-            uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
-            gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
+            uid: t.creds.ruid.load(core::sync::atomic::Ordering::Acquire),
+            gid: t.creds.rgid.load(core::sync::atomic::Ordering::Acquire),
         },
         None => SenderCreds::default(),
     }
@@ -69,7 +77,8 @@ impl InetSocket {
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
             K::Unix(pair, end) => {
-                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns);
+                let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns, passcred);
                 if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
                 result
             }
@@ -145,7 +154,8 @@ impl InetSocket {
             // AF_UNIX SOCK_STREAM: drain what's queued; empty → EOF (peer closed
             // + drained) gives Ok(0), else EAGAIN. Never parks.
             K::Unix(pair, end) => {
-                let got = pair.read(end, buf.len());
+                let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let got = pair.read_passcred(end, buf.len(), passcred);
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);
@@ -232,7 +242,7 @@ impl InetSocket {
                     return Err(vfs::VfsError::Epipe);
                 }
                 let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-                    .max(TCP_SNDBUF_DEFAULT) as usize;
+                    .max(0) as usize;
                 let timeo = self.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
                 let deadline_ns = compute_deadline_ns(timeo);
                 let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
@@ -258,7 +268,7 @@ impl InetSocket {
                 return Err(vfs::VfsError::Epipe);
             }
             let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-                .max(TCP_SNDBUF_DEFAULT) as usize;
+                .max(0) as usize;
             let entry = entry.clone();
             let eno = self.take_pending_recv_error();
             if eno != 0 { return Err(crate::sock_io::tcp_vfs_error(eno)); }
@@ -313,181 +323,5 @@ impl InetSocket {
         // so without this the writer parks and nothing ever wakes it.
         peer.register_peer_writer(&self.poll_subs);
         false
-    }
-
-    /// # C: O(1)
-    pub fn poll(&self) -> u32 {
-        use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
-        let pending = if self.has_pending_recv_error() || self.has_extended_error() { vfs::POLL_ERR } else { 0 };
-        let packet_ring_ready = self.packet_ring_readable();
-        let unix_listener = {
-            let kind = self.kind.lock();
-            if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
-        };
-        if let Some(l) = unix_listener { return l.poll_mask() | pending; }
-        // The SAME cap the send paths enforce (`socket::send::send_unix_blocking`,
-        // `sock_io::write_tcp_blocking`). Poll and `sendmsg` must read one
-        // number, or the writer is told "writable" and handed `EAGAIN`.
-        let sndbuf_cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-            .max(TCP_SNDBUF_DEFAULT) as usize;
-        // `unix_dgram_poll`'s connected-peer backlog arm. Resolved outside the
-        // `kind` lock: the lookup takes the per-netns unix registry lock, which
-        // must never nest under it.
-        let dgram_peer_writable = self.unix_dgram_peer_writable(sndbuf_cap);
-        match &*self.kind.lock() {
-            SockKind::Raw4(endpoint) => {
-                let mut mask = endpoint.poll_mask();
-                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
-                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
-                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
-                if rd && wr { mask |= POLL_HUP; }
-                mask | pending
-            }
-            SockKind::Raw6(endpoint) => {
-                let mut mask = endpoint.poll_mask();
-                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
-                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
-                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
-                if rd && wr { mask |= POLL_HUP; }
-                mask | pending
-            }
-            SockKind::Udp => {
-                let mut mask = POLL_OUT;
-                drain_loopback();
-                let udp4 = self.udp4.lock().clone();
-                let udp6 = self.udp6.lock().clone();
-                let ready4 = udp4.as_ref().is_some_and(|q| q.recv(true).is_some());
-                let ready6 = udp6.as_ref().is_some_and(|q| q.recv(true).is_some());
-                if ready4 || ready6 { mask |= POLL_IN; }
-                let inactive = udp4.as_ref().is_some_and(|q| !q.is_accepting())
-                    || udp6.as_ref().is_some_and(|q| !q.is_accepting());
-                if inactive { mask = (mask & !POLL_OUT) | vfs::POLL_HUP; }
-                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
-                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
-                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
-                if rd && wr { mask |= POLL_HUP; }
-                mask | pending
-            }
-            SockKind::TcpListener(l) => {
-                crate::stack::tcp_listener::listener_poll_mask(!l.accept_q.lock().is_empty(), pending)
-            }
-            SockKind::TcpConn(entry) => {
-                drain_loopback();
-                let mut mask = entry.poll_mask(sndbuf_cap);
-                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
-                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
-                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
-                // `tcp_poll`: `if (!(shutdown & SEND_SHUTDOWN)) { …writeable
-                // test… } else mask |= EPOLLOUT | EPOLLWRNORM;` — a send-shut
-                // socket is unconditionally "writable" so the caller collects
-                // its EPIPE from `send` rather than sleeping forever.
-                if wr { mask |= POLL_OUT | vfs::POLL_WRNORM; }
-                if rd && wr { mask |= POLL_HUP; }
-                mask | pending
-            }
-            SockKind::Unix(pair, end) => {
-                pair.poll_mask(*end, sndbuf_cap) | pending
-            }
-            SockKind::UnixListener(_) => pending,
-            SockKind::UnixDgram(q) => {
-                // `unix_dgram_poll`: `writable = unix_writable(sk, state)`, then
-                // cleared when the connected peer's receive queue is full. An
-                // UNCONNECTED datagram socket has no peer to consult and stays
-                // writable, exactly as Linux leaves `writable` alone when
-                // `unix_peer(sk)` is NULL.
-                // `writable = unix_writable(sk, state)` FIRST — the sender's own
-                // `sk_wmem_alloc` watermark, which is what bounds a symmetric
-                // pair — then cleared by the connected-peer backlog test, which
-                // `unix_dgram_peer_writable` already skips when symmetric.
-                let writable = crate::unix_sock::unix_writable(q.wmem_alloc(), sndbuf_cap)
-                    && dgram_peer_writable;
-                let mut mask = if writable { POLL_OUT | vfs::POLL_WRNORM } else { 0 };
-                if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
-                let rd = q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire);
-                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
-                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
-                if rd && wr { mask |= POLL_HUP; }
-                mask | pending
-            }
-            SockKind::UnixMsgPair(pair, end) => {
-                pair.poll_mask(*end, sndbuf_cap) | pending
-            }
-            SockKind::Packet { rx, .. } => {
-                let mut mask = POLL_OUT;
-                if packet_ring_ready || !rx.lock().is_empty() { mask |= POLL_IN; }
-                mask | pending
-            }
-            SockKind::UnixUnbound(_, _) => POLL_OUT | POLL_HUP | pending,
-            SockKind::TcpInit => POLL_OUT | pending,
-        }
-    }
-
-    /// Linux `SIOCINQ/FIONREAD` and `SIOCOUTQ` queue-count ioctls. # C: O(queue)
-    pub fn ioctl_int(&self, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
-        crate::sock_opts::check_ioctl(
-            self.net_ns(),
-            self.family.load(core::sync::atomic::Ordering::Acquire),
-        ).map_err(|_| vfs::VfsError::Eacces)?;
-        match cmd {
-            vfs::IoctlIntCmd::Fionread => Ok(self.inq_len() as u32),
-            vfs::IoctlIntCmd::Siocoutq => Ok(self.outq_len() as u32),
-            vfs::IoctlIntCmd::Siocoutqnsd => self.outq_nsd_len(),
-            vfs::IoctlIntCmd::Siocatmark => match &*self.kind.lock() {
-                SockKind::TcpConn(entry) => Ok(entry.conn.lock().at_urgent_mark() as u32),
-                _ => Err(vfs::VfsError::Enotty),
-            },
-        }
-    }
-
-    fn inq_len(&self) -> usize {
-        match &*self.kind.lock() {
-            SockKind::Raw4(endpoint) => endpoint.next_len(),
-            SockKind::Raw6(endpoint) => endpoint.first_len(),
-            SockKind::Udp => {
-                drain_loopback();
-                if let Some(q) = self.udp6.lock().as_ref() {
-                    q.recv(true).map(|(_, _, _, _, _, _, b)| b.len()).unwrap_or(0)
-                } else if let Some(q) = self.udp4.lock().as_ref() {
-                    q.recv(true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
-                } else { 0 }
-            }
-            SockKind::TcpConn(entry) => { drain_loopback(); entry.conn.lock().recv_buf.len() }
-            SockKind::Unix(pair, end) => match end {
-                crate::UnixEnd::A => pair.b_to_a.lock().buf.len(),
-                crate::UnixEnd::B => pair.a_to_b.lock().buf.len(),
-            },
-            SockKind::UnixDgram(q) => q.msgs.lock().front().map(|m| m.payload.len()).unwrap_or(0),
-            SockKind::UnixMsgPair(pair, end) => {
-                let g = match end { crate::UnixEnd::A => pair.b_to_a.lock(), crate::UnixEnd::B => pair.a_to_b.lock() };
-                g.msgs.front().map(|m| m.payload.len()).unwrap_or(0)
-            }
-            SockKind::Packet { rx, .. } => rx.lock().first_len().unwrap_or(0),
-            SockKind::TcpInit | SockKind::UnixUnbound(_, _) | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
-        }
-    }
-
-    fn outq_len(&self) -> usize {
-        match &*self.kind.lock() {
-            SockKind::TcpConn(entry) => {
-                let c = entry.conn.lock();
-                c.send_buf.len() + c.retx_q.iter().map(|s| s.payload.len()).sum::<usize>()
-            }
-            SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_)
-            | SockKind::Unix(..) | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
-            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::UnixUnbound(_, _) | SockKind::TcpListener(_)
-            | SockKind::UnixListener(_) => 0,
-        }
-    }
-
-    /// Linux TCP `SIOCOUTQNSD`: application bytes not yet passed to the
-    /// transmit path. Unacknowledged segments belong to `SIOCOUTQ`, not here.
-    /// # C: O(1)
-    fn outq_nsd_len(&self) -> vfs::KResult<u32> {
-        match &*self.kind.lock() {
-            SockKind::TcpConn(entry) => Ok(entry.conn.lock().send_buf.len() as u32),
-            SockKind::TcpInit => Ok(0),
-            SockKind::TcpListener(_) => Err(vfs::VfsError::Einval),
-            _ => Err(vfs::VfsError::Enotty),
-        }
     }
 }

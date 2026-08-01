@@ -97,7 +97,7 @@ impl InetSocket {
         let (port, endpoint) = alloc_ephemeral_udp4_owned(
             self.owner.clone(), Ipv4Addr::ANY, self.error.clone(), iface,
             self.opts.reuseaddr.clone(), self.opts.reuseport.clone(),
-            self.opts.ip_mtu_discover.clone(),
+            self.opts.ip_mtu_discover.clone(), self.opts.udp.gro.clone(),
             self.peer.clone(), self.bpf_filter.clone(), self.mcast.clone(),
         ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
         endpoint.register_poll_subs(&self.poll_subs);

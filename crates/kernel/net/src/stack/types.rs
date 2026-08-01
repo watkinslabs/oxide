@@ -1,13 +1,12 @@
 use super::*;
 
 mod tcp_entry_wait;
-
-pub type UdpDatagram = (Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>);
-
-pub(super) struct UdpRxState {
-    pub(super) accepting: bool,
-    pub(super) datagrams: VecDeque<UdpDatagram>,
-}
+// The UDP receive types, split out at the per-file size cutoff. The TCP bind,
+// connection and listener types stay here.
+#[path = "types/udp.rs"]
+mod udp;
+pub use udp::{UdpDatagram, UdpRxQueue};
+pub(super) use udp::{QueuedUdp, UdpRxState};
 
 /// One bridge next-hop's unresolved packets and its last wire solicitation.
 pub(crate) struct BridgePending {
@@ -16,49 +15,6 @@ pub(crate) struct BridgePending {
     pub(crate) solicit_attempts: u8,
     pub(crate) next_id: u64,
 }
-
-pub struct UdpRxQueue {
-    pub owner: Arc<crate::SocketOwner>,
-    pub bound_ip:   Ipv4Addr,
-    pub bound_port: u16,
-    /// Datagrams waiting for a reader: (src, sport, dst, iface, ttl, payload).
-    /// `ttl` = received IPv4 header TTL, delivered as IP_TTL cmsg when the
-    /// socket set IP_RECVTTL (systemd-resolved LLMNR hop-count check).
-    pub(super) state: Spinlock<UdpRxState, StackLockClass>,
-    /// F162: blocking sys_recvfrom waiters (kernel only).
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
-    /// Canonical owning socket error state.
-    pub error: Arc<crate::SocketError>,
-    /// Connected peer filter. `None` accepts datagrams from any peer.
-    pub peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
-    pub reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
-    pub reuseport: Arc<::core::sync::atomic::AtomicI32>,
-    pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-    pub bound_ifindex: ::core::sync::atomic::AtomicU32,
-    /// F181a: per-fd epoll subscribers.
-    pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
-    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
-    /// Socket multicast state shared before and after bind.
-    pub mcast: Arc<crate::mcast_filter::SocketMcast>,
-    /// SO_REUSEPORT group reached from the bind table on the delivery path.
-    /// Published by bind-time join; the owning socket's cell holds membership.
-    pub reuseport_group: crate::reuseport::ReuseportSlot,
-}
-
-impl UdpRxQueue {
-    /// SO_REUSEPORT membership captured when this endpoint was bound. # C: O(1)
-    pub(crate) fn reuseport_member(&self) -> bool {
-        self.reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0
-    }
-}
-
-impl ::core::ops::Deref for UdpRxQueue {
-    type Target = crate::SocketOwner;
-
-    fn deref(&self) -> &Self::Target { &self.owner }
-}
-
 
 /// Connection 4-tuple key for TCP demultiplexing.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -156,6 +112,10 @@ pub struct TcpEntry {
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// `IP_MINTTL` / `IPV6_MINHOPCOUNT`, shared with the owning socket. A
+    /// passive child snapshots its listener's, the way every other inherited
+    /// option does.
+    pub min_hop: Arc<crate::min_hop::MinHop>,
     /// Shared local bind owner. Passive children share their listener's bind.
     pub bind: Option<Arc<TcpBindReservation>>,
     /// Filter snapshot/shared socket owner used before TCP state processing.
@@ -231,6 +191,20 @@ impl TcpEntry {
                                  ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>) -> Self {
+        Self::new_bound_full(conn, error, bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            passive_listener, Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Build a transport entry sharing every option the receive path reads.
+    /// # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_bound_full(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
+                                 min_hop: Arc<crate::min_hop::MinHop>) -> Self {
         let syn_backlog_reserved = passive_listener.is_some();
         let owner = bind.as_ref().map(|bind| bind.owner.clone())
             .unwrap_or_else(|| crate::SocketOwner::root(network_namespace::initial(), 0));
@@ -240,6 +214,7 @@ impl TcpEntry {
             error,
             ip_mtu_discover,
             ipv6_mtu_discover,
+            min_hop,
             bind,
             bpf_filter,
             passive_listener,
@@ -370,11 +345,18 @@ pub struct TcpListenEntry {
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Live listening-socket IPv6 PMTU mode; each passive child snapshots it.
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Live listening-socket hop-limit minimums; each passive child shares them.
+    pub min_hop: Arc<crate::min_hop::MinHop>,
     /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
     pub backlog: ::core::sync::atomic::AtomicUsize,
     /// Half-open plus completed children not yet removed by accept.
     pub syn_backlog_used: ::core::sync::atomic::AtomicUsize,
     pub accept_backlog_used: ::core::sync::atomic::AtomicUsize,
+    /// `TCP_DEFER_ACCEPT` as the seconds window the owning socket's stored
+    /// retransmit count covers. The option block is the source of truth; this
+    /// is the applied copy the delivery path reads without reaching back into
+    /// the socket, already in the unit the hand-over rule waits in.
+    pub defer_window_secs: ::core::sync::atomic::AtomicI32,
     /// Listener close linearizes child admission and accept publication here.
     pub closed: ::core::sync::atomic::AtomicBool,
     pub local: Endpoint,

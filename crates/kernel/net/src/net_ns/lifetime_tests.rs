@@ -149,7 +149,7 @@ fn private_loopback_snapshot_pins_owner_through_packet_dispatch() {
         "teardown waits for retained loopback ingress");
 
     snapshot.drain_into(&stack);
-    assert_eq!(endpoint.recv(false).expect("UDP delivered").5, alloc::vec![7]);
+    assert_eq!(endpoint.recv(false).expect("UDP delivered").payload, alloc::vec![7]);
     assert!(done_rx.recv_timeout(Duration::from_secs(5)).expect("teardown completes"));
     teardown.join().unwrap();
     let mut rejected = crate::Pkt::with_capacity(0, 1);

@@ -93,6 +93,9 @@ pub const SO_PEERPIDFD: u64 = 77;
 pub const SO_DEVMEM_DONTNEED: u64 = 80;
 pub const SO_RCVPRIORITY: u64 = 82;
 pub const SO_PASSRIGHTS: u64 = 83;
+/// `SO_INQ` doubles as the `SCM_INQ` control-message type it enables.
+pub const SO_INQ: u64 = 84;
+pub const SCM_INQ: i32 = SO_INQ as i32;
 /// `SO_GET_FILTER` shares `SO_ATTACH_FILTER`'s number; the read direction gives
 /// it the separate meaning.
 pub const SO_GET_FILTER: u64 = SO_ATTACH_FILTER;
@@ -150,6 +153,8 @@ impl OptCaps {
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 pub struct OptSock {
     pub family: u16,
+    /// `sk_type == SOCK_STREAM`.
+    pub stream: bool,
     /// `sk_is_tcp`.
     pub tcp: bool,
     /// `sk_type == SOCK_DGRAM && sk_protocol == IPPROTO_UDP`.
@@ -204,6 +209,8 @@ pub mod flag {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Scalar {
     RcvLowat = 0,
+    /// `SO_INQ` — AF_UNIX stream `recvmsg_inq`.
+    Inq = 11,
     PeekOff = 1,
     IncomingCpu = 2,
     BusyPoll = 3,
@@ -216,7 +223,7 @@ pub enum Scalar {
     BusyPollBudget = 10,
 }
 
-impl Scalar { pub const COUNT: usize = 11; }
+impl Scalar { pub const COUNT: usize = 12; }
 
 /// Generic SOL_SOCKET state Linux keeps on every `struct sock`. # C: O(1)
 #[derive(Debug)]
@@ -292,6 +299,12 @@ pub fn next_cookie() -> i64 {
 /// first, so a short buffer is `EINVAL` and a bad pointer `EFAULT` before the
 /// option number is ever classified. # C: O(1)
 pub fn reads_int_argument(optname: u64) -> bool { optname != SO_BINDTODEVICE }
+
+/// `SO_INQ` is answered by the AF_UNIX stream protocol rather than by the
+/// generic table, and that path screens the length for an EXACT `int` before
+/// it looks at the option number: four bytes exactly, not four or more.
+/// # C: O(1)
+pub fn exact_int_argument(optname: u64) -> bool { optname == SO_INQ }
 
 /// `__sock_set_rcvbuf` / `set_sndbuf`: clamp to the sysctl ceiling as an
 /// unsigned quantity, cap at `INT_MAX/2`, double, then floor at the protocol

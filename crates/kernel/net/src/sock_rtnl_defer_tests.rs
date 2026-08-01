@@ -76,6 +76,9 @@ fn deferred_mcast_release_finishes_on_drain_not_before() {
     assert_eq!(done, 1);
     assert_eq!(pending_len(), 0);
     assert!(lo.rx_pop().is_some(), "drain_all must finish the deferred release");
+    // The membership is gone; only a socket that also cleared unconditional
+    // multicast delivery then refuses the group.
+    mcast.set_multicast_all_v4(false);
     assert!(!mcast.accept_v4(iface, group, Ipv4Addr::LOOPBACK));
 }
 

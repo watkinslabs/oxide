@@ -28,6 +28,10 @@ pub struct VirtioGpuDev {
     pub cursorq:              virtio::VirtQueueResource,
     pub features_negotiated:  u64,
     pub display:              DisplayInfo,
+    /// Raw EDID the primary scanout's display published via `CMD_GET_EDID`,
+    /// trimmed to the byte count the device reported valid. `None` when the
+    /// EDID feature was not negotiated or the device answered with none.
+    pub edid:                 Option<Vec<u8>>,
     pub resource_id_alloc:    AtomicU32,
     pub blob_uuid_alloc:      AtomicU64,
     /// Capset count discovered via `CMD_GET_CAPSET_INFO` when VIRGL
@@ -124,6 +128,8 @@ pub struct VirtioGpuDrm {
     pub features_negotiated: u64,
     pub bdf:                 u32,
     pub unique:              String,
+    /// EDID of the primary scanout's display, as fetched at probe.
+    pub edid:                Option<Vec<u8>>,
 }
 
 impl drm::DrmDriver for VirtioGpuDrm {
@@ -192,14 +198,19 @@ impl drm::DrmDriver for VirtioGpuDrm {
             None    => drm::DrmModeModeinfo::default(),
         }
     }
-    /// The scanout's current rect is the preferred mode; the standard table
-    /// supplies the alternatives. Without them a compositor is pinned to
+    /// The display's own preferred timing heads the list when its EDID names a
+    /// usable one; otherwise the scanout's current rect does. The standard
+    /// table supplies the alternatives — without them a compositor is pinned to
     /// whatever size the device powered on with, because a connector that
     /// reports one mode offers no choice. # C: O(modes)
     fn modes_for(&self, idx: usize) -> alloc::vec::Vec<drm::DrmModeModeinfo> {
         let Some(r) = self.enabled_rect(idx) else { return alloc::vec::Vec::new() };
         let (min_w, max_w, min_h, max_h) = self.dim_bounds();
-        drm::std_modes::list_for(r.width, r.height, min_w, max_w, min_h, max_h)
+        drm::std_modes::list_with_edid(self.edid_for(idx), r.width, r.height,
+            min_w, max_w, min_h, max_h)
+    }
+    fn edid_blob(&self, idx: usize) -> Option<Vec<u8>> {
+        self.edid_for(idx).map(Vec::from)
     }
     fn connector_info(&self, idx: usize) -> Option<drm::ConnectorInfo> {
         let r = self.enabled_rect(idx)?;
@@ -246,6 +257,15 @@ impl drm::DrmDriver for VirtioGpuDrm {
 }
 
 impl VirtioGpuDrm {
+    /// EDID of the display behind the `idx`-th enabled scanout. Only the
+    /// primary scanout's display is interrogated at probe, so every other
+    /// connector reports none rather than repeating the primary's identity.
+    /// # C: O(1)
+    fn edid_for(&self, idx: usize) -> Option<&[u8]> {
+        if idx != crate::PRIMARY_SCANOUT as usize { return None; }
+        self.edid.as_deref()
+    }
+
     /// Resolve the `idx`-th ENABLED scanout to its rectangle.
     /// DisplayInfo.modes has gaps (disabled slots), so we walk the
     /// array counting enabled entries. # C: O(VIRTIO_GPU_MAX_SCANOUTS)
@@ -286,6 +306,7 @@ pub fn install_with_drm_parent(
     let bdf = dev.bdf;
     let display = dev.display;
     let features_negotiated = dev.features_negotiated;
+    let edid = dev.edid.clone();
     dev.card_id = u32::MAX;
     install(dev)?;
 
@@ -294,6 +315,7 @@ pub fn install_with_drm_parent(
         features_negotiated,
         bdf,
         unique: drm_unique_from_bdf(bdf),
+        edid,
     });
     let card_id = drm::register_with_parent(drm_dev, parent);
     if card_id == u32::MAX {

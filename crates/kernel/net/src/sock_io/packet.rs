@@ -25,7 +25,6 @@ pub(super) fn recv(sock: &InetSocket, max_len: usize, opts: RecvOptions)
     let mut packet = frame.addr;
     if packet.ifindex == 0 { packet.ifindex = ifindex; }
     if packet.protocol == 0 { packet.protocol = bound_protocol; }
-    Some(Ok(Received { payload, full_len, peer: None, peer6: None,
-        pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None,
-        packet: Some(PacketReceive { addr: packet, aux: frame.aux }) }))
+    Some(Ok(Received { payload, full_len,
+        packet: Some(PacketReceive { addr: packet, aux: frame.aux }), ..Default::default() }))
 }

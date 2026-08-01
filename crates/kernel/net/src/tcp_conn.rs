@@ -22,10 +22,12 @@ pub mod sack;
 pub mod segment;
 pub mod timing;
 pub mod route_policy;
+pub mod defer;
 
 pub use types::{
     Endpoint, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,
-    OWN_WSCALE,
+    OWN_WSCALE, DATA_RETRIES_DEFAULT, DELACK_MAX_DEFAULT_NS, LINGER2_DEFAULT_NS,
+    RTO_MAX_DEFAULT_NS, SYN_RETRIES_DEFAULT,
 };
 pub use timing::{ka_now_ns, tcp_now_ms};
 

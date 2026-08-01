@@ -228,9 +228,23 @@ pub struct SockOpts {
     pub so_type: core::sync::atomic::AtomicU8,
     /// Generic SOL_SOCKET flag/scalar state (`sock_opts::sol_socket`).
     pub generic: crate::sock_opts::sol_socket::GenericSockOpts,
+    /// `IP_MINTTL` / `IPV6_MINHOPCOUNT`, shared with the transport entry the
+    /// receive path reaches so the option has exactly one home.
+    pub min_hop: Arc<crate::min_hop::MinHop>,
+    /// `IPPROTO_IP` option state (`sock_opts::sol_ip`).
+    pub ip: crate::sock_opts::sol_ip::IpOpts,
+    /// `IPPROTO_IPV6` option state (`sock_opts::sol_ipv6`).
+    pub ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts,
+    /// `IPPROTO_TCP` option state (`sock_opts::sol_tcp`).
+    pub tcp: crate::sock_opts::sol_tcp::TcpOpts,
+    /// `IPPROTO_UDP` option state (`sock_opts::sol_udp`).
+    pub udp: crate::sock_opts::sol_udp::UdpOpts,
 }
 
-pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
+/// The buffer sizes a TCP socket starts with when its namespace still carries
+/// the compiled `net.ipv4.tcp_wmem` / `tcp_rmem` window.
+pub const TCP_SNDBUF_DEFAULT: i32 = crate::sysctl::DEFAULT_TCP_WMEM[1] as i32;
+pub const TCP_RCVBUF_DEFAULT: i32 = crate::sysctl::DEFAULT_TCP_RMEM[1] as i32;
 
 impl Default for SockOpts {
     fn default() -> Self {
@@ -241,8 +255,8 @@ impl Default for SockOpts {
             keepalive:   AtomicI32::new(0),
             broadcast:   AtomicI32::new(0),
             oobinline:   AtomicI32::new(0),
-            sndbuf:      AtomicI32::new(TCP_SNDBUF_DEFAULT),
-            rcvbuf:      AtomicI32::new(TCP_RCVBUF_DEFAULT),
+            sndbuf:      AtomicI32::new(crate::sysctl::DEFAULT_WMEM_DEFAULT as i32),
+            rcvbuf:      AtomicI32::new(crate::sysctl::DEFAULT_RMEM_DEFAULT as i32),
             rcvbuf_locked: core::sync::atomic::AtomicBool::new(false),
             sndtimeo_ns: AtomicI64::new(0),
             rcvtimeo_ns: AtomicI64::new(0),
@@ -273,6 +287,11 @@ impl Default for SockOpts {
             timestamping: AtomicI32::new(0),
             so_type: AtomicU8::new(0),
             generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
+            min_hop: Arc::new(crate::min_hop::MinHop::new()),
+            ip: crate::sock_opts::sol_ip::IpOpts::default(),
+            ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts::default(),
+            tcp: crate::sock_opts::sol_tcp::TcpOpts::default(),
+            udp: crate::sock_opts::sol_udp::UdpOpts::default(),
         }
     }
 }

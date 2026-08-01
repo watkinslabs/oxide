@@ -254,11 +254,27 @@ fn in_formats_blob() -> [u8; 56] {
     b
 }
 
-/// `MODE_GETPROPBLOB` — return a property blob's bytes. Only the plane
-/// IN_FORMATS blob exists. `struct drm_mode_get_blob` = blob_id@0 (u32),
-/// length@4 (u32), data@8 (u64) = 16 bytes. Two-pass: length=0 → returns the
-/// byte length; length>=len + data ptr → copies the blob. # C: O(1)
-pub fn get_prop_blob(arg: u64) -> i64 {
+/// Copy a driver-owned blob's bytes out under the two-pass length ABI and
+/// report its true byte length. # C: O(n)
+fn copy_driver_blob(arg: u64, ulen: u32, data_ptr: u64, bytes: &[u8]) -> i64 {
+    let len = bytes.len() as u32;
+    if ulen >= len && data_ptr != 0 && user_ok(data_ptr, len as u64) {
+        for (i, byte) in bytes.iter().enumerate() {
+            // SAFETY: data_ptr..+len validated; byte-wise copy through caller AS at CPL=0.
+            unsafe { core::ptr::write_volatile((data_ptr + i as u64) as *mut u8, *byte); }
+        }
+    }
+    // SAFETY: length@4 within the validated 16-byte range; report the real size.
+    unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len); }
+    0
+}
+
+/// `MODE_GETPROPBLOB` — return a property blob's bytes. Driver-owned blobs are
+/// the plane IN_FORMATS blob and each connector's EDID; everything else is a
+/// user-created blob. `struct drm_mode_get_blob` = blob_id@0 (u32), length@4
+/// (u32), data@8 (u64) = 16 bytes. Two-pass: length=0 → returns the byte
+/// length; length>=len + data ptr → copies the blob. # C: O(blob bytes)
+pub fn get_prop_blob(card: Option<&Arc<dyn DrmDriver>>, arg: u64) -> i64 {
     if !user_ok(arg, 16) { return efault(); }
     // SAFETY: [arg,arg+16) validated; blob_id@0 u32, length@4 u32, data@8 u64.
     let (blob_id, ulen, data_ptr) = unsafe {
@@ -269,28 +285,21 @@ pub fn get_prop_blob(arg: u64) -> i64 {
     #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMPROP getblob id="); klog::write_dec_u64(blob_id as u64);
       klog::write_raw(b" ulen="); klog::write_dec_u64(ulen as u64); klog::write_raw(b"]\n"); }
-    if blob_id != IN_FORMATS_BLOB_ID {
-        return match crate::atomic::get_blob(blob_id, ulen, data_ptr) {
-            Some(len) if len >= 0 => {
-                // SAFETY: arg+4 lies in the validated get-blob UAPI structure.
-                unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len as u32); }
-                0
-            }
-            Some(err) => err,
-            None => einval(),
-        };
+    if blob_id == IN_FORMATS_BLOB_ID {
+        return copy_driver_blob(arg, ulen, data_ptr, &in_formats_blob());
     }
-    let blob = in_formats_blob();
-    let len = blob.len() as u32;
-    if ulen >= len && data_ptr != 0 && user_ok(data_ptr, len as u64) {
-        for (i, byte) in blob.iter().enumerate() {
-            // SAFETY: data_ptr..+len validated; byte-wise copy through caller AS at CPL=0.
-            unsafe { core::ptr::write_volatile((data_ptr + i as u64) as *mut u8, *byte); }
+    if let Some(bytes) = card.and_then(|c| crate::atomic::edid_blob_bytes(c, blob_id)) {
+        return copy_driver_blob(arg, ulen, data_ptr, &bytes);
+    }
+    match crate::atomic::get_blob(blob_id, ulen, data_ptr) {
+        Some(len) if len >= 0 => {
+            // SAFETY: arg+4 lies in the validated get-blob UAPI structure.
+            unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len as u32); }
+            0
         }
+        Some(err) => err,
+        None => einval(),
     }
-    // SAFETY: length@4 within the validated 16-byte range; report the real size.
-    unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len); }
-    0
 }
 
 #[cfg(test)]
