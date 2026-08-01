@@ -8,7 +8,7 @@ use crate::iface_addr::{Ipv4AddrCacheInfo, Ipv4IfaceAddr};
 use crate::bpf_filter::SocketFilter;
 use crate::mcast_filter::SocketMcast;
 use crate::route::{RouteEntry, RouteRecord, RTN_UNICAST};
-use crate::send_control::{Ipv4Options, Raw4Control};
+use crate::send_control::Raw4Control;
 use crate::stack::NetStack;
 
 use super::{Raw4Endpoint, Raw4TxOptions};
@@ -54,15 +54,19 @@ fn setup(scope: u8, gateway: Option<Ipv4Addr>) -> (NetStack, Arc<Capture>, crate
     (stack, dev, iface)
 }
 
+/// Every control-message option area enters the shared compile pass, the same
+/// one `setsockopt(IP_OPTIONS)` uses.
+fn compiled(bytes: &[u8]) -> crate::sock_opts::sol_ip::options::Compiled {
+    crate::ipv4_options::build_in(bytes, true, 0).unwrap()
+}
+
 #[test]
 fn one_message_controls_build_ipv4_header_without_endpoint_mutation() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let (stack, dev, iface) = setup(253, None);
     let endpoint = endpoint(253);
     let control = Raw4Control { source: Some(SRC), iface: Some(iface), ttl: Some(9),
-        tos: Some(0x2e), protocol: Some(17), options: Some(Ipv4Options {
-            bytes: alloc::vec![1, 1, 0, 0], first_hop: None, strict_route: false,
-        }), ..Raw4Control::default() };
+        tos: Some(0x2e), protocol: Some(17), options: Some(compiled(&[1, 1, 0, 0])), ..Raw4Control::default() };
     stack.send_raw4(&endpoint, DST, b"body", Raw4TxOptions::default(), &control).unwrap();
     let packet = &dev.packets.lock()[0];
     assert_eq!(packet[0] & 0x0f, 6);
@@ -87,10 +91,8 @@ fn source_route_uses_first_hop_route_source_and_mtu() {
     stack.routes.add(RouteEntry::main(first_hop, 32, hop_iface, None, Some(hop_source)));
     resolve_neighbour(&stack, final_iface, DST);
     resolve_neighbour(&stack, hop_iface, first_hop);
-    let control = Raw4Control { options: Some(Ipv4Options {
-        bytes: alloc::vec![131, 7, 4, 192, 0, 2, 1],
-        first_hop: Some(first_hop), strict_route: false,
-    }), ..Raw4Control::default() };
+    let control = Raw4Control { options: Some(compiled(&[131, 7, 4, 192, 0, 2, 1])),
+        ..Raw4Control::default() };
     let options = Raw4TxOptions { pmtudisc: crate::uapi::IP_PMTUDISC_DONT,
         ..Raw4TxOptions::default() };
 
@@ -111,10 +113,8 @@ fn non_copy_options_are_nops_after_fragment_zero() {
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
     resolve_neighbour(&stack, iface, DST);
-    let control = Raw4Control { options: Some(Ipv4Options {
-        bytes: alloc::vec![7, 7, 4, 0, 0, 0, 0, 0],
-        first_hop: None, strict_route: false,
-    }), ..Raw4Control::default() };
+    let control = Raw4Control { options: Some(compiled(&[7, 7, 4, 0, 0, 0, 0, 0])),
+        ..Raw4Control::default() };
     let options = Raw4TxOptions { pmtudisc: crate::uapi::IP_PMTUDISC_DONT,
         ..Raw4TxOptions::default() };
 
@@ -129,10 +129,8 @@ fn non_copy_options_are_nops_after_fragment_zero() {
 fn timestamp_address_mode_advances_pointer_and_writes_route_source() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let (stack, dev, _) = setup(253, None);
-    let control = Raw4Control { options: Some(Ipv4Options {
-        bytes: alloc::vec![68, 12, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-        first_hop: None, strict_route: false,
-    }), ..Raw4Control::default() };
+    let control = Raw4Control { options: Some(compiled(&[68, 12, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0])),
+        ..Raw4Control::default() };
 
     stack.send_raw4(&endpoint(17), DST, b"x", Raw4TxOptions::default(), &control).unwrap();
 

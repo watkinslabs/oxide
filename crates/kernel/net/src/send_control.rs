@@ -21,7 +21,9 @@ pub struct Raw4Control {
     pub ttl: Option<u8>,
     pub tos: Option<u8>,
     pub protocol: Option<u8>,
-    pub options: Option<Ipv4Options>,
+    /// `IP_OPTIONS` control message — the same compiled area the socket-level
+    /// option installs, admitted by the same compile pass.
+    pub options: Option<crate::sock_opts::sol_ip::options::Compiled>,
     pub dont_route: bool,
     pub multicast_loop: Option<bool>,
 }
@@ -39,13 +41,6 @@ pub struct Raw6Control {
     pub routing: Option<Vec<u8>>,
     pub dst_after_routing: Option<Vec<u8>>,
     pub multicast_loop: Option<bool>,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Ipv4Options {
-    pub bytes: Vec<u8>,
-    pub first_hop: Option<Ipv4Addr>,
-    pub strict_route: bool,
 }
 
 impl SendControl {

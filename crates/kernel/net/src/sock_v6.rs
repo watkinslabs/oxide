@@ -223,6 +223,7 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload, bound,
         sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8, ttl,
         sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
+        sock.ip.options().as_ref(),
     )?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }
     Ok(payload.len())
