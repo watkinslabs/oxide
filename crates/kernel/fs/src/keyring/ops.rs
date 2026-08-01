@@ -21,6 +21,9 @@
 //          per-command length rules, and the errno each public-key failure
 //          surfaces as. Owns the fact that the family is implemented, which is
 //          where the reported capability bit comes from.
+// - watch: WATCH_KEY — the watchpoint-id rule and the add/remove bookkeeping
+//          on a key's watch list. Owns the fact that key notifications are
+//          implemented, which is where the reported capability bit comes from.
 // - dh:    DH_COMPUTE — the three key payloads it reads, the parameter
 //          admission rules, the modular exponentiation and the counter-mode
 //          derivation. Owns the fact that the command is implemented at all,
@@ -34,6 +37,7 @@ mod keys;
 mod links;
 pub mod pkey;
 mod rings;
+pub mod watch;
 pub(super) mod search;
 
 pub use keys::{add_key_core, chown_core, describe_core, get_security_core, invalidate_core,

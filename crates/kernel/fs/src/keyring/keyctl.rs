@@ -13,6 +13,7 @@ use super::{cur_ctx, err, read_user_bytes, read_user_key_desc, read_user_key_typ
 
 mod dh;
 mod pkey;
+mod watch;
 
 /// `sys_keyctl(op, arg2..arg5)` — slot 250.
 ///
@@ -106,10 +107,7 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         KEYCTL_PKEY_DECRYPT => pkey::eds(&c, Operation::Decrypt, args),
         KEYCTL_PKEY_SIGN => pkey::eds(&c, Operation::Sign, args),
         KEYCTL_PKEY_VERIFY => pkey::verify(&c, args),
-        // The key-notification family is not built here yet; the
-        // `KEYCTL_CAPABILITIES` bits below are computed from the same facts, so
-        // a caller that probes before use is told exactly what it will get.
-        KEYCTL_WATCH_KEY => err(Errno::Eopnotsupp),
+        KEYCTL_WATCH_KEY => watch::watch_key(&c, args),
         _ => err(Errno::Eopnotsupp),
     }
 }
@@ -127,9 +125,10 @@ pub(super) fn keyrings_capabilities() -> [u8; KEYCTL_CAPS_BYTES] {
     let mut b0 = KEYCTL_CAPS0_CAPABILITIES | KEYCTL_CAPS0_PERSISTENT_KEYRINGS
         | KEYCTL_CAPS0_BIG_KEY | KEYCTL_CAPS0_INVALIDATE | KEYCTL_CAPS0_RESTRICT_KEYRING
         | KEYCTL_CAPS0_MOVE;
-    let b1 = KEYCTL_CAPS1_NS_KEYRING_NAME | KEYCTL_CAPS1_NS_KEY_TAG;
+    let mut b1 = KEYCTL_CAPS1_NS_KEYRING_NAME | KEYCTL_CAPS1_NS_KEY_TAG;
     if ops::dh::SUPPORTED { b0 |= KEYCTL_CAPS0_DIFFIE_HELLMAN; }
     if ops::pkey::SUPPORTED { b0 |= KEYCTL_CAPS0_PUBLIC_KEY; }
+    if ops::watch::SUPPORTED { b1 |= KEYCTL_CAPS1_NOTIFICATIONS; }
     [b0, b1]
 }
 

@@ -247,5 +247,5 @@ fn declared_lengths_are_bounded_by_the_query() {
 fn capability_bit_tracks_the_implementation() {
     let caps = super::super::keyctl::keyrings_capabilities();
     assert_eq!(caps[0] & KEYCTL_CAPS0_PUBLIC_KEY != 0, pkey::SUPPORTED);
-    assert_eq!(caps[1] & KEYCTL_CAPS1_NOTIFICATIONS, 0, "notifications are still absent");
+    assert_eq!(caps[1] & KEYCTL_CAPS1_NOTIFICATIONS != 0, super::super::ops::watch::SUPPORTED);
 }

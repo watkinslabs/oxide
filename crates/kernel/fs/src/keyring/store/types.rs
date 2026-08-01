@@ -91,6 +91,9 @@ pub struct Key {
     pub state: i32,
     /// `KEY_FLAG_USER_CONSTRUCT` — an upcall is in flight for this key.
     pub under_construction: bool,
+    /// `key->watchers` — the notification queues watching this key. Empty for
+    /// every key nobody asked to watch, which is nearly all of them.
+    pub watchers: crate::watch_queue::WatchList,
     /// The `.request_key_auth` payload, present only on a key of that type.
     /// Linux keeps it in `key->payload.data[0]` as a `struct request_key_auth`;
     /// it is the type's payload, not a parallel registry.

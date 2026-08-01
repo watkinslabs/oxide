@@ -66,6 +66,7 @@ impl Store {
             expiry_ns: 0, revoked: false, invalidated: false,
             members: Vec::new(), restrict_reject: false,
             state, under_construction: false, auth: None,
+            watchers: crate::watch_queue::WatchList::new(),
         });
         Ok(serial)
     }

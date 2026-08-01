@@ -58,38 +58,96 @@ impl WaitList {
 pub fn smoke_test() {
     smoke::smoke_test();
 }
+/// Wake anything blocked reading this pipe — what a watch queue calls when it
+/// has queued a record. # C: O(N_waiters)
+pub fn wake_pipe_readers(inode: &Inode) {
+    if let Some(p) = pipe_data(inode) { splice_ops::wake_readers(p, inode); }
+}
+
+/// Blocking record read on a notification pipe. Parks on the pipe's own read
+/// wait list, armed inside the queue's critical section so a record posted
+/// between the emptiness check and the park cannot be missed. # C: O(records)
+fn read_notifications(inode: &Inode, q: &crate::watch_queue::WatchQueue, buf: &mut [u8])
+    -> KResult<usize>
+{
+    if buf.is_empty() { return Ok(0); }
+    let pd = pipe_data(inode).ok_or(VfsError::Einval)?;
+    loop {
+        let armed = q.read_or_arm(buf.len(), || {
+            #[cfg(target_os = "oxide-kernel")]
+            // SAFETY: running task; preempt-off; park marks Sleeping and enqueues while the queue lock is held, so a poster's wake cannot land before the enqueue.
+            unsafe { pd.arm_read_wait(); }
+        });
+        match armed {
+            Err(e) => return Err(match e {
+                syscall::errno::Errno::Enobufs => VfsError::Enobufs,
+                _ => VfsError::Einval,
+            }),
+            Ok(Some(records)) => {
+                buf[..records.len()].copy_from_slice(&records);
+                if let Some(s) = inode.poll_subscribers() { s.notify(); }
+                return Ok(records.len());
+            }
+            Ok(None) => {
+                #[cfg(target_os = "oxide-kernel")]
+                {
+                    if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Erestartsys); }
+                    // SAFETY: process ctx; runqueue installed; current is Sleeping until a poster's wake fires; no lock is held here.
+                    unsafe { sched::live::schedule::schedule(); }
+                }
+                #[cfg(not(target_os = "oxide-kernel"))]
+                { let _ = pd; return Err(VfsError::Eagain); }
+            }
+        }
+    }
+}
+
 /// `i_fop` for an anonymous-pipe inode. Reads `PipeData` off `i_private` and
 /// delegates to the shared ring core (also used by `FifoFileOps`).
 struct PipeFileOps;
 impl FileOps for PipeFileOps {
     fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        // A notification pipe carries records, not bytes: they come out of its
+        // watch queue, and the byte ring behind the same inode stays unused.
+        if let Some(q) = crate::watch_queue::queue_of(inode) {
+            return read_notifications(inode, &q, buf);
+        }
         pipe_data(inode).ok_or(VfsError::Einval)?.read_blocking(inode.poll_subscribers(), buf)
     }
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if crate::watch_queue::is_notification_pipe(inode) { return Err(crate::watch_queue::write_refused()); }
         pipe_data(inode).ok_or(VfsError::Einval)?.write_blocking(inode.poll_subscribers(), buf, false)
     }
     fn write_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if crate::watch_queue::is_notification_pipe(file.inode()) { return Err(crate::watch_queue::write_refused()); }
         let packetized = file.flags().contains(vfs::OpenFlags::O_DIRECT);
         pipe_data(file.inode()).ok_or(VfsError::Einval)?.write_blocking(file.inode().poll_subscribers(), buf, packetized)
     }
     fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        if let Some(q) = crate::watch_queue::queue_of(inode) { return crate::watch_queue::read_nb(&q, buf); }
         pipe_data(inode).ok_or(VfsError::Einval)?.read_nb(inode.poll_subscribers(), buf)
     }
     fn write_nonblock(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if crate::watch_queue::is_notification_pipe(inode) { return Err(crate::watch_queue::write_refused()); }
         pipe_data(inode).ok_or(VfsError::Einval)?.write_nb(inode.poll_subscribers(), buf, false)
     }
     fn write_nonblock_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
+        if crate::watch_queue::is_notification_pipe(file.inode()) { return Err(crate::watch_queue::write_refused()); }
         let packetized = file.flags().contains(vfs::OpenFlags::O_DIRECT);
         pipe_data(file.inode()).ok_or(VfsError::Einval)?.write_nb(file.inode().poll_subscribers(), buf, packetized)
     }
     fn write_iter_file(&self, file: &File, _off: u64, bufs: &[&[u8]], nonblock: bool) -> KResult<usize> {
+        if crate::watch_queue::is_notification_pipe(file.inode()) { return Err(crate::watch_queue::write_refused()); }
         let p = pipe_data(file.inode()).ok_or(VfsError::Einval)?;
         if nonblock { p.write_iter_nb(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
         else { p.write_iter_blocking(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
     }
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
-    fn poll(&self, inode: &Inode) -> u32 { pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0) }
+    fn poll(&self, inode: &Inode) -> u32 {
+        if let Some(q) = crate::watch_queue::queue_of(inode) { return crate::watch_queue::poll_mask(&q); }
+        pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0)
+    }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(pipe_data(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocoutqnsd | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
     fn fasync_file(&self, fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(fd, on); Ok(()) }
 }
@@ -378,6 +436,13 @@ fn pipe_close_hook(inode: &InodeRef, was_writable: bool, _d: &alloc::sync::Arc<v
             klog::write_raw(b"\n");
         }
         if prev <= 1 { pipe.write_waiters.wake_all(); if let Some(s) = subs { s.notify(); } }
+    }
+    // Both ends gone: a notification pipe's queue goes with it. Watches still
+    // pointing at that queue hold their own reference to it, so one that
+    // outlives the pipe posts into a queue nobody reads rather than into a
+    // freed one.
+    if pipe.readers.load(Ordering::Acquire) == 0 && pipe.writers.load(Ordering::Acquire) == 0 {
+        crate::watch_queue::detach(inode);
     }
 }
 

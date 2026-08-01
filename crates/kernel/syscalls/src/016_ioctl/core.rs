@@ -65,6 +65,11 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         }
         return rv;
     }
+    // The watch-queue ioctls (`IOC_WATCH_QUEUE_SET_{SIZE,FILTER}`): a pipe is
+    // a Fifo, which the generic stage has no handler for, so they route here.
+    if let Some(rv) = ::fs::watch_queue::handle_watch_queue_ioctl(&file, req, arg) {
+        return rv;
+    }
     // timerfd `TFD_IOC_SET_TICKS`: route before the CharDev gate; a timerfd
     // inode is tagged CharDev but has no device backend to dispatch to.
     if let Some(rv) = ::fs::timerfd::handle_timerfd_ioctl(&file.inode(), req, arg) {

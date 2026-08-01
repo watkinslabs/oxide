@@ -13,6 +13,7 @@
 //          string, the query, and known-answer sign/verify/encrypt.
 // - payload: per-type payload contracts and the type table's read/update methods.
 // - quota: the per-uid `key_user` key/byte quota, EDQUOT and the gc refund.
+// - watch: WATCH_KEY and the records a watcher receives from the real ops.
 // - dh:    DH_COMPUTE — input-key admission, parameter vetting, and the
 //          known-answer exponentiation and key derivation.
 
@@ -28,6 +29,7 @@ mod perm;
 mod pkey;
 mod quota;
 mod rings;
+mod watch;
 
 /// A caller with fsuid == fsgid == `uid` and no supplementary groups.
 fn ctx(tid: u32, uid: u32) -> Ctx {

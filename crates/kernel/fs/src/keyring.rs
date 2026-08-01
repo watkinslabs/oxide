@@ -19,6 +19,8 @@
 // - ops:     the per-op cores (rings / keys / links), each taking an explicit
 //            `Ctx` so hosted tests drive them for arbitrary callers.
 // - keyctl:  `keyctl(2)` command dispatch and its user-memory marshalling.
+// - notify:  the ONE place a key event becomes a notification record for the
+//            queues watching that key.
 // - lifecycle: the fork / exec / exit / fsid-change transitions that move this
 //            state in Linux because it lives in `cred`.
 // - report:  `/proc/keys` and `/proc/key-users` rendering.
@@ -46,6 +48,7 @@ mod auth;
 mod construct;
 mod keyctl;
 mod lifecycle;
+mod notify;
 mod ops;
 mod perm;
 mod procfs;
