@@ -125,8 +125,8 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         if let Ok(p) = core::str::from_utf8(&path_owned) {
             if let Ok(vp) = crate::pathresolve::resolve_path_raw(p, true) {
                 let inode = vp.inode;
-                if !::fs::inotify::check_open_exec_perm(&inode) {
-                    return -(Errno::Eacces.as_i32() as i64);
+                if let Err(e) = ::fs::inotify::check_open_exec_perm(&inode) {
+                    return -(e.as_i32() as i64);
                 }
             }
         }

@@ -3,7 +3,10 @@
 // - `group`: inotify/fanotify group inode/file ops, read/write paths, and perm-gate checks.
 // - `dispatch`: global registry, event routing, VFS hook wiring, and fire_* helpers.
 // - `marks`: mark teardown when the watched object dies (`__fsnotify_inode_delete`).
-// - `queue`: notification-queue admission — overflow + inotify's merge rule.
+// - `queue`: notification-queue admission — overflow + each kind's merge rule.
+// - `mask`: per-mark applicability (ONDIR / ON_CHILD) and ignore-mask rules.
+// - `response`: `fanotify_response` admission and the verdict→errno mapping.
+// - `fan_read`: fanotify read path — metadata, info records, minted fds.
 // - `layout`: `struct inotify_event` wire encoding + name padding rules.
 // - `fan_layout`: `fanotify_event_metadata` + `fanotify_event_info_fid` encoding.
 // - `path`: watch-path resolution through task root/cwd plus credentials.
@@ -13,12 +16,15 @@
 
 mod dispatch;
 mod fan_layout;
+mod fan_read;
 mod group;
 mod layout;
 mod marks;
+mod mask;
 mod path;
 mod perm;
 mod queue;
+mod response;
 mod syscalls;
 mod types;
 mod validate;
@@ -71,11 +77,10 @@ pub(crate) use validate::{validate_fanotify_init, validate_fanotify_mark_group,
     FAN_MARK_ONLYDIR, FAN_NONBLOCK, FAN_REPORT_DIR_FID, FAN_REPORT_FD_ERROR, FAN_REPORT_FID,
     FAN_REPORT_MNT, FAN_REPORT_NAME, FAN_REPORT_TARGET_FID};
 #[cfg(test)]
-pub(crate) use types::{inode_key, Event, MarkScope, PermEvent, FAN_ACCESS, FAN_ALLOW, FAN_ATTRIB, FAN_CLOSE_WRITE, FAN_CREATE,
-    FAN_DENY, FAN_FS_ERROR, FAN_MNT_ATTACH, FAN_MODIFY, FAN_MOVE, FAN_MOVED_FROM, FAN_MOVED_TO, FAN_MOVE_SELF,
+pub(crate) use types::{inode_key, Event, MarkScope, FAN_ACCESS, FAN_ATTRIB, FAN_CLOSE_WRITE, FAN_CREATE,
+    FAN_FS_ERROR, FAN_MNT_ATTACH, FAN_MODIFY, FAN_MOVE, FAN_MOVED_FROM, FAN_MOVED_TO, FAN_MOVE_SELF,
     FAN_ONDIR, FAN_OPEN, FAN_OPEN_EXEC, FAN_OPEN_EXEC_PERM, FAN_OPEN_PERM, FAN_PRE_ACCESS, FAN_RENAME,
     IN_EXCL_UNLINK, IN_IGNORED, IN_ONESHOT, INOTIFY_DEFAULT_MAX_QUEUED_EVENTS, IN_Q_OVERFLOW, IN_UNMOUNT};
 #[cfg(test)]
-pub(crate) use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(test)]
 pub(crate) use vfs::InodeRef;

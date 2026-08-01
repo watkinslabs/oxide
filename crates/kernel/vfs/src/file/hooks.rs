@@ -61,6 +61,7 @@ struct InodeHooks {
     dirent_delete: Option<fn(&InodeRef, &str, bool)>,
     /// `fsnotify_inoderemove` — the inode's LAST link is gone. Args: (inode).
     delete_self: Option<fn(&InodeRef)>,
+    inode_evict: Option<fn(&InodeRef)>,
     /// `fsnotify_change` — a successful `notify_change`. Args: (inode, ia_valid).
     /// The subscriber owns the `ATTR_*` → event-mask mapping, exactly as
     /// Linux's `fsnotify_change` inline does (`include/linux/fsnotify.h`).
@@ -72,7 +73,7 @@ impl InodeHooks {
     const fn new() -> Self {
         Self { open: None, read: None, write: None, clone: None,
                close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None,
-               delete_self: None, setattr: None }
+               delete_self: None, inode_evict: None, setattr: None }
     }
 }
 
@@ -156,6 +157,20 @@ pub fn set_delete_self_hook(f: fn(&InodeRef)) { HOOKS.lock().delete_self = Some(
 /// Fire the delete-self hook (no-op when not installed). # C: O(1)
 pub fn fire_delete_self_hook(inode: &InodeRef) {
     let h = HOOKS.lock().delete_self;
+    if let Some(f) = h { f(inode); }
+}
+
+/// Install the inode-EVICTION hook. Distinct from the delete-self hook: that
+/// one announces an inode that has ceased to exist, this one an inode merely
+/// leaving the cache, which may still exist on disk and be read back later.
+/// The distinction is user-visible — a notification mark that asked not to pin
+/// its object goes away with the cached inode, while an ordinary mark does not.
+/// # C: O(1)
+pub fn set_inode_evict_hook(f: fn(&InodeRef)) { HOOKS.lock().inode_evict = Some(f); }
+
+/// Fire the inode-eviction hook (no-op when not installed). # C: O(1)
+pub fn fire_inode_evict_hook(inode: &InodeRef) {
+    let h = HOOKS.lock().inode_evict;
     if let Some(f) = h { f(inode); }
 }
 

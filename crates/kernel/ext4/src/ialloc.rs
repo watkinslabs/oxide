@@ -18,6 +18,51 @@ use crate::superblock::{SB_OFF_FREE_INODES, SB_OFF_LAST_ORPHAN, SUPERBLOCK_LEN, 
 mod create;
 mod project;
 
+/// On-disk inode byte offset of `i_generation` — the inode's INCARNATION
+/// number, bumped every time the number is reallocated to a new object. It is
+/// half of an exportable file handle's identity (`vfs::export`): decode
+/// compares it and reports `ESTALE` on a mismatch, so a handle minted against
+/// a deleted file cannot open the unrelated file that later inherited its
+/// number. It is also an input to the metadata-checksum seed.
+const I_OFF_GENERATION: usize = 0x64;
+
+/// Odd multiplier (golden-ratio) applied to the allocation sequence. Odd ⇒ the
+/// map is a bijection on `u32`, so no two allocations within a boot draw the
+/// same generation — the property the stale-handle rejection rests on.
+const GENERATION_STRIDE: u32 = 0x9E37_79B9;
+
+/// Allocation sequence behind [`next_inode_generation`], seeded from the
+/// realtime clock on first use so the values a fresh boot hands out do not
+/// repeat the previous boot's — which would let a file handle survive a
+/// reboot and resolve to the wrong object.
+static GENERATION_SEQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Next `i_generation` for a newly allocated inode.
+///
+/// Never zero: zero is the "this filesystem does not version its inode
+/// numbers" wildcard (`vfs::export::GENERATION_ANY`) that a handle matches
+/// unconditionally, so handing it to a real on-disk inode would silently
+/// disable that inode's recycle detection.
+/// # C: O(1)
+fn next_inode_generation() -> u32 {
+    use core::sync::atomic::Ordering;
+    if GENERATION_SEQ.load(Ordering::Relaxed) == 0 {
+        let seed = vfs::inode_times::realtime_now_ns() as u32 | 1;
+        let _ = GENERATION_SEQ.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
+    }
+    let g = GENERATION_SEQ.fetch_add(1, Ordering::Relaxed).wrapping_mul(GENERATION_STRIDE);
+    if g == 0 { GENERATION_STRIDE } else { g }
+}
+
+/// Stamp a freshly zeroed on-disk inode slot with its generation. Must run
+/// BEFORE the slot is written, because the inode checksum is keyed on
+/// `(ino, generation)`.
+/// # C: O(1)
+pub(crate) fn stamp_new_inode_generation(bytes: &mut [u8]) {
+    bytes[I_OFF_GENERATION..I_OFF_GENERATION + 4]
+        .copy_from_slice(&next_inode_generation().to_le_bytes());
+}
+
 /// On-disk inode byte offset of `NEXT_ORPHAN` — Linux overloads `i_dtime`
 /// (@0x14) as the "next orphan inode number" pointer while an inode sits on
 /// the superblock orphan list. A small value (< `s_inodes_count`) is a list
@@ -524,6 +569,7 @@ impl Mount {
         if ftype == S_IFREG || ftype == S_IFDIR {
             bytes[0x20..0x24].copy_from_slice(&0x0008_0000u32.to_le_bytes());
         }
+        stamp_new_inode_generation(&mut bytes);
         self.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
         let hdr = ExtentHeader { magic: EXT4_EXT_MAGIC, entries: 0, max: 4, depth: 0, generation: 0 };
         let mut i_block = [0u8; I_BLOCK_LEN];
