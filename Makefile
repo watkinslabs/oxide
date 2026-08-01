@@ -41,7 +41,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
-        feature-gate feature-gate-x86 feature-gate-arm \
+        feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
         smoke-ping smoke-ping-x86 smoke-ping-arm \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -236,10 +236,19 @@ stack-gate: stack-gate-x86 stack-gate-arm
 # starts, so the boot log is empty and reads like a boot failure rather than a
 # build one. B1641 lost a lane to exactly that.
 #
-# `debug-all` is a superset of `debug-boot`, so this covers the boot's feature
-# set and every other debug block. CI's build-kernel matrix runs the same
-# combination; this target is the local equivalent for the merge path, which
-# does not wait on CI.
+# `debug-all` is NOT the whole debug surface — it is a curated aggregate of ~11
+# features, so gating on it alone left ~75 debug features uncompiled by anything
+# routine, and three of them (`debug-stderr`, `debug-memtest`, `debug-atexit`)
+# had been broken for months (B1671). The gate therefore enumerates EVERY
+# `debug-*` feature declared in kmain's `[features]` table, so a feature added
+# later is covered without editing this file.
+#
+# `debug-atexit` is the one exclusion: it and `debug-stderr` are mutually
+# exclusive by design (`020_writev` picks the richer `[DYNERR]` tracer when
+# atexit is on), so enabling both hides the `debug-stderr` writev block from the
+# type checker. `make feature-gate-atexit` covers it as a separate, non-routine
+# pass — it is a distinct feature set, so it recompiles rather than reusing the
+# routine gate's artifacts.
 #
 # `--check` (type-check, no codegen/link/snapshot/rootfs) is what keeps this
 # usable as a ROUTINE gate: the defect class is a compile error inside a
@@ -247,11 +256,19 @@ stack-gate: stack-gate-x86 stack-gate-arm
 # at a fraction of the cost. `.githooks/pre-push` runs it on every branch push
 # that touches kernel sources; `make build-debug` remains the full codegen+link
 # form for the merge path.
+GATE_FEATURES = $(shell awk '/^\[features\]/{f=1;next} /^\[/{f=0} f && /^debug-[a-z0-9-]* *=/{print $$1}' \
+	crates/kernel/kmain/Cargo.toml | grep -v '^debug-atexit$$' | paste -sd,)
+
 feature-gate-x86:
-	cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-all --check
+	cargo run --quiet -p xtask -- kernel --arch x86_64 --features $(GATE_FEATURES) --check
 feature-gate-arm:
-	cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-all --check
+	cargo run --quiet -p xtask -- kernel --arch aarch64 --features $(GATE_FEATURES) --check
 feature-gate: feature-gate-x86 feature-gate-arm
+
+# The mutually-exclusive half: `debug-atexit` instead of `debug-stderr`.
+feature-gate-atexit:
+	cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-atexit,debug-all --check
+	cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-atexit,debug-all --check
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.

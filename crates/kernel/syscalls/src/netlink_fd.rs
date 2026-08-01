@@ -57,7 +57,7 @@ fn uev_comm() {
     if let Some(c) = sched::live::current() {
         klog::write_dec_u64(c.tid as u64);
         klog::write_raw(b"/");
-        klog::write_raw(c.name.as_bytes());
+        { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); }
     } else { klog::write_raw(b"?"); }
 }
 

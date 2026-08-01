@@ -55,7 +55,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         klog::write_raw(b" tgt="); klog::write_dec_u64(vt_target as u64);
         klog::write_raw(b" active="); klog::write_dec_u64(vt::active() as u64);
         klog::write_raw(b" by=");
-        if let Some(c) = sched::live::current() { klog::write_raw(c.name.as_bytes()); }
+        if let Some(c) = sched::live::current() { { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); } }
         klog::write_raw(b"]\n");
     }
     if !(1..=63).contains(&vt_target) { return None; }
