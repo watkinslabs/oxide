@@ -212,7 +212,7 @@ fn get_persistent_is_stable_and_refreshes_the_expiry() {
     let t = ctx(1021, 6106);
     let first = get_persistent(&t, -1, KEY_SPEC_SESSION_KEYRING) as i32;
     let e1 = STORE.lock().keys[&first].expiry_ns;
-    assert_eq!(e1, PERSISTENT_KEYRING_EXPIRY * 1_000_000_000);
+    assert_eq!(e1, persistent_expiry() * 1_000_000_000);
     let mut later = ctx(1021, 6106);
     later.now_ns = 60 * 1_000_000_000;
     assert_eq!(get_persistent(&later, -1, KEY_SPEC_SESSION_KEYRING), first as i64,

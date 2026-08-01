@@ -28,7 +28,7 @@ fn maxkeys_leaf() -> IntHook {
 
 #[test]
 fn a_new_key_appears_in_the_proc_keys_body_procfs_renders() {
-    fs::keyring_procfs::register_procfs_hooks();
+    fs::keyring::register_procfs_hooks();
     let serial = sys_keyctl(&SyscallArgs { a0: KEYCTL_JOIN_SESSION_KEYRING, ..Default::default() });
     assert!(serial > 0, "joining a session keyring mints one: {serial}");
 
@@ -43,7 +43,7 @@ fn a_new_key_appears_in_the_proc_keys_body_procfs_renders() {
 
 #[test]
 fn the_key_users_body_charges_the_owning_uid() {
-    fs::keyring_procfs::register_procfs_hooks();
+    fs::keyring::register_procfs_hooks();
     let serial = sys_keyctl(&SyscallArgs { a0: KEYCTL_JOIN_SESSION_KEYRING, ..Default::default() });
     assert!(serial > 0);
     let body = String::from_utf8(procfs::hooks::keyring::key_users()).expect("ASCII lines");
@@ -53,7 +53,7 @@ fn the_key_users_body_charges_the_owning_uid() {
 
 #[test]
 fn a_sysctl_write_moves_the_ceiling_the_key_store_reports() {
-    fs::keyring_procfs::register_procfs_hooks();
+    fs::keyring::register_procfs_hooks();
     let restore = quota_limit(QuotaKnob::MaxKeys);
     let leaf = maxkeys_leaf();
 
@@ -66,4 +66,20 @@ fn a_sysctl_write_moves_the_ceiling_the_key_store_reports() {
     assert_eq!(quota_limit(QuotaKnob::MaxKeys), 1234);
 
     set_quota_limit(QuotaKnob::MaxKeys, restore);
+}
+
+// The persistent-keyring window is a live value, not a constant: writing the
+// sysctl changes the expiry stamped on the NEXT persistent keyring handed out.
+// A knob that reads back but leaves the lifetime alone would tell an
+// administrator they had shortened a credential's life when they had not.
+#[test]
+fn the_persistent_expiry_sysctl_changes_the_keyrings_lifetime() {
+    fs::keyring::register_procfs_hooks();
+    let saved = fs::keyring::persistent_expiry();
+    fs::keyring::set_persistent_expiry(120);
+    assert_eq!(procfs::hooks::keyring::persistent_expiry(), 120,
+        "/proc/sys/kernel/keys/persistent_keyring_expiry reads the live value");
+    procfs::hooks::keyring::set_persistent_expiry(300);
+    assert_eq!(fs::keyring::persistent_expiry(), 300, "and a write reaches the store");
+    fs::keyring::set_persistent_expiry(saved);
 }

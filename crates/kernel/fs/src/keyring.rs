@@ -22,6 +22,8 @@
 // - lifecycle: the fork / exec / exit / fsid-change transitions that move this
 //            state in Linux because it lives in `cred`.
 // - report:  `/proc/keys` and `/proc/key-users` rendering.
+// - procfs:  the boot binding that hands those renderers, and the
+//            `/proc/sys/kernel/keys/` values, to the procfs leaf crate.
 //
 // This file owns only the syscall entry points, the user-memory helpers they
 // share, and the one place `sched::current()` is turned into a `Ctx`.
@@ -46,6 +48,7 @@ mod keyctl;
 mod lifecycle;
 mod ops;
 mod perm;
+mod procfs;
 mod report;
 mod store;
 mod types;
@@ -61,8 +64,10 @@ mod types;
 mod uapi;
 
 pub use keyctl::sys_keyctl;
+pub use procfs::register_procfs_hooks;
 pub use lifecycle::{exec as exec_keys, exit as exit_keys, fork as fork_keys, fsids_changed};
-pub use store::{quota_limit, set_quota_limit, QuotaKnob, TaskIds};
+pub use store::{persistent_expiry, quota_limit, set_persistent_expiry, set_quota_limit,
+    QuotaKnob, TaskIds};
 use ops::Ctx;
 use uapi::*;
 

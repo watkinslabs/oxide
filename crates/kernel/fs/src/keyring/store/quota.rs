@@ -1,48 +1,11 @@
-// The per-uid `key_user` quota: the `/proc/sys/kernel/keys/` ceilings, the
-// charge/refund arithmetic `key_alloc` and `key_payload_reserve` perform, and
+// The per-uid `key_user` quota: the charge/refund arithmetic `key_alloc` and `key_payload_reserve` perform, and
 // the gc that makes a charge releasable.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 use syscall::errno::Errno;
 
-use super::{KeyUser, Quota, Store};
-use super::super::uapi::*;
+use super::{max_bytes, max_keys, KeyUser, Quota, Store};
 
-/// The four quota ceilings, live rather than constant: they are
-/// `/proc/sys/kernel/keys/{maxkeys,maxbytes,root_maxkeys,root_maxbytes}`, and a
-/// sysctl a caller can read but that changes nothing is not a sysctl. Indexed
-/// by [`QuotaKnob`]; the compile-time values are the boot defaults.
-static QUOTA_LIMITS: [AtomicU64; 4] = [
-    AtomicU64::new(KEY_QUOTA_MAXKEYS),
-    AtomicU64::new(KEY_QUOTA_MAXBYTES),
-    AtomicU64::new(KEY_QUOTA_ROOT_MAXKEYS),
-    AtomicU64::new(KEY_QUOTA_ROOT_MAXBYTES),
-];
-
-/// The `/proc/sys/kernel/keys/` knobs backing [`QUOTA_LIMITS`], in that order.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum QuotaKnob { MaxKeys = 0, MaxBytes = 1, RootMaxKeys = 2, RootMaxBytes = 3 }
-
-/// Read a quota ceiling. # C: O(1)
-pub fn quota_limit(k: QuotaKnob) -> u64 { QUOTA_LIMITS[k as usize].load(Ordering::Relaxed) }
-
-/// Write a quota ceiling — the sysctl store path. Lowering a ceiling below what
-/// a uid already holds does not reclaim anything, exactly as Linux's does: the
-/// charge is only re-tested on the next allocation. # C: O(1)
-pub fn set_quota_limit(k: QuotaKnob, v: u64) { QUOTA_LIMITS[k as usize].store(v, Ordering::Relaxed); }
-
-/// A uid's key-count ceiling — `key_quota_root_maxkeys` for root, else
-/// `key_quota_maxkeys`. # C: O(1)
-pub fn max_keys(uid: u32) -> u64 {
-    quota_limit(if uid == ROOT_UID { QuotaKnob::RootMaxKeys } else { QuotaKnob::MaxKeys })
-}
-
-/// A uid's key-byte ceiling — `key_quota_root_maxbytes` / `key_quota_maxbytes`.
-/// # C: O(1)
-pub fn max_bytes(uid: u32) -> u64 {
-    quota_limit(if uid == ROOT_UID { QuotaKnob::RootMaxBytes } else { QuotaKnob::MaxBytes })
-}
 /// `key_alloc`'s ceiling test: one more key, and `add_bytes` more bytes, must
 /// both still fit. Taking the two ceilings as arguments is what lets the
 /// `/proc/sys/kernel/keys/` knobs be proved to GATE an allocation rather than
