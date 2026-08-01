@@ -115,9 +115,15 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_data(dev, dev_t, d)?;
         mounted(ty, fs, None, source, sb_flags)
     })));
-    let _ = register_fs(FsType::new("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _, sb_flags| -> R {
+    // procfs honours NO mount option: its constructor discards the data string
+    // and its root inode is a process-global singleton, so there is nowhere for
+    // a per-mount option to live. Declaring an EMPTY table states that
+    // truthfully, which makes an option-support query answer "no" for
+    // `hidepid`/`subset` instead of claiming a confinement that is not applied.
+    // Restore each name here as its enforcement lands, never before.
+    let _ = register_fs(FsType::with_parameters("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _, sb_flags| -> R {
         mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs), None, "proc", sb_flags)
-    })));
+    }), Some(&[])));
     let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, _, sb_flags| -> R {
         mounted(ty, Arc::new(sysfs::SysfsFs), None, "sysfs", sb_flags)
     })));
