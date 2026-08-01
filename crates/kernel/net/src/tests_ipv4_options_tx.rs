@@ -10,8 +10,8 @@ use sync::{Socket as LockClass, Spinlock};
 use crate::iface_addr::{Ipv4AddrCacheInfo, Ipv4IfaceAddr};
 use crate::ipv4::{ip_checksum, IPV4_HDR_LEN};
 use crate::route::RouteEntry;
-use crate::sock_opts::sol_ip::options::Compiled;
-use crate::sock_opts::sol_ip::uapi::{IPOPT_END, IPOPT_LSRR, IPOPT_NOOP, IPOPT_RA, IPOPT_RR};
+use crate::ipv4_options::Compiled;
+use crate::ipv4_options::uapi::{IPOPT_END, IPOPT_LSRR, IPOPT_NOOP, IPOPT_RA, IPOPT_RR};
 use crate::stack::NetStack;
 use crate::{Ipv4Addr, MacAddr, NetDev, NetIfaceId, NetResult, Pkt};
 

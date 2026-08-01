@@ -148,7 +148,7 @@ fn parse_routing(data: &[u8]) -> KResult<Vec<u8>> {
 /// socket-level option does, so one message and one `setsockopt` produce the
 /// identical compiled area. # C: O(optlen)
 fn parse_ip_options(data: &[u8], cap: bool, net_ns: u64)
-    -> KResult<net::sock_opts::sol_ip::options::Compiled>
+    -> KResult<net::ipv4_options::Compiled>
 {
     net::ipv4_options::build_control(data, cap, net_ns).map_err(Error::from)
 }
