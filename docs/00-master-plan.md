@@ -270,7 +270,7 @@ See `MANIFEST.md`.
 ## 17 Changelog
 
 - 2026-05-14: v1/v2/v2.x framing deleted wholesale. Single phase ladder; every Linux subsystem in scope. `docs/00-v2.md` and `docs/v2/` deleted. `§9 non-goals` collapsed to two architectural exclusions (32-bit, big-endian). `§15` re-framed as a generic release criterion that fires per tag, not a one-shot `v1.0` gate.
-- 2026-05-08: `43§2` acceptance shrunk to a minimal userspace set (R05).
+- 2026-05-08: `43§2` acceptance shrunk to a minimal userspace set.
 - 2026-05-06: phase ladder gains explicit rows 10/11/12 for modules loader, PCI enumeration, virtio common infra. Spun out from "phase 9 + driver work backing phase 8" because each turned out to be a multi-PR slug deserving its own gate.
 - 2026-05-06: phases 13–17 added covering the Linux-userspace integration arc — dynamic linker, libc/NSS/PAM, system manager, RPM toolchain, agetty/login flow. Each phase is a usable milestone (e.g. phase 13 alone unlocks running unmodified Fedora binaries with a small set of .so files staged).
 

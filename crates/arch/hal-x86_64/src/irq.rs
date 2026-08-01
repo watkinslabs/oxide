@@ -1,5 +1,5 @@
 // Per-vector IRQ entry stubs per `22§4` + IRQ-exit preemption epilogue
-// per `14§R07`.
+// per `14§5.6`.
 //
 // Distinct from the fault stubs (`fault.rs`) only in vector tagging and
 // the stack switch: both build the SAME `PtRegs` (`pt_regs.rs`). IRQ
@@ -149,7 +149,7 @@ core::arch::global_asm!(
     "    call oxide_irq_dispatch",  // handler + sti/do_softirq/cli on the hardirq stack
     "    pop  rax",                 // drop pad
     "    pop  rsp",                 // back to the interrupted (outer) stack
-    // -- resched-on-exit (`14§R07`): hand the Rust slow path the interrupted
+    // -- resched-on-exit (`14§5.6`): hand the Rust slow path the interrupted
     //    `PtRegs` itself, so it reads the saved CS (return-to-user test) and
     //    rewrites the saved RIP (rseq critical-section abort, `sched::rseq`)
     //    through named fields instead of this stub's byte offsets. Runs on the

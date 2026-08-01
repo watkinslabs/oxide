@@ -119,9 +119,9 @@ fn check_headers(path: &Path, text: &str, charter: bool, f: &mut Findings) {
                 format!("dotted header form forbidden: `## {body}` (drop trailing `.`)"));
             continue;
         }
-        // Charters permit any section ID. Subsystem docs require numeric,
-        // with one exception: `## Revision YYYY-MM-DD ...` blocks per `02§1.5`.
-        if !charter && !is_dotted_num(first) && first != "Revision" {
+        // Charters permit any section ID. Subsystem docs require numeric:
+        // FROZEN specs are revised in the body, with no in-file revision block (`02§1`).
+        if !charter && !is_dotted_num(first) {
             f.push(path, i + 1, "doc/header-num",
                 format!("non-charter section ID must be numeric: `## {first}`"));
         }

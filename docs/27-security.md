@@ -2,64 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38`. Provides:every privilege check.
 
-## Revision 2026-05-09 (R03)
-
-- Changed: `crates/security` is the real owner of the seccomp cBPF
-  interpreter (`security::seccomp`) and bpf(2) admit
-  (`security::bpf`). `kernel/src/seccomp.rs` (392 lines) and
-  `kernel/src/dev_bpf.rs` (113 lines) moved verbatim.
-- Cross-crate `current task` accessor: `sched::set_current_hook` /
-  `sched::current()` lets workspace crates query the running task
-  without depending on the kernel-internal sched module. Kernel
-  installs the hook at boot from `crate::sched::current`.
-- Wiring: `kernel::seccomp` and `kernel::dev_bpf` are `pub use`
-  re-exports from `security::*` so syscall_glue / glue_seccomp /
-  glue_bpf keep working.
-- Capability bits stay on `sched::Creds`; `has_cap_for` /
-  user-NS scoping stay in `crates/nscg`. File caps + Landlock
-  admit stay in kernel-side glue.
-
-## Revision 2026-05-09 (R02)
-
-- Changed: pinned the current BPF subset shape. `bpf(2)` admits
-  BPF_PROG_LOAD with cBPF (32-bit classic-BPF) instructions stored
-  in a BpfProgInode; BPF_MAP_CREATE returns a BpfMapInode (hash-map,
-  byte-keyed). Helper-fn calls from cBPF land via the existing
-  seccomp interpreter (which is cBPF-shaped). All ops require
-  CAP_BPF. eBPF + verifier + JIT tracked as phase 23.
-- Why: phase 24 (bpf+seccomp+landlock) unblocks userspace tools
-  (bpftool admit, libbpf feature probes) once `bpf(2)` returns a
-  real fd instead of ENOSYS. The cBPF subset is small (no
-  verifier means we restrict to CAP_BPF callers and document the
-  unverified-program risk).
-- Affected code: `kernel/src/dev_bpf.rs` (new — BpfProgInode +
-  BpfMapInode + bpf(2) op dispatch); `kernel/src/syscall_glue.rs`
-  (NR_BPF arm).
-- Test contract change: §16 acceptance gains "bpf(BPF_PROG_LOAD)
-  admit + close" smoke; programs that load a no-op cBPF and
-  immediately close get a real fd.
-
-## Revision 2026-05-09 (R01)
-
-- Changed: pinned per-user-NS cap scoping. `cap_effective` bits scope
-  to the calling task's user_ns chain; new helper
-  `has_cap_for(target_user_ns, cap)` returns true only when the bit
-  is set AND target_user_ns is the calling task's user_ns OR a
-  descendant of it (caller in init NS sees all NSes as descendants).
-- Why: F92/F93/F95 use the global `cap_effective` mask; a task that
-  unshared CLONE_NEWUSER and gained CAP_FULL in its own NS could
-  affect resources owned by a sibling user_ns. Without scoping, the
-  F106 substrate would be a security regression. Each user_ns
-  records its parent at unshare time in a side registry; descendant
-  checks walk up.
-- Affected code: `crates/sched/src/task.rs` (parent_user_ns field);
-  `kernel/src/syscall_glue_signal.rs` (unshare records parent);
-  ~10 privileged sites convert `has_cap` to `has_cap_for(target, cap)`.
-- Test contract change: §16 gains a "user-NS containment" smoke —
-  child unshares CLONE_NEWUSER, parent in init NS still kills it
-  (init NS is ancestor of child's NS); reverse direction returns
-  EPERM since init is not a descendant of the child's NS.
-
 ## 1 Purpose
 
 Capabilities (Linux v3, 64-bit), seccomp (strict + filter), Landlock (filesystem sandbox), KASLR/KPTI/SMEP/SMAP/PAN/PXN/CET/BTI baseline, signature trust root, taint flags, sysctl tree.
@@ -95,6 +37,8 @@ pub fn taint(flag:TaintFlag, msg:&'static str);
 `Caps` per `01§9`. Per-task: effective, permitted, inheritable, bounding, ambient.
 
 Transition rules: `execve` of file with file caps + setuid bits → recompute per Linux capability(7) rules. NoNewPrivs blocks privilege gain.
+
+User-ns scoping: a cap authorizes an operation on `target_user_ns` only when the bit is set AND `target_user_ns` is the caller's user-ns or a descendant of it (a task in the initial ns sees every ns as a descendant). Each user-ns records its parent at creation; the check walks that chain (`26§3.6`). Unscoped `has_cap` at a privileged site is a bug: a task that unshared `CLONE_NEWUSER` holds full caps in its own ns and must not reach a sibling ns's resources.
 
 ## 5 Seccomp
 
@@ -260,4 +204,3 @@ All cmp/key-ops on secret material via `subtle::ConstantTimeEq`. Memcmp-on-secre
 ## 19 Cross-spec
 
 `13` (CAP_SYS_NICE for RT scheduling), `18` (sig verify, taint), `26` (caps in user-ns), `15` (capset, seccomp, landlock_*), `11` (W^X enforced at mmap).
-

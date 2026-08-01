@@ -64,7 +64,7 @@ use hal::Context;
 
     #[test]
     fn new_kernel_with_irq_frame_layout() {
-        // `14§R07` pins the scaffold: saved-RIP + one `PtRegs`. The IRQ
+        // `14§5.6` pins the scaffold: saved-RIP + one `PtRegs`. The IRQ
         // epilogue pops all 15 GPRs, so entry/arg must be in the FRAME's
         // r12/r13 and not only in `Context` — otherwise the trampoline
         // jumps through a zeroed r12 on the task's first run.

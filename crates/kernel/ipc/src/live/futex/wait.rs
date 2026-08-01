@@ -146,6 +146,9 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
             let mut voff: u64 = 0;
             let mut vprot: u8 = 0;
             let mut vino: u64 = 0;
+            // SAFETY: `cur` is the running task on this CPU; the mm slot has a
+            // single mutator per `13§5` (the task's own execve/exit), so it
+            // cannot be replaced while that same task sits in this futex wait.
             let (kind, foff): (&str, u64) = match unsafe { cur.mm_ref() } {
                 None => ("NOMM", 0),
                 // SAFETY: single-mutator mm slot per 13§5.
@@ -165,6 +168,8 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
                     }
                 },
             };
+            // SAFETY: same single-mutator mm slot as the borrow above — `cur` is
+            // this CPU's running task and no other CPU may replace its mm.
             let root = unsafe { cur.mm_ref() }.map(|m| m.root_pa()).unwrap_or(0);
             klog::write_raw(b"[mnt] FUTEXWAIT root=");
             klog::write_hex_u64(root);

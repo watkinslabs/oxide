@@ -26,7 +26,7 @@ pub enum SockKind {
     Unix(Arc<crate::UnixPair>, crate::UnixEnd),
     /// AF_UNIX path-bound listener. `accept` pops a queued pair.
     UnixListener(Arc<crate::UnixListener>),
-    /// AF_UNIX SOCK_DGRAM (F120 / `24§R01`). Per-socket message
+    /// AF_UNIX SOCK_DGRAM (F120 / `24§9`). Per-socket message
     /// queue; sendto/recvfrom push/pop here. Real per-message SCM
     /// metadata (sender creds, fd array) rides F121.
     UnixDgram(Arc<crate::UnixDgramQueue>),

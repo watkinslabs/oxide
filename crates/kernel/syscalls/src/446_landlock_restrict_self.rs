@@ -27,8 +27,7 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
     let nnp = cur.no_new_privs.load(Ordering::Acquire);
-    let cap = cur.has_cap(sched::cap::SYS_ADMIN);
-    if let Err(e) = abi::restrict_self_precheck(nnp, cap, flags) {
+    if let Err(e) = abi::restrict_self_precheck(nnp, cap_sys_admin_in_own_user_ns(&cur), flags) {
         return -(e.as_i32() as i64);
     }
     let plan = abi::restrict_plan(fd, flags, nnp);
@@ -53,6 +52,19 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
     }
     if plan.tsync { sync_siblings(&cur, &dom, plan.propagate_no_new_privs); }
     0
+}
+
+/// Whether the caller holds the administrative capability **in its own user
+/// namespace**, which is the alternative to `no_new_privs` for enforcing a
+/// policy. Testing the capability without resolving the namespace would let a
+/// thread that is only root inside an unprivileged user namespace enforce a
+/// policy a later set-user-ID exec still runs under.
+/// # C: O(N_userns_depth)
+fn cap_sys_admin_in_own_user_ns(cur: &sched::Task) -> bool {
+    match cur.namespace_owner(namespace_identity::NamespaceKind::User) {
+        Some(own) => nscg::proc_ns::has_cap_for(cur, &own.pin(), sched::cap::SYS_ADMIN),
+        None => cur.has_cap(sched::cap::SYS_ADMIN),
+    }
 }
 
 /// Replace every sibling thread's domain with `dom`.

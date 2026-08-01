@@ -29,7 +29,7 @@ pub static IRQ_LAST_VEC: AtomicU64 = AtomicU64::new(0);
 /// the tick counter, EOIs, sets NEED_RESCHED, then asks the
 /// scheduler for the next task and stages it in
 /// `oxide_preempt_next_ctx` so the asm tail switches on IRQ exit
-/// (per `14§R07`).
+/// (per `14§5.6`/`14§6.5`).
 ///
 /// # SAFETY: invoked only from the IRQ entry asm with IRQs masked
 /// (interrupt-gate clears IF on entry).
@@ -250,7 +250,9 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_x86_64::PtRegs) {
     if regs.is_null() { return; }
     // SAFETY: the IRQ-exit asm passes the interrupted `PtRegs`, live here.
     let vector = unsafe { (*regs).vector };
-    // SAFETY: same live frame.
+    // SAFETY: same frame the vector was just read from — non-null (checked
+    // above) and still owned by this task's kernel stack until
+    // `oxide_irq_resume_user` pops it; `from_user` only reads `cs`.
     if !unsafe { (*regs).from_user() } { return; }
     // Linux routes NMI through `irqentry_nmi_enter`/`irqentry_nmi_exit`, which
     // never reach `exit_to_user_mode_loop`. The fault epilogue this function

@@ -2,18 +2,6 @@
 
 FROZEN 2026-05-02. Dep:every spec above.
 
-## Revision 2026-08-01 (R07)
-
-- Changed: §1, §2, §3, §5 — acceptance binaries are Fedora RPM builds already on the image, not binaries this repo builds "against our libc". "Linked against our static musl" and "`redis 7` against our musl" are void; the contract is the stock Fedora binary running unmodified.
-- Why: the in-tree libc, loader and userspace build tree are deleted; userspace comes from `../images` as Fedora RPMs (`29a§2`). A criterion phrased as "builds against our libc" cannot be run.
-- Affected code: none — acceptance scenarios run against the composed image.
-- Test contract change: §5 step 1 becomes "install the package into the profile" instead of "build from source against our toolchain".
-
-## Revision 2026-05-14 (R06)
-
-- Deleted: v1/v2/v2.x split. Per `00§9` every Linux subsystem is in scope; there is no parking lot. Single acceptance set, ordered as a smoke-first staircase.
-- Binaries previously labeled "v2" (Go/Rust+tokio/redis/nginx/openssh/chrony) and "v2.x" (systemd/Wayland/Docker/KVM) are listed under their gating phase. Each becomes a hard tag-gate as that phase lands; none are deferred.
-
 ## 1 Purpose
 
 Enumerate the binary-level acceptance tests. Each binary listed is the *contract*: if the stock Fedora build of it fails to run on our syscall ABI, the gating phase is not done.

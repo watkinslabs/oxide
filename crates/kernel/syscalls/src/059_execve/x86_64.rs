@@ -299,7 +299,12 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     new_as.set_mmap_layout(layout.base, layout.top_down);
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"before-elf-load");
-    let img = match elf_load::load_static_blob(blob, &new_as, &rnd) {
+    let exec_image = elf_load::Image {
+        blob,
+        file: exec_vp.as_ref().map(crate::execve_common::image_backing),
+    };
+    let img = match elf_load::load_image(
+        exec_image, Some(&crate::execve_common::open_interp), &new_as, &rnd) {
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };

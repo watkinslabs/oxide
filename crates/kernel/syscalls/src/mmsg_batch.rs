@@ -37,6 +37,15 @@ use syscall::errno::Errno;
 
 use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_WAITFORONE};
 
+/// The order these rules compose in, and the only place they do.
+pub mod run;
+pub use run::{BatchOps, run as run_batch};
+
+/// Hosted-only scripted socket, shared by the unit tests and the host-oracle
+/// differential corpus so both drive the real composition above.
+#[cfg(not(target_os = "oxide-kernel"))]
+pub mod fake;
+
 /// Nanoseconds in one second, for the supplied-timeout range check.
 pub const NSEC_PER_SEC: u64 = 1_000_000_000;
 

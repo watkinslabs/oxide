@@ -10,8 +10,14 @@ comparing. Never hand-write an expected errno from memory (`docs/15`).
 - `src/oracle.rs` — host-side wrappers (`open`, `mkdir`, `dup3`, `pipe2`, …),
   each returning an [`outcome::Outcome`] (return value + errno, decoded from
   the real `errno` global after a `-1` return).
+- `src/sockets.rs` — the message-path oracle: real loopback UDP fixtures (a
+  bound pair, a deep receive queue, a socket carrying an ICMP-driven pending
+  error) plus `recvmmsg`/`sendmmsg`/`SO_ERROR` over them. Used by
+  `crates/kernel/syscalls/tests/conformance_mmsg.rs`.
 - `src/outcome.rs` — the shared `Outcome` type + `same_errno_class` (success
-  class must match; on failure, the errno must match). `ret` is compared too
+  class must match; on failure, the errno must match — `F793` fixed an
+  inverted guard here that compared the errno only on SUCCESS, i.e. never,
+  so every failure case in every corpus passed on the class alone). `ret` is compared too
   ONLY when a case opts in (`Case::compare_ret_on_success`) — fd numbers,
   inode-adjacent counters etc. never line up across two independent kernels.
 - `src/corpus.rs` — `Case` (one corpus row) + `run_corpus` (the one call

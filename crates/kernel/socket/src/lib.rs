@@ -38,7 +38,7 @@ mod receive;
 mod send;
 mod target;
 
-pub use batch::{BatchIo, BatchSpec, send_batch};
+pub use batch::{BatchIo, BatchSpec, UIO_MAXIOV, send_batch};
 pub use error::{Error, KResult};
 pub use filter::{FilterError, FilterFile};
 pub use message::{Message, SendOutcome};
@@ -60,3 +60,6 @@ mod filter_tests;
 #[cfg(test)]
 #[path = "tests/netlink_preflight.rs"]
 mod netlink_preflight_tests;
+#[cfg(test)]
+#[path = "tests/landlock_hooks.rs"]
+mod landlock_hooks_tests;

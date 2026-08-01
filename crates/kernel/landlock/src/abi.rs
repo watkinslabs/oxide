@@ -47,6 +47,11 @@ pub struct RulesetAttr {
     pub handled_fs:  AccessMask,
     pub handled_net: AccessMask,
     pub scoped:      AccessMask,
+    /// Rights whose denial is not logged, for objects a rule marked quiet.
+    pub quiet_fs:    AccessMask,
+    pub quiet_net:   AccessMask,
+    /// Scopes whose denial is never logged; needs no object marking.
+    pub quiet_scoped: AccessMask,
 }
 
 impl RulesetAttr {
@@ -58,7 +63,8 @@ impl RulesetAttr {
             b.copy_from_slice(&buf[i * 8..i * 8 + 8]);
             u64::from_le_bytes(b)
         };
-        Self { handled_fs: w(0), handled_net: w(1), scoped: w(2) }
+        Self { handled_fs: w(0), handled_net: w(1), scoped: w(2),
+               quiet_fs: w(3), quiet_net: w(4), quiet_scoped: w(5) }
     }
 
     /// Content admission. Unknown bits in any mask are rejected rather than
@@ -66,11 +72,19 @@ impl RulesetAttr {
     /// the difference between a sandbox and the appearance of one. A ruleset
     /// that handles nothing at all is refused so the caller learns its policy
     /// would have had no effect.
+    ///
+    /// A quiet mask may only name rights the same ruleset handles: quieting a
+    /// right the layer does not filter would describe a denial that cannot
+    /// happen. Because the handled masks are checked first, that subset test
+    /// also settles that the quiet masks name no unknown bit.
     /// # C: O(1)
     pub fn validate(&self) -> Result<(), Errno> {
         if (self.handled_fs  | MASK_ACCESS_FS)  != MASK_ACCESS_FS  { return Err(Errno::Einval); }
         if (self.handled_net | MASK_ACCESS_NET) != MASK_ACCESS_NET { return Err(Errno::Einval); }
         if (self.scoped      | MASK_SCOPE)      != MASK_SCOPE      { return Err(Errno::Einval); }
+        if (self.quiet_fs     | self.handled_fs)  != self.handled_fs  { return Err(Errno::Einval); }
+        if (self.quiet_net    | self.handled_net) != self.handled_net { return Err(Errno::Einval); }
+        if (self.quiet_scoped | self.scoped)      != self.scoped      { return Err(Errno::Einval); }
         if self.handled_fs == 0 && self.handled_net == 0 && self.scoped == 0 {
             return Err(Errno::Enomsg);
         }
@@ -78,7 +92,7 @@ impl RulesetAttr {
     }
 }
 
-/// `landlock_add_rule`'s `flags`: no flag is defined at this ABI level.
+/// `landlock_add_rule`'s `flags`.
 /// # C: O(1)
 pub fn add_rule_flags_ok(flags: u32) -> Result<(), Errno> {
     if (flags | MASK_ADD_RULE) != MASK_ADD_RULE { return Err(Errno::Einval); }
@@ -89,13 +103,19 @@ pub fn add_rule_flags_ok(flags: u32) -> Result<(), Errno> {
 ///
 /// An all-zero `allowed_access` is a rule that can never grant anything;
 /// reporting ENOMSG tells the caller its policy is inert instead of letting it
-/// believe an allow-rule was installed. `allowed_access` outside the ruleset's
-/// handled mask is EINVAL — a rule may never grant a right the ruleset does not
-/// filter.
+/// believe an allow-rule was installed. That is not so once a flag is set: an
+/// empty rule then still carries the quiet marking for its object, which is the
+/// whole reason to add it. `allowed_access` outside the ruleset's handled mask
+/// is EINVAL — a rule may never grant a right the ruleset does not filter, and
+/// marking an object quiet is refused unless the ruleset named something to be
+/// quiet about.
 /// # C: O(1)
-pub fn rule_access_ok(allowed: AccessMask, handled: AccessMask) -> Result<(), Errno> {
-    if allowed == 0 { return Err(Errno::Enomsg); }
+pub fn rule_access_ok(allowed: AccessMask, handled: AccessMask, flags: u32, quiet: AccessMask)
+    -> Result<(), Errno>
+{
+    if flags == 0 && allowed == 0 { return Err(Errno::Enomsg); }
     if (allowed | handled) != handled { return Err(Errno::Einval); }
+    if (flags & ADD_RULE_QUIET) != 0 && quiet == 0 { return Err(Errno::Einval); }
     Ok(())
 }
 

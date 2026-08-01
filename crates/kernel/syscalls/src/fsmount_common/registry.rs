@@ -65,6 +65,29 @@ pub fn ensure_filesystems_registered() {
     *done = true;
 }
 
+/// Which types publish a parameter table, and why the rest do not.
+///
+/// A table is a promise about a filesystem's WHOLE option surface, enforced on
+/// both entry points: `mount(2)` now builds an `FsContext` and admits its
+/// comma-separated blob through the same verdict `fsconfig(2)` applies, so a
+/// key absent from the table fails the real mount, not merely the probe.
+///
+/// So a table is published only where the option string is actually delivered
+/// to the backend — `tmpfs`, `ramfs`, `ext4`, `autofs`, `fuse` — and it lists
+/// what the reference accepts, in full, INCLUDING names not yet acted on.
+/// Listing a name we ignore is honest about the mount succeeding; omitting it
+/// would make a mount the reference accepts fail outright, which is worse.
+///
+/// Every other type here takes `None`: its constructor discards the data
+/// string entirely, so it has no option surface to describe. `None` keeps the
+/// pre-table behaviour exactly — the blob travels whole and nothing in it is
+/// refused. That is deliberate for `devpts` (`-o gid=5,mode=620,ptmxmode=000`
+/// on every boot) and `cgroup2` (`-o nsdelegate,memory_recursiveprot`): a
+/// table for either would reject nothing they are given today, but it would
+/// also claim an option surface neither implements.
+///
+/// `proc` is the exception, and `Some(&[])` is a real declaration rather than
+/// a default — see its registration below.
 fn register_filesystems() {
     use vfs::fs::{superblock_from_filesystem, FsFlags, FsType, register_fs};
     type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
@@ -99,11 +122,12 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = rfs;
         mounted(ty, fs, Some(root), target, sb_flags)
     }
-    let _ = register_fs(FsType::new("tmpfs", TMPFS_MAGIC,
-        FsFlags::FS_USERNS_MOUNT | FsFlags::FS_ALLOW_IDMAP, Box::new(tmpfs_ctor)));
-    let _ = register_fs(FsType::new("ramfs", RAMFS_MAGIC,
-        FsFlags::FS_USERNS_MOUNT, Box::new(ramfs_ctor)));
-    let _ = register_fs(FsType::new("ext4", EXT4_MAGIC,
+    let _ = register_fs(FsType::with_parameters("tmpfs", TMPFS_MAGIC,
+        FsFlags::FS_USERNS_MOUNT | FsFlags::FS_ALLOW_IDMAP, Box::new(tmpfs_ctor),
+        Some(::fs::tmpfs::TMPFS_PARAMS)));
+    let _ = register_fs(FsType::with_parameters("ramfs", RAMFS_MAGIC,
+        FsFlags::FS_USERNS_MOUNT, Box::new(ramfs_ctor), Some(::fs::tmpfs::RAMFS_PARAMS)));
+    let _ = register_fs(FsType::with_parameters("ext4", EXT4_MAGIC,
         FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64| -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let access = vfs::MAY_READ
@@ -114,13 +138,18 @@ fn register_filesystems() {
         // every quota mount option was silently accepted and did nothing.
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_data(dev, dev_t, d)?;
         mounted(ty, fs, None, source, sb_flags)
-    })));
+    }), Some(ext4::rootfs::EXT4_PARAMS)));
     // procfs honours NO mount option: its constructor discards the data string
     // and its root inode is a process-global singleton, so there is nowhere for
     // a per-mount option to live. Declaring an EMPTY table states that
     // truthfully, which makes an option-support query answer "no" for
     // `hidepid`/`subset` instead of claiming a confinement that is not applied.
     // Restore each name here as its enforcement lands, never before.
+    //
+    // That declaration now binds `mount(2)` too, so `mount -t proc -o hidepid=2`
+    // reports EINVAL instead of succeeding with no confinement applied. Failing
+    // closed is the point: a caller told "yes" while getting no confinement is
+    // strictly worse off than one told "no", which it can see and react to.
     let _ = register_fs(FsType::with_parameters("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _, sb_flags| -> R {
         mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs), None, "proc", sb_flags)
     }), Some(&[])));
@@ -149,18 +178,18 @@ fn register_filesystems() {
     pseudo!("fusectl", FUSE_CTL_MAGIC);
     pseudo!("mqueue", MQUEUE_MAGIC);
     pseudo!("hugetlbfs", HUGETLBFS_MAGIC);
-    let _ = register_fs(FsType::new("autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, data: &str, sb_flags| -> R {
+    let _ = register_fs(FsType::with_parameters("autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, data: &str, sb_flags| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::autofs::AutofsFs::new(data)?;
         mounted(ty, fs, None, "autofs", sb_flags)
-    })));
+    }), Some(::fs::autofs::AUTOFS_PARAMS)));
     let _ = register_fs(FsType::new("binfmt_misc", BINFMTFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
         mounted(ty, fs, None, "binfmt_misc", sb_flags)
     })));
-    let _ = register_fs(FsType::new("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _s: Option<&str>, _t: &str, data: &str, sb_flags| -> R {
+    let _ = register_fs(FsType::with_parameters("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _s: Option<&str>, _t: &str, data: &str, sb_flags| -> R {
         let (fs, root) = ::fs::fuse::mount_from_data(data)?;
         mounted(ty, fs, Some(root), "fuse", sb_flags)
-    })));
+    }), Some(::fs::fuse::FUSE_PARAMS)));
     let _ = register_fs(FsType::new("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = devpts::devpts_fs();
         mounted(ty, fs, None, "devpts", sb_flags)

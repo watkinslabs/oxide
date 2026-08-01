@@ -2,13 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:every workflow (`xtask kernel`,`xtask rootfs`,`xtask image`,`xtask qemu`).
 
-## Revision 2026-08-01 (R01)
-
-- Changed: §3 layout, §4 command list, §5 image content, §9 test contract — no userspace is built here. `userspace/libc/musl/`, `userspace/dynlink/`, `userspace/apps/` and `xtask user` are deleted; the root filesystem is a Fedora glibc image composed by `../images` and copied in by `xtask rootfs`. §3 also matches the real grouped crate layout (`52§4`).
-- Why: `crates/user/*`, the `xtask glibc`/`sysroot`/`ldso` commands, the `userspace/` build tree, and `vendor/cross` are deleted; spec `59` is deleted with them. The layout block described a tree that has not existed for months.
-- Affected code: none — the deletions already landed.
-- Test contract change: §9 drops "`xtask user` builds"; adds the boot gate against the Fedora rootfs.
-
 ## 1 Purpose
 
 Define workspace layout, `xtask` commands, image-build pipeline (kernel ELF + initramfs + ESP partition), QEMU runner.
@@ -67,7 +60,7 @@ xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
 xtask test      [--hosted | --kernel | --loom | --miri | --proptest | --all]
 xtask bench     --arch <a>
 xtask spec-lint                       # CI lints from `08`,`07`
-xtask doc-check                       # MANIFEST consistency, frozen-revision-block lints
+xtask doc-check                       # MANIFEST consistency, spec header/status/xref lints
 xtask sign-cert <key.pem>             # generate `OXIDE_TRUSTED_KEYS` for module signing
 ```
 
@@ -145,4 +138,3 @@ qemu-system-aarch64 \
 ## 12 Cross-spec
 
 `07` (toolchain + targets), `29` (userspace), `36` (bootloader handoff), `40` (CI uses xtask).
-

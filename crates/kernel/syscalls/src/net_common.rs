@@ -223,14 +223,16 @@ mod tests {
         assert!(!sendmmsg.contains("message_data_len"));
         assert!(!sendmmsg.contains("sys_sendmsg(&"));
 
+        // recvmmsg's ORDER is no longer a source-grep claim either: the slot
+        // file holds no composition to grep. It implements the ABI steps and
+        // hands them to `mmsg_batch::run`, whose own tests drive that order —
+        // timeout before descriptor, pending error before the batch — through
+        // the same code the kernel runs.
         let recvmmsg = include_str!("299_recvmmsg.rs");
-        let lookup = recvmmsg.find("let target = match crate::recvmsg::lookup(args.a0)").unwrap();
-        let timeout = recvmmsg.find("let mut timeout = match timeout_import(args.a4)").unwrap();
-        assert!(timeout < lookup, "recvmmsg imports timeout before fd lookup");
-        // The copyback rule itself is no longer a source-grep claim: it lives
-        // in `mmsg_batch` and is asserted here on the function the shim calls.
-        assert!(recvmmsg.contains("mmsg_batch::copies_timeout_back(result)"),
-            "recvmmsg asks the batch rule whether to copy the timeout back");
+        assert!(recvmmsg.contains("mmsg_batch::run_batch(&mut batch, args.a3, args.a2)"),
+            "recvmmsg composes its batch through the one ungated runner");
+        assert!(!recvmmsg.contains("for index in 0.."),
+            "the slot file keeps no batch loop of its own");
         assert!(!crate::mmsg_batch::copies_timeout_back(0),
             "an empty batch leaves the caller's timespec alone");
         assert!(crate::mmsg_batch::copies_timeout_back(1));

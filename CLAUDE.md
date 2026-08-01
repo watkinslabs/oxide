@@ -327,7 +327,7 @@ wrong authorship, unverified.
 | `F<NN>-<title>` | new functionality | `F01-pmm-buddy` |
 | `B<NN>-<title>` | bug fix | `B01-branch-retention-rule` |
 | `D<NN>-<title>` | spec edits only (no code) | `D02-status-line-sweep` |
-| `R<NN>-<title>` | revision block on FROZEN spec | `R01-modernity-drop-fat` |
+| `R<NN>-<title>` | revise a FROZEN spec (body edit; git is the change record, `02§1`) | `R01-modernity-drop-fat` |
 | `Z<NN>-<title>` | freeze a DRAFT spec | `Z01-spec-discipline` |
 | `C<NN>-<title>` | tooling, deps, CI plumbing | `C04-spec-lint` |
 | `P<n>-<NN>-<title>` | phase-N work | `P1-01-pmm-buddy` |

@@ -8,7 +8,10 @@ impl vmm::FileBacking for FakeBacking {
     fn size_hint(&self) -> u64 { 0 }
 }
 
-static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// One lock for EVERY `sysv_shm` test module. `REG` is a single process-wide
+/// registry and each module used to hold its own lock, so a `reset()` in one
+/// module could clear the registry another module's test had just populated.
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn err(e: syscall::errno::Errno) -> i64 {
     -(e.as_i32() as i64)
@@ -45,6 +48,7 @@ fn segment(mode: u32, size: usize) -> Arc<ShmSegment> {
         id: 1, key: 1, ns: owner.key(), size, mode,
         uid: 10, gid: 20, cuid: 10, cgid: 20, cpid: 77,
         nattch: core::sync::atomic::AtomicI64::new(0),
+        creator: Spinlock::new(None),
         backing: backing(),
     })
 }

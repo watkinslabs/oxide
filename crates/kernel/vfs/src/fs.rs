@@ -18,6 +18,7 @@ pub use flags::FsFlags;
 pub use fs_context::{
     FsContext, FsContextOps, FsContextPhase, FsContextPurpose, FsContextSecurity, FsParameter,
     FsValue, ClassicMountFsContextOps, ParamResult, SB_FLAGS_USER_MASK, apply_sb_flags, put_fs_context,
+    generic_parse_monolithic, parse_monolithic_mount_data,
     finish_clean_context, reconfigure_super, vfs_clean_context, vfs_cmd_create,
     vfs_cmd_reconfigure, vfs_get_tree, vfs_get_tree_exclusive, vfs_parse_fs_param, vfs_parse_fs_param_source,
     vfs_parse_fs_string,

@@ -2,13 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`02`.
 
-## Revision 2026-05-02 (C13)
-
-- Changed: added §7 "File length cap" (1000-line hard, 500-line soft target).
-- Why: large files defeat AI re-reading — token-load grows linearly while context-window stays fixed. Split-into-submodules keeps each unit under one cache window. Reinforces the §1+§2 density target at the file granularity.
-- Affected code: `tools/spec-lint/` gains `length_lint.rs`; `spec-lint length` + `all` enforce the cap. CLAUDE.md§"File length cap" mirrors.
-- Test contract change: §6 lint enforcement adds the file-length check.
-
 Audience=AI. Optimize tokens. Never lose capability/invariant/test/constraint. Compress prose only.
 
 ## 1 Doc rules
@@ -100,4 +93,3 @@ Above 1000 ⇒ build fail. Above 500 ⇒ next-touch split. Splits:
 - Markdown: sister doc cited via `<doc>§<sec>`; do not duplicate content.
 
 Why: AI re-reads docs/code repeatedly; token cost compounds. A 2000-line file costs 4× a 500-line file across all future reads. Cap is forcing function for modularity.
-
