@@ -1,0 +1,23 @@
+[package]
+name = "pkey"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Asymmetric-key material: DER decoding, X.509 certificate and PKCS#8 private
+# key parsing, and the RSA primitive with its PKCS#1 v1.5 encodings. The
+# arithmetic itself is `mpi`; nothing here allocates entropy or touches the
+# kernel, so the whole crate is driven by hosted tests against published
+# vectors.
+
+[dependencies]
+mpi   = { path = "../mpi" }
+crypt = { path = "../crypt" }
+
+[features]
+default = []
+hosted = []
+
+[lints]
+workspace = true

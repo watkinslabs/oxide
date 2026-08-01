@@ -1,0 +1,70 @@
+// Key material for the tests: one 1024-bit RSA key, as the self-signed X.509
+// certificate carrying its public half and as the PKCS#8 blob carrying the
+// private half. Both were produced by an outside toolchain, so a parser that
+// only agrees with its own encoder fails here.
+//
+// Subject `O=Oxide Test, CN=pkey vector`; the certificate carries a subject
+// key identifier, which is what the proposed key description ends with.
+
+/// The certificate.
+pub const CERT_DER: &str = concat!(
+    "308202323082019ba0030201020214280d0bb06dc810c24687dae3d19387bd2fdea38f300d06092a864886f70d01010b",
+    "0500302b31133011060355040a0c0a4f7869646520546573743114301206035504030c0b706b657920766563746f7230",
+    "1e170d3236303830313134333932315a170d3336303732393134333932315a302b31133011060355040a0c0a4f786964",
+    "6520546573743114301206035504030c0b706b657920766563746f7230819f300d06092a864886f70d01010105000381",
+    "8d0030818902818100aa58a4e795793f490436d2c9423c853ff66fa79f1524551ba4ea8c481b282935be33c0b6511171",
+    "250bba4a6f254962a03b13818a710d8bdcf70bc9f17e626fb55863e37a6424a0ba1c02d9582079233720c5b92ab39c09",
+    "0db99d30e16a380de4bd5df2ac50450d6f6804224d7e8e98d6811bdb748a49338dfe961019c984fbaf0203010001a353",
+    "3051301f0603551d23041830168014fb55bbd159ecd01255e7d576480dcb840ddd8ce7300f0603551d130101ff040530",
+    "030101ff301d0603551d0e04160414fb55bbd159ecd01255e7d576480dcb840ddd8ce7300d06092a864886f70d01010b",
+    "05000381810058c57c5e92aaa83dab4ab7135267ab3e46eae83668e25dd5aea9c20ed4bab7c67b5388dc1d1da58b13ef",
+    "380b5e7d74349418d8a08ae2bcf64cad8e92049fc657cab11c1bf76fff9913b7635941f5a46ef2831250bbf21e6f4300",
+    "8265bb5a08147a069be57ee610a99eaf6f51bd0a520478d8f1357ac6a795a17d29d246f307ec",
+);
+
+/// The private key.
+pub const KEY_PKCS8: &str = concat!(
+    "30820277020100300d06092a864886f70d0101010500048202613082025d02010002818100aa58a4e795793f490436d2",
+    "c9423c853ff66fa79f1524551ba4ea8c481b282935be33c0b6511171250bba4a6f254962a03b13818a710d8bdcf70bc9",
+    "f17e626fb55863e37a6424a0ba1c02d9582079233720c5b92ab39c090db99d30e16a380de4bd5df2ac50450d6f680422",
+    "4d7e8e98d6811bdb748a49338dfe961019c984fbaf02030100010281807ab46fd501aedd0f53a1ca247f39e92231fa2b",
+    "dc43f66ff801cb92513e7ea770b719c06f93e5e482b2f7f63629bdbaf58098846f9d100cf7965d3f925d5fbae6d09690",
+    "e7d4c4795d7477d68b42333552f5c0019fed234692e8ccfb8580107484677ee293f1e7250f0bc11f2d4e8acbd8884517",
+    "551a88b99ab347333e46b58b81024100e13bb2fad85ddd072e9d8bd84803852676203e94a61cb351f0ff092b86d8a155",
+    "fa04fc58b440eb2745443ffaa777ef76368606f1a7e3c3ecd6735203ca2e6637024100c19d93074d6996c9a0cc041f72",
+    "15c9c2dd797e0e9e8d1127da5184aa6a6ef9387f381c455b0e4a81d47c94fb2d33c22125c4354921d54c098d4b18a38b",
+    "39da49024100d2da99a6bdf1b95ee4e3f6ac46568d4b4160d45542e1317aaf9b82512e4f1552b0da040762d03794af02",
+    "c2c67c0b0ab1673fb7b6798effb773d7c7dae666e3a702400479cb0b512bceb38c870ad55b42cbae388675768b0dc1c6",
+    "c5123b59e129fd92e3c5fd4951288c6a61ea1b5b8f18f234e7f59831bf9979af82d7a8932745c819024100d924e5c888",
+    "7fee62ab456fc1ea9879a2bd7b29581aa4a92f2857bc70f5bcd0f346f445525b8fa0be9aa41dc60b470d6c8925703c72",
+    "d950f64f09631006569763",
+);
+
+/// SHA-256 of `oxide pkey vector`.
+pub const DIGEST_SHA256: &str = "266602de73b6e54973d13613f585516562951bc1dd297e08c2a5d8c3f46efd1a";
+
+/// The PKCS#1 v1.5 signature of that digest under the private key. The
+/// encoding is deterministic, so this is a fixed answer.
+pub const SIG_SHA256: &str = concat!(
+    "9b28cfe2ea5f1bb37021fd2032bf5c2506f09359625a1299331570136671096b5284e1c2d8cee6cf1aa48b05c871f316",
+    "b49f91b693d892ad45843023d567114b865407fa22fecd20746342beabe418a634ede5f79515edb398444cef61952e29",
+    "b934c9ca9403d03c29d6955bc97acaf20b68b10922f3bbc04ed66eac95b5ad8c",
+);
+
+/// The subject key identifier the certificate carries.
+pub const SKID_HEX: &str = "fb55bbd159ecd01255e7d576480dcb840ddd8ce7";
+
+/// Decode a hex string. # C: O(n)
+pub fn unhex(s: &str) -> alloc::vec::Vec<u8> {
+    let b = s.as_bytes();
+    (0..b.len() / 2).map(|i| nyb(b[i * 2]) << 4 | nyb(b[i * 2 + 1])).collect()
+}
+fn nyb(c: u8) -> u8 { if c.is_ascii_digit() { c - b'0' } else { c - b'a' + 10 } }
+
+/// Render bytes as lowercase hex. # C: O(n)
+pub fn hexed(b: &[u8]) -> alloc::string::String {
+    use core::fmt::Write;
+    let mut s = alloc::string::String::new();
+    for x in b { let _ = write!(s, "{x:02x}"); }
+    s
+}

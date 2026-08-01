@@ -35,6 +35,12 @@ cpu      = { path = "../cpu" }
 # key-derivation path resolves hash names against.
 mpi      = { path = "../../shared/mpi" }
 crypt    = { path = "../../shared/crypt" }
+# Asymmetric key blobs (X.509 / PKCS#8) and the RSA operations the
+# `KEYCTL_PKEY_*` family performs.
+pkey     = { path = "../../shared/pkey" }
+# Encryption padding must be unpredictable, so it comes from the kernel's
+# random pool rather than from anything the caller can influence.
+crng     = { path = "../crng" }
 
 [dev-dependencies]
 block = { path = "../block" }
