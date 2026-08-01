@@ -23,7 +23,8 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
 3. Arch-specific behavior lives in arch crates only.
 4. Tooling code lives under `tools/` only.
 5. Kernel smoke probes live under `userspace/`; the boot userspace image is composed by the sibling `../images` repo,
-   never in kernel subsystem crates.
+   never in kernel subsystem crates. This repo contains no userspace runtime code — no libc, loader, NSS, PAM,
+   package manager, or service manager (`29a§2`).
 
 ## 4 Layout contract (target)
 
@@ -34,9 +35,8 @@ oxide2/
 │   ├── kernel/                # core subsystem crates
 │   ├── drivers/               # driver crates
 │   ├── arch/                  # arch + boot + kernel-bin crates
-│   ├── shared/                # shared no_std libraries
-│   └── user/                  # userspace runtime/auth/pkg libs
-├── userspace/                 # C/Rust userspace binaries and tests
+│   └── shared/                # shared no_std libraries
+├── userspace/                 # kernel conformance probes + smoke binaries only
 ├── tools/                     # xtask, lint, build helpers
 ├── docs/                      # specs
 ├── tests/                     # integration/hosted test harnesses
@@ -120,8 +120,8 @@ Constraints:
 2. Driver crates may depend on domain/shared/arch abstractions, not on
    unrelated high-level subsystems.
 3. `tools/*` cannot be required by runtime kernel crates.
-4. Userspace libs under `crates/user/*` cannot be imported by kernel
-   runtime crates.
+4. No userspace-runtime crate group exists (`crates/user/*` deleted 2026-08-01);
+   userland comes from Fedora RPMs via `../images`.
 5. `crates/kernel/network-namespace` is a leaf over shared synchronization;
    tasks, networking, nsfs, and syscall layers depend on it, never vice versa.
 6. `crates/kernel/namespace-identity` is dependency-neutral; non-network and
@@ -183,6 +183,8 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-08-01: Removed the `crates/user/*` layer — this repo builds no userspace;
+  userland is Fedora RPMs composed by `../images` (`29a§2`).
 - 2026-07-29: Made `cgroup` the single owner of cgroup BPF attachment state;
   security verifies and executes immutable snapshots without a parallel
   registry.
@@ -196,7 +198,7 @@ Temporary exceptions are allowed only with:
 
 1. Keep `kernel/` directory name, or move integration crate to
    `crates/kernel/integration/` after migration?
-2. Rename existing short crates (`dl`,`svc`,`pkg`,`obs`,`nscg`) now,
-   or only for new crates first and old crates later?
+2. Rename existing short crates (`obs`,`nscg`) now, or only for new
+   crates first and old crates later?
 3. CI heuristic for adapter scope: LOC cap only, or AST-based rule
    (stateful type definitions + public mutating functions)?

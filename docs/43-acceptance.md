@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:every spec above.
 
+## Revision 2026-08-01 (R07)
+
+- Changed: §1, §2, §3, §5 — acceptance binaries are Fedora RPM builds already on the image, not binaries this repo builds "against our libc". "Linked against our static musl" and "`redis 7` against our musl" are void; the contract is the stock Fedora binary running unmodified.
+- Why: the in-tree libc, loader and userspace build tree are deleted; userspace comes from `../images` as Fedora RPMs (`29a§2`). A criterion phrased as "builds against our libc" cannot be run.
+- Affected code: none — acceptance scenarios run against the composed image.
+- Test contract change: §5 step 1 becomes "install the package into the profile" instead of "build from source against our toolchain".
+
 ## Revision 2026-05-14 (R06)
 
 - Deleted: v1/v2/v2.x split. Per `00§9` every Linux subsystem is in scope; there is no parking lot. Single acceptance set, ordered as a smoke-first staircase.
@@ -9,12 +16,12 @@ FROZEN 2026-05-02. Dep:every spec above.
 
 ## 1 Purpose
 
-Enumerate the binary-level acceptance tests. Each binary listed is the *contract*: if a stock build from upstream against our libc/syscall ABI fails to run, the gating phase is not done.
+Enumerate the binary-level acceptance tests. Each binary listed is the *contract*: if the stock Fedora build of it fails to run on our syscall ABI, the gating phase is not done.
 
 ## 2 Smoke tier — bash + coreutils + util-linux
 
-Linked against our static musl. Smoke target is the first thing
-acceptance fires. bash is the shell.
+Stock Fedora glibc binaries from the composed image (`29a§2`). Smoke
+target is the first thing acceptance fires. bash is the shell.
 
 | Binary | Why | Tests covered |
 |---|---|---|
@@ -36,7 +43,7 @@ Adds dynamic linking + libc-with-NSS-PAM + a real PID 1 + agetty.
 |---|---|---|
 | Statically-linked Go ≥1.22 (hello + goroutines + channels + http server) | Go runtime exercises clone3, futex, epoll, mmap, tgkill | sched, ipc, vmm |
 | Statically-linked Rust + `tokio` | tokio uses epoll/futex/clone3 | same coverage |
-| `redis 7` against our musl | event loop, AF_UNIX, TCP | net, ipc |
+| `redis 7` (Fedora RPM) | event loop, AF_UNIX, TCP | net, ipc |
 | `nginx` w/o io_uring | server, signals, pidfile | net, fs, signals |
 | `nginx` with `aio threads io_uring;` | io_uring | phase 22 enabled |
 | `openssh-server 9.x` | PTY, modern crypto, rlimits | tty, pty, security, net |
@@ -58,7 +65,7 @@ Adds dynamic linking + libc-with-NSS-PAM + a real PID 1 + agetty.
 ## 5 Per-binary test plan
 
 For each acceptance binary:
-1. Build from source against our toolchain into the rootfs image.
+1. Add the package to the profile package set in `../images`; recompose the image.
 2. `xtask qemu` boot.
 3. Run a scripted scenario (e.g., `ls /; cat /proc/cpuinfo > /tmp/c; grep -c processor /tmp/c`).
 4. Capture serial; assert expected substrings.

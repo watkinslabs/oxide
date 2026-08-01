@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-08-01 (R07)
+
+- Changed: §2 profile note, §3.3, §3.4, §8 — this repo builds no userspace. Userspace is Fedora glibc composed from RPMs by the sibling `../images` repo; there is no userspace target triple owned here, no libc/ld build step, no `xtask user`/`glibc`/`sysroot`/`ldso`/`uapi-export` subcommand, and no LFS-style userspace build ladder. §3.4 keeps only the kernel build chain. Spec `59` deleted; `59§` references in the R05 block are flattened to plain text so `xref` resolves.
+- Why: `crates/user/*` (55,868 LOC of own libc, `ld.so`, NSS, PAM, RPM), the `xtask glibc`/`sysroot`/`ldso`/`folded` command family, the `userspace/` probe tree, and `vendor/cross` are deleted. R05's flip of the userspace triple to `*-unknown-linux-gnu` described a build that no longer exists here.
+- Affected code: none — the deletions already landed; this aligns the spec with the tree. `xtask` subcommands that survive are the kernel/image/boot set.
+- Test contract change: §9 drops the ABI-golden + symbol-version-set checks (they tested the deleted libc); the kernel-build items stand.
+
 ## Revision 2026-08-01 (R06)
 
 - Changed: §5 states that the build-time discipline rules bind the KERNEL BUILD, and names what is out of scope — host-test code, `feature = "hosted"` builds, and dev-tool crates per the `02` carve-out. The `extern crate std` and `panic!(fmt)` bullets say so at the bullet.
@@ -11,10 +18,10 @@ FROZEN 2026-05-02. Dep:`02`,`08`.
 
 ## Revision 2026-06-14 (R05)
 
-- Changed: §3.3-3.4 userspace target triples flip `*-unknown-linux-musl` → `*-unknown-linux-gnu`; §3 build ladder step 3 "musl fork" → "oxide-libc (`crates/user/glibc`, glibc-ABI Rust)" per `59`; UAPI export step unchanged (libc binds same kernel ABI). `rust-lld` both arches unchanged.
-- Why: glibc ABI is the userspace contract (`03` R01, `59§1`). Stock Rust `x86_64-unknown-linux-gnu`/`aarch64-unknown-linux-gnu` `std` links against our `libc.so.6`.
-- Affected code: `xtask` gains `glibc` subcommand (builds cdylib+staticlib+crt+ldso, publishes sysroot); `xtask user` orchestration retargets. musl path retained until `59§6` G19.
-- Test contract change: §9 adds ABI-golden + symbol-version-set checks (`59§7`).
+- Changed: §3.3-3.4 userspace target triples flip `*-unknown-linux-musl` → `*-unknown-linux-gnu`; §3 build ladder step 3 "musl fork" → "oxide-libc (`crates/user/glibc`, glibc-ABI Rust)" per spec 59; UAPI export step unchanged (libc binds same kernel ABI). `rust-lld` both arches unchanged.
+- Why: glibc ABI is the userspace contract (`03` R01). Stock Rust `x86_64-unknown-linux-gnu`/`aarch64-unknown-linux-gnu` `std` links against our `libc.so.6`.
+- Affected code: `xtask` gains `glibc` subcommand (builds cdylib+staticlib+crt+ldso, publishes sysroot); `xtask user` orchestration retargets. musl path retained until spec 59 G19.
+- Test contract change: §9 adds ABI-golden + symbol-version-set checks.
 
 ## Revision 2026-05-25 (R04)
 
@@ -37,7 +44,7 @@ FROZEN 2026-05-02. Dep:`02`,`08`.
 - Affected code: `targets/x86_64-unknown-oxide-kernel.json`, `targets/aarch64-unknown-oxide-kernel.json`. Both build a no_std `kernel` rlib via `cargo build -Z build-std`.
 - Test contract change: §9 still applies; both arches now pass `xtask kernel --arch <a>` clean-checkout build (verified locally).
 
-One pinned nightly. Four custom target JSONs (kernel×2, user×2). Three build profiles. `panic=abort` everywhere kernel.
+One pinned nightly. Two custom target JSONs (kernel×2). Three build profiles. `panic=abort` everywhere kernel.
 
 ## 1 Toolchain
 
@@ -77,7 +84,7 @@ inherits="dev"  # + --features debug-all (`04§3`)
 
 Rules: all kernel profiles `panic="abort"`. `release` IS the perf profile (no separate one). `opt-level=0` not used (10–50× slower; kernel unrunnable).
 
-Userspace targets `*-unknown-linux-musl` (per `29a§2`): standard Cargo profiles; `panic="unwind"` default with musl unwinder. Same toolchain pin.
+No userspace profile here: userspace binaries are Fedora RPM builds (`29a§2`), not built by this repo.
 
 ## 3 Targets (`targets/`)
 
@@ -125,22 +132,15 @@ ISA floor `x86-64-v3` (Haswell+) per `03§7`. SSE/AVX off (kernel doesn't save t
 
 No FP/NEON kernel; lazy FPSIMD trap. `+strict-align` (`SCTLR_EL1.A=1`); catches alignment bugs early. `cpu=generic` (ARMv8.2-A); GICv3 floor (Cortex-A75/M1+).
 
-### 3.3 Userspace targets (RESOLVED per `29a§2` — Linux-look-alike, not `os=oxide`)
+### 3.3 Userspace targets (none owned here)
 
-Userspace targets are upstream Rust targets. No custom JSON. Per `29a§2`:
+This repo owns no userspace target. Userspace is Fedora `-gnu` binaries installed from RPMs (`29a§2`); their triples are `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu` as Fedora builds them. Nothing in this repo cross-compiles against them.
 
-| Target | Use |
-|---|---|
-| `x86_64-unknown-linux-musl` | userspace x86 |
-| `aarch64-unknown-linux-musl` | userspace arm |
+Custom `*-unknown-oxide` userspace targets considered + rejected: would require porting `std` (Redox-style work) for no user-visible benefit while the Linux-compat surface is the target.
 
-These are stock Rust targets. `std` works. Tokio/hyper/serde/etc. build unchanged. Cross-compile via `cargo build --target x86_64-unknown-linux-musl`.
+Dynamic linker is Fedora's `ld-linux-x86-64.so.2` / `ld-linux-aarch64.so.1`, shipped by the `glibc` RPM (`29a§4`).
 
-Custom `*-unknown-oxide` userspace targets considered + rejected: would require porting `std` (Redox-style work) for no user-visible benefit while the Linux-compat surface is the target. Migration to `os=oxide` becomes a phase once a distinct userspace ABI surface emerges.
-
-Userspace dynamic linker still `/lib/ld-oxide.so.1` (our musl-fork ld.so) per `29a§4`. Cross-compile from any Linux/Mac dev box.
-
-### 3.4 Build chain (kernel-only vs userspace)
+### 3.4 Build chain (kernel only)
 
 Kernel binary depends on `rustc` + the kernel target JSON only. No libc, no userspace headers, no UAPI export step. Built directly:
 
@@ -148,18 +148,13 @@ Kernel binary depends on `rustc` + the kernel target JSON only. No libc, no user
 cargo -Z build-std --target ./targets/<arch>-unknown-oxide-kernel.json -p kernel
 ```
 
-Userspace follows the LFS pattern (cross-toolchain → kernel-headers → libc → ld → apps):
-
 | Step | Artifact | Source | Consumes |
 |---|---|---|---|
-| 1 | cross-toolchain | `rust-toolchain.toml` (rustc + clang) | — |
-| 2 | UAPI export | `xtask uapi-export` → `userspace/uapi/` | `15§2`+`§6`+`§6.7`, `01§6`+`§7` |
-| 3 | musl fork | `userspace/libc/musl/` → `libc.{so,a}` + `usr/include/` | step 2 |
-| 4 | `ld-oxide.so.1` | `userspace/dynlink/` | step 3 |
-| 5 | apps (in-tree) | `userspace/apps/<name>/` | steps 3 + 4 |
-| 6 | initramfs / image | `xtask image` | kernel binary + step 5 |
+| 1 | cross-toolchain | `rust-toolchain.toml` (rustc) | — |
+| 2 | kernel ELF | `xtask kernel --arch <a>` | step 1 |
+| 3 | boot image | `xtask artifacts` + `xtask grub`/`image` | step 2 + rootfs |
 
-Kernel ↔ userspace handshake = `userspace/uapi/`. No other shared code crosses the boundary. Steps 2–5 orchestrated by `xtask user` per `29§4.1`.
+Rootfs is an input, not a product: `../images` composes and packs `<profile>-<arch>-root.img` from RPMs, and this repo copies it (`29§5`). The kernel↔userspace contract is the Linux syscall ABI in `15` — no source crosses the boundary.
 
 ## 4 Build cmds
 
@@ -223,18 +218,19 @@ target/<triple>/<profile>/
 
 ```
 xtask kernel    --arch <x86_64|aarch64> --profile <release|dev|debug-build>
-xtask user      --arch <a>
+xtask artifacts --arch <a>
+xtask rootfs    --arch <a>            # copies the ../images pre-packed root image
 xtask image     --arch <a>
+xtask grub      --arch <a>
 xtask test      [--hosted|--kernel|--loom|--miri|--proptest]
-xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
-xtask bench     --arch <a>
+xtask conformance
 xtask spec-lint
 xtask doc-check
 ```
 
 ## 9 Test contract (frozen)
 
-- Four target JSONs in `targets/`; hello-world `no_std` kernel builds for each.
+- Two kernel target JSONs in `targets/`; hello-world `no_std` kernel builds for each.
 - `xtask kernel --arch x86_64` and `--arch aarch64` clean-checkout success.
 - §5 lints in `tools/spec-lint/`; clean kernel passes.
 - `static mut FOO` injected → build fail with clear msg.

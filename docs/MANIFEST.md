@@ -77,9 +77,14 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `56-timers-and-registration.md` | DRAFT | — | `02`,`06`,`07`,`08`,`13`,`23`,`52`,`53` |
 | `57-vt-emulator.md` | DRAFT | — | `01`,`02`,`07`,`08`,`28`,`49`,`50`,`55` |
 | `58-virtio-snd.md` | FROZEN | 2026-06-12 | `01`,`02`,`07`,`15`,`16`,`18`,`19`,`22`,`34`,`35`,`50` |
-| `59-glibc.md` | DRAFT | — | `01`,`02`,`03`,`07`,`08`,`09`,`15`,`29`,`29a`,`31`,`53` |
 | `60-udev-kernel-contract.md` | DRAFT | — | `01`,`02`,`03`,`06`,`13`,`15`,`19`,`24`,`27`,`35`,`47` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
+
+## Deleted
+
+| File | Deleted | Reason |
+|---|---|---|
+| `59-glibc.md` | 2026-08-01 (R88) | Specified a glibc-ABI libc + `ld-linux` written in this repo (`crates/user/*`, `xtask glibc`). That code is deleted; userspace is Fedora glibc composed from RPMs by the sibling `../images` repo. No surviving content — kernel-side ABI obligations live in `15`, `31`, `29a`. |
 
 ## Freeze order
 
