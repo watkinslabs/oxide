@@ -228,12 +228,6 @@ pub fn register_timers() {
     use core::sync::atomic::{AtomicBool, Ordering};
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) { return; }
-    // Seed the deadline class's per-CPU bandwidth cap before any task can ask
-    // for a reservation, so the very first `sched_setattr(SCHED_DEADLINE)` is
-    // judged against real capacity rather than against a zero cap that refuses
-    // everything. The CPU count is NOT captured here: capacity is derived from
-    // the live online set at each decision.
-    deadline::bw::init_default();
     const P: u64 = 100_000_000; // 100 ms
     timer::register_periodic(P, cgroup::tick);
     timer::register_periodic(P, live::balance::balance_tick);
