@@ -43,8 +43,11 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("interrupts".to_string(),  crate::interrupts::make_proc_interrupts());
     c.insert("softirqs".to_string(),    StaticFileInode::new(b"                CPU0       \n      HI:          0\n   TIMER:       1234\n") as InodeRef);
     c.insert("kallsyms".to_string(),    StaticFileInode::new(b"") as InodeRef);
-    c.insert("key-users".to_string(),   StaticFileInode::new(b"") as InodeRef);
-    c.insert("keys".to_string(),        StaticFileInode::new(b"") as InodeRef);
+    // Rendered per read, and `keys` in the READING task's context — the file
+    // omits every key that task cannot VIEW, so one shared body would publish
+    // one task's view to all of them.
+    c.insert("key-users".to_string(),   crate::keys::make_proc_key_users());
+    c.insert("keys".to_string(),        crate::keys::make_proc_keys());
     c.insert("locks".to_string(),       StaticFileInode::new(b"") as InodeRef);
     c.insert("crypto".to_string(),      StaticFileInode::new(b"") as InodeRef);
     c.insert("execdomains".to_string(), StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);

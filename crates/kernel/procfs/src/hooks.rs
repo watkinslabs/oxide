@@ -3,6 +3,9 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 use alloc::vec::Vec;
 
+/// `/proc/keys`, `/proc/key-users` and the `/proc/sys/kernel/keys/` ceilings.
+pub mod keyring;
+
 static BOOT_SECS: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static HOST_GET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static HOST_SET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
