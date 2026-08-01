@@ -458,7 +458,7 @@ def _build_image(arch: str, build_id: str, features: str = "debug-boot",
     when debugging kernel internals."""
     if arch not in ("x86_64", "aarch64"):
         raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
-    # Limine is gone on both arches: `xtask grub --arch <arch> --id <id>
+    # Both arches: `xtask grub --arch <arch> --id <id>
     # --features <f> --build-only` yields target/builds/<id>/oxide-<arch>-
     # grub.iso (x86 multiboot2; arm EFI-stub) plus the namespaced blobs,
     # without launching qemu, so the MCP can spawn its own gdb-paused one.
@@ -668,7 +668,7 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
                 "-m", mem,
                 *smp_args,
                 "-bios", str(ovmf),
-                # Limine-free: `img` is the GRUB EFI-stub ISO. OVMF→GRUB→
+                # `img` is the GRUB EFI-stub ISO. OVMF→GRUB→
                 # `linux` boots our arm64 Image. Disk-based rootfs (F405):
                 # root + home virtio-blk with the serials kmain looks up
                 # (was "embedded in kernel" — stale pre-F405).

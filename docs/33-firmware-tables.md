@@ -13,9 +13,10 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`19`,`20`,`21`,`34`. Provides:PMM (mem map), `1
   `set_add_cpu_hook(kernel::cpu_topology::add_cpu)` then invokes
   `firmware::try_log_acpi`. `firmware::init` reports ready (no
   static state).
-- DT (device-tree) parsing tracked as phase 39. arm64 still uses Limine
-  HHDM + ACPI (QEMU virt + EDK2 ships ACPI tables); pure DT-only
-  embedded boards land with that phase.
+- DT (device-tree) parsing tracked as phase 39. The arm64 EFI path uses
+  the boot trampoline's HHDM + the EFI config table's ACPI RSDP (QEMU
+  virt + EDK2 ships ACPI tables); pure DT-only embedded boards land with
+  that phase.
 - `debug-acpi` feature now lives on `crates/firmware`; the kernel
   forwards via `kernel/debug-acpi = ["firmware/debug-acpi"]`.
 

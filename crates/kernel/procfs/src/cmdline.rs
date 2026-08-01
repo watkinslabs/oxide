@@ -1,7 +1,7 @@
 // /proc/cmdline backed by the kernel's boot-cmdline slot.
 //
 // `crate::hooks::cmdline` returns the bytes the bootloader passed
-// (Limine `cmdline` on x86, FDT `/chosen/bootargs` on aarch64) or an
+// (multiboot2 cmdline tag on x86, FDT `/chosen/bootargs` on aarch64) or an
 // arch-default until those parsers land.
 
 #![cfg(target_os = "oxide-kernel")]

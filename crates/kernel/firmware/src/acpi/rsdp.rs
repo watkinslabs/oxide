@@ -15,7 +15,7 @@ pub enum RsdpStatus {
     Logged,
 }
 
-/// Walk a Limine-supplied XSDT and log each table signature + length.
+/// Walk the firmware XSDT and log each table signature + length.
 ///
 /// `xsdt_pa` is the physical address from the RSDP (rev ≥ 2);
 /// `hhdm_offset` is `info.hhdm_offset` so we can dereference.
@@ -101,14 +101,14 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
 
 /// Read an HHDM-mapped RSDP pointer, validate, log a one-line summary.
 ///
-/// `rsdp_va` is the kernel-VA pointer Limine surfaced
+/// `rsdp_va` is the kernel-VA pointer the boot stub surfaced
 /// (`info.rsdp_pa`); 0 means absent. We don't compute the checksum
 /// here — the goal is "does ACPI exist and is the pointer sane?",
 /// not full validation.
 ///
 /// # SAFETY: caller asserts `rsdp_va` is either 0 or a kernel-VA
 /// pointer to ≥ 36 bytes of bootloader-owned ACPI memory (true for
-/// any non-null Limine RSDP response).
+/// any non-null RSDP the boot stub surfaced).
 /// # C: O(1)
 /// # Ctx: pre-init, single-CPU
 pub unsafe fn try_log_rsdp(rsdp_va: u64) -> RsdpStatus {
@@ -124,7 +124,7 @@ pub unsafe fn try_log_rsdp(rsdp_va: u64) -> RsdpStatus {
 /// Convenience wrapper around `parse_and_log_rsdp` + `try_log_xsdt`.
 ///
 /// # SAFETY: same contract as `try_log_rsdp` for `rsdp_va`;
-/// `hhdm_offset` is the live Limine HHDM offset.
+/// `hhdm_offset` is the live HHDM offset.
 /// # C: O(table count)
 pub unsafe fn try_log_acpi(rsdp_va: u64, hhdm_offset: u64) {
     // SAFETY: per fn contract — caller asserted the bootloader-supplied RSDP/XSDT pointers are live.

@@ -2,8 +2,8 @@
 // Boot cmdline transport. The bootloader's command line lives here so
 // `/proc/cmdline` and any kernel parameter parser read from a single
 // global. v1: arch defaults installed early in boot reflect what the
-// build pipeline actually passes (Limine config / U-Boot bootargs);
-// real bootloader parsing (Limine KERNEL_FILE.cmdline on x86, FDT
+// build pipeline actually passes (GRUB `linux` line / U-Boot bootargs);
+// real bootloader parsing (multiboot2 cmdline tag on x86, FDT
 // /chosen/bootargs on aarch64) replaces `install_arch_default()` in
 // follow-up PRs.
 //
@@ -60,7 +60,7 @@ pub unsafe fn install_arch_default() {
     #[cfg(target_arch = "aarch64")]
     const DEFAULT: &[u8] =
         b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro quiet console=ttyAMA0,115200 console=tty0\n";
-    // Only install if nothing else (e.g. a future Limine/DTB parser)
+    // Only install if nothing else (e.g. the multiboot2/DTB parser)
     // has set it already.
     if PTR.load(Ordering::Acquire).is_null() {
         // SAFETY: install_arch_default is boot-only (single-writer); DEFAULT is a 'static byte literal that outlives the kernel; no procfs read can race here because /proc isn't mounted yet.

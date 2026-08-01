@@ -43,7 +43,7 @@ pub static GIC_ITS_PA: core::sync::atomic::AtomicU64
 /// Handles common types only; unknown types are logged as `???`.
 ///
 /// `pa` is the table's physical address (already-validated by the
-/// XSDT walk); `hhdm_offset` is the Limine HHDM offset.
+/// XSDT walk); `hhdm_offset` is the boot HHDM offset.
 ///
 /// # SAFETY: caller asserts the table at `hhdm + pa` has a valid
 /// ACPI SDT header + MADT entry list per its declared `length`.

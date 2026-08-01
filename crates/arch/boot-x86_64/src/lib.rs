@@ -1,18 +1,14 @@
 // x86_64 bootloader handoff per docs/36 + docs/20.
 //
-// Limine bootloader reads request markers from `.limine_reqs` (custom
-// linker section) and writes responses, then jumps to the kernel
-// entry. Our `_start` lives in `.text.boot` (per linker script
-// 07§6), runs with paging set up by Limine to identity-map the
-// kernel image at the upper-half virtual address.
-//
-// Phase 0 scope: get a `_start` symbol that runs cleanly in QEMU under
-// Limine, sets up the kernel stack, parses Limine memmap into our
-// `BootInfo`, and tail-calls `kmain::kernel_main`. UART driver
-// (16550A on QEMU `-serial stdio`) lands here so klog has a sink.
-//
-// Real Limine integration + 16550 driver land in P0-07 follow-ups;
-// this is the typed shell.
+// GRUB loads the kernel ELF directly via multiboot2: it scans the first
+// 32 KiB for the header in `mb2.rs`, whose entry-address tag points at
+// the 32-bit `_mb2_entry` trampoline. The trampoline builds boot page
+// tables (identity + higher-half + HHDM), enters long mode, and
+// tail-calls `_start` in `.text.boot` (per linker script `07§6`).
+// `_start` swaps to the kernel stack and calls `_start_rust`, which
+// parses the multiboot2 info struct into a `BootInfo` and tail-calls
+// `kmain::kernel_main`. UART (16550A on QEMU `-serial stdio`) lives
+// here so klog has a sink before any driver exists.
 
 #![no_std]
 #![cfg_attr(target_os = "oxide-kernel", no_main)]
@@ -29,7 +25,6 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
-pub mod limine;
 pub mod mb2;
 pub mod uart;
 
@@ -47,10 +42,8 @@ macro_rules! debug_boot { ($($t:tt)*) => {} }
 mod boot_debug;
 mod boot_info_build;
 mod entry;
-mod requests;
 
 pub use boot_info_build::stub_boot_info;
-pub use requests::{LIMINE_EXECUTABLE_FILE, LIMINE_HHDM, LIMINE_KERNEL_FILE, LIMINE_MEMMAP, LIMINE_RSDP, LIMINE_SMP};
 
 #[cfg(test)]
 mod tests;

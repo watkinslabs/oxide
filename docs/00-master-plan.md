@@ -229,7 +229,7 @@ Per `02`. MANIFEST authoritative. Every spec has §Cross-spec. Boot flow Mermaid
 
 ## 12 Tooling (off-the-shelf, no rewrites)
 
-`qemu-system-{x86_64,aarch64}`, `gdb-multiarch`, `bochs` (secondary x86 ref), `proptest`,`loom`,`miri`, `defmt`-style klog (own decoder), `cargo-binutils`,`rust-objcopy`,`rust-lld`, `limine` (x86) / `EDK2`+`U-Boot` (arm), `mkfs.ext4`+`e2fsck` (FS differential).
+`qemu-system-{x86_64,aarch64}`, `gdb-multiarch`, `bochs` (secondary x86 ref), `proptest`,`loom`,`miri`, `defmt`-style klog (own decoder), `cargo-binutils`,`rust-objcopy`,`rust-lld`, `grub2-mkrescue` (both arches) + `EDK2`/`U-Boot` (arm), `mkfs.ext4`+`e2fsck` (FS differential).
 
 ## 13 Risk register
 
@@ -241,7 +241,7 @@ Per `02`. MANIFEST authoritative. Every spec has §Cross-spec. Boot flow Mermaid
 | Lost wakeup in sched | loom `wake/sleep`; proptest oracle |
 | `unsafe` UB | miri (hostable); SAFETY comments enforced `07§5` |
 | Driver explodes kernel | drivers no `static mut`; state owned by instance kernel hands them; review checklist |
-| Bootloader weirdness | exactly Limine x86 / EDK2 or U-Boot arm; anything else = unsupported |
+| Bootloader weirdness | exactly GRUB multiboot2 x86 / GRUB EFI-stub or U-Boot `booti` arm; anything else = unsupported |
 | Slow CI killing momentum | hosted <2min, QEMU smoke <5min, no duration-based gating |
 
 ## 14 The five rules

@@ -1,7 +1,7 @@
 // Boot-stub → kernel handoff types per `36` + `52§3` shared layer.
 //
-// Per-arch boot stubs (Limine on x86_64, EDK2/U-Boot DTB on aarch64)
-// parse the bootloader-specific blob and hand the kernel one
+// Per-arch boot stubs (multiboot2 info on x86_64, EDK2/U-Boot DTB on
+// aarch64) parse the bootloader-specific blob and hand the kernel one
 // uniform `BootInfo`. Domain crates (pmm-setup, vmm, smp, time, etc.)
 // consume fields off `BootInfo` directly so none of them have to
 // pull in `kernel`.
@@ -14,7 +14,7 @@
 /// Boot info passed by the arch boot stub.
 ///
 /// Layout is bootloader-defined per `36`; the stub parses the
-/// bootloader-specific blob (Limine info on x86_64, DTB/EDK2 on
+/// bootloader-specific blob (multiboot2 info on x86_64, DTB/EDK2 on
 /// aarch64) and hands a uniform view to the kernel.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -28,26 +28,18 @@ pub struct BootInfo {
     pub seed: [u8; 32],
     /// Boot-time monotonic counter snapshot in nanoseconds.
     pub boot_ns: u64,
-    /// Higher-half direct-map offset (Limine HHDM, `36§3`). For any
-    /// physical address `pa` covered by HHDM, the kernel-VA mirror
-    /// is `hhdm_offset + pa`. `0` means the bootloader did not
-    /// populate the HHDM response (early-boot diagnostics, hosted
-    /// tests, or stub paths).
+    /// Higher-half direct-map offset installed by the boot stub's page
+    /// tables (`36§3`). For any physical address `pa` covered by HHDM,
+    /// the kernel-VA mirror is `hhdm_offset + pa`. `0` means no HHDM
+    /// (early-boot diagnostics, hosted tests, or stub paths).
     pub hhdm_offset: u64,
     /// Physical address of the ACPI RSDP table, or 0 if the
     /// bootloader did not surface one (no UEFI / no ACPI on this
     /// platform).
     pub rsdp_pa: u64,
-    /// Limine SMP response (x86_64): pointer to the
-    /// `[*mut limine_proto::SmpInfoX86; smp_count]` array. `0`
-    /// when running outside Limine or when the bootloader didn't
-    /// populate the SMP response. Per `13§11` AP startup uses
-    /// this to park `goto_address` per AP.
-    pub smp_info_array: u64,
-    /// Number of entries in `smp_info_array`. Includes the boot
-    /// CPU; AP startup filters it via `bsp_lapic_id`.
-    pub smp_count: u64,
-    /// Boot CPU's APIC ID per Limine SMP response.
+    /// Boot CPU's APIC id (x86_64) / MPIDR (aarch64). Neither live
+    /// handoff carries a CPU table, so AP topology comes from the ACPI
+    /// MADT / device tree and AP startup is the kernel's own (`13§11`).
     pub bsp_lapic_id: u32,
     /// Padding so the C-layout end is 8-byte-aligned across both arches.
     pub _pad: u32,

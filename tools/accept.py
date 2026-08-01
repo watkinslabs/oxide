@@ -11,7 +11,7 @@ Exit code 0 = pass, 1 = fail, 2 = setup error.
 
 Per CLAUDE.md: drives QEMU directly, no human-in-the-loop. Build the
 boot ISO via `cargo run -p xtask -- image --arch <arch>` first
-(Limine is gone — x86 SeaBIOS+multiboot2, arm OVMF+GRUB EFI-stub);
+(x86 SeaBIOS+multiboot2, arm OVMF+GRUB EFI-stub);
 assumes the toolchain is already present.
 """
 
@@ -55,7 +55,7 @@ def parse_scenario(path: Path):
             yield ("comment", line)
 
 def qemu_cmd(arch: str, image: Path) -> list[str]:
-    # `image` is the GRUB boot ISO (Limine is gone). x86 boots via SeaBIOS
+    # `image` is the GRUB boot ISO. x86 boots via SeaBIOS
     # El Torito (qemu default, no -bios) + the multiboot2 kernel, with the
     # ext4 rootfs on virtio-blk. arm boots OVMF→GRUB→EFI-stub `linux`; the
     # rootfs is embedded in the kernel Image so no block device is needed,

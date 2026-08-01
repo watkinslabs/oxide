@@ -148,7 +148,7 @@ Dropped protos: DCCP, SCTP, L2TP, RDS, TIPC.
 
 ## 7 Boot / firmware / hardware
 
-- UEFI only. No BIOS/CSM/multiboot1. Limine x86 / EDK2/U-Boot arm.
+- GRUB both arches: multiboot2 x86 / EFI-stub arm64 Image under EDK2 (U-Boot `booti` also accepted). No multiboot1, no BIOS int 13h.
 - No real mode/v8086/A20/segmentation. Long mode at first instr.
 - No 32-bit kernel/syscall ABI. 32-bit binary → `ENOEXEC` at loader.
 - IRQ ctrl: x2APIC x86 (xAPIC fallback only on pre-Nehalem, effectively unsupported); GICv3+ arm (GICv2 dropped).
