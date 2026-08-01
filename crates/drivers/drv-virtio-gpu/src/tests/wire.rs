@@ -44,6 +44,7 @@ const CURSOR_Y_OFFSET: usize = 32;
 const CURSOR_RESOURCE_OFFSET: usize = 40;
 const CURSOR_HOT_X_OFFSET: usize = 44;
 const CURSOR_HOT_Y_OFFSET: usize = 48;
+const EDID_SIZE_OFFSET: usize = CTRL_HEADER_BYTES;
 const EDID_DATA_OFFSET: usize = CTRL_HEADER_BYTES + EDID_RESPONSE_METADATA_BYTES;
 const EDID_MAGIC: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
 const TEST_HOST_FEATURES: u64 = 0b1111;
@@ -300,10 +301,11 @@ fn parse_display_info_rejects_wrong_type() {
 fn parse_edid_decodes_block() {
     let mut resp = [0u8; EDID_RESPONSE_BYTES];
     write_u32_le(&mut resp, CTRL_TYPE_OFFSET, VIRTIO_GPU_RESP_OK_EDID);
+    write_u32_le(&mut resp, EDID_SIZE_OFFSET, EDID_MAGIC.len() as u32);
     resp[EDID_DATA_OFFSET..EDID_DATA_OFFSET + EDID_MAGIC.len()]
         .copy_from_slice(&EDID_MAGIC);
-    let edid = parse_edid(&resp).unwrap();
-    assert_eq!(&edid[..EDID_MAGIC.len()], &EDID_MAGIC);
+    let edid = parse_edid_bytes(&resp).unwrap();
+    assert_eq!(edid, &EDID_MAGIC);
 }
 
 #[test]
