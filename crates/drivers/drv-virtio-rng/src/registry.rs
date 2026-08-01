@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::{consts::{HWRNG_MAJOR, HWRNG_MINOR}, fill::fill_from_device};
+use crate::{consts::{BOUNCE_FRAME_BYTES, HWRNG_MAJOR, HWRNG_MINOR}, fill::fill_from_device};
 
 pub(crate) struct RngState {
     pub device_key: virtio::VirtioChildDeviceKey,
@@ -44,12 +44,18 @@ pub fn install(
     }
     let bounce_pa = pmm::setup::alloc_one_frame()?;
     let va = resources.hhdm.wrapping_add(bounce_pa) as *mut u8;
+    // SAFETY: HHDM view of the frame `alloc_one_frame` just returned, so this
+    // code is its only owner and no other mapping exists yet; the loop clears
+    // exactly the one PAGE_SIZE frame that was allocated.
     unsafe {
-        for i in 0..0x1000usize {
+        for i in 0..BOUNCE_FRAME_BYTES {
             core::ptr::write_volatile(va.add(i), 0);
         }
     }
     let used = resources.hhdm.wrapping_add(requestq.device_pa) as *const u16;
+    // SAFETY: HHDM-mapped q0 used ring (require_queue accepted device_pa);
+    // aligned u16 load of used.idx at index 1, taken once so the driver's
+    // avail counter starts from whatever the device has already consumed.
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
     let hwrng_dev = Arc::new(
         drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
@@ -91,8 +97,10 @@ pub fn install(
                 .position(|record| record.lock().device_key == device_key)
                 .map(|idx| registry.records.remove(idx))
         };
+        // The record was published under `active_key` before this point, so a
+        // concurrent `fill` may hold a clone of it: disarm, never plain-free.
         if let Some(record) = record {
-            free_frame(record.lock().bounce_pa);
+            disarm_and_free(&record);
         } else {
             free_frame(bounce_pa);
         }
@@ -134,11 +142,12 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
         devfs::misc::clear_hwrng_source();
     }
 
-    let ctx = record.lock();
-    unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8) };
-    free_frame(ctx.bounce_pa);
-    let removed_hwrng_dev = if was_active { Some(Arc::clone(&ctx.hwrng_dev)) } else { None };
-    drop(ctx);
+    let (cfg_va, removed_hwrng_dev) = {
+        let ctx = record.lock();
+        (ctx.cfg_va, if was_active { Some(Arc::clone(&ctx.hwrng_dev)) } else { None })
+    };
+    let _ = virtio::reset_device(cfg_va);
+    disarm_and_free(&record);
     if let Some(hwrng_dev) = removed_hwrng_dev {
         drv::device_del(&hwrng_dev);
         if let Some((promoted_key, promoted)) = promoted_hwrng_dev {
@@ -152,21 +161,42 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let Some(record) = find_handle(device_key) else {
         return false;
     };
-    let mut ctx = record.lock();
-    if ctx.shutdown {
-        return true;
-    }
-    ctx.shutdown = true;
-    if ctx.cfg_va != 0 {
-        unsafe { core::ptr::write_volatile((ctx.cfg_va + 0x14) as *mut u8, 0u8) };
-    }
-    let bounce_pa = core::mem::replace(&mut ctx.bounce_pa, 0);
-    free_frame(bounce_pa);
+    let cfg_va = {
+        let ctx = record.lock();
+        if ctx.shutdown {
+            return true;
+        }
+        ctx.cfg_va
+    };
+    let _ = virtio::reset_device(cfg_va);
+    disarm_and_free(&record);
     true
+}
+
+/// Mark a record dead and hand its DMA frame back, in that order.
+///
+/// Removal from the registry alone does not disarm a record: `fill` and
+/// `fill_from_device` clone the handle out of the registry, release the
+/// registry lock, and only then take the record lock, so a clone can still be
+/// in flight. Clearing `bounce_pa` under the record lock before the frame is
+/// freed makes such a clone return 0 instead of publishing a freed frame to
+/// the device as a WRITE descriptor.
+/// # C: O(1)
+pub(crate) fn disarm_and_free(record: &RngHandle) {
+    let bounce_pa = {
+        let mut ctx = record.lock();
+        ctx.shutdown = true;
+        core::mem::replace(&mut ctx.bounce_pa, 0)
+    };
+    free_frame(bounce_pa);
 }
 
 pub(crate) fn free_frame(pa: u64) {
     if pa != 0 {
+        // SAFETY: `pa` came from `alloc_one_frame` for this record's bounce
+        // buffer and reaches here only after the record was removed from the
+        // registry (or marked shut down) with `bounce_pa` cleared under its
+        // lock, so no descriptor and no clone of the handle still names it.
         unsafe { pmm::setup::free_one_frame(pa); }
     }
 }

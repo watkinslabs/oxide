@@ -109,6 +109,10 @@ impl core::ops::DerefMut for VtBhGuard {
 }
 
 pub(crate) fn pixels_as_bytes(px: &[u32]) -> &[u8] {
+    // SAFETY: reinterpreting an initialized `[u32]` as `[u8]` of four times the
+    // length — u8's alignment of 1 is satisfied by any u32 pointer, every byte
+    // is initialized, and the borrow keeps `px` alive for the result's lifetime.
+    // `len() * 4` cannot overflow: the source slice already exists in memory.
     unsafe { core::slice::from_raw_parts(px.as_ptr() as *const u8, px.len() * 4) }
 }
 

@@ -59,10 +59,24 @@ const CTL_POLL_BUDGET: u32 = 2_000_000;
 const TX_POLL_BUDGET: u32 = 4_000_000;
 const EVENT_SIZE: usize = 8;
 const SND_FRAME_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
-const MAX_EVENTQ_DESCS: u16 = (SND_FRAME_BYTES / EVENT_SIZE) as u16;
+/// Largest eventq the driver accepts: `prepost_eventq` writes one descriptor
+/// per slot into a one-frame descriptor table AND one buffer per slot into a
+/// one-frame event area, so the cap is whichever of the two runs out first.
+const MAX_EVENTQ_DESCS: u16 = {
+    let by_buffer = SND_FRAME_BYTES / EVENT_SIZE;
+    let by_desc = SND_FRAME_BYTES / lifecycle::VIRTQ_DESC_ENTRY_BYTES;
+    (if by_desc < by_buffer { by_desc } else { by_buffer }) as u16
+};
 
 const REQ_OFF: u64 = 0;
 const RESP_OFF: u64 = 0x200;
+
+/// `virtio_snd_pcm_xfer` header (stream_id) that opens a TX/RX chain.
+const SND_XFER_HDR_BYTES: usize = 4;
+/// `virtio_snd_pcm_status` the device writes back at the end of the chain.
+const SND_XFER_STATUS_BYTES: usize = 8;
+/// Where that status lands inside the TX/RX scratch frame.
+const SND_XFER_STATUS_OFF: u64 = 16;
 
 const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
 

@@ -35,6 +35,7 @@ pub(super) struct DrmSetVersion {
 
 /// `struct drm_mode_atomic` Linux UAPI (64 bytes on 64-bit).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct DrmModeAtomic {
     pub(super) flags:           u32,
     pub(super) count_objs:      u32,
