@@ -92,6 +92,10 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // feature/lock pair: a child of a shadow-stack thread must not be able to
     // re-open a facility its parent locked.
     task.nocpuid.store(parent.nocpuid.load(Ordering::Acquire), Ordering::Release);
+    // Protection-key rights: a thread that opened a key keeps it across fork,
+    // and a CLONE_VM thread must start where its creator stood or it would
+    // fault on the very memory it was spawned to work on.
+    task.pkru.store(parent.pkru.load(Ordering::Acquire), Ordering::Release);
     task.shstk_features.store(parent.shstk_features.load(Ordering::Acquire), Ordering::Release);
     task.shstk_locked.store(parent.shstk_locked.load(Ordering::Acquire), Ordering::Release);
     // The child's visible numbers are NOT seeded here: they are drawn from the

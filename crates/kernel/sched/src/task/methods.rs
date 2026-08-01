@@ -408,6 +408,9 @@ impl Task {
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
             nocpuid:       AtomicBool::new(false),
+            // Born with the restrictive default: a thread must open a key
+            // deliberately, never by inheriting an accident of creation order.
+            pkru:          AtomicU32::new(crate::pkru_init_value()),
             shstk_features: AtomicU64::new(0),
             shstk_locked:   AtomicU64::new(0),
             #[cfg(target_arch = "aarch64")]
