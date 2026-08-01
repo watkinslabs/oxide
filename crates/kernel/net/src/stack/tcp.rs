@@ -310,6 +310,7 @@ impl NetStack {
     /// instantiate a new connection from it. Drives the matched
     /// TcpConn's `input`; xmit any returned response segment.
     /// # C: O(log N) lookup + O(payload) handler
+    #[cfg(test)]
     pub(crate) fn deliver_tcp_packet(&self, net_ns: u64, iface: NetIfaceId,
                     src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8])
         -> NetResult<()>
