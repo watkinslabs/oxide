@@ -10,6 +10,8 @@
 // - segment.rs    : wire-segment builders (ACK/data/SYN variants).
 // - timing.rs     : monotonic clocks used by TS/keepalive.
 // - route_policy.rs: selected IPv4 route metrics applied to a new TCB.
+// - reqsk.rs      : the half-open request sock (SYN-RECV minisock) a listener holds,
+//                   its SYN-ACK timer accounting and the TCP_DEFER_ACCEPT rules.
 // - tests.rs      : unit tests split out from in-module block.
 
 extern crate alloc;
@@ -22,7 +24,7 @@ pub mod sack;
 pub mod segment;
 pub mod timing;
 pub mod route_policy;
-pub mod defer;
+pub mod reqsk;
 
 pub use types::{
     Endpoint, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,

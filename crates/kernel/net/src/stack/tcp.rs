@@ -147,10 +147,9 @@ impl NetStack {
         crate::stack_icmp::handle_error_in(self, net_ns, iface, offender, kind, code, payload)
     }
 
-    /// F159: RTO scanner. Re-emits expired segs; drops conns past
-    /// retry ceilings (SYN=6, data=15). # C: O(N_conns·retx_q).
-    pub fn tcp_retx_tick(&self, now_ns: u64) {
-        // Snapshot the conn list to keep the tcp_conns lock short.
+    /// Every connection a timer pass may touch, snapshotted so the tables stay
+    /// unlocked while each entry is worked on. # C: O(N_conns)
+    pub(crate) fn tcp_tick_entries(&self) -> Vec<super::tcp_reqsk::TickEntry> {
         let table_sets: Vec<(u64, Arc<super::inet_tables::InetTables>)> = self.inet.lock().iter()
             .map(|(&net_ns, tables)| (net_ns, tables.clone())).collect();
         let table_sets: Vec<(network_namespace::NetworkNamespaceRef,
@@ -160,14 +159,20 @@ impl NetStack {
                     else { network_namespace::lookup_u64(net_ns)? };
                 Some((owner, tables))
             }).collect();
-        let mut entries: Vec<(network_namespace::NetworkNamespaceRef,
-                              Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)> = Vec::new();
+        let mut entries: Vec<super::tcp_reqsk::TickEntry> = Vec::new();
         for (owner, tables) in table_sets {
             let snapshot: Vec<(TcpKey, Arc<TcpEntry>)> = tables.tcp_conns.lock().iter()
                 .map(|(key, entry)| (*key, entry.clone())).collect();
             entries.extend(snapshot.into_iter()
                 .map(|(key, entry)| (owner.clone(), tables.clone(), key, entry)));
         }
+        entries
+    }
+
+    /// F159: RTO scanner. Re-emits expired segs; drops conns past
+    /// retry ceilings (SYN=6, data=15). # C: O(N_conns·retx_q).
+    pub fn tcp_retx_tick(&self, now_ns: u64) {
+        let entries = self.tcp_tick_entries();
         let mut to_drop: Vec<(Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)>
             = Vec::new();
         // F161: 2*MSL linger before reclaiming a TIME_WAIT 4-tuple
@@ -175,6 +180,9 @@ impl NetStack {
         // dropped immediately — no 4-tuple reservation needed once
         // both sides agree the connection is gone.
         const TW_TIMEOUT_NS: u64 = 60_000_000_000;
+        // Half-open requests run on their own timer, with their own ceiling
+        // and the deferring period's suppression of retransmits.
+        self.tcp_reqsk_tick(&entries, now_ns);
         for (_owner, tables, key, entry) in entries.iter() {
             // Per-entry: decide retx + drop under the conn lock,
             // collect segments to emit after dropping it.
@@ -186,6 +194,9 @@ impl NetStack {
                 // observation if zero.
                 if c.state == crate::tcp_state::TcpState::Closed {
                     (Vec::new(), true, c.local.ip, c.remote.ip)
+                } else if c.state == crate::tcp_state::TcpState::SynRecv && c.rsk.armed() {
+                    // A request's SYN-ACK belongs to the request timer.
+                    (Vec::new(), false, c.local.ip, c.remote.ip)
                 } else if c.state == crate::tcp_state::TcpState::TimeWait {
                     if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
                     if now_ns.saturating_sub(c.tw_start_ns) >= TW_TIMEOUT_NS {
@@ -234,20 +245,6 @@ impl NetStack {
             for s in &segs {
                 let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
                     entry.bound_iface(), TcpTxPolicy::Entry(entry));
-            }
-            // A connection withheld by `TCP_DEFER_ACCEPT` whose window has now
-            // run out becomes acceptable, so a blocked `accept` has to be
-            // woken — nothing else will arrive to do it.
-            let expired = {
-                let mut c = entry.conn.lock();
-                let due = c.defer_deadline_ns != 0 && now_ns >= c.defer_deadline_ns;
-                if due { c.defer_deadline_ns = 0; }
-                due
-            };
-            if expired && !entry.accepted.load(::core::sync::atomic::Ordering::Acquire) {
-                if let Some(listener) = entry.passive_listener.as_ref()
-                    .and_then(alloc::sync::Weak::upgrade)
-                { listener.notify_acceptable(); }
             }
             // A ping-pong-mode socket held its acknowledgement back so it
             // could ride the application's reply; once `TCP_DELACK_MAX_US`
@@ -370,6 +367,15 @@ impl NetStack {
                 }), seg,
             ) else { return Ok(()); };
             let seg = &seg[..keep];
+            // The listener-side check a segment for a half-open request passes
+            // before any state machine sees it: a deferring listener drops the
+            // bare acknowledgement, so the request stays in SYN-RECV and the
+            // peer's handshake is left unconfirmed.
+            if let Some(listener) = passive_listener.as_ref() {
+                if super::tcp_reqsk::defers_segment(&entry, listener, &hdr, seg) {
+                    return Ok(());
+                }
+            }
             // F158: wake on either recv_buf growth or terminal state
             let (_pre_len, pre_state, input, _post_len, post_state) = {
                 let mut c = entry.conn.lock();
@@ -398,18 +404,6 @@ impl NetStack {
                 && post_state == crate::tcp_state::TcpState::Established
             {
                 let Some(listener) = passive_listener else { return Ok(()); };
-                // `TCP_DEFER_ACCEPT`: a handshake that completed without data
-                // is queued but withheld from `accept` until the client sends
-                // something or the window the listener asked for runs out.
-                {
-                    let mut c = entry.conn.lock();
-                    if c.recv_buf.is_empty() {
-                        let window = listener.defer_window_secs.load(
-                            ::core::sync::atomic::Ordering::Acquire);
-                        c.defer_deadline_ns = crate::tcp_conn::defer::deadline_ns(
-                            window, crate::tcp_conn::ka_now_ns());
-                    }
-                }
                 if !entry.promote_to_accept_backlog() {
                     entry.release_syn_backlog();
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
@@ -421,22 +415,6 @@ impl NetStack {
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                     super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
                     return Ok(());
-                }
-            }
-            // Data on a connection withheld by `TCP_DEFER_ACCEPT` is what the
-            // listener was waiting for: the child becomes acceptable now, and
-            // the first read on the accepted socket returns these bytes.
-            {
-                let deferred = {
-                    let mut c = entry.conn.lock();
-                    let due = c.defer_deadline_ns != 0 && !c.recv_buf.is_empty();
-                    if due { c.defer_deadline_ns = 0; }
-                    due
-                };
-                if deferred {
-                    if let Some(listener) = entry.passive_listener.as_ref()
-                        .and_then(alloc::sync::Weak::upgrade)
-                    { listener.notify_acceptable(); }
                 }
             }
             if let Some(r) = resp {

@@ -73,6 +73,7 @@ pub(crate) mod tcp_listener;
 pub use tcp_listener::TcpAcceptWait;
 mod tcp;
 mod tcp_listener_deliver;
+mod tcp_reqsk;
 mod tcp_open;
 pub(crate) mod tcp_writable;
 pub(crate) mod tcp_rx_trace;
