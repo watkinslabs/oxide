@@ -156,6 +156,13 @@ pub(super) fn qemu_run_grub_x86_64(
         // F458: virtio-mouse (relative pointer) → /dev/input/event1. Relative
         // (not absolute/tablet) so QMP input-send-event works headless.
         "-device", "virtio-mouse-pci,id=ptr0,bus=pcie.0",
+        // B1646: virtio-tablet (absolute pointer) → /dev/input/event2. Without
+        // an absolute pointer the host UI has no way to place the guest cursor:
+        // it must grab and feed relative deltas, so the guest cursor and the
+        // host cursor drift apart and clicks land where the guest cursor is,
+        // not where the user is pointing. Declared AFTER the relative mouse so
+        // event0/event1 keep their keyboard/mouse identities.
+        "-device", "virtio-tablet-pci,id=tablet0,bus=pcie.0",
         // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
         // this at boot and backs /dev/hwrng with it.
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
