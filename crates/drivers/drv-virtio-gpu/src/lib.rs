@@ -11,6 +11,9 @@ extern crate alloc;
 mod wire;
 pub use wire::*;
 
+mod edid;
+pub use edid::*;
+
 mod device;
 pub use device::*;
 

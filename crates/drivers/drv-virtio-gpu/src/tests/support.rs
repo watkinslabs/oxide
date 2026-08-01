@@ -31,6 +31,7 @@ pub(super) fn test_device(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
         cursorq: test_ctrlq(),
         features_negotiated: 0,
         display: DisplayInfo::default(),
+        edid: None,
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1),
         capset_count: 0,

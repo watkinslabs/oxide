@@ -73,6 +73,15 @@ pub fn set_scanout_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
     present_rect_for_key(driver_key, res_id, w, h, present::Rect::full(w, h))
 }
 
+/// `ScanoutOps::present` — present the damaged region userspace reported.
+/// # C: O(1) + O(scanout)
+pub fn present_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32, w: u32, h: u32,
+    damage: drm::node::DamageRect) -> bool
+{
+    present_rect_for_key(driver_key, res_id, w, h,
+        present::Rect { x: damage.x, y: damage.y, w: damage.w, h: damage.h })
+}
+
 /// Present `rect` of `res_id` on scanout 0, following `present::plan`: upload
 /// the damaged region, bind the scanout only when the binding actually
 /// changed, then flush. The whole sequence runs under one `CTX` acquisition so
@@ -178,7 +187,7 @@ pub fn register_drm_hooks(card_id: u32, device_key: virtio::VirtioChildDeviceKey
         driver_key,
         create_from_pa: create_scanout_from_pa_for_key,
         destroy_resource: unref_scanout_resource_for_key,
-        set_scanout: set_scanout_for_key,
+        present: present_for_key,
         set_cursor: set_cursor_for_key,
         move_cursor: move_cursor_for_key,
         restore_console: restore_console_scanout_for_key,
