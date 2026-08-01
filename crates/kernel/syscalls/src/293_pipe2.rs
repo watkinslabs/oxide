@@ -22,7 +22,7 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     const O_NOTIFICATION_PIPE: u32 = OpenFlags::O_EXCL.bits();
     const VALID_FLAGS: u32 = O_CLOEXEC | O_NONBLOCK | O_DIRECT | O_NOTIFICATION_PIPE;
     if flags & !VALID_FLAGS != 0 { return -(Errno::Einval.as_i32() as i64); }
-    if flags & O_NOTIFICATION_PIPE != 0 { return -(Errno::Enopkg.as_i32() as i64); }
+    let notification = flags & O_NOTIFICATION_PIPE != 0;
     let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
@@ -43,6 +43,10 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
         klog::write_dec_u64(r as u64);
         klog::write_raw(b"\n");
     }
+    // A notification pipe carries kernel-generated RECORDS rather than bytes:
+    // the queue behind it is what its reads come from, and userspace may not
+    // write into it at all.
+    if notification { ::fs::watch_queue::attach(&inode); }
     let dentry = vfs::dcache::d_alloc_pseudo("pipe", inode.clone(), &crate::anon_dname::PIPE_OPS);
     let mut r_oflags = OpenFlags::O_RDONLY;
     let mut w_oflags = OpenFlags::O_WRONLY;

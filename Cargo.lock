@@ -648,6 +648,7 @@ dependencies = [
  "klog",
  "mpi",
  "namespace-identity",
+ "net",
  "nscg",
  "pidfd",
  "pkey",

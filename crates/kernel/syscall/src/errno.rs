@@ -55,6 +55,9 @@ pub enum Errno {
     Eidrm   = 43,
     Enomsg  = 42,
     Ebade   = 52,
+    /// `EBADSLT` — the slot named exists as a concept but is not filled: what
+    /// removing a watchpoint that was never added reports.
+    Ebadslt = 57,
     Enodata = 61,
     Enopkg  = 65,
     Enonet  = 64,
