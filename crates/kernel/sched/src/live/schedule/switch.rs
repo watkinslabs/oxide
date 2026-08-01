@@ -508,6 +508,19 @@ pub unsafe fn schedule() {
                 hal_x86_64::set_syscall_kstack(top as u64);
             }
         }
+        // Linux `__switch_to_xtra`: `if ((tifp ^ tifn) & _TIF_NOCPUID)
+        // set_cpuid_faulting(...)`. The arming bit is a CPU register, the
+        // policy is per-thread, so the two only stay in agreement if the
+        // switch re-programs it whenever it differs. Written as a difference
+        // test, not an unconditional store, so a system where no task ever
+        // called `arch_prctl(ARCH_SET_CPUID)` pays no MSR write at all.
+        let prev_nocpuid = prev_ref.nocpuid.load(Ordering::Relaxed);
+        if now.nocpuid.load(Ordering::Relaxed) != prev_nocpuid {
+            // SAFETY: running on the CPU being reprogrammed with preemption
+            // disabled, so the MSR and the incoming task's flag cannot
+            // diverge; the callee is a no-op when the CPU has no mechanism.
+            unsafe { hal_x86_64::set_cpuid_faulting(!prev_nocpuid); }
+        }
         // SAFETY: both fpu_state areas are heap-allocated 64-aligned ArchFpuBuf
         // (as_mut_ptr → the aligned XSAVE region); CR0.TS is clear (kernel never
         // sets it) so FXSAVE/XSAVE don't #NM; prev_ref is the outgoing task whose

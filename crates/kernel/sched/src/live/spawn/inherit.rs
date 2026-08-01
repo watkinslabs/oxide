@@ -78,6 +78,16 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     if parent.no_new_privs.load(Ordering::Acquire) {
         task.no_new_privs.store(true, Ordering::Release);
     }
+    // `arch_prctl` per-thread arch state. Linux carries all of it in
+    // `thread_info::flags` and `thread_struct`, both of which `dup_task_struct`
+    // copies wholesale, so a fork child inherits them and only `execve` clears
+    // them. TIF_NOCPUID: a child of a thread that disabled `cpuid` must also
+    // see `cpuid` fault, or a determinism sandbox leaks through fork. The CET
+    // feature/lock pair: a child of a shadow-stack thread must not be able to
+    // re-open a facility its parent locked.
+    task.nocpuid.store(parent.nocpuid.load(Ordering::Acquire), Ordering::Release);
+    task.shstk_features.store(parent.shstk_features.load(Ordering::Acquire), Ordering::Release);
+    task.shstk_locked.store(parent.shstk_locked.load(Ordering::Acquire), Ordering::Release);
     // The child's visible numbers are NOT seeded here: they are drawn from the
     // PID namespace it ends up in, which clone only publishes afterwards.
     // Seccomp is INHERITED across fork/clone and PRESERVED across execve
