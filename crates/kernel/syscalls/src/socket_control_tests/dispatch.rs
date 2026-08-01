@@ -69,34 +69,7 @@ fn syscall_return_stages_are_feature_gated_ordered_and_cleared() {
         "the tail delegates to the ONE return-to-user work loop");
 }
 
-// A dual-stack AF_INET6 socket that connected to an IPv4 peer took the IPv4
-// path, so its peer tuple is in `sock.peer`, not `sock.peer6`. The peer name
-// such a socket reports is still the v4-mapped form `::ffff:a.b.c.d`, so an
-// empty `peer6` must FALL THROUGH to the generic tuple rather than
-// short-circuit to ENOTCONN — that early return declared every
-// `getaddrinfo(AI_V4MAPPED)` connection unconnected.
-#[test]
-fn ipv6_peername_falls_through_to_the_v4_mapped_tuple() {
-    let source = include_str!("../052_getpeername.rs");
-    let v6 = source.find("net::sock::AF_INET6").expect("the AF_INET6 branch exists");
-    let tail = &source[v6..];
-    let peer6 = tail.find("sock.peer6.lock()").expect("the branch reads peer6");
-    let enotconn = tail.find("Errno::Enotconn").unwrap_or(tail.len());
-    assert!(peer6 < enotconn,
-        "the peer6 read must precede any ENOTCONN in the AF_INET6 branch");
-    assert!(tail[..enotconn].contains("if let Some((ip, port)) = *sock.peer6.lock()"),
-        "an absent native-v6 peer falls through instead of returning ENOTCONN");
-}
 
-// `getsockname` on the same socket has the mirror bug: reading `local_ip6`
-// unconditionally reported `[::]`. Linux reports `sk_v6_rcv_saddr` or, when
-// that is unspecified, whatever local address the socket actually holds.
-#[test]
-fn ipv6_sockname_consults_the_v4_mapped_source() {
-    let source = include_str!("../051_getsockname.rs");
-    assert!(source.contains("v6_name_is_v4_mapped"),
-        "the AF_INET6 branch routes through the shared name-source rule");
-}
 
 #[test]
 fn connect_security_precedes_family_parse_and_unix_lookup_once() {
@@ -166,3 +139,6 @@ fn peer_credentials_and_groups_come_from_one_snapshot() {
     // A pair nobody published credentials for has no supplementary list.
     assert_eq!(pair.peer_cred(net::UnixEnd::A).group_count(), 0);
 }
+
+// C245: the v4-mapped dual-stack name rules moved to `sock_name::tests`, where
+// they are asserted on the bytes each socket state actually reports.
