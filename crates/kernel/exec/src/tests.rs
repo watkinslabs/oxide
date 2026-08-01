@@ -64,7 +64,7 @@ fn elf(et_dyn: bool, base_vaddr: u64, interp: Option<&[u8]>) -> Vec<u8> {
 /// Load into a fresh AS whose arena top is armed the way execve arms it.
 fn load(blob: &[u8], rnd: &ExecRnd) -> (LoadedImage, alloc::sync::Arc<AddressSpace>) {
     let as_ = AddressSpace::new(0x1_0000).expect("AS::new");
-    as_.set_mmap_base(rnd.mmap_base(8 << 20));
+    as_.set_mmap_layout(rnd.mmap_base(8 << 20), true);
     let img = load_static_blob(blob, &as_, rnd).expect("load");
     (img, as_)
 }
@@ -219,4 +219,44 @@ fn placed_mappings_never_overlap() {
             assert!(s >= PAGE && e <= hal::USER_VA_END, "span {s:#x}..{e:#x} out of user range");
         }
     }
+}
+
+/// `MMAP_PAGE_ZERO` is only correct if page 0 is actually THERE afterwards,
+/// readable and executable but not writable, and sealed against a later
+/// mprotect/munmap. Asserting the persona bit is stored proves nothing.
+#[test]
+fn mmap_page_zero_maps_a_read_exec_sealed_page_at_va_zero() {
+    let blob = elf(true, 0, None);
+    let rnd = full(false);
+    let (_img, as_) = load(&blob, &rnd);
+    let zero = hal::UserVirtAddr::new(crate::persona::PAGE_ZERO_VA).expect("VA 0");
+
+    // Without the persona bit the loader leaves VA 0 unmapped — the null trap.
+    assert!(as_.find_vma(zero).is_none(), "page 0 mapped without MMAP_PAGE_ZERO");
+
+    assert!(crate::persona::map_page_zero(&as_), "MMAP_PAGE_ZERO did not map page 0");
+    let vma = as_.find_vma(zero).expect("page 0 missing after the SVr4 emulation");
+    assert_eq!(vma.start.as_u64(), crate::persona::PAGE_ZERO_VA);
+    assert_eq!(vma.end.as_u64(), PAGE);
+    assert!(vma.prot.contains(vmm::VmaProt::READ));
+    assert!(vma.prot.contains(vmm::VmaProt::EXEC));
+    assert!(!vma.prot.contains(vmm::VmaProt::WRITE), "SVr4 page 0 is not writable");
+    assert!(as_.range_sealed(zero, PAGE as usize), "page 0 was left unsealed");
+}
+
+/// The emulation runs AFTER every PT_LOAD and after the interpreter, so it can
+/// never displace a segment: a load that already placed something at VA 0
+/// keeps it, and no other mapping moves.
+#[test]
+fn mmap_page_zero_displaces_no_segment() {
+    let blob = elf(true, 0, None);
+    let rnd = full(false);
+    let (_img, as_) = load(&blob, &rnd);
+    let before: Vec<(u64, u64)> = as_.snapshot_vmas().iter()
+        .map(|v| (v.start.as_u64(), v.end.as_u64())).collect();
+    crate::persona::map_page_zero(&as_);
+    let after: Vec<(u64, u64)> = as_.snapshot_vmas().iter()
+        .map(|v| (v.start.as_u64(), v.end.as_u64()))
+        .filter(|(s, _)| *s != crate::persona::PAGE_ZERO_VA).collect();
+    assert_eq!(before, after, "the SVr4 page displaced a loaded segment");
 }

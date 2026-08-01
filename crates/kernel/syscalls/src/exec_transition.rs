@@ -181,6 +181,24 @@ pub(crate) fn exec_rnd(cur: &sched::Task, per_clear: u32) -> aslr::ExecRnd {
     aslr::ExecRnd::draw(persona & sched::personality::ADDR_NO_RANDOMIZE != 0)
 }
 
+/// Linux `setup_new_exec` → `arch_pick_mmap_layout(mm, &rlim_stack)`: this
+/// exec's arena anchor AND search direction.
+///
+/// `raw_stack_rlim` is the caller's `RLIMIT_STACK` soft limit BEFORE this
+/// kernel's `min(…, RLIM_STACK_MAP_CAP)` clamp, because `RLIM_INFINITY` is one
+/// of the three conditions that select the legacy layout and the clamp would
+/// erase it. `per_clear` is folded in for the same reason `exec_rnd` folds it:
+/// a caller must not pre-arm `ADDR_COMPAT_LAYOUT` and have a setuid image
+/// inherit a predictable low arena.
+/// # C: O(1)
+pub(crate) fn exec_mmap_layout(cur: &sched::Task, per_clear: u32, rnd: &aslr::ExecRnd,
+                               rlim_stack: u64, raw_stack_rlim: u64) -> aslr::Layout {
+    let persona = sched::personality::at_exec(sched::personality::get(cur), per_clear);
+    rnd.mmap_layout(rlim_stack,
+                    sched::personality::addr_compat_layout(persona),
+                    raw_stack_rlim == sched::rlimit::INFINITY)
+}
+
 /// Linux `begin_new_exec`: a secure exec resets `RLIMIT_STACK` to `_STK_LIM`
 /// so a hostile caller cannot hand a setuid binary a pathological stack limit.
 /// # C: O(1)

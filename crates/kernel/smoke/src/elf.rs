@@ -226,7 +226,7 @@ unsafe fn spawn_user_blob_with_vpid(
             VmaBacking::Anonymous,
             true,
         ).map_err(|_| elf_load::LoadError::Enomem)?;
-        mm.set_mmap_base(rnd.mmap_base(USER_STACK_LEN));
+        mm.set_mmap_layout(rnd.mmap_base(USER_STACK_LEN), true);
         let img = load_static_blob(blob, &mm, &rnd)?;
         // F152-2: no kernel-side TLS region — user crt1 mmaps its
         // own TCB and installs FS_BASE via arch_prctl(ARCH_SET_FS).

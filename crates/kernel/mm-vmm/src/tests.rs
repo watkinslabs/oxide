@@ -4,6 +4,7 @@
 // `40§3`-controlled CI.
 
 mod address_space;
+mod legacy_layout;
 mod accounting;
 mod vma_tree;
 

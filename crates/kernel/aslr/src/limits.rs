@@ -74,6 +74,23 @@ pub struct Budget {
     pub stack_rnd_mask: u64,
     /// `arch_align_stack` jitter ceiling in bytes (exclusive).
     pub align_stack_max: u32,
+    /// Divisor in `TASK_UNMAPPED_BASE` — the floor the LEGACY bottom-up mmap
+    /// layout allocates upward from. The two arches do NOT agree: x86_64 is
+    /// `PAGE_ALIGN(task_size / 3)` and arm64 is `PAGE_ALIGN(window / 4)`, so
+    /// the divisor is per-budget rather than one shared constant.
+    pub task_unmapped_div: u64,
+}
+
+impl Budget {
+    /// Linux `TASK_UNMAPPED_BASE` for this arch, over this kernel's single
+    /// user window. Bottom-up allocation starts here; it sits low enough that
+    /// the legacy arena and the stack cannot meet for any reachable
+    /// `RLIMIT_STACK`.
+    /// # C: O(1)
+    pub const fn task_unmapped_base(&self) -> u64 {
+        let raw = DEFAULT_MAP_WINDOW / self.task_unmapped_div;
+        (raw + (PAGE_SIZE_BYTES - 1)) & !(PAGE_SIZE_BYTES - 1)
+    }
 }
 
 /// x86_64. `mmap_rnd_bits` 28..32 (`arch/x86/Kconfig:358-364`),
@@ -86,6 +103,7 @@ pub const X86_64: Budget = Budget {
     mmap_rnd_bits_max: 32,
     stack_rnd_mask:    0x3f_ffff,
     align_stack_max:   8192,
+    task_unmapped_div: 3,
 };
 
 /// aarch64, 4 KiB pages. `mmap_rnd_bits` min 18 (`arch/arm64/Kconfig:299`);
@@ -101,6 +119,7 @@ pub const AARCH64: Budget = Budget {
     mmap_rnd_bits_max: 30,
     stack_rnd_mask:    0x3_ffff >> (PAGE_SHIFT - 12),
     align_stack_max:   PAGE_SIZE_BYTES as u32,
+    task_unmapped_div: 4,
 };
 
 /// The budget for the arch this kernel is being built for.
