@@ -50,6 +50,7 @@ pub use socket_owner::SocketOwner;
 pub use sockaddr::SockaddrStorage;
 pub mod loopback;
 pub mod ipv4;
+pub mod ipv4_options;
 pub mod ipv6;
 pub mod ipv6_ext;
 pub mod icmp;
