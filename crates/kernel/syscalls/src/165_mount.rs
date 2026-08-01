@@ -22,6 +22,10 @@ use crate::fsmount_common::mount_fstype_at;
 // was a second source of truth for the same UAPI contract.
 use vfs::mount::{MS_BIND, MS_MOVE, MS_PROPAGATION, MS_REC, MS_REMOUNT, MS_REMOUNTABLE};
 
+/// Longest mount-option string `mount(2)` accepts, matching the single page
+/// Linux copies the option block into. # C: O(1)
+const MOUNT_DATA_MAX: usize = 4096;
+
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
 pub fn sys_mount(args: &SyscallArgs) -> i64 {
@@ -165,9 +169,19 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
             .map(|r| alloc::sync::Arc::ptr_eq(&vp.dentry, &r)).unwrap_or(false);
         if !at_mount_root { return -(Errno::Einval.as_i32() as i64); }
         let r = if flags & MS_BIND != 0 {
+            // A bind remount changes only the per-mount MNT_* bits; the option
+            // string names the SUPERBLOCK's configuration and has no meaning
+            // for one mount of it.
             vfs::mount::remount_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE)
         } else {
-            vfs::mount::remount_super_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE)
+            let data = if data_p != 0 {
+                match read_user_cstr_owned(data_p, MOUNT_DATA_MAX) {
+                    Ok(d) => d, Err(rv) => return rv,
+                }
+            } else {
+                String::new()
+            };
+            vfs::mount::remount_super_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE, &data)
         };
         return match r {
             Ok(()) => 0,
@@ -348,7 +362,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         klog::write_raw(b"\n");
     }
     let data = if data_p != 0 {
-        match read_user_cstr_owned(data_p, 4096) {
+        match read_user_cstr_owned(data_p, MOUNT_DATA_MAX) {
             Ok(s) => s, Err(rv) => return rv,
         }
     } else {

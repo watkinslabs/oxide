@@ -27,8 +27,8 @@ fn xfs_getquota_getnext_copyout_faults_after_fs_hook() {
     let ops = Arc::new(GetOps { get_calls: AtomicU32::new(0), next_calls: AtomicU32::new(0) });
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), ops.clone(), 0x51544154, Q_XGETQUOTA, 4096, "xfs-getquota-copyout".into(), Arc::new(()));
 
-    assert_eq!(dispatch(&sb, Q_XGETQUOTA, vfs::QuotaType::User, 1000, 0), eno(Errno::Efault));
-    assert_eq!(dispatch(&sb, Q_XGETNEXTQUOTA, vfs::QuotaType::User, 2000, 0), eno(Errno::Efault));
+    assert_eq!(dispatch(&sb, Q_XGETQUOTA, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 1000), 0), eno(Errno::Efault));
+    assert_eq!(dispatch(&sb, Q_XGETNEXTQUOTA, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 2000), 0), eno(Errno::Efault));
     assert_eq!(ops.get_calls.load(Ordering::SeqCst), 1000);
     assert_eq!(ops.next_calls.load(Ordering::SeqCst), 2000);
 }
@@ -97,7 +97,7 @@ fn xfs_setqlim_id0_splits_info_timers_before_dquot_limits() {
     q.d_btimer_hi = 0x12;
     q.d_iwarns = 77;
 
-    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::Group, 0, &mut q as *mut FsDiskQuota as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::Group, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Group, 0), &mut q as *mut FsDiskQuota as u64), 0);
     assert_eq!(ops.info_seq.load(Ordering::SeqCst), 1);
     assert_eq!(ops.set_seq.load(Ordering::SeqCst), 2);
     assert_eq!(ops.info_kind.load(Ordering::SeqCst), vfs::QuotaType::Group.slot() as u32);
@@ -153,7 +153,7 @@ fn xfs_setqlim_id0_uses_filesystem_info_hook_without_active_generic_quota() {
     q.d_fieldmask = FS_DQ_RTBWARNS;
     q.d_rtbwarns = 19;
 
-    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::Project, 0, &mut q as *mut FsDiskQuota as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::Project, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Project, 0), &mut q as *mut FsDiskQuota as u64), 0);
     assert_eq!(ops.info_seq.load(Ordering::SeqCst), 1);
     assert_eq!(ops.set_seq.load(Ordering::SeqCst), 2);
     assert_eq!(ops.info_kind.load(Ordering::SeqCst), vfs::QuotaType::Project.slot() as u32);
@@ -195,7 +195,7 @@ fn xfs_setqlim_nonzero_warning_only_reaches_empty_limit_update() {
     q.d_fieldmask = FS_DQ_BWARNS;
     q.d_bwarns = 12;
 
-    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::User, 1000, &mut q as *mut FsDiskQuota as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 1000), &mut q as *mut FsDiskQuota as u64), 0);
     assert_eq!(ops.calls.load(Ordering::SeqCst), 1);
     assert_eq!(ops.kind.load(Ordering::SeqCst), vfs::QuotaType::User.slot() as u32);
     assert_eq!(ops.id.load(Ordering::SeqCst), 1000);
@@ -223,7 +223,7 @@ fn xfs_setqlim_checks_set_dqblk_support_before_info_update() {
     q.d_fieldmask = FS_DQ_BTIMER;
     q.d_btimer = 5;
 
-    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::User, 0, &mut q as *mut FsDiskQuota as u64), eno(Errno::Enosys));
+    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut q as *mut FsDiskQuota as u64), eno(Errno::Enosys));
     assert_eq!(ops.info_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -247,7 +247,7 @@ fn xfs_setqlim_missing_info_hook_is_einval_after_set_dqblk_support() {
     q.d_fieldmask = FS_DQ_IWARNS;
     q.d_iwarns = 9;
 
-    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::Group, 0, &mut q as *mut FsDiskQuota as u64), eno(Errno::Einval));
+    assert_eq!(dispatch(&sb, Q_XSETQLIM, vfs::QuotaType::Group, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Group, 0), &mut q as *mut FsDiskQuota as u64), eno(Errno::Einval));
     assert_eq!(ops.set_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -288,7 +288,7 @@ fn xfs_getquota_calls_fs_hook_and_encodes_output() {
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), ops.clone(), 0x51544154, Q_XGETQUOTA, 4096, "xfs-getquota".into(), Arc::new(()));
     let mut out = empty_quota();
 
-    assert_eq!(dispatch(&sb, Q_XGETQUOTA, vfs::QuotaType::Project, 42, &mut out as *mut FsDiskQuota as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XGETQUOTA, vfs::QuotaType::Project, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Project, 42), &mut out as *mut FsDiskQuota as u64), 0);
     assert_eq!(ops.calls.load(Ordering::SeqCst), 1);
     assert_eq!(ops.kind.load(Ordering::SeqCst), vfs::QuotaType::Project.slot() as u32);
     assert_eq!(ops.id.load(Ordering::SeqCst), 42);
@@ -331,7 +331,7 @@ fn xfs_getnextquota_uses_start_id_and_writes_next_id() {
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), ops.clone(), 0x51544154, Q_XGETNEXTQUOTA, 4096, "xfs-getnextquota".into(), Arc::new(()));
     let mut out = empty_quota();
 
-    assert_eq!(dispatch(&sb, Q_XGETNEXTQUOTA, vfs::QuotaType::Group, 6999, &mut out as *mut FsDiskQuota as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XGETNEXTQUOTA, vfs::QuotaType::Group, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Group, 6999), &mut out as *mut FsDiskQuota as u64), 0);
     assert_eq!(ops.start_id.load(Ordering::SeqCst), 6999);
     assert_eq!(out.d_flags, FS_GROUP_QUOTA);
     assert_eq!(out.d_id, 7000);
@@ -370,17 +370,17 @@ fn xfs_quotaon_quotaoff_validate_and_pass_raw_flags() {
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), ops.clone(), 0x51544154, Q_XQUOTAON, 4096, "xfs-onoff".into(), Arc::new(()));
     let mut flags = FS_QUOTA_UDQ_ACCT as u32 | FS_QUOTA_GDQ_ENFD as u32 | FS_QUOTA_PDQ_ACCT as u32;
 
-    assert_eq!(dispatch(&sb, Q_XQUOTAON, vfs::QuotaType::User, 0, 0), eno(Errno::Efault));
-    assert_eq!(dispatch(&sb, Q_XQUOTAOFF, vfs::QuotaType::Project, 0, 0), eno(Errno::Efault));
-    assert_eq!(dispatch(&sb, Q_XQUOTAON, vfs::QuotaType::User, 0, &mut flags as *mut u32 as u64), 0);
-    assert_eq!(dispatch(&sb, Q_XQUOTAOFF, vfs::QuotaType::Project, 0, &mut flags as *mut u32 as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XQUOTAON, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), 0), eno(Errno::Efault));
+    assert_eq!(dispatch(&sb, Q_XQUOTAOFF, vfs::QuotaType::Project, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Project, 0), 0), eno(Errno::Efault));
+    assert_eq!(dispatch(&sb, Q_XQUOTAON, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut flags as *mut u32 as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XQUOTAOFF, vfs::QuotaType::Project, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Project, 0), &mut flags as *mut u32 as u64), 0);
     assert_eq!(ops.on_flags.load(Ordering::SeqCst), flags);
     assert_eq!(ops.off_flags.load(Ordering::SeqCst), flags);
 
     let valid_flags = flags;
     flags |= UNKNOWN_XFS_QUOTA_FLAG;
-    assert_eq!(dispatch(&sb, Q_XQUOTAON, vfs::QuotaType::User, 0, &mut flags as *mut u32 as u64), eno(Errno::Einval));
-    assert_eq!(dispatch(&sb, Q_XQUOTAOFF, vfs::QuotaType::Project, 0, &mut flags as *mut u32 as u64), eno(Errno::Einval));
+    assert_eq!(dispatch(&sb, Q_XQUOTAON, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut flags as *mut u32 as u64), eno(Errno::Einval));
+    assert_eq!(dispatch(&sb, Q_XQUOTAOFF, vfs::QuotaType::Project, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Project, 0), &mut flags as *mut u32 as u64), eno(Errno::Einval));
     assert_eq!(ops.on_flags.load(Ordering::SeqCst), valid_flags);
     assert_eq!(ops.off_flags.load(Ordering::SeqCst), valid_flags);
 }
@@ -390,9 +390,9 @@ fn xfs_quotarm_reads_flags_before_rm_hook_support() {
     let sb = qstat_sb();
     let mut flags = FS_QUOTA_UDQ_ACCT as u32 | FS_QUOTA_PDQ_ENFD as u32;
 
-    assert_eq!(dispatch(&sb, Q_XQUOTARM, vfs::QuotaType::User, 0, 0), eno(Errno::Efault));
+    assert_eq!(dispatch(&sb, Q_XQUOTARM, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), 0), eno(Errno::Efault));
     assert_eq!(
-        dispatch(&sb, Q_XQUOTARM, vfs::QuotaType::User, 0, &mut flags as *mut u32 as u64),
+        dispatch(&sb, Q_XQUOTARM, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut flags as *mut u32 as u64),
         eno(Errno::Enosys),
     );
 }
@@ -414,7 +414,7 @@ fn xfs_quotarm_passes_raw_flags_to_filesystem_hook() {
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), ops.clone(), 0x51544154, 0x5806, 4096, "xfs-rm-order".into(), Arc::new(()));
     let mut flags = FS_QUOTA_UDQ_ACCT as u32 | FS_QUOTA_GDQ_ENFD as u32 | FS_QUOTA_PDQ_ACCT as u32;
 
-    assert_eq!(dispatch(&sb, Q_XQUOTARM, vfs::QuotaType::Project, 0, &mut flags as *mut u32 as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XQUOTARM, vfs::QuotaType::Project, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::Project, 0), &mut flags as *mut u32 as u64), 0);
     assert_eq!(ops.flags.load(Ordering::SeqCst), flags);
 }
 
@@ -422,7 +422,7 @@ fn xfs_quotarm_passes_raw_flags_to_filesystem_hook() {
 fn xfs_quotasync_is_ro_check_then_noop() {
     let sb = qstat_sb();
 
-    assert_eq!(dispatch(&sb, Q_XQUOTASYNC, vfs::QuotaType::User, 0, 0), 0);
+    assert_eq!(dispatch(&sb, Q_XQUOTASYNC, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), 0), 0);
     sb.set_readonly(true);
-    assert_eq!(dispatch(&sb, Q_XQUOTASYNC, vfs::QuotaType::User, 0, 0), eno(Errno::Erofs));
+    assert_eq!(dispatch(&sb, Q_XQUOTASYNC, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), 0), eno(Errno::Erofs));
 }

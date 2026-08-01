@@ -31,9 +31,13 @@ pub const DQB_RTB_TIMER: u32 = 1 << 10;
 pub const DQB_SPACE:     u32 = 1 << 12;
 pub const DQB_INO_COUNT: u32 = 1 << 13;
 pub const DQB_RTB_COUNT: u32 = 1 << 14;
+/// Fields the GENERIC quota-file backend can store. The realtime-device
+/// counters and the per-dquot warning counters are deliberately absent: no
+/// generic quota file has a place to put them, so a request that names one is
+/// `EINVAL` rather than a silently dropped write. A backend with a realtime
+/// device installs its own record setter and accepts the wider set.
 pub const DQB_VFS_MASK:  u32 = DQB_SPACE | DQB_SPC_SOFT | DQB_SPC_HARD
-    | DQB_INO_COUNT | DQB_INO_SOFT | DQB_INO_HARD | DQB_SPC_TIMER | DQB_INO_TIMER
-    | DQB_RTB_SOFT | DQB_RTB_HARD | DQB_RTB_TIMER | DQB_RTB_COUNT;
+    | DQB_INO_COUNT | DQB_INO_SOFT | DQB_INO_HARD | DQB_SPC_TIMER | DQB_INO_TIMER;
 
 /// Linux-style quota limit pair. Zero means unlimited. # C: O(1)
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

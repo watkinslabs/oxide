@@ -81,7 +81,7 @@ pub trait SuperOps: Send + Sync {
     /// the remount with `s_flags` UNCHANGED. The new mount API's richer
     /// `fs_context_operations.reconfigure` supersedes this for converted
     /// filesystems; this is the classic hook for the rest. # C: FS-dependent
-    fn remount_fs(&self, _sb_flags: u64) -> KResult<()> { Ok(()) }
+    fn remount_fs(&self, _sb_flags: u64, _data: &str) -> KResult<()> { Ok(()) }
     /// `s_op->umount_begin` — `umount2(MNT_FORCE)` is about to detach this
     /// filesystem, so abort whatever in-flight work would otherwise keep
     /// callers blocked in it (a network/FUSE mount whose server or daemon is
@@ -136,6 +136,12 @@ pub trait SuperOps: Send + Sync {
     fn quota_off(&self, sb: &SuperBlock, kind: QuotaType) -> KResult<()> {
         crate::quota_off(sb, kind)
     }
+    /// True when `s_qcop->quota_off` is installed. Default TRUE: the generic
+    /// VFS quota-file disable above is the hook, exactly as the classic
+    /// quota-control op table ships it. A filesystem whose quota state lives
+    /// in hidden system files installs `quota_disable` instead and overrides
+    /// this to FALSE; with NEITHER hook `Q_QUOTAOFF` is `ENOSYS`. # C: O(1)
+    fn quota_off_supported(&self, _sb: &SuperBlock, _kind: QuotaType) -> bool { true }
     /// `s_qcop->set_xstate` / XFS-compatible quota enable. # C: FS-dependent
     fn quota_enable_xfs(&self, _sb: &SuperBlock, _flags: u32) -> KResult<()> {
         Err(crate::types::VfsError::Enosys)

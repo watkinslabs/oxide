@@ -26,7 +26,7 @@ pub use engine::{setgroups_policy, snapshot_map, write_map, write_setgroups, IdM
 pub use extent::{validate_extents, ExtentError, IdMapExtent};
 pub use resolve::{is_mapped, to_host as resolve_to_host, to_ns as resolve_to_ns};
 pub use translate::{has_mapping, to_host, to_host_checked, to_ns, OverflowId};
-pub use uapi::{INVALID_ID, OVERFLOW_GID, OVERFLOW_UID, UID_GID_MAP_MAX_EXTENTS};
+pub use uapi::{INVALID_ID, OVERFLOW_GID, OVERFLOW_PROJID, OVERFLOW_UID, UID_GID_MAP_MAX_EXTENTS};
 
 #[cfg(test)]
 mod tests;

@@ -38,6 +38,11 @@ pub struct RootfsState {
     /// FIFREEZE state (Linux `sb->s_writers.frozen`). Set by
     /// `Ext4SuperOps::freeze_fs`, cleared by `thaw_fs`. PER MOUNT.
     pub frozen: core::sync::atomic::AtomicBool,
+    /// Quota options this mount was given (`usrquota`, `usrjquota=`, `jqfmt=`,
+    /// …). Sole owner of the mount's quota-option truth: `enable_mount_quotas`
+    /// reads it to decide which classes load, from which file, and whether
+    /// limits are enforced or only usage tracked. PER MOUNT.
+    pub quota_opts: sync::Spinlock<crate::mount_opts::SbQuotaOpts, sync::Inode>,
 }
 
 impl RootfsState {
@@ -52,7 +57,30 @@ impl RootfsState {
             cache_hits:   core::sync::atomic::AtomicU64::new(0),
             cache_misses: core::sync::atomic::AtomicU64::new(0),
             frozen:       core::sync::atomic::AtomicBool::new(false),
+            quota_opts:   sync::Spinlock::new(crate::mount_opts::SbQuotaOpts::default()),
         })
+    }
+
+    /// On-disk quota feature bits of this mount. # C: O(1)
+    pub fn quota_features(&self) -> crate::mount_opts::FsQuotaFeatures {
+        crate::mount_opts::FsQuotaFeatures {
+            quota: self.mount.sb.has_quota(),
+            project: self.mount.sb.has_project(),
+        }
+    }
+
+    /// Snapshot of the quota options in force on this mount. # C: O(MAXQUOTAS)
+    pub fn quota_opts(&self) -> crate::mount_opts::SbQuotaOpts { self.quota_opts.lock().clone() }
+
+    /// Parse `data` and fold its quota options into this mount's option state.
+    /// `quota_loaded` selects remount semantics. Nothing is applied unless the
+    /// whole data string is accepted. # C: O(len(data))
+    pub fn configure_mount_opts(&self, data: &str, quota_loaded: bool) -> vfs::KResult<()> {
+        let feat = self.quota_features();
+        let mut next = self.quota_opts();
+        crate::mount_opts::configure(data, &feat, &mut next, quota_loaded)?;
+        *self.quota_opts.lock() = next;
+        Ok(())
     }
 
     /// Back-stamp the owning VFS `SuperBlock` (`FileSystem::set_sb`). # C: O(1)
@@ -79,38 +107,10 @@ impl RootfsState {
         Ok(())
     }
 
+    /// Turn on every quota class this mount's options + on-disk features ask
+    /// for. Delegates to `mountquota`. # C: O(quota files)
     pub(crate) fn enable_mount_quotas(self: &Arc<Self>, sb: &Arc<vfs::SuperBlock>, allow_readonly: bool) -> vfs::KResult<()> {
-        if !self.mount.sb.has_quota() || (sb.sb_rdonly() && !allow_readonly) { return Ok(()); }
-        let mut done = [false; vfs::MAXQUOTAS];
-        for kind in [vfs::QuotaType::User, vfs::QuotaType::Group, vfs::QuotaType::Project] {
-            let ino = match kind {
-                vfs::QuotaType::User    => self.mount.sb.usr_quota_inum,
-                vfs::QuotaType::Group   => self.mount.sb.grp_quota_inum,
-                vfs::QuotaType::Project => self.mount.sb.prj_quota_inum,
-            };
-            if ino == 0 { continue; }
-            if sb.s_dquot.is_enabled(kind) { continue; }
-            let r = if allow_readonly {
-                crate::quota::quota_on_hidden_remount(self, sb, kind, vfs::QFMT_VFS_V1)
-            } else {
-                crate::quota::quota_on_hidden(self, sb, kind, vfs::QFMT_VFS_V1)
-            };
-            let had_suspended_limits = allow_readonly && sb.s_dquot.has_suspended_limits(kind);
-            if let Err(e) = r.and_then(|_| {
-                if had_suspended_limits { Ok(()) } else { vfs::quota_disable_limits(sb, kind) }
-            }) {
-                let rb = if allow_readonly { rollback_remount_quotas(sb, done) } else { rollback_mount_quotas(sb, done) };
-                if let Err(rb) = rb { return Err(rb); }
-                return Err(e);
-            }
-            done[kind.slot()] = true;
-        }
-        if allow_readonly {
-            for kind in [vfs::QuotaType::User, vfs::QuotaType::Group, vfs::QuotaType::Project] {
-                if done[kind.slot()] { let _ = sb.s_dquot.take_suspended_limits(kind); }
-            }
-        }
-        Ok(())
+        super::mountquota::enable_mount_quotas(self, sb, allow_readonly)
     }
 
     /// Owning `SuperBlock` (`i_sb`), if the SB is built and live. # C: O(1)
@@ -322,19 +322,4 @@ impl RootfsState {
         self.page_cache.invalidate(InodeId(ino as u64));
         Some(())
     }
-}
-
-fn rollback_mount_quotas(sb: &vfs::SuperBlock, done: [bool; vfs::MAXQUOTAS]) -> vfs::KResult<()> {
-    let mut first = Ok(());
-    for old in [vfs::QuotaType::User, vfs::QuotaType::Group, vfs::QuotaType::Project] {
-        if !done[old.slot()] { continue; }
-        if let Err(e) = vfs::quota_off(sb, old) {
-            if first.is_ok() { first = Err(e); }
-        }
-    }
-    first
-}
-
-fn rollback_remount_quotas(sb: &vfs::SuperBlock, done: [bool; vfs::MAXQUOTAS]) -> vfs::KResult<()> {
-    if done.iter().any(|done| *done) { vfs::quota_suspend_sysfiles(sb) } else { Ok(()) }
 }

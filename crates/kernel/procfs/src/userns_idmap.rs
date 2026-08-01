@@ -19,6 +19,16 @@ use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuild
 #[cfg(target_os = "oxide-kernel")]
 const FILE_MODE: u16 = 0o644;
 const PAGE_SIZE: usize = 4096;
+/// Per-pid inode-number tags. Each per-pid file owns one so two files under
+/// the same pid never collide on `st_ino`. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+const PID_INO_TAG_UID_MAP: u64 = 0x2b;
+#[cfg(target_os = "oxide-kernel")]
+const PID_INO_TAG_GID_MAP: u64 = 0x2c;
+#[cfg(target_os = "oxide-kernel")]
+const PID_INO_TAG_SETGROUPS: u64 = 0x2d;
+#[cfg(target_os = "oxide-kernel")]
+const PID_INO_TAG_PROJID_MAP: u64 = 0x2e;
 /// `write(2)` on a Linux `setgroups` file accepts only "allow"/"deny" plus
 /// an optional trailing newline (Linux `proc_setgroups_write` `kbuf[8]`).
 const SETGROUPS_BUF_MAX: usize = 8;
@@ -108,11 +118,19 @@ fn has_cap_in_parent(opener: &FileCred, target: &NamespaceRef, cap: u32) -> bool
 fn update_map(opener: &FileCred, owner: &NamespaceRef, kind: IdMapKind, src: &[u8])
     -> KResult<usize>
 {
-    let cap = match kind { IdMapKind::Uid => sched::cap::SETUID, IdMapKind::Gid => sched::cap::SETGID };
-    let privileged = has_cap_in_parent(opener, owner, cap);
+    // `projid_map` names no capability at all: any valid extent set is
+    // accepted on first write, so neither the parent-capability probe nor the
+    // writer's own id participates.
+    let privileged = match kind {
+        IdMapKind::Uid => has_cap_in_parent(opener, owner, sched::cap::SETUID),
+        IdMapKind::Gid => has_cap_in_parent(opener, owner, sched::cap::SETGID),
+        IdMapKind::Projid => true,
+    };
     let extents = parse_extents(src)?;
     let writer_own_id = match kind {
-        IdMapKind::Uid => opener.dac().uid, IdMapKind::Gid => opener.dac().gid,
+        IdMapKind::Uid => opener.dac().uid,
+        IdMapKind::Gid => opener.dac().gid,
+        IdMapKind::Projid => 0,
     };
     user_ns::write_map(owner, kind, privileged, writer_own_id, &extents).map_err(error)?;
     Ok(src.len())
@@ -166,9 +184,13 @@ impl FileOps for UidGidMapOps {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-/// Build one target-task `uid_map`/`gid_map` file. # C: O(1)
+/// Build one target-task `uid_map`/`gid_map`/`projid_map` file. # C: O(1)
 pub fn make(tid: u32, kind: IdMapKind) -> InodeRef {
-    let tag = match kind { IdMapKind::Uid => 0x2b, IdMapKind::Gid => 0x2c };
+    let tag = match kind {
+        IdMapKind::Uid => PID_INO_TAG_UID_MAP,
+        IdMapKind::Gid => PID_INO_TAG_GID_MAP,
+        IdMapKind::Projid => PID_INO_TAG_PROJID_MAP,
+    };
     InodeBuilder::new(super::live::pid_ino(tag, tid),
         mk_mode(FileType::Regular, FILE_MODE), default_inode_ops(), Arc::new(UidGidMapOps))
         .private(Arc::new(UidGidMap { tid, kind }))
@@ -206,7 +228,7 @@ impl FileOps for SetgroupsOps {
 #[cfg(target_os = "oxide-kernel")]
 /// Build one target-task `setgroups` file. # C: O(1)
 pub fn make_setgroups(tid: u32) -> InodeRef {
-    InodeBuilder::new(super::live::pid_ino(0x2d, tid),
+    InodeBuilder::new(super::live::pid_ino(PID_INO_TAG_SETGROUPS, tid),
         mk_mode(FileType::Regular, FILE_MODE), default_inode_ops(), Arc::new(SetgroupsOps))
         .private(Arc::new(SetgroupsFile { tid }))
         .build()

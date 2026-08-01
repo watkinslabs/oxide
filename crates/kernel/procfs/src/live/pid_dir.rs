@@ -51,6 +51,7 @@ fn pc_schedstat(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0 0 0\n"
 fn pc_autogroup(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"/autogroup-1 nice 0\n") }
 fn pc_uid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Uid) }
 fn pc_gid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Gid) }
+fn pc_projid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Projid) }
 fn pc_setgroups(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make_setgroups(t) }
 fn pc_syscall(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"running\n") }
 fn pc_empty(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"") }
@@ -100,6 +101,7 @@ const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
     ("autogroup", FileType::Regular, pc_autogroup),
     ("uid_map", FileType::Regular, pc_uid_map),
     ("gid_map", FileType::Regular, pc_gid_map),
+    ("projid_map", FileType::Regular, pc_projid_map),
     ("setgroups", FileType::Regular, pc_setgroups),
     ("syscall", FileType::Regular, pc_syscall),
     ("stack", FileType::Regular, pc_empty),
@@ -147,7 +149,6 @@ fn pid_entry_inode(d: &ProcPidDirInode, tid: u32, name: &str) -> KResult<InodeRe
             Ok(make_proc_pid_task_dir(tgid))
         }
         "ns" => Ok(make_proc_pid_ns_dir(tid)),
-        "projid_map" => Ok(crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n")),
         "make-it-fail" | "fail-nth" | "pagemap" | "kpagecount" | "kpageflags" => {
             Ok(StaticFileInode::new(b""))
         }

@@ -9,6 +9,7 @@
 // - `stat`: statfs and `/proc` display hook pass-throughs.
 // - `attrs`: flags, active refs, write limits, UUID, and timestamp attributes.
 // - `lifecycle`: sync, freeze/thaw, shutdown, and `put_super`.
+// - `userns`: `s_user_ns` stamping and the mounting-namespace probe.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -32,10 +33,12 @@ mod model;
 mod ops;
 mod registry;
 mod stat;
+mod userns;
 
 pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_NODEV, SB_I_NOEXEC, SB_I_NOIDMAP, SB_I_RESTRICTED_VARIANT, SB_I_USERNS_REQUIRED, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
 pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
 pub use registry::{fs_supers, next_anon_dev, register_super, sb_by_dev, sget, sget_result};
+pub use userns::{clear_current_user_ns_hook, set_current_user_ns_hook};
 pub(crate) use registry::alloc_anon_minor;
 
 type FreezeParkHook = fn(usize);
@@ -80,6 +83,14 @@ pub struct SuperBlock {
     pub s_magic: u64,
     /// `s_dev` — the `st_dev` every inode on this SB reports.
     pub s_dev: u64,
+    /// `s_user_ns` — the user namespace this instance's ids are expressed in,
+    /// stamped from the MOUNTING task at construction. Quota ids arriving from
+    /// userspace are translated INTO it and reported back OUT of it, so an id
+    /// with no mapping here is `EINVAL` rather than silently aliasing another
+    /// account. A pin, not an active reference: an instance outlives the
+    /// namespace's membership in the active tree but must keep its id maps
+    /// readable for as long as ids cross this boundary.
+    pub s_user_ns: namespace_identity::NamespacePin,
     /// `s_blocksize`.
     pub s_blocksize: u32,
     /// `s_flags` — mount RO/option bits + lifecycle (`SB_BORN`/`SB_ACTIVE`).
