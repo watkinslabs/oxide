@@ -41,6 +41,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
+        feature-gate feature-gate-x86 feature-gate-arm \
         smoke-ping smoke-ping-x86 smoke-ping-arm \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -221,6 +222,24 @@ stack-gate-arm: arm
 	  --arch aarch64 --fail $(STACK_DEPTH_CEILING) \
 	  --allowlist tools/stack-depth-allow-aarch64.txt
 stack-gate: stack-gate-x86 stack-gate-arm
+
+# Feature-gated compile gate. The routine gates (`xtask kernel`, hosted tests,
+# stack-gate) all build WITHOUT features, so code inside `debug_boot! { … }` and
+# every other `#[cfg(feature = …)]` block is not compiled by any of them. A
+# branch that does not compile can therefore pass the entire local gate set and
+# then fail `make qemu-*`, which sets `debug-boot` — the build dies before QEMU
+# starts, so the boot log is empty and reads like a boot failure rather than a
+# build one. B1641 lost a lane to exactly that.
+#
+# `debug-all` is a superset of `debug-boot`, so this covers the boot's feature
+# set and every other debug block. CI's build-kernel matrix runs the same
+# combination; this target is the local equivalent for the merge path, which
+# does not wait on CI.
+feature-gate-x86:
+	cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-all
+feature-gate-arm:
+	cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-all
+feature-gate: feature-gate-x86 feature-gate-arm
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.
