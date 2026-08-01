@@ -58,22 +58,21 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     qemu_run_grub_x86_64(&repo, id.as_deref(), &iso, smp)
 }
 
-/// Rebuild requested vendor packages before staging them into the rootfs.
+/// Stage the rootfs disk before an image build, unless a cached one is reused.
 fn prepare_rootfs(rest: &[String], arch: &str) -> Result<std::path::PathBuf, u8> {
+    let _ = arch;
     let repo = repo_root();
     let skip = std::env::var("OXIDE_SKIP_ROOTFS").is_ok();
-    prepare_rootfs_in(&repo, rest, arch, skip, || crate::cmd_rootfs(rest))?;
+    prepare_rootfs_in(skip, || crate::cmd_rootfs(rest))?;
     Ok(repo)
 }
 
-fn prepare_rootfs_in<F>(repo: &std::path::Path, rest: &[String], arch: &str,
-    skip: bool, stage: F) -> Result<(), u8>
+fn prepare_rootfs_in<F>(skip: bool, stage: F) -> Result<(), u8>
 where
     F: FnOnce() -> Result<(), u8>,
 {
-    crate::gc::rebuild_vendor(repo, arch, rest)?;
     // OXIDE_SKIP_ROOTFS=1 reuses the cached rootfs disk instead of restaging
-    // ~50 vendor apps + rebuilding the ext4 image every boot. Kernel-only
+    // the guest userspace + rebuilding the ext4 image every boot. Kernel-only
     // changes don't touch the rootfs, so this turns a multi-minute rebuild
     // into a no-op. Unset (default) = always rebuild, for correctness/CI.
     if skip {
@@ -150,50 +149,25 @@ fn cmd_run_existing(rest: &[String], arch: &str) -> Result<(), u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::cell::Cell;
 
-    static NEXT: AtomicU64 = AtomicU64::new(0);
+    // OXIDE_SKIP_ROOTFS is the difference between booting the kernel you just
+    // built against a fresh rootfs and booting it against a cached one. Both
+    // directions are asserted: a skip that still staged would cost minutes a
+    // boot, and a non-skip that did not stage would boot a stale userspace.
+    #[test]
+    fn skip_reuses_the_cached_rootfs_and_clear_stages_it() {
+        let staged = Cell::new(false);
+        prepare_rootfs_in(true, || { staged.set(true); Ok(()) }).unwrap();
+        assert!(!staged.get(), "OXIDE_SKIP_ROOTFS must not restage");
 
-    struct Fixture(std::path::PathBuf);
-
-    impl Fixture {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "oxide-xtask-vendor-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed),
-            ));
-            let log = path.join("order.log");
-            for name in ["beta", "alpha"] {
-                std::fs::create_dir_all(path.join("vendor").join(name)).unwrap();
-                std::fs::write(
-                    path.join("vendor").join(name).join("build.sh"),
-                    format!("printf '{}:%s\\n' \"$1\" >> {:?}\n", name, log),
-                ).unwrap();
-            }
-            Self(path)
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        let staged = Cell::new(false);
+        prepare_rootfs_in(false, || { staged.set(true); Ok(()) }).unwrap();
+        assert!(staged.get(), "default must restage the rootfs");
     }
 
     #[test]
-    fn requested_vendor_rebuild_finishes_before_rootfs_staging() {
-        let fixture = Fixture::new();
-        let log = fixture.0.join("order.log");
-        let args = vec!["--rebuild-vendor".to_string()];
-        prepare_rootfs_in(&fixture.0, &args, "aarch64", false, || {
-            assert_eq!(
-                std::fs::read_to_string(&log).unwrap(),
-                "alpha:aarch64\nbeta:aarch64\n",
-            );
-            std::fs::write(&log, "alpha:aarch64\nbeta:aarch64\nrootfs\n").map_err(|_| 1)
-        }).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(log).unwrap(),
-            "alpha:aarch64\nbeta:aarch64\nrootfs\n",
-        );
+    fn a_staging_failure_is_propagated() {
+        assert_eq!(prepare_rootfs_in(false, || Err(7)), Err(7));
     }
 }

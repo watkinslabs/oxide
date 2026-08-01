@@ -22,8 +22,6 @@ VENDOR="$REPO_ROOT/vendor"
 # below (seeded from any tree that already has a verified copy) is the
 # real source. Until these are mirrored under our own ghcr.io / S3, the
 # cache is what makes a new worktree reproducible.
-OVMF_X64_URL="https://retrage.github.io/edk2-nightly/bin/RELEASEX64_OVMF.fd"
-OVMF_X64_SHA256="4f4a8d5092c18219f67291731785b6714811bd2b677029a52f95699718c72aef"
 
 OVMF_AA64_URL="https://retrage.github.io/edk2-nightly/bin/RELEASEAARCH64_QEMU_EFI.fd"
 OVMF_AA64_SHA256="403fd8ae69c1c42764a383f0917cc249df2caeb06a789c9f0ca231b9427ef518"
@@ -99,8 +97,6 @@ fetch() {
 # OVMF firmware (EDK2 nightly snapshots)
 # ---------------------------------------------------------------------------
 
-echo "ovmf x86_64:"
-fetch "$OVMF_X64_URL"   "$VENDOR/firmware/ovmf-x64.fd"     "$OVMF_X64_SHA256"  "ovmf-x64.fd"
 
 echo "ovmf aarch64:"
 fetch "$OVMF_AA64_URL"  "$VENDOR/firmware/ovmf-aarch64.fd" "$OVMF_AA64_SHA256" "ovmf-aarch64.fd"
