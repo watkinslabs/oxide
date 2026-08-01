@@ -8,8 +8,8 @@
 //! link's own name instead fails `EEXIST`, because that name is taken by the
 //! link — and `EEXIST` is only ever correct for `O_EXCL`.
 //!
-//! Ungated on purpose: the syscall slot that uses this is target-gated, where a
-//! `#[cfg(test)]` block compiles away in silence (`08§7`).
+//! Ungated on purpose: the resolver that uses this is reached from target-gated
+//! slot files, where a `#[cfg(test)]` block compiles away in silence (`08§7`).
 
 extern crate alloc;
 use alloc::string::String;
