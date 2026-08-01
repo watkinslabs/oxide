@@ -42,6 +42,8 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
         File("kptr_restrict",         Int(0, Some((0, 2)))),
         File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),
         File("io_uring_disabled",     Int(0, Some((0, 2)))),
+        File("shm_rmid_forced",       IntHook(get_shm_rmid_forced, set_shm_rmid_forced,
+                                              Some(ipc::sysv_shm::RMID_FORCED_BOUNDS))),
         File("hostname",              StrHook(crate::hooks::hostname, crate::hooks::set_hostname)),
         // core dump control (systemd-coredump / sysctl.d write these). Both
         // core_pattern and core_pipe_limit are bound to fs::coredump's live

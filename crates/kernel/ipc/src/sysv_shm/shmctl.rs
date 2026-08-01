@@ -201,6 +201,12 @@ fn rmid_segment(shmid: i32, cred: &IpcCred) -> i64 {
     if g[pos].nattch.load(Ordering::Acquire) > 0 {
         if let Some(m) = alloc::sync::Arc::get_mut(&mut g[pos]) {
             m.mode |= SHM_DEST;
+            // Linux `do_shm_rmid` -> `ipc_set_key_private`: a doomed segment
+            // leaves the key hash, so `shmget(key, ...)` can neither find it
+            // nor be handed an id that is already being torn down. Without
+            // this the marked segment stays reachable by key for as long as
+            // an attacher survives.
+            m.key = super::IPC_PRIVATE;
         } else {
             return err(Errno::Eagain);
         }
@@ -277,6 +283,8 @@ pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
 mod tests {
     use super::*;
     use alloc::sync::Arc;
+    use sync::Spinlock;
+    use crate::sysv_shm::tests::TEST_LOCK;
 
     struct FakeBacking;
 
@@ -285,7 +293,6 @@ mod tests {
         fn size_hint(&self) -> u64 { 0 }
     }
 
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn backing() -> Arc<dyn vmm::FileBacking> {
         Arc::new(FakeBacking)
@@ -350,6 +357,7 @@ mod tests {
             id: 7, key: 9, ns: owner.key(), size: 4096, mode: 0o600,
             uid: 10, gid: 20, cuid: 10, cgid: 20, cpid: 77,
             nattch: core::sync::atomic::AtomicI64::new(2),
+            creator: Spinlock::new(None),
             backing: backing(),
         });
         REG.segs.lock().push(seg.clone());
@@ -378,6 +386,27 @@ mod tests {
         drop(s);
         assert_eq!(rmid_segment(id, &cred_caps(99, 99, &[], false, false, true)), 0);
         assert!(lookup_by_id(id).is_none());
+    }
+
+    #[test]
+    fn rmid_with_attachers_marks_and_unpublishes_the_key() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        const KEY: i32 = 0x5900;
+        let owner = cred(10, 20, &[], false);
+        let id = shmget(KEY, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
+        lookup_by_id(id).unwrap().nattch.store(1, Ordering::Release);
+        assert_eq!(rmid_segment(id, &owner), 0);
+        let seg = lookup_by_id(id).expect("an attached segment is marked, not removed");
+        assert_ne!(seg.mode & SHM_DEST, 0);
+        assert_eq!(seg.key, super::super::IPC_PRIVATE, "a doomed segment leaves the key hash");
+        drop(seg);
+        // Linux: the key is free again, so this creates a NEW segment rather
+        // than handing back the id being torn down.
+        let fresh = shmget(KEY, 4096, super::super::IPC_CREAT | 0o600, owner) as i32;
+        assert!(fresh > 0);
+        assert_ne!(fresh, id);
+        reset();
     }
 
     #[test]
