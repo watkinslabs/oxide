@@ -24,7 +24,8 @@
 #[path = "syn_opts_tests.rs"]
 mod tests;
 
-use crate::tcp_hdr::{opt, TCP_HDR_MIN_LEN};
+use crate::tcp_conn::fastopen::Cookie;
+use crate::tcp_hdr::{opt, FASTOPEN_MAGIC, TCP_HDR_MIN_LEN};
 
 /// Largest option area a TCP header can address: the 4-bit data offset counts
 /// 4-byte words, so the header is at most 60 bytes.
@@ -42,6 +43,19 @@ const SPACE_TIMESTAMP: usize = 12;
 const SPACE_SACK_PERM: usize = 4;
 const SPACE_WSCALE: usize = 4;
 
+/// Bytes a fast-open option spends before its cookie: the kind and length
+/// under the assigned number, and a further two for the experiment identifier
+/// under the shared experimental number.
+pub const LEN_FASTOPEN_BASE: usize = 2;
+pub const LEN_EXP_FASTOPEN_BASE: usize = 4;
+
+/// Bytes a fast-open option occupies, cookie included, rounded up to the word
+/// the option area is measured in. # C: O(1)
+fn space_fastopen(cookie: &Cookie) -> usize {
+    let base = if cookie.exp { LEN_EXP_FASTOPEN_BASE } else { LEN_FASTOPEN_BASE };
+    (base + cookie.len() + 3) & !3
+}
+
 /// What one handshake segment offers or echoes. Every field is `None`/`false`
 /// unless this segment genuinely carries that option: a SYN-ACK echoes only
 /// what the peer's SYN offered, so an absent field is how "the peer did not
@@ -57,6 +71,8 @@ pub struct SynOptions {
     pub sack_perm: bool,
     /// Window scale this side will apply to the windows it advertises.
     pub wscale: Option<u8>,
+    /// A fast-open cookie to present, or an empty cookie asking for one.
+    pub fastopen: Option<Cookie>,
 }
 
 impl SynOptions {
@@ -71,6 +87,7 @@ impl SynOptions {
         // otherwise waste, so the pair costs nothing extra alongside them.
         if self.sack_perm && self.timestamp.is_none() { len += SPACE_SACK_PERM; }
         if self.wscale.is_some() { len += SPACE_WSCALE; }
+        if let Some(c) = self.fastopen.as_ref() { len += space_fastopen(c); }
         len
     }
 
@@ -121,6 +138,28 @@ impl SynOptions {
             out[i + 2] = LEN_WSCALE;
             out[i + 3] = ws;
             i += SPACE_WSCALE;
+        }
+        if let Some(c) = self.fastopen.as_ref() {
+            // The experimental form spends two extra bytes naming the
+            // experiment; a peer that only speaks that form would not
+            // recognise the assigned kind, so the reply keeps the kind the
+            // exchange started under.
+            let base = if c.exp { LEN_EXP_FASTOPEN_BASE } else { LEN_FASTOPEN_BASE };
+            let opt_len = base + c.len();
+            if c.exp {
+                out[i] = opt::EXP;
+                out[i + 1] = opt_len as u8;
+                out[i + 2..i + 4].copy_from_slice(&FASTOPEN_MAGIC.to_be_bytes());
+            } else {
+                out[i] = opt::FASTOPEN;
+                out[i + 1] = opt_len as u8;
+            }
+            out[i + base..i + base + c.len()].copy_from_slice(c.as_bytes());
+            // The option is the last one written, so a length that does not
+            // fill its final word is padded with no-ops rather than leaving
+            // bytes a peer would walk into as another option.
+            for pad in &mut out[i + opt_len..i + space_fastopen(c)] { *pad = opt::NOP; }
+            i += space_fastopen(c);
         }
         i
     }

@@ -117,7 +117,7 @@ pub const TCP_MIN_MSS: i32 = 88;
 pub const MAX_TCP_WINDOW: i32 = 32767;
 
 /// The largest window scale `TCP_REPAIR_OPTIONS` accepts.
-pub const TCP_MAX_WSCALE: u32 = 14;
+pub const TCP_MAX_WSCALE: u32 = crate::tcp_hdr::WSCALE_MAX as u32;
 
 /// The seconds ceiling `TCP_LINGER2` saturates to.
 pub const TCP_FIN_TIMEOUT_MAX_S: i32 = 120;
