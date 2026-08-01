@@ -32,14 +32,14 @@ pub(crate) fn cmd_spec_lint(rest: &[String]) -> Result<(), u8> {
 /// vDSO is assembled from `vdso/*.S` (vdso/build.sh); the rootfs is generated
 /// by `xtask rootfs`. (The hand-rolled smoke ELFs have no source and stay
 /// tracked.) docs/53.
-pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
+pub(crate) fn ensure_blobs(arch: &str, rest: &[String], skip_rootfs: bool) -> Result<(), u8> {
     eprintln!("xtask: build and validate vDSO ({arch})");
     let mut c = Command::new("sh");
     c.arg("crates/kernel/syscalls/vdso/build.sh").arg(arch);
     run(c)?;
     // Compile-only CI still builds and validates the real vDSO, then skips the
     // local rootfs artifact required only by the boot gate.
-    if std::env::var_os("OXIDE_STUB_BLOBS").is_some() { return Ok(()); }
+    if skip_rootfs || std::env::var_os("OXIDE_STUB_BLOBS").is_some() { return Ok(()); }
     let id = parse_arg(rest, "--id");
     let repo = crate::image_qemu::repo_root();
     let img = crate::buildns::blobs_dir(&repo, id.as_deref()).join(format!("root-{arch}.img"));
@@ -57,7 +57,12 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     })?;
     let id = parse_arg(rest, "--id");
     if let Some(ref id) = id { crate::buildns::validate(id)?; }
-    ensure_blobs(&arch, rest)?;
+    // `--check`: type-check only (`cargo check`), no codegen, no link, no ELF
+    // snapshot, no rootfs. Purpose is the feature-gated COMPILE gate — code
+    // inside `#[cfg(feature = …)]` blocks is invisible to a default build, so
+    // the routine gate needs a cheap way to compile it on both arches.
+    let check_only = rest.iter().any(|a| a == "--check");
+    ensure_blobs(&arch, rest, check_only)?;
     let profile = parse_arg(rest, "--profile").unwrap_or("release".into());
     let features = parse_arg(rest, "--features");
     let target = match arch.as_str() {
@@ -94,7 +99,7 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     // target/ is safe. An id'd build then snapshots its ELF below.
     let mut c = Command::new("cargo");
     c.args([
-        "build",
+        if check_only { "check" } else { "build" },
         "-Z", "build-std=core,compiler_builtins,alloc",
         "-Z", "build-std-features=compiler-builtins-mem",
         "-Z", "unstable-options",
@@ -109,6 +114,7 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         c.args(["--features", f.as_str()]);
     }
     run(c)?;
+    if check_only { return Ok(()); }
     // Snapshot: copy the freshly built ELF from the shared cargo build location
     // into the build's namespace (`target/builds/<id-or-"default">/...`) so a
     // running instance boots a stable ISO decoupled from later builds that reuse
