@@ -77,6 +77,42 @@ mod x86 {
         // user-mode exception wedges a CPU.
         assert_eq!(trap(0x1f), FaultSignal { signo: SIGSEGV_, code: SI_KERNEL });
     }
+
+    // A protection-key denial always arrives with PF_PROT set as well — the
+    // page IS present and the page tables DO permit the access; the key
+    // refused it. So the key check must come first, or every key violation is
+    // reported as a plain access error and the handler loses the one fact it
+    // needs to act on.
+    #[test]
+    fn a_protection_key_denial_outranks_the_present_page_classification() {
+        let pk = PF_PROT | PF_USER | PF_PK;
+        assert_eq!(page_fault(pk), FaultSignal { signo: SIGSEGV_, code: code::SEGV_PKUERR });
+        assert_eq!(page_fault(pk | PF_WRITE), FaultSignal { signo: SIGSEGV_, code: code::SEGV_PKUERR });
+    }
+
+    // Without the key bit every existing classification is unchanged.
+    #[test]
+    fn the_key_bit_does_not_disturb_the_other_classifications() {
+        assert_eq!(page_fault(PF_USER), FaultSignal { signo: SIGSEGV_, code: code::SEGV_MAPERR });
+        assert_eq!(page_fault(PF_PROT | PF_USER), FaultSignal { signo: SIGSEGV_, code: code::SEGV_ACCERR });
+        assert_eq!(page_fault(PF_PROT | PF_WRITE | PF_INSTR),
+            FaultSignal { signo: SIGSEGV_, code: code::SEGV_ACCERR });
+    }
+
+    // The error-code bit positions are architectural; an off-by-one silently
+    // reclassifies every fault.
+    #[test]
+    fn the_page_fault_error_code_bits_are_the_documented_positions() {
+        assert_eq!(PF_PROT, 1 << 0);
+        assert_eq!(PF_WRITE, 1 << 1);
+        assert_eq!(PF_USER, 1 << 2);
+        assert_eq!(PF_RSVD, 1 << 3);
+        assert_eq!(PF_INSTR, 1 << 4);
+        assert_eq!(PF_PK, 1 << 5);
+        assert_eq!(PF_SHSTK, 1 << 6);
+        assert_eq!(PF_SGX, 1 << 15);
+    }
+
 }
 
 mod arm {
@@ -159,5 +195,21 @@ mod arm {
     fn ec_and_dfsc_decode_the_documented_bit_positions() {
         assert_eq!(ec(esr(EC_DABT_LOW, 0x3f)), EC_DABT_LOW);
         assert_eq!(dfsc(esr(EC_DABT_LOW, 0x3f)), 0x3f);
+    }
+
+    // A permission-overlay abort has NO fault-status code of its own: it
+    // arrives as an ordinary permission fault. The Overlay bit is a hint that
+    // may be spuriously set, so classification must not key on it — an
+    // overlay-flagged permission fault classifies exactly like any other,
+    // and the key verdict comes from the rights register instead.
+    #[test]
+    fn an_overlay_flagged_permission_fault_classifies_as_a_permission_fault() {
+        let plain = esr(EC_DABT_LOW, 0x0d);
+        let flagged = plain | ISS2_OVERLAY;
+        assert_eq!(abort(flagged), abort(plain));
+        assert_eq!(abort(flagged), FaultSignal { signo: SIGSEGV_, code: code::SEGV_ACCERR });
+        // The hint lives outside the fault-status field, so it cannot corrupt
+        // the decode of the fault class itself.
+        assert_eq!(dfsc(flagged), 0x0d);
     }
 }
