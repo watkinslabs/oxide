@@ -1,6 +1,6 @@
-// No rights register on this target: hosted builds, and aarch64 until its
-// permission-overlay enablement lands. Every operation is inert and reads
-// answer 0 — nothing is denied — rather than fabricating a register state.
+// No rights register on this target (hosted builds). Every operation is inert
+// and reads answer 0 — nothing is denied — rather than fabricating a register
+// state the target does not have.
 
 /// # C: O(1)
 pub fn supported() -> bool { false }
