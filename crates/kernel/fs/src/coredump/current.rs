@@ -59,7 +59,8 @@ pub fn write_for_current(signo: i32) {
         // core is still worth having, and gdb reads it.
         CoreKind::File => {
             let n = sched::rlimit::dump::prefix_len(body.len(), cx.rlimit_core, DUMP_CHUNK);
-            write_to_file(&pattern::file_path(&raw, &cx), &body[..n]);
+            super::file_target::write_to_file(&pattern::file_path(&raw, &cx), &body[..n],
+                cx.uid, cx.gid, suid_safe_required(cx.dumpable));
         }
         // A socket destination needs a connection to a listener that this
         // kernel has no path to yet, so nothing is delivered. Writing a file
@@ -105,12 +106,6 @@ fn trim(p: &[u8]) -> &[u8] {
     let mut end = p.len();
     while end > 0 && (p[end - 1] == b'\n' || p[end - 1] == b'\r') { end -= 1; }
     &p[..end]
-}
-
-fn write_to_file(path: &str, body: &[u8]) {
-    let inode = crate::tmpfs::tmpfs_anon_file();
-    let _ = inode.write(0, body);
-    devfs::register(alloc::boxed::Box::leak(alloc::string::String::from(path).into_boxed_str()), inode);
 }
 
 fn snapshot(cur: &sched::Task, signo: i32) -> CoreContext {

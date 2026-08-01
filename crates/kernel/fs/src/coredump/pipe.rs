@@ -15,10 +15,17 @@ use alloc::vec::Vec;
 
 use vfs::{File, OpenFlags};
 
+use super::limits::claim_pipe_slot;
 use super::pattern::{CoreContext, COREDUMP_PIDFD_NUMBER};
+use super::stream::{deliver, Chunk};
 
 /// Standard input, where the helper reads the dump from.
 const STDIN_FD: i32 = 0;
+
+/// Bytes offered to the pipe per write. Matching the ring's atomic-write size
+/// keeps each attempt one all-or-nothing operation, so a partially drained ring
+/// never splits a chunk.
+const PIPE_DUMP_CHUNK: usize = crate::pipe::limits::PIPE_BUF;
 
 /// Context the helper's setup callback needs, handed across as the request's
 /// opaque data.
@@ -39,7 +46,15 @@ struct PipeSetup {
 /// # C: O(dump size) + O(helper start)
 pub fn dump_to_program(pattern: &[u8], cx: &CoreContext, body: &[u8]) -> bool {
     let Some((argv, wants_pidfd)) = super::pattern::pipe_argv(pattern, cx) else { return false };
+    // The slot is claimed before anything is started and released when this
+    // returns, so the count reflects helpers that are actually running.
+    let slot = claim_pipe_slot();
+    if !slot.admitted() {
+        klog::kwarn!("coredump: over core_pipe_limit, skipping core dump");
+        return false;
+    }
     let (read_end, write_end) = match make_pipe() { Some(p) => p, None => return false };
+    let inode = write_end.inode().clone();
 
     let data = Box::into_raw(Box::new(PipeSetup {
         read_end, vpid: cx.vpid, wants_pidfd,
@@ -53,7 +68,14 @@ pub fn dump_to_program(pattern: &[u8], cx: &CoreContext, body: &[u8]) -> bool {
     let rc = umh::call_usermodehelper_exec(info, umh::UMH_WAIT_EXEC);
     if rc != 0 { return false; }
 
-    write_all(&write_end, body)
+    let delivered = write_all(&write_end, body);
+    // Dropping the write end is the helper's end-of-input. Without it the
+    // helper blocks on a read that never returns and never writes the dump out.
+    drop(write_end);
+    if slot.waits_for_helper() {
+        if let Some(pd) = crate::pipe::pipe_data(&inode) { pd.wait_for_readers_gone(); }
+    }
+    delivered
 }
 
 fn make_pipe() -> Option<(Arc<File>, Arc<File>)> {
@@ -99,16 +121,16 @@ fn release_setup(info: &mut umh::SubprocessInfo) {
 }
 
 /// Push the whole dump into the pipe. The helper drains it as we write, so a
-/// dump larger than the pipe's buffer is delivered across several writes.
-fn write_all(write_end: &Arc<File>, mut body: &[u8]) -> bool {
-    while !body.is_empty() {
-        match write_end.inode().write(0, body) {
-            Ok(0) => return false,
-            Ok(n) => body = &body[n..],
-            // The reader is gone: the program exited or was killed before it
-            // read the whole dump. Nothing more can be delivered.
-            Err(_) => return false,
-        }
-    }
-    true
+/// dump larger than the pipe's buffer is delivered across many writes — which
+/// is the normal case, since a dump is measured in megabytes and a pipe in
+/// pages. The wait for room uses the dumper's rule: the fatal signal being
+/// delivered to this very thread is not a reason to abandon the dump, or no
+/// dump would ever survive its first full ring.
+fn write_all(write_end: &Arc<File>, body: &[u8]) -> bool {
+    let inode = write_end.inode();
+    let d = deliver(body, PIPE_DUMP_CHUNK, &mut |c| match crate::pipe::write_dump(inode, c) {
+        Ok(0) | Err(_) => Chunk::Refused,
+        Ok(n) => Chunk::Took(n),
+    });
+    d.complete
 }

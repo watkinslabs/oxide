@@ -178,6 +178,28 @@ pub fn deliverable_signals_self() -> u64 {
     super::schedule::current().map(deliverable_signals).unwrap_or(0)
 }
 
+/// Whether an UNSURVIVABLE kill is pending for `task` — a `SIGKILL` in either
+/// the thread-private or the process-directed set. Distinct from
+/// [`deliverable_signals`]: a signal being deliverable means an ordinary
+/// blocking operation should give up so the handler can run, whereas this means
+/// the task will not run user code again no matter what.
+///
+/// The blocking mask is deliberately NOT consulted: `SIGKILL` cannot be blocked,
+/// caught or ignored.
+/// # C: O(1)
+pub fn fatal_kill_pending(task: &crate::Task) -> bool {
+    let Some(bit) = crate::signum::bit_for(crate::signum::Signum::Sigkill as u32) else { return false };
+    all_pending(task) & bit != 0
+}
+
+/// Whether an unsurvivable kill is pending for the running task. The core
+/// dumper's stop condition: it keeps writing through the fatal signal it is
+/// already delivering, and stops only for this.
+/// # C: O(1)
+pub fn fatal_kill_pending_self() -> bool {
+    super::schedule::current().map(|t| fatal_kill_pending(&t)).unwrap_or(false)
+}
+
 /// F168: if `task` is currently Sleeping (parked on some
 /// WaitList), transition to Runnable and enqueue so the parked
 /// helper observes the just-set pending signal on its next

@@ -1,35 +1,96 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{InodeBuilder, PollSubscribers, default_inode_ops, mk_mode};
 
+use super::limits::{round_pipe_size, PIPE_BUF, PIPE_DEF_SIZE, PIPE_GROW_STEP, PIPE_MAX_SIZE};
 use super::{PipeFileOps, WaitList};
 
-pub(super) const PIPE_CAP: usize = 4096;
+#[cfg(test)]
+mod tests;
+
+/// What ends a blocking write that ran out of room and has to wait.
+///
+/// A `write(2)` gives up as soon as ANY signal is deliverable, so the C library
+/// can restart it after the handler runs. The thread writing a core dump cannot
+/// use that rule: it is already inside the delivery of the signal that killed
+/// it, so "a signal is deliverable" is permanently true and the very first wait
+/// would abandon the dump. It stops only for a kill it cannot survive, which is
+/// what makes a dump larger than the ring reach its destination at all.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WriteAbort {
+    /// Ordinary `write(2)`: any deliverable signal ends the wait.
+    OnDeliverableSignal,
+    /// The core dumper: only an unsurvivable kill ends the wait.
+    OnFatalKill,
+}
 
 pub(super) struct PipeBuf {
-    pub(super) data: [u8; PIPE_CAP],
-    pub(super) packet: [bool; PIPE_CAP],
-    pub(super) packet_end: [bool; PIPE_CAP],
+    /// Backing store, grown on demand up to `cap`. Its length is what the ring
+    /// indices wrap on; `cap` is only the ceiling it may grow to.
+    pub(super) data: Vec<u8>,
+    pub(super) packet: Vec<bool>,
+    pub(super) packet_end: Vec<bool>,
     pub(super) head: usize,
     pub(super) tail: usize,
     pub(super) len:  usize,
+    /// `F_GETPIPE_SZ`: how many bytes this pipe may hold.
+    pub(super) cap:  usize,
 }
 
 impl PipeBuf {
-    const fn new() -> Self {
-        Self { data: [0; PIPE_CAP], packet: [false; PIPE_CAP], packet_end: [false; PIPE_CAP],
-            head: 0, tail: 0, len: 0 }
+    fn new() -> Self {
+        Self { data: Vec::new(), packet: Vec::new(), packet_end: Vec::new(),
+            head: 0, tail: 0, len: 0, cap: PIPE_DEF_SIZE }
+    }
+
+    /// Next ring index after `i`. Wraps on the ALLOCATED length, not on the
+    /// capacity — an unfilled pipe holds fewer bytes than it may grow to.
+    /// # C: O(1)
+    pub(super) fn next_idx(&self, i: usize) -> usize {
+        if i + 1 >= self.data.len() { 0 } else { i + 1 }
+    }
+
+    /// Rotate the queued bytes to the front so the backing store can be
+    /// extended without the new slots landing inside the queue.
+    fn normalize(&mut self) {
+        if self.head == 0 { return; }
+        self.data.rotate_left(self.head);
+        self.packet.rotate_left(self.head);
+        self.packet_end.rotate_left(self.head);
+        self.head = 0;
+        self.tail = if self.len >= self.data.len() { 0 } else { self.len };
+    }
+
+    /// Extend the backing store by one allocation unit. False when the pipe is
+    /// already at its capacity or the memory is not there — either way the
+    /// caller treats it as a full ring and waits.
+    fn grow(&mut self) -> bool {
+        let cur = self.data.len();
+        if cur >= self.cap { return false; }
+        let want = (cur + PIPE_GROW_STEP).min(self.cap);
+        let add = want - cur;
+        if self.data.try_reserve_exact(add).is_err() { return false; }
+        if self.packet.try_reserve_exact(add).is_err() { return false; }
+        if self.packet_end.try_reserve_exact(add).is_err() { return false; }
+        self.normalize();
+        self.data.resize(want, 0);
+        self.packet.resize(want, false);
+        self.packet_end.resize(want, false);
+        self.tail = self.len;
+        true
     }
 
     pub(super) fn push(&mut self, b: u8, packet: bool, packet_end: bool) -> bool {
-        if self.len == PIPE_CAP { return false; }
+        if self.len >= self.cap { return false; }
+        if self.len >= self.data.len() && !self.grow() { return false; }
         self.data[self.tail] = b;
         self.packet[self.tail] = packet;
         self.packet_end[self.tail] = packet_end;
-        self.tail = (self.tail + 1) % PIPE_CAP;
+        self.tail = self.next_idx(self.tail);
         self.len += 1;
         true
     }
@@ -41,7 +102,7 @@ impl PipeBuf {
         let packet_end = self.packet_end[self.head];
         self.packet[self.head] = false;
         self.packet_end[self.head] = false;
-        self.head = (self.head + 1) % PIPE_CAP;
+        self.head = self.next_idx(self.head);
         self.len -= 1;
         Some((b, packet, packet_end))
     }
@@ -67,7 +128,6 @@ pub struct PipeData {
     /// Tasks parked on a write that found the buffer full. Woken
     /// when a read drains bytes or when the last reader closes.
     pub(super) write_waiters: WaitList,
-    pub(super) capacity: AtomicUsize,
 }
 
 impl PipeData {
@@ -79,7 +139,6 @@ impl PipeData {
             readers: AtomicUsize::new(0),
             read_waiters:  WaitList::new(),
             write_waiters: WaitList::new(),
-            capacity: AtomicUsize::new(PIPE_CAP),
         }
     }
 
@@ -123,17 +182,19 @@ impl PipeData {
     }
 
     /// Push one scatter write while holding the ring lock. Writes no bytes when
-    /// the complete PIPE_BUF-sized operation does not fit. # C: O(bytes)
+    /// the complete `PIPE_BUF`-sized operation does not fit, which is the POSIX
+    /// atomicity guarantee: a write of at most `PIPE_BUF` bytes is never split
+    /// across another writer's bytes. # C: O(bytes)
     fn try_fill_iter(&self, bufs: &[&[u8]], total: usize, packetized: bool) -> usize {
         let mut g = self.buf.lock();
-        let cap = self.capacity.load(Ordering::Acquire);
+        let cap = g.cap;
         if g.len >= cap { return 0; }
-        if total <= PIPE_CAP && total <= cap && cap - g.len < total { return 0; }
+        if total <= PIPE_BUF && total <= cap && cap - g.len < total { return 0; }
         let mut n = 0;
         for buf in bufs {
             for &b in *buf {
                 if g.len >= cap { return n; }
-                let packet_end = packetized && (n + 1 == total || g.len + 1 == cap || (n + 1) % PIPE_CAP == 0);
+                let packet_end = packetized && (n + 1 == total || g.len + 1 == cap || (n + 1) % PIPE_BUF == 0);
                 if !g.push(b, packetized, packet_end) { return n; }
                 n += 1;
             }
@@ -164,8 +225,8 @@ impl PipeData {
             if self.writers.load(Ordering::Acquire) == 0 { return Ok(0); }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // Linux `pipe_read` (`fs/pipe.c:476-481`): "just return
-                // directly with -ERESTARTSYS if we're interrupted".
+                // A read that has copied nothing returns straight out on a
+                // deliverable signal, having done every wakeup it owed.
                 if sched::live::deliverable_signals_self() != 0 {
                     return Err(VfsError::Erestartsys);
                 }
@@ -195,6 +256,13 @@ impl PipeData {
     /// Blocking scatter write shared by anonymous pipes and named FIFOs.
     /// # C: O(bytes) + park
     pub(super) fn write_iter_blocking(&self, subs: Option<&PollSubscribers>, bufs: &[&[u8]], packetized: bool) -> KResult<usize> {
+        self.write_iter_abort(subs, bufs, packetized, WriteAbort::OnDeliverableSignal)
+    }
+
+    /// Blocking scatter write with an explicit rule for what ends the wait.
+    /// # C: O(bytes) + park
+    pub(super) fn write_iter_abort(&self, subs: Option<&PollSubscribers>, bufs: &[&[u8]],
+                                   packetized: bool, abort: WriteAbort) -> KResult<usize> {
         let total = Self::iov_len(bufs)?;
         if total == 0 { return Ok(0); }
         loop {
@@ -206,10 +274,9 @@ impl PipeData {
                 return Ok(n);
             }
             #[cfg(target_os = "oxide-kernel")]
-            // Linux `pipe_write` (`fs/pipe.c:654`): `ret = -ERESTARTSYS;`.
-            if sched::live::deliverable_signals_self() != 0 {
-                return Err(VfsError::Erestartsys);
-            }
+            // A write that has placed no bytes reports the interruption; the
+            // dumper's rule keeps it waiting for room instead.
+            if write_wait_aborted(abort) { return Err(VfsError::Erestartsys); }
             // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping before scheduling.
             #[cfg(target_os = "oxide-kernel")]
             unsafe { self.write_waiters.park(); }
@@ -217,7 +284,7 @@ impl PipeData {
             #[cfg(target_os = "oxide-kernel")]
             unsafe { sched::live::schedule::schedule(); }
             #[cfg(not(target_os = "oxide-kernel"))]
-            return Err(VfsError::Eagain);
+            { let _ = abort; return Err(VfsError::Eagain); }
         }
     }
 
@@ -254,8 +321,7 @@ impl PipeData {
 
     /// `poll`/`select` readiness bitmask per pipe(7). # C: O(1)
     pub(super) fn poll_mask(&self) -> u32 {
-        let len = self.buf.lock().len;
-        let cap = self.capacity.load(Ordering::Acquire);
+        let (len, cap) = { let g = self.buf.lock(); (g.len, g.cap) };
         let writers = self.writers.load(Ordering::Acquire);
         let readers = self.readers.load(Ordering::Acquire);
         let mut mask = 0u32;
@@ -282,6 +348,38 @@ impl PipeData {
 
     /// Bytes currently queued for `FIONREAD`. # C: O(1)
     pub(super) fn queued_bytes(&self) -> usize { self.buf.lock().len }
+
+    /// Bytes this pipe may hold (`F_GETPIPE_SZ`). # C: O(1)
+    pub fn capacity(&self) -> usize { self.buf.lock().cap }
+
+    /// Park until every reader has closed its end.
+    ///
+    /// The core dumper uses this to keep the crashing process alive until the
+    /// helper it fed has finished, so the helper can still read `/proc/<pid>`
+    /// of the process whose dump it is holding. The check runs AFTER the park
+    /// enqueue, and a close observed in the window between them un-parks us, so
+    /// a reader that closes while we are arming cannot leave us asleep.
+    /// # C: O(1) + park
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn wait_for_readers_gone(&self) {
+        while self.readers.load(Ordering::Acquire) != 0 {
+            if sched::live::fatal_kill_pending_self() { return; }
+            // SAFETY: running task; preempt-off; park bumps the Arc and marks the task Sleeping before the recheck below.
+            unsafe { self.write_waiters.park(); }
+            if self.readers.load(Ordering::Acquire) == 0 { self.write_waiters.cancel_current_park(); }
+            // SAFETY: process ctx; runqueue installed; current is Sleeping until the last reader's close wakes the write side.
+            unsafe { sched::live::schedule::schedule(); }
+        }
+    }
+}
+
+/// Whether a blocking write that found no room gives up now.
+#[cfg(target_os = "oxide-kernel")]
+fn write_wait_aborted(abort: WriteAbort) -> bool {
+    match abort {
+        WriteAbort::OnDeliverableSignal => sched::live::deliverable_signals_self() != 0,
+        WriteAbort::OnFatalKill => sched::live::fatal_kill_pending_self(),
+    }
 }
 
 /// Pipe inode numbers come out of the one range `vfs::pseudo_ino` reserves for
@@ -302,110 +400,29 @@ pub fn make_pipe_inode() -> InodeRef {
 pub fn pipe_data(inode: &Inode) -> Option<&PipeData> { inode.private::<PipeData>() }
 
 /// `fcntl(F_GETPIPE_SZ)`. # C: O(1)
-pub fn pipe_size(inode: &Inode) -> Option<usize> {
-    pipe_data(inode).map(|p| p.capacity.load(Ordering::Acquire))
-}
+pub fn pipe_size(inode: &Inode) -> Option<usize> { pipe_data(inode).map(|p| p.capacity()) }
 
-/// `fcntl(F_SETPIPE_SZ)`. # C: O(1)
+/// `fcntl(F_SETPIPE_SZ)`.
+///
+/// The request is rounded UP to whole allocation units, so the size reported
+/// back is never smaller than what was asked for. A request past the tunable
+/// ceiling is refused rather than clamped, and a request below what is already
+/// queued is `EBUSY` — shrinking a pipe may not discard bytes a reader has not
+/// collected. # C: O(1)
 pub fn set_pipe_size(inode: &Inode, requested: usize) -> Result<usize, VfsError> {
+    if requested > PIPE_MAX_SIZE { return Err(VfsError::Eperm); }
     let p = pipe_data(inode).ok_or(VfsError::Einval)?;
-    let new_cap = requested.clamp(1, PIPE_CAP);
-    let len = p.buf.lock().len;
-    if new_cap < len { return Err(VfsError::Ebusy); }
-    if requested > PIPE_CAP { return Err(VfsError::Eperm); }
-    p.capacity.store(new_cap, Ordering::Release);
+    let new_cap = round_pipe_size(requested);
+    let mut g = p.buf.lock();
+    if new_cap < g.len { return Err(VfsError::Ebusy); }
+    g.cap = new_cap;
     Ok(new_cap)
 }
 
-// B1422 — lost-wakeup regression test for `read_blocking`. `sched::live`
-// (the real scheduler) does not exist under a hosted `cargo test` build (no
-// runqueue is ever installed, so `WaitList::park`/`schedule` degrade to
-// no-ops — see the crate-level `WaitList` hosted stand-in in `pipe.rs`), so
-// this cannot drive the exact production park/wake call. Instead it drives
-// real OS threads against the SAME ring lock (`PipeData.buf`) production
-// code uses, with a wait-list stand-in that is deliberately AS LOSSY as the
-// real one: a wake is silently dropped if nobody is registered yet. Unlike
-// `std::thread::park`/`unpark` (whose token persists regardless of call
-// order, which would validate nothing here), this reproduces the exact
-// failure shape: if "check empty" and "register as parked" are not one
-// critical section with the writer's "mutate, drop, wake", the wake can be
-// dropped and the reader hangs. `reader_once` below mirrors the FIXED
-// `read_blocking` shape line for line; `writer_push` mirrors
-// `write_iter_blocking`'s mutate-under-lock/drop/wake.
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Barrier, Condvar, Mutex};
-    use std::thread;
-    use std::time::Duration;
-
-    /// Lossy hosted wait-list stand-in: `wake` is a no-op unless a reader is
-    /// currently registered — exactly `WaitList::wake_all` finding an empty
-    /// list.
-    #[derive(Default)]
-    struct LossyWaitList {
-        slot: Mutex<Option<std::sync::Arc<(Mutex<bool>, Condvar)>>>,
-    }
-    impl LossyWaitList {
-        fn register(&self) -> std::sync::Arc<(Mutex<bool>, Condvar)> {
-            let slot = std::sync::Arc::new((Mutex::new(false), Condvar::new()));
-            *self.slot.lock().unwrap() = Some(slot.clone());
-            slot
-        }
-        fn wake(&self) {
-            if let Some(slot) = self.slot.lock().unwrap().take() {
-                *slot.0.lock().unwrap() = true;
-                slot.1.notify_all();
-            }
-        }
-    }
-
-    /// Mirrors the FIXED `read_blocking`: one critical section over
-    /// `pd.buf` covers "is there data" and "register as parked" so
-    /// `writer_push`'s mutate-then-wake can never land in the gap.
-    fn reader_once(pd: &PipeData, waiters: &LossyWaitList) -> usize {
-        loop {
-            let mut g = pd.buf.lock();
-            if g.len != 0 {
-                let mut tmp = [0u8; 1];
-                return PipeData::drain_locked(&mut g, &mut tmp);
-            }
-            let slot = waiters.register();
-            drop(g);
-            let (lock, cv) = &*slot;
-            let guard = lock.lock().unwrap();
-            let (_guard, res) = cv
-                .wait_timeout_while(guard, Duration::from_secs(2), |woken| !*woken)
-                .unwrap();
-            assert!(!res.timed_out(), "reader parked forever: lost wakeup (B1422 regression)");
-        }
-    }
-
-    /// Mirrors `write_iter_blocking`/`try_fill_iter`: mutate the SAME ring
-    /// lock, drop it, THEN wake.
-    fn writer_push(pd: &PipeData, waiters: &LossyWaitList) {
-        { pd.buf.lock().push(b'x', false, false); }
-        waiters.wake();
-    }
-
-    #[test]
-    fn concurrent_write_never_leaves_reader_parked() {
-        const ITERS: usize = 4_000;
-        let pd = PipeData::new(1);
-        pd.writers.store(1, Ordering::Release);
-        pd.readers.store(1, Ordering::Release);
-        let waiters = LossyWaitList::default();
-
-        for _ in 0..ITERS {
-            let barrier = Barrier::new(2);
-            thread::scope(|s| {
-                let reader = s.spawn(|| { barrier.wait(); reader_once(&pd, &waiters) });
-                barrier.wait();
-                writer_push(&pd, &waiters);
-                assert_eq!(reader.join().unwrap(), 1, "byte must not be lost or duplicated");
-            });
-            // Ring must be empty again before the next iteration's push.
-            assert_eq!(pd.buf.lock().len, 0);
-        }
-    }
+/// Push `buf` into a pipe on behalf of the core dumper: the wait for room ends
+/// only on an unsurvivable kill, never on the fatal signal already being
+/// delivered to the crashing thread. # C: O(bytes) + park
+pub fn write_dump(inode: &Inode, buf: &[u8]) -> KResult<usize> {
+    let p = pipe_data(inode).ok_or(VfsError::Einval)?;
+    p.write_iter_abort(inode.poll_subscribers(), &[buf], false, WriteAbort::OnFatalKill)
 }

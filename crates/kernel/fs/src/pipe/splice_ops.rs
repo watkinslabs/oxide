@@ -46,8 +46,8 @@ pub fn queued(p: &PipeData) -> usize { p.buf.lock().len }
 
 /// Free bytes before the ring is full. # C: O(1)
 pub fn space(p: &PipeData) -> usize {
-    let cap = p.capacity.load(Ordering::Acquire);
-    cap.saturating_sub(p.buf.lock().len)
+    let g = p.buf.lock();
+    g.cap.saturating_sub(g.len)
 }
 
 /// Move or duplicate up to `len` bytes from `src` into `dst`.
@@ -68,7 +68,6 @@ pub fn space(p: &PipeData) -> usize {
 /// class, so rank alone does not order them. # C: O(bytes)
 pub fn link_pipe(src: &PipeData, dst: &PipeData, len: usize, consume: bool) -> usize {
     if core::ptr::eq(src, dst) { return 0; }
-    let cap = dst.capacity.load(Ordering::Acquire);
     let (first, second) = if (src as *const PipeData as usize) < (dst as *const PipeData as usize) {
         (&src.buf, &dst.buf)
     } else {
@@ -83,12 +82,12 @@ pub fn link_pipe(src: &PipeData, dst: &PipeData, len: usize, consume: bool) -> u
     let mut idx = s.head;
     while n < len {
         if n >= s.len { break; }
-        if d.len >= cap { break; }
+        if d.len >= d.cap { break; }
         let b = s.data[idx];
         let packet = s.packet[idx];
         let packet_end = s.packet_end[idx];
         if !d.push(b, packet, packet_end) { break; }
-        idx = (idx + 1) % super::ring::PIPE_CAP;
+        idx = s.next_idx(idx);
         n += 1;
     }
     if consume {
@@ -111,7 +110,7 @@ pub fn peek(p: &PipeData, dst: &mut [u8]) -> usize {
     let mut idx = g.head;
     for slot in dst.iter_mut().take(n) {
         *slot = g.data[idx];
-        idx = (idx + 1) % super::ring::PIPE_CAP;
+        idx = g.next_idx(idx);
     }
     n
 }
@@ -126,11 +125,9 @@ pub fn advance(p: &PipeData, n: usize) {
 /// accepted (0 when the ring is full). The caller has already run
 /// [`opipe_prep`], so a full ring here is a race, not an error. # C: O(bytes)
 pub fn fill(p: &PipeData, src: &[u8]) -> usize {
-    let cap = p.capacity.load(Ordering::Acquire);
     let mut g = p.buf.lock();
     let mut n = 0;
     for &b in src {
-        if g.len >= cap { break; }
         if !g.push(b, false, false) { break; }
         n += 1;
     }
