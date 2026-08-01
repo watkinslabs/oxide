@@ -115,13 +115,24 @@ impl TcpListenEntry {
                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                            ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                            ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> Self {
+        Self::new_with_min_hop(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Build a listener sharing its socket's hop-limit minimums too. # C: O(1)
+    pub fn new_with_min_hop(bind: Arc<TcpBindReservation>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           min_hop: Arc<crate::min_hop::MinHop>) -> Self {
         let owner = bind.owner.clone();
         Self {
             owner, accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
-            ip_mtu_discover, ipv6_mtu_discover,
+            ip_mtu_discover, ipv6_mtu_discover, min_hop,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
+            defer_window_secs: ::core::sync::atomic::AtomicI32::new(0),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -174,6 +185,17 @@ impl TcpListenEntry {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
         }
         true
+    }
+
+    /// Publish that a queued child has become acceptable. Used when a
+    /// `TCP_DEFER_ACCEPT` window runs out, which changes accept readiness
+    /// without anything being added to the queue. # C: O(1)
+    pub fn notify_acceptable(&self) {
+        #[cfg(target_os = "oxide-kernel")]
+        self.accept_waiters.wake_all();
+        if let Some(weak) = self.poll_subs.lock().clone() {
+            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
+        }
     }
 
     /// Close admission and take every completed unaccepted child. # C: O(N)
@@ -268,7 +290,11 @@ impl NetStack {
         let entry = {
             let mut queue = listener.accept_q.lock();
             if listener.is_closed() { return None; }
-            let entry = queue.pop_front()?;
+            // A connection deferred by `TCP_DEFER_ACCEPT` stays in the queue
+            // without being handed over, and does not hold back the ones
+            // behind it that already carry data.
+            let index = queue.iter().position(|child| child.acceptable())?;
+            let entry = queue.remove(index)?;
             entry.accepted.store(true, ::core::sync::atomic::Ordering::Release);
             entry
         };
@@ -320,3 +346,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tcp_listener_lookup_tests.rs"]
 mod lookup_tests;
+
+#[cfg(test)]
+#[path = "tcp_defer_accept_tests.rs"]
+mod defer_accept_tests;

@@ -383,10 +383,8 @@ pub fn abs_snapshot_by_identity(
     let devices = DEVICES.lock();
     let dev = devices.iter()
         .find(|dev| matches_identity(dev, device_key, input_id, evdev_id))?;
-    Some(AbsSnapshot {
-        value: dev.abs_value(axis)?,
-        parameters: dev.abs_parameters(axis)?,
-    })
+    let (value, parameters) = dev.abs_snapshot(axis)?;
+    Some(AbsSnapshot { value, parameters })
 }
 
 /// Commit userspace LED, sound, and repeat output to canonical state and

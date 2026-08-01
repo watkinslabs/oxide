@@ -82,8 +82,10 @@ fn eviocgabs_answers_input_absinfo_field_order() {
 }
 
 /// The axis is carried in the ioctl number, not in an argument, so each axis
-/// must answer for itself and an axis the device never advertised must be
-/// refused rather than answered with zeros a compositor would map from.
+/// must answer for itself. An absolute device carries one array entry per
+/// axis, so an axis it never advertised is answered from the zeroed entry —
+/// success with an empty range, not a refusal. Refusal is reserved for a
+/// device that has no array at all (`eviocgabs_refuses_a_device_with_no_axes`).
 #[test]
 fn eviocgabs_decodes_the_axis_from_the_request_number() {
     let _serial = super::serialize();
@@ -96,8 +98,42 @@ fn eviocgabs_decodes_the_axis_from_the_request_number() {
         assert_eq!(field(&out, crate::EVDEV_ABSINFO_MAX_OFF), AXIS_MAX, "axis {axis}");
     }
 
-    let (rv, _) = read_absinfo(&file, UNADVERTISED_AXIS);
-    assert_eq!(rv, Some(-(syscall::errno::Errno::Einval.as_i32() as i64)));
+    let (rv, out) = read_absinfo(&file, UNADVERTISED_AXIS);
+    assert!(matches!(rv, Some(rv) if rv >= 0), "{rv:?}");
+    for off in [
+        crate::EVDEV_ABSINFO_VALUE_OFF,
+        crate::EVDEV_ABSINFO_MIN_OFF,
+        crate::EVDEV_ABSINFO_MAX_OFF,
+        crate::EVDEV_ABSINFO_FUZZ_OFF,
+        crate::EVDEV_ABSINFO_FLAT_OFF,
+        crate::EVDEV_ABSINFO_RES_OFF,
+    ] {
+        assert_eq!(field(&out, off), 0, "offset {off}");
+    }
+
+    input::clear_devices_for_tests();
+}
+
+/// A device with no absolute capability has no per-axis array behind the
+/// request, so every axis number is refused — udev probes this on the
+/// keyboard and the relative pointer at every boot.
+#[test]
+fn eviocgabs_refuses_a_device_with_no_axes() {
+    let _serial = super::serialize();
+    let model = test_dev(ABSOLUTE_DEVICE_ID);
+    let key = model.device_key;
+    let _ = crate::remove_device(key);
+    let (_, id) = crate::install(model).expect("install relative device");
+    let file = test_file(id);
+
+    for axis in [input::ABS_X, UNADVERTISED_AXIS] {
+        let (rv, _) = read_absinfo(&file, axis);
+        assert_eq!(
+            rv,
+            Some(-(syscall::errno::Errno::Einval.as_i32() as i64)),
+            "axis {axis}",
+        );
+    }
 
     input::clear_devices_for_tests();
 }

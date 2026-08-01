@@ -46,6 +46,7 @@ fn drm_accessors_skip_disabled_scanouts() {
         features_negotiated: 0,
         bdf: 0,
         unique: drm_unique_from_bdf(0),
+        edid: None,
     };
     assert_eq!(
         driver.crtc_ids(),

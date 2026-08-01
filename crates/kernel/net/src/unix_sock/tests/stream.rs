@@ -178,8 +178,10 @@ fn socketpair_has_no_bind_path() {
 // desynced fds from their owning D-Bus message: logind's CreateSession /
 // Inhibit reply fifo fd got attached to an earlier fd-less message and
 // dropped (upowerd saw `g_unix_fd_list_get_length: G_IS_UNIX_FD_LIST`).
-// Fix ties each burst to the stream offset of its carrying write; a read
-// never crosses an fd boundary (Linux `unix_stream_read_generic`).
+// Fix ties each burst to the stream offset of its carrying write. A receive
+// ends at the descriptor-bearing write's LAST byte, so descriptors always
+// arrive with a receive that covers the bytes they were sent with, and never
+// with one that ends before them.
 //
 // The PRIOR attempt (B541, reverted) deadlocked the boot: its `read()`
 // (the blocking-read/park path) could return EMPTY while data/fds were
@@ -198,21 +200,48 @@ fn stream_fds_bind_to_their_write_not_an_earlier_one() {
     p.write(UnixEnd::A, b"AAAA").unwrap();
     p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
 
-    // First recvmsg reads msg1's bytes: must NOT carry the fd, and must
-    // stop at the fd boundary (only "AAAA", even though 64 was asked).
+    // The run ends AFTER the descriptor-bearing write's bytes, so one receive
+    // takes both writes and the fd rides the bytes it was sent with.
     let (b1, f1, _) = p.read_stream(UnixEnd::B, 64);
-    assert_eq!(&b1[..], b"AAAA", "read capped at the fd boundary");
-    assert!(f1.is_empty(), "fd must not ride the earlier fd-less message");
+    assert_eq!(&b1[..], b"AAAABBBB", "same sender, no earlier descriptors: one receive");
+    assert_eq!(f1.len(), 1, "the fd arrives with the receive covering its own bytes");
+    assert!(alloc::sync::Arc::ptr_eq(&f1[0], &fd));
 
-    // Second recvmsg reaches the boundary: delivers msg2's bytes + the fd.
+    // The fd is delivered once and never re-delivered.
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
+    assert!(b2.is_empty());
+    assert!(f2.is_empty());
+}
+
+#[test]
+fn stream_read_stops_short_of_a_write_that_follows_descriptors() {
+    let _serial = test_guard();
+    // The fd-bearing write ends the run, so the write AFTER it is a separate
+    // receive: descriptors never straddle two receives.
+    let p = UnixPair::new();
+    let fd = anon_file();
+    p.write_with_fds(UnixEnd::A, b"AAAA", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
+    p.write(UnixEnd::A, b"BBBB").unwrap();
+    let (b1, f1, _) = p.read_stream(UnixEnd::B, 64);
+    assert_eq!(&b1[..], b"AAAA", "read capped after the fd-bearing write");
+    assert_eq!(f1.len(), 1);
     let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
     assert_eq!(&b2[..], b"BBBB");
-    assert_eq!(f2.len(), 1, "fd delivered with its own message");
-    assert!(alloc::sync::Arc::ptr_eq(&f2[0], &fd));
+    assert!(f2.is_empty());
+}
 
-    // No fds left over.
-    let (_b3, f3, _) = p.read_stream(UnixEnd::B, 64);
-    assert!(f3.is_empty());
+#[test]
+fn stream_read_glues_plain_writes_from_one_sender() {
+    let _serial = test_guard();
+    // The plain coalescing case: nothing bounds these writes, so a single
+    // recvmsg asked for 64 bytes returns all of them, not the first write.
+    let p = UnixPair::new();
+    p.write(UnixEnd::A, b"AAAA").unwrap();
+    p.write(UnixEnd::A, b"BBBB").unwrap();
+    p.write(UnixEnd::A, b"CCCC").unwrap();
+    let (b, f, _) = p.read_stream(UnixEnd::B, 64);
+    assert_eq!(&b[..], b"AAAABBBBCCCC");
+    assert!(f.is_empty());
 }
 
 #[test]
@@ -277,19 +306,21 @@ fn stream_read_with_fds_never_returns_empty_when_bytes_present() {
 #[test]
 fn stream_read_drops_only_passed_fds_keeps_future_ones() {
     let _serial = test_guard();
-    // read() past msg1 must drop msg1's fd but keep msg2's fd for a later
-    // recvmsg (the fd stays bound to its own bytes, never desynced).
+    // read() drops msg1's fd (no cmsg buffer took it) but must not run past
+    // msg1's last byte: a descriptor-bearing segment ends the receive, so
+    // msg2 and its fd stay queued for a later recvmsg, never desynced.
     let p = UnixPair::new();
     let fd1 = anon_file();
     let fd2 = anon_file();
     p.write_with_fds(UnixEnd::A, b"AAAA", alloc::vec![alloc::sync::Arc::clone(&fd1)]).unwrap();
     p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd2)]).unwrap();
-    // Plain read drains everything up to max, dropping fd1 (rode "AAAA")
-    // AND fd2 (rode "BBBB") since both are now behind the cursor.
     let got = p.read(UnixEnd::B, 8);
-    assert_eq!(&got[..], b"AAAABBBB");
+    assert_eq!(&got[..], b"AAAA", "a descriptor-bearing segment ends the receive");
+    assert_eq!(alloc::sync::Arc::strong_count(&fd1), 1, "fd1 released, not requeued");
     let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
-    assert!(b2.is_empty() && f2.is_empty(), "all fds consumed/dropped, nothing desynced");
+    assert_eq!(&b2[..], b"BBBB");
+    assert_eq!(f2.len(), 1, "fd2 stayed bound to its own bytes");
+    assert!(alloc::sync::Arc::ptr_eq(&f2[0], &fd2));
 }
 
 #[test]

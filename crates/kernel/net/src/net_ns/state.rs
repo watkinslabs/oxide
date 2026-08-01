@@ -73,11 +73,32 @@ impl Ipv4ConfKey {
 pub enum NetSysctlKey {
     Somaxconn, OptmemMax, TcpSyncookies, TcpTwReuse, TcpFinTimeout,
     TcpKeepaliveTime, IcmpEchoIgnoreAll, Ipv6DisableAll, Ipv6DisableDefault,
+    /// `net.ipv4.tcp_wmem` / `net.ipv4.tcp_rmem` — a three-value window per
+    /// namespace, not a scalar: `Min` is the floor the transport may moderate
+    /// down to, `Default` is what a new TCP socket starts with, `Max` is the
+    /// autotuning ceiling.
+    TcpWmem(BufWindow), TcpRmem(BufWindow),
     Ipv4Conf(Ipv4ConfDev, Ipv4ConfKey),
 }
 
+/// One slot of a three-value socket-buffer window. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BufWindow { Min, Default, Max }
+
+impl BufWindow {
+    pub const COUNT: usize = 3;
+    const fn index(self) -> usize {
+        match self { Self::Min => 0, Self::Default => 1, Self::Max => 2 }
+    }
+    const fn from_index(index: usize) -> Option<Self> {
+        Some(match index { 0 => Self::Min, 1 => Self::Default, 2 => Self::Max, _ => return None })
+    }
+}
+
 impl NetSysctlKey {
-    const BASE_COUNT: usize = 9;
+    const WMEM_BASE: usize = 9;
+    const RMEM_BASE: usize = Self::WMEM_BASE + BufWindow::COUNT;
+    const BASE_COUNT: usize = Self::RMEM_BASE + BufWindow::COUNT;
     const COUNT: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
 
     const fn index(self) -> usize {
@@ -87,6 +108,8 @@ impl NetSysctlKey {
             Self::TcpFinTimeout => 4, Self::TcpKeepaliveTime => 5,
             Self::IcmpEchoIgnoreAll => 6, Self::Ipv6DisableAll => 7,
             Self::Ipv6DisableDefault => 8,
+            Self::TcpWmem(slot) => Self::WMEM_BASE + slot.index(),
+            Self::TcpRmem(slot) => Self::RMEM_BASE + slot.index(),
             Self::Ipv4Conf(dev, key) => Self::BASE_COUNT
                 + dev.index() * Ipv4ConfKey::COUNT + key.index(),
         }
@@ -101,6 +124,12 @@ impl NetSysctlKey {
             4 => Self::TcpFinTimeout, 5 => Self::TcpKeepaliveTime,
             6 => Self::IcmpEchoIgnoreAll, 7 => Self::Ipv6DisableAll,
             8 => Self::Ipv6DisableDefault,
+            _ if index < Self::RMEM_BASE => match BufWindow::from_index(index - Self::WMEM_BASE) {
+                Some(slot) => Self::TcpWmem(slot), None => return None,
+            },
+            _ if index < Self::BASE_COUNT => match BufWindow::from_index(index - Self::RMEM_BASE) {
+                Some(slot) => Self::TcpRmem(slot), None => return None,
+            },
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
@@ -122,6 +151,10 @@ impl NetSysctlKey {
             3 => 2,
             4 => 60,
             5 => 7_200,
+            _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
+                crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
+            _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>
+                crate::sysctl::DEFAULT_TCP_RMEM[index - Self::RMEM_BASE],
             _ if index >= Self::BASE_COUNT => match (index - Self::BASE_COUNT)
                 % Ipv4ConfKey::COUNT
             {

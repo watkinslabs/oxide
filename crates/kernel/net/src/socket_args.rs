@@ -57,13 +57,26 @@ pub struct AcceptFlags {
     pub nonblock: bool,
 }
 
-/// Linux `__sys_socket_create` + supported-family create gates. # C: O(1)
-pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw: bool) -> Result<SocketArgs, Errno> {
+/// The family/type pair a creation is known by at the moment the security
+/// decision is taken: ranges checked, creation flags split off, and the
+/// obsolete `AF_INET`/`SOCK_PACKET` pair already remapped. Protocol support and
+/// the raw-socket capability screen belong to the family's own create
+/// operation, which runs AFTER that decision. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CreateIdentity {
+    pub family: u32,
+    pub typ: u32,
+    pub cloexec: bool,
+    pub nonblock: bool,
+}
+
+/// Everything `socket(2)` settles before the creation security hook. # C: O(1)
+pub fn create_identity(family: u32, raw_type: u32) -> Result<CreateIdentity, Errno> {
     let flags = raw_type & !SOCK_TYPE_MASK;
     if flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return Err(Errno::Einval); }
-    // Linux `__sock_create` range-checks the family before the type, so an
-    // out-of-range family outranks an out-of-range type; an in-range but
-    // unregistered family is rejected later, after the type range check.
+    // The family is range-checked before the type, so an out-of-range family
+    // outranks an out-of-range type; an in-range but unregistered family is
+    // rejected later, after the type range check.
     if family >= AF_MAX { return Err(Errno::Eafnosupport); }
     let typ = raw_type & SOCK_TYPE_MASK;
     if typ >= SOCK_MAX { return Err(Errno::Einval); }
@@ -74,6 +87,25 @@ pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw:
     } else {
         typ
     };
+    Ok(CreateIdentity {
+        family, typ,
+        cloexec:  flags & SOCK_CLOEXEC != 0,
+        nonblock: flags & SOCK_NONBLOCK != 0,
+    })
+}
+
+/// Linux `__sys_socket_create` + supported-family create gates. # C: O(1)
+pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw: bool) -> Result<SocketArgs, Errno> {
+    resolve_socket_args(create_identity(family, raw_type)?, protocol, has_net_raw)
+}
+
+/// The family's own create operation: protocol support and the capability
+/// screens, judged against an identity the security hook has already seen.
+/// # C: O(1)
+pub fn resolve_socket_args(identity: CreateIdentity, protocol: u32, has_net_raw: bool)
+    -> Result<SocketArgs, Errno>
+{
+    let CreateIdentity { family, typ, cloexec, nonblock } = identity;
     match family {
         AF_INET | AF_INET6 => validate_inet(family, typ, protocol, has_net_raw)?,
         AF_UNIX           => validate_unix(typ, protocol)?,
@@ -82,13 +114,7 @@ pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw:
         AF_VSOCK          => validate_vsock(typ, protocol)?,
         _                 => return Err(Errno::Eafnosupport),
     }
-    Ok(SocketArgs {
-        family,
-        typ,
-        protocol,
-        cloexec:  flags & SOCK_CLOEXEC != 0,
-        nonblock: flags & SOCK_NONBLOCK != 0,
-    })
+    Ok(SocketArgs { family, typ, protocol, cloexec, nonblock })
 }
 
 /// Linux `__sys_accept4_file` flag gate. The syscall's flag operand is an
@@ -301,5 +327,54 @@ mod tests {
         }));
         assert!(parse_socket_args(AF_VSOCK, SOCK_SEQPACKET, 0, true).is_ok());
         assert_eq!(parse_socket_args(AF_VSOCK, SOCK_STREAM, 1, true), Err(Errno::Eprotonosupport));
+    }
+}
+
+#[cfg(test)]
+mod create_identity_tests {
+    use super::*;
+
+    #[test]
+    fn the_identity_stage_settles_ranges_flags_and_the_obsolete_pair() {
+        let id = create_identity(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK).unwrap();
+        assert_eq!((id.family, id.typ, id.cloexec, id.nonblock),
+            (AF_INET, SOCK_STREAM, true, true));
+        // The obsolete datagram pair is renamed before anything judges it.
+        let id = create_identity(AF_INET, SOCK_PACKET).unwrap();
+        assert_eq!((id.family, id.typ), (AF_PACKET, SOCK_PACKET));
+        assert_eq!(create_identity(AF_INET, SOCK_STREAM | 0x1000).err(), Some(Errno::Einval));
+        assert_eq!(create_identity(AF_MAX, SOCK_STREAM).err(), Some(Errno::Eafnosupport));
+        assert_eq!(create_identity(AF_INET, SOCK_MAX).err(), Some(Errno::Einval));
+    }
+
+    #[test]
+    fn protocol_support_and_the_raw_capability_are_decided_after_the_identity() {
+        // The identity stage accepts a family/type pair whose protocol is not
+        // supported and whose capability the caller lacks: both belong to the
+        // resolution stage, which is what puts the security decision first.
+        let raw4 = create_identity(AF_INET, SOCK_RAW).unwrap();
+        assert!(resolve_socket_args(raw4, IPPROTO_ICMP, false).is_err());
+        assert!(resolve_socket_args(raw4, IPPROTO_ICMP, true).is_ok());
+        let packet = create_identity(AF_PACKET, SOCK_RAW).unwrap();
+        assert_eq!(resolve_socket_args(packet, 0, false).err(), Some(Errno::Eperm));
+        // An unregistered but in-range family is rejected by resolution too.
+        let unknown = create_identity(AF_MAX - 1, SOCK_STREAM).unwrap();
+        assert_eq!(resolve_socket_args(unknown, 0, true).err(), Some(Errno::Eafnosupport));
+    }
+
+    #[test]
+    fn the_two_stages_compose_into_the_one_shot_parser() {
+        for (family, raw_type, protocol) in [
+            (AF_INET, SOCK_STREAM, IPPROTO_TCP), (AF_INET, SOCK_RAW, IPPROTO_ICMP),
+            (AF_UNIX, SOCK_DGRAM, 0), (AF_INET, SOCK_PACKET, 0), (AF_MAX, SOCK_STREAM, 0),
+            (AF_INET, SOCK_STREAM | 0x1000, 0),
+        ] {
+            for has_net_raw in [false, true] {
+                let staged = create_identity(family, raw_type)
+                    .and_then(|id| resolve_socket_args(id, protocol, has_net_raw));
+                assert_eq!(staged, parse_socket_args(family, raw_type, protocol, has_net_raw),
+                    "family {family} type {raw_type} protocol {protocol}");
+            }
+        }
     }
 }

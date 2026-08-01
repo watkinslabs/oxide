@@ -38,12 +38,15 @@ impl<'a> SendContext<'a> {
     /// Capture explicit task state needed by socket send policy. # C: O(1)
     pub fn new(task: &'a sched::Task) -> Self { Self { task } }
 
-    /// Snapshot sender credentials from the retained task context. # C: O(1)
+    /// Snapshot sender credentials from the retained task context. An
+    /// unsolicited AF_UNIX credential reports the sender's REAL uid/gid — the
+    /// effective pair belongs to `SO_PEERCRED`, not to `SCM_CREDENTIALS`.
+    /// # C: O(1)
     pub(crate) fn creds(&self) -> net::sock::SenderCreds {
         net::sock::SenderCreds {
             pid: self.task.visible_pid(),
-            uid: self.task.creds.euid.load(Ordering::Acquire),
-            gid: self.task.creds.egid.load(Ordering::Acquire),
+            uid: self.task.creds.ruid.load(Ordering::Acquire),
+            gid: self.task.creds.rgid.load(Ordering::Acquire),
         }
     }
 

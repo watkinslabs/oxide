@@ -91,7 +91,7 @@ mod tests {
         frame[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&l3);
 
         stack.deliver_ethernet(iface, &frame).unwrap();
-        assert_eq!(endpoint.recv(false).unwrap().5, body);
+        assert_eq!(endpoint.recv(false).unwrap().payload, body);
     }
 
     #[test]

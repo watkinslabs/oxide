@@ -266,25 +266,28 @@ mod tests {
 
         let setsockopt = include_str!("054_setsockopt/main.rs");
         assert!(setsockopt.contains("vsock.check_option()"));
-        assert!(setsockopt.contains("let read_i32_required"));
+        assert!(include_str!("054_setsockopt/optval.rs")
+            .contains("fn read_i32_required"));
         // Every SOL_SOCKET write goes through the one canonical option table.
         assert!(setsockopt.contains("super::sol_socket::set(&sock, optname, optval, optlen)"));
         assert!(!setsockopt.contains("(SOL_SOCKET, "),
             "no SOL_SOCKET option arm may live outside the canonical table");
         let sol_set = include_str!("054_setsockopt/sol_socket.rs");
-        let length_screen = sol_set.find("optlen < core::mem::size_of::<i32>()").unwrap();
+        let length_screen = sol_set.find("if short { return Err(Errno::Einval); }").unwrap();
         let classify = sol_set.find("set::arg_class(optname)").unwrap();
         assert!(length_screen < classify,
             "the leading int screen precedes option classification");
 
         let getsockopt = include_str!("055_getsockopt.rs");
         assert!(getsockopt.contains("vsock.check_option()"));
-        assert!(getsockopt.contains("sol_socket::read(&s, optname, optval, optlen_p)"));
+        assert!(getsockopt.contains("sol_socket::read(&sock, optname, optval, optlen_p)"));
         assert!(!getsockopt.contains("(SOL_SOCKET, "),
             "no SOL_SOCKET readback arm may live outside the canonical table");
-        let bytes_back = &getsockopt[getsockopt.find("let bytes_back").unwrap()..];
-        let value_copy = bytes_back.find("copy_to_user(optval, &value[..take])").unwrap();
-        let length_copy = bytes_back.find("copy_to_user(optlen_p, &(take as u32)").unwrap();
+        // Every option value publishes through the one copyout owner, which
+        // writes the value before the resulting length.
+        let out = include_str!("055_getsockopt/out.rs");
+        let value_copy = out.find("copy_to_user(self.optval, &value[..take])").unwrap();
+        let length_copy = out.find("copy_to_user(self.optlen_p, &(take as u32)").unwrap();
         assert!(value_copy < length_copy, "getsockopt bytes publish before value-result length");
     }
 }

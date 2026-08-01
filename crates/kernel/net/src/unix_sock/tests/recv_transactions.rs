@@ -66,9 +66,9 @@ fn stream_peek_offset_reads_waitall_suffix_without_consuming() {
     let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write(UnixEnd::A, b"abcdef").unwrap();
-    let first = pair.read_stream_with_offset(UnixEnd::B, 3, true, 0,
+    let first = pair.read_stream_with_offset(UnixEnd::B, 3, true, 0, false, None,
         |data, _, _| Ok::<_, ()>((data.to_vec(), 0))).unwrap().unwrap().0;
-    let second = pair.read_stream_with_offset(UnixEnd::B, 3, true, 3,
+    let second = pair.read_stream_with_offset(UnixEnd::B, 3, true, 3, false, None,
         |data, _, _| Ok::<_, ()>((data.to_vec(), 0))).unwrap().unwrap().0;
     assert_eq!(first, b"abc");
     assert_eq!(second, b"def");
@@ -132,4 +132,32 @@ fn dgram_peek_returns_rights_without_consuming_record() {
     assert!(alloc::sync::Arc::ptr_eq(&peeked.fds[0], &file));
     let (_, consumed, _) = queue.recv_with(false, |_, _, rights| Ok::<_, ()>(rights)).unwrap().unwrap();
     assert_eq!(consumed.fds.len(), 1);
+}
+
+// --- receive-loop continuation (Linux `unix_stream_read_generic`) ---
+
+#[test]
+fn a_receive_without_waitall_never_asks_for_more() {
+    use crate::unix_sock::stream_recv_continues;
+    assert!(!stream_recv_continues(false, false, 4, 64, false));
+    assert!(!stream_recv_continues(false, true, 4, 64, false));
+}
+
+#[test]
+fn waitall_keeps_gluing_until_the_buffer_fills_or_a_boundary_ends_the_run() {
+    use crate::unix_sock::stream_recv_continues;
+    assert!(stream_recv_continues(true, false, 4, 64, false));
+    assert!(!stream_recv_continues(true, false, 64, 64, false), "the buffer is full");
+    assert!(!stream_recv_continues(true, false, 4, 64, true), "a control boundary ended the run");
+    assert!(stream_recv_continues(true, false, 0, 64, false), "nothing copied yet: still waiting");
+}
+
+#[test]
+fn a_peek_that_copied_something_never_waits_for_more() {
+    use crate::unix_sock::stream_recv_continues;
+    // A peeking receive walks off the end of the queue and returns what it has;
+    // it does not sleep for a writer the way a consuming MSG_WAITALL does.
+    assert!(!stream_recv_continues(true, true, 4, 64, false));
+    assert!(stream_recv_continues(true, true, 0, 64, false),
+        "a peek that copied nothing still waits for its first bytes");
 }

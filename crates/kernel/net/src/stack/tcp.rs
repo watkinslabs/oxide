@@ -194,14 +194,28 @@ impl NetStack {
                     } else {
                         (Vec::new(), false, c.local.ip, c.remote.ip)
                     }
-                } else if c.retx_q.is_empty() {
+                } else if c.state == crate::tcp_state::TcpState::FinWait2
+                    && c.linger2_expired(
+                        if c.tw_start_ns == 0 { now_ns } else { c.tw_start_ns }, now_ns)
+                {
+                    // `TCP_LINGER2` bounds how long the orphan may wait for
+                    // the peer's FIN; past it the connection is torn down
+                    // rather than held open indefinitely.
+                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
+                    c.state = crate::tcp_state::TcpState::Closed;
+                    (Vec::new(), true, c.local.ip, c.remote.ip)
+                } else if c.state == crate::tcp_state::TcpState::FinWait2 {
+                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
+                    (Vec::new(), false, c.local.ip, c.remote.ip)
+                } else if c.repair || c.retx_q.is_empty() {
                     (Vec::new(), false, c.local.ip, c.remote.ip)
                 } else {
                     let front_is_syn = (c.retx_q.front().unwrap().flags
                         & crate::tcp_hdr::flags::SYN) != 0;
-                    let max = if front_is_syn { 6 } else { 15 };
+                    let max = if front_is_syn { c.syn_retries }
+                        else { crate::tcp_conn::DATA_RETRIES_DEFAULT };
                     let max_retries = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0);
-                    if max_retries >= max {
+                    if max_retries >= max || c.user_timeout_expired(now_ns) {
                         // Give up on this connection. F163: surface as
                         // SO_ERROR = ETIMEDOUT so a getsockopt after
                         // async-connect's EPOLLOUT can report the cause.
@@ -219,6 +233,31 @@ impl NetStack {
             };
             for s in &segs {
                 let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
+                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
+            }
+            // A connection withheld by `TCP_DEFER_ACCEPT` whose window has now
+            // run out becomes acceptable, so a blocked `accept` has to be
+            // woken — nothing else will arrive to do it.
+            let expired = {
+                let mut c = entry.conn.lock();
+                let due = c.defer_deadline_ns != 0 && now_ns >= c.defer_deadline_ns;
+                if due { c.defer_deadline_ns = 0; }
+                due
+            };
+            if expired && !entry.accepted.load(::core::sync::atomic::Ordering::Acquire) {
+                if let Some(listener) = entry.passive_listener.as_ref()
+                    .and_then(alloc::sync::Weak::upgrade)
+                { listener.notify_acceptable(); }
+            }
+            // A ping-pong-mode socket held its acknowledgement back so it
+            // could ride the application's reply; once `TCP_DELACK_MAX_US`
+            // elapses it goes out on its own.
+            let (delack, da_src, da_dst) = {
+                let mut c = entry.conn.lock();
+                (c.delayed_ack_due(now_ns), c.local.ip, c.remote.ip)
+            };
+            if let Some(s) = &delack {
+                let _ = self.send_tcp_segment_in(entry.net_ns(), da_src, da_dst, s, 0,
                     entry.bound_iface(), TcpTxPolicy::Entry(entry));
             }
             // F193: keepalive probe scheduling. Idle for ka_idle_ns →
@@ -271,10 +310,25 @@ impl NetStack {
     /// instantiate a new connection from it. Drives the matched
     /// TcpConn's `input`; xmit any returned response segment.
     /// # C: O(log N) lookup + O(payload) handler
+    #[cfg(test)]
     pub(crate) fn deliver_tcp_packet(&self, net_ns: u64, iface: NetIfaceId,
                     src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8])
         -> NetResult<()>
     {
+        // A hop limit of the maximum admits every socket, which is what an
+        // adapter with no header in hand must supply.
+        self.deliver_tcp_packet_hop(net_ns, iface, src_ip, dst_ip, seg, packet, u8::MAX)
+    }
+
+    /// Demultiplex one TCP segment, carrying the hop limit its IP header
+    /// arrived with so a socket demanding a minimum can refuse it.
+    /// # C: O(log N + payload)
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn deliver_tcp_packet_hop(&self, net_ns: u64, iface: NetIfaceId,
+                    src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8], packet: &[u8], hop: u8)
+        -> NetResult<()>
+    {
+        let ipv6 = matches!(dst_ip, IpAddr::V6(_));
         if seg.len() < TCP_HDR_MIN_LEN { return Err(NetError::Einval); }
         let hdr = match crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip) {
             Ok(h) => h, Err(_) => return Ok(()),
@@ -291,6 +345,9 @@ impl NetStack {
         };
         if let Some(entry) = entry {
             if entry.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }
+            // The generalized hop-limit check runs before the segment reaches
+            // the state machine, and drops silently.
+            if entry.min_hop.refuses(hop, ipv6) { return Ok(()); }
             let observed_state = entry.conn.lock().state;
             let passive_listener = if observed_state == crate::tcp_state::TcpState::SynRecv {
                 entry.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade)
@@ -341,6 +398,18 @@ impl NetStack {
                 && post_state == crate::tcp_state::TcpState::Established
             {
                 let Some(listener) = passive_listener else { return Ok(()); };
+                // `TCP_DEFER_ACCEPT`: a handshake that completed without data
+                // is queued but withheld from `accept` until the client sends
+                // something or the window the listener asked for runs out.
+                {
+                    let mut c = entry.conn.lock();
+                    if c.recv_buf.is_empty() {
+                        let window = listener.defer_window_secs.load(
+                            ::core::sync::atomic::Ordering::Acquire);
+                        c.defer_deadline_ns = crate::tcp_conn::defer::deadline_ns(
+                            window, crate::tcp_conn::ka_now_ns());
+                    }
+                }
                 if !entry.promote_to_accept_backlog() {
                     entry.release_syn_backlog();
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
@@ -352,6 +421,22 @@ impl NetStack {
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                     super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
                     return Ok(());
+                }
+            }
+            // Data on a connection withheld by `TCP_DEFER_ACCEPT` is what the
+            // listener was waiting for: the child becomes acceptable now, and
+            // the first read on the accepted socket returns these bytes.
+            {
+                let deferred = {
+                    let mut c = entry.conn.lock();
+                    let due = c.defer_deadline_ns != 0 && !c.recv_buf.is_empty();
+                    if due { c.defer_deadline_ns = 0; }
+                    due
+                };
+                if deferred {
+                    if let Some(listener) = entry.passive_listener.as_ref()
+                        .and_then(alloc::sync::Weak::upgrade)
+                    { listener.notify_acceptable(); }
                 }
             }
             if let Some(r) = resp {
@@ -393,7 +478,8 @@ impl NetStack {
         // a whole `TcpConn`, the child filter/PMTU arcs, the reuseport bucket — do not
         // share a frame with the established-connection branch above, which is the one
         // that continues into transmit. Linux splits the same way (`noinline_for_stack`).
-        self.deliver_tcp_to_listener(net_ns, iface, src_ip, dst_ip, seg, packet, &hdr, key, &tables)
+        self.deliver_tcp_to_listener(net_ns, iface, src_ip, dst_ip, seg, packet, &hdr, key,
+            &tables, hop, ipv6)
     }
 }
 #[cfg(test)]

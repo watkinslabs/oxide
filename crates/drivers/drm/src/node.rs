@@ -287,7 +287,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         // IN_FORMATS blob (and any future prop blob). Without this, mutter's
         // native KMS backend reads zero plane formats ("Plane has no advertised
         // formats") and aborts modeset — the primary blocker to scanout.
-        DRM_IOCTL_MODE_GETPROPBLOB       => Some(crate::modeset::get_prop_blob(arg)),
+        DRM_IOCTL_MODE_GETPROPBLOB       => Some(crate::modeset::get_prop_blob(driver.as_ref(), arg)),
         DRM_IOCTL_MODE_GETCRTC => {
             match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_crtc(card_id, d, arg)),

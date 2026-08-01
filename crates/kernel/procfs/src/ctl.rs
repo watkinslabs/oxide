@@ -34,7 +34,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicI64, AtomicU64};
-use vfs::{InodeRef, KResult, VfsError};
+use vfs::{InodeRef, KResult};
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
@@ -42,6 +42,7 @@ use crate::proc_handler::{
     PerNetIntHook as HPerNetIntHook,
     PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
+    PerNetBufWindowHook as HPerNetBufWindowHook,
     PerNetGroupRangeHook as HPerNetGroupRangeHook,
     StrHook as HStrHook, ULongVar,
 };
@@ -56,149 +57,8 @@ const MQ_MSG_BOUNDS: (i64, i64) =
 const MQ_MSGSIZE_BOUNDS: (i64, i64) =
     (ipc::mqueue_policy::limits::MIN_MSGSIZEMAX, ipc::mqueue_policy::limits::HARD_MSGSIZEMAX);
 
-fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
-    net::net_ns::current_namespace()
-}
-fn current_pid_ns() -> namespace_identity::NamespaceRef {
-    sched::current()
-        .and_then(|task| task.namespace_owner(namespace_identity::NamespaceKind::Pid))
-        .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::Pid))
-}
-fn get_memfd_noexec(namespace: &namespace_identity::NamespaceRef) -> Result<i64, ()> {
-    namespace.pid_memfd_noexec_scope().map(i64::from).map_err(|_| ())
-}
-fn check_memfd_noexec_write(namespace: &namespace_identity::NamespaceRef) -> KResult<()> {
-    let current = sched::current().ok_or(VfsError::Esrch)?;
-    if nscg::proc_ns::has_cap_for(current, &namespace.owner_user_namespace(),
-        sched::cap::SYS_ADMIN)
-    {
-        Ok(())
-    } else {
-        Err(VfsError::Eperm)
-    }
-}
-fn set_memfd_noexec(namespace: &namespace_identity::NamespaceRef, value: i64) -> KResult<()> {
-    namespace.set_pid_memfd_noexec_scope(value as u8).map_err(|_| VfsError::Einval)
-}
-/// `fs.suid_dumpable` lives with the credential code that consumes it
-/// (`sched::cred`, Linux `fs/exec.c int suid_dumpable`); this leaf binds to
-/// that variable rather than keeping a procfs-owned copy.
-fn get_suid_dumpable() -> i64 { sched::cred::suid_dumpable() as i64 }
-fn get_perf_paranoid() -> i64 { sched::perf_sw::paranoid() as i64 }
-fn set_perf_paranoid(v: i64) { sched::perf_sw::set_paranoid(v as i32); }
-fn get_perf_sample_rate() -> i64 { sched::perf_sw::sample_rate() as i64 }
-fn set_perf_sample_rate(v: i64) { sched::perf_sw::set_sample_rate(v as i32); }
-fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
-/// `kernel.randomize_va_space` + `vm.mmap_rnd_bits` bind to `aslr`, the single
-/// owner of the randomisation policy every `execve` consults.
-fn get_randomize_va_space() -> i64 { aslr::randomize_va_space() as i64 }
-fn set_randomize_va_space(v: i64) { aslr::set_randomize_va_space(v as i32); }
-/// `vm.unprivileged_userfaultfd` binds to the mm-owned tunable
-/// `userfaultfd_syscall_allowed` consults; there is no procfs-side copy that
-/// could disagree with the gate.
-fn get_unprivileged_userfaultfd() -> i64 { vmm::uffd::unprivileged_userfaultfd() }
-fn set_unprivileged_userfaultfd(v: i64) { vmm::uffd::set_unprivileged_userfaultfd(v); }
-fn get_legacy_va_layout() -> i64 { aslr::tunable::legacy_va_layout() as i64 }
-fn set_legacy_va_layout(v: i64) { aslr::tunable::set_legacy_va_layout(v != 0); }
-
-fn get_mmap_rnd_bits() -> i64 { aslr::tunable::mmap_rnd_bits() as i64 }
-fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max(0) as u32); }
-/// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
-/// `vfs::fdtable`), so `setrlimit(RLIMIT_NOFILE)`'s EPERM ceiling and this file
-/// can never disagree.
-fn get_nr_open() -> i64 { vfs::fdtable::nr_open() as i64 }
-fn set_nr_open(value: i64) { let _ = vfs::fdtable::set_nr_open(value as u32); }
-fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0); }
-/// `fs.mqueue.*` binds to the per-IPC-namespace values `mq_open` measures a
-/// `struct mq_attr` against (`ipc/mq_sysctl.c`), so raising a ceiling here and
-/// the EINVAL the syscall reports can never disagree. Every leaf is
-/// namespace-scoped: Linux's `set_lookup` resolves `current`'s `ipc_ns`.
-fn get_ep_max_watches() -> i64 { vfs::epoll_limits::max_user_watches() }
-fn set_ep_max_watches(v: i64) { vfs::epoll_limits::set_max_user_watches(v) }
-fn get_in_max_watches() -> i64 { vfs::fsnotify::max_user_watches() }
-fn set_in_max_watches(v: i64) { vfs::fsnotify::set_max_user_watches(v) }
-fn get_in_max_instances() -> i64 { vfs::fsnotify::max_user_instances() }
-fn set_in_max_instances(v: i64) { vfs::fsnotify::set_max_user_instances(v) }
-fn get_in_max_queued() -> i64 { vfs::fsnotify::max_queued_events() }
-fn set_in_max_queued(v: i64) { vfs::fsnotify::set_max_queued_events(v) }
-fn get_fan_max_groups() -> i64 { vfs::fsnotify::fanotify_max_user_groups() }
-fn set_fan_max_groups(v: i64) { vfs::fsnotify::set_fanotify_max_user_groups(v) }
-fn get_fan_max_marks() -> i64 { vfs::fsnotify::fanotify_max_user_marks() }
-fn set_fan_max_marks(v: i64) { vfs::fsnotify::set_fanotify_max_user_marks(v) }
-fn get_fan_max_queued() -> i64 { vfs::fsnotify::fanotify_max_queued_events() }
-fn set_fan_max_queued(v: i64) { vfs::fsnotify::set_fanotify_max_queued_events(v) }
-
-fn get_mq_queues_max() -> i64 { ipc::live::posix_mq::sysctl::queues_max() }
-fn set_mq_queues_max(v: i64) { ipc::live::posix_mq::sysctl::set_queues_max(v) }
-fn get_mq_msg_max() -> i64 { ipc::live::posix_mq::sysctl::msg_max() }
-fn set_mq_msg_max(v: i64) { ipc::live::posix_mq::sysctl::set_msg_max(v) }
-fn get_mq_msgsize_max() -> i64 { ipc::live::posix_mq::sysctl::msgsize_max() }
-fn set_mq_msgsize_max(v: i64) { ipc::live::posix_mq::sysctl::set_msgsize_max(v) }
-fn get_mq_msg_default() -> i64 { ipc::live::posix_mq::sysctl::msg_default() }
-fn set_mq_msg_default(v: i64) { ipc::live::posix_mq::sysctl::set_msg_default(v) }
-fn get_mq_msgsize_default() -> i64 { ipc::live::posix_mq::sysctl::msgsize_default() }
-fn set_mq_msgsize_default(v: i64) { ipc::live::posix_mq::sysctl::set_msgsize_default(v) }
-/// `kernel.modules_disabled` binds to the variable `init_module`/`finit_module`/
-/// `delete_module` actually read (`modules::admission`), so the file and the
-/// syscall admission can never disagree. Linux registers the leaf with
-/// `extra1 = extra2 = SYSCTL_ONE`: only the 0→1 transition is in range, which
-/// is what makes the latch one-way.
-fn get_modules_disabled() -> i64 { modules::admission::modules_disabled() as i64 }
-fn set_modules_disabled(value: i64) { let _ = modules::admission::set_modules_disabled(value); }
-fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
-fn get_ptrace_scope() -> i64 { sched::yama::scope() as i64 }
-/// A REFUSED write must report EINVAL, not silently succeed: a hardening
-/// script that lowers `ptrace_scope` and reads back a success it did not get
-/// would believe it had relaxed a restriction that is still in force.
-fn set_ptrace_scope(value: i64) -> Result<(), ()> {
-    if sched::yama::set_scope(value) { Ok(()) } else { Err(()) }
-}
-/// `net.core.rmem_max` / `net.core.wmem_max` bind to the ONE pair of ceilings
-/// `SO_RCVBUF` / `SO_SNDBUF` clamp against, so the leaf and the option can
-/// never disagree.
-fn get_rmem_max() -> i64 { net::sysctl::rmem_max() as i64 }
-fn set_rmem_max(value: i64) { net::sysctl::set_rmem_max(value) }
-fn get_wmem_max() -> i64 { net::sysctl::wmem_max() as i64 }
-fn set_wmem_max(value: i64) { net::sysctl::set_wmem_max(value) }
-fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
-    let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
-    net::sysctl::value(namespace, key).ok_or(())
-}
-fn set_net_int(namespace: &network_namespace::NetworkNamespaceRef,
-    key: usize, value: i64) -> Result<(), ()>
-{
-    let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
-    net::sysctl::set_value(namespace, key, value)
-}
-fn local_port_range(namespace: &network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()> {
-    let range = net::ephemeral::range_for(namespace).ok_or(())?;
-    Ok((range.start, range.end))
-}
-fn set_local_port_range(namespace: &network_namespace::NetworkNamespaceRef,
-    start: u16, end: u16) -> Result<(), ()>
-{
-    net::ephemeral::set_range_for(namespace, start, end)
-}
-fn ping_group_range(namespace: &network_namespace::NetworkNamespaceRef)
-    -> Result<(u32, u32), ()>
-{
-    net::ping::group_range_for(namespace).ok_or(())
-}
-fn set_ping_group_range(namespace: &network_namespace::NetworkNamespaceRef,
-    low: u32, high: u32) -> Result<(), ()>
-{
-    net::ping::set_group_range_for(namespace, low, high)
-}
-fn unprivileged_port_start(namespace: &network_namespace::NetworkNamespaceRef,
-    _key: usize) -> Result<i64, ()>
-{
-    net::ephemeral::unprivileged_start_for(namespace).map(i64::from).ok_or(())
-}
-fn set_unprivileged_port_start(namespace: &network_namespace::NetworkNamespaceRef,
-    _key: usize, value: i64) -> Result<(), ()>
-{
-    net::ephemeral::set_unprivileged_start_for(namespace, value as u16)
-}
+mod hooks;
+use hooks::*;
 
 /// One `ctl_table` leaf's `proc_handler` class + default value. # C: n/a
 enum Leaf {
@@ -231,6 +91,10 @@ enum Leaf {
     /// Two-u16 `proc_dointvec` bound to subsystem accessors.
     PerNetU16PairHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()>,
         fn(&network_namespace::NetworkNamespaceRef, u16, u16) -> Result<(), ()>),
+    /// Three-value socket-buffer window (`tcp_wmem` / `tcp_rmem`).
+    PerNetBufWindowHook(fn(&network_namespace::NetworkNamespaceRef) -> [i64; 3],
+        fn(&network_namespace::NetworkNamespaceRef, [i64; 3]) -> Result<(), ()>,
+        (i64, i64)),
     /// Two-value group window bound to subsystem accessors.
     PerNetGroupRangeHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u32, u32), ()>,
         fn(&network_namespace::NetworkNamespaceRef, u32, u32) -> Result<(), ()>),
@@ -393,10 +257,12 @@ const SYSCTL_TREE: &[Node] = &[
         Dir("core", &[
             File("somaxconn",          NetInt(net::net_ns::NetSysctlKey::Somaxconn, Some((0, INT_MAX)))),
             File("optmem_max",         NetInt(net::net_ns::NetSysctlKey::OptmemMax, Some((0, INT_MAX)))),
-            File("rmem_default",       Const(b"212992\n")),
+            File("rmem_default",       NetGlobalIntHook(get_rmem_default, set_rmem_default,
+                Some(net::sysctl::RMEM_DEFAULT_BOUNDS))),
             File("rmem_max",           NetGlobalIntHook(get_rmem_max, set_rmem_max,
                 Some(net::sysctl::RMEM_MAX_BOUNDS))),
-            File("wmem_default",       Const(b"212992\n")),
+            File("wmem_default",       NetGlobalIntHook(get_wmem_default, set_wmem_default,
+                Some(net::sysctl::WMEM_DEFAULT_BOUNDS))),
             File("wmem_max",           NetGlobalIntHook(get_wmem_max, set_wmem_max,
                 Some(net::sysctl::WMEM_MAX_BOUNDS))),
             File("netdev_max_backlog", Const(b"1000\n")),
@@ -408,6 +274,10 @@ const SYSCTL_TREE: &[Node] = &[
             File("tcp_tw_reuse",       NetInt(net::net_ns::NetSysctlKey::TcpTwReuse, Some((0, 2)))),
             File("tcp_fin_timeout",    NetInt(net::net_ns::NetSysctlKey::TcpFinTimeout, Some((0, INT_MAX)))),
             File("tcp_keepalive_time", NetInt(net::net_ns::NetSysctlKey::TcpKeepaliveTime, Some((0, INT_MAX)))),
+            File("tcp_wmem",           PerNetBufWindowHook(tcp_wmem, set_tcp_wmem,
+                net::sysctl::TCP_MEM_BOUNDS)),
+            File("tcp_rmem",           PerNetBufWindowHook(tcp_rmem, set_tcp_rmem,
+                net::sysctl::TCP_MEM_BOUNDS)),
             File("ip_local_port_range", PerNetU16PairHook(local_port_range, set_local_port_range)),
             File("ip_unprivileged_port_start", PerNetIntHook(unprivileged_port_start,
                 set_unprivileged_port_start, Some((0, 65_535)))),
@@ -502,6 +372,8 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))
         }
         Leaf::StrHook(get, set) => bound_sysctl_inode(Arc::new(HStrHook { get, set })),
+        Leaf::PerNetBufWindowHook(get, set, bounds) => bound_sysctl_inode(Arc::new(
+            HPerNetBufWindowHook { current_ns: current_net_ns, get, set, bounds })),
         Leaf::PerNetGroupRangeHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetGroupRangeHook {
             current_ns: current_net_ns, get, set,
         })),

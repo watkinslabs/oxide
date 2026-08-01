@@ -55,6 +55,10 @@ pub use crate::bpf_filter::{
     install_bpf_filter_context_runner, install_bpf_filter_runner, BpfFilterContextFn, BpfFilterFn,
 }; // bridge in bpf_filter.rs
 
+/// The most of an opening handshake packet `TCP_SAVE_SYN` records: a maximal
+/// network header plus a maximal TCP header with all its options.
+pub const SAVED_SYN_MAX: usize = 60 + 60;
+
 mod types;
 mod inet_tables;
 mod pmtu_cache;

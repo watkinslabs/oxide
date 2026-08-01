@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 use net::sock::InetSocket;
 use net::socket_args::{
-    is_ping_protocol, parse_socket_args, AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, AF_UNIX,
+    is_ping_protocol, AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, AF_UNIX,
     AF_VSOCK, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM,
 };
 
@@ -22,20 +22,30 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Some(namespace) => namespace,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let spec = match parse_socket_args(domain, raw, proto, nscg::has_net_raw_for(cur, &net_namespace)) {
-        Ok(s) => s,
+    // The creation decision is taken on the family/type pair alone, before the
+    // family's own create operation screens the protocol or the raw-socket
+    // capability — so a denial is reported even for a request that would have
+    // failed those screens anyway.
+    let identity = match net::socket_args::create_identity(domain, raw) {
+        Ok(identity) => identity,
         Err(e) => return -(e.as_i32() as i64),
     };
     let security_context = security::network::Context {
         namespace: net_namespace.id().as_u64(),
-        family: spec.family as u16,
-        socket_type: spec.typ,
-        protocol: spec.protocol,
+        family: identity.family as u16,
+        socket_type: identity.typ,
+        protocol: proto,
         operation: security::network::Operation::Create,
     };
     if matches!(security::network::evaluate(security_context), security::network::Verdict::Deny) {
         return -(Errno::Eperm.as_i32() as i64);
     }
+    let spec = match net::socket_args::resolve_socket_args(identity, proto,
+        nscg::has_net_raw_for(cur, &net_namespace))
+    {
+        Ok(s) => s,
+        Err(e) => return -(e.as_i32() as i64),
+    };
     // Linux assigns the DGRAM transport during AF_VSOCK creation. Current
     // virtio-vsock has that transport only while a device endpoint is live;
     // without one, creation fails ENODEV rather than publishing a phantom fd.
