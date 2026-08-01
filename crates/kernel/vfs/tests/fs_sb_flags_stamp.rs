@@ -51,7 +51,7 @@ impl FileSystem for DevFs {
 
 fn nodev_type() -> Arc<FsType> {
     FsType::new("sbflagnodev", T_MAGIC, FsFlags::empty(),
-        Box::new(|ty, _s, _t, _d, sb_flags| {
+        Box::new(|ty, _s, _t, _d, sb_flags, _: &[vfs::fs::FsParameter]| {
             let fs: Arc<dyn FileSystem> = Arc::new(NodevFs);
             superblock_from_filesystem(ty, fs, None, String::from("sbflagnodev"), sb_flags)
         }))
@@ -82,18 +82,48 @@ fn an_sget_hit_keeps_the_live_instances_flags() {
     // `alloc_super()` time and are not re-stamped by a later mounter.
     const DEV: u64 = 0x5342_0001;
     let ty = FsType::new("sbflagdev", T_MAGIC, FsFlags::empty(),
-        Box::new(|ty, _s, _t, _d, sb_flags| {
+        Box::new(|ty, _s, _t, _d, sb_flags, _: &[vfs::fs::FsParameter]| {
             let fs: Arc<dyn FileSystem> = Arc::new(DevFs(DEV));
             superblock_from_filesystem(ty, fs, None, String::from("sbflagdev"), sb_flags)
         }));
     let first = ty.construct_with_flags(None, "/mnt", "", 0).expect("first realize");
     assert!(!first.is_readonly(), "first mount was read-write");
 
-    let second = ty.construct_with_flags(None, "/mnt2", "", SB_RDONLY | SB_NOATIME)
+    // A hit whose read-only state AGREES shares the instance, and the other
+    // `SB_*` bits it asked for are not stamped onto it — those are per-mount
+    // and ride the mount, not the superblock.
+    let second = ty.construct_with_flags(None, "/mnt2", "", SB_NOATIME)
         .expect("second realize");
     assert!(Arc::ptr_eq(&first, &second), "same s_dev must reuse the instance");
-    assert!(!second.is_readonly(),
-        "an sget hit must not read-only a live superblock behind the first mounter");
     assert_eq!(second.s_flags() & SB_NOATIME, 0,
         "an sget hit must not re-stamp any SB_* bit on the live instance");
+}
+
+// FAILS-BEFORE: this second mount SUCCEEDED and silently flipped the live
+// instance read-only under every task already holding a writable file on it.
+#[test]
+fn an_sget_hit_that_would_change_the_read_only_state_is_refused() {
+    const DEV: u64 = 0x5342_0002;
+    let ty = FsType::new("sbflagro", T_MAGIC, FsFlags::empty(),
+        Box::new(|ty, _s, _t, _d, sb_flags, _: &[vfs::fs::FsParameter]| {
+            let fs: Arc<dyn FileSystem> = Arc::new(DevFs(DEV));
+            superblock_from_filesystem(ty, fs, None, String::from("sbflagro"), sb_flags)
+        }));
+    let rw = ty.construct_with_flags(None, "/mnt", "", 0).expect("first realize");
+    assert!(!rw.is_readonly());
+
+    let refused = ty.construct_with_flags(None, "/mnt2", "", SB_RDONLY).err();
+    assert_eq!(refused, Some(vfs::VfsError::Ebusy),
+        "mounting the same device read-only over a read-write instance");
+    assert!(!rw.is_readonly(), "the live instance kept the state its own mount chose");
+
+    // The refusal is specific to the read-only bit and specific to REUSE: the
+    // same request against a fresh device still creates a read-only instance.
+    let ro_ty = FsType::new("sbflagro2", T_MAGIC, FsFlags::empty(),
+        Box::new(|ty, _s, _t, _d, sb_flags, _: &[vfs::fs::FsParameter]| {
+            let fs: Arc<dyn FileSystem> = Arc::new(DevFs(0x5342_0003));
+            superblock_from_filesystem(ty, fs, None, String::from("sbflagro2"), sb_flags)
+        }));
+    let ro = ro_ty.construct_with_flags(None, "/mnt3", "", SB_RDONLY).expect("fresh read-only");
+    assert!(ro.is_readonly());
 }

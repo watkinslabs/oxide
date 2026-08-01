@@ -25,7 +25,7 @@ pub mod fs;
 pub mod fops;
 mod params;
 
-pub use params::FUSE_PARAMS;
+pub use params::{pinned_channel, FUSE_FD_KEY, FUSE_PARAMS};
 
 #[cfg(test)]
 mod tests;
@@ -90,15 +90,26 @@ fn mount_from_opts(opts: fs::MountOpts, file: &vfs::File)
 /// task, so `proc_fd_file(None, fd)` reaches the daemon's own fd table.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-pub fn mount_from_data(data: &str) -> vfs::KResult<(alloc::sync::Arc<dyn vfs::fs::FileSystem>, vfs::InodeRef)> {
+pub fn mount_from_data(data: &str, pinned: &[vfs::fs::FsParameter])
+    -> vfs::KResult<(alloc::sync::Arc<dyn vfs::fs::FileSystem>, vfs::InodeRef)> {
     trace_mount_stage(b"parse");
     let opts = match fs::parse_mount_opts(data) {
         Ok(opts) => opts,
         Err(e) => { trace_mount_stage(b"parse-fail"); return Err(e); }
     };
-    let file = match sched::proclink::proc_fd_file(None, opts.fd) {
+    // `fd=` reaches here two ways and BOTH end at one open file description.
+    // `mount -o fd=17` writes the number, which is resolved in the mounting
+    // task exactly as before. `fsconfig(FSCONFIG_SET_FD, "fd", …)` hands over a
+    // description the kernel pinned when the parameter was parsed — use it,
+    // because the caller is free to have closed that descriptor between the
+    // `fsconfig` and the `FSCONFIG_CMD_CREATE` that got here, and re-resolving
+    // the number would then fail a mount the reference completes.
+    let file = match pinned_channel(pinned) {
         Some(file) => file,
-        None => { trace_mount_stage(b"fd-fail"); return Err(vfs::VfsError::Ebadf); }
+        None => match sched::proclink::proc_fd_file(None, opts.fd) {
+            Some(file) => file,
+            None => { trace_mount_stage(b"fd-fail"); return Err(vfs::VfsError::Ebadf); }
+        },
     };
     let mounted = match mount_from_opts(opts, &file) {
         Ok(mounted) => mounted,

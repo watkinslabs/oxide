@@ -227,7 +227,7 @@ fn wraparound_is_efbig_and_the_type_ladder_precedes_it() {
 #[test]
 fn s_maxbytes_cap_sits_at_max_lfs_filesize() {
     let fs_ty = vfs::fs::FsType::new("maxfs", 0x1601, vfs::fs::FsFlags::empty(),
-        alloc::boxed::Box::new(|_, _, _, _, _| Err(vfs::VfsError::Enotty)));
+        alloc::boxed::Box::new(|_, _, _, _, _, _| Err(vfs::VfsError::Enotty)));
     let sb = vfs::SuperBlock::new(fs_ty, Arc::new(vfs::SimpleSuperOps {
         magic: 0x1601, block_size: 4096, options: String::new(),
     }), 0x1601, 0x1601, 4096, String::from("maxfs"), Arc::new(()));

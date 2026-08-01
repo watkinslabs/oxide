@@ -30,7 +30,7 @@ fn tree(root_uid: u32, mid_uid: u32, leaf_uid: u32)
 {
     let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
         "acceptfs", 0, vfs::fs::FsFlags::empty(),
-        alloc::boxed::Box::new(|_, _, _, _, _| unreachable!("not mounted through ->mount")));
+        alloc::boxed::Box::new(|_, _, _, _, _, _| unreachable!("not mounted through ->mount")));
     let s_op: Arc<dyn vfs::SuperOps> = Arc::new(vfs::SimpleSuperOps {
         magic: 0, block_size: 4096, options: String::new() });
     let sb = SuperBlock::from_ops(ty, s_op, None, 0, next_anon_dev(), 4096,

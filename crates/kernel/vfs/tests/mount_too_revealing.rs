@@ -77,7 +77,7 @@ fn restricted_ty() -> Arc<dyn FileSystemType> {
     static TY: OnceLock<Arc<vfs::fs::FsType>> = OnceLock::new();
     TY.get_or_init(|| vfs::fs::FsType::new("revealfs", 0x9fa0,
         FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED,
-        Box::new(|_, _, _, _, _| unreachable!("mounted explicitly")))).clone()
+        Box::new(|_, _, _, _, _, _| unreachable!("mounted explicitly")))).clone()
 }
 
 /// A type WITHOUT `FS_USERNS_MOUNT_RESTRICTED` — Linux's second early exit.
@@ -85,7 +85,7 @@ fn plain_ty() -> Arc<dyn FileSystemType> {
     static TY: OnceLock<Arc<vfs::fs::FsType>> = OnceLock::new();
     TY.get_or_init(|| vfs::fs::FsType::new("plainfs", 0x0102,
         FsFlags::FS_USERNS_MOUNT,
-        Box::new(|_, _, _, _, _| unreachable!("mounted explicitly")))).clone()
+        Box::new(|_, _, _, _, _, _| unreachable!("mounted explicitly")))).clone()
 }
 
 /// A SECOND restricted type, to prove the `s_type` comparison actually discriminates.
@@ -93,7 +93,7 @@ fn other_restricted_ty() -> Arc<dyn FileSystemType> {
     static TY: OnceLock<Arc<vfs::fs::FsType>> = OnceLock::new();
     TY.get_or_init(|| vfs::fs::FsType::new("otherfs", 0x6265_6572,
         FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED,
-        Box::new(|_, _, _, _, _| unreachable!("mounted explicitly")))).clone()
+        Box::new(|_, _, _, _, _, _| unreachable!("mounted explicitly")))).clone()
 }
 
 /// A superblock of `ty` with `s_iflags` stamped as `fill_super` would.

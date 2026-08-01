@@ -34,7 +34,7 @@ fn register_get_construct_and_unknown_is_none() {
     assert!(get_fs_type("t040ctor").is_none(), "unregistered: get_fs_type None");
 
     register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str, _| -> vfs::fs::KResult<Arc<vfs::SuperBlock>> {
+        Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str, _, _: &[vfs::fs::FsParameter]| -> vfs::fs::KResult<Arc<vfs::SuperBlock>> {
             let fs: Arc<dyn FileSystem> = Arc::new(T040Fs);
             superblock_from_filesystem(ty, fs, None, String::from("t040ctor"), 0)
         }))).expect("register t040ctor");
@@ -54,7 +54,7 @@ fn register_get_construct_and_unknown_is_none() {
 
     // Duplicate name → EBUSY.
     assert!(register_fs(FsType::new("t040ctor", T_MAGIC, FsFlags::empty(),
-        Box::new(|_, _s: Option<&str>, _t: &str, _d: &str, _| -> vfs::fs::KResult<Arc<vfs::SuperBlock>> {
+        Box::new(|_, _s: Option<&str>, _t: &str, _d: &str, _, _: &[vfs::fs::FsParameter]| -> vfs::fs::KResult<Arc<vfs::SuperBlock>> {
             Err(vfs::VfsError::Einval)
         }))).is_err(), "duplicate name rejected");
 
@@ -75,7 +75,7 @@ fn flag_aware_constructor_receives_readonly_state() {
         "flagctor",
         T_MAGIC,
         FsFlags::FS_REQUIRES_DEV,
-        Box::new(move |_, _, _, _, flags| {
+        Box::new(move |_, _, _, _, flags, _: &[vfs::fs::FsParameter]| {
             writer.store(flags, Ordering::Release);
             Err(vfs::VfsError::Einval)
         }),
