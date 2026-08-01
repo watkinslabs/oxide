@@ -104,6 +104,21 @@ impl Domain {
         self.layers.iter().map(|l| l.handled_net).collect()
     }
 
+    /// Whether any layer filters `access` at all. A domain that filters none of
+    /// it must not inspect the address: producing an argument error from a
+    /// policy that does not apply would change a program's errno by the mere
+    /// presence of an unrelated sandbox.
+    /// # C: O(N_layers)
+    pub fn handles_net(&self, access: AccessMask) -> bool {
+        self.layers.iter().any(|l| (l.handled_net & access) != 0)
+    }
+
+    /// Whether any layer filters `access` on the filesystem.
+    /// # C: O(N_layers)
+    pub fn handles_fs(&self, access: AccessMask) -> bool {
+        self.layers.iter().any(|l| (l.fs_mask() & access) != 0)
+    }
+
     /// Union of every layer's filtered filesystem rights.
     /// # C: O(N_layers)
     pub fn union_fs_mask(&self) -> AccessMask {
@@ -138,6 +153,41 @@ impl Domain {
         Err(Errno::Eacces)
     }
 
+    /// Whether this thread may resolve the pathname socket at `path`, whose
+    /// server was published from `peer`.
+    ///
+    /// A socket published inside the domain that scoped resolution stays
+    /// reachable without any rule, exactly as a scoped resource does: a layer
+    /// is satisfied outright when the peer's ancestry agrees with ours there.
+    /// Every other layer still has to be satisfied by a hierarchy rule, which
+    /// is why a denial is the filesystem answer and not the scope one.
+    /// # C: O(depth × N_layers × N_rules)
+    pub fn check_unix_resolve(&self, path: &VfsPath, peer: Option<&Arc<Domain>>)
+        -> Result<(), Errno>
+    {
+        let req = ACCESS_FS_RESOLVE_UNIX;
+        let masks = self.fs_masks();
+        let (mut m, union) = LayerMasks::init(&masks, req);
+        if union == 0 { return Ok(()); }
+        let inside: Vec<AccessMask> = (0..self.layers.len())
+            .map(|i| if self.peer_inside_at(peer, i) { req } else { 0 })
+            .collect();
+        if m.unmask(&inside) { return Ok(()); }
+        for n in walk::ancestors(path).iter() {
+            if m.unmask(&self.granted_at(n)) { return Ok(()); }
+        }
+        Err(Errno::Eacces)
+    }
+
+    /// Whether `peer` is this domain or one created beneath it at `level`.
+    /// # C: O(1)
+    fn peer_inside_at(&self, peer: Option<&Arc<Domain>>, level: usize) -> bool {
+        match peer {
+            None => false,
+            Some(p) => p.ancestry.len() > level && p.ancestry[level] == self.ancestry[level],
+        }
+    }
+
     /// Whether `access` is allowed on `port`. Ports carry no hierarchy, so a
     /// layer is satisfied only by a rule naming the port itself.
     /// # C: O(N_layers × N_rules)
@@ -161,11 +211,7 @@ impl Domain {
     pub fn scope_denies(&self, scope: AccessMask, peer: Option<&Arc<Domain>>) -> bool {
         for (level, l) in self.layers.iter().enumerate() {
             if (l.scoped & scope) == 0 { continue; }
-            let inside = match peer {
-                None => false,
-                Some(p) => p.ancestry.len() > level && p.ancestry[level] == self.ancestry[level],
-            };
-            if !inside { return true; }
+            if !self.peer_inside_at(peer, level) { return true; }
         }
         false
     }

@@ -372,7 +372,14 @@ pub(crate) fn resolve_unix_addr(path: alloc::vec::Vec<u8>) -> Result<net::UnixAd
     if p.inode.file_type() != vfs::FileType::Socket {
         return Err(-(Errno::Econnrefused.as_i32() as i64));
     }
-    Ok(net::UnixAddr::from_inode_bytes(path, &p.inode))
+    let addr = net::UnixAddr::from_inode_bytes(path, &p.inode);
+    // Resolving a pathname socket published outside this sandbox is a
+    // filesystem right, checked once the object is known to be a socket so a
+    // name that is not one keeps its own error.
+    if let Err(e) = net::landlock_addr::check_unix_resolve(&p, &addr) {
+        return Err(crate::net_common::errno_from_neterr(e));
+    }
+    Ok(addr)
 }
 
 /// Drop a pathname AF_UNIX registry binding after VFS unlink removed the socket

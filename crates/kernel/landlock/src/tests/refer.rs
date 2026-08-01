@@ -30,7 +30,7 @@ const ALL: AccessMask = ACCESS_FS_REFER | ACCESS_FS_MAKE_REG | ACCESS_FS_REMOVE_
 
 fn dom(rules: &[(&Arc<Dentry>, AccessMask)], handled: AccessMask) -> Arc<Domain> {
     let rs = Ruleset::new(&RulesetAttr { handled_fs: handled, ..Default::default() });
-    for (d, a) in rules { rs.add_fs(d.inode().unwrap(), true, *a).unwrap(); }
+    for (d, a) in rules { rs.add_fs(d.inode().unwrap(), true, *a, 0).unwrap(); }
     Domain::merge(None, &rs).unwrap()
 }
 

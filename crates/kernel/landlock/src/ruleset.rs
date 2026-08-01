@@ -23,6 +23,9 @@ use crate::uapi::*;
 pub struct FsRule {
     pub inode:   InodeRef,
     pub allowed: AccessMask,
+    /// Denials naming this object are not logged, for the rights the ruleset
+    /// put in its quiet mask. It never changes an access decision.
+    pub quiet:   bool,
 }
 
 /// A port rule: `allowed` network actions on `port`.
@@ -30,6 +33,7 @@ pub struct FsRule {
 pub struct NetRule {
     pub port:    u16,
     pub allowed: AccessMask,
+    pub quiet:   bool,
 }
 
 #[derive(Default)]
@@ -43,6 +47,9 @@ pub struct Ruleset {
     pub handled_fs:  AccessMask,
     pub handled_net: AccessMask,
     pub scoped:      AccessMask,
+    pub quiet_fs:    AccessMask,
+    pub quiet_net:   AccessMask,
+    pub quiet_scoped: AccessMask,
     rules: Spinlock<Rules, TaskListClass>,
 }
 
@@ -51,6 +58,8 @@ impl Ruleset {
     pub fn new(attr: &abi::RulesetAttr) -> Arc<Self> {
         Arc::new(Self {
             handled_fs: attr.handled_fs, handled_net: attr.handled_net, scoped: attr.scoped,
+            quiet_fs: attr.quiet_fs, quiet_net: attr.quiet_net,
+            quiet_scoped: attr.quiet_scoped,
             rules: Spinlock::new(Rules::default()),
         })
     }
@@ -61,20 +70,24 @@ impl Ruleset {
 
     /// Admit and store a hierarchy rule. `is_dir` describes the rule target.
     /// # C: O(1)
-    pub fn add_fs(&self, inode: InodeRef, is_dir: bool, allowed: AccessMask) -> Result<(), Errno> {
-        abi::rule_access_ok(allowed, self.handled_fs)?;
+    pub fn add_fs(&self, inode: InodeRef, is_dir: bool, allowed: AccessMask, flags: u32)
+        -> Result<(), Errno>
+    {
+        abi::rule_access_ok(allowed, self.handled_fs, flags, self.quiet_fs)?;
         abi::path_target_ok(is_dir, allowed)?;
+        let quiet = (flags & ADD_RULE_QUIET) != 0;
         let allowed = abi::absolute_access(allowed, self.handled_fs);
-        self.rules.lock().fs.push(FsRule { inode, allowed });
+        self.rules.lock().fs.push(FsRule { inode, allowed, quiet });
         Ok(())
     }
 
     /// Admit and store a port rule.
     /// # C: O(1)
-    pub fn add_net(&self, port: u64, allowed: AccessMask) -> Result<(), Errno> {
-        abi::rule_access_ok(allowed, self.handled_net)?;
+    pub fn add_net(&self, port: u64, allowed: AccessMask, flags: u32) -> Result<(), Errno> {
+        abi::rule_access_ok(allowed, self.handled_net, flags, self.quiet_net)?;
         abi::net_port_ok(port)?;
-        self.rules.lock().net.push(NetRule { port: port as u16, allowed });
+        let quiet = (flags & ADD_RULE_QUIET) != 0;
+        self.rules.lock().net.push(NetRule { port: port as u16, allowed, quiet });
         Ok(())
     }
 
