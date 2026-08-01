@@ -169,6 +169,7 @@ mod tests {
 
     #[test]
     fn misc_register_claims_minor_and_cdev() {
+        let _modules = crate::test_serial::claim();
         let mut misc = new_misc();
         assert_eq!(misc_register(&mut misc), LINUX_OK);
         assert_ne!(misc.minor, LINUX_MISC_DYNAMIC_MINOR);

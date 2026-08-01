@@ -317,6 +317,7 @@ mod tests {
 
     #[test]
     fn blob_file_reads_back_bytes() {
+        let _modules = crate::test_serial::claim();
         let bytes = *b"blob-data";
         let mut blob = DebugfsBlobWrapper { data: bytes.as_ptr() as *const c_void, size: bytes.len() };
         let d = debugfs_create_blob(b"debugfs_blob\0".as_ptr() as *const c_char, 0o400, null_mut(), &mut blob);
@@ -330,6 +331,7 @@ mod tests {
 
     #[test]
     fn symlink_entry_is_visible() {
+        let _modules = crate::test_serial::claim();
         let d = debugfs_create_symlink(
             b"debugfs_link\0".as_ptr() as *const c_char,
             null_mut(),
@@ -342,6 +344,7 @@ mod tests {
 
     #[test]
     fn regset32_file_renders_register_values() {
+        let _modules = crate::test_serial::claim();
         let regs = [0x1234_5678u32, 0x90ab_cdefu32];
         let defs = [
             DebugfsReg32 { name: b"status\0".as_ptr() as *mut c_char, offset: 0 },
@@ -363,6 +366,7 @@ mod tests {
 
     #[test]
     fn simple_attr_round_trips_value() {
+        let _modules = crate::test_serial::claim();
         let mut inode = LinuxInode { i_rdev: 0, private: null_mut() };
         let mut file = LinuxFile { private_data: null_mut() };
         assert_eq!(

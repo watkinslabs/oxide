@@ -15,6 +15,7 @@ unsafe extern "C" fn queue(_ep: *mut UsbEndpoint, req: *mut UsbRequest, _gfp: u3
 
 #[test]
 fn request_alloc_queue_free_uses_endpoint_ops() {
+    let _modules = crate::test_serial::claim();
     QUEUES.store(0, Ordering::Relaxed);
     let ops = UsbEpOps { enable: None, disable: None, alloc_request: None, free_request: None, queue: Some(queue), dequeue: None };
     let mut ep = test_ep(&ops);
@@ -33,6 +34,7 @@ fn request_alloc_queue_free_uses_endpoint_ops() {
 
 #[test]
 fn gadget_state_helpers_update_flags() {
+    let _modules = crate::test_serial::claim();
     let mut gadget = test_gadget();
     assert_eq!(usb_gadget_set_selfpowered(&mut gadget), LINUX_OK);
     assert_eq!(usb_gadget_set_remote_wakeup(&mut gadget, 1), LINUX_OK);
@@ -51,6 +53,7 @@ fn gadget_state_helpers_update_flags() {
 
 #[test]
 fn endpoint_match_checks_direction_type_and_packet_limit() {
+    let _modules = crate::test_serial::claim();
     let ops = UsbEpOps { enable: None, disable: None, alloc_request: None, free_request: None, queue: None, dequeue: None };
     let mut ep = test_ep(&ops);
     let mut gadget = test_gadget();
@@ -67,6 +70,7 @@ fn endpoint_match_checks_direction_type_and_packet_limit() {
 
 #[test]
 fn gadget_driver_registration_is_singleton() {
+    let _modules = crate::test_serial::claim();
     GADGET_DRIVER.lock().take();
     let mut driver = UsbGadgetDriver {
         function: c"sample".as_ptr(), max_speed: USB_SPEED_HIGH, bind: None, unbind: None,

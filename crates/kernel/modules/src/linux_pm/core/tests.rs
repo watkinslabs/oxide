@@ -55,6 +55,7 @@ fn test_ops() -> LinuxDevPmOps {
 
 #[test]
 fn runtime_pm_get_put_drives_callbacks_and_state() {
+    let _modules = crate::test_serial::claim();
     RUNTIME_SUSPENDS.store(0, Ordering::Relaxed);
     RUNTIME_RESUMES.store(0, Ordering::Relaxed);
     let ops = test_ops();
@@ -72,6 +73,7 @@ fn runtime_pm_get_put_drives_callbacks_and_state() {
 
 #[test]
 fn system_pm_drives_sleep_callbacks() {
+    let _modules = crate::test_serial::claim();
     SYSTEM_SUSPENDS.store(0, Ordering::Relaxed);
     SYSTEM_RESUMES.store(0, Ordering::Relaxed);
     let ops = test_ops();
@@ -85,6 +87,7 @@ fn system_pm_drives_sleep_callbacks() {
 
 #[test]
 fn wakeup_helpers_track_capability_and_enablement() {
+    let _modules = crate::test_serial::claim();
     let ops = test_ops();
     let mut driver = test_driver();
     let mut dev = test_dev(&ops, &mut driver);
@@ -98,7 +101,7 @@ fn wakeup_helpers_track_capability_and_enablement() {
 
 #[test]
 fn export_symbols_registers_pm_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "pm_runtime_enable", "pm_runtime_get_sync", "pm_runtime_put_sync",

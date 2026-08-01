@@ -8,6 +8,7 @@ use crate::{by_index, hot_add, hot_remove, init, DEFAULT_DEVICE_INDEX, DEFAULT_D
 /// control ABI additions continue from the next available ID.
 #[test]
 fn init_publishes_default_zram0_once_and_reserves_hot_add_id() {
+    let _control = super::claim_control();
     init().expect("first zram initialization");
     let first = by_index(DEFAULT_DEVICE_INDEX).expect("default zram0");
     init().expect("idempotent zram initialization");

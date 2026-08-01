@@ -184,9 +184,28 @@ fn next_id() -> TimerId {
 }
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicU64, Ordering};
+
+    // ONE timer wheel. `TIMERS`, `ONESHOTS`, `CANCELLED_ONESHOTS`, `NEXT_ID`
+    // and the A/B fire counters are process-global — a kernel has one wheel —
+    // so no test can own a private copy, and `reset()` wiping the wheel is the
+    // maximally destructive operation to run unserialized. Every test here
+    // takes this claim, which resets the wheel on acquire. Poison is recovered:
+    // one failing test reports as one failure, not a cascade.
+    static WHEEL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct WheelClaim(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    fn claim_wheel() -> WheelClaim {
+        let g = WHEEL.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        WheelClaim(g)
+    }
 
     static A: AtomicU64 = AtomicU64::new(0);
     static B: AtomicU64 = AtomicU64::new(0);
@@ -223,7 +242,7 @@ mod tests {
     /// derefs `arg`, which the owner has released, a stale-pointer write.
     #[test]
     fn drained_then_cancelled_oneshot_does_not_fire() {
-        reset();
+        let _wheel = claim_wheel();
         register_periodic(1, cancel_victim_oneshot);
         let victim = register_oneshot(10, 0xdead_beef, victim_oneshot_fire);
         VICTIM_ONESHOT_ID.store(victim.raw(), Ordering::Relaxed);
@@ -236,7 +255,7 @@ mod tests {
 
     #[test]
     fn register_returns_owned_nonzero_ids() {
-        reset();
+        let _wheel = claim_wheel();
 
         let a = register_periodic(10, tick_a);
         let b = register_periodic(10, tick_b);
@@ -250,7 +269,7 @@ mod tests {
 
     #[test]
     fn unregister_removes_only_matching_timer() {
-        reset();
+        let _wheel = claim_wheel();
 
         let a = register_periodic(10, tick_a);
         let b = register_periodic(10, tick_b);
@@ -266,7 +285,7 @@ mod tests {
 
     #[test]
     fn unregister_stops_future_due_runs() {
-        reset();
+        let _wheel = claim_wheel();
 
         let a = register_periodic(10, tick_a);
         run_due(10);
@@ -280,7 +299,7 @@ mod tests {
 
     #[test]
     fn oneshot_fires_once_and_unregisters() {
-        reset();
+        let _wheel = claim_wheel();
 
         let a = register_oneshot(10, 3, |v| { A.fetch_add(v as u64, Ordering::Relaxed); });
         let b = register_oneshot(20, 7, |v| { B.fetch_add(v as u64, Ordering::Relaxed); });

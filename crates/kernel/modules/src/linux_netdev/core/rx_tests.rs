@@ -26,6 +26,7 @@ fn rx_skb(dev: *mut LinuxNetDevice) -> *mut LinuxSkBuff {
 
 #[test]
 fn netif_rx_accepts_exact_live_generation() {
+    let _modules = crate::test_serial::claim();
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
     // SAFETY: test owns this allocation until explicit free.
     let dev = unsafe { netalloc::alloc_etherdev(0) };
@@ -41,6 +42,7 @@ fn netif_rx_accepts_exact_live_generation() {
 
 #[test]
 fn netif_rx_rejects_skb_stamped_before_retirement() {
+    let _modules = crate::test_serial::claim();
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
     // SAFETY: test owns this allocation until explicit free.
     let dev = unsafe { netalloc::alloc_etherdev(0) };
@@ -57,6 +59,7 @@ fn netif_rx_rejects_skb_stamped_before_retirement() {
 
 #[test]
 fn eth_type_trans_retains_exact_link_frame_after_pull() {
+    let _modules = crate::test_serial::claim();
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
     // SAFETY: alloc_etherdev takes no caller pointers; the returned allocation is owned solely by this test until the free_netdev at the end.
     let dev = unsafe { netalloc::alloc_etherdev(0) };
@@ -89,6 +92,7 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
 
 #[test]
 fn netif_rx_publishes_pulled_link_frame_to_packet_socket_once() {
+    let _modules = crate::test_serial::claim();
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
     let packet = Arc::new(net::sock::InetSocket::new_packet_in(
         net::eth_p::ALL, 3, net::net_ns::initial_namespace()));
@@ -114,6 +118,7 @@ fn netif_rx_publishes_pulled_link_frame_to_packet_socket_once() {
 
 #[test]
 fn skb_expansion_preserves_pulled_link_header_identity() {
+    let _modules = crate::test_serial::claim();
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
     // SAFETY: alloc_etherdev takes only sizeof_priv; the allocation it returns is exclusively this test's until the matching free_netdev.
     let dev = unsafe { netalloc::alloc_etherdev(0) };

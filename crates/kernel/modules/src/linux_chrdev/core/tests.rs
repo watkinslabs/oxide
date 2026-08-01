@@ -123,6 +123,7 @@ fn new_cdev() -> LinuxCdev {
 
 #[test]
 fn cdev_add_routes_vfs_calls() {
+    let _modules = crate::test_serial::claim();
     let mut cdev = new_cdev();
     cdev_init(&mut cdev, &FOPS);
     let dev = mkdev(TEST_MAJOR_A, TEST_MINOR_BASE);
@@ -144,6 +145,7 @@ fn cdev_add_routes_vfs_calls() {
 
 #[test]
 fn overlapping_cdev_region_is_busy() {
+    let _modules = crate::test_serial::claim();
     let mut one = new_cdev();
     let mut two = new_cdev();
     cdev_init(&mut one, &FOPS);
@@ -158,6 +160,7 @@ fn overlapping_cdev_region_is_busy() {
 
 #[test]
 fn dynamic_major_allocation_writes_dev() {
+    let _modules = crate::test_serial::claim();
     let mut dev = 0u32;
     assert_eq!(alloc_chrdev_region(&mut dev, TEST_MINOR_BASE, TEST_MINOR_COUNT, core::ptr::null()), LINUX_OK);
     assert_ne!(major(dev), LINUX_MAJOR_DYNAMIC);
@@ -167,6 +170,7 @@ fn dynamic_major_allocation_writes_dev() {
 
 #[test]
 fn device_node_routes_open_state_poll_mmap_and_release() {
+    let _modules = crate::test_serial::claim();
     OPEN_COUNT.store(0, Ordering::SeqCst);
     RELEASE_COUNT.store(0, Ordering::SeqCst);
     POLL_COUNT.store(0, Ordering::SeqCst);

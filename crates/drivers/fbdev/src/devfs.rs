@@ -343,6 +343,7 @@ mod tests {
 
     #[test]
     fn register_node_is_idempotent_without_republishing() {
+        let _fbdev = crate::test_claim::claim_fbdev();
         let idx = 0x7ffe;
         let _ = unregister_node(idx);
 
@@ -361,6 +362,7 @@ mod tests {
 
     #[test]
     fn unregister_then_register_restores_model_owned_node() {
+        let _fbdev = crate::test_claim::claim_fbdev();
         let idx = 0x7ffc;
         let addr = alloc::format!("fb{idx}");
         let _ = unregister_node(idx);
@@ -395,6 +397,7 @@ mod tests {
 
     #[test]
     fn register_node_leaves_slot_free_when_model_publication_conflicts() {
+        let _fbdev = crate::test_claim::claim_fbdev();
         let idx = 0x7ffd;
         let _ = unregister_node(idx);
         let addr = alloc::format!("fb{idx}");

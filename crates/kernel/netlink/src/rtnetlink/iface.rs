@@ -12,11 +12,16 @@ use super::uapi::Ifinfomsg;
 /// # C: O(N_ifaces)
 pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u8; 6], net::PacketLinkAddress, u32, bool, u32, LinkStats64)> {
     let stack = net::global_stack();
+    // Nothing is held across the snapshot and the per-device lookup, so a
+    // device unregistered in that window is simply absent by the time it is
+    // read back. A dump reports the devices that still exist — the removal is
+    // announced on its own `RTM_DELLINK` — so the missing one is skipped, not
+    // unwrapped into a panic.
     stack.ifaces.snapshot_in_ns(ns)
         .into_iter()
-        .map(|snap| {
+        .filter_map(|snap| {
             let id = snap.id;
-            let dev = stack.ifaces.lookup_in_ns(id, ns).unwrap();
+            let dev = stack.ifaces.lookup_in_ns(id, ns)?;
             let is_lo = snap.name == "lo";
             let flags = stack.ifaces.iface_flags(id).unwrap_or(0);
             let raw = dev.stats();
@@ -26,8 +31,8 @@ pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u
                 rx_errors: raw.rx_errors, tx_errors: raw.tx_errors,
                 rx_dropped: raw.rx_dropped, tx_dropped: raw.tx_dropped,
             };
-            (snap.ifindex, snap.name,
-             dev.mac().0, dev.hardware_broadcast(), dev.mtu(), is_lo, flags, stats)
+            Some((snap.ifindex, snap.name,
+             dev.mac().0, dev.hardware_broadcast(), dev.mtu(), is_lo, flags, stats))
         })
         .collect()
 }

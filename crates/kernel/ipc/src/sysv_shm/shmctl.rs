@@ -284,7 +284,6 @@ mod tests {
     use super::*;
     use alloc::sync::Arc;
     use sync::Spinlock;
-    use crate::sysv_shm::tests::TEST_LOCK;
 
     struct FakeBacking;
 
@@ -298,10 +297,8 @@ mod tests {
         Arc::new(FakeBacking)
     }
 
-    fn reset() {
-        REG.next_id.store(1, Ordering::Release);
-        REG.segs.lock().clear();
-    }
+    /// The one reset body lives with the claim that owns it.
+    fn reset() { crate::sysv_shm::test_claim::reset_shm() }
 
     fn cred(euid: u32, egid: u32, groups: &[u32], cap_ipc_owner: bool) -> IpcCred {
         cred_caps(euid, egid, groups, cap_ipc_owner, false, cap_ipc_owner)
@@ -331,8 +328,7 @@ mod tests {
 
     #[test]
     fn ipc_info_and_shm_info_do_not_require_valid_shmid() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
+        let _shm = crate::sysv_shm::test_claim::claim_shm();
         let c = cred(10, 20, &[], false);
         assert!(shmget(10, 4096, super::super::IPC_CREAT | 0o600, c.clone()) > 0);
         assert!(shmget(11, 8192, super::super::IPC_CREAT | 0o600, c) > 0);
@@ -350,8 +346,7 @@ mod tests {
 
     #[test]
     fn stat_permissions_and_stat_any_match_linux() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
+        let _shm = crate::sysv_shm::test_claim::claim_shm();
         let owner = crate::ipc_namespace::current().unwrap();
         let seg = alloc::sync::Arc::new(ShmSegment {
             id: 7, key: 9, ns: owner.key(), size: 4096, mode: 0o600,
@@ -375,8 +370,7 @@ mod tests {
 
     #[test]
     fn ipc_set_and_rmid_require_owner_or_sys_admin() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
+        let _shm = crate::sysv_shm::test_claim::claim_shm();
         let owner = cred(10, 20, &[], false);
         let id = shmget(77, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
         assert_eq!(set_segment(id, &cred(99, 99, &[], false), ShmctlSet { uid: 1, gid: 2, mode: 0o644 }), err(Errno::Eperm));
@@ -390,8 +384,7 @@ mod tests {
 
     #[test]
     fn rmid_with_attachers_marks_and_unpublishes_the_key() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
+        let _shm = crate::sysv_shm::test_claim::claim_shm();
         const KEY: i32 = 0x5900;
         let owner = cred(10, 20, &[], false);
         let id = shmget(KEY, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
@@ -411,8 +404,7 @@ mod tests {
 
     #[test]
     fn lock_unlock_require_owner_or_ipc_lock_and_toggle_mode_bit() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
+        let _shm = crate::sysv_shm::test_claim::claim_shm();
         let owner = cred(10, 20, &[], false);
         let id = shmget(88, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
         assert_eq!(lock_segment(id, SHM_LOCK, &cred(99, 99, &[], false)), err(Errno::Eperm));
@@ -427,8 +419,7 @@ mod tests {
 
     #[test]
     fn syscall_entry_copies_stat_info_and_set_buffers() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        reset();
+        let _shm = crate::sysv_shm::test_claim::claim_shm();
         let owner = cred(10, 20, &[], false);
         let id = shmget(99, 4096, super::super::IPC_CREAT | 0o600, owner) as i32;
         let mut ds = [0u8; SHMID64_DS_BYTES];

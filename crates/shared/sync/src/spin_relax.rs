@@ -88,23 +88,30 @@ fn hosted_yield() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::AtomicU32;
 
-    static CALLS: AtomicU32 = AtomicU32::new(0);
-    fn count() { CALLS.fetch_add(1, Ordering::Relaxed); }
+    // Per-THREAD, not per-process. `HOOK` is global and `relax()` is what every
+    // contended `Spinlock` in this crate calls, so while the hook is installed
+    // every sibling test's spinning thread runs it too — a process-wide counter
+    // reads their iterations as this test's and the count overshoots. Counting
+    // on the calling thread attributes each call to the test that made it.
+    std::thread_local! {
+        static CALLS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    }
+    fn count() { CALLS.with(|c| c.set(c.get() + 1)); }
+    fn calls() -> u32 { CALLS.with(|c| c.get()) }
 
     #[test]
     fn relax_is_inert_until_a_hook_is_installed_and_then_runs_it() {
-        // Serialised by being the only test that touches HOOK.
+        // Serialised by being the only test that writes HOOK.
         HOOK.store(core::ptr::null_mut(), Ordering::Release);
-        CALLS.store(0, Ordering::Relaxed);
+        CALLS.with(|c| c.set(0));
         relax();
-        assert_eq!(CALLS.load(Ordering::Relaxed), 0, "no hook ⇒ pause only");
+        assert_eq!(calls(), 0, "no hook ⇒ pause only");
         // SAFETY: `count` takes no locks and is reentrant.
         unsafe { set_spin_relax_hook(count); }
         relax();
         relax();
-        assert_eq!(CALLS.load(Ordering::Relaxed), 2, "every spin iteration services the hook");
+        assert_eq!(calls(), 2, "every spin iteration services the hook");
         HOOK.store(core::ptr::null_mut(), Ordering::Release);
     }
 }

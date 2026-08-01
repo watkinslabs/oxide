@@ -323,6 +323,7 @@ mod tests {
 
     #[test]
     fn export_symbols_registers_seq_file_surface() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::is_exported("single_open"));
         assert!(crate::is_exported("seq_read"));
@@ -331,6 +332,7 @@ mod tests {
 
     #[test]
     fn single_open_read_release_materializes_show_output() {
+        let _modules = crate::test_serial::claim();
         let mut file = LinuxFile { private_data: null_mut() };
         assert_eq!(single_open(&mut file, Some(show), b"demo\0".as_ptr() as *mut c_void), 0);
         let mut pos = 0i64;

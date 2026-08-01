@@ -125,6 +125,7 @@ mod tests {
 
     #[test]
     fn parses_records() {
+        let _modules = crate::test_serial::claim();
         let mut info = ModuleInfo::default();
         let mut rec = alloc::vec::Vec::new();
         for f in [alloc::format!("name=e1000"), alloc::format!("license=GPL"),
@@ -149,6 +150,7 @@ mod tests {
 
     #[test]
     fn parses_modinfo_section() {
+        let _modules = crate::test_serial::claim();
         let data = b"name=ahci\0license=Dual BSD/GPL\0description=SATA\0";
         let sec = Section {
             name: ".modinfo", sh_type: SHT_PROGBITS, flags: 0, addr: 0,
@@ -163,6 +165,7 @@ mod tests {
 
     #[test]
     fn ignores_non_modinfo_sections() {
+        let _modules = crate::test_serial::claim();
         let data = b"name=bad\0";
         let sec = Section {
             name: ".strtab", sh_type: SHT_NULL, flags: 0, addr: 0,
@@ -183,6 +186,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_vermagic() {
+        let _modules = crate::test_serial::claim();
         let mut info = ModuleInfo::default();
         info.parse_records(b"vermagic=9.9.9\0");
         assert!(!info.vermagic_matches());

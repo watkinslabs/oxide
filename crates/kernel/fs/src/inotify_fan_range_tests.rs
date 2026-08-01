@@ -77,6 +77,7 @@ fn read_ranges(g: &InotifyData) -> Vec<RangeRecord> {
 /// # C: O(1)
 #[test]
 fn a_real_ftruncate_asks_the_pre_content_gate_with_a_range() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = file_on(0xA101, 0xA101_0001);
     let g = pre_group(&ino, FAN_PRE_ACCESS);
     let dentry = vfs::dcache::d_alloc_pseudo("trunc", ino.clone(), &crate::anon_dname::ANON_INODE_OPS);
@@ -96,6 +97,7 @@ fn a_real_ftruncate_asks_the_pre_content_gate_with_a_range() {
 /// # C: O(1)
 #[test]
 fn a_read_asks_both_content_gates_and_a_write_only_the_first() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = file_on(0xA102, 0xA102_0001);
     let g = pre_group(&ino, FAN_PRE_ACCESS | FAN_ACCESS_PERM);
     assert_eq!(crate::inotify::check_file_area_perm(&ino, false, Some(0), 1), Ok(()));
@@ -116,6 +118,7 @@ fn a_read_asks_both_content_gates_and_a_write_only_the_first() {
 /// # C: O(1)
 #[test]
 fn an_access_with_no_offset_carries_no_range_record() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = file_on(0xA103, 0xA103_0001);
     let g = pre_group(&ino, FAN_PRE_ACCESS);
     assert_eq!(crate::inotify::check_file_area_perm(&ino, false, None, 0), Ok(()));
@@ -129,6 +132,7 @@ fn an_access_with_no_offset_carries_no_range_record() {
 /// # C: O(1)
 #[test]
 fn an_mmap_asks_only_the_pre_content_gate() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = file_on(0xA104, 0xA104_0001);
     let g = pre_group(&ino, FAN_PRE_ACCESS | FAN_ACCESS_PERM);
     assert_eq!(crate::inotify::check_mmap_perm(&ino, 8192, 4096), Ok(()));
@@ -143,6 +147,7 @@ fn an_mmap_asks_only_the_pre_content_gate() {
 /// # C: O(1)
 #[test]
 fn the_reported_window_covers_the_whole_access() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = file_on(0xA105, 0xA105_0001);
     let g = pre_group(&ino, FAN_PRE_ACCESS);
     // An access straddling a granule boundary reports both granules.
@@ -160,6 +165,7 @@ fn the_reported_window_covers_the_whole_access() {
 /// # C: O(1)
 #[test]
 fn a_file_with_no_pre_content_mark_is_never_gated() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = file_on(0xA106, 0xA106_0001);
     let g = InotifyData::new_fanotify(FAN_CLASS_PRE_CONTENT);
     assert_eq!(crate::inotify::check_file_area_perm(&ino, false, Some(0), 4096), Ok(()));
@@ -173,6 +179,7 @@ fn a_file_with_no_pre_content_mark_is_never_gated() {
 /// # C: O(1)
 #[test]
 fn pre_access_is_a_pre_content_class_mask_and_never_names_a_directory() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use syscall::errno::Errno;
     let pre = InotifyData::new_fanotify(FAN_CLASS_PRE_CONTENT);
     assert_eq!(validate_fanotify_mark_group(&pre, MarkScope::Inode, FAN_PRE_ACCESS, 0, true), Ok(()));
@@ -193,6 +200,7 @@ fn pre_access_is_a_pre_content_class_mask_and_never_names_a_directory() {
 /// # C: O(1)
 #[test]
 fn pre_content_events_are_never_merged() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = file_on(0xA107, 0xA107_0001);
     let g = pre_group(&ino, FAN_PRE_ACCESS);
     assert_eq!(crate::inotify::check_file_area_perm(&ino, true, Some(0), 1), Ok(()));

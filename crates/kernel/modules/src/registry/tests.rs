@@ -23,7 +23,6 @@ unsafe extern "C" fn ok_exit() {
 fn reset() {
     REGISTRY.lock().clear();
     NEXT_ID.store(0, Ordering::Relaxed);
-    crate::symtab::_reset();
     INIT_COUNT.store(0, TestOrdering::SeqCst);
     EXIT_COUNT.store(0, TestOrdering::SeqCst);
 }
@@ -56,6 +55,7 @@ static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn snapshot_reports_name_state_and_counts() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
@@ -85,6 +85,7 @@ fn snapshot_reports_name_state_and_counts() {
 
 #[test]
 fn register_runs_initcall_and_marks_live() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
@@ -98,6 +99,7 @@ fn register_runs_initcall_and_marks_live() {
 
 #[test]
 fn register_drops_module_when_init_fails() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
@@ -109,6 +111,7 @@ fn register_drops_module_when_init_fails() {
 
 #[test]
 fn unload_runs_exitcall_before_removing_record() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
@@ -128,6 +131,7 @@ fn unload_runs_exitcall_before_removing_record() {
 
 #[test]
 fn unload_by_name_removes_only_matching_live_record() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("one", 0);
@@ -140,6 +144,7 @@ fn unload_by_name_removes_only_matching_live_record() {
 
 #[test]
 fn unload_busy_module_fails() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("busy", 1);
@@ -153,6 +158,7 @@ fn unload_busy_module_fails() {
 
 #[test]
 fn module_refs_pin_until_last_put() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("pinned", 0);
@@ -169,6 +175,7 @@ fn module_refs_pin_until_last_put() {
 
 #[test]
 fn final_unload_removes_module_exports() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("exporter", 0);
@@ -180,6 +187,7 @@ fn final_unload_removes_module_exports() {
 
 #[test]
 fn module_taints_track_out_of_tree_and_license() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
@@ -194,6 +202,7 @@ fn module_taints_track_out_of_tree_and_license() {
 
 #[test]
 fn forced_unload_marks_taint_while_waiting_for_refs() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("forced", 1);
@@ -205,6 +214,7 @@ fn forced_unload_marks_taint_while_waiting_for_refs() {
 
 #[test]
 fn invalid_names_are_rejected() {
+    let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(unload_by_name(""), Err(RegistryError::Inval));

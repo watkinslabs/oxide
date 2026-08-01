@@ -26,6 +26,7 @@ fn cfg_with_live_status() -> [u8; COMMON_CFG_BYTES] {
 
 #[test]
 fn remove_blk_unregisters_block_disk_and_device_node() {
+    let _blkmodel = super::claim_block_model();
     let seq = TEST_DISK_SEQ.fetch_add(1, Ordering::Relaxed);
     let name = format!("vdtest{}", seq);
     let bus = 0xf0;
@@ -66,6 +67,7 @@ fn remove_blk_unregisters_block_disk_and_device_node() {
 
 #[test]
 fn remove_blk_selects_only_matching_device_record() {
+    let _blkmodel = super::claim_block_model();
     const TEST_BUS: u8 = 0xd0;
     const TEST_FUNCTION: u8 = 0;
 
@@ -101,6 +103,7 @@ fn remove_blk_selects_only_matching_device_record() {
 
 #[test]
 fn remove_waits_for_inflight_owner_before_reset_and_blocks_new_io() {
+    let _blkmodel = super::claim_block_model();
     let mut cfg = cfg_with_live_status();
     let state = std::sync::Arc::new(crate::modern::BlkState::for_test_cfg(cfg.as_mut_ptr() as u64));
     state.hold_inflight_for_tests();
@@ -120,6 +123,7 @@ fn remove_waits_for_inflight_owner_before_reset_and_blocks_new_io() {
 
 #[test]
 fn shutdown_blk_quiesces_without_unregistering_publication() {
+    let _blkmodel = super::claim_block_model();
     let seq = TEST_DISK_SEQ.fetch_add(1, Ordering::Relaxed);
     let name = format!("vdtest{}shutdown", seq);
     let bus = 0xe0;
@@ -145,6 +149,7 @@ fn shutdown_blk_quiesces_without_unregistering_publication() {
 
 #[test]
 fn shutdown_waits_for_inflight_owner_before_reset_and_blocks_new_io() {
+    let _blkmodel = super::claim_block_model();
     let mut cfg = cfg_with_live_status();
     let state = std::sync::Arc::new(crate::modern::BlkState::for_test_cfg(cfg.as_mut_ptr() as u64));
     state.hold_inflight_for_tests();

@@ -45,12 +45,21 @@ fn output_is_not_a_repeating_block() {
 
 #[test]
 fn short_and_unaligned_lengths_are_filled_completely() {
+    // A fill that silently writes nothing leaves the buffer zeroed EVERY time.
+    // One sample cannot tell that apart from real output for a short length —
+    // a single random byte is legitimately zero once in 256, which is how this
+    // test failed on a correct pool. Resample instead: `ATTEMPTS` independent
+    // all-zero results is 256^-ATTEMPTS, while a pool writing nothing never
+    // escapes the loop.
+    const ATTEMPTS: usize = 32;
     for n in [1usize, 7, 8, 63, 64, 65, 129] {
-        let v = take(n);
-        assert_eq!(v.len(), n);
-        // A run of `n` zeroes is astronomically unlikely; catching it catches
-        // a fill that silently wrote nothing.
-        assert!(v.iter().any(|&b| b != 0), "fill({n}) produced all zeroes");
+        let mut wrote = false;
+        for _ in 0..ATTEMPTS {
+            let v = take(n);
+            assert_eq!(v.len(), n);
+            if v.iter().any(|&b| b != 0) { wrote = true; break; }
+        }
+        assert!(wrote, "fill({n}) produced all zeroes {ATTEMPTS} times running");
     }
 }
 

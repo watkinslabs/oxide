@@ -6,7 +6,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI64, Ordering};
 
 use super::*;
-use crate::sysv_shm::tests::TEST_LOCK;
 use crate::sysv_shm::{lookup_by_id, shm_vma_close, ShmSegment, PAGE_SIZE, REG, SHM_DEST};
 
 const SPAN: u64 = 4 * PAGE_SIZE;
@@ -106,8 +105,7 @@ fn seg_with(id: i32, nattch: i64, mode: u32) -> Arc<ShmSegment> {
 
 #[test]
 fn detach_drops_the_attach_count_without_destroying_a_live_segment() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    REG.segs.lock().clear();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let seg = seg_with(901, 2, 0o600);
     REG.segs.lock().push(seg.clone());
     shm_vma_close(&seg.backing);
@@ -121,8 +119,7 @@ fn detach_drops_the_attach_count_without_destroying_a_live_segment() {
 
 #[test]
 fn last_detach_destroys_a_segment_already_marked_shm_dest() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    REG.segs.lock().clear();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let seg = seg_with(902, 2, 0o600 | SHM_DEST);
     REG.segs.lock().push(seg.clone());
     shm_vma_close(&seg.backing);
