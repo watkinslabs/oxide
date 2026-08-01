@@ -12,12 +12,12 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 
 | Type | next | meaning |
 |---|---|---|
-| F | 776 | new functionality |
-| B | 1653 | bug fix |
-| D | 436 | spec/doc edits (no code) |
+| F | 778 | new functionality |
+| B | 1663 | bug fix |
+| D | 439 | spec/doc edits (no code) |
 | R | 87  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
-| C | 244 | tooling / deps / CI plumbing |
+| C | 247 | tooling / deps / CI plumbing |
 | P17 | 18 | phase-17 work (tty + login) |
 
 ## Reserved (in flight)
@@ -46,6 +46,12 @@ counter advanced to 1509 so none of the three live lanes collides.
 `B1459`-`B1465` reserved 2026-07-27 for the concurrent compliance-blocker
 lanes (signal frames, wait deadlines, poll subscribers, durable writes, procfs
 creds, exec privilege transition). Counter advanced to 1466.
+
+`B1653`-`B1662`, `C244`-`C246`, `F777` reserved 2026-08-01 for the
+known-issues clearing wave (net options, AF_UNIX OOB, TCP defer-accept /
+zerocopy-receive, keyring keyctl gaps, drain_loopback backlog, net test-suite
+races, gate-set hardening). Counters advanced past them so concurrent lanes
+cannot collide.
 
 ## Known counter collisions
 
