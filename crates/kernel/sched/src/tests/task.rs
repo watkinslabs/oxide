@@ -1,3 +1,4 @@
+use crate::jobctl::WakeKind;
 use crate::task::{SchedClass, SchedPolicy, Task, TaskState};
 use core::sync::atomic::Ordering;
 use std::sync::{Arc, Barrier};
@@ -246,22 +247,38 @@ fn task_pgid_can_be_updated() {
 }
 
 #[test]
+fn only_a_sigcont_wake_records_a_continue_event() {
+    // Regression: every wake used to set `cont_pending`, so a `PTRACE_CONT`
+    // raised a `wait4(WCONTINUED)` event the tracee never continued from.
+    for (wake, expect) in [(WakeKind::Cont, true), (WakeKind::PtraceResume, false),
+                           (WakeKind::Kill, false)] {
+        let t = Task::new(31, "t", SchedClass::Normal { weight: 1024 });
+        t.set_state(TaskState::Stopped);
+        assert!(crate::registry::try_wake_stopped(&t, wake));
+        assert_eq!(t.cont_pending.load(Ordering::Acquire), expect,
+                   "{wake:?}");
+        // The reason is published for the resuming task to read back.
+        assert_eq!(crate::jobctl::wake_of(t.jobctl.load(Ordering::Acquire)), wake);
+    }
+}
+
+#[test]
 fn try_wake_stopped_flips_only_stopped_tasks() {
     let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
     assert_eq!(t.state(), TaskState::Runnable);
-    assert!(!crate::registry::try_wake_stopped(&t));
+    assert!(!crate::registry::try_wake_stopped(&t, WakeKind::Cont));
     assert_eq!(t.state(), TaskState::Runnable);
     t.set_state(TaskState::Stopped);
-    assert!(crate::registry::try_wake_stopped(&t));
+    assert!(crate::registry::try_wake_stopped(&t, WakeKind::Cont));
     assert_eq!(t.state(), TaskState::Runnable);
-    assert!(!crate::registry::try_wake_stopped(&t));
+    assert!(!crate::registry::try_wake_stopped(&t, WakeKind::Cont));
 }
 
 #[test]
 fn try_wake_stopped_ignores_zombie() {
     let t = Task::new(2, "t", SchedClass::Normal { weight: 1024 });
     t.set_state(TaskState::Zombie);
-    assert!(!crate::registry::try_wake_stopped(&t));
+    assert!(!crate::registry::try_wake_stopped(&t, WakeKind::Cont));
     assert_eq!(t.state(), TaskState::Zombie);
 }
 

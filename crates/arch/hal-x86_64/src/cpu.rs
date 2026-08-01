@@ -1,5 +1,48 @@
 use hal::CpuOps;
 
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+use crate::msr;
+
+/// Write the 64-bit value `val` to MSR `sel`.
+/// # SAFETY: `wrmsr` is privileged at CPL=0; the caller owns the meaning of
+/// whichever architectural register `sel` names.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[inline]
+pub(crate) unsafe fn wrmsr(sel: u32, val: u64) {
+    // SAFETY: per fn contract — `wrmsr` is legal at CPL=0; ECX selects the
+    // register, EDX:EAX carry the value; no memory effect.
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") sel,
+            in("eax") val as u32,
+            in("edx") (val >> 32) as u32,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+/// Read the 64-bit value of MSR `sel`.
+/// # SAFETY: `rdmsr` is privileged at CPL=0; reads only.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[inline]
+pub(crate) unsafe fn rdmsr(sel: u32) -> u64 {
+    let lo: u32; let hi: u32;
+    // SAFETY: per fn contract — `rdmsr` is legal at CPL=0; ECX selects the
+    // register; no memory effect.
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") sel,
+            out("eax") lo, out("edx") hi,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    ((hi as u64) << 32) | (lo as u64)
+}
+
 /// Write IA32_FS_BASE MSR (0xC000_0100) — the per-thread FS-segment
 /// base used by user-space TLS (`fs:0x...`). Single-CPU v1; the
 /// caller (typically `sys_arch_prctl(ARCH_SET_FS, va)`) owns the
@@ -12,22 +55,8 @@ use hal::CpuOps;
 /// # Ctx: syscall context, IRQs off (FMASK clears IF on entry)
 pub unsafe fn set_user_fs_base(va: u64) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let lo = va as u32;
-        let hi = (va >> 32) as u32;
-        // SAFETY: `wrmsr` is a privileged write; ECX selects
-        // IA32_FS_BASE (0xC000_0100). No memory effect; only changes
-        // the architectural FS_BASE register.
-        unsafe {
-            core::arch::asm!(
-                "wrmsr",
-                in("ecx") 0xC000_0100u32,
-                in("eax") lo,
-                in("edx") hi,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-    }
+    // SAFETY: per fn contract — privileged write of the architectural FS_BASE register with a caller-validated user VA.
+    unsafe { wrmsr(msr::IA32_FS_BASE, va); }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { let _ = va; }
 }
@@ -38,19 +67,42 @@ pub unsafe fn set_user_fs_base(va: u64) {
 /// # C: O(1)
 pub unsafe fn get_user_fs_base() -> u64 {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let lo: u32; let hi: u32;
-        // SAFETY: rdmsr is privileged; ECX selects IA32_FS_BASE; no memory effect.
-        unsafe {
-            core::arch::asm!(
-                "rdmsr",
-                in("ecx") 0xC000_0100u32,
-                out("eax") lo, out("edx") hi,
-                options(nomem, nostack, preserves_flags),
-            );
-        }
-        ((hi as u64) << 32) | (lo as u64)
-    }
+    // SAFETY: per fn contract — privileged read of the architectural FS_BASE register; no memory effect.
+    unsafe { rdmsr(msr::IA32_FS_BASE) }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
+/// Write this thread's USER GS base.
+///
+/// The value goes to `IA32_KERNEL_GS_BASE`, not `IA32_GS_BASE`: kernel mode
+/// runs with the per-CPU area in the live GS base, and the shadow register is
+/// what the exit-path `swapgs` promotes on the way to ring 3. Writing
+/// `IA32_GS_BASE` here would replace this CPU's per-CPU base — the exact
+/// takeover `clear_cr4_fsgsbase` exists to prevent ring 3 from performing.
+///
+/// # SAFETY: `wrmsr` is privileged at CPL=0. Caller validates `va` is below
+/// `TASK_SIZE_MAX` if user-supplied (`arch_prctl` answers EPERM otherwise),
+/// which keeps it canonical AND keeps bit 63 clear — the paranoid exception
+/// entry's kernel-vs-user GS test depends on that.
+/// # C: O(1)
+/// # Ctx: syscall context
+pub unsafe fn set_user_gs_base(va: u64) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: per fn contract — privileged write of the shadow GS base with a caller-validated user VA; the live per-CPU GS base is untouched.
+    unsafe { wrmsr(msr::IA32_KERNEL_GS_BASE, va); }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = va; }
+}
+
+/// Read this thread's USER GS base. Inverse of `set_user_gs_base`; valid only
+/// in kernel mode, where the user base is the shadow register.
+/// # SAFETY: `rdmsr` is privileged at CPL=0; reads only.
+/// # C: O(1)
+pub unsafe fn get_user_gs_base() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: per fn contract — privileged read of the shadow GS base; no memory effect.
+    unsafe { rdmsr(msr::IA32_KERNEL_GS_BASE) }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { 0 }
 }
@@ -137,23 +189,19 @@ impl CpuOps for X86CpuOps {
     /// # C: O(1)
     fn mmio_barrier() { mmio_barrier(); }
 
+    /// Installs the per-CPU base by `wrmsr(IA32_GS_BASE)` — deliberately NOT
+    /// `wrgsbase`, which would require `CR4.FSGSBASE`. That bit also hands
+    /// ring 3 `wrgsbase`, and ring 3 rewriting the base ring 0 reads for
+    /// `gs:[…]` is an arbitrary kernel write plus a stack pivot on the next
+    /// kernel entry. `clear_cr4_fsgsbase` keeps the bit off; this MSR write
+    /// is what works without it.
     /// # SAFETY: caller asserts `base` points to a valid per-CPU
     /// area whose first word is the cpu_id.
     /// # C: O(1)
     unsafe fn set_percpu_base(base: *mut u8) {
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-        {
-            // SAFETY: `wrgsbase` writes the GS base register from the
-            // caller-supplied pointer. Requires CR4.FSGSBASE = 1, which
-            // boot enables before the first call. Kernel-only insn.
-            unsafe {
-                core::arch::asm!(
-                    "wrgsbase {b}",
-                    b = in(reg) base,
-                    options(nomem, nostack, preserves_flags),
-                );
-            }
-        }
+        // SAFETY: privileged write of the architectural GS_BASE register; `base` is this CPU's own per-CPU area per fn contract.
+        unsafe { wrmsr(msr::IA32_GS_BASE, base as u64); }
         #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
         { let _ = base; }
     }

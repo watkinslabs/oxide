@@ -150,6 +150,11 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         cur.account_write_result(ret);
         return ret;
     }
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), true, Some(file.pos()), 0) {
+        let ret = -(e.as_i32() as i64);
+        cur.account_write_result(ret);
+        return ret;
+    }
     let array_bytes = match iovcnt.checked_mul(16) {
         Some(v) => v,
         None    => {

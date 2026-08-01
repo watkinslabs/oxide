@@ -176,8 +176,16 @@ pub struct AddressSpace {
     /// top-down from a position that leaves the stack room to
     /// expand up to RLIMIT_STACK. Default 0 means "not initialised"
     /// — `find_hole` falls back to the legacy `MMAP_TOP` constant
-    /// (used by boot-anchor AS + hosted tests).
+    /// (used by boot-anchor AS + hosted tests). Under
+    /// `mmap_topdown == false` the same field is the FLOOR the bottom-up
+    /// search allocates upward from (Linux `mm->mmap_legacy_base`).
     mmap_base: core::sync::atomic::AtomicU64,
+    /// Linux `MMF_TOPDOWN`: the direction `get_unmapped_area` searches from
+    /// `mmap_base`. `arch_pick_mmap_layout` sets it at `execve` from
+    /// `mmap_is_legacy` — `personality(ADDR_COMPAT_LAYOUT)`, an unlimited
+    /// `RLIMIT_STACK`, or `vm.legacy_va_layout`. Default is Linux's default:
+    /// top-down.
+    mmap_topdown: core::sync::atomic::AtomicBool,
     /// AArch64 signal handlers return through this process's mapped vDSO
     /// `__kernel_rt_sigreturn` entry. Linux arm64 owns this address in the
     /// mm context: libc deliberately leaves `sa_restorer` zero.
@@ -310,6 +318,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
+            mmap_topdown: core::sync::atomic::AtomicBool::new(true),
             vdso_rt_sigreturn: core::sync::atomic::AtomicU64::new(0),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false),

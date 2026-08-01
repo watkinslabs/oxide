@@ -78,7 +78,14 @@ fn drm_accessors_skip_disabled_scanouts() {
     let connector = driver.connector_info(1).unwrap();
     assert_eq!(connector.connection, drm::DRM_MODE_CONNECTED);
     assert_eq!(connector.encoder_id, drm::encoder_id_for(1));
-    assert_eq!(connector.mode_count, 1);
+    // The connector publishes a real mode list: its current rect preferred and
+    // first, plus the standard alternatives a compositor can switch to.
+    let modes = driver.modes_for(1);
+    assert_eq!(u32::from(modes[0].hdisplay), SECOND_MODE_WIDTH);
+    assert_eq!(u32::from(modes[0].vdisplay), SECOND_MODE_HEIGHT);
+    assert_ne!(modes[0].ty & drm::DRM_MODE_TYPE_PREFERRED, 0);
+    assert!(modes.len() > 1, "one mode leaves the compositor no choice");
+    assert!(modes.iter().any(|m| u32::from(m.hdisplay) == 1920 && u32::from(m.vdisplay) == 1080));
     let crtc = driver.crtc_info(1).unwrap();
     assert_eq!(crtc.mode_valid, 1);
     assert_eq!(crtc.fb_id, 0);

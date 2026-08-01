@@ -34,10 +34,12 @@ pub(super) fn seccomp_gate(nr: u64, args: &[u64; 6]) -> Option<u64> {
         Verdict::Skip { ret } => Some(ret as u64),
         // `syscall_rollback(current, current_pt_regs())` then
         // `force_sig_seccomp(this_syscall, data, false)` — a CATCHABLE
-        // SIGSYS — then `goto skip`. x86_64's `syscall_rollback` is
-        // `regs->ax = regs->orig_ax`, so a handler that returns sees the
-        // syscall number in the return register.
-        Verdict::Trap(s) => { queue_sigsys(&s); Some(nr) }
+        // SIGSYS — then `goto skip`. What the rollback leaves in the return
+        // register differs per arch, so it is not `nr` on both.
+        Verdict::Trap(s) => {
+            queue_sigsys(&s);
+            Some(crate::syscall_rollback::rolled_back_return(nr, args[0]))
+        }
         // `if (action != SECCOMP_RET_KILL_THREAD ||
         //      atomic_read(&current->signal->live) == 1)` -> fatal SIGSYS
         // with a core dump for the whole group; else `do_exit(SIGSYS)` for

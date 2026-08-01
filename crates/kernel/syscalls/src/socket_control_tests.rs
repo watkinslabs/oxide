@@ -357,5 +357,22 @@ fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
     assert_eq!(kinds, alloc::vec![cmsg::IPV6_HOPLIMIT, cmsg::IPV6_TCLASS]);
     // A datagram that carried no traffic class produces no message.
     let absent = RxMeta { tclass: None, ..Default::default() };
-    assert!(cmsg::plan(&want, &absent).is_empty());
-}
+    assert!(cmsg::plan(&want, &absent).is_empty());}
+
+// A dual-stack AF_INET6 socket that connected to an IPv4 peer took the IPv4
+// path, so its peer tuple is in `sock.peer`, not `sock.peer6`. Linux
+// `inet6_getname` still answers with `sk->sk_v6_daddr` == `::ffff:a.b.c.d`
+// (`net/ipv6/af_inet6.c`), so an empty `peer6` must FALL THROUGH to the
+// generic tuple rather than short-circuit to ENOTCONN — that early return
+// declared every `getaddrinfo(AI_V4MAPPED)` connection unconnected.
+
+// `getsockname` on the same socket has the mirror bug: reading `local_ip6`
+// unconditionally reported `[::]`. Linux reports `sk_v6_rcv_saddr` or, when
+// that is unspecified, whatever local address the socket actually holds.
+
+// The SOL_SOCKET options with their own argument or value shape are routed to
+// their owner instead of the scalar table, and the option numbers come from the
+// one canonical table.
+
+// The peer identity one AF_UNIX end reports is a single snapshot, so
+// SO_PEERCRED and SO_PEERGROUPS can never name two different instants.

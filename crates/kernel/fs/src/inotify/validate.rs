@@ -3,8 +3,8 @@ use syscall::errno::Errno;
 use crate::inotify::types::{
     InotifyData, MarkScope, FAN_ACCESS, FAN_ALL_EVENT_BITS, FAN_CLOSE, FAN_FS_ERROR,
     FAN_MNT_EVENTS, FAN_MODIFY, FAN_ONDIR, FAN_OPEN, FAN_OPEN_EXEC, FAN_PRE_ACCESS,
-    FAN_Q_OVERFLOW, FAN_RENAME, IN_ALL_EVENTS, IN_EXCL_UNLINK, IN_IGNORED, IN_ONESHOT,
-    IN_Q_OVERFLOW, PERM_BITS,
+    FAN_Q_OVERFLOW, FAN_RENAME, FANOTIFY_EVENT_FLAGS, IN_ALL_EVENTS, IN_EXCL_UNLINK, IN_IGNORED,
+    IN_ONESHOT, IN_Q_OVERFLOW, PERM_BITS,
 };
 
 pub(super) const IN_NONBLOCK: u32 = 0o0_004_000;
@@ -28,8 +28,8 @@ pub(super) const FAN_ALL_CLASS_BITS:    u32 = FAN_CLASS_CONTENT | FAN_CLASS_PRE_
 pub(crate) const FAN_UNLIMITED_QUEUE: u32 = 0x0000_0010;
 pub(crate) const FAN_UNLIMITED_MARKS: u32 = 0x0000_0020;
 pub(crate) const FAN_ENABLE_AUDIT:      u32 = 0x0000_0040;
-const FAN_REPORT_PIDFD:      u32 = 0x0000_0080;
-const FAN_REPORT_TID:        u32 = 0x0000_0100;
+pub(crate) const FAN_REPORT_PIDFD: u32 = 0x0000_0080;
+pub(crate) const FAN_REPORT_TID:   u32 = 0x0000_0100;
 pub(crate) const FAN_REPORT_FID:        u32 = 0x0000_0200;
 pub(crate) const FAN_REPORT_DIR_FID:    u32 = 0x0000_0400;
 pub(crate) const FAN_REPORT_NAME:       u32 = 0x0000_0800;
@@ -66,8 +66,6 @@ pub(crate) const FAN_MARK_KNOWN: u32 = FAN_MARK_ADD | FAN_MARK_REMOVE | FAN_MARK
 pub(super) const FANOTIFY_MARK_TYPE_BITS: u32 = FAN_MARK_MOUNT | FAN_MARK_FILESYSTEM;
 pub(super) const FANOTIFY_MARK_CMD_BITS: u32 = FAN_MARK_ADD | FAN_MARK_REMOVE | FAN_MARK_FLUSH;
 pub(super) const FANOTIFY_MARK_IGNORE_BITS: u32 = FAN_MARK_IGNORED_MASK | FAN_MARK_IGNORE;
-pub(super) const FANOTIFY_EVENT_FLAGS: u32 = FAN_EVENT_ON_CHILD | FAN_ONDIR;
-const FAN_EVENT_ON_CHILD: u32 = 0x0800_0000;
 pub(super) const FANOTIFY_EVENTS: u32 = FAN_ALL_EVENT_BITS & !(PERM_BITS | FANOTIFY_EVENT_FLAGS | FAN_Q_OVERFLOW);
 pub(super) const FANOTIFY_FD_EVENTS: u32 = FAN_ACCESS | FAN_MODIFY | FAN_CLOSE | FAN_OPEN
     | FAN_OPEN_EXEC | PERM_BITS;
@@ -201,6 +199,7 @@ pub(crate) fn validate_fanotify_mark_group(
     scope: MarkScope,
     mask: u32,
     flags: u32,
+    has_sys_admin: bool,
 ) -> Result<(), Errno> {
     if !group.is_fanotify() { return Err(Errno::Einval); }
     if group.flags & FAN_REPORT_MNT != 0 {
@@ -210,6 +209,16 @@ pub(crate) fn validate_fanotify_mark_group(
         if mask & FAN_MNT_EVENTS != 0 { return Err(Errno::Einval); }
         if scope == MarkScope::MountNamespace { return Err(Errno::Einval); }
     }
+    // Only an INODE mark is available to an unprivileged caller. A mount, a
+    // filesystem or a mount namespace is shared by everything running on it, so
+    // watching one is an administrative act and needs `CAP_SYS_ADMIN` in the
+    // user namespace the GROUP was created in.
+    //
+    // Position is user-visible: this sits AFTER the mount-event/scope pairing
+    // above and BEFORE every remaining mask check, so an unprivileged caller
+    // asking for a filesystem mark with an otherwise-invalid mask is told
+    // `EPERM`, not `EINVAL` — the mask it chose never gets examined.
+    if scope != MarkScope::Inode && !has_sys_admin { return Err(Errno::Eperm); }
     let class = group.flags & FAN_ALL_CLASS_BITS;
     if mask & PERM_BITS != 0 && class == 0 { return Err(Errno::Einval); }
     if mask & FAN_PRE_ACCESS != 0 && class == FAN_CLASS_CONTENT { return Err(Errno::Einval); }

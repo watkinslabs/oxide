@@ -26,7 +26,7 @@
 use core::cell::UnsafeCell;
 
 // Consumed by the `global_asm!` entry stub (kernel target only) and by the
-// selector-pairing test below.
+// selector-pairing test in `syscall/tests.rs`.
 #[cfg(any(all(target_arch = "x86_64", target_os = "oxide-kernel"), test))]
 use crate::gdt::{USER_CS_SELECTOR, USER_SS_SELECTOR};
 use crate::pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_SYSCALL};
@@ -40,7 +40,7 @@ const _: () = assert!(PT_REGS_VECTOR_SYSCALL_IMM as u64 == PT_REGS_VECTOR_SYSCAL
 
 // MSR numbers are written only by `install_syscall_msrs`, whose body is
 // kernel-target-only; the two RFLAGS/EFER bit values below are additionally
-// pinned by the host unit tests at the bottom of this file.
+// pinned by the host unit tests in `syscall/tests.rs`.
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const IA32_EFER:  u32 = 0xC000_0080;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -72,9 +72,11 @@ unsafe impl Sync for SyscallKStack {}
 static SYSCALL_KSTACK: SyscallKStack = SyscallKStack(UnsafeCell::new([0u8; 4096]));
 
 // B3.3 per-CPU syscall slots. The syscall entry/exit asm + the Rust frame
-// readers reach these through the per-CPU area (gs base = kernel per-CPU,
-// the no-swapgs model the rest of the kernel already relies on for
-// `current_cpu`/percpu_base). Offsets within the 4 KiB per-CPU page; 0 is
+// readers reach these through the per-CPU area. GS base is the kernel
+// per-CPU area for the whole of kernel mode — the entry paths `swapgs` in
+// and the exit paths `swapgs` out, so every kernel-side `gs:[…]` (here,
+// `current_cpu`, the hardirq-stack slot) sees the same base regardless of
+// which ring it was entered from. Offsets within the 4 KiB per-CPU page; 0 is
 // `cpu_id`, 8/16 were freed when Phase A removed the IRQ-tail ctx staging.
 //   gs:[8]  — this CPU's per-task syscall kstack top (set by
 //             `set_syscall_kstack` on every switch; was OXIDE_SYSCALL_KSTACK)
@@ -93,8 +95,8 @@ fn percpu_syscall_kstack() -> u64 {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
         let v: u64;
-        // SAFETY: gs base is the kernel per-CPU area (no-swapgs model);
-        // offset 8 is the per-task kstack slot. Read-only.
+        // SAFETY: kernel mode runs with the kernel per-CPU GS base (entry
+        // swapgs); offset 8 is the per-task kstack slot. Read-only.
         unsafe { core::arch::asm!("mov {v}, gs:[8]", v = out(reg) v, options(nostack, preserves_flags, readonly)); }
         v
     }
@@ -150,10 +152,18 @@ core::arch::global_asm!(
     ".globl oxide_syscall_entry",
     ".type  oxide_syscall_entry, @function",
     "oxide_syscall_entry:",
+    // `syscall` leaves GS base holding the USER base (arch_prctl ARCH_SET_GS,
+    // or 0). `swapgs` exchanges it with IA32_KERNEL_GS_BASE, which the kernel
+    // parked the per-CPU base in on the way out — so every `gs:[…]` below
+    // resolves against this CPU's per-CPU area. IF is already clear here
+    // (IA32_FMASK), so no maskable interrupt can observe the swap window; the
+    // four IST-routed vectors that can (#DB/NMI/#DF/#MC) go through the
+    // paranoid entry, which tests the live GS base instead of the saved CS.
+    "    swapgs",
     // P5-10: stash user RSP via a PER-CPU slot (gs:[16]) instead of r12
     // (the prior `mov r12, rsp` clobbered user r12). B3.3: per-CPU via the
-    // gs-relative per-CPU area (gs base = kernel per-CPU, no-swapgs model)
-    // so an AP syscalling concurrently with the BSP never clobbers the
+    // gs-relative per-CPU area (kernel per-CPU base, live from the swapgs
+    // above) so an AP syscalling concurrently with the BSP never clobbers the
     // shared scratch. gs:[8] = this CPU's per-task syscall kstack top
     // (set by set_syscall_kstack on every switch); gs:[16] = user-RSP scratch.
     "    mov  gs:[16], rsp",
@@ -260,6 +270,14 @@ core::arch::global_asm!(
     "    mov  rsp, [rsp + 0xa0]",              // user RSP (last write per sysretq spec)
     // The frame itself is abandoned below the kernel rsp we just dropped;
     // the next syscall starts fresh from the kstack top.
+    // Hand GS back to user. `cli` first: the dispatch above may have run with
+    // IRQs on, and an IRQ taken between the `swapgs` and the return would
+    // enter through `oxide_irq_common`, which reads the SAVED CS — kernel —
+    // and would therefore skip its own swapgs and run the handler on the user
+    // GS base. `sysretq` reloads RFLAGS from r11, so clearing IF here costs
+    // the returning thread nothing. No `gs:[…]` access may follow.
+    "    cli",
+    "    swapgs",
     "    sysretq",
     // ---- IRETQ return (Linux `swapgs_restore_regs_and_return_to_usermode`) --
     // The full-fidelity exit: restores rcx and r11 as ordinary registers and
@@ -285,6 +303,11 @@ core::arch::global_asm!(
     // Drop the 15 GPR slots plus `vector`/`error`, leaving rsp on the frame's
     // rip/cs/rflags/rsp/ss image. rax still holds the dispatch retval.
     "    add  rsp, 0x88",
+    // Unconditional, unlike the fault/IRQ tails: this path is only reachable
+    // from a `syscall`, so the interrupted context is always ring 3. Same
+    // `cli`-then-`swapgs` window rule as the SYSRET tail above.
+    "    cli",
+    "    swapgs",
     "    iretq",
     ".size oxide_syscall_entry, . - oxide_syscall_entry",
     user_cs = const USER_CS_SELECTOR,
@@ -371,8 +394,8 @@ pub unsafe fn set_syscall_kstack(top: u64) {
     // on every switch (after set_percpu_base, so gs is valid). The next
     // syscall on this CPU loads it via the entry stub.
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    // SAFETY: gs base = kernel per-CPU area (no-swapgs); offset 8 is the
-    // per-task syscall-kstack slot within the 4 KiB per-CPU page.
+    // SAFETY: kernel mode runs with the kernel per-CPU GS base (entry
+    // swapgs); offset 8 is the per-task syscall-kstack slot in that page.
     unsafe { core::arch::asm!("mov gs:[8], {v}", v = in(reg) top, options(nostack, preserves_flags)); }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { let _ = top; }
@@ -436,52 +459,5 @@ pub unsafe fn install_syscall_msrs() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sfmask_includes_if_df_ac() {
-        assert!(SFMASK_BITS & (1 << 9)  != 0, "IF cleared on entry");
-        assert!(SFMASK_BITS & (1 << 10) != 0, "DF cleared on entry");
-        assert!(SFMASK_BITS & (1 << 18) != 0, "AC cleared on entry");
-    }
-
-    #[test]
-    fn efer_sce_bit_position() {
-        assert_eq!(EFER_SCE, 1);
-    }
-
-    #[test]
-    fn syscall_kstack_size_is_4k() {
-        assert_eq!(core::mem::size_of::<SyscallKStack>(), 4096);
-    }
-
-    #[test]
-    fn the_entry_stub_pushes_exactly_one_pt_regs() {
-        // 22 `push`es in `oxide_syscall_entry`; the frame it leaves is what
-        // `current_pt_regs()` re-derives from the kstack top.
-        assert_eq!(PT_REGS_BYTES, 22 * 8);
-        // ...and that count keeps rsp 16-aligned at the `call`, which is why
-        // the stub needs no alignment pad before `oxide_syscall_dispatch`.
-        assert_eq!(PT_REGS_BYTES % 16, 0, "entry pushes must not skew the SysV alignment");
-    }
-
-    #[test]
-    fn the_syscall_vector_sentinel_survives_the_asm_immediate() {
-        // `push -1` is what the assembler accepts; `from_syscall()` tests
-        // against the u64 spelling.
-        assert_eq!(PT_REGS_VECTOR_SYSCALL_IMM as u64, PT_REGS_VECTOR_SYSCALL);
-        assert_eq!(PT_REGS_VECTOR_SYSCALL, u64::MAX);
-    }
-
-    #[test]
-    fn the_synthesized_selectors_are_the_ring3_gdt_pair() {
-        // The IRETQ image `syscall` does not push is synthesized from these;
-        // they must be the very selectors `sysretq` reloads (gdt.rs STAR
-        // arithmetic), or the first IRQ from ring 3 pushes a mismatched SS.
-        assert_eq!(USER_CS_SELECTOR, crate::gdt::USER_CS as u64);
-        assert_eq!(USER_SS_SELECTOR, crate::gdt::USER_DS as u64);
-        assert_eq!(USER_CS_SELECTOR & 3, 3);
-        assert_eq!(USER_SS_SELECTOR & 3, 3);
-    }
-}
+#[path = "syscall/tests.rs"]
+mod tests;

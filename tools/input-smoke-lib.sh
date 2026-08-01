@@ -76,6 +76,11 @@ ROUNDS = 40
 ROUND_PAUSE_SECONDS = 0.3
 MOTION_X = 12
 MOTION_Y = -7
+# QEMU's absolute input axis range. Each round steps the tablet to a new
+# position: an absolute axis that repeats its previous value carries no
+# information and the input core drops it, exactly as Linux does.
+ABS_AXIS_MAX = 0x7FFF
+ABS_STEPS = 8
 
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
@@ -101,11 +106,16 @@ def input_event(evs):
     cmd({"execute": "input-send-event", "arguments": {"events": evs}})
     rd()
 
-for _ in range(ROUNDS):
+for round_index in range(ROUNDS):
     send_key("a")
     input_event([
         {"type": "rel", "data": {"axis": "x", "value": MOTION_X}},
         {"type": "rel", "data": {"axis": "y", "value": MOTION_Y}},
+    ])
+    step = (round_index % ABS_STEPS) + 1
+    input_event([
+        {"type": "abs", "data": {"axis": "x", "value": ABS_AXIS_MAX * step // (ABS_STEPS + 1)}},
+        {"type": "abs", "data": {"axis": "y", "value": ABS_AXIS_MAX * step // (ABS_STEPS + 1)}},
     ])
     input_event([{"type": "btn", "data": {"button": "left", "down": True}}])
     input_event([{"type": "btn", "data": {"button": "left", "down": False}}])

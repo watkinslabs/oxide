@@ -132,7 +132,7 @@ fn load_image(mm: &Arc<vmm::AddressSpace>, program: &[u8], info: &SubprocessInfo
         release_borrow();
         return Err(-(Errno::Enomem.as_i32()));
     }
-    mm.set_mmap_base(rnd.mmap_base(HELPER_STACK_BYTES));
+    mm.set_mmap_layout(rnd.mmap_base(HELPER_STACK_BYTES), true);
 
     stage!(b"stack-mapped");
     let img = match elf_load::load_static_blob(program, mm, &rnd) {

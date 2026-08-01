@@ -9,6 +9,18 @@ use crate::limits::{Budget, CURRENT, STACK_TOP};
 use crate::mode::{self, Mode};
 use crate::tunable;
 
+/// Linux `arch_pick_mmap_layout`'s two outputs: the arena anchor and the
+/// direction `get_unmapped_area` searches from it. They are ONE decision — a
+/// legacy base searched downward, or a top-down base searched upward, would
+/// each walk straight out of the arena — so they travel together.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Layout {
+    /// `mm->mmap_base`: the ceiling when `top_down`, the floor otherwise.
+    pub base: u64,
+    /// Linux `MMF_TOPDOWN`.
+    pub top_down: bool,
+}
+
 /// Every random word one exec consumes, plus the decision that produced them.
 /// `randomize == false` means every offset below is zero, so an
 /// `ADDR_NO_RANDOMIZE` exec and a `randomize_va_space=0` exec produce a
@@ -82,11 +94,38 @@ impl ExecRnd {
     }
 
     /// Linux `arch_pick_mmap_layout` top-down result — `mm->mmap_base`, the
-    /// ceiling `get_unmapped_area` searches down from. This kernel has no
-    /// legacy bottom-up layout, so the `mmap_is_legacy` branch does not apply.
+    /// ceiling `get_unmapped_area` searches down from.
     /// # C: O(1)
     pub fn mmap_base(&self, rlim_stack: u64) -> u64 {
         layout::mmap_base(self.mmap_rnd, rlim_stack, self.randomize, &self.budget)
+    }
+
+    /// Linux `mmap_legacy_base` — the FLOOR the bottom-up layout allocates
+    /// upward from. Shares `mmap_rnd` with [`Self::mmap_base`] exactly as
+    /// `arch_pick_mmap_base` passes one `random_factor` to both, so a single
+    /// exec cannot end up with two independent arena draws.
+    /// # C: O(1)
+    pub fn mmap_legacy_base(&self) -> u64 {
+        layout::mmap_legacy_base(self.mmap_rnd, &self.budget)
+    }
+
+    /// Linux `arch_pick_mmap_layout` in full: the anchor address AND the search
+    /// direction, decided together and committed to the mm in one step.
+    /// `Layout::top_down` is Linux's `MMF_TOPDOWN`.
+    /// # C: O(1)
+    pub fn mmap_layout(&self, rlim_stack: u64, addr_compat_layout: bool,
+                       stack_rlim_unlimited: bool) -> Layout {
+        let legacy = layout::mmap_is_legacy(
+            addr_compat_layout,
+            stack_rlim_unlimited,
+            layout::unlimited_stack_flips_layout(),
+            crate::tunable::legacy_va_layout(),
+        );
+        if legacy {
+            Layout { base: self.mmap_legacy_base(), top_down: false }
+        } else {
+            Layout { base: self.mmap_base(rlim_stack), top_down: true }
+        }
     }
 
     /// Linux `randomize_stack_top(STACK_TOP)` (`fs/binfmt_elf.c:1028`).

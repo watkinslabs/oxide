@@ -68,7 +68,7 @@ pub fn notify_with(stop_code: i32, message: u64, mut info: sched::SigInfo)
     }
     *cur.ptrace_siginfo.lock() = Some(info);
     crate::ptrace_fpu::snapshot_current();
-    sched::live::stop::stop_until_cont_code(stop_code as u32);
+    sched::live::stop::stop_until_cont_code(stop_code as u32, sched::jobctl::StopKind::Ptrace);
     crate::ptrace_fpu::restore_if_dirty();
     // Linux `ptrace_stop`'s tail: `exit_code = current->exit_code;
     // current->last_siginfo = NULL; current->ptrace_message = 0;
@@ -154,17 +154,6 @@ pub fn signal_stop(sig: u32, info: Option<sched::SigInfo>)
     (outcome, delivered)
 }
 
-/// Whether `ev` would stop the running task, without stopping it. Callers that
-/// must publish state before parking (the clone path, which reports only after
-/// the child is schedulable) use this to skip the work when nothing is
-/// listening.
-/// # C: O(1)
-pub fn event_armed(ev: u32) -> bool {
-    let Some(cur) = sched::live::current() else { return false };
-    cur.traced_by.load(Ordering::Acquire) != 0
-        && event::event_enabled(cur.ptrace_options.load(Ordering::Acquire), ev)
-}
-
 /// Linux `ptrace_init_task`: a child created by a reported fork/vfork/clone is
 /// auto-attached to the SAME tracer with the SAME options, and comes to rest
 /// immediately — a SEIZED child in a `PTRACE_EVENT_STOP`, a classically
@@ -226,6 +215,8 @@ pub fn exit_ptrace(tracer_tid: u32) {
             sched::live::zombies::notify_real_parent_of_zombie(&t);
         }
         // A tracee parked in a ptrace stop has no tracer left to resume it.
-        sched::live::registry::wake_if_stopped(&t);
+        t.jobctl.store(sched::jobctl::resume_clears(t.jobctl.load(Ordering::Acquire)),
+                       Ordering::Release);
+        sched::live::registry::wake_if_stopped(&t, sched::jobctl::WakeKind::PtraceResume);
     }
 }

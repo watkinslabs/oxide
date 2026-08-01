@@ -3,17 +3,29 @@
 use super::AddressSpace;
 
 impl AddressSpace {
-    /// Per-AS mmap arena top per Linux `mm_struct::mmap_base`.
-    /// `execve` computes this from RLIMIT_STACK + a fixed GAP per
-    /// `arch_pick_mmap_base`. Zero is the uninitialised sentinel.
+    /// Linux `arch_pick_mmap_layout`: install this mm's arena anchor AND the
+    /// direction `get_unmapped_area` searches from it, in one step. Anchor and
+    /// direction are never set apart — a legacy floor searched top-down would
+    /// walk straight out of the arena.
+    ///
+    /// `top_down` is Linux's `MMF_TOPDOWN`. With it, `base` is the CEILING
+    /// (`mm->mmap_base`, `stack_top - rlim_stack - GAP`); without it, `base` is
+    /// the FLOOR (`mm->mmap_legacy_base`, `TASK_UNMAPPED_BASE + rnd`). Zero is
+    /// the uninitialised sentinel in both directions.
     /// # C: O(1)
-    pub fn set_mmap_base(&self, base: u64) {
+    pub fn set_mmap_layout(&self, base: u64, top_down: bool) {
+        self.mmap_topdown.store(top_down, core::sync::atomic::Ordering::Release);
         self.mmap_base.store(base, core::sync::atomic::Ordering::Release);
     }
 
     /// # C: O(1)
     pub fn mmap_base(&self) -> u64 {
         self.mmap_base.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Linux `mm_flags_test(MMF_TOPDOWN, mm)`. # C: O(1)
+    pub fn mmap_topdown(&self) -> bool {
+        self.mmap_topdown.load(core::sync::atomic::Ordering::Acquire)
     }
 
     /// Publish the mapped vDSO `__kernel_rt_sigreturn` entry for this mm.

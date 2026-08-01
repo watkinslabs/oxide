@@ -46,6 +46,9 @@ pub(super) fn set_randomize_va_space(v: i64) { aslr::set_randomize_va_space(v as
 /// could disagree with the gate.
 pub(super) fn get_unprivileged_userfaultfd() -> i64 { vmm::uffd::unprivileged_userfaultfd() }
 pub(super) fn set_unprivileged_userfaultfd(v: i64) { vmm::uffd::set_unprivileged_userfaultfd(v); }
+pub(super) fn get_legacy_va_layout() -> i64 { aslr::tunable::legacy_va_layout() as i64 }
+pub(super) fn set_legacy_va_layout(v: i64) { aslr::tunable::set_legacy_va_layout(v != 0); }
+
 pub(super) fn get_mmap_rnd_bits() -> i64 { aslr::tunable::mmap_rnd_bits() as i64 }
 pub(super) fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max(0) as u32); }
 /// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
@@ -92,7 +95,12 @@ pub(super) fn get_modules_disabled() -> i64 { modules::admission::modules_disabl
 pub(super) fn set_modules_disabled(value: i64) { let _ = modules::admission::set_modules_disabled(value); }
 pub(super) fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
 pub(super) fn get_ptrace_scope() -> i64 { sched::yama::scope() as i64 }
-pub(super) fn set_ptrace_scope(value: i64) { let _ = sched::yama::set_scope(value); }
+/// A REFUSED write must report EINVAL, not silently succeed: a hardening
+/// script that lowers `ptrace_scope` and reads back a success it did not get
+/// would believe it had relaxed a restriction that is still in force.
+pub(super) fn set_ptrace_scope(value: i64) -> Result<(), ()> {
+    if sched::yama::set_scope(value) { Ok(()) } else { Err(()) }
+}
 /// `net.core.rmem_max` / `net.core.wmem_max` bind to the ONE pair of ceilings
 /// `SO_RCVBUF` / `SO_SNDBUF` clamp against, so the leaf and the option can
 /// never disagree.

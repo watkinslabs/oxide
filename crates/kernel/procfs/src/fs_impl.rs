@@ -33,6 +33,14 @@ impl vfs::SuperOps for ProcfsSuperOps {
             ..Default::default()
         })
     }
+
+    /// procfs installs no handle-export backend: a procfs inode number is
+    /// synthesized from the live object it reflects (a pid, a per-task file)
+    /// and is neither stable across that object's lifetime nor resolvable back
+    /// to it by number. `name_to_handle_at(2)` therefore reports `EOPNOTSUPP`
+    /// here instead of minting a handle whose every `open_by_handle_at(2)`
+    /// would be `ESTALE`. # C: O(1)
+    fn export_can_decode_fh(&self) -> bool { false }
 }
 
 impl vfs::fs::FileSystem for ProcfsFs {

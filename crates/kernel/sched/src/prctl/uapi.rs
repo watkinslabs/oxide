@@ -96,6 +96,39 @@ pub const PR_RSEQ_SLICE_EXTENSION_GET: u64 = 1;
 pub const PR_RSEQ_SLICE_EXTENSION_SET: u64 = 2;
 pub const PR_RSEQ_SLICE_EXT_ENABLE:    u64 = 0x01;
 
+/// `PR_SET_TAGGED_ADDR_CTRL` bits (arg2). `PR_TAGGED_ADDR_ENABLE` is the
+/// tagged-address ABI itself; the `PR_MTE_*` bits ride the same word and are
+/// only accepted on a CPU with memory tagging.
+pub const PR_TAGGED_ADDR_ENABLE: u64 = 1 << 0;
+pub const PR_MTE_TCF_NONE:  u64 = 0;
+pub const PR_MTE_TCF_SYNC:  u64 = 1 << 1;
+pub const PR_MTE_TCF_ASYNC: u64 = 1 << 2;
+pub const PR_MTE_TCF_MASK:  u64 = PR_MTE_TCF_SYNC | PR_MTE_TCF_ASYNC;
+/// `PR_MTE_TAG_MASK` — the 16-bit include-mask of tags the kernel may pick
+/// for `PROT_MTE` pages, at `PR_MTE_TAG_SHIFT`.
+pub const PR_MTE_TAG_SHIFT: u32 = 3;
+pub const PR_MTE_TAG_MASK: u64 = 0xffff << PR_MTE_TAG_SHIFT;
+
+/// `PR_SVE_SET_VL` / `PR_SME_SET_VL` argument layout: a vector length in the
+/// low 16 bits plus flag bits above it.
+pub const PR_SVE_VL_LEN_MASK: u64 = 0xffff;
+pub const PR_SVE_VL_INHERIT:  u64 = 1 << 17;
+pub const PR_SME_VL_LEN_MASK: u64 = 0xffff;
+pub const PR_SME_VL_INHERIT:  u64 = 1 << 17;
+
+/// `PR_PAC_RESET_KEYS` / `PR_PAC_{SET,GET}_ENABLED_KEYS` key selectors (arg2).
+/// The four `APIA`..`APDB` keys authenticate ADDRESSES; `APGA` is the generic
+/// key and is gated on a separate CPU feature.
+pub const PR_PAC_APIAKEY: u64 = 1 << 0;
+pub const PR_PAC_APIBKEY: u64 = 1 << 1;
+pub const PR_PAC_APDAKEY: u64 = 1 << 2;
+pub const PR_PAC_APDBKEY: u64 = 1 << 3;
+pub const PR_PAC_APGAKEY: u64 = 1 << 4;
+/// Address keys only — `PR_PAC_SET_ENABLED_KEYS` cannot enable/disable the
+/// generic key, which has no `SCTLR_EL1` enable bit.
+pub const PR_PAC_ENABLED_KEYS_MASK: u64 =
+    PR_PAC_APIAKEY | PR_PAC_APIBKEY | PR_PAC_APDAKEY | PR_PAC_APDBKEY;
+
 /// `PR_TIMING_STATISTICAL` — the only accepted `PR_SET_TIMING` value and the
 /// value `PR_GET_TIMING` reports. Zero, not one.
 pub const PR_TIMING_STATISTICAL: u64 = 0;

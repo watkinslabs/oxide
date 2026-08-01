@@ -156,7 +156,8 @@ fn ptrace_signal(p: crate::signal::PendingSignal) -> Option<crate::signal::Pendi
     use core::sync::atomic::Ordering;
     let Some(cur) = sched::live::current() else { return Some(p) };
     let traced = cur.traced_by.load(Ordering::Relaxed) != 0;
-    if !crate::s101_ptrace_sigstop::stops_for_tracer(traced, p.sig) { return Some(p); }
+    let immutable = cur.sigactions_ref().is_immutable(p.sig);
+    if !crate::s101_ptrace_sigstop::stops_for_tracer(traced, p.sig, immutable) { return Some(p); }
     let (outcome, info) = crate::ptrace::stop::signal_stop(p.sig, p.info);
     match outcome {
         crate::s101_ptrace_sigstop::Outcome::Suppress => None,

@@ -112,7 +112,7 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
     let (res_id, w, h) = match crate::crtc::fb_scanout_resource(card_id, ops, p.fb_id) {
         Some(v) => v, None => return einval(),
     };
-    if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
+    if !(ops.present)(ops.driver_key, res_id, w, h, crate::node::DamageRect::full(w, h)) { return einval(); }
     crate::crtc::set_current_fb(card_id, p.fb_id);
     crate::crtc::set_owner(card_id, token);
     0
@@ -135,7 +135,8 @@ pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_
     let (res_id, width, height) = match crate::crtc::fb_scanout_resource(card_id, ops, fb_id) {
         Some(v) => v, None => return einval(),
     };
-    if !(ops.set_scanout)(ops.driver_key, res_id, width, height) { return einval(); }
+    if !(ops.present)(ops.driver_key, res_id, width, height, crate::node::DamageRect::full(width, height)) { return einval(); }
+    crate::diag::record(crate::diag::Present::Flip, fb_id, res_id);
     crate::crtc::set_current_fb(card_id, fb_id);
     crate::crtc::set_owner(card_id, token);
     0
@@ -211,12 +212,12 @@ pub fn cursor2(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, arg: u64) ->
 }
 
 /// `MODE_DIRTYFB` — the client rendered into `fb_id` in place and asks the
-/// driver to push the damaged region to the host. virtio-gpu's TRANSFER_TO_HOST
-/// + RESOURCE_FLUSH re-upload the buffer; we flush the whole fb (no partial-
-/// damage primitive is exposed) and ONLY when `fb_id` is the one currently
-/// scanned out (otherwise there is nothing on screen to refresh). This is what
-/// makes an in-place-rendered (non-page-flipped) compositor's frames appear.
-/// # C: O(1) + O(scanout).
+/// driver to push the damaged region to the host. The clip list bounds what is
+/// uploaded, so an in-place-rendered frame costs its damage rather than the
+/// whole surface; a caller passing no clips, or more than the walk cap, gets
+/// the whole surface. Acts ONLY when `fb_id` is the one currently scanned out
+/// (Linux dirtyfb on an unbound fb is a successful no-op).
+/// # C: O(clips) + O(scanout).
 pub fn dirty_fb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbDirtyCmd>() as u64) { return einval(); }
     // SAFETY: arg range validated; DrmModeFbDirtyCmd is repr(C) 24 B; aligned read at CPL=0.
@@ -229,9 +230,30 @@ pub fn dirty_fb(card_id: u32, arg: u64) -> i64 {
     let (res_id, w, h) = match crate::crtc::fb_scanout_resource(card_id, ops, d.fb_id) {
         Some(v) => v, None => return einval(),
     };
-    // set_scanout re-issues SET_SCANOUT + TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
-    if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
+    let damage = dirty_damage(&d, w, h);
+    if !(ops.present)(ops.driver_key, res_id, w, h, damage) { return einval(); }
+    crate::diag::record(crate::diag::Present::Dirty, d.fb_id, res_id);
     0
+}
+
+/// Damage a DIRTYFB request describes: the bounding box of its clips, or the
+/// whole surface when it supplies none, supplies too many to walk, or its clip
+/// array is not readable. # C: O(clips)
+fn dirty_damage(d: &DrmModeFbDirtyCmd, w: u32, h: u32) -> crate::node::DamageRect {
+    let full = crate::node::DamageRect::full(w, h);
+    if !crate::damage::clip_count_is_usable(d.num_clips) || d.clips_ptr == 0 { return full; }
+    let n = d.num_clips as usize;
+    let bytes = (n as u64) * core::mem::size_of::<crate::damage::DrmClipRect>() as u64;
+    if !user_ok(d.clips_ptr, bytes) { return full; }
+    let mut clips = [crate::damage::DrmClipRect::default(); crate::damage::MAX_DAMAGE_CLIPS as usize];
+    // SAFETY: range [clips_ptr, clips_ptr+n*8) validated < USER_VA_END above; drm_clip_rect is 8 bytes with no padding; reads through the caller's AS at CPL=0.
+    unsafe {
+        for (i, slot) in clips.iter_mut().take(n).enumerate() {
+            *slot = core::ptr::read_volatile(
+                (d.clips_ptr + (i as u64) * 8) as *const crate::damage::DrmClipRect);
+        }
+    }
+    crate::damage::bounding_rect(&clips[..n], w, h).unwrap_or(full)
 }
 
 /// `MODE_OBJ_SETPROPERTY` — set an object property by id. The only writable

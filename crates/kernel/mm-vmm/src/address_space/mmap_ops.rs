@@ -2,7 +2,7 @@
 
 use hal::UserVirtAddr;
 
-use crate::hole::{find_hole, hole_clear};
+use crate::hole::{find_hole, find_hole_bottom_up, hole_clear};
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult, MdweAdmission, MmapError, MmapPlacement};
 
@@ -56,11 +56,22 @@ impl AddressSpace {
     pub fn get_unmapped_area(&self, len: usize) -> KResult<UserVirtAddr> {
         validate_len(len)?;
         let tree = self.vmas.read();
-        let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
-            0 => MMAP_TOP,
-            v => v,
-        };
-        find_hole(&tree, len as u64, top).ok_or(Error::NoMem)
+        self.unmapped_area(&tree, len as u64).ok_or(Error::NoMem)
+    }
+
+    /// Linux `mm_get_unmapped_area` (`mm/mmap.c:806`): one entry point that
+    /// dispatches on `MMF_TOPDOWN` to `arch_get_unmapped_area_topdown` or, for
+    /// the legacy layout, to `arch_get_unmapped_area`. Every hole search goes
+    /// through here so the two directions cannot disagree about which anchor
+    /// this mm is using.
+    /// # C: O(N) over VMAs
+    fn unmapped_area(&self, tree: &crate::tree::VmaTree, len: u64) -> Option<UserVirtAddr> {
+        let anchor = self.mmap_base.load(core::sync::atomic::Ordering::Acquire);
+        if self.mmap_topdown() {
+            find_hole(tree, len, if anchor == 0 { MMAP_TOP } else { anchor })
+        } else {
+            find_hole_bottom_up(tree, len, anchor)
+        }
     }
 
     /// Place a new VMA with Linux `VM_MAY*` permissions.
@@ -195,13 +206,7 @@ impl AddressSpace {
                 };
                 let start = match from_hint {
                     Some(h) => h,
-                    None => {
-                        let top = match self.mmap_base.load(core::sync::atomic::Ordering::Acquire) {
-                            0 => MMAP_TOP,
-                            v => v,
-                        };
-                        find_hole(&tree, len_u64, top).ok_or(Error::NoMem)?
-                    },
+                    None => self.unmapped_area(&tree, len_u64).ok_or(Error::NoMem)?,
                 };
                 (start, None)
             }

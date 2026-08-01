@@ -128,25 +128,25 @@ fn inotify_add_watch_mask_validation_matches_linux_ordering_units() {
 fn inotify_add_watch_create_replace_and_add_semantics() {
     let g = InotifyData::new(0);
     let key = 0xabcdusize;
-    let wd = add_or_update_watch(&g, key, 0x44, IN_MODIFY).unwrap();
+    let wd = add_or_update_watch(&g, key, 0x44, IN_MODIFY, false, None).unwrap();
     assert_eq!(wd, 1);
     assert_eq!(g.watches.lock()[0].mask, IN_MODIFY);
 
-    let same = add_or_update_watch(&g, key, 0x44, IN_OPEN).unwrap();
+    let same = add_or_update_watch(&g, key, 0x44, IN_OPEN, false, None).unwrap();
     assert_eq!(same, wd);
     assert_eq!(g.watches.lock()[0].mask, IN_OPEN);
 
-    let same = add_or_update_watch(&g, key, 0x44, IN_MODIFY | 0x2000_0000).unwrap();
+    let same = add_or_update_watch(&g, key, 0x44, IN_MODIFY | 0x2000_0000, false, None).unwrap();
     assert_eq!(same, wd);
     assert_eq!(g.watches.lock()[0].mask, IN_OPEN | IN_MODIFY);
 
     assert_eq!(
-        add_or_update_watch(&g, key, 0x44, IN_ATTRIB | 0x1000_0000),
+        add_or_update_watch(&g, key, 0x44, IN_ATTRIB | 0x1000_0000, false, None),
         Err(syscall::errno::Errno::Eexist),
     );
     assert_eq!(g.watches.lock()[0].mask, IN_OPEN | IN_MODIFY);
 
-    let flags_only = add_or_update_watch(&g, 0xbeefusize, 0x44, 0x0100_0000).unwrap();
+    let flags_only = add_or_update_watch(&g, 0xbeefusize, 0x44, 0x0100_0000, false, None).unwrap();
     assert_eq!(flags_only, 2);
     assert_eq!(g.watches.lock()[1].mask, 0);
 }
@@ -155,7 +155,7 @@ fn inotify_add_watch_create_replace_and_add_semantics() {
 fn inotify_oneshot_removes_watch_and_queues_ignored() {
     let ino = InotifyData::new(0);
     let file = reg(6, 0o644, 0);
-    let wd = add_or_update_watch(&ino, inode_key(&file), file.fsid(), IN_MODIFY | IN_ONESHOT).unwrap();
+    let wd = add_or_update_watch(&ino, inode_key(&file), file.fsid(), IN_MODIFY | IN_ONESHOT, false, None).unwrap();
     fire_self(&file, IN_MODIFY);
     assert_eq!(ino.watches.lock().len(), 0);
     assert_eq!(read_event_pair(&ino), (wd, IN_MODIFY));
@@ -167,7 +167,7 @@ fn inotify_oneshot_removes_watch_and_queues_ignored() {
 #[test]
 fn inotify_remove_watch_queues_ignored_and_rejects_missing_wd() {
     let ino = InotifyData::new(0);
-    let wd = add_or_update_watch(&ino, 0xcafeusize, 0x44, IN_OPEN).unwrap();
+    let wd = add_or_update_watch(&ino, 0xcafeusize, 0x44, IN_OPEN, false, None).unwrap();
     assert_eq!(remove_watch(&ino, wd), Ok(()));
     assert_eq!(read_event_pair(&ino), (wd, IN_IGNORED));
     assert_eq!(remove_watch(&ino, wd), Err(syscall::errno::Errno::Einval));
@@ -179,10 +179,10 @@ fn inotify_queue_overflow_reports_single_overflow_event() {
     // Distinct wds: identical consecutive records are MERGED into the tail
     // (Linux `inotify_merge`), so a run of clones would never fill the queue.
     for i in 0..INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
-        ino.enqueue_event(Event { wd: i as i32, mask: IN_OPEN, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
+        ino.enqueue_event(Event { wd: i as i32, mask: IN_OPEN, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, ..Default::default() });
     }
-    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
-    ino.enqueue_event(Event { wd: 1, mask: IN_ATTRIB, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
+    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, ..Default::default() });
+    ino.enqueue_event(Event { wd: 1, mask: IN_ATTRIB, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, ..Default::default() });
     let q = ino.events.lock();
     assert_eq!(q.len(), INOTIFY_DEFAULT_MAX_QUEUED_EVENTS + 1);
     assert_eq!(q.back().map(|e| (e.wd, e.mask)), Some((-1, IN_Q_OVERFLOW)));
@@ -256,53 +256,53 @@ fn fanotify_mark_group_validation_matches_linux_units() {
     let einval = syscall::errno::Errno::Einval;
     let ino = InotifyData::new(0);
     assert_eq!(
-        validate_fanotify_mark_group(&ino, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&ino, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD, true),
         Err(einval),
     );
 
     let notif = InotifyData::new_fanotify(0);
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_FS_ERROR, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_FS_ERROR, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Mount, FAN_OPEN, FAN_MARK_ADD | FAN_MARK_EVICTABLE),
+        validate_fanotify_mark_group(&notif, MarkScope::Mount, FAN_OPEN, FAN_MARK_ADD | FAN_MARK_EVICTABLE, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_MNT_ATTACH, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_MNT_ATTACH, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD, true),
         Err(einval),
     );
 
     let content = InotifyData::new_fanotify(FAN_CLASS_CONTENT);
-    assert_eq!(validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD), Ok(()));
+    assert_eq!(validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD, true), Ok(()));
     assert_eq!(
-        validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_PRE_ACCESS, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_PRE_ACCESS, FAN_MARK_ADD, true),
         Err(einval),
     );
 
     let fid = InotifyData::new_fanotify(FAN_REPORT_DIR_FID | FAN_REPORT_NAME | FAN_REPORT_FID);
-    assert_eq!(validate_fanotify_mark_group(&fid, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD), Ok(()));
+    assert_eq!(validate_fanotify_mark_group(&fid, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD, true), Ok(()));
 
     let mnt = InotifyData::new_fanotify(FAN_REPORT_MNT);
     assert_eq!(
-        validate_fanotify_mark_group(&mnt, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&mnt, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD, true),
         Ok(()),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&mnt, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&mnt, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD, true),
         Err(einval),
     );
 }
@@ -323,7 +323,7 @@ fn empty_inotify_is_eagain_and_not_pollable() {
 fn queued_event_is_readable_then_drains_to_eagain() {
     let ino = InotifyData::new(0);
     let before = ino.poll_subs.generation();
-    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
+    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, ..Default::default() });
     assert!(ino.poll_subs.generation() > before, "queued inotify event wakes epoll subscribers");
     assert_eq!(ino.poll(), vfs::POLL_IN);
     let mut buf = [0u8; 64];
@@ -360,7 +360,7 @@ fn parse_events(buf: &[u8], n: usize) -> alloc::vec::Vec<(i32, u32, u32, alloc::
 
 fn watched_dir(g: &Arc<InotifyData>, ino: u64, mask: u32) -> (InodeRef, i32) {
     let d = dir(ino, 0o755, 0, &[]);
-    let wd = add_or_update_watch(g, inode_key(&d), d.fsid(), mask).unwrap();
+    let wd = add_or_update_watch(g, inode_key(&d), d.fsid(), mask, true, None).unwrap();
     (d, wd)
 }
 
@@ -401,7 +401,7 @@ fn delete_self_and_move_self_never_carry_in_isdir() {
     // two, deliberately, to avoid breaking existing inotify programs.
     let g = InotifyData::new(0);
     let d = dir(0x7103, 0o755, 0, &[]);
-    add_or_update_watch(&g, inode_key(&d), d.fsid(), IN_ATTRIB | FAN_DELETE_SELF | FAN_MOVE_SELF).unwrap();
+    add_or_update_watch(&g, inode_key(&d), d.fsid(), IN_ATTRIB | FAN_DELETE_SELF | FAN_MOVE_SELF, true, None).unwrap();
     fire_self(&d, FAN_ATTRIB);
     fire_self(&d, FAN_DELETE_SELF);
     fire_self(&d, FAN_MOVE_SELF);

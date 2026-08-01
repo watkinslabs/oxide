@@ -96,6 +96,18 @@ pub const NT_PRSTATUS: u64 = 1;
 pub const NT_PRFPREG:  u64 = 2;
 pub const NT_X86_XSTATE: u64 = 0x202;
 pub const NT_ARM_SYSTEM_CALL: u64 = 0x404;
+/// `sizeof(struct user_hwdebug_state)`: a `dbg_info` word, a pad word, then 16
+/// `{ u64 addr; u32 ctrl; u32 pad; }` slots. Always the full 16 regardless of
+/// how many the machine implements.
+pub const ARM64_HWDEBUG_STATE_BYTES: usize = 8 + 16 * 16;
+
+/// `NT_ARM_HW_BREAK` — the arm64 hardware BREAKPOINT register file, exchanged
+/// as a `struct user_hwdebug_state`. arm64's answer to x86's `u_debugreg`
+/// window; it is what `gdb`'s `hbreak` drives.
+pub const NT_ARM_HW_BREAK: u64 = 0x402;
+/// `NT_ARM_HW_WATCH` — the same structure for the WATCHPOINT register file,
+/// which is what `gdb`'s `watch` drives.
+pub const NT_ARM_HW_WATCH: u64 = 0x403;
 
 /// Highest signal number `valid_signal()` accepts (`_NSIG`).
 pub const NSIG: u64 = 64;

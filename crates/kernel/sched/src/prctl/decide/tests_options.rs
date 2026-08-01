@@ -75,24 +75,56 @@ fn futex_hash_and_rseq_slice_reach_their_owners_with_raw_arguments() {
                    cmd: PR_RSEQ_SLICE_EXTENSION_GET, ctrl: 0, a4: 0, a5: 0 }));
 }
 
+/// The arm64-only options are RECOGNISED by `classify` and answered by the
+/// dispatch arm that can read the CPU's `ID_AA64*_EL1` registers. Rejecting
+/// them here instead would bake "this hardware has no SVE" into the ABI shim,
+/// where it would still be EINVAL on a CPU that does have it.
+#[test]
+fn architecture_options_are_classified_not_rejected() {
+    assert_eq!(classify(PR_SVE_SET_VL, 128, 0, 0, 0), Ok(Op::SveSetVl(128)));
+    assert_eq!(classify(PR_SVE_GET_VL, 0, 0, 0, 0), Ok(Op::SveGetVl));
+    assert_eq!(classify(PR_SME_SET_VL, 64, 0, 0, 0), Ok(Op::SmeSetVl(64)));
+    assert_eq!(classify(PR_SME_GET_VL, 0, 0, 0, 0), Ok(Op::SmeGetVl));
+    assert_eq!(classify(PR_PAC_RESET_KEYS, PR_PAC_APIAKEY, 0, 0, 0),
+               Ok(Op::PacResetKeys(PR_PAC_APIAKEY)));
+    assert_eq!(classify(PR_PAC_SET_ENABLED_KEYS, PR_PAC_APIAKEY, PR_PAC_APIAKEY, 0, 0),
+               Ok(Op::PacSetEnabledKeys { keys: PR_PAC_APIAKEY, enabled: PR_PAC_APIAKEY }));
+    assert_eq!(classify(PR_PAC_GET_ENABLED_KEYS, 0, 0, 0, 0), Ok(Op::PacGetEnabledKeys));
+    assert_eq!(classify(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE, 0, 0, 0),
+               Ok(Op::SetTaggedAddrCtrl(PR_TAGGED_ADDR_ENABLE)));
+    assert_eq!(classify(PR_GET_TAGGED_ADDR_CTRL, 0, 0, 0, 0), Ok(Op::GetTaggedAddrCtrl));
+}
+
+/// Their tail rules still belong here: the generic switch checks arg3..arg5
+/// before it calls the per-arch helper, so a malformed call is EINVAL even on
+/// a CPU that has the feature.
+#[test]
+fn architecture_options_keep_their_tail_rules() {
+    assert_eq!(classify(PR_PAC_RESET_KEYS, 0, 1, 0, 0), Err(Errno::Einval));
+    assert_eq!(classify(PR_PAC_SET_ENABLED_KEYS, 0, 0, 1, 0), Err(Errno::Einval));
+    assert_eq!(classify(PR_PAC_GET_ENABLED_KEYS, 1, 0, 0, 0), Err(Errno::Einval));
+    assert_eq!(classify(PR_SET_TAGGED_ADDR_CTRL, 0, 1, 0, 0), Err(Errno::Einval));
+    assert_eq!(classify(PR_GET_TAGGED_ADDR_CTRL, 1, 0, 0, 0), Err(Errno::Einval));
+    // The vector-length pair has NO tail rule upstream: `SVE_SET_VL(arg2)` is
+    // called with arg3..arg5 unexamined, so rejecting them would be stricter
+    // than Linux.
+    assert_eq!(classify(PR_SVE_SET_VL, 128, 1, 1, 1), Ok(Op::SveSetVl(128)));
+    assert_eq!(classify(PR_SME_GET_VL, 1, 1, 1, 1), Ok(Op::SmeGetVl));
+}
+
 #[test]
 fn architecture_options_this_port_exposes_no_hardware_for_are_einval() {
-    // arm64 answers EINVAL for each of these without SVE / SME / pointer
-    // authentication / the tagged-address ABI, and x86_64 answers EINVAL for
-    // all of them unconditionally. This port programs TCR_EL1 with top-byte-
-    // ignore OFF and exposes no SVE/SME/PAuth, so EINVAL is the truthful
-    // answer on both arches rather than a deferral.
-    for opt in [PR_SVE_SET_VL, PR_SVE_GET_VL, PR_SME_SET_VL, PR_SME_GET_VL,
-                PR_PAC_RESET_KEYS, PR_PAC_SET_ENABLED_KEYS, PR_PAC_GET_ENABLED_KEYS,
-                PR_SET_TAGGED_ADDR_CTRL, PR_GET_TAGGED_ADDR_CTRL] {
-        assert_eq!(classify(opt, 0, 0, 0, 0), Err(Errno::Einval), "option {opt}");
-    }
     // The generic `(-EINVAL)` macro group: no architecture this port targets
     // overrides them (FP_MODE is MIPS-only, ENDIAN is powerpc-only).
     for opt in [PR_GET_UNALIGN, PR_SET_UNALIGN, PR_GET_FPEMU, PR_SET_FPEMU,
                 PR_GET_FPEXC, PR_SET_FPEXC, PR_GET_ENDIAN, PR_SET_ENDIAN,
                 PR_SET_FP_MODE, PR_GET_FP_MODE] {
         assert_eq!(classify(opt, 0, 0, 0, 0), Err(Errno::Einval), "option {opt}");
+        // The macro is invoked with arg2 (or nothing) and returns EINVAL
+        // without looking at anything, so no argument makes them succeed and
+        // none makes them fail differently.
+        assert_eq!(classify(opt, 1, 1, 1, 1), Err(Errno::Einval), "option {opt} with args");
+        assert_eq!(classify(opt, u64::MAX, 0, 0, 0), Err(Errno::Einval), "option {opt} max arg2");
     }
     // MPX is an explicit "no longer implemented" EINVAL arm upstream, not an
     // unknown option.

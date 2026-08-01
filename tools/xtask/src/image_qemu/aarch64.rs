@@ -122,6 +122,7 @@ pub(super) fn qemu_run_aarch64_grub(
     let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
     let smp_str = smp.to_string();
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
+    let gpu_dev = super::common::virtio_gpu_device_arg(None);
     // Same OXIDE_QEMU_UART_SOCK plumbing as the x86 launcher.
     let uart_chardev: String = match std::env::var("OXIDE_QEMU_UART_SOCK") {
         Ok(p) if !p.is_empty() => {
@@ -187,11 +188,15 @@ pub(super) fn qemu_run_aarch64_grub(
         // virtio-gpu scanout + keyboard for the graphical console (fbcon
         // paints here; no GOP on this path). Without them only serial gets
         // output and the GTK window stays blank.
-        "-device", "virtio-gpu-pci,bus=pcie.0",
+        "-device", gpu_dev.as_str(),
         "-device", "virtio-keyboard-pci,bus=pcie.0",
         // F458: virtio-mouse (relative pointer) → /dev/input/event1. Relative
         // (not absolute/tablet) so QMP input-send-event works headless.
         "-device", "virtio-mouse-pci,id=ptr0,bus=pcie.0",
+        // B1646: virtio-tablet (absolute pointer) → /dev/input/event2, lockstep
+        // with x86. Declared AFTER the relative mouse so event0/event1 keep
+        // their keyboard/mouse identities.
+        "-device", "virtio-tablet-pci,id=tablet0,bus=pcie.0",
         // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
         // this at boot and backs /dev/hwrng with it.
         "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
