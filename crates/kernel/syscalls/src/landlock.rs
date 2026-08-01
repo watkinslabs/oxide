@@ -1,13 +1,10 @@
-// landlock_create_ruleset / landlock_add_rule / landlock_restrict_self
-// per Linux landlock(7). Per-task chain stored on Task; namei
-// check hook (`security::landlock::chain_permits`) walks the chain
-// on every path-based syscall.
+// Kernel-side plumbing for Landlock. Every decision lives in the `landlock`
+// crate, which is ungated and unit-tested; this file only resolves task and
+// descriptor state and hands it over.
 //
-// `landlock_create_ruleset` allocates a registry entry and returns
-// an anonymous fd backed by a `LandlockRulesetInode` carrying the
-// ruleset id. `landlock_add_rule` resolves the fd → inode → id,
-// then appends a (path, allowed_access) rule. `landlock_restrict
-// _self` pushes the id onto the calling task's landlock_chain.
+// The hooks are the whole point: a ruleset that is created, populated and
+// enforced but consulted by nothing enforces nothing. Every entry point below
+// has at least one caller in a path, open, port or signal syscall.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -15,20 +12,21 @@ use alloc::sync::Arc;
 
 use syscall::errno::Errno;
 
-use ::security::landlock::{self as ll};
-use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
+use ::landlock::access as la;
+use ::landlock::uapi::AccessMask;
+use ::landlock::{Domain, Ruleset};
+use vfs::{FileType, Inode, InodeRef, KResult, VfsError, VfsPath};
 use vfs::{InodeBuilder, default_inode_ops, mk_mode};
 use vfs::FileOps;
 
-/// `/sys/landlock` anonymous-fd backend state (`i_private`) carrying a ruleset
-/// id. Post-KEYSTONE: the inode is a concrete `vfs::Inode` whose `i_private`
-/// is this struct; the data path lives in [`LandlockFileOps`].
+/// `i_private` of a ruleset fd: the layer being built. Holding the ruleset here
+/// rather than in a side table is what keeps descriptor lifetime and ruleset
+/// lifetime the same fact.
 pub struct LandlockRulesetInode {
-    pub ruleset_id: u64,
+    pub ruleset: Arc<Ruleset>,
 }
 
-/// `file_operations` for a landlock ruleset fd: not a data stream — `read`/
-/// `write` are `Eio` (Linux landlock fds are config handles, not readable).
+/// A ruleset fd is a configuration handle, not a data stream.
 /// # C: O(1)
 struct LandlockFileOps;
 impl FileOps for LandlockFileOps {
@@ -36,35 +34,136 @@ impl FileOps for LandlockFileOps {
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
 
-/// Construct a landlock ruleset anon inode carrying `ruleset_id`. The ino keeps
-/// the old `"LND"`-tagged marker (`0x4C4E_4400…`). # C: O(1)
-pub fn make_landlock_inode(ruleset_id: u64) -> InodeRef {
-    let ino = 0x4C4E_4400_0000_0000 | ruleset_id;
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), Arc::new(LandlockFileOps))
-        .private(Arc::new(LandlockRulesetInode { ruleset_id }))
+/// Anonymous inode backing a ruleset fd.
+/// # C: O(1)
+pub fn make_landlock_inode(ruleset: Arc<Ruleset>) -> InodeRef {
+    let ino = 0x4C4E_4400_0000_0000u64 | (Arc::as_ptr(&ruleset) as u64 & 0xFFFF_FFFF);
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(),
+                      Arc::new(LandlockFileOps))
+        .private(Arc::new(LandlockRulesetInode { ruleset }))
         .build()
 }
 
-/// Check `(path, op)` against the calling task's landlock chain.
-/// Returns Ok(()) when every entry in the chain allows the op;
-/// Err(-EACCES-as-i64) on first denial. Empty chain = unrestricted.
-/// Called from path-based syscalls (openat, unlinkat, …) before the actual VFS
-/// work. Uses the resolved VFS path identity, never rendered path text.
-/// # C: O(N_chain × N_rules)
-pub fn check(path: &vfs::VfsPath, op: u64) -> Result<(), i64> {
-    let cur = match sched::live::current() { Some(c) => c, None => return Ok(()) };
-    let chain_ids = cur.landlock_chain.lock().clone();
-    if chain_ids.is_empty() { return Ok(()); }
-    let chain: alloc::vec::Vec<Arc<ll::Ruleset>> =
-        chain_ids.into_iter().filter_map(ll::lookup).collect();
-    if ll::chain_permits(&chain, path, op) { Ok(()) }
-    else { Err(-(Errno::Eacces.as_i32() as i64)) }
+/// Resolve a descriptor to the ruleset it backs. A descriptor that is not a
+/// ruleset fd is a descriptor-type error, distinct from a closed one, so a
+/// caller can tell "wrong fd" from "no fd".
+/// # C: O(1)
+pub fn ruleset_from_fd(fd: i32) -> Result<Arc<Ruleset>, Errno> {
+    let cur = sched::live::current().ok_or(Errno::Esrch)?;
+    // SAFETY: running task on this CPU; preempt-off; sole reader of its own fd table slot.
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
+    let f = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
+    let p = f.inode().private::<LandlockRulesetInode>().ok_or(Errno::Ebadfd)?;
+    Ok(p.ruleset.clone())
 }
 
-/// Check a not-yet-instantiated child by the resolved parent path. Linux
-/// path-beneath creation permissions are anchored on the containing directory;
-/// the leaf text is not object identity until the backend creates a dentry.
-/// # C: O(N_chain × N_rules)
-pub fn check_parent(parent: &vfs::VfsPath, op: u64) -> Result<(), i64> {
+/// Whether a descriptor is a ruleset fd. A ruleset fd may not anchor a rule.
+/// # C: O(1)
+pub fn is_ruleset_file(f: &Arc<vfs::File>) -> bool {
+    f.inode().private::<LandlockRulesetInode>().is_some()
+}
+
+/// The calling thread's enforced domain, or `None` when unconfined.
+/// # C: O(1)
+pub fn current_domain() -> Option<Arc<Domain>> {
+    sched::live::current().and_then(|c| c.landlock_domain.lock().clone())
+}
+
+/// Install a deeper domain on the calling thread.
+/// # C: O(1)
+pub fn set_current_domain(d: Arc<Domain>) -> Result<(), Errno> {
+    let cur = sched::live::current().ok_or(Errno::Esrch)?;
+    *cur.landlock_domain.lock() = Some(d);
+    Ok(())
+}
+
+/// Gate a resolved path. `Ok` when unconfined or permitted.
+/// # C: O(depth × N_layers × N_rules)
+pub fn check(path: &VfsPath, op: AccessMask) -> Result<(), i64> {
+    match current_domain() {
+        None => Ok(()),
+        Some(d) => d.check_fs(path, op).map_err(|e| -(e.as_i32() as i64)),
+    }
+}
+
+/// Gate a not-yet-created child by its containing directory: creation rights
+/// are anchored on the parent, since the child is not an object yet.
+/// # C: O(depth × N_layers × N_rules)
+pub fn check_parent(parent: &VfsPath, op: AccessMask) -> Result<(), i64> {
     check(parent, op)
 }
+
+/// Gate an open and return the rights to record on the resulting description.
+/// Callers must store the result with `File::set_landlock_access`, or later
+/// truncation and device control will be unrestricted.
+/// # C: O(depth × N_layers × N_rules)
+pub fn open_decide(path: &VfsPath, open_req: AccessMask, is_device: bool) -> Result<u64, i64> {
+    match current_domain() {
+        None => Ok(u64::MAX),
+        Some(d) => la::open_decide(&d, path, open_req, is_device)
+            .map_err(|e| -(e.as_i32() as i64)),
+    }
+}
+
+/// Gate a reparenting (link or rename).
+/// # C: O(depth × N_layers × N_rules)
+pub fn check_refer(old_dir: &VfsPath, old: &::landlock::refer::Target,
+                   new_dir: &VfsPath, new: Option<&::landlock::refer::Target>,
+                   removable: bool, exchange: bool) -> Result<(), i64>
+{
+    match current_domain() {
+        None => Ok(()),
+        Some(d) => ::landlock::refer::check(&d, old_dir, old, new_dir, new, removable, exchange)
+            .map_err(|e| -(e.as_i32() as i64)),
+    }
+}
+
+/// Gate a port operation.
+/// # C: O(N_layers × N_rules)
+pub fn check_net(port: u16, op: AccessMask) -> Result<(), i64> {
+    match current_domain() {
+        None => Ok(()),
+        Some(d) => d.check_net(port, op).map_err(|e| -(e.as_i32() as i64)),
+    }
+}
+
+/// Whether the calling thread's domain isolates it from `peer` for `scope`.
+/// # C: O(N_layers)
+pub fn scope_denies(scope: AccessMask, peer: Option<&Arc<Domain>>) -> bool {
+    match current_domain() {
+        None => false,
+        Some(d) => d.scope_denies(scope, peer),
+    }
+}
+
+/// Transport of an internet socket, for port-rule purposes.
+/// # C: O(1)
+pub fn sock_proto(sock: &net::sock::InetSocket) -> ::landlock::netcheck::Proto {
+    use ::landlock::netcheck::Proto;
+    match *sock.kind.lock() {
+        net::sock::SockKind::TcpInit
+        | net::sock::SockKind::TcpListener(_)
+        | net::sock::SockKind::TcpConn(_) => Proto::Tcp,
+        net::sock::SockKind::Udp => Proto::Udp,
+        _ => Proto::Other,
+    }
+}
+
+/// Gate a socket operation that names an address. `connecting` distinguishes
+/// establishing a peer from naming a local address.
+/// # C: O(N_layers × N_rules)
+pub fn check_socket(proto: ::landlock::netcheck::Proto, connecting: bool,
+                    bytes: &[u8], sock_family: u16) -> Result<(), i64>
+{
+    use ::landlock::netcheck::{self as nc, Verdict};
+    if current_domain().is_none() { return Ok(()); }
+    let req = match if connecting { nc::connect_request(proto) } else { nc::bind_request(proto) } {
+        Some(r) => r, None => return Ok(()),
+    };
+    match nc::classify(req, connecting, nc::Addr::parse(bytes), sock_family) {
+        Verdict::Allow => Ok(()),
+        Verdict::Fail(e) => Err(-(e.as_i32() as i64)),
+        Verdict::CheckPort(p) => check_net(p, req),
+    }
+}
+

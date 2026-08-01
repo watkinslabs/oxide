@@ -169,4 +169,11 @@ pub struct File {
     /// Linux `file->f_ep`: weak backlinks to epitems watching this open file
     /// description. Final `File::drop` drains them before backend teardown.
     epoll_links: Spinlock<Vec<(u32, Weak<dyn FileEpollLink>)>, FileLinkClass>,
+    /// Sandbox rights recorded when this description was opened. Operations
+    /// that are decided at open but exercised later (truncation, device
+    /// control) read this instead of re-evaluating policy, so an fd keeps the
+    /// rights it was opened with even after it is passed to another process or
+    /// after the opener sandboxes itself further. All-ones means unrestricted,
+    /// which is what every description that never passed a policy check keeps.
+    landlock_access: AtomicU64,
 }

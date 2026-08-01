@@ -65,6 +65,9 @@ pub struct UnixDgramQueue {
     pub bound: Spinlock<Option<UnixAddr>, UnixLockClass>,
     /// Connected peer address for AF_UNIX SOCK_DGRAM.
     pub peer: Spinlock<Option<UnixAddr>, UnixLockClass>,
+    /// Sandbox domain of whoever published this address; see the stream
+    /// listener's field of the same name.
+    owner_domain: Spinlock<Option<Arc<landlock::Domain>>, UnixLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     pub reader_shutdown: core::sync::atomic::AtomicBool,
     queued_bytes: core::sync::atomic::AtomicUsize,
@@ -93,6 +96,16 @@ pub struct UnixDgramQueue {
 }
 
 impl UnixDgramQueue {
+    /// Record the sandbox domain that published this address. # C: O(1)
+    pub fn set_owner_domain(&self, d: Option<Arc<landlock::Domain>>) {
+        *self.owner_domain.lock() = d;
+    }
+
+    /// Sandbox domain that published this address. # C: O(1)
+    pub fn owner_domain(&self) -> Option<Arc<landlock::Domain>> {
+        self.owner_domain.lock().clone()
+    }
+
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
         Self::new_with_filter(Arc::new(crate::bpf_filter::SocketFilter::new()))
@@ -104,6 +117,7 @@ impl UnixDgramQueue {
             msgs: Spinlock::new(VecDeque::new()),
             bound: Spinlock::new(None),
             peer: Spinlock::new(None),
+            owner_domain: Spinlock::new(None),
             bpf_filter,
             reader_shutdown: core::sync::atomic::AtomicBool::new(false),
             queued_bytes: core::sync::atomic::AtomicUsize::new(0),

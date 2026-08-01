@@ -20,6 +20,20 @@
 pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
     use core::sync::atomic::Ordering;
     use sched::Signum;
+    // Landlock signal scoping. A confined thread must not reach a process
+    // outside its domain, and this applies to every path below — including a
+    // sibling thread and a capability holder — so a denial here wins outright.
+    // Signalling yourself skips it: the two operands would be the same lock,
+    // and a thread is always inside its own domain anyway.
+    if cur.tid != target.tid {
+        let mine = cur.landlock_domain.lock().clone();
+        let theirs = target.landlock_domain.lock().clone();
+        if ::landlock::domain::scope_denied(mine.as_ref(), theirs.as_ref(),
+                                            ::landlock::uapi::SCOPE_SIGNAL)
+        {
+            return false;
+        }
+    }
     // Linux `check_kill_permission`: `!same_thread_group(current, t)` gates the
     // credential test, so a thread may always signal a SIBLING regardless of
     // whose credentials each thread carries. Testing only `tid == tid` denied a
@@ -200,4 +214,90 @@ mod tests {
         assert!(prlimit_perm_check(&cur, &target));
     }
 
+}
+
+#[cfg(test)]
+mod landlock_signal_scope_tests {
+    use super::sig_perm_check;
+    use ::landlock::abi::RulesetAttr;
+    use ::landlock::uapi::{SCOPE_SIGNAL, ACCESS_FS_READ_FILE};
+    use ::landlock::{Domain, Ruleset};
+    use core::sync::atomic::Ordering;
+
+    fn task(tid: u32, uid: u32) -> sched::Task {
+        let t = sched::Task::new(tid, "ll-scope", sched::SchedClass::Normal { weight: 1024 });
+        for f in [&t.creds.ruid, &t.creds.euid, &t.creds.suid] { f.store(uid, Ordering::Release); }
+        t
+    }
+
+    fn scoped_domain(parent: Option<&alloc::sync::Arc<Domain>>) -> alloc::sync::Arc<Domain> {
+        let rs = Ruleset::new(&RulesetAttr { scoped: SCOPE_SIGNAL, ..Default::default() });
+        Domain::merge(parent, &rs).unwrap()
+    }
+
+    #[test]
+    fn a_signal_scope_denies_an_unconfined_target_even_with_full_capabilities() {
+        // The task default is root-equivalent, so this also proves the scope
+        // outranks the capability path rather than being shadowed by it.
+        let cur = task(1, 0);
+        let target = task(2, 0);
+        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+    }
+
+    #[test]
+    fn a_signal_scope_still_allows_a_target_inside_the_same_domain() {
+        let cur = task(1, 0);
+        let target = task(2, 0);
+        let dom = scoped_domain(None);
+        *cur.landlock_domain.lock() = Some(dom.clone());
+        *target.landlock_domain.lock() = Some(dom);
+        assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+    }
+
+    #[test]
+    fn a_signal_scope_reaches_a_target_that_sandboxed_itself_further() {
+        let cur = task(1, 0);
+        let target = task(2, 0);
+        let outer = scoped_domain(None);
+        let inner = scoped_domain(Some(&outer));
+        *cur.landlock_domain.lock() = Some(outer);
+        *target.landlock_domain.lock() = Some(inner.clone());
+        assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+        // And the nested one cannot signal back out.
+        *cur.landlock_domain.lock() = Some(inner);
+        *target.landlock_domain.lock() = Some(scoped_domain(None));
+        assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+    }
+
+    #[test]
+    fn a_domain_that_scopes_nothing_does_not_affect_signalling() {
+        // A filesystem-only policy must not accidentally isolate the process.
+        let cur = task(1, 0);
+        let target = task(2, 0);
+        let rs = Ruleset::new(&RulesetAttr {
+            handled_fs: ACCESS_FS_READ_FILE, ..Default::default() });
+        *cur.landlock_domain.lock() = Some(Domain::merge(None, &rs).unwrap());
+        assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+    }
+
+    #[test]
+    fn a_scoped_thread_can_still_signal_itself() {
+        // The scope test reads both tasks' domains; for a self-signal those are
+        // the same lock, so the check has to be skipped rather than taken twice.
+        let cur = task(1, 0);
+        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        assert!(sig_perm_check(&cur, &cur, sched::Signum::Sigterm as i32));
+    }
+
+    #[test]
+    fn a_scoped_thread_cannot_reach_a_sibling_outside_its_domain() {
+        // The sibling-thread shortcut must not bypass the scope.
+        let cur = task(1, 0);
+        let target = task(2, 0);
+        cur.tgid.store(1, Ordering::Release);
+        target.tgid.store(1, Ordering::Release);
+        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+    }
 }

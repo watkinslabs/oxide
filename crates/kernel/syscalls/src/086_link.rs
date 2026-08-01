@@ -9,7 +9,9 @@ use crate::namei_common::{
     resolve_link_parent_at,
 };
 
-pub(crate) fn link_inode_at(src: vfs::InodeRef, src_mnt_id: u64, dirfd: i32, raw_link: &str) -> i64 {
+pub(crate) fn link_path_at(srcp: &vfs::VfsPath, dirfd: i32, raw_link: &str) -> i64 {
+    let src = srcp.inode.clone();
+    let src_mnt_id = srcp.mnt_id;
     let (parent, name) = match resolve_link_parent_at(dirfd, raw_link) {
         Ok(x) => x, Err(rv) => return rv,
     };
@@ -36,8 +38,18 @@ pub(crate) fn link_inode_at(src: vfs::InodeRef, src_mnt_id: u64, dirfd: i32, raw
     if let Err(e) = vfs::may_linkat(&src, &cred) {
         return errno_from_vfs(e);
     }
-    if let Err(rv) = crate::landlock::check_parent(&parent,
-        ::security::landlock::access::MAKE_REG) { return rv; }
+    // Linking is a reparenting: the destination hierarchy must allow creating
+    // this file type AND must be no less restricted than the source, otherwise
+    // the new name would grant the file rights it did not have.
+    let src_target = ::landlock::refer::Target { dentry: srcp.dentry.clone(), inode: src.clone() };
+    let src_dir = match srcp.dentry.parent() {
+        Some(d) => vfs::VfsPath { mnt_id: srcp.mnt_id, dentry: d.clone(),
+                                  inode: d.inode().unwrap_or_else(|| src.clone()),
+                                  last_component: None },
+        None => srcp.clone(),
+    };
+    if let Err(rv) = crate::landlock::check_refer(&src_dir, &src_target, &parent, None,
+                                                  false, false) { return rv; }
     if let Err(e) = vfs::may_create(&parent.inode, &cred) {
         return errno_from_vfs(e);
     }
@@ -80,5 +92,5 @@ pub fn sys_link(args: &SyscallArgs) -> i64 {
         Ok(p) => p,
         Err(rv) => return rv,
     };
-    link_inode_at(src.inode, src.mnt_id, crate::pathresolve::AT_FDCWD, &link)
+    link_path_at(&src, crate::pathresolve::AT_FDCWD, &link)
 }

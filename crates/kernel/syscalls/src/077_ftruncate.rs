@@ -23,5 +23,12 @@ pub fn sys_ftruncate(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Truncation is decided by the rights recorded when this description was
+    // opened, not by the caller's current domain: an fd passed between
+    // processes keeps the rights it was opened with, and a thread that
+    // sandboxes itself after an open does not lose them.
+    if !::landlock::access::truncate_allowed(file.landlock_access()) {
+        return -(Errno::Eacces.as_i32() as i64);
+    }
     ::fs::truncate::do_ftruncate(&file, len, &crate::pathresolve::current_cred())
 }
