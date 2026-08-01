@@ -196,3 +196,31 @@ fn union_of_filtered_rights_always_includes_reparenting() {
     assert_eq!(dom.union_fs_mask(), ACCESS_FS_READ_FILE | ACCESS_FS_REFER);
     assert_eq!(dom.fs_masks(), vec![ACCESS_FS_READ_FILE | ACCESS_FS_REFER]);
 }
+
+#[test]
+fn the_abstract_socket_scope_isolates_the_same_way_the_signal_scope_does() {
+    // Both scopes share one comparison, so this pins that a ruleset scoping
+    // only abstract sockets does not accidentally isolate signalling too.
+    let rs = Ruleset::new(&RulesetAttr {
+        scoped: SCOPE_ABSTRACT_UNIX_SOCKET, ..Default::default() });
+    let dom = enforce(None, &rs);
+    assert!(dom.scopes(SCOPE_ABSTRACT_UNIX_SOCKET));
+    assert!(!dom.scopes(SCOPE_SIGNAL));
+    assert!(dom.scope_denies(SCOPE_ABSTRACT_UNIX_SOCKET, None));
+    assert!(!dom.scope_denies(SCOPE_SIGNAL, None));
+    assert!(!dom.scope_denies(SCOPE_ABSTRACT_UNIX_SOCKET, Some(&dom)));
+}
+
+#[test]
+fn a_ruleset_may_scope_both_kinds_at_once() {
+    let rs = Ruleset::new(&RulesetAttr {
+        scoped: SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL, ..Default::default() });
+    let dom = enforce(None, &rs);
+    let other = enforce(None, &rs);
+    for s in [SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_SIGNAL] {
+        assert!(dom.scopes(s));
+        assert!(dom.scope_denies(s, None));
+        assert!(dom.scope_denies(s, Some(&other)));
+        assert!(!dom.scope_denies(s, Some(&dom)));
+    }
+}

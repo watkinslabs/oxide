@@ -42,13 +42,12 @@ fn the_reported_abi_version_matches_the_rights_actually_accepted() {
     // The version number is a promise about which rights are enforced. Raising
     // it past what is enforced silently disables a well-written caller's
     // sandbox, so every mask below must stop exactly where enforcement does.
-    assert_eq!(ABI_VERSION, 5);
+    assert_eq!(ABI_VERSION, 6);
     // Device control is the last filesystem right of this level.
     assert_eq!(MASK_ACCESS_FS, (ACCESS_FS_IOCTL_DEV << 1) - 1);
-    // Signal scoping is enforced; the abstract-socket scope is not, and is
-    // therefore not accepted either.
-    assert_eq!(MASK_SCOPE, SCOPE_SIGNAL);
-    assert_eq!(MASK_SCOPE & SCOPE_ABSTRACT_UNIX_SOCKET, 0);
+    // Both scopes are enforced, so both are accepted.
+    assert_eq!(MASK_SCOPE, (SCOPE_SIGNAL << 1) - 1);
+    assert_eq!(MASK_SCOPE & SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_ABSTRACT_UNIX_SOCKET);
     // Stream ports only; datagram rights arrived later.
     assert_eq!(MASK_ACCESS_NET, (ACCESS_NET_CONNECT_TCP << 1) - 1);
     // Logging control and thread synchronisation both arrived later, so no
@@ -94,9 +93,6 @@ fn unknown_handled_bits_are_rejected_not_ignored() {
     let a = RulesetAttr { handled_net: MASK_ACCESS_NET | (1 << 8), ..Default::default() };
     assert_eq!(a.validate(), Err(Errno::Einval));
     let a = RulesetAttr { scoped: MASK_SCOPE | (1 << 4), ..Default::default() };
-    assert_eq!(a.validate(), Err(Errno::Einval));
-    // Including the scope that nothing enforces.
-    let a = RulesetAttr { scoped: SCOPE_ABSTRACT_UNIX_SOCKET, ..Default::default() };
     assert_eq!(a.validate(), Err(Errno::Einval));
 }
 

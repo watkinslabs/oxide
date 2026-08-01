@@ -58,13 +58,11 @@ pub const MASK_ACCESS_NET: AccessMask = (LAST_ACCESS_NET << 1) - 1;
 pub const SCOPE_ABSTRACT_UNIX_SOCKET: AccessMask = 1 << 0;
 pub const SCOPE_SIGNAL:               AccessMask = 1 << 1;
 
-/// Scopes this kernel accepts. The abstract-socket scope is deliberately
-/// absent: isolating an abstract-namespace socket requires knowing which
-/// domain created its listener, which nothing records yet. Accepting the bit
-/// and not enforcing it would report a sandbox that does not exist, so it is
-/// refused instead — which is why the mask is written out rather than derived
-/// from the highest defined bit.
-pub const MASK_SCOPE: AccessMask = SCOPE_SIGNAL;
+/// Highest defined scope; the mask is every bit up to it. Both scopes are
+/// enforced: signalling through the signal-permission check, abstract sockets
+/// through the AF_UNIX connect and datagram-send paths.
+pub const LAST_SCOPE: AccessMask = SCOPE_SIGNAL;
+pub const MASK_SCOPE: AccessMask = (LAST_SCOPE << 1) - 1;
 
 // ---- syscall flags --------------------------------------------------------
 
@@ -92,11 +90,8 @@ pub const RULE_NET_PORT:     u64 = 2;
 /// corresponding enforcement exists. Raising it past what is enforced is the
 /// one failure mode that silently turns a working sandbox into no sandbox.
 ///
-/// Every right of every level up to this one is enforced. Signal scoping,
-/// which belongs to the next level, is also enforced and accepted, but the
-/// abstract-socket scope introduced alongside it is not, so the number stops
-/// here rather than claiming a level it only half-implements.
-pub const ABI_VERSION: i64 = 5;
+/// Every right and scope of every level up to this one is enforced.
+pub const ABI_VERSION: i64 = 6;
 
 /// Value reported for `LANDLOCK_CREATE_RULESET_ERRATA`: a bitmask of fixed
 /// issues for the current ABI version. No erratum applies to this implementation.

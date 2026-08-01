@@ -3,6 +3,13 @@ use super::*;
 /// Connect an AF_UNIX socket, waiting for listener backlog space when needed.
 /// # C: O(wait retries)
 pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: bool) -> Result<(), NetError> {
+    // Abstract-namespace isolation. An abstract name has no filesystem object
+    // to attach a rule to, so a sandbox confines it by domain: only a socket
+    // published from inside the caller's own domain is reachable. The refusal
+    // is EPERM, which is what distinguishes it from a hierarchy denial.
+    if crate::landlock_glue::abstract_connect_denied(&sock.net_namespace, &addr) {
+        return Err(NetError::Eperm);
+    }
     {
         let kind = sock.kind.lock();
         if let SockKind::UnixDgram(q) = &*kind {
