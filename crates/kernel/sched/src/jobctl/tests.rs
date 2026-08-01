@@ -171,3 +171,44 @@ fn a_non_listening_tracee_is_not_re_trapped() {
     assert!(!wake_retraps(TRAP_STOP, WakeKind::Cont));
     assert!(!wake_retraps(LISTENING, WakeKind::Cont), "nothing latched to re-report");
 }
+
+// --- the counter as the thread group actually drives it --------------------
+
+#[test]
+fn a_threaded_group_reports_one_cld_stopped_not_one_per_thread() {
+    // Drives the REAL storage (`ThreadGroup::join_group_stop`) with the same
+    // debt-arming the stop path does, so this proves the counter is consumed,
+    // not merely computed.
+    use crate::task::{SchedClass, Task};
+    let leader = Task::new(7701, "grp", SchedClass::Normal { weight: 1024 });
+    let tg = &leader.thread_group;
+    tg.commit_member();
+    tg.commit_member();
+    let live = tg.live_count();
+    assert!(live >= 3, "three threads in the group, got {live}");
+    let mut reports = 0;
+    for _ in 0..live {
+        // Each thread arrives with a fresh debt, exactly as a park does.
+        let step = tg.join_group_stop(STOP_PENDING | STOP_CONSUME);
+        if step.completed { reports += 1; }
+    }
+    assert_eq!(reports, 1, "one ^Z owes the shell exactly one SIGCHLD");
+    assert_eq!(tg.group_stop_count(), 0);
+}
+
+#[test]
+fn a_sigcont_resets_the_tally_so_the_next_stop_counts_from_full() {
+    use crate::task::{SchedClass, Task};
+    let leader = Task::new(7702, "grp", SchedClass::Normal { weight: 1024 });
+    let tg = &leader.thread_group;
+    tg.commit_member();
+    let live = tg.live_count();
+    // A partial stop: one thread parked, the rest had not yet.
+    assert!(!tg.join_group_stop(STOP_PENDING | STOP_CONSUME).completed);
+    assert_eq!(tg.group_stop_count(), live - 1);
+    tg.end_group_stop();
+    // The next stop must re-seed, not resume the half-finished tally — which
+    // would report CLD_STOPPED a thread early.
+    assert!(!tg.join_group_stop(STOP_PENDING | STOP_CONSUME).completed || live == 1);
+    assert_eq!(tg.group_stop_count(), live - 1);
+}
