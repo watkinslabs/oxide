@@ -1,5 +1,7 @@
 // Module manifest:
 // - affinity: cpus_allowed fork inheritance + cpuset/user-mask composition.
+// - child_rusage: signal_struct c* counters — reap-time child accounting for
+//   getrusage(RUSAGE_CHILDREN) and times(2).
 // - common: shared hosted-test fixtures and serialisation helpers.
 // - cpu_nanosleep: CPU-clock clock_nanosleep arm/resolve + accounting-tick service.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
@@ -24,6 +26,7 @@
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
 mod affinity;
+mod child_rusage;
 pub(crate) mod common;
 mod pi_boost;
 mod cpu_nanosleep;
