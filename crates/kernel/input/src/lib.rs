@@ -37,7 +37,7 @@ pub use state::with_state_bits_by_identity;
 pub use state::{OutputBatch, OutputEvent};
 pub use types::{InputEvent, VirtioInputAbsInfo, VirtioInputDevIds, VirtioInputEvent};
 pub use uapi::{
-    ABS_CNT, ABS_MAX, ABS_MT_FIRST, ABS_MT_LAST, ABS_MT_SLOT, ABS_MT_TRACKING_ID,
+    ABS_CNT, ABS_MAX, ABS_MT_FIRST, ABS_MT_LAST, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
     EVENT_MINOR_BASE, EV_ABS, EV_CNT, EV_FF, EV_KEY, EV_LED, EV_MAX, EV_MSC, EV_PWR,
     EV_REL, EV_REP, EV_SND,
     EV_SW, EV_SYN, FF_CNT, FF_MAX, INPUT_PROP_CNT, INPUT_PROP_MAX, KEY_CNT, KEY_MAX,
