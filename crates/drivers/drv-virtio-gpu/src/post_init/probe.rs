@@ -84,7 +84,8 @@ pub fn get_display_info(
         // device still DMAs into back to the buddy allocator (the B1339/B1340
         // class); leak it instead, exactly as the backing-store path does.
         cmd_buf.disarm();
-        klog::write_raw(b"[VGPU] display-info timed out, leaking command frame\n");
+        #[cfg(feature = "debug-boot")]
+        { klog::write_raw(b"[VGPU] display-info timed out, leaking command frame\n"); }
         return false;
     }
     core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
@@ -117,7 +118,8 @@ pub fn get_display_info(
         // leaves the device free to write into this frame later, so it may
         // neither be reused for the scanout commands nor returned to the PMM.
         cmd_buf.disarm();
-        klog::write_raw(b"[VGPU] edid fetch timed out, leaking command frame\n");
+        #[cfg(feature = "debug-boot")]
+        { klog::write_raw(b"[VGPU] edid fetch timed out, leaking command frame\n"); }
         return false;
     }
     #[cfg(feature = "debug-boot")]

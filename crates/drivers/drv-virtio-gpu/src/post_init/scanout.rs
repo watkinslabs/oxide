@@ -224,7 +224,8 @@ fn release_scanout_dma(ctx: &ScanoutCtx, reset_confirmed: bool) {
     let (cmd_frame, fb_run) =
         release::releasable_dma(reset_confirmed, ctx.cmd_buf_pa, fb_base_pa);
     if !reset_confirmed {
-        klog::write_raw(b"[VGPU] reset unconfirmed, leaking scanout DMA frames\n");
+        #[cfg(feature = "debug-boot")]
+        { klog::write_raw(b"[VGPU] reset unconfirmed, leaking scanout DMA frames\n"); }
     }
     if let Some(pa) = cmd_frame {
         // SAFETY: the command frame this driver allocated in `get_display_info`
