@@ -11,6 +11,7 @@
 //   * `dev`    — the `/dev/fuse` misc char device `file_operations`.
 //   * `fs`     — the mounted `fuse` filesystem + root inode + mount parsing.
 //   * `fops`   — the forwarding `i_op`/`i_fop` (LOOKUP/GETATTR/OPEN/READ/READDIR…).
+//   * `params` — the mount-parameter table fuse options are admitted against.
 //
 // Scope: a REAL read-only browse+read filesystem (LOOKUP, GETATTR, OPEN/OPENDIR,
 // READ, READDIR, RELEASE/RELEASEDIR, FLUSH, INIT). The write/create/mutation
@@ -22,6 +23,9 @@ pub mod conn;
 pub mod dev;
 pub mod fs;
 pub mod fops;
+mod params;
+
+pub use params::FUSE_PARAMS;
 
 #[cfg(test)]
 mod tests;
