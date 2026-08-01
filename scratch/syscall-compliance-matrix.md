@@ -18,6 +18,7 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | `DISPATCH-GAP` | Linux has a real entry; Oxide lacks a visible `NR_*` constant or dispatch route. |
 | `LINUX-ENOSYS` | Linux source intentionally has no real native implementation for this slot. Oxide must return `-ENOSYS`, not a stub success. |
 | `IN-PROGRESS` | Local uncommitted work is currently touching this syscall family. |
+| `NEEDS-REWORK` | Committed work landed, but the row is deliberately NOT closed: a known defect, unverified claim, or architectural constraint recorded in the notes must be resolved before it can be `IMPL`. Deliberately chosen over `IMPL` so the findings stay visible and the rework starts from full context instead of re-deriving it. |
 
 ## Audit Rules
 
