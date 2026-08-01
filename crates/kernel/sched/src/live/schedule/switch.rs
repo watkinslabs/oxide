@@ -455,6 +455,28 @@ pub unsafe fn schedule() {
         let ktop = unsafe { rq.current_ref() }.kernel_stack.load(Ordering::Acquire);
         hal_aarch64::set_current_kstack_top(ktop as u64);
     }
+    // Linux `__switch_to_xtra`'s hardware-breakpoint arm: the incoming task's
+    // DR0-DR3/DR7 replace the outgoing task's, so a `PTRACE_POKEUSER`-armed
+    // watchpoint follows its task instead of firing in whatever ran next. The
+    // helper writes nothing at all when neither side is armed, which is every
+    // switch on a machine with no debugger attached.
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: rq.current is the incoming task just published by
+        // swap_current; prev_ref aliases the outgoing one. Context switch at
+        // CPL=0, preempt-off, so this CPU's debug registers are ours.
+        unsafe { crate::debugreg::x86::switch_to(prev_ref, rq.current_ref()); }
+    }
+    // The aarch64 counterpart: DBGBVR/DBGBCR + DBGWVR/DBGWCR follow their
+    // task, so a `NT_ARM_HW_BREAK`-armed watchpoint fires for the tracee that
+    // set it and not for whatever ran next.
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: rq.current is the incoming task just published by
+        // swap_current; prev_ref aliases the outgoing one. Context switch at
+        // EL1, preempt-off, so this CPU's debug registers are ours.
+        unsafe { crate::debugreg::arm::switch_to(prev_ref, rq.current_ref()); }
+    }
     // SAFETY: rq.current was just set to the new Arc by swap_current.
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
     // SAFETY: rq.current was just set to next and this scheduler context owns
@@ -508,6 +530,19 @@ pub unsafe fn schedule() {
                 hal_x86_64::set_syscall_kstack(top as u64);
             }
         }
+        // Linux `__switch_to_xtra`: `if ((tifp ^ tifn) & _TIF_NOCPUID)
+        // set_cpuid_faulting(...)`. The arming bit is a CPU register, the
+        // policy is per-thread, so the two only stay in agreement if the
+        // switch re-programs it whenever it differs. Written as a difference
+        // test, not an unconditional store, so a system where no task ever
+        // called `arch_prctl(ARCH_SET_CPUID)` pays no MSR write at all.
+        let prev_nocpuid = prev_ref.nocpuid.load(Ordering::Relaxed);
+        if now.nocpuid.load(Ordering::Relaxed) != prev_nocpuid {
+            // SAFETY: running on the CPU being reprogrammed with preemption
+            // disabled, so the MSR and the incoming task's flag cannot
+            // diverge; the callee is a no-op when the CPU has no mechanism.
+            unsafe { hal_x86_64::set_cpuid_faulting(!prev_nocpuid); }
+        }
         // SAFETY: both fpu_state areas are heap-allocated 64-aligned ArchFpuBuf
         // (as_mut_ptr → the aligned XSAVE region); CR0.TS is clear (kernel never
         // sets it) so FXSAVE/XSAVE don't #NM; prev_ref is the outgoing task whose
@@ -534,6 +569,19 @@ pub unsafe fn schedule() {
             hal_aarch64::fpu_save((*prev_ref.fpu_state.get()).as_mut_ptr() as *mut hal_aarch64::FpuStateAArch64);
             hal_aarch64::fpu_restore((*now.fpu_state.get()).as_mut_ptr() as *const hal_aarch64::FpuStateAArch64);
         }
+    }
+
+    // `prctl(PR_SET_TSC)` is per-THREAD but the trap it asks for is a CPU
+    // control register, so it only holds while its task is on the CPU. Linux
+    // re-asserts it from `__switch_to_xtra` (x86 `CR4.TSD`) and
+    // `cntkctl_thread_switch` (arm64 `CNTKCTL_EL1`); this is the same edge —
+    // one compare on an unchanged mode, a register write only on a change.
+    // Without it a sandboxed thread's trap would silently evaporate the first
+    // time anything else ran on its CPU.
+    {
+        // SAFETY: rq.current is the incoming task, just published by swap_current.
+        let next_armed = crate::prctl::tsc::denied(unsafe { rq.current_ref() });
+        crate::prctl::tsc::switch_to(crate::prctl::tsc::denied(prev_ref), next_armed);
     }
 
     core::mem::forget(inner);

@@ -28,10 +28,11 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
-mod cpuid;
+pub mod cpuid;
 mod fault;
 mod exception_table;
 mod fpu;
+pub mod hw_breakpoint;
 mod mmu;
 pub mod mmu_ops;
 pub mod pci;
@@ -53,7 +54,7 @@ mod vbar;
 mod uaccess;
 pub mod vmm;
 pub use cpuid::midr_el1;
-pub use regs::{
+pub use regs::{TCR_EL1_BASE, TCR_EL1_KERNEL, TCR_EL1_TBI0, 
     read_mair_el1, read_sctlr_el1, read_tcr_el1, read_ttbr0_el1, read_ttbr1_el1,
 };
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
@@ -64,6 +65,10 @@ pub use fault::{install_ctx_dump, install_fault_handler, CtxDumpFn, FaultHandler
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER,
               FPU_FPCR_OFF, FPU_FPSR_OFF, FPU_STATE_BYTES, FPU_VREGS_BYTES};
 pub use context::{ContextAArch64, ForkRegs};
+pub use hw_breakpoint::{
+    classify as classify_debug_exception, num_brps, num_wrps, DebugEvent, HwBpError,
+    HwBreakpointState, RegFile,
+};
 pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteArm64, PteFlags, PtIndices,
     ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, PTE_PHYS_MASK,

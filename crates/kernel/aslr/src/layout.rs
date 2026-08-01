@@ -40,6 +40,56 @@ pub fn mmap_base(rnd: u64, rlim_stack: u64, randomize: bool, b: &Budget) -> u64 
     page_align_up(STACK_TOP.saturating_sub(gap).saturating_sub(rnd))
 }
 
+/// Linux `mmap_legacy_base()` — `arch/x86/mm/mmap.c:101-105` and the generic
+/// `mm/util.c:473`, both `TASK_UNMAPPED_BASE + random_factor`. This is the
+/// FLOOR the legacy layout allocates upward from, where `mmap_base` is the
+/// CEILING the default layout allocates downward from; the two are different
+/// anchors for opposite search directions, not two spellings of one address.
+/// # C: O(1)
+pub fn mmap_legacy_base(rnd: u64, b: &Budget) -> u64 {
+    b.task_unmapped_base().saturating_add(rnd)
+}
+
+/// Linux `mmap_is_legacy()` — `mm/util.c:413-426` (arm64) and
+/// `arch/x86/mm/mmap.c:62-67` (x86_64):
+///
+/// ```text
+/// if (current->personality & ADDR_COMPAT_LAYOUT) return 1;
+/// if (rlim_stack->rlim_cur == RLIM_INFINITY && !STACK_GROWSUP) return 1;   /* generic only */
+/// return sysctl_legacy_va_layout;
+/// ```
+///
+/// The three inputs are independent and ANY of them selects bottom-up. The
+/// unlimited-stack arm is the subtle one: with no bound on how far the stack
+/// may grow, a top-down arena has no gap it can safely reserve, so the whole
+/// layout flips rather than the gap merely widening. x86_64 omits that arm —
+/// its `mmap_base` clamps the gap to `MAX_GAP` instead — which is a real
+/// per-arch divergence, so `unlimited_stack_flips` carries the arch's answer
+/// rather than being assumed.
+///
+/// `ADDR_COMPAT_LAYOUT` also interacts with `ADDR_NO_RANDOMIZE`, but only
+/// through the shared `random_factor`: an un-randomised exec draws zero, so the
+/// legacy base is exactly `TASK_UNMAPPED_BASE` and a randomised one is that
+/// plus `arch_mmap_rnd()`. The two bits are otherwise orthogonal — the layout
+/// DIRECTION is not a randomisation decision.
+/// # C: O(1)
+pub fn mmap_is_legacy(
+    addr_compat_layout: bool,
+    stack_rlim_unlimited: bool,
+    unlimited_stack_flips: bool,
+    sysctl_legacy_va_layout: bool,
+) -> bool {
+    if addr_compat_layout { return true; }
+    if unlimited_stack_flips && stack_rlim_unlimited { return true; }
+    sysctl_legacy_va_layout
+}
+
+/// Whether an unlimited `RLIMIT_STACK` alone selects the legacy layout on this
+/// arch. Only arm64 takes the generic `arch_pick_mmap_layout` that tests it;
+/// x86_64 supplies its own, which does not.
+/// # C: O(1)
+pub const fn unlimited_stack_flips_layout() -> bool { cfg!(target_arch = "aarch64") }
+
 /// Linux `randomize_stack_top()` — `mm/util.c:341-355`. Both arches take the
 /// non-`STACK_GROWSUP` branch, so the random page count is SUBTRACTED:
 /// `PAGE_ALIGN(stack_top) - ((get_random_long() & STACK_RND_MASK) << PAGE_SHIFT)`.

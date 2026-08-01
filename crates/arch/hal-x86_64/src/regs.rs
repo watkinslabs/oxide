@@ -22,48 +22,21 @@ pub unsafe fn set_data_watchpoint(va: u64) {
     }
 }
 
-// DR7 bit-field constants (Intel SDM Vol. 3 §17.2.4). Named so the
-// watchpoint arming below carries no bare magic hex.
-//
-// DR0 fields are shared by the generic diagnostic and the HoleHdr-specific
-// one, so they use the generic kernel/test gate. DR1-only fields ride the
-// narrower `debug-hw-watchpoint` gate.
-/// DR7.L0 — local-enable DR0 (bit 0).
+// DR7 bit-field constants live in `debugreg::dr7`, the crate's single owner of
+// the debug-control layout (`07§5`). The diagnostic watchpoints below and the
+// per-task ptrace layer both name them from there.
 #[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-const DR7_L0: u64 = 1 << 0;
-/// DR7.L1 — local-enable DR1 (bit 2).
+use crate::debugreg::dr7::{
+    len_shift, rw_shift, DR7_GE, DR7_L0, DR7_LEN_8, DR7_RESERVED_ONE, DR7_RW_WRITE,
+};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
-const DR7_L1: u64 = 1 << 2;
-/// DR7.GE — global-exact data-breakpoint match (bit 9, recommended set).
-#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-const DR7_GE: u64 = 1 << 9;
-/// DR7 bit 10 — reserved, read-as-one; software sets it.
-#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-const DR7_RESERVED_ONE: u64 = 1 << 10;
-/// R/Wn field value: break on data WRITE only (not exec, not I/O, not r/w).
-#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-const DR7_RW_WRITE: u64 = 0b01;
-/// LENn field value: 8-byte watch length (requires 64-bit CPU support).
-#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-const DR7_LEN_8: u64 = 0b10;
-/// Shift to DR7.R/W0 (bits 16-17).
-#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-const DR7_RW0_SHIFT: u32 = 16;
-/// Shift to DR7.LEN0 (bits 18-19).
-#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-const DR7_LEN0_SHIFT: u32 = 18;
-/// Shift to DR7.R/W1 (bits 20-21).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
-const DR7_RW1_SHIFT: u32 = 20;
-/// Shift to DR7.LEN1 (bits 22-23).
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
-const DR7_LEN1_SHIFT: u32 = 22;
+use crate::debugreg::dr7::DR7_L1;
 
 #[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const fn dr7_dr0_write_8() -> u64 {
     DR7_L0 | DR7_GE | DR7_RESERVED_ONE
-        | (DR7_RW_WRITE << DR7_RW0_SHIFT)
-        | (DR7_LEN_8 << DR7_LEN0_SHIFT)
+        | (DR7_RW_WRITE << rw_shift(0))
+        | (DR7_LEN_8 << len_shift(0))
 }
 
 /// DIAG (`debug-hw-watchpoint`): arm DR0+DR1 as 8-byte WRITE data
@@ -80,7 +53,7 @@ const fn dr7_dr0_write_8() -> u64 {
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
 pub unsafe fn arm_hole_watchpoint(base: u64) {
     let dr7 = dr7_dr0_write_8() | DR7_L1
-        | (DR7_RW_WRITE << DR7_RW1_SHIFT) | (DR7_LEN_8 << DR7_LEN1_SHIFT);
+        | (DR7_RW_WRITE << rw_shift(1)) | (DR7_LEN_8 << len_shift(1));
     // SAFETY: mov to dr0/dr1/dr7 is privileged, legal at CPL=0; no memory
     // effects. DR0/DR1 hold the watched HoleHdr word addresses; DR7 enables
     // both as 8-byte write watchpoints per the field constants above.
@@ -185,6 +158,30 @@ pub fn read_cr4() -> u64 {
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { 0 }
+}
+
+/// Force `CR4.FSGSBASE` off on THIS CPU.
+///
+/// Must run on every CPU before it can execute ring-3 code, and before
+/// anything installs a GS base. With the bit set, unprivileged `wrgsbase`
+/// replaces the base that ring 0 reads for every per-CPU access — the next
+/// kernel entry writes and pivots through an attacker-chosen pointer — and
+/// the paranoid exception entry loses its only GS-independent way to tell a
+/// kernel GS base from a user one (`msr::gs_base_is_kernel`).
+///
+/// # SAFETY: privileged CR4 write, legal at CPL=0. CR4 is per-CPU and the
+/// calling CPU is its own sole writer during bring-up.
+/// # C: O(1)
+/// # Ctx: pre-init, per CPU, IRQ-off
+pub unsafe fn clear_cr4_fsgsbase() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: per fn-level contract — privileged CR4 read/write at CPL=0 during this CPU's own bring-up; no other CPU writes this CR4.
+    unsafe {
+        let mut cr4: u64;
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        cr4 = crate::msr::cr4_without_fsgsbase(cr4);
+        asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
 }
 
 /// Enable CR4 bits required to let user code execute SSE/SSE2

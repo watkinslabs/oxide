@@ -16,8 +16,7 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use hal::UserVirtAddr;
-use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
+use vmm::AddressSpace;
 
 /// Linux `SET_PERSONALITY(ex)` for a 64-bit native image. Runs at the same
 /// point the credential transition commits, so a failed `execve` leaves the
@@ -27,33 +26,44 @@ pub(crate) fn set_personality(cur: &sched::Task) {
     sched::personality::clear(cur, sched::personality::PER_CLEAR_ON_EXEC);
 }
 
-/// Linux `load_elf_binary`'s SVR4 emulation:
+/// Linux `arch_setup_new_exec()` plus `reset_thread_features()` — the
+/// per-thread arch state a fresh image must NOT inherit.
 ///
-/// ```text
-/// if (current->personality & MMAP_PAGE_ZERO)
-///         error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,
-///                         MAP_FIXED | MAP_PRIVATE, 0);
-/// ```
+/// `TIF_NOCPUID`: "If cpuid was previously disabled for this task, re-enable
+/// it." A caller must not be able to hand a setuid image a `cpuid` that
+/// faults, which would make its CPU-feature dispatch take an unexpected
+/// branch or die on an unhandled #GP. The live MSR is reprogrammed here, not
+/// left to the next context switch, because the exec returns to user before
+/// any switch is guaranteed to happen.
+///
+/// `thread.features` / `thread.features_locked`: the CET facility set and its
+/// lock. Carrying a lock across exec would make the new program's first
+/// `ARCH_SHSTK_ENABLE` a permanent EPERM for reasons it cannot see.
+/// # C: O(1)
+pub(crate) fn arch_setup_new_exec(cur: &sched::Task) {
+    use core::sync::atomic::Ordering;
+    if cur.nocpuid.swap(crate::arch_prctl_abi::cpuid::nocpuid_after_exec(), Ordering::AcqRel) {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: runs on the CPU whose MSR is being reprogrammed, inside the
+        // exec commit with preemption disabled by the caller's scope; a no-op
+        // on a CPU with no CPUID-faulting mechanism.
+        unsafe { hal_x86_64::set_cpuid_faulting(false); }
+    }
+    let reset = crate::arch_prctl_abi::shstk::ShstkState::after_exec();
+    cur.shstk_features.store(reset.features, Ordering::Release);
+    cur.shstk_locked.store(reset.locked, Ordering::Release);
+}
+
+/// Linux `load_elf_binary`'s SVR4 emulation, dispatched to its owner.
 ///
 /// `per_clear` is the exec's `bprm->per_clear`, which carries `MMAP_PAGE_ZERO`
 /// for a privileged image — a caller must not be able to pre-arm a readable
 /// page 0 under a setuid binary. Linux applies it in `begin_new_exec`, before
 /// this test; this kernel commits credentials later, so it is folded in here
 /// exactly as `exec_transition::exec_rnd` folds it into the ASLR decision.
-///
-/// The result is deliberately unchecked, as Linux leaves it: a system that
-/// refuses low mappings simply gets no page 0, and the exec proceeds.
 /// # C: O(log N_vmas)
 pub(crate) fn map_page_zero(cur: &sched::Task, new_as: &AddressSpace, per_clear: u32) {
-    let persona = sched::personality::get(cur) & !per_clear;
-    if persona & sched::personality::MMAP_PAGE_ZERO == 0 { return; }
-    let Some(zero) = UserVirtAddr::new(0) else { return };
-    let _ = new_as.mmap(
-        Some(zero),
-        hal::PAGE_SIZE_BYTES as usize,
-        VmaProt::READ | VmaProt::EXEC,
-        VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
-        VmaBacking::Anonymous,
-        true,
-    );
+    let persona = sched::personality::at_exec(sched::personality::get(cur), per_clear);
+    if !sched::personality::mmap_page_zero(persona) { return; }
+    elf_load::persona::map_page_zero(new_as);
 }

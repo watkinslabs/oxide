@@ -80,3 +80,13 @@ the actual mistake instead of repeating it.
 8. Run `make smoke` BOTH arches.
 9. Run the SSH end-to-end repro from `state.md` — `echo HELLO; id`
    must complete in `<10 s` exit 0 on BOTH arches.
+
+## 8 GS base + ring transitions (x86)
+
+| ID | Arch | Pattern | Patch |
+|---|---|---|---|
+| 8.1 | x86 | `CR4.FSGSBASE` set enables `wrgsbase` at **CPL 3**. Under a no-swapgs model that lets ring 3 replace the base ring 0 dereferences for `gs:[…]` — arbitrary kernel write + stack pivot on the next entry. Under the swapgs model it additionally voids the paranoid entry's sign test, since a user base may then have bit 63 set. Keep the bit clear (`msr::CR4_FSGSBASE`); install the per-CPU base by `wrmsr(IA32_GS_BASE)`. | B1638. |
+| 8.2 | x86 | Every entry needs a GS decision and every exit needs the matching undo. Entries from a known ring (`syscall`) swap unconditionally; entries from either ring test saved-CS RPL. Adding an entry path without its exit leaves ring 3 running on the kernel per-CPU base. | B1638. |
+| 8.3 | x86 | The exit window between `swapgs` and `sysretq`/`iretq` runs at CPL 0 on the USER base, and the saved CS there says *kernel*. Every fault reachable in it must take the paranoid entry (test the live `IA32_GS_BASE`, not the frame) — which is why `#DB`/NMI/`#DF`/`#MC` are IST-routed. The set is `fault::paranoid::PARANOID_VECTORS`; IST routing and stub macro must agree. | B1638. |
+| 8.4 | x86 | `cli` before the exit `swapgs`, always. Fault and IRQ handling run IRQs-on (demand paging blocks on block I/O; `finish_task_switch` re-enables), and a maskable IRQ landing in the window enters through the regular path, reads a kernel CS, skips its own swapgs and dispatches on the user base. `iretq`/`sysretq` reload RFLAGS, so the `cli` costs the returning thread nothing. | B1638. |
+| 8.5 | x86 | The per-thread user GS base lives in `IA32_KERNEL_GS_BASE` while in kernel mode — `IA32_GS_BASE` is per-CPU and must not move on a task switch. Save/restore/seed/reset it wherever `fs_base` is handled (`Context::switch`, fork seeding, exec reset, ptrace `SegState`), never the other MSR. | B1638. |

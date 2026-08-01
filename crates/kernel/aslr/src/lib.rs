@@ -31,6 +31,6 @@ pub mod tunable;
 #[cfg(test)]
 mod tests;
 
-pub use exec::ExecRnd;
+pub use exec::{ExecRnd, Layout};
 pub use limits::{Budget, AARCH64, CURRENT, ELF_ET_DYN_BASE, STACK_TOP, X86_64};
 pub use mode::{Mode, randomize_va_space, set_randomize_va_space};

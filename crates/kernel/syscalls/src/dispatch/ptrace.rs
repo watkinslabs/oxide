@@ -14,14 +14,18 @@
 /// One armed request produces exactly ONE stop: `swap(false)` disarms before
 /// parking, so a tracer that wants the matching exit stop must issue a second
 /// PTRACE_SYSCALL, as Linux requires.
+///
+/// Returns `fatal_signal_pending` — `ptrace_report_syscall`'s own return, which
+/// the entry side turns into "abort the call". A tracee that was killed while
+/// stopped must not go on to run the syscall it was stopped on the way into.
 /// # C: O(1)
-pub(super) fn ptrace_syscall_stop_if_armed(rax: u64, entry: bool) {
+pub(super) fn ptrace_syscall_stop_if_armed(rax: u64, entry: bool) -> bool {
     use core::sync::atomic::Ordering;
     use sched::Signum;
     use crate::s101_ptrace_event as event;
-    let cur = match sched::live::current() { Some(c) => c, None => return };
-    if cur.traced_by.load(Ordering::Acquire) == 0 { return; }
-    if !cur.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return; }
+    let cur = match sched::live::current() { Some(c) => c, None => return false };
+    if cur.traced_by.load(Ordering::Acquire) == 0 { return false; }
+    if !cur.ptrace_syscall_armed.swap(false, Ordering::AcqRel) { return false; }
     cur.ptrace_stop_rax.store(rax, Ordering::Release);
     // Linux `ptrace_report_syscall`: the stop signal reported through
     // wait(2) is `SIGTRAP | 0x80` when PTRACE_O_TRACESYSGOOD is set, which is
@@ -45,4 +49,28 @@ pub(super) fn ptrace_syscall_stop_if_armed(rax: u64, entry: bool) {
     if resume_sig != 0 {
         sched::live::send_sig_self_info(resume_sig, sched::sigsend::SigSource::Kernel);
     }
+    cur.sigpending.load(Ordering::Acquire) & Signum::Sigkill.bit() != 0
+}
+
+/// Re-read the syscall number the entry frame holds NOW.
+///
+/// A tracer stopped at the entry stop may have rewritten it (and the
+/// arguments) with `PTRACE_SETREGS` / `PTRACE_POKEUSER` /
+/// `PTRACE_SET_SYSCALL_INFO`. Everything downstream — the seccomp filter and
+/// the dispatch itself — must act on what the frame says now, not on what
+/// userspace originally asked for, or the rewrite is silently ignored.
+/// # C: O(1)
+pub(super) fn syscall_nr_after_entry_stop(orig: u64) -> u64 {
+    use core::sync::atomic::Ordering;
+    // Untraced is the overwhelmingly common case and there is nobody who could
+    // have rewritten anything, so the frame read is skipped entirely — one
+    // atomic load on the syscall hot path instead.
+    match sched::live::current() {
+        Some(c) if c.traced_by.load(Ordering::Acquire) != 0 => {}
+        _ => return orig,
+    }
+    let regs = crate::arch_frame::current_user_regs();
+    if regs.is_null() { return orig; }
+    // SAFETY: `current_user_regs` is this task's own live syscall entry frame on its own kernel stack, read-only, and this task is the sole mutator of it per `13§5`.
+    unsafe { crate::arch_frame::frame_syscall_nr(regs) }
 }

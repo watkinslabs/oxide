@@ -407,6 +407,9 @@ impl Task {
             dbg_fpu_state_expected: AtomicUsize::new(dbg_fpu_state_expected),
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
+            nocpuid:       AtomicBool::new(false),
+            shstk_features: AtomicU64::new(0),
+            shstk_locked:   AtomicU64::new(0),
             #[cfg(target_arch = "aarch64")]
             svc_frame:     core::sync::atomic::AtomicU64::new(0),
             seccomp_filters: Spinlock::new(alloc::vec::Vec::new()),
@@ -420,6 +423,8 @@ impl Task {
             // with the same count a switched-out one would have had.
             preempt_count: AtomicU32::new(crate::preempt::PREEMPT_DISABLED),
             no_new_privs:   AtomicBool::new(false),
+            tsc_sigsegv:    AtomicBool::new(false),
+            tagged_addr:    AtomicBool::new(false),
             dumpable:       AtomicU8::new(super::SUID_DUMP_USER),
             thp_disable:    AtomicU8::new(super::THP_DISABLE_OFF),
             timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
@@ -438,6 +443,10 @@ impl Task {
             stop_pending:    AtomicBool::new(false),
             cont_pending:    AtomicBool::new(false),
             stop_code:       AtomicU32::new(0),
+            debugregs:       crate::debugreg::slab::Lazy::new(),
+            #[cfg(target_arch = "aarch64")]
+            hw_break: crate::debugreg::slab::Lazy::new(),
+            jobctl:          AtomicU64::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),

@@ -34,7 +34,7 @@ pub(crate) fn target_mm(pid: i32) -> Result<Arc<AddressSpace>, i64> {
     // clone_mm pins against a concurrent exit/execve mm replacement on
     // another CPU; None is Linux's `!mm` ESRCH arm.
     let mm = match task.clone_mm() { Some(m) => m, None => return Err(esrch) };
-    if !owns_mm(cur, &mm) && crate::s101_ptrace_perm::may_access(cur, &task).is_err() {
+    if !owns_mm(cur, &mm) && crate::s101_ptrace_perm::may_attach_access(cur, &task).is_err() {
         return Err(-(Errno::Eperm.as_i32() as i64));
     }
     Ok(mm)

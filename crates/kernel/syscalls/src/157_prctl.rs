@@ -17,9 +17,11 @@ const PR_SET_SECCOMP: u64 = 22;
 /// `prctl(option, arg2, arg3, arg4, arg5)` — slot 157.
 ///
 /// `PR_SET_SECCOMP` is the legacy front door onto `do_seccomp`
-/// (`kernel/seccomp.c:prctl_set_seccomp`); the mode rule and the reason
-/// FILTER mode is declined live with the seccomp owner
-/// (`security::seccomp::prctl_seccomp_op`).
+/// (`kernel/seccomp.c:prctl_set_seccomp`). Both modes reach it: STRICT maps to
+/// `SECCOMP_SET_MODE_STRICT` and FILTER to `SECCOMP_SET_MODE_FILTER`, with the
+/// mode ladder owned by `security::seccomp::prctl_seccomp_op`. The door
+/// libseccomp actually uses is `seccomp(2)` (slot 317); this one exists for
+/// the pre-3.17 callers that still take it.
 /// # C: see `sched::prctl::sys_prctl`
 pub fn sys_prctl(args: &SyscallArgs) -> i64 {
     if args.a0 == PR_SET_SECCOMP {

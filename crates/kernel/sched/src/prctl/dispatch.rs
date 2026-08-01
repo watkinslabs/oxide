@@ -8,7 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use super::decide::{self, Op};
-use super::{apply, caps, futex_hash, name, rseq_slice, task_state};
+use super::{apply, arm64, caps, futex_hash, name, rseq_slice, task_state};
 
 /// `sys_prctl(option, arg2, arg3, arg4, arg5)` — slot 157.
 ///
@@ -43,8 +43,8 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         Op::SetSeccomp { .. } => -(Errno::Einval.as_i32() as i64),
         Op::CapbsetRead(cap) => caps::capbset_read(&cur, cap),
         Op::CapbsetDrop(cap) => caps::capbset_drop(&cur, cap),
-        Op::GetTsc(p) => task_state::get_tsc(p),
-        Op::SetTsc(mode) => task_state::set_tsc(mode),
+        Op::GetTsc(p) => task_state::get_tsc(&cur, p),
+        Op::SetTsc(mode) => task_state::set_tsc(&cur, mode),
         Op::GetSecurebits => caps::get_securebits(&cur),
         Op::SetSecurebits(v) => caps::set_securebits(&cur, v),
         Op::SetTimerslack(ns) => task_state::set_timerslack(&cur, ns),
@@ -117,6 +117,44 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         Op::SetSyscallUserDispatch(cfg) => apply::set_syscall_user_dispatch(&cur, &cfg),
         Op::GetAuxv { ptr, len } => apply::get_auxv(&cur, ptr, len),
         Op::TimerCreateRestoreIds(op) => apply::timer_create_restore_ids(&cur, op),
+        // The arm64-only group. `arm64::features()` reads this CPU's
+        // `ID_AA64*_EL1` registers (all-zero on any other target), so the
+        // answer is the hardware's, not a compile-time assumption.
+        Op::SveGetVl | Op::SveSetVl(_) | Op::SmeGetVl | Op::SmeSetVl(_) => {
+            // `sve_set_current_vl` / `sme_set_current_vl` test support before
+            // touching `arg`, so an unsupported system answers EINVAL for
+            // every argument including a well-formed one.
+            let f = arm64::features();
+            let ok = match op {
+                Op::SveGetVl | Op::SveSetVl(_) => arm64::sve_available(f),
+                _ => arm64::sme_available(f),
+            };
+            if ok { 0 } else { -(Errno::Einval.as_i32() as i64) }
+        }
+        Op::PacResetKeys(arg) => match arm64::pac_reset_keys_check(arm64::features(), arg) {
+            // Reachable only once this kernel owns the per-task keys; the
+            // regeneration hangs off this arm at that point.
+            Ok(()) => 0,
+            Err(e) => -(e.as_i32() as i64),
+        },
+        Op::PacSetEnabledKeys { keys, enabled } =>
+            match arm64::pac_set_enabled_keys_check(arm64::features(), keys, enabled) {
+                Ok(()) => 0,
+                Err(e) => -(e.as_i32() as i64),
+            },
+        Op::PacGetEnabledKeys => {
+            if arm64::address_auth_available(arm64::features()) { 0 }
+            else { -(Errno::Einval.as_i32() as i64) }
+        }
+        Op::SetTaggedAddrCtrl(arg) => match arm64::tagged_addr_set_check(arm64::features(), arg) {
+            Ok(on) => { cur.tagged_addr.store(on, Ordering::Release); 0 }
+            Err(e) => -(e.as_i32() as i64),
+        },
+        Op::GetTaggedAddrCtrl =>
+            match arm64::tagged_addr_get(cur.tagged_addr.load(Ordering::Acquire)) {
+                Ok(v) => v,
+                Err(e) => -(e.as_i32() as i64),
+            },
         Op::FutexHash { cmd, slots, a4 } => futex_hash::decide(cmd, slots, a4),
         Op::RseqSliceExtension { cmd, ctrl, a4, a5 } => rseq_slice::decide(cmd, ctrl, a4, a5),
     }
