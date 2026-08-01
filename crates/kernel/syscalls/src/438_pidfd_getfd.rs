@@ -38,7 +38,7 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
         Some(target) => target,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
-    if sched::ptrace_access::may_access(&cur, &target).is_err() {
+    if crate::s101_ptrace_perm::may_attach_access(&cur, &target).is_err() {
         return -(Errno::Eperm.as_i32() as i64);
     }
     if target.state() == sched::task::TaskState::Zombie {
@@ -62,7 +62,7 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     }
 }
 
-// The access gate is `sched::ptrace_access::may_access` — Linux
+// The access gate is the ATTACH-class ladder — Linux
 // `ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS)`. This file used to carry its
 // own open-coded copy of the cred ladder, which OMITTED the dumpability gate:
 // `__ptrace_may_access` requires `CAP_SYS_PTRACE` when the target is

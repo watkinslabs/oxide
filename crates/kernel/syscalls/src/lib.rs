@@ -228,6 +228,10 @@ pub mod rwf;
 pub mod kcmp_abi;
 pub mod setns_flags;
 #[path = "101_ptrace/uapi.rs"] pub mod s101_ptrace_uapi;
+/// `syscall_trace_enter`'s phase ORDER. Declared here rather than from
+/// `dispatch/mod.rs`, which is kernel-gated: a `#[cfg(test)]` block inside a
+/// gated module compiles away silently and its tests never run.
+#[path = "dispatch/entry_order.rs"] pub mod dispatch_entry_order;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "101_ptrace/decide.rs"] pub mod s101_ptrace_decide;
 #[cfg(any(target_os = "oxide-kernel", test))]

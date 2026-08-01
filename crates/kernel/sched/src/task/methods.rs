@@ -443,6 +443,10 @@ impl Task {
             stop_pending:    AtomicBool::new(false),
             cont_pending:    AtomicBool::new(false),
             stop_code:       AtomicU32::new(0),
+            debugregs:       crate::debugreg::slab::Lazy::new(),
+            #[cfg(target_arch = "aarch64")]
+            hw_break: crate::debugreg::slab::Lazy::new(),
+            jobctl:          AtomicU64::new(0),
             rseq_ptr:       AtomicU64::new(0),
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),

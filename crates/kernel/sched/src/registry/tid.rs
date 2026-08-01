@@ -50,13 +50,26 @@ pub fn lookup(tid: u32) -> Option<Arc<Task>> {
 /// Stopped to begin with. Used by SIGCONT delivery per signal(7):
 /// the state-flip half is hosted-testable here, the re-enqueue
 /// half lives in kernel-side `wake_if_stopped`.
+///
+/// `wake` is why the task is being resumed, and it decides whether this is a
+/// `wait4(WCONTINUED)` event at all. Only a real SIGCONT is: a `PTRACE_CONT`
+/// that happens to un-stop a tracee is not a continue, and neither is a
+/// kill-wake that only resumes the task so it can run its own death. It is
+/// also published into the latch's wake field because the resuming task itself
+/// must know, on the way out of its stop, whether it owes its parent a
+/// `CLD_CONTINUED` — `cont_pending` cannot serve, since a `wait4` may consume
+/// it first.
 /// # C: O(1)
-pub fn try_wake_stopped(task: &Task) -> bool {
+pub fn try_wake_stopped(task: &Task, wake: crate::jobctl::WakeKind) -> bool {
     if task.state() != TaskState::Stopped {
         return false;
     }
-    task.cont_pending
-        .store(true, core::sync::atomic::Ordering::Release);
+    let jc = task.jobctl.load(core::sync::atomic::Ordering::Acquire);
+    task.jobctl.store(crate::jobctl::with_wake(jc, wake), core::sync::atomic::Ordering::Release);
+    if crate::jobctl::records_continued(wake) {
+        task.cont_pending
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
     task.set_state(TaskState::Runnable);
     // Per `13§9` wakeup→resched: a newly-runnable task may outrank
     // current; flag a reschedule so the next preempt-enable or

@@ -47,10 +47,14 @@ pub fn zap_other_threads() {
         if tid == self_tid { continue; }
         if let Some(t) = crate::registry::lookup(tid) {
             t.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
-            super::registry::wake_if_stopped(&t);
-            // Linux `task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK)`: a
-            // queued group-stop must not re-stop a thread we just killed, and
-            // resuming it to die is not a `wait4(WCONTINUED)` event either.
+            // Linux `task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK)` runs
+            // BEFORE the wake: a queued group-stop or ptrace trap must not
+            // re-stop (or re-trap) a thread we just killed.
+            t.jobctl.store(crate::jobctl::clear_pending(t.jobctl.load(Ordering::Acquire),
+                crate::jobctl::PENDING_MASK | crate::jobctl::LISTENING), Ordering::Release);
+            super::registry::wake_if_stopped(&t, crate::jobctl::WakeKind::Kill);
+            // Resuming a thread so it can die is not a `wait4(WCONTINUED)`
+            // event either.
             t.stop_pending.store(false, Ordering::Release);
             t.cont_pending.store(false, Ordering::Release);
             signal_wake_up(&t);
@@ -92,7 +96,12 @@ pub fn complete_signal(leader_tid: u32, sig: u32) -> bool {
     let unblockable = crate::signum::is_unblockable(sig);
     let wake = |t: &alloc::sync::Arc<crate::Task>| {
         if !wants_signal(t.sigmask.load(Ordering::Acquire), bit, unblockable) { return false; }
-        super::registry::wake_if_stopped(t);
+        // `signal_wake_up(t, sig == SIGKILL)` — see `send::publish`. A STOPPED
+        // task is only resumed by the kill; every other signal waits for the
+        // SIGCONT (or, for a tracee, for the tracer) that ends the stop.
+        if sig == Signum::Sigkill as u32 {
+            super::registry::wake_if_stopped(t, crate::jobctl::WakeKind::Kill);
+        }
         signal_wake_up(t);
         true
     };
