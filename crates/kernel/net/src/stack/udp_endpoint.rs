@@ -95,12 +95,13 @@ impl UdpRxQueue {
 
     /// Queue one datagram if this endpoint still accepts delivery. # C: O(payload)
     pub fn enqueue(&self, datagram: UdpDatagram) -> bool {
-        self.enqueue_gro(datagram, false)
+        self.enqueue_gro(datagram, false, false)
     }
 
     /// Deliver one datagram, coalescing it into the queued run when the
-    /// canonical rule admits it. # C: O(payload)
-    pub fn enqueue_gro(&self, datagram: UdpDatagram, checksum_zero: bool) -> bool {
+    /// canonical rule admits it and the ingress interface offers coalescing.
+    /// # C: O(payload)
+    pub fn enqueue_gro(&self, datagram: UdpDatagram, checksum_zero: bool, offered: bool) -> bool {
         use crate::udp_gro::{GroAdmit, GroRun, admit};
         let mut state = self.state.lock();
         if !state.accepting { return false; }
@@ -108,7 +109,7 @@ impl UdpRxQueue {
         let same_flow = state.datagrams.back()
             .is_some_and(|q| udp4_same_flow(&q.datagram, &datagram));
         let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
-            checksum_zero, self.gro_enabled());
+            checksum_zero, offered && self.gro_enabled());
         match decision {
             GroAdmit::Merge => {
                 let tail = state.datagrams.back_mut().expect("a merge names a tail");

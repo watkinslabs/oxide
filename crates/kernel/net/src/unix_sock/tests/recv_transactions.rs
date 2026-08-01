@@ -66,9 +66,9 @@ fn stream_peek_offset_reads_waitall_suffix_without_consuming() {
     let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write(UnixEnd::A, b"abcdef").unwrap();
-    let first = pair.read_stream_with_offset(UnixEnd::B, 3, true, 0,
+    let first = pair.read_stream_with_offset(UnixEnd::B, 3, true, 0, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), 0))).unwrap().unwrap().0;
-    let second = pair.read_stream_with_offset(UnixEnd::B, 3, true, 3,
+    let second = pair.read_stream_with_offset(UnixEnd::B, 3, true, 3, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), 0))).unwrap().unwrap().0;
     assert_eq!(first, b"abc");
     assert_eq!(second, b"def");

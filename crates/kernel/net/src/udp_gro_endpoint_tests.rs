@@ -28,7 +28,7 @@ fn deliver(q: &UdpRxQueue, len: usize, fill: u8) -> bool {
 fn deliver_from(q: &UdpRxQueue, src: Ipv4Addr, sport: u16, dev: NetIfaceId, ttl: u8,
     len: usize, fill: u8) -> bool
 {
-    q.enqueue_gro((src, sport, DST, dev, ttl, alloc::vec![fill; len]), false)
+    q.enqueue_gro((src, sport, DST, dev, ttl, alloc::vec![fill; len]), false, true)
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn a_suppressed_checksum_datagram_is_delivered_alone() {
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     // Neither joins the run...
-    assert!(q.enqueue_gro((SRC, SPORT, DST, iface(1), TTL, alloc::vec![2; 100]), true));
+    assert!(q.enqueue_gro((SRC, SPORT, DST, iface(1), TTL, alloc::vec![2; 100]), true, true));
     // ...nor heads one.
     assert!(deliver(&q, 100, 3));
     assert_eq!(q.queued_len(), 3);
@@ -170,12 +170,21 @@ fn a_datagram_after_a_drained_run_starts_a_fresh_one() {
 }
 
 #[test]
+fn an_interface_that_does_not_offer_coalescing_delivers_datagrams_separately() {
+    let q = queue(true);
+    for i in 0..3 {
+        assert!(q.enqueue_gro((SRC, SPORT, DST, iface(1), TTL, alloc::vec![i; 100]), false, false));
+    }
+    assert_eq!(q.queued_len(), 3, "the socket asked, but the interface does not offer it");
+}
+
+#[test]
 fn the_ipv6_endpoint_coalesces_by_the_same_rule() {
     let q = Udp6RxQueue::new(Ipv6Addr::LOOPBACK, DPORT);
     q.gro.store(1, Ordering::Release);
     let deliver6 = |len: usize, fill: u8, class: u8| {
         q.enqueue_gro((Ipv6Addr::LOOPBACK, SPORT, Ipv6Addr::LOOPBACK, iface(1), 64, class,
-            alloc::vec![fill; len]), false)
+            alloc::vec![fill; len]), false, true)
     };
     assert!(deliver6(100, 1, 0));
     assert!(deliver6(100, 2, 0));

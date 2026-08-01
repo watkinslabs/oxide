@@ -298,6 +298,9 @@ impl NetStack {
                     .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
                 let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst,
                     udp.dst_port, iface, datagram_body);
+                let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
+                    .map_or(0, |dev| dev.hardware_type());
+                let gro_offered = crate::udp_gro::device_offers_gro(hatype);
                 let has_v4 = !endpoints.is_empty();
                 for q in endpoints {
                     if hdr.dst.is_multicast() {
@@ -319,7 +322,7 @@ impl NetStack {
                     ) else { continue; };
                     let _ = q.enqueue_gro((
                         hdr.src, udp.src_port, hdr.dst, iface, hdr.ttl, body[..keep].to_vec(),
-                    ), udp.checksum == 0);
+                    ), udp.checksum == 0, gro_offered);
                 }
                 let endpoints6 = if !has_v4 || hdr.dst.is_multicast() || hdr.dst.is_broadcast() {
                     self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port,
@@ -344,7 +347,7 @@ impl NetStack {
                         Ipv6Addr::from_v4_mapped(hdr.src), udp.src_port,
                         Ipv6Addr::from_v4_mapped(hdr.dst), iface, hdr.ttl, hdr.tos,
                         body[..keep].to_vec(),
-                    ), udp.checksum == 0);
+                    ), udp.checksum == 0, gro_offered);
                 }
             }
             p if p == IpProto::Tcp as u8 =>
