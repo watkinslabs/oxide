@@ -4,8 +4,8 @@
 use core::sync::atomic::Ordering;
 
 use crate::addr::{Ipv4Addr, Ipv6Addr, NetIfaceId};
-use crate::stack::UdpRxQueue;
-use crate::stack_ipv6::Udp6RxQueue;
+use crate::stack::{UdpDatagram, UdpRxQueue};
+use crate::stack_ipv6::{Udp6Datagram, Udp6RxQueue};
 
 const SRC: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 7);
 const DST: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
@@ -28,7 +28,8 @@ fn deliver(q: &UdpRxQueue, len: usize, fill: u8) -> bool {
 fn deliver_from(q: &UdpRxQueue, src: Ipv4Addr, sport: u16, dev: NetIfaceId, ttl: u8,
     len: usize, fill: u8) -> bool
 {
-    q.enqueue_gro((src, sport, DST, dev, ttl, alloc::vec![fill; len]), false, true)
+    q.enqueue_gro(UdpDatagram::plain(src, sport, DST, dev, ttl, alloc::vec![fill; len]),
+        false, true)
 }
 
 #[test]
@@ -38,8 +39,8 @@ fn coalescing_off_delivers_every_datagram_separately() {
     assert_eq!(q.queued_len(), 3);
     for i in 0..3u8 {
         let (datagram, seg) = q.recv_gro(false).expect("queued");
-        assert_eq!(datagram.5.len(), 100);
-        assert_eq!(datagram.5[0], i);
+        assert_eq!(datagram.payload.len(), 100);
+        assert_eq!(datagram.payload[0], i);
         assert_eq!(seg, None, "an uncoalesced receive reports no segment size");
     }
 }
@@ -50,10 +51,10 @@ fn one_flow_of_equal_datagrams_becomes_one_receive() {
     for i in 0..4 { assert!(deliver(&q, 100, i)); }
     assert_eq!(q.queued_len(), 1, "four datagrams, one receive");
     let (datagram, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!(datagram.5.len(), 400);
+    assert_eq!(datagram.payload.len(), 400);
     assert_eq!(seg, Some(100), "the reader is told how to split it back");
     // The bytes arrive in order, each segment intact.
-    for i in 0..4usize { assert!(datagram.5[i * 100..(i + 1) * 100].iter().all(|b| *b == i as u8)); }
+    for i in 0..4usize { assert!(datagram.payload[i * 100..(i + 1) * 100].iter().all(|b| *b == i as u8)); }
     assert!(q.recv_gro(false).is_none());
 }
 
@@ -67,10 +68,10 @@ fn a_short_final_datagram_joins_and_ends_the_receive() {
     assert!(deliver(&q, 100, 4));
     assert_eq!(q.queued_len(), 2);
     let (first, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!(first.5.len(), 240);
+    assert_eq!(first.payload.len(), 240);
     assert_eq!(seg, Some(100), "the size stays the full segment, not the short tail");
     let (second, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!(second.5.len(), 100);
+    assert_eq!(second.payload.len(), 100);
     assert_eq!(seg, None);
 }
 
@@ -80,12 +81,12 @@ fn a_longer_datagram_ends_the_run_instead_of_joining_it() {
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 200, 2));
     assert_eq!(q.queued_len(), 2);
-    assert_eq!(q.recv_gro(false).expect("queued").0.5.len(), 100);
+    assert_eq!(q.recv_gro(false).expect("queued").0.payload.len(), 100);
     // ...and the longer one heads a run of its own.
     assert!(deliver(&q, 200, 3));
     assert_eq!(q.queued_len(), 1);
     let (datagram, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!(datagram.5.len(), 400);
+    assert_eq!(datagram.payload.len(), 400);
     assert_eq!(seg, Some(200));
 }
 
@@ -105,6 +106,49 @@ fn a_run_never_spans_two_flows() {
     }
 }
 
+/// Every header value the receive ancillary messages publish is part of the
+/// flow key, because a coalesced receive reports ONE of each for the whole
+/// run. Delivering a datagram that differs in any of them must break the run
+/// rather than misreport it.
+#[test]
+fn a_run_never_spans_two_published_header_values() {
+    let base = |fill: u8| UdpDatagram {
+        src: SRC, sport: SPORT, dst: DST, dport: DPORT, iface: iface(1), ttl: TTL,
+        tos: 0, options: alloc::vec::Vec::new(), frag_max: 0,
+        payload: alloc::vec![fill; 100],
+    };
+    let variants: [(&str, fn(UdpDatagram) -> UdpDatagram); 4] = [
+        ("type of service", |mut d| { d.tos = 0x28; d }),
+        ("destination port", |mut d| { d.dport = DPORT + 1; d }),
+        ("header option area", |mut d| { d.options = alloc::vec![1, 2, 3, 4]; d }),
+        ("hop limit", |mut d| { d.ttl = TTL - 1; d }),
+    ];
+    for (label, differ) in variants {
+        let q = queue(true);
+        assert!(q.enqueue_gro(base(1), false, true));
+        assert!(q.enqueue_gro(differ(base(2)), false, true));
+        assert_eq!(q.queued_len(), 2, "{label} must break the run");
+    }
+    // The control: two identical datagrams still merge.
+    let q = queue(true);
+    assert!(q.enqueue_gro(base(1), false, true));
+    assert!(q.enqueue_gro(base(2), false, true));
+    assert_eq!(q.queued_len(), 1);
+}
+
+/// A reassembled datagram was handed up as FRAGMENTS, which the receive path
+/// refuses to coalesce, and the fragment size it reports belongs to it alone.
+#[test]
+fn a_reassembled_datagram_is_delivered_alone() {
+    let q = queue(true);
+    let mut fragmented = UdpDatagram::plain(SRC, SPORT, DST, iface(1), TTL, alloc::vec![1; 100]);
+    fragmented.frag_max = 576;
+    assert!(q.enqueue_gro(fragmented.clone(), false, true));
+    assert!(q.enqueue_gro(fragmented, false, true));
+    assert_eq!(q.queued_len(), 2, "neither joins the other");
+    assert_eq!(q.recv_gro(false).expect("queued").1, None);
+}
+
 #[test]
 fn a_run_stops_at_the_segment_cap_and_the_next_datagram_starts_another() {
     let q = queue(true);
@@ -113,7 +157,7 @@ fn a_run_stops_at_the_segment_cap_and_the_next_datagram_starts_another() {
     assert!(deliver(&q, 10, 2));
     assert_eq!(q.queued_len(), 2);
     let (first, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!(first.5.len(), 10 * crate::udp_gro::UDP_GRO_CNT_MAX);
+    assert_eq!(first.payload.len(), 10 * crate::udp_gro::UDP_GRO_CNT_MAX);
     assert_eq!(seg, Some(10));
 }
 
@@ -122,7 +166,8 @@ fn a_suppressed_checksum_datagram_is_delivered_alone() {
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     // Neither joins the run...
-    assert!(q.enqueue_gro((SRC, SPORT, DST, iface(1), TTL, alloc::vec![2; 100]), true, true));
+    assert!(q.enqueue_gro(
+        UdpDatagram::plain(SRC, SPORT, DST, iface(1), TTL, alloc::vec![2; 100]), true, true));
     // ...nor heads one.
     assert!(deliver(&q, 100, 3));
     assert_eq!(q.queued_len(), 3);
@@ -144,10 +189,10 @@ fn peeking_a_coalesced_receive_reports_the_same_segment_size() {
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 100, 2));
     let (peeked, seg) = q.recv_gro(true).expect("queued");
-    assert_eq!((peeked.5.len(), seg), (200, Some(100)));
+    assert_eq!((peeked.payload.len(), seg), (200, Some(100)));
     assert_eq!(q.queued_len(), 1, "a peek consumes nothing");
     let (popped, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!((popped.5.len(), seg), (200, Some(100)));
+    assert_eq!((popped.payload.len(), seg), (200, Some(100)));
 }
 
 #[test]
@@ -162,18 +207,20 @@ fn a_datagram_after_a_drained_run_starts_a_fresh_one() {
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 100, 2));
-    assert_eq!(q.recv_gro(false).expect("queued").0.5.len(), 200);
+    assert_eq!(q.recv_gro(false).expect("queued").0.payload.len(), 200);
     assert!(deliver(&q, 100, 3));
     assert!(deliver(&q, 100, 4));
     let (datagram, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!((datagram.5.len(), seg), (200, Some(100)));
+    assert_eq!((datagram.payload.len(), seg), (200, Some(100)));
 }
 
 #[test]
 fn an_interface_that_does_not_offer_coalescing_delivers_datagrams_separately() {
     let q = queue(true);
     for i in 0..3 {
-        assert!(q.enqueue_gro((SRC, SPORT, DST, iface(1), TTL, alloc::vec![i; 100]), false, false));
+        assert!(q.enqueue_gro(
+            UdpDatagram::plain(SRC, SPORT, DST, iface(1), TTL, alloc::vec![i; 100]),
+            false, false));
     }
     assert_eq!(q.queued_len(), 3, "the socket asked, but the interface does not offer it");
 }
@@ -183,8 +230,8 @@ fn the_ipv6_endpoint_coalesces_by_the_same_rule() {
     let q = Udp6RxQueue::new(Ipv6Addr::LOOPBACK, DPORT);
     q.gro.store(1, Ordering::Release);
     let deliver6 = |len: usize, fill: u8, class: u8| {
-        q.enqueue_gro((Ipv6Addr::LOOPBACK, SPORT, Ipv6Addr::LOOPBACK, iface(1), 64, class,
-            alloc::vec![fill; len]), false, true)
+        q.enqueue_gro(Udp6Datagram::plain(Ipv6Addr::LOOPBACK, SPORT, Ipv6Addr::LOOPBACK,
+            iface(1), 64, class, alloc::vec![fill; len]), false, true)
     };
     assert!(deliver6(100, 1, 0));
     assert!(deliver6(100, 2, 0));
@@ -193,5 +240,29 @@ fn the_ipv6_endpoint_coalesces_by_the_same_rule() {
     assert!(deliver6(100, 3, 8));
     assert_eq!(q.queued_len(), 2);
     let (datagram, seg) = q.recv_gro(false).expect("queued");
-    assert_eq!((datagram.6.len(), seg), (200, Some(100)));
+    assert_eq!((datagram.payload.len(), seg), (200, Some(100)));
+}
+
+/// The IPv6 flow key covers the extension-header chain and the flow-info
+/// field for the same reason the IPv4 one covers the option area.
+#[test]
+fn the_ipv6_run_never_spans_two_published_header_values() {
+    let base = |fill: u8| Udp6Datagram {
+        src: Ipv6Addr::LOOPBACK, sport: SPORT, dst: Ipv6Addr::LOOPBACK, dport: DPORT,
+        iface: iface(1), hop_limit: 64, traffic_class: 0, flowinfo: 0,
+        ext_headers: alloc::vec::Vec::new(), frag_max: 0,
+        payload: alloc::vec![fill; 100],
+    };
+    let variants: [(&str, fn(Udp6Datagram) -> Udp6Datagram); 3] = [
+        ("flow-info field", |mut d| { d.flowinfo = 0x1_2345; d }),
+        ("extension headers", |mut d| { d.ext_headers = alloc::vec![(60, alloc::vec![0u8; 8])]; d }),
+        ("destination port", |mut d| { d.dport = DPORT + 1; d }),
+    ];
+    for (label, differ) in variants {
+        let q = Udp6RxQueue::new(Ipv6Addr::LOOPBACK, DPORT);
+        q.gro.store(1, Ordering::Release);
+        assert!(q.enqueue_gro(base(1), false, true));
+        assert!(q.enqueue_gro(differ(base(2)), false, true));
+        assert_eq!(q.queued_len(), 2, "{label} must break the run");
+    }
 }

@@ -309,10 +309,10 @@ fn udp4_unbind_linearizes_payload_and_error_delivery() {
     let stack = NetStack::new();
     let endpoint = bind4(&stack, V4_A, None, false, false, UID, None).unwrap();
     let stale = stack.udp_demux(V4_SRC, 9_000, V4_A, PORT, IFACE_A).pop().unwrap();
-    assert!(stale.enqueue((V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![1])));
+    assert!(stale.enqueue(crate::stack::UdpDatagram::plain(V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![1])));
     stack.unbind_udp_endpoint(&endpoint);
     assert_eq!(stale.queued_len(), 1);
-    assert!(!stale.enqueue((V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![2])));
+    assert!(!stale.enqueue(crate::stack::UdpDatagram::plain(V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![2])));
 
     stale.error.set_recverr4(true);
     let entry = crate::SocketErrorEntry {
@@ -333,14 +333,14 @@ fn udp6_unbind_linearizes_native_and_mapped_delivery() {
     let endpoint = bind6(&stack, V6_A, None, false, false, UID, None).unwrap();
     let stale = stack.udp6_demux(V6_SRC, 9_000, V6_A, PORT, IFACE_A).pop().unwrap();
     stack.unbind_udp6_endpoint(&endpoint);
-    assert!(!stale.enqueue((V6_SRC, 9_000, V6_A, IFACE_A, 64, 0, alloc::vec![1])));
+    assert!(!stale.enqueue(crate::stack_ipv6::Udp6Datagram::plain(V6_SRC, 9_000, V6_A, IFACE_A, 64, 0, alloc::vec![1])));
     assert!(!stale.set_error(syscall::errno::Errno::Econnrefused as i32));
     assert!(!stale.error.has());
 
     let endpoint = bind6(&stack, Ipv6Addr::ANY, None, false, false, UID, None).unwrap();
     let mapped = stack.udp6_demux_v4(V4_SRC, 9_001, V4_A, PORT, IFACE_A).pop().unwrap();
     stack.unbind_udp6_endpoint(&endpoint);
-    assert!(!mapped.enqueue((
+    assert!(!mapped.enqueue(crate::stack_ipv6::Udp6Datagram::plain(
         Ipv6Addr::from_v4_mapped(V4_SRC), 9_001, Ipv6Addr::from_v4_mapped(V4_A),
         IFACE_A, 64, 0, alloc::vec![2],
     )));
@@ -360,7 +360,7 @@ fn concurrent_udp4_delivery_linearizes_once_against_unbind() {
         let deliver = stale.clone();
         let sender = thread::spawn(move || {
             deliver_barrier.wait();
-            deliver.enqueue((V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![1]))
+            deliver.enqueue(crate::stack::UdpDatagram::plain(V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![1]))
         });
         let close_barrier = barrier.clone();
         let close_stack = stack.clone();
@@ -372,7 +372,7 @@ fn concurrent_udp4_delivery_linearizes_once_against_unbind() {
         let accepted = sender.join().unwrap();
         closer.join().unwrap();
         assert_eq!(stale.queued_len(), usize::from(accepted));
-        assert!(!stale.enqueue((V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![2])));
+        assert!(!stale.enqueue(crate::stack::UdpDatagram::plain(V4_SRC, 9_000, V4_A, IFACE_A, 64, alloc::vec![2])));
     }
 }
 

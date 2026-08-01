@@ -2,7 +2,38 @@ use super::*;
 
 mod tcp_entry_wait;
 
-pub type UdpDatagram = (Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>);
+/// One queued IPv4 UDP datagram plus every header field the ancillary
+/// messages publish: `dst` + `iface` back IP_PKTINFO, `dport` completes the
+/// IP_ORIGDSTADDR socket address, `ttl` backs IP_TTL, `tos` backs IP_TOS,
+/// `options` backs IP_RECVOPTS and IP_RETOPTS, and `frag_max` backs
+/// IP_RECVFRAGSIZE.
+#[derive(Clone, Debug)]
+pub struct UdpDatagram {
+    pub src: Ipv4Addr,
+    pub sport: u16,
+    pub dst: Ipv4Addr,
+    pub dport: u16,
+    pub iface: NetIfaceId,
+    pub ttl: u8,
+    pub tos: u8,
+    /// Received header option area, empty when the header carried none.
+    pub options: Vec<u8>,
+    /// Largest fragment this datagram was reassembled from, zero when it
+    /// arrived whole.
+    pub frag_max: u32,
+    pub payload: Vec<u8>,
+}
+
+impl UdpDatagram {
+    /// A datagram carrying nothing beyond the addresses, hop limit and body —
+    /// the shape a loopback delivery produces. # C: O(1)
+    pub fn plain(src: Ipv4Addr, sport: u16, dst: Ipv4Addr, iface: NetIfaceId, ttl: u8,
+                 payload: Vec<u8>) -> Self
+    {
+        Self { src, sport, dst, dport: 0, iface, ttl, tos: 0, options: Vec::new(),
+               frag_max: 0, payload }
+    }
+}
 
 /// One queued IPv4 UDP receive plus the coalescing run it belongs to.
 #[derive(Clone)]
@@ -28,9 +59,8 @@ pub struct UdpRxQueue {
     pub owner: Arc<crate::SocketOwner>,
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
-    /// Datagrams waiting for a reader: (src, sport, dst, iface, ttl, payload).
-    /// `ttl` = received IPv4 header TTL, delivered as IP_TTL cmsg when the
-    /// socket set IP_RECVTTL (systemd-resolved LLMNR hop-count check).
+    /// Datagrams waiting for a reader, each carrying the header fields the
+    /// ancillary messages publish.
     pub(super) state: Spinlock<UdpRxState, StackLockClass>,
     /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]

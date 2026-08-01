@@ -6,6 +6,17 @@ use crate::stack_ipv6::Udp6RxQueue;
 use crate::ndp;
 use crate::netfilter_hook::{NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INET_PRE_ROUTING};
 
+/// The IPv6 header state the receive ancillary messages publish, carried from
+/// the parse down to the datagram queue. # C: O(headers)
+pub(crate) struct RxAncillary {
+    pub flow_label: u32,
+    /// `(header kind, whole header bytes)`, in the order they arrived.
+    pub ext_headers: alloc::vec::Vec<(u8, alloc::vec::Vec<u8>)>,
+    /// Largest single fragment the datagram was reassembled from, zero when it
+    /// arrived whole.
+    pub frag_max: u32,
+}
+
 impl NetStack {
     /// Demux IPv6 after resolving the ingress interface owner. # C: O(payload)
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
@@ -30,6 +41,11 @@ impl NetStack {
         }
         let payload = &l3[crate::ipv6::IPV6_HDR_LEN..payload_end];
         let mld_router_alert = hbh_has_mld_router_alert(hdr.next_header, payload);
+        let mut ancillary = RxAncillary {
+            flow_label: hdr.flow_label,
+            ext_headers: crate::ipv6_ext::collect(hdr.next_header, payload),
+            frag_max: 0,
+        };
         let assembled;
         let reassembled_packet;
         let (next_header, payload, full_packet) = match crate::ipv6_ext::walk(hdr.next_header, payload)
@@ -58,11 +74,16 @@ impl NetStack {
                 } else {
                     None
                 };
+                let fragsize = l3.len() as u32;
                 match self.ipv6_reasm.push_with_prefix(
                     k, crate::stack::net_now_ns(), offset, prefix.as_deref(), payload, more,
+                    fragsize,
                 ) {
-                    Some((prefix, bytes)) => {
+                    Some((prefix, bytes, largest)) => {
                         assembled = bytes;
+                        ancillary.frag_max = largest;
+                        ancillary.ext_headers =
+                            crate::ipv6_ext::collect(fragment_next_header, &assembled[..]);
                         match crate::ipv6_ext::walk(fragment_next_header, &assembled[..])
                             .map_err(|_| crate::netdev::NetError::Einval)?
                         {
@@ -84,7 +105,7 @@ impl NetStack {
         };
         self.deliver_rx_ipv6_payload(
             net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
-            hdr.flow_label, mld_router_alert, next_header, payload,
+            &ancillary, mld_router_alert, next_header, payload,
             full_packet,
         )
     }
@@ -105,12 +126,13 @@ impl NetStack {
         dst: Ipv6Addr,
         hop_limit: u8,
         traffic_class: u8,
-        flow_label: u32,
+        ancillary: &RxAncillary,
         mld_router_alert: bool,
         next_header: u8,
         payload: &[u8],
         packet: &[u8],
     ) -> NetResult<()> {
+        let flow_label = ancillary.flow_label;
         let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
             .map_or(0, |dev| dev.hardware_type());
         for endpoint in self.inet_tables(net_ns).raw6.endpoints(next_header) {
@@ -134,7 +156,7 @@ impl NetStack {
                 )?;
             }
             n if n == IpProto::Udp as u8 => self.deliver_rx_udp6(
-                net_ns, iface, src, dst, hop_limit, traffic_class, payload, packet),
+                net_ns, iface, src, dst, hop_limit, traffic_class, ancillary, payload, packet),
             n if n == IpProto::Tcp as u8 => {
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
@@ -154,7 +176,8 @@ impl NetStack {
     /// # C: O(N endpoints * payload)
     #[inline(never)]
     fn deliver_rx_udp6(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, dst: Ipv6Addr,
-        hop_limit: u8, traffic_class: u8, payload: &[u8], packet: &[u8])
+        hop_limit: u8, traffic_class: u8, ancillary: &RxAncillary, payload: &[u8],
+        packet: &[u8])
     {
         let udp = match crate::udp::parse_v6(payload, src, dst) {
             Ok(h) => h,
@@ -189,10 +212,14 @@ impl NetStack {
                         .map_or(0, |dev| dev.hardware_type()),
                 }), body.len(),
             ) else { continue; };
-            let _ = q.enqueue_gro((
-                src, udp.src_port, dst, iface, hop_limit, traffic_class,
-                body[..keep].to_vec(),
-            ), udp.checksum == 0, gro_offered);
+            let _ = q.enqueue_gro(crate::stack_ipv6::Udp6Datagram {
+                src, sport: udp.src_port, dst, dport: udp.dst_port, iface, hop_limit,
+                traffic_class,
+                flowinfo: crate::cmsg::flowinfo(traffic_class, ancillary.flow_label),
+                ext_headers: ancillary.ext_headers.clone(),
+                frag_max: ancillary.frag_max,
+                payload: body[..keep].to_vec(),
+            }, udp.checksum == 0, gro_offered);
         }
     }
 

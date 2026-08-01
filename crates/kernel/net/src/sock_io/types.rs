@@ -2,7 +2,10 @@ use crate::addr::NetIfaceId;
 use crate::sock::PacketReceive;
 use crate::Ipv4Addr;
 
-/// Kernel-owned result for one socket receive operation.
+/// Kernel-owned result for one socket receive operation. Every field beyond
+/// the payload backs one receive ancillary message (`crate::cmsg`), so a
+/// receive path that captures nothing simply leaves them at their defaults.
+#[derive(Default)]
 pub struct Received {
     pub payload: alloc::vec::Vec<u8>,
     pub full_len: usize,
@@ -15,6 +18,22 @@ pub struct Received {
     /// cmsg when the socket enabled IPV6_RECVTCLASS. Twin of `hoplimit`.
     pub tclass: Option<u8>,
     pub ttl: Option<u8>,
+    /// Received IPv4 type-of-service byte, published by IP_RECVTOS.
+    pub tos: Option<u8>,
+    /// Received IPv4 header option area, published by IP_RECVOPTS, and echoed
+    /// by IP_RETOPTS.
+    pub options: alloc::vec::Vec<u8>,
+    /// Datagram destination port, which completes the socket address
+    /// IP_RECVORIGDSTADDR and IPV6_RECVORIGDSTADDR publish.
+    pub dport: u16,
+    /// Largest fragment the datagram was reassembled from, published by
+    /// IP_RECVFRAGSIZE and IPV6_RECVFRAGSIZE.
+    pub frag_max: u32,
+    /// Received IPv6 flow-info field, published by IPV6_FLOWINFO.
+    pub flowinfo: u32,
+    /// Received IPv6 extension headers in wire order, published by
+    /// IPV6_HOPOPTS, IPV6_DSTOPTS, IPV6_RTHDR and their compatibility twins.
+    pub ext_headers: alloc::vec::Vec<(u8, alloc::vec::Vec<u8>)>,
     pub packet: Option<PacketReceive>,
     /// `UDP_GRO`: the segment size a coalesced receive was assembled from, so
     /// the reader can split the payload back into datagrams. `None` when this
@@ -27,8 +46,7 @@ impl Received {
     /// payload. `payload` is a parameter because TCP reports EOF only after
     /// handing back whatever it had already copied. # C: O(1)
     pub fn eof(payload: alloc::vec::Vec<u8>) -> Self {
-        Self { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None,
-               hoplimit: None, tclass: None, ttl: None, packet: None, gro: None }
+        Self { payload, ..Default::default() }
     }
 }
 

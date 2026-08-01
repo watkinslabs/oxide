@@ -26,7 +26,8 @@ fn f180a_ipv6_udp_bind_then_recv_routes_via_udp6() {
     h.write_to(&mut frame[..IPV6_HDR_LEN]);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
     // The exact bound endpoint yields the IPv6 sender and payload.
-    let (src, sport, _, _, _, _, body) = endpoint.recv(false).expect("v6 UDP must route to bound queue");
+    let d = endpoint.recv(false).expect("v6 UDP must route to bound queue");
+    let (src, sport, body) = (d.src, d.sport, d.payload);
     assert_eq!(src, Ipv6Addr::LOOPBACK);
     assert_eq!(sport, 33000);
     assert_eq!(body, payload);
@@ -76,8 +77,8 @@ fn sw2_ipv6_udp_rx_captures_pktinfo_and_hoplimit() {
     h.hop_limit = 255; // on-link mDNS
     h.write_to(&mut frame[..IPV6_HDR_LEN]);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
-    let (src, sport, dst, iface, hop, _tclass, body) =
-        endpoint.recv(false).expect("meta datagram delivered");
+    let d = endpoint.recv(false).expect("meta datagram delivered");
+    let (src, sport, dst, iface, hop, body) = (d.src, d.sport, d.dst, d.iface, d.hop_limit, d.payload);
     assert_eq!(src, Ipv6Addr::LOOPBACK);
     assert_eq!(sport, 5353);
     assert_eq!(dst, Ipv6Addr::LOOPBACK);
@@ -341,7 +342,8 @@ fn ipv6_fragments_reassemble_to_udp_socket() {
     assert!(endpoint.recv(false).is_none(), "last fragment alone is incomplete");
     stack.deliver_rx_ipv6(id, &f1).unwrap();
 
-    let (peer, port, _, _, _, _, body) = endpoint.recv(false).expect("reassembled datagram delivered");
+    let d = endpoint.recv(false).expect("reassembled datagram delivered");
+    let (peer, port, body) = (d.src, d.sport, d.payload);
     assert_eq!(peer, src);
     assert_eq!(port, src_port);
     assert_eq!(body, payload);

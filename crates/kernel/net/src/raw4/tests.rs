@@ -239,7 +239,7 @@ fn raw_udp_clone_does_not_interfere_with_transport_delivery() {
 
     let raw_packet = raw.recv(false).unwrap().packet;
     assert_eq!(Ipv4Hdr::parse(&raw_packet).unwrap().proto, IpProto::Udp as u8);
-    assert_eq!(udp.recv(false).unwrap().5, b"payload");
+    assert_eq!(udp.recv(false).unwrap().payload, b"payload");
 }
 
 #[test]
@@ -279,6 +279,9 @@ fn multicast_membership_filters_each_raw_endpoint() {
     stack.register_raw4(&joined);
     stack.register_raw4(&unjoined);
     let group = Ipv4Addr::new(239, 1, 2, 3);
+    // Unconditional multicast delivery is on at creation, so membership only
+    // gates a raw socket that cleared it.
+    unjoined.mcast.set_multicast_all_v4(false);
     joined.mcast.change_v4(&stack, iface, group, Ipv4Addr::LOOPBACK, true).unwrap();
     while loopback.rx_pop().is_some() {}
     let bytes = packet(PROTOCOL, Ipv4Addr::new(192, 0, 2, 1), group, 5, 0, &[], b"group");

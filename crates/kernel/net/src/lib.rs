@@ -33,6 +33,9 @@ pub mod sysctl;
 pub mod uapi;
 pub mod send_control;
 pub mod socket_args;
+// Receive ancillary messages: which control message each option produces, in
+// what order, with what payload. Ungated so the whole decision is testable.
+pub mod cmsg;
 pub mod sockaddr;
 pub mod socket_error;
 pub mod socket_owner;

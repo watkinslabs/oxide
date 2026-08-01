@@ -331,17 +331,30 @@ fn ipv6_tclass_recvtclass_use_linux_optnames_and_twin_shapes() {
     assert_eq!(admit(IPV6_RECVHOPLIMIT, 1), Ok(Action::Flag { bit: RECVHOPLIMIT, on: true }));
 }
 
-// B1376: recvmsg emits the IPV6_TCLASS ancillary from the captured
-// Received.tclass only when IPV6_RECVTCLASS is enabled — mirroring the
-// IPV6_HOPLIMIT/IPV6_RECVHOPLIMIT gate exactly.
+// B1376: recvmsg emits the IPV6_TCLASS ancillary from the captured traffic
+// class only when IPV6_RECVTCLASS is enabled — mirroring the
+// IPV6_HOPLIMIT/IPV6_RECVHOPLIMIT gate exactly. The receive plan owns the
+// decision, so this asserts the behaviour rather than the shim's text.
 #[test]
 fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
-    let source = include_str!("recvmsg/inet.rs");
-    assert!(source.contains("const IPV6_TCLASS: i32 = 67;"));
-    let gate = source.find("if sock.opts.ipv6_recvtclass.load(Ordering::Acquire) != 0 {").unwrap();
-    let emit = source[gate..].find(
-        "if let Some(tclass) = rcv.tclass { out.push(IPPROTO_IPV6, IPV6_TCLASS,").unwrap();
-    assert!(emit < source[gate..].find("if sock.packet_auxdata()").unwrap_or(usize::MAX));
+    use net::cmsg::{self, Msg, RxMeta, Want};
+    let meta = RxMeta { hoplimit: Some(64), tclass: Some(0x28), ..Default::default() };
+    assert!(cmsg::plan(&Want::default(), &meta).is_empty());
+    let want = Want { tclass6: true, ..Default::default() };
+    assert_eq!(cmsg::plan(&want, &meta), alloc::vec![Msg {
+        level: cmsg::SOL_IPV6, kind: cmsg::IPV6_TCLASS,
+        bytes: alloc::vec::Vec::from(0x28i32.to_ne_bytes()),
+    }]);
+    // The twin gate is separate: asking for the hop limit does not produce a
+    // traffic class, and the hop limit precedes it when both are on.
+    let hop = Want { hoplimit6: true, ..Default::default() };
+    assert_eq!(cmsg::plan(&hop, &meta).len(), 1);
+    let both = Want { hoplimit6: true, tclass6: true, ..Default::default() };
+    let kinds: alloc::vec::Vec<i32> = cmsg::plan(&both, &meta).iter().map(|m| m.kind).collect();
+    assert_eq!(kinds, alloc::vec![cmsg::IPV6_HOPLIMIT, cmsg::IPV6_TCLASS]);
+    // A datagram that carried no traffic class produces no message.
+    let absent = RxMeta { tclass: None, ..Default::default() };
+    assert!(cmsg::plan(&want, &absent).is_empty());
 }
 
 #[test]
