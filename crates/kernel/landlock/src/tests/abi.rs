@@ -42,7 +42,7 @@ fn the_reported_abi_version_matches_the_rights_actually_accepted() {
     // The version number is a promise about which rights are enforced. Raising
     // it past what is enforced silently disables a well-written caller's
     // sandbox, so every mask below must stop exactly where enforcement does.
-    assert_eq!(ABI_VERSION, 6);
+    assert_eq!(ABI_VERSION, 8);
     // Device control is the last filesystem right of this level.
     assert_eq!(MASK_ACCESS_FS, (ACCESS_FS_IOCTL_DEV << 1) - 1);
     // Both scopes are enforced, so both are accepted.
@@ -50,9 +50,8 @@ fn the_reported_abi_version_matches_the_rights_actually_accepted() {
     assert_eq!(MASK_SCOPE & SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_ABSTRACT_UNIX_SOCKET);
     // Stream ports only; datagram rights arrived later.
     assert_eq!(MASK_ACCESS_NET, (ACCESS_NET_CONNECT_TCP << 1) - 1);
-    // Logging control and thread synchronisation both arrived later, so no
-    // flag of either syscall is accepted.
-    assert_eq!(MASK_RESTRICT_SELF, 0);
+    // Logging control and thread synchronisation are both handled.
+    assert_eq!(MASK_RESTRICT_SELF, (RESTRICT_SELF_TSYNC << 1) - 1);
     assert_eq!(MASK_ADD_RULE, 0);
     assert_eq!(ERRATA, 0);
 }
@@ -204,11 +203,51 @@ fn the_permission_check_precedes_the_flag_check() {
 
 #[test]
 fn a_flag_from_a_later_abi_level_is_refused() {
-    // Accepting the thread-synchronisation bit without implementing it would
-    // report success while sibling threads stayed unconfined.
-    assert_eq!(restrict_self_precheck(true, false, 0), Ok(()));
-    for bit in 0..8 {
-        assert_eq!(restrict_self_precheck(true, false, 1 << bit), Err(Errno::Einval));
+    assert_eq!(restrict_self_precheck(true, false, 1 << 4), Err(Errno::Einval));
+}
+
+#[test]
+fn every_defined_restrict_flag_is_accepted() {
+    assert_eq!(restrict_self_precheck(true, false, MASK_RESTRICT_SELF), Ok(()));
+    assert_eq!(restrict_self_precheck(true, false, MASK_RESTRICT_SELF + 1), Err(Errno::Einval));
+}
+
+#[test]
+fn only_a_pure_log_configuration_change_may_omit_a_ruleset() {
+    assert!(restrict_plan(3, 0, false).needs_ruleset);
+    assert!(restrict_plan(-1, 0, false).needs_ruleset);
+    assert!(!restrict_plan(-1, RESTRICT_SELF_LOG_SUBDOMAINS_OFF, false).needs_ruleset);
+    assert!(!restrict_plan(-1, RESTRICT_SELF_LOG_SUBDOMAINS_OFF | RESTRICT_SELF_TSYNC,
+                           false).needs_ruleset);
+    // Any other flag makes it a real enforcement, which needs a ruleset.
+    assert!(restrict_plan(-1, RESTRICT_SELF_LOG_SUBDOMAINS_OFF | RESTRICT_SELF_LOG_NEW_EXEC_ON,
+                          false).needs_ruleset);
+    assert!(restrict_plan(3, RESTRICT_SELF_LOG_SUBDOMAINS_OFF, false).needs_ruleset);
+}
+
+#[test]
+fn thread_synchronisation_carries_no_new_privs_to_the_siblings() {
+    // Otherwise a sibling could gain privileges under a policy it never
+    // installed, which is the exact scenario the permission gate exists for.
+    assert!(restrict_plan(3, RESTRICT_SELF_TSYNC, true).propagate_no_new_privs);
+    // A caller admitted by capability instead does not force it on siblings.
+    assert!(!restrict_plan(3, RESTRICT_SELF_TSYNC, false).propagate_no_new_privs);
+    // Without the flag nothing is propagated.
+    assert!(!restrict_plan(3, 0, true).propagate_no_new_privs);
+    assert!(!restrict_plan(3, 0, true).tsync);
+    assert!(restrict_plan(3, RESTRICT_SELF_TSYNC, false).tsync);
+}
+
+#[test]
+fn the_logging_flags_are_accepted_and_change_no_decision() {
+    // They select which denials reach an audit log. There is no audit log, so
+    // they are inert — but refusing them would break a caller that only wants
+    // to quieten its own logs.
+    for f in [RESTRICT_SELF_LOG_SAME_EXEC_OFF, RESTRICT_SELF_LOG_NEW_EXEC_ON,
+              RESTRICT_SELF_LOG_SUBDOMAINS_OFF] {
+        assert_eq!(restrict_self_precheck(true, false, f), Ok(()));
+        assert!(restrict_plan(3, f, false).needs_ruleset);
+        assert!(!restrict_plan(3, f, false).tsync);
     }
 }
 
