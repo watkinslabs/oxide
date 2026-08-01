@@ -79,7 +79,23 @@ pub const I_WILL_FREE:      u32 = 1 << 4;
 pub const I_FREEING:        u32 = 1 << 5;
 pub const I_CLEAR:          u32 = 1 << 6;
 pub const I_LINKABLE:       u32 = 1 << 7;
-pub const I_DIRTY:          u32 = I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES;
+/// `I_DIRTY_TIME` — the inode's OWN timestamps differ from the on-disk copy and
+/// the superblock is mounted `lazytime`, so the difference is deliberately not
+/// yet persisted. Tracked apart from `I_DIRTY_SYNC` because that is the whole of
+/// lazytime: a pure timestamp change costs no I/O until a forcing point
+/// (`fsync`/`sync`/`syncfs`, an unrelated inode change, eviction of a linked
+/// inode, unmount, or the expiry interval) converts it. `I_DIRTY_INODE`
+/// supersedes it — a real metadata change writes the timestamps out with itself
+/// — but it may be re-set over an `I_DIRTY_SYNC` already in flight so a
+/// concurrent writeback cannot swallow a newer stamp.
+pub const I_DIRTY_TIME:     u32 = 1 << 8;
+/// The inode ITSELF is dirty (as opposed to only its pages) — the set that makes
+/// `s_op->write_inode` necessary.
+pub const I_DIRTY_INODE:    u32 = I_DIRTY_SYNC | I_DIRTY_DATASYNC;
+pub const I_DIRTY:          u32 = I_DIRTY_INODE | I_DIRTY_PAGES;
+/// Every dirty bit including the lazy-timestamp one — the set that must keep an
+/// inode pinned on the writeback list and that eviction has to resolve.
+pub const I_DIRTY_ALL:      u32 = I_DIRTY | I_DIRTY_TIME;
 
 pub const S_SYNC:      u32 = 1 << 0;
 pub const S_NOATIME:   u32 = 1 << 1;

@@ -223,6 +223,11 @@ impl Inode {
     }
     /// True iff being evicted. # C: O(1)
     pub fn is_freeing(&self) -> bool { self.i_state() & (I_FREEING | I_WILL_FREE) != 0 }
+    /// `inode->dirtied_time_when` — wall-clock ns at which the pending lazy
+    /// timestamp deferral started; `0` when none is pending. # C: O(1)
+    pub fn dirtied_time_when(&self) -> u64 { self.dirtied_time_when.load(Ordering::Acquire) }
+    /// Stamp the lazy-timestamp expiry clock. # C: O(1)
+    pub fn set_dirtied_time_when(&self, ns: u64) { self.dirtied_time_when.store(ns, Ordering::Release); }
     /// `set_nlink`. # C: O(1)
     pub fn set_nlink(&self, n: u32) { self.i_nlink.store(n, Ordering::Relaxed); }
     /// `inc_nlink` (saturating). # C: O(1)

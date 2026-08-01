@@ -358,6 +358,16 @@ fn notify_change_applied(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr) -> KRe
         }
     }
     let r = inode.setattr(idmap, ia);
+    // An explicit attribute change is a lazytime forcing point (Linux's
+    // `mark_inode_dirty` out of `setattr_copy` / the per-fs `->setattr`): the
+    // inode is being written for a reason unrelated to timestamps, so any stamp
+    // it was holding back rides along instead of waiting. `mark_inode_dirty`
+    // supersedes `I_DIRTY_TIME` and hands `s_op->dirty_inode` both bits, which
+    // is what tells a backend to write the timestamps out with this change.
+    if r.is_ok() {
+        crate::writeback::mark_inode_dirty(
+            inode, crate::inode::I_DIRTY_SYNC, crate::inode_times::realtime_now_ns());
+    }
     // Linux fires notification from HERE and nowhere else: `notify_change`
     // calls `fsnotify_change(dentry, ia_valid)` once `i_op->setattr` returns 0
     // (`fs/attr.c`). Firing per-syscall instead silently skips every path that

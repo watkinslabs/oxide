@@ -2,7 +2,7 @@ extern crate alloc;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use crate::dentry::Dentry;
-use crate::inode::{InodeRef, I_CLEAR, I_DIRTY, I_FREEING, I_NEW, I_WILL_FREE};
+use crate::inode::{InodeRef, I_CLEAR, I_DIRTY_ALL, I_DIRTY_TIME, I_FREEING, I_NEW, I_WILL_FREE};
 use crate::types::Ino;
 use super::{IcacheEntry, SuperBlock};
 
@@ -57,11 +57,26 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
     /// kernel's keep-vs-evict split. # C: O(log N_ino)
     pub fn iput(&self, inode: InodeRef) {
         if inode.i_count_dec() != 1 { return; } // not the last reference
+        // `iput`'s lazytime forcing point (Linux fs/inode.c: `if (inode->i_nlink
+        // && sync_lazytime(inode))` runs before the count reaches zero). An
+        // inode that still has a NAME must not carry a deferred timestamp into
+        // eviction, where the state — and with it the stamp — is simply
+        // dropped. A link-less inode is exempt: it is about to cease existing,
+        // so no I/O is spent persisting the times of a deleted file.
+        if inode.nlink() != 0 && inode.i_state() & I_DIRTY_TIME != 0 {
+            crate::writeback::sync_lazytime_on(
+                Some(self), &inode, crate::inode_times::realtime_now_ns());
+        }
         // i_count is now 0 (iput_final). Consult the backend keep/evict policy.
         if !self.s_op.drop_inode(&inode) { return; } // retain cached for reuse
         let ino = inode.ino();
         inode.set_state(I_WILL_FREE, 0);
-        let _ = self.s_op.write_inode(&inode, false); // flush dirty metadata
+        // Linux `iput_final` flushes metadata only for an inode that still has a
+        // NAME (`write_inode_now` runs in the branch reached with links intact).
+        // A link-less inode is being DELETED — writing its metadata out costs
+        // I/O to record state that is about to be freed, and under `lazytime`
+        // would defeat the option's main saving on a create/read/unlink churn.
+        if inode.nlink() != 0 { let _ = self.s_op.write_inode(&inode, true); }
         inode.set_state(I_FREEING, I_WILL_FREE);
         self.s_op.evict_inode(&inode); // default: clear_inode (I_FREEING|I_CLEAR)
         self.wb_forget(ino); // dirty bits gone → drop the writeback pin
@@ -162,19 +177,23 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         if let Some(i) = self.icache_upgrade(ino) { i.drop_nlink(); }
     }
 
-    /// `mark_inode_dirty` (Linux `__mark_inode_dirty`): OR the requested
-    /// `I_DIRTY_*` bits into `ino`'s state. `flags` is masked to `I_DIRTY` so a
-    /// caller cannot smuggle a lifecycle bit (`I_NEW`/`I_FREEING`/…) through the
-    /// dirtying path. No-op if uncached. # C: O(log N_ino)
+    /// `mark_inode_dirty` (Linux `__mark_inode_dirty`) BY INO — the cache-keyed
+    /// form. Delegates to [`crate::writeback::mark_inode_dirty`] so the
+    /// lazy-timestamp supersede, the `s_op->dirty_inode` notification, the
+    /// lifecycle-bit mask and the writeback pin all follow one state machine.
+    /// No-op if uncached. # C: O(log N_ino)
     pub fn mark_inode_dirty(&self, ino: Ino, flags: u32) {
-        self.i_set_state(ino, flags & I_DIRTY, 0);
+        if let Some(i) = self.icache_upgrade(ino) {
+            crate::writeback::mark_inode_dirty_on(
+                Some(self), &i, flags, crate::inode_times::realtime_now_ns());
+        }
     }
 
     /// `clear_inode` (Linux fs/inode.c): the terminal eviction state. Sets
     /// `I_FREEING | I_CLEAR` and drops every dirty bit — the inode's metadata is
     /// gone and no writeback will follow. # C: O(log N_ino)
     pub fn clear_inode(&self, ino: Ino) {
-        self.i_set_state(ino, I_FREEING | I_CLEAR, I_DIRTY);
+        self.i_set_state(ino, I_FREEING | I_CLEAR, I_DIRTY_ALL);
     }
 
     /// Record `d` as an alias of `inode` (Linux `d_instantiate` →

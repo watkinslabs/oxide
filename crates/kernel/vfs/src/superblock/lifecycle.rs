@@ -30,10 +30,18 @@ impl SuperBlock {
     /// before `put_super` and by `freeze_super`/`sync(2)`. # C: O(dirty)
     pub fn sync_filesystem(&self) -> KResult<()> {
         if self.is_readonly() { return Ok(()); }
+        // Inode metadata goes out BEFORE each `sync_fs`, not after: a backend's
+        // `sync_fs` is what makes the preceding writes durable (ext4 commits the
+        // running transaction), so an inode written after it sits in a
+        // transaction nobody committed. Linux orders each pass the same way —
+        // `writeback_inodes_sb` then `sync_fs(0)`, `sync_inodes_sb` then
+        // `sync_fs(1)`. The second pass is `WB_SYNC_ALL`, which is what forces
+        // every deferred lazy timestamp out regardless of its age.
+        let now = crate::inode_times::realtime_now_ns();
+        self.wb_writeback_pass(false, now)?;
         self.sync_fs(false)?;
-        self.sync_fs(true)?;
-        self.wb_writeback(); // wait pass cleaned the inodes → clear I_DIRTY + unpin
-        Ok(())
+        self.wb_writeback_pass(true, now)?;
+        self.sync_fs(true)
     }
 
     /// Current `s_writers.frozen` level (`SB_UNFROZEN`..`SB_FREEZE_COMPLETE`).
