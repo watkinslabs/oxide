@@ -7,7 +7,7 @@ devices — so `graphical.target` → seat0 CanGraphical → gdm greeter works.
 
 ## 1 Why this exists
 
-`19§Purpose` assumed "we don't ship udev; we fully populate `/dev` from kernel."
+`19§1` assumed "we don't ship udev; we fully populate `/dev` from kernel."
 That is **dead** (`03`, boot-to-GNOME campaign): we run REAL `systemd-udevd` 257.
 The kernel is now the *producer* of a device-model contract that udevd/libudev/
 logind *consume* verbatim. `/run/udev/{data,tags,queue,control,links}` are created
