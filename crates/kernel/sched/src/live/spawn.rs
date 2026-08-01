@@ -2,7 +2,7 @@
 //
 // Allocates a kernel stack, builds the per-arch HAL `Context`
 // scaffold via `Context::new_kernel_with_irq_frame` (so the kthread
-// can be entered via the IRQ-tail epilogue per `14§R07`), wraps the
+// can be entered via the IRQ-tail epilogue per `14§5.6`/`14§6.5`), wraps the
 // task in `Arc<Task>`, and enqueues it on the global runqueue's
 // CFS class. Idle tasks are constructed by `install_default_runqueue`
 // in `schedule.rs`; this path is for runnable kthreads only.
@@ -134,7 +134,7 @@ pub unsafe fn spawn_kernel_thread(
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
     // 3. Build the per-arch HAL Context onto the stack scaffold.
-    // SAFETY: stack_top is the freshly-installed top-of-stack, 16-byte aligned per Box's u8 alignment + KTHREAD_STACK_BYTES being a 16-multiple; entry is a valid extern "C" fn(usize)->!; the new_kernel_with_irq_frame layout reserves the bytes it writes below stack_top per `14§R07`. arch_ctx_ptr<ArchCtx>() asserts size fits.
+    // SAFETY: stack_top is the freshly-installed top-of-stack, 16-byte aligned per Box's u8 alignment + KTHREAD_STACK_BYTES being a 16-multiple; entry is a valid extern "C" fn(usize)->!; the new_kernel_with_irq_frame layout reserves the bytes it writes below stack_top per `14§5.6`/`14§6.5`. arch_ctx_ptr<ArchCtx>() asserts size fits.
     unsafe {
         let p = task.arch_ctx_ptr::<ArchCtx>();
         core::ptr::write(p, ArchCtx::new_kernel_with_irq_frame(stack_top, entry, arg));

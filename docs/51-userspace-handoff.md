@@ -204,5 +204,5 @@ hosts:   files
 - `29a§2` — userland supplier (Fedora RPMs; this repo builds no userspace)
 - `28§3` — VT/console semantics getty depends on
 - `19` — devfs/procfs/sysfs registration paths
-- `16` revisions R01/R02 — mount(2) namespace + dirent hooks
+- `16§2` — dirent-mutation notification hooks; `16§6` — per-mount-ns mount tree
 - `31§4` — ELF loader stack/auxv

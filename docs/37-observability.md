@@ -2,23 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`13`,`19`,`23`,`38`. Provides:userspace tools (`dmesg`,`perf`,`bpftrace` per phase 25).
 
-## Revision 2026-05-09 (R01)
-
-- Changed: pinned the initial tracefs root + control-file shape. Boot
-  registers a synthetic `/sys/kernel/tracing` directory whose
-  lookup yields static read-only inodes for `available_events`,
-  `tracing_on`, `trace`, `trace_pipe`, `current_tracer`. Bodies
-  match Linux's empty-trace defaults so userspace tools
-  (`bpftrace`, `perf record`, `trace-cmd`) probe the surface
-  without panicking. Real per-CPU ring buffers + tracepoint
-  registration land in phase 25.
-- Why: phase 25 (perf_event_open + tracefs/ftrace + ebpf
-  tracepoints) needs the tracefs root before any tracepoint
-  framework lands. The static-files-only first slice unblocks
-  feature-probe paths.
-- Affected code: `kernel/src/dev_tracefs.rs` (new — directory inode
-  + leaf static files); `kernel/src/lib.rs` boot init.
-
 ## 1 Purpose
 
 Logging surface (`klog`), tracing (static tracepoints, function tracer), perf counters (PMU), eBPF (deferred). Crash dump (defer).
@@ -133,4 +116,3 @@ PMU access: per-CPU MSR; group locking when multiple counters share a group.
 ## 16 Cross-spec
 
 `04` (logger spec), `19` (`/dev/kmsg`,`/sys/kernel/tracing`), `15` (perf_event_open), `38` (panic→klog drain to UART).
-

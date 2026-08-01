@@ -38,7 +38,7 @@ pub(super) fn check_klog_ungated(path: &Path, lines: &[&str], f: &mut Findings) 
                     let gated = gated_stack.last().copied().unwrap_or(false);
                     if !gated {
                         f.push(path, i + 1, "code/klog-ungated",
-                            format!("`{}` not under `#[cfg(feature=\"debug-<sub>\")]` or `debug_<sub>!` (R06)", name));
+                            format!("`{}` not under `#[cfg(feature=\"debug-<sub>\")]` or `debug_<sub>!` (`04§4.0`)", name));
                     }
                 }
             }

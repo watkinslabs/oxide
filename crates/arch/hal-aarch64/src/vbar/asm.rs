@@ -630,7 +630,7 @@ core::arch::global_asm!(
     "    b    oxide_lower_sync_restore",
     ".size oxide_lower_el_sync_handler, . - oxide_lower_el_sync_handler",
 
-    // IRQ entry per `22§5` + `14§R07`. Frame = 288 B: x0..x18,
+    // IRQ entry per `22§5` + `14§6.5`. Frame = 288 B: x0..x18,
     // x29/x30, ELR_EL1, SPSR_EL1, SP_EL0, and x19..x28. The complete
     // interrupted register set is owned by this exception frame.
     // The ELR/SPSR pair was missing pre-R07; an
