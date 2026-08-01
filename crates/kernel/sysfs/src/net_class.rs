@@ -96,15 +96,8 @@ impl FileOps for SysClassNetOps {
             klog::write_dec_u64(snap.len() as u64);
             klog::write_raw(b"]\n");
         }
-        let mut idx = ctx.pos as usize;
-        while idx < snap.len() {
-            let next = idx as u64 + 1;
-            let name = &snap[idx].1;
-            let ino = inode.lookup(name).map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, snap.iter().map(|d| d.1.as_str()),
+            FileType::Symlink)
     }
 }
 
@@ -139,15 +132,8 @@ impl FileOps for SysDevicesVirtualNetOps {
             klog::write_dec_u64(snap.len() as u64);
             klog::write_raw(b"]\n");
         }
-        let mut idx = ctx.pos as usize;
-        while idx < snap.len() {
-            let next = idx as u64 + 1;
-            let name = &snap[idx].1;
-            let ino = inode.lookup(name).map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, snap.iter().map(|d| d.1.as_str()),
+            FileType::Directory)
     }
 }
 
@@ -320,26 +306,11 @@ impl FileOps for NetIfaceOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        let attr_count = NET_IFACE_GROUP.attrs.len();
-        while idx < attr_count {
-            let next = idx as u64 + 1;
-            let name = NET_IFACE_GROUP.attrs[idx].name;
-            let ino = inode.lookup(name).map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        if idx == attr_count {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup("statistics").map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit("statistics", ino, FileType::Directory, next) { return Ok(()); }
-        }
-        if idx == attr_count + 1 {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup("subsystem").map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit("subsystem", ino, FileType::Symlink, next) { return Ok(()); }
-        }
-        Ok(())
+        let mut es = crate::readdir::DirEntries::new(inode);
+        for attr in NET_IFACE_GROUP.attrs.iter() { es.push(attr.name, FileType::Regular); }
+        es.push("statistics", FileType::Directory);
+        es.push("subsystem", FileType::Symlink);
+        es.emit(ctx)
     }
 }
 

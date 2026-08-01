@@ -16,6 +16,10 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 const SYSCPU_DIR_MODE: u16 = 0o555;
+/// Name prefix of a per-CPU device directory (`cpu0`, `cpu1`, …).
+const CPU_DIR_PREFIX: &str = "cpu";
+/// Per-CPU topology attribute group (Linux `topology_attr_group`).
+const CPU_TOPOLOGY_DIR: &str = "topology";
 use core::fmt::Write as _;
 use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
@@ -83,29 +87,16 @@ impl InodeOps for SysCpuRootOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> { root_lookup(name) }
 }
 impl FileOps for SysCpuRootOps {
+    /// The `cpuN` set is the LIVE online mask, re-read per call, so a CPU going
+    /// offline mid-listing must not shift its neighbours' cursors. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        let n = ncpu();
-        let total = ROOT_FILES.len() + n;
-        while idx < total {
-            let next = idx as u64 + 1;
-            let (name, ft);
-            let mut buf = String::new();
-            if idx < ROOT_FILES.len() {
-                name = ROOT_FILES[idx];
-                ft = FileType::Regular;
-            } else {
-                let _ = write!(buf, "cpu{}", idx - ROOT_FILES.len());
-                name = buf.as_str();
-                ft = FileType::Directory;
-            }
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, ft, next) {
-                return Ok(());
-            }
-            idx += 1;
+        let mut names = crate::readdir::typed(ROOT_FILES, FileType::Regular);
+        for c in 0..ncpu() {
+            let mut s = String::new();
+            let _ = write!(s, "{CPU_DIR_PREFIX}{c}");
+            names.push((s, FileType::Directory));
         }
-        Ok(())
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 
@@ -117,7 +108,7 @@ pub fn make_syscpu_root() -> InodeRef {
 
 /// Parse a `cpu<N>` directory name to its index.
 fn parse_cpu_n(name: &str) -> Option<usize> {
-    name.strip_prefix("cpu").and_then(|d| d.parse::<usize>().ok())
+    name.strip_prefix(CPU_DIR_PREFIX).and_then(|d| d.parse::<usize>().ok())
 }
 
 // ---- /sys/devices/system/cpu/cpuN ---------------------------------------
@@ -131,7 +122,7 @@ fn cpu_n_lookup(c: usize, name: &str) -> KResult<InodeRef> {
     match name {
         "online" => Ok(attr(crate::ids::CPU_ONLINE + c as Ino, String::from("1\n"))),
         "uevent" => Ok(attr(crate::ids::CPU_UEVENT + c as Ino, String::from("DRIVER=processor\n"))),
-        "topology" => Ok(make_syscpu_topology(c)),
+        CPU_TOPOLOGY_DIR => Ok(make_syscpu_topology(c)),
         _ => Err(VfsError::Enoent),
     }
 }
@@ -146,23 +137,11 @@ impl InodeOps for SysCpuNOps {
 impl FileOps for SysCpuNOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    /// # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        let total = CPUN_FILES.len() + 1; // + topology dir
-        while idx < total {
-            let next = idx as u64 + 1;
-            let (name, ft) = if idx < CPUN_FILES.len() {
-                (CPUN_FILES[idx], FileType::Regular)
-            } else {
-                ("topology", FileType::Directory)
-            };
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, ft, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let mut names = crate::readdir::typed(CPUN_FILES, FileType::Regular);
+        names.push((String::from(CPU_TOPOLOGY_DIR), FileType::Directory));
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 
@@ -222,17 +201,10 @@ impl InodeOps for SysCpuTopologyOps {
 impl FileOps for SysCpuTopologyOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    /// # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < TOPO_FILES.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(TOPO_FILES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(TOPO_FILES[idx], ino, FileType::Regular, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names = crate::readdir::typed(TOPO_FILES, FileType::Regular);
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 

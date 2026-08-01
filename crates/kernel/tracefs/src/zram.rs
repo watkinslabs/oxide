@@ -4,13 +4,14 @@
 //! `block_state` renders directly from each device's canonical slot table.
 
 use alloc::format;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use vfs::file_ops::FileOps;
 use vfs::inode::{Inode, InodeBuilder};
 use vfs::inode_ops::{default_inode_ops, mk_mode};
-use vfs::{DirContext, FileType, Ino, InodeRef, KResult, VfsError};
+use vfs::{CookieEntry, DirContext, FileType, Ino, InodeRef, KResult, VfsError};
 
 /// Linux debugfs directory permissions.
 const DEBUG_DIR_MODE: u16 = 0o755;
@@ -27,7 +28,6 @@ const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 const NANOSECONDS_PER_MICROSECOND: u64 = 1_000;
 const ZRAM_DEVICE_PREFIX: &str = "zram";
 const BLOCK_STATE_LEAF: &str = "block_state";
-const FIRST_DIRECTORY_COOKIE: u64 = 1;
 
 /// Build the optional `/sys/kernel/debug/zram` root. # C: O(1)
 pub fn register() {
@@ -49,17 +49,24 @@ impl vfs::InodeOps for ZramRootOps {
     }
 }
 impl FileOps for ZramRootOps {
+    /// The device set is zram-control's live table, re-read per call, so a
+    /// device hot-removed between two `getdents` pages must not shift its
+    /// neighbours' cursors: cookies come from the name.
+    ///
+    /// A device that disappeared between the snapshot and the resolve ends the
+    /// listing rather than failing it. Propagating that ENOENT (the previous
+    /// `?`) turned an ordinary concurrent hot-remove into a `getdents` error for
+    /// the whole directory, and emitting it with `d_ino == 0` — the other half
+    /// of this crate's old inconsistency — would list a deleted placeholder.
+    /// Linux does neither: the vanished entry is simply absent. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let indices = drv_zram::indices();
-        let mut position = ctx.pos as usize;
-        while position < indices.len() {
-            let index = indices[position];
+        let mut es: Vec<CookieEntry> = Vec::new();
+        for index in drv_zram::indices() {
             let name = format!("{ZRAM_DEVICE_PREFIX}{index}");
-            let next = u64::try_from(position).unwrap_or(u64::MAX).saturating_add(FIRST_DIRECTORY_COOKIE);
-            if !ctx.emit(&name, inode.lookup(&name)?.ino(), FileType::Directory, next) { return Ok(()); }
-            position += 1;
+            let Ok(dev) = inode.lookup(&name) else { continue };
+            es.push(CookieEntry::new(name, dev.ino(), FileType::Directory));
         }
-        Ok(())
+        vfs::emit_by_cookie(&mut es, ctx)
     }
 }
 
@@ -77,11 +84,14 @@ impl vfs::InodeOps for ZramDeviceOps {
 impl FileOps for ZramDeviceOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    /// One fixed leaf, but on the same name-cookie cursor as every other
+    /// synthetic directory so `seekdir(3)` means one thing fs-wide. # C: O(1)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        if ctx.pos != 0 { return Ok(()); }
-        let leaf = inode.lookup(BLOCK_STATE_LEAF)?;
-        let _ = ctx.emit(BLOCK_STATE_LEAF, leaf.ino(), FileType::Regular, FIRST_DIRECTORY_COOKIE);
-        Ok(())
+        let mut es: Vec<CookieEntry> = Vec::new();
+        if let Ok(leaf) = inode.lookup(BLOCK_STATE_LEAF) {
+            es.push(CookieEntry::new(String::from(BLOCK_STATE_LEAF), leaf.ino(), FileType::Regular));
+        }
+        vfs::emit_by_cookie(&mut es, ctx)
     }
 }
 

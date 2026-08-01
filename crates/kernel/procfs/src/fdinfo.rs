@@ -49,6 +49,9 @@ impl InodeOps for FdInfoDirOps {
 /// `i_fop` for the fdinfo directory — readdir enumerates the live fds.
 struct FdInfoDirFileOps;
 impl FileOps for FdInfoDirFileOps {
+    /// One entry per live fd, cookie-ordered by name: an fd closed between two
+    /// `getdents` pages neither shifts its neighbours nor lands in the listing
+    /// as a `d_ino == 0` placeholder. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcFdInfoDirInode>().ok_or(VfsError::Einval)?;
         let task = match d.tid_opt {
@@ -62,21 +65,9 @@ impl FileOps for FdInfoDirFileOps {
         let fdt = match task.clone_fd_table() {
             Some(t) => t, None => return Ok(()),
         };
-        let fds = fdt.live_fds();
-        let mut idx = ctx.pos as usize;
-        while idx < fds.len() {
-            let next = idx as u64 + 1;
-            let fd = fds[idx];
-            let mut buf = [0u8; 11]; let mut n = 0; let mut t = fd as u32;
-            if t == 0 { buf[0] = b'0'; n = 1; }
-            else { while t > 0 { buf[n] = b'0' + (t % 10) as u8; t /= 10; n += 1; } }
-            buf[..n].reverse();
-            let s = crate::util::decimal_str(&buf, n);
-            let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(s, ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        let names = fdt.live_fds().into_iter()
+            .map(|fd| (crate::readdir::decimal_name(fd as u32), FileType::Regular));
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 
