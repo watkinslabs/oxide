@@ -421,6 +421,56 @@ fn wire_validation_retains_negative_einval_and_accepts_gnome_retry() {
     }), Err(Errno::Einval));
 }
 
+// A desktop wall-clock watcher arms `TFD_TIMER_ABSTIME|TFD_TIMER_CANCEL_ON_SET`
+// on a CLOCK_REALTIME timerfd. That pair is the COMPLETE `timerfd_settime` flag
+// set, so it is admitted end to end and arms the cancel wiring; the only EINVAL
+// left on the path is the itimerspec import. Pinned because a live-session trace
+// showed one EINVAL for this exact call shape and the flag mask was suspected —
+// the flags are accepted, the value was not.
+#[test]
+fn abstime_cancel_on_set_pair_is_admitted_and_the_residual_einval_is_the_value() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let fixture = Fixture::new(CLOCK_REALTIME);
+    const BOTH: u64 = TFD_TIMER_ABSTIME | uapi::TFD_TIMER_CANCEL_ON_SET;
+    let value = wire(0, 0, i64::MAX, 0);
+    assert_eq!(sys_timerfd_settime(&settime_args(fixture.fd, BOTH, &value, 0)), 0);
+    let armed = *fixture.data().state.lock();
+    assert!(armed.cancel_enabled);
+    assert!(armed.realtime_absolute);
+    assert_eq!(armed.settime_flags as u64, BOTH);
+    assert_eq!(armed.expiry_ns, syscall::time::KTIME_MAX_NS);
+
+    // Same flags, rejected values: a pre-1970 `tv_sec` and an out-of-range
+    // `tv_nsec` in either member.
+    for bad in [wire(0, 0, -1, 0), wire(0, 0, 0, 1_000_000_000),
+        wire(-1, 0, 1, 0), wire(0, -1, 1, 0)] {
+        assert_eq!(sys_timerfd_settime(&settime_args(fixture.fd, BOTH, &bad, 0)),
+            neg(Errno::Einval));
+    }
+    // One bit above the pair is the flag rejection, reported before the fd.
+    assert_eq!(sys_timerfd_settime(&settime_args(fixture.fd, BOTH | 4, &value, 0)),
+        neg(Errno::Einval));
+}
+
+// `TFD_TIMER_CANCEL_ON_SET` only arms cancellation together with
+// `TFD_TIMER_ABSTIME` on a realtime clock; neither half alone does, and neither
+// combination is an argument error.
+#[test]
+fn cancel_on_set_needs_abstime_and_a_realtime_clock_but_never_fails_the_call() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let value = wire(0, 0, 1, 0);
+    let cancel_only = uapi::TFD_TIMER_CANCEL_ON_SET;
+    let realtime = Fixture::new(CLOCK_REALTIME);
+    assert_eq!(sys_timerfd_settime(&settime_args(realtime.fd, cancel_only, &value, 0)), 0);
+    assert!(!realtime.data().state.lock().cancel_enabled);
+    drop(realtime);
+
+    let monotonic = Fixture::new(CLOCK_MONOTONIC);
+    let both = TFD_TIMER_ABSTIME | cancel_only;
+    assert_eq!(sys_timerfd_settime(&settime_args(monotonic.fd, both, &value, 0)), 0);
+    assert!(!monotonic.data().state.lock().cancel_enabled);
+}
+
 #[test]
 fn relative_deadline_clamps_to_linux_ktime_max() {
     assert_eq!(monotonic_deadline_from_value(
