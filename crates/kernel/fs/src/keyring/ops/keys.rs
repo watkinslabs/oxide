@@ -8,7 +8,7 @@ use syscall::errno::Errno;
 
 use super::{e, Ctx};
 use super::super::perm::{check_perm, Lookup};
-use super::super::store::STORE;
+use super::super::store::{Store, STORE};
 use super::super::types;
 use super::super::uapi::*;
 
@@ -84,6 +84,7 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
 /// a growing payload can EDQUOT. # C: O(payload)
 pub fn update_core(c: &Ctx, serial: i32, payload: Vec<u8>, have_payload_ptr: bool) -> i64 {
     let mut g = STORE.lock();
+    let serial = match user_key(&mut g, serial, c) { Ok(s) => s, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     let ty = g.keys.get(&serial).expect("check_perm proved existence under the same held lock").key_type;
     if !ty.updatable { return e(Errno::Eopnotsupp); }
@@ -109,6 +110,7 @@ pub fn update_core(c: &Ctx, serial: i32, payload: Vec<u8>, have_payload_ptr: boo
 /// # C: O(log N)
 pub fn revoke_core(c: &Ctx, serial: i32) -> i64 {
     let mut g = STORE.lock();
+    let serial = match user_key(&mut g, serial, c) { Ok(s) => s, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) {
         if rv != e(Errno::Eacces) { return rv; }
         if let Err(rv2) = check_perm(&g, serial, &c.t, KEY_NEED_SETATTR, Lookup::Full, c.now_ns) {
@@ -127,6 +129,7 @@ pub fn revoke_core(c: &Ctx, serial: i32) -> i64 {
 /// lookup is ENOKEY, not EKEYREVOKED. # C: O(N)
 pub fn invalidate_core(c: &Ctx, serial: i32) -> i64 {
     let mut g = STORE.lock();
+    let serial = match user_key(&mut g, serial, c) { Ok(s) => s, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SEARCH, Lookup::Full, c.now_ns) { return rv; }
     g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock").invalidated = true;
     for k in g.keys.values_mut() { k.members.retain(|&m| m != serial); }
@@ -144,6 +147,7 @@ pub fn chown_core(c: &Ctx, serial: i32, uid: u32, gid: u32) -> i64 {
     const UNCHANGED: u32 = u32::MAX;
     if uid == UNCHANGED && gid == UNCHANGED { return 0; }
     let mut g = STORE.lock();
+    let serial = match user_key(&mut g, serial, c) { Ok(s) => s, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SETATTR, Lookup::Partial, c.now_ns) { return rv; }
     let k = g.keys.get(&serial).expect("check_perm proved existence under the same held lock");
     let privileged = (uid != UNCHANGED && k.uid != uid)
@@ -168,6 +172,7 @@ pub fn chown_core(c: &Ctx, serial: i32, uid: u32, gid: u32) -> i64 {
 pub fn setperm_core(c: &Ctx, serial: i32, perm: u32) -> i64 {
     if perm & !KEY_PERM_VALID != 0 { return e(Errno::Einval); }
     let mut g = STORE.lock();
+    let serial = match user_key(&mut g, serial, c) { Ok(s) => s, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SETATTR, Lookup::Partial, c.now_ns) { return rv; }
     let k = g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock");
     if k.uid != c.t.fsuid && !c.sys_admin { return e(Errno::Eacces); }
@@ -187,6 +192,7 @@ pub fn setperm_core(c: &Ctx, serial: i32, perm: u32) -> i64 {
 /// clock-free. # C: O(N)
 pub fn set_timeout_core(c: &Ctx, serial: i32, secs: u64) -> i64 {
     let mut g = STORE.lock();
+    let serial = match user_key(&mut g, serial, c) { Ok(s) => s, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SETATTR, Lookup::Partial, c.now_ns) {
         if rv != e(Errno::Eacces) { return rv; }
         if super::super::auth::get_instantiation_authkey(&g, serial, &c.t, c.now_ns).is_err() {
@@ -208,7 +214,9 @@ const NS_PER_SEC: u64 = 1_000_000_000;
 /// (keyring: native-endian 4-byte member serials; else the payload).
 /// # C: O(payload/members)
 pub fn read_core(c: &Ctx, serial: i32, buflen: u64) -> Result<Vec<u8>, i64> {
-    let g = STORE.lock();
+    let mut g = STORE.lock();
+    let serial = user_key(&mut g, serial, c).map_err(e)?;
+    let g = g;
     // `keyctl_read_key` collapses EVERY lookup failure — no such serial, and
     // equally a revoked or expired key — to a flat ENOKEY, so READ is the one
     // command that never distinguishes them.
@@ -238,7 +246,9 @@ pub fn read_core(c: &Ctx, serial: i32, buflen: u64) -> Result<Vec<u8>, i64> {
 /// PARTIAL lookup (a revoked key can still be described), returning
 /// `type;uid;gid;perm;desc` with a trailing NUL. # C: O(log N)
 pub fn describe_core(c: &Ctx, serial: i32) -> Result<String, i64> {
-    let g = STORE.lock();
+    let mut g = STORE.lock();
+    let serial = user_key(&mut g, serial, c).map_err(e)?;
+    let g = g;
     check_perm(&g, serial, &c.t, KEY_NEED_VIEW, Lookup::Partial, c.now_ns)?;
     let k = g.keys.get(&serial).expect("check_perm proved existence under the same held lock");
     let mut s = alloc::format!("{};{};{};{:08x};{}",
@@ -252,7 +262,9 @@ pub fn describe_core(c: &Ctx, serial: i32) -> Result<String, i64> {
 /// that hook returns 0, and Linux answers userspace with a one-byte empty
 /// string, so the returned length is 1. # C: O(log N)
 pub fn get_security_core(c: &Ctx, serial: i32) -> Result<String, i64> {
-    let g = STORE.lock();
+    let mut g = STORE.lock();
+    let serial = user_key(&mut g, serial, c).map_err(e)?;
+    let g = g;
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_VIEW, Lookup::Partial, c.now_ns) {
         // Same authorisation-token override as `KEYCTL_SET_TIMEOUT`: a helper
         // servicing a request may inspect the key it was asked to build.
@@ -262,4 +274,19 @@ pub fn get_security_core(c: &Ctx, serial: i32) -> Result<String, i64> {
         }
     }
     Ok(String::from("\0"))
+}
+
+/// `lookup_user_key`: the key id a keyctl command was handed, turned into a
+/// real serial. A command that names a KEY takes the same id shape as one that
+/// names a keyring — a positive serial, or a special id — so both go through
+/// the one resolution rather than only the keyring-taking commands doing it.
+///
+/// The id that matters most is `@a`: a helper servicing an upcall reads the
+/// authorisation token to learn what it was asked to build. Without the
+/// resolution that id reaches the store as a literal negative number, matches
+/// no key, and comes back ENOKEY — which the helper cannot tell from holding no
+/// authority at all, so it gives up before answering anything.
+/// # C: O(log N)
+fn user_key(g: &mut Store, id: i32, c: &Ctx) -> Result<i32, Errno> {
+    g.resolve(id, &c.t)
 }
