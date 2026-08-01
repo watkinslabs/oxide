@@ -91,8 +91,11 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
 
     // Lazy completion reap: pull the device's used.idx forward. In-flight count
     // is `tx_next_avail - tx_last_used`. Completed frames free their buffers.
-    // SAFETY: HHDM-mapped q1 used ring; aligned u16 load of used.idx at +2.
     virtio::dma::invalidate_from_device(used_va, used_bytes);
+    // SAFETY: `used_va` is the HHDM view of this device's TX used ring, whose
+    // `device_pa` `is_runtime_valid()` proved non-zero; Virtio 1.2 §2.7.8 puts
+    // `idx` at byte 2 as an aligned u16, inside the ring frame. The invalidate
+    // above discarded stale lines so this sees the device's latest publish.
     let dev_used = unsafe { core::ptr::read_volatile((used_va + 2) as *const u16) };
     s.tx_last_used = dev_used;
 

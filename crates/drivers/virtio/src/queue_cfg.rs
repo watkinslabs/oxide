@@ -18,6 +18,14 @@ pub const CFG_QUEUE_DRIVER: u64 = 0x28;
 pub const CFG_QUEUE_DEVICE: u64 = 0x30;
 
 const QUEUE_ZERO: u16 = 0;
+/// `program_queue` backs each split-virtqueue area with exactly ONE frame from
+/// `VirtioQueueAllocator::alloc_frame`, so every area must fit in one frame.
+const QUEUE_FRAME_BYTES: u64 = 4096;
+/// `struct vring_desc` is addr/len/flags/next = 16 bytes (Virtio 1.2 §2.7.5).
+const VRING_DESC_BYTES: u64 = 16;
+/// Descriptor table is the binding area at 16 B/entry; at this N the avail ring
+/// (6 + 2N bytes) and used ring (6 + 8N bytes) both still fit one frame.
+const MAX_QUEUE_SIZE: u16 = (QUEUE_FRAME_BYTES / VRING_DESC_BYTES) as u16;
 const QUEUE_ENABLE_READY: u16 = 1;
 const QUEUE_ADDR_HIGH_OFF: u64 = 4;
 const QUEUE_ADDR_LOW_MASK: u64 = 0xFFFF_FFFF;
@@ -142,9 +150,22 @@ pub fn program_queue<A: VirtioQueueAllocator>(
     };
 
     w16(CFG_QUEUE_SELECT, qi);
-    let size = r16(CFG_QUEUE_SIZE);
+    let mut size = r16(CFG_QUEUE_SIZE);
     if size == 0 {
         return None;
+    }
+    // `size` is DEVICE-supplied. Every ring area below gets exactly one frame,
+    // so a device advertising more entries than one frame holds would have the
+    // driver's own descriptor/avail/used stores run off the end of that frame
+    // (QEMU takes `queue-size=1024` on virtio-blk). Virtio 1.2 §4.1.4.3 makes
+    // queue_size driver-writable down to a smaller power of two: negotiate it
+    // down, then re-read, and refuse the queue if the device did not accept.
+    if size > MAX_QUEUE_SIZE {
+        w16(CFG_QUEUE_SIZE, MAX_QUEUE_SIZE);
+        size = r16(CFG_QUEUE_SIZE);
+        if size == 0 || size > MAX_QUEUE_SIZE {
+            return None;
+        }
     }
 
     let desc_pa = allocator.alloc_frame()?;
@@ -256,6 +277,9 @@ mod tests {
     fn partial_allocation_failure_unwinds_frames() {
         let mut cfg = [0u64; 8];
         let base = cfg.as_mut_ptr() as u64;
+        // SAFETY: base points at this test's own `[u64; 8]` fake common-cfg
+        // register block, and CFG_QUEUE_SIZE (0x18) is an aligned u16 field
+        // inside its 64 bytes, so the store is in bounds and aligned.
         unsafe {
             core::ptr::write_volatile((base + CFG_QUEUE_SIZE) as *mut u16, 128);
         }
@@ -337,6 +361,37 @@ mod tests {
         assert!(queues.extra_queue(TEST_UNPLANNED_QUEUE_INDEX).is_none());
         assert_eq!(programmed_msix, TEST_EXTRA_MSIX_VECTOR);
         assert_eq!(selected_queue, QUEUE_ZERO);
+    }
+
+    /// A device may advertise more descriptors than the one frame per ring area
+    /// that `program_queue` allocates. Without the §4.1.4.3 renegotiation the
+    /// returned `size` licenses driver stores past the end of that frame.
+    #[test]
+    fn oversized_device_queue_size_is_negotiated_down_to_one_frame() {
+        const DEVICE_ADVERTISED_QUEUE_SIZE: u16 = 1024;
+        let mut cfg = [0u64; 8];
+        let base = cfg.as_mut_ptr() as u64;
+        // SAFETY: base points at this test's own `[u64; 8]` fake common-cfg
+        // register block, and CFG_QUEUE_SIZE (0x18) is an aligned u16 field
+        // inside its 64 bytes, so the store is in bounds and aligned.
+        unsafe {
+            core::ptr::write_volatile(
+                (base + CFG_QUEUE_SIZE) as *mut u16, DEVICE_ADVERTISED_QUEUE_SIZE);
+        }
+        let mut allocator = TestAllocator::new(3);
+
+        let ring = program_queue(base, 0, 0, &mut allocator)
+            .expect("clamped queue should still program");
+
+        assert_eq!(ring.size, MAX_QUEUE_SIZE);
+        // SAFETY: base points at this test's own `[u64; 8]` fake common-cfg
+        // register block, and CFG_QUEUE_SIZE (0x18) is an aligned u16 field
+        // inside its 64 bytes, so the load is in bounds and aligned.
+        let negotiated = unsafe {
+            core::ptr::read_volatile((base + CFG_QUEUE_SIZE) as *const u16)
+        };
+        assert_eq!(negotiated, MAX_QUEUE_SIZE);
+        assert!(MAX_QUEUE_SIZE as u64 * VRING_DESC_BYTES <= QUEUE_FRAME_BYTES);
     }
 
     #[test]
