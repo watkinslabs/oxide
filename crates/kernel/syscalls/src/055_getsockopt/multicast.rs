@@ -7,25 +7,13 @@ fn preflight(s: &net::sock::InetSocket, op: net::sock_mcast::McastGetOp) -> Resu
     s.preflight_mcast_get(op).map_err(errno_from_neterr)
 }
 
-/// The `int`-shaped publish step one scalar multicast answer ends in. The
-/// hosted test build mounts this file at the crate root, where the gated
-/// copyout wrapper is absent, so the sink is abstract rather than concrete.
-pub(crate) trait ScalarOut { fn publish(&self, value: i32) -> i64; }
-
-#[cfg(target_os = "oxide-kernel")]
-impl ScalarOut for super::out::OptOut {
-    fn publish(&self, value: i32) -> i64 { self.i32(value) }
-}
-
-impl<F: Fn(i32) -> i64> ScalarOut for F {
-    fn publish(&self, value: i32) -> i64 { self(value) }
-}
-
-pub(super) fn scalar_get<O: ScalarOut>(s: &alloc::sync::Arc<net::sock::InetSocket>,
-                                       option: net::sock_mcast::McastScalarGet,
-                                       out: &O) -> i64 {
+/// The hosted test build mounts this file at the crate root, where `out` is
+/// mounted too, so the one copyout owner is reachable from both builds.
+pub(super) fn scalar_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
+                         option: net::sock_mcast::McastScalarGet,
+                         out: &super::out::OptOut) -> i64 {
     match s.get_mcast_scalar(option) {
-        Ok(value) => out.publish(value), Err(error) => errno_from_neterr(error),
+        Ok(value) => out.i32(value), Err(error) => errno_from_neterr(error),
     }
 }
 
