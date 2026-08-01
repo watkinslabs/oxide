@@ -259,6 +259,9 @@ mod tests {
     fn volatile_accessors_round_trip_on_host_memory() {
         let mut q = 0u64;
         let p = &mut q as *mut u64 as *mut c_void;
+        // SAFETY: p is the address of the u64 `q` on this test's stack, so it is writable and
+        // 8-byte aligned — enough for the widest access here (writeq/readq); the narrower
+        // writeb/readb touch its first byte. No real MMIO window is involved.
         unsafe {
             writeq(TEST_QWORD, p);
             assert_eq!(readq(p), TEST_QWORD);

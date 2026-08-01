@@ -62,11 +62,13 @@ unsafe extern "C" fn ethtool_convert_link_mode_to_legacy_u32(dst: *mut u32, src:
 
 /// # C: O(ETH_GSTRING_LEN)
 unsafe extern "C" fn ethtool_puts(data: *mut *mut u8, strp: *const c_char) {
+    // SAFETY: write_gstring null-checks both pointers and the loaded *data; the ethtool_puts KPI contract is that *data has ETH_GSTRING_LEN writable bytes and strp is NUL-terminated.
     unsafe { write_gstring(data, strp); }
 }
 
 /// # C: O(ETH_GSTRING_LEN)
 unsafe extern "C" fn ethtool_sprintf(data: *mut *mut u8, fmt: *const c_char, mut _args: ...) {
+    // SAFETY: only the NUL-terminated fmt string is copied (variadic args are never read), and write_gstring null-checks data, *data and fmt before touching the ETH_GSTRING_LEN slot.
     unsafe { write_gstring(data, fmt); }
 }
 
@@ -80,6 +82,7 @@ unsafe extern "C" fn eth_validate_addr(dev: *mut LinuxNetDevice) -> i32 {
 
 /// # C: O(ETH_ALEN)
 unsafe extern "C" fn eth_mac_addr(dev: *mut LinuxNetDevice, p: *mut c_void) -> i32 {
+    // SAFETY: eth_prepare_mac_addr_change null-checks both arguments and reads p only as the 16-byte struct sockaddr that ndo_set_mac_address is defined to receive.
     unsafe { eth_prepare_mac_addr_change(dev, p) }
 }
 
@@ -96,6 +99,7 @@ unsafe extern "C" fn eth_prepare_mac_addr_change(dev: *mut LinuxNetDevice, p: *m
 
 /// # C: O(ETH_ALEN)
 unsafe extern "C" fn eth_commit_mac_addr_change(dev: *mut LinuxNetDevice, p: *mut c_void) {
+    // SAFETY: same preconditions as the prepare half — dev/p are the pair Linux passes to ndo_set_mac_address, and the callee null-checks both before copying ETH_ALEN bytes.
     let _ = unsafe { eth_prepare_mac_addr_change(dev, p) };
 }
 

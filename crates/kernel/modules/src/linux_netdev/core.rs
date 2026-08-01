@@ -62,7 +62,8 @@ pub(super) fn export_symbols() {
 /// # C: O(N netdevs)
 unsafe extern "C" fn register_netdev(dev: *mut LinuxNetDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    netalloc::ensure_registered_name(dev);
+    // SAFETY: dev was null-checked above and register_netdev's KPI contract is that the caller still owns it and has not published it, matching ensure_registered_name's precondition.
+    unsafe { netalloc::ensure_registered_name(dev); }
     let name = linux_name(dev);
     let adapter = Arc::new(LinuxNetAdapter {
         dev: dev as usize, name,
@@ -351,9 +352,12 @@ impl NetDev for LinuxNetAdapter {
     fn set_mtu(&self, mtu: u32) -> Result<(), NetError> {
         let dev = self.dev as *mut LinuxNetDevice;
         if dev.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: self.dev is the net_device register_netdev recorded; the stack holds this adapter until unregister_netdev, which the driver must call before free_netdev, and the null check above ran.
         let ops = unsafe { (*dev).netdev_ops };
         if ops.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: ops is the driver's own net_device_ops table, alive as long as the module owning dev, and non-null per the check above.
         let change = unsafe { (*ops).ndo_change_mtu }.ok_or(NetError::Eopnotsupp)?;
+        // SAFETY: ndo_change_mtu's KPI contract takes the owning net_device and the new MTU; dev is exactly the pointer the driver registered.
         let result = unsafe { change(dev, mtu) };
         match result {
             LINUX_OK => Ok(()),
@@ -366,11 +370,14 @@ impl NetDev for LinuxNetAdapter {
     fn set_mac(&self, mac: MacAddr) -> Result<(), NetError> {
         let dev = self.dev as *mut LinuxNetDevice;
         if dev.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: self.dev is the net_device register_netdev recorded and the stack drops this adapter only in unregister_netdev, before the driver may free_netdev; non-null per the check above.
         let ops = unsafe { (*dev).netdev_ops };
         if ops.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: ops is the driver's static net_device_ops table reached through the live dev, non-null per the check above.
         let change = unsafe { (*ops).ndo_set_mac_address }.ok_or(NetError::Eopnotsupp)?;
         let mut addr = LinuxSockAddr { family: net::uapi::ARPHRD_ETHER, data: [0; 14] };
         addr.data[..6].copy_from_slice(&mac.0);
+        // SAFETY: ndo_set_mac_address reads a sockaddr; addr is a local LinuxSockAddr with the 14-byte sa_data Linux expects, borrowed only for the duration of this synchronous call.
         let result = unsafe { change(dev, &mut addr as *mut _ as *mut c_void) };
         match result {
             LINUX_OK => Ok(()),
@@ -384,11 +391,14 @@ impl NetDev for LinuxNetAdapter {
     fn set_ifmap(&self, map: net::IfaceMap) -> Result<(), NetError> {
         let dev = self.dev as *mut LinuxNetDevice;
         if dev.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: self.dev is the net_device register_netdev recorded; the adapter is dropped in unregister_netdev before the driver frees it, and dev is non-null per the check above.
         let ops = unsafe { (*dev).netdev_ops };
         if ops.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: ops is the driver-owned net_device_ops table read from the live dev, non-null per the check above.
         let change = unsafe { (*ops).ndo_set_config }.ok_or(NetError::Eopnotsupp)?;
         let mut request = LinuxIfMap { mem_start: map.mem_start, mem_end: map.mem_end,
             base_addr: map.base_addr, irq: map.irq, dma: map.dma, port: map.port };
+        // SAFETY: ndo_set_config takes a struct ifmap; request is a local LinuxIfMap matching that layout and outlives this synchronous call.
         match unsafe { change(dev, &mut request) } {
             LINUX_OK => Ok(()),
             LINUX_EINVAL => Err(NetError::Einval),
@@ -401,12 +411,14 @@ impl NetDev for LinuxNetAdapter {
     fn tx_queue_len(&self) -> u32 {
         let dev = self.dev as *const LinuxNetDevice;
         if dev.is_null() { return 0; }
+        // SAFETY: self.dev is the net_device register_netdev recorded and stays live until unregister_netdev drops this adapter; tx_queue_len is a plain u32 field of that allocation.
         unsafe { (*dev).tx_queue_len }
     }
 
     fn set_tx_queue_len(&self, len: u32) -> Result<(), NetError> {
         let dev = self.dev as *mut LinuxNetDevice;
         if dev.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: self.dev is the registered net_device, live until unregister_netdev drops this adapter; writing the tx_queue_len field mirrors what Linux does under RTNL for the same device.
         unsafe { (*dev).tx_queue_len = len; }
         Ok(())
     }

@@ -68,7 +68,9 @@ extern "C" fn input_allocate_device() -> *mut LinuxInputDev {
 
 unsafe extern "C" fn input_free_device(dev: *mut LinuxInputDev) {
     if dev.is_null() { return; }
+    // SAFETY: dev was just null-checked, and this KPI entry's contract is that it is an input_allocate_device result the module has not yet freed; registered is an inline u32 of that allocation.
     if unsafe { (*dev).registered } != 0 {
+        // SAFETY: unregister_live's precondition is a device that completed input_register_device, which is the only writer of registered != 0 and sets oxide_key/evdev_id before doing so.
         unsafe { unregister_live(dev); }
     }
     // SAFETY: dev was allocated by input_allocate_device and is no longer registered.
@@ -77,6 +79,7 @@ unsafe extern "C" fn input_free_device(dev: *mut LinuxInputDev) {
 
 unsafe extern "C" fn input_register_device(dev: *mut LinuxInputDev) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: dev was null-checked on the previous line; registering a device the module has already freed is outside this KPI's contract, so the allocation is live and registered readable.
     if unsafe { (*dev).registered } != 0 { return -LINUX_EBUSY; }
     // This KPI does not yet expose input_ff_create()/ff_device callbacks.
     // Reject an incomplete FF device instead of publishing capabilities that
@@ -90,6 +93,7 @@ unsafe extern "C" fn input_register_device(dev: *mut LinuxInputDev) -> i32 {
     unsafe {
         (*dev).oxide_key = key.raw();
     }
+    // SAFETY: input_to_model requires a live LinuxInputDev plus name/phys/uniq that are either null or NUL-terminated; the null test above covers the former and the input KPI requires the module's identity strings to outlive registration. It only copies out of dev, so the &mut aliasing below is unaffected.
     let model = unsafe { input_to_model(dev) };
     let Some((_input_id, evdev_id)) = input::install(model) else {
         // SAFETY: registration still owns the live unregistered LinuxInputDev.
@@ -102,13 +106,16 @@ unsafe extern "C" fn input_register_device(dev: *mut LinuxInputDev) -> i32 {
         let _ = input::remove_device(key);
         return -LINUX_ENOMEM;
     }
+    // SAFETY: dev is the same live allocation validated at fn entry, and install plus publish_evdev have both succeeded, so flipping registered last matches the state unregister_live expects to find.
     unsafe { (*dev).registered = 1; }
     LINUX_OK
 }
 
 unsafe extern "C" fn input_unregister_device(dev: *mut LinuxInputDev) {
     if dev.is_null() { return; }
+    // SAFETY: dev was just null-checked; per the Linux input KPI it is the input_allocate_device result the module registered, still owned by the module at unregister time.
     if unsafe { (*dev).registered } != 0 {
+        // SAFETY: registered != 0 is written only by a completed input_register_device, so the oxide_key and evdev_id that unregister_live tears down are the ones install/publish_evdev handed out.
         unsafe { unregister_live(dev); }
     }
     // SAFETY: Linux input unregister consumes the final device reference from input_allocate_device.
@@ -117,6 +124,7 @@ unsafe extern "C" fn input_unregister_device(dev: *mut LinuxInputDev) {
 
 unsafe extern "C" fn input_set_capability(dev: *mut LinuxInputDev, ev_type: u32, code: u32) {
     if dev.is_null() { return; }
+    // SAFETY: dev was null-checked above; the &mut lives only for this call and the input KPI gives the module exclusive ownership of the device until input_register_device, so no other reference to the capability maps exists. set_capability itself range-checks ev_type/code.
     unsafe { set_capability(&mut *dev, ev_type, code); }
 }
 
@@ -129,6 +137,7 @@ unsafe extern "C" fn input_set_abs_params(
     flat: i32,
 ) {
     if dev.is_null() || axis as usize >= ABS_CNT { return; }
+    // SAFETY: dev is non-null per the guard above and the axis guard bounds the index by ABS_CNT, which is exactly the length of the absinfo array; the &mut is transient and the module owns the device exclusively while configuring it.
     unsafe {
         set_capability(&mut *dev, u32::from(EV_ABS), u32::from(axis));
         (*dev).absinfo[axis as usize] = LinuxInputAbsInfo {
@@ -144,44 +153,58 @@ unsafe extern "C" fn input_set_abs_params(
 
 unsafe extern "C" fn input_event(dev: *mut LinuxInputDev, ev_type: u16, code: u16, value: i32) {
     if dev.is_null() { return; }
+    // SAFETY: dev was null-checked on the previous line; input_event's KPI contract is that the module reports events only on a device it still owns.
     if unsafe { (*dev).registered } == 0 {
+        // SAFETY: same non-null dev; the unregistered branch means no evdev model exists yet, so this &mut to the local state bitmaps is the only live reference. update_state consults the capability bits before touching any array.
         unsafe { update_state(&mut *dev, ev_type, code, value); }
         return;
     }
+    // SAFETY: registered != 0, so input_register_device stored the evdev_id that install returned into this still-live device.
     let id = unsafe { (*dev).evdev_id };
     let _ = input::push_evdev_event(id, ev_type, code, value);
 }
 
 unsafe extern "C" fn input_report_key(dev: *mut LinuxInputDev, code: u16, value: i32) {
+    // SAFETY: input_event's precondition on dev is identical to input_report_key's own, so the caller of this KPI entry has already established it; input_event re-checks for null itself.
     unsafe { input_event(dev, EV_KEY, code, i32::from(value != 0)); }
 }
 
 unsafe extern "C" fn input_report_abs(dev: *mut LinuxInputDev, code: u16, value: i32) {
+    // SAFETY: forwarding the caller's own dev unchanged to input_event, whose precondition on it is the same one input_report_abs imposes; the null case is handled inside input_event.
     unsafe { input_event(dev, EV_ABS, code, value); }
 }
 
 unsafe extern "C" fn input_report_rel(dev: *mut LinuxInputDev, code: u16, value: i32) {
+    // SAFETY: forwarding the caller's own dev unchanged to input_event, whose precondition on it is the same one input_report_rel imposes; the null case is handled inside input_event.
     unsafe { input_event(dev, EV_REL, code, value); }
 }
 
 unsafe extern "C" fn input_sync(dev: *mut LinuxInputDev) {
+    // SAFETY: forwarding the caller's own dev unchanged to input_event, whose precondition on it is the same one input_sync imposes; the null case is handled inside input_event.
     unsafe { input_event(dev, EV_SYN, SYN_REPORT, 0); }
 }
 
 unsafe extern "C" fn input_set_drvdata(dev: *mut LinuxInputDev, data: *mut c_void) {
     if dev.is_null() { return; }
+    // SAFETY: dev was null-checked above; private_data is an opaque *mut c_void slot the kernel never dereferences, so storing the module's cookie into the live device cannot invalidate anything else.
     unsafe { (*dev).private_data = data; }
 }
 
 unsafe extern "C" fn input_get_drvdata(dev: *const LinuxInputDev) -> *mut c_void {
     if dev.is_null() { return null_mut(); }
+    // SAFETY: dev was null-checked above; the read returns the opaque cookie by value without dereferencing it, so only the LinuxInputDev allocation itself must be live, which the KPI contract gives.
     unsafe { (*dev).private_data }
 }
 
+// Precondition: dev is a live LinuxInputDev whose registered field is non-zero, i.e. input_register_device
+// completed and stored the oxide_key/evdev_id read below. No null check here — the two callers do it.
 unsafe fn unregister_live(dev: *mut LinuxInputDev) {
+    // SAFETY: the precondition above makes dev live and registered, so oxide_key holds the key next_device_key minted for the install that is being torn down.
     let key = VirtioChildDeviceKey::from_raw(unsafe { (*dev).oxide_key });
+    // SAFETY: same live registered device; evdev_id is the identity publish_evdev consumed, so unpublish here undoes exactly that publish.
     let _ = input::unpublish_evdev(unsafe { (*dev).evdev_id });
     let _ = input::remove_device(key);
+    // SAFETY: dev is still the caller's live allocation — remove_device only dropped the canonical input model, not this KPI mirror — so resetting it to the unregistered state is a plain field write.
     unsafe {
         (*dev).registered = 0;
         (*dev).evdev_id = MAX_INPUT_DEVICES as u32;
@@ -318,6 +341,7 @@ mod tests {
     fn register_exports_capabilities_to_evdev_model() {
         let dev = input_allocate_device();
         assert!(!dev.is_null());
+        // SAFETY: dev is the uniquely owned allocation just returned by input_allocate_device and asserted non-null; NAME/PHYS are NUL-terminated statics that outlive the registration, satisfying the string-lifetime half of the KPI contract, and input_unregister_device at the end of the block consumes the box exactly once.
         unsafe {
             (*dev).name = NAME.as_ptr() as *const c_char;
             (*dev).phys = PHYS.as_ptr() as *const c_char;
@@ -388,6 +412,7 @@ mod tests {
     fn register_rejects_force_feedback_without_ff_backend() {
         let dev = input_allocate_device();
         assert!(!dev.is_null());
+        // SAFETY: dev is the uniquely owned allocation just returned by input_allocate_device and asserted non-null; NAME is a NUL-terminated static, registration is expected to fail so nothing is published, and input_free_device consumes the box exactly once.
         unsafe {
             (*dev).name = NAME.as_ptr() as *const c_char;
             input_set_capability(dev, u32::from(EV_FF), u32::from(FF_RUMBLE));

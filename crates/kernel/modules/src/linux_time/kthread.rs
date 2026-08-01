@@ -72,6 +72,8 @@ pub(super) extern "C" fn kthread_stop(task: *mut LinuxTaskStruct) -> i32 {
     if task.is_null() { return 0; }
     // SAFETY: non-null task pointer was allocated by kthread_create.
     unsafe { (*task).should_stop.store(1, Ordering::Release); }
+    // SAFETY: task is the kthread_create Box, and kthread_stop below is the only code that frees
+    // it — the trampoline only ever stores into result/done — so it stays live for this spin.
     while unsafe { !(*task).done.load(Ordering::Acquire) } {
         schedule();
     }
@@ -92,8 +94,11 @@ extern "C" fn kthread_entry(arg: usize) -> ! {
     let start = arg as *mut KthreadStart;
     run_kthread(start);
     if let Some(cur) = sched::live::current() { sched::live::mark_done(cur); }
+    // SAFETY: schedule() requires the caller to be the running task on this CPU and to own the
+    // switch — this is the kthread's own entry trampoline, running as that task, and mark_done on
+    // the line above already took it off the runnable set, so nothing re-picks it and the call
+    // never returns into a stale frame.
     unsafe {
-        // SAFETY: kthread is exiting from its own process context.
         sched::live::schedule();
     }
     loop { core::hint::spin_loop(); }

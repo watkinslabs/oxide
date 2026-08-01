@@ -201,6 +201,7 @@ unsafe extern "C" fn napi_get_frags(_napi: *mut LinuxNapiStruct) -> *mut LinuxSk
 
 /// # C: O(frame)
 unsafe extern "C" fn napi_gro_frags(napi: *mut LinuxNapiStruct) -> i32 {
+    // SAFETY: napi_get_frags ignores its napi argument entirely and returns a fresh skb_alloc allocation, so no caller-supplied pointer is dereferenced here.
     let skb = unsafe { napi_get_frags(napi) };
     // SAFETY: gro_receive_skb consumes the temporary skb.
     unsafe { gro_receive_skb(napi, skb) }
@@ -227,6 +228,7 @@ unsafe extern "C" fn __napi_alloc_frag_align(fragsz: u32, align_mask: u32) -> *m
 /// # C: O(fragsz)
 unsafe extern "C" fn skb_page_frag_refill(sz: u32, page_frag: *mut c_void, gfp: u32) -> bool {
     if page_frag.is_null() { return false; }
+    // SAFETY: __napi_alloc_frag_align takes only integers and returns alloc_zeroed storage; page_frag itself is not dereferenced, only null-checked above.
     let p = unsafe { __napi_alloc_frag_align(sz, 0) };
     let _ = gfp;
     !p.is_null()

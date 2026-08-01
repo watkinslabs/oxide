@@ -60,7 +60,9 @@ impl Driver for PciModelDriver {
 pub(super) fn register_driver(driver: *mut LinuxPciDriver) -> i32 {
     if driver.is_null() { return -LINUX_EINVAL; }
     if driver_name_ptr(driver).is_null() { return -LINUX_EINVAL; }
-    let name = copy_driver_name(driver_name_ptr(driver));
+    // SAFETY: the line above returned early unless driver_name_ptr(driver) is non-NULL, and that
+    // pointer is the module's own static name string, so it is NUL-terminated and readable.
+    let name = unsafe { copy_driver_name(driver_name_ptr(driver)) };
     let mut g = DRIVERS.lock();
     if g.iter().any(|r| r.ptr == driver as usize) { return -LINUX_EBUSY; }
     if g.iter().any(|r| r.name == name) { return -LINUX_EBUSY; }
@@ -95,8 +97,11 @@ fn bind_model_device(slot: usize, model: &Arc<Device>) -> drv::KResult<()> {
     if insert_binding(driver as usize, model, dev_ptr as usize, id as usize).is_err() {
         return Err(drv::Error::Busy);
     }
+    // SAFETY: driver came from driver_ptr(slot), i.e. a DriverRecord register_driver installed and
+    // unregister_driver has not removed, so the struct pci_driver is live; id points into that
+    // driver's own id_table (match_id returned it); dev_ptr is the Box allocated above, kept alive
+    // for the whole call and only leaked into the binding table once probe succeeds.
     let rc = unsafe {
-        // SAFETY: driver/id/dev_ptr are live Linux PCI ABI objects for this probe call.
         match (*driver).probe { Some(probe) => probe(dev_ptr, id), None => LINUX_OK }
     };
     if rc == LINUX_OK {
@@ -112,8 +117,11 @@ fn unbind_model_device(slot: usize, model: &Device) {
     let Some(driver) = driver_ptr(slot) else { return; };
     let Some(rec) = remove_binding_by_model(model, driver) else { return; };
     let dev = rec.dev as *mut LinuxPciDev;
+    // SAFETY: remove_binding_by_model just took the BindingRecord out of BINDINGS under its lock,
+    // so this path uniquely owns rec.dev — the Box::into_raw'd LinuxPciDev from bind_model_device
+    // — and no concurrent unbind can also free it; driver is the still-registered pci_driver whose
+    // slot the record was filed under, so its remove hook and the Box layout both match.
     unsafe {
-        // SAFETY: binding table owns dev until this remove path drops the Box.
         if let Some(remove) = (*(driver as *mut LinuxPciDriver)).remove { remove(dev); }
         (*dev).dev.driver = null_mut();
         (*dev).driver_data = null_mut();
@@ -123,8 +131,11 @@ fn unbind_model_device(slot: usize, model: &Device) {
 
 fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
     let bdf = pci::parse_bdf_addr(&model.addr).unwrap_or(Bdf { bus: 0, device: 0, function: 0 });
+    // SAFETY: every field of LinuxPciDev is valid all-zero — raw pointers (null), integers, bools
+    // (false), c_char/u32 arrays, and the Option<extern fn> hooks in its nested LinuxDevice /
+    // LinuxKobject / LinuxDevPmInfo (None) — so the zeroed pattern is an inhabited value, not
+    // uninitialised memory; the fields that need non-zero defaults are assigned below.
     let mut dev: LinuxPciDev = unsafe {
-        // SAFETY: repr(C) PCI device state is initialized immediately below before publication.
         MaybeUninit::zeroed().assume_init()
     };
     dev.dev = LinuxDevice {
@@ -134,8 +145,11 @@ fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
         parent: null_mut(),
         bus: null_mut(),
         class: null_mut(),
+        // SAFETY: driver is the pci_driver from driver_ptr(slot) (register_driver installed it and
+        // unregister_driver has not run), so its embedded struct device_driver is live for at
+        // least as long as this pci_dev; the borrow is immediately coerced to the *mut stored in
+        // dev.driver and never kept as a reference.
         driver: unsafe {
-            // SAFETY: driver is validated by register/probe path.
             &mut (*driver).driver
         },
         init_name: core::ptr::null(),
@@ -168,20 +182,26 @@ fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
 
 fn match_id(driver: *mut LinuxPciDriver, model: &Device) -> Option<*const LinuxPciDeviceId> {
     if driver.is_null() || model.bus != "pci" { return None; }
+    // SAFETY: driver was checked non-null above and every caller obtains it from driver_ptr, i.e.
+    // a DriverRecord still present in DRIVERS, so the struct pci_driver is live and its id_table
+    // field is readable.
     let mut cur = unsafe {
-        // SAFETY: driver is validated by register/probe path.
         (*driver).id_table
     };
     if cur.is_null() { return None; }
     for _ in 0..MAX_PCI_ID_TABLE {
+        // SAFETY: pci_driver's KPI contract is that id_table is an array terminated by an
+        // all-zero sentinel; cur starts at that array and only advances past entries
+        // id_is_sentinel rejected, so it addresses a real entry here.
         let id = unsafe {
-            // SAFETY: bounded walk over Linux sentinel-terminated PCI ID table.
             &*cur
         };
         if id_is_sentinel(id) { return None; }
         if id_matches(id, model) { return Some(cur); }
+        // SAFETY: the entry at cur was just proven non-sentinel, so the table has at least one
+        // more element; the MAX_PCI_ID_TABLE loop bound also stops a missing sentinel from
+        // walking off the end indefinitely.
         cur = unsafe {
-            // SAFETY: bounded walk advances within the caller-provided ID table.
             cur.add(1)
         };
     }
@@ -215,11 +235,10 @@ fn insert_binding(driver: usize, model: &Arc<Device>, dev: usize, id: usize) -> 
 fn remove_binding(model: &Arc<Device>, driver: usize) {
     let mut g = BINDINGS.lock();
     if let Some(pos) = g.iter().position(|r| r.driver == driver && Arc::ptr_eq(&r.model, model)) {
-        let rec = g.swap_remove(pos);
-        unsafe {
-            // SAFETY: binding table owns dev when probe fails before publication.
-            drop(Box::from_raw(rec.dev as *mut LinuxPciDev));
-        }
+        // Drop the record only. Ownership of rec.dev is still with bind_model_device's local Box
+        // on the failed-probe path (Box::into_raw runs only when probe succeeds), so freeing it
+        // here would double-free it when that Box goes out of scope.
+        let _ = g.swap_remove(pos);
     }
 }
 
@@ -245,18 +264,24 @@ fn first_free_slot(g: &[DriverRecord]) -> usize {
 
 fn driver_name_ptr(driver: *mut LinuxPciDriver) -> *const c_char {
     if driver.is_null() { return core::ptr::null(); }
+    // SAFETY: pci_register_driver's KPI contract is that the module keeps its struct pci_driver
+    // alive for the whole registration; driver was checked non-null on the line above, and only
+    // the name / driver.name pointer fields are read here, never dereferenced.
     unsafe {
-        // SAFETY: driver is a caller-owned Linux struct pci_driver.
         if !(*driver).name.is_null() { (*driver).name } else { (*driver).driver.name }
     }
 }
 
-fn copy_driver_name(ptr: *const c_char) -> String {
+// Precondition: ptr is non-NULL and points at a C string that either terminates within
+// PCI_CSTR_MAX bytes or is readable for at least PCI_CSTR_MAX bytes (Linux driver names are
+// static string literals, so both hold).
+unsafe fn copy_driver_name(ptr: *const c_char) -> String {
     let mut s = String::new();
     let mut i = 0usize;
     while i < PCI_CSTR_MAX {
+        // SAFETY: the caller's precondition makes ptr readable up to the NUL or PCI_CSTR_MAX
+        // bytes, and the loop condition keeps i below that bound.
         let b = unsafe {
-            // SAFETY: ptr is a Linux C string; scan is bounded.
             *ptr.add(i) as u8
         };
         if b == 0 { break; }
@@ -289,8 +314,9 @@ pub(super) fn binding_count() -> usize { BINDINGS.lock().len() }
 pub(super) fn bound_id_driver_data(model: &Arc<Device>) -> Option<usize> {
     let g = BINDINGS.lock();
     let rec = g.iter().find(|r| Arc::ptr_eq(&r.model, model))?;
+    // SAFETY: rec.id is the id_table entry match_id returned when this still-present binding was
+    // made, so it points into the test driver's 'static id_table array, which outlives the probe.
     unsafe {
-        // SAFETY: test reads the ID entry pointer recorded with the live binding.
         Some((*(rec.id as *const LinuxPciDeviceId)).driver_data)
     }
 }

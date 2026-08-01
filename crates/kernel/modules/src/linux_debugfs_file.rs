@@ -184,6 +184,9 @@ mod tests {
     }
 
     unsafe extern "C" fn active_release(_inode: *mut LinuxInode, file: *mut LinuxFile) -> i32 {
+        // SAFETY: the release hook of ACTIVE_FOPS is only reached through the debugfs file this
+        // test created, so file is the same live LinuxFile active_open stamped with ACTIVE_COOKIE;
+        // only that private_data word is read, and the file outlives the callback.
         if unsafe { (*file).private_data as usize } == ACTIVE_COOKIE {
             ACTIVE_RELEASE.fetch_add(1, Ordering::SeqCst);
         }

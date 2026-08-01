@@ -238,8 +238,11 @@ extern "C" fn pci_enable_msi(dev: *mut LinuxPciDev) -> i32 {
 
 extern "C" fn pci_disable_msi(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
+    // SAFETY: pci_disable_msi's KPI contract is that dev is the struct pci_dev the probe callback
+    // was handed, which registry::bind_model_device keeps Box-alive in BINDINGS until unbind; dev
+    // was checked non-null above, and only the irq_vector_flags word set by alloc_irq_vectors is
+    // read here.
     let flags = unsafe {
-        // SAFETY: dev points at a caller-owned Linux struct pci_dev.
         (*dev).irq_vector_flags
     };
     if flags & PCI_IRQ_MSI != 0 { pci_free_irq_vectors(dev); }

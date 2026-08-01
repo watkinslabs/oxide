@@ -186,8 +186,11 @@ extern "C" fn __alloc_pages_noprof(
 /// # C: O(order)
 pub(crate) extern "C" fn __free_pages(page: *mut LinuxPage, order: u32) {
     if page.is_null() { return; }
-    if !valid_page(page) { return; }
-    // SAFETY: caller passes a page descriptor returned by alloc_pages.
+    // SAFETY: __free_pages' KPI contract is that page came from alloc_pages, so it is a live
+    // page_desc_alloc block; valid_page then rejects anything whose magic is not PAGE_MAGIC.
+    if !unsafe { valid_page(page) } { return; }
+    // SAFETY: valid_page just confirmed PAGE_MAGIC, so page is an initialised LinuxPage whose
+    // pa field is the page_run_alloc run recorded by alloc_pages.
     let pa = unsafe { (*page).pa };
     page_run_free_pa(pa, order);
     page_desc_free(page);
@@ -207,7 +210,10 @@ extern "C" fn free_pages(addr: usize, order: u32) {
 }
 
 pub(crate) extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
-    if valid_page(page) { unsafe { (*page).va } } else { null_mut() }
+    // SAFETY: page_address' KPI contract is that page is a descriptor from alloc_pages (or NULL,
+    // which valid_page rejects); on a PAGE_MAGIC match the va field is the direct-map pointer
+    // page_run_alloc returned for the same run, still owned by this descriptor.
+    if unsafe { valid_page(page) } { unsafe { (*page).va } } else { null_mut() }
 }
 
 extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
@@ -215,7 +221,10 @@ extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
 }
 
 pub(crate) fn linux_page_phys(page: *const LinuxPage) -> Option<u64> {
-    if valid_page(page as *mut LinuxPage) { Some(unsafe { (*page).pa }) } else { None }
+    // SAFETY: every caller (page_to_phys, vmap, dma_map_page) forwards a descriptor obtained from
+    // alloc_pages and not yet passed to __free_pages, so valid_page may read its magic; a
+    // PAGE_MAGIC match means pa is the alloc_contig_object address recorded for that run.
+    if unsafe { valid_page(page as *mut LinuxPage) } { Some(unsafe { (*page).pa }) } else { None }
 }
 
 unsafe extern "C" fn kstrdup(s: *const u8, flags: u32) -> *mut u8 {
@@ -274,9 +283,12 @@ pub(crate) fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut u8 {
         Ok(v) => v,
         Err(_) => return null_mut(),
     };
-    // SAFETY: layout was validated above.
+    // SAFETY: alloc requires a non-zero-size layout; size != 0 was checked at entry and
+    // total = off + size, so from_size_align above accepted a layout of at least `size` bytes.
     let base = unsafe { alloc(layout) };
     if base.is_null() { return null_mut(); }
+    // SAFETY: off < total because total = off + size with size >= 1, so base.add(off) stays
+    // inside the allocation `alloc` just returned for `layout`.
     let user = unsafe { base.add(off) };
     let h = Header { magic: ALLOC_MAGIC, total, align: layout.align(), off };
     // SAFETY: header slot is inside the allocation immediately before user.
@@ -289,6 +301,9 @@ pub(crate) fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut u8 {
 
 fn free_bytes(ptr: *mut u8) {
     if ptr.is_null() { return; }
+    // SAFETY: kfree/kvfree/kmem_cache_free's KPI contract is that ptr came from alloc_bytes, which
+    // always writes a Header in the size_of::<Header>() bytes immediately below the returned
+    // pointer and aligns it to at least align_of::<usize>(); that word is what is read here.
     let hp = unsafe { ptr.sub(size_of::<Header>()) as *mut Header };
     // SAFETY: Linux KPI callers must pass a pointer returned by this allocator.
     let h = unsafe { *hp };
@@ -301,9 +316,13 @@ fn free_bytes(ptr: *mut u8) {
     unsafe { dealloc(ptr.sub(h.off), layout); }
 }
 
-fn valid_page(page: *mut LinuxPage) -> bool {
+// Precondition: page is NULL or points to a readable, size_of::<LinuxPage>()-sized allocation —
+// i.e. a descriptor from page_desc_alloc that page_desc_free has not yet released. Only the magic
+// word is read, so a live-but-foreign block is rejected rather than trusted.
+unsafe fn valid_page(page: *mut LinuxPage) -> bool {
     if page.is_null() { return false; }
-    // SAFETY: caller promises a struct page pointer; bad magic is rejected.
+    // SAFETY: the caller's precondition makes page a live page_desc_alloc block, so the magic
+    // field written by alloc_pages is readable here.
     unsafe { (*page).magic == PAGE_MAGIC }
 }
 
@@ -428,7 +447,8 @@ unsafe fn format_c(out: &mut Vec<u8>, fmt: *const u8, ap: &mut VaList) {
         }
         match c {
             b's' => {
-                // SAFETY: vararg type follows %s.
+                // SAFETY: kasprintf's contract is that the varargs match fmt; a %s conversion was
+                // just parsed, so the next slot holds a char pointer and next_arg reads it as such.
                 let p = unsafe { ap.next_arg::<*mut c_void>() as *const u8 };
                 push_cstr(out, p);
             }
@@ -438,26 +458,31 @@ unsafe fn format_c(out: &mut Vec<u8>, fmt: *const u8, ap: &mut VaList) {
             }
             b'd' | b'i' => {
                 let v = if long {
-                    // SAFETY: vararg type follows %ld/%zd.
+                    // SAFETY: the l/z modifier consumed above means the caller passed a long or
+                    // ssize_t for this %ld/%zd, which is exactly i64 on both LP64 kernel targets.
                     unsafe { ap.next_arg::<i64>() }
                 } else {
-                    // SAFETY: vararg type follows %d.
+                    // SAFETY: no length modifier was parsed, so bare %d/%i takes a C int, which
+                    // after default argument promotion is the i32 read here.
                     unsafe { ap.next_arg::<i32>() as i64 }
                 };
                 push_i64(out, v);
             }
             b'u' | b'x' => {
                 let v = if long {
-                    // SAFETY: vararg type follows %lu/%zx.
+                    // SAFETY: the l/z modifier consumed above means this %lu/%zx slot holds an
+                    // unsigned long or size_t, which is exactly u64 on both LP64 kernel targets.
                     unsafe { ap.next_arg::<u64>() }
                 } else {
-                    // SAFETY: vararg type follows %u/%x.
+                    // SAFETY: no length modifier was parsed, so bare %u/%x takes an unsigned int,
+                    // which after default argument promotion is the u32 read here.
                     unsafe { ap.next_arg::<u32>() as u64 }
                 };
                 push_u64(out, v, if c == b'x' { 16 } else { 10 });
             }
             b'p' => {
-                // SAFETY: vararg type follows %p.
+                // SAFETY: a %p conversion was just parsed, so the caller's matching vararg is a
+                // pointer; it is only widened to usize for hex formatting, never dereferenced.
                 let p = unsafe { ap.next_arg::<*mut c_void>() as usize };
                 out.extend_from_slice(b"0x");
                 push_u64(out, p as u64, 16);

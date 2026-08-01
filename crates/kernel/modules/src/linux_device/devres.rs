@@ -104,7 +104,7 @@ fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut c_void {
         Ok(v) => v,
         Err(_) => return null_mut(),
     };
-    // SAFETY: layout was validated above.
+    // SAFETY: alloc's non-zero-size precondition holds because off is align_up(size_of::<DevresHeader>(), align) so total >= size_of::<DevresHeader>() > 0; Layout::from_size_align already rejected any overflowing or misaligned combination.
     let base = unsafe { alloc(layout) };
     if base.is_null() { return null_mut(); }
     // SAFETY: base covers total bytes, off is within allocation.

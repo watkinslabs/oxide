@@ -337,6 +337,9 @@ mod tests {
         let mut buf = [0i8; 32];
         let n = seq_read(&mut file, buf.as_mut_ptr(), buf.len(), &mut pos);
         assert_eq!(n, 12);
+        // SAFETY: buf is the 32-element i8 stack array passed to seq_read, and n is that call's
+        // return value (asserted == 12), i.e. the number of bytes it actually wrote into buf, so
+        // the slice covers only initialised, in-bounds elements of a still-live local.
         let got = unsafe { core::slice::from_raw_parts(buf.as_ptr() as *const u8, n as usize) };
         assert_eq!(got, b"name=demo 7\n");
         assert_eq!(single_release(null_mut(), &mut file), 0);

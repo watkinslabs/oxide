@@ -235,6 +235,7 @@ extern "C" fn acpi_match_device(ids: *const AcpiDeviceId, dev: *const crate::lin
         // SAFETY: ids is a Linux sentinel-terminated ACPI match table.
         let id = unsafe { &*cur };
         if id.id[0] == 0 { return null(); }
+        // SAFETY: acpi was tested non-null above and is the device's ACPI companion; hid is an inline [c_char; ACPI_ID_LEN] array, exactly the ACPI_ID_LEN bytes fixed_id_eq reads.
         if fixed_id_eq(id.id.as_ptr(), unsafe { (*acpi).hid.as_ptr() }) { return cur; }
         // SAFETY: advancing within caller-provided sentinel-terminated table.
         cur = unsafe { cur.add(1) };
@@ -250,6 +251,7 @@ extern "C" fn acpi_dev_get_first_match_dev(hid: *const c_char, uid: *const c_cha
         if acpi.is_null() { continue; }
         // SAFETY: acpi points at a Linux ACPI companion installed by the caller.
         let hid_match = fixed_len_cstr_eq(unsafe { (*acpi).hid.as_ptr() }, ACPI_ID_LEN, hid);
+        // SAFETY: the `continue` above skipped a null acpi; uid is an inline [c_char; ACPI_ID_LEN] array, so the ACPI_ID_LEN bound handed to fixed_len_cstr_eq matches its real extent.
         let uid_match = uid.is_null() || fixed_len_cstr_eq(unsafe { (*acpi).uid.as_ptr() }, ACPI_ID_LEN, uid);
         if hid_match && uid_match { return acpi; }
     }
@@ -291,6 +293,7 @@ fn bind_device(dev: *mut PlatformDevice) {
 
 fn bind_driver_to_device(driver: *mut PlatformDriver, dev: *mut PlatformDevice) -> bool {
     if driver.is_null() || dev.is_null() { return false; }
+    // SAFETY: dev was tested non-null on the line above; it reached here either straight from platform_device_add or out of DEVICES, which platform_device_del empties before the device may be freed, so the struct is still live.
     if unsafe { !(*dev).driver.is_null() } { return false; }
     let id = match platform_match(driver, dev) { Some(v) => v, None => return false };
     // SAFETY: driver and dev are caller-owned Linux platform structs.
@@ -299,7 +302,9 @@ fn bind_driver_to_device(driver: *mut PlatformDriver, dev: *mut PlatformDevice) 
         (*dev).id_entry = id;
         (*dev).dev.driver = &mut (*driver).driver;
     }
+    // SAFETY: driver was tested non-null above and comes from DRIVERS, which platform_driver_unregister clears before the module may drop the struct platform_driver.
     if let Some(probe) = unsafe { (*driver).probe } {
+        // SAFETY: probe is the module's own extern "C" fn(*mut platform_device) -> int, and the binding fields it expects (driver, id_entry, dev.driver) were installed immediately above.
         let rc = unsafe { probe(dev) };
         if rc != LINUX_OK {
             // SAFETY: binding fields were installed just above and are being unwound.
@@ -319,7 +324,9 @@ fn unbind_device(dev: *mut PlatformDevice) {
     // SAFETY: dev points at a caller-owned Linux struct platform_device.
     let driver = unsafe { (*dev).driver };
     if driver.is_null() { return; }
+    // SAFETY: driver is the pointer read out of (*dev).driver and returned early when null; only bind_driver_to_device stores it there, and it stores a live DRIVERS entry.
     if let Some(remove) = unsafe { (*driver).remove } {
+        // SAFETY: remove is the module's own extern "C" fn(*mut platform_device), invoked while dev is still bound to this driver, mirroring the Linux unbind order.
         let _ = unsafe { remove(dev) };
     }
     // SAFETY: dev is exclusively unbound by platform registry mutation.
@@ -355,6 +362,7 @@ fn platform_match_id(ids: *const PlatformDeviceId, dev: *mut PlatformDevice) -> 
         // SAFETY: ids is a Linux sentinel-terminated platform match table.
         let id = unsafe { &*cur };
         if id.name[0] == 0 { return null(); }
+        // SAFETY: dev was tested non-null at fn entry; name is the NUL-terminated string platform_device_alloc rejected as null, and PLATFORM_NAME_SIZE is the true extent of id.name, not of dev.name.
         if fixed_len_cstr_eq(id.name.as_ptr(), PLATFORM_NAME_SIZE, unsafe { (*dev).name }) { return cur; }
         // SAFETY: advancing within caller-provided sentinel-terminated table.
         cur = unsafe { cur.add(1) };

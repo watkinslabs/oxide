@@ -32,16 +32,22 @@ impl WaitCell {
     pub(crate) fn park_locked(&self) {
         self.waiters.fetch_add(1, Ordering::AcqRel);
         #[cfg(target_os = "oxide-kernel")]
+        // Callers (mutex/sem/completion/waitqueue KPI) run in process context with the scheduler
+        // live, and self.wait lives in a WaitCell that CELLS heap-owns and never frees.
+        // SAFETY: WaitList::park needs the running task on a live runqueue, which the above gives;
+        // the waiters bump precedes it so a racing wake_one still sees this waiter.
         unsafe {
-            // SAFETY: caller holds the resource gate, checked the blocked condition, and drops the gate before yielding.
             self.wait.park();
         }
     }
 
     pub(crate) fn yield_parked(&self) {
         #[cfg(target_os = "oxide-kernel")]
+        // SAFETY: park_yield requires the caller to be already Sleeping on a wait list — the KPI
+        // wrappers only reach here after park_locked enqueued current on self.wait, and they drop
+        // the resource gate in between so the waker that must call wake_one cannot deadlock
+        // against us; each wrapper re-checks its condition in a loop after this returns.
         unsafe {
-            // SAFETY: park_locked put current on the wait list and the gate has been dropped.
             sched::live::park_yield();
         }
         #[cfg(not(target_os = "oxide-kernel"))]

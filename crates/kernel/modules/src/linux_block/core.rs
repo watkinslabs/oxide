@@ -129,13 +129,17 @@ pub(super) unsafe extern "C" fn blk_cleanup_queue(q: *mut LinuxRequestQueue) {
 
 unsafe extern "C" fn blk_queue_make_request(q: *mut LinuxRequestQueue, f: Option<MakeRequestFn>) {
     if q.is_null() { return; }
-    // SAFETY: q is a live request_queue.
+    // SAFETY: q is null-checked above, and the only queues a module can hold come from blk_alloc_queue /
+    // blk_mq_init_queue below, which Box::into_raw a fully initialised LinuxRequestQueue; make_request_fn
+    // is a plain Option<fn> field of that allocation, so the store cannot observe uninitialised memory.
     unsafe { (*q).make_request_fn = f; }
 }
 
 unsafe extern "C" fn blk_queue_logical_block_size(q: *mut LinuxRequestQueue, size: u32) {
     if q.is_null() || size == 0 { return; }
-    // SAFETY: q is a live request_queue.
+    // SAFETY: q is null-checked above and originates from blk_alloc_queue's Box, which is only released by
+    // blk_cleanup_queue; logical_block_size is a u32 field of that allocation. size != 0 is enforced here so
+    // the divisors in sectors_to_blocks/blocks_to_sectors never see a zero block size.
     unsafe { (*q).logical_block_size = size; }
 }
 
@@ -171,12 +175,16 @@ pub(super) unsafe extern "C" fn put_disk(disk: *mut LinuxGendisk) {
 
 pub(super) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk) {
     if disk.is_null() { return; }
-    let name = disk_name(disk);
+    // SAFETY: disk is null-checked above and, per the add_disk KPI, is a gendisk the module obtained from
+    // alloc_disk/alloc_disk_node and has not yet passed to put_disk, so its disk_name array is initialised.
+    let name = unsafe { disk_name(disk) };
     if name.is_empty() { return; }
     let adapter = Arc::new(LinuxBlockAdapter { disk: disk as usize }) as Arc<dyn BlockDevice>;
     let idx = block::registry::register_with_driver(
         block::registry::GENERIC_BLOCK_DRIVER, &name, None, adapter);
-    // SAFETY: disk is a live gendisk.
+    // SAFETY: same null-checked gendisk allocation as above; registered/queue are plain fields of it. The
+    // queue back-pointer store is guarded by the is_null test, and (*disk).queue is either null or the
+    // blk_alloc_queue Box the module attached, whose `disk` field is likewise plain data.
     unsafe {
         (*disk).registered = if idx == 0 { 0 } else { 1 };
         if !(*disk).queue.is_null() { (*(*disk).queue).disk = disk; }
@@ -185,27 +193,34 @@ pub(super) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk) {
 
 unsafe extern "C" fn del_gendisk(disk: *mut LinuxGendisk) {
     if disk.is_null() { return; }
-    let name = disk_name(disk);
+    // SAFETY: disk is null-checked, and del_gendisk's KPI contract is that it runs before put_disk, so the
+    // alloc_disk allocation and its disk_name array are still live here.
+    let name = unsafe { disk_name(disk) };
     if !name.is_empty() { let _ = block::registry::unregister(&name); }
-    // SAFETY: disk is a live gendisk.
+    // SAFETY: same live gendisk; clearing `registered` must happen after the registry drops its adapter so
+    // the flag never claims a publication the block registry no longer has.
     unsafe { (*disk).registered = 0; }
 }
 
 unsafe extern "C" fn set_capacity(disk: *mut LinuxGendisk, sectors: u64) {
     if disk.is_null() { return; }
-    // SAFETY: disk is a live gendisk.
+    // SAFETY: disk is null-checked and owned by the calling module between alloc_disk and put_disk; capacity
+    // is a u64 field of that allocation, read back only through get_capacity/capacity_blocks.
     unsafe { (*disk).capacity = sectors; }
 }
 
 unsafe extern "C" fn get_capacity(disk: *const LinuxGendisk) -> u64 {
     if disk.is_null() { return 0; }
-    // SAFETY: disk is a live gendisk.
+    // SAFETY: disk is null-checked; alloc_disk_node zero-initialises capacity before publishing the gendisk,
+    // so this load is defined even if the module never called set_capacity.
     unsafe { (*disk).capacity }
 }
 
 pub(super) unsafe extern "C" fn submit_bio(bio: *mut LinuxBio) -> i32 {
     if bio.is_null() { return -LINUX_EINVAL; }
-    // SAFETY: bio points to a LinuxBio.
+    // SAFETY: bio is null-checked above; every bio reaching this KPI comes from bio_alloc (interior of a
+    // BioOwner Box) or from bio_init on module-owned storage, both of which initialise bi_disk to a gendisk
+    // pointer or null. The null cases are rejected on the next lines before any further dereference.
     let disk = unsafe { (*bio).bi_disk };
     if disk.is_null() { return -LINUX_EINVAL; }
     // SAFETY: disk points to a LinuxGendisk.
@@ -243,7 +258,10 @@ unsafe extern "C" fn bio_set_dev(bio: *mut LinuxBio, bdev: *mut LinuxBlockDevice
 
 pub(super) unsafe extern "C" fn bio_add_page(bio: *mut LinuxBio, page: *mut c_void, len: u32, off: u32) -> i32 {
     if bio.is_null() { return 0; }
-    // SAFETY: bio is live; capacity is owned by BioOwner.
+    // SAFETY: bio is null-checked; `owner` is the BioOwner back-pointer bio_alloc_with_len installed (null
+    // for bio_init storage, rejected below). In the page_data.is_null() arm bi_size = n <= owner.buf.len().
+    // In the page arm soundness rests on the __bio_add_page KPI contract that [off, off+len) lies inside the
+    // caller's page — this shim does not re-derive that bound from LinuxPage::order.
     unsafe {
         let owner = (*bio).owner as *mut BioOwner;
         if owner.is_null() { return 0; }
@@ -375,10 +393,13 @@ fn blocks_to_sectors(blocks: u64, block_size: u32) -> u64 {
     blocks.saturating_mul(factor)
 }
 
-fn disk_name(disk: *const LinuxGendisk) -> String {
+// Precondition: disk is null or points to a live LinuxGendisk allocation (alloc_disk_node, not yet put_disk).
+unsafe fn disk_name(disk: *const LinuxGendisk) -> String {
     if disk.is_null() { return String::new(); }
     let mut out = String::new();
-    // SAFETY: disk points to a fixed-size NUL-terminated C name field.
+    // SAFETY: disk_name is a `[c_char; DISK_NAME_LEN]` inline array of the live gendisk, so iterating it by
+    // reference stays in bounds regardless of whether a NUL terminator is present; the break only shortens
+    // the walk, it is not what keeps it in bounds.
     unsafe {
         for c in &(*disk).disk_name {
             if *c == c_char::default() { break; }
