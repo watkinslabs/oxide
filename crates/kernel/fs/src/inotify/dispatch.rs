@@ -60,7 +60,9 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
     let key = inode_key(inode);
     let fsid = inode.fsid();
     #[cfg(target_os = "oxide-kernel")]
-    let pid = sched::current().map(|t| t.tgid.load(Ordering::Relaxed)).unwrap_or(0);
+    // `fanotify_event_metadata.pid` is a pid userspace can act on, so it is
+    // the process's VISIBLE number — never the opaque internal tgid.
+    let pid = sched::current().map(|t| t.visible_pid()).unwrap_or(0);
     #[cfg(not(target_os = "oxide-kernel"))]
     let pid = 0u32;
     let g = INSTANCES.lock();

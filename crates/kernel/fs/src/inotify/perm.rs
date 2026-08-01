@@ -35,7 +35,9 @@ fn check_perm(inode: &InodeRef, perm_mask: u32) -> bool {
     let key = inode_key(inode);
     let fsid = inode.fsid();
     #[cfg(target_os = "oxide-kernel")]
-    let pid = sched::current().map(|t| t.tgid.load(Ordering::Relaxed)).unwrap_or(0);
+    // `fanotify_event_metadata.pid` is a pid userspace can act on, so it is
+    // the process's VISIBLE number — never the opaque internal tgid.
+    let pid = sched::current().map(|t| t.visible_pid()).unwrap_or(0);
     #[cfg(not(target_os = "oxide-kernel"))]
     let pid = 0u32;
     let ev = Arc::new(PermEvent { obj: inode.clone(), pid, mask: perm_mask, response: core::sync::atomic::AtomicU32::new(0) });
