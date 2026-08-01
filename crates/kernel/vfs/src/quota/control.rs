@@ -7,7 +7,7 @@ use crate::types::{KResult, VfsError};
 
 use super::dquot::DquotSet;
 use super::ids::{Kqid, QuotaType};
-use super::inode::dquot_drop_type;
+use super::inode::dquot_drop_type_on;
 use super::limits::{DQF_ROOT_SQUASH, DQF_SETINFO_MASK, IIF_ALL, IIF_FLAGS, MemDqblk, MemDqinfo};
 use super::ops::DquotOperations;
 
@@ -32,7 +32,7 @@ pub fn quota_off(sb: &SuperBlock, kind: QuotaType) -> KResult<()> {
             first = Err(e);
         }
     }
-    sb.for_each_inode(|inode| dquot_drop_type(inode, kind));
+    sb.for_each_inode(|inode| dquot_drop_type_on(sb, inode, kind));
     if let Some(ops) = sb.s_dquot.operations(kind) {
         if let Err(e) = ops.write_info(kind, sb.s_dquot.info(kind)) {
             if first.is_ok() { first = Err(e); }
@@ -86,7 +86,7 @@ pub fn quota_suspend_sysfiles(sb: &SuperBlock) -> KResult<()> {
     }
     for kind in [QuotaType::User, QuotaType::Group, QuotaType::Project] {
         if !sb.s_dquot.is_enabled(kind) || sb.s_dquot.info(kind).dqi_flags & super::limits::DQF_SYS_FILE == 0 { continue; }
-        sb.for_each_inode(|inode| dquot_drop_type(inode, kind));
+        sb.for_each_inode(|inode| dquot_drop_type_on(sb, inode, kind));
         sb.s_dquot.suspend(kind)?;
     }
     Ok(())

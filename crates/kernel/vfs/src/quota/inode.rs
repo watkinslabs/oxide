@@ -53,6 +53,23 @@ pub fn dqput(dq: DquotRef) {
     if let Some(sb) = dq.owner_super() { sb.s_dquot.dqput(dq); }
 }
 
+/// `dqput` for a caller that already holds the owning superblock.
+///
+/// A dquot does NOT own its superblock — it records it weakly, matching the
+/// bare back-pointer the quota contract gives a dquot, whose lifetime is
+/// bounded by the superblock having quota on. [`dqput`] therefore has to
+/// upgrade that weak reference, and the temporary it produces looks, to a
+/// static caller-graph walk, like it can be the LAST reference and re-enter
+/// superblock teardown. On the teardown path itself the superblock is already
+/// borrowed, so taking it by reference both avoids pointless refcount traffic
+/// and keeps superblock shutdown off its own call chain. # C: O(log N)+FS
+pub fn dqput_on(sb: &SuperBlock, dq: DquotRef) { sb.s_dquot.dqput(dq); }
+
+/// [`dquot_drop_type`] for a caller that already holds the superblock. # C: O(1)
+pub fn dquot_drop_type_on(sb: &SuperBlock, inode: &Inode, kind: QuotaType) {
+    if let Some(dq) = inode.i_dquot.take(kind) { dqput_on(sb, dq); }
+}
+
 /// Snapshot one inode-attached dquot. # C: O(1)
 pub fn inode_dquot(inode: &Inode, kind: QuotaType) -> Option<DquotRef> {
     inode.i_dquot.get(kind)
