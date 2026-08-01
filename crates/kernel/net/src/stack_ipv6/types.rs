@@ -364,14 +364,13 @@ impl core::ops::Deref for Udp6RxQueue {
 }
 
 /// Two IPv6 receives belong to one coalescing flow when they share the source
-/// endpoint, the local endpoint they arrived on, the ingress interface, and
-/// EVERY header value the receive ancillary messages publish.
+/// and destination endpoints, the ingress interface, the hop limit, the
+/// traffic class, the flow label and the extension-header chain, which is
+/// compared byte for byte.
 ///
-/// The device-level check ignores the traffic class, but a coalesced receive
-/// reports ONE hop limit, ONE traffic class, ONE flow-info field and ONE
-/// extension-header chain for every datagram merged into it — so a receive
-/// path that publishes those values has to refuse a merge that would make
-/// them a lie. # C: O(headers)
+/// A difference in any of them terminates the run rather than joining it, so
+/// the single set of header values a coalesced receive publishes describes
+/// every datagram merged into it. # C: O(headers)
 fn udp6_same_flow(a: &Udp6Datagram, b: &Udp6Datagram) -> bool {
     a.src == b.src && a.sport == b.sport && a.dst == b.dst && a.dport == b.dport
         && a.iface == b.iface && a.hop_limit == b.hop_limit

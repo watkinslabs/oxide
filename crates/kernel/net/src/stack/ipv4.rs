@@ -330,6 +330,7 @@ impl NetStack {
                         src: hdr.src, sport: udp.src_port, dst: hdr.dst,
                         dport: udp.dst_port, iface, ttl: hdr.ttl, tos: hdr.tos,
                         options: rx_options.clone(), frag_max,
+                        dont_fragment: hdr.flags_frag & crate::ipv4::IPV4_FLAG_DONT_FRAGMENT != 0,
                         payload: body[..keep].to_vec(),
                     }, udp.checksum == 0, gro_offered);
                 }

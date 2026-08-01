@@ -110,7 +110,7 @@ impl UdpRxQueue {
             .is_some_and(|q| udp4_same_flow(&q.datagram, &datagram));
         let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
             checksum_zero,
-            crate::udp_gro::coalescable_receive(offered, datagram.frag_max)
+            crate::udp_gro::coalescable_v4(offered, datagram.frag_max, datagram.options.len())
                 && self.gro_enabled());
         match decision {
             GroAdmit::Merge => {
@@ -176,15 +176,16 @@ impl UdpRxQueue {
 }
 
 /// Two IPv4 receives belong to one coalescing flow when they share the source
-/// endpoint, the local endpoint they arrived on, the ingress interface, and
-/// EVERY header value the receive ancillary messages publish.
+/// and destination endpoints, the ingress interface, the hop limit, the
+/// type-of-service byte and the don't-fragment bit. A difference in any of
+/// them terminates the run rather than joining it, so the single hop limit and
+/// type-of-service byte a coalesced receive publishes describe every datagram
+/// merged into it.
 ///
-/// The device-level check compares only the protocol and the two addresses,
-/// but a coalesced receive reports ONE hop limit, ONE type-of-service byte and
-/// ONE option area for every datagram merged into it — so a receive path that
-/// publishes those values has to refuse a merge that would make them a lie.
-/// # C: O(option area)
+/// The option area is absent from the key because an optioned datagram never
+/// becomes a coalescing candidate at all. # C: O(1)
 fn udp4_same_flow(a: &UdpDatagram, b: &UdpDatagram) -> bool {
     a.src == b.src && a.sport == b.sport && a.dst == b.dst && a.dport == b.dport
-        && a.iface == b.iface && a.ttl == b.ttl && a.tos == b.tos && a.options == b.options
+        && a.iface == b.iface && a.ttl == b.ttl && a.tos == b.tos
+        && a.dont_fragment == b.dont_fragment
 }
