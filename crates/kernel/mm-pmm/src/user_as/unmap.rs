@@ -81,6 +81,8 @@ fn clear_migration_entry(as_: &AddressSpace, va: u64) -> Option<hal::pt_walker::
         let entry = hal::pt_walker::migration_entry_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, hhdm_offset())?;
         hal::pt_walker::clear_migration_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, entry, hhdm_offset()).then_some(entry)
     };
+    // SAFETY: same held PTE lock, live borrowed root and HHDM coverage as the
+    // x86_64 arm above; only the walker type differs.
     #[cfg(target_arch = "aarch64")]
     let cleared = unsafe {
         let entry = hal::pt_walker::migration_entry_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va, hhdm_offset())?;
@@ -176,6 +178,9 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             {
                 let base = pa.0 & PAGE_ALIGN_MASK;
                 if crate::setup::frame_refcount(base) <= 1 {
+                    // SAFETY: `mm_ref` needs no concurrent execve replacing the
+                    // mm; this reads the CURRENT task's own slot from inside its
+                    // own MADV_DONTNEED syscall, so it is not in execve.
                     let root = sched::live::current().and_then(|c| unsafe { c.mm_ref() }).map(|mm| mm.root_pa()).unwrap_or(0);
                     let n = crate::setup::fwm_peer_maps(va, base, root, crate::user_as::hhdm_offset());
                     if n > 0 {
@@ -303,6 +308,9 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             {
                 let base = pa.0 & PAGE_ALIGN_MASK;
                 if crate::setup::frame_refcount(base) <= 1 {
+                    // SAFETY: `mm_ref` needs no concurrent execve replacing the
+                    // mm; this reads the CURRENT task's own slot from inside its
+                    // own munmap syscall, so it is not in execve.
                     let root = sched::live::current().and_then(|c| unsafe { c.mm_ref() }).map(|mm| mm.root_pa()).unwrap_or(0);
                     let n = crate::setup::fwm_peer_maps(va, base, root, crate::user_as::hhdm_offset());
                     if n > 0 {

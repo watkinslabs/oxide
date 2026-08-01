@@ -38,7 +38,8 @@ unsafe fn first_mismatch(page: *const u8, poison: u8) -> Option<(usize, u8)> {
 /// # SAFETY: `page` points to one readable PMM-owned page at physical `pa`.
 #[cfg(feature = "debug-watchdog")]
 pub(super) unsafe fn report_watchdog_mismatch(page: *const u8, pa: u64) {
-    // SAFETY: upheld by the caller.
+    // SAFETY: this fn's own contract already requires `page` to name one
+    // readable PMM-owned page, which is exactly `first_mismatch`'s precondition.
     if let Some((off, byte)) = unsafe { first_mismatch(page, 0xAA) } {
         #[cfg(test)]
         TEST_MISMATCH_OFFSET.store(off, core::sync::atomic::Ordering::Release);
@@ -66,7 +67,8 @@ pub(crate) fn take_test_mismatch() -> Option<usize> {
 /// # SAFETY: `page` points to one readable PMM-owned page at physical `pa`.
 #[cfg(feature = "debug-cow")]
 pub(super) unsafe fn report_cow_mismatch(page: *const u8, pa: u64) {
-    // SAFETY: upheld by the caller.
+    // SAFETY: this fn's own contract already requires `page` to name one
+    // readable PMM-owned page, which is exactly `first_mismatch`'s precondition.
     if let Some((off, byte)) = unsafe { first_mismatch(page, 0xCC) } {
         klog::write_raw(b"[POISON] frame=");
         klog::write_hex_u64(pa);

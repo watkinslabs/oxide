@@ -71,6 +71,10 @@ pub fn lock_step_hook(frame: &mut hal_x86_64::PtRegs) -> bool {
             // SAFETY: root is the live AS; HHDM read of the just-written bytes.
             if let Some(pa) = unsafe { read_foreign_leaf_pa(root, WATCH_VA & !0xFFF, hhdm) } {
                 let src = (hhdm + (pa & !0xFFF) + (WATCH_VA & 0xFFF)) as *const u8;
+                // SAFETY: `pa` came from a present leaf of the live root, so
+                // its HHDM alias is a mapped readable frame; the 16-byte read
+                // starts at page offset `WATCH_VA & 0xFFF` = 0 and so stays
+                // inside that one frame.
                 for i in 0..16 { buf[i] = unsafe { core::ptr::read_volatile(src.add(i)) }; }
             }
         }
@@ -157,9 +161,17 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
             return;
         }
         let hhdm = hhdm_offset();
+        // SAFETY: `root` is this task's live AS root (non-zero checked above)
+        // and the SEGV dumper runs in fault context on the owning CPU, so the
+        // tables cannot be torn down under the read-only walk; HHDM covers
+        // every table page dereferenced.
         match unsafe { read_foreign_leaf(root, addr & !PAGE_MASK, hhdm) } {
             Some((pa, raw)) => {
             let src = (hhdm + (pa & !PAGE_MASK) + (addr & PAGE_MASK)) as *const u64;
+                // SAFETY: `pa` came from a present leaf, so its HHDM alias is
+                // mapped readable RAM. The sole caller passes a 16-aligned
+                // `got_addr` whose page offset is 0xeb0, so the 8-byte read is
+                // u64-aligned and ends inside the same frame.
                 let val = unsafe { core::ptr::read_volatile(src) };
                 klog::write_raw(b":pte=");
                 klog::write_hex_u64(raw);
