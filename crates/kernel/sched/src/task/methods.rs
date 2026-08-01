@@ -420,6 +420,8 @@ impl Task {
             // with the same count a switched-out one would have had.
             preempt_count: AtomicU32::new(crate::preempt::PREEMPT_DISABLED),
             no_new_privs:   AtomicBool::new(false),
+            tsc_sigsegv:    AtomicBool::new(false),
+            tagged_addr:    AtomicBool::new(false),
             dumpable:       AtomicU8::new(super::SUID_DUMP_USER),
             thp_disable:    AtomicU8::new(super::THP_DISABLE_OFF),
             timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
