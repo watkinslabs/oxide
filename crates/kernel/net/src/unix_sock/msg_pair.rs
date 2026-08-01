@@ -241,6 +241,13 @@ impl UnixMsgPair {
             return Ok(sent);
         }
         let payload = &payload[..payload.len().min(verdict as usize)];
+        // Capture the SENDER's creds per-message (SO_PASSCRED) BEFORE the ring
+        // lock: resolving the sender's identity walks the task registry, which
+        // must never be entered with a socket queue held.
+        let creds = match supplied_creds {
+            Some(ids) => crate::unix_sock::MsgCred::from_supplied(ids),
+            None => crate::unix_sock::MsgCred::of_current((0, 0, 0)),
+        };
         let receiver = self.gc_node(end.other());
         let transition = receiver.pin();
         rights.register(&receiver);
@@ -254,12 +261,6 @@ impl UnixMsgPair {
         if g.closed_writer || g.reader_shutdown { return Err(UnixMsgSendError::PeerClosed); }
         let charge = message_charge(payload.len());
         if g.bytes.saturating_add(charge) > cap { return Err(UnixMsgSendError::WouldBlock); }
-        // Capture the SENDER's creds per-message (SO_PASSCRED). Hosted tests
-        // have no `current()`; default to zero there.
-        let creds = match supplied_creds {
-            Some(ids) => crate::unix_sock::MsgCred::from_supplied(ids),
-            None => crate::unix_sock::MsgCred::of_current((0, 0, 0)),
-        };
         g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds: Vec::new(), rights: Some(rights), creds });
         g.bytes += charge;
         let n = sent;
