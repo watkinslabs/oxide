@@ -193,6 +193,11 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                         klog::write_raw(b"\n");
                     }
                 }
+                // Linux `generic_file_mmap`/`generic_file_readonly_mmap` run
+                // `file_accessed(file)` when the mapping is established, NOT on
+                // each fault — this is also the only atime a mapped `execve`
+                // image ever gets (fs/exec.c never touches atime itself).
+                vfs::file_accessed(&file);
                 backing = Some(crate::mmap_file::InodeFileBacking::new(inode.clone()));
             },
         }

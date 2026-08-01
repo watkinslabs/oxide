@@ -167,28 +167,17 @@ impl InodeOps for CharDevDirOps {
 }
 impl FileOps for CharDevDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const BASE_ENTRIES: &[(&str, FileType)] = &[
+        // `device` is a symlink only for a char dev with a model parent; the
+        // lookup that resolves its ino enforces that.
+        const ENTRIES: &[(&str, FileType)] = &[
             ("dev", FileType::Regular),
             ("uevent", FileType::Regular),
             ("subsystem", FileType::Symlink),
+            ("device", FileType::Symlink),
         ];
         let d = inode.private::<CharDevDirData>().ok_or(VfsError::Einval)?;
-        let info = char_by_addr(d.class, &d.addr).ok_or(VfsError::Enoent)?;
-        let mut entries: Vec<(&str, FileType)> = BASE_ENTRIES.to_vec();
-        if parent_device_target(&info).is_some() {
-            entries.push(("device", FileType::Symlink));
-        }
-        let mut idx = ctx.pos as usize;
-        while idx < entries.len() {
-            let (name, ft) = entries[idx];
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, ft, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        char_by_addr(d.class, &d.addr).ok_or(VfsError::Enoent)?;
+        crate::readdir::emit_table(inode, ctx, ENTRIES)
     }
 }
 
@@ -230,16 +219,8 @@ impl FileOps for VirtualClassOps {
             .ok_or(VfsError::Einval)?
             .class;
         let devs = char_devs(class);
-        let mut idx = ctx.pos as usize;
-        while idx < devs.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(&devs[idx].addr).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(&devs[idx].addr, ino, FileType::Directory, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, devs.iter().map(|d| d.addr.as_str()),
+            FileType::Directory)
     }
 }
 
@@ -277,16 +258,8 @@ impl FileOps for SysClassOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let class = inode.private::<SysClassData>().ok_or(VfsError::Einval)?.class;
         let devs = char_devs(class);
-        let mut idx = ctx.pos as usize;
-        while idx < devs.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(&devs[idx].addr).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(&devs[idx].addr, ino, FileType::Symlink, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, devs.iter().map(|d| d.addr.as_str()),
+            FileType::Symlink)
     }
 }
 

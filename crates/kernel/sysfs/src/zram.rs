@@ -56,13 +56,8 @@ impl InodeOps for RootOps {
 }
 impl FileOps for RootOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        while (ctx.pos as usize) < GROUP.attrs.len() {
-            let name = GROUP.attrs[ctx.pos as usize].name;
-            let next = ctx.pos + 1;
-            if !ctx.emit(name, inode.lookup(name).map(|child| child.ino()).unwrap_or(0), FileType::Regular, next) { break; }
-            ctx.pos = next;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, GROUP.attrs.iter().map(|a| a.name),
+            FileType::Regular)
     }
 }
 

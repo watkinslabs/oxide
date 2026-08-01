@@ -80,10 +80,24 @@ impl File {
         };
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
+        // `file_accessed` (Linux include/linux/fs.h) — the atime bump the
+        // per-backend read helpers (`filemap_read`, `shmem_file_read_iter`,
+        // `pipe_read`) each run at the end of a read. Unconditional on the byte
+        // count: Linux stamps even a 0-byte read at EOF.
+        crate::atime::file_accessed(self);
         if n > 0 {
             fire_read_hook(&self.inode, &self.dentry);
         }
         Ok(n)
+    }
+
+    /// `iterate_dir`'s backend call (Linux `file->f_op->iterate_shared(file,
+    /// ctx)`): dispatch readdir through the cached `f_op` with the open
+    /// DESCRIPTION, so a backend holding per-open cursor state (FUSE's daemon
+    /// `OPENDIR` handle) keeps it across the paginated calls of one listing.
+    /// # C: backend-dependent
+    pub fn iterate_dir(&self, ctx: &mut crate::file_ops::DirContext) -> KResult<()> {
+        self.f_op.iterate_file(self, ctx)
     }
 
     /// `file_start_write` (Linux `fs/super.c` `sb_start_write` via the
@@ -284,6 +298,7 @@ impl File {
         } else {
             self.f_op.read(&self.inode, off as u64, buf)?
         };
+        crate::atime::file_accessed(self);
         if n > 0 {
             fire_read_hook(&self.inode, &self.dentry);
         }
@@ -415,6 +430,7 @@ impl File {
         }
         self.pos.store(pos + total, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
+        crate::atime::file_accessed(self);
         if total > 0 {
             fire_read_hook(&self.inode, &self.dentry);
         }

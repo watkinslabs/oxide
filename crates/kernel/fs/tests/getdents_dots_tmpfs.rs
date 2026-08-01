@@ -62,13 +62,20 @@ fn fixture() -> (Arc<TmpfsFs>, vfs::InodeRef, vfs::InodeRef) {
 /// tmpfs stores only real children, so the VFS must supply `.` and `..` — at
 /// cursors 0 and 1, in that order, before any child, with the right inode
 /// numbers.
+/// The open description a `getdents` call carries. `readdir_dots` takes the
+/// `struct file`, not the inode, because Linux `iterate_shared` does — a
+/// backend with per-open cursor state (FUSE) needs it.
+fn dirfile(inode: &vfs::InodeRef) -> std::sync::Arc<vfs::File> {
+    vfs::File::new(inode.clone(), vfs::Dentry::new_root(inode.clone()), vfs::OpenFlags::O_RDONLY)
+}
+
 #[test]
 fn tmpfs_directory_leads_with_dot_and_dotdot() {
     let (_fs, root, dir) = fixture();
     assert!(!dir.dir_emits_dots(), "tmpfs has no on-disk dots of its own");
 
     let mut sink = Sink::new();
-    let (r, end) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), 0, &mut sink);
+    let (r, end) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), 0, &mut sink);
     r.expect("readdir");
 
     assert_eq!(sink.recs[0].name, ".");
@@ -93,7 +100,7 @@ fn tmpfs_directory_leads_with_dot_and_dotdot() {
 fn root_dotdot_is_the_root_itself() {
     let (_fs, root, _dir) = fixture();
     let mut sink = Sink::new();
-    let (r, _) = vfs::readdir_dots(&root, root.ino(), root.ino(), 0, &mut sink);
+    let (r, _) = vfs::readdir_dots(&dirfile(&root), root.ino(), root.ino(), 0, &mut sink);
     r.expect("readdir");
     assert_eq!(sink.recs[1].name, "..");
     assert_eq!(sink.recs[1].ino, root.ino());
@@ -107,7 +114,7 @@ fn tmpfs_reports_a_real_d_type_per_entry() {
     use vfs::dirent::{DT_BLK, DT_CHR, DT_DIR, DT_FIFO, DT_LNK, DT_REG, DT_SOCK, DT_UNKNOWN};
     let (_fs, root, dir) = fixture();
     let mut sink = Sink::new();
-    let (r, _) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), 0, &mut sink);
+    let (r, _) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), 0, &mut sink);
     r.expect("readdir");
     let want = [(".", DT_DIR), ("..", DT_DIR), ("blk", DT_BLK), ("chr", DT_CHR),
                 ("fifo", DT_FIFO), ("file", DT_REG), ("link", DT_LNK), ("sock", DT_SOCK),
@@ -127,7 +134,7 @@ fn tmpfs_reports_a_real_d_type_per_entry() {
 fn resuming_from_a_d_off_cookie_yields_the_exact_suffix() {
     let (_fs, root, dir) = fixture();
     let mut all = Sink::new();
-    let (r, end) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), 0, &mut all);
+    let (r, end) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), 0, &mut all);
     r.expect("readdir");
     let full: Vec<String> = all.recs.iter().map(|r| r.name.clone()).collect();
     // Cookies are strictly increasing positions, starting at 1 for '.'.
@@ -140,7 +147,7 @@ fn resuming_from_a_d_off_cookie_yields_the_exact_suffix() {
     for split in 0..full.len() {
         let resume = all.recs[split].next;
         let mut rest = Sink::new();
-        let (r2, _) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), resume, &mut rest);
+        let (r2, _) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), resume, &mut rest);
         r2.expect("readdir resume");
         let got: Vec<String> = rest.recs.iter().map(|r| r.name.clone()).collect();
         assert_eq!(got, full[split + 1..], "resume from cookie {resume}");
@@ -154,7 +161,7 @@ fn a_full_buffer_inside_the_dots_retries_them() {
     let (_fs, root, dir) = fixture();
     for cap in [0usize, 1] {
         let mut sink = Sink::capped(cap);
-        let (r, end) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), 0, &mut sink);
+        let (r, end) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), 0, &mut sink);
         r.expect("readdir");
         assert_eq!(sink.recs.len(), cap);
         assert_eq!(end, cap as u64, "cursor stops exactly at the unemitted dot");
@@ -170,7 +177,7 @@ fn paginated_read_reconstructs_the_directory_exactly_once() {
     let mut pos = 0u64;
     loop {
         let mut page = Sink::capped(2);
-        let (r, end) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), pos, &mut page);
+        let (r, end) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), pos, &mut page);
         r.expect("readdir page");
         if page.recs.is_empty() { break; }
         for rec in &page.recs { seen.push(rec.name.clone()); }

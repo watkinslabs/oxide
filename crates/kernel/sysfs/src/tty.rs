@@ -112,15 +112,8 @@ impl FileOps for SysClassTtyOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < TTY_DEVICES.len() {
-            let next = idx as u64 + 1;
-            let name = TTY_DEVICES[idx].0;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, TTY_DEVICES.iter().map(|d| d.0),
+            FileType::Symlink)
     }
 }
 
@@ -140,15 +133,8 @@ impl FileOps for SysDevicesVirtualTtyOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < TTY_DEVICES.len() {
-            let next = idx as u64 + 1;
-            let name = TTY_DEVICES[idx].0;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, TTY_DEVICES.iter().map(|d| d.0),
+            FileType::Directory)
     }
 }
 
@@ -193,20 +179,10 @@ impl FileOps for TtyDeviceOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = match inode.private::<TtyDeviceData>() { Some(d) => d, None => return Ok(()) };
-        let entries = tty_dev_attrs(&d.name);
-        let mut idx = ctx.pos as usize;
-        while idx < entries.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(entries[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(entries[idx], ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        if idx == entries.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup("subsystem").map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit("subsystem", ino, FileType::Symlink, next) { return Ok(()); }
-        }
-        Ok(())
+        let mut es = crate::readdir::DirEntries::new(inode);
+        for name in tty_dev_attrs(&d.name) { es.push(name, FileType::Regular); }
+        es.push("subsystem", FileType::Symlink);
+        es.emit(ctx)
     }
 }
 

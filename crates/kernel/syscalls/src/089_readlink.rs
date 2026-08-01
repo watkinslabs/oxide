@@ -62,6 +62,9 @@ pub(crate) fn readlink_resolved(vp: vfs::VfsPath, empty_path: bool, buf_ptr: u64
     if !matches!(vp.inode.file_type(), vfs::FileType::Symlink) {
         return -((if empty_path { Errno::Enoent } else { Errno::Einval }).as_i32() as i64);
     }
+    // Linux `do_readlinkat`: `touch_atime(&path)` runs between the LSM check and
+    // `vfs_readlink`, so reading a symlink advances ITS atime (not the target's).
+    vfs::touch_atime(vp.mnt_id, &vp.inode);
     let target: alloc::vec::Vec<u8> = match vp.inode.get_link() {
         Ok(v) => v,
         Err(e) => return crate::namei_common::errno_from_vfs(e),

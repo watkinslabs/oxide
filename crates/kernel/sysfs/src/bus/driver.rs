@@ -43,22 +43,13 @@ impl FileOps for DriverDirOps {
             })
             .map(|d| d.addr.as_str())
             .collect();
-        let mut idx = ctx.pos as usize;
+        // Attrs and bound-device links share ONE name-keyed cookie space, so
+        // the former `idx - ATTRS.len()` offset arithmetic is gone.
         const ATTRS: &[&str] = &["bind", "unbind"];
-        while idx < ATTRS.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(ATTRS[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(ATTRS[idx], ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        while idx - ATTRS.len() < bound.len() {
-            let next = idx as u64 + 1;
-            let name = bound[idx - ATTRS.len()];
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        let mut es = crate::readdir::DirEntries::new(inode);
+        for name in ATTRS.iter() { es.push(name, FileType::Regular); }
+        for name in bound.iter() { es.push(name, FileType::Symlink); }
+        es.emit(ctx)
     }
 }
 pub(super) fn make_driver_dir_inode(bus: &'static str, driver: &'static str) -> InodeRef {

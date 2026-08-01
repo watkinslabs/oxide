@@ -224,17 +224,7 @@ fn emit_entries(
     ctx: &mut DirContext,
     entries: &[(&str, FileType)],
 ) -> KResult<()> {
-    let mut index = ctx.pos as usize;
-    while index < entries.len() {
-        let (name, file_type) = entries[index];
-        let next = index as u64 + 1;
-        let ino = inode.lookup(name).map(|child| child.ino()).unwrap_or(0);
-        if !ctx.emit(name, ino, file_type, next) {
-            return Ok(());
-        }
-        index += 1;
-    }
-    Ok(())
+    crate::readdir::emit_table(inode, ctx, entries)
 }
 
 pub(super) fn make_input_parent_dir(addr: String) -> InodeRef {

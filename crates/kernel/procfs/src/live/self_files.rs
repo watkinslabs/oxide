@@ -342,34 +342,14 @@ impl InodeOps for ProcSelfFdOps {
 impl FileOps for ProcSelfFdOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    /// The fd table is re-snapshotted per call, so an fd closed between two
+    /// `getdents` pages must not shift the cursor of every higher fd — and the
+    /// closed fd itself is dropped from the listing rather than emitted with
+    /// `d_ino == 0`. # C: O(N log N)
     fn iterate(&self, _inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let fds = sched::proclink::proc_fd_list(self.tid);
-        let mut idx = ctx.pos as usize;
-        while idx < fds.len() {
-            let next = idx as u64 + 1;
-            let fd = fds[idx];
-            let mut buf = [0u8; 11];
-            let mut n = 0;
-            let mut t = fd as u32;
-            if t == 0 {
-                buf[0] = b'0';
-                n = 1;
-            } else {
-                while t > 0 {
-                    buf[n] = b'0' + (t % 10) as u8;
-                    t /= 10;
-                    n += 1;
-                }
-            }
-            buf[..n].reverse();
-            let s = crate::util::decimal_str(&buf, n);
-            let ino = fd_lookup_for(self.tid, s).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(s, ino, FileType::Symlink, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names = sched::proclink::proc_fd_list(self.tid).into_iter()
+            .map(|fd| (crate::readdir::decimal_name(fd as u32), FileType::Symlink));
+        crate::readdir::emit_resolved(names, |n| fd_lookup_for(self.tid, n).ok().map(|i| i.ino()), ctx)
     }
 }
 

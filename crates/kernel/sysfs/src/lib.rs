@@ -36,6 +36,7 @@ pub mod kobject;
 pub mod modules;
 mod net_class;
 pub mod net_stats;
+mod readdir;
 pub mod root;
 pub mod tty;
 pub mod zram;

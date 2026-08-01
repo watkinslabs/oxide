@@ -222,17 +222,11 @@ impl FileOps for SysBlockOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let disks = block::registry::snapshot();
-        let mut idx = ctx.pos as usize;
-        while idx < disks.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(&disks[idx].name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, disks.iter().map(|d| d.name.as_str()),
+            FileType::Directory)
     }
 }
-fn make_sys_block_inode() -> InodeRef {
+pub(crate) fn make_sys_block_inode() -> InodeRef {
     InodeBuilder::new(INO_BLOCK_ROOT, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysBlockOps), Arc::new(SysBlockOps)).build()
 }
@@ -268,42 +262,15 @@ impl InodeOps for DiskDirOps {
 impl FileOps for DiskDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<DiskDirData>().ok_or(VfsError::Einval)?;
-        let mut idx = ctx.pos as usize;
         let group = disk_group(&d.name);
-        while idx < group.attrs.len() {
-            let next = idx as u64 + 1;
-            let name = group.attrs[idx].name;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        if idx == group.attrs.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup("queue").map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit("queue", ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        if idx == group.attrs.len() + 1 {
-            let has_serial = block::registry::by_name(&d.name)
-                .map(|disk| disk.serial.is_some())
-                .unwrap_or(false);
-            if has_serial {
-                let next = idx as u64 + 1;
-                let ino = inode.lookup("device").map(|i| i.ino()).unwrap_or(0);
-                if !ctx.emit("device", ino, FileType::Directory, next) { return Ok(()); }
-                idx += 1;
-            }
-        }
-        let subsystem_pos = group.attrs.len() + 1
-            + block::registry::by_name(&d.name)
-                .map(|disk| disk.serial.is_some() as usize)
-                .unwrap_or(0);
-        if idx == subsystem_pos {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup("subsystem").map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit("subsystem", ino, FileType::Symlink, next) { return Ok(()); }
-        }
-        Ok(())
+        let mut es = crate::readdir::DirEntries::new(inode);
+        for attr in group.attrs.iter() { es.push(attr.name, FileType::Regular); }
+        es.push("queue", FileType::Directory);
+        // `device/` exists only for a disk carrying a serial; the lookup that
+        // resolves the ino enforces that, so no separate predicate is needed.
+        es.push("device", FileType::Directory);
+        es.push("subsystem", FileType::Symlink);
+        es.emit(ctx)
     }
 }
 fn make_disk_dir_inode(name: String) -> InodeRef {
@@ -328,15 +295,8 @@ impl InodeOps for DeviceDirOps {
 }
 impl FileOps for DeviceDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < DEVICE_GROUP.attrs.len() {
-            let next = idx as u64 + 1;
-            let name = DEVICE_GROUP.attrs[idx].name;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, DEVICE_GROUP.attrs.iter().map(|a| a.name),
+            FileType::Regular)
     }
 }
 fn make_device_dir_inode(name: String) -> InodeRef {
@@ -361,15 +321,8 @@ impl InodeOps for QueueDirOps {
 }
 impl FileOps for QueueDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < QUEUE_GROUP.attrs.len() {
-            let next = idx as u64 + 1;
-            let name = QUEUE_GROUP.attrs[idx].name;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, QUEUE_GROUP.attrs.iter().map(|a| a.name),
+            FileType::Regular)
     }
 }
 fn make_queue_dir_inode(name: String) -> InodeRef {
@@ -411,14 +364,8 @@ impl FileOps for SysClassBlockOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let disks = block::registry::snapshot();
-        let mut idx = ctx.pos as usize;
-        while idx < disks.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(&disks[idx].name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(&disks[idx].name, ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, disks.iter().map(|d| d.name.as_str()),
+            FileType::Symlink)
     }
 }
 fn make_sys_class_block_inode() -> InodeRef {

@@ -109,6 +109,9 @@ impl InodeOps for AutofsRootInodeOps {
 /// `i_fop` for the autofs root: an empty directory. # C: O(1)
 struct AutofsRootFileOps;
 impl FileOps for AutofsRootFileOps {
+    /// No children to cursor over: an autofs root holds only trigger dentries,
+    /// which resolve through `lookup` and are never listed. Emitting nothing is
+    /// cursor-independent, so there is no ordinal to convert. # C: O(1)
     fn iterate(&self, _inode: &Inode, _ctx: &mut DirContext) -> KResult<()> {
         Ok(())
     }

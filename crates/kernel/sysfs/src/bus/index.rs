@@ -82,14 +82,8 @@ impl FileOps for SysDevIndexOps {
                 names.push(name);
             }
         }
-        let mut idx = ctx.pos as usize;
-        while idx < names.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(&names[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(&names[idx], ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, names.iter().map(|n| n.as_str()),
+            FileType::Symlink)
     }
 }
 
