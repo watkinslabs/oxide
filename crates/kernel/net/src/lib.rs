@@ -34,6 +34,10 @@ pub mod uapi;
 pub mod send_control;
 pub mod landlock_glue;
 pub mod socket_args;
+// The whole `socket(2)` admission sequence: identity, creation security
+// decision, family resolution, post-resolution screens. Ungated so the
+// ordering is testable without a kernel target.
+pub mod socket_create;
 // Receive ancillary messages: which control message each option produces, in
 // what order, with what payload. Ungated so the whole decision is testable.
 pub mod cmsg;

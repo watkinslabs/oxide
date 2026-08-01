@@ -22,50 +22,22 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Some(namespace) => namespace,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
-    // The creation decision is taken on the family/type pair alone, before the
-    // family's own create operation screens the protocol or the raw-socket
-    // capability — so a denial is reported even for a request that would have
-    // failed those screens anyway.
-    let identity = match net::socket_args::create_identity(domain, raw) {
-        Ok(identity) => identity,
-        Err(e) => return -(e.as_i32() as i64),
-    };
-    let security_context = security::network::Context {
+    let env = net::socket_create::CreateEnv {
         namespace: net_namespace.id().as_u64(),
-        family: identity.family as u16,
-        socket_type: identity.typ,
-        protocol: proto,
-        operation: security::network::Operation::Create,
+        has_net_raw: nscg::has_net_raw_for(cur, &net_namespace),
+        vsock_dgram_ready: net::vsock::driver_up(),
+        vsock_seqpacket_ready: net::vsock::driver_supports_seqpacket(),
     };
-    if matches!(security::network::evaluate(security_context), security::network::Verdict::Deny) {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
-    let spec = match net::socket_args::resolve_socket_args(identity, proto,
-        nscg::has_net_raw_for(cur, &net_namespace))
-    {
-        Ok(s) => s,
-        Err(e) => return -(e.as_i32() as i64),
-    };
-    // Linux assigns the DGRAM transport during AF_VSOCK creation. Current
-    // virtio-vsock has that transport only while a device endpoint is live;
-    // without one, creation fails ENODEV rather than publishing a phantom fd.
-    if spec.family == AF_VSOCK && spec.typ == SOCK_DGRAM && !net::vsock::driver_up() {
-        return -(Errno::Enodev.as_i32() as i64);
-    }
-    // The ICMP datagram endpoint class is admitted by group membership in the
-    // socket's own network namespace, which is why an unprivileged echo-probe
-    // tool needs no capability at all.
-    if spec.typ == SOCK_DGRAM && is_ping_protocol(spec.family, spec.protocol) {
+    let admitted = || {
         let egid = cur.creds.egid.load(core::sync::atomic::Ordering::Acquire);
         let groups = cur.creds.group_list();
         let supplementary: &[u32] = groups.as_ref().map_or(&[], |list| &list[..]);
-        if !net::ping::admits(&net_namespace, net::ping::CallerGroups { egid, supplementary }) {
-            return -(Errno::Eacces.as_i32() as i64);
-        }
-    }
-    if spec.family == AF_VSOCK && spec.typ == SOCK_SEQPACKET
-        && !net::vsock::driver_supports_seqpacket()
-    { return -(Errno::Esocktnosupport.as_i32() as i64); }
+        net::ping::admits(&net_namespace, net::ping::CallerGroups { egid, supplementary })
+    };
+    let spec = match net::socket_create::plan(domain, raw, proto, env, admitted) {
+        Ok(s) => s,
+        Err(e) => return -(e.as_i32() as i64),
+    };
     let inode: vfs::InodeRef = if spec.family == AF_VSOCK {
         net::vsock_socket::make_vsock_socket_inode(Arc::new(
             net::vsock_socket::VsockSocket::new_type_in(spec.typ, net_namespace.clone())))
