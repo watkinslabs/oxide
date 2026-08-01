@@ -118,22 +118,41 @@ pub const KEYCTL_CAPS1_NS_KEYRING_NAME:   u8 = 0x01;
 pub const KEYCTL_CAPS1_NS_KEY_TAG:        u8 = 0x02;
 pub const KEYCTL_CAPS1_NOTIFICATIONS:     u8 = 0x04;
 
-/// `keyrings_capabilities[]` for this kernel: persistent keyrings, the
-/// `big_key` type, `KEYCTL_INVALIDATE`, `KEYCTL_RESTRICT_KEYRING` and
-/// `KEYCTL_MOVE` are implemented and advertised. The Diffie-Hellman, public-key
-/// and key-notification bits stay clear because those command families are not
-/// implemented — the advertised bits and the commands' answers must agree, or a
-/// caller that probes capabilities before use is told to expect a facility that
-/// is not there.
-pub const KEYRINGS_CAPABILITIES: [u8; 2] = [
-    KEYCTL_CAPS0_CAPABILITIES
-        | KEYCTL_CAPS0_PERSISTENT_KEYRINGS
-        | KEYCTL_CAPS0_BIG_KEY
-        | KEYCTL_CAPS0_INVALIDATE
-        | KEYCTL_CAPS0_RESTRICT_KEYRING
-        | KEYCTL_CAPS0_MOVE,
-    KEYCTL_CAPS1_NS_KEYRING_NAME | KEYCTL_CAPS1_NS_KEY_TAG,
-];
+/// Number of capability bytes this kernel reports. The bytes themselves are
+/// COMPUTED by the dispatch layer from the modules that implement each
+/// feature; a constant array here would be a second, silently-drifting answer
+/// to "what does this kernel support".
+pub const KEYCTL_CAPS_BYTES: usize = 2;
+
+/// The key type `KEYCTL_DH_COMPUTE` accepts its three inputs from. A `logon`
+/// payload is write-only and a keyring has no payload at all, so neither can
+/// supply a number: any other type is EOPNOTSUPP.
+pub const USER_KEY_TYPE: &str = "user";
+
+/// `struct keyctl_dh_params` — three key serials, no padding.
+pub const DH_PARAMS_SIZE: u64 = 12;
+/// `struct keyctl_kdf_params`: two user pointers, the otherinfo length, and
+/// eight reserved words, padded to pointer alignment.
+pub const KDF_PARAMS_SIZE: u64 = 56;
+pub const KDF_HASHNAME_OFFSET: u64 = 0;
+pub const KDF_OTHERINFO_OFFSET: u64 = 8;
+pub const KDF_OTHERINFO_LEN_OFFSET: u64 = 16;
+pub const KDF_SPARE_OFFSET: u64 = 20;
+pub const KDF_SPARE_WORDS: u64 = 8;
+/// Longest derived output `KEYCTL_DH_COMPUTE` will produce, and longest
+/// otherinfo it will accept. Exceeding either is EMSGSIZE — not EINVAL, which
+/// is how a caller tells "too big" from "malformed".
+pub const KEYCTL_KDF_MAX_OUTPUT_LEN: u64 = 1024;
+pub const KEYCTL_KDF_MAX_OI_LEN: u64 = 64;
+/// Longest algorithm name accepted for the derivation hash; a longer one is
+/// EINVAL before the name is looked up.
+pub const CRYPTO_MAX_ALG_NAME: usize = 128;
+/// Shortest Diffie-Hellman modulus accepted, counted on the raw payload width.
+/// Anything below this is EINVAL: a computation with a modulus that small is
+/// not a key agreement, it is an expensive way to publish a secret.
+pub const DH_MIN_PRIME_BITS: usize = 1536;
+/// Import ceiling on a multi-precision integer; a wider operand is EINVAL.
+pub const MPI_MAX_IMPORT_BITS: usize = 16384;
 
 /// `key_get_type_from_user` buffer size (`char type[32]`).
 pub const KEY_TYPE_MAX: usize = 32;

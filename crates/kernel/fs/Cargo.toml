@@ -31,6 +31,10 @@ timekeeper = { path = "../timekeeper" }
 namespace-identity = { path = "../namespace-identity" }
 uaccess  = { path = "../uaccess" }
 cpu      = { path = "../cpu" }
+# Diffie-Hellman modular exponentiation and the digest table the keyring's
+# key-derivation path resolves hash names against.
+mpi      = { path = "../../shared/mpi" }
+crypt    = { path = "../../shared/crypt" }
 
 [dev-dependencies]
 block = { path = "../block" }
