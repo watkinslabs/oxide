@@ -106,38 +106,63 @@ fn a_run_never_spans_two_flows() {
     }
 }
 
-/// Every header value the receive ancillary messages publish is part of the
-/// flow key, because a coalesced receive reports ONE of each for the whole
-/// run. Delivering a datagram that differs in any of them must break the run
-/// rather than misreport it.
-#[test]
-fn a_run_never_spans_two_published_header_values() {
-    let base = |fill: u8| UdpDatagram {
+fn plain4(fill: u8) -> UdpDatagram {
+    UdpDatagram {
         src: SRC, sport: SPORT, dst: DST, dport: DPORT, iface: iface(1), ttl: TTL,
-        tos: 0, options: alloc::vec::Vec::new(), frag_max: 0,
+        tos: 0, options: alloc::vec::Vec::new(), frag_max: 0, dont_fragment: false,
         payload: alloc::vec![fill; 100],
-    };
+    }
+}
+
+/// The hop limit, the type-of-service byte and the port pair are all part of
+/// the flow key: a difference in any of them terminates the run rather than
+/// joining it. That is also why the single hop limit and type-of-service byte
+/// a coalesced receive publishes describe every datagram merged into it.
+#[test]
+fn a_run_never_spans_two_compared_header_values() {
     let variants: [(&str, fn(UdpDatagram) -> UdpDatagram); 4] = [
         ("type of service", |mut d| { d.tos = 0x28; d }),
         ("destination port", |mut d| { d.dport = DPORT + 1; d }),
-        ("header option area", |mut d| { d.options = alloc::vec![1, 2, 3, 4]; d }),
         ("hop limit", |mut d| { d.ttl = TTL - 1; d }),
+        ("don't-fragment bit", |mut d| { d.dont_fragment = true; d }),
     ];
     for (label, differ) in variants {
         let q = queue(true);
-        assert!(q.enqueue_gro(base(1), false, true));
-        assert!(q.enqueue_gro(differ(base(2)), false, true));
+        assert!(q.enqueue_gro(plain4(1), false, true));
+        assert!(q.enqueue_gro(differ(plain4(2)), false, true));
         assert_eq!(q.queued_len(), 2, "{label} must break the run");
     }
     // The control: two identical datagrams still merge.
     let q = queue(true);
-    assert!(q.enqueue_gro(base(1), false, true));
-    assert!(q.enqueue_gro(base(2), false, true));
+    assert!(q.enqueue_gro(plain4(1), false, true));
+    assert!(q.enqueue_gro(plain4(2), false, true));
     assert_eq!(q.queued_len(), 1);
 }
 
-/// A reassembled datagram was handed up as FRAGMENTS, which the receive path
-/// refuses to coalesce, and the fragment size it reports belongs to it alone.
+/// A header carrying options is refused coalescing outright rather than
+/// compared, so two datagrams with the SAME option area are still delivered
+/// one by one.
+#[test]
+fn an_optioned_datagram_is_delivered_alone_even_against_an_identical_one() {
+    let optioned = |fill: u8| {
+        let mut d = plain4(fill);
+        d.options = alloc::vec![1, 2, 3, 4];
+        d
+    };
+    let q = queue(true);
+    assert!(q.enqueue_gro(optioned(1), false, true));
+    assert!(q.enqueue_gro(optioned(2), false, true));
+    assert_eq!(q.queued_len(), 2, "an optioned header never heads or joins a run");
+    assert_eq!(q.recv_gro(false).expect("queued").1, None);
+    // And one arriving after a run in progress does not join it either.
+    let q = queue(true);
+    assert!(q.enqueue_gro(plain4(1), false, true));
+    assert!(q.enqueue_gro(optioned(2), false, true));
+    assert_eq!(q.queued_len(), 2);
+}
+
+/// A reassembled datagram is refused for the same reason a fragment is: the
+/// refusal happens before the transport ever sees it.
 #[test]
 fn a_reassembled_datagram_is_delivered_alone() {
     let q = queue(true);
@@ -243,18 +268,20 @@ fn the_ipv6_endpoint_coalesces_by_the_same_rule() {
     assert_eq!((datagram.payload.len(), seg), (200, Some(100)));
 }
 
-/// The IPv6 flow key covers the extension-header chain and the flow-info
-/// field for the same reason the IPv4 one covers the option area.
+/// The IPv6 flow key covers the flow label, the traffic class, the hop limit
+/// and the extension-header chain, which is compared byte for byte.
 #[test]
-fn the_ipv6_run_never_spans_two_published_header_values() {
+fn the_ipv6_run_never_spans_two_compared_header_values() {
     let base = |fill: u8| Udp6Datagram {
         src: Ipv6Addr::LOOPBACK, sport: SPORT, dst: Ipv6Addr::LOOPBACK, dport: DPORT,
         iface: iface(1), hop_limit: 64, traffic_class: 0, flowinfo: 0,
         ext_headers: alloc::vec::Vec::new(), frag_max: 0,
         payload: alloc::vec![fill; 100],
     };
-    let variants: [(&str, fn(Udp6Datagram) -> Udp6Datagram); 3] = [
-        ("flow-info field", |mut d| { d.flowinfo = 0x1_2345; d }),
+    let variants: [(&str, fn(Udp6Datagram) -> Udp6Datagram); 5] = [
+        ("flow label", |mut d| { d.flowinfo = 0x1_2345; d }),
+        ("traffic class", |mut d| { d.traffic_class = 0x28; d }),
+        ("hop limit", |mut d| { d.hop_limit = 63; d }),
         ("extension headers", |mut d| { d.ext_headers = alloc::vec![(60, alloc::vec![0u8; 8])]; d }),
         ("destination port", |mut d| { d.dport = DPORT + 1; d }),
     ];

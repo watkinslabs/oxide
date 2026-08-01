@@ -1,51 +1,12 @@
 use super::*;
 
 mod tcp_entry_wait;
-
-/// One queued IPv4 UDP datagram plus every header field the ancillary
-/// messages publish: `dst` + `iface` back IP_PKTINFO, `dport` completes the
-/// IP_ORIGDSTADDR socket address, `ttl` backs IP_TTL, `tos` backs IP_TOS,
-/// `options` backs IP_RECVOPTS and IP_RETOPTS, and `frag_max` backs
-/// IP_RECVFRAGSIZE.
-#[derive(Clone, Debug)]
-pub struct UdpDatagram {
-    pub src: Ipv4Addr,
-    pub sport: u16,
-    pub dst: Ipv4Addr,
-    pub dport: u16,
-    pub iface: NetIfaceId,
-    pub ttl: u8,
-    pub tos: u8,
-    /// Received header option area, empty when the header carried none.
-    pub options: Vec<u8>,
-    /// Largest fragment this datagram was reassembled from, zero when it
-    /// arrived whole.
-    pub frag_max: u32,
-    pub payload: Vec<u8>,
-}
-
-impl UdpDatagram {
-    /// A datagram carrying nothing beyond the addresses, hop limit and body —
-    /// the shape a loopback delivery produces. # C: O(1)
-    pub fn plain(src: Ipv4Addr, sport: u16, dst: Ipv4Addr, iface: NetIfaceId, ttl: u8,
-                 payload: Vec<u8>) -> Self
-    {
-        Self { src, sport, dst, dport: 0, iface, ttl, tos: 0, options: Vec::new(),
-               frag_max: 0, payload }
-    }
-}
-
-/// One queued IPv4 UDP receive plus the coalescing run it belongs to.
-#[derive(Clone)]
-pub(super) struct QueuedUdp {
-    pub(super) datagram: UdpDatagram,
-    pub(super) gro: crate::udp_gro::GroRun,
-}
-
-pub(super) struct UdpRxState {
-    pub(super) accepting: bool,
-    pub(super) datagrams: VecDeque<QueuedUdp>,
-}
+// The UDP receive types, split out at the per-file size cutoff. The TCP bind,
+// connection and listener types stay here.
+#[path = "types/udp.rs"]
+mod udp;
+pub use udp::{UdpDatagram, UdpRxQueue};
+pub(super) use udp::{QueuedUdp, UdpRxState};
 
 /// One bridge next-hop's unresolved packets and its last wire solicitation.
 pub(crate) struct BridgePending {
@@ -54,51 +15,6 @@ pub(crate) struct BridgePending {
     pub(crate) solicit_attempts: u8,
     pub(crate) next_id: u64,
 }
-
-pub struct UdpRxQueue {
-    pub owner: Arc<crate::SocketOwner>,
-    pub bound_ip:   Ipv4Addr,
-    pub bound_port: u16,
-    /// Datagrams waiting for a reader, each carrying the header fields the
-    /// ancillary messages publish.
-    pub(super) state: Spinlock<UdpRxState, StackLockClass>,
-    /// F162: blocking sys_recvfrom waiters (kernel only).
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
-    /// Canonical owning socket error state.
-    pub error: Arc<crate::SocketError>,
-    /// Connected peer filter. `None` accepts datagrams from any peer.
-    pub peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
-    pub reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
-    pub reuseport: Arc<::core::sync::atomic::AtomicI32>,
-    pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-    /// `UDP_GRO`, shared with the owning socket: while set, arriving
-    /// datagrams of one flow coalesce into a single receive.
-    pub gro: Arc<::core::sync::atomic::AtomicI32>,
-    pub bound_ifindex: ::core::sync::atomic::AtomicU32,
-    /// F181a: per-fd epoll subscribers.
-    pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
-    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
-    /// Socket multicast state shared before and after bind.
-    pub mcast: Arc<crate::mcast_filter::SocketMcast>,
-    /// SO_REUSEPORT group reached from the bind table on the delivery path.
-    /// Published by bind-time join; the owning socket's cell holds membership.
-    pub reuseport_group: crate::reuseport::ReuseportSlot,
-}
-
-impl UdpRxQueue {
-    /// SO_REUSEPORT membership captured when this endpoint was bound. # C: O(1)
-    pub(crate) fn reuseport_member(&self) -> bool {
-        self.reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0
-    }
-}
-
-impl ::core::ops::Deref for UdpRxQueue {
-    type Target = crate::SocketOwner;
-
-    fn deref(&self) -> &Self::Target { &self.owner }
-}
-
 
 /// Connection 4-tuple key for TCP demultiplexing.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]

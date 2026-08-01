@@ -88,10 +88,21 @@ pub fn device_offers_gro(hardware_type: u16) -> bool {
 
 /// Whether a delivered datagram is a coalescing candidate at all.
 ///
-/// A reassembled datagram never is: the device handed up FRAGMENTS, which the
-/// receive path refuses to coalesce, and the fragment size such a receive
-/// reports belongs to that datagram alone. # C: O(1)
+/// A reassembled datagram never is. A fragment is refused coalescing before it
+/// ever reaches the transport, so a datagram rebuilt from fragments cannot
+/// coalesce either — the same answer, reached earlier in the path.
+/// # C: O(1)
 pub fn coalescable_receive(offered: bool, frag_max: u32) -> bool { offered && frag_max == 0 }
+
+/// [`coalescable_receive`] for IPv4, which additionally refuses any datagram
+/// whose header carried options.
+///
+/// A header longer than the fixed twenty bytes is rejected from coalescing
+/// outright rather than compared, so the option area a coalesced receive
+/// publishes can never disagree with the datagrams merged into it. # C: O(1)
+pub fn coalescable_v4(offered: bool, frag_max: u32, option_bytes: usize) -> bool {
+    coalescable_receive(offered, frag_max) && option_bytes == 0
+}
 
 /// The `UDP_GRO` control message a receive publishes, if any.
 ///
@@ -116,11 +127,22 @@ mod tests {
 
     #[test]
     fn a_reassembled_datagram_is_never_a_coalescing_candidate() {
-        // The device never saw it as one packet, and the fragment size it
-        // reports is its own.
+        // A fragment is refused before the transport, so the datagram rebuilt
+        // from fragments is refused too.
         assert!(coalescable_receive(true, 0));
         assert!(!coalescable_receive(true, 1_400));
         assert!(!coalescable_receive(false, 0));
+    }
+
+    #[test]
+    fn an_optioned_ipv4_header_is_never_a_coalescing_candidate() {
+        // A header longer than the fixed twenty bytes is refused outright
+        // rather than compared against the run.
+        assert!(coalescable_v4(true, 0, 0));
+        assert!(!coalescable_v4(true, 0, 4));
+        // And the shared refusals still apply.
+        assert!(!coalescable_v4(true, 1_400, 0));
+        assert!(!coalescable_v4(false, 0, 0));
     }
 
     #[test]
