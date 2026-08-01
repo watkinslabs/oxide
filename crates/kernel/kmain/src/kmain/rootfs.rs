@@ -145,9 +145,9 @@ fn debug_boot_rootfs() {
             b"oxide-boot-smoke",
         );
         net::sock::drain_loopback();
-        if let Some((_, _, _, _, _, payload)) = endpoint.and_then(|endpoint| endpoint.recv(false)) {
+        if let Some(datagram) = endpoint.and_then(|endpoint| endpoint.recv(false)) {
             klog::write_raw(b"[INFO]  net udp lo round-trip: ");
-            klog::write_raw(&payload);
+            klog::write_raw(&datagram.payload);
             klog::write_raw(b"\n");
         }
     }
