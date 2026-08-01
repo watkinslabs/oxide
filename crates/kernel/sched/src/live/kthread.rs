@@ -113,14 +113,15 @@ pub unsafe fn park_if_requested(me: &Task) {
             break;
         }
         me.kthread_parked.store(true, Ordering::Release);
-        // SAFETY: per this fn's contract — running kthread, no lock held
-        // once `gate` drops below; the matching schedule() yields
-        // immediately per the WaitList contract. Registering under `gate`
-        // (held since the check above) closes the race documented on
-        // `PARK_GATE`.
+        // Registering under `gate` (held since the check above) closes the
+        // race documented on `PARK_GATE`.
+        // SAFETY: per this fn's contract — running kthread, no lock held once
+        // `gate` drops below; the matching schedule() yields immediately per
+        // the WaitList contract.
         unsafe { PARK_WAIT.park(); }
         drop(gate);
-        // SAFETY: parked on PARK_WAIT holding no lock.
+        // SAFETY: this kthread is parked on PARK_WAIT holding no lock, which
+        // is `schedule`'s sleepable-context contract.
         unsafe { super::schedule(); }
     }
     me.kthread_parked.store(false, Ordering::Release);
