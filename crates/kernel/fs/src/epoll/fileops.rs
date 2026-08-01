@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use vfs::{File, FileOps, Inode, KResult, VfsError};
 
-use super::{epoll_data_of_inode, EpItem, EpollData, EPOLLS};
+use super::{epoll_data_of_inode, monotonic_ns, EpItem, EpollData, EPOLLS};
 
 /// `i_fop` for an epoll inode. # C: O(1)
 pub(super) struct EpollFileOps;
@@ -39,15 +39,32 @@ impl FileOps for EpollFileOps {
     }
 
     /// A nested epoll fd is readable while its ready list contains an active,
-    /// currently-ready item. # C: O(N_ready)
+    /// currently-ready item. An interest whose readiness is produced by a
+    /// deadline rather than by a source callback has nothing to enqueue it, so
+    /// due deadlines are materialized here first — the same step `epoll_wait`
+    /// takes before it scans. Without it a timer that came due while the outer
+    /// waiter slept stays invisible to every caller that reaches this epoll
+    /// through another readiness wait.
+    /// # C: O(N_entries + N_ready)
     fn poll(&self, inode: &Inode) -> u32 {
         let d = match inode.private::<EpollData>() { Some(d) => d, None => return 0 };
+        d.queue_expired_deadlines(monotonic_ns());
         let ready = d.ready.lock().clone();
         for item in ready {
             let state = item.state.lock();
             if state.active && state.armed { return vfs::POLL_IN; }
         }
         0
+    }
+
+    /// Earliest deadline at which some interest becomes ready with no source
+    /// callback to announce it. An outer `poll`/`select`/`epoll_wait` bounds
+    /// its sleep by this exactly as it would for that interest held directly;
+    /// reporting nothing here parks the outer waiter past the deadline and the
+    /// readiness is only ever observed on the next unrelated wakeup.
+    /// # C: O(N_entries)
+    fn poll_deadline_ns(&self, file: &File) -> Option<u64> {
+        file.inode().private::<EpollData>()?.next_poll_deadline()
     }
 
     /// `ep_show_fdinfo`: one line per interest, in interest-list order, naming
