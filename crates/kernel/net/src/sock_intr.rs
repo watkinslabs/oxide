@@ -84,6 +84,45 @@ pub const fn sock_intr_net(deadline_ns: u64) -> NetError { sock_intr(deadline_ns
 /// `sock_intr_errno` straight to a `VfsError`. # C: O(1)
 pub const fn sock_intr_vfs(deadline_ns: u64) -> vfs::VfsError { sock_intr(deadline_ns).vfs() }
 
+/// What an interruptible socket data wait does next once the queue cannot make
+/// progress. Kept out of any target-gated module so the ladder is decided in
+/// ONE tested place instead of once per `#[cfg]` arm.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WaitVerdict {
+    /// Direction is shut down; no amount of waiting can admit the transfer.
+    Shutdown,
+    /// Caller asked not to block.
+    NoWait,
+    /// A signal is deliverable, so the wait ends with the restart-or-EINTR
+    /// verdict [`sock_intr`] picks from the wait's deadline.
+    Interrupted(SockIntr),
+    /// Nothing forbids sleeping: park on the socket's wait list.
+    Park,
+}
+
+/// Ladder every interruptible socket data wait follows before it sleeps: a
+/// shut direction outranks everything (the transfer can never be admitted), a
+/// non-blocking caller never sleeps, and a deliverable signal ends the wait
+/// before it parks. # C: O(1)
+pub const fn wait_verdict(shut: bool, nonblock: bool, signal_pending: bool, deadline_ns: u64)
+    -> WaitVerdict
+{
+    if shut { return WaitVerdict::Shutdown; }
+    if nonblock { return WaitVerdict::NoWait; }
+    if signal_pending { return WaitVerdict::Interrupted(sock_intr(deadline_ns)); }
+    WaitVerdict::Park
+}
+
+/// Whether the calling task has a signal that would interrupt a sleep.
+/// # C: O(pending sets)
+#[cfg(target_os = "oxide-kernel")]
+pub fn signal_pending_self() -> bool { sched::live::deliverable_signals_self() != 0 }
+
+/// Hosted builds have no task carrying signals, so no wait is interruptible.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn signal_pending_self() -> bool { false }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +155,48 @@ mod tests {
         // `MAX_SCHEDULE_TIMEOUT` reading rather than a standing assumption.
         assert_eq!(sock_intr_vfs(NO_TIMEOUT), vfs::VfsError::Erestartsys);
         assert_eq!(sock_intr_net(NO_TIMEOUT), NetError::Erestartsys);
+    }
+
+    #[test]
+    fn a_shut_direction_outranks_every_other_wait_reason() {
+        // EPIPE is reported even for a non-blocking caller with a signal
+        // queued: the transfer can never be admitted, so there is no wait to
+        // interrupt and nothing for a retry to accomplish.
+        for nonblock in [false, true] {
+            for signal in [false, true] {
+                assert_eq!(wait_verdict(true, nonblock, signal, NO_TIMEOUT),
+                    WaitVerdict::Shutdown, "nonblock={nonblock} signal={signal}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_blocking_caller_reports_eagain_even_with_a_signal_queued() {
+        assert_eq!(wait_verdict(false, true, true, NO_TIMEOUT), WaitVerdict::NoWait);
+        assert_eq!(wait_verdict(false, true, false, 1_000), WaitVerdict::NoWait);
+    }
+
+    #[test]
+    fn a_blocking_wait_with_a_signal_takes_the_deadlines_restart_verdict() {
+        // Untimed: restartable. Timed: the remaining time cannot be carried
+        // across a restart, so EINTR.
+        assert_eq!(wait_verdict(false, false, true, NO_TIMEOUT),
+            WaitVerdict::Interrupted(SockIntr::Restartsys));
+        assert_eq!(wait_verdict(false, false, true, 1_000),
+            WaitVerdict::Interrupted(SockIntr::Eintr));
+    }
+
+    #[test]
+    fn an_uninterrupted_blocking_wait_parks() {
+        assert_eq!(wait_verdict(false, false, false, NO_TIMEOUT), WaitVerdict::Park);
+        assert_eq!(wait_verdict(false, false, false, 1_000), WaitVerdict::Park);
+    }
+
+    #[test]
+    fn a_hosted_task_never_reports_a_pending_signal() {
+        // Hosted builds carry no task state; a hosted wait therefore parks
+        // rather than inventing an interrupt the kernel build would not see.
+        assert!(!signal_pending_self());
     }
 
     #[test]
