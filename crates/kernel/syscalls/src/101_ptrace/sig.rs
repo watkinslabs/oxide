@@ -117,14 +117,29 @@ pub fn interrupt(target: &Arc<Task>) -> Result<(), Errno> {
 
 /// PTRACE_LISTEN — SEIZE-only, and the tracee must be in a
 /// PTRACE_EVENT_STOP group-stop; anything else is EIO.
+///
+/// The tracee stays stopped, but arms `JOBCTL_LISTENING | JOBCTL_TRAP_STOP` so
+/// that an asynchronous event — a SIGCONT reaching the group, a group stop
+/// starting — RE-TRAPS it and is reported, instead of resuming it into
+/// userspace with the event never announced. Without the latch, LISTEN was
+/// indistinguishable from doing nothing.
 /// # C: O(1)
-pub fn listen(target: &Task) -> Result<(), Errno> {
+pub fn listen(target: &Arc<Task>) -> Result<(), Errno> {
     if !target.ptrace_seized.load(Ordering::Acquire) { return Err(Errno::Eio); }
     let in_event_stop = target.ptrace_siginfo.lock().as_ref()
         .map(|si| uapi::event_of_stop_code(si.code) == uapi::EVENT_STOP)
         .unwrap_or(false);
     if !in_event_stop { return Err(Errno::Eio); }
     target.cont_pending.store(false, Ordering::Release);
+    let armed = sched::jobctl::listen(target.jobctl.load(Ordering::Acquire));
+    target.jobctl.store(armed, Ordering::Release);
+    // The window LISTEN exists to close: an event that landed between the
+    // tracee entering this trap and this call already set `TRAP_NOTIFY`, and
+    // no further event is coming to wake it. Trigger the re-trap now, or the
+    // tracee sleeps forever holding a report the tracer will never see.
+    if sched::jobctl::retrap_pending(armed) {
+        sched::live::registry::wake_if_stopped(target, sched::jobctl::WakeKind::Cont);
+    }
     Ok(())
 }
 

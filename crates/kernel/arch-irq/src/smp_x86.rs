@@ -10,7 +10,7 @@
 //
 // STATUS: ENABLED (F428). `bring_up_aps_x86` INIT/SIPI-starts each MADT AP
 // to long mode; `ap_main_x86` then makes it a full scheduling target:
-// FSGSBASE, GS_BASE, syscall MSRs (EFER.SCE/STAR/LSTAR/SFMASK), IDTR, LAPIC
+// GS_BASE, syscall MSRs (EFER.SCE/STAR/LSTAR/SFMASK), IDTR, LAPIC
 // enable, per-CPU runqueue + TSS + syscall-kstack + LAPIC timer, then `sti`
 // idle. User tasks DO migrate onto the AP and issue `syscall` here — so the
 // per-AP syscall-MSR install is mandatory (without it the AP #UDs on
@@ -104,7 +104,7 @@ fn ap_stage(cpu: u32, stage: u32) {
     }
 }
 
-/// Shared AP bring-up body: enable FSGSBASE, stamp logical cpu_id + GS_BASE,
+/// Shared AP bring-up body: stamp logical cpu_id + GS_BASE,
 /// load IDTR, enable the LAPIC, install the per-CPU runqueue, mark
 /// online, arm the LAPIC timer, then park in the `sti; hlt` idle
 /// loop. Diverges.
@@ -121,7 +121,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // AP on its own minimal 4-entry GDT (CS=0x18); kernel CS/DS (0x28/0x30)
     // and the per-CPU TSS selectors (0x50+cpu*0x10) only exist in the kernel
     // GDT. MUST precede the GS_BASE setup below: the reload writes GS=0x30
-    // (→ GS base 0), so the wrgsbase that follows re-establishes the per-CPU
+    // (→ GS base 0), so the GS_BASE wrmsr that follows re-establishes the per-CPU
     // base correctly. Without this, `ltr` of the AP's TSS selector #GP's →
     // triple fault (the old "AP scheduling wedges the boot").
     // SAFETY: AP at CPL=0, long mode, kernel master CR3; BSP completed
@@ -152,14 +152,11 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     unsafe { hal_x86_64::enable_sse(); }
     ap_stage(logical_cpu_id, AP_STAGE_SSE);
 
-    // Enable CR4.FSGSBASE on this AP (Limine leaves it off per-AP).
-    // SAFETY: AP runs CPL=0 here; CR4 write is legal; bit 16 enables rd/wrgsbase which we use immediately below.
-    unsafe {
-        let mut cr4: u64;
-        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
-        cr4 |= 1u64 << 16;
-        core::arch::asm!("mov cr4, {cr4}", cr4 = in(reg) cr4, options(nomem, nostack, preserves_flags));
-    }
+    // Force CR4.FSGSBASE off on this AP, matching the BSP. While the bit is
+    // set, ring 3 on this CPU can `wrgsbase` the per-CPU base that the
+    // syscall/IRQ entry asm dereferences at CPL=0.
+    // SAFETY: AP runs CPL=0 here; CR4 is per-CPU and this AP is its sole writer.
+    unsafe { hal_x86_64::clear_cr4_fsgsbase(); }
 
     // Stamp logical cpu_id at percpu offset 0 + install GS_BASE.
     // SAFETY: ctx.percpu_base is a freshly-allocated 4 KiB page owned by this AP from publish; sole writer is this AP.

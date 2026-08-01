@@ -75,6 +75,18 @@ pub enum Op {
     TimerCreateRestoreIds(super::timer_ids::RestoreIds),
     FutexHash { cmd: u64, slots: u64, a4: u64 },
     RseqSliceExtension { cmd: u64, ctrl: u64, a4: u64, a5: u64 },
+    /// arm64-only. Each keeps its raw argument: the CPU-feature test runs
+    /// BEFORE argument validation in every one of these, so the ladder cannot
+    /// be split across `classify`, which has no CPU to ask.
+    SveSetVl(u64),
+    SveGetVl,
+    SmeSetVl(u64),
+    SmeGetVl,
+    PacResetKeys(u64),
+    PacSetEnabledKeys { keys: u64, enabled: u64 },
+    PacGetEnabledKeys,
+    SetTaggedAddrCtrl(u64),
+    GetTaggedAddrCtrl,
 }
 
 /// Linux `if (arg2 || arg3 || arg4 || arg5) return -EINVAL;` and its shorter
@@ -244,6 +256,37 @@ pub fn classify(option: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> Result<Op, E
         }
         PR_GET_MDWE => { none_of(&[a2, a3, a4, a5])?; Ok(Op::GetMdwe) }
         PR_SET_VMA => Ok(Op::SetVma),
+        // The arm64-only group. Each carries its own tail rule from the
+        // generic switch; the per-arch helper behind it applies the CPU
+        // feature test, so classification only enforces the shape.
+        PR_SVE_SET_VL => Ok(Op::SveSetVl(a2)),
+        PR_SVE_GET_VL => Ok(Op::SveGetVl),
+        PR_SME_SET_VL => Ok(Op::SmeSetVl(a2)),
+        PR_SME_GET_VL => Ok(Op::SmeGetVl),
+        PR_PAC_RESET_KEYS => { none_of(&[a3, a4, a5])?; Ok(Op::PacResetKeys(a2)) }
+        PR_PAC_SET_ENABLED_KEYS => {
+            none_of(&[a4, a5])?;
+            Ok(Op::PacSetEnabledKeys { keys: a2, enabled: a3 })
+        }
+        PR_PAC_GET_ENABLED_KEYS => { none_of(&[a2, a3, a4, a5])?; Ok(Op::PacGetEnabledKeys) }
+        PR_SET_TAGGED_ADDR_CTRL => { none_of(&[a3, a4, a5])?; Ok(Op::SetTaggedAddrCtrl(a2)) }
+        PR_GET_TAGGED_ADDR_CTRL => { none_of(&[a2, a3, a4, a5])?; Ok(Op::GetTaggedAddrCtrl) }
+        // Linux calls the per-arch `SET_UNALIGN_CTL` / `GET_UNALIGN_CTL` /
+        // `SET_FPEMU_CTL` / `GET_FPEMU_CTL` / `SET_FPEXC_CTL` /
+        // `GET_FPEXC_CTL` / `SET_ENDIAN` / `GET_ENDIAN` / `SET_FP_MODE` /
+        // `GET_FP_MODE` macros here. NEITHER arch this kernel targets defines
+        // any of them, so all ten resolve to the generic `(-EINVAL)` — an
+        // EXPLICIT arm, reached without looking at arg2..arg5. They are listed
+        // rather than left to the unknown-option default so the answer is a
+        // decision with a test behind it instead of a coincidence: unaligned
+        // access control is alpha/parisc/powerpc/riscv/sh, FP emulation and
+        // FP exception control are powerpc, endianness switching is powerpc,
+        // and the FP mode pair is MIPS.
+        PR_GET_UNALIGN | PR_SET_UNALIGN
+        | PR_GET_FPEMU | PR_SET_FPEMU
+        | PR_GET_FPEXC | PR_SET_FPEXC
+        | PR_GET_ENDIAN | PR_SET_ENDIAN
+        | PR_SET_FP_MODE | PR_GET_FP_MODE => Err(Errno::Einval),
         // The IO-flusher pair keeps its raw arguments: Linux tests
         // CAP_SYS_RESOURCE first and only then the arguments, so an
         // unprivileged caller gets EPERM even for a malformed call.

@@ -143,9 +143,24 @@ const SYSREG_CNTFRQ_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2:
 #[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
 const SYSREG_CNTVCT_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 2 };
 
+// Also emulated for EL0: `CNTPCT_EL0`. Denying counter access clears BOTH
+// EL0PCTEN and EL0VCTEN, so a task under `prctl(PR_TSC_SIGSEGV)` traps here on
+// the physical counter too; emulating that one while refusing the virtual one
+// would leave the trap trivially side-steppable.
+#[cfg(any(test, all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+const SYSREG_CNTPCT_EL0: SysReg = SysReg { op0: 3, op1: 3, crn: 14, crm: 0, op2: 1 };
+
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64;
+    /// Non-zero when the current task ran `prctl(PR_SET_TSC, PR_TSC_SIGSEGV)`.
+    /// The task-state owner lives above this crate, so the counter-read
+    /// emulator asks by upcall rather than reaching into the scheduler.
+    fn oxide_arm_counter_read_denied() -> u64;
+    /// Deliver SIGSEGV to the current task for a denied counter read
+    /// (Linux `cntvct_read_handler`'s `force_sig(SIGSEGV)` arm). Returns the
+    /// saved user x0, like the undef handler.
+    fn oxide_arm_counter_read_sigsegv(frame_ptr: *mut u8) -> u64;
 }
 
 /// Read this CPU's per-CPU area base (`TPIDR_EL1`).
@@ -359,6 +374,14 @@ fn read_cntfrq_el0() -> u64 {
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+fn read_cntpct_el0() -> u64 {
+    let v: u64;
+    // SAFETY: `mrs CNTPCT_EL0` reads the architected physical counter and has no memory side effects.
+    unsafe { core::arch::asm!("mrs {v}, cntpct_el0", v = out(reg) v, options(nomem, nostack, preserves_flags)); }
+    v
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 fn read_cntvct_el0() -> u64 {
     let v: u64;
     // SAFETY: `mrs CNTVCT_EL0` reads the architected virtual counter and has no memory side effects.
@@ -381,8 +404,23 @@ pub unsafe extern "C" fn oxide_arm_sysreg_trap_handler(frame: *mut SvcFrame, esr
         return unsafe { oxide_arm_undef_handler(frame.cast::<u8>()) };
     }
     let reg = sysreg_iss_reg(esr);
+    // Linux `cntvct_read_handler` / `cntfrq_read_handler`: a task that armed
+    // `PR_TSC_SIGSEGV` gets the signal INSTEAD of the emulated value. Without
+    // this arm the trap still fires (the enable bits are cleared) but the
+    // emulator hands the counter back anyway, so `PR_TSC_SIGSEGV` would report
+    // success while `mrs CNTVCT_EL0` kept working — the exact lie the option
+    // exists to prevent.
+    if matches!(reg, SYSREG_CNTVCT_EL0 | SYSREG_CNTPCT_EL0 | SYSREG_CNTFRQ_EL0) {
+        // SAFETY: upcall into the task-state owner; reads one per-task flag and takes no locks.
+        if unsafe { oxide_arm_counter_read_denied() } != 0 {
+            // SAFETY: the frame is the live 288 B lower-EL sync frame this handler was given.
+            return unsafe { oxide_arm_counter_read_sigsegv(frame.cast::<u8>()) };
+        }
+    }
     let value = if reg == SYSREG_CNTVCT_EL0 {
         read_cntvct_el0()
+    } else if reg == SYSREG_CNTPCT_EL0 {
+        read_cntpct_el0()
     } else if reg == SYSREG_CNTFRQ_EL0 {
         read_cntfrq_el0()
     } else {

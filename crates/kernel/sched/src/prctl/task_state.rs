@@ -10,7 +10,6 @@ use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 
 use super::decide;
-use super::uapi::*;
 use crate::task::Task;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -137,21 +136,18 @@ pub fn get_tid_address(cur: &Task, ptr: u64) -> i64 {
 }
 
 /// `PR_GET_TSC` — Linux `get_tsc_mode(adr)` PUTS an `unsigned int` through
-/// `adr` and returns 0 (or EFAULT); the mode is not the syscall value. This
-/// port never arms `TIF_NOTSC`, so the reported mode is always
-/// `PR_TSC_ENABLE`, which is the truth about the CPU state userspace sees.
+/// `adr` and returns 0 (or EFAULT); the mode is not the syscall value.
 /// # C: O(1)
-pub fn get_tsc(ptr: u64) -> i64 { put_user_u32(ptr, PR_TSC_ENABLE) }
+pub fn get_tsc(cur: &Task, ptr: u64) -> i64 {
+    put_user_u32(ptr, super::tsc::flag_to_mode(super::tsc::denied(cur)))
+}
 
-/// `PR_SET_TSC` — Linux `set_tsc_mode(val)` toggles `CR4.TSD` per task.
-///
-/// `PR_TSC_ENABLE` is already the standing state, so accepting it is exact.
-/// `PR_TSC_SIGSEGV` needs a per-task `CR4.TSD` toggle carried through the
-/// context-switch path plus a `#GP` classifier that raises SIGSEGV on a
-/// trapped `rdtsc` — none of which this port has. Returning 0 for it would
-/// tell a sandbox its TSC is trapped when `rdtsc` still runs freely, so it is
-/// refused instead.
+/// `PR_SET_TSC` — Linux `set_tsc_mode(val)`: arm or disarm this task's
+/// counter-read trap and make the CPU it is running on agree immediately.
 /// # C: O(1)
-pub fn set_tsc(mode: u32) -> i64 {
-    if mode == PR_TSC_ENABLE { 0 } else { err(Errno::Einval) }
+pub fn set_tsc(cur: &Task, mode: u32) -> i64 {
+    match super::tsc::mode_to_flag(mode) {
+        Ok(armed) => { super::tsc::apply(cur, armed); 0 }
+        Err(e) => err(e),
+    }
 }

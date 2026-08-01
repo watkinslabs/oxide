@@ -376,6 +376,16 @@ core::arch::global_asm!(
     // SS bits instead of running the syscall dispatcher).
     "    cmp x9, #0x32",
     "    b.eq oxide_softstep_save_block",
+    // EC=0x30 = hardware BREAKPOINT and EC=0x34 = WATCHPOINT, both from a
+    // lower EL. Same saved-frame shape and the same return-to-user tail as the
+    // software step, so they share its save block; the Rust hook re-reads ESR
+    // and reports the right SIGTRAP si_code for each. Without this an armed
+    // debug slot is installed in hardware but its exception falls through to
+    // the default vector, so a watchpoint never reaches the debugger.
+    "    cmp x9, #0x30",
+    "    b.eq oxide_softstep_save_block",
+    "    cmp x9, #0x34",
+    "    b.eq oxide_softstep_save_block",
     // EC=0x00 = "Unknown reason" from a lower EL = undefined instruction
     // at EL0. Linux delivers a catchable SIGILL; route to the undef save
     // block (full frame save → Rust hook builds the SIGILL handler frame).

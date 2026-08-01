@@ -104,7 +104,7 @@ fn sigcont_and_the_stop_signals_flush_each_other() {
 #[test]
 fn a_forced_fault_signal_keeps_an_installed_handler_when_unblocked() {
     let d = force_decision(HANDLER, SIGSEGV, 0, ForceMode::Current);
-    assert_eq!(d, ForceOutcome { reset_to_dfl: false, unblock: false });
+    assert_eq!(d, ForceOutcome { reset_to_dfl: false, unblock: false, immutable: false });
 }
 
 #[test]
@@ -113,13 +113,13 @@ fn a_forced_fault_signal_that_is_blocked_is_unblocked_and_reset_to_default() {
     // die on a wild pointer rather than loop faulting forever.
     let blocked = Signum::Sigsegv.bit();
     let d = force_decision(HANDLER, SIGSEGV, blocked, ForceMode::Current);
-    assert_eq!(d, ForceOutcome { reset_to_dfl: true, unblock: true });
+    assert_eq!(d, ForceOutcome { reset_to_dfl: true, unblock: true, immutable: false });
 }
 
 #[test]
 fn a_forced_fault_signal_that_is_ignored_is_reset_to_default() {
     let d = force_decision(SIG_IGN, SIGSEGV, 0, ForceMode::Current);
-    assert_eq!(d, ForceOutcome { reset_to_dfl: true, unblock: false });
+    assert_eq!(d, ForceOutcome { reset_to_dfl: true, unblock: false, immutable: false });
 }
 
 #[test]
@@ -164,4 +164,13 @@ fn a_fault_record_carries_the_faulting_address_not_a_sender_identity() {
     assert_eq!((i.pid, i.uid, i.value), (0, 0, 0));
     let f = i.fault.expect("a fault record must select the _sigfault arm");
     assert_eq!((f.addr, f.addr_lsb), (0x7fff_0000_1000, 12));
+}
+
+#[test]
+fn only_handler_exit_marks_the_action_immutable() {
+    // `SA_IMMUTABLE` is what makes a forced-fatal signal final: the process
+    // cannot re-install a handler for it, and its tracer cannot intercept it.
+    assert!(force_decision(HANDLER, SIGSEGV, 0, ForceMode::Exit).immutable);
+    assert!(!force_decision(HANDLER, SIGSEGV, 0, ForceMode::SigDfl).immutable);
+    assert!(!force_decision(SIG_IGN, SIGSEGV, 0, ForceMode::Current).immutable);
 }

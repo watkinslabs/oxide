@@ -417,8 +417,21 @@ pub const ARCH_GET_XCOMP_PERM:       u64 = 0x1022;
 pub const ARCH_REQ_XCOMP_PERM:       u64 = 0x1023;
 pub const ARCH_GET_XCOMP_GUEST_PERM: u64 = 0x1024;
 pub const ARCH_REQ_XCOMP_GUEST_PERM: u64 = 0x1025;
+pub const ARCH_XCOMP_TILECFG:  u64 = 17;
+pub const ARCH_XCOMP_TILEDATA: u64 = 18;
+pub const ARCH_MAP_VDSO_X32: u64 = 0x2001;
+pub const ARCH_MAP_VDSO_32:  u64 = 0x2002;
+pub const ARCH_MAP_VDSO_64:  u64 = 0x2003;
+// 0x3001..0x3004 are permanently burnt — old glibcs issued them.
+pub const ARCH_GET_UNTAG_MASK:     u64 = 0x4001;
+pub const ARCH_ENABLE_TAGGED_ADDR: u64 = 0x4002;
+pub const ARCH_GET_MAX_TAG_BITS:   u64 = 0x4003;
+pub const ARCH_FORCE_TAGGED_SVA:   u64 = 0x4004;
 pub const ARCH_SHSTK_ENABLE:  u64 = 0x5001;
 pub const ARCH_SHSTK_DISABLE: u64 = 0x5002;
 pub const ARCH_SHSTK_LOCK:    u64 = 0x5003;
 pub const ARCH_SHSTK_UNLOCK:  u64 = 0x5004;
 pub const ARCH_SHSTK_STATUS:  u64 = 0x5005;
+/// `ARCH_SHSTK_*` feature bits carried in `arg2` of the shadow-stack codes.
+pub const ARCH_SHSTK_SHSTK: u64 = 1 << 0;
+pub const ARCH_SHSTK_WRSS:  u64 = 1 << 1;
