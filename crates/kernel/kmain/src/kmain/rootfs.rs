@@ -7,9 +7,13 @@ use crate::BootInfo;
 /// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn init(info: &BootInfo) {
+    // SAFETY: forwarded boot-entry contract — single CPU, no user address space
+    // live, so republishing the kernel-half master has no concurrent copier.
     #[cfg(target_arch = "x86_64")]
     unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
 
+    // SAFETY: forwarded boot-entry contract; these one-shot hook installs run
+    // before the first mount, so nothing can observe a half-installed hook.
     unsafe {
         // Serialize ext4 metadata transactions per-task: the reentrant txn gate
         // keys ownership on the current task id so concurrent tasks/CPUs can't
@@ -213,6 +217,9 @@ fn handoff_to_userspace(info: &BootInfo) {
     // exec into, and a helper started against a half-built root would fail in
     // ways no caller could interpret.
     umh::usermodehelper_enable();
+    // SAFETY: reached only from `rootfs::init` under the boot-entry contract,
+    // with the rootfs mounted and the scheduler running, which is what the
+    // ptrace install and the first user-task exec require.
     #[cfg(target_arch = "x86_64")]
     unsafe {
         debug_boot! { klog::write_raw(b"[INFO]  init: handoff begin\n"); }
@@ -221,6 +228,8 @@ fn handoff_to_userspace(info: &BootInfo) {
         pmm::user_as::install_lock_step_hook();
         smoke::elf::run_as_task(info.hhdm_offset);
     }
+    // SAFETY: same mounted-rootfs, scheduler-running handoff point as the
+    // x86_64 arm above.
     #[cfg(target_arch = "aarch64")]
     unsafe { smoke::elf_arm::run(); }
 }
