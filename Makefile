@@ -42,6 +42,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         frame-gate frame-gate-x86 frame-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
+        hosted-gate \
         smoke-ping smoke-ping-x86 smoke-ping-arm \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -84,7 +85,7 @@ counter-check:
 
 # Mirror of the PR-time gate per `docs/40§2`: spec-lint clean, hosted tests
 # green, both arches build default AND with debug-all on.
-ci: lint test build build-debug counter-check
+ci: lint hosted-gate test build build-debug counter-check
 
 # ---- qemu -----------------------------------------------------------------
 
@@ -269,6 +270,18 @@ feature-gate: feature-gate-x86 feature-gate-arm
 feature-gate-atexit:
 	cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-atexit,debug-all --check
 	cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-atexit,debug-all --check
+
+# Type-check every workspace crate ON ITS OWN for the host, with its own
+# default features. `cargo check --workspace` does NOT cover this: cargo
+# unifies features across one invocation, so a dependant that asks for
+# `net/hosted` hides a crate that only compiles with that feature on. Neither
+# do the routine gates — `cargo test` turns the same gate on through
+# `cfg(test)`, and both kernel builds turn it on through `target_os`. B1660
+# reached main red for `cargo check -p net` with every one of them green.
+#
+# ~5 s when nothing changed, ~12 s after a core crate is touched, on 24 jobs.
+hosted-gate:
+	./tools/hosted-check.sh
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.

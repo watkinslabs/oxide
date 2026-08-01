@@ -2,14 +2,22 @@
 # pre-push: two gates, both keyed on whether the outgoing commits touch a
 # kernel / arch / ABI / userspace surface.
 #
-#   1. feature-gate (EVERY push, branch or main): type-check both arches with
+#   1. hosted-gate (EVERY push, branch or main): type-check every workspace
+#      crate on its own for the host. Nothing else in the routine set builds a
+#      crate with only ITS OWN default features — `cargo test` turns the
+#      `hosted` gate on through `cfg(test)`, both kernel builds turn it on
+#      through `target_os`, and `cargo check --workspace` turns it on through
+#      feature unification with a dependant. B1660 reached main red for
+#      `cargo check -p net` with all of them green.
+#      Bypass: SKIP_HOSTED_GATE=1.
+#   2. feature-gate (EVERY push, branch or main): type-check both arches with
 #      `--features debug-all`. Nothing else in the routine set compiles
 #      feature-gated code, so a compile error inside `debug_boot! { … }` or any
 #      `#[cfg(feature = …)]` block survives a green local run and a green
 #      `xtask kernel`, then kills `make qemu-*` before QEMU starts — an empty
 #      boot log that reads like a boot failure. B1641 lost a lane to that.
 #      Bypass: SKIP_FEATURE_GATE=1.
-#   2. boot-smoke (direct main pushes only): capped at 180 seconds per arch.
+#   3. boot-smoke (direct main pushes only): capped at 180 seconds per arch.
 #      Bypass: SKIP_SMOKE=1.
 #
 # Documentation-only, CI-only, and tooling-only pushes trigger neither.
@@ -85,7 +93,19 @@ if [ "$need_gate" = "0" ]; then
     exit 0
 fi
 
-# ---- gate 1: feature-gated compile, both arches ---------------------------
+# ---- gate 1: every crate type-checks on its own, for the host -------------
+if [ "${SKIP_HOSTED_GATE:-0}" = "1" ]; then
+    echo "pre-push: SKIP_HOSTED_GATE=1 set, bypassing hosted-gate"
+else
+    echo "pre-push: kernel change — running hosted-gate (per-crate host check)"
+    if ! make hosted-gate; then
+        echo "pre-push: FAIL — a crate does not type-check on its own (make hosted-gate)" >&2
+        echo "         push aborted; fix the gating or SKIP_HOSTED_GATE=1 to bypass" >&2
+        exit 1
+    fi
+fi
+
+# ---- gate 2: feature-gated compile, both arches ---------------------------
 if [ "${SKIP_FEATURE_GATE:-0}" = "1" ]; then
     echo "pre-push: SKIP_FEATURE_GATE=1 set, bypassing feature-gate"
 else
@@ -98,7 +118,7 @@ else
     echo "pre-push: feature-gate PASS on both arches"
 fi
 
-# ---- gate 2: boot-smoke, direct main pushes only --------------------------
+# ---- gate 3: boot-smoke, direct main pushes only --------------------------
 if [ "$pushes_main" = "0" ]; then
     echo "pre-push: PR branch push — skipping boot-smoke"
     exit 0
