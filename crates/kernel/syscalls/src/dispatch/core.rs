@@ -430,13 +430,29 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // handler emulates, so neither a tracer nor a cBPF filter compiled for
     // THIS ABI may be shown its arguments.
     if let Some(rv) = super::user_dispatch::user_dispatch_gate(orig_nr) { return rv; }
-    if let Some(rv) = super::seccomp::seccomp_gate(orig_nr, &[a0, a1, a2, a3, a4, a5]) { return rv; }
-    ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP, true);
+    // The ptrace entry stop runs BEFORE seccomp, and the number is re-read
+    // afterwards, so a tracer's rewrite is what the filter judges and what the
+    // dispatcher runs. The reverse order let a tracer substitute a call the
+    // filter had already approved under a different number.
+    let aborted = ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP, true);
+    let abi_nr = super::ptrace::syscall_nr_after_entry_stop(orig_nr);
+    #[cfg(target_arch = "aarch64")]
+    let nr = if abi_nr == orig_nr { nr } else { syscall::arm_abi::aarch64_nr_to_x86(abi_nr) };
+    #[cfg(not(target_arch = "aarch64"))]
+    let nr = abi_nr;
     #[cfg(feature = "debug-syscost")]
     let __syscost = crate::syscost::start();
     #[cfg(feature = "debug-startlat")]
     let __startlat = crate::startlat::start();
-    let rv = if let Some(rv) = dispatch_route_a(nr, &args) { rv }
+    // A skipped call does NOT return early: it falls through to the exit tail
+    // below, so its syscall-exit stop and — for a `SECCOMP_RET_TRAP` SIGSYS —
+    // its signal delivery happen before the return to userspace instead of
+    // waiting for the next timer tick.
+    let entry = crate::dispatch_entry_order::entry_work(
+        aborted, abi_nr, ENOSYS_AT_ENTRY_STOP,
+        |n| super::seccomp::seccomp_gate(n, &[a0, a1, a2, a3, a4, a5]));
+    let rv = if let crate::dispatch_entry_order::EntryOutcome::Skip(rv) = entry { rv as i64 }
+    else if let Some(rv) = dispatch_route_a(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_b(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_c(nr, &args) { rv }
     else if let Some(rv) = sched::cred::cred_dispatch(nr, &args) { rv }
