@@ -257,6 +257,7 @@ mod tests {
 
     #[test]
     fn volatile_accessors_round_trip_on_host_memory() {
+        let _modules = crate::test_serial::claim();
         let mut q = 0u64;
         let p = &mut q as *mut u64 as *mut c_void;
         // SAFETY: p is the address of the u64 `q` on this test's stack, so it is writable and
@@ -272,6 +273,7 @@ mod tests {
 
     #[test]
     fn hosted_ioremap_preserves_offset_and_unmaps() {
+        let _modules = crate::test_serial::claim();
         let mut bytes = [0u8; PAGE_SIZE as usize];
         let phys = bytes.as_mut_ptr() as u64 + TEST_OFFSET;
         let p = ioremap(phys, TEST_LEN);
@@ -283,7 +285,7 @@ mod tests {
 
     #[test]
     fn export_symbols_registers_io_surface() {
-        crate::symtab::_reset();
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in [
             "ioremap", "ioremap_nocache", "iounmap", "readb", "readw", "readl", "readq",

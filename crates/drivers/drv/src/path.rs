@@ -176,11 +176,13 @@ mod tests {
 
     #[test]
     fn unknown_bus_has_no_invented_root() {
+        let _model = crate::model::test_claim::claim_model();
         assert_eq!(device_root_canon("unknown"), None);
     }
 
     #[test]
     fn canonical_relative_path_does_not_replace_bus_identity() {
+        let _model = crate::model::test_claim::claim_model();
         let dev = crate::try_device_add(Arc::new(
             Device::new("input", String::from("event4"), 0, 0, 0)
                 .with_sysfs_relpath(String::from("input17/event4")),
@@ -196,6 +198,7 @@ mod tests {
 
     #[test]
     fn malformed_canonical_relative_path_is_rejected_before_publication() {
+        let _model = crate::model::test_claim::claim_model();
         for path in ["", "/event4", "input17/", "input17//event4", "../event4"] {
             let dev = Arc::new(
                 Device::new("input", String::from("event4"), 0, 0, 0)
@@ -211,6 +214,7 @@ mod tests {
 
     #[test]
     fn input_path_uses_exact_live_transitive_ancestry_and_fails_closed() {
+        let _model = crate::model::test_claim::claim_model();
         let pci_addr = "0000:00:2e.0";
         let virtio_addr = "virtio-path-test";
         let pci = crate::try_device_add(device("pci", pci_addr)).expect("pci path parent");
@@ -256,6 +260,7 @@ mod tests {
 
     #[test]
     fn strict_child_add_revalidates_exact_parent_at_publication() {
+        let _model = crate::model::test_claim::claim_model();
         let parent_addr = "virtio-path-race";
         let old_parent = crate::try_device_add(device("virtio", parent_addr))
             .expect("old parent");
@@ -283,6 +288,7 @@ mod tests {
 
     #[test]
     fn exact_canonical_path_does_not_alias_same_name_replacement() {
+        let _model = crate::model::test_claim::claim_model();
         let old = crate::try_device_add(device("platform", "canon-reuse"))
             .expect("old object");
         assert!(device_canon_exact(&old).is_some());
@@ -301,6 +307,7 @@ mod tests {
 
     #[test]
     fn removed_device_object_cannot_be_registered_again() {
+        let _model = crate::model::test_claim::claim_model();
         let dev = crate::try_device_add(device("platform", "canon-dead-object"))
             .expect("first lifecycle");
         crate::device_del(&dev);
@@ -315,6 +322,7 @@ mod tests {
 
     #[test]
     fn ordinary_parented_add_rejects_missing_ancestor() {
+        let _model = crate::model::test_claim::claim_model();
         let direct_orphan = Arc::new(
             Device::new("virtio", String::from("virtio-broken-chain"), 0, 0, 0)
                 .with_parent("pci", String::from("0000:00:2f.0")),

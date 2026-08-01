@@ -111,6 +111,7 @@ unsafe extern "C" fn model_remove(dev: *mut LinuxPciDev) {
 
 #[test]
 fn register_resources_iomap_and_irq_vectors() {
+    let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
     assert_eq!(pci_resource_start(&dev, TEST_BAR), TEST_MMIO_START);
     assert_eq!(pci_resource_len(&dev, TEST_BAR), TEST_MMIO_END - TEST_MMIO_START + 1);
@@ -127,6 +128,7 @@ fn register_resources_iomap_and_irq_vectors() {
 
 #[test]
 fn msi_irq_vectors_allocate_and_free_arch_vectors() {
+    let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
     assert_eq!(
         pci_alloc_irq_vectors(&mut dev, TEST_MSI_VECTOR_COUNT, TEST_MSI_VECTOR_COUNT, PCI_IRQ_MSI),
@@ -147,6 +149,7 @@ fn msi_irq_vectors_allocate_and_free_arch_vectors() {
 
 #[test]
 fn config_helpers_update_fallback_config_space() {
+    let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
     let mut b = 0u8;
     let mut w = 0u16;
@@ -164,6 +167,7 @@ fn config_helpers_update_fallback_config_space() {
 
 #[test]
 fn driver_registration_and_drvdata_round_trip() {
+    let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
     // SAFETY: repr(C) KPI structs are plain data and zero is a valid empty state for tests.
     let mut driver: LinuxPciDriver = unsafe { MaybeUninit::zeroed().assume_init() };
@@ -178,6 +182,7 @@ fn driver_registration_and_drvdata_round_trip() {
 
 #[test]
 fn pci_driver_registration_binds_existing_model_device() {
+    let _modules = crate::test_serial::claim();
     MODEL_PROBES.store(0, Ordering::SeqCst);
     MODEL_REMOVES.store(0, Ordering::SeqCst);
     let model = Arc::new(
@@ -210,7 +215,7 @@ fn pci_driver_registration_binds_existing_model_device() {
 
 #[test]
 fn export_symbols_registers_pci_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "__pci_register_driver", "pci_register_driver", "pci_enable_device", "pci_resource_start",

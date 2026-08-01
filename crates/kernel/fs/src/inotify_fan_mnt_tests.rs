@@ -134,6 +134,7 @@ fn records_for(g: &InotifyData, ids: &[u64]) -> Vec<(u32, i32, u64)> {
 /// # C: O(1)
 #[test]
 fn a_real_mount_and_umount_reach_a_mntns_mark() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     let ns = vfs::mntns::current_namespace().id();
     let g = mnt_group(ns, MNT_EVENTS);
@@ -154,6 +155,7 @@ fn a_real_mount_and_umount_reach_a_mntns_mark() {
 /// # C: O(1)
 #[test]
 fn a_mark_only_hears_the_transition_it_subscribed_to() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     let ns = vfs::mntns::current_namespace().id();
     let g = mnt_group(ns, FAN_MNT_DETACH);
@@ -172,6 +174,7 @@ fn a_mark_only_hears_the_transition_it_subscribed_to() {
 /// # C: O(1)
 #[test]
 fn a_mark_on_another_namespace_hears_nothing() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     let ns = vfs::mntns::current_namespace().id();
     let other = ns.wrapping_add(0x5000_0000);
@@ -190,6 +193,7 @@ fn a_mark_on_another_namespace_hears_nothing() {
 /// # C: O(1)
 #[test]
 fn two_mount_changes_stay_two_records() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     let ns = vfs::mntns::current_namespace().id();
     let g = mnt_group(ns, MNT_EVENTS);
@@ -215,6 +219,7 @@ fn two_mount_changes_stay_two_records() {
 /// # C: O(1)
 #[test]
 fn the_last_mntns_mark_leaving_restores_the_fast_path() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     let ns = vfs::mntns::current_namespace().id();
     let before = MNTNS_MARK_COUNT.load(Ordering::Acquire);
@@ -236,6 +241,7 @@ fn the_last_mntns_mark_leaving_restores_the_fast_path() {
 /// # C: O(1)
 #[test]
 fn a_mntns_mark_needs_a_mount_namespace_node() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     assert_eq!(mnt_ns_from_inode(&dir_inode(0xB001)), None,
                "an ordinary directory is not a mount-namespace node");
@@ -251,6 +257,7 @@ fn a_mntns_mark_needs_a_mount_namespace_node() {
 /// # C: O(1)
 #[test]
 fn a_non_inode_mark_needs_sys_admin_before_any_mask_rule() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use syscall::errno::Errno;
     let plain = InotifyData::new_fanotify(0);
     // FAN_FS_ERROR on a MOUNT mark is EINVAL when privileged ...
@@ -283,6 +290,7 @@ fn a_non_inode_mark_needs_sys_admin_before_any_mask_rule() {
 /// # C: O(1)
 #[test]
 fn a_mntns_mark_never_matches_a_file_event() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     let ns = vfs::mntns::current_namespace().id();
     let g = mnt_group(ns, MNT_EVENTS);
@@ -300,6 +308,7 @@ fn a_mntns_mark_never_matches_a_file_event() {
 /// # C: O(1)
 #[test]
 fn a_dying_filesystem_cannot_retire_a_mount_namespace_mark() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let _s = guard();
     let ns = vfs::mntns::current_namespace().id();
     let g = mnt_group(ns, MNT_EVENTS);
@@ -314,6 +323,7 @@ fn a_dying_filesystem_cannot_retire_a_mount_namespace_mark() {
 /// # C: O(1)
 #[test]
 fn the_record_carries_only_the_mount_id() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(String::from(Ty.name()), "fanmnt");
     assert_eq!(MNT_INFO_LEN, 4 + 8, "header plus one 64-bit id, nothing else");
 }

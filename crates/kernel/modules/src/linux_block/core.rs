@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn export_symbols_registers_block_surface() {
-        crate::symtab::_reset();
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in [
             "blk_alloc_queue", "blk_cleanup_queue", "blk_queue_make_request",
@@ -485,6 +485,7 @@ mod tests {
 
     #[test]
     fn gendisk_registers_adapter_and_submits_bio_io() {
+        let _modules = crate::test_serial::claim();
         *BACKING.lock() = alloc::vec![0u8; (TEST_BLOCKS as usize) * (TEST_BLOCK_SIZE as usize)];
         let q = blk_alloc_queue(GFP_KERNEL);
         assert!(!q.is_null());

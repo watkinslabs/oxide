@@ -3,25 +3,24 @@
 // broadcast registry), so tests cannot own them; the alternative to a lock is
 // inventing per-test registries in the kernel, which would be worse.
 //
-// One lock PER GLOBAL rather than one per file: the FIB is written from four
-// separate test files (`rtnetlink_tests.rs`, `rtnetlink_tests/route_semantics.rs`,
-// `rtnetlink_lookup.rs`, `netlink_socket.rs`), so a per-file lock leaves them
-// racing each other — measured 2/40 after per-file locking, 0/N after this.
+// One lock PER GLOBAL rather than one per file: a global written from several
+// test files needs one owner, or the files race each other.
+//
+// The FIB's owner is NOT here. Namespace 0's route table belongs to
+// `net::hosted_fixture::init_net_domain()`, which snapshots those rows on
+// acquire and restores them on drop — so a private `FIB` mutex beside it was a
+// second lock over the same table and excluded nothing: a netlink test holding
+// `FIB` inserted ns-0 routes that a `net`-fixture holder then restored away
+// underneath it. Every route test now takes the domain guard itself.
 //
 // Poison is recovered, not propagated: a genuine assertion failure must report
 // as ONE failure instead of cascading into every sibling that shares the lock.
 
 use std::sync::{Mutex, MutexGuard};
 
-static FIB: Mutex<()> = Mutex::new(());
 static UEVENT: Mutex<()> = Mutex::new(());
 static GENL: Mutex<()> = Mutex::new(());
 static QUOTA_EVENTS: Mutex<()> = Mutex::new(());
-
-/// Serialise access to the global routing table (`rtnetlink::route_*`).
-pub(crate) fn fib() -> MutexGuard<'static, ()> {
-    FIB.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 /// Serialise access to the global `UEVENT_LISTENERS` broadcast registry.
 pub(crate) fn uevent() -> MutexGuard<'static, ()> {

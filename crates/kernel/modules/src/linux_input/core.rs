@@ -321,11 +321,13 @@ mod tests {
 
     #[test]
     fn input_event_abi_is_linux_compatible() {
+        let _modules = crate::test_serial::claim();
         assert_eq!(core::mem::size_of::<LinuxInputEvent>(), INPUT_EVENT_BYTES);
     }
 
     #[test]
     fn input_device_mirror_matches_kpi_header_layout() {
+        let _modules = crate::test_serial::claim();
         assert_eq!(core::mem::size_of::<LinuxInputDev>(), INPUT_DEV_ABI_BYTES);
         assert_eq!(core::mem::offset_of!(LinuxInputDev, propbit), PROPBIT_OFFSET);
         assert_eq!(core::mem::offset_of!(LinuxInputDev, mscbit), MSCBIT_OFFSET);
@@ -339,6 +341,7 @@ mod tests {
 
     #[test]
     fn register_exports_capabilities_to_evdev_model() {
+        let _modules = crate::test_serial::claim();
         let dev = input_allocate_device();
         assert!(!dev.is_null());
         // SAFETY: dev is the uniquely owned allocation just returned by input_allocate_device and asserted non-null; NAME/PHYS are NUL-terminated statics that outlive the registration, satisfying the string-lifetime half of the KPI contract, and input_unregister_device at the end of the block consumes the box exactly once.
@@ -410,6 +413,7 @@ mod tests {
 
     #[test]
     fn register_rejects_force_feedback_without_ff_backend() {
+        let _modules = crate::test_serial::claim();
         let dev = input_allocate_device();
         assert!(!dev.is_null());
         // SAFETY: dev is the uniquely owned allocation just returned by input_allocate_device and asserted non-null; NAME is a NUL-terminated static, registration is expected to fail so nothing is published, and input_free_device consumes the box exactly once.
@@ -424,6 +428,7 @@ mod tests {
 
     #[test]
     fn input_set_capability_rejects_invalid_codes_without_partial_mutation() {
+        let _modules = crate::test_serial::claim();
         let invalid = [
             (EV_KEY, KEY_CNT),
             (EV_REL, REL_CNT),
@@ -448,6 +453,7 @@ mod tests {
 
     #[test]
     fn input_set_capability_rejects_unknown_or_truncated_aliases() {
+        let _modules = crate::test_serial::claim();
         let dev = input_allocate_device();
         assert!(!dev.is_null());
         // SAFETY: input_allocate_device returned this uniquely owned live object.
@@ -470,6 +476,7 @@ mod tests {
 
     #[test]
     fn input_set_capability_accepts_linux_max_codes() {
+        let _modules = crate::test_serial::claim();
         let dev = input_allocate_device();
         assert!(!dev.is_null());
         let valid = [
@@ -495,6 +502,7 @@ mod tests {
 
     #[test]
     fn input_set_capability_accepts_power_without_subtype_mutation() {
+        let _modules = crate::test_serial::claim();
         let dev = input_allocate_device();
         assert!(!dev.is_null());
         // SAFETY: input_allocate_device returned this uniquely owned live object.

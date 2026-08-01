@@ -92,6 +92,7 @@ mod tests {
 
     #[test]
     fn name_len_matches_linux_64bit() {
+        let _modules = crate::test_serial::claim();
         // __MODULE_NAME_LEN = 64 - sizeof(unsigned long) = 56 on LP64.
         assert_eq!(MODULE_NAME_LEN, 56);
     }
@@ -101,6 +102,7 @@ mod tests {
     /// execute arbitrary bytes in ring 0.
     #[test]
     fn a_caller_without_cap_sys_module_is_denied() {
+        let _modules = crate::test_serial::claim();
         assert_eq!(admit(false, false), Admission::Denied);
         assert_eq!(admit(true, false), Admission::Allow);
         // The latch denies even a fully capable caller.
@@ -109,6 +111,7 @@ mod tests {
 
     #[test]
     fn finit_flags_window_matches_linux() {
+        let _modules = crate::test_serial::claim();
         for f in [0, 1, 2, 4, 7] { assert!(finit_flags_valid(f), "flags {f} are accepted by Linux"); }
         for f in [8, 0x10, u64::MAX] { assert!(!finit_flags_valid(f), "flags {f} must be EINVAL"); }
     }
@@ -118,6 +121,7 @@ mod tests {
     /// than quietly re-enabling module loading on a hardened system.
     #[test]
     fn modules_disabled_latch_rejects_every_value_but_one() {
+        let _modules = crate::test_serial::claim();
         assert!(!set_modules_disabled(0));
         assert!(!set_modules_disabled(2));
         assert!(!set_modules_disabled(-1));

@@ -65,6 +65,7 @@ static RX_MODE_OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
 
 #[test]
 fn export_symbols_registers_netdev_surface() {
+    let _modules = crate::test_serial::claim();
     crate::linux_netdev::export_symbols();
     assert!(resolve("alloc_etherdev", false).is_ok());
     assert!(resolve("register_netdev", false).is_ok());
@@ -75,6 +76,7 @@ fn export_symbols_registers_netdev_surface() {
 
 #[test]
 fn register_netdev_exposes_adapter_and_xmit() {
+    let _modules = crate::test_serial::claim();
     TX_COUNT.store(0, Ordering::Release);
     TX_LEN.store(0, Ordering::Release);
     // SAFETY: test owns the net_device allocation through free_netdev.
@@ -105,6 +107,7 @@ fn register_netdev_exposes_adapter_and_xmit() {
 
 #[test]
 fn packet_receive_mode_updates_flags_before_driver_callback() {
+    let _modules = crate::test_serial::claim();
     RX_MODE_COUNT.store(0, Ordering::Release);
     RX_MODE_FLAGS.store(0, Ordering::Release);
     RX_MODE_MC_COUNT.store(0, Ordering::Release);
@@ -146,6 +149,7 @@ fn packet_receive_mode_updates_flags_before_driver_callback() {
 
 #[test]
 fn skb_put_reserve_pull_and_free_round_trip() {
+    let _modules = crate::test_serial::claim();
     let skb = skb::dev_alloc_skb(SAMPLE_FRAME_LEN as u32);
     assert!(!skb.is_null());
     // SAFETY: test owns skb until kfree_skb.
@@ -162,6 +166,7 @@ fn skb_put_reserve_pull_and_free_round_trip() {
 
 #[test]
 fn rx_views_handle_l2_and_l3_skb_data() {
+    let _modules = crate::test_serial::claim();
     let mut l2 = [0u8; SAMPLE_FRAME_LEN];
     l2[ETHERTYPE_OFFSET] = (net::addr::eth_p::IPV4 >> u8::BITS) as u8;
     l2[ETHERTYPE_OFFSET + 1] = net::addr::eth_p::IPV4 as u8;

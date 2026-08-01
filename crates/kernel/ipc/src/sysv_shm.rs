@@ -384,4 +384,7 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
 }
 
 #[cfg(test)]
+pub(crate) mod test_claim;
+
+#[cfg(test)]
 mod tests;

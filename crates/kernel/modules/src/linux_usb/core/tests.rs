@@ -37,6 +37,7 @@ fn submit_ok(urb: *mut UsbUrb) -> i32 {
 
 #[test]
 fn register_driver_binds_matching_interface() {
+    let _modules = crate::test_serial::claim();
     PROBES.store(0, Ordering::Relaxed);
     DRIVERS.lock().clear();
     INTERFACES.lock().clear();
@@ -62,6 +63,7 @@ fn register_driver_binds_matching_interface() {
 
 #[test]
 fn uninstall_interface_disconnects_bound_driver() {
+    let _modules = crate::test_serial::claim();
     PROBES.store(0, Ordering::Relaxed);
     DISCONNECTS.store(0, Ordering::Relaxed);
     DRIVERS.lock().clear();
@@ -91,6 +93,7 @@ fn uninstall_interface_disconnects_bound_driver() {
 
 #[test]
 fn transfers_use_transport_or_enodev() {
+    let _modules = crate::test_serial::claim();
     clear_transport();
     let mut dev = test_device();
     let mut actual = 7;
@@ -103,6 +106,7 @@ fn transfers_use_transport_or_enodev() {
 
 #[test]
 fn urb_submit_records_status_and_completion() {
+    let _modules = crate::test_serial::claim();
     COMPLETES.store(0, Ordering::Relaxed);
     set_transport(UsbTransport { bulk: None, submit: Some(submit_ok), control: None, interrupt: None });
     let urb = usb_alloc_urb(0, 0);
@@ -120,6 +124,7 @@ fn urb_submit_records_status_and_completion() {
 
 #[test]
 fn coherent_alloc_returns_dma_handle() {
+    let _modules = crate::test_serial::claim();
     let mut dma = 0u64;
     let p = usb_alloc_coherent(null_mut(), 64, 0, &mut dma);
     assert!(!p.is_null());

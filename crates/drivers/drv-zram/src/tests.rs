@@ -18,6 +18,18 @@ mod compression;
 mod discard;
 mod linux_corpus;
 mod basic;
+// The zram-control device table is process-global — a kernel has one
+// `/dev/zram*` index space — and `hot_add` hands out the LOWEST free index. A
+// test that removes its index and asserts the next `hot_add` returns the same
+// number is only correct while no sibling can take that number first, so every
+// test driving `init`/`hot_add`/`hot_remove` holds this claim. Poison is
+// recovered: one failing test reports as one failure, not a cascade.
+pub(crate) static CONTROL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn claim_control() -> std::sync::MutexGuard<'static, ()> {
+    CONTROL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Block zero for complete-device test I/O.
 const FIRST_DEVICE_BLOCK: u64 = 0;
 /// Fresh-byte value for zeroed device data and assertions.
@@ -167,6 +179,7 @@ fn rejected_write_releases_its_new_pool_object() {
 
 #[test]
 fn control_reuses_removed_index() {
+    let _control = claim_control();
     let index = hot_add().unwrap();
     assert!(by_index(index).is_some());
     assert!(hot_remove(index).is_ok());
@@ -177,6 +190,7 @@ fn control_reuses_removed_index() {
 
 #[test]
 fn control_removes_initialized_unused_device() {
+    let _control = claim_control();
     let index = hot_add().unwrap();
     let device = by_index(index).unwrap();
     device.set_disksize(PAGE_BYTES as u64).unwrap();
@@ -294,6 +308,7 @@ fn writeback_limit_rejects_then_accounts_one_page() {
 
 #[test]
 fn hot_remove_releases_uninitialized_backing_claim() {
+    let _control = claim_control();
     let test_id = BACKING_TEST_ID.fetch_add(1, Ordering::Relaxed);
     let name = alloc::format!("zram-remove-backing{}", test_id);
     let blocks_per_page = PAGE_BYTES as u64 / BACKING_BLOCK_SIZE as u64;

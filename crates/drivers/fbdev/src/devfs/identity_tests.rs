@@ -30,6 +30,7 @@ fn bare_inode(ino: Ino) -> InodeRef {
 
 #[test]
 fn a_published_fb_number_falls_inside_the_fbdev_region() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let ino = make_fb_inode(TEST_FB_IDX).ino();
     assert_eq!(ino, FB0_INO_BASE | TEST_FB_IDX as Ino);
     assert!(FBDEV.contains(ino), "{ino:#x} outside {}", FBDEV.name());
@@ -38,6 +39,7 @@ fn a_published_fb_number_falls_inside_the_fbdev_region() {
 
 #[test]
 fn a_real_fb_inode_resolves_to_its_own_index() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let inode = make_fb_inode(TEST_FB_IDX);
     assert_eq!(super::fb_index_of(&inode), Some(TEST_FB_IDX));
     assert_eq!(super::fb_index_of(&make_fb_inode(0)), Some(0));
@@ -45,6 +47,7 @@ fn a_real_fb_inode_resolves_to_its_own_index() {
 
 #[test]
 fn a_foreign_inode_reusing_an_fb_number_is_declined() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     // The exact number `/dev/fb0` carries, on an inode that is not a
     // framebuffer. Resolving it would run the FBIO* body against fb 0.
     let stranger = foreign_inode(FB0_INO_BASE);
@@ -56,6 +59,7 @@ fn a_foreign_inode_reusing_an_fb_number_is_declined() {
 
 #[test]
 fn an_inode_with_no_backend_state_is_declined() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let bare = bare_inode(FB0_INO_BASE | TEST_FB_IDX as Ino);
     assert_eq!(super::fb_index_of(&bare), None);
     assert_eq!(handle_fbdev_ioctl(&bare, crate::FBIOGET_FSCREENINFO, 0), None);
@@ -64,6 +68,7 @@ fn an_inode_with_no_backend_state_is_declined() {
 
 #[test]
 fn a_high_inode_whose_low_half_reads_as_fbdev_is_declined() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     // What the low-32-bit mask could not see: every tag family mints numbers
     // whose low 32 bits are its own id, so an ext4 inode number or a socket id
     // of 0xFB00_0003 produced a full match and stole fb 3's ioctls.

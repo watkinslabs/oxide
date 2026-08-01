@@ -9,7 +9,6 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use sched::Task;
 
 use super::*;
-use crate::sysv_shm::tests::TEST_LOCK;
 use crate::sysv_shm::{lookup_by_id, rmid_forced, ShmSegment, SHM_DEST};
 
 const IPC_CREAT: u64 = 0o1000;
@@ -50,10 +49,8 @@ fn task(tid: u32) -> Arc<Task> {
     Arc::new(Task::new(tid, "shm-creator", sched::SchedClass::Normal { weight: 1024 }))
 }
 
-fn reset() {
-    crate::sysv_shm::REG.segs.lock().clear();
-    rmid_forced::set_shm_rmid_forced(0);
-}
+/// The one reset body lives with the claim that owns it.
+fn reset() { crate::sysv_shm::test_claim::reset_shm() }
 
 fn create(key: i32) -> i32 {
     let cpid = 0;
@@ -66,8 +63,7 @@ fn creator_of(id: i32) -> bool {
 
 #[test]
 fn creation_records_the_creating_task() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let a = task(60_001);
     become_current(&a);
     let id = create(0x5100);
@@ -79,8 +75,7 @@ fn creation_records_the_creating_task() {
 
 #[test]
 fn creator_exit_orphans_the_segment_and_leaves_it_for_a_later_sweep() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let a = task(60_002);
     become_current(&a);
     let id = create(0x5200);
@@ -98,8 +93,7 @@ fn creator_exit_orphans_the_segment_and_leaves_it_for_a_later_sweep() {
 
 #[test]
 fn creator_exit_under_forced_rmid_destroys_an_idle_segment() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let a = task(60_003);
     become_current(&a);
     rmid_forced::set_shm_rmid_forced(1);
@@ -112,8 +106,7 @@ fn creator_exit_under_forced_rmid_destroys_an_idle_segment() {
 
 #[test]
 fn a_still_attached_segment_survives_its_creators_exit_even_when_forced() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let a = task(60_004);
     become_current(&a);
     rmid_forced::set_shm_rmid_forced(1);
@@ -132,8 +125,7 @@ fn a_still_attached_segment_survives_its_creators_exit_even_when_forced() {
 
 #[test]
 fn exit_shm_leaves_another_tasks_segments_alone() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let a = task(60_005);
     let b = task(60_006);
     become_current(&a);
@@ -153,8 +145,7 @@ fn a_recycled_tid_does_not_inherit_the_dead_creators_segments() {
     // reused, and a tid-keyed creator list would let the NEXT task with the
     // same number orphan (and under forced rmid destroy) segments it never
     // created.
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     const TID: u32 = 60_007;
     let first = task(TID);
     become_current(&first);
@@ -172,8 +163,7 @@ fn a_recycled_tid_does_not_inherit_the_dead_creators_segments() {
 
 #[test]
 fn orphan_sweep_skips_segments_whose_creator_is_still_alive() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let a = task(60_008);
     become_current(&a);
     let live = create(0x5700);
@@ -189,8 +179,7 @@ fn orphan_sweep_skips_segments_whose_creator_is_still_alive() {
 
 #[test]
 fn rmid_forced_flag_round_trips_and_defaults_off() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     assert_eq!(rmid_forced::shm_rmid_forced(), 0);
     rmid_forced::set_shm_rmid_forced(1);
     assert_eq!(rmid_forced::shm_rmid_forced(), 1);
@@ -208,8 +197,7 @@ fn forced_rmid_reclaims_a_never_rmided_segment_at_its_last_detach() {
     // The `shm_may_destroy` arm that only exists once the sysctl does: with
     // rmid_forced clear this segment survives, with it set the last detach
     // takes it, without any IPC_RMID ever being issued.
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let seg = Arc::new(ShmSegment {
         id: 60_100, key: 0x5800, ns: crate::ipc_namespace::current().unwrap().key(),
         size: SEG_SIZE, mode: SEG_MODE as u32,

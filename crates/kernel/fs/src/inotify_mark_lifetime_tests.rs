@@ -43,6 +43,7 @@ fn ev(wd: i32, mask: u32, cookie: u32, name: &[u8]) -> Event {
 /// the moment we enter the syscall").
 #[test]
 fn deleting_the_watched_inode_frees_the_wd_and_queues_ignored() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk(0x7001);
     let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_DELETE_SELF, false, None).unwrap();
@@ -60,6 +61,7 @@ fn deleting_the_watched_inode_frees_the_wd_and_queues_ignored() {
 /// path against a retired mark.
 #[test]
 fn a_recycled_ino_gets_a_fresh_wd_not_the_dead_one() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let old = mk(0x7002);
     let first = add_or_update_watch(&g, inode_key(&old), old.fsid(), FAN_MODIFY, false, None).unwrap();
@@ -79,6 +81,7 @@ fn a_recycled_ino_gets_a_fresh_wd_not_the_dead_one() {
 /// filesystem-scope marks hang off the mount/superblock and are untouched.
 #[test]
 fn mount_scope_marks_survive_an_inode_delete() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let f = mk(0x7003);
     assert_eq!(apply_mark(&g, MarkScope::Mount, 0, f.fsid(), FAN_MODIFY, true, false, 0), 0);
@@ -95,6 +98,7 @@ fn mount_scope_marks_survive_an_inode_delete() {
 /// only inotify groups get `IN_IGNORED`.
 #[test]
 fn a_fanotify_inode_mark_dies_without_an_ignored_record() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let f = mk(0x7004);
     assert_eq!(apply_mark(&g, MarkScope::Inode, inode_key(&f), f.fsid(), FAN_MODIFY, true, false, 0), 0);
@@ -111,6 +115,7 @@ fn a_fanotify_inode_mark_dies_without_an_ignored_record() {
 /// CORRECT, not a lost watch. Pinned so the next reader does not "fix" it.
 #[test]
 fn oneshot_retires_the_watch_so_a_later_rm_watch_is_correctly_einval() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk(0x7005);
     let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_MODIFY | IN_ONESHOT, false, None).unwrap();
@@ -124,6 +129,7 @@ fn oneshot_retires_the_watch_so_a_later_rm_watch_is_correctly_einval() {
 /// `inotify_merge`/`event_compare`: an identical tail absorbs the new record.
 #[test]
 fn an_identical_consecutive_event_is_folded_into_the_tail() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     g.enqueue_event(ev(1, FAN_MODIFY, 0, b""));
     g.enqueue_event(ev(1, FAN_MODIFY, 0, b""));
@@ -135,6 +141,7 @@ fn an_identical_consecutive_event_is_folded_into_the_tail() {
 /// interleaved different event breaks the run.
 #[test]
 fn only_the_tail_absorbs_so_an_interleaved_event_breaks_the_run() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     g.enqueue_event(ev(1, FAN_MODIFY, 0, b""));
     g.enqueue_event(ev(1, FAN_DELETE_SELF, 0, b""));
@@ -145,6 +152,7 @@ fn only_the_tail_absorbs_so_an_interleaved_event_breaks_the_run() {
 /// A different wd or a different name is a different record.
 #[test]
 fn a_different_wd_or_name_never_merges() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert!(!merges_into_tail(&ev(1, FAN_MODIFY, 0, b""), &ev(2, FAN_MODIFY, 0, b"")));
     assert!(!merges_into_tail(&ev(1, FAN_MODIFY, 0, b"a"), &ev(1, FAN_MODIFY, 0, b"b")));
     assert!(!merges_into_tail(&ev(1, FAN_MODIFY, 0, b""), &ev(1, FAN_MODIFY, 0, b"a")));
@@ -154,6 +162,7 @@ fn a_different_wd_or_name_never_merges() {
 /// mask/wd/name collapse even with distinct cookies. Mirrors Linux exactly.
 #[test]
 fn the_rename_cookie_is_not_part_of_the_comparison() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert!(merges_into_tail(&ev(1, FAN_MODIFY, 7, b"x"), &ev(1, FAN_MODIFY, 9, b"x")));
 }
 
@@ -161,6 +170,7 @@ fn the_rename_cookie_is_not_part_of_the_comparison() {
 /// the last word on that wd and absorbs nothing.
 #[test]
 fn an_ignored_tail_absorbs_nothing() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert!(!merges_into_tail(&ev(1, IN_IGNORED, 0, b""), &ev(1, IN_IGNORED, 0, b"")));
     let g = InotifyData::new(0);
     g.enqueue_event(ev(1, IN_IGNORED, 0, b""));

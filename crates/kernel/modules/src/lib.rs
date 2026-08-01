@@ -24,6 +24,9 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+#[cfg(test)]
+mod test_serial;
+
 pub mod symtab;
 pub use symtab::{
     export, export_module, is_exported, license_is_gpl, resolve, unexport_module,
@@ -140,6 +143,7 @@ mod stub_tests {
 
     #[test]
     fn init_succeeds() {
+        let _modules = crate::test_serial::claim();
         // SAFETY: hosted-test entry; nothing else has touched the subsystem; init's preconditions trivially hold.
         let r = unsafe { init() };
         assert_eq!(r, Ok(()));

@@ -118,6 +118,7 @@ mod tests {
 
     #[test]
     fn kobject_refs_names_attrs_and_uevents() {
+        let _modules = crate::test_serial::claim();
         RELEASES.store(0, Ordering::Relaxed);
         let ktype = LinuxKobjType { release: Some(release) };
         let mut kobj = LinuxKobject::new();

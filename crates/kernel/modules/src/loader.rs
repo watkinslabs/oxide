@@ -275,6 +275,7 @@ mod tests {
 
     #[test]
     fn loads_minimal_rel() {
+        let _modules = crate::test_serial::claim();
         let buf = build_minimal_rel();
         let m = load_module(&buf, &EmptyResolver).unwrap();
         assert!(m.sections.iter().any(|s| s.name == ".text"));
@@ -283,6 +284,7 @@ mod tests {
 
     #[test]
     fn loads_minimal_aarch64_rel() {
+        let _modules = crate::test_serial::claim();
         let mut buf = build_minimal_rel();
         buf[18..20].copy_from_slice(&EM_AARCH64.to_le_bytes());
         let m = load_module(&buf, &EmptyResolver).unwrap();
@@ -291,6 +293,7 @@ mod tests {
 
     #[test]
     fn rejects_undefined_symbol() {
+        let _modules = crate::test_serial::claim();
         // Build a minimal rel and inject an UNDEF symbol that
         // points at no section. The loader should fail when no
         // resolver entry matches.

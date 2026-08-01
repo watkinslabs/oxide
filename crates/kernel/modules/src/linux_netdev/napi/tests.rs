@@ -54,6 +54,7 @@ unsafe fn cleanup(iface: net::NetIfaceId, dev: *mut LinuxNetDevice) {
 
 #[test]
 fn current_generation_runs_poll_under_ingress_lease() {
+    let _modules = crate::test_serial::claim();
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     POLLS.store(0, Ordering::Release);
     let (iface, dev) = fixture();
@@ -70,6 +71,7 @@ fn current_generation_runs_poll_under_ingress_lease() {
 
 #[test]
 fn retired_generation_rejects_prepared_poll() {
+    let _modules = crate::test_serial::claim();
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     POLLS.store(0, Ordering::Release);
     let (iface, dev) = fixture();
@@ -87,6 +89,7 @@ fn retired_generation_rejects_prepared_poll() {
 
 #[test]
 fn losing_prepare_preserves_scheduled_generation() {
+    let _modules = crate::test_serial::claim();
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (iface, dev) = fixture();
     let mut napi = napi(dev);
@@ -104,6 +107,7 @@ fn losing_prepare_preserves_scheduled_generation() {
 
 #[test]
 fn disable_cancels_prepared_generation() {
+    let _modules = crate::test_serial::claim();
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     POLLS.store(0, Ordering::Release);
     let (iface, dev) = fixture();

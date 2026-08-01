@@ -489,4 +489,7 @@ pub fn bind_addr(bus: &str, addr: &str, driver_name: &'static str) -> KResult<()
 
 
 #[cfg(test)]
+pub(crate) mod test_claim;
+
+#[cfg(test)]
 mod tests;
