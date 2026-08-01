@@ -61,6 +61,14 @@ pub(super) fn ptrace_syscall_stop_if_armed(rax: u64, entry: bool) -> bool {
 /// userspace originally asked for, or the rewrite is silently ignored.
 /// # C: O(1)
 pub(super) fn syscall_nr_after_entry_stop(orig: u64) -> u64 {
+    use core::sync::atomic::Ordering;
+    // Untraced is the overwhelmingly common case and there is nobody who could
+    // have rewritten anything, so the frame read is skipped entirely — one
+    // atomic load on the syscall hot path instead.
+    match sched::live::current() {
+        Some(c) if c.traced_by.load(Ordering::Acquire) != 0 => {}
+        _ => return orig,
+    }
     let regs = crate::arch_frame::current_user_regs();
     if regs.is_null() { return orig; }
     // SAFETY: `current_user_regs` is this task's own live syscall entry frame on its own kernel stack, read-only, and this task is the sole mutator of it per `13§5`.
