@@ -29,7 +29,7 @@ pub fn remount_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
 /// through `SuperBlock::reconfigure_super` first, then commit the per-mount
 /// `MNT_*` option bits. A backend remount failure leaves both flag sets
 /// unchanged, matching Linux's fail-before commit shape. # C: O(dirty)
-pub fn remount_super_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
+pub fn remount_super_flags_by_id(mnt_id: u64, flags: u64, data: &str) -> KResult<()> {
     let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
     if !check_mnt(&m) { return Err(VfsError::Einval); }
     let (old, new) = proposed_mnt_flags(&m, flags);
@@ -40,7 +40,7 @@ pub fn remount_super_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
         return Err(VfsError::Ebusy);
     }
     let sb_set = ms_to_sb(flags);
-    m.sb.reconfigure_super(sb_set, SB_REMOUNT_MASK & !sb_set)?;
+    m.sb.reconfigure_super(sb_set, SB_REMOUNT_MASK & !sb_set, data)?;
     m.flags.store(new, Ordering::Release);
     mntns::bump_gen(m.namespace_id());
     Ok(())

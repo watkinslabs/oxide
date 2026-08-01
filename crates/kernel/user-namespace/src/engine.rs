@@ -13,12 +13,24 @@ use crate::translate::OverflowId;
 use crate::uapi::{INITIAL_COUNT, INITIAL_HOST_ID, INITIAL_NS_ID};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum IdMapKind { Uid, Gid }
+pub enum IdMapKind { Uid, Gid, Projid }
 
 impl IdMapKind {
     /// Overflow id this map kind translates an unmapped id to. # C: O(1)
     pub const fn overflow(self) -> OverflowId {
-        match self { Self::Uid => OverflowId::Uid, Self::Gid => OverflowId::Gid }
+        match self {
+            Self::Uid => OverflowId::Uid,
+            Self::Gid => OverflowId::Gid,
+            Self::Projid => OverflowId::Projid,
+        }
+    }
+    /// Whether an unprivileged writer is restricted to a single extent naming
+    /// its own id. TRUE for `uid_map`/`gid_map`, which grant authority over
+    /// other people's ids. FALSE for `projid_map`: a project id confers no
+    /// authority, so anyone may install any valid project mapping — Linux
+    /// passes no capability at all for that file. # C: O(1)
+    pub const fn write_needs_privilege(self) -> bool {
+        match self { Self::Uid | Self::Gid => true, Self::Projid => false }
     }
 }
 
@@ -51,11 +63,14 @@ impl From<ExtentError> for UserNsError {
 struct UserNsState {
     uid_map: Option<Vec<IdMapExtent>>,
     gid_map: Option<Vec<IdMapExtent>>,
+    projid_map: Option<Vec<IdMapExtent>>,
     setgroups: SetgroupsPolicy,
 }
 
 impl Default for UserNsState {
-    fn default() -> Self { Self { uid_map: None, gid_map: None, setgroups: SetgroupsPolicy::Allow } }
+    fn default() -> Self {
+        Self { uid_map: None, gid_map: None, projid_map: None, setgroups: SetgroupsPolicy::Allow }
+    }
 }
 
 static STATE: sync::Spinlock<BTreeMap<NamespaceId, UserNsState>, sync::TaskList> =
@@ -87,11 +102,19 @@ fn initial_map() -> Vec<IdMapExtent> {
 }
 
 fn map_field(state: &UserNsState, kind: IdMapKind) -> &Option<Vec<IdMapExtent>> {
-    match kind { IdMapKind::Uid => &state.uid_map, IdMapKind::Gid => &state.gid_map }
+    match kind {
+        IdMapKind::Uid => &state.uid_map,
+        IdMapKind::Gid => &state.gid_map,
+        IdMapKind::Projid => &state.projid_map,
+    }
 }
 
 fn map_field_mut(state: &mut UserNsState, kind: IdMapKind) -> &mut Option<Vec<IdMapExtent>> {
-    match kind { IdMapKind::Uid => &mut state.uid_map, IdMapKind::Gid => &mut state.gid_map }
+    match kind {
+        IdMapKind::Uid => &mut state.uid_map,
+        IdMapKind::Gid => &mut state.gid_map,
+        IdMapKind::Projid => &mut state.projid_map,
+    }
 }
 
 /// Snapshot the current map (empty when unset — Linux shows an empty
@@ -136,7 +159,12 @@ pub fn setgroups_policy<H: core::ops::Deref<Target = Namespace>>(owner: &H)
     Ok(states.get(&owner.id()).map(|s| s.setgroups).unwrap_or(SetgroupsPolicy::Allow))
 }
 
-/// Apply one validated `uid_map`/`gid_map` write (Linux `map_write`).
+/// Apply one validated `uid_map`/`gid_map`/`projid_map` write (Linux
+/// `map_write`).
+///
+/// `projid_map` takes NO capability: a project id names an accounting bucket,
+/// not an authority, so any valid extent set is accepted on first write
+/// ([`IdMapKind::write_needs_privilege`]). Write-once still applies.
 ///
 /// `writer_has_cap_in_parent` is `CAP_SETUID`/`CAP_SETGID` held by the
 /// writer in the target namespace's PARENT (the caller resolves this via
@@ -153,7 +181,7 @@ pub fn write_map(owner: &NamespaceRef, kind: IdMapKind, writer_has_cap_in_parent
 {
     let id = require_writable_owner(owner)?;
     validate_extents(extents)?;
-    if !writer_has_cap_in_parent {
+    if kind.write_needs_privilege() && !writer_has_cap_in_parent {
         let sole = extents[0];
         if extents.len() != 1 || sole.count != 1 || sole.host_id != writer_own_id {
             return Err(UserNsError::UnprivilegedNotOwnId);

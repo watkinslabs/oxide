@@ -14,6 +14,22 @@ fn current_mount_ns() -> vfs::mntns::MntNamespaceRef {
         .unwrap_or_else(vfs::mntns::initial)
 }
 
+/// User namespace a superblock built right now belongs to (Linux stamps
+/// `sb->s_user_ns` from the MOUNTING task). Boot-time and kernel-internal
+/// mounts have no task and get the initial namespace, whose maps are the
+/// identity. # C: O(1)
+fn current_user_ns() -> Option<namespace_identity::NamespacePin> {
+    sched::live::current()?
+        .namespace_owner(namespace_identity::NamespaceKind::User)
+        .map(|ns| ns.pin())
+}
+
+/// Linux `capable(CAP_SYS_RESOURCE)` for the quota limit ladder: the holder
+/// charges past hard limits and expired grace periods. # C: O(1)
+fn quota_has_sys_resource() -> bool {
+    sched::live::current().is_some_and(|cur| cur.has_cap(sched::cap::SYS_RESOURCE))
+}
+
 /// Install the VFS path-walk hooks (mount-crossing) AND the mount-ns
 /// provider at boot. Resolution is now always per-component
 /// (`d_lookup → i_op->lookup → d_add`); there is no whole-path delegate to
@@ -26,6 +42,8 @@ pub fn install_vfs_hooks() {
         sched::live::sb_freeze::schedule_after_park,
         sched::live::sb_freeze::wake,
     );
+    vfs::superblock::set_current_user_ns_hook(current_user_ns);
+    vfs::set_quota_sys_resource_hook(quota_has_sys_resource);
     vfs::set_quota_wait_hooks(
         sched::live::quota_wait::park,
         sched::live::quota_wait::schedule_after_park,

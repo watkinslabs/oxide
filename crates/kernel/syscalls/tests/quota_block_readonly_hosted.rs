@@ -3,8 +3,11 @@
 // under test needs. dead_code here measures the test's reach, not the kernel's
 // -- the real signal lives in `xtask kernel`, which is dead_code-clean.
 #![allow(dead_code)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use syscall::{errno::Errno, SyscallArgs};
+
+static CURRENT_TASK_PTR: AtomicU64 = AtomicU64::new(0);
 
 const SPECIAL_ADDR: u64 = 0x5155_2A10;
 
@@ -34,6 +37,8 @@ mod abi;
 mod cmd;
 #[path = "../src/179_quotactl/dispatch.rs"]
 mod dispatch;
+#[path = "../src/179_quotactl/qidns.rs"]
+mod qidns;
 #[path = "../src/179_quotactl/sys.rs"]
 mod sys;
 #[path = "../src/179_quotactl_xfs/core.rs"]
@@ -68,11 +73,27 @@ fn resolved_block_path(inode_sb: &Arc<vfs::SuperBlock>, rdev: u32) -> vfs::VfsPa
     vfs::VfsPath { mnt_id: 0, dentry: d, inode: ino, last_component: None }
 }
 
+fn hosted_current_task() -> Option<&'static sched::Task> {
+    let ptr = CURRENT_TASK_PTR.load(Ordering::Acquire);
+    if ptr == 0 { return None; }
+    // SAFETY: tests store leaked Task pointers and clear only between serialized cases.
+    Some(unsafe { &*(ptr as *const sched::Task) })
+}
+
+/// Publish a privileged caller so a command reaches its own errno instead of
+/// stopping at the no-current-task rung. # C: O(1)
+fn install_root_current() {
+    let task = Box::leak(Box::new(sched::Task::new(0x2a10, "quotactl-block-readonly-hosted",
+        sched::SchedClass::Normal { weight: 1024 })));
+    CURRENT_TASK_PTR.store(task as *const sched::Task as u64, Ordering::Release);
+}
+
 fn begin_test() -> MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     *SPECIAL_PATH.lock().unwrap() = None;
     READ_USER_PATH_CALLS.lock().unwrap().clear();
-    sched::set_current_hook(|| None);
+    CURRENT_TASK_PTR.store(0, Ordering::Release);
+    sched::set_current_hook(hosted_current_task);
     guard
 }
 
@@ -96,40 +117,76 @@ fn args(subcmd: u64) -> SyscallArgs {
     }
 }
 
+// Device-targeted `quotactl(2)` takes no write reference on the target, so a
+// READ-ONLY superblock changes nothing about which errno a command returns.
+// Every assertion below is paired: the same command against a writable target
+// must produce the same answer.
+
 #[test]
-fn block_readonly_classic_write_commands_return_erofs_before_current_task_hosted() {
+fn block_readonly_classic_write_commands_are_not_rejected_by_a_write_gate_hosted() {
     let _guard = begin_test();
     let _target_sb = install_readonly_target("block-readonly-classic-target-sb", 0x5155_2A11,
         "block-readonly-classic-special-sb", 0x5155_2A12);
 
     for subcmd in [cmd::Q_GETQUOTA, cmd::Q_GETNEXTQUOTA, cmd::Q_SETQUOTA, cmd::Q_SETINFO, cmd::Q_QUOTAOFF] {
         READ_USER_PATH_CALLS.lock().unwrap().clear();
-        assert_eq!(sys::sys_quotactl(&args(subcmd)), eno(Errno::Erofs));
+        assert_eq!(sys::sys_quotactl(&args(subcmd)), eno(Errno::Esrch),
+            "a read-only target must not short-circuit a classic write command to EROFS");
         assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
     }
 }
 
 #[test]
-fn block_readonly_quotaon_returns_erofs_after_quota_path_and_special_lookup_hosted() {
+fn block_writable_and_readonly_targets_agree_on_every_classic_write_command_hosted() {
+    let _guard = begin_test();
+    let target_sb = install_readonly_target("block-rw-parity-target-sb", 0x5155_2A19,
+        "block-rw-parity-special-sb", 0x5155_2A1A);
+
+    for subcmd in [cmd::Q_GETQUOTA, cmd::Q_GETNEXTQUOTA, cmd::Q_SETQUOTA, cmd::Q_SETINFO, cmd::Q_QUOTAOFF] {
+        target_sb.set_readonly(true);
+        let ro = sys::sys_quotactl(&args(subcmd));
+        target_sb.set_readonly(false);
+        let rw = sys::sys_quotactl(&args(subcmd));
+        assert_eq!(ro, rw, "read-only state must not alter a classic write command's errno");
+    }
+}
+
+#[test]
+fn block_readonly_quotaon_is_not_rejected_by_a_write_gate_hosted() {
     let _guard = begin_test();
     let _target_sb = install_readonly_target("block-readonly-quotaon-target-sb", 0x5155_2A13,
         "block-readonly-quotaon-special-sb", 0x5155_2A14);
 
-    assert_eq!(sys::sys_quotactl(&args(cmd::Q_QUOTAON)), eno(Errno::Erofs));
+    assert_eq!(sys::sys_quotactl(&args(cmd::Q_QUOTAON)), eno(Errno::Esrch));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[0, SPECIAL_ADDR]);
 }
 
 #[test]
-fn block_readonly_xfs_write_commands_return_erofs_before_usercopy_hosted() {
+fn block_readonly_xfs_write_commands_are_not_rejected_by_a_write_gate_hosted() {
     let _guard = begin_test();
     let _target_sb = install_readonly_target("block-readonly-xfs-target-sb", 0x5155_2A17,
         "block-readonly-xfs-special-sb", 0x5155_2A18);
 
     for subcmd in [xfs::Q_XSETQLIM, xfs::Q_XQUOTAON, xfs::Q_XQUOTAOFF, xfs::Q_XQUOTARM] {
         READ_USER_PATH_CALLS.lock().unwrap().clear();
-        assert_eq!(sys::sys_quotactl(&args(subcmd)), eno(Errno::Erofs));
+        assert_eq!(sys::sys_quotactl(&args(subcmd)), eno(Errno::Esrch),
+            "a read-only target must not short-circuit an XFS write command to EROFS");
         assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
     }
+}
+
+#[test]
+fn block_readonly_quota_sync_is_the_only_command_that_reports_erofs_hosted() {
+    // The single read-only rejection quota control has: the XFS quota-sync
+    // command names it explicitly. Its writable-target counterpart succeeds.
+    let _guard = begin_test();
+    let target_sb = install_readonly_target("block-readonly-xqsync-target-sb", 0x5155_2A1B,
+        "block-readonly-xqsync-special-sb", 0x5155_2A1C);
+    install_root_current();
+
+    assert_eq!(sys::sys_quotactl(&args(xfs::Q_XQUOTASYNC)), eno(Errno::Erofs));
+    target_sb.set_readonly(false);
+    assert_eq!(sys::sys_quotactl(&args(xfs::Q_XQUOTASYNC)), 0);
 }
 
 #[test]

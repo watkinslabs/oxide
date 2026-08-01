@@ -13,6 +13,7 @@ klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 bitflags = { version = "2", default-features = false }
 namespace-identity = { path = "../namespace-identity" }
+user-namespace = { path = "../user-namespace" }
 vmm      = { path = "../mm-vmm" }
 
 [dev-dependencies]

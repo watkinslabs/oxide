@@ -120,7 +120,7 @@ fn hidden_quota_ro_to_rw_remount_later_class_failure_surfaces_prior_quota_off_fa
     assert!(!sb.s_dquot.is_enabled(vfs::QuotaType::Project));
     m.state().mount.fail_next_quota_info_write_for_tests();
 
-    assert_eq!(sb.reconfigure_super(0, SB_RDONLY), Err(VfsError::Eio));
+    assert_eq!(sb.reconfigure_super(0, SB_RDONLY, ""), Err(VfsError::Eio));
 
     assert!(sb.is_readonly(), "failed remount leaves SB_RDONLY set");
     assert!(!sb.s_dquot.is_enabled(vfs::QuotaType::Project), "later failed class stays inactive");

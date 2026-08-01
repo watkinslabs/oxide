@@ -8,6 +8,7 @@
 // - `179_quotactl/abi.rs`: classic quotactl UAPI structs and usercopy helpers.
 // - `179_quotactl/cmd.rs`: classic/XFS quotactl command constants and classification.
 // - `179_quotactl/dispatch.rs`: targeted/global quotactl dispatch shared with hosted tests.
+// - `179_quotactl/qidns.rs`: user-namespace resolution of the `id` argument.
 // - `179_quotactl/tests.rs`: direct syscall/context errno-order coverage.
 // - `179_quotactl_xfs.rs`: XFS-compatible command ABI and dispatch.
 #![cfg(any(target_os = "oxide-kernel", test))]
@@ -17,6 +18,7 @@ use syscall::{errno::Errno, SyscallArgs};
 #[path = "179_quotactl/abi.rs"] mod abi;
 #[path = "179_quotactl/cmd.rs"] mod cmd;
 #[path = "179_quotactl/dispatch.rs"] mod dispatch;
+#[path = "179_quotactl/qidns.rs"] mod qidns;
 #[path = "179_quotactl/sys.rs"] mod sys;
 #[cfg(test)] #[path = "179_quotactl/tests.rs"] mod tests;
 #[path = "179_quotactl_xfs.rs"] mod xfs;

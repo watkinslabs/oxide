@@ -37,6 +37,8 @@ mod abi;
 mod cmd;
 #[path = "../src/179_quotactl/dispatch.rs"]
 mod dispatch;
+#[path = "../src/179_quotactl/qidns.rs"]
+mod qidns;
 #[path = "../src/179_quotactl/sys.rs"]
 mod sys;
 #[path = "../src/179_quotactl_xfs/core.rs"]
@@ -133,17 +135,20 @@ fn sys_quotactl_unknown_subcmd_root_returns_einval_after_block_lookup_hosted() {
 }
 
 #[test]
-fn sys_quotactl_unknown_subcmd_readonly_target_returns_erofs_before_permission_hosted() {
+fn sys_quotactl_unknown_subcmd_on_a_readonly_target_still_runs_the_permission_ladder_hosted() {
+    // A read-only target must not collapse the unknown-subcommand ladder to
+    // EROFS: an unknown command is EINVAL for a privileged caller and EPERM
+    // for everyone else, exactly as on a writable target.
     let _guard = begin_test();
     install_current(0, true);
     let (_target_sb, _special_sb) = install_readonly_block_target();
 
-    assert_eq!(sys::sys_quotactl(&args()), eno(Errno::Erofs));
+    assert_eq!(sys::sys_quotactl(&args()), eno(Errno::Einval));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
 
     READ_USER_PATH_CALLS.lock().unwrap().clear();
     install_current(1000, false);
-    assert_eq!(sys::sys_quotactl(&args()), eno(Errno::Erofs));
+    assert_eq!(sys::sys_quotactl(&args()), eno(Errno::Eperm));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
 }
 

@@ -1,17 +1,19 @@
 use syscall::errno::Errno;
 
-use super::{abi::{user_range, write_raw}, dispatch::{qid, quota_now_sec}, eno};
+use super::{abi::{user_range, write_raw}, dispatch::quota_now_sec, eno, qidns::QuotaIdCtx};
 #[path = "uapi.rs"] mod uapi;
 pub use super::cmd::{Q_XGETNEXTQUOTA, Q_XGETQSTAT, Q_XGETQSTATV, Q_XGETQUOTA, Q_XQUOTAOFF, Q_XQUOTAON, Q_XQUOTARM, Q_XQUOTASYNC, Q_XSETQLIM};
 use uapi::*;
 
 /// Dispatch XFS-compatible quotactl commands through the generic VFS quota core.
 /// # C: O(N_dq)+FS
-pub fn dispatch(sb: &vfs::SuperBlock, subcmd: u64, kind: vfs::QuotaType, id: u64, addr: u64) -> i64 {
+pub fn dispatch(sb: &vfs::SuperBlock, subcmd: u64, kind: vfs::QuotaType, idctx: &QuotaIdCtx,
+    addr: u64) -> i64
+{
     match subcmd {
-        Q_XGETQUOTA => get_quota(sb, kind, id, addr),
-        Q_XGETNEXTQUOTA => get_next_quota(sb, kind, id, addr),
-        Q_XSETQLIM => set_qlim(sb, kind, id, addr),
+        Q_XGETQUOTA => get_quota(sb, kind, idctx, addr),
+        Q_XGETNEXTQUOTA => get_next_quota(sb, kind, idctx, addr),
+        Q_XSETQLIM => set_qlim(sb, kind, idctx, addr),
         Q_XGETQSTAT => get_qstat(sb, kind, addr),
         Q_XGETQSTATV => get_qstatv(sb, kind, addr),
         Q_XQUOTASYNC => if sb.sb_rdonly() { eno(Errno::Erofs) } else { 0 },
@@ -38,21 +40,27 @@ pub fn command(subcmd: u64) -> Option<vfs::QuotaCtlCmd> {
     }
 }
 
-fn get_quota(sb: &vfs::SuperBlock, kind: vfs::QuotaType, id: u64, addr: u64) -> i64 {
-    let dq = match sb.s_op.quota_get_xfs(sb, qid(kind, id)) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
-    write_quota(addr, kind, id as u32, dq)
+fn get_quota(sb: &vfs::SuperBlock, kind: vfs::QuotaType, idctx: &QuotaIdCtx, addr: u64) -> i64 {
+    let qid = match idctx.kqid(sb) { Ok(q) => q, Err(rv) => return rv };
+    let dq = match sb.s_op.quota_get_xfs(sb, qid) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
+    write_quota(addr, kind, idctx.report(qid), dq)
 }
 
-fn get_next_quota(sb: &vfs::SuperBlock, kind: vfs::QuotaType, id: u64, addr: u64) -> i64 {
-    let (next, dq) = match sb.s_op.quota_get_next_xfs(sb, qid(kind, id)) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
-    write_quota(addr, kind, next.id, dq)
+fn get_next_quota(sb: &vfs::SuperBlock, kind: vfs::QuotaType, idctx: &QuotaIdCtx, addr: u64) -> i64 {
+    let qid = match idctx.kqid(sb) { Ok(q) => q, Err(rv) => return rv };
+    let (next, dq) = match sb.s_op.quota_get_next_xfs(sb, qid) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
+    write_quota(addr, kind, idctx.report(next), dq)
 }
 
-fn set_qlim(sb: &vfs::SuperBlock, kind: vfs::QuotaType, id: u64, addr: u64) -> i64 {
+fn set_qlim(sb: &vfs::SuperBlock, kind: vfs::QuotaType, idctx: &QuotaIdCtx, addr: u64) -> i64 {
     let mut q = match read_quota(addr) { Ok(q) => q, Err(rv) => return rv };
     if !sb.s_op.quota_set_xfs_supported(sb) { return eno(Errno::Enosys); }
-    let qid = qid(kind, id);
-    if id == 0 && q.d_fieldmask & (FS_DQ_TIMER_MASK | FS_DQ_WARNS_MASK) != 0 {
+    let qid = match idctx.kqid(sb) { Ok(q) => q, Err(rv) => return rv };
+    // "Set the timers/warnings for EVERYONE" is keyed on the identity the
+    // TARGET filesystem calls id 0 — not on the number the caller typed, which
+    // a namespace can map to any account at all.
+    let root_id = vfs::from_kqid_munged(&sb.s_user_ns, qid) == 0;
+    if root_id && q.d_fieldmask & (FS_DQ_TIMER_MASK | FS_DQ_WARNS_MASK) != 0 {
         if !sb.s_op.quota_set_info_xfs_supported(sb) { return eno(Errno::Einval); }
         let info = vfs::MemDqinfo {
             dqi_bgrace: if q.d_fieldmask & FS_DQ_BTIMER != 0 { xfs_info_timer(q.d_btimer) } else { 0 },

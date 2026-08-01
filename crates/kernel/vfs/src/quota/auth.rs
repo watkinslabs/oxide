@@ -34,6 +34,11 @@ pub fn quota_ignore_hardlimit(fmt: u32, dqi_flags: u32) -> bool {
     quota_has_sys_resource() && (fmt != QFMT_VFS_OLD || dqi_flags & DQF_ROOT_SQUASH == 0)
 }
 
+/// Linux `INVALID_UID`/`INVALID_GID`/`INVALID_PROJID` — the identity a quota
+/// argument resolves to when the caller's user namespace has no mapping for
+/// it. Never equal to a real credential. # C: O(1)
+pub const INVALID_QUOTA_ID: u32 = u32::MAX;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QuotaCtlCmd {
     Sync,
@@ -77,7 +82,14 @@ impl QuotaCtlCred {
     }
 }
 
-/// Linux `check_quotactl_permission` for classic quota commands. # C: O(ngroups)
+/// Linux `check_quotactl_permission` for classic quota commands.
+///
+/// `id` is the INTERNAL identity the caller's namespace resolved its `qid_t`
+/// argument to — the same space `cred.euid`/`cred.egid` live in, so the
+/// "query the dquot you own" exemption compares like with like. An argument
+/// the caller's namespace cannot name arrives as [`INVALID_QUOTA_ID`], which
+/// no real credential equals, so it falls through to the capability rung
+/// exactly as Linux's `INVALID_UID` does. # C: O(ngroups)
 pub fn quota_check_quotactl_permission(cmd: QuotaCtlCmd, kind: QuotaType, id: u32, cred: &QuotaCtlCred) -> crate::KResult<()> {
     match cmd {
         QuotaCtlCmd::GetFmt | QuotaCtlCmd::GetInfo | QuotaCtlCmd::Sync

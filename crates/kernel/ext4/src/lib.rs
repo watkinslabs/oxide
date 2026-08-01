@@ -66,6 +66,9 @@ mod fsync_latency;
 
 pub mod quota;
 
+pub mod mount_opts;
+pub use mount_opts::{Ext4MountOpts, FsQuotaFeatures, SbQuotaOpts};
+
 // Host-compilable so the verify-left resolution harness
 // (tests/walk_image.rs) can drive the real ext4 Inode impls via
 // `set_test_mount`. The boot path mounts a real virtio-blk disk via

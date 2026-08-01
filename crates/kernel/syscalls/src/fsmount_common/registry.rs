@@ -104,12 +104,15 @@ fn register_filesystems() {
     let _ = register_fs(FsType::new("ramfs", RAMFS_MAGIC,
         FsFlags::FS_USERNS_MOUNT, Box::new(ramfs_ctor)));
     let _ = register_fs(FsType::new("ext4", EXT4_MAGIC,
-        FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, _d: &str, sb_flags: u64| -> R {
+        FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64| -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let access = vfs::MAY_READ
             | if sb_flags & vfs::superblock::SB_RDONLY == 0 { vfs::MAY_WRITE } else { 0 };
         let (dev, dev_t) = resolve_ext4_source(source, access)?;
-        let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
+        // Honour the `-o usrquota/grpquota/prjquota/usrjquota=/grpjquota=/
+        // jqfmt=/quota/noquota` option string. Was: dropped on the floor, so
+        // every quota mount option was silently accepted and did nothing.
+        let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_data(dev, dev_t, d)?;
         mounted(ty, fs, None, source, sb_flags)
     })));
     let _ = register_fs(FsType::new("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _, sb_flags| -> R {

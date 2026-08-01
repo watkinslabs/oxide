@@ -173,3 +173,64 @@ fn translate_mapped_unmapped_and_boundary_ids() {
     assert_eq!(to_ns(&map, 100_009, OverflowId::Uid), 9);
     assert_eq!(to_ns(&map, 100_010, OverflowId::Uid), OVERFLOW_UID);
 }
+
+// --- projid_map ----------------------------------------------------------
+
+#[test]
+fn projid_map_is_independent_of_the_uid_and_gid_maps() {
+    let owner = root_child();
+    engine::write_map(&owner, IdMapKind::Uid, true, 0, &[ext(0, 100_000, 10)]).unwrap();
+    engine::write_map(&owner, IdMapKind::Projid, true, 0, &[ext(0, 5000, 10)]).unwrap();
+    assert_eq!(engine::snapshot_map(&owner, IdMapKind::Projid).unwrap().as_slice(),
+        &[ext(0, 5000, 10)][..]);
+    assert_eq!(engine::snapshot_map(&owner, IdMapKind::Uid).unwrap().as_slice(),
+        &[ext(0, 100_000, 10)][..]);
+    assert!(engine::snapshot_map(&owner, IdMapKind::Gid).unwrap().is_empty());
+}
+
+#[test]
+fn an_unprivileged_writer_may_install_any_projid_extent_set() {
+    // A project id names an accounting bucket, not an authority, so the
+    // single-extent/own-id restriction that guards uid_map and gid_map does
+    // not apply — the same write is EPERM for a uid map and accepted here.
+    let owner = root_child();
+    let extents = [ext(0, 7000, 100), ext(1000, 9000, 5)];
+    assert_eq!(engine::write_map(&owner, IdMapKind::Uid, false, 4242, &extents),
+        Err(UserNsError::UnprivilegedNotOwnId));
+    engine::write_map(&owner, IdMapKind::Projid, false, 4242, &extents).unwrap();
+    assert_eq!(engine::snapshot_map(&owner, IdMapKind::Projid).unwrap().as_slice(), &extents[..]);
+}
+
+#[test]
+fn projid_map_is_write_once_like_the_other_maps() {
+    let owner = root_child();
+    engine::write_map(&owner, IdMapKind::Projid, false, 0, &[ext(0, 1, 1)]).unwrap();
+    assert_eq!(engine::write_map(&owner, IdMapKind::Projid, true, 0, &[ext(0, 2, 1)]),
+        Err(UserNsError::AlreadyPopulated));
+}
+
+#[test]
+fn projid_map_needs_no_setgroups_deny_and_does_not_lock_setgroups() {
+    let owner = root_child();
+    engine::write_map(&owner, IdMapKind::Projid, false, 0, &[ext(0, 1, 1)]).unwrap();
+    engine::write_setgroups(&owner, SetgroupsPolicy::Deny).unwrap();
+    assert_eq!(engine::setgroups_policy(&owner).unwrap(), SetgroupsPolicy::Deny);
+}
+
+#[test]
+fn the_initial_namespace_projid_map_is_the_boot_identity_extent() {
+    let init = initial(NamespaceKind::User);
+    assert_eq!(engine::snapshot_map(&init, IdMapKind::Projid).unwrap().as_slice(),
+        &[ext(0, 0, u32::MAX)][..]);
+    assert_eq!(engine::write_map(&init, IdMapKind::Projid, true, 0, &[ext(0, 0, 1)]),
+        Err(UserNsError::InitialOwner));
+}
+
+#[test]
+fn an_unmapped_project_id_translates_to_the_project_overflow_id() {
+    let map = [ext(0, 5000, 10)];
+    assert_eq!(to_host(&map, 0, OverflowId::Projid), 5000);
+    assert_eq!(to_host(&map, 10, OverflowId::Projid), crate::uapi::OVERFLOW_PROJID);
+    assert_eq!(to_ns(&map, 5009, OverflowId::Projid), 9);
+    assert_eq!(to_ns(&map, 4999, OverflowId::Projid), crate::uapi::OVERFLOW_PROJID);
+}

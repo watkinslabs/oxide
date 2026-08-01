@@ -14,7 +14,7 @@ mod format;
 mod insert;
 mod scan;
 
-pub use enable::{quota_on_ext4, quota_on_hidden, quota_on_hidden_remount};
+pub use enable::{quota_on_ext4, quota_on_hidden, quota_on_hidden_remount, quota_on_journalled};
 
 pub(crate) fn is_active_quota_file(sb: &vfs::SuperBlock, ino: u32) -> bool {
     sb.s_dquot.any_operations()
