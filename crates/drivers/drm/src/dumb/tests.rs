@@ -10,7 +10,7 @@ type TestDriverKey = crate::node::ScanoutDriverKey;
 
 fn scanout_key(raw: u32) -> TestDriverKey { TestDriverKey::from_raw(raw).unwrap() }
 fn test_create(_driver_key: TestDriverKey, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> { None }
-fn test_set_scanout(_driver_key: TestDriverKey, _res_id: u32, _w: u32, _h: u32) -> bool { true }
+fn test_present(_driver_key: TestDriverKey, _res_id: u32, _w: u32, _h: u32, _d: crate::node::DamageRect) -> bool { true }
 fn test_set_cursor(_driver_key: TestDriverKey, _res_id: u32, _w: u32, _h: u32,
     _x: i32, _y: i32, _hot_x: i32, _hot_y: i32) -> bool { true }
 fn test_move_cursor(_driver_key: TestDriverKey, _x: i32, _y: i32) -> bool { true }
