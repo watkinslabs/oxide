@@ -210,8 +210,16 @@ fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them(
     assert!(!Arc::ptr_eq(&parent_set.mount, &replacement.mount));
     assert!(NamespaceRef::ptr_eq(&replacement.pid, &replacement.pid_for_children));
     assert!(NamespacePin::ptr_eq(&replacement.pid.parent().unwrap(), &parent_set.pid.pin()));
+    // Numbering is its own step: the namespace set is published first, then
+    // the child draws a number from each level of it. The new namespace's
+    // first task is its init, so that number is 1.
+    child.alloc_pid_mappings(&[], true).unwrap();
     assert_eq!(child.vtid.load(Ordering::Acquire), 1);
     assert_eq!(child.vtgid.load(Ordering::Acquire), 1);
+    assert_ne!(child.pid_nr_ns(&parent_set.pid), 0,
+        "the parent namespace still numbers a child it can see");
+    assert_ne!(child.pid_nr_ns(&parent_set.pid), 1,
+        "and numbers it itself, not with the number the child's own namespace gave it");
     assert!(Arc::ptr_eq(&parent_network, &child.network_namespace_snapshot().unwrap()));
     for namespace in [&replacement.cgroup, &replacement.ipc, &replacement.pid,
         &replacement.time, &replacement.uts]
@@ -266,6 +274,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
         false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
     assert!(NamespaceRef::ptr_eq(&owner(&child, NamespaceKind::Pid), &pending));
     assert!(NamespaceRef::ptr_eq(&child.pid_namespace_for_children().unwrap(), &pending));
+    child.alloc_pid_mappings(&[], true).unwrap();
     assert_eq!(child.vtid.load(Ordering::Acquire), 1);
 }
 
