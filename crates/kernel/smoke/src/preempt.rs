@@ -1,4 +1,4 @@
-// Per-arch 4-task preempt smoke per `13§3` + `14§R07`.
+// Per-arch 4-task preempt smoke per `13§3` + `14§5.6`/`14§6.5`.
 //
 // Drives the timer + IRQ-exit picker end-to-end against the real
 // `Runqueue` (P2-13b). Workload: each kthread enters, hlt/wfi-sleeps

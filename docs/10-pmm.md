@@ -2,10 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`04`,`06`,`08`,`09`. Provides:`11`,`12`,DMA drivers.
 
-## Revision 2026-06-11 (R01)
-
-`Pmm::free_orders() -> [u64; ORDERS]` added: read-only per-order free-block-count snapshot under the buddy lock (sibling of `free_pages`/`allocated_pages`). Backs `/proc/buddyinfo` (`19`, Linux `frag_show`). No allocator-behavior change.
-
 Buddy allocator owning all phys frames. **Bitmap = source of truth for free state**; free-list = derived index. Disagreement ⇒ panic.
 
 ## 1 Purpose
@@ -43,6 +39,7 @@ impl Pmm {
   pub fn free(&self, pfn:Pfn, order:Order);          // # C: O(MAX_ORDER); # Ctx: any
   pub fn free_pages(&self) -> u64;                    // # C: O(MAX_ORDER)
   pub fn allocated_pages(&self) -> u64;               // # C: O(1)
+  pub fn free_orders(&self) -> [u64; ORDERS];         // # C: O(MAX_ORDER); per-order free-block snapshot under the buddy lock; backs `/proc/buddyinfo` (`19`)
   pub fn audit(&self);                                // # C: O(N); debug only; lock held by caller
 }
 ```
@@ -170,4 +167,3 @@ Bench: `bench/pmm_bench.rs` vs hosted oracle; `bench-history/`.
 ## 14 Changelog
 
 (none)
-

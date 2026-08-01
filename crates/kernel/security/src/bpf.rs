@@ -1,5 +1,5 @@
 // `bpf(2)` — syscall slot 321 (x86_64) / 280 (aarch64 generic ABI),
-// per `27§R02`. Module manifest; no policy lives here.
+// per `27§5`. Module manifest; no policy lives here.
 //
 //   uapi.rs  `enum bpf_cmd`, `union bpf_attr` offsets, BPF_F_* flags
 //   attr.rs  attr size protocol, CHECK_ATTR, capability ladders

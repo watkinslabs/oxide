@@ -2,12 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`10`,`11`,`12`,`16`. Provides: every FS; backed by `drv-virtio-blk`,`drv-nvme`,`drv-ahci`.
 
-## Revision 2026-06-11 (R01)
-
-§3a added: per-disk I/O accounting (`disk_stats`). Every device registered in the block registry is wrapped at registration in a stats-counting `BlockDevice` decorator that, on each completed `submit_sync`, increments per-disk counters: completed reads/writes/discards, 512-byte sectors read/written/discarded, flushes, and in-flight depth. `block::registry::Disk` exposes the live counters; `/proc/diskstats` (`19`) reads them (Linux `disk_stats` / `blk_account_io_done`). Per-request latency (`ms_*`) and request merging are not yet tracked — those fields report 0.
-
----
-
 Two coupled subsystems:
 - Block layer: dispatch I/O to block devices, batch+merge, async completion.
 - Page cache: cache file-backed pages, serve VFS read/write, async writeback.
@@ -145,4 +139,3 @@ Disk-bound workloads = HW-limited, not these budgets.
 ## 12 Changelog
 
 (none)
-

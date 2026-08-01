@@ -29,7 +29,7 @@ pub static IRQ_LAST_VEC: AtomicU64 = AtomicU64::new(0);
 /// the tick counter, EOIs, sets NEED_RESCHED, then asks the
 /// scheduler for the next task and stages it in
 /// `oxide_preempt_next_ctx` so the asm tail switches on IRQ exit
-/// (per `14§R07`).
+/// (per `14§5.6`/`14§6.5`).
 ///
 /// # SAFETY: invoked only from the IRQ entry asm with IRQs masked
 /// (interrupt-gate clears IF on entry).

@@ -2,48 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
-## Revision 2026-08-01 (R07)
-
-- Changed: §2 profile note, §3.3, §3.4, §8 — this repo builds no userspace. Userspace is Fedora glibc composed from RPMs by the sibling `../images` repo; there is no userspace target triple owned here, no libc/ld build step, no `xtask user`/`glibc`/`sysroot`/`ldso`/`uapi-export` subcommand, and no LFS-style userspace build ladder. §3.4 keeps only the kernel build chain. Spec `59` deleted; `59§` references in the R05 block are flattened to plain text so `xref` resolves.
-- Why: `crates/user/*` (55,868 LOC of own libc, `ld.so`, NSS, PAM, RPM), the `xtask glibc`/`sysroot`/`ldso`/`folded` command family, the `userspace/` probe tree, and `vendor/cross` are deleted. R05's flip of the userspace triple to `*-unknown-linux-gnu` described a build that no longer exists here.
-- Affected code: none — the deletions already landed; this aligns the spec with the tree. `xtask` subcommands that survive are the kernel/image/boot set.
-- Test contract change: §9 drops the ABI-golden + symbol-version-set checks (they tested the deleted libc); the kernel-build items stand.
-
-## Revision 2026-08-01 (R06)
-
-- Changed: §5 states that the build-time discipline rules bind the KERNEL BUILD, and names what is out of scope — host-test code, `feature = "hosted"` builds, and dev-tool crates per the `02` carve-out. The `extern crate std` and `panic!(fmt)` bullets say so at the bullet.
-- Why: both rules were written as bare CI greps, and a raw `grep -c` on either reads as a large violation count against code the rule never applied to. Measured: 73 `extern crate std` sites, of which 19 survive a naive line-local `#[cfg(test)]` filter and all 19 are gated by target cfg, hosted-feature cfg, an enclosing `#[cfg(test)] mod`, or the hosted-only `conformance` dev-dependency; 113 `panic!` sites carry a format placeholder while `code/panic-fmt` correctly reports 0, because host `assert_eq!` expands to precisely the forbidden construct. Twice in one session a raw count was escalated as a defect at scale. The rules were right; their stated scope was missing.
-- Affected code: none — `spec-lint` already filters this way (`check_panic_fmt` skips off-kernel lines). `make audit-counts` reports the filtered figure so an audit reads what the gate enforces.
-- Test contract change: §9 gains "an audit count for a scoped rule matches the linter's count, not a raw grep".
-
-## Revision 2026-06-14 (R05)
-
-- Changed: §3.3-3.4 userspace target triples flip `*-unknown-linux-musl` → `*-unknown-linux-gnu`; §3 build ladder step 3 "musl fork" → "oxide-libc (`crates/user/glibc`, glibc-ABI Rust)" per spec 59; UAPI export step unchanged (libc binds same kernel ABI). `rust-lld` both arches unchanged.
-- Why: glibc ABI is the userspace contract (`03` R01). Stock Rust `x86_64-unknown-linux-gnu`/`aarch64-unknown-linux-gnu` `std` links against our `libc.so.6`.
-- Affected code: `xtask` gains `glibc` subcommand (builds cdylib+staticlib+crt+ldso, publishes sysroot); `xtask user` orchestration retargets. musl path retained until spec 59 G19.
-- Test contract change: §9 adds ABI-golden + symbol-version-set checks.
-
-## Revision 2026-05-25 (R04)
-
-- Changed: §5 adds "No magic numbers for errno / ABI constants" rule.
-- Why: F163 set `error_eno = 110` / `111` / `104` inline. Unreadable, ungreppable, breaks when the Linux errno table is wrong, and forces reviewers to consult `errno.h` to verify each occurrence. Same hazard for other typed ABI constants (`MAP_*`, `O_*`, `SOCK_*`, `SO_*`, signal numbers, syscall slot numbers). These all have existing typed enums (`syscall::errno::Errno`, `vfs::OpenFlags`, `sched::sig::Signum`, `syscall::nrs::*`); raw integer literals are a code-review failure.
-- Affected code: `spec-lint` gains a `code/magic-errno` rule (next PR); existing call sites audited.
-- Test contract change: §9 adds "magic-errno injected → spec-lint fail" once the lint lands.
-
-## Revision 2026-05-02 (R03)
-
-- Changed: added §3.4 "Build chain (kernel-only vs userspace)".
-- Why: §3.3 names target triples but never spells out that the kernel binary needs only the cross-toolchain (`rust-toolchain.toml` + `-Z build-std`), while userspace requires UAPI export → musl-fork → ld-oxide → app, in that order. Linux solves this with `make headers_install`; the spec had no analogue.
-- Affected code: `xtask` will gain a `uapi-export` subcommand; `xtask user` will become the orchestrator of musl + ld + apps build per `29§4.1`.
-- Test contract change: none yet; §9 expands when `xtask uapi-export` lands.
-
-## Revision 2026-05-02 (R02)
-
-- Changed: §3.1 + §3.2 target JSON shapes to match current rustc target-spec format.
-- Why: `nightly-2026-05-01` target-spec parser rejects the spec-as-written. Specifically: `target-c-int-width` removed (default 32 is correct); `target-pointer-width` numeric not string; `is-builtin` field removed (no longer recognized); `-3dnow,-3dnowa` features removed (deprecated in current LLVM); `rustc-abi: "x86-softfloat"` added on x86 + `rustc-abi: "softfloat"` and `abi: "softfloat"` added on aarch64 (kernel disables SSE/NEON; current rustc requires explicit ABI instead of implicit feature-disable); aarch64 data-layout updated to current upstream `e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32`.
-- Affected code: `targets/x86_64-unknown-oxide-kernel.json`, `targets/aarch64-unknown-oxide-kernel.json`. Both build a no_std `kernel` rlib via `cargo build -Z build-std`.
-- Test contract change: §9 still applies; both arches now pass `xtask kernel --arch <a>` clean-checkout build (verified locally).
-
 One pinned nightly. Two custom target JSONs (kernel×2). Three build profiles. `panic=abort` everywhere kernel.
 
 ## 1 Toolchain
@@ -247,4 +205,3 @@ xtask doc-check
 ## 11 Changelog
 
 (none)
-

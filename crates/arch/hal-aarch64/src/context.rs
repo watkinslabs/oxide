@@ -141,7 +141,7 @@ impl Context for ContextAArch64 {
     /// Build a kernel-thread context whose saved kernel stack
     /// carries a synthetic IRQ frame matching the layout the IRQ
     /// epilogue (`oxide_irq_resume_user`) expects. Layout pinned in
-    /// `14§R07`; total scaffold = 288 B from `Context.sp` upward:
+    /// `14§6.5`; total scaffold = 288 B from `Context.sp` upward:
     ///
     ///   [sp+0x000..0x0a0]  saved x0..x18 + x29 + x30 (22 × 8 B, zero)
     ///   [sp+0x0b0]         saved ELR_EL1  = oxide_trampoline_kernel
@@ -268,7 +268,7 @@ impl Context for ContextAArch64 {
 
 impl ContextAArch64 {
     /// User-mode flavor of `new_kernel_with_irq_frame` per
-    /// `14§R07`. The synthetic IRQ frame's saved sp_el0 is set to
+    /// `14§6.5`. The synthetic IRQ frame's saved sp_el0 is set to
     /// `user_sp`, ELR_EL1 to `user_ip`, SPSR_EL1 to `0x3C0`
     /// (M=EL0t, DAIF all masked); the shared `oxide_irq_resume_user`
     /// epilogue's eret therefore transitions to EL0 at `user_ip`
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn new_kernel_with_irq_frame_layout() {
-        // `14§R07` pins the full 288-byte on-stack scaffold.
+        // `14§6.5` pins the full 288-byte on-stack scaffold.
         // Walk every slot from sp upward; any reorder of the IRQ
         // stub's expectations breaks here loud.
         let mut stack = alloc::vec![0u8; 4096];

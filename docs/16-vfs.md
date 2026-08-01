@@ -2,49 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`08`,`09`,`12`,`15`. Provides:`fs-tmpfs`,`fs-ext4`, etc.; `19`,`28`.
 
-## Revision 2026-05-09 (R02)
-
-- Changed: pinned the dirent-mutation hook contract. Two new
-  fn-ptr slots in vfs::file: `set_dirent_create_hook(fn(&InodeRef, &str))`
-  and `set_dirent_delete_hook(fn(&InodeRef, &str))`. devfs and tmpfs
-  fire them when `register`/`register_in_ns`/(future) `unregister`
-  splits the path into (parent, leaf). The kernel's inotify module
-  installs these to fire IN_CREATE/IN_DELETE/IN_MOVED with the leaf
-  name as the trailing `name[]` field.
-- Why: F94/F102 inotify substrate fires only on FILE-level events
-  (open/access/modify/close). Directory-level events (IN_CREATE on
-  /dev when a new entry is registered) need a hook at the path-
-  registry mutation site. Tracking what programs need: containerd /
-  systemd-machined watch /run + /var/run for socket appearance.
-- Affected code: `crates/vfs/src/file.rs` (two new fn-ptr slots);
-  `kernel/src/devfs.rs` (fire on register / register_in_ns);
-  `kernel/src/dev_inotify.rs` (install + dispatch);
-  `kernel/src/tmpfs.rs` (mutable-fs paths fire on add/remove).
-- Test contract change: §9 acceptance gains a "directory-watch"
-  smoke — inotify_add_watch on /dev/pts; openpt creates a slave;
-  the watcher sees IN_CREATE with the slave's name.
-
-## Revision 2026-05-09 (R01)
-
-- Changed: pinned the mount-table representation. Per-NS table is
-  a `Spinlock<BTreeMap<(mount_ns_id, path), InodeRef>>` keyed by
-  (calling task's mount_ns, mountpoint absolute path). Lookup tries
-  `(cur.mount_ns, path)` first, falls back to `(0, path)` (init NS).
-  `unshare(CLONE_NEWNS)` snapshots parent's entries at unshare time
-  (full copy; per-mount CoW tracked as later phase). Bind mounts:
-  `mount(src, dst, "none", MS_BIND, ...)` resolves source inode and
-  registers it at dst path in caller's mount_ns.
-- Why: F107 added the mount_ns substrate; F110 mount(tmpfs) but
-  used the global devfs registry — every NS sees the same paths,
-  defeating CLONE_NEWNS isolation. The per-NS BTreeMap closes that.
-- Affected code: `kernel/src/devfs.rs` (per-NS table + lookup
-  fallback); `kernel/src/syscall_glue_mount.rs` (mount writes to
-  caller's NS); `kernel/src/syscall_glue_signal.rs`
-  (unshare(CLONE_NEWNS) snapshots parent's entries).
-- Test contract change: §9 acceptance gains a "mount-NS isolation"
-  smoke — child unshares CLONE_NEWNS, mounts tmpfs at /m; parent
-  in init NS does not see /m, and vice versa.
-
 Single tree of files/dirs/inode-typed objects abstracting underlying FSes. Path resolution, mount, inode/dentry caches, FD surface backing `read`/`write`/`open`/`close`/`stat`/`mmap`/...
 
 ## 1 Frozen invariants
@@ -86,6 +43,8 @@ pub trait Filesystem: Send+Sync {
   fn mount(&self, source:&OsStr, opts:&MountOpts) -> KR<Arc<dyn Superblock>>;
 }
 ```
+
+Dirent-mutation notification hooks: `set_dirent_create_hook` / `set_dirent_delete_hook` take `fn(&InodeRef, &str, bool)` and fire on the parent directory with the leaf name whenever an entry appears or disappears. Every FS that mutates dirents fires them; `fs::inotify` installs them to emit `IN_CREATE`/`IN_DELETE`/`IN_MOVED` (`19`).
 
 ## 3 Path resolution
 
@@ -168,4 +127,3 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 ## 14 Changelog
 
 (none)
-
