@@ -168,6 +168,14 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
                 return Ok(PreparedSend::Inet(InetPrepared::Packet));
             }
             let address = crate::address::inet(message.name.as_deref())?;
+            // A send that names an explicit recipient settles the same remote
+            // port a connect would, so it asks for the same port rights. A send
+            // with no address settles nothing and is not checked. Placed after
+            // the family and length parse so a malformed address reports its
+            // own error rather than a permission one.
+            if let Some(name) = message.name.as_deref() {
+                net::landlock_addr::check_send_addr(socket, name).map_err(Error::from)?;
+            }
             let raw_family = match &*socket.kind.lock() {
                 net::sock::SockKind::Raw4(_) => Some(false),
                 net::sock::SockKind::Raw6(_) => Some(true),

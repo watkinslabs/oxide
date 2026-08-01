@@ -51,7 +51,7 @@ fn an_open_records_the_optional_rights_it_was_granted() {
     let rs = Ruleset::new(&RulesetAttr {
         handled_fs: ACCESS_FS_READ_FILE | ACCESS_FS_TRUNCATE, ..Default::default() });
     rs.add_fs(root.inode().unwrap(), true,
-              ACCESS_FS_READ_FILE | ACCESS_FS_TRUNCATE).unwrap();
+              ACCESS_FS_READ_FILE | ACCESS_FS_TRUNCATE, 0).unwrap();
     let dom = Domain::merge(None, &rs).unwrap();
     let a = open_decide(&dom, &path(7, root), ACCESS_FS_READ_FILE, false).unwrap();
     assert!(truncate_allowed(a));
@@ -64,7 +64,7 @@ fn an_open_without_the_truncate_right_still_succeeds_but_forbids_truncation() {
     let root = Dentry::new_root(dir_inode(1));
     let rs = Ruleset::new(&RulesetAttr {
         handled_fs: ACCESS_FS_READ_FILE | ACCESS_FS_TRUNCATE, ..Default::default() });
-    rs.add_fs(root.inode().unwrap(), true, ACCESS_FS_READ_FILE).unwrap();
+    rs.add_fs(root.inode().unwrap(), true, ACCESS_FS_READ_FILE, 0).unwrap();
     let dom = Domain::merge(None, &rs).unwrap();
     let a = open_decide(&dom, &path(7, root), ACCESS_FS_READ_FILE, false).unwrap();
     assert!(!truncate_allowed(a));
@@ -75,7 +75,7 @@ fn an_open_missing_a_required_right_is_refused() {
     let root = Dentry::new_root(dir_inode(1));
     let rs = Ruleset::new(&RulesetAttr {
         handled_fs: ACCESS_FS_READ_FILE, ..Default::default() });
-    rs.add_fs(root.inode().unwrap(), true, ACCESS_FS_READ_FILE).unwrap();
+    rs.add_fs(root.inode().unwrap(), true, ACCESS_FS_READ_FILE, 0).unwrap();
     let dom = Domain::merge(None, &rs).unwrap();
     let p = path(7, root);
     assert!(open_decide(&dom, &p, ACCESS_FS_READ_FILE, false).is_ok());
@@ -89,7 +89,7 @@ fn a_denied_required_right_reports_permission_denied() {
     let sub  = vfs::d_add(&root, "sub", dir_inode(2));
     let rs = Ruleset::new(&RulesetAttr {
         handled_fs: ACCESS_FS_READ_FILE, ..Default::default() });
-    rs.add_fs(sub.inode().unwrap(), true, ACCESS_FS_READ_FILE).unwrap();
+    rs.add_fs(sub.inode().unwrap(), true, ACCESS_FS_READ_FILE, 0).unwrap();
     let dom = Domain::merge(None, &rs).unwrap();
     assert_eq!(open_decide(&dom, &path(7, root), ACCESS_FS_READ_FILE, false),
                Err(Errno::Eacces));
@@ -101,7 +101,7 @@ fn device_control_is_recorded_only_for_devices() {
     let rs = Ruleset::new(&RulesetAttr {
         handled_fs: ACCESS_FS_READ_FILE | ACCESS_FS_IOCTL_DEV, ..Default::default() });
     rs.add_fs(root.inode().unwrap(), true,
-              ACCESS_FS_READ_FILE | ACCESS_FS_IOCTL_DEV).unwrap();
+              ACCESS_FS_READ_FILE | ACCESS_FS_IOCTL_DEV, 0).unwrap();
     let dom = Domain::merge(None, &rs).unwrap();
     let p = path(7, root);
     let non_dev = open_decide(&dom, &p, ACCESS_FS_READ_FILE, false).unwrap();
