@@ -196,6 +196,22 @@ pub trait AddressSpaceOps: Send + Sync {
         }
     }
 
+    /// `filemap_cachestat` — classify every entry this address space holds in
+    /// the inclusive page-index range and fold it into the `cachestat(2)`
+    /// counters. Only entries that EXIST are visited (never the whole index
+    /// space), so a `len == 0` request over a sparse file is O(entries), not
+    /// O(2^52). Multi-page entries clip to the range via
+    /// [`crate::CachestatRange::covered`].
+    ///
+    /// Default: all-zero, the honest answer for an address space that keeps no
+    /// enumerable index (its pages are computed on demand and never evicted,
+    /// so no page is "in the cache" in the sense the syscall reports).
+    /// # C: O(entries in range)
+    fn cachestat(&self, range: crate::CachestatRange) -> crate::CachestatCounts {
+        let _ = range;
+        crate::CachestatCounts::default()
+    }
+
     /// Non-faulting `mincore(2)` query for a page-aligned file offset. This is
     /// the Linux `filemap_get_entry()` leg: report already-resident cache pages
     /// without allocating or reading from backing storage. # C: O(log N_pages)
