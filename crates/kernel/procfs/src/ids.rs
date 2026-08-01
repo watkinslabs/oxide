@@ -56,6 +56,10 @@ pub(crate) const SELF_LIMITS: u64 = 0x3000_1D01;
 pub(crate) const RANDOM_UUID: u64 = 0x3000_1D02;
 /// `/sys/kernel/random/uuid` — same generator, distinct inode identity.
 pub(crate) const SYS_RANDOM_UUID: u64 = 0x3000_1D03;
+/// `/proc/keys` — rendered per read in the reading task's context.
+pub(crate) const KEYS: u64 = 0x3000_1D04;
+/// `/proc/key-users` — the per-uid key charge table.
+pub(crate) const KEY_USERS: u64 = 0x3000_1D05;
 pub(crate) const CPU_ROOT: u64 = HOSTNAME;
 pub(crate) const CPU_ATTR_ONLINE: u64 = 0x3000_1C01;
 pub(crate) const CPU_ATTR_OFFLINE: u64 = 0x3000_1C02;

@@ -92,6 +92,7 @@ pub unsafe fn init(info: &BootInfo) {
     procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
     fs::coredump::register_core_hooks();
     fs::acct::register_sysctl_hooks();
+    fs::keyring_procfs::register_procfs_hooks();
     hal::zerotrap::set_tid_hook(zerotrap_tid);
     ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
     drv::set_devtmpfs_hook(devfs::add_device_node);

@@ -299,6 +299,25 @@ const SYSCTL_TREE: &[Node] = &[
         // level that no attach path applies. Writes are one-way (the scope
         // may be raised, never lowered), which is why the setter is a hook
         // rather than a bounded `Int`.
+        // `security/keys/sysctl.c` registers the four per-uid key ceilings
+        // against the LIVE `key_quota_*` variables `key_alloc` tests, each a
+        // `proc_dointvec_minmax` over [1, INT_MAX]. Bound to the key store's
+        // own accessors: a procfs-local cell would let an admin raise a
+        // ceiling here and still collect EDQUOT from `add_key(2)`.
+        Dir("keys", &[
+            File("maxkeys",       IntHook(crate::hooks::keyring::maxkeys,
+                                          crate::hooks::keyring::set_maxkeys,
+                                          Some(crate::hooks::keyring::KEY_QUOTA_BOUNDS))),
+            File("maxbytes",      IntHook(crate::hooks::keyring::maxbytes,
+                                          crate::hooks::keyring::set_maxbytes,
+                                          Some(crate::hooks::keyring::KEY_QUOTA_BOUNDS))),
+            File("root_maxkeys",  IntHook(crate::hooks::keyring::root_maxkeys,
+                                          crate::hooks::keyring::set_root_maxkeys,
+                                          Some(crate::hooks::keyring::KEY_QUOTA_BOUNDS))),
+            File("root_maxbytes", IntHook(crate::hooks::keyring::root_maxbytes,
+                                          crate::hooks::keyring::set_root_maxbytes,
+                                          Some(crate::hooks::keyring::KEY_QUOTA_BOUNDS))),
+        ]),
         Dir("yama", &[
             File("ptrace_scope",      CheckedIntHook(get_ptrace_scope, set_ptrace_scope,
                                               Some((0, sched::yama::SCOPE_MAX as i64)))),
