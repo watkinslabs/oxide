@@ -30,6 +30,10 @@ impl ProbeCommandBuffer {
 impl Drop for ProbeCommandBuffer {
     fn drop(&mut self) {
         if self.owned {
+            // SAFETY: `owned` still set means this probe never handed the frame
+            // to the device — every path that publishes a descriptor naming it,
+            // or that times out with one outstanding, calls `disarm` first — so
+            // the frame is this struct's alone and is freed exactly once.
             unsafe { pmm::setup::free_one_frame(self.pa); }
         }
     }
@@ -59,6 +63,10 @@ impl ProbeFramebufferRun {
 impl Drop for ProbeFramebufferRun {
     fn drop(&mut self) {
         if self.owned {
+            // SAFETY: `owned` still set means ATTACH_BACKING never succeeded, so
+            // the device's resource table does not name this run; `setup_scanout`
+            // calls `disarm` the moment it does. Same order it was allocated at,
+            // freed exactly once.
             unsafe {
                 pmm::setup::free_contig(self.base_pa, self.order);
             }
@@ -106,6 +114,8 @@ use probe::submit_one;
 
 mod damage;
 mod edid;
+/// When a removed scanout's DMA frames may go back to the PMM.
+mod release;
 pub mod present;
 
 mod scanout;
