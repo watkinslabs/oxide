@@ -284,3 +284,20 @@ fn arm_unassigned_numbers_do_not_reach_x86_only_syscalls() {
 }
 
 fn syscall_nr_kexec_file_load() -> u64 { crate::nrs::NR_KEXEC_FILE_LOAD }
+
+/// arm64 has no `arch_prctl(2)` at all: the sub-code space describes FS/GS
+/// segment bases, CPUID faulting, XSAVE permission and CET, none of which
+/// exist on aarch64, and `asm-generic/unistd.h` assigns it no number. Slot
+/// 158's x86 handler writes the FS-base MSR, so a fall-through would run a
+/// segment-base write for an arm caller that asked for something else — and
+/// the integer 158 IS assigned on arm64, to `getgroups`.
+#[test]
+fn no_aarch64_number_reaches_the_arch_prctl_slot() {
+    use crate::nrs::NR_ARCH_PRCTL;
+    assert_eq!(aarch64_nr_to_x86(158), crate::nrs::NR_GETGROUPS,
+               "arm 158 is getgroups, not arch_prctl");
+    for arm in 0..1024u64 {
+        assert_ne!(aarch64_nr_to_x86(arm), NR_ARCH_PRCTL,
+            "aarch64 nr {arm} translates onto x86 arch_prctl (slot {NR_ARCH_PRCTL})");
+    }
+}
