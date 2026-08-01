@@ -160,4 +160,27 @@ impl VirtioInputDev {
             .then(|| self.abs_info[code as usize])
             .flatten()
     }
+
+    /// Whether the device carries the per-axis parameter array at all. Linux
+    /// allocates one zeroed `ABS_CNT`-wide array the moment a device gains any
+    /// absolute capability, so presence is a property of the device, not of
+    /// the individual axis.
+    /// # C: O(1)
+    pub(crate) fn has_absinfo(&self) -> bool {
+        self.ev_bits.get(EV_ABS as usize / 8)
+            .is_some_and(|byte| byte & (1u8 << (EV_ABS % 8)) != 0)
+    }
+
+    /// One axis as `EVIOCGABS` answers it. A device with no absolute
+    /// capability has no array to read and refuses the request; on a device
+    /// that has one, an axis it never advertised reads back as the zeroed
+    /// array entry, which is what the caller's `struct input_absinfo` receives.
+    /// # C: O(1)
+    pub(crate) fn abs_snapshot(&self, code: u16) -> Option<(i32, VirtioInputAbsInfo)> {
+        if !self.has_absinfo() || code as usize >= ABS_CNT { return None; }
+        Some((
+            self.abs_value(code).unwrap_or_default(),
+            self.abs_parameters(code).unwrap_or_default(),
+        ))
+    }
 }
