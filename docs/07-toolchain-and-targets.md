@@ -2,6 +2,13 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
+## Revision 2026-08-01 (R06)
+
+- Changed: §5 states that the build-time discipline rules bind the KERNEL BUILD, and names what is out of scope — host-test code, `feature = "hosted"` builds, and dev-tool crates per the `02` carve-out. The `extern crate std` and `panic!(fmt)` bullets say so at the bullet.
+- Why: both rules were written as bare CI greps, and a raw `grep -c` on either reads as a large violation count against code the rule never applied to. Measured: 73 `extern crate std` sites, of which 19 survive a naive line-local `#[cfg(test)]` filter and all 19 are gated by target cfg, hosted-feature cfg, an enclosing `#[cfg(test)] mod`, or the hosted-only `conformance` dev-dependency; 113 `panic!` sites carry a format placeholder while `code/panic-fmt` correctly reports 0, because host `assert_eq!` expands to precisely the forbidden construct. Twice in one session a raw count was escalated as a defect at scale. The rules were right; their stated scope was missing.
+- Affected code: none — `spec-lint` already filters this way (`check_panic_fmt` skips off-kernel lines). `make audit-counts` reports the filtered figure so an audit reads what the gate enforces.
+- Test contract change: §9 gains "an audit count for a scoped rule matches the linter's count, not a raw grep".
+
 ## Revision 2026-06-14 (R05)
 
 - Changed: §3.3-3.4 userspace target triples flip `*-unknown-linux-musl` → `*-unknown-linux-gnu`; §3 build ladder step 3 "musl fork" → "oxide-libc (`crates/user/glibc`, glibc-ABI Rust)" per `59`; UAPI export step unchanged (libc binds same kernel ABI). `rust-lld` both arches unchanged.
@@ -169,15 +176,17 @@ cargo build -Z build-std=core,compiler_builtins,alloc \
 
 ## 5 Build-time discipline rules
 
+Scope: these bind the KERNEL BUILD. Host-test code (`#[cfg(test)]`), hosted builds (`feature = "hosted"`, `#[cfg(not(target_os = "oxide-kernel"))]`) and dev-tool crates under the `02` carve-out are out of scope, and a count that does not filter them is not a violation count. Every lint below filters this way; audits must use the linter's number (`make audit-counts`), never a raw grep.
+
 - `panic="abort"` every kernel profile. Build-test: `panic!("foo")` → no unwind tables in `.text`.
 - No `static mut` outside `#[cfg(test)]`. CI grep, build fail. Per `06§11`.
 - No `dyn HAL trait`. Post-build `nm | grep -E 'vtable.*<.* as oxide::hal::(MmuOps|CpuOps|Context|IrqOps|TimerOps)>'` → fail. Per `05§C1`.
-- `kassert!(cond, "literal")` only; no `panic!(fmt)`. CI grep `panic!(.*\{` → fail.
+- `kassert!(cond, "literal")` only; no `panic!(fmt)`. Kernel build only — host test code is out of scope, since `assert_eq!` expands to exactly this construct. Enforced by `code/panic-fmt`, which skips off-kernel lines; a raw `panic!(.*\{` grep counts ~113 legitimate host-test sites and is not the rule.
 - **No magic numbers for typed ABI constants.** Errno values, `OpenFlags`, `MAP_*`, `SOCK_*`, `SO_*`, signal numbers, syscall slot numbers go through their typed enum (`syscall::errno::Errno`, `vfs::OpenFlags`, `sched::sig::Signum`, `syscall::nrs::*`, etc.). A bare integer assigned to a field named `*_eno` / `*_errno` / `*_signo` / `*_slot`, or compared against an integer in an errno/signal/flag context, is a CI lint failure (`code/magic-errno`). Adds-to-enum first, uses-the-name second. Local constants for non-ABI numeric thresholds (RTO ms, retry counts, buffer sizes) are fine — name them `const FOO_NS: u64 = …;` so reviewers see the meaning.
 - `# C:` on every `pub fn`. CI lint via `tools/spec-lint/`. Per `04§1.2`.
 - `// SAFETY: <≥30 chars naming invariant>` on every `unsafe { }`. CI lint.
 - klog macros only accept `&'static str` format strings (compile-time interned). No `format!()` results passed in. CI grep.
-- `#![no_std]` every kernel crate. `extern crate std` in any kernel binary → fail.
+- `#![no_std]` every kernel crate. `extern crate std` in any kernel binary → fail. Reaching the kernel build is what makes it a violation: a site behind `#[cfg(not(target_os = "oxide-kernel"))]`, `#[cfg(any(test, feature = "hosted"))]`, or an enclosing `#[cfg(test)] mod` is compliant, as is a dev-tool crate under the `02` carve-out (`tools/spec-lint`, `crates/kernel/conformance`). A raw grep counts ~73 sites, none of them violations.
 
 ```rust
 #[macro_export] macro_rules! kassert {
@@ -229,7 +238,8 @@ xtask doc-check
 - `xtask kernel --arch x86_64` and `--arch aarch64` clean-checkout success.
 - §5 lints in `tools/spec-lint/`; clean kernel passes.
 - `static mut FOO` injected → build fail with clear msg.
-- `panic!("err: {}", x)` injected → build fail.
+- `panic!("err: {}", x)` injected → build fail. Injected into host-test code → NO finding (scope, §5).
+- An audit count for a scoped rule equals the linter's count, not a raw grep: `make audit-counts` reports 0 `panic!(fmt)` and 0 `extern crate std` against a clean kernel build.
 - `Box<dyn MmuOps>` injected → post-build vtable grep fail.
 - `xtask qemu --arch x86_64`/`--arch aarch64` boot hello-world + clean exit.
 - Toolchain bump PR template documented (`CONTRIBUTING.md`).
