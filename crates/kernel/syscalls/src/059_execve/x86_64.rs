@@ -269,11 +269,14 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     // vs `:1073`), because the interpreter and a no-interp PIE are placed by
     // `get_unmapped_area` and therefore need `mmap_base` already armed.
     let rnd = crate::exec_transition::exec_rnd(&cur, creds.per_clear);
-    let rlim_stack: u64 = {
+    // The RAW soft limit is kept alongside the mapped one: `RLIM_INFINITY` is
+    // an input to `arch_pick_mmap_layout` that the map-size clamp erases.
+    let raw_stack_rlim: u64 = {
         let (rc, _) = cur.rlimit(sched::rlimit::rlim::STACK);
-        let rc = crate::exec_transition::secure_stack_limit(rc, creds.secure_exec);
-        ((rc + 0xfff) & !0xfff).min(aslr::limits::RLIM_STACK_MAP_CAP)
+        crate::exec_transition::secure_stack_limit(rc, creds.secure_exec)
     };
+    let rlim_stack: u64 =
+        ((raw_stack_rlim.saturating_add(0xfff)) & !0xfff).min(aslr::limits::RLIM_STACK_MAP_CAP);
     let stack_top: u64 = rnd.stack_top();
     let exec_user_stack_va = stack_top - rlim_stack;
     let exec_user_stack_top = stack_top;
@@ -291,7 +294,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     }
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-stack-map");
-    new_as.set_mmap_base(rnd.mmap_base(rlim_stack));
+    let layout = crate::exec_transition::exec_mmap_layout(
+        &cur, creds.per_clear, &rnd, rlim_stack, raw_stack_rlim);
+    new_as.set_mmap_layout(layout.base, layout.top_down);
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"before-elf-load");
     let img = match elf_load::load_static_blob(blob, &new_as, &rnd) {

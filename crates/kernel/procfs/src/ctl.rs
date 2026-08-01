@@ -98,6 +98,9 @@ fn set_randomize_va_space(v: i64) { aslr::set_randomize_va_space(v as i32); }
 /// could disagree with the gate.
 fn get_unprivileged_userfaultfd() -> i64 { vmm::uffd::unprivileged_userfaultfd() }
 fn set_unprivileged_userfaultfd(v: i64) { vmm::uffd::set_unprivileged_userfaultfd(v); }
+fn get_legacy_va_layout() -> i64 { aslr::tunable::legacy_va_layout() as i64 }
+fn set_legacy_va_layout(v: i64) { aslr::tunable::set_legacy_va_layout(v != 0); }
+
 fn get_mmap_rnd_bits() -> i64 { aslr::tunable::mmap_rnd_bits() as i64 }
 fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max(0) as u32); }
 /// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
@@ -356,6 +359,13 @@ const SYSCTL_TREE: &[Node] = &[
             check_memfd_noexec_write, set_memfd_noexec,
             Some((namespace_identity::PID_MEMFD_NOEXEC_SCOPE_EXEC as i64,
                   namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED as i64)))),
+        // `vm.legacy_va_layout` — `sysctl_legacy_va_layout`, the system-wide
+        // third input to `mmap_is_legacy` alongside
+        // `personality(ADDR_COMPAT_LAYOUT)` and an unlimited RLIMIT_STACK.
+        // Non-zero makes every subsequent exec allocate its mmap arena upward
+        // from TASK_UNMAPPED_BASE instead of downward from mmap_base.
+        File("legacy_va_layout",        IntHook(get_legacy_va_layout,
+                                                set_legacy_va_layout, Some((0, 1)))),
         // `vm.mmap_rnd_bits` — the live entropy width `arch_mmap_rnd()` uses,
         // bounded by this arch's Kconfig pair (`mm/mmap.c:66-75`). Linux has a
         // `mmap_rnd_compat_bits` sibling only under `CONFIG_COMPAT`; this
