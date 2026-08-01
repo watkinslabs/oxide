@@ -15,6 +15,7 @@ pub(crate) extern "C" fn _find_next_bit(addr: *const usize, size: usize, offset:
     let bits = usize::BITS as usize;
     let mut bit = offset;
     while bit < size {
+        // SAFETY: bit < size and the KPI contract sizes addr at ceil(size/usize::BITS) words, so bit/bits indexes the caller's own bitmap.
         let word = unsafe { *addr.add(bit / bits) };
         let mask = usize::MAX << (bit % bits);
         let masked = word & mask;

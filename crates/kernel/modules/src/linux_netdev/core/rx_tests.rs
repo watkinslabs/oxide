@@ -58,6 +58,7 @@ fn netif_rx_rejects_skb_stamped_before_retirement() {
 #[test]
 fn eth_type_trans_retains_exact_link_frame_after_pull() {
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
+    // SAFETY: alloc_etherdev takes no caller pointers; the returned allocation is owned solely by this test until the free_netdev at the end.
     let dev = unsafe { netalloc::alloc_etherdev(0) };
     assert!(!dev.is_null());
     // SAFETY: test exclusively owns dev and skb through synchronous extraction.
@@ -95,6 +96,7 @@ fn netif_rx_publishes_pulled_link_frame_to_packet_socket_once() {
     if let net::sock::SockKind::Packet { ifindex, .. } = &*packet.kind.lock() {
         ifindex.store(iface.raw(), Ordering::Release);
     }
+    // SAFETY: alloc_etherdev dereferences no caller pointer and the returned net_device is owned only by this test until free_netdev below.
     let dev = unsafe { netalloc::alloc_etherdev(0) };
     assert!(!dev.is_null());
     // SAFETY: test exclusively owns dev and transfers skb ownership to netif_rx.
@@ -113,6 +115,7 @@ fn netif_rx_publishes_pulled_link_frame_to_packet_socket_once() {
 #[test]
 fn skb_expansion_preserves_pulled_link_header_identity() {
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
+    // SAFETY: alloc_etherdev takes only sizeof_priv; the allocation it returns is exclusively this test's until the matching free_netdev.
     let dev = unsafe { netalloc::alloc_etherdev(0) };
     assert!(!dev.is_null());
     // SAFETY: test owns dev and skb until synchronous extraction frees the skb.

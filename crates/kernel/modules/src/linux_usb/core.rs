@@ -73,8 +73,10 @@ pub unsafe fn install_interface(intf: *mut UsbInterface) -> i32 {
         if g.iter().any(|p| *p == intf as usize) { return -LINUX_EBUSY; }
         g.push(intf as usize);
     }
+    // SAFETY: intf was null-checked and install_interface's contract makes it a live UsbInterface owned by the caller until uninstall_interface.
     unsafe { (*intf).registered = 1; }
-    bind_interface(intf);
+    // SAFETY: same live intf; the INTERFACES lock was released above so bind_interface can take it without deadlocking.
+    unsafe { bind_interface(intf); }
     LINUX_OK
 }
 
@@ -84,12 +86,16 @@ pub unsafe fn install_interface(intf: *mut UsbInterface) -> i32 {
 pub unsafe fn uninstall_interface(intf: *mut UsbInterface) {
     if intf.is_null() { return; }
     INTERFACES.lock().retain(|p| *p != intf as usize);
+    // SAFETY: intf was null-checked and uninstall_interface's contract makes it a live UsbInterface the caller still owns.
     let driver = unsafe { (*intf).driver };
     if !driver.is_null() {
+        // SAFETY: driver was null-checked and only ever set by bind_driver_to_interface from a driver still in DRIVERS.
         if let Some(disconnect) = unsafe { (*driver).disconnect } {
+            // SAFETY: Linux's disconnect contract takes the interface it was probed with, and intf is that live interface.
             unsafe { disconnect(intf); }
         }
     }
+    // SAFETY: intf is still the caller's live UsbInterface; clearing both fields after disconnect matches Linux's teardown order.
     unsafe {
         (*intf).driver = null_mut();
         (*intf).registered = 0;
@@ -106,6 +112,7 @@ extern "C" fn __usb_register_driver(
 
 extern "C" fn usb_register_driver(driver: *mut UsbDriver) -> i32 {
     if driver.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: driver was null-checked; usb_register_driver's KPI contract is a live usb_driver the module keeps alive until usb_deregister.
     if unsafe { (*driver).name.is_null() || (*driver).id_table.is_null() } { return -LINUX_EINVAL; }
     {
         let mut g = DRIVERS.lock();
@@ -114,7 +121,8 @@ extern "C" fn usb_register_driver(driver: *mut UsbDriver) -> i32 {
     }
     let intfs = INTERFACES.lock().clone();
     for p in intfs {
-        bind_driver_to_interface(driver, p as *mut UsbInterface);
+        // SAFETY: every entry in INTERFACES was installed by install_interface and is removed on uninstall, so p is a live UsbInterface; the lock was dropped by the clone.
+        unsafe { bind_driver_to_interface(driver, p as *mut UsbInterface); }
     }
     LINUX_OK
 }
@@ -125,10 +133,14 @@ extern "C" fn usb_deregister(driver: *mut UsbDriver) {
     let intfs = INTERFACES.lock().clone();
     for p in intfs {
         let intf = p as *mut UsbInterface;
+        // SAFETY: INTERFACES only holds interfaces install_interface registered and uninstall_interface has not removed, so intf is live.
         if unsafe { (*intf).driver == driver } {
+            // SAFETY: driver was null-checked and the caller owns it for the duration of usb_deregister.
             if let Some(disconnect) = unsafe { (*driver).disconnect } {
+                // SAFETY: intf is the live interface this driver was probed against, which is what Linux's disconnect expects.
                 unsafe { disconnect(intf); }
             }
+            // SAFETY: intf is still live and the driver it pointed at is being deregistered, so the back-pointer must be cleared.
             unsafe { (*intf).driver = null_mut(); }
         }
     }
@@ -154,11 +166,13 @@ extern "C" fn usb_alloc_urb(iso_packets: i32, _mem_flags: u32) -> *mut UsbUrb {
 
 unsafe extern "C" fn usb_free_urb(urb: *mut UsbUrb) {
     if urb.is_null() { return; }
+    // SAFETY: urb was null-checked and usb_free_urb's contract is that it came from usb_alloc_urb, i.e. a Box::into_raw of the same layout.
     unsafe { drop(Box::from_raw(urb)); }
 }
 
 unsafe extern "C" fn usb_submit_urb(urb: *mut UsbUrb, _mem_flags: u32) -> i32 {
     if urb.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: urb was null-checked and usb_submit_urb's contract is a live urb from usb_alloc_urb that the caller does not free until completion.
     unsafe {
         (*urb).actual_length = 0;
         (*urb).status = -LINUX_ENODEV;
@@ -168,11 +182,15 @@ unsafe extern "C" fn usb_submit_urb(urb: *mut UsbUrb, _mem_flags: u32) -> i32 {
         Some(f) => f(urb),
         None => -LINUX_ENODEV,
     };
+    // SAFETY: the transport hook returns rather than freeing the urb, so it is still the live allocation checked above.
     unsafe { (*urb).status = rc; }
     if rc == LINUX_OK {
+        // SAFETY: same live urb; a successful transport transfers the whole requested length in this compatibility core.
         unsafe { (*urb).actual_length = (*urb).transfer_buffer_length; }
     }
+    // SAFETY: same live urb; complete is a module-supplied callback stored in it before submission.
     if let Some(complete) = unsafe { (*urb).complete } {
+        // SAFETY: Linux's completion contract hands the callback the urb it was registered on, and the callback owns it from here.
         unsafe { complete(urb); }
     }
     rc
@@ -180,11 +198,13 @@ unsafe extern "C" fn usb_submit_urb(urb: *mut UsbUrb, _mem_flags: u32) -> i32 {
 
 unsafe extern "C" fn usb_kill_urb(urb: *mut UsbUrb) {
     if urb.is_null() { return; }
+    // SAFETY: urb was null-checked and usb_kill_urb's contract is a live urb from usb_alloc_urb owned by the calling module.
     unsafe { (*urb).status = -LINUX_ENOENT; }
 }
 
 unsafe extern "C" fn usb_unlink_urb(urb: *mut UsbUrb) -> i32 {
     if urb.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: urb was null-checked and usb_unlink_urb's contract is a live urb from usb_alloc_urb owned by the calling module.
     unsafe { (*urb).status = -LINUX_ENOENT; }
     LINUX_OK
 }
@@ -220,6 +240,7 @@ extern "C" fn usb_alloc_coherent(dev: *mut UsbDevice, size: usize, _mem_flags: u
     if size == 0 || dma.is_null() { return null_mut(); }
     let Some(order) = order_for_size(size) else { return null_mut(); };
     let Some((pa, va)) = crate::linux_alloc::page_run_alloc(order, true) else { return null_mut(); };
+    // SAFETY: dma was null-checked above and usb_alloc_coherent's contract makes it aligned, writable dma_addr_t storage.
     unsafe { *dma = pa; }
     va as *mut c_void
 }
@@ -234,20 +255,24 @@ extern "C" fn usb_free_coherent(dev: *mut UsbDevice, size: usize, addr: *mut c_v
 
 unsafe extern "C" fn usb_set_intfdata(intf: *mut UsbInterface, data: *mut c_void) {
     if intf.is_null() { return; }
+    // SAFETY: intf was null-checked; usb_set_intfdata is only legal on an interface the caller was probed with, which stays live across the call.
     unsafe { (*intf).intfdata = data; }
 }
 
 unsafe extern "C" fn usb_get_intfdata(intf: *mut UsbInterface) -> *mut c_void {
     if intf.is_null() { return null_mut(); }
+    // SAFETY: intf was null-checked; usb_get_intfdata is only legal on an interface the caller was probed with, which stays live across the call.
     unsafe { (*intf).intfdata }
 }
 
 unsafe extern "C" fn usb_get_dev(dev: *mut UsbDevice) -> *mut UsbDevice {
+    // SAFETY: dev was null-checked and usb_get_dev's contract is a device the caller already holds a reference to, so it cannot be freed here.
     if !dev.is_null() { unsafe { (*dev).refcnt = (*dev).refcnt.saturating_add(1); } }
     dev
 }
 
 unsafe extern "C" fn usb_put_dev(dev: *mut UsbDevice) {
+    // SAFETY: dev was null-checked and usb_put_dev's contract is a reference the caller took with usb_get_dev, so the device is still live.
     if !dev.is_null() { unsafe { (*dev).refcnt = (*dev).refcnt.saturating_sub(1); } }
 }
 
@@ -259,6 +284,7 @@ extern "C" fn usb_put_intf(_intf: *mut UsbInterface) {}
 
 unsafe extern "C" fn usb_match_id(intf: *mut UsbInterface, ids: *const UsbDeviceId) -> *const UsbDeviceId {
     if intf.is_null() || ids.is_null() { return null(); }
+    // SAFETY: both pointers were null-checked; usb_match_id's contract is a probed interface plus the module's zero-terminated id table, match_id's preconditions.
     unsafe { match_id(intf, ids).unwrap_or(null()) }
 }
 
@@ -266,6 +292,7 @@ extern "C" fn usb_find_interface(driver: *mut UsbDriver, minor: i32) -> *mut Usb
     if driver.is_null() { return null_mut(); }
     for p in INTERFACES.lock().iter().copied() {
         let intf = p as *mut UsbInterface;
+        // SAFETY: INTERFACES only holds interfaces install_interface registered and uninstall_interface has not removed, so intf is live under the lock.
         if unsafe { (*intf).driver == driver && (*intf).registered as i32 == minor } {
             return intf;
         }
@@ -283,6 +310,7 @@ fn transfer_msg(
     hook: Option<fn(*mut UsbDevice, u32, *mut c_void, i32, *mut i32, i32) -> i32>,
 ) -> i32 {
     if dev.is_null() || len < 0 { return -LINUX_EINVAL; }
+    // SAFETY: actual was null-checked and usb_bulk_msg/usb_interrupt_msg promise it is aligned, writable int storage when non-null.
     if !actual.is_null() { unsafe { *actual = 0; } }
     match hook {
         Some(f) => f(dev, pipe, data, len, actual, timeout),
@@ -290,22 +318,30 @@ fn transfer_msg(
     }
 }
 
-fn bind_interface(intf: *mut UsbInterface) {
+// Precondition: `intf` is a live UsbInterface currently registered in INTERFACES.
+unsafe fn bind_interface(intf: *mut UsbInterface) {
     let drivers = DRIVERS.lock().clone();
     for p in drivers {
-        if bind_driver_to_interface(p as *mut UsbDriver, intf) { break; }
+        // SAFETY: DRIVERS only holds drivers usb_register_driver added and usb_deregister has not removed, so p is live; intf is the caller's live interface.
+        if unsafe { bind_driver_to_interface(p as *mut UsbDriver, intf) } { break; }
     }
 }
 
-fn bind_driver_to_interface(driver: *mut UsbDriver, intf: *mut UsbInterface) -> bool {
+// Precondition: `driver` and `intf` are null or live entries of DRIVERS / INTERFACES.
+unsafe fn bind_driver_to_interface(driver: *mut UsbDriver, intf: *mut UsbInterface) -> bool {
+    // SAFETY: both pointers were null-checked; an already-bound interface is skipped so no driver is probed twice.
     if driver.is_null() || intf.is_null() || unsafe { !(*intf).driver.is_null() } { return false; }
+    // SAFETY: usb_register_driver rejected a null id_table, and Linux requires it to be a zero-terminated usb_device_id array.
     let id = unsafe { match_id(intf, (*driver).id_table) };
     let Some(id) = id else { return false; };
+    // SAFETY: driver is a live entry of DRIVERS, so reading its probe hook is in bounds.
     let rc = match unsafe { (*driver).probe } {
+        // SAFETY: Linux's probe contract takes the interface being bound plus the matching id entry, and id points into the driver's own table.
         Some(probe) => unsafe { probe(intf, id) },
         None => LINUX_OK,
     };
     if rc == LINUX_OK {
+        // SAFETY: intf is still the live interface probe accepted, so recording the owning driver is in bounds.
         unsafe { (*intf).driver = driver; }
         true
     } else {
@@ -317,18 +353,26 @@ unsafe fn match_id(intf: *mut UsbInterface, ids: *const UsbDeviceId) -> Option<*
     if ids.is_null() { return None; }
     let mut off = 0usize;
     loop {
+        // SAFETY: MODULE_DEVICE_TABLE requires a zero-terminated usb_device_id array, and the terminator check below stops the walk before off leaves it.
         let id = unsafe { ids.add(off) };
+        // SAFETY: id is inside the driver's id table because every earlier entry was a non-terminator; an all-zero entry ends the walk.
         if unsafe { (*id).match_flags == 0 && (*id).driver_info == 0 } { return None; }
+        // SAFETY: id is a live non-terminator table entry and intf is the caller's live interface, which are id_matches' preconditions.
         if unsafe { id_matches(intf, &*id) } { return Some(id); }
         off += 1;
     }
 }
 
+// Precondition: `intf` is a live UsbInterface whose cur_altsetting and usb_dev are null or live.
 unsafe fn id_matches(intf: *mut UsbInterface, id: &UsbDeviceId) -> bool {
+    // SAFETY: intf is a live interface registered through install_interface, so its altsetting pointer is readable.
     let alt = unsafe { (*intf).cur_altsetting };
     if alt.is_null() { return false; }
+    // SAFETY: alt was null-checked and points at the host-supplied altsetting that stays live while the interface is registered.
     let desc = unsafe { (*alt).desc };
+    // SAFETY: intf is live, so reading its owning-device back-pointer is in bounds.
     let dev = unsafe { (*intf).usb_dev };
+    // SAFETY: dev was null-checked and its descriptor is an inline field of the live usb_device, so the borrow lasts only for the match.
     if !dev.is_null() && !device_id_matches(unsafe { &(*dev).descriptor }, id) { return false; }
     interface_id_matches(&desc, id)
 }
