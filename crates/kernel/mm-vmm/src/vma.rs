@@ -188,6 +188,24 @@ pub trait FileBacking: Send + Sync {
     /// file-backed VMA maps). Default 0 for non-inode backings.
     fn ino(&self) -> u64 { 0 }
 
+    /// Stable identity of the OBJECT behind this backing, shared by every
+    /// mapping of it in every process, or 0 when the backing has no such
+    /// identity.
+    ///
+    /// This is the value a shared-futex key is derived from — Linux keys a
+    /// `!FUTEX_PRIVATE_FLAG` futex on `(inode, page index, offset)` rather than
+    /// on an address or a physical page, precisely so that two processes
+    /// mapping one file at different addresses hash to the same futex, and so
+    /// that the key survives the page being evicted and re-read at a different
+    /// physical address.
+    ///
+    /// It is NOT the inode number: that is only unique within a filesystem.
+    /// Implementors return a per-inode kernel identity, and MUST return the
+    /// same value for every mapping of the same object or cross-process wakes
+    /// are lost.
+    /// # C: O(1)
+    fn object_id(&self) -> u64 { 0 }
+
     /// MAP_SHARED page-cache frame for page-aligned file offset `off`. Some =
     /// the persistent backing frame a shared mapping installs directly (Linux
     /// shmem); None (default) = no shareable frame → the fault handler copies

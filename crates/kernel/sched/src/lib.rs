@@ -63,6 +63,9 @@ pub use signum::{bit_for, clone_exit_signal, Signum};
 pub mod wait_select;
 pub mod sigqueue;
 pub mod sched_enc;
+// PI-futex priority-inheritance ordering rule. Non-gated so the class
+// comparison is hosted-tested; `live::pi_boost` applies it.
+pub mod pi_prio;
 pub mod hrtimeout;
 #[path = "timers/clockid.rs"] pub mod posix_clock;
 #[path = "timers/model.rs"] mod timer_model;

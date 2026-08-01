@@ -413,6 +413,7 @@ impl Task {
             seccomp_mode:    AtomicU8::new(0),
             robust_list_head: AtomicU64::new(0),
             robust_list_len:  AtomicU64::new(0),
+            pi_base_class: AtomicU64::new(u64::MAX),
             // Linux `init_task` starts at `PREEMPT_DISABLED`: every task resumes
             // inside `schedule()`'s preempt-off scope and pays the matching
             // enable in `finish_task_switch`, so a never-run task must arrive

@@ -53,6 +53,15 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
                 let owner_tid = if vt != 0 { vt } else { task.tid };
                 crate::live::run_robust_exit(rl, owner_tid);
             }
+            // PI-futex ownership handoff (Linux do_exit -> exit_pi_state_list).
+            // Runs for EVERY dying thread, robust list or not: the kernel's own
+            // PI ownership records are what release a PTHREAD_PRIO_INHERIT
+            // mutex to the next waiter with FUTEX_OWNER_DIED. Same mm-still-
+            // mapped requirement as the robust walk above.
+            {
+                let vt = task.vtid.load(Ordering::Acquire);
+                crate::live::run_pi_exit(if vt != 0 { vt } else { task.tid });
+            }
             // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem). Unconditional
             // here: the group-exit latch above has already made this a
             // group-fatal death, so the whole thread group — the unit the undo

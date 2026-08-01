@@ -196,6 +196,15 @@ pub fn do_exit(status: i32) -> i64 {
                 let owner_tid = if vt != 0 { vt } else { task.tid };
                 ipc::live::futex::exit_robust_list(rl, owner_tid);
             }
+            // PI-futex ownership handoff (Linux do_exit -> exit_pi_state_list).
+            // Runs for EVERY dying thread, robust list or not: the kernel's own
+            // PI ownership records are what release a PTHREAD_PRIO_INHERIT
+            // mutex to the next waiter with FUTEX_OWNER_DIED. Same mm-still-
+            // mapped requirement as the robust walk above.
+            {
+                let vt = task.vtid.load(Ordering::Acquire);
+                ipc::live::futex::exit_pi_state_list(if vt != 0 { vt } else { task.tid });
+            }
             // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem): adjustments
             // registered by semop(SEM_UNDO) are applied when the LAST thread of
             // the group exits, which is where the undo list is keyed — a

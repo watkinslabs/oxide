@@ -10,7 +10,12 @@ use super::core::{FUTEX_BITSET_MATCH_ANY, current_key, load_user_u32, store_user
 /// no wake). Returns the number of waiters woken (Linux futex-requeue
 /// semantics). Single-key waiters only — waitv groups are left untouched.
 /// # C: O(W)
-pub fn requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: usize, nr_requeue: usize, private: bool) -> i64 {
+pub fn requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: i64, nr_requeue: i64, private: bool) -> i64 {
+    // Linux `futex_requeue`: negative counts are EINVAL. Casting them to a
+    // count type instead (the previous shape) turned `-1` into an unbounded
+    // requeue that drained the whole wait queue.
+    if nr_wake < 0 || nr_requeue < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let (nr_wake, nr_requeue) = (nr_wake as usize, nr_requeue as usize);
     let src = match current_key(src_uaddr, private) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
     let dst = match current_key(dst_uaddr, private) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
     let mut woken: Vec<Arc<sched::Task>> = Vec::new();
@@ -40,7 +45,7 @@ pub fn requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: usize, nr_requeue: usize
 /// return EAGAIN so the caller retries instead of requeueing stale waiters.
 /// This is what glibc's pthread_cond_broadcast / older condvars use to move
 /// waiters from the cond futex onto the associated mutex. # C: O(W)
-pub fn cmp_requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: usize, nr_requeue: usize, cmpval: u32, private: bool) -> i64 {
+pub fn cmp_requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: i64, nr_requeue: i64, cmpval: u32, private: bool) -> i64 {
     if src_uaddr == 0 || src_uaddr >= hal::USER_VA_END || (src_uaddr & 0x3) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -61,12 +66,15 @@ fn sign_extend12(v: u32) -> i32 { (((v & 0xfff) << 20) as i32) >> 20 }
 /// encoded comparison, wake up to `nr_wake2` waiters on `uaddr2`. Linux
 /// `futex_wake_op` — glibc uses it in some condvar/lock fast paths. The RMW is
 /// atomic by the single-CPU preempt-off syscall invariant. # C: O(W)
-pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: usize, nr_wake2: usize, encoded: u32, private: bool) -> i64 {
+pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: i64, nr_wake2: i64, encoded: u32, private: bool) -> i64 {
+    if nr_wake < 0 || nr_wake2 < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let (nr_wake, nr_wake2) = (nr_wake as usize, nr_wake2 as usize);
     for ua in [uaddr1, uaddr2] {
         if ua == 0 || ua >= hal::USER_VA_END || (ua & 0x3) != 0 {
             return -(Errno::Einval.as_i32() as i64);
         }
     }
+    if (encoded >> 24) & 0xf > 5 { return -(Errno::Enosys.as_i32() as i64); }
     let op = (encoded >> 28) & 0x7;
     let oparg_shift = (encoded >> 28) & 0x8 != 0;
     let cmp = (encoded >> 24) & 0xf;
@@ -76,13 +84,17 @@ pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: usize, nr_wake2: usize, encode
     // SAFETY: bounded user VA validated; CR3 is current's; preempt-off makes the
     // read-modify-write atomic vs other tasks on this UP CPU.
     let oldval = unsafe { load_user_u32(uaddr2) } as i32;
+    // An unknown OP or CMP is -ENOSYS, not -EINVAL: Linux's arch helper falls
+    // off its switch to `ret = -ENOSYS`, and `futex_atomic_op_inuser` returns
+    // -ENOSYS for an unknown comparison. Reporting EINVAL here would have made
+    // a caller probing for op support conclude its arguments were malformed.
     let newval = match op {
         0 => oparg,
         1 => oldval.wrapping_add(oparg),
         2 => oldval | oparg,
         3 => oldval & !oparg,
         4 => oldval ^ oparg,
-        _ => return -(Errno::Einval.as_i32() as i64),
+        _ => return -(Errno::Enosys.as_i32() as i64),
     };
     // SAFETY: same validated user word; CPL=0 store through the active CR3.
     unsafe { store_user_u32(uaddr2, newval as u32); }
@@ -95,7 +107,7 @@ pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: usize, nr_wake2: usize, encode
         3 => oldval <= cmparg,
         4 => oldval > cmparg,
         5 => oldval >= cmparg,
-        _ => false,
+        _ => return -(Errno::Enosys.as_i32() as i64),
     };
     if do_wake2 {
         if let Some(k2) = current_key(uaddr2, private) { woken += wake_key(k2, nr_wake2, FUTEX_BITSET_MATCH_ANY); }

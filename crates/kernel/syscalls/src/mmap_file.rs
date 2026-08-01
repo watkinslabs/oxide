@@ -129,6 +129,14 @@ impl FileBacking for InodeFileBacking {
 
     fn size_hint(&self) -> u64 { self.inode.size() }
     fn ino(&self) -> u64 { self.inode.ino() }
+
+    /// The inode's kernel identity — the address of the refcounted `InodeRef`
+    /// the inode cache hands to every opener of this file. Every mapping of one
+    /// file therefore reports the same value, which is what lets a shared futex
+    /// in a `MAP_SHARED` file page be keyed on the file rather than on a
+    /// physical page that eviction and re-read can move.
+    /// # C: O(1)
+    fn object_id(&self) -> u64 { Arc::as_ptr(&self.inode) as *const u8 as u64 }
     fn file_rmap(&self) -> Option<Arc<vmm::FileRmap>> { Some(self.inode.file_rmap()) }
     /// MAP_SHARED: defer to the inode's page-frame store (tmpfs/memfd return
     /// a real frame; other inodes default to None → copy path). # C: O(log N)

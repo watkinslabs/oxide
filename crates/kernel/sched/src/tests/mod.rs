@@ -24,6 +24,7 @@
 
 mod affinity;
 pub(crate) mod common;
+mod pi_boost;
 mod cpu_nanosleep;
 mod exit_notify;
 mod net_namespace;

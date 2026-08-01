@@ -30,6 +30,8 @@ pub mod chroot_refs;
 pub mod registry;
 pub mod runqueue;
 pub mod rq_locate;
+// PI-futex priority boost application (`crate::pi_prio` owns the ordering rule).
+pub mod pi_boost;
 pub mod schedule;
 pub mod spawn;
 pub mod sched_fork;
@@ -240,6 +242,37 @@ pub fn run_robust_exit(head_uaddr: u64, owner_tid: u32) {
     // SAFETY: hook installed via set_robust_exit_hook with the documented RobustExitFn signature; Acquire load pairs with the Release store in the setter; ptr is a valid 'static fn address.
     let f: RobustExitFn = unsafe { core::mem::transmute(p) };
     f(head_uaddr, owner_tid);
+}
+
+/// PI-futex ownership handoff for a dying thread (`exit_pi_state_list`),
+/// installed at boot by kmain. Same hook shape and same reason as
+/// `RobustExitFn`: the body lives in `ipc`.
+///
+/// Distinct from the robust-list walk and NOT interchangeable with it: the
+/// robust walk only touches futexes userspace registered on a robust list, and
+/// it deliberately does not wake PI waiters. The kernel's own PI ownership
+/// records are what actually hand a `PTHREAD_PRIO_INHERIT` mutex to the next
+/// waiter with `FUTEX_OWNER_DIED`, and they exist whether or not the mutex was
+/// robust. Argument is the dying thread's userspace TID.
+pub type PiExitFn = fn(u32);
+static PI_EXIT_HOOK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1)
+pub fn set_pi_exit_hook(f: PiExitFn) {
+    PI_EXIT_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Run the installed PI-futex exit handoff for a dying thread. No-op if unset.
+/// MUST be called while the dying task's mm is still mapped — the handoff
+/// writes the new owner's TID into the user word.
+/// # C: O(S · N_waiters) via the installed walk
+pub fn run_pi_exit(owner_tid: u32) {
+    let p = PI_EXIT_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: hook installed via set_pi_exit_hook with the documented PiExitFn signature; Acquire load pairs with the Release store in the setter; ptr is a valid 'static fn address.
+    let f: PiExitFn = unsafe { core::mem::transmute(p) };
+    f(owner_tid);
 }
 
 /// SysV `SEM_UNDO` exit walk (`ipc::sysv::sem::exit_sem`), installed at boot by
