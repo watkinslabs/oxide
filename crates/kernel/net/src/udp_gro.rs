@@ -76,6 +76,16 @@ pub fn admit(tail: Option<&GroRun>, same_flow: bool, len: usize, checksum_zero: 
     GroAdmit::Merge
 }
 
+/// Whether the interface a datagram arrived on offers receive coalescing.
+///
+/// Coalescing is a device receive-path feature, not a property of the socket:
+/// a loopback delivery is handed straight to the protocol and is never
+/// coalesced, so a local sender's datagrams reach the reader one by one no
+/// matter what the receiving socket asked for. # C: O(1)
+pub fn device_offers_gro(hardware_type: u16) -> bool {
+    hardware_type != crate::uapi::ARPHRD_LOOPBACK
+}
+
 /// The `UDP_GRO` control message a receive publishes, if any.
 ///
 /// It exists only for a receive several datagrams were coalesced into, and
@@ -90,6 +100,12 @@ pub fn reported_seg_size(enabled: bool, coalesced: Option<i32>) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_delivery_is_never_coalesced() {
+        assert!(!device_offers_gro(crate::uapi::ARPHRD_LOOPBACK));
+        assert!(device_offers_gro(crate::uapi::ARPHRD_ETHER));
+    }
 
     #[test]
     fn the_control_message_needs_both_a_coalesced_receive_and_the_option() {

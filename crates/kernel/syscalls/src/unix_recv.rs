@@ -89,10 +89,10 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
             let waitall = flags & MSG_WAITALL != 0;
             let mut total = 0usize;
             let mut all_files = alloc::vec::Vec::new();
-            let mut last_cred = None;
+            let mut last_cred = None; // latched once, on the first glued segment
             loop {
                 let offset = if peek { total } else { 0 };
-                match pair.read_stream_with_offset(end, user.capacity - total, peek, offset, |data, _, _| {
+                match pair.read_stream_with_offset(end, user.capacity - total, peek, offset, passcred, |data, _, _| {
                     let copied = user.copy_payload_at(total, data)?;
                     Ok::<_, i64>((copied, copied))
                 }) {
@@ -106,7 +106,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                         total += copied;
                         let got_control = files.stops_waitall(passcred);
                         all_files.extend(files);
-                        if cred.is_some() { last_cred = cred; }
+                        if last_cred.is_none() { last_cred = cred; }
                         if !waitall || total == user.capacity || got_control {
                             if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
