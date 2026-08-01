@@ -50,6 +50,15 @@ pub unsafe fn set_spin_relax_hook(f: SpinRelaxFn) { HOOK.store(f as *mut (), Ord
 #[inline]
 pub fn relax() {
     core::hint::spin_loop();
+    // Hosted builds have no one-thread-per-CPU guarantee: the OS can
+    // deschedule a lock holder while every waiter burns a whole core, turning
+    // a bounded kernel spin into an unbounded hosted livelock. B1653 caught a
+    // `net` test binary wedged at ~4300% CPU this way — 30-odd threads in
+    // `Spinlock::lock` making no progress, orphaned from a completed run.
+    // Yielding hands the core back so the holder can finish. Never compiled
+    // into a kernel target, where the pause alone is the correct behavior.
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    hosted_yield();
     let p = HOOK.load(Ordering::Acquire);
     if p.is_null() { return; }
     // SAFETY: `HOOK` is only ever written by `set_spin_relax_hook` from a
@@ -57,6 +66,23 @@ pub fn relax() {
     // a live 'static fn pointer with that exact signature.
     let f: SpinRelaxFn = unsafe { core::mem::transmute(p) };
     f();
+}
+
+/// Yield this OS thread once every `HOSTED_SPINS_PER_YIELD` relax steps. Pure
+/// pausing keeps a short critical section fast; the periodic yield is what
+/// bounds the wait when the holder is not currently on a core. # C: O(1)
+#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+fn hosted_yield() {
+    const HOSTED_SPINS_PER_YIELD: u32 = 4_096;
+    std::thread_local! {
+        static SPINS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    }
+    SPINS.with(|spins| {
+        let next = spins.get() + 1;
+        if next < HOSTED_SPINS_PER_YIELD { spins.set(next); return; }
+        spins.set(0);
+        std::thread::yield_now();
+    });
 }
 
 #[cfg(test)]

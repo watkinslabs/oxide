@@ -42,7 +42,8 @@ fn admitted_egress_can_resume_after_close_before_retirement() {
     let teardown = std::thread::spawn(move || {
         done_tx.send(teardown_stack.teardown_iface_in(net_ns, iface)).unwrap();
     });
-    while stack.ifaces.namespace(iface).is_some() { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("iface leaves its namespace",
+        || stack.ifaces.namespace(iface).is_none());
 
     assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     egress.xmit(Pkt::new(0)).unwrap();
@@ -63,7 +64,8 @@ impl NetDev for LifecycleDev {
     fn resume_namespace(&self) {
         self.resumes.fetch_add(1, Ordering::AcqRel);
         self.resume_started.store(true, Ordering::Release);
-        while !self.resume_release.load(Ordering::Acquire) { std::thread::yield_now(); }
+        crate::hosted_fixture::spin_until("resume release is signalled",
+            || self.resume_release.load(Ordering::Acquire));
     }
     fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::MoveToInitial }
     fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
@@ -88,7 +90,8 @@ fn current_unregister_waits_through_namespace_move_then_destroys() {
     let teardown = std::thread::spawn(move || {
         teardown_stack.teardown_iface_in(net_ns, iface)
     });
-    while stack.ifaces.namespace(iface).is_some() { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("iface leaves its namespace",
+        || stack.ifaces.namespace(iface).is_none());
     let unregister_stack = stack.clone();
     let (unregister_tx, unregister_rx) = std::sync::mpsc::channel();
     let unregister = std::thread::spawn(move || {
@@ -99,7 +102,8 @@ fn current_unregister_waits_through_namespace_move_then_destroys() {
     }
 
     drop(lease);
-    while !resume_started.load(Ordering::Acquire) { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("resume starts",
+        || resume_started.load(Ordering::Acquire));
     assert!(stack.ifaces.acquire_ingress(iface).is_none());
     assert!(matches!(unregister_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     resume_release.store(true, Ordering::Release);
@@ -127,14 +131,16 @@ fn current_unregister_cannot_claim_resume_pending_generation() {
     }), net_ns);
     let teardown_stack = stack.clone();
     let teardown = std::thread::spawn(move || teardown_stack.teardown_iface_in(net_ns, iface));
-    while !resume_started.load(Ordering::Acquire) { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("resume starts",
+        || resume_started.load(Ordering::Acquire));
 
     let unregister_stack = stack.clone();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let unregister = std::thread::spawn(move || {
         done_tx.send(unregister_stack.unregister_iface_current(iface)).unwrap();
     });
-    while stack.ifaces.resume_waiters(iface) == 0 { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("a resume waiter appears",
+        || stack.ifaces.resume_waiters(iface) != 0);
     assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
 
     resume_release.store(true, Ordering::Release);
