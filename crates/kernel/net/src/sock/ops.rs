@@ -59,13 +59,13 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp4_owned(sock.owner.clone(), ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
-                                         sock.opts.ip_mtu_discover.clone(),
+                                         sock.opts.ip_mtu_discover.clone(), sock.opts.udp.gro.clone(),
                                          sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
                     (port, stack().bind_udp_socket_owned(
                         sock.owner.clone(), ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
-                        sock.opts.ip_mtu_discover.clone(),
+                        sock.opts.ip_mtu_discover.clone(), sock.opts.udp.gro.clone(),
                         sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };
@@ -93,6 +93,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                                          sock.opts.ipv6_v6only.clone(),
                                          sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                                          sock.opts.ipv6_mtu_discover.clone(),
+                                         sock.opts.udp.no_check6_rx.clone(), sock.opts.udp.gro.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
                     (port, stack().bind_udp6_socket_owned(
@@ -101,6 +102,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                         sock.opts.ipv6_v6only.clone(),
                         sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                         sock.opts.ipv6_mtu_discover.clone(),
+                        sock.opts.udp.no_check6_rx.clone(), sock.opts.udp.gro.clone(),
                         sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };
@@ -312,7 +314,13 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     let new_sock = InetSocket::from_accepted_tcp(sock, entry.clone());
     inherit_tcp_keepalive_opts(&new_sock, sock);
     inherit_tcp_oobinline(&new_sock, sock);
+    new_sock.opts.tcp.inherit(&sock.opts.tcp);
     apply_tcp_keepalive_opts(&new_sock, &entry);
+    {
+        let mut c = entry.conn.lock();
+        crate::sock_opts::sol_tcp::apply::to_conn(&new_sock.opts, &mut c);
+        crate::sock_opts::sol_tcp::apply::collect_saved_syn(&new_sock.opts, &mut c);
+    }
     // F180b: pin the peer slot for the family the listener was opened
     // in. v6 listeners only ever see v6 conns (deliver path keys by
     // IpAddr); same for v4.

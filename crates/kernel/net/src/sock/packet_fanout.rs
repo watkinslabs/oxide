@@ -432,8 +432,9 @@ fn defragment_ipv4(group: &PacketFanoutGroup, packet: &[u8], network: usize)
         id: u16::from_be_bytes([packet[network + 4], packet[network + 5]]),
     };
     let prefix = (offset == 0).then_some(&packet[..network + ihl]);
-    let (mut prefix, payload) = stack().ipv4_reasm.push_with_prefix(key,
-        crate::stack::net_now_ns(), offset, prefix, &packet[network + ihl..network + total], more)?;
+    let (mut prefix, payload, _) = stack().ipv4_reasm.push_with_prefix(key,
+        crate::stack::net_now_ns(), offset, prefix, &packet[network + ihl..network + total], more,
+        0)?;
     let ip_len = ihl.checked_add(payload.len())?;
     if ip_len > u16::MAX as usize || prefix.len() < network + ihl { return None; }
     prefix[network + 2..network + 4].copy_from_slice(&(ip_len as u16).to_be_bytes());

@@ -242,22 +242,22 @@ impl NetStack {
         hop_limit: u8, traffic_class: u8, mode: i32) -> NetResult<()>
     {
         self.send_udp6_pmtu_to_bound_opts_owner(None, net_ns, src, src_port, dst, dst_port,
-            payload, bound, hop_limit, traffic_class, mode)
+            payload, bound, hop_limit, traffic_class, mode, false)
     }
 
     /// Build and transmit socket-owned UDP/IPv6. # C: O(payload + N)
     pub fn send_udp6_pmtu_to_bound_opts_owned(&self, owner: &crate::SocketOwner,
         src: Ipv6Addr, src_port: u16, dst: Ipv6Addr, dst_port: u16, payload: &[u8],
-        bound: Option<NetIfaceId>, hop_limit: u8, traffic_class: u8, mode: i32)
-        -> NetResult<()> {
+        bound: Option<NetIfaceId>, hop_limit: u8, traffic_class: u8, mode: i32,
+        no_check: bool) -> NetResult<()> {
         self.send_udp6_pmtu_to_bound_opts_owner(Some(owner), owner.net_ns(), src, src_port,
-            dst, dst_port, payload, bound, hop_limit, traffic_class, mode)
+            dst, dst_port, payload, bound, hop_limit, traffic_class, mode, no_check)
     }
 
     fn send_udp6_pmtu_to_bound_opts_owner(&self, owner: Option<&crate::SocketOwner>,
         net_ns: u64, src: Ipv6Addr, src_port: u16, dst: Ipv6Addr, dst_port: u16,
         payload: &[u8], bound: Option<NetIfaceId>, hop_limit: u8, traffic_class: u8,
-        mode: i32) -> NetResult<()> {
+        mode: i32, no_check: bool) -> NetResult<()> {
         let src = if src == Ipv6Addr::ANY && dst == Ipv6Addr::LOOPBACK {
             Ipv6Addr::LOOPBACK
         } else { src };
@@ -272,7 +272,7 @@ impl NetStack {
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut packet = crate::pkt::Pkt::with_capacity(0, l4_len);
         let body = packet.put(l4_len).map_err(|_| NetError::Enobufs)?;
-        crate::udp::build_into_v6(src_port, dst_port, src, dst, payload, body);
+        crate::udp::build_into_v6_opts(src_port, dst_port, src, dst, payload, body, no_check);
         self.xmit_ipv6_l4_with_policy(
             iface_id, iface, next_hop, src, dst, IpProto::Udp, packet.data(), hop_limit,
             traffic_class, mtu,

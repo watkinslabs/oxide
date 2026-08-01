@@ -3,10 +3,12 @@
 // - pair.rs      : pair construction, endpoint identity, names, and credentials.
 // - send.rs      : byte and ancillary-data writes plus reader notification.
 // - read.rs      : plain reads, peeking, and atomic blocking-read parking.
+// - coalesce.rs  : control-buffer-less receive boundaries (rights / sender change).
 // - recv.rs      : transactional boundary-aware recvmsg reads.
 // - lifecycle.rs : shutdown, release, reset, EOF, and readiness state.
 // - trace.rs     : feature-gated D-Bus stream diagnostics.
 
+mod coalesce;
 mod lifecycle;
 mod pair;
 mod read;
@@ -22,5 +24,5 @@ pub use lifecycle::ArmStreamRead;
 pub use lifecycle::ArmStreamWrite;
 #[cfg(target_os = "oxide-kernel")]
 pub use read::ReadOutcome;
-pub use recv::StreamFiles;
+pub use recv::{stream_recv_continues, StreamFiles};
 pub use types::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};

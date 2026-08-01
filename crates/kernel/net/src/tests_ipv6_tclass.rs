@@ -89,6 +89,6 @@ fn ingest_preserves_header_traffic_class() {
     hdr.write_to(&mut frame[..crate::ipv6::IPV6_HDR_LEN]);
     stack.deliver_rx_ipv6(iface, &frame).unwrap();
 
-    let (_, _, _, _, _hop, tclass, _body) = queue.recv(false).expect("datagram queued");
+    let tclass = queue.recv(false).expect("datagram queued").traffic_class;
     assert_eq!(tclass, T, "ingested datagram must retain the header traffic class");
 }

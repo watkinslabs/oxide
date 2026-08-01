@@ -99,6 +99,54 @@ pub struct TcpConn {
     pub ka_count:    u32,
     pub last_rx_ns:  u64,
     pub next_ka_ns:  u64,
+    /// `TCP_SYNCNT`: how many times the initial SYN is retransmitted before
+    /// the connection attempt is abandoned.
+    pub syn_retries: u32,
+    /// `TCP_LINGER2`: how long the connection may hold FIN-WAIT-2 before it
+    /// is torn down. `0` = leave the state as soon as it is entered.
+    pub linger2_ns: u64,
+    /// `TCP_THIN_LINEAR_TIMEOUTS`: retransmit a thin stream on a flat timer
+    /// instead of doubling it, so a one-segment flow recovers in one RTO.
+    pub thin_lto: bool,
+    /// `TCP_USER_TIMEOUT`: abort once data has gone unacknowledged this long,
+    /// regardless of the retransmit count. `0` = no caller-imposed limit.
+    pub user_timeout_ns: u64,
+    /// Wall time the oldest unacknowledged segment was first sent, which is
+    /// what the user timeout is measured from.
+    pub first_unacked_ns: u64,
+    /// `TCP_REPAIR`: the connection's sequence state is under external
+    /// control, so timers and probes stand down.
+    pub repair: bool,
+    /// `TCP_REPAIR_OPTIONS` restored maximum segment size.
+    pub mss_clamp: u16,
+    /// `TCP_REPAIR_OPTIONS` restored selective-acknowledgement negotiation.
+    pub sack_ok: bool,
+    /// `TCP_NOTSENT_LOWAT`: unsent bytes above this make the socket
+    /// unwritable, so a writer is woken only when the queue has drained.
+    pub notsent_lowat: u32,
+    /// `TCP_TX_DELAY`: an artificial one-way delay folded into the smoothed
+    /// round-trip estimate.
+    pub tx_delay_ns: u64,
+    /// `TCP_RTO_MAX_MS` / `TCP_DELACK_MAX_US` as the timer ceilings they set.
+    pub rto_max_ns: u64,
+    pub delack_max_ns: u64,
+    /// Repair-visible window state: the sequence of the last window update,
+    /// the largest window the peer ever advertised, and the receive window
+    /// with the sequence it was advertised from.
+    pub snd_wl1: u32,
+    pub max_window: u32,
+    pub rcv_wnd: u32,
+    pub rcv_wup: u32,
+    /// An acknowledgement is owed but was withheld because the socket is in
+    /// ping-pong mode, and the deadline by which it must go out anyway.
+    pub ack_pending: bool,
+    pub ack_deadline_ns: u64,
+    /// `TCP_SAVE_SYN`: the handshake packet that opened this connection, from
+    /// the network header onward, kept until `TCP_SAVED_SYN` collects it.
+    pub syn_bytes: Option<alloc::vec::Vec<u8>>,
+    /// `TCP_DEFER_ACCEPT`: while non-zero, this completed passive connection
+    /// is withheld from `accept` until data arrives or this instant passes.
+    pub defer_deadline_ns: u64,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -112,3 +160,13 @@ pub enum TcpConnError {
 /// by tests that construct minimal TCP frames.
 pub const OWN_MSS_DEFAULT: u16 = 1460;
 pub const OWN_WSCALE: u8 = 7;
+/// Retransmit-timeout ceiling and delayed-acknowledgement ceiling a connection
+/// runs with until `TCP_RTO_MAX_MS` / `TCP_DELACK_MAX_US` name others.
+pub const RTO_MAX_DEFAULT_NS: u64 = 120_000_000_000;
+pub const DELACK_MAX_DEFAULT_NS: u64 = 200_000_000;
+/// SYN retransmits before an unanswered connection attempt is abandoned, and
+/// data retransmits before an established connection is.
+pub const SYN_RETRIES_DEFAULT: u32 = 6;
+pub const DATA_RETRIES_DEFAULT: u32 = 15;
+/// FIN-WAIT-2 hold time a connection runs with until `TCP_LINGER2` names one.
+pub const LINGER2_DEFAULT_NS: u64 = 60_000_000_000;

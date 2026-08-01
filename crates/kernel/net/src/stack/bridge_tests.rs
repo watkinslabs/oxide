@@ -279,6 +279,6 @@ fn bridge_mac_delivery_uses_the_bridge_as_the_l3_ingress_identity() {
     wire[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&l3);
     stack.deliver_ethernet(port_id, &wire).unwrap();
     let received = endpoint.recv(false).unwrap();
-    assert_eq!(received.3, bridge);
-    assert_eq!(received.5, body);
+    assert_eq!(received.iface, bridge);
+    assert_eq!(received.payload, body);
 }
