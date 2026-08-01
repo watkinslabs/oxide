@@ -21,6 +21,8 @@ pub mod uapi;
 mod ioctl;
 #[path = "arp/proxy.rs"]
 pub(crate) mod proxy;
+#[path = "arp/proc_row.rs"]
+pub mod proc_row;
 
 pub use ioctl::ioctl;
 
