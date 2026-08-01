@@ -89,6 +89,7 @@ pub mod policy_rule;
 pub mod forwarding;
 pub mod iface_addr;
 pub mod bind_screen;
+pub mod local_port;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod reuseport;

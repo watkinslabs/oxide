@@ -125,11 +125,11 @@ impl NetStack {
     /// Reserve a TCP local name retaining one socket's canonical owner. # C: O(range * N_port)
     pub fn tcp_reserve_owned(&self, owner: Arc<crate::SocketOwner>, local_ip: IpAddr,
                           requested_port: u16, iface: Option<NetIfaceId>, reuseaddr: bool,
-                          reuseport: bool, v6only: bool)
+                          reuseport: bool, v6only: bool, port_range: u32)
         -> NetResult<Arc<TcpBindReservation>>
     {
         self.tcp_reserve_peer_owned(owner, local_ip, requested_port, iface, reuseaddr,
-            reuseport, v6only, None)
+            reuseport, v6only, None, port_range)
     }
 
     /// Auto-bind for an outbound connection — Linux `inet_hash_connect`
@@ -150,11 +150,11 @@ impl NetStack {
     pub fn tcp_reserve_connect_owned(&self, owner: Arc<crate::SocketOwner>, local_ip: IpAddr,
                                   requested_port: u16, iface: Option<NetIfaceId>,
                                   reuseaddr: bool, reuseport: bool, v6only: bool,
-                                  peer: (IpAddr, u16))
+                                  peer: (IpAddr, u16), port_range: u32)
         -> NetResult<Arc<TcpBindReservation>>
     {
         self.tcp_reserve_peer_owned(owner, local_ip, requested_port, iface, reuseaddr,
-            reuseport, v6only, Some(peer))
+            reuseport, v6only, Some(peer), port_range)
     }
 
     fn tcp_reserve_peer_in(&self, net_ns: u64, local_ip: IpAddr, requested_port: u16,
@@ -165,12 +165,14 @@ impl NetStack {
         let namespace = if net_ns == 0 { network_namespace::initial() }
             else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
         self.tcp_reserve_peer_owned(crate::SocketOwner::root(namespace, owner_uid),
-            local_ip, requested_port, iface, reuseaddr, reuseport, v6only, peer)
+            local_ip, requested_port, iface, reuseaddr, reuseport, v6only, peer,
+            crate::local_port::NAMESPACE_WINDOW)
     }
 
     fn tcp_reserve_peer_owned(&self, owner: Arc<crate::SocketOwner>, local_ip: IpAddr,
                            requested_port: u16, iface: Option<NetIfaceId>, reuseaddr: bool,
-                           reuseport: bool, v6only: bool, peer: Option<(IpAddr, u16)>)
+                           reuseport: bool, v6only: bool, peer: Option<(IpAddr, u16)>,
+                           port_range: u32)
         -> NetResult<Arc<TcpBindReservation>>
     {
         // Draw the boot secret here, in process context: the passive-open
@@ -186,7 +188,7 @@ impl NetStack {
                 local_ip, requested_port, iface,
                 reuseaddr, reuseport, v6only).ok_or(NetError::Eaddrinuse);
         }
-        let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
+        let range = crate::local_port::range_in(net_ns, port_range).ok_or(NetError::Enodev)?;
         // Peer known (`connect`) → keyed 4-tuple offset, Linux
         // `inet_hash_connect`. Peer unknown (`bind(0)`/`listen`) → uniform
         // random offset on the opposite parity, Linux
