@@ -148,6 +148,10 @@ fn apply(sock: &Arc<InetSocket>, action: &Action) -> i64 {
     let effects = install::store(&sock.opts, action);
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => Some(entry.clone()),
+        SockKind::TcpListener(listener) => {
+            if effects.defer { install::to_listener(&sock.opts, listener); }
+            None
+        }
         _ => None,
     };
     if let Some(entry) = &entry {

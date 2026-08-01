@@ -22,6 +22,7 @@ pub mod sack;
 pub mod segment;
 pub mod timing;
 pub mod route_policy;
+pub mod defer;
 
 pub use types::{
     Endpoint, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,

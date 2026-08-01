@@ -90,6 +90,7 @@ impl TcpConn {
             ack_pending: false,
             ack_deadline_ns: 0,
             syn_bytes: None,
+            defer_deadline_ns: 0,
         }
     }
 
@@ -174,6 +175,7 @@ impl TcpConn {
             ack_pending: false,
             ack_deadline_ns: 0,
             syn_bytes: None,
+            defer_deadline_ns: 0,
         }
     }
 

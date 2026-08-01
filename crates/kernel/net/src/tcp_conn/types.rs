@@ -144,6 +144,9 @@ pub struct TcpConn {
     /// `TCP_SAVE_SYN`: the handshake packet that opened this connection, from
     /// the network header onward, kept until `TCP_SAVED_SYN` collects it.
     pub syn_bytes: Option<alloc::vec::Vec<u8>>,
+    /// `TCP_DEFER_ACCEPT`: while non-zero, this completed passive connection
+    /// is withheld from `accept` until data arrives or this instant passes.
+    pub defer_deadline_ns: u64,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

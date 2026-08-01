@@ -375,6 +375,11 @@ pub struct TcpListenEntry {
     /// Half-open plus completed children not yet removed by accept.
     pub syn_backlog_used: ::core::sync::atomic::AtomicUsize,
     pub accept_backlog_used: ::core::sync::atomic::AtomicUsize,
+    /// `TCP_DEFER_ACCEPT` as the seconds window the owning socket's stored
+    /// retransmit count covers. The option block is the source of truth; this
+    /// is the applied copy the delivery path reads without reaching back into
+    /// the socket, already in the unit the hand-over rule waits in.
+    pub defer_window_secs: ::core::sync::atomic::AtomicI32,
     /// Listener close linearizes child admission and accept publication here.
     pub closed: ::core::sync::atomic::AtomicBool,
     pub local: Endpoint,

@@ -235,6 +235,20 @@ impl NetStack {
                 let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
                     entry.bound_iface(), TcpTxPolicy::Entry(entry));
             }
+            // A connection withheld by `TCP_DEFER_ACCEPT` whose window has now
+            // run out becomes acceptable, so a blocked `accept` has to be
+            // woken — nothing else will arrive to do it.
+            let expired = {
+                let mut c = entry.conn.lock();
+                let due = c.defer_deadline_ns != 0 && now_ns >= c.defer_deadline_ns;
+                if due { c.defer_deadline_ns = 0; }
+                due
+            };
+            if expired && !entry.accepted.load(::core::sync::atomic::Ordering::Acquire) {
+                if let Some(listener) = entry.passive_listener.as_ref()
+                    .and_then(alloc::sync::Weak::upgrade)
+                { listener.notify_acceptable(); }
+            }
             // A ping-pong-mode socket held its acknowledgement back so it
             // could ride the application's reply; once `TCP_DELACK_MAX_US`
             // elapses it goes out on its own.
@@ -366,6 +380,18 @@ impl NetStack {
                 && post_state == crate::tcp_state::TcpState::Established
             {
                 let Some(listener) = passive_listener else { return Ok(()); };
+                // `TCP_DEFER_ACCEPT`: a handshake that completed without data
+                // is queued but withheld from `accept` until the client sends
+                // something or the window the listener asked for runs out.
+                {
+                    let mut c = entry.conn.lock();
+                    if c.recv_buf.is_empty() {
+                        let window = listener.defer_window_secs.load(
+                            ::core::sync::atomic::Ordering::Acquire);
+                        c.defer_deadline_ns = crate::tcp_conn::defer::deadline_ns(
+                            window, crate::tcp_conn::ka_now_ns());
+                    }
+                }
                 if !entry.promote_to_accept_backlog() {
                     entry.release_syn_backlog();
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
@@ -377,6 +403,22 @@ impl NetStack {
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                     super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
                     return Ok(());
+                }
+            }
+            // Data on a connection withheld by `TCP_DEFER_ACCEPT` is what the
+            // listener was waiting for: the child becomes acceptable now, and
+            // the first read on the accepted socket returns these bytes.
+            {
+                let deferred = {
+                    let mut c = entry.conn.lock();
+                    let due = c.defer_deadline_ns != 0 && !c.recv_buf.is_empty();
+                    if due { c.defer_deadline_ns = 0; }
+                    due
+                };
+                if deferred {
+                    if let Some(listener) = entry.passive_listener.as_ref()
+                        .and_then(alloc::sync::Weak::upgrade)
+                    { listener.notify_acceptable(); }
                 }
             }
             if let Some(r) = resp {
