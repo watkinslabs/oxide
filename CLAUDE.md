@@ -332,6 +332,26 @@ ledgers) goes in `scratch/`, never the repo root or `docs/`. `docs/` is specs on
 plan carries a **Status** first column and a **Branch** column per work item, updated as
 lanes are claimed / merged.
 
+## Known issues go in `scratch/known_issues.md` (HARD RULE)
+
+Every issue, breakage, divergence, deviation, gap, flake, or thing-worth-noting gets a
+row in `scratch/known_issues.md` — **in the same PR that finds it**, not later. A finding
+that lives only in a session report is lost the moment the session ends.
+
+- **Find it, file it.** This includes: anything non-Linux, anything stubbed or
+  stored-but-unconsumed, a test that flakes, a gate that misses a defect class, a
+  pre-existing failure you confirmed, a negative result that saves the next lane time,
+  and any deviation you decided NOT to fix.
+- **Fix it, flip it.** Change the row to `FIXED <sha>` in the PR that fixes it. Do not
+  silently delete rows — a shrinking list must mean fixed, never forgotten.
+- **A row with no owner is still a row.** Not knowing who will fix it is not a reason to
+  omit it.
+- Record the EVIDENCE, not the theory: the failing test name, the measured number, the
+  reproduction. Negative results are first-class — "X does not cause Y, proven by Z" is
+  worth as much as a fix.
+- Never delete a row to make the list look shorter, and never downgrade a severity
+  without new evidence.
+
 ## state.md is short-lived session memory, not history
 
 `state.md` is the hand-off note from the previous session — what
