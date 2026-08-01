@@ -8,7 +8,7 @@ pub(super) use net::sock_opts::sol_socket::{SOL_SOCKET, SO_BINDTODEVICE, SO_ERRO
 
 pub(super) const IPPROTO_IP: u64 = 0;
 pub(super) const IPPROTO_TCP: u64 = 6;
-pub(super) const IPPROTO_UDP: i32 = 17;
+pub(super) const IPPROTO_UDP: u64 = 17;
 pub(super) const IPPROTO_IPV6: u64 = 41;
 pub(super) const IPPROTO_ICMP: u8 = 1;
 pub(super) const IPPROTO_ICMPV6: u8 = 58;
@@ -43,6 +43,8 @@ pub(super) const IPV6_RECVHOPLIMIT: u64 = 51;
 pub(super) const SOL_ICMPV6: u64 = 58;
 pub(super) const ICMP_FILTER: u64 = 1;
 pub(super) const ICMP6_FILTER: u64 = 1;
+/// `struct icmp6_filter` — eight 32-bit words.
+pub(super) const ICMP6_FILTER_BYTES: usize = 32;
 pub(super) const MCAST_MSFILTER: u64 = 48;
 
 pub(super) const TCP_NODELAY: u64 = 1;
@@ -51,3 +53,6 @@ pub(super) const TCP_KEEPIDLE: u64 = 4;
 pub(super) const TCP_KEEPINTVL: u64 = 5;
 pub(super) const TCP_KEEPCNT: u64 = 6;
 pub(super) const TCP_INFO: u64 = 11;
+
+/// Linux default outbound multicast hop limit when `IPV6_MULTICAST_HOPS` is unset.
+pub(super) const IPV6_DEFAULT_MULTICAST_HOPS: i32 = 1;

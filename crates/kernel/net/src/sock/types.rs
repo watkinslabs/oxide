@@ -228,6 +228,14 @@ pub struct SockOpts {
     pub so_type: core::sync::atomic::AtomicU8,
     /// Generic SOL_SOCKET flag/scalar state (`sock_opts::sol_socket`).
     pub generic: crate::sock_opts::sol_socket::GenericSockOpts,
+    /// `IPPROTO_IP` option state (`sock_opts::sol_ip`).
+    pub ip: crate::sock_opts::sol_ip::IpOpts,
+    /// `IPPROTO_IPV6` option state (`sock_opts::sol_ipv6`).
+    pub ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts,
+    /// `IPPROTO_TCP` option state (`sock_opts::sol_tcp`).
+    pub tcp: crate::sock_opts::sol_tcp::TcpOpts,
+    /// `IPPROTO_UDP` option state (`sock_opts::sol_udp`).
+    pub udp: crate::sock_opts::sol_udp::UdpOpts,
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
@@ -273,6 +281,10 @@ impl Default for SockOpts {
             timestamping: AtomicI32::new(0),
             so_type: AtomicU8::new(0),
             generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
+            ip: crate::sock_opts::sol_ip::IpOpts::default(),
+            ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts::default(),
+            tcp: crate::sock_opts::sol_tcp::TcpOpts::default(),
+            udp: crate::sock_opts::sol_udp::UdpOpts::default(),
         }
     }
 }
