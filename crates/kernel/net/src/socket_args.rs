@@ -270,6 +270,28 @@ mod tests {
         assert_eq!(parse_socket_args(AF_PACKET, SOCK_RAW, 0, false), Err(Errno::Eperm));
     }
 
+    // C246: SOCK_RAW is NOT a capability-bearing type by itself — the screen
+    // belongs to the family's own create operation, and only the INET pair and
+    // AF_PACKET install one. `unix_create` accepts SOCK_RAW from any caller and
+    // silently remaps it to SOCK_DGRAM ("Believe it or not BSD has AF_UNIX,
+    // SOCK_RAW though nothing uses it"), and AF_NETLINK's normal type IS
+    // SOCK_RAW. A future reader who "fixes" this by screening SOCK_RAW
+    // family-independently breaks every netlink socket in userspace.
+    #[test]
+    fn only_the_inet_families_and_af_packet_screen_raw_sockets() {
+        for (family, protocol) in [(AF_UNIX, 0), (AF_NETLINK, 0)] {
+            assert!(parse_socket_args(family, SOCK_RAW, protocol, false).is_ok(),
+                "family {family} screens SOCK_RAW but its create operation does not");
+        }
+        // The AF_UNIX personality remap is not applied by the parse — the
+        // socket-creation owner does it, so the parsed type is still SOCK_RAW.
+        assert_eq!(parse_socket_args(AF_UNIX, SOCK_RAW, 0, false).unwrap().typ, SOCK_RAW);
+        // The screening families reject the same unprivileged request.
+        assert_eq!(parse_socket_args(AF_INET, SOCK_RAW, IPPROTO_RAW, false), Err(Errno::Eperm));
+        assert_eq!(parse_socket_args(AF_INET6, SOCK_RAW, IPPROTO_RAW, false), Err(Errno::Eperm));
+        assert_eq!(parse_socket_args(AF_PACKET, SOCK_RAW, 0, false), Err(Errno::Eperm));
+    }
+
     // The INET families resolve the type/protocol pair before the raw-socket
     // capability screen, so the missing protocol outranks the missing
     // capability. AF_PACKET screens the capability first instead.
