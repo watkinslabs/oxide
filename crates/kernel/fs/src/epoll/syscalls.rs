@@ -312,11 +312,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
     if out > 0 || timeout_ns == Some(0) { return out as i64; }
     #[cfg(target_os = "oxide-kernel")]
     {
-        use hal::TimerOps;
-        let now = || {
-            #[cfg(target_arch = "x86_64")] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
-            #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-        };
+        let now = super::monotonic_ns;
         let deadline_ns = timeout_ns.map(|ns| now().saturating_add(ns));
         #[cfg(feature = "debug-wakelat")]
         let wl_start = now();
