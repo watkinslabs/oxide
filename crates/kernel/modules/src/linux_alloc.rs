@@ -216,6 +216,18 @@ pub(crate) extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
     if unsafe { valid_page(page) } { unsafe { (*page).va } } else { null_mut() }
 }
 
+/// Bytes the page descriptor's run covers, i.e. `PAGE_SIZE << order`, or None for a foreign pointer.
+/// # C: O(1)
+pub(crate) fn page_run_len(page: *mut LinuxPage) -> Option<usize> {
+    // SAFETY: page_run_len's precondition matches page_address' — page is NULL or a descriptor from
+    // alloc_pages that __free_pages has not released — so valid_page may read its magic word, and a
+    // PAGE_MAGIC match means `order` is the allocation order alloc_pages recorded for the same run.
+    if !unsafe { valid_page(page) } { return None; }
+    // SAFETY: valid_page returned true above, so page is a live page_desc_alloc descriptor whose
+    // order field was written by alloc_pages; the shift is the same one page_run_alloc sized with.
+    PAGE_SIZE.checked_shl(unsafe { (*page).order })
+}
+
 extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
     linux_page_phys(page).unwrap_or(0)
 }
