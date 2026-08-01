@@ -1,12 +1,14 @@
-// Keyring membership and search ops: LINK, UNLINK, MOVE, CLEAR,
-// RESTRICT_KEYRING, SEARCH, and the `request_key(2)` search.
+// Keyring membership ops: LINK, UNLINK, MOVE, CLEAR, RESTRICT_KEYRING, and the
+// two search entry points, KEYCTL_SEARCH and `request_key(2)`.
 
-use alloc::vec::Vec;
+#[cfg(test)] use alloc::vec::Vec;
 use syscall::errno::Errno;
 
+use super::search::{self, Expired};
 use super::{e, Ctx};
-use super::super::perm::{check_perm, visible_for_search, Lookup};
-use super::super::store::{Store, TaskIds, STORE};
+use super::super::construct;
+use super::super::perm::{check_perm, Lookup};
+use super::super::store::{Store, STORE};
 use super::super::types;
 use super::super::uapi::*;
 
@@ -118,14 +120,15 @@ pub fn restrict_core(c: &Ctx, ring_id: i32, key_type: Option<&str>) -> i64 {
     0
 }
 
-/// `KEYCTL_SEARCH` core — Linux `keyctl_keyring_search`: search starts at the
-/// NAMED keyring (which needs `KEY_NEED_SEARCH`) and descends through nested
-/// keyrings; on a hit, if `dest` is non-zero the key needs `KEY_NEED_LINK` and
-/// is linked into `dest`, which needs `KEY_NEED_WRITE`.
+/// `KEYCTL_SEARCH` core — Linux `keyctl_keyring_search`: the search starts at
+/// the NAMED keyring (which needs `KEY_NEED_SEARCH`) and descends through
+/// nested keyrings; on a hit, if `dest` is non-zero the key needs
+/// `KEY_NEED_LINK` and is linked into `dest`, which needs `KEY_NEED_WRITE`.
 ///
-/// Searching the whole global key store instead — as a flat scan does — makes
-/// any key in any task's keyring findable by serial-free name lookup, which is
-/// not a search at all. # C: O(N)
+/// Unlike `request_key`, an expired match is REPORTED (EKEYEXPIRED) rather than
+/// skipped: a caller naming a specific key wants to know it went stale, not to
+/// be told it never existed.
+/// # C: O(N)
 pub fn search_core(c: &Ctx, ring_id: i32, key_type: &str, description: &str, dest: i32) -> i64 {
     let ty = match types::lookup(key_type) { Some(t) => t, None => return e(Errno::Enokey) };
     let mut g = STORE.lock();
@@ -136,8 +139,12 @@ pub fn search_core(c: &Ctx, ring_id: i32, key_type: &str, description: &str, des
         if let Err(rv) = check_perm(&g, d, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
         Some(d)
     };
-    let found = match search_from(&g, &[ring], &c.t, ty.name, description, c.now_ns) {
-        Some(s) => s, None => return e(Errno::Enokey),
+    let found = match search::search(&g, &[ring], &c.t, ty.name, description, c.now_ns, Expired::Report) {
+        Ok(s) => s,
+        // `-EAGAIN` means the keyrings were searchable and held no match, which
+        // userspace is told as ENOKEY; every other reason is reported as it is.
+        Err(x) if x == search::NO_MATCH => return e(Errno::Enokey),
+        Err(x) => return -(x as i64),
     };
     if let Some(d) = dest_ring {
         if let Err(rv) = check_perm(&g, found, &c.t, KEY_NEED_LINK, Lookup::Full, c.now_ns) { return rv; }
@@ -147,62 +154,68 @@ pub fn search_core(c: &Ctx, ring_id: i32, key_type: &str, description: &str, des
 }
 
 /// `request_key(2)` core — Linux `request_key_and_link` →
-/// `search_process_keyrings_rcu` → `search_cred_keyrings_rcu`: the caller's
-/// thread, then process, then session (or, absent a session keyring, the
-/// user-session) keyring, each descended recursively.
+/// `search_process_keyrings_rcu`: the caller's thread, then process, then
+/// session (or, absent a session keyring, the user-session) keyring, each
+/// descended recursively.
 ///
-/// A miss is ENOKEY. Linux would upcall `/sbin/request-key` when
-/// `callout_info` is non-NULL and negate the key if the helper fails, which
-/// still surfaces as ENOKEY to the caller; there is no upcall helper here, so
-/// ENOKEY is the same answer by the same rule rather than a swallowed error.
-/// A hit is linked into `dest` when one is given. # C: O(N)
-pub fn request_key_core(c: &Ctx, key_type: &str, description: &str, dest: i32) -> i64 {
-    let ty = match types::lookup(key_type) { Some(t) => t, None => return e(Errno::Enokey) };
-    let mut g = STORE.lock();
-    let dest_ring = if dest == 0 { None } else {
-        let d = match g.resolve(dest, &c.t) { Ok(d) => d, Err(err) => return e(err) };
-        if let Err(rv) = check_perm(&g, d, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
-        Some(d)
-    };
-    let roots = g.cred_roots(&c.t);
-    let found = match search_from(&g, &roots, &c.t, ty.name, description, c.now_ns) {
-        Some(s) => s, None => return e(Errno::Enokey),
-    };
-    if let Some(d) = dest_ring {
-        if let Err(rv) = check_perm(&g, found, &c.t, KEY_NEED_LINK, Lookup::Full, c.now_ns) { return rv; }
-        if let Err(err) = g.link(d, found) { return e(err); }
-    }
-    found as i64
-}
-
-/// Depth-first walk of `roots` and every nested keyring the caller can
-/// `KEY_NEED_SEARCH`, returning the first live, visible type+description
-/// match. Linux `keyring_search_rcu` with `KEYRING_SEARCH_RECURSE`: an
-/// unsearchable nested keyring is skipped rather than failing the whole
-/// search, and a revoked/expired/invalidated key never matches. # C: O(N)
-fn search_from(g: &Store, roots: &[i32], t: &TaskIds, key_type: &str, description: &str, now_ns: u64)
-    -> Option<i32>
+/// On a miss the answer depends on `callout`:
+///   * `None` — the caller passed no callout info, so it is asking only whether
+///     the key already exists: ENOKEY, no upcall, no key allocated. An empty
+///     STRING is not None; `request_key(t, d, "", r)` does upcall.
+///   * `Some(_)` — construct it: allocate the key, mint its authorisation
+///     token, and run `/sbin/request-key`. The requester then gets whatever the
+///     helper made of it — the payload, or the errno it was negated or rejected
+///     with.
+///
+/// A miss that ran into a NEGATIVE key for the same name is NOT a miss: that
+/// key's stored errno is the answer and no helper runs, which is what keeps an
+/// unresolvable name from re-invoking the helper on every request.
+/// # C: O(N)
+pub fn request_key_core(c: &Ctx, key_type: &str, description: &str, callout: Option<&[u8]>,
+    dest: i32) -> i64
 {
-    let mut visited: Vec<i32> = Vec::new();
-    let mut stack: Vec<i32> = roots.iter().rev().copied().collect();
-    while let Some(cur) = stack.pop() {
-        if visited.contains(&cur) { continue; }
-        visited.push(cur);
-        let ring = match g.keys.get(&cur) { Some(k) if k.is_keyring() => k, _ => continue };
-        if !visible_for_search(g, ring, t, now_ns) { continue; }
-        let mut nested: Vec<i32> = Vec::new();
-        for &m in &ring.members {
-            let k = match g.keys.get(&m) { Some(k) => k, None => continue };
-            if k.key_type.name == key_type && k.description == description
-                && visible_for_search(g, k, t, now_ns)
-            {
-                return Some(m);
-            }
-            if k.is_keyring() { nested.push(m); }
+    let ty = match types::lookup(key_type) { Some(t) => t, None => return e(Errno::Enokey) };
+    let (dest_ring, found) = {
+        let mut g = STORE.lock();
+        let dest_ring = if dest == 0 { None } else {
+            let d = match g.resolve(dest, &c.t) { Ok(d) => d, Err(err) => return e(err) };
+            if let Err(rv) = check_perm(&g, d, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
+            Some(d)
+        };
+        let roots = g.cred_roots(&c.t);
+        match search::search(&g, &roots, &c.t, ty.name, description, c.now_ns, Expired::Skip) {
+            Ok(s) => (dest_ring, Some(s)),
+            Err(x) if x == search::NO_MATCH => (dest_ring, None),
+            Err(x) => return -(x as i64),
         }
-        for m in nested.into_iter().rev() { stack.push(m); }
+    };
+    let key = match found {
+        Some(s) => s,
+        None => {
+            let callout = match callout { Some(ci) => ci, None => return e(Errno::Enokey) };
+            match construct::construct_key_and_link(c, ty, description, callout,
+                dest_ring.unwrap_or(0))
+            {
+                Ok(k) => k,
+                Err(rv) => return rv,
+            }
+        }
+    };
+    let g = STORE.lock();
+    // `wait_for_key_construction`: a key that was negated or rejected reports
+    // the error it was given, not its serial.
+    if let Err(rv) = construct::construction_result(&g, key, c.now_ns) { return rv; }
+    drop(g);
+    if found.is_some() {
+        // A key found by search is linked into the destination only after it
+        // passes `KEY_NEED_LINK`; a constructed one was linked at birth.
+        let mut g = STORE.lock();
+        if let Some(d) = dest_ring {
+            if let Err(rv) = check_perm(&g, key, &c.t, KEY_NEED_LINK, Lookup::Full, c.now_ns) { return rv; }
+            if let Err(err) = g.link(d, key) { return e(err); }
+        }
     }
-    None
+    key as i64
 }
 
 /// Snapshot a keyring's member serials. `None` if the serial isn't a keyring.

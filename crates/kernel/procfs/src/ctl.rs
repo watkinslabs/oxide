@@ -60,6 +60,12 @@ const MQ_MSGSIZE_BOUNDS: (i64, i64) =
 mod hooks;
 use hooks::*;
 
+// Subtree declarations, split out for the file-length cap. Named `*_dir`
+// because a bare `mod net` here SHADOWS the `net` crate that this file's own
+// leaves bind to — a collision that only fails on a kernel-target build.
+mod kernel_dir;
+mod net_dir;
+
 /// One `ctl_table` leaf's `proc_handler` class + default value. # C: n/a
 enum Leaf {
     /// `proc_dointvec` (bounds `None`) / `proc_dointvec_minmax` (bounds
@@ -117,57 +123,7 @@ use Node::{Dir, File};
 /// (`kernel/`, `fs/`, `vm/`, `net/core`, `net/ipv4`, …) with the live binding
 /// declared at every leaf. # C: n/a
 const SYSCTL_TREE: &[Node] = &[
-    Dir("kernel", &[
-        File("pid_max",               Int(32768, Some((1, 4_194_304)))),
-        File("ngroups_max",           Const(b"65536\n")),
-        File("cap_last_cap",          Const(b"40\n")),
-        File("osrelease",             Const(b"5.15.0-oxide\n")),
-        File("ostype",                Const(b"Linux\n")),
-        File("version",               Const(b"#1 SMP PREEMPT oxide v0.1.0\n")),
-        File("domainname",            StrHook(crate::hooks::domainname, crate::hooks::set_domainname)),
-        File("threads-max",           Int(32768, Some((20, INT_MAX)))),
-        File("printk",                Bytes(b"4\t4\t1\t7\n")),
-        // Bound to the three tunables every BSD-process-accounting free-space
-        // check reads (`fs::acct`), not a procfs-local copy: a dead cell here
-        // would report a suspend threshold that no accounting write applies.
-        File("acct",                  StrHook(crate::hooks::acct_parm, crate::hooks::set_acct_parm)),
-        File("sched_rr_timeslice_ms", Int(100, Some((1, INT_MAX)))),
-        // Bound to `aslr`'s live cell — the same value every exec reads when it
-        // decides whether to randomise. A procfs-local copy would let this file
-        // report a protection the loader is not applying (or the reverse), which
-        // is the exact falsehood hardening scanners were being told before ASLR
-        // existed. Linux registers this leaf with plain `proc_dointvec` and NO
-        // extra1/extra2 (`mm/memory.c:128-136`), so no bounds here either.
-        File("randomize_va_space",    IntHook(get_randomize_va_space,
-                                              set_randomize_va_space, None)),
-        // Bound to the live value `perf_event_open` consults (`sched::perf_sw`),
-        // not a procfs-local cell — a dead cell here would let userspace loosen
-        // a gate the syscall never reads.
-        File("perf_event_paranoid",   IntHook(get_perf_paranoid, set_perf_paranoid, Some((-1, 4)))),
-        File("perf_event_max_sample_rate",
-            IntHook(get_perf_sample_rate, set_perf_sample_rate, Some((1, INT_MAX)))),
-        File("dmesg_restrict",        IntHook(get_dmesg_restrict, set_dmesg_restrict, Some((0, 1)))),
-        File("kptr_restrict",         Int(0, Some((0, 2)))),
-        File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),
-        File("io_uring_disabled",     Int(0, Some((0, 2)))),
-        File("hostname",              StrHook(crate::hooks::hostname, crate::hooks::set_hostname)),
-        // core dump control (systemd-coredump / sysctl.d write these). core_pattern
-        // is bound to fs::coredump's live template (write_for_current honors it);
-        // sysrq/core_pipe_limit/core_uses_pid are the real bounded sysctl vars.
-        File("core_pattern",          StrHook(crate::hooks::core_pattern, crate::hooks::set_core_pattern)),
-        File("core_pipe_limit",       Int(0, Some((0, INT_MAX)))),
-        File("core_uses_pid",         Int(1, Some((0, 1)))),
-        File("sysrq",                 Int(16, Some((0, 511)))),
-        // Bound to the live cell `__ptrace_may_access`'s LSM tail consults,
-        // not a procfs-local copy: a dead cell here would report a hardening
-        // level that no attach path applies. Writes are one-way (the scope
-        // may be raised, never lowered), which is why the setter is a hook
-        // rather than a bounded `Int`.
-        Dir("yama", &[
-            File("ptrace_scope",      CheckedIntHook(get_ptrace_scope, set_ptrace_scope,
-                                              Some((0, sched::yama::SCOPE_MAX as i64)))),
-        ]),
-    ]),
+    Dir("kernel", kernel_dir::KERNEL_SYSCTLS),
     Dir("fs", &[
         File("file-max",              ULong(4096, None)),
         File("file-nr",              Const(b"0\t0\t65536\n")),
@@ -253,47 +209,7 @@ const SYSCTL_TREE: &[Node] = &[
         File("unprivileged_userfaultfd", IntHook(get_unprivileged_userfaultfd,
             set_unprivileged_userfaultfd, Some(vmm::uffd::UNPRIVILEGED_USERFAULTFD_BOUNDS))),
     ]),
-    Dir("net", &[
-        Dir("core", &[
-            File("somaxconn",          NetInt(net::net_ns::NetSysctlKey::Somaxconn, Some((0, INT_MAX)))),
-            File("optmem_max",         NetInt(net::net_ns::NetSysctlKey::OptmemMax, Some((0, INT_MAX)))),
-            File("rmem_default",       NetGlobalIntHook(get_rmem_default, set_rmem_default,
-                Some(net::sysctl::RMEM_DEFAULT_BOUNDS))),
-            File("rmem_max",           NetGlobalIntHook(get_rmem_max, set_rmem_max,
-                Some(net::sysctl::RMEM_MAX_BOUNDS))),
-            File("wmem_default",       NetGlobalIntHook(get_wmem_default, set_wmem_default,
-                Some(net::sysctl::WMEM_DEFAULT_BOUNDS))),
-            File("wmem_max",           NetGlobalIntHook(get_wmem_max, set_wmem_max,
-                Some(net::sysctl::WMEM_MAX_BOUNDS))),
-            File("netdev_max_backlog", Const(b"1000\n")),
-        ]),
-        Dir("ipv4", &[
-            File("ip_forward",         NetInt(net::net_ns::NetSysctlKey::Ipv4Conf(
-                net::net_ns::Ipv4ConfDev::All, net::net_ns::Ipv4ConfKey::Forwarding), Some((0, 1)))),
-            File("tcp_syncookies",     NetInt(net::net_ns::NetSysctlKey::TcpSyncookies, Some((0, 2)))),
-            File("tcp_tw_reuse",       NetInt(net::net_ns::NetSysctlKey::TcpTwReuse, Some((0, 2)))),
-            File("tcp_fin_timeout",    NetInt(net::net_ns::NetSysctlKey::TcpFinTimeout, Some((0, INT_MAX)))),
-            File("tcp_keepalive_time", NetInt(net::net_ns::NetSysctlKey::TcpKeepaliveTime, Some((0, INT_MAX)))),
-            File("tcp_wmem",           PerNetBufWindowHook(tcp_wmem, set_tcp_wmem,
-                net::sysctl::TCP_MEM_BOUNDS)),
-            File("tcp_rmem",           PerNetBufWindowHook(tcp_rmem, set_tcp_rmem,
-                net::sysctl::TCP_MEM_BOUNDS)),
-            File("ip_local_port_range", PerNetU16PairHook(local_port_range, set_local_port_range)),
-            File("ip_unprivileged_port_start", PerNetIntHook(unprivileged_port_start,
-                set_unprivileged_port_start, Some((0, 65_535)))),
-            File("icmp_echo_ignore_all", NetInt(net::net_ns::NetSysctlKey::IcmpEchoIgnoreAll, Some((0, 1)))),
-            // The group window that admits an ICMP datagram endpoint. The
-            // compiled default `1 0` admits nobody; distributions open it at
-            // boot so an echo-probe tool needs no capability.
-            File("ping_group_range", PerNetGroupRangeHook(ping_group_range, set_ping_group_range)),
-        ]),
-        Dir("ipv6", &[
-            Dir("conf", &[
-                Dir("all",     &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableAll, Some((0, 1)))) ]),
-                Dir("default", &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableDefault, Some((0, 1)))) ]),
-            ]),
-        ]),
-    ]),
+    Dir("net", net_dir::NET_SYSCTLS),
 ];
 
 /// The Linux `net/ipv4/conf/<dev>/*` per-interface knob set (net/ipv4/

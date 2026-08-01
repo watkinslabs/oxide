@@ -29,9 +29,11 @@ fn ctx(tid: u32, uid: u32) -> Ctx {
 }
 
 /// The same caller holding `CAP_SYS_ADMIN`.
+/// The same caller holding both `CAP_SYS_ADMIN` and `CAP_SETUID`.
 fn admin_ctx(tid: u32, uid: u32) -> Ctx {
     let mut c = ctx(tid, uid);
     c.sys_admin = true;
+    c.set_uid = true;
     c
 }
 

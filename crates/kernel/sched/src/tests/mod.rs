@@ -5,6 +5,7 @@
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
 // - namespaces: concrete non-network owner lifetime and exit ordering.
+// - keyring_hooks: keyring exit/fsid-change hook dispatch + last-thread rule.
 // - pidfd: exact identity acquisition, reap ordering, reuse, and readiness.
 // - prctl: PR_SET_NAME/PR_GET_NAME comm rename + PR_SET_DUMPABLE/GET_DUMPABLE.
 // - queues: RT/CFS/runqueue scheduling invariants and pick/remove behavior.
@@ -29,6 +30,7 @@ mod cpu_nanosleep;
 mod exit_notify;
 mod net_namespace;
 mod namespaces;
+pub(crate) mod keyring_hooks;
 mod pidfd;
 mod pidns_report;
 mod prctl;

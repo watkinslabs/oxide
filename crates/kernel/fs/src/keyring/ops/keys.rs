@@ -84,16 +84,29 @@ pub fn update_core(c: &Ctx, serial: i32, payload: Vec<u8>, have_payload_ptr: boo
     0
 }
 
-/// `KEYCTL_REVOKE` core: `KEY_NEED_WRITE` on the key, with a PARTIAL lookup so
-/// an already-revoked key answers EKEYREVOKED from `key_revoke` rather than
-/// being invisible. # C: O(log N)
+/// `KEYCTL_REVOKE` core — Linux `keyctl_revoke_key`. Two details a plain
+/// `KEY_NEED_WRITE` check gets wrong:
+///
+///   * the lookup is FULL, so an already-revoked or expired key answers
+///     EKEYREVOKED/EKEYEXPIRED from `key_validate` BEFORE the permission check
+///     — a caller re-revoking a key learns it is already revoked rather than
+///     being told it lacks access;
+///   * on EACCES the lookup is retried with `KEY_NEED_SETATTR`. Revocation is
+///     an attribute change as much as a write, and a key whose perm grants
+///     Setattr but not Write is still revocable by its holder. Only EACCES is
+///     retried; every other error stands.
+/// # C: O(log N)
 pub fn revoke_core(c: &Ctx, serial: i32) -> i64 {
     let mut g = STORE.lock();
-    if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_WRITE, Lookup::Partial, c.now_ns) { return rv; }
-    let k = g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock");
-    if k.invalidated { return e(Errno::Enokey); }
-    if k.revoked { return e(Errno::Ekeyrevoked); }
-    k.revoked = true;
+    if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) {
+        if rv != e(Errno::Eacces) { return rv; }
+        if let Err(rv2) = check_perm(&g, serial, &c.t, KEY_NEED_SETATTR, Lookup::Full, c.now_ns) {
+            return rv2;
+        }
+    }
+    // `key_revoke` is idempotent; the full lookup above is what turns a second
+    // revoke into EKEYREVOKED, so reaching here means the key was live.
+    g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock").revoked = true;
     0
 }
 
@@ -152,14 +165,23 @@ pub fn setperm_core(c: &Ctx, serial: i32, perm: u32) -> i64 {
 }
 
 /// `KEYCTL_SET_TIMEOUT` core — Linux `keyctl_set_timeout`: `KEY_NEED_SETATTR`
-/// on the key via a PARTIAL lookup, `secs == 0` clears the expiry. There is no
-/// `CAP_SYS_ADMIN` bypass; the only alternative path Linux offers is holding
-/// the key's instantiation authorisation token, which requires a `request_key`
-/// upcall to be in flight. `now_ns` comes from [`Ctx`] so this core stays
-/// clock-free. # C: O(log N)
+/// on the key via a PARTIAL lookup (a key under construction can be given a
+/// timeout), and `secs == 0` CLEARS the expiry — the opposite of
+/// `KEYCTL_REJECT`'s timeout, where 0 means "expires immediately".
+///
+/// There is no `CAP_SYS_ADMIN` bypass. The one alternative path is holding the
+/// key's instantiation authorisation token: a helper building a key must be
+/// able to set its lifetime before it fills it in, and it has no permission on
+/// a key it does not yet own. `now_ns` comes from [`Ctx`] so this core stays
+/// clock-free. # C: O(N)
 pub fn set_timeout_core(c: &Ctx, serial: i32, secs: u64) -> i64 {
     let mut g = STORE.lock();
-    if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SETATTR, Lookup::Partial, c.now_ns) { return rv; }
+    if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SETATTR, Lookup::Partial, c.now_ns) {
+        if rv != e(Errno::Eacces) { return rv; }
+        if super::super::auth::get_instantiation_authkey(&g, serial, &c.t, c.now_ns).is_err() {
+            return rv;
+        }
+    }
     let k = g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock");
     k.expiry_ns = if secs == 0 { 0 } else { c.now_ns.saturating_add(secs.saturating_mul(NS_PER_SEC)) };
     0
@@ -220,6 +242,13 @@ pub fn describe_core(c: &Ctx, serial: i32) -> Result<String, i64> {
 /// string, so the returned length is 1. # C: O(log N)
 pub fn get_security_core(c: &Ctx, serial: i32) -> Result<String, i64> {
     let g = STORE.lock();
-    check_perm(&g, serial, &c.t, KEY_NEED_VIEW, Lookup::Partial, c.now_ns)?;
+    if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_VIEW, Lookup::Partial, c.now_ns) {
+        // Same authorisation-token override as `KEYCTL_SET_TIMEOUT`: a helper
+        // servicing a request may inspect the key it was asked to build.
+        if rv != e(Errno::Eacces) { return Err(rv); }
+        if super::super::auth::get_instantiation_authkey(&g, serial, &c.t, c.now_ns).is_err() {
+            return Err(rv);
+        }
+    }
     Ok(String::from("\0"))
 }
