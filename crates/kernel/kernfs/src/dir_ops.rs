@@ -49,8 +49,6 @@ pub(crate) struct PseudoDirFileOps;
 
 impl FileOps for PseudoDirFileOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let off = ctx.pos;
-        pdir(inode)?.op_readdir(off, &mut |ino, next, name, ft| ctx.emit(name, ino, ft, next))?;
-        Ok(())
+        pdir(inode)?.op_readdir(ctx)
     }
 }

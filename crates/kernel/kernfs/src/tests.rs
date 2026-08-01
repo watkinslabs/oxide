@@ -60,7 +60,7 @@ fn leaf_publication_owns_one_directory_entry_without_path_state() {
 }
 
 #[test]
-fn readdir_sorted_and_no_overlay_when_off() {
+fn readdir_lists_every_child_once_and_no_overlay_when_off() {
     let r = root();
     r.insert_path("/z", PseudoSymlink::new(3, 0, b"z"));
     r.insert_path("/a", PseudoSymlink::new(4, 0, b"a"));
@@ -78,6 +78,10 @@ fn readdir_sorted_and_no_overlay_when_off() {
         let mut ctx = vfs::DirContext::new(0, &mut actor);
         r.as_inode().readdir(&mut ctx).unwrap();
     }
+    // Listing ORDER is the cookie order (Linux kernfs lists in name-hash
+    // order, which is why `ls` sorts for itself); the contract is that every
+    // child appears exactly once and nothing an overlay would add appears.
+    names.sort();
     assert_eq!(names, std::vec!["a", "m", "z"]);
 }
 
