@@ -168,62 +168,6 @@ impl NetStack {
         Ok(())
     }
 
-    /// UDP receive demultiplex for one IPv6 datagram.
-    ///
-    /// `#[inline(never)]` and separate from `deliver_rx_ipv6_payload`: the header parse,
-    /// the endpoint vector and the per-socket filter context were all locals of the
-    /// protocol switch, so the TCP arm — the one that continues into transmit — carried
-    /// them without ever touching them. Linux splits its receive arms the same way.
-    /// # C: O(N endpoints * payload)
-    #[inline(never)]
-    fn deliver_rx_udp6(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, dst: Ipv6Addr,
-        hop_limit: u8, traffic_class: u8, ancillary: &RxAncillary, payload: &[u8],
-        packet: &[u8])
-    {
-        let udp = match crate::udp::parse_v6(payload, src, dst) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
-        // Reuseport selection classifies the datagram body, so resolve it
-        // before the demux rather than per selected endpoint.
-        let datagram_body = payload
-            .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
-        let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface,
-            datagram_body);
-        let gro_offered = crate::udp_gro::device_offers_gro(
-            self.ifaces.lookup_in_ns(iface, net_ns).map_or(0, |dev| dev.hardware_type()));
-        for q in endpoints {
-            // A zero checksum reaches only an endpoint that opted into
-            // accepting one; every other socket drops the datagram as a
-            // checksum error rather than queueing it.
-            if udp.checksum == 0
-                && q.no_check6_rx.load(core::sync::atomic::Ordering::Acquire) == 0
-            { continue; }
-            if !crate::cgroup_bpf::ingress(
-                &q.owner, packet, crate::addr::eth_p::IPV6, iface,
-            ) { continue; }
-            let packet = &payload[..udp.length as usize];
-            let body = &packet[crate::udp::UDP_HDR_LEN..];
-            let Some(keep) = crate::bpf_filter::retained_payload_len(
-                q.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
-                    packet, protocol: crate::addr::eth_p::IPV6,
-                    ifindex: Some(iface.raw()),
-                    pay_offset: crate::udp::UDP_HDR_LEN as u32,
-                    hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                        .map_or(0, |dev| dev.hardware_type()),
-                }), body.len(),
-            ) else { continue; };
-            let _ = q.enqueue_gro(crate::stack_ipv6::Udp6Datagram {
-                src, sport: udp.src_port, dst, dport: udp.dst_port, iface, hop_limit,
-                traffic_class,
-                flowinfo: crate::cmsg::flowinfo(traffic_class, ancillary.flow_label),
-                ext_headers: ancillary.ext_headers.clone(),
-                frag_max: ancillary.frag_max,
-                payload: body[..keep].to_vec(),
-            }, udp.checksum == 0, gro_offered);
-        }
-    }
-
     fn deliver_rx_icmpv6(
         &self,
         net_ns: u64,
