@@ -109,22 +109,20 @@ impl FileOps for FuseFileOps {
     }
 
     /// `FUSE_READDIR` — stream the directory nodeid's entries into `ctx`,
-    /// resuming at the cursor `ctx.pos` (the daemon `off` cookie). OPENDIR (lazy
-    /// per-iterate) + READDIR + RELEASEDIR; the daemon returns a packed
-    /// `fuse_dirent` stream which is decoded and emitted. # C: O(entries) + rtt
-    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let d = fuse_data(inode)?;
-        // OPENDIR to obtain a directory fh (released at the end of this call).
-        let mut ob = Vec::with_capacity(proto::FUSE_OPEN_IN_SIZE);
-        proto::OpenIn { flags: 0, open_flags: 0 }.encode(&mut ob);
-        let oreply = d.conn.call(proto::FUSE_OPENDIR, d.nodeid, &ob)?;
-        let fh = proto::OpenOut::decode(&oreply).ok_or(VfsError::Eio)?.fh;
-        let res = readdir_stream(d.conn.as_ref(), d.nodeid, fh, ctx);
-        // RELEASEDIR regardless of the readdir outcome.
-        let mut rb = Vec::with_capacity(proto::FUSE_RELEASE_IN_SIZE);
-        encode_release(&mut rb, fh, 0);
-        let _ = d.conn.call(proto::FUSE_RELEASEDIR, d.nodeid, &rb);
-        res
+    /// resuming at the cursor `ctx.pos` (the daemon `off` cookie).
+    ///
+    /// The directory `fh` is the one this OPEN DESCRIPTION already holds
+    /// ([`ensure_open`], released by `on_release_file` at last close), NOT a
+    /// fresh OPENDIR/RELEASEDIR pair per call. `getdents` is paginated, and a
+    /// FUSE daemon is entitled to keep its listing cursor against the `fh`
+    /// (libfuse's own `readdir` handlers commonly do); re-opening per page
+    /// discarded that state, so a multi-page listing could restart or lose
+    /// entries and cost two extra round trips per page.
+    /// # C: O(entries) + one rtt
+    fn iterate_file(&self, file: &File, ctx: &mut DirContext) -> KResult<()> {
+        let d = fuse_data(file.inode())?;
+        let fh = ensure_open(file)?;
+        readdir_stream(d.conn.as_ref(), d.nodeid, fh, ctx)
     }
 
     /// The daemon's `FUSE_READDIR` stream carries its own `.`/`..` (libfuse

@@ -91,6 +91,15 @@ impl File {
         Ok(n)
     }
 
+    /// `iterate_dir`'s backend call (Linux `file->f_op->iterate_shared(file,
+    /// ctx)`): dispatch readdir through the cached `f_op` with the open
+    /// DESCRIPTION, so a backend holding per-open cursor state (FUSE's daemon
+    /// `OPENDIR` handle) keeps it across the paginated calls of one listing.
+    /// # C: backend-dependent
+    pub fn iterate_dir(&self, ctx: &mut crate::file_ops::DirContext) -> KResult<()> {
+        self.f_op.iterate_file(self, ctx)
+    }
+
     /// `file_start_write` (Linux `fs/super.c` `sb_start_write` via the
     /// `vfs_write`/`write_iter` path): admit THIS description as an in-flight
     /// writer against its inode's superblock freeze gate before any data write,
