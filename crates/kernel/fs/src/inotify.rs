@@ -6,6 +6,7 @@
 // - `queue`: notification-queue admission — overflow + each kind's merge rule.
 // - `mask`: per-mark applicability (ONDIR / ON_CHILD) and ignore-mask rules.
 // - `response`: `fanotify_response` admission and the verdict→errno mapping.
+// - `fan_ids`: reported-pid selection and the event descriptor's open mode.
 // - `fan_read`: fanotify read path — metadata, info records, minted fds.
 // - `layout`: `struct inotify_event` wire encoding + name padding rules.
 // - `fan_layout`: `fanotify_event_metadata` + `fanotify_event_info_fid` encoding.
@@ -20,6 +21,7 @@
 
 mod dispatch;
 mod fan_err;
+mod fan_ids;
 mod fan_layout;
 mod fan_mnt;
 mod fan_range;

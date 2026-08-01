@@ -141,9 +141,8 @@ fn ask_group(group: &Arc<InotifyData>, inode: &InodeRef, perm_mask: u32,
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn reporting_pid(group: &InotifyData) -> u32 {
     let Some(t) = sched::current() else { return 0 };
-    if !group.reports_tid() { return t.visible_pid(); }
-    let v = t.vtid.load(Ordering::Acquire);
-    if v != 0 { v } else { t.tid }
+    crate::inotify::fan_ids::select_reported_pid(
+        group.reports_tid(), t.visible_pid(), t.vtid.load(Ordering::Acquire), t.tid)
 }
 
 /// # C: O(1)
