@@ -5,7 +5,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use alloc::format;
 
 use crate::uname_release::{build_utsname, UTSNAME_TOTAL_LEN};
 
@@ -42,8 +41,11 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
     // reported the empty string — two answers for one piece of state.
     let host: &[u8] = &host;
     let dom:  &[u8] = &dom;
-    let version = format!("#1 SMP PREEMPT oxide v0.1.0 nr_cpus={}", cpu::smp::online_count());
-    let img = build_utsname(host, dom, version.as_bytes(), cur.personality.load(Ordering::Acquire));
+    // `version` is the build banner Linux stamps at compile time, NOT per-boot
+    // state: `/proc/sys/kernel/version` copies the same utsname field, so a
+    // value assembled here would be a second answer for one field.
+    let version = crate::uname_release::UTS_VERSION.as_bytes();
+    let img = build_utsname(host, dom, version, cur.personality.load(Ordering::Acquire));
     // SAFETY: `tp` names one validated writable `struct new_utsname`; the image
     // is exactly UTSNAME_TOTAL_LEN bytes and byte writes need no alignment.
     unsafe {

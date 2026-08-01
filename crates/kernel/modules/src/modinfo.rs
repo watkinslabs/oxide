@@ -6,7 +6,11 @@ use alloc::vec::Vec;
 
 use elf::{parse_relocatable, Section, SHT_PROGBITS};
 
-pub const KERNEL_VERMAGIC: &str = "0.1.0-oxide";
+/// Module vermagic. Linux stamps the kernel's `UTS_RELEASE` into every module
+/// and refuses a mismatch, so this is the SAME string `uname(2)` reports — not
+/// a second version number a module could satisfy while targeting a different
+/// kernel. The out-of-tree build headers define the same value.
+pub const KERNEL_VERMAGIC: &str = syscall::uts::KERNEL_VERMAGIC;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ModuleParam {
@@ -122,7 +126,15 @@ mod tests {
     #[test]
     fn parses_records() {
         let mut info = ModuleInfo::default();
-        info.parse_records(b"name=e1000\0license=GPL\0author=A\0depends=ptp,dca\0vermagic=0.1.0-oxide\0parm=debug:enable logs\0parmtype=debug:int\0");
+        let mut rec = alloc::vec::Vec::new();
+        for f in [alloc::format!("name=e1000"), alloc::format!("license=GPL"),
+                  alloc::format!("author=A"), alloc::format!("depends=ptp,dca"),
+                  alloc::format!("vermagic={KERNEL_VERMAGIC}"),
+                  alloc::format!("parm=debug:enable logs"),
+                  alloc::format!("parmtype=debug:int")] {
+            rec.extend_from_slice(f.as_bytes()); rec.push(0);
+        }
+        info.parse_records(&rec);
         assert_eq!(info.name.as_deref(), Some("e1000"));
         assert_eq!(info.license.as_deref(), Some("GPL"));
         assert_eq!(info.author, [String::from("A")]);
@@ -157,6 +169,16 @@ mod tests {
             offset: 0, size: data.len() as u64, link: 0, info: 0, addralign: 1, entsize: 0,
         };
         assert_eq!(ModuleInfo::parse_sections(data, &[sec]), ModuleInfo::default());
+    }
+
+    // The out-of-tree module build headers must stamp the SAME release the
+    // loader checks against; a header that drifts produces modules this kernel
+    // rejects with no way to see why from either side.
+    #[test]
+    fn out_of_tree_build_header_stamps_the_kernel_vermagic() {
+        let hdr = include_str!("../../../../kpi/include/generated/utsrelease.h");
+        let want = alloc::format!("#define UTS_RELEASE \"{KERNEL_VERMAGIC}\"");
+        assert!(hdr.contains(&want), "kpi utsrelease.h must define {want}");
     }
 
     #[test]
