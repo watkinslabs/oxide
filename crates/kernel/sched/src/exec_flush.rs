@@ -32,7 +32,7 @@ pub fn flush_thread_flags(cur: &Task) {
     // do NOT survive exec. The new image's keys mean something else entirely,
     // so inheriting the old program's open keys would hand it access it never
     // asked for. Inert where the register does not exist.
-    crate::pkru::reset_on_exec(cur);
+    crate::pkey_rights::reset_on_exec(cur);
     #[cfg(target_arch = "aarch64")]
     {
         crate::prctl::tsc::apply(cur, false);

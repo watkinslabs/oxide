@@ -204,8 +204,7 @@ pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod cred;
-pub mod pkru;
-pub use pkru::init_value as pkru_init_value;
+pub mod pkey_rights;
 pub mod prctl;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_set_mm;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_vma;

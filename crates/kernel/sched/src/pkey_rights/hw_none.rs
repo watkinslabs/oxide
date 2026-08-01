@@ -5,8 +5,8 @@
 /// # C: O(1)
 pub fn supported() -> bool { false }
 /// # C: O(1)
-pub fn init_value() -> u32 { 0 }
+pub fn init_value() -> u64 { 0 }
 /// # C: O(1)
-pub fn read_live() -> u32 { 0 }
+pub fn read_live() -> u64 { 0 }
 /// # C: O(1)
-pub fn write_live(v: u32) { let _ = v; }
+pub fn write_live(v: u64) { let _ = v; }

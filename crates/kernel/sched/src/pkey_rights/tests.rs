@@ -13,7 +13,7 @@ fn an_absent_register_denies_nothing() {
     assert!(!supported());
     assert_eq!(init_value(), 0);
     assert_eq!(read_live(), 0);
-    write_live(0xFFFF_FFFF);
+    write_live(0xFFFF_FFFF_FFFF_FFFF);
     assert_eq!(read_live(), 0);
 }
 
@@ -24,17 +24,17 @@ fn an_absent_register_denies_nothing() {
 fn the_handoff_is_inert_without_a_register() {
     let prev = task(1);
     let next = task(2);
-    prev.pkru.store(0xDEAD_BEEF, Ordering::Relaxed);
-    next.pkru.store(0x1234_5678, Ordering::Relaxed);
+    prev.pkey_rights.store(0xDEAD_BEEF, Ordering::Relaxed);
+    next.pkey_rights.store(0x1234_5678, Ordering::Relaxed);
     switch_to(&prev, &next);
-    assert_eq!(prev.pkru.load(Ordering::Relaxed), 0xDEAD_BEEF);
-    assert_eq!(next.pkru.load(Ordering::Relaxed), 0x1234_5678);
+    assert_eq!(prev.pkey_rights.load(Ordering::Relaxed), 0xDEAD_BEEF);
+    assert_eq!(next.pkey_rights.load(Ordering::Relaxed), 0x1234_5678);
 }
 
 // A task is born holding the default rather than an arbitrary value.
 #[test]
 fn a_new_task_starts_at_the_default() {
-    assert_eq!(task(3).pkru.load(Ordering::Relaxed), init_value());
+    assert_eq!(task(3).pkey_rights.load(Ordering::Relaxed), init_value());
 }
 
 // exec resets the snapshot: a fresh program must not inherit rights the old
@@ -42,7 +42,7 @@ fn a_new_task_starts_at_the_default() {
 #[test]
 fn exec_resets_the_snapshot_to_the_default() {
     let t = task(4);
-    t.pkru.store(0xAAAA_AAAA, Ordering::Relaxed);
+    t.pkey_rights.store(0xAAAA_AAAA, Ordering::Relaxed);
     reset_on_exec(&t);
-    assert_eq!(t.pkru.load(Ordering::Relaxed), init_value());
+    assert_eq!(t.pkey_rights.load(Ordering::Relaxed), init_value());
 }

@@ -17,10 +17,13 @@ use core::sync::atomic::Ordering;
 use crate::Task;
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-#[path = "pkru/hw_x86.rs"]
+#[path = "pkey_rights/hw_x86.rs"]
 mod hw;
+// aarch64's POR_EL0 joins as a third arm when its enablement lands; until then
+// it takes the inert path rather than a stub that claims a register it has not
+// been given.
 #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-#[path = "pkru/hw_none.rs"]
+#[path = "pkey_rights/hw_none.rs"]
 mod hw;
 
 /// Does this system enforce protection keys? False makes every function here
@@ -30,13 +33,13 @@ pub fn supported() -> bool { hw::supported() }
 
 /// The rights register value a task is born with and `execve` resets to.
 /// Zero when unsupported: no key can deny anything. # C: O(1)
-pub fn init_value() -> u32 { hw::init_value() }
+pub fn init_value() -> u64 { hw::init_value() }
 
 /// Snapshot the live register. # C: O(1)
-pub fn read_live() -> u32 { hw::read_live() }
+pub fn read_live() -> u64 { hw::read_live() }
 
 /// Load `v` into the live register. # C: O(1)
-pub fn write_live(v: u32) { hw::write_live(v); }
+pub fn write_live(v: u64) { hw::write_live(v); }
 
 /// `__switch_to`'s rights-register handoff: capture what `prev` ended up with
 /// — including any unprivileged user write the kernel never saw — then install
@@ -47,8 +50,8 @@ pub fn write_live(v: u32) { hw::write_live(v); }
 /// # C: O(1)
 pub fn switch_to(prev: &Task, next: &Task) {
     if !supported() { return; }
-    prev.pkru.store(read_live(), Ordering::Relaxed);
-    write_live(next.pkru.load(Ordering::Relaxed));
+    prev.pkey_rights.store(read_live(), Ordering::Relaxed);
+    write_live(next.pkey_rights.load(Ordering::Relaxed));
 }
 
 /// `execve` reset (Linux `fpu_flush_thread` → `pkru_write_default`): a fresh
@@ -56,7 +59,7 @@ pub fn switch_to(prev: &Task, next: &Task) {
 /// something else entirely. # C: O(1)
 pub fn reset_on_exec(task: &Task) {
     let init = init_value();
-    task.pkru.store(init, Ordering::Relaxed);
+    task.pkey_rights.store(init, Ordering::Relaxed);
     write_live(init);
 }
 

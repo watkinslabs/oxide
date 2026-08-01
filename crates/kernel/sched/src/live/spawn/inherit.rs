@@ -95,7 +95,7 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // Protection-key rights: a thread that opened a key keeps it across fork,
     // and a CLONE_VM thread must start where its creator stood or it would
     // fault on the very memory it was spawned to work on.
-    task.pkru.store(parent.pkru.load(Ordering::Acquire), Ordering::Release);
+    task.pkey_rights.store(parent.pkey_rights.load(Ordering::Acquire), Ordering::Release);
     task.shstk_features.store(parent.shstk_features.load(Ordering::Acquire), Ordering::Release);
     task.shstk_locked.store(parent.shstk_locked.load(Ordering::Acquire), Ordering::Release);
     // The child's visible numbers are NOT seeded here: they are drawn from the
