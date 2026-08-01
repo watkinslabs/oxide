@@ -37,7 +37,7 @@ pub use pidfd::{
 };
 pub use snapshot::{
     kernel_stack_bytes_snapshot, live_counts, live_tids, next_live_tid_after, tasks_traced_by,
-    thread_entries, try_snapshot,
+    thread_entries, thread_group, try_snapshot,
 };
 #[cfg(any(test, feature = "hosted"))]
 pub use tid::clear_for_tests;
