@@ -217,15 +217,12 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         klog::write_raw(s.as_bytes());
         klog::write_raw(b"\"\n");
     }
-    let landlock_op = {
-        use ::security::landlock::access as la;
-        let mut op = la::READ_FILE;
-        if (flags & 0o1) != 0 { op |= la::WRITE_FILE; op &= !la::READ_FILE; }
-        if (flags & 0o2) != 0 { op |= la::READ_FILE | la::WRITE_FILE; }
-        if (flags & O_CREAT) != 0 { op |= la::MAKE_REG; }
-        if (flags & O_TRUNC) != 0 { op |= la::TRUNCATE; }
-        op
-    };
+    // Creating a name is a right on the containing directory; reading, writing
+    // and truncating are rights on the object itself and are decided once the
+    // final object is known, below. Asking for both against the same path was
+    // wrong in both directions: a directory open asked for the file-reading
+    // right, and creation was checked against the created file.
+    let create_op = ::landlock::uapi::ACCESS_FS_MAKE_REG;
     // openat2 RESOLVE_*: resolve the existing-file path up-front through the
     // flag-aware resolver so EXDEV (BENEATH/NO_XDEV) / ELOOP (NO_SYMLINKS) /
     // EAGAIN (CACHED) surface to userspace instead of collapsing to ENOENT.
@@ -279,7 +276,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
-        if let Err(rv) = crate::landlock::check(&dir, landlock_op) { return rv; }
+        if let Err(rv) = crate::landlock::check_parent(&dir, create_op) { return rv; }
         let display = vfs::mount::render_path_for_mount(dir.mnt_id, &dir.dentry);
         let cred = crate::pathresolve::current_cred();
         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
@@ -312,7 +309,6 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         if regular_only && vp.inode.file_type() != vfs::FileType::Regular {
             return -(Errno::Eftype.as_i32() as i64);
         }
-        if let Err(rv) = crate::landlock::check(&vp, landlock_op) { return rv; }
         let display = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
         // `/dev/ptmx` and `/dev/tty` are device identities, not string paths:
         // bind mounts, chroot, and `openat(devfd,"ptmx")` must route the same
@@ -382,7 +378,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         if (mnt.flags.load(core::sync::atomic::Ordering::Acquire) & vfs::mount::MNT_RDONLY) != 0 {
             return -(Errno::Erofs.as_i32() as i64);
         }
-        if let Err(rv) = crate::landlock::check_parent(&parent, landlock_op) { return rv; }
+        if let Err(rv) = crate::landlock::check_parent(&parent, create_op) { return rv; }
         let create_path = crate::namei_common::render_child_path(&parent, &name);
         // ext4 D9: create on the RESOLVED PARENT dir inode + leaf name
         // (Linux `filename_create` → `i_op->create`), instead of the
@@ -470,6 +466,26 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         }
         return rv;
     }
+    // Sandbox admission for the object itself. Read/write/list are required
+    // outright; truncation and device control are decided here too and recorded
+    // on the description, because an fd must keep the rights it was opened with
+    // even after it is handed to another process.
+    let ll_final = vfs::VfsPath { mnt_id, dentry: dentry.clone(), inode: inode.clone(),
+                                  last_component: None };
+    let ll_ftype = inode.file_type();
+    if (flags & O_TRUNC) != 0 && (flags & O_PATH) == 0 {
+        if let Err(rv) = crate::landlock::check(&ll_final,
+            ::landlock::uapi::ACCESS_FS_TRUNCATE) { return rv; }
+    }
+    let ll_acc = flags & 0o3;
+    let ll_path_only = (flags & O_PATH) != 0;
+    let ll_req = ::landlock::access::open_access(
+        !ll_path_only && (ll_acc == 0 || ll_acc == 2),
+        !ll_path_only && (ll_acc == 1 || ll_acc == 2),
+        false,
+        ll_ftype == vfs::FileType::Directory);
+    let ll_access = match crate::landlock::open_decide(&ll_final, ll_req,
+        ::landlock::access::is_device(ll_ftype)) { Ok(a) => a, Err(rv) => return rv };
     // Lease-break (Linux `break_lease` in `do_open`): conflicting open signals
     // the lease holder + waits before proceeding. Zero-cost without a lease;
     // skip for a just-created file (cannot hold a pre-existing lease).
@@ -533,6 +549,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
             // `FMODE_CREATED` (Linux `do_dentry_open`): this open is the one
             // that created the file. `fcntl(F_CREATED_QUERY)` reads it back;
             // before this the bit was defined but never set by any path.
+            if let Ok(f) = fdt.get(fd) { f.set_landlock_access(ll_access); }
             if created { if let Ok(f) = fdt.get(fd) { f.set_created(); } }
             if let Some(i) = created_ref { vfs::file::iput(i); }
             #[cfg(feature = "debug-atexit")]

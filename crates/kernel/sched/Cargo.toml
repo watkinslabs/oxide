@@ -12,6 +12,7 @@ hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 vfs  = { path = "../../kernel/vfs" }
+landlock = { path = "../landlock" }
 cgroup = { path = "../cgroup" }
 timer = { path = "../timer" }
 softirq = { path = "../softirq" }

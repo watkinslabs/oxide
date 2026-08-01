@@ -23,18 +23,10 @@ pub(crate) fn do_rmdir_at(dirfd: i32, raw: &str) -> i64 {
     };
     // D30: capture the victim dir dentry before the backend removes it.
     let victim = child_dentry(&parent, &name);
-    let landlock_target = victim.as_ref()
-        .and_then(|d| d.inode().map(|inode| vfs::VfsPath {
-            mnt_id: parent.mnt_id,
-            dentry: d.clone(),
-            inode,
-            last_component: None,
-        }));
-    let landlock_result = match landlock_target.as_ref() {
-        Some(vp) => crate::landlock::check(vp, ::security::landlock::access::REMOVE_DIR),
-        None => crate::landlock::check_parent(&parent, ::security::landlock::access::REMOVE_DIR),
-    };
-    if let Err(rv) = landlock_result { return rv; }
+    // The removal right is a property of the containing directory: a rule
+    // granting it on the victim itself must not authorise removing the victim.
+    if let Err(rv) = crate::landlock::check_parent(&parent,
+        ::landlock::uapi::ACCESS_FS_REMOVE_DIR) { return rv; }
     if parent_mount_readonly(&parent) {
         return -(syscall::errno::Errno::Erofs.as_i32() as i64);
     }

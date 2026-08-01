@@ -26,13 +26,13 @@ pub fn sys_mknod(args: &SyscallArgs) -> i64 {
 
 /// Landlock right the new node's type consumes. # C: O(1)
 fn landlock_right(t: NodeType) -> u64 {
-    use ::security::landlock::access;
+    use ::landlock::uapi as access;
     match t {
-        NodeType::Reg  => access::MAKE_REG,
-        NodeType::Chr  => access::MAKE_CHAR,
-        NodeType::Blk  => access::MAKE_BLOCK,
-        NodeType::Fifo => access::MAKE_FIFO,
-        NodeType::Sock => access::MAKE_SOCK,
+        NodeType::Reg  => access::ACCESS_FS_MAKE_REG,
+        NodeType::Chr  => access::ACCESS_FS_MAKE_CHAR,
+        NodeType::Blk  => access::ACCESS_FS_MAKE_BLOCK,
+        NodeType::Fifo => access::ACCESS_FS_MAKE_FIFO,
+        NodeType::Sock => access::ACCESS_FS_MAKE_SOCK,
     }
 }
 

@@ -114,6 +114,6 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     task.seccomp_mode.store(parent.seccomp_mode.load(Ordering::Acquire), Ordering::Release);
     // Landlock ruleset chain is likewise inherited across fork and kept
     // across execve — a Landlock-confined process's children stay confined.
-    let parent_chain = parent.landlock_chain.lock().clone();
-    *task.landlock_chain.lock() = parent_chain;
+    let parent_domain = parent.landlock_domain.lock().clone();
+    *task.landlock_domain.lock() = parent_domain;
 }
