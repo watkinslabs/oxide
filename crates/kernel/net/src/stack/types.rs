@@ -4,9 +4,16 @@ mod tcp_entry_wait;
 
 pub type UdpDatagram = (Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>);
 
+/// One queued IPv4 UDP receive plus the coalescing run it belongs to.
+#[derive(Clone)]
+pub(super) struct QueuedUdp {
+    pub(super) datagram: UdpDatagram,
+    pub(super) gro: crate::udp_gro::GroRun,
+}
+
 pub(super) struct UdpRxState {
     pub(super) accepting: bool,
-    pub(super) datagrams: VecDeque<UdpDatagram>,
+    pub(super) datagrams: VecDeque<QueuedUdp>,
 }
 
 /// One bridge next-hop's unresolved packets and its last wire solicitation.
@@ -35,6 +42,9 @@ pub struct UdpRxQueue {
     pub reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
     pub reuseport: Arc<::core::sync::atomic::AtomicI32>,
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// `UDP_GRO`, shared with the owning socket: while set, arriving
+    /// datagrams of one flow coalesce into a single receive.
+    pub gro: Arc<::core::sync::atomic::AtomicI32>,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,

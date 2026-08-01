@@ -317,9 +317,9 @@ impl NetStack {
                                 .map_or(0, |dev| dev.hardware_type()),
                         }), body.len(),
                     ) else { continue; };
-                    let _ = q.enqueue((
+                    let _ = q.enqueue_gro((
                         hdr.src, udp.src_port, hdr.dst, iface, hdr.ttl, body[..keep].to_vec(),
-                    ));
+                    ), udp.checksum == 0);
                 }
                 let endpoints6 = if !has_v4 || hdr.dst.is_multicast() || hdr.dst.is_broadcast() {
                     self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port,
@@ -340,11 +340,11 @@ impl NetStack {
                                 .map_or(0, |dev| dev.hardware_type()),
                         }), body.len(),
                     ) else { continue; };
-                    let _ = q.enqueue((
+                    let _ = q.enqueue_gro((
                         Ipv6Addr::from_v4_mapped(hdr.src), udp.src_port,
                         Ipv6Addr::from_v4_mapped(hdr.dst), iface, hdr.ttl, hdr.tos,
                         body[..keep].to_vec(),
-                    ));
+                    ), udp.checksum == 0);
                 }
             }
             p if p == IpProto::Tcp as u8 =>

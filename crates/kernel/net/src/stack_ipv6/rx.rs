@@ -187,10 +187,10 @@ impl NetStack {
                         .map_or(0, |dev| dev.hardware_type()),
                 }), body.len(),
             ) else { continue; };
-            let _ = q.enqueue((
+            let _ = q.enqueue_gro((
                 src, udp.src_port, dst, iface, hop_limit, traffic_class,
                 body[..keep].to_vec(),
-            ));
+            ), udp.checksum == 0);
         }
     }
 
