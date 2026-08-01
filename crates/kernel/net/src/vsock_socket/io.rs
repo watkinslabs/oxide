@@ -30,17 +30,16 @@ impl VsockSocket {
                 }
                 Err(error) => return Err(error),
             }
-            if nonblock { return Err(vfs::VfsError::Eagain); }
+            // An interrupted record wait reports SO_RCVTIMEO's restart verdict.
+            match crate::sock_intr::wait_verdict(false, nonblock,
+                crate::sock_intr::signal_pending_self(), self.recv_deadline_ns())
+            {
+                crate::sock_intr::WaitVerdict::NoWait => return Err(vfs::VfsError::Eagain),
+                crate::sock_intr::WaitVerdict::Interrupted(intr) => return Err(intr.vfs()),
+                crate::sock_intr::WaitVerdict::Shutdown | crate::sock_intr::WaitVerdict::Park => {}
+            }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
-                // `sock_intr_errno(timeout)`; untimed here (no SO_RCVTIMEO on
-                // AF_VSOCK in this tree), so ERESTARTSYS.
-                if sched::live::deliverable_signals_self() != 0 {
-                    // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
-                    // `sock_intr_errno(timeout)` off `sock_rcvtimeo`.
-                    return Err(crate::sock_intr::sock_intr_vfs(self.recv_deadline_ns()));
-                }
                 if !vsock::arm_seqpacket_recv_wait(&conn, self, 0) { continue; }
                 // SAFETY: current task is parked on this connection's wait list.
                 unsafe { sched::live::schedule::schedule(); }
@@ -96,18 +95,18 @@ impl VsockSocket {
                     if sent > 0 { break; }
                     #[cfg(test)]
                     if let Some(hook) = self.write_retry_hook.lock().take() { hook(self); }
-                    if c.tx.lock().shut() { return Err(vfs::VfsError::Epipe); }
-                    if nonblock { return Err(vfs::VfsError::Eagain); }
+                    // Send-side shutdown outranks the wait; an interrupted wait
+                    // reports SO_SNDTIMEO's restart verdict.
+                    match crate::sock_intr::wait_verdict(c.tx.lock().shut(), nonblock,
+                        crate::sock_intr::signal_pending_self(), self.send_deadline_ns())
+                    {
+                        crate::sock_intr::WaitVerdict::Shutdown => return Err(vfs::VfsError::Epipe),
+                        crate::sock_intr::WaitVerdict::NoWait => return Err(vfs::VfsError::Eagain),
+                        crate::sock_intr::WaitVerdict::Interrupted(intr) => return Err(intr.vfs()),
+                        crate::sock_intr::WaitVerdict::Park => {}
+                    }
                     #[cfg(target_os = "oxide-kernel")]
                     {
-                        // Linux `vsock_connectible_sendmsg` (`af_vsock.c:2267`):
-                        // `sock_intr_errno(timeout)`; untimed here (no
-                        // SO_SNDTIMEO on AF_VSOCK in this tree).
-                        if sched::live::deliverable_signals_self() != 0 {
-                            // Linux `vsock_connectible_sendmsg` (`af_vsock.c:2267`):
-                            // `sock_intr_errno(timeout)` off `sock_sndtimeo`.
-                            return Err(crate::sock_intr::sock_intr_vfs(self.send_deadline_ns()));
-                        }
                         let tx = c.tx.lock();
                         if tx.shut() { return Err(vfs::VfsError::Epipe); }
                         let ready = if seqpacket {
@@ -120,10 +119,17 @@ impl VsockSocket {
                         // SAFETY: current task was parked on this connection's wait list.
                         unsafe { sched::live::schedule::schedule(); }
                     }
+                    // Hosted builds have no scheduler to park on, so a verdict
+                    // of Park can only be reported as "no progress yet". Every
+                    // errno-bearing verdict above is shared with the kernel
+                    // build; only the sleep itself is unavailable here.
                     #[cfg(not(target_os = "oxide-kernel"))]
                     return Err(vfs::VfsError::Eagain);
                 }
-                Err(crate::NetError::Enotconn) => return Err(vfs::VfsError::Epipe),
+                // No transport, or a connection that never reached (or has left)
+                // the established state: ENOTCONN. EPIPE is reserved for a shut
+                // direction, which the admission check above already reported.
+                Err(crate::NetError::Enotconn) => return Err(vfs::VfsError::Enotconn),
                 Err(crate::NetError::Epipe) => return Err(vfs::VfsError::Epipe),
                 Err(crate::NetError::Emsgsize) => return Err(vfs::VfsError::Emsgsize),
                 Err(_) => return Err(vfs::VfsError::Eio),

@@ -329,7 +329,7 @@ fn vsock_batch_oob_imports_each_attempt_as_envelope_only() {
 }
 
 #[test]
-fn vsock_destination_and_interrupt_errors_match_linux() {
+fn vsock_destination_and_transport_errors_match_linux() {
     let task = sched::Task::new(13, "send", sched::SchedClass::Normal { weight: 1024 });
     let ctx = SendContext::new(&task);
     let init = Arc::new(net::vsock_socket::VsockSocket::new());
@@ -346,8 +346,15 @@ fn vsock_destination_and_interrupt_errors_match_linux() {
         ..Message::default() }, 0), Err(Error::Eisconn));
     assert_eq!(send(&ctx, file.clone(), Message { name: Some(Vec::new()),
         ..Message::default() }, 0), Err(Error::Eisconn));
+    // The connection above carries no transport (nothing published an endpoint
+    // for this owner), so a payload send reports ENOTCONN — the same answer a
+    // connection-oriented socket gives when it has no transport or has not
+    // reached the established state. EPIPE belongs to a shut direction and
+    // EINTR to an interrupted wait; neither applies before a transport exists,
+    // and an untimed interrupted wait would report ERESTARTSYS rather than
+    // EINTR anyway (`net::sock_intr`).
     assert_eq!(send(&ctx, file, Message { payload: alloc::vec![1], requested_len: 1,
-        name: None, ..Message::default() }, 0), Err(Error::Eintr));
+        name: None, ..Message::default() }, 0), Err(Error::Enotconn));
 }
 
 #[test]
