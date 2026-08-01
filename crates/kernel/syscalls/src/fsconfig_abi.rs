@@ -168,6 +168,27 @@ mod tests {
         assert_eq!(classify(3, FSCONFIG_SET_FD, KEY, 0, AT_FDCWD), Err(Errno::Einval));
     }
 
+    // The "has this filesystem been converted to the new mount API" probe every
+    // systemd-based userspace runs before it asks whether a mount option
+    // exists: `SET_FD` with a deliberately nonexistent key, no value, and the
+    // context's OWN descriptor as the auxiliary fd. It must clear argument
+    // admission — EOPNOTSUPP would be read as "not converted" and would make
+    // the caller give up on the whole option query — so the rejection has to
+    // come from the parameter parse, where the reference reports an unknown
+    // option as EINVAL.
+    #[test]
+    fn the_converted_filesystem_probe_clears_admission_and_is_not_eopnotsupp() {
+        const CTX_FD: i32 = 3;
+        let admitted = classify(CTX_FD, FSCONFIG_SET_FD, KEY, 0, CTX_FD);
+        assert_eq!(admitted, Ok(FsconfigCmd::SetFd));
+        assert!(admitted.unwrap().takes_key());
+        // The command number is what separates "unknown option" from
+        // "unconverted filesystem"; nothing outside the published set may
+        // report EINVAL in its place.
+        assert_eq!(classify(CTX_FD, FSCONFIG_CMD_CREATE_EXCL + 1, 0, 0, 0),
+            Err(Errno::Eopnotsupp));
+    }
+
     #[test]
     fn set_fd_carries_a_key_and_reads_no_user_value() {
         assert!(FsconfigCmd::SetFd.takes_key());
