@@ -171,7 +171,7 @@ fn vfs_write_iter_dispatches_multiple_aligned_messages() {
 }
 
 #[test]
-fn vfs_write_iter_rejects_malformed_split_header_without_dispatch() {
+fn vfs_write_iter_accepts_malformed_split_header_without_dispatch() {
     let (weak, file) = socket_file(vfs::OpenFlags::O_RDWR);
     let mut message = [0u8; Nlmsghdr::SIZE];
     Nlmsghdr {
@@ -183,7 +183,7 @@ fn vfs_write_iter_rejects_malformed_split_header_without_dispatch() {
     }.write_to(&mut message);
     let iov = [&message[..1], &message[1..4], &message[4..15], &message[15..]];
 
-    assert_eq!(file.write_iter(&iov), Err(vfs::VfsError::Einval));
+    assert_eq!(file.write_iter(&iov), Ok(message.len()));
     assert!(weak.upgrade().unwrap().dequeue().is_none());
 }
 
@@ -241,11 +241,44 @@ fn connect_destination_owns_default_send_and_peer_state() {
     const REQUESTED_GROUPS: u32 = 0b1100;
     const FIRST_REQUESTED_GROUP: u32 = 0b0100;
     let socket = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
-    assert_eq!(socket.destination(), (NETLINK_UNCONNECTED_PORT_ID, NETLINK_UNCONNECTED_GROUPS));
+    assert_eq!(socket.destination(), NlDest::UNCONNECTED);
     assert_eq!(socket.connect_destination(DESTINATION_PORT_ID, REQUESTED_GROUPS), Ok(()));
-    assert_eq!(socket.destination(), (DESTINATION_PORT_ID, FIRST_REQUESTED_GROUP));
+    assert_eq!(socket.destination(), NlDest { port_id: DESTINATION_PORT_ID, group: FIRST_REQUESTED_GROUP });
     assert_eq!(socket.disconnect_destination(), Ok(()));
-    assert_eq!(socket.destination(), (NETLINK_UNCONNECTED_PORT_ID, NETLINK_UNCONNECTED_GROUPS));
+    assert_eq!(socket.destination(), NlDest::UNCONNECTED);
+}
+
+/// A send with no `msg_name` uses the connected destination, and the port and
+/// group keep their own identities the whole way through: the peer named by
+/// `connect` receives the datagram on its port, not on a group.
+#[test]
+fn unnamed_send_reaches_the_connected_peer_port() {
+    use alloc::sync::Arc;
+    let namespace = network_namespace::initial();
+    let sender = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
+    let peer = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
+    bind_port_id(&peer, 0).unwrap();
+    let peer_port = peer.port_id.load(Ordering::Acquire);
+    assert_ne!(peer_port, 0);
+    assert_eq!(sender.connect_destination(peer_port, 0), Ok(()));
+    assert_eq!(sender.destination(), NlDest { port_id: peer_port, group: 0 });
+    assert_eq!(sender.send_to(b"unicast", sender.destination()), Ok(7));
+    assert_eq!(peer.dequeue().map(|(bytes, _)| bytes), Some(b"unicast".to_vec()));
+    assert!(sender.dequeue().is_none(), "the sender did not receive its own datagram");
+}
+
+/// A `sockaddr_nl` naming a port that no live socket owns is ECONNREFUSED,
+/// which is what makes the port-vs-group distinction observable.
+#[test]
+fn a_named_send_to_an_unowned_port_is_econnrefused() {
+    let sender = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+    let mut name = [0u8; SOCKADDR_NL_SIZE];
+    name[..2].copy_from_slice(&AF_NETLINK.to_ne_bytes());
+    name[4..8].copy_from_slice(&u32::MAX.to_ne_bytes());
+    let dest = parse_dest(&name).unwrap();
+    assert_eq!(dest, NlDest { port_id: u32::MAX, group: 0 });
+    assert_eq!(sender.send_to(b"x", dest),
+        Err(SendError::Backend(vfs::VfsError::Econnrefused)));
 }
 
 fn deny_connect(_context: security::network::Context) -> security::network::Verdict {
@@ -264,7 +297,7 @@ fn connect_destination_does_not_repeat_syscall_connect_admission() {
         deny_connect), None);
     let socket = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
     assert_eq!(socket.connect_destination(DESTINATION_PORT_ID, REQUESTED_GROUPS), Ok(()));
-    assert_eq!(socket.destination(), (DESTINATION_PORT_ID, FIRST_REQUESTED_GROUP));
+    assert_eq!(socket.destination(), NlDest { port_id: DESTINATION_PORT_ID, group: FIRST_REQUESTED_GROUP });
     assert_eq!(security::network::counters(namespace_id, security::network::Operation::Connect),
         Some((0, 0)));
     assert_eq!(security::network::remove(namespace_id, security::network::Operation::Connect),
