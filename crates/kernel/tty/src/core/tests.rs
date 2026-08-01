@@ -12,6 +12,7 @@ use crate::pty::{
 use crate::wait::host::HostWait;
 use crate::wait::TtyWait;
 
+mod echo_stream;
 mod exclusive;
 mod hangup;
 
