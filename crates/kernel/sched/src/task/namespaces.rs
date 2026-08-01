@@ -215,6 +215,29 @@ impl Task {
         self.pid.configure_mappings(&namespace, numbers)
     }
 
+    /// Draw this task's number in its own PID namespace and in every ancestor,
+    /// then stamp the own-namespace number as the visible thread id. `set_tid`
+    /// names numbers innermost-first for a caller that picked them. The
+    /// visible process id follows for a thread-group leader; a task joining an
+    /// existing group keeps the leader's. # C: O(depth log N_held)
+    pub fn alloc_pid_mappings(&self, set_tid: &[u32], group_leader: bool)
+        -> Result<(), PidMappingError>
+    {
+        let namespace = self.namespace_owner(NamespaceKind::Pid)
+            .ok_or(PidMappingError::NamespaceKind)?;
+        let numbers = self.pid.alloc_mappings(&namespace, set_tid)?;
+        let own = numbers[0];
+        self.vtid.store(own, core::sync::atomic::Ordering::Release);
+        if group_leader { self.vtgid.store(own, core::sync::atomic::Ordering::Release); }
+        Ok(())
+    }
+
+    /// The number this task carries as seen from `namespace`; 0 when
+    /// `namespace` does not number it. # C: O(depth)
+    pub fn pid_nr_ns(&self, namespace: &NamespaceRef) -> u32 {
+        self.pid.nr_in(namespace)
+    }
+
     /// Configure ordinary initial-namespace tasks at publication. Nested PID
     /// namespaces require explicit ancestor numbers from clone setup. # C: O(1)
     pub(crate) fn configure_initial_pid_mapping(&self) {

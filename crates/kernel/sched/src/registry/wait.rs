@@ -33,7 +33,9 @@ impl WaitChildSnapshot {
     /// # C: O(1)
     pub fn from_task(t: &Task) -> Self {
         Self {
-            vpid:     t.vtgid.load(Ordering::Acquire),
+            // The waiter reads this number, so it is expressed in the WAITER's
+            // pid namespace — not the child's own.
+            vpid:     super::leader_tgid_nr_in(t, &super::reader_pid_ns()).unwrap_or(0),
             uid:      t.creds.ruid.load(Ordering::Acquire),
             utime_ns: t.utime_ns.load(Ordering::Acquire),
             stime_ns: t.stime_ns.load(Ordering::Acquire),
@@ -121,7 +123,7 @@ fn candidate_locked(g: &Registry, t: &Task) -> Candidate {
         parent_tgid: parent_tgid_locked(g, parent_tid),
         tracer_tid,
         tracer_tgid: parent_tgid_locked(g, tracer_tid),
-        vpid:        t.vtgid.load(Ordering::Acquire),
+        vpid:        super::leader_tgid_nr_in(t, &super::reader_pid_ns()).unwrap_or(0),
         pgid:        t.pgid(),
         exit_signal: t.exit_signal.load(Ordering::Acquire),
     }

@@ -484,7 +484,7 @@ fn datagram_queue_final_release_collects_cycle_unrooted_by_discard() {
     let (root_file, root_socket) = socket_file(crate::sock::SockKind::UnixDgram(root.clone()),
         &root.gc_node());
     let (_cycle, cycle_file, weak, cycle_socket) = self_cycle();
-    let message = UnixDgram { payload: b"root".to_vec(), creds: (0, 0, 0), fds: alloc::vec![] };
+    let message = UnixDgram { payload: b"root".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((0, 0, 0)), fds: alloc::vec![] };
     root.try_push_with_rights(message, classify_files(alloc::vec![cycle_file.clone()])).unwrap();
     drop(cycle_file);
     collect_scm_rights();

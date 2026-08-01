@@ -119,7 +119,7 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             .ok_or(NetError::Econnrefused)?;
         crate::trace_dgram_journal(&path.display, payload);
         q.try_push_from(crate::UnixDgram {
-            payload: payload.to_vec(), creds: (creds.pid, creds.uid, creds.gid),
+            payload: payload.to_vec(), creds: creds.stamp(),
             fds: alloc::vec::Vec::new(),
         }, sender)?;
         return Ok(payload.len());

@@ -35,7 +35,7 @@ pub fn reap_orphans() {
         attach_to(&zombie, &reaper);
         // Send before the `wait4` wake, as `zombies::enqueue_zombie` does: the
         // reaper must never be roused ahead of the event it will inspect.
-        super::send_child_event(&reaper, super::reparent_child_event(&zombie));
+        super::send_child_event(&reaper, super::reparent_child_event(&zombie, &reaper));
         super::wake_wait4_parent(reaper.tid);
     }
 }
@@ -151,7 +151,8 @@ pub fn reparent_children(dying_tid: u32) {
         let pds = t.pdeathsig.load(Ordering::Acquire);
         if crate::bit_for(pds as u32).is_some() {
             let src = crate::sigsend::SigSource::User {
-                pid: dying.vtgid.load(Ordering::Acquire),
+                // PDEATHSIG's si_pid is read by the child, in the child's ns.
+                pid: crate::registry::tgid_nr_seen_by(&dying, &t),
                 uid: dying.creds.ruid.load(Ordering::Acquire),
             };
             let _ = crate::live::sigpend::post_group_signal(&t, pds as u32, src);
@@ -160,7 +161,9 @@ pub fn reparent_children(dying_tid: u32) {
         if threaded { continue; }
         // Linux `reparent_leader`: "We don't want people slaying init."
         t.exit_signal.store(super::super::sigpend::Signum::Sigchld.as_u8(), Ordering::Release);
-        if matches!(t.state(), TaskState::Zombie) { reparented.push(super::reparent_child_event(&t)); }
+        if matches!(t.state(), TaskState::Zombie) {
+            reparented.push(super::reparent_child_event(&t, &reaper));
+        }
         // The child's process group may have just lost its last outside
         // connection (POSIX 3.2.2.2).
         super::orphan::kill_orphaned_pgrp(&t, Some(&dying));

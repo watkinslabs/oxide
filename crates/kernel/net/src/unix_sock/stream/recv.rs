@@ -69,13 +69,14 @@ impl UnixPair {
                 return_end = index + 1;
             } else {
                 cap = core::cmp::min(cap, (*off - g.consumed) as usize);
-                next_cred = Some(*cred);
+                // Rendered for the READER's pid namespace, here and below.
+                next_cred = Some(cred.ids_for_reader());
                 break;
             }
         }
         for (_, rights, cred) in g.ancillary.iter().skip(return_start).take(return_end - return_start) {
             rights_len += rights.len();
-            cred_out = Some(*cred);
+            cred_out = Some(cred.ids_for_reader());
         }
         let data_end = core::cmp::min(cap, g.buf.len());
         if offset >= data_end && return_start == return_end { return Ok(None); }

@@ -9,7 +9,7 @@ use super::{GcNode, GcRights, UnixAddr};
 pub struct UnixDgram {
     pub payload: Vec<u8>,
     /// Sender's (pid, uid, gid) at sendmsg time.
-    pub creds: (u32, u32, u32),
+    pub creds: crate::unix_sock::MsgCred,
     /// F189: SCM_RIGHTS — files carried alongside the payload.
     pub fds: Vec<Arc<vfs::File>>,
 }
@@ -47,7 +47,7 @@ impl UnixDgramRecord {
     fn take_msg(&mut self) -> (UnixDgram, Option<UnixAddr>) {
         let msg = UnixDgram {
             payload: core::mem::take(&mut self.msg.payload),
-            creds:   self.msg.creds,
+            creds:   self.msg.creds.clone(),
             fds:     core::mem::take(&mut self.msg.fds),
         };
         (msg, self.sender.take())
@@ -349,7 +349,7 @@ impl UnixDgramQueue {
             }
         };
         if peek {
-            let msg = UnixDgram { payload: front.payload.clone(), creds: front.creds, fds: front.rights.clone_files() };
+            let msg = UnixDgram { payload: front.payload.clone(), creds: front.creds.clone(), fds: front.rights.clone_files() };
             return Ok(Some((copied, msg, front.sender.clone())));
         }
         let mut record = q.pop_front().unwrap();

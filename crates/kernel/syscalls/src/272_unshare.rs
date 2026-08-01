@@ -211,18 +211,12 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         let parent = snapshot.pid.clone();
         let namespace = allocate_identity(NamespaceKind::Pid, &owner_user, Some(parent))?;
         snapshot.pid_for_children = namespace.clone();
-        if matches!(change, NamespaceChange::CloneChild { .. }) {
-            snapshot.pid = namespace;
-            task.vtgid.store(1, core::sync::atomic::Ordering::Release);
-            task.vtid.store(1, core::sync::atomic::Ordering::Release);
-        }
+        // The child's visible numbers are drawn from this namespace and every
+        // ancestor after the set is published; the namespace's own allocator
+        // hands its first task the number 1.
+        if matches!(change, NamespaceChange::CloneChild { .. }) { snapshot.pid = namespace; }
     } else if matches!(change, NamespaceChange::CloneChild { .. }) {
-        let enters_child_namespace = !NamespaceRef::ptr_eq(&snapshot.pid, &snapshot.pid_for_children);
         snapshot.pid = snapshot.pid_for_children.clone();
-        if enters_child_namespace {
-            task.vtgid.store(1, core::sync::atomic::Ordering::Release);
-            task.vtid.store(1, core::sync::atomic::Ordering::Release);
-        }
     }
     if matches!(change, NamespaceChange::CloneChild { share_vm: false })
         && !NamespaceRef::ptr_eq(&snapshot.time, &snapshot.time_for_children)

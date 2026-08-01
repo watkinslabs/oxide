@@ -129,7 +129,7 @@ impl UnixPair {
         let released = match end { UnixEnd::A => &self.released_a, UnixEnd::B => &self.released_b };
         if released.swap(true, AcqRel) { return; }
         let incoming = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
-        let (unread, fds): (bool, Vec<(u64, GcRights, (u32, u32, u32))>) = {
+        let (unread, fds): (bool, Vec<(u64, GcRights, crate::unix_sock::MsgCred)>) = {
             let mut g = incoming.lock();
             let unread = !g.buf.is_empty() || !g.ancillary.is_empty();
             g.buf.clear();
