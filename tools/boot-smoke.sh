@@ -127,6 +127,58 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# QEMU image the boot will open, per architecture. Globbed over the build
+# namespaces because this run does not choose which one `make` will use.
+case "$ARCH" in
+    arm) IMG_GLOB="$SMOKE_ROOT/target/builds/"'*'"/root-aarch64.img" ;;
+    *)   IMG_GLOB="$SMOKE_ROOT/target/builds/"'*'"/root-x86_64.img" ;;
+esac
+
+# Reap a QEMU left holding THIS TREE'"'"'S boot image.
+#
+# A smoke that is killed (a harness timeout, a cancelled run) can leave its
+# QEMU alive, and it keeps the image open. The next boot then dies with
+# `Is another process using the image [...]` and writes a log containing ZERO
+# kernel output — which reads exactly like a boot failure and is not one. That
+# has already produced retracted before/after claims.
+#
+# The image path is the discriminator, and it is safe precisely because it is
+# specific: `$SMOKE_ROOT` is this worktree, so a QEMU holding it cannot be
+# another lane'"'"'s live boot, which runs out of a different tree. A blanket
+# `pkill qemu-system` would kill those, so it is never used. Anything that is
+# not a `qemu-system-*` holding one of OUR images is left strictly alone.
+reap_stale_image_holders() {
+    local img pid exe found=0
+    for img in $IMG_GLOB; do
+        [ -e "$img" ] || continue
+        for fd in /proc/[0-9]*/fd/*; do
+            [ -e "$fd" ] || continue
+            [ "$(readlink -f "$fd" 2>/dev/null)" = "$img" ] || continue
+            pid="${fd#/proc/}"; pid="${pid%%/*}"
+            exe="$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null || true)"
+            case "$exe" in qemu-system-*) ;; *) continue ;; esac
+            echo "boot-smoke: reaping stale $exe pid=$pid still holding $img" >&2
+            echo "boot-smoke:   (a previous smoke was killed without releasing it; NOT a kernel failure)" >&2
+            kill -TERM "$pid" 2>/dev/null || true
+            found=1
+        done
+    done
+    [ "$found" -eq 0 ] && return 0
+    sleep 2
+    for img in $IMG_GLOB; do
+        [ -e "$img" ] || continue
+        for fd in /proc/[0-9]*/fd/*; do
+            [ -e "$fd" ] || continue
+            [ "$(readlink -f "$fd" 2>/dev/null)" = "$img" ] || continue
+            pid="${fd#/proc/}"; pid="${pid%%/*}"
+            exe="$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null || true)"
+            case "$exe" in qemu-system-*) ;; *) continue ;; esac
+            kill -KILL "$pid" 2>/dev/null || true
+        done
+    done
+    return 0
+}
+
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev
 # doesn't try to read from CI's missing TTY.
 #
@@ -197,6 +249,9 @@ check_serial_rx() {
 
 # Run one boot; return 0 if `oxide login:` appears within TIMEOUT.
 attempt_boot() {
+    # Before anything opens the image: release it if a killed predecessor is
+    # still holding it, or this attempt fails with no kernel output at all.
+    reap_stale_image_holders
     LOG="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.log)"
     echo "boot-smoke: arch=$ARCH attempt=$1/$ATTEMPTS timeout=${TIMEOUT}s log=$LOG"
     # Writable stdin: a FIFO held open by our own RDWR fd ($SYSRQ_WFD) so
@@ -265,6 +320,18 @@ close_sysrq() {
     SYSRQ_FIFO=""
 }
 
+# A failed attempt whose log holds NO kernel output never booted, so it says
+# nothing about the kernel. Name that out loud: the two logs look identical
+# otherwise, and reading one as a boot failure is how this cost a retraction.
+diagnose_empty_log() {
+    local lines
+    lines="$(grep -c '"'"'^\[[0-9]'"'"' "$LOG" 2>/dev/null || echo 0)"
+    [ "$lines" -gt 0 ] && return 0
+    echo "boot-smoke: attempt $1 produced ZERO kernel output lines — the kernel never ran." >&2
+    echo "boot-smoke:   This is a harness/build/image-lock failure, NOT a kernel failure." >&2
+    echo "boot-smoke:   Check the log for an image lock, a build error, or a GRUB stall." >&2
+}
+
 a=1
 while [ "$a" -le "$ATTEMPTS" ]; do
     if attempt_boot "$a"; then
@@ -272,6 +339,7 @@ while [ "$a" -le "$ATTEMPTS" ]; do
         exit 0
     fi
     kill_boot
+    diagnose_empty_log "$a"
     keep_log_copy "$a" "post-fail"
     rm -f "$LOG"
     a=$(( a + 1 ))

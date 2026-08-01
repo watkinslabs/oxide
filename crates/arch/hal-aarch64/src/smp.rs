@@ -320,6 +320,12 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     // This mirrors the BSP setup in `_start_rust` and is required even before
     // the AP first returns to EL0.
     crate::fpu_enable();
+    // Follow the BSP's permission-overlay decision. Passing `false` is what
+    // makes it a follow rather than a second decision: this PE enables the
+    // overlay iff the BSP latched it, so a key's protection can never depend
+    // on which core a thread happens to be running on.
+    // SAFETY: AP bring-up at EL1 before this PE runs EL0; TCR2_EL1/CPACR_EL1 are per-CPU and this PE is their sole writer.
+    unsafe { crate::setup_poe(false); }
     // SAFETY: AP bring-up before this PE runs EL0; enables architected counter reads.
     unsafe { crate::timer::enable_el0_counter_access(); }
     // Kernel AP-init hook: GIC CPU interface + resched SGI + runqueue.

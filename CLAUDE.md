@@ -334,7 +334,27 @@ wrong authorship, unverified.
 
 Counter is per-type, monotonically increasing, never reused. Two-digit minimum (`NN`); widen to three (`NNN`) once any single type passes 99. Title is kebab-case, ≤40 chars, no trailing slashes. Old `feature/`, `fix/`, etc. branches predate this scheme and are kept as-is for history.
 
-**Counters live in `metadata/index.md` — HARD RULE, never invent them.** The repo is ~4000 commits in (`F` is in the 400s, `B`/`D` in the 90s–110s). Before creating a branch of type `<T>`, read the `next` value for `<T>` in `metadata/index.md`, name the branch with it, then INCREMENT that line and commit `metadata/index.md` (same PR or a tracking commit) so the next branch/run is correct. Guessing a counter (e.g. `F30`) produces garbage, non-sortable names that collide with real history.
+**CLAIM the counter, never just read it — HARD RULE.** Take a branch number with:
+
+```
+name=$(tools/next-branch.sh --claim B my-fix-title)   # prints e.g. B1689-my-fix-title
+git worktree add -b "$name" ../kernel-${name%%-*} origin/main
+```
+
+`--claim` pushes a `claim/<T><NN>` ref to origin before it returns, so the number
+is yours the moment you have it; a lane racing you for the same number is refused
+by the remote and retries. Reading the counter is **not** claiming it —
+`tools/next-branch.sh B`, `--dry-run`, and `metadata/index.md` all hand every
+concurrent lane the same answer. Three lanes drew `B1667` on one day and a whole
+signal-report implementation was discarded as the duplicate.
+
+Never invent a number (`F30` produces garbage, non-sortable names that collide
+with real history), and never hand-pick one to "avoid" a collision. Git — branch
+refs, merge subjects and `claim/*` refs — is the only source of truth for which
+numbers are taken. `metadata/index.md` keeps the HISTORY of past reservations and
+collisions (not derivable from git) but no longer carries a `next` table: a second
+place to record a number git already knows fell behind on nearly every parallel
+wave. `make counters` prints the next free number per type.
 
 **Short-lived feature branches (HARD RULE).** Every feature / bug / doc change gets its own fresh branch from current `origin/main`; no omnibus branches and no long-running catch-all worktrees. Finish one feature, commit it, push it, open/merge the PR, then delete the local branch and worktree before starting the next feature. Refactors are features too: isolate them on their own branch instead of mixing cleanup with driver work, and never continue piling new work onto a dirty or conflicted branch. If a branch becomes misshapen, stop, preserve it with an archive tag, and cherry-pick the still-valuable commits onto clean one-feature branches.
 
