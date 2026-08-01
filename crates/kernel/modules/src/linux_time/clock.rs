@@ -90,8 +90,11 @@ pub(super) extern "C" fn preempt_schedule_notrace() { schedule(); }
 
 pub(super) extern "C" fn schedule() {
     #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: schedule()'s contract is that the caller stands at a safe schedule point per 13§9.
+    // The Linux `schedule()`/`cond_resched()` KPI this exports carries the same contract for the
+    // driver calling it — process/kthread context, no spinlock held — and this wrapper adds no
+    // state of its own that a switch could invalidate.
     unsafe {
-        // SAFETY: caller requested a Linux schedule point in process/kthread context.
         sched::live::schedule();
     }
 }

@@ -257,9 +257,11 @@ pub(super) fn install_attrs(path: &str, item: *mut ConfigItem) {
         // SAFETY: configfs attr array is NULL-terminated by module code.
         let attr = unsafe { *attrs.add(i) };
         if attr.is_null() { break; }
+        // SAFETY: attr was just tested non-null, and attrs_ptr only yields entries of the item type's ct_attrs table, so it is a live ConfigfsAttribute; read_cstr bounds the name scan at NAME_MAX.
         if let Some(name) = unsafe { read_cstr((*attr).name, NAME_MAX) } {
             if valid_name(&name) {
                 let ap = join_path(path, &name);
+                // SAFETY: same non-null attr from the ct_attrs table whose name was read above; mode is a plain field of that entry, no further pointer chased.
                 let mode = unsafe { (*attr).mode };
                 let data = AttrData { item: item as usize, attr: attr as usize, frag: Arc::clone(&frag) };
                 tracefs::config_root().insert_path(&ap, attr_inode(mode, data));

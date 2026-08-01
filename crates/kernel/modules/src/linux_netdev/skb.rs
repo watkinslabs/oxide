@@ -79,11 +79,13 @@ pub(super) unsafe extern "C" fn kfree_skb(skb: *mut LinuxSkBuff) {
 
 /// # C: O(1)
 pub(super) unsafe extern "C" fn dev_kfree_skb(skb: *mut LinuxSkBuff) {
+    // SAFETY: dev_kfree_skb's KPI contract transfers skb ownership exactly like kfree_skb, which null-checks skb and drops the Box<SkbOwner> skb_alloc leaked into skb->owner.
     unsafe { kfree_skb(skb); }
 }
 
 /// # C: O(1)
 pub(super) unsafe extern "C" fn consume_skb(skb: *mut LinuxSkBuff) {
+    // SAFETY: consume_skb is the success-path free and takes the same ownership as kfree_skb, which null-checks skb and reclaims the SkbOwner box recorded in skb->owner exactly once.
     unsafe { kfree_skb(skb); }
 }
 
@@ -144,7 +146,7 @@ pub(super) unsafe extern "C" fn skb_reserve(skb: *mut LinuxSkBuff, len: u32) {
 /// # C: O(1)
 pub(super) unsafe extern "C" fn skb_tail_pointer(skb: *const LinuxSkBuff) -> *mut u8 {
     if skb.is_null() { return null_mut(); }
-    // SAFETY: skb points to a LinuxSkBuff.
+    // SAFETY: skb was null-checked above; tail is a plain pointer field of the LinuxSkBuff embedded at offset 0 of its live SkbOwner allocation.
     unsafe { (*skb).tail }
 }
 
@@ -236,6 +238,7 @@ pub(super) unsafe extern "C" fn skb_clone_tx_timestamp(_skb: *mut LinuxSkBuff) {
 
 /// # C: O(1)
 pub(super) unsafe extern "C" fn sk_skb_reason_drop(skb: *mut LinuxSkBuff, _reason: u32) {
+    // SAFETY: the drop-reason variant consumes the skb like kfree_skb, which null-checks it and frees the Box<SkbOwner> held in skb->owner; the reason code carries no pointer.
     unsafe { kfree_skb(skb); }
 }
 
@@ -254,13 +257,14 @@ pub(super) unsafe extern "C" fn skb_add_rx_frag_netmem(skb: *mut LinuxSkBuff, _i
 
 /// # C: O(size)
 pub(super) unsafe extern "C" fn skb_coalesce_rx_frag(skb: *mut LinuxSkBuff, i: i32, size: u32, truesize: u32) {
+    // SAFETY: skb_add_rx_frag_netmem null-checks skb and never dereferences its netmem argument, so the null placeholder is sound; it grows the buffer through ensure_room before skb_put.
     unsafe { skb_add_rx_frag_netmem(skb, i, null_mut(), 0, size as i32, truesize); }
 }
 
 /// # C: O(len)
 pub(super) unsafe extern "C" fn skb_to_sgvec(skb: *const LinuxSkBuff, _sg: *mut c_void, offset: i32, len: i32) -> i32 {
     if skb.is_null() || offset < 0 || len < 0 { return -LINUX_EINVAL; }
-    // SAFETY: skb points to a LinuxSkBuff.
+    // SAFETY: skb was null-checked above; only the plain len field of the live LinuxSkBuff is read here, no data pointer is dereferenced.
     unsafe {
         if (offset as usize).checked_add(len as usize).map_or(true, |end| end > (*skb).len as usize) { return -LINUX_EINVAL; }
     }
@@ -308,9 +312,10 @@ pub(super) unsafe extern "C" fn eth_type_trans(skb: *mut LinuxSkBuff, dev: *mut 
 }
 
 /// # C: O(1)
-pub(super) fn skb_data(skb: *const LinuxSkBuff) -> Option<&'static [u8]> {
+// Precondition: skb is NULL or live, and the returned slice — whose 'static lifetime is a lie, it really borrows the SkbOwner buffer — must be consumed before any free or ensure_room reallocation of that skb.
+pub(super) unsafe fn skb_data(skb: *const LinuxSkBuff) -> Option<&'static [u8]> {
     if skb.is_null() { return None; }
-    // SAFETY: caller uses the returned view before freeing the skb.
+    // SAFETY: per the precondition skb is live, and skb_put/skb_push/skb_pull keep data..data+len inside the SkbOwner buffer, so the slice covers initialized bytes of that allocation.
     unsafe { Some(core::slice::from_raw_parts((*skb).data, (*skb).len as usize)) }
 }
 
@@ -393,7 +398,8 @@ unsafe fn ensure_room(skb: *mut LinuxSkBuff, add_head: usize, add_tail: usize) -
 pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff)
     -> Option<(Vec<u8>, Option<Vec<u8>>, u16, u32, Option<u64>, net::PacketRxMetadata)>
 {
-    let data = skb_data(skb)?.to_vec();
+    // SAFETY: skb is live here (this fn's own contract) and the borrowed view is copied by to_vec on the same expression, before the kfree_skb at the end of this function.
+    let data = unsafe { skb_data(skb) }?.to_vec();
     // SAFETY: skb and its owner remain valid until kfree_skb below.
     let (link, proto, fallback_iface, ingress_iface, ingress_generation, metadata) = unsafe {
         let dev = (*skb).dev;

@@ -53,7 +53,7 @@ unsafe fn format_bytes(out: &mut [u8], n: &mut usize, fmt: *const c_char, ap: &m
         }
         match c {
             b's' => {
-                // SAFETY: vararg type follows %s.
+                // SAFETY: the C varargs contract makes the argument matching a %s conversion a pointer, so reading it as pointer-sized is the promoted type the caller pushed.
                 let p = unsafe { ap.next_arg::<*mut c_void>() as *const c_char };
                 push_cstr(out, n, p);
             }
