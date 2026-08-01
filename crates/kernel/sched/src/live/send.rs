@@ -137,7 +137,10 @@ pub fn force_sig_info_to_task(t: &Arc<Task>, info: SigInfo, mode: ForceMode) {
     let handler = t.sigactions_ref().get(sig).handler;
     let blocked = t.sigmask.load(Ordering::Acquire);
     let d = sigsend::force_decision(handler, sig, blocked, mode);
-    if d.reset_to_dfl { t.sigactions_ref().force_default(sig); }
+    if d.reset_to_dfl {
+        let flags = if d.immutable { crate::task::SA_IMMUTABLE } else { 0 };
+        t.sigactions_ref().force_default_flags(sig, flags);
+    }
     if d.unblock { t.sigmask.fetch_and(!bit, Ordering::AcqRel); }
     // The disposition is now guaranteed deliverable, so the `sig_ignored` arm
     // inside `send_signal` cannot drop it; `SigSource::Info` carries the full
@@ -163,13 +166,17 @@ pub fn force_sig_fault(sig: Signum, code: i32, addr: u64, addr_lsb: i16) {
     force_sig_info_to_task(&cur, info, ForceMode::Current);
 }
 
-/// Linux `force_fatal_sig(sig)` — `HANDLER_SIG_DFL`: the default action runs
-/// even if a handler is installed, but the task stays killable.
+/// Linux `force_fatal_sig(sig)` — `HANDLER_EXIT`: the default action runs even
+/// if a handler is installed, and the action is marked `SA_IMMUTABLE` so it
+/// cannot be turned back into a survivable one. `HANDLER_SIG_DFL` (which is
+/// what this used to pass) resets the disposition but leaves it changeable, so
+/// a task could re-install a handler and outlive a signal that was meant to be
+/// terminal.
 /// # C: O(1)
 pub fn force_fatal_sig(sig: Signum, code: i32, addr: u64) {
     let Some(cur) = current_arc() else { return };
     let info = sigsend::fault_info(sig.as_u8() as u32, code, addr, 0);
-    force_sig_info_to_task(&cur, info, ForceMode::SigDfl);
+    force_sig_info_to_task(&cur, info, ForceMode::Exit);
 }
 
 /// Linux `send_sig_info(sig, SEND_SIG_PRIV, t)` for a kernel-generated,
@@ -258,7 +265,15 @@ fn publish(t: &Arc<Task>, sig: u32, bit: u64, target: SigTarget) {
     match target {
         SigTarget::Thread => {
             t.sigpending.fetch_or(bit, Ordering::Release);
-            super::registry::wake_if_stopped(t);
+            // `complete_signal`: `signal_wake_up(t, sig == SIGKILL)`. Only the
+            // kill resumes a STOPPED task — `TASK_STOPPED` carries
+            // `TASK_WAKEKILL` and nothing else. Waking a stopped task for any
+            // signal at all ran a job-control-stopped process back into
+            // userspace on an ordinary `kill -USR1`, and yanked a tracee out
+            // of a ptrace stop its tracer had not resumed.
+            if sig == crate::Signum::Sigkill as u32 {
+                super::registry::wake_if_stopped(t, crate::jobctl::WakeKind::Kill);
+            }
             super::sigpend::signal_wake_up(t);
         }
         SigTarget::Process => {
@@ -298,10 +313,32 @@ fn flush_group(t: &Task, mask: u64) {
 }
 
 /// `prepare_signal`'s SIGCONT arm: resume every job-control-stopped member.
+///
+/// A SEIZED tracee is NOT resumed. Linux routes it through
+/// `ptrace_trap_notify` instead: the SIGCONT is an event its tracer is
+/// entitled to be told about, so the trap latch is armed and the tracee is
+/// only woken when it is `PTRACE_LISTEN`ing — at which point it re-reports its
+/// stop rather than running on. Resuming it outright let a SIGCONT from any
+/// unrelated process steal a tracee out from under `gdb`.
 /// # C: O(N_threads)
 fn resume_group(t: &Task) {
     let tgid = t.tgid.load(Ordering::Acquire);
     for (_vtid, tid) in crate::registry::thread_entries(tgid) {
-        if let Some(m) = super::registry::lookup(tid) { super::registry::wake_if_stopped(&m); }
+        let Some(m) = super::registry::lookup(tid) else { continue };
+        m.jobctl.store(crate::jobctl::clear_pending(m.jobctl.load(Ordering::Acquire),
+                                                    crate::jobctl::STOP_PENDING), Ordering::Release);
+        if m.ptrace_seized.load(Ordering::Acquire) { trap_notify(&m); continue; }
+        super::registry::wake_if_stopped(&m, crate::jobctl::WakeKind::Cont);
     }
+}
+
+/// Linux `ptrace_trap_notify`: arm the seized tracee's `JOBCTL_TRAP_NOTIFY` and
+/// wake it only if it is `PTRACE_LISTEN`ing, so it re-enters its trap and
+/// reports the event. A tracee in an ordinary ptrace stop keeps sleeping — its
+/// tracer will see the latch when it resumes it.
+/// # C: O(1)
+fn trap_notify(t: &Arc<Task>) {
+    let (new, wake) = crate::jobctl::trap_notify(t.jobctl.load(Ordering::Acquire));
+    t.jobctl.store(new, Ordering::Release);
+    if wake { super::registry::wake_if_stopped(t, crate::jobctl::WakeKind::Cont); }
 }

@@ -6,6 +6,9 @@ const SIGINT:  u32 = Signum::Sigint as u32;
 const SIGKILL: u32 = Signum::Sigkill as u32;
 const SIGSTOP: u32 = Signum::Sigstop as u32;
 const SIGUSR1: u32 = Signum::Sigusr1 as u32;
+const SIGSEGV: u32 = Signum::Sigsegv as u32;
+const SIGSYS:  u32 = Signum::Sigsys as u32;
+const SIGILL:  u32 = Signum::Sigill as u32;
 
 fn mask(sigs: &[u32]) -> u64 {
     sigs.iter().filter_map(|s| sched::signum::bit_for(*s)).fold(0, |a, b| a | b)
@@ -13,16 +16,16 @@ fn mask(sigs: &[u32]) -> u64 {
 
 #[test]
 fn an_untraced_task_never_takes_a_signal_delivery_stop() {
-    for s in [SIGHUP, SIGINT, SIGUSR1, SIGSTOP] { assert!(!stops_for_tracer(false, s)); }
+    for s in [SIGHUP, SIGINT, SIGUSR1, SIGSTOP] { assert!(!stops_for_tracer(false, s, false)); }
 }
 
 #[test]
 fn sigkill_is_never_stoppable_by_a_tracer() {
     // The one exclusion in Linux's gate: a tracer that could stop on SIGKILL
     // could make its tracee unkillable.
-    assert!(!stops_for_tracer(true, SIGKILL));
-    assert!(stops_for_tracer(true, SIGSTOP));
-    for s in [SIGHUP, SIGINT, SIGUSR1] { assert!(stops_for_tracer(true, s)); }
+    assert!(!stops_for_tracer(true, SIGKILL, false));
+    assert!(stops_for_tracer(true, SIGSTOP, false));
+    for s in [SIGHUP, SIGINT, SIGUSR1] { assert!(stops_for_tracer(true, s, false)); }
 }
 
 #[test]
@@ -95,4 +98,15 @@ fn a_tracee_woken_without_a_tracer_write_delivers_the_reported_signal() {
 #[test]
 fn si_user_is_the_code_a_substituted_record_carries() {
     assert_eq!(SI_USER, 0);
+}
+
+#[test]
+fn an_sa_immutable_signal_never_reaches_the_tracer() {
+    // A forced-fatal signal (`force_fatal_sig`, seccomp `RET_KILL_*`) marks its
+    // action `SA_IMMUTABLE`. The tracer's signal-delivery stop is skipped for
+    // it, so the tracer cannot resume with signal 0 and cancel the death.
+    for s in [SIGSEGV, SIGSYS, SIGILL, SIGUSR1] {
+        assert!(stops_for_tracer(true, s, false), "an ordinary signal still stops");
+        assert!(!stops_for_tracer(true, s, true), "an immutable action is not negotiable");
+    }
 }

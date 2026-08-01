@@ -21,6 +21,13 @@ const SA_NODEFER:   u64 = 0x40000000;
 const SA_RESETHAND: u64 = 0x80000000;
 const UAPI_SA_FLAGS: u64 = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_SIGINFO | SA_RESTORER
     | SA_ONSTACK | SA_RESTART | SA_NODEFER | SA_RESETHAND;
+/// `SA_IMMUTABLE` — KERNEL-INTERNAL, deliberately absent from `UAPI_SA_FLAGS`
+/// so `rt_sigaction` can neither set it nor read it back. The uapi reserves
+/// this bit for exactly this use. A signal forced with `HANDLER_EXIT` marks
+/// its action immutable, which makes the death final: the disposition can no
+/// longer be changed back to a handler, and a tracer can no longer intercept
+/// the signal to suppress or replace it.
+pub const SA_IMMUTABLE: u64 = 0x0080_0000;
 const UNBLOCKABLE_MASK: u64 = Signum::Sigkill.bit() | Signum::Sigstop.bit();
 pub const SIG_BLOCK:   u64 = 0;
 pub const SIG_UNBLOCK: u64 = 1;
@@ -105,13 +112,16 @@ impl SigActions {
     /// Read one action slot for signal delivery. # C: O(1)
     pub fn get(&self, sig: u32) -> SaHandler { self.table.lock()[(sig - 1) as usize] }
 
-    /// Reset caught handlers at execve. # C: O(64)
+    /// Reset caught handlers at execve (`flush_signal_handlers`), which also
+    /// clears `SA_IMMUTABLE` — the new program inherits no forced disposition.
+    /// # C: O(64)
     pub fn reset_caught(&self) {
         let mut t = self.table.lock();
         for slot in t.iter_mut() {
             if slot.handler != SIG_DFL && slot.handler != SIG_IGN {
                 *slot = SaHandler::default();
             }
+            slot.flags &= !SA_IMMUTABLE;
         }
     }
 
@@ -122,9 +132,23 @@ impl SigActions {
     /// which is what keeps a wild pointer fatal instead of an infinite fault
     /// loop.
     /// # C: O(1)
-    pub fn force_default(&self, sig: u32) {
+    pub fn force_default(&self, sig: u32) { self.force_default_flags(sig, 0) }
+
+    /// `force_default` plus `action->sa.sa_flags |= SA_IMMUTABLE` for a
+    /// `HANDLER_EXIT` force. The flag is the ONE thing that survives the reset,
+    /// and it is what later refuses a `rt_sigaction` on this slot and keeps the
+    /// signal out of the tracer's hands.
+    /// # C: O(1)
+    pub fn force_default_flags(&self, sig: u32, flags: u64) {
         if sig == 0 || sig as usize > SIGACTION_COUNT { return; }
-        self.table.lock()[(sig - 1) as usize] = SaHandler::default();
+        self.table.lock()[(sig - 1) as usize] = SaHandler { flags, ..SaHandler::default() };
+    }
+
+    /// Whether this slot's action was marked immutable by a forced-fatal
+    /// delivery. # C: O(1)
+    pub fn is_immutable(&self, sig: u32) -> bool {
+        if sig == 0 || sig as usize > SIGACTION_COUNT { return false; }
+        self.table.lock()[(sig - 1) as usize].flags & SA_IMMUTABLE != 0
     }
 
     /// Linux do_sigaction core: validate, snapshot old, sanitize, install.
@@ -135,6 +159,10 @@ impl SigActions {
         }
         let idx = sig - 1;
         let mut t = self.table.lock();
+        // `do_sigaction`: `if (k->sa.sa_flags & SA_IMMUTABLE) return -EINVAL`.
+        // A process forced to die on this signal must not be able to install a
+        // handler for it and survive.
+        if t[idx].flags & SA_IMMUTABLE != 0 { return Err(()); }
         let old = sanitize_action(t[idx]);
         if let Some(mut new) = act {
             new.flags = sanitize_flags(new.flags);

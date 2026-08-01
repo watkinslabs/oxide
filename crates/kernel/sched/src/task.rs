@@ -61,7 +61,7 @@ pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use io_context::current_ioprio;
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;
-pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use sigwake::{SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
@@ -741,6 +741,16 @@ pub struct Task {
     /// `SIGTRAP | 0x80`. `syscall::ptrace` composes and decodes it; the wait
     /// status is `syscall::wait::stopped_wstatus(stop_code)`.
     pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_code: AtomicU32,
+    /// Linux `task->jobctl`: the job-control / ptrace-trap latch. Bit layout
+    /// and every rule read off it are `crate::jobctl`.
+    pub jobctl: AtomicU64,
+    /// Why this task was last made runnable out of a stop, as a
+    /// `crate::jobctl::WakeKind` discriminant. The stopping task reads it on
+    /// the way out of the stop to decide whether the resume was an observable
+    /// `CLD_CONTINUED` event — only a real SIGCONT is. A shared flag cannot
+    /// serve: `cont_pending` is consumed by whichever `wait4` collects it
+    /// first, which would race the stopped task's own read.
+    pub stop_wake: AtomicU8,
 
     /// `rseq(2)` registration pointer — per-THREAD user pointer to a
     /// `struct rseq`. Non-zero means every exit to user republishes the ids

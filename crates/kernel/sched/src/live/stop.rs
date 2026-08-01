@@ -15,6 +15,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::exit::notify::{cldstop_notify, Cldstop, ParentSigchld};
+use crate::jobctl::{self, NotifyTarget, StopKind, WakeKind};
 use crate::TaskState;
 
 /// Flip current to Stopped + schedule away. Loops until SIGCONT
@@ -31,25 +32,55 @@ pub fn stop_until_cont() {
 /// `wait4(WUNTRACED)` reports. A job-control stop's code IS its signal; the
 /// wider ptrace event codes come from `syscall::ptrace`.
 /// # C: O(N_schedule) until cont
-pub fn stop_until_cont_sig(sig: u8) { stop_until_cont_code(sig as u32) }
+pub fn stop_until_cont_sig(sig: u8) { stop_until_cont_code(sig as u32, StopKind::JobControl) }
 
 /// The full-width form. A ptrace event stop's code is `SIGTRAP | (event <<
 /// 8)`, which does not fit the byte a job-control stop uses — passing it
 /// through `stop_until_cont_sig` truncated the event byte away and every
 /// event stop reported as a bare SIGTRAP.
+///
+/// `kind` separates Linux's two distinct stops. A job-control stop is reported
+/// to the REAL parent as `CLD_STOPPED` and its SIGCONT resume as
+/// `CLD_CONTINUED`; a ptrace stop is reported to the TRACER as `CLD_TRAPPED`
+/// and its resume is not an event at all. Reporting both as
+/// `CLD_STOPPED`/`CLD_CONTINUED` to the real parent meant every single
+/// `PTRACE_SYSCALL` step of a traced process fired a spurious `SIGCHLD` pair at
+/// the shell that started it, and a `wait4(WCONTINUED)` event that never
+/// happened.
 /// # C: O(N_schedule) until cont
-pub fn stop_until_cont_code(code: u32) {
+pub fn stop_until_cont_code(code: u32, kind: StopKind) {
     let cur = match crate::live::current() { Some(c) => c, None => return };
     let sig = (code & 0xff) as u8;
     cur.stop_code.store(code, Ordering::Release);
     cur.stop_pending.store(true, Ordering::Release);
+    cur.jobctl.fetch_or(match kind {
+        StopKind::Ptrace     => jobctl::TRACED,
+        StopKind::JobControl => jobctl::STOPPED,
+    }, Ordering::AcqRel);
     cur.set_state(TaskState::Stopped);
-    notify_parent_cldstop(cur, Cldstop::Stopped, sig as u32);
+    notify_parent_cldstop(cur, jobctl::stop_si_code(kind), sig as u32, jobctl::notify_target(kind));
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
         unsafe { crate::live::schedule(); }
         if cur.state() == TaskState::Runnable {
-            notify_parent_cldstop(cur, Cldstop::Continued, crate::Signum::Sigcont as u32);
+            let wake = WakeKind::from_u8(cur.stop_wake.load(Ordering::Acquire));
+            // `PTRACE_LISTEN`'s contract: the tracee stays stopped, and an
+            // asynchronous event re-traps it so the tracer is told, instead of
+            // silently resuming it into userspace with the event unreported.
+            if jobctl::wake_retraps(cur.jobctl.load(Ordering::Acquire), wake) {
+                cur.jobctl.fetch_and(!jobctl::TRAP_NOTIFY, Ordering::AcqRel);
+                cur.stop_code.store(code, Ordering::Release);
+                cur.stop_pending.store(true, Ordering::Release);
+                cur.set_state(TaskState::Stopped);
+                notify_parent_cldstop(cur, jobctl::stop_si_code(kind), sig as u32,
+                                      jobctl::notify_target(kind));
+                continue;
+            }
+            cur.jobctl.fetch_and(!(jobctl::TRACED | jobctl::STOPPED), Ordering::AcqRel);
+            if let Some(why) = jobctl::resume_notify(kind, wake) {
+                notify_parent_cldstop(cur, why, crate::Signum::Sigcont as u32,
+                                      NotifyTarget::RealParent);
+            }
             return;
         }
         // The pick may return us only if no other Runnable task
@@ -68,10 +99,23 @@ pub fn stop_until_cont_code(code: u32) {
 /// and ALWAYS wakes a `wait4`-blocked parent — a stop that notified nobody left
 /// `waitpid(WUNTRACED)` asleep through the stop it was waiting for, which is
 /// what made a backgrounded tty read look like a hang rather than a stop.
+/// `to` is `do_notify_parent_cldstop`'s `for_ptracer` argument: a ptrace stop
+/// is announced to the tracer (`tsk->parent`), a job-control stop to the real
+/// parent (`tsk->real_parent`). A tracee whose tracer has since detached falls
+/// back to the real parent rather than notifying nobody.
 /// # Ctx: dispatch tail, process context, preempt-off.
 /// # C: O(N_waiters)
-fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32) {
-    let Some(parent) = cur.parent() else { return };
+fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32, to: NotifyTarget) {
+    let tracer = match to {
+        NotifyTarget::Tracer => {
+            let tid = cur.traced_by.load(Ordering::Acquire);
+            if tid == 0 { None } else { crate::registry::lookup(tid) }
+        }
+        NotifyTarget::RealParent => None,
+    };
+    let parent = match tracer { Some(t) => t, None => match cur.parent() {
+        Some(p) => p, None => return,
+    } };
     let act = parent.sigactions_ref().get(crate::Signum::Sigchld as u32);
     let n = cldstop_notify(why, ParentSigchld { handler: act.handler, flags: act.flags });
     let info = crate::task::SigInfo {

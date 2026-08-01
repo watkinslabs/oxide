@@ -32,6 +32,8 @@ pub mod cputime_trace;
 pub mod perf_sw;
 /// `__ptrace_may_access` — the credential predicate ptrace/kcmp/pidfd_getfd/perf share.
 pub mod ptrace_access;
+/// `task->jobctl` — job-control / ptrace-trap latch and its stop-notify rules.
+pub mod jobctl;
 pub mod yama;
 pub mod seccomp_filter;
 pub mod loadavg;
