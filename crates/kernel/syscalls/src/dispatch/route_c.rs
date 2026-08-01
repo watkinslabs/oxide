@@ -182,6 +182,9 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // than left to the dispatch fall-through so the refusal is a decision
         // with evidence, not an accident.
         n if crate::unconfigured::is_unconfigured(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
+        // SAFETY: `current_user_regs` yields this task's live entry frame, which
+        // `rt_sigreturn` must rewrite in place to resume the interrupted context;
+        // the frame outlives the call because the syscall returns through it.
         syscall::nrs::NR_RT_SIGRETURN => unsafe { ::fs::sig_dispatch::rt_sigreturn(crate::arch_frame::current_user_regs()) },
         _ => return None,
     })
