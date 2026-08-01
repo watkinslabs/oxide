@@ -88,7 +88,7 @@ impl ConnectTransaction<'_> {
                 Ok(())
             }
             (ConnectKind::Udp, RemoteAddr::Inet6 { ip, port, scope_id }) => {
-                crate::sock_v6::validate_udp6_mapped_destination(
+                crate::inet_tx::validate_udp6_mapped_destination(
                     ip,
                     sock.opts.ipv6_v6only.load(
                         core::sync::atomic::Ordering::Acquire,
@@ -107,7 +107,7 @@ impl ConnectTransaction<'_> {
                 crate::sock_io::connect_wait_established(sock, &entry)
             }
             (ConnectKind::Tcp, RemoteAddr::Inet6 { ip, port, scope_id }) => {
-                if let Some(ip) = crate::sock_v6::tcp6_mapped_destination(
+                if let Some(ip) = crate::inet_tx::tcp6_mapped_destination(
                     ip,
                     sock.opts.ipv6_v6only.load(
                         core::sync::atomic::Ordering::Acquire,

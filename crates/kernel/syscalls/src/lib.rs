@@ -15,6 +15,7 @@ mod membarrier;
 mod affinity_abi;
 mod getdents_abi;
 mod net_errno;
+pub mod mmsg_batch;
 pub mod arch_prctl_abi;
 pub mod obsolete;
 // Slots refused with the errno Linux returns when the backing CONFIG is unset
