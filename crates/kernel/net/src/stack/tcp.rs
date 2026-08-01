@@ -194,14 +194,28 @@ impl NetStack {
                     } else {
                         (Vec::new(), false, c.local.ip, c.remote.ip)
                     }
-                } else if c.retx_q.is_empty() {
+                } else if c.state == crate::tcp_state::TcpState::FinWait2
+                    && c.linger2_expired(
+                        if c.tw_start_ns == 0 { now_ns } else { c.tw_start_ns }, now_ns)
+                {
+                    // `TCP_LINGER2` bounds how long the orphan may wait for
+                    // the peer's FIN; past it the connection is torn down
+                    // rather than held open indefinitely.
+                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
+                    c.state = crate::tcp_state::TcpState::Closed;
+                    (Vec::new(), true, c.local.ip, c.remote.ip)
+                } else if c.state == crate::tcp_state::TcpState::FinWait2 {
+                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
+                    (Vec::new(), false, c.local.ip, c.remote.ip)
+                } else if c.repair || c.retx_q.is_empty() {
                     (Vec::new(), false, c.local.ip, c.remote.ip)
                 } else {
                     let front_is_syn = (c.retx_q.front().unwrap().flags
                         & crate::tcp_hdr::flags::SYN) != 0;
-                    let max = if front_is_syn { 6 } else { 15 };
+                    let max = if front_is_syn { c.syn_retries }
+                        else { crate::tcp_conn::DATA_RETRIES_DEFAULT };
                     let max_retries = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0);
-                    if max_retries >= max {
+                    if max_retries >= max || c.user_timeout_expired(now_ns) {
                         // Give up on this connection. F163: surface as
                         // SO_ERROR = ETIMEDOUT so a getsockopt after
                         // async-connect's EPOLLOUT can report the cause.
@@ -219,6 +233,17 @@ impl NetStack {
             };
             for s in &segs {
                 let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
+                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
+            }
+            // A ping-pong-mode socket held its acknowledgement back so it
+            // could ride the application's reply; once `TCP_DELACK_MAX_US`
+            // elapses it goes out on its own.
+            let (delack, da_src, da_dst) = {
+                let mut c = entry.conn.lock();
+                (c.delayed_ack_due(now_ns), c.local.ip, c.remote.ip)
+            };
+            if let Some(s) = &delack {
+                let _ = self.send_tcp_segment_in(entry.net_ns(), da_src, da_dst, s, 0,
                     entry.bound_iface(), TcpTxPolicy::Entry(entry));
             }
             // F193: keepalive probe scheduling. Idle for ka_idle_ns →

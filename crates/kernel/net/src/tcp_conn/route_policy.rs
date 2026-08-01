@@ -53,7 +53,9 @@ impl TcpConn {
         }
         if metrics.reordering != 0 { self.reordering = metrics.reordering; }
         self.route_features = metrics.features;
-        self.quickack = metrics.quickack != 0;
+        // The route metric only ever forces quick acknowledgements on; a route
+        // without it leaves the socket's own `TCP_QUICKACK` choice standing.
+        if metrics.quickack != 0 { self.quickack = true; }
         self.fastopen_no_cookie = metrics.fastopen_no_cookie != 0;
         if let Some(congestion) = metrics.cc_algo {
             self.congestion = congestion;

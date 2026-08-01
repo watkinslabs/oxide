@@ -2,6 +2,10 @@
 
 use crate::tcp_conn::TcpConn;
 
+/// Segments in flight below which duplicate-acknowledgement recovery cannot
+/// fire, so the stream is "thin" for `TCP_THIN_LINEAR_TIMEOUTS`.
+pub const THIN_STREAM_SEGMENTS: usize = 4;
+
 impl TcpConn {
     /// Update SRTT/RTTVAR/RTO from a new sample (RFC 6298 §2.2-2.3).
     /// `r_ns` is the measured RTT.
@@ -21,8 +25,8 @@ impl TcpConn {
         if self.rto_ns < self.rto_min_ns {
             self.rto_ns = self.rto_min_ns;
         }
-        if self.rto_ns > 60_000_000_000 {
-            self.rto_ns = 60_000_000_000;
+        if self.rto_ns > self.rto_max_ns {
+            self.rto_ns = self.rto_max_ns;
         }
     }
 
@@ -30,6 +34,14 @@ impl TcpConn {
     /// # C: O(retx_q.len())
     pub fn retransmit_due(&mut self, now_ns: u64) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         let mut out = alloc::vec::Vec::new();
+        // Repair holds the sequence state still, so nothing may be re-sent
+        // from under the process restoring it.
+        if self.repair { return out; }
+        // The user timeout is measured from when the queue first went
+        // unacknowledged, not from the last retransmit, so the mark is taken
+        // when the queue becomes non-empty and cleared when it drains.
+        if self.retx_q.is_empty() { self.first_unacked_ns = 0; }
+        else if self.first_unacked_ns == 0 { self.first_unacked_ns = now_ns; }
         let rto = self.rto_ns;
         let mut expired = alloc::vec::Vec::new();
         for (i, s) in self.retx_q.iter().enumerate() {
@@ -49,10 +61,61 @@ impl TcpConn {
             s.retries += 1;
         }
         if !out.is_empty() {
-            self.rto_ns = core::cmp::min(self.rto_ns.saturating_mul(2), 60_000_000_000);
+            // A thin stream has too few segments in flight to trigger fast
+            // retransmit, so doubling the timer after every loss compounds
+            // into seconds of stall; the flat timer keeps recovery at one RTO.
+            if !self.thin_lto || !self.is_thin_stream() {
+                self.rto_ns = core::cmp::min(self.rto_ns.saturating_mul(2), self.rto_max_ns);
+            }
             self.cc_on_rto();
         }
         out
+    }
+
+    /// Whether the acknowledgement owed for freshly received in-order data
+    /// goes out at once. Quick-ACK mode always acknowledges immediately;
+    /// otherwise the socket is in ping-pong mode and holds the ACK back so it
+    /// can ride the application's reply, unless more than a full segment has
+    /// gone unacknowledged — at which point the peer's window would stall.
+    /// # C: O(1)
+    pub fn ack_now(&self) -> bool {
+        if self.quickack || self.repair { return true; }
+        let unacked = self.rcv_nxt.wrapping_sub(self.rcv_wup);
+        unacked > crate::tcp_cc::cc_mss(self)
+    }
+
+    /// Drive the delayed-acknowledgement deadline. Returns the acknowledgement
+    /// once the socket has held it as long as `TCP_DELACK_MAX_US` allows.
+    /// # C: O(sack blocks)
+    pub fn delayed_ack_due(&mut self, now_ns: u64) -> Option<alloc::vec::Vec<u8>> {
+        if !self.ack_pending { return None; }
+        if self.ack_deadline_ns == 0 {
+            self.ack_deadline_ns = now_ns.saturating_add(self.delack_max_ns);
+            return None;
+        }
+        if now_ns < self.ack_deadline_ns { return None; }
+        self.ack_pending = false;
+        self.ack_deadline_ns = 0;
+        self.rcv_wup = self.rcv_nxt;
+        Some(self.build_ack_with_sack())
+    }
+
+    /// A stream with too few packets in flight for duplicate-acknowledgement
+    /// recovery to ever fire. # C: O(1)
+    pub fn is_thin_stream(&self) -> bool { self.retx_q.len() < THIN_STREAM_SEGMENTS }
+
+    /// Whether the connection has gone unacknowledged past the caller's
+    /// `TCP_USER_TIMEOUT`. # C: O(1)
+    pub fn user_timeout_expired(&self, now_ns: u64) -> bool {
+        if self.user_timeout_ns == 0 || self.retx_q.is_empty() { return false; }
+        if self.first_unacked_ns == 0 { return false; }
+        now_ns.saturating_sub(self.first_unacked_ns) >= self.user_timeout_ns
+    }
+
+    /// Whether FIN-WAIT-2 has been held past `TCP_LINGER2`. `entered_ns` is
+    /// when the state was entered. # C: O(1)
+    pub fn linger2_expired(&self, entered_ns: u64, now_ns: u64) -> bool {
+        now_ns.saturating_sub(entered_ns) >= self.linger2_ns
     }
 
 }
