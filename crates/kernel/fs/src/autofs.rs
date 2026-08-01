@@ -197,7 +197,12 @@ impl AutofsState {
                 self.cancel_pending(token);
                 return Err(VfsError::Eintr);
             }
+            // SAFETY: process context holding no lock — the pipe and pending
+            // maps were released above — which is `park`'s contract; the token is
+            // already registered, so a wake cannot be missed between the two.
             unsafe { self.waiters.park(); }
+            // SAFETY: parked on `self.waiters` holding no lock, which is
+            // `schedule`'s sleepable-context contract.
             unsafe { schedule_now(); }
         }
     }
@@ -320,6 +325,10 @@ fn parse_fd_option(options: &str) -> Option<i32> {
 
 fn resolve_fd(fd: i32) -> KResult<Arc<File>> {
     let cur = sched::current().ok_or(VfsError::Ebadf)?;
+    // SAFETY: `fd_table_ref` borrows the CURRENT task's own fd-table slot, which
+    // only that task replaces (execve/unshare), and it is here in a mount option
+    // parse instead — so the borrow has no competing mutator, and it is cloned
+    // out before returning.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(VfsError::Ebadf)?.clone();
     fdt.get(fd)
 }
