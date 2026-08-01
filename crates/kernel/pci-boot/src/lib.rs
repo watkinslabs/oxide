@@ -22,6 +22,7 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // Submodule named `virtio_drv` (not `virtio`) so it doesn't shadow
 // the external `virtio` crate dependency referenced elsewhere in this
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
+mod config_access;
 mod virtio_bus;
 mod virtio_child;
 mod virtio_drv;
@@ -80,22 +81,8 @@ fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
 /// has been brought up and `ECAM_BASE_VA` published.
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
-    let devs = {
-        #[cfg(target_arch = "x86_64")]
-        {
-            match hal_x86_64::pci::EcamPci::from_published() {
-                Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
-                None => alloc::vec::Vec::new(),
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            match hal_aarch64::pci::EcamPci::from_published() {
-                Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
-                None    => alloc::vec::Vec::new(),
-            }
-        }
-    };
+    config_access::install_hooks();
+    let devs = scan_devices();
     debug_boot! {
         klog::write_raw(b"[INFO]  pci: devices=");
         klog::write_dec_u64(devs.len() as u64);
@@ -120,14 +107,7 @@ pub fn enumerate_and_log() {
         }
         trace::bar_dump_arch(d.bdf);
         trace::cap_dump_arch(d);
-
-        let class24 = ((d.class_code as u32) << 16)
-            | ((d.subclass as u32) << 8) | (d.prog_if as u32);
-        let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-            0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
-        if publish_pci_model_device(d, addr, class24).is_none() {
-            continue;
-        }
+        publish_scanned_device(d);
     }
 
     // F40 + F57: brief IRQ unmask window so any MSIs queued during
@@ -288,6 +268,43 @@ pub fn enumerate_and_log() {
     }
 }
 
+/// Walk every addressable config-space bus. # C: O(N_bdfs probed)
+fn scan_devices() -> alloc::vec::Vec<pci::PciDevice> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        match hal_x86_64::pci::EcamPci::from_published() {
+            Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
+            None => alloc::vec::Vec::new(),
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        match hal_aarch64::pci::EcamPci::from_published() {
+            Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
+            None    => alloc::vec::Vec::new(),
+        }
+    }
+}
+
+/// Register one scanned function with the driver model. Already-registered
+/// functions resolve to their live object, so a rescan only adds what appeared.
+/// # C: O(N_devices)
+fn publish_scanned_device(d: &pci::PciDevice) -> Option<alloc::sync::Arc<drv::Device>> {
+    let class24 = ((d.class_code as u32) << 16)
+        | ((d.subclass as u32) << 8) | (d.prog_if as u32);
+    let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
+        0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
+    publish_pci_model_device(d, addr, class24)
+}
+
+/// Re-enumerate the PCI hierarchy and publish functions that appeared since
+/// the last scan (sysfs `rescan`). # C: O(N_bdfs probed)
+pub fn rescan() {
+    for d in scan_devices().iter() {
+        publish_scanned_device(d);
+    }
+}
+
 fn publish_pci_model_device(
     d: &pci::PciDevice,
     addr: alloc::string::String,
@@ -295,6 +312,7 @@ fn publish_pci_model_device(
 ) -> Option<alloc::sync::Arc<drv::Device>> {
     let dev = alloc::sync::Arc::new(
         drv::Device::new("pci", addr.clone(), d.vendor_id, d.device_id, class24)
+            .with_pci_ident(config_access::pci_ident(d))
             .with_resources(pci_resources_arch(d.bdf)),
     );
     match drv::try_device_add(dev) {

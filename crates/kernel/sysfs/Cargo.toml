@@ -14,6 +14,9 @@ block = { path = "../block" }
 netlink = { path = "../netlink" }
 network-namespace = { path = "../network-namespace" }
 drv   = { path = "../../drivers/drv" }
+pci   = { path = "../../drivers/pci" }
+cpu   = { path = "../cpu" }
+namespace-identity = { path = "../namespace-identity" }
 drm   = { path = "../../drivers/drm" }
 input = { path = "../input" }
 modules = { path = "../modules" }

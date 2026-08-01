@@ -1,7 +1,7 @@
 use super::*;
 
 const ATTRIBUTE_READ_BUFFER_BYTES: usize = 16;
-const RESOURCE_READ_BUFFER_BYTES: usize = 160;
+const RESOURCE_READ_BUFFER_BYTES: usize = 512;
 const TEST_VIRTIO_DEVICE_ID: u16 = 2;
 const TEST_BLOCK_DEVT: (u32, u32) = (254, 42);
 const TEST_PCI_VENDOR_ID: u16 = 0x1234;
@@ -78,12 +78,17 @@ fn pci_device_exposes_indexed_bar_resource_attrs() {
     let dir = devices.lookup("0000:00:1f.0").expect("pci device dir");
     assert_eq!(dir.lookup("resource0").err(), Some(VfsError::Enoent));
 
+    // The aggregate table has one fixed row per standard BAR plus the
+    // expansion ROM, zero-filled where the function decodes nothing, so a
+    // parser can index rows by BAR number.
     let resource = dir.lookup("resource").expect("aggregate resource attr");
     let mut buf = [0u8; RESOURCE_READ_BUFFER_BYTES];
     let n = resource.read(0, &mut buf).expect("read aggregate resource");
-    assert_eq!(
-        &buf[..n],
-        b"0x0000000000001000 0x0000000000001fff 0x0000000000000200\n0x00000000febc0000 0x00000000febc0fff 0x0000000000002200\n");
+    let expected = alloc::format!(
+        "{zero}{zero}0x0000000000001000 0x0000000000001fff 0x0000000000000200\n\
+         {zero}{zero}0x00000000febc0000 0x00000000febc0fff 0x0000000000002200\n{zero}",
+        zero = "0x0000000000000000 0x0000000000000000 0x0000000000000000\n");
+    assert_eq!(core::str::from_utf8(&buf[..n]).expect("utf8"), expected);
 
     let res2 = dir.lookup("resource2").expect("resource2 attr");
     let n = res2.read(0, &mut buf).expect("read resource2");
@@ -99,7 +104,7 @@ fn pci_device_exposes_indexed_bar_resource_attrs() {
 
     let modalias = dir.lookup("modalias").expect("modalias still works");
     let n = modalias.read(0, &mut buf).expect("read modalias");
-    assert_eq!(&buf[..n], b"pci:v00001234d00005678sv*sd*bc01sc06i01\n");
+    assert_eq!(&buf[..n], b"pci:v00001234d00005678sv00000000sd00000000bc01sc06i01\n");
 
     drv::device_del(&dev);
 }

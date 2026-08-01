@@ -26,9 +26,12 @@ pub(super) fn modalias(dev: &drv::Device) -> String {
         let base = (dev.class >> 16) & 0xff;
         let sub = (dev.class >> 8) & 0xff;
         let pi = dev.class & 0xff;
+        let ident = dev.pci.unwrap_or_default();
         alloc::format!(
-            "pci:v{:08X}d{:08X}sv*sd*bc{:02X}sc{:02X}i{:02X}",
-            dev.vendor_id as u32, dev.device_id as u32, base, sub, pi)
+            "pci:v{:08X}d{:08X}sv{:08X}sd{:08X}bc{:02X}sc{:02X}i{:02X}",
+            dev.vendor_id as u32, dev.device_id as u32,
+            ident.subsystem_vendor as u32, ident.subsystem_device as u32,
+            base, sub, pi)
     } else if dev.bus == "virtio" {
         alloc::format!("virtio:d{:08x}", dev.device_id as u32)
     } else {
@@ -85,21 +88,11 @@ fn resource_body(r: &drv::Resource) -> Vec<u8> {
     ).into_bytes()
 }
 
-fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
+pub(super) fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
     match leaf {
         "vendor" => Some(alloc::format!("0x{:04x}\n", dev.vendor_id).into_bytes()),
         "device" => Some(alloc::format!("0x{:04x}\n", dev.device_id).into_bytes()),
         "class"  => Some(alloc::format!("0x{:06x}\n", dev.class).into_bytes()),
-        "resource" if dev.bus == "pci" => {
-            let mut s = String::new();
-            for r in dev.resources.iter() {
-                s.push_str(&alloc::format!(
-                    "0x{:016x} 0x{:016x} 0x{:016x}\n",
-                    r.start, r.end, r.flags,
-                ));
-            }
-            Some(s.into_bytes())
-        }
         leaf if dev.bus == "pci" && pci_resource_index(leaf).is_some() => {
             let bar = pci_resource_index(leaf).expect("resource index checked");
             dev.resources
@@ -130,18 +123,6 @@ fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// PCI device default attribute group (Linux `pci_dev_attrs`). # C: n/a
-const PCI_DEV_ATTRS: &[Attribute] = &[
-    Attribute { name: "vendor", mode: RO_PERM },
-    Attribute { name: "device", mode: RO_PERM },
-    Attribute { name: "class",  mode: RO_PERM },
-    Attribute { name: "resource", mode: RO_PERM },
-    Attribute { name: "modalias", mode: RO_PERM },
-    Attribute { name: "driver_override", mode: RW_PERM },
-    Attribute { name: "uevent", mode: RW_PERM },
-];
-static PCI_DEV_GROUP: AttrGroup = AttrGroup { attrs: PCI_DEV_ATTRS };
-
 /// virtio device default attribute group. # C: n/a
 const VIRTIO_DEV_ATTRS: &[Attribute] = &[
     // Linux exposes both transport identity attributes on every virtio device.
@@ -167,7 +148,6 @@ static PLATFORM_DEV_GROUP: AttrGroup = AttrGroup { attrs: PLATFORM_DEV_ATTRS };
 /// The device attribute group for `bus`. # C: O(1)
 fn dev_group(bus: &str) -> &'static AttrGroup {
     match bus {
-        "pci" => &PCI_DEV_GROUP,
         "virtio" => &VIRTIO_DEV_GROUP,
         "platform" => &PLATFORM_DEV_GROUP,
         _ => &PLATFORM_DEV_GROUP,
@@ -185,28 +165,32 @@ impl SysfsOps for DeviceKobj {
 
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
         dev_canon_exact(&self.device).ok_or(VfsError::Enoent)?;
-        let dev = &self.device;
-        match attr {
-            "driver_override" => {
-                let s = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?;
-                let value = s.trim();
-                if value.is_empty() || value == "(null)" {
-                    dev.set_driver_override(None);
-                } else {
-                    dev.set_driver_override(Some(String::from(value)));
-                }
-                Ok(buf.len())
+        dev_store(&self.device, attr, buf)
+    }
+}
+
+/// Bus-independent device attribute writes. # C: O(n)
+pub(super) fn dev_store(dev: &drv::Device, attr: &str, buf: &[u8]) -> KResult<usize> {
+    match attr {
+        "driver_override" => {
+            let s = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?;
+            let value = s.trim();
+            if value.is_empty() || value == "(null)" {
+                dev.set_driver_override(None);
+            } else {
+                dev.set_driver_override(Some(String::from(value)));
             }
-            "uevent" => {
-                let action = crate::uevent_action(buf);
-                let devpath = dev_devpath(&dev).ok_or(VfsError::Enoent)?;
-                let env = dev_uevent_env(&dev);
-                let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
-                ::netlink::emit_uevent_with_env(action, &devpath, dev.bus, &refs);
-                Ok(buf.len())
-            }
-            _ => Err(VfsError::Erofs),
+            Ok(buf.len())
         }
+        "uevent" => {
+            let action = crate::uevent_action(buf);
+            let devpath = dev_devpath(dev).ok_or(VfsError::Enoent)?;
+            let env = dev_uevent_env(dev);
+            let refs: Vec<&str> = env.iter().map(|s| s.as_str()).collect();
+            ::netlink::emit_uevent_with_env(action, &devpath, dev.bus, &refs);
+            Ok(buf.len())
+        }
+        _ => Err(VfsError::Erofs),
     }
 }
 
@@ -288,6 +272,7 @@ impl InodeOps for DeviceDirOps {
                 let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { device: Arc::clone(dev) });
                 return Ok(make_attr_inode(&PCI_RESOURCE_ATTRS[bar as usize], ops, INO_ATTR));
             }
+            return super::pci_file::lookup(dev, name).ok_or(VfsError::Enoent);
         }
         let attr = dev_group(dev.bus).find(name).ok_or(VfsError::Enoent)?;
         let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { device: Arc::clone(dev) });
@@ -299,13 +284,18 @@ impl FileOps for DeviceDirOps {
         let data = match inode.private::<DeviceDirData>() { Some(d) => d, None => return Err(VfsError::Einval) };
         let dev = &data.device;
         dev_canon_exact(dev).ok_or(VfsError::Enoent)?;
-        let attrs = dev_group(dev.bus).attrs;
         let bound = dev.bound().is_some();
         let has_parent = dev.parent().is_some();
         let has_dev = dev.dev_t.is_some();
-        let mut entries: Vec<(&str, FileType)> = attrs.iter()
-            .map(|a| (a.name, FileType::Regular))
-            .collect();
+        let mut entries: Vec<(&str, FileType)> = if dev.bus == "pci" {
+            super::pci_attrs::visible_attrs(dev).iter()
+                .map(|a| (a.name, FileType::Regular))
+                .collect()
+        } else {
+            dev_group(dev.bus).attrs.iter()
+                .map(|a| (a.name, FileType::Regular))
+                .collect()
+        };
         if has_dev {
             entries.push(("dev", FileType::Regular));
         }
