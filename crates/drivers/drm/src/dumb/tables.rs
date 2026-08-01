@@ -268,6 +268,11 @@ pub fn bind_fb_scanout_resource(card_id: u32, fb_id: u32, res_id: u32) -> bool {
 }
 
 pub(super) fn free_buf_pages(pa: u64, order: u8) {
+    // Reached only from `close_handle` handing back the run after the LAST
+    // handle and mmap reference went away.
+    // SAFETY: `pa`/`order` name the `alloc_contig_object` run this dumb buffer
+    // was created with, and the per-frame drop frees only at refcount zero, so a
+    // still-mapped VMA — which holds one object ref per page — keeps its page.
     unsafe {
         let frames = 1u64 << order;
         for i in 0..frames {
