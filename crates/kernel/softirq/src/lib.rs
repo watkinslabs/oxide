@@ -24,6 +24,8 @@
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
+#[cfg(test)]
+extern crate std;
 
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
@@ -358,6 +360,29 @@ pub unsafe fn run_pending_process() {
 mod tests {
     use super::*;
     use core::sync::atomic::AtomicU32;
+    use std::sync::{Mutex, MutexGuard};
+
+    // `PENDING`, `PROCESS_PENDING` and `HANDLERS` are the processor's ONE
+    // softirq state, and a hosted test binary models exactly one processor.
+    // Every test here mutates all three, so each must own that state for its
+    // whole body: two tests running in parallel otherwise clear each other's
+    // pending bits and overwrite each other's handlers, and whichever loses
+    // reports a handler that "never ran" or a bit that "stayed set".
+    // Resetting the statics on entry (and on exit, as `self_rearming_handler_
+    // is_bounded` did) only orders the damage — it cannot prevent it.
+    static SOFTIRQ_STATE: Mutex<()> = Mutex::new(());
+
+    fn own_softirq_state() -> MutexGuard<'static, ()> {
+        let guard = match SOFTIRQ_STATE.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => { SOFTIRQ_STATE.clear_poison(); poisoned.into_inner() }
+        };
+        // A failed test leaves its bits behind; start from a known state
+        // rather than inheriting them.
+        PENDING[0].store(0, Ordering::Relaxed);
+        PROCESS_PENDING.store(0, Ordering::Relaxed);
+        guard
+    }
 
     static T_HITS: AtomicU32 = AtomicU32::new(0);
     fn t_handler() { T_HITS.fetch_add(1, Ordering::Relaxed); }
@@ -375,8 +400,8 @@ mod tests {
 
     #[test]
     fn raise_then_run_invokes_handler() {
+        let _state = own_softirq_state();
         T_HITS.store(0, Ordering::Relaxed);
-        PENDING[0].store(0, Ordering::Relaxed);
         set_handler(Slot::FbconFlush, t_handler);
         raise(Slot::FbconFlush);
         assert!(pending());
@@ -388,9 +413,8 @@ mod tests {
 
     #[test]
     fn process_only_slot_waits_for_process_drain() {
+        let _state = own_softirq_state();
         PROCESS_HITS.store(0, Ordering::Relaxed);
-        PENDING[0].store(0, Ordering::Relaxed);
-        PROCESS_PENDING.store(0, Ordering::Relaxed);
         set_handler(Slot::NetNsReap, process_handler);
         raise_process(Slot::NetNsReap);
         // SAFETY: hosted test models an IRQ-tail accounting bracket.
@@ -405,8 +429,8 @@ mod tests {
 
     #[test]
     fn run_pending_drains_until_empty() {
+        let _state = own_softirq_state();
         T_HITS.store(0, Ordering::Relaxed);
-        PENDING[0].store(0, Ordering::Relaxed);
         set_handler(Slot::FbconFlush, t_handler);
         raise(Slot::FbconFlush);
         raise(Slot::FbconFlush);
@@ -418,7 +442,7 @@ mod tests {
 
     #[test]
     fn unset_slot_no_handler_no_call() {
-        PENDING[0].store(0, Ordering::Relaxed);
+        let _state = own_softirq_state();
         HANDLERS[Slot::InputDrain as usize].store(core::ptr::null_mut(), Ordering::Relaxed);
         raise(Slot::InputDrain);
         // SAFETY: hosted unit test; no IRQs to coordinate with; sole caller of run_pending in this thread.
@@ -429,8 +453,8 @@ mod tests {
 
     #[test]
     fn clear_handler_removes_handler_and_pending_bit() {
+        let _state = own_softirq_state();
         T_HITS.store(0, Ordering::Relaxed);
-        PENDING[0].store(0, Ordering::Relaxed);
         set_handler(Slot::VsockRx, t_handler);
         raise(Slot::VsockRx);
         assert!(pending());
@@ -444,8 +468,8 @@ mod tests {
 
     #[test]
     fn self_rearming_handler_is_bounded() {
+        let _state = own_softirq_state();
         REARM_HITS.store(0, Ordering::Relaxed);
-        PENDING[0].store(0, Ordering::Relaxed);
         set_handler(Slot::NetRx, rearming_handler);
         raise(Slot::NetRx);
         // SAFETY: hosted unit test; no IRQs to coordinate with; sole caller of run_pending in this thread.
@@ -454,8 +478,7 @@ mod tests {
         assert_eq!(REARM_HITS.load(Ordering::Relaxed), MAX_SOFTIRQ_RESTART);
         // Still-pending work is deferred (left set), not dropped.
         assert!(pending());
-        // Reset shared statics so sibling tests aren't tainted.
+        // Leave no re-arming handler installed for the next owner of the state.
         set_handler(Slot::NetRx, noop_handler);
-        PENDING[0].store(0, Ordering::Relaxed);
     }
 }
