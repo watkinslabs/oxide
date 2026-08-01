@@ -11,6 +11,10 @@ use alloc::vec::Vec;
 /// Fetch the primary scanout's EDID, or `None` when the feature was not
 /// negotiated or the device produced no usable blob.
 ///
+/// `timed_out` is set when the device never retired the descriptor. The command
+/// frame is then still reachable by the device and the caller must neither
+/// reuse nor free it — the failure is NOT the "device declined" case.
+///
 /// # SAFETY: caller owns the probe command frame and CTRLQ; both VAs are live,
 /// the frame is at least `RESP_OFF + RESP_EDID_LEN` bytes, and no other
 /// submission is in flight on this queue.
@@ -19,6 +23,7 @@ pub(super) unsafe fn fetch(
     features_negotiated: u64,
     cmd_buf_va: *mut u8, cmd_buf_pa: u64,
     ctrlq: virtio::VirtQueueResource, hhdm: u64,
+    timed_out: &mut bool,
 ) -> Option<Vec<u8>> {
     if !crate::should_fetch(features_negotiated) { return None; }
     // SAFETY: request and response areas both lie inside the probe command
@@ -38,6 +43,7 @@ pub(super) unsafe fn fetch(
     // SAFETY: request encoded above at cmd_buf_pa; the response descriptor is
     // sized for the whole EDID reply inside the same probe frame.
     if !unsafe { probe::submit_raw(cmd_buf_pa, req_len, crate::RESP_EDID_LEN, ctrlq, hhdm) } {
+        *timed_out = true;
         return None;
     }
     // SAFETY: the device wrote at most RESP_EDID_LEN bytes at RESP_OFF, which

@@ -46,6 +46,11 @@ pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let res_id = ctx.res_id;
     let (x, y, w, h, off) = (plan.x, plan.y, plan.w, plan.h, plan.dst_off);
+    // The rectangle is `plan_copy`'s, already clipped to `ctx.w`/`ctx.h`, so the
+    // device is asked to transfer only bytes the copy above actually wrote.
+    // SAFETY: `submit_one`'s contract — `CTX` is held, so this ctx's command
+    // frame and CTRLQ are live and single-producer for the whole call, and the
+    // frame was allocated 4 KiB by the probe that installed the ctx.
     unsafe {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, x, y, w, h, off),
@@ -99,9 +104,16 @@ pub fn blank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
         return;
     }
     hal::zerotrap::trap((ctx.fb_va as *mut u8) as *const u8, ctx.fb_bytes as usize);
+    // SAFETY: `fb_va`/`fb_bytes` are the HHDM view and byte length of the
+    // `alloc_contig` run this ctx owns as its resource backing, so the whole
+    // range is inside it; `CTX` is held and `quiesced` was checked, so the ctx
+    // (and its run) cannot be torn down underneath this write.
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
+    // SAFETY: `submit_one`'s contract — `CTX` is held, so this ctx's command
+    // frame and CTRLQ are live and single-producer for the whole call, and the
+    // frame was allocated 4 KiB by the probe that installed the ctx.
     unsafe {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
@@ -200,17 +212,34 @@ pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         Some(ctx) => ctx,
         None => return false,
     };
-    let _ = virtio::reset_device(ctx.cfg_va);
-    let fb_base_pa = ctx.fb_va - ctx.hhdm;
-    unsafe {
-        if ctx.cmd_buf_pa != 0 {
-            pmm::setup::free_one_frame(ctx.cmd_buf_pa);
-        }
-        if fb_base_pa != 0 {
-            pmm::setup::free_contig(fb_base_pa, ctx.fb_order);
-        }
-    }
+    release_scanout_dma(&ctx, virtio::reset_device(ctx.cfg_va));
     true
+}
+
+/// Return a removed scanout's DMA frames to the PMM, but only those
+/// `release::releasable_dma` says the device can no longer reach.
+/// # C: O(1)
+fn release_scanout_dma(ctx: &ScanoutCtx, reset_confirmed: bool) {
+    let fb_base_pa = ctx.fb_va.wrapping_sub(ctx.hhdm);
+    let (cmd_frame, fb_run) =
+        release::releasable_dma(reset_confirmed, ctx.cmd_buf_pa, fb_base_pa);
+    if !reset_confirmed {
+        klog::write_raw(b"[VGPU] reset unconfirmed, leaking scanout DMA frames\n");
+    }
+    if let Some(pa) = cmd_frame {
+        // SAFETY: the command frame this driver allocated in `get_display_info`
+        // and stored in the ctx just removed from CTX, so no other path can
+        // reach it; the confirmed reset proves the device no longer holds a
+        // descriptor naming it, and it is freed exactly once here.
+        unsafe { pmm::setup::free_one_frame(pa); }
+    }
+    if let Some(pa) = fb_run {
+        // SAFETY: the `alloc_contig(ctx.fb_order)` run this driver attached as
+        // the scanout resource's backing store, freed at the same order it was
+        // allocated; the confirmed reset dropped the device's resource table, so
+        // nothing can still DMA into it, and the ctx that owned it is gone.
+        unsafe { pmm::setup::free_contig(pa, ctx.fb_order); }
+    }
 }
 
 pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
@@ -238,15 +267,12 @@ pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDevic
         Some(ctx) => ctx,
         None => return false,
     };
-    let fb_base_pa = ctx.fb_va - ctx.hhdm;
-    unsafe {
-        if ctx.cmd_buf_pa != 0 {
-            pmm::setup::free_one_frame(ctx.cmd_buf_pa);
-        }
-        if fb_base_pa != 0 {
-            pmm::setup::free_contig(fb_base_pa, ctx.fb_order);
-        }
-    }
+    // The probe reached ATTACH_BACKING before this unwind, so the device's
+    // resource table names `fb_base_pa` as live backing and no DETACH is ever
+    // sent. Reset first and honour its confirmation, exactly as the orderly
+    // removal path does — freeing here unconditionally handed a physical
+    // address the device may still write into back to the buddy allocator.
+    release_scanout_dma(&ctx, virtio::reset_device(ctx.cfg_va));
     true
 }
 
@@ -324,6 +350,9 @@ pub fn unpublish_console_scanout(_device_key: virtio::VirtioChildDeviceKey) {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn fbdev_vsync_yield() {
+    // SAFETY: fbdev calls its yield hook from process context while waiting on
+    // vsync, holding no spinlock — the precondition `tick_yield` needs to run
+    // the scheduler and return to this task.
     unsafe { sched::live::tick_yield(); }
 }
 
