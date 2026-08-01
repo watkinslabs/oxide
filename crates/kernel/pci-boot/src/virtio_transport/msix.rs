@@ -32,6 +32,17 @@ struct TransportRecord {
 static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> =
     Spinlock::new(Vec::new());
 
+/// Whether the model still admits MSI/MSI-X for this function. Userspace
+/// clears it through the function's `msi_bus` attribute, which only binds
+/// drivers that have not yet requested a vector. # C: O(N_devices)
+fn msi_admitted(bdf: pci::Bdf) -> bool {
+    let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
+        0u16, bdf.bus, bdf.device, bdf.function);
+    drv::devices().into_iter()
+        .find(|dev| dev.bus == "pci" && dev.addr == addr)
+        .is_none_or(|dev| dev.msi_allowed())
+}
+
 pub(crate) fn bind_msix_vector(
     d: &pci::PciDevice,
     caps: &pci::heapless_caps::CapVec,
@@ -40,6 +51,7 @@ pub(crate) fn bind_msix_vector(
     queue_vector: u16,
     handler: fn(),
 ) -> Option<MsixBinding> {
+    if !msi_admitted(d.bdf) { return None; }
     let c = caps.find(pci::CAP_ID_MSIX)?;
     let m = arch::decode_cap(d.bdf, c.cfg_off)?;
     let entry_off = pci::msix_table_entry_offset(m, queue_vector)?;
