@@ -16,7 +16,7 @@ fn file(ino: u64) -> InodeRef {
 }
 
 fn ev(wd: i32, mask: u32) -> Event {
-    Event { wd, mask, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None }
+    Event { wd, mask, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 }
 }
 
 fn read_pair(g: &InotifyData) -> (i32, u32) {
@@ -164,7 +164,7 @@ fn a_fid_mode_group_reports_a_file_handle_and_no_descriptor() {
     let g = InotifyData::new_owned(0x0000_0200, true, 91_010, 0);
     let f = file(0x4242);
     g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(),
-                            obj: Some(f.clone()), pid: 77, perm: None });
+                            obj: Some(f.clone()), pid: 77, perm: None, mnt_id: 0 });
     let mut buf = [0u8; 128];
     let n = g.read_fanotify(&mut buf).unwrap();
     let want = fan_layout::FAN_EVENT_METADATA_LEN + fan_layout::fid_info_len(fan_layout::FANOTIFY_FID_LEN, 0);
@@ -196,7 +196,7 @@ fn a_dir_fid_name_group_reports_the_entry_name() {
     let g = InotifyData::new_owned(0x0000_0400 | 0x0000_0800, true, 91_011, 0);
     let d = file(0x99);
     g.enqueue_event(Event { wd: 1, mask: FAN_CREATE, cookie: 0, name: b"kid".to_vec(),
-                            obj: Some(d.clone()), pid: 5, perm: None });
+                            obj: Some(d.clone()), pid: 5, perm: None, mnt_id: 0 });
     let mut buf = [0u8; 128];
     let n = g.read_fanotify(&mut buf).unwrap();
     let want = fan_layout::FAN_EVENT_METADATA_LEN + fan_layout::fid_info_len(fan_layout::FANOTIFY_FID_LEN, 3);
@@ -213,7 +213,7 @@ fn a_dir_fid_name_group_reports_the_entry_name() {
 fn a_fanotify_buffer_too_small_for_the_first_event_is_einval() {
     let g = InotifyData::new_owned(0x0000_0200, true, 91_012, 0);
     g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(),
-                            obj: Some(file(3)), pid: 0, perm: None });
+                            obj: Some(file(3)), pid: 0, perm: None, mnt_id: 0 });
     // Room for the metadata but not the info record that follows it.
     let mut small = [0u8; fan_layout::FAN_EVENT_METADATA_LEN];
     assert_eq!(g.read_fanotify(&mut small), Err(vfs::VfsError::Einval));
@@ -226,7 +226,7 @@ fn a_fanotify_buffer_too_small_for_the_first_event_is_einval() {
 #[test]
 fn a_legacy_fanotify_group_still_emits_bare_metadata() {
     let g = InotifyData::new_owned(0, true, 91_013, 0);
-    g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(), obj: None, pid: 3, perm: None });
+    g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(), obj: None, pid: 3, perm: None, mnt_id: 0 });
     let mut buf = [0u8; 128];
     assert_eq!(g.read_fanotify(&mut buf), Ok(fan_layout::FAN_EVENT_METADATA_LEN));
     assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()),

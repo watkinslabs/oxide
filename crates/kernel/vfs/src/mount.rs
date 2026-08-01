@@ -105,6 +105,13 @@ pub use idmapped::{can_idmap_superblock, mnt_setattr_attached, mnt_setattr_detac
 mod revealing;
 pub use revealing::{mnt_already_visible, mount_too_revealing};
 
+// Mount-tree change notification (`fsnotify_mnt_attach`/`_detach`/`_move`): the
+// settable hook plus the attach/detach/move classification. The notification
+// subsystem installs the implementation, so vfs never depends on it.
+mod notify;
+pub use notify::{mnt_transition_mask, set_mnt_notify_hook, MntNotifyHook,
+    FS_MNT_ATTACH, FS_MNT_DETACH, FS_MNT_MOVE};
+
 // Mount expiry list (Linux `mark_mounts_for_expiry`, autofs/NFS auto-umount):
 // a two-sweep grace where an unused, unmarked mount is marked on one pass and
 // reaped on the next if still idle.

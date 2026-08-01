@@ -9,6 +9,7 @@
 // - `fan_read`: fanotify read path — metadata, info records, minted fds.
 // - `layout`: `struct inotify_event` wire encoding + name padding rules.
 // - `fan_layout`: `fanotify_event_metadata` + `fanotify_event_info_fid` encoding.
+// - `fan_mnt`: `FAN_MARK_MNTNS` marks, mount-tree dispatch, and the mount info record.
 // - `path`: watch-path resolution through task root/cwd plus credentials.
 // - `perm`: `FAN_*_PERM` access gates and the park-until-verdict wait.
 // - `validate`: inotify/fanotify UAPI flags and Linux argument validation.
@@ -16,6 +17,7 @@
 
 mod dispatch;
 mod fan_layout;
+mod fan_mnt;
 mod fan_read;
 mod group;
 mod layout;
@@ -32,6 +34,10 @@ mod validate;
 #[cfg(test)]
 #[path = "inotify_fan_tests.rs"]
 mod fan_tests;
+
+#[cfg(test)]
+#[path = "inotify_fan_mnt_tests.rs"]
+mod fan_mnt_tests;
 
 #[cfg(test)]
 #[path = "inotify_deleteself_tests.rs"]

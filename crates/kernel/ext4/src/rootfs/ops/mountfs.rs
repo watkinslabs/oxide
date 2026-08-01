@@ -84,8 +84,11 @@ impl vfs::SuperOps for Ext4SuperOps {
         // to a live file. The root inode is exempt: it is reachable by
         // definition and some images leave its count unconventional.
         if raw.links_count == 0 && raw_ino != crate::superblock::EXT4_ROOT_INO { return None; }
-        if generation != vfs::export::GENERATION_ANY && raw.generation != vfs::export::GENERATION_ANY
-            && raw.generation != generation { return None; }
+        // Only the HANDLE's zero wildcards (the reconnect walk cannot know a
+        // parent's incarnation). A zero in the on-disk slot is a real value and
+        // must still be compared, or a handle minted against a versioned
+        // incarnation would open whatever unversioned object took the number.
+        if generation != vfs::export::GENERATION_ANY && raw.generation != generation { return None; }
         self.st.wrap_any_ino(raw_ino)
     }
 

@@ -69,7 +69,7 @@ pub(crate) fn destroy_inode_marks(inode: &InodeRef) {
         arc.release_marks(freed.len());
         if arc.is_fanotify() { continue; }
         for wd in freed {
-            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None });
+            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
         }
     }
 }
@@ -148,8 +148,8 @@ pub(crate) fn unmount_fs_marks(fsid: u64) {
         arc.release_marks(freed.len());
         if arc.is_fanotify() { continue; }
         for wd in freed {
-            arc.enqueue_event(Event { wd, mask: IN_UNMOUNT, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None });
-            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None });
+            arc.enqueue_event(Event { wd, mask: IN_UNMOUNT, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
+            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
         }
     }
 }

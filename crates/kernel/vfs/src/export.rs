@@ -22,12 +22,18 @@ extern crate alloc;
 
 //
 // Module manifest:
-//   fid — the FID payload this kernel encodes and its codec, shared by
-//         `name_to_handle_at`/`open_by_handle_at` and by fanotify's
-//         `FAN_REPORT_FID` info records, which must encode the SAME handle or
-//         a fid a watcher was handed cannot be opened.
+//   fid       — the FID payload this kernel encodes and its codec, shared by
+//               `name_to_handle_at`/`open_by_handle_at` and by fanotify's
+//               `FAN_REPORT_FID` info records, which must encode the SAME
+//               handle or a fid a watcher was handed cannot be opened.
+//   reconnect — the upward `get_parent` walk that makes a decoded object reach
+//               the filesystem root, plus the acceptable-alias preference.
 
 pub mod fid;
+pub mod reconnect;
+
+pub use reconnect::{MAX_RECONNECT_DEPTH, connected_alias, dentry_connected, find_acceptable_alias,
+    generic_get_parent, reconnect_path};
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -38,23 +44,40 @@ use crate::file_ops::{DirContext, DirEmit};
 use crate::inode::{Inode, InodeRef};
 use crate::types::{FileType, Ino};
 
-/// Generation value meaning "this filesystem does not version its inode
-/// numbers". A handle encoding it matches any generation, which is what a
-/// pseudo-filesystem that never recycles a number needs; a filesystem that
-/// DOES recycle (any on-disk one) stamps a nonzero generation and gets the
-/// strict comparison.
+/// Generation value meaning "no incarnation was recorded". A HANDLE encoding it
+/// matches any incarnation — the wildcard a decode that never learned a
+/// generation needs, and the one the `..`-derived parent of a reconnect walk
+/// necessarily uses.
+///
+/// The rule for an INODE's own generation is the opposite, and deliberately so
+/// (see [`generation_matches`]): a superblock-owned inode is always versioned
+/// (`SuperBlock::next_inode_generation` never mints this value), so a zero
+/// there means the inode has no owning superblock — and an inode with no
+/// superblock is unreachable by any handle decode, since decode resolves
+/// through `s_op->fh_to_dentry`. It is therefore never a licence to match.
 pub const GENERATION_ANY: u32 = 0;
 
 /// Does a handle's encoded generation name this inode's incarnation?
 ///
-/// A zero on either side is the "unversioned" wildcard above; two nonzero
-/// values must be equal. Mismatch is `ESTALE` at the caller, never a
-/// successful open of the recycled object.
+/// Only the ENCODED side wildcards. An inode whose own generation is zero is
+/// NOT a wildcard: treating it as one would let a handle minted against a
+/// versioned incarnation open the unversioned object that later took the
+/// number, which is the exact recycle hole the generation exists to close.
+/// Mismatch is `ESTALE` at the caller.
 /// # C: O(1)
 pub fn generation_matches(inode: &Inode, encoded: u32) -> bool {
-    let have = inode.i_generation();
-    encoded == GENERATION_ANY || have == GENERATION_ANY || have == encoded
+    encoded == GENERATION_ANY || inode.i_generation() == encoded
 }
+
+/// May this superblock mint a handle at all (Linux `exportfs_can_encode_fh`,
+/// which is `exportfs_can_decode_fh` for a decodable handle request)?
+///
+/// A filesystem that cannot turn its own handles back into inodes must report
+/// `EOPNOTSUPP` at `name_to_handle_at` rather than hand out a handle whose
+/// every later `open_by_handle_at` would be `ESTALE`. In Linux this is the
+/// absence of `s_export_op`; here it is [`crate::SuperOps::export_can_decode_fh`].
+/// # C: O(1)
+pub fn can_encode_fh(sb: &crate::SuperBlock) -> bool { sb.s_op.export_can_decode_fh() }
 
 /// Resolve `ino` on `sb` from the inode cache alone, honoring the encoded
 /// generation. The [`crate::SuperOps::fh_to_dentry`] default builds on this;
@@ -62,7 +85,13 @@ pub fn generation_matches(inode: &Inode, encoded: u32) -> bool {
 /// still resolves (re-read from the store) instead of reporting `ESTALE`.
 /// # C: O(log N_ino)
 pub fn ilookup_generation(sb: &crate::SuperBlock, ino: Ino, generation: u32) -> Option<InodeRef> {
-    let inode = sb.ilookup(ino)?;
+    // The filesystem ROOT is reachable by definition and is pinned by `s_root`
+    // for the mount's whole life, but it is built during fill-super — before
+    // the superblock exists — so it never entered the inode cache. Resolving it
+    // from `s_root` is what lets the reconnect walk terminate at the top of the
+    // tree instead of reporting the root itself stale.
+    let inode = sb.ilookup(ino)
+        .or_else(|| sb.s_root_inode().filter(|r| r.ino() == ino))?;
     if generation_matches(&inode, generation) { Some(inode) } else { None }
 }
 

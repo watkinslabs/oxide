@@ -83,6 +83,7 @@ fn ask_group(group: &Arc<InotifyData>, inode: &InodeRef, perm_mask: u32) -> Resu
         obj: Some(inode.clone()),
         pid: reporting_pid(group),
         perm: Some(st.clone()),
+        mnt_id: 0,
     };
     // A closed or overflowed group never answers, so an event it refused to
     // queue must not be waited on.

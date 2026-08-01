@@ -33,7 +33,7 @@ fn mk(ino: u64) -> InodeRef {
 fn masks(g: &InotifyData) -> Vec<u32> { g.events.lock().iter().map(|e| e.mask).collect() }
 fn wds(g: &InotifyData) -> Vec<i32> { g.watches.lock().iter().map(|w| w.wd).collect() }
 fn ev(wd: i32, mask: u32, cookie: u32, name: &[u8]) -> Event {
-    Event { wd, mask, cookie, name: name.to_vec(), obj: None, pid: 0, perm: None }
+    Event { wd, mask, cookie, name: name.to_vec(), obj: None, pid: 0, perm: None, mnt_id: 0 }
 }
 
 /// The core of `fsnotify_inoderemove`: the inode dying frees the wd, and the

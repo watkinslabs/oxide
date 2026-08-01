@@ -10,7 +10,7 @@ use crate::inotify::path::resolve_watch_path;
 use crate::inotify::types::{
     inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ALL_EVENT_BITS, FAN_EVENT_ON_CHILD,
     IN_ALL_EVENTS, IN_IGNORED, INOTIFY_MARK_FLAGS,
-    MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
+    MARK_COUNT, MNTNS_MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
 use crate::inotify::validate::*;
 
@@ -222,7 +222,7 @@ pub(crate) fn add_or_update_watch(
     // ceiling is charged; failing it unwinds the wd and reports ENOSPC.
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
     if !inotify.charge_mark() { return Err(Errno::Enospc); }
-    g.push(Watch { wd, inode_key: key, fsid, scope: MarkScope::Inode, mask: event_mask,
+    g.push(Watch { wd, inode_key: key, fsid, ns_id: 0, scope: MarkScope::Inode, mask: event_mask,
                    flags: mark_flags, ignored: 0, ignore_has_flags: false,
                    ignore_survives_modify: false, evictable: false });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
@@ -240,7 +240,7 @@ pub(crate) fn remove_watch(inotify: &Arc<InotifyData>, wd: i32) -> Result<(), Er
     drop(g);
     inotify.release_marks(1);
     MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
-    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None });
+    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
     Ok(())
 }
 
@@ -266,14 +266,24 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
 /// PERM_MARK_COUNT. Returns 0 or the errno. # C: O(N_watches)
 pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usize, fsid: u64,
                          bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
+    apply_mark_ns(inotify, scope, key, fsid, 0, bits, add, ignored, mflags)
+}
+
+/// [`apply_mark`] for a mark whose object is a MOUNT NAMESPACE (`ns_id`), which
+/// no inode key or `fsid` identifies. # C: O(N_watches)
+pub(crate) fn apply_mark_ns(inotify: &Arc<InotifyData>, scope: MarkScope, key: usize, fsid: u64,
+                            ns_id: u64, bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
     // `FAN_MARK_IGNORE` means the event flags in the ignore set mean what they
     // say; the legacy `FAN_MARK_IGNORED_MASK` has them reinterpreted (`mask`).
     let ignore_has_flags = mflags & FAN_MARK_IGNORE != 0;
     let survives = mflags & FAN_MARK_IGNORED_SURV_MODIFY != 0;
     let evictable = mflags & FAN_MARK_EVICTABLE != 0;
     let mut g = inotify.watches.lock();
-    let same = |w: &Watch| w.scope == scope
-        && (if scope == MarkScope::Inode { w.inode_key == key } else { w.fsid == fsid });
+    let same = |w: &Watch| w.scope == scope && match scope {
+        MarkScope::Inode => w.inode_key == key,
+        MarkScope::MountNamespace => w.ns_id == ns_id,
+        _ => w.fsid == fsid,
+    };
     if let Some(i) = g.iter().position(|w| same(w)) {
         let old = g[i].mask;
         if ignored {
@@ -288,6 +298,7 @@ pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usiz
         if g[i].mask == 0 && g[i].ignored == 0 {
             g.remove(i);
             MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
+            if scope == MarkScope::MountNamespace { MNTNS_MARK_COUNT.fetch_sub(1, Ordering::AcqRel); }
             drop(g);
             inotify.release_marks(1);
         }
@@ -299,10 +310,11 @@ pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usiz
     if !inotify.charge_mark() { return -(Errno::Enospc.as_i32() as i64); }
     let (mask, ign) = if ignored { (0, bits) } else { (bits, 0) };
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
-    g.push(Watch { wd, inode_key: key, fsid, scope, mask, flags: 0, ignored: ign,
+    g.push(Watch { wd, inode_key: key, fsid, ns_id, scope, mask, flags: 0, ignored: ign,
                    ignore_has_flags: ignored && ignore_has_flags,
                    ignore_survives_modify: ignored && survives, evictable });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
+    if scope == MarkScope::MountNamespace { MNTNS_MARK_COUNT.fetch_add(1, Ordering::AcqRel); }
     perm_delta(0, mask);
     0
 }
@@ -327,7 +339,8 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         Ok(s) => s,
         Err(e) => return -(e.as_i32() as i64),
     };
-    if let Err(e) = validate_fanotify_mark_group(&inotify, scope, mask, flags) {
+    if let Err(e) = validate_fanotify_mark_group(&inotify, scope, mask, flags,
+                                                 current_has_cap(sched::cap::SYS_ADMIN)) {
         return -(e.as_i32() as i64);
     }
     let ignored = flags & (FAN_MARK_IGNORED_MASK | FAN_MARK_IGNORE) != 0;
@@ -341,6 +354,9 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         drop(g);
         if removed > 0 { MARK_COUNT.fetch_sub(removed, Ordering::AcqRel); }
         if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
+        if removed > 0 && scope == MarkScope::MountNamespace {
+            MNTNS_MARK_COUNT.fetch_sub(removed, Ordering::AcqRel);
+        }
         inotify.release_marks(removed);
         return 0;
     }
@@ -358,8 +374,33 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     if flags & FAN_MARK_ONLYDIR != 0 && inode.file_type() != FileType::Directory {
         return -(Errno::Enotdir.as_i32() as i64);
     }
+    // A mount-namespace mark names the namespace its path resolves to, not the
+    // node it resolved through: the object the mark attaches to is the mount
+    // namespace itself, so a path that is not a mount-namespace node names no
+    // object at all and the call is rejected.
+    if scope == MarkScope::MountNamespace {
+        let Some(ns) = mnt_ns_from_inode(&inode) else {
+            return -(Errno::Einval.as_i32() as i64);
+        };
+        return apply_mark_ns(&inotify, scope, 0, 0, ns, bits,
+                             flags & FAN_MARK_ADD != 0, ignored, flags);
+    }
     let (key, fsid) = (inode_key(&inode), inode.fsid());
     apply_mark(&inotify, scope, key, fsid, bits, flags & FAN_MARK_ADD != 0, ignored, flags)
+}
+
+/// The mount namespace a resolved path names, or `None` when the path is not a
+/// mount-namespace node. The identity handed back is the namespace's own id —
+/// the same key the mount tree stamps on every mount it owns — so a mark and
+/// the mounts it will hear about agree by construction rather than through a
+/// second table mapping one to the other. # C: O(1)
+pub(crate) fn mnt_ns_from_inode(inode: &vfs::InodeRef) -> Option<u64> {
+    let ns = inode.private::<nscg::proc_ns::NsInode>()?;
+    if ns.kind != nscg::proc_ns::NsKind::Mnt { return None; }
+    match ns.owner() {
+        nscg::NsOwner::Mnt(m) => Some(m.id()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

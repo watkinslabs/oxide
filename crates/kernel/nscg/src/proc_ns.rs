@@ -156,6 +156,14 @@ pub fn net_ns_inode(namespace: NetworkNamespaceRef) -> InodeRef {
     ns_node(&ns)
 }
 
+/// Build an nsfs node retaining a concrete MOUNT namespace owner — the node a
+/// walk through `/proc/<pid>/ns/mnt` lands on, and the object a mark or a
+/// `setns` names when it says "that mount namespace". # C: O(1)
+pub fn mnt_ns_inode(namespace: vfs::mntns::MntNamespaceRef) -> InodeRef {
+    let ns = NsInode::new(NsKind::Mnt, NsOwner::Mnt(namespace));
+    ns_node(&ns)
+}
+
 /// Construct the `/proc/<pid>/ns/<type>` inode retaining `task`'s exact owner for
 /// `kind`. A `S_IFLNK` magic node (Linux nsfs): a walk through it jumps to
 /// [`ns_node`]; `readlink` yields the "<type>:[<ino>]" text; the captured
