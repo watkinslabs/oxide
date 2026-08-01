@@ -19,10 +19,12 @@ use crate::Task;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[path = "pkey_rights/hw_x86.rs"]
 mod hw;
-// aarch64's POR_EL0 joins as a third arm when its enablement lands; until then
-// it takes the inert path rather than a stub that claims a register it has not
-// been given.
-#[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+#[path = "pkey_rights/hw_arm.rs"]
+mod hw;
+// Hosted builds have no rights register at all.
+#[cfg(not(any(all(target_arch = "x86_64", target_os = "oxide-kernel"),
+              all(target_arch = "aarch64", target_os = "oxide-kernel"))))]
 #[path = "pkey_rights/hw_none.rs"]
 mod hw;
 
