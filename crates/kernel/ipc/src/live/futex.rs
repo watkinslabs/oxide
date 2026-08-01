@@ -7,12 +7,14 @@
 
 mod core;
 mod ops;
+mod pi;
 mod robust;
 mod wait;
 mod waitv;
 
 pub use core::{FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_BITSET_MATCH_ANY};
 pub use ops::{cmp_requeue, requeue, wake_op};
+pub use pi::{cmp_requeue_pi, exit_pi_state_list, lock_pi, unlock_pi, wait_requeue_pi};
 pub use robust::exit_robust_list;
 pub use wait::{dispatch, dispatch_timed};
-pub use waitv::{dispatch_waitv, dispatch_waitv_timed};
+pub use waitv::{WaitvEntry, dispatch_waitv_timed};

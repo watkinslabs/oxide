@@ -16,9 +16,15 @@ use super::*;
 pub fn task_policy(t: &sched::Task) -> u32 { t.policy.load(Ordering::Acquire) }
 
 /// Linux `p->rt_priority`: the RT priority, 0 for every non-RT policy.
+///
+/// Reads the BASE class, not the effective one. A task holding a PI futex may
+/// be running at a priority borrowed from a waiter; reporting that through
+/// `sched_getparam` would tell userspace it had set a priority it never asked
+/// for, and feeding it back into `sched_setscheduler` would make the borrowed
+/// priority permanent.
 /// # C: O(1)
 pub fn task_rt_priority(t: &sched::Task) -> u32 {
-    match t.sched_class() { sched::SchedClass::Rt { prio, .. } => prio as u32, _ => 0 }
+    match sched::pi_prio::base_class(t) { sched::SchedClass::Rt { prio, .. } => prio as u32, _ => 0 }
 }
 
 /// Linux `p->se.slice` — the CFS slice `sched_getattr` reports in
