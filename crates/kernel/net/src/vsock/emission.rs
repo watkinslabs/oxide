@@ -3,10 +3,6 @@ use sync::{Guard, Socket as SockLockClass};
 
 use super::{tx_for, VsockConn, VsockState, VIRTIO_VSOCK_OP_CREDIT_UPDATE};
 
-#[cfg(any(test, feature = "hosted"))]
-static INJECT_TAIL_CREDIT: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
 pub(crate) struct EmissionGuard<'a> {
     conn: &'a VsockConn,
     guard: Option<Guard<'a, (), SockLockClass>>,
@@ -29,7 +25,7 @@ fn finish_credit_updates<'a>(c: &'a VsockConn, mut guard: Guard<'a, (), SockLock
     loop {
         flush_credit_update(c);
         #[cfg(test)]
-        if INJECT_TAIL_CREDIT.swap(false, Ordering::AcqRel) { send_credit_update(c); }
+        if c.inject_tail_credit.swap(false, Ordering::AcqRel) { send_credit_update(c); }
         drop(guard);
         if !c.credit_update_pending.load(Ordering::Acquire) { return; }
         let Some(next) = c.emit.try_lock() else { return; };
@@ -37,19 +33,10 @@ fn finish_credit_updates<'a>(c: &'a VsockConn, mut guard: Guard<'a, (), SockLock
     }
 }
 
+/// Arm one tail-window credit update on THIS connection. # C: O(1)
 #[cfg(test)]
-pub(crate) fn inject_tail_credit_for_test() {
-    INJECT_TAIL_CREDIT.store(true, Ordering::Release);
-}
-
-#[cfg(any(test, feature = "hosted"))]
-pub(super) fn reset_hosted_test_injection() {
-    INJECT_TAIL_CREDIT.store(false, Ordering::Release);
-}
-
-#[cfg(test)]
-pub(super) fn hosted_test_injection_armed() -> bool {
-    INJECT_TAIL_CREDIT.load(Ordering::Acquire)
+pub(crate) fn inject_tail_credit_for_test(c: &VsockConn) {
+    c.inject_tail_credit.store(true, Ordering::Release);
 }
 
 impl Drop for EmissionGuard<'_> {

@@ -334,7 +334,12 @@ impl TxCompletion {
     fn wait(&self) -> NetResult<()> {
         loop {
             if let Some(result) = *tx_lock!(self.result) { return result; }
-            core::hint::spin_loop();
+            // `sync::relax`, not a bare `spin_loop`: it is the crate's single
+            // relax step (services owed cross-CPU work on a kernel target, and
+            // yields periodically in a hosted build, where 64 waiter threads
+            // can otherwise starve the one drainer that completes them —
+            // B1653's unbounded `net` test-binary spin).
+            sync::relax();
         }
     }
 }

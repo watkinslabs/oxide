@@ -50,7 +50,8 @@ impl crate::NetDev for BlockingControlDev {
     }
     fn ipv4_addr_changed(&self, _addr: Option<Ipv4Addr>) {
         self.entered.store(true, Ordering::Release);
-        while !self.release.load(Ordering::Acquire) { std::thread::yield_now(); }
+        crate::hosted_fixture::spin_until("release is signalled",
+            || self.release.load(Ordering::Acquire));
         assert!(!self.retired.load(Ordering::Acquire));
     }
 }
@@ -173,7 +174,7 @@ fn teardown_drains_generation_qualified_address_side_effect() {
     let setter = std::thread::spawn(move || {
         setter_stack.set_primary_ipv4_in(NS, iface, Ipv4Addr::new(203, 0, 113, 1), 0)
     });
-    while !entered.load(Ordering::Acquire) { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("the worker enters", || entered.load(Ordering::Acquire));
 
     let teardown_stack = stack.clone();
     let (done_tx, done_rx) = std::sync::mpsc::channel();

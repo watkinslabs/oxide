@@ -19,7 +19,8 @@ std::thread_local! {
 pub(super) fn pause_after_pass() {
     if !PAUSE_THIS_COLLECTOR.with(|armed| armed.replace(false)) { return; }
     PASS_PAUSED.store(true, Ordering::Release);
-    while !RELEASE_PASS.load(Ordering::Acquire) { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("the GC pass is released",
+        || RELEASE_PASS.load(Ordering::Acquire));
     PASS_PAUSED.store(false, Ordering::Release);
     if PANIC_AFTER_PAUSE.with(|armed| armed.replace(false)) {
         panic!("injected collector owner unwind");

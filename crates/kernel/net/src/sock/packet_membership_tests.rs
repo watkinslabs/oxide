@@ -164,7 +164,8 @@ fn close_racing_admitted_add_is_linearized_then_flushed() {
     let closed = StdArc::new(AtomicBool::new(false));
     let close_done = closed.clone();
     let closer = std::thread::spawn(move || { closing.release_file(); close_done.store(true, Ordering::Release); });
-    while !socket.released.load(Ordering::Acquire) { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("socket release publishes",
+        || socket.released.load(Ordering::Acquire));
     assert!(!closed.load(Ordering::Acquire), "close waits behind admitted RTNL operation");
     resume.wait();
     assert_eq!(worker.join().unwrap(), Ok(()));
@@ -190,9 +191,8 @@ fn unregister_detaches_memberships_bind_and_rejects_late_add() {
     socket.change_packet_membership(membership, true).unwrap();
     let lease = stack.ifaces.acquire_ingress(iface).unwrap();
     let removing = std::thread::spawn(move || stack.unregister_iface_in(net_ns, iface));
-    while stack.ifaces.acquire_ingress(iface).is_some() {
-        std::thread::yield_now();
-    }
+    crate::hosted_fixture::spin_until("ingress closes for the removed iface",
+        || stack.ifaces.acquire_ingress(iface).is_none());
     assert_eq!(socket.change_packet_membership(membership, true), Err(crate::NetError::Enodev));
     drop(lease);
     assert!(removing.join().unwrap());

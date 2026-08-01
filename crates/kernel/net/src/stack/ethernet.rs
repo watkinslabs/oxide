@@ -96,6 +96,7 @@ mod tests {
 
     #[test]
     fn ethernet_ingress_rejects_a_truncated_link_header_before_l3() {
+        let _domain = crate::hosted_fixture::init_net_domain();
         let stack = NetStack::new();
         let (iface, _lo) = stack.register_loopback();
         assert_eq!(stack.deliver_ethernet(iface, &[0; crate::ethernet::ETH_HDR_LEN - 1]),

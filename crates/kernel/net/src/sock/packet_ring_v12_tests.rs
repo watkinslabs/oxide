@@ -137,6 +137,7 @@ fn v1_suppresses_v2_only_vlan_status() {
 
 #[test]
 fn receive_delivery_uses_ring_as_the_only_canonical_destination() {
+    let _packets = crate::hosted_fixture::packet_socket_domain();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let socket = Arc::new(InetSocket::new_packet_in(crate::eth_p::ALL, RAW, owner.clone()));
     register_packet(&socket);

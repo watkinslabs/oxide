@@ -177,13 +177,8 @@ fn held_ingress_lease_closes_admission_and_blocks_move_until_release() {
     let teardown = std::thread::spawn(move || {
         done_tx.send(worker.teardown_iface_in(net_ns, iface)).unwrap();
     });
-    loop {
-        match stack.ifaces.acquire_ingress(iface) {
-            Some(probe) => drop(probe),
-            None => break,
-        }
-        std::thread::yield_now();
-    }
+    crate::hosted_fixture::spin_until("ingress closes for the torn-down iface",
+        || stack.ifaces.acquire_ingress(iface).is_none());
     assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     assert_eq!(stack.ifaces.namespace(iface), None);
 

@@ -8,7 +8,6 @@ fn reset() {
     ENDPOINTS.lock().clear();
     PRIMARY_OWNER.store(VSOCK_OWNER_ANY_RAW, Ordering::Release);
     TABLE.reset_for_hosted_test();
-    emission::reset_hosted_test_injection();
 }
 
 /// Exclusive hosted ownership of process-global VSOCK state.
@@ -48,7 +47,6 @@ mod tests {
             key.local_port, key.peer_cid, key.peer_port, VsockState::Connected))));
         assert!(TABLE.add_listener(Some(owner), 64_002).is_some());
         let binding = TABLE.reserve_bind(Some(owner), Some(64_003)).expect("bind reservation");
-        inject_tail_credit_for_test();
 
         reset();
 
@@ -59,7 +57,6 @@ mod tests {
         let ephemeral = TABLE.reserve_bind(None, None).expect("reset ephemeral allocation");
         assert_eq!(ephemeral.port, 1024);
         assert!(TABLE.release_bind(&ephemeral));
-        assert!(!emission::hosted_test_injection_armed());
     }
 
     #[test]

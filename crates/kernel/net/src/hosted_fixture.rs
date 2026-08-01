@@ -1,12 +1,65 @@
 //! Canonical ownership for hosted tests that exercise the initial network domain.
 
 use alloc::vec::Vec;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::iface_addr::Ipv4IfaceAddr;
 use crate::{NetIfaceId, RouteRecord};
 
 static INITIAL_NET_DOMAIN: Mutex<()> = Mutex::new(());
+
+/// `sock::PACKET_REGISTRY` is one process-global list and
+/// `sock::service_packet_ring_timers` is the single kernel-wide V3 retire
+/// tick that walks it across every namespace. A hosted test driving that
+/// sweep therefore advances the retire deadline of, and retires blocks in,
+/// every other test's registered V3 ring — an ownership boundary no
+/// namespace or per-`NetStack` fixture can restore, because the sweep is
+/// global by contract. Readers (tests that register a packet socket and
+/// assert on their OWN ring/timer state) run concurrently with each other;
+/// only the sweep needs exclusion.
+static PACKET_RING_DOMAIN: RwLock<()> = RwLock::new(());
+
+/// Shared ownership for a test that registers a packet socket. # C: O(wait)
+#[must_use = "the guard must span the complete registered lifetime of the socket"]
+pub fn packet_socket_domain() -> RwLockReadGuard<'static, ()> {
+    PACKET_RING_DOMAIN.read().unwrap_or_else(|poisoned| {
+        PACKET_RING_DOMAIN.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
+/// Exclusive ownership for a test that drives the global V3 retire sweep, or
+/// that requires its own thread to run the socket's FINAL `Arc` drop: the
+/// registry walk in `deliver` / `service_packet_ring_timers` upgrades every
+/// `Weak` it holds, so a concurrent walk transiently resurrects another
+/// test's socket and moves that final drop onto the walking thread — and out
+/// of the simulated softirq window the dropping test established. # C: O(wait)
+#[must_use = "the guard must span the complete exclusive window"]
+pub fn packet_registry_exclusive() -> RwLockWriteGuard<'static, ()> {
+    PACKET_RING_DOMAIN.write().unwrap_or_else(|poisoned| {
+        PACKET_RING_DOMAIN.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
+/// Ceiling for every hosted cross-thread wait. Generous enough that a loaded
+/// CI box never trips it, finite so a wait whose condition can no longer
+/// become true fails the test instead of spinning forever: an unbounded
+/// `while !cond { yield_now() }` in a `#[test]` orphans the whole binary at
+/// full multi-core spin (observed ~4300% CPU for 20 min) with no output and
+/// no exit, poisoning every concurrent measurement on the box (B1653).
+const HOSTED_WAIT_LIMIT: core::time::Duration = core::time::Duration::from_secs(60);
+
+/// Spin until `ready`, bounded by `HOSTED_WAIT_LIMIT`. # C: O(wait)
+#[track_caller]
+pub fn spin_until(what: &'static str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + HOSTED_WAIT_LIMIT;
+    while !ready() {
+        assert!(std::time::Instant::now() < deadline,
+            "hosted wait exceeded its bound: {what}");
+        std::thread::yield_now();
+    }
+}
 
 /// Exclusive hosted ownership of namespace-0 address and process hook state.
 #[must_use = "the ownership guard must span the complete hosted fixture lifetime"]

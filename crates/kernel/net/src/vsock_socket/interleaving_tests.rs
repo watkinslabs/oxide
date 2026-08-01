@@ -346,7 +346,7 @@ fn credit_request_in_final_unlock_window_is_drained() {
     let _guard = vsock::tests::test_domain();
     let (sock, conn) = setup(0x0c00_000b, 0x5c00_000b, 63_011);
     state().0.lock().unwrap_or_else(|error| error.into_inner()).release = true;
-    vsock::inject_tail_credit_for_test();
+    vsock::inject_tail_credit_for_test(&conn);
     assert_eq!(vsock::send(&conn, b"tail"), Ok(4));
     let ops = state().0.lock().unwrap_or_else(|error| error.into_inner()).ops.clone();
     assert_eq!(ops, [vsock::VIRTIO_VSOCK_OP_RW, vsock::VIRTIO_VSOCK_OP_CREDIT_UPDATE]);
