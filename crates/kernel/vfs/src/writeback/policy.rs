@@ -99,15 +99,6 @@ pub fn forces_lazytime(sync_all: bool, when_ns: u64, now_ns: u64, interval_secs:
 /// flushed by the data pass, not by an inode write. # C: O(1)
 pub fn needs_write_inode(dirty: u32) -> bool { dirty & I_DIRTY_INODE != 0 }
 
-/// `I_DIRTY_TIME` alone, on an inode that is neither being created nor destroyed
-/// (Linux `inode_is_dirtytime_only`) — the state in which a filesystem may
-/// opportunistically write the timestamps out with a neighbouring inode.
-/// # C: O(1)
-pub fn is_dirtytime_only(state: u32) -> bool {
-    use crate::inode::{I_FREEING, I_NEW, I_WILL_FREE};
-    state & (I_DIRTY_TIME | I_NEW | I_FREEING | I_WILL_FREE) == I_DIRTY_TIME
-}
-
 /// The dirty bits a writeback pass harvests and clears from `i_state`
 /// (`dirty = inode->i_state & I_DIRTY`). `I_DIRTY_TIME` is NOT in it: it is
 /// resolved before this point by the lazytime conversion, never dropped.
