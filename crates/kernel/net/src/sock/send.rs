@@ -65,6 +65,9 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
         };
         let mut raw_control = control.raw4.clone();
+        // A control message replaces the socket's own option area outright;
+        // without one the sticky `IP_OPTIONS` area rides the datagram.
+        if raw_control.options.is_none() { raw_control.options = sock.opts.ip.options(); }
         if raw_control.multicast_loop.is_none() {
             raw_control.multicast_loop = Some(
                 sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0);

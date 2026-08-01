@@ -103,7 +103,7 @@ pub(crate) fn validate_non_unix(ctx: &SendContext<'_>, control: &[u8]) -> KResul
 }
 
 fn stream(_ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: &[u8],
-    scm: &Scm, cap: usize, include_control: bool) -> KResult<usize>
+    scm: &Scm, cap: usize, include_control: bool, oob: bool) -> KResult<usize>
 {
     enum Target { Stream(Arc<net::UnixPair>, net::UnixEnd), Msg(Arc<net::UnixMsgPair>, net::UnixEnd) }
     let target = match &*socket.kind.lock() {
@@ -113,6 +113,15 @@ fn stream(_ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: 
     };
     let rights = net::classify_files(if include_control { scm.files.clone() } else { Vec::new() });
     let supplied = if include_control { scm.creds } else { None };
+    if oob {
+        let Target::Stream(pair, end) = target else { return Err(Error::Eopnotsupp) };
+        let byte = *payload.first().ok_or(Error::Eopnotsupp)?;
+        let creds = supplied.map(|c| (c.pid, c.uid, c.gid));
+        return pair.write_oob(end, byte, rights, creds, cap).map_err(|error| match error {
+            net::unix_sock::UnixStreamSendError::PeerClosed => Error::Epipe,
+            net::unix_sock::UnixStreamSendError::WouldBlock => Error::Eagain,
+        });
+    }
     let result = match target {
         Target::Stream(pair, end) => match supplied {
             Some(creds) => pair.write_with_rights_and_creds_bounded(end, payload, rights,
@@ -156,16 +165,23 @@ fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
 
 /// Pin SCM objects and resolve AF_UNIX send state before payload import. # C: O(control + lookup)
 pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
-    message: &Message) -> Option<KResult<UnixScm>>
+    message: &Message, flags: u32) -> Option<KResult<UnixScm>>
 {
     enum Kind { Datagram(Arc<net::UnixDgramQueue>), Stream }
+    let byte_stream = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
     let kind = match &*socket.kind.lock() {
         net::sock::SockKind::UnixDgram(queue) => Kind::Datagram(queue.clone()),
         net::sock::SockKind::Unix(_, _) | net::sock::SockKind::UnixMsgPair(_, _) => Kind::Stream,
         _ => return None,
     };
     Some((|| {
+        // Ancillary data is parsed FIRST: a malformed control buffer outranks
+        // the absent out-of-band channel, whichever socket kind this is.
         let scm = parse(ctx, &message.control, true)?;
+        let oob = flags as u64 & net::uapi::MSG_OOB != 0;
+        if crate::oob::unix_oob_plan(byte_stream, oob, message.requested_len)
+            == crate::oob::UnixOobPlan::Unsupported
+        { return Err(Error::Eopnotsupp); }
         match kind {
             Kind::Stream => Ok(UnixScm::Stream(scm)),
             Kind::Datagram(local) => {
@@ -186,7 +202,8 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
 
 /// Commit one prepared AF_UNIX send transaction. # C: O(payload)
 pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
-    message: &Message, scm: &UnixScm, cap: usize, offset: usize) -> KResult<usize>
+    message: &Message, scm: &UnixScm, cap: usize, offset: usize, body: usize, oob: bool)
+    -> KResult<usize>
 {
     match scm {
         // `cap` is the sender's SO_SNDBUF. It serves two distinct Linux roles:
@@ -195,7 +212,12 @@ pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::Inet
         UnixScm::Datagram { scm, queue, sender, address, symmetric, local } =>
             datagram(ctx, message, scm, queue.clone(), sender.clone(), address.clone(),
                 if *symmetric { usize::MAX } else { cap }, local, cap),
-        UnixScm::Stream(scm) => stream(ctx, socket, &message.payload[offset..], scm, cap, offset == 0),
+        // The out-of-band tail is the payload's LAST byte; the body loop stops
+        // one short of it and this step queues it as the urgent record.
+        UnixScm::Stream(scm) if oob =>
+            stream(ctx, socket, &message.payload[body..], scm, cap, offset == 0, true),
+        UnixScm::Stream(scm) =>
+            stream(ctx, socket, &message.payload[offset..body], scm, cap, offset == 0, false),
     }
 }
 

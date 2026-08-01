@@ -41,8 +41,10 @@ pub const NET_SYSCTLS: &[Node] = &[
             // compiled default `1 0` admits nobody; distributions open it at
             // boot so an echo-probe tool needs no capability.
             File("ping_group_range", PerNetGroupRangeHook(ping_group_range, set_ping_group_range)),
+            File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv4NonlocalBind, Some((0, 1)))),
         ]),
         Dir("ipv6", &[
+            File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv6NonlocalBind, Some((0, 1)))),
             Dir("conf", &[
                 Dir("all",     &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableAll, Some((0, 1)))) ]),
                 Dir("default", &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableDefault, Some((0, 1)))) ]),

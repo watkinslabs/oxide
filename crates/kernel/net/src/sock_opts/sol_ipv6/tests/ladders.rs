@@ -2,7 +2,7 @@
 
 use syscall::errno::Errno;
 use super::super::set::{self, Action, Ipv6Sock};
-use super::super::state::flag;
+use crate::sock_opts::sol_ip::flag as v4flag;
 use super::super::uapi::*;
 use super::*;
 
@@ -12,8 +12,29 @@ use super::*;
 fn transparent_answers_the_capability_before_the_width() {
     assert_eq!(set::admit(IPV6_TRANSPARENT, 1, 0, dgram(), none()), Err(Errno::Eperm));
     assert_eq!(set::admit(IPV6_TRANSPARENT, 1, 4, dgram(), net_raw()),
-        Ok(Action::Flag { bit: flag::TRANSPARENT, on: true }));
+        Ok(Action::InetFlag { bit: v4flag::TRANSPARENT, on: true }));
     assert_eq!(set::admit(IPV6_TRANSPARENT, 0, 0, dgram(), none()), Err(Errno::Einval));
+}
+
+#[test]
+fn the_nonlocal_bind_pair_writes_the_shared_inet_word() {
+    // There is no v6-private freebind or transparent bit: both option numbers
+    // resolve to the storage the `IPPROTO_IP` twins own.
+    assert_eq!(set::admit(IPV6_FREEBIND, 1, 4, dgram(), none()),
+        Ok(Action::InetFlag { bit: v4flag::FREEBIND, on: true }));
+    assert_eq!(set::admit(IPV6_FREEBIND, 0, 4, dgram(), none()),
+        Ok(Action::InetFlag { bit: v4flag::FREEBIND, on: false }));
+    assert_eq!(set::admit(IPV6_FREEBIND, 1, 2, dgram(), none()), Err(Errno::Einval));
+}
+
+#[test]
+fn the_nonlocal_bind_pair_reads_the_shared_inet_word() {
+    use super::super::get::{self, Ipv6GetState, Value};
+    let state = Ipv6GetState { inet_flags: v4flag::FREEBIND, ..Default::default() };
+    assert_eq!(get::read(IPV6_FREEBIND, dgram(), &state), Ok(Value::Int(1)));
+    assert_eq!(get::read(IPV6_TRANSPARENT, dgram(), &state), Ok(Value::Int(0)));
+    let state = Ipv6GetState { inet_flags: v4flag::TRANSPARENT, ..Default::default() };
+    assert_eq!(get::read(IPV6_TRANSPARENT, dgram(), &state), Ok(Value::Int(1)));
 }
 
 #[test]

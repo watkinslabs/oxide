@@ -9,7 +9,6 @@ use crate::sock::SockOpts;
 use crate::tcp_conn::TcpConn;
 use super::*;
 use super::set::Action;
-use super::defer;
 use super::repair::RepairEffect;
 
 /// What the shim must do to the live connection after a store. Each flag names
@@ -26,8 +25,8 @@ pub struct Effects {
     pub write_space: bool,
     /// Reload the connection's copy of the option block.
     pub reload: bool,
-    /// Reload a live listener's copy of the deferral window.
-    pub defer: bool,
+    /// Reload a live listener's applied copies of the request-sock options.
+    pub listener: bool,
 }
 
 impl Effects {
@@ -53,11 +52,16 @@ pub fn store(opts: &SockOpts, action: &Action) -> Effects {
         Action::KeepIntvl(v) => { opts.tcp_keepintvl_s.store(*v, Ordering::Release); Effects::reload() }
         Action::KeepCnt(v) => { opts.tcp_keepcnt.store(*v, Ordering::Release); Effects::reload() }
         Action::MaxSeg(v) => { tcp.maxseg.store(*v, Ordering::Release); Effects::reload() }
-        Action::SynCnt(v) => { tcp.syncnt.store(*v, Ordering::Release); Effects::reload() }
+        Action::SynCnt(v) => {
+            tcp.syncnt.store(*v, Ordering::Release);
+            // The ceiling reaches a listener's half-open requests too, which
+            // have no connection to reload it into.
+            Effects { listener: true, ..Effects::reload() }
+        }
         Action::Linger2(v) => { tcp.linger2_s.store(*v, Ordering::Release); Effects::reload() }
         Action::DeferAccept(v) => {
             tcp.defer_accept.store(*v, Ordering::Release);
-            Effects { defer: true, ..Effects::default() }
+            Effects { listener: true, ..Effects::default() }
         }
         Action::WindowClamp(v) => { tcp.window_clamp.store(*v, Ordering::Release); Effects::reload() }
         Action::QuickAck { pingpong, push_ack } => {
@@ -239,11 +243,15 @@ pub fn notify_write_space(entry: &crate::stack::TcpEntry) {
     entry.notify_writable();
 }
 
-/// Install the deferral window on a live listener, so an option set after
-/// `listen` takes effect on the next connection. # C: O(retransmits)
+/// Install the option block's request-sock state on a live listener, so an
+/// option set after `listen` reaches the requests that arrive next. Both are
+/// stored in the unit the option stores, not a derived one. # C: O(1)
 pub fn to_listener(opts: &SockOpts, listener: &crate::stack::TcpListenEntry) {
-    listener.defer_window_secs.store(
-        defer::window_secs(opts.tcp.defer_accept.load(Ordering::Acquire)), Ordering::Release);
+    listener.defer_accept.store(
+        opts.tcp.defer_accept.load(Ordering::Acquire), Ordering::Release);
+    listener.synack_retries.store(
+        opts.tcp.syncnt.load(Ordering::Acquire).clamp(0, u8::MAX as i32) as u8,
+        Ordering::Release);
 }
 
 /// Hand the handshake packet the connection was opened by to the accepted

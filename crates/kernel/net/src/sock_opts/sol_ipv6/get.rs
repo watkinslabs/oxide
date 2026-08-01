@@ -5,6 +5,7 @@ use syscall::errno::Errno;
 
 use super::set::{Ipv6Sock, RECVHOPLIMIT, RECVPKTINFO, RECVTCLASS};
 use super::state::{Sticky, flag};
+use crate::sock_opts::sol_ip::flag as v4flag;
 use super::uapi::*;
 
 /// The live socket values this level publishes. # C: O(1)
@@ -13,6 +14,9 @@ pub struct Ipv6GetState {
     /// `Ipv6Opts` flag word, plus the three receive bits the socket carries in
     /// its own fields.
     pub flags: u64,
+    /// `IPPROTO_IP` flag word — the storage `IPV6_FREEBIND` and
+    /// `IPV6_TRANSPARENT` share with their IPv4 twins.
+    pub inet_flags: u64,
     pub v6only: bool,
     pub recverr: bool,
     pub mc_loop: bool,
@@ -59,6 +63,7 @@ pub enum Value {
 /// `do_ipv6_getsockopt`. # C: O(len)
 pub fn read(optname: u64, sock: Ipv6Sock, s: &Ipv6GetState) -> Result<Value, Errno> {
     let bit = |b: u64| Value::Int(i32::from(s.flags & b != 0));
+    let inet_bit = |b: u64| Value::Int(i32::from(s.inet_flags & b != 0));
     Ok(match optname {
         IPV6_ADDRFORM => {
             if sock.protocol != IPPROTO_UDP && sock.protocol != IPPROTO_TCP {
@@ -94,8 +99,8 @@ pub fn read(optname: u64, sock: Ipv6Sock, s: &Ipv6GetState) -> Result<Value, Err
             if s.mtu == 0 { return Err(Errno::Enotconn); }
             Value::Exact(mtuinfo(s.mtu))
         }
-        IPV6_TRANSPARENT => bit(flag::TRANSPARENT),
-        IPV6_FREEBIND => bit(flag::FREEBIND),
+        IPV6_TRANSPARENT => inet_bit(v4flag::TRANSPARENT),
+        IPV6_FREEBIND => inet_bit(v4flag::FREEBIND),
         IPV6_RECVORIGDSTADDR => bit(flag::RXORIGDSTADDR),
         // An unset hop limit resolves through the route, then the namespace
         // default, exactly as the transmit path does.

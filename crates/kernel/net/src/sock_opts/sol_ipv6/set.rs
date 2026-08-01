@@ -4,6 +4,7 @@ use syscall::errno::Errno;
 
 use super::state::flag;
 use super::uapi::*;
+use crate::sock_opts::sol_ip::flag as v4flag;
 use crate::sock_opts::sol_socket::OptCaps;
 
 /// Argument shape the caller must supply. # C: O(1)
@@ -52,6 +53,11 @@ pub struct Ipv6Sock {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Action {
     Flag { bit: u64, on: bool },
+    /// A bit this level shares with `IPPROTO_IP`: `IPV6_FREEBIND` and
+    /// `IPV6_TRANSPARENT` write the very storage their IPv4 twins do, so the
+    /// socket carries exactly one nonlocal-bind permission. `bit` is a
+    /// `sol_ip::flag` constant.
+    InetFlag { bit: u64, on: bool },
     RecvErr(bool),
     UnicastHops(i32),
     MulticastHops(i32),
@@ -206,9 +212,9 @@ pub fn admit(optname: u64, val: i32, optlen: u32, sock: Ipv6Sock, caps: OptCaps)
             // The capability ladder runs before the width screen.
             if on && !caps.net_raw_or_admin() { return Err(Errno::Eperm); }
             wide()?;
-            Ok(Action::Flag { bit: flag::TRANSPARENT, on })
+            Ok(Action::InetFlag { bit: v4flag::TRANSPARENT, on })
         }
-        IPV6_FREEBIND => { wide()?; Ok(Action::Flag { bit: flag::FREEBIND, on }) }
+        IPV6_FREEBIND => { wide()?; Ok(Action::InetFlag { bit: v4flag::FREEBIND, on }) }
         IPV6_ROUTER_ALERT => {
             wide()?;
             // Only a socket opened on the raw protocol itself can receive the

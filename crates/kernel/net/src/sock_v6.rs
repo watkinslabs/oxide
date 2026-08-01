@@ -4,38 +4,11 @@
 // v1 source-address pick (LOOPBACK for ::1 else ANY).
 
 use crate::netdev::NetError;
+pub use crate::sock_v6_name::{name_bound_ifindex, name_scope_id};
 use crate::sock::{
     InetSocket,
     alloc_ephemeral_udp6_owned, drain_loopback, stack,
 };
-
-const IPV6_MULTICAST_SCOPE_MASK: u8 = 0x0f;
-const IPV6_SCOPE_LINK_LOCAL: u8 = 2;
-const IPV6_SCOPE_OCTET: usize = 1;
-const IPV6_NO_SCOPE_ID: u32 = 0;
-
-/// Linux `ipv6_iface_scope_id`: expose a device only for interface- or
-/// link-scoped addresses, never for global IPv6 addresses. # C: O(1)
-pub fn name_scope_id(address: crate::Ipv6Addr, bound_ifindex: u32) -> u32 {
-    let multicast_scope = address.is_multicast()
-        && (address.0[IPV6_SCOPE_OCTET] & IPV6_MULTICAST_SCOPE_MASK) <= IPV6_SCOPE_LINK_LOCAL;
-    if address.is_link_local() || multicast_scope { bound_ifindex } else { IPV6_NO_SCOPE_ID }
-}
-
-/// Resolve the device recorded by the live IPv6 transport owner for a name
-/// query. A socket-level SO_BINDTODEVICE setting is authoritative before an
-/// endpoint exists; otherwise the endpoint/reservation owns the binding.
-/// # C: O(1)
-pub fn name_bound_ifindex(sock: &InetSocket) -> u32 {
-    use core::sync::atomic::Ordering;
-    let configured = sock.opts.bound_ifindex.load(Ordering::Acquire);
-    if configured != IPV6_NO_SCOPE_ID { return configured; }
-    if let Some(endpoint) = sock.udp6.lock().as_ref().cloned() {
-        return endpoint.bound_ifindex.load(Ordering::Acquire);
-    }
-    sock.tcp_bind.lock().as_ref().and_then(|bind| bind.bound_iface())
-        .map(crate::NetIfaceId::raw).unwrap_or(IPV6_NO_SCOPE_ID)
-}
 
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16>,
@@ -250,6 +223,7 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload, bound,
         sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8, ttl,
         sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
+        sock.opts.ip.options().as_ref(),
     )?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }
     Ok(payload.len())

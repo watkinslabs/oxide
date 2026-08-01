@@ -78,7 +78,9 @@ impl InetSocket {
         match k {
             K::Unix(pair, end) => {
                 let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
-                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns, passcred);
+                let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns,
+                    passcred, inline);
                 if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
                 result
             }
@@ -155,7 +157,8 @@ impl InetSocket {
             // + drained) gives Ok(0), else EAGAIN. Never parks.
             K::Unix(pair, end) => {
                 let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
-                let got = pair.read_passcred(end, buf.len(), passcred);
+                let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let got = pair.read_passcred(end, buf.len(), passcred, inline);
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);

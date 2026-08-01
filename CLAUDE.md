@@ -286,6 +286,21 @@ one-line fix", no emergency path.
 - Opening or merging the PR is the integration owner's call, not the working agent's.
   Push the branch and report. See the merge-authority rule in the claim-work section.
 
+## NEVER `git stash` (HARD RULE)
+
+**The stash stack is SHARED across every worktree of a clone.** With several lanes
+running at once, `git stash` / `git stash pop` is a cross-lane data race: one lane's
+`pop` takes another lane's stash. This has already happened — 16 unrelated files
+landed in the wrong worktree while the owner's tracked edits vanished, recovered only
+via `git fsck` dangling commits.
+
+- Park work-in-progress with a **temporary commit on your own branch**
+  (`git commit -m wip`, later `git reset --soft HEAD~1`). Commits are per-branch;
+  the stash stack is not.
+- `git stash list` entries you did not create are someone else's live work. Do not
+  pop, drop, or clear them.
+- This applies to every stash form, including `git stash -u` and `git stash push <path>`.
+
 ## NEVER `git add -A` (HARD RULE)
 
 **Never run `git add -A`, `git add .`, `git commit -a`, or any other stage-everything
@@ -378,8 +393,16 @@ lanes are claimed / merged.
 ## Known issues go in `scratch/known_issues.md` (HARD RULE)
 
 Every issue, breakage, divergence, deviation, gap, flake, or thing-worth-noting gets a
-row in `scratch/known_issues.md` — **in the same PR that finds it**, not later. A finding
-that lives only in a session report is lost the moment the session ends.
+row **in the same PR that finds it**, not later. A finding that lives only in a session
+report is lost the moment the session ends.
+
+**Where the row goes: `scratch/issues.d/<your-branch>.md`, not the curated ledger.**
+One file per lane, written only by that lane, so it cannot conflict. A single shared
+table does not survive concurrent lanes — it conflicted on every PR of a 15-lane wave and
+each conflict cost a rebase round-trip. `scratch/known_issues.md` stays the curated
+ledger; the integration owner folds drops into it and deletes the drop file.
+`tools/issues.sh` renders curated + drops, `--count` shows row counts. A row in a drop
+file is exactly as binding as one in the curated ledger.
 
 - **Find it, file it.** This includes: anything non-Linux, anything stubbed or
   stored-but-unconsumed, a test that flakes, a gate that misses a defect class, a

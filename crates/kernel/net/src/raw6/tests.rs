@@ -113,7 +113,7 @@ fn exact_tuple_device_namespace_and_link_local_source_scope() {
 fn checked_bind_rejects_ipv4_mapped_address() {
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL);
     let mapped = Ipv6Addr::from_v4_mapped(crate::Ipv4Addr::new(192, 0, 2, 1));
-    assert_eq!(endpoint.bind_checked(Raw6Address::new(mapped, 0), None),
+    assert_eq!(endpoint.bind_checked(Raw6Address::new(mapped, 0), None, Default::default()),
         Err(crate::NetError::Eaddrnotavail));
 }
 

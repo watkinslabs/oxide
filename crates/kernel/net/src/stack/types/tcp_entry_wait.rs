@@ -37,15 +37,6 @@ impl TcpEntry {
         }
     }
 
-    /// Whether this completed passive connection may be handed to `accept`:
-    /// either its listener never deferred, or the client has sent something,
-    /// or the deferral window has run out. # C: O(1)
-    pub fn acceptable(&self) -> bool {
-        let c = self.conn.lock();
-        crate::tcp_conn::defer::acceptable(
-            c.defer_deadline_ns, c.recv_buf.len(), crate::tcp_conn::ka_now_ns())
-    }
-
     /// Wake observers parked on write readiness. # C: O(1)
     pub fn notify_writable(&self) {
         if let Some(weak) = self.poll_subs.lock().clone() {

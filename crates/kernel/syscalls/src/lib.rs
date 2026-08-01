@@ -22,6 +22,7 @@ pub mod obsolete;
 // kernel-only cfg so the pinned slot set is actually unit-tested.
 pub mod unconfigured;
 mod access_cred;
+mod cachestat;
 mod lsm;
 mod pkey;
 // User-buffer range coverage, the decision half of `userbuf`'s access checks.
@@ -192,6 +193,12 @@ include!("kernel_body.rs");
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
 
+// `TCP_ZEROCOPY_RECEIVE`'s receive window. The window object and the socket
+// `mmap(2)` admission carry no target gate so their tests compile hosted; only
+// the option's copy-in/copy-out shim under it is kernel-only.
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod tcp_zerocopy;
+
 // Linux `struct stat` encoder: the byte offsets and the signed `st_*time` /
 // unsigned `st_*time_nsec` split are the whole observable contract, so it
 // compiles hosted too. Declared here rather than in `kernel_body.rs` because a
@@ -303,6 +310,15 @@ mod send_user;
 // every `*_getname` length/byte layout is provable under `cargo test` even
 // though `net_sockaddr` (its user-memory marshalling) is kernel-only.
 mod sockaddr_encode;
+
+// The `socketpair(2)` creation admission — kernel + hosted, so the family and
+// type rules are provable under `cargo test` while the slot stays an ABI shim.
+mod socketpair_spec;
+
+// The `*_getname` DECISIONS (which socket field answers, which error a socket
+// with no such name reports) — kernel + hosted, so `getsockname`/`getpeername`
+// behaviour is provable under `cargo test` while the slots stay ABI shims.
+mod sock_name;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod socket_control_tests;

@@ -50,6 +50,7 @@ pub use socket_owner::SocketOwner;
 pub use sockaddr::SockaddrStorage;
 pub mod loopback;
 pub mod ipv4;
+pub mod ipv4_options;
 pub mod ipv6;
 pub mod ipv6_ext;
 pub mod icmp;
@@ -87,6 +88,7 @@ pub mod route6;
 pub mod policy_rule;
 pub mod forwarding;
 pub mod iface_addr;
+pub mod bind_screen;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod reuseport;
@@ -138,6 +140,10 @@ pub mod sock_drop;
 pub mod sock_rtnl_defer;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_v6;
+// Ungated for `cargo test`, but it reads the socket type, which the plain
+// `cargo check -p net` build does not have.
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub mod sock_v6_name;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_mcast;
 pub mod stack_ipv6;
@@ -174,6 +180,8 @@ mod tests_socket_filter;
 mod tests_ipv6_local;
 #[cfg(test)]
 mod tests_ipv4_udp_errors;
+#[cfg(test)]
+mod tests_ipv4_options_tx;
 #[cfg(test)]
 mod tests_inet_netns;
 #[cfg(test)]
