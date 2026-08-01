@@ -140,8 +140,8 @@ pub enum ForceMode {
     Current,
     /// `HANDLER_SIG_DFL` — always reset to SIG_DFL, keep the task killable.
     SigDfl,
-    /// `HANDLER_EXIT` — reset to SIG_DFL and mark the action immutable; the
-    /// process dies no matter what (`force_fatal_sig`, seccomp KILL).
+    /// `HANDLER_EXIT` — reset to SIG_DFL and mark the action `SA_IMMUTABLE`;
+    /// the process dies no matter what (`force_fatal_sig`, seccomp KILL).
     Exit,
 }
 
@@ -152,6 +152,11 @@ pub struct ForceOutcome {
     pub reset_to_dfl: bool,
     /// Remove the signal from the receiver's blocked mask.
     pub unblock: bool,
+    /// `action->sa.sa_flags |= SA_IMMUTABLE` — the disposition is now frozen.
+    /// A later `rt_sigaction` on this signal is EINVAL, and the tracer's
+    /// signal-delivery stop is skipped for it, so neither the process nor a
+    /// debugger can turn a forced-fatal signal back into a survivable one.
+    pub immutable: bool,
 }
 
 /// Linux `force_sig_info_to_task`'s ladder: "if necessary we unblock the
@@ -165,8 +170,9 @@ pub fn force_decision(handler: u64, sig: u32, blocked: u64, mode: ForceMode) -> 
     let ignored = handler == SIG_IGN;
     let blocked_here = signum::bit_for(sig).is_some_and(|b| blocked & b != 0);
     let forced = mode != ForceMode::Current;
+    let immutable = mode == ForceMode::Exit;
     if blocked_here || ignored || forced {
-        ForceOutcome { reset_to_dfl: true, unblock: blocked_here }
+        ForceOutcome { reset_to_dfl: true, unblock: blocked_here, immutable }
     } else {
         ForceOutcome::default()
     }

@@ -25,9 +25,11 @@ use alloc::sync::Arc;
 /// tested); this wrapper adds the runqueue side.
 /// # SAFETY: caller is the syscall path on this CPU; the registry's
 /// own lock plus the runqueue's inner lock serialize the wake.
+/// `wake` names why (`crate::jobctl::WakeKind`), which is what decides whether
+/// the resume is a `wait4(WCONTINUED)` / `CLD_CONTINUED` event.
 /// # C: O(log N)
-pub fn wake_if_stopped(task: &Arc<Task>) {
-    if !try_wake_stopped(task) {
+pub fn wake_if_stopped(task: &Arc<Task>, wake: crate::jobctl::WakeKind) {
+    if !try_wake_stopped(task, wake) {
         return;
     }
     // Placement goes through `place_runnable` (Linux `ttwu`'s

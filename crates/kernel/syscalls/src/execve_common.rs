@@ -50,6 +50,12 @@ pub(crate) fn nproc_admits(cur: &sched::Task) -> Option<i64> {
 /// # C: O(1) — 64-slot scan.
 pub(crate) fn reset_caught_signals(cur: &sched::Task) {
     cur.sigactions_ref().reset_caught();
+    // Linux `flush_ptrace_hw_breakpoint(current)` on exec: a breakpoint set
+    // against the old image names an address that now belongs to different
+    // code, so leaving it armed traps the new program at an arbitrary point.
+    sched::debugreg::clear(cur);
+    #[cfg(target_arch = "aarch64")]
+    sched::debugreg::arm::clear(cur);
 }
 
 /// F129: sweep all other per-task state Linux execve(2) resets:

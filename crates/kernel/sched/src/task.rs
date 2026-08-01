@@ -61,7 +61,7 @@ pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use io_context::current_ioprio;
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;
-pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use sigwake::{SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
@@ -782,6 +782,27 @@ pub struct Task {
     /// `SIGTRAP | 0x80`. `syscall::ptrace` composes and decodes it; the wait
     /// status is `syscall::wait::stopped_wstatus(stop_code)`.
     pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_code: AtomicU32,
+    /// Per-task hardware debug-register shadow: DR0-DR3 addresses, then the
+    /// DR6 status and DR7 control. Installed into hardware by the context
+    /// switch when armed and read/written by `PTRACE_PEEKUSER`/`POKEUSER` on
+    /// the `u_debugreg` window. Arch-neutral storage; the bit contract belongs
+    /// to the HAL (`debugreg::x86`).
+    ///
+    /// LAZY: one pointer, null until a breakpoint is actually armed. `Task` is
+    /// built on the boot stack and the deepest aarch64 syscall path runs within
+    /// single-digit bytes of the stack ceiling, so an inline register file here
+    /// is a stack-budget regression rather than merely wasted memory.
+    pub debugregs: crate::debugreg::slab::Lazy<crate::debugreg::Shadow>,
+    /// aarch64 per-task hardware breakpoint / watchpoint register file — up to
+    /// 16 breakpoint plus 16 watchpoint slots, so LAZY for the same
+    /// stack-budget reason as `debugregs` above. Same single-mutator discipline
+    /// as `fpu_state` (`13§5`) once allocated: the owning task on its own CPU,
+    /// or a tracer while the tracee is ptrace-stopped.
+    #[cfg(target_arch = "aarch64")]
+    pub hw_break: crate::debugreg::slab::Lazy<crate::debugreg::arm::Shadow>,
+    /// Linux `task->jobctl`: the job-control / ptrace-trap latch. Bit layout
+    /// and every rule read off it are `crate::jobctl`.
+    pub jobctl: AtomicU64,
 
     /// `rseq(2)` registration pointer — per-THREAD user pointer to a
     /// `struct rseq`. Non-zero means every exit to user republishes the ids
