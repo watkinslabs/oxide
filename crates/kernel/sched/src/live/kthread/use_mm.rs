@@ -38,7 +38,7 @@ pub unsafe fn kthread_use_mm(mm: &Arc<AddressSpace>) {
     // skip this one and leave it running on a stale translation.
     mm.mark_cpu(me);
     // SAFETY: forwarded fn-level contract — the running task is a kernel thread with no address space, so this replace displaces nothing.
-    unsafe { cur.replace_mm(Some(Arc::clone(mm))); }
+    unsafe { cur.replace_borrowed_mm(Some(Arc::clone(mm))); }
     // SAFETY: forwarded fn-level contract — the root carries the shared kernel half, so kernel mappings stay valid across the write.
     unsafe { ActiveMmu::activate(mm.root_pa()); }
 }
@@ -53,5 +53,5 @@ pub unsafe fn kthread_use_mm(mm: &Arc<AddressSpace>) {
 pub unsafe fn kthread_unuse_mm() {
     let Some(cur) = super::super::schedule::current() else { return };
     // SAFETY: forwarded fn-level contract — the borrow installed here is the only address space this kernel thread has, and `replace_mm` parks it so the root survives while still installed.
-    unsafe { cur.replace_mm(None); }
+    unsafe { cur.replace_borrowed_mm(None); }
 }

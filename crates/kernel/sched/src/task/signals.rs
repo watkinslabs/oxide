@@ -417,6 +417,23 @@ impl Task {
     /// to call on an actively-scheduled task from another CPU.
     /// # C: O(1)
     pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
+        // SAFETY: forwarded fn-level contract.
+        unsafe { self.replace_mm_inner(new, true); }
+    }
+
+    /// The same swap for an mm this task only BORROWED (a kernel thread
+    /// running `kthread_use_mm`). Releasing a borrow must not latch the lent
+    /// address space's resident-set peak onto the borrower: the peak belongs
+    /// to the process that owns the pages, and folding it into a kernel
+    /// thread's own accounting invents a residency that thread never had.
+    /// # SAFETY: same contract as [`Self::replace_mm`].
+    /// # C: O(1)
+    pub unsafe fn replace_borrowed_mm(&self, new: Option<Arc<AddressSpace>>) {
+        // SAFETY: forwarded fn-level contract.
+        unsafe { self.replace_mm_inner(new, false); }
+    }
+
+    unsafe fn replace_mm_inner(&self, new: Option<Arc<AddressSpace>>, latch_rss: bool) {
         self.debug_check_canary("replace_mm");
         let _pin = self.mm_pin_lock.lock();
         // SAFETY: see fn-level contract; single-mutator on this CPU.
@@ -424,7 +441,7 @@ impl Task {
         // Linux latches `signal_struct::maxrss` from the departing mm, so an
         // `execve(2)` does not reset the process's `ru_maxrss` to the new
         // image's residency.
-        if let Some(m) = old.as_ref() {
+        if let (true, Some(m)) = (latch_rss, old.as_ref()) {
             crate::rusage_charge::latch_hiwater_rss(self, m.accounting_snapshot().hiwater_rss_pages);
         }
         #[cfg(target_os = "oxide-kernel")]
