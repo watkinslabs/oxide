@@ -8,9 +8,15 @@ extern crate alloc;
 
 mod bars;
 mod caps;
+mod config_space;
 mod scan;
 mod layout;
 mod types;
+pub mod uapi;
+
+pub use config_space::{
+    interrupt_line, read8, read16, read_bytes, span, subsystem_ids, visible_size, write_bytes,
+};
 
 pub use bars::{
     bar_offset, decode_bars, probe_bar_resources, Bar, Resource, IORESOURCE_IO, IORESOURCE_MEM,
