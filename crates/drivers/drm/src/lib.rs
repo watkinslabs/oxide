@@ -33,6 +33,7 @@ mod tests;
 pub mod crtc;
 pub mod diag;
 pub mod atomic;
+pub mod edid;
 pub mod dumb;
 pub mod kms_ext;
 pub mod modeset;

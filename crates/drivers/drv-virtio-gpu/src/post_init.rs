@@ -105,6 +105,7 @@ pub use probe::get_display_info;
 use probe::submit_one;
 
 mod damage;
+mod edid;
 pub mod present;
 
 mod scanout;
