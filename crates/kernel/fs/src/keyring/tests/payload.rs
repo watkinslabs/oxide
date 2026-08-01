@@ -113,13 +113,20 @@ fn update_applies_the_types_payload_contract() {
 #[test]
 fn the_registered_type_table_matches_its_methods() {
     for (name, readable, updatable) in
-        [("keyring", true, false), ("user", true, true), ("logon", false, true), ("big_key", true, true)]
+        [("keyring", true, false), ("user", true, true), ("logon", false, true), ("big_key", true, true),
+         // An asymmetric key has neither method: its material never comes back
+         // out, and swapping it under a caller that already queried it would
+         // let a signature be checked against a different key.
+         ("asymmetric", false, false)]
     {
         let t = types::lookup(name).expect("registered");
         assert_eq!(t.readable, readable, "{} read method", name);
         assert_eq!(t.updatable, updatable, "{} update method", name);
     }
-    assert!(types::lookup("asymmetric").is_none(), "unregistered types stay unregistered");
+    // The types needing hardware this kernel has no driver for stay
+    // unregistered, and an unregistered name is ENODEV out of `add_key`.
+    assert!(types::lookup("encrypted").is_none());
+    assert!(types::lookup("trusted").is_none());
 }
 
 // A `logon` payload is write-only: reading it is EOPNOTSUPP even for the

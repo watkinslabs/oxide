@@ -7,10 +7,11 @@
 // quota charge that payload incurs, because both are per-type facts that
 // `add_key`/`KEYCTL_UPDATE` must apply BEFORE the key is minted.
 //
-// `asymmetric`, `encrypted` and `trusted` are separate CONFIG symbols whose
-// payload machinery (X.509 parsing, TPM sealing) this kernel does not build,
-// so their names are unregistered.
+// `encrypted` and `trusted` need TPM sealing this kernel has no driver for,
+// so their names are unregistered. `asymmetric` IS registered: its payload is
+// an X.509 certificate or a PKCS#8 private key, parsed by `pkey`.
 
+use alloc::string::String;
 use syscall::errno::Errno;
 use super::uapi::*;
 
@@ -29,6 +30,10 @@ pub enum PayloadRule {
     /// `big_key_preparse`: a non-NULL payload of 1..=1048576 bytes, charged a
     /// FLAT quota regardless of size — the payload lives outside the key.
     Big,
+    /// The asymmetric-key parsers: the payload must decode as a key blob, and
+    /// the blob may propose the key's description. A flat quota, because the
+    /// stored material is the parsed key rather than the blob's length.
+    Asymmetric,
 }
 
 /// Upper payload bound for the user-defined types.
@@ -37,6 +42,8 @@ pub const USER_PAYLOAD_MAX: u64 = 32767;
 pub const BIG_PAYLOAD_MAX: u64 = 1024 * 1024;
 /// The flat byte quota a `big_key` payload is charged.
 pub const BIG_QUOTA: u64 = 16;
+/// The flat byte quota an asymmetric key is charged.
+pub const ASYMMETRIC_QUOTA: u64 = 100;
 
 /// The `struct key_type` fields the permission / perm-default / payload logic
 /// consults.
@@ -58,6 +65,10 @@ pub struct KeyType {
     pub restrictable: bool,
     /// `type->preparse`'s payload contract.
     pub payload_rule: PayloadRule,
+    /// Whether the type's preparse can PROPOSE a description, which is what
+    /// lets a caller add a key without naming it. Every other type leaves an
+    /// absent description as EINVAL.
+    pub describes_itself: bool,
 }
 
 /// `key_types_list` in registration order.
@@ -67,12 +78,12 @@ static TYPES: &[KeyType] = &[
     // EOPNOTSUPP. It still gets `KEY_POS_WRITE` by default because
     // `default_perm` names the keyring type explicitly.
     KeyType { name: "keyring", readable: true,  updatable: false, is_keyring: true,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty, describes_itself: false },
     KeyType { name: "user",    readable: true,  updatable: true,  is_keyring: false,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::UserDefined },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::UserDefined, describes_itself: false },
     // `logon` deliberately omits `.read`: the payload is write-only.
     KeyType { name: "logon",   readable: false, updatable: true,  is_keyring: false,
-              vet_colon: true,  restrictable: false, payload_rule: PayloadRule::UserDefined },
+              vet_colon: true,  restrictable: false, payload_rule: PayloadRule::UserDefined, describes_itself: false },
     // `big_key` takes a payload up to 1 MiB. Linux offloads anything past a
     // small threshold into an encrypted shmem file so it can be swapped; that
     // is a storage decision with no syscall-visible effect — the same bytes
@@ -81,7 +92,7 @@ static TYPES: &[KeyType] = &[
     // which is why a big_key does not consume the owner's byte quota in
     // proportion to its size.
     KeyType { name: "big_key", readable: true,  updatable: true,  is_keyring: false,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Big },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Big, describes_itself: false },
     // The instantiation authorisation token. Registered like any other type,
     // and unreachable from userspace by name for the same reason Linux's is:
     // `key_get_type_from_user` rejects a `.`-prefixed name with EPERM, so no
@@ -90,7 +101,16 @@ static TYPES: &[KeyType] = &[
     // holding the token — that is how `/sbin/request-key` learns what it was
     // asked to build.
     KeyType { name: REQKEY_AUTH_TYPE, readable: true, updatable: false, is_keyring: false,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty, describes_itself: false },
+    // An asymmetric key holds parsed public-key material. It has no `read`
+    // method — the point of the type is that operations happen inside the
+    // kernel and the key material never comes back out — and no `update`: a
+    // key whose material could be swapped underneath a caller that already
+    // queried it would let a signature be verified against a different key
+    // than the one that was checked.
+    KeyType { name: ASYMMETRIC_KEY_TYPE, readable: false, updatable: false, is_keyring: false,
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Asymmetric,
+              describes_itself: true },
 ];
 
 /// The authorisation-token type, for the paths that mint one directly.
@@ -141,6 +161,25 @@ pub fn vet_payload(t: &KeyType, len: u64, have_ptr: bool) -> Result<(), Errno> {
             if len == 0 || len > USER_PAYLOAD_MAX || !have_ptr { Err(Errno::Einval) } else { Ok(()) },
         PayloadRule::Big =>
             if len == 0 || len > BIG_PAYLOAD_MAX || !have_ptr { Err(Errno::Einval) } else { Ok(()) },
+        // The blob's own decoding is the length rule; `preparse_blob` applies
+        // it, because a length test cannot tell a certificate from noise.
+        PayloadRule::Asymmetric =>
+            if len == 0 || len > BIG_PAYLOAD_MAX || !have_ptr { Err(Errno::Einval) } else { Ok(()) },
+    }
+}
+
+/// The part of `preparse` that only the payload's own parser can answer: does
+/// the blob decode, and what description does it propose for itself? A type
+/// with no parser accepts any payload its length rule allowed and proposes
+/// nothing. # C: O(len)
+pub fn preparse_blob(t: &KeyType, payload: &[u8]) -> Result<Option<String>, Errno> {
+    match t.payload_rule {
+        PayloadRule::Asymmetric => {
+            let key = pkey::AsymmetricKey::parse(payload)
+                .map_err(super::ops::pkey::errno_for)?;
+            Ok(key.description)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -154,6 +193,7 @@ pub fn payload_quota(t: &KeyType, len: u64) -> u64 {
         PayloadRule::Empty => 0,
         PayloadRule::UserDefined => len,
         PayloadRule::Big => BIG_QUOTA,
+        PayloadRule::Asymmetric => ASYMMETRIC_QUOTA,
     }
 }
 

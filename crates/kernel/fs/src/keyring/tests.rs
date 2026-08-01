@@ -9,6 +9,8 @@
 //          SET_TIMEOUT/READ/DESCRIBE.
 // - links: LINK/UNLINK/MOVE/CLEAR/RESTRICT and the SEARCH / request_key scope.
 // - perm:  the `key_task_permission` chokepoint itself.
+// - pkey:  the PKEY_* family — asymmetric key admission, the information
+//          string, the query, and known-answer sign/verify/encrypt.
 // - payload: per-type payload contracts and the type table's read/update methods.
 // - quota: the per-uid `key_user` key/byte quota, EDQUOT and the gc refund.
 // - dh:    DH_COMPUTE — input-key admission, parameter vetting, and the
@@ -23,6 +25,7 @@ mod keys;
 mod links;
 mod payload;
 mod perm;
+mod pkey;
 mod quota;
 mod rings;
 

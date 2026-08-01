@@ -129,6 +129,43 @@ pub const KEYCTL_CAPS_BYTES: usize = 2;
 /// supply a number: any other type is EOPNOTSUPP.
 pub const USER_KEY_TYPE: &str = "user";
 
+/// The key type the `KEYCTL_PKEY_*` family operates on. Any other type is
+/// EOPNOTSUPP: it exists and may be readable, it simply has no asymmetric
+/// operations.
+pub const ASYMMETRIC_KEY_TYPE: &str = "asymmetric";
+
+/// Keys in the supplementary information string the `KEYCTL_PKEY_*` family
+/// takes, and the encoding assumed when the string names none.
+pub const PKEY_INFO_ENC: &str = "enc";
+pub const PKEY_INFO_HASH: &str = "hash";
+pub const PKEY_ENCODING_DEFAULT: &str = "raw";
+/// `strndup_user(_info, PAGE_SIZE)` bound on that string.
+pub const PKEY_INFO_MAX: usize = 4096;
+
+/// `KEYCTL_SUPPORTS_*` — the operation bits `KEYCTL_PKEY_QUERY` reports.
+pub const KEYCTL_SUPPORTS_ENCRYPT: u32 = 0x01;
+pub const KEYCTL_SUPPORTS_DECRYPT: u32 = 0x02;
+pub const KEYCTL_SUPPORTS_SIGN:    u32 = 0x04;
+pub const KEYCTL_SUPPORTS_VERIFY:  u32 = 0x08;
+
+/// `struct keyctl_pkey_query`: two words, four half-words, ten reserved words.
+pub const PKEY_QUERY_SIZE: usize = 56;
+pub const PKEY_QUERY_SUPPORTED_OPS_OFFSET: usize = 0;
+pub const PKEY_QUERY_KEY_SIZE_OFFSET: usize = 4;
+pub const PKEY_QUERY_MAX_DATA_SIZE_OFFSET: usize = 8;
+pub const PKEY_QUERY_MAX_SIG_SIZE_OFFSET: usize = 10;
+pub const PKEY_QUERY_MAX_ENC_SIZE_OFFSET: usize = 12;
+pub const PKEY_QUERY_MAX_DEC_SIZE_OFFSET: usize = 14;
+
+/// `struct keyctl_pkey_params`: the key serial, the input length, a union of
+/// the output length and the second input length, and seven reserved words.
+pub const PKEY_PARAMS_SIZE: u64 = 40;
+pub const PKEY_PARAMS_KEY_ID_OFFSET: usize = 0;
+pub const PKEY_PARAMS_IN_LEN_OFFSET: usize = 4;
+pub const PKEY_PARAMS_OUT_LEN_OFFSET: usize = 8;
+pub const PKEY_PARAMS_SPARE_OFFSET: usize = 12;
+pub const PKEY_PARAMS_SPARE_WORDS: usize = 7;
+
 /// `struct keyctl_dh_params` — three key serials, no padding.
 pub const DH_PARAMS_SIZE: u64 = 12;
 /// `struct keyctl_kdf_params`: two user pointers, the otherinfo length, and
