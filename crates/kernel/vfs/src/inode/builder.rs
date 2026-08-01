@@ -106,6 +106,7 @@ impl InodeBuilder {
             i_btime: self.btime,
             i_writecount: core::sync::atomic::AtomicI32::new(0),
             i_state: AtomicU32::new(0),
+            dirtied_time_when: AtomicU64::new(0),
             i_count: AtomicU32::new(1),
             i_version: AtomicU64::new(self.version),
             i_fsid: AtomicU64::new(self.fsid),

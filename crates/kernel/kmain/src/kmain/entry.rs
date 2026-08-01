@@ -33,6 +33,9 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kerror!("fatal: khelper spawn failed");
         sched::halt_forever();
     }
+    // Periodic lazytime sweep: bounds how long a `lazytime` mount may hold a
+    // timestamp in memory. Needs the workqueue, so it arms right after it.
+    fs::sync::start_dirtytime_writeback();
     if pmm::spawn_kswapd().is_err() {
         klog::kerror!("fatal: kswapd spawn failed");
         sched::halt_forever();
