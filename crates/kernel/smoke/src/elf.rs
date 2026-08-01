@@ -321,7 +321,9 @@ unsafe fn spawn_user_blob_with_vpid(
     // FS-relative access, matching Linux execve semantics.
     // SAFETY: wrmsr IA32_FS_BASE = 0 at CPL=0 is legal; user crt1
     // overwrites with the real TCB before first FS-relative load.
-    unsafe { hal_x86_64::set_user_fs_base(0); }
+    // SAFETY: wrmsr of the two per-thread segment bases at CPL=0 is legal;
+    // a fresh user image starts with both clear, exactly as execve leaves them.
+    unsafe { hal_x86_64::set_user_fs_base(0); hal_x86_64::set_user_gs_base(0); }
 
     debug_irq! {
         klog::write_raw(b"[INFO]  user-blob: spawned name=");

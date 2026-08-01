@@ -34,7 +34,7 @@ mod uaccess;
 pub mod vmm;
 
 pub use context::{ContextX86_64, ForkRegs};
-pub use cpu::{get_user_fs_base, halt, mmio_barrier, set_user_fs_base, X86CpuOps};
+pub use cpu::{get_user_fs_base, get_user_gs_base, halt, mmio_barrier, set_user_fs_base, set_user_gs_base, X86CpuOps};
 pub use cpuid_fault::{cpuid_fault_kind, cpuid_fault_supported, set_cpuid_faulting,
     CPUID_FAULT_AMD, CPUID_FAULT_INTEL, CPUID_FAULT_NONE};
 pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, vendor as cpuid_vendor};
