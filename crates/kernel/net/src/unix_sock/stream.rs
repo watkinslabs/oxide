@@ -24,5 +24,5 @@ pub use lifecycle::ArmStreamRead;
 pub use lifecycle::ArmStreamWrite;
 #[cfg(target_os = "oxide-kernel")]
 pub use read::ReadOutcome;
-pub use recv::StreamFiles;
+pub use recv::{stream_recv_continues, StreamFiles};
 pub use types::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};
