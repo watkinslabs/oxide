@@ -34,7 +34,10 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
     dest: i32) -> i64
 {
     let ty = match types::lookup(key_type) { Some(t) => t, None => return e(Errno::Enodev) };
-    if desc.is_empty() { return e(Errno::Einval); }
+    // A key must be named. Only a type whose payload can propose a name for
+    // itself may be added without one, and even then the proposal has to
+    // materialise — see below.
+    if desc.is_empty() && !ty.describes_itself { return e(Errno::Einval); }
     let mut g = STORE.lock();
     // The destination keyring is MANDATORY: an id of 0 is not shorthand for
     // the session keyring, it is EINVAL out of the id resolver. Treating it as
@@ -43,6 +46,14 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
     let ring = match g.resolve(dest, &c.t) { Ok(r) => r, Err(err) => return e(err) };
     if g.keys.get(&ring).map(|k| !k.is_keyring()).unwrap_or(true) { return e(Errno::Enotdir); }
     if let Err(err) = types::vet_payload(ty, payload.len() as u64, have_payload_ptr) { return e(err); }
+    // The type's parser runs BEFORE the destination keyring is checked for
+    // write access, so a malformed payload is reported as malformed rather
+    // than as a permission problem on a keyring the caller never got to use.
+    let proposed = match types::preparse_blob(ty, &payload) { Ok(d) => d, Err(err) => return e(err) };
+    let named: String = if !desc.is_empty() { String::from(desc) } else {
+        match proposed { Some(d) => d, None => return e(Errno::Einval) }
+    };
+    let desc: &str = &named;
     if let Err(rv) = check_perm(&g, ring, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     let quota = types::payload_quota(ty, payload.len() as u64);
     if ty.updatable {
