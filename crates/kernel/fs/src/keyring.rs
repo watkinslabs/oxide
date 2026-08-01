@@ -19,16 +19,19 @@
 // - ops:     the per-op cores (rings / keys / links), each taking an explicit
 //            `Ctx` so hosted tests drive them for arbitrary callers.
 // - keyctl:  `keyctl(2)` command dispatch and its user-memory marshalling.
+// - lifecycle: the fork / exec / exit / fsid-change transitions that move this
+//            state in Linux because it lives in `cred`.
+// - report:  `/proc/keys` and `/proc/key-users` rendering.
 //
 // This file owns only the syscall entry points, the user-memory helpers they
 // share, and the one place `sched::current()` is turned into a `Ctx`.
 //
-// Model vs Linux: session/thread keyrings are keyed per-TID, the process
-// keyring per-TGID, the user + user-session keyrings per-UID; fork copies the
-// parent's session serial via `inherit_session`. A login session sharing ONE
-// session keyring across several processes is reached the way Linux reaches
-// it — `KEYCTL_JOIN_SESSION_KEYRING` with a name, which pam_keyinit and
-// systemd use.
+// Model vs Linux: Linux hangs every one of these on `cred`. Here the session,
+// thread and `jit_keyring` state is keyed per-TID, the process keyring per-TGID
+// and the user + user-session keyrings per-UID, which reproduces the cred
+// sharing rules structurally — a `CLONE_THREAD` child shares its parent's tgid
+// and therefore its process keyring, a fork does not — with `lifecycle`
+// applying the transitions `copy_creds`/`prepare_exec_creds`/`put_cred` apply.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -38,8 +41,10 @@ use syscall::errno::Errno;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 mod keyctl;
+mod lifecycle;
 mod ops;
 mod perm;
+mod report;
 mod store;
 mod types;
 // The complete `uapi/linux/keyctl.h` + `include/linux/key.h` number space:
@@ -54,8 +59,8 @@ mod types;
 mod uapi;
 
 pub use keyctl::sys_keyctl;
-pub use ops::inherit_session;
-pub use store::TaskIds;
+pub use lifecycle::{exec as exec_keys, exit as exit_keys, fork as fork_keys, fsids_changed};
+pub use store::{quota_limit, set_quota_limit, QuotaKnob, TaskIds};
 use ops::Ctx;
 use uapi::*;
 
@@ -219,6 +224,16 @@ pub fn sys_request_key(args: &SyscallArgs) -> i64 {
     }
     ops::request_key_core(&cur_ctx(), &key_type, &description, args.a3 as i32)
 }
+
+/// `/proc/keys` as the CURRENT reader sees it — keys it may not VIEW are
+/// omitted, so the file is a per-task view rather than a global dump. # C: O(N)
+pub fn proc_keys() -> String {
+    let c = cur_ctx();
+    report::proc_keys(&c.t, c.now_ns)
+}
+
+/// `/proc/key-users` — the per-uid quota table. # C: O(N)
+pub fn proc_key_users() -> String { report::proc_key_users() }
 
 /// Dispatch for the three keyring slots. # C: O(1)
 pub fn keyring_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {

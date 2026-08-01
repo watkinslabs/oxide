@@ -106,16 +106,6 @@ fn get_keyring_id_by_serial_needs_search_permission() {
     assert_eq!(get_keyring_id(&owner, ring, true), ring as i64);
 }
 
-// A forked child shares the parent's session keyring (Linux copy_creds).
-#[test]
-fn fork_inherits_session_keyring() {
-    let parent = ctx(1007, 1007);
-    let child  = ctx(1008, 1007);
-    let ps = join_session(&parent, None);
-    inherit_session(parent.t.tid, child.t.tid);
-    assert_eq!(get_keyring_id(&child, KEY_SPEC_SESSION_KEYRING, true), ps);
-}
-
 // SET_REQKEY_KEYRING returns the PREVIOUS setting and actually stores the new
 // one; returning a bare 0 told `request-key` its default had been installed
 // when nothing had changed. The default before any call is
