@@ -178,7 +178,12 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     let layout = crate::exec_transition::exec_mmap_layout(
         &cur, creds.per_clear, &rnd, rlim_stack, raw_stack_rlim);
     new_as.set_mmap_layout(layout.base, layout.top_down);
-    let img = match elf_load::load_static_blob(blob, &new_as, &rnd) {
+    let exec_image = elf_load::Image {
+        blob,
+        file: exec_vp.as_ref().map(crate::execve_common::image_backing),
+    };
+    let img = match elf_load::load_image(
+        exec_image, Some(&crate::execve_common::open_interp), &new_as, &rnd) {
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };

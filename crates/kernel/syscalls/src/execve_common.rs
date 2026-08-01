@@ -260,3 +260,24 @@ pub(crate) fn resolve_shebang_chain(
     // Recursion cap exceeded (Linux `exec_binprm`: `if (depth > 5) return -ELOOP`).
     Err(-(Errno::Eloop.as_i32() as i64))
 }
+
+/// The file an exec image was read from, as the ELF loader wants it: Linux
+/// `bprm->file`, which becomes `vma->vm_file` on every PT_LOAD the loader maps
+/// out of it, so the program's own text and data are file-backed mappings
+/// rather than private memory with nothing behind them.
+/// # C: O(1)
+pub(crate) fn image_backing(vp: &vfs::VfsPath) -> alloc::sync::Arc<dyn vmm::FileBacking> {
+    crate::mmap_file::InodeFileBacking::new(vp.inode.clone())
+}
+
+/// Open the pathname a PT_INTERP names through the same `do_open_execat` gate
+/// the exec image went through, and hand back its bytes together with its file.
+/// `None` leaves the loader on its boot-time rootfs reader, which resolves no
+/// inode and therefore yields no file.
+/// # C: O(components) + O(size/PAGE)
+pub(crate) fn open_interp(path: &[u8])
+    -> Option<(alloc::vec::Vec<u8>, Option<alloc::sync::Arc<dyn vmm::FileBacking>>)>
+{
+    let (blob, vp) = crate::pathresolve::open_exec(path).ok()?;
+    Some((blob, Some(image_backing(&vp))))
+}
