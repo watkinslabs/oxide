@@ -94,7 +94,7 @@ fn f179a_sack_blocks_two_disjoint_runs() {
 
 #[test]
 fn f179a_ack_with_ooo_carries_sack_option() {
-    let mut c = client_established();
+    let mut c = client_established_sack();
     let base = c.rcv_nxt;
     // Push OOO then in-order; the ACK reply should carry SACK.
     let ooo = build_data_segment(base.wrapping_add(5), c.snd_nxt, b"world");
@@ -105,6 +105,68 @@ fn f179a_ack_with_ooo_carries_sack_option() {
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].left,  base.wrapping_add(5));
     assert_eq!(parsed[0].right, base.wrapping_add(10));
+}
+
+#[test]
+fn sack_blocks_are_withheld_from_a_peer_that_did_not_permit_them() {
+    // The peer's SYN-ACK carried no SACK-permitted, so this side may not send
+    // blocks however many out-of-order runs it is holding.
+    let mut c = client_established();
+    assert!(!c.sack_ok);
+    let base = c.rcv_nxt;
+    let ooo = build_data_segment(base.wrapping_add(5), c.snd_nxt, b"world");
+    let _ = c.input(lo_ip(), lo_ip(), &ooo);
+    assert!(!c.sack_blocks().is_empty(), "the runs exist; only sending them is refused");
+    let ack = c.build_ack_with_sack();
+    assert!(crate::tcp_hdr::parse_sack_option(&ack).is_empty());
+    assert_eq!(ack.len(), TCP_HDR_MIN_LEN, "a bare acknowledgement carries no option area");
+}
+
+#[test]
+fn an_opening_syn_offers_every_option_this_side_supports() {
+    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
+    let syn = c.active_open().unwrap();
+    assert_eq!(parse_mss_option(&syn), Some(crate::tcp_conn::OWN_MSS_DEFAULT));
+    assert_eq!(parse_wscale_option(&syn), Some(crate::tcp_conn::OWN_WSCALE));
+    assert!(crate::tcp_hdr::parse_sack_permitted(&syn), "SACK-permitted is offered, not merely parsed");
+    assert!(crate::tcp_hdr::parse_ts_option(&syn).is_some());
+}
+
+#[test]
+fn a_syn_ack_echoes_only_the_options_the_peer_offered() {
+    // A bare SYN: the reply may carry none of the negotiated options, because
+    // offering one the peer never asked for turns a feature on unilaterally.
+    let mut server = TcpConn::new_listener(ep(lo(), 80));
+    let bare = build_syn_opts(0x3000_0000, SynOptions { mss: Some(1460), ..SynOptions::default() });
+    let synack = server.input(lo_ip(), lo_ip(), &bare).unwrap().unwrap();
+    assert_eq!(parse_wscale_option(&synack), None);
+    assert!(crate::tcp_hdr::parse_ts_option(&synack).is_none());
+    assert!(!crate::tcp_hdr::parse_sack_permitted(&synack));
+    assert_eq!(parse_mss_option(&synack), Some(crate::tcp_conn::OWN_MSS_DEFAULT));
+
+    // The same listener answering a SYN that offered everything echoes it all.
+    let mut server = TcpConn::new_listener(ep(lo(), 80));
+    let full = build_syn_opts(0x3000_0000, SynOptions {
+        mss: Some(1460), timestamp: Some((7, 0)), sack_perm: true, wscale: Some(9) });
+    let synack = server.input(lo_ip(), lo_ip(), &full).unwrap().unwrap();
+    assert_eq!(parse_wscale_option(&synack), Some(crate::tcp_conn::OWN_WSCALE));
+    assert!(crate::tcp_hdr::parse_ts_option(&synack).is_some());
+    assert!(crate::tcp_hdr::parse_sack_permitted(&synack));
+}
+
+#[test]
+fn a_peer_that_declines_scaling_takes_this_sides_scale_down_with_it() {
+    // The opening SYN set this side's scale in advance. A SYN-ACK without the
+    // option disables scaling both ways, so the advertised window must stop
+    // being shifted — otherwise it reports a window the peer reads unshifted.
+    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
+    let _ = c.active_open().unwrap();
+    assert_eq!(c.snd_wscale, crate::tcp_conn::OWN_WSCALE);
+    let synack = build_synack_opts(0x2000_0000, c.snd_nxt, 65535,
+        SynOptions { mss: Some(1460), ..SynOptions::default() });
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
+    assert!(!c.wscale_ok);
+    assert_eq!((c.snd_wscale, c.rcv_wscale), (0, 0));
 }
 
 #[test]
@@ -332,5 +394,51 @@ pub(super) fn client_established() -> TcpConn {
     let synack = build_synack_with_options(0x2000_0000, c.snd_nxt, 65535, Some(1460), None);
     let _ = c.input(lo_ip(), lo_ip(), &synack);
     assert_eq!(c.state, TcpState::Established);
+    c
+}
+
+/// A peer's SYN-ACK carrying an arbitrary option set, assembled through the
+/// real writer so a test drives the same layout the stack emits.
+pub(super) fn build_synack_opts(peer_seq: u32, peer_ack: u32, window: u16,
+                                opts: SynOptions) -> Vec<u8>
+{
+    let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + opts.encoded_len()];
+    opts.encode(&mut buf[TCP_HDR_MIN_LEN..]);
+    let mut h = TcpHdr {
+        src_port: 80, dst_port: 5000,
+        seq: peer_seq, ack: peer_ack,
+        data_offset: opts.data_offset(),
+        flags: crate::tcp_hdr::flags::SYN | crate::tcp_hdr::flags::ACK,
+        window, checksum: 0, urg_ptr: 0,
+    };
+    h.build_into(lo(), lo(), &mut buf);
+    buf
+}
+
+/// A peer's opening SYN carrying an arbitrary option set. # C: O(1)
+pub(super) fn build_syn_opts(peer_seq: u32, opts: SynOptions) -> Vec<u8> {
+    let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + opts.encoded_len()];
+    opts.encode(&mut buf[TCP_HDR_MIN_LEN..]);
+    let mut h = TcpHdr {
+        src_port: 5000, dst_port: 80,
+        seq: peer_seq, ack: 0,
+        data_offset: opts.data_offset(),
+        flags: crate::tcp_hdr::flags::SYN,
+        window: 65535, checksum: 0, urg_ptr: 0,
+    };
+    h.build_into(lo(), lo(), &mut buf);
+    buf
+}
+
+/// An established client whose peer permitted selective acknowledgement — the
+/// negotiation that entitles this side to send blocks at all.
+pub(super) fn client_established_sack() -> TcpConn {
+    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
+    let _ = c.active_open().unwrap();
+    let synack = build_synack_opts(0x2000_0000, c.snd_nxt, 65535,
+        SynOptions { mss: Some(1460), sack_perm: true, ..SynOptions::default() });
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
+    assert_eq!(c.state, TcpState::Established);
+    assert!(c.sack_ok, "the peer permitted selective acknowledgement");
     c
 }

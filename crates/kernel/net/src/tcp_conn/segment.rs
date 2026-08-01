@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::tcp_conn::{TcpConn, UnackedSegment};
+use crate::tcp_conn::syn_opts::SynOptions;
 use crate::tcp_hdr::{TcpHdr, TCP_HDR_MIN_LEN, flags, opt};
 
 impl TcpConn {
@@ -70,37 +71,33 @@ impl TcpConn {
         self.build_syn_with_opts_at(self.snd_nxt, flag_bits)
     }
 
-    pub(super) fn build_syn_with_opts_at(&self, seq: u32, flag_bits: u8) -> Vec<u8> {
-        const OPTS_LEN: usize = 20;
-        let total = TCP_HDR_MIN_LEN + OPTS_LEN;
-        let mut buf = alloc::vec![0u8; total];
-        let mut i = TCP_HDR_MIN_LEN;
-        buf[i] = opt::MSS;
-        buf[i + 1] = 4;
+    /// Options this handshake segment carries. An opening SYN offers
+    /// everything this side supports; a SYN-ACK may only echo what the peer's
+    /// SYN offered, because an option the peer never asked for would be read
+    /// as this side unilaterally turning a feature on. # C: O(1)
+    pub(crate) fn syn_options(&self, flag_bits: u8) -> SynOptions {
+        let synack = (flag_bits & flags::ACK) != 0;
         let mss = if self.own_mss != 0 { self.own_mss } else { super::OWN_MSS_DEFAULT };
-        buf[i + 2..i + 4].copy_from_slice(&mss.to_be_bytes());
-        i += 4;
-        buf[i] = opt::NOP;
-        i += 1;
-        buf[i] = opt::WSCALE;
-        buf[i + 1] = 3;
-        buf[i + 2] = self.snd_wscale;
-        i += 3;
-        buf[i] = opt::NOP;
-        i += 1;
-        buf[i] = opt::NOP;
-        i += 1;
-        buf[i] = opt::TIMESTAMP;
-        buf[i + 1] = 10;
-        buf[i + 2..i + 6].copy_from_slice(
-            &crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off).to_be_bytes());
-        buf[i + 6..i + 10].copy_from_slice(&self.ts_recent.to_be_bytes());
+        SynOptions {
+            mss: Some(mss),
+            timestamp: (!synack || self.ts_enabled).then(|| (
+                crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off), self.ts_recent)),
+            sack_perm: !synack || self.sack_ok,
+            wscale: (!synack || self.wscale_ok).then_some(self.snd_wscale),
+        }
+    }
+
+    pub(super) fn build_syn_with_opts_at(&self, seq: u32, flag_bits: u8) -> Vec<u8> {
+        let opts = self.syn_options(flag_bits);
+        let opts_len = opts.encoded_len();
+        let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + opts_len];
+        opts.encode(&mut buf[TCP_HDR_MIN_LEN..]);
         let mut h = TcpHdr {
             src_port: self.local.port,
             dst_port: self.remote.port,
             seq,
             ack: self.rcv_nxt,
-            data_offset: 10,
+            data_offset: opts.data_offset(),
             flags: flag_bits,
             window: self.current_rcv_window(),
             checksum: 0,

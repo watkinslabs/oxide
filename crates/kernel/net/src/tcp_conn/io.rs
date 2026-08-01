@@ -156,6 +156,7 @@ impl TcpConn {
                     dst_ip, src_ip, self.local.port, hdr.src_port);
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
+                    self.wscale_ok = true;
                     self.rcv_wscale = s;
                     self.snd_wscale = crate::tcp_conn::OWN_WSCALE;
                 }
@@ -163,6 +164,10 @@ impl TcpConn {
                     self.ts_enabled = true;
                     self.ts_recent  = tsval;
                 }
+                // Selective acknowledgement is only usable when the peer said
+                // so on its SYN; sending blocks to a peer that never permitted
+                // them is an option it is entitled to reject the segment over.
+                self.sack_ok = crate::tcp_hdr::parse_sack_permitted(seg);
                 self.snd_wnd = hdr.window as u32;
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvSyn)
                     .ok_or(TcpConnError::BadState)?;
@@ -193,9 +198,15 @@ impl TcpConn {
                 self.rcv_read_seq = self.rcv_nxt;
                 self.snd_una = hdr.ack;
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
-                if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
-                    self.rcv_wscale = s;
+                match crate::tcp_hdr::parse_wscale_option(seg) {
+                    Some(s) => { self.wscale_ok = true; self.rcv_wscale = s; }
+                    // The peer declined scaling. This side offered it on the
+                    // SYN and set its own scale in advance, so that has to be
+                    // taken back: continuing to shift the advertised window
+                    // would report a window the peer reads unshifted.
+                    None => { self.rcv_wscale = 0; self.snd_wscale = 0; }
                 }
+                self.sack_ok = crate::tcp_hdr::parse_sack_permitted(seg);
                 if let Some((tsval, _)) = crate::tcp_hdr::parse_ts_option(seg) {
                     self.ts_enabled = true;
                     self.ts_recent  = tsval;

@@ -199,7 +199,7 @@ fn f179a_sack_blocks_two_disjoint_runs() {
 
 #[test]
 fn f179a_ack_with_ooo_carries_sack_option() {
-    let mut c = client_established();
+    let mut c = client_established_sack();
     let base = c.rcv_nxt;
     // Push OOO then in-order; the ACK reply should carry SACK.
     let ooo = build_data_segment(base.wrapping_add(5), c.snd_nxt, b"world");
