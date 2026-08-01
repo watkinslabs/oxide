@@ -742,21 +742,26 @@ pub struct Task {
     /// status is `syscall::wait::stopped_wstatus(stop_code)`.
     pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_code: AtomicU32,
     /// Per-task hardware debug-register shadow: DR0-DR3 addresses, then the
-    /// DR6 status and DR7 control at `debugreg::STATUS`/`CONTROL`. Installed
-    /// into hardware by the context switch when armed and read/written by
-    /// `PTRACE_PEEKUSER`/`POKEUSER` on the `u_debugreg` window. Arch-neutral
-    /// storage: the bit contract belongs to the HAL (`debugreg::x86`).
-    pub debugregs: [AtomicU64; crate::debugreg::SLOTS],
+    /// DR6 status and DR7 control. Installed into hardware by the context
+    /// switch when armed and read/written by `PTRACE_PEEKUSER`/`POKEUSER` on
+    /// the `u_debugreg` window. Arch-neutral storage; the bit contract belongs
+    /// to the HAL (`debugreg::x86`).
+    ///
+    /// LAZY: one pointer, null until a breakpoint is actually armed. `Task` is
+    /// built on the boot stack and the deepest aarch64 syscall path runs within
+    /// single-digit bytes of the stack ceiling, so an inline register file here
+    /// is a stack-budget regression rather than merely wasted memory.
+    pub debugregs: crate::debugreg::slab::Lazy<crate::debugreg::Shadow>,
+    /// aarch64 per-task hardware breakpoint / watchpoint register file — up to
+    /// 16 breakpoint plus 16 watchpoint slots, so LAZY for the same
+    /// stack-budget reason as `debugregs` above. Same single-mutator discipline
+    /// as `fpu_state` (`13§5`) once allocated: the owning task on its own CPU,
+    /// or a tracer while the tracee is ptrace-stopped.
+    #[cfg(target_arch = "aarch64")]
+    pub hw_break: crate::debugreg::slab::Lazy<crate::debugreg::arm::Shadow>,
     /// Linux `task->jobctl`: the job-control / ptrace-trap latch. Bit layout
     /// and every rule read off it are `crate::jobctl`.
     pub jobctl: AtomicU64,
-    /// Why this task was last made runnable out of a stop, as a
-    /// `crate::jobctl::WakeKind` discriminant. The stopping task reads it on
-    /// the way out of the stop to decide whether the resume was an observable
-    /// `CLD_CONTINUED` event — only a real SIGCONT is. A shared flag cannot
-    /// serve: `cont_pending` is consumed by whichever `wait4` collects it
-    /// first, which would race the stopped task's own read.
-    pub stop_wake: AtomicU8,
 
     /// `rseq(2)` registration pointer — per-THREAD user pointer to a
     /// `struct rseq`. Non-zero means every exit to user republishes the ids

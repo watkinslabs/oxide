@@ -350,7 +350,7 @@ fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
 fn sshd_base_lifecycle_omits_per_syscall_trace_and_detail_retains_it() {
     let source = include_str!("dispatch/core.rs");
     let enter = source.find("trace_sshd_listener_enter(nr, &args);").unwrap();
-    let dispatch = source.find("let entry = crate::dispatch_entry_order::entry_work(").unwrap();
+    let dispatch = source.find("let entry = syscall_entry_work(orig_nr, &args);").unwrap();
     let exit = source.find("trace_sshd_listener_exit(nr, rv);").unwrap();
     let detail = source.find("#[cfg(feature = \"debug-sshd-detail\")]\n    trace_sshd_syscall(nr, rv);").unwrap();
     assert!(enter < dispatch);

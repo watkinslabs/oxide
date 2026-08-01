@@ -258,8 +258,7 @@ fn only_a_sigcont_wake_records_a_continue_event() {
         assert_eq!(t.cont_pending.load(Ordering::Acquire), expect,
                    "{wake:?}");
         // The reason is published for the resuming task to read back.
-        assert_eq!(WakeKind::from_u8(t.stop_wake.load(Ordering::Acquire)),
-                   wake);
+        assert_eq!(crate::jobctl::wake_of(t.jobctl.load(Ordering::Acquire)), wake);
     }
 }
 

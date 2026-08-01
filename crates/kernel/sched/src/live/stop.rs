@@ -15,7 +15,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::exit::notify::{cldstop_notify, Cldstop, ParentSigchld};
-use crate::jobctl::{self, NotifyTarget, StopKind, WakeKind};
+use crate::jobctl::{self, NotifyTarget, StopKind};
 use crate::TaskState;
 
 /// Flip current to Stopped + schedule away. Loops until SIGCONT
@@ -76,7 +76,7 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
         unsafe { crate::live::schedule(); }
         if cur.state() == TaskState::Runnable {
-            let wake = WakeKind::from_u8(cur.stop_wake.load(Ordering::Acquire));
+            let wake = jobctl::wake_of(cur.jobctl.load(Ordering::Acquire));
             // Leaving the trap drops LISTENING, so PTRACE_LISTEN is per-stop:
             // the tracer must re-issue it after each report.
             let jc = jobctl::stop_exit_clears(cur.jobctl.load(Ordering::Acquire));

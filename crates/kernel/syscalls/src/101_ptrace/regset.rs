@@ -63,6 +63,12 @@ pub fn regset(target: &Task, nt: u64, data: u64, write: bool) -> Result<(), Errn
             if write { mem::fpregs_in(target, iov_base, n)? }
             else     { mem::fpregs_out(target, iov_base, n)? }
         }
+        #[cfg(target_arch = "aarch64")]
+        uapi::NT_ARM_HW_BREAK => hwdebug(target, iov_base, n, write,
+            hal_aarch64::hw_breakpoint::RegFile::Break)?,
+        #[cfg(target_arch = "aarch64")]
+        uapi::NT_ARM_HW_WATCH => hwdebug(target, iov_base, n, write,
+            hal_aarch64::hw_breakpoint::RegFile::Watch)?,
         // `decide::regset_len` already rejected every other note type.
         _ => return Err(Errno::Einval),
     }
@@ -113,4 +119,85 @@ fn copy_regs_in(src: u64, regs: &mut [u64]) -> Result<(), Errno> {
         }
     }
     Ok(())
+}
+
+/// `NT_ARM_HW_BREAK` / `NT_ARM_HW_WATCH` — arm64's hardware breakpoint and
+/// watchpoint register files, exchanged as a `struct user_hwdebug_state`.
+/// This is the interface `gdb`'s `hbreak` and `watch` drive; arm64 has no
+/// `struct user` debug window for them to use instead.
+///
+/// The header's `dbg_info` reports the debug architecture version and the
+/// number of slots THIS machine implements, read from the CPU's own feature
+/// register. The buffer is always the full 16 slots regardless — the
+/// implemented count travels in the header, not in the length.
+///
+/// Transferred one slot at a time rather than through a `struct`-sized stack
+/// buffer: the whole structure is 264 bytes and this runs on the syscall path,
+/// whose deepest aarch64 chain has no room for it.
+///
+/// A write validates every slot into a scratch copy FIRST and installs the
+/// result only if all of them pass, so a rejected slot cannot leave the task
+/// holding half a debugger's request. The layout arithmetic belongs to the
+/// HAL; this shim only moves bytes and reports errno.
+/// # C: O(N_slots)
+#[cfg(target_arch = "aarch64")]
+fn hwdebug(target: &Task, base: u64, n: usize, write: bool,
+           file: hal_aarch64::hw_breakpoint::RegFile) -> Result<(), Errno> {
+    use hal_aarch64::hw_breakpoint::layout;
+    if n == 0 { return Ok(()); }
+    let ok = if write { crate::userbuf::validate_user_buf(base, n as u64, 1).is_ok() }
+             else     { crate::userbuf::validate_user_buf_writable(base, n as u64, 1).is_ok() };
+    if !ok { return Err(Errno::Efault); }
+    if write {
+        let mut st = sched::debugreg::arm::snapshot(target);
+        for idx in 0..layout::REGSET_SLOTS {
+            // A short iovec leaves the remaining slots at their current value,
+            // matching `copy_regset_from_user`'s partial-write semantics.
+            if layout::slot_ctrl_off(idx) + 4 > n { break; }
+            let addr = read_u64(base, layout::slot_addr_off(idx));
+            let ctrl = read_u32(base, layout::slot_ctrl_off(idx));
+            st.set_addr(file, idx, addr).map_err(|_| Errno::Einval)?;
+            st.set_ctrl(file, idx, ctrl).map_err(|_| Errno::Einval)?;
+        }
+        sched::debugreg::arm::store(target, &st);
+        return Ok(());
+    }
+    let st = sched::debugreg::arm::snapshot(target);
+    if layout::DBG_INFO_OFF + 4 <= n {
+        write_u32(base, layout::DBG_INFO_OFF, sched::debugreg::arm::dbg_info(file));
+    }
+    if layout::HDR_PAD_OFF + 4 <= n { write_u32(base, layout::HDR_PAD_OFF, 0); }
+    for idx in 0..layout::REGSET_SLOTS {
+        let (addr, ctrl) = st.get(file, idx).unwrap_or((0, 0));
+        if layout::slot_addr_off(idx) + 8 <= n { write_u64(base, layout::slot_addr_off(idx), addr); }
+        if layout::slot_ctrl_off(idx) + 4 <= n { write_u32(base, layout::slot_ctrl_off(idx), ctrl); }
+        if layout::slot_pad_off(idx)  + 4 <= n { write_u32(base, layout::slot_pad_off(idx), 0); }
+    }
+    Ok(())
+}
+
+/// Unaligned user reads/writes at an offset inside a range the caller already
+/// validated. Kept tiny and separate so the transfer above needs no buffer.
+#[cfg(target_arch = "aarch64")]
+fn read_u64(base: u64, off: usize) -> u64 {
+    // SAFETY: `base..base+n` was validated readable in the caller's AS and `off+8 <= n` is checked at every call site; unaligned load, as Linux `copy_from_user` permits.
+    unsafe { core::ptr::read_unaligned((base + off as u64) as *const u64) }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn read_u32(base: u64, off: usize) -> u32 {
+    // SAFETY: `base..base+n` was validated readable in the caller's AS and `off+4 <= n` is checked at every call site; unaligned load.
+    unsafe { core::ptr::read_unaligned((base + off as u64) as *const u32) }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn write_u64(base: u64, off: usize, v: u64) {
+    // SAFETY: `base..base+n` was validated writable in the caller's AS and `off+8 <= n` is checked at the call site; unaligned store, as Linux `copy_to_user` permits.
+    unsafe { core::ptr::write_unaligned((base + off as u64) as *mut u64, v); }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn write_u32(base: u64, off: usize, v: u32) {
+    // SAFETY: `base..base+n` was validated writable in the caller's AS and `off+4 <= n` is checked at the call site; unaligned store.
+    unsafe { core::ptr::write_unaligned((base + off as u64) as *mut u32, v); }
 }
