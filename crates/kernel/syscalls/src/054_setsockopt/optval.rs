@@ -47,4 +47,5 @@ pub(super) fn read_u8_or_i32(optval: u64, optlen: u32) -> Option<i32> {
 }
 
 /// Encode an `Errno` as the negative syscall return. # C: O(1)
+#[allow(dead_code)]
 pub(super) fn err(error: Errno) -> i64 { -(error.as_i32() as i64) }

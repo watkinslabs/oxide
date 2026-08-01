@@ -103,12 +103,44 @@ fn publish_v6(inner: &mut Inner, stack: &NetStack, rtnl: &crate::RtnlGuard<'_>,
 
 
 /// Canonical socket-owned multicast state, valid before and after bind.
-pub struct SocketMcast { inner: Spinlock<Inner, LockClass> }
+pub struct SocketMcast {
+    inner: Spinlock<Inner, LockClass>,
+    /// `IP_MULTICAST_ALL` / `IPV6_MULTICAST_ALL`, both enabled at creation.
+    /// Stored on the object the receive path already reaches so the option has
+    /// exactly one home; delivery itself still requires a joined group, which
+    /// is the answer this flag would otherwise relax.
+    multicast_all_v4: ::core::sync::atomic::AtomicBool,
+    multicast_all_v6: ::core::sync::atomic::AtomicBool,
+}
 
 impl SocketMcast {
     /// Empty socket multicast state. # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(Inner { v4: BTreeMap::new(), v6: BTreeMap::new() }) }
+        Self {
+            inner: Spinlock::new(Inner { v4: BTreeMap::new(), v6: BTreeMap::new() }),
+            multicast_all_v4: ::core::sync::atomic::AtomicBool::new(true),
+            multicast_all_v6: ::core::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// # C: O(1)
+    pub fn set_multicast_all_v4(&self, on: bool) {
+        self.multicast_all_v4.store(on, ::core::sync::atomic::Ordering::Release);
+    }
+
+    /// # C: O(1)
+    pub fn set_multicast_all_v6(&self, on: bool) {
+        self.multicast_all_v6.store(on, ::core::sync::atomic::Ordering::Release);
+    }
+
+    /// # C: O(1)
+    pub fn multicast_all_v4(&self) -> bool {
+        self.multicast_all_v4.load(::core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// # C: O(1)
+    pub fn multicast_all_v6(&self) -> bool {
+        self.multicast_all_v6.load(::core::sync::atomic::Ordering::Acquire)
     }
 
     /// Join or leave one IPv4 group and its interface-level refcount atomically. # C: O(N)
