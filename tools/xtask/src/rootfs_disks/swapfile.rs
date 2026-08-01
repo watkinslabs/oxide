@@ -3,10 +3,6 @@ use std::process::Command;
 
 use crate::cmds::run;
 
-const X86_TRIPLET: &str = "x86_64-linux-musl";
-const X86_CROSS_DIR: &str = "x86_64-linux-musl-cross";
-const ARM_TRIPLET: &str = "aarch64-linux-musl";
-const ARM_CROSS_DIR: &str = "aarch64-linux-musl-cross";
 const PROBE_SOURCE: &str = "userspace/swapfile_probe/swapfile_probe.c";
 const PROBE_NAME: &str = "swapfile_probe";
 const PROBE_DESTINATION: &str = "/usr/local/bin/swapfile_probe";
@@ -33,21 +29,13 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
 }
 
 fn build_probe(arch: &str) -> Result<PathBuf, u8> {
-    let (triplet, cross_dir) = match arch {
-        "x86_64" => (X86_TRIPLET, X86_CROSS_DIR),
-        "aarch64" => (ARM_TRIPLET, ARM_CROSS_DIR),
-        _ => { eprintln!("xtask rootfs: unsupported arch `{arch}` for ext4 swapfile smoke"); return Err(2); }
-    };
-    let cc = PathBuf::from(format!("vendor/cross/{cross_dir}/bin/{triplet}-cc"));
-    if !cc.is_file() {
-        eprintln!("xtask rootfs: missing {} for ext4 swapfile smoke", cc.display());
-        return Err(2);
-    }
+    let (cc, sysroot) = super::probe_cc(arch, "ext4 swapfile smoke")?;
     let out_dir = PathBuf::from("target").join("smoke").join(arch);
     std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let out = out_dir.join(PROBE_NAME);
     let mut c = Command::new(cc);
-    c.args(["-O2", "-static", "-Wall", "-Wextra", "-Werror", PROBE_SOURCE, "-o"]);
+    if let Some(path) = sysroot { c.arg(format!("--sysroot={path}")); }
+    c.args(["-O2", "-std=gnu11", "-Wall", "-Wextra", "-Werror", PROBE_SOURCE, "-o"]);
     c.arg(&out);
     run(c)?;
     Ok(out)

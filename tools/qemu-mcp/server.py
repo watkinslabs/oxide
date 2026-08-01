@@ -90,7 +90,7 @@ needs no id). `qemu_list()` shows live instances.
 
 BUILD CONTROL (qemu_start kwargs): `name` (label), `features`, `smp`, `accel`
 ("kvm" fast / "tcg" — some SMP timing bugs ONLY repro under tcg), and the rebuild
-passthrough `rebuild_vendor` / `rebuild_rootfs` / `skip_rootfs` / `clean_kernel`
+passthrough `rebuild_rootfs` / `skip_rootfs` / `clean_kernel`
 (forwarded to xtask). GDB attaches with the namespaced kernel ELF as the symbol
 source, on a per-instance free port.
 
@@ -422,22 +422,16 @@ def _gdb_cmd(s: Session, cmd: str, timeout: float = 30.0) -> list[str]:
 # Build helper
 # ---------------------------------------------------------------------------
 
-def _rebuild_flags(rebuild_vendor: str | None = None, rebuild_rootfs: bool = False,
+def _rebuild_flags(rebuild_rootfs: bool = False,
                    skip_rootfs: bool = False, clean_kernel: bool = False) -> list[str]:
     """Translate the qemu_start rebuild knobs into xtask `grub` flags. Pure
     (no I/O) so it's unit-testable.
 
-      rebuild_vendor None      → (nothing)
-      rebuild_vendor ""        → --rebuild-vendor          (all deps)
-      rebuild_vendor "a,b"     → --rebuild-vendor=a,b
       rebuild_rootfs True      → --rebuild-rootfs
       skip_rootfs    True      → --skip-rootfs
       clean_kernel   True      → --clean-kernel
     """
     flags: list[str] = []
-    if rebuild_vendor is not None:
-        flags.append("--rebuild-vendor" if rebuild_vendor == ""
-                     else f"--rebuild-vendor={rebuild_vendor}")
     if rebuild_rootfs:
         flags.append("--rebuild-rootfs")
     if skip_rootfs:
@@ -513,7 +507,7 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
                smp: int = 1, accel: str = "kvm", mem: str = "2G", cpu: str = "",
                paused: bool = True, ssh_fwd: bool = False,
                extra_args: list[str] | None = None,
-               rebuild_vendor: str | None = None, rebuild_rootfs: bool = False,
+               rebuild_rootfs: bool = False,
                skip_rootfs: bool = False, clean_kernel: bool = False) -> str:
     """Build the kernel image for `arch` (x86_64 or aarch64) into a
     per-build namespace, spawn QEMU with the gdb-stub on a free port, and
@@ -548,8 +542,6 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
                  control (e.g. ["-d","int,guest_errors","-D","/tmp/q.log"]).
 
     Rebuild passthrough (forwarded to the xtask `grub` build command):
-      rebuild_vendor  None = no-op; "" = --rebuild-vendor (rebuild ALL vendor
-                      deps); "systemd,bash" = --rebuild-vendor=systemd,bash.
       rebuild_rootfs  True → --rebuild-rootfs (rebuild the rootfs image).
       skip_rootfs     True → --skip-rootfs (reuse the existing rootfs).
       clean_kernel    True → --clean-kernel (force a clean kernel rebuild).
@@ -586,8 +578,7 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
     pause_args = ["-gdb", f"tcp::{gdb_port}", "-S"] if paused else ["-gdb", f"tcp::{gdb_port}"]
 
     # Build into the namespace (serialized under _BUILD_LOCK internally).
-    rebuild_flags = _rebuild_flags(rebuild_vendor, rebuild_rootfs,
-                                   skip_rootfs, clean_kernel)
+    rebuild_flags = _rebuild_flags(rebuild_rootfs, skip_rootfs, clean_kernel)
     img = _build_image(arch, build_id, features, rebuild_flags)
     elf = _kernel_elf(arch, build_id)
     if not elf.is_file():

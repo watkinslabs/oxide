@@ -4,9 +4,6 @@
 /userspace/*/target/
 **/*.rs.bk
 
-# Cross-toolchains (~322 MiB; fetched on demand by tools/fetch-cross.sh).
-/vendor/cross/
-
 # Image artifacts (regenerated; not source)
 *.img
 !crates/kernel/ext4/tests/*.img
@@ -140,12 +137,6 @@ vmcore*
 # /tools/docker/Dockerfile.* — image source
 # /.github/workflows/*.yml — CI source
 # /rust-toolchain.toml     — toolchain pin
-vendor/dhcpcd/dhcpcd-*.tar.*
-vendor/dhcpcd/dhcpcd-10.3.2/
-vendor/dropbear/dropbear-*.tar.*
-vendor/dropbear/dropbear-2024.86/
-vendor/openssh/openssh-*.tar.*
-vendor/openssh/openssh-9.9p2/
 crates/kernel/syscalls/vdso/*.so
 
 # rustc incremental-compilation crash dumps (transient, never commit)

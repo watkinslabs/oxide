@@ -18,9 +18,8 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
 
-use crate::cmds::{parse_arg, run};
+use crate::cmds::parse_arg;
 use crate::image_qemu::repo_root;
 
 /// `xtask gc [--keep N] [--cache-keep M] [--all] [--dry-run]`.
@@ -216,51 +215,4 @@ fn human(bytes: u64) -> String {
     let mut v = bytes as f64; let mut i = 0;
     while v >= 1024.0 && i < U.len() - 1 { v /= 1024.0; i += 1; }
     if i == 0 { format!("{bytes} B") } else { format!("{v:.1} {}", U[i]) }
-}
-
-// --- vendor rebuild -------------------------------------------------------
-
-/// Parse `--rebuild-vendor[=pkg,...]` and, when present, run
-/// `bash vendor/<pkg>/build.sh <arch>` for each requested pkg BEFORE staging.
-/// Presence with no `=value` rebuilds all 46 vendor deps (every `vendor/*`
-/// with a `build.sh`). A bad pkg name errors before any build runs.
-pub(crate) fn rebuild_vendor(repo: &Path, arch: &str, rest: &[String]) -> Result<(), u8> {
-    let present = rest.iter().any(|a| a == "--rebuild-vendor" || a.starts_with("--rebuild-vendor="));
-    if !present { return Ok(()); }
-    let pkgs: Vec<String> = match parse_arg(rest, "--rebuild-vendor") {
-        Some(list) => list.split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect(),
-        None => all_vendor_pkgs(repo),
-    };
-    if pkgs.is_empty() { eprintln!("xtask: --rebuild-vendor: no vendor packages found"); return Err(2); }
-    // Validate ALL names first (no partial builds on a typo).
-    for pkg in &pkgs {
-        let sh = repo.join("vendor").join(pkg).join("build.sh");
-        if !sh.is_file() {
-            eprintln!("xtask: --rebuild-vendor: vendor/{pkg}/build.sh not found");
-            return Err(2);
-        }
-    }
-    for pkg in &pkgs {
-        let sh = repo.join("vendor").join(pkg).join("build.sh");
-        eprintln!("xtask: --rebuild-vendor: bash {} {arch}", sh.display());
-        let mut c = Command::new("bash");
-        c.arg(sh.to_str().unwrap()).arg(arch);
-        run(c)?;
-    }
-    Ok(())
-}
-
-/// Every `vendor/*` dir carrying a `build.sh`, sorted.
-fn all_vendor_pkgs(repo: &Path) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(repo.join("vendor")) {
-        for ent in rd.flatten() {
-            let p = ent.path();
-            if p.join("build.sh").is_file() {
-                out.push(ent.file_name().to_string_lossy().into_owned());
-            }
-        }
-    }
-    out.sort();
-    out
 }
