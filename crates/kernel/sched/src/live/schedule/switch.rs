@@ -445,6 +445,9 @@ pub unsafe fn schedule() {
         // per-task. Restore the incoming task's frame pointer before switching
         // stacks so clone/exec/signal code cannot read or rewrite the task that
         // last entered SVC on this CPU.
+        // SAFETY: `swap_current` just published the incoming task as
+        // `rq.current`, and `schedule` runs preempt-off, so the runqueue's Arc
+        // keeps this borrow alive for the whole read.
         let frame = unsafe { rq.current_ref() }.svc_frame.load(Ordering::Acquire);
         hal_aarch64::set_current_svc_frame(frame);
         // Publish the incoming task's kernel-stack bounds for the exception-entry
@@ -485,6 +488,9 @@ pub unsafe fn schedule() {
     // different CPU than it last ran on (`kernel/sched/core.c`); that counter
     // is what `PERF_COUNT_SW_CPU_MIGRATIONS` reports. `u16::MAX` is the
     // never-scheduled sentinel and is not a migration.
+    // SAFETY: `rq.current` is the incoming task just published by
+    // `swap_current` and `schedule` runs preempt-off, so the runqueue's Arc
+    // keeps this borrow alive across the counter swap.
     let prev_cpu = unsafe { rq.current_ref() }.cpu.swap(me as u16, Ordering::AcqRel);
     if prev_cpu != u16::MAX && prev_cpu != me as u16 {
         // SAFETY: rq.current is the incoming task just published by swap_current; relaxed counter bump only.
@@ -543,11 +549,11 @@ pub unsafe fn schedule() {
             // diverge; the callee is a no-op when the CPU has no mechanism.
             unsafe { hal_x86_64::set_cpuid_faulting(!prev_nocpuid); }
         }
+        // CR0.TS is clear (the kernel never sets it) so FXSAVE/XSAVE don't #NM.
         // SAFETY: both fpu_state areas are heap-allocated 64-aligned ArchFpuBuf
-        // (as_mut_ptr → the aligned XSAVE region); CR0.TS is clear (kernel never
-        // sets it) so FXSAVE/XSAVE don't #NM; prev_ref is the outgoing task whose
-        // live FPU is in the CPU now, `now` is the incoming task; single-CPU +
-        // preempt-off here per `13§5`.
+        // (as_mut_ptr → the aligned XSAVE region); `prev_ref` is the outgoing
+        // task whose live FPU is in the CPU now and `now` is the incoming one,
+        // both single-mutator here under preempt-off per `13§5`.
         unsafe {
             prev_ref.debug_check_fpu_state("schedule-save-prev");
             now.debug_check_fpu_state("schedule-restore-next");
@@ -557,12 +563,15 @@ pub unsafe fn schedule() {
     }
     #[cfg(target_arch = "aarch64")]
     {
+        // SAFETY: `rq.current` is the incoming task just published by
+        // `swap_current`, borrowed preempt-off, so its Arc outlives this borrow.
         let now = unsafe { rq.current_ref() };
+        // CPACR_EL1.FPEN is enabled kernel-wide (boot `fpu_enable`), so the
+        // q-register store/load cannot trap.
         // SAFETY: fpu_state areas are heap-allocated 64-aligned ArchFpuBuf
-        // (as_mut_ptr → the aligned save region); CPACR_EL1.FPEN is enabled
-        // kernel-wide (boot `fpu_enable`) so the q-reg store/load doesn't trap;
-        // prev_ref is outgoing (live FPSIMD in the CPU), `now` is incoming;
-        // single-CPU + preempt-off here per `13§5`.
+        // (as_mut_ptr → the aligned save region); `prev_ref` is outgoing (live
+        // FPSIMD in the CPU) and `now` incoming, both single-mutator here under
+        // preempt-off per `13§5`.
         unsafe {
             prev_ref.debug_check_fpu_state("schedule-save-prev");
             now.debug_check_fpu_state("schedule-restore-next");
@@ -620,6 +629,8 @@ pub unsafe fn schedule() {
     // reloading it, another CPU can pick `prev` up and update it, and a stale
     // reload would clobber that.
     let outgoing_pc = crate::preempt::preempt_count_swap(
+        // SAFETY: `rq.current` is the incoming task published by `swap_current`,
+        // borrowed preempt-off, so the runqueue's Arc outlives this read.
         unsafe { rq.current_ref() }.preempt_count.load(Ordering::Acquire));
     prev_ref.preempt_count.store(outgoing_pc, Ordering::Release);
 

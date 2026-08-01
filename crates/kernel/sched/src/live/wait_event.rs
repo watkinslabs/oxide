@@ -98,7 +98,8 @@ pub unsafe fn wait_event_interruptible(wq: &WaitList, cond: impl FnMut() -> bool
 pub unsafe fn wait_event_interruptible_until(wq: &WaitList, deadline_ns: u64,
                                              now: impl Fn() -> u64,
                                              cond: impl FnMut() -> bool) -> WaitOutcome {
-    // SAFETY: forwarded contract.
+    // SAFETY: this fn is itself `unsafe` and forwards `wait_event`'s contract
+    // unchanged — sleepable context, `wq` outliving the wait.
     unsafe { wait_event(wq, WaitState::Interruptible, deadline_ns, now, cond) }
 }
 

@@ -445,7 +445,10 @@ impl Task {
     /// to call on an actively-scheduled task from another CPU.
     /// # C: O(1)
     pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
-        // SAFETY: forwarded fn-level contract.
+        // SAFETY: this fn is itself `unsafe` and forwards its contract
+        // unchanged — caller is the running task on its own CPU (or holds the
+        // runqueue invariant for it) with preempt off, so the mm slot has a
+        // single mutator across the swap.
         unsafe { self.replace_mm_inner(new, true); }
     }
 
@@ -457,7 +460,9 @@ impl Task {
     /// # SAFETY: same contract as [`Self::replace_mm`].
     /// # C: O(1)
     pub unsafe fn replace_borrowed_mm(&self, new: Option<Arc<AddressSpace>>) {
-        // SAFETY: forwarded fn-level contract.
+        // SAFETY: this fn is itself `unsafe` and forwards `replace_mm`'s
+        // contract unchanged — caller is the running task on its own CPU with
+        // preempt off, so the mm slot has a single mutator across the swap.
         unsafe { self.replace_mm_inner(new, false); }
     }
 
