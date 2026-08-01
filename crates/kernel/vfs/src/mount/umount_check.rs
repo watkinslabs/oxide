@@ -22,8 +22,13 @@ use super::mnt_flags::{MNT_DETACH, MNT_EXPIRE, MNT_FORCE};
 pub enum Umount {
     /// Detach the mount and everything under it (`MNT_DETACH`).
     DetachTree,
-    /// Detach this mount only; the shim still applies the busy test.
-    Detach,
+    /// Admitted. Before detaching this mount — and this mount only — the caller
+    /// owes the two steps `do_umount` performs past this point: reap the
+    /// expirable submounts under it (`shrink_submounts`), then apply the
+    /// propagation-aware busy test (`propagate_mount_busy`), which refuses with
+    /// `EBUSY`. Neither belongs here: both need the live mount tree, and the
+    /// shrink is a SIDE EFFECT that changes the answer to the test after it.
+    ShrinkAndDetach,
     /// The caller's own root mount, no `MNT_DETACH`: Linux remounts it
     /// read-only instead of detaching it.
     RemountRootReadonly,
@@ -120,14 +125,13 @@ pub fn umount_check(flags: u64, facts: &UmountFacts) -> UmountPlan {
     if facts.locked { return plan(Err(UmountRefusal::Einval)); }
     if !facts.has_parent { return plan(Err(UmountRefusal::Einval)); }
     if detach { return plan(Ok(Umount::DetachTree)); }
-    // `propagate_mount_busy(mnt, 2)`: a child mount pins its parent
-    // (`mnt_set_mountpoint` takes an implicit reference), so a mount with
-    // children reads above the two references an idle mount has and is BUSY.
-    // Only `MNT_DETACH` takes the subtree down with it — never a filesystem
-    // type. Pseudo-filesystems used to be carved out of this rung in the shim
-    // and silently unmounted mounts the caller never named.
-    if facts.has_children { return plan(Err(UmountRefusal::Ebusy)); }
-    plan(Ok(Umount::Detach))
+    // Past every refusal the flags and the mount's position can produce. What
+    // remains — reap the expirable submounts, then the propagation-aware busy
+    // test — needs the live tree, so it is the caller's, and only `MNT_DETACH`
+    // skips it. Busy-ness is never a property of the filesystem TYPE: the shim
+    // used to carve procfs/sysfs/devtmpfs out of this rung and silently unmount
+    // whole subtrees the caller never named.
+    plan(Ok(Umount::ShrinkAndDetach))
 }
 
 /// Sample the [`UmountFacts`] of the mount `mnt_id` for a caller whose own
@@ -175,7 +179,7 @@ mod tests {
 
     #[test]
     fn plain_umount_detaches_one_mount() {
-        assert_eq!(umount_check(0, &plain()).outcome, Ok(Umount::Detach));
+        assert_eq!(umount_check(0, &plain()).outcome, Ok(Umount::ShrinkAndDetach));
     }
 
     #[test]
@@ -192,7 +196,7 @@ mod tests {
     #[test]
     fn expire_second_pass_detaches() {
         let f = UmountFacts { was_expiry_marked: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Ok(Umount::Detach));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Ok(Umount::ShrinkAndDetach));
     }
 
     #[test]
@@ -273,17 +277,22 @@ mod tests {
     }
 
     #[test]
-    fn a_mount_with_children_is_busy_unless_detach_was_asked_for() {
+    fn children_do_not_refuse_here_they_are_the_shrink_and_busy_steps_job() {
+        // A mount with submounts is admitted by the ladder and refused (or not)
+        // by the busy test the caller runs after shrinking the expirable ones —
+        // the whole reason an autofs parent can be unmounted at all. MNT_DETACH
+        // skips both and takes the subtree; MNT_FORCE is not MNT_DETACH and does
+        // not license taking the subtree down.
         let f = UmountFacts { has_children: true, ..plain() };
-        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Ebusy));
+        assert_eq!(umount_check(0, &f).outcome, Ok(Umount::ShrinkAndDetach));
         assert_eq!(umount_check(MNT_DETACH, &f).outcome, Ok(Umount::DetachTree));
-        // MNT_FORCE is not MNT_DETACH: it aborts in-flight work, it does not
-        // license taking the subtree down.
-        assert_eq!(umount_check(MNT_FORCE, &f).outcome, Err(UmountRefusal::Ebusy));
+        assert_eq!(umount_check(MNT_FORCE, &f).outcome, Ok(Umount::ShrinkAndDetach));
     }
 
     #[test]
-    fn the_locked_and_parent_rungs_outrank_the_busy_rung() {
+    fn the_locked_and_parent_rungs_refuse_before_any_shrink_happens() {
+        // The shrink is a SIDE EFFECT: a refused unmount must not have reaped
+        // the target's expirable submounts on its way out.
         let f = UmountFacts { has_children: true, locked: true, ..plain() };
         assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Einval));
         let f = UmountFacts { has_children: true, has_parent: false, ..plain() };
@@ -292,7 +301,7 @@ mod tests {
 
     #[test]
     fn force_alone_does_not_change_the_decision() {
-        assert_eq!(umount_check(MNT_FORCE, &plain()).outcome, Ok(Umount::Detach));
+        assert_eq!(umount_check(MNT_FORCE, &plain()).outcome, Ok(Umount::ShrinkAndDetach));
     }
 
     #[test]

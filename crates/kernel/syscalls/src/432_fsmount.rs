@@ -26,11 +26,13 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     const MOUNT_ATTR_NOSYMFOLLOW:u64 = 0x20_0000;
     const ATTR_VALID: u64 = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV
         | MOUNT_ATTR_NOEXEC | MOUNT_ATTR__ATIME | MOUNT_ATTR_NODIRATIME | MOUNT_ATTR_NOSYMFOLLOW;
-    if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
-    // Validate the fsmount(2) flag words the old shim silently dropped (D51):
+    // Linux order: the FLAG WORDS are validated before any privilege test, so a
+    // malformed call reports EINVAL regardless of who made it and an
+    // unprivileged caller cannot use the errno to probe its own privilege.
     // `flags` outside FSMOUNT_CLOEXEC → EINVAL; `attr_flags` outside the settable
     // MOUNT_ATTR_* set → EINVAL; the atime sub-field must name exactly one mode.
     if args.a1 & !FSMOUNT_CLOEXEC != 0 { return -(Errno::Einval.as_i32() as i64); }
+    if let Some(rv) = may_mount_or_eperm() { return rv; }  // Linux may_mount (D49)
     if args.a2 & !ATTR_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
     match args.a2 & MOUNT_ATTR__ATIME {
         0 | MOUNT_ATTR_NOATIME | MOUNT_ATTR_STRICTATIME => {}
@@ -44,14 +46,17 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     let attrs = args.a2;
     // CONVERTED pseudo fstype: the SB was realized at fsconfig(CMD_CREATE). The
     // context MUST be AwaitingMount with a pinned root (Linux do_fsmount rejects
-    // a fsmount before get_tree with EINVAL); carry the realized (sb, root) for
+    // a fsmount before get_tree); carry the realized (sb, root) for
     // move_mount → attach_sb.
     {
-        let g = ctx.fc.lock();
-        if let Some(fc) = g.as_ref() {
-            if fc.phase() != vfs::fs::FsContextPhase::AwaitingMount {
-                return -(Errno::Einval.as_i32() as i64);
-            }
+        let mut g = ctx.fc.lock();
+        if let Some(fc) = g.as_mut() {
+            // Linux `do_fsmount` ladder, in order: no realized root → EINVAL;
+            // too-revealing → EPERM; wrong phase → EBUSY. The phase rung is LAST
+            // and it is EBUSY, not EINVAL — "the context exists but is not
+            // holding a mountable tree right now" is a retry condition, and it
+            // is what a SECOND fsmount on one context fd reports once the first
+            // has cleaned it back to the fspick state.
             let (sb, root) = match (fc.sb(), fc.root()) {
                 (Some(sb), Some(root)) => (sb.clone(), root.clone()),
                 _ => return -(Errno::Einval.as_i32() as i64),
@@ -68,11 +73,19 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
                 Ok(l) => l,
                 Err(_) => return -(Errno::Eperm.as_i32() as i64),
             };
+            if fc.phase() != vfs::fs::FsContextPhase::AwaitingMount {
+                return -(Errno::Ebusy.as_i32() as i64);
+            }
             if crate::mount_perm::current_user_ns_differs_from_mount_ns_owner() {
                 lock_flags |= vfs::mount::lock_new_mount_bits(mnt_flags);
             }
             let mo: InodeRef = MountObjectInode::new_realized(sb, root, ctx.fstype.clone(), attrs,
                 lock_flags);
+            // `vfs_clean_context(fc)`: the mount is made, so the context returns
+            // to the state an `fspick(2)` leaves behind. Without this a caller
+            // could fsmount(2) one context fd repeatedly and mint N mount
+            // objects from a single superblock.
+            vfs::fs::vfs_clean_context(fc);
             return install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0);
         }
     }

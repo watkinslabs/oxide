@@ -33,31 +33,6 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     pivot_root_from(new_root, put_old, PivotRoot { mnt_id, path_mounted: true })
 }
 
-/// Linux `is_path_reachable(mnt, dentry, root)`: walk the MOUNT chain up from
-/// `(mnt, d)` until the target mount is reached or a self-parented mount stops
-/// the walk, then require the carried dentry to be at or below the target
-/// mount's root dentry.
-///
-/// The namespace root mount accepts the global root dentry as an alias of its
-/// own `mnt_root`, the same equivalence [`is_ns_root_dentry`] /
-/// [`namespace_root_path`] apply: mountpoints attached directly under the
-/// namespace root are materialized from the global root dentry, so a strict
-/// `s_root` identity test would call every one of them unreachable.
-/// # C: O(depth)
-fn is_path_reachable(mut mnt: u64, mut d: Arc<Dentry>, root_mnt: u64) -> bool {
-    while mnt != root_mnt {
-        let Some(m) = mount_by_id(mnt) else { return false; };
-        if m.is_root() { break; }
-        let Some(mp) = m.mountpoint() else { break; };
-        d = mp;
-        mnt = m.parent_id.load(Ordering::Acquire);
-    }
-    if mnt != root_mnt { return false; }
-    let Some(target) = mount_by_id(root_mnt) else { return false; };
-    if target.mnt_root().map(|r| d.is_subdir_of(&r)).unwrap_or(false) { return true; }
-    target.is_root() && global_root().map(|r| d.is_subdir_of(&r)).unwrap_or(false)
-}
-
 /// Linux `where_to_mount(old, …, false)`: `put_old` resolution descends through
 /// anything already mounted there, so the old root STACKS on the overmount
 /// rather than being refused. Returns the mount `put_old` finally resides on
@@ -171,6 +146,9 @@ pub fn pivot_root_from(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>, root: Pivo
     // dentry — `path_mounted(new)` pins `new->dentry` to it — and the walk
     // replaces it with the mountpoint dentry on the first crossing.
     let nr_root_d = mount_by_id(nr_id).and_then(|m| m.mnt_root());
+    // `root->dentry` — the caller's root dentry. `path_mounted(&root)` (checked
+    // in the ladder) makes it the root mount's own `mnt_root`.
+    let root_d = mount_by_id(root.mnt_id).and_then(|m| m.mnt_root());
     let facts = PivotFacts {
         old_mnt_shared:     shared_by_id(po_mnt),
         new_parent_shared:  parent_shared(nr_id),
@@ -183,10 +161,19 @@ pub fn pivot_root_from(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>, root: Pivo
         old_is_root_mnt:    po_mnt == root.mnt_id,
         root_path_mounted:  root.path_mounted,
         new_path_mounted,
-        old_reachable_from_new: is_path_reachable(po_mnt, po_d.clone(), nr_id),
-        new_reachable_from_root: match &nr_root_d {
-            Some(nrd) => is_path_reachable(nr_id, nrd.clone(), root.mnt_id),
-            None => false,
+        // `mnt_has_parent(new_mnt)`: a mount here is self-parented iff it is the
+        // namespace root, and a chrooted caller reaches this rung with the
+        // namespace root as `new_root` without tripping the EBUSY above.
+        new_has_parent:     mount_by_id(nr_id).map(|m| !m.is_root()).unwrap_or(false),
+        // `is_path_reachable(old_mnt, old_mp->m_dentry, new)` — `new->dentry` is
+        // the new root mount's own `mnt_root` (`path_mounted(new)`).
+        old_reachable_from_new: reachable_from_mount_root(po_mnt, &po_d, nr_id),
+        // `is_path_reachable(new_mnt, new->dentry, &root)` — `&root` is the
+        // caller's `struct path`, so the target dentry is the CALLER's root
+        // dentry, not the namespace root's.
+        new_reachable_from_root: match (&nr_root_d, root_d.as_ref()) {
+            (Some(nrd), Some(rd)) => path_reachable_from_root(nr_id, nrd, root.mnt_id, rd),
+            _ => false,
         },
     };
     if let Err(e) = pivot_check(&facts) {
@@ -306,7 +293,10 @@ fn retree_whole_ns(ns: u64, nr_m: &Arc<Mount>, nr_subtree: &[u64], po_mnt: u64,
         };
         (m.mnt_id, np)
     }).collect();
-    commit_retree(ns, &new_paths, Some(nr_id), nr_subtree);
+    // `attach_mnt(root_mnt, old_mnt, old_mp)`: the displaced old root attaches
+    // on the mount `put_old` finally resides on, at THAT mount's root dentry
+    // when `put_old` is covered by an overmount (Linux `where_to_mount`).
+    commit_retree(ns, &new_paths, Some(nr_id), Some((old_root_id, po_mnt, po_d.clone())));
     notify::fsnotify_mnt_move(ns, old_root_id);
     notify::fsnotify_mnt_move(ns, nr_id);
     mntns::chroot_fs_refs(old_root_id, nr_id);

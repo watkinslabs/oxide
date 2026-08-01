@@ -11,54 +11,47 @@ fn set_mountpoint_dentry(m: &Arc<Mount>, new_d: Option<Arc<Dentry>>, rendered: S
 }
 
 
-/// Commit a whole-namespace path rewrite (pivot_root): re-root the ns, then
-/// for each mount mutate its position in place and rebuild the ns index (links
-/// + crossings + hash) by identity. Mounts listed in `preserve` (the new root's
-/// own subtree) KEEP their existing mountpoint dentry — they live INSIDE the
-/// moved filesystems and travel unchanged (Linux `copy_tree`); only their
-/// rendered path is re-based. Re-deriving their dentry by a global-path
-/// `descend` was the 203/EXEC bug: a bind/clone submount's `s_root` is a
-/// DISTINCT dentry the global-root descent NEVER reaches, so the descent
-/// re-seated the crossing onto the OLD tree's dentry — after the executor's
-/// `pivot_root` the relocated `/usr`,`/lib64` were unreachable from the new
-/// root, so `execve(/usr/lib/systemd/systemd-udevd)` ENOENT'd → status 203.
-/// Mounts OUTSIDE the new-root subtree (the old root + its tree, relocated
-/// under `put_old`) are still reachable from the global root, so their position
-/// is materialised by `descend`. # C: O(N×depth)
-fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>, preserve: &[u64]) {
+/// Commit a whole-namespace re-root (pivot_root when the caller's root IS the
+/// namespace root): exactly TWO attachments change, matching the two
+/// `attach_mnt()` calls Linux makes. `new_root_id` becomes the self-parented
+/// namespace root, and `relocate` — `(mnt_id, new_parent, new_mountpoint)` —
+/// re-seats the displaced old root on the mount `put_old` finally resides on.
+/// EVERY other mount keeps its mountpoint dentry AND its recorded parent: those
+/// dentries live inside filesystems that travelled with the pivot, so Linux
+/// never touches them; only the rendered path in `new_paths` follows.
+///
+/// Re-deriving positions by a global-path `descend` was the 203/EXEC bug: a
+/// bind/clone submount's `s_root` is a DISTINCT dentry the global-root descent
+/// NEVER reaches, so the descent re-seated the crossing onto the OLD tree's
+/// dentry — after the executor's `pivot_root` the relocated `/usr`,`/lib64`
+/// were unreachable from the new root, so `execve` ENOENT'd. The old root had
+/// the same exposure through its rendered destination string, which cannot name
+/// the covering mount's root dentry when `put_old` is overmounted; it is passed
+/// as an explicit attachment instead. # C: O(N×depth)
+fn commit_retree(ns: u64, new_paths: &[(u64, String)], new_root_id: Option<u64>,
+    relocate: Option<(u64, u64, Arc<Dentry>)>)
+{
     let mounts = mounts_in_ns(ns);
-    // [D24] Drop this ns's strict crossing-hash entries BEFORE re-deriving the
-    // relocated (non-preserve) positions: those are materialised by a plain
-    // dentry `descend` from the new global root, which must NOT cross the stale
-    // crossings (matches the legacy map-clear that ran here). `rebuild_ns_index`
-    // re-inserts every crossing from the recorded mountpoint dentries below.
-    // [D28a] FRONT structural region (before the sleeping `descend` below):
-    // drop the stale crossings + re-root the ns, serialized w.r.t. other writers.
+    // [D28a] One writer-serialized structural region: re-root the ns, re-seat
+    // the two mounts whose attachment changes, re-render the rest, then rebuild
+    // the ns index (links + crossings + hash). No sleeping work runs inside it
+    // — nothing is materialised by path any more. `rebuild_ns_index` does NOT
+    // self-lock; it is covered by this hold.
     {
         let _w = MOUNT_WRITE.lock();
-        hash_drop_ids(&mounts.iter().map(|m| m.mnt_id).collect::<Vec<_>>());
         if let Some(rid) = new_root_id { mntns::ns_set_root(ns, rid); }
-    }
-    let root = global_root();
-    // The (sleeping) `descend` materialization of relocated positions runs with
-    // NO writer lock held.
-    let dents: Vec<(u64, String, Option<Arc<Dentry>>)> = new_paths.iter().map(|(id, p)| {
-        let is_root = Some(*id) == new_root_id;
-        let d = if is_root { None }
-                else if preserve.contains(id) { mount_by_id(*id).and_then(|m| m.mountpoint()) }
-                else { root.as_ref().and_then(|r| descend(r, p)) };
-        (*id, p.clone(), d)
-    }).collect();
-    // [D28a] BACK structural region: re-seat every mount + rebuild the ns index
-    // (links + crossings + hash) as one writer-serialized mutation.
-    // `rebuild_ns_index` does NOT self-lock — it is covered by this hold.
-    {
-        let _w = MOUNT_WRITE.lock();
         for m in mounts.iter() {
-            if let Some((_, p, d)) = dents.iter().find(|(id, _, _)| *id == m.mnt_id) {
-                let is_root = Some(m.mnt_id) == new_root_id;
-                if !preserve.contains(&m.mnt_id) { m.parent_id.store(0, Ordering::Release); }
-                set_mountpoint_dentry(m, if is_root { None } else { d.clone() }, p.clone());
+            let Some((_, p)) = new_paths.iter().find(|(id, _)| *id == m.mnt_id) else { continue; };
+            if Some(m.mnt_id) == new_root_id {
+                // The new root becomes self-parented: no mountpoint dentry.
+                set_mountpoint_dentry(m, None, p.clone());
+                m.parent_id.store(m.mnt_id, Ordering::Release);
+            } else if relocate.as_ref().map(|(id, _, _)| *id == m.mnt_id).unwrap_or(false) {
+                let (_, parent, d) = relocate.as_ref().unwrap();
+                set_mountpoint_dentry(m, Some(d.clone()), p.clone());
+                m.parent_id.store(*parent, Ordering::Release);
+            } else {
+                *m.rendered_path.lock() = p.clone();
             }
         }
         rebuild_ns_index(ns);

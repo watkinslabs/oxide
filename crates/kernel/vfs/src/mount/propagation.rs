@@ -49,6 +49,40 @@ pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
     out
 }
 
+/// The propagation MIRRORS of `m`: the copy of `m` living at the same relative
+/// position under every propagation target of `m`'s PARENT (Linux
+/// `__lookup_mnt(&peer->mnt, mnt->mnt_mountpoint)`, the walk shared by
+/// `propagate_umount` and `propagate_mount_busy`).
+///
+/// One resolver for both callers: the busy test must consult exactly the copies
+/// the detach would remove, or it refuses unmounts that would have succeeded
+/// and permits ones that yank a pinned copy. Mirrors are located by relative
+/// position, not by mountpoint dentry — peers here live at DISTINCT dentries,
+/// so the same-dentry shortcut does not apply. Empty for a namespace root, for
+/// a private parent, and for a mount whose mountpoint is not a plain-parent
+/// descendant of its parent's root. # C: O(N_targets × depth)
+pub(super) fn peer_mirrors(m: &Arc<Mount>) -> Vec<Arc<Mount>> {
+    let mut out: Vec<Arc<Mount>> = Vec::new();
+    let Some(parent) = mount_by_id(m.parent_id.load(Ordering::Acquire)) else { return out; };
+    if parent.mnt_id == m.mnt_id { return out; }
+    let (Some(mp), Some(parent_root)) = (m.mountpoint(), parent.mnt_root()) else { return out; };
+    let Some(rel) = plain_rel_under(&mp, &parent_root) else { return out; };
+    if rel.is_empty() { return out; }
+    for peer in propagation_targets(&parent) {
+        let base = match peer.mnt_root().or_else(|| peer.mountpoint()).or_else(global_root) {
+            Some(b) => b, None => continue,
+        };
+        // Resolve the mirror's MOUNTPOINT dentry WITHOUT the final cross: the
+        // mirror is mounted there, so a crossing walk would return the mirror's
+        // ROOT — which is not a mountpoint and which `__lookup_mnt` cannot key.
+        let Some(d) = super::detach::descend_mountpoint(&base, &rel) else { continue; };
+        if let Some(mirror) = __lookup_mnt(peer.mnt_id, &d) {
+            if mirror.mnt_id != m.mnt_id { out.push(mirror); }
+        }
+    }
+    out
+}
+
 /// Assign the source new mount a peer group and mark it SHARED, returning the
 /// group id (Linux `invent_group_ids` + `set_mnt_shared` over the propagated
 /// source subtree). Reuses an existing group if the source already had one — a

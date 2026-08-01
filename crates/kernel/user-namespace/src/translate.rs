@@ -59,6 +59,18 @@ pub fn has_mapping(map: &[IdMapExtent], host_id: u32) -> bool {
 /// when the namespace has no mapping — an unmapped namespace root that came
 /// back as 65534 would let a task running as uid 65534 take the root path.
 /// # C: O(map.len())
+/// [`to_ns`] with its miss preserved as `None` rather than munged to the
+/// overflow id. `statmount(2)` renders a mount's id mappings in the caller's
+/// namespace and must SKIP a range that does not resolve there; munging the
+/// miss to 65534 would report a mapping the caller does not actually have.
+/// # C: O(map.len())
+pub fn to_ns_checked(map: &[IdMapExtent], host_id: u32) -> Option<u32> {
+    map.iter().find_map(|e| {
+        let off = host_id.checked_sub(e.host_id)?;
+        if off < e.count { Some(e.ns_id + off) } else { None }
+    })
+}
+
 pub fn to_host_checked(map: &[IdMapExtent], ns_id: u32) -> Option<u32> {
     map.iter().find_map(|e| {
         let off = ns_id.checked_sub(e.ns_id)?;
