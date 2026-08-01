@@ -147,6 +147,35 @@ pub fn restrict_self_precheck(no_new_privs: bool, cap_sys_admin: bool, flags: u3
     Ok(())
 }
 
+/// What a `landlock_restrict_self` call has to do, once its arguments are
+/// admitted.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RestrictPlan {
+    /// Resolve the ruleset fd and stack a layer.
+    pub needs_ruleset: bool,
+    /// Apply the outcome to every thread of the process, not just this one.
+    pub tsync: bool,
+    /// Turn on `no_new_privs` for the sibling threads too, because the caller
+    /// has it and they must not be able to gain privileges under a policy they
+    /// did not install.
+    pub propagate_no_new_privs: bool,
+}
+
+/// Read the plan out of the arguments. The one call shape that installs no
+/// layer is a pure logging-configuration change: `-1` with exactly the
+/// subdomain-log bit, optionally combined with the thread-sync bit.
+/// # C: O(1)
+pub fn restrict_plan(ruleset_fd: i32, flags: u32, no_new_privs: bool) -> RestrictPlan {
+    let tsync = (flags & RESTRICT_SELF_TSYNC) != 0;
+    let log_only = ruleset_fd == -1
+        && (flags & !RESTRICT_SELF_TSYNC) == RESTRICT_SELF_LOG_SUBDOMAINS_OFF;
+    RestrictPlan {
+        needs_ruleset: !log_only,
+        tsync,
+        propagate_no_new_privs: tsync && no_new_privs,
+    }
+}
+
 /// Whether another layer may be stacked on a domain that already has `layers`.
 /// # C: O(1)
 pub fn may_stack_layer(layers: usize) -> Result<(), Errno> {

@@ -72,10 +72,20 @@ pub const CREATE_RULESET_ERRATA:  u32 = 1 << 1;
 /// `landlock_add_rule` defines no flag at this ABI level.
 pub const MASK_ADD_RULE: u32 = 0;
 
-/// `landlock_restrict_self` defines no flag at this ABI level: audit-log
-/// control and cross-thread enforcement both arrived later. Accepting their
-/// bits would tell a caller its threads were synchronised when they were not.
-pub const MASK_RESTRICT_SELF: u32 = 0;
+// `landlock_restrict_self` flags.
+//
+// The three logging flags select which denials reach the audit log. This
+// kernel has no audit subsystem, so they are validated, carried, and record
+// nothing — the same shape a kernel built without audit support has, and they
+// never change an access decision.
+pub const RESTRICT_SELF_LOG_SAME_EXEC_OFF:  u32 = 1 << 0;
+pub const RESTRICT_SELF_LOG_NEW_EXEC_ON:    u32 = 1 << 1;
+pub const RESTRICT_SELF_LOG_SUBDOMAINS_OFF: u32 = 1 << 2;
+/// Apply the result to every thread of the calling process at once.
+pub const RESTRICT_SELF_TSYNC:              u32 = 1 << 3;
+
+pub const LAST_RESTRICT_SELF: u32 = RESTRICT_SELF_TSYNC;
+pub const MASK_RESTRICT_SELF: u32 = (LAST_RESTRICT_SELF << 1) - 1;
 
 // ---- rule types -----------------------------------------------------------
 
@@ -90,8 +100,8 @@ pub const RULE_NET_PORT:     u64 = 2;
 /// corresponding enforcement exists. Raising it past what is enforced is the
 /// one failure mode that silently turns a working sandbox into no sandbox.
 ///
-/// Every right and scope of every level up to this one is enforced.
-pub const ABI_VERSION: i64 = 6;
+/// Every right, scope and flag of every level up to this one is enforced.
+pub const ABI_VERSION: i64 = 8;
 
 /// Value reported for `LANDLOCK_CREATE_RULESET_ERRATA`: a bitmask of fixed
 /// issues for the current ABI version. No erratum applies to this implementation.

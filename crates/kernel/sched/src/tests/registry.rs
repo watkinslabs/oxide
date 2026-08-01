@@ -197,3 +197,50 @@ fn concurrent_insert_and_lookup_from_multiple_threads() {
         assert!(crate::registry::lookup_by_vpid(owned.tid).is_some());
     }
 }
+
+#[test]
+fn thread_group_reaches_every_thread_including_unnumbered_ones() {
+    // The reporting view (`thread_entries`) drops a thread the reader's pid
+    // namespace cannot name. A caller applying state to the whole process —
+    // Landlock's cross-thread enforcement — must not, or one thread would
+    // silently stay outside the policy the other threads just entered.
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let l = leader(100, 100);
+    let m1 = member(101, 100, 100, 101);
+    // vtid 0 = numbered by no namespace the reader can see.
+    let m2 = member(102, 100, 100, 0);
+    // A thread of a different process must not be swept in.
+    let other = leader(200, 200);
+    for t in [&l, &m1, &m2, &other] { crate::registry::insert(t); }
+
+    let mut tids: AVec<u32> = crate::registry::thread_group(100)
+        .iter().map(|t| t.tid).collect();
+    tids.sort_unstable();
+    assert_eq!(&tids[..], &[100, 101, 102]);
+
+    // The reporting view omits the unnumbered thread, which is why the two
+    // are separate functions.
+    let reported: AVec<u32> = crate::registry::thread_entries(100)
+        .into_iter().map(|(_, real)| real).collect();
+    assert!(!reported.contains(&102));
+
+    assert_eq!(crate::registry::thread_group(200).len(), 1);
+    assert!(crate::registry::thread_group(999).is_empty());
+}
+
+#[test]
+fn thread_group_drops_a_thread_that_has_exited() {
+    // A dead thread must not receive policy: the registry holds weak refs, so
+    // the sweep has to skip one whose task is gone.
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let l = leader(300, 300);
+    crate::registry::insert(&l);
+    {
+        let m = member(301, 300, 300, 301);
+        crate::registry::insert(&m);
+        assert_eq!(crate::registry::thread_group(300).len(), 2);
+    }
+    assert_eq!(crate::registry::thread_group(300).len(), 1);
+}
