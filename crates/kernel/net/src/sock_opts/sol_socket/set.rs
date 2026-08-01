@@ -121,6 +121,15 @@ pub fn admit(optname: u64, arg: Arg, sock: OptSock, env: SetEnv) -> Result<Actio
         // Read-only identity and error slots.
         SO_TYPE | SO_PROTOCOL | SO_DOMAIN | SO_ERROR => Err(Errno::Enoprotoopt),
 
+        // `SO_INQ` belongs to the AF_UNIX stream protocol, not to the generic
+        // table: no other socket shape reaches an implementation of it, and
+        // the value is a strict boolean.
+        SO_INQ => {
+            if !(sock.unix() && sock.stream) { return Err(Errno::Enoprotoopt); }
+            if !(0..=1).contains(&value) { return Err(Errno::Einval); }
+            Ok(Action::Scalar { slot: Scalar::Inq, value })
+        }
+
         SO_PRIORITY => {
             let allowed = (TC_PRIO_BESTEFFORT..=TC_PRIO_INTERACTIVE).contains(&value)
                 || caps.net_raw_or_admin();

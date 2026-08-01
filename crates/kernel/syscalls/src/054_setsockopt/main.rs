@@ -8,11 +8,6 @@ use syscall::errno::Errno;
 
 use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from_file};
 use crate::net_trace::trace_enotsock_at;
-use super::multicast::{
-    SourceOp, ipv4_group_filter, ipv4_mcast_group_req, ipv4_mcast_group_source_req,
-    ipv4_mcast_if, ipv4_mcast_membership, ipv4_mcast_source_req, ipv6_mcast_membership,
-    ipv4_msfilter, ipv6_group_filter, ipv6_mcast_group_req, ipv6_mcast_group_source_req,
-};
 use super::raw::raw_setsockopt;
 use super::packet::packet_setsockopt;
 use super::uapi::*;
@@ -65,6 +60,11 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         if optname == SO_BINDTODEVICE { return bind_to_device(&sock, optval, optlen); }
         return super::sol_socket::set(&sock, optname, optval, optlen);
     }
+    // An AF_UNIX socket carries no protocol-level option table at all: every
+    // level above SOL_SOCKET is EOPNOTSUPP, never "unknown option".
+    if sock.family.load(Ordering::Acquire) == net::sock::AF_UNIX {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
     if level == net::uapi::SOL_PACKET {
         return packet_setsockopt(&sock, optname, optval, optlen);
     }
@@ -74,208 +74,13 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     if let Some(result) = raw_setsockopt(&sock, level, optname, optval, optlen) {
         return result;
     }
-    match (level, optname) {
-        (IPPROTO_IP, IP_ADD_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, true),
-        (IPPROTO_IP, IP_DROP_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, false),
-        (IPPROTO_IPV6, IPV6_JOIN_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, true),
-        (IPPROTO_IPV6, IPV6_LEAVE_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, false),
-        _ => {}
+    match level {
+        IPPROTO_IP => super::ip::set(&sock, optname, optval, optlen),
+        IPPROTO_IPV6 => super::ipv6::set(&sock, optname, optval, optlen),
+        IPPROTO_TCP => super::tcp::set(&sock, optname, optval, optlen),
+        IPPROTO_UDP => super::udp::set(&sock, optname, optval, optlen),
+        _ => -(Errno::Enoprotoopt.as_i32() as i64),
     }
-    if level == IPPROTO_IPV6 && optname == IPV6_MULTICAST_LOOP {
-        if optlen < 4 { return -(Errno::Einval.as_i32() as i64); }
-        if optval == 0 {
-            return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Loop(0)));
-        }
-    }
-    match (level, optname) {
-        (IPPROTO_IP, IP_MULTICAST_IF) if optlen < 4 =>
-            return -(Errno::Einval.as_i32() as i64),
-        (IPPROTO_IP, IP_MULTICAST_TTL | IP_MULTICAST_LOOP) if optlen == 0 =>
-            return -(Errno::Einval.as_i32() as i64),
-        (IPPROTO_IPV6, IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP)
-            if optlen < 4 => return -(Errno::Einval.as_i32() as i64),
-        _ => {}
-    }
-    let read_i32 = |o: u64| -> Option<i32> {
-        if optlen < 4 { return None; }
-        let mut bytes = [0u8; 4];
-        uaccess::copy_from_user(&mut bytes, o).ok()?;
-        Some(i32::from_ne_bytes(bytes))
-    };
-    let read_i32_required = || -> Result<i32, i64> {
-        read_i32(optval).ok_or(if optlen < 4 {
-            -(Errno::Einval.as_i32() as i64)
-        } else {
-            -(Errno::Efault.as_i32() as i64)
-        })
-    };
-    // Linux precedence for the byte-or-int IP options: a zero optlen is
-    // EINVAL, a non-zero optlen with a bad pointer is EFAULT.
-    let read_u8_or_i32_required = || -> Result<i32, i64> {
-        read_u8_or_i32(optval, optlen).ok_or(if optlen == 0 {
-            -(Errno::Einval.as_i32() as i64)
-        } else {
-            -(Errno::Efault.as_i32() as i64)
-        })
-    };
-    match (level, optname) {
-        (IPPROTO_IP, IP_TOS) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.ip_tos.store(v & 0xff, Ordering::Release);
-        }
-        (IPPROTO_IP, IP_TTL) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            // Linux `ip_setsockopt`: -1 keeps the route-selected hoplimit;
-            // otherwise the value must be 1..=255 (0 and < -1 are EINVAL).
-            if v != -1 && !(1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ip_ttl.store(v, Ordering::Release);
-        }
-        (IPPROTO_IP, IP_PKTINFO) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.ip_pktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
-        }
-        (IPPROTO_IP, IP_RECVTTL) => {
-            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.ip_recvttl.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
-        }
-        (IPPROTO_IP, IP_MTU_DISCOVER) => {
-            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
-            if !net::uapi::valid_ip_pmtudisc(v) { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ip_mtu_discover.store(v, Ordering::Release);
-        }
-        (IPPROTO_IP, IP_RECVERR) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.error.set_recverr4(v != 0);
-        }
-        (IPPROTO_IP, IP_MULTICAST_TTL) => {
-            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
-            return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V4Ttl(v)));
-        }
-        (IPPROTO_IP, IP_MULTICAST_LOOP) => {
-            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
-            return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V4Loop(v)));
-        }
-        (IPPROTO_IP, IP_MULTICAST_IF) => return ipv4_mcast_if(&sock, optval, optlen),
-        (IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP) => return ipv4_mcast_source_req(&sock, optval, optlen, SourceOp::Join),
-        (IPPROTO_IP, IP_DROP_SOURCE_MEMBERSHIP) => return ipv4_mcast_source_req(&sock, optval, optlen, SourceOp::Leave),
-        (IPPROTO_IP, IP_BLOCK_SOURCE) => return ipv4_mcast_source_req(&sock, optval, optlen, SourceOp::Block),
-        (IPPROTO_IP, IP_UNBLOCK_SOURCE) => return ipv4_mcast_source_req(&sock, optval, optlen, SourceOp::Unblock),
-        (IPPROTO_IP, IP_MSFILTER) => return ipv4_msfilter(&sock, optval, optlen),
-        (IPPROTO_IP, MCAST_JOIN_GROUP) => return ipv4_mcast_group_req(&sock, optval, optlen, true),
-        (IPPROTO_IP, MCAST_LEAVE_GROUP) => return ipv4_mcast_group_req(&sock, optval, optlen, false),
-        (IPPROTO_IP, MCAST_JOIN_SOURCE_GROUP) => return ipv4_mcast_group_source_req(&sock, optval, optlen, SourceOp::Join),
-        (IPPROTO_IP, MCAST_LEAVE_SOURCE_GROUP) => return ipv4_mcast_group_source_req(&sock, optval, optlen, SourceOp::Leave),
-        (IPPROTO_IP, MCAST_BLOCK_SOURCE) => return ipv4_mcast_group_source_req(&sock, optval, optlen, SourceOp::Block),
-        (IPPROTO_IP, MCAST_UNBLOCK_SOURCE) => return ipv4_mcast_group_source_req(&sock, optval, optlen, SourceOp::Unblock),
-        (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_group_filter(&sock, optval, optlen),
-        (IPPROTO_IPV6, IPV6_V6ONLY) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if sock.local_port.lock().is_some() { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ipv6_v6only.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
-        }
-        (IPPROTO_IPV6, IPV6_RECVERR) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.error.set_recverr6(v != 0);
-        }
-        (IPPROTO_IPV6, IPV6_MTU_DISCOVER) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if !net::uapi::valid_ipv6_pmtudisc(v) { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ipv6_mtu_discover.store(v, Ordering::Release);
-        }
-        (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ipv6_ucast_hops.store(v, Ordering::Release);
-        }
-        (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Hops(v)));
-        }
-        (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Loop(v)));
-        }
-        (IPPROTO_IPV6, IPV6_MULTICAST_IF) => {
-            let idx = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Iface(idx)));
-        }
-        (IPPROTO_IPV6, IPV6_RECVPKTINFO) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.ipv6_recvpktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
-        }
-        (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.ipv6_recvhoplimit.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
-        }
-        (IPPROTO_IPV6, IPV6_TCLASS) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ipv6_tclass.store(v, Ordering::Release);
-        }
-        (IPPROTO_IPV6, IPV6_RECVTCLASS) => {
-            if let Err(e) = require_v6(&sock) { return e; }
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.ipv6_recvtclass.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
-        }
-        (IPPROTO_IPV6, MCAST_JOIN_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, true),
-        (IPPROTO_IPV6, MCAST_LEAVE_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, false),
-        (IPPROTO_IPV6, MCAST_JOIN_SOURCE_GROUP) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Join),
-        (IPPROTO_IPV6, MCAST_LEAVE_SOURCE_GROUP) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Leave),
-        (IPPROTO_IPV6, MCAST_BLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Block),
-        (IPPROTO_IPV6, MCAST_UNBLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Unblock),
-        (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter(&sock, optval, optlen),
-        (IPPROTO_TCP, TCP_NODELAY) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            sock.opts.tcp_nodelay.store(v, Ordering::Release);
-        }
-        (IPPROTO_TCP, TCP_CORK) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            let new = if v != 0 { 1 } else { 0 };
-            let old = sock.opts.tcp_cork.swap(new, Ordering::AcqRel);
-            if old != 0 && new == 0 {
-                let entry = match &*sock.kind.lock() {
-                    net::sock::SockKind::TcpConn(entry) => Some(entry.clone()),
-                    _ => None,
-                };
-                if let Some(entry) = entry {
-                    let nodelay = sock.opts.tcp_nodelay.load(Ordering::Acquire) != 0;
-                    let _ = net::sock::stack().tcp_send(&entry, &[], usize::MAX, nodelay, false);
-                    net::sock::drain_loopback();
-                }
-            }
-        }
-        (IPPROTO_TCP, TCP_KEEPIDLE) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.tcp_keepidle_s.store(v, Ordering::Release);
-            refresh_tcp_keepalive(&sock);
-        }
-        (IPPROTO_TCP, TCP_KEEPINTVL) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.tcp_keepintvl_s.store(v, Ordering::Release);
-            refresh_tcp_keepalive(&sock);
-        }
-        (IPPROTO_TCP, TCP_KEEPCNT) => {
-            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.tcp_keepcnt.store(v, Ordering::Release);
-            refresh_tcp_keepalive(&sock);
-        }
-        _ => return -(Errno::Enoprotoopt.as_i32() as i64),
-    }
-    0
-}
-
-fn encode_mcast(result: net::NetResult<()>) -> i64 {
-    match result { Ok(()) => 0, Err(error) => errno_from_neterr(error) }
 }
 
 fn multicast_preflight(level: u64, optname: u64) -> Option<net::sock_mcast::McastSetOp> {
@@ -295,35 +100,6 @@ fn multicast_preflight(level: u64, optname: u64) -> Option<net::sock_mcast::Mcas
             | MCAST_UNBLOCK_SOURCE | MCAST_LEAVE_GROUP | MCAST_JOIN_SOURCE_GROUP
             | MCAST_LEAVE_SOURCE_GROUP | MCAST_MSFILTER) => Some(V6Other),
         _ => None,
-    }
-}
-
-/// Gate IPPROTO_IPV6 options to AF_INET6 sockets, matching the family
-/// check already used by the v6 multicast-membership helpers. # C: O(1)
-fn require_v6(sock: &Arc<net::sock::InetSocket>) -> Result<(), i64> {
-    if sock.family.load(Ordering::Acquire) != net::sock::AF_INET6 {
-        return Err(-(Errno::Eafnosupport.as_i32() as i64));
-    }
-    Ok(())
-}
-
-pub(super) fn read_u8_or_i32(optval: u64, optlen: u32) -> Option<i32> {
-    if (1..4).contains(&optlen) {
-        let mut byte = [0u8; 1];
-        uaccess::copy_from_user(&mut byte, optval).ok()?;
-        return Some(byte[0] as i32);
-    }
-    if optlen >= 4 {
-        let mut bytes = [0u8; 4];
-        uaccess::copy_from_user(&mut bytes, optval).ok()?;
-        return Some(i32::from_ne_bytes(bytes));
-    }
-    None
-}
-
-fn refresh_tcp_keepalive(sock: &Arc<net::sock::InetSocket>) {
-    if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
-        net::sock_opts::apply_tcp_keepalive_opts(sock, entry);
     }
 }
 

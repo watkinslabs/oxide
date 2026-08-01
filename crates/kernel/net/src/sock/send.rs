@@ -7,7 +7,7 @@ pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
         SockKind::TcpConn(entry) => entry.clone(), _ => return false,
     };
     let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-        .max(TCP_SNDBUF_DEFAULT) as usize;
+        .max(0) as usize;
     if !entry.arm_transmit_wait(&sock.write_shut, cap, deadline_ns) { return true; }
     // SAFETY: arm_transmit_wait published current before dropping conn.
     unsafe { sched::live::schedule::schedule(); }
@@ -132,12 +132,19 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             || crate::stack::tcp_send_closed(entry.conn.lock().state)
         { return Err(NetError::Epipe); }
         let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-            .max(TCP_SNDBUF_DEFAULT) as usize;
+            .max(0) as usize;
         let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
         let cork = sock.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
         let n = stack().tcp_send(&entry, payload, cap, nodelay, cork)?;
         drain_loopback();
         return Ok(n);
+    }
+    if matches!(*sock.kind.lock(), SockKind::Udp) {
+        // A corked datagram never reaches the builders below: the cork owns
+        // the destination and the accumulated bytes until it is pushed.
+        if let Some(n) = crate::sock_opts::sol_udp::emit::intercept(sock, &dest, payload)? {
+            return Ok(n);
+        }
     }
     if let Some(RemoteAddr::Inet6 { ip, port, scope_id }) = dest {
         return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);

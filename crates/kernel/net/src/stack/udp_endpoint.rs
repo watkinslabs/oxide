@@ -12,6 +12,7 @@ impl UdpRxQueue {
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             crate::SocketOwner::root(network_namespace::initial(), 0),
             Arc::new(Spinlock::new(None)), Arc::new(crate::bpf_filter::SocketFilter::new()),
             Arc::new(crate::mcast_filter::SocketMcast::new()))
@@ -22,6 +23,7 @@ impl UdpRxQueue {
                       reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
                       reuseport: Arc<::core::sync::atomic::AtomicI32>,
                       ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                      gro: Arc<::core::sync::atomic::AtomicI32>,
                       owner: Arc<crate::SocketOwner>,
                       peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -31,7 +33,7 @@ impl UdpRxQueue {
             state: Spinlock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
-            error, peer, reuseaddr, reuseport, ip_mtu_discover,
+            error, peer, reuseaddr, reuseport, ip_mtu_discover, gro,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None), bpf_filter, mcast,
             reuseport_group: crate::reuseport::new_slot(),
@@ -74,15 +76,54 @@ impl UdpRxQueue {
 
     /// Pop or peek one endpoint-local datagram. # C: O(payload when peeking)
     pub fn recv(&self, peek: bool) -> Option<UdpDatagram> {
+        self.recv_gro(peek).map(|(datagram, _)| datagram)
+    }
+
+    /// Pop or peek one receive together with the segment size it reports when
+    /// several datagrams were coalesced into it. # C: O(payload when peeking)
+    pub fn recv_gro(&self, peek: bool) -> Option<(UdpDatagram, Option<usize>)> {
         let mut state = self.state.lock();
-        if peek { state.datagrams.front().cloned() } else { state.datagrams.pop_front() }
+        let queued = if peek { state.datagrams.front().cloned() }
+            else { state.datagrams.pop_front() };
+        queued.map(|q| { let seg = q.gro.cmsg_seg_size(); (q.datagram, seg) })
+    }
+
+    /// `UDP_GRO` is engaged on the owning socket. # C: O(1)
+    pub fn gro_enabled(&self) -> bool {
+        self.gro.load(::core::sync::atomic::Ordering::Acquire) != 0
     }
 
     /// Queue one datagram if this endpoint still accepts delivery. # C: O(payload)
     pub fn enqueue(&self, datagram: UdpDatagram) -> bool {
+        self.enqueue_gro(datagram, false, false)
+    }
+
+    /// Deliver one datagram, coalescing it into the queued run when the
+    /// canonical rule admits it and the ingress interface offers coalescing.
+    /// # C: O(payload)
+    pub fn enqueue_gro(&self, datagram: UdpDatagram, checksum_zero: bool, offered: bool) -> bool {
+        use crate::udp_gro::{GroAdmit, GroRun, admit};
         let mut state = self.state.lock();
         if !state.accepting { return false; }
-        state.datagrams.push_back(datagram);
+        let len = datagram.payload.len();
+        let same_flow = state.datagrams.back()
+            .is_some_and(|q| udp4_same_flow(&q.datagram, &datagram));
+        let batch = crate::udp_gro::current_batch();
+        let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
+            checksum_zero,
+            crate::udp_gro::coalescable_v4(offered, datagram.frag_max, datagram.options.len())
+                && self.gro_enabled(), batch);
+        match decision {
+            GroAdmit::Merge => {
+                let tail = state.datagrams.back_mut().expect("a merge names a tail");
+                tail.datagram.payload.extend_from_slice(&datagram.payload);
+                tail.gro.extend(len);
+            }
+            GroAdmit::Separate { open } => {
+                let gro = if open { GroRun::open(len, batch) } else { GroRun::single(len, batch) };
+                state.datagrams.push_back(QueuedUdp { datagram, gro });
+            }
+        }
         drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
@@ -113,7 +154,7 @@ impl UdpRxQueue {
 
     /// Total queued payload bytes. # C: O(N)
     pub fn queued_bytes(&self) -> usize {
-        self.state.lock().datagrams.iter().map(|(.., payload)| payload.len()).sum()
+        self.state.lock().datagrams.iter().map(|q| q.datagram.payload.len()).sum()
     }
 
     /// Atomically publish read shutdown against receive delivery. # C: O(1)
@@ -133,4 +174,19 @@ impl UdpRxQueue {
         drop(state);
         true
     }
+}
+
+/// Two IPv4 receives belong to one coalescing flow when they share the source
+/// and destination endpoints, the ingress interface, the hop limit, the
+/// type-of-service byte and the don't-fragment bit. A difference in any of
+/// them terminates the run rather than joining it, so the single hop limit and
+/// type-of-service byte a coalesced receive publishes describe every datagram
+/// merged into it.
+///
+/// The option area is absent from the key because an optioned datagram never
+/// becomes a coalescing candidate at all. # C: O(1)
+fn udp4_same_flow(a: &UdpDatagram, b: &UdpDatagram) -> bool {
+    a.src == b.src && a.sport == b.sport && a.dst == b.dst && a.dport == b.dport
+        && a.iface == b.iface && a.ttl == b.ttl && a.tos == b.tos
+        && a.dont_fragment == b.dont_fragment
 }

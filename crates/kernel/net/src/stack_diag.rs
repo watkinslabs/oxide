@@ -267,9 +267,9 @@ mod tests {
             Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 1001,
             Arc::new(Spinlock::<Option<(Ipv4Addr, u16)>, StackLockClass>::new(Some((remote, 5400)))),
             Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
-        assert!(open.enqueue((remote, 5400, local, NetIfaceId::from_raw(11), 64, alloc::vec![0; 3])));
-        assert!(connected.enqueue((remote, 5400, local, NetIfaceId::from_raw(12), 64, alloc::vec![0; 5])));
-        assert!(connected.enqueue((remote, 5400, local, NetIfaceId::from_raw(12), 64, alloc::vec![0; 7])));
+        assert!(open.enqueue(crate::stack::UdpDatagram::plain(remote, 5400, local, NetIfaceId::from_raw(11), 64, alloc::vec![0; 3])));
+        assert!(connected.enqueue(crate::stack::UdpDatagram::plain(remote, 5400, local, NetIfaceId::from_raw(12), 64, alloc::vec![0; 5])));
+        assert!(connected.enqueue(crate::stack::UdpDatagram::plain(remote, 5400, local, NetIfaceId::from_raw(12), 64, alloc::vec![0; 7])));
 
         let rows = stack.inet_diag_snapshot(IPPROTO_UDP);
         assert_eq!(rows.len(), 2);
@@ -306,9 +306,9 @@ mod tests {
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
-        assert!(open.enqueue((remote, 6400, local, NetIfaceId::from_raw(21), 64, 0, alloc::vec![0; 4])));
-        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, 0, alloc::vec![0; 6])));
-        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, 0, alloc::vec![0; 8])));
+        assert!(open.enqueue(crate::stack_ipv6::Udp6Datagram::plain(remote, 6400, local, NetIfaceId::from_raw(21), 64, 0, alloc::vec![0; 4])));
+        assert!(connected.enqueue(crate::stack_ipv6::Udp6Datagram::plain(remote, 6400, local, NetIfaceId::from_raw(22), 64, 0, alloc::vec![0; 6])));
+        assert!(connected.enqueue(crate::stack_ipv6::Udp6Datagram::plain(remote, 6400, local, NetIfaceId::from_raw(22), 64, 0, alloc::vec![0; 8])));
 
         let rows = stack.inet_diag_snapshot(IPPROTO_UDP);
         assert_eq!(rows.len(), 2);

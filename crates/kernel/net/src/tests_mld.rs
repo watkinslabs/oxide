@@ -244,6 +244,9 @@ fn mld_failed_close_report_consumes_bounded_attempts() {
 
     dev.fail.store(true, Ordering::Release);
     assert_eq!(state.change_v6(&stack, iface, group, source, false), Ok(()));
+    // The leave dropped the membership; with unconditional multicast delivery
+    // cleared the socket then refuses the group.
+    state.set_multicast_all_v6(false);
     assert!(!state.accept_v6(iface, group, source));
     assert!(stack.v6_mcast.lock().get(&iface).is_some_and(|groups| {
         groups.iter().any(|current| current.group == group && current.members.is_empty()

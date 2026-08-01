@@ -56,7 +56,7 @@ mod packet_ring_v3;
 mod packet_tx;
 mod packet_ring_tx;
 mod construct;
-mod iface;
+pub mod iface;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod inode;
 #[cfg(target_os = "oxide-kernel")]

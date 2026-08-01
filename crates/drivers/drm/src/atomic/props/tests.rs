@@ -100,6 +100,78 @@ fn immutable_properties_are_flagged() {
     }
 }
 
+/// A connector's EDID is how userspace learns which monitor it is driving, and
+/// it is an immutable blob property whose value is the blob id.
+#[test]
+fn connector_carries_an_immutable_edid_blob_property() {
+    assert!(CONN_PROPS.contains(&PROP_CONN_EDID));
+    let d = desc(PROP_CONN_EDID).expect("connector EDID");
+    assert_eq!(d.name, b"EDID");
+    assert_eq!(d.flags, DRM_MODE_PROP_BLOB | DRM_MODE_PROP_IMMUTABLE);
+    assert_eq!(d.num_values(), 0);
+    assert_eq!(d.enum_count(), 0);
+    // Visible to a legacy client: EDID is not an atomic-only property.
+    assert_eq!(d.flags & DRM_MODE_PROP_ATOMIC, 0);
+}
+
+/// EDID blob ids are reserved per connector and must not collide with the
+/// plane IN_FORMATS blob or the user-created blob range.
+#[test]
+fn edid_blob_ids_round_trip_within_their_reserved_range() {
+    for idx in 0..EDID_BLOB_ID_MAX_CONNECTORS as usize {
+        let id = edid_blob_id(idx).expect("reserved id");
+        assert_eq!(edid_blob_idx(id), Some(idx));
+        assert_ne!(id, IN_FORMATS_BLOB_ID);
+    }
+    assert!(edid_blob_id(EDID_BLOB_ID_MAX_CONNECTORS as usize).is_none());
+    assert!(edid_blob_idx(EDID_BLOB_ID_BASE - 1).is_none());
+    assert!(edid_blob_idx(EDID_BLOB_ID_BASE + EDID_BLOB_ID_MAX_CONNECTORS).is_none());
+    assert!(edid_blob_idx(IN_FORMATS_BLOB_ID).is_none());
+}
+
+/// A card with one connector; `has_edid` decides whether its display published
+/// an EDID, which is the only difference the EDID property may show.
+struct OneConnector { has_edid: bool }
+
+const TEST_EDID: [u8; 4] = [0x00, 0xff, 0xff, 0xff];
+
+impl DrmDriver for OneConnector {
+    fn name(&self) -> &'static str { "t" }
+    fn version(&self) -> (u32, u32, u32) { (0, 1, 0) }
+    fn date(&self) -> &'static str { "20260730" }
+    fn desc(&self) -> &'static str { "t" }
+    fn unique(&self) -> &str { "t" }
+    fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 1, 1, 1) }
+    fn dim_bounds(&self) -> (u32, u32, u32, u32) { (1, 4096, 1, 2160) }
+    fn cap(&self, c: u64) -> u64 { crate::default_cap(c) }
+    fn connector_ids(&self) -> alloc::vec::Vec<u32> { alloc::vec![crate::connector_id_for(0)] }
+    fn edid_blob(&self, idx: usize) -> Option<alloc::vec::Vec<u8>> {
+        if self.has_edid && idx == 0 { Some(TEST_EDID.to_vec()) } else { None }
+    }
+}
+
+fn card_with_edid(has_edid: bool) -> Arc<dyn DrmDriver> { Arc::new(OneConnector { has_edid }) }
+
+#[test]
+fn edid_property_value_is_the_blob_id_only_when_a_display_published_one() {
+    let conn = crate::connector_id_for(0);
+    let with = card_with_edid(true);
+    assert_eq!(value(0, &with, conn, PROP_CONN_EDID), edid_blob_id(0).unwrap() as u64);
+    // No EDID means blob id zero, never an id GETPROPBLOB would fail to find.
+    let without = card_with_edid(false);
+    assert_eq!(value(0, &without, conn, PROP_CONN_EDID), 0);
+}
+
+#[test]
+fn edid_blob_bytes_resolve_only_for_a_connector_of_this_card() {
+    let card = card_with_edid(true);
+    assert_eq!(edid_blob_bytes(&card, edid_blob_id(0).unwrap()).as_deref(), Some(&TEST_EDID[..]));
+    // Connector 1 does not exist on this card, and IN_FORMATS is not an EDID.
+    assert!(edid_blob_bytes(&card, edid_blob_id(1).unwrap()).is_none());
+    assert!(edid_blob_bytes(&card, IN_FORMATS_BLOB_ID).is_none());
+    assert!(edid_blob_bytes(&card_with_edid(false), edid_blob_id(0).unwrap()).is_none());
+}
+
 /// Property ids are a stable ABI within one boot: two properties on the same
 /// object must never share an id, or enumeration hands userspace the wrong
 /// descriptor.
