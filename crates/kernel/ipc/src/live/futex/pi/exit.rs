@@ -63,7 +63,10 @@ pub fn exit_pi_state_list(owner_tid: u32) {
                         }
                     }
                     None => {
-                        // SAFETY: same verified word as above.
+                        // SAFETY: the same word `read_word_for_exit` just
+                        // proved in-range, 4-aligned and present+writable; a
+                        // single naturally-aligned RMW in the dying task's
+                        // still-active address space.
                         unsafe { cmpxchg_user_u32(uaddr, uval, owner_died_word(uval)) };
                         drop_state(&mut tbl, i);
                     }

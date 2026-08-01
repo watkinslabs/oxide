@@ -65,6 +65,10 @@ pub(super) fn fire_signal(pid: u32, signo: u16) {
     if pid == 0 || signo == 0 { return; }
     let raw = SIGNAL_HOOK.load(Ordering::Acquire);
     if raw.is_null() { return; }
+    // SAFETY: `SIGNAL_HOOK` is only ever stored by `set_signal_hook`, whose
+    // typed parameter forces the value to be exactly a `fn(u32, u16)` cast to
+    // `*mut ()`. The null case returned above, so `raw` here is a live
+    // `'static` code address of that signature.
     let f: fn(u32, u16) = unsafe { core::mem::transmute::<*mut (), fn(u32, u16)>(raw) };
     f(pid, signo);
 }
@@ -77,8 +81,11 @@ pub(super) fn owner_alive(vpid: u32, tid: u32) -> bool {
     if vpid == 0 && tid == 0 { return false; }
     let raw = OWNER_ALIVE.load(Ordering::Acquire);
     if raw.is_null() { return true; }
-    let f: fn(u32, u32) -> bool =
-        unsafe { core::mem::transmute::<*mut (), fn(u32, u32) -> bool>(raw) };
+    type AliveFn = fn(u32, u32) -> bool;
+    // SAFETY: the only non-null store to `OWNER_ALIVE` is `set_owner_alive_hook`,
+    // whose typed parameter forces exactly this signature; the test reset stores
+    // null and the null case returned above.
+    let f: AliveFn = unsafe { core::mem::transmute::<*mut (), AliveFn>(raw) };
     f(vpid, tid)
 }
 
@@ -89,6 +96,9 @@ pub fn set_switch_hook(f: fn(n: u8)) {
 pub(super) fn fire_switch(n: u8) {
     let raw = ON_SWITCH.load(Ordering::Acquire);
     if raw.is_null() { return; }
+    // SAFETY: the only non-null store to `ON_SWITCH` is `set_switch_hook`, whose
+    // typed parameter forces exactly `fn(u8)`; the test reset stores null and
+    // the null case returned above.
     let f: fn(u8) = unsafe { core::mem::transmute::<*mut (), fn(u8)>(raw) };
     f(n);
 }
