@@ -110,6 +110,14 @@ pub struct ThreadGroup {
     /// the reap path reads it while holding the `ZOMBIES` list, another
     /// `TaskList`-class lock (`06§3.6` forbids that nesting).
     group_exit_code: AtomicI32,
+    /// Linux `signal_struct::group_stop_count` — how many threads of this
+    /// process still owe the group stop in progress a stop. Seeded when the
+    /// stop is initiated and decremented by each thread as it parks; the one
+    /// that drives it to zero completes the stop and is the ONE that reports
+    /// `CLD_STOPPED` to the real parent. Without the counter every thread of a
+    /// threaded process reported its own stop, so a shell saw N `SIGCHLD`s for
+    /// one `^Z`.
+    group_stop_count: AtomicU32,
     /// Linux `signal_struct::shared_pending.signal` — the PROCESS-directed
     /// pending bitmap, the set `kill(2)`/`kill_pgrp`/`sigqueue(3)` post into
     /// and that ANY thread of the group may dequeue from. See
@@ -185,6 +193,7 @@ impl ThreadGroup {
             is_child_subreaper: AtomicBool::new(false),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
+            group_stop_count: AtomicU32::new(0),
             shared_pending: AtomicU64::new(0),
             shared_sigqueue: crate::sigqueue::new_queues(),
             signalfd_poll: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
@@ -289,6 +298,30 @@ impl ThreadGroup {
     /// last"; after retirement `0` is Linux's `thread_group_empty`.
     /// # C: O(1)
     pub fn live_count(&self) -> u32 { self.state.lock().live }
+
+    /// Join the group stop in progress, initiating it when this is the first
+    /// thread to arrive.
+    ///
+    /// The rule itself is the ungated `jobctl::participate_group_stop`; this
+    /// method only owns the counter's storage and its seeding — the first
+    /// thread to arrive sizes the stop by the group's live membership.
+    /// # C: O(1)
+    pub fn join_group_stop(&self, jobctl: u64) -> crate::jobctl::GroupStopStep {
+        let count = match self.group_stop_count.load(Ordering::Acquire) {
+            0 => { let n = self.live_count().max(1); self.group_stop_count.store(n, Ordering::Release); n }
+            n => n,
+        };
+        let step = crate::jobctl::participate_group_stop(jobctl, count);
+        self.group_stop_count.store(step.count, Ordering::Release);
+        step
+    }
+
+    /// A SIGCONT (or a group exit) ends the stop, so the next `^Z` starts a
+    /// fresh count instead of resuming a half-finished one. # C: O(1)
+    pub fn end_group_stop(&self) { self.group_stop_count.store(0, Ordering::Release); }
+
+    /// Threads of this process that still owe the group stop a stop. # C: O(1)
+    pub fn group_stop_count(&self) -> u32 { self.group_stop_count.load(Ordering::Acquire) }
 
     /// Linux `wait_task_zombie`'s `(signal->flags & SIGNAL_GROUP_EXIT) ?
     /// signal->group_exit_code : ...` guard. # C: O(1)

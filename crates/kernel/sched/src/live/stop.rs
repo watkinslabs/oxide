@@ -58,7 +58,10 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
         StopKind::JobControl => jobctl::STOPPED,
     }, Ordering::AcqRel);
     cur.set_state(TaskState::Stopped);
-    notify_parent_cldstop(cur, jobctl::stop_si_code(kind), sig as u32, jobctl::notify_target(kind));
+    if group_stop_notifies(cur, kind) {
+        notify_parent_cldstop(cur, jobctl::stop_si_code(kind), sig as u32,
+                              jobctl::notify_target(kind));
+    }
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
         unsafe { crate::live::schedule(); }
@@ -94,11 +97,32 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
     }
 }
 
-/// Linux `do_notify_parent_cldstop` (`kernel/signal.c:2290-2346`) wiring for a
-/// self-stop / resume. Posts SIGCHLD when the parent's disposition allows it
-/// and ALWAYS wakes a `wait4`-blocked parent — a stop that notified nobody left
+/// Linux `task_participate_group_stop` folded together with `do_signal_stop`'s
+/// `notify` decision: whether THIS park is the one that owes a report.
+///
+/// A ptrace stop always reports — it is per-tracee, and its audience is the
+/// tracer. A job-control stop is per-PROCESS: the group stop is complete only
+/// once every thread has parked, and exactly ONE `CLD_STOPPED` is owed for it.
+/// Reporting per-thread made a `^Z` on a threaded process fire one `SIGCHLD`
+/// per thread at the shell.
+/// # C: O(1)
+fn group_stop_notifies(cur: &crate::Task, kind: StopKind) -> bool {
+    if kind == StopKind::Ptrace { return true; }
+    // Take on the counter debt unless this thread already carries one, so a
+    // thread re-parking inside one group stop cannot pay for it twice.
+    let jc = cur.jobctl.fetch_or(jobctl::STOP_PENDING | jobctl::STOP_CONSUME, Ordering::AcqRel)
+        | jobctl::STOP_PENDING | jobctl::STOP_CONSUME;
+    let step = cur.thread_group.join_group_stop(jc);
+    cur.jobctl.store(step.jobctl, Ordering::Release);
+    step.completed
+}
+
+/// Linux `do_notify_parent_cldstop` wiring for a self-stop / resume. Posts
+/// SIGCHLD when the parent's disposition allows it and ALWAYS wakes a
+/// `wait4`-blocked parent — a stop that notified nobody left
 /// `waitpid(WUNTRACED)` asleep through the stop it was waiting for, which is
 /// what made a backgrounded tty read look like a hang rather than a stop.
+///
 /// `to` is `do_notify_parent_cldstop`'s `for_ptracer` argument: a ptrace stop
 /// is announced to the tracer (`tsk->parent`), a job-control stop to the real
 /// parent (`tsk->real_parent`). A tracee whose tracer has since detached falls

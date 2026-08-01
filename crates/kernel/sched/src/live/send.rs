@@ -322,6 +322,10 @@ fn flush_group(t: &Task, mask: u64) {
 /// unrelated process steal a tracee out from under `gdb`.
 /// # C: O(N_threads)
 fn resume_group(t: &Task) {
+    // `sig->group_stop_count = 0` — the stop is over, so the next one starts a
+    // fresh count rather than resuming a half-finished tally and reporting
+    // CLD_STOPPED one thread early.
+    t.thread_group.end_group_stop();
     let tgid = t.tgid.load(Ordering::Acquire);
     for (_vtid, tid) in crate::registry::thread_entries(tgid) {
         let Some(m) = super::registry::lookup(tid) else { continue };
