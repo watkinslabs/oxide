@@ -174,15 +174,8 @@ impl FileOps for SysClassDrmOps {
         let minors: Vec<DrmMinor> = drm_minors().into_iter()
             .filter(|minor| drm_device_path(minor).is_some())
             .collect();
-        let mut idx = ctx.pos as usize;
-        while idx < minors.len() {
-            let next = idx as u64 + 1;
-            let name = minors[idx].name.as_str();
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, minors.iter().map(|m| m.name.as_str()),
+            FileType::Symlink)
     }
 }
 fn make_sys_class_drm_inode() -> InodeRef {
@@ -207,15 +200,8 @@ impl FileOps for SysDevicesVirtualDrmOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let minors = unparented_minors();
-        let mut idx = ctx.pos as usize;
-        while idx < minors.len() {
-            let next = idx as u64 + 1;
-            let name = minors[idx].name.as_str();
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, minors.iter().map(|m| m.name.as_str()),
+            FileType::Directory)
     }
 }
 fn make_sys_devices_virtual_drm_inode() -> InodeRef {
@@ -246,15 +232,8 @@ impl FileOps for ParentDrmOps {
         let d = inode.private::<ParentDrmData>().ok_or(VfsError::Einval)?;
         drv::device_canon_exact(&d.parent).ok_or(VfsError::Enoent)?;
         let minors = parented_minors(d.parent.bus, &d.parent.addr);
-        let mut idx = ctx.pos as usize;
-        while idx < minors.len() {
-            let next = idx as u64 + 1;
-            let name = minors[idx].name.as_str();
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, minors.iter().map(|m| m.name.as_str()),
+            FileType::Directory)
     }
 }
 
@@ -296,25 +275,15 @@ impl FileOps for DrmDeviceOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const BASE_ENTRIES: &[(&str, FileType)] = &[
+        // `device` is a symlink only when the minor has a model parent; the
+        // lookup that resolves its ino enforces that.
+        const ENTRIES: &[(&str, FileType)] = &[
             ("dev", FileType::Regular), ("uevent", FileType::Regular),
-            ("subsystem", FileType::Symlink),
+            ("subsystem", FileType::Symlink), ("device", FileType::Symlink),
         ];
         let d = inode.private::<DrmDeviceData>().ok_or(VfsError::Einval)?;
         drm_device_path(&d.minor).ok_or(VfsError::Enoent)?;
-        let mut entries: Vec<(&str, FileType)> = BASE_ENTRIES.to_vec();
-        if device_link_target(&d.minor).is_some() {
-            entries.push(("device", FileType::Symlink));
-        }
-        let mut idx = ctx.pos as usize;
-        while idx < entries.len() {
-            let next = idx as u64 + 1;
-            let (nm, ft) = entries[idx];
-            let ino = inode.lookup(nm).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(nm, ino, ft, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_table(inode, ctx, ENTRIES)
     }
 }
 fn make_drm_device_inode(minor: DrmMinor) -> InodeRef {

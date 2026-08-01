@@ -4,6 +4,11 @@ use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef
 
 use super::pid_ino;
 
+/// Every `/proc/<pid>/ns/` link Linux publishes (`proc_ns_dir_readdir` over
+/// `ns_entries`); `NsKind::from_leaf` is the matching resolver.
+const NS_ENTRIES: &[&str] = &["mnt", "cgroup", "uts", "ipc", "user", "pid", "net",
+    "pid_for_children", "time", "time_for_children"];
+
 pub struct ProcPidNsDirInode {
     pub tid: u32,
 }
@@ -26,19 +31,11 @@ impl InodeOps for ProcPidNsDirOps {
 }
 
 impl FileOps for ProcPidNsDirOps {
+    /// A namespace link the task no longer holds (it exited between two
+    /// `getdents` pages) is dropped, not emitted with `d_ino == 0`. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const NAMES: &[&str] = &["mnt", "cgroup", "uts", "ipc", "user", "pid", "net",
-            "pid_for_children", "time", "time_for_children"];
-        let mut idx = ctx.pos as usize;
-        while idx < NAMES.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(NAMES[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(NAMES[idx], ino, FileType::Symlink, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names = crate::readdir::typed(NS_ENTRIES, FileType::Symlink);
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 

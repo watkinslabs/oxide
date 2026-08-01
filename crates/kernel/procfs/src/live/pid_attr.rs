@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::sync::Arc;
 
 use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
@@ -43,19 +44,11 @@ impl InodeOps for ProcPidAttrDirOps {
 }
 
 impl FileOps for ProcPidAttrDirOps {
+    /// # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let _tid = inode.private::<ProcPidAttrDirInode>().ok_or(VfsError::Einval)?.tid;
-        let mut idx = ctx.pos as usize;
-        while idx < ATTR_ENTRIES.len() {
-            let next = idx as u64 + 1;
-            let (name, ft, _) = ATTR_ENTRIES[idx];
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, ft, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names = ATTR_ENTRIES.iter().map(|(n, ft, _)| (String::from(*n), *ft));
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 
@@ -81,18 +74,10 @@ impl InodeOps for ProcPidAttrApparmorDirOps {
 }
 
 impl FileOps for ProcPidAttrApparmorDirOps {
+    /// # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let mut idx = ctx.pos as usize;
-        while idx < APPARMOR_ENTRIES.len() {
-            let next = idx as u64 + 1;
-            let (name, ft, _) = APPARMOR_ENTRIES[idx];
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, ft, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names = APPARMOR_ENTRIES.iter().map(|(n, ft, _)| (String::from(*n), *ft));
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 

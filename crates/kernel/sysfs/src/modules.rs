@@ -25,15 +25,8 @@ impl InodeOps for ModuleRootOps {
 impl FileOps for ModuleRootOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let snap = modules::registry::snapshot();
-        let mut idx = ctx.pos as usize;
-        while idx < snap.len() {
-            let next = idx as u64 + 1;
-            let name = &snap[idx].name;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, snap.iter().map(|m| m.name.as_str()),
+            FileType::Directory)
     }
 }
 
@@ -56,13 +49,7 @@ impl InodeOps for ModuleDirOps {
 impl FileOps for ModuleDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ModuleDirData>().ok_or(VfsError::Einval)?;
-        let entries = module_entries(&d.snap);
-        for (idx, (name, ft)) in entries.iter().enumerate().skip(ctx.pos as usize) {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, *ft, next) { return Ok(()); }
-        }
-        Ok(())
+        crate::readdir::emit_table(inode, ctx, &module_entries(&d.snap))
     }
 }
 
@@ -93,15 +80,8 @@ impl InodeOps for ParamDirOps {
 impl FileOps for ParamDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ParamDirData>().ok_or(VfsError::Einval)?;
-        let mut idx = ctx.pos as usize;
-        while idx < d.snap.params.len() {
-            let next = idx as u64 + 1;
-            let name = &d.snap.params[idx].name;
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, d.snap.params.iter().map(|p| p.name.as_str()),
+            FileType::Regular)
     }
 }
 

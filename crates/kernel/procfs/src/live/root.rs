@@ -1,8 +1,9 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
-use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
+use vfs::{CookieEntry, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
 
 const PROC_ROOT_DIR_MODE: u16 = 0o555;
 
@@ -48,53 +49,19 @@ impl InodeOps for ProcRootOps {
 }
 
 impl FileOps for ProcRootOps {
+    /// The pid set is re-snapshotted on every call, so an ordinal cursor over it
+    /// is not a `d_off`: one process exiting mid-listing shifts every later
+    /// ordinal. Cookies come from the name (`crate::readdir`). # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcRootInode>().ok_or(VfsError::Einval)?;
-        let mut idx = ctx.pos as usize;
-        let nstat = d.children.len();
-        while idx < nstat {
-            let (name, child) = d.children.iter().nth(idx).unwrap();
-            let next = idx as u64 + 1;
-            if !ctx.emit(name.as_str(), child.ino(), child.file_type(), next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
+        // Statically registered children hold their inode already — no lookup.
+        let mut es: Vec<CookieEntry> = d.children.iter()
+            .map(|(n, c)| CookieEntry::new(n.clone(), c.ino(), c.file_type()))
+            .collect();
         let vpids = sched::live::registry::live_vpids();
-        let total = nstat + 2 + vpids.len();
-        while idx < total {
-            let dyn_idx = idx - nstat;
-            let next = idx as u64 + 1;
-            let mut buf = [0u8; 11];
-            let s: &str = if dyn_idx == 0 {
-                "self"
-            } else if dyn_idx == 1 {
-                "thread-self"
-            } else {
-                let mut t = vpids[dyn_idx - 2];
-                let mut n = 0;
-                if t == 0 {
-                    buf[0] = b'0';
-                    n = 1;
-                } else {
-                    while t > 0 {
-                        buf[n] = b'0' + (t % 10) as u8;
-                        t /= 10;
-                        n += 1;
-                    }
-                }
-                buf[..n].reverse();
-                crate::util::decimal_str(&buf, n)
-            };
-            let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            // `self`/`thread-self` are magic symlinks, not directories.
-            let ft = if dyn_idx <= 1 { FileType::Symlink } else { FileType::Directory };
-            if !ctx.emit(s, ino, ft, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::push_resolved(&mut es, crate::readdir::proc_root_dynamic(&vpids),
+            |n| inode.lookup(n).ok().map(|i| i.ino()));
+        vfs::emit_by_cookie(&mut es, ctx)
     }
 }
 
