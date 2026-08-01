@@ -1,5 +1,3 @@
-#![cfg(target_os = "oxide-kernel")]
-
 use syscall::errno::Errno;
 
 /// The `(optval, optlen)` copyout pair one `getsockopt` answers through.
