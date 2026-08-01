@@ -85,7 +85,21 @@ counters:
 
 # Mirror of the PR-time gate per `docs/40§2`: spec-lint clean, hosted tests
 # green, both arches build default AND with debug-all on.
-ci: lint hosted-gate test build build-debug
+ci: lint matrix-gate hosted-gate test build build-debug
+
+# Structural gate on the syscall compliance ledger: one row per syscall number,
+# the declared column count on every row (escape-aware, so `\|` inside a cell is
+# a cell and not a column), and a Status drawn from the file's own legend.
+#
+# Every invariant here is a defect that reached main. The duplicate-row check in
+# particular: F784 read the matrix with a parser that split on `|` without
+# honouring the escape, silently skipped all 65 pipe-bearing rows, concluded
+# those syscalls had no row, and appended 65 duplicates with conflicting Status.
+# This lint already existed and already printed those exact 65 rows as a note --
+# it was never wired into a gate, so nobody saw it. A warning nothing reads is
+# not verification.
+matrix-gate:
+	python3 tools/matrix-lint.py
 
 # ---- qemu -----------------------------------------------------------------
 
