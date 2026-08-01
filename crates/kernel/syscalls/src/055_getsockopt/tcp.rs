@@ -34,6 +34,12 @@ struct Snapshot {
 
 /// `getsockopt(fd, IPPROTO_TCP, ...)`. # C: O(value bytes)
 pub(super) fn get(sock: &Arc<InetSocket>, optname: u64, out: &OptOut) -> i64 {
+    // The zero-copy receive owns its own operand: it reads its length against
+    // the versioned struct rather than the generic value screen, and it
+    // publishes in place rather than through the value table.
+    if optname == sol::TCP_ZEROCOPY_RECEIVE {
+        return crate::tcp_zerocopy::receive::get(sock, out.optval, out.optlen_p);
+    }
     let len = match out.requested_len() { Ok(len) => len, Err(rv) => return rv };
     let snap = snapshot(sock);
     let tcp = &sock.opts.tcp;

@@ -192,6 +192,12 @@ include!("kernel_body.rs");
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
 
+// `TCP_ZEROCOPY_RECEIVE`'s receive window. The window object and the socket
+// `mmap(2)` admission carry no target gate so their tests compile hosted; only
+// the option's copy-in/copy-out shim under it is kernel-only.
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod tcp_zerocopy;
+
 // Linux `struct stat` encoder: the byte offsets and the signed `st_*time` /
 // unsigned `st_*time_nsec` split are the whole observable contract, so it
 // compiles hosted too. Declared here rather than in `kernel_body.rs` because a
