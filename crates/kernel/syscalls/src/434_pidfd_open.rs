@@ -5,20 +5,15 @@
 /// # C: O(N_tasks + N_fds)
 pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
-    const PIDFD_NONBLOCK: u64 = vfs::OpenFlags::O_NONBLOCK.bits() as u64;
-    const PIDFD_THREAD: u64 = vfs::OpenFlags::O_EXCL.bits() as u64;
-    if args.a1 & !(PIDFD_NONBLOCK | PIDFD_THREAD) != 0 || args.a0 as i32 <= 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    let (pid, options) = match pidfd::admit(args.a0, args.a1) {
+        Ok(admitted) => admitted,
+        Err(errno) => return -(errno.as_i32() as i64),
+    };
     let current = match sched::live::current() {
         Some(current) => current,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let options = pidfd::OpenOptions {
-        nonblock: args.a1 & PIDFD_NONBLOCK != 0,
-        thread: args.a1 & PIDFD_THREAD != 0,
-    };
-    match pidfd::open(current, args.a0 as u32, options) {
+    match pidfd::open(current, pid, options) {
         Ok(fd) => fd as i64,
         Err(pidfd::OpenError::NotFound) => -(Errno::Esrch.as_i32() as i64),
         Err(pidfd::OpenError::NotLeader) => -(Errno::Enoent.as_i32() as i64),
