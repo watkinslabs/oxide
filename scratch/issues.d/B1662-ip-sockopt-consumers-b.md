@@ -1,6 +1,0 @@
-# B1662-ip-sockopt-consumers-b
-
-| Status | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|
-| OPEN | high | `cargo check -p net` and plain `cargo test -p net` fail on `main` with 10 × `cannot find sock_opts in crate`: the ungated `net::ipv4_options` module uses `crate::sock_opts`, which is `#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]`. Only `cargo test -p net --features hosted` builds. Every `net` lane must remember the feature flag or it reads as its own breakage. | Reproduced on `main` at `80e6adf05` (before this branch existed) and at `4a110da60`; `cargo test -p net --features hosted` → 1577 passed. Arrived with the B1660 IPv4-options-on-transmit merge. | — |
-| OPEN | low | `IP_BIND_ADDRESS_NO_PORT` and `IP_LOCAL_PORT_RANGE` wiring lives in `sock/ops.rs`, `sock/tcp_lifecycle.rs` and `sock_v6.rs`, all `#[cfg(target_os = "oxide-kernel")]` — the decisions are covered hosted in `net::local_port::tests` (including the UDP allocator and the TCP reservation), but the bind-path call sites themselves are reachable only by a kernel-target build. Same phantom-test gap the ledger already records for those files. | `net::local_port::tests` (12 tests); both arches build. | — |
