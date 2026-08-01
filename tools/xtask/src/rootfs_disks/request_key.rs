@@ -7,9 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::cmds::run;
 
-const SOURCE: &str = "userspace/request_key_probe/main.c";
 /// The helper the kernel execs. Absent it, the probe can only report the ENOENT
 /// that made this proof necessary, so the injection refuses rather than
 /// producing a run whose failure would be ambiguous.
@@ -45,20 +43,9 @@ fn require_helper(img: &Path) -> Result<(), u8> {
     Err(2)
 }
 
-/// GNU cross-build, not musl: the probe reaches both syscalls through glibc's
-/// `syscall(3)`, which is the entry point under test on both architectures.
-fn build_probe(arch: &str) -> Result<PathBuf, u8> {
-    let (cc, sysroot) = super::probe_cc(arch, "the request_key proof")?;
-    let out_dir = PathBuf::from("target").join("smoke").join(arch);
-    std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
-    let out = out_dir.join("request_key_probe");
-    let mut c = Command::new(cc);
-    if let Some(path) = sysroot { c.arg(format!("--sysroot={path}")); }
-    c.args(["-O2", "-g", "-std=gnu11", "-Wall", "-Wextra", "-Werror"]);
-    c.arg(SOURCE).arg("-o").arg(&out);
-    run(c)?;
-    Ok(out)
-}
+/// Cross-built against the glibc ABI: the probe reaches both syscalls through
+/// glibc's `syscall(3)`, which is the entry point under test on both arches.
+fn build_probe(arch: &str) -> Result<PathBuf, u8> { super::probe_cargo(arch, "request_key_probe") }
 
 fn write_service() -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");

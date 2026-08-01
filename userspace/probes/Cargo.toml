@@ -1,0 +1,36 @@
+# In-guest kernel probes, built for `*-unknown-linux-gnu` against the glibc ABI.
+#
+# A SEPARATE workspace, excluded from the kernel workspace at the repo root: these
+# target userspace triples and link the system glibc, so they must never be pulled
+# into `cargo build --workspace`, `hosted-gate`, or a kernel feature build.
+#
+# Member manifest:
+# - support:     shared stdout/errno helpers, the only code any two probes share.
+# - drm:         DRM/KMS modeset-info regression -> `drm_probe`.
+# - swapfile:    ext4 swapfile lifecycle + memcg swap accounting -> `swapfile_probe`.
+# - request_key: request_key(2) upcall reaches a real helper -> `request_key_probe`.
+#
+# Probes that compare against a real Linux run (`af_packet_diff`, `wait_diff`)
+# deliberately stay C: their host oracle is the same source compiled by the same
+# compiler, and moving one side alone would move the oracle.
+[workspace]
+resolver = "2"
+members = ["support", "drm", "swapfile", "request_key"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+libc = "0.2"
+support = { path = "support" }
+
+# Probes run in a guest that may be mid-failure. Abort instead of unwinding so a
+# panic cannot be swallowed, and keep them small enough to inject with debugfs.
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
