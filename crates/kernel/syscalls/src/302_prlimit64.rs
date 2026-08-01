@@ -49,7 +49,13 @@ pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
     // `task` may not be `current` (prlimit64 explicitly targets an arbitrary
     // pid); `do_prlimit` takes the target thread group's rlimit lock, so this
     // cross-task read-decide-write cannot race a reader/writer on another CPU.
-    let old = match task.do_prlimit(resource, new, cur.has_cap(sched::cap::SYS_RESOURCE)) {
+    // The hard-limit-raise gate is `capable(CAP_SYS_RESOURCE)` — the INIT user
+    // namespace test (`perm_common::capable`) — and is asked of the CALLER, not
+    // the target. `prlimit_perm_check` above is the separate, target-namespace
+    // access test; passing it does not license raising a hard limit.
+    let old = match task.do_prlimit(resource, new,
+        crate::rlimit_policy::cap_sys_resource(&cur))
+    {
         Ok(old) => old,
         Err(e)  => return -(crate::rlimit_policy::errno_of(e).as_i32() as i64),
     };
