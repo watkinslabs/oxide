@@ -240,10 +240,17 @@ stack-gate: stack-gate-x86 stack-gate-arm
 # set and every other debug block. CI's build-kernel matrix runs the same
 # combination; this target is the local equivalent for the merge path, which
 # does not wait on CI.
+#
+# `--check` (type-check, no codegen/link/snapshot/rootfs) is what keeps this
+# usable as a ROUTINE gate: the defect class is a compile error inside a
+# feature-gated block, which `cargo check` reports identically to a full build
+# at a fraction of the cost. `.githooks/pre-push` runs it on every branch push
+# that touches kernel sources; `make build-debug` remains the full codegen+link
+# form for the merge path.
 feature-gate-x86:
-	cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-all
+	cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-all --check
 feature-gate-arm:
-	cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-all
+	cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-all --check
 feature-gate: feature-gate-x86 feature-gate-arm
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —

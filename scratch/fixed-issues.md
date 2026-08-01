@@ -7,6 +7,12 @@ shipped with nothing calling them.
 
 Columns match the live ledger: `Status | Sev | Issue | Evidence | Owner`.
 
+## Tooling / gates
+
+| Status | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|
+| FIXED C244 | high | Routine gate set compiled NO feature-gated code, so a branch that does not build could pass every check — the failure then surfaced as an EMPTY `make qemu-*` log, which reads like a boot failure rather than a build one. `make feature-gate` existed but nothing invoked it routinely; `.githooks/pre-push` returned early on every PR-branch push and only ever ran boot-smoke. | Fixed by `xtask kernel --check` (type-check only: no codegen, link, ELF snapshot or rootfs) behind `make feature-gate`, wired into `pre-push` for EVERY push touching `kernel/ crates/ userspace/ targets/ vendor/ tools/xtask/ Cargo.*`. Positive control (E0308 injected in a `debug_boot!` block in `kmain/runtime.rs`): default-feature check GREEN 0 errors, `make feature-gate` RED `error[E0308]: mismatched types --> crates/kernel/kmain/src/kmain/runtime.rs:137:29` / `make: *** [feature-gate-x86] Error 101`; error removed -> GREEN both arches. Cost: 43 s cold in a fresh worktree (22 s x86 + 20 s aarch64), 5 s warm. | C244 |
+
 ## Keyring
 
 | Status | Sev | Issue | Evidence | Owner |
