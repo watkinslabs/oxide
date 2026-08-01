@@ -43,11 +43,14 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
         File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),
         File("io_uring_disabled",     Int(0, Some((0, 2)))),
         File("hostname",              StrHook(crate::hooks::hostname, crate::hooks::set_hostname)),
-        // core dump control (systemd-coredump / sysctl.d write these). core_pattern
-        // is bound to fs::coredump's live template (write_for_current honors it);
-        // sysrq/core_pipe_limit/core_uses_pid are the real bounded sysctl vars.
+        // core dump control (systemd-coredump / sysctl.d write these). Both
+        // core_pattern and core_pipe_limit are bound to fs::coredump's live
+        // cells — `write_for_current` honours the template, and the pipe
+        // destination consults the cap before it starts a collector.
         File("core_pattern",          StrHook(crate::hooks::core_pattern, crate::hooks::set_core_pattern)),
-        File("core_pipe_limit",       Int(0, Some((0, INT_MAX)))),
+        File("core_pipe_limit",       IntHook(crate::hooks::core_pipe_limit,
+                                              crate::hooks::set_core_pipe_limit,
+                                              Some((0, INT_MAX)))),
         File("core_uses_pid",         Int(1, Some((0, 1)))),
         File("sysrq",                 Int(16, Some((0, 511)))),
         // `security/keys/sysctl.c` registers the four per-uid key ceilings against
