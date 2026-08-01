@@ -4,15 +4,15 @@
 // an id with no covering extent maps to the overflow id.
 
 use crate::extent::IdMapExtent;
-use crate::uapi::{OVERFLOW_GID, OVERFLOW_UID};
+use crate::uapi::{OVERFLOW_GID, OVERFLOW_PROJID, OVERFLOW_UID};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum OverflowId { Uid, Gid }
+pub enum OverflowId { Uid, Gid, Projid }
 
 impl OverflowId {
-    /// # C: O(1)
-    const fn value(self) -> u32 {
-        match self { Self::Uid => OVERFLOW_UID, Self::Gid => OVERFLOW_GID }
+    /// Numeric overflow id an unmapped translation lands on. # C: O(1)
+    pub const fn value(self) -> u32 {
+        match self { Self::Uid => OVERFLOW_UID, Self::Gid => OVERFLOW_GID, Self::Projid => OVERFLOW_PROJID }
     }
 }
 

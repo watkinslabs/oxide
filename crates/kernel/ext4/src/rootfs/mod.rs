@@ -15,6 +15,7 @@ mod evict;
 mod inode;
 mod ops;
 mod quota;
+mod mountquota;
 mod framecache;
 mod swapfile;
 

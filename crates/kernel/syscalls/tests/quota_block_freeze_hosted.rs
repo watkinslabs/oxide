@@ -38,6 +38,8 @@ mod abi;
 mod cmd;
 #[path = "../src/179_quotactl/dispatch.rs"]
 mod dispatch;
+#[path = "../src/179_quotactl/qidns.rs"]
+mod qidns;
 #[path = "../src/179_quotactl/sys.rs"]
 mod sys;
 #[path = "../src/179_quotactl_xfs/core.rs"]
@@ -133,7 +135,7 @@ fn sys_quotactl_xfs_onoff_waits_for_frozen_block_superblock_hosted() {
 }
 
 #[test]
-fn sys_quotactl_xfs_onoff_waits_for_frozen_readonly_block_superblock_hosted() {
+fn sys_quotactl_xfs_onoff_waits_for_a_frozen_readonly_block_superblock_then_proceeds_hosted() {
     let _guard = begin_test();
     let target_sb = install_block_target();
     target_sb.set_readonly(true);
@@ -149,7 +151,10 @@ fn sys_quotactl_xfs_onoff_waits_for_frozen_readonly_block_superblock_hosted() {
         a5: 0,
     };
 
-    assert_eq!(sys::sys_quotactl(&args), eno(Errno::Erofs));
+    // Read-only state is NOT a rejection here: the command waits for the thaw
+    // and then runs the same ladder a writable target would, stopping at the
+    // no-current-task rung rather than at a write gate.
+    assert_eq!(sys::sys_quotactl(&args), eno(Errno::Esrch));
     assert!(!target_sb.is_frozen());
     assert_eq!(target_sb.sb_writers(), 0);
     assert_eq!(FREEZE_PARKS.load(Ordering::SeqCst), 1);

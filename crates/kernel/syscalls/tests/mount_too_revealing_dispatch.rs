@@ -112,9 +112,9 @@ impl FileSystem for RevealFs {
 fn register_revealproc() {
     let _ = vfs::fs::register_fs(FsType::new("revealproc", 0x9fa0,
         FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED,
-        Box::new(|ty, _s, _t, _d| {
+        Box::new(|ty, _s, _t, _d, _| {
             let fs: Arc<dyn FileSystem> = Arc::new(RevealFs);
-            vfs::fs::superblock_from_filesystem(ty, fs, None, "revealproc".into())
+            vfs::fs::superblock_from_filesystem(ty, fs, None, "revealproc".into(), 0)
         })));
 }
 

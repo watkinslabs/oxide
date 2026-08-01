@@ -97,7 +97,7 @@ fn rw_to_ro_remount_suspends_hidden_quota_accounting() {
     assert!(sb.s_dquot.is_enabled(kind));
     assert!(!sb.s_dquot.is_enforced(kind));
 
-    sb.reconfigure_super(SB_RDONLY, 0).expect("RW→RO remount");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("RW→RO remount");
 
     assert!(sb.is_readonly());
     assert!(!sb.s_dquot.is_enabled(kind), "RW→RO suspends hidden quota accounting");
@@ -131,11 +131,11 @@ fn ro_to_rw_remount_restores_prior_hidden_quota_enforcement() {
     vfs::quota_enable_limits(&sb, kind).expect("enable project limits");
     assert!(sb.s_dquot.is_enforced(kind));
 
-    sb.reconfigure_super(SB_RDONLY, 0).expect("RW→RO remount");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("RW→RO remount");
     assert!(sb.is_readonly());
     assert!(!sb.s_dquot.is_enabled(kind));
 
-    sb.reconfigure_super(0, SB_RDONLY).expect("RO→RW remount");
+    sb.reconfigure_super(0, SB_RDONLY, "").expect("RO→RW remount");
 
     assert!(!sb.is_readonly());
     assert!(sb.s_dquot.is_enabled(kind), "RO→RW resumes hidden quota accounting");
@@ -150,8 +150,8 @@ fn ro_to_rw_remount_keeps_default_hidden_quota_limits_disabled() {
     let kind = vfs::QuotaType::Project;
     assert!(!sb.s_dquot.is_enforced(kind));
 
-    sb.reconfigure_super(SB_RDONLY, 0).expect("RW→RO remount");
-    sb.reconfigure_super(0, SB_RDONLY).expect("RO→RW remount");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("RW→RO remount");
+    sb.reconfigure_super(0, SB_RDONLY, "").expect("RO→RW remount");
 
     assert!(!sb.is_readonly());
     assert!(sb.s_dquot.is_enabled(kind));
@@ -167,24 +167,62 @@ fn failed_ro_to_rw_remount_preserves_suspended_enforcement_for_retry() {
     vfs::quota_enable_limits(&sb, user).expect("enable user limits");
     assert!(sb.s_dquot.is_enforced(user));
 
-    sb.reconfigure_super(SB_RDONLY, 0).expect("RW→RO remount");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("RW→RO remount");
     assert!(sb.is_readonly());
     assert!(!sb.s_dquot.is_enabled(user));
     assert!(!sb.s_dquot.is_enabled(project));
     m.state().mount.write_at(HELLO_INO, 0, &alloc::vec![0u8; 2048]).expect("corrupt project quota file");
 
-    assert_eq!(sb.reconfigure_super(0, SB_RDONLY), Err(vfs::VfsError::Einval));
+    assert_eq!(sb.reconfigure_super(0, SB_RDONLY, ""), Err(vfs::VfsError::Einval));
 
     assert!(sb.is_readonly(), "failed RO→RW remount leaves SB_RDONLY set");
     assert!(!sb.s_dquot.is_enabled(user), "resumed user quota rolls back to suspended");
     assert!(!sb.s_dquot.is_enabled(project), "failed project quota stays inactive");
     m.state().mount.write_at(HELLO_INO, 0, &empty_project_quota_file()).expect("restore project quota file");
 
-    sb.reconfigure_super(0, SB_RDONLY).expect("retry RO→RW remount");
+    sb.reconfigure_super(0, SB_RDONLY, "").expect("retry RO→RW remount");
 
     assert!(!sb.is_readonly());
     assert!(sb.s_dquot.is_enabled(user));
     assert!(sb.s_dquot.is_enforced(user), "retry restores pre-suspend user enforcement");
     assert!(sb.s_dquot.is_enabled(project));
     assert!(!sb.s_dquot.is_enforced(project), "project enforcement stays at its pre-suspend state");
+}
+
+#[test]
+fn a_remount_option_string_reaches_the_filesystem_and_is_validated() {
+    // The remount half of the mount-option contract: `mount -o remount,...`
+    // hands the backend its option string, so a change the live filesystem
+    // cannot make is refused and nothing about the mount moves. Before the
+    // option string was threaded, every one of these was accepted and dropped.
+    common::boot_hosted_pmm();
+    let (m, sb) = mount(seeded_quota_disk());
+    let before = m.state().quota_opts();
+
+    // The quota FEATURE is on for this image, so a journalled quota file name
+    // cannot be introduced by remount.
+    assert_eq!(sb.reconfigure_super(0, 0, "usrjquota=aquota.user,jqfmt=vfsv1"),
+        Err(vfs::VfsError::Einval));
+    assert_eq!(m.state().quota_opts().jquota_fmt, before.jquota_fmt,
+        "a refused remount commits none of its options");
+    assert!(m.state().quota_opts().qf_name(vfs::QuotaType::User.slot()).is_none());
+
+    // A malformed quota option is refused the same way.
+    assert_eq!(sb.reconfigure_super(0, 0, "jqfmt=nonsuch"), Err(vfs::VfsError::Einval));
+    assert!(!sb.is_readonly(), "a refused remount leaves the superblock flags alone");
+
+    // An accepted option string is applied to the mount's option state, and
+    // the next reload of the class (the RO→RW transition, which is where a
+    // hidden quota file is read back in) honours it.
+    let kind = vfs::QuotaType::Project;
+    assert!(!sb.s_dquot.is_enforced(kind));
+    sb.reconfigure_super(0, 0, "prjquota").expect("remount requesting project limits");
+    assert!(m.state().quota_opts().limits_requested(kind),
+        "the accepted option reached the live mount's option state");
+
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("RW→RO remount");
+    sb.reconfigure_super(0, SB_RDONLY, "").expect("RO→RW remount");
+    assert!(sb.s_dquot.is_enabled(kind));
+    assert!(sb.s_dquot.is_enforced(kind),
+        "the requested limit enforcement reached the live quota state");
 }

@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 
-use super::{abi::{dqinfo_classic_valid, if_dqblk_fieldmask, read_dqblk, read_dqinfo, write_dqblk, write_dqinfo, write_next_dqblk, write_u32}, cmd::*, eno, xfs};
+use super::{abi::{dqinfo_classic_valid, if_dqblk_fieldmask, read_dqblk, read_dqinfo, write_dqblk, write_dqinfo, write_next_dqblk, write_u32}, cmd::*, eno, qidns::{self, QuotaIdCtx}, xfs};
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
@@ -62,10 +62,14 @@ fn quotactl_dispatch_sb_block_inner(
     sb: &vfs::SuperBlock, cmd: u64, id: u64, addr: u64,
     quotaon_path: Result<Option<&vfs::VfsPath>, i64>,
 ) -> Option<i64> {
-    if quotactl_cmd_write(cmd) {
-        if sb.is_frozen() { return None; }
-        if sb.is_readonly() { return Some(eno(Errno::Erofs)); }
-    }
+    // Device-targeted `quotactl(2)` takes NO write reference on the target:
+    // it waits for a frozen superblock to thaw, but a READ-ONLY superblock is
+    // not rejected here. `EROFS` on a read-only fs comes only from the one
+    // command that names it (`Q_XQUOTASYNC`) and, on the fd-targeted variant,
+    // from that syscall's explicit write reference on the mount. Rejecting
+    // every write command up front hid `Q_SETQUOTA`'s real errno ladder and
+    // turned an unknown subcommand into `EROFS` instead of `EPERM`/`EINVAL`.
+    if quotactl_cmd_write(cmd) && sb.is_frozen() { return None; }
     Some(quotactl_dispatch_sb_with_path(sb, cmd, id, addr, quotaon_path))
 }
 
@@ -93,7 +97,8 @@ fn quotactl_dispatch_sb_with_path(
         if qcred.cap_sys_admin { return eno(Errno::Einval); }
         return eno(Errno::Eperm);
     };
-    if let Err(e) = vfs::quota_check_quotactl_permission(qcmd, kind, id as u32, &qcred) {
+    let idctx = QuotaIdCtx::new(qidns::caller_user_ns(cur), kind, id);
+    if let Err(e) = vfs::quota_check_quotactl_permission(qcmd, kind, idctx.auth_id(), &qcred) {
         return crate::namei_common::errno_from_vfs(e);
     }
 
@@ -102,6 +107,7 @@ fn quotactl_dispatch_sb_with_path(
             if sb.s_op.quota_disable_supported(sb, kind) {
                 return sb.s_op.quota_disable(sb, kind).map(|_| 0).unwrap_or_else(crate::namei_common::errno_from_vfs);
             }
+            if !sb.s_op.quota_off_supported(sb, kind) { return eno(Errno::Enosys); }
             sb.s_op.quota_off(sb, kind).map(|_| 0).unwrap_or_else(crate::namei_common::errno_from_vfs)
         }
         Q_GETFMT => {
@@ -109,16 +115,18 @@ fn quotactl_dispatch_sb_with_path(
             write_u32(addr, fmt)
         }
         Q_GETQUOTA => {
-            let dq = match vfs::quota_getquota(sb, qid(kind, id)) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
+            let qid = match idctx.kqid(sb) { Ok(q) => q, Err(rv) => return rv };
+            let dq = match vfs::quota_getquota(sb, qid) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
             write_dqblk(addr, dq)
         }
         Q_GETNEXTQUOTA => {
-            let (next, dq) = match vfs::quota_getnextquota(sb, qid(kind, id)) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
-            write_next_dqblk(addr, next.id, dq)
+            let qid = match idctx.kqid(sb) { Ok(q) => q, Err(rv) => return rv };
+            let (next, dq) = match vfs::quota_getnextquota(sb, qid) { Ok(d) => d, Err(e) => return crate::namei_common::errno_from_vfs(e) };
+            write_next_dqblk(addr, idctx.report(next), dq)
         }
         Q_SETQUOTA => {
             let dqblk = match read_dqblk(addr) { Ok(d) => d, Err(rv) => return rv };
-            let qid = qid(kind, id);
+            let qid = match idctx.kqid(sb) { Ok(q) => q, Err(rv) => return rv };
             let fieldmask = if_dqblk_fieldmask(dqblk.dqb_valid);
             vfs::quota_setquota_masked(sb, qid, dqblk, fieldmask, quota_now_sec()).map(|_| 0).unwrap_or_else(crate::namei_common::errno_from_vfs)
         }
@@ -153,7 +161,7 @@ fn quotactl_dispatch_sb_with_path(
             };
             sb.s_op.quota_on(sb, kind, id as u32, Some(qpath)).map(|_| 0).unwrap_or_else(crate::namei_common::errno_from_vfs)
         }
-        _ => xfs::dispatch(sb, subcmd, kind, id, addr),
+        _ => xfs::dispatch(sb, subcmd, kind, &idctx, addr),
     }
 }
 
@@ -182,6 +190,8 @@ fn quotactl_dispatch_sb_fd_inner(sb: &vfs::SuperBlock, cmd: u64, id: u64, addr: 
         Some(c) => c, None => return eno(Errno::Esrch),
     };
     let qcred = current_quota_cred(cur);
+    // `Q_QUOTAON`'s `id` names the on-disk quota FORMAT, not an account, so it
+    // is not a namespace-relative identity and never translates.
     if let Err(e) = vfs::quota_check_quotactl_permission(vfs::QuotaCtlCmd::QuotaOn, kind, id as u32, &qcred) {
         return crate::namei_common::errno_from_vfs(e);
     }
@@ -217,7 +227,8 @@ pub fn quotactl_noquota_dispatch(cmd: u64, id: u64) -> i64 {
             let Some(kind) = quota_type(qtype) else { return eno(Errno::Einval); };
             let Some(qcmd) = quota_cmd(subcmd) else { return eno(Errno::Einval); };
             let qcred = current_quota_cred(cur);
-            if let Err(e) = vfs::quota_check_quotactl_permission(qcmd, kind, id as u32, &qcred) {
+            let idctx = QuotaIdCtx::new(qidns::caller_user_ns(cur), kind, id);
+            if let Err(e) = vfs::quota_check_quotactl_permission(qcmd, kind, idctx.auth_id(), &qcred) {
                 return crate::namei_common::errno_from_vfs(e);
             }
             eno(Errno::Esrch)
@@ -262,14 +273,6 @@ fn current_quota_cred(cur: &sched::Task) -> vfs::QuotaCtlCred {
         egid: cur.creds.egid.load(Ordering::Acquire),
         cap_sys_admin: cur.has_cap(sched::cap::SYS_ADMIN),
         groups: cur.creds.vfs_group_list(),
-    }
-}
-
-pub(super) fn qid(kind: vfs::QuotaType, id: u64) -> vfs::Kqid {
-    match kind {
-        vfs::QuotaType::User => vfs::Kqid::user(id as u32),
-        vfs::QuotaType::Group => vfs::Kqid::group(id as u32),
-        vfs::QuotaType::Project => vfs::Kqid::project(id as u32),
     }
 }
 

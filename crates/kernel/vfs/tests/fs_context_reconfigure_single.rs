@@ -40,7 +40,7 @@ impl FileSystem for TFs {
 struct CountOps { remounts: AtomicU32 }
 impl SuperOps for CountOps {
     fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs::default()) }
-    fn remount_fs(&self, _sb_flags: u64) -> KResult<()> {
+    fn remount_fs(&self, _sb_flags: u64, _data: &str) -> KResult<()> {
         self.remounts.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

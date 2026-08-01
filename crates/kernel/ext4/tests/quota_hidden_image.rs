@@ -140,7 +140,7 @@ fn hidden_project_quota_auto_activates_at_ro_to_rw_remount() {
     assert!(sb.is_readonly(), "fixture starts read-only");
     assert!(!sb.s_dquot.is_enabled(kind), "RO mount leaves hidden quota inactive");
 
-    sb.reconfigure_super(0, SB_RDONLY).expect("RO→RW remount enables hidden quota");
+    sb.reconfigure_super(0, SB_RDONLY, "").expect("RO→RW remount enables hidden quota");
 
     assert!(!sb.is_readonly(), "RO→RW remount clears SB_RDONLY");
     assert!(sb.s_dquot.is_enabled(kind), "hidden quota accounting enabled by remount");
@@ -159,7 +159,7 @@ fn hidden_project_quota_failure_aborts_ro_to_rw_remount() {
     let kind = vfs::QuotaType::Project;
     assert!(sb.is_readonly(), "fixture starts read-only");
 
-    assert_eq!(sb.reconfigure_super(0, SB_RDONLY), Err(vfs::VfsError::Einval));
+    assert_eq!(sb.reconfigure_super(0, SB_RDONLY, ""), Err(vfs::VfsError::Einval));
 
     assert!(sb.is_readonly(), "failed RO→RW remount leaves SB_RDONLY set");
     assert!(!sb.s_dquot.is_enabled(kind), "failed remount leaves hidden quota inactive");

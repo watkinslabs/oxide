@@ -42,13 +42,13 @@ fn register_ext4_like(fstype: &str) {
         fstype,
         ext4::EXT4_SUPER_MAGIC as u64,
         FsFlags::FS_REQUIRES_DEV,
-        alloc::boxed::Box::new(move |ty, source: Option<&str>, _t: &str, _d: &str| -> R {
+        alloc::boxed::Box::new(move |ty, source: Option<&str>, _t: &str, _d: &str, _sb_flags: u64| -> R {
             let source = source.ok_or(vfs::VfsError::Enoent)?;
             let name = source.rsplit('/').next().unwrap_or(source);
             let dev = block::by_name(name).map(|d| d.dev.clone()).ok_or(vfs::VfsError::Enoent)?;
             let fs: Arc<dyn vfs::fs::FileSystem> =
                 ext4::rootfs::Ext4Mount::open(dev).map_err(|_| vfs::VfsError::Einval)?;
-            superblock_from_filesystem(ty, fs, None, source.to_string())
+            superblock_from_filesystem(ty, fs, None, source.to_string(), 0)
         }),
     ));
 }

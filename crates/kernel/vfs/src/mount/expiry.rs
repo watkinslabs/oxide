@@ -44,6 +44,14 @@ pub fn mnt_expire_remove(list: u64, m: &Arc<Mount>) {
     if let Some(v) = EXPIRE_LISTS.lock().get_mut(&list) { v.retain(|&id| id != m.mnt_id); }
 }
 
+/// Linux `list_del_init(&mnt->mnt_expire)` where the caller does not know which
+/// list holds the mount: drop `id` from EVERY expire list. `pivot_root` needs it
+/// — a mount that has been relocated must not keep auto-expiring at its old
+/// filesystem's request. # C: O(N_lists × N_members)
+pub(super) fn mnt_expire_remove_any(id: u64) {
+    for v in EXPIRE_LISTS.lock().values_mut() { v.retain(|&m| m != id); }
+}
+
 /// Linux `!list_empty(&mnt->mnt_expire)`: is this mount queued on ANY expire
 /// list? `lock_mnt_tree` skips such mounts when stamping `MNT_LOCKED`, so an
 /// auto-expiring (autofs/NFS) submount stays reapable inside an unprivileged

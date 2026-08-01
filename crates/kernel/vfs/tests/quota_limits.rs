@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{DQB_RTB_COUNT, DQB_RTB_HARD, DQB_RTB_SOFT, DQB_RTB_TIMER, DQB_SPACE, DQB_SPC_SOFT, DQB_SPC_TIMER, DQF_SYS_FILE, DquotOperations, DquotUsage, IIF_BGRACE, IIF_FLAGS, KResult, Kqid, MemDqblk, MemDqinfo, QuotaType, VfsError, dquot_charge_usage};
+use vfs::{DQB_RTB_COUNT, DQB_RTB_HARD, DQB_RTB_SOFT, DQB_RTB_TIMER, DQB_SPACE, DQB_SPC_HARD, DQB_SPC_SOFT, DQB_SPC_TIMER, DQF_SYS_FILE, DquotOperations, DquotUsage, IIF_BGRACE, IIF_FLAGS, KResult, Kqid, MemDqblk, MemDqinfo, QuotaType, VfsError, dquot_charge_usage};
 
 struct TType;
 impl FileSystemType for TType {
@@ -111,16 +111,27 @@ fn quota_masked_setquota_preserves_linux_space_minus_reserved_semantics() {
 }
 
 #[test]
-fn quota_masked_setquota_applies_realtime_fields() {
+fn quota_masked_setquota_refuses_realtime_fields_the_generic_backend_cannot_store() {
+    // A generic quota file has no realtime-device counters, so naming one is
+    // EINVAL — the record must never come back reporting a limit that was
+    // silently dropped. The realtime values themselves round-trip through the
+    // in-core record; only the SETTER refuses them.
     let sb = sb();
     let qid = Kqid::project(7);
     vfs::quota_on(&sb, QuotaType::Project, vfs::QFMT_VFS_V1, Arc::new(QOps)).unwrap();
-    vfs::quota_setquota_masked(&sb, qid, MemDqblk {
-        dqb_rtb_hardlimit: 8192, dqb_rtb_softlimit: 4096, dqb_rtbcount: 2048, dqb_rtbtimer: 33,
-        ..MemDqblk::new()
-    }, DQB_RTB_HARD | DQB_RTB_SOFT | DQB_RTB_COUNT | DQB_RTB_TIMER, 0).unwrap();
+    for mask in [DQB_RTB_HARD, DQB_RTB_SOFT, DQB_RTB_COUNT, DQB_RTB_TIMER] {
+        assert_eq!(vfs::quota_setquota_masked(&sb, qid, MemDqblk {
+            dqb_rtb_hardlimit: 8192, dqb_rtb_softlimit: 4096, dqb_rtbcount: 2048, dqb_rtbtimer: 33,
+            ..MemDqblk::new()
+        }, mask, 0), Err(VfsError::Einval));
+    }
     let dq = vfs::quota_getquota(&sb, qid).unwrap();
-    assert_eq!((dq.dqb_rtb_hardlimit, dq.dqb_rtb_softlimit, dq.dqb_rtbcount, dq.dqb_rtbtimer), (8192, 4096, 2048, 33));
+    assert_eq!((dq.dqb_rtb_hardlimit, dq.dqb_rtb_softlimit, dq.dqb_rtbcount, dq.dqb_rtbtimer),
+        (0, 0, 0, 0));
+    // The fields the generic backend DOES own are still accepted alongside.
+    vfs::quota_setquota_masked(&sb, qid, MemDqblk { dqb_bhardlimit: 4096, ..MemDqblk::new() },
+        DQB_SPC_HARD, 0).unwrap();
+    assert_eq!(vfs::quota_getquota(&sb, qid).unwrap().dqb_bhardlimit, 4096);
 }
 
 #[test]
@@ -174,4 +185,32 @@ fn quota_sysfile_active_requires_enabled_sysfile_quota_info() {
         ..MemDqinfo::default()
     });
     assert!(vfs::quota_sysfile_active(&sb));
+}
+
+#[test]
+fn a_hard_limit_denial_records_the_warning_class_that_named_it() {
+    // Every denial and every soft-limit crossing produces a warning record for
+    // the netlink transport. This drains the hosted log to prove the class the
+    // limit ladder chose actually reaches delivery, rather than being computed
+    // and dropped.
+    let sb = sb();
+    let qid = Kqid::user(4242);
+    vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, Arc::new(QOps)).unwrap();
+    vfs::quota_setquota(&sb, qid, MemDqblk {
+        dqb_bhardlimit: 100, dqb_ihardlimit: 1, ..MemDqblk::new()
+    }).unwrap();
+    let _ = vfs::take_logged_warnings();
+
+    assert_eq!(dquot_charge_usage(&sb, 4242, 0, 0,
+        DquotUsage { space: 4096, reserved_space: 0, inodes: 0 }), Err(VfsError::Edquot));
+    let warnings = vfs::take_logged_warnings();
+    assert_eq!(warnings.len(), 1, "one denial, one warning");
+    assert_eq!(warnings[0].qid, qid);
+    assert_eq!(warnings[0].warn_type, vfs::QuotaWarnType::BHardWarn);
+
+    assert_eq!(dquot_charge_usage(&sb, 4242, 0, 0,
+        DquotUsage { space: 0, reserved_space: 0, inodes: 2 }), Err(VfsError::Edquot));
+    let warnings = vfs::take_logged_warnings();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].warn_type, vfs::QuotaWarnType::IHardWarn);
 }

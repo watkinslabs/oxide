@@ -7,7 +7,7 @@ mod flow;
 mod ops;
 mod types;
 
-pub use context::{FC_LOG_MAX, FsContext, SB_FLAGS_USER_MASK, put_fs_context};
+pub use context::{FC_LOG_MAX, FsContext, SB_FLAGS_USER_MASK, apply_sb_flags, put_fs_context};
 pub use flow::{reconfigure_super, vfs_get_tree, vfs_get_tree_exclusive, vfs_parse_fs_param, vfs_parse_fs_param_source, vfs_parse_fs_string};
 pub use ops::{FsContextOps, FsContextSecurity, ClassicMountFsContextOps, ParamResult};
 pub use types::{AT_FDCWD, FsContextPhase, FsContextPurpose, FsParameter, FsValue, KResult};

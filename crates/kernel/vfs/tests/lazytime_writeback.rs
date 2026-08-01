@@ -336,7 +336,7 @@ fn remount_flips_lazytime_in_both_directions() {
     // leaves an already-deferred stamp on the writeback list, and it must stay
     // owed rather than be dropped with the option.
     let deferred = disk.atime(32);
-    sb.reconfigure_super(0, SB_LAZYTIME).expect("remount nolazytime");
+    sb.reconfigure_super(0, SB_LAZYTIME, "").expect("remount nolazytime");
     assert!(!sb.is_lazytime());
     assert_eq!(disk.atime(32), deferred, "the flip itself writes nothing");
     assert_eq!(i.i_state() & I_DIRTY_TIME, I_DIRTY_TIME, "the debt survives the flip");
@@ -350,7 +350,7 @@ fn remount_flips_lazytime_in_both_directions() {
     assert_eq!(i.i_state() & I_DIRTY_TIME, 0, "nothing deferred under nolazytime");
 
     // -o remount,lazytime
-    sb.reconfigure_super(SB_LAZYTIME, 0).expect("remount lazytime");
+    sb.reconfigure_super(SB_LAZYTIME, 0, "").expect("remount lazytime");
     set_clock_secs(START_SEC + 200);
     read_file(&i);
     assert_eq!(disk.atime(32), Timespec64::from_secs(START_SEC + 100),

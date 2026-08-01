@@ -29,7 +29,20 @@
 # runqueue). Split 96 B in `install_default_runqueue` + 96 B in the task
 # construction below it; it is a struct-size consequence of the class
 # existing, not a new call chain.
-19920	_start
-19904	_start_rust
-19760	kmain::kmain::entry::kernel_main
-16560	kmain::kmain::rootfs::init
+#
+# B1634 raised each of these by 16 B, x86_64 only (aarch64 absorbed it without
+# moving). Namespace-aware quota ids require the superblock to record the user
+# namespace it was mounted from, which grew `SuperBlock` 584 -> 592 B; the boot
+# path tears a superblock down on this stack, so the extra 8 B lands in the
+# teardown frames and rounds to 16 B after alignment. Struct-size consequence
+# of the field existing, not a new call chain.
+#
+# The same lane also SHORTENED this family by 288 B before this 16 B: quota-off
+# reached `dqput`, which upgraded the dquot's weak back-reference to its
+# superblock, and the resulting temporary made superblock teardown appear to
+# re-enter itself. A dquot does not own its superblock, so the teardown path
+# now passes the borrowed one it already holds.
+19936	_start
+19920	_start_rust
+19776	kmain::kmain::entry::kernel_main
+16576	kmain::kmain::rootfs::init

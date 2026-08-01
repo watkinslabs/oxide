@@ -116,7 +116,10 @@ pub fn reconfigure_super(fc: &mut FsContext) -> KResult<()> {
     }
     let set = fc.sb_flags & fc.sb_flags_mask;
     let clear = !fc.sb_flags & fc.sb_flags_mask;
-    if let Err(e) = sb.reconfigure_super(set, clear) {
+    // The backend sees the same option string a classic `mount -o remount`
+    // would have handed it, rebuilt from the parameters this context collected.
+    let data = fc.classic_mount_options();
+    if let Err(e) = sb.reconfigure_super(set, clear, &data) {
         fc.phase = FsContextPhase::Failed;
         return Err(e);
     }

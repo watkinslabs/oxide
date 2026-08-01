@@ -33,6 +33,27 @@ pub fn quota_on_ext4(st: &Arc<RootfsState>, sb: &vfs::SuperBlock, kind: vfs::Quo
     Ok(())
 }
 
+/// Enable a journalled (visible) quota file named by the mount options.
+///
+/// Same visible-file handling as the quotactl path — the quota file gains the
+/// immutable/noatime protection flags — but the file is reached by inode
+/// number resolved in the filesystem root rather than by a namespace path,
+/// because at mount time the filesystem is not yet attached anywhere.
+/// # C: O(quota-file)
+pub fn quota_on_journalled(st: &Arc<RootfsState>, sb: &vfs::SuperBlock, kind: vfs::QuotaType, fmt: u32, ino: u32, allow_readonly: bool) -> vfs::KResult<()> {
+    quota_on_inode(st, sb, kind, fmt, ino, false, allow_readonly)?;
+    let ops = sb.s_dquot.operations(kind).ok_or(vfs::VfsError::Einval)?;
+    let ext4 = ops_as_ext4(ops.as_ref()).ok_or(vfs::VfsError::Einval)?;
+    let inode = st.wrap_any_ino(ino).ok_or(vfs::VfsError::Eio)?;
+    match mark_visible_quota_file(st, &inode, ino) {
+        Ok(flags) => { ext4.remember_visible_orig_flags(kind, flags); Ok(()) }
+        Err(e) => {
+            if let Err(rb) = rollback_quota_on(sb, kind, ext4) { return Err(rb); }
+            Err(e)
+        }
+    }
+}
+
 /// Enable ext4 hidden quota inode for one quota class. # C: O(quota-file)
 pub fn quota_on_hidden(st: &Arc<RootfsState>, sb: &vfs::SuperBlock, kind: vfs::QuotaType, fmt: u32) -> vfs::KResult<()> {
     quota_on_ext4(st, sb, kind, fmt, None)

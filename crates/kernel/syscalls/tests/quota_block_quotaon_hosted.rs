@@ -41,6 +41,8 @@ mod abi;
 mod cmd;
 #[path = "../src/179_quotactl/dispatch.rs"]
 mod dispatch;
+#[path = "../src/179_quotactl/qidns.rs"]
+mod qidns;
 #[path = "../src/179_quotactl/sys.rs"]
 mod sys;
 #[path = "../src/179_quotactl_xfs/core.rs"]
@@ -178,7 +180,7 @@ fn block_quotaon_visible_file_returns_deferred_bad_quota_path_hosted() {
 }
 
 #[test]
-fn block_quotaon_system_file_readonly_returns_erofs_before_enable_hook_hosted() {
+fn block_quotaon_system_file_on_a_readonly_target_still_reaches_the_enable_hook_hosted() {
     let _guard = begin_test();
     install_root();
     let ops = Arc::new(QuotaOnOps::new(true));
@@ -188,15 +190,17 @@ fn block_quotaon_system_file_readonly_returns_erofs_before_enable_hook_hosted() 
     target_sb.set_readonly(true);
     *SPECIAL_PATH.lock().unwrap() = Some(resolved_block_path(&special_sb, target_sb.s_dev as u32));
 
-    assert_eq!(sys::sys_quotactl(&quotaon_args()), eno(Errno::Erofs));
+    // Device-targeted quota control takes no write reference, so a read-only
+    // target behaves exactly like the writable case above.
+    assert_eq!(sys::sys_quotactl(&quotaon_args()), 0);
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[BAD_QUOTAON_ADDR, SPECIAL_ADDR]);
-    assert_eq!(ops.enables.load(Ordering::SeqCst), 0);
+    assert_eq!(ops.enables.load(Ordering::SeqCst), 1);
     assert_eq!(ops.quota_ons.load(Ordering::SeqCst), 0);
     clear_paths();
 }
 
 #[test]
-fn block_quotaon_visible_file_readonly_returns_erofs_before_deferred_path_error_hosted() {
+fn block_quotaon_visible_file_on_a_readonly_target_still_reports_the_path_error_hosted() {
     let _guard = begin_test();
     install_root();
     let ops = Arc::new(QuotaOnOps::new(false));
@@ -206,7 +210,7 @@ fn block_quotaon_visible_file_readonly_returns_erofs_before_deferred_path_error_
     target_sb.set_readonly(true);
     *SPECIAL_PATH.lock().unwrap() = Some(resolved_block_path(&special_sb, target_sb.s_dev as u32));
 
-    assert_eq!(sys::sys_quotactl(&quotaon_args()), eno(Errno::Erofs));
+    assert_eq!(sys::sys_quotactl(&quotaon_args()), eno(Errno::Efault));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[BAD_QUOTAON_ADDR, SPECIAL_ADDR]);
     assert_eq!(ops.enables.load(Ordering::SeqCst), 0);
     assert_eq!(ops.quota_ons.load(Ordering::SeqCst), 0);
@@ -214,7 +218,7 @@ fn block_quotaon_visible_file_readonly_returns_erofs_before_deferred_path_error_
 }
 
 #[test]
-fn block_quotaoff_system_file_readonly_returns_erofs_before_disable_hook_hosted() {
+fn block_quotaoff_system_file_on_a_readonly_target_still_reaches_the_disable_hook_hosted() {
     let _guard = begin_test();
     install_root();
     let ops = Arc::new(QuotaOnOps::new(true));
@@ -232,10 +236,10 @@ fn block_quotaoff_system_file_readonly_returns_erofs_before_disable_hook_hosted(
         a5: 0,
     };
 
-    assert_eq!(sys::sys_quotactl(&args), eno(Errno::Erofs));
+    assert_eq!(sys::sys_quotactl(&args), 0);
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
     assert_eq!(ops.enables.load(Ordering::SeqCst), 0);
-    assert_eq!(ops.disables.load(Ordering::SeqCst), 0);
+    assert_eq!(ops.disables.load(Ordering::SeqCst), 1);
     assert_eq!(ops.quota_ons.load(Ordering::SeqCst), 0);
     clear_paths();
 }

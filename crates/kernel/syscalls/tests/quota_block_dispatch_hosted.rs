@@ -80,6 +80,8 @@ mod abi;
 mod cmd;
 #[path = "../src/179_quotactl/dispatch.rs"]
 mod dispatch;
+#[path = "../src/179_quotactl/qidns.rs"]
+mod qidns;
 #[path = "../src/179_quotactl/sys.rs"]
 mod sys;
 #[path = "../src/179_quotactl_xfs/core.rs"]
