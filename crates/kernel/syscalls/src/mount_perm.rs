@@ -49,6 +49,17 @@ pub(crate) fn cap_sys_admin_in_init_user_ns() -> bool {
     nscg::proc_ns::has_cap_for(&cur, &init.pin(), sched::cap::SYS_ADMIN)
 }
 
+/// Linux `ns_capable(sb->s_user_ns, CAP_SYS_ADMIN)` — privilege over the user
+/// namespace a filesystem INSTANCE's ids are expressed in. Distinct from
+/// [`may_mount`], which asks about the mount namespace's owner: a context fd
+/// opened with `fspick(2)` passes `may_mount` and still must not reconfigure a
+/// superblock owned by a user namespace the caller has no authority over
+/// (`FSCONFIG_CMD_RECONFIGURE`). # C: O(userns depth)
+pub(crate) fn cap_sys_admin_in_sb_user_ns(sb: &vfs::SuperBlock) -> bool {
+    let Some(cur) = sched::live::current() else { return false; };
+    nscg::proc_ns::has_cap_for(&cur, &sb.s_user_ns, sched::cap::SYS_ADMIN)
+}
+
 /// Linux `create_new_namespace`'s `user_ns != ns->user_ns` — the calling task's
 /// CURRENT user namespace against the one owning its mount namespace. When they
 /// differ, the detached copy `open_tree(OPEN_TREE_CLONE)` / `fsmount(2)` produces

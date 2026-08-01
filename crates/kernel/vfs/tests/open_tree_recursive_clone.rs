@@ -247,7 +247,7 @@ fn idmap_recursive_prepare_is_atomic_across_mixed_filesystems() {
 
     assert_eq!(
         vfs::mount::mnt_setattr_detached_tree(
-            &tree, vfs::mount::MNT_RDONLY, 0, Some(map), true, None, true,
+            &tree, vfs::mount::MNT_RDONLY, 0, Some(install(map)), None, true,
         ),
         Err(VfsError::Einval),
         "recursive prepare must reject the procfs-like child without partial commit",
@@ -271,7 +271,7 @@ fn idmap_nonrecursive_changes_only_clone_root_and_cannot_be_replaced() {
     let map = Arc::new(vfs::idmap::Idmap::uniform(100_000, 0, 65_536));
 
     vfs::mount::mnt_setattr_detached_tree(
-        &tree, vfs::mount::MNT_RDONLY, 0, Some(map.clone()), true, None, false,
+        &tree, vfs::mount::MNT_RDONLY, 0, Some(install(map.clone())), None, false,
     ).expect("nonrecursive idmap on supported clone root");
     assert!(root.is_readonly(), "root option committed with its idmap");
     assert_eq!(root.idmap().map_out_uid(100_000), 0, "root exposes mapped uid");
@@ -279,11 +279,42 @@ fn idmap_nonrecursive_changes_only_clone_root_and_cannot_be_replaced() {
     assert!(!proc.is_readonly(), "nonrecursive request leaves child options alone");
     assert!(source.idmap().is_identity(), "source remains non-idmapped");
     assert_eq!(
-        vfs::mount::mnt_setattr_detached_tree(&tree, 0, 0, Some(map), true, None, false),
+        vfs::mount::mnt_setattr_detached_tree(&tree, 0, 0, Some(install(map.clone())), None, false),
         Err(VfsError::Eperm),
-        "Linux permits only the first idmap installation",
+        "only the first idmap installation is permitted without the replace mode",
+    );
+    assert_eq!(root.idmap().map_out_uid(100_000), 0, "refused install left the map alone");
+
+    // The replace mode — which only `open_tree_attr(2)` on a tree it cloned
+    // itself can ask for — overwrites the map instead.
+    let other = Arc::new(vfs::idmap::Idmap::uniform(200_000, 0, 65_536));
+    vfs::mount::mnt_setattr_detached_tree(&tree, 0, 0, Some(replace(other)), None, false)
+        .expect("replace mode overwrites an existing idmap");
+    assert_eq!(root.idmap().map_out_uid(200_000), 0, "replacement map is now in force");
+
+    // Replacing with the identity map is how an idmap is REMOVED.
+    vfs::mount::mnt_setattr_detached_tree(
+        &tree, 0, 0, Some(replace(Arc::new(vfs::idmap::Idmap::identity()))), None, false,
+    ).expect("replace mode removes an existing idmap");
+    assert!(root.idmap().is_identity(), "clone root is no longer idmapped");
+    assert!(root.is_readonly(), "removing the idmap left the option bits alone");
+
+    assert_eq!(
+        vfs::mount::mnt_setattr_detached_tree(&tree, 0, 0, Some(install(map)), None, false),
+        Ok(()),
+        "a first install on the now-unmapped clone is permitted again",
     );
     vfs::mount::release_clone_tree(&tree);
+}
+
+/// A first-install request: no replace mode, so an existing map refuses it.
+fn install(map: Arc<vfs::idmap::Idmap>) -> vfs::mount::IdmapSet {
+    vfs::mount::IdmapSet { map, userns: None, replace: false, controls_superblock: true }
+}
+
+/// An `open_tree_attr(OPEN_TREE_CLONE)`-shaped request: may overwrite or remove.
+fn replace(map: Arc<vfs::idmap::Idmap>) -> vfs::mount::IdmapSet {
+    vfs::mount::IdmapSet { map, userns: None, replace: true, controls_superblock: true }
 }
 
 #[allow(dead_code)]

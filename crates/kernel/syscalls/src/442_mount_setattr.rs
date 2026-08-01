@@ -76,8 +76,7 @@ fn propagation(raw: u64) -> Option<vfs::mount::Propagation> {
 
 fn validate_attr(attr: &MountAttr) -> Result<(), i64> {
     use vfs::mount::{
-        MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_SETTABLE,
-        MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME,
+        MOUNT_ATTR_NOATIME, MOUNT_ATTR_SETTABLE, MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME,
     };
     if attr.propagation & !PROPAGATION_MASK != 0
         || (attr.propagation & PROPAGATION_MASK).count_ones() > 1 {
@@ -86,9 +85,6 @@ fn validate_attr(attr: &MountAttr) -> Result<(), i64> {
     if (attr.attr_set | attr.attr_clr) & !MOUNT_ATTR_SETTABLE != 0 {
         return Err(neg(Errno::Einval));
     }
-    // mount_setattr cannot remove/replace an idmap. That replacement mode is
-    // reserved for open_tree_attr(2)'s unpublished clone transaction.
-    if attr.attr_clr & MOUNT_ATTR_IDMAP != 0 { return Err(neg(Errno::Einval)); }
 
     let set_atime = attr.attr_set & MOUNT_ATTR__ATIME;
     let clr_atime = attr.attr_clr & MOUNT_ATTR__ATIME;
@@ -105,10 +101,12 @@ fn validate_attr(attr: &MountAttr) -> Result<(), i64> {
 }
 
 /// Resolve the exact nsfs user-namespace fd, enforce Linux's initial-namespace
-/// and namespace-capability gates, then snapshot its canonical maps.
-fn idmap_from_fd(fd: u64) -> Result<Arc<vfs::idmap::Idmap>, i64> {
-    if fd > i32::MAX as u64 { return Err(neg(Errno::Einval)); }
-    let file = fd_file(fd as i32).ok_or_else(|| neg(Errno::Ebadf))?;
+/// and namespace-capability gates, then snapshot its canonical maps. Returns
+/// the map alongside the namespace it came from, which the per-mount ladder
+/// compares against the superblock's own owning namespace.
+fn idmap_from_fd(fd: i32)
+    -> Result<(Arc<vfs::idmap::Idmap>, namespace_identity::NamespacePin), i64> {
+    let file = fd_file(fd).ok_or_else(|| neg(Errno::Ebadf))?;
     let ns = file.inode().private::<nscg::NsInode>()
         .ok_or_else(|| neg(Errno::Einval))?;
     if ns.kind != nscg::NsKind::User { return Err(neg(Errno::Einval)); }
@@ -118,12 +116,34 @@ fn idmap_from_fd(fd: u64) -> Result<Arc<vfs::idmap::Idmap>, i64> {
     };
     if owner.is_initial() { return Err(neg(Errno::Eperm)); }
     let current = sched::live::current().ok_or_else(|| neg(Errno::Eperm))?;
-    if !nscg::proc_ns::has_cap_for(current, &owner.pin(), sched::cap::SYS_ADMIN) {
+    let pin = owner.pin();
+    if !nscg::proc_ns::has_cap_for(current, &pin, sched::cap::SYS_ADMIN) {
         return Err(neg(Errno::Eperm));
     }
     nscg::user_ns::mount_idmap(&owner)
-        .map(Arc::new)
+        .map(|map| (Arc::new(map), pin))
         .map_err(|_| neg(Errno::Einval))
+}
+
+/// Turn the shaped idmap plan into the map + namespace the transaction needs.
+/// The removal plan resolves no descriptor, so a caller clearing an idmap never
+/// has its `userns_fd` field looked at. # C: O(userns extents)
+fn resolve_idmap(plan: crate::mount_idmap_policy::IdmapPlan, kflags: u32,
+                 controls_superblock: bool) -> Result<Option<vfs::mount::IdmapSet>, i64> {
+    use crate::mount_idmap_policy::IdmapPlan;
+    let (map, userns) = match plan {
+        IdmapPlan::Leave => return Ok(None),
+        IdmapPlan::Identity => (Arc::new(vfs::idmap::Idmap::identity()), None),
+        IdmapPlan::FromUserNsFd(fd) => {
+            let (map, pin) = idmap_from_fd(fd)?;
+            (map, Some(pin))
+        }
+    };
+    Ok(Some(vfs::mount::IdmapSet {
+        map, userns,
+        replace: crate::mount_idmap_policy::idmap_replace(kflags),
+        controls_superblock,
+    }))
 }
 
 fn apply_mount_object(
@@ -131,15 +151,14 @@ fn apply_mount_object(
     attr: &MountAttr,
     set_mnt: u64,
     clr_mnt: u64,
-    idmap: Option<Arc<vfs::idmap::Idmap>>,
-    controls_superblock: bool,
+    idmap: Option<vfs::mount::IdmapSet>,
     prop: Option<vfs::mount::Propagation>,
     recursive: bool,
 ) -> i64 {
     let tree = object.detached_tree.lock();
     if let Some(tree) = tree.as_ref() {
         return match vfs::mount::mnt_setattr_detached_tree(
-            tree, set_mnt, clr_mnt, idmap, controls_superblock, prop, recursive,
+            tree, set_mnt, clr_mnt, idmap, prop, recursive,
         ) {
             Ok(()) => 0,
             Err(error) => crate::namei_common::errno_from_vfs(error),
@@ -156,13 +175,16 @@ fn apply_mount_object(
     if !vfs::mount::can_change_locked_options(old, state.lock_flags, new) {
         return neg(Errno::Eperm);
     }
-    if let Some(map) = idmap {
-        if state.idmap.is_some() { return neg(Errno::Eperm); }
-        if let Err(error) = vfs::mount::can_idmap_superblock(sb) {
+    if let Some(req) = idmap {
+        // The object has never been reachable from a mount namespace, so it is
+        // the anonymous case the replace mode exists to serve.
+        let facts = vfs::mount::idmap_facts_for(sb, &req, state.idmap.is_some(), true);
+        if let Err(error) = vfs::mount::can_idmap_mount(facts) {
             return crate::namei_common::errno_from_vfs(error);
         }
-        if !controls_superblock { return neg(Errno::Eperm); }
-        state.idmap = Some(map);
+        // The identity map is stored as "no map", so a removal and a mount that
+        // never had one are one state rather than two that can disagree.
+        state.idmap = if req.map.is_identity() { None } else { Some(req.map) };
     }
     let idmap_bit = vfs::mount::MOUNT_ATTR_IDMAP;
     state.attrs &= !(attr.attr_clr & !idmap_bit);
@@ -174,7 +196,9 @@ fn apply_mount_object(
 /// `sys_mount_setattr(dirfd, path, flags, uattr, size)` — slot 442.
 /// # C: O(path + selected mounts + userns extents)
 pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
-    mount_setattr_at(args.a0 as i32, None, args.a1, args.a2, args.a3, args.a4 as usize)
+    let kflags = crate::mount_idmap_policy::kflags_for_mount_setattr(
+        args.a2 & AT_RECURSIVE != 0);
+    mount_setattr_at(args.a0 as i32, None, args.a1, args.a2, args.a3, args.a4 as usize, kflags)
 }
 
 /// `mount_setattr(2)` with the pathname optionally already in kernel memory, so
@@ -183,9 +207,14 @@ pub fn sys_mount_setattr(args: &SyscallArgs) -> i64 {
 /// is `None` the pathname is read from `path_ptr` at exactly the point Linux
 /// reads it — AFTER the flag word and the attribute block — so a call that is
 /// wrong in both its flags and its pathname pointer still reports the flag
-/// error. # C: O(path + selected mounts + userns extents)
+/// error.
+///
+/// `kflags` is the caller's kernel-side attribute mode, which the uapi block
+/// cannot carry: `open_tree_attr(2)` on a tree it just cloned may remove or
+/// replace an idmap, `mount_setattr(2)` may not.
+/// # C: O(path + selected mounts + userns extents)
 pub fn mount_setattr_at(dirfd: i32, path: Option<&str>, path_ptr: u64, at_flags: u64,
-                        uattr: u64, size: usize) -> i64 {
+                        uattr: u64, size: usize, kflags: u32) -> i64 {
     if at_flags & !VALID_AT_FLAGS != 0 { return neg(Errno::Einval); }
     let attr = match copy_mount_attr(uattr, size) {
         Ok(attr) => attr,
@@ -198,18 +227,21 @@ pub fn mount_setattr_at(dirfd: i32, path: Option<&str>, path_ptr: u64, at_flags:
     }
     if let Err(rv) = validate_attr(&attr) { return rv; }
 
-    let idmap = if attr.attr_set & vfs::mount::MOUNT_ATTR_IDMAP != 0 {
-        match idmap_from_fd(attr.userns_fd) {
-            Ok(map) => Some(map),
-            Err(rv) => return rv,
-        }
-    } else {
-        None
+    // The idmap REQUEST is shaped from the block plus the caller's mode before
+    // any descriptor is touched, so a removal never reads `userns_fd`.
+    let plan = match crate::mount_idmap_policy::build_mount_idmapped(
+        attr.attr_set, attr.attr_clr, attr.userns_fd, kflags) {
+        Ok(plan) => plan,
+        Err(error) => return neg(error),
     };
     // Every superblock currently carries the initial filesystem idmapping
-    // (the same invariant used by `Mount::may_suid`). Linux checks
-    // `ns_capable(sb->s_user_ns, CAP_SYS_ADMIN)` after filesystem admission.
+    // (the same invariant used by `Mount::may_suid`), so the capability that
+    // governs it is the one held in the initial user namespace.
     let controls_superblock = crate::mount_perm::cap_sys_admin_in_init_user_ns();
+    let idmap = match resolve_idmap(plan, kflags, controls_superblock) {
+        Ok(idmap) => idmap,
+        Err(rv) => return rv,
+    };
     let prop = propagation(attr.propagation);
     use vfs::mount::{mount_attr_to_mnt, MNT_ATIME_MODE_MASK, MOUNT_ATTR__ATIME};
     let mut set_mnt = mount_attr_to_mnt(attr.attr_set) & !MNT_ATIME_MODE_MASK;
@@ -227,14 +259,13 @@ pub fn mount_setattr_at(dirfd: i32, path: Option<&str>, path_ptr: u64, at_flags:
             Err(rv) => return rv,
         },
     };
-    let recursive = at_flags & AT_RECURSIVE != 0;
+    let recursive = crate::mount_idmap_policy::recurse(kflags);
 
     if raw_path.is_empty() && at_flags & AT_EMPTY_PATH != 0 {
         if let Some(inode) = fd_inode(dirfd) {
             if let Some(object) = inode.private::<MountObjectInode>() {
                 return apply_mount_object(
-                    object, &attr, set_mnt, clr_mnt, idmap, controls_superblock,
-                    prop, recursive,
+                    object, &attr, set_mnt, clr_mnt, idmap, prop, recursive,
                 );
             }
         }
@@ -253,18 +284,19 @@ pub fn mount_setattr_at(dirfd: i32, path: Option<&str>, path_ptr: u64, at_flags:
         .map(|root| Arc::ptr_eq(&root, &path.dentry)).unwrap_or(false);
     if !mounted { return neg(Errno::Einval); }
 
-    if idmap.is_some() {
+    if let Some(req) = idmap.as_ref() {
         let Some(mount) = vfs::mount::mount_by_id(path.mnt_id) else {
             return neg(Errno::Einval);
         };
-        if !mount.idmap().is_identity() { return neg(Errno::Eperm); }
-        if let Err(error) = vfs::mount::can_idmap_superblock(mount.sb()) {
-            return crate::namei_common::errno_from_vfs(error);
-        }
-        if !controls_superblock { return neg(Errno::Eperm); }
-        // Linux `can_idmap_mount`: a mount already visible in the hierarchy
-        // cannot acquire its first idmap.
-        return neg(Errno::Einval);
+        // A path lookup landed on it, so it is reachable from a live mount
+        // namespace: `anon_ns` is false and the ladder's last rung refuses the
+        // change whatever mode the caller is in. Running the whole ladder
+        // anyway keeps the EARLIER refusals (second install, unsupported
+        // filesystem, missing capability) observable in their real order.
+        let already = !mount.idmap().is_identity();
+        let facts = vfs::mount::idmap_facts_for(mount.sb(), req, already, false);
+        let error = vfs::mount::can_idmap_mount(facts).err().unwrap_or(vfs::VfsError::Einval);
+        return crate::namei_common::errno_from_vfs(error);
     }
     match vfs::mount::mnt_setattr_attached(
         path.mnt_id, set_mnt, clr_mnt, prop, recursive,
