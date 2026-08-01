@@ -393,8 +393,16 @@ lanes are claimed / merged.
 ## Known issues go in `scratch/known_issues.md` (HARD RULE)
 
 Every issue, breakage, divergence, deviation, gap, flake, or thing-worth-noting gets a
-row in `scratch/known_issues.md` — **in the same PR that finds it**, not later. A finding
-that lives only in a session report is lost the moment the session ends.
+row **in the same PR that finds it**, not later. A finding that lives only in a session
+report is lost the moment the session ends.
+
+**Where the row goes: `scratch/issues.d/<your-branch>.md`, not the curated ledger.**
+One file per lane, written only by that lane, so it cannot conflict. A single shared
+table does not survive concurrent lanes — it conflicted on every PR of a 15-lane wave and
+each conflict cost a rebase round-trip. `scratch/known_issues.md` stays the curated
+ledger; the integration owner folds drops into it and deletes the drop file.
+`tools/issues.sh` renders curated + drops, `--count` shows row counts. A row in a drop
+file is exactly as binding as one in the curated ledger.
 
 - **Find it, file it.** This includes: anything non-Linux, anything stubbed or
   stored-but-unconsumed, a test that flakes, a gate that misses a defect class, a
