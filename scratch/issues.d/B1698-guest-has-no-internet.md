@@ -88,3 +88,20 @@ removed, 3 of the 5 fail.
 |---|---|
 | med | `drv-virtio-net`'s `resolve_next_hop_mac_observed` returns `None` for **every** non-broadcast IPv4 next hop, so `NetDev::xmit` with an IPv4 next hop always fails `EHOSTUNREACH`. Its own doc comment claims "IPv4 misses send ARP"; the arm does no lookup and sends nothing. Reached by IPv4 forwarding (`stack_forward.rs`) and IGMP membership reports (`stack_igmp.rs`), so neither can transmit. Not on the path this lane fixed (ordinary socket transmit resolves through `tx_dispatch::resolve_or_queue` and `xmit_l2_observed`). The Linux-shaped repair is to route those `dev.xmit()` call sites through the neighbour-owning dispatch, not to add a second lookup inside the driver. |
 | med | NetworkManager enumerates no devices (`nmcli device status` empty; NM journal stops at `manager: startup complete` with `platform-linux: do-change-link[1]: internal failure 5`). The RTM_GETLINK dump itself is fine — `ip -d link` lists `lo` and `eth0` through it — so this is something later in NM's platform layer. Consequence: no DHCP client runs and `/etc/resolv.conf` is never written, so name resolution stays broken even with ARP repaired. |
+
+## Second break on the same chain: outbound IPv4 TTL was 0
+
+With ARP repaired, the verification boot got answers from the gateway for the
+first time — and they were `From 10.0.2.2 icmp_seq=2 Time to live exceeded`.
+
+`net::inet_tx::ipv4_ttl` resolved an unset `IP_TTL` (the negative sentinel, the
+value every socket has unless a program sets one) to a wire TTL of **0**. The
+first router discards such a datagram and answers Time Exceeded, so the guest
+could reach its own link and nothing past it. Fixed to the default hop budget
+`IPV4_DEFAULT_TTL`; a set value of zero stays zero, and the multicast arm is
+unchanged (`IP_MULTICAST_TTL` already defaults to 1 and its setter normalises
+the sentinel).
+
+This closes the `known_issues.md` row that recorded the TTL-0 value as "very
+likely a divergence" pending verification — it is one, and it was reachable
+from `ping` (raw/ICMP send) and every UDP send.
