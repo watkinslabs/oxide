@@ -23,11 +23,16 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     // Landlock signal scoping. A confined thread must not reach a process
     // outside its domain, and this applies to every path below — including a
     // sibling thread and a capability holder — so a denial here wins outright.
-    if ::landlock::domain::scope_denied(cur.landlock_domain.lock().as_ref(),
-                                        target.landlock_domain.lock().as_ref(),
-                                        ::landlock::uapi::SCOPE_SIGNAL)
-    {
-        return false;
+    // Signalling yourself skips it: the two operands would be the same lock,
+    // and a thread is always inside its own domain anyway.
+    if cur.tid != target.tid {
+        let mine = cur.landlock_domain.lock().clone();
+        let theirs = target.landlock_domain.lock().clone();
+        if ::landlock::domain::scope_denied(mine.as_ref(), theirs.as_ref(),
+                                            ::landlock::uapi::SCOPE_SIGNAL)
+        {
+            return false;
+        }
     }
     // Linux `check_kill_permission`: `!same_thread_group(current, t)` gates the
     // credential test, so a thread may always signal a SIBLING regardless of
@@ -274,6 +279,15 @@ mod landlock_signal_scope_tests {
             handled_fs: ACCESS_FS_READ_FILE, ..Default::default() });
         *cur.landlock_domain.lock() = Some(Domain::merge(None, &rs).unwrap());
         assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+    }
+
+    #[test]
+    fn a_scoped_thread_can_still_signal_itself() {
+        // The scope test reads both tasks' domains; for a self-signal those are
+        // the same lock, so the check has to be skipped rather than taken twice.
+        let cur = task(1, 0);
+        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        assert!(sig_perm_check(&cur, &cur, sched::Signum::Sigterm as i32));
     }
 
     #[test]
