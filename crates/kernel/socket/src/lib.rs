@@ -5,6 +5,7 @@
 // - `send`: family routing, retry, and SIGPIPE completion.
 // - `address`: kernel-snapshot socket-address decoding and UNIX lookup.
 // - `control*`: SCM and raw IP ancillary policy.
+// - `oob`: AF_UNIX out-of-band send division.
 // - `packet`: AF_PACKET message transmission.
 // - `batch`: lazy sendmmsg import/publication policy.
 // - `receive`: SCM_RIGHTS receive descriptor publication.
@@ -31,6 +32,7 @@ mod error;
 mod filter;
 mod ids;
 mod message;
+mod oob;
 mod packet;
 mod receive;
 mod send;
@@ -40,6 +42,7 @@ pub use batch::{BatchIo, BatchSpec, send_batch};
 pub use error::{Error, KResult};
 pub use filter::{FilterError, FilterFile};
 pub use message::{Message, SendOutcome};
+pub use oob::{unix_oob_plan, UnixOobPlan};
 pub use receive::{ReceiveFdResult, install_received_fds};
 pub use send::{ImportMode, MessageIo, SendContext, send, send_io, write, writev};
 pub use target::{SendFile, SendKind};

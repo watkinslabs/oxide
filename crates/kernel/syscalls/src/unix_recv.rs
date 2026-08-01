@@ -11,6 +11,27 @@ use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// `recv(MSG_OOB)` on a connected AF_UNIX stream: the one byte awaiting
+/// out-of-band delivery, reported with `MSG_OOB` set in the returned flags.
+/// Never blocks — nothing pending, or `SO_OOBINLINE` having put the byte in the
+/// in-band stream instead, is the same EINVAL. `MSG_PEEK` leaves the byte where
+/// it is. # C: O(1)
+fn recv_urgent(pair: &Arc<net::UnixPair>, end: net::UnixEnd, sock: &Arc<InetSocket>,
+    user: &RecvUser, flags: u64, inline: bool) -> i64
+{
+    let Some(byte) = pair.recv_oob(end, flags & MSG_PEEK != 0, inline) else {
+        return err(Errno::Einval);
+    };
+    let copied = match user.copy_payload_at(0, &[byte]) { Ok(n) => n, Err(e) => return e };
+    let path = net::sock::unix_peer_path(sock).unwrap_or(None);
+    let sa = encoded_sockaddr_un(path.as_deref());
+    if let Err(e) = finish(user, alloc::vec::Vec::new(), None, flags, MSG_OOB as u32, sa.as_bytes()) {
+        return e;
+    }
+    sock.note_receive_now();
+    copied as i64
+}
+
 enum WaitOutcome { Retry, DatagramShutdown }
 
 fn wait_nonblock(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64,
@@ -68,8 +89,10 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
         Msg(Arc<net::UnixMsgPair>, net::UnixEnd),
         Dgram(Arc<net::UnixDgramQueue>),
     }
+    let inline = sock.opts.oobinline.load(Ordering::Acquire) != 0;
     let target = match &*sock.kind.lock() {
-        SockKind::Unix(_, _) if flags & MSG_OOB != 0 => return err(Errno::Einval),
+        SockKind::Unix(pair, end) if flags & MSG_OOB != 0 =>
+            return recv_urgent(&pair.clone(), *end, sock, user, flags, inline),
         SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_) if flags & MSG_OOB != 0 => {
             return err(Errno::Eopnotsupp);
         }
@@ -98,7 +121,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
             let mut committed: Option<net::unix_sock::MsgCred> = None;
             loop {
                 let offset = if peek { total } else { 0 };
-                match pair.read_stream_with_offset(end, user.capacity - total, peek, offset, passcred, committed.as_ref(), |data, _, _| {
+                match pair.read_stream_with_offset(end, user.capacity - total, peek, offset, passcred, committed.as_ref(), inline, |data, _, _| {
                     let copied = user.copy_payload_at(total, data)?;
                     Ok::<_, i64>((copied, copied))
                 }) {

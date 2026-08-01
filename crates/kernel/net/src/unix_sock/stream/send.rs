@@ -17,7 +17,7 @@ impl UnixPair {
 
     /// Append as many bytes as fit under the sender's queue cap. # C: O(data.len())
     pub fn write_bounded(&self, end: UnixEnd, data: &[u8], cap: usize) -> Result<usize, UnixStreamSendError> {
-        self.write_inner(end, data, GcRights::from_files(Vec::new()), None, cap)
+        self.write_inner(end, data, GcRights::from_files(Vec::new()), None, cap, false)
     }
 
     /// Append `data` plus a SCM_RIGHTS burst, tagging the fds to the
@@ -31,27 +31,29 @@ impl UnixPair {
 
     /// Enqueue a classified canonical SCM_RIGHTS batch. # C: O(data.len() + rights)
     pub fn write_with_rights(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, rights, None, usize::MAX).map_err(|_| UnixStreamError::PeerClosed)
+        self.write_inner(end, data, rights, None, usize::MAX, false).map_err(|_| UnixStreamError::PeerClosed)
     }
 
     /// Enqueue one rights-bearing stream segment under a byte cap. # C: O(data.len() + rights)
     pub fn write_with_rights_bounded(&self, end: UnixEnd, data: &[u8], rights: GcRights,
         cap: usize) -> Result<usize, UnixStreamSendError>
-    { self.write_inner(end, data, rights, None, cap) }
+    { self.write_inner(end, data, rights, None, cap, false) }
 
     /// Enqueue rights with an explicitly validated SCM_CREDENTIALS record. # C: O(data.len() + rights)
     pub fn write_with_rights_and_creds(&self, end: UnixEnd, data: &[u8], rights: GcRights, creds: (u32, u32, u32)) -> Result<usize, UnixStreamError> {
-        self.write_inner(end, data, rights, Some(creds), usize::MAX).map_err(|_| UnixStreamError::PeerClosed)
+        self.write_inner(end, data, rights, Some(creds), usize::MAX, false).map_err(|_| UnixStreamError::PeerClosed)
     }
 
     /// Enqueue one credential-bearing stream segment under a byte cap. # C: O(data.len() + rights)
     pub fn write_with_rights_and_creds_bounded(&self, end: UnixEnd, data: &[u8], rights: GcRights,
         creds: (u32, u32, u32), cap: usize) -> Result<usize, UnixStreamSendError>
-    { self.write_inner(end, data, rights, Some(creds), cap) }
+    { self.write_inner(end, data, rights, Some(creds), cap, false) }
 
-    /// # C: O(data.len() + rights)
-    fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights,
-        supplied_creds: Option<(u32, u32, u32)>, cap: usize) -> Result<usize, UnixStreamSendError> {
+    /// `oob` marks the byte as the one awaiting `recv(MSG_OOB)`; its offset is
+    /// recorded under the same ring lock that queues it, so no concurrent
+    /// in-band write can be mistaken for it. # C: O(data.len() + rights)
+    pub(super) fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights,
+        supplied_creds: Option<(u32, u32, u32)>, cap: usize, oob: bool) -> Result<usize, UnixStreamSendError> {
         if data.is_empty() { return Ok(0); }
         // DIAG (debug-dbus): dump AF_UNIX SOCK_STREAM messages that mention the
         // login1 session interface or carry a D-Bus error reply. dbus-broker
@@ -106,6 +108,7 @@ impl UnixPair {
             let off = g.produced;
             g.ancillary.push_back((off, rights, sender_cred));
         }
+        if oob { g.oob = Some(g.produced); }
         g.buf.extend(data[..take].iter().copied());
         let n = take;
         g.produced += n as u64;
@@ -142,8 +145,11 @@ impl UnixPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            // F181a: targeted epoll wake
-            super::super::wake_peer_subs(self, end, vfs::POLL_IN);
+            // F181a: targeted epoll wake. An out-of-band byte also raises the
+            // receiver's priority readiness, which is what a description that
+            // asked for signal-driven I/O turns into `SIGURG`.
+            let events = if oob { vfs::POLL_IN | vfs::POLL_PRI } else { vfs::POLL_IN };
+            super::super::wake_peer_subs(self, end, events);
         }
         Ok(n)
     }
