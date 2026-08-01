@@ -9,6 +9,7 @@
 mod context;
 mod cpu;
 mod cpuid;
+mod cpuid_fault;
 mod fault;
 mod exception_table;
 mod fpu;
@@ -33,10 +34,13 @@ pub mod vmm;
 
 pub use context::{ContextX86_64, ForkRegs};
 pub use cpu::{get_user_fs_base, halt, mmio_barrier, set_user_fs_base, X86CpuOps};
+pub use cpuid_fault::{cpuid_fault_kind, cpuid_fault_supported, set_cpuid_faulting,
+    CPUID_FAULT_AMD, CPUID_FAULT_INTEL, CPUID_FAULT_NONE};
 pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, vendor as cpuid_vendor};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
 pub use fault::{
+    fixup_eligible, VEC_GP, VEC_PF,
     current_fault_frame, install_fault_handler, install_user_trap_hook,
     vector_stub_addr, FaultHandler, UserTrapHook,
 };

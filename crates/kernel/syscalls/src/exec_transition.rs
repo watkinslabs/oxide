@@ -163,6 +163,9 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // `SET_PERSONALITY2(*elf_ex, &arch_state)` — the arch half, which on both
     // 64-bit targets clears READ_IMPLIES_EXEC unconditionally.
     crate::exec_persona::set_personality(cur);
+    // `arch_setup_new_exec()` + `reset_thread_features()` — the arch state
+    // `arch_prctl` owns, which a new image must not inherit.
+    crate::exec_persona::arch_setup_new_exec(cur);
     cur.dumpable.store(t.dumpable, Ordering::Release);
 }
 
