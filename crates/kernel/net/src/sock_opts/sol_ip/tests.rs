@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use super::get::{self, IpGetState, ScalarOut, Value};
-use super::options;
+use crate::ipv4_options::area as options;
 use super::set::{self, Action, ArgClass, IpSock};
 use super::state::{IpOpts, effective_port_range, flag};
 use super::uapi::*;

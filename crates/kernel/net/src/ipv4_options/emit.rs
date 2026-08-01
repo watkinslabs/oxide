@@ -4,8 +4,8 @@
 
 use crate::addr::Ipv4Addr;
 use crate::ipv4::{ip_checksum, IPV4_HDR_LEN, IPV4_VERSION};
-use crate::sock_opts::sol_ip::options::Compiled;
-use crate::sock_opts::sol_ip::uapi::{IPOPT_COPIED, IPOPT_END, IPOPT_NOOP};
+use super::area::Compiled;
+use super::uapi::{IPOPT_COPIED, IPOPT_END, IPOPT_NOOP};
 
 /// Milliseconds in a day: the timestamp option counts from UTC midnight.
 const TS_DAY_MS: u64 = 86_400_000;

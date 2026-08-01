@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use super::{Raw4Endpoint, Raw4TxOptions};
-use crate::sock_opts::sol_ip::options::Compiled;
+use crate::ipv4_options::Compiled;
 use crate::addr::{eth_p, Ipv4Addr, NetIfaceId};
 use crate::ipv4::{ip_checksum, IPV4_HDR_LEN, IPV4_VERSION};
 use crate::netdev::{NetError, NetResult};

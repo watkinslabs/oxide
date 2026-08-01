@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Socket as LockClass, Spinlock};
 
-use super::options::Compiled;
+use crate::ipv4_options::Compiled;
 
 /// `inet_sock` boolean fields this level owns. The option numbers are ABI; the
 /// bit positions are private. # C: O(1)
@@ -99,7 +99,7 @@ impl IpOpts {
     /// not the compiled form. # C: O(optlen)
     pub fn options_undone(&self) -> Vec<u8> {
         match self.options.lock().as_ref() {
-            Some(c) => super::options::undo(c),
+            Some(c) => crate::ipv4_options::undo(c),
             None => Vec::new(),
         }
     }
