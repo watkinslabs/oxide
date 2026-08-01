@@ -62,8 +62,8 @@ impl LoopbackDev {
     /// # C: O(1)
     pub fn rx_len(&self) -> usize { self.rx.lock().queue.len() }
 
-    /// Account one dequeued frame rejected by protocol delivery. # C: O(1)
-    pub(crate) fn record_rx_error(&self) { self.rx_errors.fetch_add(1, Ordering::Relaxed); }
+    /// Account one frame the receive backlog refused. # C: O(1)
+    pub(crate) fn record_rx_dropped(&self) { self.rx_dropped.fetch_add(1, Ordering::Relaxed); }
 }
 
 impl Default for LoopbackDev { fn default() -> Self { Self::new() } }
@@ -85,6 +85,7 @@ impl NetDev for LoopbackDev {
     }
     fn mtu(&self)  -> u32 { 65535 }
     fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_LOOPBACK }
+    fn record_rx_error(&self) { self.rx_errors.fetch_add(1, Ordering::Relaxed); }
     fn retire_namespace(&self) {
         let mut rx = self.rx.lock();
         if !rx.live { return; }

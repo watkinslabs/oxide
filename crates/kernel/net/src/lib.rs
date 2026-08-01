@@ -48,6 +48,7 @@ pub mod secure_seq;
 pub use socket_error::{SocketError, SocketErrorEntry};
 pub use socket_owner::SocketOwner;
 pub use sockaddr::SockaddrStorage;
+pub mod backlog;
 pub mod loopback;
 pub mod ipv4;
 pub mod ipv4_options;
