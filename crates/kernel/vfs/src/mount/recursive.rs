@@ -34,7 +34,9 @@ fn is_shared(m: &Mount) -> bool {
     Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Shared
 }
 
-fn is_unbindable(m: &Mount) -> bool {
+/// Linux `IS_MNT_UNBINDABLE` — the mount refuses to be bind-copied
+/// (`do_loopback`, `copy_tree`). # C: O(1)
+pub fn is_unbindable(m: &Mount) -> bool {
     Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Unbindable
 }
 

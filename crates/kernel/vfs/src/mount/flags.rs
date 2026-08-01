@@ -55,6 +55,11 @@ pub const MS_NODIRATIME: u64 = 0x800;
 pub const MS_RELATIME: u64 = 1 << 21;
 pub const MS_STRICTATIME: u64 = 1 << 24;
 pub const MS_LAZYTIME: u64 = 1 << 25;
+/// `MS_SILENT` (`uapi/linux/mount.h`) — suppress the backend's fill-super
+/// console chatter. Not an option bit anything enforces here, but
+/// `flags_to_propagation_type` STRIPS it alongside `MS_REC`, so a
+/// `mount(NULL, t, NULL, MS_SHARED|MS_SILENT)` must not be read as malformed.
+pub const MS_SILENT: u64 = 1 << 15;
 
 // --- mount(2) OPERATION selectors (`uapi/linux/mount.h`). Not option bits:
 // `path_mount` dispatches on these to do_reconfigure_mnt / do_remount /

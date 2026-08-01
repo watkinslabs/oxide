@@ -7,10 +7,10 @@ use alloc::vec::Vec;
 use sync::{Devices as FsClass, Spinlock};
 
 use crate::dentry::Dentry;
-use crate::superblock::{SuperBlock, SB_RDONLY};
+use crate::superblock::SuperBlock;
 
 use super::api::KResult;
-use super::fs_context::{self, FsParameter, SB_FLAGS_USER_MASK};
+use super::fs_context::{self, FsParameter, SB_FLAGS_USER_MASK, apply_sb_flags};
 struct SharedSuper {
     fs_name: String,
     key:     String,
@@ -19,12 +19,13 @@ struct SharedSuper {
 
 static SHARED_SUPERS: Spinlock<Vec<SharedSuper>, FsClass> = Spinlock::new(Vec::new());
 
+/// Stamp the context's `SB_*` request onto a freshly filled superblock. ONE
+/// stamping policy for the whole tree — [`apply_sb_flags`] — shared with the
+/// classic `superblock_from_filesystem` fill-super boundary, so `s_flags` and
+/// the `SB_RDONLY` mirror can never disagree between the two mount APIs.
+/// # C: O(1)
 fn stamp_sb_flags(sb: &SuperBlock, fc: &fs_context::FsContext) {
-    let mask = fc.sb_flags_mask();
-    let set = fc.sb_flags() & mask;
-    let clear = !fc.sb_flags() & mask;
-    sb.set_s_flags(set, clear);
-    sb.set_readonly(set & SB_RDONLY != 0);
+    apply_sb_flags(sb, fc.sb_flags(), fc.sb_flags_mask());
 }
 
 fn sget_probe(fs_name: &str, key: &str) -> Option<Arc<SuperBlock>> {

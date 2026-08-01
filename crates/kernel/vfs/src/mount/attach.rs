@@ -4,7 +4,10 @@
 fn realize_compat_sb(s_type: Arc<dyn FileSystemType>, mp: Option<&Arc<Dentry>>,
     fs: Arc<dyn FileSystem>, root: Option<InodeRef>) -> KResult<Arc<SuperBlock>> {
     let s_id = match mp { Some(d) => abs_string(d), None => String::from("/") };
-    superblock_from_filesystem(s_type, fs, root, s_id)
+    // A compat graft creates the superblock for an ALREADY-CHOSEN backend
+    // object; the mount(2) `SB_*` request never reaches here (a bind creates no
+    // superblock in Linux at all), so the instance is born with no user flags.
+    superblock_from_filesystem(s_type, fs, root, s_id, 0)
 }
 
 /// Graft an ALREADY-REALIZED `SuperBlock` (built by the new mount API's
@@ -320,7 +323,7 @@ pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone())?;
+    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone(), 0)?;
     let root_dentry = sb.s_root().ok_or(VfsError::Enoent)?;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered, reservation)
 }
@@ -334,7 +337,7 @@ pub fn register_bind_path_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: St
     let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone())?;
+    let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone(), 0)?;
     graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered, reservation)
 }
 

@@ -7,20 +7,26 @@
 //
 // Module manifest:
 //   record — the `acct_v3` wire layout + `encode_comp_t`/`encode_float` (pure)
-//   state  — per-pid-namespace accounting file, append cursor, free-space
-//            suspend/resume hysteresis
-//   tests  — hosted proof of the layout, the encodings and the admission ladder
+//   space  — free-space suspend/resume hysteresis + the interval between
+//            checks (pure)
+//   parm   — the three `kernel/acct` tunables and their `/proc/sys` vector leaf
+//   state  — per-pid-namespace accounting file, append cursor, superblock pin
+//   tests  — hosted proof of the layout, the encodings, the hysteresis, the
+//            tunable leaf and the admission ladder
 //
 // The admission ladder itself (`acct_on`'s check order) is `admit_file` below,
 // pure over the facts the caller resolved, so `cargo test -p fs` proves the
 // ORDER — which is the only observable part of a rejected `acct(2)`.
 
 pub mod record;
+pub mod space;
+pub mod parm;
 pub mod state;
 #[cfg(test)]
 mod tests;
 
 pub use record::{AcctFacts, ACCT_V3_LEN, AFORK, AGROUP, ACORE, ASU, AXSIG};
+pub use state::NsTarget;
 
 /// Why `acct_on` refused a file, in Linux's own test order.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -65,22 +71,40 @@ pub fn admit_file(f: AcctFileFacts) -> Result<(), AcctFileError> {
 
 /// `acct(path)` once the caller has resolved and admitted the file: bind it to
 /// `ns_id`'s accounting slot. # C: O(log N_namespaces)
-pub fn acct_on(ns_id: u64, inode: vfs::InodeRef) { state::enable(ns_id, inode); }
+pub fn acct_on(ns_id: u64, inode: vfs::InodeRef, now_ns: u64) {
+    state::enable(ns_id, inode, now_ns);
+}
 
-/// `acct(NULL)`: stop accounting for `ns_id`. Linux returns success whether or
-/// not a file was bound. # C: O(log N_namespaces)
+/// `acct(NULL)`: stop accounting for `ns_id`. Success whether or not a file was
+/// bound. # C: O(log N_namespaces)
 pub fn acct_off(ns_id: u64) { state::disable(ns_id); }
+
+/// A pid namespace has died with accounting still on: close its file, so the
+/// namespace's last reference to the accounting filesystem goes away with it.
+/// # C: O(log N_namespaces)
+pub fn acct_exit_ns(ns_id: u64) { state::disable(ns_id); }
+
+/// Whether `ns_id` is accounting. # C: O(log N_namespaces)
+pub fn accounting_on_for(ns_id: u64) -> bool { state::is_enabled(ns_id) }
 
 /// Whether any namespace is accounting — the exit path's guard, so a boot that
 /// never calls `acct(2)` pays one lock-and-check per process exit and nothing
 /// more. # C: O(1)
 pub fn accounting_active() -> bool { state::any_active() }
 
-/// Linux `acct_process()`: write `facts` as an `acct_v3` record to the
-/// accounting file of every namespace in `chain` (the exiting task's pid
-/// namespace followed by its ancestors) that has one.
-/// # C: O(depth * log N_namespaces)
-pub fn acct_process(chain: &[u64], facts: &AcctFacts) {
-    if chain.is_empty() { return; }
-    state::append(chain, &facts.encode());
+/// Write `facts` as an `acct_v3` record to the accounting file of every target
+/// namespace that has one — the exiting task's pid namespace followed by its
+/// ancestors. Each record carries the pids that ITS namespace sees, so a
+/// container's log and the host's log name the same process by their own
+/// numbers. # C: O(depth * log N_namespaces)
+pub fn acct_process(targets: &[NsTarget], facts: &AcctFacts, now_ns: u64) {
+    if targets.is_empty() { return; }
+    state::append(targets, facts, now_ns);
+}
+
+/// Bind the `/proc/sys/kernel/acct` leaf to the live tunables at boot. Without
+/// it the file would report a triple no free-space check ever consults.
+/// # C: O(1)
+pub fn register_sysctl_hooks() {
+    procfs::hooks::set_acct_parm_hooks(parm::sysctl_read, parm::sysctl_write);
 }

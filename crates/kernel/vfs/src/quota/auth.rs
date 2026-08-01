@@ -1,6 +1,38 @@
+use sync::Spinlock;
+
 use crate::{VfsError, namei::GroupList};
 
+use super::control::QFMT_VFS_OLD;
 use super::ids::QuotaType;
+use super::limits::DQF_ROOT_SQUASH;
+
+struct QuotaCapHookLock;
+impl sync::LockClass for QuotaCapHookLock { fn rank() -> u16 { 30 } fn name() -> &'static str { "QuotaCapHookLock" } }
+
+type SysResourceHook = fn() -> bool;
+
+static SYS_RESOURCE_HOOK: Spinlock<Option<SysResourceHook>, QuotaCapHookLock> = Spinlock::new(None);
+
+/// Install the CAP_SYS_RESOURCE probe. VFS owns the limit ladder; the task's
+/// capability set lives in the layer that owns credentials. # C: O(1)
+pub fn set_quota_sys_resource_hook(hook: SysResourceHook) { *SYS_RESOURCE_HOOK.lock() = Some(hook); }
+
+/// Remove the CAP_SYS_RESOURCE probe. # C: O(1)
+pub fn clear_quota_sys_resource_hook() { *SYS_RESOURCE_HOOK.lock() = None; }
+
+/// True when the current task holds CAP_SYS_RESOURCE. Without an installed
+/// probe no task is privileged, so limits apply to everyone. # C: O(1)
+pub fn quota_has_sys_resource() -> bool {
+    let hook = *SYS_RESOURCE_HOOK.lock();
+    hook.is_some_and(|hook| hook())
+}
+
+/// `ignore_hardlimit`: a CAP_SYS_RESOURCE holder bypasses hard limits and
+/// expired grace periods, except on the original on-disk format when that
+/// class is configured to squash root. # C: O(1)
+pub fn quota_ignore_hardlimit(fmt: u32, dqi_flags: u32) -> bool {
+    quota_has_sys_resource() && (fmt != QFMT_VFS_OLD || dqi_flags & DQF_ROOT_SQUASH == 0)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QuotaCtlCmd {

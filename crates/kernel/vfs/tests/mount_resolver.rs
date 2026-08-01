@@ -397,11 +397,14 @@ fn pivot_root_swaps_namespace_root() {
     assert_eq!(ino_at("/old/etc"), Some(0xD), "old tree relocated under put_old");
     assert!(ino_at("/nr").is_none(), "old new_root path gone");
     // Errors (fresh ns): new_root not a mount → Einval; put_old not under
-    // new_root → Einval; put_old is itself a mount → Ebusy.
+    // new_root → Einval.
     vfs::mount::set_current_ns_provider(common::current_namespace);
     assert!(matches!(common::pivot_root("/nope", "/nope/old"), Err(VfsError::Einval)));
     common::register("/e-nr", Arc::new(TestFs { root_ino: 1 })).expect("e-nr");
     assert!(matches!(common::pivot_root("/e-nr", "/other"), Err(VfsError::Einval)));
+    // put_old already covered by a mount is NOT refused: `put_old` resolution
+    // descends through it (Linux `where_to_mount`) and the old root stacks on
+    // that mount's root, exactly as `pivot_root(".", ".")` stacks on new_root.
     common::register("/e-nr/m", Arc::new(TestFs { root_ino: 2 })).expect("e-m");
-    assert!(matches!(common::pivot_root("/e-nr", "/e-nr/m"), Err(VfsError::Ebusy)));
+    common::pivot_root("/e-nr", "/e-nr/m").expect("put_old under an overmount stacks");
 }

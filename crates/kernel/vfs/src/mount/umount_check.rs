@@ -47,6 +47,21 @@ pub enum UmountRefusal {
     Eperm,
 }
 
+/// `do_umount`'s full result: the outcome of the admission ladder PLUS whether
+/// the shim owes the filesystem an `s_op->umount_begin` call.
+///
+/// `umount_begin` is a mid-ladder SIDE EFFECT, not an outcome: Linux fires it
+/// after the `MNT_EXPIRE` rung and before every later one, so it runs even when
+/// the unmount is then refused for being outside the caller's namespace or
+/// locked. Modelling it as a field keeps that position under test instead of
+/// leaving it to whatever order the shim happens to use.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct UmountPlan {
+    /// Call `sb->s_op->umount_begin(sb)` before acting on `outcome`.
+    pub umount_begin: bool,
+    pub outcome: Result<Umount, UmountRefusal>,
+}
+
 /// The mount-tree facts `do_umount` consults, sampled once by the shim.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct UmountFacts {
@@ -80,26 +95,39 @@ pub const EXPIRE_REQUIRED_REFS: u32 = 2;
 /// The shim performs the expiry-mark exchange BEFORE calling (recording the
 /// prior value in `was_expiry_marked`), because the mark is a side effect that
 /// must happen exactly once per accepted `MNT_EXPIRE` call. # C: O(1)
-pub fn umount_check(flags: u64, facts: &UmountFacts) -> Result<Umount, UmountRefusal> {
+pub fn umount_check(flags: u64, facts: &UmountFacts) -> UmountPlan {
+    let refuse = |e| UmountPlan { umount_begin: false, outcome: Err(e) };
     if flags & MNT_EXPIRE != 0 {
         if facts.is_caller_root || flags & (MNT_FORCE | MNT_DETACH) != 0 {
-            return Err(UmountRefusal::Einval);
+            return refuse(UmountRefusal::Einval);
         }
         if facts.has_children || facts.ref_count != EXPIRE_REQUIRED_REFS {
-            return Err(UmountRefusal::Ebusy);
+            return refuse(UmountRefusal::Ebusy);
         }
         // First pass: the mount is marked and lives to the next call.
-        if !facts.was_expiry_marked { return Err(UmountRefusal::Eagain); }
+        if !facts.was_expiry_marked { return refuse(UmountRefusal::Eagain); }
     }
+    // Past the expiry rung, `MNT_FORCE` owes the filesystem its chance to abort
+    // in-flight work — whatever the remaining rungs decide.
+    let begin = flags & MNT_FORCE != 0;
+    let plan = |outcome| UmountPlan { umount_begin: begin, outcome };
     let detach = flags & MNT_DETACH != 0;
     if facts.is_caller_root && !detach {
-        if !facts.may_remount_root { return Err(UmountRefusal::Eperm); }
-        return Ok(Umount::RemountRootReadonly);
+        if !facts.may_remount_root { return plan(Err(UmountRefusal::Eperm)); }
+        return plan(Ok(Umount::RemountRootReadonly));
     }
-    if !facts.in_caller_ns { return Err(UmountRefusal::Einval); }
-    if facts.locked { return Err(UmountRefusal::Einval); }
-    if !facts.has_parent { return Err(UmountRefusal::Einval); }
-    Ok(if detach { Umount::DetachTree } else { Umount::Detach })
+    if !facts.in_caller_ns { return plan(Err(UmountRefusal::Einval)); }
+    if facts.locked { return plan(Err(UmountRefusal::Einval)); }
+    if !facts.has_parent { return plan(Err(UmountRefusal::Einval)); }
+    if detach { return plan(Ok(Umount::DetachTree)); }
+    // `propagate_mount_busy(mnt, 2)`: a child mount pins its parent
+    // (`mnt_set_mountpoint` takes an implicit reference), so a mount with
+    // children reads above the two references an idle mount has and is BUSY.
+    // Only `MNT_DETACH` takes the subtree down with it — never a filesystem
+    // type. Pseudo-filesystems used to be carved out of this rung in the shim
+    // and silently unmounted mounts the caller never named.
+    if facts.has_children { return plan(Err(UmountRefusal::Ebusy)); }
+    plan(Ok(Umount::Detach))
 }
 
 /// Sample the [`UmountFacts`] of the mount `mnt_id` for a caller whose own
@@ -147,93 +175,93 @@ mod tests {
 
     #[test]
     fn plain_umount_detaches_one_mount() {
-        assert_eq!(umount_check(0, &plain()), Ok(Umount::Detach));
+        assert_eq!(umount_check(0, &plain()).outcome, Ok(Umount::Detach));
     }
 
     #[test]
     fn mnt_detach_detaches_the_whole_tree() {
-        assert_eq!(umount_check(MNT_DETACH, &plain()), Ok(Umount::DetachTree));
+        assert_eq!(umount_check(MNT_DETACH, &plain()).outcome, Ok(Umount::DetachTree));
     }
 
     #[test]
     fn expire_first_pass_is_eagain_not_a_detach() {
         let f = plain();
-        assert_eq!(umount_check(MNT_EXPIRE, &f), Err(UmountRefusal::Eagain));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Err(UmountRefusal::Eagain));
     }
 
     #[test]
     fn expire_second_pass_detaches() {
         let f = UmountFacts { was_expiry_marked: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE, &f), Ok(Umount::Detach));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Ok(Umount::Detach));
     }
 
     #[test]
     fn expire_with_force_or_detach_is_einval() {
         let f = UmountFacts { was_expiry_marked: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE | MNT_FORCE, &f), Err(UmountRefusal::Einval));
-        assert_eq!(umount_check(MNT_EXPIRE | MNT_DETACH, &f), Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(MNT_EXPIRE | MNT_FORCE, &f).outcome, Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(MNT_EXPIRE | MNT_DETACH, &f).outcome, Err(UmountRefusal::Einval));
     }
 
     #[test]
     fn expire_on_the_callers_root_is_einval() {
         let f = UmountFacts { is_caller_root: true, was_expiry_marked: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE, &f), Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Err(UmountRefusal::Einval));
     }
 
     #[test]
     fn expire_with_children_or_extra_refs_is_ebusy_before_the_mark_is_consulted() {
         let f = UmountFacts { has_children: true, was_expiry_marked: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE, &f), Err(UmountRefusal::Ebusy));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Err(UmountRefusal::Ebusy));
         let f = UmountFacts { ref_count: 3, was_expiry_marked: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE, &f), Err(UmountRefusal::Ebusy));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Err(UmountRefusal::Ebusy));
         // Fewer references than the pair Linux demands is equally EBUSY.
         let f = UmountFacts { ref_count: 1, was_expiry_marked: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE, &f), Err(UmountRefusal::Ebusy));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Err(UmountRefusal::Ebusy));
     }
 
     #[test]
     fn expire_einval_outranks_ebusy() {
         // Both rungs would fire; EINVAL is the earlier one.
         let f = UmountFacts { has_children: true, is_caller_root: true, ..plain() };
-        assert_eq!(umount_check(MNT_EXPIRE, &f), Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(MNT_EXPIRE, &f).outcome, Err(UmountRefusal::Einval));
     }
 
     #[test]
     fn callers_root_without_detach_remounts_readonly() {
         let f = UmountFacts { is_caller_root: true, ..plain() };
-        assert_eq!(umount_check(0, &f), Ok(Umount::RemountRootReadonly));
+        assert_eq!(umount_check(0, &f).outcome, Ok(Umount::RemountRootReadonly));
     }
 
     #[test]
     fn callers_root_remount_needs_authority_over_the_filesystem() {
         let f = UmountFacts { is_caller_root: true, may_remount_root: false, ..plain() };
-        assert_eq!(umount_check(0, &f), Err(UmountRefusal::Eperm));
+        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Eperm));
     }
 
     #[test]
     fn callers_root_with_detach_takes_the_ordinary_path() {
         let f = UmountFacts { is_caller_root: true, ..plain() };
-        assert_eq!(umount_check(MNT_DETACH, &f), Ok(Umount::DetachTree));
+        assert_eq!(umount_check(MNT_DETACH, &f).outcome, Ok(Umount::DetachTree));
     }
 
     #[test]
     fn a_mount_outside_the_callers_namespace_is_einval() {
         let f = UmountFacts { in_caller_ns: false, ..plain() };
-        assert_eq!(umount_check(0, &f), Err(UmountRefusal::Einval));
-        assert_eq!(umount_check(MNT_DETACH, &f), Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(MNT_DETACH, &f).outcome, Err(UmountRefusal::Einval));
     }
 
     #[test]
     fn a_locked_mount_is_einval_even_with_detach() {
         let f = UmountFacts { locked: true, ..plain() };
-        assert_eq!(umount_check(0, &f), Err(UmountRefusal::Einval));
-        assert_eq!(umount_check(MNT_DETACH, &f), Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(MNT_DETACH, &f).outcome, Err(UmountRefusal::Einval));
     }
 
     #[test]
     fn the_namespace_root_has_no_parent_and_is_einval() {
         let f = UmountFacts { has_parent: false, ..plain() };
-        assert_eq!(umount_check(0, &f), Err(UmountRefusal::Einval));
+        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Einval));
     }
 
     #[test]
@@ -241,11 +269,59 @@ mod tests {
         // Linux tests `current->fs->root.mnt` before re-taking the locks and
         // repeating check_mnt / MNT_LOCKED, so a locked root still remounts.
         let f = UmountFacts { is_caller_root: true, locked: true, in_caller_ns: false, ..plain() };
-        assert_eq!(umount_check(0, &f), Ok(Umount::RemountRootReadonly));
+        assert_eq!(umount_check(0, &f).outcome, Ok(Umount::RemountRootReadonly));
+    }
+
+    #[test]
+    fn a_mount_with_children_is_busy_unless_detach_was_asked_for() {
+        let f = UmountFacts { has_children: true, ..plain() };
+        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Ebusy));
+        assert_eq!(umount_check(MNT_DETACH, &f).outcome, Ok(Umount::DetachTree));
+        // MNT_FORCE is not MNT_DETACH: it aborts in-flight work, it does not
+        // license taking the subtree down.
+        assert_eq!(umount_check(MNT_FORCE, &f).outcome, Err(UmountRefusal::Ebusy));
+    }
+
+    #[test]
+    fn the_locked_and_parent_rungs_outrank_the_busy_rung() {
+        let f = UmountFacts { has_children: true, locked: true, ..plain() };
+        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Einval));
+        let f = UmountFacts { has_children: true, has_parent: false, ..plain() };
+        assert_eq!(umount_check(0, &f).outcome, Err(UmountRefusal::Einval));
     }
 
     #[test]
     fn force_alone_does_not_change_the_decision() {
-        assert_eq!(umount_check(MNT_FORCE, &plain()), Ok(Umount::Detach));
+        assert_eq!(umount_check(MNT_FORCE, &plain()).outcome, Ok(Umount::Detach));
+    }
+
+    #[test]
+    fn force_asks_the_filesystem_to_abort_in_flight_work() {
+        assert!(umount_check(MNT_FORCE, &plain()).umount_begin);
+        assert!(!umount_check(0, &plain()).umount_begin);
+        assert!(!umount_check(MNT_DETACH, &plain()).umount_begin);
+    }
+
+    #[test]
+    fn force_still_aborts_when_a_later_rung_refuses() {
+        // The whole point of MNT_FORCE is to unwedge callers blocked in a dead
+        // filesystem; Linux fires `umount_begin` before re-taking the locks and
+        // re-testing check_mnt / MNT_LOCKED, so a refusal there does not skip it.
+        let f = UmountFacts { in_caller_ns: false, ..plain() };
+        let p = umount_check(MNT_FORCE, &f);
+        assert_eq!(p.outcome, Err(UmountRefusal::Einval));
+        assert!(p.umount_begin);
+        let f = UmountFacts { locked: true, ..plain() };
+        assert!(umount_check(MNT_FORCE, &f).umount_begin);
+    }
+
+    #[test]
+    fn an_expiry_refusal_precedes_the_abort_hook() {
+        // MNT_EXPIRE|MNT_FORCE is rejected by the earlier rung, so the
+        // filesystem is never asked to abort.
+        let f = UmountFacts { was_expiry_marked: true, ..plain() };
+        let p = umount_check(MNT_EXPIRE | MNT_FORCE, &f);
+        assert_eq!(p.outcome, Err(UmountRefusal::Einval));
+        assert!(!p.umount_begin);
     }
 }

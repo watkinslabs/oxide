@@ -74,12 +74,18 @@ fn get_qstat(sb: &vfs::SuperBlock, kind: vfs::QuotaType, addr: u64) -> i64 {
     let state = match quota_state(sb) { Ok(s) => s, Err(e) => return crate::namei_common::errno_from_vfs(e) };
     let flags = quota_state_flags(&state);
     let info = state.types[kind.slot()].info;
-    let uquota = qfilestat(&state, vfs::QuotaType::User);
-    let gquota = if state.types[vfs::QuotaType::Group.slot()].accounting {
-        qfilestat(&state, vfs::QuotaType::Group)
-    } else {
-        qfilestat(&state, vfs::QuotaType::Project)
-    };
+    // Quota inodes may exist while the class is inactive, so each slot is
+    // reported whenever its inode number is present. Q_XGETQSTAT has no
+    // project slot, so project state borrows the group slot — but only when
+    // group accounting is off, and only if a project quota inode exists.
+    let mut uquota = FsQfilestat::default();
+    if state.types[vfs::QuotaType::User.slot()].file.ino != 0 { uquota = qfilestat(&state, vfs::QuotaType::User); }
+    let mut gquota = FsQfilestat::default();
+    if state.types[vfs::QuotaType::Group.slot()].file.ino != 0 { gquota = qfilestat(&state, vfs::QuotaType::Group); }
+    if state.types[vfs::QuotaType::Project.slot()].file.ino != 0
+        && !state.types[vfs::QuotaType::Group.slot()].accounting {
+        gquota = qfilestat(&state, vfs::QuotaType::Project);
+    }
     if flags == 0 { return eno(Errno::Enosys); }
     let out = FsQuotaStat {
         qs_version: FS_QSTAT_VERSION,

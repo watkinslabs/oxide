@@ -14,8 +14,8 @@ use super::{TMPFS_MAGIC, TmpfsFs};
 fn live_sb() -> Arc<SuperBlock> {
     let fs = TmpfsFs::new(String::from("/"));
     let root = fs.root_inode();
-    let ty = FsType::new("tmpfs", TMPFS_MAGIC, FsFlags::empty(), Box::new(|_, _, _, _| Err(VfsError::Einval)));
-    superblock_from_filesystem(ty, fs as Arc<dyn FileSystem>, Some(root), String::from("tmpfs")).expect("realize tmpfs")
+    let ty = FsType::new("tmpfs", TMPFS_MAGIC, FsFlags::empty(), Box::new(|_, _, _, _, _| Err(VfsError::Einval)));
+    superblock_from_filesystem(ty, fs as Arc<dyn FileSystem>, Some(root), String::from("tmpfs"), 0).expect("realize tmpfs")
 }
 
 // [inode D2] A child created on a back-stamped tmpfs mount is registered in the

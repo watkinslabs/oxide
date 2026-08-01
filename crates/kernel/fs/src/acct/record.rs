@@ -8,10 +8,24 @@
 // 64 bytes structurally and a single misplaced field silently corrupts every
 // record ever written.
 
-/// `ACCT_VERSION` for `struct acct_v3` (`include/linux/acct.h`). The record
-/// version byte is `ACCT_VERSION | ACCT_BYTEORDER`, and `ACCT_BYTEORDER` is 0
-/// on little-endian — both arches this kernel targets are little-endian.
+/// `ACCT_VERSION` for `struct acct_v3`. The record's version byte is
+/// `ACCT_VERSION | ACCT_BYTEORDER`.
 pub const ACCT_VERSION: u8 = 3;
+
+/// `ACCT_BYTEORDER` — the high bit of the version byte, set when the records
+/// are big-endian. Derived from the build target rather than assumed, because
+/// a reader on another machine decides how to interpret every multi-byte field
+/// in the file from this one bit. Both arches this kernel targets are
+/// little-endian today; the derivation is what keeps that an observation
+/// rather than a hardcoded assumption.
+#[cfg(target_endian = "big")]
+pub const ACCT_BYTEORDER: u8 = 0x80;
+/// See the big-endian arm.
+#[cfg(target_endian = "little")]
+pub const ACCT_BYTEORDER: u8 = 0x00;
+
+/// The byte written to `ac_version`.
+pub const ACCT_VERSION_BYTE: u8 = ACCT_VERSION | ACCT_BYTEORDER;
 
 /// `ACCT_COMM` — the command-name field width in `struct acct_v3`. Note it is
 /// NOT NUL-terminated in v3 (v0/v1/v2 carry `ACCT_COMM + 1`).
@@ -139,7 +153,7 @@ impl AcctFacts {
     pub fn encode(&self) -> [u8; ACCT_V3_LEN] {
         let mut r = [0u8; ACCT_V3_LEN];
         r[0] = self.flag;
-        r[1] = ACCT_VERSION;  // | ACCT_BYTEORDER, which is 0 little-endian
+        r[1] = ACCT_VERSION_BYTE;
         r[2..4].copy_from_slice(&self.tty.to_le_bytes());
         r[4..8].copy_from_slice(&self.exitcode.to_le_bytes());
         r[8..12].copy_from_slice(&self.uid.to_le_bytes());
