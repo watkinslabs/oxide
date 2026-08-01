@@ -37,6 +37,13 @@ impl TcpEntry {
         }
     }
 
+    /// Wake observers parked on write readiness. # C: O(1)
+    pub fn notify_writable(&self) {
+        if let Some(weak) = self.poll_subs.lock().clone() {
+            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_OUT | vfs::POLL_WRNORM); }
+        }
+    }
+
     /// Transport readiness before socket-level shutdown overlays. `POLL_OUT`
     /// follows Linux `tcp_poll` (`net/ipv4/tcp.c:600-616`): withheld while
     /// `__sk_stream_is_writeable(sk, 1)` is false, which is what makes a
@@ -48,8 +55,9 @@ impl TcpEntry {
         let c = self.conn.lock();
         let writeable = {
             let in_flight: usize = c.retx_q.iter().map(|segment| segment.payload.len()).sum();
-            crate::stack::tcp_writable::tcp_is_writeable(
-                c.send_buf.len().saturating_add(in_flight), sndbuf_cap)
+            crate::stack::tcp_writable::tcp_writeable_with_lowat(
+                c.send_buf.len().saturating_add(in_flight), sndbuf_cap,
+                c.send_buf.len(), c.notsent_lowat)
         };
         let mut mask = if c.state == crate::tcp_state::TcpState::SynSent && !self.error.has() {
             0

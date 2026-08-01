@@ -14,9 +14,9 @@
 //
 // It is a RELATIVE watermark, not `sndbuf >> 1`: free space must be at least
 // half of what is already queued, so writability holds while `wmem_queued` is
-// under ~2/3 of `sndbuf`. `tcp_stream_memory_free`'s `tcp_notsent_lowat` arm is
-// a no-op at the default `tcp_notsent_lowat = UINT_MAX`, and this kernel has no
-// `TCP_NOTSENT_LOWAT`, so the two tests above are the whole predicate.
+// under ~2/3 of `sndbuf`. `TCP_NOTSENT_LOWAT` adds a second, absolute test on
+// top: a socket that named one is unwritable while more than that many bytes
+// are still queued but not yet sent, which is a no-op at the default.
 //
 // Ungated on purpose (`docs/53`): the arithmetic lives here with its unit
 // tests; `TcpEntry::poll_mask` only supplies the two numbers.
@@ -32,6 +32,25 @@ pub fn tcp_is_writeable(queued: usize, sndbuf: usize) -> bool {
     if queued >= sndbuf { return false; }
     let wspace = sndbuf - queued;
     wspace >= queued / 2
+}
+
+/// `tcp_stream_memory_free`: the `TCP_NOTSENT_LOWAT` arm, an absolute cap on
+/// bytes the application has queued but the sender has not put on the wire.
+/// A socket that named a low watermark stays unwritable until the unsent
+/// backlog falls under it, which is what lets a writer keep exactly that much
+/// data buffered instead of filling the whole send buffer.
+/// # C: O(1)
+pub fn tcp_stream_memory_free(notsent: usize, lowat: u32) -> bool {
+    if lowat == u32::MAX { return true; }
+    notsent < lowat as usize
+}
+
+/// The whole write-readiness predicate: the relative watermark and the
+/// unsent-bytes cap must both hold. # C: O(1)
+pub fn tcp_writeable_with_lowat(queued: usize, sndbuf: usize, notsent: usize, lowat: u32)
+    -> bool
+{
+    tcp_is_writeable(queued, sndbuf) && tcp_stream_memory_free(notsent, lowat)
 }
 
 #[cfg(test)]
@@ -72,5 +91,25 @@ mod tests {
     #[test]
     fn zero_sndbuf_is_never_writeable() {
         assert!(!tcp_is_writeable(0, 0));
+    }
+
+    #[test]
+    fn the_default_low_watermark_never_withholds_writability() {
+        assert!(tcp_writeable_with_lowat(0, 16384, 16_000_000, u32::MAX));
+    }
+
+    #[test]
+    fn a_named_low_watermark_withholds_writability_until_the_backlog_drains() {
+        // The relative watermark alone would call this writable; the absolute
+        // unsent cap is what keeps the writer parked.
+        assert!(tcp_is_writeable(2048, 16384));
+        assert!(!tcp_writeable_with_lowat(2048, 16384, 2048, 1024));
+        assert!(tcp_writeable_with_lowat(2048, 16384, 1023, 1024));
+    }
+
+    #[test]
+    fn the_low_watermark_is_exclusive_at_its_own_value() {
+        assert!(!tcp_stream_memory_free(1024, 1024));
+        assert!(tcp_stream_memory_free(1023, 1024));
     }
 }

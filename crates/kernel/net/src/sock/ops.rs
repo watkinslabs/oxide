@@ -314,7 +314,13 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     let new_sock = InetSocket::from_accepted_tcp(sock, entry.clone());
     inherit_tcp_keepalive_opts(&new_sock, sock);
     inherit_tcp_oobinline(&new_sock, sock);
+    new_sock.opts.tcp.inherit(&sock.opts.tcp);
     apply_tcp_keepalive_opts(&new_sock, &entry);
+    {
+        let mut c = entry.conn.lock();
+        crate::sock_opts::sol_tcp::apply::to_conn(&new_sock.opts, &mut c);
+        crate::sock_opts::sol_tcp::apply::collect_saved_syn(&new_sock.opts, &mut c);
+    }
     // F180b: pin the peer slot for the family the listener was opened
     // in. v6 listeners only ever see v6 conns (deliver path keys by
     // IpAddr); same for v4.
