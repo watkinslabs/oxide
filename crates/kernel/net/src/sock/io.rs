@@ -1,11 +1,15 @@
 use super::*;
 
+/// The running task's sender credentials for an unsolicited AF_UNIX
+/// credential stamp: the REAL uid/gid, which is what a receiver reads back
+/// from `SCM_CREDENTIALS` (`SO_PEERCRED` is the effective-pair interface).
+/// # C: O(1)
 fn current_sender_creds() -> SenderCreds {
     match sched::live::current() {
         Some(t) => SenderCreds {
             pid: t.visible_pid(),
-            uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
-            gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
+            uid: t.creds.ruid.load(core::sync::atomic::Ordering::Acquire),
+            gid: t.creds.rgid.load(core::sync::atomic::Ordering::Acquire),
         },
         None => SenderCreds::default(),
     }
@@ -69,7 +73,8 @@ impl InetSocket {
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
             K::Unix(pair, end) => {
-                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns);
+                let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns, passcred);
                 if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
                 result
             }
@@ -145,7 +150,8 @@ impl InetSocket {
             // AF_UNIX SOCK_STREAM: drain what's queued; empty → EOF (peer closed
             // + drained) gives Ok(0), else EAGAIN. Never parks.
             K::Unix(pair, end) => {
-                let got = pair.read(end, buf.len());
+                let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let got = pair.read_passcred(end, buf.len(), passcred);
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);

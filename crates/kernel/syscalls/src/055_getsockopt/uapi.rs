@@ -56,3 +56,10 @@ pub(super) const TCP_INFO: u64 = 11;
 
 /// Linux default outbound multicast hop limit when `IPV6_MULTICAST_HOPS` is unset.
 pub(super) const IPV6_DEFAULT_MULTICAST_HOPS: i32 = 1;
+
+pub(super) const UDP_CORK: u64 = 1;
+pub(super) const UDP_ENCAP: u64 = 100;
+pub(super) const UDP_NO_CHECK6_TX: u64 = 101;
+pub(super) const UDP_NO_CHECK6_RX: u64 = 102;
+pub(super) const UDP_SEGMENT: u64 = 103;
+pub(super) const UDP_GRO: u64 = 104;

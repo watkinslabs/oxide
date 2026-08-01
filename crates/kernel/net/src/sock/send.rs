@@ -139,6 +139,13 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
         drain_loopback();
         return Ok(n);
     }
+    if matches!(*sock.kind.lock(), SockKind::Udp) {
+        // A corked datagram never reaches the builders below: the cork owns
+        // the destination and the accumulated bytes until it is pushed.
+        if let Some(n) = crate::sock_opts::sol_udp::emit::intercept(sock, &dest, payload)? {
+            return Ok(n);
+        }
+    }
     if let Some(RemoteAddr::Inet6 { ip, port, scope_id }) = dest {
         return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);
     }
