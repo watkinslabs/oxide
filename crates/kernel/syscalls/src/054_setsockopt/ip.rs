@@ -89,7 +89,7 @@ fn set_options(sock: &Arc<InetSocket>, optval: u64, optlen: u32) -> i64 {
     if optlen != 0 && uaccess::copy_from_user(&mut bytes, optval).is_err() {
         return errno(Errno::Efault);
     }
-    match ipset::admit_options(&bytes, super::sol_socket::caps_for(sock)) {
+    match ipset::admit_options(&bytes, super::sol_socket::caps_for(sock), sock.net_ns()) {
         Ok(action) => apply(sock, action),
         Err(e) => errno(e),
     }

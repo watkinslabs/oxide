@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use net::send_control::{Ipv4Options, SendControl};
+use net::send_control::SendControl;
 use crate::{Error, KResult};
 
 const CMSG_HDR_LEN: usize = 16;
@@ -31,7 +31,7 @@ fn i32_at(bytes: &[u8], at: usize) -> i32 { i32::from_ne_bytes(bytes[at..at + 4]
 fn u64_at(bytes: &[u8], at: usize) -> u64 { u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap()) }
 
 /// Parse native LP64 IP controls into one immutable transmit override. # C: O(control)
-pub fn parse_raw_control(control: &[u8], ipv6: bool, cap_net_raw: bool)
+pub fn parse_raw_control(control: &[u8], ipv6: bool, cap_net_raw: bool, net_ns: u64)
     -> KResult<SendControl>
 {
     let mut out = SendControl::default();
@@ -43,7 +43,7 @@ pub fn parse_raw_control(control: &[u8], ipv6: bool, cap_net_raw: bool)
         let kind = i32_at(control, off + 12);
         let data = &control[off + CMSG_HDR_LEN..off + len];
         if ipv6 && level == SOL_IPV6 { parse_v6(kind, data, cap_net_raw, &mut out)?; }
-        else if !ipv6 && level == SOL_IP { parse_v4(kind, data, cap_net_raw, &mut out)?; }
+        else if !ipv6 && level == SOL_IP { parse_v4(kind, data, cap_net_raw, net_ns, &mut out)?; }
         let aligned = len.checked_add(7).ok_or_else(|| Error::Einval)? & !7;
         let next = off.checked_add(aligned).ok_or_else(|| Error::Einval)?;
         if next > control.len() { break; }
@@ -51,7 +51,9 @@ pub fn parse_raw_control(control: &[u8], ipv6: bool, cap_net_raw: bool)
     }
     Ok(out)
 }
-fn parse_v4(kind: i32, data: &[u8], cap: bool, out: &mut SendControl) -> KResult<()> {
+fn parse_v4(kind: i32, data: &[u8], cap: bool, net_ns: u64, out: &mut SendControl)
+    -> KResult<()>
+{
     match kind {
         IP_PKTINFO => {
             if data.len() != 12 { return Err(Error::Einval); }
@@ -67,7 +69,8 @@ fn parse_v4(kind: i32, data: &[u8], cap: bool, out: &mut SendControl) -> KResult
         }
         IP_PROTOCOL => out.raw4.protocol = Some(parse_u8_int(data, 1)?),
         IP_RETOPTS => {
-            out.raw4.options = Some(parse_ip_options(&data[..data.len().min(IPV4_OPTION_MAX)], cap)?);
+            out.raw4.options =
+                Some(parse_ip_options(&data[..data.len().min(IPV4_OPTION_MAX)], cap, net_ns)?);
         }
         _ => return Err(Error::Einval),
     }
@@ -141,58 +144,11 @@ fn parse_routing(data: &[u8]) -> KResult<Vec<u8>> {
     Ok(data[..len].to_vec())
 }
 
-fn parse_ip_options(data: &[u8], cap: bool) -> KResult<Ipv4Options> {
-    let mut bytes = data.to_vec();
-    while bytes.len() & 3 != 0 { bytes.push(0); }
-    let mut first_hop = None;
-    let mut strict_route = false;
-    let mut have_route = false;
-    let mut have_rr = false;
-    let mut have_ts = false;
-    let mut off = 0usize;
-    while off < bytes.len() {
-        let kind = bytes[off];
-        if kind == 0 { for byte in &mut bytes[off..] { *byte = 0; } break; }
-        if kind == 1 { off += 1; continue; }
-        if off + 2 > bytes.len() { return Err(Error::Einval); }
-        let len = bytes[off + 1] as usize;
-        if len < 2 || off + len > bytes.len() { return Err(Error::Einval); }
-        if kind == 131 || kind == 137 {
-            if have_route || len < 7 || bytes[off + 2] != 4 || (len - 3) & 3 != 0 {
-                return Err(Error::Einval);
-            }
-            have_route = true;
-            first_hop = Some(net::Ipv4Addr::new(bytes[off + 3], bytes[off + 4], bytes[off + 5], bytes[off + 6]));
-            strict_route = kind == 137;
-            if len > 7 { bytes.copy_within(off + 7..off + len, off + 3); }
-        } else if kind == 7 {
-            if have_rr || len < 3 || bytes[off + 2] < 4
-                || (bytes[off + 2] as usize <= len && bytes[off + 2] as usize + 3 > len)
-            { return Err(Error::Einval); }
-            have_rr = true;
-        } else if kind == 68 {
-            if have_ts || len < 4 || bytes[off + 2] < 5 { return Err(Error::Einval); }
-            let pointer = bytes[off + 2] as usize;
-            let mode = bytes[off + 3] & 0x0f;
-            if pointer <= len {
-                if pointer + 3 > len { return Err(Error::Einval); }
-                match mode {
-                    0 => {}
-                    1 => {
-                        if pointer + 7 > len { return Err(Error::Einval); }
-                    }
-                    3 => if pointer + 7 > len { return Err(Error::Einval); },
-                    _ => if !cap { return Err(Error::Einval); },
-                }
-            } else if mode != 3 && bytes[off + 3] >> 4 == 15 {
-                return Err(Error::Einval);
-            }
-            have_ts = true;
-        } else if kind == 148 {
-            if len < 4 { return Err(Error::Einval); }
-        } else if !cap { return Err(Error::Einval); }
-        off += len;
-    }
-    if have_route && !cap { return Err(Error::Eperm); }
-    Ok(Ipv4Options { bytes, first_hop, strict_route })
+/// The `IP_OPTIONS` control message enters the same compile pass the
+/// socket-level option does, so one message and one `setsockopt` produce the
+/// identical compiled area. # C: O(optlen)
+fn parse_ip_options(data: &[u8], cap: bool, net_ns: u64)
+    -> KResult<net::sock_opts::sol_ip::options::Compiled>
+{
+    net::ipv4_options::build_control(data, cap, net_ns).map_err(Error::from)
 }
