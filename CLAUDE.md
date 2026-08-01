@@ -286,6 +286,21 @@ one-line fix", no emergency path.
 - Opening or merging the PR is the integration owner's call, not the working agent's.
   Push the branch and report. See the merge-authority rule in the claim-work section.
 
+## NEVER `git stash` (HARD RULE)
+
+**The stash stack is SHARED across every worktree of a clone.** With several lanes
+running at once, `git stash` / `git stash pop` is a cross-lane data race: one lane's
+`pop` takes another lane's stash. This has already happened — 16 unrelated files
+landed in the wrong worktree while the owner's tracked edits vanished, recovered only
+via `git fsck` dangling commits.
+
+- Park work-in-progress with a **temporary commit on your own branch**
+  (`git commit -m wip`, later `git reset --soft HEAD~1`). Commits are per-branch;
+  the stash stack is not.
+- `git stash list` entries you did not create are someone else's live work. Do not
+  pop, drop, or clear them.
+- This applies to every stash form, including `git stash -u` and `git stash push <path>`.
+
 ## NEVER `git add -A` (HARD RULE)
 
 **Never run `git add -A`, `git add .`, `git commit -a`, or any other stage-everything
