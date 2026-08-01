@@ -22,11 +22,12 @@ pub fn apply_offset(mono_ns: u64, offset: u64) -> u64 {
     mono_ns.wrapping_add(offset)
 }
 
-/// Linux `CLK_TCK` is fixed at 100 Hz on glibc x86_64 / aarch64.
-/// /proc/<pid>/stat utime/stime + sys_times return ticks at this
-/// rate. Convert ns → ticks.
+/// ns → `clock_t` ticks at `USER_HZ`, the rate `times(2)` and
+/// `/proc/<pid>/stat`'s utime/stime report and `AT_CLKTCK` advertises. The
+/// divisor is owned by `syscall::rusage` so the auxv entry userspace divides
+/// by and the numbers this kernel reports cannot disagree.
 /// # C: O(1)
-pub fn ns_to_clk_tck(ns: u64) -> u64 { ns / 10_000_000 }
+pub fn ns_to_clk_tck(ns: u64) -> u64 { syscall::rusage::ns_to_clock_t(ns) }
 
 /// Split a wall-clock ns count into `(sec, nsec)` per timespec.
 /// # C: O(1)

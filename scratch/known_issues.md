@@ -51,3 +51,9 @@ Rows found by B1649 (`add_key`/`request_key`/`keyctl`). Retired rows: `fixed-iss
 | OPEN | med | `fork_keys` / `exec_keys` are verified by build and inspection only. Their call sites are in kernel-gated files (`056_clone.rs`, `exec_transition.rs`) with no extractable decision logic, so no hosted test proves either hook actually fires. `exit_keys` IS covered. Same phantom-test class as the `sock_v6.rs` row above. | B1649. | — |
 | OPEN | low | No `/proc/sys/kernel/keys/gc_delay`. Deliberate: `Store::collect()` runs inline with no delay timer, so the knob would gate nothing — and a sysctl that reads back but changes no behaviour is the defect class this project bans. Add the knob only when a deferred gc exists. | B1649, negative result. | — |
 | OPEN | low | A named session keyring is NOT joinable by default, including by its own owner: `find_keyring_by_name` checks Search WITHOUT possession, and the mask a named keyring is created with grants View/Read/Link only. So `keyctl session <name>` twice yields two distinct keyrings unless the owner widens the mask first. This matches the reference and is test-pinned, but it is surprising enough that a future lane will read it as a bug. | B1649, `a_named_join_without_search_permission_creates_rather_than_joins`. | — |
+
+## Process accounting
+
+| Status | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|
+| OPEN | low | `ru_utime`/`ru_stime` and `times(2)`'s `tms_utime`/`tms_stime` are tick-sampled per-task counters, not the scaled pair upstream derives so that user+system exactly equals the task's total run time. The two can therefore differ from `sum_exec_runtime` by up to a tick per thread. Deliberate: the sampled values are the more direct measurement and no known consumer depends on the identity. Revisit if a benchmark or a `getrusage`-based profiler reports the discrepancy. | F779, negative result — no test asserts the identity because it does not hold. | — |

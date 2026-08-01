@@ -44,7 +44,35 @@ pub const IO_BLOCK_SHIFT: u32 = 9;
 /// `getrusage(2)` accepts only these three; anything else is `EINVAL`
 /// (`RUSAGE_BOTH` included — it never reaches userspace). # C: O(1)
 pub const fn getrusage_who_valid(who: i32) -> bool {
-    who == RUSAGE_SELF || who == RUSAGE_CHILDREN || who == RUSAGE_THREAD
+    getrusage_source(who).is_some()
+}
+
+/// Which set of counters a `getrusage(2)` `who` names.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum RusageSource {
+    /// `RUSAGE_SELF`: the whole thread group — every live thread plus the
+    /// residue of every thread that already exited.
+    ThreadGroup,
+    /// `RUSAGE_THREAD`: the calling thread alone. `ru_maxrss` still comes from
+    /// the process, since the resident set is a property of the shared mm.
+    Thread,
+    /// `RUSAGE_CHILDREN`: what the process accumulated from children it has
+    /// terminated AND waited for, each folded with that child's own children.
+    ReapedChildren,
+}
+
+/// Resolve `who` to its counter set, `None` for the `EINVAL` cases. Named
+/// rather than open-coded at the syscall slot because the slot is
+/// `target_os = "oxide-kernel"`-gated and cannot be tested: a catch-all arm
+/// there would silently answer `RUSAGE_SELF` for an unvalidated selector.
+/// # C: O(1)
+pub const fn getrusage_source(who: i32) -> Option<RusageSource> {
+    match who {
+        RUSAGE_SELF     => Some(RusageSource::ThreadGroup),
+        RUSAGE_THREAD   => Some(RusageSource::Thread),
+        RUSAGE_CHILDREN => Some(RusageSource::ReapedChildren),
+        _               => None,
+    }
 }
 
 /// Byte count → 512-byte block-I/O operation count. # C: O(1)
@@ -116,6 +144,25 @@ fn put(b: &mut [u8; RUSAGE_BYTES], off: usize, v: u64) {
 /// `sizeof(struct tms)` — four `clock_t`, which is `long` on both LP64 arches.
 pub const TMS_BYTES: usize = 32;
 
+/// `USER_HZ` — the rate `times(2)`, `/proc/<pid>/stat` and `/proc/uptime`
+/// denominate `clock_t` in, and the value `sysconf(_SC_CLK_TCK)` reads out of
+/// `AT_CLKTCK`. Fixed at 100 on both supported LP64 arches.
+///
+/// Owned here, in the ABI crate every producer can reach, because the four
+/// consumers must agree by construction: the auxv entry userspace divides by,
+/// the `times(2)` conversion, `/proc/<pid>/stat`'s utime/stime, and
+/// `/proc/uptime`'s centiseconds. A divisor open-coded per call site is a
+/// split source of truth whose only symptom is userspace's arithmetic being
+/// quietly wrong.
+pub const USER_HZ: u64 = 100;
+
+/// Nanoseconds per `USER_HZ` tick.
+pub const NS_PER_USER_TICK: u64 = 1_000_000_000 / USER_HZ;
+
+/// Nanoseconds → `clock_t` ticks, truncating, exactly as `nsec_to_clock_t`
+/// does. Every `clock_t` this kernel reports goes through here. # C: O(1)
+pub const fn ns_to_clock_t(ns: u64) -> u64 { ns / NS_PER_USER_TICK }
+
 /// `times(2)` in clock ticks: the calling PROCESS's user/system CPU time, and
 /// its reaped children's. `tms_utime`/`tms_stime` cover the whole thread group
 /// (Linux `thread_group_cputime_adjusted`), not the calling thread.
@@ -167,6 +214,21 @@ mod tests {
         assert!(!getrusage_who_valid(RUSAGE_BOTH));
         assert!(!getrusage_who_valid(2));
         assert!(!getrusage_who_valid(i32::MIN));
+    }
+
+    /// Each accepted `who` names a DIFFERENT counter set. A catch-all arm at
+    /// the syscall slot would answer `RUSAGE_SELF` for anything unrecognised,
+    /// which is exactly the shape that turns a future selector into silently
+    /// wrong data instead of `EINVAL`.
+    #[test]
+    fn each_accepted_who_selects_its_own_counter_set() {
+        assert_eq!(getrusage_source(RUSAGE_SELF), Some(RusageSource::ThreadGroup));
+        assert_eq!(getrusage_source(RUSAGE_THREAD), Some(RusageSource::Thread));
+        assert_eq!(getrusage_source(RUSAGE_CHILDREN), Some(RusageSource::ReapedChildren));
+        assert_eq!(getrusage_source(RUSAGE_BOTH), None, "kernel-internal, never from userspace");
+        for who in [2, 3, -3, i32::MIN, i32::MAX] {
+            assert_eq!(getrusage_source(who), None, "who {who}");
+        }
     }
 
     #[test]
@@ -239,6 +301,41 @@ mod tests {
         // tick count, so a NULL pointer must skip the copy-out, not EFAULT.
         assert!(!times_wants_tms(0));
         assert!(times_wants_tms(0x7fff_0000));
+    }
+
+    /// `AT_CLKTCK` is what glibc's `sysconf(_SC_CLK_TCK)` returns, and every
+    /// `clock_t` this kernel reports must be in that unit — a mismatch makes
+    /// userspace's `ticks / sysconf(_SC_CLK_TCK)` silently wrong rather than
+    /// failing. One constant, one divisor.
+    #[test]
+    fn clock_t_is_denominated_in_the_user_hz_the_auxv_advertises() {
+        assert_eq!(USER_HZ, 100);
+        assert_eq!(NS_PER_USER_TICK * USER_HZ, 1_000_000_000);
+        assert_eq!(ns_to_clock_t(1_000_000_000), USER_HZ, "one second is USER_HZ ticks");
+    }
+
+    /// `nsec_to_clock_t` truncates: a partial tick is not reported until it
+    /// completes, so `times(2)` is monotonic and never rounds a process's CPU
+    /// time up past what it actually consumed.
+    #[test]
+    fn the_tick_conversion_truncates_rather_than_rounding() {
+        assert_eq!(ns_to_clock_t(0), 0);
+        assert_eq!(ns_to_clock_t(NS_PER_USER_TICK - 1), 0);
+        assert_eq!(ns_to_clock_t(NS_PER_USER_TICK), 1);
+        assert_eq!(ns_to_clock_t(2 * NS_PER_USER_TICK - 1), 1);
+        assert_eq!(ns_to_clock_t(3_250_000_000), 325);
+    }
+
+    /// `times(2)` returns ticks since boot as an unsigned count that the
+    /// syscall path forces successful. At `USER_HZ` a 64-bit ns source cannot
+    /// produce a tick count that collides with the errno window, so the only
+    /// wraparound that could is the ns counter's own — hundreds of years out.
+    #[test]
+    fn the_tick_count_since_boot_never_reaches_the_errno_window() {
+        assert_eq!(ns_to_clock_t(u64::MAX), u64::MAX / NS_PER_USER_TICK);
+        assert!(ns_to_clock_t(u64::MAX) < i64::MAX as u64,
+            "the widest possible monotonic sample still encodes as a positive clock_t");
+        assert!(!times_return_is_error(ns_to_clock_t(u64::MAX) as i64));
     }
 
     #[test]
