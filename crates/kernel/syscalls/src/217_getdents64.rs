@@ -185,7 +185,7 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
     let self_ino = inode.ino();
     let parent_ino = file.dentry().parent()
         .and_then(|p| p.inode()).map(|i| i.ino()).unwrap_or(self_ino);
-    let (r, new_off) = vfs::readdir_dots(&inode, self_ino, parent_ino, start, &mut actor);
+    let (r, new_off) = vfs::readdir_dots(&file, self_ino, parent_ino, start, &mut actor);
     let iter_err = r.as_ref().err().map(|e| *e as i32);
 
     #[cfg(feature = "debug-getdents")]

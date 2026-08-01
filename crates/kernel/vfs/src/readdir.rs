@@ -14,7 +14,6 @@
 
 use crate::dirent::{DType, DOTS_RESERVED, emit_dots};
 use crate::file_ops::{DirContext, DirEmit};
-use crate::inode::InodeRef;
 use crate::types::{FileType, KResult};
 
 /// Forwarding actor that shifts a backend's child cookies past the two reserved
@@ -36,7 +35,8 @@ impl DirEmit for DotShift<'_> {
     }
 }
 
-/// Drive one `getdents` pass over `inode` starting at readdir cursor `start`,
+/// Drive one `getdents` pass over the open description `file` starting at
+/// readdir cursor `start`,
 /// synthesising `.` (ino `self_ino`) and `..` (ino `parent_ino`) unless the
 /// backend supplies its own. Returns the backend's result and the resume cursor
 /// to store in `file->f_pos`.
@@ -44,11 +44,12 @@ impl DirEmit for DotShift<'_> {
 /// For a filesystem root Linux makes `..` resolve back to the root, so the
 /// caller passes `parent_ino == self_ino` there.
 /// # C: O(N_dirents)
-pub fn readdir_dots(inode: &InodeRef, self_ino: u64, parent_ino: u64, start: u64,
+pub fn readdir_dots(file: &crate::File, self_ino: u64, parent_ino: u64, start: u64,
                     actor: &mut dyn DirEmit) -> (KResult<()>, u64) {
+    let inode = file.inode();
     if inode.dir_emits_dots() {
         let mut ctx = DirContext::new(start, actor);
-        let r = inode.readdir(&mut ctx);
+        let r = file.iterate_dir(&mut ctx);
         return (r, ctx.pos);
     }
     let mut pos = start;
@@ -64,6 +65,6 @@ pub fn readdir_dots(inode: &InodeRef, self_ino: u64, parent_ino: u64, start: u64
     }
     let mut shift = DotShift { inner: actor };
     let mut ctx = DirContext::new(pos - DOTS_RESERVED, &mut shift);
-    let r = inode.readdir(&mut ctx);
+    let r = file.iterate_dir(&mut ctx);
     (r, ctx.pos + DOTS_RESERVED)
 }

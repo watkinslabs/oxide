@@ -68,7 +68,7 @@ fn listing() -> (Arc<ext4::rootfs::Ext4Mount>, vfs::InodeRef, Sink) {
     dir.create_child("file", 0o644, &vfs::inode_ops::CreateCtx::root()).expect("create");
     dir.symlink_child("link", b"file", &vfs::inode_ops::CreateCtx::root()).expect("symlink");
     let mut sink = Sink::new();
-    let (r, _end) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), 0, &mut sink);
+    let (r, _end) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), 0, &mut sink);
     r.expect("readdir");
     (m, dir, sink)
 }
@@ -76,6 +76,13 @@ fn listing() -> (Arc<ext4::rootfs::Ext4Mount>, vfs::InodeRef, Sink) {
 /// The on-disk `file_type` byte is decoded per entry: a directory reports
 /// `DT_DIR`, a symlink `DT_LNK`, a regular file `DT_REG`. `mini.img` has
 /// `EXT4_FEATURE_INCOMPAT_FILETYPE`, so nothing is `DT_UNKNOWN`.
+/// The open description a `getdents` call carries. `readdir_dots` takes the
+/// `struct file`, not the inode, because Linux `iterate_shared` does — a
+/// backend with per-open cursor state (FUSE) needs it.
+fn dirfile(inode: &vfs::InodeRef) -> alloc::sync::Arc<vfs::File> {
+    vfs::File::new(inode.clone(), vfs::Dentry::new_root(inode.clone()), vfs::OpenFlags::O_RDONLY)
+}
+
 #[test]
 fn ext4_reports_the_on_disk_d_type_per_entry() {
     let (_m, _dir, sink) = listing();
@@ -135,7 +142,7 @@ fn d_off_cookies_resume_at_the_next_entry() {
 
     for split in 0..full.len() {
         let mut rest = Sink::new();
-        let (r, _) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), all.recs[split].next, &mut rest);
+        let (r, _) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), all.recs[split].next, &mut rest);
         r.expect("readdir resume");
         assert_eq!(rest.names(), full[split + 1..], "resume from {}", all.recs[split].next);
     }
@@ -154,7 +161,7 @@ fn paginated_listing_is_complete_and_duplicate_free() {
     let mut pos = 0u64;
     loop {
         let mut page = Sink::capped(2);
-        let (r, end) = vfs::readdir_dots(&dir, dir.ino(), root.ino(), pos, &mut page);
+        let (r, end) = vfs::readdir_dots(&dirfile(&dir), dir.ino(), root.ino(), pos, &mut page);
         r.expect("readdir page");
         if page.recs.is_empty() { break; }
         seen.extend(page.names());
