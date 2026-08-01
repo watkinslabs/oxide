@@ -7,15 +7,25 @@ use std::path::{Path, PathBuf};
 use crate::{read, walk, Findings};
 
 mod klog;
+mod magic_errno;
+mod scope;
 use klog::check_klog_ungated;
+use magic_errno::check_magic_errno;
 
 pub fn run(root: &Path, f: &mut Findings) {
     let ext_gated = build_externally_gated_map(root);
+    let dev_only = scope::dev_only_crate_dirs(root);
+    let test_roots = scope::test_gated_roots(root);
     for sub in &["crates", "kernel"] {
         let d = root.join(sub);
         if !d.is_dir() { continue; }
         let files = walk::files_with_ext(&d, "rs", &["target"]);
-        for p in files { lint_file(&p, &ext_gated, f); }
+        for p in files {
+            // A crate no kernel binary links cannot break a kernel-binary rule.
+            if dev_only.iter().any(|c| p.starts_with(c)) { continue; }
+            let gated = test_roots.iter().any(|s| scope::under_module_root(&p, s));
+            lint_file(&p, gated, &ext_gated, f);
+        }
     }
 }
 
@@ -80,90 +90,28 @@ fn parse_file_mod(t: &str) -> Option<String> {
     Some(name)
 }
 
-fn lint_file(path: &PathBuf, ext_gated: &HashSet<PathBuf>, f: &mut Findings) {
+fn lint_file(path: &PathBuf, test_gated: bool, ext_gated: &HashSet<PathBuf>, f: &mut Findings) {
     let text = read(path);
     let lines: Vec<&str> = text.lines().collect();
-    let is_test = is_test_file(path);
-    let is_root = is_crate_root(path);
+    let is_test = test_gated || is_test_file(path);
+    let is_root = scope::is_crate_root(path);
+    // Lines no kernel build compiles: `#[cfg(test)]` items and
+    // `#[cfg(not(target_os = "oxide-kernel"))]` items. `docs/07§5` scopes these
+    // rules to the kernel BINARY, and the whole-file `tests/` skip below is the
+    // same judgement already applied at path granularity.
+    let off_kernel: Vec<bool> = if is_test { vec![true; lines.len()] } else { scope::non_kernel_mask(&lines) };
 
     if is_root { check_no_std(path, &lines, f); }
-    check_extern_std(path, &lines, f);
+    check_extern_std(path, &lines, &off_kernel, f);
     if !is_test { check_static_mut(path, &text, &lines, f); }
-    check_panic_fmt(path, &lines, f);
+    check_panic_fmt(path, &lines, &off_kernel, f);
     if !is_test { check_unsafe_safety(path, &lines, f); }
     if !is_test { check_pub_fn_complexity(path, &lines, f); }
     if !is_test && !is_klog_crate(path) && !ext_gated.contains(path) {
         check_klog_ungated(path, &lines, f);
     }
     if !is_test { check_no_dyn_hal(path, &lines, f); }
-    if !is_test { check_magic_errno(path, &lines, f); }
-}
-
-/// Per docs/07§5 / R04: ABI-meaning fields (`*_eno` / `*_errno` /
-/// `*_signo` / `*_slot`) and the assigned errno values they hold
-/// must come from a typed enum, not bare integer literals. Pattern:
-/// `<ident>_eno = <int>;` (also _errno, _signo, _slot). Allows
-/// `= 0` (cleared / not-an-error sentinel) and named constants.
-/// # C: O(lines)
-fn check_magic_errno(path: &Path, lines: &[&str], f: &mut Findings) {
-    let p_str = path.to_string_lossy();
-    // Errno enum itself defines the numeric values — exempt.
-    if p_str.contains("syscall/src/errno.rs") { return; }
-    for (i, l) in lines.iter().enumerate() {
-        let t = strip_line_comment(l).trim();
-        // Match `<base>_<suffix> = <digits>;` where suffix flags an
-        // ABI-meaning slot. Tolerate whitespace + trailing comma/semi.
-        for suffix in ["_eno", "_errno", "_signo", "_slot"] {
-            if let Some(eq) = t.find(suffix) {
-                let after = t[eq + suffix.len()..].trim_start();
-                if !after.starts_with('=') { continue; }
-                let val = after[1..].trim();
-                // Strip trailing `;` `,` `)` etc.
-                let v = val.trim_end_matches(|c: char| c == ';' || c == ',' || c == ')').trim();
-                // Accept: `0` (clear), `Errno::*`, named const (UPPER_SNAKE), unrelated rhs (.read()/etc).
-                if v == "0" { continue; }
-                if v.starts_with("Errno::") || v.starts_with("syscall::errno::") { continue; }
-                if v.starts_with("Signum::") { continue; }
-                if v.starts_with("NR_") { continue; }
-                // Identifier-only rhs (function call, field load, named const) is fine.
-                if v.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') { continue; }
-                // Bare integer or hex literal — fail.
-                if v.chars().all(|c| c.is_ascii_digit() || c == 'x' || c == '_' || c.is_ascii_hexdigit()) {
-                    f.push(path, i + 1, "code/magic-errno",
-                        format!("`{}` assigned bare integer `{}` — use Errno::* / Signum::* / NR_* (07§5)", suffix, v));
-                }
-            }
-        }
-        // Comparisons are ABI-significant too; reject a second truth such as
-        // `if signo == 9` instead of requiring the typed signal/errno name.
-        for marker in ["errno", "signo", "_slot"] {
-            if !t.contains(marker) { continue; }
-            // Struct/object initializers carry the same ABI meaning as an
-            // assignment (`SigInfo { signo: 9 }`).
-            if marker != "_slot" {
-                let Some(pos) = t.find(':') else { continue; };
-                let rhs = t[pos + 1..].trim_start();
-                let v = rhs.trim_end_matches(|c: char| ",;)]}".contains(c)).trim();
-                if !v.is_empty() && !v.starts_with("Errno::") && !v.starts_with("Signum::")
-                    && !v.starts_with("syscall::errno::") && !v.starts_with("NR_")
-                    && v.chars().all(|c| c.is_ascii_digit() || c == 'x' || c == '_' || c.is_ascii_hexdigit()) {
-                    f.push(path, i + 1, "code/magic-errno",
-                        format!("`{}` initialized with bare integer `{}` — use the typed ABI constant (07§5)", marker, v));
-                }
-            }
-            for op in ["==", "!=", ">=", "<=", ">", "<"] {
-                let Some(pos) = t.find(op) else { continue; };
-                let rhs = t[pos + op.len()..].trim_start();
-                let v = rhs.trim_end_matches(|c: char| ",;)]}".contains(c)).trim();
-                if v.is_empty() || v.starts_with("Errno::") || v.starts_with("Signum::")
-                    || v.starts_with("syscall::errno::") || v.starts_with("NR_") { continue; }
-                if v.chars().all(|c| c.is_ascii_digit() || c == 'x' || c == '_' || c.is_ascii_hexdigit()) {
-                    f.push(path, i + 1, "code/magic-errno",
-                        format!("`{}` compared against bare integer `{}` — use the typed ABI constant (07§5)", marker, v));
-                }
-            }
-        }
-    }
+    if !is_test { check_magic_errno(path, &lines, &off_kernel, f); }
 }
 
 fn is_klog_crate(path: &Path) -> bool {
@@ -180,13 +128,6 @@ fn is_test_file(path: &Path) -> bool {
     matches!(path.file_name().and_then(|n| n.to_str()), Some("tests.rs"))
 }
 
-fn is_crate_root(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|n| n.to_str()),
-        Some("lib.rs") | Some("main.rs")
-    )
-}
-
 fn check_no_std(path: &Path, lines: &[&str], f: &mut Findings) {
     let ok = lines.iter().any(|l| {
         let t = l.trim();
@@ -198,22 +139,17 @@ fn check_no_std(path: &Path, lines: &[&str], f: &mut Findings) {
     }
 }
 
-fn check_extern_std(path: &Path, lines: &[&str], f: &mut Findings) {
+/// `docs/07§5`: "`extern crate std` in any kernel binary → fail". `off_kernel`
+/// carries the cfg scope, so an `extern crate std` INSIDE a `#[cfg(test)] mod
+/// tests { … }` block or under `#[cfg(not(target_os = "oxide-kernel"))]` passes
+/// — no kernel binary contains it. The old check only looked at the single
+/// preceding line, so the common form (the declaration a few lines into a test
+/// module) read as unguarded: 16 of its 18 findings were that false positive.
+fn check_extern_std(path: &Path, lines: &[&str], off_kernel: &[bool], f: &mut Findings) {
     for (i, l) in lines.iter().enumerate() {
         if !l.trim_start().starts_with("extern crate std") { continue; }
-        // Permitted only when guarded by `#[cfg(test)]` on the immediately
-        // preceding non-blank line. Anywhere else = build fail.
-        let mut back = 1;
-        let mut guarded = false;
-        while i >= back {
-            let prev = lines[i - back].trim_start();
-            if prev.is_empty() { back += 1; continue; }
-            guarded = prev.starts_with("#[cfg(test)]") || prev.starts_with("#[cfg(any(test");
-            break;
-        }
-        if !guarded {
-            f.push(path, i + 1, "code/extern-std", "`extern crate std` forbidden in kernel crate");
-        }
+        if off_kernel.get(i).copied().unwrap_or(false) { continue; }
+        f.push(path, i + 1, "code/extern-std", "`extern crate std` forbidden in kernel crate");
     }
 }
 
@@ -265,8 +201,15 @@ fn is_static_mut_item(s: &str) -> bool {
     false
 }
 
-fn check_panic_fmt(path: &Path, lines: &[&str], f: &mut Findings) {
+/// `docs/07§5`: `kassert!(cond, "literal")` only, no `panic!(fmt)` — the rule
+/// exists because kernel profiles are `panic="abort"` with statically interned
+/// panic strings. Host test code has neither property, and every `assert_eq!`
+/// in the tree already expands to exactly the formatted panic this forbids, so
+/// enforcing it there flagged 110 of 113 sites for a rule the surrounding
+/// `assert!` macros break on the adjacent line.
+fn check_panic_fmt(path: &Path, lines: &[&str], off_kernel: &[bool], f: &mut Findings) {
     for (i, l) in lines.iter().enumerate() {
+        if off_kernel.get(i).copied().unwrap_or(false) { continue; }
         let t = strip_line_comment(l);
         // crude: panic!(...{...) — format-string call.
         if let Some(idx) = t.find("panic!(") {
