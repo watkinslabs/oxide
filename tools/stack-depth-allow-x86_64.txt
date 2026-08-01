@@ -42,7 +42,28 @@
 # superblock, and the resulting temporary made superblock teardown appear to
 # re-enter itself. A dquot does not own its superblock, so the teardown path
 # now passes the borrowed one it already holds.
-19936	_start
-19920	_start_rust
-19776	kmain::kmain::entry::kernel_main
-16576	kmain::kmain::rootfs::init
+#
+# B1638 raised each of these by 64 B. Measured, not estimated: `Task` grew
+# 3624 -> 3656 B (+32) across the ptrace/prctl/arch_prctl/personality work, and
+# the boot chain materialises a `Task` in TWO frames on the same path (the idle
+# task's construction and the runqueue install above it), so a +32 struct shows
+# up as +64 on each recorded root. This is the same shape as the F774 entry
+# above, which split its +192 the same way.
+#
+# The +32 is eight new per-task fields, each one a value some syscall now
+# CONSUMES rather than merely stores: `nocpuid` (ARCH_SET_CPUID), `shstk_features`
+# and `shstk_locked` (the CET facility set and its lock), `tsc_sigsegv`
+# (PR_SET_TSC's CR4.TSD trap), `tagged_addr` (arm64 PR_SET_TAGGED_ADDR_CTRL),
+# `jobctl` (the group-stop / PTRACE_LISTEN latch), and the two `Lazy` handles for
+# the x86 and arm64 hardware debug-register shadows. The debug-register shadows
+# are deliberately behind `Lazy` — inline they would have been hundreds of bytes
+# per task and would have pushed the aarch64 syscall path over its ceiling, which
+# has no allowlist to absorb it.
+#
+# `ContextX86_64` also grew 0x40 -> 0x48 for the user `gs_base` the swapgs
+# conversion introduced; it is embedded in `Task` and is part of the +32 above,
+# not a separate charge.
+20000	_start
+19984	_start_rust
+19840	kmain::kmain::entry::kernel_main
+16640	kmain::kmain::rootfs::init

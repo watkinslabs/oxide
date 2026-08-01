@@ -61,7 +61,7 @@ pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use io_context::current_ioprio;
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;
-pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use sigwake::{SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
@@ -600,6 +600,21 @@ pub struct Task {
 
     /// PTRACE_SINGLESTEP arm bit (RFLAGS.TF x86; MDSCR_EL1.SS+SPSR.SS arm).
     pub singlestep: AtomicU32,
+
+    /// Linux `TIF_NOCPUID` — `arch_prctl(ARCH_SET_CPUID, 0)` armed user-mode
+    /// `cpuid` faulting for this thread. Per-THREAD, not per-CPU: the switch
+    /// path programs the vendor MSR whenever the incoming task's bit differs
+    /// from the outgoing one, exactly as `__switch_to_xtra` does. Inherited
+    /// across fork, cleared at exec (`arch_setup_new_exec`).
+    pub nocpuid: AtomicBool,
+
+    /// Linux `thread.features` / `thread.features_locked` — the CET
+    /// shadow-stack facilities (`ARCH_SHSTK_SHSTK`, `ARCH_SHSTK_WRSS`) this
+    /// thread has enabled, and those whose state may no longer change.
+    /// `ARCH_SHSTK_STATUS` reports the first; `ARCH_SHSTK_LOCK` sets the
+    /// second. Both reset at exec (`reset_thread_features`).
+    pub shstk_features: AtomicU64,
+    pub shstk_locked: AtomicU64,
     /// F206 aarch64 per-task SVC-frame ptr; deliver_arm reads here.
     #[cfg(target_arch = "aarch64")]
     pub svc_frame: core::sync::atomic::AtomicU64,
@@ -665,6 +680,23 @@ pub struct Task {
     /// allowed by Linux; we mirror that.
     pub no_new_privs: AtomicBool,
 
+    /// Linux `TIF_NOTSC` (`prctl(PR_SET_TSC, PR_TSC_SIGSEGV)`) — this task
+    /// may not read the time-stamp counter. Per-THREAD, not per-process.
+    /// Consumed by the x86_64 arm of `schedule()`, which drives `CR4.TSD`
+    /// from it on every switch so a trapped `rdtsc` raises `#GP` and the
+    /// user-fault path turns that into SIGSEGV. Inherited across fork and
+    /// preserved by execve (`flush_thread` does not clear the flag).
+    /// aarch64 has no equivalent control; the option is x86-only there.
+    pub tsc_sigsegv: AtomicBool,
+
+    /// Linux arm64 `TIF_TAGGED_ADDR` (`prctl(PR_SET_TAGGED_ADDR_CTRL,
+    /// PR_TAGGED_ADDR_ENABLE)`) — this task's user pointers may carry a
+    /// non-zero top byte. Consumed by the aarch64 user-pointer validator,
+    /// which strips the tag before the range check exactly as Linux's
+    /// `access_ok` calls `untagged_addr`. Per-THREAD, inherited across fork,
+    /// and cleared by execve.
+    pub tagged_addr: AtomicBool,
+
     /// Linux `mm->flags SUID_DUMP_*` (`prctl(PR_SET_DUMPABLE/GET_DUMPABLE)`):
     /// DISABLE(0)/USER(1)/ROOT(2). Gates core dumps, ptrace, `/proc/pid/mem`
     /// ownership. Per-task (v1: mm not yet shared cross-thread, so no
@@ -674,7 +706,13 @@ pub struct Task {
     /// `PR_SET_THP_DISABLE`/`GET_THP_DISABLE` — Linux's two `mm` flags
     /// `MMF_DISABLE_THP_COMPLETELY` / `MMF_DISABLE_THP_EXCEPT_ADVISED`,
     /// encoded as `THP_DISABLE_*` here because they are mutually exclusive.
-    /// Round-trip bookkeeping only — v1 has no THP allocator to gate.
+    /// Inert by construction, not by omission: there is no transparent-huge-
+    /// page allocator or collapse path in this kernel for the flag to gate,
+    /// the same position as a Linux built without huge-page support, where the
+    /// prctl still round-trips. Its consumer belongs next to the
+    /// `thp_vma_allowable_order` equivalent when that path lands, with
+    /// `/proc/<pid>/smaps` deriving `THPeligible` from it rather than
+    /// hard-coding 0.
     pub thp_disable: AtomicU8,
 
     /// Per-task timer-slack value in nanoseconds, controlled by
@@ -688,7 +726,10 @@ pub struct Task {
     pub default_timer_slack_ns: AtomicU64,
 
     /// Linux `PF_MCE_PROCESS` | `PF_MCE_EARLY` (`prctl(PR_MCE_KILL)`),
-    /// packed as `MCE_KILL_PROCESS` / `MCE_KILL_EARLY`.
+    /// packed as `MCE_KILL_PROCESS` / `MCE_KILL_EARLY`. Consumed by
+    /// `memory_failure`'s early-kill decision upstream; there is no machine-
+    /// check or hwpoison subsystem here, so nothing reads it yet and its
+    /// consumer belongs with the poison bookkeeping when that lands.
     pub mce_kill: AtomicU8,
 
     /// `PR_SET_PDEATHSIG` — signal delivered to this task when its
@@ -741,6 +782,27 @@ pub struct Task {
     /// `SIGTRAP | 0x80`. `syscall::ptrace` composes and decodes it; the wait
     /// status is `syscall::wait::stopped_wstatus(stop_code)`.
     pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_code: AtomicU32,
+    /// Per-task hardware debug-register shadow: DR0-DR3 addresses, then the
+    /// DR6 status and DR7 control. Installed into hardware by the context
+    /// switch when armed and read/written by `PTRACE_PEEKUSER`/`POKEUSER` on
+    /// the `u_debugreg` window. Arch-neutral storage; the bit contract belongs
+    /// to the HAL (`debugreg::x86`).
+    ///
+    /// LAZY: one pointer, null until a breakpoint is actually armed. `Task` is
+    /// built on the boot stack and the deepest aarch64 syscall path runs within
+    /// single-digit bytes of the stack ceiling, so an inline register file here
+    /// is a stack-budget regression rather than merely wasted memory.
+    pub debugregs: crate::debugreg::slab::Lazy<crate::debugreg::Shadow>,
+    /// aarch64 per-task hardware breakpoint / watchpoint register file — up to
+    /// 16 breakpoint plus 16 watchpoint slots, so LAZY for the same
+    /// stack-budget reason as `debugregs` above. Same single-mutator discipline
+    /// as `fpu_state` (`13§5`) once allocated: the owning task on its own CPU,
+    /// or a tracer while the tracee is ptrace-stopped.
+    #[cfg(target_arch = "aarch64")]
+    pub hw_break: crate::debugreg::slab::Lazy<crate::debugreg::arm::Shadow>,
+    /// Linux `task->jobctl`: the job-control / ptrace-trap latch. Bit layout
+    /// and every rule read off it are `crate::jobctl`.
+    pub jobctl: AtomicU64,
 
     /// `rseq(2)` registration pointer — per-THREAD user pointer to a
     /// `struct rseq`. Non-zero means every exit to user republishes the ids

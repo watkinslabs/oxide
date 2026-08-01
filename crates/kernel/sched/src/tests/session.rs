@@ -468,3 +468,25 @@ fn personality_returns_previous_on_every_set() {
     assert_eq!(personality::get(&p), personality::PER_LINUX);
     assert!(!personality::read_implies_exec(&p));
 }
+
+/// `set_personality(pers)` is a plain assignment: no masking, no validation,
+/// no EINVAL on the generic path. A kernel that masked the argument would
+/// break `setarch` round-trips through `/proc/<pid>/personality`, which
+/// renders whatever was stored.
+#[test]
+fn personality_stores_the_argument_verbatim_including_dead_bits() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let p = published(100);
+    // Every bit with no consumer, plus an execution-domain byte that no longer
+    // dispatches anything: all of it must survive a store/read round trip.
+    let odd = personality::audit::PER_NO_CONSUMER | personality::domains::PER_HPUX;
+    assert_eq!(personality::get_set(&p, odd), personality::PER_LINUX);
+    assert_eq!(personality::get(&p), odd, "the persona was masked on store");
+    assert_eq!(personality::get_set(&p, personality::PERSONALITY_QUERY), odd);
+    assert_eq!(personality::get(&p), odd, "the query form stored the sentinel");
+    // The dead bits are stored but drive nothing.
+    assert!(!personality::mmap_page_zero(personality::get(&p)));
+    assert!(!personality::addr_compat_layout(personality::get(&p)));
+    assert!(!personality::sticky_timeouts(personality::get(&p)));
+}

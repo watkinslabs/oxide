@@ -102,6 +102,17 @@ core::arch::global_asm!(
     // stubs, so rsp after them IS a `PtRegs` (`pt_regs.rs`).
     ".type oxide_irq_common, @function",
     "oxide_irq_common:",
+    // GS fixup, before the first `gs:[…]` below. The interrupted context's
+    // ring is in the saved CS the CPU pushed — at this point the per-vector
+    // head has put (err, vec) below the IRETQ image, so CS sits at
+    // [rsp+0x18]. RPL 3 ⇒ the interrupted code was ring 3 and GS base still
+    // holds ITS base ⇒ swap in the kernel per-CPU base. RPL 0 ⇒ kernel base
+    // already live (interrupt gates keep IF clear across the exit windows
+    // where that would not hold, so a maskable IRQ cannot land in one).
+    "    test byte ptr [rsp + 0x18], 3",
+    "    jz   1f",
+    "    swapgs",
+    "1:",
     "    push rax", "    push rcx", "    push rdx",
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
@@ -161,6 +172,20 @@ core::arch::global_asm!(
     "    pop r11", "    pop r10", "    pop r9", "    pop r8",
     "    pop rdi", "    pop rsi",
     "    pop rdx", "    pop rcx", "    pop rax",
+    // Mirror of the entry fixup: rsp is back on the (vec, err) pair, so the
+    // frame's CS is again at [rsp+0x18]. Returning to ring 3 ⇒ put the user
+    // GS base back. `cli` first because this epilogue is also reached from
+    // `oxide_finish_switch_tramp`, which enables IRQs as part of the
+    // first-run `finish_task_switch` handoff, and from `oxide_irq_common`
+    // after a `schedule()` that may have done the same — an IRQ taken
+    // between the swapgs and the `iretq` would see a kernel CS and skip its
+    // own swapgs. `iretq` reloads RFLAGS from the frame, so IF comes back.
+    // No `gs:[…]` access may follow.
+    "    cli",
+    "    test byte ptr [rsp + 0x18], 3",
+    "    jz   1f",
+    "    swapgs",
+    "1:",
     "    add rsp, 16",              // drop our vec + err
     "    iretq",
     ".size oxide_irq_resume_user, . - oxide_irq_resume_user",

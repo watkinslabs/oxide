@@ -27,3 +27,15 @@ pub fn mmap_rnd_bits() -> u32 { MMAP_RND_BITS.load(Ordering::Relaxed) }
 pub fn set_mmap_rnd_bits(v: u32) {
     MMAP_RND_BITS.store(v.clamp(mmap_rnd_bits_min(), mmap_rnd_bits_max()), Ordering::Relaxed);
 }
+
+/// Linux `int sysctl_legacy_va_layout` (`mm/util.c`), registered as
+/// `vm.legacy_va_layout` with a 0..1 range. Non-zero makes EVERY exec take the
+/// legacy bottom-up mmap layout, independently of any persona.
+static LEGACY_VA_LAYOUT: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Live `vm.legacy_va_layout`. # C: O(1)
+pub fn legacy_va_layout() -> bool { LEGACY_VA_LAYOUT.load(Ordering::Relaxed) }
+
+/// `proc_dointvec_minmax` write path for `vm.legacy_va_layout`. # C: O(1)
+pub fn set_legacy_va_layout(v: bool) { LEGACY_VA_LAYOUT.store(v, Ordering::Relaxed); }

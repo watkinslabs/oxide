@@ -36,6 +36,12 @@ unsafe extern "C" fn _start_rust() -> ! {
     hal_aarch64::fpu_enable();
     // SAFETY: BSP bring-up before EL0 starts; enables architected counter reads for userspace.
     unsafe { hal_aarch64::timer::enable_el0_counter_access(); }
+    // Latch how many hardware breakpoint / watchpoint slots this CPU actually
+    // implements, from its own feature register. A tracer is told the real
+    // number through the debug regsets, and the count varies by implementation
+    // — hard-coding it would arm slots that do not exist.
+    // SAFETY: BSP bring-up at EL1 before any task runs; the debug feature register is read-only with no side effects.
+    unsafe { hal_aarch64::hw_breakpoint::idreg::init(); }
 
     // The self-bootstrap Image trampoline installs the HHDM; hand its
     // offset to the PL011 driver so the UART is reachable after the MMU

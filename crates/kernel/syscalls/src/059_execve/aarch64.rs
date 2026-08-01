@@ -152,11 +152,14 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     // Same ordering as the x86_64 path and as Linux: arena + stack first, so
     // the interpreter's `get_unmapped_area` placement has a `mmap_base`.
     let rnd = crate::exec_transition::exec_rnd(&cur, creds.per_clear);
-    let rlim_stack: u64 = {
+    // The RAW soft limit is kept alongside the mapped one: `RLIM_INFINITY` is
+    // an input to `arch_pick_mmap_layout` that the map-size clamp erases.
+    let raw_stack_rlim: u64 = {
         let (rc, _) = cur.rlimit(sched::rlimit::rlim::STACK);
-        let rc = crate::exec_transition::secure_stack_limit(rc, creds.secure_exec);
-        ((rc + 0xfff) & !0xfff).min(aslr::limits::RLIM_STACK_MAP_CAP)
+        crate::exec_transition::secure_stack_limit(rc, creds.secure_exec)
     };
+    let rlim_stack: u64 =
+        ((raw_stack_rlim.saturating_add(0xfff)) & !0xfff).min(aslr::limits::RLIM_STACK_MAP_CAP);
     let stack_top: u64 = rnd.stack_top();
     let exec_user_stack_va = stack_top - rlim_stack;
     let exec_user_stack_top = stack_top;
@@ -172,7 +175,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     ).is_err() {
         return -(Errno::Enomem.as_i32() as i64);
     }
-    new_as.set_mmap_base(rnd.mmap_base(rlim_stack));
+    let layout = crate::exec_transition::exec_mmap_layout(
+        &cur, creds.per_clear, &rnd, rlim_stack, raw_stack_rlim);
+    new_as.set_mmap_layout(layout.base, layout.top_down);
     let img = match elf_load::load_static_blob(blob, &new_as, &rnd) {
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
