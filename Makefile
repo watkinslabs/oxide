@@ -81,10 +81,14 @@ lint:
 # gate fails when any key exceeds it — a new violation in a crate that already
 # has 500 still fails, because nothing is compared tree-wide.
 #
-# `make lint` stays the full report and stays the target to run while burning the
-# backlog down. The baseline only ever shrinks: `--update` writes
-# `min(current, baseline)` per key and refuses to raise one without
-# `--allow-growth`, which prints every loosened key.
+# Tightening is part of the definition of done for every burndown PR: slack below
+# the baseline FAILS, because a fixed finding that is not locked in can be
+# reintroduced with the gate still green. `make lint` stays the full report and
+# stays the target to run while burning the backlog down.
+#
+# The baseline only ever shrinks: `--update` writes `min(current, baseline)` per
+# key and refuses to raise one without `--allow-growth`, which prints every
+# loosened key.
 lint-ratchet:
 	$(CARGO) run --quiet -p spec-lint -- ratchet
 

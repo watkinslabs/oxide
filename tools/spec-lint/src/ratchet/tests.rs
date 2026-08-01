@@ -78,6 +78,27 @@ fn update_never_raises_without_the_flag() {
     fs::remove_dir_all(&dir).ok();
 }
 
+// A burndown that does not tighten leaves its gains unlocked: the fixed
+// findings could be reintroduced and the gate would still be green. So slack
+// below the baseline is a failure with a fix-it command, not a note.
+#[test]
+fn slack_below_the_baseline_fails_until_it_is_tightened() {
+    let dir = std::env::temp_dir().join(format!("spec-lint-ratchet-slack-{}", std::process::id()));
+    let p = dir.join(BASELINE_REL);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(&p, render(&c(&[("kernel", "code/safety-missing", 500)]))).unwrap();
+
+    let fixed_some = c(&[("kernel", "code/safety-missing", 380)]);
+    assert!(matches!(check(&dir, &fixed_some, false, false), Outcome::Fail),
+            "379 fixed-but-unlocked findings is exactly the state this catches");
+
+    assert!(matches!(check(&dir, &fixed_some, true, false), Outcome::Pass));
+    assert!(matches!(check(&dir, &fixed_some, false, false), Outcome::Pass),
+            "green again once the tightened baseline is committed");
+    assert_eq!(load(&p), fixed_some);
+    fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_key_that_reaches_zero_leaves_the_baseline() {
     let dir = std::env::temp_dir().join(format!("spec-lint-ratchet-zero-{}", std::process::id()));
