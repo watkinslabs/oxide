@@ -184,7 +184,9 @@ pub(crate) fn push_u64(v: &mut Vec<u8>, mut n: u64) {
     }
 }
 
-pub(crate) const VERSION_BODY: &[u8] = b"Linux version 5.15.0-oxide (oxide@build) #1 SMP PREEMPT\n";
+/// `/proc/version` — Linux `linux_banner`, derived from the one kernel-version
+/// owner so it cannot disagree with `uname(2)` or the sysctl leaves.
+pub(crate) const VERSION_BODY: &[u8] = syscall::uts::PROC_VERSION.as_bytes();
 
 // /proc/cpuinfo is generated per-online-CPU from CPUID / MIDR_EL1 — see
 // `crate::cpuinfo`. The two hardcoded single-block blobs that used to live
