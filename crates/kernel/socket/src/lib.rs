@@ -60,3 +60,6 @@ mod filter_tests;
 #[cfg(test)]
 #[path = "tests/netlink_preflight.rs"]
 mod netlink_preflight_tests;
+#[cfg(test)]
+#[path = "tests/landlock_hooks.rs"]
+mod landlock_hooks_tests;
