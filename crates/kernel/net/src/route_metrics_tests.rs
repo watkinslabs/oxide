@@ -17,6 +17,7 @@ fn install_route(stack: &NetStack, iface: crate::NetIfaceId, metrics: RouteMetri
 
 #[test]
 fn resolved_route_retains_priority_and_complete_metrics() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let metrics = RouteMetrics {
@@ -33,6 +34,7 @@ fn resolved_route_retains_priority_and_complete_metrics() {
 
 #[test]
 fn configured_mtu_lock_and_hoplimit_reach_ipv4_output() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let metrics = RouteMetrics {
@@ -56,6 +58,7 @@ fn configured_mtu_lock_and_hoplimit_reach_ipv4_output() {
 
 #[test]
 fn active_and_passive_tcp_consume_the_selected_metrics() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let metrics = RouteMetrics {

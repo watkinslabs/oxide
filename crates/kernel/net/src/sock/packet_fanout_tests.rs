@@ -93,6 +93,7 @@ fn protocol_bound_outgoing_does_not_advance_lb_selector() {
 
 #[test]
 fn packet_origin_suppresses_the_entire_fanout_group() {
+    let _packets = crate::hosted_fixture::packet_socket_domain();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let a = socket(owner.clone());
     let b = socket(owner.clone());
@@ -109,6 +110,7 @@ fn packet_origin_suppresses_the_entire_fanout_group() {
 
 #[test]
 fn fanout_hook_ignores_only_the_group_outgoing_flag() {
+    let _packets = crate::hosted_fixture::packet_socket_domain();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let sender = socket(owner.clone());
     let observer = socket(owner.clone());
@@ -329,7 +331,8 @@ fn final_release_waits_for_selected_delivery_and_blocks_late_delivery() {
             closed_tx.send(()).unwrap();
         })
     };
-    while socket.packet_in_fanout() { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("the socket leaves its fanout group",
+        || !socket.packet_in_fanout());
     assert_eq!(closed_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty));
     leave.wait();
     assert!(delivery.join().unwrap().is_some());

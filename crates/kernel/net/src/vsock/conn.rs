@@ -109,6 +109,10 @@ pub struct VsockConn {
     /// connect never completed (ENOTCONN).
     pub(crate) ever_connected: AtomicBool,
     pub(crate) credit_update_pending: AtomicBool,
+    /// Hosted-test one-shot tail-window credit update, per-connection so no
+    /// concurrently running test can consume it (B1653).
+    #[cfg(any(test, feature = "hosted"))]
+    pub(crate) inject_tail_credit: AtomicBool,
     /// Socket-owned timeout retained with this outbound connection so a
     /// repeated blocking connect observes the same configured deadline.
     connect_timeout_ns: AtomicU64,
@@ -233,6 +237,8 @@ impl VsockConn {
             accept_ready: AtomicBool::new(false),
             ever_connected: AtomicBool::new(matches!(st, VsockState::Connected)),
             credit_update_pending: AtomicBool::new(false),
+            #[cfg(any(test, feature = "hosted"))]
+            inject_tail_credit: AtomicBool::new(false),
             connect_timeout_ns: AtomicU64::new(super::VSOCK_CONNECT_TIMEOUT_NS),
             connect_owner: Spinlock::new(None),
             connect_error: Spinlock::new(None),

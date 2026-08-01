@@ -183,6 +183,7 @@ fn multi_packet_chain_uses_aligned_offsets_and_zero_terminator() {
 
 #[test]
 fn raw_loopback_transmit_publishes_one_multicast_record() {
+    let _packets = crate::hosted_fixture::packet_socket_domain();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let socket = Arc::new(InetSocket::new_packet_in(crate::eth_p::IPV4, RAW, owner.clone()));
     socket.set_packet_version(crate::uapi::TPACKET_V3).unwrap();
@@ -241,6 +242,7 @@ fn v3_vlan_metadata_uses_variant1_native_fields() {
 
 #[test]
 fn final_release_prevents_timer_retirement_while_mmap_keeps_pages_alive() {
+    let _packets = crate::hosted_fixture::packet_registry_exclusive();
     let socket = Arc::new(socket());
     register_packet(&socket);
     let pin = socket.packet_ring_mmap(0, 8192).unwrap();

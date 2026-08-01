@@ -44,7 +44,8 @@ fn aborted_generation_wakes_unregister_waiter() {
     let id = reg.id();
     let worker = stack.clone();
     let waiter = std::thread::spawn(move || worker.unregister_iface_current(id));
-    while stack.ifaces.resume_waiters(id) == 0 { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("a resume waiter appears",
+        || stack.ifaces.resume_waiters(id) != 0);
 
     assert!(stack.abort_iface(reg));
     assert!(waiter.join().unwrap());
@@ -61,7 +62,8 @@ fn dropped_registration_aborts_and_wakes_unregister_waiter() {
     let id = reg.id();
     let worker = stack.clone();
     let waiter = std::thread::spawn(move || worker.unregister_iface_current(id));
-    while stack.ifaces.resume_waiters(id) == 0 { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("a resume waiter appears",
+        || stack.ifaces.resume_waiters(id) != 0);
 
     drop(reg);
     assert!(waiter.join().unwrap());

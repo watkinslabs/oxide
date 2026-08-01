@@ -63,6 +63,7 @@ fn vnet_header_encodes_metadata_and_zeroes_num_buffers() {
 
 #[test]
 fn queued_raw_receive_places_vnet_header_immediately_before_packet() {
+    let _packets = crate::hosted_fixture::packet_socket_domain();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let socket = Arc::new(InetSocket::new_packet_in(crate::eth_p::ALL, RAW, owner.clone()));
     socket.set_packet_vnet_hdr_size(10).unwrap();

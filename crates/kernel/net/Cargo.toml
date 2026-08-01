@@ -31,6 +31,17 @@ nscg = { path = "../nscg" }
 
 [dev-dependencies]
 loom = "0.7.2"
+# `sched::preempt::this_cpu()` only hands each OS thread its own simulated
+# per-CPU slot under `any(test, feature = "hosted")` (B1415). `cargo test -p
+# net` builds `sched` as a plain non-test dependency, so without this the
+# whole hosted suite collapses onto slot 0 and one test's softirq-context
+# simulation makes every concurrently running test read `in_interrupt() ==
+# true` — the `sock_rtnl_defer` / packet-membership flake class (B1653).
+sched = { path = "../sched", features = ["hosted"] }
+# `sync/hosted` makes `spin_relax::relax()` yield instead of pure-pausing:
+# hosted tests oversubscribe cores, so a descheduled `Spinlock` holder
+# otherwise livelocks every waiter at 100% CPU each (B1653).
+sync = { path = "../../shared/sync", features = ["hosted"] }
 
 
 # F159: TCP retx scanner needs monotonic_ns. Per-arch HAL only links
