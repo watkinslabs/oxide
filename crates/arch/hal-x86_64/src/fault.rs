@@ -222,7 +222,7 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
     // production, no log line. Only log loudly when we're about to
     // halt (handler returned false → unrecoverable).
     let mut handled = (current_handler())(f.vector, f.error, f.rip, cr2);
-    if !handled && f.vector == 14 && (f.cs & 3) == 0 && cr2 < hal::USER_VA_END {
+    if !handled && (f.cs & 3) == 0 && fixup_eligible(f.vector, cr2) {
         if let Some(fixup) = crate::exception_table::lookup(f.rip) {
             f.rip = fixup;
             handled = true;
@@ -310,6 +310,32 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
         { let _ = f; }
     }
     handled
+}
+
+/// Intel-SDM vector numbers the exception-table fixup path names.
+pub const VEC_GP: u64 = 13;
+pub const VEC_PF: u64 = 14;
+
+/// May a kernel-mode fault at this vector be resolved by an
+/// `__ex_table` fixup?
+///
+/// #PF is the uaccess case, and it stays restricted to a user-range `cr2`:
+/// a kernel-address page fault inside a `rep movsb` is a kernel bug, not a
+/// user pointer that went bad, and silently jumping to the fixup would hide
+/// it.
+///
+/// #GP is the MSR case — the `rdmsr`/`wrmsr` of a register the CPU does not
+/// implement raises #GP with no `cr2` to bound. Without this arm, probing a
+/// model-specific register a hypervisor omits is unrecoverable: the CPU halts
+/// in the oops printer instead of taking the recorded fixup, which is why the
+/// capability probes that need it cannot be written at all.
+/// # C: O(1)
+pub fn fixup_eligible(vector: u64, cr2: u64) -> bool {
+    match vector {
+        VEC_PF => cr2 < hal::USER_VA_END,
+        VEC_GP => true,
+        _ => false,
+    }
 }
 
 /// Map an Intel-SDM exception vector to a short label (Vol. 3
