@@ -273,7 +273,7 @@ mod tests {
         assert!(!setsockopt.contains("(SOL_SOCKET, "),
             "no SOL_SOCKET option arm may live outside the canonical table");
         let sol_set = include_str!("054_setsockopt/sol_socket.rs");
-        let length_screen = sol_set.find("optlen < core::mem::size_of::<i32>()").unwrap();
+        let length_screen = sol_set.find("if short { return Err(Errno::Einval); }").unwrap();
         let classify = sol_set.find("set::arg_class(optname)").unwrap();
         assert!(length_screen < classify,
             "the leading int screen precedes option classification");

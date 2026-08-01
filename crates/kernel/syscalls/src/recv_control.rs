@@ -14,6 +14,7 @@ const CMSG_ALIGN: usize = 8;
 const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
+use net::sock_opts::sol_socket::SCM_INQ;
 
 fn errno(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 pub(crate) struct DeliveredControl {
@@ -77,11 +78,16 @@ fn cred_bytes(cred: (u32, u32, u32)) -> [u8; 12] {
 
 /// Emit credentials, then reserve, copy, and publish each received fd. # C: O(files + faults)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32, u32, u32)>, recv_flags: u64) -> Result<DeliveredControl, i64> {
+pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32, u32, u32)>,
+    inq: Option<i32>, recv_flags: u64) -> Result<DeliveredControl, i64>
+{
     let mut flags = output_flags(recv_flags);
     let cap = if user.control == 0 { 0 } else { user.controllen };
     let mut control = Control::new(cap);
     if let Some(cred) = cred { control.push(SOL_SOCKET, SCM_CREDENTIALS, &cred_bytes(cred)); }
+    // `SO_INQ` publishes the bytes still queued after this receive, as an
+    // `int` control message carrying the option's own number.
+    if let Some(inq) = inq { control.push(SOL_SOCKET, SCM_INQ, &inq.to_ne_bytes()); }
     let off = control.copy_to(user)?;
     flags |= control.flags;
     let remaining = cap.saturating_sub(off);

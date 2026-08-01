@@ -60,6 +60,11 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         if optname == SO_BINDTODEVICE { return bind_to_device(&sock, optval, optlen); }
         return super::sol_socket::set(&sock, optname, optval, optlen);
     }
+    // An AF_UNIX socket carries no protocol-level option table at all: every
+    // level above SOL_SOCKET is EOPNOTSUPP, never "unknown option".
+    if sock.family.load(Ordering::Acquire) == net::sock::AF_UNIX {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
     if level == net::uapi::SOL_PACKET {
         return packet_setsockopt(&sock, optname, optval, optlen);
     }

@@ -40,13 +40,10 @@ use uapi::*;
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
 ///
 /// Honored:
-///   SOL_SOCKET (1) / SO_PEERCRED (17): writes back a `struct ucred`
-///     {pid, uid, gid} (12 bytes) for AF_UNIX-paired fds. v1 reports
-///     the calling task's tid + 0/0 (no real uid); sufficient for
-///     systemd-class peer-credential checks to receive a non-zero pid.
-///   SOL_SOCKET / SO_TYPE (3): writes back the SOCK_* shape.
-///   Everything else: zero-length opt + return 0.
-/// # C: O(1)
+/// SOL_SOCKET reads answer from the canonical option table; a socket that
+/// pinned no peer identity reports the no-peer `struct ucred` rather than the
+/// caller's own credentials. Each protocol level has its own table, and an
+/// AF_UNIX socket has none at all above SOL_SOCKET. # C: O(1)
 pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     let _fd     = args.a0;
     let level   = args.a1;
@@ -145,6 +142,13 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     };
     if let Err(error) = net::sock_opts::check_option(&sock) {
         return errno_from_neterr(error);
+    }
+    // An AF_UNIX socket carries no protocol-level option table at all: every
+    // level above SOL_SOCKET is EOPNOTSUPP, never "unknown option".
+    if level != SOL_SOCKET
+        && sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_UNIX
+    {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
     }
     if level == net::uapi::SOL_PACKET {
         return packet::packet_getsockopt(&sock, optname, optval, optlen_p);
