@@ -216,6 +216,10 @@ pub unsafe fn init_from_boot_info(
     // The remaining reserved pool is the permanent PageMeta array.  It is
     // initialized and published before PMM readiness below, so no PMM-backed
     // heap arena can ever exist without canonical ownership metadata.
+    // SAFETY: `pool_bytes = bitmap_pool_bytes + page_meta_pool_bytes` and the
+    // chosen region was required to hold `pool_bytes + PAGE_SIZE_BYTES`, so
+    // this offset lands strictly inside the single HHDM allocation `pool_va`
+    // names — the one-past-the-end rule `ptr::add` requires.
     let page_meta_ptr = unsafe { pool_va.add(bitmap_pool_bytes as usize) } as *mut crate::PageMeta;
 
     // Build the UsableRegion list, shrinking the chosen region.

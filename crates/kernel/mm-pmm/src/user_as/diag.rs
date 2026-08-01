@@ -56,6 +56,9 @@ pub fn diag_verify_file_pages() {
             // zero content arrived WITH the frame at install (some path zeroed
             // it before mapping); D=1 => a store retired through THIS mapping
             // after install (a user memset / kernel copy-to-user of zeros).
+            // SAFETY: `mm` is borrowed for this call and is the dying task's
+            // own live root, walked read-only on the CPU that owns it, so no
+            // peer can free the tables mid-walk; HHDM covers every table page.
             let raw_leaf = unsafe {
                 hal::pt_walker::translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
                     mm.root_pa(), va, hhdm)
