@@ -72,6 +72,8 @@ pub mod flags {
 
 /// Reserved `nlmsg_type` values. Per-protocol types start at 16.
 pub mod msg {
+    /// First `nlmsg_type` a protocol may own; below this is reserved control.
+    pub const NLMSG_MIN_TYPE: u16 = 0x10;
     pub const NLMSG_NOOP:    u16 = 1;
     pub const NLMSG_ERROR:   u16 = 2;
     pub const NLMSG_DONE:    u16 = 3;
@@ -81,7 +83,7 @@ pub mod msg {
 /// 16-byte `struct nlmsghdr` (host-endian; Linux netlink runs on
 /// the local byte order).
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Nlmsghdr {
     pub nlmsg_len:   u32,
     pub nlmsg_type:  u16,

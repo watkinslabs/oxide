@@ -292,23 +292,25 @@ pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     ) {
         return crate::net_common::errno_from_neterr(e);
     }
-    let (port_id, groups) = target.socket().destination();
-    let sa = encoded_sockaddr_nl(port_id, groups);
+    let dest = target.socket().destination();
+    let sa = encoded_sockaddr_nl(dest.port_id, dest.group);
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }
 
-/// Read the destination port and group mask from an already validated
-/// `sockaddr_nl`, or report that no destination was supplied. # C: O(1)
-fn dest_nl_address(dest_p: u64, dest_len: u64) -> Option<(u32, u32)> {
+/// Copy an optional user `sockaddr_nl` into kernel memory. `None` means no
+/// destination was supplied, which is not an error — the socket's connected
+/// destination is used instead. # C: O(1)
+fn user_sockaddr_nl(dest_p: u64, dest_len: u64) -> Option<[u8; ::netlink::SOCKADDR_NL_SIZE]> {
     let address_bytes = ::netlink::SOCKADDR_NL_SIZE as u64;
     let end = dest_p.checked_add(address_bytes)?;
     if dest_p == 0 || dest_len < address_bytes || end > USER_VA_END { return None; }
-    // SAFETY: the complete sockaddr_nl range is user-address-valid for both typed loads.
-    unsafe {
-        let groups = core::ptr::read_volatile((dest_p + ::netlink::SOCKADDR_NL_GROUPS_OFFSET as u64) as *const u32);
-        let port_id = core::ptr::read_volatile((dest_p + ::netlink::SOCKADDR_NL_PORT_ID_OFFSET as u64) as *const u32);
-        Some((groups, port_id))
+    let mut name = [0u8; ::netlink::SOCKADDR_NL_SIZE];
+    for (index, byte) in name.iter_mut().enumerate() {
+        // SAFETY: the complete sockaddr_nl range was bounds-checked against
+        // USER_VA_END above, so every byte of this read is user-address-valid.
+        *byte = unsafe { core::ptr::read_volatile((dest_p + index as u64) as *const u8) };
     }
+    Some(name)
 }
 
 /// Send one coalesced message through an already-resolved netlink file. # C: O(len)
@@ -320,8 +322,14 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
     { return crate::net_common::errno_from_neterr(error); }
-    let (groups, port_id) = dest_nl_address(name, namelen).unwrap_or_else(|| socket.destination());
-    let result = socket.send_to(buf, groups, port_id);
+    let dest = match user_sockaddr_nl(name, namelen) {
+        Some(name) => match ::netlink::parse_dest(&name) {
+            Ok(dest) => dest,
+            Err(error) => return -(error as i64),
+        },
+        None => socket.destination(),
+    };
+    let result = socket.send_to(buf, dest);
     // Keep the diagnostic path available after coalesced sends moved to the
     // canonical destination owner. It is intentionally feature-gated, like
     // the imported-send trace, rather than being removed or made unconditional.
@@ -329,7 +337,7 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
     {
         let cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
         let delivered = usize::from(result.is_ok());
-        trace_uev_send(cooked, port_id, groups, buf, b"owner", delivered);
+        trace_uev_send(cooked, dest.port_id, dest.group, buf, b"owner", delivered);
     }
     match result {
         Ok(n) => n as i64,
@@ -352,20 +360,18 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&sock.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
     { return crate::net_common::errno_from_neterr(error); }
-    let (groups, dest_pid) = if !name.is_empty() {
-        if name.len() < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
-        if u16::from_ne_bytes(name[..2].try_into().unwrap()) != net::socket_args::AF_NETLINK_WIRE {
-            return -(Errno::Eafnosupport.as_i32() as i64);
+    let dest = if name.is_empty() { sock.destination() } else {
+        match ::netlink::parse_dest(name) {
+            Ok(dest) => dest,
+            Err(error) => return -(error as i64),
         }
-        (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
-            u32::from_ne_bytes(name[4..8].try_into().unwrap()))
-    } else { sock.destination() };
-    let result = sock.send_to(payload, groups, dest_pid);
+    };
+    let result = sock.send_to(payload, dest);
     #[cfg(feature = "debug-uevent")]
     {
         let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
         let delivered = usize::from(result.is_ok());
-        trace_uev_send(cooked, dest_pid, groups, payload, b"owner", delivered);
+        trace_uev_send(cooked, dest.port_id, dest.group, payload, b"owner", delivered);
     }
     match result {
         Ok(n) => n as i64,
