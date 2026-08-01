@@ -1,7 +1,0 @@
-# C248 — atomic branch-number claim
-
-| Status | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|
-| FIXED C248 | high | Reading a branch counter was not claiming it. `tools/next-branch.sh`, and `metadata/index.md` behind it, handed every concurrent lane the SAME answer; the number only became real once someone pushed. Three lanes drew `B1667` on one day and a whole signal-report implementation was discarded as the duplicate. | C248. `--claim` pushes `claim/<T><NN>` to origin before returning the name, carrying a commit unique to the lane, so two lanes racing one number push different values to the same ref and the remote refuses the loser. Race-tested: three concurrent `--claim B` runs took B1689/B1690/B1691, each loser retrying automatically (`was taken by another lane — retrying`). | C248 |
-| OPEN | low | `metadata/index.md` counters drift behind git and nothing repairs them — `tools/next-branch.sh --check` reports `D next=439 but D445 exists`. Harmless now that claims are atomic (the index is only a backstop), but the check will keep reporting STALE until someone either refreshes the table or retires it in favour of the claim refs. | C248, `tools/next-branch.sh --check`. | — |
-| OPEN | low | Claim refs are never deleted, by design — they are the record of which numbers were handed out. `git branch -a` therefore grows one `claim/<T><NN>` per branch ever created. If that becomes noise, filter with `--no-contains` or move the namespace out of `refs/heads`; do NOT prune them, or numbers become reusable. | C248. | — |
