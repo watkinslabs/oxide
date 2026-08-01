@@ -160,7 +160,8 @@ impl NetStack {
             n if n == IpProto::Tcp as u8 => {
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
-                let _ = self.deliver_tcp_packet(net_ns, iface, src, dst, payload, packet);
+                let _ = self.deliver_tcp_packet_hop(net_ns, iface, src, dst, payload, packet,
+                    hop_limit);
             }
             _ => {}
         }

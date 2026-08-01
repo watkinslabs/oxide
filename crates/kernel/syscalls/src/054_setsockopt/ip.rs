@@ -70,7 +70,7 @@ fn apply(sock: &Arc<InetSocket>, action: Action) -> i64 {
             let stream = net::sock_opts::describe_ip(sock).stream;
             sock.opts.ip_tos.store(ipset::tos_value(v, current, stream), Ordering::Release);
         }
-        Action::MinTtl(v) => sock.opts.ip.set_min_ttl(v),
+        Action::MinTtl(v) => sock.opts.min_hop.set_ttl(v),
         Action::MtuDiscover(v) => sock.opts.ip_mtu_discover.store(v, Ordering::Release),
         Action::UnicastIf(ifindex) => sock.opts.ip.set_unicast_if(ifindex),
         Action::LocalPortRange(packed) => sock.opts.ip.set_local_port_range(packed),

@@ -196,6 +196,10 @@ pub struct TcpEntry {
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// `IP_MINTTL` / `IPV6_MINHOPCOUNT`, shared with the owning socket. A
+    /// passive child snapshots its listener's, the way every other inherited
+    /// option does.
+    pub min_hop: Arc<crate::min_hop::MinHop>,
     /// Shared local bind owner. Passive children share their listener's bind.
     pub bind: Option<Arc<TcpBindReservation>>,
     /// Filter snapshot/shared socket owner used before TCP state processing.
@@ -271,6 +275,20 @@ impl TcpEntry {
                                  ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>) -> Self {
+        Self::new_bound_full(conn, error, bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            passive_listener, Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Build a transport entry sharing every option the receive path reads.
+    /// # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_bound_full(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
+                                 min_hop: Arc<crate::min_hop::MinHop>) -> Self {
         let syn_backlog_reserved = passive_listener.is_some();
         let owner = bind.as_ref().map(|bind| bind.owner.clone())
             .unwrap_or_else(|| crate::SocketOwner::root(network_namespace::initial(), 0));
@@ -280,6 +298,7 @@ impl TcpEntry {
             error,
             ip_mtu_discover,
             ipv6_mtu_discover,
+            min_hop,
             bind,
             bpf_filter,
             passive_listener,
@@ -410,6 +429,8 @@ pub struct TcpListenEntry {
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Live listening-socket IPv6 PMTU mode; each passive child snapshots it.
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Live listening-socket hop-limit minimums; each passive child shares them.
+    pub min_hop: Arc<crate::min_hop::MinHop>,
     /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
     pub backlog: ::core::sync::atomic::AtomicUsize,
     /// Half-open plus completed children not yet removed by accept.

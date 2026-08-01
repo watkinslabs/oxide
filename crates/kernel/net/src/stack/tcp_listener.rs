@@ -115,10 +115,20 @@ impl TcpListenEntry {
                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                            ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                            ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> Self {
+        Self::new_with_min_hop(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Build a listener sharing its socket's hop-limit minimums too. # C: O(1)
+    pub fn new_with_min_hop(bind: Arc<TcpBindReservation>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           min_hop: Arc<crate::min_hop::MinHop>) -> Self {
         let owner = bind.owner.clone();
         Self {
             owner, accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
-            ip_mtu_discover, ipv6_mtu_discover,
+            ip_mtu_discover, ipv6_mtu_discover, min_hop,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),

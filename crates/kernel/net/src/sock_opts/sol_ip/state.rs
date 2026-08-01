@@ -2,7 +2,7 @@
 // `set`, every value/shape rule in `get`.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Socket as LockClass, Spinlock};
 
 use super::options::Compiled;
@@ -31,7 +31,6 @@ pub mod flag {
 /// Per-socket `IPPROTO_IP` option state. # C: O(1)
 pub struct IpOpts {
     flags: AtomicU64,
-    min_ttl: AtomicI32,
     /// `IP_UNICAST_IF` — outbound interface index for unicast, zero unset.
     unicast_if: AtomicU32,
     /// `IP_LOCAL_PORT_RANGE` — low half is the first port, high half the last.
@@ -43,7 +42,6 @@ impl Default for IpOpts {
     fn default() -> Self {
         Self {
             flags: AtomicU64::new(0),
-            min_ttl: AtomicI32::new(0),
             unicast_if: AtomicU32::new(0),
             local_port_range: AtomicU32::new(0),
             options: Spinlock::new(None),
@@ -73,11 +71,6 @@ impl IpOpts {
     /// `IP_MULTICAST_ALL`: deliver every multicast datagram arriving on a
     /// joined group's port, not only those passing the source filter. # C: O(1)
     pub fn multicast_all(&self) -> bool { !self.flag(flag::MC_ALL_OFF) }
-
-    /// # C: O(1)
-    pub fn min_ttl(&self) -> i32 { self.min_ttl.load(Ordering::Acquire) }
-    /// # C: O(1)
-    pub fn set_min_ttl(&self, value: i32) { self.min_ttl.store(value, Ordering::Release); }
 
     /// # C: O(1)
     pub fn unicast_if(&self) -> u32 { self.unicast_if.load(Ordering::Acquire) }

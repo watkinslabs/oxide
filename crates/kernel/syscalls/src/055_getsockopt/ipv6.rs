@@ -43,7 +43,7 @@ fn view(sock: &Arc<InetSocket>) -> Ipv6GetState {
         unicast_if: sock.opts.ipv6.unicast_if(),
         pmtudisc: sock.opts.ipv6_mtu_discover.load(Ordering::Acquire),
         tclass: sock.opts.ipv6_tclass.load(Ordering::Acquire).max(0),
-        min_hopcount: sock.opts.ipv6.min_hopcount(),
+        min_hopcount: sock.opts.min_hop.hopcount(),
         srcprefs: sock.opts.ipv6.srcprefs(),
         frag_size: sock.opts.ipv6.frag_size(),
         use_min_mtu: sock.opts.ipv6.use_min_mtu(),
