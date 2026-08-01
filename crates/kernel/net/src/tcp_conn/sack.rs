@@ -31,7 +31,10 @@ impl TcpConn {
 
     /// Build an ACK segment carrying SACK blocks when present.
     pub fn build_ack_with_sack(&mut self) -> Vec<u8> {
-        let blocks = self.sack_blocks();
+        // Blocks may only be sent to a peer that permitted them on its SYN.
+        // Sending them regardless offered a peer that declined the option an
+        // extension it never agreed to parse.
+        let blocks = if self.sack_ok { self.sack_blocks() } else { Vec::new() };
         if blocks.is_empty() {
             return self.build_segment(flags::ACK, &[]);
         }
