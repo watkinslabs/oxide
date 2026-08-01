@@ -23,7 +23,7 @@ pub struct Raw4Control {
     pub protocol: Option<u8>,
     /// `IP_OPTIONS` control message — the same compiled area the socket-level
     /// option installs, admitted by the same compile pass.
-    pub options: Option<crate::sock_opts::sol_ip::options::Compiled>,
+    pub options: Option<crate::ipv4_options::Compiled>,
     pub dont_route: bool,
     pub multicast_loop: Option<bool>,
 }

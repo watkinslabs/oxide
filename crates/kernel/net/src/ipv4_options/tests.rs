@@ -5,8 +5,8 @@
 use super::emit::{self, Header};
 use crate::addr::Ipv4Addr;
 use crate::ipv4::{ip_checksum, IPV4_HDR_LEN};
-use crate::sock_opts::sol_ip::options;
-use crate::sock_opts::sol_ip::uapi::{IPOPT_END, IPOPT_LSRR, IPOPT_NOOP, IPOPT_RA, IPOPT_RR,
+use crate::ipv4_options::area as options;
+use crate::ipv4_options::uapi::{IPOPT_END, IPOPT_LSRR, IPOPT_NOOP, IPOPT_RA, IPOPT_RR,
     IPOPT_SSRR, IPOPT_TIMESTAMP, IPOPT_TS_PRESPEC, IPOPT_TS_TSANDADDR, IPOPT_TS_TSONLY};
 
 const SRC: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);

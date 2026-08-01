@@ -5,7 +5,7 @@
 use syscall::errno::Errno;
 
 use crate::addr::Ipv4Addr;
-use crate::sock_opts::sol_ip::options::{self, AddrClass, Compiled};
+use super::area::{self, AddrClass, Compiled};
 
 /// The remote-unicast answer the timestamp option's prespecified form asks
 /// for: an address this namespace does not own, and which is neither multicast
@@ -26,7 +26,7 @@ impl AddrClass for RemoteUnicast {
 /// Compile a caller-supplied option area against one namespace's own
 /// addresses. # C: O(optlen + addresses)
 pub fn build_in(bytes: &[u8], net_raw: bool, net_ns: u64) -> Result<Compiled, Errno> {
-    options::build_with(bytes, net_raw, &RemoteUnicast { net_ns })
+    area::build_with(bytes, net_raw, &RemoteUnicast { net_ns })
 }
 
 /// [`build_in`] for the transmit-side callers that speak the stack's error

@@ -56,7 +56,7 @@ fn setup(scope: u8, gateway: Option<Ipv4Addr>) -> (NetStack, Arc<Capture>, crate
 
 /// Every control-message option area enters the shared compile pass, the same
 /// one `setsockopt(IP_OPTIONS)` uses.
-fn compiled(bytes: &[u8]) -> crate::sock_opts::sol_ip::options::Compiled {
+fn compiled(bytes: &[u8]) -> crate::ipv4_options::Compiled {
     crate::ipv4_options::build_in(bytes, true, 0).unwrap()
 }
 
