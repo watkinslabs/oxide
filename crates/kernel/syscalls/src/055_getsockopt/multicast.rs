@@ -9,9 +9,9 @@ fn preflight(s: &net::sock::InetSocket, op: net::sock_mcast::McastGetOp) -> Resu
 
 pub(super) fn scalar_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
                          option: net::sock_mcast::McastScalarGet,
-                         back: &impl Fn(i32) -> i64) -> i64 {
+                         out: &super::out::OptOut) -> i64 {
     match s.get_mcast_scalar(option) {
-        Ok(value) => back(value), Err(error) => errno_from_neterr(error),
+        Ok(value) => out.i32(value), Err(error) => errno_from_neterr(error),
     }
 }
 

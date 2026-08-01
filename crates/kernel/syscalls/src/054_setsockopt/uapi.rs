@@ -62,6 +62,8 @@ pub(super) const IPPROTO_RAW: u64 = 255;
 pub(super) const ICMP_FILTER: u64 = 1;
 pub(super) const ICMP6_FILTER: u64 = 1;
 
+pub(super) const IPPROTO_UDP: u64 = 17;
+
 pub(super) const IPPROTO_TCP: u64 = 6;
 pub(super) const TCP_NODELAY: u64 = 1;
 pub(super) const TCP_CORK: u64 = 3;

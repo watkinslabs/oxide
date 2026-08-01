@@ -8,6 +8,20 @@ use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from
 
 #[path = "055_getsockopt/multicast.rs"]
 mod multicast;
+#[path = "055_getsockopt/out.rs"]
+mod out;
+#[path = "055_getsockopt/path_mtu.rs"]
+mod path_mtu;
+#[path = "055_getsockopt/raw.rs"]
+mod raw;
+#[path = "055_getsockopt/ip.rs"]
+mod ip;
+#[path = "055_getsockopt/ipv6.rs"]
+mod ipv6;
+#[path = "055_getsockopt/tcp.rs"]
+mod tcp;
+#[path = "055_getsockopt/udp.rs"]
+mod udp;
 #[path = "055_getsockopt/sol_socket.rs"]
 mod sol_socket;
 #[path = "055_getsockopt/packet.rs"]
@@ -20,7 +34,7 @@ mod packet_abi;
 mod uapi;
 #[path = "055_getsockopt/varlen.rs"]
 mod varlen;
-use multicast::{ipv4_group_filter_get, ipv4_msfilter_get, ipv6_group_filter_get, scalar_get};
+use out::OptOut;
 use uapi::*;
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
@@ -39,20 +53,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     let optname = args.a2;
     let optval  = args.a3;
     let optlen_p = args.a4;
-    let i32_back = |val: i32| -> i64 {
-        let mut raw_len = [0u8; 4];
-        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
-        let requested = i32::from_ne_bytes(raw_len);
-        if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
-        let take = core::cmp::min(requested as usize, core::mem::size_of::<i32>());
-        if take != 0 && uaccess::copy_to_user(optval, &val.to_ne_bytes()[..take]).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        0
-    };
+    let out = OptOut::new(optval, optlen_p);
     let u64_back = |val: u64| -> i64 {
         const VSOCK_BUFFER_OPTION_BYTES: usize = core::mem::size_of::<u64>();
         let mut raw_len = [0u8; core::mem::size_of::<i32>()];
@@ -102,7 +103,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             security::network::Operation::Option)
         { return errno_from_neterr(error); }
         let pending = target.take_error();
-        return i32_back(pending);
+        return out.i32(pending);
     }
     if level == SOL_SOCKET && matches!(optname, SO_LOCK_FILTER | SO_GET_FILTER) {
         let target = match socket::FilterFile::from_file(file.clone()) {
@@ -114,7 +115,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             security::network::Operation::Option)
         { return errno_from_neterr(error); }
         if optname == SO_GET_FILTER { return varlen::get_filter(&target, optval, optlen_p); }
-        return i32_back(i32::from(target.is_locked()));
+        return out.i32(i32::from(target.is_locked()));
     }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
@@ -134,7 +135,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             return -(Errno::Enoprotoopt.as_i32() as i64);
         }
         return match vsock.get_socket_option(level, optname) {
-            Ok(value) => i32_back(value),
+            Ok(value) => out.i32(value),
             Err(e) => errno_from_neterr(e),
         };
     }
@@ -165,182 +166,44 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         }
     }
     if level == SOL_SOCKET && optname == SO_PEERCRED {
-        // Real peer creds for a connected AF_UNIX fd (snapshotted at
-        // socketpair/connect/accept); falls back to the caller's own
-        // {pid,euid,egid} for non-unix/unconnected sockets.
-        let snapshot = peercred_for_socket(&sock).map(|cred| cred.ids());
-        let (pid, uid, gid) = snapshot.unwrap_or_else(|| {
-            use core::sync::atomic::Ordering;
-            sched::live::current()
-                .map(|c| (c.visible_pid(),
-                          c.creds.euid.load(Ordering::Relaxed),
-                          c.creds.egid.load(Ordering::Relaxed)))
-                .unwrap_or((0, 0, 0))
-        });
-        // DIAG (debug-dbus): log every SO_PEERCRED read + the returned peer
-        // {pid,uid,gid}. dbus-broker calls this at accept to learn a client's
-        // pid; if it returns pid=0 (or a wrong pid) for mutter's connection, the
-        // bus can't tell logind mutter's pid → GetSessionByPID(0) → NoSessionForPID.
+        // `net::sock_opts::peercred` owns the encoding, including the answer
+        // for a socket that never pinned a peer identity.
+        let snapshot = peercred_for_socket(&sock)
+            .map(|cred| { let (pid, uid, gid) = cred.ids(); (pid as i32, uid, gid) });
+        // DIAG (debug-dbus): dbus-broker calls this at accept to learn a
+        // client's pid; a wrong pid there breaks logind session lookup.
         #[cfg(feature = "debug-dbus")]
         {
             klog::write_raw(b"[PEERCRED fd=");
-            klog::write_dec_u64(args.a0 as u64);
+            klog::write_dec_u64(_fd);
             klog::write_raw(b" -> pid=");
-            klog::write_dec_u64(pid as u64);
-            klog::write_raw(b" uid=");
-            klog::write_dec_u64(uid as u64);
+            klog::write_dec_u64(snapshot.map(|(pid, _, _)| pid as u64).unwrap_or(0));
             klog::write_raw(b" src=");
-            klog::write_raw(if snapshot.is_some() { b"pair" } else { b"self" });
-            klog::write_raw(b" by=");
-            if let Some(c) = sched::live::current() {
-                klog::write_dec_u64(c.tid as u64);
-                klog::write_raw(b"/");
-                let comm = c.comm_bytes();
-                klog::write_raw(sched::Task::comm_trim(&comm).as_bytes());
-            }
+            klog::write_raw(if snapshot.is_some() { b"pair" } else { b"none" });
             klog::write_raw(b"]\n");
         }
-        let mut raw_len = [0u8; 4];
-        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        let requested = i32::from_ne_bytes(raw_len);
-        if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
-        let mut value = [0u8; 12];
-        value[..4].copy_from_slice(&pid.to_ne_bytes());
-        value[4..8].copy_from_slice(&uid.to_ne_bytes());
-        value[8..].copy_from_slice(&gid.to_ne_bytes());
-        let take = core::cmp::min(requested as usize, value.len());
-        if take != 0 && uaccess::copy_to_user(optval, &value[..take]).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        return 0;
+        return out.bytes(&net::sock_opts::peercred::ucred_bytes(snapshot));
     }
-    // Read-back of options stored via setsockopt.
-    use core::sync::atomic::Ordering;
-    {
-        let s = sock;
-        let bytes_back = |value: &[u8]| -> i64 {
-            let mut raw_len = [0u8; 4];
-            if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
-            let requested = i32::from_ne_bytes(raw_len);
-            if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
-            let take = core::cmp::min(requested as usize, value.len());
-            if take != 0 && uaccess::copy_to_user(optval, &value[..take]).is_err() { return -(Errno::Efault.as_i32() as i64); }
-            if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() { return -(Errno::Efault.as_i32() as i64); }
-            0
-        };
-        if level == SOL_SOCKET {
-            // The interface name has its own `ERANGE`-bounded copyout shape.
-            if optname == SO_BINDTODEVICE { return bind_to_device_name(&s, optval, optlen_p); }
-            return sol_socket::read(&s, optname, optval, optlen_p);
-        }
-        match (level, optname) {
-            (IPPROTO_IP, IP_HDRINCL) => match &*s.kind.lock() {
-                SockKind::Raw4(endpoint) if !endpoint.is_ping() =>
-                    return i32_back(i32::from(endpoint.hdrincl())),
-                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
-            },
-            (IPPROTO_RAW, ICMP_FILTER) => match &*s.kind.lock() {
-                SockKind::Raw4(endpoint) if endpoint.is_ping() =>
-                    return -(Errno::Enoprotoopt.as_i32() as i64),
-                SockKind::Raw4(endpoint) if endpoint.protocol() == IPPROTO_ICMP => {
-                    let value = endpoint.icmp_filter().to_ne_bytes();
-                    return bytes_back(&value);
-                }
-                SockKind::Raw4(_) => return -(Errno::Eopnotsupp.as_i32() as i64),
-                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
-            },
-            (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
-            (IPPROTO_IP, IP_TTL) => {
-                let ttl = s.opts.ip_ttl.load(Ordering::Acquire);
-                return i32_back(if ttl < 0 { net::ipv4::IPV4_DEFAULT_TTL as i32 } else { ttl });
-            }
-            (IPPROTO_IP, IP_PKTINFO) => return i32_back(s.opts.ip_pktinfo.load(Ordering::Acquire)),
-            (IPPROTO_IP, IP_MTU_DISCOVER) => return i32_back(s.opts.ip_mtu_discover.load(Ordering::Acquire)),
-            (IPPROTO_IP, IP_MTU) => return socket_path_mtu(&s, false, &i32_back),
-            (IPPROTO_IP, IP_RECVERR) => return i32_back(i32::from(s.error.recverr4())),
-            (IPPROTO_IP, IP_MULTICAST_TTL) => return scalar_get(&s, net::sock_mcast::McastScalarGet::V4Ttl, &i32_back),
-            (IPPROTO_IP, IP_MULTICAST_LOOP) => return scalar_get(&s, net::sock_mcast::McastScalarGet::V4Loop, &i32_back),
-            (IPPROTO_IP, IP_MSFILTER) => return ipv4_msfilter_get(&s, optval, optlen_p),
-            (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_group_filter_get(&s, optval, optlen_p),
-            (IPPROTO_IPV6, IPV6_V6ONLY) => return i32_back(s.opts.ipv6_v6only.load(Ordering::Acquire)),
-            (IPPROTO_IPV6, IPV6_HDRINCL) => match &*s.kind.lock() {
-                SockKind::Raw6(endpoint) if !endpoint.is_ping() =>
-                    return i32_back(i32::from(endpoint.header_included())),
-                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
-            },
-            (IPPROTO_IPV6, IPV6_CHECKSUM) | (IPPROTO_RAW, IPV6_CHECKSUM) => match &*s.kind.lock() {
-                SockKind::Raw6(endpoint) if !endpoint.is_ping() =>
-                    return i32_back(endpoint.checksum().linux_value()),
-                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
-            },
-            (SOL_ICMPV6, ICMP6_FILTER) => match &*s.kind.lock() {
-                SockKind::Raw6(endpoint) if endpoint.is_ping() =>
-                    return -(Errno::Enoprotoopt.as_i32() as i64),
-                SockKind::Raw6(endpoint) if endpoint.protocol() == IPPROTO_ICMPV6 => {
-                    let words = endpoint.icmp_filter().words();
-                    // SAFETY: eight initialized u32 words occupy exactly 32 readable bytes.
-                    let bytes = unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), 32) };
-                    return bytes_back(bytes);
-                }
-                SockKind::Raw6(_) => return -(Errno::Eopnotsupp.as_i32() as i64),
-                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
-            },
-            (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => {
-                // Linux resolves a negative (unset) hop limit to the effective
-                // default at read time, matching the TX path.
-                let h = s.opts.ipv6_ucast_hops.load(Ordering::Acquire);
-                return i32_back(if h < 0 { net::ipv6::IPV6_DEFAULT_HOP_LIMIT as i32 } else { h });
-            }
-            (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => {
-                let h = s.opts.ipv6_mcast_hops.load(Ordering::Acquire);
-                // Unset multicast hop limit resolves to the Linux default of 1.
-                return i32_back(if h < 0 { 1 } else { h });
-            }
-            (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => return scalar_get(&s, net::sock_mcast::McastScalarGet::V6Loop, &i32_back),
-            (IPPROTO_IPV6, IPV6_MTU) => return socket_path_mtu(&s, true, &i32_back),
-            (IPPROTO_IPV6, IPV6_MTU_DISCOVER) =>
-                return i32_back(s.opts.ipv6_mtu_discover.load(Ordering::Acquire)),
-            (IPPROTO_IPV6, IPV6_RECVERR) => return i32_back(i32::from(s.error.recverr6())),
-            (IPPROTO_IPV6, IPV6_MULTICAST_IF) => return scalar_get(&s, net::sock_mcast::McastScalarGet::V6Iface, &i32_back),
-            (IPPROTO_IPV6, IPV6_RECVPKTINFO) => return i32_back(s.opts.ipv6_recvpktinfo.load(Ordering::Acquire)),
-            (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => return i32_back(s.opts.ipv6_recvhoplimit.load(Ordering::Acquire)),
-            (IPPROTO_IPV6, IPV6_TCLASS) => {
-                // Linux resolves the unset (-1) sticky traffic class to 0 at
-                // read time, matching the TX path.
-                let t = s.opts.ipv6_tclass.load(Ordering::Acquire);
-                return i32_back(if t < 0 { 0 } else { t });
-            }
-            (IPPROTO_IPV6, IPV6_RECVTCLASS) => return i32_back(s.opts.ipv6_recvtclass.load(Ordering::Acquire)),
-            (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter_get(&s, optval, optlen_p),
-            (IPPROTO_TCP, TCP_NODELAY) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
-            (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),
-            (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
-            (IPPROTO_TCP, TCP_KEEPINTVL) => return i32_back(s.opts.tcp_keepintvl_s.load(Ordering::Acquire)),
-            (IPPROTO_TCP, TCP_KEEPCNT) => return i32_back(s.opts.tcp_keepcnt.load(Ordering::Acquire)),
-            // F188: TCP_INFO returns the Linux tcp_info struct.
-            (IPPROTO_TCP, TCP_INFO) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
-            _ => {
-                // Linux getsockopt: an unknown OPTION at a recognized level is
-                // ENOPROTOOPT for every family, but an unrecognized LEVEL leaves
-                // the chain as EOPNOTSUPP for non-IPv6 sockets (`ip_getsockopt`
-                // and the af-specific tail) while IPv6 (`ipv6_getsockopt`)
-                // reports ENOPROTOOPT. Real programs use recognized levels, so
-                // only this malformed-level path changes.
-                let recognized_level = matches!(level,
-                    SOL_SOCKET | IPPROTO_IP | IPPROTO_IPV6 | IPPROTO_RAW | IPPROTO_TCP);
-                if !recognized_level
-                    && s.family.load(Ordering::Acquire) != net::sock::AF_INET6
-                {
-                    return -(Errno::Eopnotsupp.as_i32() as i64);
-                }
-                return -(Errno::Enoprotoopt.as_i32() as i64);
-            }
-        }
+    if level == SOL_SOCKET {
+        // The interface name has its own `ERANGE`-bounded copyout shape.
+        if optname == SO_BINDTODEVICE { return bind_to_device_name(&sock, optval, optlen_p); }
+        return sol_socket::read(&sock, optname, optval, optlen_p);
+    }
+    if let Some(result) = raw::get(&sock, level, optname, &out) { return result; }
+    match level {
+        IPPROTO_IP => ip::get(&sock, optname, &out),
+        IPPROTO_IPV6 => ipv6::get(&sock, optname, &out),
+        IPPROTO_TCP => tcp::get(&sock, optname, &out),
+        IPPROTO_UDP => udp::get(&sock, optname, &out),
+        IPPROTO_RAW => -(Errno::Enoprotoopt.as_i32() as i64),
+        // Linux getsockopt: an unknown OPTION at a recognized level is
+        // ENOPROTOOPT for every family, but an unrecognized LEVEL leaves the
+        // chain as EOPNOTSUPP for non-IPv6 sockets while IPv6 reports
+        // ENOPROTOOPT. Real programs use recognized levels, so only this
+        // malformed-level path changes.
+        _ if sock.family.load(core::sync::atomic::Ordering::Acquire)
+            != net::sock::AF_INET6 => -(Errno::Eopnotsupp.as_i32() as i64),
+        _ => -(Errno::Enoprotoopt.as_i32() as i64),
     }
 }
 
@@ -352,29 +215,6 @@ fn peercred_for_socket(sock: &alloc::sync::Arc<net::sock::InetSocket>)
         SockKind::UnixMsgPair(pair, end) => Some(pair.peer_cred(*end)),
         SockKind::UnixListener(listener) => Some(listener.owner_cred()),
         _ => None,
-    }
-}
-
-fn socket_path_mtu(s: &alloc::sync::Arc<net::sock::InetSocket>, ipv6: bool,
-                   back: &impl Fn(i32) -> i64) -> i64 {
-    use core::sync::atomic::Ordering;
-    let dst = {
-        let kind = s.kind.lock();
-        match &*kind {
-            SockKind::TcpConn(entry) => Some(entry.conn.lock().remote.ip),
-            _ if ipv6 => s.peer6.lock().map(|(ip, _)| net::IpAddr::V6(ip)),
-            _ => s.peer.lock().map(|(ip, _)| net::IpAddr::V4(ip)),
-        }
-    };
-    let Some(dst) = dst else { return -(Errno::Enotconn.as_i32() as i64); };
-    if ipv6 != matches!(dst, net::IpAddr::V6(_)) {
-        return -(Errno::Enotconn.as_i32() as i64);
-    }
-    let raw = s.opts.bound_ifindex.load(Ordering::Acquire);
-    let bound = if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) };
-    match net::sock::stack().path_mtu(dst, bound, false) {
-        Ok(mtu) => back(mtu.min(i32::MAX as u32) as i32),
-        Err(error) => errno_from_neterr(error),
     }
 }
 
@@ -453,7 +293,7 @@ pub(crate) fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i3
         SockKind::Packet { protocol, .. } => protocol.load(Ordering::Acquire) as i32,
         SockKind::Raw4(endpoint) => endpoint.protocol() as i32,
         SockKind::Raw6(endpoint) => endpoint.protocol() as i32,
-        SockKind::Udp => IPPROTO_UDP,
+        SockKind::Udp => IPPROTO_UDP as i32,
         SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP as i32,
         _ => 0,
     }

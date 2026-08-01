@@ -4,8 +4,15 @@
 // Module manifest:
 // - this file: security admission plus the TCP keepalive option application.
 // - `sol_socket`: the generic SOL_SOCKET option table (slots 54/55).
+// - `peercred`: the `SO_PEERCRED` value encoding, including the no-peer answer.
+// - `sol_ip` / `sol_ipv6` / `sol_tcp` / `sol_udp`: one option level each.
 
+pub mod peercred;
+pub mod sol_ip;
+pub mod sol_ipv6;
 pub mod sol_socket;
+pub mod sol_tcp;
+pub mod sol_udp;
 
 use crate::sock::InetSocket;
 use crate::stack::TcpEntry;
