@@ -14,7 +14,7 @@ const CMSG_ALIGN: usize = 8;
 const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
-use net::sock_opts::sol_socket::SCM_INQ;
+use net::sock_opts::inq::InqCmsg;
 
 fn errno(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 pub(crate) struct DeliveredControl {
@@ -37,6 +37,13 @@ impl Control {
     /// Queue one protocol control message for ordered copyout. # C: O(data)
     pub fn push(&mut self, level: i32, ty: i32, data: &[u8]) {
         self.entries.push((level, ty, data.to_vec()));
+    }
+
+    /// Queue the unread-bytes report a receive owes its caller. Every option
+    /// that enables one — the socket-level and the transport-level number
+    /// alike — publishes through this one path. # C: O(1)
+    pub fn push_inq(&mut self, inq: Option<InqCmsg>) {
+        if let Some(inq) = inq { self.push(inq.level, inq.ty, &inq.data()); }
     }
 
     /// Emit queued cmsgs through one Linux-style advancing cursor. # C: O(entries + data + faults)
@@ -79,15 +86,13 @@ fn cred_bytes(cred: (u32, u32, u32)) -> [u8; 12] {
 /// Emit credentials, then reserve, copy, and publish each received fd. # C: O(files + faults)
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32, u32, u32)>,
-    inq: Option<i32>, recv_flags: u64) -> Result<DeliveredControl, i64>
+    inq: Option<InqCmsg>, recv_flags: u64) -> Result<DeliveredControl, i64>
 {
     let mut flags = output_flags(recv_flags);
     let cap = if user.control == 0 { 0 } else { user.controllen };
     let mut control = Control::new(cap);
     if let Some(cred) = cred { control.push(SOL_SOCKET, SCM_CREDENTIALS, &cred_bytes(cred)); }
-    // `SO_INQ` publishes the bytes still queued after this receive, as an
-    // `int` control message carrying the option's own number.
-    if let Some(inq) = inq { control.push(SOL_SOCKET, SCM_INQ, &inq.to_ne_bytes()); }
+    control.push_inq(inq);
     let off = control.copy_to(user)?;
     flags |= control.flags;
     let remaining = cap.saturating_sub(off);
@@ -157,6 +162,40 @@ mod tests {
 
         assert_eq!(control.copy_to(&user).unwrap(), 32, "cursor advances through CMSG_SPACE");
         assert_eq!(&bytes[28..], &[0xa5; 4], "put_cmsg never touches alignment padding");
+    }
+
+    #[test]
+    fn the_unread_bytes_report_is_emitted_at_its_own_level_and_number() {
+        // Both options publish through the one push path, so the level and
+        // number in the emitted header are the only thing that differs.
+        for (inq, level, ty) in [
+            (InqCmsg::socket(7), 1, net::sock_opts::sol_socket::SCM_INQ),
+            (InqCmsg::tcp(7), 6, net::sock_opts::sol_tcp::TCP_CM_INQ as i32),
+        ] {
+            let mut bytes = [0u8; 32];
+            let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+                control: bytes.as_mut_ptr() as u64, controllen: bytes.len(),
+                iov: Vec::new(), capacity: 0 };
+            let mut control = Control::new(bytes.len());
+            control.push_inq(Some(inq));
+            let copied = control.copy_to(&user).unwrap();
+            assert_eq!(copied, aligned(CMSG_HDR + 4));
+            assert_eq!(u64::from_ne_bytes(bytes[..8].try_into().unwrap()) as usize, CMSG_HDR + 4);
+            assert_eq!(i32::from_ne_bytes(bytes[8..12].try_into().unwrap()), level);
+            assert_eq!(i32::from_ne_bytes(bytes[12..16].try_into().unwrap()), ty);
+            assert_eq!(i32::from_ne_bytes(bytes[16..20].try_into().unwrap()), 7);
+        }
+    }
+
+    #[test]
+    fn a_socket_that_did_not_ask_gets_no_unread_bytes_report() {
+        let mut bytes = [0u8; 32];
+        let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(),
+            iov: Vec::new(), capacity: 0 };
+        let mut control = Control::new(bytes.len());
+        control.push_inq(None);
+        assert_eq!(control.copy_to(&user).unwrap(), 0);
     }
 
     #[test]
