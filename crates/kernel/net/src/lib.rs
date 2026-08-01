@@ -89,7 +89,10 @@ pub mod route6;
 pub mod policy_rule;
 pub mod forwarding;
 pub mod iface_addr;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+// The router-alert registry is read by the ungated forwarding and raw-socket
+// paths, so it carries no gate of its own: an ungated module cannot name a
+// configured-out one, and gating those callers instead would put the forwarding
+// decision behind a build flag.
 pub mod router_alert;
 pub mod bind_screen;
 pub mod local_port;
@@ -121,9 +124,7 @@ pub use netdev::{
     PacketRxMode, PacketVlan, STAT_FIELDS,
 };
 
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_opts;
 pub mod vsock;
 pub mod vsock_socket;
