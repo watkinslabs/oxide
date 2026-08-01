@@ -41,7 +41,13 @@ fn i64_at(bytes: &[u8], offset: usize) -> i64 {
 /// and a bad pointer `EFAULT` before the option number is classified.
 /// # C: O(1)
 fn import(optname: u64, optval: u64, optlen: u32) -> Result<Arg, Errno> {
-    if optlen < core::mem::size_of::<i32>() as u32 { return Err(Errno::Einval); }
+    let width = core::mem::size_of::<i32>() as u32;
+    let short = if net::sock_opts::sol_socket::exact_int_argument(optname) {
+        optlen != width
+    } else {
+        optlen < width
+    };
+    if short { return Err(Errno::Einval); }
     let leading = i32_at(&read_bytes::<4>(optval)?, 0);
     match net::sock_opts::sol_socket::set::arg_class(optname) {
         ArgClass::Int | ArgClass::Device | ArgClass::Filter | ArgClass::Reuseport

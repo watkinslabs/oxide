@@ -6,6 +6,8 @@ use crate::pkt::Pkt;
 pub const IPV4_HDR_LEN: usize = 20;
 pub const IPV4_VERSION: u8    = 4;
 pub const IPV4_DEFAULT_TTL: u8 = 64;
+/// The don't-fragment bit of the flags-and-offset field.
+pub const IPV4_FLAG_DONT_FRAGMENT: u16 = 0x4000;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Ipv4Error {

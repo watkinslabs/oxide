@@ -10,6 +10,9 @@ use crate::stack::NetStack;
 
 #[path = "mcast_socket_gate.rs"]
 mod socket_gate;
+// The IPv6 membership half, split out at the per-file size cutoff. The IPv4
+// half, the delivery decision and the shared state stay here.
+mod membership_v6;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use socket_gate::{SocketMcastGate, SocketMcastLease};
 
@@ -103,12 +106,44 @@ fn publish_v6(inner: &mut Inner, stack: &NetStack, rtnl: &crate::RtnlGuard<'_>,
 
 
 /// Canonical socket-owned multicast state, valid before and after bind.
-pub struct SocketMcast { inner: Spinlock<Inner, LockClass> }
+pub struct SocketMcast {
+    inner: Spinlock<Inner, LockClass>,
+    /// `IP_MULTICAST_ALL` / `IPV6_MULTICAST_ALL`, both enabled at creation:
+    /// a datagram for a group this socket never joined is delivered ANYWAY,
+    /// and only a group it did join is source-filtered. Clearing the flag is
+    /// what restricts delivery to joined groups.
+    multicast_all_v4: ::core::sync::atomic::AtomicBool,
+    multicast_all_v6: ::core::sync::atomic::AtomicBool,
+}
 
 impl SocketMcast {
     /// Empty socket multicast state. # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(Inner { v4: BTreeMap::new(), v6: BTreeMap::new() }) }
+        Self {
+            inner: Spinlock::new(Inner { v4: BTreeMap::new(), v6: BTreeMap::new() }),
+            multicast_all_v4: ::core::sync::atomic::AtomicBool::new(true),
+            multicast_all_v6: ::core::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// # C: O(1)
+    pub fn set_multicast_all_v4(&self, on: bool) {
+        self.multicast_all_v4.store(on, ::core::sync::atomic::Ordering::Release);
+    }
+
+    /// # C: O(1)
+    pub fn set_multicast_all_v6(&self, on: bool) {
+        self.multicast_all_v6.store(on, ::core::sync::atomic::Ordering::Release);
+    }
+
+    /// # C: O(1)
+    pub fn multicast_all_v4(&self) -> bool {
+        self.multicast_all_v4.load(::core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// # C: O(1)
+    pub fn multicast_all_v6(&self) -> bool {
+        self.multicast_all_v6.load(::core::sync::atomic::Ordering::Acquire)
     }
 
     /// Join or leave one IPv4 group and its interface-level refcount atomically. # C: O(N)
@@ -252,156 +287,25 @@ impl SocketMcast {
         Ok(())
     }
 
-    /// Join or leave one IPv6 group and interface-level refcount atomically. # C: O(N)
-    pub fn change_v6(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv6Addr,
-                     report_src: Ipv6Addr, join: bool) -> NetResult<()> {
-        self.change_v6_in(stack, 0, iface, group, report_src, join)
-    }
-
-    /// Join or leave one IPv6 group in an explicit network namespace. # C: O(N)
-    pub fn change_v6_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
-                        group: Ipv6Addr, report_src: Ipv6Addr, join: bool) -> NetResult<()> {
-        let key = v6_key(iface, group);
-        let report_owner = namespace_owner(net_ns).ok_or(NetError::Enodev)?;
-        let rtnl = stack.rtnl_lock();
-        let mut inner = self.inner.lock();
-        let work = if join {
-            if inner.v6.contains_key(&key) { return Err(NetError::Eaddrinuse); }
-            let generation = stack.multicast_generation_in(&rtnl, net_ns, iface)?;
-            let membership = V6Membership {
-                net_ns, generation, report_src,
-                filter: SourceFilter6 { mode: FilterMode::Exclude, sources: Vec::new() },
-            };
-            publish_v6(&mut inner, stack, &rtnl, &report_owner, net_ns, self.owner_key(), iface, group,
-                report_src, Some(membership))?
-        } else {
-            let membership = inner.v6.get(&key).cloned().ok_or(NetError::Eaddrnotavail)?;
-            if membership.net_ns != net_ns { return Err(NetError::Enodev); }
-            publish_v6(&mut inner, stack, &rtnl, &report_owner, net_ns, self.owner_key(), iface, group,
-                membership.report_src, None)?
-        };
-        drop(inner); drop(rtnl);
-        stack.finish_v6_multicast(work);
-        Ok(())
-    }
-
-    /// Apply one IPv6 source-membership operation. # C: O(N + S)
-    pub fn source_v6(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv6Addr,
-                     report_src: Ipv6Addr, source: Ipv6Addr, op: SourceOp) -> NetResult<()> {
-        self.source_v6_in(stack, 0, iface, group, report_src, source, op)
-    }
-
-    /// Apply one IPv6 source operation in an explicit network namespace. # C: O(N + S)
-    pub fn source_v6_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
-                        group: Ipv6Addr, report_src: Ipv6Addr, source: Ipv6Addr,
-                        op: SourceOp) -> NetResult<()> {
-        let key = v6_key(iface, group);
-        let report_owner = namespace_owner(net_ns).ok_or(NetError::Enodev)?;
-        let rtnl = stack.rtnl_lock();
-        let mut inner = self.inner.lock();
-        let work = match op {
-            SourceOp::Join => {
-                let mut next = match inner.v6.get(&key) {
-                    Some(current) if current.filter.mode != FilterMode::Include => return Err(NetError::Eaddrinuse),
-                    Some(current) => current.clone(),
-                    None => V6Membership {
-                        net_ns, generation: stack.multicast_generation_in(&rtnl, net_ns, iface)?,
-                        report_src, filter: SourceFilter6 { mode: FilterMode::Include, sources: Vec::new() },
-                    },
-                };
-                if next.net_ns != net_ns { return Err(NetError::Enodev); }
-                if next.filter.sources.contains(&source) { return Err(NetError::Eaddrinuse); }
-                next.filter.sources.push(source);
-                publish_v6(&mut inner, stack, &rtnl, &report_owner, net_ns, self.owner_key(), iface, group,
-                    next.report_src, Some(next))?
-            }
-            SourceOp::Leave => {
-                let mut next = inner.v6.get(&key).cloned().ok_or(NetError::Eaddrnotavail)?;
-                if next.net_ns != net_ns { return Err(NetError::Enodev); }
-                if next.filter.mode != FilterMode::Include { return Err(NetError::Einval); }
-                let index = next.filter.sources.iter().position(|addr| *addr == source)
-                    .ok_or(NetError::Eaddrnotavail)?;
-                next.filter.sources.remove(index);
-                let report_src = next.report_src;
-                let next = if next.filter.sources.is_empty() { None } else { Some(next) };
-                publish_v6(&mut inner, stack, &rtnl, &report_owner, net_ns, self.owner_key(), iface, group,
-                    report_src, next)?
-            }
-            SourceOp::Block | SourceOp::Unblock => {
-                let mut next = inner.v6.get(&key).cloned().ok_or(NetError::Eaddrnotavail)?;
-                if next.net_ns != net_ns { return Err(NetError::Enodev); }
-                if next.filter.mode != FilterMode::Exclude { return Err(NetError::Einval); }
-                let found = next.filter.sources.iter().position(|addr| *addr == source);
-                if op == SourceOp::Block {
-                    if found.is_some() { return Err(NetError::Eaddrinuse); }
-                    next.filter.sources.push(source);
-                } else {
-                    let index = found.ok_or(NetError::Eaddrnotavail)?;
-                    next.filter.sources.remove(index);
-                }
-                publish_v6(&mut inner, stack, &rtnl, &report_owner, net_ns, self.owner_key(), iface, group,
-                    next.report_src, Some(next))?
-            }
-        };
-        drop(inner); drop(rtnl);
-        stack.finish_v6_multicast(work);
-        Ok(())
-    }
-
-    /// Replace one IPv6 full-state filter, joining the group if needed. # C: O(N + S)
-    pub fn set_v6(&self, stack: &NetStack, iface: NetIfaceId, group: Ipv6Addr,
-                  report_src: Ipv6Addr, mode: FilterMode, sources: &[Ipv6Addr]) -> NetResult<()> {
-        self.set_v6_in(stack, 0, iface, group, report_src, mode, sources)
-    }
-
-    /// Replace one IPv6 filter in an explicit network namespace. # C: O(N + S)
-    pub fn set_v6_in(&self, stack: &NetStack, net_ns: u64, iface: NetIfaceId,
-                     group: Ipv6Addr, report_src: Ipv6Addr, mode: FilterMode,
-                     sources: &[Ipv6Addr]) -> NetResult<()> {
-        let key = v6_key(iface, group);
-        let mut dedup = Vec::new();
-        for source in sources { if !dedup.contains(source) { dedup.push(*source); } }
-        let report_owner = namespace_owner(net_ns).ok_or(NetError::Enodev)?;
-        let rtnl = stack.rtnl_lock();
-        let mut inner = self.inner.lock();
-        let work = if mode == FilterMode::Include && dedup.is_empty() {
-            let membership = inner.v6.get(&key).cloned().ok_or(NetError::Eaddrnotavail)?;
-            if membership.net_ns != net_ns { return Err(NetError::Enodev); }
-            publish_v6(&mut inner, stack, &rtnl, &report_owner, net_ns, self.owner_key(), iface, group,
-                membership.report_src, None)?
-        } else {
-            if inner.v6.get(&key).is_some_and(|current| current.net_ns != net_ns) {
-                return Err(NetError::Enodev);
-            }
-            let generation = match inner.v6.get(&key) {
-                Some(current) => current.generation,
-                None => stack.multicast_generation_in(&rtnl, net_ns, iface)?,
-            };
-            let next = V6Membership {
-                net_ns, generation,
-                report_src: inner.v6.get(&key).map(|current| current.report_src).unwrap_or(report_src),
-                filter: SourceFilter6 { mode, sources: dedup },
-            };
-            publish_v6(&mut inner, stack, &rtnl, &report_owner, net_ns, self.owner_key(), iface, group,
-                next.report_src, Some(next))?
-        };
-        drop(inner); drop(rtnl);
-        stack.finish_v6_multicast(work);
-        Ok(())
-    }
-
-    /// Test IPv4 membership and source filter in one lock snapshot. # C: O(log N + S)
+    /// Test IPv4 membership and source filter in one lock snapshot. A group
+    /// this socket never joined is refused only when the caller turned
+    /// unconditional multicast delivery off. # C: O(log N + S)
     pub fn accept_v4(&self, iface: NetIfaceId, group: Ipv4Addr, src: Ipv4Addr) -> bool {
         let inner = self.inner.lock();
-        let Some(membership) = inner.v4.get(&v4_key(iface, group)) else { return false };
+        let Some(membership) = inner.v4.get(&v4_key(iface, group)) else {
+            return self.multicast_all_v4();
+        };
         let listed = membership.filter.sources.contains(&src);
         match membership.filter.mode { FilterMode::Include => listed, FilterMode::Exclude => !listed }
     }
 
-    /// Test exact IPv6 membership. # C: O(log N)
+    /// Test exact IPv6 membership, with the same unconditional-delivery rule
+    /// the IPv4 side follows. # C: O(log N)
     pub fn accept_v6(&self, iface: NetIfaceId, group: Ipv6Addr, src: Ipv6Addr) -> bool {
         let inner = self.inner.lock();
-        let Some(membership) = inner.v6.get(&v6_key(iface, group)) else { return false };
+        let Some(membership) = inner.v6.get(&v6_key(iface, group)) else {
+            return self.multicast_all_v6();
+        };
         let listed = membership.filter.sources.contains(&src);
         match membership.filter.mode { FilterMode::Include => listed, FilterMode::Exclude => !listed }
     }

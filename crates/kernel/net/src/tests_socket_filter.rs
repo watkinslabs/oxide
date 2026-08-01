@@ -49,7 +49,7 @@ fn udp_socket_filter_sees_header_drops_zero_and_truncates_positive_verdict() {
         Ipv4Addr::LOOPBACK, SOURCE_PORT, Ipv4Addr::LOOPBACK, PORT, b"abcdef",
     ).unwrap();
     stack.drain_loopback(iface, &loopback);
-    assert_eq!(truncated.recv(false).unwrap().5, b"abc");
+    assert_eq!(truncated.recv(false).unwrap().payload, b"abc");
 
     stack.unbind_udp_endpoint(&truncated);
     let dropped = endpoint(&stack, PORT, filter(0));

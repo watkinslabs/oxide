@@ -227,6 +227,10 @@ impl NetStack {
         let frag_payload = &l3[hdr.ihl_bytes() .. total];
         let assembled;
         let reassembled_packet;
+        // The received option area is what IP_RECVOPTS and IP_RETOPTS publish,
+        // so it is kept rather than skipped past.
+        let rx_options = l3[IPV4_HDR_LEN..hdr.ihl_bytes()].to_vec();
+        let mut frag_max = 0u32;
         let mf = (hdr.flags_frag & 0x2000) != 0;
         let off8 = (hdr.flags_frag & 0x1FFF) as usize;
         let (payload, full_packet): (&[u8], &[u8]) = if mf || off8 != 0 {
@@ -236,11 +240,13 @@ impl NetStack {
                 proto: hdr.proto, id: hdr.id,
             };
             let prefix = (off8 == 0).then_some(&l3[..hdr.ihl_bytes()]);
+            let fragsize = (hdr.ihl_bytes() + frag_payload.len()) as u32;
             match self.ipv4_reasm.push_with_prefix(
-                k, net_now_ns(), off8 * 8, prefix, frag_payload, mf,
+                k, net_now_ns(), off8 * 8, prefix, frag_payload, mf, fragsize,
             ) {
-                Some((header, b)) => {
+                Some((header, b, largest)) => {
                     assembled = b;
+                    frag_max = largest;
                     let Some(packet) = crate::cgroup_bpf::reassembled_ipv4(&header, &assembled)
                         else { return Err(NetError::Einval); };
                     reassembled_packet = packet;
@@ -298,6 +304,9 @@ impl NetStack {
                     .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
                 let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst,
                     udp.dst_port, iface, datagram_body);
+                let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
+                    .map_or(0, |dev| dev.hardware_type());
+                let gro_offered = crate::udp_gro::device_offers_gro(hatype);
                 let has_v4 = !endpoints.is_empty();
                 for q in endpoints {
                     if hdr.dst.is_multicast() {
@@ -317,9 +326,13 @@ impl NetStack {
                                 .map_or(0, |dev| dev.hardware_type()),
                         }), body.len(),
                     ) else { continue; };
-                    let _ = q.enqueue((
-                        hdr.src, udp.src_port, hdr.dst, iface, hdr.ttl, body[..keep].to_vec(),
-                    ));
+                    let _ = q.enqueue_gro(crate::stack::UdpDatagram {
+                        src: hdr.src, sport: udp.src_port, dst: hdr.dst,
+                        dport: udp.dst_port, iface, ttl: hdr.ttl, tos: hdr.tos,
+                        options: rx_options.clone(), frag_max,
+                        dont_fragment: hdr.flags_frag & crate::ipv4::IPV4_FLAG_DONT_FRAGMENT != 0,
+                        payload: body[..keep].to_vec(),
+                    }, udp.checksum == 0, gro_offered);
                 }
                 let endpoints6 = if !has_v4 || hdr.dst.is_multicast() || hdr.dst.is_broadcast() {
                     self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port,
@@ -340,16 +353,18 @@ impl NetStack {
                                 .map_or(0, |dev| dev.hardware_type()),
                         }), body.len(),
                     ) else { continue; };
-                    let _ = q.enqueue((
-                        Ipv6Addr::from_v4_mapped(hdr.src), udp.src_port,
-                        Ipv6Addr::from_v4_mapped(hdr.dst), iface, hdr.ttl, hdr.tos,
-                        body[..keep].to_vec(),
-                    ));
+                    let _ = q.enqueue_gro(crate::stack_ipv6::Udp6Datagram {
+                        src: Ipv6Addr::from_v4_mapped(hdr.src), sport: udp.src_port,
+                        dst: Ipv6Addr::from_v4_mapped(hdr.dst), dport: udp.dst_port,
+                        iface, hop_limit: hdr.ttl, traffic_class: hdr.tos,
+                        flowinfo: 0, ext_headers: alloc::vec::Vec::new(), frag_max,
+                        payload: body[..keep].to_vec(),
+                    }, udp.checksum == 0, gro_offered);
                 }
             }
             p if p == IpProto::Tcp as u8 =>
-                self.deliver_tcp_packet(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
-                    payload, full_packet)?,
+                self.deliver_tcp_packet_hop(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
+                    payload, full_packet, hdr.ttl)?,
             p if p == IpProto::Igmp as u8 => {
                 if hdr.ttl == 1 && ipv4_has_router_alert(&l3[IPV4_HDR_LEN..hdr.ihl_bytes()]) {
                     self.handle_igmp(iface, hdr.src, hdr.dst, payload)?;

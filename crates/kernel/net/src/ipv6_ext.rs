@@ -16,6 +16,23 @@ fn is_skip_header(next: u8) -> bool {
     matches!(next, NH_HOP_BY_HOP | NH_DEST_OPTS | NH_ROUTING)
 }
 
+/// Collect the extension headers a received packet carries, in wire order, as
+/// `(header kind, whole header bytes)`. The receive ancillary messages publish
+/// exactly these, so the walk keeps them instead of stepping past.
+/// # C: O(headers)
+pub fn collect(mut next: u8, mut payload: &[u8]) -> alloc::vec::Vec<(u8, alloc::vec::Vec<u8>)> {
+    let mut out = alloc::vec::Vec::new();
+    while is_skip_header(next) {
+        if payload.len() < 2 { break; }
+        let hdr_len = (payload[1] as usize + 1) * 8;
+        if hdr_len > payload.len() { break; }
+        out.push((next, payload[..hdr_len].to_vec()));
+        next = payload[0];
+        payload = &payload[hdr_len..];
+    }
+    out
+}
+
 /// Walk IPv6 extension headers until an upper-layer payload or Fragment header. # C: O(headers)
 pub fn walk(mut next: u8, mut payload: &[u8]) -> Result<ExtWalk<'_>, Ipv6ExtError> {
     while is_skip_header(next) {

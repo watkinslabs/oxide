@@ -85,6 +85,24 @@ fn mode_dims(card: &Arc<dyn DrmDriver>, crtc_idx: usize) -> (u32, u32) {
     }
 }
 
+/// Blob id of the EDID connector `obj_id` published, or `None` when the object
+/// is not a connector of this card or its display published no EDID. A
+/// connector without EDID reports blob id zero, not a blob that GETPROPBLOB
+/// would then fail to find. # C: O(connectors + EDID bytes)
+fn connector_edid_blob_id(card: &Arc<dyn DrmDriver>, obj_id: u32) -> Option<u32> {
+    let idx = card.connector_ids().iter().position(|id| *id == obj_id)?;
+    card.edid_blob(idx)?;
+    edid_blob_id(idx)
+}
+
+/// Bytes of a driver-owned EDID blob, or `None` when `blob_id` names no
+/// connector's EDID on this card. # C: O(connectors + EDID bytes)
+pub fn edid_blob_bytes(card: &Arc<dyn DrmDriver>, blob_id: u32) -> Option<alloc::vec::Vec<u8>> {
+    let idx = edid_blob_idx(blob_id)?;
+    if idx >= card.connector_ids().len() { return None; }
+    card.edid_blob(idx)
+}
+
 /// Current value of one property, read from the committed KMS state the scanout
 /// owner (`crtc`) holds — never from a shadow table. Mirrors
 /// `drm_atomic_{crtc,plane,connector}_get_property` (drm_atomic_uapi.c).
@@ -102,6 +120,7 @@ fn value(card_id: u32, card: &Arc<dyn DrmDriver>, obj_id: u32, prop: u32) -> u64
         PROP_CRTC_OUT_FENCE_PTR | PROP_CRTC_VRR_ENABLED => 0,
         PROP_CONN_CRTC_ID => if active { crtc as u64 } else { 0 },
         PROP_CONN_DPMS | PROP_CONN_LINK_STATUS | PROP_CONN_NON_DESKTOP | PROP_CONN_TILE => 0,
+        PROP_CONN_EDID => connector_edid_blob_id(card, obj_id).unwrap_or(0) as u64,
         PROP_PLANE_TYPE => match plane_idx {
             Some(idx) if is_cursor_idx(idx) => DRM_PLANE_TYPE_CURSOR,
             _ => DRM_PLANE_TYPE_PRIMARY,

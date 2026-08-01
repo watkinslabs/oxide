@@ -288,7 +288,22 @@ impl TcpConn {
                     emit_fin_ack = Some(self.build_segment(flags::ACK, &[]));
                 }
                 if !payload.is_empty() && emit_fin_ack.is_none() {
-                    return Ok(Some(self.build_ack_with_sack()));
+                    if self.ack_now() {
+                        self.rcv_wup = self.rcv_nxt;
+                        self.ack_pending = false;
+                        self.ack_deadline_ns = 0;
+                        return Ok(Some(self.build_ack_with_sack()));
+                    }
+                    // Ping-pong mode: the acknowledgement waits for either the
+                    // reply it can ride on or the delayed-ACK deadline, which
+                    // the retransmit scan stamps and enforces.
+                    self.ack_pending = true;
+                    return Ok(None);
+                }
+                if emit_fin_ack.is_some() {
+                    self.rcv_wup = self.rcv_nxt;
+                    self.ack_pending = false;
+                    self.ack_deadline_ns = 0;
                 }
                 Ok(emit_fin_ack)
             }

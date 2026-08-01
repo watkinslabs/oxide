@@ -33,6 +33,11 @@ pub mod sysctl;
 pub mod uapi;
 pub mod send_control;
 pub mod socket_args;
+// Receive ancillary messages: which control message each option produces, in
+// what order, with what payload. Ungated so the whole decision is testable.
+pub mod cmsg;
+// The generalized hop-limit security check both IP levels expose.
+pub mod min_hop;
 pub mod sockaddr;
 pub mod socket_error;
 pub mod socket_owner;
@@ -53,6 +58,9 @@ pub mod arp;
 pub mod ethernet;
 pub mod ndp;
 pub mod udp;
+pub mod udp_gro;
+#[cfg(test)]
+mod udp_gro_endpoint_tests;
 pub mod tcp_hdr;
 pub mod tcp_conn;
 pub use tcp_conn::{Endpoint, TcpCongestionControl, TcpConn, TcpConnError};
@@ -167,6 +175,8 @@ mod tests_ipv6_local;
 mod tests_ipv4_udp_errors;
 #[cfg(test)]
 mod tests_inet_netns;
+#[cfg(test)]
+mod tests_min_hop;
 #[cfg(test)]
 mod route_metrics_tests;
 
