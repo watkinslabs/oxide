@@ -165,6 +165,13 @@ fn queue_limit_and_close_are_admission_boundaries() {
 fn multicast_requires_socket_membership_before_queue_admission() {
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), PROTOCOL);
     let group = Ipv6Addr([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+    // A group this socket never joined is delivered while unconditional
+    // multicast delivery is on, which is the state a socket is created in.
+    assert_eq!(endpoint.receive(packet(PROTOCOL, LINK_LOCAL, group, b"group")),
+        Raw6RxDisposition::Queued);
+    assert_eq!(endpoint.recv(false).unwrap().payload, b"group");
+    // Clearing it restores membership as the admission gate.
+    endpoint.mcast.set_multicast_all_v6(false);
     assert_eq!(endpoint.receive(packet(PROTOCOL, LINK_LOCAL, group, b"group")),
         Raw6RxDisposition::PolicyDrop);
     assert_eq!(endpoint.queue_usage(), (0, 0));

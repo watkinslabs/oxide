@@ -121,11 +121,12 @@ pub(crate) fn read_unix_stream_blocking(
     end: crate::UnixEnd,
     buf: &mut [u8],
     deadline_ns: u64,
+    passcred: bool,
 ) -> vfs::KResult<usize> {
     loop {
         // Fast path + interruption checks BEFORE arming the wait, matching
         // Linux (signal/timeout observed before prepare_to_wait).
-        let got = pair.read(end, buf.len());
+        let got = pair.read_passcred(end, buf.len(), passcred);
         if !got.is_empty() {
             let n = got.len();
             buf[..n].copy_from_slice(&got);
@@ -152,7 +153,7 @@ pub(crate) fn read_unix_stream_blocking(
         #[cfg(target_os = "oxide-kernel")]
         {
             use crate::unix_sock::stream::ReadOutcome;
-            match pair.read_or_park(end, buf.len(), deadline_ns) {
+            match pair.read_or_park(end, buf.len(), deadline_ns, passcred) {
                 ReadOutcome::Data(got) => {
                     if !got.is_empty() {
                         let n = got.len();
@@ -311,7 +312,7 @@ pub fn recvfrom_opts(
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&msg[..take]);
-        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
+        return Ok(Received { payload: out, full_len, ..Default::default() });
     }
     // AF_UNIX SOCK_STREAM socketpair (UnixPair byte rings). Same bug as the
     // SEQPACKET case below: recvmsg/recvfrom had no SockKind::Unix branch and
@@ -324,10 +325,11 @@ pub fn recvfrom_opts(
         _ => None,
     };
     if let Some((pair, end)) = stream {
-        let got = if opts.peek { pair.peek(end, max_len) } else { pair.read(end, max_len) };
+        let passcred = sock.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let got = if opts.peek { pair.peek(end, max_len) } else { pair.read_passcred(end, max_len, passcred) };
         if !got.is_empty() {
             let full_len = got.len();
-            return Ok(Received { payload: got, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
+            return Ok(Received { payload: got, full_len, ..Default::default() });
         }
         if pair.take_reset(end) { return Err(NetError::Econnreset); }
         // Empty: EOF (peer closed + drained) → 0-byte read; else EAGAIN so the
@@ -348,7 +350,7 @@ pub fn recvfrom_opts(
     };
     if let Some((pair, end)) = msgpair {
         return match pair.recv_payload(end, max_len, opts.peek) {
-            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None }),
+            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, ..Default::default() }),
             // `is_eof` existed with no caller on this path: a drained
             // SEQPACKET whose writer closed reported EAGAIN while poll reported
             // POLLIN — the same spin as the DGRAM arm above.
@@ -364,11 +366,19 @@ pub fn recvfrom_opts(
         };
         let full_len = datagram.packet.len();
         let take = core::cmp::min(max_len, full_len);
+        // A raw socket receives the whole packet, so the header fields the
+        // ancillary messages publish are read back out of it.
+        let (tos, options) = match crate::ipv4::Ipv4Hdr::parse(&datagram.packet) {
+            Ok(h) => (Some(h.tos),
+                datagram.packet.get(crate::ipv4::IPV4_HDR_LEN..h.ihl_bytes())
+                    .unwrap_or(&[]).to_vec()),
+            Err(_) => (None, alloc::vec::Vec::new()),
+        };
         return Ok(Received {
             payload: datagram.packet[..take].to_vec(), full_len,
-            peer: Some((datagram.source, 0)), peer6: None,
-            pktinfo: Some((datagram.destination, datagram.iface)), pktinfo6: None,
-            hoplimit: None, tclass: None, ttl: Some(datagram.ttl), packet: None,
+            peer: Some((datagram.source, 0)),
+            pktinfo: Some((datagram.destination, datagram.iface)),
+            ttl: Some(datagram.ttl), tos, options, ..Default::default()
         });
     }
     if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
@@ -378,11 +388,13 @@ pub fn recvfrom_opts(
         let full_len = datagram.payload.len();
         let take = core::cmp::min(max_len, full_len);
         return Ok(Received {
-            payload: datagram.payload[..take].to_vec(), full_len, peer: None,
+            payload: datagram.payload[..take].to_vec(), full_len,
             peer6: Some((datagram.meta.source.addr, 0, datagram.meta.source.scope_id)),
-            pktinfo: None, pktinfo6: Some((datagram.meta.destination, datagram.meta.iface)),
+            pktinfo6: Some((datagram.meta.destination, datagram.meta.iface)),
             hoplimit: Some(datagram.meta.hop_limit), tclass: Some(datagram.meta.traffic_class),
-            ttl: None, packet: None,
+            flowinfo: crate::cmsg::flowinfo(datagram.meta.traffic_class,
+                datagram.meta.flow_label),
+            ..Default::default()
         });
     }
     if let Some(received) = packet::recv(sock, max_len, opts) { return received; }
@@ -403,7 +415,7 @@ pub fn recvfrom_opts(
         }
         let full_len = payload.len();
         let peer = *sock.peer.lock();
-        return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
+        return Ok(Received { payload, full_len, peer, ..Default::default() });
     }
     // UDP. AF_INET6 datagram sockets retain their exact v6 endpoint;
     // consulting the IPv4 endpoint would always miss.
@@ -419,20 +431,24 @@ pub fn recvfrom_opts(
                 return recv_empty(sock.read_shut.load(core::sync::atomic::Ordering::Acquire));
             }
         };
-        let got = endpoint.recv(opts.peek);
-        let Some((src_ip6, src_port, dst_ip6, iface, hop, tclass, full)) = got else {
+        let Some((d, gro)) = endpoint.recv_gro(opts.peek) else {
             let eno = sock.take_pending_recv_error();
             if eno != 0 { return Err(pending_net_error(eno)); }
             return recv_empty(sock.read_shut.load(core::sync::atomic::Ordering::Acquire));
         };
-        let full_len = full.len();
+        let full_len = d.payload.len();
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
-        out.extend_from_slice(&full[..take]);
+        out.extend_from_slice(&d.payload[..take]);
+        let scope_id = if d.src.is_link_local() { d.iface.raw() } else { 0 };
         return Ok(Received {
-            payload: out, full_len, peer: None,
-            peer6: Some((src_ip6, src_port, if src_ip6.is_link_local() { iface.raw() } else { 0 })),
-            pktinfo: None, pktinfo6: Some((dst_ip6, iface)), hoplimit: Some(hop), tclass: Some(tclass), ttl: None, packet: None,
+            payload: out, full_len,
+            peer6: Some((d.src, d.sport, scope_id)),
+            pktinfo6: Some((d.dst, d.iface)),
+            hoplimit: Some(d.hop_limit), tclass: Some(d.traffic_class),
+            dport: d.dport, flowinfo: d.flowinfo, ext_headers: d.ext_headers,
+            frag_max: d.frag_max, gro: gro.map(|seg| seg as i32),
+            ..Default::default()
         });
     }
     // UDP / others (AF_INET).
@@ -447,15 +463,19 @@ pub fn recvfrom_opts(
             return recv_empty(sock.read_shut.load(core::sync::atomic::Ordering::Acquire));
         }
     };
-    let got = endpoint.recv(opts.peek);
-    let Some((src_ip, src_port, dst_ip, iface, ttl, full)) = got else {
+    let Some((d, gro)) = endpoint.recv_gro(opts.peek) else {
         let eno = sock.take_pending_recv_error();
         if eno != 0 { return Err(pending_net_error(eno)); }
         return recv_empty(sock.read_shut.load(core::sync::atomic::Ordering::Acquire));
     };
-    let full_len = full.len();
+    let full_len = d.payload.len();
     let take = core::cmp::min(max_len, full_len);
     let mut out = alloc::vec::Vec::with_capacity(take);
-    out.extend_from_slice(&full[..take]);
-    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None, pktinfo: Some((dst_ip, iface)), pktinfo6: None, hoplimit: None, tclass: None, ttl: Some(ttl), packet: None })
+    out.extend_from_slice(&d.payload[..take]);
+    Ok(Received {
+        payload: out, full_len, peer: Some((d.src, d.sport)),
+        pktinfo: Some((d.dst, d.iface)), ttl: Some(d.ttl), tos: Some(d.tos),
+        options: d.options, dport: d.dport, frag_max: d.frag_max,
+        gro: gro.map(|seg| seg as i32), ..Default::default()
+    })
 }

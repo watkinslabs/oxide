@@ -181,7 +181,8 @@ fn loopback_udp_round_trip() {
         b"hello-net",
     ).unwrap();
     stack.drain_loopback(id, &lo);
-    let (src, src_port, _, _, _, payload) = endpoint.recv(false).unwrap();
+    let d = endpoint.recv(false).unwrap();
+    let (src, src_port, payload) = (d.src, d.sport, d.payload);
     assert_eq!(src, Ipv4Addr::LOOPBACK);
     assert_eq!(src_port, 5000);
     assert_eq!(payload, b"hello-net");
@@ -199,9 +200,9 @@ fn udp_recv_peek_leaves_datagram_queued() {
         b"peek-me",
     ).unwrap();
     stack.drain_loopback(id, &lo);
-    let (_, _, _, _, _, peeked) = endpoint.recv(true).unwrap();
+    let peeked = endpoint.recv(true).unwrap().payload;
     assert_eq!(peeked, b"peek-me");
-    let (_, _, _, _, _, popped) = endpoint.recv(false).unwrap();
+    let popped = endpoint.recv(false).unwrap().payload;
     assert_eq!(popped, b"peek-me");
     assert!(endpoint.recv(false).is_none());
 }

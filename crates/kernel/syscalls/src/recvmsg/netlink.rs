@@ -54,7 +54,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
         }
     };
     let delivered = if sock.protocol == NETLINK_KOBJECT_UEVENT {
-        match crate::recv_control::deliver(user, Vec::new(), Some((0, 0, 0)), flags) {
+        match crate::recv_control::deliver(user, Vec::new(), Some((0, 0, 0)), None, flags) {
             Ok(delivered) => delivered,
             Err(error) => return error,
         }

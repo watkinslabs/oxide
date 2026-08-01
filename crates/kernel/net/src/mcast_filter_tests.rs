@@ -11,10 +11,40 @@ fn unjoined_and_source_filters_gate_delivery() {
     let group = Ipv4Addr::new(239, 1, 2, 3);
     let allowed = Ipv4Addr::new(10, 0, 0, 1);
     let denied = Ipv4Addr::new(10, 0, 0, 2);
+    // Unconditional multicast delivery is ON at creation, so a group this
+    // socket never joined is delivered anyway; clearing it is what makes
+    // membership a gate.
+    assert!(state.accept_v4(iface, group, allowed));
+    state.set_multicast_all_v4(false);
     assert!(!state.accept_v4(iface, group, allowed));
+    // Once the socket DOES join, the source filter decides and unconditional
+    // delivery has no say either way.
     state.set_v4(&stack, iface, group, Ipv4Addr::LOOPBACK, FilterMode::Include, &[allowed]).unwrap();
     assert!(state.accept_v4(iface, group, allowed));
     assert!(!state.accept_v4(iface, group, denied));
+    state.set_multicast_all_v4(true);
+    assert!(!state.accept_v4(iface, group, denied));
+}
+
+#[test]
+fn unconditional_delivery_is_the_creation_default_for_both_families() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let state = SocketMcast::new();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    assert!(state.multicast_all_v4());
+    assert!(state.multicast_all_v6());
+    let group = Ipv4Addr::new(239, 9, 9, 9);
+    let group6 = Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0, 0, 0xfb]);
+    assert!(state.accept_v4(iface, group, Ipv4Addr::new(10, 0, 0, 1)));
+    assert!(state.accept_v6(iface, group6, Ipv6Addr::LOOPBACK));
+    // The two families are cleared independently.
+    state.set_multicast_all_v4(false);
+    assert!(!state.accept_v4(iface, group, Ipv4Addr::new(10, 0, 0, 1)));
+    assert!(state.accept_v6(iface, group6, Ipv6Addr::LOOPBACK));
+    state.set_multicast_all_v6(false);
+    assert!(!state.accept_v6(iface, group6, Ipv6Addr::LOOPBACK));
+    let _ = &stack;
 }
 
 #[test]
@@ -54,6 +84,9 @@ fn include_empty_removes_membership_and_interface_reference() {
     assert_eq!(body[8], crate::igmp::IGMP_V3_RECORD_BLOCK_OLD_SOURCES);
     assert_eq!(u16::from_be_bytes([body[10], body[11]]), 1);
     assert_eq!(&body[16..20], &source.octets());
+    // Membership is gone, so only a socket that also cleared unconditional
+    // multicast delivery stops accepting the group.
+    state.set_multicast_all_v4(false);
     assert!(!state.accept_v4(iface, group, source));
     assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| {
         groups.iter().any(|entry| entry.group == group && entry.is_empty()
@@ -77,6 +110,9 @@ fn release_clears_socket_before_interface_reporting() {
     state.change_v4(&stack, iface, group, Ipv4Addr::LOOPBACK, true).unwrap();
     let _ = lo.rx_pop().expect("join report");
     state.release(&stack);
+    // Release drops the membership; with unconditional delivery cleared the
+    // group is then refused.
+    state.set_multicast_all_v4(false);
     assert!(!state.accept_v4(iface, group, Ipv4Addr::new(10, 0, 0, 3)));
     assert!(lo.rx_pop().is_some());
 }
@@ -98,6 +134,7 @@ fn v4_membership_and_release_use_captured_namespace() {
     let _ = lo.rx_pop().expect("namespace join report");
     state.release(&stack);
     assert!(lo.rx_pop().is_some());
+    state.set_multicast_all_v4(false);
     assert!(!state.accept_v4(local, group, Ipv4Addr::new(10, 0, 0, 3)));
 }
 

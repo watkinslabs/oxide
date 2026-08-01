@@ -118,6 +118,18 @@ pub fn build_into_v6(
     src_port: u16, dst_port: u16,
     src_ip: crate::addr::Ipv6Addr, dst_ip: crate::addr::Ipv6Addr,
     payload: &[u8], out: &mut [u8],
+) { build_into_v6_opts(src_port, dst_port, src_ip, dst_ip, payload, out, false) }
+
+/// Build a UDP/IPv6 datagram, optionally suppressing the checksum.
+///
+/// A suppressed checksum goes on the wire as zero, which only a receiver that
+/// opted into zero-checksum acceptance will take. A computed checksum of zero
+/// is instead transmitted as all-ones, since zero is reserved for "suppressed".
+/// # C: O(N) checksum
+pub fn build_into_v6_opts(
+    src_port: u16, dst_port: u16,
+    src_ip: crate::addr::Ipv6Addr, dst_ip: crate::addr::Ipv6Addr,
+    payload: &[u8], out: &mut [u8], no_check: bool,
 ) {
     let length: u16 = (8 + payload.len()) as u16;
     out[ 0.. 2].copy_from_slice(&src_port.to_be_bytes());
@@ -127,9 +139,15 @@ pub fn build_into_v6(
     if !payload.is_empty() {
         out[8.. 8 + payload.len()].copy_from_slice(payload);
     }
+    if no_check { return; }
     let cs = compute_udp_checksum_v6(&out[..length as usize], src_ip, dst_ip);
+    let cs = if cs == 0 { UDP_CSUM_MANGLED_ZERO } else { cs };
     out[6..8].copy_from_slice(&cs.to_be_bytes());
 }
+
+/// The value a computed checksum of zero is transmitted as, so the reserved
+/// "no checksum" encoding stays unambiguous.
+pub const UDP_CSUM_MANGLED_ZERO: u16 = 0xFFFF;
 
 /// Validate UDP/IPv6 segment checksum against the v6 pseudo-header.
 /// # C: O(N)
@@ -174,8 +192,10 @@ pub fn parse_v6(
         return Err(UdpError::BadLen);
     }
     let cs = u16::from_be_bytes([buf[6], buf[7]]);
-    // IPv6 UDP checksum is mandatory (no zero-skip).
-    if !udp_checksum_v6_ok(&buf[..length as usize], src, dst) {
+    // A zero checksum is not validated here: it is only acceptable to a
+    // receiver that opted in, so the decision belongs to the endpoint demux,
+    // which drops the datagram for every socket that did not.
+    if cs != 0 && !udp_checksum_v6_ok(&buf[..length as usize], src, dst) {
         return Err(UdpError::BadChecksum);
     }
     Ok(UdpHdr {

@@ -1,4 +1,8 @@
 #![cfg(target_os = "oxide-kernel")]
+// The `IPPROTO_IP` and `IPPROTO_IPV6` numbers are owned by
+// `net::sock_opts::sol_ip` / `sol_ipv6`; the copies here stay as the ABI
+// record the option-number tests read.
+#![allow(dead_code)]
 
 // SOL_SOCKET option numbers live in `net::sock_opts::sol_socket`.
 pub(super) use net::sock_opts::sol_socket::{SOL_SOCKET, SO_BINDTODEVICE, SO_ERROR,
@@ -8,7 +12,7 @@ pub(super) use net::sock_opts::sol_socket::{SOL_SOCKET, SO_BINDTODEVICE, SO_ERRO
 
 pub(super) const IPPROTO_IP: u64 = 0;
 pub(super) const IPPROTO_TCP: u64 = 6;
-pub(super) const IPPROTO_UDP: i32 = 17;
+pub(super) const IPPROTO_UDP: u64 = 17;
 pub(super) const IPPROTO_IPV6: u64 = 41;
 pub(super) const IPPROTO_ICMP: u8 = 1;
 pub(super) const IPPROTO_ICMPV6: u8 = 58;
@@ -43,11 +47,17 @@ pub(super) const IPV6_RECVHOPLIMIT: u64 = 51;
 pub(super) const SOL_ICMPV6: u64 = 58;
 pub(super) const ICMP_FILTER: u64 = 1;
 pub(super) const ICMP6_FILTER: u64 = 1;
+/// `struct icmp6_filter` — eight 32-bit words.
+pub(super) const ICMP6_FILTER_BYTES: usize = 32;
 pub(super) const MCAST_MSFILTER: u64 = 48;
 
-pub(super) const TCP_NODELAY: u64 = 1;
-pub(super) const TCP_CORK: u64 = 3;
-pub(super) const TCP_KEEPIDLE: u64 = 4;
-pub(super) const TCP_KEEPINTVL: u64 = 5;
-pub(super) const TCP_KEEPCNT: u64 = 6;
-pub(super) const TCP_INFO: u64 = 11;
+
+/// Linux default outbound multicast hop limit when `IPV6_MULTICAST_HOPS` is unset.
+pub(super) const IPV6_DEFAULT_MULTICAST_HOPS: i32 = 1;
+
+pub(super) const UDP_CORK: u64 = 1;
+pub(super) const UDP_ENCAP: u64 = 100;
+pub(super) const UDP_NO_CHECK6_TX: u64 = 101;
+pub(super) const UDP_NO_CHECK6_RX: u64 = 102;
+pub(super) const UDP_SEGMENT: u64 = 103;
+pub(super) const UDP_GRO: u64 = 104;

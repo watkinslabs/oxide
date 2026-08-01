@@ -1,4 +1,8 @@
 #![cfg(target_os = "oxide-kernel")]
+// The `IPPROTO_IP` and `IPPROTO_IPV6` numbers are owned by
+// `net::sock_opts::sol_ip` / `sol_ipv6`; the copies here stay as the ABI
+// record the option-number tests read.
+#![allow(dead_code)]
 
 // SOL_SOCKET option numbers live in `net::sock_opts::sol_socket`.
 pub(super) use net::sock_opts::sol_socket::{SOL_SOCKET, SO_BINDTODEVICE};
@@ -62,9 +66,12 @@ pub(super) const IPPROTO_RAW: u64 = 255;
 pub(super) const ICMP_FILTER: u64 = 1;
 pub(super) const ICMP6_FILTER: u64 = 1;
 
+pub(super) const IPPROTO_UDP: u64 = 17;
+
 pub(super) const IPPROTO_TCP: u64 = 6;
-pub(super) const TCP_NODELAY: u64 = 1;
-pub(super) const TCP_CORK: u64 = 3;
-pub(super) const TCP_KEEPIDLE: u64 = 4;
-pub(super) const TCP_KEEPINTVL: u64 = 5;
-pub(super) const TCP_KEEPCNT: u64 = 6;
+pub(super) const UDP_CORK: u64 = 1;
+pub(super) const UDP_ENCAP: u64 = 100;
+pub(super) const UDP_NO_CHECK6_TX: u64 = 101;
+pub(super) const UDP_NO_CHECK6_RX: u64 = 102;
+pub(super) const UDP_SEGMENT: u64 = 103;
+pub(super) const UDP_GRO: u64 = 104;

@@ -72,10 +72,12 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
         crate::IpAddr::V4(*sock.local_ip.lock())
     };
     let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, None)?;
-    let listener = stack().tcp_listen_reserved_filter_pmtu_modes(
+    let listener = stack().tcp_listen_reserved_min_hop(
         &bind, sock.bpf_filter.clone(), sock.opts.ip_mtu_discover.clone(),
-        sock.opts.ipv6_mtu_discover.clone())?;
+        sock.opts.ipv6_mtu_discover.clone(), sock.opts.min_hop.clone())?;
     listener.set_backlog(backlog, somaxconn);
+    listener.defer_window_secs.store(crate::sock_opts::sol_tcp::defer::window_secs(
+        sock.opts.tcp.defer_accept.load(Ordering::Acquire)), Ordering::Release);
     listener.register_poll_subs(&sock.poll_subs);
     stack().join_tcp_reuseport(&listener, &sock.reuseport_group);
     *sock.kind.lock() = SockKind::TcpListener(listener);
@@ -87,12 +89,14 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
     -> Result<Arc<crate::stack::TcpEntry>, NetError> {
     if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
     let bind = ensure_tcp_bind(sock, local_ip, local_port, Some((remote_ip, remote_port)))?;
-    let entry = stack().tcp_connect_reserved_filter_pmtu_modes(
+    let entry = stack().tcp_connect_reserved_min_hop(
         &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
         sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),
+        sock.opts.min_hop.clone(),
     )?;
     entry.register_poll_subs(&sock.poll_subs);
     apply_tcp_keepalive_opts(sock, &entry);
+    crate::sock_opts::sol_tcp::apply::to_conn(&sock.opts, &mut entry.conn.lock());
     super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(sock, &entry);
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     match remote_ip {

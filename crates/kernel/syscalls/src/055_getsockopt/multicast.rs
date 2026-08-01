@@ -7,11 +7,13 @@ fn preflight(s: &net::sock::InetSocket, op: net::sock_mcast::McastGetOp) -> Resu
     s.preflight_mcast_get(op).map_err(errno_from_neterr)
 }
 
+/// The hosted test build mounts this file at the crate root, where `out` is
+/// mounted too, so the one copyout owner is reachable from both builds.
 pub(super) fn scalar_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
                          option: net::sock_mcast::McastScalarGet,
-                         back: &impl Fn(i32) -> i64) -> i64 {
+                         out: &super::out::OptOut) -> i64 {
     match s.get_mcast_scalar(option) {
-        Ok(value) => back(value), Err(error) => errno_from_neterr(error),
+        Ok(value) => out.i32(value), Err(error) => errno_from_neterr(error),
     }
 }
 
@@ -195,10 +197,11 @@ mod tests {
     #[test]
     fn scalar_get_rejects_family_before_encoding() {
         let udp4 = Arc::new(net::sock::InetSocket::new_udp());
-        let called = core::cell::Cell::new(false);
-        let back = |_: i32| { called.set(true); 0 };
-        assert_eq!(scalar_get(&udp4, net::sock_mcast::McastScalarGet::V6Loop, &back),
+        // A copyout pair that can only fault: reaching the encoder at all
+        // would report EFAULT, so EOPNOTSUPP proves the family screen ran
+        // first and the value was never encoded.
+        let out = super::super::out::OptOut::new(0, 0);
+        assert_eq!(scalar_get(&udp4, net::sock_mcast::McastScalarGet::V6Loop, &out),
             -(Errno::Eopnotsupp.as_i32() as i64));
-        assert!(!called.get());
     }
 }

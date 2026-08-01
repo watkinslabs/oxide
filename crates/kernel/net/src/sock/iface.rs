@@ -27,3 +27,17 @@ pub(crate) fn bound_iface(sock: &InetSocket) -> Result<Option<NetIfaceId>, NetEr
         sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire),
     )
 }
+
+/// The layer-3 master device an interface sits under, `Some(0)` when it has
+/// none and `None` when no such interface exists in this namespace. Every
+/// interface-index option screens through here before it is judged.
+/// # C: O(N_ifaces)
+pub fn l3_master_index(net_ns: u64, ifindex: u32) -> Option<i32> {
+    let id = NetIfaceId::from_raw(ifindex);
+    stack().ifaces.lookup_in_ns(id, net_ns).map(|_| 0)
+}
+
+/// Whether an interface index names a device in this namespace. # C: O(N_ifaces)
+pub fn iface_exists(net_ns: u64, ifindex: u32) -> bool {
+    l3_master_index(net_ns, ifindex).is_some()
+}

@@ -8,7 +8,7 @@ use super::*;
 pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     drain_loopback();
     let q = sock.udp4.lock().as_ref().cloned()?;
-    q.recv(false).map(|(src, port, _, _, _, payload)| (src, port, payload))
+    q.recv(false).map(|d| (d.src, d.sport, d.payload))
 }
 
 /// AF_INET6 UDP dgram receive — pops one datagram from the v6 port
@@ -17,7 +17,7 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
 pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)> {
     drain_loopback();
     let q = sock.udp6.lock().as_ref().cloned()?;
-    q.recv(false).map(|(src, port, _, _, _, _, payload)| (src, port, payload))
+    q.recv(false).map(|d| (d.src, d.sport, d.payload))
 }
 
 /// AF_INET dgram-socket send — auto-binds an ephemeral local
@@ -61,6 +61,25 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     };
     let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8; if dst.is_multicast() && !mcast_loop && crate::sock_mcast::is_loopback_iface(bound_iface) { return Ok(payload.len()); }
     let pmtudisc = sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
+    // size, the last carrying the remainder.
+    let gso = sock.opts.udp.gso_size();
+    if gso != 0 {
+        let mtu = stack().path_mtu_in(net_ns, crate::addr::IpAddr::V4(dst), bound_iface, false)?
+            as usize;
+        if let Some(plan) = crate::sock_opts::sol_udp::segment::plan_v4(
+            payload.len(), gso, mtu, false)?
+        {
+            for segment in payload.chunks(plan.seg_size) {
+                stack().send_udp_pmtu_to_bound_opts_owned(
+                    &sock.owner, src_ip, src_port, dst, dst_port, segment, bound_iface, tos, ttl,
+                    pmtudisc,
+                )?;
+            }
+            if !dst.is_multicast() || mcast_loop { drain_loopback(); }
+            return Ok(payload.len());
+        }
+    }
     stack().send_udp_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl, pmtudisc,
     )?;

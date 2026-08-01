@@ -295,6 +295,18 @@ impl NetStack {
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_reserved_min_hop(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Publish a listener sharing the socket's hop-limit minimums too.
+    /// # C: O(N)
+    pub fn tcp_listen_reserved_min_hop(&self, bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        min_hop: Arc<crate::min_hop::MinHop>) -> NetResult<Arc<TcpListenEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -323,8 +335,8 @@ impl NetStack {
             });
             if conflict { return Err(NetError::Eaddrinuse); }
         }
-        let entry = Arc::new(TcpListenEntry::new_with_filter(
-            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover));
+        let entry = Arc::new(TcpListenEntry::new_with_min_hop(
+            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop));
         let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
         listeners.entry(key).or_default().push(entry.clone());
         bind.role.store(TCP_BIND_LISTEN, Ordering::Release);
@@ -368,6 +380,21 @@ impl NetStack {
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpEntry>>
     {
+        self.tcp_connect_reserved_min_hop(bind, local_ip, remote_ip, remote_port, error,
+            bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(crate::min_hop::MinHop::new()))
+    }
+
+    /// Active-open while sharing the socket's hop-limit minimums too.
+    /// # C: O(log N + xmit)
+    #[allow(clippy::too_many_arguments)]
+    pub fn tcp_connect_reserved_min_hop(&self, bind: &Arc<TcpBindReservation>,
+        local_ip: IpAddr, remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        min_hop: Arc<crate::min_hop::MinHop>) -> NetResult<Arc<TcpEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -375,27 +402,8 @@ impl NetStack {
         let key = TcpKey { local_ip, local_port: bind.local.port, remote_ip, remote_port };
         let mut conns = tables.tcp_conns.lock();
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
-        // Linux `tcp_v4_connect`: `st = secure_tcp_seq_and_ts_off(net, saddr,
-        // daddr, sport, dport); tp->write_seq = st.seq` (`net/ipv4/tcp_ipv4.c`).
-        let isn = crate::secure_seq::secure_tcp_seq(
-            local_ip, remote_ip, bind.local.port, remote_port);
-        let mut conn = TcpConn::new_client(
-            Endpoint { ip: local_ip, port: bind.local.port },
-            Endpoint { ip: remote_ip, port: remote_port }, isn,
-        );
-        // Linux `tp->tsoffset = st.ts_off` — the other half of the same hash.
-        conn.ts_off = crate::secure_seq::secure_tcp_ts_off(
-            local_ip, remote_ip, bind.local.port, remote_port);
-        let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
-        let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
-        conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
-            bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode);
-        conn.apply_route_metrics(self.route_metrics_for_dst_in(
-            bind.net_ns(), remote_ip, bind.bound_iface()));
-        let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
-            conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover));
+        let (entry, syn) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
+            error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop)?;
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(
@@ -408,6 +416,49 @@ impl NetStack {
         bind.role.store(TCP_BIND_CONNECT, Ordering::Release);
         crate::stack::stamp_last_sent_public(&entry, 1);
         Ok(entry)
+    }
+
+    /// Materialise the client connection, its opening SYN, and the table entry
+    /// that owns it.
+    ///
+    /// Split out and never inlined so the connection object — half a kilobyte
+    /// of send and receive queues, timers, and option state — is confined to
+    /// this frame. Inlined into the caller, its slots stay reserved for the
+    /// whole of `tcp_connect_reserved_min_hop`, so the SYN transmit and the
+    /// loopback receive it re-enters run on top of half a kilobyte of dead
+    /// storage. Returning the finished `Arc` pops that before the transmit.
+    /// # C: O(route lookup)
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn build_active_child(&self, bind: &Arc<TcpBindReservation>, local_ip: IpAddr,
+        remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        min_hop: Arc<crate::min_hop::MinHop>)
+        -> NetResult<(Arc<TcpEntry>, alloc::vec::Vec<u8>)>
+    {
+        // The initial sequence number and the timestamp bias are the two
+        // halves of one keyed hash over the connection's four-tuple, so an
+        // off-path observer cannot predict either.
+        let isn = crate::secure_seq::secure_tcp_seq(
+            local_ip, remote_ip, bind.local.port, remote_port);
+        let mut conn = TcpConn::new_client(
+            Endpoint { ip: local_ip, port: bind.local.port },
+            Endpoint { ip: remote_ip, port: remote_port }, isn,
+        );
+        conn.ts_off = crate::secure_seq::secure_tcp_ts_off(
+            local_ip, remote_ip, bind.local.port, remote_port);
+        let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
+        let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
+        conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
+            bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode);
+        conn.apply_route_metrics(self.route_metrics_for_dst_in(
+            bind.net_ns(), remote_ip, bind.bound_iface()));
+        let syn = conn.active_open().map_err(|_| NetError::Eio)?;
+        Ok((Arc::new(TcpEntry::new_bound_full(
+            conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, None, min_hop)), syn))
     }
 }
 
