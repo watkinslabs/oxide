@@ -90,8 +90,9 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
 
     // A filesystem that cannot turn its own handles back into inodes must not
     // mint one a caller will later fail to open (`exportfs_can_encode_fh`).
-    if let Some(sb) = inode.i_sb() {
-        if !vfs::export::can_encode_fh(&sb) { return err(Errno::Eopnotsupp); }
+    let sb = inode.i_sb();
+    if let Some(sb) = sb.as_ref() {
+        if !vfs::export::can_encode_fh(sb) { return err(Errno::Eopnotsupp); }
     }
 
     // handle->handle_bytes is the caller-supplied capacity; the header is read
@@ -99,7 +100,14 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     if let Err(rv) = validate_user_buf(handle_ptr, HANDLE_HDR, 1) { return rv; }
     // SAFETY: handle_ptr validated readable for HANDLE_HDR bytes in the caller's AS by validate_user_buf; unaligned u32 read of the handle_bytes field.
     let cap = unsafe { core::ptr::read_unaligned(handle_ptr as *const u32) };
-    let needed = encoded_fid_len(opts.connectable, is_dir);
+    // The WIDTH is the filesystem's, not the VFS's: a kernfs-backed pseudo-fs
+    // mints an 8-byte node-id handle, and a caller that sizes its buffer to
+    // that width without running the grow-and-retry protocol would otherwise
+    // get EOVERFLOW from every call.
+    let needed = match sb.as_ref() {
+        Some(sb) => sb.s_op.export_fid_len(opts.connectable, is_dir),
+        None     => encoded_fid_len(opts.connectable, is_dir),
+    };
     match handle_capacity_check(cap, needed) {
         Err(e)          => return err(e),
         Ok(Err(needed)) => return overflow(handle_ptr, needed),
@@ -120,8 +128,11 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     } else { None };
 
     let mut fid_buf = [0u8; FID_LEN_PARENT as usize];
-    let (fid_len, fid_type) = encode_fid(&Fid {
-        ino: inode.ino(), generation: inode.i_generation(), parent }, &mut fid_buf);
+    let (fid_len, fid_type) = match sb.as_ref() {
+        Some(sb) => sb.s_op.export_encode_fh(&inode, parent, &mut fid_buf),
+        None     => encode_fid(&Fid {
+            ino: inode.ino(), generation: inode.i_generation(), parent }, &mut fid_buf),
+    };
     // The user flags ride in `handle_type` so 304 knows how to decode without
     // out-of-band state: CONNECTABLE says "reconnect me", IS_DIR says which of
     // the two reconnect shapes applies.

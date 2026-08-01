@@ -74,6 +74,14 @@ pub fn encoded_fid_len(connectable: bool, is_dir: bool) -> u32 {
 /// `buf` must hold [`FID_LEN_PARENT`].
 /// # C: O(1)
 pub fn encode_fid(fid: &Fid, buf: &mut [u8; FID_LEN_PARENT as usize]) -> (u32, i32) {
+    encode_fid_into(fid, buf)
+}
+
+/// [`encode_fid`] over a slice, for the `s_op->encode_fh` hook whose buffer is
+/// sized by the filesystem's own [`encoded_fid_len`]. `buf` must hold
+/// [`FID_LEN`], or [`FID_LEN_PARENT`] when `fid.parent` is set.
+/// # C: O(1)
+pub fn encode_fid_into(fid: &Fid, buf: &mut [u8]) -> (u32, i32) {
     buf[OFF_INO..OFF_INO + 8].copy_from_slice(&fid.ino.to_le_bytes());
     buf[OFF_GEN..OFF_GEN + 4].copy_from_slice(&fid.generation.to_le_bytes());
     match fid.parent {
