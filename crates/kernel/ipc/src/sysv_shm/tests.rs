@@ -11,8 +11,6 @@ impl vmm::FileBacking for FakeBacking {
 /// One lock for EVERY `sysv_shm` test module. `REG` is a single process-wide
 /// registry and each module used to hold its own lock, so a `reset()` in one
 /// module could clear the registry another module's test had just populated.
-pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn err(e: syscall::errno::Errno) -> i64 {
     -(e.as_i32() as i64)
 }
@@ -29,10 +27,8 @@ fn cred(euid: u32, egid: u32, groups: &[u32], cap: bool) -> IpcCred {
     }
 }
 
-fn reset() {
-    REG.next_id.store(1, AtomicOrdering::Release);
-    REG.segs.lock().clear();
-}
+/// The one reset body lives with the claim that owns it.
+fn reset() { crate::sysv_shm::test_claim::reset_shm() }
 
 fn backing() -> Arc<dyn vmm::FileBacking> {
     Arc::new(FakeBacking)
@@ -55,8 +51,7 @@ fn segment(mode: u32, size: usize) -> Arc<ShmSegment> {
 
 #[test]
 fn private_key_always_creates_and_validates_new_size() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let c = cred(10, 20, &[], false);
     let a = shmget(IPC_PRIVATE, 1, 0, c.clone());
     let b = shmget(IPC_PRIVATE, 1, 0, c.clone());
@@ -68,8 +63,7 @@ fn private_key_always_creates_and_validates_new_size() {
 
 #[test]
 fn missing_public_key_without_create_returns_enoent_before_size_validation() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let calls = AtomicUsize::new(0);
     let r = shmget_with_backing_cred(123, 0, 0, 77, cred(1, 1, &[], false), || {
         calls.fetch_add(1, AtomicOrdering::AcqRel);
@@ -81,8 +75,7 @@ fn missing_public_key_without_create_returns_enoent_before_size_validation() {
 
 #[test]
 fn create_public_key_records_owner_mode_and_lazy_allocates() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let calls = AtomicUsize::new(0);
     let id = shmget_with_backing_cred(44, 4096, IPC_CREAT | 0o640, 77, cred(42, 7, &[], false), || {
         calls.fetch_add(1, AtomicOrdering::AcqRel);
@@ -102,8 +95,7 @@ fn create_public_key_records_owner_mode_and_lazy_allocates() {
 
 #[test]
 fn existing_key_honors_excl_size_and_permissions() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let owner = cred(10, 20, &[], false);
     let id = shmget(55, 8192, IPC_CREAT | 0o640, owner.clone());
     assert!(id > 0);
@@ -118,8 +110,7 @@ fn existing_key_honors_excl_size_and_permissions() {
 
 #[test]
 fn hugetlb_create_is_rejected_without_allocating_normal_shmem() {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
     let calls = AtomicUsize::new(0);
     let c = cred(10, 20, &[], false);
     let r = shmget_with_backing_cred(66, 4096, IPC_CREAT | SHM_HUGETLB | 0o600, 77, c.clone(), || {

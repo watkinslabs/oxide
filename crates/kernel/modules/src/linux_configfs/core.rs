@@ -467,5 +467,5 @@ pub(super) fn release_item(item: *mut ConfigItem) {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/mod.rs"]
 mod tests;

@@ -94,6 +94,12 @@ pub fn set_reader(reader: FirmwareReader) { set_initramfs_reader(reader); }
 /// # C: O(1)
 pub fn clear_reader() { *INITRAMFS_READER.lock() = None; }
 
+/// Test-only: empty the cache and drop the reader hook. Callers MUST hold the
+/// firmware claim (`test_serial::firmware`).
+/// # C: O(N_entries)
+#[cfg(test)]
+pub(crate) fn reset_for_test() { CACHE.lock().clear(); clear_reader(); }
+
 extern "C" fn request_firmware(fw_out: *mut *const LinuxFirmware, name: *const c_char, _dev: *mut c_void) -> i32 {
     request_firmware_impl(fw_out, name)
 }
@@ -362,7 +368,7 @@ mod tests {
 
     #[test]
     fn request_firmware_uses_search_path() {
-        CACHE.lock().clear();
+        let _modules = crate::test_serial::claim();
         set_reader(test_reader);
         let mut fw: *const LinuxFirmware = core::ptr::null();
         let rc = request_firmware(&mut fw, c"rtl/driver.bin".as_ptr(), null_mut());
@@ -377,7 +383,7 @@ mod tests {
 
     #[test]
     fn firmware_cache_survives_reader_clear() {
-        CACHE.lock().clear();
+        let _modules = crate::test_serial::claim();
         set_initramfs_reader(test_reader);
         assert_eq!(firmware_request_cache(null_mut(), c"alt.bin".as_ptr()), LINUX_OK);
         clear_reader();
@@ -390,7 +396,7 @@ mod tests {
 
     #[test]
     fn request_firmware_nowait_invokes_callback() {
-        CACHE.lock().clear();
+        let _modules = crate::test_serial::claim();
         CALLBACKS.store(0, Ordering::Release);
         LAST_CONTEXT.store(0, Ordering::Release);
         LAST_SIZE.store(0, Ordering::Release);
@@ -405,7 +411,7 @@ mod tests {
 
     #[test]
     fn request_firmware_into_buf_copies_without_owning_buffer() {
-        CACHE.lock().clear();
+        let _modules = crate::test_serial::claim();
         set_reader(test_reader);
         let mut buf = [0u8; 8];
         let mut fw: *const LinuxFirmware = core::ptr::null();
@@ -421,6 +427,7 @@ mod tests {
 
     #[test]
     fn parent_path_is_rejected() {
+        let _modules = crate::test_serial::claim();
         let mut fw: *const LinuxFirmware = core::ptr::null();
         let rc = request_firmware(&mut fw, c"../driver.bin".as_ptr(), null_mut());
         assert_eq!(rc, -LINUX_EINVAL);
@@ -429,6 +436,7 @@ mod tests {
 
     #[test]
     fn missing_firmware_clears_output() {
+        let _modules = crate::test_serial::claim();
         clear_reader();
         let mut fw: *const LinuxFirmware = core::ptr::dangling();
         let rc = request_firmware_direct(&mut fw, c"missing.bin".as_ptr(), null_mut());

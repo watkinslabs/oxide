@@ -119,6 +119,7 @@ mod tests {
 
     #[test]
     fn bit_helpers_round_trip() {
+        let _modules = crate::test_serial::claim();
         const TEST_KEY_CODE: u16 = 30;
         let mut bits = [0usize; INPUT_KEY_WORDS];
         set_bit(&mut bits, TEST_KEY_CODE);

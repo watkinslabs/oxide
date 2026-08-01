@@ -180,6 +180,7 @@ mod tests {
 
     #[test]
     fn lun_encoding_covers_peripheral_and_flat_forms() {
+        let _modules = crate::test_serial::claim();
         let mut lun = ScsiLun { scsi_lun: [0xff; 8] };
         // SAFETY: int_to_scsilun's precondition is a writable struct scsi_lun; lun is a live local of exactly that type, uniquely borrowed here.
         unsafe { int_to_scsilun(7, &mut lun); }
@@ -192,6 +193,7 @@ mod tests {
 
     #[test]
     fn sense_helpers_build_fixed_and_descriptor_buffers() {
+        let _modules = crate::test_serial::claim();
         let mut fixed = [0u8; SCSI_SENSE_BUFFERSIZE];
         // SAFETY: scsi_build_sense_buffer requires SCSI_SENSE_BUFFERSIZE writable bytes, and `fixed` is a local array declared with exactly that length.
         assert!(unsafe { scsi_build_sense_buffer(0, fixed.as_mut_ptr(), 5, 0x20, 0) });
@@ -213,6 +215,7 @@ mod tests {
 
     #[test]
     fn exported_tables_match_group_command_sizes() {
+        let _modules = crate::test_serial::claim();
         assert_eq!(scsi_command_size_tbl, [6, 10, 10, 12, 16, 12, 10, 10]);
         assert!(!scsi_device_type.0[0].is_null());
     }

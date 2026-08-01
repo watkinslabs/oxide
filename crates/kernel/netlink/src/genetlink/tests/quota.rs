@@ -22,18 +22,26 @@ fn warning(kind: vfs::QuotaType, id: u32, class: vfs::QuotaWarnType, uid: u32)
 }
 
 /// The one socket every quota test broadcasts to, in the initial namespace the
-/// family lives in.
-fn quota_listener() -> (alloc::sync::Arc<crate::netlink_socket::NetlinkSocket>,
-    std::sync::MutexGuard<'static, ()>)
+/// family lives in, paired with the claim on the statically-reserved events
+/// group.
+///
+/// The guard comes FIRST in the tuple on purpose. Bindings drop in reverse
+/// declaration order, so `let (listener, guard)` releases the claim while the
+/// listener is still registered in the process-global `GENL_LISTENERS` list —
+/// the next quota test then broadcasts into a socket the previous test still
+/// owns, and delivery counts and message order stop matching what either test
+/// wrote. The exclusion has to outlive the resource it protects.
+fn quota_listener() -> (std::sync::MutexGuard<'static, ()>,
+    alloc::sync::Arc<crate::netlink_socket::NetlinkSocket>)
 {
     boot();
     let serial = crate::test_serial::quota_events();
-    (subscriber(&network_namespace::initial(), GENL_ID_VFS_DQUOT as u32), serial)
+    (serial, subscriber(&network_namespace::initial(), GENL_ID_VFS_DQUOT as u32))
 }
 
 #[test]
 fn a_warning_arrives_with_its_full_attribute_set() {
-    let (listener, _serial) = quota_listener();
+    let (_serial, listener) = quota_listener();
     let sent = warning(vfs::QuotaType::Group, 4242, vfs::QuotaWarnType::BSoftLongWarn, 1000);
     assert_eq!(quota::multicast_warning(sent), Ok(1));
 
@@ -54,7 +62,7 @@ fn a_warning_arrives_with_its_full_attribute_set() {
 
 #[test]
 fn every_quota_class_reports_its_own_qtype() {
-    let (listener, _serial) = quota_listener();
+    let (_serial, listener) = quota_listener();
     for (kind, id) in [
         (vfs::QuotaType::User, 1u32),
         (vfs::QuotaType::Group, 2),
@@ -70,7 +78,7 @@ fn every_quota_class_reports_its_own_qtype() {
 
 #[test]
 fn the_warning_class_travels_as_its_uapi_number() {
-    let (listener, _serial) = quota_listener();
+    let (_serial, listener) = quota_listener();
     for class in [
         vfs::QuotaWarnType::IHardWarn, vfs::QuotaWarnType::ISoftLongWarn,
         vfs::QuotaWarnType::ISoftWarn, vfs::QuotaWarnType::BHardWarn,
@@ -110,14 +118,21 @@ fn the_64_bit_id_attributes_land_8_byte_aligned() {
 #[test]
 fn a_warning_with_no_listener_is_not_an_error_for_the_filesystem() {
     boot();
-    // No subscriber is created here: the hook must swallow ESRCH so quota
-    // accounting is never failed by a missing userspace daemon.
+    // This test creates no subscriber, but it DOES broadcast on the events
+    // group, so it must hold the group's claim like every other sender: a
+    // sibling's listener is a subscriber, and this warning landing in it is a
+    // record that sibling never sent. Observed as
+    // `ParsedWarning { qtype: 0, excess_id: 1, caused_id: 0 }` — precisely the
+    // warning below — arriving in another quota test's queue.
+    let _serial = crate::test_serial::quota_events();
+    // The hook must swallow ESRCH so quota accounting is never failed by a
+    // missing userspace daemon.
     quota::send_warning(warning(vfs::QuotaType::User, 1, vfs::QuotaWarnType::BHardWarn, 0));
 }
 
 #[test]
 fn the_vfs_hook_is_installed_and_carries_warnings_to_the_group() {
-    let (listener, _serial) = quota_listener();
+    let (_serial, listener) = quota_listener();
     let _ = vfs::take_logged_warnings();
     // Deliver through the VFS entry point the quota charge path calls, not
     // through the transport directly.
@@ -133,7 +148,7 @@ fn the_vfs_hook_is_installed_and_carries_warnings_to_the_group() {
 
 #[test]
 fn a_batch_flush_delivers_one_message_per_quota_class() {
-    let (listener, _serial) = quota_listener();
+    let (_serial, listener) = quota_listener();
     let mut warns = vfs::DquotWarns::new();
     let dev = vfs::mkdev(TEST_MAJOR, TEST_MINOR);
     warns.prepare(vfs::Kqid::user(11), vfs::QuotaWarnType::BHardWarn, dev);

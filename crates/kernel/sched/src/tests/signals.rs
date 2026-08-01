@@ -18,8 +18,16 @@ const SIGUSR1: u32 = Signum::Sigusr1 as u32;
 const SIGCHLD: u32 = Signum::Sigchld as u32;
 const SIGRTMIN: u32 = signum::RT_SIGNAL_MIN;
 
+/// `RLIMIT_SIGPENDING` is charged to an ACCOUNT keyed on (user namespace, uid),
+/// not to the task — so every test task left at the default uid 0 queues into
+/// ONE process-global account, and a test that sets a tight limit finds a
+/// sibling's records already filling it. Each task here therefore gets its tid
+/// as its account uid, which is what Linux gives a test its own account: a
+/// distinct user, not a lock.
 fn task(tid: u32) -> Arc<Task> {
-    Arc::new(Task::new(tid, "sig", SchedClass::Normal { weight: 1024 }))
+    let t = Task::new(tid, "sig", SchedClass::Normal { weight: 1024 });
+    t.ucounts_uid.store(tid, Ordering::Release);
+    Arc::new(t)
 }
 
 /// A leader plus one sibling thread sharing its `ThreadGroup`, as `clone(2)`
@@ -28,6 +36,7 @@ fn thread_group() -> (Arc<Task>, Arc<Task>) {
     let leader = task(1);
     leader.pid.attach(&leader);
     let mut worker = Task::new(2, "sig-worker", SchedClass::Normal { weight: 1024 });
+    worker.ucounts_uid.store(leader.ucounts_uid.load(Ordering::Acquire), Ordering::Release);
     worker.join_thread_group(Arc::clone(&leader.thread_group));
     let worker = Arc::new(worker);
     worker.pid.attach(&worker);

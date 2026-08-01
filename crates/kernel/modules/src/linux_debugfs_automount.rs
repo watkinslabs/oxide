@@ -145,6 +145,7 @@ mod tests {
     /// never fires the trigger, so it resolves to the empty trigger directory.
     #[test]
     fn automount_onto_own_root_is_eloop_and_no_automount_skips_trigger() {
+        let _modules = crate::test_serial::claim();
         let n = NEXT_NAME.fetch_add(1, Ordering::Relaxed);
         let mut buf = [0u8; 32];
         let name = entry_name(&mut buf, b"loop", n);
@@ -182,6 +183,7 @@ mod tests {
 
     #[test]
     fn debugfs_automount_resolves_through_vfs_walk() {
+        let _modules = crate::test_serial::claim();
         let n = NEXT_NAME.fetch_add(1, Ordering::Relaxed);
         let mut name = [0u8; 32];
         let prefix = b"auto";

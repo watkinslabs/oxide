@@ -224,6 +224,7 @@ mod tests {
 
     #[test]
     fn text_sections_are_rx() {
+        let _modules = crate::test_serial::claim();
         let f = section_page_flags(SHF_ALLOC | SHF_EXECINSTR);
         assert!(f.contains(PageFlags::READ));
         assert!(f.contains(PageFlags::EXEC));
@@ -232,6 +233,7 @@ mod tests {
 
     #[test]
     fn writable_sections_are_non_exec() {
+        let _modules = crate::test_serial::claim();
         let f = section_page_flags(SHF_ALLOC | SHF_WRITE);
         assert!(f.contains(PageFlags::READ));
         assert!(f.contains(PageFlags::WRITE));

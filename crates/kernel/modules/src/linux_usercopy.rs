@@ -111,22 +111,26 @@ mod tests {
 
     #[test]
     fn access_ok_accepts_user_range() {
+        let _modules = crate::test_serial::claim();
         assert!(access_ok(USER_PTR as *const u8, USER_LEN as usize));
     }
 
     #[test]
     fn access_ok_rejects_null_nonempty_and_kernel_range() {
+        let _modules = crate::test_serial::claim();
         assert!(!access_ok(core::ptr::null(), USER_LEN as usize));
         assert!(!access_ok(USER_VA_END as *const u8, USER_LEN as usize));
     }
 
     #[test]
     fn access_ok_rejects_overflow() {
+        let _modules = crate::test_serial::claim();
         assert!(!access_ok(OVERFLOW_BASE as *const u8, USER_LEN as usize));
     }
 
     #[test]
     fn copy_helpers_report_uncopied_without_current_mm() {
+        let _modules = crate::test_serial::claim();
         let mut dst = [0u8; USER_LEN as usize];
         let src = [1u8; USER_LEN as usize];
         assert_eq!(copy_from_user(dst.as_mut_ptr(), USER_PTR as *const u8, dst.len()), dst.len());
@@ -135,6 +139,7 @@ mod tests {
 
     #[test]
     fn typed_helpers_return_efault_for_invalid_user_ptrs() {
+        let _modules = crate::test_serial::claim();
         let mut out = 0u32;
         assert_eq!(__get_user_4(core::ptr::null(), &mut out), -LINUX_EFAULT);
         assert_eq!(__put_user_4(0xfeed_beefu32, core::ptr::null_mut()), -LINUX_EFAULT);

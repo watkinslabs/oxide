@@ -7,6 +7,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +32,9 @@ pub use vblank::{
 };
 #[cfg(test)]
 use vblank::VBLANK_SEQ;
+
+#[cfg(test)]
+mod test_claim;
 
 #[cfg(test)]
 mod tests;

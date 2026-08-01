@@ -125,8 +125,9 @@ pub fn snapshot() -> alloc::vec::Vec<(&'static str, KsymEntry)> {
 /// # C: O(1)
 pub fn count() -> usize { SYMTAB.lock().len() }
 
-/// Test-only: drop every entry. Lets each test start from a known
-/// empty state without coordinating with siblings.
+/// Test-only: drop every entry. Callers MUST hold the symbol-table claim
+/// (`test_serial::symtab`), which is the only thing that makes emptying a
+/// process-global table safe while sibling tests run.
 /// # C: O(N)
-#[cfg(any(test, feature = "hosted"))]
-pub fn _reset() { SYMTAB.lock().clear(); }
+#[cfg(test)]
+pub(crate) fn reset_for_test() { SYMTAB.lock().clear(); }

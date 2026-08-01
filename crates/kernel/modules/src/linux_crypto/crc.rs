@@ -98,30 +98,35 @@ mod tests {
 
     #[test]
     fn crc32_le_matches_shared_crc() {
+        let _modules = crate::test_serial::claim();
         let raw = crc32_le(CRC_FINAL_XOR, VECTOR.as_ptr(), VECTOR.len());
         assert_eq!(raw ^ CRC_FINAL_XOR, CRC32_STANDARD);
     }
 
     #[test]
     fn crc32c_matches_shared_crc() {
+        let _modules = crate::test_serial::claim();
         let raw = __crc32c_le(CRC_FINAL_XOR, VECTOR.as_ptr(), VECTOR.len());
         assert_eq!(raw ^ CRC_FINAL_XOR, CRC32C_STANDARD);
     }
 
     #[test]
     fn crc32_be_known_vector() {
+        let _modules = crate::test_serial::claim();
         let raw = crc32_be(CRC_FINAL_XOR, VECTOR.as_ptr(), VECTOR.len());
         assert_eq!(raw ^ CRC_FINAL_XOR, CRC32_BE_STANDARD);
     }
 
     #[test]
     fn crc_t10dif_known_vector() {
+        let _modules = crate::test_serial::claim();
         assert_eq!(crc_t10dif_arch(0, VECTOR.as_ptr(), VECTOR.len()), CRC_T10DIF_STANDARD);
         assert_eq!(crc_t10dif_generic(0, VECTOR.as_ptr(), VECTOR.len()), CRC_T10DIF_STANDARD);
     }
 
     #[test]
     fn null_nonempty_returns_seed() {
+        let _modules = crate::test_serial::claim();
         const SEED: u32 = 0x1020_3040;
         assert_eq!(crc32_le(SEED, core::ptr::null(), VECTOR.len()), SEED);
     }

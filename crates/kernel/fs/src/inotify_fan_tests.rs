@@ -24,6 +24,7 @@ fn masks(g: &InotifyData) -> Vec<u32> { g.events.lock().iter().map(|e| e.mask).c
 // (FAN_ACCESS here) are dropped. fire_attrib maps to FAN_ATTRIB.
 #[test]
 fn inode_mark_event_set() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x1001);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(),
@@ -42,6 +43,7 @@ fn inode_mark_event_set() {
 // nothing on a different one.
 #[test]
 fn mount_mark_matches_by_fsid() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     apply_mark(&g, MarkScope::Mount, 0, 0x2001, FAN_OPEN, true, false, 0);
     let same = mk_inode(FileType::Regular, 0x2001);
@@ -54,6 +56,7 @@ fn mount_mark_matches_by_fsid() {
 // A filesystem-scope mark behaves like a mount mark over the whole superblock.
 #[test]
 fn filesystem_mark_matches_superblock() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     apply_mark(&g, MarkScope::Filesystem, 0, 0x3001, FAN_MODIFY, true, false, 0);
     let a = mk_inode(FileType::Regular, 0x3001);
@@ -69,6 +72,7 @@ fn filesystem_mark_matches_superblock() {
 // clears FANOTIFY_EVENT_FLAGS from `user_mask` outside fid mode).
 #[test]
 fn ondir_filters_directory_self_events() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let dir = mk_inode(FileType::Directory, 0x4001);
     apply_mark(&g, MarkScope::Inode, inode_key(&dir), dir.fsid(), FAN_OPEN, true, false, 0);
@@ -82,6 +86,7 @@ fn ondir_filters_directory_self_events() {
 // FAN_MARK_IGNORED_MASK bits suppress otherwise-requested events.
 #[test]
 fn ignored_mask_suppresses() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x5001);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_OPEN | FAN_CLOSE_WRITE, true, false, 0);
@@ -98,6 +103,7 @@ fn ignored_mask_suppresses() {
 /// it thought it had suppressed.
 #[test]
 fn a_volatile_ignore_set_is_cleared_by_a_modification() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x5101);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_MODIFY | FAN_OPEN, true, false, 0);
@@ -112,6 +118,7 @@ fn a_volatile_ignore_set_is_cleared_by_a_modification() {
 /// which is the flag's entire purpose.
 #[test]
 fn a_surviving_ignore_set_outlives_a_modification() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x5201);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_MODIFY | FAN_OPEN, true, false,
@@ -128,6 +135,7 @@ fn a_surviving_ignore_set_outlives_a_modification() {
 /// every open of every file on the system.
 #[test]
 fn a_directory_mark_needs_event_on_child_for_events_inside_it() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let dir = mk_inode(FileType::Directory, 0x5301);
     apply_mark(&g, MarkScope::Inode, inode_key(&dir), dir.fsid(), FAN_OPEN, true, false, 0);
@@ -144,6 +152,7 @@ fn a_directory_mark_needs_event_on_child_for_events_inside_it() {
 /// the parent delivers one access twice.
 #[test]
 fn the_parent_leg_does_not_re_deliver_to_mount_and_filesystem_marks() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     apply_mark(&g, MarkScope::Mount, 0, 0x5401, FAN_OPEN, true, false, 0);
     apply_mark(&g, MarkScope::Filesystem, 0, 0x5401, FAN_OPEN, true, false, 0);
@@ -156,6 +165,7 @@ fn the_parent_leg_does_not_re_deliver_to_mount_and_filesystem_marks() {
 // destination dir, sharing one cookie; FAN_MOVE_SELF fires on the moved object.
 #[test]
 fn move_emits_paired_cookie() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let old = mk_inode(FileType::Directory, 0x6001);
     let new = mk_inode(FileType::Directory, 0x6002);
@@ -179,6 +189,7 @@ fn move_emits_paired_cookie() {
 
 #[test]
 fn child_create_delete_events_reach_watched_directory() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let dir = mk_inode(FileType::Directory, 0x6d01);
     apply_mark(&g, MarkScope::Inode, inode_key(&dir), dir.fsid(),
@@ -194,6 +205,7 @@ fn child_create_delete_events_reach_watched_directory() {
 // sees an event whose affected object is a directory — and one WITH it does.
 #[test]
 fn fanotify_directory_events_need_fan_ondir_on_the_mark() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let plain = InotifyData::new_fanotify(0);
     let ondir = InotifyData::new_fanotify(0);
     let dir = mk_inode(FileType::Directory, 0x6d55);
@@ -210,6 +222,7 @@ fn fanotify_directory_events_need_fan_ondir_on_the_mark() {
 // FAN_OPEN_EXEC is delivered to a mark requesting it (execve open-exec event).
 #[test]
 fn open_exec_event() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x7001);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_OPEN_EXEC, true, false, 0);
@@ -220,6 +233,7 @@ fn open_exec_event() {
 // REMOVE clears the named bits; emptying the mark retires it (no further events).
 #[test]
 fn remove_clears_and_retires() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x8001);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_MODIFY | FAN_OPEN, true, false, 0);
@@ -234,6 +248,7 @@ fn remove_clears_and_retires() {
 // observes the verdict. (No scheduler park needed on host: the fd is FAN_NOFD.)
 #[test]
 fn perm_reply_protocol_deny_then_allow() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9001);
     let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -247,6 +262,7 @@ fn perm_reply_protocol_deny_then_allow() {
 /// different and wrong explanation.
 #[test]
 fn a_denied_access_reports_eperm() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9101);
     let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -261,6 +277,7 @@ fn a_denied_access_reports_eperm() {
 /// jumped ahead of every notification that explained them.
 #[test]
 fn permission_events_are_read_in_arrival_order() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let a = mk_inode(FileType::Regular, 0x9201);
     let b = mk_inode(FileType::Regular, 0x9202);
@@ -275,6 +292,7 @@ fn permission_events_are_read_in_arrival_order() {
 /// parked on that one record and names it by its own descriptor.
 #[test]
 fn a_permission_event_is_never_merged_away() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9301);
     let s1 = queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -288,6 +306,7 @@ fn a_permission_event_is_never_merged_away() {
 /// one record with the masks OR-ed, which is the whole point of the merge.
 #[test]
 fn identical_fanotify_events_merge_with_ored_masks() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9401);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(),
@@ -306,6 +325,7 @@ fn identical_fanotify_events_merge_with_ored_masks() {
 /// how busy the machine is.
 #[test]
 fn a_mergeable_event_is_found_however_deep_the_queue_has_grown() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let first = mk_inode(FileType::Regular, 0xB101);
     apply_mark(&g, MarkScope::Filesystem, 0, 0xB101, FAN_OPEN | FAN_MODIFY, true, false, 0);
@@ -332,6 +352,7 @@ fn a_mergeable_event_is_found_however_deep_the_queue_has_grown() {
 /// answers a stale event learns it did.
 #[test]
 fn a_response_naming_no_pending_event_is_enoent() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     assert_eq!(respond(&g, 4242, FAN_ALLOW), Err(vfs::VfsError::Enoent));
 }
@@ -339,6 +360,7 @@ fn a_response_naming_no_pending_event_is_enoent() {
 /// The response word is validated before anything is unblocked.
 #[test]
 fn a_malformed_response_is_einval() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9501);
     queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -356,6 +378,7 @@ fn a_malformed_response_is_einval() {
 /// the 8 bytes that response occupied.
 #[test]
 fn one_write_answers_exactly_one_event() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9601);
     let s1 = queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -379,6 +402,7 @@ fn one_write_answers_exactly_one_event() {
 /// recorded against the decision it justifies.
 #[test]
 fn a_fan_info_response_carries_its_audit_rule_through_to_the_event() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use crate::inotify::response::{AuditRule, AUDIT_RULE_LEN, FAN_INFO,
         FAN_RESPONSE_INFO_AUDIT_RULE};
     let g = InotifyData::new_fanotify(0);
@@ -398,6 +422,7 @@ fn a_fan_info_response_carries_its_audit_rule_through_to_the_event() {
 /// permission event answerable — the daemon may write a correct one instead.
 #[test]
 fn a_malformed_fan_info_record_is_einval_and_answers_nothing() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use crate::inotify::response::{AUDIT_RULE_LEN, FAN_INFO, FAN_RESPONSE_INFO_AUDIT_RULE,
         FAN_RESPONSE_INFO_NONE};
     let g = InotifyData::new_fanotify(0);
@@ -433,6 +458,7 @@ fn a_malformed_fan_info_record_is_einval_and_answers_nothing() {
 /// EINVAL.
 #[test]
 fn a_fan_nofd_response_with_a_record_is_accepted_and_answers_nothing() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use crate::inotify::response::{AUDIT_RULE_LEN, FAN_INFO, FAN_RESPONSE_INFO_AUDIT_RULE};
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9A01);
@@ -476,6 +502,7 @@ fn respond_with_rule(g: &InotifyData, fd: i32, response: u32, info: &[u8])
 /// response is discarded rather than published.
 #[test]
 fn a_verdict_for_an_abandoned_access_is_discarded() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0x9701);
     let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -489,6 +516,7 @@ fn a_verdict_for_an_abandoned_access_is_discarded() {
 // never wedges a blocked accessor.
 #[test]
 fn perm_release_auto_allows() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0xA001);
     let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -501,6 +529,7 @@ fn perm_release_auto_allows() {
 /// leaves the other set of accessors parked forever.
 #[test]
 fn release_answers_both_reported_and_still_queued_events() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0xA101);
     let reported = queue_perm(&g, &ino, FAN_OPEN_PERM);
@@ -515,6 +544,7 @@ fn release_answers_both_reported_and_still_queued_events() {
 /// teardown is not parked on a group that will never answer.
 #[test]
 fn a_closed_group_queues_no_further_events() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0xA201);
     g.on_release();
@@ -530,6 +560,7 @@ fn a_closed_group_queues_no_further_events() {
 // PERM_MARK_COUNT, so the gate assertions are race-free.
 #[test]
 fn open_exec_perm_gate_cycle() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     // No perm marks armed by us yet → execve gate stays inert.
     assert!(!perm_marks_present());
 
@@ -594,6 +625,7 @@ fn respond(g: &InotifyData, fd: i32, response: u32) -> vfs::KResult<usize> {
 // FAN_REPORT_NAME without FAN_REPORT_DIR_FID are all EINVAL.
 #[test]
 fn init_flag_validation() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(validate_fanotify_init(FAN_CLOEXEC | FAN_NONBLOCK), 0);
     assert_eq!(validate_fanotify_init(FAN_CLASS_CONTENT), 0);
     assert_ne!(validate_fanotify_init(0x8000_0000), 0);                 // unknown bit
@@ -644,6 +676,7 @@ fn cached_inode(sb: &Arc<vfs::SuperBlock>, ino: u64) -> InodeRef {
 /// disagree.
 #[test]
 fn an_evictable_mark_takes_no_reference_and_leaves_with_the_inode() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
     let g = InotifyData::new_fanotify(0);
     let sb = mk_sb(0xE001);
@@ -664,6 +697,7 @@ fn an_evictable_mark_takes_no_reference_and_leaves_with_the_inode() {
 /// other reference does not evict it.
 #[test]
 fn an_ordinary_mark_holds_its_inode_resident() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
     let g = InotifyData::new_fanotify(0);
     let sb = mk_sb(0xE101);
@@ -683,6 +717,7 @@ fn an_ordinary_mark_holds_its_inode_resident() {
 /// loop pins every inode it ever touched.
 #[test]
 fn retiring_a_mark_releases_the_inode_it_held() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
     let g = InotifyData::new_fanotify(0);
     let sb = mk_sb(0xE201);
@@ -700,6 +735,7 @@ fn retiring_a_mark_releases_the_inode_it_held() {
 /// one ordinary takes a fresh reference.
 #[test]
 fn re_adding_a_mark_restates_whether_it_pins_its_object() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let sb = mk_sb(0xE301);
     let ino = cached_inode(&sb, 0xE301);
@@ -721,6 +757,7 @@ fn re_adding_a_mark_restates_whether_it_pins_its_object() {
 /// event.
 #[test]
 fn a_pidfd_group_emits_a_pidfd_record() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use crate::inotify::validate::FAN_REPORT_PIDFD;
     let g = InotifyData::new_fanotify(FAN_REPORT_PIDFD);
     let ino = mk_inode(FileType::Regular, 0xF001);
@@ -740,6 +777,7 @@ fn a_pidfd_group_emits_a_pidfd_record() {
 /// in `metadata.mask` that such a group's userspace never expects.
 #[test]
 fn only_a_fid_group_is_told_the_object_was_a_directory() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use crate::inotify::validate::FAN_REPORT_FID;
     let legacy = InotifyData::new_fanotify(0);
     let fid = InotifyData::new_fanotify(FAN_REPORT_FID);
@@ -755,6 +793,7 @@ fn only_a_fid_group_is_told_the_object_was_a_directory() {
 // FLUSH drops only the marks of the selected scope, leaving other scopes intact.
 #[test]
 fn flush_is_scope_local() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_fanotify(0);
     let ino = mk_inode(FileType::Regular, 0xB001);
     apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_OPEN, true, false, 0);

@@ -207,6 +207,7 @@ mod tests {
 
     #[test]
     fn debugfs_file_open_state_lives_until_last_close() {
+        let _modules = crate::test_serial::claim();
         ACTIVE_OPEN.store(0, Ordering::SeqCst);
         ACTIVE_READ.store(0, Ordering::SeqCst);
         ACTIVE_RELEASE.store(0, Ordering::SeqCst);

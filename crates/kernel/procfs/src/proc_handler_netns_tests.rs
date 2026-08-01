@@ -3,7 +3,19 @@ use network_namespace::NetworkNamespaceRef;
 
 use super::{PerNetIntHook, ProcHandler};
 
+// One `CURRENT` for four tests: the bound leaves resolve their namespace by
+// CALLING `current()`, so a sibling that stores its own namespace here between
+// this test's `bind()` and its `store()` redirects this test's write into the
+// sibling's namespace. The fixture is a single-slot process-global, so the
+// tests that drive it take this claim for their whole body. Poison is
+// recovered: one failing test reports as one failure, not a cascade.
 static CURRENT: std::sync::Mutex<Option<NetworkNamespaceRef>> = std::sync::Mutex::new(None);
+
+static CURRENT_CLAIM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn claim_current() -> std::sync::MutexGuard<'static, ()> {
+    CURRENT_CLAIM.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn current() -> NetworkNamespaceRef {
     Arc::clone(CURRENT.lock().unwrap().as_ref().unwrap())
@@ -21,6 +33,7 @@ fn set(namespace: &NetworkNamespaceRef, key: usize, value: i64) -> Result<(), ()
 
 #[test]
 fn opened_net_sysctls_retain_owner_after_task_namespace_switch() {
+    let _current = claim_current();
     let _ = net::net_ns::install_final_drop_pending_notifier();
     let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let opened_in = network_namespace::allocate(initial_user.clone()).unwrap();
@@ -69,6 +82,7 @@ fn group_leaf(namespace: &NetworkNamespaceRef) -> Arc<dyn ProcHandler> {
 // endpoint class outright, and the reserved-invalid group is refused.
 #[test]
 fn ping_group_range_leaf_round_trips_the_window() {
+    let _current = claim_current();
     let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let namespace = network_namespace::allocate(initial_user).unwrap();
     net::net_ns::materialize_state(&namespace);
@@ -94,6 +108,7 @@ fn ping_group_range_leaf_round_trips_the_window() {
 
 #[test]
 fn ping_group_range_windows_are_private_to_their_namespace() {
+    let _current = claim_current();
     let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let first = network_namespace::allocate(initial_user.clone()).unwrap();
     let second = network_namespace::allocate(initial_user).unwrap();
@@ -110,6 +125,7 @@ fn ping_group_range_windows_are_private_to_their_namespace() {
 
 #[test]
 fn buffer_ceilings_are_one_global_pair_writable_only_from_the_initial_namespace() {
+    let _current = claim_current();
     use super::NetGlobalIntHook;
     use vfs::VfsError;
     let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);

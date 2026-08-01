@@ -11,6 +11,7 @@ unsafe fn cstr(p: *const u8) -> &'static str {
 
 #[test]
 fn kmalloc_round_trip_and_zero_allocs() {
+    let _modules = crate::test_serial::claim();
     let p = kmalloc(16, 0);
     assert!(!p.is_null());
     // SAFETY: p is the 16-byte kmalloc block asserted non-null on the line above, so byte 0 of it
@@ -27,6 +28,7 @@ fn kmalloc_round_trip_and_zero_allocs() {
 
 #[test]
 fn kcalloc_checks_overflow_and_zeroes() {
+    let _modules = crate::test_serial::claim();
     assert!(kcalloc(usize::MAX, 2, 0).is_null());
     let p = kcalloc(4, 4, 0);
     assert!(!p.is_null());
@@ -38,6 +40,7 @@ fn kcalloc_checks_overflow_and_zeroes() {
 
 #[test]
 fn page_runs_support_struct_page_and_free_pages() {
+    let _modules = crate::test_serial::claim();
     let page = alloc_pages(GFP_ZERO, 1);
     assert!(!page.is_null());
     let addr = page_address(page);
@@ -54,6 +57,7 @@ fn page_runs_support_struct_page_and_free_pages() {
 
 #[test]
 fn vmap_single_page_aliases_and_unmaps() {
+    let _modules = crate::test_serial::claim();
     let page = alloc_pages(GFP_ZERO, 0);
     assert!(!page.is_null());
     let mut pages = [page];
@@ -67,6 +71,7 @@ fn vmap_single_page_aliases_and_unmaps() {
 
 #[test]
 fn vmap_rejects_non_contiguous_page_list() {
+    let _modules = crate::test_serial::claim();
     let a = alloc_pages(GFP_ZERO, 0);
     let b = alloc_pages(GFP_ZERO, 0);
     assert!(!a.is_null());
@@ -82,6 +87,7 @@ fn vmap_rejects_non_contiguous_page_list() {
 
 #[test]
 fn string_helpers_copy_and_format() {
+    let _modules = crate::test_serial::claim();
     // SAFETY: kstrdup requires a NUL-terminated string; the b"drv\0" literal is a 'static array
     // whose final byte is the terminator, so c_strlen inside kstrdup stops within it.
     let dup = unsafe { kstrdup(b"drv\0".as_ptr(), 0) };
@@ -101,6 +107,7 @@ fn string_helpers_copy_and_format() {
 
 #[test]
 fn modern_noprof_allocators_match_linux_entry_points() {
+    let _modules = crate::test_serial::claim();
     let p = __kmalloc_noprof(24, GFP_ZERO);
     assert!(!p.is_null());
     // SAFETY: p is the 24-byte __kmalloc_noprof block asserted non-null above, zeroed because
@@ -136,6 +143,7 @@ unsafe extern "C" fn cache_ctor(obj: *mut c_void) {
 
 #[test]
 fn kmem_cache_create_alloc_free_destroy_honors_args() {
+    let _modules = crate::test_serial::claim();
     CTOR_CALLS.store(0, Ordering::SeqCst);
     let args = cache::LinuxKmemCacheArgs {
         align: 16,
@@ -162,6 +170,7 @@ fn kmem_cache_create_alloc_free_destroy_honors_args() {
 
 #[test]
 fn noprof_page_allocators_return_page_descriptors() {
+    let _modules = crate::test_serial::claim();
     let page = alloc_pages_noprof(GFP_ZERO, 0);
     assert!(!page.is_null());
     assert!(!page_address(page).is_null());
@@ -174,7 +183,7 @@ fn noprof_page_allocators_return_page_descriptors() {
 
 #[test]
 fn export_symbols_registers_allocator_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "kmalloc", "kzalloc", "kcalloc", "kfree", "vmalloc", "vfree", "vmap", "vunmap",

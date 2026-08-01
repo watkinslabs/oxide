@@ -426,6 +426,7 @@ mod tests {
 
     #[test]
     fn null_owner_is_builtin_and_gettable() {
+        let _modules = crate::test_serial::claim();
         // SAFETY: NULL is the built-in-module owner in Linux's KPI and try_module_get's first
         // statement returns before any dereference, so no module storage is touched.
         let got = unsafe { try_module_get(core::ptr::null_mut()) };
@@ -436,6 +437,7 @@ mod tests {
 
     #[test]
     fn live_and_coming_modules_are_refcounted() {
+        let _modules = crate::test_serial::claim();
         for state in [MODULE_STATE_LIVE, MODULE_STATE_COMING] {
             let mut m = module(state, 1);
             // SAFETY: m is the fully initialised LinuxModule on this test's stack, so it stands in
@@ -450,6 +452,7 @@ mod tests {
 
     #[test]
     fn going_or_unknown_modules_refuse_new_refs() {
+        let _modules = crate::test_serial::claim();
         for state in [MODULE_STATE_GOING, 99] {
             let mut m = module(state, 4);
             // SAFETY: m is this test's stack LinuxModule, initialised with the GOING/unknown state
@@ -461,6 +464,7 @@ mod tests {
 
     #[test]
     fn saturated_modules_refuse_new_refs() {
+        let _modules = crate::test_serial::claim();
         let mut m = module(MODULE_STATE_LIVE, u32::MAX);
         // SAFETY: m is this test's stack LinuxModule, initialised LIVE with a saturated refcnt, so
         // it is a valid target for the atomic fetch_update try_module_get performs on it.
@@ -470,6 +474,7 @@ mod tests {
 
     #[test]
     fn module_put_saturates_at_zero() {
+        let _modules = crate::test_serial::claim();
         let mut m = module(MODULE_STATE_LIVE, 0);
         // SAFETY: m is this test's stack LinuxModule with refcnt 0; module_put only runs a
         // checked_sub fetch_update on that field, which is initialised and lives past the call.
@@ -479,6 +484,7 @@ mod tests {
 
     #[test]
     fn scalar_params_parse_and_render_values() {
+        let _modules = crate::test_serial::claim();
         let mut int_v = 0i32;
         let kp = KernelParam { name: null(), mod_: core::ptr::null_mut(), ops: &param_ops_int, perm: 0, level: 0, flags: 0, arg: (&mut int_v as *mut i32).cast() };
         // SAFETY: the value string is the NUL-terminated b"-42\0" literal, and kp.arg is the
@@ -501,6 +507,7 @@ mod tests {
 
     #[test]
     fn array_params_walk_element_ops() {
+        let _modules = crate::test_serial::claim();
         let mut vals = [0u32; 3];
         let mut num = 0u32;
         let arr = KParamArray { max: 3, elemsize: core::mem::size_of::<u32>() as u32, num: &mut num, ops: &param_ops_uint, elem: vals.as_mut_ptr().cast() };

@@ -65,6 +65,7 @@ mod tests {
 
     #[test]
     fn get_random_bytes_fills_buffer() {
+        let _modules = crate::test_serial::claim();
         let mut b = [0u8; RANDOM_LEN];
         get_random_bytes(b.as_mut_ptr(), b.len());
         assert!(b.iter().any(|v| *v != 0));
@@ -72,6 +73,7 @@ mod tests {
 
     #[test]
     fn add_device_randomness_accepts_valid_input() {
+        let _modules = crate::test_serial::claim();
         let seed = [1u8, 2, 3, 4];
         add_device_randomness(seed.as_ptr(), seed.len());
         let _ = get_random_u32();

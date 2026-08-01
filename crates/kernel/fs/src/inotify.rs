@@ -18,6 +18,7 @@
 // - `perm`: `FAN_*_PERM` access gates and the park-until-verdict wait.
 // - `validate`: inotify/fanotify UAPI flags and Linux argument validation.
 // - `syscalls`: inotify/fanotify syscall entry points and mark editing.
+// - `test_claim`: hosted-test claim on the one global group registry (test-only).
 
 mod dispatch;
 mod fan_err;
@@ -74,6 +75,9 @@ mod mark_lifetime_tests;
 #[cfg(test)]
 #[path = "inotify_limits_tests.rs"]
 mod limits_tests;
+
+#[cfg(test)]
+pub(crate) mod test_claim;
 
 #[cfg(test)]
 mod tests;

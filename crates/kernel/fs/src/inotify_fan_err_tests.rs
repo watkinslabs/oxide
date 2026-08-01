@@ -97,6 +97,7 @@ fn read_err_records(g: &InotifyData) -> Vec<ErrRecord> {
 /// # C: O(1)
 #[test]
 fn a_reported_filesystem_error_reaches_a_filesystem_mark() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xE001;
     let g = err_group(fsid);
     let ino = inode_on(fsid, 0xE001_0001);
@@ -112,6 +113,7 @@ fn a_reported_filesystem_error_reaches_a_filesystem_mark() {
 /// # C: O(1)
 #[test]
 fn an_error_with_no_inode_still_names_the_filesystem() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xE002;
     let g = err_group(fsid);
     vfs::fire_fs_error(fsid, None, REPORTED_ERRNO);
@@ -126,6 +128,7 @@ fn an_error_with_no_inode_still_names_the_filesystem() {
 /// # C: O(1)
 #[test]
 fn repeated_errors_on_one_filesystem_fold_into_one_counted_record() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xE003;
     let g = err_group(fsid);
     let a = inode_on(fsid, 0xE003_0001);
@@ -144,6 +147,7 @@ fn repeated_errors_on_one_filesystem_fold_into_one_counted_record() {
 /// # C: O(1)
 #[test]
 fn errors_on_different_filesystems_stay_separate_records() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let (one, two) = (0xE004, 0xE005);
     let g = err_group(one);
     assert_eq!(apply_mark(&g, MarkScope::Filesystem, 0, two, FAN_FS_ERROR, true, false, 0), 0);
@@ -163,6 +167,7 @@ fn errors_on_different_filesystems_stay_separate_records() {
 /// # C: O(1)
 #[test]
 fn an_unrelated_or_unsubscribed_mark_hears_nothing() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     install_hooks_once();
     let g = InotifyData::new_fanotify(FAN_REPORT_FID);
     assert_eq!(apply_mark(&g, MarkScope::Filesystem, 0, 0xE006, FAN_FS_ERROR, true, false, 0), 0);
@@ -179,6 +184,7 @@ fn an_unrelated_or_unsubscribed_mark_hears_nothing() {
 /// # C: O(1)
 #[test]
 fn the_error_record_is_the_last_record_of_the_event() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xE009;
     let g = err_group(fsid);
     vfs::fire_fs_error(fsid, None, REPORTED_ERRNO);
@@ -199,6 +205,7 @@ fn the_error_record_is_the_last_record_of_the_event() {
 /// # C: O(1)
 #[test]
 fn only_a_fid_reporting_filesystem_mark_may_ask_for_errors() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use syscall::errno::Errno;
     let g = InotifyData::new_fanotify(FAN_REPORT_FID);
     assert_eq!(validate_fanotify_mark_group(&g, MarkScope::Inode, FAN_FS_ERROR, 0, true),
