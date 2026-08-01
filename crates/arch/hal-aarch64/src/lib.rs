@@ -28,7 +28,7 @@ use hal::{CpuOps, Nanos, TimerOps};
 use sync::IrqGate;
 
 mod context;
-mod cpuid;
+pub mod cpuid;
 mod fault;
 mod exception_table;
 mod fpu;
@@ -53,7 +53,7 @@ mod vbar;
 mod uaccess;
 pub mod vmm;
 pub use cpuid::midr_el1;
-pub use regs::{
+pub use regs::{TCR_EL1_BASE, TCR_EL1_KERNEL, TCR_EL1_TBI0, 
     read_mair_el1, read_sctlr_el1, read_tcr_el1, read_ttbr0_el1, read_ttbr1_el1,
 };
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]

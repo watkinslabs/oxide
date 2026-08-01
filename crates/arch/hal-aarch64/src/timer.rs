@@ -31,13 +31,63 @@ pub fn period() -> u32 { period_slot().load(Ordering::Relaxed) }
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub(crate) fn set_period(period: u32) { period_slot().store(period, Ordering::Relaxed); }
 
-// OR'd into CNTKCTL_EL1 by `enable_el0_counter_access`, which is kernel-target-only.
+// OR'd into CNTKCTL_EL1 by `enable_el0_counter_access`. Also read by
+// `set_el0_counter_access`, the per-task toggle behind `prctl(PR_SET_TSC)`,
+// and by the pure `cntkctl_with_counter_access` below — so the host build
+// needs them too and they carry no target gate.
+/// CNTKCTL_EL1.EL0PCTEN (bit 0) — EL0 may read `CNTPCT_EL0`.
+pub const CNTKCTL_EL0PCTEN: u64 = 1 << 0;
+/// CNTKCTL_EL1.EL0VCTEN (bit 1) — EL0 may read `CNTVCT_EL0`/`CNTFRQ_EL0`.
+pub const CNTKCTL_EL0VCTEN: u64 = 1 << 1;
+/// Both EL0 counter-read enables, the state a task without `PR_TSC_SIGSEGV`
+/// runs under.
+pub const CNTKCTL_EL0_COUNTER_ACCESS: u64 = CNTKCTL_EL0PCTEN | CNTKCTL_EL0VCTEN;
+
+/// The CNTKCTL_EL1 value `set_el0_counter_access` would install over `cur`.
+/// Pure, so the bit math is reachable from `cargo test` on any host — the
+/// sysreg RMW below is not.
+/// # C: O(1)
+pub fn cntkctl_with_counter_access(cur: u64, allow: bool) -> u64 {
+    if allow { cur | CNTKCTL_EL0_COUNTER_ACCESS } else { cur & !CNTKCTL_EL0_COUNTER_ACCESS }
+}
+
+/// Force EL0 counter-read access to `allow` on the PE this call runs on.
+///
+/// Denying it makes an EL0 `mrs CNTVCT_EL0` trap to EL1 as a sysreg access
+/// (ESR EC 0x18) instead of returning the counter; the trap handler then
+/// decides between emulating the read and raising SIGSEGV. This is the
+/// aarch64 half of `prctl(PR_SET_TSC)`, so it is re-asserted on every context
+/// switch whose incoming task disagrees with the outgoing one.
+///
+/// # SAFETY: privileged sysreg RMW on this PE's CNTKCTL_EL1; callers run
+/// preempt-off so no nested switch interleaves the read-modify-write, and no
+/// other CNTKCTL field is disturbed. The `isb` retires the change before EL0
+/// resumes.
+/// # C: O(1)
+/// # Ctx: process|irq; preempt-off
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-const CNTKCTL_EL0PCTEN: u64 = 1 << 0;
-#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-const CNTKCTL_EL0VCTEN: u64 = 1 << 1;
-#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-const CNTKCTL_EL0_COUNTER_ACCESS: u64 = CNTKCTL_EL0PCTEN | CNTKCTL_EL0VCTEN;
+pub unsafe fn set_el0_counter_access(allow: bool) {
+    // SAFETY: per fn contract — CNTKCTL_EL1 is this PE's EL1 timer-control register; RMW touches only the two EL0 counter-read enables.
+    unsafe {
+        let cur: u64;
+        core::arch::asm!("mrs {v}, cntkctl_el1", v = out(reg) cur, options(nomem, nostack, preserves_flags));
+        let want = cntkctl_with_counter_access(cur, allow);
+        if want != cur {
+            core::arch::asm!(
+                "msr cntkctl_el1, {v}",
+                "isb",
+                v = in(reg) want,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+    }
+}
+
+/// Host build: no CNTKCTL_EL1 to program.
+/// # SAFETY: no-op; exists so callers need no target gate of their own.
+/// # C: O(1)
+#[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+pub unsafe fn set_el0_counter_access(allow: bool) { let _ = allow; }
 
 /// Enable EL0 reads of the architected physical/virtual counter.
 ///

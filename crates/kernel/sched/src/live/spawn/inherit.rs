@@ -59,6 +59,12 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // (Linux copies `default_timer_slack_ns` in `dup_task_struct`).
     task.default_timer_slack_ns
         .store(parent.default_timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+    // `prctl(PR_SET_TSC)` and `prctl(PR_SET_TAGGED_ADDR_CTRL)` are thread
+    // flags, which fork copies wholesale with the rest of `thread_info`. A
+    // child that did NOT inherit the TSC trap would be a one-`fork()` escape
+    // from the very restriction its parent asked for.
+    task.tsc_sigsegv.store(parent.tsc_sigsegv.load(Ordering::Acquire), Ordering::Release);
+    task.tagged_addr.store(parent.tagged_addr.load(Ordering::Acquire), Ordering::Release);
     // PR_MCE_KILL policy lives in `task_struct::flags`, copied by fork.
     task.mce_kill.store(parent.mce_kill.load(Ordering::Acquire), Ordering::Release);
     // PR_SET_IO_FLUSHER is `PF_MEMALLOC_NOIO | PF_LOCAL_THROTTLE`, also in

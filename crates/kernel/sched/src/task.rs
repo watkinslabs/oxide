@@ -680,6 +680,23 @@ pub struct Task {
     /// allowed by Linux; we mirror that.
     pub no_new_privs: AtomicBool,
 
+    /// Linux `TIF_NOTSC` (`prctl(PR_SET_TSC, PR_TSC_SIGSEGV)`) — this task
+    /// may not read the time-stamp counter. Per-THREAD, not per-process.
+    /// Consumed by the x86_64 arm of `schedule()`, which drives `CR4.TSD`
+    /// from it on every switch so a trapped `rdtsc` raises `#GP` and the
+    /// user-fault path turns that into SIGSEGV. Inherited across fork and
+    /// preserved by execve (`flush_thread` does not clear the flag).
+    /// aarch64 has no equivalent control; the option is x86-only there.
+    pub tsc_sigsegv: AtomicBool,
+
+    /// Linux arm64 `TIF_TAGGED_ADDR` (`prctl(PR_SET_TAGGED_ADDR_CTRL,
+    /// PR_TAGGED_ADDR_ENABLE)`) — this task's user pointers may carry a
+    /// non-zero top byte. Consumed by the aarch64 user-pointer validator,
+    /// which strips the tag before the range check exactly as Linux's
+    /// `access_ok` calls `untagged_addr`. Per-THREAD, inherited across fork,
+    /// and cleared by execve.
+    pub tagged_addr: AtomicBool,
+
     /// Linux `mm->flags SUID_DUMP_*` (`prctl(PR_SET_DUMPABLE/GET_DUMPABLE)`):
     /// DISABLE(0)/USER(1)/ROOT(2). Gates core dumps, ptrace, `/proc/pid/mem`
     /// ownership. Per-task (v1: mm not yet shared cross-thread, so no
@@ -689,7 +706,13 @@ pub struct Task {
     /// `PR_SET_THP_DISABLE`/`GET_THP_DISABLE` — Linux's two `mm` flags
     /// `MMF_DISABLE_THP_COMPLETELY` / `MMF_DISABLE_THP_EXCEPT_ADVISED`,
     /// encoded as `THP_DISABLE_*` here because they are mutually exclusive.
-    /// Round-trip bookkeeping only — v1 has no THP allocator to gate.
+    /// Inert by construction, not by omission: there is no transparent-huge-
+    /// page allocator or collapse path in this kernel for the flag to gate,
+    /// the same position as a Linux built without huge-page support, where the
+    /// prctl still round-trips. Its consumer belongs next to the
+    /// `thp_vma_allowable_order` equivalent when that path lands, with
+    /// `/proc/<pid>/smaps` deriving `THPeligible` from it rather than
+    /// hard-coding 0.
     pub thp_disable: AtomicU8,
 
     /// Per-task timer-slack value in nanoseconds, controlled by
@@ -703,7 +726,10 @@ pub struct Task {
     pub default_timer_slack_ns: AtomicU64,
 
     /// Linux `PF_MCE_PROCESS` | `PF_MCE_EARLY` (`prctl(PR_MCE_KILL)`),
-    /// packed as `MCE_KILL_PROCESS` / `MCE_KILL_EARLY`.
+    /// packed as `MCE_KILL_PROCESS` / `MCE_KILL_EARLY`. Consumed by
+    /// `memory_failure`'s early-kill decision upstream; there is no machine-
+    /// check or hwpoison subsystem here, so nothing reads it yet and its
+    /// consumer belongs with the poison bookkeeping when that lands.
     pub mce_kill: AtomicU8,
 
     /// `PR_SET_PDEATHSIG` — signal delivered to this task when its

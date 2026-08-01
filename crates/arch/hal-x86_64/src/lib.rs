@@ -28,6 +28,7 @@ mod regs;
 mod signal;
 mod syscall;
 mod timer;
+mod tsd;
 mod tss;
 mod uaccess;
 pub mod vmm;
@@ -80,6 +81,7 @@ pub use syscall::{
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use timer::{calibrate_tsc_khz, read_rtc_unix_secs};
 pub use timer::{set_tsc_khz, X86TimerOps};
+pub use tsd::{cr4_with_tsd, set_tsd, CR4_TSD};
 pub use tss::{
     install_tss, install_tss_for_cpu, set_rsp0, setup_ist_stacks, tss_base_addr, Tss64,
     TSS_SEL, IST_STACK_BYTES,
