@@ -120,9 +120,8 @@ pub struct AuthData {
     pub requester: TaskIds,
     /// `rka->pid`.
     pub pid: u32,
-    /// `rka->callout_info`, handed to the helper through `KEYCTL_READ` on the
-    /// authorisation key.
-    pub callout: Vec<u8>,
-    /// `rka->op` (`char op[8]`).
+    /// `rka->op` (`char op[8]`). The callout info is not held here: it is the
+    /// token's readable PAYLOAD, which is where the type's read method looks
+    /// when the helper asks what it was called for.
     pub op: String,
 }

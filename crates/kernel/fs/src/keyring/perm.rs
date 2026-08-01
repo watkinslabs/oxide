@@ -103,6 +103,51 @@ pub(crate) fn check_perm(g: &Store, serial: i32, t: &TaskIds, need: u32, mode: L
     key_task_permission(g, key, t, need).map_err(|e| -(e.as_i32() as i64))
 }
 
+/// How a call site decides whether the possessor perm byte applies —
+/// `make_key_ref(key, possessed)`'s second argument, which is NOT always
+/// computed by reachability.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum Possess {
+    /// Reachability from the caller's own keyrings (`is_key_possessed`).
+    Computed,
+    /// Possessed by construction. A persistent keyring lives in the
+    /// kernel-wide `.persistent_register`, which is in nobody's keyrings, so
+    /// computed possession is always false and its user byte grants only
+    /// View/Read — the caller could never link the ring it just asked for.
+    /// Being handed the keyring IS the possession.
+    Yes,
+    /// NOT possessed, whatever the caller can reach.
+    /// `find_keyring_by_name` passes `possessed = 0`, so joining a named
+    /// session keyring turns on its user/group/other bytes alone. The default
+    /// mask a named keyring is created with grants View/Read/Link and NOT
+    /// Search, so a second task joins one only if its owner widened the perms
+    /// with `KEYCTL_SETPERM` first.
+    No,
+}
+
+/// `key_task_permission` with the possession rule stated by the call site.
+/// # C: O(members)
+pub(crate) fn check_perm_with(g: &Store, serial: i32, t: &TaskIds, need: u32, now_ns: u64,
+    possess: Possess) -> Result<(), i64>
+{
+    let key = g.keys.get(&serial).ok_or(-(Errno::Enokey.as_i32() as i64))?;
+    key_validate(key, now_ns).map_err(|e| -(e.as_i32() as i64))?;
+    let mut kperm = if key.uid == t.fsuid {
+        (key.perm >> KEY_PERM_USR_SHIFT) & KEY_PERM_BYTE_MASK
+    } else if key.gid != GID_INVALID && key.perm & KEY_GRP_ALL != 0 && t.in_group(key.gid) {
+        (key.perm >> KEY_PERM_GRP_SHIFT) & KEY_PERM_BYTE_MASK
+    } else {
+        (key.perm >> KEY_PERM_OTH_SHIFT) & KEY_PERM_BYTE_MASK
+    };
+    let possessed = match possess {
+        Possess::Computed => is_possessed(g, serial, t),
+        Possess::Yes => true,
+        Possess::No => false,
+    };
+    if possessed { kperm |= (key.perm >> KEY_PERM_POS_SHIFT) & KEY_PERM_BYTE_MASK; }
+    if kperm & need == need { Ok(()) } else { Err(-(Errno::Eacces.as_i32() as i64)) }
+}
+
 /// Search-path visibility check (`KEYCTL_SEARCH`/`request_key`): a key the
 /// caller cannot `KEY_NEED_SEARCH`, or that is revoked/invalidated/expired, is
 /// invisible — no ENOKEY/EACCES split, it just never matches, matching Linux

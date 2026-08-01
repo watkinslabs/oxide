@@ -193,6 +193,11 @@ pub const ERESTART_RESTARTBLOCK_NR:  u32 = 516;
 /// `UIO_MAXIOV` — the `KEYCTL_INSTANTIATE_IOV` segment-count ceiling.
 pub const UIO_MAXIOV: u64 = 1024;
 
+/// The instantiation authorisation token's type name. The leading `.` is what
+/// keeps it out of userspace's reach: `key_get_type_from_user` refuses a
+/// `.`-prefixed type name with EPERM.
+pub const REQKEY_AUTH_TYPE: &str = ".request_key_auth";
+
 /// `.request_key_auth` perm: the holder (possessor) may view, read the callout
 /// info, find it by search and link it; the owner gets VIEW alone.
 pub const REQKEY_AUTH_PERM: u32 = KEY_POS_VIEW | KEY_POS_READ | KEY_POS_SEARCH | KEY_POS_LINK | KEY_USR_VIEW;
@@ -207,6 +212,10 @@ pub const PERSISTENT_KEYRING_PERM: u32 = (KEY_POS_ALL & !KEY_POS_SETATTR) | KEY_
 /// `persistent_keyring_expiry` — three days of non-use, refreshed by every
 /// successful `KEYCTL_GET_PERSISTENT`.
 pub const PERSISTENT_KEYRING_EXPIRY: u64 = 3 * 24 * 3600;
+/// The register holding every per-uid persistent keyring, and the prefix each
+/// of those carries. Both are kernel-internal names.
+pub const PERSISTENT_REGISTER_NAME: &str = ".persistent_register";
+pub const PERSISTENT_PREFIX: &str = "_persistent.";
 
 /// `/sbin/request-key` and the environment it is given.
 pub const SBIN_REQUEST_KEY: &[u8] = b"/sbin/request-key";

@@ -25,16 +25,35 @@ fn get_session_reflects_join() {
     assert_eq!(get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true), joined);
 }
 
-// A NAMED join rejoins the same keyring (Linux: same-named session keyring is
-// shared), while a different name is a different keyring.
+// A named join is only a JOIN if the named keyring grants Search through its
+// user/group/other bytes: `find_keyring_by_name` checks permission without
+// possession, so being able to reach a keyring is not being able to re-enter
+// it. The mask a named session keyring is created with is
+// View/Read/Link — no Search — so by default even its own owner gets a FRESH
+// keyring of that name rather than the old one.
 #[test]
-fn named_join_is_stable_by_name() {
+fn a_named_join_without_search_permission_creates_rather_than_joins() {
     let t = ctx(1003, 1003);
     let x1 = join_session(&t, Some("keyring-test-alpha"));
+    assert!(x1 >= FIRST_SERIAL as i64);
     let x2 = join_session(&t, Some("keyring-test-alpha"));
-    let y  = join_session(&t, Some("keyring-test-beta"));
-    assert_eq!(x1, x2, "same name rejoins one keyring");
-    assert_ne!(x1, y,  "different name is a different keyring");
+    assert_ne!(x1, x2, "the default mask grants no Search, so this is a new keyring");
+    assert_eq!(STORE.lock().session.get(&1003).copied(), Some(x2 as i32),
+        "and the caller really moved into it");
+}
+
+// Widen the mask and the name becomes shareable — which is what makes one
+// login session's keyring reachable by every process in it.
+#[test]
+fn a_named_join_shares_the_keyring_once_search_is_granted() {
+    let owner = ctx(1004, 1004);
+    let ring = join_session(&owner, Some("keyring-test-shared")) as i32;
+    force_perm(ring, NAMED_SESSION_KEYRING_PERM | (KEY_NEED_SEARCH << KEY_PERM_USR_SHIFT));
+    let peer = ctx(1104, 1004);
+    assert_eq!(join_session(&peer, Some("keyring-test-shared")), ring as i64,
+        "a second process of the same uid joins the SAME keyring");
+    // Re-joining the ring the caller is already in answers 0, not the serial.
+    assert_eq!(join_session(&peer, Some("keyring-test-shared")), 0);
 }
 
 // The special keyrings resolve to DISTINCT real keyrings for a task.
@@ -145,22 +164,82 @@ fn set_reqkey_keyring_installs_the_named_keyring() {
         "the process keyring was installed, not just recorded");
 }
 
-// GET_PERSISTENT for another uid without CAP_SYS_ADMIN is EPERM; `-1` means
-// "my own" and always works.
+// GET_PERSISTENT for another uid needs CAP_SETUID — reaching into another
+// user's cached credentials is an identity operation, not an administrative
+// one. `-1` means "my own" and needs nothing.
 #[test]
 fn get_persistent_refuses_another_uid() {
     let t = ctx(1017, 6102);
-    assert!(get_persistent(&t, -1, 0) >= FIRST_SERIAL as i64);
-    assert_eq!(get_persistent(&t, 6103, 0), eperm());
+    assert!(get_persistent(&t, -1, KEY_SPEC_SESSION_KEYRING) >= FIRST_SERIAL as i64);
+    assert_eq!(get_persistent(&t, 6103, KEY_SPEC_SESSION_KEYRING), eperm());
     let a = admin_ctx(1018, 6102);
-    assert!(get_persistent(&a, 6103, 0) >= FIRST_SERIAL as i64, "CAP_SYS_ADMIN may ask for another uid");
+    assert!(get_persistent(&a, 6103, KEY_SPEC_SESSION_KEYRING) >= FIRST_SERIAL as i64,
+        "CAP_SETUID may ask for another uid");
 }
 
-// GET_PERSISTENT links the ring into the destination keyring when one is given.
+// A destination is MANDATORY: the persistent keyring is useless unless it is
+// linked somewhere the caller can reach, so id 0 is not "just tell me the
+// serial".
 #[test]
-fn get_persistent_links_into_the_destination() {
+fn get_persistent_requires_a_destination() {
     let t = ctx(1019, 6104);
+    assert_eq!(get_persistent(&t, -1, 0), einval());
     let sess = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
     let ring = get_persistent(&t, -1, KEY_SPEC_SESSION_KEYRING) as i32;
     assert!(members_of(sess).expect("session is a keyring").contains(&ring));
+}
+
+// The persistent keyring is NOT the user keyring: it is a separate
+// `_persistent.<uid>` ring, which is what lets it outlive the user's last
+// session. Aliasing the two hands the caller a ring with the wrong lifetime.
+#[test]
+fn the_persistent_keyring_is_not_the_user_keyring() {
+    let t = ctx(1020, 6105);
+    let user = get_keyring_id(&t, KEY_SPEC_USER_KEYRING, true) as i32;
+    let ring = get_persistent(&t, -1, KEY_SPEC_SESSION_KEYRING) as i32;
+    assert_ne!(ring, user);
+    let g = STORE.lock();
+    assert_eq!(g.keys[&ring].description, "_persistent.6105");
+    let register = g.persistent_register.expect("the register was created on first use");
+    assert!(g.keys[&register].members.contains(&ring), "it lives in the register");
+    assert_eq!(g.keys[&register].description, ".persistent_register");
+}
+
+// The same uid gets the SAME persistent keyring back, with its expiry pushed
+// out on every use — three days from last use, not from creation.
+#[test]
+fn get_persistent_is_stable_and_refreshes_the_expiry() {
+    let t = ctx(1021, 6106);
+    let first = get_persistent(&t, -1, KEY_SPEC_SESSION_KEYRING) as i32;
+    let e1 = STORE.lock().keys[&first].expiry_ns;
+    assert_eq!(e1, PERSISTENT_KEYRING_EXPIRY * 1_000_000_000);
+    let mut later = ctx(1021, 6106);
+    later.now_ns = 60 * 1_000_000_000;
+    assert_eq!(get_persistent(&later, -1, KEY_SPEC_SESSION_KEYRING), first as i64,
+        "the same ring comes back");
+    assert!(STORE.lock().keys[&first].expiry_ns > e1, "and its life is extended by the use");
+}
+
+
+// A `.`-prefixed name may never be joined or created from userspace: the dot
+// prefix marks a kernel-internal keyring, and joining one by name would put the
+// caller inside `.persistent_register` or a live request's token keyring.
+#[test]
+fn a_dot_prefixed_session_name_is_refused() {
+    assert_eq!(vet_session_name(Some(".persistent_register")), Err(Errno::Eperm));
+    assert_eq!(vet_session_name(Some(".")), Err(Errno::Eperm));
+    assert_eq!(vet_session_name(Some("_ses")), Ok(()),
+        "the underscore anonymous rings carry no such reservation");
+    assert_eq!(vet_session_name(Some("login")), Ok(()));
+    assert_eq!(vet_session_name(None), Ok(()), "an anonymous join names nothing");
+}
+
+// The refusal happens before any keyring is touched, so a rejected name leaves
+// the caller in the session keyring it already had.
+#[test]
+fn a_refused_name_does_not_move_the_caller() {
+    let t = ctx(1105, 1105);
+    let before = join_session(&t, None);
+    assert_eq!(vet_session_name(Some(".sneaky")), Err(Errno::Eperm));
+    assert_eq!(get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true), before);
 }

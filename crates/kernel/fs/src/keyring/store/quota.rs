@@ -135,6 +135,21 @@ impl Store {
                 .chain(self.keys.values().filter_map(|k| k.auth.as_ref().map(|a| a.target)))
                 .collect();
             linked.extend_from_slice(&held);
+            // A request in flight holds its authorisation token, and the
+            // keyring the helper will reach that token through. Between the
+            // token being minted and the helper task being handed that keyring
+            // as its session, NEITHER is reachable from any gc root — a
+            // collection in that window (any other task unlinking a key is
+            // enough to trigger one) destroys the token and strands the
+            // requester on a key no helper can now answer.
+            let tokens: Vec<i32> = self.keys.values()
+                .filter(|k| k.auth.is_some()).map(|k| k.serial).collect();
+            for k in self.keys.values() {
+                if k.is_keyring() && k.members.iter().any(|m| tokens.contains(m)) {
+                    linked.push(k.serial);
+                }
+            }
+            linked.extend_from_slice(&tokens);
             let dead: Vec<i32> = self.keys.keys().copied().filter(|s| !linked.contains(s)).collect();
             if dead.is_empty() { return; }
             for s in dead { self.destroy(s); }
