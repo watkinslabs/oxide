@@ -55,7 +55,12 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
     let cur_dl = t.dl.params();
     let want_dl = crate::sched_policy::dl::attr_params(attr);
     if dl_policy(policy) || was_dl {
-        if dl_policy(policy) && !caller.has_cap(sched::cap::SYS_NICE)
+        // Applies to EVERY syscall caller, privileged or not: `CAP_SYS_NICE`
+        // overrides the ownership and priority ladders, not the question of
+        // whether the reservation can be honoured at all. A task that cannot
+        // reach the whole span, or a class with no bandwidth to give, cannot be
+        // promised a deadline by anyone.
+        if dl_policy(policy)
             && !crate::sched_policy::dl::user_dl_allowed(dl_span(), dl_task_mask(t),
                                                         sched::deadline::bw::DL_BW.bw()) {
             return err(Errno::Eperm);
