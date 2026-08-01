@@ -314,7 +314,8 @@ impl Context for ContextX86_64 {
             let cur_gs: u64 = unsafe { rdmsr(crate::msr::IA32_KERNEL_GS_BASE) };
             // SAFETY: prev is a valid &mut Self per fn contract.
             unsafe { (*prev).fs_base = cur_fs; (*prev).gs_base = cur_gs; }
-            // SAFETY: `oxide_context_switch` OVERWRITES rsp/rbp/rbx/r12-r15
+            // Why inline asm and not a plain call: `oxide_context_switch`
+            // OVERWRITES rsp/rbp/rbx/r12-r15
             // with the incoming task's saved values — that IS the switch
             // (see its global_asm! body: every one of those regs is loaded
             // from `next` before the `ret`). Per docs/54 §1.4 ("an asm stub
@@ -334,6 +335,10 @@ impl Context for ContextX86_64 {
             // `"frame-pointer": "always"`), so LLVM never places an
             // ordinary Rust value in either — only r12-r15 are reachable
             // by the register allocator and need declaring here.
+            // SAFETY: `prev`/`next` are valid `Context` records and `next`'s
+            // saved stack carries a resumable frame, per this fn's contract;
+            // the clobber list covers every allocator-reachable register the
+            // stub rewrites, so no live Rust value survives across the switch.
             unsafe {
                 core::arch::asm!(
                     "call {switch_fn}",
