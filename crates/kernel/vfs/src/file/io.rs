@@ -80,6 +80,11 @@ impl File {
         };
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
+        // `file_accessed` (Linux include/linux/fs.h) — the atime bump the
+        // per-backend read helpers (`filemap_read`, `shmem_file_read_iter`,
+        // `pipe_read`) each run at the end of a read. Unconditional on the byte
+        // count: Linux stamps even a 0-byte read at EOF.
+        crate::atime::file_accessed(self);
         if n > 0 {
             fire_read_hook(&self.inode, &self.dentry);
         }
@@ -284,6 +289,7 @@ impl File {
         } else {
             self.f_op.read(&self.inode, off as u64, buf)?
         };
+        crate::atime::file_accessed(self);
         if n > 0 {
             fire_read_hook(&self.inode, &self.dentry);
         }
@@ -415,6 +421,7 @@ impl File {
         }
         self.pos.store(pos + total, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
+        crate::atime::file_accessed(self);
         if total > 0 {
             fire_read_hook(&self.inode, &self.dentry);
         }

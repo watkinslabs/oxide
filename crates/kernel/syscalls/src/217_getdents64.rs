@@ -197,6 +197,9 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
 
     // Linux `iterate_dir` stores the cursor unconditionally, error or not.
     file.set_pos(new_off);
+    // `iterate_dir` runs `file_accessed(file)` after the backend walk — reading
+    // a directory advances its atime exactly as reading a file does.
+    vfs::file_accessed(&file);
     if actor.fill.written() > 0 {
         let cap = actor.fill.capacity();
         // SAFETY: same admitted [dirp, dirp+count) range as the packing path;

@@ -357,7 +357,8 @@ pub fn register_bind_clone_under(parent_id: u64, mp_d: Arc<Dentry>,
 
 fn graft_bind_realized(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_dentry: Arc<Dentry>,
     parent_id: u64, rendered: String, reservation: mntns::MountReservation) -> KResult<()> {
-    graft_bind_realized_with_flags(mp_d, sb, root_dentry, parent_id, rendered, 0, 0, reservation)
+    graft_bind_realized_with_flags(mp_d, sb, root_dentry, parent_id, rendered,
+                                   crate::mount::ms_to_mnt(0), 0, reservation)
 }
 
 fn graft_bind_realized_with_flags(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_dentry: Arc<Dentry>,

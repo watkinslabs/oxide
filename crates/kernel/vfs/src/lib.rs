@@ -22,12 +22,14 @@ pub use static_file::{StaticFileInode, make_static_file_inode};
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod atime;
 pub mod dcache;
 pub mod dentry;
 pub mod errseq;
 pub mod devnode;
 pub mod dirent;
 pub mod readdir;
+pub mod readdir_cookie;
 pub mod fdtable;
 pub mod file;
 pub mod fileattr;
@@ -69,6 +71,8 @@ pub use superblock::{FileSystemType, SbStatFs, SimpleSuperOps, SuperBlock, Super
 pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, path_lookup_at_cred, path_lookup_at_root_cred, mountpoint_lookup_at_root_cred, mount_target_from_resolved_path, resolve_abs, resolve_path_dentry, set_root_dentry_provider, device_permission, may_open_dev, set_device_permission_hook, DevicePermissionHook, inode_permission, generic_permission, may_open, may_create, may_create_in_sticky, may_delete, may_delete_dentry, may_link, may_link_source, may_linkat, Cred, LastType, LookupFlags, LinkTarget, MountTarget, Nameidata, VfsPath, GroupList, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_IALLUGO, S_ISUID, S_ISGID, S_IXGRP};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER, dirent_pack, dirent_reclen, DIRENT_HEADER, DType};
 pub use readdir::readdir_dots;
+pub use readdir_cookie::{emit_by_cookie, name_cookie, CookieEntry};
+pub use atime::{file_accessed, touch_atime};
 pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX, set_file_ref_drop_hook};
 pub use file::{File, FileCred, FileEpollLink, Fmode, SeekFrom, SyncMode, SYNC_TO_EOF, iocb_sync_mode, fsync_slot_present, clear_file_lock_wait_hooks, file_lock_interrupted, file_lock_park, file_lock_schedule, file_lock_wake, fire_clone_hook, fire_dirent_create, fire_delete_self_hook, fire_dirent_delete, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_drop_hook, set_file_lock_wait_hooks, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook};
