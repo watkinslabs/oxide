@@ -313,76 +313,6 @@ stack-report:
 	python3 tools/stack-depth-gate.py $(KERNEL_ELF_$(ARCH)) \
 	  --arch $(ARCH) --fail 99999 --top 20 --show-path
 
-DRIVER_PATH_SMOKE_TIMEOUT ?= 900
-smoke-driver-path-x86: x86
-	./tools/boot-smoke-driver-path.sh x86 $(DRIVER_PATH_SMOKE_TIMEOUT)
-smoke-driver-path-arm: arm
-	./tools/boot-smoke-driver-path.sh arm $(DRIVER_PATH_SMOKE_TIMEOUT)
-smoke-driver-path: smoke-driver-path-x86 smoke-driver-path-arm
-
-SYSBLOCK_SMOKE_TIMEOUT ?= 900
-smoke-sysblock-x86: x86
-	./tools/boot-smoke-sysblock.sh x86 $(SYSBLOCK_SMOKE_TIMEOUT)
-smoke-sysblock-arm: arm
-	./tools/boot-smoke-sysblock.sh arm $(SYSBLOCK_SMOKE_TIMEOUT)
-smoke-sysblock: smoke-sysblock-x86 smoke-sysblock-arm
-
-SYSBUS_BIND_SMOKE_TIMEOUT ?= 600
-smoke-sysbus-bind-x86: x86
-	./tools/boot-smoke-sysbus-bind.sh x86 $(SYSBUS_BIND_SMOKE_TIMEOUT)
-smoke-sysbus-bind-arm: arm
-	./tools/boot-smoke-sysbus-bind.sh arm $(SYSBUS_BIND_SMOKE_TIMEOUT)
-smoke-sysbus-bind: smoke-sysbus-bind-x86 smoke-sysbus-bind-arm
-
-SHUTDOWN_SMOKE_TIMEOUT ?= 600
-smoke-shutdown-x86: x86
-	./tools/boot-smoke-shutdown.sh x86 $(SHUTDOWN_SMOKE_TIMEOUT)
-smoke-shutdown-arm: arm
-	./tools/boot-smoke-shutdown.sh arm $(SHUTDOWN_SMOKE_TIMEOUT)
-smoke-shutdown: smoke-shutdown-x86 smoke-shutdown-arm
-
-VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT ?= 900
-smoke-virtio-snd-multidev-x86: x86
-	./tools/boot-smoke-virtio-snd-multidev.sh x86 $(VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-snd-multidev-arm: arm
-	./tools/boot-smoke-virtio-snd-multidev.sh arm $(VIRTIO_SND_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-snd-multidev: smoke-virtio-snd-multidev-x86 smoke-virtio-snd-multidev-arm
-
-VIRTIO_GPU_MULTIDEV_SMOKE_TIMEOUT ?= 900
-smoke-virtio-gpu-multidev-x86: x86
-	./tools/boot-smoke-virtio-gpu-multidev.sh x86 $(VIRTIO_GPU_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-gpu-multidev-arm: arm
-	./tools/boot-smoke-virtio-gpu-multidev.sh arm $(VIRTIO_GPU_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-gpu-multidev: smoke-virtio-gpu-multidev-x86 smoke-virtio-gpu-multidev-arm
-
-VIRTIO_NET_MULTIDEV_SMOKE_TIMEOUT ?= 900
-smoke-virtio-net-multidev-x86: x86
-	./tools/boot-smoke-virtio-net-multidev.sh x86 $(VIRTIO_NET_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-net-multidev-arm: arm
-	./tools/boot-smoke-virtio-net-multidev.sh arm $(VIRTIO_NET_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-net-multidev: smoke-virtio-net-multidev-x86 smoke-virtio-net-multidev-arm
-
-VIRTIO_BLK_MULTIDEV_SMOKE_TIMEOUT ?= 900
-smoke-virtio-blk-multidev-x86: x86
-	./tools/boot-smoke-virtio-blk-multidev.sh x86 $(VIRTIO_BLK_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-blk-multidev-arm: arm
-	./tools/boot-smoke-virtio-blk-multidev.sh arm $(VIRTIO_BLK_MULTIDEV_SMOKE_TIMEOUT)
-smoke-virtio-blk-multidev: smoke-virtio-blk-multidev-x86 smoke-virtio-blk-multidev-arm
-
-STORAGE_MULTICTRL_SMOKE_TIMEOUT ?= 900
-smoke-storage-multictrl-x86: x86
-	./tools/boot-smoke-storage-multictrl.sh x86 $(STORAGE_MULTICTRL_SMOKE_TIMEOUT)
-smoke-storage-multictrl-arm: arm
-	./tools/boot-smoke-storage-multictrl.sh arm $(STORAGE_MULTICTRL_SMOKE_TIMEOUT)
-smoke-storage-multictrl: smoke-storage-multictrl-x86 smoke-storage-multictrl-arm
-
-USERSPACE_SEAT_SMOKE_TIMEOUT ?= 900
-smoke-userspace-seat-x86: x86
-	./tools/boot-smoke-userspace-seat.sh x86 $(USERSPACE_SEAT_SMOKE_TIMEOUT)
-smoke-userspace-seat-arm: arm
-	./tools/boot-smoke-userspace-seat.sh arm $(USERSPACE_SEAT_SMOKE_TIMEOUT)
-smoke-userspace-seat: smoke-userspace-seat-x86 smoke-userspace-seat-arm
-
 DRM_RENDER_SMOKE_TIMEOUT ?= 900
 smoke-drm-render-x86: x86
 	./tools/boot-smoke-drm-render.sh x86 $(DRM_RENDER_SMOKE_TIMEOUT)
@@ -425,6 +355,22 @@ smoke-grub:
 # oxide login: prompt and checks `id` reports uid=1000. Catches
 # SysV stack ordering, PAM, TIOCSCTTY-foreground_pgid, and shell
 # job-control regressions in one shot.
+# Serial-driven kernel smokes with no in-guest probe: the /proc /dev /sys
+# sweep and the framebuffer-keyboard login. Both worked but had no target.
+FS_SMOKE_TIMEOUT ?= 600
+smoke-fs-x86: x86
+	./tools/boot-smoke-fs.sh x86 $(FS_SMOKE_TIMEOUT)
+smoke-fs-arm: arm
+	./tools/boot-smoke-fs.sh arm $(FS_SMOKE_TIMEOUT)
+smoke-fs: smoke-fs-x86 smoke-fs-arm
+
+KBD_LOGIN_SMOKE_TIMEOUT ?= 600
+smoke-kbd-login-x86: x86
+	./tools/boot-smoke-kbd-login.sh x86 $(KBD_LOGIN_SMOKE_TIMEOUT)
+smoke-kbd-login-arm: arm
+	./tools/boot-smoke-kbd-login.sh arm $(KBD_LOGIN_SMOKE_TIMEOUT)
+smoke-kbd-login: smoke-kbd-login-x86 smoke-kbd-login-arm
+
 LOGIN_SMOKE_TIMEOUT ?= 600
 smoke-login-x86: x86
 	./tools/boot-smoke-login.sh x86 $(LOGIN_SMOKE_TIMEOUT)
@@ -465,46 +411,6 @@ smoke-ssh-x86: x86
 smoke-ssh-arm: arm
 	./tools/boot-smoke-ssh.sh arm $(SSH_SMOKE_TIMEOUT) $(SSH_SMOKE_CONNECTIONS)
 smoke-ssh: smoke-ssh-x86 smoke-ssh-arm
-
-# D3.3 virtio-vsock host↔guest round-trip smoke. Starts a host AF_VSOCK
-# echo server, rebuilds the rootfs with OXIDE_VSOCK_SMOKE=1 so rcS runs
-# /bin/vsock_probe, boots, and checks for `vsock_probe: PASS` +
-# `virtio-vsock installed cid=3` on serial. Needs /dev/vhost-vsock on
-# the host (skips cleanly otherwise).
-VSOCK_SMOKE_TIMEOUT ?= 600
-smoke-vsock-x86: x86
-	./tools/boot-smoke-vsock.sh x86 $(VSOCK_SMOKE_TIMEOUT)
-smoke-vsock-arm: arm
-	./tools/boot-smoke-vsock.sh arm $(VSOCK_SMOKE_TIMEOUT)
-smoke-vsock: smoke-vsock-x86
-
-VIRTIO_RNG_REBIND_SMOKE_TIMEOUT ?= 600
-smoke-virtio-rng-rebind-x86: x86
-	./tools/boot-smoke-virtio-rng-rebind.sh x86 $(VIRTIO_RNG_REBIND_SMOKE_TIMEOUT)
-smoke-virtio-rng-rebind-arm: arm
-	./tools/boot-smoke-virtio-rng-rebind.sh arm $(VIRTIO_RNG_REBIND_SMOKE_TIMEOUT)
-smoke-virtio-rng-rebind: smoke-virtio-rng-rebind-x86 smoke-virtio-rng-rebind-arm
-
-VIRTIO_PARENT_CHILD_REBIND_SMOKE_TIMEOUT ?= 600
-smoke-virtio-parent-child-rebind-x86: x86
-	./tools/boot-smoke-virtio-parent-child-rebind.sh x86 $(VIRTIO_PARENT_CHILD_REBIND_SMOKE_TIMEOUT)
-smoke-virtio-parent-child-rebind-arm: arm
-	./tools/boot-smoke-virtio-parent-child-rebind.sh arm $(VIRTIO_PARENT_CHILD_REBIND_SMOKE_TIMEOUT)
-smoke-virtio-parent-child-rebind: smoke-virtio-parent-child-rebind-x86 smoke-virtio-parent-child-rebind-arm
-
-UART_REBIND_SMOKE_TIMEOUT ?= 600
-smoke-uart-rebind-x86: x86
-	./tools/boot-smoke-uart-rebind.sh x86 $(UART_REBIND_SMOKE_TIMEOUT)
-smoke-uart-rebind-arm: arm
-	./tools/boot-smoke-uart-rebind.sh arm $(UART_REBIND_SMOKE_TIMEOUT)
-smoke-uart-rebind: smoke-uart-rebind-x86 smoke-uart-rebind-arm
-
-PS2_REBIND_SMOKE_TIMEOUT ?= 600
-smoke-ps2-rebind-x86: x86
-	./tools/boot-smoke-ps2-rebind.sh x86 $(PS2_REBIND_SMOKE_TIMEOUT)
-smoke-ps2-rebind-arm: arm
-	./tools/boot-smoke-ps2-rebind.sh arm $(PS2_REBIND_SMOKE_TIMEOUT)
-smoke-ps2-rebind: smoke-ps2-rebind-x86 smoke-ps2-rebind-arm
 
 INPUT_DELIVERY_SMOKE_TIMEOUT ?= 900
 smoke-mouse-x86: x86
