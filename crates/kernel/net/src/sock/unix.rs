@@ -29,9 +29,9 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
         _ => return Err(NetError::Einval),
     };
     if let Some(c) = sched::live::current() {
-        use core::sync::atomic::Ordering;
-        candidate.set_end_cred(crate::UnixEnd::B, c.visible_pid(),
-            c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed));
+        if let Some(cred) = crate::PeerCred::of_current() {
+            candidate.set_end_cred(crate::UnixEnd::B, cred);
+        }
         candidate.set_end_identity(crate::UnixEnd::B, Some(c.thread_group.leader_pid()));
     }
     let timeout = sock.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);

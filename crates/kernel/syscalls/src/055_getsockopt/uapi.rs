@@ -2,7 +2,8 @@
 
 // SOL_SOCKET option numbers live in `net::sock_opts::sol_socket`.
 pub(super) use net::sock_opts::sol_socket::{SOL_SOCKET, SO_BINDTODEVICE, SO_ERROR,
-    SO_LOCK_FILTER, SO_PEERCRED, SO_PEERPIDFD};
+    SO_GET_FILTER, SO_LOCK_FILTER, SO_MEMINFO, SO_PEERCRED, SO_PEERGROUPS, SO_PEERNAME,
+    SO_PEERPIDFD, SO_PEERSEC};
 
 
 pub(super) const IPPROTO_IP: u64 = 0;

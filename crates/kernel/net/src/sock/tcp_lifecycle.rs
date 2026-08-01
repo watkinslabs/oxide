@@ -77,6 +77,7 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
         sock.opts.ipv6_mtu_discover.clone())?;
     listener.set_backlog(backlog, somaxconn);
     listener.register_poll_subs(&sock.poll_subs);
+    stack().join_tcp_reuseport(&listener, &sock.reuseport_group);
     *sock.kind.lock() = SockKind::TcpListener(listener);
     Ok(())
 }

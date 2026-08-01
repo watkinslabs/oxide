@@ -70,6 +70,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                     )?)
                 };
                 endpoint.register_poll_subs(&sock.poll_subs);
+                stack().join_udp4_reuseport(&endpoint, &sock.reuseport_group);
                 *sock.udp4.lock() = Some(endpoint);
                 *local_port = Some(port);
                 *sock.local_ip.lock() = ip;
@@ -104,6 +105,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                     )?)
                 };
                 endpoint.register_poll_subs(&sock.poll_subs);
+                stack().join_udp6_reuseport(&endpoint, &sock.reuseport_group);
                 *sock.udp6.lock() = Some(endpoint);
                 *local_port = Some(port);
                 *sock.local_ip6.lock() = ip;
@@ -238,10 +240,7 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         };
         listener.register_subs(&sock.poll_subs);
         let current = sched::live::current();
-        let cred = current.as_ref().map(|c| {
-            use core::sync::atomic::Ordering;
-            (c.visible_pid(), c.creds.euid.load(Ordering::Relaxed), c.creds.egid.load(Ordering::Relaxed))
-        });
+        let cred = crate::PeerCred::of_current();
         let identity = current.as_ref().map(|c| c.thread_group.leader_pid());
         listener.listen_with_cred(backlog, somaxconn, cred, identity);
         #[cfg(target_os = "oxide-kernel")]

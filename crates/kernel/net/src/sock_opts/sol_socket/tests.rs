@@ -1,6 +1,7 @@
 use super::*;
 use super::get::{SockView, Value};
-use super::set::{Action, Arg, ArgClass, admit, arg_class, bind_device_allowed, device_name_len};
+use super::set::{Action, Arg, ArgClass, SetEnv, admit, arg_class, bind_device_allowed,
+    device_name_len, devmem_dontneed_tokens};
 use syscall::errno::Errno;
 
 const AF_UNIX_W: u16 = crate::socket_args::AF_UNIX as u16;
@@ -17,8 +18,10 @@ fn none() -> OptCaps { OptCaps::default() }
 fn admin() -> OptCaps { OptCaps { net_admin: true, net_raw: false } }
 fn raw() -> OptCaps { OptCaps { net_admin: false, net_raw: true } }
 
+fn env(caps: OptCaps) -> SetEnv { SetEnv { caps, ..Default::default() } }
+
 fn set(optname: u64, value: i32, sock: OptSock, caps: OptCaps) -> Result<Action, Errno> {
-    admit(optname, Arg::Int(value), sock, caps, false)
+    admit(optname, Arg::Int(value), sock, env(caps))
 }
 
 #[test]
@@ -146,15 +149,15 @@ fn timeouts_reject_a_denormalized_microsecond_field_with_edom() {
 #[test]
 fn timeout_admission_routes_send_and_receive_slots() {
     let arg = Arg::Timeval { sec: 2, usec: 500_000 };
-    assert_eq!(admit(SO_SNDTIMEO_OLD, arg, tcp(), none(), false),
+    assert_eq!(admit(SO_SNDTIMEO_OLD, arg, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Ok(Action::Timeout { send: true, ns: 2_500_000_000 }));
-    assert_eq!(admit(SO_SNDTIMEO_NEW, arg, tcp(), none(), false),
+    assert_eq!(admit(SO_SNDTIMEO_NEW, arg, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Ok(Action::Timeout { send: true, ns: 2_500_000_000 }));
-    assert_eq!(admit(SO_RCVTIMEO_OLD, arg, tcp(), none(), false),
+    assert_eq!(admit(SO_RCVTIMEO_OLD, arg, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Ok(Action::Timeout { send: false, ns: 2_500_000_000 }));
-    assert_eq!(admit(SO_RCVTIMEO_NEW, arg, tcp(), none(), false),
+    assert_eq!(admit(SO_RCVTIMEO_NEW, arg, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Ok(Action::Timeout { send: false, ns: 2_500_000_000 }));
-    assert_eq!(admit(SO_RCVTIMEO_OLD, Arg::Timeval { sec: 0, usec: -5 }, tcp(), none(), false),
+    assert_eq!(admit(SO_RCVTIMEO_OLD, Arg::Timeval { sec: 0, usec: -5 }, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Err(Errno::Edom));
 }
 
@@ -167,9 +170,9 @@ fn timeout_readback_reports_zero_for_unset_and_immediate() {
 
 #[test]
 fn linger_stores_the_flag_separately_from_the_stored_seconds() {
-    assert_eq!(admit(SO_LINGER, Arg::Linger { on: 0, seconds: 5 }, tcp(), none(), false),
+    assert_eq!(admit(SO_LINGER, Arg::Linger { on: 0, seconds: 5 }, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Ok(Action::Linger { on: false, seconds: 5 }));
-    assert_eq!(admit(SO_LINGER, Arg::Linger { on: 1, seconds: 5 }, tcp(), none(), false),
+    assert_eq!(admit(SO_LINGER, Arg::Linger { on: 1, seconds: 5 }, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Ok(Action::Linger { on: true, seconds: 5 }));
     assert_eq!(arg_class(SO_LINGER), ArgClass::Linger);
     // Clearing the switch must not publish the caller's seconds: Linux only
@@ -185,17 +188,17 @@ fn linger_stores_the_flag_separately_from_the_stored_seconds() {
 #[test]
 fn txtime_validates_flags_then_the_clock_capability_then_the_clock() {
     let ok = Arg::TxTime { clockid: set::CLOCK_MONOTONIC, flags: SOF_TXTIME_DEADLINE_MODE };
-    assert_eq!(admit(SO_TXTIME, ok, tcp(), none(), false), Ok(Action::TxTime {
+    assert_eq!(admit(SO_TXTIME, ok, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }), Ok(Action::TxTime {
         clockid: set::CLOCK_MONOTONIC, deadline_mode: true, report_errors: false }));
     assert_eq!(admit(SO_TXTIME, Arg::TxTime { clockid: set::CLOCK_MONOTONIC, flags: 0x8 },
-        tcp(), admin(), false), Err(Errno::Einval));
+        tcp(), SetEnv { caps: admin(), bound_device: false, ..Default::default() }), Err(Errno::Einval));
     // A non-monotonic clock needs CAP_NET_ADMIN before the clock is validated.
-    assert_eq!(admit(SO_TXTIME, Arg::TxTime { clockid: 4242, flags: 0 }, tcp(), none(), false),
+    assert_eq!(admit(SO_TXTIME, Arg::TxTime { clockid: 4242, flags: 0 }, tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Err(Errno::Eperm));
-    assert_eq!(admit(SO_TXTIME, Arg::TxTime { clockid: 4242, flags: 0 }, tcp(), admin(), false),
+    assert_eq!(admit(SO_TXTIME, Arg::TxTime { clockid: 4242, flags: 0 }, tcp(), SetEnv { caps: admin(), bound_device: false, ..Default::default() }),
         Err(Errno::Einval));
     assert!(admit(SO_TXTIME, Arg::TxTime { clockid: set::CLOCK_TAI, flags: 0 },
-        tcp(), admin(), false).is_ok());
+        tcp(), SetEnv { caps: admin(), bound_device: false, ..Default::default() }).is_ok());
 }
 
 #[test]
@@ -253,7 +256,7 @@ fn peek_off_needs_a_socket_that_implements_it() {
 #[test]
 fn pacing_rate_uses_the_wide_form_only_when_the_caller_supplies_one() {
     assert_eq!(arg_class(SO_MAX_PACING_RATE), ArgClass::PacingRate);
-    assert_eq!(admit(SO_MAX_PACING_RATE, Arg::PacingRate(1 << 40), tcp(), none(), false),
+    assert_eq!(admit(SO_MAX_PACING_RATE, Arg::PacingRate(1 << 40), tcp(), SetEnv { caps: none(), bound_device: false, ..Default::default() }),
         Ok(Action::PacingRate(1 << 40)));
     assert_eq!(set(SO_MAX_PACING_RATE, 1000, tcp(), none()), Ok(Action::PacingRate(1000)));
     // The all-ones 32-bit request means "unlimited", not four billion.
@@ -265,7 +268,7 @@ fn rebinding_a_device_needs_cap_net_raw_only_when_one_is_already_bound() {
     assert_eq!(bind_device_allowed(none(), false), Ok(()));
     assert_eq!(bind_device_allowed(none(), true), Err(Errno::Eperm));
     assert_eq!(bind_device_allowed(raw(), true), Ok(()));
-    assert_eq!(admit(SO_BINDTOIFINDEX, Arg::Int(2), tcp(), none(), true), Err(Errno::Eperm));
+    assert_eq!(admit(SO_BINDTOIFINDEX, Arg::Int(2), tcp(), SetEnv { caps: none(), bound_device: true, ..Default::default() }), Err(Errno::Eperm));
 }
 
 #[test]
@@ -374,7 +377,7 @@ fn unix_sockets_start_with_scm_rights_enabled_and_a_one_byte_watermark() {
     assert_eq!(state.scalar(Scalar::RcvLowat), 1);
     assert_eq!(get::value(SO_RCVLOWAT, 4, &state, &view), Ok(Value::Int(1)));
     assert_eq!(get::value(SO_PASSRIGHTS, 4, &state, &view), Ok(Value::Int(1)));
-    let off = admit(SO_PASSRIGHTS, Arg::Int(0), unix(), none(), false).unwrap();
+    let off = admit(SO_PASSRIGHTS, Arg::Int(0), unix(), SetEnv { caps: none(), bound_device: false, ..Default::default() }).unwrap();
     assert_eq!(off, Action::Flag { bit: flag::SCM_RIGHTS_OFF, on: true });
     state.set_flag(flag::SCM_RIGHTS_OFF, true);
     assert_eq!(get::value(SO_PASSRIGHTS, 4, &state, &view), Ok(Value::Int(0)));
@@ -387,4 +390,99 @@ fn socket_cookie_is_allocated_once() {
     let second = state.cookie(|| 99);
     assert_eq!(first, 41);
     assert_eq!(second, 41);
+}
+
+#[test]
+fn prefer_busy_poll_enable_needs_net_admin_but_disable_does_not() {
+    assert_eq!(set(SO_PREFER_BUSY_POLL, 1, tcp(), none()), Err(Errno::Eperm));
+    assert_eq!(set(SO_PREFER_BUSY_POLL, 1, tcp(), raw()), Err(Errno::Eperm));
+    assert_eq!(set(SO_PREFER_BUSY_POLL, 1, tcp(), admin()),
+        Ok(Action::Flag { bit: flag::PREFER_BUSY_POLL, on: true }));
+    assert_eq!(set(SO_PREFER_BUSY_POLL, 0, tcp(), none()),
+        Ok(Action::Flag { bit: flag::PREFER_BUSY_POLL, on: false }));
+    let state = GenericSockOpts::default();
+    let view = SockView { sock: tcp(), ..Default::default() };
+    assert_eq!(get::value(SO_PREFER_BUSY_POLL, 4, &state, &view), Ok(Value::Int(0)));
+    state.set_flag(flag::PREFER_BUSY_POLL, true);
+    assert_eq!(get::value(SO_PREFER_BUSY_POLL, 4, &state, &view), Ok(Value::Int(1)));
+}
+
+#[test]
+fn busy_poll_budget_privilege_outranks_the_field_width_screen() {
+    let budget = |caps, current, value| admit(SO_BUSY_POLL_BUDGET, Arg::Int(value), tcp(),
+        SetEnv { caps, busy_poll_budget: current, ..Default::default() });
+    // An unprivileged RAISE is EPERM even when the value is unrepresentable.
+    assert_eq!(budget(none(), 8, BUSY_POLL_BUDGET_MAX + 1), Err(Errno::Eperm));
+    assert_eq!(budget(none(), 8, 9), Err(Errno::Eperm));
+    // Lowering, or staying put, needs no capability.
+    assert_eq!(budget(none(), 8, 8), Ok(Action::Scalar { slot: Scalar::BusyPollBudget, value: 8 }));
+    assert_eq!(budget(none(), 8, 0), Ok(Action::Scalar { slot: Scalar::BusyPollBudget, value: 0 }));
+    // With the capability the width screen is what rejects an out-of-range value.
+    assert_eq!(budget(admin(), 0, BUSY_POLL_BUDGET_MAX + 1), Err(Errno::Einval));
+    assert_eq!(budget(admin(), 0, -1), Err(Errno::Einval));
+    assert_eq!(budget(admin(), 0, BUSY_POLL_BUDGET_MAX),
+        Ok(Action::Scalar { slot: Scalar::BusyPollBudget, value: BUSY_POLL_BUDGET_MAX }));
+    // The budget has no read direction.
+    let state = GenericSockOpts::default();
+    let view = SockView { sock: tcp(), ..Default::default() };
+    assert_eq!(get::value(SO_BUSY_POLL_BUDGET, 4, &state, &view), Err(Errno::Enoprotoopt));
+}
+
+#[test]
+fn incoming_napi_id_aggregates_reserved_identifiers_to_zero() {
+    let state = GenericSockOpts::default();
+    let below = SockView { sock: tcp(), napi_id: MIN_NAPI_ID - 1, ..Default::default() };
+    let valid = SockView { sock: tcp(), napi_id: MIN_NAPI_ID, ..Default::default() };
+    assert_eq!(get::value(SO_INCOMING_NAPI_ID, 4, &state, &below), Ok(Value::Int(0)));
+    assert_eq!(get::value(SO_INCOMING_NAPI_ID, 4, &state, &valid),
+        Ok(Value::Int(MIN_NAPI_ID as i32)));
+    // Read-only: the identifier is recorded by the receive path, never written.
+    assert_eq!(set(SO_INCOMING_NAPI_ID, 9, tcp(), admin()), Err(Errno::Enoprotoopt));
+}
+
+#[test]
+fn devmem_dontneed_is_stream_only_and_takes_whole_tokens() {
+    assert_eq!(devmem_dontneed_tokens(udp(), DEVMEM_TOKEN_SIZE as u32), Err(Errno::Ebadf));
+    assert_eq!(devmem_dontneed_tokens(unix(), DEVMEM_TOKEN_SIZE as u32), Err(Errno::Ebadf));
+    // The socket-shape screen outranks the length screen.
+    assert_eq!(devmem_dontneed_tokens(udp(), 5), Err(Errno::Ebadf));
+    assert_eq!(devmem_dontneed_tokens(tcp(), 4), Err(Errno::Einval));
+    assert_eq!(devmem_dontneed_tokens(tcp(),
+        (DEVMEM_TOKEN_SIZE * (MAX_DONTNEED_TOKENS + 1)) as u32), Err(Errno::Einval));
+    assert_eq!(devmem_dontneed_tokens(tcp(), 0), Ok(0));
+    assert_eq!(devmem_dontneed_tokens(tcp(), (DEVMEM_TOKEN_SIZE * 3) as u32), Ok(3));
+    assert_eq!(devmem_dontneed_tokens(tcp(),
+        (DEVMEM_TOKEN_SIZE * MAX_DONTNEED_TOKENS) as u32), Ok(MAX_DONTNEED_TOKENS));
+}
+
+#[test]
+fn buffer_writes_clamp_against_the_live_ceilings_not_a_compiled_constant() {
+    let with = |wmem, rmem, optname, value| admit(optname, Arg::Int(value), tcp(),
+        SetEnv { caps: admin(), ceilings: BufCeilings { wmem_max: wmem, rmem_max: rmem },
+            ..Default::default() });
+    // A lowered ceiling clamps the request before the doubling.
+    assert_eq!(with(16_384, DEFAULT_RMEM_MAX, SO_SNDBUF, 1 << 20),
+        Ok(Action::SndBuf(32_768)));
+    assert_eq!(with(DEFAULT_WMEM_MAX, 16_384, SO_RCVBUF, 1 << 20),
+        Ok(Action::RcvBuf(32_768)));
+    // The forced variants ignore the ceiling entirely.
+    assert_eq!(with(16_384, DEFAULT_RMEM_MAX, SO_SNDBUFFORCE, 1 << 20),
+        Ok(Action::SndBuf(2 << 20)));
+    assert_eq!(with(DEFAULT_WMEM_MAX, 16_384, SO_RCVBUFFORCE, 1 << 20),
+        Ok(Action::RcvBuf(2 << 20)));
+}
+
+#[test]
+fn options_with_their_own_argument_shape_never_reach_the_scalar_table() {
+    for optname in [SO_ATTACH_REUSEPORT_CBPF, SO_ATTACH_REUSEPORT_EBPF, SO_DETACH_REUSEPORT_BPF] {
+        assert_eq!(arg_class(optname), ArgClass::Reuseport);
+        assert!(reads_int_argument(optname));
+    }
+    assert_eq!(arg_class(SO_DEVMEM_DONTNEED), ArgClass::Devmem);
+    assert!(reads_int_argument(SO_DEVMEM_DONTNEED));
+    let state = GenericSockOpts::default();
+    let view = SockView { sock: tcp(), ..Default::default() };
+    for optname in [SO_PEERSEC, SO_PEERGROUPS, SO_MEMINFO, SO_PEERNAME, SO_GET_FILTER] {
+        assert_eq!(get::value(optname, 64, &state, &view), Err(Errno::Enoprotoopt));
+    }
 }

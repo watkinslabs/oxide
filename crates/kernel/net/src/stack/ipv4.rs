@@ -292,7 +292,12 @@ impl NetStack {
                 // map lock before touching the queue itself. wake_all
                 // takes the waitlist lock + runqueue inner; we must
                 // not hold the udp-map lock across either.
-                let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface);
+                // Reuseport selection classifies the datagram body, so resolve
+                // it before the demux rather than per selected endpoint.
+                let datagram_body = payload
+                    .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
+                let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst,
+                    udp.dst_port, iface, datagram_body);
                 let has_v4 = !endpoints.is_empty();
                 for q in endpoints {
                     if hdr.dst.is_multicast() {
@@ -317,7 +322,8 @@ impl NetStack {
                     ));
                 }
                 let endpoints6 = if !has_v4 || hdr.dst.is_multicast() || hdr.dst.is_broadcast() {
-                    self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface)
+                    self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port,
+                        iface, datagram_body)
                 } else { Vec::new() };
                 for q in endpoints6 {
                     if !crate::cgroup_bpf::ingress(

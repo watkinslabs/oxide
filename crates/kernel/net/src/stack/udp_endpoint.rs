@@ -34,6 +34,7 @@ impl UdpRxQueue {
             error, peer, reuseaddr, reuseport, ip_mtu_discover,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None), bpf_filter, mcast,
+            reuseport_group: crate::reuseport::new_slot(),
         }
     }
 

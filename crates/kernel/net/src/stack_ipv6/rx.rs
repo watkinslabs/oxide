@@ -160,7 +160,12 @@ impl NetStack {
             Ok(h) => h,
             Err(_) => return,
         };
-        let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface);
+        // Reuseport selection classifies the datagram body, so resolve it
+        // before the demux rather than per selected endpoint.
+        let datagram_body = payload
+            .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
+        let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface,
+            datagram_body);
         for q in endpoints {
             if !crate::cgroup_bpf::ingress(
                 &q.owner, packet, crate::addr::eth_p::IPV6, iface,
@@ -352,7 +357,7 @@ impl NetStack {
 
     fn udp6_error_endpoint(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, sport: u16,
                            dst: Ipv6Addr, dport: u16) -> Option<alloc::sync::Arc<Udp6RxQueue>> {
-        self.udp6_demux_in(net_ns, dst, dport, src, sport, iface).pop()
+        self.udp6_demux_in(net_ns, dst, dport, src, sport, iface, &[]).pop()
     }
 
     fn deliver_raw6_error(&self, net_ns: u64, iface: NetIfaceId, offender: Ipv6Addr,

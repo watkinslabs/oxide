@@ -1,9 +1,8 @@
 use super::*;
 
-/// Select one TCP reuseport listener using the incoming four-tuple. # C: O(address bytes)
-pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
-                                         dst_port: u16, bucket_len: usize) -> usize {
-    if bucket_len <= 1 { return 0; }
+/// Per-flow listener distribution value derived from the incoming four-tuple.
+/// # C: O(address bytes)
+pub(super) fn reuseport_flow_hash(src_ip: IpAddr, src_port: u16, dst_port: u16) -> u32 {
     let mut hash = 0u32;
     match src_ip {
         IpAddr::V4(addr) => {
@@ -13,8 +12,27 @@ pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
             for byte in addr.0 { hash = hash.wrapping_mul(31).wrapping_add(byte as u32); }
         }
     }
-    hash = hash.wrapping_add(src_port as u32).wrapping_add(dst_port as u32);
-    (hash as usize) % bucket_len
+    hash.wrapping_add(src_port as u32).wrapping_add(dst_port as u32)
+}
+
+/// Select one TCP reuseport listener using the incoming four-tuple. # C: O(address bytes)
+pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
+                                         dst_port: u16, bucket_len: usize) -> usize {
+    if bucket_len <= 1 { return 0; }
+    reuseport_flow_hash(src_ip, src_port, dst_port) as usize % bucket_len
+}
+
+/// Apply the listen key's reuseport program before its flow-hash distribution.
+/// # C: O(program)
+pub(crate) fn select_listener_index(bucket: &[Arc<TcpListenEntry>], src_ip: IpAddr,
+                                    src_port: u16, dst_port: u16, seg: &[u8]) -> usize {
+    if bucket.len() <= 1 { return 0; }
+    bucket.first()
+        .and_then(|entry| crate::reuseport::slot::group(&entry.reuseport_group))
+        .and_then(|group| {
+            group.select(reuseport_flow_hash(src_ip, src_port, dst_port), bucket.len(), seg)
+        })
+        .unwrap_or_else(|| select_reuseport_listener(src_ip, src_port, dst_port, bucket.len()))
 }
 
 /// Linux `__inet_lookup_listener` bucket order: the exact-address tier before
@@ -108,6 +126,7 @@ impl TcpListenEntry {
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
+            reuseport_group: crate::reuseport::new_slot(),
         }
     }
 

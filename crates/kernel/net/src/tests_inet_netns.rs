@@ -103,8 +103,8 @@ fn ingress_interface_selects_only_its_namespace_udp_endpoint() {
     let b = bind_udp(&stack, ns_b, Ipv4Addr::ANY, PORT).unwrap();
     let src = Ipv4Addr::new(192, 0, 2, 1);
 
-    let selected_a = stack.udp_demux_in(ns_a, src, 50_000, Ipv4Addr::LOOPBACK, PORT, iface_a);
-    let selected_b = stack.udp_demux_in(ns_b, src, 50_000, Ipv4Addr::LOOPBACK, PORT, iface_b);
+    let selected_a = stack.udp_demux_in(ns_a, src, 50_000, Ipv4Addr::LOOPBACK, PORT, iface_a, &[]);
+    let selected_b = stack.udp_demux_in(ns_b, src, 50_000, Ipv4Addr::LOOPBACK, PORT, iface_b, &[]);
     assert_eq!(selected_a.len(), 1);
     assert_eq!(selected_b.len(), 1);
     assert!(Arc::ptr_eq(&selected_a[0], &a));
