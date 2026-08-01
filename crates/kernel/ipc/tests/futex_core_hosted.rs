@@ -90,14 +90,59 @@ impl MmRef {
     pub fn root_pa(&self) -> u64 { self.root_pa }
     pub fn find_vma(&self, _u: UserVirtAddr) -> Option<Vma> { None }
 }
-pub struct Vma { pub flags: vmm::VmaFlags }
+pub struct Vma {
+    pub flags: vmm::VmaFlags,
+    pub backing: vmm::VmaBacking,
+    pub start: UserVirtAddr,
+}
 
 // ---------------------------------------------------------------------------
 // `sched::{Task, TaskState, live}` mock
 // ---------------------------------------------------------------------------
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchedPolicy { Normal, Fifo, Rr, Idle }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SchedClass { Deadline, Rt { prio: u8, policy: SchedPolicy }, Normal { weight: u32 }, Idle }
+
+impl SchedClass {
+    pub fn encode(self) -> u64 {
+        match self {
+            SchedClass::Idle => 0,
+            SchedClass::Normal { weight } => 1 | ((weight as u64) << 8),
+            SchedClass::Rt { prio, policy } => {
+                let c = match policy { SchedPolicy::Normal => 0u64, SchedPolicy::Fifo => 1,
+                                       SchedPolicy::Rr => 2, SchedPolicy::Idle => 3 };
+                2 | ((prio as u64) << 8) | (c << 16)
+            }
+            SchedClass::Deadline => 3,
+        }
+    }
+    pub fn decode(v: u64) -> SchedClass {
+        match v & 0xff {
+            1 => SchedClass::Normal { weight: (v >> 8) as u32 },
+            2 => SchedClass::Rt { prio: (v >> 8) as u8,
+                policy: match (v >> 16) as u8 { 1 => SchedPolicy::Fifo, 2 => SchedPolicy::Rr,
+                                                3 => SchedPolicy::Idle, _ => SchedPolicy::Normal } },
+            3 => SchedClass::Deadline,
+            _ => SchedClass::Idle,
+        }
+    }
+}
+
+// The REAL priority-inheritance rule + boost application, so the PI tree this
+// harness compiles is production code end to end.
+#[path = "../../sched/src/pi_prio.rs"] pub mod pi_prio;
+#[path = "../../sched/src/live/pi_boost.rs"] pub mod pi_boost;
+
+pub mod runqueue {
+    use super::*;
+    pub fn set_class(task: &Arc<Task>, new: SchedClass) { task.set_sched_class(new); }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub enum TaskState { Runnable, Sleeping }
+pub enum TaskState { Runnable, Sleeping, Zombie }
 
 /// Mock of `sched::task::restart` — the discriminant + payload `wait_loop`
 /// arms for `futex_wait_restart`. Values must track the real
@@ -155,6 +200,8 @@ pub struct Task {
     pub futex_uaddr: AtomicU64,
     pub wakeup_deadline_ns: AtomicU64,
     pub restart_block: RestartBlockMock,
+    pub class_enc: AtomicU64,
+    pub pi_base_class: AtomicU64,
     state: AtomicU8,
     signal_pending: AtomicBool,
     mm_root: u64,
@@ -168,6 +215,8 @@ impl Task {
             futex_uaddr: AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),
             restart_block: RestartBlockMock::default(),
+            class_enc: AtomicU64::new(SchedClass::Normal { weight: 1024 }.encode()),
+            pi_base_class: AtomicU64::new(u64::MAX),
             state: AtomicU8::new(0),
             signal_pending: AtomicBool::new(false),
             mm_root,
@@ -175,8 +224,14 @@ impl Task {
         }
     }
     pub fn set_state(&self, s: TaskState) {
-        self.state.store(if s == TaskState::Sleeping { 1 } else { 0 }, Ordering::Release);
+        self.state.store(match s { TaskState::Runnable => 0, TaskState::Sleeping => 1, TaskState::Zombie => 2 },
+                         Ordering::Release);
     }
+    pub fn state(&self) -> TaskState {
+        match self.state.load(Ordering::Acquire) { 1 => TaskState::Sleeping, 2 => TaskState::Zombie, _ => TaskState::Runnable }
+    }
+    pub fn sched_class(&self) -> SchedClass { SchedClass::decode(self.class_enc.load(Ordering::Acquire)) }
+    pub fn set_sched_class(&self, c: SchedClass) { self.class_enc.store(c.encode(), Ordering::Release); }
     fn is_sleeping(&self) -> bool { self.state.load(Ordering::Acquire) == 1 }
     /// SAFETY: test-only mock; no real address space, single fixed `mm_root`.
     pub unsafe fn mm_ref(&self) -> Option<MmRef> { Some(MmRef { root_pa: self.mm_root }) }
@@ -186,6 +241,21 @@ impl Task {
 pub mod live {
     use super::*;
     use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    pub use crate::{pi_boost, runqueue};
+
+    pub mod registry {
+        use super::*;
+        pub static TASKS: std::sync::Mutex<Option<HashMap<u32, Arc<Task>>>> = std::sync::Mutex::new(None);
+        pub fn insert(t: &Arc<Task>) {
+            TASKS.lock().unwrap().get_or_insert_with(HashMap::new).insert(t.tid, t.clone());
+        }
+        pub fn lookup(tid: u32) -> Option<Arc<Task>> {
+            TASKS.lock().unwrap().as_ref().and_then(|m| m.get(&tid).cloned())
+        }
+        pub fn lookup_by_vpid(tid: u32) -> Option<Arc<Task>> { lookup(tid) }
+    }
 
     thread_local! {
         static CURRENT: RefCell<Option<Arc<Task>>> = const { RefCell::new(None) };
@@ -196,6 +266,7 @@ pub mod live {
     /// stands in for the real per-CPU `current` pointer + `select_task_rq`.
     pub fn set_current(task: Arc<Task>) {
         let _ = task.thread.set(std::thread::current());
+        registry::insert(&task);
         CURRENT.with(|c| *c.borrow_mut() = Some(task));
     }
 
@@ -248,6 +319,8 @@ mod futex;
 // the included production source resolves here, so the harness exercises the
 // same table the kernel does.
 #[path = "../src/futex_restart.rs"] pub mod futex_restart;
+// Same arrangement for the PI word-transition rules the included PI tree uses.
+#[path = "../src/futex_pi_rules.rs"] pub mod futex_pi_rules;
 
 use futex::core::{FUTEX_BITSET_MATCH_ANY, FUTEX_PRIVATE_FLAG};
 
@@ -327,9 +400,9 @@ fn wake_bitset_zero_is_einval_not_success() {
 fn unimplemented_ops_return_enosys_never_zero() {
     let word = AtomicU32::new(0);
     let uaddr = &word as *const AtomicU32 as u64;
-    for op in [FUTEX_FD, FUTEX_LOCK_PI, FUTEX_UNLOCK_PI, FUTEX_TRYLOCK_PI,
-               FUTEX_WAIT_REQUEUE_PI, FUTEX_CMP_REQUEUE_PI, FUTEX_LOCK_PI2,
-               /* genuinely unknown cmd */ 200] {
+    // The PI commands are implemented (see `futex_pi_hosted.rs`); what remains
+    // ENOSYS is `FUTEX_FD`, which Linux removed, and any unknown command.
+    for op in [FUTEX_FD, /* genuinely unknown cmd */ 200] {
         let rv = futex::wait::dispatch(uaddr, op | FUTEX_PRIVATE_FLAG, 0);
         assert_eq!(rv, enosys(), "op {op} must return -ENOSYS, not silent success");
         assert_ne!(rv, 0, "op {op} must never silently report success");

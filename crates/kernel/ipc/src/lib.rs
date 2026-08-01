@@ -16,6 +16,14 @@ mod ipc_namespace;
 // futex(2) FUTEX_WAIT restart rule. Kept out of the kernel-only `live` tree so
 // the `-ERESTARTSYS` vs `-ERESTART_RESTARTBLOCK` split is hosted-tested.
 pub mod futex_restart;
+// futex2 flag/operand validation (`futex_flags_valid`, `futex_validate_input`).
+// Non-gated so the reject ladder is hosted-tested; the slot files that consume
+// it are kernel-gated.
+pub mod futex2_flags;
+// PI-futex user-word transitions (`futex_lock_pi_atomic`, `wake_futex_pi`, the
+// owner-death handoff). Non-gated so every word transition and errno is
+// hosted-tested; `live::futex::pi` applies them.
+pub mod futex_pi_rules;
 // POSIX mqueue open/unlink/notify/getsetattr decision rules. Non-gated so the
 // errno ladders are hosted-tested (`live` is kernel-only).
 pub mod mqueue_policy;

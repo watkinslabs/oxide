@@ -185,6 +185,10 @@ fn init_runtime_subsystems() {
     // fault must still have its registered semaphore adjustments applied, or
     // peers blocked on those semaphores never run again.
     sched::live::set_sysvsem_exit_hook(ipc::sysv::sem::exit_sem);
+    // PI-futex ownership handoff, same arrangement: a thread killed by a fatal
+    // fault while owning a PTHREAD_PRIO_INHERIT mutex must hand it to the next
+    // waiter with FUTEX_OWNER_DIED, or every waiter blocks on a dead owner.
+    sched::live::set_pi_exit_hook(ipc::live::futex::exit_pi_state_list);
     // Controlling-terminal disassociation, same arrangement: resolving a
     // terminal inode to its console / devpts device is above `sched` in the
     // crate graph, so the exit paths reach it through this hook. Without it a
