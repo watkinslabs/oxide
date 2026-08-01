@@ -83,7 +83,7 @@ pub struct UnixRing {
     pub consumed: u64,
     /// Per-write SCM_RIGHTS and sender credentials tagged with the absolute
     /// stream offset of their first byte. FIFO / ascending by offset.
-    pub ancillary: VecDeque<(u64, GcRights, (u32, u32, u32))>,
+    pub ancillary: VecDeque<(u64, GcRights, crate::unix_sock::MsgCred)>,
 }
 
 impl UnixRing {

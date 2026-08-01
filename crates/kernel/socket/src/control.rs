@@ -143,7 +143,7 @@ fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
 {
     let creds = scm.creds.unwrap_or_else(|| ctx.creds());
     let datagram = net::UnixDgram { payload: message.payload.clone(),
-        creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() };
+        creds: creds.stamp(), fds: Vec::new() };
     // `sock_alloc_send_pskb` + `skb_set_owner_w`: the sender's own write memory
     // is charged and bounds this send, which is the ONLY bound a symmetrically
     // connected pair has (`unix_dgram_sendmsg` skips the peer recvq test there).

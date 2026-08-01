@@ -147,7 +147,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                 Ok(Some((copied, msg, full))) => {
                     let mut out_flags = 0;
                     if full > copied { out_flags |= MSG_TRUNC as u32; }
-                    if let Err(e) = finish(user, msg.fds, if passcred { Some(msg.creds) } else { None }, flags, out_flags, sa.as_bytes()) { return e; }
+                    if let Err(e) = finish(user, msg.fds, if passcred { Some(msg.creds.ids_for_reader()) } else { None }, flags, out_flags, sa.as_bytes()) { return e; }
                     sock.note_receive_now();
                     return if flags & MSG_TRUNC != 0 { full as i64 } else { copied as i64 };
                 }
@@ -182,7 +182,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                     let mut out_flags = 0;
                     if msg.payload.len() > copied { out_flags |= MSG_TRUNC as u32; }
                     let sa = encoded_sockaddr_un(sender.as_ref().map(|addr| addr.display.as_slice()));
-                    if let Err(e) = finish(user, msg.fds, if passcred { Some(msg.creds) } else { None }, flags, out_flags, sa.as_bytes()) { return e; }
+                    if let Err(e) = finish(user, msg.fds, if passcred { Some(msg.creds.ids_for_reader()) } else { None }, flags, out_flags, sa.as_bytes()) { return e; }
                     sock.note_receive_now();
                     return if flags & MSG_TRUNC != 0 { msg.payload.len() as i64 } else { copied as i64 };
                 }

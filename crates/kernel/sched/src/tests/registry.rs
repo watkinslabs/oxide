@@ -19,8 +19,11 @@ fn leader(tid: u32, vpid: u32) -> Arc<Task> {
     t
 }
 
-fn member(tid: u32, vpid: u32, vtid: u32) -> Arc<Task> {
+/// A non-leader thread: its `tgid` names the leader, which is what makes the
+/// process number resolvable from the group rather than from the thread.
+fn member(tid: u32, leader_tid: u32, vpid: u32, vtid: u32) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "member", SchedClass::Normal { weight: 1024 }));
+    t.tgid.store(leader_tid, Ordering::Release);
     t.vtgid.store(vpid, Ordering::Release);
     t.vtid.store(vtid, Ordering::Release);
     t
@@ -64,7 +67,7 @@ fn insert_and_removal_keep_tid_and_vpid_resolution_consistent() {
     crate::registry::clear_for_tests();
     let l = leader(20, 700);
     crate::registry::insert(&l);
-    let m = member(21, 700, 721);
+    let m = member(21, 20, 700, 721);
     crate::registry::insert(&m);
 
     // Leader always wins over a member, regardless of insertion order.
@@ -94,7 +97,7 @@ fn hint_never_demotes_a_live_leader_to_a_later_member() {
     // to be leader-first in every caller) — the hint must still end up
     // pointing at the leader once it registers, and a later member insert
     // must not overwrite a live leader hint.
-    let m = member(31, 800, 831);
+    let m = member(31, 30, 800, 831);
     crate::registry::insert(&m);
     assert_eq!(crate::registry::lookup_by_vpid(800).unwrap().tid, 31,
         "with no leader yet registered, the sole member is the correct answer");
@@ -102,7 +105,7 @@ fn hint_never_demotes_a_live_leader_to_a_later_member() {
     crate::registry::insert(&l);
     assert_eq!(crate::registry::lookup_by_vpid(800).unwrap().tid, 30,
         "leader insert must claim the hint from an existing member");
-    let m2 = member(32, 800, 832);
+    let m2 = member(32, 30, 800, 832);
     crate::registry::insert(&m2);
     assert_eq!(crate::registry::lookup_by_vpid(800).unwrap().tid, 30,
         "a second member insert must not demote the live leader hint");

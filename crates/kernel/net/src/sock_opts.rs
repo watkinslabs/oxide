@@ -72,6 +72,19 @@ pub struct SenderCreds {
     pub gid: u32,
 }
 
+impl SenderCreds {
+    /// The per-message stamp these credentials produce, pinning the identity
+    /// the pid names so a receiver in another namespace is told ITS number for
+    /// the sender. # C: O(N_tasks) for a caller-supplied pid; O(1) otherwise
+    pub fn stamp(&self) -> crate::unix_sock::MsgCred {
+        let current = crate::unix_sock::MsgCred::of_current((self.pid, self.uid, self.gid));
+        if current.pid == self.pid && current.uid == self.uid && current.gid == self.gid {
+            return current;
+        }
+        crate::unix_sock::MsgCred::from_supplied((self.pid, self.uid, self.gid))
+    }
+}
+
 fn keepalive_secs_to_ns(secs: i32) -> u64 {
     (secs.max(1) as u64).saturating_mul(1_000_000_000)
 }

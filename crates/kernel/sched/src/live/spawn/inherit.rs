@@ -78,12 +78,8 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     if parent.no_new_privs.load(Ordering::Acquire) {
         task.no_new_privs.store(true, Ordering::Release);
     }
-    // Namespace publication runs after this allocation. Seed a visible PID;
-    // clone namespace work replaces it with 1 when the child becomes a
-    // new PID namespace's init task.
-    let v = super::alloc_vpid();
-    task.vtgid.store(v, Ordering::Release);
-    task.vtid.store(v, Ordering::Release);
+    // The child's visible numbers are NOT seeded here: they are drawn from the
+    // PID namespace it ends up in, which clone only publishes afterwards.
     // Seccomp is INHERITED across fork/clone and PRESERVED across execve
     // (Linux `copy_seccomp` in `copy_process`; execve never clears it).
     // Without this a seccomp-sandboxed process could fork() and the child

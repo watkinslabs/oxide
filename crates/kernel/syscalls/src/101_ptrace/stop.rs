@@ -57,7 +57,15 @@ pub fn notify_with(stop_code: i32, message: u64, mut info: sched::SigInfo)
 {
     let Some(cur) = sched::live::current() else { return (0, None) };
     cur.ptrace_eventmsg.store(message, Ordering::Release);
-    if info.pid == 0 { info.pid = cur.traced_by.load(Ordering::Acquire); }
+    // The record is read by the TRACEE (and by the tracer through
+    // PTRACE_GETSIGINFO), so the tracer is named by the number the tracee's pid
+    // namespace gives it — never the opaque internal tid.
+    if info.pid == 0 {
+        let tracer = cur.traced_by.load(Ordering::Acquire);
+        info.pid = sched::live::registry::lookup(tracer)
+            .map(|t| sched::registry::tgid_nr_seen_by(&t, &cur))
+            .unwrap_or(0);
+    }
     *cur.ptrace_siginfo.lock() = Some(info);
     crate::ptrace_fpu::snapshot_current();
     sched::live::stop::stop_until_cont_code(stop_code as u32);

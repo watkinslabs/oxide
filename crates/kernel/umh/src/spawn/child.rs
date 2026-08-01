@@ -36,11 +36,17 @@ const HELPER_STACK_BYTES: u64 = 0x10000;
 pub fn start(info: &mut SubprocessInfo) -> Result<Arc<sched::Task>, i32> {
     let mm = new_address_space()?;
     let tid = sched::live::next_tid();
-    let vpid = sched::live::alloc_vpid();
     // SAFETY: worker-thread process context with the allocator and HAL up; the task stays unpublished until `wake` below, so this thread is its sole writer throughout.
     let task = unsafe {
-        sched::live::new_user_task_unpublished(tid, vpid, vpid, "umh", Arc::clone(&mm))
+        sched::live::new_user_task_unpublished(tid, 0, 0, "umh", Arc::clone(&mm))
     }.map_err(|_| -(Errno::Enomem.as_i32()))?;
+    // A helper runs in the initial PID namespace and draws its number from it,
+    // through its own PID identity, so the number is returned when the helper
+    // is released.
+    task.alloc_pid_mappings(&[], true).map_err(|_| -(Errno::Eagain.as_i32()))?;
+    let vpid = task.vtgid.load(core::sync::atomic::Ordering::Acquire);
+    task.set_pgid(vpid);
+    task.set_sid(vpid);
 
     stage!(b"task-built");
     let fdt = Arc::new(vfs::FdTable::new());

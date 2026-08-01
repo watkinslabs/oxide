@@ -16,7 +16,9 @@ use crate::Task;
 /// (CLD_KILLED / CLD_DUMPED if the core bit 0x80 is set on the signo),
 /// else exited (CLD_EXITED, si_status = exit code).
 /// # C: O(1)
-pub(super) fn child_exit_info(child: &Task, signo: u32) -> crate::task::SigInfo {
+pub(super) fn child_exit_info(child: &Task, signo: u32, receiver: &Task)
+    -> crate::task::SigInfo
+{
     // CLD_* si_code values (siginfo(7) / asm-generic/siginfo.h).
     const CLD_EXITED: i32 = 1;
     const CLD_KILLED: i32 = 2;
@@ -31,7 +33,8 @@ pub(super) fn child_exit_info(child: &Task, signo: u32) -> crate::task::SigInfo 
     crate::task::SigInfo {
         signo,
         code,
-        pid:   child.vtgid.load(Ordering::Acquire),
+        // Read by the RECEIVER, so numbered in the receiver's namespace.
+        pid:   crate::registry::tgid_nr_seen_by(child, receiver),
         uid:   child.creds.ruid.load(Ordering::Acquire),
         value: status as u64,
         sys:   None, fault: None, poll: None
@@ -42,8 +45,8 @@ pub(super) fn child_exit_info(child: &Task, signo: u32) -> crate::task::SigInfo 
 /// parent and re-runs the reaper's `do_notify_parent` contract, so the reaper
 /// gets the same PROCESS-directed record any other child exit produces; the
 /// caller sends it after its `wait4` wake. # C: O(1)
-pub(super) fn reparent_child_event(child: &Task) -> crate::task::SigInfo {
-    child_exit_info(child, crate::live::sigpend::Signum::Sigchld.as_u8() as u32)
+pub(super) fn reparent_child_event(child: &Task, reaper: &Task) -> crate::task::SigInfo {
+    child_exit_info(child, crate::live::sigpend::Signum::Sigchld.as_u8() as u32, reaper)
 }
 
 /// `do_notify_parent`'s send half for a reparented zombie: SIGCHLD on the

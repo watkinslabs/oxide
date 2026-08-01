@@ -86,7 +86,7 @@ pub fn notify_real_parent_of_zombie(task: &Arc<Task>) {
     if let Some(p) = task.parent() {
         let decision = exit_notify_decision(task, Some(&p));
         if let Some(signo) = decision.signal {
-            let info = child_exit_info(task, signo);
+            let info = child_exit_info(task, signo, &p);
             let _ = super::send::send_signal(&p, signo,
                 crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
         }
@@ -146,7 +146,7 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     // notification signal.
     let notify = parent.as_ref().and_then(|p| {
         accrue_child_rusage(&task, p);
-        decision.signal.map(|signo| (signo, child_exit_info(&task, signo)))
+        decision.signal.map(|signo| (signo, child_exit_info(&task, signo, p)))
     });
     if decision.autoreap { registry::mark_reaped(&task); }
     // A newly childless process group may have just been orphaned with stopped
@@ -342,7 +342,8 @@ fn zombie_candidate(t: &Task) -> Candidate {
         parent_tgid: tgid_of(parent_tid),
         tracer_tid,
         tracer_tgid: tgid_of(tracer_tid),
-        vpid:        t.vtgid.load(Ordering::Acquire),
+        vpid: crate::registry::leader_tgid_nr_in(t, &crate::registry::reader_pid_ns())
+            .unwrap_or(0),
         pgid:        t.pgid(),
         exit_signal: t.exit_signal.load(Ordering::Acquire),
     }

@@ -1,7 +1,6 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
 
 use sched::pid::PidIdentity;
 use vfs::dentry::{Dentry, DentryOps};
@@ -73,11 +72,25 @@ impl FileOps for PidfdFileOps {
             let _ = write!(FdinfoFmt(out), "Pid:\t-1\n");
             return;
         };
-        let vpid = task.vtid.load(Ordering::Acquire);
-        if vpid == 0 {
-            let _ = write!(FdinfoFmt(out), "Pid:\t-1\n");
-        } else {
-            let _ = write!(FdinfoFmt(out), "Pid:\t{}\nNSpid:\t{}\n", vpid, vpid);
+        // Both rows are expressed in the READER's pid namespace: `Pid:` is the
+        // number that namespace gives the target, and `NSpid:` continues with
+        // one number per deeper level, so a reader that cannot name the target
+        // is told so rather than handed the target's own private number.
+        let reader = sched::registry::reader_pid_ns();
+        let chain = target.nr_chain_from(&reader);
+        let chain = if chain.is_empty() {
+            match sched::registry::vnr_in(&task, &reader) {
+                Some(nr) => alloc::vec![nr],
+                None => alloc::vec::Vec::new(),
+            }
+        } else { chain };
+        match chain.first() {
+            None => { let _ = write!(FdinfoFmt(out), "Pid:\t-1\n"); }
+            Some(nr) => {
+                let _ = write!(FdinfoFmt(out), "Pid:\t{nr}\nNSpid:");
+                for nr in chain.iter() { let _ = write!(FdinfoFmt(out), "\t{nr}"); }
+                let _ = write!(FdinfoFmt(out), "\n");
+            }
         }
     }
 }

@@ -65,13 +65,10 @@ impl UnixPair {
         #[cfg(feature = "debug-dbus")]
         trace_dbus_stream(data);
         let stable_cred = match end { UnixEnd::A => self.cred_a.get(), UnixEnd::B => self.cred_b.get() }.ids();
-        #[cfg(target_os = "oxide-kernel")]
-        let sender_cred = supplied_creds.unwrap_or_else(|| sched::live::current().map(|c| {
-            use core::sync::atomic::Ordering::Relaxed;
-            (c.visible_pid(), c.creds.ruid.load(Relaxed), c.creds.rgid.load(Relaxed))
-        }).unwrap_or(stable_cred));
-        #[cfg(not(target_os = "oxide-kernel"))]
-        let sender_cred = supplied_creds.unwrap_or(stable_cred);
+        let sender_cred = match supplied_creds {
+            Some(ids) => crate::unix_sock::MsgCred::from_supplied(ids),
+            None => crate::unix_sock::MsgCred::of_current(stable_cred),
+        };
         if self.peer_gone(end) { return Err(UnixStreamSendError::PeerClosed); }
         let receiver = self.gc_node(end.other());
         let transition = receiver.pin();

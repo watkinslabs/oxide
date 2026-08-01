@@ -80,25 +80,6 @@ pub fn next_tid() -> u32 {
     }
 }
 
-/// Namespace-visible pid source. 1 belongs to the initial task, so allocation
-/// starts at 2. Every new PROCESS draws from here — a fork, and equally a
-/// helper process the kernel starts itself — so there is one pid space, not a
-/// per-creator one.
-static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
-
-/// Draw the next namespace-visible pid. # C: O(1)
-pub fn alloc_vpid() -> u32 {
-    NEXT_VPID.fetch_add(1, core::sync::atomic::Ordering::AcqRel)
-}
-
-/// Retire every pid number up to and including `vpid` from the ordinary
-/// allocator, so a caller that named its child's pid explicitly cannot have
-/// that number handed to some later task as well.
-/// # C: O(1)
-pub fn reserve_vpid(vpid: u32) {
-    NEXT_VPID.fetch_max(vpid.saturating_add(1), core::sync::atomic::Ordering::AcqRel);
-}
-
 /// Errors `spawn_kernel_thread` can return.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SpawnError {

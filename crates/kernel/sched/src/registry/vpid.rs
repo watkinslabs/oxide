@@ -66,6 +66,68 @@ pub fn caller_pid_ns() -> Option<NamespaceRef> {
     crate::live::current()?.namespace_owner(NamespaceKind::Pid)
 }
 
+/// The pid namespace every number rendered on this call must be expressed in:
+/// the READER's, which is what decides whether a task is nameable at all and
+/// which of its numbers is the right one. Outside a live task (boot, kernel
+/// log, hosted fixtures) that is the initial namespace, which numbers
+/// everything. # C: O(1)
+pub fn reader_pid_ns() -> NamespaceRef {
+    #[cfg(target_os = "oxide-kernel")]
+    { caller_pid_ns().unwrap_or_else(|| namespace_identity::initial(NamespaceKind::Pid)) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { namespace_identity::initial(NamespaceKind::Pid) }
+}
+
+/// Linux `task_tgid_nr_ns(p, ns)`: the PROCESS number `t` belongs to as `ns`
+/// sees it, or `None` when `ns` does not number that process. A thread reports
+/// its group leader's number, which is the pid every process-scoped interface
+/// (`/proc/<pid>`, credentials, `getpid`) reports for it.
+/// # C: O(log N_tasks + depth)
+pub fn tgid_nr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    let tgid = t.tgid.load(Ordering::Acquire);
+    if tgid == t.tid { return leader_tgid_nr_in(t, ns); }
+    match lookup(tgid) {
+        Some(leader) => leader_tgid_nr_in(&leader, ns),
+        None => group_nr_without_leader(t, ns),
+    }
+}
+
+/// The process number a task carries when its group leader is no longer
+/// reachable: the number clone copied from the leader. Only the initial
+/// namespace can name a task from that copy alone. # C: O(1)
+fn group_nr_without_leader(t: &Task, ns: &NamespaceRef) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    if !ns.is_initial() { return None; }
+    let vtgid = t.vtgid.load(Ordering::Acquire);
+    Some(if vtgid != 0 { vtgid } else { t.tgid.load(Ordering::Acquire) })
+}
+
+/// `tgid_nr_in` for a task already known to be its group's leader, which every
+/// zombie and every wait candidate is. Touches no registry entry, so it is the
+/// form callers holding the registry lock must use. # C: O(depth)
+pub fn leader_tgid_nr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    if let Some(nr) = t.pid.visible_tid(ns) { return Some(nr); }
+    if !ns.is_initial() { return None; }
+    let vtgid = t.vtgid.load(Ordering::Acquire);
+    Some(if vtgid != 0 { vtgid } else { t.tgid.load(Ordering::Acquire) })
+}
+
+/// `tgid_nr_in` for a caller that already holds the registry lock: the group
+/// leader is resolved from the map it is holding, never through a nested
+/// acquire. # C: O(log N_tasks + depth)
+fn tgid_nr_in_locked(g: &super::core::Registry, t: &Task, ns: &NamespaceRef) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    let tgid = t.tgid.load(Ordering::Acquire);
+    if tgid == t.tid { return leader_tgid_nr_in(t, ns); }
+    match g.by_tid.get(&tgid).and_then(|w| w.upgrade()) {
+        Some(leader) if !leader.reaped.load(Ordering::Acquire) =>
+            leader_tgid_nr_in(&leader, ns),
+        _ => group_nr_without_leader(t, ns),
+    }
+}
+
 /// Resolve a USERSPACE-supplied pid/tid (the value getpid/gettid/fork return)
 /// to a Task, interpreted in the CALLER's pid namespace. THIS is the correct
 /// primitive for any syscall whose pid arg comes from userspace (kill,
@@ -103,27 +165,28 @@ pub fn resolve_user_pid(pid: u32) -> Option<Arc<Task>> {
 /// # C: O(log N_tasks) hint hit; O(N_tasks) fallback scan
 pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
     use core::sync::atomic::Ordering;
+    let ns = reader_pid_ns();
     let mut g = REG.lock_irqsave::<RegIrq>();
     if let Some(w) = g.vpid_hint.get(&vpid) {
         match w.upgrade() {
             Some(t) if !t.reaped.load(Ordering::Acquire)
-                && t.vtgid.load(Ordering::Acquire) == vpid
-                && t.vtid.load(Ordering::Acquire) == vpid =>
+                && tgid_nr_in_locked(&g, &t, &ns) == Some(vpid)
+                && t.vtid.load(Ordering::Acquire) == t.vtgid.load(Ordering::Acquire) =>
             {
                 return Some(t);
             }
             None => { g.vpid_hint.remove(&vpid); } // deterministic prune: confirmed-dead
-            _ => {} // stale or non-leader hint: fall through to the authoritative scan
+            _ => {} // stale, non-leader, or foreign-namespace hint: authoritative scan
         }
     }
     let mut fallback: Option<Arc<Task>> = None;
     let mut leader: Option<alloc::sync::Weak<Task>> = None;
     for (_, w) in g.by_tid.iter() {
         let Some(t) = w.upgrade() else { continue };
-        if t.reaped.load(Ordering::Acquire) || t.vtgid.load(Ordering::Acquire) != vpid {
+        if t.reaped.load(Ordering::Acquire) || tgid_nr_in_locked(&g, &t, &ns) != Some(vpid) {
             continue;
         }
-        if t.vtid.load(Ordering::Acquire) == vpid {
+        if t.vtid.load(Ordering::Acquire) == t.vtgid.load(Ordering::Acquire) {
             leader = Some(alloc::sync::Weak::clone(w));
             fallback = Some(t);
             break;
@@ -143,6 +206,7 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
 /// # C: O(N_tasks log N_tasks)
 pub fn live_vpids() -> Vec<u32> {
     use core::sync::atomic::Ordering;
+    let ns = reader_pid_ns();
     let mut g = REG.lock_irqsave::<RegIrq>();
     super::core::prune_dead_locked(&mut g);
     let mut out: Vec<u32> = g
@@ -153,7 +217,10 @@ pub fn live_vpids() -> Vec<u32> {
         // still strong-ref alive but must not appear in /proc (else ps/htop show
         // it as a lingering zombie).
         .filter(|t| !t.reaped.load(Ordering::Acquire))
-        .map(|t| t.vtgid.load(Ordering::Acquire))
+        // A reader only sees the processes its OWN namespace numbers, by the
+        // number that namespace gives them: a task in a sibling or descendant
+        // namespace has no name here and is not listed.
+        .filter_map(|t| tgid_nr_in_locked(&g, &t, &ns))
         .filter(|&v| v != 0)
         .collect();
     out.sort_unstable();
@@ -168,17 +235,18 @@ pub fn live_vpids() -> Vec<u32> {
 /// # C: O(log N_tasks) via `lookup`.
 pub fn display_vpid(tid: u32) -> u64 {
     use core::sync::atomic::Ordering;
+    let ns = reader_pid_ns();
     if let Some(t) = lookup(tid) {
         if !t.reaped.load(Ordering::Acquire) {
-            let v = t.vtgid.load(Ordering::Acquire);
-            if v != 0 { return v as u64; }
+            if let Some(v) = tgid_nr_in(&t, &ns) { if v != 0 { return v as u64; } }
+            return 0;
         }
     }
     let g = REG.lock_irqsave::<RegIrq>();
     g.by_tid.values().filter_map(|weak| weak.upgrade()).find_map(|task| {
         (!task.reaped.load(Ordering::Acquire)
             && task.tgid.load(Ordering::Acquire) == tid)
-            .then(|| task.vtgid.load(Ordering::Acquire) as u64)
+            .then(|| tgid_nr_in_locked(&g, &task, &ns).unwrap_or(0) as u64)
             .filter(|vpid| *vpid != 0)
     }).unwrap_or(tid as u64)
 }
@@ -188,16 +256,9 @@ pub fn display_vpid(tid: u32) -> u64 {
 /// `/proc/<pid>/task/<tid>` must expose thread ids, not process ids.
 /// # C: O(log N_tasks) via `lookup`.
 pub fn display_vtid(tid: u32) -> u64 {
-    use core::sync::atomic::Ordering;
+    let ns = reader_pid_ns();
     match lookup(tid) {
-        Some(t) => {
-            let v = t.vtid.load(Ordering::Acquire);
-            if v != 0 {
-                v as u64
-            } else {
-                tid as u64
-            }
-        }
+        Some(t) => vnr_in(&t, &ns).unwrap_or(0) as u64,
         None => tid as u64,
     }
 }
@@ -208,12 +269,47 @@ pub fn display_vtid(tid: u32) -> u64 {
 /// # C: O(log N_tasks) — two registry lookups.
 pub fn parent_vpid(tid: u32) -> u64 {
     use core::sync::atomic::Ordering;
+    let ns = reader_pid_ns();
     let ptid = match lookup(tid) {
         Some(t) => t.parent_tid.load(Ordering::Acquire),
         None => return 0,
     };
+    // A parent OUTSIDE the reader's namespace has no name there — Linux
+    // reports PPid 0, which is what a namespace's init sees for its creator.
     lookup(ptid)
-        .map(|p| p.vtgid.load(Ordering::Acquire))
+        .and_then(|p| tgid_nr_in(&p, &ns))
         .filter(|&v| v != 0)
         .unwrap_or(0) as u64
+}
+
+/// Numbers `t`'s THREAD identity carries from `reader`'s level inward to its
+/// own, the `/proc/<pid>/status` `NSpid` row. Empty when `reader` does not
+/// number `t`; a single-entry chain for a task the initial namespace numbers
+/// without a published mapping. # C: O(depth)
+pub fn nr_chain_in(t: &Task, reader: &NamespaceRef) -> Vec<u32> {
+    let chain = t.pid.nr_chain_from(reader);
+    if !chain.is_empty() { return chain; }
+    match vnr_in(t, reader) { Some(nr) => alloc::vec![nr], None => Vec::new() }
+}
+
+/// Numbers the process, process group or session named `nr` in `owner` carries
+/// from `reader`'s level inward — Linux's `task_tgid_nr_ns` /
+/// `task_pgrp_nr_ns` / `task_session_nr_ns` rows. Empty when the number names
+/// no live task, which is how a group whose leader has exited reports.
+/// # C: O(N_tasks + depth)
+pub fn group_chain(owner: &NamespaceRef, nr: u32, reader: &NamespaceRef) -> Vec<u32> {
+    match lookup_in_namespace(owner, nr) {
+        Some(t) => nr_chain_in(&t, reader),
+        None => Vec::new(),
+    }
+}
+
+/// The PROCESS number `t` carries as `viewer`'s pid namespace numbers it — the
+/// value every `si_pid` must hold, because a signal's pid field is read by the
+/// RECEIVER, in the receiver's namespace. 0 when the viewer's namespace does
+/// not number `t` at all. # C: O(log N_tasks + depth)
+pub fn tgid_nr_seen_by(t: &Task, viewer: &Task) -> u32 {
+    let ns = viewer.namespace_owner(NamespaceKind::Pid)
+        .unwrap_or_else(|| namespace_identity::initial(NamespaceKind::Pid));
+    tgid_nr_in(t, &ns).unwrap_or(0)
 }

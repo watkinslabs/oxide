@@ -229,3 +229,59 @@ fn finalizer_runs_at_lifetime_end_not_activity_end() {
     drop(child);
     assert_eq!(FINALIZED.load(Ordering::Relaxed), before + 1);
 }
+
+mod pid_numbers {
+    use crate::{allocate, initial, NamespaceKind, PidNumberError, PID_MAX_LIMIT};
+
+    fn pid_ns() -> crate::NamespaceRef {
+        allocate(NamespaceKind::Pid, initial(NamespaceKind::User),
+            Some(initial(NamespaceKind::Pid))).unwrap()
+    }
+
+    /// Only a PID namespace numbers anything; asking any other kind is an
+    /// error rather than a silently-zero answer.
+    #[test]
+    fn only_a_pid_namespace_numbers() {
+        let uts = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
+        assert_eq!(uts.pid_numbers().alloc(), Err(PidNumberError::NotPidNamespace));
+        assert_eq!(uts.pid_numbers().max(), Err(PidNumberError::NotPidNamespace));
+        assert_eq!(uts.pid_numbers().reserve(1), Err(PidNumberError::NotPidNamespace));
+    }
+
+    /// A number outside `1..pid_max` names no task and is refused, so a caller
+    /// that picked one is told rather than silently given another.
+    #[test]
+    fn a_number_outside_the_range_is_refused() {
+        let ns = pid_ns();
+        let max = ns.pid_numbers().max().unwrap();
+        assert_eq!(ns.pid_numbers().reserve(0), Err(PidNumberError::OutOfRange));
+        assert_eq!(ns.pid_numbers().reserve(max), Err(PidNumberError::OutOfRange));
+        assert!(ns.pid_numbers().reserve(max - 1).is_ok());
+    }
+
+    /// The ceiling moves within the range Linux permits and nowhere else.
+    #[test]
+    fn the_ceiling_moves_only_within_the_permitted_range() {
+        let ns = pid_ns();
+        assert!(ns.pid_numbers().set_max(4096).is_ok());
+        assert_eq!(ns.pid_numbers().max(), Ok(4096));
+        assert_eq!(ns.pid_numbers().set_max(0), Err(PidNumberError::OutOfRange));
+        assert_eq!(ns.pid_numbers().set_max(PID_MAX_LIMIT + 1), Err(PidNumberError::OutOfRange));
+        assert!(ns.pid_numbers().set_max(PID_MAX_LIMIT).is_ok());
+    }
+
+    /// Two live tasks never share a number, and a released number returns to
+    /// the space.
+    #[test]
+    fn a_number_is_held_until_it_is_freed() {
+        let ns = pid_ns();
+        let first = ns.pid_numbers().alloc().unwrap();
+        let second = ns.pid_numbers().alloc().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(ns.pid_numbers().reserve(first), Err(PidNumberError::InUse));
+        assert_eq!(ns.pid_numbers().held(), 2);
+        ns.pid_numbers().free(first);
+        assert!(!ns.pid_numbers().is_held(first));
+        assert!(ns.pid_numbers().reserve(first).is_ok());
+    }
+}

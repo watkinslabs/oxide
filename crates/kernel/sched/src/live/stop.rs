@@ -77,7 +77,8 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32) {
     let info = crate::task::SigInfo {
         signo: crate::Signum::Sigchld as u32,
         code:  n.si_code,
-        pid:   cur.vtgid.load(Ordering::Acquire),
+        // Read by the parent, so numbered in the PARENT's pid namespace.
+        pid:   crate::registry::tgid_nr_seen_by(cur, &parent),
         uid:   cur.creds.ruid.load(Ordering::Acquire),
         value: status_sig as u64,
         sys:   None, fault: None, poll: None
