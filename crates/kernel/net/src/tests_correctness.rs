@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use super::*;
 use crate::addr::*;
 use crate::tcp_conn::{TcpConn, Endpoint};
+use crate::tcp_conn::syn_opts::SynOptions;
 use crate::tcp_hdr::{TcpHdr, parse_mss_option, parse_wscale_option, opt, TCP_HDR_MIN_LEN};
 use crate::tcp_state::TcpState;
 use crate::arp::{ArpCache, ARP_STALE_NS};

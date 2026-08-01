@@ -119,8 +119,14 @@ pub struct TcpConn {
     pub repair: bool,
     /// `TCP_REPAIR_OPTIONS` restored maximum segment size.
     pub mss_clamp: u16,
-    /// `TCP_REPAIR_OPTIONS` restored selective-acknowledgement negotiation.
+    /// The peer permits selective acknowledgement, so this side may send SACK
+    /// blocks. Negotiated on the handshake, and restored directly by
+    /// `TCP_REPAIR_OPTIONS`.
     pub sack_ok: bool,
+    /// The peer offered window scaling, so both scales are in effect. A peer
+    /// that omitted the option disables scaling in both directions, which is
+    /// not the same as a peer that offered a scale of zero.
+    pub wscale_ok: bool,
     /// `TCP_NOTSENT_LOWAT`: unsent bytes above this make the socket
     /// unwritable, so a writer is woken only when the queue has drained.
     pub notsent_lowat: u32,
