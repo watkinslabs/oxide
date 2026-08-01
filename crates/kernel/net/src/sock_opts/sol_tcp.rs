@@ -20,7 +20,6 @@ pub mod get;
 pub mod ca;
 pub mod ulp;
 pub mod repair;
-pub mod defer;
 pub mod apply;
 pub mod zerocopy;
 #[cfg(test)]
