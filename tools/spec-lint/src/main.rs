@@ -9,6 +9,7 @@ mod doc_lint;
 mod code_lint;
 mod length_lint;
 mod manifest_lint;
+mod ratchet;
 mod walk;
 mod xref_lint;
 
@@ -28,6 +29,7 @@ impl Findings {
     pub fn push(&mut self, path: &Path, line: usize, rule: &'static str, msg: impl Into<String>) {
         self.items.push(Finding { path: path.to_path_buf(), line, rule, msg: msg.into() });
     }
+    pub fn items(&self) -> &[Finding] { &self.items }
     pub fn report(&self) -> bool {
         for f in &self.items {
             eprintln!("{}:{}: [{}] {}", f.path.display(), f.line, f.rule, f.msg);
@@ -43,7 +45,11 @@ impl Findings {
 }
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.iter().any(|a| a == "-h" || a == "--help") { usage(); return ExitCode::from(2); }
+    let update = argv.iter().any(|a| a == "--update");
+    let allow_growth = argv.iter().any(|a| a == "--allow-growth");
+    let mut args = argv.iter().filter(|a| !a.starts_with('-')).cloned();
     let cmd = args.next().unwrap_or_else(|| "all".into());
     let root = args.next().map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap());
 
@@ -54,17 +60,29 @@ fn main() -> ExitCode {
         "length" => length_lint::run(&root, &mut f),
         "manifest" => manifest_lint::run(&root, &mut f),
         "xref" => xref_lint::run(&root, &mut f),
-        "all" => {
-            doc_lint::run(&root, &mut f);
-            manifest_lint::run(&root, &mut f);
-            xref_lint::run(&root, &mut f);
-            code_lint::run(&root, &mut f);
-            length_lint::run(&root, &mut f);
-        }
-        "-h" | "--help" => { eprintln!("usage: spec-lint <docs|code|length|manifest|xref|all> [root]"); return ExitCode::from(2); }
-        other => { eprintln!("spec-lint: unknown subcommand `{other}`"); return ExitCode::from(2); }
+        "all" | "ratchet" => run_all(&root, &mut f),
+        other => { eprintln!("spec-lint: unknown subcommand `{other}`"); usage(); return ExitCode::from(2); }
+    }
+    if cmd == "ratchet" {
+        return match ratchet::check(&root, &ratchet::tally(&root, &f), update, allow_growth) {
+            ratchet::Outcome::Pass => ExitCode::SUCCESS,
+            ratchet::Outcome::Fail => ExitCode::from(1),
+        };
     }
     if f.report() { ExitCode::SUCCESS } else { ExitCode::from(1) }
+}
+
+fn run_all(root: &Path, f: &mut Findings) {
+    doc_lint::run(root, f);
+    manifest_lint::run(root, f);
+    xref_lint::run(root, f);
+    code_lint::run(root, f);
+    length_lint::run(root, f);
+}
+
+fn usage() {
+    eprintln!("usage: spec-lint <docs|code|length|manifest|xref|all|ratchet> [root]");
+    eprintln!("       ratchet [--update [--allow-growth]]   gate findings against {}", ratchet::BASELINE_REL);
 }
 
 // shared helpers ------------------------------------------------------------
