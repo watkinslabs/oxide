@@ -36,7 +36,7 @@ pub(crate) use events::{wake_msgpair_peer_subs, wake_peer_subs};
 
 pub use types::{EndCred, PeerCred, UnixEnd};
 
-pub use stream::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};
+pub use stream::{stream_recv_continues, UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};
 pub use msg_cred::MsgCred;
 pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing, UnixMsgSendError};
 pub use dgram::{UnixDgram, UnixDgramQueue};

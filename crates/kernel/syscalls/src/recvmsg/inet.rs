@@ -20,6 +20,8 @@ const IPV6_HOPLIMIT: i32 = 52;
 const IPV6_TCLASS: i32 = 67;
 const IP_RECVERR: i32 = 11;
 const IPV6_RECVERR: i32 = 25;
+const SOL_UDP: i32 = net::sock_opts::sol_udp::uapi::SOL_UDP as i32;
+const UDP_GRO: i32 = net::sock_opts::sol_udp::uapi::UDP_GRO as i32;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -98,6 +100,13 @@ pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) ->
 }
 fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
     let mut out = Control::new(cap);
+    // The segmentation size of a coalesced receive precedes the IP-level
+    // ancillary data, as it does on every UDP receive that carries one.
+    if let Some(seg) = net::udp_gro::reported_seg_size(
+        sock.opts.udp.gro.load(Ordering::Acquire) != 0, rcv.gro)
+    {
+        out.push(SOL_UDP, UDP_GRO, &seg.to_ne_bytes());
+    }
     if sock.opts.ip_pktinfo.load(Ordering::Acquire) != 0 {
         if let Some((dst, iface)) = rcv.pktinfo {
             let mut data = [0u8; 12];
@@ -259,7 +268,7 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
             Ok(Some(_)) => {
                 if let Err(e) = copy_name(user, sock, &Received {
                     payload: Vec::new(), full_len: 1, peer: None, peer6: None,
-                    pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None,
+                    pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None, gro: None,
                 }) { return Err(e); }
                 user.finish(0, crate::recv_control::output_flags(flags)).map_err(|e| e)?;
                 return Ok(1);
@@ -306,7 +315,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
         };
         if let Err(e) = copy_name(user, sock, &Received {
             payload: Vec::new(), full_len: copied, peer: None, peer6: None,
-            pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None,
+            pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None, gro: None,
         }) { return e; }
         if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
         if copied != 0 { sock.note_receive_now(); }

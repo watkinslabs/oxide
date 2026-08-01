@@ -54,7 +54,8 @@ impl NetStack {
         let namespace = if net_ns == 0 { network_namespace::initial() }
             else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
         self.bind_udp_socket_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
-            port, iface, error, reuseaddr, reuseport, ip_mtu_discover, peer, bpf_filter, mcast)
+            port, iface, error, reuseaddr, reuseport, ip_mtu_discover,
+            Arc::new(::core::sync::atomic::AtomicI32::new(0)), peer, bpf_filter, mcast)
     }
 
     /// Bind an IPv4 UDP endpoint retaining one socket's canonical owner. # C: O(N_port)
@@ -64,6 +65,7 @@ impl NetStack {
                            reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
                            reuseport: Arc<::core::sync::atomic::AtomicI32>,
                            ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           gro: Arc<::core::sync::atomic::AtomicI32>,
                            peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                            mcast: Arc<crate::mcast_filter::SocketMcast>)
@@ -109,7 +111,7 @@ impl NetStack {
         let q = Arc::new(UdpRxQueue::new_socket(
             net_ns, bind_ip, port, error, reuseaddr,
             Arc::new(::core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
-            ip_mtu_discover, owner, peer, bpf_filter, mcast,
+            ip_mtu_discover, gro, owner, peer, bpf_filter, mcast,
         ));
         q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0),
             ::core::sync::atomic::Ordering::Release);
