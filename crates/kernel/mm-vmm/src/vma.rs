@@ -188,6 +188,21 @@ pub trait FileBacking: Send + Sync {
     /// file-backed VMA maps). Default 0 for non-inode backings.
     fn ino(&self) -> u64 { 0 }
 
+    /// Directory-entry count of the mapped object. Zero marks an object with
+    /// no name in any directory — an unlinked file, or the anonymous shared
+    /// memory a `MAP_SHARED|MAP_ANONYMOUS` mapping is built on — which is what
+    /// separates the anonymous-shared core-dump class from the file-backed
+    /// shared one. Default 1 for a backing that maps no inode.
+    /// # C: O(1)
+    fn i_nlink(&self) -> u32 { 1 }
+
+    /// `i_mode` of the mapped object (file type plus permission bits). The
+    /// core-dump header-page rule reads its execute bits to tell a program
+    /// image from a plain data mapping. Default 0 for a backing that maps no
+    /// inode.
+    /// # C: O(1)
+    fn i_mode(&self) -> u16 { 0 }
+
     /// Stable identity of the OBJECT behind this backing, shared by every
     /// mapping of it in every process, or 0 when the backing has no such
     /// identity.

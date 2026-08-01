@@ -120,6 +120,10 @@ impl AddressSpace {
     pub fn new_for_exec(root_pa: u64, parent: &Self) -> KResult<alloc::sync::Arc<Self>> {
         let child = Self::new(root_pa)?;
         child.mdwe.inherit_from(&parent.mdwe);
+        // The core-dump filter is not exec state: a process that narrowed its
+        // dump keeps that choice across an image replacement, exactly as it
+        // keeps it across fork.
+        child.set_coredump_filter(parent.coredump_filter());
         Ok(child)
     }
 
