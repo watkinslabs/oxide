@@ -20,12 +20,23 @@ Linux's `CONFIG_FRAME_WARN` warns rather than fails, and this keeps that
 shape: `--warn` reports, `--fail` is the never-exceed ceiling that breaks the
 build. One frame taking half the kernel stack is indefensible regardless of
 what the rest of the call chain does.
+
+The baseline is keyed on the DEMANGLED path, for the reason spelled out in
+`rust_symbol_identity`: a mangled name carries a crate disambiguator that
+changes with the features the crate was built with, so a baseline keyed on it
+makes the verdict depend on which build produced the ELF. An entry naming a
+frame that is not in the ELF is reported as STALE rather than ignored — it is
+dead permission, and it needs the opposite fix from a new over-ceiling frame.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rust_symbol_identity as rsi        # noqa: E402
 
 # The two disassemblers print the SAME instruction differently, and the gate is
 # useless — silently passing — if it only understands one:
@@ -68,13 +79,12 @@ def parse(objdump_out):
 
 
 def demangle(names):
-    """Best-effort rustfilt/c++filt; falls back to the raw symbol."""
-    try:
-        p = subprocess.run(["rustfilt"], input="\n".join(names),
-                           capture_output=True, text=True, check=True)
-        return p.stdout.splitlines()
-    except Exception:
-        return names
+    """-> readable names, via the same identity function the baseline uses.
+
+    No external demangler: a gate whose output depends on whether `rustfilt`
+    happens to be installed is one more way for it to disagree with itself.
+    """
+    return [rsi.identity(n) for n in names]
 
 
 SELF_TEST_INPUT = """
@@ -130,7 +140,13 @@ def self_test():
         return 1
     if bad:
         return 1
-    print(f"frame-size-gate: self-test PASS ({len(want)} cases)")
+    rsi.self_test()
+    # The baseline must not care which build produced the ELF: two builds of
+    # one tree differ in the crate disambiguator and in nothing else.
+    a = "_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main"
+    b = "_RNvNtNtCs1Yf3GkQE07G_5kmain5kmain5entry11kernel_main"
+    assert a != b and rsi.identity(a) == rsi.identity(b)
+    print(f"frame-size-gate: self-test PASS ({len(want)} cases + baseline identity)")
     return 0
 
 
@@ -144,8 +160,12 @@ def main():
     ap.add_argument("--fail", type=int, default=8192,
                     help="hard ceiling: any frame at or above this fails the build")
     ap.add_argument("--top", type=int, default=15)
+    ap.add_argument("--allow-stale", action="store_true",
+                    help="report baseline entries whose frame is not in this ELF instead "
+                         "of failing on them (they are dead permission either way)")
     ap.add_argument("--baseline",
-                    help="file of `bytes<TAB>symbol` for frames already over the ceiling. "
+                    help="file of `bytes<TAB>demangled path` for frames already over the "
+                         "ceiling. "
                          "Those are tolerated at or below their recorded size, so the gate "
                          "fails on NEW or WORSENED frames while the known set is burned down.")
     ap.add_argument("--write-baseline", action="store_true",
@@ -182,6 +202,17 @@ def main():
     over_warn = [(n, s) for n, s in ranked if s >= args.warn]
     over_fail = [(n, s) for n, s in ranked if s >= args.fail]
 
+    # Identity, not the mangled symbol. Many-to-one is possible (one generic
+    # instantiated in two crates, an LLVM clone beside its original), so a
+    # baseline entry covers the LARGEST frame sharing that identity.
+    ident = {raw: rsi.identity(raw) for raw in frames}
+    present = set(ident.values())
+    by_id, by_id_raw = {}, {}
+    for n, sz in over_fail:
+        k = ident[n]
+        if sz > by_id.get(k, -1):
+            by_id[k], by_id_raw[k] = sz, n
+
     if args.write_baseline:
         if not args.baseline:
             print("frame-size-gate: --write-baseline needs --baseline", file=sys.stderr)
@@ -190,8 +221,8 @@ def main():
             f.write("# Frames already over the hard ceiling when the gate was introduced.\n")
             f.write("# Tolerated at or below the recorded size ONLY; a new or worsened frame\n")
             f.write("# fails. Burn this list down — do not add to it.\n")
-            for n, sz in sorted(over_fail, key=lambda kv: -kv[1]):
-                f.write(f"{sz}\t{n}\n")
+            for k, sz in sorted(by_id.items(), key=lambda kv: -kv[1]):
+                f.write(f"{sz}\t{k}\n")
         print(f"frame-size-gate: wrote {len(over_fail)} baseline entries to {args.baseline}")
         return 0
 
@@ -203,13 +234,16 @@ def main():
                 if not line or line.startswith("#"):
                     continue
                 sz, name = line.split("\t", 1)
-                baseline[name] = int(sz)
+                baseline[rsi.identity(name.strip())] = int(sz)
         except FileNotFoundError:
             print(f"frame-size-gate: baseline {args.baseline} not found", file=sys.stderr)
             return 2
 
-    regressions = [(n, s) for n, s in over_fail
-                   if n not in baseline or s > baseline[n]]
+    fresh = [(k, sz) for k, sz in by_id.items() if k not in baseline]
+    worse = [(k, sz, baseline[k]) for k, sz in by_id.items()
+             if k in baseline and sz > baseline[k]]
+    stale = [k for k in baseline if k not in present]
+    regressions = fresh + worse
 
     print(f"frame-size-gate: {args.elf}")
     print(f"  functions scanned : {len(frames)}")
@@ -223,19 +257,33 @@ def main():
             print(f"    {size:7d}  {pretty}")
 
     if baseline:
-        print(f"  baselined       : {len(over_fail) - len(regressions)} of {len(over_fail)} over-ceiling frames")
+        print(f"  baselined       : {len(by_id) - len(regressions)} of {len(by_id)} over-ceiling frames")
 
+    # A NEW/WORSENED frame is code to fix; a STALE entry is a line to delete.
     if regressions:
         print(f"\nframe-size-gate: FAIL — {len(regressions)} function(s) reserve "
               f">= {args.fail} B of stack and are new or worse than the baseline:",
               file=sys.stderr)
-        for name, size in regressions:
-            was = baseline.get(name)
-            note = f" (baseline {was})" if was is not None else " (new)"
-            print(f"    {size:7d}{note}  {name}", file=sys.stderr)
+        for k, size in sorted(fresh, key=lambda t: -t[1]):
+            print(f"    {size:7d}  NEW       {k}", file=sys.stderr)
+            print(f"             (symbol {by_id_raw[k]})", file=sys.stderr)
+        for k, size, was in sorted(worse, key=lambda t: -t[1]):
+            print(f"    {size:7d}  WORSENED  {k}  (baseline {was}, +{size - was})", file=sys.stderr)
+            print(f"             (symbol {by_id_raw[k]})", file=sys.stderr)
         print("\nA frame this large overflows the kernel stack on a deep call chain; "
               "split the function or move the buffer off-stack.", file=sys.stderr)
+    if stale and not args.allow_stale:
+        print(f"\nframe-size-gate: FAIL — {len(stale)} baseline entr(y/ies) name a frame "
+              f"that is not in {args.elf} at all:", file=sys.stderr)
+        for k in sorted(stale):
+            print(f"    STALE  {k}", file=sys.stderr)
+        print("\nDelete those lines: the function is gone, and a baseline that keeps "
+              "permission for code that no longer exists stops meaning anything.",
+              file=sys.stderr)
+    if regressions or (stale and not args.allow_stale):
         return 1
+    if stale:
+        print(f"  stale (ignored) : {len(stale)} entr(y/ies) name a frame not in this ELF")
     print("frame-size-gate: PASS")
     return 0
 

@@ -1,7 +1,11 @@
 # Static call paths at or over the stack-depth ceiling when the gate landed
 # (aarch64). Tolerated at or below the recorded budget ONLY — a new or deeper
 # path FAILS. Each block states why that family is legitimately deep; the
-# gate refuses an entry that is not under a reason block.
+# gate refuses an entry that is not under a reason block, and fails on an
+# entry naming a path that is no longer in the kernel.
+#
+# Entries are DEMANGLED paths (B1632), which survive a rebuild with a different
+# feature set; a mangled symbol is still accepted and normalised.
 #
 # Burn this down. Regenerate with:
 #   make stack-gate-baseline-arm
