@@ -21,6 +21,8 @@ extern crate std;
 
 pub mod bh;
 pub mod cfs;
+pub mod deadline;
+pub mod dl;
 pub mod clock;
 pub mod cmdline;
 pub mod cputime;
@@ -72,6 +74,8 @@ pub use preempt::{rcu_read_lock, rcu_read_unlock};
 pub use sync::{call_rcu, note_qs as rcu_note_qs, rcu_barrier, rcu_process_callbacks, synchronize_rcu};
 
 pub use cfs::CfsRunqueue;
+pub use dl::DlRunqueue;
+pub use deadline::{DlEntity, DlParams};
 pub use task::current_ioprio;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
@@ -224,6 +228,12 @@ pub fn register_timers() {
     use core::sync::atomic::{AtomicBool, Ordering};
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) { return; }
+    // Seed the deadline class's per-CPU bandwidth cap before any task can ask
+    // for a reservation, so the very first `sched_setattr(SCHED_DEADLINE)` is
+    // judged against real capacity rather than against a zero cap that refuses
+    // everything. The CPU count is NOT captured here: capacity is derived from
+    // the live online set at each decision.
+    deadline::bw::init_default();
     const P: u64 = 100_000_000; // 100 ms
     timer::register_periodic(P, cgroup::tick);
     timer::register_periodic(P, live::balance::balance_tick);

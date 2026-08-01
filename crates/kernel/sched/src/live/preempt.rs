@@ -37,6 +37,12 @@ pub fn need_resched() -> bool { crate::preempt::take_need_resched() }
 /// # C: O(1)
 pub fn task_tick() {
     let Some(cur) = crate::current() else { crate::preempt::set_need_resched(); return; };
+    // Deadline class first: it is the only class whose tick can REVOKE the CPU
+    // outright, and its budget must be charged before any other class rule runs.
+    if matches!(cur.sched_class(), crate::SchedClass::Deadline) {
+        crate::deadline::live::task_tick_dl(cur);
+        return;
+    }
     let policy = cur.policy.load(core::sync::atomic::Ordering::Acquire);
     let left = cur.rt_time_slice.load(core::sync::atomic::Ordering::Acquire);
     if policy == crate::sched_enc::SCHED_RR {

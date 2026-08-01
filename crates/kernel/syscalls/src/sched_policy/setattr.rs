@@ -40,16 +40,30 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
         if let Err(rv) = sa::uclamp_validate(attr, uc_min.value, uc_max.value) { return rv; }
     }
 
-    // A policy this scheduler cannot honour must not be silently recorded and
-    // then run as SCHED_NORMAL. SCHED_DEADLINE has no deadline class here.
-    if dl_policy(policy) { return err(Errno::Eopnotsupp); }
-
-    // Linux's "if not changing anything there's no need to proceed further,
-    // but store a possible modification of reset_on_fork". Skipping the commit
-    // also skips `__setscheduler_uclamp`, so an auto clamp survives a no-op.
+    // "If not changing anything there's no need to proceed further, but store a
+    // possible modification of reset_on_fork". Skipping the commit also skips
+    // the util-clamp update, so an auto clamp survives a no-op.
     if policy == task_policy(t) && !params_changed(t, attr, policy) {
         t.sched_reset_on_fork.store(reset_on_fork, Ordering::Release);
         return 0;
+    }
+
+    // Deadline admission runs LAST, after every argument and permission answer:
+    // `EBUSY` means "the machine is full", and reporting it ahead of a bad
+    // argument or a denied caller would misattribute the refusal.
+    let was_dl = dl_policy(task_policy(t));
+    let cur_dl = t.dl.params();
+    let want_dl = crate::sched_policy::dl::attr_params(attr);
+    if dl_policy(policy) || was_dl {
+        if dl_policy(policy) && !caller.has_cap(sched::cap::SYS_NICE)
+            && !crate::sched_policy::dl::user_dl_allowed(dl_span(), dl_task_mask(t),
+                                                        sched::deadline::bw::DL_BW.bw()) {
+            return err(Errno::Eperm);
+        }
+        match crate::sched_policy::dl::admit(dl_policy(policy), was_dl, &cur_dl, &want_dl) {
+            Ok(change) => crate::sched_policy::dl::commit(change),
+            Err(rv) => return rv,
+        }
     }
 
     let new_is_rt = rt_policy(policy);
@@ -61,10 +75,21 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
     0
 }
 
+/// The CPU span the deadline class is admitted against.
+/// # C: O(1)
+fn dl_span() -> u64 { sched::deadline::span() }
+
+/// The CPUs `t` may actually run on.
+/// # C: O(1)
+fn dl_task_mask(t: &sched::Task) -> u64 { t.cpus_allowed.load(Ordering::Acquire) }
+
 /// Linux's `goto change` ladder: would this request alter anything the task
 /// already has?
 /// # C: O(1)
 fn params_changed(t: &sched::Task, attr: &SchedAttr, policy: u32) -> bool {
+    if dl_policy(policy) && crate::sched_policy::dl::dl_param_changed(&t.dl.params(), attr) {
+        return true;
+    }
     if fair_policy(policy)
         && (attr.nice != t.nice.load(Ordering::Acquire) as i32 || attr.runtime != task_slice_ns(t)) {
         return true;
@@ -100,7 +125,17 @@ pub fn setscheduler(caller: &sched::Task, t: &Arc<sched::Task>,
 /// # C: O(log N)
 fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     use sched::{SchedClass, SchedPolicy};
+    // Leaving the deadline class releases the reservation and cancels any
+    // pending replenishment; the ledger must not keep a booking for an entity
+    // that no longer contends.
+    if !dl_policy(policy) && dl_policy(task_policy(t)) { sched::deadline::live::leave_class(t); }
     let new_class = match policy {
+        SCHED_DEADLINE => {
+            let p = crate::sched_policy::dl::attr_params(attr);
+            if dl_policy(task_policy(t)) { sched::deadline::live::reset_params(t, &p); }
+            else { sched::deadline::live::enter_class(t, &p); }
+            SchedClass::Deadline
+        }
         SCHED_FIFO | SCHED_RR => {
             let p = if policy == SCHED_FIFO { SchedPolicy::Fifo } else { SchedPolicy::Rr };
             SchedClass::Rt { prio: attr.priority as u8, policy: p }

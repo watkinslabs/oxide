@@ -112,33 +112,18 @@ pub fn priority_min(policy: i32) -> i64 {
     }
 }
 
-/// Linux `DL_SCALE` (`kernel/sched/sched.h:182`): the low bits `sched_runtime`
-/// loses to the bandwidth fixed point, so a runtime below `1 << DL_SCALE` is
-/// rejected outright.
-pub const DL_SCALE: u32 = 10;
-/// `sysctl_sched_dl_period_min` (`kernel/sched/deadline.c:32`), in ns.
-pub const DL_PERIOD_MIN_NS: u64 = 100 * 1_000;
-/// `sysctl_sched_dl_period_max` (`kernel/sched/deadline.c:31`), in ns.
-pub const DL_PERIOD_MAX_NS: u64 = (1u64 << 22) * 1_000;
+// The deadline parameter contract belongs to the class that ENFORCES it, not
+// to the syscall shim: a locally declared copy is exactly how a validator and
+// an enforcer come to disagree about what was admitted.
+pub use sched::deadline::{DL_PERIOD_MAX_NS, DL_PERIOD_MIN_NS, DL_SCALE};
 
-/// Linux `__checkparam_dl()` (`kernel/sched/deadline.c:3889`). A `sched_param`-
-/// based `sched_setscheduler(2)` leaves runtime/deadline/period zero, so a
-/// DEADLINE request from slot 144 can never satisfy this and fails `-EINVAL`
-/// before any permission check — mainline's answer for
-/// `sched_setscheduler(pid, SCHED_DEADLINE, …)`.
+/// Deadline parameter validation for a request. A `sched_param`-based
+/// `sched_setscheduler(2)` leaves runtime/deadline/period zero, so a DEADLINE
+/// request through slot 144 can never satisfy this and is `-EINVAL` before any
+/// permission check.
 /// # C: O(1)
 pub fn checkparam_dl(attr: &crate::sched_attr::SchedAttr) -> bool {
-    // Special (parameter-less) DL tasks exist only via the kernel-internal
-    // SCHED_FLAG_SUGOV, which the syscall path rejects separately.
-    if attr.flags & crate::sched_attr::FLAG_SUGOV != 0 { return true; }
-    if attr.deadline == 0 { return false; }
-    if attr.runtime < (1u64 << DL_SCALE) { return false; }
-    // The MSB is reserved for wrap-around/sign handling in the bandwidth math.
-    if attr.deadline & (1u64 << 63) != 0 || attr.period & (1u64 << 63) != 0 { return false; }
-    let period = if attr.period == 0 { attr.deadline } else { attr.period };
-    if period < attr.deadline || attr.deadline < attr.runtime { return false; }
-    if period < DL_PERIOD_MIN_NS || period > DL_PERIOD_MAX_NS { return false; }
-    true
+    sched::deadline::checkparam_dl(attr.runtime, attr.deadline, attr.period, attr.flags)
 }
 
 /// Linux `__sched_setscheduler()` flag-mask gate: anything outside
@@ -202,6 +187,7 @@ pub fn pid_arg(raw: u64) -> Result<u32, i64> {
 //                than by scattering `#[cfg]` through `setattr`'s logic.
 mod task;
 mod setattr;
+pub mod dl;
 #[cfg_attr(any(target_os = "oxide-kernel", test), path = "sched_policy/commit_live.rs")]
 #[cfg_attr(not(any(target_os = "oxide-kernel", test)), path = "sched_policy/commit_absent.rs")]
 mod commit;

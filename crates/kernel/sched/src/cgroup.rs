@@ -113,6 +113,12 @@ pub fn freeze_hook(pid: u64, v: bool) {
 pub fn cpuset_hook(pid: u64, mask: u64) {
     if mask == 0 { return; }
     if let Some(t) = lookup_init_pid(pid as u32) {
+        // A `SCHED_DEADLINE` task's reservation was admitted against the whole
+        // span the class schedules over. A cpuset that would confine it to less
+        // is not applied: honouring it would leave admitted bandwidth booked
+        // against capacity the task can no longer reach, and silently break the
+        // guarantee it was granted.
+        if crate::deadline::live::confined_below_span(&t, mask) { return; }
         t.cpuset_cpus_allowed.store(mask, CgOrd::Release);
         let user = t.user_cpus_allowed.load(CgOrd::Acquire);
         let eff = crate::affinity::compose(mask, user, crate::affinity::MaskChange::CpusetUpdate);
