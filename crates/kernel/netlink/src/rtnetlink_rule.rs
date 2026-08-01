@@ -452,10 +452,10 @@ mod tests {
         let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &owner));
         let v6_listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &owner));
         let other_listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &other));
-        listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_RULE);
-        v6_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_RULE);
-        other_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_RULE);
-        other_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_RULE);
+        let _ = listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_RULE);
+        let _ = v6_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_RULE);
+        let _ = other_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_RULE);
+        let _ = other_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_RULE);
         crate::register_rtnl_listener(&listener);
         crate::register_rtnl_listener(&v6_listener);
         crate::register_rtnl_listener(&other_listener);
