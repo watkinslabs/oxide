@@ -309,6 +309,11 @@ mod send_user;
 // Pure sockaddr encoders: compiled for BOTH the kernel and hosted tests, so
 // every `*_getname` length/byte layout is provable under `cargo test` even
 // though `net_sockaddr` (its user-memory marshalling) is kernel-only.
+// The AF_PACKET setsockopt write SHAPE (per-option `optlen` contract, the
+// cooked-socket refusal, the vnet-header coercion) — kernel + hosted, so the
+// ABI is provable under `cargo test` while the slot stays an import shim.
+mod packet_optshape;
+
 mod sockaddr_encode;
 
 // The `socketpair(2)` creation admission — kernel + hosted, so the family and
