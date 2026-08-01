@@ -87,8 +87,15 @@ fn freeze_mapped_page(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> Opt
         if file_idx != idx || frozen.try_reserve(1).is_err() { oom = true; return; }
         let _pt = mm.lock_page_table();
         if !attach_marker(token) { oom = true; return; }
+        // The exact-PA check makes the rewrite target the leaf this
+        // transaction froze.
+        // SAFETY: `mm`'s page-table lock is held across the replacement and the
+        // rmap walk holds `mm` alive, so its tables cannot be torn down; HHDM
+        // covers every table page the walker reads.
         #[cfg(target_arch = "x86_64")]
         let changed = unsafe { hal::pt_walker::replace_present_4k_with_migration_if_pa_at_root::<hal_x86_64::vmm::PtWalkerX86>(mm.root_pa(), va, pa, token, hhdm_offset()) };
+        // SAFETY: same held page-table lock and rmap-pinned mm as the x86_64 arm
+        // above; only the walker type differs.
         #[cfg(target_arch = "aarch64")]
         let changed = unsafe { hal::pt_walker::replace_present_4k_with_migration_if_pa_at_root::<hal_aarch64::vmm::PtWalkerArm>(mm.root_pa(), va, pa, token, hhdm_offset()) };
         drop(_pt);
@@ -108,8 +115,15 @@ fn freeze_mapped_page(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> Opt
 fn rollback_frozen_page(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64, token: hal::pt_walker::MigrationEntry, frozen: Vec<FrozenPte>) {
     for pte in frozen {
         let _pt = pte.mm.lock_page_table();
+        // The exact-token check makes the rewrite target the marker this
+        // transaction installed.
+        // SAFETY: `pte.mm` is an Arc held by the FrozenPte and its page-table
+        // lock is held across the replacement; HHDM covers every table page
+        // the walker reads.
         #[cfg(target_arch = "x86_64")]
         let restored = unsafe { hal::pt_walker::replace_migration_4k_with_present_at_root::<hal_x86_64::vmm::PtWalkerX86>(pte.mm.root_pa(), pte.va, token, pa, pte.flags, hhdm_offset()) };
+        // SAFETY: same held page-table lock and Arc-held mm as the x86_64 arm
+        // above; only the walker type differs.
         #[cfg(target_arch = "aarch64")]
         let restored = unsafe { hal::pt_walker::replace_migration_4k_with_present_at_root::<hal_aarch64::vmm::PtWalkerArm>(pte.mm.root_pa(), pte.va, token, pa, pte.flags, hhdm_offset()) };
         drop(_pt);
@@ -291,6 +305,9 @@ fn evict_mapped(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> bool {
         let _ = pmm::setup::putback_isolated_lru(isolated); let _ = pmm::setup::unlock_page(pa); return false;
     };
     let Some(base) = pmm::setup::frame_ptr(pa) else { rollback_frozen_page(data, idx, pa, cgid, token, frozen); let _ = pmm::setup::putback_isolated_lru(isolated); let _ = pmm::setup::unlock_page(pa); return false; };
+    // SAFETY: `frame_ptr` returned the HHDM alias of `pa`, a whole PMM-managed
+    // frame; the page is LRU-isolated and page-locked here and every mapping was
+    // replaced by a migration marker, so nothing writes it during the copy.
     let bytes = unsafe { core::slice::from_raw_parts(base, hal::PAGE_SIZE_BYTES as usize) }.to_vec();
     if !cgroup::try_charge_swap(cgid, hal::PAGE_SIZE_BYTES) { rollback_frozen_page(data, idx, pa, cgid, token, frozen); let _ = pmm::setup::putback_isolated_lru(isolated); let _ = pmm::setup::unlock_page(pa); return false; }
     let entry = match store_page(&bytes, cgid) { Some(e) => e, None => { cgroup::uncharge_swap(cgid, hal::PAGE_SIZE_BYTES); rollback_frozen_page(data, idx, pa, cgid, token, frozen); let _ = pmm::setup::putback_isolated_lru(isolated); let _ = pmm::setup::unlock_page(pa); return false; } };
@@ -318,8 +335,15 @@ fn evict_mapped(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> bool {
     }
     for pte in &frozen {
         let _pt = pte.mm.lock_page_table();
+        // The exact-token check makes the rewrite target the marker this
+        // transaction installed.
+        // SAFETY: `pte.mm` is an Arc held by the FrozenPte and its page-table
+        // lock is held across the replacement; HHDM covers every table page
+        // the walker reads.
         #[cfg(target_arch = "x86_64")]
         let changed = unsafe { hal::pt_walker::replace_migration_4k_with_swap_at_root::<hal_x86_64::vmm::PtWalkerX86>(pte.mm.root_pa(), pte.va, token, entry, hhdm_offset()) };
+        // SAFETY: same held page-table lock and Arc-held mm as the x86_64 arm
+        // above; only the walker type differs.
         #[cfg(target_arch = "aarch64")]
         let changed = unsafe { hal::pt_walker::replace_migration_4k_with_swap_at_root::<hal_aarch64::vmm::PtWalkerArm>(pte.mm.root_pa(), pte.va, token, entry, hhdm_offset()) };
         drop(_pt);

@@ -152,14 +152,15 @@ impl PteArm64 {
 pub unsafe fn flush_local_va(va: u64) {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
-        // SAFETY: `tlbi vae1is` invalidates EL1 stage-1 entries
-        // matching the operand VA across the inner-shareable
-        // domain. ARM ARM D5.7. The LEADING `dsb ishst` publishes the
-        // caller's page-table store to every other PE's table walker
-        // before the broadcast invalidate, so a peer cannot re-cache
-        // the stale descriptor after the TLBI; the trailing `dsb ish`
-        // + `isb` order the completed invalidate against subsequent
-        // loads. Linux's arm64 template, `asm/tlbflush.h`.
+        // The LEADING `dsb ishst` publishes the caller's page-table store
+        // to every other PE's table walker before the broadcast invalidate,
+        // so a peer cannot re-cache the stale descriptor after the TLBI;
+        // the trailing `dsb ish` + `isb` order the completed invalidate
+        // against subsequent loads.
+        // SAFETY: `tlbi vae1is` is an EL1-privileged stage-1 invalidate of
+        // the operand VA across the inner-shareable domain, legal here
+        // because this fn is `unsafe` and only ever runs at EL1; it touches
+        // no memory, so the operand needs no mapping. ARM ARM D5.7.
         unsafe {
             core::arch::asm!(
                 "dsb ishst",

@@ -91,6 +91,10 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                         // SAFETY: process ctx; park armed under listener state;
                         // connect, signal, and timeout wake the task.
                         if l.arm_accept_wait(park_dl) {
+                            // SAFETY: process context holding no lock (the park
+                            // was armed under the accept_q lock, which
+                            // `arm_accept_wait` released), which is `schedule`'s
+                            // sleepable-context contract.
                             unsafe { sched::live::schedule::schedule(); }
                             l.accept_waiters.remove_current();
                         }

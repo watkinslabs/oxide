@@ -105,6 +105,9 @@ pub unsafe fn switch_to(prev: &Task, next: &Task) {
     let (Some(p), Some(n)) = (prev.hw_break.get(), next.hw_break.get()) else {
         // At most one side is armed; a null slot IS the reset state, so a
         // half-armed switch only has to install the side that exists.
+        // SAFETY: forwarded contract — the context switch owns both tasks, so
+        // neither runs concurrently and this CPU's debug registers are the
+        // scheduler's for the duration.
         return unsafe { switch_one(prev, next) };
     };
     // SAFETY: single-mutator rule per `13§5` as documented on `Shadow`; the context switch owns both tasks here and neither can run concurrently.

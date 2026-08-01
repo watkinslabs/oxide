@@ -20,12 +20,17 @@ fn handle_migration_fault(as_: &AddressSpace, uva: UserVirtAddr, hhdm: u64) -> b
     let va = uva.as_u64() & !PAGE_MASK;
     let marker = {
         let _pt = as_.lock_page_table();
+        // SAFETY: the page-table lock is held for the whole walk and `as_` is
+        // borrowed by the caller, so neither the root nor any intermediate
+        // table can be freed under it; HHDM covers every table page read.
         #[cfg(target_arch = "x86_64")]
         let entry = unsafe {
             hal::pt_walker::migration_entry_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
                 as_.root_pa(), va, hhdm,
             )
         };
+        // SAFETY: same held page-table lock and HHDM coverage as the x86_64
+        // arm above; only the walker type differs.
         #[cfg(target_arch = "aarch64")]
         let entry = unsafe {
             hal::pt_walker::migration_entry_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(
@@ -98,6 +103,10 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                                 // ASCII path ("/lib…") that RIP is the corruptor
                                 // — re-protects the page RO, and clears TF.
                                 let root = mm.root_pa();
+                                // SAFETY: `root` is the faulting task's own live
+                                // root, mutated here on the CPU that took the
+                                // fault for exactly one page inside the VMA `v`
+                                // that was just looked up in that same mm.
                                 unsafe { mprotect_pages(root, cr2 & !PAGE_MASK, PAGE_BYTES as usize, VmaProt::READ | VmaProt::WRITE); }
                                 let f = hal_x86_64::current_fault_frame();
                                 if !f.is_null() {
@@ -340,6 +349,8 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
         // SAFETY: read-only translate of the active CR3/TTBR0 for the faulting VA.
         #[cfg(target_arch = "x86_64")]
         let cur = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
+        // SAFETY: same read-only translate of the live root as the x86_64 arm
+        // above, in fault context on the CPU that owns it.
         #[cfg(target_arch = "aarch64")]
         let cur = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
         if let Some((p, _)) = cur {
@@ -500,6 +511,8 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
     if matches!(fault, FaultKind::Protection { access: FaultAccess::Write })
         && (0x7ffff6000000..0x7ffff8000000).contains(&va_raw) {
         let fp = hal_x86_64::current_fault_frame();
+        // SAFETY: null-checked; a non-null `current_fault_frame` is this CPU's
+        // live `PtRegs` on its own kernel stack, valid for the whole handler.
         let rip = if fp.is_null() { 0 } else { unsafe { (*fp).rip } };
         // memset lives at ld.so bias 0x40000000 + [0x24970, 0x24a40). When the
         // zeroing store faults inside memset, dump its ARGS (rdi=dst, sil=val,
@@ -521,6 +534,9 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
             if in_memset {
                 let gp = hal_x86_64::current_fault_frame();
                 if !gp.is_null() {
+                    // SAFETY: null-checked; a non-null `current_fault_frame` is
+                    // this CPU's live `PtRegs` on its own kernel stack, and the
+                    // borrow ends before the handler returns.
                     let g = unsafe { &*gp };
                     klog::write_raw(b" MEMSET dst=");
                     klog::write_hex_u64(g.rdi);
@@ -609,6 +625,9 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
         }
         klog::write_raw(b" cr3=");
         klog::write_hex_u64(hal_x86_64::read_cr3() & !PAGE_MASK);
+        // SAFETY: `mm_ref` requires no concurrent execve replacing the mm; the
+        // task is the CURRENT one, which is sitting in its own fault handler
+        // and so cannot be executing execve against itself.
         match sched::live::current().and_then(|cur| unsafe { cur.mm_ref() }) {
             Some(mm) => {
                 klog::write_raw(b" mm=");

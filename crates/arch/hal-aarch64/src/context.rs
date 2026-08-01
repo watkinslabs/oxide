@@ -220,7 +220,8 @@ impl Context for ContextAArch64 {
     unsafe fn switch(prev: *mut Self, next: *const Self) {
         #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
         {
-            // SAFETY: `oxide_context_switch` OVERWRITES sp/x19-x29/x30
+            // Why inline asm and not a plain call:
+            // `oxide_context_switch` OVERWRITES sp/x19-x29/x30
             // with the incoming task's saved values — that IS the
             // switch (see its global_asm! body). Per docs/54 §1.4
             // ("an asm stub that clobbers callee-saved regs across a
@@ -239,6 +240,10 @@ impl Context for ContextAArch64 {
             // reserved by LLVM's aarch64 codegen on this target (not
             // available to the register allocator for arbitrary
             // values), and x30 is consumed by the `bl` itself.
+            // SAFETY: `prev`/`next` are valid `Context` records and `next`'s
+            // saved stack carries a resumable frame, per this fn's contract;
+            // the clobber list covers every allocator-reachable register the
+            // stub rewrites, so no live Rust value survives across the switch.
             unsafe {
                 core::arch::asm!(
                     "bl {switch_fn}",

@@ -313,6 +313,8 @@ pub fn fwm_peer_maps(va: u64, pa: u64, exclude_root: u64, hhdm: u64) -> usize {
         // HHDM covers page-table memory.
         #[cfg(target_arch = "x86_64")]
         let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, va, hhdm) };
+        // SAFETY: same read-only walk of a live AS root as the x86_64 arm
+        // above, with HHDM covering every page-table page dereferenced.
         #[cfg(target_arch = "aarch64")]
         let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(root, va, hhdm) };
         if let Some((mapped, _)) = tr {
@@ -451,6 +453,9 @@ pub(super) fn dec_ctx_root() -> u64 {
     let t = DEC_CTX.load(core::sync::atomic::Ordering::Acquire);
     if t != 0 { return t; }
     sched::live::current()
+        // SAFETY: `mm_ref` requires no concurrent execve replacing this task's
+        // mm; the task read here is the CURRENT one, and only a task itself
+        // replaces its own mm, so this borrow has no competing mutator.
         .and_then(|c| unsafe { c.mm_ref() }.map(|m| m.root_pa()))
         .unwrap_or(0)
 }

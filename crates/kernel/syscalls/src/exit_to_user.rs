@@ -229,7 +229,8 @@ pub unsafe extern "C" fn irqentry_exit(regs: *mut u8) {
     // mode says user (it never reaches here), and a task-less early-boot IRQ
     // has no signal state at all.
     if sched::live::current().is_none() { return; }
-    // SAFETY: forwarded contract.
+    // SAFETY: this fn's own contract is forwarded unchanged — `regs` is a live
+    // entry frame, checked non-null and user-mode above, with a current task.
     let _ = unsafe { exit_to_user_mode_loop(regs, None) };
 }
 

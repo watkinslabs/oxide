@@ -204,12 +204,16 @@ mod tests {
         reset();
         let h = init(body, 5).unwrap();
         assert!(schedule(h));
-        // SAFETY: host test, single-threaded softirq-equivalent context.
+        // SAFETY: `run_pending` requires softirq-or-process context with
+        // non-sleeping bodies; the host test is single-threaded under the
+        // serialize() lock and its bodies only touch atomics and the table.
         assert_eq!(unsafe { run_pending() }, 1);
         assert_eq!(HITS.load(Ordering::Acquire), 1);
         assert_eq!(SUM.load(Ordering::Acquire), 5);
         // Not re-scheduled, so a second drain does nothing.
-        // SAFETY: as above.
+        // SAFETY: `run_pending` requires softirq-or-process context with
+        // non-sleeping bodies; the host test is single-threaded under the
+        // serialize() lock and its bodies only touch atomics and the table.
         assert_eq!(unsafe { run_pending() }, 0);
         assert_eq!(HITS.load(Ordering::Acquire), 1);
     }
@@ -222,7 +226,9 @@ mod tests {
         assert!(schedule(h));
         assert!(schedule(h));
         assert!(schedule(h));
-        // SAFETY: host test.
+        // SAFETY: `run_pending` requires softirq-or-process context with
+        // non-sleeping bodies; the host test is single-threaded under the
+        // serialize() lock and its bodies only touch atomics and the table.
         assert_eq!(unsafe { run_pending() }, 1, "three schedules, one run");
         assert_eq!(HITS.load(Ordering::Acquire), 1);
     }
@@ -264,10 +270,15 @@ mod tests {
         OTHER.store(second, Ordering::Release);
         let first_h = init(first, 0).unwrap();
         assert!(schedule(first_h));
-        // SAFETY: host test.
+        // SAFETY: `run_pending` requires softirq-or-process context with
+        // non-sleeping bodies; the host test is single-threaded under the
+        // serialize() lock and its bodies only touch atomics and the table.
         let ran = unsafe { run_pending() };
         assert!(ran >= 1);
-        // SAFETY: host test; drain whatever the first body queued.
+        // SAFETY: `run_pending` requires softirq-or-process context with
+        // non-sleeping bodies; the host test is single-threaded under the
+        // serialize() lock and its bodies only touch atomics and the table.
+        // Drain whatever the first body queued.
         unsafe { run_pending(); }
         assert_eq!(SUM.load(Ordering::Acquire), 9, "the queued tasklet ran");
         OTHER.store(usize::MAX, Ordering::Release);
