@@ -26,6 +26,7 @@ use vfs::{KResult, VfsError};
 
 use super::state::RootfsState;
 
+mod cachestat;
 mod dirty;
 #[cfg(feature = "debug-fillverify")]
 mod debug;
@@ -82,6 +83,12 @@ pub(crate) struct Ext4FrameStore {
     me: Spinlock<Weak<Ext4FrameStore>, TaskListClass>,
     /// One-shot: registered in the global dirty list (on first dirty).
     registered: AtomicBool,
+    /// Eviction shadows (Linux workingset shadow entries in the mapping
+    /// xarray): `page_idx -> nonresident-age stamp` for a page reclaim dropped.
+    /// The index stays *present* in the cache's index space with no frame, so
+    /// `cachestat(2)` can report it as evicted and judge its recency. A refault
+    /// consumes the shadow; truncate/invalidate deletes it along with the page.
+    shadows: Spinlock<BTreeMap<u64, u64>, TaskListClass>,
     /// DIAG (debug-fillverify): checksum of each page at fill time,
     /// re-verified on every read of a still-clean page. Distinguishes
     /// lower-layer read nondeterminism ([FILLRACE], caught at fill) from a
@@ -102,6 +109,7 @@ impl Ext4FrameStore {
             dirty: Spinlock::new(BTreeSet::new()),
             me: Spinlock::new(Weak::new()),
             registered: AtomicBool::new(false),
+            shadows: Spinlock::new(BTreeMap::new()),
             #[cfg(feature = "debug-fillverify")]
             sums: Spinlock::new(BTreeMap::new()),
         });
@@ -226,6 +234,8 @@ impl Ext4FrameStore {
         pmm::setup::classify_file_page(pa, cgid);
         pmm::kassert!(pmm::setup::admit_file_lru(pa).is_ok(), "file lru admission invariant");
         g.insert(idx, FileCachePage { pa, cgid });
+        // Refault: the page is back, so its eviction shadow is consumed.
+        self.shadows.lock().remove(&idx);
         vfs::memory_accounting::account_file_cache_publish(1);
         drop(g);
         #[cfg(feature = "debug-fillverify")]
@@ -272,6 +282,9 @@ impl Ext4FrameStore {
         if self.dirty.lock().contains(&idx) { return None; }
         let page = pages.remove(&idx)?;
         drop(pages);
+        // Reclaim leaves a shadow, stamped with the nonresident age, so a later
+        // `cachestat` can tell "evicted" from "never cached".
+        self.shadows.lock().insert(idx, pmm::reclaim::workingset_eviction());
         #[cfg(feature = "debug-fillverify")]
         self.sums.lock().remove(&idx);
         vfs::memory_accounting::account_file_cache_remove(1);
@@ -422,6 +435,9 @@ impl Ext4FrameStore {
         for idx in &dirty_ids { d.remove(idx); }
         drop(d);
         if !dirty_ids.is_empty() { vfs::memory_accounting::account_file_cache_discard_dirty(dirty_ids.len() as u64); }
+        // Truncation removes the index entirely, shadow included — a refault
+        // there is a new page, not a returning one.
+        self.shadows.lock().retain(|&i, _| i < lo || i >= hi);
         #[cfg(feature = "debug-fillverify")]
         self.sums.lock().retain(|&i, _| i < lo || i >= hi);
         n

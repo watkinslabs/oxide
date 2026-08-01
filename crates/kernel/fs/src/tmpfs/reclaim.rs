@@ -255,7 +255,7 @@ fn evict_unmapped(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> bool {
         match pages.get(&idx).copied() {
             Some(ShmemPage::Resident { pa: current, cgid: owner })
                 if current == pa && owner == cgid && pmm::setup::frame_mapcount(pa) == 0 => {
-                pages.insert(idx, ShmemPage::Swapped { entry, cgid });
+                pages.insert(idx, ShmemPage::Swapped { entry, cgid, shadow: pmm::reclaim::workingset_eviction() });
                 true
             }
             _ => false,
@@ -341,7 +341,7 @@ fn evict_mapped(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> bool {
         let mut pages = data.pages.lock();
         if matches!(pages.get(&idx), Some(ShmemPage::Migrating { pa: current, cgid: owner, token: current_token })
             if *current == pa && *owner == cgid && *current_token == token) {
-            pages.insert(idx, ShmemPage::Swapped { entry, cgid });
+            pages.insert(idx, ShmemPage::Swapped { entry, cgid, shadow: pmm::reclaim::workingset_eviction() });
             #[cfg(feature = "debug-zram-lifecycle")]
             super::lifetime::trace_migration(b"commit", data, idx, token);
             true

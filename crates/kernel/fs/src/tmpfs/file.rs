@@ -30,7 +30,10 @@ fn allocating_memcg() -> u64 {
 #[derive(Clone, Copy)]
 pub(super) enum ShmemPage {
     Resident { pa: u64, cgid: u64 },
-    Swapped { entry: hal::pt_walker::SwapEntry, cgid: u64 },
+    /// `shadow` is the nonresident-age stamp taken when the page left memory
+    /// (Linux's workingset shadow, carried by the swap entry in the mapping
+    /// xarray). `cachestat(2)` reads it to judge how recent the eviction was.
+    Swapped { entry: hal::pt_walker::SwapEntry, cgid: u64, shadow: u64 },
     /// Canonical in-flight shmem pageout state.  The physical frame remains
     /// owned by this inode, but no new mapper may acquire it until the token
     /// resolves to Resident (rollback) or Swapped (commit).
@@ -87,7 +90,7 @@ impl vfs::SealCarrier for TmpfsFileData {
 pub(super) fn ensure_page(g: &mut BTreeMap<u64, ShmemPage>, idx: u64, acct: &TmpfsSb) -> KResult<u64> {
     if let Some(page) = g.get(&idx).copied() {
         if let Some(pa) = page.resident_pa() { return Ok(pa); }
-        let ShmemPage::Swapped { entry, cgid } = page else { return Err(VfsError::Eagain); };
+        let ShmemPage::Swapped { entry, cgid, .. } = page else { return Err(VfsError::Eagain); };
         // A swapped shmem page retains its inode index and swap charge.  A
         // refault allocates a new object frame, restores bytes, and only then
         // consumes the old swap entry; failed reload leaves the index intact.
@@ -500,6 +503,38 @@ impl AddressSpaceOps for TmpfsFileData {
         self.pages.lock().get(&(off / PG as u64)).is_some_and(|page| page.resident_pa().is_some())
     }
 
+    /// `filemap_cachestat` over a shmem mapping. Resident (and in-flight
+    /// migrating) indices are cache pages; a swapped index is the value entry
+    /// the walk reports as evicted, judged recent by its shadow stamp.
+    ///
+    /// `nr_dirty` is always zero, and that is shmem's real answer rather than
+    /// a missing one: shmem's dirty hook only sets the per-page flag and never
+    /// tags the mapping, because there is no backing store to write back to —
+    /// the pages ARE the store. `nr_writeback` is zero for the same reason.
+    /// # C: O(entries in range)
+    fn cachestat(&self, range: vfs::CachestatRange) -> vfs::CachestatCounts {
+        let mut cs = vfs::CachestatCounts::default();
+        if range.first > range.last { return cs; }
+        let entries: alloc::vec::Vec<(u64, ShmemPage)> = {
+            let g = self.pages.lock();
+            g.range(range.first..=range.last).map(|(&idx, &page)| (idx, page)).collect()
+        };
+        let age = pmm::reclaim::nonresident_age();
+        let size = pmm::reclaim::workingset::file_workingset_size();
+        for (idx, page) in entries {
+            let nr = range.covered(idx, 1);
+            match page {
+                ShmemPage::Resident { .. } | ShmemPage::Migrating { .. } =>
+                    cs.account(vfs::PageState::Cache { dirty: false, writeback: false }, nr),
+                ShmemPage::Swapped { shadow, .. } => {
+                    let recent = pmm::reclaim::workingset::test_recent_sized(shadow, age, size);
+                    cs.account(vfs::PageState::Evicted { recent }, nr);
+                }
+            }
+        }
+        cs
+    }
+
     /// # C: O(1)
     fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
 }
@@ -517,7 +552,7 @@ mod shmem_page_tests {
         let cgid = 0x61;
         let resident = ShmemPage::Resident { pa: 0x9000, cgid };
         let entry = hal::pt_walker::SwapEntry::new(1, 7).expect("representable swap entry");
-        let swapped = ShmemPage::Swapped { entry, cgid };
+        let swapped = ShmemPage::Swapped { entry, cgid, shadow: 0 };
         assert_eq!(resident.resident_pa(), Some(0x9000));
         assert_eq!(swapped.resident_pa(), None);
         assert_eq!(resident.cgid(), swapped.cgid());
