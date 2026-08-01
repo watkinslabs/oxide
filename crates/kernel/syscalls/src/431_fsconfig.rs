@@ -36,12 +36,18 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
     // An empty key is left for `vfs_parse_fs_param` to reject, which is where
     // Linux reports it ("VFS: Empty parameter name").
     let key = if cmd.takes_key() {
-        match read_cstr_req(args.a2, fsconfig_abi::KEY_MAX) { Ok(k) => k, Err(rv) => return rv }
+        match read_cstr_strndup(args.a2, fsconfig_abi::KEY_MAX) { Ok(k) => k, Err(rv) => return rv }
     } else { alloc::string::String::new() };
     let value = match cmd.value_kind() {
         ValueKind::None => alloc::string::String::new(),
-        ValueKind::Path { .. } => match read_path_allow_empty(args.a3) { Ok(v) => v, Err(rv) => return rv },
-        ValueKind::Str => match read_cstr_req(args.a3, fsconfig_abi::VALUE_MAX) {
+        ValueKind::Path { empty_ok } => match read_path_allow_empty(args.a3) {
+            Ok(v) => match fsconfig_abi::admit_path_value(&v, empty_ok) {
+                Ok(())  => v,
+                Err(e) => return -(e.as_i32() as i64),
+            },
+            Err(rv) => return rv,
+        },
+        ValueKind::Str => match read_cstr_strndup(args.a3, fsconfig_abi::VALUE_MAX) {
             Ok(v) => v, Err(rv) => return rv,
         },
         ValueKind::Blob => alloc::string::String::new(),
@@ -64,22 +70,40 @@ pub fn sys_fsconfig(args: &SyscallArgs) -> i64 {
     // `vfs::fs::FsContext` (D14: params no longer dropped; D13: SB realized at
     // CMD_CREATE; D15: CMD_RECONFIGURE). An unrecognised parameter / parse
     // error surfaces the VFS errno.
+    // `mount_capable(fc)` for the CREATE pair, sampled BEFORE the context lock
+    // (the capability walk reads scheduler state). The decision itself lives in
+    // `mount_dispatch::mount_capable`, the same one `mount(2)` uses, so the two
+    // entry points to superblock creation cannot disagree about who may create
+    // an instance of a filesystem without `FS_USERNS_MOUNT`.
+    let caps = crate::mount_perm::sample_mount_caps();
+
     {
         let mut g = ctx.fc.lock();
         if let Some(fc) = g.as_mut() {
+            // `finish_clean_context(fc)` heads every command in Linux.
+            if let Err(e) = vfs::fs::finish_clean_context(fc) {
+                return crate::namei_common::errno_from_vfs(e);
+            }
             return match cmd {
-                FsconfigCmd::CmdCreate => match vfs::fs::vfs_get_tree(fc) {
-                    Ok(())  => 0,
-                    Err(e)  => crate::namei_common::errno_from_vfs(e),
-                },
-                FsconfigCmd::CmdCreateExcl => match vfs::fs::vfs_get_tree_exclusive(fc) {
-                    Ok(())  => 0,
-                    Err(e)  => crate::namei_common::errno_from_vfs(e),
-                },
-                FsconfigCmd::CmdReconfigure => match vfs::fs::reconfigure_super(fc) {
-                    Ok(())  => 0,
-                    Err(e)  => crate::namei_common::errno_from_vfs(e),
-                },
+                FsconfigCmd::CmdCreate | FsconfigCmd::CmdCreateExcl => {
+                    let excl = cmd == FsconfigCmd::CmdCreateExcl;
+                    let can = mount_capable(fc.fs_type().fs_flags(), caps);
+                    match vfs::fs::vfs_cmd_create(fc, excl, can) {
+                        Ok(())  => 0,
+                        Err(e)  => crate::namei_common::errno_from_vfs(e),
+                    }
+                }
+                FsconfigCmd::CmdReconfigure => {
+                    // `ns_capable(sb->s_user_ns, CAP_SYS_ADMIN)`. No superblock
+                    // means no instance to be privileged over; the phase rung
+                    // inside `vfs_cmd_reconfigure` reports that case.
+                    let can = fc.sb().map(|sb| crate::mount_perm::cap_sys_admin_in_sb_user_ns(sb))
+                        .unwrap_or(false);
+                    match vfs::fs::vfs_cmd_reconfigure(fc, can) {
+                        Ok(())  => 0,
+                        Err(e)  => crate::namei_common::errno_from_vfs(e),
+                    }
+                }
                 FsconfigCmd::SetFlag => parse(fc, vfs::fs::FsParameter::flag(&key)),
                 FsconfigCmd::SetPath => parse(fc, vfs::fs::FsParameter::path_at(&key, &value, aux, false)),
                 FsconfigCmd::SetPathEmpty => parse(fc, vfs::fs::FsParameter::path_at(&key, &value, aux, true)),

@@ -126,22 +126,37 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
             Err(e) => crate::namei_common::errno_from_vfs(e),
         };
     }
+    // `MNT_DETACH` ⇒ `umount_tree(mnt, UMOUNT_PROPAGATE)`, which takes the whole
+    // subtree. A plain umount instead owes the two steps `do_umount` performs
+    // past the ladder, in this order:
+    //
+    //  1. `shrink_submounts(mnt)` — reap the expirable (automounted) submounts
+    //     under the target. A mount whose only children are autofs/NFS
+    //     short-lived submounts is NOT busy: those are exactly what the
+    //     automounter would have reaped on its own next idle sweep, so Linux
+    //     reaps them eagerly here. Without it, unmounting an autofs-managed
+    //     directory reported EBUSY where Linux succeeds.
+    //  2. `propagate_mount_busy(mnt, 2)` — the busy test, which is
+    //     PROPAGATION-AWARE: unmounting a mount under a shared parent removes
+    //     the mirror copy under every peer and slave too, so a pinned mirror
+    //     refuses the whole operation even when the named mount is idle.
+    //
+    // Both need the live mount tree, so neither can live in the pure ladder;
+    // the rules themselves are unit-tested in `vfs::mount::{shrink,busy}`.
+    let recursive = outcome == vfs::mount::Umount::DetachTree;
+    if !recursive {
+        vfs::mount::shrink_submounts(&target_mount);
+        if vfs::mount::propagate_mount_busy(&target_mount, vfs::mount::UMOUNT_SYSCALL_REFCNT) {
+            return -(Errno::Ebusy.as_i32() as i64);
+        }
+    }
     // The mount engine detaches by the COVERED mountpoint dentry, so translate
     // the mount id back to it. `umount_check`'s `has_parent` rung already
-    // refused a namespace root, which is the only mount without one.
+    // refused a namespace root, which is the only mount without one. Resolved
+    // AFTER the shrink: it reaps mounts, never the target itself.
     let Some((target_d, _)) = vfs::mount::mountpoint_of(resolved.mnt_id) else {
         return -(Errno::Einval.as_i32() as i64);
     };
-    // `MNT_DETACH` ⇒ `umount_tree(mnt, UMOUNT_PROPAGATE)`, which takes the whole
-    // subtree; a plain umount detaches this mount only. The busy test that
-    // decides between them lives in the ladder above, where it is under test.
-    //
-    // The shim used to carve procfs/sysfs/devtmpfs/devfs out of that busy test
-    // and detach their whole subtree even without MNT_DETACH. Busy-ness is not
-    // a property of the filesystem type — Linux applies the same test to procfs
-    // as to ext4 — and the carve-out silently unmounted mounts the caller never
-    // named.
-    let recursive = outcome == vfs::mount::Umount::DetachTree;
     // `s_dev` of the filesystem this mount exposes, captured while the mount is
     // still in the table so the post-detach "was that the last one?" test below
     // has something to compare against.
