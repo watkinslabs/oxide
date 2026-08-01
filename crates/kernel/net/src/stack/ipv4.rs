@@ -78,23 +78,32 @@ impl NetStack {
         } else { ttl };
         self.xmit_ipv4_l4_with_policy(
             route.iface, iface, next_hop, src, dst, proto, l4, tos, ttl, id, mtu, false, true,
-            None,
+            None, None,
         ).map(|_| ())
     }
 
-    fn xmit_ipv4_l4_with_policy(&self, iface_id: NetIfaceId,
+    /// Emit one IPv4 L4 payload carrying a compiled header option area. `dst`
+    /// is the FINAL destination; a compiled source route puts its first hop on
+    /// the wire and the caller must already have routed to that hop.
+    /// # C: O(payload)
+    pub(crate) fn xmit_ipv4_l4_with_policy(&self, iface_id: NetIfaceId,
         iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize, df: bool,
-        may_fragment: bool, owner: Option<&crate::SocketOwner>)
+        may_fragment: bool, owner: Option<&crate::SocketOwner>,
+        opts: Option<&crate::sock_opts::sol_ip::options::Compiled>)
         -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
-        let total = IPV4_HDR_LEN + l4.len();
-        let mut full = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
+        let stamp = crate::ipv4_options::timestamp();
+        let hlen = crate::ipv4_options::header_len(opts);
+        let total = hlen + l4.len();
+        let flags = if df { crate::ipv4::IPV4_FLAG_DONT_FRAGMENT } else { 0 };
+        let mut header = crate::ipv4_options::Header {
+            src, dst, proto: proto as u8, tos, ttl, id, flags_frag: flags,
+        };
+        let mut full = Pkt::with_capacity(hlen, total + hlen);
         full.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
-        let flags = if df { 0x4000 } else { 0 };
-        crate::ipv4::push_ipv4_header_tos_ttl_frag(
-            &mut full, src, dst, proto, id, tos, ttl, flags,
-        ).map_err(|_| NetError::Enobufs)?;
+        let slot = full.push(hlen).map_err(|_| NetError::Enobufs)?;
+        crate::ipv4_options::write_header(slot, &header, opts, l4.len(), stamp);
         full.proto = crate::addr::eth_p::IPV4;
         full.iface = Some(iface_id);
         full.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
@@ -115,19 +124,25 @@ impl NetStack {
         }
 
         if !may_fragment { return Err(NetError::Emsgsize); }
-        let max_payload = mtu.saturating_sub(IPV4_HDR_LEN) & !7usize;
+        let max_payload = mtu.saturating_sub(hlen) & !7usize;
         if max_payload == 0 { return Err(NetError::Emsgsize); }
+        // Every fragment after the one carrying the first octet drops the
+        // options the copied bit excludes, keeping the header length identical
+        // across the set.
+        let later = opts.map(crate::ipv4_options::fragmented);
         let mut off = 0usize;
         while off < l4.len() {
             let take = ::core::cmp::min(max_payload, l4.len() - off);
             let more = off + take < l4.len();
             let frag_off_units = (off / 8) as u16;
-            let flags_frag = if more { 0x2000 } else { 0 } | frag_off_units;
-            let total = IPV4_HDR_LEN + take;
-            let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
+            header.flags_frag = if more { crate::ipv4::IPV4_FLAG_MORE_FRAGMENTS } else { 0 }
+                | frag_off_units;
+            let opts = if off == 0 { opts } else { later.as_ref() };
+            let total = hlen + take;
+            let mut p = Pkt::with_capacity(hlen, total + hlen);
             p.put(take).map_err(|_| NetError::Enobufs)?.copy_from_slice(&l4[off..off + take]);
-            crate::ipv4::push_ipv4_header_tos_ttl_frag(&mut p, src, dst, proto, id, tos, ttl, flags_frag)
-                .map_err(|_| NetError::Enobufs)?;
+            let slot = p.push(hlen).map_err(|_| NetError::Enobufs)?;
+            crate::ipv4_options::write_header(slot, &header, opts, take, stamp);
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);
             p.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
@@ -150,7 +165,7 @@ impl NetStack {
         self.xmit_ipv4_l4_with_policy(
             route.iface, iface, next_hop, src, dst, IpProto::Tcp, l4, tos,
             route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL),
-            self.next_ipv4_id(), mtu, df, may_fragment, owner,
+            self.next_ipv4_id(), mtu, df, may_fragment, owner, None,
         )
     }
 
@@ -168,36 +183,44 @@ impl NetStack {
         dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
         self.send_udp_pmtu_to_bound_opts_owner(None, net_ns, src, src_port, dst, dst_port,
-            payload, bound, tos, ttl, mode)
+            payload, bound, tos, ttl, mode, None)
     }
 
     /// Build and transmit socket-owned UDP/IPv4. # C: O(payload + N)
     pub fn send_udp_pmtu_to_bound_opts_owned(&self, owner: &crate::SocketOwner,
         src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16, payload: &[u8],
-        bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
+        bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32,
+        opts: Option<&crate::sock_opts::sol_ip::options::Compiled>) -> NetResult<()> {
         self.send_udp_pmtu_to_bound_opts_owner(Some(owner), owner.net_ns(), src, src_port,
-            dst, dst_port, payload, bound, tos, ttl, mode)
+            dst, dst_port, payload, bound, tos, ttl, mode, opts)
     }
 
+    /// The route, PMTU policy and header a UDP/IPv4 datagram leaves on. A
+    /// compiled source route retargets every one of them at its first hop —
+    /// route lookup, path MTU, wire destination and transport checksum — while
+    /// the option area carries the real destination.
+    /// # C: O(payload + N)
     fn send_udp_pmtu_to_bound_opts_owner(&self, owner: Option<&crate::SocketOwner>,
         net_ns: u64, src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16,
-        payload: &[u8], bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32)
+        payload: &[u8], bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32,
+        opts: Option<&crate::sock_opts::sol_ip::options::Compiled>)
         -> NetResult<()> {
-        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
+        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, wire_dst, bound)?;
         let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
-            net_ns, route, dst, iface.mtu(), mode,
+            net_ns, route, wire_dst, iface.mtu(), mode,
         );
         let udp_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut packet = Pkt::with_capacity(0, udp_len);
         let udp = packet.put(udp_len).map_err(|_| NetError::Enobufs)?;
-        UdpHdr::build_into(src_port, dst_port, src, dst, payload, udp);
+        UdpHdr::build_into(src_port, dst_port, src, wire_dst, payload, udp);
         let id = { let mut next = self.next_ip_id.lock(); *next = next.wrapping_add(1); *next };
         self.xmit_ipv4_l4_with_policy(
             route.iface, iface, next_hop, src, dst, IpProto::Udp, packet.data(), tos,
             if ttl == 0 {
                 route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL)
             } else { ttl }, id,
-            mtu, df, may_fragment, owner,
+            mtu, df, may_fragment, owner, opts,
         ).map(|_| ())
     }
 

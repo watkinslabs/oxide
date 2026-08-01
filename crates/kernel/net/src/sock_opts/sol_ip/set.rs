@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use syscall::errno::Errno;
 
-use super::options::{self, Compiled};
+use super::options::Compiled;
 use super::state::flag;
 use super::uapi::*;
 use crate::sock_opts::sol_socket::OptCaps;
@@ -180,11 +180,12 @@ pub fn tos_value(request: i32, current: i32, stream: bool) -> i32 {
 }
 
 /// `IP_OPTIONS`: an area wider than an IPv4 header can carry is refused before
-/// it is parsed, and a source route needs the raw-network capability.
+/// it is parsed, and a source route needs the raw-network capability. The
+/// namespace's own addresses answer the timestamp option's prespecified form.
 /// # C: O(optlen)
-pub fn admit_options(bytes: &[u8], caps: OptCaps) -> Result<Action, Errno> {
+pub fn admit_options(bytes: &[u8], caps: OptCaps, net_ns: u64) -> Result<Action, Errno> {
     if bytes.len() > MAX_IPOPTLEN { return Err(Errno::Einval); }
-    Ok(Action::Options(options::build(bytes, caps.net_raw)?))
+    Ok(Action::Options(crate::ipv4_options::build_in(bytes, caps.net_raw, net_ns)?))
 }
 
 /// `IP_IPSEC_POLICY` / `IP_XFRM_POLICY`: the capability ladder answers first,

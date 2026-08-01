@@ -204,8 +204,8 @@ fn read_only_options_refuse_a_write() {
 
 #[test]
 fn an_option_area_wider_than_a_header_is_refused() {
-    assert_eq!(set::admit_options(&[0u8; 41], net_raw()), Err(Errno::Einval));
-    assert!(set::admit_options(&[0u8; 40], net_raw()).is_ok());
+    assert_eq!(set::admit_options(&[0u8; 41], net_raw(), 0), Err(Errno::Einval));
+    assert!(set::admit_options(&[0u8; 40], net_raw(), 0).is_ok());
 }
 
 #[test]
@@ -435,7 +435,7 @@ fn an_unknown_read_is_refused() {
 fn stored_options_read_back_as_the_caller_wrote_them() {
     let opts = IpOpts::default();
     let area = [IPOPT_RR, 7, 4, 0, 0, 0, 0, IPOPT_END];
-    let Ok(Action::Options(c)) = set::admit_options(&area, net_raw()) else {
+    let Ok(Action::Options(c)) = set::admit_options(&area, net_raw(), 0) else {
         panic!("a record route is admissible");
     };
     opts.set_options(c);

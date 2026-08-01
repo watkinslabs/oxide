@@ -176,7 +176,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             crate::control::validate_non_unix(ctx, &message.control)?;
             let mut control = if let Some(ipv6) = raw_family {
                 let cap = nscg::proc_ns::has_net_raw_for(ctx.task(), &socket.net_namespace);
-                crate::control_raw::parse_raw_control(&message.control, ipv6, cap)?
+                crate::control_raw::parse_raw_control(&message.control, ipv6, cap, socket.net_ns())?
             } else { net::send_control::SendControl::default() };
             control.apply_flags(flags as u64);
             Ok(PreparedSend::Inet(InetPrepared::Transport(address, control)))

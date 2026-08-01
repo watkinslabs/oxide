@@ -50,6 +50,7 @@ pub use socket_owner::SocketOwner;
 pub use sockaddr::SockaddrStorage;
 pub mod loopback;
 pub mod ipv4;
+pub mod ipv4_options;
 pub mod ipv6;
 pub mod ipv6_ext;
 pub mod icmp;
@@ -176,6 +177,8 @@ mod tests_socket_filter;
 mod tests_ipv6_local;
 #[cfg(test)]
 mod tests_ipv4_udp_errors;
+#[cfg(test)]
+mod tests_ipv4_options_tx;
 #[cfg(test)]
 mod tests_inet_netns;
 #[cfg(test)]

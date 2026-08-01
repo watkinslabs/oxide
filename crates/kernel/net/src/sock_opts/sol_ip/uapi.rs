@@ -88,6 +88,9 @@ pub const IPOPT_SID: u8 = 136;
 pub const IPOPT_SSRR: u8 = 137;
 pub const IPOPT_RA: u8 = 148;
 
+/// The option-kind bit that marks an option as belonging in every fragment.
+pub const IPOPT_COPIED: u8 = 0x80;
+
 /// `IPOPT_TS_*` — the timestamp option's flag nibble.
 pub const IPOPT_TS_TSONLY: u8 = 0;
 pub const IPOPT_TS_TSANDADDR: u8 = 1;
