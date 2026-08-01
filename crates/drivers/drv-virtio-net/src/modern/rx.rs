@@ -293,5 +293,8 @@ pub fn rx_poll_for<F: FnMut(&[u8], net::PacketRxMetadata)>(device_key: DeviceKey
     for (f, metadata) in frames {
         cb(&f, metadata);
     }
+    // Everything this poll drained has been handed to the protocol, so the
+    // receive batch is over: runs still open in it accept nothing further.
+    net::udp_gro::end_rx_batch();
     delivered
 }
