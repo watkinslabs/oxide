@@ -584,6 +584,17 @@ pub unsafe fn schedule() {
         crate::prctl::tsc::switch_to(crate::prctl::tsc::denied(prev_ref), next_armed);
     }
 
+    // Protection-key rights (Linux `x86_pkru_save`/`x86_pkru_load` around
+    // `__switch_to`). Unlike every other per-task register here this one is
+    // USER-writable, so the outgoing task's snapshot is refreshed by READING
+    // the live register — a write-only handoff would discard every unprivileged
+    // `WRPKRU` the thread performed since it was scheduled in. Inert when the
+    // CPU has no rights register.
+    {
+        // SAFETY: rq.current is the incoming task, just published by swap_current.
+        crate::pkey_rights::switch_to(prev_ref, unsafe { rq.current_ref() });
+    }
+
     core::mem::forget(inner);
 
     // debug-armctx: record the callee-saved state about to be restored into the
