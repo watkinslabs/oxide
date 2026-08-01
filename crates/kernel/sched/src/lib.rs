@@ -61,6 +61,7 @@ pub mod ucounts;
 pub mod runqueue;
 pub mod task;
 pub mod sigio;
+pub mod signal_report;
 pub mod sigsend;
 pub mod signum;
 pub mod sigaltstack;

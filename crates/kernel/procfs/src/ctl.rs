@@ -124,6 +124,12 @@ use Node::{Dir, File};
 /// declared at every leaf. # C: n/a
 const SYSCTL_TREE: &[Node] = &[
     Dir("kernel", kernel_dir::KERNEL_SYSCTLS),
+    // `debug/` carries a single leaf: the reference registers `exception-trace`
+    // there (not under `kernel/`), and `sysctl -w debug.exception-trace=0` is
+    // how an operator silences the unhandled-fault report.
+    Dir("debug", &[
+        File("exception-trace",   IntHook(get_exception_trace, set_exception_trace, Some((0, 1)))),
+    ]),
     Dir("fs", &[
         File("file-max",              ULong(4096, None)),
         File("file-nr",              Const(b"0\t0\t65536\n")),

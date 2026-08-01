@@ -33,6 +33,10 @@ pub fn force_user_fault_x86(vec: u64, err: u64, pc: u64, cr2: u64) -> bool {
     use hal::fault_class::x86_64 as fc;
     let (cls, addr) = if vec == fc::TRAP_PF { (fc::page_fault(err), cr2) }
                       else { (fc::trap(vec), fc::trap_addr(vec, pc)) };
+    let fp = hal_x86_64::current_fault_frame();
+    // SAFETY: stub-built PtRegs on the kernel stack; read-only, and the stub does not pop it until the Rust dispatcher returns, so the slot is live here.
+    let sp = if fp.is_null() { 0 } else { unsafe { (*fp).rsp } };
+    sched::signal_report::report_user_fault(signum_from(cls.signo).as_u8() as u32, addr, pc, sp, err, vma_at(pc));
     raise(cls, addr);
     true
 }
@@ -48,8 +52,31 @@ pub fn force_user_fault_arm(esr: u64, far: u64, elr: u64) -> bool {
     // (BRK, illegal state, FP) names the instruction that raised it.
     let addr = if fc::from_el0(esr) || matches!(fc::ec(esr), fc::EC_PC_ALIGN | fc::EC_SP_ALIGN)
                { far } else { elr };
+    let sp_el0: u64;
+    // SAFETY: `mrs sp_el0` is a side-effect-free privileged read at EL1; SP_EL0 still holds the interrupted EL0 stack pointer inside the fault vector.
+    unsafe { core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack, preserves_flags)); }
+    // The reference reports ESR in the `error` position on this arch.
+    sched::signal_report::report_user_fault(signum_from(cls.signo).as_u8() as u32, addr, elr, sp_el0, esr, vma_at(elr));
     raise(cls, addr);
     true
+}
+
+/// Resolve the mapping covering `ip` in the faulting task's own mm, for the
+/// unhandled-fault report's `print_vma_addr` tail. `None` when there is no
+/// current task or the address is unmapped (the report then omits the tail).
+/// # C: O(log N)
+fn vma_at(ip: u64) -> Option<sched::signal_report::VmaAddr> {
+    use vmm::vma::VmaBacking;
+    let cur = sched::live::current()?;
+    // SAFETY: synchronous fault dispatch on the faulting task's own CPU, so `cur` is the running task and its mm slot has no concurrent mutator; the query is read-only.
+    let mm = unsafe { cur.mm_ref() }?;
+    let v = mm.find_vma(hal::UserVirtAddr::new(ip)?)?;
+    let start = v.start.as_u64();
+    let (ino, off) = match &v.backing {
+        VmaBacking::File { backing, off } => (backing.ino(), off + ip.saturating_sub(start)),
+        _ => (0, 0),
+    };
+    Some(sched::signal_report::VmaAddr { start, len: v.end.as_u64() - start, ino, file_off: off })
 }
 
 /// Queue one classified fault signal. A signo the classifier could not map
