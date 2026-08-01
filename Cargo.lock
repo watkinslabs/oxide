@@ -639,11 +639,13 @@ dependencies = [
  "boot-info",
  "cgroup",
  "cpu",
+ "crypt",
  "devfs",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "mpi",
  "namespace-identity",
  "nscg",
  "pidfd",
@@ -1082,6 +1084,10 @@ dependencies = [
 
 [[package]]
 name = "movable"
+version = "0.1.0"
+
+[[package]]
+name = "mpi"
 version = "0.1.0"
 
 [[package]]

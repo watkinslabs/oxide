@@ -40,7 +40,12 @@ impl Default for Sha256 { fn default() -> Self { Self::new() } }
 
 impl Sha256 {
     /// # C: O(1)
-    pub fn new() -> Self { Self { h: H0, buf: [0u8; 64], buf_len: 0, total: 0 } }
+    pub fn new() -> Self { Self::with_iv(H0) }
+
+    /// Same compression function, different initial chaining value — how
+    /// SHA-224 is defined against the SHA-256 core.
+    /// # C: O(1)
+    pub fn with_iv(h: [u32; 8]) -> Self { Self { h, buf: [0u8; 64], buf_len: 0, total: 0 } }
 
     /// # C: O(N)
     pub fn update(&mut self, data: &[u8]) {

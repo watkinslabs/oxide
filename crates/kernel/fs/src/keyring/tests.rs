@@ -11,11 +11,14 @@
 // - perm:  the `key_task_permission` chokepoint itself.
 // - payload: per-type payload contracts and the type table's read/update methods.
 // - quota: the per-uid `key_user` key/byte quota, EDQUOT and the gc refund.
+// - dh:    DH_COMPUTE — input-key admission, parameter vetting, and the
+//          known-answer exponentiation and key derivation.
 
 use super::*;
 use super::ops::Ctx;
 use super::store::{TaskIds, STORE};
 
+mod dh;
 mod keys;
 mod links;
 mod payload;
