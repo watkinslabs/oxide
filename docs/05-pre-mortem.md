@@ -106,12 +106,12 @@ Fix: driver list amended (`35§4`). First-rung: virtio-{blk,net,console,rng,vsoc
 ## F Missing entirely
 
 ### F1 Userspace toolchain
-"Modern musl/glibc binaries run" needs a libc that knows our syscall ABI. Options: patch musl (~3 patches; small), use relibc (Redox), build scratch (no).
-Fix: `29§4` musl vendored fork.
+"Modern glibc binaries run" needs a libc bound to our syscall ABI. Options considered: patch musl, write our own glibc-ABI libc, run unmodified Fedora glibc.
+Fix: unmodified Fedora glibc from RPMs (`29a§3`); the kernel matches Linux instead of the libc matching the kernel. Both build-our-own attempts were deleted 2026-08-01.
 
 ### F2 init / PID 1
-Phase 5 says "musl bash runs"; doesn't say *who runs sh*. PID 1 is special: kernel hands initial AS, ignores most signals, reaps orphan zombies. Need minimal init before the shell is useful.
-Fix: `29§3`.
+Phase 5 says "bash runs"; doesn't say *who runs sh*. PID 1 is special: kernel hands initial AS, ignores most signals, reaps orphan zombies. Need PID 1 before the shell is useful.
+Fix: `29§3` — upstream systemd from the Fedora rootfs.
 
 ### F3 Image pipeline
 Bootable image = kernel + initramfs (cpio); tooling/layout/mkfs absent from master plan.
