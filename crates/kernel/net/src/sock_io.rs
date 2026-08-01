@@ -122,11 +122,12 @@ pub(crate) fn read_unix_stream_blocking(
     buf: &mut [u8],
     deadline_ns: u64,
     passcred: bool,
+    inline: bool,
 ) -> vfs::KResult<usize> {
     loop {
         // Fast path + interruption checks BEFORE arming the wait, matching
         // Linux (signal/timeout observed before prepare_to_wait).
-        let got = pair.read_passcred(end, buf.len(), passcred);
+        let got = pair.read_passcred(end, buf.len(), passcred, inline);
         if !got.is_empty() {
             let n = got.len();
             buf[..n].copy_from_slice(&got);
@@ -153,7 +154,7 @@ pub(crate) fn read_unix_stream_blocking(
         #[cfg(target_os = "oxide-kernel")]
         {
             use crate::unix_sock::stream::ReadOutcome;
-            match pair.read_or_park(end, buf.len(), deadline_ns, passcred) {
+            match pair.read_or_park(end, buf.len(), deadline_ns, passcred, inline) {
                 ReadOutcome::Data(got) => {
                     if !got.is_empty() {
                         let n = got.len();
@@ -326,7 +327,9 @@ pub fn recvfrom_opts(
     };
     if let Some((pair, end)) = stream {
         let passcred = sock.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let got = if opts.peek { pair.peek(end, max_len) } else { pair.read_passcred(end, max_len, passcred) };
+        let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let got = if opts.peek { pair.peek(end, max_len, inline) }
+            else { pair.read_passcred(end, max_len, passcred, inline) };
         if !got.is_empty() {
             let full_len = got.len();
             return Ok(Received { payload: got, full_len, ..Default::default() });

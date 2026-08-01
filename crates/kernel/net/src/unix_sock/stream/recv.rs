@@ -13,18 +13,25 @@ use super::super::{GcRights, MsgCred, UnixEnd};
 pub struct StreamFiles {
     files: Vec<Arc<vfs::File>>,
     cred_stop: bool,
+    oob_stop: bool,
     sender: Option<MsgCred>,
 }
 
 impl StreamFiles {
-    fn new(files: Vec<Arc<vfs::File>>, cred_stop: bool) -> Self { Self { files, cred_stop, sender: None } }
-
-    fn with_sender(files: Vec<Arc<vfs::File>>, cred_stop: bool, sender: Option<MsgCred>) -> Self {
-        Self { files, cred_stop, sender }
+    fn new(files: Vec<Arc<vfs::File>>, cred_stop: bool) -> Self {
+        Self { files, cred_stop, oob_stop: false, sender: None }
     }
 
-    /// Whether receive may continue across this control result. # C: O(1)
-    pub fn stops_waitall(&self, passcred: bool) -> bool { !self.files.is_empty() || (passcred && self.cred_stop) }
+    fn with_sender(files: Vec<Arc<vfs::File>>, cred_stop: bool, oob_stop: bool,
+        sender: Option<MsgCred>) -> Self
+    { Self { files, cred_stop, oob_stop, sender } }
+
+    /// Whether receive may continue across this control result. An out-of-band
+    /// record ends the receive whatever the receiver asked for: in-band data is
+    /// never glued across the mark. # C: O(1)
+    pub fn stops_waitall(&self, passcred: bool) -> bool {
+        !self.files.is_empty() || (passcred && self.cred_stop) || self.oob_stop
+    }
 
     /// The writer this run glued bytes from, for a MSG_WAITALL receive to latch
     /// and carry across a sleep so a later writer cannot be glued on. # C: O(1)
@@ -69,7 +76,7 @@ impl UnixPair {
     /// Transactional stream receive with optional non-consuming peek. # C: O(max + rights)
     pub fn read_stream_with_opts<R, E>(&self, end: UnixEnd, max: usize, peek: bool, copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<(R, usize), E>)
         -> Result<Option<(R, StreamFiles, Option<(u32, u32, u32)>)>, E>
-    { self.read_stream_with_offset(end, max, peek, 0, false, None, copy) }
+    { self.read_stream_with_offset(end, max, peek, 0, false, None, false, copy) }
 
     /// Transactional stream receive after a non-consuming logical offset.
     ///
@@ -83,8 +90,11 @@ impl UnixPair {
     /// cursor then yields a run of NO bytes whose `stops_waitall` is set — a
     /// boundary, distinct from the `Ok(None)` that means nothing is queued.
     /// # C: O(offset + max + rights)
+    /// `inline` is the receiving socket's `SO_OOBINLINE`: with it set the
+    /// out-of-band byte is delivered here as ordinary data instead of being
+    /// stepped over.
     pub fn read_stream_with_offset<R, E>(&self, end: UnixEnd, max: usize, peek: bool, offset: usize, passcred: bool,
-        committed: Option<&MsgCred>,
+        committed: Option<&MsgCred>, inline: bool,
         copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<(R, usize), E>)
         -> Result<Option<(R, StreamFiles, Option<(u32, u32, u32)>)>, E>
     {
@@ -92,16 +102,22 @@ impl UnixPair {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
         };
-        let logical = g.consumed.saturating_add(offset as u64);
-        let run = coalesce_run(segments(&g.ancillary), logical, g.produced, passcred, committed);
-        let cap = core::cmp::min(offset.saturating_add(max),
-            run.stop.saturating_sub(g.consumed) as usize);
+        // Step over the out-of-band records standing in front of this receive
+        // BEFORE any of the in-band boundary work: a consuming step retires
+        // them, which moves `consumed`, and every index below is taken from it.
+        let head = g.consumed.saturating_add(offset as u64);
+        let window = g.oob_window(head, peek, inline);
+        let ring_off = window.head.saturating_sub(g.consumed) as usize;
+        let run = coalesce_run(segments(&g.ancillary), window.head, g.produced, passcred, committed);
+        let stop = core::cmp::min(run.stop, window.stop);
+        let cap = core::cmp::min(ring_off.saturating_add(max),
+            stop.saturating_sub(g.consumed) as usize);
         let data_end = core::cmp::min(cap, g.buf.len());
-        let take = core::cmp::min(max, data_end.saturating_sub(offset));
+        let take = core::cmp::min(max, data_end.saturating_sub(ring_off));
         // Ancillary data belongs to the segments the copied bytes reach; a peek
         // continuation must not report what its earlier step already did.
-        let reached = g.consumed.saturating_add((offset + take) as u64);
-        let reported_through = if peek && offset != 0 { Some(g.consumed) } else { None };
+        let reached = g.consumed.saturating_add((ring_off + take) as u64);
+        let reported_through = if peek && ring_off != 0 { Some(g.consumed) } else { None };
         let (report_start, report_count) = report_window(segments(&g.ancillary), reached, reported_through);
         let mut rights_len = 0usize;
         for (_, rights, _) in g.ancillary.iter().skip(report_start).take(report_count) {
@@ -114,19 +130,22 @@ impl UnixPair {
         // A run the committed writer ended at the cursor carries no bytes and no
         // ancillary data, yet is NOT an empty queue: report it so a MSG_WAITALL
         // caller ends its receive instead of sleeping on data it may not glue.
-        let ended_at_cursor = run.cause == StopCause::Sender && run.stop <= logical;
-        if offset >= data_end && report_count == 0 && !ended_at_cursor { return Ok(None); }
-        let out: Vec<u8> = g.buf.iter().skip(offset).take(take).copied().collect();
+        let ended_at_cursor = run.cause == StopCause::Sender && run.stop <= window.head;
+        if ring_off >= data_end && report_count == 0 && !ended_at_cursor { return Ok(None); }
+        let out: Vec<u8> = g.buf.iter().skip(ring_off).take(take).copied().collect();
         let (copied, commit) = copy(&out, rights_len, cred_out)?;
         let commit = core::cmp::min(commit, take);
-        let cred_stop = run.cause == StopCause::Sender && commit == take
-            && offset.saturating_add(take) == cap;
+        let reached_stop = commit == take && ring_off.saturating_add(take) == cap;
+        let cred_stop = run.cause == StopCause::Sender && reached_stop;
+        // The window's boundary only ends the receive when it is the one the
+        // copy actually reached; the in-band rule may have stopped it sooner.
+        let oob_stop = window.oob_stop && window.stop <= run.stop && reached_stop;
         if peek {
             let mut files = Vec::with_capacity(rights_len);
             for (_, rights, _) in g.ancillary.iter().skip(report_start).take(report_count) {
                 files.extend(rights.clone_files());
             }
-            return Ok(Some((copied, StreamFiles::with_sender(files, cred_stop, sender), cred_out)));
+            return Ok(Some((copied, StreamFiles::with_sender(files, cred_stop, oob_stop, sender), cred_out)));
         }
         for _ in 0..commit { g.buf.pop_front(); }
         g.consumed += commit as u64;
@@ -157,7 +176,7 @@ impl UnixPair {
         }
         let mut files = Vec::new();
         for rights in rights_out { files.extend(rights.take_files()); }
-        Ok(Some((copied, StreamFiles::with_sender(files, cred_stop, sender), cred_out)))
+        Ok(Some((copied, StreamFiles::with_sender(files, cred_stop, oob_stop, sender), cred_out)))
     }
 
     /// Boundary-aware infallible stream drain used by legacy receive paths. # C: O(max + rights)
@@ -169,7 +188,7 @@ impl UnixPair {
     pub fn read_stream_passcred(&self, end: UnixEnd, max: usize, passcred: bool)
         -> (Vec<u8>, StreamFiles, Option<(u32, u32, u32)>)
     {
-        self.read_stream_with_offset(end, max, false, 0, passcred, None,
+        self.read_stream_with_offset(end, max, false, 0, passcred, None, false,
             |data, _, _| Ok::<_, core::convert::Infallible>((data.to_vec(), data.len())))
             .unwrap_or_else(|never| match never {})
             .map(|(data, files, cred)| (data, files, cred))
