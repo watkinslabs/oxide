@@ -27,7 +27,8 @@ impl DispatchDev {
         self.calls.lock().unwrap().push(id);
         if id == 1 {
             self.entered.store(true, Ordering::Release);
-            while !self.release.load(Ordering::Acquire) { std::thread::yield_now(); }
+            crate::hosted_fixture::spin_until("release is signalled",
+                || self.release.load(Ordering::Acquire));
         }
         self.active.fetch_sub(1, Ordering::AcqRel);
         Ok(())
@@ -80,6 +81,7 @@ fn packet_count(socket: &crate::sock::InetSocket) -> usize {
 
 #[test]
 fn queued_tx_is_peer_visible_once_and_direct_tx_is_hidden() {
+    let _packets = crate::hosted_fixture::packet_socket_domain();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let observer = Arc::new(crate::sock::InetSocket::new_packet_in(
         crate::eth_p::ALL, RAW, owner.clone()));
@@ -106,14 +108,15 @@ fn mixed_queued_and_direct_tx_has_one_hardware_owner_and_fifo_queue() {
 
     let first = lease.clone();
     let first_tx = std::thread::spawn(move || first.xmit(packet(1)));
-    while !dev.entered.load(Ordering::Acquire) { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("the device xmit is entered",
+        || dev.entered.load(Ordering::Acquire));
 
     let second = lease.clone();
     let second_tx = std::thread::spawn(move || second.xmit_raw_from(&frame(2), None));
-    while lease.queued_tx() != 1 { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("one frame is queued", || lease.queued_tx() == 1);
     let third = lease.clone();
     let third_tx = std::thread::spawn(move || third.xmit_raw_from(&frame(3), None));
-    while lease.queued_tx() != 2 { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("two frames are queued", || lease.queued_tx() == 2);
     let direct = lease.clone();
     let direct_tx = std::thread::spawn(move || {
         direct.xmit_raw_policy_from(&frame(9), None, true)
@@ -141,13 +144,15 @@ fn full_dispatch_fifo_returns_enobufs() {
     let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
     let first = lease.clone();
     let first_tx = std::thread::spawn(move || first.xmit(packet(1)));
-    while !dev.entered.load(Ordering::Acquire) { std::thread::yield_now(); }
+    crate::hosted_fixture::spin_until("the device xmit is entered",
+        || dev.entered.load(Ordering::Acquire));
 
     let mut pending = Vec::new();
     for at in 0..super::super::tx_dispatch::TX_QUEUE_CAPACITY {
         let queued = lease.clone();
         pending.push(std::thread::spawn(move || queued.xmit_raw_from(&frame(2), None)));
-        while lease.queued_tx() != at + 1 { std::thread::yield_now(); }
+        crate::hosted_fixture::spin_until("the next frame is queued",
+            || lease.queued_tx() == at + 1);
     }
     assert_eq!(lease.xmit_raw_from(&frame(3), None), Err(NetError::Enobufs));
 

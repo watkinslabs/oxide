@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::mcast_filter::SocketMcast;
-use crate::sock::{register_packet, InetSocket, PacketMembershipRequest};
+use crate::sock::{InetSocket, PacketMembershipRequest};
 use crate::stack::NetStack;
 use crate::{eth_p, uapi, Ipv4Addr, NetDev, NetIfaceId, PacketLinkAddress, PacketRxMode};
 use sync::Socket as SockLockClass;
@@ -118,8 +118,13 @@ fn interrupt_context_final_drop_defers_then_drains() {
     let stack = crate::global_stack();
     let dev = Arc::new(ModeDev::new());
     let iface = stack.ifaces.register_in_ns(dev.clone(), owner.id().as_u64());
+    // Deliberately NOT `register_packet`: the process-global registry hands
+    // out transient strong refs (`Weak::upgrade`) to every walker, so a
+    // concurrent `deliver` would own the FINAL `Arc` drop this test exists to
+    // observe, and run it on the walker's thread in the walker's context
+    // (B1653). Membership is socket-local plus `stack.ifaces` state; the
+    // registry contributes nothing to the release path under test.
     let socket = Arc::new(InetSocket::new_packet_in(eth_p::ALL, 3, owner.clone()));
-    register_packet(&socket);
     socket.change_packet_membership(promisc_request(iface), true).unwrap();
     assert!(dev.mode.lock().promiscuous);
     assert_eq!(pending_len(), 0);
@@ -150,8 +155,13 @@ fn process_context_final_drop_still_releases_inline() {
     let stack = crate::global_stack();
     let dev = Arc::new(ModeDev::new());
     let iface = stack.ifaces.register_in_ns(dev.clone(), owner.id().as_u64());
+    // Deliberately NOT `register_packet`: the process-global registry hands
+    // out transient strong refs (`Weak::upgrade`) to every walker, so a
+    // concurrent `deliver` would own the FINAL `Arc` drop this test exists to
+    // observe, and run it on the walker's thread in the walker's context
+    // (B1653). Membership is socket-local plus `stack.ifaces` state; the
+    // registry contributes nothing to the release path under test.
     let socket = Arc::new(InetSocket::new_packet_in(eth_p::ALL, 3, owner.clone()));
-    register_packet(&socket);
     socket.change_packet_membership(promisc_request(iface), true).unwrap();
     assert!(dev.mode.lock().promiscuous);
 

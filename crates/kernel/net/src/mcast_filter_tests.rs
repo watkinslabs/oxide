@@ -183,9 +183,8 @@ fn socket_gate_closes_admission_and_waits_active_operation() {
         closing.close_wait();
         done_tx.send(()).unwrap();
     });
-    while !matches!(gate.enter(&released), Err(NetError::Einval)) {
-        std::thread::yield_now();
-    }
+    crate::hosted_fixture::spin_until("the released gate rejects entry",
+        || matches!(gate.enter(&released), Err(NetError::Einval)));
     assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
 
     drop(operation);
