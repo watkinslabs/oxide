@@ -398,28 +398,51 @@ impl NetStack {
         Ok(())
     }
 
-    /// Drain lo xmit → deliver_rx; v6 frames route to deliver_rx_ipv6.
-    /// # C: O(N pending)
-    pub fn drain_loopback(&self, iface: NetIfaceId, lo: &LoopbackDev) {
-        let Some(lease) = self.ifaces.acquire_ingress(iface) else { return };
-        self.drain_loopback_in(&lease, lo);
+    /// Receive processing for one dequeued loopback frame, under its exact
+    /// admitted interface generation. The sole delivery body: both the NET_RX
+    /// backlog drain and the hosted fixtures below reach protocol delivery
+    /// through here and nowhere else.
+    /// # Ctx: NET_RX bottom half
+    /// # C: O(1) + protocol delivery
+    pub(crate) fn deliver_loopback_pkt_in(&self, lease: &crate::IngressLease, p: Pkt) {
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        if p.mac_frame().is_none() {
+            crate::sock::deliver_packet_loopback_in(lease, p.data(), p.proto);
+        }
+        // F180b: dispatch by ethertype so v6 lo round-trips work.
+        let delivered = if p.proto == crate::addr::eth_p::IPV6 {
+            self.deliver_rx_ipv6_in(lease, p.data())
+        } else {
+            self.deliver_rx_in(lease, p.data())
+        };
+        if delivered.is_err() { lease.device().record_rx_error(); }
     }
 
-    /// Drain one loopback queue under its exact admitted interface generation. # C: O(N pending)
-    pub(crate) fn drain_loopback_in(&self, lease: &crate::IngressLease, lo: &LoopbackDev) {
+    /// Hosted fixture: enqueue everything a loopback holds and run the drain to
+    /// completion, synchronously, against this stack.
+    ///
+    /// Test-build only. In a running kernel there is exactly one route from a
+    /// queued frame to protocol delivery — raise NET_RX and let the bottom half
+    /// take it (`backlog::net_rx_schedule`) — and a second, synchronous route
+    /// compiled into the kernel is what the ledger row this replaced was about:
+    /// it puts the whole receive subtree back on the caller's stack.
+    /// # C: O(N pending)
+    #[cfg(any(test, feature = "hosted"))]
+    pub fn drain_loopback(&self, iface: NetIfaceId, lo: &LoopbackDev) {
         while let Some(p) = lo.rx_pop() {
-            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-            if p.mac_frame().is_none() {
-                crate::sock::deliver_packet_loopback_in(lease, p.data(), p.proto);
+            if self.netif_rx(iface, p) == crate::backlog::RxVerdict::Drop {
+                lo.record_rx_dropped();
             }
-            // F180b: dispatch by ethertype so v6 lo round-trips work.
-            let delivered = if p.proto == crate::addr::eth_p::IPV6 {
-                self.deliver_rx_ipv6_in(lease, p.data())
-            } else {
-                self.deliver_rx_in(lease, p.data())
-            };
-            if delivered.is_err() { lo.record_rx_error(); }
         }
+        while self.do_net_rx() {}
+    }
+
+    /// Hosted fixture: drain one loopback queue under a caller-supplied lease.
+    /// Test-build only, for the same reason as [`Self::drain_loopback`].
+    /// # C: O(N pending)
+    #[cfg(any(test, feature = "hosted"))]
+    pub(crate) fn drain_loopback_in(&self, lease: &crate::IngressLease, lo: &LoopbackDev) {
+        while let Some(p) = lo.rx_pop() { self.deliver_loopback_pkt_in(lease, p); }
     }
 }
 

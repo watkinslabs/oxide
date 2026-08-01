@@ -26,23 +26,26 @@ const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
 const VIRTQ_USED_HEADER_BYTES: usize = 4;
 const VIRTQ_USED_ELEM_BYTES: usize = 8;
 
-/// Install this driver's RX bottom-half handler. The handler belongs to the
-/// virtio-net device lifetime, not to boot or the transport layer.
+/// Put this driver's RX poll routine on the shared NET_RX poll list. The entry
+/// belongs to the virtio-net device lifetime, not to boot or the transport
+/// layer. It is a poll-list entry rather than the softirq slot itself: one slot
+/// serves every RX source, and a driver that claimed the slot would displace
+/// the receive backlog and any other driver that probed before it.
 /// # C: O(1)
 pub fn install_rx_softirq_handler() {
     if !SOFTIRQ_INSTALLED.swap(true, Ordering::AcqRel) {
         #[cfg(target_os = "oxide-kernel")]
-        softirq::set_handler(softirq::Slot::NetRx, rx_drain_softirq);
+        assert!(net::backlog::register_poll(rx_drain_softirq), "NET_RX poll list full");
     }
 }
 
-/// Remove this driver's RX bottom-half handler and discard queued stale RX
-/// work. Called after the device is reset during remove.
-/// # C: O(NCPU)
+/// Take this driver's RX poll routine off the list. Called after the device is
+/// reset during remove.
+/// # C: O(1)
 pub fn uninstall_rx_softirq_handler() {
     if SOFTIRQ_INSTALLED.swap(false, Ordering::AcqRel) {
         #[cfg(target_os = "oxide-kernel")]
-        let _ = softirq::clear_handler(softirq::Slot::NetRx);
+        net::backlog::unregister_poll(rx_drain_softirq);
     }
 }
 

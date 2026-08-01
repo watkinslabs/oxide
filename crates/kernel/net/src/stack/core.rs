@@ -19,6 +19,8 @@ impl NetStack {
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
             v6_ra_pending: Spinlock::new(Vec::new()),
+            softnet: [const { Spinlock::new(crate::backlog::queue::SoftnetData::new()) }; cpu::MAX_CPUS],
+            rx_poll: Spinlock::new(Vec::new()),
             v6_mcast:   Spinlock::new(BTreeMap::new()), v4_mcast: Spinlock::new(BTreeMap::new()),
             #[cfg(not(target_os = "oxide-kernel"))]
             ra_now_ns: ::core::sync::atomic::AtomicU64::new(0),
@@ -161,6 +163,7 @@ impl NetStack {
         let id = self.ifaces.register_in_ns(lo.clone() as Arc<dyn NetDev>, net_ns);
         let rtnl = self.rtnl_lock();
         self.configure_loopback_in_rtnl(&rtnl, net_ns, id);
+        self.register_rx_poll(id, &lo);
         (id, lo)
     }
 
@@ -174,6 +177,7 @@ impl NetStack {
         let (reg, lo) = self.prepare_loopback_in_rtnl(rtnl, owner);
         let id = reg.id();
         assert!(self.ifaces.publish(rtnl, reg));
+        self.register_rx_poll(id, &lo);
         self.configure_loopback_in_rtnl(rtnl, net_ns, id);
         let properties = crate::control_event::LinkProperties {
             name: alloc::string::String::from("lo"), mac: crate::MacAddr::ZERO,

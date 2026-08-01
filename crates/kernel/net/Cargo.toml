@@ -22,6 +22,7 @@ sched    = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 softirq  = { path = "../softirq" }
+cpu      = { path = "../cpu" }
 pmm      = { path = "../mm-pmm" }
 security = { path = "../security" }
 cgroup   = { path = "../cgroup" }
