@@ -105,3 +105,49 @@ the sentinel).
 This closes the `known_issues.md` row that recorded the TTL-0 value as "very
 likely a divergence" pending verification — it is one, and it was reachable
 from `ping` (raw/ICMP send) and every UDP send.
+
+## Verified end to end
+
+Same topology, x86_64, after both fixes. In-guest, root on the serial console:
+
+```
+$ ping -c3 -W2 10.0.2.2
+64 bytes from 10.0.2.2: icmp_seq=2 ttl=255 time=13.7 ms
+64 bytes from 10.0.2.2: icmp_seq=3 ttl=255 time=6.94 ms
+3 packets transmitted, 2 received, 33.3333% packet loss
+
+$ ip neigh
+10.0.2.2 dev eth0 lladdr 52:55:0a:00:02:02 STALE
+10.0.2.3 dev eth0 lladdr 52:55:0a:00:02:03 STALE
+fe80::2 dev eth0 lladdr 52:56:00:00:00:02 REACHABLE
+
+$ ping -c3 -W2 1.1.1.1
+64 bytes from 1.1.1.1: icmp_seq=1 ttl=255 time=3.26 ms
+64 bytes from 1.1.1.1: icmp_seq=2 ttl=255 time=3.38 ms
+64 bytes from 1.1.1.1: icmp_seq=3 ttl=255 time=3.86 ms
+3 packets transmitted, 3 received, 0% packet loss
+
+$ rm -f /etc/resolv.conf; printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf
+$ getent hosts example.com
+2606:4700:10::6814:179a example.com
+2606:4700:10::ac42:93f3 example.com
+dns=0
+
+$ curl -sS -m 25 -o /tmp/page -w 'http=%{http_code} bytes=%{size_download}\n' http://example.com/
+curl=0
+<!doctype html><html lang="en"><head><title>Example Domain</title><link rel="icon" href="d
+```
+
+Before the fixes this sequence produced 100% loss to the gateway and a
+`FAILED` neighbour; between them it produced `Time to live exceeded`.
+
+The `resolv.conf` line had to be written by hand, for two independent reasons
+recorded below: nothing configures it (NM enumerates no devices), and the
+kernel refuses to create it.
+
+## Also found, filed not fixed
+
+| Severity | Finding |
+|---|---|
+| HIGH | `open(path, O_WRONLY\|O_CREAT\|O_TRUNC)` on a **dangling symlink whose parent directory exists** returns **EEXIST**. The reference follows the link and creates the target; EEXIST is only correct with `O_EXCL`. Minimal in-guest reproducer: `ln -sf /run/systemd/resolve/stub-resolv.conf /etc/rc2` (that directory exists, the file does not), then `: > /etc/rc2` → `sh: /etc/rc2: File exists`, and `python3 -c "import os;os.open('/etc/rc2',os.O_WRONLY\|os.O_CREAT\|os.O_TRUNC,0o644)"` → `FileExistsError: [Errno 17]`. This is why nothing in the guest can write `/etc/resolv.conf`, which ships as exactly such a dangling symlink — so it is on the path between a working IP stack and working name resolution. Needs its own lane: the fix sits in the `O_CREAT` open path and its errno ordering against `O_EXCL`/`O_NOFOLLOW` has to be audited against the reference. |
+| med | `procfs::net`'s `#[cfg(test)] mod tests` (containing `route_projection_is_namespace_scoped`) is a phantom: `pub mod net` is declared `#[cfg(target_os = "oxide-kernel")]` in the crate root, so the block never compiles. That is why this lane's `/proc/net/arp` row format went into ungated `net::arp::proc_row` instead. |
