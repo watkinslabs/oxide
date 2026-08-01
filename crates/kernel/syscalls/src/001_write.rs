@@ -68,6 +68,12 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_stage(b"write-file");
     if !file.f_mode().contains(vfs::Fmode::WRITE) { return -(Errno::Ebadf.as_i32() as i64); }
+    // fanotify FAN_PRE_ACCESS covers writes too: a watcher that owns the file's
+    // content must fill the range before a partial write lands inside it. No
+    // FAN_ACCESS_PERM — nothing has been read for a scanner to inspect.
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), true, Some(file.pos()), cnt as u64) {
+        return -(e.as_i32() as i64);
+    }
     // DIAG (debug-wakelat): symbolize systemd-hwdb (tid 4135)'s write() CALLER
     // stack during its serialize-spin. The USERIP sampler only catches the libc
     // syscall wrapper (0x7ffff71af75e); the real infinite loop is hwdb's own .text

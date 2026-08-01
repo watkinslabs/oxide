@@ -16,7 +16,7 @@ fn file(ino: u64) -> InodeRef {
 }
 
 fn ev(wd: i32, mask: u32) -> Event {
-    Event { wd, mask, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 }
+    Event { wd, mask, cookie: 0, name: Vec::new(), obj: None, pid: 0, ..Default::default() }
 }
 
 fn read_pair(g: &InotifyData) -> (i32, u32) {
@@ -31,18 +31,18 @@ fn a_new_watch_past_the_per_user_ceiling_is_enospc() {
     let uid = 91_001;
     let g = InotifyData::new_owned(0, false, uid, 0);
     set_max_user_watches(2);
-    assert!(add_or_update_watch(&g, 1, 0x10, IN_MODIFY, false).is_ok());
-    assert!(add_or_update_watch(&g, 2, 0x10, IN_MODIFY, false).is_ok());
-    assert_eq!(add_or_update_watch(&g, 3, 0x10, IN_MODIFY, false),
+    assert!(add_or_update_watch(&g, 1, 0x10, IN_MODIFY, false, None).is_ok());
+    assert!(add_or_update_watch(&g, 2, 0x10, IN_MODIFY, false, None).is_ok());
+    assert_eq!(add_or_update_watch(&g, 3, 0x10, IN_MODIFY, false, None),
                Err(syscall::errno::Errno::Enospc), "over the ceiling is ENOSPC, not EINVAL/ENOMEM");
     assert_eq!(g.watches.lock().len(), 2, "the refused watch was not installed");
     // An UPDATE of an existing watch takes no new charge, so it still succeeds
     // while the user sits at their ceiling.
-    assert!(add_or_update_watch(&g, 1, 0x10, IN_OPEN, false).is_ok());
+    assert!(add_or_update_watch(&g, 1, 0x10, IN_OPEN, false, None).is_ok());
     // Removing one frees exactly one slot.
     let wd = g.watches.lock()[0].wd;
     assert_eq!(remove_watch(&g, wd), Ok(()));
-    assert!(add_or_update_watch(&g, 3, 0x10, IN_MODIFY, false).is_ok());
+    assert!(add_or_update_watch(&g, 3, 0x10, IN_MODIFY, false, None).is_ok());
     drop(g);
     assert_eq!(ucount(uid, Ucount::InotifyWatches), 0, "the group's charges died with it");
     set_max_user_watches(INOTIFY_MIN_MAX_USER_WATCHES as i64);
@@ -53,8 +53,8 @@ fn closing_a_group_returns_its_instance_and_watch_charges() {
     let uid = 91_002;
     assert!(inc_ucount(uid, Ucount::InotifyInstances), "stand in for the syscall's charge");
     let g = InotifyData::new_owned(0, false, uid, 0);
-    add_or_update_watch(&g, 1, 0x10, IN_MODIFY, false).unwrap();
-    add_or_update_watch(&g, 2, 0x10, IN_MODIFY, false).unwrap();
+    add_or_update_watch(&g, 1, 0x10, IN_MODIFY, false, None).unwrap();
+    add_or_update_watch(&g, 2, 0x10, IN_MODIFY, false, None).unwrap();
     assert_eq!(ucount(uid, Ucount::InotifyInstances), 1);
     assert_eq!(ucount(uid, Ucount::InotifyWatches), 2);
     drop(g);
@@ -107,7 +107,7 @@ fn the_queue_depth_is_snapshot_at_group_creation() {
 fn excl_unlink_suppresses_path_events_on_an_unlinked_file_only() {
     let g = InotifyData::new_owned(0, false, 91_006, 0);
     let f = file(600_001);
-    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_MODIFY | IN_EXCL_UNLINK, false).unwrap();
+    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_MODIFY | IN_EXCL_UNLINK, false, None).unwrap();
     // Still linked: delivered.
     fire_self_path(&f, IN_MODIFY, false);
     assert_eq!(read_pair(&g), (wd, IN_MODIFY));
@@ -125,7 +125,7 @@ fn excl_unlink_suppresses_path_events_on_an_unlinked_file_only() {
 fn without_excl_unlink_an_unlinked_files_events_still_arrive() {
     let g = InotifyData::new_owned(0, false, 91_007, 0);
     let f = file(600_002);
-    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_MODIFY, false).unwrap();
+    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_MODIFY, false, None).unwrap();
     fire_self_path(&f, IN_MODIFY, true);
     assert_eq!(read_pair(&g), (wd, IN_MODIFY));
     drop(g);
@@ -135,7 +135,7 @@ fn without_excl_unlink_an_unlinked_files_events_still_arrive() {
 fn unmount_reports_in_unmount_then_in_ignored_and_frees_the_wd() {
     let g = InotifyData::new_owned(0, false, 91_008, 0);
     // Only IN_MODIFY was requested; IN_UNMOUNT arrives regardless.
-    let wd = add_or_update_watch(&g, 600_003, 0xCC, IN_MODIFY, false).unwrap();
+    let wd = add_or_update_watch(&g, 600_003, 0xCC, IN_MODIFY, false, None).unwrap();
     unmount_fs_marks(0xCC);
     assert_eq!(read_pair(&g), (wd, IN_UNMOUNT), "the unmount notice comes first");
     assert_eq!(read_pair(&g), (wd, IN_IGNORED), "then the watch's death record");
@@ -149,8 +149,8 @@ fn unmount_reports_in_unmount_then_in_ignored_and_frees_the_wd() {
 fn unmount_leaves_marks_on_other_filesystems_alone() {
     let g = InotifyData::new_owned(0, false, 91_009, 0);
     let a = file(600_004);
-    add_or_update_watch(&g, 4_001, 0xAA, IN_MODIFY, false).unwrap();
-    let keep = add_or_update_watch(&g, 4_002, 0xBB, IN_MODIFY, false).unwrap();
+    add_or_update_watch(&g, 4_001, 0xAA, IN_MODIFY, false, None).unwrap();
+    let keep = add_or_update_watch(&g, 4_002, 0xBB, IN_MODIFY, false, None).unwrap();
     let _ = a;
     unmount_fs_marks(0xAA);
     let live: Vec<i32> = g.watches.lock().iter().map(|w| w.wd).collect();
@@ -164,7 +164,7 @@ fn a_fid_mode_group_reports_a_file_handle_and_no_descriptor() {
     let g = InotifyData::new_owned(0x0000_0200, true, 91_010, 0);
     let f = file(0x4242);
     g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(),
-                            obj: Some(f.clone()), pid: 77, perm: None, mnt_id: 0 });
+                            obj: Some(f.clone()), pid: 77, ..Default::default() });
     let mut buf = [0u8; 128];
     let n = g.read_fanotify(&mut buf).unwrap();
     let want = fan_layout::FAN_EVENT_METADATA_LEN + fan_layout::fid_info_len(fan_layout::FANOTIFY_FID_LEN, 0);
@@ -196,7 +196,7 @@ fn a_dir_fid_name_group_reports_the_entry_name() {
     let g = InotifyData::new_owned(0x0000_0400 | 0x0000_0800, true, 91_011, 0);
     let d = file(0x99);
     g.enqueue_event(Event { wd: 1, mask: FAN_CREATE, cookie: 0, name: b"kid".to_vec(),
-                            obj: Some(d.clone()), pid: 5, perm: None, mnt_id: 0 });
+                            obj: Some(d.clone()), pid: 5, ..Default::default() });
     let mut buf = [0u8; 128];
     let n = g.read_fanotify(&mut buf).unwrap();
     let want = fan_layout::FAN_EVENT_METADATA_LEN + fan_layout::fid_info_len(fan_layout::FANOTIFY_FID_LEN, 3);
@@ -213,7 +213,7 @@ fn a_dir_fid_name_group_reports_the_entry_name() {
 fn a_fanotify_buffer_too_small_for_the_first_event_is_einval() {
     let g = InotifyData::new_owned(0x0000_0200, true, 91_012, 0);
     g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(),
-                            obj: Some(file(3)), pid: 0, perm: None, mnt_id: 0 });
+                            obj: Some(file(3)), pid: 0, ..Default::default() });
     // Room for the metadata but not the info record that follows it.
     let mut small = [0u8; fan_layout::FAN_EVENT_METADATA_LEN];
     assert_eq!(g.read_fanotify(&mut small), Err(vfs::VfsError::Einval));
@@ -226,7 +226,7 @@ fn a_fanotify_buffer_too_small_for_the_first_event_is_einval() {
 #[test]
 fn a_legacy_fanotify_group_still_emits_bare_metadata() {
     let g = InotifyData::new_owned(0, true, 91_013, 0);
-    g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(), obj: None, pid: 3, perm: None, mnt_id: 0 });
+    g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(), obj: None, pid: 3, ..Default::default() });
     let mut buf = [0u8; 128];
     assert_eq!(g.read_fanotify(&mut buf), Ok(fan_layout::FAN_EVENT_METADATA_LEN));
     assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()),

@@ -26,7 +26,12 @@ const FANOTIFY_HTABLE_SIZE: usize = 128;
 /// candidates inside the bucket, exactly as the mask does.
 /// # C: O(1)
 fn hash_bucket(ev: &Event) -> usize {
-    let id = match &ev.obj { Some(o) => alloc::sync::Arc::as_ptr(o) as usize as u64, None => 0 };
+    // An error record's identity is its FILESYSTEM, so two errors on one
+    // filesystem must land in the same bucket however different the inodes they
+    // were found on — otherwise the merge rule that folds them can never find
+    // the record to fold into.
+    let id = if crate::inotify::fan_err::is_error_event(ev.mask) { ev.fsid }
+             else { match &ev.obj { Some(o) => alloc::sync::Arc::as_ptr(o) as usize as u64, None => 0 } };
     // Fibonacci hashing: multiply by 2^64/phi and keep the high bits, so the
     // low-entropy alignment bits of a heap pointer do not all land in one
     // bucket.
@@ -118,7 +123,14 @@ impl EventQueue {
             if fanotify_should_merge(old, ev) { hit = Some(idx); break; }
         }
         let Some(idx) = hit else { return false };
-        if let Some(old) = self.q.get_mut(idx) { old.mask |= ev.mask; }
+        if let Some(old) = self.q.get_mut(idx) {
+            old.mask |= ev.mask;
+            // The record an error was folded into stands for one more error
+            // than it did. The count is the only thing distinguishing "the
+            // filesystem hiccuped once" from "the filesystem is disintegrating",
+            // since the folded records themselves are gone.
+            if crate::inotify::fan_err::is_error_event(old.mask) { old.err_count += 1; }
+        }
         true
     }
 }
@@ -177,8 +189,30 @@ pub(crate) fn fanotify_should_merge(old: &Event, new: &Event) -> bool {
     if old.pid != new.pid { return false; }
     if (old.mask & FAN_ONDIR) != (new.mask & FAN_ONDIR) { return false; }
     if (old.mask & FAN_RENAME) != (new.mask & FAN_RENAME) { return false; }
+    // An error record is about a FILESYSTEM, not about an object inside one, so
+    // its identity is the filesystem alone: two errors on one filesystem ALWAYS
+    // fold together, whichever inodes (if any) they were discovered on. That is
+    // the point — a failing filesystem produces errors faster than a daemon can
+    // drain them, and the queue must not fill with them.
+    let (e_old, e_new) = (crate::inotify::fan_err::is_error_event(old.mask),
+                          crate::inotify::fan_err::is_error_event(new.mask));
+    if e_old || e_new { return e_old && e_new && old.fsid == new.fsid; }
     if old.name != new.name { return false; }
+    // A rename carries a SECOND parent+name, and two renames that agree on the
+    // source but not the destination are two different renames.
+    if old.name2 != new.name2 { return false; }
+    if !same_dir2(old, new) { return false; }
     same_object(old, new)
+}
+
+/// The destination halves of two rename records name the same directory (or
+/// neither carries one). # C: O(1)
+fn same_dir2(old: &Event, new: &Event) -> bool {
+    match (&old.dir2, &new.dir2) {
+        (None, None) => true,
+        (Some(a), Some(b)) => alloc::sync::Arc::ptr_eq(a, b),
+        _ => false,
+    }
 }
 
 /// `fanotify_path_equal` / `fanotify_fid_event_equal`: two records name the
@@ -206,7 +240,7 @@ mod tests {
     }
 
     fn ev(mask: u32, pid: u32, o: Option<vfs::InodeRef>, name: &[u8]) -> Event {
-        Event { wd: 1, mask, cookie: 0, name: name.to_vec(), obj: o, pid, perm: None, mnt_id: 0 }
+        Event { wd: 1, mask, cookie: 0, name: name.to_vec(), obj: o, pid, ..Default::default() }
     }
 
     #[test]
@@ -278,7 +312,7 @@ mod tests {
     /// absorbed. # C: O(1)
     #[test]
     fn the_overflow_marker_is_never_merged() {
-        let ov = Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 };
+        let ov = Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(), obj: None, pid: 0, ..Default::default() };
         assert!(!is_mergeable_event(&ov));
         assert!(!fanotify_should_merge(&ov, &ov));
     }
@@ -286,10 +320,10 @@ mod tests {
     /// inotify's tail rule is unchanged by the fanotify one. # C: O(1)
     #[test]
     fn inotify_tail_merge_still_ignores_the_cookie_and_never_absorbs_ignored() {
-        let a = Event { wd: 3, mask: FAN_ACCESS, cookie: 1, name: b"n".to_vec(), obj: None, pid: 0, perm: None, mnt_id: 0 };
-        let b = Event { wd: 3, mask: FAN_ACCESS, cookie: 99, name: b"n".to_vec(), obj: None, pid: 0, perm: None, mnt_id: 0 };
+        let a = Event { wd: 3, mask: FAN_ACCESS, cookie: 1, name: b"n".to_vec(), obj: None, pid: 0, ..Default::default() };
+        let b = Event { wd: 3, mask: FAN_ACCESS, cookie: 99, name: b"n".to_vec(), obj: None, pid: 0, ..Default::default() };
         assert!(merges_into_tail(&a, &b));
-        let ign = Event { wd: 3, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 };
+        let ign = Event { wd: 3, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, ..Default::default() };
         assert!(!merges_into_tail(&ign, &ign));
     }
 }

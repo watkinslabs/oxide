@@ -93,7 +93,7 @@ fn a_combined_change_reports_every_applicable_bit() {
 fn the_subscriber_queues_one_event_per_bit() {
     let g = InotifyData::new(0);
     let f = mk_file(0x5A01);
-    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB | IN_MODIFY, false).unwrap();
+    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB | IN_MODIFY, false, None).unwrap();
 
     vfs_setattr_notify(&f, ATTR_UID | ATTR_SIZE);
     let m = masks(&g);
@@ -106,7 +106,7 @@ fn the_subscriber_queues_one_event_per_bit() {
 fn an_unrequested_bit_is_dropped() {
     let g = InotifyData::new(0);
     let f = mk_file(0x5A02);
-    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false).unwrap();
+    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
 
     vfs_setattr_notify(&f, ATTR_SIZE);           // MODIFY only — not watched
     assert_eq!(masks(&g), Vec::<u32>::new(), "a watch for ATTRIB gets no MODIFY");
@@ -121,7 +121,7 @@ fn an_unrequested_bit_is_dropped() {
 fn notify_change_drives_the_hook() {
     let g = InotifyData::new(0);
     let f = mk_file(0x5A03);
-    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false).unwrap();
+    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
     vfs::set_setattr_hook(vfs_setattr_notify);
 
     let mut ia = Iattr { valid: ATTR_MODE, mode: 0o600, ..Default::default() };
@@ -136,7 +136,7 @@ fn notify_change_drives_the_hook() {
 fn a_rejected_setattr_fires_nothing() {
     let g = InotifyData::new(0);
     let f = mk_file(0x5A04);
-    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false).unwrap();
+    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
     vfs::set_setattr_hook(vfs_setattr_notify);
 
     // Unprivileged, non-owner chmod of a root-owned file → EPERM in
@@ -161,8 +161,8 @@ use crate::inotify::syscalls::add_or_update_watch as add_watch;
 use crate::inotify::types::{Event as InEvent, IN_CREATE as IN_CREATE_BIT};
 
 fn queue(g: &InotifyData, name: &[u8]) {
-    g.enqueue_event(InEvent { wd: 1, mask: IN_CREATE_BIT, cookie: 0,
-        name: name.to_vec(), obj: None, pid: 0, perm: None, mnt_id: 0 });
+    g.enqueue_event(InEvent { wd: 1, mask: IN_CREATE_BIT, name: name.to_vec(),
+        ..Default::default() });
 }
 
 /// `get_one_event` returns EINVAL only when the FIRST event cannot fit; the
@@ -212,7 +212,7 @@ fn one_read_drains_every_event_that_fits() {
 fn a_watched_event_is_readable() {
     let g = InotifyData::new(0);
     let f = mk_file(0x5A09);
-    let wd = add_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false).unwrap();
+    let wd = add_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
     vfs_setattr_notify(&f, ATTR_MODE);
     let mut buf = [0u8; 64];
     let n = g.read_nonblock(0, &mut buf).expect("event readable");

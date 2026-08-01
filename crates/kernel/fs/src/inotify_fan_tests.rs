@@ -560,7 +560,9 @@ fn open_exec_perm_gate_cycle() {
 fn perm_event(obj: &InodeRef, mask: u32, st: Arc<crate::inotify::types::PermState>)
     -> crate::inotify::types::Event {
     crate::inotify::types::Event {
-        wd: -1, mask, cookie: 0, name: Vec::new(), obj: Some(obj.clone()), pid: 0, perm: Some(st), mnt_id: 0,    }
+        wd: -1, mask, cookie: 0, name: Vec::new(), obj: Some(obj.clone()), pid: 0,
+        perm: Some(st), ..Default::default()
+    }
 }
 
 /// Queue a permission event on `g` and hand back the state an accessor would
@@ -600,32 +602,117 @@ fn init_flag_validation() {
     assert_eq!(validate_fanotify_init(FAN_REPORT_NAME | FAN_REPORT_DIR_FID), 0);
 }
 
-/// `FAN_MARK_EVICTABLE` means "do not pin the object": the mark goes away with
-/// the cached inode, so a later access is NOT reported. An ordinary mark pins
-/// the object and survives. Without this the flag was accepted and stored and
-/// then changed nothing, which is worse than rejecting it — a watcher believes
-/// it holds a non-pinning mark and it does not.
-#[test]
-fn an_evictable_mark_goes_away_with_the_cached_inode() {
-    let g = InotifyData::new_fanotify(0);
-    let ino = mk_inode(FileType::Regular, 0xE001);
-    apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_OPEN, true, false,
-               crate::inotify::validate::FAN_MARK_EVICTABLE);
-    fire_self(&ino, FAN_OPEN);
-    assert_eq!(masks(&g), [FAN_OPEN], "armed before eviction");
-    crate::inotify::marks::evict_inode_marks(&ino);
-    assert!(g.watches.lock().is_empty(), "the evictable mark left with the inode");
+/// A throwaway superblock so an inode has a real cache to be evicted FROM.
+/// Eviction is what `FAN_MARK_EVICTABLE` is about, and it cannot be observed on
+/// a free-standing inode. # C: O(1)
+#[cfg(test)]
+fn mk_sb(s_dev: u64) -> Arc<vfs::SuperBlock> {
+    struct T;
+    impl vfs::superblock::FileSystemType for T {
+        fn name(&self) -> &str { "markfs" }
+        fn mount(&self, _s: Option<&str>, _o: &str) -> vfs::KResult<Arc<vfs::SuperBlock>> {
+            Err(vfs::VfsError::Enodev)
+        }
+    }
+    struct O;
+    impl vfs::superblock::SuperOps for O {
+        fn statfs(&self) -> vfs::KResult<vfs::superblock::SbStatFs> {
+            Ok(vfs::superblock::SbStatFs { f_bsize: 4096, ..Default::default() })
+        }
+    }
+    vfs::SuperBlock::new(Arc::new(T), Arc::new(O), 0x6d61_726b, s_dev, 4096,
+                         alloc::string::String::from("markfs"), Arc::new(()))
 }
 
-/// A mark WITHOUT the flag pins its object and survives an eviction.
+/// A link-less inode resident in `sb`'s cache, born with one reference.
+/// # C: O(1)
+#[cfg(test)]
+fn cached_inode(sb: &Arc<vfs::SuperBlock>, ino: u64) -> InodeRef {
+    sb.iget(ino, || InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644),
+        default_inode_ops(), Arc::new(InotifyFileOps))
+        .sb(Arc::downgrade(sb)).nlink(0).build())
+}
+
+/// `FAN_MARK_EVICTABLE` means "do not hold the object in memory". The mark
+/// takes no reference on the inode, so the last other reference going evicts
+/// it, and the mark goes with it — a watcher must re-establish such a mark.
+///
+/// Modelling the flag as a stored bool made it meaningless: an ORDINARY mark
+/// held no reference either, so both kinds survived eviction identically and
+/// the object was free to be reclaimed and its number reused underneath the
+/// mark. The distinction is now the reference itself, so the two cannot
+/// disagree.
 #[test]
-fn an_ordinary_mark_survives_an_eviction() {
+fn an_evictable_mark_takes_no_reference_and_leaves_with_the_inode() {
+    vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
     let g = InotifyData::new_fanotify(0);
-    let ino = mk_inode(FileType::Regular, 0xE101);
-    apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_OPEN, true, false, 0);
-    crate::inotify::marks::evict_inode_marks(&ino);
+    let sb = mk_sb(0xE001);
+    let ino = cached_inode(&sb, 0xE001);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false,
+                     crate::inotify::validate::FAN_MARK_EVICTABLE);
     fire_self(&ino, FAN_OPEN);
+    assert_eq!(masks(&g), [FAN_OPEN], "armed before eviction");
+    assert_eq!(ino.i_count(), 1, "an evictable mark took no reference");
+    sb.iput(ino.clone());
+    drop(ino);
+    assert!(sb.ilookup(0xE001).is_none(), "the inode left the cache");
+    assert!(g.watches.lock().is_empty(), "and the mark left with it");
+}
+
+/// A mark WITHOUT the flag holds a reference on its inode, which is what keeps
+/// the object — and therefore the mark's identity — alive. Dropping every
+/// other reference does not evict it.
+#[test]
+fn an_ordinary_mark_holds_its_inode_resident() {
+    vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
+    let g = InotifyData::new_fanotify(0);
+    let sb = mk_sb(0xE101);
+    let ino = cached_inode(&sb, 0xE101);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false, 0);
+    assert_eq!(ino.i_count(), 2, "the mark took a reference of its own");
+    sb.iput(ino.clone());
+    drop(ino);
+    let still = sb.ilookup(0xE101).expect("the mark keeps the inode resident");
+    assert_eq!(still.i_count(), 1, "exactly the mark's reference remains");
+    fire_self(&still, FAN_OPEN);
     assert_eq!(masks(&g), [FAN_OPEN]);
+}
+
+/// Retiring the mark gives the reference back, and the inode is then free to
+/// be evicted. Without the release a watcher that adds and removes marks in a
+/// loop pins every inode it ever touched.
+#[test]
+fn retiring_a_mark_releases_the_inode_it_held() {
+    vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
+    let g = InotifyData::new_fanotify(0);
+    let sb = mk_sb(0xE201);
+    let ino = cached_inode(&sb, 0xE201);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false, 0);
+    sb.iput(ino.clone());
+    drop(ino);
+    crate::inotify::syscalls::apply_inode_mark(&g, &sb.ilookup(0xE201).unwrap(), FAN_OPEN, false, false, 0);
+    assert!(g.watches.lock().is_empty(), "the mark is gone");
+    assert!(sb.ilookup(0xE201).is_none(), "and so is the reference it held");
+}
+
+/// An `FAN_MARK_ADD` restates whether the mark pins its object, so turning an
+/// ordinary mark evictable gives the reference back and turning an evictable
+/// one ordinary takes a fresh reference.
+#[test]
+fn re_adding_a_mark_restates_whether_it_pins_its_object() {
+    let g = InotifyData::new_fanotify(0);
+    let sb = mk_sb(0xE301);
+    let ino = cached_inode(&sb, 0xE301);
+    let evictable = crate::inotify::validate::FAN_MARK_EVICTABLE;
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false, 0);
+    assert_eq!(ino.i_count(), 2);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_MODIFY, true, false, evictable);
+    assert_eq!(ino.i_count(), 1, "the mark gave its reference up");
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_ACCESS, true, false, 0);
+    assert_eq!(ino.i_count(), 2, "and took a fresh one back");
+    drop(g);
+    assert_eq!(ino.i_count(), 1, "the group dying releases it");
+    sb.iput(ino.clone());
 }
 
 /// A `FAN_REPORT_PIDFD` group's read carries a pidfd info record after the
