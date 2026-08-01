@@ -27,7 +27,7 @@ pub use publication::{register, unregister};
 pub(crate) use publication::card_poll_subs;
 #[cfg(test)]
 pub use publication::{registered_card_ids, unregister_all};
-pub use scanout::{clear_scanout_ops, scanout_ops, set_scanout_ops, ScanoutDriverKey, ScanoutOps};
+pub use scanout::{clear_scanout_ops, scanout_ops, set_scanout_ops, DamageRect, ScanoutDriverKey, ScanoutOps};
 
 use auth::{
     authorize_magic, client_cap_atomic, copy_bytes_to_user,

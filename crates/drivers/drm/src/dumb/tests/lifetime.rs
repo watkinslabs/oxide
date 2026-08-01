@@ -9,7 +9,7 @@ fn clear_card_state_releases_bound_scanout_resource() {
     DESTROYED_RES_ID.store(0, Ordering::Release);
     crate::node::set_scanout_ops(3, crate::node::ScanoutOps {
         driver_key: scanout_key(0x3003), create_from_pa: test_create, destroy_resource: record_destroy,
-        set_scanout: test_set_scanout, set_cursor: test_set_cursor, move_cursor: test_move_cursor,
+        present: test_present, set_cursor: test_set_cursor, move_cursor: test_move_cursor,
         restore_console: test_restore, boot_res_id: test_boot,
     });
     TABLES.lock().fbs.push(FbObj {
