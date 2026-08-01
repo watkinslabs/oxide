@@ -39,21 +39,31 @@ pub mod rlim {
 /// `RLIM_INFINITY` per POSIX — the "no limit" sentinel.
 pub const INFINITY: u64 = u64::MAX;
 
-/// Linux's init-task rlimit defaults (kernel/include/asm-generic/
-/// resource.h `INIT_RLIMITS`). Inherited by every task at creation
-/// (and by fork per POSIX). Only the rusable ones diverge from
-/// RLIM_INFINITY; the rest stay unlimited so they don't bite.
+/// Linux's init-task rlimit table (`INIT_RLIMITS`) AFTER `fork_init`'s two
+/// overwrites, which is the state every task actually inherits. Fork copies it
+/// per POSIX. Anything not listed here is `RLIM_INFINITY` in both columns.
 ///
 /// RLIMIT_STACK = (8 MiB, RLIM_INFINITY) — Linux's _STK_LIM. Used
 /// by execve to compute mmap_base = stack_top - rlim_stack - GAP
 /// and by try_grow_stack as the upper bound on auto-extension.
+///
+/// The four DEFAULT-ZERO entries are the load-bearing ones and were all
+/// `RLIM_INFINITY` here until F777. `RLIMIT_NICE` and `RLIMIT_RTPRIO` are
+/// `{0, 0}` upstream: with them unlimited, the `setpriority(2)` and
+/// `sched_setscheduler(2)` ladders — which are written correctly and consult
+/// exactly these two slots — could never refuse anything, so any unprivileged
+/// process could take nice -20 or SCHED_FIFO priority 99 without `CAP_SYS_NICE`.
 pub const DEFAULT_RLIMITS: [(u64, u64); rlim::COUNT] = {
     let mut a = [(INFINITY, INFINITY); rlim::COUNT];
     a[rlim::STACK] = (8 * 1024 * 1024, INFINITY);
-    a[rlim::NOFILE] = (1024, 4096);  // Linux _RLIM_NOFILE / NR_OPEN_DEFAULT
+    a[rlim::NOFILE] = (1024, 4096);  // Linux INR_OPEN_CUR / INR_OPEN_MAX
     a[rlim::CORE]   = (0, INFINITY);  // disabled by default
     a[rlim::MEMLOCK] = (MLOCK_LIMIT, MLOCK_LIMIT);
-    a[rlim::SIGPENDING] = (THREADS_MAX / 2, THREADS_MAX / 2);
+    a[rlim::MSGQUEUE] = (MQ_BYTES_MAX, MQ_BYTES_MAX);
+    a[rlim::NPROC] = (DEFAULT_NPROC, DEFAULT_NPROC);
+    a[rlim::SIGPENDING] = (DEFAULT_SIGPENDING, DEFAULT_SIGPENDING);
+    a[rlim::NICE] = (0, 0);
+    a[rlim::RTPRIO] = (0, 0);
     a
 };
 
@@ -62,12 +72,20 @@ pub const DEFAULT_RLIMITS: [(u64, u64); rlim::COUNT] = {
 /// a second copy could disagree with what the sysctl reports.
 pub const THREADS_MAX: u64 = 32768;
 
-/// `INIT_RLIMITS` leaves `RLIMIT_SIGPENDING` at `{0, 0}` and `fork_init`
-/// immediately overwrites it with `max_threads / 2` (`kernel/fork.c`), so the
-/// zero in the table is never observable. Leaving it at `RLIM_INFINITY` instead
-/// would make the queued-record limit unenforceable, and an unbounded real-time
-/// queue is a memory-exhaustion path any unprivileged process can drive.
+/// `INIT_RLIMITS` leaves `RLIMIT_NPROC` and `RLIMIT_SIGPENDING` at `{0, 0}` and
+/// `fork_init` immediately overwrites BOTH with `max_threads / 2`, so the zeros
+/// in the table are never observable. Leaving either at `RLIM_INFINITY` instead
+/// would make its admission gate unreachable — an unbounded real-time signal
+/// queue and an unbounded task count are both memory-exhaustion paths any
+/// unprivileged process can drive.
 pub const DEFAULT_SIGPENDING: u64 = THREADS_MAX / 2;
+
+/// `fork_init`'s `RLIMIT_NPROC` default, the same `max_threads / 2`.
+pub const DEFAULT_NPROC: u64 = THREADS_MAX / 2;
+
+/// Linux `MQ_BYTES_MAX` — the `RLIMIT_MSGQUEUE` default for both columns, and
+/// the ceiling the POSIX message-queue admission gate charges against.
+pub const MQ_BYTES_MAX: u64 = 819_200;
 
 /// Linux `MLOCK_LIMIT` (`include/uapi/linux/resource.h`), the RLIMIT_MEMLOCK
 /// default for both the soft and hard limit. Leaving MEMLOCK unlimited would

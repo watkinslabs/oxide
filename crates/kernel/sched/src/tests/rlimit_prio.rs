@@ -4,7 +4,8 @@
 use alloc::sync::Arc;
 
 use crate::rlimit::{
-    nice_to_rlimit, prio_which, rlimit_to_nice, rlim, DEFAULT_RLIMITS, INFINITY, MAX_NICE, MIN_NICE,
+    nice_to_rlimit, prio_which, rlimit_to_nice, rlim, DEFAULT_NPROC as NPROC_DEFAULT,
+    DEFAULT_RLIMITS, INFINITY, MAX_NICE, MIN_NICE,
 };
 use crate::{SchedClass, Task};
 
@@ -112,12 +113,63 @@ fn fork_inherits_the_whole_table_into_a_fresh_thread_group() {
     assert_eq!(child.rlimit(rlim::NOFILE), (2048, 4096));
 }
 
+/// Every one of the 16 slots pinned to the value a Linux task actually starts
+/// with — `INIT_RLIMITS` with `fork_init`'s two `max_threads / 2` overwrites
+/// already applied. Written out in full rather than looped, because the four
+/// entries that were wrong (NPROC, MSGQUEUE, NICE, RTPRIO, all `RLIM_INFINITY`
+/// before F777) were wrong in the direction that makes a correctly-written
+/// enforcement ladder unreachable, which no round-trip test can catch.
 #[test]
 fn every_resource_index_is_addressable_and_defaults_match_linux_init_rlimits() {
+    const MIB8: u64 = 8 * 1024 * 1024;
     let t = task(9107);
     for i in 0..rlim::COUNT { assert_eq!(t.rlimit(i), DEFAULT_RLIMITS[i]); }
-    assert_eq!(t.rlimit(rlim::STACK), (8 * 1024 * 1024, INFINITY), "_STK_LIM");
-    assert_eq!(t.rlimit(rlim::NOFILE), (1024, 4096), "NR_OPEN_DEFAULT");
-    assert_eq!(t.rlimit(rlim::CORE), (0, INFINITY), "cores disabled by default");
-    assert_eq!(t.rlimit(rlim::CPU), (INFINITY, INFINITY));
+    let expect: [(u64, u64); rlim::COUNT] = [
+        (INFINITY, INFINITY),                            // CPU
+        (INFINITY, INFINITY),                            // FSIZE
+        (INFINITY, INFINITY),                            // DATA
+        (MIB8, INFINITY),                                // STACK — _STK_LIM
+        (0, INFINITY),                                   // CORE — cores off
+        (INFINITY, INFINITY),                            // RSS — inert upstream
+        (NPROC_DEFAULT, NPROC_DEFAULT),                  // NPROC — max_threads/2
+        (1024, 4096),                                    // NOFILE — INR_OPEN_CUR/MAX
+        (MIB8, MIB8),                                    // MEMLOCK — MLOCK_LIMIT
+        (INFINITY, INFINITY),                            // AS
+        (INFINITY, INFINITY),                            // LOCKS — inert upstream
+        (NPROC_DEFAULT, NPROC_DEFAULT),                  // SIGPENDING — max_threads/2
+        (819_200, 819_200),                              // MSGQUEUE — MQ_BYTES_MAX
+        (0, 0),                                          // NICE
+        (0, 0),                                          // RTPRIO
+        (INFINITY, INFINITY),                            // RTTIME
+    ];
+    for i in 0..rlim::COUNT {
+        assert_eq!(t.rlimit(i), expect[i], "RLIMIT index {i} default");
+    }
+}
+
+/// `RLIMIT_NICE` = 0 is what makes `nice_to_rlimit` refuse: the allowance is
+/// expressed as `20 - nice`, so a zero limit admits no negative nice at all,
+/// and only `CAP_SYS_NICE` overrides. A limit of `RLIM_INFINITY` (the pre-F777
+/// default) admitted nice -20 for every unprivileged process.
+#[test]
+fn the_default_nice_allowance_admits_no_priority_increase() {
+    let t = task(9108);
+    let (allowed, _) = t.rlimit(rlim::NICE);
+    assert_eq!(allowed, 0);
+    for nice in [-20, -1, 0, 19] {
+        assert!(nice_to_rlimit(nice) as u64 > allowed,
+            "nice {nice} needs CAP_SYS_NICE under the default allowance");
+    }
+    // Granting headroom is what a privileged `setrlimit` is for: `20 - nice`.
+    t.set_rlimit(rlim::NICE, (nice_to_rlimit(-5) as u64, INFINITY));
+    assert!(nice_to_rlimit(-5) as u64 <= t.rlimit(rlim::NICE).0);
+    assert!(nice_to_rlimit(-6) as u64 > t.rlimit(rlim::NICE).0, "one step further is still refused");
+}
+
+/// `RLIMIT_RTPRIO` = 0 is Linux's "unprivileged tasks get no real-time policy":
+/// `sched_setscheduler` demands `CAP_SYS_NICE` whenever the limit is zero.
+#[test]
+fn the_default_realtime_allowance_admits_no_realtime_policy() {
+    let t = task(9109);
+    assert_eq!(t.rlimit(rlim::RTPRIO), (0, 0));
 }
