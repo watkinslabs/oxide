@@ -134,7 +134,11 @@ fn apply(sock: &Arc<InetSocket>, action: Action, raw_val: i32) -> i64 {
             sock.opts.ipv6_recvtclass.store(0, Ordering::Release);
             sock.family.store(net::sock::AF_INET, Ordering::Release);
         }
-        Action::RouterAlert(on) => sock.opts.ipv6.set_flag(flag::RTALERT, on),
+        Action::RouterAlert { selector, on } => {
+            sock.opts.ipv6.set_ra_selector(
+                selector.unwrap_or(net::router_alert::V6_NO_SLOT));
+            sock.opts.ipv6.set_flag(flag::RTALERT, on)
+        }
         Action::Delegated => return errno(Errno::Enoprotoopt),
     }
     0

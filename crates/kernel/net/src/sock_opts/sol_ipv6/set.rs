@@ -75,7 +75,9 @@ pub enum Action {
     SrcPrefs(i32),
     /// Convert the socket to the IPv4 address family.
     AddrForm,
-    RouterAlert(bool),
+    /// `IPV6_ROUTER_ALERT`: `selector` is the chain slot to take, `None` to
+    /// release one; `on` is what the option bit reads back as.
+    RouterAlert { selector: Option<i32>, on: bool },
     /// Owned by the multicast, anycast or raw-socket table.
     Delegated,
 }
@@ -220,9 +222,12 @@ pub fn admit(optname: u64, val: i32, optlen: u32, sock: Ipv6Sock, caps: OptCaps)
             // Only a socket opened on the raw protocol itself can receive the
             // packets the chain carries.
             if !sock.raw || sock.protocol != IPPROTO_RAW { return Err(Errno::Enoprotoopt); }
-            if on && sock.on_ra_chain { return Err(Errno::Eaddrinuse); }
-            if !on && !sock.on_ra_chain { return Err(Errno::Enobufs); }
-            Ok(Action::RouterAlert(on))
+            // The operand is a selector, not a boolean: a zero value takes a
+            // chain slot matching alert value zero, and only a negative value
+            // releases one. The reported option bit still follows the boolean.
+            let selector = crate::router_alert::v6_selector(val);
+            crate::router_alert::admit(selector.is_some(), sock.on_ra_chain)?;
+            Ok(Action::RouterAlert { selector, on })
         }
 
         IPV6_PATHMTU | IPV6_HOPLIMIT | IPV6_AUTHHDR => Err(Errno::Enoprotoopt),
