@@ -3,54 +3,56 @@
 FROZEN 2026-05-02. Dep:`01`,`02`,`07`,`20`,`21`,`33`,`39`. Provides:kernel `_start`.
 ## 1 Purpose
 
-Define the boundary between bootloader (Limine on x86, EDK2/U-Boot on arm) and kernel. What state we expect, what we accept, what we reject.
+Define the boundary between bootloader (GRUB both arches) and kernel. What state we expect, what we accept, what we reject.
 
 ## 2 Invariants (frozen)
 
-1. x86_64: Limine modern protocol. CPU in long mode at kernel entry. No real-mode, no v8086, no BIOS calls.
-2. aarch64: UEFI app (EDK2-compatible) or U-Boot booti. CPU at EL2 or EL1 with MMU off.
-3. Bootloader hands a defined struct of (memory map, ACPI RSDP or DTB ptr, framebuffer info, kernel cmdline string, modules list inc. initramfs).
-4. Kernel does not parse legacy multiboot1, BIOS int 13h, or 32-bit protected mode.
-5. Kernel image format: ELF64 with `_start` as entry; relocated by bootloader if PIE (KASLR future).
+1. x86_64: multiboot2. GRUB enters the kernel's own 32-bit trampoline; the trampoline reaches long mode before any Rust runs. No real-mode, no v8086, no BIOS calls after entry.
+2. aarch64: arm64 Image protocol. Either a UEFI application (EFI stub, entered by GRUB `linux` under EDK2) or a flat `Image` at a known phys addr (U-Boot `booti` / QEMU `-kernel`). CPU at EL2 or EL1 with MMU off after the stub drops it.
+3. Bootloader hands the kernel enough to build one `BootInfo`: memory map, ACPI RSDP or DTB pointer, kernel cmdline string.
+4. Kernel does not parse multiboot1, BIOS int 13h, or any protocol other than the two above.
+5. Kernel image format: ELF64 loaded by multiboot2 (x86_64); PE32+ arm64 Image (aarch64).
+6. No initramfs and no bootloader module list. Root is an ext4 block device named by the cmdline (`39§5`).
 
-## 3 Limine protocol (x86_64)
+## 3 Multiboot2 protocol (x86_64)
 
-We use Limine ≥ 6.0 with the [Limine Boot Protocol](https://github.com/limine-bootloader/limine).
+Kernel ELF embeds a Multiboot2 header (spec §3.1.2) in the first 32 KiB. Its entry-address tag (type 3) names a 32-bit trampoline, not `_start`: GRUB enters in protected mode with paging off, so the kernel builds its own page tables before any Rust code runs.
 
-Kernel ELF embeds `.limine_requests` section with feature-request structs:
-- `LIMINE_FRAMEBUFFER_REQUEST` → fb info.
-- `LIMINE_HHDM_REQUEST` → higher-half direct-map base.
-- `LIMINE_MEMMAP_REQUEST` → memory map.
-- `LIMINE_RSDP_REQUEST` → ACPI RSDP physical address.
-- `LIMINE_SMP_REQUEST` → AP info.
-- `LIMINE_KERNEL_FILE_REQUEST` → kernel ELF self-pointer (for kallsyms etc.).
-- `LIMINE_MODULE_REQUEST` → loaded modules (initramfs).
-- `LIMINE_KERNEL_ADDRESS_REQUEST` → physical and virtual base.
-- `LIMINE_BOOT_TIME_REQUEST` → boot wallclock seed.
+| Stage | State |
+|---|---|
+| GRUB → trampoline | 32-bit protected mode, paging off, A20 on, IF=0, `eax` = `0x36d76289`, `ebx` = MB2 info phys addr |
+| Trampoline | Saves magic + info ptr; builds identity (0–1 GiB), higher-half (`0xFFFFFFFF80000000` → LMA `0x200000`), and HHDM (`0xFFFF800000000000` → phys 0, 1 GiB pages) maps; enables PAE+LME+NXE+PG; tears down the low identity map |
+| Trampoline → `_start` | Long mode, IRQs off, BSP only, kernel at its linked higher-half VA |
 
-Kernel `_start` reads response pointers; aborts if any required is null.
+Multiboot2 info tags consumed:
 
-Bootloader-provided invariants we trust:
-- Higher-half direct-map established.
-- ACPI tables physically reachable.
-- BSP in long mode, paging on, IRQs disabled.
+| Tag | Use |
+|---|---|
+| 1 (boot command line) | `/proc/cmdline`, `oxide.*` tokens (`§5`) |
+| 6 (memory map) | `BootInfo.memmap`, carved around the loaded kernel image |
+| 15 (ACPI 2.0 RSDP) | `BootInfo.rsdp_pa` — preferred; carries the XSDT the MADT walk needs |
+| 14 (ACPI 1.0 RSDP) | fallback only; RSDT-only |
+
+Not supplied by this handoff, and therefore owned by the kernel:
+- HHDM base: installed by the trampoline, reported as `BootInfo.hhdm_offset`.
+- Framebuffer: from the virtio-gpu / DRM path (`35`), not a boot tag.
+- CPU topology and AP startup: ACPI MADT plus the kernel's own INIT/SIPI trampoline (`13§11`). The handoff carries no CPU table.
+- GDT/IDT/PIC state: the trampoline's GDT is temporary; `_start_rust` installs kernel-owned GDT/TSS/IDT and remaps+masks the legacy 8259 before the first `sti` (`20§3`).
 
 ## 4 EDK2 / U-Boot (aarch64)
 
-Kernel is a UEFI executable (PE32+ wrapping our ELF) OR a flat `Image` blob loaded by U-Boot at a known phys addr.
+Kernel is a PE32+ arm64 `Image` (64-byte Linux Image header, `Documentation/arm64/booting.rst`) wrapping the kernel ELF's loadable image, with an EFI stub entry.
 
-UEFI path:
-- Kernel runs as UEFI application; uses Boot Services to:
-  - Get memory map (`GetMemoryMap`).
-  - Get ACPI from `EFI_CONFIG_TABLE` (or DTB from same).
-  - Locate framebuffer via GOP.
-  - Load initramfs from same FS.
-- Then `ExitBootServices`. After: only Runtime Services available.
+UEFI path (the one CI boots): OVMF → GRUB `arm64-efi` → `linux /boot/oxide-aarch64.Image`. The stub, still in Boot Services:
+- Reads the cmdline from the loaded-image protocol's UCS-2 `LoadOptions`. This firmware publishes no FDT, so there is no `/chosen/bootargs` to read.
+- Finds the ACPI 2.0 RSDP in the EFI configuration table (`gEfiAcpi20TableGuid`) and records it for `BootInfo.rsdp_pa`; without it PCI never enumerates.
+- `ExitBootServices`, drops the MMU, then joins the self-boot trampoline.
 
-U-Boot path:
-- DTB in `x0`; Image base in fixed addr.
-- Set up minimal env, jump to kernel.
-- Initramfs loaded by U-Boot script to a known addr; address noted in DTB chosen-node.
+U-Boot / QEMU `-kernel` path: `booti` loads the flat Image at the RAM base and jumps to byte 0 with MMU off and `x0` = DTB phys. The kernel parses the DTB `/memory` node for the memmap and `/chosen/bootargs` for the cmdline.
+
+Both paths converge on the same trampoline: drop EL2→EL1 if needed, build identity + higher-half + HHDM tables, enable the MMU, jump to the higher-half VA, clear TTBR0, tail-call `_start`.
+
+AP startup is PSCI `CPU_ON` driven by the kernel off the DTB `/cpus` list or the MADT — no bootloader parks APs.
 
 ## 5 Cmdline
 
@@ -70,23 +72,23 @@ Single-threaded boot until `smp_init`.
 
 ## 7 Test contract (frozen)
 
-- Limine boot of empty kernel → "hello via UART" + clean QEMU exit (ISA-debug-exit).
-- Limine boot with initramfs module attached: kernel sees module, mounts as rootfs.
-- EDK2 boot in QEMU `virt`: same sequence.
+- GRUB multiboot2 boot in QEMU q35 → "hello via UART" + clean QEMU exit (ISA-debug-exit).
+- GRUB EFI-stub boot in QEMU `virt` under OVMF: same sequence.
+- Both arches: `BootInfo.rsdp_pa` non-zero, MADT decodes, memmap total ≈ QEMU `-m`.
 - Cmdline parse: invalid `oxide.smp=abc` logs warn, ignores; valid keys take effect.
 - Memory map sanity: PMM init reports total ≈ QEMU `-m`.
 
 ## 8 Failure modes
 
-- Required Limine request null: kernel halts with "boot protocol error" via UART.
+- Bootloader magic absent (entered outside the multiboot2 trampoline): empty memmap, kernel halts with "boot protocol error" via UART.
 - ExitBootServices fail: halt.
 - Memmap empty: halt.
 
 ## 9 Debug
 
-`debug-boot`: dump every Limine request response; full memmap; cmdline tokens.
+`debug-boot`: dump the parsed handoff (HHDM, RSDP, bootloader magic); full memmap; cmdline tokens.
 
 ## 10 Cross-spec
 
-`33` (RSDP/DTB consumption), `20`/`21` (early arch setup), `39` (image builder produces compatible ESP/initramfs).
+`33` (RSDP/DTB consumption), `20`/`21` (early arch setup), `39§5` (image builder produces the GRUB ISO + root disk), `13§11` (kernel-driven AP startup).
 

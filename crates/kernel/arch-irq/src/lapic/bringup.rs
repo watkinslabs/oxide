@@ -28,7 +28,7 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     if LAPIC_BASE_VA.load(Ordering::Acquire) != 0 {
         return LapicStatus::AlreadyOn;
     }
-    // Make sure IA32_APIC_BASE.E is set (Limine leaves it on, but
+    // Make sure IA32_APIC_BASE.E is set (firmware usually leaves it on, but
     // be defensive -- bit 11 is the global enable).
     // SAFETY: rdmsr/wrmsr on IA32_APIC_BASE are privileged but
     // legal at CPL=0; bit 11 is the well-defined global-enable bit.

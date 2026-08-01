@@ -63,7 +63,7 @@ impl AddressSpace {
                 // Zero-fill via HHDM kernel mirror per `11§5` "zero_or_loaded".
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM
                 // mirror at `hhdm_offset + pa` is mapped writable in
-                // the kernel's page tables (Limine-installed); 4096
+                // the kernel's page tables (boot-installed); 4096
                 // bytes is the page granule.
                 unsafe {
                     let dst = (hhdm_offset + pa) as *mut u8;

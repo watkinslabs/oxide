@@ -1,4 +1,4 @@
-// `xtask image`, `xtask grub` per `07§8`. Limine is gone on both arches:
+// `xtask image`, `xtask grub` per `07§8`. GRUB boots both arches:
 // x86 boots via GRUB multiboot2, aarch64 via the GRUB EFI-stub `linux`
 // path (arm64 Image + self-boot MMU trampoline). `image` is a thin alias
 // that builds the GRUB boot artifact without launching qemu; `grub`
@@ -98,7 +98,7 @@ pub(super) fn ensure_virtio_blk_extra_img(
 }
 
 /// `xtask image --arch <arch>` — build the bootable artifact
-/// (`target/oxide-<arch>-grub.iso`) without launching qemu. Limine is
+/// (`target/oxide-<arch>-grub.iso`) without launching qemu. GRUB is
 /// gone, so this is a thin alias for `grub --arch <arch> --build-only`:
 /// one "produce the boot artifact" entry point for external harnesses
 /// (qemu-mcp, accept.py, run-smokes.sh).

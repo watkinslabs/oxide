@@ -145,7 +145,7 @@ _arm_entry:
     /* GICv3 CPU interface: ICC_SRE_EL2 = Enable|DFB|DIB|SRE (0xf) so
        EL1 may use the ICC_ system registers; without SRE the kernel's
        GICv3 init cannot deliver IRQs (the timer tick never fires and
-       the scheduler wedges). Linux/Limine set this at EL2.           */
+       the scheduler wedges). Linux sets this at EL2.                 */
     mov     x0, #0xf
     msr     S3_4_C12_C9_5, x0     /* ICC_SRE_EL2 */
     isb

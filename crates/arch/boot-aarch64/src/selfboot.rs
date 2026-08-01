@@ -1,4 +1,4 @@
-// aarch64 self-bootstrap boot path (no Limine). QEMU `-machine virt
+// aarch64 self-bootstrap boot path. QEMU `-machine virt
 // -kernel <Image>` (and U-Boot `booti`) load a flat arm64 Image at RAM
 // base 0x4000_0000 (text_offset 0) and jump to byte 0 with the MMU off,
 // caches off, x0 = DTB phys, at EL2 (cortex-a72 on virt) or EL1.
@@ -7,9 +7,7 @@
 // booting.rst`); its first word branches to `_arm_entry`, the MMU
 // trampoline. The trampoline drops EL2->EL1 if needed, builds boot page
 // tables, enables the MMU, jumps to the kernel's higher-half VMA, then
-// tail-calls the shared `_start` (which Limine also enters). The Limine
-// path is unaffected: Limine enters at the ELF `e_entry` (`_start`) with
-// the MMU already on and never touches the Image header / trampoline.
+// tail-calls the shared `_start`.
 //
 // Address-space layout the boot page tables install (4 KiB granule,
 // 1 GiB level-1 block descriptors, 48-bit VA):
@@ -34,8 +32,8 @@ use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 pub const ARM_SELFBOOT_HHDM: u64 = 0xFFFF_8000_0000_0000;
 
 /// Set to 1 by the trampoline (after the high jump) when we booted via
-/// the Image protocol rather than Limine. `_start_rust` reads it to pick
-/// `ARM_SELFBOOT_HHDM` instead of the (absent) Limine HHDM response.
+/// the arm64 Image protocol. `_start_rust` reads it to pick
+/// `ARM_SELFBOOT_HHDM` as the `BootInfo` HHDM offset.
 #[no_mangle]
 pub static SB_SELFBOOT_FLAG: AtomicU64 = AtomicU64::new(0);
 
@@ -53,7 +51,7 @@ pub static SB_LOAD_BASE: AtomicU64 = AtomicU64::new(0);
 /// ACPI). `build_boot_info` surfaces it as `BootInfo.rsdp_pa` so the kernel
 /// decodes RSDP→XSDT→MCFG (PCI ECAM) + MADT — without it the EFI/GRUB arm
 /// path has neither DTB nor ACPI, so PCI never enumerates (no GPU/display)
-/// and CPUs can't be counted. Limine used to surface this; we lost it.
+/// and CPUs can't be counted.
 #[no_mangle]
 pub static EFI_RSDP_PA: AtomicU64 = AtomicU64::new(0);
 

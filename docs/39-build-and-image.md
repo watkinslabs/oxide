@@ -66,17 +66,16 @@ xtask sign-cert <key.pem>             # generate `OXIDE_TRUSTED_KEYS` for module
 
 ## 5 Image format
 
-`boot.img` = a GPT disk image with two partitions:
-1. ESP (FAT32, ~64 MiB): `EFI/BOOT/BOOT<arch>.EFI` (Limine x86 / EDK2-shim arm), kernel ELF, initramfs.cpio.zst, `limine.conf` (x86) or DTB (arm).
-2. Optional: ext4 rootfs partition (when running with persistent root; otherwise `root=tmpfs`).
+`xtask image` produces a GRUB rescue ISO plus a separate root disk — no ESP, no GPT boot image, no initramfs:
+1. `oxide-<arch>-grub.iso` (`grub2-mkrescue`): `boot/grub/grub.cfg` + the kernel payload. x86_64 loads `boot/oxide-x86_64` (ELF) with `multiboot2`; aarch64 loads `boot/oxide-aarch64.Image` (EFI-stub arm64 Image) with `linux`. Firmware is SeaBIOS El Torito on x86_64, OVMF on aarch64.
+2. `root-<arch>.img`: ext4 root, attached as virtio-blk and named by the kernel cmdline.
 
 Root filesystem content is Fedora's, composed by `../images` (`29a§2`): `/sbin/init`→systemd, `/lib64/ld-linux-*`, `/lib64/libc.so.6`, `/bin/{bash,…}`, `/etc/*`, empty `/proc`,`/sys`,`/dev`,`/tmp` mount points. This repo adds nothing to it but the conformance probes (`29a§5`).
 
 Built by `xtask`:
 - `xtask kernel` + `xtask artifacts` → kernel ELF.
 - `xtask rootfs` → copy `../images/output/<profile>-<arch>-root.img`.
-- Build ESP image with `mtools` (`mformat`,`mcopy`); GRUB config for x86, DTB path for arm.
-- Build GPT.
+- `xtask grub` stages `boot/` + `grub.cfg` and runs `grub2-mkrescue` (aarch64 with `-d vendor/grub/arm64-efi`, fetched by `tools/fetch-vendor.sh`).
 
 ## 6 Reproducibility
 

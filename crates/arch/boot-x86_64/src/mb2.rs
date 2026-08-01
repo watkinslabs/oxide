@@ -1,5 +1,5 @@
-// Multiboot2 boot path (GRUB loads our kernel directly, replacing
-// Limine). The header GRUB scans for in the first 32 KiB of the ELF
+// Multiboot2 boot path: GRUB loads our kernel ELF directly. The header
+// GRUB scans for in the first 32 KiB of the ELF
 // carries an entry-address tag pointing at `_mb2_entry` — a 32-bit
 // trampoline (GRUB enters in protected mode, paging off). The
 // trampoline builds boot page tables, switches to 64-bit long mode, and
@@ -223,7 +223,7 @@ _mb2_entry:
     /* EFER.LME (bit 8) + EFER.NXE (bit 11), MSR 0xC0000080. NXE is
        mandatory: the kernel's device/user/rodata leaves set the NX bit
        (63); without NXE that bit is reserved and the first access to an
-       NX page faults RSVD (this is what Limine enables for us). */
+       NX page faults RSVD. */
     mov $0xC0000080, %ecx
     rdmsr
     or  $((1 << 8) | (1 << 11)), %eax
@@ -269,10 +269,9 @@ _mb2_high:
     movabs $mb2_pml4, %rax
     movq $0, (%rax)
 
-    /* 'L64' breadcrumb, then hand off to the bootloader-agnostic _start
-       (it swaps to KERNEL_STACK and tail-calls _start_rust). The Limine-
-       vs-MB2 split happens in build_boot_info / capture_cmdline, keyed on
-       the saved bootloader magic. */
+    /* 'L64' breadcrumb, then hand off to _start (it swaps to
+       KERNEL_STACK and tail-calls _start_rust, which reads the saved
+       bootloader magic + info pointer to build the BootInfo). */
     mov $0x3F8, %dx
     mov $0x4C, %al      /* 'L' */
     out %al, %dx
@@ -320,7 +319,8 @@ pub mod info {
         static __kernel_end: u8;
     }
 
-    /// True when GRUB (any MB2 loader) booted us rather than Limine.
+    /// True when a multiboot2 loader (GRUB) entered through the
+    /// trampoline, which is the only supported x86_64 handoff (`36§3`).
     /// # C: O(1)
     pub fn is_mb2_boot() -> bool {
         // SAFETY: mb2_saved_magic is a 'static BSS u64 the trampoline
@@ -426,10 +426,10 @@ pub mod info {
         let mut p = base + 8;
         let mut n = 0usize;
         // Despite the `rsdp_pa` field name, kernel_main treats this as a
-        // directly-dereferenceable kernel VA (firmware::acpi derefs it,
-        // acpi.rs:182) — Limine reports an HHDM VA here, not a raw
-        // physical. We mirror that: the RSDP copy GRUB embeds in the MB2
-        // ACPI tag is already HHDM-mapped, so its VA is what we return.
+        // directly-dereferenceable kernel VA (firmware::acpi derefs it),
+        // not a raw physical address. The RSDP copy GRUB embeds in the
+        // MB2 ACPI tag is already HHDM-mapped, so its VA is what we
+        // return.
         let mut rsdp_va = 0u64;
         while p + 8 <= end {
             let ty = rd32(p);

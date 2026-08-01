@@ -150,7 +150,7 @@ Bare integer literals in any of these positions = silent bug bait
 - `-Zbuild-std=core,compiler_builtins,alloc` for kernel targets.
 - `rust-lld` linker both arches.
 - Custom JSONs in `targets/` are kernel-only; userspace uses upstream `*-unknown-linux-gnu` targets.
-- Limine (x86_64) / EDK2 or U-Boot (aarch64) bootloaders.
+- GRUB both arches: multiboot2 (x86_64) / EFI-stub arm64 Image under EDK2 or U-Boot `booti` (aarch64).
 
 ## CI (`docs/40`)
 

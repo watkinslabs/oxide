@@ -160,7 +160,7 @@ fn log_boot_info(info: &BootInfo) {
             klog::write_raw(b"\n");
         }
         firmware::set_add_cpu_hook(cpu::add_cpu);
-        // SAFETY: `info.rsdp_pa` is the Limine-supplied kernel VA
+        // SAFETY: `info.rsdp_pa` is the boot-stub-supplied kernel VA
         // for the RSDP (HHDM-mapped); the bootloader keeps the
         // backing memory alive past kernel handoff per `36§3`.
         unsafe { firmware::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }

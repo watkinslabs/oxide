@@ -238,7 +238,7 @@ impl Context for ContextX86_64 {
         entry: extern "C" fn(usize) -> !,
         arg: usize,
     ) -> Self {
-        // Selectors per Limine v6+ GDT layout: code = 0x28 (64-bit kernel
+        // Selectors per the kernel GDT layout: code = 0x28 (64-bit kernel
         // CS), data = 0x30 (64-bit kernel DS/SS).
         let regs = PtRegs {
             r12:    entry as *const () as usize as u64,

@@ -94,7 +94,7 @@ fn decode_ep2(hhdm: u64, ep: &[u8]) -> Option<DmiId> {
 fn decode_at(hhdm: u64, table_pa: u64, max_len: usize) -> Option<DmiId> {
     if table_pa == 0 || max_len == 0 || max_len > SMBIOS_MAX_TABLE_LEN { return None; }
     // SAFETY: table_pa/max_len come from the validated entry point; the table
-    // lies in the same HHDM-mapped firmware region as the anchor (Limine/GRUB
+    // lies in the same HHDM-mapped firmware region as the anchor (GRUB
     // map physical RAM linearly at `hhdm`). Bounded by max_len; parsing is safe.
     let tbl: &[u8] = unsafe {
         core::slice::from_raw_parts((hhdm + table_pa) as *const u8, max_len)

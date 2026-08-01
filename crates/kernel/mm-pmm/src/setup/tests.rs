@@ -15,8 +15,6 @@ use super::*;
             boot_ns: 0,
             rsdp_pa: 0,
             hhdm_offset: 0xFFFF_8000_0000_0000,
-            smp_info_array: 0,
-            smp_count: 0,
             bsp_lapic_id: 0,
             _pad: 0,
         };
@@ -35,8 +33,6 @@ use super::*;
             boot_ns: 0,
             rsdp_pa: 0,
             hhdm_offset: 0,
-            smp_info_array: 0,
-            smp_count: 0,
             bsp_lapic_id: 0,
             _pad: 0,
         };

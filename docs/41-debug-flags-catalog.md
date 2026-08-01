@@ -52,7 +52,7 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-hal-aarch64` | `hal-aarch64` | TCR/MAIR/SCTLR/per-cpu reg dump | boot-only | `21§17` |
 | `debug-power` | `power` | log reboot attempts, idle states | <1% | `32§11` |
 | `debug-ipc` | `ipc` | pipe/AF_UNIX buffer dumps; futex queue dump; signal trace | 20% | `24§14` |
-| `debug-boot` | `boot-*` | dump Limine responses; full memmap | boot-only | `36§9` |
+| `debug-boot` | `boot-*` | dump the parsed handoff (HHDM/RSDP/magic); full memmap | boot-only | `36§9` |
 | `debug-all` | meta | enables all `debug-*` except `debug-syscalls`, `debug-slab-audit`, `debug-net` (too expensive for general use) | varies | recommended for routine debug work |
 | `paranoid-ci` | meta | aggressive-audit PR-time build. Enables: `debug-pmm` + `debug-alloc` + `debug-lockdep` + `debug-preempt` + `debug-sched-canary` + `debug-vmm` + `debug-vfs`. Catches concurrency / memory / refcount bugs by per-op auditing in proptest harnesses, not by long workloads. | 5–10× | **MANDATORY in `pr.yml` test-hosted job per `40§2`** |
 
