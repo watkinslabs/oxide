@@ -7,10 +7,10 @@ use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, In
 
 use crate::inotify::dispatch::register_instance;
 use crate::inotify::layout::{encode_event, event_record_len};
-use crate::inotify::queue::{fanotify_should_merge, is_mergeable_event, FANOTIFY_MAX_MERGE_EVENTS};
-use crate::inotify::response::{validate_response, validate_response_fd, FAN_ALLOW, RESPONSE_LEN};
+use crate::inotify::response::{parse_response_info, validate_response, validate_response_fd,
+    AuditRule, AUDIT_RULE_LEN, FAN_ALLOW, FAN_INFO, RESPONSE_LEN};
 use crate::inotify::types::{
-    Event, InotifyData, PermState, IN_Q_OVERFLOW, MARK_COUNT, NEXT_INOTIFY_INO,
+    Event, InotifyData, PermState, IN_Q_OVERFLOW, MARK_COUNT, MNTNS_MARK_COUNT, NEXT_INOTIFY_INO,
     PERM_BITS, PERM_MARK_COUNT,
 };
 use crate::inotify::validate::{FAN_CLASS_PRE_CONTENT, FAN_ENABLE_AUDIT, FAN_REPORT_DIR_FID,
@@ -60,7 +60,7 @@ impl InotifyData {
             max_events,
             fanotify,
             watches: sync::Spinlock::new(Vec::new()),
-            events: sync::Spinlock::new(alloc::collections::VecDeque::new()),
+            events: sync::Spinlock::new(crate::inotify::queue::EventQueue::new()),
             closed: core::sync::atomic::AtomicBool::new(false),
             poll_subs: Arc::new(PollSubscribers::new()),
             read_waiters: crate::inotify::types::ReadWaiters::new(),
@@ -147,13 +147,13 @@ impl InotifyData {
             if self.closed.load(Ordering::Acquire) { return false; }
             if q.len() >= self.max_events {
                 if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return false; }
-                q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(),
-                                    obj: None, pid: 0, perm: None });
+                q.push(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(),
+                               obj: None, pid: 0, perm: None, mnt_id: 0 });
                 true
             } else if self.merge_into_queue(&mut q, &ev) {
                 false
             } else {
-                q.push_back(ev);
+                q.push(ev);
                 true
             }
         };
@@ -166,16 +166,16 @@ impl InotifyData {
 
     /// The group's merge callback. `true` when `ev` was folded into a record
     /// already in the queue and must not be queued again.
-    /// # C: O(FANOTIFY_MAX_MERGE_EVENTS)
-    fn merge_into_queue(&self, q: &mut alloc::collections::VecDeque<Event>, ev: &Event) -> bool {
+    ///
+    /// inotify compares against the queue TAIL alone; fanotify hashes the event
+    /// on the object it happened to and searches only that bucket, so a
+    /// mergeable pair finds each other however deep the queue has grown.
+    /// # C: O(1) inotify / O(FANOTIFY_MAX_MERGE_EVENTS) fanotify
+    fn merge_into_queue(&self, q: &mut crate::inotify::queue::EventQueue, ev: &Event) -> bool {
         if !self.fanotify {
             return q.back().is_some_and(|t| crate::inotify::queue::merges_into_tail(t, ev));
         }
-        if !is_mergeable_event(ev) { return false; }
-        for old in q.iter_mut().rev().take(FANOTIFY_MAX_MERGE_EVENTS) {
-            if fanotify_should_merge(old, ev) { old.mask |= ev.mask; return true; }
-        }
-        false
+        q.merge_fanotify(ev)
     }
 
     /// Apply one validated `struct fanotify_response`: find the pending
@@ -183,12 +183,14 @@ impl InotifyData {
     /// wake the parked accessor. `ENOENT` when no pending event carries that
     /// descriptor — a stale or invented fd is reported, not ignored.
     /// # C: O(N_pending)
-    fn apply_response(&self, fd: i32, response: u32) -> Result<(), VfsError> {
+    fn apply_response(&self, fd: i32, response: u32, rule: Option<AuditRule>)
+        -> Result<(), VfsError> {
         let taken = {
             let mut pend = self.perm_pending.lock();
             pend.iter().position(|(f, _)| *f == fd).map(|pos| pend.remove(pos))
         };
         let Some((_, st)) = taken else { return Err(VfsError::Enoent) };
+        if let Some(r) = rule { st.set_audit_rule(r); }
         if st.answer(response) { self.access_waiters.wake_all(); }
         Ok(())
     }
@@ -341,9 +343,15 @@ impl InotifyData {
     ///
     /// EXACTLY ONE response per write, whatever the caller's count — a longer
     /// write carries an optional info record for that single response, never a
-    /// second response, and the return value is the 8 bytes consumed rather
-    /// than the count. A short write is EINVAL; an unknown descriptor is
+    /// second response. A short write is EINVAL; an unknown descriptor is
     /// ENOENT. inotify fds are not writable.
+    ///
+    /// The return value is the response struct plus the info record the write
+    /// actually carried, so a daemon that attaches a record and gets back `8`
+    /// knows the record was not taken. `FAN_INFO`'s record is parsed BEFORE the
+    /// descriptor is admitted, and a `FAN_NOFD` descriptor with a valid record
+    /// is accepted for the record alone — such a write names no event, so it
+    /// neither answers one nor reports ENOENT.
     /// # C: O(N_pending)
     pub(crate) fn write(&self, _o: u64, buf: &[u8]) -> KResult<usize> {
         if !self.fanotify { return Err(VfsError::Eio); }
@@ -352,10 +360,20 @@ impl InotifyData {
         let resp = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let pre_content = self.flags & FAN_CLASS_PRE_CONTENT != 0;
         let audit = self.flags & FAN_ENABLE_AUDIT != 0;
-        let verdict = validate_response(resp, pre_content, audit).map_err(|_| VfsError::Einval)?;
+        let _ = validate_response(resp, pre_content, audit).map_err(|_| VfsError::Einval)?;
+        let mut rule = None;
+        let mut consumed = 0usize;
+        if resp & FAN_INFO != 0 {
+            rule = Some(parse_response_info(&buf[RESPONSE_LEN..]).map_err(|_| VfsError::Einval)?);
+            consumed = AUDIT_RULE_LEN;
+            if fd == crate::inotify::fan_layout::FAN_NOFD { return Ok(RESPONSE_LEN + consumed); }
+        }
         let fd = validate_response_fd(fd).map_err(|_| VfsError::Einval)?;
-        self.apply_response(fd, verdict.access | (resp & !crate::inotify::response::RESPONSE_ACCESS))?;
-        Ok(RESPONSE_LEN)
+        // `event->response = response & ~FAN_INFO` — the record is stored
+        // beside the verdict, not inside it, so a re-read of the stored word
+        // never claims a record that is no longer attached to it.
+        self.apply_response(fd, resp & !FAN_INFO, rule)?;
+        Ok(RESPONSE_LEN + consumed)
     }
 
     /// Last close of a fanotify group auto-allows pending permission events so
@@ -385,12 +403,17 @@ impl Drop for InotifyData {
         // auto-allow runs here too — a blocked accessor must never outlive the
         // group it is waiting on.
         if self.fanotify { self.release_perms(); }
-        let (held, perms) = {
+        let (held, perms, mntns) = {
             let g = self.watches.lock();
-            (g.len(), g.iter().filter(|w| w.mask & PERM_BITS != 0).count())
+            (g.len(), g.iter().filter(|w| w.mask & PERM_BITS != 0).count(),
+             g.iter().filter(|w| w.scope == crate::inotify::types::MarkScope::MountNamespace).count())
         };
         self.release_marks(held);
         if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
+        // The mount-tree fast path keys on this count, so a group dying with
+        // live mount-namespace marks must give them back or every mount in the
+        // system keeps paying for a watcher that no longer exists.
+        if mntns > 0 { MNTNS_MARK_COUNT.fetch_sub(mntns, Ordering::AcqRel); }
         let group_kind = if self.fanotify { Ucount::FanotifyGroups } else { Ucount::InotifyInstances };
         vfs::fsnotify::dec_ucount(self.uid, group_kind, 1);
         // The live marks the group still held are gone with it.

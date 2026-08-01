@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 
 use vfs::{InodeRef, KResult, VfsError};
 
-use crate::inotify::fan_layout;
+use crate::inotify::{fan_layout, fan_mnt};
 use crate::inotify::types::{Event, InotifyData, PermState};
 
 impl InotifyData {
@@ -75,12 +75,14 @@ impl InotifyData {
     }
 
     /// Bytes `ev` occupies in a reader's buffer under this group's report mode:
-    /// the fixed metadata, the optional fid record, and the optional pidfd
-    /// record. # C: O(1)
+    /// the fixed metadata, the optional fid record, the optional pidfd record,
+    /// and — for a mount-tree change — the mount record naming the mount that
+    /// moved. # C: O(1)
     pub(crate) fn fan_event_len(&self, ev: &Event) -> usize {
         let mut n = fan_layout::event_len(self.info_type(ev), fan_layout::FANOTIFY_FID_LEN,
                                           ev.name.len());
         if self.reports_pidfd() { n += fan_layout::PIDFD_INFO_LEN; }
+        if fan_mnt::is_mnt_event(ev.mask) { n += fan_mnt::MNT_INFO_LEN; }
         n
     }
 
@@ -152,8 +154,12 @@ impl InotifyData {
                                                fan_layout::FANOTIFY_FID_TYPE, &fh, &ev.name);
         }
         if self.reports_pidfd() {
-            let pidfd = self.install_pidfd(ev.pid);
-            fan_layout::encode_pidfd_info(&mut dst[off..total], pidfd);
+            off += fan_layout::encode_pidfd_info(&mut dst[off..total], self.install_pidfd(ev.pid));
+        }
+        // The mount record comes LAST, after every other info record a group
+        // could have asked for.
+        if fan_mnt::is_mnt_event(ev.mask) {
+            fan_mnt::encode_mnt_info(&mut dst[off..total], ev.mnt_id);
         }
         total
     }

@@ -92,6 +92,19 @@ pub trait SuperOps: Send + Sync {
     fn fh_to_parent(&self, sb: &SuperBlock, ino: Ino, generation: u32) -> Option<InodeRef> {
         self.fh_to_dentry(sb, ino, generation)
     }
+    /// `s_export_op->get_parent` — the directory containing `dir`, used by the
+    /// reconnect walk to climb from a decoded directory to an ancestor that is
+    /// already in the dentry tree.
+    ///
+    /// The default reads `dir`'s `..` entry and decodes that number, which is
+    /// every filesystem whose directories carry a real `..`. A backend that
+    /// keeps the parent link somewhere else (a synthesized hierarchy, an
+    /// on-disk back-pointer) overrides this; without a working answer a
+    /// fully-evicted directory handle can only ever come back disconnected.
+    /// # C: FS-dependent
+    fn get_parent(&self, sb: &SuperBlock, dir: &InodeRef) -> Option<InodeRef> {
+        crate::export::generic_get_parent(sb, dir)
+    }
     /// True when this instance can decode the handles it encodes
     /// (`exportfs_can_decode_fh`). A filesystem whose inode numbers are not a
     /// resolvable identity says `false`, and `name_to_handle_at` reports

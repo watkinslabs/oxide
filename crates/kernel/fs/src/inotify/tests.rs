@@ -179,10 +179,10 @@ fn inotify_queue_overflow_reports_single_overflow_event() {
     // Distinct wds: identical consecutive records are MERGED into the tail
     // (Linux `inotify_merge`), so a run of clones would never fill the queue.
     for i in 0..INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
-        ino.enqueue_event(Event { wd: i as i32, mask: IN_OPEN, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None });
+        ino.enqueue_event(Event { wd: i as i32, mask: IN_OPEN, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
     }
-    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None });
-    ino.enqueue_event(Event { wd: 1, mask: IN_ATTRIB, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None });
+    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
+    ino.enqueue_event(Event { wd: 1, mask: IN_ATTRIB, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
     let q = ino.events.lock();
     assert_eq!(q.len(), INOTIFY_DEFAULT_MAX_QUEUED_EVENTS + 1);
     assert_eq!(q.back().map(|e| (e.wd, e.mask)), Some((-1, IN_Q_OVERFLOW)));
@@ -256,53 +256,53 @@ fn fanotify_mark_group_validation_matches_linux_units() {
     let einval = syscall::errno::Errno::Einval;
     let ino = InotifyData::new(0);
     assert_eq!(
-        validate_fanotify_mark_group(&ino, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&ino, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD, true),
         Err(einval),
     );
 
     let notif = InotifyData::new_fanotify(0);
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_FS_ERROR, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_FS_ERROR, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Mount, FAN_OPEN, FAN_MARK_ADD | FAN_MARK_EVICTABLE),
+        validate_fanotify_mark_group(&notif, MarkScope::Mount, FAN_OPEN, FAN_MARK_ADD | FAN_MARK_EVICTABLE, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_MNT_ATTACH, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::Inode, FAN_MNT_ATTACH, FAN_MARK_ADD, true),
         Err(einval),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&notif, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&notif, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD, true),
         Err(einval),
     );
 
     let content = InotifyData::new_fanotify(FAN_CLASS_CONTENT);
-    assert_eq!(validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD), Ok(()));
+    assert_eq!(validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_OPEN_PERM, FAN_MARK_ADD, true), Ok(()));
     assert_eq!(
-        validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_PRE_ACCESS, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&content, MarkScope::Inode, FAN_PRE_ACCESS, FAN_MARK_ADD, true),
         Err(einval),
     );
 
     let fid = InotifyData::new_fanotify(FAN_REPORT_DIR_FID | FAN_REPORT_NAME | FAN_REPORT_FID);
-    assert_eq!(validate_fanotify_mark_group(&fid, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD), Ok(()));
+    assert_eq!(validate_fanotify_mark_group(&fid, MarkScope::Inode, FAN_RENAME, FAN_MARK_ADD, true), Ok(()));
 
     let mnt = InotifyData::new_fanotify(FAN_REPORT_MNT);
     assert_eq!(
-        validate_fanotify_mark_group(&mnt, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&mnt, MarkScope::MountNamespace, FAN_MNT_ATTACH, FAN_MARK_ADD, true),
         Ok(()),
     );
     assert_eq!(
-        validate_fanotify_mark_group(&mnt, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD),
+        validate_fanotify_mark_group(&mnt, MarkScope::Inode, FAN_OPEN, FAN_MARK_ADD, true),
         Err(einval),
     );
 }
@@ -323,7 +323,7 @@ fn empty_inotify_is_eagain_and_not_pollable() {
 fn queued_event_is_readable_then_drains_to_eagain() {
     let ino = InotifyData::new(0);
     let before = ino.poll_subs.generation();
-    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None });
+    ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
     assert!(ino.poll_subs.generation() > before, "queued inotify event wakes epoll subscribers");
     assert_eq!(ino.poll(), vfs::POLL_IN);
     let mut buf = [0u8; 64];

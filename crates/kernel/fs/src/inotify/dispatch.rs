@@ -134,13 +134,13 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
             // record, so it keeps the leaf.
             let name = if arc.fanotify && !arc.reports_dir_fid() { Vec::new() }
                        else { encode_name(f.name) };
-            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie: f.cookie, name, obj, pid, perm: None });
+            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie: f.cookie, name, obj, pid, perm: None, mnt_id: 0 });
             if !arc.fanotify && (wi.flags & IN_ONESHOT) != 0 {
                 let wd = wi.wd;
                 watches.remove(i);
                 MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
                 arc.release_marks(1);
-                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid, perm: None });
+                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid, perm: None, mnt_id: 0 });
                 continue;
             }
             i += 1;
@@ -322,6 +322,10 @@ pub fn install_write_hook() {
     vfs::set_close_hook(vfs_close_notify);
     vfs::set_dirent_create_hook(vfs_dirent_create);
     vfs::set_dirent_delete_hook(vfs_dirent_delete);
+    // Mount-tree changes reach a `FAN_MARK_MNTNS` mark through the mount
+    // subsystem's own choke points, not through any inode hook — a mount event
+    // has no inode to hang one on.
+    crate::inotify::fan_mnt::install_mnt_hook();
 }
 
 fn vfs_dirent_create(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {

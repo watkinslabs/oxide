@@ -202,6 +202,26 @@ impl vfs::SuperOps for SysfsSuperOps {
             ..Default::default()
         })
     }
+
+    /// sysfs installs no handle-export backend: its inodes are synthesized on
+    /// demand from the live kernel objects they reflect, so an inode number is
+    /// not an identity that can be resolved back to one. `name_to_handle_at(2)`
+    /// reports `EOPNOTSUPP` rather than minting a handle that could never be
+    /// reopened. # C: O(1)
+    fn export_can_decode_fh(&self) -> bool { false }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::SysfsSuperOps;
+    use vfs::SuperOps;
+
+    /// sysfs must decline to encode a handle — the second honest `false`
+    /// implementor keeping `name_to_handle_at`'s `EOPNOTSUPP` arm live.
+    #[test]
+    fn sysfs_cannot_decode_a_file_handle() {
+        assert!(!SysfsSuperOps.export_can_decode_fh());
+    }
 }
 
 impl vfs::fs::FileSystem for SysfsFs {

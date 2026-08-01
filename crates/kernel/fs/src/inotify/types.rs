@@ -1,4 +1,3 @@
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
@@ -126,12 +125,28 @@ pub(crate) struct PermState {
     /// descriptor the daemon answers by is NOT held here: the group's pending
     /// list is keyed by it and is the only place it lives.
     pub(crate) verdict: AtomicU32,
+    /// The `FAN_INFO` audit record the verdict arrived with, if any. Published
+    /// BEFORE the verdict, so a reader that has seen an answer has also seen
+    /// the record that justifies it.
+    audit_rule: Spinlock<Option<crate::inotify::response::AuditRule>, TaskListClass>,
 }
 
 impl PermState {
     /// # C: O(1)
     pub(crate) fn new() -> Self {
-        Self { state: AtomicU32::new(PERM_INIT), verdict: AtomicU32::new(0) }
+        Self { state: AtomicU32::new(PERM_INIT), verdict: AtomicU32::new(0),
+               audit_rule: Spinlock::new(None) }
+    }
+
+    /// Record the `FAN_INFO` audit rule a verdict arrived with. # C: O(1)
+    pub(crate) fn set_audit_rule(&self, r: crate::inotify::response::AuditRule) {
+        *self.audit_rule.lock() = Some(r);
+    }
+
+    /// The audit rule recorded against this decision, or `None` when the
+    /// verdict carried no record. # C: O(1)
+    pub(crate) fn audit_rule(&self) -> Option<crate::inotify::response::AuditRule> {
+        *self.audit_rule.lock()
     }
 
     /// Mark the event handed to the daemon. # C: O(1)
@@ -169,13 +184,21 @@ pub(crate) static PERM_MARK_COUNT: core::sync::atomic::AtomicUsize =
 pub(crate) static MARK_COUNT: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
+/// Number of live `FAN_MARK_MNTNS` marks. The mount-tree attach/detach/move
+/// choke points early-return when 0, so a system with no mount watcher — every
+/// system that is not running one — pays nothing per mount.
+pub(crate) static MNTNS_MARK_COUNT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 /// Monotonic rename cookie pairing a FAN_MOVED_FROM with its FAN_MOVED_TO
 /// (Linux `fsnotify_get_cookie`).
 pub(crate) static MOVE_COOKIE: AtomicU32 = AtomicU32::new(1);
 
 /// fanotify mark scope (`FAN_MARK_INODE` default / `FAN_MARK_MOUNT` /
-/// `FAN_MARK_FILESYSTEM`). Inode marks key on inode identity; mount and
-/// filesystem marks key on the owning superblock's `st_dev` (`fsid`).
+/// `FAN_MARK_FILESYSTEM` / `FAN_MARK_MNTNS`). Inode marks key on inode
+/// identity; mount and filesystem marks key on the owning superblock's
+/// `st_dev` (`fsid`); mount-namespace marks key on the mount namespace's id
+/// and match no inode at all.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MarkScope { Inode, Mount, Filesystem, MountNamespace }
 
@@ -186,6 +209,12 @@ pub(crate) struct Watch {
     pub(crate) inode_key: usize,
     /// Superblock `st_dev` for a `Mount`/`Filesystem`-scope mark (0 for inode).
     pub(crate) fsid: u64,
+    /// Mount-namespace id for a `MountNamespace`-scope mark (0 otherwise). A
+    /// SEPARATE field from `fsid` on purpose: a namespace id and an `st_dev`
+    /// are unrelated number spaces, and sharing one field would let the
+    /// superblock teardown sweep (`unmount_fs_marks`) retire a mount-namespace
+    /// mark whose id happened to collide with a dying filesystem's.
+    pub(crate) ns_id: u64,
     pub(crate) scope: MarkScope,
     /// Events that generate a notification on a matching object.
     pub(crate) mask: u32,
@@ -214,6 +243,11 @@ impl Watch {
     pub(crate) fn applies(&self, key: usize, fsid: u64) -> bool {
         match self.scope {
             MarkScope::Inode => self.inode_key == key,
+            // A mount-namespace mark is not attached to any object with an
+            // inode: it only ever receives mount-tree changes, never an event
+            // about a file. Matching one here would deliver every event on
+            // every filesystem to a `FAN_REPORT_MNT` group.
+            MarkScope::MountNamespace => false,
             _ => self.fsid != 0 && self.fsid == fsid,
         }
     }
@@ -268,6 +302,10 @@ pub(crate) struct Event {
     /// task is parked on. Its presence is what makes the record unmergeable
     /// and what a reader keys the minted descriptor to.
     pub(crate) perm:   Option<Arc<PermState>>,
+    /// The mount a `FAN_MNT_ATTACH`/`FAN_MNT_DETACH` record is about, reported
+    /// in a `FAN_EVENT_INFO_TYPE_MNT` info record. `0` on every other record —
+    /// mount ids start at 1, so it is never a real mount.
+    pub(crate) mnt_id: u64,
 }
 
 pub struct InotifyData {
@@ -292,7 +330,7 @@ pub struct InotifyData {
     /// order alongside ordinary notifications, exactly as a reader must see
     /// them: a daemon that keeps a second queue for permission events reports
     /// them out of order relative to the notifications that explain them.
-    pub(crate) events:  Spinlock<VecDeque<Event>, TaskListClass>,
+    pub(crate) events:  Spinlock<crate::inotify::queue::EventQueue, TaskListClass>,
     /// `true` once the group's last descriptor is closed. Stops new events
     /// from entering the queue, so a permission event can never be queued
     /// after the release path has already answered everything.

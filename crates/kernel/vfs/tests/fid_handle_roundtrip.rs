@@ -107,9 +107,9 @@ fn recycled_inode_number_does_not_resolve_through_the_old_handle() {
     assert!(resolve(&sb, second.ino(), second.i_generation()).is_some());
 }
 
-/// The wildcard generation matches any incarnation — how a filesystem that
-/// never recycles a number opts out — but a MISMATCH between two real
-/// generations is always rejected.
+/// The wildcard generation matches any incarnation — how a decode that never
+/// learned a generation (the `..`-derived parent of a reconnect walk) proceeds
+/// — but a MISMATCH between two real generations is always rejected.
 #[test]
 fn unversioned_wildcard_matches_but_mismatch_does_not() {
     let sb = sb();
@@ -117,6 +117,62 @@ fn unversioned_wildcard_matches_but_mismatch_does_not() {
     assert!(resolve(&sb, 31, vfs::export::GENERATION_ANY).is_some(), "wildcard matches");
     assert!(resolve(&sb, 31, i.i_generation()).is_some(), "exact match");
     assert!(resolve(&sb, 31, i.i_generation().wrapping_add(1)).is_none(), "mismatch rejected");
+}
+
+/// Only the HANDLE's zero wildcards. An inode whose OWN generation is zero is
+/// unversioned, not a skeleton key: a handle carrying a real generation must
+/// not open it, or a versioned incarnation's handle would open whatever
+/// unversioned object later took the number.
+///
+/// Fails-before: a `have == GENERATION_ANY || …` clause accepted every handle
+/// against an unversioned inode, which is the recycle hole the generation
+/// exists to close.
+#[test]
+fn an_unversioned_inode_is_not_a_wildcard() {
+    let sb = sb();
+    let unversioned = sb.iget(41, || {
+        InodeBuilder::new(41, mk_mode(FileType::Regular, 0o644),
+            default_inode_ops(), default_file_ops())
+            .sb(Arc::downgrade(&sb)).generation(vfs::export::GENERATION_ANY).build()
+    });
+    assert_eq!(unversioned.i_generation(), vfs::export::GENERATION_ANY);
+    assert!(resolve(&sb, 41, vfs::export::GENERATION_ANY).is_some(),
+        "a handle with no generation still resolves");
+    assert!(resolve(&sb, 41, 7).is_none(),
+        "a handle naming a real incarnation must NOT open an unversioned inode");
+}
+
+/// A superblock-minted generation is never the wildcard, so an inode built with
+/// an owning superblock is ALWAYS versioned — the rule that makes the wildcard
+/// mean "no superblock" rather than "happened to draw zero".
+#[test]
+fn a_superblock_never_mints_the_wildcard_generation() {
+    let sb = sb();
+    for _ in 0..64 {
+        assert_ne!(sb.next_inode_generation(), vfs::export::GENERATION_ANY);
+    }
+}
+
+/// A superblock whose backend cannot decode its own handles refuses to encode
+/// one — `name_to_handle_at`'s EOPNOTSUPP arm. Without a filesystem answering
+/// `false` that arm is unreachable code.
+#[test]
+fn a_filesystem_that_cannot_decode_refuses_to_encode() {
+    struct NoExportOps;
+    impl vfs::SuperOps for NoExportOps {
+        fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> { Ok(vfs::SbStatFs::default()) }
+        fn export_can_decode_fh(&self) -> bool { false }
+    }
+    struct NoExportFs;
+    impl FileSystem for NoExportFs {
+        fn name(&self) -> &str { "noexportfs" }
+        fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> { Some(Arc::new(NoExportOps)) }
+    }
+
+    assert!(vfs::export::can_encode_fh(&sb()), "the default backend encodes");
+    let no = common::realize_sb(Arc::new(NoExportFs), None, next_anon_dev(),
+                                String::from("noexportfs"));
+    assert!(!vfs::export::can_encode_fh(&no), "a non-decoding filesystem must not mint handles");
 }
 
 /// An inode nothing holds is gone from the cache, and the generic backend

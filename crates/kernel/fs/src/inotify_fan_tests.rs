@@ -298,6 +298,36 @@ fn identical_fanotify_events_merge_with_ored_masks() {
     assert_eq!(masks(&g), [FAN_OPEN | FAN_MODIFY], "one merged record");
 }
 
+/// The merge search is HASHED on the object, not a walk back from the tail. A
+/// daemon that has fallen hundreds of events behind must still get its repeated
+/// access folded into the record already describing it: with a bounded backward
+/// scan the same access reaches userspace twice as soon as the queue is deeper
+/// than the bound, which is a behaviour change userspace can see purely from
+/// how busy the machine is.
+#[test]
+fn a_mergeable_event_is_found_however_deep_the_queue_has_grown() {
+    let g = InotifyData::new_fanotify(0);
+    let first = mk_inode(FileType::Regular, 0xB101);
+    apply_mark(&g, MarkScope::Filesystem, 0, 0xB101, FAN_OPEN | FAN_MODIFY, true, false, 0);
+    fire_self(&first, FAN_OPEN);
+    // Bury it under far more unrelated records than any bounded backward scan
+    // would reach — each on its own object, so none of them merges.
+    let depth = crate::inotify::queue::FANOTIFY_MAX_MERGE_EVENTS * 2;
+    let others: Vec<InodeRef> = (0..depth)
+        .map(|i| {
+            let o = InodeBuilder::new(0xC000_0000 + i as u64, mk_mode(FileType::Regular, 0o644),
+                default_inode_ops(), Arc::new(InotifyFileOps)).fsid(0xB101).build();
+            fire_self(&o, FAN_OPEN);
+            o
+        })
+        .collect();
+    assert_eq!(g.events.lock().len(), depth + 1, "each unrelated object is its own record");
+    fire_self(&first, FAN_MODIFY);
+    assert_eq!(g.events.lock().len(), depth + 1, "the repeat merged rather than queueing again");
+    assert_eq!(masks(&g)[0], FAN_OPEN | FAN_MODIFY, "into the record at the FRONT");
+    drop(others);
+}
+
 /// An unknown descriptor is reported, not silently dropped — a daemon that
 /// answers a stale event learns it did.
 #[test]
@@ -342,6 +372,103 @@ fn one_write_answers_exactly_one_event() {
     assert_eq!(g.write(0, &two), Ok(8), "only the first response is consumed");
     assert_eq!(s1.answered(), Some(FAN_ALLOW));
     assert_eq!(s2.answered(), None, "the second response was not applied");
+}
+
+/// `FAN_INFO`'s record is PARSED, not skipped. A daemon that attaches an audit
+/// rule gets the record's bytes counted in the return value, and the rule is
+/// recorded against the decision it justifies.
+#[test]
+fn a_fan_info_response_carries_its_audit_rule_through_to_the_event() {
+    use crate::inotify::response::{AuditRule, AUDIT_RULE_LEN, FAN_INFO,
+        FAN_RESPONSE_INFO_AUDIT_RULE};
+    let g = InotifyData::new_fanotify(0);
+    let ino = mk_inode(FileType::Regular, 0x9801);
+    let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
+    let fd = read_one_perm(&g);
+    let w = respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+                              &audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0,
+                                                AUDIT_RULE_LEN as u16, 77, 1, 2));
+    assert_eq!(w, Ok(8 + AUDIT_RULE_LEN), "the record's bytes are consumed too");
+    assert_eq!(st.answered(), Some(FAN_ALLOW), "FAN_INFO is stripped from the stored verdict");
+    assert_eq!(st.audit_rule(),
+               Some(AuditRule { rule_number: 77, subj_trust: 1, obj_trust: 2 }));
+}
+
+/// Every field of the record is checked, and a rejected record leaves the
+/// permission event answerable — the daemon may write a correct one instead.
+#[test]
+fn a_malformed_fan_info_record_is_einval_and_answers_nothing() {
+    use crate::inotify::response::{AUDIT_RULE_LEN, FAN_INFO, FAN_RESPONSE_INFO_AUDIT_RULE,
+        FAN_RESPONSE_INFO_NONE};
+    let g = InotifyData::new_fanotify(0);
+    let ino = mk_inode(FileType::Regular, 0x9901);
+    let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
+    let fd = read_one_perm(&g);
+    let ok = audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0, AUDIT_RULE_LEN as u16, 5, 0, 0);
+    let einval = Err(vfs::VfsError::Einval);
+    // FAN_INFO with no record at all.
+    assert_eq!(respond(&g, fd, FAN_ALLOW | FAN_INFO), einval);
+    // A truncated record, and a record with trailing bytes: the tail must be
+    // EXACTLY one record.
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO, &ok[..AUDIT_RULE_LEN - 1]), einval);
+    let mut long = ok.to_vec();
+    long.push(0);
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO, &long), einval);
+    // The only record type a response may carry.
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+        &audit_rule_bytes(FAN_RESPONSE_INFO_NONE, 0, AUDIT_RULE_LEN as u16, 5, 0, 0)), einval);
+    // A nonzero pad byte, and a header length disagreeing with the record.
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+        &audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 1, AUDIT_RULE_LEN as u16, 5, 0, 0)), einval);
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+        &audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0, 8, 5, 0, 0)), einval);
+    assert_eq!(st.answered(), None, "no rejected write answered the event");
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO, &ok), Ok(8 + AUDIT_RULE_LEN));
+    assert_eq!(st.answered(), Some(FAN_ALLOW));
+}
+
+/// `FAN_NOFD` names no event. With `FAN_INFO` the write is still accepted for
+/// its record alone — it neither answers a pending event nor reports ENOENT —
+/// while a negative descriptor WITHOUT a record has nothing to mean and is
+/// EINVAL.
+#[test]
+fn a_fan_nofd_response_with_a_record_is_accepted_and_answers_nothing() {
+    use crate::inotify::response::{AUDIT_RULE_LEN, FAN_INFO, FAN_RESPONSE_INFO_AUDIT_RULE};
+    let g = InotifyData::new_fanotify(0);
+    let ino = mk_inode(FileType::Regular, 0x9A01);
+    let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
+    let _fd = read_one_perm(&g);
+    let ok = audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0, AUDIT_RULE_LEN as u16, 9, 0, 0);
+    let nofd = crate::inotify::fan_layout::FAN_NOFD;
+    assert_eq!(respond_with_rule(&g, nofd, FAN_ALLOW | FAN_INFO, &ok), Ok(8 + AUDIT_RULE_LEN));
+    assert_eq!(st.answered(), None, "no pending event was named");
+    assert_eq!(respond(&g, nofd, FAN_ALLOW), Err(vfs::VfsError::Einval),
+               "without a record a negative descriptor names nothing at all");
+}
+
+/// One `struct fanotify_response_info_audit_rule` in wire order. # C: O(1)
+#[cfg(test)]
+fn audit_rule_bytes(ty: u8, pad: u8, len: u16, rule: u32, subj: u32, obj: u32) -> [u8; 16] {
+    let mut b = [0u8; 16];
+    b[0] = ty;
+    b[1] = pad;
+    b[2..4].copy_from_slice(&len.to_le_bytes());
+    b[4..8].copy_from_slice(&rule.to_le_bytes());
+    b[8..12].copy_from_slice(&subj.to_le_bytes());
+    b[12..16].copy_from_slice(&obj.to_le_bytes());
+    b
+}
+
+/// A `fanotify_response` followed by raw info bytes, written as one call.
+/// # C: O(info.len())
+#[cfg(test)]
+fn respond_with_rule(g: &InotifyData, fd: i32, response: u32, info: &[u8])
+    -> vfs::KResult<usize> {
+    let mut w = Vec::new();
+    w.extend_from_slice(&fd.to_le_bytes());
+    w.extend_from_slice(&response.to_le_bytes());
+    w.extend_from_slice(info);
+    g.write(0, &w)
 }
 
 /// An accessor that abandoned the wait (killed mid-syscall) must not be
@@ -433,8 +560,7 @@ fn open_exec_perm_gate_cycle() {
 fn perm_event(obj: &InodeRef, mask: u32, st: Arc<crate::inotify::types::PermState>)
     -> crate::inotify::types::Event {
     crate::inotify::types::Event {
-        wd: -1, mask, cookie: 0, name: Vec::new(), obj: Some(obj.clone()), pid: 0, perm: Some(st),
-    }
+        wd: -1, mask, cookie: 0, name: Vec::new(), obj: Some(obj.clone()), pid: 0, perm: Some(st), mnt_id: 0,    }
 }
 
 /// Queue a permission event on `g` and hand back the state an accessor would

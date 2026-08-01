@@ -162,7 +162,7 @@ use crate::inotify::types::{Event as InEvent, IN_CREATE as IN_CREATE_BIT};
 
 fn queue(g: &InotifyData, name: &[u8]) {
     g.enqueue_event(InEvent { wd: 1, mask: IN_CREATE_BIT, cookie: 0,
-        name: name.to_vec(), obj: None, pid: 0, perm: None });
+        name: name.to_vec(), obj: None, pid: 0, perm: None, mnt_id: 0 });
 }
 
 /// `get_one_event` returns EINVAL only when the FIRST event cannot fit; the
