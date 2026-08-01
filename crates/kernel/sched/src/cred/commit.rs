@@ -62,6 +62,16 @@ impl CredIdentity {
 pub(super) fn commit_creds(cur: &Task, old: CredIdentity) {
     crate::ucounts::recharge_after_setuid(cur);
     let now = CredIdentity::capture(cur);
+    // Linux `commit_creds`: `if (!uid_eq(new->fsuid, old->fsuid))
+    // key_fsuid_changed(new)` and the fsgid twin. The thread keyring is owned
+    // by whoever the filesystem ids say the task is, so a task that moves them
+    // must take its `@t` along or it can no longer reach it through the user
+    // permission byte. Driven from here — the ONE credential commit point — so
+    // setfsuid, setuid, setreuid, setresuid and their gid twins all reach it
+    // without a per-syscall call site to forget.
+    if now.fsuid != old.fsuid || now.fsgid != old.fsgid {
+        crate::live::run_fsids_changed(cur.tid, now.fsuid, now.fsgid);
+    }
     let changed = now.euid != old.euid
         || now.egid != old.egid
         || now.fsuid != old.fsuid

@@ -69,6 +69,13 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             let vtg = task.vtgid.load(Ordering::Acquire);
             let tg = task.tgid.load(Ordering::Acquire);
             crate::live::run_sysvsem_exit(if vtg != 0 { vtg } else { tg });
+            // Final `put_cred` for the keyring state (Linux `exit_creds`). A
+            // task killed by a fatal signal strands exactly the same thread
+            // keyring, assumed authority and session reference as one that
+            // called `exit(2)`, and a recycled tid would then inherit them.
+            // Runs before `mark_done` so the group-dead test still counts this
+            // thread live.
+            crate::live::run_keyring_exit(task);
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); }
             // Linux `do_exit`: `if (group_dead) disassociate_ctty(1)`. A

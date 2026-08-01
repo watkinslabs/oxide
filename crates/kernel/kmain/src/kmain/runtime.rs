@@ -194,6 +194,14 @@ fn init_runtime_subsystems() {
     // crate graph, so the exit paths reach it through this hook. Without it a
     // session leader's death leaves its terminal owned by a dead session.
     sched::live::set_disassociate_ctty_hook(syscalls::tty_hangup::disassociate_ctty_on_exit);
+    // Keyring `exit_creds` and `key_fsuid_changed`/`key_fsgid_changed`, same
+    // arrangement: the key store lives in `fs`, which is above `sched`, so the
+    // exit paths and the credential commit point reach it through these hooks.
+    // Without them a dead tid's session keyring outlives it — and a recycled
+    // tid inherits it — and a task that moves its fsuid strands its `@t` under
+    // the old owner.
+    sched::live::set_keyring_exit_hook(fs::keyring::exit_keys);
+    sched::live::set_fsids_changed_hook(fs::keyring::fsids_changed);
     // Linux `shm_vm_ops`: shm_nattch follows VMA lifetime, not shmat/shmdt.
     vmm::set_shm_vm_ops(ipc::sysv_shm::shm_vma_open, ipc::sysv_shm::shm_vma_close);
     let _ = unsafe { nscg::init() };
