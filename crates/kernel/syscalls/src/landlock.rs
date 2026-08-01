@@ -139,31 +139,23 @@ pub fn scope_denies(scope: AccessMask, peer: Option<&Arc<Domain>>) -> bool {
 /// Transport of an internet socket, for port-rule purposes.
 /// # C: O(1)
 pub fn sock_proto(sock: &net::sock::InetSocket) -> ::landlock::netcheck::Proto {
-    use ::landlock::netcheck::Proto;
-    match *sock.kind.lock() {
-        net::sock::SockKind::TcpInit
-        | net::sock::SockKind::TcpListener(_)
-        | net::sock::SockKind::TcpConn(_) => Proto::Tcp,
-        net::sock::SockKind::Udp => Proto::Udp,
-        _ => Proto::Other,
-    }
+    net::landlock_addr::sock_proto(sock)
 }
 
-/// Gate a socket operation that names an address. `connecting` distinguishes
-/// establishing a peer from naming a local address.
+/// Gate a socket operation that names an address, for the running task. The
+/// decision itself lives beside the socket layer's other address checks so that
+/// `bind`/`connect` here and the datagram send path answer from one place.
 /// # C: O(N_layers × N_rules)
-pub fn check_socket(proto: ::landlock::netcheck::Proto, connecting: bool,
+pub fn check_socket(proto: ::landlock::netcheck::Proto, op: ::landlock::netcheck::Op,
                     bytes: &[u8], sock_family: u16) -> Result<(), i64>
 {
-    use ::landlock::netcheck::{self as nc, Verdict};
-    if current_domain().is_none() { return Ok(()); }
-    let req = match if connecting { nc::connect_request(proto) } else { nc::bind_request(proto) } {
-        Some(r) => r, None => return Ok(()),
-    };
-    match nc::classify(req, connecting, nc::Addr::parse(bytes), sock_family) {
-        Verdict::Allow => Ok(()),
-        Verdict::Fail(e) => Err(-(e.as_i32() as i64)),
-        Verdict::CheckPort(p) => check_net(p, req),
-    }
+    net::landlock_addr::addr_verdict(current_domain().as_ref(), proto, op, bytes, sock_family)
+        .map_err(crate::net_errno::errno_from_neterr)
 }
+
+// Resolving a pathname UNIX-domain socket has no entry point here on purpose.
+// Deciding it needs the answer to "has anyone bound this address at all", which
+// only the AF_UNIX registry holds, so the gate is composed in `net` and both
+// call sites — `connect(2)` and a send naming a recipient — use that one. A
+// wrapper here would put the not-bound-is-not-a-denial rule in two places.
 

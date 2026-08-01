@@ -32,6 +32,7 @@ pub mod netdev;
 pub mod sysctl;
 pub mod uapi;
 pub mod send_control;
+pub mod landlock_addr;
 pub mod landlock_glue;
 pub mod socket_args;
 // The whole `socket(2)` admission sequence: identity, creation security

@@ -2,13 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`,`09`.
 
-## Revision 2026-05-02 (R03)
-
-- Changed: §10 glossary adds `UAPI` and `Kernel-internal` terms.
-- Why: defines the boundary `15§6.7` carves out for musl-fork consumption (`29§4.1`, `29a§3`); same delineation Linux draws between `include/uapi/linux/` and the rest. Without it, "kernel-internal type" and "ABI type" had no shared definition across specs.
-- Affected code: none yet; informs the future `crates/uapi/` (kernel side) + `userspace/uapi/` (export tree).
-- Test contract change: none.
-
 Every type referenced by ≥2 subsystems lives here. Single-subsystem types stay in their spec.
 
 Common derives `D` = `Copy,Clone,Eq,PartialEq,Ord,PartialOrd,Hash,Debug` (Hash skipped where Wallclock-like). All newtypes `#[repr(transparent)]` unless noted.
@@ -176,7 +169,7 @@ Const names: `Caps::CAP_<NAME>`.
 | Loom test | exhaustive interleaving exploration, depth-bounded |
 | Hosted test | `cargo test` on dev host (not kernel target) |
 | In-kernel test | runs inside booted kernel; result via serial |
-| FROZEN | spec marked `Status: FROZEN <date>`; revision blocks required (`02`) |
+| FROZEN | spec marked `Status: FROZEN <date>`; body edits only, via a `revise:` commit (`02§1`) |
 | Charter | non-subsystem spec (`00`–`09`) constraining everything below |
 | HAL | trait set in `crates/hal/`, impls per arch |
 | vDSO | RX ELF blob mapped in every user AS; `clock_gettime`,`getcpu` fast paths |
@@ -198,4 +191,3 @@ If a type isn't here it's: (a) single-subsystem (lives in that spec), (b) ABI st
 ## 13 Changelog
 
 (none)
-

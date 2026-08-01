@@ -22,6 +22,25 @@ fn connect_security_precedes_family_parse_and_unix_lookup_once() {
     assert!(body.contains("connect_admitted("));
 }
 
+// Resolving a pathname AF_UNIX address for `connect(2)` carries a filesystem
+// right. The decision is behaviourally covered in `net::landlock_addr`; what
+// this guards is the call disappearing from the one resolution site, or
+// drifting ahead of the checks whose errors it would mask. The domain comes off
+// the running task, so a hosted build cannot drive it any other way.
+#[test]
+fn connect_gates_pathname_unix_resolution_after_the_socket_type_check() {
+    let source = include_str!("../namei_common.rs");
+    let body = &source[source.find("fn resolve_unix_addr").expect("resolve slot")..];
+    let hook = body.find("net::landlock_addr::check_unix_resolve(&p, &addr)")
+        .expect("UNIX resolve gate");
+    // A name that is not a socket keeps ECONNREFUSED.
+    assert!(body.find("p.inode.file_type() != vfs::FileType::Socket").expect("type check")
+        < hook);
+    // Abstract names return before the path lookup and never reach the gate.
+    assert!(body.find("net::unix_path_is_abstract(&path)").expect("abstract split") < hook);
+    assert_eq!(body.matches("check_unix_resolve").count(), 1);
+}
+
 // The SOL_SOCKET options with their own argument or value shape are routed to
 // their owner instead of the scalar table, and the option numbers come from the
 // one canonical table.

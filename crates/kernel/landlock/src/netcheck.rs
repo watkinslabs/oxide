@@ -26,13 +26,22 @@ pub enum Proto { Tcp, Udp, Other }
 /// Right a bind asks for; `None` means the transport carries no port rules.
 /// # C: O(1)
 pub fn bind_request(p: Proto) -> Option<AccessMask> {
-    match p { Proto::Tcp => Some(ACCESS_NET_BIND_TCP), _ => None }
+    match p {
+        Proto::Tcp => Some(ACCESS_NET_BIND_TCP),
+        Proto::Udp => Some(ACCESS_NET_BIND_UDP),
+        Proto::Other => None,
+    }
 }
 
-/// Right a connect asks for.
+/// Right a connect asks for. A datagram send to an explicit recipient settles
+/// the same remote port a connect would, so it asks for the same right.
 /// # C: O(1)
 pub fn connect_request(p: Proto) -> Option<AccessMask> {
-    match p { Proto::Tcp => Some(ACCESS_NET_CONNECT_TCP), _ => None }
+    match p {
+        Proto::Tcp => Some(ACCESS_NET_CONNECT_TCP),
+        Proto::Udp => Some(ACCESS_NET_CONNECT_SEND_UDP),
+        Proto::Other => None,
+    }
 }
 
 /// What to do with an address once its family is understood.
@@ -80,21 +89,45 @@ impl Addr {
     }
 }
 
-/// Decide an address. `sock_family` is the socket's own family; `connecting`
-/// distinguishes establishing a peer from naming a local address.
+/// What the caller is doing with the address.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Op {
+    /// Naming a local address.
+    Bind,
+    /// Settling a peer.
+    Connect,
+    /// Sending a datagram to an explicit recipient.
+    Send,
+}
+
+/// Decide an address.
 ///
 /// An unspecified family means "drop the association" on connect, which is
 /// always allowed — refusing it would make dropping a privilege harder than
 /// keeping it. On bind it is accepted only where the network stack itself would
 /// accept it, so a caller gets the argument error it is owed rather than a
-/// permission error.
+/// permission error. Sending to an unspecified family from an IPv6 socket is
+/// denied outright: the socket's family can change under the check, and an
+/// IPv4 socket would read that address as a real destination.
+///
+/// A family that disagrees with the socket's own is not an error here — the
+/// network stack owes that answer, and producing it from the sandbox would
+/// change a program's errno by the mere presence of a policy.
 /// # C: O(1)
-pub fn classify(access: AccessMask, connecting: bool, a: Addr, sock_family: u16) -> Verdict {
+pub fn classify(access: AccessMask, op: Op, a: Addr, sock_family: u16) -> Verdict {
     if a.addrlen < SOCKADDR_FAMILY_LEN { return Verdict::Fail(Errno::Einval); }
 
     let family = if a.sa_family == AF_UNSPEC {
-        if connecting && access == ACCESS_NET_CONNECT_TCP { return Verdict::Allow; }
-        if access == ACCESS_NET_BIND_TCP {
+        let binding = access == ACCESS_NET_BIND_TCP || access == ACCESS_NET_BIND_UDP;
+        if access == ACCESS_NET_CONNECT_TCP
+            || (access == ACCESS_NET_CONNECT_SEND_UDP && op == Op::Connect)
+        {
+            return Verdict::Allow;
+        }
+        if access == ACCESS_NET_CONNECT_SEND_UDP && sock_family == AF_INET6 {
+            return Verdict::Fail(Errno::Eacces);
+        }
+        if binding {
             if sock_family == AF_INET {
                 if a.addrlen < SOCKADDR_IN_LEN { return Verdict::Fail(Errno::Einval); }
                 if !a.v4_wildcard { return Verdict::Fail(Errno::Eafnosupport); }
@@ -103,8 +136,7 @@ pub fn classify(access: AccessMask, connecting: bool, a: Addr, sock_family: u16)
                 return Verdict::Fail(Errno::Eafnosupport);
             }
         }
-        // An unspecified family only stands in for IPv4, and only for a
-        // wildcard bind.
+        // An unspecified family only stands in for IPv4.
         AF_INET
     } else {
         a.sa_family
@@ -114,12 +146,6 @@ pub fn classify(access: AccessMask, connecting: bool, a: Addr, sock_family: u16)
         AF_INET  => if a.addrlen < SOCKADDR_IN_LEN  { return Verdict::Fail(Errno::Einval); },
         AF_INET6 => if a.addrlen < SOCKADDR_IN6_LEN { return Verdict::Fail(Errno::Einval); },
         _ => return Verdict::Allow,
-    }
-
-    // A family that disagrees with the socket's own is an argument error, not a
-    // denial; only dropping to the unspecified family is a legitimate change.
-    if a.sa_family != sock_family && a.sa_family != AF_UNSPEC {
-        return Verdict::Fail(Errno::Einval);
     }
     Verdict::CheckPort(a.port)
 }

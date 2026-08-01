@@ -19,7 +19,7 @@
 //                 `Arc<Task>`, enqueue.
 //   `schedule` — the one `schedule()` switch primitive (`13§8`) +
 //                `finish_task_switch` handoff; IRQ-exit routes through
-//                it via `oxide_irq_exit_to_user` (`14§R07`).
+//                it via `oxide_irq_exit_to_user` (`14§5.6`/`14§6.5`).
 //
 // Replaces the `kernel/src/ksched.rs` Vec-shim per the P2-13b
 // branch in state.md.

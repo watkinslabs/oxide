@@ -41,7 +41,12 @@ fn resolve_unix(ctx: &SendContext<'_>, path: Vec<u8>) -> KResult<net::UnixAddr> 
     let found = vfs::path_lookup_at_root_cred(start.dentry, start.mnt_id, root.dentry, root.mnt_id,
         &decoded, vfs::LookupFlags::default(), cred(task)).map_err(Error::from)?;
     if found.inode.file_type() != vfs::FileType::Socket { return Err(Error::Econnrefused); }
-    Ok(net::UnixAddr::from_inode_bytes(path, &found.inode))
+    let addr = net::UnixAddr::from_inode_bytes(path, &found.inode);
+    // Resolving a pathname socket published outside this sandbox is a
+    // filesystem right, checked once the object is known to be a socket so a
+    // name that is not one keeps its own error.
+    net::landlock_addr::check_unix_resolve(&found, &addr).map_err(Error::from)?;
+    Ok(addr)
 }
 
 /// Decode one kernel-owned INET sockaddr without protocol side effects. # C: O(1)

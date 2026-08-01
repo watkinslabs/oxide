@@ -14,7 +14,6 @@ crates/drivers/drv	code/klog-ungated	7
 crates/drivers/drv-ahci	code/klog-ungated	2
 crates/drivers/drv-ahci	code/pub-fn-complexity	1
 crates/drivers/drv-nvme	code/pub-fn-complexity	1
-crates/drivers/drv-ps2-keyboard	code/safety-missing	3
 crates/drivers/drv-virtio-blk	code/klog-ungated	4
 crates/drivers/drv-virtio-blk	code/pub-fn-complexity	17
 crates/drivers/drv-virtio-gpu	code/pub-fn-complexity	25
@@ -28,9 +27,7 @@ crates/drivers/fbcon	code/pub-fn-complexity	42
 crates/drivers/fbdev	code/pub-fn-complexity	30
 crates/drivers/virtio	code/pub-fn-complexity	48
 crates/drivers/vt	code/pub-fn-complexity	20
-crates/drivers/vt	code/safety-missing	3
 crates/kernel/arch-irq	code/klog-ungated	15
-crates/kernel/arch-irq	code/safety-short	1
 crates/kernel/block	code/pub-fn-complexity	4
 crates/kernel/cgroup	code/pub-fn-complexity	13
 crates/kernel/console	code/pub-fn-complexity	11
@@ -39,18 +36,14 @@ crates/kernel/efence	code/pub-fn-complexity	1
 crates/kernel/exec	code/klog-ungated	1
 crates/kernel/exec	code/pub-fn-complexity	1
 crates/kernel/ext4	code/pub-fn-complexity	23
-crates/kernel/firmware	code/safety-short	1
 crates/kernel/fs	code/klog-ungated	26
 crates/kernel/fs	code/pub-fn-complexity	27
 crates/kernel/ipc	code/pub-fn-complexity	1
-crates/kernel/ipc	code/safety-missing	2
-crates/kernel/ipc	code/safety-short	1
 crates/kernel/kernfs	code/pub-fn-complexity	22
 crates/kernel/kmain	code/klog-ungated	45
 crates/kernel/mm-pmm	code/klog-ungated	76
 crates/kernel/mm-pmm	code/pub-fn-complexity	9
 crates/kernel/mm-vmm	code/pub-fn-complexity	7
-crates/kernel/mmio-map	code/safety-missing	1
 crates/kernel/modules	code/klog-ungated	7
 crates/kernel/modules	code/pub-fn-complexity	35
 crates/kernel/namespace-identity	code/pub-fn-complexity	24
@@ -69,7 +62,6 @@ crates/kernel/procfs	code/pub-fn-complexity	15
 crates/kernel/sched	code/klog-ungated	170
 crates/kernel/sched	code/pub-fn-complexity	54
 crates/kernel/security	code/pub-fn-complexity	24
-crates/kernel/security	code/safety-missing	1
 crates/kernel/smoke	code/klog-ungated	5
 crates/kernel/sound	code/pub-fn-complexity	52
 crates/kernel/syscalls	code/klog-ungated	98
@@ -83,7 +75,7 @@ crates/kernel/umh	code/klog-ungated	10
 crates/kernel/umh	code/pub-fn-complexity	2
 crates/kernel/user-namespace	code/pub-fn-complexity	2
 crates/kernel/vfs	code/klog-ungated	24
-crates/kernel/vfs	code/pub-fn-complexity	108
+crates/kernel/vfs	code/pub-fn-complexity	107
 crates/kernel/vt	code/pub-fn-complexity	3
 crates/shared/kalloc	code/klog-ungated	15
 crates/shared/kalloc	code/pub-fn-complexity	7

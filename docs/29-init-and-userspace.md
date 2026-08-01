@@ -2,27 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`,`51`. Provides:every running userspace.
 
-## Revision 2026-08-01 (R05)
-
-- Changed: §2 invariant 5, §3, §4, §4.1, §5, §6, §7, §8, §10, §11 — this repo builds no libc, no loader, no init and no userspace binary. PID 1 is upstream systemd from the Fedora rootfs (`51§2`); the rootfs is composed from RPMs by `../images` and consumed as a packed image. §4 becomes "libc (consumed, not built)"; §4.1 becomes the image-consumption order; `xtask user` deleted from §5. Spec `59` deleted; `59§` references in the R04 block are flattened to plain text so `xref` resolves.
-- Why: `crates/user/*`, the `xtask glibc`/`sysroot`/`ldso` command family, and the `userspace/` build tree are deleted. R04 and R03 described building a libc + loader + apps here; nothing in the tree does that.
-- Affected code: none — the deletions already landed. `xtask rootfs` copies `../images/output/<profile>-<arch>-root.img`.
-- Test contract change: §10 drops the "builds userspace" items; the boot-to-shell gates stand, now against the Fedora image.
-
-## Revision 2026-06-14 (R04)
-
-- Changed: §4 libc = **oxide-libc** (glibc-ABI Rust, `crates/user/glibc`, spec 59), not the musl fork; loader = `ld-linux-x86-64.so.2`/`ld-linux-aarch64.so.1` (`crates/user/ldso`), not `ld-oxide.so.1`. §4.1 build-order step "musl" → "oxide-libc + ldso". `/etc` + image steps unchanged.
-- Why: glibc ABI is the userspace contract (`03` R01).
-- Affected code: `xtask user` retargets to `xtask glibc`; musl fork + ld-oxide retired at spec 59 G19.
-- Test contract change: glibc differential oracle.
-
-## Revision 2026-05-02 (R03)
-
-- Changed: added §4.1 "Build order".
-- Why: §4 names the musl fork + ld-oxide but never spells out the LFS-style sequence (cross-toolchain → UAPI export → musl → ld → apps → image). `xtask user` was a black box.
-- Affected code: `xtask user` lands as the orchestrator of steps 2–5 below; `xtask image` already covers step 6.
-- Test contract change: none.
-
 ## 1 Purpose
 
 PID 1 (init), libc, image build pipeline (initramfs + on-disk root), boot-to-shell sequence.
@@ -132,4 +111,3 @@ systemd reaps orphans via `waitid(P_ALL, WEXITED|WNOHANG, &si)` in a SIGCHLD-dri
 ## 13 Cross-spec
 
 `13`+`15` (clone3,execve), `16`+`19` (mounts), `28` (controlling tty for getty), `31` (ELF loader for execve), `39` (image builder).
-

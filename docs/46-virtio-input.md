@@ -2,15 +2,6 @@
 
 FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`22`,`34`,`35`,`50`. Provides:`drv-virtio-input`,`50` (VT keyboard backend),evdev `/dev/input/event*`.
 
-## Revision 2026-07-30 (R01)
-
-- Changed: §2, §6, §8–§10 bind every open file to one exact live evdev object, give each open client its own packet queue and clock, preserve host `SYN_REPORT`, and make disconnect/revoke/grab/state reconciliation match Linux.
-- Changed: §2, §8, §10, §11, §16 require both virtqueues and Linux-shaped STATUSQ output, completion, teardown, and inhibit restore behavior.
-- Changed: §7, §13–§15 correct bitmap widths, ioctl errors, MT forwarding, force-feedback advertisement, and input-core autorepeat ownership.
-- Why: the defined evdev and virtio-input behavior contradicts the shared-stream, synthetic-SYN, cache-only-repeat, and force-feedback text.
-- Affected code: `input`, `drv`, `drv-virtio-input`, devfs, procfs, sysfs, netlink, PCI virtio-child handoff.
-- Test contract change: add per-open delivery/reconciliation, stale-fd disconnect, STATUSQ lifecycle, inhibit output, and QMP keyboard/pointer injection gates.
-
 Full evdev/input-event UAPI surface plus virtio 1.2 §5.8. No deferrals.
 
 ## 1 Purpose
@@ -101,7 +92,7 @@ Input core ignores unadvertised types/codes, duplicate KEY/SW/LED state, zero RE
 
 The completed packet receives one input-core timestamp. Each client converts it to `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, or `CLOCK_BOOTTIME` according to its `EVIOCSCLOCKID` state. Client-buffer overflow drops unread data and starts recovery with `EV_SYN/SYN_DROPPED`.
 
-## 7 ioctl set on `/dev/input/event<N>` (per docs/35 R01 evdev surface)
+## 7 ioctl set on `/dev/input/event<N>` (evdev surface per `35§3`)
 
 | ioctl | Code | Behavior |
 |---|---|---|

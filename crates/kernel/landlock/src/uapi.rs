@@ -23,11 +23,16 @@ pub const ACCESS_FS_MAKE_SYM:     AccessMask = 1 << 12;
 pub const ACCESS_FS_REFER:        AccessMask = 1 << 13;
 pub const ACCESS_FS_TRUNCATE:     AccessMask = 1 << 14;
 pub const ACCESS_FS_IOCTL_DEV:    AccessMask = 1 << 15;
+/// Resolve a pathname UNIX-domain socket on `connect` or on a `sendmsg` that
+/// names an explicit recipient. Like the scopes, it only bites when the server
+/// was published outside the sandboxed thread's domain; unlike them, a denial
+/// is `EACCES` because it is a filesystem right.
+pub const ACCESS_FS_RESOLVE_UNIX: AccessMask = 1 << 16;
 
 /// Highest filesystem right this kernel enforces; the mask is every bit up to
 /// it. A right defined at a later ABI level is deliberately absent: accepting
 /// a right that nothing enforces would hand a caller a sandbox that is not one.
-pub const LAST_ACCESS_FS: AccessMask = ACCESS_FS_IOCTL_DEV;
+pub const LAST_ACCESS_FS: AccessMask = ACCESS_FS_RESOLVE_UNIX;
 pub const MASK_ACCESS_FS: AccessMask = (LAST_ACCESS_FS << 1) - 1;
 
 /// Rights meaningful on a non-directory rule target. A rule whose parent fd is
@@ -36,7 +41,8 @@ pub const ACCESS_FILE: AccessMask = ACCESS_FS_EXECUTE
     | ACCESS_FS_WRITE_FILE
     | ACCESS_FS_READ_FILE
     | ACCESS_FS_TRUNCATE
-    | ACCESS_FS_IOCTL_DEV;
+    | ACCESS_FS_IOCTL_DEV
+    | ACCESS_FS_RESOLVE_UNIX;
 
 /// Rights a ruleset handles even when the caller did not list them. Reparenting
 /// is denied by default so that an ABI-1 policy cannot be escaped by moving a
@@ -48,9 +54,12 @@ pub const ACCESS_FS_INITIALLY_DENIED: AccessMask = ACCESS_FS_REFER;
 
 pub const ACCESS_NET_BIND_TCP:    AccessMask = 1 << 0;
 pub const ACCESS_NET_CONNECT_TCP: AccessMask = 1 << 1;
+pub const ACCESS_NET_BIND_UDP:    AccessMask = 1 << 2;
+/// Naming a datagram peer, and sending to an explicit recipient: both settle
+/// the remote port, so both ask for the same right.
+pub const ACCESS_NET_CONNECT_SEND_UDP: AccessMask = 1 << 3;
 
-/// Datagram rights belong to a later ABI level and are not accepted here.
-pub const LAST_ACCESS_NET: AccessMask = ACCESS_NET_CONNECT_TCP;
+pub const LAST_ACCESS_NET: AccessMask = ACCESS_NET_CONNECT_SEND_UDP;
 pub const MASK_ACCESS_NET: AccessMask = (LAST_ACCESS_NET << 1) - 1;
 
 // ---- LANDLOCK_SCOPE_* -----------------------------------------------------
@@ -69,8 +78,10 @@ pub const MASK_SCOPE: AccessMask = (LAST_SCOPE << 1) - 1;
 pub const CREATE_RULESET_VERSION: u32 = 1 << 0;
 pub const CREATE_RULESET_ERRATA:  u32 = 1 << 1;
 
-/// `landlock_add_rule` defines no flag at this ABI level.
-pub const MASK_ADD_RULE: u32 = 0;
+/// Mark the rule's object so that a denial naming it is not logged, when the
+/// ruleset also named the right in the matching quiet mask.
+pub const ADD_RULE_QUIET: u32 = 1 << 0;
+pub const MASK_ADD_RULE: u32 = ADD_RULE_QUIET;
 
 // `landlock_restrict_self` flags.
 //
@@ -101,11 +112,22 @@ pub const RULE_NET_PORT:     u64 = 2;
 /// one failure mode that silently turns a working sandbox into no sandbox.
 ///
 /// Every right, scope and flag of every level up to this one is enforced.
-pub const ABI_VERSION: i64 = 8;
+pub const ABI_VERSION: i64 = 10;
 
-/// Value reported for `LANDLOCK_CREATE_RULESET_ERRATA`: a bitmask of fixed
-/// issues for the current ABI version. No erratum applies to this implementation.
-pub const ERRATA: i64 = 0;
+// Errata bits: erratum N is reported as bit N-1.
+//
+/// Only a TCP socket is subject to the TCP port rights, so a non-TCP stream
+/// protocol is not restricted by them.
+pub const ERRATUM_TCP_ONLY: i64 = 1 << 0;
+/// A thread may always signal another thread of its own process, whatever
+/// domain either is in.
+pub const ERRATUM_SAME_THREAD_GROUP_SIGNAL: i64 = 1 << 1;
+
+/// Value reported for `LANDLOCK_CREATE_RULESET_ERRATA`: a bitmask of the fixed
+/// issues this implementation carries. A bit is set only where the behaviour
+/// the erratum describes is the behaviour here, because a feature-detecting
+/// program uses the absence of a bit to work around the unfixed behaviour.
+pub const ERRATA: i64 = ERRATUM_TCP_ONLY | ERRATUM_SAME_THREAD_GROUP_SIGNAL;
 
 // ---- limits and struct sizes ---------------------------------------------
 
@@ -113,8 +135,8 @@ pub const ERRATA: i64 = 0;
 pub const MAX_NUM_LAYERS: usize = 16;
 
 /// `sizeof(struct landlock_ruleset_attr)` at the current ABI level: the
-/// filesystem, network and scope masks.
-pub const RULESET_ATTR_SIZE: usize = 24;
+/// filesystem, network and scope masks, then the three quiet masks.
+pub const RULESET_ATTR_SIZE: usize = 48;
 /// Smallest accepted `size` for `landlock_create_ruleset`: through
 /// `handled_access_fs`, the only member ABI 1 defined.
 pub const RULESET_ATTR_MIN_SIZE: usize = 8;
