@@ -17,7 +17,7 @@ OUTPUT_ARCH(aarch64)
  * arches. */
 KERNEL_BASE = 0xFFFFFFFF80000000;
 
-/* Physical load address for the self-bootstrap (Limine-free) path. QEMU
+/* Physical load address for the self-bootstrap path. QEMU
  * `virt` RAM base is 0x4000_0000; the arm64 Image protocol loads us at
  * RAM_base + text_offset (text_offset=0). AT() pins every section's LMA
  * to KERNEL_PHYS + (VMA - KERNEL_BASE) so `objcopy -O binary` yields a

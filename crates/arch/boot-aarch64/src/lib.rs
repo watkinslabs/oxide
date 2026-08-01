@@ -1,4 +1,4 @@
-// aarch64 bootloader handoff per docs/36 + docs/21 — Limine-free.
+// aarch64 bootloader handoff per docs/36 + docs/21.
 //
 // Both live arm boot paths enter through the arm64 Image protocol
 // trampoline in `selfboot.rs`:

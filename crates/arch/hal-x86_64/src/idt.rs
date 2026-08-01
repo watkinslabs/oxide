@@ -16,7 +16,7 @@ use core::cell::UnsafeCell;
 pub const IDT_LEN: usize = 256;
 
 /// Kernel code selector. Filled in once GDT bring-up exists; until
-/// then the bootloader-provided CS works (Limine sets up flat 64-bit
+/// then the trampoline-provided CS works (it sets up flat 64-bit
 /// segments at offset 0x28).
 pub const KERNEL_CS: u16 = 0x28;
 

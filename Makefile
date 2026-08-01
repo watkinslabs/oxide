@@ -167,9 +167,9 @@ QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
 # AP bring-up + the periodic load balancer are exercised every push.
 SMP ?= 1
 
-# Limine is gone on BOTH arches — x86 boots via the GRUB multiboot2 path
-# and aarch64 via the GRUB EFI-stub `linux` path (`xtask grub` dispatches
-# on --arch). `cmd_grub` takes --arch/--smp/--features.
+# Both arches boot via GRUB — x86 through the multiboot2 path, aarch64
+# through the EFI-stub `linux` path (`xtask grub` dispatches on --arch).
+# `cmd_grub` takes --arch/--smp/--features.
 qemu-x86:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
@@ -178,8 +178,8 @@ qemu-arm:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
 
-# GRUB self-bootstrap path: build a GRUB ISO that multiboot2-loads the
-# kernel directly (replacing Limine) and boot it. WIP — see F372.
+# Same x86 GRUB path as `qemu-x86`, with xtask's default features
+# (`debug-boot`) instead of QEMU_FEATURES_X86.
 qemu-x86-grub:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64 --smp $(SMP)

@@ -160,7 +160,7 @@ fn read_be_u32(buf: &[u8], off: usize) -> KResult<u32> {
 
 /// First `/memory` node's first `reg` entry → `(base, size)`. Assumes
 /// the arm64 `virt` cell layout (#address-cells=2, #size-cells=2), i.e.
-/// `reg = <base_hi base_lo size_hi size_lo>` (16 bytes). The Limine-free
+/// `reg = <base_hi base_lo size_hi size_lo>` (16 bytes). The self-boot
 /// self-bootstrap path uses this to build the PMM memmap from the DTB.
 /// Returns `None` if no `/memory` node / `reg` property is found.
 /// # C: O(struct_block_size)

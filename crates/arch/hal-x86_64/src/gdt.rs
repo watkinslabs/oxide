@@ -1,9 +1,9 @@
 // x86_64 kernel-owned GDT install per `20§3` step 2.
 //
-// Replaces the Limine-provided GDT with one we own, in BSS, before
-// any code path requires user descriptors or a TSS. Selector offsets
-// match Limine v6+ layout so `KERNEL_CS = 0x28` / `KERNEL_DS = 0x30`
-// callers (`idt.rs`, `context.rs`) keep working unchanged:
+// Replaces the boot trampoline's temporary GDT with one we own, in
+// BSS, before any code path requires user descriptors or a TSS.
+// Selector offsets are fixed by the kernel ABI so `KERNEL_CS = 0x28` /
+// `KERNEL_DS = 0x30` callers (`idt.rs`, `context.rs`) stay valid:
 //
 //   sel 0x00       null
 //   sel 0x08..0x20 reserved (zero — kept for selector-offset stability)

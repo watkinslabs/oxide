@@ -30,7 +30,7 @@ fn boot_hosted_pmm() {
         let regions = [BootMemRegion { base_pa: 0, len: HOSTED_PMM_POOL as u64, kind: BootMemKind::Usable }];
         let info = BootInfo {
             memmap_count: 1, memmap_ptr: regions.as_ptr(), seed: [0u8; 32], boot_ns: 0,
-            rsdp_pa: 0, hhdm_offset: buf, smp_info_array: 0, smp_count: 0, bsp_lapic_id: 0, _pad: 0,
+            rsdp_pa: 0, hhdm_offset: buf, bsp_lapic_id: 0, _pad: 0,
         };
         // SAFETY: BootInfo names a live region slice for this call; HHDM maps to leaked host memory.
         unsafe { pmm::setup::init_from_boot_info(&info).expect("pmm init"); }

@@ -62,17 +62,17 @@ Kernel binary is independent of step 2. Composition (package set, `/etc` content
 
 ## 5 Image pipeline
 
-`xtask image --arch <a>` produces `boot.img`:
-1. ESP partition: `EFI/BOOT/BOOTX64.EFI` (or `BOOTAA64.EFI`) ← Limine (x86) / EDK2-compatible loader.
-2. Kernel ELF.
-3. Initramfs.cpio.zst.
-4. Bootloader config (`limine.conf` / device-tree blob with kernel args).
-5. (Optional) extra rootfs partition with ext4.
+`xtask image --arch <a>` produces `target/builds/<ns>/oxide-<arch>-grub.iso` (`39§5`):
+1. `boot/grub/grub.cfg` — `multiboot2` (x86_64) or `linux` (aarch64) menuentry with the kernel cmdline.
+2. `boot/oxide-x86_64` (kernel ELF) or `boot/oxide-aarch64.Image` (EFI-stub arm64 Image).
+3. `grub2-mkrescue` wraps both into a bootable ISO — BIOS El Torito on x86_64, EFI (vendored `arm64-efi` modules) on aarch64.
+
+Root is a separate ext4 disk (`root-<arch>.img`, virtio-blk), not part of the ISO. No initramfs.
 
 `xtask rootfs --arch <a>` supplies the root filesystem: copy of `../images/output/<profile>-<arch>-root.img`, already composed + packed from RPMs. No userspace build step exists in this repo.
 
 `xtask qemu --arch <a>` runs:
-- `qemu-system-<arch> -bios /usr/share/edk2/<arch>/code.fd -drive ...boot.img -smp 4 -m 4G -nographic`.
+- `qemu-system-<arch> -cdrom oxide-<arch>-grub.iso -drive ...root-<arch>.img -smp N -m 4G -nographic` (aarch64 adds `-bios vendor/firmware/ovmf-aarch64.fd`).
 
 ## 6 Boot sequence (post-kernel-init)
 

@@ -403,7 +403,7 @@ unsafe fn clean_dcache_to_poc(va: u64, len: usize) {
     unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
 }
 
-/// Boot-CPU AP startup via PSCI `CPU_ON` (Limine-free). For each non-BSP
+/// Boot-CPU AP startup via PSCI `CPU_ON`. For each non-BSP
 /// MPIDR from the DTB `/cpus` list (published by `set_psci_ap_params`),
 /// allocate a stack + per-CPU page + `ApContext` + a physical `ApBootBlock`,
 /// clean the block to PoC, then `cpu_on(mpidr, entry_pa, phys(block))`. The

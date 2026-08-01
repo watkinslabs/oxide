@@ -2,8 +2,8 @@
 use crate::{boot_debug, boot_info_build};
 
 /// Rust-side boot continuation. Runs on the kernel stack we
-/// installed in `_start`. Reads Limine responses, builds a
-/// `BootInfo`, and tail-calls `kernel_main`.
+/// installed in `_start`. Parses the multiboot2 info struct into a
+/// `BootInfo` and tail-calls `kernel_main`.
 ///
 /// # SAFETY: called only from the asm `_start` after `rsp` has
 /// been swapped to `KERNEL_STACK`'s top. Single-CPU, IRQ-off.
@@ -20,17 +20,17 @@ unsafe extern "C" fn _start_rust() -> ! {
         unsafe { boot_debug::init_boot_uart(); }
         klog::set_byte_sink(boot_debug::boot_emit);
     }
-    // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (mirroring Limine's selector offsets so KERNEL_CS=0x28 / KERNEL_DS=0x30 stay valid) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
+    // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (KERNEL_CS=0x28 / KERNEL_DS=0x30) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
     unsafe { hal_x86_64::install_kernel_gdt(); }
     // SAFETY: single-CPU boot, IRQs masked; GDT just installed with TSS descriptor populated at TSS_SEL=0x48 (avail 64-bit TSS, type=9). install_tss issues `ltr 0x48` which marks the descriptor busy and binds CR0.TR to the kernel-wide TSS. RSP0 stays zero until first userspace task; pre-userspace IRQs (Phase 1 path) ignore RSP0 since they take from CPL=0.
     unsafe { hal_x86_64::install_tss(); }
     // SAFETY: single-CPU boot, IRQs masked; install_default populates a kernel-owned IDT and `lidt`s it. Subsequent exceptions vector to oxide_idt_default_handler which halts.
     unsafe { hal_x86_64::install_default_idt(); }
     // Remap+mask the legacy 8259 PIC away from the exception vectors.
-    // Bootloader-agnostic: Limine masks the PIC for us, GRUB/multiboot2
-    // does not — leaving IRQ0 (PIT) at vector 0x08 (the #DF slot), so the
-    // first STI vectors a PIT tick into the double-fault handler. The
-    // kernel drives the APIC, so all legacy IRQs stay masked.
+    // The multiboot2 handoff leaves the PIC as firmware left it, with
+    // IRQ0 (PIT) at vector 0x08 (the #DF slot), so the first STI vectors
+    // a PIT tick into the double-fault handler. The kernel drives the
+    // APIC, so all legacy IRQs stay masked.
     // SAFETY: boot-only, single-CPU, IRQs masked; writes only the always-present legacy 8259 PIC ports (0x20/0x21/0xA0/0xA1) on the q35 target.
     unsafe { boot_debug::remap_and_mask_pic(); }
     // SAFETY: single-CPU boot, IRQs masked; GDT in place so STAR's kernel CS=0x28 / SS=0x30 selectors are valid; sets IA32_LSTAR to oxide_syscall_entry, EFER.SCE=1, FMASK clears IF/DF/AC on entry. User-side `syscall` becomes legal but no user task exists pre-userspace_smoke.
@@ -58,7 +58,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     hal_x86_64::set_tsc_khz(tsc_khz);
     klog::set_clock_fn(boot_debug::now_ns_x86);
     debug_boot! { boot_debug::log_cpu_info(); }
-    // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of cmdline can race; reads bootloader-owned EXECUTABLE_FILE response then publishes the captured bytes through the AtomicPtr-backed slot.
+    // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of cmdline can race; reads the loader-owned multiboot2 cmdline tag then publishes the captured bytes through the boot-owned slot.
     unsafe { boot_info_build::capture_cmdline(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned static state and produces an owned BootInfo.
@@ -69,12 +69,12 @@ unsafe extern "C" fn _start_rust() -> ! {
     unsafe { kmain::kernel_main(&info) }
 }
 
-/// Entry point invoked by Limine. Swaps to `KERNEL_STACK` and tail-calls
-/// `_start_rust`.
+/// Entry point the multiboot2 trampoline tail-calls once long mode is
+/// on. Swaps to `KERNEL_STACK` and tail-calls `_start_rust`.
 ///
-/// # SAFETY: caller is the bootloader; runs single-CPU with IRQs
-/// masked, paging on, kernel image mapped at upper-half linker base,
-/// bootloader's stack still active.
+/// # SAFETY: caller is `_mb2_entry`; runs single-CPU with IRQs masked,
+/// paging on, kernel image mapped at upper-half linker base, the
+/// trampoline's boot stack still active.
 /// # C: not measured
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]

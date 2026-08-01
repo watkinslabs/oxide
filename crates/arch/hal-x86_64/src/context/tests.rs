@@ -91,11 +91,11 @@ use hal::Context;
         assert_eq!(r.vector, super::SCAFFOLD_VECTOR);
         assert!(!r.from_syscall(), "a kthread scaffold is not a syscall frame");
         assert_eq!(r.rip, super::trampoline_kernel_addr(), "iretq RIP");
-        assert_eq!(r.cs, crate::idt::KERNEL_CS as u64, "iretq CS (Limine kernel code = 0x28)");
+        assert_eq!(r.cs, crate::idt::KERNEL_CS as u64, "iretq CS (kernel code = 0x28)");
         assert!(!r.from_user(), "kthread stays at CPL 0");
         assert_eq!(r.rflags, 0x202,       "iretq RFLAGS (IF=1)");
         assert_eq!(r.rsp, top as u64,     "iretq RSP_post (= stack_top)");
-        assert_eq!(r.ss, crate::gdt::KERNEL_DS as u64, "iretq SS (Limine kernel data = 0x30)");
+        assert_eq!(r.ss, crate::gdt::KERNEL_DS as u64, "iretq SS (kernel data = 0x30)");
     }
 
     #[test]

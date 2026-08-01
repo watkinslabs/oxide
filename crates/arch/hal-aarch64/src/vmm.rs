@@ -5,16 +5,17 @@
 // file supplies the arm bit semantics + privileged-register access
 // via the `PtWalker` trait.
 //
-// Limine programs MAIR_EL1 = 0xff: byte 0 = Normal WB-cacheable,
-// bytes 1..7 = Device-nGnRnE. We use AttrIdx = 1.
+// The self-boot trampoline programs MAIR_EL1 = 0xFF04: Attr0 =
+// Device-nGnRE, Attr1 = Normal WB-cacheable. We use AttrIdx = 1 for
+// Normal memory.
 
 use hal::pt_walker::{self, PtWalker, WalkErr};
 
 const VALID:    u64 = 1 << 0;
 const TABLE:    u64 = 1 << 1;       // also "PAGE" at L3
 // AttrIndx is descriptor bits[4:2], so AttrIdx 1 = bit 2 (1<<2). The old
-// value (1<<3) is bit 3 = AttrIdx **2**, which only happened to work under
-// Limine's MAIR=0xff (Normal@0, Device@2). Self-boot MAIR=0xFF04 puts Normal
+// value (1<<3) is bit 3 = AttrIdx **2**, which is Device under the
+// self-boot MAIR. Self-boot MAIR=0xFF04 puts Normal
 // at AttrIdx1 (=0xFF) and Device at AttrIdx0 (=0x04); selecting AttrIdx2 there
 // (=0x00) is Device too, so every page came out Device → EL0 unaligned reads
 // took a DFSC=0x21 alignment abort. Use the real AttrIdx1 bit.
@@ -142,9 +143,8 @@ impl PtWalker for PtWalkerArm {
 
     fn pack_device_leaf(pa: u64) -> u64 {
         // Device MMIO. Self-boot MAIR_EL1=0xFF04: Attr0=Device-nGnRE,
-        // Attr1=Normal-WB → Device uses AttrIdx0 (no ATTR1 bit). The old
-        // Limine MAIR (0xff) had Device at AttrIdx1; Limine is gone, so
-        // this matches the self-boot asm page tables (Device blocks =
+        // Attr1=Normal-WB → Device uses AttrIdx0 (no ATTR1 bit). This
+        // matches the self-boot asm page tables (Device blocks =
         // 0x0401 → AttrIdx0). Mapping device as AttrIdx1 here = Normal-WB
         // (wrong; only TCG-tolerated).
         (pa & Self::PHYS_MASK) | VALID | TABLE | SH0 | SH1 | AF | PXN | UXN
@@ -155,8 +155,7 @@ impl PtWalker for PtWalkerArm {
         // doesn't trap on first access. Inner-Shareable. AttrIdx picks
         // the MAIR_EL1 byte. Self-boot MAIR=0xFF04: Attr0=Device-nGnRE,
         // Attr1=Normal-WB. So cached(Normal) → AttrIdx1 (ATTR1 set),
-        // NO_CACHE(Device) → AttrIdx0. (Limine's 0xff had these swapped;
-        // Limine is gone.) Mapping Normal as AttrIdx0 = Device made every
+        // NO_CACHE(Device) → AttrIdx0. Mapping Normal as AttrIdx0 = Device made every
         // demand-faulted user page Device → unaligned reads took a DFSC
         // 0x21 alignment abort (the arm -smp 2 crash).
         let mut e = (pa & Self::PHYS_MASK) | VALID | TABLE | AF | SH0 | SH1;

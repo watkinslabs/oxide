@@ -1,10 +1,11 @@
 // x86_64 kernel binary stage. Pulls `boot_x86_64::_start` (the
-// Limine entry point) into the link, supplies a panic handler, and
+// multiboot2 trampoline's continuation) into the link, supplies a
+// panic handler, and
 // lets the linker script in `x86_64-kernel.ld` (in this crate) decide layout.
 //
 // `cargo build -p kernel-bin-x86_64 --target ...oxide-kernel.json`
 // produces `target/<target>/<profile>/oxide-x86_64`, an ELF64 the
-// Limine bootloader can load directly.
+// GRUB can load directly via multiboot2.
 //
 // On host we still produce a no_main binary that the linker just
 // drops into the host toolchain; it has no `_start` of its own and
@@ -16,7 +17,7 @@
 
 // Pull `boot_x86_64::_start` into the link. The `extern crate` form
 // (vs `use`) keeps the `_start` symbol live even though no Rust code
-// in this crate calls it — Limine reaches it via the ELF entry.
+// in this crate calls it — the multiboot2 trampoline tail-calls it.
 #[cfg(target_os = "oxide-kernel")]
 extern crate boot_x86_64 as _boot;
 
