@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI64, Ordering};
 
 use super::*;
+use crate::sysv_shm::tests::TEST_LOCK;
 use crate::sysv_shm::{lookup_by_id, shm_vma_close, ShmSegment, PAGE_SIZE, REG, SHM_DEST};
 
 const SPAN: u64 = 4 * PAGE_SIZE;
@@ -18,7 +19,6 @@ impl vmm::FileBacking for FakeBacking {
     fn size_hint(&self) -> u64 { 0 }
 }
 
-static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn vma(start: u64, end: u64, off: u64, seg: Option<usize>) -> DetachVma {
     DetachVma { start, end, off, seg }
@@ -99,6 +99,7 @@ fn seg_with(id: i32, nattch: i64, mode: u32) -> Arc<ShmSegment> {
         id, key: 4242, ns: owner.key(), size: SPAN as usize, mode,
         uid: 0, gid: 0, cuid: 0, cgid: 0, cpid: 1,
         nattch: AtomicI64::new(nattch),
+        creator: sync::Spinlock::new(None),
         backing: Arc::new(FakeBacking),
     })
 }
