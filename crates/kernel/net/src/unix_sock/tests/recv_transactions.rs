@@ -104,7 +104,7 @@ fn dgram_record_keeps_rights_and_sender_in_one_queue_entry() {
     let queue = UnixDgramQueue::new();
     let file = anon_file();
     let sender = UnixAddr::from_sockaddr_path(b"\0sender".to_vec());
-    let msg = UnixDgram { payload: b"record".to_vec(), creds: (1, 2, 3), fds: alloc::vec::Vec::new() };
+    let msg = UnixDgram { payload: b"record".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: alloc::vec::Vec::new() };
     queue.try_push_from_with_rights(msg, Some(sender.clone()), GcRights::from_files(alloc::vec![file.clone()])).unwrap();
     assert!(matches!(queue.recv_with(true, |msg, source, rights| {
         assert_eq!(msg.payload, b"record");
@@ -125,7 +125,7 @@ fn dgram_peek_returns_rights_without_consuming_record() {
     let _serial = test_guard();
     let queue = UnixDgramQueue::new();
     let file = anon_file();
-    let msg = UnixDgram { payload: b"peek".to_vec(), creds: (1, 2, 3), fds: alloc::vec![file.clone()] };
+    let msg = UnixDgram { payload: b"peek".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: alloc::vec![file.clone()] };
     queue.try_push(msg).unwrap();
     let (_, peeked, _) = queue.recv_with(true, |_, _, rights| Ok::<_, ()>(rights)).unwrap().unwrap();
     assert_eq!(peeked.fds.len(), 1);

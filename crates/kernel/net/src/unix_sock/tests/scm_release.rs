@@ -103,7 +103,7 @@ fn direct_datagram_queue_release_collects_discarded_rights() {
     let (root_file, _) = socket_file(crate::sock::SockKind::UnixDgram(root.clone()),
         &root.gc_node());
     let (cycle_file, weak) = self_cycle();
-    let message = UnixDgram { payload: b"root".to_vec(), creds: (0, 0, 0), fds: alloc::vec![] };
+    let message = UnixDgram { payload: b"root".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((0, 0, 0)), fds: alloc::vec![] };
     root.try_push_with_rights(message, classify_files(alloc::vec![cycle_file.clone()])).unwrap();
     drop(cycle_file);
     assert_rooted(&weak);

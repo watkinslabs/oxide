@@ -36,6 +36,8 @@ fn fd_size(task: &sched::Task) -> u64 {
     match unsafe { task.fd_table_ref() } { Some(t) => t.capacity() as u64, None => 0 }
 }
 
+fn widen(numbers: Vec<u32>) -> Vec<u64> { numbers.into_iter().map(u64::from).collect() }
+
 /// # C: O(ngroups + 64 signal slots)
 pub fn body(tid: u32) -> Vec<u8> {
     let Some(task) = sched::live::registry::lookup(tid) else { return Vec::new() };
@@ -55,6 +57,19 @@ pub fn body(tid: u32) -> Vec<u8> {
     let tracer = task.traced_by.load(Ordering::Acquire);
     let name = task.comm();
     let mem_rows = crate::pid_mem::status_rows(&task);
+    // The NS* rows report one number per namespace level, from the READER's
+    // level inward to the task's own — the direct read-out of the per-level
+    // numbering a nested PID namespace gives its tasks.
+    let reader = sched::live::registry::reader_pid_ns();
+    let own = task.namespace_owner(namespace_identity::NamespaceKind::Pid)
+        .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::Pid));
+    let ns_pid = widen(sched::live::registry::nr_chain_in(&task, &reader));
+    let ns_tgid = match sched::live::registry::lookup(task.tgid.load(Ordering::Acquire)) {
+        Some(leader) => widen(sched::live::registry::nr_chain_in(&leader, &reader)),
+        None => ns_pid.clone(),
+    };
+    let ns_pgid = widen(sched::live::registry::group_chain(&own, task.pgid(), &reader));
+    let ns_sid = widen(sched::live::registry::group_chain(&own, task.sid(), &reader));
     let s = Status {
         name:   &name,
         umask:  task.umask(),
@@ -62,7 +77,9 @@ pub fn body(tid: u32) -> Vec<u8> {
         tgid:   vpid,
         // Linux `task_numa_group_id` — no NUMA balancing, so no group.
         ngid:   0,
-        pid:    vpid,
+        // `Pid:` is the THREAD's number and `Tgid:` the process's; they differ
+        // for `/proc/<pid>/task/<tid>/status`, which this same body renders.
+        pid:    sched::live::registry::display_vtid(tid),
         ppid,
         tracer_pid: if tracer == 0 { 0 } else { sched::live::registry::display_vpid(tracer) },
         uid: [c.ruid.load(Ordering::Acquire), c.euid.load(Ordering::Acquire),
@@ -71,10 +88,10 @@ pub fn body(tid: u32) -> Vec<u8> {
               c.sgid.load(Ordering::Acquire), c.fsgid.load(Ordering::Acquire)],
         fd_size: fd_size(&task),
         groups,
-        ns_tgid: vpid,
-        ns_pid:  vpid,
-        ns_pgid: task.pgid() as u64,
-        ns_sid:  task.sid() as u64,
+        ns_tgid: &ns_tgid,
+        ns_pid:  &ns_pid,
+        ns_pgid: &ns_pgid,
+        ns_sid:  &ns_sid,
         // Linux `PF_KTHREAD`. A kernel thread is exactly a task with no mm,
         // which is also the property `task_dump_owner` uses the flag to detect.
         kthread: task.clone_mm().is_none(),

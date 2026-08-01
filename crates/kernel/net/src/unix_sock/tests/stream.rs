@@ -86,8 +86,8 @@ fn msgpair_creds_are_per_message_fifo() {
     // Two senders write end A (read by end B), sender 100 then sender 200.
     {
         let mut g = p.b_to_a.lock();
-        g.msgs.push_back(UnixMsg { payload: b"first".to_vec(),  fds: alloc::vec::Vec::new(), rights: None, creds: (100, 0, 0) });
-        g.msgs.push_back(UnixMsg { payload: b"second".to_vec(), fds: alloc::vec::Vec::new(), rights: None, creds: (200, 0, 0) });
+        g.msgs.push_back(UnixMsg { payload: b"first".to_vec(),  fds: alloc::vec::Vec::new(), rights: None, creds: crate::unix_sock::MsgCred::from_ids((100, 0, 0)) });
+        g.msgs.push_back(UnixMsg { payload: b"second".to_vec(), fds: alloc::vec::Vec::new(), rights: None, creds: crate::unix_sock::MsgCred::from_ids((200, 0, 0)) });
     }
     let m1 = p.recv_msg(UnixEnd::A, 64).expect("first");
     assert_eq!(m1.payload, b"first");
@@ -298,7 +298,7 @@ fn dgram_message_preserves_sender_creds() {
     let q = UnixDgramQueue::new();
     q.try_push(UnixDgram {
         payload: b"READY=1".to_vec(),
-        creds: (40, 0, 0),
+        creds: crate::unix_sock::MsgCred::from_ids((40, 0, 0)),
         fds: alloc::vec::Vec::new(),
     }).unwrap();
     let got = q.pop().expect("one queued message");

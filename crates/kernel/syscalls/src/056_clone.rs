@@ -80,10 +80,6 @@ pub(crate) fn set_requested_pids_ok(requested: &[u32]) -> Result<(), Errno> {
         }
         level = here.parent().and_then(|parent| parent.get_active());
     }
-    if let Some(inner) = requested.first().copied() {
-        // Keep the ordinary allocator from re-issuing a number the caller took.
-        sched::live::spawn::reserve_vpid(inner);
-    }
     Ok(())
 }
 
@@ -263,17 +259,6 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         into_cgid.unwrap_or_else(|| cgroup::cgroup_of(cur.tid as u64))
     };
     if !child.try_charge_kernel_stack(stack_memcg) { return errno(Errno::Enomem); }
-    // The vpid (vtid) to return to the parent — captured now, before the
-    // `child` Arc may be dropped at the end. spawn stamped it.
-    // `clone3` `set_tid[]`: the caller picked the child's pid in its own pid
-    // namespace. Admission already reserved the number, so stamping it here —
-    // before publication, before any mapping is configured — is the one point
-    // where the child has no other identity yet.
-    if let Some(inner) = set_tid.first().copied() {
-        child.vtid.store(inner, Ordering::Release);
-        child.vtgid.store(inner, Ordering::Release);
-    }
-    let child_vpid_ret = child.vtid.load(Ordering::Acquire);
     child.exit_signal.store(exit_signal as u8, Ordering::Release);
 
     // CLONE_THREAD: the new task joins the caller's thread group.
@@ -348,9 +333,14 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         child.rseq_len.store(cur.rseq_len.load(Ordering::Acquire), Ordering::Release);
         child.rseq_sig.store(cur.rseq_sig.load(Ordering::Acquire), Ordering::Release);
     }
-    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret, set_tid) {
-        return errno(e);
-    }
+    // The number to return to the parent: the child's pid AS THE CALLER'S pid
+    // namespace numbers it, which is not the child's own number whenever this
+    // call put the child in a deeper namespace. Captured now, before the
+    // `child` Arc may be dropped at the end.
+    let child_vpid_ret = match namespaces::inherit_and_publish(cur, &child, flags, set_tid) {
+        Ok(nr) => nr,
+        Err(e) => return errno(e),
+    };
     // Linux `copy_creds` charges the new task to its account, then
     // `copy_process` decides on the resulting count — the task being admitted
     // is INSIDE the number it is judged against, which is what makes the

@@ -30,6 +30,7 @@ mod exit_notify;
 mod net_namespace;
 mod namespaces;
 mod pidfd;
+mod pidns_report;
 mod prctl;
 mod ptrace_dumpable;
 mod rt_tick_policy;

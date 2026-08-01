@@ -93,6 +93,7 @@ fn initialize(registry: &mut Registry) {
         nsfs_ino: NamespaceKind::User.initial_nsfs_ino(),
         owner_user_namespace: Owner::InitialUser, parent: None,
         pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(0),
+        pid_numbers: crate::pid_numbers::PidNumberSpace::for_kind(NamespaceKind::User, true),
         active: core::sync::atomic::AtomicUsize::new(1), finalizers: SpinLock::new(Vec::new()),
     });
     registry.publish_lifetime(&user);
@@ -104,6 +105,7 @@ fn initialize(registry: &mut Registry) {
             kind, id: INIT_ID, ns_id: kind.initial_ns_id(), nsfs_ino: kind.initial_nsfs_ino(),
             owner_user_namespace: Owner::Ref(NamespacePin::from_arc(Arc::clone(&user))),
             parent: None, pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(0),
+            pid_numbers: crate::pid_numbers::PidNumberSpace::for_kind(kind, true),
             active: core::sync::atomic::AtomicUsize::new(1),
             finalizers: SpinLock::new(Vec::new()),
         });
@@ -241,6 +243,7 @@ fn allocate_inactive_inner(kind: NamespaceKind, owner: NamespacePin,
         nsfs_ino: registry.next_nsfs_ino()?, owner_user_namespace: Owner::Ref(owner),
         parent, pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(
             pid_memfd_noexec_scope),
+        pid_numbers: crate::pid_numbers::PidNumberSpace::for_kind(kind, false),
         active: core::sync::atomic::AtomicUsize::new(0),
         finalizers: SpinLock::new(Vec::new()),
     });

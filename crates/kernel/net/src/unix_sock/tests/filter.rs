@@ -20,7 +20,7 @@ fn pathname_datagram_filter_sees_payload_drops_zero_and_truncates_positive() {
     install_bpf_filter_runner(verdict_runner);
     let filter = filter(3);
     let queue = UnixDgramQueue::new_with_filter(filter.clone());
-    queue.try_push(UnixDgram { payload: b"abcdef".to_vec(), creds: (1, 2, 3), fds: Vec::new() })
+    queue.try_push(UnixDgram { payload: b"abcdef".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: Vec::new() })
         .unwrap();
     assert_eq!(queue.pop().unwrap().payload, b"abc");
 
@@ -28,9 +28,9 @@ fn pathname_datagram_filter_sees_payload_drops_zero_and_truncates_positive() {
         kind: FilterKind::Ebpf, insns: 0u32.to_ne_bytes().to_vec(),
     }).unwrap();
     assert_eq!(queue.try_push_from_with_rights_bounded(
-        UnixDgram { payload: b"oversized".to_vec(), creds: (1, 2, 3), fds: Vec::new() }, None,
+        UnixDgram { payload: b"oversized".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: Vec::new() }, None,
         GcRights::from_files(Vec::new()), 3), Err(crate::NetError::Emsgsize));
-    queue.try_push(UnixDgram { payload: b"dropped".to_vec(), creds: (1, 2, 3), fds: Vec::new() })
+    queue.try_push(UnixDgram { payload: b"dropped".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: Vec::new() })
         .unwrap();
     assert!(queue.pop().is_none());
 }
@@ -42,7 +42,7 @@ fn owned_datagram_filter_drop_settles_the_original_wmem_charge() {
     let sender = UnixDgramQueue::new();
     let queue = UnixDgramQueue::new_with_filter(filter(0));
     queue.try_push_owned(
-        UnixDgram { payload: b"dropped".to_vec(), creds: (1, 2, 3), fds: Vec::new() }, None,
+        UnixDgram { payload: b"dropped".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: Vec::new() }, None,
         GcRights::from_files(Vec::new()), usize::MAX, &sender, 4096,
     ).unwrap();
     assert!(queue.pop().is_none());
@@ -56,7 +56,7 @@ fn owned_datagram_filter_truncation_preserves_the_original_wmem_charge() {
     let sender = UnixDgramQueue::new();
     let queue = UnixDgramQueue::new_with_filter(filter(3));
     queue.try_push_owned(
-        UnixDgram { payload: b"abcdef".to_vec(), creds: (1, 2, 3), fds: Vec::new() }, None,
+        UnixDgram { payload: b"abcdef".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: Vec::new() }, None,
         GcRights::from_files(Vec::new()), usize::MAX, &sender, 4096,
     ).unwrap();
     assert_eq!(sender.wmem_alloc(), 6, "BPF trim does not change skb truesize");

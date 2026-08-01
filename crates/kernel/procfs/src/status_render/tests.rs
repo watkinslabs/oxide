@@ -12,7 +12,7 @@ fn unprivileged() -> Status<'static> {
         gid: [1000, 1000, 1000, 1000],
         fd_size: 64,
         groups: &[10, 1000],
-        ns_tgid: 812, ns_pid: 815, ns_pgid: 812, ns_sid: 812,
+        ns_tgid: &[812], ns_pid: &[815], ns_pgid: &[812], ns_sid: &[812],
         kthread: false, threads: 3,
         sig_queued: 0, sig_limit: 63_000,
         sig_pnd: 0, shd_pnd: 0, sig_blk: 0x1000, sig_ign: 0x1000, sig_cgt: 0x0000_0001_0000_4002,
@@ -158,4 +158,31 @@ fn field_order_matches_linux_proc_pid_status() {
         "voluntary_ctxt_switches", "nonvoluntary_ctxt_switches",
     ]);
     assert_eq!(field(&b, "Umask"), "0022", "4-digit octal, as Linux %#04o renders it");
+}
+
+/// A task in a two-deep PID namespace nest reports one number per level in
+/// every `NS*` row, outermost (the reader's) first — the whole point of the
+/// rows, and unreadable from a single scalar.
+#[test]
+fn ns_rows_report_one_number_per_namespace_level() {
+    let mut s = unprivileged();
+    s.ns_tgid = &[812, 40, 1];
+    s.ns_pid = &[815, 42, 3];
+    s.ns_pgid = &[812, 40, 1];
+    s.ns_sid = &[812, 40, 1];
+    let body = alloc::string::String::from_utf8(render(&s)).unwrap();
+    assert_eq!(field(&body, "NStgid"), "812\t40\t1");
+    assert_eq!(field(&body, "NSpid"), "815\t42\t3");
+    assert_eq!(field(&body, "NSpgid"), "812\t40\t1");
+    assert_eq!(field(&body, "NSsid"), "812\t40\t1");
+}
+
+/// A reader that cannot name the task at all gets an empty row rather than a
+/// fabricated number.
+#[test]
+fn ns_rows_are_empty_when_the_reader_numbers_nothing() {
+    let mut s = unprivileged();
+    s.ns_pgid = &[];
+    let body = alloc::string::String::from_utf8(render(&s)).unwrap();
+    assert!(body.lines().any(|l| l == "NSpgid:"), "{body}");
 }

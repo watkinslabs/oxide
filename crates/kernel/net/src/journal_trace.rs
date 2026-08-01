@@ -36,7 +36,7 @@ pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
     klog::write_raw(b"[B288 dgram ");
     klog::write_raw(&crate::unix_sock::unix_path_display(path));
     klog::write_raw(b" pid=");
-    let pid = sched::live::current().map(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+    let pid = sched::live::current().map(|t| t.visible_pid()).unwrap_or(0);
     klog::write_dec_u64(pid as u64);
     klog::write_raw(b"] ");
     klog::write_raw(&body[..core::cmp::min(body.len(), DUMP_CAP)]);

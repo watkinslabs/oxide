@@ -249,6 +249,11 @@ pub fn make_proc_pid_task_dir(tgid: u32) -> InodeRef {
 }
 
 pub(crate) fn pid_to_kernel_tid(p: u32) -> Option<u32> {
-    use sched::live::registry::{lookup, lookup_by_vpid};
-    lookup_by_vpid(p).or_else(|| lookup(p)).map(|t| t.tid)
+    use sched::live::registry::{lookup, lookup_by_vpid, reader_pid_ns};
+    // The internal-tid fallback names the kernel threads that never took a
+    // visible number. It is the INITIAL namespace's view only: a reader inside
+    // a nested namespace must not be able to reach a task by an identifier its
+    // namespace never issued.
+    let fallback = || if reader_pid_ns().is_initial() { lookup(p) } else { None };
+    lookup_by_vpid(p).or_else(fallback).map(|t| t.tid)
 }

@@ -72,12 +72,12 @@ pub struct UnixMsg {
     /// SCM_CREDENTIALS. Per-MESSAGE (not the shared per-end cred slot) so a
     /// socketpair shared by many senders (systemd-udevd's worker_watch: all
     /// workers write one end) attributes each message to its true sender.
-    pub creds: (u32, u32, u32),
+    pub creds: crate::unix_sock::MsgCred,
 }
 
 impl UnixMsg {
     /// Empty EOF/shutdown sentinel for syscall receive paths. # C: O(1)
-    pub fn empty() -> Self { Self { payload: Vec::new(), fds: Vec::new(), rights: None, creds: (0, 0, 0) } }
+    pub fn empty() -> Self { Self { payload: Vec::new(), fds: Vec::new(), rights: None, creds: Default::default() } }
 }
 
 impl UnixMsgPair {
@@ -241,6 +241,13 @@ impl UnixMsgPair {
             return Ok(sent);
         }
         let payload = &payload[..payload.len().min(verdict as usize)];
+        // Capture the SENDER's creds per-message (SO_PASSCRED) BEFORE the ring
+        // lock: resolving the sender's identity walks the task registry, which
+        // must never be entered with a socket queue held.
+        let creds = match supplied_creds {
+            Some(ids) => crate::unix_sock::MsgCred::from_supplied(ids),
+            None => crate::unix_sock::MsgCred::of_current((0, 0, 0)),
+        };
         let receiver = self.gc_node(end.other());
         let transition = receiver.pin();
         rights.register(&receiver);
@@ -254,18 +261,6 @@ impl UnixMsgPair {
         if g.closed_writer || g.reader_shutdown { return Err(UnixMsgSendError::PeerClosed); }
         let charge = message_charge(payload.len());
         if g.bytes.saturating_add(charge) > cap { return Err(UnixMsgSendError::WouldBlock); }
-        // Capture the SENDER's creds per-message (SO_PASSCRED). Hosted tests
-        // have no `current()`; default to zero there.
-        #[cfg(target_os = "oxide-kernel")]
-        let creds = supplied_creds.unwrap_or_else(|| sched::live::current()
-            .map(|c| (
-                c.visible_pid(),
-                c.creds.ruid.load(core::sync::atomic::Ordering::Relaxed),
-                c.creds.rgid.load(core::sync::atomic::Ordering::Relaxed),
-            ))
-            .unwrap_or((0, 0, 0)));
-        #[cfg(not(target_os = "oxide-kernel"))]
-        let creds = supplied_creds.unwrap_or((0u32, 0u32, 0u32));
         g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds: Vec::new(), rights: Some(rights), creds });
         g.bytes += charge;
         let n = sent;
@@ -313,8 +308,9 @@ impl UnixMsgPair {
         let full_len = front.payload.len();
         let payload = front.payload[..core::cmp::min(max, full_len)].to_vec();
         let rights_len = front.rights.as_ref().map(GcRights::len).unwrap_or(front.fds.len());
-        let creds = front.creds;
-        let copied = match copy(&payload, rights_len, creds, full_len) {
+        let creds = front.creds.clone();
+        // Rendered for the RECEIVER's pid namespace at this instant.
+        let copied = match copy(&payload, rights_len, creds.ids_for_reader(), full_len) {
             Ok(copied) => copied,
             Err(err) => {
                 let dropped = if peek { None } else { g.msgs.pop_front() };
