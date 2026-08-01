@@ -238,7 +238,10 @@ pub struct SockOpts {
     pub udp: crate::sock_opts::sol_udp::UdpOpts,
 }
 
-pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
+/// The buffer sizes a TCP socket starts with when its namespace still carries
+/// the compiled `net.ipv4.tcp_wmem` / `tcp_rmem` window.
+pub const TCP_SNDBUF_DEFAULT: i32 = crate::sysctl::DEFAULT_TCP_WMEM[1] as i32;
+pub const TCP_RCVBUF_DEFAULT: i32 = crate::sysctl::DEFAULT_TCP_RMEM[1] as i32;
 
 impl Default for SockOpts {
     fn default() -> Self {
@@ -249,8 +252,8 @@ impl Default for SockOpts {
             keepalive:   AtomicI32::new(0),
             broadcast:   AtomicI32::new(0),
             oobinline:   AtomicI32::new(0),
-            sndbuf:      AtomicI32::new(TCP_SNDBUF_DEFAULT),
-            rcvbuf:      AtomicI32::new(TCP_RCVBUF_DEFAULT),
+            sndbuf:      AtomicI32::new(crate::sysctl::DEFAULT_WMEM_DEFAULT as i32),
+            rcvbuf:      AtomicI32::new(crate::sysctl::DEFAULT_RMEM_DEFAULT as i32),
             rcvbuf_locked: core::sync::atomic::AtomicBool::new(false),
             sndtimeo_ns: AtomicI64::new(0),
             rcvtimeo_ns: AtomicI64::new(0),

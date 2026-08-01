@@ -232,7 +232,7 @@ impl InetSocket {
                     return Err(vfs::VfsError::Epipe);
                 }
                 let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-                    .max(TCP_SNDBUF_DEFAULT) as usize;
+                    .max(0) as usize;
                 let timeo = self.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
                 let deadline_ns = compute_deadline_ns(timeo);
                 let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
@@ -258,7 +258,7 @@ impl InetSocket {
                 return Err(vfs::VfsError::Epipe);
             }
             let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-                .max(TCP_SNDBUF_DEFAULT) as usize;
+                .max(0) as usize;
             let entry = entry.clone();
             let eno = self.take_pending_recv_error();
             if eno != 0 { return Err(crate::sock_io::tcp_vfs_error(eno)); }
@@ -329,7 +329,7 @@ impl InetSocket {
         // `sock_io::write_tcp_blocking`). Poll and `sendmsg` must read one
         // number, or the writer is told "writable" and handed `EAGAIN`.
         let sndbuf_cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-            .max(TCP_SNDBUF_DEFAULT) as usize;
+            .max(0) as usize;
         // `unix_dgram_poll`'s connected-peer backlog arm. Resolved outside the
         // `kind` lock: the lookup takes the per-netns unix registry lock, which
         // must never nest under it.

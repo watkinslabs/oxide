@@ -398,3 +398,58 @@ mod tests;
 #[cfg(test)]
 #[path = "proc_handler_netns_tests.rs"]
 mod netns_tests;
+
+/// Per-network-namespace three-value socket-buffer window (`tcp_wmem` /
+/// `tcp_rmem`). Linux formats the three ints tab-separated and lets a write
+/// supply fewer than three, leaving the untouched slots live.
+pub struct PerNetBufWindowHook {
+    pub current_ns: fn() -> NetworkNamespaceRef,
+    pub get: fn(&NetworkNamespaceRef) -> [i64; 3],
+    pub set: fn(&NetworkNamespaceRef, [i64; 3]) -> Result<(), ()>,
+    pub bounds: (i64, i64),
+}
+struct BoundPerNetBufWindowHook {
+    namespace: NetworkNamespaceRef,
+    get: fn(&NetworkNamespaceRef) -> [i64; 3],
+    set: fn(&NetworkNamespaceRef, [i64; 3]) -> Result<(), ()>,
+    bounds: (i64, i64),
+}
+impl ProcHandler for PerNetBufWindowHook {
+    fn format(&self) -> Vec<u8> { format_buf_window((self.get)(&(self.current_ns)())) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_buf_window(&(self.current_ns)(), self.get, self.set, self.bounds, src)
+    }
+    fn bind(&self) -> Option<Arc<dyn ProcHandler>> {
+        Some(Arc::new(BoundPerNetBufWindowHook {
+            namespace: (self.current_ns)(), get: self.get, set: self.set, bounds: self.bounds,
+        }))
+    }
+}
+impl ProcHandler for BoundPerNetBufWindowHook {
+    fn format(&self) -> Vec<u8> { format_buf_window((self.get)(&self.namespace)) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_buf_window(&self.namespace, self.get, self.set, self.bounds, src)
+    }
+}
+
+fn format_buf_window(window: [i64; 3]) -> Vec<u8> {
+    alloc::format!("{}\t{}\t{}\n", window[0], window[1], window[2]).into_bytes()
+}
+
+fn store_buf_window(namespace: &NetworkNamespaceRef,
+    get: fn(&NetworkNamespaceRef) -> [i64; 3],
+    set: fn(&NetworkNamespaceRef, [i64; 3]) -> Result<(), ()>,
+    bounds: (i64, i64), src: &[u8]) -> Result<(), ()>
+{
+    let text = core::str::from_utf8(src).map_err(|_| ())?;
+    let mut window = get(namespace);
+    let mut fields = text.split_whitespace();
+    for slot in window.iter_mut() {
+        let Some(field) = fields.next() else { break };
+        let value = field.parse::<i64>().map_err(|_| ())?;
+        if value < bounds.0 || value > bounds.1 { return Err(()); }
+        *slot = value;
+    }
+    if fields.next().is_some() { return Err(()); }
+    set(namespace, window)
+}

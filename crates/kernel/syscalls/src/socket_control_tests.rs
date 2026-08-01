@@ -234,7 +234,7 @@ fn generic_getsockopt_matches_canonical_socket_option_constants() {
         (sol::SO_TYPE, sol::SO_ACCEPTCONN, sol::SO_DOMAIN, sol::SO_PROTOCOL,
          sol::SO_OOBINLINE, sol::SOL_SOCKET));
     let source = include_str!("055_getsockopt.rs");
-    assert!(source.contains("sol_socket::read(&s, optname, optval, optlen_p)"));
+    assert!(source.contains("sol_socket::read(&sock, optname, optval, optlen_p)"));
     for owned in ["SO_TYPE", "SO_ACCEPTCONN", "SO_DOMAIN", "SO_PROTOCOL"] {
         assert!(!source.contains(&alloc::format!("(SOL_SOCKET, {owned})")));
         assert!(!source.contains(&alloc::format!("(SOL_SOCKET, net::uapi::{owned})")));
@@ -315,21 +315,21 @@ fn ipv6_tclass_recvtclass_use_linux_optnames_and_twin_shapes() {
         assert!(uapi.contains("IPV6_TCLASS: u64 = 67"));
         assert!(uapi.contains("IPV6_RECVTCLASS: u64 = 66"));
     }
-    let set = include_str!("054_setsockopt/main.rs");
-    let tclass = set.find("(IPPROTO_IPV6, IPV6_TCLASS) =>").unwrap();
-    assert!(set[tclass..].contains("require_v6(&sock)"));
+    let set = include_str!("054_setsockopt/ipv6.rs");
+    let tclass = set.find("IPV6_TCLASS =>").unwrap();
+    assert!(set[tclass..].contains("require_v6(sock)"));
     assert!(set[tclass..].contains("if !(-1..=255).contains(&v)"));
     assert!(set[tclass..].contains("sock.opts.ipv6_tclass.store(v, Ordering::Release)"));
-    let recvtclass = set.find("(IPPROTO_IPV6, IPV6_RECVTCLASS) =>").unwrap();
+    let recvtclass = set.find("IPV6_RECVTCLASS =>").unwrap();
     assert!(set[recvtclass..]
         .contains("sock.opts.ipv6_recvtclass.store(if v != 0 { 1 } else { 0 }, Ordering::Release)"));
 
-    let get = include_str!("055_getsockopt.rs");
-    let get_tclass = get.find("(IPPROTO_IPV6, IPV6_TCLASS) =>").unwrap();
+    let get = include_str!("055_getsockopt/ipv6.rs");
+    let get_tclass = get.find("IPV6_TCLASS =>").unwrap();
     // Unset (-1) sticky resolves to 0 on read, matching the TX path.
     assert!(get[get_tclass..].contains("if t < 0 { 0 } else { t }"));
     assert!(get.contains(
-        "(IPPROTO_IPV6, IPV6_RECVTCLASS) => return i32_back(s.opts.ipv6_recvtclass.load(Ordering::Acquire))"
+        "IPV6_RECVTCLASS => out.i32(sock.opts.ipv6_recvtclass.load(Ordering::Acquire))"
     ));
 }
 

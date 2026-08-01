@@ -195,10 +195,11 @@ mod tests {
     #[test]
     fn scalar_get_rejects_family_before_encoding() {
         let udp4 = Arc::new(net::sock::InetSocket::new_udp());
-        let called = core::cell::Cell::new(false);
-        let back = |_: i32| { called.set(true); 0 };
-        assert_eq!(scalar_get(&udp4, net::sock_mcast::McastScalarGet::V6Loop, &back),
+        // A copyout pair that can only fault: reaching the encoder at all
+        // would report EFAULT, so EOPNOTSUPP proves the family screen ran
+        // first and the value was never encoded.
+        let out = super::super::out::OptOut::new(0, 0);
+        assert_eq!(scalar_get(&udp4, net::sock_mcast::McastScalarGet::V6Loop, &out),
             -(Errno::Eopnotsupp.as_i32() as i64));
-        assert!(!called.get());
     }
 }

@@ -42,6 +42,7 @@ use crate::proc_handler::{
     PerNetIntHook as HPerNetIntHook,
     PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
+    PerNetBufWindowHook as HPerNetBufWindowHook,
     PerNetGroupRangeHook as HPerNetGroupRangeHook,
     StrHook as HStrHook, ULongVar,
 };
@@ -148,6 +149,27 @@ fn set_ptrace_scope(value: i64) { let _ = sched::yama::set_scope(value); }
 /// `net.core.rmem_max` / `net.core.wmem_max` bind to the ONE pair of ceilings
 /// `SO_RCVBUF` / `SO_SNDBUF` clamp against, so the leaf and the option can
 /// never disagree.
+/// `net.core.{r,w}mem_default` bind to the ONE pair of buffer sizes every new
+/// socket is seeded from, so the leaf can never disagree with what a socket
+/// reports through `SO_RCVBUF` / `SO_SNDBUF` right after creation.
+fn get_rmem_default() -> i64 { net::sysctl::rmem_default() as i64 }
+fn set_rmem_default(value: i64) { net::sysctl::set_rmem_default(value) }
+fn get_wmem_default() -> i64 { net::sysctl::wmem_default() as i64 }
+fn set_wmem_default(value: i64) { net::sysctl::set_wmem_default(value) }
+/// `net.ipv4.tcp_{w,r}mem` bind to the per-namespace window a new TCP socket
+/// takes its buffers from.
+fn tcp_wmem(ns: &network_namespace::NetworkNamespaceRef) -> [i64; 3] {
+    net::sysctl::tcp_buf_window(ns, false)
+}
+fn set_tcp_wmem(ns: &network_namespace::NetworkNamespaceRef, w: [i64; 3]) -> Result<(), ()> {
+    net::sysctl::set_tcp_buf_window(ns, false, w)
+}
+fn tcp_rmem(ns: &network_namespace::NetworkNamespaceRef) -> [i64; 3] {
+    net::sysctl::tcp_buf_window(ns, true)
+}
+fn set_tcp_rmem(ns: &network_namespace::NetworkNamespaceRef, w: [i64; 3]) -> Result<(), ()> {
+    net::sysctl::set_tcp_buf_window(ns, true, w)
+}
 fn get_rmem_max() -> i64 { net::sysctl::rmem_max() as i64 }
 fn set_rmem_max(value: i64) { net::sysctl::set_rmem_max(value) }
 fn get_wmem_max() -> i64 { net::sysctl::wmem_max() as i64 }
@@ -220,6 +242,10 @@ enum Leaf {
     /// Two-u16 `proc_dointvec` bound to subsystem accessors.
     PerNetU16PairHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()>,
         fn(&network_namespace::NetworkNamespaceRef, u16, u16) -> Result<(), ()>),
+    /// Three-value socket-buffer window (`tcp_wmem` / `tcp_rmem`).
+    PerNetBufWindowHook(fn(&network_namespace::NetworkNamespaceRef) -> [i64; 3],
+        fn(&network_namespace::NetworkNamespaceRef, [i64; 3]) -> Result<(), ()>,
+        (i64, i64)),
     /// Two-value group window bound to subsystem accessors.
     PerNetGroupRangeHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u32, u32), ()>,
         fn(&network_namespace::NetworkNamespaceRef, u32, u32) -> Result<(), ()>),
@@ -375,10 +401,12 @@ const SYSCTL_TREE: &[Node] = &[
         Dir("core", &[
             File("somaxconn",          NetInt(net::net_ns::NetSysctlKey::Somaxconn, Some((0, INT_MAX)))),
             File("optmem_max",         NetInt(net::net_ns::NetSysctlKey::OptmemMax, Some((0, INT_MAX)))),
-            File("rmem_default",       Const(b"212992\n")),
+            File("rmem_default",       NetGlobalIntHook(get_rmem_default, set_rmem_default,
+                Some(net::sysctl::RMEM_DEFAULT_BOUNDS))),
             File("rmem_max",           NetGlobalIntHook(get_rmem_max, set_rmem_max,
                 Some(net::sysctl::RMEM_MAX_BOUNDS))),
-            File("wmem_default",       Const(b"212992\n")),
+            File("wmem_default",       NetGlobalIntHook(get_wmem_default, set_wmem_default,
+                Some(net::sysctl::WMEM_DEFAULT_BOUNDS))),
             File("wmem_max",           NetGlobalIntHook(get_wmem_max, set_wmem_max,
                 Some(net::sysctl::WMEM_MAX_BOUNDS))),
             File("netdev_max_backlog", Const(b"1000\n")),
@@ -390,6 +418,10 @@ const SYSCTL_TREE: &[Node] = &[
             File("tcp_tw_reuse",       NetInt(net::net_ns::NetSysctlKey::TcpTwReuse, Some((0, 2)))),
             File("tcp_fin_timeout",    NetInt(net::net_ns::NetSysctlKey::TcpFinTimeout, Some((0, INT_MAX)))),
             File("tcp_keepalive_time", NetInt(net::net_ns::NetSysctlKey::TcpKeepaliveTime, Some((0, INT_MAX)))),
+            File("tcp_wmem",           PerNetBufWindowHook(tcp_wmem, set_tcp_wmem,
+                net::sysctl::TCP_MEM_BOUNDS)),
+            File("tcp_rmem",           PerNetBufWindowHook(tcp_rmem, set_tcp_rmem,
+                net::sysctl::TCP_MEM_BOUNDS)),
             File("ip_local_port_range", PerNetU16PairHook(local_port_range, set_local_port_range)),
             File("ip_unprivileged_port_start", PerNetIntHook(unprivileged_port_start,
                 set_unprivileged_port_start, Some((0, 65_535)))),
@@ -482,6 +514,8 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))
         }
         Leaf::StrHook(get, set) => bound_sysctl_inode(Arc::new(HStrHook { get, set })),
+        Leaf::PerNetBufWindowHook(get, set, bounds) => bound_sysctl_inode(Arc::new(
+            HPerNetBufWindowHook { current_ns: current_net_ns, get, set, bounds })),
         Leaf::PerNetGroupRangeHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetGroupRangeHook {
             current_ns: current_net_ns, get, set,
         })),
