@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 namespace-identity = { path = "../namespace-identity" }
+syscall = { path = "../syscall" }
 sched = { path = "../sched" }
 vfs = { path = "../vfs" }
 
