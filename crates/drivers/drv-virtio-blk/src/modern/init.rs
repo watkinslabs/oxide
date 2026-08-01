@@ -75,6 +75,10 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let h = hhdm();
     if h != 0 {
         let va = h.wrapping_add(bounce_pa) as *mut u8;
+        // SAFETY: `bounce_pa` is the `alloc_contig(BOUNCE_ORDER)` block just
+        // allocated above and owned solely by this probe; `BOUNCE_ORDER` is
+        // derived from `BOUNCE_BYTES`, so the block covers every index written.
+        // No descriptor references it yet, so the device cannot see the stores.
         unsafe {
             for i in 0..BOUNCE_BYTES { core::ptr::write_volatile(va.add(i), 0); }
         }
@@ -86,6 +90,10 @@ pub fn init_blk(init: BlkInit) -> u32 {
             used as u64,
             2 * core::mem::size_of::<u16>(),
         );
+        // SAFETY: `device_pa` is this queue's used frame (checked non-zero) via
+        // HHDM; `used.add(1)` is the aligned u16 `used.idx` at byte 2, the first
+        // four bytes of the frame. `invalidate_from_device` above dropped any
+        // stale cache line so this reads what the device left after reset.
         unsafe { core::ptr::read_volatile(used.add(1)) }
     } else { 0 };
 
