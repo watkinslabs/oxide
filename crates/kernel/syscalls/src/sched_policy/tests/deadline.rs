@@ -162,6 +162,21 @@ fn shrinking_a_reservation_is_judged_against_the_bandwidth_already_held() {
 }
 
 #[test]
+fn a_task_that_cannot_reach_the_whole_span_is_refused_even_with_cap_sys_nice() {
+    // The reservation is booked against the span; a task confined below it has
+    // a guarantee the ledger never checked. Capability overrides the ownership
+    // and priority ladders, not whether the promise can be kept at all.
+    let _ledger = dl_ledger();
+    let caller = normal(1, 0);
+    privileged(&caller);
+    let t = normal(2, 0);
+    let span = sched::deadline::span();
+    t.cpus_allowed.store(span & !(span & span.wrapping_neg()), Ordering::Release);
+    assert_eq!(setattr(&caller, &t, &dl(1_000_000, 10_000_000, 10_000_000)), EPERM);
+    assert_eq!(task_policy(&t), SCHED_NORMAL);
+}
+
+#[test]
 fn a_deadline_priority_must_be_zero() {
     let caller = normal(1, 0);
     privileged(&caller);
