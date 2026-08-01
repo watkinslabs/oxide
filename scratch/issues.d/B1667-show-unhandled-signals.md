@@ -20,3 +20,9 @@ merged ledger row records. All from ONE live-gnome boot:
 | Status | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|
 | OPEN | blocker | `net` does not compile without its `hosted` feature: nine errors, all `could not find X in the crate root` for modules gated `any(target_os = "oxide-kernel", test, feature = "hosted")` (`sock_opts`, and the `use` chain around it). Any crate that depends on `net` and is tested on its own — `cargo test -p procfs` — therefore fails to build. Arrived on `main`, not from this branch: `cargo check -p procfs` was clean in this worktree BEFORE merging `origin/main` and fails immediately after, and B1667 touches no `net` file. | B1667, `cargo test -p procfs` at `origin/main` = `80e6adf05`: `error: could not compile net (lib) due to 9 previous errors`. Both kernel targets still build, because there the `target_os` arm of the gate is live — only the hosted build is broken. | — |
+
+## Negative result: the TLS hypothesis is WEAKER than the row above implies
+
+| Status | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|
+| OPEN | med | The "large `PT_TLS`" lead for the `powervr_mesa` SIGSEGV does NOT survive its own follow-up check and must not be treated as the cause. `libpowervr_rogue.so` (4352 B of TLS, faults) and `libvulkan_radeon.so` (48 B, does NOT fault) use the IDENTICAL relocation type — `R_X86_64_TLSDESC`, two vs three of them. Same `dlopen` code path, same lazy `__tls_get_addr` resolution, no initial-exec relocation anywhere, so no static-TLS-surplus failure is involved in either. The libraries differ only in TLS SIZE, and 4352 B is not a large allocation. Anyone picking this up should treat the TLS angle as unconfirmed and start from the faulting `ip` instead. | B1663/B1667, `readelf -rW` on both libraries extracted from the image. Recorded because a negative result here saves the next lane the same detour. | — |
