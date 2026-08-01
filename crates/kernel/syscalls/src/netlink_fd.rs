@@ -190,9 +190,10 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
         }
         let group = u32::from_ne_bytes(raw);
         let s = socket;
-        if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
-        else if optname == NETLINK_DROP_MEMBERSHIP { s.drop_membership(group); }
-        else { s.set_no_enobufs(group != 0); }
+        let membership = if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group) }
+            else if optname == NETLINK_DROP_MEMBERSHIP { s.drop_membership(group) }
+            else { s.set_no_enobufs(group != 0); Ok(()) };
+        if let Err(error) = membership { return crate::net_common::errno_from_neterr(error); }
         #[cfg(feature = "debug-uevent")]
         if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
             trace_uev_bind(group, if optname == NETLINK_ADD_MEMBERSHIP { b"addmemb" } else { b"dropmemb" });
@@ -218,30 +219,34 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     let requested = i32::from_ne_bytes(raw_len);
     if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
     let requested = requested as usize;
-    let mut bytes = [0u8; NETLINK_SCALAR_BYTES];
+    let mut bytes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
     let required = match (level, optname) {
         (net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL) => {
             if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
-            bytes[..NETLINK_SCALAR_BYTES].copy_from_slice(&(socket.protocol as u32).to_ne_bytes());
+            bytes.extend_from_slice(&(socket.protocol as u32).to_ne_bytes());
             NETLINK_SCALAR_BYTES
         }
         (net::uapi::SOL_SOCKET, net::uapi::SO_TYPE) => {
             if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
-            bytes[..NETLINK_SCALAR_BYTES].copy_from_slice(&net::socket_args::SOCK_RAW.to_ne_bytes());
+            bytes.extend_from_slice(&net::socket_args::SOCK_RAW.to_ne_bytes());
             NETLINK_SCALAR_BYTES
         }
         (::netlink::sockopt::SOL_NETLINK, ::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS) => {
-            netlink_membership_mask(socket.groups.load(core::sync::atomic::Ordering::Acquire), &mut bytes);
-            NETLINK_SCALAR_BYTES
+            bytes = netlink_membership_words(socket.membership_words());
+            bytes.len()
         }
         _ => return -(Errno::Enoprotoopt.as_i32() as i64),
     };
     netlink_getsockopt_copyout(optval, optlen_p, requested, &bytes[..required])
 }
 
-/// Encode NETLINK's canonical membership bitmap as its Linux ABI word. # C: O(1)
-fn netlink_membership_mask(groups: u32, bytes: &mut [u8]) {
-    bytes.copy_from_slice(&groups.to_ne_bytes());
+/// Encode NETLINK's canonical membership bitmap as its Linux ABI words: one
+/// `u32` per 32 groups the protocol offers, and the FULL length reported back
+/// through optlen even when only a prefix fits. # C: O(words)
+fn netlink_membership_words(words: alloc::vec::Vec<u32>) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(words.len() * core::mem::size_of::<u32>());
+    for word in words { out.extend_from_slice(&word.to_ne_bytes()); }
+    out
 }
 
 /// Copy a NETLINK getsockopt result then report its full Linux result length. # C: O(len)
@@ -275,7 +280,7 @@ pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     use core::sync::atomic::Ordering;
     let socket = target.socket();
     let pid = socket.port_id.load(Ordering::Acquire);
-    let groups = socket.groups.load(Ordering::Acquire);
+    let groups = socket.groups.low_mask();
     let sa = encoded_sockaddr_nl(pid, groups);
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }

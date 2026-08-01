@@ -1,6 +1,8 @@
 // Netlink module manifest.
 // - `wire`: AF_NETLINK numbers, nlmsghdr wire types, and alignment helpers.
 // - `handler`: external protocol-handler registration for netfilter.
+// - `groups`: the per-socket multicast-group subscription bitmap.
+// - `membership`: socket-side group subscription + genetlink credentials.
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
 // - `destination`: socket-owned connect destination and default-send state.
@@ -32,7 +34,9 @@ extern crate std;
 #[cfg(test)]
 pub(crate) mod test_serial;
 
+mod groups;
 mod handler;
+mod membership;
 mod inode;
 mod listeners;
 mod netlink_socket;
@@ -54,13 +58,15 @@ pub mod rtnetlink_rule;
 pub mod audit;
 pub mod sock_diag;
 
+pub use groups::{GroupBitmap, GROUP_BITS_PER_WORD, NETLINK_MIN_NGROUPS, RTNLGRP_MAX};
 pub use handler::{install_netfilter_handler, ProtoHandler};
 pub use inode::{
     make_netlink_socket_inode, netlink_arc_from_inode, netlink_from_inode,
 };
 pub use listeners::{
     emit_uevent, emit_uevent_with_env, emit_uevent_with_env_bytes, rebroadcast_cooked_uevent,
-    register_rtnl_listener, register_uevent_listener, rtnl_multicast, uevent_seqnum,
+    register_rtnl_listener, register_uevent_listener, rtnl_multicast, rtnl_multicast_in,
+    uevent_seqnum,
     unicast_uevent_to_port,
 };
 pub(crate) use handler::invoke_netfilter;

@@ -43,7 +43,7 @@ pub struct NetlinkSocket {
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,
     pub port_id: AtomicU32,
-    pub groups: AtomicU32,
+    pub groups: crate::groups::GroupBitmap,
     pub dst_port_id: AtomicU32,
     pub dst_groups: AtomicU32,
     pub connected: AtomicBool,
@@ -83,7 +83,7 @@ impl NetlinkSocket {
             protocol,
             net_ns: Arc::clone(net_ns),
             port_id: AtomicU32::new(alloc_port_id()),
-            groups: AtomicU32::new(0),
+            groups: crate::groups::GroupBitmap::new(),
             dst_port_id: AtomicU32::new(crate::NETLINK_UNCONNECTED_PORT_ID),
             dst_groups: AtomicU32::new(crate::NETLINK_UNCONNECTED_GROUPS),
             connected: AtomicBool::new(false),
@@ -112,10 +112,6 @@ impl NetlinkSocket {
         )?;
         Err(net::NetError::Eopnotsupp)
     }
-
-    /// `bind` nl_groups: subscribe to the given group bitmask.
-    /// # C: O(1)
-    pub fn set_group_mask(&self, mask: u32) { self.groups.store(mask, Ordering::Release); }
 
     /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
     pub fn set_pending_recv_error(&self, errno: i32) -> bool {
@@ -157,16 +153,6 @@ impl NetlinkSocket {
         self.write_to_groups(buf, dest.group).map_err(SendError::Backend)
     }
 
-    /// `NETLINK_ADD_MEMBERSHIP`: subscribe to one `RTNLGRP_*` group. # C: O(1)
-    pub fn add_membership(&self, group: u32) {
-        if group != 0 && group <= 32 { self.groups.fetch_or(1u32 << (group - 1), Ordering::AcqRel); }
-    }
-
-    /// `NETLINK_DROP_MEMBERSHIP`: unsubscribe one group. # C: O(1)
-    pub fn drop_membership(&self, group: u32) {
-        if group != 0 && group <= 32 { self.groups.fetch_and(!(1u32 << (group - 1)), Ordering::AcqRel); }
-    }
-
     /// Dispatch a single parsed request header.
     /// # C: O(reply build)
     fn handle_one(&self, hdr: &Nlmsghdr, msg: &[u8]) {
@@ -198,7 +184,7 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELROUTE) => rtnetlink::handle_delroute_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWLINK)
             | (proto::NETLINK_ROUTE, rtnetlink::RTM_SETLINK) => rtnetlink::handle_setlink_in(net_ns, hdr, msg),
-            (proto::NETLINK_GENERIC, _) => genetlink::handle(msg),
+            (proto::NETLINK_GENERIC, _) => genetlink::handle(msg, net_ns, self.genl_cred()),
             (proto::NETLINK_AUDIT, _) => crate::audit::handle(hdr, msg),
             (proto::NETLINK_NETFILTER, _) => invoke_netfilter(msg),
             (proto::NETLINK_SOCK_DIAG, sock_diag::SOCK_DIAG_BY_FAMILY)
