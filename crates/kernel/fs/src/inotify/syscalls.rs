@@ -8,7 +8,7 @@ use vfs::FileType;
 use crate::inotify::group::make_inotify_inode;
 use crate::inotify::path::resolve_watch_path;
 use crate::inotify::types::{
-    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ALL_EVENT_BITS,
+    inode_key, perm_delta, InotifyData, MarkScope, Watch, FAN_ALL_EVENT_BITS, FAN_EVENT_ON_CHILD,
     IN_ALL_EVENTS, IN_IGNORED, INOTIFY_MARK_FLAGS,
     MARK_COUNT, PERM_BITS, PERM_MARK_COUNT,
 };
@@ -68,7 +68,7 @@ fn sys_inotify_init_flags(flags: u32) -> i64 {
     if !vfs::fsnotify::inc_ucount(uid, vfs::fsnotify::Ucount::InotifyInstances) {
         return -(Errno::Emfile.as_i32() as i64);
     }
-    let inode = make_inotify_inode(InotifyData::new_owned(flags, false, uid));
+    let inode = make_inotify_inode(InotifyData::new_owned(flags, false, uid, 0));
     let dentry = vfs::dcache::d_alloc_pseudo("inotify", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & IN_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
@@ -127,7 +127,7 @@ pub fn sys_fanotify_init(args: &syscall::SyscallArgs) -> i64 {
     if !vfs::fsnotify::inc_ucount(uid, vfs::fsnotify::Ucount::FanotifyGroups) {
         return -(Errno::Emfile.as_i32() as i64);
     }
-    let data = InotifyData::new_owned(flags, true, uid);
+    let data = InotifyData::new_owned(flags, true, uid, event_f_flags);
     let e = validate_fanotify_init_post_charge(flags, current_has_cap(sched::cap::AUDIT_WRITE));
     if e != 0 { return -(e as i64); }
     let inode = make_inotify_inode(data);
@@ -172,10 +172,23 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
         }
     };
     let key = inode_key(&inode);
-    match add_or_update_watch(&inotify, key, inode.fsid(), mask) {
+    let is_dir = inode.file_type() == FileType::Directory;
+    match add_or_update_watch(&inotify, key, inode.fsid(), mask, is_dir) {
         Ok(wd) => wd as i64,
         Err(e) => -(e.as_i32() as i64),
     }
+}
+
+/// `inotify_arg_to_mask`: the mark's stored mask is not what the caller asked
+/// for. Every mark also receives the unmount notice regardless, and a mark on a
+/// DIRECTORY watches its children — which is why inotify never needed a
+/// `FAN_EVENT_ON_CHILD` of its own, and why a mark that omits the bit would
+/// stop reporting anything about the files inside a watched directory.
+/// # C: O(1)
+pub(crate) fn inotify_arg_to_mask(arg: u32, is_dir: bool) -> u32 {
+    let mut mask = arg & IN_ALL_EVENTS;
+    if is_dir { mask |= FAN_EVENT_ON_CHILD; }
+    mask
 }
 
 /// Create or update an inode watch with Linux `IN_MASK_ADD`/`IN_MASK_CREATE`
@@ -187,8 +200,9 @@ pub(crate) fn add_or_update_watch(
     key: usize,
     fsid: u64,
     mask: u32,
+    is_dir: bool,
 ) -> Result<i32, Errno> {
-    let event_mask = mask & IN_ALL_EVENTS;
+    let event_mask = inotify_arg_to_mask(mask, is_dir);
     let mark_flags = mask & INOTIFY_MARK_FLAGS;
     let mut g = inotify.watches.lock();
     for w in g.iter_mut() {
@@ -208,7 +222,9 @@ pub(crate) fn add_or_update_watch(
     // ceiling is charged; failing it unwinds the wd and reports ENOSPC.
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
     if !inotify.charge_mark() { return Err(Errno::Enospc); }
-    g.push(Watch { wd, inode_key: key, fsid, scope: MarkScope::Inode, mask: event_mask, flags: mark_flags, ignored: 0 });
+    g.push(Watch { wd, inode_key: key, fsid, scope: MarkScope::Inode, mask: event_mask,
+                   flags: mark_flags, ignored: 0, ignore_has_flags: false,
+                   ignore_survives_modify: false, evictable: false });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     Ok(wd)
 }
@@ -224,7 +240,7 @@ pub(crate) fn remove_watch(inotify: &Arc<InotifyData>, wd: i32) -> Result<(), Er
     drop(g);
     inotify.release_marks(1);
     MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
-    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0 });
+    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None });
     Ok(())
 }
 
@@ -249,7 +265,12 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
 /// a REMOVE that empties both masks retires the mark. Maintains MARK_COUNT +
 /// PERM_MARK_COUNT. Returns 0 or the errno. # C: O(N_watches)
 pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usize, fsid: u64,
-                         bits: u32, add: bool, ignored: bool) -> i64 {
+                         bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
+    // `FAN_MARK_IGNORE` means the event flags in the ignore set mean what they
+    // say; the legacy `FAN_MARK_IGNORED_MASK` has them reinterpreted (`mask`).
+    let ignore_has_flags = mflags & FAN_MARK_IGNORE != 0;
+    let survives = mflags & FAN_MARK_IGNORED_SURV_MODIFY != 0;
+    let evictable = mflags & FAN_MARK_EVICTABLE != 0;
     let mut g = inotify.watches.lock();
     let same = |w: &Watch| w.scope == scope
         && (if scope == MarkScope::Inode { w.inode_key == key } else { w.fsid == fsid });
@@ -258,6 +279,11 @@ pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usiz
         if ignored {
             if add { g[i].ignored |= bits; } else { g[i].ignored &= !bits; }
         } else if add { g[i].mask |= bits; } else { g[i].mask &= !bits; }
+        if ignored && add {
+            g[i].ignore_has_flags = ignore_has_flags;
+            g[i].ignore_survives_modify = survives;
+        }
+        if add { g[i].evictable = evictable; }
         perm_delta(old, g[i].mask);
         if g[i].mask == 0 && g[i].ignored == 0 {
             g.remove(i);
@@ -273,7 +299,9 @@ pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usiz
     if !inotify.charge_mark() { return -(Errno::Enospc.as_i32() as i64); }
     let (mask, ign) = if ignored { (0, bits) } else { (bits, 0) };
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
-    g.push(Watch { wd, inode_key: key, fsid, scope, mask, flags: 0, ignored: ign });
+    g.push(Watch { wd, inode_key: key, fsid, scope, mask, flags: 0, ignored: ign,
+                   ignore_has_flags: ignored && ignore_has_flags,
+                   ignore_survives_modify: ignored && survives, evictable });
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     perm_delta(0, mask);
     0
@@ -331,7 +359,7 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
         return -(Errno::Enotdir.as_i32() as i64);
     }
     let (key, fsid) = (inode_key(&inode), inode.fsid());
-    apply_mark(&inotify, scope, key, fsid, bits, flags & FAN_MARK_ADD != 0, ignored)
+    apply_mark(&inotify, scope, key, fsid, bits, flags & FAN_MARK_ADD != 0, ignored, flags)
 }
 
 #[cfg(test)]

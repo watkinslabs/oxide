@@ -65,6 +65,39 @@ pub trait SuperOps: Send + Sync {
     fn statfs(&self) -> KResult<SbStatFs>;
     /// `sync_fs` — flush dirty state. Default no-op (pseudo-fs). # C: FS-dependent
     fn sync_fs(&self, _wait: bool) -> KResult<()> { Ok(()) }
+    /// `s_export_op->fh_to_dentry` — turn an `open_by_handle_at(2)` file
+    /// identity back into an inode WITHOUT a path walk.
+    ///
+    /// `generation` is the incarnation the handle was minted against; a
+    /// filesystem that versions its inode numbers MUST reject a mismatch
+    /// (`None` here, `ESTALE` at the syscall) or a recycled number silently
+    /// opens a different file. [`crate::export::generation_matches`] is that
+    /// comparison.
+    ///
+    /// The default resolves from the inode cache only, so an EVICTED inode
+    /// reports stale. A filesystem with a backing store overrides this to
+    /// re-read the inode by number — that is the whole difference between "the
+    /// handle works while something still holds the file open" and a real
+    /// exportable handle.
+    /// # C: FS-dependent
+    fn fh_to_dentry(&self, sb: &SuperBlock, ino: Ino, generation: u32) -> Option<InodeRef> {
+        crate::export::ilookup_generation(sb, ino, generation)
+    }
+    /// `s_export_op->fh_to_parent` — the same decode applied to the PARENT
+    /// identity a connectable handle carries. Split from
+    /// [`Self::fh_to_dentry`] because Linux hands each a different slice of the
+    /// FID; here both halves are the same `(ino, generation)` pair, so the
+    /// default forwards and a backend overriding one gets the other for free.
+    /// # C: FS-dependent
+    fn fh_to_parent(&self, sb: &SuperBlock, ino: Ino, generation: u32) -> Option<InodeRef> {
+        self.fh_to_dentry(sb, ino, generation)
+    }
+    /// True when this instance can decode the handles it encodes
+    /// (`exportfs_can_decode_fh`). A filesystem whose inode numbers are not a
+    /// resolvable identity says `false`, and `name_to_handle_at` reports
+    /// `EOPNOTSUPP` for a decodable-handle request rather than minting one that
+    /// can never be opened. # C: O(1)
+    fn export_can_decode_fh(&self) -> bool { true }
     /// `freeze_fs` — quiesce on-disk state for a consistent snapshot (FIFREEZE).
     /// Called once writers are blocked and dirty state synced. Default no-op
     /// (pseudo-fs with no backing store). # C: FS-dependent

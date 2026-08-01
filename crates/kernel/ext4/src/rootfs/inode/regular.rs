@@ -390,8 +390,8 @@ impl AddressSpaceOps for Ext4FileMapping {
 /// on-disk inode. Re-reading the slot here to fetch it made every instantiation
 /// a second inode-table read whose failure silently reported `st_blocks = 0`.
 pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: u64, nlink: u32,
-    uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, blocks: u64)
-    -> InodeRef
+    uid: u32, gid: u32, projid: u32, times: crate::timestamp::InodeTimes, blocks: u64,
+    generation: u32) -> InodeRef
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino, size);
     let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size), frames,
@@ -409,6 +409,7 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
         .nlink(nlink)
         .owner(uid, gid)
         .projid(projid)
+        .generation(generation)
         .times(times.atime, times.mtime, times.ctime)
         .mapping(mapping)
         .xattrs(xattrs)
