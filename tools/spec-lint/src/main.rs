@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod audit;
 mod doc_lint;
 mod code_lint;
 mod length_lint;
@@ -55,6 +56,7 @@ fn main() -> ExitCode {
 
     let mut f = Findings::default();
     match cmd.as_str() {
+        "audit" => { return if audit::run(&root) { ExitCode::SUCCESS } else { ExitCode::from(1) }; }
         "docs" => doc_lint::run(&root, &mut f),
         "code" => code_lint::run(&root, &mut f),
         "length" => length_lint::run(&root, &mut f),
@@ -81,8 +83,9 @@ fn run_all(root: &Path, f: &mut Findings) {
 }
 
 fn usage() {
-    eprintln!("usage: spec-lint <docs|code|length|manifest|xref|all|ratchet> [root]");
+    eprintln!("usage: spec-lint <docs|code|length|manifest|xref|audit|all|ratchet> [root]");
     eprintln!("       ratchet [--update [--allow-growth]]   gate findings against {}", ratchet::BASELINE_REL);
+    eprintln!("       audit                                 enforced vs raw-grep counts for the scoped `07§5` rules");
 }
 
 // shared helpers ------------------------------------------------------------
