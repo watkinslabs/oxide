@@ -36,6 +36,25 @@ fn write_ids(ptr: u64, ids: &[u32], cap: u32) {
     }
 }
 
+/// Copy a connector's mode array out, following the same 2-pass rule as every
+/// other counted DRM array: copy only when the caller's buffer has room for
+/// the WHOLE list, so a probe pass (`count_modes = 0`) is a pure count query
+/// and a short buffer is never partially filled. Returns modes copied.
+/// # C: O(modes)
+fn copy_modes(ptr: u64, cap: u32, modes: &[DrmModeModeinfo]) -> u32 {
+    let n = modes.len() as u32;
+    if ptr == 0 || cap < n || n == 0 { return 0; }
+    let stride = core::mem::size_of::<DrmModeModeinfo>() as u64;
+    if !user_ok(ptr, (n as u64) * stride) { return 0; }
+    // SAFETY: range [ptr, ptr+n*stride) validated < USER_VA_END; drm_mode_modeinfo stores through the caller's AS at CPL=0.
+    unsafe {
+        for (i, m) in modes.iter().enumerate() {
+            core::ptr::write_volatile((ptr + (i as u64) * stride) as *mut DrmModeModeinfo, *m);
+        }
+    }
+    n
+}
+
 /// `MODE_GETRESOURCES` — Linux 2-pass: write back real counts +
 /// min/max dims always; copy each id array out only when the user
 /// count is >= real count and the ptr is non-null. # C: O(objects)
@@ -115,14 +134,10 @@ pub fn get_connector(card_id: u32, card: &Arc<dyn DrmDriver>, atomic_client: boo
     let count = card.connector_ids().len();
     let idx = match connector_idx_of(g.connector_id, count) { Some(i) => i, None => return einval() };
     let info = match card.connector_info(idx) { Some(i) => i, None => return einval() };
-    let mode = card.mode_for(idx);
-    // Copy the mode list out only if the user advertised room.
-    if g.modes_ptr != 0 && g.count_modes >= 1 {
-        if user_ok(g.modes_ptr, core::mem::size_of::<DrmModeModeinfo>() as u64) {
-            // SAFETY: modes_ptr range validated; one drm_mode_modeinfo (68 B) write through caller's AS at CPL=0.
-            unsafe { core::ptr::write_volatile(g.modes_ptr as *mut DrmModeModeinfo, mode); }
-        }
-    }
+    let modes = card.modes_for(idx);
+    // Linux fills at most the count userspace advertised room for, then reports
+    // the true count so a probe-then-allocate caller loops until they agree.
+    copy_modes(g.modes_ptr, g.count_modes, &modes);
     // We expose one encoder per connector; copy its id when asked.
     if g.encoders_ptr != 0 && g.count_encoders >= 1 {
         write_ids(g.encoders_ptr, &[info.encoder_id], 1);
@@ -131,7 +146,7 @@ pub fn get_connector(card_id: u32, card: &Arc<dyn DrmDriver>, atomic_client: boo
         crate::DRM_MODE_OBJECT_CONNECTOR, atomic_client, g.props_ptr, g.prop_values_ptr, g.count_props) {
         Ok(n) => n, Err(err) => return err,
     };
-    g.count_modes      = info.mode_count;
+    g.count_modes      = modes.len() as u32;
     g.count_props      = count_props;
     g.count_encoders   = 1;
     g.encoder_id       = info.encoder_id;
@@ -308,7 +323,7 @@ mod tests {
             if i != 0 { return None; }
             Some(ConnectorInfo { connection: DRM_MODE_CONNECTED,
                 connector_type: DRM_MODE_CONNECTOR_VIRTUAL, encoder_id: encoder_id_for(0),
-                mm_width: 211, mm_height: 158, mode_count: 1 })
+                mm_width: 211, mm_height: 158 })
         }
         fn crtc_info(&self, i: usize) -> Option<CrtcInfo> {
             if i != 0 { return None; }

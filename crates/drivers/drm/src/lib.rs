@@ -31,8 +31,10 @@ pub use uapi::*;
 mod tests;
 
 pub mod crtc;
+pub mod diag;
 pub mod atomic;
 pub mod dumb;
 pub mod kms_ext;
 pub mod modeset;
+pub mod std_modes;
 pub mod node;
