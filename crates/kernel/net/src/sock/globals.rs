@@ -148,7 +148,7 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
         else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
     alloc_ephemeral_udp6_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
         error, iface, reuseaddr, reuseport, v6only, peer, ip_mtu_discover,
-        ipv6_mtu_discover, bpf_filter, mcast)
+        ipv6_mtu_discover, Arc::new(core::sync::atomic::AtomicI32::new(0)), bpf_filter, mcast)
 }
 
 /// Allocate IPv6 UDP state retaining one socket's canonical owner. # C: O(N tries * N_port)
@@ -160,6 +160,7 @@ pub fn alloc_ephemeral_udp6_owned(owner: Arc<crate::SocketOwner>, bind_ip: crate
                             peer: Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
                             ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                             ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
                             bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                             mcast: Arc<crate::mcast_filter::SocketMcast>)
     -> Result<(u16, Arc<crate::stack_ipv6::Udp6RxQueue>), NetError>
@@ -172,7 +173,7 @@ pub fn alloc_ephemeral_udp6_owned(owner: Arc<crate::SocketOwner>, bind_ip: crate
             owner.clone(), bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
             v6only.clone(),
             peer.clone(), ip_mtu_discover.clone(), ipv6_mtu_discover.clone(),
-            bpf_filter.clone(), mcast.clone(),
+            no_check6_rx.clone(), bpf_filter.clone(), mcast.clone(),
         ) {
             return Ok((p, endpoint));
         }

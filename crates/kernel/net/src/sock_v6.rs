@@ -58,7 +58,7 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
             sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
             sock.opts.ipv6_v6only.clone(),
             sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
-            sock.opts.ipv6_mtu_discover.clone(),
+            sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
             sock.bpf_filter.clone(), sock.mcast.clone(),
         ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
         endpoint.register_poll_subs(&sock.poll_subs);
@@ -209,7 +209,7 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
                     sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                     sock.opts.ipv6_v6only.clone(),
                     sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
-                    sock.opts.ipv6_mtu_discover.clone(),
+                    sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
                     sock.bpf_filter.clone(), sock.mcast.clone(),
                 ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
                 endpoint.register_poll_subs(&sock.poll_subs);
@@ -293,9 +293,30 @@ pub fn sendto_v6(sock: &InetSocket,
     let hop = resolve_v6_hop_limit(sock, dst_ip);
     let tclass = resolve_v6_tclass(sock);
     let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    let iface = scoped_iface(sock, dst_ip, scope_id)?;
+    let no_check = sock.opts.udp.no_check6_tx();
+    // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
+    // size, the last carrying the remainder.
+    let gso = sock.opts.udp.gso_size();
+    if gso != 0 {
+        let mtu = stack().path_mtu_in(
+            sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), iface, false)? as usize;
+        if let Some(plan) = crate::sock_opts::sol_udp::segment::plan_v6(
+            payload.len(), gso, mtu, no_check)?
+        {
+            for segment in payload.chunks(plan.seg_size) {
+                stack().send_udp6_pmtu_to_bound_opts_owned(
+                    &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
+                    pmtudisc, no_check,
+                )?;
+            }
+            drain_loopback();
+            return Ok(payload.len());
+        }
+    }
     stack().send_udp6_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload,
-        scoped_iface(sock, dst_ip, scope_id)?, hop, tclass, pmtudisc,
+        iface, hop, tclass, pmtudisc, no_check,
     )?;
     drain_loopback();
     Ok(payload.len())
