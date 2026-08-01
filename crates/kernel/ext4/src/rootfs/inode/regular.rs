@@ -378,6 +378,10 @@ impl AddressSpaceOps for Ext4FileMapping {
 
     fn mincore_page(&self, off: u64) -> bool { self.data.frames.mincore_page(off) }
 
+    fn cachestat(&self, range: vfs::CachestatRange) -> vfs::CachestatCounts {
+        self.data.frames.cachestat(range)
+    }
+
     /// One coalesced device read per window instead of the generic
     /// page-at-a-time loop: a contiguous file maps to one physical run, so the
     /// caller's whole readahead window is a single block request.
