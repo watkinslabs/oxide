@@ -10,9 +10,11 @@ use sync::{Guard, Spinlock};
 use crate::superblock::SuperBlock;
 use crate::types::{KResult, VfsError};
 
+use super::charge::{self, ChargeCtx, DQUOT_SPACE_WARN};
 use super::ids::{QuotaId, QuotaType};
 use super::limits::{DQB_INO_COUNT, DQB_INO_HARD, DQB_INO_SOFT, DQB_INO_TIMER, DQB_RTB_COUNT, DQB_RTB_HARD, DQB_RTB_SOFT, DQB_RTB_TIMER, DQB_SPACE, DQB_SPC_HARD, DQB_SPC_SOFT, DQB_SPC_TIMER, DQB_VFS_MASK, DquotLimits, MemDqblk, MemDqinfo};
 use super::usage::DquotUsage;
+use super::warn::QuotaWarnType;
 
 pub(super) struct QuotaAccountingClass;
 impl sync::LockClass for QuotaAccountingClass { fn rank() -> u16 { 33 } fn name() -> &'static str { "QuotaAccountingClass" } }
@@ -43,6 +45,13 @@ impl DquotState {
         let dqblk = MemDqblk::from_limits_usage(limits, DquotUsage::zero());
         Self { dqblk, fake: fake_dqblk(dqblk) }
     }
+}
+
+/// Reason a quota mutation refused, paired with the warning it raised.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChargeResult {
+    pub result: KResult<()>,
+    pub warn:   QuotaWarnType,
 }
 
 /// One Linux `struct dquot`: identity plus canonical usage/limit counters. # C: O(1)
@@ -155,8 +164,40 @@ impl Dquot {
     }
     /// Charge usage with quota-class grace settings. # C: O(1)
     pub fn charge_with_grace(&self, delta: DquotUsage, info: MemDqinfo, now_sec: u64) -> KResult<()> {
+        self.charge_checked(delta, DQUOT_SPACE_WARN, grace_ctx(info, now_sec)).result
+    }
+    /// Charge usage through the full Linux limit ladder, reporting the warning
+    /// class the attempt raised. # C: O(1)
+    pub fn charge_checked(&self, delta: DquotUsage, flags: u32, ctx: ChargeCtx) -> ChargeResult {
         let _acct = lock_accounting();
-        self.charge_nogate_with_grace(delta, info, now_sec)
+        if delta.is_zero() { return ChargeResult { result: Ok(()), warn: QuotaWarnType::NoWarn }; }
+        let mut st = self.st.lock();
+        let (next, warn) = check_charge(st.dqblk, delta, flags, ctx);
+        match next {
+            Ok(dqblk) => { st.dqblk = dqblk; ChargeResult { result: Ok(()), warn } }
+            Err(e) => ChargeResult { result: Err(e), warn },
+        }
+    }
+    /// Release usage, reporting the below-limit warning class it raised. # C: O(1)
+    pub fn release_checked(&self, delta: DquotUsage, enforced: bool) -> ChargeResult {
+        let _acct = lock_accounting();
+        if delta.is_zero() { return ChargeResult { result: Ok(()), warn: QuotaWarnType::NoWarn }; }
+        let mut st = self.st.lock();
+        let warn = worst_free_warn(st.dqblk, delta, enforced);
+        let result = release_dqblk(&mut st.dqblk, delta);
+        ChargeResult { result, warn }
+    }
+    /// `dquot_claim_space_nodirty`: reserved space becomes used space. # C: O(1)
+    pub fn claim_reserved(&self, number: u64) {
+        let _acct = lock_accounting();
+        let mut st = self.st.lock();
+        st.dqblk = charge::claim_space(st.dqblk, number);
+    }
+    /// `dquot_reclaim_space_nodirty`: used space becomes reserved space. # C: O(1)
+    pub fn reclaim_reserved(&self, number: u64) {
+        let _acct = lock_accounting();
+        let mut st = self.st.lock();
+        st.dqblk = charge::reclaim_space(st.dqblk, number);
     }
     /// Remove charged usage. Underflow means caller's inode accounting is stale. # C: O(1)
     pub fn release(&self, delta: DquotUsage) -> KResult<()> {
@@ -169,7 +210,7 @@ impl Dquot {
     }
     pub(super) fn admits_nogate_with_grace(&self, delta: DquotUsage, info: MemDqinfo, now_sec: u64) -> bool {
         let st = self.st.lock();
-        check_charge(st.dqblk, delta, info, now_sec).is_ok()
+        check_charge(st.dqblk, delta, DQUOT_SPACE_WARN, grace_ctx(info, now_sec)).0.is_ok()
     }
     pub(super) fn can_release_nogate(&self, delta: DquotUsage) -> bool {
         self.st.lock().dqblk.usage().checked_sub(delta).is_some()
@@ -196,19 +237,14 @@ impl Dquot {
     pub(super) fn charge_nogate_with_grace(&self, delta: DquotUsage, info: MemDqinfo, now_sec: u64) -> KResult<()> {
         if delta.is_zero() { return Ok(()); }
         let mut st = self.st.lock();
-        let next = check_charge(st.dqblk, delta, info, now_sec)?;
-        st.dqblk = next;
+        let (next, _warn) = check_charge(st.dqblk, delta, DQUOT_SPACE_WARN, grace_ctx(info, now_sec));
+        st.dqblk = next?;
         Ok(())
     }
     pub(super) fn release_nogate(&self, delta: DquotUsage) -> KResult<()> {
         if delta.is_zero() { return Ok(()); }
         let mut st = self.st.lock();
-        let usage = st.dqblk.usage().checked_sub(delta).ok_or(VfsError::Einval)?;
-        st.dqblk.dqb_curspace = usage.space;
-        st.dqblk.dqb_rsvspace = usage.reserved_space;
-        st.dqblk.dqb_curinodes = usage.inodes;
-        clear_grace_under_soft(&mut st.dqblk);
-        Ok(())
+        release_dqblk(&mut st.dqblk, delta)
     }
     pub(super) fn set_usage_nogate(&self, usage: DquotUsage) {
         let mut st = self.st.lock();
@@ -220,23 +256,29 @@ impl Dquot {
 }
 
 fn hard_admits(dq: MemDqblk, delta: DquotUsage) -> bool {
-    dq.limits().admits(dq.usage(), delta)
+    let tspace = dq.dqb_curspace.saturating_add(dq.dqb_rsvspace)
+        .saturating_add(delta.space).saturating_add(delta.reserved_space);
+    let space_ok = dq.dqb_bhardlimit == 0 || tspace <= dq.dqb_bhardlimit;
+    let inode_ok = dq.dqb_ihardlimit == 0
+        || dq.dqb_curinodes.saturating_add(delta.inodes) <= dq.dqb_ihardlimit;
+    space_ok && inode_ok
 }
 
-const fn fake_dqblk(dq: MemDqblk) -> bool {
-    dq.dqb_bhardlimit == 0 && dq.dqb_bsoftlimit == 0 && dq.dqb_ihardlimit == 0 && dq.dqb_isoftlimit == 0
-        && dq.dqb_rtb_hardlimit == 0 && dq.dqb_rtb_softlimit == 0
-}
+const fn fake_dqblk(dq: MemDqblk) -> bool { charge::is_fake(dq) }
 
-fn check_charge(mut dq: MemDqblk, delta: DquotUsage, info: MemDqinfo, now_sec: u64) -> KResult<MemDqblk> {
-    let next = dq.usage().checked_add(delta).ok_or(VfsError::Edquot)?;
-    if !hard_admits(dq, delta) { return Err(VfsError::Edquot); }
-    check_soft(dq.dqb_curspace, next.space, dq.dqb_bsoftlimit, &mut dq.dqb_btime, info.dqi_bgrace, now_sec)?;
-    check_soft(dq.dqb_curinodes, next.inodes, dq.dqb_isoftlimit, &mut dq.dqb_itime, info.dqi_igrace, now_sec)?;
-    dq.dqb_curspace = next.space;
-    dq.dqb_rsvspace = next.reserved_space;
-    dq.dqb_curinodes = next.inodes;
-    Ok(dq)
+/// Run the block ladder then the inode ladder over one combined delta,
+/// unwinding the block charge when the inode ladder refuses. # C: O(1)
+fn check_charge(dq: MemDqblk, delta: DquotUsage, flags: u32, ctx: ChargeCtx) -> (KResult<MemDqblk>, QuotaWarnType) {
+    let space = charge::add_space(dq, delta.space, delta.reserved_space, flags, ctx);
+    if let Err(e) = space.result { return (Err(e), space.warn); }
+    let inodes = charge::add_inodes(space.dqblk, delta.inodes, ctx);
+    let warn = if space.warn.is_none() { inodes.warn } else { space.warn };
+    // The block counters were already applied to `space.dqblk`; refusing the
+    // inode half discards that record entirely, so no partial charge is left.
+    match inodes.result {
+        Err(e) => (Err(e), warn),
+        Ok(()) => (Ok(inodes.dqblk), warn),
+    }
 }
 
 fn apply_masked_dqblk(cur: &mut MemDqblk, new: MemDqblk, fieldmask: u32, info: MemDqinfo, now_sec: u64) {
@@ -285,23 +327,30 @@ fn apply_masked_dqblk(cur: &mut MemDqblk, new: MemDqblk, fieldmask: u32, info: M
     cur.dqb_valid = fieldmask;
 }
 
-fn check_soft(cur: u64, next: u64, soft: u64, timer: &mut i64, grace: u64, now_sec: u64) -> KResult<()> {
-    if soft == 0 || next <= soft {
-        *timer = 0;
-        return Ok(());
-    }
-    if cur <= soft {
-        *timer = now_sec.saturating_add(grace).min(i64::MAX as u64) as i64;
-        return Ok(());
-    }
-    if *timer != 0 && (*timer < 0 || now_sec >= *timer as u64) { return Err(VfsError::Edquot); }
-    if *timer == 0 { *timer = now_sec.saturating_add(grace).min(i64::MAX as u64) as i64; }
+fn grace_ctx(info: MemDqinfo, now_sec: u64) -> ChargeCtx {
+    ChargeCtx { info, now_sec, enforced: true, ignore_hardlimit: false }
+}
+
+/// Apply a release delta, refusing an underflow that would mean the caller's
+/// inode accounting has already drifted from the charged totals. # C: O(1)
+fn release_dqblk(dqblk: &mut MemDqblk, delta: DquotUsage) -> KResult<()> {
+    dqblk.usage().checked_sub(delta).ok_or(VfsError::Einval)?;
+    *dqblk = charge::decr_space(*dqblk, delta.space);
+    *dqblk = charge::free_reserved_space(*dqblk, delta.reserved_space);
+    *dqblk = charge::decr_inodes(*dqblk, delta.inodes);
     Ok(())
 }
 
+/// Highest-severity below-limit warning raised by one combined release. # C: O(1)
+fn worst_free_warn(dqblk: MemDqblk, delta: DquotUsage, enforced: bool) -> QuotaWarnType {
+    let space = charge::bdq_free_warn(dqblk, delta.space.saturating_add(delta.reserved_space), enforced);
+    if !space.is_none() { return space; }
+    charge::idq_free_warn(dqblk, delta.inodes, enforced)
+}
+
 fn clear_grace_under_soft(dq: &mut MemDqblk) {
-    if dq.dqb_bsoftlimit == 0 || dq.dqb_curspace <= dq.dqb_bsoftlimit { dq.dqb_btime = 0; }
-    if dq.dqb_isoftlimit == 0 || dq.dqb_curinodes <= dq.dqb_isoftlimit { dq.dqb_itime = 0; }
+    if dq.dqb_curspace.saturating_add(dq.dqb_rsvspace) <= dq.dqb_bsoftlimit { dq.dqb_btime = 0; }
+    if dq.dqb_curinodes <= dq.dqb_isoftlimit { dq.dqb_itime = 0; }
 }
 
 /// Per-filesystem dquot table keyed by [`QuotaId`]. Filesystems store this in

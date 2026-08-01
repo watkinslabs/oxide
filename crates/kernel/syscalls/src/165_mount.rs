@@ -20,8 +20,7 @@ use crate::fsmount_common::mount_fstype_at;
 // mount(2) request bits are owned by `vfs::mount` (`mount/flags.rs`) — the same
 // definition `ms_to_mnt`/`ms_to_mnt_remount` map from. Re-declaring them here
 // was a second source of truth for the same UAPI contract.
-use vfs::mount::{MS_BIND, MS_MOVE, MS_PROPAGATION, MS_REC, MS_REMOUNT, MS_REMOUNTABLE,
-                 MS_SHARED, MS_SLAVE, MS_UNBINDABLE};
+use vfs::mount::{MS_BIND, MS_MOVE, MS_PROPAGATION, MS_REC, MS_REMOUNT, MS_REMOUNTABLE};
 
 /// `sys_mount(source, target, fstype, flags, data)` — slot 165.
 /// # C: O(N_path)
@@ -158,6 +157,13 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         let vp = match crate::pathresolve::resolve_path_raw(&target_raw, false) {
             Ok(p) => p, Err(_) => return -(Errno::Einval.as_i32() as i64),
         };
+        // Linux `do_remount`/`do_reconfigure_mnt` both gate on `path_mounted`:
+        // a remount names a MOUNT, not a directory inside one. Without this,
+        // `mount -o remount,ro /var/log` silently remounted whatever mount
+        // happens to contain `/var/log` — a much wider change than asked for.
+        let at_mount_root = vfs::mount::root_dentry_for_mount_id(vp.mnt_id)
+            .map(|r| alloc::sync::Arc::ptr_eq(&vp.dentry, &r)).unwrap_or(false);
+        if !at_mount_root { return -(Errno::Einval.as_i32() as i64); }
         let r = if flags & MS_BIND != 0 {
             vfs::mount::remount_flags_by_id(vp.mnt_id, flags & MS_REMOUNTABLE)
         } else {
@@ -199,6 +205,12 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
             klog::write_raw(b"\n");
         }
         if !source_ok {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        // Linux `__do_loopback`: `if (IS_MNT_UNBINDABLE(old)) return -EINVAL`.
+        // An UNBINDABLE mount is precisely one that refuses to be bind-copied;
+        // accepting the bind published a subtree its owner marked un-copyable.
+        if vfs::mount::mount_by_id(source_mnt).map(|m| vfs::mount::is_unbindable(&m)).unwrap_or(false) {
             return -(Errno::Einval.as_i32() as i64);
         }
         // Linux `__do_loopback`: `if (!recurse && __has_locked_children(old,
@@ -261,34 +273,40 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     // *event* delivery rides a follow-up. MS_REC recursive retune is
     // also a follow-up. Changing propagation of a non-mount → EINVAL.
     if flags & MS_PROPAGATION != 0 {
-        use vfs::mount::Propagation;
-        let kind = if flags & MS_UNBINDABLE != 0 { Propagation::Unbindable }
-            else if flags & MS_SLAVE != 0 { Propagation::Slave }
-            else if flags & MS_SHARED != 0 { Propagation::Shared }
-            else { Propagation::Private };
-        // Record on the target if it's a real entry in the unified
-        // mount table. Some mounts (tmpfs) still register via the devfs
-        // registry rather than vfs::mount::TABLE (fragmented table —
-        // unified in later K2/K3 work); for those, accept-and-noop as
-        // before rather than spuriously EINVAL and regress systemd.
-        // Resolve to the MOUNTPOINT dentry (not crossing into a mount attached
-        // there) so `set_propagation`'s `mount_exact_at` finds the mount grafted
-        // AT target. A plain resolve crosses in and yields the mount's ROOT
-        // dentry, which mount_exact_at can't match → the retune silently no-ops
-        // and e.g. systemd's `make-rslave /run/systemd/mount-rootfs` leaves the
-        // service rootfs SHARED, so its later pivot_root -EINVAL'd.
-        {
-            let td = target_mt.mountpoint.clone();
-            if flags & MS_REC != 0 {
-                // Recursive retune (systemd `make-rslave /` before pivot_root):
-                // apply to the target mount AND its whole subtree, else the
-                // bind-cloned service rootfs stays SHARED and pivot_root EINVALs.
-                let _ = vfs::mount::set_propagation_recursive(&td, kind);
-            } else {
-                let _ = vfs::mount::set_propagation(&td, kind);
-            }
-        }
-        return 0;
+        // Linux `do_change_type`: identify the mount the walk CROSSED INTO
+        // (`path->mnt`), then run the admission ladder. `path_mounted(path)` —
+        // the resolved dentry IS that mount's root — is the first rung, and a
+        // failure there is EINVAL: retuning propagation of something that is
+        // not a mount root must not report success. This shim previously
+        // swallowed every refusal (`let _ = set_propagation(...)`) and returned
+        // 0, so a typo'd or not-yet-mounted target looked like a retune that
+        // took effect.
+        let vp = match crate::pathresolve::resolve_path_raw(&target_raw, false) {
+            Ok(p) => p, Err(e) => return crate::namei_common::errno_from_vfs(e),
+        };
+        let at_mount_root = vfs::mount::root_dentry_for_mount_id(vp.mnt_id)
+            .map(|r| alloc::sync::Arc::ptr_eq(&vp.dentry, &r)).unwrap_or(false);
+        let m = vfs::mount::mount_by_id(vp.mnt_id);
+        let facts = vfs::mount::ChangeTypeFacts {
+            at_mount_root,
+            // `may_change_propagation`'s `is_mounted()` rung: the mount must
+            // still belong to a live namespace — and `check_mnt` additionally
+            // scopes it to the CALLER's, which is the namespace `may_mount`
+            // already granted authority over.
+            in_namespace: m.as_ref().map(|m| vfs::mount::check_mnt(m)).unwrap_or(false),
+            // `ns_capable(ns->user_ns, CAP_SYS_ADMIN)` over that same namespace.
+            ns_capable: crate::mount_perm::may_mount_or_eperm().is_none(),
+        };
+        let req = match vfs::mount::change_type_check(flags, &facts) {
+            Ok(r) => r, Err(e) => return crate::namei_common::errno_from_vfs(e),
+        };
+        // MS_REC rides in `req.recurse` (systemd `make-rslave /` before
+        // pivot_root: without the recursion the bind-cloned service rootfs
+        // stays SHARED and pivot_root EINVALs).
+        return match vfs::mount::change_type_by_id(vp.mnt_id, req) {
+            Ok(()) => 0,
+            Err(e) => crate::namei_common::errno_from_vfs(e),
+        };
     }
     // MS_MOVE: relocate the mount currently at `source` to `target`.
     // The mount tree is implicit (parent = longest-prefix mount_point),

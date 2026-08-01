@@ -48,6 +48,7 @@ pub mod fs;
 pub mod mount;
 pub mod mntns;
 pub mod superblock;
+pub mod sb_pin;
 mod superblock_wb;
 pub mod writeback;
 pub mod timespec;

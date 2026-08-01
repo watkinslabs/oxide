@@ -138,6 +138,10 @@ impl SuperBlock {
         let cur = self.s_flags();
         let proposed = (cur & !clear) | set;
         let going_ro = (proposed & SB_RDONLY) != 0 && (cur & SB_RDONLY) == 0;
+        // Sealing RW→RO evicts every kernel-side writer first (process
+        // accounting), so no in-kernel file keeps writing to a filesystem
+        // userspace has been told is read-only.
+        if going_ro { crate::sb_pin::kill_sb_pins(crate::sb_pin::sb_key_ref(self)); }
         if going_ro { self.sync_filesystem()?; }
         self.s_op.remount_fs(proposed)?;
         self.set_s_flags(set, clear);

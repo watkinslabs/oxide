@@ -3,9 +3,12 @@
 // per-id accounting state and lookup tables, `info` owns superblock quota
 // state, `inode` owns inode dquot attachment, `ops` owns filesystem hooks,
 // `auth` owns quotactl admission, `control` owns quotactl work functions, and
+// `charge` owns the Linux limit ladder (`dquot_add_space`/`dquot_add_inodes`),
+// `warn` owns quota warning classes and delivery, and
 // `transfer` owns Linux-shaped `__dquot_transfer` movement across dquot slots.
 
 mod auth;
+mod charge;
 mod control;
 mod dquot;
 mod error;
@@ -16,10 +19,13 @@ mod limits;
 mod ops;
 mod transfer;
 mod usage;
+mod warn;
 
-pub use auth::{QuotaCtlCmd, QuotaCtlCred, quota_check_quotactl_permission};
+pub use charge::{ChargeCtx, ChargeOutcome, DQUOT_SPACE_NOFAIL, DQUOT_SPACE_RESERVE, DQUOT_SPACE_WARN};
+pub use warn::{DquotWarn, DquotWarns, QuotaWarnType, QuotaWarning, clear_quota_warn_hook, deliver_warning, set_quota_warn_hook};
+pub use auth::{QuotaCtlCmd, QuotaCtlCred, clear_quota_sys_resource_hook, quota_check_quotactl_permission, quota_has_sys_resource, quota_ignore_hardlimit, set_quota_sys_resource_hook};
 pub use control::{QFMT_VFS_OLD, QFMT_VFS_V0, QFMT_VFS_V1, quota_disable_limits, quota_enable_limits, quota_getfmt, quota_getinfo, quota_getnextquota, quota_getquota, quota_off, quota_on, quota_setinfo, quota_setquota, quota_setquota_masked, quota_shutdown, quota_suspend_sysfiles, quota_sync, quota_sync_all, quota_sysfile_active};
-pub use dquot::{Dquot, DquotRef, DquotSet};
+pub use dquot::{ChargeResult, Dquot, DquotRef, DquotSet};
 pub use error::{QuotaError, QuotaResult};
 pub use ids::{Kqid, QuotaId, QuotaType, MAXQUOTAS};
 pub use info::{QuotaInfo, clear_quota_wait_hooks, set_quota_wait_hooks};

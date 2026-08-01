@@ -7,11 +7,14 @@ use crate::inode::Inode;
 use crate::superblock::SuperBlock;
 use crate::types::{KResult, VfsError};
 
+use super::auth::quota_ignore_hardlimit;
+use super::charge::{ChargeCtx, DQUOT_SPACE_WARN};
 use super::dquot::{Dquot, DquotRef};
 use super::ids::{Kqid, QuotaType, MAXQUOTAS};
 use super::limits::MemDqinfo;
 use super::transfer::{DquotTransferSlot, dquot_transfer_with_grace_mask, rollback_transferred_usage};
 use super::usage::DquotUsage;
+use super::warn::DquotWarns;
 
 struct InodeDquotLockClass;
 impl sync::LockClass for InodeDquotLockClass { fn rank() -> u16 { 32 } fn name() -> &'static str { "InodeDquotLockClass" } }
@@ -241,17 +244,16 @@ pub fn dquot_alloc_inode(sb: &SuperBlock, uid: u32, gid: u32, projid: u32, usage
 pub fn dquot_charge_usage(sb: &SuperBlock, uid: u32, gid: u32, projid: u32, usage: DquotUsage) -> KResult<()> {
     let ids = [Kqid::user(uid), Kqid::group(gid), Kqid::project(projid)];
     let mut snap: [Option<(DquotRef, DquotUsage)>; MAXQUOTAS] = core::array::from_fn(|_| None);
+    let mut warns = DquotWarns::new();
+    let caller_uid = uid;
     for qid in ids {
         if !sb.s_dquot.is_enabled(qid.kind) { continue; }
         let dq = sb.s_dquot.dqget(qid)?;
         let before = dq.usage();
-        let info = sb.s_dquot.info(qid.kind);
-        let charge = if sb.s_dquot.is_enforced(qid.kind) {
-            dq.charge_with_grace(usage, info, quota_now_sec())
-        } else {
-            dq.charge_unchecked(usage)
-        };
-        if let Err(e) = charge {
+        let outcome = dq.charge_checked(usage, DQUOT_SPACE_WARN, charge_ctx(sb, qid.kind));
+        warns.prepare(qid, outcome.warn, sb.s_dev as u32);
+        if let Err(e) = outcome.result {
+            warns.flush(caller_uid);
             let rb = restore_snapshots(sb, &snap);
             dqput_snapshots(sb, &snap);
             sb.s_dquot.dqput(dq);
@@ -262,13 +264,26 @@ pub fn dquot_charge_usage(sb: &SuperBlock, uid: u32, gid: u32, projid: u32, usag
             snap[qid.slot()] = Some((dq, before));
             let rb = restore_snapshots(sb, &snap);
             dqput_snapshots(sb, &snap);
+            warns.flush(caller_uid);
             if let Err(rb) = rb { return Err(rb); }
             return Err(e);
         }
         snap[qid.slot()] = Some((dq, before));
     }
     dqput_snapshots(sb, &snap);
+    warns.flush(caller_uid);
     Ok(())
+}
+
+/// Per-class limit-ladder inputs for one charge against `sb`. # C: O(1)
+fn charge_ctx(sb: &SuperBlock, kind: QuotaType) -> ChargeCtx {
+    let info = sb.s_dquot.info(kind);
+    ChargeCtx {
+        info,
+        now_sec: quota_now_sec(),
+        enforced: sb.s_dquot.is_enforced(kind),
+        ignore_hardlimit: quota_ignore_hardlimit(sb.s_dquot.format(kind), info.dqi_flags),
+    }
 }
 
 /// Release a removed inode from the active quota classes on `sb`. # C: O(MAXQUOTAS log N)+FS
@@ -279,11 +294,15 @@ pub fn dquot_free_inode(sb: &SuperBlock, uid: u32, gid: u32, projid: u32, usage:
 /// Release arbitrary inode-owned usage from active quota classes on `sb`. # C: O(MAXQUOTAS log N)+FS
 pub fn dquot_release_usage(sb: &SuperBlock, uid: u32, gid: u32, projid: u32, usage: DquotUsage) -> KResult<()> {
     let mut snap: [Option<(DquotRef, DquotUsage)>; MAXQUOTAS] = core::array::from_fn(|_| None);
+    let mut warns = DquotWarns::new();
+    let caller_uid = uid;
     for qid in [Kqid::user(uid), Kqid::group(gid), Kqid::project(projid)] {
         if !sb.s_dquot.is_enabled(qid.kind) { continue; }
         let dq = sb.s_dquot.dqget(qid)?;
         let before = dq.usage();
-        if let Err(e) = dq.release(usage) {
+        let outcome = dq.release_checked(usage, sb.s_dquot.is_enforced(qid.kind));
+        warns.prepare(qid, outcome.warn, sb.s_dev as u32);
+        if let Err(e) = outcome.result {
             let rb = restore_snapshots(sb, &snap);
             dqput_snapshots(sb, &snap);
             sb.s_dquot.dqput(dq);
@@ -300,6 +319,7 @@ pub fn dquot_release_usage(sb: &SuperBlock, uid: u32, gid: u32, projid: u32, usa
         snap[qid.slot()] = Some((dq, before));
     }
     dqput_snapshots(sb, &snap);
+    warns.flush(caller_uid);
     Ok(())
 }
 

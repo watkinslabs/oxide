@@ -7,7 +7,8 @@
 //! - `attach`: superblock materialization plus root/submount registration.
 //! - `clone_tree`: open_tree/bind clone construction and recursive graft commit.
 //! - `recursive`: recursive attach and mount-subtree predicates.
-//! - `namespace`: pivot/bind/move namespace-tree mutations.
+//! - `namespace`: bind/move namespace-tree mutations and the pivot retree commit.
+//! - `pivot`: `pivot_root(2)` tree surgery — slot swap, re-root, re-render.
 //! - `namespace_lifecycle`: mount refcount, namespace copy, and namespace reap.
 //! - `attrs`: remount, mount_setattr, write pins, and inode lookup helpers.
 //! - `beneath`: `move_mount(MOVE_MOUNT_BENEATH)` slot swap + its admission ladder.
@@ -45,7 +46,14 @@ pub use crate::mntns::{
 // Mount-propagation engine (peer/slave fan-out) lives in a submodule to hold
 // the line cap; its public surface stays `vfs::mount::*` verbatim.
 mod propagation;
-pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_group, set_propagation, set_propagation_recursive};
+pub use propagation::{change_type_by_id, join_peer_group, peer_group_of, propagate_mount, set_group,
+    set_propagation, set_propagation_recursive};
+
+// `do_change_type`'s admission ladder as a pure decision over sampled facts —
+// a submodule (not an `include!`) so it carries its own hosted unit tests.
+mod propagation_check;
+pub use propagation_check::{change_type_check, flags_to_propagation_type, ChangeType,
+    ChangeTypeFacts};
 
 // Umount / detach tear-down (umount(2), d_invalidate detach, propagate_umount)
 // lives in a submodule to hold the line cap; public surface stays `vfs::mount::*`.
@@ -75,7 +83,7 @@ pub use mnt_flags::{
 // umount2(2)'s admission ladder as a pure decision over sampled facts, so its
 // ORDER (and MNT_EXPIRE's two-pass EAGAIN grace) is a hosted unit test.
 mod umount_check;
-pub use umount_check::{umount_check, umount_facts, Umount, UmountFacts, UmountRefusal, EXPIRE_REQUIRED_REFS};
+pub use umount_check::{umount_check, umount_facts, Umount, UmountFacts, UmountPlan, UmountRefusal, EXPIRE_REQUIRED_REFS};
 
 // Locked mount flags: the MNT_LOCK_*/MNT_LOCKED stamp an unprivileged user-ns
 // copy inherits (`lock_mnt_tree`) and the ladder that refuses to relax it
@@ -105,6 +113,7 @@ pub use expiry::{
     expire_list_create, mark_mounts_for_expiry, mnt_expire_add, mnt_expire_remove,
     sweep_expired_mounts,
 };
+use expiry::mnt_expire_remove_any;
 
 mod flags;
 pub use flags::*;
@@ -121,6 +130,7 @@ include!("mount/attach.rs");
 include!("mount/clone_tree.rs");
 include!("mount/recursive.rs");
 include!("mount/namespace.rs");
+include!("mount/pivot.rs");
 include!("mount/namespace_lifecycle.rs");
 include!("mount/attrs.rs");
 include!("mount/beneath.rs");

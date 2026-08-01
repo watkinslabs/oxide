@@ -61,7 +61,7 @@ pub fn realize_sb(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, dev: u64, s_i
         })
     });
     let ty: Arc<dyn vfs::FileSystemType> =
-        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
+        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
     let sb = SuperBlock::from_ops(ty, s_op, root, fs.magic(), dev, fs.block_size(), s_id, Arc::new(()));
     fs.set_sb(Arc::downgrade(&sb)).expect("test ext4 set_sb");
     if let Some(name) = fs.sysfs_name() { sb.set_sysfs_name(&name); }
@@ -72,8 +72,8 @@ pub fn realize_sb(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, dev: u64, s_i
 pub fn realize_sb_result(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, _dev: u64, s_id: String) -> vfs::KResult<Arc<SuperBlock>> {
     let root = root.or_else(|| fs.root());
     let ty: Arc<dyn vfs::FileSystemType> =
-        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
-    vfs::fs::superblock_from_filesystem(ty, fs, root, s_id)
+        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
+    vfs::fs::superblock_from_filesystem(ty, fs, root, s_id, 0)
 }
 
 /// Fallible hosted realization with `SB_RDONLY` set before `FileSystem::set_sb`.
@@ -87,7 +87,7 @@ pub fn realize_sb_readonly_result(fs: Arc<dyn FileSystem>, root: Option<InodeRef
         })
     });
     let ty: Arc<dyn vfs::FileSystemType> =
-        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
+        vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _, _| unreachable!("test fs type is not mounted through ->mount")));
     let sb = SuperBlock::from_ops(ty, s_op, root, fs.magic(), dev, fs.block_size(), s_id, Arc::new(()));
     sb.set_readonly(true);
     fs.set_sb(Arc::downgrade(&sb))?;

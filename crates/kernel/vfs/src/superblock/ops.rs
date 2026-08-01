@@ -82,6 +82,15 @@ pub trait SuperOps: Send + Sync {
     /// `fs_context_operations.reconfigure` supersedes this for converted
     /// filesystems; this is the classic hook for the rest. # C: FS-dependent
     fn remount_fs(&self, _sb_flags: u64) -> KResult<()> { Ok(()) }
+    /// `s_op->umount_begin` — `umount2(MNT_FORCE)` is about to detach this
+    /// filesystem, so abort whatever in-flight work would otherwise keep
+    /// callers blocked in it (a network/FUSE mount whose server or daemon is
+    /// gone). Called BEFORE the detach ladder's remaining rungs, so it runs even
+    /// when the unmount is ultimately refused — the point is to unwedge the
+    /// blocked callers, and the mount program is expected to retry. Default
+    /// no-op: a filesystem with no in-flight-request concept has nothing to
+    /// abort. # C: FS-dependent
+    fn umount_begin(&self, _sb: &SuperBlock) {}
     /// `s_qcop->quota_on` / filesystem quota enable hook. Default no-op
     /// unsupported for filesystems without on-disk quota files. # C: FS-dependent
     fn quota_on(&self, _sb: &SuperBlock, _kind: QuotaType, _format_id: u32, _path: Option<&VfsPath>) -> KResult<()> {

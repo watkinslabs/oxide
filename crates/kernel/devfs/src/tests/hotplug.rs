@@ -43,7 +43,7 @@ fn mount_devtmpfs() -> Arc<SuperBlock> {
         Arc::new(DevtmpfsType),
         fs,
         crate::DevfsFs.root(),
-        String::from("devtmpfs-test"),
+        String::from("devtmpfs-test"), 0,
     ).expect("realize devtmpfs")
 }
 

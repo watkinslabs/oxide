@@ -252,6 +252,10 @@ const SYSCTL_TREE: &[Node] = &[
         File("domainname",            StrHook(crate::hooks::domainname, crate::hooks::set_domainname)),
         File("threads-max",           Int(32768, Some((20, INT_MAX)))),
         File("printk",                Bytes(b"4\t4\t1\t7\n")),
+        // Bound to the three tunables every BSD-process-accounting free-space
+        // check reads (`fs::acct`), not a procfs-local copy: a dead cell here
+        // would report a suspend threshold that no accounting write applies.
+        File("acct",                  StrHook(crate::hooks::acct_parm, crate::hooks::set_acct_parm)),
         File("sched_rr_timeslice_ms", Int(100, Some((1, INT_MAX)))),
         // Bound to `aslr`'s live cell — the same value every exec reads when it
         // decides whether to randomise. A procfs-local copy would let this file

@@ -27,6 +27,10 @@ pub fn unregister_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> usize {
 }
 
 fn unregister_mount(target: Arc<Mount>) -> usize {
+    // A kernel-side user holding a file open on this filesystem (process
+    // accounting) must let go BEFORE the structural removal, or its reference
+    // outlives the mount it was taken on. Runs with no mount lock held.
+    crate::sb_pin::kill_sb_pins(crate::sb_pin::sb_key(&target.sb));
     let id = target.mnt_id;
     let mp = target.mountpoint();
     let parent = target.parent_id.load(Ordering::Acquire);

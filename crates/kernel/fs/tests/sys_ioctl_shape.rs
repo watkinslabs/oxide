@@ -200,7 +200,7 @@ fn mk_file_with_fop(ft: FileType, flags: OpenFlags, size: u64, fop: Arc<dyn File
 }
 
 fn mk_file_with_uuid(uuid: [u8; 16]) -> Arc<File> {
-    let fs_ty = vfs::fs::FsType::new("uuidfs", 0x1600, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _| Err(VfsError::Enotty)));
+    let fs_ty = vfs::fs::FsType::new("uuidfs", 0x1600, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _, _| Err(VfsError::Enotty)));
     let sb = SuperBlock::new(fs_ty, Arc::new(SimpleSuperOps {
         magic: 0x1600,
         block_size: 4096,
@@ -216,7 +216,7 @@ fn mk_file_with_uuid(uuid: [u8; 16]) -> Arc<File> {
 }
 
 fn mk_file_with_sysfs_name(sysfs_name: Option<&str>) -> Arc<File> {
-    let fs_ty = vfs::fs::FsType::new("sysfsnamefs", 0x1601, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _| Err(VfsError::Enotty)));
+    let fs_ty = vfs::fs::FsType::new("sysfsnamefs", 0x1601, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _, _| Err(VfsError::Enotty)));
     let sb = SuperBlock::new(fs_ty, Arc::new(SimpleSuperOps {
         magic: 0x1601,
         block_size: 4096,

@@ -9,6 +9,7 @@ use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, ne
 use crate::types::VfsError;
 
 use super::flags::FsFlags;
+use super::fs_context::{apply_sb_flags, SB_FLAGS_USER_MASK};
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
 
@@ -47,9 +48,17 @@ pub trait FileSystem: Send + Sync {
 /// `SuperBlock`. This is a fill-super compatibility boundary only: the returned
 /// SB carries all live authority in `s_type`, `s_op`, `s_root`, and
 /// `s_fs_info`; no `Arc<dyn FileSystem>` is retained behind it or consulted by
-/// the mount namespace. # C: O(N_sb) for device-backed reuse.
+/// the mount namespace.
+///
+/// `sb_flags` is the mount request's `SB_*` word. Linux assigns it in
+/// `alloc_super()` — at superblock ALLOCATION — so a `sget()` HIT returns the
+/// EXISTING instance with its own flags untouched; only the creation path
+/// stamps. Mirrored here by stamping inside the `sget_result` creation closure
+/// and nowhere else, through the one shared stamping helper
+/// [`apply_sb_flags`] that the fs_context/`get_tree` path also uses.
+/// # C: O(N_sb) for device-backed reuse.
 pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn FileSystem>,
-    root_inode: Option<InodeRef>, s_id: String) -> KResult<Arc<SuperBlock>> {
+    root_inode: Option<InodeRef>, s_id: String, sb_flags: u64) -> KResult<Arc<SuperBlock>> {
     let root = root_inode.or_else(|| fs.root());
     let s_op: Arc<dyn SuperOps> = fs.super_ops().unwrap_or_else(|| {
         Arc::new(SimpleSuperOps {
@@ -69,6 +78,7 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
             sget_result(dev, move || {
                 let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
                 sb.set_s_iflags(s_iflags);
+                apply_sb_flags(&sb, sb_flags, SB_FLAGS_USER_MASK);
                 fs_for_stamp.set_sb(Arc::downgrade(&sb))?;
                 if let Some(name) = fs_for_stamp.sysfs_name() { sb.set_sysfs_name(&name); }
                 Ok(sb)
@@ -77,6 +87,7 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
         None => {
             let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
             sb.set_s_iflags(s_iflags);
+            apply_sb_flags(&sb, sb_flags, SB_FLAGS_USER_MASK);
             fs.set_sb(Arc::downgrade(&sb))?;
             if let Some(name) = fs.sysfs_name() { sb.set_sysfs_name(&name); }
             Ok(sb)
@@ -84,49 +95,39 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
     }
 }
 
-pub type FsConstructor = dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str) -> KResult<Arc<SuperBlock>> + Send + Sync;
-pub type FsFlagConstructor = dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str, u64) -> KResult<Arc<SuperBlock>> + Send + Sync;
-
-pub(super) enum Constructor {
-    Basic(Box<FsConstructor>),
-    Flags(Box<FsFlagConstructor>),
-}
+/// `file_system_type::mount`/`init_fs_context` stand-in: build one superblock
+/// from `(type, source, target, option string, SB_* flags)`. ONE form — the
+/// flag word is never optional, so no constructor can silently drop it.
+pub type FsConstructor =
+    dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str, u64) -> KResult<Arc<SuperBlock>>
+        + Send + Sync;
 
 pub struct FsType {
     pub(super) name:  String,
     pub(super) magic: u64,
     pub(super) flags: FsFlags,
     self_ref:          Weak<FsType>,
-    pub(super) ctor:  Constructor,
+    pub(super) ctor:  Box<FsConstructor>,
 }
 
 impl FsType {
+    /// Register a filesystem type. `ctor` is `fill_super`: it receives the
+    /// request's `SB_*` flag word as its last argument and must hand it to
+    /// [`superblock_from_filesystem`] (or stamp it itself) so the resulting
+    /// superblock carries `SB_RDONLY`/`SB_NOATIME`/… # C: O(1)
     pub fn new(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>) -> Arc<Self> {
         Arc::new_cyclic(|self_ref| Self {
-            name: name.to_string(), magic, flags, self_ref: self_ref.clone(),
-            ctor: Constructor::Basic(ctor),
-        })
-    }
-    /// Register a filesystem constructor that consumes superblock flags.
-    /// # C: O(1)
-    pub fn new_with_flags(
-        name: &str,
-        magic: u64,
-        flags: FsFlags,
-        ctor: Box<FsFlagConstructor>,
-    ) -> Arc<Self> {
-        Arc::new_cyclic(|self_ref| Self {
-            name: name.to_string(), magic, flags, self_ref: self_ref.clone(),
-            ctor: Constructor::Flags(ctor),
+            name: name.to_string(), magic, flags, self_ref: self_ref.clone(), ctor,
         })
     }
     fn as_type(&self) -> Arc<dyn FileSystemType> {
         self.self_ref.upgrade().expect("registered filesystem type self-ref") as Arc<dyn FileSystemType>
     }
+    /// Construct with no caller-supplied `SB_*` flags. # C: O(constructor)
     pub fn construct(&self, source: Option<&str>, target: &str, data: &str) -> KResult<Arc<SuperBlock>> {
         self.construct_with_flags(source, target, data, 0)
     }
-    /// Construct a superblock while preserving mount-derived superblock flags.
+    /// Construct while preserving mount-derived superblock flags.
     /// # C: O(constructor)
     pub fn construct_with_flags(
         &self,
@@ -135,10 +136,7 @@ impl FsType {
         data: &str,
         sb_flags: u64,
     ) -> KResult<Arc<SuperBlock>> {
-        match &self.ctor {
-            Constructor::Basic(ctor) => ctor(self.as_type(), source, target, data),
-            Constructor::Flags(ctor) => ctor(self.as_type(), source, target, data, sb_flags),
-        }
+        (self.ctor)(self.as_type(), source, target, data, sb_flags)
     }
     pub fn magic(&self) -> u64 { self.magic }
     pub fn fs_flags(&self) -> FsFlags { self.flags }

@@ -307,6 +307,25 @@ pub fn set_propagation_recursive(d: &Arc<Dentry>, kind: Propagation) -> KResult<
     Ok(())
 }
 
+/// Apply an ACCEPTED [`ChangeType`] decision to the mount `mnt_id` (Linux
+/// `do_change_type`'s `for (m = mnt; m; m = recurse ? next_mnt(m, mnt) : NULL)`
+/// loop). Identity is the mount id the walk crossed into, never a re-derived
+/// dentry: a pseudo-filesystem's `s_root` is shared between instances, so a
+/// dentry-keyed lookup cannot name one mount. # C: O(N_subtree)
+pub fn change_type_by_id(mnt_id: u64, req: super::ChangeType) -> KResult<()> {
+    let m = mount_by_id(mnt_id).ok_or(VfsError::Einval)?;
+    let ns = m.namespace_id();
+    apply_propagation(&m, req.kind);
+    if req.recurse {
+        for id in super::subtree_ids(ns, m.mnt_id) {
+            if id == m.mnt_id { continue; }
+            if let Some(cm) = super::mount_by_id(id) { apply_propagation(&cm, req.kind); }
+        }
+    }
+    mntns::bump_gen(ns);
+    Ok(())
+}
+
 /// Apply one propagation transition to a single mount (Linux
 /// `change_mnt_propagation`). # C: O(N_peers) worst case
 pub(super) fn apply_propagation(m: &Arc<Mount>, kind: Propagation) {

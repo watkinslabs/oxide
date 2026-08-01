@@ -441,3 +441,45 @@ fn attr_time_clamps_an_out_of_range_subsecond_field() {
     assert_eq!(attr_time((-5i64) as u64, u32::MAX),
                vfs::Timespec64 { sec: -5, nsec: NSEC_PER_SEC - 1 });
 }
+
+// ---- s_op->umount_begin: MNT_FORCE aborts the connection --------------------
+
+/// `umount2(MNT_FORCE)` on a fuse mount reaches `sb->s_op->umount_begin`, which
+/// aborts the channel so every blocked VFS caller is released with `-ENOTCONN`
+/// and the mount stops being busy. Drives the REAL superblock the mount path
+/// builds, so it also proves `FuseFs` actually installs the vtable (a fuse
+/// mount used to fall back to the generic pseudo-fs `s_op`, which has no hook).
+#[test]
+fn mnt_force_umount_begin_aborts_the_channel() {
+    let c = conn();
+    let ffs = super::fs::build_fuse_fs(c.clone(), 0, 0, 0);
+    let pending = c.new_request(FUSE_READ, 1, &[0u8; 40]);
+    let ty = vfs::fs::FsType::new("fuse", super::FUSE_SUPER_MAGIC, vfs::fs::FsFlags::empty(),
+        alloc::boxed::Box::new(|_, _, _, _, _| Err(vfs::VfsError::Einval)));
+    let fs: Arc<dyn vfs::fs::FileSystem> = ffs.clone();
+    let sb = vfs::fs::superblock_from_filesystem(
+        ty, fs, Some(ffs.root_inode()), alloc::string::String::from("fuse"), 0)
+        .expect("realize fuse superblock");
+
+    assert!(!c.is_aborted(), "a live mount starts connected");
+    sb.s_op.umount_begin(&sb);
+    assert!(c.is_aborted(), "MNT_FORCE must abort the fuse connection");
+    assert!(pending.done.load(core::sync::atomic::Ordering::Acquire),
+        "the blocked caller is released, so the mount stops being busy");
+    assert_eq!(pending.error.load(core::sync::atomic::Ordering::Acquire),
+        super::FUSE_WIRE_ENOTCONN);
+}
+
+/// The trait default is a no-op: a filesystem with no in-flight-request concept
+/// has nothing to abort, exactly as Linux leaves `s_op->umount_begin` NULL.
+#[test]
+fn a_filesystem_without_in_flight_requests_takes_the_no_op_default() {
+    let ops = vfs::SimpleSuperOps {
+        magic: 0, block_size: 4096, options: alloc::string::String::new(),
+    };
+    let ty = vfs::fs::FsType::new("nobegin", 0, vfs::fs::FsFlags::empty(),
+        alloc::boxed::Box::new(|_, _, _, _, _| Err(vfs::VfsError::Einval)));
+    let sb = vfs::SuperBlock::from_ops(ty, Arc::new(ops), None, 0, 0x4e4f_0001, 4096,
+        alloc::string::String::from("nobegin"), Arc::new(()));
+    sb.s_op.umount_begin(&sb);
+}

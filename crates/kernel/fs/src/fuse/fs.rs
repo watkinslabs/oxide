@@ -12,7 +12,8 @@ use alloc::vec::Vec;
 
 use vfs::fs::FileSystem;
 use vfs::timespec::NSEC_PER_SEC;
-use vfs::{FileType, Inode, InodeBuilder, InodeRef, KResult, Timespec64, VfsError};
+use vfs::{FileType, Inode, InodeBuilder, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps,
+    Timespec64, VfsError};
 
 use super::conn::FuseConn;
 use super::fops::{FuseFileOps, FuseInodeOps};
@@ -93,6 +94,35 @@ impl FuseFs {
     pub fn root_inode(&self) -> InodeRef { self.root.clone() }
 }
 
+/// `super_operations` for a mounted fuse instance. Exists for one hook:
+/// `umount_begin`. Everything else matches what the generic pseudo-fs vtable
+/// reported before, so `statfs(2)` on a fuse mount is unchanged.
+pub struct FuseSuperOps {
+    conn: Arc<FuseConn>,
+    options: String,
+}
+
+impl FuseSuperOps {
+    /// # C: O(1)
+    pub fn new(conn: Arc<FuseConn>, options: String) -> Self { Self { conn, options } }
+}
+
+impl SuperOps for FuseSuperOps {
+    /// # C: O(1)
+    fn statfs(&self) -> KResult<SbStatFs> {
+        Ok(SbStatFs { f_type: FUSE_SUPER_MAGIC, f_bsize: FUSE_BLKSIZE, ..Default::default() })
+    }
+    /// # C: O(1)
+    fn show_options(&self) -> String { self.options.clone() }
+    /// `s_op->umount_begin` — `umount2(MNT_FORCE)` on a fuse mount whose daemon
+    /// is wedged or gone. Aborting the connection completes every queued request
+    /// with `-ENOTCONN` and wakes its blocked caller, so the references pinning
+    /// the mount are released and the unmount can proceed; a daemon still
+    /// reading the channel gets `ENODEV`. Without this hook the mount stayed
+    /// busy forever and MNT_FORCE meant nothing. # C: O(N_pending)
+    fn umount_begin(&self, _sb: &SuperBlock) { self.conn.abort(); }
+}
+
 impl FileSystem for FuseFs {
     /// # C: O(1)
     fn name(&self) -> &str { "fuse" }
@@ -104,6 +134,10 @@ impl FileSystem for FuseFs {
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
     /// `/proc/mounts` options tail — the daemon channel is opaque. # C: O(1)
     fn show_options(&self) -> String { String::from(",user_id=0,group_id=0,default_permissions") }
+    /// # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn SuperOps>> {
+        Some(Arc::new(FuseSuperOps::new(self.conn.clone(), self.show_options())))
+    }
 }
 
 /// Build a `FuseFs` over an already-resolved `/dev/fuse` channel `conn`. Fires
