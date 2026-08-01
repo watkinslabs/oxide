@@ -114,6 +114,14 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             Some(RemoteAddr::Unspec) => return Err(NetError::Einval),
             _ => q.peer().ok_or(NetError::Edestaddrreq)?,
         };
+        // Same abstract-namespace isolation as connect, except that a datagram
+        // socket already connected to this peer was admitted when it connected
+        // and is not re-checked.
+        if q.peer().as_ref().map(|p| p.key != path.key).unwrap_or(true)
+            && crate::landlock_glue::abstract_connect_denied(&sock.net_namespace, &path)
+        {
+            return Err(NetError::Eperm);
+        }
         let q = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &path)
             .dgram_lookup_addr(&path)
             .ok_or(NetError::Econnrefused)?;

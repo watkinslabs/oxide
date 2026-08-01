@@ -35,6 +35,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             // are private to the socket's retained namespace owner.
             let listener = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
                 .bind_addr(addr).map_err(|_| NetError::Eaddrinuse)?;
+            listener.set_owner_domain(crate::landlock_glue::current_domain());
             *bound = Some(listener);
             drop(kind);
             Ok(())
@@ -44,6 +45,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             // stream listener above.
             crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
                 .dgram_bind_addr(addr.clone(), queue.clone()).map_err(|_| NetError::Eaddrinuse)?;
+            queue.set_owner_domain(crate::landlock_glue::current_domain());
             queue.set_bound(addr);
             Ok(())
         }

@@ -32,6 +32,7 @@ pub mod netdev;
 pub mod sysctl;
 pub mod uapi;
 pub mod send_control;
+pub mod landlock_glue;
 pub mod socket_args;
 pub mod sockaddr;
 pub mod socket_error;

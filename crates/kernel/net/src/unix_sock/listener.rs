@@ -16,6 +16,11 @@ pub struct UnixListener {
     pub accept_waiters: sched::live::WaitList,
     /// The listener socket's epoll subscribers.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
+    /// Sandbox domain of whoever published this address. An abstract-namespace
+    /// name has no filesystem object to hang a rule on, so a sandbox isolates
+    /// it by domain instead: a client may reach this socket only from inside
+    /// the domain that created it. `None` means it was published unconfined.
+    owner_domain: Spinlock<Option<Arc<landlock::Domain>>, UnixLockClass>,
     gc: GcNode,
 }
 
@@ -108,6 +113,7 @@ impl UnixListener {
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
+            owner_domain: Spinlock::new(None),
             gc: GcNode::new(),
         })
     }
@@ -158,6 +164,16 @@ impl UnixListener {
     /// (`init_peercred` on the listening socket). # C: O(1)
     pub fn owner_identity(&self) -> Option<Arc<sched::pid::PidIdentity>> {
         self.state.lock().owner_identity.clone()
+    }
+
+    /// Record the sandbox domain that published this address. # C: O(1)
+    pub fn set_owner_domain(&self, d: Option<Arc<landlock::Domain>>) {
+        *self.owner_domain.lock() = d;
+    }
+
+    /// Sandbox domain that published this address. # C: O(1)
+    pub fn owner_domain(&self) -> Option<Arc<landlock::Domain>> {
+        self.owner_domain.lock().clone()
     }
 
     /// Linux listener readiness: readable only while accept can succeed.

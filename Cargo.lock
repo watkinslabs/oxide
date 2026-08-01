@@ -1099,6 +1099,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "landlock",
  "loom",
  "namespace-identity",
  "network-namespace",
