@@ -121,3 +121,35 @@ fn a_healthy_filesystem_reports_nothing() {
     assert!(file.bmap(1 << 20).is_ok());
     assert_eq!(reports_for(dev).len(), before, "nothing to report on a healthy filesystem");
 }
+
+/// A filesystem has exactly TWO identities and they are different things: the
+/// per-mount `st_dev` a watcher and `stat(2)` key on, and the UUID-derived
+/// `f_fsid` that survives across mounts. Neither substitutes for the other.
+///
+/// The stable one had a SECOND, incompatible implementation hashing the same
+/// UUID a different way, documented as if it were `st_dev` — so one filesystem
+/// answered to three numbers and a caller picking the wrong accessor keyed a
+/// watcher on an identity no mark is ever recorded under. This pins the fold to
+/// its single owner and pins the two spaces apart, so the split cannot return
+/// without failing here.
+#[test]
+fn the_stable_identity_has_one_owner_and_is_not_the_mount_identity() {
+    let dev = 0x00FE_0003;
+    let (m, sb) = mount(dev);
+    let st = m.state();
+    let uuid = st.mount.sb.uuid;
+
+    assert_eq!(st.uuid_fsid(), ext4::superblock::uuid_to_fsid(&uuid),
+               "the stable identity is the ONE fold, not a second hash of the same UUID");
+    assert_eq!(sb.statfs().expect("statfs").f_fsid, st.uuid_fsid(),
+               "and it is exactly what statfs reports as f_fsid");
+
+    // The two number spaces are distinct: `st_dev` is assigned per mount and
+    // the fixture's UUID is not zero, so conflating them cannot go unnoticed.
+    assert_ne!(uuid, [0u8; 16], "fixture has a real UUID");
+    assert_ne!(st.uuid_fsid(), sb.s_dev,
+               "the stable identity is NOT the mount's st_dev");
+    let root = m.root().expect("root inode");
+    assert_eq!(root.fsid(), sb.s_dev,
+               "what a watcher keys on stays the per-mount st_dev");
+}
