@@ -9,13 +9,14 @@
 // setters and PR_SET_MM_MAP path validate exactly like Linux
 // `kernel/sys.c` `prctl_set_mm` / `validate_prctl_map_addr`.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use alloc::vec::Vec;
 use hal::USER_VA_END;
 use sync::{AddressSpace as AddressSpaceClass, Spinlock};
 
 use super::AddressSpace;
+use crate::coredump_filter::CoredumpFilter;
 
 // PR_SET_MM subcommand numbers (`uapi/linux/prctl.h`), passed as
 // prctl arg2. 1..=11 are the single-field pointer setters; 12..=15
@@ -147,6 +148,12 @@ pub(super) struct MmLayout {
     /// mapped image's `__kernel_rt_sigreturn` symbol when an AArch64 handler
     /// has no SA_RESTORER trampoline, exactly as Linux does.
     vdso_ehdr:   AtomicU64,
+    /// Which VMA classes a core dump of this process contains
+    /// ([`CoredumpFilter`]). Per-mm, so every thread of the process shares one
+    /// value, and copied by `forked` so a child starts from its parent's
+    /// choice. `/proc/<pid>/coredump_filter` is a view of this word and of
+    /// nothing else.
+    coredump_filter: AtomicU32,
 }
 
 impl MmLayout {
@@ -160,6 +167,7 @@ impl MmLayout {
             auxv:        Spinlock::new(None),
             user_set:    AtomicU64::new(0),
             vdso_ehdr:   AtomicU64::new(0),
+            coredump_filter: AtomicU32::new(CoredumpFilter::DEFAULT.bits()),
         }
     }
 
@@ -176,6 +184,7 @@ impl MmLayout {
             auxv:        Spinlock::new(src.auxv.lock().clone()),
             user_set:    g(&src.user_set),
             vdso_ehdr:   g(&src.vdso_ehdr),
+            coredump_filter: AtomicU32::new(src.coredump_filter.load(Ordering::Acquire)),
         }
     }
 }
@@ -208,6 +217,18 @@ impl AddressSpace {
     /// vDSO ELF header address for this mm, or zero before exec mapping.
     /// # C: O(1)
     pub fn vdso_ehdr(&self) -> u64 { self.mm_layout.vdso_ehdr.load(Ordering::Acquire) }
+
+    /// Which VMA classes a core dump of this process contains.
+    /// # C: O(1)
+    pub fn coredump_filter(&self) -> CoredumpFilter {
+        CoredumpFilter::from_bits_truncate(self.mm_layout.coredump_filter.load(Ordering::Acquire))
+    }
+
+    /// Replace the core-dump filter (a `/proc/<pid>/coredump_filter` write).
+    /// # C: O(1)
+    pub fn set_coredump_filter(&self, f: CoredumpFilter) {
+        self.mm_layout.coredump_filter.store(f.bits(), Ordering::Release);
+    }
 
     /// True once `prctl(PR_SET_MM)` explicitly rewrote a layout field.
     /// `/proc/<pid>/{cmdline,environ}` foreign-read the arg/env region

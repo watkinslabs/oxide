@@ -57,6 +57,7 @@ pub mod proc_handler;
 pub mod random_uuid;
 #[cfg(target_os = "oxide-kernel")] mod pid_sched;
 #[cfg(any(target_os = "oxide-kernel", test))] mod proc_clock;
+#[cfg(any(target_os = "oxide-kernel", test))] mod coredump_filter;
 #[cfg(any(target_os = "oxide-kernel", test))] mod timens_offsets;
 #[cfg(any(target_os = "oxide-kernel", test))] mod userns_idmap;
 pub mod hooks;

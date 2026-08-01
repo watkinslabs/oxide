@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod address_space;
+pub mod coredump_filter;
 pub mod debug_cow;
 #[cfg(feature = "debug-atexit")]
 pub mod tailwatch;
@@ -48,6 +49,7 @@ pub use address_space::pkeys;
 pub use address_space::{saved_auxv_blob, SAVED_AUXV_BYTES};
 pub use address_space::rss::{self, RssPages};
 pub use anon_vma::{AnonVma, RmapTarget};
+pub use coredump_filter::{CoredumpFilter, FilterParseError};
 pub use file_rmap::{FileRmap, WritableMapReservation, WriteSealError};
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};

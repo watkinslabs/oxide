@@ -1,9 +1,11 @@
-// Hosted coverage for `kernel.core_pattern`. Module manifest:
+// Hosted coverage for core dumps. Module manifest:
 //   expansion  the `%` specifier table and its escaping
 //   destination  file path vs program argument vector
+//   selection  which mappings the dump contains, and how much of each
 
 mod expansion;
 mod destination;
+mod selection;
 
 use super::pattern::CoreContext;
 use alloc::vec::Vec;

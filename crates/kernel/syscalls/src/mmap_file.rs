@@ -129,6 +129,8 @@ impl FileBacking for InodeFileBacking {
 
     fn size_hint(&self) -> u64 { self.inode.size() }
     fn ino(&self) -> u64 { self.inode.ino() }
+    fn i_nlink(&self) -> u32 { self.inode.nlink() }
+    fn i_mode(&self) -> u16 { self.inode.i_mode() }
 
     /// The inode's kernel identity — the address of the refcounted `InodeRef`
     /// the inode cache hands to every opener of this file. Every mapping of one
