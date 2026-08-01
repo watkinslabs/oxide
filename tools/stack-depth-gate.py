@@ -71,12 +71,36 @@ that path, because the walker still takes the maximum over both.
 `--no-blocking-tail` turns this off. A missing scheduling point is a hard
 error rather than a silent pass: the symbol moving is exactly how this
 accounting would rot back into the number that motivated it.
+
+WHAT THE ALLOWLIST IS KEYED ON
+------------------------------
+The DEMANGLED path (`rust_symbol_identity`), never the mangled symbol. A
+mangled name carries a crate disambiguator that changes with the feature set
+the crate was built with, so an allowlist keyed on it made the verdict depend
+on which build last exported `target/artifacts` — the same tree passed or
+failed on build provenance. Identity keeps everything that distinguishes two
+functions (generic arguments, closure index, impl self-type) and drops only
+the build-dependent parts, and an entry written in the old mangled form still
+matches because it is put through the same function.
+
+Identity is many-to-one in two cases the linker allows — one generic
+instantiated in two crates, and an LLVM internal-linkage clone next to its
+original. A budget therefore covers the DEEPEST symbol sharing that identity,
+which is the conservative direction.
+
+A stale entry — an identity that no longer names anything in the ELF — FAILS
+rather than being ignored, because an allowlist that silently keeps permission
+for paths that are long gone is how the ceiling stops meaning anything.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rust_symbol_identity as rsi        # noqa: E402
 
 # Both disassemblers must be understood or the gate silently passes:
 #   GNU objdump : `sub    $0x1000,%rsp`      `call   ffffffff80001000 <foo>`
@@ -311,14 +335,12 @@ class Walker:
 
 
 def demangle(names):
-    """Best-effort rustfilt; falls back to the raw symbols."""
-    try:
-        p = subprocess.run(["rustfilt"], input="\n".join(names),
-                           capture_output=True, text=True, check=True)
-        out = p.stdout.splitlines()
-        return out if len(out) == len(names) else names
-    except Exception:
-        return names
+    """-> readable names, via the same identity function the allowlist uses.
+
+    No external demangler: a gate whose output depends on whether `rustfilt`
+    happens to be installed is the flakiness this file exists to remove.
+    """
+    return [rsi.identity(n) for n in names]
 
 
 def disassemble(elf):
@@ -338,34 +360,44 @@ def disassemble(elf):
 
 
 def read_allowlist(path):
-    """-> {symbol: budget}
+    """-> {identity: (budget, line-number)}
 
     The file is blocks: a run of `#` comment lines states WHY that family of
-    paths is legitimately deep, then the `<bytes>\\t<symbol>` entries it covers,
+    paths is legitimately deep, then the `<bytes>\\t<name>` entries it covers,
     then a blank line ends the block. An entry outside a block is REFUSED —
     an allowlist nobody can audit is how a gate rots into decoration, and the
     reason is the whole point of the file.
+
+    `<name>` is a demangled path, but an entry still carrying a mangled symbol
+    from before this was keyed on identity is accepted and normalised, so no
+    budget is silently dropped by the format change.
     """
     allow, reason = {}, None
     with open(path) as f:
         for n, line in enumerate(f, 1):
-            s = line.strip()
-            if not s:
+            s = line.rstrip("\n")
+            if not s.strip():
                 reason = None            # blank line closes the block
                 continue
-            if s.startswith("#"):
-                reason = s.lstrip("# ").strip() or reason
+            if s.lstrip().startswith("#"):
+                reason = s.strip().lstrip("# ").strip() or reason
                 continue
             try:
-                budget, sym = s.split("\t", 1)
+                budget, sym = s.strip().split("\t", 1)
                 budget = int(budget)
             except ValueError:
-                raise SystemExit(f"{path}:{n}: want `<bytes>\\t<symbol>`, got {s!r}")
+                raise SystemExit(f"{path}:{n}: want `<bytes>\\t<name>`, got {s.strip()!r}")
             if not reason:
                 raise SystemExit(
                     f"{path}:{n}: {sym[:60]}… is not under a `#` reason block. "
                     "Every allowlisted path states why it is legitimately deep.")
-            allow[sym] = budget
+            key = rsi.identity(sym.strip())
+            prev = allow.get(key)
+            if prev and prev[0] != budget:
+                raise SystemExit(
+                    f"{path}:{n}: {key[:60]}… is already allowed {prev[0]} B at line "
+                    f"{prev[1]}. Two budgets for one path is ambiguous; keep one.")
+            allow[key] = (budget, n)
     return allow
 
 
@@ -387,9 +419,12 @@ def main():
     ap.add_argument("--show-path", action="store_true",
                     help="print the frame-by-frame chain for each reported function")
     ap.add_argument("--allowlist",
-                    help="file of `<bytes>\\t<symbol>` for paths that are known-deep. "
-                         "Tolerated at or below the recorded budget, so a NEW or "
-                         "WORSENED path still fails.")
+                    help="file of `<bytes>\\t<demangled path>` for paths that are "
+                         "known-deep. Tolerated at or below the recorded budget, so a "
+                         "NEW or WORSENED path still fails.")
+    ap.add_argument("--allow-stale", action="store_true",
+                    help="report allowlist entries whose path is not in this ELF instead "
+                         "of failing on them (they are dead permission either way)")
     ap.add_argument("--write-allowlist", action="store_true",
                     help="rewrite --allowlist from this ELF (reasons must be edited in by hand)")
     args = ap.parse_args()
@@ -423,6 +458,17 @@ def main():
     ranked = sorted(depth.items(), key=lambda kv: -kv[1])
     over = [(n, d) for n, d in ranked if d >= args.fail]
 
+    # Identity, not the mangled symbol: see WHAT THE ALLOWLIST IS KEYED ON.
+    ident = {raw: rsi.identity(raw) for raw in frames}
+    present = set(ident.values())
+    # Many-to-one is possible, so a budget covers the DEEPEST symbol sharing
+    # the identity — the conservative direction.
+    over_by_id = {}
+    for n, d in over:
+        k = ident[n]
+        if k not in over_by_id or d > over_by_id[k][0]:
+            over_by_id[k] = (d, n)
+
     if args.write_allowlist:
         if not args.allowlist:
             print("stack-depth-gate: --write-allowlist needs --allowlist", file=sys.stderr)
@@ -430,16 +476,21 @@ def main():
         with open(args.allowlist, "w") as f:
             f.write("# Static call paths already at or over the ceiling when the gate\n"
                     "# landed. Tolerated at or below the recorded budget ONLY — a new or\n"
-                    "# deeper path fails. Each entry MUST carry a reason; the gate refuses\n"
-                    "# to load an entry without one. Burn this list down.\n")
-            for n, d in over:
-                f.write(f"# TODO: state why this path is legitimately deep.\n{d}\t{n}\n")
-        print(f"stack-depth-gate: wrote {len(over)} entries to {args.allowlist} "
+                    "# deeper path fails. Entries are DEMANGLED paths, which survive a\n"
+                    "# rebuild with different features; each MUST carry a reason, and an\n"
+                    "# entry naming a path that no longer exists fails. Burn this down.\n")
+            for k, (d, _) in sorted(over_by_id.items(), key=lambda kv: -kv[1][0]):
+                f.write(f"# TODO: state why this path is legitimately deep.\n{d}\t{k}\n")
+        print(f"stack-depth-gate: wrote {len(over_by_id)} entries to {args.allowlist} "
               "(add a reason to each before committing)")
         return 0
 
     allow = read_allowlist(args.allowlist) if args.allowlist else {}
-    regressions = [(n, d) for n, d in over if d > allow.get(n, -1)]
+    fresh = [(k, d, raw) for k, (d, raw) in over_by_id.items() if k not in allow]
+    worse = [(k, d, raw, allow[k][0]) for k, (d, raw) in over_by_id.items()
+             if k in allow and d > allow[k][0]]
+    stale = [(k, allow[k][1]) for k in allow if k not in present]
+    slack = [k for k in allow if k in present and k not in over_by_id]
 
     print(f"stack-depth-gate: {args.elf} ({args.arch})")
     print(f"  functions scanned  : {len(frames)}")
@@ -458,22 +509,45 @@ def main():
         print(f"    {d:7d}  {pretty}" + (f"   [{note}]" if note else ""))
         if args.show_path:
             for hop in w.path(raw)[1:]:
-                print(f"            +{frames.get(hop, 0):6d}  {hop}")
+                print(f"            +{frames.get(hop, 0):6d}  {rsi.identity(hop)}")
 
     if allow:
-        print(f"  allowlisted        : {len(over) - len(regressions)} of {len(over)}")
+        held = len(over_by_id) - len(fresh) - len(worse)
+        print(f"  allowlisted        : {held} of {len(over_by_id)} over-ceiling path(s)")
+        for k in sorted(slack):
+            print(f"  slack              : {allow[k][0]} B allowed, now under the "
+                  f"ceiling — the entry can go: {k}")
 
-    if regressions:
-        print(f"\nstack-depth-gate: FAIL — {len(regressions)} static path(s) reach "
+    # The two failures need OPPOSITE responses, so they are never merged into
+    # one list: a NEW or WORSENED path is code to fix, a STALE entry is a line
+    # to delete.
+    if fresh or worse:
+        print(f"\nstack-depth-gate: FAIL — {len(fresh) + len(worse)} static path(s) reach "
               f">= {args.fail} B on a {16 * 1024} B kernel stack:", file=sys.stderr)
-        for name, d in regressions:
-            was = allow.get(name)
-            print(f"    {d:7d}{f' (budget {was})' if was else ' (new)'}  {name}", file=sys.stderr)
+        for k, d, raw in sorted(fresh, key=lambda t: -t[1]):
+            print(f"    {d:7d}  NEW       {k}", file=sys.stderr)
+            print(f"             (symbol {raw})", file=sys.stderr)
+        for k, d, raw, was in sorted(worse, key=lambda t: -t[1]):
+            print(f"    {d:7d}  WORSENED  {k}  (budget {was}, +{d - was})", file=sys.stderr)
+            print(f"             (symbol {raw})", file=sys.stderr)
         print("\nSplit the chain so the big frames overlap instead of summing "
               "(Linux `noinline_for_stack`), move the data off-stack, or — if the "
               "path is genuinely this deep — add it to the allowlist WITH a reason.",
               file=sys.stderr)
+    if stale and not args.allow_stale:
+        print(f"\nstack-depth-gate: FAIL — {len(stale)} allowlist entr(y/ies) name a path "
+              f"that is not in {args.elf} at all:", file=sys.stderr)
+        for k, line in sorted(stale, key=lambda t: t[1]):
+            print(f"    {args.allowlist}:{line}  STALE  {k}", file=sys.stderr)
+        print("\nDelete those lines. This is NOT a depth regression — the path is gone, "
+              "and an allowlist that keeps permission for code that no longer exists "
+              "stops meaning anything. If the symbol only vanishes in the build you are "
+              "checking, check the build the list was recorded against instead of "
+              "passing --allow-stale.", file=sys.stderr)
+    if fresh or worse or (stale and not args.allow_stale):
         return 1
+    if stale:
+        print(f"  stale (ignored)    : {len(stale)} entr(y/ies) name a path not in this ELF")
     print("stack-depth-gate: PASS")
     return 0
 
@@ -639,8 +713,72 @@ def self_test():
     assert plain.depth["reaper"] == (8 + 0x80) + (8 + 0x40), plain.depth["reaper"]
     assert wb.depth["reaper"] == (8 + 0x80) + (8 + 0x40) + tail, wb.depth["reaper"]
 
+    identity_self_test()
     print("stack-depth-gate: self-test PASS (x86_64 + aarch64, probe-split, "
-          "recursion, indirect, blocking tail)")
+          "recursion, indirect, blocking tail, allowlist identity)")
+    return 0
+
+
+# Two builds of one tree, differing only in the crate disambiguator — the
+# provenance dependence that made this gate's verdict unreliable.
+BUILD_A = "_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main"
+BUILD_B = "_RNvNtNtCs1Yf3GkQE07G_5kmain5kmain5entry11kernel_main"
+
+
+def identity_self_test():
+    import tempfile
+
+    rsi.self_test()
+    # The defect in one line: the gate must not care which build it reads.
+    assert BUILD_A != BUILD_B
+    assert rsi.identity(BUILD_A) == rsi.identity(BUILD_B) == \
+        "kmain::kmain::entry::kernel_main"
+
+    def allowlist(text):
+        f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+        f.write(text)
+        f.close()
+        return f.name
+
+    # An entry written in the OLD mangled form still matches the identity of a
+    # DIFFERENT build's symbol: the format change drops no budget.
+    path = allowlist(f"# reason\n19920\t{BUILD_A}\n")
+    allow = read_allowlist(path)
+    assert allow == {"kmain::kmain::entry::kernel_main": (19920, 2)}, allow
+    assert rsi.identity(BUILD_B) in allow
+
+    # Demangled entries are the written form, and re-reading one is a no-op.
+    path = allowlist("# reason\n19920\tkmain::kmain::entry::kernel_main\n")
+    assert read_allowlist(path)["kmain::kmain::entry::kernel_main"][0] == 19920
+
+    # Same path recorded twice with different budgets is ambiguous, not a
+    # silent last-wins.
+    path = allowlist(f"# reason\n19920\t{BUILD_A}\n19000\t{BUILD_B}\n")
+    try:
+        read_allowlist(path)
+        raise AssertionError("two budgets for one identity must be refused")
+    except SystemExit:
+        pass
+
+    # A budget covers the deepest symbol sharing its identity, which is what
+    # keeps the many-to-one cases (one generic instantiated in two crates, an
+    # LLVM clone beside its original) from letting a regression through.
+    frames = {BUILD_A: 100, BUILD_A + ".llvm.4242": 100}
+    over = [(BUILD_A, 13000), (BUILD_A + ".llvm.4242", 14000)]
+    ident = {raw: rsi.identity(raw) for raw in frames}
+    by_id = {}
+    for n, d in over:
+        k = ident[n]
+        if k not in by_id or d > by_id[k][0]:
+            by_id[k] = (d, n)
+    assert len(by_id) == 1 and by_id["kmain::kmain::entry::kernel_main"][0] == 14000, by_id
+
+    # Stale is a different verdict from new: the identity is in the allowlist
+    # but names nothing in the ELF.
+    allow = read_allowlist(allowlist("# reason\n19920\tkmain::gone::forever\n"))
+    present = set(ident.values())
+    assert [k for k in allow if k not in present] == ["kmain::gone::forever"]
+    assert [k for k in allow if k in present] == []
     return 0
 
 

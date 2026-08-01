@@ -1,7 +1,13 @@
 # Static call paths at or over the stack-depth ceiling when the gate landed
 # (x86_64). Tolerated at or below the recorded budget ONLY — a new or deeper
 # path FAILS. Each block states why that family is legitimately deep; the
-# gate refuses an entry that is not under a reason block.
+# gate refuses an entry that is not under a reason block, and fails on an
+# entry naming a path that is no longer in the kernel.
+#
+# Entries are DEMANGLED paths (B1632). They used to be mangled symbols, whose
+# crate disambiguator changes with the features the crate was built with, so
+# the same source tree passed or failed depending on which build the gate
+# happened to read. An old mangled entry is still accepted and normalised.
 #
 # Burn this down. Regenerate with:
 #   make stack-gate-baseline-x86
@@ -25,5 +31,5 @@
 # existing, not a new call chain.
 19920	_start
 19904	_start_rust
-19760	_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main
-16560	_RNvNtNtCseQ963CMHBD6_5kmain5kmain6rootfs4init
+19760	kmain::kmain::entry::kernel_main
+16560	kmain::kmain::rootfs::init
