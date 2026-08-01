@@ -7,6 +7,8 @@
 
 #[cfg(feature = "debug-zerotrap")]
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "debug-zerotrap")]
+use crate::PAGE_SIZE_BYTES;
 
 #[cfg(feature = "debug-zerotrap")]
 const SLOTS: usize = 256;

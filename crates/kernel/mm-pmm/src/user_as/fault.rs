@@ -42,7 +42,7 @@ fn handle_migration_fault(as_: &AddressSpace, uva: UserVirtAddr, hhdm: u64) -> b
     sched::live::migration_wait::schedule_after_park();
     true
 }
-#[cfg(feature = "debug-mount")]
+#[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
 use crate::user_as::debug::{STEP_ROOT, STEP_RIP, STEP_VA};
 
 #[cfg(target_arch = "x86_64")]

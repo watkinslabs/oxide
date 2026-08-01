@@ -33,7 +33,7 @@ pub(crate) fn trace_udevdb_path(op: &'static [u8], path: &str, rv: i64) {
     if let Some(c) = sched::live::current() {
         klog::write_dec_u64(c.tid as u64);
         klog::write_raw(b"/");
-        klog::write_raw(c.name.as_bytes());
+        { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); }
     } else {
         klog::write_raw(b"0");
     }
@@ -55,7 +55,7 @@ pub(crate) fn trace_udevdb_file(op: &'static [u8], file: &vfs::File, rv: i64) {
     if let Some(c) = sched::live::current() {
         klog::write_dec_u64(c.tid as u64);
         klog::write_raw(b"/");
-        klog::write_raw(c.name.as_bytes());
+        { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); }
     } else {
         klog::write_raw(b"0");
     }
