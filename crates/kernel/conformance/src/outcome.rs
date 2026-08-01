@@ -35,7 +35,7 @@ impl Outcome {
     /// case-local comparison before calling into `corpus`.
     pub fn same_errno_class(&self, other: &Outcome) -> bool {
         self.is_success() == other.is_success()
-            && (!self.is_success() || self.errno == other.errno)
+            && (self.is_success() || self.errno == other.errno)
     }
 }
 
