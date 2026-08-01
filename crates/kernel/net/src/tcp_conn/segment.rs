@@ -84,6 +84,10 @@ impl TcpConn {
                 crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off), self.ts_recent)),
             sack_perm: !synack || self.sack_ok,
             wscale: (!synack || self.wscale_ok).then_some(self.snd_wscale),
+            // No handshake drives fast open yet: the cookie's key owner and
+            // the mint/verify that fills this in are the next change. The
+            // codec above is complete and exercised by `fastopen`'s tests.
+            fastopen: None,
         }
     }
 

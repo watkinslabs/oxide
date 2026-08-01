@@ -98,6 +98,32 @@ pub mod opt {
     pub const SACK_PERMIT:   u8 = 4;  // RFC 2018 §2
     pub const SACK:          u8 = 5;  // RFC 2018 §3
     pub const TIMESTAMP:     u8 = 8;  // RFC 7323 §3
+    pub const FASTOPEN:      u8 = 34; // RFC 7413 §2
+    pub const EXP:           u8 = 254; // RFC 6994 §3
+}
+
+/// Largest window scale the option may carry (RFC 7323 §2.3). A peer naming a
+/// larger one is clamped rather than refused: it still offered scaling, and the
+/// option is not malformed — but applying the value verbatim would shift every
+/// window by an amount the sequence space cannot express.
+pub const WSCALE_MAX: u8 = 14;
+
+/// The 16-bit experiment identifier fast open registered under the shared
+/// experimental option kind, for peers predating the assigned number.
+pub const FASTOPEN_MAGIC: u16 = 0xF989;
+
+/// Cookie bytes of a fast-open option, and whether they arrived under the
+/// experimental kind. `Some(&[])` is a cookie REQUEST — the option is present
+/// and carries no cookie, which is how a client asks for one.
+///
+/// The assigned kind is preferred when a segment carries both, matching the
+/// order the option table is walked. # C: O(option_bytes)
+pub fn parse_fastopen_option(seg: &[u8]) -> Option<(&[u8], bool)> {
+    if let Some(body) = walk_options(seg, opt::FASTOPEN) { return Some((body, false)); }
+    let body = walk_options(seg, opt::EXP)?;
+    if body.len() < 2 { return None; }
+    if u16::from_be_bytes([body[0], body[1]]) != FASTOPEN_MAGIC { return None; }
+    Some((&body[2..], true))
 }
 
 /// F179: a single Selective ACK block — half-open `[left, right)`.
@@ -146,7 +172,7 @@ pub fn parse_ts_option(seg: &[u8]) -> Option<(u32, u32)> {
 /// # C: O(option_bytes)
 pub fn parse_wscale_option(seg: &[u8]) -> Option<u8> {
     walk_options(seg, opt::WSCALE).map(|bytes| {
-        if bytes.is_empty() { 0 } else { core::cmp::min(bytes[0], 14) }
+        if bytes.is_empty() { 0 } else { core::cmp::min(bytes[0], WSCALE_MAX) }
     })
 }
 

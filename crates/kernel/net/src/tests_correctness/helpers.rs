@@ -147,7 +147,8 @@ fn a_syn_ack_echoes_only_the_options_the_peer_offered() {
     // The same listener answering a SYN that offered everything echoes it all.
     let mut server = TcpConn::new_listener(ep(lo(), 80));
     let full = build_syn_opts(0x3000_0000, SynOptions {
-        mss: Some(1460), timestamp: Some((7, 0)), sack_perm: true, wscale: Some(9) });
+        mss: Some(1460), timestamp: Some((7, 0)), sack_perm: true, wscale: Some(9),
+        fastopen: None });
     let synack = server.input(lo_ip(), lo_ip(), &full).unwrap().unwrap();
     assert_eq!(parse_wscale_option(&synack), Some(crate::tcp_conn::OWN_WSCALE));
     assert!(crate::tcp_hdr::parse_ts_option(&synack).is_some());
@@ -167,6 +168,22 @@ fn a_peer_that_declines_scaling_takes_this_sides_scale_down_with_it() {
     let _ = c.input(lo_ip(), lo_ip(), &synack);
     assert!(!c.wscale_ok);
     assert_eq!((c.snd_wscale, c.rcv_wscale), (0, 0));
+}
+
+#[test]
+fn a_peer_scale_above_the_ceiling_is_clamped_on_the_wire() {
+    // A peer advertising a scale the sequence space cannot express must not
+    // have it applied verbatim to every window this side computes.
+    let mut c = TcpConn::new_client(ep(lo(), 5000), ep(lo(), 80), 0x1000_0000);
+    let _ = c.active_open().unwrap();
+    let synack = build_synack_opts(0x2000_0000, c.snd_nxt, 65535,
+        SynOptions { mss: Some(1460), wscale: Some(255), ..SynOptions::default() });
+    let _ = c.input(lo_ip(), lo_ip(), &synack);
+    assert!(c.wscale_ok, "the option was still offered");
+    assert_eq!(c.rcv_wscale, crate::tcp_hdr::WSCALE_MAX);
+    // The RFC limit has ONE owner: the option table's ceiling is this constant,
+    // not a second copy that could drift from it.
+    assert_eq!(crate::sock_opts::sol_tcp::TCP_MAX_WSCALE, crate::tcp_hdr::WSCALE_MAX as u32);
 }
 
 #[test]
