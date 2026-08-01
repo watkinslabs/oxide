@@ -26,6 +26,12 @@ Columns match the live ledger: `Status | Sev | Issue | Evidence | Owner`.
 | FIXED 244c9e5f6 | med | `KEYCTL_SET_TIMEOUT` and `KEYCTL_GET_SECURITY` had no authorisation-token path, so a helper could not bound or inspect the key it was asked to build. `KEYCTL_JOIN_SESSION_KEYRING` accepted a `.`-prefixed name, which would place a caller inside `.persistent_register`. | B1649, `set_timeout_accepts_the_authorisation_token_instead_of_setattr`, `a_dot_prefixed_session_name_is_refused`. | B1649 |
 | FIXED 68f197dc4 | med | `/proc/keys` and `/proc/key-users` were empty static stubs and `/proc/sys/kernel/keys/*` did not exist at all. | B1649. Both live and per-reader filtered; four ceilings plus `persistent_keyring_expiry` bound to the live values `key_alloc` and `KEYCTL_GET_PERSISTENT` consult. | B1649 |
 
+## Net / socket
+
+| Status | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|
+| FIXED B1655 | med | `TCP_ZEROCOPY_RECEIVE` returned ENOPROTOOPT. Needed mm-side page mapping into the caller's address space. | B1655. `mmap(2)` on a TCP socket fd now builds a receive window (read-only, `EPERM` on write/exec, `ENODEV` for every other socket); the option remaps whole receive-queue pages into it. Operand layout, optlen versioning, errno ordering, copy-buffer fallback and straggler, `length`/`recv_skip_hint`/`inq`/`err` rules covered by 26 hosted tests in `net::sock_opts::sol_tcp::zerocopy::tests` plus 6 in `syscalls::tcp_zerocopy::window::tests`. | B1655 |
+
 ## Process
 
 Retired to CLAUDE.md as standing hard rules (`Conflict resolution is where

@@ -166,6 +166,21 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 Err(error) => error,
             };
         }
+        // Socket fd: a TCP socket maps a `TCP_ZEROCOPY_RECEIVE` window, whose
+        // pages are REFCOUNTED RAM frames published through the file-backed
+        // direct-frame arm (the fault installs one PTE reference per page, and
+        // munmap/teardown release it). Never a phys range: that arm counts no
+        // reference, so the owner releasing a page while userspace still maps
+        // it would be a free-while-mapped UAF. Every other socket has no
+        // mapping operation at all.
+        if let Some(result) = crate::tcp_zerocopy::mmap_backing(&file, prot, args.a1) {
+            let zc_backing = match result { Ok(value) => value, Err(error) => return error };
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
+                                                fd as i64, 0, Some(zc_backing), None, None, may_prot) {
+                Ok(va) => va as i64,
+                Err(error) => error,
+            };
+        }
         match fbdev::devfs::mmap_backing(inode) {
             Some((pa, len)) => {
                 // The mapped window must fit within the device's backing.
