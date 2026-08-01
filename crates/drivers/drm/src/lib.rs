@@ -34,6 +34,7 @@ pub mod crtc;
 pub mod damage;
 pub mod diag;
 pub mod atomic;
+pub mod edid;
 pub mod dumb;
 pub mod kms_ext;
 pub mod modeset;

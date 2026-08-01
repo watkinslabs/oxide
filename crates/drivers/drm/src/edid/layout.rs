@@ -23,6 +23,30 @@ pub const FEATURE_PREFERRED_TIMING: u8 = 1 << 1;
 /// timing regardless of the feature bit.
 pub const REVISION_PREFERRED_ALWAYS: u8 = 4;
 
+/// Three-byte bitmap of the established timings the display claims.
+pub const OFF_ESTABLISHED: usize = 35;
+/// Bits the established-timing bitmap defines, one mode each.
+pub const EST_TIMING_COUNT: usize = 17;
+/// The last established-timing bit lives in the manufacturer-reserved byte.
+pub const EST_MFG_RSVD_BIT16: u32 = 0x80;
+pub const EST_MFG_RSVD_SHIFT: u32 = 9;
+
+/// Eight 2-byte standard timing entries.
+pub const OFF_STANDARD: usize = 38;
+pub const STD_TIMING_COUNT: usize = 8;
+pub const STD_TIMING_LEN: usize = 2;
+/// Horizontal size is stored as `(hsize - STD_HSIZE_BASE) / STD_HSIZE_STEP`.
+pub const STD_HSIZE_STEP: u32 = 8;
+pub const STD_HSIZE_BASE: u32 = 248;
+pub const STD_ASPECT_MASK: u8 = 0xc0;
+pub const STD_ASPECT_SHIFT: u32 = 6;
+/// From this revision the zero aspect code means 16:10 rather than square.
+pub const STD_ASPECT_16_10_FROM_REVISION: u8 = 3;
+pub const STD_VFREQ_MASK: u8 = 0x3f;
+pub const STD_VFREQ_BASE: u32 = 60;
+/// Byte pairs the standard reserves to mean an unused standard timing slot.
+pub const STD_UNUSED_PAIRS: [(u8, u8); 3] = [(0x00, 0x00), (0x01, 0x01), (0x20, 0x20)];
+
 /// Four 18-byte descriptors, the first of which may be the preferred timing.
 pub const OFF_DETAILED: usize = 54;
 pub const DTD_LEN: usize = 18;
