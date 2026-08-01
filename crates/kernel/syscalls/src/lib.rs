@@ -304,6 +304,15 @@ mod send_user;
 // though `net_sockaddr` (its user-memory marshalling) is kernel-only.
 mod sockaddr_encode;
 
+// The `socketpair(2)` creation admission — kernel + hosted, so the family and
+// type rules are provable under `cargo test` while the slot stays an ABI shim.
+mod socketpair_spec;
+
+// The `*_getname` DECISIONS (which socket field answers, which error a socket
+// with no such name reports) — kernel + hosted, so `getsockname`/`getpeername`
+// behaviour is provable under `cargo test` while the slots stay ABI shims.
+mod sock_name;
+
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod socket_control_tests;
 

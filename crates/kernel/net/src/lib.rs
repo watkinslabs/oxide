@@ -138,6 +138,7 @@ pub mod sock_drop;
 pub mod sock_rtnl_defer;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_v6;
+pub mod sock_v6_name;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_mcast;
 pub mod stack_ipv6;

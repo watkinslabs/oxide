@@ -43,45 +43,9 @@ fn control_routes_distinguish_bad_fd_from_non_socket() {
     }
 }
 
-#[test]
-fn packet_getpeername_preserves_the_packet_owner_error() {
-    let peer = include_str!("052_getpeername.rs");
-    let packet = peer.find("net::sock::AF_PACKET").unwrap();
-    let unix = peer.find("net::sock::AF_UNIX").unwrap();
-    assert!(packet < unix);
-    assert!(peer[packet..unix].contains("Errno::Eopnotsupp"));
-}
 
-#[test]
-fn packet_name_queries_route_to_packet_owned_abi() {
-    let local = include_str!("051_getsockname.rs");
-    assert!(local.contains("net::sock::packet_local_addr(&sock)"));
-    assert!(local.contains("encoded_sockaddr_ll(packet)"));
-}
 
-#[test]
-fn ipv6_name_queries_use_ipv6_socket_state() {
-    let local = include_str!("051_getsockname.rs");
-    let peer = include_str!("052_getpeername.rs");
-    assert!(local.contains("sock.local_ip6.lock()"));
-    assert!(peer.contains("sock.peer6.lock()"));
-    for source in [local, peer] {
-        assert!(source.contains("net::sock_v6::name_scope_id"));
-        assert!(source.contains("net::sock_v6::name_bound_ifindex"));
-    }
-}
 
-#[test]
-fn tcp_peername_checks_transport_state_before_tuple_copyout() {
-    let peer = include_str!("052_getpeername.rs");
-    let state = peer.find("let tcp_peer_unavailable").unwrap();
-    let ipv6 = peer.find("sock.peer6.lock()").unwrap();
-    let ipv4 = peer.find("sock.peer.lock()").unwrap();
-    assert!(state < ipv6);
-    assert!(state < ipv4);
-    assert!(peer[state..ipv6].contains("entry.peer_name_connected()"));
-    assert!(peer[state..ipv6].contains("Errno::Enotconn"));
-}
 
 #[test]
 fn ipv6_tcp_bind_preserves_the_resolved_scope_owner() {
@@ -90,30 +54,8 @@ fn ipv6_tcp_bind_preserves_the_resolved_scope_owner() {
     assert!(bind.contains("bind_tcp(sock, crate::IpAddr::V6(ip), port, iface)"));
 }
 
-#[test]
-fn socketpair_reserves_and_copyouts_before_family_creation() {
-    let source = include_str!("053_socketpair.rs");
-    let install = source.find("crate::fd_pair::install_fd_pair").unwrap();
-    let parse = source.find("let spec = parse_socket_args").unwrap();
-    assert!(install < parse);
-}
 
-#[test]
-fn socketpair_keeps_valid_non_unix_families_on_linux_unsupported_owner_path() {
-    let source = include_str!("053_socketpair.rs");
-    let parse = source.find("let spec = parse_socket_args").unwrap();
-    let unsupported = source.find("if spec.family != AF_UNIX").unwrap();
-    assert!(parse < unsupported);
-    assert!(source[unsupported..].contains("Errno::Eopnotsupp"));
-    assert!(!source[unsupported..].contains("Errno::Eafnosupport"));
-}
 
-#[test]
-fn unix_raw_socketpair_uses_linux_datagram_personality() {
-    let source = include_str!("053_socketpair.rs");
-    assert!(source.contains("if spec.typ == SOCK_RAW { SOCK_DGRAM }"));
-    assert!(source.contains("s.opts.so_type.store(socket_type"));
-}
 
 #[test]
 fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
@@ -304,8 +246,12 @@ fn oobinline_setsockopt_normalizes_linux_boolean_values() {
         Ok(Action::Oobinline(1)));
     assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(0), sock, env),
         Ok(Action::Oobinline(0)));
-    assert!(include_str!("054_setsockopt/sol_socket.rs")
-        .contains("Action::Oobinline(v) => sock.opts.oobinline.store(v, Ordering::Release)"));
+    // Every non-zero value normalizes to the same stored 1, so a readback can
+    // never report the caller's raw argument.
+    for value in [1, 2, -1, i32::MIN, i32::MAX] {
+        assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(value), sock, env),
+            Ok(Action::Oobinline(1)), "{value}");
+    }
 }
 
 // B1376: IPV6_TCLASS / IPV6_RECVTCLASS carry the Linux optname values, and
@@ -376,3 +322,12 @@ fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
 
 // The peer identity one AF_UNIX end reports is a single snapshot, so
 // SO_PEERCRED and SO_PEERGROUPS can never name two different instants.
+
+// C245: the name-query and socketpair guarantees that used to be asserted by
+// grepping the kernel-gated slot files are now asserted on BEHAVIOUR against
+// their ungated owners — `sock_name` (which socket field answers a
+// `getsockname`/`getpeername`, and the errno a socket with no such name
+// reports), `net::sock_v6_name` (the `sin6_scope_id` rule) and
+// `socketpair_spec` (the family/type admission and the AF_UNIX SOCK_RAW
+// personality). The socketpair reserve-then-construct ordering is covered by
+// `fd_pair::tests::rejected_socket_arguments_still_perturb_the_callers_array`.

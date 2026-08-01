@@ -61,7 +61,7 @@ pub(super) fn peergroups(groups: Option<Vec<u32>>, optval: u64, optlen_p: u64) -
 /// than padded when the caller asks for more than it occupies. # C: O(1)
 pub(super) fn peername(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i64 {
     let requested = match requested(optlen_p) { Ok(v) => v, Err(e) => return errno(e) };
-    let address = crate::s052_getpeername::peer_sockaddr(sock).ok();
+    let address = crate::sock_name::peer_sockaddr(sock).ok();
     let len = match varlen::peername_len(address.as_ref().map(|sa| sa.len()), requested) {
         Ok(len) => len, Err(e) => return errno(e),
     };
@@ -76,7 +76,7 @@ pub(super) fn peername(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i6
 pub(super) fn peersec(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i64 {
     use core::sync::atomic::Ordering;
     let requested = match requested(optlen_p) { Ok(v) => v, Err(e) => return errno(e) };
-    let connected = crate::s052_getpeername::peer_sockaddr(sock).is_ok();
+    let connected = crate::sock_name::peer_sockaddr(sock).is_ok();
     let context = security::network::PeerContext {
         namespace: sock.net_ns(),
         family: sock.family.load(Ordering::Acquire),
