@@ -233,6 +233,36 @@ describe()
     done
 }
 
+# libinput is the consumer the desktop actually reads pointers through, and it
+# only accepts an absolute device once it has read a usable axis range out of
+# the node. Asserting it lists the absolute pointer proves the range reached
+# userspace intact -- a range the driver failed to harvest reads back as zeros,
+# which libinput refuses, and no other check in this gate would notice.
+libinput_nodes_for()
+{
+    printf '%s\n' "$1" | /usr/bin/awk -v cap="$2" '
+        /^Device:/ { node = ""; emitted = 0 }
+        /^Kernel:/ { node = $2 }
+        /^Capabilities:/ {
+            if (node != "" && !emitted)
+                for (i = 2; i <= NF; i++)
+                    if ($i == cap) { print node; emitted = 1 }
+        }
+    '
+}
+
+require_libinput_pointer()
+{
+    devices=$(/usr/bin/libinput list-devices 2>&1) || { printf '%s\n' "$devices"; fail "$1-libinput-list"; }
+    printf '%s\n' "$devices"
+    pointers=$(libinput_nodes_for "$devices" pointer)
+    for node in $pointer $tablet
+    do
+        printf '%s\n' "$pointers" | /usr/bin/grep -Fqx "$node" ||
+            fail "$1-libinput-pointer node=$node listed=$(printf '%s' "$pointers" | /usr/bin/tr '\n' ',')"
+    done
+}
+
 resolve()
 {
     describe "$1"
@@ -242,6 +272,7 @@ resolve()
     [ -c "$pointer" ] || fail "$1-pointer-char node=$pointer"
     [ -c "$keyboard" ] || fail "$1-keyboard-char node=$keyboard"
     [ -c "$tablet" ] || fail "$1-tablet-char node=$tablet"
+    require_libinput_pointer "$1"
 }
 
 count_type()
@@ -527,6 +558,21 @@ mod tests {
         for attribute in ["capabilities/ev", "capabilities/rel", "capabilities/abs", "capabilities/key"] {
             assert!(body.contains(attribute), "missing {attribute}");
         }
+    }
+
+    /// A driver that fails to harvest the axis range still delivers events and
+    /// still advertises the axis, so every other check in this gate passes.
+    /// libinput is the one consumer that refuses the device outright, which
+    /// makes its device list the userspace-visible proof the range survived.
+    #[test]
+    fn libinput_must_accept_both_pointers_before_the_window_opens() {
+        let body = probe_body(Mode::Delivery);
+        assert!(body.contains("libinput list-devices"));
+        assert!(body.contains("libinput_nodes_for \"$devices\" pointer"));
+        assert!(body.contains("for node in $pointer $tablet"));
+        assert!(body.contains("$1-libinput-pointer node=$node"));
+        // Runs inside resolve, so a refused device fails before any capture.
+        assert!(body.contains("require_libinput_pointer \"$1\""));
     }
 
     #[test]
