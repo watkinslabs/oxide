@@ -37,6 +37,10 @@ pub(super) fn set_perf_paranoid(v: i64) { sched::perf_sw::set_paranoid(v as i32)
 pub(super) fn get_perf_sample_rate() -> i64 { sched::perf_sw::sample_rate() as i64 }
 pub(super) fn set_perf_sample_rate(v: i64) { sched::perf_sw::set_sample_rate(v as i32); }
 pub(super) fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
+/// `debug.exception-trace` binds to the live `show_unhandled_signals` cell the
+/// fault path reads, so silencing the report here really does silence it.
+pub(super) fn get_exception_trace() -> i64 { sched::signal_report::show_unhandled_signals() as i64 }
+pub(super) fn set_exception_trace(v: i64) { sched::signal_report::set_show_unhandled_signals(v != 0); }
 /// `kernel.randomize_va_space` + `vm.mmap_rnd_bits` bind to `aslr`, the single
 /// owner of the randomisation policy every `execve` consults.
 pub(super) fn get_randomize_va_space() -> i64 { aslr::randomize_va_space() as i64 }
