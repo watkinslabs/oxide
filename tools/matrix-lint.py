@@ -10,8 +10,32 @@ and is invisible in the rendered table. That happened; this is the guard.
 """
 import re, subprocess, sys
 
-VALID = {"NEEDS-AUDIT", "PARTIAL", "IMPL", "DISPATCH-GAP", "LINUX-ENOSYS",
-         "IN-PROGRESS", "DONE"}
+# Split on `|` only where it is NOT backslash-escaped. Naive `str.split("|")`
+# is what let `F784` through: it treated every pipe-bearing row as unparseable,
+# skipped it, read the absence as "this syscall has no row", and appended 66
+# duplicates. A parser that drops what it cannot read reports absence, not error.
+UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+
+# Statuses come from the legend table in the matrix itself, never a copy here.
+# The hardcoded set this replaced had drifted: it lacked `NEEDS-REWORK`, which
+# the legend defines and 15 rows use, so the lint failed on clean main and would
+# have been dismissed as broken by the first person to wire it up.
+LEGEND_RE = re.compile(r"\|\s*`([A-Z][A-Z-]*)`\s*\|")
+
+
+def legend_statuses(lines):
+    out, inside = set(), False
+    for l in lines:
+        if l.startswith("## Status Legend"):
+            inside = True
+            continue
+        if inside:
+            if l.startswith("## "):
+                break
+            m = LEGEND_RE.match(l)
+            if m:
+                out.add(m.group(1))
+    return out
 
 # An IMPL row claims FULL Linux semantics. If its own Evidence admits a
 # remaining divergence, the row contradicts itself -- and the honest text is
@@ -22,6 +46,14 @@ VALID = {"NEEDS-AUDIT", "PARTIAL", "IMPL", "DISPATCH-GAP", "LINUX-ENOSYS",
 OVERSTATED = re.compile(
     r"(NOT matched|not implemented\b|is absent\b|we do not\b|unimplemented\b|"
     r"remains? (?:open|unmatched)|no counterpart)", re.I)
+
+# Past-tense prose describes the state a fix REMOVED, which is the opposite of a
+# disclosed gap: "which had no counterpart before" means the counterpart now
+# exists. Matching it flagged rows 82, 264 and 316, all of which are correctly
+# `IMPL`. Checked BEFORE `OVERSTATED` so the negative-claim shape stays narrow.
+PAST_TENSE = re.compile(
+    r"(had no counterpart|was absent|were absent|had not been implemented|"
+    r"was not implemented|previously (?:absent|unimplemented))", re.I)
 
 def check_no_duplicate(path):
     """A second copy of the matrix is a split source of truth in the ledger.
@@ -41,6 +73,29 @@ def check_no_duplicate(path):
     return 0
 
 
+ALLOW_FILE = "tools/matrix-overstated-allow.txt"
+
+
+def load_overstated_allow():
+    """Rows already `IMPL` whose Evidence discloses a gap, each with a reason.
+
+    Same shape as the stack-depth gate: a finding that predates the gate is
+    RECORDED rather than silently tolerated or bulk-flipped, so the gate can go
+    green today and still fail on the next NEW violation. Entries only leave
+    this file when the owning lane resolves the row -- a lane may not add itself
+    to it to make its own row pass.
+    """
+    import os
+    out = set()
+    if not os.path.exists(ALLOW_FILE):
+        return out
+    for l in open(ALLOW_FILE):
+        l = l.split("#", 1)[0].strip()
+        if l.isdigit():
+            out.add(l)
+    return out
+
+
 def main(path):
     lines = open(path).read().split("\n")
     try:
@@ -48,11 +103,16 @@ def main(path):
     except StopIteration:
         print("matrix-lint: no '## Main Matrix' section"); return 1
     header = next(l for l in lines[start:] if l.startswith("| Nr |"))
-    ncol = len(header.split("|"))
-    names = [c.strip() for c in header.split("|")]
+    ncol = len(UNESCAPED_PIPE.split(header))
+    names = [c.strip() for c in UNESCAPED_PIPE.split(header)]
     st_i = names.index("Status")
+    VALID = legend_statuses(lines)
+    if not VALID:
+        print("matrix-lint: could not parse the '## Status Legend' table"); return 1
     bad = check_no_duplicate(path)
-    warn = []
+    seen_nr = {}
+    overstated_allow = load_overstated_allow()
+    allowed_hit = []
     # Branches that still exist locally or on the remote. An IN-PROGRESS row
     # naming anything else is stale by definition.
     try:
@@ -65,23 +125,39 @@ def main(path):
     for i, l in enumerate(lines[start:], start=start + 1):
         if not l.startswith("| ") or l.startswith("| Nr |") or set(l) <= set("|-: "):
             continue
-        f = l.split("|")
+        f = UNESCAPED_PIPE.split(l)
         nr = f[1].strip()
         if not nr.isdigit():
             continue
-        if len(f) < ncol:
-            # Too FEW fields means the row is shifted: a value was written one
-            # column left/right of where it belongs. This is the corruption
-            # case and is always an error.
-            print(f"{path}:{i}: row {nr} has {len(f)-2} columns, header declares {ncol-2} (shifted)")
+        if len(f) != ncol:
+            # Either direction is now an error. Too FEW fields means the row is
+            # shifted: a value written one column off. Too MANY means a bare '|'
+            # inside a cell (write '\|'), which used to be a warning -- and that
+            # warning named all 65 rows `F784` went on to duplicate. Nobody saw
+            # it, because this lint was never wired into a gate. Warnings that
+            # nothing reads are not verification.
+            how = "shifted" if len(f) < ncol else r"unescaped '|' in a cell (write '\|')"
+            print(f"{path}:{i}: row {nr} has {len(f)-2} columns, header declares {ncol-2} ({how})")
             bad += 1
             continue
-        if len(f) > ncol:
-            # Extra fields are unescaped '|' inside the free-text Evidence
-            # column. Harmless to the leading columns, so warn rather than
-            # fail -- but report it, since it defeats naive column parsing.
-            warn.append(nr)
-        st = f[st_i].strip().strip("`")
+        # One row per syscall number. Two rows disagree on Status, and every
+        # reader takes whichever it reaches first.
+        if nr in seen_nr:
+            print(f"{path}:{i}: row {nr} duplicates the row at line {seen_nr[nr]} "
+                  f"-- one row per syscall number")
+            bad += 1
+        else:
+            seen_nr[nr] = i
+        st_raw = f[st_i].strip()
+        st = st_raw.strip("`")
+        # Every status is written `IMPL`, not IMPL. An unbackticked one still
+        # reads fine to a human and still matches `.strip("`")`, so it survives
+        # review and survived this lint -- but it silently drops out of every
+        # count that greps for the backticked form. Row 103 sat like that.
+        if st in VALID and not (st_raw.startswith("`") and st_raw.endswith("`")):
+            print(f"{path}:{i}: row {nr} Status={st_raw!r} is not backticked -- "
+                  f"it drops out of any count matching `STATUS`")
+            bad += 1
         if st not in VALID:
             print(f"{path}:{i}: row {nr} Status={st!r} not in legend")
             bad += 1
@@ -97,16 +173,19 @@ def main(path):
                       f"no longer exists -- the work merged; use PARTIAL/IMPL")
                 bad += 1
         elif st == "IMPL":
-            ev = "|".join(f[names.index("Evidence / next audit"):])
-            m = OVERSTATED.search(ev)
-            if m:
+            ev = "|".join(f[names.index("Evidence / next audit"):])  # noqa: rejoin cell
+            ev_now = PAST_TENSE.sub("", ev)
+            m = OVERSTATED.search(ev_now)
+            if m and nr not in overstated_allow:
                 print(f"{path}:{i}: row {nr} is IMPL but its Evidence admits "
                       f"a gap ({m.group(0)!r}) -- use PARTIAL")
                 bad += 1
-    if warn:
-        print(f"matrix-lint: note: {len(warn)} row(s) have unescaped '|' in Evidence: "
-              + ", ".join(warn[:8]) + ("..." if len(warn) > 8 else ""))
-    print(f"matrix-lint: {'FAIL' if bad else 'ok'} ({bad} problem(s))")
+            elif m:
+                allowed_hit.append(nr)
+    if bad:
+        print(f"matrix-lint: FAIL ({bad} problem(s))")
+        return 1
+    print(f"matrix-lint: ok ({len(seen_nr)} rows, {len(seen_nr)} distinct syscalls)")
     return 1 if bad else 0
 
 if __name__ == "__main__":
