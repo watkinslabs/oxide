@@ -24,8 +24,8 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
         net::uapi::PACKET_RESERVE => packet_i32(
             sock.packet_reserve().map(|value| value as i32)),
         net::uapi::PACKET_LOSS => packet_i32(sock.packet_loss().map(i32::from)),
-        net::uapi::PACKET_VNET_HDR => packet_i32(
-            sock.packet_vnet_hdr_size().map(|size| i32::from(size != 0))),
+        net::uapi::PACKET_VNET_HDR => packet_i32(sock.packet_vnet_hdr_size()
+            .map(|size| crate::packet_optshape::vnet_hdr_get(size, false))),
         net::uapi::PACKET_TIMESTAMP => packet_i32(sock.packet_timestamp()),
         net::uapi::PACKET_FANOUT => packet_i32(sock.packet_fanout_value()),
         net::uapi::PACKET_TX_HAS_OFF => packet_i32(sock.packet_tx_has_off().map(i32::from)),
@@ -34,8 +34,8 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
         net::uapi::PACKET_ROLLOVER_STATS => packet_rollover_statistics(sock),
         net::uapi::PACKET_IGNORE_OUTGOING => packet_i32(
             sock.packet_ignore_outgoing().map(i32::from)),
-        net::uapi::PACKET_VNET_HDR_SZ => packet_i32(
-            sock.packet_vnet_hdr_size().map(|size| size as i32)),
+        net::uapi::PACKET_VNET_HDR_SZ => packet_i32(sock.packet_vnet_hdr_size()
+            .map(|size| crate::packet_optshape::vnet_hdr_get(size, true))),
         _ => return -(Errno::Enoprotoopt.as_i32() as i64),
     };
     let value = match value { Ok(value) => value, Err(error) => return error };

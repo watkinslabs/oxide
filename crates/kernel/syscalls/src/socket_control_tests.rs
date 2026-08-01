@@ -66,93 +66,11 @@ fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     assert!(source[classify..negative].contains("Errno::Enotsock"));
 }
 
-#[test]
-fn obsolete_packet_options_remain_explicitly_unsupported() {
-    let set = include_str!("054_setsockopt/packet.rs");
-    let get = include_str!("055_getsockopt/packet.rs");
-    for source in [set, get] {
-        assert!(!source.contains("PACKET_RECV_OUTPUT =>"));
-        assert!(!source.contains("PACKET_TX_TIMESTAMP =>"));
-        assert!(source.contains("_ =>"));
-        assert!(source.contains("Errno::Enoprotoopt"));
-    }
-}
 
-#[test]
-fn packet_loss_uses_linux_number_and_dedicated_set_get_routes() {
-    assert_eq!(net::uapi::PACKET_LOSS, 14);
-    let set = include_str!("054_setsockopt/packet.rs");
-    let get = include_str!("055_getsockopt/packet.rs");
-    assert!(set.contains("PACKET_LOSS => packet_loss(sock, optval, optlen)"));
-    let loss = set.split("fn packet_loss(").nth(1).unwrap();
-    assert!(loss.contains("if optlen != core::mem::size_of::<i32>() as u32"));
-    assert!(loss.contains("parse_packet_flag(&bytes, optlen as usize)"));
-    assert!(set.contains("sock.set_packet_loss(value)"));
-    assert!(get.contains("sock.packet_loss().map(i32::from)"));
-}
 
-#[test]
-fn packet_offload_options_use_linux_numbers_and_net_methods() {
-    assert_eq!(net::uapi::PACKET_COPY_THRESH, 7);
-    assert_eq!(net::uapi::PACKET_VNET_HDR, 15);
-    assert_eq!(net::uapi::PACKET_TIMESTAMP, 17);
-    assert_eq!(net::uapi::PACKET_TX_HAS_OFF, 19);
-    assert_eq!(net::uapi::PACKET_QDISC_BYPASS, 20);
-    assert_eq!(net::uapi::PACKET_VNET_HDR_SZ, 24);
-    let set = include_str!("054_setsockopt/packet.rs");
-    let get = include_str!("055_getsockopt/packet.rs");
-    for method in [
-        "set_packet_copy_thresh", "set_packet_vnet_hdr_size", "set_packet_timestamp",
-        "set_packet_tx_has_off", "set_packet_qdisc_bypass",
-    ] { assert!(set.contains(method)); }
-    for method in [
-        "packet_copy_thresh()", "packet_vnet_hdr_size()", "packet_timestamp()",
-        "packet_tx_has_off()", "packet_qdisc_bypass()",
-    ] { assert!(get.contains(method)); }
-}
 
-#[test]
-fn packet_offload_set_abi_preserves_lengths_and_coercions() {
-    let source = include_str!("054_setsockopt/packet.rs");
-    let signed = source.split("fn packet_signed(").nth(1).unwrap();
-    assert!(signed.contains("optlen != core::mem::size_of::<i32>() as u32"));
-    assert!(signed.contains("i32::from_ne_bytes(bytes)"));
-    let signed_flag = source.split("fn packet_signed_flag(").nth(1).unwrap();
-    assert!(signed_flag.contains("optlen != core::mem::size_of::<i32>() as u32"));
-    assert!(signed_flag.contains("i32::from_ne_bytes(bytes) != 0"));
-    let unsigned_flag = source.split("fn packet_unsigned_flag(").nth(1).unwrap();
-    assert!(unsigned_flag.contains("optlen != core::mem::size_of::<u32>() as u32"));
-    assert!(unsigned_flag.contains("u32::from_ne_bytes(bytes) != 0"));
-    assert!(source.contains("PACKET_COPY_THRESH => packet_signed"));
-    assert!(source.contains("PACKET_TIMESTAMP => packet_signed"));
-    assert!(source.contains("PACKET_TX_HAS_OFF => packet_unsigned_flag"));
-    assert!(source.contains("PACKET_QDISC_BYPASS => packet_signed_flag"));
-}
 
-#[test]
-fn packet_vnet_raw_rejection_precedes_length_and_usercopy() {
-    let set = include_str!("054_setsockopt/packet.rs");
-    let vnet = set.split("fn packet_vnet_hdr(").nth(1).unwrap();
-    let raw = vnet.find("if !raw").unwrap();
-    let length = vnet.find("if optlen <").unwrap();
-    let copy = vnet.find("copy_from_user").unwrap();
-    assert!(raw < length && length < copy);
-    assert!(vnet.contains("else if value == 0 { 0 } else { net::uapi::VIRTIO_NET_HDR_LEN }"));
 
-}
-
-#[test]
-fn packet_offload_get_abi_uses_native_i32_truncation() {
-    let source = include_str!("055_getsockopt/packet.rs");
-    for option in [
-        "PACKET_COPY_THRESH", "PACKET_VNET_HDR", "PACKET_TIMESTAMP",
-        "PACKET_TX_HAS_OFF", "PACKET_QDISC_BYPASS", "PACKET_VNET_HDR_SZ",
-    ] { assert!(source.contains(option)); }
-    assert!(source.contains("PacketOptionValue"));
-    assert!(source.contains("value.output(requested as usize)"));
-    assert!(source.contains("sock.packet_vnet_hdr_size().map(|size| i32::from(size != 0))"));
-    assert!(source.contains("sock.packet_vnet_hdr_size().map(|size| size as i32)"));
-}
 
 #[test]
 fn packet_getsockopt_uses_one_linux_ordered_copyout_transaction() {
@@ -331,3 +249,9 @@ fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
 // `socketpair_spec` (the family/type admission and the AF_UNIX SOCK_RAW
 // personality). The socketpair reserve-then-construct ordering is covered by
 // `fd_pair::tests::rejected_socket_arguments_still_perturb_the_callers_array`.
+
+// C246: the AF_PACKET option-ABI guarantees are asserted on BEHAVIOUR against
+// `packet_optshape` — the ungated owner of the per-option `optlen` contract,
+// the cooked-socket refusal that precedes any import, and the vnet-header
+// value coercion the shim now calls instead of open-coding. Value truncation
+// and the statistics layout are covered by `055_getsockopt/packet_abi.rs`.
