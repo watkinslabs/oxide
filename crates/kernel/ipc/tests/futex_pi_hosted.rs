@@ -19,7 +19,7 @@ extern crate self as hal_x86_64;
 extern crate self as sched;
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
