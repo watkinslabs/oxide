@@ -2,11 +2,13 @@
 //
 // Drives `crates/elf::parse` against a `&'static [u8]` blob and
 // registers each PT_LOAD as a MAP_FIXED VMA in the supplied
-// `AddressSpace` with `VmaBacking::KernelBytes` (P2-17). Returns
+// `AddressSpace`, backed by the file the image was read from where
+// the segment is a mapping of it. Returns
 // the entry-point VA the caller drops to user mode at.
 //
 // Module manifest:
 //   `load`  — PT_LOAD placement + R_*_RELATIVE self-relocation staging.
+//   `layout` — how a segment divides between its file and kernel-owned bytes.
 //   `place` — the two Linux placement strategies and the phdr scans they need.
 //   `brk`     — `start_brk` selection and the heap window.
 //   `persona` — the `MMAP_PAGE_ZERO` SVr4 emulation at the tail of the load.
@@ -37,6 +39,7 @@ use hal::UserVirtAddr;
 use vmm::{AddressSpace, VmaProt};
 
 mod brk;
+mod layout;
 mod load;
 pub mod persona;
 mod place;
@@ -44,6 +47,8 @@ mod uapi;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_file_backing;
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 
@@ -154,9 +159,9 @@ fn read_interp_blob(path: &[u8]) -> Option<alloc::vec::Vec<u8>> {
 #[cfg(not(target_os = "oxide-kernel"))]
 fn read_interp_blob(_path: &[u8]) -> Option<alloc::vec::Vec<u8>> { None }
 
-/// Load `blob` into `as_` per docs/31§4. Each PT_LOAD becomes a
-/// MAP_FIXED VMA with `VmaBacking::KernelBytes` (P2-17) so demand-
-/// paging copies the bytes from the kernel image on first touch.
+/// Load `blob` into `as_` per docs/31§4. Each PT_LOAD becomes a MAP_FIXED
+/// VMA; the part of it that is a mapping of the file is backed by that file,
+/// the rest by kernel-owned bytes demand-paging copies on first touch.
 ///
 /// `blob` only needs to live for the duration of this call: the
 /// segment bytes are copied into AS-owned staging Vecs (B22), so
@@ -167,9 +172,36 @@ struct LoadStaging {
     vstart:   u64,
     vend:     u64,
     prot:     VmaProt,
+    /// Kernel-owned bytes for `[file_end, vend)`. Empty when the whole
+    /// segment is a mapping of its file.
     padded:   alloc::vec::Vec<u8>,
     head_pad: usize,
+    file_end:   u64,
+    file_pgoff: u64,
 }
+
+/// One image the loader places: its bytes, and the file they were read from.
+///
+/// The file is Linux `bprm->file` for the exec and the interpreter's own file
+/// for a PT_INTERP image. It becomes each PT_LOAD's backing, so the program's
+/// text and data are file-backed mappings. `None` is an image with no file
+/// behind it — a blob linked into the kernel — whose segments are backed by
+/// kernel-owned bytes.
+pub struct Image<'a> {
+    pub blob: &'a [u8],
+    pub file: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
+}
+
+impl<'a> Image<'a> {
+    /// An image the kernel carries rather than one it opened. # C: O(1)
+    pub fn embedded(blob: &'a [u8]) -> Self { Self { blob, file: None } }
+}
+
+/// Opens the pathname a PT_INTERP names, yielding its bytes and its file.
+/// Callers without a resolved filesystem pass `None` and the loader falls back
+/// to the boot-time rootfs reader, which yields no file.
+pub type InterpOpen<'a> =
+    &'a dyn Fn(&[u8]) -> Option<(alloc::vec::Vec<u8>, Option<alloc::sync::Arc<dyn vmm::FileBacking>>)>;
 
 /// `rnd` is this exec's randomisation draw. Callers that are not an execve
 /// (boot smoke drivers) pass `aslr::exec::NONE` for a fixed layout.
@@ -179,6 +211,18 @@ pub fn load_static_blob(
     as_: &AddressSpace,
     rnd: &aslr::ExecRnd,
 ) -> Result<LoadedImage, LoadError> {
+    load_image(Image::embedded(blob), None, as_, rnd)
+}
+
+/// `load_static_blob` with the files behind the images, per `31§4`.
+/// # C: O(phdrs) parse + O(phdrs) mmap
+pub fn load_image(
+    exec_image: Image<'_>,
+    interp_open: Option<InterpOpen<'_>>,
+    as_: &AddressSpace,
+    rnd: &aslr::ExecRnd,
+) -> Result<LoadedImage, LoadError> {
+    let blob = exec_image.blob;
     // Two cases per Linux execve:
     //   * No PT_INTERP (static, static-PIE): the kernel is the
     //     only thing that runs before user `_start`, so we apply
@@ -205,7 +249,7 @@ pub fn load_static_blob(
         (ElfType::Dyn, false) => Placement::Unmapped,
         _ => return Err(LoadError::Enoexec),
     };
-    let exec = place_image(blob, as_, placement, !has_interp)?;
+    let exec = place_image(blob, as_, placement, !has_interp, exec_image.file.as_ref())?;
 
     let parsed = exec_parsed;
     let mut interp_base: u64 = 0;
@@ -217,19 +261,24 @@ pub fn load_static_blob(
             klog::write_raw(interp_path);
             klog::write_raw(b"\n");
         }
-        let interp_blob = match read_interp_blob(interp_path) {
-            Some(blob) => {
-                #[cfg(feature = "debug-execload")]
-                klog::write_raw(b"[INFO]  elf-load: interp read ok\n");
-                blob
-            }
-            None => {
-                #[cfg(feature = "debug-execload")]
-                klog::write_raw(b"[ERROR] elf-load: interp read failed\n");
-                return Err(LoadError::Enoexec);
-            }
+        let opened = interp_open.and_then(|open| open(interp_path));
+        let (interp_blob, interp_file) = match opened {
+            Some(pair) => pair,
+            None => match read_interp_blob(interp_path) {
+                Some(blob) => {
+                    #[cfg(feature = "debug-execload")]
+                    klog::write_raw(b"[INFO]  elf-load: interp read ok\n");
+                    (blob, None)
+                }
+                None => {
+                    #[cfg(feature = "debug-execload")]
+                    klog::write_raw(b"[ERROR] elf-load: interp read failed\n");
+                    return Err(LoadError::Enoexec);
+                }
+            },
         };
-        let interp = match place_image(&interp_blob, as_, Placement::Unmapped, false) {
+        let interp =
+            match place_image(&interp_blob, as_, Placement::Unmapped, false, interp_file.as_ref()) {
             Ok(img) => {
                 #[cfg(feature = "debug-execload")]
                 klog::write_raw(b"[INFO]  elf-load: interp place ok\n");
@@ -279,6 +328,7 @@ fn load_error_name(err: LoadError) -> &'static [u8] {
     }
 }
 
+use layout::relocs_precede_file_backing;
 use load::place_image;
 use place::Placement;
 
