@@ -250,7 +250,9 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_x86_64::PtRegs) {
     if regs.is_null() { return; }
     // SAFETY: the IRQ-exit asm passes the interrupted `PtRegs`, live here.
     let vector = unsafe { (*regs).vector };
-    // SAFETY: same live frame.
+    // SAFETY: same frame the vector was just read from — non-null (checked
+    // above) and still owned by this task's kernel stack until
+    // `oxide_irq_resume_user` pops it; `from_user` only reads `cs`.
     if !unsafe { (*regs).from_user() } { return; }
     // Linux routes NMI through `irqentry_nmi_enter`/`irqentry_nmi_exit`, which
     // never reach `exit_to_user_mode_loop`. The fault epilogue this function
