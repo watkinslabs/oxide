@@ -86,6 +86,13 @@ pub trait DrmDriver: Send + Sync {
     fn modes_for(&self, idx: usize) -> alloc::vec::Vec<DrmModeModeinfo> {
         alloc::vec![self.mode_for(idx)]
     }
+    /// The raw EDID the display behind connector `idx` published, or `None`
+    /// when it published none. Backs the connector's immutable EDID property;
+    /// a driver whose display cannot be interrogated leaves it unimplemented,
+    /// exactly as a connector with no EDID reports a zero blob id.
+    /// # C: O(EDID bytes)
+    fn edid_blob(&self, _idx: usize) -> Option<Vec<u8>> { None }
+
     fn connector_info(&self, _idx: usize) -> Option<ConnectorInfo> { None }
     fn crtc_info(&self, _idx: usize) -> Option<CrtcInfo> { None }
     fn encoder_info(&self, _idx: usize) -> Option<EncoderInfo> { None }
@@ -93,6 +100,16 @@ pub trait DrmDriver: Send + Sync {
 }
 
 pub fn mode_from_rect(w: u32, h: u32) -> DrmModeModeinfo {
+    mode_from_rect_at(w, h, DEFAULT_REFRESH_HZ)
+}
+
+/// Refresh rate a synthesised mode carries when none was asserted.
+pub const DEFAULT_REFRESH_HZ: u32 = 60;
+
+/// A mode of the given size at the given refresh rate, with blanking and sync
+/// in the usual proportions. For sizes asserted without timings — a standard
+/// timing entry names a size and a rate and nothing else. # C: O(1)
+pub fn mode_from_rect_at(w: u32, h: u32, refresh_hz: u32) -> DrmModeModeinfo {
     let w16 = w as u16;
     let h16 = h as u16;
     let hsync_start = w16.saturating_add(w16 / 20);
@@ -101,21 +118,22 @@ pub fn mode_from_rect(w: u32, h: u32) -> DrmModeModeinfo {
     let vsync_start = h16.saturating_add(3);
     let vsync_end = h16.saturating_add(9);
     let vtotal = h16.saturating_add(h16 / 40).saturating_add(20);
-    let clock = ((htotal as u64) * (vtotal as u64) * 60 / 1000) as u32;
+    let refresh = refresh_hz.max(1);
+    let clock = ((htotal as u64) * (vtotal as u64) * refresh as u64 / 1000) as u32;
     let mut name = [0u8; 32];
     write_mode_name(&mut name, w, h);
     DrmModeModeinfo {
         clock,
         hdisplay: w16, hsync_start, hsync_end, htotal, hskew: 0,
         vdisplay: h16, vsync_start, vsync_end, vtotal, vscan: 0,
-        vrefresh: 60,
+        vrefresh: refresh,
         flags: DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC,
         ty: DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
         name,
     }
 }
 
-fn write_mode_name(out: &mut [u8; 32], w: u32, h: u32) {
+pub(crate) fn write_mode_name(out: &mut [u8; 32], w: u32, h: u32) {
     let mut p = 0usize;
     p += write_dec(&mut out[p..], w);
     if p < 31 {

@@ -91,7 +91,7 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
         && !user_ok(c.set_connectors_ptr, (c.count_connectors as u64) * 4) {
         return einval();
     }
-    if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
+    if !(ops.present)(ops.driver_key, res_id, w, h, crate::node::DamageRect::full(w, h)) { return einval(); }
     crate::diag::record(crate::diag::Present::SetCrtc, c.fb_id, res_id);
     set_current_fb(card_id, c.fb_id);
     set_owner(card_id, token);
@@ -113,7 +113,7 @@ pub fn page_flip(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, ar
     if f.fb_id == 0 { return einval(); }
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
     let (res_id, w, h) = match fb_scanout_resource(card_id, ops, f.fb_id) { Some(v) => v, None => return einval() };
-    if !(ops.set_scanout)(ops.driver_key, res_id, w, h) { return einval(); }
+    if !(ops.present)(ops.driver_key, res_id, w, h, crate::node::DamageRect::full(w, h)) { return einval(); }
     crate::diag::record(crate::diag::Present::Flip, f.fb_id, res_id);
     set_current_fb(card_id, f.fb_id);
     set_owner(card_id, token);
