@@ -21,6 +21,7 @@
 //! RAM is slow under TCG and pointless on a normal boot.
 
 use pmm::{Order, PageBacking, Pmm};
+use sync::IrqGate;
 use hal::Pfn;
 
 const PAGE_BYTES: usize = 4096;
@@ -48,7 +49,7 @@ const PATTERNS: [u64; 4] = [
 /// it, and asserts the free count is conserved. Pre-scheduler boot context:
 /// single-CPU, no other allocator user, so draining everything is safe.
 /// # C: O(N_free_pages × PATTERNS × PAGE_BYTES)
-pub fn run<B: PageBacking>(p: &Pmm<B>) {
+pub fn run<B: PageBacking, I: IrqGate>(p: &Pmm<B, I>) {
     let baseline = p.free_pages();
 
     // ---- 1. Drain every free order-0 page into an in-page linked list ----
