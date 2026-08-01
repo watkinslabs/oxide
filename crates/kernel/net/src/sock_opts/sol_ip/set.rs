@@ -88,8 +88,7 @@ pub fn admit(optname: u64, val: i32, optlen: u32, sock: IpSock, caps: OptCaps)
         // so its own admission precedes every other option's.
         IP_ROUTER_ALERT => {
             if !sock.raw || sock.inet_num == IPPROTO_RAW as u16 { return Err(Errno::Einval); }
-            if on && sock.on_ra_chain { return Err(Errno::Eaddrinuse); }
-            if !on && !sock.on_ra_chain { return Err(Errno::Enobufs); }
+            crate::router_alert::admit(on, sock.on_ra_chain)?;
             Ok(Action::RouterAlert(on))
         }
 

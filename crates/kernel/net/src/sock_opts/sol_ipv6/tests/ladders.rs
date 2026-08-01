@@ -69,10 +69,18 @@ fn the_router_alert_chain_is_the_raw_protocol_socket_only() {
     assert_eq!(set6(IPV6_ROUTER_ALERT, 1, 4), Err(Errno::Enoprotoopt));
     assert_eq!(set::admit(IPV6_ROUTER_ALERT, 1, 4, raw(58), none()), Err(Errno::Enoprotoopt));
     assert_eq!(set::admit(IPV6_ROUTER_ALERT, 1, 4, raw(IPPROTO_RAW), none()),
-        Ok(Action::RouterAlert(true)));
+        Ok(Action::RouterAlert { selector: Some(1), on: true }));
     let joined = Ipv6Sock { on_ra_chain: true, ..raw(IPPROTO_RAW) };
     assert_eq!(set::admit(IPV6_ROUTER_ALERT, 1, 4, joined, none()), Err(Errno::Eaddrinuse));
+    // The operand is a selector: zero takes a slot matching alert value zero
+    // while the option bit still reads back off, and only a negative value
+    // releases one.
     assert_eq!(set::admit(IPV6_ROUTER_ALERT, 0, 4, raw(IPPROTO_RAW), none()),
+        Ok(Action::RouterAlert { selector: Some(0), on: false }));
+    assert_eq!(set::admit(IPV6_ROUTER_ALERT, 0, 4, joined, none()), Err(Errno::Eaddrinuse));
+    assert_eq!(set::admit(IPV6_ROUTER_ALERT, -1, 4, joined, none()),
+        Ok(Action::RouterAlert { selector: None, on: true }));
+    assert_eq!(set::admit(IPV6_ROUTER_ALERT, -1, 4, raw(IPPROTO_RAW), none()),
         Err(Errno::Enobufs));
 }
 
