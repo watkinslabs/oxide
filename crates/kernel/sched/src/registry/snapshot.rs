@@ -119,6 +119,19 @@ pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
     out
 }
 
+/// Every live thread of the real thread group `tgid`, regardless of whether any
+/// pid namespace numbers it. Unlike `thread_entries` this is not a reporting
+/// view: a caller applying state to the whole process must reach every thread,
+/// including one the reader's namespace cannot name.
+/// # C: O(N_tasks)
+pub fn thread_group(tgid: u32) -> Vec<Arc<Task>> {
+    let g = REG.lock_irqsave::<RegIrq>();
+    g.by_tid.values()
+        .filter_map(|w| w.upgrade())
+        .filter(|t| t.tgid.load(Ordering::Acquire) == tgid)
+        .collect()
+}
+
 /// Every live task `tracer_tid` is the ptrace tracer of — Linux's
 /// `tracer->ptraced` list, which this tree does not thread onto the task
 /// struct, so the relation is recovered by scanning `traced_by`. `exit_ptrace`
