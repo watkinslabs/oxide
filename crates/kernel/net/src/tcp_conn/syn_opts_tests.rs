@@ -3,6 +3,7 @@
 // the writer.
 
 use super::*;
+use crate::tcp_conn::fastopen::{Cookie, COOKIE_MAX};
 
 /// Encode into a full-sized area and return exactly the bytes written.
 fn bytes(o: &SynOptions) -> alloc::vec::Vec<u8> {
@@ -14,7 +15,7 @@ fn bytes(o: &SynOptions) -> alloc::vec::Vec<u8> {
 
 fn full() -> SynOptions {
     SynOptions { mss: Some(1460), timestamp: Some((0x1122_3344, 0x5566_7788)),
-                 sack_perm: true, wscale: Some(7) }
+                 sack_perm: true, wscale: Some(7), fastopen: None }
 }
 
 #[test]
@@ -98,7 +99,8 @@ fn every_combination_lands_on_a_word_boundary_and_fits_the_header() {
         for ts in [None, Some((1u32, 2u32))] {
             for sack in [false, true] {
                 for ws in [None, Some(7u8)] {
-                    let o = SynOptions { mss, timestamp: ts, sack_perm: sack, wscale: ws };
+                    let o = SynOptions { mss, timestamp: ts, sack_perm: sack, wscale: ws,
+                                         fastopen: None };
                     let n = o.encoded_len();
                     assert_eq!(n % 4, 0, "{o:?} is not word aligned");
                     assert!(n <= MAX_OPTION_BYTES, "{o:?} overruns the option area");
@@ -108,6 +110,90 @@ fn every_combination_lands_on_a_word_boundary_and_fits_the_header() {
             }
         }
     }
+}
+
+// ---- fast open ------------------------------------------------------------
+
+const EIGHT: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+fn cookie(n: usize, exp: bool) -> Cookie {
+    Cookie::new(&[0xa5u8; COOKIE_MAX][..n], exp).unwrap()
+}
+
+#[test]
+fn a_cookie_request_is_one_word_under_the_assigned_kind() {
+    let o = SynOptions { fastopen: Some(Cookie::request(false)), ..SynOptions::default() };
+    // Kind and length come to two bytes, so the word is filled out with no-ops
+    // rather than left for a peer to walk into.
+    assert_eq!(bytes(&o), [opt::FASTOPEN, 2, opt::NOP, opt::NOP]);
+}
+
+#[test]
+fn a_cookie_request_names_the_experiment_under_the_experimental_kind() {
+    let o = SynOptions { fastopen: Some(Cookie::request(true)), ..SynOptions::default() };
+    assert_eq!(bytes(&o), [opt::EXP, 4, 0xf9, 0x89]);
+}
+
+#[test]
+fn an_eight_byte_cookie_is_padded_to_its_word_under_the_assigned_kind() {
+    let o = SynOptions { fastopen: Some(Cookie::new(&EIGHT, false).unwrap()), ..SynOptions::default() };
+    assert_eq!(o.encoded_len(), 12);
+    assert_eq!(bytes(&o), [
+        opt::FASTOPEN, 10, 1, 2,
+        3, 4, 5, 6,
+        7, 8, opt::NOP, opt::NOP,
+    ]);
+}
+
+#[test]
+fn an_eight_byte_cookie_fills_its_words_under_the_experimental_kind() {
+    let o = SynOptions { fastopen: Some(Cookie::new(&EIGHT, true).unwrap()), ..SynOptions::default() };
+    assert_eq!(o.encoded_len(), 12);
+    assert_eq!(bytes(&o), [
+        opt::EXP, 12, 0xf9, 0x89,
+        1, 2, 3, 4,
+        5, 6, 7, 8,
+    ]);
+}
+
+#[test]
+fn every_cookie_length_lands_on_a_word_boundary_under_both_kinds() {
+    for exp in [false, true] {
+        for n in [0usize, 4, 6, 8, 10, 12, 14, 16] {
+            let c = if n == 0 { Cookie::request(exp) } else { cookie(n, exp) };
+            let o = SynOptions { mss: Some(1460), fastopen: Some(c), ..SynOptions::default() };
+            let len = o.encoded_len();
+            assert_eq!(len % 4, 0, "cookie {n} exp {exp} is not word aligned");
+            assert!(len <= MAX_OPTION_BYTES, "cookie {n} exp {exp} overruns the area");
+            assert_eq!(bytes(&o).len(), len);
+        }
+    }
+}
+
+#[test]
+fn a_full_offer_with_a_cookie_still_fits_the_option_area() {
+    // The largest handshake this side can emit: every negotiated option plus
+    // the longest cookie under the costlier kind.
+    let o = SynOptions {
+        mss: Some(1460), timestamp: Some((1, 2)), sack_perm: true, wscale: Some(7),
+        fastopen: Some(cookie(COOKIE_MAX, true)),
+    };
+    assert_eq!(o.encoded_len(), 40);
+    assert_eq!(o.encoded_len(), MAX_OPTION_BYTES, "the area is exactly full");
+    assert_eq!(o.data_offset(), 15, "the largest data offset the field can hold");
+    assert_eq!(bytes(&o).len(), 40);
+}
+
+#[test]
+fn the_cookie_is_written_after_every_other_option() {
+    let o = SynOptions {
+        mss: Some(1460), timestamp: Some((1, 2)), sack_perm: true, wscale: Some(7),
+        fastopen: Some(Cookie::new(&EIGHT, false).unwrap()),
+    };
+    let b = bytes(&o);
+    assert_eq!(&b[..4], &[opt::MSS, LEN_MSS, 0x05, 0xb4]);
+    assert_eq!(&b[16..20], &[opt::NOP, opt::WSCALE, LEN_WSCALE, 7]);
+    assert_eq!(b[20], opt::FASTOPEN);
 }
 
 #[test]
