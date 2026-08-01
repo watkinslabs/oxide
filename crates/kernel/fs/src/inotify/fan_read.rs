@@ -26,11 +26,10 @@ impl InotifyData {
             Some(t) => t.clone(), None => return fan_layout::FAN_NOFD,
         };
         let dentry = vfs::dcache::d_alloc_pseudo("[fanotify]", obj.clone(), &crate::anon_dname::ANON_INODE_OPS);
-        let oflags = vfs::OpenFlags::from_bits_truncate(self.event_f_flags)
-            - vfs::OpenFlags::O_CLOEXEC;
-        let file = vfs::File::new(obj.clone(), dentry, oflags);
+        let file = vfs::File::new(obj.clone(), dentry,
+                                  crate::inotify::fan_ids::event_open_flags(self.event_f_flags));
         let fd = fdt.alloc_limit(file, cur.nofile_soft()).unwrap_or(fan_layout::FAN_NOFD);
-        if fd >= 0 && self.event_f_flags & vfs::OpenFlags::O_CLOEXEC.bits() != 0 {
+        if fd >= 0 && crate::inotify::fan_ids::event_fd_cloexec(self.event_f_flags) {
             let _ = fdt.set_cloexec(fd, true);
         }
         fd
