@@ -75,11 +75,15 @@ impl RootfsState {
     /// Parse `data` and fold its quota options into this mount's option state.
     /// `quota_loaded` selects remount semantics. Nothing is applied unless the
     /// whole data string is accepted. # C: O(len(data))
+    /// `next` is boxed and this stays out of its caller's frame for the reason
+    /// given on `mount_opts::configure`: this runs on the root-filesystem mount
+    /// path, the deepest chain the stack-depth gate measures.
+    #[inline(never)]
     pub fn configure_mount_opts(&self, data: &str, quota_loaded: bool) -> vfs::KResult<()> {
         let feat = self.quota_features();
-        let mut next = self.quota_opts();
+        let mut next = alloc::boxed::Box::new(self.quota_opts());
         crate::mount_opts::configure(data, &feat, &mut next, quota_loaded)?;
-        *self.quota_opts.lock() = next;
+        *self.quota_opts.lock() = *next;
         Ok(())
     }
 

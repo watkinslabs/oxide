@@ -29,14 +29,20 @@ pub use apply::apply_quota_options;
 /// Parse, validate, consistency-check and apply one mount-data string against
 /// a filesystem's live quota option state. The single entry point for both
 /// mount and remount; `quota_loaded` selects remount semantics.
+///
+/// The parse context is heap-allocated and this function is kept out of its
+/// caller's frame: mounting the root filesystem sits on the deepest boot chain
+/// the stack-depth gate measures, and carrying the context by value there costs
+/// the chain a few hundred bytes for the life of every frame below it.
 /// # C: O(len(data) + MAXQUOTAS)
+#[inline(never)]
 pub fn configure(
     data: &str,
     feat: &FsQuotaFeatures,
     sb: &mut SbQuotaOpts,
     quota_loaded: bool,
 ) -> vfs::KResult<()> {
-    let mut ctx = Ext4MountOpts::parse(data)?;
+    let mut ctx = alloc::boxed::Box::new(Ext4MountOpts::parse(data)?);
     ctx.validate()?;
     check_quota_consistency(&mut ctx, feat, sb, quota_loaded)?;
     apply_quota_options(&mut ctx, feat, sb);
