@@ -17,6 +17,8 @@
 // `wait.rs` — wait(2)-family option masks, event-class gating, idtype
 // mapping, wstatus→siginfo decode. `rusage.rs` — `struct rusage` layout,
 // `who` selector, and the one encoder every producer shares.
+// `uts.rs` — the ONE kernel version identity (`uname(2)` release/sysname/
+// version, the `/proc` bodies derived from them, module vermagic).
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -38,6 +40,7 @@ pub mod sigset;
 pub mod time;
 pub mod tracepoint;
 pub mod userptr;
+pub mod uts;
 pub mod wait;
 
 pub use args::SyscallArgs;

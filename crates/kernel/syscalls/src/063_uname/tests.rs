@@ -16,7 +16,12 @@ fn text(img: &[u8], idx: usize) -> &str {
 }
 
 fn img(personality: u32) -> alloc::vec::Vec<u8> {
-    build_utsname(b"oxide", b"lan.example", b"#1 SMP PREEMPT oxide", personality)
+    build_utsname(b"oxide", b"lan.example", UTS_VERSION.as_bytes(), personality)
+}
+
+/// `UTS_RELEASE` rewritten to the 2.6 series: `2.6.<patchlevel + 60>` + tail.
+fn uname26_of_release() -> alloc::string::String {
+    override_release(UTS_RELEASE)
 }
 
 #[test]
@@ -42,7 +47,7 @@ fn fields_land_in_linux_declaration_order() {
     assert_eq!(text(&b, IDX_SYSNAME), "Linux");
     assert_eq!(text(&b, IDX_NODENAME), "oxide");
     assert_eq!(text(&b, IDX_RELEASE), UTS_RELEASE);
-    assert_eq!(text(&b, IDX_VERSION), "#1 SMP PREEMPT oxide");
+    assert_eq!(text(&b, IDX_VERSION), UTS_VERSION);
     assert_eq!(text(&b, IDX_MACHINE), UTS_MACHINE);
     assert_eq!(text(&b, IDX_DOMAINNAME), "lan.example");
 }
@@ -70,10 +75,17 @@ fn an_oversized_field_truncates_to_64_bytes_plus_nul() {
 #[test]
 fn uname26_rewrites_the_release_to_the_2_6_series() {
     // Linux `override_release`: "2.6.<PATCHLEVEL + 60>" + the tail past the
-    // version numbers. 5.15.0-oxide → patchlevel 15 → 2.6.75-oxide.
+    // version numbers. 6.19.0-oxide → patchlevel 19 → 2.6.79-oxide.
+    assert_eq!(override_release("6.19.0-oxide"), "2.6.79-oxide");
     assert_eq!(override_release("5.15.0-oxide"), "2.6.75-oxide");
+    // The rewrite tracks the LIVE release, so a release bump cannot leave a
+    // UNAME26 task reporting the arithmetic of the previous one.
+    let want = alloc::format!("2.6.{}{}",
+        syscall::uts::RELEASE_PATCHLEVEL + 60,
+        &UTS_RELEASE[UTS_RELEASE.find('-').unwrap()..]);
+    assert_eq!(uname26_of_release(), want);
     let b = img(UNAME26);
-    assert_eq!(text(&b, IDX_RELEASE), "2.6.75-oxide");
+    assert_eq!(text(&b, IDX_RELEASE), want);
     // Everything else is untouched by UNAME26.
     assert_eq!(text(&b, IDX_MACHINE), UTS_MACHINE);
     assert_eq!(text(&b, IDX_SYSNAME), "Linux");
@@ -102,7 +114,7 @@ fn per_linux32_reports_the_compat_machine() {
 fn the_two_overrides_are_independent_and_compose() {
     let b = img(PER_LINUX32 | UNAME26);
     assert_eq!(text(&b, IDX_MACHINE), COMPAT_UTS_MACHINE);
-    assert_eq!(text(&b, IDX_RELEASE), "2.6.75-oxide");
+    assert_eq!(text(&b, IDX_RELEASE), uname26_of_release());
     // An unrelated personality flag changes neither.
     let n = img(ADDR_NO_RANDOMIZE);
     assert_eq!(text(&n, IDX_MACHINE), UTS_MACHINE);

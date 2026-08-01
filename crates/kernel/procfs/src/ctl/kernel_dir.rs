@@ -13,9 +13,12 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
         File("pid_max",               Int(32768, Some((1, 4_194_304)))),
         File("ngroups_max",           Const(b"65536\n")),
         File("cap_last_cap",          Const(b"40\n")),
-        File("osrelease",             Const(b"5.15.0-oxide\n")),
-        File("ostype",                Const(b"Linux\n")),
-        File("version",               Const(b"#1 SMP PREEMPT oxide v0.1.0\n")),
+        // The three utsname fields this subtree reports are DERIVED from the
+        // one kernel-version owner, never re-typed: a reader comparing these
+        // against `uname(2)` must not be able to tell them apart.
+        File("osrelease",             Const(syscall::uts::PROC_SYS_OSRELEASE.as_bytes())),
+        File("ostype",                Const(syscall::uts::PROC_SYS_OSTYPE.as_bytes())),
+        File("version",               Const(syscall::uts::PROC_SYS_VERSION.as_bytes())),
         File("domainname",            StrHook(crate::hooks::domainname, crate::hooks::set_domainname)),
         File("threads-max",           Int(32768, Some((20, INT_MAX)))),
         File("printk",                Bytes(b"4\t4\t1\t7\n")),

@@ -22,10 +22,10 @@ pub const IDX_VERSION:    usize = 3;
 pub const IDX_MACHINE:    usize = 4;
 pub const IDX_DOMAINNAME: usize = 5;
 
-/// `UTS_SYSNAME`.
-pub const UTS_SYSNAME: &str = "Linux";
-/// `UTS_RELEASE` — the kernel version string userspace parses.
-pub const UTS_RELEASE: &str = "5.15.0-oxide";
+/// `UTS_SYSNAME` / `UTS_RELEASE` / `UTS_VERSION` — re-exported from the one
+/// owner (`syscall::uts`), which the `/proc` bodies and the module vermagic
+/// derive from too. Never re-declare the literal here.
+pub use syscall::uts::{UTS_RELEASE, UTS_SYSNAME, UTS_VERSION};
 /// `UTS_MACHINE` — the native architecture name.
 #[cfg(target_arch = "x86_64")]
 pub const UTS_MACHINE: &str = "x86_64";
