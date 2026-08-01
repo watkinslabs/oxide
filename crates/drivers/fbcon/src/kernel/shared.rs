@@ -53,6 +53,17 @@ impl VtState {
 // because it is already running with bottom halves accounted for.
 pub(crate) static VT_STATE: Spinlock<Option<VtState>, TtyClass> = Spinlock::new(None);
 
+// Hosted tests mutate one process-global console: `VT_STATE`, the kernel
+// registration `kernel_init`/`kernel_unregister` install, the `FbconFlush`
+// softirq slot and the preempt count. Two test modules each defining their OWN
+// serialization static did not exclude each other — a `kernel/tests.rs` test
+// and a crate-root `tests.rs` test ran concurrently and clobbered the flush
+// probe, the registration and the pending bit. The lock must belong to the
+// state, so this is the ONLY serialization an fbcon test may take. It ranks
+// above `TtyClass` so `VT_STATE` nests inside it.
+#[cfg(test)]
+pub(crate) static CONSOLE_TEST_DOMAIN: Spinlock<(), sync::Devices> = Spinlock::new(());
+
 /// The bottom-half gate `spin_lock_bh` needs. `sync` sits below `sched` and
 /// cannot reach the preempt count itself, so the gate arrives as a type.
 type Bh = sched::bh::SchedBh;
