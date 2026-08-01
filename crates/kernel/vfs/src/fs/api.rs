@@ -5,11 +5,11 @@ use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 
 use crate::inode::InodeRef;
-use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, next_anon_dev, sget_result};
+use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, next_anon_dev, sget_reused, SB_RDONLY};
 use crate::types::VfsError;
 
 use super::flags::FsFlags;
-use super::fs_context::{apply_sb_flags, SB_FLAGS_USER_MASK};
+use super::fs_context::{apply_sb_flags, FsParameter, SB_FLAGS_USER_MASK};
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
 
@@ -75,14 +75,25 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
     match fs.dev_id() {
         Some(dev) => {
             let fs_for_stamp = fs.clone();
-            sget_result(dev, move || {
+            let (sb, reused) = sget_reused(dev, move || {
                 let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, dev, s_blocksize, s_id, Arc::new(()));
                 sb.set_s_iflags(s_iflags);
                 apply_sb_flags(&sb, sb_flags, SB_FLAGS_USER_MASK);
                 fs_for_stamp.set_sb(Arc::downgrade(&sb))?;
                 if let Some(name) = fs_for_stamp.sysfs_name() { sb.set_sysfs_name(&name); }
                 Ok(sb)
-            })
+            })?;
+            // A second mount of one device must not SUMMARILY change the
+            // read-only state the live instance was created with — every task
+            // already holding a file on that superblock would silently gain or
+            // lose write access it never asked about. The reference refuses the
+            // second mount with EBUSY instead, and only for `SB_RDONLY`: the
+            // remaining flags are per-MOUNT and travel on the mount, not here.
+            if reused && (sb_flags ^ sb.s_flags()) & SB_RDONLY != 0 {
+                sb.deactivate_super();
+                return Err(VfsError::Ebusy);
+            }
+            Ok(sb)
         }
         None => {
             let sb = SuperBlock::from_ops(s_type, s_op, root, s_magic, next_anon_dev(), s_blocksize, s_id, Arc::new(()));
@@ -96,11 +107,22 @@ pub fn superblock_from_filesystem(s_type: Arc<dyn FileSystemType>, fs: Arc<dyn F
 }
 
 /// `file_system_type::mount`/`init_fs_context` stand-in: build one superblock
-/// from `(type, source, target, option string, SB_* flags)`. ONE form — the
-/// flag word is never optional, so no constructor can silently drop it.
+/// from `(type, source, target, option string, SB_* flags, pinned files)`. ONE
+/// form — the flag word is never optional, so no constructor can silently drop
+/// it.
+///
+/// The last argument is the value-carrying half of the mount API. A parameter
+/// supplied as `FSCONFIG_SET_FD` names an open file the kernel PINNED when the
+/// parameter was parsed; its fd NUMBER renders into the option string like any
+/// other value, but the number alone is not enough — the caller may legally
+/// close the descriptor between `fsconfig(2)` and `FSCONFIG_CMD_CREATE`, and a
+/// backend that re-resolves the number then fails a mount the reference
+/// completes. So the pinned descriptions travel alongside the string, in
+/// admission order. Both views are rendered from the one parameter list the
+/// context admitted; neither is a second place a parameter can be declared.
 pub type FsConstructor =
-    dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str, u64) -> KResult<Arc<SuperBlock>>
-        + Send + Sync;
+    dyn Fn(Arc<dyn FileSystemType>, Option<&str>, &str, &str, u64, &[FsParameter])
+        -> KResult<Arc<SuperBlock>> + Send + Sync;
 
 pub struct FsType {
     pub(super) name:  String,
@@ -144,7 +166,19 @@ impl FsType {
         data: &str,
         sb_flags: u64,
     ) -> KResult<Arc<SuperBlock>> {
-        (self.ctor)(self.as_type(), source, target, data, sb_flags)
+        self.construct_pinned(source, target, data, sb_flags, &[])
+    }
+    /// Construct carrying the parameters whose values are pinned open files.
+    /// See [`FsConstructor`]. # C: O(constructor)
+    pub fn construct_pinned(
+        &self,
+        source: Option<&str>,
+        target: &str,
+        data: &str,
+        sb_flags: u64,
+        pinned: &[FsParameter],
+    ) -> KResult<Arc<SuperBlock>> {
+        (self.ctor)(self.as_type(), source, target, data, sb_flags, pinned)
     }
     pub fn magic(&self) -> u64 { self.magic }
     pub fn fs_flags(&self) -> FsFlags { self.flags }
@@ -163,9 +197,9 @@ impl FileSystemType for FsType {
     ) -> KResult<Arc<SuperBlock>> {
         self.construct_with_flags(src, "", opts, sb_flags)
     }
-    fn mount_at(&self, src: Option<&str>, target: &str, opts: &str, sb_flags: u64)
-        -> KResult<Arc<SuperBlock>> {
-        self.construct_with_flags(src, target, opts, sb_flags)
+    fn mount_at(&self, src: Option<&str>, target: &str, opts: &str, sb_flags: u64,
+        pinned: &[FsParameter]) -> KResult<Arc<SuperBlock>> {
+        self.construct_pinned(src, target, opts, sb_flags, pinned)
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
     fn parameters(&self) -> Option<&'static [crate::fs::fs_parser::FsParamSpec]> { self.params }

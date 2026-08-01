@@ -64,17 +64,30 @@ pub fn register_super(sb: &Arc<SuperBlock>) {
 /// This is the dedup used by the mount table's device-backed fill-super path;
 /// anonymous/pseudo filesystems still receive a fresh anon device. # C: O(N_sb)
 pub fn sget_result(dev: u64, build: impl FnOnce() -> KResult<Arc<SuperBlock>>) -> KResult<Arc<SuperBlock>> {
+    sget_reused(dev, build).map(|(sb, _)| sb)
+}
+
+/// [`sget_result`], plus the one fact the caller cannot recover afterwards:
+/// whether the instance was REUSED or freshly built.
+///
+/// A caller that must not change a live instance's state — a second mount of
+/// one device asking for a different read-only setting — needs the answer, and
+/// inferring it from the returned flags cannot work: a fresh instance whose
+/// fill-super neglected to stamp is indistinguishable from a reused one that
+/// disagrees. `true` = reused. # C: O(N_sb)
+pub fn sget_reused(dev: u64, build: impl FnOnce() -> KResult<Arc<SuperBlock>>)
+    -> KResult<(Arc<SuperBlock>, bool)> {
     {
         let g = FS_SUPERS.lock();
         for w in g.iter() {
             if let Some(sb) = w.upgrade() {
-                if sb.s_dev == dev && sb.grab_active() { sb.s_count_inc(); return Ok(sb); }
+                if sb.s_dev == dev && sb.grab_active() { sb.s_count_inc(); return Ok((sb, true)); }
             }
         }
     }
     let sb = build()?;
     register_super(&sb);
-    Ok(sb)
+    Ok((sb, false))
 }
 
 /// Infallible compatibility wrapper for callers whose fill-super cannot fail.

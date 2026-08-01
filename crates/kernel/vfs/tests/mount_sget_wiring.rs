@@ -96,7 +96,7 @@ fn anon_fs_not_shared() {
 fn attach_recursive_grafts_mount() {
     let _g = guard(0xD140);
     vfs::fs::register_fs(vfs::fs::FsType::new("devfs_test", 0xEF53,
-        vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _, _| Err(VfsError::Enodev))))
+        vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _, _, _| Err(VfsError::Enodev))))
         .expect("register devfs_test type");
     let fs = Arc::new(DevFs { dev: None, root_ino: 0x51 });
     let src_root: InodeRef = make_tdir(0xBEEF);

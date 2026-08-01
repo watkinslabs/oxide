@@ -17,7 +17,7 @@ fn test_sb(fs: &Arc<PseudoFs>, root_inode: vfs::InodeRef) -> Arc<SuperBlock> {
     use vfs::fs::{FileSystem, FsFlags, FsType};
     let ty: Arc<dyn vfs::FileSystemType> = FsType::new(
         "kernfs", 0xBEEF, FsFlags::empty(),
-        alloc::boxed::Box::new(|_, _, _, _, _| unreachable!("test fs type is not mounted through ->mount")),
+        alloc::boxed::Box::new(|_, _, _, _, _, _| unreachable!("test fs type is not mounted through ->mount")),
     );
     vfs::fs::superblock_from_filesystem(
         ty, fs.clone() as Arc<dyn FileSystem>, Some(root_inode), String::from("kernfs"), 0,

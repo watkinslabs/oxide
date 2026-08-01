@@ -239,7 +239,7 @@ mod fs_tests {
         use vfs::FileSystemType;
         use vfs::fs::{superblock_from_filesystem, FsFlags, FsType};
         // The exact ctor registered for "devtmpfs" in the syscalls crate.
-        let ctor = Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str, _| {
+        let ctor = Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str, _, _: &[vfs::fs::FsParameter]| {
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
             superblock_from_filesystem(ty, fs, None, alloc::string::String::from("devtmpfs"), 0)
         });

@@ -61,7 +61,7 @@ impl FileSystem for TestMountFs { fn name(&self) -> &str { "testfs" } }
 fn ensure_testfs_type() {
     if vfs::fs::get_fs_type("testfs").is_some() { return; }
     let ty = vfs::fs::FsType::new("testfs", 0, vfs::fs::FsFlags::empty(),
-        Box::new(|_, _, _, _, _| unreachable!("testfs is mounted explicitly via register_bind")));
+        Box::new(|_, _, _, _, _, _| unreachable!("testfs is mounted explicitly via register_bind")));
     let _ = vfs::fs::register_fs(ty);
 }
 

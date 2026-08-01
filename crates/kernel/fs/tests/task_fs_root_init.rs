@@ -55,7 +55,7 @@ fn install_root_mount() {
     vfs::set_root_dentry_provider(root_provider);
     let fs: Arc<dyn FileSystem> = Arc::new(RootFs { root: inode });
     let ty = vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(),
-        Box::new(|_, _, _, _, _| unreachable!("fixture fs is mounted explicitly")));
+        Box::new(|_, _, _, _, _, _| unreachable!("fixture fs is mounted explicitly")));
     vfs::mount::register_typed(ty, None, fs).expect("namespace root mount");
 }
 

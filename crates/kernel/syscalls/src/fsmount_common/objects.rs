@@ -24,9 +24,15 @@ impl FsContextInode {
         Self::build(fstype, Some(fc))
     }
 
+    /// The context fd is READABLE: it hands back the error/warning log the
+    /// parse produced, which is the only channel that says WHICH option a
+    /// rejected `fsconfig(2)` refused. The default vtable's read reports "no
+    /// data operation for this file type", so the messages were populated and
+    /// unreachable. # C: O(1)
     fn build(fstype: String, fc: Option<vfs::fs::FsContext>) -> InodeRef {
         let ino = NEXT_FSCTX_INO.fetch_add(1, Ordering::Relaxed);
-        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), default_file_ops())
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(),
+            super::fscontext_ops::fscontext_file_ops())
             .private(Arc::new(Self { fstype, fc: Spinlock::new(fc) }))
             .build()
     }

@@ -123,25 +123,75 @@ impl FsContext {
     /// through the parameter list, so nothing is reordered, deduplicated or
     /// re-quoted on the way to a backend that parses the string itself.
     /// Otherwise it is rebuilt from the admitted parameters, which is the only
-    /// form `fsconfig(2)` ever produces. # C: O(N_params)
+    /// form `fsconfig(2)` ever produces.
+    ///
+    /// A parameter that arrived as a pinned descriptor or a pathname renders
+    /// its TEXT form here — `fd=17`, `usrjquota=/quota.user` — so a backend
+    /// that reads its options out of a string sees exactly what the equivalent
+    /// `mount -o` would have handed it. The descriptor case renders the number
+    /// and [`FsContext::pinned_params`] carries the description that number
+    /// named, because the number alone is stale the moment the caller closes
+    /// the fd. # C: O(N_params)
     pub fn classic_mount_options(&self) -> String {
         if let Some(d) = &self.monolithic { return d.clone(); }
         let mut s = String::new();
         for p in &self.params {
+            let rendered = match &p.value {
+                FsValue::Flag => None,
+                FsValue::String(v) => Some(v.clone()),
+                FsValue::File { fd, .. } => Some(fd.to_string()),
+                FsValue::Filename { path, .. } => Some(path.clone()),
+                // No parameter type accepts a binary blob, so an admitted
+                // parameter can never hold one and this arm is unreachable
+                // through `vfs_parse_fs_param`. Rendering it as a bare word
+                // rather than as bytes keeps a corrupt option string from ever
+                // being handed to a backend.
+                FsValue::Blob(_) => None,
+            };
             if !s.is_empty() { s.push(','); }
             s.push_str(&p.key);
-            if let FsValue::String(v) = &p.value { s.push('='); s.push_str(v); }
+            if let Some(v) = rendered { s.push('='); s.push_str(&v); }
         }
         s
     }
 
+    /// The admitted parameters whose value is an open file the kernel pinned
+    /// when the parameter was parsed, in admission order. See
+    /// [`crate::fs::FsConstructor`]. # C: O(N_params)
+    pub fn pinned_params(&self) -> Vec<FsParameter> {
+        self.params.iter().filter(|p| matches!(p.value, FsValue::File { .. })).cloned().collect()
+    }
+
+    /// One log entry, in the form `read(2)` on the context fd hands back
+    /// verbatim: a level character, a space, the message, and a terminating
+    /// newline. The newline is part of the stored string because the read
+    /// returns exactly `strlen` bytes with no NUL, so a reader splitting on
+    /// lines depends on it being there. The ring holds [`FC_LOG_MAX`] entries
+    /// and drops the OLDEST on overflow — a filesystem that rejects a
+    /// parameter early must not lose that message to a later one. # C: O(len)
     fn logfc(&mut self, level: char, msg: &str) {
-        let mut e = String::with_capacity(msg.len() + 2);
+        let mut e = String::with_capacity(msg.len() + 3);
         e.push(level);
         e.push(' ');
         e.push_str(msg);
+        e.push('\n');
         if self.log.len() >= FC_LOG_MAX { self.log.remove(0); }
         self.log.push(e);
+    }
+
+    /// `fetch_message`: dequeue the OLDEST log entry for a reader whose buffer
+    /// is `len` bytes.
+    ///
+    /// Three outcomes, and the difference between the last two is the whole
+    /// point of the call: `Ok(Some(msg))` consumed one message; `Ok(None)` is
+    /// an empty ring, which the caller reports as "no data available"; and
+    /// `Err(Emsgsize)` is a message that does not fit, LEFT IN THE RING so the
+    /// caller can retry with a bigger buffer. Consuming a message the reader
+    /// cannot receive would lose it silently. # C: O(N_log)
+    pub fn fetch_message(&mut self, len: usize) -> KResult<Option<String>> {
+        let head = match self.log.first() { Some(h) => h, None => return Ok(None) };
+        if head.len() > len { return Err(crate::types::VfsError::Emsgsize); }
+        Ok(Some(self.log.remove(0)))
     }
 
     pub fn errorf(&mut self, msg: &str) { self.logfc('e', msg); }

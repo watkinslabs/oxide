@@ -6,6 +6,10 @@
 //! messages, bounds itself to `FC_LOG_MAX` (oldest dropped), that `invalf` both
 //! logs and returns `Einval`, and that the real parse rejections (unknown param,
 //! multiple sources, unsupported value type) are logged through it.
+//!
+//! The stored form is the WIRE form: `read(2)` on the context descriptor hands
+//! an entry back byte for byte, so the level character, the separating space
+//! and the terminating newline are all part of the string and are pinned here.
 
 use std::sync::Arc;
 
@@ -30,9 +34,9 @@ fn level_tagged_messages_accumulate_oldest_first() {
     fc.infof("fyi");
     let log = fc.log_messages();
     assert_eq!(log.len(), 3);
-    assert_eq!(log[0], "e boom");
-    assert_eq!(log[1], "w careful");
-    assert_eq!(log[2], "i fyi");
+    assert_eq!(log[0], "e boom\n");
+    assert_eq!(log[1], "w careful\n");
+    assert_eq!(log[2], "i fyi\n");
 }
 
 #[test]
@@ -46,8 +50,8 @@ fn ring_is_bounded_dropping_oldest() {
     let log = fc.log_messages();
     assert_eq!(log.len(), FC_LOG_MAX, "ring capped at FC_LOG_MAX");
     // The first 3 (m0..m2) were dropped; the window starts at m3.
-    assert_eq!(log[0], "e m3", "oldest entries evicted: {:?}", log);
-    assert_eq!(log[FC_LOG_MAX - 1], format!("e m{}", FC_LOG_MAX + 2));
+    assert_eq!(log[0], "e m3\n", "oldest entries evicted: {:?}", log);
+    assert_eq!(log[FC_LOG_MAX - 1], format!("e m{}\n", FC_LOG_MAX + 2));
 }
 
 #[test]
@@ -55,7 +59,7 @@ fn invalf_logs_and_returns_einval() {
     let mut fc = ctx();
     let r: KResult<()> = fc.invalf("nope");
     assert_eq!(r.unwrap_err(), VfsError::Einval);
-    assert_eq!(fc.log_messages(), &["e nope".to_string()]);
+    assert_eq!(fc.log_messages(), &["e nope\n".to_string()]);
 }
 
 #[test]
@@ -70,7 +74,7 @@ fn unknown_parameter_is_logged_through_invalf() {
     // A path value, however, has no legacy form → logged invalf.
     let e2 = vfs_parse_fs_param(&mut fc, &FsParameter::path("upperdir", "/u")).unwrap_err();
     assert_eq!(e2, VfsError::Einval);
-    assert!(fc.log_messages().iter().any(|m| m.starts_with("e ") && m.contains("value type")),
+    assert!(fc.log_messages().iter().any(|m| m.starts_with("e ") && m.contains("path")),
         "unsupported value type logged: {:?}", fc.log_messages());
 }
 
@@ -90,6 +94,47 @@ fn take_log_drains_the_ring() {
     fc.errorf("a");
     fc.warnf("b");
     let drained = fc.take_log();
-    assert_eq!(drained, vec!["e a".to_string(), "w b".to_string()]);
+    assert_eq!(drained, vec!["e a\n".to_string(), "w b\n".to_string()]);
     assert!(fc.log_messages().is_empty(), "ring emptied after take_log");
+}
+
+// `read(2)` on the context descriptor is the ONLY way userspace ever sees these
+// messages: a rejected `fsconfig(2)` reports EINVAL and nothing else. Before
+// this, every producer above wrote into a ring with no reader at all.
+#[test]
+fn one_message_per_read_oldest_first_then_no_data() {
+    let mut fc = ctx();
+    fc.errorf("first");
+    fc.warnf("second");
+    assert_eq!(fc.fetch_message(64).unwrap().as_deref(), Some("e first\n"));
+    assert_eq!(fc.fetch_message(64).unwrap().as_deref(), Some("w second\n"));
+    // An empty ring is "no data available", not end-of-file: the context is
+    // quiet, not finished.
+    assert_eq!(fc.fetch_message(64).unwrap(), None);
+}
+
+// A buffer too short must NOT consume the message. Truncating it would destroy
+// the only copy of the diagnostic the caller asked for.
+#[test]
+fn a_short_buffer_reports_emsgsize_and_leaves_the_message_queued() {
+    let mut fc = ctx();
+    fc.errorf("a long enough diagnostic");
+    let want = "e a long enough diagnostic\n";
+    assert_eq!(fc.fetch_message(want.len() - 1).unwrap_err(), VfsError::Emsgsize);
+    assert_eq!(fc.log_messages().len(), 1, "still queued after EMSGSIZE");
+    // Exactly-fitting is a fit — the count is the byte length, newline
+    // included and no NUL.
+    assert_eq!(fc.fetch_message(want.len()).unwrap().as_deref(), Some(want));
+}
+
+// The reader drains the SAME ring the producers write, oldest first, so a
+// rejection reported early is not shadowed by a later one.
+#[test]
+fn a_rejected_parameter_is_readable_and_names_the_parameter() {
+    let mut fc = ctx();
+    assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::path("upperdir", "/u")).unwrap_err(),
+        VfsError::Einval);
+    let msg = fc.fetch_message(256).unwrap().expect("the refusal is readable");
+    assert!(msg.starts_with("e "), "level-tagged: {msg:?}");
+    assert!(msg.ends_with('\n'), "newline-terminated: {msg:?}");
 }
