@@ -79,7 +79,7 @@ fn stream_peek_reports_different_credential_boundary() {
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"one", classify_files(alloc::vec![]), (41, 42, 43)).unwrap();
     pair.write_with_rights_and_creds(UnixEnd::A, b"two", classify_files(alloc::vec![]), (51, 52, 53)).unwrap();
-    let (data, boundary, cred) = pair.read_stream_with_offset(UnixEnd::B, 64, true, 0, true, None,
+    let (data, boundary, cred) = pair.read_stream_with_offset(UnixEnd::B, 64, true, 0, true, None, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     assert_eq!(data, b"one", "a peek honours the same writer boundary a read does");
     assert!(boundary.stops_waitall(true));
@@ -94,7 +94,7 @@ fn stream_peek_coalesces_equal_senders_like_a_read() {
     let cred = (91, 92, 93);
     pair.write_with_rights_and_creds(UnixEnd::A, b"one", classify_files(alloc::vec![]), cred).unwrap();
     pair.write_with_rights_and_creds(UnixEnd::A, b"two", classify_files(alloc::vec![]), cred).unwrap();
-    let (data, _, _) = pair.read_stream_with_offset(UnixEnd::B, 64, true, 0, true, None,
+    let (data, _, _) = pair.read_stream_with_offset(UnixEnd::B, 64, true, 0, true, None, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     assert_eq!(data, b"onetwo");
     assert_eq!(pair.read_stream_passcred(UnixEnd::B, 64, true).0, b"onetwo", "the peek consumed nothing");
@@ -168,14 +168,14 @@ fn read_stops_at_a_sender_change_only_when_the_socket_passes_credentials() {
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), (11, 12, 13)).unwrap();
     pair.write_with_rights_and_creds(UnixEnd::A, b"second", classify_files(alloc::vec![]), (21, 22, 23)).unwrap();
-    assert_eq!(pair.read_passcred(UnixEnd::B, 64, true), b"first",
+    assert_eq!(pair.read_passcred(UnixEnd::B, 64, true, false), b"first",
         "credential passing on: different writers are never glued");
-    assert_eq!(pair.read_passcred(UnixEnd::B, 64, true), b"second");
+    assert_eq!(pair.read_passcred(UnixEnd::B, 64, true, false), b"second");
 
     let plain = UnixPair::new();
     plain.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), (11, 12, 13)).unwrap();
     plain.write_with_rights_and_creds(UnixEnd::A, b"second", classify_files(alloc::vec![]), (21, 22, 23)).unwrap();
-    assert_eq!(plain.read_passcred(UnixEnd::B, 64, false), b"firstsecond",
+    assert_eq!(plain.read_passcred(UnixEnd::B, 64, false, false), b"firstsecond",
         "credential passing off: the sender's identity is not a boundary");
 }
 
@@ -214,13 +214,13 @@ fn stream_receive_ends_when_a_new_writer_arrives_during_a_waitall_sleep() {
     // what it already has, NOT glue the new writer on.
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), (11, 12, 13)).unwrap();
-    let (first, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None,
+    let (first, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     assert_eq!(first, b"first");
     let committed = control.committed_sender().cloned().expect("the run names the writer it glued");
 
     pair.write_with_rights_and_creds(UnixEnd::A, b"second", classify_files(alloc::vec![]), (21, 22, 23)).unwrap();
-    let resumed = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, Some(&committed),
+    let resumed = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, Some(&committed), false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap();
     let (bytes, control, cred) = resumed.expect("a writer change is a boundary, not an empty queue");
     assert!(bytes.is_empty(), "not one byte of the new writer is glued on");
@@ -240,10 +240,10 @@ fn stream_receive_reports_an_empty_queue_as_nothing_queued() {
     // more instead of ending on a boundary that does not exist.
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), (11, 12, 13)).unwrap();
-    let (_, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None,
+    let (_, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     let committed = control.committed_sender().cloned().unwrap();
-    let drained = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, Some(&committed),
+    let drained = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, Some(&committed), false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap();
     assert!(drained.is_none(), "an exhausted queue is not a writer boundary");
 }
@@ -254,11 +254,11 @@ fn stream_waitall_resume_glues_more_bytes_from_the_same_writer() {
     let pair = UnixPair::new();
     let cred = (31, 32, 33);
     pair.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), cred).unwrap();
-    let (_, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None,
+    let (_, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     let committed = control.committed_sender().cloned().unwrap();
     pair.write_with_rights_and_creds(UnixEnd::A, b"second", classify_files(alloc::vec![]), cred).unwrap();
-    let (more, _, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, Some(&committed),
+    let (more, _, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, Some(&committed), false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     assert_eq!(more, b"second", "the same writer keeps being glued across the sleep");
 }
@@ -268,11 +268,11 @@ fn stream_committed_writer_binds_nothing_without_credential_passing() {
     let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), (11, 12, 13)).unwrap();
-    let (_, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None,
+    let (_, control, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, true, None, false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     let committed = control.committed_sender().cloned().unwrap();
     pair.write_with_rights_and_creds(UnixEnd::A, b"second", classify_files(alloc::vec![]), (21, 22, 23)).unwrap();
-    let (more, _, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, false, Some(&committed),
+    let (more, _, _) = pair.read_stream_with_offset(UnixEnd::B, 64, false, 0, false, Some(&committed), false,
         |data, _, _| Ok::<_, ()>((data.to_vec(), data.len()))).unwrap().unwrap();
     assert_eq!(more, b"second", "the writer is not a boundary on a socket that passes no credentials");
 }

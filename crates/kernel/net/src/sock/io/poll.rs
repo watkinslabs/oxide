@@ -80,7 +80,11 @@ impl InetSocket {
                 mask | pending
             }
             SockKind::Unix(pair, end) => {
-                pair.poll_mask(*end, sndbuf_cap) | pending
+                // A byte awaiting `recv(MSG_OOB)` is priority readiness, which
+                // `SO_OOBINLINE` does not suppress: the option changes which
+                // receive delivers the byte, not that one is there.
+                let urgent = if pair.has_oob(*end) { vfs::POLL_PRI } else { 0 };
+                pair.poll_mask(*end, sndbuf_cap) | urgent | pending
             }
             SockKind::UnixListener(_) => pending,
             SockKind::UnixDgram(q) => {
@@ -128,6 +132,11 @@ impl InetSocket {
             vfs::IoctlIntCmd::Siocoutqnsd => self.outq_nsd_len(),
             vfs::IoctlIntCmd::Siocatmark => match &*self.kind.lock() {
                 SockKind::TcpConn(entry) => Ok(entry.conn.lock().at_urgent_mark() as u32),
+                SockKind::Unix(pair, end) => Ok(pair.at_oob_mark(*end) as u32),
+                // AF_UNIX has an out-of-band channel only on `SOCK_STREAM`, so
+                // the mark is not a question the other flavours can answer.
+                SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _) | SockKind::UnixListener(_)
+                | SockKind::UnixUnbound(_, _) => Err(vfs::VfsError::Eopnotsupp),
                 _ => Err(vfs::VfsError::Enotty),
             },
         }
@@ -146,10 +155,9 @@ impl InetSocket {
                 } else { 0 }
             }
             SockKind::TcpConn(entry) => { drain_loopback(); entry.conn.lock().recv_buf.len() }
-            SockKind::Unix(pair, end) => match end {
-                crate::UnixEnd::A => pair.b_to_a.lock().buf.len(),
-                crate::UnixEnd::B => pair.a_to_b.lock().buf.len(),
-            },
+            // A spent out-of-band record still holds a queue slot but delivers
+            // nothing, so it is not a byte the reader can ask for.
+            SockKind::Unix(pair, end) => pair.readable_len(*end),
             SockKind::UnixDgram(q) => q.msgs.lock().front().map(|m| m.payload.len()).unwrap_or(0),
             SockKind::UnixMsgPair(pair, end) => {
                 let g = match end { crate::UnixEnd::A => pair.b_to_a.lock(), crate::UnixEnd::B => pair.a_to_b.lock() };
