@@ -89,6 +89,8 @@ pub mod route6;
 pub mod policy_rule;
 pub mod forwarding;
 pub mod iface_addr;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub mod router_alert;
 pub mod bind_screen;
 pub mod local_port;
 pub mod netfilter_hook;
