@@ -96,15 +96,79 @@ def load_overstated_allow():
     return out
 
 
-def main(path):
-    lines = open(path).read().split("\n")
+def table(lines):
+    """Locate `## Main Matrix`, return (start, header names, column count).
+
+    Shared by the lint and the `--counts` reader so a second consumer cannot
+    grow its own parser and disagree with the gate. `F784` is the whole reason
+    this file exists: it counted rows with a parser that split on bare `|`,
+    silently dropped the 65 pipe-bearing rows, and reported the absence as
+    "untracked". Any counter that re-derives the split has re-created that bug.
+    """
     try:
         start = next(i for i, l in enumerate(lines) if l.startswith("## Main Matrix"))
     except StopIteration:
-        print("matrix-lint: no '## Main Matrix' section"); return 1
+        return None
     header = next(l for l in lines[start:] if l.startswith("| Nr |"))
-    ncol = len(UNESCAPED_PIPE.split(header))
     names = [c.strip() for c in UNESCAPED_PIPE.split(header)]
+    return start, names, len(names)
+
+
+def iter_rows(lines, start, ncol):
+    """Yield (line_no, fields) for each numbered row, escape-aware.
+
+    Yields malformed rows too (fields length != ncol) so the lint can fail on
+    them; a caller that only wants well-formed rows filters on `len(f)`.
+    """
+    for i, l in enumerate(lines[start:], start=start + 1):
+        if not l.startswith("| ") or l.startswith("| Nr |") or set(l) <= set("|-: "):
+            continue
+        f = UNESCAPED_PIPE.split(l)
+        if not f[1].strip().isdigit():
+            continue
+        yield i, f
+
+
+def counts(path):
+    """Print `STATUS<TAB>count` for every legend status, plus `ROWS<TAB>n`.
+
+    Consumed by `xtask stats`. Statuses come from the legend, so a status added
+    there appears here without editing this function, and a row the lint would
+    reject is counted as `MALFORMED` rather than silently dropped.
+    """
+    lines = open(path).read().split("\n")
+    t = table(lines)
+    if t is None:
+        print("matrix-lint: no '## Main Matrix' section", file=sys.stderr)
+        return 1
+    start, names, ncol = t
+    st_i = names.index("Status")
+    valid = legend_statuses(lines)
+    if not valid:
+        print("matrix-lint: could not parse the '## Status Legend' table", file=sys.stderr)
+        return 1
+    tally = dict.fromkeys(valid, 0)
+    tally["MALFORMED"] = 0
+    rows = 0
+    for _, f in iter_rows(lines, start, ncol):
+        rows += 1
+        if len(f) != ncol:
+            tally["MALFORMED"] += 1
+            continue
+        st = f[st_i].strip().strip("`")
+        tally[st] = tally.get(st, 0) + 1
+    print(f"ROWS\t{rows}")
+    for k in sorted(tally):
+        print(f"{k}\t{tally[k]}")
+    return 0
+
+
+def main(path):
+    lines = open(path).read().split("\n")
+    t = table(lines)
+    if t is None:
+        print("matrix-lint: no '## Main Matrix' section"); return 1
+    start, names, ncol = t
     st_i = names.index("Status")
     VALID = legend_statuses(lines)
     if not VALID:
@@ -189,4 +253,8 @@ def main(path):
     return 1 if bad else 0
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "scratch/syscall-compliance-matrix.md"))
+    argv = sys.argv[1:]
+    want_counts = "--counts" in argv
+    argv = [a for a in argv if a != "--counts"]
+    path = argv[0] if argv else "scratch/syscall-compliance-matrix.md"
+    sys.exit(counts(path) if want_counts else main(path))
