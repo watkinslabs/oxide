@@ -31,7 +31,7 @@ fn record_destroy(driver_key: ScanoutDriverKey, _res_id: u32) -> bool {
     true
 }
 
-fn record_set_scanout(driver_key: ScanoutDriverKey, _res_id: u32, _w: u32, _h: u32) -> bool {
+fn record_set_scanout(driver_key: ScanoutDriverKey, _res_id: u32, _w: u32, _h: u32, _d: DamageRect) -> bool {
     LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     true
 }
@@ -109,7 +109,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             driver_key: scanout_key(0x7001),
             create_from_pa: record_create,
             destroy_resource: record_destroy,
-            set_scanout: record_set_scanout,
+            present: record_set_scanout,
             set_cursor: record_set_cursor,
             move_cursor: record_move_cursor,
             restore_console: record_restore,
@@ -119,7 +119,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             driver_key: scanout_key(0x8002),
             create_from_pa: record_create,
             destroy_resource: record_destroy,
-            set_scanout: record_set_scanout,
+            present: record_set_scanout,
             set_cursor: record_set_cursor,
             move_cursor: record_move_cursor,
             restore_console: record_restore,
@@ -130,7 +130,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
         let ops8 = scanout_ops(8).unwrap();
         assert_eq!(ops7.driver_key.raw(), 0x7001);
         assert_eq!(ops8.driver_key.raw(), 0x8002);
-        assert!((ops7.set_scanout)(ops7.driver_key, 42, 640, 480));
+        assert!((ops7.present)(ops7.driver_key, 42, 640, 480, DamageRect::full(640, 480)));
         assert_eq!(LAST_SCANOUT_DRIVER_KEY.load(Ordering::Acquire), 0x7001);
         assert!((ops8.restore_console)(ops8.driver_key));
         assert_eq!(LAST_SCANOUT_DRIVER_KEY.load(Ordering::Acquire), 0x8002);
