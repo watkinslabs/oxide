@@ -93,12 +93,12 @@ pub fn set_user_regs(t: &Task, u: &[u64; REGS_N]) -> Result<(), Errno> {
     {
         let mut seg = seg_state(t);
         let rax = crate::s101_ptrace_regs::x86::from_user_regs(u, &mut f, &mut seg, ::hal::USER_VA_END)?;
-        // No user GS base exists on this port (arch_prctl has no ARCH_SET_GS),
-        // so a non-zero request cannot be honoured; refusing is EIO rather
-        // than a silent drop.
-        if seg.gs_base != 0 { return Err(Errno::Eio); }
-        // SAFETY: the tracee is ptrace-stopped, so its ArchCtx is not being switched; `arch_ctx_ptr` returns its own 64-byte context buffer and `fs_base` is the field the ctxsw reloads into IA32_FS_BASE.
-        unsafe { (*t.arch_ctx_ptr::<hal_x86_64::ContextX86_64>()).fs_base = seg.fs_base; }
+        // SAFETY: the tracee is ptrace-stopped, so its ArchCtx is not being switched; `arch_ctx_ptr` returns its own context buffer, and fs_base/gs_base are the fields the ctxsw reloads into IA32_FS_BASE / IA32_KERNEL_GS_BASE.
+        unsafe {
+            let p = t.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
+            (*p).fs_base = seg.fs_base;
+            (*p).gs_base = seg.gs_base;
+        }
         t.ptrace_stop_rax.store(rax, Ordering::Release);
     }
     #[cfg(target_arch = "aarch64")]
@@ -181,16 +181,20 @@ pub fn set_syscall_return(t: &Task, rval: i64) -> Result<(), Errno> {
 }
 
 /// Segment state the entry frame does not carry. `cs`/`ss` are this port's
-/// fixed user selectors; `fs_base` comes from the tracee's saved `ArchCtx`;
-/// `gs_base` is always 0 (no ARCH_SET_GS on this port).
+/// fixed user selectors; `fs_base` and `gs_base` come from the tracee's saved
+/// `ArchCtx`, the same fields `arch_prctl(ARCH_SET_FS/ARCH_SET_GS)` mirrors
+/// and the context switch reloads.
 #[cfg(target_arch = "x86_64")]
 fn seg_state(t: &Task) -> crate::s101_ptrace_regs::x86::SegState {
-    // SAFETY: the tracee is ptrace-stopped, so no CPU is running its context switch; `arch_ctx_ptr` returns its own context buffer, whose `fs_base` field the ctxsw keeps in sync with IA32_FS_BASE.
-    let fs_base = unsafe { (*t.arch_ctx_ptr::<hal_x86_64::ContextX86_64>()).fs_base };
+    // SAFETY: the tracee is ptrace-stopped, so no CPU is running its context switch; `arch_ctx_ptr` returns its own context buffer, whose fs_base/gs_base fields the ctxsw keeps in sync with IA32_FS_BASE / IA32_KERNEL_GS_BASE.
+    let (fs_base, gs_base) = unsafe {
+        let p = t.arch_ctx_ptr::<hal_x86_64::ContextX86_64>();
+        ((*p).fs_base, (*p).gs_base)
+    };
     crate::s101_ptrace_regs::x86::SegState {
         cs: hal_x86_64::USER_CS as u64,
         ss: hal_x86_64::USER_DS as u64,
         ds: 0, es: 0, fs: 0, gs: 0,
-        fs_base, gs_base: 0,
+        fs_base, gs_base,
     }
 }

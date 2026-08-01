@@ -1,8 +1,12 @@
 // CPU-exception fault handler per `22§4`.
 //
-// Fault entry stubs live in `stubs`; this file is the manifest and
-// public dispatch surface for x86_64 exception handling.
+// Module manifest:
+//   stubs    — per-vector entry stubs + the regular/paranoid common paths.
+//   paranoid — which vectors take the paranoid entry and their IST slots.
+// This file is the manifest and public dispatch surface for x86_64
+// exception handling.
 
+pub mod paranoid;
 mod stubs;
 
 pub use stubs::vector_stub_addr;

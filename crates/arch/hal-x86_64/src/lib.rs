@@ -22,6 +22,7 @@ mod irq_gate;
 pub mod linux_retpoline;
 mod mmu;
 pub mod mmu_ops;
+pub mod msr;
 pub mod pci;
 mod pt_regs;
 mod regs;
@@ -34,7 +35,7 @@ mod uaccess;
 pub mod vmm;
 
 pub use context::{ContextX86_64, ForkRegs};
-pub use cpu::{get_user_fs_base, halt, mmio_barrier, set_user_fs_base, X86CpuOps};
+pub use cpu::{get_user_fs_base, get_user_gs_base, halt, mmio_barrier, set_user_fs_base, set_user_gs_base, X86CpuOps};
 pub use cpuid_fault::{cpuid_fault_kind, cpuid_fault_supported, set_cpuid_faulting,
     CPUID_FAULT_AMD, CPUID_FAULT_INTEL, CPUID_FAULT_NONE};
 pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, vendor as cpuid_vendor};
@@ -72,7 +73,7 @@ pub use pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_NMI, PT_REGS_VECTOR_SYSC
 pub use regs::{read_clear_dr6, set_data_watchpoint};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
 pub use regs::{arm_hole_watchpoint, disarm_hole_watchpoint, read_dr0_dr1};
-pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
+pub use regs::{clear_cr4_fsgsbase, enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
 pub use signal::{build_signal_frame, min_sigstksz, current_user_sp, sigframe_base, sigframe_range, restart_ignored_syscall, restart_via_restart_syscall, restore_signal_frame, rt_sigreturn_frame_range};
 pub use syscall::{
     boot_syscall_kstack_top, current_kstack_top, current_pt_regs,

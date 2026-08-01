@@ -133,3 +133,23 @@ fn unknown_sub_code_is_einval() {
         assert_eq!(classify(code, 0), Err(Errno::Einval), "code {code:#x}");
     }
 }
+
+#[test]
+fn every_accepted_gs_base_keeps_bit_63_clear() {
+    // Cross-module invariant, and the reason ARCH_SET_GS can exist at all on
+    // this port: the paranoid exception entry decides whether it must
+    // `swapgs` by testing the sign of the live GS base. That test is only
+    // sound while no value userspace can install has bit 63 set. The
+    // TASK_SIZE_MAX rule is what guarantees it — so anything `classify`
+    // accepts for ARCH_SET_GS must read as a USER base.
+    for v in [0u64, 1, 4096, 0x7f00_1234_5000, TASK_SIZE_MAX - 1] {
+        assert_eq!(classify(nrs::ARCH_SET_GS, v), Ok(ArchOp::SetGs(v)));
+        assert!(!hal_x86_64::msr::gs_base_is_kernel(v),
+            "ARCH_SET_GS({v:#x}) would forge a kernel-looking GS base");
+    }
+    // And every value that WOULD forge one is refused before the write.
+    for v in [1u64 << 63, 0xffff_8000_0000_0000, 0xffff_ffff_8100_0000, u64::MAX] {
+        assert!(hal_x86_64::msr::gs_base_is_kernel(v));
+        assert_eq!(classify(nrs::ARCH_SET_GS, v), Err(Errno::Eperm));
+    }
+}
