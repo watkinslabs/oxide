@@ -122,6 +122,14 @@ pub struct SuperBlock {
     pub s_maxbytes: u64,
     /// `s_max_links` — zero means unlimited; nonzero caps hardlinks in `vfs_link`.
     pub s_max_links: AtomicU32,
+    /// Next `i_generation` to hand an inode this instance builds WITHOUT a
+    /// backend-supplied one. An on-disk filesystem stores a generation per
+    /// inode and passes it verbatim; an in-memory one has nowhere to keep it,
+    /// so the instance mints a monotonically increasing value instead. That is
+    /// enough for the property `name_to_handle_at`/`open_by_handle_at` need —
+    /// two inodes that reuse one number are distinguishable — because an
+    /// in-memory instance does not survive a reboot for a handle to outlive.
+    s_next_generation: AtomicU32,
     /// `s_time_gran` — timestamp granularity in ns (Linux `sb->s_time_gran`),
     /// set at `fill_super` ([`SuperBlock::set_time_gran`]) and consulted by
     /// [`SuperBlock::timestamp_truncate`] to floor inode atime/mtime/ctime to

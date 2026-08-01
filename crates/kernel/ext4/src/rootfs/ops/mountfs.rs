@@ -55,6 +55,40 @@ impl vfs::SuperOps for Ext4SuperOps {
     /// # C: O(1)
     fn drop_inode(&self, inode: &vfs::Inode) -> bool { inode.nlink() == 0 }
 
+    /// `s_export_op->fh_to_dentry` (Linux `ext4_fh_to_dentry` →
+    /// `ext4_nfs_get_inode`): re-read the inode named by an
+    /// `open_by_handle_at(2)` handle FROM DISK, so a handle outlives the inode
+    /// cache instead of going stale the moment the last opener closed the file.
+    ///
+    /// The three ways it stays stale are the three Linux enforces: the number
+    /// is outside the filesystem, its bit is clear in the inode bitmap (the
+    /// slot is free — surfaced here as `i_links_count == 0`, which is what a
+    /// freed slot carries), or the on-disk `i_generation` disagrees with the
+    /// one the handle was minted against, meaning the number was reallocated to
+    /// a different object.
+    /// # C: O(1) inode read
+    fn fh_to_dentry(&self, sb: &vfs::SuperBlock, ino: vfs::Ino, generation: u32)
+        -> Option<vfs::InodeRef>
+    {
+        // A resident inode is the authoritative incarnation: return the SAME
+        // `Arc` a path walk would, never a second parallel copy of one object.
+        if let Some(i) = sb.ilookup(ino) {
+            return if vfs::export::generation_matches(&i, generation) { Some(i) } else { None };
+        }
+        if !crate::rootfs::inode::is_ext4_ino(ino) { return None; }
+        let raw_ino = crate::rootfs::inode::ext4_unwrap_ino(ino);
+        if raw_ino == 0 || raw_ino > self.st.mount.sb.inodes_count { return None; }
+        let raw = self.st.mount.read_inode(raw_ino).ok()?;
+        // A freed slot keeps its old contents apart from the link count, so
+        // `nlink == 0` is how a handle to a deleted file is told apart from one
+        // to a live file. The root inode is exempt: it is reachable by
+        // definition and some images leave its count unconventional.
+        if raw.links_count == 0 && raw_ino != crate::superblock::EXT4_ROOT_INO { return None; }
+        if generation != vfs::export::GENERATION_ANY && raw.generation != vfs::export::GENERATION_ANY
+            && raw.generation != generation { return None; }
+        self.st.wrap_any_ino(raw_ino)
+    }
+
     /// Linux `ext4_evict_inode`: an inode reaching here with no links is the
     /// unlinked-but-was-open (or never-named O_TMPFILE) case — truncate its
     /// data blocks, release its quota charge, and free the inode slot NOW that
