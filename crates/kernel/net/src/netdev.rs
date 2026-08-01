@@ -144,7 +144,7 @@ impl McastReportState {
     pub(crate) fn retire(&self) {
         self.state.fetch_and(!Self::LIVE, Ordering::AcqRel);
         while self.state.load(Ordering::Acquire) & (Self::V4 | Self::V6) != 0 {
-            core::hint::spin_loop();
+            sync::relax();
         }
     }
     pub(crate) fn try_v4(&self) -> bool { self.try_drive(Self::V4) }
