@@ -14,6 +14,36 @@ impl OptOut {
     /// Publish an `int`-shaped option value. # C: O(1)
     pub fn i32(&self, val: i32) -> i64 { self.bytes(&val.to_ne_bytes()) }
 
+    /// The caller's declared buffer length, screened once for the readers that
+    /// branch on it before they choose a value. # C: O(1)
+    pub fn requested_len(&self) -> Result<usize, i64> {
+        let mut raw_len = [0u8; 4];
+        if uaccess::copy_from_user(&mut raw_len, self.optlen_p).is_err() {
+            return Err(-(Errno::Efault.as_i32() as i64));
+        }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        Ok(requested as usize)
+    }
+
+    /// Publish a value whose length the caller already had to supply exactly,
+    /// leaving the length word untouched. # C: O(n)
+    pub fn value_only(&self, value: &[u8]) -> i64 {
+        if !value.is_empty() && uaccess::copy_to_user(self.optval, value).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    }
+
+    /// Publish only a length — the size a value needs when the caller's buffer
+    /// was too small to receive it. # C: O(1)
+    pub fn length_only(&self, len: usize) -> i64 {
+        if uaccess::copy_to_user(self.optlen_p, &(len as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    }
+
     /// Publish a byte-shaped option value truncated to the caller's length.
     /// # C: O(n)
     pub fn bytes(&self, value: &[u8]) -> i64 {

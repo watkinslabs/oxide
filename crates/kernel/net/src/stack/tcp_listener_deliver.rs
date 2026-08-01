@@ -75,6 +75,12 @@ impl NetStack {
         let new_entry = build_passive_child(local_ep, own_mss, metrics, &listener);
         // Handshake input runs against the heap-resident child, so the connection
         // state never occupies a frame on the delivery path.
+        // Record the handshake packet the child was opened by, from the
+        // network header onward, so an accepted socket that asked for it with
+        // `TCP_SAVE_SYN` has something to collect. It is dropped with the
+        // connection if nobody does.
+        new_entry.conn.lock().syn_bytes =
+            Some(packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
         let resp = match new_entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
             Err(_) => {

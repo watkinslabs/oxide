@@ -1,3 +1,5 @@
+#![cfg(target_os = "oxide-kernel")]
+
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 

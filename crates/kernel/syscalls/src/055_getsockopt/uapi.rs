@@ -47,12 +47,6 @@ pub(super) const ICMP6_FILTER: u64 = 1;
 pub(super) const ICMP6_FILTER_BYTES: usize = 32;
 pub(super) const MCAST_MSFILTER: u64 = 48;
 
-pub(super) const TCP_NODELAY: u64 = 1;
-pub(super) const TCP_CORK: u64 = 3;
-pub(super) const TCP_KEEPIDLE: u64 = 4;
-pub(super) const TCP_KEEPINTVL: u64 = 5;
-pub(super) const TCP_KEEPCNT: u64 = 6;
-pub(super) const TCP_INFO: u64 = 11;
 
 /// Linux default outbound multicast hop limit when `IPV6_MULTICAST_HOPS` is unset.
 pub(super) const IPV6_DEFAULT_MULTICAST_HOPS: i32 = 1;
