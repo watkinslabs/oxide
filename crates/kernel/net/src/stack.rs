@@ -19,7 +19,6 @@
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
 // - rx_backlog: per-CPU receive backlog, poll list, and the NET_RX drain pass.
 // - ethernet: canonical L2 ingress before bridge and L3 demultiplexing.
-// - arp_neighbor: canonical per-interface IPv4 neighbor bindings.
 // - bridge: RTNL-owned port/FDB state and L2 forwarding decisions.
 // - bridge_port_info: legacy bridge-port configuration snapshots.
 // - bridge_config: legacy bridge timing configuration.
@@ -83,7 +82,6 @@ mod tcp_pmtu;
 mod ipv4;
 mod rx_backlog;
 mod ethernet;
-mod arp_neighbor;
 mod neigh_rtnl;
 mod bridge;
 mod bridge_fdb;

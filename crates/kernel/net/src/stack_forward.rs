@@ -16,7 +16,11 @@ impl NetStack {
     /// Learns the sender neighbour and replies only for this interface's
     /// primary IPv4 address. # C: O(log N + frame)
     pub fn deliver_arp_in(&self, lease: &crate::IngressLease, payload: &[u8]) -> NetResult<()> {
-        let request = crate::arp::ArpPkt::parse(payload).map_err(|_| NetError::Einval)?;
+        // A malformed ARP payload is a dropped frame, not an ingress error: the
+        // reference consumes the packet and returns success to its caller, so a
+        // truncated or unsupported-hardware ARP cannot fail the L2 dispatch that
+        // delivered it.
+        let Ok(request) = crate::arp::ArpPkt::parse(payload) else { return Ok(()); };
         let cache = self.ifaces.arp_cache_in_ns(lease.iface(), lease.net_ns())
             .ok_or(NetError::Enodev)?;
         let state = if request.opcode == crate::arp::ARP_OP_REPLY {
@@ -27,6 +31,10 @@ impl NetStack {
         let resolved = cache.learn_at(request.sender_ip, request.sender_mac, state,
             crate::stack::net_now_ns());
         for job in resolved { job.resume(); }
+        // A bridge parks its own unresolved packets rather than in the
+        // interface transmit queue, so the one neighbour owner has to release
+        // both or bridged traffic waits on a binding that already exists.
+        self.bridge_neighbour_resolved(lease.iface(), crate::addr::IpAddr::V4(request.sender_ip));
         if request.opcode != crate::arp::ARP_OP_REQUEST { return Ok(()); }
         let local = self.ipv4_iface_addr(lease.net_ns(), lease.iface()) == Some(request.target_ip);
         let explicit_proxy = self.arp_proxy.contains(lease.net_ns(), lease.iface(), request.target_ip);
