@@ -20,9 +20,13 @@
 extern crate std;
 
 extern crate alloc;
+pub mod digest;
+pub mod sha1;
 pub mod sha256;
 pub mod sha512;
 pub mod yescrypt;
+pub use digest::Digest;
+pub use sha1::Sha1;
 pub use sha256::Sha256;
 pub use sha512::Sha512;
 

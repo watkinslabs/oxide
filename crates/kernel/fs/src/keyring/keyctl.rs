@@ -6,8 +6,11 @@ use syscall::errno::Errno;
 
 use super::ops;
 use super::uapi::*;
+
 use super::{cur_ctx, err, read_user_bytes, read_user_key_desc, read_user_key_type,
     write_user_capped, write_user_exact};
+
+mod dh;
 
 /// `sys_keyctl(op, arg2..arg5)` — slot 250.
 ///
@@ -95,25 +98,44 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         }
         KEYCTL_MOVE => ops::move_core(&c, args.a1 as i32, args.a2 as i32, args.a3 as i32, args.a4 as u32),
         KEYCTL_CAPABILITIES => capabilities(args.a1, args.a2),
-        // `CONFIG_KEY_DH_OPERATIONS=n`, `CONFIG_ASYMMETRIC_KEY_TYPE=n` and
-        // `CONFIG_KEY_NOTIFICATIONS=n` make Linux itself return EOPNOTSUPP
-        // from the stubs in `security/keys/internal.h`. The advertised
-        // `KEYCTL_CAPABILITIES` bits agree: neither DH, public-key nor
-        // notification support is claimed.
-        KEYCTL_DH_COMPUTE | KEYCTL_PKEY_QUERY | KEYCTL_PKEY_ENCRYPT | KEYCTL_PKEY_DECRYPT
+        KEYCTL_DH_COMPUTE => dh::dh_compute(&c, args),
+        // The public-key and key-notification command families are not built
+        // here yet; the `KEYCTL_CAPABILITIES` bits below are computed from the
+        // same facts, so a caller that probes before use is told exactly what
+        // it will get.
+        KEYCTL_PKEY_QUERY | KEYCTL_PKEY_ENCRYPT | KEYCTL_PKEY_DECRYPT
         | KEYCTL_PKEY_SIGN | KEYCTL_PKEY_VERIFY | KEYCTL_WATCH_KEY => err(Errno::Eopnotsupp),
         _ => err(Errno::Eopnotsupp),
     }
+}
+
+/// The capability bytes this build reports.
+///
+/// Each optional bit is taken from the module that IMPLEMENTS the feature
+/// (`ops::dh::SUPPORTED` and friends), never from a list kept alongside the
+/// dispatch: a second list is a second truth, and the failure it produces —
+/// a bit claiming a command that answers EOPNOTSUPP, or a working command no
+/// caller probes for — is silent in both directions. The unconditional bits
+/// name commands this kernel has no build option to omit.
+/// # C: O(1)
+pub(super) fn keyrings_capabilities() -> [u8; KEYCTL_CAPS_BYTES] {
+    let mut b0 = KEYCTL_CAPS0_CAPABILITIES | KEYCTL_CAPS0_PERSISTENT_KEYRINGS
+        | KEYCTL_CAPS0_BIG_KEY | KEYCTL_CAPS0_INVALIDATE | KEYCTL_CAPS0_RESTRICT_KEYRING
+        | KEYCTL_CAPS0_MOVE;
+    let b1 = KEYCTL_CAPS1_NS_KEYRING_NAME | KEYCTL_CAPS1_NS_KEY_TAG;
+    if ops::dh::SUPPORTED { b0 |= KEYCTL_CAPS0_DIFFIE_HELLMAN; }
+    [b0, b1]
 }
 
 /// `keyctl_capabilities(buffer, buflen)`: copy up to `buflen` capability
 /// bytes, zero-fill any remaining caller buffer, and return the FULL size so a
 /// caller built against a longer array learns the true length. # C: O(buflen)
 fn capabilities(buf_p: u64, buflen: u64) -> i64 {
-    let full = KEYRINGS_CAPABILITIES.len();
+    let caps = keyrings_capabilities();
+    let full = caps.len();
     if buflen > 0 {
         let n = core::cmp::min(buflen as usize, full);
-        if let Err(rv) = super::write_user_bytes(buf_p, &KEYRINGS_CAPABILITIES[..n]) { return rv; }
+        if let Err(rv) = super::write_user_bytes(buf_p, &caps[..n]) { return rv; }
         if (buflen as usize) > n {
             let zeros = alloc::vec![0u8; buflen as usize - n];
             if let Err(rv) = super::write_user_bytes(buf_p + n as u64, &zeros) { return rv; }

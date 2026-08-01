@@ -17,9 +17,14 @@
 //          request_key upcalls.
 // - instantiate: INSTANTIATE, INSTANTIATE_IOV, NEGATE, REJECT,
 //          ASSUME_AUTHORITY — the family gated on the authorisation token.
+// - dh:    DH_COMPUTE — the three key payloads it reads, the parameter
+//          admission rules, the modular exponentiation and the counter-mode
+//          derivation. Owns the fact that the command is implemented at all,
+//          which is where the reported capability bit comes from.
 
 use super::store::TaskIds;
 
+pub mod dh;
 mod instantiate;
 mod keys;
 mod links;
