@@ -1,30 +1,15 @@
 use super::*;
-use alloc::{boxed::Box, vec};
-use std::sync::{Mutex, MutexGuard, Once};
+use std::sync::{Mutex, MutexGuard};
 
-static ZRAM_PROVIDER_ONCE: Once = Once::new();
-static ZRAM_TEST_PAGES: Mutex<Vec<Box<[u8]>>> = Mutex::new(Vec::new());
+// zram accepts exactly one physical-page provider per process and rejects a
+// second one. These tests therefore do NOT install their own: zram's device
+// constructors install the single hosted fixture themselves, so a swap test
+// that reaches zram through `hot_add` gets the same provider every other
+// hosted zram test uses. A local second provider here compiled out whenever
+// `drv-zram/hosted` was off and collided with the driver's whenever it was on,
+// which is why this file's outcome depended on which OTHER package happened to
+// be in the same cargo invocation.
 
-fn zram_test_alloc() -> Option<u64> {
-    let mut pages = ZRAM_TEST_PAGES.lock().ok()?;
-    pages.push(vec![0; hal::PAGE_SIZE_BYTES as usize].into_boxed_slice());
-    Some((pages.len() as u64) * hal::PAGE_SIZE_BYTES)
-}
-fn zram_test_ptr(pa: u64) -> Option<*mut u8> {
-    let index = usize::try_from(pa / hal::PAGE_SIZE_BYTES).ok()?.checked_sub(1)?;
-    let mut pages = ZRAM_TEST_PAGES.lock().ok()?;
-    Some(pages.get_mut(index)?.as_mut_ptr())
-}
-fn zram_test_release(_pa: u64) {}
-fn zram_test_lock(_pa: u64) -> bool { true }
-fn zram_test_unlock(_pa: u64) -> bool { true }
-fn install_zram_test_provider() {
-    ZRAM_PROVIDER_ONCE.call_once(|| {
-        drv_zram::install_page_provider(drv_zram::PageProvider::new(
-            zram_test_alloc, zram_test_release, zram_test_ptr, zram_test_lock, zram_test_unlock,
-        )).unwrap();
-    });
-}
 use block::{BlockRequest, MemDisk};
 use sync::TaskList;
 
@@ -173,7 +158,6 @@ fn snapshot_excludes_header_and_bad_pages_from_capacity() {
 #[test]
 fn final_swap_reference_reclaims_zram_slot() {
     let _guard = swap_test_lock();
-    install_zram_test_provider();
     let index = drv_zram::hot_add().unwrap();
     let name = alloc::format!("zram{}", index);
     let zram = drv_zram::by_index(index).unwrap();

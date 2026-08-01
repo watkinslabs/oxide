@@ -20,7 +20,7 @@ movable   = { path = "../../shared/movable" }
 
 [dev-dependencies]
 proptest = "1"
-drv-zram = { path = "../../drivers/drv-zram" }
+drv-zram = { path = "../../drivers/drv-zram", features = ["hosted"] }  # sole hosted PMM page provider; a second one is rejected
 
 [dependencies.sched]
 path = "../sched"
