@@ -14,6 +14,19 @@ impl OptOut {
     /// Publish an `int`-shaped option value. # C: O(1)
     pub fn i32(&self, val: i32) -> i64 { self.bytes(&val.to_ne_bytes()) }
 
+    /// Publish a value whose length the option table already resolved: the
+    /// bytes go out as they are, and the published length is exactly how many
+    /// were written. # C: O(n)
+    pub fn exact(&self, value: &[u8]) -> i64 {
+        if !value.is_empty() && uaccess::copy_to_user(self.optval, value).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if uaccess::copy_to_user(self.optlen_p, &(value.len() as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    }
+
     /// Publish a byte-shaped option value truncated to the caller's length.
     /// # C: O(n)
     pub fn bytes(&self, value: &[u8]) -> i64 {
