@@ -49,6 +49,14 @@ pub fn sys_readv(args: &SyscallArgs) -> i64 {
         cur.account_read_result(ret);
         return ret;
     }
+    // fanotify content gates. A vectored read is ONE access at the
+    // description's cursor: the iovecs are where the bytes land, not which
+    // bytes are read.
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), false, Some(file.pos()), 0) {
+        let ret = -(e.as_i32() as i64);
+        cur.account_read_result(ret);
+        return ret;
+    }
     if iovcnt > IOV_MAX {
         let ret = -(Errno::Einval.as_i32() as i64);
         cur.account_read_result(ret);

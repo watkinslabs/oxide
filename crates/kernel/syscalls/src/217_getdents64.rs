@@ -152,6 +152,12 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
     if count > 0 {
         if let Err(rv) = validate_user_buf_writable(dirp, count as u64, 1) { return rv; }
     }
+    // fanotify content gates for a directory read. A directory access names no
+    // byte range — the entries are not the file's content — so the pre-content
+    // event carries no range record.
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&inode, false, None, 0) {
+        return -(e.as_i32() as i64);
+    }
     #[cfg(feature = "debug-getdents")]
     sched::diag::getdents_begin(cur, fd, file.mnt_id(), inode.ino(), file.pos(), count);
     #[cfg(feature = "debug-getdents-detail")]

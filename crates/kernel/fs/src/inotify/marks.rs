@@ -46,6 +46,9 @@ use crate::inotify::types::{inode_key, perm_delta, Event, MarkScope, IN_IGNORED,
 pub(crate) fn destroy_inode_marks(inode: &InodeRef) {
     if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
     let key = inode_key(inode);
+    // Released after the instance list lock drops: the last reference going
+    // evicts the inode, and eviction re-enters these same tables.
+    let mut pins: Vec<InodeRef> = Vec::new();
     let g = instances().lock();
     for w in g.iter() {
         let arc = match w.upgrade() { Some(a) => a, None => continue };
@@ -62,16 +65,19 @@ pub(crate) fn destroy_inode_marks(inode: &InodeRef) {
                 }
                 perm_delta(watches[i].mask, 0);
                 freed.push(watches[i].wd);
-                watches.remove(i);
+                let mut dead = watches.remove(i);
+                pins.extend(dead.take_pin());
                 MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
             }
         }
         arc.release_marks(freed.len());
         if arc.is_fanotify() { continue; }
         for wd in freed {
-            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
+            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, ..Default::default() });
         }
     }
+    drop(g);
+    crate::inotify::types::release_pins(pins);
 }
 
 /// An inode is leaving the cache. A mark created with `FAN_MARK_EVICTABLE`
@@ -95,7 +101,11 @@ pub(crate) fn evict_inode_marks(inode: &InodeRef) {
             let mut i = 0usize;
             while i < watches.len() {
                 let wi = &watches[i];
-                if !wi.evictable || wi.scope != MarkScope::Inode || wi.inode_key != key {
+                // Only a mark holding NO reference on the inode can be here at
+                // all: a mark that pins its object keeps that object out of
+                // the eviction path entirely, so the check is the pin itself
+                // rather than a flag recorded beside it.
+                if !wi.is_evictable() || wi.scope != MarkScope::Inode || wi.inode_key != key {
                     i += 1;
                     continue;
                 }
@@ -130,6 +140,7 @@ pub(crate) fn evict_inode_marks(inode: &InodeRef) {
 pub(crate) fn unmount_fs_marks(fsid: u64) {
     if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
     if fsid == 0 { return; }
+    let mut pins: Vec<InodeRef> = Vec::new();
     let g = instances().lock();
     for w in g.iter() {
         let arc = match w.upgrade() { Some(a) => a, None => continue };
@@ -141,15 +152,18 @@ pub(crate) fn unmount_fs_marks(fsid: u64) {
                 if watches[i].fsid != fsid { i += 1; continue; }
                 perm_delta(watches[i].mask, 0);
                 freed.push(watches[i].wd);
-                watches.remove(i);
+                let mut dead = watches.remove(i);
+                pins.extend(dead.take_pin());
                 MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
             }
         }
         arc.release_marks(freed.len());
         if arc.is_fanotify() { continue; }
         for wd in freed {
-            arc.enqueue_event(Event { wd, mask: IN_UNMOUNT, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
-            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
+            arc.enqueue_event(Event { wd, mask: IN_UNMOUNT, cookie: 0, name: Vec::new(), obj: None, pid: 0, ..Default::default() });
+            arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid: 0, ..Default::default() });
         }
     }
+    drop(g);
+    crate::inotify::types::release_pins(pins);
 }

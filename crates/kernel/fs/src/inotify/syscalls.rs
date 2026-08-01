@@ -173,7 +173,7 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     };
     let key = inode_key(&inode);
     let is_dir = inode.file_type() == FileType::Directory;
-    match add_or_update_watch(&inotify, key, inode.fsid(), mask, is_dir) {
+    match add_or_update_watch(&inotify, key, inode.fsid(), mask, is_dir, Some(&inode)) {
         Ok(wd) => wd as i64,
         Err(e) => -(e.as_i32() as i64),
     }
@@ -201,6 +201,7 @@ pub(crate) fn add_or_update_watch(
     fsid: u64,
     mask: u32,
     is_dir: bool,
+    pin: Option<&vfs::InodeRef>,
 ) -> Result<i32, Errno> {
     let event_mask = inotify_arg_to_mask(mask, is_dir);
     let mark_flags = mask & INOTIFY_MARK_FLAGS;
@@ -222,9 +223,11 @@ pub(crate) fn add_or_update_watch(
     // ceiling is charged; failing it unwinds the wd and reports ENOSPC.
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
     if !inotify.charge_mark() { return Err(Errno::Enospc); }
-    g.push(Watch { wd, inode_key: key, fsid, ns_id: 0, scope: MarkScope::Inode, mask: event_mask,
-                   flags: mark_flags, ignored: 0, ignore_has_flags: false,
-                   ignore_survives_modify: false, evictable: false });
+    // An inotify watch is never evictable: it pins the inode it watches, which
+    // is why one watch is budgeted against the per-user ceiling at the cost of
+    // a resident inode.
+    g.push(Watch::new(wd, key, fsid, 0, MarkScope::Inode, event_mask, mark_flags,
+                      0, false, false, pin));
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     Ok(wd)
 }
@@ -236,11 +239,13 @@ pub(crate) fn remove_watch(inotify: &Arc<InotifyData>, wd: i32) -> Result<(), Er
     let Some(pos) = g.iter().position(|w| w.wd == wd) else {
         return Err(Errno::Einval);
     };
-    g.remove(pos);
+    let mut dead = g.remove(pos);
+    let pin = dead.take_pin();
     drop(g);
+    crate::inotify::types::release_pins(pin.into_iter().collect());
     inotify.release_marks(1);
     MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
-    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, perm: None, mnt_id: 0 });
+    inotify.enqueue_event(crate::inotify::types::Event { wd, mask: IN_IGNORED, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, ..Default::default() });
     Ok(())
 }
 
@@ -266,18 +271,31 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
 /// PERM_MARK_COUNT. Returns 0 or the errno. # C: O(N_watches)
 pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usize, fsid: u64,
                          bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
-    apply_mark_ns(inotify, scope, key, fsid, 0, bits, add, ignored, mflags)
+    apply_mark_ns(inotify, scope, key, fsid, 0, bits, add, ignored, mflags, None)
+}
+
+/// [`apply_mark`] for an INODE-scope mark, which pins the inode it is attached
+/// to unless the caller asked for `FAN_MARK_EVICTABLE`. This is the arm
+/// `fanotify_mark` takes for a default-scope mark; the key/fsid arms exist for
+/// the scopes that have no inode. # C: O(N_watches)
+pub(crate) fn apply_inode_mark(inotify: &Arc<InotifyData>, inode: &vfs::InodeRef,
+                               bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
+    let pin = if mflags & FAN_MARK_EVICTABLE != 0 { None } else { Some(inode) };
+    apply_mark_ns(inotify, MarkScope::Inode, inode_key(inode), inode.fsid(), 0,
+                  bits, add, ignored, mflags, pin)
 }
 
 /// [`apply_mark`] for a mark whose object is a MOUNT NAMESPACE (`ns_id`), which
 /// no inode key or `fsid` identifies. # C: O(N_watches)
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_mark_ns(inotify: &Arc<InotifyData>, scope: MarkScope, key: usize, fsid: u64,
-                            ns_id: u64, bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
+                            ns_id: u64, bits: u32, add: bool, ignored: bool, mflags: u32,
+                            pin: Option<&vfs::InodeRef>) -> i64 {
     // `FAN_MARK_IGNORE` means the event flags in the ignore set mean what they
     // say; the legacy `FAN_MARK_IGNORED_MASK` has them reinterpreted (`mask`).
     let ignore_has_flags = mflags & FAN_MARK_IGNORE != 0;
     let survives = mflags & FAN_MARK_IGNORED_SURV_MODIFY != 0;
-    let evictable = mflags & FAN_MARK_EVICTABLE != 0;
+    let mut released: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
     let mut g = inotify.watches.lock();
     let same = |w: &Watch| w.scope == scope && match scope {
         MarkScope::Inode => w.inode_key == key,
@@ -293,15 +311,23 @@ pub(crate) fn apply_mark_ns(inotify: &Arc<InotifyData>, scope: MarkScope, key: u
             g[i].ignore_has_flags = ignore_has_flags;
             g[i].ignore_survives_modify = survives;
         }
-        if add { g[i].evictable = evictable; }
+        // An ADD restates whether the mark pins its object, so a mark that
+        // gains `FAN_MARK_EVICTABLE` gives its reference up and one that loses
+        // it takes a fresh reference.
+        if add { released.extend(g[i].repin(pin)); }
         perm_delta(old, g[i].mask);
         if g[i].mask == 0 && g[i].ignored == 0 {
-            g.remove(i);
+            let mut dead = g.remove(i);
+            released.extend(dead.take_pin());
             MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
             if scope == MarkScope::MountNamespace { MNTNS_MARK_COUNT.fetch_sub(1, Ordering::AcqRel); }
             drop(g);
+            crate::inotify::types::release_pins(released);
             inotify.release_marks(1);
+            return 0;
         }
+        drop(g);
+        crate::inotify::types::release_pins(released);
         return 0;
     }
     if !add { return -(Errno::Enoent.as_i32() as i64); }
@@ -310,9 +336,8 @@ pub(crate) fn apply_mark_ns(inotify: &Arc<InotifyData>, scope: MarkScope, key: u
     if !inotify.charge_mark() { return -(Errno::Enospc.as_i32() as i64); }
     let (mask, ign) = if ignored { (0, bits) } else { (bits, 0) };
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
-    g.push(Watch { wd, inode_key: key, fsid, ns_id, scope, mask, flags: 0, ignored: ign,
-                   ignore_has_flags: ignored && ignore_has_flags,
-                   ignore_survives_modify: ignored && survives, evictable });
+    g.push(Watch::new(wd, key, fsid, ns_id, scope, mask, 0, ign,
+                      ignored && ignore_has_flags, ignored && survives, pin));
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     if scope == MarkScope::MountNamespace { MNTNS_MARK_COUNT.fetch_add(1, Ordering::AcqRel); }
     perm_delta(0, mask);
@@ -347,11 +372,17 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     if flags & FAN_MARK_FLUSH != 0 {
         let mut g = inotify.watches.lock();
         let (mut removed, mut perms) = (0usize, 0usize);
-        g.retain(|w| {
-            if w.scope == scope { removed += 1; if w.mask & PERM_BITS != 0 { perms += 1; } false }
-            else { true }
-        });
+        let mut pins: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
+        let mut i = 0usize;
+        while i < g.len() {
+            if g[i].scope != scope { i += 1; continue; }
+            removed += 1;
+            if g[i].mask & PERM_BITS != 0 { perms += 1; }
+            let mut dead = g.remove(i);
+            pins.extend(dead.take_pin());
+        }
         drop(g);
+        crate::inotify::types::release_pins(pins);
         if removed > 0 { MARK_COUNT.fetch_sub(removed, Ordering::AcqRel); }
         if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
         if removed > 0 && scope == MarkScope::MountNamespace {
@@ -383,7 +414,10 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
             return -(Errno::Einval.as_i32() as i64);
         };
         return apply_mark_ns(&inotify, scope, 0, 0, ns, bits,
-                             flags & FAN_MARK_ADD != 0, ignored, flags);
+                             flags & FAN_MARK_ADD != 0, ignored, flags, None);
+    }
+    if scope == MarkScope::Inode {
+        return apply_inode_mark(&inotify, &inode, bits, flags & FAN_MARK_ADD != 0, ignored, flags);
     }
     let (key, fsid) = (inode_key(&inode), inode.fsid());
     apply_mark(&inotify, scope, key, fsid, bits, flags & FAN_MARK_ADD != 0, ignored, flags)

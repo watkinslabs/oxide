@@ -72,7 +72,7 @@ pub(crate) fn fire_mnt(ns_id: u64, mnt_id: u64, mask: u32) {
         };
         for (wd, report) in hits {
             arc.enqueue_event(Event { wd, mask: report, cookie: 0, name: Vec::new(),
-                                      obj: None, pid, perm: None, mnt_id });
+                                      obj: None, pid, mnt_id, ..Default::default() });
         }
     }
 }

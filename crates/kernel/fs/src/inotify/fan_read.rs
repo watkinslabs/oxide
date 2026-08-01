@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 
 use vfs::{InodeRef, KResult, VfsError};
 
-use crate::inotify::{fan_layout, fan_mnt};
+use crate::inotify::{fan_err, fan_layout, fan_mnt, fan_range, fan_rename};
 use crate::inotify::types::{Event, InotifyData, PermState};
 
 impl InotifyData {
@@ -74,14 +74,53 @@ impl InotifyData {
         fan_layout::info_type_for(fid, dfid, nm, !ev.name.is_empty())
     }
 
+    /// The fid records this group emits for `ev`, in wire order. Slot 0
+    /// describes `(obj, name)` and slot 1 `(dir2, name2)`.
+    ///
+    /// Only a rename fills the second slot, and it renames the first: a watcher
+    /// has to be able to tell the source parent+name from the destination
+    /// parent+name, which the ordinary `DFID_NAME` type cannot say. A rename
+    /// reported to a mark that watches only the destination fills slot 0 alone —
+    /// with the DESTINATION record — because there is no source half to report.
+    /// # C: O(1)
+    fn fid_record_types(&self, ev: &Event) -> [Option<u8>; 2] {
+        if !fan_rename::is_rename_event(ev.mask) { return [self.info_type(ev), None]; }
+        use fan_rename::{FAN_EVENT_INFO_TYPE_NEW_DFID_NAME, FAN_EVENT_INFO_TYPE_OLD_DFID_NAME};
+        match (ev.obj.is_some(), ev.dir2.is_some()) {
+            (true, true)  => [Some(FAN_EVENT_INFO_TYPE_OLD_DFID_NAME),
+                              Some(FAN_EVENT_INFO_TYPE_NEW_DFID_NAME)],
+            (true, false) => [Some(FAN_EVENT_INFO_TYPE_OLD_DFID_NAME), None],
+            (false, true) => [Some(FAN_EVENT_INFO_TYPE_NEW_DFID_NAME), None],
+            (false, false) => [None, None],
+        }
+    }
+
+    /// The inode and name one fid slot describes. Slot 1's name lives in
+    /// `name2`, and a rename reported to a destination-only mark keeps its
+    /// single record in slot 0 — so the slot index alone does not decide which
+    /// pair is read. # C: O(1)
+    fn fid_slot<'a>(&self, ev: &'a Event, slot: usize) -> (Option<&'a InodeRef>, &'a [u8]) {
+        let second = slot == 1 || (slot == 0 && ev.obj.is_none() && ev.dir2.is_some());
+        if second { (ev.dir2.as_ref(), &ev.name2) } else { (ev.obj.as_ref(), &ev.name) }
+    }
+
     /// Bytes `ev` occupies in a reader's buffer under this group's report mode:
-    /// the fixed metadata, the optional fid record, the optional pidfd record,
-    /// and — for a mount-tree change — the mount record naming the mount that
-    /// moved. # C: O(1)
+    /// the fixed metadata, the fid records, the optional pidfd record, and
+    /// whichever family-specific record the event carries — a filesystem error,
+    /// a pre-content byte range, or the mount that moved — in that order.
+    /// # C: O(1)
     pub(crate) fn fan_event_len(&self, ev: &Event) -> usize {
-        let mut n = fan_layout::event_len(self.info_type(ev), fan_layout::FANOTIFY_FID_LEN,
-                                          ev.name.len());
+        let ty = self.fid_record_types(ev);
+        let mut n = fan_layout::FAN_EVENT_METADATA_LEN;
+        for (slot, t) in ty.iter().enumerate() {
+            let Some(t) = *t else { continue };
+            let (_, name) = self.fid_slot(ev, slot);
+            n += fan_layout::fid_info_len(fan_layout::FANOTIFY_FID_LEN,
+                                          fan_layout::name_len_for(t, name.len()));
+        }
         if self.reports_pidfd() { n += fan_layout::PIDFD_INFO_LEN; }
+        if fan_err::is_error_event(ev.mask) { n += fan_err::ERROR_INFO_LEN; }
+        if ev.range.is_some() { n += fan_range::RANGE_INFO_LEN; }
         if fan_mnt::is_mnt_event(ev.mask) { n += fan_mnt::MNT_INFO_LEN; }
         n
     }
@@ -130,9 +169,9 @@ impl InotifyData {
     /// without one could never be answered.
     /// # C: O(name.len())
     fn emit_fan_event(&self, dst: &mut [u8], ev: &Event) -> usize {
-        let ty = self.info_type(ev);
+        let ty = self.fid_record_types(ev);
         let total = self.fan_event_len(ev);
-        let want_obj_fd = ty.is_none() || ev.perm.is_some();
+        let want_obj_fd = (ty[0].is_none() && ty[1].is_none()) || ev.perm.is_some();
         let fd = match (want_obj_fd, &ev.obj) {
             (true, Some(o)) => self.install_obj_fd(o),
             _ => fan_layout::FAN_NOFD,
@@ -141,23 +180,34 @@ impl InotifyData {
         let meta = fan_layout::FAN_EVENT_METADATA_LEN;
         fan_layout::encode_metadata(&mut dst[..meta], total, ev.mask, fd, ev.pid);
         let mut off = meta;
-        if let Some(t) = ty {
+        for (slot, t) in ty.iter().enumerate() {
+            let Some(t) = *t else { continue };
+            let (obj, name) = self.fid_slot(ev, slot);
             // The fid a watcher is handed must be the handle
             // `open_by_handle_at` decodes, generation included — a fid that
-            // cannot be opened is not a fid.
-            let (s_dev, ino, gen) = match &ev.obj {
+            // cannot be opened is not a fid. A record whose object is the
+            // FILESYSTEM names no inode, so its handle is zeroed and its fsid
+            // comes off the record itself.
+            let (s_dev, ino, gen) = match obj {
                 Some(o) => (o.fsid(), o.ino(), o.i_generation()),
-                None => (0, 0, vfs::export::GENERATION_ANY),
+                None => (ev.fsid, 0, vfs::export::GENERATION_ANY),
             };
             let fh = fan_layout::fid_handle(ino, gen);
             off += fan_layout::encode_fid_info(&mut dst[off..total], t, s_dev,
-                                               fan_layout::FANOTIFY_FID_TYPE, &fh, &ev.name);
+                                               fan_layout::FANOTIFY_FID_TYPE, &fh, name);
         }
         if self.reports_pidfd() {
             off += fan_layout::encode_pidfd_info(&mut dst[off..total], self.install_pidfd(ev.pid));
         }
-        // The mount record comes LAST, after every other info record a group
-        // could have asked for.
+        // Family-specific records follow every record a group could have asked
+        // for, in a fixed order: the filesystem error, the pre-content range,
+        // then the mount that moved.
+        if fan_err::is_error_event(ev.mask) {
+            off += fan_err::encode_error_info(&mut dst[off..total], ev.error, ev.err_count);
+        }
+        if let Some((offset, count)) = ev.range {
+            off += fan_range::encode_range_info(&mut dst[off..total], offset, count);
+        }
         if fan_mnt::is_mnt_event(ev.mask) {
             fan_mnt::encode_mnt_info(&mut dst[off..total], ev.mnt_id);
         }

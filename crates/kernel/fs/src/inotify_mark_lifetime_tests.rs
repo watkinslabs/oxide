@@ -33,7 +33,7 @@ fn mk(ino: u64) -> InodeRef {
 fn masks(g: &InotifyData) -> Vec<u32> { g.events.lock().iter().map(|e| e.mask).collect() }
 fn wds(g: &InotifyData) -> Vec<i32> { g.watches.lock().iter().map(|w| w.wd).collect() }
 fn ev(wd: i32, mask: u32, cookie: u32, name: &[u8]) -> Event {
-    Event { wd, mask, cookie, name: name.to_vec(), obj: None, pid: 0, perm: None, mnt_id: 0 }
+    Event { wd, mask, cookie, name: name.to_vec(), obj: None, pid: 0, ..Default::default() }
 }
 
 /// The core of `fsnotify_inoderemove`: the inode dying frees the wd, and the
@@ -45,7 +45,7 @@ fn ev(wd: i32, mask: u32, cookie: u32, name: &[u8]) -> Event {
 fn deleting_the_watched_inode_frees_the_wd_and_queues_ignored() {
     let g = InotifyData::new(0);
     let f = mk(0x7001);
-    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_DELETE_SELF, false).unwrap();
+    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_DELETE_SELF, false, None).unwrap();
 
     fire_delete_self(&f);
 
@@ -62,13 +62,13 @@ fn deleting_the_watched_inode_frees_the_wd_and_queues_ignored() {
 fn a_recycled_ino_gets_a_fresh_wd_not_the_dead_one() {
     let g = InotifyData::new(0);
     let old = mk(0x7002);
-    let first = add_or_update_watch(&g, inode_key(&old), old.fsid(), FAN_MODIFY, false).unwrap();
+    let first = add_or_update_watch(&g, inode_key(&old), old.fsid(), FAN_MODIFY, false, None).unwrap();
 
     fire_delete_self(&old);
 
     // Same fsid + ino: a fresh file that landed on the recycled inode number.
     let new = mk(0x7002);
-    let second = add_or_update_watch(&g, inode_key(&new), new.fsid(), FAN_MODIFY, false).unwrap();
+    let second = add_or_update_watch(&g, inode_key(&new), new.fsid(), FAN_MODIFY, false, None).unwrap();
 
     assert_ne!(second, first, "a new object never inherits a retired wd");
     assert_eq!(remove_watch(&g, first), Err(syscall::errno::Errno::Einval));
@@ -82,7 +82,7 @@ fn mount_scope_marks_survive_an_inode_delete() {
     let g = InotifyData::new_fanotify(0);
     let f = mk(0x7003);
     assert_eq!(apply_mark(&g, MarkScope::Mount, 0, f.fsid(), FAN_MODIFY, true, false, 0), 0);
-    add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_MODIFY, false).unwrap();
+    add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_MODIFY, false, None).unwrap();
     assert_eq!(wds(&g).len(), 2);
 
     fire_delete_self(&f);
@@ -113,7 +113,7 @@ fn a_fanotify_inode_mark_dies_without_an_ignored_record() {
 fn oneshot_retires_the_watch_so_a_later_rm_watch_is_correctly_einval() {
     let g = InotifyData::new(0);
     let f = mk(0x7005);
-    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_MODIFY | IN_ONESHOT, false).unwrap();
+    let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_MODIFY | IN_ONESHOT, false, None).unwrap();
 
     crate::inotify::fire_modify(&f);
 

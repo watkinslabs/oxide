@@ -148,7 +148,7 @@ impl InotifyData {
             if q.len() >= self.max_events {
                 if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return false; }
                 q.push(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, name: Vec::new(),
-                               obj: None, pid: 0, perm: None, mnt_id: 0 });
+                               obj: None, pid: 0, ..Default::default() });
                 true
             } else if self.merge_into_queue(&mut q, &ev) {
                 false
@@ -403,11 +403,18 @@ impl Drop for InotifyData {
         // auto-allow runs here too — a blocked accessor must never outlive the
         // group it is waiting on.
         if self.fanotify { self.release_perms(); }
-        let (held, perms, mntns) = {
-            let g = self.watches.lock();
-            (g.len(), g.iter().filter(|w| w.mask & PERM_BITS != 0).count(),
-             g.iter().filter(|w| w.scope == crate::inotify::types::MarkScope::MountNamespace).count())
+        let (held, perms, mntns, pins) = {
+            let mut g = self.watches.lock();
+            let perms = g.iter().filter(|w| w.mask & PERM_BITS != 0).count();
+            let mntns = g.iter()
+                .filter(|w| w.scope == crate::inotify::types::MarkScope::MountNamespace).count();
+            let pins: Vec<vfs::InodeRef> = g.iter_mut().filter_map(|w| w.take_pin()).collect();
+            (g.len(), perms, mntns, pins)
         };
+        // Every inode this group's marks kept resident is released with no
+        // lock held: dropping the last reference evicts the inode, and
+        // eviction re-enters the mark tables through the eviction hook.
+        crate::inotify::types::release_pins(pins);
         self.release_marks(held);
         if perms > 0 { PERM_MARK_COUNT.fetch_sub(perms, Ordering::AcqRel); }
         // The mount-tree fast path keys on this count, so a group dying with

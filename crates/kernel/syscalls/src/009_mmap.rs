@@ -84,6 +84,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         let file = match fdt.get(fd as i32) {
             Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
         };
+        if let Err(e) = ::fs::inotify::check_mmap_perm(&file.inode(), offset, args.a1) {
+            return -(e.as_i32() as i64);
+        }
         let path_noexec = file.vfsmount()
             .map(|m| m.is_noexec() || m.sb().is_noexec())
             .unwrap_or(false);

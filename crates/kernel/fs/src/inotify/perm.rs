@@ -9,20 +9,62 @@ use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 use vfs::InodeRef;
 
+use crate::inotify::fan_range;
 use crate::inotify::mask::mask_applicable;
 use crate::inotify::response::{validate_response, Verdict, FAN_ALLOW};
 use crate::inotify::types::{inode_key, Event, InotifyData, PermState, FAN_ACCESS_PERM,
-    FAN_OPEN_EXEC_PERM, FAN_OPEN_PERM, PERM_MARK_COUNT};
+    FAN_OPEN_EXEC_PERM, FAN_OPEN_PERM, FAN_PRE_ACCESS, PERM_MARK_COUNT};
 
 /// FAN_OPEN_PERM gate for the open path. `Ok(())` lets the open proceed.
 /// # C: O(1) fast / O(groups)+park
-pub fn check_open_perm(inode: &InodeRef) -> Result<(), Errno> { check_perm(inode, FAN_OPEN_PERM) }
-
-/// FAN_ACCESS_PERM gate for the read path. # C: O(1) fast / O(groups)+park
-pub fn check_access_perm(inode: &InodeRef) -> Result<(), Errno> { check_perm(inode, FAN_ACCESS_PERM) }
+pub fn check_open_perm(inode: &InodeRef) -> Result<(), Errno> { check_perm(inode, FAN_OPEN_PERM, None) }
 
 /// FAN_OPEN_EXEC_PERM gate for the execve path. # C: O(1) fast / O(groups)+park
-pub fn check_open_exec_perm(inode: &InodeRef) -> Result<(), Errno> { check_perm(inode, FAN_OPEN_EXEC_PERM) }
+pub fn check_open_exec_perm(inode: &InodeRef) -> Result<(), Errno> {
+    check_perm(inode, FAN_OPEN_EXEC_PERM, None)
+}
+
+/// THE gate every access to a file's CONTENT passes through — read, write,
+/// scatter/gather and positional forms alike.
+///
+/// Two events, in this order and for a reason:
+///   1. `FAN_PRE_ACCESS`, for reads AND writes, naming the byte range. A
+///      pre-content watcher's whole job is to put the bytes there before
+///      anything looks at them, so it must run first and must be told which
+///      bytes.
+///   2. `FAN_ACCESS_PERM`, for READS only. A content scanner inspects what is
+///      there, which is only meaningful after step 1 has filled it — and a
+///      write has nothing to inspect yet.
+///
+/// `ppos` is `None` for an access that names no range; such an event carries no
+/// range record and asks about the file as a whole.
+/// # C: O(1) fast path; else O(groups) + one park per group per event
+pub fn check_file_area_perm(inode: &InodeRef, write: bool, ppos: Option<u64>, count: u64)
+    -> Result<(), Errno> {
+    if PERM_MARK_COUNT.load(Ordering::Acquire) == 0 { return Ok(()); }
+    check_perm(inode, FAN_PRE_ACCESS, ppos.map(|p| fan_range::aligned_range(p, count)))?;
+    if write { return Ok(()); }
+    check_perm(inode, FAN_ACCESS_PERM, None)
+}
+
+/// Pre-content gate for `mmap`: the mapping is a promise that the bytes can be
+/// read later, at a point where no syscall is running to be refused, so the
+/// content has to be filled now. Reads and writes alike, and no
+/// `FAN_ACCESS_PERM` — nothing has been inspected yet.
+/// # C: O(1) fast / O(groups)+park
+pub fn check_mmap_perm(inode: &InodeRef, offset: u64, len: u64) -> Result<(), Errno> {
+    if PERM_MARK_COUNT.load(Ordering::Acquire) == 0 { return Ok(()); }
+    check_perm(inode, FAN_PRE_ACCESS, Some(fan_range::aligned_range(offset, len)))
+}
+
+/// Pre-content gate for a size change (`truncate`/`ftruncate`). A truncate
+/// destroys or extends content at a point, so the watcher is told the range
+/// holding that point — the content there has to exist before it can be cut.
+/// # C: O(1) fast / O(groups)+park
+pub fn check_truncate_perm(inode: &InodeRef, length: u64) -> Result<(), Errno> {
+    if PERM_MARK_COUNT.load(Ordering::Acquire) == 0 { return Ok(()); }
+    check_perm(inode, FAN_PRE_ACCESS, Some(fan_range::aligned_range(length, 0)))
+}
 
 /// Boot fast-path gate: `true` iff any `FAN_*_PERM` mark is armed anywhere.
 /// Lets the execve perm-gate skip its inode resolve entirely at boot (no perm
@@ -60,20 +102,21 @@ fn interested_groups(inode: &InodeRef, perm_mask: u32, is_dir: bool) -> Vec<Arc<
 /// is the next group asked. A denial stops the walk immediately: the access is
 /// already refused, so there is nothing left for a later group to decide.
 /// # C: O(1) fast path; else O(groups) + one park per group
-fn check_perm(inode: &InodeRef, perm_mask: u32) -> Result<(), Errno> {
+fn check_perm(inode: &InodeRef, perm_mask: u32, range: Option<(u64, u64)>) -> Result<(), Errno> {
     if PERM_MARK_COUNT.load(Ordering::Acquire) == 0 { return Ok(()); }
     let is_dir = inode.file_type() == vfs::FileType::Directory;
     let groups = interested_groups(inode, perm_mask, is_dir);
     if groups.is_empty() { return Ok(()); }
     for group in groups {
-        ask_group(&group, inode, perm_mask)?;
+        ask_group(&group, inode, perm_mask, range)?;
     }
     Ok(())
 }
 
 /// Queue one permission event to `group` and park until it is answered.
 /// # C: O(1) + one park
-fn ask_group(group: &Arc<InotifyData>, inode: &InodeRef, perm_mask: u32) -> Result<(), Errno> {
+fn ask_group(group: &Arc<InotifyData>, inode: &InodeRef, perm_mask: u32,
+             range: Option<(u64, u64)>) -> Result<(), Errno> {
     let st = Arc::new(PermState::new());
     let ev = Event {
         wd: -1,
@@ -83,7 +126,8 @@ fn ask_group(group: &Arc<InotifyData>, inode: &InodeRef, perm_mask: u32) -> Resu
         obj: Some(inode.clone()),
         pid: reporting_pid(group),
         perm: Some(st.clone()),
-        mnt_id: 0,
+        range,
+        ..Default::default()
     };
     // A closed or overflowed group never answers, so an event it refused to
     // queue must not be waited on.

@@ -29,6 +29,14 @@ pub fn sys_copy_file_range(args: &SyscallArgs) -> i64 {
     let (in_ptr, out_ptr) = (args.a1, args.a3);
     let mut pos_in = match load_pos(in_ptr, &in_file) { Ok(v) => v, Err(e) => return e };
     let mut pos_out = match load_pos(out_ptr, &out_file) { Ok(v) => v, Err(e) => return e };
+    // Both ends are real accesses to real content: the source is READ (so it
+    // takes the scanner gate too) and the destination is WRITTEN.
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&in_file.inode(), false, Some(pos_in), args.a4) {
+        return -(e.as_i32() as i64);
+    }
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&out_file.inode(), true, Some(pos_out), args.a4) {
+        return -(e.as_i32() as i64);
+    }
     let limit = cur.rlimit(sched::rlimit::rlim::FSIZE).0;
     let limit = if limit == sched::rlimit::INFINITY { u64::MAX } else { limit };
     let ret = ::fs::splice::copy_file_range(&in_file, &mut pos_in, &out_file, &mut pos_out,

@@ -94,6 +94,12 @@ pub fn vfs_fallocate(_cur: &sched::Task, file: &File, mode: u32, offset: i64, le
     // 15. Freeze-gated backend call. RLIMIT_FSIZE is deliberately NOT checked
     //     here: Linux leaves it to each filesystem's `inode_newsize_ok` call,
     //     which is why tmpfs enforces it even under KEEP_SIZE and ext4 does not.
+    // fanotify FAN_PRE_ACCESS: allocating or punching a range changes the
+    // file's content there, so a pre-content watcher is asked first and is told
+    // which range.
+    if let Err(e) = crate::inotify::check_file_area_perm(inode, true, Some(offset as u64), len as u64) {
+        return err(e);
+    }
     let guard = match file_start_write(file) { Ok(g) => g, Err(e) => return err(e) };
     let r = inode.fallocate(mode, offset as u64, len as u64);
     drop(guard);
