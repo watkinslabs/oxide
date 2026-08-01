@@ -23,13 +23,14 @@ use sync::Spinlock;
 use vfs::{File, FileType, Fmode, Inode, InodeRef, KResult, VfsError};
 use vfs::FileOps;
 pub mod eventfd;
+pub mod limits;
 mod ring;
 mod smoke;
 mod splice_ops;
 #[cfg(test)]
 mod fifo_tests;
 pub use eventfd::{EventfdData, is_eventfd, make_eventfd_inode};
-pub use ring::{make_pipe_inode, pipe_data, pipe_size, set_pipe_size, PipeData};
+pub use ring::{make_pipe_inode, pipe_data, pipe_size, set_pipe_size, write_dump, PipeData};
 /// `splice`/`tee`/`vmsplice` pipe-side primitives (Linux `fs/splice.c`).
 pub use splice_ops::{advance, fill, ipipe_prep, link_pipe, opipe_prep, peek, pipe_info,
     queued, space, wake_readers, wake_writers, PipeRef};

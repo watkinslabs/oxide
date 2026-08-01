@@ -16,6 +16,8 @@ static CPAT_GET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CPAT_SET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static ACCT_GET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static ACCT_SET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static CPIPE_GET: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static CPIPE_SET: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// `/proc/sys/kernel/acct` get/set — the three-int free-space tunable vector
 /// owned by `fs::acct`. # C: O(1)
@@ -36,6 +38,28 @@ pub fn set_acct_parm(b: &[u8]) {
     if p.is_null() { return; }
     // SAFETY: pointer set from a `fn(&[u8])` via set_acct_parm_hooks.
     let f: fn(&[u8]) = unsafe { core::mem::transmute(p) }; f(b)
+}
+
+/// `/proc/sys/kernel/core_pipe_limit` get/set (owned by fs::coredump). Bound to
+/// the live cap the pipe destination consults, so the file cannot report a
+/// concurrency limit that no dump applies. # C: O(1)
+pub fn set_core_pipe_limit_hooks(get: fn() -> i64, set: fn(i64)) {
+    CPIPE_GET.store(get as *mut (), Ordering::Release);
+    CPIPE_SET.store(set as *mut (), Ordering::Release);
+}
+/// # C: O(1)
+pub fn core_pipe_limit() -> i64 {
+    let p = CPIPE_GET.load(Ordering::Acquire);
+    if p.is_null() { return 0; }
+    // SAFETY: pointer set from a `fn() -> i64` via set_core_pipe_limit_hooks.
+    let f: fn() -> i64 = unsafe { core::mem::transmute(p) }; f()
+}
+/// # C: O(1)
+pub fn set_core_pipe_limit(v: i64) {
+    let p = CPIPE_SET.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: pointer set from a `fn(i64)` via set_core_pipe_limit_hooks.
+    let f: fn(i64) = unsafe { core::mem::transmute(p) }; f(v)
 }
 
 /// `/proc/sys/kernel/core_pattern` get/set (owned by fs::coredump). # C: O(1)
