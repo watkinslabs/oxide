@@ -1,12 +1,18 @@
-// The helper thread and the caller's completion.
+// The helper threads and the caller's completion.
 //
-// Helpers run on a thread of their own rather than on the shared deferred-work
+// Helpers run on threads of their own rather than on the shared deferred-work
 // pool, for two reasons. The exec cannot run on the submitting task's page
 // tables — loading an image writes through the NEW address space's user
 // addresses, so it needs a thread that owns no address space of its own. And a
 // `UMH_WAIT_PROC` request blocks until the helper program terminates, which on
 // a shared worker would stall every other piece of deferred work behind it for
 // as long as that program runs.
+//
+// There is more than ONE such thread, and the count grows on demand: a request
+// that blocks must not block a pending one. `pool` states why, and owns the
+// growth rule; this module is where a thread applies it — the thread that takes
+// a request starts a replacement first, so an idle servicer is always waiting
+// behind whatever the busy ones are doing.
 //
 // A waiting caller blocks on its own request's completion, so two helpers
 // started at once do not wake each other.
@@ -22,6 +28,7 @@ use syscall::errno::Errno;
 
 use crate::backend::HelperRun;
 use crate::info::SubprocessInfo;
+use crate::pool::{Grow, Pool};
 use crate::uapi::{UMH_KILLABLE, UMH_NO_WAIT, UMH_WAIT_PROC};
 
 use super::arch;
@@ -46,8 +53,20 @@ type UmhIrq = hal_aarch64::ArmIrqGate;
 /// failure rather than growing without bound from an interrupt handler.
 const QUEUE_DEPTH: usize = 32;
 
+/// Servicing threads the pool will start. Every request the queue can hold may
+/// be one that blocks for as long as its program runs, so the ceiling matches
+/// the queue depth: nothing that fits on the queue can be stuck behind another
+/// request rather than behind its own helper.
+const MAX_SERVICERS: u32 = QUEUE_DEPTH as u32;
+
+/// `arg` of the thread boot starts, which is the one that runs the self-test.
+/// Threads the pool grows into carry `GROWN_SERVICER` and skip it.
+const INITIAL_SERVICER: usize = 1;
+const GROWN_SERVICER: usize = 0;
+
 static PENDING: Spinlock<VecDeque<usize>, UmhQueue> = Spinlock::new(VecDeque::new());
 static PENDING_WAIT: WaitList = WaitList::new();
+static POOL: Pool = Pool::new(MAX_SERVICERS);
 
 /// Missed-wakeup backstop for both the helper thread's idle park and a caller's
 /// completion wait.
@@ -157,17 +176,26 @@ fn put(req: &Req, info: Box<SubprocessInfo>) {
     req.info.store(Box::into_raw(info), Ordering::Release);
 }
 
-/// The helper thread. Owns no address space, so it is free to install a
+/// A servicing thread. Owns no address space, so it is free to install a
 /// helper's while loading its image, and free to block for as long as a helper
-/// runs.
+/// runs — which is why taking a request starts a replacement first.
 /// # C: O(queued helpers)
-extern "C" fn khelper(_arg: usize) -> ! {
+extern "C" fn khelper(arg: usize) -> ! {
     #[cfg(feature = "debug-umh")]
-    super::selftest::run();
+    if arg == INITIAL_SERVICER { super::selftest::run(); }
+    let _ = arg;
+    POOL.ready();
     loop {
         let next = PENDING.lock_irqsave::<UmhIrq>().pop_front();
         match next {
-            Some(arg) => run_one(arg),
+            Some(req) => {
+                // Before running anything: this thread may now block for the
+                // whole lifetime of a helper program, so hand the queue a
+                // successor rather than leaving the next request behind it.
+                if POOL.claim() == Grow::Spawn { start_servicer(GROWN_SERVICER); }
+                run_one(req);
+                POOL.released();
+            }
             // SAFETY: running kthread with no lock held; the deadline bounds the park so a submission landing between the check and the park is not lost.
             None => unsafe {
                 PENDING_WAIT.park_with_deadline(arch::now_ns() + BACKSTOP_NS);
@@ -177,11 +205,23 @@ extern "C" fn khelper(_arg: usize) -> ! {
     }
 }
 
-/// Start the helper thread. # C: O(1)
+/// Start one servicing thread against a slot the pool has already reserved.
+/// A failure releases the reservation, so a later claim retries rather than
+/// believing the pool is bigger than it is. # C: O(1)
+fn start_servicer(arg: usize) {
+    let tid = sched::live::next_tid();
+    // SAFETY: process context with the runqueues installed; `khelper` is a 'static extern "C" fn pointer.
+    let started = unsafe { sched::live::spawn_kernel_thread(tid, "khelper", khelper, arg) };
+    if started.is_err() { POOL.spawn_failed(); }
+}
+
+/// Start the first servicing thread. # C: O(1)
 pub fn spawn_helper_thread() -> Result<(), sched::live::SpawnError> {
+    if !POOL.reserve() { return Err(sched::live::SpawnError::Again); }
     let tid = sched::live::next_tid();
     // SAFETY: boot path after the runqueues are installed; `khelper` is a 'static extern "C" fn pointer.
-    unsafe { sched::live::spawn_kernel_thread(tid, "khelper", khelper, 0)?; }
+    let r = unsafe { sched::live::spawn_kernel_thread(tid, "khelper", khelper, INITIAL_SERVICER) };
+    if let Err(e) = r { POOL.spawn_failed(); return Err(e); }
     Ok(())
 }
 
