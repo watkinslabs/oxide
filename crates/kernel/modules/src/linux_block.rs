@@ -1,5 +1,7 @@
-// Module manifest: types owns Linux C layout; core owns legacy BIO facade; mq owns blk-mq/request facade.
+// Module manifest: types owns Linux C layout; contract owns the ungated ownership/length decisions;
+// core owns legacy BIO facade; mq owns blk-mq/request facade.
 
+mod contract;
 mod core;
 mod misc;
 mod mq;
