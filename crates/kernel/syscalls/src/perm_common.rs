@@ -20,12 +20,23 @@
 pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
     use core::sync::atomic::Ordering;
     use sched::Signum;
+    // Linux `check_kill_permission`: `!same_thread_group(current, t)` gates the
+    // credential test, so a thread may always signal a SIBLING regardless of
+    // whose credentials each thread carries. Testing only `tid == tid` denied a
+    // `pthread_kill` issued after one thread ran `setresuid`, which is exactly
+    // how glibc's `__nptl_setxid` broadcast works.
+    //
+    // The same bypass outranks Landlock signal scoping, and deliberately so
+    // (landlock errata bit for same-thread-group signalling): threads are not a
+    // security boundary, and a library that enforces a policy across threads
+    // already running has to signal them to do it. Scoping them apart breaks
+    // exactly the multi-threaded programs the policy is meant to confine.
+    if cur.tid == target.tid { return true; }
+    if cur.tgid.load(Ordering::Acquire) == target.tgid.load(Ordering::Acquire) { return true; }
     // Landlock signal scoping. A confined thread must not reach a process
     // outside its domain, and this applies to every path below — including a
-    // sibling thread and a capability holder — so a denial here wins outright.
-    // Signalling yourself skips it: the two operands would be the same lock,
-    // and a thread is always inside its own domain anyway.
-    if cur.tid != target.tid {
+    // capability holder — so a denial here wins outright.
+    {
         let mine = cur.landlock_domain.lock().clone();
         let theirs = target.landlock_domain.lock().clone();
         if ::landlock::domain::scope_denied(mine.as_ref(), theirs.as_ref(),
@@ -34,13 +45,6 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
             return false;
         }
     }
-    // Linux `check_kill_permission`: `!same_thread_group(current, t)` gates the
-    // credential test, so a thread may always signal a SIBLING regardless of
-    // whose credentials each thread carries. Testing only `tid == tid` denied a
-    // `pthread_kill` issued after one thread ran `setresuid`, which is exactly
-    // how glibc's `__nptl_setxid` broadcast works.
-    if cur.tid == target.tid { return true; }
-    if cur.tgid.load(Ordering::Acquire) == target.tgid.load(Ordering::Acquire) { return true; }
     // F118: CAP_KILL must be held in a NS that's an ancestor of (or
     // equal to) the target's user_ns. Init-NS callers pass through.
     if target.namespace_owner(namespace_identity::NamespaceKind::User).as_ref()
@@ -291,12 +295,31 @@ mod landlock_signal_scope_tests {
     }
 
     #[test]
-    fn a_scoped_thread_cannot_reach_a_sibling_outside_its_domain() {
-        // The sibling-thread shortcut must not bypass the scope.
+    fn a_scoped_thread_still_reaches_a_sibling_in_another_domain() {
+        // Threads are not a security boundary, and the libraries that enforce a
+        // policy across already-running threads have to signal them to do it.
+        // Scoping siblings apart breaks exactly those programs, so the
+        // same-process shortcut outranks the scope (landlock erratum bit for
+        // same-thread-group signalling, which this kernel reports as present).
         let cur = task(1, 0);
         let target = task(2, 0);
         cur.tgid.store(1, Ordering::Release);
         target.tgid.store(1, Ordering::Release);
+        *cur.landlock_domain.lock() = Some(scoped_domain(None));
+        assert!(sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
+        // The reported errata bitmask has to agree with the behaviour above,
+        // because a program feature-detects the fix through it.
+        assert_ne!(::landlock::uapi::ERRATA
+                   & ::landlock::uapi::ERRATUM_SAME_THREAD_GROUP_SIGNAL, 0);
+    }
+
+    #[test]
+    fn a_scoped_thread_cannot_reach_a_different_process_in_another_domain() {
+        // The shortcut is same-process only; a distinct process is still scoped.
+        let cur = task(1, 0);
+        let target = task(2, 0);
+        cur.tgid.store(1, Ordering::Release);
+        target.tgid.store(2, Ordering::Release);
         *cur.landlock_domain.lock() = Some(scoped_domain(None));
         assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigterm as i32));
     }

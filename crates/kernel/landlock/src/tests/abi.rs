@@ -42,18 +42,19 @@ fn the_reported_abi_version_matches_the_rights_actually_accepted() {
     // The version number is a promise about which rights are enforced. Raising
     // it past what is enforced silently disables a well-written caller's
     // sandbox, so every mask below must stop exactly where enforcement does.
-    assert_eq!(ABI_VERSION, 8);
-    // Device control is the last filesystem right of this level.
-    assert_eq!(MASK_ACCESS_FS, (ACCESS_FS_IOCTL_DEV << 1) - 1);
+    assert_eq!(ABI_VERSION, 10);
+    // Resolving a pathname socket is the last filesystem right of this level.
+    assert_eq!(MASK_ACCESS_FS, (ACCESS_FS_RESOLVE_UNIX << 1) - 1);
     // Both scopes are enforced, so both are accepted.
     assert_eq!(MASK_SCOPE, (SCOPE_SIGNAL << 1) - 1);
     assert_eq!(MASK_SCOPE & SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_ABSTRACT_UNIX_SOCKET);
-    // Stream ports only; datagram rights arrived later.
-    assert_eq!(MASK_ACCESS_NET, (ACCESS_NET_CONNECT_TCP << 1) - 1);
+    // Datagram ports as well as stream ports.
+    assert_eq!(MASK_ACCESS_NET, (ACCESS_NET_CONNECT_SEND_UDP << 1) - 1);
     // Logging control and thread synchronisation are both handled.
     assert_eq!(MASK_RESTRICT_SELF, (RESTRICT_SELF_TSYNC << 1) - 1);
-    assert_eq!(MASK_ADD_RULE, 0);
-    assert_eq!(ERRATA, 0);
+    assert_eq!(MASK_ADD_RULE, ADD_RULE_QUIET);
+    // Only the errata whose behaviour this kernel actually has.
+    assert_eq!(ERRATA, ERRATUM_TCP_ONLY | ERRATUM_SAME_THREAD_GROUP_SIGNAL);
 }
 
 #[test]
@@ -106,9 +107,10 @@ fn a_ruleset_that_handles_nothing_is_enomsg() {
 
 #[test]
 fn attr_decodes_little_endian_words_in_order() {
-    let b = attr_bytes(&[1, 2, 3]);
+    let b = attr_bytes(&[1, 2, 3, 1, 2, 3]);
     let a = RulesetAttr::decode(&b);
     assert_eq!((a.handled_fs, a.handled_net, a.scoped), (1, 2, 3));
+    assert_eq!((a.quiet_fs, a.quiet_net, a.quiet_scoped), (1, 2, 3));
 }
 
 #[test]
@@ -125,32 +127,33 @@ fn a_short_attr_zero_extends_into_the_newer_members() {
 }
 
 #[test]
-fn add_rule_accepts_no_flag() {
+fn add_rule_accepts_only_the_quiet_flag() {
     assert_eq!(add_rule_flags_ok(0), Ok(()));
-    assert_eq!(add_rule_flags_ok(1), Err(Errno::Einval));
+    assert_eq!(add_rule_flags_ok(ADD_RULE_QUIET), Ok(()));
+    assert_eq!(add_rule_flags_ok(ADD_RULE_QUIET | 2), Err(Errno::Einval));
     assert_eq!(add_rule_flags_ok(2), Err(Errno::Einval));
 }
 
 #[test]
 fn an_empty_rule_is_enomsg() {
-    assert_eq!(rule_access_ok(0, ACCESS_FS_EXECUTE), Err(Errno::Enomsg));
+    assert_eq!(rule_access_ok(0, ACCESS_FS_EXECUTE, 0, 0), Err(Errno::Enomsg));
 }
 
 #[test]
 fn a_rule_may_not_grant_what_the_ruleset_does_not_handle() {
     // The central invariant: a layer never grants a right it does not filter.
-    assert_eq!(rule_access_ok(ACCESS_FS_WRITE_FILE, ACCESS_FS_READ_FILE), Err(Errno::Einval));
-    assert_eq!(rule_access_ok(ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE), Ok(()));
+    assert_eq!(rule_access_ok(ACCESS_FS_WRITE_FILE, ACCESS_FS_READ_FILE, 0, 0), Err(Errno::Einval));
+    assert_eq!(rule_access_ok(ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE, 0, 0), Ok(()));
     // Reparenting is filtered by default but must still be declared before a
     // rule may grant it.
-    assert_eq!(rule_access_ok(ACCESS_FS_REFER, ACCESS_FS_READ_FILE), Err(Errno::Einval));
+    assert_eq!(rule_access_ok(ACCESS_FS_REFER, ACCESS_FS_READ_FILE, 0, 0), Err(Errno::Einval));
 }
 
 #[test]
 fn enomsg_precedes_the_subset_check() {
     // An all-zero access is trivially a subset, so the order is observable only
     // through which error a caller with both problems receives.
-    assert_eq!(rule_access_ok(0, 0), Err(Errno::Enomsg));
+    assert_eq!(rule_access_ok(0, 0, 0, 0), Err(Errno::Enomsg));
 }
 
 #[test]
@@ -260,8 +263,90 @@ fn the_layer_stack_is_bounded() {
 
 #[test]
 fn struct_sizes_match_the_published_layout() {
-    assert_eq!(RULESET_ATTR_SIZE, 3 * 8);
+    assert_eq!(RULESET_ATTR_SIZE, 6 * 8);
     assert_eq!(PATH_BENEATH_ATTR_SIZE, 12);
     assert_eq!(NET_PORT_ATTR_SIZE, 16);
     assert_eq!(RULESET_ATTR_MIN_SIZE, 8);
+}
+
+#[test]
+fn a_quiet_mask_may_only_name_rights_the_ruleset_handles() {
+    // Quieting a right the layer does not filter would describe a denial that
+    // cannot happen, so it is refused rather than dropped.
+    let a = RulesetAttr { handled_fs: ACCESS_FS_READ_FILE,
+                          quiet_fs: ACCESS_FS_WRITE_FILE, ..Default::default() };
+    assert_eq!(a.validate(), Err(Errno::Einval));
+    let a = RulesetAttr { handled_net: ACCESS_NET_BIND_TCP,
+                          quiet_net: ACCESS_NET_CONNECT_TCP, ..Default::default() };
+    assert_eq!(a.validate(), Err(Errno::Einval));
+    let a = RulesetAttr { scoped: SCOPE_SIGNAL,
+                          quiet_scoped: SCOPE_ABSTRACT_UNIX_SOCKET, ..Default::default() };
+    assert_eq!(a.validate(), Err(Errno::Einval));
+    // A subset is accepted, including the whole handled mask.
+    let a = RulesetAttr { handled_fs: ACCESS_FS_READ_FILE | ACCESS_FS_WRITE_FILE,
+                          quiet_fs: ACCESS_FS_READ_FILE, ..Default::default() };
+    assert_eq!(a.validate(), Ok(()));
+}
+
+#[test]
+fn a_quiet_mask_carrying_an_unknown_bit_is_caught_by_the_subset_test() {
+    // The handled masks are validated first, so an unknown quiet bit can never
+    // be a subset of a valid handled mask.
+    let a = RulesetAttr { handled_fs: ACCESS_FS_READ_FILE,
+                          quiet_fs: 1 << 40, ..Default::default() };
+    assert_eq!(a.validate(), Err(Errno::Einval));
+}
+
+#[test]
+fn the_quiet_subset_check_precedes_the_empty_ruleset_answer() {
+    // An all-zero handled mask with a quiet bit set is an argument error, not
+    // an inert policy: the caller named something it cannot have meant.
+    let a = RulesetAttr { quiet_fs: ACCESS_FS_READ_FILE, ..Default::default() };
+    assert_eq!(a.validate(), Err(Errno::Einval));
+}
+
+#[test]
+fn an_empty_rule_is_meaningful_once_it_carries_the_quiet_flag() {
+    // Without a flag an empty rule grants nothing and is reported inert. With
+    // the quiet flag it still marks its object, which is the reason to add it.
+    assert_eq!(rule_access_ok(0, ACCESS_FS_READ_FILE, 0, ACCESS_FS_READ_FILE),
+               Err(Errno::Enomsg));
+    assert_eq!(rule_access_ok(0, ACCESS_FS_READ_FILE, ADD_RULE_QUIET, ACCESS_FS_READ_FILE),
+               Ok(()));
+}
+
+#[test]
+fn marking_a_rule_quiet_needs_a_ruleset_with_something_to_quiet() {
+    // A quiet marking against an empty quiet mask can never suppress anything.
+    assert_eq!(rule_access_ok(ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE, ADD_RULE_QUIET, 0),
+               Err(Errno::Einval));
+    assert_eq!(rule_access_ok(ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE,
+                              ADD_RULE_QUIET, ACCESS_FS_READ_FILE), Ok(()));
+}
+
+#[test]
+fn the_handled_subset_check_precedes_the_quiet_flag_check() {
+    // A rule granting an unhandled right is an argument error whether or not
+    // it also asks to be quiet; reporting the flag problem would hide it.
+    assert_eq!(rule_access_ok(ACCESS_FS_WRITE_FILE, ACCESS_FS_READ_FILE, ADD_RULE_QUIET, 0),
+               Err(Errno::Einval));
+}
+
+#[test]
+fn the_rights_of_the_reported_abi_level_are_all_accepted() {
+    // Each right this level added must be admitted, or a program that
+    // feature-detected the version gets EINVAL for a right it was promised.
+    for m in [ACCESS_FS_RESOLVE_UNIX] {
+        assert_eq!(RulesetAttr { handled_fs: m, ..Default::default() }.validate(), Ok(()));
+    }
+    for m in [ACCESS_NET_BIND_UDP, ACCESS_NET_CONNECT_SEND_UDP] {
+        assert_eq!(RulesetAttr { handled_net: m, ..Default::default() }.validate(), Ok(()));
+    }
+}
+
+#[test]
+fn resolving_a_pathname_socket_is_a_right_a_file_rule_may_carry() {
+    // The right names a socket, which is not a directory, so a rule anchored on
+    // the socket itself has to be admissible.
+    assert_eq!(path_target_ok(false, ACCESS_FS_RESOLVE_UNIX), Ok(()));
 }
