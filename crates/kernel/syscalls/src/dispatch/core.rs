@@ -383,6 +383,27 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     klog::write_raw(b"]\n");
 }
 
+/// The pre-call entry work — `syscall_trace_enter`'s ptrace stop, the
+/// post-stop number re-read, and the seccomp filter — in a frame of its own.
+///
+/// Returns `(skip_value, abi_syscall_number)`: `Some(rv)` means do not run the
+/// call and send `rv` down the normal exit path; the number is the one to
+/// dispatch on, which a tracer may have rewritten.
+/// # C: O(1) plus the filter's own cost
+#[inline(never)]
+fn syscall_entry_work(orig_nr: u64, args: &SyscallArgs) -> (Option<u64>, u64) {
+    let aborted = ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP, true);
+    let abi_nr = super::ptrace::syscall_nr_after_entry_stop(orig_nr);
+    let outcome = crate::dispatch_entry_order::entry_work(
+        aborted, abi_nr, ENOSYS_AT_ENTRY_STOP,
+        |n| super::seccomp::seccomp_gate(n,
+            &[args.a0, args.a1, args.a2, args.a3, args.a4, args.a5]));
+    match outcome {
+        crate::dispatch_entry_order::EntryOutcome::Skip(rv) => (Some(rv), abi_nr),
+        crate::dispatch_entry_order::EntryOutcome::Run(nr)  => (None, nr),
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
     let orig_nr = nr;
@@ -434,12 +455,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // afterwards, so a tracer's rewrite is what the filter judges and what the
     // dispatcher runs. The reverse order let a tracer substitute a call the
     // filter had already approved under a different number.
-    let aborted = ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP, true);
-    let abi_nr = super::ptrace::syscall_nr_after_entry_stop(orig_nr);
+    // Kept in its own non-inlined frame: its locals would otherwise sum into
+    // this function's, which sits on the deepest aarch64 syscall chain the
+    // stack gate measures. The entry work is a shallow sibling of the routes.
+    let entry = syscall_entry_work(orig_nr, &args);
     #[cfg(target_arch = "aarch64")]
-    let nr = if abi_nr == orig_nr { nr } else { syscall::arm_abi::aarch64_nr_to_x86(abi_nr) };
+    let nr = if entry.1 == orig_nr { nr } else { syscall::arm_abi::aarch64_nr_to_x86(entry.1) };
     #[cfg(not(target_arch = "aarch64"))]
-    let nr = abi_nr;
+    let nr = entry.1;
     #[cfg(feature = "debug-syscost")]
     let __syscost = crate::syscost::start();
     #[cfg(feature = "debug-startlat")]
@@ -448,10 +471,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // below, so its syscall-exit stop and — for a `SECCOMP_RET_TRAP` SIGSYS —
     // its signal delivery happen before the return to userspace instead of
     // waiting for the next timer tick.
-    let entry = crate::dispatch_entry_order::entry_work(
-        aborted, abi_nr, ENOSYS_AT_ENTRY_STOP,
-        |n| super::seccomp::seccomp_gate(n, &[a0, a1, a2, a3, a4, a5]));
-    let rv = if let crate::dispatch_entry_order::EntryOutcome::Skip(rv) = entry { rv as i64 }
+    let rv = if let Some(rv) = entry.0 { rv as i64 }
     else if let Some(rv) = dispatch_route_a(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_b(nr, &args) { rv }
     else if let Some(rv) = dispatch_route_c(nr, &args) { rv }

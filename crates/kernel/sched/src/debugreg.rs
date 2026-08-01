@@ -12,9 +12,15 @@
 //   * `armed` / `clear` — the arch-neutral predicates callers outside x86 use.
 //   * `x86` — the HAL bridge: snapshot/install/context-switch, x86_64 only.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::Task;
+
+pub mod slab;
+
+/// The x86 shadow behind the lazy slot: DR0-DR3, then DR6 and DR7.
+#[derive(Default)]
+pub struct Shadow { pub regs: [AtomicU64; SLOTS] }
 
 /// Number of hardware breakpoint slots — DR0..DR3.
 pub const NR_ADDR: usize = 4;
@@ -62,31 +68,39 @@ pub const MAX_IDX: usize = 7;
 
 /// Read one `u_debugreg` slot of `t`. A nonexistent index (DR4/DR5, or past
 /// the end) reads as zero rather than failing — the read side has no error
-/// path at all. # C: O(1)
+/// path at all. A task that never armed a breakpoint answers from the
+/// architectural reset value without touching an allocation.
+/// # C: O(1)
 pub fn get(t: &Task, idx: usize) -> u64 {
-    match slot_of_u_debugreg(idx) {
-        Some(s) => t.debugregs[s].load(Ordering::Acquire),
-        None    => 0,
-    }
+    let (Some(slot), Some(sh)) = (slot_of_u_debugreg(idx), t.debugregs.get()) else { return 0 };
+    sh.regs[slot].load(Ordering::Acquire)
 }
 
-/// Store one slot verbatim. Validation is the caller's — a DR7 write must have
-/// been through the HAL ladder first. # C: O(1)
+/// Store one slot verbatim, allocating the shadow on first use. Validation is
+/// the caller's — a DR7 write must have been through the HAL ladder first.
+/// # C: O(1)
 pub fn put(t: &Task, slot: usize, v: u64) {
-    if slot < SLOTS { t.debugregs[slot].store(v, Ordering::Release); }
+    if slot >= SLOTS { return; }
+    if let Some(sh) = t.debugregs.get_or_init() { sh.regs[slot].store(v, Ordering::Release); }
 }
 
 /// The four breakpoint addresses. # C: O(1)
 pub fn addrs(t: &Task) -> [u64; NR_ADDR] {
     let mut a = [0u64; NR_ADDR];
+    let Some(sh) = t.debugregs.get() else { return a };
     let mut i = 0;
-    while i < NR_ADDR { a[i] = t.debugregs[i].load(Ordering::Acquire); i += 1; }
+    while i < NR_ADDR { a[i] = sh.regs[i].load(Ordering::Acquire); i += 1; }
     a
 }
 
-/// At least one breakpoint slot is enabled. # C: O(1)
+/// At least one breakpoint slot is enabled. The context-switch gate, so the
+/// no-shadow answer must be reachable without an allocation.
+/// # C: O(1)
 pub fn armed(t: &Task) -> bool {
-    t.debugregs[CONTROL].load(Ordering::Acquire) & DR7_ENABLE_MASK != 0
+    match t.debugregs.get() {
+        Some(sh) => sh.regs[CONTROL].load(Ordering::Acquire) & DR7_ENABLE_MASK != 0,
+        None     => false,
+    }
 }
 
 /// Drop every breakpoint. `execve` does this (Linux `flush_ptrace_hw_breakpoint`
@@ -94,18 +108,26 @@ pub fn armed(t: &Task) -> bool {
 /// image names an address that no longer belongs to anything.
 /// # C: O(1)
 pub fn clear(t: &Task) {
+    let Some(sh) = t.debugregs.get() else { return };
     let mut i = 0;
-    while i < SLOTS { t.debugregs[i].store(0, Ordering::Release); i += 1; }
+    while i < SLOTS { sh.regs[i].store(0, Ordering::Release); i += 1; }
 }
 
 /// Accumulate the cause bits of a #DB into the task's DR6 shadow, so its
 /// tracer can read WHY the trap fired after the fact. # C: O(1)
 pub fn record_status(t: &Task, cause: u64) {
-    t.debugregs[STATUS].fetch_or(cause, Ordering::AcqRel);
+    if let Some(sh) = t.debugregs.get_or_init() { sh.regs[STATUS].fetch_or(cause, Ordering::AcqRel); }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[path = "debugreg/x86.rs"] pub mod x86;
+
+/// aarch64 exposes hardware breakpoints through the `NT_ARM_HW_BREAK` /
+/// `NT_ARM_HW_WATCH` regsets rather than a `struct user` debug window, so its
+/// storage is a separate register file with nothing in common beyond being
+/// per-task.
+#[cfg(target_arch = "aarch64")]
+#[path = "debugreg/arm.rs"] pub mod arm;
 
 #[cfg(test)]
 #[path = "debugreg/tests.rs"] mod tests;

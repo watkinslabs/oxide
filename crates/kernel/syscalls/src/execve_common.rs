@@ -54,6 +54,8 @@ pub(crate) fn reset_caught_signals(cur: &sched::Task) {
     // against the old image names an address that now belongs to different
     // code, so leaving it armed traps the new program at an arbitrary point.
     sched::debugreg::clear(cur);
+    #[cfg(target_arch = "aarch64")]
+    sched::debugreg::arm::clear(cur);
 }
 
 /// F129: sweep all other per-task state Linux execve(2) resets:

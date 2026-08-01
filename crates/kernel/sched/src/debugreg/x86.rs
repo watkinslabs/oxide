@@ -7,8 +7,6 @@
 // `NT_ARM_HW_BREAK` / `NT_ARM_HW_WATCH` regsets instead of a `struct user`
 // debug-register window, so it has no counterpart here.
 
-use core::sync::atomic::Ordering;
-
 use hal_x86_64::debugreg::{dr6, dr7, DebugRegs, Dr7Error};
 
 use crate::Task;
@@ -18,8 +16,8 @@ use super::{CONTROL, NR_ADDR, STATUS};
 pub fn snapshot(t: &Task) -> DebugRegs {
     DebugRegs {
         addr: super::addrs(t),
-        dr6:  t.debugregs[STATUS].load(Ordering::Acquire),
-        dr7:  t.debugregs[CONTROL].load(Ordering::Acquire),
+        dr6:  super::get(t, super::STATUS_IDX),
+        dr7:  super::get(t, super::CONTROL_IDX),
     }
 }
 
@@ -33,7 +31,7 @@ pub fn set_addr(t: &Task, slot: usize, addr: u64) -> Result<(), Dr7Error> {
     if slot >= NR_ADDR { return Err(Dr7Error::KernelAddress { slot }); }
     let mut regs = snapshot(t);
     regs.set_addr(slot, addr)?;
-    t.debugregs[slot].store(addr, Ordering::Release);
+    super::put(t, slot, addr);
     Ok(())
 }
 
@@ -43,7 +41,7 @@ pub fn set_addr(t: &Task, slot: usize, addr: u64) -> Result<(), Dr7Error> {
 pub fn set_control(t: &Task, dr7: u64) -> Result<(), Dr7Error> {
     let mut regs = snapshot(t);
     regs.set_dr7(dr7)?;
-    t.debugregs[CONTROL].store(regs.dr7, Ordering::Release);
+    super::put(t, CONTROL, regs.dr7);
     Ok(())
 }
 
@@ -55,13 +53,13 @@ pub fn set_control(t: &Task, dr7: u64) -> Result<(), Dr7Error> {
 /// tracer is entitled to read back unchanged.
 /// # C: O(1)
 pub fn set_status(t: &Task, dr6: u64) {
-    t.debugregs[STATUS].store(dr6::normalize(dr6), Ordering::Release);
+    super::put(t, STATUS, dr6::normalize(dr6));
 }
 
 /// `ptrace_get_debugreg(6)` — the virtual DR6 flipped back to architectural
 /// polarity, which is the form userspace expects.
 /// # C: O(1)
-pub fn status(t: &Task) -> u64 { dr6::normalize(t.debugregs[STATUS].load(Ordering::Acquire)) }
+pub fn status(t: &Task) -> u64 { dr6::normalize(super::get(t, super::STATUS_IDX)) }
 
 /// Install `t`'s breakpoints on this CPU. Skips every privileged write when
 /// neither the outgoing nor the incoming task has a slot armed, which is every
@@ -70,7 +68,11 @@ pub fn status(t: &Task) -> u64 { dr6::normalize(t.debugregs[STATUS].load(Orderin
 /// registers owned by the scheduler for the duration.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 pub unsafe fn switch_to(prev: &Task, next: &Task) {
+    // `#[inline(never)]`: this runs inside `schedule`, which sits on the
+    // deepest syscall chain the stack gate measures, and the common case
+    // returns without materialising either snapshot.
     if !super::armed(prev) && !super::armed(next) { return; }
     let (p, n) = (snapshot(prev), snapshot(next));
     // SAFETY: forwarded contract — context switch, CPL=0, this CPU's debug

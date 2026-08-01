@@ -101,6 +101,11 @@ pub fn regset_bytes(nt_type: u64, arch: Arch) -> Result<usize, Errno> {
         (uapi::NT_PRFPREG,  Arch::X86_64) => Ok(uapi::X86_USER_I387_BYTES),
         (uapi::NT_PRSTATUS, Arch::Aarch64) => Ok(uapi::ARM64_USER_PT_REGS_N * 8),
         (uapi::NT_PRFPREG,  Arch::Aarch64) => Ok(uapi::ARM64_USER_FPSIMD_BYTES),
+        // `struct user_hwdebug_state` is always reported at its FULL 16-slot
+        // size, whatever the machine implements: the implemented count is
+        // carried in the `dbg_info` header word, not in the regset length.
+        (uapi::NT_ARM_HW_BREAK, Arch::Aarch64) | (uapi::NT_ARM_HW_WATCH, Arch::Aarch64) =>
+            Ok(uapi::ARM64_HWDEBUG_STATE_BYTES),
         _ => Err(Errno::Einval),
     }
 }

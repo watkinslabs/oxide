@@ -467,6 +467,16 @@ pub unsafe fn schedule() {
         // CPL=0, preempt-off, so this CPU's debug registers are ours.
         unsafe { crate::debugreg::x86::switch_to(prev_ref, rq.current_ref()); }
     }
+    // The aarch64 counterpart: DBGBVR/DBGBCR + DBGWVR/DBGWCR follow their
+    // task, so a `NT_ARM_HW_BREAK`-armed watchpoint fires for the tracee that
+    // set it and not for whatever ran next.
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: rq.current is the incoming task just published by
+        // swap_current; prev_ref aliases the outgoing one. Context switch at
+        // EL1, preempt-off, so this CPU's debug registers are ours.
+        unsafe { crate::debugreg::arm::switch_to(prev_ref, rq.current_ref()); }
+    }
     // SAFETY: rq.current was just set to the new Arc by swap_current.
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
     // SAFETY: rq.current was just set to next and this scheduler context owns

@@ -39,6 +39,19 @@ pub const STOPPED: u64 = 1 << 26;
 /// Parked in a ptrace stop.
 pub const TRACED: u64 = 1 << 27;
 
+/// Why the task was last resumed out of a stop, as a `WakeKind` in bits 32-33.
+///
+/// Linux keeps this nowhere — its `CLD_CONTINUED` decision is a
+/// `signal_struct` flag latched by `prepare_signal`. Our stopping task reads
+/// the reason back itself, so it is carried HERE, in the high half that
+/// Linux's own bit assignment (which stops at 27) does not use. It is stored
+/// with the latch rather than in a field of its own because a separate byte on
+/// `Task` costs eight after padding, and `Task` is built on the boot stack
+/// where the depth gate has no room to spare.
+pub const WAKE_SHIFT: u32 = 32;
+/// Width mask of the wake-reason field, before shifting.
+pub const WAKE_MASK: u64 = 0b11;
+
 /// Both trap latches — what `do_jobctl_trap` acts on.
 pub const TRAP_MASK: u64 = TRAP_STOP | TRAP_NOTIFY;
 /// Everything a dying or resumed task must have cleared.
@@ -64,7 +77,7 @@ pub enum StopKind {
 }
 
 /// Why a stopped task was made runnable again. `repr(u8)` because the wake
-/// site publishes it into `Task::stop_wake` for the waking task to read back.
+/// site publishes it into the latch's wake field for the waking task to read back.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum WakeKind {
@@ -79,11 +92,21 @@ pub enum WakeKind {
 }
 
 impl WakeKind {
-    /// Decode a `Task::stop_wake` byte. An unrecognised value is the
-    /// conservative `Kill`, which notifies nothing. # C: O(1)
+    /// Decode a stored discriminant. An unrecognised value is the conservative
+    /// `Kill`, which notifies nothing. # C: O(1)
     pub const fn from_u8(v: u8) -> Self {
         match v { 0 => WakeKind::Cont, 1 => WakeKind::PtraceResume, _ => WakeKind::Kill }
     }
+}
+
+/// Replace the wake-reason field of a latch. # C: O(1)
+pub const fn with_wake(jobctl: u64, wake: WakeKind) -> u64 {
+    (jobctl & !(WAKE_MASK << WAKE_SHIFT)) | ((wake as u64) << WAKE_SHIFT)
+}
+
+/// Read the wake-reason field back out. # C: O(1)
+pub const fn wake_of(jobctl: u64) -> WakeKind {
+    WakeKind::from_u8(((jobctl >> WAKE_SHIFT) & WAKE_MASK) as u8)
 }
 
 /// Who the stop notification goes to.
