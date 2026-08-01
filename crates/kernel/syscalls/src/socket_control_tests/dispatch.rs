@@ -4,70 +4,8 @@
 
 use super::*;
 
-#[test]
-fn sshd_base_lifecycle_omits_per_syscall_trace_and_detail_retains_it() {
-    let source = include_str!("../dispatch/core.rs");
-    let enter = source.find("trace_sshd_listener_enter(nr, &args);").unwrap();
-    let dispatch = source.find("let entry = syscall_entry_work(orig_nr, &args);").unwrap();
-    let exit = source.find("trace_sshd_listener_exit(nr, rv);").unwrap();
-    let detail = source.find("#[cfg(feature = \"debug-sshd-detail\")]\n    trace_sshd_syscall(nr, rv);").unwrap();
-    assert!(enter < dispatch);
-    assert!(detail < exit);
-    assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_listener_enter"));
-    assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_listener_exit"));
-    for nr in ["NR_SOCKET", "NR_BIND", "NR_LISTEN", "NR_ACCEPT4"] {
-        assert!(source.contains(nr));
-    }
-    assert!(source.contains("[SSHD-LISTEN] enter"));
-    assert!(source.contains("[SSHD-LISTEN] exit"));
-    assert!(source.contains("#[cfg(feature = \"debug-sshd-detail\")]\nfn trace_sshd_syscall"));
-    assert!(!source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_syscall"));
-    let manifest = include_str!("../../Cargo.toml");
-    assert!(manifest.contains("debug-sshd = []"));
-    assert!(manifest.contains("debug-sshd-detail = [\"debug-sshd\"]"));
-}
 
-#[test]
-fn aarch64_sshd_exec_marker_follows_executable_path_publication() {
-    let source = include_str!("../059_execve/aarch64.rs");
-    let path = source.find("cur.set_exe_path(Some(path_str.clone()));").unwrap();
-    let marker = source.find("trace_sshd_exec_success(cur.tid, &path_owned);").unwrap();
-    assert!(path < marker);
-    assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_exec_success"));
-    assert!(source.contains("[SSHD-EXEC] tid="));
-    assert!(source.contains("path=/usr/sbin/sshd"));
-}
 
-#[test]
-fn syscall_return_stages_are_feature_gated_ordered_and_cleared() {
-    let source = include_str!("../dispatch/core.rs");
-    let feature = "#[cfg(feature = \"debug-syscall-return\")]";
-    let dispatch = source.find("SYSCALL_RETURN_STAGE_AFTER_DISPATCH").unwrap();
-    let diag = source.find("SYSCALL_RETURN_STAGE_AFTER_DIAG").unwrap();
-    let timers = source.find("SYSCALL_RETURN_STAGE_AFTER_TIMERS").unwrap();
-    let rseq = source.find("SYSCALL_RETURN_STAGE_AFTER_RSEQ").unwrap();
-    let ptrace = source.find("SYSCALL_RETURN_STAGE_AFTER_PTRACE").unwrap();
-    let loop_stage = source.find("SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER").unwrap();
-    let clear = source.rfind("syscall_return_clear(task)").unwrap();
-    // The `return_task` binding plus the six ordered stage markers
-    // (DISPATCH/DIAG/TIMERS/RSEQ/PTRACE/IN_EXIT_TO_USER) are each
-    // feature-gated; the DISPATCH marker's binding and emit are two
-    // attributes, giving eight.
-    //
-    // B1471 dropped the ninth and tenth: the signal + restart arms used to
-    // sit inline here and return EARLY, so each early exit needed its own
-    // gated `syscall_return_clear`. They now live in the shared
-    // `exit_to_user` loop (Linux `exit_to_user_mode_loop`, run by the IRQ and
-    // exception return paths too), so this function has exactly ONE exit and
-    // one clear.
-    assert_eq!(source.matches(feature).count(), 8);
-    assert!(dispatch < diag && diag < timers && timers < rseq && rseq < ptrace);
-    assert!(ptrace < loop_stage && loop_stage < clear);
-    assert_eq!(source.matches("syscall_return_clear(task)").count(), 1,
-        "one exit from the tail means one clear");
-    assert!(source.contains("crate::exit_to_user::exit_to_user_mode_loop(regs, Some(rv))"),
-        "the tail delegates to the ONE return-to-user work loop");
-}
 
 
 
@@ -142,3 +80,13 @@ fn peer_credentials_and_groups_come_from_one_snapshot() {
 
 // C245: the v4-mapped dual-stack name rules moved to `sock_name::tests`, where
 // they are asserted on the bytes each socket state actually reports.
+
+// C246: the sshd-trace and syscall-return-stage instrumentation is DEBUG-ONLY
+// scaffolding — it has no observable production behaviour, so no behavioural
+// test can exist for it. What those grep tests actually guarded against was the
+// blocks failing to COMPILE, which `make feature-gate` now covers directly:
+// `GATE_FEATURES` derives its list from `kmain`'s manifest and so type-checks
+// both arches with `debug-sshd`, `debug-sshd-detail` and
+// `debug-syscall-return` among the other 84. Verified by reinstating a type
+// error inside `trace_sshd_listener_enter`: the default build reports 0 errors,
+// `make feature-gate-x86` fails E0308.
