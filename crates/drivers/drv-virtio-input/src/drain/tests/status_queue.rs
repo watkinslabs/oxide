@@ -129,6 +129,7 @@ fn event(value: u32) -> VirtioInputEvent {
 
 #[test]
 fn transport_profile_requires_event_status_and_device_config() {
+    let _devices = crate::registry::own_device_table();
     let profile = crate::transport_profile();
     assert!(profile.child_requirements.required_queues[EVENT_QUEUE_SLOT]);
     assert!(profile.child_requirements.required_queues[STATUS_QUEUE_SLOT]);
@@ -144,6 +145,7 @@ fn transport_profile_requires_event_status_and_device_config() {
 
 #[test]
 fn resource_gate_rejects_missing_statusq_or_device_config() {
+    let _devices = crate::registry::own_device_table();
     const QUEUE_SIZE: u16 = 2;
     const EVENT_DESC_PA: u64 = 1;
     const EVENT_DRIVER_PA: u64 = 2;
@@ -173,6 +175,7 @@ fn resource_gate_rejects_missing_statusq_or_device_config() {
 
 #[test]
 fn eventq_publishes_every_frame_backed_descriptor() {
+    let _devices = crate::registry::own_device_table();
     let mut fixture = Fixture::new();
     let eventq = virtio::VirtQueueResource {
         index: EVENT_QUEUE_INDEX,
@@ -205,6 +208,7 @@ fn eventq_publishes_every_frame_backed_descriptor() {
 
 #[test]
 fn status_descriptor_is_driver_readable_eight_byte_indexed_buffer() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4100_0000;
     const QUEUE_SIZE: u16 = 2;
     const EVENT_VALUE: u32 = 7;
@@ -236,6 +240,7 @@ fn status_descriptor_is_driver_readable_eight_byte_indexed_buffer() {
 
 #[test]
 fn completion_is_reaped_before_submit_and_descriptor_is_reused() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4200_0000;
     const QUEUE_SIZE: u16 = 2;
     const FIRST_VALUE: u32 = 1;
@@ -270,6 +275,7 @@ fn completion_is_reaped_before_submit_and_descriptor_is_reused() {
 
 #[test]
 fn nonzero_status_completion_length_poison_queue() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4250_0000;
     const QUEUE_SIZE: u16 = 2;
 
@@ -306,6 +312,7 @@ fn nonzero_status_completion_length_poison_queue() {
 
 #[test]
 fn duplicate_status_completion_poison_queue() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4260_0000;
     const QUEUE_SIZE: u16 = 2;
 
@@ -337,6 +344,7 @@ fn duplicate_status_completion_poison_queue() {
 
 #[test]
 fn status_batch_capacity_failure_does_not_partially_publish() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4270_0000;
     const QUEUE_SIZE: u16 = 2;
 
@@ -360,6 +368,7 @@ fn status_batch_capacity_failure_does_not_partially_publish() {
 
 #[test]
 fn canonical_output_batch_is_encoded_for_exact_status_queue() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4280_0000;
     const QUEUE_SIZE: u16 = 2;
     const FIRST_CODE: u16 = 1;
@@ -411,6 +420,7 @@ fn canonical_output_batch_is_encoded_for_exact_status_queue() {
 
 #[test]
 fn full_status_queue_retains_and_retries_canonical_output() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4281_0000;
     const QUEUE_SIZE: u16 = 1;
     const FIRST_LED_CODE: u16 = 1;
@@ -469,6 +479,7 @@ fn full_status_queue_retains_and_retries_canonical_output() {
 
 #[test]
 fn exact_device_send_and_teardown_retain_both_owned_frames() {
+    let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4300_0000;
     const UNKNOWN_DEVICE_KEY_RAW: u32 = 0x4400_0000;
     const QUEUE_SIZE: u16 = 1;

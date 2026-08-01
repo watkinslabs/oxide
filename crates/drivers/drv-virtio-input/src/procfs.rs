@@ -121,7 +121,6 @@ mod tests {
     const RAW_PHYS: [u8; 3] = [b'P', 0x01, b'H'];
     const RAW_SERIAL: [u8; 3] = [b'U', b'\\', 0xfe];
 
-    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn key(raw: u32) -> virtio::VirtioChildDeviceKey {
         virtio::VirtioChildDeviceKey::from_raw(raw)
@@ -160,7 +159,7 @@ mod tests {
 
     #[test]
     fn devices_body_names_virtual_input_sysfs_device() {
-        let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+        let _devices = crate::registry::own_device_table();
         crate::registry::clear_devices_for_tests();
         let device_key = key(VIRTUAL_DEVICE_KEY_RAW);
         let (input_id, evdev_id) = crate::install(test_dev(device_key))
@@ -195,7 +194,7 @@ mod tests {
 
     #[test]
     fn devices_body_lists_multiple_input_records_in_event_order() {
-        let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+        let _devices = crate::registry::own_device_table();
         crate::registry::clear_devices_for_tests();
         let first = key(FIRST_DEVICE_KEY_RAW);
         let later = key(LATER_DEVICE_KEY_RAW);
@@ -245,7 +244,7 @@ mod tests {
 
     #[test]
     fn devices_body_preserves_linux_raw_identity_bytes() {
-        let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+        let _devices = crate::registry::own_device_table();
         crate::registry::clear_devices_for_tests();
         let device_key = key(RAW_IDENTITY_DEVICE_KEY_RAW);
         let mut model = test_dev(device_key);

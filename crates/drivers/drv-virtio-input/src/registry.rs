@@ -304,3 +304,42 @@ pub(crate) fn clear_devices_for_tests() {
     }
     input::clear_devices_for_tests();
 }
+
+// The input device table is process-global and has MAX_INPUT_DEVICES slots:
+// the `input::` canonical records, the devfs `eventN` nodes and the evdev
+// endpoint publications are one table reached through three modules. Hosted
+// tests published into it from `tests`, `devfs::tests`, `procfs` and `drain`
+// while only `tests` took a lock, and the ones that picked slot numbers by
+// hand collided outright (two different devices both claimed `5`). So one
+// test's clear landed inside another's measurement window and one test's
+// publish stole another's slot.
+//
+// The lock belongs to the table. Every test that touches it takes THIS one —
+// a second lock elsewhere would exclude nothing, which is how this got here.
+#[cfg(test)]
+static DEVICE_TABLE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Exclusive hosted ownership of the input device table for a test's whole
+/// body. The table is empty on entry and on exit, so neither a failed test nor
+/// a test that forgets to clean up can taint the next owner.
+#[cfg(test)]
+#[must_use = "the table is only owned while the guard lives"]
+pub(crate) struct DeviceTableOwner {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for DeviceTableOwner {
+    fn drop(&mut self) { clear_devices_for_tests(); }
+}
+
+/// # C: O(MAX_INPUT_DEVICES)
+#[cfg(test)]
+pub(crate) fn own_device_table() -> DeviceTableOwner {
+    let guard = match DEVICE_TABLE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => { DEVICE_TABLE.clear_poison(); poisoned.into_inner() }
+    };
+    clear_devices_for_tests();
+    DeviceTableOwner { _guard: guard }
+}
