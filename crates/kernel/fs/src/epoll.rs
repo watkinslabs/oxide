@@ -39,6 +39,16 @@ pub use fileops::handle_epoll_ioctl;
 /// folded into that range, so it can never become a neighbouring owner's.
 use vfs::pseudo_ino::EPOLL as INO_REGION;
 
+/// The clock every deadline in this module is expressed against.
+/// # C: O(1)
+pub(super) fn monotonic_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
+
 // Park / wake plumbing lives in `sched::live` so net/IPC layers
 // (which don't depend on `fs`) can trigger epoll wakeups without a
 // circular crate edge. See `sched::live::EPOLL_GLOBAL_WAIT` and
@@ -456,3 +466,7 @@ fn epoll_data_of_inode(inode: &vfs::InodeRef) -> Option<Arc<EpollData>> {
 #[cfg(test)]
 #[path = "epoll/identity_tests.rs"]
 mod identity_tests;
+
+#[cfg(test)]
+#[path = "epoll/deadline_tests.rs"]
+mod deadline_tests;
