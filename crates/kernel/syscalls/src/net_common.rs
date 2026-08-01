@@ -227,8 +227,13 @@ mod tests {
         let lookup = recvmmsg.find("let target = match crate::recvmsg::lookup(args.a0)").unwrap();
         let timeout = recvmmsg.find("let mut timeout = match timeout_import(args.a4)").unwrap();
         assert!(timeout < lookup, "recvmmsg imports timeout before fd lookup");
-        assert!(recvmmsg.contains("if result > 0"),
-            "recvmmsg copies a supplied timeout back only after a completed datagram");
+        // The copyback rule itself is no longer a source-grep claim: it lives
+        // in `mmsg_batch` and is asserted here on the function the shim calls.
+        assert!(recvmmsg.contains("mmsg_batch::copies_timeout_back(result)"),
+            "recvmmsg asks the batch rule whether to copy the timeout back");
+        assert!(!crate::mmsg_batch::copies_timeout_back(0),
+            "an empty batch leaves the caller's timespec alone");
+        assert!(crate::mmsg_batch::copies_timeout_back(1));
 
         let bind = include_str!("049_bind.rs");
         assert!(bind.contains("move_sockaddr_to_kernel_shape(addr_p, addrlen)"));

@@ -46,22 +46,10 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
     Ok(())
 }
 
-/// Reject a mapped IPv6 datagram destination on an IPV6_V6ONLY socket. # C: O(1)
-pub(crate) fn validate_udp6_mapped_destination(dst_ip: crate::Ipv6Addr, v6only: bool)
-    -> Result<(), NetError>
-{
-    if v6only && dst_ip.to_v4_mapped().is_some() { Err(NetError::Enetunreach) }
-    else { Ok(()) }
-}
-
-/// Select native TCP6 or mapped TCP4 after CONNECT6 policy ran. # C: O(1)
-pub(crate) fn tcp6_mapped_destination(dst_ip: crate::Ipv6Addr, v6only: bool)
-    -> Result<Option<crate::Ipv4Addr>, NetError>
-{
-    let Some(dst_ip) = dst_ip.to_v4_mapped() else { return Ok(None); };
-    if v6only { Err(NetError::Enetunreach) } else { Ok(Some(dst_ip)) }
-}
-
+/// Resolve an IPv6 scope id to the interface a send leaves by. A zero scope
+/// falls back to the socket's multicast interface; a non-zero one must name a
+/// live interface in this namespace and must not fight `SO_BINDTODEVICE`.
+/// # C: O(1) lookup
 pub(crate) fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u32)
     -> Result<Option<crate::NetIfaceId>, NetError>
 {
@@ -80,22 +68,15 @@ pub(crate) fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u3
 /// `IPV6_DEFAULT_HOP_LIMIT` for unicast. # C: O(1)
 fn resolve_v6_hop_limit(sock: &InetSocket, dst_ip: crate::Ipv6Addr) -> u8 {
     use core::sync::atomic::Ordering;
-    if dst_ip.is_multicast() {
-        let h = sock.opts.ipv6_mcast_hops.load(Ordering::Acquire);
-        if h < 0 { 1 } else { h as u8 }
-    } else {
-        let h = sock.opts.ipv6_ucast_hops.load(Ordering::Acquire);
-        if h < 0 { crate::ipv6::IPV6_DEFAULT_HOP_LIMIT } else { h as u8 }
-    }
+    crate::inet_tx::ipv6_hop_limit(sock.opts.ipv6_mcast_hops.load(Ordering::Acquire),
+        sock.opts.ipv6_ucast_hops.load(Ordering::Acquire), dst_ip.is_multicast())
 }
 
 /// Resolve the outbound traffic class for a v6 datagram from the socket's
 /// sticky IPV6_TCLASS. The `-1` sentinel means "unset" → Linux default 0.
 /// Unlike hop limit, traffic class does not depend on multicast. # C: O(1)
 fn resolve_v6_tclass(sock: &InetSocket) -> u8 {
-    use core::sync::atomic::Ordering;
-    let t = sock.opts.ipv6_tclass.load(Ordering::Acquire);
-    if t < 0 { 0 } else { t as u8 }
+    crate::inet_tx::ipv6_tclass(sock.opts.ipv6_tclass.load(core::sync::atomic::Ordering::Acquire))
 }
 
 /// Raw IPv6 send with socket scope, PMTU, and protocol-override state. # C: O(payload + N)
@@ -253,8 +234,8 @@ pub fn sendto_v6(sock: &InetSocket,
                   scope_id: u32,
                   payload: &[u8]) -> Result<usize, NetError> {
     let eno = sock.take_pending_recv_error();
-    if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
-    validate_udp6_mapped_destination(
+    if eno != 0 { return Err(crate::sock_error::pending_net_error(eno)); }
+    crate::inet_tx::validate_udp6_mapped_destination(
         dst_ip,
         sock.opts.ipv6_v6only.load(core::sync::atomic::Ordering::Acquire) != 0,
     )?;
@@ -294,48 +275,4 @@ pub fn sendto_v6(sock: &InetSocket,
     )?;
     drain_loopback();
     Ok(payload.len())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn v6only_mapped_udp_destination_is_network_unreachable_before_send() {
-        let mapped = crate::Ipv6Addr::from_v4_mapped(
-            crate::Ipv4Addr::new(192, 0, 2, 1),
-        );
-        assert_eq!(
-            super::validate_udp6_mapped_destination(mapped, true),
-            Err(crate::NetError::Enetunreach),
-        );
-        assert_eq!(super::validate_udp6_mapped_destination(mapped, false), Ok(()));
-        assert_eq!(
-            super::validate_udp6_mapped_destination(crate::Ipv6Addr::LOOPBACK, true),
-            Ok(()),
-        );
-        let sock = crate::sock::InetSocket::new_udp6();
-        sock.opts.ipv6_v6only.store(1, core::sync::atomic::Ordering::Release);
-        assert_eq!(
-            super::sendto_v6(&sock, mapped, 53, 0, b"query"),
-            Err(crate::NetError::Enetunreach),
-        );
-        assert!(sock.local_port.lock().is_none());
-    }
-
-    #[test]
-    fn mapped_tcp_destination_selects_tcp4_unless_v6only() {
-        let mapped_ip = crate::Ipv4Addr::new(198, 51, 100, 7);
-        let mapped = crate::Ipv6Addr::from_v4_mapped(mapped_ip);
-        assert_eq!(
-            super::tcp6_mapped_destination(mapped, true),
-            Err(crate::NetError::Enetunreach),
-        );
-        assert_eq!(
-            super::tcp6_mapped_destination(mapped, false),
-            Ok(Some(mapped_ip)),
-        );
-        assert_eq!(
-            super::tcp6_mapped_destination(crate::Ipv6Addr::LOOPBACK, false),
-            Ok(None),
-        );
-    }
 }
