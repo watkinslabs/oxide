@@ -13,7 +13,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use super::{key, FakeInputConfig, TEST_DEVICE_KEY_RAW, TEST_MUTEX};
+use super::{key, FakeInputConfig, TEST_DEVICE_KEY_RAW};
 use super::{TEST_TRANSPORT_VENDOR, TEST_VIRTIO_INPUT_DEVICE_ID};
 
 /// Sentinel for "the remove hook never ran at all".
@@ -39,6 +39,17 @@ fn observe_remove(dev: &drv::Device) {
 }
 
 fn ignore_remove(_dev: &drv::Device) {}
+
+// The driver model keys a device by bus address and refuses a duplicate, and
+// nothing here removes the parent again — so a fixed address made the SECOND
+// test to run fail with Busy, whichever one that was. Each parent gets its own
+// address instead.
+static NEXT_PARENT_ADDR: AtomicU32 = AtomicU32::new(0);
+
+fn unique_parent() -> alloc::sync::Arc<drv::Device> {
+    let n = NEXT_PARENT_ADDR.fetch_add(1, Ordering::Relaxed);
+    parent_device(&alloc::format!("virtio-test{}", n))
+}
 
 fn parent_device(addr: &str) -> alloc::sync::Arc<drv::Device> {
     let parent = alloc::sync::Arc::new(drv::Device::new(
@@ -66,7 +77,6 @@ fn bind(parent: &alloc::sync::Arc<drv::Device>) -> u32 {
 
 #[test]
 fn unbind_tears_the_model_node_down_while_the_canonical_record_is_still_live() {
-    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _nodes = crate::devfs::tests::serialize();
     crate::registry::clear_devices_for_tests();
     HOOK_RAN.store(false, Ordering::Relaxed);
@@ -74,7 +84,7 @@ fn unbind_tears_the_model_node_down_while_the_canonical_record_is_still_live() {
     INPUT_ID_AT_REMOVE.store(NO_OBSERVATION, Ordering::Relaxed);
     drv::set_sysfs_remove_hook(observe_remove);
 
-    let parent = parent_device("virtio0");
+    let parent = unique_parent();
     let evdev_id = bind(&parent);
     let input_id = input::device(evdev_id).expect("canonical model").input_id;
 
@@ -95,12 +105,11 @@ fn unbind_tears_the_model_node_down_while_the_canonical_record_is_still_live() {
 
 #[test]
 fn rebind_mints_a_new_input_index_and_reuses_the_evdev_minor() {
-    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _nodes = crate::devfs::tests::serialize();
     crate::registry::clear_devices_for_tests();
     drv::set_sysfs_remove_hook(ignore_remove);
 
-    let parent = parent_device("virtio0");
+    let parent = unique_parent();
     let first_evdev = bind(&parent);
     let first_input = input::device(first_evdev).expect("first model").input_id;
 
@@ -121,7 +130,6 @@ fn rebind_mints_a_new_input_index_and_reuses_the_evdev_minor() {
 
 #[test]
 fn concurrently_installed_devices_never_share_an_identity() {
-    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _nodes = crate::devfs::tests::serialize();
     crate::registry::clear_devices_for_tests();
 
@@ -145,7 +153,6 @@ fn concurrently_installed_devices_never_share_an_identity() {
 
 #[test]
 fn disconnect_flushes_through_the_live_handler_and_keeps_the_record_installed() {
-    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _nodes = crate::devfs::tests::serialize();
     crate::registry::clear_devices_for_tests();
 

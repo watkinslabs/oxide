@@ -98,6 +98,7 @@ fn assert_rejected_without_partial_delivery(fixture: &Fixture, ctx: &QueueCtx, b
 
 #[test]
 fn invalid_later_event_descriptor_rejects_entire_snapshot() {
+    let _devices = crate::registry::own_device_table();
     let _guard = TEST_LOCK.lock();
     let mut fixture = Fixture::new();
     let mut ctx = fixture.context(TWO_ENTRY_QUEUE_SIZE);
@@ -132,6 +133,7 @@ fn invalid_later_event_descriptor_rejects_entire_snapshot() {
 
 #[test]
 fn duplicate_event_descriptor_rejects_entire_snapshot() {
+    let _devices = crate::registry::own_device_table();
     let _guard = TEST_LOCK.lock();
     let mut fixture = Fixture::new();
     let mut ctx = fixture.context(TWO_ENTRY_QUEUE_SIZE);
@@ -166,6 +168,7 @@ fn duplicate_event_descriptor_rejects_entire_snapshot() {
 
 #[test]
 fn short_event_completion_rejects_entire_snapshot() {
+    let _devices = crate::registry::own_device_table();
     let _guard = TEST_LOCK.lock();
     let mut fixture = Fixture::new();
     let mut ctx = fixture.context(SINGLE_ENTRY_QUEUE_SIZE);
