@@ -17,6 +17,7 @@ devfs   = { path = "../../kernel/devfs" }
 drv     = { path = "../drv" }
 syscall = { path = "../../kernel/syscall" }
 sched   = { path = "../../kernel/sched" }
+uaccess = { path = "../../kernel/uaccess" }
 
 [features]
 debug-boot = []  # [DRMPROP] KMS plane/property ioctl trace (mutter primary-plane hunt)

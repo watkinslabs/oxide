@@ -233,6 +233,10 @@ pub(super) fn free_frame(pa: u64) {
             TEST_FREED_FRAMES.lock().push(pa);
             return;
         }
+        // SAFETY: every caller reaches here from `stop_reset_free`, which runs
+        // only after the Ctx left CTX (so no queue path can name the frame) and
+        // after the transport reset stopped the device, or from the probe's own
+        // cleanup for frames no descriptor was ever built over.
         unsafe { pmm::setup::free_one_frame(pa); }
     }
 }

@@ -13,9 +13,14 @@ pub(crate) fn now_ns() -> u64 { crate::port::now_ns() }
 #[inline]
 fn irq_save_enable() -> u64 {
     use sync::IrqGate;
-    // SAFETY: bounded block wait; irq_restore pairs on the same task/CPU.
+    // SAFETY: unmasking is sound because the only caller, `poll_enabled`, holds
+    // no plain lock an IRQ or softirq path also takes, and its every exit —
+    // completion, deadline, or budget — pairs this with `irq_restore(token)`.
     #[cfg(target_arch = "x86_64")]
     unsafe { hal_x86_64::X86IrqGate::save_enable() }
+    // SAFETY: unmasking is sound because the only caller, `poll_enabled`, holds
+    // no plain lock an IRQ or softirq path also takes, and its every exit —
+    // completion, deadline, or budget — pairs this with `irq_restore(token)`.
     #[cfg(target_arch = "aarch64")]
     unsafe { hal_aarch64::ArmIrqGate::save_enable() }
 }
@@ -23,9 +28,14 @@ fn irq_save_enable() -> u64 {
 #[inline]
 fn irq_restore(token: u64) {
     use sync::IrqGate;
-    // SAFETY: token came from irq_save_enable on this task/CPU.
+    // SAFETY: `token` is the opaque flags word the matching `irq_save_enable`
+    // produced earlier in the same call frame on this CPU, so restoring it
+    // returns the interrupt mask to exactly the caller's entry state.
     #[cfg(target_arch = "x86_64")]
     unsafe { hal_x86_64::X86IrqGate::restore(token) }
+    // SAFETY: `token` is the opaque DAIF word the matching `irq_save_enable`
+    // produced earlier in the same call frame on this CPU, so restoring it
+    // returns the interrupt mask to exactly the caller's entry state.
     #[cfg(target_arch = "aarch64")]
     unsafe { hal_aarch64::ArmIrqGate::restore(token) }
 }

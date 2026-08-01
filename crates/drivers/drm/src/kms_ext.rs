@@ -30,6 +30,7 @@ const GAMMA_ENTRY_BYTES: u64 = 2;
 const GAMMA_ENTRY_MAX:   u64 = 0xFFFF;
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
+fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 
 #[derive(Copy, Clone)]
 struct CursorState {
@@ -197,16 +198,14 @@ fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, c
 
 /// `MODE_CURSOR` legacy cursor ioctl. # C: O(n) table lookup + device work.
 pub fn cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeCursor>() as u64) { return einval(); }
-    let cursor = unsafe { core::ptr::read_volatile(arg as *const DrmModeCursor) };
+    let Ok(cursor) = crate::uarg::read_arg::<DrmModeCursor>(arg) else { return efault() };
     set_cursor(card_id, card, token, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
         cursor.width, cursor.height, cursor.handle, 0, 0)
 }
 
 /// `MODE_CURSOR2` cursor ioctl with a hotspot. # C: O(n) + device work.
 pub fn cursor2(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeCursor2>() as u64) { return einval(); }
-    let cursor = unsafe { core::ptr::read_volatile(arg as *const DrmModeCursor2) };
+    let Ok(cursor) = crate::uarg::read_arg::<DrmModeCursor2>(arg) else { return efault() };
     set_cursor(card_id, card, token, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
         cursor.width, cursor.height, cursor.handle, cursor.hot_x, cursor.hot_y)
 }

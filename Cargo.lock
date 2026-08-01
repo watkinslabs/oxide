@@ -239,6 +239,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "uaccess",
  "vfs",
 ]
 
@@ -387,6 +388,7 @@ dependencies = [
  "syscall",
  "timekeeper",
  "tty",
+ "uaccess",
  "vfs",
  "virtio",
  "vt",

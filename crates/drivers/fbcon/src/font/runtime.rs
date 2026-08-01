@@ -12,14 +12,25 @@ static ACTIVE: AtomicPtr<Font> = AtomicPtr::new(core::ptr::null_mut());
 pub fn active() -> &'static Font {
     let p = ACTIVE.load(Ordering::Acquire);
     if !p.is_null() {
+        // SAFETY: a non-null ACTIVE is a `Box::into_raw(Box<Font>)` that is
+        // deliberately never freed — `install` overwrites the pointer and leaks
+        // the old font precisely so any `&'static Font` handed out here stays
+        // valid. The Acquire pairs with the Release/AcqRel stores below.
         return unsafe { &*p };
     }
     let font = parse_psf2(DEFAULT_PSF).expect("built-in default8x16.psfu must parse");
     let raw = Box::into_raw(Box::new(font));
     match ACTIVE.compare_exchange(core::ptr::null_mut(), raw, Ordering::AcqRel, Ordering::Acquire) {
+        // SAFETY: this thread won the CAS, so `raw` is the leaked Box it just
+        // created and is now the single published font; nothing frees it.
         Ok(_) => unsafe { &*raw },
         Err(winner) => {
+            // SAFETY: the CAS failed, so `raw` was never published and this
+            // thread still holds the only pointer to that Box — reclaiming it
+            // here is the sole drop of that allocation.
             drop(unsafe { Box::from_raw(raw) });
+            // SAFETY: `winner` is the pointer the CAS observed, another
+            // thread's leaked `Box<Font>`, which is likewise never freed.
             unsafe { &*winner }
         }
     }

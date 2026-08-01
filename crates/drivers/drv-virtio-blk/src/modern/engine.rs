@@ -16,6 +16,10 @@ impl BlkState {
         // free list, which kalloc_grow (or anything else) could then carve
         // into a live heap object the device keeps writing into.
         if self.bounce_pa != 0 && reset_confirmed {
+            // SAFETY: `bounce_pa` is this driver's own `alloc_contig(BOUNCE_ORDER)`
+            // block, freed exactly once here; `reset_confirmed` proves the device
+            // read status==0 after reset, so no in-flight DMA targets the frames,
+            // and `idle` proves no request still references them.
             unsafe { pmm::setup::free_contig(self.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
         } else if self.bounce_pa != 0 {
             klog::write_raw(b"[BLK-REMOVE] reset unconfirmed, leaking bounce buffer\n");
@@ -119,6 +123,12 @@ impl BlkState {
         let bounce = h.wrapping_add(self.bounce_pa) as *mut u8;
         let mut hdr = [0u8; 16];
         blk::encode_header(&mut hdr, type_, sector);
+        // No descriptor referencing this block has been published yet, so the
+        // device cannot be reading these bytes concurrently.
+        // SAFETY: `bounce` is the HHDM view of this driver's own shared
+        // `alloc_contig(BOUNCE_ORDER)` block spanning DATA_OFF+BOUNCE_DATA_BYTES;
+        // `acquire_turn` made this task its sole owner and `submit` rejected any
+        // `data.len()` above BOUNCE_DATA_BYTES, so every offset is in bounds.
         unsafe {
             for (i, b) in hdr.iter().enumerate() {
                 core::ptr::write_volatile(bounce.add(HDR_OFF + i), *b);
@@ -137,6 +147,12 @@ impl BlkState {
         let (descs, n) = blk::build_chain(is_in, hdr_pa, data_pa, data_len, status_pa);
 
         let desc_tbl = h.wrapping_add(self.requestq.desc_pa) as *mut u64;
+        // `acquire_turn` gives this task sole ownership of heads 0..n, and the
+        // device only reads them once the `avail.idx` store below publishes them.
+        // SAFETY: `desc_pa` is the queue's own descriptor frame via HHDM, sized
+        // by the `size` that `program_queue` negotiated down to one frame's
+        // worth of descriptors; `n` is `build_chain`'s count, capped at
+        // MAX_REQUEST_DESCRIPTORS = 3, so `i*2 + 1` stays inside the frame.
         unsafe {
             for (i, d) in descs.iter().take(n).enumerate() {
                 let (w0, w1) = blk::pack_desc(d);
@@ -150,6 +166,12 @@ impl BlkState {
         let target = {
             let mut g = self.inflight.lock();
             let slot = g.avail_idx % qsz;
+            // `inflight` is held, and the Release fence orders the ring-entry
+            // store before the `idx` store that hands the entry to the device.
+            // SAFETY: `driver_pa` is the queue's own avail frame via HHDM, whose
+            // u16 layout is flags, idx, ring[qsz] (Virtio 1.2 §2.7.6); `slot` is
+            // reduced mod `qsz` and `qsz` is capped at one frame's worth of
+            // descriptors, so `2 + slot` is an in-bounds aligned u16 index.
             unsafe {
                 core::ptr::write_volatile(avail.add(2 + slot as usize), 0u16);
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
@@ -161,6 +183,11 @@ impl BlkState {
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         if self.requestq.notify_va != 0 {
+            // The Release fence above published the ring before this doorbell.
+            // SAFETY: `notify_va` is this queue's doorbell inside the device's
+            // Device-attr-mapped notify BAR window, computed at probe from
+            // `queue_notify_off` and checked non-zero here; a u16 store of the
+            // queue index is its defined access (Virtio 1.2 §4.1.4.4).
             unsafe {
                 core::ptr::write_volatile(
                     self.requestq.notify_va as *mut u16,
@@ -172,6 +199,10 @@ impl BlkState {
         self.wait_for_completion(h, target)?;
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
+        // SAFETY: same owned bounce block; STATUS_OFF is its in-bounds status
+        // byte. `wait_for_completion` observed this request's used-ring entry,
+        // so the device has finished writing the byte, and the Acquire fence
+        // above orders that device write before this load.
         let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
         if let Err(st) = blk::decode_status(status) {
             #[cfg(feature = "debug-boot")]
@@ -179,6 +210,10 @@ impl BlkState {
             return Err(block_error_for_status(st));
         }
         if is_in {
+            // SAFETY: read-back of the same owned bounce block; `data.len()`
+            // was bounded by `BOUNCE_DATA_BYTES` in `submit`, so
+            // `DATA_OFF + i` stays inside it. The used-ring entry retired the
+            // descriptor chain, so the device is done writing the payload.
             unsafe {
                 for (i, b) in data.iter_mut().enumerate() {
                     *b = core::ptr::read_volatile(bounce.add(DATA_OFF + i));
@@ -298,6 +333,12 @@ impl BlkState {
         let bounce = h.wrapping_add(bounce_pa) as *mut u8;
         let mut header = [0u8; VIRTIO_BLK_REQUEST_HEADER_BYTES];
         blk::encode_header(&mut header, type_, sector);
+        // Not yet published to any descriptor, so no other CPU and not the
+        // device can reach this block while these stores run.
+        // SAFETY: `bounce` is the HHDM view of the `alloc_contig(BOUNCE_ORDER)`
+        // block allocated for THIS request above, spanning
+        // DATA_OFF+BOUNCE_DATA_BYTES, and `owned_request_plan` capped `data_len`
+        // at BOUNCE_DATA_BYTES, so every offset written is inside it.
         unsafe {
             for (offset, byte) in header.iter().enumerate() {
                 core::ptr::write_volatile(bounce.add(HDR_OFF + offset), *byte);
@@ -317,6 +358,15 @@ impl BlkState {
             bounce_pa + STATUS_OFF as u64,
         );
         let desc_table = h.wrapping_add(self.requestq.desc_pa) as *mut u64;
+        // `head` came from `free_heads` (entries `slot * MAX_REQUEST_DESCRIPTORS`
+        // for `slot < size / 3`), so this request exclusively owns descriptors
+        // `head..head+3` until its used-ring entry retires them. `ring` is held
+        // across both writes; the Release fence orders the avail ring-entry store
+        // before the `avail.idx` publish.
+        // SAFETY: descriptor and avail frames of this queue via HHDM, sized by
+        // the `size` `program_queue` negotiated down to one frame; with
+        // `descriptor_count <= MAX_REQUEST_DESCRIPTORS` and `head + 3 <= size`,
+        // and `avail_slot < size`, every index written is in bounds and aligned.
         unsafe {
             for (offset, descriptor) in descs.iter().take(descriptor_count).enumerate() {
                 let mut descriptor = *descriptor;
@@ -338,6 +388,10 @@ impl BlkState {
         ring.pending.push(PendingRequest { head, bounce_pa, request, completion, is_in, data_len });
         drop(ring);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        // SAFETY: `notify_va` is this queue's doorbell in the Device-attr notify
+        // BAR window; `is_runtime_valid()` at the top of this fn proved it
+        // non-zero. A u16 store of the queue index is the doorbell's defined
+        // access, and the Release fence published the rings before it.
         unsafe { core::ptr::write_volatile(self.requestq.notify_va as *mut u16, self.requestq.index); }
         Ok(())
     }
@@ -358,10 +412,18 @@ impl BlkState {
             let pending = {
                 let mut ring = self.inflight.lock();
                 let used = h.wrapping_add(self.requestq.device_pa) as *const u8;
+                // SAFETY: `device_pa` is this queue's used frame via HHDM,
+                // non-zero per the guard above. Virtio 1.2 §2.7.8 puts `idx` at
+                // byte 2 as an aligned u16; the volatile load re-reads the
+                // device's publish rather than caching it.
                 let used_index = unsafe { core::ptr::read_volatile(used.add(core::mem::size_of::<u16>()) as *const u16) };
                 if ring.used_seen == used_index { return; }
                 let slot = (ring.used_seen % self.requestq.size) as usize;
                 let entry = core::mem::size_of::<u16>() * 2 + slot * (core::mem::size_of::<u32>() * 2);
+                // SAFETY: same used frame; `slot < size` and `size` is capped to
+                // one frame, so `4 + slot*8` is an in-bounds, u32-aligned
+                // `used.ring[slot].id`. `used_seen != used_index` proves the
+                // device already published this entry.
                 let head = unsafe { core::ptr::read_volatile(used.add(entry) as *const u32) as u16 };
                 ring.used_seen = ring.used_seen.wrapping_add(1);
                 let Some(position) = ring.pending.iter().position(|request| request.head == head) else {
@@ -373,12 +435,20 @@ impl BlkState {
             };
             let mut request = pending.request;
             let bounce = h.wrapping_add(pending.bounce_pa) as *const u8;
+            // SAFETY: the per-request `alloc_contig(BOUNCE_ORDER)` block, still
+            // owned by this `PendingRequest` (removed from `pending` above, not
+            // yet freed). Its descriptor head came back in the used ring, so the
+            // device has finished with it. STATUS_OFF is in bounds.
             let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
             let result = match blk::decode_status(status) {
                 Ok(()) if pending.is_in => {
                     if request.buffer.len() < pending.data_len as usize {
                         Err(BlockError::Eio)
                     } else {
+                        // SAFETY: same retired bounce block; the length check
+                        // above bounds `data_len` by the caller's buffer, and
+                        // `owned_request_plan` bounded it by BOUNCE_DATA_BYTES,
+                        // so `DATA_OFF + offset` is inside the block.
                         unsafe {
                             for (offset, byte) in request.buffer[..pending.data_len as usize].iter_mut().enumerate() {
                                 *byte = core::ptr::read_volatile(bounce.add(DATA_OFF + offset));

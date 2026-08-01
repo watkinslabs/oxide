@@ -10,6 +10,8 @@ pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-rng", VIRTIO_ID_RNG);
 
 pub(crate) const FILL_POLL_BUDGET: u32 = 2_000_000;
+/// Size of the single DMA bounce frame each record owns.
+pub(crate) const BOUNCE_FRAME_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 pub(crate) const FILL_BUFFER_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
 

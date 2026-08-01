@@ -19,10 +19,17 @@ fn submit_ctrl_for_key<F: Fn(&mut [u8]) -> usize>(driver_key: drm::node::Scanout
         return false;
     }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
+    // SAFETY: `submit_one`'s contract — `CTX` is held for the whole call, so
+    // this ctx's 4 KiB command frame and its CTRLQ stay live and single-producer
+    // and the previous submission on the queue was already retired.
     let ok = unsafe {
         submit_one(cmd_buf_va_p, ctx.cmd_buf_pa, |b| encode(b), ctx.ctrlq, ctx.hhdm)
     };
     if !ok { return false; }
+    // SAFETY: RESP_OFF (0x200) is a 4-byte-aligned offset with 0xE00 bytes left
+    // in the ctx's command frame, so this reads the reply header's `type` word
+    // in bounds; `ok` means the device retired the descriptor, so it is done
+    // writing, and `CTX` is still held so the frame cannot be freed.
     let resp = unsafe { core::ptr::read_volatile((ctx.cmd_buf_va + 0x200) as *const u32) };
     resp >= 0x1100 && resp < 0x1200
 }
@@ -103,14 +110,26 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
     let (cmd_buf_pa, ctrlq, hhdm) = (ctx.cmd_buf_pa, ctx.ctrlq, ctx.hhdm);
     for step in steps.iter().take(n) {
         let ok = match *step {
+            // SAFETY: `submit_one`'s contract — `CTX` is held across the whole
+            // plan, so the ctx's 4 KiB command frame and CTRLQ stay live and
+            // single-producer, and each step waits for the previous descriptor
+            // to retire before the frame is reused.
             present::Step::Transfer { rect: r, offset } => unsafe {
                 submit_one(cmd_buf_va_p, cmd_buf_pa,
                     |b| crate::encode_transfer_to_host_2d(b, res_id, r.x, r.y, r.w, r.h, offset), ctrlq, hhdm)
             },
+            // SAFETY: `submit_one`'s contract — `CTX` is held across the whole
+            // plan, so the ctx's 4 KiB command frame and CTRLQ stay live and
+            // single-producer, and each step waits for the previous descriptor
+            // to retire before the frame is reused.
             present::Step::SetScanout => unsafe {
                 submit_one(cmd_buf_va_p, cmd_buf_pa,
                     |b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h), ctrlq, hhdm)
             },
+            // SAFETY: `submit_one`'s contract — `CTX` is held across the whole
+            // plan, so the ctx's 4 KiB command frame and CTRLQ stay live and
+            // single-producer, and each step waits for the previous descriptor
+            // to retire before the frame is reused.
             present::Step::Flush { rect: r } => unsafe {
                 submit_one(cmd_buf_va_p, cmd_buf_pa,
                     |b| crate::encode_resource_flush(b, res_id, r.x, r.y, r.w, r.h), ctrlq, hhdm)
@@ -133,6 +152,9 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
         let g = CTX.lock();
         let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
         if ctx.quiesced { return false; }
+        // SAFETY: `submit_cursor_one`'s contract — `CTX` is held, so the ctx's
+        // 4 KiB command frame and CURSORQ are live and single-producer; the
+        // cursor area 0x100..0x200 is disjoint from the CTRLQ areas.
         return unsafe {
             submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
                 |b| crate::encode_update_cursor(b, 0, 0, 0, 0, 0, 0, 0), ctx.cursorq, ctx.hhdm)
@@ -147,6 +169,10 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
     let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced { return false; }
     let cmd_buf_va = ctx.cmd_buf_va as *mut u8;
+    // SAFETY: `submit_one` / `submit_cursor_one` contract — `CTX` is held for
+    // all three commands, so the ctx's 4 KiB command frame and both queues stay
+    // live and single-producer, and each command waits for the previous
+    // descriptor to retire before the frame is reused.
     unsafe {
         if !submit_one(cmd_buf_va, ctx.cmd_buf_pa,
             |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0), ctx.ctrlq, ctx.hhdm) {
@@ -167,6 +193,9 @@ pub fn move_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, x: i32, y: i
     let g = CTX.lock();
     let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced { return false; }
+    // SAFETY: `submit_cursor_one`'s contract — `CTX` is held, so the ctx's 4 KiB
+    // command frame and CURSORQ are live and single-producer, and the cursor
+    // area 0x100..0x200 is disjoint from the CTRLQ request and reply areas.
     unsafe {
         submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
             |b| crate::encode_move_cursor(b, x, y), ctx.cursorq, ctx.hhdm)
@@ -208,6 +237,9 @@ pub fn flush_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     }
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
+    // SAFETY: `submit_one`'s contract — `CTX` is held for the whole call, so
+    // this ctx's 4 KiB command frame and its CTRLQ stay live and single-producer
+    // and the previous submission on the queue was already retired.
     unsafe {
         let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
