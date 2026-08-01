@@ -22,7 +22,7 @@ drift between `kernel/src`, ad-hoc `crates/*`, and one-off folders.
 2. Subsystem behavior lives in domain crates under `crates/`.
 3. Arch-specific behavior lives in arch crates only.
 4. Tooling code lives under `tools/` only.
-5. Userspace code and assets live under `userspace/` and `vendor/`,
+5. Kernel smoke probes live under `userspace/`; the boot userspace image is composed by the sibling `../images` repo,
    never in kernel subsystem crates.
 
 ## 4 Layout contract (target)
@@ -40,7 +40,7 @@ oxide2/
 ├── tools/                     # xtask, lint, build helpers
 ├── docs/                      # specs
 ├── tests/                     # integration/hosted test harnesses
-└── vendor/                    # third-party sources/assets
+└── vendor/                    # kernel-build inputs only (see vendor/README.md)
 ```
 
 Current `crates/<name>` paths may remain during migration; new crates

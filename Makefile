@@ -135,8 +135,7 @@ SMP ?= 1
 
 # Limine is gone on BOTH arches — x86 boots via the GRUB multiboot2 path
 # and aarch64 via the GRUB EFI-stub `linux` path (`xtask grub` dispatches
-# on --arch). The old `xtask qemu` (Limine ISO + check_vendor for
-# vendor/limine/*) is dead. `cmd_grub` takes --arch/--smp/--features.
+# on --arch). `cmd_grub` takes --arch/--smp/--features.
 qemu-x86:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
