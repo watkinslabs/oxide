@@ -101,11 +101,6 @@ impl InetSocket {
         // never returned POLL_HUP and the surviving task (e.g. sshd-
         // session waiting on its slave) blocked forever — keeping every
         // upstream accept'd TCP socket pinned in CLOSE_WAIT.
-        enum UnixRelease {
-            Stream(alloc::sync::Arc<crate::UnixPair>, crate::UnixEnd),
-            Message(alloc::sync::Arc<crate::UnixMsgPair>, crate::UnixEnd),
-            Datagram(alloc::sync::Arc<crate::UnixDgramQueue>),
-        }
         let unix_release = {
             let kind = self.kind.lock();
             match &*kind {
@@ -118,6 +113,27 @@ impl InetSocket {
         };
         let collect_unix = unix_release.is_some();
         drop(_lifecycle);
+        self.release_unix_endpoint(unix_release);
+        if collect_unix { crate::unix_sock::collect_scm_rights(); }
+    }
+}
+
+/// The AF_UNIX endpoint an `InetSocket` owns, taken out under the lifecycle
+/// lock so the teardown below runs without it.
+enum UnixRelease {
+    Stream(alloc::sync::Arc<crate::UnixPair>, crate::UnixEnd),
+    Message(alloc::sync::Arc<crate::UnixMsgPair>, crate::UnixEnd),
+    Datagram(alloc::sync::Arc<crate::UnixDgramQueue>),
+}
+
+impl InetSocket {
+    /// Peer-EOF and address release for an AF_UNIX endpoint. Kept out of line:
+    /// `release_file` sits on the deepest static syscall path this kernel has,
+    /// so the queue and registry locals this teardown needs must not be charged
+    /// to every close that is not an AF_UNIX one.
+    /// # C: O(queued messages)
+    #[inline(never)]
+    fn release_unix_endpoint(&self, unix_release: Option<UnixRelease>) {
         match unix_release {
             Some(UnixRelease::Stream(pair, end)) => pair.release_end(end),
             Some(UnixRelease::Message(pair, end)) => pair.release_end(end),
@@ -134,14 +150,13 @@ impl InetSocket {
         // reusable after the socket closes (Linux frees the bind on close).
         // Without this, the bind leaks in UNIX_REGISTRY and a restart-looping
         // daemon (systemd-networkd's varlink listener) hits EADDRINUSE on
-        // rebind → "Could not set up manager: Address in use".
+        // rebind -> "Could not set up manager: Address in use".
         let unix_bound = { self.unix_bound.lock().clone() };
         if let Some(l) = unix_bound {
             crate::net_ns::unix_registry_for_addr_in(&self.net_namespace, &l.addr)
                 .unbind_addr(&l.addr);
             l.close();
         }
-        if collect_unix { crate::unix_sock::collect_scm_rights(); }
     }
 }
 
