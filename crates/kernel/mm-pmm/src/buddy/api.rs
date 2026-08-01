@@ -225,6 +225,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             // SAFETY: pointer is page-aligned and points to PAGE_SIZE_BYTES
             // of caller-owned memory; no aliasing for the duration.
             hal::zerotrap::trap((p) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
+            // SAFETY: `p` is the HHDM address of a page this call just removed
+            // from the free lists, so the allocator owns the whole
+            // PAGE_SIZE_BYTES span exclusively and no other CPU can hold a
+            // reference to it until the Pfn is returned to the caller.
             unsafe { core::ptr::write_bytes(p, 0, PAGE_SIZE_BYTES as usize) };
         }
         Ok(Pfn(pfn))

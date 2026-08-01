@@ -103,6 +103,9 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
             return -(error.as_i32() as i64);
         }
     }
+    // SAFETY: `fd_table_ref` borrows the CURRENT task's own fd-table slot,
+    // which only that task replaces, and it is here rather than in a replacing
+    // path, so the borrow has no competing mutator.
     #[cfg(feature = "debug-fdlife")]
     if let Some(table) = unsafe { cur.fd_table_ref() } {
         crate::fd_life::op(cur, table, b"unshare", flags as i32, -1, 0);

@@ -178,8 +178,10 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     // no reschedule IPI is ever sent from under it.
     for task in deferred {
         let owner = task.cpu.load(Ordering::Acquire) as u32;
-        // SAFETY: bounded lookup; an absent old owner cannot drain a list.
         let target = if owner < cpu::MAX_CPUS as u32
+            // SAFETY: `global_for` is sound for any index and returns `None` for
+            // a CPU that has not completed `install_global`; the range check
+            // above keeps the probe bounded.
             && unsafe { global_for(owner) }.is_some() { owner } else { cpu };
         wake_list_push(target, task);
         resched_curr(target);

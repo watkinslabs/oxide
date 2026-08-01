@@ -102,16 +102,16 @@ impl PtWalker for PtWalkerArm {
     unsafe fn flush_va(va: u64) {
         #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
         {
-            // SAFETY: `tlbi vae1is` invalidates EL1 stage-1 entries matching
-            // the operand VA across the inner-shareable domain. The LEADING
-            // `dsb ishst` is required, not decorative: it makes the caller's
-            // page-table store visible to every other PE's table walker
-            // BEFORE the broadcast invalidate runs. Without it a peer walker
-            // can re-cache the stale descriptor after the TLBI and the
-            // invalidate is silently lost. Linux states the template in
-            // `arch/arm64/include/asm/tlbflush.h`: "DSB ISHST // Ensure prior
-            // page-table updates have completed / TLBI ... / DSB ISH // Ensure
-            // the TLB invalidation has completed / ISB".
+            // The LEADING `dsb ishst` is required, not decorative: it makes
+            // the caller's page-table store visible to every other PE's table
+            // walker BEFORE the broadcast invalidate runs. Without it a peer
+            // walker can re-cache the stale descriptor after the TLBI and the
+            // invalidate is silently lost. The `dsb ish` + `isb` tail orders
+            // the completed invalidate against subsequent loads.
+            // SAFETY: `tlbi vae1is` is an EL1-privileged stage-1 invalidate of
+            // the operand VA across the inner-shareable domain, legal here
+            // because this trait method is `unsafe` and only runs at EL1; it
+            // touches no memory, so the operand needs no mapping.
             unsafe {
                 core::arch::asm!(
                     "dsb ishst",

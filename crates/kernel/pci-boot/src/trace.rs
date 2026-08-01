@@ -175,11 +175,18 @@ pub(crate) fn cap_dump_arch(d: &pci::PciDevice) {
                         let tbl_pa = tbar_pa + m.table_offset as u64;
                         let page_pa = tbl_pa & !0xFFF;
                         let page_off = tbl_pa - page_pa;
+                        // SAFETY: `page_pa` is the page-aligned base of this
+                        // device's own MSI-X table BAR, read from its config
+                        // space; boot phase, single-CPU, IRQs masked, PMM ready.
                         let base_va = unsafe { map_mmio_pages(page_pa, 1) };
                         let tbl_va = base_va + page_off;
                         let n = if m.table_size > 4 { 4 } else { m.table_size };
                         for i in 0..n {
                             let entry_va = tbl_va + (i as u64) * 16;
+                            // SAFETY: `entry_va` is inside the single MMIO page
+                            // just mapped, since `i < 4` and the table starts at
+                            // `page_off < 0x1000`; the vector-control word is
+                            // 4-byte aligned and this is the only mapping of it.
                             let vc = unsafe {
                                 core::ptr::read_volatile((entry_va + 12) as *const u32)
                             };
@@ -197,6 +204,8 @@ pub(crate) fn cap_dump_arch(d: &pci::PciDevice) {
                             klog::write_dec_u64((vc & 0x1) as u64);
                             klog::write_raw(b"\n");
                         }
+                        // SAFETY: unmaps exactly the one page `map_mmio_pages`
+                        // returned above, after the last read through it.
                         unsafe { mmio_map::unmap_pages(base_va, 1); }
                     }
                 }

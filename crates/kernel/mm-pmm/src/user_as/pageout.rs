@@ -259,9 +259,11 @@ fn restore_unreplaced_mappings(ptes: &[ReclaimPte], pa: u64) {
 fn rollback_replaced_mappings(ptes: &[ReclaimPte], pa: u64, entry: hal::pt_walker::SwapEntry) {
     for pte in ptes.iter().filter(|pte| pte.replaced) {
         let _pt = pte.mm.lock_page_table();
+        // SAFETY: the PTE lock is held for the whole replacement and this
+        // transaction itself installed the exact swap entry after
+        // write-protecting the original PA, so the leaf it rewrites is the one
+        // it owns; HHDM covers every table page the walker dereferences.
         let restored = unsafe {
-            // SAFETY: the PTE lock is held and this transaction installed the
-            // exact swap entry after write-protecting the original PA.
             #[cfg(target_arch = "x86_64")]
             { hal::pt_walker::replace_swap_4k_with_present_at_root::<hal_x86_64::vmm::PtWalkerX86>(pte.mm.root_pa(), pte.va, entry, pa, pte.original_flags, hhdm_offset()) }
             #[cfg(target_arch = "aarch64")]
@@ -298,8 +300,10 @@ pub fn flush_reclaim_mapping(mm: &AddressSpace, va: u64) {
     // synchronous IPI below (Linux `flush_tlb_others`).
     #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: read-only borrow of the running task's mm slot.
         let current_root = sched::live::current()
+            // SAFETY: read-only borrow of the RUNNING task's own mm slot; only
+            // a task replaces its own mm, and it is here rather than in execve,
+            // so `mm_ref`'s no-concurrent-mutator precondition holds.
             .and_then(|task| unsafe { task.mm_ref() })
             .map(|current_mm| current_mm.root_pa());
         if current_root == Some(mm.root_pa()) {

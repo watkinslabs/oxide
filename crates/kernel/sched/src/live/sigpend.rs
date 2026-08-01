@@ -255,9 +255,9 @@ pub fn vfork_done(child: &crate::Task) {
 /// # C: O(N_cpus · N) runqueue remove
 pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
     task.frozen.store(true, Ordering::Release);
-    // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
-    // that has not completed `install_global`, which the walk skips.
     let found = super::rq_locate::dequeue_from_owning_rq_with(
+        // SAFETY: `global_for` is sound for any index; it yields `None` for a
+        // CPU that has not completed `install_global`, which the walk skips.
         &|c| unsafe { super::runqueue::global_for(c) }, task.tid);
     if let Some((_, cpu)) = found { super::resched_curr(cpu); }
     crate::preempt::set_need_resched();

@@ -82,6 +82,10 @@ pub fn oom_memory(as_: &AddressSpace) -> Option<OomMemory> {
                 // tmpfs/shmem can lawfully acquire swap leaves too. Any live
                 // user swap PTE is apportioned through its canonical slot
                 // mapcount rather than being restricted to anonymous VMAs.
+                // SAFETY: `as_` is borrowed for the whole call and its
+                // page-table lock is held, so the root and its tables cannot be
+                // torn down under this read-only walk; HHDM covers every table
+                // page the walker dereferences.
                 let entry = unsafe {
                     #[cfg(target_arch = "x86_64")]
                     { hal::pt_walker::swap_entry_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, hhdm) }

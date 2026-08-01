@@ -108,14 +108,16 @@ pub fn corruption_probe(addr: u64) {
     let pa = if in_hhdm_range {
         Some(addr - hhdm)
     } else {
-        // SAFETY: corruption_probe runs from kalloc's own validate/panic
-        // path with a single live CPU and no concurrent AS teardown in
-        // flight; the active root is stable for the walk's duration, and
-        // HHDM covers all page-table memory per boot setup.
         // translate_at_va (not translate_4k) because the kernel image /
         // static heap region is 2 MiB-block mapped, not 4 KiB-paged.
+        // corruption_probe runs from kalloc's own validate/panic path.
+        // SAFETY: a single live CPU and no concurrent AS teardown, so the
+        // active root is stable for the walk and HHDM covers every
+        // page-table page the walker dereferences.
         #[cfg(target_arch = "x86_64")]
         let tr = unsafe { hal::pt_walker::translate_at_va::<hal_x86_64::vmm::PtWalkerX86>(addr, hhdm) };
+        // SAFETY: same stable-root and HHDM-coverage argument as the x86_64
+        // arm above; only the walker type differs.
         #[cfg(target_arch = "aarch64")]
         let tr = unsafe { hal::pt_walker::translate_at_va::<hal_aarch64::vmm::PtWalkerArm>(addr, hhdm) };
         tr.map(|(pa, _leaf, _level)| pa)

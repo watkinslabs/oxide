@@ -188,6 +188,8 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
         // SAFETY: DR6/DR0/DR1 reads are privileged, legal at CPL=0; in fault
         // dispatch with IRQs masked, this CPU is the sole debug-reg reader.
         let dr6 = unsafe { crate::read_clear_dr6() };
+        // SAFETY: DR0/DR1 reads are privileged, legal at CPL=0; the values are
+        // only formatted into the trace, so a concurrent re-arm cannot be unsound.
         let (dr0, dr1) = unsafe { crate::read_dr0_dr1() };
         // DR6 bits 0-3 (B0-B3) name which watchpoint matched.
         if dr6 & 0b1111 != 0 {
