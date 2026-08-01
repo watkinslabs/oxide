@@ -23,6 +23,11 @@ pub const GLOBAL_RT_PERIOD_NS: u64 = 1_000_000_000;
 /// Default global real-time runtime, ns. Equal to the period: the whole of a
 /// CPU may be reserved by deadline tasks.
 pub const GLOBAL_RT_RUNTIME_NS: u64 = 1_000_000_000;
+/// [`GLOBAL_RT_RUNTIME_NS`] over [`GLOBAL_RT_PERIOD_NS`] in `BW_SHIFT` fixed
+/// point — one whole CPU. A `const` because the ledger is a static with no
+/// initialiser to run (`to_ratio` is not const-callable here); the equality is
+/// asserted by [`init_default`].
+const DEFAULT_BW: u64 = BW_UNIT;
 
 /// Scale a per-CPU bandwidth cap by an aggregate capacity.
 /// # C: O(1)
@@ -94,13 +99,16 @@ pub struct DlBw {
 }
 
 impl DlBw {
+    /// The cap starts at the default global real-time share rather than at
+    /// zero, so the ledger needs no boot-time seeding step and cannot be asked
+    /// a question before one has run. A zero cap would refuse every reservation
+    /// while looking like a capacity answer.
     /// # C: O(1)
     pub const fn new() -> DlBw {
-        DlBw { bw: AtomicU64::new(0), total_bw: AtomicU64::new(0) }
+        DlBw { bw: AtomicU64::new(DEFAULT_BW), total_bw: AtomicU64::new(0) }
     }
 
-    /// Seed the per-CPU cap from the global real-time period/runtime pair. A
-    /// runtime equal to the period admits a full CPU's worth.
+    /// Re-seed the per-CPU cap from a global real-time period/runtime pair.
     ///
     /// No CPU count is stored: the online set is the single truth for capacity
     /// and is read at each decision, so a CPU coming up or going down changes
@@ -165,11 +173,13 @@ impl Default for DlBw {
 /// every deadline task, so there is exactly one sum and one cap.
 pub static DL_BW: DlBw = DlBw::new();
 
-/// Seed [`DL_BW`] at the default global real-time period/runtime.
+/// Reset [`DL_BW`] to the default global real-time period/runtime. The boot
+/// path does NOT call this — [`DlBw::new`] already carries the default — so it
+/// exists for a runtime change of the global share.
 /// # C: O(1)
 pub fn init_default() {
+    debug_assert_eq!(to_ratio(GLOBAL_RT_PERIOD_NS, GLOBAL_RT_RUNTIME_NS), DEFAULT_BW);
     DL_BW.init(GLOBAL_RT_PERIOD_NS, GLOBAL_RT_RUNTIME_NS);
-    debug_assert_eq!(to_ratio(GLOBAL_RT_PERIOD_NS, GLOBAL_RT_RUNTIME_NS), BW_UNIT);
 }
 
 #[cfg(test)]

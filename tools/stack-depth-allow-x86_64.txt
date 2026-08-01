@@ -16,7 +16,14 @@
 # static boot stack before any `Task` exists, and `kstack::alloc` has not yet
 # handed out a 16 KiB guard-paged stack. The depth is real but the budget is
 # a different one; re-check this block if the boot stack is ever resized.
-19728	_start
-19712	_start_rust
-19568	_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main
-16368	_RNvNtNtCseQ963CMHBD6_5kmain5kmain6rootfs4init
+#
+# F774 raised each of these by 192 B: adding the SCHED_DEADLINE class grew
+# `Task` by its deadline entity and `RunqueueInner` by a third class tree, and
+# the boot path builds one of each on this stack (the idle task and the
+# runqueue). Split 96 B in `install_default_runqueue` + 96 B in the task
+# construction below it; it is a struct-size consequence of the class
+# existing, not a new call chain.
+19920	_start
+19904	_start_rust
+19760	_RNvNtNtCseQ963CMHBD6_5kmain5kmain5entry11kernel_main
+16560	_RNvNtNtCseQ963CMHBD6_5kmain5kmain6rootfs4init
