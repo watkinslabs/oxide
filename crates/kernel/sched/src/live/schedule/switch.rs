@@ -455,6 +455,18 @@ pub unsafe fn schedule() {
         let ktop = unsafe { rq.current_ref() }.kernel_stack.load(Ordering::Acquire);
         hal_aarch64::set_current_kstack_top(ktop as u64);
     }
+    // Linux `__switch_to_xtra`'s hardware-breakpoint arm: the incoming task's
+    // DR0-DR3/DR7 replace the outgoing task's, so a `PTRACE_POKEUSER`-armed
+    // watchpoint follows its task instead of firing in whatever ran next. The
+    // helper writes nothing at all when neither side is armed, which is every
+    // switch on a machine with no debugger attached.
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: rq.current is the incoming task just published by
+        // swap_current; prev_ref aliases the outgoing one. Context switch at
+        // CPL=0, preempt-off, so this CPU's debug registers are ours.
+        unsafe { crate::debugreg::x86::switch_to(prev_ref, rq.current_ref()); }
+    }
     // SAFETY: rq.current was just set to the new Arc by swap_current.
     unsafe { rq.current_ref() }.exec_start_ns.store(now, Ordering::Release);
     // SAFETY: rq.current was just set to next and this scheduler context owns

@@ -34,6 +34,8 @@ pub mod perf_sw;
 pub mod ptrace_access;
 /// `task->jobctl` — job-control / ptrace-trap latch and its stop-notify rules.
 pub mod jobctl;
+/// Per-task hardware debug-register shadow (`ptrace` DR0-DR7).
+pub mod debugreg;
 pub mod yama;
 pub mod seccomp_filter;
 pub mod loadavg;
