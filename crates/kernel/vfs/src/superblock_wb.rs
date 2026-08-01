@@ -11,24 +11,32 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::inode::{InodeRef, I_DIRTY};
+use crate::inode::{InodeRef, I_DIRTY_ALL};
 use crate::superblock::SuperBlock;
 use crate::types::Ino;
 
 impl SuperBlock {
     /// Reconcile the writeback pin for `ino` against the inode's CURRENT
-    /// `i_state` (call after any state mutation): a set `I_DIRTY` bit inserts the
+    /// `i_state` (call after any state mutation): a set `I_DIRTY_ALL` bit (a
+    /// deferred lazy timestamp counts) inserts the
     /// STRONG `Arc` into `s_wb` (idempotent — an already-pinned dirty inode keeps
     /// its single pin), a fully-clean inode drops the pin so it becomes evictable.
     /// This is the `__mark_inode_dirty` add / writeback-done remove, expressed as
     /// one reconcile so every `i_set_state`/`mark_inode_dirty`/`clear_inode` path
     /// keeps `s_wb` exact. # C: O(log N_wb)
     pub(crate) fn wb_reconcile(&self, ino: Ino, inode: &InodeRef) {
-        if inode.i_state() & I_DIRTY != 0 {
-            self.s_wb.lock().entry(ino).or_insert_with(|| inode.clone());
-        } else {
-            self.s_wb.lock().remove(&ino);
-        }
+        if inode.i_state() & I_DIRTY_ALL != 0 { self.wb_pin(ino, inode); } else { self.wb_forget(ino); }
+    }
+
+    /// Install the STRONG writeback pin for a now-dirty inode (idempotent). Kept
+    /// apart from the unpin half so a caller that can only ever DIRTY an inode
+    /// ([`crate::writeback::mark_inode_dirty`]) does not drag the B-tree REMOVE
+    /// path — rebalance, merge, node free — into its static call graph. That
+    /// path is the deepest thing reachable from `iput`, so the split is worth a
+    /// named function. # C: O(log N_wb)
+    pub(crate) fn wb_pin(&self, ino: Ino, inode: &InodeRef) {
+        let mut wb = self.s_wb.lock();
+        if !wb.contains_key(&ino) { wb.insert(ino, inode.clone()); }
     }
 
     /// Drop the writeback pin for `ino` unconditionally — the terminal
@@ -37,29 +45,24 @@ impl SuperBlock {
     /// writeback list). # C: O(log N_wb)
     pub(crate) fn wb_forget(&self, ino: Ino) { self.s_wb.lock().remove(&ino); }
 
+    /// [`Self::wb_reconcile`] keyed off the inode's own `i_ino` — the form every
+    /// writeback-path caller wants, since it holds the `Arc` already.
+    /// # C: O(log N_wb)
+    pub(crate) fn wb_reconcile_inode(&self, inode: &InodeRef) {
+        self.wb_reconcile(inode.ino(), inode);
+    }
+
     /// `s_inodes_wb` snapshot — every inode currently STRONG-pinned dirty (Linux
-    /// the per-sb writeback list), in `ino` order. The set `sync`/`fsync` walk to
-    /// write back. # C: O(N_wb)
+    /// the per-sb `b_dirty` + `b_dirty_time` lists), in `ino` order. The set
+    /// `sync`/`fsync` walk to write back; an inode owing only a deferred
+    /// timestamp is in it, which is what keeps a lazytime stamp alive until a
+    /// forcing point pays it. # C: O(N_wb)
     pub fn wb_dirty_inodes(&self) -> Vec<InodeRef> {
         self.s_wb.lock().values().cloned().collect()
     }
 
     /// Count of dirty-pinned inodes (Linux per-bdi `b_dirty` length). # C: O(1)
     pub fn nr_dirty_inodes(&self) -> usize { self.s_wb.lock().len() }
-
-    /// `sync_inodes_sb` writeback completion (Linux fs/fs-writeback.c): the wait
-    /// pass of [`SuperBlock::sync_filesystem`] has flushed the backend, so every
-    /// dirty-pinned inode is now clean — clear its `I_DIRTY` bits and drop the
-    /// writeback pin, leaving a now-clean unreferenced inode evictable by the next
-    /// `drop_caches`. Snapshots the list first so the per-inode unpin does not
-    /// mutate the map under its own iterator. # C: O(N_wb)
-    pub(crate) fn wb_writeback(&self) {
-        let dirty: Vec<(Ino, InodeRef)> = self.s_wb.lock().iter().map(|(k, v)| (*k, v.clone())).collect();
-        for (ino, inode) in dirty {
-            inode.set_state(0, I_DIRTY); // writeback done — inode is clean
-            self.s_wb.lock().remove(&ino);
-        }
-    }
 
     /// `invalidate_inodes` / per-sb `drop_caches` (Linux fs/inode.c
     /// `invalidate_inodes`, fs/drop_caches.c): sweep the inode cache dropping

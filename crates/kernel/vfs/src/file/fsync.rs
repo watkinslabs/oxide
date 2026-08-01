@@ -219,7 +219,10 @@ impl File {
         // what lets a backend install a real `fsync` slot on a type the generic
         // table calls streaming without a second list contradicting it.
         let ret = if self.f_op().fsync_needs_writeback(self) {
-            fsync_ordered(self.inode(), start, end_incl, || self.f_op().fsync(self, datasync))
+            fsync_ordered(self.inode(), start, end_incl, || {
+                self.fsync_metadata(datasync)?;
+                self.f_op().fsync(self, datasync)
+            })
         } else {
             // Nothing cached to flush: the backend's answer IS the result. Not
             // recorded in `wb_err` — that latch reports WRITEBACK failures, and
@@ -234,6 +237,29 @@ impl File {
         match ret {
             Err(e) => Err(e),
             Ok(()) => deferred,
+        }
+    }
+
+    /// `sync_inode_metadata(inode, 1)` — the inode-metadata half of a generic
+    /// `->fsync`, run between the data writeback and the backend's commit so the
+    /// commit covers the inode write rather than following it.
+    ///
+    /// Two gates, both Linux's:
+    /// * nothing dirty at all (including a deferred timestamp) — nothing to do;
+    /// * `fdatasync` on an inode with no `I_DIRTY_DATASYNC` — the caller asked
+    ///   for the DATA to be durable and explicitly not to pay for metadata, so a
+    ///   pending timestamp stays deferred. `fsync` has no such gate, which is
+    ///   why it is a lazytime forcing point and `fdatasync` is not.
+    /// # C: O(1) + one backend inode write
+    fn fsync_metadata(&self, datasync: bool) -> KResult<()> {
+        use crate::inode::{I_DIRTY_ALL, I_DIRTY_DATASYNC};
+        let inode = self.inode();
+        let st = inode.i_state();
+        if st & I_DIRTY_ALL == 0 { return Ok(()); }
+        if datasync && st & I_DIRTY_DATASYNC == 0 { return Ok(()); }
+        match inode.i_sb() {
+            Some(sb) => sb.writeback_single_inode(inode, true, crate::inode_times::realtime_now_ns()),
+            None     => Ok(()),
         }
     }
 

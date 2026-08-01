@@ -38,6 +38,8 @@ impl Inode {
     pub fn tmpfile(&self, mode: u32, ctx: &CreateCtx) -> KResult<InodeRef> { self.i_op.tmpfile(self, mode, ctx) }
     /// `i_op->update_time`. # C: O(1)
     pub fn update_time(&self, now: Timespec64, flags: u32) -> KResult<()> { self.i_op.update_time(self, now, flags) }
+    /// `i_op->sync_lazytime` — flush a deferred timestamp. # C: backend-dependent
+    pub fn sync_lazytime(&self) -> KResult<()> { self.i_op.sync_lazytime(self) }
     /// `i_op->readlink`. # C: O(target_len)
     pub fn readlink(&self) -> KResult<Vec<u8>> { self.i_op.readlink(self) }
     /// `i_op->get_link` inline fast path first. # C: O(target_len)

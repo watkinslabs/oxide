@@ -6,7 +6,7 @@
 //
 // Every function here is UNGATED so the ladder is hosted-testable.
 
-use crate::inode::{is_noatime, Inode};
+use crate::inode::{is_noatime, Inode, InodeRef};
 use crate::inode_times::{atime_needs_update, current_time, realtime_now_ns, AtimeCtx};
 use crate::mount::{mount_by_id, MNT_RDONLY};
 use crate::timespec::Timespec64;
@@ -57,19 +57,18 @@ pub fn touch_atime_needed(c: &AtimeCtx, now: Timespec64) -> bool {
 /// (ext4) writes it out. A no-op before the wall clock is installed (early
 /// boot), which is why a boot-time read cannot stamp atime to the epoch.
 ///
-/// No LAZYTIME deferral: `SB_LAZYTIME` is parsed and stored, but the
-/// dirty-inode writeback pass clears `I_DIRTY` without calling
-/// `s_op->write_inode`, so deferring the stamp would DISCARD it. Persisting
-/// eagerly is the conservative side of that trade — more I/O than Linux under
-/// `-o lazytime`, never a lost or wrong timestamp. # C: O(1) + one backend
-/// inode write
-pub fn touch_atime(mnt_id: u64, inode: &Inode) {
+/// Recorded through [`crate::writeback::inode_update_time`], so a `lazytime`
+/// mount defers the on-disk write (`I_DIRTY_TIME`, paid at the next forcing
+/// point) while every other mount persists immediately. atime is the timestamp
+/// lazytime exists for: a read-mostly workload otherwise pays a metadata write
+/// per file per relatime interval. # C: O(1) [+ one backend inode write]
+pub fn touch_atime(mnt_id: u64, inode: &InodeRef) {
     let raw = realtime_now_ns();
     if raw == 0 { return; }
     let now = current_time(inode, raw);
     let c = atime_ctx(mnt_flags_for(mnt_id), inode);
     if !touch_atime_needed(&c, now) { return; }
-    let _ = inode.update_time(now, S_ATIME);
+    let _ = crate::writeback::inode_update_time(inode, now, S_ATIME, raw);
 }
 
 /// True for the file types whose read path Linux runs `file_accessed` on.
