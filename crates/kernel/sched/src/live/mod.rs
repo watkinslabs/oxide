@@ -55,6 +55,9 @@ pub mod migration_wait;
 pub mod cpu_rlimit;
 pub mod tick_deadline;
 pub mod vfs_context;
+// Keyring exit + fsid-change hooks: state owned by `fs`, transitions driven
+// from here (see the module header for why they are function pointers).
+pub mod keyring_hooks;
 #[cfg(feature = "debug-wakelat")]
 pub mod wakelat;
 
@@ -94,6 +97,8 @@ pub use sigpend::{
 pub use tick_deadline::{post_expired_timer_signals, service_current_timers, service_task_timers,
     tick_wake_expired};
 pub use vfs_context::{current_vfs_lookup_context, VfsLookupContext};
+pub use keyring_hooks::{run_fsids_changed, run_keyring_exit, set_fsids_changed_hook,
+                        set_keyring_exit_hook, FsidsChangedFn, KeyringExitFn};
 pub use zombies::{apply_pid_namespace_reboot_status, initial_init_task, namespace_child_reaper, set_pid_namespace_reboot, enqueue_zombie, has_wait_zombies, has_zombies, in_initial_pid_namespace, park_for_wait4, peek_one, pid_namespace_chain, reap_one, reap_orphans, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4, zap_pid_namespace};
 
 pub mod preempt;

@@ -46,6 +46,8 @@ pub mod xattr;
 /// `file_getattr(2)`/`file_setattr(2)` `struct file_attr` ABI (Linux `fs/file_attr.c`).
 pub mod fileattr;
 pub mod keyring;
+/// Boot binding of the keyring's `/proc/keys`, `/proc/key-users` and
+/// `/proc/sys/kernel/keys/*` accessors into procfs.
 pub mod perf;
 /// Identity vs numbering for this crate's anon-inode families.
 pub mod pseudo_ino_identity;

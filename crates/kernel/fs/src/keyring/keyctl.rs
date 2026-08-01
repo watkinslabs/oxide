@@ -13,16 +13,9 @@ use super::{cur_ctx, err, read_user_bytes, read_user_key_desc, read_user_key_typ
 ///
 /// Every command Linux implements without `CONFIG_KEY_DH_OPERATIONS`,
 /// `CONFIG_ASYMMETRIC_KEY_TYPE` or `CONFIG_KEY_NOTIFICATIONS` is dispatched to
-/// a real core. The instantiation family (`INSTANTIATE`, `INSTANTIATE_IOV`,
-/// `NEGATE`, `REJECT`, `ASSUME_AUTHORITY`) reaches its Linux answer by the
-/// Linux rule: each first resolves the target's instantiation authorisation
-/// key via `key_get_instantiation_authkey`, which searches the caller's
-/// keyrings for a `.request_key_auth` key and yields ENOKEY when there is
-/// none. Authorisation keys are minted only by an in-flight `request_key`
-/// upcall to `/sbin/request-key`; with no upcall helper there is never one to
-/// find, so ENOKEY is the correct and complete answer rather than a swallowed
-/// command. `KEYCTL_ASSUME_AUTHORITY(0)` — divest authority — is a real
-/// success, and a negative id is EINVAL, both per `keyctl_assume_authority`.
+/// a real core, including the instantiation family — `INSTANTIATE`,
+/// `INSTANTIATE_IOV`, `NEGATE`, `REJECT` and `ASSUME_AUTHORITY` — which is what
+/// `/sbin/request-key` uses to answer a key the kernel asked it to build.
 /// # C: depends on op
 pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
     let c = cur_ctx();
@@ -31,6 +24,7 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         KEYCTL_JOIN_SESSION_KEYRING => {
             let name = if args.a1 == 0 { None }
                        else { match read_user_key_desc(args.a1) { Ok(s) => Some(s), Err(rv) => return rv } };
+            if let Err(e) = ops::vet_session_name(name.as_deref()) { return err(e); }
             ops::join_session(&c, name.as_deref())
         }
         KEYCTL_UPDATE => {
@@ -66,14 +60,31 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         }
         KEYCTL_SET_REQKEY_KEYRING => ops::set_reqkey_keyring(&c, args.a1 as i32),
         KEYCTL_SET_TIMEOUT => ops::set_timeout_core(&c, args.a1 as i32, args.a2 as u32 as u64),
-        KEYCTL_ASSUME_AUTHORITY => assume_authority(args.a1 as i32),
+        KEYCTL_ASSUME_AUTHORITY => ops::assume_authority_core(&c, args.a1 as i32),
         KEYCTL_GET_SECURITY => {
             let s = match ops::get_security_core(&c, args.a1 as i32) { Ok(s) => s, Err(rv) => return rv };
             write_user_capped(args.a2, args.a3, s.as_bytes())
         }
         KEYCTL_SESSION_TO_PARENT => ops::session_to_parent(&c, super::parent_info()),
-        KEYCTL_INSTANTIATE | KEYCTL_INSTANTIATE_IOV | KEYCTL_NEGATE | KEYCTL_REJECT =>
-            err(Errno::Enokey),
+        KEYCTL_INSTANTIATE => {
+            // A NULL pointer or a zero length instantiates with an EMPTY
+            // payload rather than faulting: `keyctl_instantiate_key` drops the
+            // iterator when `!plen`, which is how a type with no payload at all
+            // is instantiated.
+            if args.a3 > KEY_MAX_PAYLOAD { return err(Errno::Einval); }
+            let payload = match read_user_bytes(args.a2, args.a3) { Ok(v) => v, Err(rv) => return rv };
+            ops::instantiate_core(&c, args.a1 as i32, payload, args.a4 as i32)
+        }
+        KEYCTL_INSTANTIATE_IOV => {
+            let n = match ops::vet_iov_count(args.a2 != 0, args.a3) { Ok(n) => n, Err(rv) => return rv };
+            let payload = match super::read_user_iov(args.a2, n) { Ok(v) => v, Err(rv) => return rv };
+            ops::instantiate_core(&c, args.a1 as i32, payload, args.a4 as i32)
+        }
+        // NEGATE is REJECT with ENOKEY — the plain "I could not build this".
+        KEYCTL_NEGATE => ops::reject_core(&c, args.a1 as i32, args.a2 as u32 as u64,
+            Errno::Enokey.as_i32() as u32, args.a3 as i32),
+        KEYCTL_REJECT => ops::reject_core(&c, args.a1 as i32, args.a2 as u32 as u64,
+            args.a3 as u32, args.a4 as i32),
         KEYCTL_INVALIDATE => ops::invalidate_core(&c, args.a1 as i32),
         KEYCTL_GET_PERSISTENT => ops::get_persistent(&c, args.a1 as i32, args.a2 as i32),
         KEYCTL_RESTRICT_KEYRING => {
@@ -93,16 +104,6 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         | KEYCTL_PKEY_SIGN | KEYCTL_PKEY_VERIFY | KEYCTL_WATCH_KEY => err(Errno::Eopnotsupp),
         _ => err(Errno::Eopnotsupp),
     }
-}
-
-/// `keyctl_assume_authority` — id 0 divests the authority the caller holds
-/// (always a success; there is never one held here), a negative id is EINVAL,
-/// and any real id needs an instantiation authorisation key that only a live
-/// `request_key` upcall could have created. # C: O(1)
-fn assume_authority(id: i32) -> i64 {
-    if id < 0 { return err(Errno::Einval); }
-    if id == 0 { return 0; }
-    err(Errno::Enokey)
 }
 
 /// `keyctl_capabilities(buffer, buflen)`: copy up to `buflen` capability

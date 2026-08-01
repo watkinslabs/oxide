@@ -153,10 +153,10 @@ fn request_key_searches_only_the_callers_cred_keyrings() {
     let stranger = ctx(1051, 6311);
     let k = add_key_core(&owner, "user", "reqkey-scope", alloc::vec![8], true, KEY_SPEC_SESSION_KEYRING) as i32;
     force_perm(k, KEY_PERM_VALID);
-    assert_eq!(request_key_core(&stranger, "user", "reqkey-scope", 0), enokey());
-    assert_eq!(request_key_core(&owner, "user", "reqkey-scope", 0), k as i64);
+    assert_eq!(request_key_core(&stranger, "user", "reqkey-scope", None, 0), enokey());
+    assert_eq!(request_key_core(&owner, "user", "reqkey-scope", None, 0), k as i64);
     let thread_key = add_key_core(&owner, "user", "reqkey-thread", alloc::vec![9], true, KEY_SPEC_THREAD_KEYRING) as i32;
-    assert_eq!(request_key_core(&owner, "user", "reqkey-thread", 0), thread_key as i64);
+    assert_eq!(request_key_core(&owner, "user", "reqkey-thread", None, 0), thread_key as i64);
 }
 
 // An unregistered type is ENOKEY out of `key_type_lookup` for both search
@@ -164,23 +164,32 @@ fn request_key_searches_only_the_callers_cred_keyrings() {
 #[test]
 fn request_key_miss_and_unknown_type_are_enokey() {
     let t = ctx(1052, 6312);
-    assert_eq!(request_key_core(&t, "user", "never-added", 0), enokey());
-    assert_eq!(request_key_core(&t, "no-such-type", "x", 0), enokey());
+    assert_eq!(request_key_core(&t, "user", "never-added", None, 0), enokey());
+    assert_eq!(request_key_core(&t, "no-such-type", "x", None, 0), enokey());
 }
 
-// A revoked or expired key never matches a search — `key_validate` runs on
-// every candidate, so REVOKE really does take the key out of circulation.
+// A revoked or expired key never SATISFIES a search, and KEYCTL_SEARCH reports
+// WHY. Only "the keyrings were searchable and held no match" is turned into
+// ENOKEY; a candidate skipped for being revoked or stale surfaces as
+// EKEYREVOKED/EKEYEXPIRED, because a caller naming a specific key needs to tell
+// "gone" from "never there" — it decides whether to re-fetch or to give up.
 #[test]
-fn revoked_and_expired_keys_are_invisible_to_search() {
+fn a_revoked_or_expired_key_does_not_satisfy_a_search_and_says_why() {
     let t = ctx(1053, 6313);
     let ring = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
     let a = add_key_core(&t, "user", "search-revoked", alloc::vec![1], true, KEY_SPEC_SESSION_KEYRING) as i32;
     let b = add_key_core(&t, "user", "search-expired", alloc::vec![1], true, KEY_SPEC_SESSION_KEYRING) as i32;
     assert_eq!(search_core(&t, ring, "user", "search-revoked", 0), a as i64);
     assert_eq!(revoke_core(&t, a), 0);
-    assert_eq!(search_core(&t, ring, "user", "search-revoked", 0), enokey());
+    assert_eq!(search_core(&t, ring, "user", "search-revoked", 0), err(Errno::Ekeyrevoked));
     assert_eq!(set_timeout_core(&t, b, 1), 0);
     let mut later = ctx(1053, 6313);
     later.now_ns = 2 * 1_000_000_000;
-    assert_eq!(search_core(&later, ring, "user", "search-expired", 0), enokey());
+    assert_eq!(search_core(&later, ring, "user", "search-expired", 0), err(Errno::Ekeyexpired));
+    // The state check runs BEFORE the description is compared, so a revoked key
+    // of the same TYPE colours the answer even for an unrelated name. A name
+    // that matches nothing in a keyring holding no dead keys is plain ENOKEY.
+    let clean = add_key_core(&t, "keyring", "search-clean-ring", alloc::vec![], false,
+        KEY_SPEC_SESSION_KEYRING) as i32;
+    assert_eq!(search_core(&t, clean, "user", "search-never-added", 0), enokey());
 }
