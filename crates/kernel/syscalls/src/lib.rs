@@ -119,6 +119,7 @@ pub mod open_tree_policy;
 // The idmap half of the shared `struct mount_attr` block: which of the two
 // syscalls may REMOVE or REPLACE a mount's idmap, and when the `userns_fd`
 // field is read at all. Ungated so it is testable — both slots are kernel-only.
+pub mod mount_attr_abi;
 pub mod mount_idmap_policy;
 // statmount(2)/listmount(2) ABI: the request struct's size admission, the
 // STATMOUNT_* field-mask space, the namespace-admission ladder, and the

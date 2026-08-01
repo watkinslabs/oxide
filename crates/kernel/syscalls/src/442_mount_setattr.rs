@@ -7,43 +7,18 @@ use syscall::errno::Errno;
 use syscall::SyscallArgs;
 
 use crate::fsmount_common::*;
-
-const PAGE_SIZE: usize = 4096;
-const MOUNT_ATTR_SIZE_VER0: usize = 32;
-
-const AT_SYMLINK_NOFOLLOW: u64 = 0x0100;
-const AT_NO_AUTOMOUNT: u64 = 0x0800;
-const AT_EMPTY_PATH: u64 = 0x1000;
-const AT_RECURSIVE: u64 = 0x8000;
-const VALID_AT_FLAGS: u64 =
-    AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_RECURSIVE;
-
-const MS_UNBINDABLE: u64 = 1 << 17;
-const MS_PRIVATE: u64 = 1 << 18;
-const MS_SLAVE: u64 = 1 << 19;
-const MS_SHARED: u64 = 1 << 20;
-const PROPAGATION_MASK: u64 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
-
-#[derive(Clone, Copy)]
-struct MountAttr {
-    attr_set: u64,
-    attr_clr: u64,
-    propagation: u64,
-    userns_fd: u64,
-}
+use crate::mount_attr_abi::{
+    self, MountAttr, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_RECURSIVE, AT_SYMLINK_NOFOLLOW,
+    MOUNT_ATTR_SIZE_VER0, VALID_AT_FLAGS,
+};
 
 fn neg(error: Errno) -> i64 { -(error.as_i32() as i64) }
-
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
-}
 
 /// Linux `copy_struct_from_user`: v0 is exactly 32 bytes, a larger zero tail is
 /// accepted, and a nonzero extension byte is `E2BIG`. Size/capability order is
 /// observable by feature probes and matches `wants_mount_setattr`.
 fn copy_mount_attr(ptr: u64, size: usize) -> Result<MountAttr, i64> {
-    if size > PAGE_SIZE { return Err(neg(Errno::E2big)); }
-    if size < MOUNT_ATTR_SIZE_VER0 { return Err(neg(Errno::Einval)); }
+    mount_attr_abi::admit_size(size).map_err(neg)?;
     if let Some(rv) = may_mount_or_eperm() { return Err(rv); }
 
     let mut bytes = [0u8; MOUNT_ATTR_SIZE_VER0];
@@ -54,50 +29,9 @@ fn copy_mount_attr(ptr: u64, size: usize) -> Result<MountAttr, i64> {
             .ok_or_else(|| neg(Errno::Efault))?;
         uaccess::copy_from_user(&mut tail, tail_ptr)
             .map_err(|_| neg(Errno::Efault))?;
-        if tail.iter().any(|byte| *byte != 0) { return Err(neg(Errno::E2big)); }
+        mount_attr_abi::admit_tail(&tail).map_err(neg)?;
     }
-    Ok(MountAttr {
-        attr_set: u64_at(&bytes, 0),
-        attr_clr: u64_at(&bytes, 8),
-        propagation: u64_at(&bytes, 16),
-        userns_fd: u64_at(&bytes, 24),
-    })
-}
-
-fn propagation(raw: u64) -> Option<vfs::mount::Propagation> {
-    match raw {
-        MS_SHARED => Some(vfs::mount::Propagation::Shared),
-        MS_SLAVE => Some(vfs::mount::Propagation::Slave),
-        MS_UNBINDABLE => Some(vfs::mount::Propagation::Unbindable),
-        MS_PRIVATE => Some(vfs::mount::Propagation::Private),
-        _ => None,
-    }
-}
-
-fn validate_attr(attr: &MountAttr) -> Result<(), i64> {
-    use vfs::mount::{
-        MOUNT_ATTR_NOATIME, MOUNT_ATTR_SETTABLE, MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME,
-    };
-    if attr.propagation & !PROPAGATION_MASK != 0
-        || (attr.propagation & PROPAGATION_MASK).count_ones() > 1 {
-        return Err(neg(Errno::Einval));
-    }
-    if (attr.attr_set | attr.attr_clr) & !MOUNT_ATTR_SETTABLE != 0 {
-        return Err(neg(Errno::Einval));
-    }
-
-    let set_atime = attr.attr_set & MOUNT_ATTR__ATIME;
-    let clr_atime = attr.attr_clr & MOUNT_ATTR__ATIME;
-    if clr_atime != 0 {
-        if clr_atime != MOUNT_ATTR__ATIME { return Err(neg(Errno::Einval)); }
-        if set_atime != 0 && set_atime != MOUNT_ATTR_NOATIME
-            && set_atime != MOUNT_ATTR_STRICTATIME {
-            return Err(neg(Errno::Einval));
-        }
-    } else if set_atime != 0 {
-        return Err(neg(Errno::Einval));
-    }
-    Ok(())
+    Ok(MountAttr::decode(&bytes))
 }
 
 /// Resolve the exact nsfs user-namespace fd, enforce Linux's initial-namespace
@@ -222,10 +156,8 @@ pub fn mount_setattr_at(dirfd: i32, path: Option<&str>, path_ptr: u64, at_flags:
     };
     // Linux returns success for a no-op before looking up either path or
     // userns_fd. A zero-sized support probe was rejected above, as intended.
-    if attr.attr_set == 0 && attr.attr_clr == 0 && attr.propagation == 0 {
-        return 0;
-    }
-    if let Err(rv) = validate_attr(&attr) { return rv; }
+    if attr.is_nop() { return 0; }
+    if let Err(errno) = mount_attr_abi::validate(&attr) { return neg(errno); }
 
     // The idmap REQUEST is shaped from the block plus the caller's mode before
     // any descriptor is touched, so a removal never reads `userns_fd`.
@@ -242,7 +174,7 @@ pub fn mount_setattr_at(dirfd: i32, path: Option<&str>, path_ptr: u64, at_flags:
         Ok(idmap) => idmap,
         Err(rv) => return rv,
     };
-    let prop = propagation(attr.propagation);
+    let prop = mount_attr_abi::propagation(attr.propagation);
     use vfs::mount::{mount_attr_to_mnt, MNT_ATIME_MODE_MASK, MOUNT_ATTR__ATIME};
     let mut set_mnt = mount_attr_to_mnt(attr.attr_set) & !MNT_ATIME_MODE_MASK;
     let mut clr_mnt = mount_attr_to_mnt(attr.attr_clr) & !MNT_ATIME_MODE_MASK;
