@@ -21,7 +21,7 @@ a row.
 | OPEN | med | A `net` test binary can enter a multi-core spin — observed at ~4300% CPU for 20 min, orphaned from a completed run. Distinct from, and more serious than, the intermittent assertion failures above. | Reaped manually during B1641; poisons any concurrent measurement while live. | — |
 | OPEN | low | 42 `find(...).unwrap()` source-grep assertions in `socket_control_tests.rs` / `dispatch.rs` fail hard whenever the text they grep moves. Already produced one false "flake" and one real merge break. Convert to behavioural assertions. | B1641 hit this twice; two were converted, the rest remain. | — |
 | OPEN | low | Citation debt: repository text must not name/path-link/quote external implementation sources. 273 files carry `.c:NNN`, 113 mention `include/uapi`, 50 carry `.h:NNN`, 10 name the local reference tree by path. | Pre-existing tree-wide; B1641 added zero. | — |
-| OPEN | low | `metadata/index.md` counters go stale and collide — index read `D 424` while `D432` was already merged. | Same hazard the file's own note records for `C238`. | — |
+| FIXED C247 | low | `metadata/index.md` counters go stale and collide — index read `D 424` while `D432` was already merged. | `tools/next-branch.sh` derives the number from git refs + merge subjects and maxes against the table; `--check` fails when the table is behind, wired into `make ci` as `counter-check`. Positive control: the check reported `C247 already exists in git` before the table was bumped. | C247 |
 
 ## Net / socket
 
