@@ -63,7 +63,7 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     let pmtudisc = sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
     // `IP_OPTIONS` rides every datagram this socket sends, and a source route
     // among them retargets the route lookup at its first hop.
-    let ip_options = sock.ip.options();
+    let ip_options = sock.opts.ip.options();
     // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
     // size, the last carrying the remainder.
     let gso = sock.opts.udp.gso_size();
