@@ -54,16 +54,62 @@ pub fn unref_scanout_resource_for_key(driver_key: drm::node::ScanoutDriverKey, r
     if res_id == 0 || res_id == BOOT_SCANOUT_RES_ID {
         return false;
     }
+    // A destroyed resource can no longer be what the scanout is bound to, so
+    // drop the record; leaving it would let a later present skip the rebind.
+    {
+        let owner = key_from_scanout_driver(driver_key);
+        let mut g = CTX.lock();
+        if let Some(ctx) = g.iter_mut().find(|ctx| ctx.device_key == owner) {
+            if ctx.bound.is_some_and(|b| b.res_id == res_id) { ctx.bound = None; }
+        }
+    }
     let _ = submit_ctrl_for_key(driver_key, |b| crate::encode_resource_detach_backing(b, res_id));
     submit_ctrl_for_key(driver_key, |b| crate::encode_resource_unref(b, res_id))
 }
 
+/// Present the whole of `res_id` on scanout 0 at `w` x `h`.
+/// # C: O(1) + O(scanout)
 pub fn set_scanout_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32, w: u32, h: u32) -> bool {
+    present_rect_for_key(driver_key, res_id, w, h, present::Rect::full(w, h))
+}
+
+/// Present `rect` of `res_id` on scanout 0, following `present::plan`: upload
+/// the damaged region, bind the scanout only when the binding actually
+/// changed, then flush. The whole sequence runs under one `CTX` acquisition so
+/// a concurrent presentation cannot interleave between the commands and leave
+/// the scanout bound to a resource whose contents were never uploaded.
+/// # C: O(1) + O(scanout)
+pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
+    w: u32, h: u32, rect: present::Rect) -> bool
+{
     let owner = key_from_scanout_driver(driver_key);
     if !scanout_ready_for_key(owner) || w == 0 || h == 0 { return false; }
-    if !submit_ctrl_for_key(driver_key, |b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h)) { return false; }
-    if !submit_ctrl_for_key(driver_key, |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0)) { return false; }
-    if !submit_ctrl_for_key(driver_key, |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h)) { return false; }
+    let Some(rect) = present::clamp_rect(rect, w, h) else { return false };
+    let next = present::Binding { res_id, w, h };
+    let mut g = CTX.lock();
+    let Some(ctx) = g.iter_mut().find(|ctx| ctx.device_key == owner) else { return false };
+    if ctx.quiesced { return false; }
+    let (steps, n) = present::plan(ctx.bound, next, rect, damage::BYTES_PER_PIXEL as u32);
+    let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
+    let (cmd_buf_pa, ctrlq, hhdm) = (ctx.cmd_buf_pa, ctx.ctrlq, ctx.hhdm);
+    for step in steps.iter().take(n) {
+        let ok = match *step {
+            present::Step::Transfer { rect: r, offset } => unsafe {
+                submit_one(cmd_buf_va_p, cmd_buf_pa,
+                    |b| crate::encode_transfer_to_host_2d(b, res_id, r.x, r.y, r.w, r.h, offset), ctrlq, hhdm)
+            },
+            present::Step::SetScanout => unsafe {
+                submit_one(cmd_buf_va_p, cmd_buf_pa,
+                    |b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h), ctrlq, hhdm)
+            },
+            present::Step::Flush { rect: r } => unsafe {
+                submit_one(cmd_buf_va_p, cmd_buf_pa,
+                    |b| crate::encode_resource_flush(b, res_id, r.x, r.y, r.w, r.h), ctrlq, hhdm)
+            },
+        };
+        if !ok { return false; }
+        if matches!(step, present::Step::SetScanout) { ctx.bound = Some(next); }
+    }
     true
 }
 

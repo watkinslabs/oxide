@@ -24,7 +24,6 @@ pub struct ConnectorInfo {
     pub encoder_id: u32,
     pub mm_width: u32,
     pub mm_height: u32,
-    pub mode_count: u32,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -80,6 +79,13 @@ pub trait DrmDriver: Send + Sync {
     fn encoder_ids(&self) -> Vec<u32> { Vec::new() }
     fn plane_ids(&self) -> Vec<u32> { Vec::new() }
     fn mode_for(&self, _idx: usize) -> DrmModeModeinfo { DrmModeModeinfo::default() }
+    /// Every mode the connector offers, preferred one first. Drivers with a
+    /// real mode table override this; the default publishes only the current
+    /// mode, which is what a connector with no alternatives reports.
+    /// # C: O(modes)
+    fn modes_for(&self, idx: usize) -> alloc::vec::Vec<DrmModeModeinfo> {
+        alloc::vec![self.mode_for(idx)]
+    }
     fn connector_info(&self, _idx: usize) -> Option<ConnectorInfo> { None }
     fn crtc_info(&self, _idx: usize) -> Option<CrtcInfo> { None }
     fn encoder_info(&self, _idx: usize) -> Option<EncoderInfo> { None }

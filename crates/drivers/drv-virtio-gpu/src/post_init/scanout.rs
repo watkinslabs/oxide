@@ -130,7 +130,7 @@ pub(super) fn install_scanout_ctx(
     }
     ctxs.push(ScanoutCtx {
         device_key, cfg_va, w, h, fb_va, fb_bytes, fb_order, res_id,
-        ctrlq, cursorq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
+        ctrlq, cursorq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false, bound: None,
     });
     true
 }
@@ -377,6 +377,7 @@ mod tests {
             hhdm: 0,
             fbdev_idx: None,
             quiesced: false,
+            bound: None,
         }
     }
 
