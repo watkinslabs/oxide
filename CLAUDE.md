@@ -173,7 +173,15 @@ Bare integer literals in any of these positions = silent bug bait
 
 Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real glibc userspace (systemd, bash, Fedora packages) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
 
-**Rule:** before `git push` on a branch that touches `kernel/`, `crates/kernel/`, `crates/drivers/`, `crates/arch/`, `userspace/`, `targets/`, `vendor/`, `rust-toolchain.toml`, `Cargo.toml`, or `Cargo.lock` — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach login.
+**Boot ONLY what can break the boot (HARD RULE).** A boot is ~60-120 s per arch, serialises against every other lane on the box, and produces contention noise when several run at once. Do NOT boot to "be safe" — a ritual boot on a change that cannot affect the boot costs real time and teaches nobody anything.
+
+**Boot when the change can reach the running kernel:** boot/entry paths, linker scripts, `crates/arch/**`, syscall dispatch or slot files, drivers on the boot path (console, serial, timer, interrupt, block, virtio), init/exec/mount paths, memory management, scheduler, anything altering an ABI a running binary consumes, the image or rootfs contents, `targets/`, `rust-toolchain.toml`, `Cargo.toml`/`Cargo.lock`.
+
+**Do NOT boot for:** docs, `scratch/**` (ledger, matrix, drop files), comments and SAFETY prose, `#[cfg(test)]`-only changes, test-harness edits, spec-lint baselines, tooling that is not on the boot path, or a rebase that brought in only already-merged main. State in the PR body that no boot was run **and why** — an explicit skip with a reason is correct; a silent skip is not, and neither is an unexplained boot.
+
+If you are unsure whether a change is boot-visible, say so and boot once — but that is the exception, not the default.
+
+**Rule:** before `git push` on a branch whose changes are boot-visible per the list above — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach the marker.
 
 A pre-push hook at `.githooks/pre-push` enforces this automatically. Install once per clone with `git config core.hooksPath .githooks`. Bypass for known-safe doc-only pushes with `SKIP_SMOKE=1 git push`.
 
