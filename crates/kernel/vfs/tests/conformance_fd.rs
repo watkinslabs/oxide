@@ -140,13 +140,19 @@ fn read_on_directory_eisdir() -> (Outcome, Outcome) {
     (host, oxide)
 }
 
-fn write_on_directory_eisdir() -> (Outcome, Outcome) {
+/// `write(2)` to a directory is refused for NOT BEING OPEN FOR WRITING, not
+/// for being a directory: the writability check runs first, and a directory
+/// can never be opened writable in the first place. The oxide side must
+/// therefore be handed the same `O_RDONLY` description the host can actually
+/// produce — an `O_RDWR` directory is a state no Linux `open` returns, and
+/// comparing against one asked the two kernels different questions.
+fn write_on_directory_not_writable() -> (Outcome, Outcome) {
     let t = oracle::TempDir::new("write-dir");
     let fd = oracle::open_keep(t.path(), libc::O_RDONLY, 0);
     let host = oracle::write(fd, b"x");
     oracle::close_raw(fd);
 
-    let f = mk_file(directory(4), OpenFlags::O_RDWR);
+    let f = mk_file(directory(4), OpenFlags::O_RDONLY);
     let oxide = Outcome::from_oxide_rv(f.write(b"x").map(|n| n as i64).unwrap_or_else(|e| -(e as i64)));
     (host, oxide)
 }
@@ -223,7 +229,7 @@ const CASES: &[Case] = &[
     Case { id: "fcntl.f_dupfd_cloexec.ok", known_divergence: None, skip: None, compare_ret_on_success: false, run: fcntl_dupfd_cloexec_ok },
     Case { id: "fcntl.f_getfl.append_roundtrip", known_divergence: None, skip: None, compare_ret_on_success: true, run: fcntl_getfl_append_roundtrip },
     Case { id: "read.directory.eisdir", known_divergence: None, skip: None, compare_ret_on_success: false, run: read_on_directory_eisdir },
-    Case { id: "write.directory.eisdir", known_divergence: None, skip: None, compare_ret_on_success: false, run: write_on_directory_eisdir },
+    Case { id: "write.directory.not_writable", known_divergence: None, skip: None, compare_ret_on_success: false, run: write_on_directory_not_writable },
     Case { id: "lseek.pipe.espipe", known_divergence: None, skip: None, compare_ret_on_success: false, run: lseek_espipe_on_pipe },
     Case { id: "lseek.negative_result.einval", known_divergence: None, skip: None, compare_ret_on_success: false, run: lseek_negative_result_einval },
     Case { id: "ftruncate.negative_len.einval", known_divergence: None, skip: None, compare_ret_on_success: false, run: ftruncate_negative_len_einval },

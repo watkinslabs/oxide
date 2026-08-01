@@ -117,10 +117,14 @@ fn trailing_slash_splits_mkdir_from_symlink_on_the_host() {
     let t = TempDir::new("po-slash");
     let p = format!("{}/fresh/", t.path().to_str().unwrap());
     let sym = oracle::symlink("target", Path::new(&p));
+    // The verdict is taken while the name is still FREE: the mkdir below
+    // materialises it, and asking afterwards would answer EEXIST about a
+    // fixture the host never saw.
+    let verdict = create_verdict(&p, CreateKind::NonDir);
     let dir = oracle::mkdir(Path::new(&p), 0o755);
     assert!(!sym.is_success(), "symlink to a slashed free name must fail: {sym:?}");
     assert!(dir.is_success(), "mkdir of a slashed free name must succeed: {dir:?}");
-    assert!(sym.same_errno_class(&create_verdict(&p, CreateKind::NonDir)));
+    assert!(sym.same_errno_class(&verdict), "symlink host={sym:?} oxide={verdict:?}");
 }
 
 // ---- remove family: rmdir / unlink ---------------------------------------
