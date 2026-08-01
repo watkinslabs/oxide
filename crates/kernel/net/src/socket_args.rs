@@ -31,10 +31,10 @@ pub const SOCK_TYPE_MASK: u32 = 0xf;
 pub const SOCK_MAX:       u32 = SOCK_PACKET + 1;
 pub const SOCK_CLOEXEC:   u32 = 0o2_000_000;
 pub const SOCK_NONBLOCK:  u32 = 0o0_004_000;
-const IPPROTO_MAX:        u32 = 256;
-const IPPROTO_IP:         u32 = 0;
-const IPPROTO_TCP:        u32 = 6;
-const IPPROTO_UDP:        u32 = 17;
+pub const IPPROTO_MAX:    u32 = 256;
+pub const IPPROTO_IP:     u32 = 0;
+pub const IPPROTO_TCP:    u32 = 6;
+pub const IPPROTO_UDP:    u32 = 17;
 /// The two ICMP protocol numbers that register a datagram endpoint alongside
 /// UDP: an echo-probe socket, admitted by group membership rather than by the
 /// raw-network capability.
