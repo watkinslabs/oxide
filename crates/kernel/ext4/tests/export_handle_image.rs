@@ -191,6 +191,93 @@ fn connectable_handle_reconnects_child_under_its_parent() {
     assert_eq!(cd.inode().expect("positive").ino(), child.ino());
 }
 
+/// THE directory-reconnect test. A directory THREE levels down, with every
+/// level between it and the root evicted from the inode cache, still comes back
+/// CONNECTED: the walk re-reads each `..` from disk, finds each level's name in
+/// its parent, and instantiates the whole chain down from the root.
+///
+/// A one-level reconnect attaches the directory under a still-disconnected
+/// parent — `dentry_connected` is then false and the reopened fd has no
+/// renderable path, which is the gap this closes.
+#[test]
+fn evicted_directory_reconnects_all_the_way_to_the_root() {
+    let (m, sb) = mount();
+    let st = m.state();
+    st.mkdir_at(b"/deep", 0o755).expect("mkdir deep");
+    st.mkdir_at(b"/deep/mid", 0o755).expect("mkdir mid");
+    st.mkdir_at(b"/deep/mid/leaf", 0o755).expect("mkdir leaf");
+    let leaf = st.lookup_inode_any(b"/deep/mid/leaf").expect("leaf");
+    let handle = handle_of(&leaf);
+
+    // Evict everything: nothing between the leaf and the root is cached, and no
+    // dentry names any of it.
+    for p in [b"/deep".as_slice(), b"/deep/mid", b"/deep/mid/leaf"] {
+        let i = st.lookup_inode_any(p).expect("resolve before evict");
+        sb.iforget(i.ino());
+    }
+    drop(leaf);
+
+    let decoded = decode(&sb, handle).expect("the evicted directory decodes from disk");
+    let d = vfs::export::reconnect_path(&sb, &decoded).expect("and reconnects");
+    assert!(vfs::export::dentry_connected(&d), "the decoded directory must reach the root");
+    assert_eq!(d.name(), "leaf");
+    let mid = d.parent().expect("parent").clone();
+    assert_eq!(mid.name(), "mid");
+    let deep = mid.parent().expect("grandparent").clone();
+    assert_eq!(deep.name(), "deep");
+    assert!(deep.parent().expect("root").is_root(), "…whose parent is the fs root");
+}
+
+/// The backend's `..` is what the reconnect walk climbs, so `get_parent` must
+/// answer on a real image — including for the root, whose `..` is itself.
+#[test]
+fn get_parent_reads_the_on_disk_dotdot() {
+    let (m, sb) = mount();
+    let st = m.state();
+    st.mkdir_at(b"/gp", 0o755).expect("mkdir");
+    let dir = st.lookup_inode_any(b"/gp").expect("dir");
+    let root = st.lookup_inode_any(b"/").expect("root");
+
+    let parent = sb.s_op.get_parent(&sb, &dir).expect("`..` resolves");
+    assert_eq!(parent.ino(), root.ino(), "`..` of /gp is the root");
+    // The root's `..` is the root — the terminator the walk stops on.
+    let rp = sb.s_op.get_parent(&sb, &root).expect("root `..` resolves");
+    assert_eq!(rp.ino(), root.ino());
+    // A regular file has no `..`.
+    let f = st.create_at(b"/gp/plain.bin", 0o644).expect("create");
+    assert!(sb.s_op.get_parent(&sb, &f).is_none(), "a non-directory has no parent entry");
+}
+
+/// A non-directory whose PARENT is also fully evicted still reconnects: the
+/// parent goes through the same upward walk before the child is instantiated
+/// under it. The one-hop version handed the child an anonymous parent alias.
+#[test]
+fn evicted_child_reconnects_under_a_reconnected_parent() {
+    let (m, sb) = mount();
+    let st = m.state();
+    st.mkdir_at(b"/outer", 0o755).expect("mkdir outer");
+    st.mkdir_at(b"/outer/inner", 0o755).expect("mkdir inner");
+    let child = st.create_at(b"/outer/inner/file.bin", 0o644).expect("create");
+    let parent = st.lookup_inode_any(b"/outer/inner").expect("parent");
+    let (child_h, parent_h) = (handle_of(&child), handle_of(&parent));
+    let (child_ino, parent_ino) = (child.ino(), parent.ino());
+    drop(child); drop(parent);
+    let outer = st.lookup_inode_any(b"/outer").expect("outer");
+    sb.iforget(outer.ino());
+    drop(outer);
+    sb.iforget(parent_ino);
+    sb.iforget(child_ino);
+
+    let decoded_parent = sb.s_op.fh_to_parent(&sb, parent_h.0, parent_h.1).expect("parent decodes");
+    let decoded_child = sb.s_op.fh_to_dentry(&sb, child_h.0, child_h.1).expect("child decodes");
+    let pd = vfs::export::reconnect_path(&sb, &decoded_parent).expect("parent reconnects fully");
+    assert!(vfs::export::dentry_connected(&pd), "the parent itself must reach the root");
+    let name = vfs::export::get_name(&decoded_parent, decoded_child.ino()).expect("name");
+    let cd = vfs::export::reconnect_child(&pd, &name, &decoded_child).expect("child reconnects");
+    assert!(vfs::export::dentry_connected(&cd), "…and so must the child");
+    assert_eq!(cd.name(), "file.bin");
+}
+
 /// A connectable handle whose child was moved out of the named parent no longer
 /// reconnects: the name scan finds nothing, which is ESTALE at the syscall
 /// rather than a silent downgrade to a pathless alias.

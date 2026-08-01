@@ -192,8 +192,15 @@ static NS_MOUNTS: Spinlock<BTreeMap<u64, BTreeMap<u64, Arc<Mount>>>, MountClass>
 /// inserted under the same key. # C: O(log N)
 fn mounts_publish(m: Arc<Mount>) {
     let ns = m.namespace_id();
-    MOUNTS.lock().insert(m.mnt_id, m.clone());
-    NS_MOUNTS.lock().entry(ns).or_default().insert(m.mnt_id, m);
+    let id = m.mnt_id;
+    MOUNTS.lock().insert(id, m.clone());
+    NS_MOUNTS.lock().entry(ns).or_default().insert(id, m);
+    // Every path that makes a mount visible in a namespace funnels through
+    // here, so this is the one place a mount-namespace watcher can be told
+    // about an attach without a second, drift-prone list of call sites. Fired
+    // with the two index locks released — the notification subsystem's locks
+    // must not nest inside the mount arena's.
+    notify::fsnotify_mnt_attach(ns, id);
 }
 
 /// Remove `id` from the mount arena AND its namespace's index — the ONLY way a
@@ -202,14 +209,20 @@ fn mounts_publish(m: Arc<Mount>) {
 /// dropped from the wrong bucket. # C: O(log N)
 fn mounts_unpublish(id: u64) -> Option<Arc<Mount>> {
     let removed = MOUNTS.lock().remove(&id);
+    let mut left = None;
     if let Some(m) = removed.as_ref() {
         let ns = m.namespace_id();
+        left = Some(ns);
         let mut g = NS_MOUNTS.lock();
         if let Some(bucket) = g.get_mut(&ns) {
             bucket.remove(&id);
             if bucket.is_empty() { g.remove(&ns); }
         }
     }
+    // Counterpart of the attach notification in `mounts_publish`: the mount is
+    // no longer in the namespace's tree. Nothing is reported for an id that was
+    // not published, so a repeated umount stays silent.
+    if let Some(ns) = left { notify::fsnotify_mnt_detach(ns, id); }
     removed
 }
 

@@ -29,9 +29,16 @@ pub(crate) fn ext4_sync_file(inode: &Inode) -> KResult<()> {
     let Some((st, _ino)) = super::data::ext4_state_of(inode) else {
         return Ok(()); // not an ext4-backed inode: nothing of ours to commit
     };
-    st.mount.commit_batch().map_err(vfs_error_from_mount)?;
+    st.mount.commit_batch().map_err(|e| fs_err(&st, e))?;
     st.mount.dev.flush().map_err(|_| VfsError::Eio)?;
     Ok(())
+}
+
+/// Announce a filesystem error and map it to the caller's errno
+/// (`rootfs::fserror::report`), for the sites that hold the owning mount state.
+/// # C: O(1) + subscribers
+pub(crate) fn fs_err(st: &crate::rootfs::RootfsState, e: crate::MountError) -> vfs::VfsError {
+    crate::rootfs::fserror::report(st, e)
 }
 
 pub(crate) fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
@@ -69,7 +76,7 @@ impl InodeOps for Ext4RegInodeOps {
     /// # C: O(number of extents)
     fn bmap(&self, inode: &Inode, block: u64) -> KResult<u64> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        let runs = d.st.mount.extent_map(d.ino).map_err(vfs_error_from_mount)?;
+        let runs = d.st.mount.extent_map(d.ino).map_err(|e| fs_err(&d.st, e))?;
         for (logical, physical, len, unwritten) in runs {
             let run_start = logical as u64;
             let run_len = len as u64;
@@ -84,7 +91,7 @@ impl InodeOps for Ext4RegInodeOps {
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let _mutation = d.begin_swap_mutation()?;
-        d.st.mount.truncate_inode(d.ino, len).map_err(vfs_error_from_mount)?;
+        d.st.mount.truncate_inode(d.ino, len).map_err(|e| fs_err(&d.st, e))?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
         #[cfg(feature = "ext4-frame-cache")]
@@ -137,7 +144,7 @@ impl InodeOps for Ext4RegInodeOps {
                 inode.atime().unwrap_or(vfs::Timespec64::ZERO),
                 inode.mtime().unwrap_or(vfs::Timespec64::ZERO),
                 inode.ctime().unwrap_or(vfs::Timespec64::ZERO),
-            ).map_err(vfs_error_from_mount)?;
+            ).map_err(|e| fs_err(&d.st, e))?;
         }
         Ok(())
     }
@@ -161,7 +168,7 @@ impl InodeOps for Ext4RegInodeOps {
               emit: &mut dyn FnMut(vfs::FiemapExtent) -> bool) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         let bs = d.st.mount.sb.block_size.max(1) as u64;
-        let runs = d.st.mount.extent_map(d.ino).map_err(vfs_error_from_mount)?;
+        let runs = d.st.mount.extent_map(d.ino).map_err(|e| fs_err(&d.st, e))?;
         let range_end = start.saturating_add(len);
         let last_idx = runs.len().wrapping_sub(1);
         for (idx, &(rlog, rphys, rlen, unwritten)) in runs.iter().enumerate() {
@@ -271,7 +278,7 @@ impl FileOps for Ext4RegFileOps {
         { d.frames.write_buffered(off, buf)?; }
         #[cfg(not(feature = "ext4-frame-cache"))]
         {
-            d.st.mount.write_at(d.ino, off, buf).map_err(vfs_error_from_mount)?;
+            d.st.mount.write_at(d.ino, off, buf).map_err(|e| fs_err(&d.st, e))?;
             d.st.page_cache.invalidate(InodeId(d.ino as u64));
         }
         let end = off.saturating_add(buf.len() as u64);

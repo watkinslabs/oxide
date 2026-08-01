@@ -38,6 +38,9 @@ pub fn sys_pwrite64(args: &SyscallArgs) -> i64 {
         cnt = crate::userbuf::clamp_rw_count(cnt);
     }
     let pos = crate::write_common::positional_write_pos(&file, off);
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), true, Some(pos), cnt as u64) {
+        return -(e.as_i32() as i64);
+    }
     cnt = match crate::write_common::rlimit_fsize_cap(&cur, &file, pos, cnt, true) {
         Ok(n)  => n,
         Err(e) => return e,

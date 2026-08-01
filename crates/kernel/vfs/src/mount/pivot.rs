@@ -245,6 +245,11 @@ fn relocate_root_mount(ns: u64, nr_m: &Arc<Mount>, root_m: &Arc<Mount>, po_m: &A
         rerender_subtree(ns, nr_m.mnt_id);
     }
     mntns::bump_gen(ns);
+    // Both mounts named by the call changed position inside `ns` and neither
+    // left it: the old root moved under `put_old` and the new root took its
+    // slot. Two move records, one per relocated mount.
+    notify::fsnotify_mnt_move(ns, root_m.mnt_id);
+    notify::fsnotify_mnt_move(ns, nr_m.mnt_id);
     mntns::chroot_fs_refs(root_m.mnt_id, nr_m.mnt_id);
     Ok(())
 }
@@ -302,6 +307,8 @@ fn retree_whole_ns(ns: u64, nr_m: &Arc<Mount>, nr_subtree: &[u64], po_mnt: u64,
         (m.mnt_id, np)
     }).collect();
     commit_retree(ns, &new_paths, Some(nr_id), nr_subtree);
+    notify::fsnotify_mnt_move(ns, old_root_id);
+    notify::fsnotify_mnt_move(ns, nr_id);
     mntns::chroot_fs_refs(old_root_id, nr_id);
     Ok(())
 }

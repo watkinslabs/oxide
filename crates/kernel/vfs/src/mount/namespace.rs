@@ -348,5 +348,11 @@ fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, de
     }
     if to_root { mntns::ns_set_root(ns, from_id); }
     mntns::bump_gen(ns);
+    // The moved mount never left `ns`, so it is ONE record carrying both the
+    // attach and detach bits. Only the mount named in the request is reported:
+    // its descendants kept their position relative to it, which is not a tree
+    // change a watcher of the namespace can observe. Fired after the last
+    // structural lock is dropped.
+    notify::fsnotify_mnt_move(ns, from_id);
     Ok(())
 }

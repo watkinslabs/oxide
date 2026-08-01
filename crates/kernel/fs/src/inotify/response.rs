@@ -35,6 +35,53 @@ pub(crate) const RESPONSE_VALID_MASK: u32 =
 /// `sizeof(struct fanotify_response)`.
 pub(crate) const RESPONSE_LEN: usize = 8;
 
+/// `FAN_RESPONSE_INFO_NONE` — the response carries no additional record.
+pub(crate) const FAN_RESPONSE_INFO_NONE: u8 = 0;
+/// `FAN_RESPONSE_INFO_AUDIT_RULE` — the record names the userspace rule that
+/// produced the verdict. The only record type a response may carry.
+pub(crate) const FAN_RESPONSE_INFO_AUDIT_RULE: u8 = 1;
+
+/// `sizeof(struct fanotify_response_info_audit_rule)`: the 4-byte
+/// `fanotify_response_info_header {type u8, pad u8, len u16}` followed by
+/// `rule_number`, `subj_trust` and `obj_trust`.
+pub(crate) const AUDIT_RULE_LEN: usize = 16;
+
+/// The audit record a daemon attaches to a verdict: which of its rules decided,
+/// and how far it trusts the subject and the object. Recorded on the permission
+/// event so the verdict's justification is not lost between the write that
+/// carried it and whatever renders it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AuditRule {
+    pub(crate) rule_number: u32,
+    pub(crate) subj_trust:  u32,
+    pub(crate) obj_trust:   u32,
+}
+
+/// Parse the `struct fanotify_response_info_audit_rule` that follows the
+/// response struct when the verdict sets `FAN_INFO`.
+///
+/// Every field is checked, and the checks are the whole user-visible contract
+/// of the flag: the trailing bytes must be EXACTLY one record (a longer write
+/// is not two records and a shorter one is not a truncated record — both are
+/// `EINVAL`), the type must be the audit-rule type, the header's own length
+/// must agree with the record it heads, and the pad byte must be zero so the
+/// field stays available. A response whose record fails any of these leaves the
+/// permission event untouched — the daemon may write a correct one instead.
+/// # C: O(1)
+pub(crate) fn parse_response_info(info: &[u8]) -> Result<AuditRule, Errno> {
+    if info.len() != AUDIT_RULE_LEN { return Err(Errno::Einval); }
+    if info[0] != FAN_RESPONSE_INFO_AUDIT_RULE { return Err(Errno::Einval); }
+    if info[1] != 0 { return Err(Errno::Einval); }
+    if u16::from_le_bytes([info[2], info[3]]) as usize != AUDIT_RULE_LEN {
+        return Err(Errno::Einval);
+    }
+    Ok(AuditRule {
+        rule_number: u32::from_le_bytes([info[4], info[5], info[6], info[7]]),
+        subj_trust:  u32::from_le_bytes([info[8], info[9], info[10], info[11]]),
+        obj_trust:   u32::from_le_bytes([info[12], info[13], info[14], info[15]]),
+    })
+}
+
 /// The errno packed into the high byte of a response word (`FAN_DENY_ERRNO`).
 /// # C: O(1)
 pub(crate) fn response_errno(response: u32) -> u32 { (response >> ERRNO_SHIFT) & ERRNO_MASK }
@@ -225,6 +272,54 @@ mod tests {
         assert_eq!(validate_response_fd(-2), Err(Errno::Einval));
         assert_eq!(validate_response_fd(0), Ok(0));
         assert_eq!(validate_response_fd(7), Ok(7));
+    }
+
+    /// One `struct fanotify_response_info_audit_rule` in wire order. # C: O(1)
+    fn rule(ty: u8, pad: u8, len: u16, n: u32, subj: u32, obj: u32) -> [u8; AUDIT_RULE_LEN] {
+        let mut b = [0u8; AUDIT_RULE_LEN];
+        b[0] = ty;
+        b[1] = pad;
+        b[2..4].copy_from_slice(&len.to_le_bytes());
+        b[4..8].copy_from_slice(&n.to_le_bytes());
+        b[8..12].copy_from_slice(&subj.to_le_bytes());
+        b[12..16].copy_from_slice(&obj.to_le_bytes());
+        b
+    }
+
+    /// The record's three payload words are read at the offsets the struct
+    /// puts them at, after its 4-byte header. # C: O(1)
+    #[test]
+    fn an_audit_rule_record_decodes_its_three_payload_words() {
+        let b = rule(FAN_RESPONSE_INFO_AUDIT_RULE, 0, AUDIT_RULE_LEN as u16, 0x1234, 7, 9);
+        assert_eq!(parse_response_info(&b),
+                   Ok(AuditRule { rule_number: 0x1234, subj_trust: 7, obj_trust: 9 }));
+    }
+
+    /// The trailing bytes are EXACTLY one record: a truncated one is not a
+    /// short record and a longer one is not two records. # C: O(1)
+    #[test]
+    fn the_record_length_must_match_exactly() {
+        let b = rule(FAN_RESPONSE_INFO_AUDIT_RULE, 0, AUDIT_RULE_LEN as u16, 1, 0, 0);
+        assert_eq!(parse_response_info(&b[..AUDIT_RULE_LEN - 1]), Err(Errno::Einval));
+        let mut long = alloc::vec::Vec::from(b);
+        long.push(0);
+        assert_eq!(parse_response_info(&long), Err(Errno::Einval));
+        assert_eq!(parse_response_info(&[]), Err(Errno::Einval));
+    }
+
+    /// Audit-rule is the only record type a response may carry, the pad byte
+    /// must stay zero, and the header's length must agree with the record it
+    /// heads. # C: O(1)
+    #[test]
+    fn every_header_field_of_the_record_is_checked() {
+        let good = AUDIT_RULE_LEN as u16;
+        assert_eq!(parse_response_info(&rule(FAN_RESPONSE_INFO_NONE, 0, good, 1, 0, 0)),
+                   Err(Errno::Einval));
+        assert_eq!(parse_response_info(&rule(2, 0, good, 1, 0, 0)), Err(Errno::Einval));
+        assert_eq!(parse_response_info(&rule(FAN_RESPONSE_INFO_AUDIT_RULE, 1, good, 1, 0, 0)),
+                   Err(Errno::Einval));
+        assert_eq!(parse_response_info(&rule(FAN_RESPONSE_INFO_AUDIT_RULE, 0, good - 1, 1, 0, 0)),
+                   Err(Errno::Einval));
     }
 
     /// `response_errno` reads only the top byte. # C: O(1)

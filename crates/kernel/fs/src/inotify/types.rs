@@ -1,4 +1,3 @@
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
@@ -126,12 +125,28 @@ pub(crate) struct PermState {
     /// descriptor the daemon answers by is NOT held here: the group's pending
     /// list is keyed by it and is the only place it lives.
     pub(crate) verdict: AtomicU32,
+    /// The `FAN_INFO` audit record the verdict arrived with, if any. Published
+    /// BEFORE the verdict, so a reader that has seen an answer has also seen
+    /// the record that justifies it.
+    audit_rule: Spinlock<Option<crate::inotify::response::AuditRule>, TaskListClass>,
 }
 
 impl PermState {
     /// # C: O(1)
     pub(crate) fn new() -> Self {
-        Self { state: AtomicU32::new(PERM_INIT), verdict: AtomicU32::new(0) }
+        Self { state: AtomicU32::new(PERM_INIT), verdict: AtomicU32::new(0),
+               audit_rule: Spinlock::new(None) }
+    }
+
+    /// Record the `FAN_INFO` audit rule a verdict arrived with. # C: O(1)
+    pub(crate) fn set_audit_rule(&self, r: crate::inotify::response::AuditRule) {
+        *self.audit_rule.lock() = Some(r);
+    }
+
+    /// The audit rule recorded against this decision, or `None` when the
+    /// verdict carried no record. # C: O(1)
+    pub(crate) fn audit_rule(&self) -> Option<crate::inotify::response::AuditRule> {
+        *self.audit_rule.lock()
     }
 
     /// Mark the event handed to the daemon. # C: O(1)
@@ -169,23 +184,36 @@ pub(crate) static PERM_MARK_COUNT: core::sync::atomic::AtomicUsize =
 pub(crate) static MARK_COUNT: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
+/// Number of live `FAN_MARK_MNTNS` marks. The mount-tree attach/detach/move
+/// choke points early-return when 0, so a system with no mount watcher — every
+/// system that is not running one — pays nothing per mount.
+pub(crate) static MNTNS_MARK_COUNT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 /// Monotonic rename cookie pairing a FAN_MOVED_FROM with its FAN_MOVED_TO
 /// (Linux `fsnotify_get_cookie`).
 pub(crate) static MOVE_COOKIE: AtomicU32 = AtomicU32::new(1);
 
 /// fanotify mark scope (`FAN_MARK_INODE` default / `FAN_MARK_MOUNT` /
-/// `FAN_MARK_FILESYSTEM`). Inode marks key on inode identity; mount and
-/// filesystem marks key on the owning superblock's `st_dev` (`fsid`).
+/// `FAN_MARK_FILESYSTEM` / `FAN_MARK_MNTNS`). Inode marks key on inode
+/// identity; mount and filesystem marks key on the owning superblock's
+/// `st_dev` (`fsid`); mount-namespace marks key on the mount namespace's id
+/// and match no inode at all.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MarkScope { Inode, Mount, Filesystem, MountNamespace }
 
-#[derive(Clone)]
 pub(crate) struct Watch {
     pub(crate) wd: i32,
     /// Inode identity for an `Inode`-scope mark (0 for mount/fs marks).
     pub(crate) inode_key: usize,
     /// Superblock `st_dev` for a `Mount`/`Filesystem`-scope mark (0 for inode).
     pub(crate) fsid: u64,
+    /// Mount-namespace id for a `MountNamespace`-scope mark (0 otherwise). A
+    /// SEPARATE field from `fsid` on purpose: a namespace id and an `st_dev`
+    /// are unrelated number spaces, and sharing one field would let the
+    /// superblock teardown sweep (`unmount_fs_marks`) retire a mount-namespace
+    /// mark whose id happened to collide with a dying filesystem's.
+    pub(crate) ns_id: u64,
     pub(crate) scope: MarkScope,
     /// Events that generate a notification on a matching object.
     pub(crate) mask: u32,
@@ -203,9 +231,24 @@ pub(crate) struct Watch {
     /// a watcher that suppressed its own writes starts hearing about the file
     /// again as soon as anything else changes it.
     pub(crate) ignore_survives_modify: bool,
-    /// `FAN_MARK_EVICTABLE` — the mark does not pin the object it is attached
-    /// to in memory, and goes away when the object is reclaimed.
-    pub(crate) evictable: bool,
+    /// The reference this mark holds on the inode it is attached to, which is
+    /// what keeps that inode resident for as long as the mark exists. `None`
+    /// for a mount/filesystem/namespace mark (they are attached to no inode)
+    /// and for an inode mark created with `FAN_MARK_EVICTABLE`, which asked
+    /// NOT to pin its object.
+    ///
+    /// The pin IS the evictable distinction — there is no separate flag, so
+    /// the two can never disagree. An ordinary mark's inode cannot reach the
+    /// eviction path at all, and an evictable mark's inode can, taking the
+    /// mark with it. Modelling `FAN_MARK_EVICTABLE` as a bool while every mark
+    /// was keyed on `(fsid, ino)` made the flag meaningless: an ordinary mark
+    /// survived eviction only by construction, and its object was free to be
+    /// reclaimed and its inode number handed to a different file underneath it.
+    ///
+    /// Released through [`Watch::take_pin`] with NO lock held — dropping the
+    /// last reference runs the inode's eviction, which re-enters the mark
+    /// tables through the eviction hook.
+    pin: Option<InodeRef>,
 }
 
 impl Watch {
@@ -214,6 +257,11 @@ impl Watch {
     pub(crate) fn applies(&self, key: usize, fsid: u64) -> bool {
         match self.scope {
             MarkScope::Inode => self.inode_key == key,
+            // A mount-namespace mark is not attached to any object with an
+            // inode: it only ever receives mount-tree changes, never an event
+            // about a file. Matching one here would deliver every event on
+            // every filesystem to a `FAN_REPORT_MNT` group.
+            MarkScope::MountNamespace => false,
             _ => self.fsid != 0 && self.fsid == fsid,
         }
     }
@@ -237,6 +285,46 @@ impl Watch {
         crate::inotify::mask::effective_ignore_mask(self.ignored, self.mask,
                                                     self.ignore_has_flags, is_dir, iter)
     }
+
+    /// A new mark on `pin`'s object. An inode mark takes a reference on the
+    /// inode unless the caller asked for an evictable one; every other scope
+    /// is attached to no inode and takes none. # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(wd: i32, inode_key: usize, fsid: u64, ns_id: u64, scope: MarkScope,
+                      mask: u32, flags: u32, ignored: u32, ignore_has_flags: bool,
+                      ignore_survives_modify: bool, pin: Option<&InodeRef>) -> Self {
+        let pin = pin.map(|i| { i.igrab(); i.clone() });
+        Self { wd, inode_key, fsid, ns_id, scope, mask, flags, ignored, ignore_has_flags,
+               ignore_survives_modify, pin }
+    }
+
+    /// This mark holds no reference on its object: either it is not an inode
+    /// mark, or it was created `FAN_MARK_EVICTABLE`. # C: O(1)
+    pub(crate) fn is_evictable(&self) -> bool { self.pin.is_none() }
+
+    /// Detach the inode reference so it can be released once every mark table
+    /// lock is dropped. # C: O(1)
+    pub(crate) fn take_pin(&mut self) -> Option<InodeRef> { self.pin.take() }
+
+    /// Re-establish the pin an `FAN_MARK_ADD` without `FAN_MARK_EVICTABLE`
+    /// implies on a mark that had none, and hand back the reference a mark
+    /// that is BECOMING evictable must give up. # C: O(1)
+    pub(crate) fn repin(&mut self, pin: Option<&InodeRef>) -> Option<InodeRef> {
+        match (pin, self.pin.is_some()) {
+            (Some(i), false) => { i.igrab(); self.pin = Some(i.clone()); None }
+            (None, true)     => self.pin.take(),
+            _ => None,
+        }
+    }
+}
+
+/// Release inode references detached from destroyed marks. Runs with NO mark
+/// table lock held: the last reference dropping evicts the inode, and eviction
+/// re-enters those tables through the eviction hook. # C: O(N)
+pub(crate) fn release_pins(pins: Vec<InodeRef>) {
+    for i in pins {
+        match i.i_sb() { Some(sb) => sb.iput(i), None => { i.i_count_dec(); } }
+    }
 }
 
 /// Track PERM_MARK_COUNT across a mask transition on one watch: a watch gains a
@@ -248,6 +336,11 @@ pub(crate) fn perm_delta(old: u32, new: u32) {
     else if o && !n { PERM_MARK_COUNT.fetch_sub(1, Ordering::AcqRel); }
 }
 
+/// One queued notification. Most fields are common to every family; the tail
+/// carries the payload only one family has, so a record that is not of that
+/// family leaves it at the zero value (`Default`) and every construction site
+/// names only what it actually reports.
+#[derive(Default)]
 pub(crate) struct Event {
     pub(crate) wd:     i32,
     pub(crate) mask:   u32,
@@ -268,6 +361,36 @@ pub(crate) struct Event {
     /// task is parked on. Its presence is what makes the record unmergeable
     /// and what a reader keys the minted descriptor to.
     pub(crate) perm:   Option<Arc<PermState>>,
+    /// The mount a `FAN_MNT_ATTACH`/`FAN_MNT_DETACH` record is about, reported
+    /// in a `FAN_EVENT_INFO_TYPE_MNT` info record. `0` on every other record —
+    /// mount ids start at 1, so it is never a real mount.
+    pub(crate) mnt_id: u64,
+    /// `FAN_RENAME` only: the DESTINATION parent directory. The SOURCE parent
+    /// is the ordinary `obj`/`name` pair, so ONE record carries both halves of
+    /// the rename and userspace never has to re-pair two events. `None` on
+    /// every other record, and also on a rename reported to a mark that covers
+    /// only the destination — such a mark is told the new parent alone, in
+    /// `obj`/`name`.
+    pub(crate) dir2:   Option<InodeRef>,
+    /// `FAN_RENAME` only: the entry name inside `dir2`.
+    pub(crate) name2:  Vec<u8>,
+    /// `FAN_FS_ERROR` only: the errno the filesystem reported, as the POSITIVE
+    /// number userspace reads out of the record.
+    pub(crate) error:  i32,
+    /// The `st_dev` of the filesystem a record whose object is the FILESYSTEM
+    /// itself is about (`FAN_FS_ERROR`). Every other family derives its fsid
+    /// from `obj`, which such a record may not have — a corrupt filesystem
+    /// often cannot name an inode at all.
+    pub(crate) fsid:   u64,
+    /// `FAN_FS_ERROR` only: how many errors this record stands for. Starts at
+    /// 1 and rises every time another error on the same filesystem is folded
+    /// into it, so a filesystem failing continuously produces one record with a
+    /// climbing count instead of flooding the queue.
+    pub(crate) err_count: u32,
+    /// `FAN_PRE_ACCESS` only: the PAGE-ALIGNED byte range the access covers, as
+    /// `(offset, count)`. `None` when the access names no range — such an event
+    /// carries no range record at all.
+    pub(crate) range:  Option<(u64, u64)>,
 }
 
 pub struct InotifyData {
@@ -292,7 +415,7 @@ pub struct InotifyData {
     /// order alongside ordinary notifications, exactly as a reader must see
     /// them: a daemon that keeps a second queue for permission events reports
     /// them out of order relative to the notifications that explain them.
-    pub(crate) events:  Spinlock<VecDeque<Event>, TaskListClass>,
+    pub(crate) events:  Spinlock<crate::inotify::queue::EventQueue, TaskListClass>,
     /// `true` once the group's last descriptor is closed. Stops new events
     /// from entering the queue, so a permission event can never be queued
     /// after the release path has already answered everything.

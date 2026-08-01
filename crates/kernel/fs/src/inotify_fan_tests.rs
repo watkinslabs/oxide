@@ -298,6 +298,36 @@ fn identical_fanotify_events_merge_with_ored_masks() {
     assert_eq!(masks(&g), [FAN_OPEN | FAN_MODIFY], "one merged record");
 }
 
+/// The merge search is HASHED on the object, not a walk back from the tail. A
+/// daemon that has fallen hundreds of events behind must still get its repeated
+/// access folded into the record already describing it: with a bounded backward
+/// scan the same access reaches userspace twice as soon as the queue is deeper
+/// than the bound, which is a behaviour change userspace can see purely from
+/// how busy the machine is.
+#[test]
+fn a_mergeable_event_is_found_however_deep_the_queue_has_grown() {
+    let g = InotifyData::new_fanotify(0);
+    let first = mk_inode(FileType::Regular, 0xB101);
+    apply_mark(&g, MarkScope::Filesystem, 0, 0xB101, FAN_OPEN | FAN_MODIFY, true, false, 0);
+    fire_self(&first, FAN_OPEN);
+    // Bury it under far more unrelated records than any bounded backward scan
+    // would reach — each on its own object, so none of them merges.
+    let depth = crate::inotify::queue::FANOTIFY_MAX_MERGE_EVENTS * 2;
+    let others: Vec<InodeRef> = (0..depth)
+        .map(|i| {
+            let o = InodeBuilder::new(0xC000_0000 + i as u64, mk_mode(FileType::Regular, 0o644),
+                default_inode_ops(), Arc::new(InotifyFileOps)).fsid(0xB101).build();
+            fire_self(&o, FAN_OPEN);
+            o
+        })
+        .collect();
+    assert_eq!(g.events.lock().len(), depth + 1, "each unrelated object is its own record");
+    fire_self(&first, FAN_MODIFY);
+    assert_eq!(g.events.lock().len(), depth + 1, "the repeat merged rather than queueing again");
+    assert_eq!(masks(&g)[0], FAN_OPEN | FAN_MODIFY, "into the record at the FRONT");
+    drop(others);
+}
+
 /// An unknown descriptor is reported, not silently dropped — a daemon that
 /// answers a stale event learns it did.
 #[test]
@@ -342,6 +372,103 @@ fn one_write_answers_exactly_one_event() {
     assert_eq!(g.write(0, &two), Ok(8), "only the first response is consumed");
     assert_eq!(s1.answered(), Some(FAN_ALLOW));
     assert_eq!(s2.answered(), None, "the second response was not applied");
+}
+
+/// `FAN_INFO`'s record is PARSED, not skipped. A daemon that attaches an audit
+/// rule gets the record's bytes counted in the return value, and the rule is
+/// recorded against the decision it justifies.
+#[test]
+fn a_fan_info_response_carries_its_audit_rule_through_to_the_event() {
+    use crate::inotify::response::{AuditRule, AUDIT_RULE_LEN, FAN_INFO,
+        FAN_RESPONSE_INFO_AUDIT_RULE};
+    let g = InotifyData::new_fanotify(0);
+    let ino = mk_inode(FileType::Regular, 0x9801);
+    let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
+    let fd = read_one_perm(&g);
+    let w = respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+                              &audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0,
+                                                AUDIT_RULE_LEN as u16, 77, 1, 2));
+    assert_eq!(w, Ok(8 + AUDIT_RULE_LEN), "the record's bytes are consumed too");
+    assert_eq!(st.answered(), Some(FAN_ALLOW), "FAN_INFO is stripped from the stored verdict");
+    assert_eq!(st.audit_rule(),
+               Some(AuditRule { rule_number: 77, subj_trust: 1, obj_trust: 2 }));
+}
+
+/// Every field of the record is checked, and a rejected record leaves the
+/// permission event answerable — the daemon may write a correct one instead.
+#[test]
+fn a_malformed_fan_info_record_is_einval_and_answers_nothing() {
+    use crate::inotify::response::{AUDIT_RULE_LEN, FAN_INFO, FAN_RESPONSE_INFO_AUDIT_RULE,
+        FAN_RESPONSE_INFO_NONE};
+    let g = InotifyData::new_fanotify(0);
+    let ino = mk_inode(FileType::Regular, 0x9901);
+    let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
+    let fd = read_one_perm(&g);
+    let ok = audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0, AUDIT_RULE_LEN as u16, 5, 0, 0);
+    let einval = Err(vfs::VfsError::Einval);
+    // FAN_INFO with no record at all.
+    assert_eq!(respond(&g, fd, FAN_ALLOW | FAN_INFO), einval);
+    // A truncated record, and a record with trailing bytes: the tail must be
+    // EXACTLY one record.
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO, &ok[..AUDIT_RULE_LEN - 1]), einval);
+    let mut long = ok.to_vec();
+    long.push(0);
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO, &long), einval);
+    // The only record type a response may carry.
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+        &audit_rule_bytes(FAN_RESPONSE_INFO_NONE, 0, AUDIT_RULE_LEN as u16, 5, 0, 0)), einval);
+    // A nonzero pad byte, and a header length disagreeing with the record.
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+        &audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 1, AUDIT_RULE_LEN as u16, 5, 0, 0)), einval);
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO,
+        &audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0, 8, 5, 0, 0)), einval);
+    assert_eq!(st.answered(), None, "no rejected write answered the event");
+    assert_eq!(respond_with_rule(&g, fd, FAN_ALLOW | FAN_INFO, &ok), Ok(8 + AUDIT_RULE_LEN));
+    assert_eq!(st.answered(), Some(FAN_ALLOW));
+}
+
+/// `FAN_NOFD` names no event. With `FAN_INFO` the write is still accepted for
+/// its record alone — it neither answers a pending event nor reports ENOENT —
+/// while a negative descriptor WITHOUT a record has nothing to mean and is
+/// EINVAL.
+#[test]
+fn a_fan_nofd_response_with_a_record_is_accepted_and_answers_nothing() {
+    use crate::inotify::response::{AUDIT_RULE_LEN, FAN_INFO, FAN_RESPONSE_INFO_AUDIT_RULE};
+    let g = InotifyData::new_fanotify(0);
+    let ino = mk_inode(FileType::Regular, 0x9A01);
+    let st = queue_perm(&g, &ino, FAN_OPEN_PERM);
+    let _fd = read_one_perm(&g);
+    let ok = audit_rule_bytes(FAN_RESPONSE_INFO_AUDIT_RULE, 0, AUDIT_RULE_LEN as u16, 9, 0, 0);
+    let nofd = crate::inotify::fan_layout::FAN_NOFD;
+    assert_eq!(respond_with_rule(&g, nofd, FAN_ALLOW | FAN_INFO, &ok), Ok(8 + AUDIT_RULE_LEN));
+    assert_eq!(st.answered(), None, "no pending event was named");
+    assert_eq!(respond(&g, nofd, FAN_ALLOW), Err(vfs::VfsError::Einval),
+               "without a record a negative descriptor names nothing at all");
+}
+
+/// One `struct fanotify_response_info_audit_rule` in wire order. # C: O(1)
+#[cfg(test)]
+fn audit_rule_bytes(ty: u8, pad: u8, len: u16, rule: u32, subj: u32, obj: u32) -> [u8; 16] {
+    let mut b = [0u8; 16];
+    b[0] = ty;
+    b[1] = pad;
+    b[2..4].copy_from_slice(&len.to_le_bytes());
+    b[4..8].copy_from_slice(&rule.to_le_bytes());
+    b[8..12].copy_from_slice(&subj.to_le_bytes());
+    b[12..16].copy_from_slice(&obj.to_le_bytes());
+    b
+}
+
+/// A `fanotify_response` followed by raw info bytes, written as one call.
+/// # C: O(info.len())
+#[cfg(test)]
+fn respond_with_rule(g: &InotifyData, fd: i32, response: u32, info: &[u8])
+    -> vfs::KResult<usize> {
+    let mut w = Vec::new();
+    w.extend_from_slice(&fd.to_le_bytes());
+    w.extend_from_slice(&response.to_le_bytes());
+    w.extend_from_slice(info);
+    g.write(0, &w)
 }
 
 /// An accessor that abandoned the wait (killed mid-syscall) must not be
@@ -433,7 +560,8 @@ fn open_exec_perm_gate_cycle() {
 fn perm_event(obj: &InodeRef, mask: u32, st: Arc<crate::inotify::types::PermState>)
     -> crate::inotify::types::Event {
     crate::inotify::types::Event {
-        wd: -1, mask, cookie: 0, name: Vec::new(), obj: Some(obj.clone()), pid: 0, perm: Some(st),
+        wd: -1, mask, cookie: 0, name: Vec::new(), obj: Some(obj.clone()), pid: 0,
+        perm: Some(st), ..Default::default()
     }
 }
 
@@ -474,32 +602,117 @@ fn init_flag_validation() {
     assert_eq!(validate_fanotify_init(FAN_REPORT_NAME | FAN_REPORT_DIR_FID), 0);
 }
 
-/// `FAN_MARK_EVICTABLE` means "do not pin the object": the mark goes away with
-/// the cached inode, so a later access is NOT reported. An ordinary mark pins
-/// the object and survives. Without this the flag was accepted and stored and
-/// then changed nothing, which is worse than rejecting it — a watcher believes
-/// it holds a non-pinning mark and it does not.
-#[test]
-fn an_evictable_mark_goes_away_with_the_cached_inode() {
-    let g = InotifyData::new_fanotify(0);
-    let ino = mk_inode(FileType::Regular, 0xE001);
-    apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_OPEN, true, false,
-               crate::inotify::validate::FAN_MARK_EVICTABLE);
-    fire_self(&ino, FAN_OPEN);
-    assert_eq!(masks(&g), [FAN_OPEN], "armed before eviction");
-    crate::inotify::marks::evict_inode_marks(&ino);
-    assert!(g.watches.lock().is_empty(), "the evictable mark left with the inode");
+/// A throwaway superblock so an inode has a real cache to be evicted FROM.
+/// Eviction is what `FAN_MARK_EVICTABLE` is about, and it cannot be observed on
+/// a free-standing inode. # C: O(1)
+#[cfg(test)]
+fn mk_sb(s_dev: u64) -> Arc<vfs::SuperBlock> {
+    struct T;
+    impl vfs::superblock::FileSystemType for T {
+        fn name(&self) -> &str { "markfs" }
+        fn mount(&self, _s: Option<&str>, _o: &str) -> vfs::KResult<Arc<vfs::SuperBlock>> {
+            Err(vfs::VfsError::Enodev)
+        }
+    }
+    struct O;
+    impl vfs::superblock::SuperOps for O {
+        fn statfs(&self) -> vfs::KResult<vfs::superblock::SbStatFs> {
+            Ok(vfs::superblock::SbStatFs { f_bsize: 4096, ..Default::default() })
+        }
+    }
+    vfs::SuperBlock::new(Arc::new(T), Arc::new(O), 0x6d61_726b, s_dev, 4096,
+                         alloc::string::String::from("markfs"), Arc::new(()))
 }
 
-/// A mark WITHOUT the flag pins its object and survives an eviction.
+/// A link-less inode resident in `sb`'s cache, born with one reference.
+/// # C: O(1)
+#[cfg(test)]
+fn cached_inode(sb: &Arc<vfs::SuperBlock>, ino: u64) -> InodeRef {
+    sb.iget(ino, || InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644),
+        default_inode_ops(), Arc::new(InotifyFileOps))
+        .sb(Arc::downgrade(sb)).nlink(0).build())
+}
+
+/// `FAN_MARK_EVICTABLE` means "do not hold the object in memory". The mark
+/// takes no reference on the inode, so the last other reference going evicts
+/// it, and the mark goes with it — a watcher must re-establish such a mark.
+///
+/// Modelling the flag as a stored bool made it meaningless: an ORDINARY mark
+/// held no reference either, so both kinds survived eviction identically and
+/// the object was free to be reclaimed and its number reused underneath the
+/// mark. The distinction is now the reference itself, so the two cannot
+/// disagree.
 #[test]
-fn an_ordinary_mark_survives_an_eviction() {
+fn an_evictable_mark_takes_no_reference_and_leaves_with_the_inode() {
+    vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
     let g = InotifyData::new_fanotify(0);
-    let ino = mk_inode(FileType::Regular, 0xE101);
-    apply_mark(&g, MarkScope::Inode, inode_key(&ino), ino.fsid(), FAN_OPEN, true, false, 0);
-    crate::inotify::marks::evict_inode_marks(&ino);
+    let sb = mk_sb(0xE001);
+    let ino = cached_inode(&sb, 0xE001);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false,
+                     crate::inotify::validate::FAN_MARK_EVICTABLE);
     fire_self(&ino, FAN_OPEN);
+    assert_eq!(masks(&g), [FAN_OPEN], "armed before eviction");
+    assert_eq!(ino.i_count(), 1, "an evictable mark took no reference");
+    sb.iput(ino.clone());
+    drop(ino);
+    assert!(sb.ilookup(0xE001).is_none(), "the inode left the cache");
+    assert!(g.watches.lock().is_empty(), "and the mark left with it");
+}
+
+/// A mark WITHOUT the flag holds a reference on its inode, which is what keeps
+/// the object — and therefore the mark's identity — alive. Dropping every
+/// other reference does not evict it.
+#[test]
+fn an_ordinary_mark_holds_its_inode_resident() {
+    vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
+    let g = InotifyData::new_fanotify(0);
+    let sb = mk_sb(0xE101);
+    let ino = cached_inode(&sb, 0xE101);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false, 0);
+    assert_eq!(ino.i_count(), 2, "the mark took a reference of its own");
+    sb.iput(ino.clone());
+    drop(ino);
+    let still = sb.ilookup(0xE101).expect("the mark keeps the inode resident");
+    assert_eq!(still.i_count(), 1, "exactly the mark's reference remains");
+    fire_self(&still, FAN_OPEN);
     assert_eq!(masks(&g), [FAN_OPEN]);
+}
+
+/// Retiring the mark gives the reference back, and the inode is then free to
+/// be evicted. Without the release a watcher that adds and removes marks in a
+/// loop pins every inode it ever touched.
+#[test]
+fn retiring_a_mark_releases_the_inode_it_held() {
+    vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
+    let g = InotifyData::new_fanotify(0);
+    let sb = mk_sb(0xE201);
+    let ino = cached_inode(&sb, 0xE201);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false, 0);
+    sb.iput(ino.clone());
+    drop(ino);
+    crate::inotify::syscalls::apply_inode_mark(&g, &sb.ilookup(0xE201).unwrap(), FAN_OPEN, false, false, 0);
+    assert!(g.watches.lock().is_empty(), "the mark is gone");
+    assert!(sb.ilookup(0xE201).is_none(), "and so is the reference it held");
+}
+
+/// An `FAN_MARK_ADD` restates whether the mark pins its object, so turning an
+/// ordinary mark evictable gives the reference back and turning an evictable
+/// one ordinary takes a fresh reference.
+#[test]
+fn re_adding_a_mark_restates_whether_it_pins_its_object() {
+    let g = InotifyData::new_fanotify(0);
+    let sb = mk_sb(0xE301);
+    let ino = cached_inode(&sb, 0xE301);
+    let evictable = crate::inotify::validate::FAN_MARK_EVICTABLE;
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_OPEN, true, false, 0);
+    assert_eq!(ino.i_count(), 2);
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_MODIFY, true, false, evictable);
+    assert_eq!(ino.i_count(), 1, "the mark gave its reference up");
+    crate::inotify::syscalls::apply_inode_mark(&g, &ino, FAN_ACCESS, true, false, 0);
+    assert_eq!(ino.i_count(), 2, "and took a fresh one back");
+    drop(g);
+    assert_eq!(ino.i_count(), 1, "the group dying releases it");
+    sb.iput(ino.clone());
 }
 
 /// A `FAN_REPORT_PIDFD` group's read carries a pidfd info record after the
