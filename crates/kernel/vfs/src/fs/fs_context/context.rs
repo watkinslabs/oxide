@@ -33,6 +33,14 @@ pub struct FsContext {
     pub(super) sb_flags_mask: u64,
     pub(super) source:        Option<String>,
     pub(super) params:        Vec<FsParameter>,
+    /// The `mount(2)` data blob kept WHOLE, for a filesystem that publishes no
+    /// parameter table (`legacy_fs_context`'s `legacy_data`). `None` on every
+    /// `fsopen(2)`/`fspick(2)` context, which has no blob.
+    pub(super) monolithic:    Option<String>,
+    /// The `mount(2)` target pathname. `fsopen(2)` has none — the target is
+    /// chosen later, at `move_mount(2)` — so this is `None` there, and a
+    /// filesystem whose superblock identity depends on it must tolerate that.
+    pub(super) mount_target:  Option<String>,
     pub(super) root:          Option<Arc<Dentry>>,
     pub(super) sb:            Option<Arc<SuperBlock>>,
     pub(super) fs_private:    Arc<dyn Any + Send + Sync>,
@@ -74,7 +82,8 @@ impl FsContext {
         Self {
             ops: Arc::new(ClassicMountFsContextOps),
             fs_type, purpose, phase, sb_flags, sb_flags_mask,
-            source: None, params: Vec::new(), root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None, create_exclusive: false,
+            source: None, params: Vec::new(), monolithic: None, mount_target: None,
+            root: None, sb: None, fs_private: Arc::new(()), log: Vec::new(), security: None, create_exclusive: false,
         }
     }
 
@@ -92,6 +101,14 @@ impl FsContext {
     pub fn params(&self) -> &[FsParameter] { &self.params }
     pub fn fs_private(&self) -> &Arc<dyn Any + Send + Sync> { &self.fs_private }
     pub fn set_source(&mut self, src: &str) { self.source = Some(src.to_string()); }
+    /// Keep the `mount(2)` data blob whole for an unconverted backend. # C: O(len)
+    pub fn set_monolithic(&mut self, data: &str) { self.monolithic = Some(data.to_string()); }
+    /// The verbatim blob, if this context kept one. # C: O(1)
+    pub fn monolithic(&self) -> Option<&str> { self.monolithic.as_deref() }
+    /// Record the `mount(2)` target pathname. # C: O(len)
+    pub fn set_mount_target(&mut self, target: &str) { self.mount_target = Some(target.to_string()); }
+    /// The `mount(2)` target, or `None` on a context that never named one. # C: O(1)
+    pub fn mount_target(&self) -> Option<&str> { self.mount_target.as_deref() }
     pub fn set_fs_private(&mut self, p: Arc<dyn Any + Send + Sync>) { self.fs_private = p; }
     /// Select `CMD_CREATE_EXCL` superblock admission for the pending create.
     /// # C: O(1)
@@ -100,7 +117,15 @@ impl FsContext {
     pub fn create_exclusive(&self) -> bool { self.create_exclusive }
     pub fn fail(&mut self) { self.phase = FsContextPhase::Failed; }
 
+    /// The option string the backend's `fill_super` receives.
+    ///
+    /// A context that kept its blob whole replays it EXACTLY — no round-trip
+    /// through the parameter list, so nothing is reordered, deduplicated or
+    /// re-quoted on the way to a backend that parses the string itself.
+    /// Otherwise it is rebuilt from the admitted parameters, which is the only
+    /// form `fsconfig(2)` ever produces. # C: O(N_params)
     pub fn classic_mount_options(&self) -> String {
+        if let Some(d) = &self.monolithic { return d.clone(); }
         let mut s = String::new();
         for p in &self.params {
             if !s.is_empty() { s.push(','); }

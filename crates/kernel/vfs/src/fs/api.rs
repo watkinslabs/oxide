@@ -163,6 +163,10 @@ impl FileSystemType for FsType {
     ) -> KResult<Arc<SuperBlock>> {
         self.construct_with_flags(src, "", opts, sb_flags)
     }
+    fn mount_at(&self, src: Option<&str>, target: &str, opts: &str, sb_flags: u64)
+        -> KResult<Arc<SuperBlock>> {
+        self.construct_with_flags(src, target, opts, sb_flags)
+    }
     fn fs_flags(&self) -> FsFlags { self.flags }
     fn parameters(&self) -> Option<&'static [crate::fs::fs_parser::FsParamSpec]> { self.params }
 }

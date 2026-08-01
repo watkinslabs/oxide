@@ -83,7 +83,7 @@ crates/kernel/umh	code/klog-ungated	10
 crates/kernel/umh	code/pub-fn-complexity	2
 crates/kernel/user-namespace	code/pub-fn-complexity	2
 crates/kernel/vfs	code/klog-ungated	24
-crates/kernel/vfs	code/pub-fn-complexity	108
+crates/kernel/vfs	code/pub-fn-complexity	107
 crates/kernel/vt	code/pub-fn-complexity	3
 crates/shared/kalloc	code/klog-ungated	15
 crates/shared/kalloc	code/pub-fn-complexity	7
