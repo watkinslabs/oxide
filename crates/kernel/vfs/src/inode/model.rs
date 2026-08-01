@@ -94,6 +94,13 @@ pub struct Inode {
     /// file open for write cannot be executed.
     pub(super) i_writecount:   AtomicI32,
     pub(super) i_state:        AtomicU32,
+    /// Linux `inode->dirtied_time_when`: the wall-clock nanosecond at which
+    /// `I_DIRTY_TIME` was first set on an otherwise-clean inode. The expiry
+    /// clock for the lazy-timestamp deferral — a background writeback pass
+    /// forces the stamp out once it is older than the expire interval. `0` =
+    /// never dirtied-time (the epoch nanosecond is not a reachable stamp: the
+    /// timestamp paths refuse to run before the wall clock is installed).
+    pub(super) dirtied_time_when: AtomicU64,
     pub(super) i_count:        AtomicU32,
     pub(super) i_version:      AtomicU64,
     pub(super) i_fsid:         AtomicU64,

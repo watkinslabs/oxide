@@ -210,7 +210,8 @@ impl File {
     /// `file_update_time` (Linux fs/inode.c) — after a modifying write, stamp
     /// the inode's mtime + ctime to the current wall clock via its
     /// `i_op->update_time` (ext4 & co. persist through to the backend; the
-    /// generic default updates the in-core fields). Scoped to regular files:
+    /// generic default updates the in-core fields), or — on a `lazytime` mount —
+    /// record the change as a deferred `I_DIRTY_TIME` debt instead. Scoped to regular files:
     /// pipe/socket/tty/device writes route through this same `File::write` but
     /// do not carry an mtime the Linux `generic_file_write_iter` path would
     /// bump. No clock installed yet (early boot) → `current_time` floors 0 and
@@ -220,7 +221,8 @@ impl File {
         let raw = crate::inode_times::realtime_now_ns();
         if raw == 0 { return; }
         let now = crate::inode_times::current_time(&*self.inode, raw);
-        let _ = self.inode.update_time(now, crate::S_MTIME | crate::S_CTIME | crate::S_VERSION);
+        let _ = crate::writeback::inode_update_time(
+            &self.inode, now, crate::S_MTIME | crate::S_CTIME | crate::S_VERSION, raw);
     }
 
     /// `lseek(2)` SEEK_SET / CUR / END. Returns the new position.

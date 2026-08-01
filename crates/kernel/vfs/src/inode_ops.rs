@@ -201,6 +201,23 @@ pub trait InodeOps: Send + Sync {
         crate::inode::generic_update_time(inode, now, flags)
     }
 
+    /// `i_op->sync_lazytime` — persist the timestamps a `lazytime` mount has
+    /// been holding in memory, WITHOUT changing them. Runs at every point that
+    /// forces a deferred stamp out: `fsync`/`fdatasync`, `sync`/`syncfs`,
+    /// eviction of a still-linked inode, unmount, an unrelated metadata change,
+    /// and the expiry interval.
+    ///
+    /// The default is [`Self::update_time`] with an EMPTY `S_*` selection: no
+    /// field moves, so a backend that writes through on `update_time` (ext4)
+    /// flushes the current in-core times, and one with nothing to persist does
+    /// nothing. `now` is therefore unread; the inode's own ctime is passed so a
+    /// backend that ignores the selection cannot invent a future stamp.
+    /// # C: backend-dependent
+    fn sync_lazytime(&self, inode: &Inode) -> KResult<()> {
+        let keep = inode.ctime().unwrap_or(Timespec64::ZERO);
+        self.update_time(inode, keep, 0)
+    }
+
     /// `i_op->permission` — DAC check for `mask` (`MAY_*`). Default the immutable
     /// write-deny then `generic_permission`. # C: O(ngroups)
     fn permission(&self, inode: &Inode, mask: u32, cred: &Cred) -> KResult<()> {
