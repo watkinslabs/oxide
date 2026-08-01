@@ -68,7 +68,7 @@ pub fn notify_with(stop_code: i32, message: u64, mut info: sched::SigInfo)
     }
     *cur.ptrace_siginfo.lock() = Some(info);
     crate::ptrace_fpu::snapshot_current();
-    sched::live::stop::stop_until_cont_code(stop_code as u32);
+    sched::live::stop::stop_until_cont_code(stop_code as u32, sched::jobctl::StopKind::Ptrace);
     crate::ptrace_fpu::restore_if_dirty();
     // Linux `ptrace_stop`'s tail: `exit_code = current->exit_code;
     // current->last_siginfo = NULL; current->ptrace_message = 0;
@@ -226,6 +226,8 @@ pub fn exit_ptrace(tracer_tid: u32) {
             sched::live::zombies::notify_real_parent_of_zombie(&t);
         }
         // A tracee parked in a ptrace stop has no tracer left to resume it.
-        sched::live::registry::wake_if_stopped(&t);
+        t.jobctl.store(sched::jobctl::resume_clears(t.jobctl.load(Ordering::Acquire)),
+                       Ordering::Release);
+        sched::live::registry::wake_if_stopped(&t, sched::jobctl::WakeKind::PtraceResume);
     }
 }

@@ -177,8 +177,19 @@ fn resume(target: &Arc<sched::Task>, request: u64, data: u64) -> Result<(), Errn
     // have rewritten the record this very resume is about to deliver, and the
     // tracee clears it itself once it has read it (Linux `ptrace_stop`'s tail).
     target.stop_code.store(data as u32, Ordering::Release);
-    sched::live::registry::wake_if_stopped(target);
+    // The tracer's own resume clears the whole trap latch, `JOBCTL_LISTENING`
+    // included: a `PTRACE_LISTEN` is ended by the next resume, not carried
+    // into it, or the tracee would re-trap instead of running.
+    clear_trap_latch(target);
+    sched::live::registry::wake_if_stopped(target, sched::jobctl::WakeKind::PtraceResume);
     Ok(())
+}
+
+/// Clear `JOBCTL_PENDING_MASK | JOBCTL_LISTENING` on a resumed tracee.
+/// # C: O(1)
+fn clear_trap_latch(target: &sched::Task) {
+    let jc = target.jobctl.load(Ordering::Acquire);
+    target.jobctl.store(sched::jobctl::resume_clears(jc), Ordering::Release);
 }
 
 /// PTRACE_DETACH. Same `valid_signal` gate as resume, and the same
@@ -197,7 +208,8 @@ fn detach(target: &Arc<sched::Task>, data: u64) -> Result<(), Errno> {
     if data == 0 {
         target.sigpending.fetch_and(!Signum::Sigstop.bit(), Ordering::Release);
     }
-    sched::live::registry::wake_if_stopped(target);
+    clear_trap_latch(target);
+    sched::live::registry::wake_if_stopped(target, sched::jobctl::WakeKind::PtraceResume);
     Ok(())
 }
 
