@@ -91,7 +91,7 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     // A filesystem that cannot turn its own handles back into inodes must not
     // mint one a caller will later fail to open (`exportfs_can_encode_fh`).
     if let Some(sb) = inode.i_sb() {
-        if !sb.s_op.export_can_decode_fh() { return err(Errno::Eopnotsupp); }
+        if !vfs::export::can_encode_fh(&sb) { return err(Errno::Eopnotsupp); }
     }
 
     // handle->handle_bytes is the caller-supplied capacity; the header is read

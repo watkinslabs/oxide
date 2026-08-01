@@ -86,19 +86,17 @@ pub(crate) fn info_type_for(report_fid: bool, report_dir_fid: bool, report_name:
     Some(FAN_EVENT_INFO_TYPE_DFID)
 }
 
-/// Name bytes that ride along with `info_type`. Only the two `*_NAME` types
-/// carry one; `copy_fid_info_to_user` rejects a name on any other type.
+/// Name bytes that ride along with `info_type`. Only the `*_DFID_NAME` types
+/// carry one — the ordinary one and the two rename-specific ones — and a name
+/// handed to any other type is dropped rather than written where a reader would
+/// not look for it.
 /// # C: O(1)
 pub(crate) fn name_len_for(info_type: u8, name_len: usize) -> usize {
-    if info_type == FAN_EVENT_INFO_TYPE_DFID_NAME { name_len } else { 0 }
-}
-
-/// `metadata.event_len` — the fixed metadata plus whatever info record follows.
-/// # C: O(1)
-pub(crate) fn event_len(info_type: Option<u8>, fh_len: usize, name_len: usize) -> usize {
     match info_type {
-        None => FAN_EVENT_METADATA_LEN,
-        Some(t) => FAN_EVENT_METADATA_LEN + fid_info_len(fh_len, name_len_for(t, name_len)),
+        FAN_EVENT_INFO_TYPE_DFID_NAME
+        | crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_OLD_DFID_NAME
+        | crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_NEW_DFID_NAME => name_len,
+        _ => 0,
     }
 }
 
@@ -181,7 +179,6 @@ mod tests {
     fn a_legacy_group_reports_bare_metadata() {
         assert_eq!(info_type_for(false, false, false, false), None);
         assert_eq!(info_type_for(false, false, true, true), None, "NAME alone is not a fid mode");
-        assert_eq!(event_len(None, 8, 5), FAN_EVENT_METADATA_LEN);
     }
 
     #[test]
@@ -285,11 +282,18 @@ mod tests {
         assert_eq!(encode_pidfd_info(&mut buf[..7], 1), 0, "no partial record");
     }
 
+    /// Each record is sized from the name its TYPE carries, so a nameless type
+    /// never pays for a name it was handed. The event length is the metadata
+    /// plus exactly those record sizes. # C: O(1)
     #[test]
-    fn event_len_adds_exactly_one_info_record() {
-        assert_eq!(event_len(Some(FAN_EVENT_INFO_TYPE_FID), 8, 0), 24 + 28);
-        assert_eq!(event_len(Some(FAN_EVENT_INFO_TYPE_DFID_NAME), 8, 3), 24 + 32);
-        assert_eq!(event_len(Some(FAN_EVENT_INFO_TYPE_DFID), 8, 3), 24 + 28,
+    fn a_record_is_sized_from_the_name_its_type_carries() {
+        let n = |t, name: usize| fid_info_len(8, name_len_for(t, name));
+        assert_eq!(FAN_EVENT_METADATA_LEN + n(FAN_EVENT_INFO_TYPE_FID, 0), 24 + 28);
+        assert_eq!(FAN_EVENT_METADATA_LEN + n(FAN_EVENT_INFO_TYPE_DFID_NAME, 3), 24 + 32);
+        assert_eq!(FAN_EVENT_METADATA_LEN + n(FAN_EVENT_INFO_TYPE_DFID, 3), 24 + 28,
                    "a nameless type does not pay for the name");
+        // The two rename record types DO carry a name, so both pay for one.
+        assert_eq!(n(crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_OLD_DFID_NAME, 3), 32);
+        assert_eq!(n(crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_NEW_DFID_NAME, 3), 32);
     }
 }

@@ -183,12 +183,15 @@ printf '%s: BEGIN\n' "$tag"
     fail "udevadm-settle"
 
 expected_keyboard_count=1
-expected_mouse_count=1
+# Two pointers: the relative mouse and the absolute tablet. A guest with no
+# absolute pointer gives the host no way to place the guest cursor, so the two
+# cursors drift apart and clicks land away from where the user pointed.
+expected_mouse_count=2
 event_count=0
 udev_keyboard_count=0
 udev_mouse_count=0
 udev_keyboard_node=
-udev_mouse_node=
+udev_mouse_nodes=
 input_names=
 
 for event_class in /sys/class/input/event*
@@ -254,7 +257,7 @@ do
     if has_line "$direct" "ID_INPUT_MOUSE=1"; then
         require_line "$event_db" "ID_INPUT_MOUSE=1" "$event-udev-db"
         udev_mouse_count=$((udev_mouse_count + 1))
-        udev_mouse_node=$node
+        udev_mouse_nodes=$(printf '%s\n%s' "$udev_mouse_nodes" "$node")
     elif has_line "$event_db" "ID_INPUT_MOUSE=1"; then
         fail "$event-mouse-db-without-builtin"
     fi
@@ -295,8 +298,12 @@ libinput_pointer_count=$(printf '%s\n' "$libinput_pointer_nodes" |
     fail "libinput-pointer-count actual=$libinput_pointer_count nodes=$libinput_pointer_nodes"
 [ "$libinput_keyboard_nodes" = "$udev_keyboard_node" ] ||
     fail "keyboard-node udev=$udev_keyboard_node libinput=$libinput_keyboard_nodes"
-[ "$libinput_pointer_nodes" = "$udev_mouse_node" ] ||
-    fail "mouse-node udev=$udev_mouse_node libinput=$libinput_pointer_nodes"
+# Order is not part of the contract; the two classifiers must name the same
+# set of pointer nodes.
+udev_mouse_set=$(printf '%s\n' "$udev_mouse_nodes" | /usr/bin/awk 'NF' | /usr/bin/sort)
+libinput_pointer_set=$(printf '%s\n' "$libinput_pointer_nodes" | /usr/bin/awk 'NF' | /usr/bin/sort)
+[ "$libinput_pointer_set" = "$udev_mouse_set" ] ||
+    fail "mouse-node udev=$udev_mouse_set libinput=$libinput_pointer_set"
 
 seat_status=$(/usr/bin/loginctl seat-status seat0 2>&1) ||
     fail "logind-seat0"
@@ -354,6 +361,20 @@ mod tests {
         }
         assert_eq!(body.matches("printf '%s: PASS").count(), 1);
         assert_eq!(body.matches("printf '%s: FAIL").count(), 1);
+    }
+
+    /// The guest carries two pointers -- a relative mouse and an absolute
+    /// tablet -- and udev classifies both as ID_INPUT_MOUSE, because absolute
+    /// coordinates plus a mouse button is what a tablet looks like. Both must
+    /// reach libinput, and the two classifiers must agree on the same set.
+    #[test]
+    fn probe_expects_both_the_relative_and_the_absolute_pointer() {
+        let body = probe_body();
+        assert!(body.contains("expected_mouse_count=2"));
+        assert!(body.contains("udev_mouse_nodes=$(printf '%s\\n%s'"));
+        assert!(body.contains("udev_mouse_set=$(printf"));
+        assert!(body.contains("libinput_pointer_set=$(printf"));
+        assert!(body.contains("[ \"$libinput_pointer_set\" = \"$udev_mouse_set\" ]"));
     }
 
     #[test]

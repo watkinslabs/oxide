@@ -143,17 +143,22 @@ impl RootfsState {
         (self.cache_hits.load(Ordering::Relaxed), self.cache_misses.load(Ordering::Relaxed))
     }
 
-    /// Stable filesystem identity for stat(2) `st_dev`. Linux uses a
-    /// block-device dev_t or anonymous bdev per mount; for this VFS bridge
-    /// the ext4 superblock UUID gives the same per-filesystem identity.
+    /// The filesystem's STABLE identity — the folded on-disk UUID `statfs`
+    /// reports as `f_fsid`, which survives across mounts.
+    ///
+    /// NOT `st_dev`. `st_dev` is the per-mount ephemeral `sb.s_dev`, reached
+    /// through [`vfs::Inode::fsid`], and it is what an fsnotify mark keys on.
+    /// The two are different number spaces and this one is neither a
+    /// substitute for nor derivable from the other.
+    ///
+    /// Delegates rather than deriving: the fold has exactly one implementation
+    /// so a caller cannot be handed two different "identities" for one
+    /// filesystem. It previously computed a SECOND, incompatible hash of the
+    /// same UUID while documenting itself as `st_dev` — three numbers claiming
+    /// to be one filesystem's identity, two of them documented as each other.
     /// # C: O(1)
-    pub fn fsid(&self) -> u64 {
-        let uuid = self.mount.sb.uuid;
-        let mut h = 0xef53_u64;
-        for b in uuid {
-            h = h.wrapping_mul(0x100_0000_01b3).wrapping_add(b as u64);
-        }
-        h
+    pub fn uuid_fsid(&self) -> u64 {
+        crate::superblock::uuid_to_fsid(&self.mount.sb.uuid)
     }
 
     /// Whole-path lookup → ext4 inode number.

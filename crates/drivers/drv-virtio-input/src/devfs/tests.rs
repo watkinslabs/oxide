@@ -17,6 +17,7 @@ pub(crate) fn serialize() -> std::sync::MutexGuard<'static, ()> {
     TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+mod absinfo;
 mod ioctl;
 mod mask;
 mod lifetime;
