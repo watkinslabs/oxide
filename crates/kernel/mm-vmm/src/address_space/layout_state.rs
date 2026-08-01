@@ -28,6 +28,20 @@ impl AddressSpace {
         self.mmap_topdown.load(core::sync::atomic::Ordering::Acquire)
     }
 
+    /// Linux `mm_flags_test(MMF_OOM_SKIP, mm)`: has this mm already been
+    /// drained, so a further reap would free nothing? # C: O(1)
+    pub fn oom_skip(&self) -> bool {
+        self.oom_skip.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Linux `mm_flags_set(MMF_OOM_SKIP, mm)`, set once the reaper has walked
+    /// this mm to completion. One-way: an mm is never un-drained, because the
+    /// dying task that owns it never faults new anonymous pages back in.
+    /// # C: O(1)
+    pub fn set_oom_skip(&self) {
+        self.oom_skip.store(true, core::sync::atomic::Ordering::Release);
+    }
+
     /// Publish the mapped vDSO `__kernel_rt_sigreturn` entry for this mm.
     /// Zero means the mm has not yet completed execve vDSO installation.
     /// # C: O(1)

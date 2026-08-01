@@ -23,6 +23,10 @@ pub mod obsolete;
 pub mod unconfigured;
 mod access_cred;
 mod cachestat;
+// `process_mrelease`'s "is this mm really about to be freed" ladder. Ungated
+// because the slot file is kernel-only and this is the entire safety argument
+// for letting one process tear down another's memory.
+pub mod process_mrelease;
 mod lsm;
 mod pkey;
 // User-buffer range coverage, the decision half of `userbuf`'s access checks.

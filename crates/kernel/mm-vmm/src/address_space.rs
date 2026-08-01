@@ -186,6 +186,12 @@ pub struct AddressSpace {
     /// `RLIMIT_STACK`, or `vm.legacy_va_layout`. Default is Linux's default:
     /// top-down.
     mmap_topdown: core::sync::atomic::AtomicBool,
+    /// Linux `MMF_OOM_SKIP`: this mm has already been drained by the reaper,
+    /// so there is nothing more to reclaim from it. `process_mrelease` sets it
+    /// after a successful reap; a repeat call then reports success without
+    /// walking again, and the "target is not dying" refusal is suppressed
+    /// because the work it would have done is already done.
+    oom_skip: core::sync::atomic::AtomicBool,
     /// AArch64 signal handlers return through this process's mapped vDSO
     /// `__kernel_rt_sigreturn` entry. Linux arm64 owns this address in the
     /// mm context: libc deliberately leaves `sa_restorer` zero.
@@ -319,6 +325,7 @@ impl AddressSpace {
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
             mmap_topdown: core::sync::atomic::AtomicBool::new(true),
+            oom_skip: core::sync::atomic::AtomicBool::new(false),
             vdso_rt_sigreturn: core::sync::atomic::AtomicU64::new(0),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false),

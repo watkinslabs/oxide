@@ -111,3 +111,107 @@ fn pageout_private_file_falls_back_without_calling_shared_backing() {
     );
     assert!(ops.evicted, "MAP_PRIVATE PAGEOUT falls back to private-page eviction");
 }
+
+// ── process_madvise: remote admission + the vector loop ──────────────────
+// `mm/madvise.c` owns both, so they are pinned here beside `madvise_vmas`.
+
+const EINVAL: i64 = -(Errno::Einval.as_i32() as i64);
+
+// A remote mm accepts only the four non-destructive reclaim hints. Everything
+// that could DROP the target's data — DONTNEED, FREE, REMOVE — is refused, and
+// so is every VMA-flag advice, which would let a remote caller reshape the
+// target's fork/dump behaviour.
+#[test]
+fn remote_valid_admits_only_non_destructive_hints() {
+    for advice in [MADV_COLD, MADV_PAGEOUT, MADV_WILLNEED, MADV_COLLAPSE] {
+        assert!(process_madvise_remote_valid(advice), "advice {advice} is a remote hint");
+    }
+    for advice in [MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MADV_DONTNEED, MADV_FREE,
+                   MADV_REMOVE, MADV_DONTFORK, MADV_DOFORK, MADV_MERGEABLE, MADV_UNMERGEABLE,
+                   MADV_HUGEPAGE, MADV_NOHUGEPAGE, MADV_DONTDUMP, MADV_DODUMP, MADV_WIPEONFORK,
+                   MADV_KEEPONFORK, MADV_POPULATE_READ, MADV_POPULATE_WRITE,
+                   MADV_DONTNEED_LOCKED, MADV_HWPOISON] {
+        assert!(!process_madvise_remote_valid(advice), "advice {advice} must not reach a remote mm");
+    }
+}
+
+// Remote-validity is a SUBSET check, not a replacement: an advice the syscall
+// does not recognise at all is rejected before the remote question is asked.
+#[test]
+fn every_remote_valid_advice_is_also_a_recognised_advice() {
+    for advice in [MADV_COLD, MADV_PAGEOUT, MADV_WILLNEED, MADV_COLLAPSE] {
+        assert!(madvise_behavior_valid(advice));
+    }
+    assert!(!madvise_behavior_valid(0xDEAD));
+    assert!(!process_madvise_remote_valid(0xDEAD));
+}
+
+// `check_input_range`: unaligned start, a length that rounds up to zero (i.e.
+// wrapped), and a range whose end overflows are all EINVAL. Zero length is
+// fine — it is simply nothing to do.
+#[test]
+fn check_input_range_rejects_unaligned_wrapped_and_overflowing() {
+    assert_eq!(check_input_range(PAGE, PAGE), Ok(()));
+    assert_eq!(check_input_range(0, 0), Ok(()));
+    assert_eq!(check_input_range(1, PAGE), Err(Errno::Einval));
+    assert_eq!(check_input_range(PAGE, u64::MAX), Err(Errno::Einval));
+    assert_eq!(check_input_range(u64::MAX & !PAGE_MASK, PAGE), Err(Errno::Einval));
+}
+
+// All entries succeeding: the result is the total byte count, and every
+// non-empty range was actually applied.
+#[test]
+fn vector_returns_total_bytes_when_every_entry_succeeds() {
+    let iovs = [(PAGE, PAGE), (4 * PAGE, 2 * PAGE)];
+    let mut seen = alloc::vec::Vec::new();
+    let rv = vector_madvise(&iovs, |s, l| { seen.push((s, l)); 0 });
+    assert_eq!(rv, (3 * PAGE) as i64);
+    assert_eq!(seen, alloc::vec![(PAGE, PAGE), (4 * PAGE, 2 * PAGE)]);
+}
+
+// A failure on a LATER entry reports the bytes advised before it, not the
+// errno — the caller detects the failure by the short count.
+#[test]
+fn vector_reports_bytes_advised_before_a_failing_entry() {
+    let iovs = [(PAGE, PAGE), (4 * PAGE, PAGE), (8 * PAGE, PAGE)];
+    let mut calls = 0;
+    let rv = vector_madvise(&iovs, |_, _| { calls += 1; if calls == 2 { EINVAL } else { 0 } });
+    assert_eq!(rv, PAGE as i64);
+    assert_eq!(calls, 2, "the vector stops at the failing entry");
+}
+
+// A failure on the FIRST entry consumed nothing, so the errno itself is the
+// only thing left to report.
+#[test]
+fn vector_reports_the_errno_when_nothing_was_advised() {
+    let rv = vector_madvise(&[(PAGE, PAGE), (4 * PAGE, PAGE)], |_, _| EINVAL);
+    assert_eq!(rv, EINVAL);
+}
+
+// A malformed entry is rejected without ever reaching the walk, and stops the
+// vector exactly as a failing walk would.
+#[test]
+fn vector_rejects_a_malformed_entry_without_applying_it() {
+    let mut calls = 0;
+    let rv = vector_madvise(&[(1, PAGE)], |_, _| { calls += 1; 0 });
+    assert_eq!(rv, EINVAL);
+    assert_eq!(calls, 0);
+}
+
+// A zero-length entry is skipped rather than applied, and counts as consumed —
+// so a vector of nothing but empty ranges succeeds with zero bytes.
+#[test]
+fn vector_skips_zero_length_entries() {
+    let mut calls = 0;
+    assert_eq!(vector_madvise(&[(PAGE, 0), (4 * PAGE, 0)], |_, _| { calls += 1; 0 }), 0);
+    assert_eq!(calls, 0);
+    let mut applied = alloc::vec::Vec::new();
+    assert_eq!(vector_madvise(&[(PAGE, 0), (4 * PAGE, PAGE)], |s, l| { applied.push((s, l)); 0 }), PAGE as i64);
+    assert_eq!(applied, alloc::vec![(4 * PAGE, PAGE)]);
+}
+
+// An empty vector is a no-op success, not an error.
+#[test]
+fn empty_vector_succeeds_with_zero_bytes() {
+    assert_eq!(vector_madvise(&[], |_, _| EINVAL), 0);
+}

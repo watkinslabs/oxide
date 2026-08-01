@@ -5,63 +5,34 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::misc::misc_common::errno;
+use crate::s028_madvise::{LiveOps, madvise_behavior_valid, madvise_vmas,
+    process_madvise_remote_valid, vector_madvise};
 
-// process_madvise-valid advice subset (Linux `madvise_behavior_valid`
-// restricted by `process_madvise` to reclaim/hint operations).
-const MADV_WILLNEED: u64 = 3; // readahead hint
-const MADV_DONTNEED: u64 = 4; // drop pages, refault as zero
-const MADV_FREE:     u64 = 8; // lazy-free anon pages
-const MADV_COLD:     u64 = 20; // deactivate hint
-const MADV_PAGEOUT:  u64 = 21; // direct anonymous reclaim to swap
-
-fn backing_errno(error: vmm::FileBackingError) -> i64 {
-    match error {
-        vmm::FileBackingError::Acces => errno(Errno::Eacces),
-        vmm::FileBackingError::Badf => errno(Errno::Ebadf),
-        vmm::FileBackingError::Inval => errno(Errno::Einval),
-        vmm::FileBackingError::Io => errno(Errno::Eio),
-        vmm::FileBackingError::NoMem => errno(Errno::Enomem),
-        vmm::FileBackingError::OpNotSupp => errno(Errno::Eopnotsupp),
-    }
-}
-
-/// Apply PAGEOUT through each target VMA's real backing owner.  A shared
-/// shmem page can have mappings in multiple address spaces, so its backing
-/// transaction—not a foreign PTE zap—is the only correct owner. # C: O(VMAs)
-fn pageout_target_range(target: &alloc::sync::Arc<vmm::AddressSpace>, base: u64, len: u64) -> i64 {
-    let end = match base.checked_add(len) { Some(end) => end, None => return errno(Errno::Einval) };
-    let vmas = target.snapshot_vmas();
-    let mut pos = base;
-    while pos < end {
-        let Some(vma) = vmas.iter().find(|vma| vma.end.as_u64() > pos) else { return errno(Errno::Enomem); };
-        if vma.start.as_u64() > pos { return errno(Errno::Enomem); }
-        let seg_end = core::cmp::min(end, vma.end.as_u64());
-        let seg_len = seg_end - pos;
-        let result = match &vma.backing {
-            vmm::VmaBacking::Anonymous => pmm::user_as::pageout_anon_range(target, pos, seg_len),
-            vmm::VmaBacking::File { off, backing } if vma.flags.contains(vmm::VmaFlags::SHARED) => {
-                let file_off = match off.checked_add(pos - vma.start.as_u64()) {
-                    Some(off) => off, None => return errno(Errno::Einval),
-                };
-                backing.madvise_pageout(file_off, seg_len).map_or_else(
-                    || pmm::user_as::evict_foreign_pages_in_range(target, pos, seg_len),
-                    |result| result.map_or_else(backing_errno, |_| 0),
-                )
-            }
-            _ => pmm::user_as::evict_foreign_pages_in_range(target, pos, seg_len),
-        };
-        if result != 0 { return result; }
-        pos = seg_end;
-    }
-    0
-}
-
-/// process_madvise(pidfd, iov, iovcnt, advice, flags). Applies `advice`
-/// to the iovec ranges in the TARGET task's address space (resolved via
-/// the pidfd). PAGEOUT uses the canonical rmap transaction and active swap
-/// area; COLD/WILLNEED remain placement/readahead hints. Returns the total
-/// bytes advised (sum of iovec lengths), matching Linux.
-/// # C: O(sum(iov_len)/4096)
+/// `process_madvise(pidfd, iovec, vlen, behavior, flags)` — slot 440.
+///
+/// Applies ONE advice across a vector of ranges in the address space named by
+/// `pidfd`. The whole point of the syscall is the remote case, so the ladder
+/// is what makes it safe, in the kernel's order:
+///
+/// 1. `flags` must be zero.
+/// 2. The iovec array is imported from the CALLER's memory — before the pidfd
+///    is even looked at, so a bad vector reports EFAULT rather than EBADF.
+/// 3. The pidfd resolves to a task.
+/// 4. Ptrace read access (fs credentials) on that task, which is what keeps
+///    the syscall from becoming an address-space-layout oracle.
+/// 5. The advice must be one the syscall recognises at all.
+/// 6. Against a FOREIGN mm the advice must additionally be non-destructive —
+///    a remote caller may change how warm the target's pages are, never drop
+///    its data — and the caller must hold CAP_SYS_NICE.
+///
+/// "Foreign" means a different mm, not a different task: a sibling thread's
+/// pidfd names the caller's own address space and takes the local path,
+/// destructive advice included.
+///
+/// The return value is the byte count actually advised. A malformed or failing
+/// range stops the vector and the count covers only the entries before it;
+/// the errno surfaces only when nothing at all was advised.
+/// # C: O(N_entries x N_vmas)
 pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
     let pidfd  = args.a0 as i32;
     let iov    = args.a1;
@@ -69,16 +40,13 @@ pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
     let advice = args.a3;
     let flags  = args.a4;
 
-    // Linux: flags must be 0.
     if flags != 0 { return errno(Errno::Einval); }
-    // Reject any advice outside the process_madvise subset.
-    match advice {
-        MADV_WILLNEED | MADV_DONTNEED | MADV_FREE | MADV_COLD | MADV_PAGEOUT => {}
-        _ => return errno(Errno::Einval),
-    }
+
+    // The iovec array lives in the CALLER's AS. Imported first, matching the
+    // kernel: a faulting vector is EFAULT even when the pidfd is also bad.
+    let iovs = match crate::pvmrw::pvmrw_common::read_iovs(iov, iovcnt) { Ok(v) => v, Err(e) => return e };
 
     let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
-    // Resolve pidfd → target task. EBADF if fd not open, EINVAL if not a pidfd.
     // SAFETY: running task on this CPU; sole reader of its fd_table slot per `13§5`; clone Arc.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };
     let file = match fdt.get(pidfd) { Ok(f) => f, Err(_) => return errno(Errno::Ebadf) };
@@ -90,44 +58,29 @@ pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
         Some(target) => target,
         None => return errno(Errno::Esrch),
     };
+
+    // `mm_access(task, PTRACE_MODE_READ_FSCREDS)`: reaching into a foreign
+    // address space requires the same authority as reading its maps. READ
+    // class, so the ATTACH-only security tail does not apply.
+    if sched::ptrace_access::may_access_mode(cur, &target, sched::ptrace_access::Mode::FsCreds).is_err() {
+        return errno(Errno::Eperm);
+    }
     // target is a foreign task: clone_mm pins against a concurrent
-    // exit/execve mm replacement on another CPU.
-    let target_mm = match target.clone_mm() {
-        Some(mm) => mm,
-        None => return errno(Errno::Esrch),
-    };
+    // exit/execve mm replacement on another CPU. No mm = a kernel thread or a
+    // task already past its mm teardown, which `mm_access` reports as ESRCH.
+    let target_mm = match target.clone_mm() { Some(mm) => mm, None => return errno(Errno::Esrch) };
 
-    // iovec array lives in the CALLER's AS; validates + caps n>1024 → EINVAL.
-    let iovs = match crate::pvmrw::pvmrw_common::read_iovs(iov, iovcnt) { Ok(v) => v, Err(e) => return e };
+    if !madvise_behavior_valid(advice) { return errno(Errno::Einval); }
 
-    let self_target = target.tid == cur.tid;
-    if !self_target {
-        match advice {
-            MADV_COLD | MADV_PAGEOUT | MADV_WILLNEED => {}
-            _ => return errno(Errno::Einval),
-        }
+    // SAFETY: running task on this CPU; mm slot single-mutator per `13§5`.
+    let own_mm = unsafe { cur.mm_ref() }.map(alloc::sync::Arc::clone);
+    let local = own_mm.as_ref().is_some_and(|mm| alloc::sync::Arc::ptr_eq(mm, &target_mm));
+    if !local {
+        if !process_madvise_remote_valid(advice) { return errno(Errno::Einval); }
         if !cur.has_cap(sched::cap::SYS_NICE) { return errno(Errno::Eperm); }
     }
-    let drop_pages = self_target && (advice == MADV_DONTNEED || advice == MADV_FREE);
-    let pageout_pages = advice == MADV_PAGEOUT;
 
-    let mut total: u64 = 0;
-    for (base, len) in iovs {
-        total = total.wrapping_add(len);
-        if len == 0 { continue; }
-        if pageout_pages {
-            let result = pageout_target_range(&target_mm, base, len);
-            if result != 0 { return result; }
-            continue;
-        }
-        if !drop_pages { continue; }
-        // evict_* validate page-alignment/bounds internally (EINVAL, ignored
-        // here) and no-op over holes — same contract as madvise slot 28.
-        if self_target {
-            // Self pidfd: target root == active root — reuse the active-root
-            // evictor (fully correct, no new PT-walk primitive).
-            let _ = pmm::user_as::evict_pages_in_range(base, len);
-        }
-    }
-    total as i64
+    let vmas = target_mm.snapshot_vmas();
+    let mut ops = LiveOps { mm: target_mm, local };
+    vector_madvise(&iovs, |start, len| madvise_vmas(start, len, advice, &vmas, &mut ops))
 }
