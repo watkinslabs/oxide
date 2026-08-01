@@ -60,6 +60,18 @@ pub fn get_display_info(
         Ok(i)  => i,
         Err(_) => return false,
     };
+    // Fetch the display's EDID before the framebuffer takes over the command
+    // frame. Optional by specification: a device that declines leaves the
+    // connector without one and the probe carries on.
+    let edid = unsafe { super::edid::fetch(drv_features, cmd_buf.va, cmd_buf.pa, ctrlq, hhdm) };
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[INFO]  virtio-gpu edid: ");
+        match edid.as_ref() {
+            Some(bytes) => { klog::write_dec_u64(bytes.len() as u64); klog::write_raw(b" bytes\n"); }
+            None => klog::write_raw(b"none\n"),
+        }
+    }
     use core::sync::atomic::{AtomicU32, AtomicU64};
     let bdf_word = (bdf_bus as u32) << 16
                  | (bdf_dev as u32) << 8
@@ -94,6 +106,7 @@ pub fn get_display_info(
         ctrlq, cursorq,
         features_negotiated: drv_features,
         display: info,
+        edid,
         resource_id_alloc: AtomicU32::new(1),
         blob_uuid_alloc: AtomicU64::new(1), capset_count: 0,
     }, Some(parent)) {
@@ -255,8 +268,13 @@ pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
         let req = core::slice::from_raw_parts_mut(buf_va, 0x100);
         let _ = encode(req);
     }
-    unsafe { submit_raw(buf_pa, 64, ctrlq, hhdm) }
+    unsafe { submit_raw(buf_pa, 64, NODATA_RESP_LEN, ctrlq, hhdm) }
 }
+
+/// Response descriptor length for a command whose reply is a bare ctrl header.
+const NODATA_RESP_LEN: usize = 24;
+/// Offset of the device-writable response area inside the probe command frame.
+pub(super) const RESP_OFF: u64 = 0x200;
 
 /// Submit one data-only CURSORQ command and wait until the device has consumed
 /// it before reusing the serialized command buffer. Cursor queue commands have
@@ -277,8 +295,11 @@ pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
     }
 }
 
-unsafe fn submit_raw(
-    buf_pa: u64, req_len: usize,
+/// Post one request/response descriptor pair on CTRLQ and spin until the device
+/// consumes it. `resp_len` sizes the device-writable descriptor; a command whose
+/// reply is larger than a bare header must say so or the device truncates it.
+pub(super) unsafe fn submit_raw(
+    buf_pa: u64, req_len: usize, resp_len: usize,
     ctrlq: virtio::VirtQueueResource, hhdm: u64,
 ) -> bool {
     let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
@@ -288,8 +309,8 @@ unsafe fn submit_raw(
                | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
                | (1u64 << 48);
         core::ptr::write_volatile(desc0.add(1), d0);
-        core::ptr::write_volatile(desc0.add(2), buf_pa + 0x200);
-        let d1 = 24u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
+        core::ptr::write_volatile(desc0.add(2), buf_pa + RESP_OFF);
+        let d1 = resp_len as u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc0.add(3), d1);
     }
     let avail = (hhdm.wrapping_add(ctrlq.driver_pa)) as *mut u16;
