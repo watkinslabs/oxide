@@ -91,7 +91,8 @@ pub fn kernel_master() -> u64 {
 
 /// Allocate a fresh user-AS L0 root: PMM frame, zero. arm separates
 /// user from kernel via TTBR0/TTBR1 so no kernel-half copy is needed
-/// — TTBR1_EL1 (set by Limine, captured by `capture_kernel_master`)
+/// — TTBR1_EL1 (set by the boot trampoline, captured by
+/// `capture_kernel_master`)
 /// remains live during AS-switch via `MmuOps::activate(root_pa)`
 /// which writes TTBR0_EL1 only.
 ///

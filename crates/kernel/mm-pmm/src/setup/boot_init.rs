@@ -33,7 +33,7 @@ pub const MAX_REGIONS: usize = 128;
 // HhdmBacking — `PageBacking` impl for the kernel direct-map.
 // ---------------------------------------------------------------------------
 
-/// `PageBacking` over Limine HHDM. `page_ptr(pfn) = hhdm + pfn*4096`.
+/// `PageBacking` over the boot HHDM. `page_ptr(pfn) = hhdm + pfn*4096`.
 /// Bitmap slices are pre-sliced into a single carved-out pool during
 /// `init_from_boot_info` and remembered here.
 pub struct HhdmBacking {
@@ -183,7 +183,7 @@ pub unsafe fn init_from_boot_info(
     // Carve the pool from the front of `chosen`. HHDM gives us a
     // kernel VA covering the whole pool at `hhdm + chosen.base_pa`.
     let pool_va: *mut u8 = info.hhdm_offset.wrapping_add(chosen.base_pa) as *mut u8;
-    // SAFETY: pool memory is RAM (chosen.kind == Usable), HHDM-mapped by the bootloader, page-aligned (Limine memmap entries are page-aligned), and not yet touched by any kernel subsystem because we run before kernel_main hands control to anything else.
+    // SAFETY: pool memory is RAM (chosen.kind == Usable), HHDM-mapped by the bootloader, page-aligned (boot memmap entries are page-aligned), and not yet touched by any kernel subsystem because we run before kernel_main hands control to anything else.
     unsafe {
         hal::zerotrap::trap(pool_va as *const u8, (pool_bytes / 8) as usize);
         core::ptr::write_bytes(pool_va, 0, pool_bytes as usize);

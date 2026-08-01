@@ -45,8 +45,6 @@ fn boot_hosted_pmm() {
             boot_ns: 0,
             rsdp_pa: 0,
             hhdm_offset: buf,
-            smp_info_array: 0,
-            smp_count: 0,
             bsp_lapic_id: 0,
             _pad: 0,
         };

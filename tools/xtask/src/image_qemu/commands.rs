@@ -17,7 +17,7 @@ pub(crate) fn cmd_image(rest: &[String]) -> Result<(), u8> {
 
 /// `xtask grub --arch <x86_64|aarch64>` — build a GRUB-bootable artifact
 /// that loads our kernel DIRECTLY (x86 multiboot2; aarch64 EFI-stub
-/// `linux`), replacing Limine, and boot it under QEMU.
+/// `linux`) and boot it under QEMU.
 pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
     if rest.iter().any(|arg| arg == "--run-existing") {
@@ -83,7 +83,7 @@ where
     Ok(())
 }
 
-/// GRUB on aarch64 (Limine-free): build the EFI-stub flat Image, stage it
+/// GRUB on aarch64: build the EFI-stub flat Image, stage it
 /// + a grub.cfg that `linux`-boots it, `grub2-mkrescue` an EFI ISO using
 /// the vendored arm64-efi GRUB modules (no host grub2-efi-aa64 install
 /// needed — see tools/fetch-grub.sh), then boot under OVMF. OVMF loads

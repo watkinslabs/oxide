@@ -1,7 +1,7 @@
 // x86_64 AP startup via LAPIC INIT/SIPI (Intel SDM Vol 3 §8.4) per `13§11`.
 //
-// Limine is gone (self-boot/GRUB), so the old parked-AP `goto_address`
-// path is dead. We start each AP ourselves: copy a real-mode→long-mode
+// No bootloader parks APs for us, so the kernel starts each one itself:
+// copy a real-mode→long-mode
 // trampoline to a low phys page, identity-map it in the kernel master
 // PML4, then INIT → SIPI → SIPI off the ACPI MADT topology (`cpu::get`).
 // The trampoline (16→32→64) loads the master CR3 (PAE+LME+**NXE** — the
@@ -19,38 +19,17 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
 use alloc::boxed::Box;
-use core::sync::atomic::AtomicPtr;
 
 use boot_info::BootInfo;
 
-/// Kernel-side mirror of `limine_proto::SmpInfoX86`. Layout matches
-/// Limine v6+ verbatim (`#[repr(C)]`); kept here to avoid a cyclic
-/// crate dependency with `limine-proto` (which uses `kernel::*`).
-/// `boot-x86_64`'s `build_boot_info` writes the array pointer +
-/// count + bsp_lapic_id into `BootInfo`; this struct's fields
-/// match the same offsets the bootloader populates.
-#[repr(C)]
-pub struct SmpInfoX86 {
-    pub processor_id:   u32,
-    pub lapic_id:       u32,
-    pub reserved:       u64,
-    pub goto_address:   AtomicPtr<()>,
-    pub extra_argument: u64,
-}
-
-/// Per-AP context published by the boot CPU via
-/// `SmpInfoX86::extra_argument`. Layout is read-only after publish.
+/// Per-AP context the boot CPU publishes in the trampoline data block.
+/// Layout is read-only after publish.
 #[repr(C)]
 pub struct ApContext {
     /// Per-CPU page (logical cpu_id at offset 0, then scratch).
     pub percpu_base: u64,
 }
 
-/// AP-side entry. Limine jumps the parked AP here with
-/// `rdi = info` once the boot CPU stores us in `info.goto_address`.
-///
-/// # SAFETY: caller is Limine; AP is in long mode, kernel AS
-/// active, IRQs masked, stack already set up by Limine.
 /// 64-bit landing pad the real-mode trampoline jumps to (`jmp rax`)
 /// once long mode is on. The trampoline set rdi=percpu_base,
 /// esi=logical_cpu_id, rsp=per-AP stack top from its patched data block.
@@ -374,9 +353,8 @@ pub fn reserve_trampoline_page() {
 /// Copies the trampoline to TRAMP_PA, identity-maps it, then for each
 /// enabled MADT CPU (skipping the BSP) patches the per-AP data block
 /// and sends INIT → SIPI → SIPI, waiting for the AP to mark itself
-/// online. Replaces the dead Limine `goto_address` path. `_info` is
-/// unused (the MB2/GRUB BootInfo has no SMP table — topology comes
-/// from the ACPI MADT via `cpu::get`).
+/// online. `_info` is unused: the multiboot2 handoff carries no CPU
+/// table, so topology comes from the ACPI MADT via `cpu::get`.
 /// # SAFETY: caller is the boot path post-ACPI-walk + post-LAPIC
 /// enable + post-MmuOps init; single-CPU; IRQs masked.
 /// # C: O(N_aps)

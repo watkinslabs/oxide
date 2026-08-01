@@ -41,7 +41,7 @@ run_one() {
   }
   trap cleanup RETURN
 
-  # Limine is gone: $img is the GRUB boot ISO. x86 = SeaBIOS El Torito
+  # $img is the GRUB boot ISO. x86 = SeaBIOS El Torito
   # (qemu default, no -bios) + multiboot2 kernel + ext4 rootfs on
   # virtio-blk; arm = OVMF→GRUB→EFI-stub `linux` with the rootfs embedded
   # in the kernel Image (no block device) + semihosting for early UART.

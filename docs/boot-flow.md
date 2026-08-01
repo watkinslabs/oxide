@@ -9,7 +9,7 @@ End-to-end boot sequence both arches. Same logical phases; arch-specific HW inte
 ```mermaid
 sequenceDiagram
     participant FW as Firmware (UEFI/U-Boot)
-    participant BL as Bootloader (Limine x86 / EDK2 arm)
+    participant BL as Bootloader (GRUB both arches)
     participant Boot as boot-{x86_64|aarch64}
     participant K as kernel _start
     participant PMM
@@ -18,13 +18,14 @@ sequenceDiagram
     participant Sched
     participant Init as PID 1
 
-    FW->>BL: load bootloader from ESP
-    BL->>BL: parse cmdline, find kernel ELF + initramfs
-    BL->>Boot: hand off (memmap, RSDP/DTB, fb, modules)
-    Note over Boot: x86: long mode, IRQs off<br/>arm: EL2→EL1 drop, MMU off
-    Boot->>Boot: set up early GDT/IDT (x86) or vector table (arm)
-    Boot->>Boot: build PT, identity + higher-half
-    Boot->>Boot: enable MMU, jump higher-half
+    FW->>BL: load GRUB (BIOS El Torito x86 / OVMF EFI arm)
+    BL->>BL: read grub.cfg, build kernel cmdline
+    BL->>Boot: x86: multiboot2 (eax=magic, ebx=info)<br/>arm: EFI-stub `linux` of the arm64 Image
+    Note over Boot: x86: 32-bit protected mode, paging off<br/>arm: EL2→EL1 drop, MMU off
+    Boot->>Boot: build PT, identity + higher-half + HHDM
+    Boot->>Boot: enable paging/MMU, jump higher-half
+    Boot->>Boot: kernel GDT/TSS/IDT (x86) or vector table (arm); mask legacy PIC
+    Boot->>Boot: parse MB2 tags (x86) / DTB+EFI cfg table (arm) into BootInfo
     Boot->>K: jump kernel_main()
     K->>PMM: pmm.init(memmap regions)
     PMM-->>K: ok; kernel image + ACPI/DTB regions reserved
@@ -38,7 +39,7 @@ sequenceDiagram
     K->>Sched: sched.init(num_cpus)
     K->>K: register drivers (linkme distributed_slice)
     K->>K: probe drivers (PCIe walk; virtio-mmio; platform DT)
-    K->>K: mount initramfs at /
+    K->>K: mount ext4 root from the virtio-blk disk
     K->>K: mount /proc, /sys, /dev (devtmpfs), /dev/pts, /sys/fs/cgroup
     K->>Init: execve /init
     Init->>Init: spawn services per /etc/init.conf
@@ -49,8 +50,8 @@ sequenceDiagram
 
 | Boundary | Pre-state | Post-state |
 |---|---|---|
-| Bootloader → `_start` | FW-defined, multi-vendor | per `36` |
-| `_start` → `kernel_main` | identity-mapped, IRQs off, BSP only | higher-half, MMU on, IRQs off, BSP |
+| Bootloader → trampoline | FW-defined, multi-vendor | per `36` |
+| trampoline → `kernel_main` | identity-mapped, IRQs off, BSP only | higher-half, MMU on, IRQs off, BSP |
 | `kernel_main` → `smp_init` | UP, no allocator | UP, PMM+VMM+slab+sched all up; APs not yet started |
 | `smp_init` → driver probe | SMP up, idle tasks running | full SMP, RQ scheduling |
 | Driver probe → mount | drivers registered+probed | block/net/console operational |
@@ -65,8 +66,8 @@ Per `06§12`. Pre-`smp_init`: trivially sequential. Post-`smp_init`: full memory
 
 | Phase | IRQs |
 |---|---|
-| Bootloader → `_start` | off |
-| `_start` → MMU on | off |
+| Bootloader → trampoline | off |
+| trampoline → MMU on | off |
 | MMU on → APIC/GIC init | off |
 | APIC/GIC init → smp_init | off (BSP timer only after this point) |
 | Post-smp_init | per-CPU |
@@ -79,13 +80,13 @@ Per `06§12`. Pre-`smp_init`: trivially sequential. Post-`smp_init`: full memory
 
 | Phase | Failure | Action |
 |---|---|---|
-| Bootloader required-request null | per `36§8` | UART halt msg "boot protocol error" |
+| Bootloader magic absent | per `36§8` | UART halt msg "boot protocol error" |
 | memmap empty | invariant | halt |
 | kernel image relocation fail | rare | halt |
 | ACPI table checksum fail | per-table | log warn, fall back; some tables fatal (MADT) |
 | AP startup timeout | per-CPU | kassert with stuck CPU id (`20§16`/`21§16`) |
 | TSC/timer cross-CPU sync >1ms | per `23§13` | kassert |
-| `/init` not found in initramfs | per `29§11` | kernel panic |
+| `/init` not found on the root fs | per `29§11` | kernel panic |
 | `/init` exits | per `29§11` | kernel panic |
 
 ## 7 Cross-spec

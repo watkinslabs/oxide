@@ -26,7 +26,8 @@ const PAGE_BYTES_2M: u64 = 2 * 1024 * 1024;
 const PAGE_BYTES_1G: u64 = 1024 * 1024 * 1024;
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 
-/// Kernel HHDM offset (the linear `pa → va` translation Limine
+/// Kernel HHDM offset (the linear `pa → va` translation the boot
+/// trampoline
 /// publishes via the HHDM response). 0 = uninitialised; the boot
 /// path calls `set_hhdm_offset` once with the real value.
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
@@ -91,7 +92,8 @@ static MASTER_PML4_PA: AtomicU64 = AtomicU64::new(0);
 /// mapping the user-AS clones must observe is installed.
 ///
 /// # SAFETY: caller is the boot path; CR3 references the live
-/// kernel-only PML4 (Limine's, plus any device-MMIO splices); no
+/// kernel-only PML4 (the boot trampoline's, plus any device-MMIO
+/// splices); no
 /// per-AS CR3 has been activated yet.
 /// # C: O(1)
 pub unsafe fn capture_kernel_master() -> u64 {
@@ -159,10 +161,10 @@ pub unsafe fn new_user_pml4() -> Option<u64> {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     if hhdm == 0 { return None; }
     // F136: clone from the CURRENT active CR3, not the saved
-    // MASTER_PML4_PA. Limine's master PT (the one MASTER_PML4_PA
+    // MASTER_PML4_PA. The boot master PT (the one MASTER_PML4_PA
     // captures at boot) is frozen before PCI enum runs — every
     // map_mmio_pages call after `user_as::init` activates the boot
-    // AS root writes to the active CR3, leaving Limine's PML4
+    // AS root writes to the active CR3, leaving the boot PML4
     // without the device-attr mappings. Cloning from active CR3
     // gives the new AS every kernel-half mapping the calling
     // context already has (including PCI MMIO BARs the device

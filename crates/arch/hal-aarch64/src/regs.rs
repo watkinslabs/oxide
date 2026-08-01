@@ -1,6 +1,6 @@
 // Privileged system-register reads per `21§7`.
 //
-// Same intent as `hal-x86_64::regs`: log Limine's MMU/paging
+// Same intent as `hal-x86_64::regs`: log the boot trampoline's MMU/paging
 // programming before subsystem code touches it.
 
 /// Read TTBR1_EL1 — kernel-half page-table base + ASID/CnP.

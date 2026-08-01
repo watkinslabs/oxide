@@ -53,7 +53,7 @@ path). No `pygdbmi` / `pwntools` / venv requirement.
 
 * `qemu_start(arch, features="debug-boot")` runs
   `cargo run -p xtask -- grub --arch <arch> --features <features> --build-only`
-  (builds the GRUB boot ISO; Limine is gone), then spawns
+  (builds the GRUB boot ISO), then spawns
   `qemu-system-<arch>` with the same args as `xtask grub` plus `-s -S`
   (gdb-stub on :1234, paused at entry).
 * `gdb --interpreter=mi3 <kernel.elf>` is spawned alongside;

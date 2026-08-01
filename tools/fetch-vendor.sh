@@ -4,7 +4,7 @@
 # already exist with matching checksums. Run once at workspace setup
 # and after edits to the pinned versions below.
 #
-# Per `36§3` (Limine, x86_64) + `36§4` (UEFI / DTB, aarch64) + this
+# Per `36§3` (multiboot2, x86_64) + `36§4` (UEFI / DTB, aarch64) + this
 # repo's no-vendored-binaries-in-git policy (see vendor/README.md).
 
 set -euo pipefail
@@ -89,9 +89,9 @@ fetch() {
     return 0
 }
 
-# Limine is gone — both arches boot via GRUB now (x86 multiboot2, arm
-# EFI-stub `linux`). x86 GRUB uses the host grub2-mkrescue; arm GRUB uses
-# the vendored arm64-efi modules fetched below.
+# Both arches boot via GRUB (x86 multiboot2, arm EFI-stub `linux`). x86
+# GRUB uses the host grub2-mkrescue; arm GRUB uses the vendored arm64-efi
+# modules fetched below.
 
 # ---------------------------------------------------------------------------
 # OVMF firmware (EDK2 nightly snapshots)
@@ -102,8 +102,8 @@ echo "ovmf aarch64:"
 fetch "$OVMF_AA64_URL"  "$VENDOR/firmware/ovmf-aarch64.fd" "$OVMF_AA64_SHA256" "ovmf-aarch64.fd"
 
 # ---------------------------------------------------------------------------
-# GRUB arm64-efi modules — the aarch64 boot path is GRUB EFI-stub `linux`
-# (Limine-free, replaces the old Limine BOOTAA64.EFI). The host's GRUB is
+# GRUB arm64-efi modules — the aarch64 boot path is GRUB EFI-stub
+# `linux`. The host's GRUB is
 # x86-only, so vendor the arm64-efi platform modules for `grub2-mkrescue
 # -d vendor/grub/arm64-efi`. Delegated to fetch-grub.sh (Fedora RPM).
 # ---------------------------------------------------------------------------

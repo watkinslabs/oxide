@@ -74,14 +74,14 @@ fn init_ps2_keyboard(_info: &BootInfo) {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn init_smp(info: &BootInfo) {
-    let _ = info; // only the x86_64 arm reads the Limine SMP response
+    let _ = info; // only the x86_64 arm threads BootInfo through
     #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: kernel_main post-init; Limine SMP response in info is bootloader-owned; boot CPU is sole writer for goto_address slots.
+        // SAFETY: kernel_main post-init, post-ACPI-MADT walk; single-CPU with IRQs masked, so the BSP is the sole writer of the trampoline page and every per-AP data block.
         let started = unsafe { arch_irq::smp_x86::bring_up_aps_x86(info) };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: cpus=");
-            klog::write_dec_u64(info.smp_count);
+            klog::write_dec_u64(cpu::count() as u64);
             klog::write_raw(b" aps_started=");
             klog::write_dec_u64(started as u64);
             klog::write_raw(b"\n");
@@ -94,7 +94,7 @@ fn init_smp(info: &BootInfo) {
             sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
             arch_irq::tlb::install();
         }
-        if started > 0 { smp_ipi_smoke(info); }
+        if started > 0 { smp_ipi_smoke(); }
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -116,8 +116,10 @@ fn init_smp(info: &BootInfo) {
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn smp_ipi_smoke(info: &BootInfo) {
-    let target = info.smp_count as u32;
+fn smp_ipi_smoke() {
+    // CPU count comes from the ACPI MADT topology, not the handoff: no
+    // supported x86_64 bootloader surfaces a CPU table (`36§3`).
+    let target = cpu::count() as u32;
     let mut spins = 0u32;
     while cpu::smp::online_count() < target && spins < 1_000_000 {
         core::hint::spin_loop();
