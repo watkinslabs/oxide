@@ -149,28 +149,50 @@ pub unsafe extern "C" fn oxide_arm_software_step_handler(frame_ptr: *mut u8) -> 
         let spsr_ptr = frame_ptr.add(FRAME_SPSR_OFF) as *mut u64;
         (core::ptr::read_volatile(x0_ptr), spsr_ptr)
     };
-    // Clear SPSR.SS so the next instruction doesn't single-step.
-    // SAFETY: spsr_ptr is the SPSR slot in the saved 288 B SVC frame; aligned u64; we own it for the duration of this hook.
-    unsafe { *spsr_ptr &= !SPSR_SS; }
-    // Clear MDSCR_EL1.SS so the CPU stops generating step exceptions
-    // until the next PTRACE_SINGLESTEP arms it again.
-    // SAFETY: MDSCR_EL1 is a privileged debug sysreg; legal RMW at EL1; single-CPU UP at this synchronous-trap context.
-    unsafe {
-        core::arch::asm!(
-            "mrs  x9,  mdscr_el1",
-            "bic  x9,  x9, #1",
-            "msr  mdscr_el1, x9",
-            out("x9") _,
-            options(nostack, preserves_flags),
-        );
-    }
-    if let Some(cur) = sched::current() { cur.singlestep.store(0, Ordering::Release); }
-    // Linux `send_user_sigtrap` -> `arm64_force_sig_fault(SIGTRAP, TRAP_TRACE,
-    // pc)`. Delivered by the return-to-user loop the softstep block now runs.
     // SAFETY: `frame_ptr` is the live 288 B frame; ELR slot at FRAME_ELR_OFF.
     let pc = unsafe { core::ptr::read_volatile(frame_ptr.add(FRAME_ELR_OFF) as *const u64) };
-    sched::live::force_sig_fault(sched::signum::Signum::Sigtrap,
-                                 hal::siginfo::code::TRAP_TRACE, pc, 0);
+    // Three exception classes share this block — software step, hardware
+    // breakpoint and watchpoint — so the cause is re-read here rather than
+    // assumed. Only the step owns the SS bits; clearing them for a breakpoint
+    // hit would disarm a single-step the tracer had also armed.
+    // SAFETY: ESR_EL1 and FAR_EL1 are read-only at EL1 in synchronous exception context; this CPU is the sole reader of its own syndrome registers here.
+    let (esr, far) = unsafe {
+        let (mut esr, mut far): (u64, u64);
+        core::arch::asm!("mrs {0}, esr_el1", "mrs {1}, far_el1",
+                         out(reg) esr, out(reg) far, options(nomem, nostack));
+        (esr, far)
+    };
+    let ec = hal_aarch64::hw_breakpoint::esr_ec(esr);
+    let stepping = ec == hal_aarch64::hw_breakpoint::exc::EC_SOFTSTEP_LOWER;
+    if stepping {
+        // Clear SPSR.SS so the next instruction doesn't single-step.
+        // SAFETY: spsr_ptr is the SPSR slot in the saved 288 B SVC frame; aligned u64; we own it for the duration of this hook.
+        unsafe { *spsr_ptr &= !SPSR_SS; }
+        // Clear MDSCR_EL1.SS so the CPU stops generating step exceptions
+        // until the next PTRACE_SINGLESTEP arms it again.
+        // SAFETY: MDSCR_EL1 is a privileged debug sysreg; legal RMW at EL1; single-CPU UP at this synchronous-trap context.
+        unsafe {
+            core::arch::asm!(
+                "mrs  x9,  mdscr_el1",
+                "bic  x9,  x9, #1",
+                "msr  mdscr_el1, x9",
+                out("x9") _,
+                options(nostack, preserves_flags),
+            );
+        }
+        if let Some(cur) = sched::current() { cur.singlestep.store(0, Ordering::Release); }
+    }
+    // `arm64_force_sig_fault(SIGTRAP, code, addr)`: TRAP_TRACE for the step,
+    // TRAP_HWBKPT for a breakpoint or watchpoint hit. Delivered by the
+    // return-to-user loop this block runs after the hook.
+    let (code, addr) = match sched::current() {
+        Some(cur) => match sched::debugreg::arm::classify(&cur, esr, far, pc) {
+            Some(ev) => (ev.si_code(), ev.addr()),
+            None => (hal::siginfo::code::TRAP_TRACE, pc),
+        },
+        None => (hal::siginfo::code::TRAP_TRACE, pc),
+    };
+    sched::live::force_sig_fault(sched::signum::Signum::Sigtrap, code, addr, 0);
     orig_x0
 }
 
