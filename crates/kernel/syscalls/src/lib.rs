@@ -73,6 +73,7 @@ pub mod openat2_resolve;
 // suite reaches it (docs/53, CLAUDE.md phantom-test rule).
 pub mod clone_abi;
 pub mod sched_policy;
+pub mod syscall_rollback;
 pub mod sched_attr;
 pub mod ioprio;
 // getpriority/setpriority (140/141) + ioprio_set/ioprio_get (251/252) share one

@@ -5,6 +5,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use super::dumpable::{dump_allowed, suid_safe_required};
 use super::pattern::{self, CoreContext, CoreKind};
 
 /// Nanoseconds per second, for the wall-clock stamp a pattern can interpolate.
@@ -24,8 +25,25 @@ const DUMP_CHUNK: usize = hal::PAGE_SIZE_BYTES as usize;
 pub fn write_for_current(signo: i32) {
     let Some(cur) = sched::live::current() else { return };
     let cx = snapshot(&cur, signo);
+    // Linux `coredump_skip`: `cprm->dumpable == TASK_DUMPABLE_OFF` produces NO
+    // dump at all, by any destination. This is the whole point of
+    // `prctl(PR_SET_DUMPABLE, 0)` — a daemon holding key material asks not to
+    // have its address space written anywhere — and it is also the state a
+    // credential change drops a setuid process into. Snapshotting the flag
+    // only to interpolate `%d` into the filename, as this did, meant a
+    // process that asked not to be dumped got a full memory image on its
+    // first SIGSEGV, and a setuid binary's dump was readable to whoever owned
+    // the pattern's directory.
+    if !dump_allowed(cx.dumpable) { return; }
     let raw = pattern::core_pattern();
     let kind = pattern::kind_of(trim(&raw));
+    // `coredump_force_suid_safe`: a dump whose dumpability was downgraded by a
+    // privilege change (`SUID_DUMP_ROOT`) may only go to a fully qualified
+    // path. A relative pattern resolves against the dying process's own cwd,
+    // which an unprivileged caller controls, so honouring it would let that
+    // caller choose where a root-owned memory image lands.
+    if kind == CoreKind::File && suid_safe_required(cx.dumpable)
+        && !pattern::file_path(&raw, &cx).starts_with('/') { return; }
 
     // A program collects the dump itself and is not subject to the size limit —
     // nothing is written to a filesystem, and Linux overwrites `cprm->limit`
