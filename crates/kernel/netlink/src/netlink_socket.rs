@@ -143,18 +143,18 @@ impl NetlinkSocket {
         if len > limit { Err(SendError::Emsgsize) } else { Ok(()) }
     }
 
-    /// Commit one admitted userspace datagram through canonical protocol routing. # C: O(len + listeners)
-    pub fn send_to(&self, buf: &[u8], dest_groups: u32, dest_port: u32)
-        -> Result<usize, SendError>
-    {
+    /// Commit one admitted userspace datagram through canonical protocol routing.
+    /// Taking the decoded destination whole keeps the port and the group from
+    /// ever being supplied in the wrong order. # C: O(len + listeners)
+    pub fn send_to(&self, buf: &[u8], dest: crate::NlDest) -> Result<usize, SendError> {
         self.preflight_send(buf.len())?;
-        if dest_port != 0 {
-            if !crate::unicast_port(self, dest_port, buf) {
+        if dest.port_id != 0 {
+            if !crate::unicast_port(self, dest.port_id, buf) {
                 return Err(SendError::Backend(vfs::VfsError::Econnrefused));
             }
-            if dest_groups == 0 { return Ok(buf.len()); }
+            if dest.group == 0 { return Ok(buf.len()); }
         }
-        self.write_to_groups(buf, dest_groups).map_err(SendError::Backend)
+        self.write_to_groups(buf, dest.group).map_err(SendError::Backend)
     }
 
     /// `NETLINK_ADD_MEMBERSHIP`: subscribe to one `RTNLGRP_*` group. # C: O(1)
@@ -171,6 +171,14 @@ impl NetlinkSocket {
     /// # C: O(reply build)
     fn handle_one(&self, hdr: &Nlmsghdr, msg: &[u8]) {
         let net_ns = self.net_ns.id().as_u64();
+        if !crate::rcv_skb::reaches_handler(self.protocol, hdr) {
+            // Netlink core acknowledges a control message or a non-request only
+            // when the sender asked for one, and never runs a handler for it.
+            if (hdr.nlmsg_flags & flags::NLM_F_ACK) != 0 {
+                self.enqueue(rtnetlink::nlmsg_ack_pub(hdr, 0));
+            }
+            return;
+        }
         let reply = if self.protocol == proto::NETLINK_ROUTE && Self::rtnl_mutation(hdr.nlmsg_type)
             && !self.may_mutate_rtnl() {
             rtnetlink::nlmsg_ack_pub(hdr, -1)
@@ -284,21 +292,17 @@ impl NetlinkSocket {
                 return Ok(consumed);
             }
         }
+        // The walk itself never fails the send. Netlink core hands the whole
+        // datagram to the protocol receive path and discards its verdict, so a
+        // malformed or unhandled message becomes an NLMSG_ERROR reply, never a
+        // failed `sendto`. Framing that runs out mid-message simply ends the
+        // walk with every byte still reported as accepted — which is what makes
+        // a fixed-size request buffer with zeroed padding behind its one
+        // message work.
         let mut off = 0usize;
-        while off < consumed {
-            if consumed - off < Nlmsghdr::SIZE { return Err(vfs::VfsError::Einval); }
-            let Some(hdr) = Nlmsghdr::parse(&datagram[off..]) else {
-                return Err(vfs::VfsError::Einval);
-            };
-            let msg_len = hdr.nlmsg_len as usize;
-            if msg_len < Nlmsghdr::SIZE || msg_len > consumed - off {
-                return Err(vfs::VfsError::Einval);
-            }
-            self.handle_one(&hdr, &datagram[off..off + msg_len]);
-            off = match off.checked_add(nlmsg_align(msg_len)) {
-                Some(next) if next <= consumed => next,
-                _ => return Err(vfs::VfsError::Einval),
-            };
+        while let Some(frame) = crate::rcv_skb::frame_at(&datagram, off) {
+            self.handle_one(&frame.hdr, &datagram[off..off + frame.msg_len]);
+            off += frame.advance;
         }
         Ok(consumed)
     }
@@ -384,22 +388,75 @@ mod tests {
         assert_eq!(sock.write(&[]), Err(vfs::VfsError::Enodata));
     }
 
+    /// Malformed framing is never a send failure: netlink core stops walking
+    /// and reports every byte accepted, leaving the sender to learn about a bad
+    /// request from an NLMSG_ERROR reply instead of a failed `sendto`.
     #[test]
-    fn malformed_netlink_frames_return_einval() {
+    fn malformed_netlink_frames_are_accepted_without_a_send_error() {
         let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
-        assert_eq!(sock.write(&[0u8; Nlmsghdr::SIZE - 1]), Err(vfs::VfsError::Einval));
+        let runt = [0u8; Nlmsghdr::SIZE - 1];
+        assert_eq!(sock.write(&runt), Ok(runt.len()));
 
         let mut short = alloc::vec![0u8; Nlmsghdr::SIZE];
         short[..2].copy_from_slice(&((Nlmsghdr::SIZE - 1) as u16).to_ne_bytes());
-        assert_eq!(sock.write(&short), Err(vfs::VfsError::Einval));
+        assert_eq!(sock.write(&short), Ok(short.len()));
 
         let mut overrun = alloc::vec![0u8; Nlmsghdr::SIZE];
         overrun[..2].copy_from_slice(&((Nlmsghdr::SIZE + 1) as u16).to_ne_bytes());
-        assert_eq!(sock.write(&overrun), Err(vfs::VfsError::Einval));
+        assert_eq!(sock.write(&overrun), Ok(overrun.len()));
 
-        let mut misaligned = alloc::vec![0u8; Nlmsghdr::SIZE + 1];
-        misaligned[..2].copy_from_slice(&(Nlmsghdr::SIZE as u16).to_ne_bytes());
-        assert_eq!(sock.write(&misaligned), Err(vfs::VfsError::Einval));
+        assert!(sock.dequeue().is_none(), "no reply is produced for unparsable framing");
+    }
+
+    /// `ip(8)` sends a fixed-size request buffer: `nlmsg_len` covers only the
+    /// leading dump request and the rest of the buffer is zero. The request
+    /// must be answered and the send must report the whole buffer accepted.
+    #[test]
+    fn zero_padded_dump_request_is_answered_and_fully_accepted() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &test_namespace());
+        let mut buf = request(rtnetlink::RTM_GETADDR, &[0u8; rtnetlink::Ifaddrmsg::SIZE]);
+        let msg_len = buf.len();
+        buf.resize(msg_len + 128, 0);
+        assert_eq!(sock.write(&buf), Ok(msg_len + 128));
+        let (reply, _) = sock.dequeue().expect("the padded dump request is answered");
+        assert!(reply_ends_with_done(&reply));
+        assert!(sock.dequeue().is_none(), "the padding produces no second reply");
+    }
+
+    /// A final message whose ALIGNED length runs past the datagram is accepted
+    /// and dispatched; the walk clamps to the datagram end.
+    #[test]
+    fn unaligned_final_message_is_dispatched_not_rejected() {
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+        let unknown = rtnetlink::RTM_MAX + 1;
+        let mut msg = request(unknown, &[0u8]);
+        assert_eq!(msg.len(), Nlmsghdr::SIZE + 1);
+        msg[..4].copy_from_slice(&((Nlmsghdr::SIZE + 1) as u32).to_ne_bytes());
+        assert_eq!(sock.write(&msg), Ok(Nlmsghdr::SIZE + 1));
+        let (reply, _) = sock.dequeue().expect("the trailing message still dispatched");
+        assert_eq!(ack_errno(&reply), -(vfs::VfsError::Eopnotsupp as i32));
+    }
+
+    /// Reserved control types and non-request messages never reach a handler;
+    /// they are acknowledged only when the sender set NLM_F_ACK.
+    #[test]
+    fn control_and_non_request_messages_skip_the_handler() {
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+        let mut noop = request(crate::msg::NLMSG_NOOP, &[]);
+        assert_eq!(sock.write(&noop), Ok(noop.len()));
+        assert!(sock.dequeue().is_none(), "a control message without NLM_F_ACK is silent");
+
+        noop[6..8].copy_from_slice(&(flags::NLM_F_REQUEST | flags::NLM_F_ACK).to_ne_bytes());
+        assert_eq!(sock.write(&noop), Ok(noop.len()));
+        let (reply, _) = sock.dequeue().expect("NLM_F_ACK on a control message is answered");
+        assert_eq!(ack_errno(&reply), 0);
+
+        let mut not_request = request(rtnetlink::RTM_GETLINK, &[]);
+        not_request[6..8].copy_from_slice(&0u16.to_ne_bytes());
+        assert_eq!(sock.write(&not_request), Ok(not_request.len()));
+        assert!(sock.dequeue().is_none(), "a non-request never runs the handler");
     }
 
     #[test]

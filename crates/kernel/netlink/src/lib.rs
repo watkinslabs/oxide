@@ -5,6 +5,8 @@
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
 // - `destination`: socket-owned connect destination and default-send state.
 // - `ports`: live namespace/protocol/port-ID ownership and bind collision checks.
+// - `rcv_skb`: netlink-core datagram framing walk and handler-admission rules.
+// - `sockaddr`: the one `sockaddr_nl` destination decoder every send path uses.
 // - `shutdown`: AF_NETLINK's Linux `sock_no_shutdown` contract.
 // - `receive`: canonical dequeue, pending-error ordering, and wait arming.
 // - `inode`: VFS inode glue for netlink socket file descriptors.
@@ -36,7 +38,9 @@ mod listeners;
 mod netlink_socket;
 mod destination;
 mod ports;
+mod rcv_skb;
 mod receive;
+mod sockaddr;
 mod shutdown;
 #[cfg(test)]
 mod netlink_tests;
@@ -65,6 +69,7 @@ pub(crate) use ports::{register_port_id, unicast_port};
 pub use netlink_socket::{NETLINK_RCVBUF_DEFAULT, NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD,
     NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
+pub use sockaddr::{encode_dest, first_group, parse_dest, NlDest};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
     KOBJECT_UEVENT_KERNEL_GROUP_MASK, KOBJECT_UEVENT_UDEV_GROUP_MASK,
     NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, SOCKADDR_NL_SIZE,
