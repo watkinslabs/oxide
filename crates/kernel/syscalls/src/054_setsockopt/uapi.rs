@@ -70,3 +70,10 @@ pub(super) const TCP_CORK: u64 = 3;
 pub(super) const TCP_KEEPIDLE: u64 = 4;
 pub(super) const TCP_KEEPINTVL: u64 = 5;
 pub(super) const TCP_KEEPCNT: u64 = 6;
+
+pub(super) const UDP_CORK: u64 = 1;
+pub(super) const UDP_ENCAP: u64 = 100;
+pub(super) const UDP_NO_CHECK6_TX: u64 = 101;
+pub(super) const UDP_NO_CHECK6_RX: u64 = 102;
+pub(super) const UDP_SEGMENT: u64 = 103;
+pub(super) const UDP_GRO: u64 = 104;

@@ -167,6 +167,12 @@ impl NetStack {
         let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface,
             datagram_body);
         for q in endpoints {
+            // A zero checksum reaches only an endpoint that opted into
+            // accepting one; every other socket drops the datagram as a
+            // checksum error rather than queueing it.
+            if udp.checksum == 0
+                && q.no_check6_rx.load(core::sync::atomic::Ordering::Acquire) == 0
+            { continue; }
             if !crate::cgroup_bpf::ingress(
                 &q.owner, packet, crate::addr::eth_p::IPV6, iface,
             ) { continue; }

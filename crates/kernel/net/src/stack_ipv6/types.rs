@@ -34,6 +34,9 @@ pub struct Udp6RxQueue {
     pub ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+    /// `UDP_NO_CHECK6_RX`, shared with the owning socket: a zero-checksum
+    /// datagram reaches this endpoint only while the cell is set.
+    pub no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -137,6 +140,7 @@ impl Udp6RxQueue {
             Arc::new(core::sync::atomic::AtomicI32::new(0)), Arc::new(Spinlock::new(None)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new()))
     }
 
@@ -149,6 +153,7 @@ impl Udp6RxQueue {
                       peer: Arc<Spinlock<Option<(Ipv6Addr, u16)>, StackLockClass>>,
                       ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                       ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                      no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
@@ -165,6 +170,7 @@ impl Udp6RxQueue {
             v6only,
             ip_mtu_discover,
             ipv6_mtu_discover,
+            no_check6_rx,
             bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
             bpf_filter,
