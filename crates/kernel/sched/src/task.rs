@@ -629,6 +629,19 @@ pub struct Task {
     pub robust_list_head: AtomicU64,
     pub robust_list_len:  AtomicU64,
 
+    /// The scheduling class this task would run at with no PI boost in effect
+    /// — its own, un-inherited class. `u64::MAX` means "not boosted"; any other
+    /// value is an encoded [`crate::SchedClass`] saved by `live::pi_boost` when
+    /// a PI-mutex waiter first lent this task its priority.
+    ///
+    /// Kept separate from `class_enc` because `class_enc` is BOTH the static
+    /// and the effective priority: overwriting it to boost would otherwise
+    /// destroy the base class, and the deboost at unlock would have nothing to
+    /// restore to. A concurrent `sched_setscheduler` on a boosted task writes
+    /// through to this field rather than to `class_enc`, so the new base takes
+    /// effect at deboost instead of being clobbered by it.
+    pub pi_base_class: AtomicU64,
+
     /// Saved `preempt_count` while this task is NOT running (Linux keeps it in
     /// `thread_info`; x86 caches it per-CPU and swaps it in `__switch_to`, which
     /// is the model used here).

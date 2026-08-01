@@ -43,18 +43,27 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     const FUTEX_REQUEUE: u32 = 3;
     const FUTEX_CMP_REQUEUE: u32 = 4;
     const FUTEX_WAKE_OP: u32 = 5;
+    const FUTEX_CMP_REQUEUE_PI: u32 = 12;
     let private = (op & ::ipc::live::futex::FUTEX_PRIVATE_FLAG) != 0;
+    // `val`/`val2` are `int` in the ABI; a negative count is EINVAL, decided by
+    // the work fns. `a2`/`a3` are sign-extended here rather than truncated to a
+    // count type, so `-1` cannot become an unbounded wake.
+    let (val_i, val2_i) = (args.a2 as i32 as i64, args.a3 as i32 as i64);
     match op_base {
         FUTEX_REQUEUE => {
-            return ::ipc::live::futex::requeue(args.a0, args.a4, args.a2 as usize, args.a3 as usize, private);
+            return ::ipc::live::futex::requeue(args.a0, args.a4, val_i, val2_i, private);
         }
         FUTEX_CMP_REQUEUE => {
             return ::ipc::live::futex::cmp_requeue(
-                args.a0, args.a4, args.a2 as usize, args.a3 as usize, args.a5 as u32, private);
+                args.a0, args.a4, val_i, val2_i, args.a5 as u32, private);
         }
         FUTEX_WAKE_OP => {
             return ::ipc::live::futex::wake_op(
-                args.a0, args.a4, args.a2 as usize, args.a3 as usize, args.a5 as u32, private);
+                args.a0, args.a4, val_i, val2_i, args.a5 as u32, private);
+        }
+        FUTEX_CMP_REQUEUE_PI => {
+            return ::ipc::live::futex::cmp_requeue_pi(
+                args.a0, args.a4, val_i, val2_i, args.a5 as u32, private);
         }
         _ => {}
     }
@@ -67,10 +76,21 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
         FUTEX_BITSET_MATCH_ANY
     };
 
+    // Linux `futex_cmd_has_timeout`: only these five commands read `utime` as a
+    // timespec at all. Every other command reuses that register as a plain
+    // integer operand (`val2`), so dereferencing it would be a wild read.
+    const FUTEX_LOCK_PI: u32 = 6;
+    let has_timeout = matches!(op_base,
+        FUTEX_WAIT | FUTEX_LOCK_PI | FUTEX_LOCK_PI2 | FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI);
+    // `FUTEX_LOCK_PI`'s timeout is ABSOLUTE `CLOCK_REALTIME` — `do_futex` sets
+    // the realtime flag for it unconditionally and falls through to
+    // `FUTEX_LOCK_PI2`, whose timeout is absolute `CLOCK_MONOTONIC` unless the
+    // caller asked for realtime. Treating `FUTEX_LOCK_PI`'s as relative (the
+    // shape the plain `FUTEX_WAIT` path uses) would give a `pthread_mutex_timedlock`
+    // on a PI mutex a deadline decades in the future.
+    let clock_realtime = (op & FUTEX_CLOCK_REALTIME) != 0 || op_base == FUTEX_LOCK_PI;
     let ts = args.a3;
-    let deadline_ns = if (op_base == FUTEX_WAIT || op_base == FUTEX_WAIT_BITSET)
-        && ts != 0 && ts < hal::USER_VA_END
-    {
+    let deadline_ns = if has_timeout && ts != 0 && ts < hal::USER_VA_END {
         // SAFETY: ts validated < USER_VA_END; timespec is 2×i64 at +0/+8 in
         // the caller's AS; CPL=0 reads via active CR3.
         let secs = unsafe { core::ptr::read_volatile(ts as *const i64) };
@@ -92,7 +112,7 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
         // `.max(1)` keeps 0 reserved for "no timeout".
         if op_base == FUTEX_WAIT {
             now.saturating_add(t).max(1)
-        } else if (op & FUTEX_CLOCK_REALTIME) == 0 {
+        } else if !clock_realtime {
             match crate::time_common::current_sleep_target_to_host(
                 crate::time_common::CLOCK_MONOTONIC, true, t)
             {
@@ -170,6 +190,13 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
                 i += 1;
             }
         }
+    }
+    // `FUTEX_WAIT_REQUEUE_PI` takes a SECOND futex address (uaddr2 = a4) and so
+    // cannot go through the single-address dispatch. `do_futex` forces its
+    // bitset to match-any before the call.
+    if op_base == FUTEX_WAIT_REQUEUE_PI {
+        return ::ipc::live::futex::wait_requeue_pi(
+            args.a0, args.a2 as u32, FUTEX_BITSET_MATCH_ANY, args.a4, private, deadline_ns);
     }
     ::ipc::live::futex::dispatch_timed(args.a0, op, args.a2 as u32, bitset, deadline_ns)
 }

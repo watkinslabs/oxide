@@ -41,13 +41,29 @@ pub const FUTEX_CMD_MASK: u32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
 /// registered bitset.
 pub const FUTEX_BITSET_MATCH_ANY: u32 = 0xffff_ffff;
 
+/// Which identity a [`Key`] is built from. Without the discriminant a shared
+/// object's id could numerically equal a page-table root and alias a private
+/// futex belonging to an unrelated process.
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(super) struct Key {
+pub(crate) enum KeyKind {
+    /// `(mm root, user VA)` — a process-private futex.
+    Private,
+    /// `(object identity, offset in object)` — Linux's inode-keyed shared futex.
+    SharedObject,
+    /// `(0, physical address)` — a shared mapping with no stable object
+    /// identity (shared anonymous memory), whose pages stay resident.
+    SharedPhys,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(crate) struct Key {
+    /// What `mm_root`/`va` mean.
+    pub(crate) kind: KeyKind,
     /// Address-space root (CR3 pa) — distinguishes processes.
-    pub(super) mm_root: u64,
+    pub(crate) mm_root: u64,
     /// User VA of the futex word. We don't translate to phys since
     /// v1 process-private; mm_root + va is a stable identity.
-    pub(super) va: u64,
+    pub(crate) va: u64,
 }
 
 pub(super) struct Waiter {
@@ -89,12 +105,12 @@ pub(super) static WAITV_GROUPS: Spinlock<Vec<Arc<WaitvGroup>>, TtyClass> = Spinl
 ///   gap). The VA is translated under the active CR3 (we are on the caller's
 ///   syscall stack, so its address space is live).
 /// # C: O(1) private; O(page-table depth) shared
-pub(super) fn current_key(uaddr: u64, private: bool) -> Option<Key> {
+pub(crate) fn current_key(uaddr: u64, private: bool) -> Option<Key> {
     let cur = sched::live::current()?;
     // SAFETY: mm slot single-mutator per `13§5`.
     let mm = unsafe { cur.mm_ref() }?;
     if private {
-        return Some(Key { mm_root: mm.root_pa(), va: uaddr });
+        return Some(Key { kind: KeyKind::Private, mm_root: mm.root_pa(), va: uaddr });
     }
     // Linux `get_futex_key`: the physical/inode key is used ONLY for a genuinely
     // shared (VM_SHARED) mapping. A "shared" futex OP on a PRIVATE mapping (anon
@@ -104,21 +120,37 @@ pub(super) fn current_key(uaddr: u64, private: bool) -> Option<Key> {
     // word compute different keys (phys vs mm+va) and the wake is lost — the
     // journald flush hang that wedged sysinit (main thread WAITs shared, worker
     // WAKEs private on the same condvar word).
-    let vm_shared = hal::UserVirtAddr::new(uaddr)
-        .and_then(|u| mm.find_vma(u))
-        .map(|v| v.flags.contains(vmm::VmaFlags::SHARED))
-        .unwrap_or(false);
+    let vma = hal::UserVirtAddr::new(uaddr).and_then(|u| mm.find_vma(u));
+    let vm_shared = vma.as_ref().map(|v| v.flags.contains(vmm::VmaFlags::SHARED)).unwrap_or(false);
     if !vm_shared {
-        return Some(Key { mm_root: mm.root_pa(), va: uaddr });
+        return Some(Key { kind: KeyKind::Private, mm_root: mm.root_pa(), va: uaddr });
     }
+    // Preferred: key on the OBJECT and the offset within it, which is what
+    // Linux's `get_futex_key` does for a `VM_SHARED` file mapping. Two
+    // processes mapping one file at different addresses then agree on the key,
+    // and — unlike a physical-page key — it survives the page being evicted and
+    // read back at a different physical address between the WAIT and the WAKE,
+    // which would otherwise silently lose the wakeup.
+    if let Some(v) = vma.as_ref() {
+        if let vmm::VmaBacking::File { backing, off } = &v.backing {
+            let obj = backing.object_id();
+            if obj != 0 {
+                let file_off = off.wrapping_add(uaddr - v.start.as_u64());
+                return Some(Key { kind: KeyKind::SharedObject, mm_root: obj, va: file_off });
+            }
+        }
+    }
+    // Shared ANONYMOUS memory (and any backing with no stable object identity)
+    // has no inode to key on. Its pages are permanently resident, so the
+    // physical page IS a stable identity for as long as the mapping exists.
     use hal::{MmuOps, Va};
     #[cfg(target_arch = "x86_64")]
     let pa = hal_x86_64::mmu_ops::X86Mmu::translate(Va(uaddr)).map(|(p, _)| p.0);
     #[cfg(target_arch = "aarch64")]
     let pa = hal_aarch64::mmu_ops::ArmMmu::translate(Va(uaddr)).map(|(p, _)| p.0);
     match pa {
-        Some(pa) => Some(Key { mm_root: 0, va: pa }),
-        None => Some(Key { mm_root: mm.root_pa(), va: uaddr }),
+        Some(pa) => Some(Key { kind: KeyKind::SharedPhys, mm_root: 0, va: pa }),
+        None => Some(Key { kind: KeyKind::Private, mm_root: mm.root_pa(), va: uaddr }),
     }
 }
 

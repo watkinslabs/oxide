@@ -61,6 +61,12 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
             let key = match current_key(uaddr, private) {
                 Some(k) => k, None => return -(Errno::Einval.as_i32() as i64),
             };
+            // A `FUTEX_WAIT_REQUEUE_PI` waiter may only be released by a
+            // `FUTEX_CMP_REQUEUE_PI`, which hands it the PI mutex it is waiting
+            // for. Releasing it through a plain wake would return it to
+            // userspace believing it owns a mutex nobody gave it, so Linux
+            // fails the wake outright rather than skipping the waiter.
+            if super::pi::has_requeue_pi_waiter(uaddr, private) { return -(Errno::Einval.as_i32() as i64); }
             let n = wake_key(key, val as usize, bitset);
             #[cfg(feature = "debug-futextrace")]
             if ftx_target_exe() {
@@ -85,20 +91,22 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
             }
             n as i64
         }
-        // `FUTEX_FD` (obsolete, removed since Linux 2.6.26 — CVE-2011-3626)
-        // and every real-time-inheritance op (`LOCK_PI`/`UNLOCK_PI`/
-        // `TRYLOCK_PI`/`WAIT_REQUEUE_PI`/`CMP_REQUEUE_PI`/`LOCK_PI2`): PI
-        // futexes need a rt_mutex-equivalent (boosted priority, an owner
-        // handoff protocol, `pi_state` shared across waiters) this kernel does
-        // not have. Previously these silently fell into `_ => 0` — a
-        // `PTHREAD_PRIO_INHERIT` mutex believed it locked/unlocked when NOTHING
-        // was arbitrated. Linux's own `do_futex` returns -ENOSYS for any cmd it
-        // does not recognize (the same value it would return if PI support
-        // were compiled out) — return that honestly instead of faking success.
-        FUTEX_FD | FUTEX_LOCK_PI | FUTEX_UNLOCK_PI | FUTEX_TRYLOCK_PI
-        | FUTEX_WAIT_REQUEUE_PI | FUTEX_CMP_REQUEUE_PI | FUTEX_LOCK_PI2 => {
-            -(Errno::Enosys.as_i32() as i64)
-        }
+        // `FUTEX_LOCK_PI` carries a RELATIVE timeout that the shim has already
+        // converted to an absolute monotonic deadline, `FUTEX_LOCK_PI2` an
+        // absolute one; both arrive here identically. `FUTEX_TRYLOCK_PI` never
+        // blocks and ignores any timeout.
+        FUTEX_LOCK_PI | FUTEX_LOCK_PI2 => super::pi::lock_pi(uaddr, private, deadline_ns, false),
+        FUTEX_TRYLOCK_PI => super::pi::lock_pi(uaddr, private, 0, true),
+        FUTEX_UNLOCK_PI => super::pi::unlock_pi(uaddr, private),
+        // `FUTEX_WAIT_REQUEUE_PI` / `FUTEX_CMP_REQUEUE_PI` take a SECOND futex
+        // address, so they never reach this single-address dispatch — the shim
+        // routes them straight to `pi::{wait_requeue_pi, cmp_requeue_pi}`.
+        FUTEX_WAIT_REQUEUE_PI | FUTEX_CMP_REQUEUE_PI => -(Errno::Einval.as_i32() as i64),
+        // `FUTEX_FD` was removed from Linux in 2.6.26 (it could not be made
+        // race-free) and its number now falls off the end of `do_futex`'s
+        // switch, so a caller gets -ENOSYS — the same value as a genuinely
+        // unknown command. Never a silent success.
+        FUTEX_FD => -(Errno::Enosys.as_i32() as i64),
         // Unknown cmd: Linux `do_futex` falls off the end of its switch to
         // `return -ENOSYS;`.
         _ => -(Errno::Enosys.as_i32() as i64),

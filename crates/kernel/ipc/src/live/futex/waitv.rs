@@ -7,35 +7,41 @@ use syscall::errno::Errno;
 
 use super::core::{WaitvGroup, current_key, load_user_u32, now_monotonic_ns, remove_waitv_group, WAITV_GROUPS};
 
-/// Multi-futex wait: park current task on N keys; resume when ANY
-/// of them is woken (returns the index that woke). Pre-flight
-/// check: if any `*uaddr != val` at entry, return -EAGAIN
-/// immediately per Linux semantics. `vals` is parallel to `uaddrs`.
-/// # C: O(N) pre-flight + O(N) park-enqueue + O(1) park
-pub fn dispatch_waitv(uaddrs: &[u64], vals: &[u32], private: bool) -> i64 {
-    dispatch_waitv_timed(uaddrs, vals, private, 0)
+/// One entry of a `futex_waitv` array, after per-entry flag validation.
+///
+/// `private` is PER ENTRY, not per call: `struct futex_waitv` carries its own
+/// flags word, so one array may mix a process-private futex with a shared one.
+/// Folding them into a single call-wide flag (the previous shape here) computed
+/// the wrong key for every entry that disagreed with the fold, so those wakes
+/// were silently lost.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct WaitvEntry {
+    pub uaddr: u64,
+    pub val: u32,
+    pub private: bool,
 }
 
-/// `dispatch_waitv` plus an absolute monotonic deadline. Linux futex waitv
-/// waits may be timed; an expired deadline wakes the task through the same
-/// `wakeup_deadline_ns` scanner used by single-futex waits. Loops on a
-/// spurious wakeup exactly as `wait::wait_loop` / Linux `futex_wait_multiple`
-/// does — a wake that is neither a real key match, an elapsed deadline, nor a
-/// deliverable signal retries instead of returning a fake success.
+/// Multi-futex wait: park current task on N keys; resume when ANY of them is
+/// woken (returns the index that woke). Pre-flight: if any `*uaddr != val` at
+/// entry, return `-EAGAIN` immediately.
+///
+/// `deadline_ns` is an absolute monotonic deadline (0 = none); an expired
+/// deadline wakes the task through the same scanner single-futex waits use.
+/// Loops on a spurious wakeup exactly as `wait::wait_loop` does — a wake that
+/// is neither a real key match, an elapsed deadline, nor a deliverable signal
+/// retries instead of returning a fake success.
 /// # C: O(N) pre-flight + O(N) park-enqueue + O(W) timeout cleanup
-pub fn dispatch_waitv_timed(uaddrs: &[u64], vals: &[u32], private: bool, deadline_ns: u64) -> i64 {
-    if uaddrs.is_empty() || uaddrs.len() != vals.len() {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let mut keys: Vec<_> = Vec::with_capacity(uaddrs.len());
-    for (i, &ua) in uaddrs.iter().enumerate() {
-        if ua == 0 || ua >= hal::USER_VA_END || (ua & 0x3) != 0 {
+pub fn dispatch_waitv_timed(entries: &[WaitvEntry], deadline_ns: u64) -> i64 {
+    if entries.is_empty() { return -(Errno::Einval.as_i32() as i64); }
+    let mut keys: Vec<_> = Vec::with_capacity(entries.len());
+    for ent in entries {
+        if ent.uaddr == 0 || ent.uaddr >= hal::USER_VA_END || (ent.uaddr & 0x3) != 0 {
             return -(Errno::Einval.as_i32() as i64);
         }
         // SAFETY: bounded user VA validated; CR3 is current's.
-        let cur_val = unsafe { load_user_u32(ua) };
-        if cur_val != vals[i] { return -(Errno::Eagain.as_i32() as i64); }
-        let key = match current_key(ua, private) {
+        let cur_val = unsafe { load_user_u32(ent.uaddr) };
+        if cur_val != ent.val { return -(Errno::Eagain.as_i32() as i64); }
+        let key = match current_key(ent.uaddr, ent.private) {
             Some(k) => k, None => return -(Errno::Einval.as_i32() as i64),
         };
         keys.push(key);
@@ -54,14 +60,14 @@ pub fn dispatch_waitv_timed(uaddrs: &[u64], vals: &[u32], private: bool, deadlin
         });
         {
             let mut groups = WAITV_GROUPS.lock();
-            for (i, &ua) in uaddrs.iter().enumerate() {
+            for ent in entries {
                 // SAFETY: bounded user VA validated above; CR3 is the caller's.
-                if unsafe { load_user_u32(ua) } != vals[i] {
+                if unsafe { load_user_u32(ent.uaddr) } != ent.val {
                     return -(Errno::Eagain.as_i32() as i64);
                 }
             }
             arc.set_state(sched::TaskState::Sleeping);
-            cur.futex_uaddr.store(uaddrs[0], core::sync::atomic::Ordering::Relaxed);
+            cur.futex_uaddr.store(entries[0].uaddr, core::sync::atomic::Ordering::Relaxed);
             groups.push(group.clone());
         }
         // Armed after the group is published and the task is Sleeping — same

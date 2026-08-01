@@ -55,7 +55,10 @@ pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
         // pinned at WEIGHT_IDLEPRIO — nice never rewrites either one's weight.
         t.nice.store(n, Ordering::Release);
         let policy = crate::sched_policy::task_policy(&t);
-        if !matches!(t.sched_class(), sched::SchedClass::Rt { .. })
+        // Base class, not the effective one: a fair task running at a PI-
+        // inherited RT priority is still a fair task and its weight must track
+        // the nice value it was just given.
+        if !matches!(sched::pi_prio::base_class(&t), sched::SchedClass::Rt { .. })
             && policy != crate::sched_policy::SCHED_IDLE {
             t.load_weight.store(w, Ordering::Release);
         }
