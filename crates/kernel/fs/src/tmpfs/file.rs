@@ -384,6 +384,10 @@ impl Drop for TmpfsFileData {
         for (_idx, page) in g.iter() {
             match *page {
                 ShmemPage::Resident { pa, cgid } => {
+                    // SAFETY: this is the inode's own reference on `pa`, dropped
+                    // exactly once here in `drop`; no mapping can outlive the
+                    // inode, since a MAP_SHARED VMA pins it through the
+                    // `FileBacking` Arc, so no stale PTE names the frame.
                     unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
                     cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
                 }

@@ -86,6 +86,9 @@ fn init_smp(info: &BootInfo) {
             klog::write_dec_u64(started as u64);
             klog::write_raw(b"\n");
         }
+        // SAFETY: the BSP is the sole writer of these global slots and the APs
+        // it just started install their own runqueues in the AP init hook, so
+        // no CPU can observe a half-installed runqueue or IPI hook.
         unsafe {
             sched::live::install_default_runqueue();
             sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
@@ -101,6 +104,8 @@ fn init_smp(info: &BootInfo) {
         arch_irq::smp_arm::install_hooks();
         arch_irq::smp_arm::publish_madt_mpidrs();
         hal_aarch64::smp::set_percpu_alloc_hook(pmm::setup::alloc_percpu_page);
+        // SAFETY: BSP boot path, sole writer of the AP entry state, and the
+        // per-CPU alloc hook the APs need was installed on the line above.
         let _started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
@@ -143,7 +148,11 @@ fn smp_ipi_smoke(info: &BootInfo) {
 
 #[cfg(target_os = "oxide-kernel")]
 fn init_runtime_subsystems() {
+    // SAFETY: both are boot-path-only one-shot inits (pre-init, IRQ-off,
+    // single-CPU per their contracts) and this fn runs exactly once from
+    // `runtime::init` on the boot CPU.
     let _ = unsafe { power::init() };
+    // SAFETY: same boot-path, single-CPU, called-once window as `power::init`.
     let _ = unsafe { firmware::init() };
     ::sched::set_current_hook(|| sched::live::current());
     // RCU CPU-topology hooks. WITHOUT these, `sync::rcu` runs its documented
@@ -204,17 +213,25 @@ fn init_runtime_subsystems() {
     sched::live::set_fsids_changed_hook(fs::keyring::fsids_changed);
     // Linux `shm_vm_ops`: shm_nattch follows VMA lifetime, not shmat/shmdt.
     vmm::set_shm_vm_ops(ipc::sysv_shm::shm_vma_open, ipc::sysv_shm::shm_vma_close);
+    // SAFETY: boot-path-only one-shot init (pre-init, single-CPU per its
+    // contract), reached once from `runtime::init` on the boot CPU.
     let _ = unsafe { nscg::init() };
     sched::cgroup::install();
     cgroup::set_notify_hook(fs::inotify::fire_modify);
     debug_cgroup! { cgroup::selftest::run(); }
+    // SAFETY: boot-path-only one-shot init (pre-init, single-CPU per its
+    // contract), reached once from `runtime::init` on the boot CPU.
     let _ = unsafe { security::init() };
+    // SAFETY: same boot-path, single-CPU, called-once window; the sysfs and
+    // bind hooks the driver model publishes into are installed before it.
     let _ = unsafe { drv::init() };
     power::set_driver_shutdown_hook(drv::shutdown_all);
 }
 
 #[cfg(target_os = "oxide-kernel")]
 fn init_vt_and_drv_hooks() {
+    // SAFETY: boot-path-only one-shot init on the boot CPU, before any user
+    // task can open a console, so no concurrent VT user exists.
     let _ = unsafe { vt::init() };
     vt::set_signal_hook(|pid, signo| {
         // VT_SETMODE's acquire/release signals are kernel-generated and
@@ -246,6 +263,8 @@ fn install_drv_sysfs_hooks() {
 
 #[cfg(target_os = "oxide-kernel")]
 fn init_network_and_pci() {
+    // SAFETY: boot-path-only one-shot init on the boot CPU, before any task can
+    // create a socket, so the protocol tables have no concurrent reader.
     unsafe { net::sock::init(); }
     crate::pci_boot::enumerate_and_log();
 }

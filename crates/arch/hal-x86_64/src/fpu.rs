@@ -114,9 +114,9 @@ pub unsafe fn xstate_init() {
         // SAFETY: cpuid is unprivileged, no memory effects.
         let (_, _, ecx1, _) = unsafe { cpuid(1) };
         if ecx1 & (1 << 26) == 0 { return; }
+        let prev_cr4: u64;
         // SAFETY: set CR4.OSXSAVE (bit 18) so XGETBV/XSETBV/XSAVE are legal;
         // read-modify-write touches no other CR4 bit; per-CPU register.
-        let prev_cr4: u64;
         unsafe {
             let mut cr4: u64;
             core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
@@ -205,11 +205,11 @@ pub unsafe fn fpu_save(state: *mut FpuStateX86_64) {
     {
         if XSAVE_ENABLED.load(Ordering::Acquire) {
             let xcr0 = XSAVE_XCR0.load(Ordering::Acquire);
-            // SAFETY: `xsave64` writes the XCR0-enabled components (≤
-            // XSAVE_AREA_BYTES ≤ backing) starting at the 64-byte-aligned
-            // operand; RFBM is the exact enabled XCR0 component set, which
-            // saves x87/SSE/AVX/AVX512 state without requesting disabled
-            // architectural components. Intel SDM `XSAVE`.
+            // RFBM is the exact enabled XCR0 component set, so x87/SSE/AVX/
+            // AVX512 are saved without requesting disabled components.
+            // SAFETY: `xsave64` writes ≤ XSAVE_AREA_BYTES (≤ the per-task
+            // backing this pointer indexes) at the caller-asserted 64-byte
+            // aligned, writable operand, with the FPU enabled. Intel SDM `XSAVE`.
             unsafe {
                 core::arch::asm!(
                     "xsave64 [{s}]",
@@ -249,12 +249,12 @@ pub unsafe fn fpu_restore(state: *const FpuStateX86_64) {
     {
         if XSAVE_ENABLED.load(Ordering::Acquire) {
             let xcr0 = XSAVE_XCR0.load(Ordering::Acquire);
+            // A fresh task's zeroed area has XSTATE_BV=0 → every component
+            // restored to its init value (x87 FCW=0x37F, MXCSR=0x1F80,
+            // YMM/ZMM=0), which is the correct fresh-thread state.
             // SAFETY: `xrstor64` loads the XCR0-enabled components from the
-            // 64-byte-aligned operand; RFBM is the exact enabled XCR0 set.
-            // A fresh
-            // task's zeroed area has XSTATE_BV=0 → every component restored
-            // to its init value (x87 FCW=0x37F, MXCSR=0x1F80, YMM/ZMM=0),
-            // which is the correct fresh-thread state. Intel SDM `XRSTOR`.
+            // caller-asserted readable 64-byte-aligned operand, whose bytes a
+            // prior `fpu_save` wrote with this same RFBM. Intel SDM `XRSTOR`.
             unsafe {
                 core::arch::asm!(
                     "xrstor64 [{s}]",

@@ -33,7 +33,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 
 .PHONY: all build x86 arm \
         build-debug x86-debug arm-debug \
-        test lint lint-ratchet lint-ratchet-update stats ci \
+        test lint lint-ratchet lint-ratchet-update audit-counts stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
@@ -81,12 +81,25 @@ lint:
 # gate fails when any key exceeds it — a new violation in a crate that already
 # has 500 still fails, because nothing is compared tree-wide.
 #
-# `make lint` stays the full report and stays the target to run while burning the
-# backlog down. The baseline only ever shrinks: `--update` writes
-# `min(current, baseline)` per key and refuses to raise one without
-# `--allow-growth`, which prints every loosened key.
+# Tightening is part of the definition of done for every burndown PR: slack below
+# the baseline FAILS, because a fixed finding that is not locked in can be
+# reintroduced with the gate still green. `make lint` stays the full report and
+# stays the target to run while burning the backlog down.
+#
+# The baseline only ever shrinks: `--update` writes `min(current, baseline)` per
+# key and refuses to raise one without `--allow-growth`, which prints every
+# loosened key.
 lint-ratchet:
 	$(CARGO) run --quiet -p spec-lint -- ratchet
+
+# Enforced-vs-raw-grep counts for the rules `07§5` scopes to the kernel build.
+# An audit must quote the enforced column: a `grep -c` does not apply the cfg
+# scoping the rules are written in, so it returns a much larger number that is
+# not a violation count. `extern crate std` was escalated as 18-73 violations
+# and `panic!(fmt)` as 113 on exactly that mistake; both are enforced at 0.
+# Fails if any scoped rule leaves zero.
+audit-counts:
+	$(CARGO) run --quiet -p spec-lint -- audit
 
 lint-ratchet-update:
 	$(CARGO) run --quiet -p spec-lint -- ratchet --update
@@ -106,7 +119,7 @@ counters:
 # (C255), so `make ci` has been unconditionally red and therefore unread. The
 # ratchet holds the line while the backlog is burned down; swap it back to
 # `lint` once the count reaches zero.
-ci: lint-ratchet matrix-gate hosted-gate test build build-debug
+ci: lint-ratchet audit-counts matrix-gate hosted-gate test build build-debug
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is

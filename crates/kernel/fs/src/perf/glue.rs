@@ -52,6 +52,9 @@ pub fn sys_perf_event_open(args: &syscall::SyscallArgs) -> i64 {
     };
 
     // `group_fd != -1` → `is_perf_file()` then the leader's private_data.
+    // SAFETY: borrows the CURRENT task's own fd-table slot, which only that
+    // task replaces, and it is here inside its own perf_event_open — so no
+    // competing mutator; the Arc is cloned out before the borrow ends.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return err(Errno::Ebadf) };
     let leader = if group_fd == -1 { None } else {
         match fdt.get(group_fd).ok().and_then(|f| {

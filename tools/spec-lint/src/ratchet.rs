@@ -129,10 +129,13 @@ pub fn check(root: &Path, cur: &Counts, update: bool, allow_growth: bool) -> Out
         return Outcome::Fail;
     }
     if under > 0 {
-        println!("spec-lint ratchet: PASS — {under} finding(s) below baseline; run `make lint-ratchet-update` to tighten");
-    } else {
-        println!("spec-lint ratchet: PASS — at baseline");
+        eprintln!("spec-lint ratchet: FAIL — {under} finding(s) below baseline and NOT locked in.");
+        eprintln!("        Run `make lint-ratchet-update` and commit the baseline in THIS PR.");
+        eprintln!("        A ratchet that is never tightened is only a high-water mark: those");
+        eprintln!("        {under} fixed finding(s) could be reintroduced and the gate would stay green.");
+        return Outcome::Fail;
     }
+    println!("spec-lint ratchet: PASS — at baseline");
     Outcome::Pass
 }
 

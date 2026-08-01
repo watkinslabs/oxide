@@ -197,6 +197,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
+    // Linux clears the TLS register across exec; the new image installs its own.
+    // SAFETY: TPIDR_EL0 is the per-thread user TLS register, written at EL1 for
+    // the task currently on this CPU, whose old image is already gone.
     unsafe {
         core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags));
     }
@@ -207,6 +210,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     cur.set_cmdline(Some(sched::argv_to_cmdline(&argv_slices[..argc])));
     cur.set_environ(Some(sched::argv_to_cmdline(&envp_slices[..envc])));
+    // SAFETY: the block borrows only `path_owned`, a kernel-side copy of the
+    // exec path already read out of user memory, and the file-capability lookup
+    // it performs runs in this task's own execve.
     let exec_path_for_caps = unsafe {
         let path_str = match core::str::from_utf8(&path_owned) {
             Ok(s) => alloc::string::String::from(s),
@@ -257,6 +263,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     if let Some(mm) = unsafe { cur.mm_ref() } {
         mm.set_vdso_rt_sigreturn(vdso_rt_sigreturn);
     }
+    // SAFETY: `build_user_stack` writes through the mm this task just installed
+    // and activated on this CPU, into the freshly mapped stack VMA whose top and
+    // length are passed here; no other task can reach that address space yet.
     let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,
