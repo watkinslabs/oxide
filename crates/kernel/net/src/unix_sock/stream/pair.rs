@@ -75,16 +75,16 @@ impl UnixPair {
 
     /// Snapshot the `{pid,uid,gid}` owning `end` (`SO_PEERCRED` source).
     /// # C: O(1)
-    pub fn set_end_cred(&self, end: crate::UnixEnd, pid: u32, uid: u32, gid: u32) {
+    pub fn set_end_cred(&self, end: crate::UnixEnd, cred: crate::PeerCred) {
         match end {
-            crate::UnixEnd::A => self.cred_a.set(pid, uid, gid),
-            crate::UnixEnd::B => self.cred_b.set(pid, uid, gid),
+            crate::UnixEnd::A => self.cred_a.set(cred),
+            crate::UnixEnd::B => self.cred_b.set(cred),
         }
     }
 
     /// The PEER's `{pid,uid,gid}` as seen from `end` (peer of A is B).
     /// # C: O(1)
-    pub fn peer_cred(&self, end: crate::UnixEnd) -> (u32, u32, u32) {
+    pub fn peer_cred(&self, end: crate::UnixEnd) -> crate::PeerCred {
         match end {
             crate::UnixEnd::A => self.cred_b.get(),
             crate::UnixEnd::B => self.cred_a.get(),

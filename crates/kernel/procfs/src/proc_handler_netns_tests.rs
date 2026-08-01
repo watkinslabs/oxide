@@ -107,3 +107,37 @@ fn ping_group_range_windows_are_private_to_their_namespace() {
     assert_eq!(net::ping::group_range_for(&first), Some((0, 5000)));
     assert_eq!(net::ping::group_range_for(&second), Some((1, 0)));
 }
+
+#[test]
+fn buffer_ceilings_are_one_global_pair_writable_only_from_the_initial_namespace() {
+    use super::NetGlobalIntHook;
+    use vfs::VfsError;
+    let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    let container = network_namespace::allocate(initial_user).unwrap();
+    net::net_ns::materialize_state(&container);
+    let saved = net::sysctl::rmem_max() as i64;
+
+    let leaf = NetGlobalIntHook {
+        current_ns: current,
+        get: || net::sysctl::rmem_max() as i64,
+        set: |value| net::sysctl::set_rmem_max(value),
+        bounds: Some(net::sysctl::RMEM_MAX_BOUNDS),
+    };
+
+    *CURRENT.lock().unwrap() = Some(network_namespace::initial());
+    assert_eq!(leaf.store_vfs(b"262144\n"), Ok(()));
+    assert_eq!(leaf.format(), b"262144\n".to_vec());
+    // Below the protocol floor is out of the write window.
+    assert_eq!(leaf.store_vfs(b"1\n"), Err(VfsError::Einval));
+    assert_eq!(leaf.store_vfs(b"not-a-number\n"), Err(VfsError::Einval));
+
+    // Every namespace reads the same number, and none but the initial one
+    // may change it.
+    *CURRENT.lock().unwrap() = Some(Arc::clone(&container));
+    assert_eq!(leaf.format(), b"262144\n".to_vec());
+    assert_eq!(leaf.store_vfs(b"524288\n"), Err(VfsError::Eacces));
+    assert_eq!(leaf.format(), b"262144\n".to_vec());
+
+    *CURRENT.lock().unwrap() = Some(network_namespace::initial());
+    assert_eq!(leaf.store_vfs(&alloc::format!("{saved}\n").into_bytes()), Ok(()));
+}

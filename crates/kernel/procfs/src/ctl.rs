@@ -38,7 +38,8 @@ use vfs::{InodeRef, KResult, VfsError};
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    IntHook as HIntHook, IntVar, PerNetIntHook as HPerNetIntHook,
+    IntHook as HIntHook, IntVar, NetGlobalIntHook as HNetGlobalIntHook,
+    PerNetIntHook as HPerNetIntHook,
     PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
     PerNetGroupRangeHook as HPerNetGroupRangeHook,
@@ -144,6 +145,13 @@ fn set_modules_disabled(value: i64) { let _ = modules::admission::set_modules_di
 fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
 fn get_ptrace_scope() -> i64 { sched::yama::scope() as i64 }
 fn set_ptrace_scope(value: i64) { let _ = sched::yama::set_scope(value); }
+/// `net.core.rmem_max` / `net.core.wmem_max` bind to the ONE pair of ceilings
+/// `SO_RCVBUF` / `SO_SNDBUF` clamp against, so the leaf and the option can
+/// never disagree.
+fn get_rmem_max() -> i64 { net::sysctl::rmem_max() as i64 }
+fn set_rmem_max(value: i64) { net::sysctl::set_rmem_max(value) }
+fn get_wmem_max() -> i64 { net::sysctl::wmem_max() as i64 }
+fn set_wmem_max(value: i64) { net::sysctl::set_wmem_max(value) }
 fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
     let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
     net::sysctl::value(namespace, key).ok_or(())
@@ -193,6 +201,9 @@ enum Leaf {
     NetInt(net::net_ns::NetSysctlKey, Option<(i64, i64)>),
     /// `proc_dointvec_minmax` bound to a subsystem-owned scalar.
     IntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
+    /// A `net/core` leaf whose backing variable is one global, writable only
+    /// from the initial network namespace.
+    NetGlobalIntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
     /// Fallible hook for values constrained by another live field.
     PerNetIntHook(fn(&network_namespace::NetworkNamespaceRef, usize) -> Result<i64, ()>,
         fn(&network_namespace::NetworkNamespaceRef, usize, i64) -> Result<(), ()>,
@@ -361,9 +372,11 @@ const SYSCTL_TREE: &[Node] = &[
             File("somaxconn",          NetInt(net::net_ns::NetSysctlKey::Somaxconn, Some((0, INT_MAX)))),
             File("optmem_max",         NetInt(net::net_ns::NetSysctlKey::OptmemMax, Some((0, INT_MAX)))),
             File("rmem_default",       Const(b"212992\n")),
-            File("rmem_max",           Const(b"212992\n")),
+            File("rmem_max",           NetGlobalIntHook(get_rmem_max, set_rmem_max,
+                Some(net::sysctl::RMEM_MAX_BOUNDS))),
             File("wmem_default",       Const(b"212992\n")),
-            File("wmem_max",           Const(b"212992\n")),
+            File("wmem_max",           NetGlobalIntHook(get_wmem_max, set_wmem_max,
+                Some(net::sysctl::WMEM_MAX_BOUNDS))),
             File("netdev_max_backlog", Const(b"1000\n")),
         ]),
         Dir("ipv4", &[
@@ -458,6 +471,8 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
                 current_ns: current_pid_ns, check_write, get, set, bounds,
             })),
         Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
+        Leaf::NetGlobalIntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(
+            HNetGlobalIntHook { current_ns: current_net_ns, get, set, bounds })),
         ULong(def, bounds) => {
             let cell: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(def)));
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))

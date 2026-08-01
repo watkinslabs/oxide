@@ -39,24 +39,35 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         sock.family.load(core::sync::atomic::Ordering::Acquire)) {
         return crate::net_common::errno_from_neterr(e);
     }
+    match peer_sockaddr(&sock) {
+        Ok(sa) => copy_sockaddr_to_user(addr_p, len_p, &sa),
+        Err(error) => -(error.as_i32() as i64),
+    }
+}
+
+/// `sk->sk_prot->getname(sock, addr, peer=1)`: the peer address a connected
+/// socket reports, shared by `getpeername(2)` and `SO_PEERNAME`. # C: O(1)
+pub(crate) fn peer_sockaddr(sock: &alloc::sync::Arc<net::sock::InetSocket>)
+    -> Result<EncodedSockaddr, Errno>
+{
     let raw = match &*sock.kind.lock() {
         SockKind::Raw4(endpoint) => match endpoint.snapshot().remote {
             Some(peer) => Some(encoded_sockaddr_in(peer.as_u32().to_be(), 0)),
-            None => return -(Errno::Enotconn.as_i32() as i64),
+            None => return Err(Errno::Enotconn),
         },
         SockKind::Raw6(endpoint) => match endpoint.peer() {
             Some(peer) => Some(encoded_sockaddr_in6(peer.addr.0, 0, peer.scope_id)),
-            None => return -(Errno::Enotconn.as_i32() as i64),
+            None => return Err(Errno::Enotconn),
         },
         _ => None,
     };
-    if let Some(sa) = raw { return copy_sockaddr_to_user(addr_p, len_p, &sa); }
+    if let Some(sa) = raw { return Ok(sa); }
     // Linux AF_PACKET installs `packet_getname`, which rejects its peer
     // query with EOPNOTSUPP rather than falling through to generic INET peer
     // state (net/packet/af_packet.c:packet_getname). AF_PACKET owns no peer
     // address, so do not synthesize one from the generic socket tuple.
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_PACKET {
-        return -(Errno::Eopnotsupp.as_i32() as i64);
+        return Err(Errno::Eopnotsupp);
     }
     // AF_UNIX sockets keep their peer as a UnixPair (SockKind::Unix /
     // UnixMsgPair), never in the IPv4 `peer` tuple. A connected AF_UNIX end
@@ -66,19 +77,16 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
     // dbus-daemon, logind and many daemons call getpeername on their AF_UNIX
     // connections; returning ENOTCONN on a live connection broke them.
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_UNIX {
-        return match net::sock::unix_peer_path(&sock) {
-            Some(path) => {
-                let sa = encoded_sockaddr_un_path(path.as_deref());
-                copy_sockaddr_to_user(addr_p, len_p, &sa)
-            }
-            None => -(Errno::Enotconn.as_i32() as i64),
+        return match net::sock::unix_peer_path(sock) {
+            Some(path) => Ok(encoded_sockaddr_un_path(path.as_deref())),
+            None => Err(Errno::Enotconn),
         };
     }
     let tcp_peer_unavailable = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => !entry.peer_name_connected(),
         _ => false,
     };
-    if tcp_peer_unavailable { return -(Errno::Enotconn.as_i32() as i64); }
+    if tcp_peer_unavailable { return Err(Errno::Enotconn); }
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_INET6 {
         // Only a NATIVE v6 peer lives in `peer6`. A dual-stack socket that
         // connected to an IPv4 peer (`::ffff:a.b.c.d`, the standard
@@ -88,14 +96,13 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         // soon as `peer6` was empty declared every such live connection
         // unconnected.
         if let Some((ip, port)) = *sock.peer6.lock() {
-            let bound_ifindex = net::sock_v6::name_bound_ifindex(&sock);
-            let sa = encoded_sockaddr_in6(ip.0, port.to_be(), net::sock_v6::name_scope_id(ip, bound_ifindex));
-            return copy_sockaddr_to_user(addr_p, len_p, &sa);
+            let bound_ifindex = net::sock_v6::name_bound_ifindex(sock);
+            return Ok(encoded_sockaddr_in6(ip.0, port.to_be(),
+                net::sock_v6::name_scope_id(ip, bound_ifindex)));
         }
     }
     let (ip, port) = match *sock.peer.lock() {
-        Some(t) => t, None => return -(Errno::Enotconn.as_i32() as i64),
+        Some(t) => t, None => return Err(Errno::Enotconn),
     };
-    let sa = encoded_sockaddr_for_socket(&sock, ip, port);
-    copy_sockaddr_to_user(addr_p, len_p, &sa)
+    Ok(encoded_sockaddr_for_socket(sock, ip, port))
 }

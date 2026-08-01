@@ -64,7 +64,7 @@ impl UnixPair {
         // session"). Default-off; zero bytes on the hot path.
         #[cfg(feature = "debug-dbus")]
         trace_dbus_stream(data);
-        let stable_cred = match end { UnixEnd::A => self.cred_a.get(), UnixEnd::B => self.cred_b.get() };
+        let stable_cred = match end { UnixEnd::A => self.cred_a.get(), UnixEnd::B => self.cred_b.get() }.ids();
         #[cfg(target_os = "oxide-kernel")]
         let sender_cred = supplied_creds.unwrap_or_else(|| sched::live::current().map(|c| {
             use core::sync::atomic::Ordering::Relaxed;

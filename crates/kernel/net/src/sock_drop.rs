@@ -63,7 +63,10 @@ impl InetSocket {
             #[cfg(target_os = "oxide-kernel")]
             entry.rx_waiters.wake_all();
         }
+        // Linux `reuseport_detach_sock`: leaving the bind key leaves the group.
+        crate::reuseport::slot::leave(&self.reuseport_group);
         if let SockKind::TcpListener(listener) = &*self.kind.lock() {
+            crate::reuseport::slot::set_endpoint_group(&listener.reuseport_group, None);
             stk.tcp_unlisten_entry(listener);
         }
         if let Some(bind) = self.tcp_bind.lock().take() {

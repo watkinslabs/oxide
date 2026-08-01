@@ -59,7 +59,7 @@ pub use tcp_conn::{Endpoint, TcpCongestionControl, TcpConn, TcpConnError};
 
 pub mod unix_sock;
 pub use unix_sock::{
-    GcPin, GcRights, GcTransferGuard, UnixAddr, UnixAddrKey, UnixConnectError, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixPair, UnixRegistry, UnixStreamError,
+    GcPin, GcRights, GcTransferGuard, UnixAddr, UnixAddrKey, UnixConnectError, UnixDgram, UnixDgramQueue, PeerCred, UnixEnd, UnixListener, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixPair, UnixRegistry, UnixStreamError,
     classify_files, transfer_guard,
     unix_path_display, unix_path_is_abstract,
 };
@@ -80,6 +80,7 @@ pub mod forwarding;
 pub mod iface_addr;
 pub mod netfilter_hook;
 pub mod bpf_filter;
+pub mod reuseport;
 pub mod mcast_filter;
 pub mod raw4;
 pub mod raw6;
