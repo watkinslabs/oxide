@@ -11,6 +11,8 @@ path = "src/lib.rs"
 klog = { path = "../../shared/klog" }
 sync  = { path = "../../shared/sync" }
 vfs   = { path = "../vfs" }
+hal   = { path = "../../arch/hal" }
+syscall = { path = "../syscall" }
 
 [features]
 debug-cgroup = []

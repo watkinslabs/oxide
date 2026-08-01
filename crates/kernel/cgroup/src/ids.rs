@@ -26,3 +26,26 @@ pub(crate) fn dir_ino(cgid: u64) -> Ino { CGROUP_DIR.at(cgid) }
 pub(crate) fn file_ino(cgid: u64, slot: u8) -> Ino {
     CGROUP_FILE.at((cgid << FILE_SLOT_BITS) | slot as u64)
 }
+
+/// Inverse of [`dir_ino`] — the cgroup id a DIRECTORY inode number encodes, or
+/// `None` when the number is not in cgroupfs's directory region.
+///
+/// The answer is a CANDIDATE id, never an existence claim: the caller must ask
+/// the hierarchy whether that cgroup is live. `at()` folds modulo the region
+/// width, so an id past the region wraps onto a lower one — a file handle
+/// therefore round-trips only for ids inside the region, and a wrapped id
+/// resolves to whatever live cgroup shares its number, exactly as an inode
+/// number collision would. # C: O(1)
+pub(crate) fn cgid_of_dir_ino(ino: Ino) -> Option<u64> {
+    if !CGROUP_DIR.contains(ino) { return None; }
+    Some(ino - CGROUP_DIR.start())
+}
+
+/// Inverse of [`file_ino`] — the `(cgroup id, file slot)` a CONTROL-FILE inode
+/// number encodes, or `None` outside cgroupfs's control-file region. A
+/// candidate, like [`cgid_of_dir_ino`]. # C: O(1)
+pub(crate) fn cgid_slot_of_file_ino(ino: Ino) -> Option<(u64, u8)> {
+    if !CGROUP_FILE.contains(ino) { return None; }
+    let packed = ino - CGROUP_FILE.start();
+    Some((packed >> FILE_SLOT_BITS, (packed & 0xff) as u8))
+}

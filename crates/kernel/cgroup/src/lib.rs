@@ -12,6 +12,7 @@ extern crate alloc;
 #[cfg(feature = "debug-cgroup")]
 pub mod selftest;
 
+pub mod export;
 pub mod inode;
 pub mod fs;
 pub mod bpf;
@@ -123,6 +124,13 @@ pub fn is_mounted() -> bool { TREE.lock().is_mounted() }
 pub fn cgid_from_dir_inode(inode: &vfs::Inode) -> Option<u64> {
     inode.private::<inode::CgDirData>().map(|d| d.cgid)
 }
+
+/// True iff `cgid` names a live cgroup. # C: O(log n)
+pub fn node_exists(cgid: u64) -> bool { TREE.lock().contains(cgid) }
+
+/// Parent cgroup id of `cgid`, or `None` for the root / a removed node.
+/// # C: O(log n)
+pub fn node_parent(cgid: u64) -> Option<u64> { TREE.lock().parent_of(cgid) }
 
 /// Write a control file. Handles the cross-subsystem files
 /// (cgroup.procs/threads/subtree_control/kill/freeze) here; delegates

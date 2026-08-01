@@ -65,6 +65,47 @@ pub trait SuperOps: Send + Sync {
     fn statfs(&self) -> KResult<SbStatFs>;
     /// `sync_fs` — flush dirty state. Default no-op (pseudo-fs). # C: FS-dependent
     fn sync_fs(&self, _wait: bool) -> KResult<()> { Ok(()) }
+    /// `s_export_op->encode_fh` — payload bytes a handle for this object costs
+    /// on THIS filesystem, so `name_to_handle_at(2)` can run its capacity check
+    /// before encoding anything.
+    ///
+    /// The default is the generic `(ino, generation[, parent])` FID. A
+    /// filesystem overrides it when its handles have a different width, and
+    /// width is a userspace-visible contract: a caller that sizes its buffer to
+    /// the width Linux's backend uses and does NOT run the grow-and-retry
+    /// protocol gets EOVERFLOW forever from a wider encoder.
+    /// # C: O(1)
+    fn export_fid_len(&self, connectable: bool, is_dir: bool) -> u32 {
+        crate::export::fid::encoded_fid_len(connectable, is_dir)
+    }
+    /// `s_export_op->encode_fh` — write this object's handle payload into `buf`
+    /// and report `(bytes, handle_type)`. `buf` holds at least
+    /// [`Self::export_fid_len`] bytes; `parent` is the containing directory's
+    /// identity, supplied only for a connectable non-directory.
+    /// # C: O(1)
+    fn export_encode_fh(&self, inode: &InodeRef, parent: Option<(Ino, u32)>, buf: &mut [u8])
+        -> (u32, i32)
+    {
+        crate::export::fid::encode_fid_into(
+            &crate::export::fid::Fid {
+                ino: inode.ino(), generation: inode.i_generation(), parent }, buf)
+    }
+    /// Payload length a `handle_type` claims on this filesystem, or `None` for
+    /// a type it did not encode (`ESTALE` at the caller, never `EINVAL` — a
+    /// well-formed foreign handle may simply name an object that is gone).
+    /// # C: O(1)
+    fn export_fid_len_for_type(&self, handle_type: i32) -> Option<u32> {
+        crate::export::fid::fid_len_for_type(handle_type)
+    }
+    /// `s_export_op` decode half: parse a handle payload back into the identity
+    /// [`Self::fh_to_dentry`] resolves. Mirrors [`Self::export_encode_fh`], so
+    /// a filesystem that overrides one overrides both.
+    /// # C: O(1)
+    fn export_decode_fh(&self, bytes: &[u8], handle_type: i32)
+        -> Result<crate::export::fid::Fid, syscall::errno::Errno>
+    {
+        crate::export::fid::decode_fid(bytes, handle_type)
+    }
     /// `s_export_op->fh_to_dentry` — turn an `open_by_handle_at(2)` file
     /// identity back into an inode WITHOUT a path walk.
     ///
