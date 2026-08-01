@@ -35,6 +35,43 @@ use crate::cmds::run;
 /// so it is hoisted here and every probe reads the one definition.
 pub(super) const ARM_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
 
+/// The Rust probe workspace, built for `*-unknown-linux-gnu`.
+pub(super) const PROBE_WORKSPACE: &str = "userspace/probes";
+
+/// Cargo triple for a probe arch.
+pub(super) fn probe_triple(arch: &str) -> Result<&'static str, u8> {
+    match arch {
+        "x86_64" => Ok("x86_64-unknown-linux-gnu"),
+        "aarch64" => Ok("aarch64-unknown-linux-gnu"),
+        other => { eprintln!("xtask rootfs: unsupported arch `{other}` for a probe"); Err(2) }
+    }
+}
+
+/// Build one Rust probe from the `userspace/probes` workspace and return the
+/// binary. # C: O(cargo)
+///
+/// A SEPARATE workspace with its own target dir, so a probe build never disturbs
+/// the kernel workspace's feature unification or artifacts. Layout and syscall
+/// slots are `const`-asserted inside each probe, so a cross-arch ABI mistake
+/// fails HERE rather than in the guest.
+pub(super) fn probe_cargo(arch: &str, package: &str) -> Result<PathBuf, u8> {
+    let triple = probe_triple(arch)?;
+    if arch == "aarch64" && !Path::new(ARM_SYSROOT).is_dir() {
+        eprintln!("xtask rootfs: missing {ARM_SYSROOT} for {package}");
+        return Err(2);
+    }
+    let mut c = Command::new("cargo");
+    c.current_dir(PROBE_WORKSPACE);
+    c.args(["build", "--release", "--target", triple, "-p", package]);
+    run(c)?;
+    let out = PathBuf::from(PROBE_WORKSPACE).join("target").join(triple).join("release").join(package);
+    if !out.is_file() {
+        eprintln!("xtask rootfs: {package} did not produce {}", out.display());
+        return Err(1);
+    }
+    Ok(out)
+}
+
 /// Compiler + sysroot for a rootfs probe, against the glibc ABI.
 ///
 /// Probes build with the SYSTEM GNU cross toolchain. The two that used the
@@ -164,30 +201,26 @@ fn inject_drm_render_smoke(root_img: &Path, arch: &str) -> Result<(), u8> {
     Ok(())
 }
 
-fn build_drm_probe(arch: &str) -> Result<PathBuf, u8> {
-    let (cc, sysroot) = probe_cc(arch, "DRM render smoke")?;
-    let out_dir = PathBuf::from("target").join("smoke").join(arch);
-    std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
-    let out = out_dir.join("drm_render_probe");
-    let mut c = Command::new(cc);
-    if let Some(path) = sysroot { c.arg(format!("--sysroot={path}")); }
-    c.args(["-O2", "-std=gnu11", "-Wall", "-Wextra", "userspace/drm_probe/drm_probe.c", "-o"]);
-    c.arg(&out);
-    run(c)?;
-    Ok(out)
-}
+fn build_drm_probe(arch: &str) -> Result<PathBuf, u8> { probe_cargo(arch, "drm_probe") }
 
 fn write_drm_render_service() -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let path = dir.join("drm-render-smoke.service");
+    // StandardOutput=tty on /dev/ttyS0, NOT `>/dev/console`: the smoke scrapes the
+    // UART, and a console redirect does not land there — so the probe's verdict
+    // was invisible and every failure looked identical from outside. Matches what
+    // the swapfile unit already does.
     let body = "[Unit]\n\
 Description=Oxide DRM render node smoke\n\
 After=basic.target systemd-udev-settle.service\n\
 \n\
 [Service]\n\
 Type=oneshot\n\
-ExecStart=/bin/sh -c '/usr/local/bin/drm_render_probe >/dev/console 2>&1'\n\
+StandardOutput=tty\n\
+StandardError=tty\n\
+TTYPath=/dev/ttyS0\n\
+ExecStart=/usr/local/bin/drm_render_probe\n\
 \n\
 [Install]\n\
 WantedBy=multi-user.target\n";

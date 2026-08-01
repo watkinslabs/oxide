@@ -1,9 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use crate::cmds::run;
 
-const PROBE_SOURCE: &str = "userspace/swapfile_probe/swapfile_probe.c";
 const PROBE_NAME: &str = "swapfile_probe";
 const PROBE_DESTINATION: &str = "/usr/local/bin/swapfile_probe";
 const SERVICE_NAME: &str = "swapfile-smoke.service";
@@ -28,18 +25,7 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     Ok(())
 }
 
-fn build_probe(arch: &str) -> Result<PathBuf, u8> {
-    let (cc, sysroot) = super::probe_cc(arch, "ext4 swapfile smoke")?;
-    let out_dir = PathBuf::from("target").join("smoke").join(arch);
-    std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
-    let out = out_dir.join(PROBE_NAME);
-    let mut c = Command::new(cc);
-    if let Some(path) = sysroot { c.arg(format!("--sysroot={path}")); }
-    c.args(["-O2", "-std=gnu11", "-Wall", "-Wextra", "-Werror", PROBE_SOURCE, "-o"]);
-    c.arg(&out);
-    run(c)?;
-    Ok(out)
-}
+fn build_probe(arch: &str) -> Result<PathBuf, u8> { super::probe_cargo(arch, PROBE_NAME) }
 
 fn write_service() -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");

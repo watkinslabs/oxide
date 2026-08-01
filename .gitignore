@@ -35,10 +35,15 @@ debug-symbols/
 /userspace/libc/musl/build/
 /userspace/dynlink/build/
 
-# Built userspace binaries. Each userspace/<name>/<name> is the
-# compiled output of <name>.c; rebuilt by `xtask user`. Ignore
-# everything under userspace/*/, then re-allow source files +
-# the vendored libc/dynlink/shared trees.
+# Built userspace binaries. Each userspace/<name>/<name> is the compiled
+# output of <name>.c. Ignore everything under userspace/*/, then re-allow
+# source files + the trees that are real source.
+#
+# This pattern assumes a FLAT userspace/<name>/<name>.c layout, so any nested
+# tree must be re-allowed explicitly or it vanishes from `git add` without a
+# warning — `userspace/probes` (the Rust probe workspace) is one, and the
+# stale `userspace/dynlink/dynlink` binaries on main are what it looks like
+# when the rule outlives its layout.
 /userspace/*/*
 !/userspace/*/*.c
 !/userspace/*/*.h
@@ -53,6 +58,9 @@ debug-symbols/
 !/userspace/libc/**
 !/userspace/keymaps/
 !/userspace/keymaps/**
+!/userspace/probes/
+!/userspace/probes/**
+/userspace/probes/target/
 
 # QEMU runtime
 /boot.txt
