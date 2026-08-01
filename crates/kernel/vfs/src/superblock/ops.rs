@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use crate::fs::FsFlags;
 use crate::fs::fs_context::FsContextOps;
+use crate::fs::fs_parser::FsParamSpec;
 use crate::file_ops::FileOps;
 use crate::inode::{Inode, InodeBuilder, InodeRef, I_CLEAR, I_DIRTY, I_FREEING};
 use crate::inode_ops::InodeOps;
@@ -357,4 +358,16 @@ pub trait FileSystemType: Send + Sync {
     /// classic mount adapter ([`crate::fs::fs_context::ClassicMountFsContextOps`]) replays the
     /// accumulated options to [`FileSystemType::mount`] at `get_tree`. # C: O(1)
     fn init_fs_context(&self) -> Option<Arc<dyn FsContextOps>> { None }
+    /// `file_system_type::parameters` — the parameters this filesystem accepts.
+    ///
+    /// `None` is the legacy filesystem: every option is swallowed into the
+    /// monolithic data string and none can be rejected, which is what an
+    /// unconverted backend does. `Some(table)` opts into real admission — a key
+    /// outside the table is reported unknown.
+    ///
+    /// `Some(&[])` is therefore a MEANINGFUL declaration, not an empty default:
+    /// it says this filesystem accepts no mount options at all, so an option
+    /// support query answers truthfully instead of claiming everything.
+    /// # C: O(1)
+    fn parameters(&self) -> Option<&'static [FsParamSpec]> { None }
 }
