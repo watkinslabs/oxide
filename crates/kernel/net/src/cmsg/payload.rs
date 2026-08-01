@@ -53,7 +53,7 @@ const IPOPT_TIMESTAMP: u8 = 68;
 const IPOPT_LSRR: u8 = 131;
 const IPOPT_SSRR: u8 = 137;
 
-/// `ip_options_echo`: the option area a reply to this datagram would carry —
+/// The option area a reply to this datagram would carry —
 /// the record-route and timestamp options as received, and the source route
 /// REVERSED so the reply retraces the path. Every other option kind is
 /// dropped, which is what keeps a security or stream-identifier option from
