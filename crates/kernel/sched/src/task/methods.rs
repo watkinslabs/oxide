@@ -407,6 +407,9 @@ impl Task {
             dbg_fpu_state_expected: AtomicUsize::new(dbg_fpu_state_expected),
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
+            nocpuid:       AtomicBool::new(false),
+            shstk_features: AtomicU64::new(0),
+            shstk_locked:   AtomicU64::new(0),
             #[cfg(target_arch = "aarch64")]
             svc_frame:     core::sync::atomic::AtomicU64::new(0),
             seccomp_filters: Spinlock::new(alloc::vec::Vec::new()),
