@@ -52,6 +52,10 @@ pub fn arm(task: &Arc<Task>, at: u64) {
 /// or was replenished inline because its instant had already passed.
 /// # C: O(N)
 pub fn disarm(task: &Task) {
+    // Every task exit runs this; the overwhelming majority have never been
+    // throttled, and taking the global queue lock for each of them would put a
+    // machine-wide serialisation point on the exit path.
+    if task.dl.replenish_at() == 0 { return; }
     task.dl.set_replenish_at(0);
     let mut g = q_lock!();
     let before = g.entries.len();
