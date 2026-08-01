@@ -76,6 +76,9 @@ fn cpuid_fault_msr() -> CpuidFaultMsr {
 /// `arch_ctx.fs_base`, so it survives context switch (`Context::switch`
 /// saves/restores it), fork (`spawn.rs` seeds the child from the live MSR)
 /// and execve (a fresh image re-runs `ARCH_SET_FS` from `__libc_setup_tls`).
+/// GS base is the same story one MSR over: `IA32_KERNEL_GS_BASE` while the
+/// CPU is in kernel mode, mirrored into `arch_ctx.gs_base`, promoted to the
+/// live GS base by the exit-path `swapgs` and cleared by execve.
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
 pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
@@ -107,19 +110,33 @@ pub fn kernel_arch_prctl(args: &SyscallArgs) -> i64 {
             let base = unsafe { hal_x86_64::get_user_fs_base() };
             put_user_u64(ptr, base)
         }
-        // ARCH_SET_GS / ARCH_GET_GS. This port runs the no-swapgs model: GS
-        // base is the kernel per-CPU area at all times (the syscall, IRQ and
-        // exception stubs and every percpu accessor read `gs:[..]` with no
-        // `swapgs`), so there is no register left to carry a user GS base.
-        // Honouring these two sub-codes requires converting every ring
-        // transition to `swapgs`, which is a HAL entry-path change (docs/54),
-        // not a syscall-ABI one. Storing the value and reporting it back would
-        // be a lie: user-mode `gs:` would still resolve against the kernel
-        // per-CPU base. EINVAL is the honest refusal — the same answer a
-        // kernel gives for a sub-code it does not implement — and
-        // `arch_prctl_abi::classify` still applies the EPERM address rule
-        // first, so the error ORDER matches Linux.
-        ArchOp::SetGs(_) | ArchOp::GetGs(_) => -(Errno::Einval.as_i32() as i64),
+        // ARCH_SET_GS / ARCH_GET_GS. The value is the thread's USER GS base.
+        // Kernel mode parks it in IA32_KERNEL_GS_BASE — the register the entry
+        // and exit `swapgs` exchange with the live per-CPU base — so the write
+        // is immediately real for ring 3 without disturbing any `gs:[..]` the
+        // kernel itself performs. Mirrors the FS pair below/above it, including
+        // the arch_ctx sync that keeps a fork() landing before the next
+        // context switch from copying a stale base.
+        ArchOp::SetGs(val) => {
+            // SAFETY: val < TASK_SIZE_MAX per `classify`, so the wrmsr operand
+            // is canonical; IA32_KERNEL_GS_BASE holds the per-thread user GS base
+            // while the CPU is in kernel mode.
+            unsafe { hal_x86_64::set_user_gs_base(val); }
+            if let Some(cur) = sched::live::current() {
+                // SAFETY: current is the running task on this CPU; arch_ctx is
+                // single-mutator per `13§5` and this is its own syscall path.
+                unsafe {
+                    let p: *mut hal_x86_64::ContextX86_64 = cur.arch_ctx_ptr();
+                    (*p).gs_base = val;
+                }
+            }
+            0
+        }
+        ArchOp::GetGs(ptr) => {
+            // SAFETY: rdmsr IA32_KERNEL_GS_BASE is privileged; no memory effect.
+            let base = unsafe { hal_x86_64::get_user_gs_base() };
+            put_user_u64(ptr, base)
+        }
         ArchOp::GetCpuid => {
             let nocpuid = sched::live::current()
                 .map(|c| c.nocpuid.load(Ordering::Acquire)).unwrap_or(false);

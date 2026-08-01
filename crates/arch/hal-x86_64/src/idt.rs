@@ -194,7 +194,7 @@ pub unsafe fn set_gate_ist(vec: u8, ist: u8) {
 }
 
 /// Point the fatal / nesting-prone CPU-exception gates at their per-CPU IST
-/// stacks (Linux-faithful: #DF→IST1, NMI→IST2, #DB→IST3, #MC→IST4). #PF is
+/// stacks (`fault::paranoid::PARANOID_VECTORS`). #PF is
 /// intentionally NOT IST-routed (Linux keeps it on RSP0 — page faults nest
 /// legitimately and a single per-CPU IST is non-reentrant). Call ONCE from
 /// the BSP boot path AFTER `tss::setup_ist_stacks(0)`; APs inherit the same
@@ -206,13 +206,11 @@ pub unsafe fn set_gate_ist(vec: u8, ist: u8) {
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU (BSP only)
 pub unsafe fn install_ist_gates() {
-    use crate::tss::{IST_DF, IST_NMI, IST_DB, IST_MC};
-    // SAFETY: see fn contract; each call is a single masked u8 field store.
-    unsafe {
-        set_gate_ist(1,  IST_DB);  // #DB  debug
-        set_gate_ist(2,  IST_NMI); // NMI
-        set_gate_ist(8,  IST_DF);  // #DF  double fault
-        set_gate_ist(18, IST_MC);  // #MC  machine check
+    // Table lives with the paranoid-entry contract it belongs to: these are
+    // exactly the vectors whose stubs jump to `oxide_fault_paranoid`.
+    for (vec, ist) in crate::fault::paranoid::PARANOID_VECTORS {
+        // SAFETY: see fn contract; each call is a single masked u8 field store.
+        unsafe { set_gate_ist(vec, ist); }
     }
 }
 

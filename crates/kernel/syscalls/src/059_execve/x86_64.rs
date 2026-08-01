@@ -324,8 +324,12 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     trace_swap_exec_stage(&path_owned, b"after-replace-mm");
     unsafe {
         hal_x86_64::set_user_fs_base(0);
+        // `execve` starts a new program image, so the inherited TLS/GS bases
+        // go with the old one — Linux clears both in `start_thread`.
+        hal_x86_64::set_user_gs_base(0);
         let ctx_ptr: *mut hal_x86_64::ContextX86_64 = cur.arch_ctx_ptr();
         (*ctx_ptr).fs_base = 0;
+        (*ctx_ptr).gs_base = 0;
     }
     unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
