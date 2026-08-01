@@ -1,10 +1,13 @@
 extern crate alloc;
 
+#[cfg(test)]
 use alloc::sync::Arc;
 
 use network_namespace::NetworkNamespaceRef;
 
-use crate::{LoopbackDev, NetStack};
+#[cfg(test)]
+use crate::LoopbackDev;
+use crate::NetStack;
 
 use super::materialize_state;
 
@@ -76,11 +79,20 @@ pub fn create_namespace(owner_user_namespace: namespace_identity::NamespacePin)
 }
 
 /// One private-loopback drain paired with the concrete namespace owner.
+///
+/// Test support only. Receive delivery reaches a namespace loopback through
+/// this stack's NET_RX poll list now (`stack::rx_backlog`), registered when the
+/// device is created; walking the namespace registry from the bottom half to
+/// rediscover the same devices would be a second, disagreeing source of truth
+/// for "what has frames waiting". What the remaining users cover is the
+/// lease-retention contract during namespace teardown, which is unchanged.
+#[cfg(test)]
 pub(crate) struct PrivateLoopback {
     lease: crate::IngressLease,
     dev: Arc<LoopbackDev>,
 }
 
+#[cfg(test)]
 impl PrivateLoopback {
     /// Dispatch the snapshotted queue while retaining its namespace owner. # C: O(N pending)
     pub(crate) fn drain_into(self, stack: &NetStack) {
@@ -94,7 +106,9 @@ impl PrivateLoopback {
     pub(crate) fn generation(&self) -> u64 { self.lease.generation() }
 }
 
-/// Snapshot owner-retained private loopback queues for network RX draining. # C: O(N_ns)
+/// Snapshot owner-retained private loopback queues. Test support only; see
+/// [`PrivateLoopback`]. # C: O(N_ns)
+#[cfg(test)]
 pub(crate) fn private_loopbacks(stack: &NetStack) -> alloc::vec::Vec<PrivateLoopback> {
     namespace_identity::active_kind_page(namespace_identity::NamespaceKind::Net,
         namespace_identity::NsId::from_u64(0), usize::MAX).into_iter().filter_map(|identity| {

@@ -17,6 +17,7 @@
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
+// - rx_backlog: per-CPU receive backlog, poll list, and the NET_RX drain pass.
 // - ethernet: canonical L2 ingress before bridge and L3 demultiplexing.
 // - arp_neighbor: canonical per-interface IPv4 neighbor bindings.
 // - bridge: RTNL-owned port/FDB state and L2 forwarding decisions.
@@ -80,6 +81,7 @@ pub(crate) mod tcp_rx_trace;
 mod tcp_tx;
 mod tcp_pmtu;
 mod ipv4;
+mod rx_backlog;
 mod ethernet;
 mod arp_neighbor;
 mod neigh_rtnl;

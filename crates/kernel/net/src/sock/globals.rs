@@ -20,6 +20,7 @@ pub unsafe fn init() {
     let owner = crate::net_ns::current_namespace();
     let (id, lo) = crate::global_stack().register_loopback_for(&owner);
     *g = Some((id, lo));
+    crate::backlog::install(); // NET_RX bottom half owns the slot before any raise
     crate::register_timers(); // net self-registers its periodic timers
 }
 
@@ -27,21 +28,15 @@ pub unsafe fn init() {
 /// # C: O(1)
 pub fn stack() -> &'static NetStack { crate::global_stack() }
 
-/// Drain lo's xmit queue back through deliver_rx; synchronous on
-/// every UDP send + after deliver_rx (so ICMP echo replies the
-/// path itself xmit'd land). Replaces a real soft-IRQ NET_RX.
-/// # C: O(N pending)
-pub fn drain_loopback() {
-    {
-        let g = LO.lock();
-        if let Some((id, lo)) = g.as_ref() {
-            crate::global_stack().drain_loopback(*id, lo);
-        }
-    }
-    for loopback in crate::net_ns::private_loopbacks(crate::global_stack()) {
-        loopback.drain_into(crate::global_stack());
-    }
-}
+/// Publish pending loopback receive work to the NET_RX bottom half.
+///
+/// Every socket call that could have made a frame visible to a peer calls this
+/// — send, recv, poll, shutdown, setsockopt, socket teardown. It does NOT walk
+/// the receive path: the bottom half does, on its own stack. Charging receive
+/// traversal to the sender is what made a transmit chain carry the whole RX
+/// subtree; see `backlog`'s module comment.
+/// # C: O(1) + the bounded drain
+pub fn drain_loopback() { crate::backlog::net_rx_schedule(); }
 
 /// Allocate an unused ephemeral src port + bind it under
 /// `Ipv4Addr::ANY` so reply datagrams can be received.

@@ -84,8 +84,15 @@ static PROCESS_PENDING: AtomicU32 = AtomicU32::new(0);
 /// Current logical CPU id (kernel) / 0 (host tests). Same arch glue as
 /// `sched::diag::percpu::this_cpu_id`. Clamped to `MAX_CPUS` so a bogus id
 /// can never index out of bounds.
+/// Canonical per-CPU index for softirq-owned state. Subsystems that keep their
+/// own per-CPU array alongside the pending mask (the net RX backlog) index it
+/// with this so a slot's queue and its pending bit can never disagree about
+/// which CPU they belong to. # C: O(1)
 #[inline]
-fn this_cpu() -> usize {
+pub fn this_cpu() -> usize { this_cpu_id() }
+
+#[inline]
+fn this_cpu_id() -> usize {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     let id = { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() as usize };
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
