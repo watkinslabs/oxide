@@ -1,7 +1,0 @@
-# C249 — reap a stale QEMU holding this tree's boot image
-
-| Status | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|
-| FIXED C249 | high | A killed smoke leaves its QEMU alive holding `root-<arch>.img`. Every later boot in that tree then died with `Is another process using the image [...]` and wrote a log with ZERO kernel lines — which reads exactly like a boot failure. Three consecutive "failures" on the B1581 lane were this, and it has produced retracted before/after claims. | C249. `attempt_boot` now reaps first, keyed on the IMAGE PATH under `$SMOKE_ROOT`, so it can only ever match a QEMU of this worktree. Tested both ways: a QEMU leaked on `target/builds/testns/root-x86_64.img` is named and killed; one holding an identically-named image OUTSIDE the tree is reported 0 times and survives. Real `make smoke-x86` PASS 75s with nothing to reap. | C249 |
-| FIXED C249 | med | A failed attempt whose log has no kernel output said nothing to distinguish "the kernel never ran" from "the kernel ran and failed". `diagnose_empty_log` now names it as a harness/build/image-lock failure explicitly. | C249. | C249 |
-| OPEN | low | The reaper walks `/proc/[0-9]*/fd/*` rather than using `lsof`, to avoid a tool dependency in the boot gate. On a box with thousands of processes that walk is not free; it runs once per attempt, so the cost is bounded, but a very busy runner may notice. | C249. | — |
