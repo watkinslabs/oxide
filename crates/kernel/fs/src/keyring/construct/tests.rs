@@ -120,26 +120,54 @@ fn an_empty_callout_string_still_upcalls() {
     assert!(request_key_core(&t, "user", "instantiate-empty", Some(b""), 0) > 0);
 }
 
-// The helper reads the callout info back off its token — that is how it learns
-// WHAT it was asked to build.
+// The helper reads the callout info back off its token with KEYCTL_READ — that
+// is how it learns WHAT it was asked to build. Asserted through `read_core`,
+// the path a helper actually uses: callout info that round-trips into the store
+// but cannot be read back out is a request nobody can service.
 #[test]
-fn the_token_carries_the_callout_info_to_the_helper() {
+fn the_helper_reads_the_callout_info_off_its_token() {
     with_helper();
     let t = ctx(4304, 4304);
-    join_session(&t, None);
-    let mut g = STORE.lock();
-    let dest = g.resolve(KEY_SPEC_SESSION_KEYRING, &t.t).expect("session keyring");
-    let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "callout-probe",
-        4304, 4304, 0, 0).expect("mint");
-    let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"afs@example",
-        dest, &t.t).expect("token");
-    let payload = g.keys[&auth].payload.clone();
+    let ring = join_session(&t, None) as i32;
+    let helper = ctx(4404, 0);
+    let (key, auth) = {
+        let mut g = STORE.lock();
+        let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "callout-probe",
+            4304, 4304, 0, 0).expect("mint");
+        let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"afs@example",
+            ring, &t.t).expect("token");
+        let hring = g.resolve(KEY_SPEC_SESSION_KEYRING, &helper.t).expect("helper session");
+        g.link(hring, auth).expect("hand the token to the helper");
+        (key, auth)
+    };
+    assert_eq!(read_core(&helper, auth, 64).expect("the token is readable by its holder"),
+        b"afs@example".to_vec(), "KEYCTL_READ on the token yields the callout info");
+    // And the record names the key and where its answer belongs.
+    let g = STORE.lock();
     let rec = g.keys[&auth].auth.clone().expect("record");
-    drop(g);
-    assert_eq!(payload, b"afs@example".to_vec(), "the callout info is the token's payload");
     assert_eq!(rec.target, key);
-    assert_eq!(rec.dest_keyring, dest, "the token records where the answer belongs");
+    assert_eq!(rec.dest_keyring, ring, "the token records where the answer belongs");
     assert_eq!(rec.op, "create");
+    drop(g);
+    // A task that does NOT hold the token cannot read the callout info out of
+    // it — the request's parameters are not public.
+    let stranger = ctx(4405, 4405);
+    assert_eq!(read_core(&stranger, auth, 64), Err(errno(Errno::Eacces)));
+}
+
+// `char op[8]` truncates at seven characters plus the terminator, so an
+// operation name is never silently widened past what the ABI carries.
+#[test]
+fn the_operation_name_is_truncated_to_the_abi_field() {
+    let t = ctx(4325, 4325);
+    let ring = join_session(&t, None) as i32;
+    let mut g = STORE.lock();
+    let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "opname",
+        4325, 4325, 0, 0).expect("mint");
+    let auth = super::super::auth::request_key_auth_new(&mut g, key, "negotiate-long", b"",
+        ring, &t.t).expect("token");
+    assert_eq!(g.keys[&auth].auth.as_ref().expect("record").op, "negotia");
+    drop(g);
 }
 
 // A helper that exits 0 without answering the key has FAILED. Trusting its exit
