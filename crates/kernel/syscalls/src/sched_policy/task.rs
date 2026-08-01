@@ -101,16 +101,35 @@ pub fn user_check(caller: &sched::Task, target: &sched::Task,
     0
 }
 
-/// Linux `get_params()` (`kernel/sched/syscalls.c:913`): fill the
-/// policy-relevant fields of `attr` from the task's live state. Drives both
-/// `sched_getattr` and `SCHED_FLAG_KEEP_PARAMS`.
+/// Fill the policy-relevant fields of `attr` from the task's live state.
+/// Drives both `sched_getattr` and `SCHED_FLAG_KEEP_PARAMS`.
+///
+/// `dynamic` is the `SCHED_GETATTR_FLAG_DL_DYNAMIC` request: a deadline task
+/// then reports the budget REMAINING in its current instance and that
+/// instance's ABSOLUTE deadline, rather than the static reservation. The two
+/// are different quantities with the same field names, so conflating them
+/// would report a task that has nearly exhausted its instance as though it
+/// were freshly replenished.
 /// # C: O(1)
-pub fn get_params(t: &sched::Task, attr: &mut SchedAttr) {
+pub fn get_params(t: &sched::Task, attr: &mut SchedAttr, dynamic: bool) {
     let policy = task_policy(t);
-    if rt_policy(policy) || dl_policy(policy) {
-        // `__getparam_dl` additionally reports runtime/deadline/period from the
-        // deadline entity; no task can hold `SCHED_DEADLINE` here (`setattr`
-        // refuses it), so only the shared `p->rt_priority` line is reachable.
+    if dl_policy(policy) {
+        let p = t.dl.params();
+        attr.priority = task_rt_priority(t);
+        attr.period = p.period;
+        if dynamic {
+            let s = t.dl.sched();
+            attr.runtime = s.runtime as u64;
+            attr.deadline = s.deadline;
+        } else {
+            attr.runtime = p.runtime;
+            attr.deadline = p.deadline;
+        }
+        // The deadline-entity flags round-trip; the governor bit is
+        // kernel-internal and is masked off by the caller before copy-out.
+        attr.flags &= !sched::deadline::SCHED_DL_FLAGS;
+        attr.flags |= p.flags;
+    } else if rt_policy(policy) {
         attr.priority = task_rt_priority(t);
     } else {
         attr.nice = t.nice.load(Ordering::Acquire) as i32;

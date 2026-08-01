@@ -14,6 +14,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 
 use crate::cfs::CfsRunqueue;
+use crate::dl::DlRunqueue;
 use crate::rt::RtRunqueue;
 use crate::task::{SchedClass, Task};
 
@@ -21,6 +22,9 @@ use crate::task::{SchedClass, Task};
 /// spinlock once that's wired (`13§6`).
 pub struct RunqueueInner {
     pub cpu: u16,
+    /// Deadline class. First in every pick: an admitted deadline reservation
+    /// outranks any priority.
+    pub dl:  DlRunqueue,
     pub rt:  RtRunqueue,
     pub cfs: CfsRunqueue,
     /// Per-CPU idle task. Always Runnable; never on RT/CFS lists per
@@ -34,6 +38,7 @@ impl RunqueueInner {
         debug_assert!(matches!(idle.sched_class(), SchedClass::Idle));
         Self {
             cpu,
+            dl:  DlRunqueue::new(),
             rt:  RtRunqueue::new(),
             cfs: CfsRunqueue::new(),
             idle,
@@ -42,7 +47,7 @@ impl RunqueueInner {
 
     /// # C: O(1)
     pub fn nr_running(&self) -> u32 {
-        self.rt.nr_running() + self.cfs.nr_running()
+        self.dl.nr_running() + self.rt.nr_running() + self.cfs.nr_running()
     }
 
     /// Enqueue a task by class. Idle tasks are rejected — they live in
@@ -57,6 +62,21 @@ impl RunqueueInner {
     /// orders them.
     /// # C: O(log N) (CFS) / O(1) (RT)
     pub fn enqueue_at(&mut self, task: Arc<Task>, pos: crate::sched_enc::requeue::RequeuePos) {
+        // Deadline-class wakeup rule (`deadline::live::on_wakeup_enqueue`): the
+        // entity's instance is re-derived against the current time, and one
+        // whose budget is spent is parked on the replenishment queue instead of
+        // being queued to run bandwidth it was never admitted for.
+        if !crate::deadline::live::on_wakeup_enqueue(&task) { return; }
+        self.enqueue_raw(task, pos)
+    }
+
+    /// [`RunqueueInner::enqueue_at`] without the wakeup-time class rules — the
+    /// insert for a task that never left the ready set conceptually (a
+    /// preemption). A deadline entity keeps its instance across a preemption;
+    /// re-deriving it here would hand a preempted task a fresh budget on every
+    /// involuntary switch, which is unbounded free bandwidth.
+    /// # C: O(log N)
+    fn enqueue_raw(&mut self, task: Arc<Task>, pos: crate::sched_enc::requeue::RequeuePos) {
         // cgroup v2 freezer: a frozen task is held off every runqueue here
         // (the single enqueue chokepoint), so wake/yield/fork can't run it
         // until `cgroup.freeze=0` thaws it + re-enqueues.
@@ -68,9 +88,14 @@ impl RunqueueInner {
         // same Arc lands in two trees, two CPUs run it, and its resumed user
         // context (SP_EL0 / callee-saved regs) is corrupted. Cleared when the
         // task is picked/removed off the tree (cfs/rt `pick_*` + `remove`).
+        // A throttled deadline entity is off every ready tree until its next
+        // period. This is the chokepoint that makes an exhausted budget an
+        // ENFORCEMENT rather than a note.
+        if !crate::deadline::enqueue_admits(&task) { return; }
         if task.on_rq.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
         task.cpu.store(self.cpu, core::sync::atomic::Ordering::Release);
         match task.sched_class() {
+            SchedClass::Deadline      => self.dl.enqueue(task),
             SchedClass::Rt { .. }     => self.rt.enqueue_at(task, pos),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
             SchedClass::Idle          => panic!("RunqueueInner::enqueue: idle"),
@@ -92,12 +117,23 @@ impl RunqueueInner {
         // the request here (rather than reading it) means one preemption
         // rotates the task once.
         let gave_up = task.rt_requeue_tail.swap(false, core::sync::atomic::Ordering::AcqRel);
-        self.enqueue_at(task, crate::sched_enc::requeue::put_prev_pos(gave_up));
+        // A deadline task thrown off by an exhausted budget must NOT come back
+        // here; it is parked on the replenishment queue instead.
+        if !crate::deadline::live::on_requeue(&task) { return; }
+        self.enqueue_raw(task, crate::sched_enc::requeue::put_prev_pos(gave_up));
     }
 
     /// Linux `yield_task()` class hook for the current runnable task before
     /// `schedule()` re-enqueues it. # C: O(log N)
     pub fn yield_current_task(&mut self, task: &Task) {
+        // A deadline task yields the INSTANCE, so it gives something up whether
+        // or not anyone else is queued — the "nothing to yield to" shortcut
+        // below is a fair-class optimisation and would silently make
+        // `sched_yield` a no-op for the one class where it costs a period.
+        if matches!(task.sched_class(), SchedClass::Deadline) {
+            crate::deadline::live::yield_dl(task);
+            return;
+        }
         if self.nr_running() == 0 { return; }
         match task.sched_class() {
             SchedClass::Normal { .. } => {
@@ -110,6 +146,8 @@ impl RunqueueInner {
             SchedClass::Rt { .. } => {
                 task.rt_requeue_tail.store(true, core::sync::atomic::Ordering::Release);
             }
+            // Handled above, before the empty-runqueue shortcut.
+            SchedClass::Deadline => {}
             SchedClass::Idle => {}
         }
     }
@@ -118,6 +156,7 @@ impl RunqueueInner {
     /// idle task if both class queues are empty.
     /// # C: O(log N) (CFS path) / O(1) (RT path)
     pub fn pick_next_task(&mut self) -> Arc<Task> {
+        if let Some(t) = self.dl.pick_earliest() { return t; }
         if let Some(t) = self.rt.pick_highest()  { return t; }
         if let Some(t) = self.cfs.pick_leftmost() { return t; }
         Arc::clone(&self.idle)
@@ -161,6 +200,7 @@ impl RunqueueInner {
     /// computation when a wakeup might outrank `current` (`13§9`).
     /// # C: O(log N) (CFS path) / O(1) (RT path)
     pub fn peek_next_task(&self) -> Arc<Task> {
+        if let Some(t) = self.dl.peek_earliest()  { return Arc::clone(t); }
         if let Some(t) = self.rt.peek_highest()   { return Arc::clone(t); }
         if let Some(t) = self.cfs.peek_leftmost() { return Arc::clone(t); }
         Arc::clone(&self.idle)
@@ -171,6 +211,7 @@ impl RunqueueInner {
     /// already migrated away).
     /// # C: O(N)
     pub fn remove(&mut self, tid: u32) -> Option<Arc<Task>> {
+        if let Some(t) = self.dl.remove(tid)  { return Some(t); }
         if let Some(t) = self.rt.remove(tid)  { return Some(t); }
         if let Some(t) = self.cfs.remove(tid) { return Some(t); }
         None

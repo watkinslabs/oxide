@@ -30,6 +30,7 @@ impl SchedClass {
             SchedClass::Idle              => 0,
             SchedClass::Normal { weight } => 1 | ((weight as u64) << 8),
             SchedClass::Rt { prio, policy } => 2 | ((prio as u64) << 8) | ((policy.code() as u64) << 16),
+            SchedClass::Deadline          => 3,
         }
     }
     /// # C: O(1)
@@ -37,6 +38,7 @@ impl SchedClass {
         match v & 0xff {
             1 => SchedClass::Normal { weight: (v >> 8) as u32 },
             2 => SchedClass::Rt { prio: (v >> 8) as u8, policy: SchedPolicy::from_code((v >> 16) as u8) },
+            3 => SchedClass::Deadline,
             _ => SchedClass::Idle,
         }
     }
@@ -51,6 +53,7 @@ pub fn policy_code_for(class: SchedClass) -> u32 {
     match class {
         SchedClass::Rt { policy: SchedPolicy::Fifo, .. } => 1,
         SchedClass::Rt { policy: SchedPolicy::Rr, .. }   => 2,
+        SchedClass::Deadline                            => SCHED_DEADLINE,
         // The per-CPU idle task is not `SCHED_IDLE`; Linux runs it in the
         // stop/idle class and still reports policy 0.
         _ => 0,

@@ -5,9 +5,9 @@
 use super::*;
 use crate::sched_enc::{SCHED_BATCH, SCHED_FIFO, SCHED_RR};
 
-fn rt(prio: u8, policy: u32) -> Cand { Cand { rank: RANK_RT, policy, rt_prio: prio, vruntime: 0 } }
-fn fair(policy: u32, vruntime: u64) -> Cand { Cand { rank: RANK_FAIR, policy, rt_prio: 0, vruntime } }
-fn idle_task() -> Cand { Cand { rank: RANK_IDLE, policy: SCHED_NORMAL, rt_prio: 0, vruntime: 0 } }
+fn rt(prio: u8, policy: u32) -> Cand { Cand { rank: RANK_RT, policy, rt_prio: prio, vruntime: 0, dl_deadline: 0, dl_special: false } }
+fn fair(policy: u32, vruntime: u64) -> Cand { Cand { rank: RANK_FAIR, policy, rt_prio: 0, vruntime, dl_deadline: 0, dl_special: false } }
+fn idle_task() -> Cand { Cand { rank: RANK_IDLE, policy: SCHED_NORMAL, rt_prio: 0, vruntime: 0, dl_deadline: 0, dl_special: false } }
 
 #[test]
 fn idle_task_always_yields_the_cpu() {
@@ -92,4 +92,46 @@ fn cand_of_reads_a_live_task() {
     t.policy.store(SCHED_FIFO, Ordering::Release);
     let c = cand_of(&t);
     assert_eq!((c.rank, c.rt_prio, c.policy), (RANK_RT, 7, SCHED_FIFO));
+}
+
+/// A deadline candidate at absolute deadline `d`.
+fn dl(d: u64) -> Cand {
+    Cand { rank: RANK_DL, policy: crate::sched_enc::SCHED_DEADLINE, rt_prio: 0, vruntime: 0,
+           dl_deadline: d, dl_special: false }
+}
+
+#[test]
+fn a_deadline_wakee_preempts_the_highest_real_time_priority() {
+    assert!(wakeup_preempt(dl(100), rt(99, crate::sched_enc::SCHED_FIFO)));
+}
+
+#[test]
+fn a_real_time_wakee_never_preempts_a_deadline_task() {
+    assert!(!wakeup_preempt(rt(99, crate::sched_enc::SCHED_FIFO), dl(100)));
+}
+
+#[test]
+fn a_deadline_wakee_preempts_a_fair_task() {
+    assert!(wakeup_preempt(dl(100), fair(SCHED_NORMAL, 0)));
+    assert!(!wakeup_preempt(fair(SCHED_NORMAL, 0), dl(100)));
+}
+
+#[test]
+fn an_earlier_deadline_preempts_a_later_one() {
+    assert!(wakeup_preempt(dl(50), dl(100)));
+    assert!(!wakeup_preempt(dl(100), dl(50)));
+}
+
+#[test]
+fn an_equal_deadline_does_not_preempt() {
+    // Two tasks due at the same instant have no ordering; rescheduling on every
+    // such wakeup would swap them without either getting closer to its deadline.
+    assert!(!wakeup_preempt(dl(100), dl(100)));
+}
+
+#[test]
+fn a_governor_entity_preempts_any_deadline() {
+    let mut sugov = dl(u64::MAX);
+    sugov.dl_special = true;
+    assert!(wakeup_preempt(sugov, dl(1)));
 }

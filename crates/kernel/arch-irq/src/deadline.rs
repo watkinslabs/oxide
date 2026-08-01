@@ -68,4 +68,9 @@ pub fn service_wall_timers() {
 pub fn service_wait_deadlines() {
     #[cfg(target_os = "oxide-kernel")]
     sched::hrtimeout::expire_now();
+    // Same interrupt, same reason: a throttled deadline entity whose next
+    // period has started is replenished and returned to the ready set here, so
+    // its budget resumes at the instant the period begins.
+    #[cfg(target_os = "oxide-kernel")]
+    sched::deadline::live::expire_throttled_now();
 }

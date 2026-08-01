@@ -374,6 +374,7 @@ impl Task {
             exe_path:   Spinlock::new(None),
             exe_inode:  Spinlock::new(None),
             rt_time_slice: AtomicU32::new(crate::sched_enc::RR_TIMESLICE_TICKS),
+            dl: crate::deadline::DlEntity::new(),
             rt_requeue_tail: AtomicBool::new(false),
             fs_context: Spinlock::new(Arc::new(super::FsContext::new())),
             environ:    Spinlock::new(None),

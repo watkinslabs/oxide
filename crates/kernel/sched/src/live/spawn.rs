@@ -107,6 +107,11 @@ pub enum SpawnError {
     NoRunqueue,
     /// The concrete kernel-stack memcg charge was rejected.
     NoMem,
+    /// The forking task holds a `SCHED_DEADLINE` reservation and did not ask
+    /// for `SCHED_RESET_ON_FORK`. Surfaces as `EAGAIN`: the child cannot
+    /// inherit an admitted reservation, and silently demoting it would give a
+    /// real-time program a fair-class child it never asked for.
+    Again,
 }
 
 /// Spawn a runnable kernel thread under the global runqueue.
@@ -387,6 +392,9 @@ pub unsafe fn spawn_user_thread_for_fork(
     // Fork/clone state the child inherits from its parent — one owner for
     // both arches (`spawn/inherit.rs`), so an addition cannot land on x86_64
     // and be forgotten on aarch64 the way `ioprio` and `exe_path` were.
+    if let Some(p) = super::current() {
+        if super::sched_fork::dl_fork_refused(p) { return Err(SpawnError::Again); }
+    }
     inherit::inherit_from_parent(task);
 
     // SAFETY: task is unpublished; no concurrent reader. install_stack allocates
@@ -476,6 +484,9 @@ pub unsafe fn spawn_user_thread_for_fork(
     // Fork/clone state the child inherits from its parent — one owner for
     // both arches (`spawn/inherit.rs`), so an addition cannot land on x86_64
     // and be forgotten on aarch64 the way `ioprio` and `exe_path` were.
+    if let Some(p) = super::current() {
+        if super::sched_fork::dl_fork_refused(p) { return Err(SpawnError::Again); }
+    }
     inherit::inherit_from_parent(task);
 
     // SAFETY: task is unpublished; no concurrent reader. install_stack allocates
