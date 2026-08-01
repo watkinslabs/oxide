@@ -375,7 +375,11 @@ impl InetSocket {
                 mask | pending
             }
             SockKind::TcpListener(l) => {
-                crate::stack::tcp_listener::listener_poll_mask(!l.accept_q.lock().is_empty(), pending)
+                // A deferred child is queued but not yet acceptable, so the
+                // listener must not report readiness an `accept` would not
+                // satisfy.
+                let ready = l.accept_q.lock().iter().any(|child| child.acceptable());
+                crate::stack::tcp_listener::listener_poll_mask(ready, pending)
             }
             SockKind::TcpConn(entry) => {
                 drain_loopback();

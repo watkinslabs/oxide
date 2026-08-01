@@ -8,6 +8,7 @@
 // - `ca`: the congestion-control registry names resolve through.
 // - `ulp`: the upper-layer-protocol registry names resolve through.
 // - `repair`: `TCP_REPAIR_WINDOW` / `TCP_REPAIR_OPTIONS` operand shapes.
+// - `defer`: the `TCP_DEFER_ACCEPT` hand-over rule.
 // - `apply`: pushes accepted option state into a live connection.
 // - `tests`: hosted coverage for the ordering, capability, and length rules.
 //
@@ -18,6 +19,7 @@ pub mod get;
 pub mod ca;
 pub mod ulp;
 pub mod repair;
+pub mod defer;
 pub mod apply;
 #[cfg(test)]
 mod tests;
