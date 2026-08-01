@@ -132,11 +132,16 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
 /// CPU yet. Freeing while a peer CPU retains a writable translation is a
 /// use-after-free into the buddy allocator.
 ///
-/// `cpumask` is the TARGET mm's `mm_cpumask` (Linux `flush_tlb_others`
-/// targeting) — the caller's own mask is the wrong set, since the pages
-/// being torn down belong to the target's address space.
+/// TLB targeting uses the TARGET mm's `mm_cpumask` (Linux `flush_tlb_others`)
+/// — the caller's own mask is the wrong set, since the pages being torn down
+/// belong to the target's address space. Taking the address space itself
+/// rather than a bare root also keeps the resident-set counters attached: a
+/// foreign zap retires exactly the leaves a local one does, so a
+/// `process_madvise`/`process_mrelease` target's `VmRSS` follows its pages
+/// down instead of drifting.
 /// # C: O(len/page) PT walks + O(pages/GATHER_BATCH_PAGES) shootdowns
-pub fn evict_foreign_pages_in_range(root_pa: u64, cpumask: u64, addr: u64, len: u64) -> i64 {
+pub fn evict_foreign_pages_in_range(target: &AddressSpace, addr: u64, len: u64) -> i64 {
+    let (root_pa, cpumask) = (target.root_pa(), target.cpumask());
     use syscall::errno::Errno;
     if addr == 0 || len == 0 || (addr & PAGE_MASK) != 0 {
         return -(Errno::Einval.as_i32() as i64);
@@ -145,7 +150,7 @@ pub fn evict_foreign_pages_in_range(root_pa: u64, cpumask: u64, addr: u64, len: 
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let mut ops = ForeignGatherOps { root_pa, hhdm: hhdm_offset() };
+    let mut ops = ForeignGatherOps { root_pa, hhdm: hhdm_offset(), target };
     let mut gather = crate::tlb_gather::TlbGather::new(cpumask);
     let mut va = addr;
     let end = addr + len_aligned;
@@ -158,23 +163,27 @@ pub fn evict_foreign_pages_in_range(root_pa: u64, cpumask: u64, addr: u64, len: 
 }
 
 /// Kernel-side [`crate::tlb_gather::GatherOps`] over a foreign page-table root.
-struct ForeignGatherOps { root_pa: u64, hhdm: u64 }
+struct ForeignGatherOps<'a> { root_pa: u64, hhdm: u64, target: &'a AddressSpace }
 
-impl crate::tlb_gather::GatherOps for ForeignGatherOps {
+impl crate::tlb_gather::GatherOps for ForeignGatherOps<'_> {
     /// # C: O(1) PT walk
     fn tear_leaf(&mut self, va: u64) -> Option<u64> {
         // SAFETY: root_pa is a live foreign AS root the caller pins via an
         // Arc for the duration of this call; HHDM covers the page-table
         // memory; the walker only clears a 4K leaf slot and returns the PA
         // it held. TLB invalidation is the gather's responsibility.
-        unsafe {
+        let torn = unsafe {
             #[cfg(target_arch = "x86_64")]
             { hal::pt_walker::unmap_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(self.root_pa, va, self.hhdm) }
             #[cfg(target_arch = "aarch64")]
             { hal::pt_walker::unmap_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(self.root_pa, va, self.hhdm) }
             #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             { let _ = va; None::<u64> }
+        };
+        if torn.is_some() {
+            if let Some(uva) = hal::UserVirtAddr::new(va) { self.target.account_pte_remove_at(uva); }
         }
+        torn
     }
 
     /// x86_64: `invlpg`, CPU-local — covers this CPU only (it may itself be

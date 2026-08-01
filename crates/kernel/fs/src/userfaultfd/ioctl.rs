@@ -232,7 +232,7 @@ fn fill(ufd: &UfData, dst: u64, src: Option<u64>, len: u64, mode: u64,
         Err(e) => (0, Some(e)),
         Ok(()) => {
             let flags = vma.expect("check_dst_vma rejects a missing VMA").prot.to_page_flags();
-            install_pages(mm.root_pa(), dst, src, len, flags)
+            install_pages(&mm, dst, src, len, flags)
         }
     };
     let (rv, count) = policy::fill_retval(installed, len, fill_err);

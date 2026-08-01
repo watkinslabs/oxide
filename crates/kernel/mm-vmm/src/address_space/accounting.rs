@@ -8,6 +8,8 @@ use sync::{KMalloc, Spinlock};
 use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking, VmaFlags};
 
+use super::rss::{class_of, RssClass, RssTally};
+
 /// Snapshot of facts owned by one address space.  `major_faults` and shmem
 /// residency are intentionally absent: VMM's FileBacking API does not expose
 /// cache misses or a backing-kind identity, so inventing either would be a
@@ -66,8 +68,18 @@ pub(super) struct VmAccounting {
     hiwater_rss_pages: AtomicU64,
 }
 
-#[derive(Clone, Copy)]
-enum PteKind { Anon, File, Kernel, Device, None }
+/// Retire one leaf from a residency counter. A counter that would go negative
+/// means a removal ran without a matching install — the drift this whole
+/// subsystem exists to prevent. Saturating keeps a released build's `VmRSS`
+/// from reading as sixteen exabytes; the debug assertion makes a hosted test
+/// fail loudly at the exact op instead. # C: O(1)
+fn dec(c: &AtomicU64) {
+    let prev = c.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.saturating_sub(1)));
+    #[cfg(test)]
+    assert!(prev.unwrap_or(0) > 0, "rss counter under-run: a PTE removal had no matching install");
+    #[cfg(not(test))]
+    let _ = prev;
+}
 
 impl VmAccounting {
     pub(super) fn new(root_pa: u64) -> Self {
@@ -138,30 +150,33 @@ impl VmAccounting {
     fn page_table_frame_allocated(&self) { self.page_table_frames.fetch_add(1, Ordering::AcqRel); }
     fn page_table_frame_released(&self) { self.page_table_frames.fetch_sub(1, Ordering::AcqRel); }
     pub(super) fn install_pte(&self, vma: &Vma) {
-        if let Some(c) = self.counter(Self::pte_kind(vma)) { c.fetch_add(1, Ordering::AcqRel); }
+        if let Some(c) = self.counter(class_of(&vma.backing)) { c.fetch_add(1, Ordering::AcqRel); }
         // Linux `update_hiwater_rss`: residency only ever grows here, so this
         // is the one transition that can raise the peak.
         self.hiwater_rss_pages.fetch_max(self.raw_snapshot().rss_pages().total(), Ordering::AcqRel);
     }
     pub(super) fn remove_pte(&self, vma: &Vma) {
-        if let Some(c) = self.counter(Self::pte_kind(vma)) { c.fetch_sub(1, Ordering::AcqRel); }
+        if let Some(c) = self.counter(class_of(&vma.backing)) { dec(c); }
     }
     pub(super) fn install_swap_pte(&self) { self.swap_pte_mappings.fetch_add(1, Ordering::AcqRel); }
-    pub(super) fn remove_swap_pte(&self) { self.swap_pte_mappings.fetch_sub(1, Ordering::AcqRel); }
-    fn pte_kind(vma: &Vma) -> PteKind {
-        match vma.backing {
-            VmaBacking::Anonymous => PteKind::Anon,
-            VmaBacking::File { .. } | VmaBacking::KernelBytes { .. } => PteKind::File,
-            VmaBacking::KernelFrame { .. } => PteKind::Kernel,
-            VmaBacking::PhysRange { .. } => PteKind::Device,
-            VmaBacking::Special => PteKind::None,
-        }
+    pub(super) fn remove_swap_pte(&self) { dec(&self.swap_pte_mappings); }
+    /// Adopt the leaves an unpublished child root already holds. Linux's
+    /// `copy_page_range` increments the CHILD's `rss_stat` once per copied
+    /// present leaf; the child is not published until the whole copy finishes,
+    /// so the counts land in one shot here instead. # C: O(1)
+    pub(super) fn seed_ptes(&self, t: &RssTally) {
+        self.anon_pte_mappings.fetch_add(t.pages.anon, Ordering::AcqRel);
+        self.file_pte_mappings.fetch_add(t.pages.file, Ordering::AcqRel);
+        self.kernel_pte_mappings.fetch_add(t.pages.shmem, Ordering::AcqRel);
+        self.device_pte_mappings.fetch_add(t.device, Ordering::AcqRel);
+        self.swap_pte_mappings.fetch_add(t.pages.swapents, Ordering::AcqRel);
+        self.hiwater_rss_pages.fetch_max(self.raw_snapshot().rss_pages().total(), Ordering::AcqRel);
     }
-    fn counter(&self, k: PteKind) -> Option<&AtomicU64> {
+    fn counter(&self, k: RssClass) -> Option<&AtomicU64> {
         Some(match k {
-            PteKind::Anon => &self.anon_pte_mappings, PteKind::File => &self.file_pte_mappings,
-            PteKind::Kernel => &self.kernel_pte_mappings, PteKind::Device => &self.device_pte_mappings,
-            PteKind::None => return None,
+            RssClass::Anon => &self.anon_pte_mappings, RssClass::File => &self.file_pte_mappings,
+            RssClass::Shmem => &self.kernel_pte_mappings, RssClass::Device => &self.device_pte_mappings,
+            RssClass::Untracked => return None,
         })
     }
 }

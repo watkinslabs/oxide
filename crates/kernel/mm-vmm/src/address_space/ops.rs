@@ -56,6 +56,14 @@ impl AddressSpace {
         if let Some(vma) = self.find_vma(va) { self.accounting.remove_pte(&vma); }
     }
 
+    /// A leaf installed into a hole by an owner outside the fault path (the
+    /// userfaultfd monitor's `UFFDIO_COPY`/`UFFDIO_ZEROPAGE` fill). Callers
+    /// that REPLACE a present leaf must not use this: the displaced page was
+    /// already counted. # C: O(log N)
+    pub fn account_pte_install_at(&self, va: UserVirtAddr) {
+        if let Some(vma) = self.find_vma(va) { self.accounting.install_pte(&vma); }
+    }
+
     /// Account one checked present→swap leaf replacement. # C: O(log N)
     pub fn account_present_to_swap_at(&self, va: UserVirtAddr) {
         if let Some(vma) = self.find_vma(va) { self.accounting.remove_pte(&vma); self.accounting.install_swap_pte(); }
