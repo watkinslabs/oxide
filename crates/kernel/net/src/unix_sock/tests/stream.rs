@@ -277,19 +277,21 @@ fn stream_read_with_fds_never_returns_empty_when_bytes_present() {
 #[test]
 fn stream_read_drops_only_passed_fds_keeps_future_ones() {
     let _serial = test_guard();
-    // read() past msg1 must drop msg1's fd but keep msg2's fd for a later
-    // recvmsg (the fd stays bound to its own bytes, never desynced).
+    // read() drops msg1's fd (no cmsg buffer took it) but must not run past
+    // msg1's last byte: a descriptor-bearing segment ends the receive, so
+    // msg2 and its fd stay queued for a later recvmsg, never desynced.
     let p = UnixPair::new();
     let fd1 = anon_file();
     let fd2 = anon_file();
     p.write_with_fds(UnixEnd::A, b"AAAA", alloc::vec![alloc::sync::Arc::clone(&fd1)]).unwrap();
     p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd2)]).unwrap();
-    // Plain read drains everything up to max, dropping fd1 (rode "AAAA")
-    // AND fd2 (rode "BBBB") since both are now behind the cursor.
     let got = p.read(UnixEnd::B, 8);
-    assert_eq!(&got[..], b"AAAABBBB");
+    assert_eq!(&got[..], b"AAAA", "a descriptor-bearing segment ends the receive");
+    assert_eq!(alloc::sync::Arc::strong_count(&fd1), 1, "fd1 released, not requeued");
     let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
-    assert!(b2.is_empty() && f2.is_empty(), "all fds consumed/dropped, nothing desynced");
+    assert_eq!(&b2[..], b"BBBB");
+    assert_eq!(f2.len(), 1, "fd2 stayed bound to its own bytes");
+    assert!(alloc::sync::Arc::ptr_eq(&f2[0], &fd2));
 }
 
 #[test]

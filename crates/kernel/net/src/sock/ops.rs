@@ -93,6 +93,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                                          sock.opts.ipv6_v6only.clone(),
                                          sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                                          sock.opts.ipv6_mtu_discover.clone(),
+                                         sock.opts.udp.no_check6_rx.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
                     (port, stack().bind_udp6_socket_owned(
@@ -101,6 +102,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                         sock.opts.ipv6_v6only.clone(),
                         sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                         sock.opts.ipv6_mtu_discover.clone(),
+                        sock.opts.udp.no_check6_rx.clone(),
                         sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };
