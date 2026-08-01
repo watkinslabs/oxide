@@ -258,6 +258,35 @@ Never again. Before writing ANY code for a ledger item / D-item / subsystem task
 7. **Delegated agents have no merge authority.** Only the primary/integration owner may create or merge a PR. A subagent must not run `gh pr merge` (or an equivalent API action), even for its own lane, and an instruction not to commit, push, create a PR, or merge is a hard boundary. Delegating implementation does not delegate integration authority.
 8. **A worktree belongs to its lane owner.** No agent may remove, prune, reset, or repurpose a worktree it did not create. The primary/integration owner may remove it only after the owning agent has handed it off or finished, `git status` confirms the exact worktree is clean, and the PR is merged (or the user explicitly abandoned the branch). Remove the worktree first, then delete its local branch.
 
+## NEVER WORK ON MAIN (HARD RULE)
+
+**Never work on `main`. Never commit to `main`. All work happens on a branch and
+reaches `main` only through a PR.** No exceptions, no "it's only a doc", no "it's a
+one-line fix", no emergency path.
+
+- Before editing ANY file, run `git rev-parse --abbrev-ref HEAD`. If it says `main`,
+  stop and create a branch first. Being on `main` is never a state in which you edit.
+- `main` is a read-only reference for reading, building, and comparing. Nothing else.
+- A shared checkout of `main` may hold someone else's uncommitted work. It is not yours,
+  it is not yours to commit, and its presence is not permission.
+- Opening or merging the PR is the integration owner's call, not the working agent's.
+  Push the branch and report. See the merge-authority rule in the claim-work section.
+
+## NEVER `git add -A` (HARD RULE)
+
+**Never run `git add -A`, `git add .`, `git commit -a`, or any other stage-everything
+form.** Stage each path explicitly: `git add CLAUDE.md metadata/index.md`.
+
+Blanket staging sweeps up whatever else happens to be in the tree — another agent's
+in-progress edit, a stray build artifact, a debug hack you meant to drop. This has
+already put one party's unfinished Makefile work into another party's commit under the
+wrong authorship, unverified.
+
+- Run `git status --short` first and know what every line is before you stage.
+- Stage by name. If the list is long, that is a signal the change is too big, not a
+  reason to reach for `-A`.
+- `git commit` only after `git diff --cached --stat` shows exactly the files you intend.
+
 ## Git workflow (mandatory)
 
 **Commit author (HARD RULE).** Every commit + PR is authored by **`Chris Watkins <chris@watkinslabs.com>`** — period. This is the only valid author identity. Before committing in any clone, ensure `git config user.name "Chris Watkins"` and `git config user.email "chris@watkinslabs.com"` are set (a fresh clone may have `user.name` unset, which produces garbage authors like "Ablative Personality" — fix it first). Never let any other name/email land on a commit or PR.
