@@ -91,6 +91,7 @@ pub unsafe fn init(info: &BootInfo) {
     procfs::hooks::set_domainname_hooks(syscalls::hostname::domain_snapshot_current, syscalls::hostname::domain_set_current);
     procfs::hooks::set_cmdline_hook(crate::boot_cmdline::get);
     fs::coredump::register_core_hooks();
+    fs::coredump::register_limit_hooks();
     fs::acct::register_sysctl_hooks();
     fs::keyring::register_procfs_hooks();
     hal::zerotrap::set_tid_hook(zerotrap_tid);
