@@ -114,7 +114,5 @@ impl IpOpts {
 /// namespace's otherwise. A half-open request keeps the namespace bound on the
 /// side it left zero. # C: O(1)
 pub fn effective_port_range(packed: u32, ns: (u16, u16)) -> (u16, u16) {
-    let (lo, hi) = (packed as u16, (packed >> 16) as u16);
-    if lo == 0 && hi == 0 { return ns; }
-    (if lo == 0 { ns.0 } else { lo }, if hi == 0 { ns.1 } else { hi })
+    crate::local_port::effective_bounds(packed, ns)
 }
