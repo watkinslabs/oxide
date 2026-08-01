@@ -28,8 +28,9 @@ pub mod flag {
     /// The caller named an autoflowlabel policy, overriding the namespace one.
     pub const AUTOFLOWLABEL_SET: u64 = 1 << 14;
     pub const SNDFLOW: u64 = 1 << 15;
-    pub const TRANSPARENT: u64 = 1 << 16;
-    pub const FREEBIND: u64 = 1 << 17;
+    // Bits 16 and 17 are retired: `IPV6_TRANSPARENT` and `IPV6_FREEBIND`
+    // write the `IPPROTO_IP` flag word their IPv4 twins own, so this level
+    // stores neither.
     pub const RTALERT: u64 = 1 << 18;
     pub const RTALERT_ISOLATE: u64 = 1 << 19;
     pub const RECVERR_RFC4884: u64 = 1 << 20;

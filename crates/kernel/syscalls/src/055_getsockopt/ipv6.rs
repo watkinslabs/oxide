@@ -30,6 +30,7 @@ fn view(sock: &Arc<InetSocket>) -> Ipv6GetState {
     else { flags |= flag::MC_ALL_OFF; }
     Ipv6GetState {
         flags,
+        inet_flags: sock.opts.ip.flag_word(),
         v6only: sock.opts.ipv6_v6only.load(Ordering::Acquire) != 0,
         recverr: sock.error.recverr6(),
         mc_loop: sock.opts.ipv6_mcast_loop.load(Ordering::Acquire) != 0,
