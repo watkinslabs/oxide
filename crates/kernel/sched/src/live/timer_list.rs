@@ -187,12 +187,18 @@ mod tests {
     fn a_one_shot_fires_once_and_disarms() {
         let _g = reset();
         assert!(add(body, 0, 1_000, 0).is_some());
-        // SAFETY: host test.
+        // SAFETY: `run_expired` requires softirq context with non-sleeping
+        // callbacks; the host test is single-threaded under TEST_LOCK and its
+        // callbacks only touch atomics and the timer table.
         assert_eq!(unsafe { run_expired(999) }, 0, "not yet due");
-        // SAFETY: host test.
+        // SAFETY: `run_expired` requires softirq context with non-sleeping
+        // callbacks; the host test is single-threaded under TEST_LOCK and its
+        // callbacks only touch atomics and the timer table.
         assert_eq!(unsafe { run_expired(1_000) }, 1, "due at exactly the deadline");
         assert_eq!(armed(), 0, "a one-shot disarms itself");
-        // SAFETY: host test.
+        // SAFETY: `run_expired` requires softirq context with non-sleeping
+        // callbacks; the host test is single-threaded under TEST_LOCK and its
+        // callbacks only touch atomics and the timer table.
         assert_eq!(unsafe { run_expired(9_999) }, 0, "must not fire twice");
         assert_eq!(HITS.load(Ordering::Acquire), 1);
     }
@@ -204,7 +210,9 @@ mod tests {
         let _g = reset();
         assert!(add(body, 0, 1_000, 100).is_some());
         // Tick arrives LATE, at 1_450.
-        // SAFETY: host test.
+        // SAFETY: `run_expired` requires softirq context with non-sleeping
+        // callbacks; the host test is single-threaded under TEST_LOCK and its
+        // callbacks only touch atomics and the timer table.
         assert_eq!(unsafe { run_expired(1_450) }, 1);
         // Next deadline must be 1_100 (1_000 + 100), not 1_550.
         assert_eq!(EARLIEST_NS.load(Ordering::Acquire), 1_100);
@@ -216,11 +224,15 @@ mod tests {
         let _g = reset();
         let h = add(body, 0, 5_000, 0).unwrap();
         assert!(modify(h, 1_000));
-        // SAFETY: host test.
+        // SAFETY: `run_expired` requires softirq context with non-sleeping
+        // callbacks; the host test is single-threaded under TEST_LOCK and its
+        // callbacks only touch atomics and the timer table.
         assert_eq!(unsafe { run_expired(1_000) }, 1, "modify moved it earlier");
         let h2 = add(body, 0, 2_000, 0).unwrap();
         assert!(del(h2));
-        // SAFETY: host test.
+        // SAFETY: `run_expired` requires softirq context with non-sleeping
+        // callbacks; the host test is single-threaded under TEST_LOCK and its
+        // callbacks only touch atomics and the timer table.
         assert_eq!(unsafe { run_expired(9_999) }, 0, "a deleted timer must not fire");
         assert_eq!(HITS.load(Ordering::Acquire), 1);
     }
@@ -243,7 +255,9 @@ mod tests {
             let _ = add(body, 0, 10_000, 0);
         }
         assert!(add(arms_another, 0, 1_000, 0).is_some());
-        // SAFETY: host test.
+        // SAFETY: `run_expired` requires softirq context with non-sleeping
+        // callbacks; the host test is single-threaded under TEST_LOCK and its
+        // callbacks only touch atomics and the timer table.
         assert_eq!(unsafe { run_expired(1_000) }, 1);
         assert_eq!(armed(), 1, "the callback's timer is armed");
     }

@@ -213,11 +213,12 @@ impl crate::tlb_gather::GatherOps for ForeignGatherOps<'_> {
 
     /// # C: O(1)
     fn free_frame(&mut self, pa: u64) {
-        // SAFETY: pa was reachable via the foreign leaf cleared by tear_leaf
-        // and every CPU's translation for it has been invalidated by the
-        // gather's flush; rmap_aware_dec_and_maybe_free checks the
-        // struct-page refcount and only releases to PMM when the last
-        // mapping drops — same contract as the active-root path in unmap.rs.
+        // `rmap_aware_dec_and_maybe_free` checks the struct-page refcount and
+        // only releases to PMM when the last mapping drops — same contract as
+        // the active-root path in unmap.rs.
+        // SAFETY: `pa` was reachable via the foreign leaf that `tear_leaf`
+        // cleared, and every CPU's translation for it has already been
+        // invalidated by the gather's flush, so no stale PTE names the frame.
         unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
     }
 }

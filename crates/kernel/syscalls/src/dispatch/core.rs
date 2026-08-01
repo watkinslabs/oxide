@@ -414,6 +414,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     if let Some(c) = sched::current() {
         c.svc_frame.store(hal_aarch64::current_svc_frame() as u64, core::sync::atomic::Ordering::Release);
     }
+    // SAFETY: `syscall_a5` reads the sixth argument out of the per-CPU entry
+    // save block, which the arch stub filled for THIS syscall before calling
+    // here and which nothing else writes until the next entry.
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
     if let Some(c) = sched::current() {

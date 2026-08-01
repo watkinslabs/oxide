@@ -90,6 +90,10 @@ pub unsafe fn free_contig(pa: u64, order: crate::Order) {
             }
         }
     }
+    // SAFETY: `free_contig`'s own contract requires `pa` to be an
+    // `alloc_contig(order)` result, aligned to `2^order` pages and unreachable
+    // by CPU or device — exactly `Pmm::free`'s precondition. The KHEAP scan
+    // just above additionally rejects a frame owned by the kernel heap.
     unsafe { p.free(pfn, order); }
 }
 

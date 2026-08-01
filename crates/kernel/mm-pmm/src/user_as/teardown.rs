@@ -115,7 +115,8 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     };
     let mut free_migration = |_va: u64, entry: hal::pt_walker::MigrationEntry| {
         if let Some(pa) = vmm::migration_drop_marker_mapping(entry) {
-            // SAFETY: mirror of x86 teardown above.
+            // SAFETY: mirror of the x86 teardown above — the marker's mapping
+            // was just dropped, so this AS held the last reference to `pa`.
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
         }
     };

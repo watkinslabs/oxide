@@ -322,6 +322,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     unsafe { cur.replace_mm(Some(new_as)); }
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-replace-mm");
+    // SAFETY: FS_BASE/GS_BASE MSR writes are legal at CPL=0 and are per-CPU;
+    // `arch_ctx_ptr` names this running task's own context buffer, whose
+    // single-mutator is the task itself, mid-execve with preempt off.
     unsafe {
         hal_x86_64::set_user_fs_base(0);
         // `execve` starts a new program image, so the inherited TLS/GS bases
@@ -341,6 +344,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
     cur.set_cmdline(Some(sched::argv_to_cmdline(&argv_slices[..argc])));
     cur.set_environ(Some(sched::argv_to_cmdline(&envp_slices[..envc])));
+    // SAFETY: the block borrows only `path_owned`, a kernel-side copy of the
+    // exec path already read out of user memory, and the file-capability lookup
+    // it performs runs in this task's own execve.
     let exec_path_for_caps = unsafe {
         let path_str = match core::str::from_utf8(&path_owned) {
             Ok(s) => alloc::string::String::from(s),
@@ -380,6 +386,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-vdso-map");
+    // SAFETY: `build_user_stack` writes through the mm this task just installed
+    // and activated on this CPU, into the freshly mapped stack VMA whose top and
+    // length are passed here; no other task can reach that address space yet.
     let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,

@@ -147,11 +147,16 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
             // SAFETY: dispatch context; current_pt_regs() is THIS task's live
             // syscall entry frame on its kernel stack (hal-x86_64 pt_regs.rs).
             let ff = hal_x86_64::current_pt_regs();
+            // SAFETY: null-checked; a non-null `current_pt_regs` is THIS task's
+            // live syscall entry frame on its own kernel stack.
             let user_rip = if ff.is_null() { 0 } else { unsafe { (*ff).rip } };
+            // SAFETY: same null-checked live entry frame as the line above.
             let user_rsp = if ff.is_null() { 0 } else { unsafe { (*ff).rsp } };
             // DIAG: read the cond word ourselves via the same read_volatile the
             // futex uses — if this != val the read path is broken in this ctx.
-            let condw = unsafe { core::ptr::read_volatile(args.a0 as *const u64) };
+            let condw = { let mut b = [0u8; 8];
+                if uaccess::copy_from_user(&mut b, args.a0).is_err() { b = [0u8; 8]; }
+                u64::from_ne_bytes(b) };
             klog::write_raw(b"[USTACK uaddr="); klog::write_hex_u64(args.a0);
             klog::write_raw(b" rip="); klog::write_hex_u64(user_rip);
             klog::write_raw(b" rsp="); klog::write_hex_u64(user_rsp);
@@ -162,12 +167,18 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
             // .text or a shared-lib mmap), resolve its VMA so the lib base
             // (vma.start) + backing inode are known → offline symbolization.
             let cur_task = sched::live::current();
+            // SAFETY: `mm_ref` needs no concurrent execve replacing the mm; this
+            // is the CURRENT task's own slot, read inside its own futex syscall.
             let mm = cur_task.as_ref().and_then(|c| unsafe { c.mm_ref() });
             let mut i = 0u64;
             while i < 80 {
                 let a = user_rsp.wrapping_add(i * 8);
                 if a >= hal::USER_VA_END { break; }
-                let w = unsafe { core::ptr::read_volatile(a as *const u64) };
+                // A user stack slot may be unmapped; the uaccess path faults to
+                // EFAULT rather than taking a kernel #PF on a raw dereference.
+                let w = { let mut b = [0u8; 8];
+                    if uaccess::copy_from_user(&mut b, a).is_err() { break; }
+                    u64::from_ne_bytes(b) };
                 let is_code = (w >= 0x1_0000 && w < 0x2000_0000)
                     || (w >= 0x7f00_0000_0000 && w < 0x8000_0000_0000);
                 if is_code {

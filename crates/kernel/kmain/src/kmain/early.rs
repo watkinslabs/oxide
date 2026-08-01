@@ -121,6 +121,9 @@ fn init_boot_percpu() {
     let p = BOOT_PERCPU.0.get() as *mut u8;
     // SAFETY: BSS-resident page; this is the boot path's single writer; cpu_id=0 stamped at offset 0 matches `current_cpu`'s gs:0 (x86) / TPIDR_EL1 (arm) read.
     unsafe { core::ptr::write_volatile(p as *mut u32, 0u32); }
+    // SAFETY: `p` is the BSS-resident per-CPU page above, and this runs on the
+    // boot CPU before any AP or IRQ can observe the per-CPU base, so these
+    // privileged CR4/MSR writes have no concurrent reader.
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use hal::CpuOps;
@@ -132,6 +135,8 @@ fn init_boot_percpu() {
         hal_x86_64::X86CpuOps::set_percpu_base(p);
         hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
     }
+    // SAFETY: `p` is the BSS-resident per-CPU page above, and this runs on the
+    // boot CPU before any AP or IRQ can observe TPIDR_EL1.
     #[cfg(target_arch = "aarch64")]
     unsafe { use hal::CpuOps; hal_aarch64::ArmCpuOps::set_percpu_base(p); }
 }
@@ -236,14 +241,24 @@ fn init_pmm_and_arch(info: &BootInfo) {
         GLOBAL_ALLOC.set_context_cpu_hook(|| hal_x86_64::X86CpuOps::current_cpu() as u16);
         #[cfg(target_arch = "x86_64")]
         GLOBAL_ALLOC.set_irq_gate(
+            // SAFETY: privileged CLI/STI-class ops, legal at CPL=0; the pair is
+            // save/restore-balanced by the allocator, which calls `restore`
+            // exactly once with the flags this `save_disable` returned.
             || unsafe { hal_x86_64::X86IrqGate::save_disable() },
+            // SAFETY: `f` is the flags word produced by the paired
+            // `save_disable` above, so this restores the caller's own IRQ state.
             |f| unsafe { hal_x86_64::X86IrqGate::restore(f) },
         );
         #[cfg(target_arch = "aarch64")]
         GLOBAL_ALLOC.set_context_cpu_hook(|| hal_aarch64::ArmCpuOps::current_cpu() as u16);
         #[cfg(target_arch = "aarch64")]
         GLOBAL_ALLOC.set_irq_gate(
+            // SAFETY: privileged DAIF ops, legal at EL1; the pair is
+            // save/restore-balanced by the allocator, which calls `restore`
+            // exactly once with the flags this `save_disable` returned.
             || unsafe { hal_aarch64::ArmIrqGate::save_disable() },
+            // SAFETY: `f` is the flags word produced by the paired
+            // `save_disable` above, so this restores the caller's own IRQ state.
             |f| unsafe { hal_aarch64::ArmIrqGate::restore(f) },
         );
         GLOBAL_ALLOC.require_context_for_growth();
@@ -280,6 +295,9 @@ fn init_pmm_and_arch(info: &BootInfo) {
         debug_pmm! { smoke::pmm::run(_p); }
         #[cfg(feature = "debug-memtest")]
         smoke::memtest::run(_p);
+        // SAFETY: single boot CPU with IRQs off and no task yet scheduled, so
+        // these one-shot HAL installs (HHDM base, PT-frame allocator, IST
+        // stacks + gates) have no concurrent reader of the state they publish.
         #[cfg(target_arch = "x86_64")]
         unsafe {
             hal_x86_64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
@@ -287,6 +305,8 @@ fn init_pmm_and_arch(info: &BootInfo) {
             hal_x86_64::setup_ist_stacks(0);
             hal_x86_64::install_ist_gates();
         }
+        // SAFETY: same single-boot-CPU, no-concurrent-reader window as the
+        // x86_64 arm above.
         #[cfg(target_arch = "aarch64")]
         unsafe {
             hal_aarch64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
@@ -303,6 +323,9 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // it takes the physical frames via this hook; page mapping uses the HAL
         // MmuOps sched already has. An overflow now #PFs on the guard page
         // instead of silently scribbling the adjacent heap block.
+        // SAFETY: the free hook only ever receives a `pa` that kstack obtained
+        // from the paired `alloc_raw_frame` and has already unmapped, which is
+        // `free_one_frame`'s not-currently-mapped precondition.
         ::sched::kstack::init(pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
         // debug-armctx: arm the aarch64 register-corruption post-mortem (fatal-
         // fault dump of kstack-slot ownership + arch_ctx + the switch ring).
@@ -338,12 +361,21 @@ fn init_pmm_and_arch(info: &BootInfo) {
         smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(target_arch = "aarch64")]
         smoke::device_map::smoke_device_map_arm(info.hhdm_offset);
+        // SAFETY: the four debug-vmm smokes each require an initialised MmuOps
+        // (HHDM offset + PT-frame allocator, both installed above) on the single
+        // boot CPU with no user address space live yet.
         #[cfg(all(target_arch = "x86_64", feature = "debug-vmm"))]
         unsafe { smoke::mmuops::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        // SAFETY: same initialised-MmuOps, boot-CPU-only window as above,
+        // through the aarch64 walker.
         #[cfg(all(target_arch = "aarch64", feature = "debug-vmm"))]
         unsafe { smoke::mmuops::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
+        // SAFETY: same initialised-MmuOps, boot-CPU-only window as above, for
+        // the user-map smoke on the x86_64 walker.
         #[cfg(all(target_arch = "x86_64", feature = "debug-vmm"))]
         unsafe { smoke::user_map::run::<hal_x86_64::mmu_ops::X86Mmu>(); }
+        // SAFETY: same initialised-MmuOps, boot-CPU-only window as above, for
+        // the user-map smoke on the aarch64 walker.
         #[cfg(all(target_arch = "aarch64", feature = "debug-vmm"))]
         unsafe { smoke::user_map::run::<hal_aarch64::mmu_ops::ArmMmu>(); }
     }
@@ -365,6 +397,9 @@ fn kalloc_smoke() {
 #[cfg(target_os = "oxide-kernel")]
 fn debug_sched_smokes() {
     debug_sched! {
+        // SAFETY: every smoke here spawns kthreads and yields; they require an
+        // initialised scheduler on the boot CPU, which `sched_init` established
+        // above, and run before any user task exists.
         unsafe {
             kthread::smoke();
             kthread::smoke_yield();
@@ -383,6 +418,8 @@ fn debug_sched_smokes() {
 
 #[cfg(target_os = "oxide-kernel")]
 fn debug_pf_smoke() {
+    // SAFETY: the fault-recovery smoke installs and removes its own fixup
+    // handler on the boot CPU before any user address space exists.
     #[cfg(all(target_arch = "x86_64", feature = "debug-vmm"))]
     unsafe { smoke::pf_recover::run(); }
 }

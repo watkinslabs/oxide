@@ -8,7 +8,12 @@ use crate::BootInfo;
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn kernel_main(info: &BootInfo) -> ! {
+    // SAFETY: `kernel_main`'s own boot-entry contract (valid kernel stack and
+    // per-CPU base, IRQs off, single CPU, `info` a valid BootInfo) is exactly
+    // what these two phases require, and it is forwarded unchanged.
     unsafe { super::early::init(info); }
+    // SAFETY: forwarded boot-entry contract; `early::init` has additionally run,
+    // which is `runtime::init`'s ordering precondition.
     unsafe { super::runtime::init(info); }
     if sched::live::spawn_timer_driver().is_err() {
         klog::kerror!("fatal: timer driver spawn failed");
@@ -59,6 +64,8 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Tasklet drain (Linux TASKLET_SOFTIRQ) — dynamic softirq-context callbacks.
     sched::live::tasklet::init_softirq();
     net::stp_softirq_init();
+    // SAFETY: forwarded boot-entry contract; the runqueue, workqueues and
+    // kthreads that `rootfs::init` mounts and execs through all exist by now.
     unsafe { super::rootfs::init(info); }
     sched::halt_forever()
 }

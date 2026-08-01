@@ -70,7 +70,12 @@ pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
                     let mut found = 0u32;
                     let mut i = 0u64;
                     while i < 16 && found < 3 {
-                        let a = unsafe { core::ptr::read_volatile((ursp + i * 8) as *const u64) };
+                        // A user stack slot may be unmapped or misaligned; the
+                        // uaccess path faults to EFAULT instead of taking a
+                        // kernel #PF on a raw dereference.
+                        let a = { let mut b = [0u8; 8];
+                            if uaccess::copy_from_user(&mut b, ursp + i * 8).is_err() { break; }
+                            u64::from_ne_bytes(b) };
                         if let Some(uva) = hal::UserVirtAddr::new(a) {
                             if let Some(vma) = mm.find_vma(uva) {
                                 if vma.prot.contains(vmm::VmaProt::EXEC)
@@ -86,10 +91,14 @@ pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
                                         let cfoff = off.wrapping_add(a - vma.start.as_u64());
                                         if cfoff == 0xdad {
                                             let lock_va = a.wrapping_add(0xb044 - 0xdad);
-                                            let byte = unsafe { core::ptr::read_volatile(lock_va as *const u8) };
+                                            let byte = { let mut b = [0u8; 1];
+                                                if uaccess::copy_from_user(&mut b, lock_va).is_err() { b[0] = 0; }
+                                                b[0] };
                                             klog::write_raw(b" LOCK@"); klog::write_hex_u64(lock_va);
                                             klog::write_raw(b"=");      klog::write_hex_u64(byte as u64);
                                             #[cfg(target_arch = "x86_64")]
+                                            // SAFETY: read-only translate of the active root for a
+                                            // user VA, in syscall context on the owning CPU.
                                             if let Some((pa, _)) = unsafe {
                                                 <hal_x86_64::mmu_ops::X86Mmu as hal::MmuOps>::translate(hal::Va(lock_va & !0xfff)) } {
                                                 klog::write_raw(b" rc="); klog::write_dec_u64(pmm::setup::frame_refcount(pa.0 & !0xfff) as u64);

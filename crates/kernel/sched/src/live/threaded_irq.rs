@@ -155,7 +155,9 @@ mod tests {
     fn a_hard_half_that_wakes_queues_the_threaded_half() {
         let _g = reset();
         assert!(request(41, Some(hard_wake), threaded, 5));
-        // SAFETY: host test standing in for ISR context.
+        // SAFETY: `dispatch` requires hard-IRQ context with a non-sleeping
+        // hard half; the host test is single-threaded under reset()'s lock
+        // and its hard halves only touch atomics.
         assert!(unsafe { dispatch(41) });
         assert_eq!(HARD.load(Ordering::Acquire), 1);
         // Queued, not yet run — it runs on a kworker.
@@ -167,7 +169,9 @@ mod tests {
     fn a_hard_half_that_handles_it_queues_nothing() {
         let _g = reset();
         assert!(request(42, Some(hard_handled), threaded, 6));
-        // SAFETY: host test.
+        // SAFETY: `dispatch` requires hard-IRQ context with a non-sleeping
+        // hard half; the host test is single-threaded under reset()'s lock
+        // and its hard halves only touch atomics.
         assert!(!unsafe { dispatch(42) }, "IRQ_HANDLED must not wake the thread");
         assert_eq!(HARD.load(Ordering::Acquire), 1);
         assert_eq!(super::super::workqueue::pending_on(6), 0);
@@ -177,7 +181,9 @@ mod tests {
     fn no_hard_half_means_the_thread_always_runs() {
         let _g = reset();
         assert!(request(43, None, threaded, 7));
-        // SAFETY: host test.
+        // SAFETY: `dispatch` requires hard-IRQ context with a non-sleeping
+        // hard half; the host test is single-threaded under reset()'s lock
+        // and its hard halves only touch atomics.
         assert!(unsafe { dispatch(43) });
         assert_eq!(super::super::workqueue::pending_on(7), 1);
     }
@@ -185,7 +191,9 @@ mod tests {
     #[test]
     fn dispatching_an_unregistered_irq_is_a_no_op() {
         let _g = reset();
-        // SAFETY: host test.
+        // SAFETY: `dispatch` requires hard-IRQ context with a non-sleeping
+        // hard half; the host test is single-threaded under reset()'s lock
+        // and its hard halves only touch atomics.
         assert!(!unsafe { dispatch(999) });
         assert_eq!(HARD.load(Ordering::Acquire), 0);
     }

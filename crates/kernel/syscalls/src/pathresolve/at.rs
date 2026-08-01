@@ -121,6 +121,8 @@ pub(crate) fn at_path_empty(ptr: u64) -> Result<bool, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
+    // SAFETY: `ptr` was just range-checked non-null and below USER_VA_END, and
+    // `read_user_cstr` itself bounds the walk to the 1-byte limit given here.
     unsafe { devfs::read_user_cstr(ptr, 1) }
         .map(|b| b.is_empty())
         .ok_or(-(Errno::Efault.as_i32() as i64))
