@@ -108,6 +108,7 @@ pub struct FsType {
     pub(super) flags: FsFlags,
     self_ref:          Weak<FsType>,
     pub(super) ctor:  Box<FsConstructor>,
+    pub(super) params: Option<&'static [crate::fs::fs_parser::FsParamSpec]>,
 }
 
 impl FsType {
@@ -116,8 +117,15 @@ impl FsType {
     /// [`superblock_from_filesystem`] (or stamp it itself) so the resulting
     /// superblock carries `SB_RDONLY`/`SB_NOATIME`/… # C: O(1)
     pub fn new(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>) -> Arc<Self> {
+        Self::with_parameters(name, magic, flags, ctor, None)
+    }
+    /// As [`FsType::new`] but declaring the parameters the filesystem accepts.
+    /// See [`FileSystemType::parameters`] for what `None` and `Some(&[])` mean.
+    /// # C: O(1)
+    pub fn with_parameters(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>,
+        params: Option<&'static [crate::fs::fs_parser::FsParamSpec]>) -> Arc<Self> {
         Arc::new_cyclic(|self_ref| Self {
-            name: name.to_string(), magic, flags, self_ref: self_ref.clone(), ctor,
+            name: name.to_string(), magic, flags, self_ref: self_ref.clone(), ctor, params,
         })
     }
     fn as_type(&self) -> Arc<dyn FileSystemType> {
@@ -156,4 +164,5 @@ impl FileSystemType for FsType {
         self.construct_with_flags(src, "", opts, sb_flags)
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
+    fn parameters(&self) -> Option<&'static [crate::fs::fs_parser::FsParamSpec]> { self.params }
 }

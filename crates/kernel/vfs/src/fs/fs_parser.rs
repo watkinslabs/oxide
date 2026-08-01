@@ -243,3 +243,66 @@ mod tests {
         assert_eq!(admit(&[], &FsParameter::string("anything", "1")), FsParamVerdict::Unknown);
     }
 }
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use crate::fs::fs_context::{vfs_parse_fs_param, FsContext};
+    use crate::fs::{FsFlags, FsType};
+    use crate::types::VfsError;
+
+    fn ty(params: Option<&'static [FsParamSpec]>) -> Arc<dyn crate::FileSystemType> {
+        FsType::with_parameters("paramtest", 0x5a5a, FsFlags::empty(),
+            Box::new(|_, _, _, _, _| Err(VfsError::Einval)), params)
+    }
+
+    // A filesystem that declares no table is the legacy backend: it cannot
+    // reject anything, which is the behaviour every filesystem had before a
+    // table existed.
+    #[test]
+    fn a_filesystem_without_a_table_still_swallows_every_key() {
+        let mut fc = FsContext::for_mount(ty(None), 0);
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::string("nosuchoption", "1")), Ok(()));
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::flag("alsononsense")), Ok(()));
+    }
+
+    // An EMPTY table is a real declaration — "this filesystem takes no options"
+    // — and is what makes an option-support query answer truthfully instead of
+    // claiming support for everything.
+    #[test]
+    fn an_empty_table_rejects_every_option_with_einval() {
+        let mut fc = FsContext::for_mount(ty(Some(&[])), 0);
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::string("hidepid", "invisible")),
+            Err(VfsError::Einval));
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::string("subset", "pid")),
+            Err(VfsError::Einval));
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::flag("anything")),
+            Err(VfsError::Einval));
+    }
+
+    // Rejecting unknown keys must not cost the two things every filesystem
+    // still has to accept: the superblock flags the VFS handles itself, and
+    // `source`.
+    #[test]
+    fn a_declared_table_still_admits_sb_flags_and_source() {
+        let mut fc = FsContext::for_mount(ty(Some(&[])), 0);
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::flag("ro")), Ok(()));
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::flag("nosuid")), Err(VfsError::Einval));
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::string("source", "/dev/vda")), Ok(()));
+    }
+
+    #[test]
+    fn a_declared_key_is_accepted_and_an_undeclared_neighbour_is_not() {
+        const SPECS: &[FsParamSpec] = &[FsParamSpec::value("size", FsParamType::Size)];
+        let mut fc = FsContext::for_mount(ty(Some(SPECS)), 0);
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::string("size", "64m")), Ok(()));
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::string("nr_blocks", "10")),
+            Err(VfsError::Einval));
+        // A value-typed key given as a bare word is the wrong shape, not an
+        // unknown key, and must not be read as a device name.
+        assert_eq!(vfs_parse_fs_param(&mut fc, &FsParameter::flag("size")), Err(VfsError::Einval));
+        assert!(fc.source().is_none());
+    }
+}
