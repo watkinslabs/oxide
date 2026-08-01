@@ -267,7 +267,15 @@ pub unsafe fn setup_poe(is_bsp: bool) {
             return;
         }
         hw::enable_overlay();
-        if is_bsp { POE.store(true, Ordering::Relaxed); }
+        if is_bsp {
+            POE.store(true, Ordering::Relaxed);
+            // Same reporting rule as the x86 side: the line appears only when
+            // the overlay was actually enabled, so its presence is the proof
+            // that TCR2_EL1.E0POE took on a CPU that implements FEAT_S1POE.
+            klog::write_raw(b"[cpu] detected: Stage-1 Permission Overlay Extension (S1POE), ");
+            klog::write_dec_u64(MAX_PKEY as u64);
+            klog::write_raw(b" keys\n");
+        }
         // Every CPU starts at the restrictive default; a task's own value is
         // loaded by the first switch onto it.
         por_write_default();

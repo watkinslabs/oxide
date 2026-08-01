@@ -49,8 +49,27 @@ pub mod x86_64 {
     /// `#PF` error-code bit 0 (`X86_PF_PROT`): the fault was a protection
     /// violation on a PRESENT page, not an absent mapping.
     pub const PF_PROT: u64 = 1 << 0;
+    /// Bit 1 (`X86_PF_WRITE`): the access was a write.
+    pub const PF_WRITE: u64 = 1 << 1;
     /// Bit 2 (`X86_PF_USER`): the access was issued at CPL=3.
     pub const PF_USER: u64 = 1 << 2;
+    /// Bit 3 (`X86_PF_RSVD`): a reserved page-table bit was set — a kernel
+    /// page-table bug, never a user-resolvable fault.
+    pub const PF_RSVD: u64 = 1 << 3;
+    /// Bit 4 (`X86_PF_INSTR`): an instruction fetch.
+    pub const PF_INSTR: u64 = 1 << 4;
+    /// Bit 5 (`X86_PF_PK`): the page's protection key denied the access.
+    ///
+    /// The hardware has already consulted PKRU against the PTE's key, so this
+    /// bit is AUTHORITATIVE — unlike the aarch64 Overlay hint, no re-check is
+    /// needed to know a key caused the fault. It cannot be resolved by any
+    /// amount of paging work: the mapping is present and permitted by the page
+    /// tables, and only a `WRPKRU` or `pkey_mprotect` can change the answer.
+    pub const PF_PK: u64 = 1 << 5;
+    /// Bit 6 (`X86_PF_SHSTK`): a shadow-stack access.
+    pub const PF_SHSTK: u64 = 1 << 6;
+    /// Bit 15 (`X86_PF_SGX`): an SGX-specific access-control violation.
+    pub const PF_SGX: u64 = 1 << 15;
 
     /// IDT vector numbers this classifier names (Intel SDM Vol. 3 §6.15).
     pub const TRAP_DE: u64 = 0;
@@ -70,10 +89,18 @@ pub mod x86_64 {
     pub const TRAP_XF: u64 = 19;
     pub const TRAP_CP: u64 = 21;
 
-    /// `#PF` classification: an absent mapping is SEGV_MAPERR, a present page
-    /// the access was not entitled to is SEGV_ACCERR.
+    /// `#PF` classification: a protection-key denial is SEGV_PKUERR, an absent
+    /// mapping is SEGV_MAPERR, and a present page the access was not entitled
+    /// to is SEGV_ACCERR.
+    ///
+    /// The key check comes FIRST because a key denial always arrives with
+    /// `PF_PROT` set as well — the page IS present and the page tables DO
+    /// permit the access; it was the key that refused. Testing `PF_PROT` first
+    /// would report every key violation as a plain access error and hide the
+    /// one piece of information a handler needs to fix it.
     /// # C: O(1)
     pub fn page_fault(err: u64) -> FaultSignal {
+        if err & PF_PK != 0 { return FaultSignal { signo: SIGSEGV, code: code::SEGV_PKUERR }; }
         let code = if err & PF_PROT != 0 { code::SEGV_ACCERR } else { code::SEGV_MAPERR };
         FaultSignal { signo: SIGSEGV, code }
     }
@@ -125,6 +152,20 @@ pub mod aarch64 {
     pub const fn ec(esr: u64) -> u64 { (esr >> 26) & 0x3f }
     /// Data/instruction abort fault status code, bits 0..5 of ESR_EL1.ISS.
     pub const fn dfsc(esr: u64) -> u64 { esr & 0x3f }
+
+    /// `ESR_ELx.ISS2.Overlay` — the permission overlay contributed to this
+    /// abort.
+    ///
+    /// A HINT, not a verdict, and deliberately not used to choose a `si_code`.
+    /// A permission-overlay fault arrives as an ORDINARY permission fault
+    /// (`dfsc` 0x0c..0x0f) — there is no distinct fault-status code for it —
+    /// and this bit can be set spuriously (the rights register is updated
+    /// without an `isb` on context switch) as well as CLEAR on an access that
+    /// should still be reported as a key violation (no page mapped yet, but
+    /// the rights register already forbids the access). The verdict therefore
+    /// has to come from comparing the live rights register against the VMA's
+    /// key, exactly as the arch-neutral access check does.
+    pub const ISS2_OVERLAY: u64 = 1 << 6;
 
     /// EC values this classifier names (Arm ARM D17.2.37).
     pub const EC_UNKNOWN: u64 = 0x00;
