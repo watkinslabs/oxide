@@ -19,3 +19,14 @@ Columns match the live ledger: `Status | Sev | Issue | Evidence | Owner`.
 | FIXED 244c9e5f6 | med | `KEYCTL_REVOKE` did not retry with `KEY_NEED_SETATTR` on EACCES, so a key whose mask grants Setattr but not Write could not be withdrawn by its holder; and it used a partial lookup, so a second revoke reported EACCES instead of EKEYREVOKED. | B1649, `revoke_falls_back_to_setattr_permission`, `revoking_twice_reports_the_key_is_already_revoked`. | B1649 |
 | FIXED 244c9e5f6 | med | `KEYCTL_SET_TIMEOUT` and `KEYCTL_GET_SECURITY` had no authorisation-token path, so a helper could not bound or inspect the key it was asked to build. `KEYCTL_JOIN_SESSION_KEYRING` accepted a `.`-prefixed name, which would place a caller inside `.persistent_register`. | B1649, `set_timeout_accepts_the_authorisation_token_instead_of_setattr`, `a_dot_prefixed_session_name_is_refused`. | B1649 |
 | FIXED 68f197dc4 | med | `/proc/keys` and `/proc/key-users` were empty static stubs and `/proc/sys/kernel/keys/*` did not exist at all. | B1649. Both live and per-reader filtered; four ceilings plus `persistent_keyring_expiry` bound to the live values `key_alloc` and `KEYCTL_GET_PERSISTENT` consult. | B1649 |
+
+## Process
+
+Retired to CLAUDE.md as standing hard rules (`Conflict resolution is where
+coverage dies`, `Verification must be able to fail`) — a lesson that lives only
+in a ledger row is one nobody reads before the next merge.
+
+| Status | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|
+| FIXED D439 | med | Two lanes splitting one file for the size cap along different axes produces a conflict where the STALE side looks plausible. B1641 and B1649 both split `procfs/ctl.rs`; B1649's copy of the `net` subtree predated B1641 making `rmem_default`/`wmem_default` live and adding `tcp_rmem`/`tcp_wmem`, so resolving line-by-line would have silently reverted two leaves to dead `Const` and deleted two more, with nothing red. Rule: take the other side wholesale and re-apply your own delta; verify by MULTISET count, not name set. | B1649 merge of `27cdb991f`; 100 declarations both sides, none dropped, none duplicated. | D439 |
+| FIXED D439 | med | Verification that returns green without exercising what it claims to. Two confirmed instances: `procfs/ctl.rs` is target-gated so `cargo check` compiled none of it (break appeared only in the kernel build); a set-based duplicate-test check that structurally could not detect duplicates (a set dedupes the very thing being looked for). Prefer a positive control — reinstate the defect and confirm the check goes red. | B1641. | D439 |
