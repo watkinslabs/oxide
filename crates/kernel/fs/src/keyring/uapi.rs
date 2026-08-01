@@ -168,3 +168,49 @@ pub const GID_INVALID: u32 = u32::MAX;
 /// First serial handed out. Serials climb from here so no real key collides
 /// with the (removed) legacy sentinel `1`.
 pub const FIRST_SERIAL: i32 = 0x1000_0000;
+
+/// `enum key_state`. A key is UNINSTANTIATED until something fills its payload
+/// in; a NEGATIVE key carries `-errno` in the same field, which is the error
+/// every later lookup of it hands back. `key_read_state` is consulted BEFORE
+/// `key_validate`, so a negative key that has also expired still reports its
+/// stored error rather than EKEYEXPIRED.
+pub const KEY_IS_UNINSTANTIATED: i32 = 0;
+pub const KEY_IS_POSITIVE:       i32 = 1;
+
+/// `key_negative_timeout` — seconds a key negated by a failed upcall lives
+/// before it expires, so a miss is not re-upcalled on every request.
+pub const KEY_NEGATIVE_TIMEOUT: u64 = 60;
+
+/// `MAX_ERRNO`. `KEYCTL_REJECT` accepts `1..MAX_ERRNO` minus the restart
+/// pseudo-errnos below, which are kernel-internal and never visible to a
+/// requester.
+pub const MAX_ERRNO: u32 = 4095;
+pub const ERESTARTSYS_NR:            u32 = 512;
+pub const ERESTARTNOINTR_NR:         u32 = 513;
+pub const ERESTARTNOHAND_NR:         u32 = 514;
+pub const ERESTART_RESTARTBLOCK_NR:  u32 = 516;
+
+/// `UIO_MAXIOV` — the `KEYCTL_INSTANTIATE_IOV` segment-count ceiling.
+pub const UIO_MAXIOV: u64 = 1024;
+
+/// `.request_key_auth` perm: the holder (possessor) may view, read the callout
+/// info, find it by search and link it; the owner gets VIEW alone.
+pub const REQKEY_AUTH_PERM: u32 = KEY_POS_VIEW | KEY_POS_READ | KEY_POS_SEARCH | KEY_POS_LINK | KEY_USR_VIEW;
+
+/// The per-request session keyring `call_sbin_request_key` builds for the
+/// helper: `keyring_alloc(..., KEY_POS_ALL | KEY_USR_VIEW | KEY_USR_READ, ...)`.
+pub const REQKEY_HELPER_KEYRING_PERM: u32 = KEY_POS_ALL | KEY_USR_VIEW | KEY_USR_READ;
+
+/// `.persistent_register` and each `_persistent.<uid>` keyring:
+/// `(KEY_POS_ALL & ~KEY_POS_SETATTR) | KEY_USR_VIEW | KEY_USR_READ`.
+pub const PERSISTENT_KEYRING_PERM: u32 = (KEY_POS_ALL & !KEY_POS_SETATTR) | KEY_USR_VIEW | KEY_USR_READ;
+/// `persistent_keyring_expiry` — three days of non-use, refreshed by every
+/// successful `KEYCTL_GET_PERSISTENT`.
+pub const PERSISTENT_KEYRING_EXPIRY: u64 = 3 * 24 * 3600;
+
+/// `/sbin/request-key` and the environment it is given.
+pub const SBIN_REQUEST_KEY: &[u8] = b"/sbin/request-key";
+/// `rka->op` for the `request_key(2)` construction path (`char op[8]`).
+pub const REQKEY_OP_CREATE: &str = "create";
+/// `char op[8]` — the auth record's operation name is truncated to fit.
+pub const REQKEY_OP_MAX: usize = 7;
