@@ -262,6 +262,27 @@ These cost real hours. Violating them produces false conclusions and wasted boot
 
 12. **FREE-IP PROVENANCE names the corruptor's free-site deterministically — the ~90% corruptor is a stale raw-`Arc` REFCOUNT op on a recycled `ArcInner`, class-confirmed.** kalloc records each block's last `caller::dealloc_return_ip()` in a `base→free_ip` ring (`holes.rs` `FreeIpRing`, C204, `any(debug-heappoison, debug-dealloc-diag)`); every corruption-detection site prints `[KALLOC] corrupt-node last-free-ip base=… free_ip=0x…`. Since the corrupt node is FREE when detected, its last free-IP names where the WRITER's victim was freed → `addr2line` → the Drop glue → the victim type. RESULT (cracked a multi-session mystery in one boot): free_ip → **`vfs::fdtable::model::FdTable::close`** (the `drop(f)` → `File::Drop`). So the corrupt block is an **`ArcInner<File>`** (strong@0, weak@8, data@16). Combined with kalloc's `HoleHdr{size@0, next@8}`: the corrupt `next@8` (`0x…819a1460`) is kalloc's OWN free-list link (a real hole), NOT an external pointer write; the DAMAGE is at `size@0` = the freed ArcInner's old strong-count word, overwritten to a count-like value (`0x1FFFFFFFF`/`0`/`0xaaaaaa`). ⇒ the corruptor is a **stale `Arc::increment_strong_count`/`from_raw`/manual refcount write** on a raw pointer to a freed-and-recycled block — the victim varies by layout (an `ArcInner<File>` this run) but the free-IP is stable, so the DAMAGE class is fixed. There is NO raw `Arc<File>`/`*const File` refcount machinery in vfs/fs/net/mm (grep clean); ALL manual raw-Arc machinery (`Arc::increment_strong_count`+`from_raw`) is on **Task/AddressSpace/AnonVma/FileRmap/Tty in `sched`/`mm`** (`live/wait_list.rs`, `runqueue.rs`, `schedule/{active_mm,switch}.rs`, `zombies.rs`, `futex/wait.rs`). **B1345 fixed one instance** (msleep leaked a one-shot → `wake_all` on a freed stack WaitList); ≥1 more stale raw-Task/AS-Arc op remains. **Method reuse:** to name ANY UAF's victim allocation, capture the free-IP at dealloc and print it at the detector — free-IP names the freer even when the writer is elsewhere. To name the WRITER, pin/rotate the `debug-hw-watchpoint` (C203 killed its false-positive storm) on close-freed blocks. Verification is now deterministic: a real fix makes the `FdTable::close` free-IP stop appearing on corrupt nodes.
 
+## Agent model selection (HARD RULE)
+
+**Investigative agents run on Sonnet. Only genuinely hard work gets Opus.** Pass
+`model: "sonnet"` on the Agent call; it is not the default and omitting it spends
+Opus on work that does not need it.
+
+| Sonnet | Opus |
+|---|---|
+| triage, audits, inventories, "find where X is" | subsystem implementation with real design choices |
+| reading specs / matrix rows and reporting state | root-causing a live bug with no working hypothesis |
+| ledger folds, doc sweeps, mechanical edits | ABI/semantics work cross-checked against the reference |
+| test-flake diagnosis, running gates, collecting evidence | anything where a wrong answer ships a silent defect |
+
+A lane that starts investigative and turns out to need Opus gets **re-spawned**,
+not upgraded in place — the finding is already written down, so the expensive
+agent starts from the answer rather than re-deriving it.
+
+Cost is not the only reason. A Sonnet lane told to report rather than fix returns
+a finding you can act on; an Opus lane given the same brief tends to fix it, which
+is how a one-item lane becomes a five-item one.
+
 ## Claim work before starting (HARD RULE — no duplicate lanes)
 
 Two agents independently rewrote the SAME mount subsystem item (the `mounted_mounts`
