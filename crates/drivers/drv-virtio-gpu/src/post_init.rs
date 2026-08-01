@@ -82,6 +82,9 @@ struct ScanoutCtx {
     hhdm: u64,
     fbdev_idx: Option<u32>,
     quiesced: bool,
+    /// What scanout 0 is currently bound to, or `None` before the first bind.
+    /// Owning it here is what lets a redundant SET_SCANOUT be skipped.
+    bound: Option<present::Binding>,
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -102,6 +105,7 @@ pub use probe::get_display_info;
 use probe::submit_one;
 
 mod damage;
+pub mod present;
 
 mod scanout;
 pub use scanout::{

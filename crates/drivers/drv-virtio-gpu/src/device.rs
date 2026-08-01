@@ -192,6 +192,15 @@ impl drm::DrmDriver for VirtioGpuDrm {
             None    => drm::DrmModeModeinfo::default(),
         }
     }
+    /// The scanout's current rect is the preferred mode; the standard table
+    /// supplies the alternatives. Without them a compositor is pinned to
+    /// whatever size the device powered on with, because a connector that
+    /// reports one mode offers no choice. # C: O(modes)
+    fn modes_for(&self, idx: usize) -> alloc::vec::Vec<drm::DrmModeModeinfo> {
+        let Some(r) = self.enabled_rect(idx) else { return alloc::vec::Vec::new() };
+        let (min_w, max_w, min_h, max_h) = self.dim_bounds();
+        drm::std_modes::list_for(r.width, r.height, min_w, max_w, min_h, max_h)
+    }
     fn connector_info(&self, idx: usize) -> Option<drm::ConnectorInfo> {
         let r = self.enabled_rect(idx)?;
         // Crude physical size: assume ~96 DPI → mm = px * 25.4 / 96.
@@ -203,7 +212,6 @@ impl drm::DrmDriver for VirtioGpuDrm {
             encoder_id:     drm::encoder_id_for(idx),
             mm_width:       mm_w,
             mm_height:      mm_h,
-            mode_count:     1,
         })
     }
     fn crtc_info(&self, idx: usize) -> Option<drm::CrtcInfo> {

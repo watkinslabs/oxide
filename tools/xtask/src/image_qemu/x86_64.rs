@@ -64,6 +64,7 @@ pub(super) fn qemu_run_grub_x86_64(
     // line-buffers + handles signals and drops scripted keystrokes.
     // Interactive: mux=on so Ctrl-A C reaches the QEMU monitor.
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
+    let gpu_dev = super::common::virtio_gpu_device_arg(None);
     let uart_chardev = match std::env::var("OXIDE_QEMU_UART_SOCK") {
         Ok(p) if !p.is_empty() => {
             let _ = std::fs::remove_file(&p);
@@ -151,7 +152,7 @@ pub(super) fn qemu_run_grub_x86_64(
         "-vga", "none",
         // virtio-gpu scanout + virtio-keyboard for the visual console so
         // fbcon renders + the GTK window takes keyboard input.
-        "-device", "virtio-gpu-pci,bus=pcie.0",
+        "-device", gpu_dev.as_str(),
         "-device", "virtio-keyboard-pci,bus=pcie.0",
         // F458: virtio-mouse (relative pointer) → /dev/input/event1. Relative
         // (not absolute/tablet) so QMP input-send-event works headless.
