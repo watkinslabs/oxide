@@ -226,6 +226,13 @@ pub unsafe fn setup_pku(is_bsp: bool) {
             let (_, _, ecx7, _) = crate::cpuid::cpuid_count(7, 0);
             if !cpuid_has_ospke(ecx7) { return; }
             OSPKE.store(true, Ordering::Relaxed);
+            // One line per detected CPU feature, as the kernel reports every
+            // other optional facility it turns on. Absence prints nothing, so
+            // the line's PRESENCE is the proof CR4.PKE took — the CPUID bit
+            // that produced it only reads back after the write landed.
+            klog::write_raw(b"[cpu] detected: Memory Protection Keys for Userspace (PKU/OSPKE), ");
+            klog::write_dec_u64(MAX_PKEY_OSPKE as u64);
+            klog::write_raw(b" keys\n");
         }
         // Every CPU starts at the restrictive default; a task's own value is
         // loaded by the first switch onto it.
