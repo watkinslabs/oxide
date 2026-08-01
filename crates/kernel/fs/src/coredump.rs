@@ -1,5 +1,6 @@
 // Core dumps. Module manifest:
 //   dumpable whether a dying process may be dumped, and how carefully
+//   filter   which mappings the dump contains, and how much of each
 //   pattern  `kernel.core_pattern` storage and expansion; destination choice
 //   elf      the `ET_CORE` image the dump consists of
 //   pipe     the `|program` destination: start a helper, feed it the dump
@@ -7,6 +8,7 @@
 //   tests    hosted coverage for the expansion and the argument split
 
 pub mod dumpable;
+pub mod filter;
 pub mod pattern;
 pub mod elf;
 #[cfg(target_os = "oxide-kernel")]
@@ -15,6 +17,7 @@ pub mod pipe;
 mod current;
 
 pub use dumpable::{dump_allowed, suid_safe_required};
+pub use filter::{describe_vma, dump_size, resolve_elf_probe, vma_dump_verdict, VmaDumpDesc, VmaDumpVerdict};
 pub use pattern::{core_pattern, register_core_hooks, set_core_pattern, CoreContext, CoreKind};
 pub use elf::build_coredump;
 #[cfg(target_os = "oxide-kernel")]
