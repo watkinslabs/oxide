@@ -26,6 +26,10 @@ pub const RANK_IDLE: u8 = 0;
 pub const RANK_FAIR: u8 = 1;
 /// Real-time class (`SCHED_FIFO` / `SCHED_RR`).
 pub const RANK_RT: u8 = 2;
+/// Deadline class (`SCHED_DEADLINE`). Above RT: an admitted deadline task
+/// carries a timing guarantee the priority-ordered class cannot make, so it
+/// wins on sight and never loses to a priority however high.
+pub const RANK_DL: u8 = 3;
 
 /// The scheduler-visible facts about one task that the wakeup-preemption
 /// decision reads. Snapshotted so the decision is a pure function and cannot
@@ -41,12 +45,17 @@ pub struct Cand {
     pub rt_prio: u8,
     /// Fair-class virtual runtime; the pick order within [`RANK_FAIR`].
     pub vruntime: u64,
+    /// Absolute deadline; the pick order within [`RANK_DL`].
+    pub dl_deadline: u64,
+    /// Governor entity — outranks every deadline, including its own class.
+    pub dl_special: bool,
 }
 
 /// Snapshot a live task for [`wakeup_preempt`].
 /// # C: O(1)
 pub fn cand_of(t: &Task) -> Cand {
     let (rank, rt_prio) = match t.sched_class() {
+        SchedClass::Deadline        => (RANK_DL, 0),
         SchedClass::Rt { prio, .. } => (RANK_RT, prio),
         SchedClass::Normal { .. }   => (RANK_FAIR, 0),
         SchedClass::Idle            => (RANK_IDLE, 0),
@@ -56,6 +65,8 @@ pub fn cand_of(t: &Task) -> Cand {
         policy: t.policy.load(Ordering::Acquire),
         rt_prio,
         vruntime: t.vruntime.load(Ordering::Acquire),
+        dl_deadline: t.dl.abs_deadline(),
+        dl_special: t.dl.params().is_special(),
     }
 }
 
@@ -73,10 +84,22 @@ pub fn wakeup_preempt(wakee: Cand, curr: Cand) -> bool {
     if wakee.rank > curr.rank { return true; }
     if wakee.rank < curr.rank { return false; }
     match wakee.rank {
+        RANK_DL   => dl_wakeup_preempt(wakee, curr),
         RANK_RT   => rt_wakeup_preempt(wakee, curr),
         RANK_FAIR => fair_wakeup_preempt(wakee, curr),
         _         => true,
     }
+}
+
+/// Deadline-class rule: a STRICTLY earlier absolute deadline preempts.
+///
+/// Equal deadlines do not, for the same reason equal RT priorities do not —
+/// two tasks that must finish at the same instant have no ordering between
+/// them, and rescheduling on every such wakeup would swap them back and forth
+/// without either getting closer to its deadline.
+/// # C: O(1)
+pub fn dl_wakeup_preempt(wakee: Cand, curr: Cand) -> bool {
+    crate::deadline::dl_entity_preempt(wakee.dl_deadline, wakee.dl_special, curr.dl_deadline)
 }
 
 /// RT-class rule: a STRICTLY higher priority preempts; equal priority does NOT.

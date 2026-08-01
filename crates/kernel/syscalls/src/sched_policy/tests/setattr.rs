@@ -162,13 +162,13 @@ fn get_params_reports_the_live_state_keep_params_would_reuse() {
     a.nice = 7;
     assert_eq!(setattr(&caller, &t, &a), 0);
     let mut out = SchedAttr::default();
-    get_params(&t, &mut out);
+    get_params(&t, &mut out, false);
     assert_eq!(out.nice, 7);
     assert_eq!(out.runtime, 5_000_000);
     // An RT task reports its priority instead, and no slice.
     assert_eq!(setattr(&caller, &t, &attr(SCHED_RR, 31, 0)), 0);
     let mut out = SchedAttr::default();
-    get_params(&t, &mut out);
+    get_params(&t, &mut out, false);
     assert_eq!(out.priority, 31);
     assert_eq!(out.runtime, 0);
 }

@@ -63,6 +63,11 @@ pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> u64 {
     // `check_thread_timers`), and posts their SIGXCPU/SIGKILL through the same
     // process-directed enqueue the caller runs below.
     due |= super::cpu_rlimit::check_cpu_rlimits(t);
+    // A `SCHED_DEADLINE` task that asked to be told about overruns
+    // (`SCHED_FLAG_DL_OVERRUN`) has one latch per overrun; taking it here posts
+    // the SIGXCPU through the same process-directed enqueue as the CPU-time
+    // limits, and coalesces repeated overruns into one signal.
+    if t.dl.take_overrun() { due |= Signum::Sigxcpu.bit(); }
     due
 }
 

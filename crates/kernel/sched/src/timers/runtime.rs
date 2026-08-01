@@ -386,7 +386,13 @@ pub fn next_interrupt_deadline() -> u64 {
     // `advancing` so a POSIX wall timer that is due-but-uncollectable (the
     // contested-lock case `next_programmed_interrupt` guards) cannot also
     // discard an unrelated sub-tick wait deadline.
-    crate::hrtimeout::fold_wait_expiry(now, programmed, crate::hrtimeout::earliest_hard_ns())
+    let with_waits = crate::hrtimeout::fold_wait_expiry(now, programmed,
+        crate::hrtimeout::earliest_hard_ns());
+    // A throttled SCHED_DEADLINE entity's replenishment instant is an event
+    // like any other: without it here the throttle would end at the next
+    // accounting tick instead of at the start of the entity's next period,
+    // which turns a sub-tick reservation into a tick-granularity one.
+    crate::hrtimeout::fold_wait_expiry(now, with_waits, crate::deadline::replenish::earliest_ns())
 }
 
 /// Re-arm this CPU's one-shot after a wait expiry was armed or cancelled in

@@ -116,6 +116,14 @@ unsafe fn irq_restore(flags: u64) {
 /// re-select it, starving higher-tid peers (the F144 rotation bug).
 /// Runs before pick + re-enqueue so the re-keyed insert sorts correctly.
 fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
+    // The deadline class charges wall time against a budget, not vruntime
+    // against a weight, so it has its own accounting (`deadline::live`). Doing
+    // it HERE — on every schedule-out, not only on the periodic tick — is what
+    // stops a task that blocks between ticks from running unaccounted.
+    if matches!(prev.sched_class(), SchedClass::Deadline) {
+        let _ = crate::deadline::live::update_curr_dl(prev, now);
+        return;
+    }
     if !matches!(prev.sched_class(), SchedClass::Normal { .. }) { return; }
     let weight = prev.load_weight.load(Ordering::Acquire);
     let start = prev.exec_start_ns.load(Ordering::Acquire);
@@ -343,6 +351,10 @@ pub unsafe fn schedule() {
     let (next_arc, already_owned) = inner.pick_next_task_claim();
     hal::kassert!(!next_arc.on_rq.load(Ordering::Acquire),
         "schedule picked task still marked on_rq");
+    // Start the incoming deadline task's charging window here, so its budget is
+    // measured from the instant it takes the CPU rather than from the last
+    // accounting tick.
+    crate::deadline::live::set_next_task_dl(&next_arc, now);
     rq.publish_nr_running(inner.nr_running());
     // Linux `picked:` in `__schedule` — `clear_tsk_need_resched(prev)`, run
     // BEFORE the `prev != next` test so a re-pick of `prev` also consumes the

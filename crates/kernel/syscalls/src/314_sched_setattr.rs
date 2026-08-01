@@ -81,6 +81,6 @@ pub fn sys_sched_setattr(args: &SyscallArgs) -> i64 {
     let caller = match sched::live::current() { Some(c) => c, None => return err(Errno::Esrch) };
     // SCHED_FLAG_KEEP_PARAMS asks for the task's own parameters back, so the
     // validation below sees values that are trivially self-consistent.
-    if attr.flags & sa::FLAG_KEEP_PARAMS != 0 { sched_policy::get_params(&t, &mut attr); }
+    if attr.flags & sa::FLAG_KEEP_PARAMS != 0 { sched_policy::get_params(&t, &mut attr, false); }
     sched_policy::setattr(caller, &t, &attr)
 }

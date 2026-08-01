@@ -143,6 +143,13 @@ decl_lock_class! {
     Hrtimeout    = 98,
     TaskList     = 100,
     Runqueue     = 110,
+    // Throttled `SCHED_DEADLINE` entities awaiting replenishment
+    // (`sched::deadline::replenish`). Taken irqsave: the hard timer IRQ sweeps
+    // it while the throttle path — which runs with the runqueue (110) held —
+    // inserts, hence the rank just ABOVE `Runqueue`. A leaf: the sweep collects
+    // due entities under it and DROPS it before re-enqueueing them, so it is
+    // never held while `Runqueue` is acquired.
+    DlReplenish  = 111,
     // Serialises tty TRANSMISSION so two writers cannot interleave bytes now
     // that the emit happens after the port lock is released (`skizm.md` Step
     // 4e). Ranked just BELOW `Tty` because it is acquired first and held across

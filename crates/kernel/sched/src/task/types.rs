@@ -78,6 +78,12 @@ pub enum SchedPolicy {
 /// pick. `13§3`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SchedClass {
+    /// `SCHED_DEADLINE`. Outranks every other class: an admitted deadline task
+    /// has a guarantee no priority-ordered class can make, so it is picked
+    /// first and preempts RT and fair on sight. Its ordering data (the absolute
+    /// deadline) lives in `Task::dl`, which is re-read on every insert, so the
+    /// class tag itself carries none.
+    Deadline,
     /// RT priority `1..=99` (higher = higher).
     Rt { prio: u8, policy: SchedPolicy },
     /// Normal-class weight from the Linux nice→weight table; vruntime

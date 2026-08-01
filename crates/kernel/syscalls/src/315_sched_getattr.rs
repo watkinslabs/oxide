@@ -28,10 +28,9 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
         sched::live::registry::resolve_user_pid(pid)
     };
     let t = match task { Some(t) => t, None => return err(Errno::Esrch) };
-    // Linux checks `flags` only AFTER the task exists: the sole legal flag is
-    // SCHED_GETATTR_FLAG_DL_DYNAMIC, and only on a SCHED_DEADLINE task. No task
-    // can hold that policy here, so any non-zero flag is EINVAL — but a bad pid
-    // still reports ESRCH first.
+    // `flags` is checked only AFTER the task exists: the sole legal flag is
+    // SCHED_GETATTR_FLAG_DL_DYNAMIC, and only on a SCHED_DEADLINE task — a bad
+    // pid still reports ESRCH first.
     if flags != 0 && (!sched_policy::dl_policy(sched_policy::task_policy(&t))
                       || flags != sa::GETATTR_FLAG_DL_DYNAMIC) {
         return err(Errno::Einval);
@@ -48,7 +47,7 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
         util_max: uc_max.value,
         ..Default::default()
     };
-    sched_policy::get_params(&t, &mut kattr);
+    sched_policy::get_params(&t, &mut kattr, flags == sa::GETATTR_FLAG_DL_DYNAMIC);
     kattr.flags &= sa::FLAG_ALL;
     let bytes = kattr.to_bytes();
 

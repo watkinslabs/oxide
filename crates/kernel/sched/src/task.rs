@@ -225,6 +225,10 @@ pub struct Task {
     /// task rejoins its priority queue at the HEAD, which is what makes
     /// `SCHED_FIFO` differ from `SCHED_RR` at all.
     pub rt_requeue_tail: AtomicBool,
+    /// `SCHED_DEADLINE` reservation + instance state (`deadline::DlEntity`).
+    /// Present on every task and inert until a deadline policy is admitted, so
+    /// the class's ordering key is readable from any task without a branch.
+    pub dl: crate::deadline::DlEntity,
     /// Linux `task_struct::mempolicy` — the PER-THREAD NUMA policy
     /// `set_mempolicy(2)` installed, packed by `MemPolicy::to_words`. Word 0
     /// is zero when no policy is installed, which is Linux's NULL
