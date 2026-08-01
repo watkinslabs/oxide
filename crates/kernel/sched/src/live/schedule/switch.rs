@@ -592,7 +592,7 @@ pub unsafe fn schedule() {
     // CPU has no rights register.
     {
         // SAFETY: rq.current is the incoming task, just published by swap_current.
-        crate::pkru::switch_to(prev_ref, unsafe { rq.current_ref() });
+        crate::pkey_rights::switch_to(prev_ref, unsafe { rq.current_ref() });
     }
 
     core::mem::forget(inner);
