@@ -176,11 +176,19 @@ fn net_route_body(net_ns: u64) -> alloc::vec::Vec<u8> {
 /// `/proc/net/route` inode. # C: O(1)
 pub fn make_proc_net_route() -> InodeRef { make_net_file(ids::NET_ROUTE as Ino, net_route_body) }
 
-/// `/proc/net/arp` — ARP cache table.
-fn net_arp_body(_net_ns: u64) -> alloc::vec::Vec<u8> {
-    // v1: empty ARP cache (loopback only). Header still
-    // emitted so iproute2 + others parse without erroring.
-    b"IP address       HW type     Flags       HW address            Mask     Device\n".to_vec()
+/// `/proc/net/arp` — IPv4 neighbour table, read by `arp(8)` and anything that
+/// predates the netlink neighbour dump. Row layout is owned by
+/// `net::arp::proc_row`, which is where its tests can run.
+fn net_arp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
+    let mut s = String::from(net::arp::proc_row::HEADER);
+    let stack = net::sock::stack();
+    for iface in stack.ifaces.snapshot_in_ns(net_ns) {
+        let Some(cache) = stack.ifaces.arp_cache_in_ns(iface.id, net_ns) else { continue };
+        for (ip, mac, state) in cache.snapshot_states() {
+            s.push_str(&net::arp::proc_row::row(ip, mac, state, &iface.name));
+        }
+    }
+    s.into_bytes()
 }
 /// `/proc/net/arp` inode. # C: O(1)
 pub fn make_proc_net_arp() -> InodeRef { make_net_file(ids::NET_ARP as Ino, net_arp_body) }
