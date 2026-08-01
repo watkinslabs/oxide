@@ -600,6 +600,21 @@ pub struct Task {
 
     /// PTRACE_SINGLESTEP arm bit (RFLAGS.TF x86; MDSCR_EL1.SS+SPSR.SS arm).
     pub singlestep: AtomicU32,
+
+    /// Linux `TIF_NOCPUID` — `arch_prctl(ARCH_SET_CPUID, 0)` armed user-mode
+    /// `cpuid` faulting for this thread. Per-THREAD, not per-CPU: the switch
+    /// path programs the vendor MSR whenever the incoming task's bit differs
+    /// from the outgoing one, exactly as `__switch_to_xtra` does. Inherited
+    /// across fork, cleared at exec (`arch_setup_new_exec`).
+    pub nocpuid: AtomicBool,
+
+    /// Linux `thread.features` / `thread.features_locked` — the CET
+    /// shadow-stack facilities (`ARCH_SHSTK_SHSTK`, `ARCH_SHSTK_WRSS`) this
+    /// thread has enabled, and those whose state may no longer change.
+    /// `ARCH_SHSTK_STATUS` reports the first; `ARCH_SHSTK_LOCK` sets the
+    /// second. Both reset at exec (`reset_thread_features`).
+    pub shstk_features: AtomicU64,
+    pub shstk_locked: AtomicU64,
     /// F206 aarch64 per-task SVC-frame ptr; deliver_arm reads here.
     #[cfg(target_arch = "aarch64")]
     pub svc_frame: core::sync::atomic::AtomicU64,
