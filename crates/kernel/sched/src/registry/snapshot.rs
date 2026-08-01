@@ -101,16 +101,18 @@ pub fn live_counts() -> (u64, u64) {
 /// `/proc/<pid>/task` enumeration is stable and Linux-like.
 /// # C: O(N_tasks log N_tasks)
 pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
+    // `/proc/<pid>/task` names each thread by the number the READER's pid
+    // namespace gives it; a thread that namespace does not number is not
+    // listed there at all.
+    let ns = super::reader_pid_ns();
     let g = REG.lock_irqsave::<RegIrq>();
     let mut out: Vec<(u32, u32)> = g
         .by_tid
         .values()
         .filter_map(|w| w.upgrade())
         .filter(|t| t.tgid.load(Ordering::Acquire) == tgid)
-        .map(|t| {
-            let vtid = t.vtid.load(Ordering::Acquire);
-            (if vtid != 0 { vtid } else { t.tid }, t.tid)
-        })
+        .filter_map(|t| super::vnr_in(&t, &ns).map(|vtid| (vtid, t.tid)))
+        .filter(|(vtid, _)| *vtid != 0)
         .collect();
     out.sort_unstable_by_key(|(vtid, _)| *vtid);
     out.dedup_by_key(|(vtid, _)| *vtid);
