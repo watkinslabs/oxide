@@ -193,6 +193,43 @@ fn mm_snapshot_pins_across_replacement() {
     assert!(alloc::sync::Arc::ptr_eq(&task.clone_mm().expect("new mm pin"), &new));
 }
 
+/// `ru_maxrss` must survive the mm that earned it: `execve` and exit both
+/// swap the address space away long before anything reads the peak back.
+#[test]
+fn a_departing_address_space_leaves_its_resident_peak_on_the_process() {
+    let old = vmm::AddressSpace::new(0).expect("old mm");
+    let uva = hal::UserVirtAddr::new(0x1_0000).expect("uva");
+    old.mmap(Some(uva), 4096, vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+             vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS, vmm::VmaBacking::Anonymous, false)
+        .expect("map one page");
+    old.account_pte_install_at(uva);
+    assert_eq!(old.accounting_snapshot().hiwater_rss_pages, 1);
+    let task = Task::new_user(13, "exec", SchedClass::Normal { weight: 1024 }, alloc::sync::Arc::clone(&old));
+    assert_eq!(task.thread_group.group_acct().hiwater_rss_pages(), 0);
+    // SAFETY: hosted test is the task's sole scheduler mutator.
+    unsafe { task.replace_mm(None); }
+    assert_eq!(task.thread_group.group_acct().hiwater_rss_pages(), 1,
+        "the peak has to outlive the mm or a reaped child reports ru_maxrss 0");
+}
+
+/// A kernel thread that borrows a user mm is not the owner of its pages, so
+/// releasing the borrow must leave its own accounting untouched.
+#[test]
+fn releasing_a_borrowed_address_space_does_not_claim_its_peak() {
+    let lent = vmm::AddressSpace::new(0).expect("lent mm");
+    let uva = hal::UserVirtAddr::new(0x1_0000).expect("uva");
+    lent.mmap(Some(uva), 4096, vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+              vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS, vmm::VmaBacking::Anonymous, false)
+        .expect("map one page");
+    lent.account_pte_install_at(uva);
+    let kt = Task::new(14, "kworker", SchedClass::Normal { weight: 1024 });
+    // SAFETY: hosted test is the task's sole scheduler mutator.
+    unsafe { kt.replace_borrowed_mm(Some(alloc::sync::Arc::clone(&lent))); }
+    // SAFETY: same.
+    unsafe { kt.replace_borrowed_mm(None); }
+    assert_eq!(kt.thread_group.group_acct().hiwater_rss_pages(), 0);
+}
+
 #[test]
 fn task_pgid_and_sid_default_to_tid() {
     let t = Task::new(42, "t", SchedClass::Normal { weight: 1024 });

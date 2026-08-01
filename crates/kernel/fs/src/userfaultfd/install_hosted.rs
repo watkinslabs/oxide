@@ -9,7 +9,7 @@ use hal::PageFlags;
 use syscall::errno::Errno;
 
 /// # C: O(1)
-pub fn install_pages(_root: u64, _dst0: u64, _src0: Option<u64>, len: u64, _flags: PageFlags)
+pub fn install_pages(_mm: &vmm::AddressSpace, _dst0: u64, _src0: Option<u64>, len: u64, _flags: PageFlags)
     -> (u64, Option<Errno>) {
     (len, None)
 }

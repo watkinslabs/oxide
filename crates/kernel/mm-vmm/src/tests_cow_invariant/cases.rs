@@ -45,7 +45,7 @@ fn fork_does_not_cow_split_shared_memfd() {
     let _ = pmm.mmap(None, PAGE as usize,
         VmaProt::READ | VmaProt::WRITE, VmaFlags::SHARED,
         VmaBacking::File { backing: Arc::new(MemfdBacking), off: 0 }, false);
-    let pslot = AsSlot { root: proot, mm: pmm };
+    let pslot = AsSlot::new(proot, pmm);
     let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
     activate(proot);
     do_fault(&pslot.mm, va, DEMAND_WRITE);
@@ -57,7 +57,7 @@ fn fork_does_not_cow_split_shared_memfd() {
     activate(proot);
     let croot = next_root;
     let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
-    let cslot = AsSlot { root: croot, mm: child };
+    let cslot = AsSlot::new(croot, child);
     check_invariant("shared-post-fork");
 
     // Child writes "CH1_" to the shared page.
@@ -92,7 +92,7 @@ fn fork_does_cow_split_private_anon() {
     let _ = pmm.mmap(None, PAGE as usize,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS, VmaBacking::Anonymous, false);
-    let pslot = AsSlot { root: proot, mm: pmm };
+    let pslot = AsSlot::new(proot, pmm);
     let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
     activate(proot);
     do_fault(&pslot.mm, va, DEMAND_WRITE);
@@ -101,7 +101,7 @@ fn fork_does_cow_split_private_anon() {
     let croot = 0x6_1000_0000u64;
     activate(proot);
     let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
-    let cslot = AsSlot { root: croot, mm: child };
+    let cslot = AsSlot::new(croot, child);
 
     store(&cslot, va, b"CH1_");
     activate(proot);
@@ -143,7 +143,7 @@ fn anon_backed_shared_loses_child_write_mm5_bug() {
     let _ = pmm.mmap(None, PAGE as usize,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::SHARED | VmaFlags::ANONYMOUS, VmaBacking::Anonymous, false);
-    let pslot = AsSlot { root: proot, mm: pmm };
+    let pslot = AsSlot::new(proot, pmm);
     let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
     activate(proot);
     do_fault(&pslot.mm, va, DEMAND_WRITE);
@@ -152,7 +152,7 @@ fn anon_backed_shared_loses_child_write_mm5_bug() {
     let croot = 0xA_1000_0000u64;
     activate(proot);
     let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
-    let cslot = AsSlot { root: croot, mm: child };
+    let cslot = AsSlot::new(croot, child);
     store(&cslot, va, b"CH1_");
 
     // The bug: anon-backed SHARED COW-splits, so the parent is frozen at PAR0.
@@ -182,7 +182,7 @@ fn fork_shares_shmem_anon_mapping() {
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::SHARED | VmaFlags::ANONYMOUS,
         VmaBacking::File { backing: Arc::new(MemfdBacking), off: 0 }, false);
-    let pslot = AsSlot { root: proot, mm: pmm };
+    let pslot = AsSlot::new(proot, pmm);
     let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
     activate(proot);
     do_fault(&pslot.mm, va, DEMAND_WRITE);
@@ -194,7 +194,7 @@ fn fork_shares_shmem_anon_mapping() {
     activate(proot);
     let croot = next_root;
     let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
-    let cslot = AsSlot { root: croot, mm: child };
+    let cslot = AsSlot::new(croot, child);
     check_invariant("shmem-anon-post-fork");
 
     // Child writes "CH1_": the parent and the backing frame MUST observe it.
@@ -250,7 +250,7 @@ fn anon_demand_over_present_leaf_accounts_displaced() {
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS,
         VmaBacking::Anonymous, false);
-    let slot = AsSlot { root, mm };
+    let slot = AsSlot::new(root, mm);
     let va = slot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
     activate(root);
 
@@ -296,7 +296,7 @@ fn cow_reuse_in_place_when_sole_anon_owner() {
     let _ = pmm.mmap(None, PAGE as usize,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS, VmaBacking::Anonymous, false);
-    let pslot = AsSlot { root: proot, mm: pmm };
+    let pslot = AsSlot::new(proot, pmm);
     let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
     activate(proot);
     do_fault(&pslot.mm, va, DEMAND_WRITE);
@@ -308,7 +308,7 @@ fn cow_reuse_in_place_when_sole_anon_owner() {
     let croot = 0x8_1000_0000u64;
     activate(proot);
     let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
-    let cslot = AsSlot { root: croot, mm: child };
+    let cslot = AsSlot::new(croot, child);
     assert!(!EXCL.with(|e| e.borrow().contains(&a)), "fork-shared page is NOT exclusive");
     do_exit(&cslot);
     drop(cslot.mm);
@@ -331,7 +331,7 @@ fn cow_no_reuse_while_fork_shared() {
     let _ = pmm.mmap(None, PAGE as usize,
         VmaProt::READ | VmaProt::WRITE,
         VmaFlags::PRIVATE | VmaFlags::ANONYMOUS, VmaBacking::Anonymous, false);
-    let pslot = AsSlot { root: proot, mm: pmm };
+    let pslot = AsSlot::new(proot, pmm);
     let va = pslot.mm.vmas_for_test().iter().next().unwrap().start.as_u64();
     activate(proot);
     do_fault(&pslot.mm, va, DEMAND_WRITE);
@@ -343,7 +343,7 @@ fn cow_no_reuse_while_fork_shared() {
     let croot = 0x9_1000_0000u64;
     activate(proot);
     let child = pslot.mm.fork_cow_pages::<MultiMmu, _>(croot, 0, rc_inc).expect("fork");
-    let cslot = AsSlot { root: croot, mm: child };
+    let cslot = AsSlot::new(croot, child);
     store(&pslot, va, b"PAR1");
     activate(proot);
     assert_ne!(cur_pa(va), a, "non-exclusive shared page must COW-copy, never reuse");

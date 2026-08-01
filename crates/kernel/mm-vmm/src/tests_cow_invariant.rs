@@ -34,6 +34,7 @@
 mod model;
 mod driver;
 mod cases;
+mod rss;
 
 use model::*;
 use driver::*;

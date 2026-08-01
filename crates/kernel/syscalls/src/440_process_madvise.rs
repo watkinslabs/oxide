@@ -44,11 +44,11 @@ fn pageout_target_range(target: &alloc::sync::Arc<vmm::AddressSpace>, base: u64,
                     Some(off) => off, None => return errno(Errno::Einval),
                 };
                 backing.madvise_pageout(file_off, seg_len).map_or_else(
-                    || pmm::user_as::evict_foreign_pages_in_range(target.root_pa(), target.cpumask(), pos, seg_len),
+                    || pmm::user_as::evict_foreign_pages_in_range(target, pos, seg_len),
                     |result| result.map_or_else(backing_errno, |_| 0),
                 )
             }
-            _ => pmm::user_as::evict_foreign_pages_in_range(target.root_pa(), target.cpumask(), pos, seg_len),
+            _ => pmm::user_as::evict_foreign_pages_in_range(target, pos, seg_len),
         };
         if result != 0 { return result; }
         pos = seg_end;

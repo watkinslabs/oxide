@@ -8,6 +8,7 @@ pub(super) use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 pub(super) use crate::address_space::AddressSpace;
 pub(super) use crate::anon_vma::AnonVma;
+pub(super) use crate::address_space::rss::{class_of, RssClass, RssPages};
 pub(super) use crate::vma::{FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, VmaBacking, VmaFlags, VmaProt};
 
 pub(super) const PAGE: u64 = 0x1000;
@@ -47,6 +48,12 @@ thread_local! {
     /// the mapcount model. Three-way equality (rmap == mapcount == Σ live
     /// PTEs) breaks the self-consistency that let the under-count hide.
     pub(super) static RMAP: RefCell<HashMap<u64, Arc<AnonVma>>> = RefCell::new(HashMap::new());
+    /// root_pa -> the live `AddressSpace`, so the RSS tier can compare each
+    /// mm's OWN residency counters against an independent walk of `ROOTS`.
+    /// Thread-local rather than the crate's global live-mm registry: two
+    /// harness tests running in parallel pick overlapping root values, and a
+    /// global keyed by root would let one clobber the other's entry.
+    pub(super) static MMS: RefCell<HashMap<u64, Arc<AddressSpace>>> = RefCell::new(HashMap::new());
     /// Recorded invariant violation (first one wins). None = clean.
     pub(super) static BUG: RefCell<Option<std::string::String>> = RefCell::new(None);
 }
@@ -60,6 +67,7 @@ pub(super) fn reset() {
     SHFRAMES.with(|r| r.borrow_mut().clear());
     EXCL.with(|r| r.borrow_mut().clear());
     RMAP.with(|r| r.borrow_mut().clear());
+    MMS.with(|r| r.borrow_mut().clear());
     ACTIVE.with(|a| *a.borrow_mut() = 0);
     BUG.with(|b| *b.borrow_mut() = None);
 }
@@ -300,6 +308,7 @@ pub(super) fn check_invariant(label: &str) {
     // the actual chain surfaces a missing self-edge (GAP A4-1): a
     // never-forked page is mapped (live_pte=1, mapcount=1) yet the chain
     // yields 0 → FAIL until `mmap` attaches the owning edge.
+    check_rss(label);
     RMAP.with(|rm| {
         for (pa, av) in rm.borrow().iter() {
             let live_ct = *live.get(pa).unwrap_or(&0);
@@ -321,4 +330,46 @@ pub(super) fn check_invariant(label: &str) {
             }
         }
     });
+}
+
+/// RSS tier: every live mm's own `rss_stat`-equivalent counters must equal an
+/// INDEPENDENT walk of its page-table leaves, classified through the VMA the
+/// leaf falls in. This is the drift check — a residency counter that misses an
+/// install or a removal stays self-consistent forever and only ever shows up
+/// against a walk. Linux's `check_mm` makes the same comparison at `mmput`.
+pub(super) fn check_rss(label: &str) {
+    let mms: Vec<(u64, Arc<AddressSpace>)> =
+        MMS.with(|m| m.borrow().iter().map(|(r, a)| (*r, Arc::clone(a))).collect());
+    for (root, mm) in mms {
+        let leaves: Vec<u64> = match ROOTS.with(|r| r.borrow().get(&root).map(|m| m.keys().copied().collect())) {
+            Some(v) => v, None => continue,
+        };
+        let mut walk = RssPages::default();
+        for va in leaves {
+            let Some(uva) = hal::UserVirtAddr::new(va) else { continue };
+            match mm.find_vma(uva) {
+                None => record_bug(std::format!(
+                    "[{}] RSS-ORPHAN-LEAF: root={:#x} va={:#x} has a leaf but no VMA", label, root, va)),
+                Some(vma) => match class_of(&vma.backing) {
+                    RssClass::Anon      => walk.anon += 1,
+                    RssClass::File      => walk.file += 1,
+                    RssClass::Shmem     => walk.shmem += 1,
+                    RssClass::Device | RssClass::Untracked => {}
+                },
+            }
+        }
+        let have = mm.accounting_snapshot().rss_pages();
+        if have.anon != walk.anon || have.file != walk.file || have.shmem != walk.shmem {
+            record_bug(std::format!(
+                "[{}] RSS-DRIFT: root={:#x} counters anon={} file={} shmem={} but walk anon={} file={} shmem={}",
+                label, root, have.anon, have.file, have.shmem, walk.anon, walk.file, walk.shmem));
+        }
+        // `VmHWM`/`ru_maxrss` may never read below the live total.
+        let snap = mm.accounting_snapshot();
+        if snap.hiwater_rss_pages < have.total() {
+            record_bug(std::format!(
+                "[{}] RSS-HIWATER-BELOW-LIVE: root={:#x} hiwater={} live={}",
+                label, root, snap.hiwater_rss_pages, have.total()));
+        }
+    }
 }
