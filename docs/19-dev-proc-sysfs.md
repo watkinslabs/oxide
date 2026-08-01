@@ -2,10 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`16`,`18`,`35`. Provides:every userspace tool that introspects (`ps`,`top`,`free`,`udev`,`mount`,`lsmod`,...).
 
-## Revision 2026-06-11 (R01)
-
-§60 global-file table gains `/proc/diskstats` (per-disk I/O counters from `17§3a`, Linux `diskstats_show`). The `stat`/`partitions`/`cpuinfo`/`loadavg`/`vmstat`/`interrupts`/`uptime`/`devices`/`buddyinfo` rows are now backed by live kernel state (per-CPU `kcpustat`, the block registry, the PMM `free_orders` per-order free-block counts, the per-CPU IRQ counters in `arch-irq::irqstat`, the load-average EWMA); the static stubs are gone.
-
 ## 1 Purpose
 
 Three pseudo-FSes that present kernel state as a tree of files. Surface defined by Linux compatibility (per `03§5.1–5.3`).
@@ -144,4 +140,3 @@ procfs is not on hot paths; budgets are loose.
 ## 12 Cross-spec
 
 `16` (mounted as a Filesystem), `26` (cgroup2 mount), `33` (firmware tables), `35` (driver registration), `18` (`/proc/modules`,`/sys/module/`).
-

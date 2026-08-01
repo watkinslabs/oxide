@@ -2,10 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`11`,`19`,`22`,`33`,`35`. Provides:every PCIe device driver.
 
-## Revision 2026-07-29 (R01)
-
-- Changed: MSI-X remains preferred when a driver benefits from independent vectors; single-vector devices may use MSI, and INTx remains the final fallback. This matches Linux `pci_alloc_irq_vectors()` selection and lets AHCI use the ICH9 controller's MSI capability instead of requiring a nonexistent MSI-X table.
-
 ## 1 Purpose
 
 Enumerate PCIe devices via ECAM. Allocate BARs (or read pre-assigned). Configure MSI-X/MSI with INTx fallback. Expose `/sys/bus/pci/devices/`. No legacy 0xCF8/0xCFC config-cycle access.

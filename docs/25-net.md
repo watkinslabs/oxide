@@ -2,13 +2,6 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34`. Provides:`15` socket syscalls, drivers, eBPF (phase 23).
 
-## Revision 2026-07-28 (R84)
-
-- Changed: §3 and §10 return resolved route state with separate priority and complete route metrics; §20 adds route-control and datapath differential proof.
-- Why: prior `RouteEntry { ..., mtu, metric }` shape conflated `RTA_PRIORITY` with nested `RTA_METRICS` and allowed lookup to discard configured dst/TCP policy.
-- Affected code: `net` FIB/IPv4/TCP owners, `netlink` route ABI, legacy route ioctl, `/proc/net/route`.
-- Test contract change: every metric validates and round-trips; active/passive TCP and IPv4 transmit prove selected-route effects.
-
 ## 1 Purpose
 
 IPv4 + IPv6 + AF_UNIX + AF_PACKET + AF_NETLINK + AF_VSOCK + AF_XDP. TCP + UDP + ICMP/ICMPv6. Routing, neighbor (ARP/NDP), netfilter-equivalent (basic). Driver model: `NetDev` trait with skb-equivalent buffers.

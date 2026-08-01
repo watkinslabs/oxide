@@ -14,7 +14,7 @@ pub use eventfs::{register_dynamic_event, EventDesc};
 
 pub use root::{config_root, debug_root, register, register_config, register_debug, trace_root};
 
-// Boot-time tracefs registration per `37§R01` and v2-arch-plan §1.8.
+// Boot-time tracefs registration per `37§6` and v2-arch-plan §1.8.
 //
 // V1: static directory at /sys/kernel/tracing whose readdir +
 // open(leaf) expose the canonical control files with empty-trace

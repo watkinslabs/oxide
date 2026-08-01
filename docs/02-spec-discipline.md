@@ -2,38 +2,11 @@
 
 FROZEN 2026-05-02. Dep:none. Umbrella for all specs.
 
-## Revision 2026-05-09 (R02)
-
-- Changed: cool-off rule deleted everywhere (§1 lifecycle, §7,
-  §9 rule 5). A spec freezes the moment its text is correct;
-  no duration gate. Soak periods are forbidden discipline-theater.
-- Changed: v2 divergence framing deleted. There is no v2.
-  Removed §9 rule 8 ("v2 divergences live in `docs/v2/<spec>.md`")
-  and every "v2.x deferral" / "rides v2.x" / "deferred to v2"
-  pattern. Every spec must describe the full Linux-equivalent
-  surface; partial subsets are not freezeable.
-- Why: user direction. Cool-off was a single-developer reviewer
-  substitute; it introduced wall-clock waits with no defect-find
-  benefit at solo scale. v2 deferrals were a way to ship partial
-  Linux compat and call it done; they leave userspace looking
-  for features that aren't there. Spec full or don't spec it.
-- Affected code: none directly; CLAUDE.md § Discipline rules 2 + 3
-  reworded; `tools/spec-lint/` continues enforcing the structural
-  rules with no duration check.
-- Test contract change: none.
-
-## Revision 2026-05-02
-
-- Changed: §5. Distinguish "Dep:" line (cross-reference list) from freeze-prereq order. Allow co-frozen groups when cross-references cycle (HAL/IRQ/timer triplet).
-- Why: MANIFEST `Freeze order` puts subsystem leaves (`14`,`23`,`22`,`33`,`36`) before HAL (`20`,`21`), but `20` cross-references `22` and vice versa. Strict reading of original §5 ("freezes only when deps frozen") makes the leaves unfreezeable. Real semantics: `Dep:` is the documentation cross-reference list; freeze order is the design call recorded in MANIFEST.
-- Affected code: none (no kernel code yet); `tools/spec-lint/` already does not enforce dep-frozen-prereq.
-- Test contract change: none.
-
 Specs are contracts. Spec wins; code follows. Spec is the durable artifact.
 
 ## 1 Lifecycle
 
-`DRAFT —(checks)→ FROZEN —(revision block)→ FROZEN'`
+`DRAFT —(checks)→ FROZEN —(body edit + revise: commit)→ FROZEN'`
 
 DRAFT: mutable, no changelog discipline, code may not be written for the subsystem, OQ at bottom is sole ambiguity site.
 
@@ -43,19 +16,13 @@ Freeze gate (all required):
 3. Test contract concrete (numbers, oracles, coverage gates) where the spec describes a subsystem with executable behavior. Charter / meta specs (this one, `08`, `09`) exempt. PR-time gates pass.
 4. Top-line `Status: FROZEN <date>`; commit `freeze: <spec>` on `Z<NN>-<spec>` branch.
 
-Post-freeze change: prepend revision block:
-```
-## Revision <date>
-- Changed: §X.Y …
-- Why: …
-- Affected code: …
-- Test contract change: …
-```
-Commit `revise: <spec> — <one-line>`. CI: any FROZEN file in diff requires same-commit revision block.
+Post-freeze change: edit the body so it states current truth. No in-file revision/changelog block — the record is the git commit + PR, which hold what changed, why, affected code, and test-contract impact. A spec reader must not have to read superseded history before the content.
+
+Commit `revise: <spec> — <one-line>` on an `R<NN>-<spec>` branch; the commit body carries the rationale. Superseded text is deleted, not annotated.
 
 ## 2 Section types
 
-Frozen: invariants, public ifc, ABI, on-disk fmt, complexity, test contract. Change requires revision block + named reason ("we changed our mind" ≠ reason; "violates `06§X`" = reason).
+Frozen: invariants, public ifc, ABI, on-disk fmt, complexity, test contract. Change requires a named reason in the `revise:` commit ("we changed our mind" ≠ reason; "violates `06§X`" = reason).
 
 Negotiable: tuning constants, internal algo choices, debug instr, log strings. Edit ⇒ Changelog line, same commit.
 
@@ -65,7 +32,7 @@ OQ (DRAFT only): deferred decisions inside the same spec text. Either become a n
 
 Code finds spec wrong:
 - Misread spec → fix code.
-- Real bug/omission → stop. Add OQ (DRAFT) or Revision block (FROZEN). Resolve. Then code.
+- Real bug/omission → stop. Add OQ (DRAFT) or revise the body (FROZEN). Resolve. Then code.
 - Inconvenient spec → revise or follow. Never deviate "just here."
 
 ## 4 Spec template
@@ -73,7 +40,6 @@ Code finds spec wrong:
 ```
 # NN <Subsystem>
 DRAFT|FROZEN <date>. Dep:`a`,`b`. Provides:`c`,`d`.
-(revision blocks if FROZEN)
 
 ## 1 Purpose
 ## 2 Inputs/outputs/deps
@@ -116,13 +82,13 @@ Before flipping a spec to FROZEN, re-read top-to-bottom with no context except t
 
 - Spec a 50-line helper. Skip.
 - 5000-word slab spec. Over-design.
-- Freeze on learning. Revisions are first-class; just visible.
+- Freeze on learning. Revisions are first-class; git holds them.
 - Substitute for tests. Frozen + no test contract = wish.
 
 ## 9 Standing rules (frozen)
 
 1. No code against DRAFT spec.
-2. Frozen sections change only via dated revision block + rationale.
+2. Frozen sections change only via a body edit whose `revise:` commit names the rationale. No in-file revision blocks; git is the change record.
 3. OQ are sole ambiguity site; absent in FROZEN.
 4. Drift → revise spec → code. Never reverse.
 5. No duration-gated waits at any layer (no cool-off, no soak, no 24h/48h/168h gates). Correctness is the gate, not the clock.
