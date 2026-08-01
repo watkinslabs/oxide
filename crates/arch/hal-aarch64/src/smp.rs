@@ -452,7 +452,7 @@ pub unsafe fn bring_up_aps_psci() -> usize {
             ttbr1_pa:          p.ttbr1_pa,
             ttbr0_kernel_pa:   p.ttbr0_kernel_pa,
             mair:              0x0000_0000_0000_FF04,
-            tcr:               0x0000_0005_B510_3510,
+            tcr:               crate::regs::TCR_EL1_KERNEL,
             ctx_va:            ctx as *const ApContext as u64,
         }));
         let bb_va = bb as *const ApBootBlock as u64;

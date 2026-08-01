@@ -44,6 +44,7 @@
 
 pub mod uapi;
 pub mod decide;
+pub mod arm64;
 pub mod sud;
 pub mod io_flusher;
 pub mod auxv;
@@ -57,6 +58,7 @@ mod rseq_slice;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod dispatch;
 mod name;
 mod task_state;
+pub mod tsc;
 mod caps;
 
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

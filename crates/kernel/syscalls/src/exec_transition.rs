@@ -163,6 +163,10 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // `SET_PERSONALITY2(*elf_ex, &arch_state)` — the arch half, which on both
     // 64-bit targets clears READ_IMPLIES_EXEC unconditionally.
     crate::exec_persona::set_personality(cur);
+    // Linux `flush_thread()` + `arch_setup_new_exec()`: the per-thread ARCH
+    // flags whose exec rule is architecture-specific (TSC trap, tagged-address
+    // ABI). Owned by sched so the two arches cannot drift apart here.
+    sched::exec_flush::flush_thread_flags(cur);
     cur.dumpable.store(t.dumpable, Ordering::Release);
 }
 
