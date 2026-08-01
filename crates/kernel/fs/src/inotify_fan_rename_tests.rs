@@ -77,6 +77,7 @@ fn read_rename_records(g: &InotifyData) -> (u32, i32, Vec<Rec>) {
 /// # C: O(1)
 #[test]
 fn a_rename_reports_both_ends_in_one_record_before_the_moved_pair() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF001;
     let old = dir_on(fsid, 0xF001_0001);
     let new = dir_on(fsid, 0xF001_0002);
@@ -107,6 +108,7 @@ fn a_rename_reports_both_ends_in_one_record_before_the_moved_pair() {
 /// # C: O(1)
 #[test]
 fn a_mark_on_the_source_directory_gets_the_old_half_only() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF002;
     let old = dir_on(fsid, 0xF002_0001);
     let new = dir_on(fsid, 0xF002_0002);
@@ -124,6 +126,7 @@ fn a_mark_on_the_source_directory_gets_the_old_half_only() {
 /// # C: O(1)
 #[test]
 fn a_mark_on_the_destination_directory_gets_the_new_half_only() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF003;
     let old = dir_on(fsid, 0xF003_0001);
     let new = dir_on(fsid, 0xF003_0002);
@@ -141,6 +144,7 @@ fn a_mark_on_the_destination_directory_gets_the_new_half_only() {
 /// # C: O(1)
 #[test]
 fn a_rename_within_one_directory_reports_both_halves_to_that_mark() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF004;
     let dir = dir_on(fsid, 0xF004_0001);
     let g = group();
@@ -158,6 +162,7 @@ fn a_rename_within_one_directory_reports_both_halves_to_that_mark() {
 /// # C: O(1)
 #[test]
 fn a_renamed_directory_needs_ondir_and_is_reported_with_it() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF005;
     let old = dir_on(fsid, 0xF005_0001);
     let new = dir_on(fsid, 0xF005_0002);
@@ -179,6 +184,7 @@ fn a_renamed_directory_needs_ondir_and_is_reported_with_it() {
 /// # C: O(1)
 #[test]
 fn an_inotify_group_still_sees_only_the_moved_pair() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF006;
     let old = dir_on(fsid, 0xF006_0001);
     let new = dir_on(fsid, 0xF006_0002);
@@ -195,6 +201,7 @@ fn an_inotify_group_still_sees_only_the_moved_pair() {
 /// # C: O(1)
 #[test]
 fn the_event_length_is_the_metadata_plus_both_named_records() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF007;
     let old = dir_on(fsid, 0xF007_0001);
     let new = dir_on(fsid, 0xF007_0002);
@@ -217,6 +224,7 @@ fn the_event_length_is_the_metadata_plus_both_named_records() {
 /// # C: O(1)
 #[test]
 fn two_different_renames_stay_two_records() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let fsid = 0xF008;
     let old = dir_on(fsid, 0xF008_0001);
     let new = dir_on(fsid, 0xF008_0002);
@@ -233,6 +241,7 @@ fn two_different_renames_stay_two_records() {
 /// # C: O(1)
 #[test]
 fn a_rename_mark_requires_the_name_reporting_mode() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     use syscall::errno::Errno;
     let named = InotifyData::new_fanotify(RENAME_MODE);
     assert_eq!(validate_fanotify_mark_group(&named, MarkScope::Inode, FAN_RENAME, 0, true), Ok(()));

@@ -73,6 +73,7 @@ fn read_event_pair(ino: &InotifyData) -> (i32, u32) {
 
 #[test]
 fn inotify_watch_path_resolution_matches_linux_permission_shape() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let public = reg(3, 0o644, 0);
     let private = reg(4, 0o600, 0);
     let subdir = dir(5, 0o755, 0, &[]);
@@ -95,6 +96,7 @@ fn inotify_watch_path_resolution_matches_linux_permission_shape() {
 
 #[test]
 fn inotify_init_flags_match_linux() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(validate_inotify_init_flags(0), Ok(()));
     assert_eq!(validate_inotify_init_flags(0o0_004_000), Ok(()));
     assert_eq!(validate_inotify_init_flags(0o2_000_000), Ok(()));
@@ -105,6 +107,7 @@ fn inotify_init_flags_match_linux() {
 
 #[test]
 fn legacy_inotify_init_ignores_a0() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let args = syscall::SyscallArgs { a0: 1, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 };
     assert_eq!(sys_inotify_init(&args), -(syscall::errno::Errno::Ebadf.as_i32() as i64));
     assert_eq!(sys_inotify_init1(&args), -(syscall::errno::Errno::Einval.as_i32() as i64));
@@ -112,6 +115,7 @@ fn legacy_inotify_init_ignores_a0() {
 
 #[test]
 fn inotify_add_watch_mask_validation_matches_linux_ordering_units() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(validate_inotify_watch_mask_bits(IN_MODIFY), Ok(()));
     assert_eq!(validate_inotify_watch_mask_bits(0), Err(syscall::errno::Errno::Einval));
     assert_eq!(validate_inotify_watch_mask_bits(0x0080_0000), Err(syscall::errno::Errno::Einval));
@@ -126,6 +130,7 @@ fn inotify_add_watch_mask_validation_matches_linux_ordering_units() {
 
 #[test]
 fn inotify_add_watch_create_replace_and_add_semantics() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let key = 0xabcdusize;
     let wd = add_or_update_watch(&g, key, 0x44, IN_MODIFY, false, None).unwrap();
@@ -153,6 +158,7 @@ fn inotify_add_watch_create_replace_and_add_semantics() {
 
 #[test]
 fn inotify_oneshot_removes_watch_and_queues_ignored() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = InotifyData::new(0);
     let file = reg(6, 0o644, 0);
     let wd = add_or_update_watch(&ino, inode_key(&file), file.fsid(), IN_MODIFY | IN_ONESHOT, false, None).unwrap();
@@ -166,6 +172,7 @@ fn inotify_oneshot_removes_watch_and_queues_ignored() {
 
 #[test]
 fn inotify_remove_watch_queues_ignored_and_rejects_missing_wd() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = InotifyData::new(0);
     let wd = add_or_update_watch(&ino, 0xcafeusize, 0x44, IN_OPEN, false, None).unwrap();
     assert_eq!(remove_watch(&ino, wd), Ok(()));
@@ -175,6 +182,7 @@ fn inotify_remove_watch_queues_ignored_and_rejects_missing_wd() {
 
 #[test]
 fn inotify_queue_overflow_reports_single_overflow_event() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = InotifyData::new(0);
     // Distinct wds: identical consecutive records are MERGED into the tail
     // (Linux `inotify_merge`), so a run of clones would never fill the queue.
@@ -191,6 +199,7 @@ fn inotify_queue_overflow_reports_single_overflow_event() {
 
 #[test]
 fn fanotify_init_validation_matches_linux_ordering_units() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let einval = syscall::errno::Errno::Einval.as_i32();
     let eperm = syscall::errno::Errno::Eperm.as_i32();
 
@@ -231,6 +240,7 @@ fn fanotify_init_validation_matches_linux_ordering_units() {
 
 #[test]
 fn fanotify_mark_prefd_validation_matches_linux_units() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let einval = syscall::errno::Errno::Einval;
 
     assert_eq!(validate_fanotify_mark_prefd(FAN_MARK_ADD, FAN_OPEN as u64), Ok(()));
@@ -253,6 +263,7 @@ fn fanotify_mark_prefd_validation_matches_linux_units() {
 
 #[test]
 fn fanotify_mark_group_validation_matches_linux_units() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let einval = syscall::errno::Errno::Einval;
     let ino = InotifyData::new(0);
     assert_eq!(
@@ -311,6 +322,7 @@ fn fanotify_mark_group_validation_matches_linux_units() {
 // poll() reports not-readable — else an epoll-driven reader spins.
 #[test]
 fn empty_inotify_is_eagain_and_not_pollable() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = InotifyData::new(0);
     let mut buf = [0u8; 64];
     assert_eq!(ino.read(0, &mut buf), Err(vfs::VfsError::Eagain));
@@ -321,6 +333,7 @@ fn empty_inotify_is_eagain_and_not_pollable() {
 // 16-byte inotify_event; a second read returns to EAGAIN.
 #[test]
 fn queued_event_is_readable_then_drains_to_eagain() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let ino = InotifyData::new(0);
     let before = ino.poll_subs.generation();
     ino.enqueue_event(Event { wd: 1, mask: IN_MODIFY, cookie: 0, name: alloc::vec::Vec::new(), obj: None, pid: 0, ..Default::default() });
@@ -366,6 +379,7 @@ fn watched_dir(g: &Arc<InotifyData>, ino: u64, mask: u32) -> (InodeRef, i32) {
 
 #[test]
 fn directory_watch_reports_which_entry_changed() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let (d, wd) = watched_dir(&g, 0x7101, IN_CREATE | IN_DELETE);
     fire_child(&d, IN_CREATE, 0, "hello.txt", false);
@@ -383,6 +397,7 @@ fn directory_watch_reports_which_entry_changed() {
 
 #[test]
 fn a_directory_entry_sets_in_isdir_but_a_file_entry_does_not() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let (d, _) = watched_dir(&g, 0x7102, IN_CREATE);
     fire_child(&d, IN_CREATE, 0, "file", false);
@@ -397,6 +412,7 @@ fn a_directory_entry_sets_in_isdir_but_a_file_entry_does_not() {
 
 #[test]
 fn delete_self_and_move_self_never_carry_in_isdir() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     // Linux `inotify_handle_inode_event` masks IN_ISDIR out of exactly these
     // two, deliberately, to avoid breaking existing inotify programs.
     let g = InotifyData::new(0);
@@ -417,6 +433,7 @@ fn delete_self_and_move_self_never_carry_in_isdir() {
 
 #[test]
 fn rename_names_both_halves_under_one_cookie() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let (from, from_wd) = watched_dir(&g, 0x7104, IN_MOVED_FROM);
     let (to, to_wd) = watched_dir(&g, 0x7105, IN_MOVED_TO);
@@ -435,6 +452,7 @@ fn rename_names_both_halves_under_one_cookie() {
 
 #[test]
 fn a_buffer_too_small_for_the_next_whole_event_is_einval_not_a_partial_event() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let (d, _) = watched_dir(&g, 0x7107, IN_CREATE);
     fire_child(&d, IN_CREATE, 0, "abcd", false);   // needs 16 + 16 = 32 bytes
@@ -452,6 +470,7 @@ fn a_buffer_too_small_for_the_next_whole_event_is_einval_not_a_partial_event() {
 
 #[test]
 fn a_short_buffer_after_a_successful_copy_returns_the_bytes_copied() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let (d, _) = watched_dir(&g, 0x7108, IN_CREATE);
     fire_child(&d, IN_CREATE, 0, "one", false);

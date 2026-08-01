@@ -12,6 +12,7 @@ extern "C" fn thread_cb(data: *mut u8) -> i32 { data as usize as i32 }
 
 #[test]
 fn time_conversions_and_sleep_advance_host_clock() {
+    let _modules = crate::test_serial::claim();
     FALLBACK_NS.store(0, Ordering::Release);
     jiffies.store(0, Ordering::Release);
     assert_eq!(msecs_to_jiffies(10), 1);
@@ -23,6 +24,7 @@ fn time_conversions_and_sleep_advance_host_clock() {
 
 #[test]
 fn work_delayed_work_tasklet_and_kthread_paths() {
+    let _modules = crate::test_serial::claim();
     WORK_COUNT.store(0, Ordering::Release);
     TASKLET_DATA.store(0, Ordering::Release);
     let mut w = LinuxWorkStruct {
@@ -64,7 +66,7 @@ fn work_delayed_work_tasklet_and_kthread_paths() {
 
 #[test]
 fn export_symbols_registers_time_surface() {
-    symtab::_reset();
+    let _modules = crate::test_serial::claim();
     super::export_symbols();
     for name in ["jiffies", "jiffies_64", "msecs_to_jiffies", "ktime_get_ns",
         "msleep", "init_timer", "hrtimer_start", "schedule_work",

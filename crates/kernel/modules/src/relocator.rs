@@ -340,6 +340,7 @@ mod tests {
 
     #[test]
     fn r_64_simple() {
+        let _modules = crate::test_serial::claim();
         let mut buf = [0u8; 16];
         apply(R_X86_64_64, 0, 0x10, 0x1000, &mut buf, 0).unwrap();
         assert_eq!(u64::from_le_bytes(buf[0..8].try_into().unwrap()), 0x1010);
@@ -347,6 +348,7 @@ mod tests {
 
     #[test]
     fn r_pc32_displacement() {
+        let _modules = crate::test_serial::claim();
         // dest_base=0x2000, r_offset=4, sym=0x3000, A=-4 → S + A - P = 0x3000-4-0x2004 = 0xff8
         let mut buf = [0u8; 8];
         apply(R_X86_64_PC32, 4, -4, 0x3000, &mut buf, 0x2000).unwrap();
@@ -356,6 +358,7 @@ mod tests {
 
     #[test]
     fn r_32s_oor() {
+        let _modules = crate::test_serial::claim();
         let mut buf = [0u8; 8];
         let r = apply(R_X86_64_32S, 0, 0, 0x8000_0000, &mut buf, 0);
         assert_eq!(r.err().unwrap(), RelocError::OutOfRange);
@@ -363,6 +366,7 @@ mod tests {
 
     #[test]
     fn unsupported_type() {
+        let _modules = crate::test_serial::claim();
         let mut buf = [0u8; 8];
         assert_eq!(apply(R_X86_64_GOTPCREL, 0, 0, 0, &mut buf, 0).err().unwrap(),
                    RelocError::Unsupported);
@@ -370,6 +374,7 @@ mod tests {
 
     #[test]
     fn r_glob_dat_writes_sym_value() {
+        let _modules = crate::test_serial::claim();
         let mut buf = [0u8; 8];
         apply_dynamic(R_X86_64_GLOB_DAT, 0, 0, 0xDEAD_BEEF_CAFE_F00D, 0, &mut buf, 0).unwrap();
         assert_eq!(u64::from_le_bytes(buf), 0xDEAD_BEEF_CAFE_F00D);
@@ -377,6 +382,7 @@ mod tests {
 
     #[test]
     fn r_jump_slot_writes_sym_value() {
+        let _modules = crate::test_serial::claim();
         let mut buf = [0u8; 8];
         apply_dynamic(R_X86_64_JUMP_SLOT, 0, 0, 0x1234_5678, 0, &mut buf, 0).unwrap();
         assert_eq!(u64::from_le_bytes(buf), 0x1234_5678);
@@ -384,6 +390,7 @@ mod tests {
 
     #[test]
     fn r_relative_uses_load_bias_plus_addend() {
+        let _modules = crate::test_serial::claim();
         let mut buf = [0u8; 8];
         apply_dynamic(R_X86_64_RELATIVE, 0, 0x100, 0, 0x4000_0000, &mut buf, 0).unwrap();
         assert_eq!(u64::from_le_bytes(buf), 0x4000_0100);
@@ -391,6 +398,7 @@ mod tests {
 
     #[test]
     fn aarch64_abs64() {
+        let _modules = crate::test_serial::claim();
         let mut buf = [0u8; 8];
         apply_for_machine(elf::EM_AARCH64, R_AARCH64_ABS64, 0, 7, 0x1000, &mut buf, 0).unwrap();
         assert_eq!(u64::from_le_bytes(buf), 0x1007);
@@ -398,6 +406,7 @@ mod tests {
 
     #[test]
     fn aarch64_call26() {
+        let _modules = crate::test_serial::claim();
         let mut buf = 0x9400_0000u32.to_le_bytes();
         apply_for_machine(elf::EM_AARCH64, R_AARCH64_CALL26, 0, 0, 0x1080, &mut buf, 0x1000).unwrap();
         assert_eq!(u32::from_le_bytes(buf) & 0x03ff_ffff, 0x20);
@@ -405,6 +414,7 @@ mod tests {
 
     #[test]
     fn aarch64_movw_uabs() {
+        let _modules = crate::test_serial::claim();
         let mut buf = 0xd280_0000u32.to_le_bytes();
         apply_for_machine(elf::EM_AARCH64, R_AARCH64_MOVW_UABS_G1_NC, 0, 0, 0x1234_5678, &mut buf, 0).unwrap();
         assert_eq!((u32::from_le_bytes(buf) >> 5) & 0xffff, 0x1234);
@@ -412,6 +422,7 @@ mod tests {
 
     #[test]
     fn aarch64_adrp_add_pair() {
+        let _modules = crate::test_serial::claim();
         let mut adrp = 0x9000_0000u32.to_le_bytes();
         let mut add = 0x9100_0000u32.to_le_bytes();
         apply_for_machine(elf::EM_AARCH64, R_AARCH64_ADR_PREL_PG_HI21, 0, 0, 0x401234, &mut adrp, 0x400000).unwrap();
@@ -422,6 +433,7 @@ mod tests {
 
     #[test]
     fn aarch64_branch_range_checks() {
+        let _modules = crate::test_serial::claim();
         let mut buf = 0x1400_0000u32.to_le_bytes();
         let r = apply_for_machine(elf::EM_AARCH64, R_AARCH64_JUMP26, 0, 0, 0x2000_0000, &mut buf, 0);
         assert_eq!(r.err().unwrap(), RelocError::OutOfRange);

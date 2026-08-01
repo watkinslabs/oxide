@@ -2,12 +2,14 @@ use super::*;
 
 #[test]
 fn addr_formatting_pci() {
+    let _model = crate::model::test_claim::claim_model();
     let a = alloc::format!("{:04x}:{:02x}:{:02x}.{}", 0u16, 0u8, 3u8, 0u8);
     assert_eq!(a, "0000:00:03.0");
 }
 
 #[test]
 fn device_add_and_bind() {
+    let _model = crate::model::test_claim::claim_model();
     let d = device_add(Arc::new(Device::new(
         "pci", alloc::string::String::from("0000:00:09.0"), 0x1AF4, 0x1042, 0x010000)));
     register_driver(&FAKE);
@@ -18,6 +20,7 @@ fn device_add_and_bind() {
 
 #[test]
 fn matches_on_device_id() {
+    let _model = crate::model::test_claim::claim_model();
     register_driver(&FAKE);
     let dev = Device::new("pci", alloc::string::String::from("0000:00:0a.0"), 0x1AF4, 0x1042, 0);
     assert_eq!(match_driver(&dev), Some("fake-virtio-blk"));
@@ -28,6 +31,7 @@ fn matches_on_device_id() {
 
 #[test]
 fn bind_rejects_same_bus_driver_when_device_does_not_match() {
+    let _model = crate::model::test_claim::claim_model();
     register_driver(&FAKE);
     let dev = device_add(Arc::new(Device::new(
         "pci", String::from("0000:00:11.0"), 0x1AF4, 0x1041, 0)));
@@ -39,6 +43,7 @@ fn bind_rejects_same_bus_driver_when_device_does_not_match() {
 
 #[test]
 fn driver_override_controls_matching_and_bind() {
+    let _model = crate::model::test_claim::claim_model();
     register_driver(&FAKE);
     register_driver(&OVERRIDE);
     let d = Arc::new(Device::new(
@@ -52,6 +57,7 @@ fn driver_override_controls_matching_and_bind() {
 
 #[test]
 fn driver_names_are_bus_scoped() {
+    let _model = crate::model::test_claim::claim_model();
     register_driver(&FAKE);
     register_driver(&PLATFORM);
     assert!(driver_names_for_bus("pci").contains(&"fake-virtio-blk"));
@@ -62,6 +68,7 @@ fn driver_names_are_bus_scoped() {
 
 #[test]
 fn bind_resolves_driver_on_device_bus() {
+    let _model = crate::model::test_claim::claim_model();
     register_driver(&PLATFORM);
     let platform = device_add(Arc::new(Device::new(
         "platform", String::from("test0"), 0, 0, 0)));
@@ -74,6 +81,7 @@ fn bind_resolves_driver_on_device_bus() {
 
 #[test]
 fn child_device_records_parent_identity() {
+    let _model = crate::model::test_claim::claim_model();
     let virtio = Device::new("virtio", String::from("virtio0"), 0x1AF4, 2, 0)
         .with_parent("pci", String::from("0000:00:04.0"));
     assert_eq!(virtio.parent(), Some(("pci", "0000:00:04.0")));
@@ -81,6 +89,7 @@ fn child_device_records_parent_identity() {
 
 #[test]
 fn driver_override_stays_on_device_bus() {
+    let _model = crate::model::test_claim::claim_model();
     register_driver(&PLATFORM);
     let pci = Device::new("pci", String::from("0000:00:10.0"), 0, 0, 0);
     pci.set_driver_override(Some(String::from("platform-test")));

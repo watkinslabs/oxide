@@ -28,6 +28,7 @@ fn read_pair(g: &InotifyData) -> (i32, u32) {
 
 #[test]
 fn a_new_watch_past_the_per_user_ceiling_is_enospc() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let uid = 91_001;
     let g = InotifyData::new_owned(0, false, uid, 0);
     set_max_user_watches(2);
@@ -50,6 +51,7 @@ fn a_new_watch_past_the_per_user_ceiling_is_enospc() {
 
 #[test]
 fn closing_a_group_returns_its_instance_and_watch_charges() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let uid = 91_002;
     assert!(inc_ucount(uid, Ucount::InotifyInstances), "stand in for the syscall's charge");
     let g = InotifyData::new_owned(0, false, uid, 0);
@@ -64,6 +66,7 @@ fn closing_a_group_returns_its_instance_and_watch_charges() {
 
 #[test]
 fn a_fanotify_group_charges_marks_not_watches() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let uid = 91_003;
     let g = InotifyData::new_owned(0, true, uid, 0);
     assert_eq!(apply_mark(&g, MarkScope::Inode, 7, 0x10, FAN_OPEN, true, false, 0), 0);
@@ -77,6 +80,7 @@ fn a_fanotify_group_charges_marks_not_watches() {
 
 #[test]
 fn fan_unlimited_marks_exempts_a_group_from_the_mark_account() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let uid = 91_004;
     // FAN_UNLIMITED_MARKS.
     let g = InotifyData::new_owned(0x0000_0020, true, uid, 0);
@@ -87,6 +91,7 @@ fn fan_unlimited_marks_exempts_a_group_from_the_mark_account() {
 
 #[test]
 fn the_queue_depth_is_snapshot_at_group_creation() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let saved = max_queued_events();
     set_max_queued_events(2);
     let g = InotifyData::new_owned(0, false, 91_005, 0);
@@ -105,6 +110,7 @@ fn the_queue_depth_is_snapshot_at_group_creation() {
 
 #[test]
 fn excl_unlink_suppresses_path_events_on_an_unlinked_file_only() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_owned(0, false, 91_006, 0);
     let f = file(600_001);
     let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_MODIFY | IN_EXCL_UNLINK, false, None).unwrap();
@@ -123,6 +129,7 @@ fn excl_unlink_suppresses_path_events_on_an_unlinked_file_only() {
 
 #[test]
 fn without_excl_unlink_an_unlinked_files_events_still_arrive() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_owned(0, false, 91_007, 0);
     let f = file(600_002);
     let wd = add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_MODIFY, false, None).unwrap();
@@ -133,6 +140,7 @@ fn without_excl_unlink_an_unlinked_files_events_still_arrive() {
 
 #[test]
 fn unmount_reports_in_unmount_then_in_ignored_and_frees_the_wd() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_owned(0, false, 91_008, 0);
     // Only IN_MODIFY was requested; IN_UNMOUNT arrives regardless.
     let wd = add_or_update_watch(&g, 600_003, 0xCC, IN_MODIFY, false, None).unwrap();
@@ -147,6 +155,7 @@ fn unmount_reports_in_unmount_then_in_ignored_and_frees_the_wd() {
 
 #[test]
 fn unmount_leaves_marks_on_other_filesystems_alone() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_owned(0, false, 91_009, 0);
     let a = file(600_004);
     add_or_update_watch(&g, 4_001, 0xAA, IN_MODIFY, false, None).unwrap();
@@ -160,6 +169,7 @@ fn unmount_leaves_marks_on_other_filesystems_alone() {
 
 #[test]
 fn a_fid_mode_group_reports_a_file_handle_and_no_descriptor() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     // FAN_REPORT_FID.
     let g = InotifyData::new_owned(0x0000_0200, true, 91_010, 0);
     let f = file(0x4242);
@@ -192,6 +202,7 @@ fn a_fid_mode_group_reports_a_file_handle_and_no_descriptor() {
 
 #[test]
 fn a_dir_fid_name_group_reports_the_entry_name() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     // FAN_REPORT_DIR_FID | FAN_REPORT_NAME.
     let g = InotifyData::new_owned(0x0000_0400 | 0x0000_0800, true, 91_011, 0);
     let d = file(0x99);
@@ -211,6 +222,7 @@ fn a_dir_fid_name_group_reports_the_entry_name() {
 
 #[test]
 fn a_fanotify_buffer_too_small_for_the_first_event_is_einval() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_owned(0x0000_0200, true, 91_012, 0);
     g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(),
                             obj: Some(file(3)), pid: 0, ..Default::default() });
@@ -225,6 +237,7 @@ fn a_fanotify_buffer_too_small_for_the_first_event_is_einval() {
 
 #[test]
 fn a_legacy_fanotify_group_still_emits_bare_metadata() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new_owned(0, true, 91_013, 0);
     g.enqueue_event(Event { wd: 1, mask: FAN_OPEN, cookie: 0, name: Vec::new(), obj: None, pid: 3, ..Default::default() });
     let mut buf = [0u8; 128];

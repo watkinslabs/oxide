@@ -7,6 +7,7 @@ const TEST_DMA_BUF_SIZE: usize = 32;
 
 #[test]
 fn coherent_alloc_returns_dma_address_and_zeroed_memory() {
+    let _modules = crate::test_serial::claim();
     let mut dma = DMA_MAPPING_ERROR;
     let p = dma_alloc_coherent(null_mut(), linux_alloc::PAGE_SIZE, &mut dma, 0);
     assert!(!p.is_null());
@@ -19,6 +20,7 @@ fn coherent_alloc_returns_dma_address_and_zeroed_memory() {
 
 #[test]
 fn streaming_map_checks_masks_and_directions() {
+    let _modules = crate::test_serial::claim();
     let mut buf = [0u8; TEST_DMA_BUF_SIZE];
     let mut mask = DEFAULT_DMA_MASK;
     let mut dev = LinuxDevice { dma_mask: &mut mask, coherent_dma_mask: DEFAULT_DMA_MASK, driver_data: null_mut() };
@@ -33,6 +35,7 @@ fn streaming_map_checks_masks_and_directions() {
 
 #[test]
 fn scatterlist_maps_buffer_and_page_entries() {
+    let _modules = crate::test_serial::claim();
     let buf = [0u8; 16];
     let mut sg = [ScatterList { page_link: 0, offset: 0, length: 0, dma_address: 0, dma_length: 0 }; 2];
     // SAFETY: sg_init_table writes nents entries; `sg` is the two-element ScatterList stack array
@@ -50,6 +53,7 @@ fn scatterlist_maps_buffer_and_page_entries() {
 
 #[test]
 fn sg_table_and_miter_walk_real_bytes() {
+    let _modules = crate::test_serial::claim();
     let mut tbl = SgTable { sgl: null_mut(), nents: 0, orig_nents: 0 };
     assert_eq!(sg_alloc_table(&mut tbl, 2, 0), 0);
     let mut a = [1u8, 2, 3, 4];
@@ -74,6 +78,7 @@ fn sg_table_and_miter_walk_real_bytes() {
 
 #[test]
 fn sgl_alloc_order_returns_owned_page_backed_entries() {
+    let _modules = crate::test_serial::claim();
     let mut nents = 0u32;
     let sgl = crate::linux_dma_sgl::sgl_alloc_order((linux_alloc::PAGE_SIZE * 2) as u64, 0, false, 0, &mut nents);
     assert!(!sgl.is_null());
@@ -90,7 +95,7 @@ fn sgl_alloc_order_returns_owned_page_backed_entries() {
 
 #[test]
 fn export_symbols_registers_dma_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "dma_alloc_coherent", "dma_free_coherent", "dma_map_single",

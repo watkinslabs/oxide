@@ -96,14 +96,19 @@ fn a_name_or_group_name_longer_than_the_wire_field_is_einval() {
 
 #[test]
 fn unregister_frees_the_id_and_reports_enoent_twice() {
-    let fam = register_test_family("unreg", Vec::new(), 1);
+    // The claim has to span BOTH registrations. `register_test_family` holds
+    // it for one registration only, so a sibling registering between this
+    // test's unregister and its re-register takes the group id this test just
+    // freed and is asserting comes back.
+    let _serial = crate::test_serial::genl();
+    let fam = register_unserialised("unreg", Vec::new(), 1);
     let freed: Vec<u32> = fam.mcgrps.iter().map(|g| g.id).collect();
     assert_eq!(family::unregister_family(fam.id), Ok(()));
     assert!(family::find_by_id(fam.id).is_none());
     assert!(family::find_by_name(&fam.name).is_none());
     assert_eq!(family::unregister_family(fam.id), Err(GenlRegError::Enoent));
     // The released group ids come back into the allocation pool.
-    let next = register_test_family("unreg-next", Vec::new(), 1);
+    let next = register_unserialised("unreg-next", Vec::new(), 1);
     assert!(freed.contains(&next.mcgrps[0].id));
     assert_eq!(family::unregister_family(next.id), Ok(()));
 }

@@ -66,7 +66,6 @@ fn cleanup(ns: u64, ifaces: &[net::NetIfaceId]) {
 
 #[test]
 fn newroute_create_excl_and_replace_follow_linux_flags() {
-    let _serial = crate::test_serial::fib();
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
@@ -94,7 +93,6 @@ fn newroute_create_excl_and_replace_follow_linux_flags() {
 
 #[test]
 fn newroute_replace_selects_existing_alias_before_mutable_metadata() {
-    let _serial = crate::test_serial::fib();
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
@@ -123,7 +121,6 @@ fn newroute_replace_selects_existing_alias_before_mutable_metadata() {
 
 #[test]
 fn newroute_replace_requires_existing_route_unless_create_is_set() {
-    let _serial = crate::test_serial::fib();
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
@@ -148,7 +145,6 @@ fn newroute_replace_requires_existing_route_unless_create_is_set() {
 
 #[test]
 fn delroute_without_oif_removes_lowest_metric_matching_alias() {
-    let _serial = crate::test_serial::fib();
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
@@ -170,7 +166,6 @@ fn delroute_without_oif_removes_lowest_metric_matching_alias() {
 
 #[test]
 fn delroute_without_retained_interface_owner_does_not_mutate() {
-    let _serial = crate::test_serial::fib();
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
@@ -215,7 +210,6 @@ fn newroute_rejects_malformed_attributes_without_mutation() {
 
 #[test]
 fn weighted_multipath_preserves_hops_flags_and_gateways() {
-    let _serial = crate::test_serial::fib();
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
@@ -252,7 +246,6 @@ fn weighted_multipath_preserves_hops_flags_and_gateways() {
 
 #[test]
 fn append_notification_contains_complete_resulting_group() {
-    let _serial = crate::test_serial::fib();
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();

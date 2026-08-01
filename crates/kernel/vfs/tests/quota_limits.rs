@@ -20,12 +20,23 @@ impl DquotOperations for QOps {
     fn as_any(&self) -> &dyn core::any::Any { self }
 }
 
+// The hosted warning log is process-global and `take_logged_warnings()` DRAINS
+// it, so a test asserting "one denial, one warning" is only correct while no
+// sibling is charging quota into the same log. Every test here holds this
+// claim. Poison is recovered: one failing test reports as one failure.
+static WARN_LOG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn claim_warn_log() -> std::sync::MutexGuard<'static, ()> {
+    WARN_LOG.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn sb() -> Arc<SuperBlock> {
     SuperBlock::new(Arc::new(TType), Arc::new(TOps), 0x5155, 0x1234, 4096, "quotafs".into(), Arc::new(()))
 }
 
 #[test]
 fn quota_setquota_rejects_v0_limits_that_cannot_be_encoded() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V0, Arc::new(QOps)).unwrap();
     assert_eq!(vfs::quota_setquota(&sb, Kqid::user(1), MemDqblk {
@@ -40,6 +51,7 @@ fn quota_setquota_rejects_v0_limits_that_cannot_be_encoded() {
 
 #[test]
 fn quota_setquota_accepts_v0_maximum_encodable_limits() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V0, Arc::new(QOps)).unwrap();
     let dq = MemDqblk {
@@ -54,6 +66,7 @@ fn quota_setquota_accepts_v0_maximum_encodable_limits() {
 
 #[test]
 fn quota_setquota_rejects_v1_limits_above_linux_core_max() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, Arc::new(QOps)).unwrap();
     assert_eq!(vfs::quota_setquota(&sb, Kqid::user(1), MemDqblk {
@@ -68,6 +81,7 @@ fn quota_setquota_rejects_v1_limits_above_linux_core_max() {
 
 #[test]
 fn quota_masked_setquota_checks_only_masked_limit_fields() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V0, Arc::new(QOps)).unwrap();
     vfs::quota_setquota_masked(&sb, Kqid::user(1), MemDqblk {
@@ -84,6 +98,7 @@ fn quota_masked_setquota_checks_only_masked_limit_fields() {
 
 #[test]
 fn quota_masked_setquota_applies_linux_space_grace_timer_rules() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, Arc::new(QOps)).unwrap();
     vfs::quota_setinfo(&sb, QuotaType::User, MemDqinfo { dqi_bgrace: 10, dqi_valid: IIF_BGRACE, ..MemDqinfo::default() }).unwrap();
@@ -102,6 +117,7 @@ fn quota_masked_setquota_applies_linux_space_grace_timer_rules() {
 
 #[test]
 fn quota_masked_setquota_preserves_linux_space_minus_reserved_semantics() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, Arc::new(QOps)).unwrap();
     let qid = Kqid::user(1);
@@ -112,6 +128,7 @@ fn quota_masked_setquota_preserves_linux_space_minus_reserved_semantics() {
 
 #[test]
 fn quota_masked_setquota_refuses_realtime_fields_the_generic_backend_cannot_store() {
+    let _warn_log = claim_warn_log();
     // A generic quota file has no realtime-device counters, so naming one is
     // EINVAL — the record must never come back reporting a limit that was
     // silently dropped. The realtime values themselves round-trip through the
@@ -136,6 +153,7 @@ fn quota_masked_setquota_refuses_realtime_fields_the_generic_backend_cannot_stor
 
 #[test]
 fn quota_limit_enforcement_can_be_disabled_while_accounting_stays_active() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     let qid = Kqid::user(1);
     vfs::quota_on(&sb, QuotaType::User, vfs::QFMT_VFS_V1, Arc::new(QOps)).unwrap();
@@ -156,6 +174,7 @@ fn quota_limit_enforcement_can_be_disabled_while_accounting_stays_active() {
 
 #[test]
 fn quota_enable_limits_matches_quotactl_fd_sysfile_quotaon() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
 
     assert_eq!(vfs::quota_enable_limits(&sb, QuotaType::Project), Err(VfsError::Einval));
@@ -173,6 +192,7 @@ fn quota_enable_limits_matches_quotactl_fd_sysfile_quotaon() {
 
 #[test]
 fn quota_sysfile_active_requires_enabled_sysfile_quota_info() {
+    let _warn_log = claim_warn_log();
     let sb = sb();
     assert!(!vfs::quota_sysfile_active(&sb));
 
@@ -189,6 +209,7 @@ fn quota_sysfile_active_requires_enabled_sysfile_quota_info() {
 
 #[test]
 fn a_hard_limit_denial_records_the_warning_class_that_named_it() {
+    let _warn_log = claim_warn_log();
     // Every denial and every soft-limit crossing produces a warning record for
     // the netlink transport. This drains the hosted log to prove the class the
     // limit ladder chose actually reaches delivery, rather than being computed

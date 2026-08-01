@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn bind_hook_reports_bound_and_unbound_after_state_change() {
+    let _model = crate::model::test_claim::claim_model();
     use sync::Spinlock as TestLock;
     static EVENTS: TestLock<Vec<BindEvent>, DriverListClass> = TestLock::new(Vec::new());
     fn hook(_bus: &str, _addr: &str, _driver: &'static str, event: BindEvent) {
@@ -24,6 +25,7 @@ fn bind_hook_reports_bound_and_unbound_after_state_change() {
 
 #[test]
 fn device_add_fires_devtmpfs_hook_and_registers() {
+    let _model = crate::model::test_claim::claim_model();
     use sync::Spinlock as TestLock;
     static SEEN: TestLock<Option<(&'static str, String, Option<(u32, u32)>)>, DriverListClass>
         = TestLock::new(None);
@@ -55,6 +57,7 @@ fn device_add_fires_devtmpfs_hook_and_registers() {
 
 #[test]
 fn device_add_initial_probe_precedes_add_uevent_without_bind_change() {
+    let _model = crate::model::test_claim::claim_model();
     fn devtmpfs_cb(_class: &str, name: &str, _dev_t: Option<(u32, u32)>, _f: Option<NodeFactory>) {
         if name == "device-add-order-node" {
             ADD_ORDER.lock().push("devtmpfs");
@@ -97,6 +100,7 @@ fn device_add_initial_probe_precedes_add_uevent_without_bind_change() {
 
 #[test]
 fn sysfs_hook_fires_on_device_add() {
+    let _model = crate::model::test_claim::claim_model();
     static HITS: AtomicU32 = AtomicU32::new(0);
     fn cb(_d: &Device) { HITS.fetch_add(1, Ordering::Release); }
     set_sysfs_hook(cb);

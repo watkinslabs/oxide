@@ -3,6 +3,7 @@ use core::ffi::c_void;
 
 #[test]
 fn mem_and_cstr_helpers_match_c_contracts() {
+    let _modules = crate::test_serial::claim();
     let mut buf = [0u8; 8];
     unsafe { mem::memset(buf.as_mut_ptr() as *mut c_void, b'a' as i32, 3); }
     assert_eq!(&buf[..4], b"aaa\0");
@@ -14,6 +15,7 @@ fn mem_and_cstr_helpers_match_c_contracts() {
 
 #[test]
 fn parse_helpers_convert_linux_numbers() {
+    let _modules = crate::test_serial::claim();
     let mut v8 = 0u8;
     let mut v16 = 0u16;
     let mut vi = 0i32;
@@ -30,6 +32,7 @@ fn parse_helpers_convert_linux_numbers() {
 
 #[test]
 fn scanf_match_bit_and_unicode_helpers_cover_runtime_utility_surface() {
+    let _modules = crate::test_serial::claim();
     let mut iv = 0i32;
     let mut word = [0u8; 8];
     assert_eq!(unsafe { parse::sscanf(b"17 fast\0".as_ptr(), b"%d %s\0".as_ptr(), &mut iv, word.as_mut_ptr()) }, 2);
@@ -59,6 +62,7 @@ fn scanf_match_bit_and_unicode_helpers_cover_runtime_utility_surface() {
 
 #[test]
 fn hex_helpers_round_trip_bytes() {
+    let _modules = crate::test_serial::claim();
     let mut bin = [0u8; 2];
     let mut hex = [0u8; 4];
     assert_eq!(unsafe { parse::hex2bin(bin.as_mut_ptr(), b"0aff".as_ptr(), 2) }, 0);
@@ -69,6 +73,7 @@ fn hex_helpers_round_trip_bytes() {
 
 #[test]
 fn format_exports_write_bounded_output() {
+    let _modules = crate::test_serial::claim();
     let mut out = [0u8; 8];
     let n = unsafe { format::snprintf(out.as_mut_ptr(), out.len(), b"%s-%d\0".as_ptr(), b"irq\0".as_ptr(), -7i32) };
     assert_eq!(n, 6);
@@ -77,7 +82,7 @@ fn format_exports_write_bounded_output() {
 
 #[test]
 fn export_symbols_registers_string_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     crate::linux_string::export_symbols();
     for name in [
         "memcpy", "memset", "memcmp", "strlen", "strcmp", "strncasecmp",

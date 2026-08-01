@@ -42,6 +42,7 @@ fn cstr_eq(ptr: *const c_char, want: &[u8]) -> bool {
 
 #[test]
 fn register_drvdata_name_and_release() {
+    let _modules = crate::test_serial::claim();
     RELEASES.store(0, Ordering::Relaxed);
     let mut dev = LinuxDevice {
         dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
@@ -67,6 +68,7 @@ fn register_drvdata_name_and_release() {
 
 #[test]
 fn class_bus_driver_and_devres_round_trip() {
+    let _modules = crate::test_serial::claim();
     ACTIONS.store(0, Ordering::Relaxed);
     let class = __class_create(null_mut(), c"sample-class".as_ptr());
     assert!(!class.is_null());
@@ -98,6 +100,7 @@ fn class_bus_driver_and_devres_round_trip() {
 
 #[test]
 fn sysfs_emit_formats_into_page_buffer() {
+    let _modules = crate::test_serial::claim();
     let mut buf = [0u8; crate::linux_alloc::PAGE_SIZE];
     let n = unsafe { sysfs_emit(buf.as_mut_ptr() as *mut c_char, c"state=%u\n".as_ptr(), 7u32) };
     assert_eq!(n, 8);
@@ -111,6 +114,7 @@ fn sysfs_emit_formats_into_page_buffer() {
 
 #[test]
 fn driver_register_binds_and_unbinds_bus_devices() {
+    let _modules = crate::test_serial::claim();
     PROBES.store(0, Ordering::Relaxed);
     REMOVES.store(0, Ordering::Relaxed);
     let mut bus = LinuxBusType { name: c"bind-bus".as_ptr(), private: null_mut() };
@@ -140,6 +144,7 @@ fn driver_register_binds_and_unbinds_bus_devices() {
 
 #[test]
 fn device_attrs_and_class_destroy_are_tracked() {
+    let _modules = crate::test_serial::claim();
     let class = __class_create(null_mut(), c"tracked-class".as_ptr());
     assert!(!class.is_null());
     let dev = unsafe { device_create(class, null_mut(), 0x1234, null_mut(), c"tracked%d".as_ptr(), 7u32) };
@@ -162,7 +167,7 @@ fn device_attrs_and_class_destroy_are_tracked() {
 
 #[test]
 fn export_symbols_registers_device_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "device_register", "device_unregister", "dev_set_drvdata",

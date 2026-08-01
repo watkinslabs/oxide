@@ -227,6 +227,7 @@ mod tests {
 
     #[test]
     fn sha256_digest_known_vector() {
+        let _modules = crate::test_serial::claim();
         let tfm = crypto_alloc_shash(c"sha256".as_ptr().cast::<u8>(), 0, 0);
         assert!(!is_err(tfm));
         let mut desc = ShashDesc { tfm, flags: 0 };
@@ -238,6 +239,7 @@ mod tests {
 
     #[test]
     fn crc32c_digest_known_vector() {
+        let _modules = crate::test_serial::claim();
         let tfm = crypto_alloc_shash(c"crc32c".as_ptr().cast::<u8>(), 0, 0);
         assert!(!is_err(tfm));
         let mut desc = ShashDesc { tfm, flags: 0 };
@@ -249,6 +251,7 @@ mod tests {
 
     #[test]
     fn streaming_sha256_matches_digest() {
+        let _modules = crate::test_serial::claim();
         let tfm = crypto_alloc_shash(c"sha256".as_ptr().cast::<u8>(), 0, 0);
         let mut desc = TestDesc {
             desc: ShashDesc { tfm, flags: 0 },
@@ -264,6 +267,7 @@ mod tests {
 
     #[test]
     fn unknown_algorithm_returns_error_pointer() {
+        let _modules = crate::test_serial::claim();
         let tfm = crypto_alloc_shash(c"md5".as_ptr().cast::<u8>(), 0, 0);
         assert!(is_err(tfm));
     }

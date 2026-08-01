@@ -207,9 +207,15 @@ fn pollout_tracks_current_pipe_capacity() {
     assert_eq!(pipe2_syscall::sys_pipe2(&args(out.as_mut_ptr() as u64, flags)), 0);
     let rf = fdt.get(out[0]).expect("read end installed");
     let wf = fdt.get(out[1]).expect("write end installed");
-    assert_eq!(fs::pipe::set_pipe_size(wf.inode(), 2), Ok(2));
+    // `F_SETPIPE_SZ` never yields a pipe smaller than one allocation unit, and
+    // never one whose capacity is not a whole number of units: a request of 2
+    // bytes resolves to a page, and the resolved size is what is reported back.
+    // POLLOUT then tracks THAT capacity, not the number asked for.
+    let cap = fs::pipe::limits::PIPE_GROW_STEP;
+    assert_eq!(fs::pipe::set_pipe_size(wf.inode(), 2), Ok(cap));
     assert_ne!(wf.poll() & POLL_OUT, 0);
-    assert_eq!(wf.write(b"xy"), Ok(2));
+    let full = alloc::vec![b'x'; cap];
+    assert_eq!(wf.write(&full), Ok(cap));
     assert_eq!(wf.poll() & POLL_OUT, 0);
     let mut b = [0u8; 1];
     assert_eq!(rf.read(&mut b), Ok(1));

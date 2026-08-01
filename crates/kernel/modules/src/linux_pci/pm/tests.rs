@@ -16,6 +16,7 @@ fn test_dev() -> LinuxPciDev {
 
 #[test]
 fn save_restore_power_state_and_wake() {
+    let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
     assert_eq!(pci_save_state(&mut dev), LINUX_OK);
     dev.config_space[TEST_CFG_DWORD_IDX] = TEST_CFG_CHANGED;
@@ -29,6 +30,7 @@ fn save_restore_power_state_and_wake() {
 
 #[test]
 fn choose_state_maps_system_sleep_to_d3hot() {
+    let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
     let msg = LinuxPmMessage { event: PM_EVENT_SUSPEND };
     assert_eq!(pci_choose_state(&mut dev, msg), PCI_D3HOT);
@@ -36,7 +38,7 @@ fn choose_state_maps_system_sleep_to_d3hot() {
 
 #[test]
 fn export_symbols_registers_pci_pm_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "pci_save_state", "pci_restore_state", "pci_set_power_state",

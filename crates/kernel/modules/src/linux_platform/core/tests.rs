@@ -90,6 +90,7 @@ fn platform_set(dev: *mut PlatformDevice, data: *mut c_void) {
 
 #[test]
 fn driver_binds_by_platform_id_and_unbinds() {
+    let _modules = crate::test_serial::claim();
     reset();
     let ids = [
         PlatformDeviceId { name: name20(*b"sample-platform\0\0\0\0\0"), driver_data: TEST_ACPI_DATA },
@@ -113,6 +114,7 @@ fn driver_binds_by_platform_id_and_unbinds() {
 
 #[test]
 fn resources_irqs_and_iomap_translate_linux_resources() {
+    let _modules = crate::test_serial::claim();
     reset();
     let mut resources = [
         LinuxResource { start: TEST_MMIO_START, end: TEST_MMIO_END, name: c"regs".as_ptr(), flags: IORESOURCE_MEM },
@@ -130,6 +132,7 @@ fn resources_irqs_and_iomap_translate_linux_resources() {
 
 #[test]
 fn firmware_match_tables_return_driver_data() {
+    let _modules = crate::test_serial::claim();
     reset();
     let mut resources = [];
     let mut dev = empty_device(c"fwdev".as_ptr(), &mut resources);
@@ -164,7 +167,7 @@ fn firmware_match_tables_return_driver_data() {
 
 #[test]
 fn export_symbols_registers_platform_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "__platform_driver_register", "platform_device_register", "platform_get_resource",

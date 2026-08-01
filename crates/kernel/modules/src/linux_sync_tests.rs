@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 #[test]
 fn spin_mutex_and_rw_paths_round_trip() {
+    let _modules = crate::test_serial::claim();
     let mut s = LinuxSpinlock { state: 7 };
     spin_lock_init(&mut s);
     assert_eq!(spin_trylock(&mut s), 1);
@@ -31,6 +32,7 @@ fn spin_mutex_and_rw_paths_round_trip() {
 
 #[test]
 fn completion_refcount_kref_and_seq_work() {
+    let _modules = crate::test_serial::claim();
     let mut c = LinuxCompletion { done: 0 };
     init_completion(&mut c);
     assert_eq!(try_wait_for_completion(&mut c), 0);
@@ -55,7 +57,7 @@ fn completion_refcount_kref_and_seq_work() {
 
 #[test]
 fn export_symbols_registers_sync_surface() {
-    symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in ["spin_lock", "raw_spin_lock", "mutex_lock", "read_lock",
         "down_read", "seqlock_init", "complete", "wake_up", "atomic_inc",
@@ -66,6 +68,7 @@ fn export_symbols_registers_sync_surface() {
 
 #[test]
 fn waitqueue_prepare_tracks_active_until_finish() {
+    let _modules = crate::test_serial::claim();
     wait::reset_wait_cells();
     let mut wq = LinuxWaitQueueHead { seq: 0 };
     let mut ent = LinuxWaitQueueEntry {

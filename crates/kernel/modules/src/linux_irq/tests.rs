@@ -25,6 +25,7 @@ unsafe extern "C" fn thread_handler(_irq: i32, dev_id: *mut c_void) -> i32 {
 
 #[test]
 fn request_dispatch_disable_and_free_irq() {
+    let _modules = crate::test_serial::claim();
     let irq = hal_x86_64::VEC_MSI_POOL_FIRST as u32;
     HITS.store(0, Ordering::Relaxed);
     assert_eq!(request_irq(irq, Some(test_handler), 0, core::ptr::null(), TEST_DEV_ID as *mut c_void), LINUX_OK);
@@ -42,6 +43,7 @@ fn request_dispatch_disable_and_free_irq() {
 
 #[test]
 fn rejects_duplicate_unshared_and_accepts_threaded_irq() {
+    let _modules = crate::test_serial::claim();
     let irq = hal_x86_64::VEC_MSI_POOL_FIRST as u32 + 1;
     HITS.store(0, Ordering::Relaxed);
     THREAD_HITS.store(0, Ordering::Relaxed);
@@ -61,6 +63,7 @@ fn rejects_duplicate_unshared_and_accepts_threaded_irq() {
 
 #[test]
 fn threaded_irq_with_default_primary_wakes_thread() {
+    let _modules = crate::test_serial::claim();
     let irq = hal_x86_64::VEC_MSI_POOL_FIRST as u32 + 2;
     THREAD_HITS.store(0, Ordering::Relaxed);
     assert_eq!(
@@ -75,7 +78,7 @@ fn threaded_irq_with_default_primary_wakes_thread() {
 
 #[test]
 fn export_symbols_registers_irq_surface() {
-    crate::symtab::_reset();
+    let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "request_irq", "request_threaded_irq", "free_irq", "enable_irq",

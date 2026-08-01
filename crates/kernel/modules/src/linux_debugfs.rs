@@ -414,6 +414,7 @@ mod tests {
 
     #[test]
     fn export_symbols_registers_debugfs_surface() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::is_exported("debugfs_create_dir"));
         assert!(crate::is_exported("debugfs_create_file"));
@@ -423,6 +424,7 @@ mod tests {
 
     #[test]
     fn numeric_file_round_trips() {
+        let _modules = crate::test_serial::claim();
         let mut v = 7u32;
         let name = b"debugfs_num\0";
         let d = debugfs_create_u32(name.as_ptr() as *const c_char, 0o600, null_mut(), &mut v);
@@ -439,6 +441,7 @@ mod tests {
 
     #[test]
     fn null_fops_create_noop_files() {
+        let _modules = crate::test_serial::claim();
         let name = b"debugfs_null_fops\0";
         let d = debugfs_create_file(
             name.as_ptr() as *const c_char,

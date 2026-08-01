@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn driver_registration_binds_existing_matching_devices() {
+    let _model = crate::model::test_claim::claim_model();
     LATE_PROBES.store(0, Ordering::Release);
     LATE_REMOVES.store(0, Ordering::Release);
     let d = device_add(Arc::new(Device::new(
@@ -18,6 +19,7 @@ fn driver_registration_binds_existing_matching_devices() {
 
 #[test]
 fn duplicate_driver_registration_does_not_reprobe_existing_devices() {
+    let _model = crate::model::test_claim::claim_model();
     DUP_REGISTER_PROBES.store(0, Ordering::Release);
     DUP_REGISTER_REMOVES.store(0, Ordering::Release);
     register_driver(&DUPLICATE_REGISTER_DRV);
@@ -38,6 +40,7 @@ fn duplicate_driver_registration_does_not_reprobe_existing_devices() {
 
 #[test]
 fn unregister_driver_unbinds_devices_before_removing_driver() {
+    let _model = crate::model::test_claim::claim_model();
     UNREGISTER_PROBES.store(0, Ordering::Release);
     UNREGISTER_REMOVES.store(0, Ordering::Release);
     register_driver(&UNREGISTER_DRV);
@@ -60,6 +63,7 @@ fn unregister_driver_unbinds_devices_before_removing_driver() {
 
 #[test]
 fn unbind_calls_remove_before_clearing_binding() {
+    let _model = crate::model::test_claim::claim_model();
     UNBIND_ORDER_REMOVE_SAW_BOUND.store(0, Ordering::Release);
     register_driver(&UNBIND_ORDER_DRV);
     let d = device_add(Arc::new(Device::new(
@@ -75,6 +79,7 @@ fn unbind_calls_remove_before_clearing_binding() {
 
 #[test]
 fn failed_probe_leaves_device_unbound_and_retriable() {
+    let _model = crate::model::test_claim::claim_model();
     FAIL_PROBES.store(0, Ordering::Release);
     register_driver(&FAILING_PROBE_DRV);
     let d = device_add(Arc::new(Device::new(
@@ -93,6 +98,7 @@ fn failed_probe_leaves_device_unbound_and_retriable() {
 
 #[test]
 fn device_del_unbinds_bound_driver_once() {
+    let _model = crate::model::test_claim::claim_model();
     REMOVE_HITS.store(0, Ordering::Release);
     register_driver(&REMOVE_DRV);
     let d = device_add(Arc::new(Device::new(
@@ -110,6 +116,7 @@ fn device_del_unbinds_bound_driver_once() {
 
 #[test]
 fn device_del_orders_remove_event_and_devtmpfs_teardown() {
+    let _model = crate::model::test_claim::claim_model();
     DEVICE_DEL_ORDER.lock().clear();
     DEVICE_DEL_ORDER_ACTIVE.store(1, Ordering::Release);
     set_sysfs_remove_hook(device_del_order_sysfs_remove);
@@ -131,6 +138,7 @@ fn device_del_orders_remove_event_and_devtmpfs_teardown() {
 
 #[test]
 fn try_device_add_rejects_duplicate_bus_identity() {
+    let _model = crate::model::test_claim::claim_model();
     let first = try_device_add(Arc::new(Device::new(
         "platform", String::from("duplicate-device-test0"), 0, 0x51fd, 0)))
         .unwrap();
@@ -153,6 +161,7 @@ fn try_device_add_rejects_duplicate_bus_identity() {
 
 #[test]
 fn rollback_devices_after_conflict_removes_only_published_batch() {
+    let _model = crate::model::test_claim::claim_model();
     let existing = try_device_add(Arc::new(Device::new(
         "tty", String::from(ROLLBACK_KEEP_ADDR), 0, ROLLBACK_KEEP_ID, 0)))
         .unwrap();
@@ -179,6 +188,7 @@ fn rollback_devices_after_conflict_removes_only_published_batch() {
 
 #[test]
 fn find_matching_device_identity_reuses_only_exact_platform_identity() {
+    let _model = crate::model::test_claim::claim_model();
     let existing = try_device_add(Arc::new(Device::new(
         "platform", String::from(PLATFORM_REUSE_ADDR),
         PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
@@ -228,6 +238,7 @@ fn find_matching_device_identity_reuses_only_exact_platform_identity() {
 
 #[test]
 fn platform_identity_conflict_is_busy_but_not_reusable() {
+    let _model = crate::model::test_claim::claim_model();
     let existing = try_device_add(Arc::new(Device::new(
         "platform", String::from(PLATFORM_CONFLICT_ADDR),
         PLATFORM_REUSE_VENDOR_ID, PLATFORM_REUSE_DEVICE_ID, PLATFORM_REUSE_CLASS,
@@ -261,6 +272,7 @@ fn platform_identity_conflict_is_busy_but_not_reusable() {
 
 #[test]
 fn try_device_add_preserves_pci_bar_resources_and_rejects_republish() {
+    let _model = crate::model::test_claim::claim_model();
     let first = try_device_add(Arc::new(
         Device::new("pci", String::from("0000:00:18.0"), 0x1234, 0x5678, 0x010601)
             .with_resources(Vec::from([
@@ -294,6 +306,7 @@ fn try_device_add_preserves_pci_bar_resources_and_rejects_republish() {
 
 #[test]
 fn pci_identity_mismatch_does_not_replace_or_rebind() {
+    let _model = crate::model::test_claim::claim_model();
     PCI_IDENTITY_PROBES.store(0, Ordering::Release);
     PCI_MISMATCH_PROBES.store(0, Ordering::Release);
     register_driver(&PCI_IDENTITY_DRV);
@@ -333,6 +346,7 @@ fn pci_identity_mismatch_does_not_replace_or_rebind() {
 
 #[test]
 fn repeated_bind_unbind_keeps_model_state_consistent() {
+    let _model = crate::model::test_claim::claim_model();
     LOOP_PROBES.store(0, Ordering::Release);
     LOOP_REMOVES.store(0, Ordering::Release);
     register_driver(&LOOP_LIFECYCLE_DRV);
@@ -356,6 +370,7 @@ fn repeated_bind_unbind_keeps_model_state_consistent() {
 
 #[test]
 fn remove_readd_rebind_loop_reuses_bus_identity_after_device_del() {
+    let _model = crate::model::test_claim::claim_model();
     READD_PROBES.store(0, Ordering::Release);
     READD_REMOVES.store(0, Ordering::Release);
     register_driver(&READD_LIFECYCLE_DRV);
@@ -379,6 +394,7 @@ fn remove_readd_rebind_loop_reuses_bus_identity_after_device_del() {
 
 #[test]
 fn multi_device_fault_hotplug_cycle_keeps_model_state_consistent() {
+    let _model = crate::model::test_claim::claim_model();
     HARDEN_PLATFORM_PROBES.store(0, Ordering::Release);
     HARDEN_PLATFORM_REMOVES.store(0, Ordering::Release);
     HARDEN_PCI_PROBES.store(0, Ordering::Release);
@@ -437,6 +453,7 @@ fn multi_device_fault_hotplug_cycle_keeps_model_state_consistent() {
 
 #[test]
 fn shutdown_all_quiesces_bound_devices_in_reverse_registration_order() {
+    let _model = crate::model::test_claim::claim_model();
     use sync::Spinlock as TestLock;
     static ORDER: TestLock<Vec<String>, DriverListClass> = TestLock::new(Vec::new());
 

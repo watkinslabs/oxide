@@ -11,6 +11,18 @@ use fs::keyring::{quota_limit, set_quota_limit, sys_keyctl, QuotaKnob};
 use procfs::proc_handler::{IntHook, ProcHandler};
 use syscall::SyscallArgs;
 
+// One key store, one set of `/proc/sys/kernel/keys/*` ceilings, one session
+// keyring per task — all process-global, and every test here mutates them.
+// `KEYCTL_JOIN_SESSION_KEYRING` in particular REPLACES the calling task's
+// session keyring, so two tests joining concurrently leave one of them
+// rendering a `/proc/keys` body whose key the other already displaced.
+// Poison is recovered: one failing test reports as one failure.
+static KEY_STORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn claim_key_store() -> std::sync::MutexGuard<'static, ()> {
+    KEY_STORE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// `KEYCTL_JOIN_SESSION_KEYRING` — the one key-creating command that takes no
 /// user pointer (a NULL name mints an anonymous session keyring), so a hosted
 /// test can create a real key without user memory.
@@ -28,6 +40,7 @@ fn maxkeys_leaf() -> IntHook {
 
 #[test]
 fn a_new_key_appears_in_the_proc_keys_body_procfs_renders() {
+    let _keys = claim_key_store();
     fs::keyring::register_procfs_hooks();
     let serial = sys_keyctl(&SyscallArgs { a0: KEYCTL_JOIN_SESSION_KEYRING, ..Default::default() });
     assert!(serial > 0, "joining a session keyring mints one: {serial}");
@@ -43,6 +56,7 @@ fn a_new_key_appears_in_the_proc_keys_body_procfs_renders() {
 
 #[test]
 fn the_key_users_body_charges_the_owning_uid() {
+    let _keys = claim_key_store();
     fs::keyring::register_procfs_hooks();
     let serial = sys_keyctl(&SyscallArgs { a0: KEYCTL_JOIN_SESSION_KEYRING, ..Default::default() });
     assert!(serial > 0);
@@ -53,6 +67,7 @@ fn the_key_users_body_charges_the_owning_uid() {
 
 #[test]
 fn a_sysctl_write_moves_the_ceiling_the_key_store_reports() {
+    let _keys = claim_key_store();
     fs::keyring::register_procfs_hooks();
     let restore = quota_limit(QuotaKnob::MaxKeys);
     let leaf = maxkeys_leaf();
@@ -74,6 +89,7 @@ fn a_sysctl_write_moves_the_ceiling_the_key_store_reports() {
 // administrator they had shortened a credential's life when they had not.
 #[test]
 fn the_persistent_expiry_sysctl_changes_the_keyrings_lifetime() {
+    let _keys = claim_key_store();
     fs::keyring::register_procfs_hooks();
     let saved = fs::keyring::persistent_expiry();
     fs::keyring::set_persistent_expiry(120);

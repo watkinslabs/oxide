@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn runtime_exports_cover_compiler_scheduler_trace_surface() {
-        crate::symtab::_reset();
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in [
             "__ubsan_handle_out_of_bounds", "__ubsan_handle_shift_out_of_bounds",
@@ -151,6 +151,7 @@ mod tests {
 
     #[test]
     fn scheduler_and_list_compat_paths_are_safe_defaults() {
+        let _modules = crate::test_serial::claim();
         assert_eq!(cond_resched(), 0);
         might_resched();
         preempt_schedule();

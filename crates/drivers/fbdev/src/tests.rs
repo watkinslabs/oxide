@@ -11,13 +11,9 @@ fn record_flush(key: FbDriverKey) { LAST_FLUSH.store(key.raw(), AtomicOrdering::
 fn record_blank(key: FbDriverKey) { LAST_BLANK.store(key.raw(), AtomicOrdering::SeqCst); }
 fn record_unblank(key: FbDriverKey) { LAST_UNBLANK.store(key.raw(), AtomicOrdering::SeqCst); }
 
-fn reset_fbdev() {
-    devfs::unregister_all_nodes();
-    FBS.lock().clear();
-}
-
 #[test]
 fn fb_var_default_bgra32() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let v = FbVarScreeninfo::default();
     assert_eq!(v.bits_per_pixel, 32);
     assert_eq!(v.red.offset, 16);
@@ -28,6 +24,7 @@ fn fb_var_default_bgra32() {
 
 #[test]
 fn fb_fix_default_truecolor() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let f = FbFixScreeninfo::default();
     assert_eq!(f.ty, FB_TYPE_PACKED_PIXELS);
     assert_eq!(f.visual, FB_VISUAL_TRUECOLOR);
@@ -45,6 +42,7 @@ fn fb_cmap_layout() { assert_eq!(core::mem::size_of::<FbCmap>(), 40); }
 
 #[test]
 fn cmap_pack_unpack_roundtrip_bgra32() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let v = FbVarScreeninfo::default();
     for &(r, g, b) in &[
         (0xFFFFu16, 0x0000u16, 0x0000u16),
@@ -59,6 +57,7 @@ fn cmap_pack_unpack_roundtrip_bgra32() {
 
 #[test]
 fn cmap_pack_places_channels_in_bgra_fields() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let v = FbVarScreeninfo::default();
     assert_eq!(pack_pseudo(&v, 0xFFFF, 0, 0), 0x00FF_0000);
     assert_eq!(pack_pseudo(&v, 0, 0xFFFF, 0), 0x0000_FF00);
@@ -67,6 +66,7 @@ fn cmap_pack_places_channels_in_bgra_fields() {
 
 #[test]
 fn pan_check_validates_against_virtual() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let mut v = FbVarScreeninfo::default();
     v.xres = 800;
     v.yres = 600;
@@ -83,6 +83,7 @@ fn pan_check_validates_against_virtual() {
 
 #[test]
 fn vblank_wait_returns_when_seq_advances() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let start = VBLANK_SEQ.load(Ordering::Relaxed);
     vblank_tick();
     let got = wait_vblank(start);
@@ -92,6 +93,7 @@ fn vblank_wait_returns_when_seq_advances() {
 
 #[test]
 fn vblank_wait_bounded_when_no_advance() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let start = VBLANK_SEQ.load(Ordering::Relaxed);
     let got = wait_vblank(start);
     assert!(got >= start);
@@ -99,6 +101,7 @@ fn vblank_wait_bounded_when_no_advance() {
 
 #[test]
 fn line_length_alignment() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     assert_eq!(line_length(800, 32), 3200);
     assert_eq!(line_length(1366, 32), 5504);
     assert_eq!(line_length(1024, 16), 2048);
@@ -106,6 +109,7 @@ fn line_length_alignment() {
 
 #[test]
 fn blank_level_validation() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     assert!(is_blank_level(FB_BLANK_UNBLANK));
     assert!(is_blank_level(FB_BLANK_POWERDOWN));
     assert!(!is_blank_level(99));
@@ -113,7 +117,7 @@ fn blank_level_validation() {
 
 #[test]
 fn init_scanout_populates_geometry_and_backing() {
-    reset_fbdev();
+    let _fbdev = crate::test_claim::claim_fbdev();
     let bytes = 800u64 * 600 * 4;
     let idx = init_scanout(0xdead_0000, 0xffff_8000_dead_0000, bytes, 800 * 4, 800, 600);
     assert_eq!(idx, 0);
@@ -125,21 +129,19 @@ fn init_scanout_populates_geometry_and_backing() {
     assert_eq!(f.line_length, 800 * 4);
     assert_eq!(backing_of(0), Some((0xdead_0000, bytes)));
     assert_eq!(kva_of(0), Some((0xffff_8000_dead_0000, bytes)));
-    reset_fbdev();
 }
 
 #[test]
 fn backing_none_without_real_fb() {
-    reset_fbdev();
+    let _fbdev = crate::test_claim::claim_fbdev();
     register(0, 1, FbVarScreeninfo::default(), FbFixScreeninfo::default());
     assert_eq!(backing_of(0), None);
     assert_eq!(kva_of(0), None);
-    reset_fbdev();
 }
 
 #[test]
 fn register_count_roundtrip() {
-    reset_fbdev();
+    let _fbdev = crate::test_claim::claim_fbdev();
     let mut v = FbVarScreeninfo::default();
     v.xres = 800;
     v.yres = 600;
@@ -147,12 +149,11 @@ fn register_count_roundtrip() {
     assert_eq!(idx, 0);
     assert_eq!(count(), 1);
     assert_eq!(var_of(0).unwrap().xres, 800);
-    reset_fbdev();
 }
 
 #[test]
 fn register_unwinds_record_when_model_publication_conflicts() {
-    reset_fbdev();
+    let _fbdev = crate::test_claim::claim_fbdev();
     let conflict = drv::try_device_add(alloc::sync::Arc::new(
         drv::Device::new("graphics", alloc::string::String::from("fb0"), 0, 0, 0)
             .with_devnode("graphics", alloc::string::String::from("fb0"), Some((29, 0))),
@@ -172,12 +173,11 @@ fn register_unwinds_record_when_model_publication_conflicts() {
     );
 
     drv::device_del(&conflict);
-    reset_fbdev();
 }
 
 #[test]
 fn fb_ops_are_per_instance() {
-    reset_fbdev();
+    let _fbdev = crate::test_claim::claim_fbdev();
     LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_BLANK.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_UNBLANK.store(u32::MAX, AtomicOrdering::SeqCst);
@@ -212,12 +212,11 @@ fn fb_ops_are_per_instance() {
     LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
     flush(fb1);
     assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), u32::MAX);
-    reset_fbdev();
 }
 
 #[test]
 fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
-    reset_fbdev();
+    let _fbdev = crate::test_claim::claim_fbdev();
     LAST_FLUSH.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_BLANK.store(u32::MAX, AtomicOrdering::SeqCst);
     LAST_UNBLANK.store(u32::MAX, AtomicOrdering::SeqCst);
@@ -253,11 +252,11 @@ fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
     assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), 44);
     assert_eq!(LAST_UNBLANK.load(AtomicOrdering::SeqCst), u32::MAX);
 
-    reset_fbdev();
 }
 
 #[test]
 fn fbio_usercopy_rejects_overflowing_user_ranges() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let fb0_inode = devfs::make_fb_inode(0);
     let efault = -(syscall::errno::Errno::Efault.as_i32() as i64);
 
@@ -285,6 +284,7 @@ fn fbio_usercopy_rejects_overflowing_user_ranges() {
 
 #[test]
 fn fbio_getcmap_rejects_invalid_transparency_pointer() {
+    let _fbdev = crate::test_claim::claim_fbdev();
     let fb0_inode = devfs::make_fb_inode(0);
     let efault = -(syscall::errno::Errno::Efault.as_i32() as i64);
     let mut red = [0u16; 1];

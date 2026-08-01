@@ -30,6 +30,7 @@ fn masks(g: &InotifyData) -> Vec<u32> { g.events.lock().iter().map(|e| e.mask).c
 /// FS_CREATE on the parent. Only the parent leg used to exist.
 #[test]
 fn a_new_hardlink_reports_attrib_on_the_file() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk(FileType::Regular, 0x6B01, 1);
     add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
@@ -42,6 +43,7 @@ fn a_new_hardlink_reports_attrib_on_the_file() {
 /// (`fsnotify_move`: `if (target) fsnotify_link_count(target)`).
 #[test]
 fn an_overwritten_rename_target_reports_attrib() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let victim = mk(FileType::Regular, 0x6B02, 2);
     add_or_update_watch(&g, inode_key(&victim), victim.fsid(), IN_ATTRIB, false, None).unwrap();
@@ -55,6 +57,7 @@ fn an_overwritten_rename_target_reports_attrib() {
 /// Pins that an rmdir'd directory reports the bare bit.
 #[test]
 fn delete_self_on_a_directory_carries_no_isdir() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let d = mk(FileType::Directory, 0x6B03, 2);
     add_or_update_watch(&g, inode_key(&d), d.fsid(), FAN_DELETE_SELF, true, None).unwrap();
@@ -70,6 +73,7 @@ fn delete_self_on_a_directory_carries_no_isdir() {
 /// versa — guards against the two legs being conflated.
 #[test]
 fn the_two_legs_are_separately_maskable() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk(FileType::Regular, 0x6B04, 1);
     add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_DELETE_SELF, false, None).unwrap();

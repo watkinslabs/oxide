@@ -42,6 +42,7 @@ fn root_cred() -> Cred {
 
 #[test]
 fn owner_and_mode_changes_are_attrib() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(setattr_event_mask(ATTR_UID), FAN_ATTRIB);
     assert_eq!(setattr_event_mask(ATTR_GID), FAN_ATTRIB);
     assert_eq!(setattr_event_mask(ATTR_MODE), FAN_ATTRIB);
@@ -52,6 +53,7 @@ fn owner_and_mode_changes_are_attrib() {
 /// change. The old per-syscall wiring had no size case at all.
 #[test]
 fn a_size_change_is_modify_not_attrib() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(setattr_event_mask(ATTR_SIZE), IN_MODIFY);
     assert_eq!(setattr_event_mask(ATTR_SIZE) & FAN_ATTRIB, 0);
 }
@@ -61,6 +63,7 @@ fn a_size_change_is_modify_not_attrib() {
 /// would pass a naive "an event fired" test, so each arm is pinned.
 #[test]
 fn the_timestamp_split_matches_linux() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(setattr_event_mask(ATTR_ATIME | ATTR_MTIME), FAN_ATTRIB);
     assert_eq!(setattr_event_mask(ATTR_ATIME), IN_ACCESS);
     assert_eq!(setattr_event_mask(ATTR_MTIME), IN_MODIFY);
@@ -73,6 +76,7 @@ fn the_timestamp_split_matches_linux() {
 /// setattr that only stamps ctime is silent.
 #[test]
 fn a_ctime_only_change_is_silent() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     assert_eq!(setattr_event_mask(ATTR_CTIME), 0);
     assert_eq!(setattr_event_mask(0), 0);
 }
@@ -80,6 +84,7 @@ fn a_ctime_only_change_is_silent() {
 /// chown + truncate in one `notify_change` reports BOTH bits.
 #[test]
 fn a_combined_change_reports_every_applicable_bit() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let m = setattr_event_mask(ATTR_UID | ATTR_SIZE);
     assert_eq!(m & FAN_ATTRIB, FAN_ATTRIB);
     assert_eq!(m & IN_MODIFY, IN_MODIFY);
@@ -91,6 +96,7 @@ fn a_combined_change_reports_every_applicable_bit() {
 /// one of them receives only that one.
 #[test]
 fn the_subscriber_queues_one_event_per_bit() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk_file(0x5A01);
     add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB | IN_MODIFY, false, None).unwrap();
@@ -104,6 +110,7 @@ fn the_subscriber_queues_one_event_per_bit() {
 
 #[test]
 fn an_unrequested_bit_is_dropped() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk_file(0x5A02);
     add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
@@ -119,6 +126,7 @@ fn an_unrequested_bit_is_dropped() {
 /// is exactly how fchmod/fchownat/truncate ended up silent.
 #[test]
 fn notify_change_drives_the_hook() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk_file(0x5A03);
     add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
@@ -134,6 +142,7 @@ fn notify_change_drives_the_hook() {
 /// `i_op->setattr` returned 0.
 #[test]
 fn a_rejected_setattr_fires_nothing() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk_file(0x5A04);
     add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
@@ -170,6 +179,7 @@ fn queue(g: &InotifyData, name: &[u8]) {
 /// reports the bytes already copied. Both entry points, same answers.
 #[test]
 fn the_short_buffer_rule_is_identical_on_both_entry_points() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     for nonblock in [false, true] {
         let g = InotifyData::new(0);
         queue(&g, b"aaaa");   // 16 hdr + 16 padded name = 32
@@ -191,6 +201,7 @@ fn the_short_buffer_rule_is_identical_on_both_entry_points() {
 /// gate; see the `wait_for_event` comment.)
 #[test]
 fn an_empty_queue_is_eagain_on_the_nonblocking_path() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     assert_eq!(g.read_nonblock(0, &mut [0u8; 64]), Err(vfs::VfsError::Eagain));
 }
@@ -198,6 +209,7 @@ fn an_empty_queue_is_eagain_on_the_nonblocking_path() {
 /// One call drains every event that fits, as Linux's `continue` loop does.
 #[test]
 fn one_read_drains_every_event_that_fits() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     for n in [&b"one"[..], b"two", b"three"] { queue(&g, n); }
     let mut buf = [0u8; 256];
@@ -210,6 +222,7 @@ fn one_read_drains_every_event_that_fits() {
 /// dispatch->queue->read chain, not just direct enqueues).
 #[test]
 fn a_watched_event_is_readable() {
+    let _notify = crate::inotify::test_claim::claim_notify();
     let g = InotifyData::new(0);
     let f = mk_file(0x5A09);
     let wd = add_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
