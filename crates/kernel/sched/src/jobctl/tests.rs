@@ -94,10 +94,10 @@ fn clearing_stop_pending_also_clears_the_signal_and_the_counter_debt() {
 
 #[test]
 fn the_last_thread_to_stop_completes_the_group_stop() {
-    let t1 = participate_group_stop(STOP_PENDING | STOP_CONSUME, 2);
+    let t1 = participate_group_stop(STOP_PENDING | STOP_CONSUME, 2, false);
     assert_eq!(t1.count, 1);
     assert!(!t1.completed, "one thread of two still running");
-    let t2 = participate_group_stop(STOP_PENDING | STOP_CONSUME, t1.count);
+    let t2 = participate_group_stop(STOP_PENDING | STOP_CONSUME, t1.count, false);
     assert_eq!(t2.count, 0);
     assert!(t2.completed, "the last thread completes the group stop");
 }
@@ -107,10 +107,10 @@ fn a_thread_that_already_paid_cannot_complete_the_stop_twice() {
     // A tracee re-stopped by its tracer re-enters the stop with the debt
     // already consumed; decrementing again would report a second CLD_STOPPED
     // for one group stop.
-    let paid = participate_group_stop(STOP_PENDING | STOP_CONSUME, 1);
+    let paid = participate_group_stop(STOP_PENDING | STOP_CONSUME, 1, false);
     assert!(paid.completed);
     assert_eq!(paid.jobctl & STOP_CONSUME, 0, "the debt is settled");
-    let again = participate_group_stop(paid.jobctl, paid.count);
+    let again = participate_group_stop(paid.jobctl, paid.count, true);
     assert!(!again.completed);
     assert_eq!(again.count, 0);
 }
@@ -118,18 +118,46 @@ fn a_thread_that_already_paid_cannot_complete_the_stop_twice() {
 #[test]
 fn participating_always_clears_stop_pending() {
     for jc in [STOP_PENDING | STOP_CONSUME | 19, STOP_PENDING | 19] {
-        assert_eq!(participate_group_stop(jc, 3).jobctl & STOP_PENDING, 0);
+        assert_eq!(participate_group_stop(jc, 3, false).jobctl & STOP_PENDING, 0);
     }
 }
 
 // --- PTRACE_LISTEN ---------------------------------------------------------
 
 #[test]
-fn listen_arms_the_trap_so_an_async_event_re_traps() {
+fn listen_sets_only_the_listening_bit() {
+    // LISTEN arms no trap: the tracee is already parked in one. The bit's only
+    // job is to make an asynchronous event WAKE the tracee so it can re-report.
     let jc = listen(0);
     assert_eq!(jc & LISTENING, LISTENING);
-    assert_eq!(jc & TRAP_STOP, TRAP_STOP);
-    assert!(wake_retraps(jc, WakeKind::Cont), "a SIGCONT re-traps a listening tracee");
+    assert_eq!(jc & TRAP_MASK, 0, "LISTEN arms no trap of its own");
+}
+
+#[test]
+fn the_re_trap_condition_is_the_trap_latch_not_listening() {
+    // A tracee woken with TRAP_NOTIFY still set holds an event nobody has been
+    // told about, so it re-enters the trap — whether or not LISTENING survived.
+    assert!(wake_retraps(TRAP_NOTIFY, WakeKind::Cont));
+    assert!(wake_retraps(TRAP_NOTIFY | LISTENING, WakeKind::Cont));
+    assert!(!wake_retraps(LISTENING, WakeKind::Cont), "nothing latched to report");
+}
+
+#[test]
+fn leaving_a_trap_drops_listening_so_listen_is_per_stop() {
+    // The tracer must re-issue PTRACE_LISTEN after each report; the tracee
+    // clears the bit on its way out, not the tracer on resume.
+    let jc = stop_exit_clears(listen(0) | TRACED);
+    assert_eq!(jc & LISTENING, 0);
+    assert_eq!(jc & TRACED, 0);
+}
+
+#[test]
+fn entering_a_trap_settles_the_latch_that_asked_for_it() {
+    // Any trap clears a pending TRAP_STOP; only a trap REPORTING
+    // PTRACE_EVENT_STOP also clears the TRAP_NOTIFY whose event it announces.
+    let armed = TRAP_STOP | TRAP_NOTIFY;
+    assert_eq!(trap_entry_clears(armed, false) & TRAP_MASK, TRAP_NOTIFY);
+    assert_eq!(trap_entry_clears(armed, true) & TRAP_MASK, 0);
 }
 
 #[test]
@@ -152,10 +180,15 @@ fn trap_notify_only_wakes_a_listening_tracee() {
 }
 
 #[test]
-fn a_tracers_own_resume_lets_a_listening_tracee_out() {
-    let jc = listen(0);
-    assert!(!wake_retraps(jc, WakeKind::PtraceResume));
-    assert_eq!(resume_clears(jc) & (LISTENING | TRAP_MASK | STOP_PENDING), 0);
+fn a_tracers_resume_clears_traced_and_nothing_else() {
+    // The trap latch is the TRACEE's to settle as it leaves the stop. A tracer
+    // that cleared it here would discard an event not yet reported.
+    let jc = TRACED | TRAP_NOTIFY | LISTENING | STOP_PENDING;
+    let after = resume_clears(jc);
+    assert_eq!(after & TRACED, 0);
+    assert_eq!(after & (TRAP_NOTIFY | LISTENING | STOP_PENDING),
+               TRAP_NOTIFY | LISTENING | STOP_PENDING);
+    assert!(!wake_retraps(jc, WakeKind::PtraceResume), "a tracer's own resume never re-traps");
 }
 
 #[test]
@@ -167,9 +200,13 @@ fn a_fatal_signal_is_never_swallowed_by_listen() {
 }
 
 #[test]
-fn a_non_listening_tracee_is_not_re_trapped() {
-    assert!(!wake_retraps(TRAP_STOP, WakeKind::Cont));
-    assert!(!wake_retraps(LISTENING, WakeKind::Cont), "nothing latched to re-report");
+fn a_completed_group_stop_is_not_reported_a_second_time() {
+    // SIGNAL_STOP_STOPPED: a thread joining a stop the group already completed
+    // owes nobody another CLD_STOPPED.
+    let fresh = participate_group_stop(STOP_PENDING | STOP_CONSUME, 1, false);
+    assert!(fresh.completed);
+    let joiner = participate_group_stop(STOP_PENDING | STOP_CONSUME, 1, true);
+    assert!(!joiner.completed, "the group stop was already reported");
 }
 
 // --- the counter as the thread group actually drives it --------------------

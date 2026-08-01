@@ -11,34 +11,37 @@ fn task() -> Task { Task::new(4001, "dbg", SchedClass::Normal { weight: 1024 }) 
 fn u_debugreg_indices_map_onto_the_shadow_including_the_hardware_aliases() {
     assert_eq!(slot_of_u_debugreg(0), Some(0));
     assert_eq!(slot_of_u_debugreg(3), Some(3));
-    // DR4/DR5 alias DR6/DR7 in hardware, and ptrace exposes the aliases.
-    assert_eq!(slot_of_u_debugreg(4), Some(STATUS));
     assert_eq!(slot_of_u_debugreg(6), Some(STATUS));
-    assert_eq!(slot_of_u_debugreg(5), Some(CONTROL));
     assert_eq!(slot_of_u_debugreg(7), Some(CONTROL));
+    // There are NO DR4/DR5 registers — they are not aliases of DR6/DR7.
+    assert_eq!(slot_of_u_debugreg(4), None);
+    assert_eq!(slot_of_u_debugreg(5), None);
     assert_eq!(slot_of_u_debugreg(8), None);
-    assert!(is_status(4) && is_status(6) && !is_status(7));
-    assert!(is_control(5) && is_control(7) && !is_control(6));
+    assert!(is_status(6) && !is_status(4) && !is_status(7));
+    assert!(is_control(7) && !is_control(5) && !is_control(6));
 }
 
 #[test]
 fn a_fresh_task_is_unarmed_and_reads_zero() {
     let t = task();
     assert!(!armed(&t), "no breakpoint is set on a task nobody traced");
-    for idx in [0usize, 1, 2, 3, 6, 7] { assert_eq!(get(&t, idx), Some(0), "u_debugreg[{idx}]"); }
+    for idx in [0usize, 1, 2, 3, 6, 7] { assert_eq!(get(&t, idx), 0, "u_debugreg[{idx}]"); }
+    // A nonexistent index reads as zero rather than failing.
+    for idx in [4usize, 5, 9] { assert_eq!(get(&t, idx), 0, "u_debugreg[{idx}]"); }
 }
 
 #[test]
-fn a_stored_breakpoint_is_read_back_through_the_alias_and_arms_the_task() {
+fn a_stored_breakpoint_is_read_back_and_arms_the_task() {
     let t = task();
     put(&t, 0, 0x4000);
-    assert_eq!(get(&t, 0), Some(0x4000));
+    assert_eq!(get(&t, 0), 0x4000);
     assert!(!armed(&t), "an address alone arms nothing — DR7 does");
     // L0 enable.
     put(&t, CONTROL, DR7_ENABLE_MASK & 1);
     assert!(armed(&t), "the context-switch gate must see the task as armed");
-    // Read back through both the direct index and the hardware alias.
-    assert_eq!(get(&t, 7), get(&t, 5));
+    assert_eq!(get(&t, 7), DR7_ENABLE_MASK & 1);
+    // DR5 is not an alias of DR7 — it does not exist and reads as zero.
+    assert_eq!(get(&t, 5), 0);
 }
 
 #[test]
@@ -58,7 +61,7 @@ fn a_db_cause_accumulates_into_the_status_shadow() {
     let t = task();
     record_status(&t, 0b0001);
     record_status(&t, 0b0100);
-    assert_eq!(get(&t, 6), Some(0b0101), "a tracer reads WHY each trap fired");
+    assert_eq!(get(&t, 6), 0b0101, "a tracer reads WHY each trap fired");
 }
 
 // The validation ladder is x86-only: aarch64 has no `struct user` debug window.
@@ -77,7 +80,7 @@ mod x86 {
         bridge::set_addr(&t, 0, 0x4000).expect("an aligned user address is installable");
         bridge::set_control(&t, DR7_W4_SLOT0).expect("a 4-byte write watchpoint is legal");
         assert!(armed(&t));
-        assert_eq!(get(&t, 0), Some(0x4000));
+        assert_eq!(get(&t, 0), 0x4000);
     }
 
     #[test]
@@ -86,7 +89,7 @@ mod x86 {
         // The whole point of validating: a tracer must not be able to make the
         // kernel trap on its own code.
         assert!(bridge::set_addr(&t, 0, 0xffff_ffff_8000_0000).is_err());
-        assert_eq!(get(&t, 0), Some(0), "a refused write stores nothing");
+        assert_eq!(get(&t, 0), 0, "a refused write stores nothing");
     }
 
     #[test]
@@ -99,21 +102,24 @@ mod x86 {
     }
 
     #[test]
-    fn the_general_detect_bit_is_refused() {
+    fn the_general_detect_bit_is_masked_off_but_the_write_succeeds() {
         let t = task();
-        assert!(bridge::set_control(&t, DR7_W4_SLOT0 | (1 << 13)).is_err());
-        assert!(!armed(&t));
+        bridge::set_control(&t, DR7_W4_SLOT0 | (1 << 13))
+            .expect("general detect does not invalidate the whole write");
+        assert!(armed(&t), "the rest of the DR7 still took effect");
+        assert_eq!(hal_x86_64::debugreg::programmable(get(&t, 7)) & (1 << 13), 0,
+                   "hardware never receives general detect");
     }
 
     #[test]
-    fn a_tracer_may_only_clear_the_status_register() {
+    fn the_virtual_status_register_round_trips_any_value() {
+        // DR6 as a tracer sees it is per-task and never loaded into hardware,
+        // so the write always succeeds and reads back verbatim.
         let t = task();
-        record_status(&t, 0b0011);
-        bridge::set_status(&t, 0);
-        assert_eq!(get(&t, 6), Some(0));
-        // A write of the side-cause bits cannot forge a breakpoint hit.
-        bridge::set_status(&t, u64::MAX);
-        assert_eq!(get(&t, 6).unwrap() & !hal_x86_64::debugreg::dr6::DR6_CAUSE_MASK, 0);
+        for v in [0u64, 0xffff_0ff0, 0b1111, u64::MAX] {
+            bridge::set_status(&t, v);
+            assert_eq!(bridge::status(&t), v, "DR6 write of {v:#x} must read back");
+        }
     }
 
     #[test]

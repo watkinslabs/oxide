@@ -56,8 +56,10 @@ pub fn peek_user(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
             if i < super::frame::REGS_N { u[i] } else { 0 }
         }
         // `ptrace_get_debugreg(n)` — the tracee's own DR0..DR7 shadow, which
-        // the context switch installs whenever the task is armed.
-        UserArea::DebugReg(n) => sched::debugreg::get(target, n).unwrap_or(0),
+        // the context switch installs whenever the task is armed. There are no
+        // DR4/DR5 registers; reading them yields zero and succeeds, which is
+        // NOT symmetric with the write side (see `set_debugreg`).
+        UserArea::DebugReg(n) => get_debugreg(target, n),
         UserArea::Padding => 0,
     };
     put_word(data, word)
@@ -85,7 +87,25 @@ pub fn poke_user(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
     }
 }
 
+/// `ptrace_get_debugreg(n)`. Never fails: an index with no register behind it
+/// reads as zero.
+/// # C: O(1)
+#[cfg(target_arch = "x86_64")]
+fn get_debugreg(target: &Task, n: usize) -> u64 {
+    if sched::debugreg::is_status(n) { return sched::debugreg::x86::status(target); }
+    sched::debugreg::get(target, n)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn get_debugreg(_target: &Task, _n: usize) -> u64 { 0 }
+
 /// `ptrace_set_debugreg(n, data)`.
+///
+/// Failure codes are Linux's and are NOT uniform: a nonexistent register
+/// (DR4/DR5, or past the end) is **EIO**, while a register that exists but was
+/// handed an unusable breakpoint — a kernel address, an illegal RW/LEN pair, a
+/// misaligned watchpoint — is **EINVAL**, since that is what the breakpoint
+/// registration itself reports.
 ///
 /// x86_64 only: `struct user`'s `u_debugreg` window is an x86 shape, and the
 /// whole PEEKUSER/POKEUSER request is already EIO on every other arch
@@ -95,9 +115,12 @@ pub fn poke_user(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
 fn set_debugreg(target: &Task, n: usize, data: u64) -> Result<(), Errno> {
     use sched::debugreg;
     if debugreg::is_status(n) { debugreg::x86::set_status(target, data); return Ok(()); }
-    let r = if debugreg::is_control(n) { debugreg::x86::set_control(target, data) }
-            else { debugreg::x86::set_addr(target, n, data) };
-    r.map_err(|_| Errno::Eio)
+    if debugreg::is_control(n) {
+        return debugreg::x86::set_control(target, data).map_err(|_| Errno::Einval);
+    }
+    // Everything that is not DR0-DR3 by this point has no register behind it.
+    if n >= debugreg::NR_ADDR { return Err(Errno::Eio); }
+    debugreg::x86::set_addr(target, n, data).map_err(|_| Errno::Einval)
 }
 
 #[cfg(not(target_arch = "x86_64"))]

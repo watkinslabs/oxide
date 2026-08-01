@@ -6,7 +6,7 @@ use hal::USER_VA_END;
 
 use super::dr6::{normalize, Dr6Status, DR6_CAUSE_MASK};
 use super::dr7::{
-    validate_addr, validate_dr7, Dr7Error, DR7_EMPTY, DR7_ENABLE_MASK, HBP_NUM,
+    programmable, validate_addr, validate_dr7, Dr7Error, DR7_EMPTY, DR7_ENABLE_MASK, HBP_NUM,
 };
 
 /// One task's DR0-DR3/DR6/DR7 shadow. `Default` is the architectural reset
@@ -34,6 +34,12 @@ impl DebugRegs {
     /// state is not armed costs no debug-register writes on switch.
     /// # C: O(1)
     pub const fn is_armed(&self) -> bool { self.dr7 & DR7_ENABLE_MASK != 0 }
+
+    /// The DR7 value hardware actually receives: the shadow with the bits a
+    /// task may not express masked away. The shadow itself keeps the raw poked
+    /// value so a read-back returns exactly what was written.
+    /// # C: O(1)
+    pub const fn hw_dr7(&self) -> u64 { programmable(self.dr7) }
 
     /// Read one of the seven ptrace-visible debug registers by its
     /// `u_debugreg` index (0-3 address, 6 status, 7 control); 4 and 5 alias

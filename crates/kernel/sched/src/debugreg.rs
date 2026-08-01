@@ -32,30 +32,42 @@ pub const DR7_ENABLE_MASK: u64 = 0xff;
 
 /// Map a `struct user.u_debugreg[idx]` index onto a storage slot.
 ///
-/// Indices 4 and 5 alias 6 and 7, as they do in hardware — a write to DR4/DR5
-/// is a write to DR6/DR7 unless CR4.DE is set, and Linux exposes the aliased
-/// pair through `ptrace_get_debugreg`/`ptrace_set_debugreg` unchanged.
+/// There are NO DR4/DR5 registers: indices 4 and 5 are not aliases of 6 and 7,
+/// they simply do not exist. A READ of them yields zero and succeeds, a WRITE
+/// of them is EIO — the asymmetry is real and observable, so the two
+/// directions are answered separately (`writable_slot`).
 /// # C: O(1)
 pub const fn slot_of_u_debugreg(idx: usize) -> Option<usize> {
     match idx {
         0..=3 => Some(idx),
-        4 | 6 => Some(STATUS),
-        5 | 7 => Some(CONTROL),
+        6     => Some(STATUS),
+        7     => Some(CONTROL),
         _     => None,
     }
 }
 
-/// Whether `idx` names the control register, which is the only slot whose
-/// write must be validated before it can reach hardware. # C: O(1)
-pub const fn is_control(idx: usize) -> bool { matches!(idx, 5 | 7) }
+/// Whether `idx` names the control register, whose write must be validated
+/// before it can reach hardware. # C: O(1)
+pub const fn is_control(idx: usize) -> bool { idx == CONTROL_IDX }
 
-/// Whether `idx` names the status register, which a tracer may only clear.
-/// # C: O(1)
-pub const fn is_status(idx: usize) -> bool { matches!(idx, 4 | 6) }
+/// Whether `idx` names the status register. # C: O(1)
+pub const fn is_status(idx: usize) -> bool { idx == STATUS_IDX }
 
-/// Read one `u_debugreg` slot of `t`. # C: O(1)
-pub fn get(t: &Task, idx: usize) -> Option<u64> {
-    slot_of_u_debugreg(idx).map(|s| t.debugregs[s].load(Ordering::Acquire))
+/// `u_debugreg` index of the status register (DR6).
+pub const STATUS_IDX: usize = 6;
+/// `u_debugreg` index of the control register (DR7).
+pub const CONTROL_IDX: usize = 7;
+/// Highest `u_debugreg` index `struct user` exposes.
+pub const MAX_IDX: usize = 7;
+
+/// Read one `u_debugreg` slot of `t`. A nonexistent index (DR4/DR5, or past
+/// the end) reads as zero rather than failing — the read side has no error
+/// path at all. # C: O(1)
+pub fn get(t: &Task, idx: usize) -> u64 {
+    match slot_of_u_debugreg(idx) {
+        Some(s) => t.debugregs[s].load(Ordering::Acquire),
+        None    => 0,
+    }
 }
 
 /// Store one slot verbatim. Validation is the caller's — a DR7 write must have

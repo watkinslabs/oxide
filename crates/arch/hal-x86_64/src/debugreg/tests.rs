@@ -134,23 +134,32 @@ fn misaligned_watchpoint_address_is_rejected() {
 }
 
 #[test]
-fn general_detect_bit_is_rejected() {
+fn general_detect_is_masked_away_not_rejected() {
+    // GD would turn every later debug-register access into a #DB, including
+    // the kernel's own context-switch reload. The write still SUCCEEDS — the
+    // bit simply cannot be expressed, so a task asking for it does not get it.
     let dr7 = dr7_slot0(DR7_RW_WRITE, DR7_LEN_1) | DR7_GD;
-    assert_eq!(validate_dr7(dr7, &addrs(0x1000), UEND), Err(Dr7Error::GeneralDetect));
-    // GD alone, with no slot armed, is still refused.
-    assert_eq!(validate_dr7(DR7_RESERVED_ONE | DR7_GD, &addrs(0), UEND),
-               Err(Dr7Error::GeneralDetect));
+    let got = validate_dr7(dr7, &addrs(0x1000), UEND).expect("the write is accepted");
+    // The shadow keeps the raw value — a PEEKUSER of DR7 reads back what was
+    // poked — but hardware never receives the bit.
+    assert_eq!(got & DR7_GD, DR7_GD, "the read-back is verbatim");
+    assert_eq!(programmable(got) & DR7_GD, 0, "general detect is never granted");
 }
 
 #[test]
-fn reserved_zero_bits_are_rejected() {
-    for bit in [11u32, 12, 14, 15, 32, 63] {
+fn reserved_bits_are_masked_away_not_rejected() {
+    for bit in [11u32, 12, 13, 14, 15, 32, 63] {
         let dr7 = DR7_RESERVED_ONE | (1u64 << bit);
-        assert_eq!(validate_dr7(dr7, &addrs(0), UEND), Err(Dr7Error::Reserved),
-                   "bit={bit}");
+        let got = validate_dr7(dr7, &addrs(0), UEND)
+            .unwrap_or_else(|e| panic!("bit={bit} must be accepted, got {e:?}"));
+        assert_eq!(programmable(got) & (1u64 << bit), 0, "bit={bit} must not reach hardware");
     }
+    // Bit 10 reads as one and is restored on the way to hardware.
+    let ten = validate_dr7(0, &addrs(0), UEND).expect("accepted");
+    assert_eq!(programmable(ten) & DR7_RESERVED_ONE, DR7_RESERVED_ONE);
     // LE/GE (bits 8/9) are software-settable, not reserved.
-    assert!(validate_dr7(DR7_RESERVED_ONE | DR7_LE | DR7_GE, &addrs(0), UEND).is_ok());
+    let ok = validate_dr7(DR7_RESERVED_ONE | DR7_LE | DR7_GE, &addrs(0), UEND).expect("ok");
+    assert_eq!(programmable(ok) & (DR7_LE | DR7_GE), DR7_LE | DR7_GE);
 }
 
 #[test]

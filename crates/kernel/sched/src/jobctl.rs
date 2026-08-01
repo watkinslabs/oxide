@@ -170,19 +170,27 @@ pub struct GroupStopStep {
 /// `STOP_CONSUME` — the debt is one per thread, so a thread that stops twice
 /// (a tracee re-stopped by its tracer) cannot drive the counter below zero and
 /// report a second, spurious group-stop completion to the real parent.
+///
+/// `already_stopped` is the group's `SIGNAL_STOP_STOPPED` latch: completion is
+/// reported only when entering a FRESH group stop. A thread joining a stop the
+/// group has already completed owes nobody a second `CLD_STOPPED`.
 /// # C: O(1)
-pub const fn participate_group_stop(jobctl: u64, count: u32) -> GroupStopStep {
+pub const fn participate_group_stop(jobctl: u64, count: u32, already_stopped: bool)
+    -> GroupStopStep
+{
     let consume = jobctl & STOP_CONSUME != 0;
     let jobctl = clear_pending(jobctl, STOP_PENDING);
     if !consume { return GroupStopStep { jobctl, count, completed: false }; }
     let count = count.saturating_sub(1);
-    GroupStopStep { jobctl, count, completed: count == 0 }
+    GroupStopStep { jobctl, count, completed: count == 0 && !already_stopped }
 }
 
-/// `PTRACE_LISTEN`'s latch: the tracee stays parked, but arms `TRAP_STOP` so an
-/// asynchronous event re-traps it rather than resuming it silently.
+/// `PTRACE_LISTEN`'s latch: `LISTENING` alone. It arms no trap — the tracee is
+/// already parked in one. The bit's only job is to make `trap_notify` WAKE the
+/// tracee when an asynchronous event arms `TRAP_NOTIFY`, so it can leave the
+/// trap and immediately re-enter it with the event reported.
 /// # C: O(1)
-pub const fn listen(jobctl: u64) -> u64 { jobctl | LISTENING | TRAP_STOP }
+pub const fn listen(jobctl: u64) -> u64 { jobctl | LISTENING }
 
 /// Whether an already-latched `TRAP_NOTIFY` must re-trap the tracee NOW.
 ///
@@ -203,23 +211,42 @@ pub const fn trap_notify(jobctl: u64) -> (u64, bool) {
     (jobctl | TRAP_NOTIFY, jobctl & LISTENING != 0)
 }
 
-/// Whether a wake must be swallowed and turned back into a trap instead of
-/// letting the tracee run.
+/// Whether a task leaving a trap owes another one immediately.
 ///
-/// A LISTENING tracee woken by an asynchronous event re-enters the trap and
-/// reports `PTRACE_EVENT_STOP` a second time; only the tracer's own resume
-/// (which clears `LISTENING`) lets it out.
+/// The condition is the TRAP LATCH, not `LISTENING`: a tracee woken with
+/// `TRAP_NOTIFY` still set has an event nobody has been told about, so it
+/// re-enters the trap and reports it. `LISTENING` only decides whether the
+/// tracee gets WOKEN in the first place (`trap_notify`), and it is dropped on
+/// the way out of every trap — which is why `PTRACE_LISTEN` is per-stop and
+/// the tracer must re-issue it after each report.
+///
+/// A kill-wake never re-traps: a `PTRACE_LISTEN` that could swallow a SIGKILL
+/// would make a process immortal. A tracer's own resume never re-traps either
+/// — it cleared the latch when it published the resume.
 /// # C: O(1)
 pub const fn wake_retraps(jobctl: u64, wake: WakeKind) -> bool {
-    !matches!(wake, WakeKind::Kill | WakeKind::PtraceResume)
-        && jobctl & LISTENING != 0
-        && jobctl & TRAP_MASK != 0
+    !matches!(wake, WakeKind::Kill | WakeKind::PtraceResume) && jobctl & TRAP_MASK != 0
 }
 
-/// A tracer's resume clears the whole trap latch — `LISTENING` included, so the
-/// next asynchronous event resumes the tracee normally instead of re-trapping.
+/// What entering a trap clears: any trap clears a pending `TRAP_STOP`, and a
+/// trap that REPORTS `PTRACE_EVENT_STOP` also settles the `TRAP_NOTIFY` that
+/// asked for it — the event it names has now been announced.
 /// # C: O(1)
-pub const fn resume_clears(jobctl: u64) -> u64 { clear_pending(jobctl, PENDING_MASK | LISTENING) }
+pub const fn trap_entry_clears(jobctl: u64, reports_event_stop: bool) -> u64 {
+    let mask = if reports_event_stop { TRAP_MASK } else { TRAP_STOP };
+    clear_pending(jobctl, mask)
+}
+
+/// What LEAVING a trap clears. `LISTENING` can only be set during a stop trap,
+/// so it is dropped here, on the tracee — not by the tracer's resume.
+/// # C: O(1)
+pub const fn stop_exit_clears(jobctl: u64) -> u64 { jobctl & !(LISTENING | TRACED) }
+
+/// `ptrace_resume` clears `JOBCTL_TRACED` and nothing else. The trap latch is
+/// the TRACEE's to settle as it leaves the stop; a tracer that cleared it here
+/// would discard an event the tracee had not yet reported.
+/// # C: O(1)
+pub const fn resume_clears(jobctl: u64) -> u64 { jobctl & !TRACED }
 
 #[cfg(test)]
 #[path = "jobctl/tests.rs"] mod tests;
