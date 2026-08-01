@@ -30,6 +30,32 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use crate::cmds::run;
 
+/// Fedora's aarch64 cross sysroot. Was duplicated verbatim in three probe
+/// modules; a fourth and fifth copy arrived with the `vendor/cross` removal,
+/// so it is hoisted here and every probe reads the one definition.
+pub(super) const ARM_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
+
+/// Compiler + sysroot for a rootfs probe, against the glibc ABI.
+///
+/// Probes build with the SYSTEM GNU cross toolchain. The two that used the
+/// 665 MiB `vendor/cross` musl toolchains were the last consumers of a tree
+/// that nothing else read and no script fetched; the other probes had already
+/// standardised on this pattern. Userspace `.c` must compile on both arches
+/// against glibc, not a private libc (CLAUDE.md ARM/x86 lockstep).
+pub(super) fn probe_cc(arch: &str, what: &str) -> Result<(&'static str, Option<&'static str>), u8> {
+    match arch {
+        "x86_64" => Ok(("gcc", None)),
+        "aarch64" => {
+            if !Path::new(ARM_SYSROOT).is_dir() {
+                eprintln!("xtask rootfs: missing {ARM_SYSROOT} for {what}");
+                return Err(2);
+            }
+            Ok(("aarch64-linux-gnu-gcc", Some(ARM_SYSROOT)))
+        }
+        _ => { eprintln!("xtask rootfs: unsupported arch `{arch}` for {what}"); Err(2) }
+    }
+}
+
 /// Finalize root-<arch>.img (add mount-points) + build home-<arch>.img next to
 /// it. Called at the end of `cmd_rootfs`, which already staged root-<arch>.img.
 pub(crate) fn build_disks(
@@ -139,25 +165,14 @@ fn inject_drm_render_smoke(root_img: &Path, arch: &str) -> Result<(), u8> {
 }
 
 fn build_drm_probe(arch: &str) -> Result<PathBuf, u8> {
-    let (trip, dir) = match arch {
-        "x86_64"  => ("x86_64-linux-musl", "x86_64-linux-musl-cross"),
-        "aarch64" => ("aarch64-linux-musl", "aarch64-linux-musl-cross"),
-        _ => { eprintln!("xtask rootfs: unsupported arch `{arch}` for DRM render smoke"); return Err(2); }
-    };
-    let cc = PathBuf::from(format!("vendor/cross/{dir}/bin/{trip}-cc"));
-    if !cc.is_file() {
-        eprintln!("xtask rootfs: missing {} for DRM render smoke", cc.display());
-        return Err(2);
-    }
+    let (cc, sysroot) = probe_cc(arch, "DRM render smoke")?;
     let out_dir = PathBuf::from("target").join("smoke").join(arch);
     std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let out = out_dir.join("drm_render_probe");
     let mut c = Command::new(cc);
-    c.args([
-        "-O2", "-static", "-Wall", "-Wextra",
-        "userspace/drm_probe/drm_probe.c",
-        "-o", out.to_str().unwrap(),
-    ]);
+    if let Some(path) = sysroot { c.arg(format!("--sysroot={path}")); }
+    c.args(["-O2", "-std=gnu11", "-Wall", "-Wextra", "userspace/drm_probe/drm_probe.c", "-o"]);
+    c.arg(&out);
     run(c)?;
     Ok(out)
 }

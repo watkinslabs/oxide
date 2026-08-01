@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use crate::cmds::run;
 
-const ARM_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
 const SOURCES: [&str; 8] = [
     "userspace/af_packet_diff/main.c",
     "userspace/af_packet_diff/common.c",
@@ -31,17 +30,7 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
 }
 
 fn build_probe(arch: &str) -> Result<PathBuf, u8> {
-    let (cc, sysroot) = match arch {
-        "x86_64"  => ("gcc", None),
-        "aarch64" => ("aarch64-linux-gnu-gcc", Some(ARM_SYSROOT)),
-        _ => { eprintln!("xtask rootfs: unsupported arch `{arch}` for AF_PACKET differential smoke"); return Err(2); }
-    };
-    if let Some(path) = sysroot {
-        if !Path::new(path).is_dir() {
-            eprintln!("xtask rootfs: missing {path} for AF_PACKET differential smoke");
-            return Err(2);
-        }
-    }
+    let (cc, sysroot) = super::probe_cc(arch, "AF_PACKET differential smoke")?;
     let out_dir = PathBuf::from("target").join("smoke").join(arch);
     std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let out = out_dir.join("af_packet_diff");

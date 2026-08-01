@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use crate::cmds::run;
 
-const ARM_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
 const SOURCE: &str = "userspace/request_key_probe/main.c";
 /// The helper the kernel execs. Absent it, the probe can only report the ENOENT
 /// that made this proof necessary, so the injection refuses rather than
@@ -49,17 +48,7 @@ fn require_helper(img: &Path) -> Result<(), u8> {
 /// GNU cross-build, not musl: the probe reaches both syscalls through glibc's
 /// `syscall(3)`, which is the entry point under test on both architectures.
 fn build_probe(arch: &str) -> Result<PathBuf, u8> {
-    let (cc, sysroot) = match arch {
-        "x86_64"  => ("gcc", None),
-        "aarch64" => ("aarch64-linux-gnu-gcc", Some(ARM_SYSROOT)),
-        _ => { eprintln!("xtask rootfs: unsupported arch `{arch}` for the request_key proof"); return Err(2); }
-    };
-    if let Some(path) = sysroot {
-        if !Path::new(path).is_dir() {
-            eprintln!("xtask rootfs: missing {path} for the request_key proof");
-            return Err(2);
-        }
-    }
+    let (cc, sysroot) = super::probe_cc(arch, "the request_key proof")?;
     let out_dir = PathBuf::from("target").join("smoke").join(arch);
     std::fs::create_dir_all(&out_dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
     let out = out_dir.join("request_key_probe");

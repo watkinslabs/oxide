@@ -101,7 +101,7 @@ Each sub-phase: small files, hosted oracle test vs host glibc, then boot-smoke a
 | G5 | `malloc/` allocator | malloc oracle + stress (mtmalloc/mmchurn ports) |
 | G6 | `stdio/` FILE + printf/scanf/buffering. G6a=printf format engine (int/str/char/ptr exact, float via core::fmt) + snprintf family + write-side (printf/fprintf/puts/fputs/putchar/fwrite) unbuffered + FILE ABI layout + std streams. G6b=scanf engine + sscanf/vsscanf. G6c=read-side (fopen/fdopen/freopen/fclose/fread/fgetc/getc/getchar/ungetc/fgets/getline/getdelim/fseek/ftell/rewind) + scanf/fscanf/vfscanf over a FILE source. Follow-ups: stdio buffering + putc/getc-macro (__overflow/__uflow), exact float dtoa. | printf/snprintf/sscanf oracle vs host; `hello` printf + file round-trip + fscanf runs |
 | G7 | `stdlib/` env/exit/str→num/qsort/bsearch | oracle |
-| G8 | `posix/` fork/exec/wait/glob/fnmatch/regex/getopt | busybox-class static bin runs |
+| G8 | `posix/` fork/exec/wait/glob/fnmatch/regex/getopt | static multi-call coreutils-class bin runs |
 | G9 | `signal/` sigaction/restorer/mask/raise/abort | signal smokes (existing ports) |
 | G10 | `time/` clock/gmtime/localtime/strftime/tz | oracle + tz |
 | G11 | `pthread/` threads/mutex/cond/rwlock/once/TLS-keys/atfork. G11a=create/join (clone trampoline + CHILD_CLEARTID futex + per-arch TCB/CLONE_SETTLS) + self/exit/detach/equal. G11b=`pthread/mutex.rs` (40B `pthread_mutex_t`, 3-state futex lock, NORMAL/RECURSIVE/ERRORCHECK + mutexattr). G11c=`cond.rs` (48B, seq-futex condvar + condattr clock), `rwlock.rs` (56B, state-word futex rwlock), `once.rs` (4B, 3-state futex once), `key.rs` (TLS keys: global slot table + per-thread values in the TCB) + minimal main-thread TCB (`init_main_tcb`, arch_prctl/tpidr) so self/keys work pre-create. | loom + pthread smokes |
@@ -112,9 +112,9 @@ Each sub-phase: small files, hosted oracle test vs host glibc, then boot-smoke a
 | G16 | `locale/` wide/mb + iconv + C.UTF-8/en_US.UTF-8 | iconv oracle |
 | G17 | `crypt/`,`rt/`,`termios/`,`setjmp/` remainder | per-area smokes |
 | G18 | Folded-lib stubs (`libpthread/dl/rt/...so`) + ld.so.cache + sysroot publish | unmodified Fedora `-gnu` static+dynamic bin runs (acceptance) |
-| G19 | Migrate existing userspace (init, busybox, probes) musl→glibc; retire musl fork + ld-oxide | `make smoke` both arches green on glibc |
+| G19 DONE | Migrate existing userspace (probes) musl→glibc; retire musl fork + ld-oxide. Tree carries zero musl sources and no `ld-oxide`; the boot rootfs is composed from Fedora RPMs by the sibling `../images` repo. | `make smoke` both arches green on glibc |
 
-Musl stays buildable through G0–G18 (parallel path); retired in G19. No hard cut mid-flight.
+Musl was buildable through G0–G18 as a parallel path and is retired (G19). No hard cut mid-flight.
 
 ## 7 Test contract
 

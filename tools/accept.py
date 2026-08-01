@@ -29,7 +29,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-OVMF_X86 = REPO / "vendor/firmware/ovmf-x64.fd"
 OVMF_ARM = REPO / "vendor/firmware/ovmf-aarch64.fd"
 
 FAULT_PATTERNS = (

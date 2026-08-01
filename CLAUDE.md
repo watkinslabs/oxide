@@ -23,7 +23,7 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
    - `make qemu-arm` boots through the SAME smoke target — verified via the qemu MCP (`mcp__qemu__qemu_start arch=aarch64`), not "should work" reasoning
    - Any aarch64 gap exposed by the work (missing syscall, missing fault classifier, x86-only inline-asm in userspace `.c`, missing toolchain, missing register save/restore, etc.) closes in the SAME PR — never deferred to a later session
    - Userspace `.c` sources must compile on both arches against the glibc ABI, not raw `syscall` inline asm. Use standard glibc entry points and the repository's GNU-target sysroot.
-   - The ARM toolchain is fetched on demand by `tools/fetch-cross.sh`. Userspace comes from real vendor cross-builds (bash, coreutils, util-linux, systemd, …) — never hand-rolled minimal replacements.
+   - The ARM toolchain is the system GNU cross compiler (`aarch64-linux-gnu-gcc`) against the Fedora aarch64 sysroot. There is no `tools/fetch-cross.sh` and no vendored cross toolchain. The boot userspace is composed from Fedora RPMs by the sibling `../images` repo — never hand-rolled minimal replacements.
 
    **No "x86 first, ARM later" anywhere in the phase ladder.** Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5; lockstep gaps go in the same PR or block phase exit.
 
