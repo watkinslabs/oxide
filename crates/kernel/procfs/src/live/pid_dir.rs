@@ -64,7 +64,7 @@ fn pc_mountinfo(t: u32, is_self: bool) -> InodeRef {
 fn pc_cgroup(t: u32, _s: bool) -> InodeRef { crate::make_proc_cgroup(Some(t)) }
 fn pc_auxv(t: u32, _s: bool) -> InodeRef { make_pid_auxv(t) }
 fn pc_timerslack(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"50000\n") }
-fn pc_coredump_filter(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000033\n") }
+fn pc_coredump_filter(t: u32, _s: bool) -> InodeRef { crate::coredump_filter::make(t) }
 fn pc_timens_offsets(t: u32, _s: bool) -> InodeRef { crate::timens_offsets::make(t) }
 fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_exe(t) }
 fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_cwd(t) }
