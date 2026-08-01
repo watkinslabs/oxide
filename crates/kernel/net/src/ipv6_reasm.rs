@@ -35,6 +35,8 @@ struct Flow {
     total: Option<usize>,
     last_ns: u64,
     prefix: Option<Vec<u8>>,
+    /// Largest single fragment seen, header included.
+    max_frag: u32,
 }
 
 fn conflicts(flow: &Flow, offset: usize, end: usize, terminal: bool) -> bool {
@@ -69,11 +71,14 @@ impl ReasmTable {
         more_fragments: bool,
     ) -> Option<Vec<u8>> {
         self.push_with_prefix(
-            key, now_ns, offset_bytes, None, payload, more_fragments,
-        ).map(|(_, payload)| payload)
+            key, now_ns, offset_bytes, None, payload, more_fragments, 0,
+        ).map(|(_, payload, _)| payload)
     }
 
-    /// Reassemble while retaining the offset-zero packet's unfragmentable prefix. # C: O(N frags)
+    /// Reassemble while retaining the offset-zero packet's unfragmentable
+    /// prefix, and report the largest single fragment the datagram was built
+    /// from — the whole received packet's length, which is what a receiver
+    /// asking for the fragment size is told. # C: O(N frags)
     pub fn push_with_prefix(
         &self,
         key: ReasmKey,
@@ -82,7 +87,8 @@ impl ReasmTable {
         prefix: Option<&[u8]>,
         payload: &[u8],
         more_fragments: bool,
-    ) -> Option<(Vec<u8>, Vec<u8>)> {
+        fragsize: u32,
+    ) -> Option<(Vec<u8>, Vec<u8>, u32)> {
         let end = offset_bytes.checked_add(payload.len())?;
         if end > REASM_MAX_BYTES { return None; }
         if more_fragments && (payload.len() & 7) != 0 { return None; }
@@ -100,8 +106,10 @@ impl ReasmTable {
             total: None,
             last_ns: now_ns,
             prefix: None,
+            max_frag: 0,
         });
         flow.last_ns = now_ns;
+        if fragsize > flow.max_frag { flow.max_frag = fragsize; }
         if offset_bytes == 0 {
             if let Some(prefix) = prefix { flow.prefix = Some(prefix.to_vec()); }
         }
@@ -129,8 +137,9 @@ impl ReasmTable {
             out[frag.offset..frag.offset + frag.bytes.len()].copy_from_slice(&frag.bytes);
         }
         let prefix = flow.prefix.clone().unwrap_or_default();
+        let max_frag = flow.max_frag;
         g.remove(&key);
-        Some((prefix, out))
+        Some((prefix, out, max_frag))
     }
 
     /// # C: O(N flows)
@@ -193,10 +202,10 @@ mod tests {
         completing[7] = 2;
         completing[40..48].copy_from_slice(b"lasthdr!");
         assert!(t.push_with_prefix(
-            key(30), 1, 8, Some(&completing), b"tail", false,
+            key(30), 1, 8, Some(&completing), b"tail", false, 0,
         ).is_none());
-        let (prefix, payload) = t.push_with_prefix(
-            key(30), 2, 0, Some(&first), b"head----", true,
+        let (prefix, payload, _) = t.push_with_prefix(
+            key(30), 2, 0, Some(&first), b"head----", true, 0,
         ).unwrap();
         assert_eq!(prefix, first);
         assert_eq!(payload, b"head----tail");

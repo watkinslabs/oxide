@@ -5,12 +5,39 @@ use sync::{Spinlock, Socket as StackLockClass};
 
 use crate::addr::{Ipv6Addr, NetIfaceId};
 
-/// A queued IPv6 UDP datagram plus the ancillary metadata Linux exposes
-/// via recvmsg: `(src, src_port, dst, recv_iface, hop_limit, traffic_class,
-/// payload)`. `dst` + `iface` back IPV6_PKTINFO; `hop_limit` backs
+/// One queued IPv6 UDP datagram plus every header field the ancillary
+/// messages publish. `dst` + `iface` back IPV6_PKTINFO; `hop_limit` backs
 /// IPV6_HOPLIMIT (avahi enforces == 255 for on-link mDNS, RFC 6762 §11);
-/// `traffic_class` backs IPV6_TCLASS (IPV6_RECVTCLASS).
-pub type Udp6Datagram = (Ipv6Addr, u16, Ipv6Addr, NetIfaceId, u8, u8, Vec<u8>);
+/// `traffic_class` backs IPV6_TCLASS; `flowinfo` backs IPV6_FLOWINFO;
+/// `dport` completes the IPV6_ORIGDSTADDR socket address; `ext_headers`
+/// carries the received extension headers in wire order for IPV6_HOPOPTS,
+/// IPV6_DSTOPTS and IPV6_RTHDR; `frag_max` backs IPV6_RECVFRAGSIZE.
+#[derive(Clone, Debug)]
+pub struct Udp6Datagram {
+    pub src: Ipv6Addr,
+    pub sport: u16,
+    pub dst: Ipv6Addr,
+    pub dport: u16,
+    pub iface: NetIfaceId,
+    pub hop_limit: u8,
+    pub traffic_class: u8,
+    pub flowinfo: u32,
+    /// `(next-header kind, whole header bytes)`, in the order they arrived.
+    pub ext_headers: Vec<(u8, Vec<u8>)>,
+    pub frag_max: u32,
+    pub payload: Vec<u8>,
+}
+
+impl Udp6Datagram {
+    /// A datagram carrying nothing beyond the addresses, hop limit, traffic
+    /// class and body. # C: O(1)
+    pub fn plain(src: Ipv6Addr, sport: u16, dst: Ipv6Addr, iface: NetIfaceId, hop_limit: u8,
+                 traffic_class: u8, payload: Vec<u8>) -> Self
+    {
+        Self { src, sport, dst, dport: 0, iface, hop_limit, traffic_class, flowinfo: 0,
+               ext_headers: Vec::new(), frag_max: 0, payload }
+    }
+}
 
 /// One queued IPv6 UDP receive plus the coalescing run it belongs to.
 #[derive(Clone)]
@@ -260,15 +287,17 @@ impl Udp6RxQueue {
         use crate::udp_gro::{GroAdmit, GroRun, admit};
         let mut state = self.state.lock();
         if !state.accepting { return false; }
-        let len = datagram.6.len();
+        let len = datagram.payload.len();
         let same_flow = state.datagrams.back()
             .is_some_and(|q| udp6_same_flow(&q.datagram, &datagram));
         let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
-            checksum_zero, offered && self.gro_enabled());
+            checksum_zero,
+            crate::udp_gro::coalescable_receive(offered, datagram.frag_max)
+                && self.gro_enabled());
         match decision {
             GroAdmit::Merge => {
                 let tail = state.datagrams.back_mut().expect("a merge names a tail");
-                tail.datagram.6.extend_from_slice(&datagram.6);
+                tail.datagram.payload.extend_from_slice(&datagram.payload);
                 tail.gro.extend(len);
             }
             GroAdmit::Separate { open } => {
@@ -306,7 +335,7 @@ impl Udp6RxQueue {
 
     /// Total queued payload bytes. # C: O(N)
     pub fn queued_bytes(&self) -> usize {
-        self.state.lock().datagrams.iter().map(|q| q.datagram.6.len()).sum()
+        self.state.lock().datagrams.iter().map(|q| q.datagram.payload.len()).sum()
     }
 
     /// Atomically publish read shutdown against receive delivery. # C: O(1)
@@ -335,8 +364,17 @@ impl core::ops::Deref for Udp6RxQueue {
 }
 
 /// Two IPv6 receives belong to one coalescing flow when they share the source
-/// endpoint, the local address they arrived on, the ingress interface, and the
-/// network-header values the receiver can observe. # C: O(1)
+/// endpoint, the local endpoint they arrived on, the ingress interface, and
+/// EVERY header value the receive ancillary messages publish.
+///
+/// The device-level check ignores the traffic class, but a coalesced receive
+/// reports ONE hop limit, ONE traffic class, ONE flow-info field and ONE
+/// extension-header chain for every datagram merged into it — so a receive
+/// path that publishes those values has to refuse a merge that would make
+/// them a lie. # C: O(headers)
 fn udp6_same_flow(a: &Udp6Datagram, b: &Udp6Datagram) -> bool {
-    a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 && a.4 == b.4 && a.5 == b.5
+    a.src == b.src && a.sport == b.sport && a.dst == b.dst && a.dport == b.dport
+        && a.iface == b.iface && a.hop_limit == b.hop_limit
+        && a.traffic_class == b.traffic_class && a.flowinfo == b.flowinfo
+        && a.ext_headers == b.ext_headers
 }

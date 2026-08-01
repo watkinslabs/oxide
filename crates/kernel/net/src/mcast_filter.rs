@@ -105,10 +105,10 @@ fn publish_v6(inner: &mut Inner, stack: &NetStack, rtnl: &crate::RtnlGuard<'_>,
 /// Canonical socket-owned multicast state, valid before and after bind.
 pub struct SocketMcast {
     inner: Spinlock<Inner, LockClass>,
-    /// `IP_MULTICAST_ALL` / `IPV6_MULTICAST_ALL`, both enabled at creation.
-    /// Stored on the object the receive path already reaches so the option has
-    /// exactly one home; delivery itself still requires a joined group, which
-    /// is the answer this flag would otherwise relax.
+    /// `IP_MULTICAST_ALL` / `IPV6_MULTICAST_ALL`, both enabled at creation:
+    /// a datagram for a group this socket never joined is delivered ANYWAY,
+    /// and only a group it did join is source-filtered. Clearing the flag is
+    /// what restricts delivery to joined groups.
     multicast_all_v4: ::core::sync::atomic::AtomicBool,
     multicast_all_v6: ::core::sync::atomic::AtomicBool,
 }
@@ -422,18 +422,25 @@ impl SocketMcast {
         Ok(())
     }
 
-    /// Test IPv4 membership and source filter in one lock snapshot. # C: O(log N + S)
+    /// Test IPv4 membership and source filter in one lock snapshot. A group
+    /// this socket never joined is refused only when the caller turned
+    /// unconditional multicast delivery off. # C: O(log N + S)
     pub fn accept_v4(&self, iface: NetIfaceId, group: Ipv4Addr, src: Ipv4Addr) -> bool {
         let inner = self.inner.lock();
-        let Some(membership) = inner.v4.get(&v4_key(iface, group)) else { return false };
+        let Some(membership) = inner.v4.get(&v4_key(iface, group)) else {
+            return self.multicast_all_v4();
+        };
         let listed = membership.filter.sources.contains(&src);
         match membership.filter.mode { FilterMode::Include => listed, FilterMode::Exclude => !listed }
     }
 
-    /// Test exact IPv6 membership. # C: O(log N)
+    /// Test exact IPv6 membership, with the same unconditional-delivery rule
+    /// the IPv4 side follows. # C: O(log N)
     pub fn accept_v6(&self, iface: NetIfaceId, group: Ipv6Addr, src: Ipv6Addr) -> bool {
         let inner = self.inner.lock();
-        let Some(membership) = inner.v6.get(&v6_key(iface, group)) else { return false };
+        let Some(membership) = inner.v6.get(&v6_key(iface, group)) else {
+            return self.multicast_all_v6();
+        };
         let listed = membership.filter.sources.contains(&src);
         match membership.filter.mode { FilterMode::Include => listed, FilterMode::Exclude => !listed }
     }

@@ -115,6 +115,9 @@ fn igmp_failed_close_report_consumes_bounded_attempts() {
 
     dev.fail.store(true, Ordering::Release);
     assert_eq!(state.change_v4(&stack, iface, group, source, false), Ok(()));
+    // The leave dropped the membership; with unconditional multicast delivery
+    // cleared the socket then refuses the group.
+    state.set_multicast_all_v4(false);
     assert!(!state.accept_v4(iface, group, source));
     assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| {
         groups.iter().any(|entry| entry.group == group && entry.change.as_ref().is_some_and(|change| {
@@ -459,7 +462,8 @@ fn ipv4_multicast_source_filter_drops_denied_udp_source() {
 
     let accepted = udp_packet(allowed, group, 32001, port, b"accepted");
     stack.deliver_rx(id, &accepted).unwrap();
-    let (src, sport, dst, iface, _ttl, body) = endpoint.recv(false).unwrap();
+    let d = endpoint.recv(false).unwrap();
+    let (src, sport, dst, iface, body) = (d.src, d.sport, d.dst, d.iface, d.payload);
     assert_eq!(src, allowed);
     assert_eq!(sport, 32001);
     assert_eq!(dst, group);
@@ -486,11 +490,18 @@ fn ipv4_multicast_delivery_is_endpoint_local() {
     let joined_state = Arc::new(crate::mcast_filter::SocketMcast::new());
     joined_state.change_v4(&stack, id, group, Ipv4Addr::LOOPBACK, true).unwrap();
     let joined = bind(joined_state);
-    let other = bind(Arc::new(crate::mcast_filter::SocketMcast::new()));
+    // Unconditional multicast delivery is on at creation, so a socket bound to
+    // the port receives the group WITHOUT joining it — clearing the option is
+    // what makes membership decide.
+    let other_state = Arc::new(crate::mcast_filter::SocketMcast::new());
+    other_state.set_multicast_all_v4(false);
+    let other = bind(other_state);
+    let unrestricted = bind(Arc::new(crate::mcast_filter::SocketMcast::new()));
 
     stack.deliver_rx(id, &udp_packet(Ipv4Addr::new(10, 0, 0, 7), group, 32000, port, b"one")).unwrap();
     assert_eq!(joined.queued_len(), 1);
     assert_eq!(other.queued_len(), 0);
+    assert_eq!(unrestricted.queued_len(), 1);
 }
 
 #[test]

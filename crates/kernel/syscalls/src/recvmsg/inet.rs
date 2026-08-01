@@ -11,17 +11,12 @@ use crate::net_sockaddr::{encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::recv_user::RecvUser;
 use crate::recv_control::Control;
 
+// The receive ancillary message numbers live in `net::cmsg`; only the
+// error-queue pair is answered here.
 const IPPROTO_IP: i32 = 0;
-const IP_TTL: i32 = 2;
-const IP_PKTINFO: i32 = 8;
 const IPPROTO_IPV6: i32 = 41;
-const IPV6_PKTINFO: i32 = 50;
-const IPV6_HOPLIMIT: i32 = 52;
-const IPV6_TCLASS: i32 = 67;
 const IP_RECVERR: i32 = 11;
 const IPV6_RECVERR: i32 = 25;
-const SOL_UDP: i32 = net::sock_opts::sol_udp::uapi::SOL_UDP as i32;
-const UDP_GRO: i32 = net::sock_opts::sol_udp::uapi::UDP_GRO as i32;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -98,40 +93,14 @@ pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) ->
     if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
     copied as i64
 }
+/// The receive ancillary messages one datagram produces. WHICH messages, in
+/// WHAT order, with WHAT payload is decided by `net::cmsg` (`docs/53§4`); this
+/// file only reads the socket's option state and moves the bytes. # C: O(headers)
 fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
     let mut out = Control::new(cap);
-    // The segmentation size of a coalesced receive precedes the IP-level
-    // ancillary data, as it does on every UDP receive that carries one.
-    if let Some(seg) = net::udp_gro::reported_seg_size(
-        sock.opts.udp.gro.load(Ordering::Acquire) != 0, rcv.gro)
-    {
-        out.push(SOL_UDP, UDP_GRO, &seg.to_ne_bytes());
-    }
-    if sock.opts.ip_pktinfo.load(Ordering::Acquire) != 0 {
-        if let Some((dst, iface)) = rcv.pktinfo {
-            let mut data = [0u8; 12];
-            data[0..4].copy_from_slice(&(iface.raw() as i32).to_ne_bytes());
-            data[4..8].copy_from_slice(&dst.octets());
-            data[8..12].copy_from_slice(&dst.octets());
-            out.push(IPPROTO_IP, IP_PKTINFO, &data);
-        }
-    }
-    if sock.opts.ip_recvttl.load(Ordering::Acquire) != 0 {
-        if let Some(ttl) = rcv.ttl { out.push(IPPROTO_IP, IP_TTL, &(ttl as i32).to_ne_bytes()); }
-    }
-    if sock.opts.ipv6_recvpktinfo.load(Ordering::Acquire) != 0 {
-        if let Some((dst, iface)) = rcv.pktinfo6 {
-            let mut data = [0u8; 20];
-            data[..16].copy_from_slice(&dst.0);
-            data[16..].copy_from_slice(&iface.raw().to_ne_bytes());
-            out.push(IPPROTO_IPV6, IPV6_PKTINFO, &data);
-        }
-    }
-    if sock.opts.ipv6_recvhoplimit.load(Ordering::Acquire) != 0 {
-        if let Some(hop) = rcv.hoplimit { out.push(IPPROTO_IPV6, IPV6_HOPLIMIT, &(hop as i32).to_ne_bytes()); }
-    }
-    if sock.opts.ipv6_recvtclass.load(Ordering::Acquire) != 0 {
-        if let Some(tclass) = rcv.tclass { out.push(IPPROTO_IPV6, IPV6_TCLASS, &(tclass as i32).to_ne_bytes()); }
+    let want = wanted(sock);
+    for msg in net::cmsg::plan(&want, &meta(sock, rcv)) {
+        out.push(msg.level, msg.kind, &msg.bytes);
     }
     if sock.packet_auxdata() == Ok(true) {
         if let Some(packet) = rcv.packet {
@@ -140,6 +109,74 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
         }
     }
     out
+}
+
+/// The receive options this socket turned on. # C: O(1)
+fn wanted(sock: &InetSocket) -> net::cmsg::Want {
+    use net::sock_opts::sol_ip::flag as ip;
+    use net::sock_opts::sol_ipv6::flag as ip6;
+    net::cmsg::Want {
+        gro: sock.opts.udp.gro.load(Ordering::Acquire) != 0,
+        pktinfo: sock.opts.ip_pktinfo.load(Ordering::Acquire) != 0,
+        ttl: sock.opts.ip_recvttl.load(Ordering::Acquire) != 0,
+        tos: sock.opts.ip.flag(ip::RECVTOS),
+        recvopts: sock.opts.ip.flag(ip::RECVOPTS),
+        retopts: sock.opts.ip.flag(ip::RETOPTS),
+        passsec: sock.opts.ip.flag(ip::PASSSEC),
+        origdstaddr: sock.opts.ip.flag(ip::ORIGDSTADDR),
+        checksum: sock.opts.ip.flag(ip::CHECKSUM),
+        fragsize: sock.opts.ip.flag(ip::RECVFRAGSIZE),
+
+        pktinfo6: sock.opts.ipv6_recvpktinfo.load(Ordering::Acquire) != 0,
+        hoplimit6: sock.opts.ipv6_recvhoplimit.load(Ordering::Acquire) != 0,
+        tclass6: sock.opts.ipv6_recvtclass.load(Ordering::Acquire) != 0,
+        flowinfo6: sock.opts.ipv6.flag(ip6::RXFLOW),
+        hopopts6: sock.opts.ipv6.flag(ip6::RXHOPOPTS),
+        dstopts6: sock.opts.ipv6.flag(ip6::RXDSTOPTS),
+        rthdr6: sock.opts.ipv6.flag(ip6::RXSRCRT),
+        origdstaddr6: sock.opts.ipv6.flag(ip6::RXORIGDSTADDR),
+        fragsize6: sock.opts.ipv6.flag(ip6::RECVFRAGSIZE),
+        old_pktinfo6: sock.opts.ipv6.flag(ip6::RXOINFO),
+        old_hoplimit6: sock.opts.ipv6.flag(ip6::RXOHLIM),
+        old_hopopts6: sock.opts.ipv6.flag(ip6::RXOHOPOPTS),
+        old_dstopts6: sock.opts.ipv6.flag(ip6::RXODSTOPTS),
+        old_rthdr6: sock.opts.ipv6.flag(ip6::RXOSRCRT),
+    }
+}
+
+/// The received datagram's header state, as the receive path captured it.
+/// # C: O(headers)
+fn meta(sock: &InetSocket, rcv: &Received) -> net::cmsg::RxMeta {
+    net::cmsg::RxMeta {
+        dst: rcv.pktinfo.map(|(dst, iface)| (dst.octets(), iface.raw())),
+        ttl: rcv.ttl,
+        tos: rcv.tos,
+        options: rcv.options.clone(),
+        dport: rcv.dport,
+        frag_max: rcv.frag_max,
+        // No receive path in this stack retains a whole-datagram checksum, so
+        // the checksum message is never produced — the same answer a Linux
+        // receive gives when the device did not hand one up.
+        checksum: None,
+        security: peer_label(sock),
+        gro: rcv.gro,
+        dst6: rcv.pktinfo6.map(|(dst, iface)| (dst.0, iface.raw())),
+        hoplimit: rcv.hoplimit,
+        tclass: rcv.tclass,
+        flowinfo: rcv.flowinfo,
+        ext_headers: rcv.ext_headers.clone(),
+        scope_id: rcv.peer6.map_or(0, |(_, _, scope)| scope),
+    }
+}
+
+/// The peer's security label, published only by a module that labels sockets.
+/// # C: O(label)
+fn peer_label(sock: &InetSocket) -> Option<Vec<u8>> {
+    security::network::peer_security(security::network::PeerContext {
+        namespace: sock.net_ns(),
+        family: sock.family.load(Ordering::Acquire),
+        connected: sock.peer.lock().is_some() || sock.peer6.lock().is_some(),
+    })
 }
 
 fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), i64> {
@@ -267,8 +304,7 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
         }) {
             Ok(Some(_)) => {
                 if let Err(e) = copy_name(user, sock, &Received {
-                    payload: Vec::new(), full_len: 1, peer: None, peer6: None,
-                    pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None, gro: None,
+                    payload: Vec::new(), full_len: 1, ..Default::default()
                 }) { return Err(e); }
                 tcp_finish(sock, user, flags)?;
                 return Ok(1);
@@ -339,8 +375,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
             Err(e) => return e,
         };
         if let Err(e) = copy_name(user, sock, &Received {
-            payload: Vec::new(), full_len: copied, peer: None, peer6: None,
-            pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None, gro: None,
+            payload: Vec::new(), full_len: copied, ..Default::default()
         }) { return e; }
         if let Err(e) = tcp_finish(sock, user, flags) { return e; }
         if copied != 0 { sock.note_receive_now(); }

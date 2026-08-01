@@ -456,9 +456,9 @@ impl InetSocket {
             SockKind::Udp => {
                 drain_loopback();
                 if let Some(q) = self.udp6.lock().as_ref() {
-                    q.recv(true).map(|(_, _, _, _, _, _, b)| b.len()).unwrap_or(0)
+                    q.recv(true).map(|d| d.payload.len()).unwrap_or(0)
                 } else if let Some(q) = self.udp4.lock().as_ref() {
-                    q.recv(true).map(|(_, _, _, _, _, b)| b.len()).unwrap_or(0)
+                    q.recv(true).map(|d| d.payload.len()).unwrap_or(0)
                 } else { 0 }
             }
             SockKind::TcpConn(entry) => { drain_loopback(); entry.conn.lock().recv_buf.len() }

@@ -105,15 +105,17 @@ impl UdpRxQueue {
         use crate::udp_gro::{GroAdmit, GroRun, admit};
         let mut state = self.state.lock();
         if !state.accepting { return false; }
-        let len = datagram.5.len();
+        let len = datagram.payload.len();
         let same_flow = state.datagrams.back()
             .is_some_and(|q| udp4_same_flow(&q.datagram, &datagram));
         let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
-            checksum_zero, offered && self.gro_enabled());
+            checksum_zero,
+            crate::udp_gro::coalescable_receive(offered, datagram.frag_max)
+                && self.gro_enabled());
         match decision {
             GroAdmit::Merge => {
                 let tail = state.datagrams.back_mut().expect("a merge names a tail");
-                tail.datagram.5.extend_from_slice(&datagram.5);
+                tail.datagram.payload.extend_from_slice(&datagram.payload);
                 tail.gro.extend(len);
             }
             GroAdmit::Separate { open } => {
@@ -151,7 +153,7 @@ impl UdpRxQueue {
 
     /// Total queued payload bytes. # C: O(N)
     pub fn queued_bytes(&self) -> usize {
-        self.state.lock().datagrams.iter().map(|q| q.datagram.5.len()).sum()
+        self.state.lock().datagrams.iter().map(|q| q.datagram.payload.len()).sum()
     }
 
     /// Atomically publish read shutdown against receive delivery. # C: O(1)
@@ -174,8 +176,15 @@ impl UdpRxQueue {
 }
 
 /// Two IPv4 receives belong to one coalescing flow when they share the source
-/// endpoint, the local address they arrived on, the ingress interface, and the
-/// network-header value the receiver can observe. # C: O(1)
+/// endpoint, the local endpoint they arrived on, the ingress interface, and
+/// EVERY header value the receive ancillary messages publish.
+///
+/// The device-level check compares only the protocol and the two addresses,
+/// but a coalesced receive reports ONE hop limit, ONE type-of-service byte and
+/// ONE option area for every datagram merged into it — so a receive path that
+/// publishes those values has to refuse a merge that would make them a lie.
+/// # C: O(option area)
 fn udp4_same_flow(a: &UdpDatagram, b: &UdpDatagram) -> bool {
-    a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 && a.4 == b.4
+    a.src == b.src && a.sport == b.sport && a.dst == b.dst && a.dport == b.dport
+        && a.iface == b.iface && a.ttl == b.ttl && a.tos == b.tos && a.options == b.options
 }

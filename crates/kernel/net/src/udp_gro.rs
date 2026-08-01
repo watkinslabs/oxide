@@ -86,6 +86,13 @@ pub fn device_offers_gro(hardware_type: u16) -> bool {
     hardware_type != crate::uapi::ARPHRD_LOOPBACK
 }
 
+/// Whether a delivered datagram is a coalescing candidate at all.
+///
+/// A reassembled datagram never is: the device handed up FRAGMENTS, which the
+/// receive path refuses to coalesce, and the fragment size such a receive
+/// reports belongs to that datagram alone. # C: O(1)
+pub fn coalescable_receive(offered: bool, frag_max: u32) -> bool { offered && frag_max == 0 }
+
 /// The `UDP_GRO` control message a receive publishes, if any.
 ///
 /// It exists only for a receive several datagrams were coalesced into, and
@@ -105,6 +112,15 @@ mod tests {
     fn loopback_delivery_is_never_coalesced() {
         assert!(!device_offers_gro(crate::uapi::ARPHRD_LOOPBACK));
         assert!(device_offers_gro(crate::uapi::ARPHRD_ETHER));
+    }
+
+    #[test]
+    fn a_reassembled_datagram_is_never_a_coalescing_candidate() {
+        // The device never saw it as one packet, and the fragment size it
+        // reports is its own.
+        assert!(coalescable_receive(true, 0));
+        assert!(!coalescable_receive(true, 1_400));
+        assert!(!coalescable_receive(false, 0));
     }
 
     #[test]
