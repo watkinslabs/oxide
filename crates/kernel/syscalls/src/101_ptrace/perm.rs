@@ -32,8 +32,13 @@ pub fn may_access(cur: &Task, target: &Task) -> Result<(), Errno> {
 
 /// The ATTACH-class form: the credential ladder plus
 /// `security_ptrace_access_check`, which is where
-/// `/proc/sys/kernel/yama/ptrace_scope` is enforced. `PTRACE_ATTACH` and
-/// `PTRACE_SEIZE` are ATTACH-class; nothing else in the request table is.
+/// `/proc/sys/kernel/yama/ptrace_scope` is enforced. Within the ptrace request
+/// table only `PTRACE_ATTACH` and `PTRACE_SEIZE` are ATTACH-class, but
+/// `pidfd_getfd(2)` and `process_vm_readv/writev(2)` reach the same gate:
+/// each takes something out of another process, which is exactly what
+/// `ptrace_scope` restricts. Routing them through the READ-class ladder let a
+/// same-uid process read another's memory at `ptrace_scope=1`, which the
+/// setting exists to prevent.
 /// # C: O(N_relations + depth)
 pub fn may_attach_access(cur: &Task, target: &Task) -> Result<(), Errno> {
     use sched::ptrace_access::{Access, Mode};

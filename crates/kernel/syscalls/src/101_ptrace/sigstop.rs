@@ -37,9 +37,17 @@ pub const SI_USER: i32 = 0;
 /// other signal — SIGSTOP included — goes through the tracer first, which is
 /// how a debugger sees and suppresses the `SIGSTOP` its own `PTRACE_ATTACH`
 /// posted.
+///
+/// `immutable` is the third term, and it is the one that was missing: a signal
+/// forced with `HANDLER_EXIT` (`force_fatal_sig`, a seccomp `RET_KILL_*`) has
+/// its action marked `SA_IMMUTABLE`, and Linux then skips the stop entirely.
+/// Without it a tracer could catch a forced-fatal SIGSEGV/SIGSYS at its
+/// delivery stop and resume with signal 0, cancelling a death the kernel had
+/// already decided was not negotiable — a sandbox escape from any process able
+/// to trace itself.
 /// # C: O(1)
-pub fn stops_for_tracer(traced: bool, sig: u32) -> bool {
-    traced && sig != Signum::Sigkill as u32
+pub fn stops_for_tracer(traced: bool, sig: u32, immutable: bool) -> bool {
+    traced && sig != Signum::Sigkill as u32 && !immutable
 }
 
 /// `ptrace_signal`'s tail, run once the tracee is back from the stop.

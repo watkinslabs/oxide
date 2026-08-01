@@ -15,7 +15,12 @@ use hal::Context;
         assert_eq!(core::mem::offset_of!(ContextX86_64, r14),     0x28);
         assert_eq!(core::mem::offset_of!(ContextX86_64, r15),     0x30);
         assert_eq!(core::mem::offset_of!(ContextX86_64, fs_base), 0x38);
-        assert_eq!(core::mem::size_of::<ContextX86_64>(), 0x40);
+        assert_eq!(core::mem::offset_of!(ContextX86_64, gs_base), 0x40);
+        assert_eq!(core::mem::size_of::<ContextX86_64>(), 0x48);
+        // `oxide_context_switch` reloads both per-thread segment bases from
+        // `next` at [rsi+0x38] / [rsi+0x40]; the buffer `Task` reserves has
+        // to hold the whole record.
+        assert!(core::mem::size_of::<ContextX86_64>() <= 128);
     }
 
     extern "C" fn dummy_entry(_arg: usize) -> ! { loop {} }
@@ -121,7 +126,7 @@ use hal::Context;
             rdi: 1, rsi: 2, rdx: 3, r10: 4, r8: 5, r9: 6,
             rcx: 7, r11: 8, r12: 12, rbx: 13, rbp: 14, r13: 15, r14: 16, r15: 17,
         };
-        let ctx = ContextX86_64::new_user_for_fork(top, 0x4000_0000, 0x7fff_f000, 0x246, &regs, 0xfeed);
+        let ctx = ContextX86_64::new_user_for_fork(top, 0x4000_0000, 0x7fff_f000, 0x246, &regs, 0xfeed, 0xf00d);
         // SAFETY: we own `stack`; the scaffold lies inside the buffer.
         let r = unsafe { scaffold_regs(&ctx) };
         assert_eq!((r.rdi, r.rsi, r.rdx, r.r10, r.r8, r.r9), (1, 2, 3, 4, 5, 6));
@@ -131,6 +136,20 @@ use hal::Context;
         assert_eq!(r.rflags, 0x246, "parent's RFLAGS carried through");
         assert!(r.from_user());
         assert_eq!(ctx.fs_base, 0xfeed, "parent TLS base inherited");
+        assert_eq!(ctx.gs_base, 0xf00d, "parent user GS base inherited");
+    }
+
+    #[test]
+    fn a_fresh_scaffold_starts_with_a_zero_user_gs_base() {
+        // Every non-fork constructor leaves gs_base 0, so the first
+        // ring-3 `swapgs` on a new task installs a null user GS base
+        // rather than whatever the previous occupant of the buffer had.
+        let mut stack = alloc::vec![0u8; 4096];
+        let top = stack.as_mut_ptr_range().end;
+        assert_eq!(ContextX86_64::new_user_with_irq_frame(top, 0x1000, 0x2000).gs_base, 0);
+        assert_eq!(ContextX86_64::new_kernel_with_irq_frame(top, dummy_entry, 0).gs_base, 0);
+        assert_eq!(ContextX86_64::new_kernel(top, dummy_entry, 0).gs_base, 0);
+        assert_eq!(ContextX86_64::new_user(top, 0x1000, 0x2000).gs_base, 0);
     }
 
     #[test]

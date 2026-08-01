@@ -7,9 +7,17 @@
 // `execve`. Bits are NOT decoration: `READ_IMPLIES_EXEC` is consulted by
 // `mmap`/`mprotect` and `UNAME26` by `uname`, exactly as Linux does.
 
+//
+// Module manifest:
+//   `domains` — the `PER_*` execution-domain table and arm64's domain gate.
+//   `audit`   — which bits have a consumer, and which are dead upstream.
+
 use core::sync::atomic::Ordering;
 
 use crate::Task;
+
+pub mod audit;
+pub mod domains;
 
 /// `uname(2)` reports a 2.6.x release. Linux `override_release`.
 pub const UNAME26: u32 = 0x002_0000;
@@ -108,6 +116,29 @@ pub fn clear(cur: &Task, mask: u32) {
 pub fn read_implies_exec(cur: &Task) -> bool {
     get(cur) & READ_IMPLIES_EXEC != 0
 }
+
+/// Linux `begin_new_exec`'s `me->personality &= ~bprm->per_clear` read as a
+/// VALUE rather than as a mutation. Every persona decision an exec makes —
+/// randomisation, page-0 emulation, mmap layout — must be taken against this,
+/// not against the stored persona, because the credential transition has not
+/// committed yet on this kernel's exec path.
+/// # C: O(1)
+pub const fn at_exec(persona: u32, per_clear: u32) -> u32 { persona & !per_clear }
+
+/// Whether the ELF loader must map the SVr4 bug-emulation page at VA 0.
+/// # C: O(1)
+pub const fn mmap_page_zero(persona: u32) -> bool { persona & MMAP_PAGE_ZERO != 0 }
+
+/// Whether this persona demands the LEGACY bottom-up mmap layout. One of the
+/// three inputs to `mmap_is_legacy`; the other two (an unlimited stack rlimit
+/// and the `vm.legacy_va_layout` sysctl) are the address-layout owner's.
+/// # C: O(1)
+pub const fn addr_compat_layout(persona: u32) -> bool { persona & ADDR_COMPAT_LAYOUT != 0 }
+
+/// Whether an interrupted `select`/`pselect6`/`ppoll` must leave the caller's
+/// residual-timeout struct untouched.
+/// # C: O(1)
+pub const fn sticky_timeouts(persona: u32) -> bool { persona & STICKY_TIMEOUTS != 0 }
 
 /// Whether `uname(2)` must report a faked 2.6.x release for this task.
 /// # C: O(1)
@@ -230,6 +261,27 @@ mod tests {
     fn a_privileged_exec_clears_strictly_more_than_a_plain_one() {
         assert_eq!(PER_CLEAR_ON_EXEC & PER_CLEAR_ON_SETID, PER_CLEAR_ON_EXEC);
         assert!(PER_CLEAR_ON_SETID & !PER_CLEAR_ON_EXEC != 0);
+    }
+
+    /// The syscall returns the PREVIOUS persona as an `unsigned int` widened to
+    /// long. Every value the top three bytes can take must stay POSITIVE at
+    /// syscall-return width, or glibc reads a persona as an errno. The
+    /// dangerous ones are the query sentinel and any persona whose high flag
+    /// bit is set: `0xffffffff as i32` is `-1`, which the syscall return
+    /// convention would deliver as `EPERM`.
+    #[test]
+    fn a_persona_widens_to_a_positive_syscall_return_on_both_arches() {
+        for pers in [0u32, PERSONALITY_QUERY, ADDR_LIMIT_3GB, ADDR_LIMIT_3GB | PER_MASK,
+                     STICKY_TIMEOUTS | ADDR_LIMIT_3GB, 0x8000_0000, u32::MAX - 1] {
+            let ret = pers as i64;
+            assert!(ret >= 0, "persona {pers:#x} widened to a negative return {ret}");
+            // …and outside the errno window a syscall return is decoded in.
+            assert!(!(-4095..0).contains(&ret));
+            assert_eq!(ret as u32, pers, "widening lost bits");
+        }
+        // The sign-extending mistake, spelled out: this is what must NOT happen.
+        assert_eq!(PERSONALITY_QUERY as i32 as i64, -1);
+        assert_eq!(PERSONALITY_QUERY as i64, 4_294_967_295);
     }
 
     #[test]

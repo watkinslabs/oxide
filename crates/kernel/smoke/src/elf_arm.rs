@@ -362,7 +362,7 @@ fn spawn_init_from_rootfs_arm() {
         debug_irq! { klog::kerror!("init-arm: stack mmap failed"); }
         return;
     }
-    mm.set_mmap_base(rnd.mmap_base(INIT_STACK_LEN));
+    mm.set_mmap_layout(rnd.mmap_base(INIT_STACK_LEN), true);
 
     let img = match elf_load::load_static_blob(init_blob, &mm, &rnd) {
         Ok(i)  => i,

@@ -8,7 +8,8 @@
 // Module manifest:
 //   `load`  — PT_LOAD placement + R_*_RELATIVE self-relocation staging.
 //   `place` — the two Linux placement strategies and the phdr scans they need.
-//   `brk`   — `start_brk` selection and the heap window.
+//   `brk`     — `start_brk` selection and the heap window.
+//   `persona` — the `MMAP_PAGE_ZERO` SVr4 emulation at the tail of the load.
 //   `stack` — initial stack, argv/envp/auxv (kernel-only).
 //   `uapi`  — auxv keys.
 //
@@ -37,6 +38,7 @@ use vmm::{AddressSpace, VmaProt};
 
 mod brk;
 mod load;
+pub mod persona;
 mod place;
 mod uapi;
 

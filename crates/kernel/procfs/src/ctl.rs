@@ -38,7 +38,7 @@ use vfs::{InodeRef, KResult, VfsError};
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    IntHook as HIntHook, IntVar, NetGlobalIntHook as HNetGlobalIntHook,
+    CheckedIntHook as HCheckedIntHook, IntHook as HIntHook, IntVar, NetGlobalIntHook as HNetGlobalIntHook,
     PerNetIntHook as HPerNetIntHook,
     PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
@@ -98,6 +98,9 @@ fn set_randomize_va_space(v: i64) { aslr::set_randomize_va_space(v as i32); }
 /// could disagree with the gate.
 fn get_unprivileged_userfaultfd() -> i64 { vmm::uffd::unprivileged_userfaultfd() }
 fn set_unprivileged_userfaultfd(v: i64) { vmm::uffd::set_unprivileged_userfaultfd(v); }
+fn get_legacy_va_layout() -> i64 { aslr::tunable::legacy_va_layout() as i64 }
+fn set_legacy_va_layout(v: i64) { aslr::tunable::set_legacy_va_layout(v != 0); }
+
 fn get_mmap_rnd_bits() -> i64 { aslr::tunable::mmap_rnd_bits() as i64 }
 fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max(0) as u32); }
 /// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
@@ -144,7 +147,12 @@ fn get_modules_disabled() -> i64 { modules::admission::modules_disabled() as i64
 fn set_modules_disabled(value: i64) { let _ = modules::admission::set_modules_disabled(value); }
 fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
 fn get_ptrace_scope() -> i64 { sched::yama::scope() as i64 }
-fn set_ptrace_scope(value: i64) { let _ = sched::yama::set_scope(value); }
+/// A REFUSED write must report EINVAL, not silently succeed: a hardening
+/// script that lowers `ptrace_scope` and reads back a success it did not get
+/// would believe it had relaxed a restriction that is still in force.
+fn set_ptrace_scope(value: i64) -> Result<(), ()> {
+    if sched::yama::set_scope(value) { Ok(()) } else { Err(()) }
+}
 /// `net.core.rmem_max` / `net.core.wmem_max` bind to the ONE pair of ceilings
 /// `SO_RCVBUF` / `SO_SNDBUF` clamp against, so the leaf and the option can
 /// never disagree.
@@ -201,6 +209,9 @@ enum Leaf {
     NetInt(net::net_ns::NetSysctlKey, Option<(i64, i64)>),
     /// `proc_dointvec_minmax` bound to a subsystem-owned scalar.
     IntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
+    /// `proc_dointvec_minmax` whose setter can REFUSE the write, for a value
+    /// with a constraint the static bounds cannot express (a one-way ratchet).
+    CheckedIntHook(fn() -> i64, fn(i64) -> Result<(), ()>, Option<(i64, i64)>),
     /// A `net/core` leaf whose backing variable is one global, writable only
     /// from the initial network namespace.
     NetGlobalIntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
@@ -289,7 +300,7 @@ const SYSCTL_TREE: &[Node] = &[
         // may be raised, never lowered), which is why the setter is a hook
         // rather than a bounded `Int`.
         Dir("yama", &[
-            File("ptrace_scope",      IntHook(get_ptrace_scope, set_ptrace_scope,
+            File("ptrace_scope",      CheckedIntHook(get_ptrace_scope, set_ptrace_scope,
                                               Some((0, sched::yama::SCOPE_MAX as i64)))),
         ]),
     ]),
@@ -356,6 +367,13 @@ const SYSCTL_TREE: &[Node] = &[
             check_memfd_noexec_write, set_memfd_noexec,
             Some((namespace_identity::PID_MEMFD_NOEXEC_SCOPE_EXEC as i64,
                   namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED as i64)))),
+        // `vm.legacy_va_layout` — `sysctl_legacy_va_layout`, the system-wide
+        // third input to `mmap_is_legacy` alongside
+        // `personality(ADDR_COMPAT_LAYOUT)` and an unlimited RLIMIT_STACK.
+        // Non-zero makes every subsequent exec allocate its mmap arena upward
+        // from TASK_UNMAPPED_BASE instead of downward from mmap_base.
+        File("legacy_va_layout",        IntHook(get_legacy_va_layout,
+                                                set_legacy_va_layout, Some((0, 1)))),
         // `vm.mmap_rnd_bits` — the live entropy width `arch_mmap_rnd()` uses,
         // bounded by this arch's Kconfig pair (`mm/mmap.c:66-75`). Linux has a
         // `mmap_rnd_compat_bits` sibling only under `CONFIG_COMPAT`; this
@@ -475,6 +493,8 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
                 current_ns: current_pid_ns, check_write, get, set, bounds,
             })),
         Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
+        Leaf::CheckedIntHook(get, set, bounds) =>
+            bound_sysctl_inode(Arc::new(HCheckedIntHook { get, set, bounds })),
         Leaf::NetGlobalIntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(
             HNetGlobalIntHook { current_ns: current_net_ns, get, set, bounds })),
         ULong(def, bounds) => {
