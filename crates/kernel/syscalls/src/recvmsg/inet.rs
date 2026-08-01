@@ -270,7 +270,7 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
                     payload: Vec::new(), full_len: 1, peer: None, peer6: None,
                     pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None, gro: None,
                 }) { return Err(e); }
-                user.finish(0, crate::recv_control::output_flags(flags)).map_err(|e| e)?;
+                tcp_finish(sock, user, flags)?;
                 return Ok(1);
             }
             Ok(None) => {
@@ -287,6 +287,31 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
         if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
         let _ = net::sock_recv::wait_recv_source_after_urgent(sock, deadline, 0);
     }
+}
+
+/// The unread-bytes report a TCP receive owes its caller when `TCP_INQ` is
+/// set. The count comes from the same receive queue `SIOCINQ` and
+/// `SO_MEMINFO` answer from, so the three can never disagree, and it is only
+/// ever built on a successful receive — a failed one publishes no control.
+/// # C: O(1)
+fn tcp_inq(sock: &Arc<InetSocket>) -> Option<net::sock_opts::inq::InqCmsg> {
+    if !sock.opts.tcp.recvmsg_inq.load(Ordering::Acquire) { return None; }
+    let entry = match &*sock.kind.lock() {
+        SockKind::TcpConn(entry) => entry.clone(),
+        _ => return None,
+    };
+    let queued = entry.conn.lock().recv_buf.len();
+    let eof = sock.read_shut.load(Ordering::Acquire)
+        || net::sock_io::tcp_recv_eof(entry.conn.lock().state);
+    Some(net::sock_opts::inq::InqCmsg::tcp(net::sock_opts::inq::tcp_inq(queued, eof)))
+}
+
+/// Publish the TCP control block for one completed receive. # C: O(control)
+fn tcp_finish(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> Result<(), i64> {
+    let mut ctrl = Control::new(if user.control == 0 { 0 } else { user.controllen });
+    ctrl.push_inq(tcp_inq(sock));
+    let ctrl_len = ctrl.copy_to(user)?;
+    user.finish(ctrl_len, ctrl.flags | crate::recv_control::output_flags(flags))
 }
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
@@ -317,7 +342,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
             payload: Vec::new(), full_len: copied, peer: None, peer6: None,
             pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None, gro: None,
         }) { return e; }
-        if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
+        if let Err(e) = tcp_finish(sock, user, flags) { return e; }
         if copied != 0 { sock.note_receive_now(); }
         return copied as i64;
     }
