@@ -215,6 +215,12 @@ pub fn do_exit(status: i32) -> i64 {
                 let tg = task.tgid.load(Ordering::Acquire);
                 ipc::sysv::sem::exit_sem(if vtg != 0 { vtg } else { tg });
             }
+            // Final `put_cred` for the keyring state (Linux `exit_creds`):
+            // drop the thread keyring, the assumed authority, the `jit_keyring`
+            // default and this tid's session reference, plus the thread group's
+            // process keyring on the last thread. Runs before `mark_done` so
+            // the hook's own group-dead test still counts this thread live.
+            sched::live::run_keyring_exit(task);
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); }

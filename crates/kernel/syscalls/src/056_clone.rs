@@ -503,6 +503,14 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // and run its glibc thread-start trampoline with the parent's stale
     // FS_BASE / an unfinished vtgid (which aliased the creator's TLS and made
     // GCond signals target the wrong futex word — the greeter/SMP wedge).
+    // Linux `copy_creds`: the child's cred is a copy of the parent's, so it
+    // starts out sharing the session keyring and the `jit_keyring` default.
+    // Unconditional on the flags — a new thread and a new process copy the same
+    // two fields; what differs (thread keyring dropped, process keyring kept
+    // only within a thread group) is already expressed by the store's tid/tgid
+    // keying. Must run BEFORE publication, or a child scheduled immediately can
+    // observe a keyring-less cred it is supposed to have inherited.
+    fs::keyring::fork_keys(cur.tid, child_tid);
     publication::commit(&child, (flags & CLONE_THREAD) != 0, prepared_pidfd);
 
     // Linux `_do_fork`: "forking complete and child started to run, tell
