@@ -13,7 +13,6 @@ mod socket_gate;
 // The IPv6 membership half, split out at the per-file size cutoff. The IPv4
 // half, the delivery decision and the shared state stay here.
 mod membership_v6;
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use socket_gate::{SocketMcastGate, SocketMcastLease};
 
 pub const MCAST_EXCLUDE: u32 = 0;
