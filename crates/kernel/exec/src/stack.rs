@@ -168,7 +168,7 @@ pub unsafe fn build_user_stack(
         (AT_EXECFN,  execfn_va),
         (AT_RANDOM,  random_va),
         (AT_HWCAP,   hwcap),
-        (AT_CLKTCK,  100),
+        (AT_CLKTCK,  syscall::rusage::USER_HZ),
         (AT_MINSIGSTKSZ, min_sigstksz),
         // 0 = "no vDSO mapped" — glibc / musl skip the AT_SYSINFO_EHDR
         // entry under that value. Non-zero = vDSO load VA per K14.

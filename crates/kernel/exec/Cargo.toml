@@ -11,6 +11,7 @@ ext4 = { path = "../ext4" }
 elf      = { path = "../../shared/elf" }
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
+syscall  = { path = "../syscall" }
 vmm      = { path = "../mm-vmm" }
 
 [features]

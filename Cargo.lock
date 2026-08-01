@@ -520,6 +520,7 @@ dependencies = [
  "ext4",
  "hal",
  "klog",
+ "syscall",
  "vmm",
 ]
 
@@ -1362,6 +1363,7 @@ dependencies = [
  "sched",
  "slab",
  "sync",
+ "syscall",
  "sysfs",
  "vfs",
  "vmm",
