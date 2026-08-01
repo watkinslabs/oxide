@@ -59,7 +59,7 @@ fn trace_open_erofs(inode: &vfs::InodeRef, mnt_id: u64, flags: u32, mnt_flags: u
         klog::write_dec_u64(c.tid as u64);
         klog::write_raw(b" tgid="); klog::write_dec_u64(c.tgid.load(Ordering::Acquire) as u64);
         klog::write_raw(b" ns="); klog::write_dec_u64(c.mount_namespace_id().unwrap_or(0));
-        klog::write_raw(b" name="); klog::write_raw(c.name.as_bytes());
+        klog::write_raw(b" name="); { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); }
     } else {
         klog::write_raw(b"0 tgid=0 ns=0 name=<none>");
     }

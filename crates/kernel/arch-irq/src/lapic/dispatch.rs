@@ -106,7 +106,7 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
                         klog::write_raw(b" lastsc=");
                         klog::write_dec_u64(c.last_syscall_nr.load(Ordering::Relaxed) as u64);
                         klog::write_raw(b" ");
-                        klog::write_raw(c.name.as_bytes());
+                        { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); }
                     }
                     klog::write_raw(b"]\n");
                 }
@@ -131,7 +131,7 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
                             klog::write_raw(b" lastsc=");
                             klog::write_dec_u64(c.last_syscall_nr.load(Ordering::Relaxed) as u64);
                             klog::write_raw(b" ");
-                            klog::write_raw(c.name.as_bytes());
+                            { let comm = c.comm_bytes(); klog::write_raw(sched::Task::comm_trim(&comm).as_bytes()); }
                             klog::write_raw(b"]\n");
                         }
                     }
