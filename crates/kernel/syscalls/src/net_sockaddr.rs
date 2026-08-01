@@ -8,8 +8,8 @@ use syscall::errno::Errno;
 // The pure encoders + their ABI constants live in `sockaddr_encode`, which is
 // not kernel-cfg-gated so hosted `cargo test` can prove every `*_getname`
 // length and byte layout. This module owns only the user-memory marshalling.
-pub(crate) use crate::sockaddr_encode::{encoded_sockaddr_for_socket, encoded_sockaddr_in,
-    encoded_sockaddr_in6, encoded_sockaddr_ll, encoded_sockaddr_nl, encoded_sockaddr_un,
+pub(crate) use crate::sockaddr_encode::{encoded_sockaddr_for_socket,
+    encoded_sockaddr_in6, encoded_sockaddr_nl, encoded_sockaddr_un,
     encoded_sockaddr_vm, EncodedSockaddr};
 use crate::sockaddr_encode::{SOCKADDR_IN_LEN, SOCKADDR_VM_LEN};
 

@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use net::sock::{InetSocket, SockKind};
-use net::socket_args::{parse_socket_args, AF_UNIX, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, SOCK_TYPE_MASK};
+use net::socket_args::{SOCK_CLOEXEC, SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM, SOCK_TYPE_MASK};
 use crate::userbuf::write_user_i32;
 
 /// `socketpair` slot 53. AF_UNIX STREAM / SEQPACKET / DGRAM (F125).
@@ -14,8 +14,10 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let raw_type = args.a1 as u32;
     let protocol = args.a2 as u32;
     let svp    = args.a3;
+    if let Err(e) = crate::socketpair_spec::check_type_flags(raw_type) {
+        return -(e.as_i32() as i64);
+    }
     let extra = raw_type & !SOCK_TYPE_MASK;
-    if extra & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -41,13 +43,10 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
     // Linux creates both sockets before asking the protocol for a pair, so the
     // per-family creation gates (including the raw-socket capability) outrank
     // the missing `socketpair` operation.
-    let spec = parse_socket_args(domain, raw_type, protocol, has_net_raw)
+    let pair = crate::socketpair_spec::admit(domain, raw_type, protocol, has_net_raw)
         .map_err(|e| -(e.as_i32() as i64))?;
-    if spec.family != AF_UNIX { return Err(-(Errno::Eopnotsupp.as_i32() as i64)); }
-    // Linux unix_create maps AF_UNIX SOCK_RAW onto SOCK_DGRAM before its
-    // socketpair operation. Preserve that one protocol personality for both
-    // transport construction and the observable SO_TYPE value.
-    let socket_type = if spec.typ == SOCK_RAW { SOCK_DGRAM } else { spec.typ };
+    let spec = pair.args;
+    let socket_type = pair.socket_type;
     net::sock_opts::check_socketpair(net_namespace.id().as_u64(), spec.family as u16,
         socket_type, spec.protocol).map_err(|e| -(crate::net_common::errno_from_neterr(e) as i64))?;
     let stream = if socket_type == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
