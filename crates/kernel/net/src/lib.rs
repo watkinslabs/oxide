@@ -140,6 +140,9 @@ pub mod sock_drop;
 pub mod sock_rtnl_defer;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_v6;
+// Ungated for `cargo test`, but it reads the socket type, which the plain
+// `cargo check -p net` build does not have.
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_v6_name;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_mcast;
