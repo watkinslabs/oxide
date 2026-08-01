@@ -188,6 +188,20 @@ Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn 
 - Check `ps -C qemu-system-x86_64,qemu-system-aarch64` is empty before a boot you intend to trust; a QEMU alive far past a normal boot (~110s ARM / ~160s x86) is wedged and fouls the ports for everyone. Do **not** use `pgrep -fc qemu-system` — it matches the waiting shell's own command line and can never reach zero.
 - The Bash sandbox usually cannot reap them (`dangerouslyDisableSandbox` sometimes can) — if they accumulate, ask the user to `pkill -9 qemu-system`, and warn sibling lanes afterwards so nobody misattributes the killed boot to their own code.
 
+## Conflict resolution is where coverage dies (HARD RULE)
+
+Two lanes splitting one file for the size cap along different axes produce a conflict in which the STALE side looks perfectly plausible. B1641 and B1649 both split `procfs/ctl.rs`; B1649's copy of the `net` subtree predated B1641 making `rmem_default`/`wmem_default` live and adding `tcp_rmem`/`tcp_wmem`, so a line-by-line resolution would have silently reverted two leaves to dead `Const` and deleted two more — with nothing red.
+
+- **Take the other side wholesale, then re-apply your own delta.** Never merge such a file hunk-by-hunk.
+- **Verify by MULTISET count, not name set.** A set dedupes the very thing you are looking for: a set-based "nothing dropped" check reported clean while 8 tests were duplicated, 7 of the pairs with *different* bodies. Count declarations on both sides and after; none dropped, none duplicated.
+- Diff hook *bodies* across both sides. One resolution nearly re-introduced a bug `main` had just fixed (`set_ptrace_scope` losing its `EINVAL`).
+
+## Verification must be able to fail (HARD RULE)
+
+A green check that does not exercise what it claims is worse than no check — it converts an unknown into a false assurance. Confirmed instances: `procfs/ctl.rs` is target-gated so `cargo check` compiled none of it (the break appeared only in the kernel build); a set-based duplicate check that structurally could not detect duplicates; a whole gate set that compiled no feature-gated code, so a branch that did not build passed everything.
+
+**Require a positive control.** Reinstate the defect (or break the behaviour) and confirm the check goes RED, then restore and confirm GREEN. Report both. This applies to new tests, new gates, and any claim that an existing check covers a class.
+
 ## Phantom tests: kernel-gated files cannot be tested (HARD RULE)
 
 `crates/kernel/syscalls/src/kernel_body.rs` is `#[cfg(target_os = "oxide-kernel")]`, and every `#[path = "NNN_name.rs"] pub mod …` it declares inherits that gate. The same applies to any file carrying `#![cfg(target_os = "oxide-kernel")]` (`misc.rs`, the slot files, most of `sched`'s syscall entry points).
