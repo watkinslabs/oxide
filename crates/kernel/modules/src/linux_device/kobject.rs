@@ -123,7 +123,9 @@ mod tests {
         let mut kobj = LinuxKobject::new();
         let attr = LinuxAttribute { name: c"state".as_ptr(), mode: 0o444 };
         kobject_init(&mut kobj, &ktype);
+        // SAFETY: kobject_set_name's varargs contract is satisfied here — the literal format string carries exactly one integer conversion and exactly one int-sized argument is passed for it.
         assert_eq!(unsafe { kobject_set_name(&mut kobj, c"kobj%d".as_ptr(), 7u32) }, LINUX_OK);
+        // SAFETY: the set_name above returned LINUX_OK, so name points into kobj.name_buf (64 bytes) holding "kobj7\0"; offset 4 is the last digit, well inside that buffer.
         assert_eq!(unsafe { *kobject_name(&kobj).add(4) as u8 }, b'7');
         assert_eq!(sysfs_create_file(&mut kobj, &attr), LINUX_OK);
         assert_eq!(attr_count(&mut kobj), 1);

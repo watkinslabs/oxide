@@ -63,6 +63,7 @@ pub(super) unsafe extern "C" fn alloc_netdev(
     name_assign_type: u8,
     setup: Option<NetdevSetup>,
 ) -> *mut LinuxNetDevice {
+    // SAFETY: forwarding the caller's arguments unchanged; alloc_netdev_mqs only dereferences name as a NUL-terminated template, which is alloc_netdev's own KPI requirement.
     unsafe { alloc_netdev_mqs(sizeof_priv, name, name_assign_type, setup, DEFAULT_TXQS, DEFAULT_RXQS) }
 }
 
@@ -72,19 +73,22 @@ pub(super) unsafe extern "C" fn alloc_etherdev_mqs(
     txqs: u32,
     rxqs: u32,
 ) -> *mut LinuxNetDevice {
+    // SAFETY: the name pointer is ETH_NAME_TEMPLATE, a NUL-terminated 'static byte string in this crate, and ether_setup is a local fn taking the dev being allocated.
     unsafe { alloc_netdev_mqs(sizeof_priv, ETH_NAME_TEMPLATE.as_ptr() as *const c_char, NET_NAME_UNKNOWN, Some(ether_setup), txqs, rxqs) }
 }
 
 /// # C: O(sizeof(struct net_device)+sizeof_priv)
 pub(super) unsafe extern "C" fn alloc_etherdev(sizeof_priv: i32) -> *mut LinuxNetDevice {
+    // SAFETY: alloc_etherdev_mqs takes no caller pointers here, only sizeof_priv and the single-queue defaults, so there is no pointer precondition to carry.
     unsafe { alloc_etherdev_mqs(sizeof_priv, DEFAULT_TXQS, DEFAULT_RXQS) }
 }
 
 /// # C: O(1)
 pub(super) unsafe extern "C" fn free_netdev(dev: *mut LinuxNetDevice) {
     if dev.is_null() { return; }
+    // SAFETY: free_netdev's KPI contract is a pointer returned by alloc_netdev*; netdev_alloc writes the NetdevHeader in the bytes immediately below the returned dev, so this sub() lands inside that same allocation.
     let hp = unsafe { (dev as *mut u8).sub(size_of::<NetdevHeader>()) as *mut NetdevHeader };
-    // SAFETY: Linux KPI callers must pass a pointer returned by alloc_netdev*.
+    // SAFETY: hp is the header slot netdev_alloc initialized with write(); NETDEV_MAGIC is re-checked below so a foreign pointer is rejected before the dealloc.
     let h = unsafe { *hp };
     if h.magic != NETDEV_MAGIC { return; }
     let layout = match Layout::from_size_align(h.total, h.align) {
@@ -124,9 +128,10 @@ pub(super) unsafe extern "C" fn eth_hw_addr_set(dev: *mut LinuxNetDevice, addr: 
     unsafe { core::ptr::copy_nonoverlapping(addr, (*dev).dev_addr.as_mut_ptr(), ETH_ALEN); }
 }
 
-pub(super) fn ensure_registered_name(dev: *mut LinuxNetDevice) {
+// Precondition: dev is NULL or a net_device the caller still owns and has not yet published, so this is the only writer of dev->name.
+pub(super) unsafe fn ensure_registered_name(dev: *mut LinuxNetDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev is owned by this facade while registering.
+    // SAFETY: per the precondition dev is a caller-owned, not-yet-published net_device, so writing its name array races with nothing.
     unsafe {
         if name_has_decimal_slot(&(*dev).name) {
             let idx = NEXT_ETH_INDEX.fetch_add(1, Ordering::Relaxed);
@@ -148,6 +153,7 @@ fn netdev_alloc(sizeof_priv: usize) -> *mut LinuxNetDevice {
     // SAFETY: layout was validated above and zero init matches C allocation expectations.
     let base = unsafe { alloc_zeroed(layout) };
     if base.is_null() { return null_mut(); }
+    // SAFETY: netdev_off is align_up(size_of::<NetdevHeader>(), dev_align) and total >= netdev_off + size_of::<LinuxNetDevice>(), so this offset is inside the layout just allocated and correctly aligned for LinuxNetDevice.
     let dev = unsafe { base.add(netdev_off) as *mut LinuxNetDevice };
     let hdr = NetdevHeader { magic: NETDEV_MAGIC, total, align: layout.align(), netdev_off };
     // SAFETY: header slot and optional private area are inside the allocation.

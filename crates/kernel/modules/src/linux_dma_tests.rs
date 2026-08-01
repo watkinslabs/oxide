@@ -11,6 +11,8 @@ fn coherent_alloc_returns_dma_address_and_zeroed_memory() {
     let p = dma_alloc_coherent(null_mut(), linux_alloc::PAGE_SIZE, &mut dma, 0);
     assert!(!p.is_null());
     assert_ne!(dma, DMA_MAPPING_ERROR);
+    // SAFETY: p is the PAGE_SIZE coherent buffer asserted non-null above, which dma_alloc_coherent
+    // returns zeroed, so exactly PAGE_SIZE initialised bytes are readable before the free below.
     unsafe { assert_eq!(core::slice::from_raw_parts(p as *const u8, linux_alloc::PAGE_SIZE), &[0; linux_alloc::PAGE_SIZE]); }
     dma_free_coherent(null_mut(), linux_alloc::PAGE_SIZE, p, dma);
 }
@@ -33,6 +35,8 @@ fn streaming_map_checks_masks_and_directions() {
 fn scatterlist_maps_buffer_and_page_entries() {
     let buf = [0u8; 16];
     let mut sg = [ScatterList { page_link: 0, offset: 0, length: 0, dma_address: 0, dma_length: 0 }; 2];
+    // SAFETY: sg_init_table writes nents entries; `sg` is the two-element ScatterList stack array
+    // declared on the previous line and sg.len() is exactly its length.
     unsafe { sg_init_table(sg.as_mut_ptr(), sg.len() as u32); }
     sg_set_buf(&mut sg[0], buf.as_ptr() as *const c_void, buf.len() as u32);
     let page = crate::linux_alloc::alloc_pages(0, 0);
@@ -50,6 +54,8 @@ fn sg_table_and_miter_walk_real_bytes() {
     assert_eq!(sg_alloc_table(&mut tbl, 2, 0), 0);
     let mut a = [1u8, 2, 3, 4];
     let mut b = [5u8, 6, 7, 8];
+    // SAFETY: sg_alloc_table returned 0 above, so tbl.sgl points at 2 initialised entries; index 1
+    // is therefore in bounds, and a/b are live 4-byte stack arrays that outlive the sg_copy below.
     unsafe {
         sg_set_buf(tbl.sgl, a.as_mut_ptr() as *const c_void, a.len() as u32);
         sg_set_buf(tbl.sgl.add(1), b.as_mut_ptr() as *const c_void, b.len() as u32);
@@ -72,6 +78,9 @@ fn sgl_alloc_order_returns_owned_page_backed_entries() {
     let sgl = crate::linux_dma_sgl::sgl_alloc_order((linux_alloc::PAGE_SIZE * 2) as u64, 0, false, 0, &mut nents);
     assert!(!sgl.is_null());
     assert_eq!(nents, 2);
+    // SAFETY: sgl is the entry array sgl_alloc_order returned (asserted non-null) and it reported
+    // nents == 2 for the PAGE_SIZE*2 request, so indexes 0 and 1 are initialised and in bounds
+    // until sgl_free_n_order below.
     unsafe {
         assert!((*sgl).page_link != 0);
         assert!((*sgl.add(1)).page_link != 0);

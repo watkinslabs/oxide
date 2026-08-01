@@ -70,6 +70,7 @@ extern "C" fn pm_runtime_disable(dev: *mut LinuxDevice) {
 }
 
 extern "C" fn pm_runtime_enabled(dev: *mut LinuxDevice) -> bool {
+    // SAFETY: `&&` short-circuits, so the read runs only once dev is known non-null; power is the LinuxDevPmInfo embedded by value in the caller's struct device, zeroed at LinuxDevPmInfo::new().
     !dev.is_null() && unsafe { (*dev).power.disable_depth == 0 }
 }
 
@@ -199,10 +200,12 @@ extern "C" fn device_set_wakeup_capable(dev: *mut LinuxDevice, capable: bool) {
 }
 
 extern "C" fn device_can_wakeup(dev: *mut LinuxDevice) -> bool {
+    // SAFETY: `&&` short-circuits past the read for a null dev; can_wakeup is a bool inside the by-value LinuxDevPmInfo, so no further pointer is followed.
     !dev.is_null() && unsafe { (*dev).power.can_wakeup }
 }
 
 extern "C" fn device_may_wakeup(dev: *mut LinuxDevice) -> bool {
+    // SAFETY: the outer `&&` gates both reads on dev being non-null; both fields are bools inside the by-value LinuxDevPmInfo that device_set_wakeup_capable keeps consistent (clearing wakeup_enabled whenever can_wakeup goes false).
     !dev.is_null() && unsafe { (*dev).power.can_wakeup && (*dev).power.wakeup_enabled }
 }
 
