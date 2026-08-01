@@ -174,8 +174,9 @@ fn bridge_arp_learning_uses_the_l3_bridge_owner() {
     let peer_ip = crate::Ipv4Addr::new(192, 0, 2, 9);
     let peer_mac = MacAddr([2, 0, 0, 0, 4, 9]);
     stack.deliver_ethernet(port_id, &arp_frame(bridge_dev.mac(), peer_mac, peer_ip)).unwrap();
-    assert_eq!(stack.arp_lookup(bridge, peer_ip), Some(peer_mac));
-    assert_eq!(stack.arp_lookup(port_id, peer_ip), None);
+    let ns = owner.id().as_u64();
+    assert_eq!(stack.ifaces.arp_cache_in_ns(bridge, ns).unwrap().lookup(peer_ip), Some(peer_mac));
+    assert_eq!(stack.ifaces.arp_cache_in_ns(port_id, ns).unwrap().lookup(peer_ip), None);
 }
 
 #[test]
@@ -241,7 +242,7 @@ fn bridge_queues_ipv4_until_the_canonical_arp_owner_resolves_it() {
     assert_eq!(port.frames.lock().unwrap().len(), 2, "timer retries the unresolved ARP request");
     port.frames.lock().unwrap().clear();
 
-    stack.arp_learn(bridge, peer_ip, peer_mac);
+    stack.deliver_ethernet(port_id, &arp_frame(bridge_mac, peer_mac, peer_ip)).unwrap();
     let frames = port.frames.lock().unwrap();
     assert_eq!(frames.len(), 2);
     for frame in frames.iter() {

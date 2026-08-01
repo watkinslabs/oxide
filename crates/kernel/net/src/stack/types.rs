@@ -374,12 +374,6 @@ pub struct TcpListenEntry {
     pub reuseport_group: crate::reuseport::ReuseportSlot,
 }
 
-pub(crate) struct ArpNeighbor {
-    pub(crate) mac: MacAddr,
-    pub(crate) learned_ns: u64,
-    pub(crate) permanent: bool,
-}
-
 pub struct NetStack {
     pub(crate) rtnl: crate::rtnl::Rtnl,
     pub ifaces: IfaceRegistry,
@@ -389,8 +383,6 @@ pub struct NetStack {
     pub(crate) arp_proxy: crate::arp::proxy::ProxyTable,
     /// Canonical bridge-port and forwarding database owner, serialized by RTNL.
     pub(crate) bridges: super::bridge::BridgeTable,
-    /// Canonical IPv4 neighbour bindings, scoped by live egress interface.
-    pub(crate) arp: Spinlock<BTreeMap<(NetIfaceId, Ipv4Addr), ArpNeighbor>, StackLockClass>,
     /// Packets accepted by a bridge while its next-hop neighbour is unresolved.
     pub(crate) bridge_pending: Spinlock<BTreeMap<(NetIfaceId, IpAddr), BridgePending>, StackLockClass>,
     /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
