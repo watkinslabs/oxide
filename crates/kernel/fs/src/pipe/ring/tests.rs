@@ -178,6 +178,29 @@ fn a_write_that_exactly_fills_the_remaining_room_is_admitted() {
 }
 
 #[test]
+fn pipe_buf_atomicity_still_binds_after_the_pipe_is_grown() {
+    let inode = make_pipe_inode();
+    let pd = pipe_data(&inode).unwrap();
+    pd.readers.store(1, Ordering::Release);
+    pd.writers.store(1, Ordering::Release);
+    let grown = set_pipe_size(&inode, 4 * PIPE_DEF_SIZE).unwrap();
+    assert!(grown > PIPE_DEF_SIZE, "the resize must have raised the ceiling");
+
+    // One byte short of the room an atomic write needs, at the NEW capacity.
+    let head = alloc::vec![0u8; grown - (PIPE_BUF - 1)];
+    assert_eq!(pd.write_iter_nb(None, &[&head], false).unwrap(), head.len());
+    let atomic = alloc::vec![1u8; PIPE_BUF];
+    assert_eq!(pd.write_iter_nb(None, &[&atomic], false), Err(VfsError::Eagain));
+    assert_eq!(pd.buf.lock().len, head.len(), "a resize must not weaken atomicity");
+    // The atomic unit is PIPE_BUF, not the capacity: a write past PIPE_BUF is
+    // still admitted short even though it would fit the grown ring outright.
+    let big = alloc::vec![2u8; PIPE_BUF + 1];
+    assert_eq!(pd.write_iter_nb(None, &[&big], false).unwrap(), PIPE_BUF - 1,
+        "a resize must not widen the atomic unit to the capacity");
+    assert_eq!(pd.buf.lock().len, grown);
+}
+
+#[test]
 fn resizing_reports_at_least_what_was_asked_for_and_refuses_the_ceiling() {
     let inode = make_pipe_inode();
     assert_eq!(pipe_size(&inode), Some(PIPE_DEF_SIZE));
