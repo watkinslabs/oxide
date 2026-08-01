@@ -28,6 +28,9 @@ pub unsafe fn init(info: &BootInfo) {
         ext4::rootfs::init_from_dev(root_dev)
             .expect("ext4 root mount (oxide-root) failed to open");
         net::sock::init();
+        // Generic netlink: the nlctrl controller plus every in-kernel family
+        // (VFS_DQUOT), registered before userspace can resolve one by name.
+        netlink::genetlink::init();
         install_network_hooks();
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
         modules::linux_time::set_now_hook(module_time_now_ns);

@@ -263,7 +263,7 @@ fn append_notification_contains_complete_resulting_group() {
     let first_ifindex = visible_ifindex(first, ns);
     let second_ifindex = visible_ifindex(second, ns);
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
-    listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_ROUTE);
+    let _ = listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_ROUTE);
     crate::register_rtnl_listener(&listener);
     let dst = Some(([198, 18, 89, 0], 24));
     let (add, add_msg) = request(RTM_NEWROUTE,

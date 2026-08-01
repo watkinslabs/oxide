@@ -266,12 +266,12 @@ fn netlink_getsockopt_keeps_linux_owned_options_and_rejects_unknowns() {
     assert!(dispatch.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_TYPE)"));
     assert!(dispatch.contains("net::socket_args::SOCK_RAW"));
     assert!(dispatch.contains("(::netlink::sockopt::SOL_NETLINK, ::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS)"));
-    assert!(dispatch.contains("netlink_membership_mask(socket.groups.load"));
+    assert!(dispatch.contains("netlink_membership_words(socket.membership_words())"));
     let unknown = dispatch.find("_ => return -(Errno::Enoprotoopt").unwrap();
     let copyout = dispatch.find("netlink_getsockopt_copyout(optval").unwrap();
     assert!(unknown < copyout);
     assert!(!source.contains("write_volatile"));
-    assert!(source.contains("bytes.copy_from_slice(&groups.to_ne_bytes())"));
+    assert!(source.contains("out.extend_from_slice(&word.to_ne_bytes())"));
     assert!(source.contains("if copied != 0 && uaccess::copy_to_user(optval"));
     assert!(source.contains("uaccess::copy_to_user(optlen_p, &required.to_ne_bytes())"));
 }

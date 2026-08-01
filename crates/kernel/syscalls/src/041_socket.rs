@@ -75,6 +75,11 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         if nl_proto == ::netlink::proto::NETLINK_ROUTE {
             ::netlink::register_rtnl_listener(&sock);
         }
+        // NETLINK_GENERIC sockets receive genetlink family multicast (nlctrl
+        // family events, VFS_DQUOT quota warnings) once subscribed to a group.
+        if nl_proto == ::netlink::proto::NETLINK_GENERIC {
+            ::netlink::genetlink::register_genl_listener(&sock);
+        }
         ::netlink::make_netlink_socket_inode(sock)
     } else {
         let inet = match (spec.family, spec.typ) {

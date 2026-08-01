@@ -224,15 +224,17 @@ fn port_ids_are_unique() {
 #[test]
 fn membership_bits_map_group_minus_one() {
     let s = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
-    s.add_membership(1);
-    s.add_membership(5);
-    assert_eq!(s.groups.load(Ordering::Acquire), (1 << 0) | (1 << 4));
-    s.drop_membership(1);
-    assert_eq!(s.groups.load(Ordering::Acquire), 1 << 4);
+    assert!(s.add_membership(1).is_ok());
+    assert!(s.add_membership(5).is_ok());
+    assert_eq!(s.groups.low_mask(), (1 << 0) | (1 << 4));
+    assert!(s.drop_membership(1).is_ok());
+    assert_eq!(s.groups.low_mask(), 1 << 4);
     s.set_group_mask(0xF);
-    assert_eq!(s.groups.load(Ordering::Acquire), 0xF);
-    s.add_membership(0);
-    assert_eq!(s.groups.load(Ordering::Acquire), 0xF);
+    assert_eq!(s.groups.low_mask(), 0xF);
+    // Group 0 is not a group; Linux rejects it rather than silently ignoring.
+    assert_eq!(s.add_membership(0), Err(net::NetError::Einval));
+    assert_eq!(s.add_membership(s.ngroups() + 1), Err(net::NetError::Einval));
+    assert_eq!(s.groups.low_mask(), 0xF);
 }
 
 #[test]
@@ -403,8 +405,8 @@ fn rtnl_multicast_delivers_only_to_subscribers() {
     let namespace = network_namespace::initial();
     let a = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
     let b = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
-    a.add_membership(1);
-    b.add_membership(5);
+    let _ = a.add_membership(1);
+    let _ = b.add_membership(5);
     register_rtnl_listener(&a);
     register_rtnl_listener(&b);
     let msg = alloc::vec![0xABu8; 8];
@@ -439,8 +441,8 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
         mcast::grp::RTNLGRP_IPV4_IFADDR,
         mcast::grp::RTNLGRP_IPV4_ROUTE,
     ] {
-        a.add_membership(group);
-        b.add_membership(group);
+        let _ = a.add_membership(group);
+        let _ = b.add_membership(group);
     }
     register_rtnl_listener(&a);
     register_rtnl_listener(&b);
