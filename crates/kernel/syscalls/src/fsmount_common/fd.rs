@@ -33,6 +33,22 @@ pub(crate) fn read_cstr_req(p: u64, max: usize) -> Result<String, i64> {
         .map_err(|_| -(Errno::Einval.as_i32() as i64))
 }
 
+/// `strndup_user(p, n)` (`mm/util.c`): a string that does not terminate inside
+/// `n` bytes is EINVAL, NOT a silent `n`-byte prefix. `fsconfig(2)` bounds both
+/// its key and its string value this way, so an over-long option name is
+/// refused rather than truncated into a DIFFERENT option that the filesystem
+/// may well accept. # C: O(n)
+pub(crate) fn read_cstr_strndup(p: u64, n: usize) -> Result<String, i64> {
+    if p == 0 || p >= USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
+    // SAFETY: p in user range; bounded read via the shared helper, which stops
+    // at the first NUL or at `n` bytes, whichever comes first.
+    let b = unsafe { devfs::read_user_cstr(p, n) }
+        .ok_or(-(Errno::Efault.as_i32() as i64))?;
+    crate::fsconfig_abi::strndup_admit(b, n)
+        .map(|s| s.to_string())
+        .map_err(|e| -(e.as_i32() as i64))
+}
+
 /// # C: O(1)
 pub(crate) fn install_fd(inode: InodeRef, name: &str, cloexec: bool) -> i64 {
     let cur = match sched::live::current() {

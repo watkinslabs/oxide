@@ -35,6 +35,12 @@ pub struct PivotFacts {
     pub root_path_mounted: bool,
     /// `path_mounted(new)` — something is mounted exactly at `new_root`.
     pub new_path_mounted: bool,
+    /// `mnt_has_parent(new_mnt)` — false when `new_root` names the namespace
+    /// root itself ("absolute root"). Reachable whenever the caller's root is
+    /// NOT the namespace root: `new_is_root_mnt`'s EBUSY compares against the
+    /// CALLER's root, so a chrooted caller naming the namespace root as
+    /// `new_root` sails past it and would otherwise detach the namespace root.
+    pub new_has_parent: bool,
     /// `is_path_reachable(old_mnt, old_mp->m_dentry, new)` — `put_old` lies
     /// under `new_root`.
     pub old_reachable_from_new: bool,
@@ -45,13 +51,9 @@ pub struct PivotFacts {
 
 /// Run the ladder.
 ///
-/// Two Linux lines have no counterpart here because they describe a mount-tree
+/// One Linux line has no counterpart here because it describes a mount-tree
 /// shape this kernel does not build, not omitted work:
 ///
-/// * `!mnt_has_parent(new_mnt)` — "new_root is the absolute root". A mount in
-///   this namespace is self-parented iff it IS the namespace root
-///   ([`super::Mount::is_root`]), which `new_is_root_mnt`'s EBUSY already
-///   rejects, so the condition is unreachable once the earlier checks pass.
 /// * `!mnt_has_parent(root_mnt)` — Linux guards `attach_mnt(new_mnt,
 ///   root_parent, root_mnt->mnt_mp)`, which grafts `new_root` into the slot the
 ///   old root occupied under `rootfs`. This tree has no mount beneath the
@@ -66,6 +68,7 @@ pub fn pivot_check(f: &PivotFacts) -> KResult<()> {
     if f.new_is_root_mnt || f.old_is_root_mnt                         { return Err(VfsError::Ebusy); }
     if !f.root_path_mounted                                           { return Err(VfsError::Einval); }
     if !f.new_path_mounted                                            { return Err(VfsError::Einval); }
+    if !f.new_has_parent                                              { return Err(VfsError::Einval); }
     if !f.old_reachable_from_new                                      { return Err(VfsError::Einval); }
     if !f.new_reachable_from_root                                     { return Err(VfsError::Einval); }
     Ok(())
@@ -82,7 +85,7 @@ mod tests {
             root_in_ns: true, new_in_ns: true,
             new_locked: false, new_dentry_unlinked: false,
             new_is_root_mnt: false, old_is_root_mnt: false,
-            root_path_mounted: true, new_path_mounted: true,
+            root_path_mounted: true, new_path_mounted: true, new_has_parent: true,
             old_reachable_from_new: true, new_reachable_from_root: true,
         }
     }
@@ -152,6 +155,30 @@ mod tests {
     fn new_root_must_itself_be_a_mount_point() {
         assert_eq!(pivot_check(&PivotFacts { new_path_mounted: false, ..ok() }),
             Err(VfsError::Einval));
+    }
+
+    // "new_root is the absolute root": a chrooted caller can name the namespace
+    // root as new_root without tripping the `new_mnt == root_mnt` EBUSY (which
+    // compares against the CALLER's root), so the parent test is what stops the
+    // namespace root from being detached out of its own tree.
+    #[test]
+    fn a_parentless_new_root_is_einval() {
+        assert_eq!(pivot_check(&PivotFacts { new_has_parent: false, ..ok() }),
+            Err(VfsError::Einval));
+    }
+
+    // Linux orders `!path_mounted(new)` before `!mnt_has_parent(new_mnt)`, and
+    // both report EINVAL — but the parent test must not run first, because a
+    // parentless mount that is also not mounted at `new_root` has to be judged
+    // by the earlier rung's facts.
+    #[test]
+    fn the_not_a_mountpoint_einval_is_reached_before_the_absolute_root_one() {
+        let f = PivotFacts { new_path_mounted: false, new_has_parent: false, ..ok() };
+        assert_eq!(pivot_check(&f), Err(VfsError::Einval));
+        // and the parent rung sits AFTER, so it cannot pre-empt the EBUSY loop
+        // test the way an earlier placement would.
+        let g = PivotFacts { new_has_parent: false, old_is_root_mnt: true, ..ok() };
+        assert_eq!(pivot_check(&g), Err(VfsError::Ebusy));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use alloc::sync::Arc;
+
 use crate::superblock::{SB_DIRSYNC, SB_LAZYTIME, SB_MANDLOCK, SB_RDONLY, SB_SYNCHRONOUS};
 use crate::types::VfsError;
 
@@ -6,13 +8,74 @@ use super::ops::ParamResult;
 use super::types::{FsContextPhase, FsContextPurpose, FsParameter, FsValue, KResult};
 use crate::fs::FsFlags;
 
+/// `vfs_clean_context()`: after a successful mount or reconfigure the context
+/// is returned to the state an `fspick(2)` would have produced — the realized
+/// `(sb, root)` stay, everything that described HOW to build them is discarded.
+/// This is what makes a second `fsmount(2)` on the same context fd report EBUSY
+/// instead of minting a second mount object from one superblock. # C: O(1)
+pub fn vfs_clean_context(fc: &mut FsContext) {
+    fc.fs_private = Arc::new(());
+    fc.sb_flags = 0;
+    fc.source = None;
+    fc.create_exclusive = false;
+    fc.params.clear();
+    fc.purpose = FsContextPurpose::Reconfigure;
+    fc.phase = FsContextPhase::AwaitingReconf;
+}
+
+/// `finish_clean_context()`: the deferred half of [`vfs_clean_context`], run at
+/// the head of every `fsconfig(2)` command. A context parked in
+/// `AwaitingReconf` is re-armed for parameters; any other phase is untouched.
+/// One implementation, so the parameter path and the command path cannot
+/// disagree about when the promotion happens. # C: O(1)
+pub fn finish_clean_context(fc: &mut FsContext) -> KResult<()> {
+    if fc.phase != FsContextPhase::AwaitingReconf { return Ok(()); }
+    fc.phase = FsContextPhase::ReconfParams;
+    Ok(())
+}
+
+/// `vfs_cmd_create()` — `FSCONFIG_CMD_CREATE` / `FSCONFIG_CMD_CREATE_EXCL`.
+/// `capable` is the caller's `mount_capable(fc)` answer, sampled by the syscall
+/// shim because the capability facts are scheduler state.
+///
+/// PHASE OUTRANKS PRIVILEGE: a context in the wrong phase reports EBUSY even
+/// for a caller who would have been refused anyway, so a program cannot probe
+/// its own privilege by watching this errno. Without the privilege rung an
+/// unprivileged user-namespace holder could realize — through `fsopen` +
+/// `fsconfig` — a superblock of a type `mount(2)` reserves for the initial user
+/// namespace. # C: O(filesystem get_tree)
+pub fn vfs_cmd_create(fc: &mut FsContext, exclusive: bool, capable: bool) -> KResult<()> {
+    if fc.phase != FsContextPhase::CreateParams { return Err(VfsError::Ebusy); }
+    if !capable { return Err(VfsError::Eperm); }
+    fc.set_create_exclusive(exclusive);
+    vfs_get_tree(fc)
+}
+
+/// `vfs_cmd_reconfigure()` — `FSCONFIG_CMD_RECONFIGURE`. `capable` is
+/// `ns_capable(sb->s_user_ns, CAP_SYS_ADMIN)`: privilege over the user
+/// namespace the INSTANCE's ids are expressed in, which is not the same test
+/// `may_mount()` applied when the context fd was opened. A refusal marks the
+/// context failed, so the caller cannot retry the same reconfigure after
+/// gaining privilege on a context that already reported the attempt.
+/// # C: O(filesystem reconfigure)
+pub fn vfs_cmd_reconfigure(fc: &mut FsContext, capable: bool) -> KResult<()> {
+    match fc.phase {
+        FsContextPhase::AwaitingReconf | FsContextPhase::ReconfParams => {}
+        _ => return Err(VfsError::Ebusy),
+    }
+    if !capable { fc.phase = FsContextPhase::Failed; return Err(VfsError::Eperm); }
+    let r = reconfigure_super(fc);
+    if r.is_ok() { vfs_clean_context(fc); }
+    r
+}
+
 pub fn vfs_parse_fs_param(fc: &mut FsContext, param: &FsParameter) -> KResult<()> {
     match fc.phase {
         FsContextPhase::CreateParams | FsContextPhase::AwaitingReconf | FsContextPhase::ReconfParams => {}
         _ => return Err(VfsError::Ebusy),
     }
     if param.key.is_empty() { return fc.invalf("VFS: Empty parameter name"); }
-    if fc.phase == FsContextPhase::AwaitingReconf { fc.phase = FsContextPhase::ReconfParams; }
+    finish_clean_context(fc)?;
     if let FsValue::Flag = param.value {
         if vfs_parse_sb_flag(fc, &param.key) { return Ok(()); }
     }

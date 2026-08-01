@@ -60,12 +60,14 @@ pub(super) fn on_any_expire_list(id: u64) -> bool {
     EXPIRE_LISTS.lock().values().any(|v| v.contains(&id))
 }
 
-/// Too-busy-to-expire test (Linux `propagate_mount_busy(mnt, 1)`): a mount with
-/// child mounts, an external pin (`mnt_count`), or that is LOCKED / INTERNAL is
-/// never auto-expired. # C: O(1)
+/// Too-busy-to-expire test: Linux `propagate_mount_busy(mnt, 1)` — which is
+/// propagation-aware, so a pinned peer copy protects the mount here exactly as
+/// it does at `umount(2)` — plus the two mounts an automounter must never be
+/// able to reap however idle they look: one LOCKED to its parent (unmounting it
+/// would reveal what its parent hid) and a kernel-INTERNAL one.
+/// # C: O(N_mirrors × depth)
 fn expire_busy(m: &Arc<Mount>) -> bool {
-    !m.mnt_mounts.lock().is_empty()
-        || m.mnt_count() > 0
+    super::busy::propagate_mount_busy(m, super::busy::PASSIVE_REFCNT)
         || m.is_locked()
         || m.is_internal()
 }
@@ -88,11 +90,9 @@ pub fn mark_mounts_for_expiry(list: u64) -> usize {
         reap.push(m);
     }
     let mut n = 0;
-    for m in reap.iter() {
-        umount_expired(m);
-        if let Some(v) = EXPIRE_LISTS.lock().get_mut(&list) { v.retain(|&id| id != m.mnt_id); }
-        n += 1;
-    }
+    // The reap leaves every expire list as part of the shared detach path, so
+    // there is no second, drift-prone list-removal here.
+    for m in reap.iter() { super::detach::detach_with_propagation(m); n += 1; }
     n
 }
 
@@ -109,24 +109,3 @@ pub fn sweep_expired_mounts() -> usize {
     n
 }
 
-/// Object-level detach of an expired mount (Linux `umount_tree(mnt)` on the
-/// expiry path), operating on the `Arc<Mount>` directly so it is ns-correct
-/// regardless of the caller's current ns: unlink from parent + hash + crossing,
-/// drop the `struct mountpoint` ref, remove from the arena, mark `MNT_DETACHED`,
-/// then defer (external pin) or run the SB teardown exactly as [`unregister`].
-/// # C: O(siblings)
-fn umount_expired(m: &Arc<Mount>) {
-    let ns = m.namespace_id();
-    let id = m.mnt_id;
-    let mp = m.mountpoint();
-    let parent = m.parent_id.load(Ordering::Acquire);
-    super::unlink_from_parent(m);
-    if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
-    super::mounts_unpublish(id);
-    if let Some(d) = mp.as_ref() {
-        super::hash_remove(parent, super::dptr(d), id);
-    }
-    m.mark_detached();
-    if m.mnt_count() == 0 { super::put_super_if_last(&m.sb); }
-    mntns::bump_gen(ns);
-}
