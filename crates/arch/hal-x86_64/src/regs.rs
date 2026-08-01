@@ -187,6 +187,30 @@ pub fn read_cr4() -> u64 {
     { 0 }
 }
 
+/// Force `CR4.FSGSBASE` off on THIS CPU.
+///
+/// Must run on every CPU before it can execute ring-3 code, and before
+/// anything installs a GS base. With the bit set, unprivileged `wrgsbase`
+/// replaces the base that ring 0 reads for every per-CPU access — the next
+/// kernel entry writes and pivots through an attacker-chosen pointer — and
+/// the paranoid exception entry loses its only GS-independent way to tell a
+/// kernel GS base from a user one (`msr::gs_base_is_kernel`).
+///
+/// # SAFETY: privileged CR4 write, legal at CPL=0. CR4 is per-CPU and the
+/// calling CPU is its own sole writer during bring-up.
+/// # C: O(1)
+/// # Ctx: pre-init, per CPU, IRQ-off
+pub unsafe fn clear_cr4_fsgsbase() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: per fn-level contract — privileged CR4 read/write at CPL=0 during this CPU's own bring-up; no other CPU writes this CR4.
+    unsafe {
+        let mut cr4: u64;
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        cr4 = crate::msr::cr4_without_fsgsbase(cr4);
+        asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
+}
+
 /// Enable CR4 bits required to let user code execute SSE/SSE2
 /// instructions: OSFXSR (bit 9, FXSAVE/FXRSTOR enable +
 /// SSE-via-XMM legal) and OSXMMEXCPT (bit 10, allow #XF). Also
