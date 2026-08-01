@@ -45,8 +45,10 @@ pub struct UdpOpts {
     pub no_check6_rx: Arc<AtomicI32>,
     /// `UDP_SEGMENT`: segmentation size, `0` when segmentation is off.
     pub gso_size: AtomicI32,
-    /// `UDP_GRO`: this socket accepts coalesced receive segments.
-    pub gro: AtomicI32,
+    /// `UDP_GRO`: this socket accepts coalesced receive segments. Shared
+    /// with the bound endpoints so the delivery path and the option read can
+    /// never disagree.
+    pub gro: Arc<AtomicI32>,
     /// Bytes held by an active cork, plus the destination they are pinned to.
     pub pending: Spinlock<Option<CorkPending>, SockLockClass>,
 }
@@ -59,7 +61,7 @@ impl Default for UdpOpts {
             no_check6_tx: AtomicI32::new(0),
             no_check6_rx: Arc::new(AtomicI32::new(0)),
             gso_size: AtomicI32::new(0),
-            gro: AtomicI32::new(0),
+            gro: Arc::new(AtomicI32::new(0)),
             pending: Spinlock::new(None),
         }
     }

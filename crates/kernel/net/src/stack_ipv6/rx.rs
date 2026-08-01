@@ -166,6 +166,8 @@ impl NetStack {
             .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
         let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface,
             datagram_body);
+        let gro_offered = crate::udp_gro::device_offers_gro(
+            self.ifaces.lookup_in_ns(iface, net_ns).map_or(0, |dev| dev.hardware_type()));
         for q in endpoints {
             // A zero checksum reaches only an endpoint that opted into
             // accepting one; every other socket drops the datagram as a
@@ -187,10 +189,10 @@ impl NetStack {
                         .map_or(0, |dev| dev.hardware_type()),
                 }), body.len(),
             ) else { continue; };
-            let _ = q.enqueue((
+            let _ = q.enqueue_gro((
                 src, udp.src_port, dst, iface, hop_limit, traffic_class,
                 body[..keep].to_vec(),
-            ));
+            ), udp.checksum == 0, gro_offered);
         }
     }
 

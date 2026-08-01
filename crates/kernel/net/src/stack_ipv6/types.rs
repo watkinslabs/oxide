@@ -12,9 +12,16 @@ use crate::addr::{Ipv6Addr, NetIfaceId};
 /// `traffic_class` backs IPV6_TCLASS (IPV6_RECVTCLASS).
 pub type Udp6Datagram = (Ipv6Addr, u16, Ipv6Addr, NetIfaceId, u8, u8, Vec<u8>);
 
+/// One queued IPv6 UDP receive plus the coalescing run it belongs to.
+#[derive(Clone)]
+struct QueuedUdp6 {
+    datagram: Udp6Datagram,
+    gro: crate::udp_gro::GroRun,
+}
+
 struct Udp6RxState {
     accepting: bool,
-    datagrams: VecDeque<Udp6Datagram>,
+    datagrams: VecDeque<QueuedUdp6>,
 }
 
 pub struct Udp6RxQueue {
@@ -37,6 +44,9 @@ pub struct Udp6RxQueue {
     /// `UDP_NO_CHECK6_RX`, shared with the owning socket: a zero-checksum
     /// datagram reaches this endpoint only while the cell is set.
     pub no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
+    /// `UDP_GRO`, shared with the owning socket: while set, arriving
+    /// datagrams of one flow coalesce into a single receive.
+    pub gro: Arc<core::sync::atomic::AtomicI32>,
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -141,6 +151,7 @@ impl Udp6RxQueue {
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new()))
     }
 
@@ -154,6 +165,7 @@ impl Udp6RxQueue {
                       ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                       ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                       no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
+                      gro: Arc<core::sync::atomic::AtomicI32>,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
@@ -171,6 +183,7 @@ impl Udp6RxQueue {
             ip_mtu_discover,
             ipv6_mtu_discover,
             no_check6_rx,
+            gro,
             bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
             bpf_filter,
@@ -218,15 +231,51 @@ impl Udp6RxQueue {
 
     /// Pop or peek one endpoint-local datagram. # C: O(payload when peeking)
     pub fn recv(&self, peek: bool) -> Option<Udp6Datagram> {
+        self.recv_gro(peek).map(|(datagram, _)| datagram)
+    }
+
+    /// Pop or peek one receive together with the segment size it reports when
+    /// several datagrams were coalesced into it. # C: O(payload when peeking)
+    pub fn recv_gro(&self, peek: bool) -> Option<(Udp6Datagram, Option<usize>)> {
         let mut state = self.state.lock();
-        if peek { state.datagrams.front().cloned() } else { state.datagrams.pop_front() }
+        let queued = if peek { state.datagrams.front().cloned() }
+            else { state.datagrams.pop_front() };
+        queued.map(|q| { let seg = q.gro.cmsg_seg_size(); (q.datagram, seg) })
+    }
+
+    /// `UDP_GRO` is engaged on the owning socket. # C: O(1)
+    pub fn gro_enabled(&self) -> bool {
+        self.gro.load(core::sync::atomic::Ordering::Acquire) != 0
     }
 
     /// Queue one datagram if this endpoint still accepts delivery. # C: O(payload)
     pub fn enqueue(&self, datagram: Udp6Datagram) -> bool {
+        self.enqueue_gro(datagram, false, false)
+    }
+
+    /// Deliver one datagram, coalescing it into the queued run when the
+    /// canonical rule admits it and the ingress interface offers coalescing.
+    /// # C: O(payload)
+    pub fn enqueue_gro(&self, datagram: Udp6Datagram, checksum_zero: bool, offered: bool) -> bool {
+        use crate::udp_gro::{GroAdmit, GroRun, admit};
         let mut state = self.state.lock();
         if !state.accepting { return false; }
-        state.datagrams.push_back(datagram);
+        let len = datagram.6.len();
+        let same_flow = state.datagrams.back()
+            .is_some_and(|q| udp6_same_flow(&q.datagram, &datagram));
+        let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
+            checksum_zero, offered && self.gro_enabled());
+        match decision {
+            GroAdmit::Merge => {
+                let tail = state.datagrams.back_mut().expect("a merge names a tail");
+                tail.datagram.6.extend_from_slice(&datagram.6);
+                tail.gro.extend(len);
+            }
+            GroAdmit::Separate { open } => {
+                let gro = if open { GroRun::open(len) } else { GroRun::single(len) };
+                state.datagrams.push_back(QueuedUdp6 { datagram, gro });
+            }
+        }
         drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
@@ -257,7 +306,7 @@ impl Udp6RxQueue {
 
     /// Total queued payload bytes. # C: O(N)
     pub fn queued_bytes(&self) -> usize {
-        self.state.lock().datagrams.iter().map(|(.., payload)| payload.len()).sum()
+        self.state.lock().datagrams.iter().map(|q| q.datagram.6.len()).sum()
     }
 
     /// Atomically publish read shutdown against receive delivery. # C: O(1)
@@ -283,4 +332,11 @@ impl core::ops::Deref for Udp6RxQueue {
     type Target = crate::SocketOwner;
 
     fn deref(&self) -> &Self::Target { &self.owner }
+}
+
+/// Two IPv6 receives belong to one coalescing flow when they share the source
+/// endpoint, the local address they arrived on, the ingress interface, and the
+/// network-header values the receiver can observe. # C: O(1)
+fn udp6_same_flow(a: &Udp6Datagram, b: &Udp6Datagram) -> bool {
+    a.0 == b.0 && a.1 == b.1 && a.2 == b.2 && a.3 == b.3 && a.4 == b.4 && a.5 == b.5
 }

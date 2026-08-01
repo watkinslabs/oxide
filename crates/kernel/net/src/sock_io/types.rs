@@ -16,6 +16,10 @@ pub struct Received {
     pub tclass: Option<u8>,
     pub ttl: Option<u8>,
     pub packet: Option<PacketReceive>,
+    /// `UDP_GRO`: the segment size a coalesced receive was assembled from, so
+    /// the reader can split the payload back into datagrams. `None` when this
+    /// receive is one datagram, which is when no such control message exists.
+    pub gro: Option<i32>,
 }
 
 impl Received {
@@ -24,7 +28,7 @@ impl Received {
     /// handing back whatever it had already copied. # C: O(1)
     pub fn eof(payload: alloc::vec::Vec<u8>) -> Self {
         Self { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None,
-               hoplimit: None, tclass: None, ttl: None, packet: None }
+               hoplimit: None, tclass: None, ttl: None, packet: None, gro: None }
     }
 }
 
