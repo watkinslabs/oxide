@@ -151,3 +151,81 @@ kernel refuses to create it.
 |---|---|
 | HIGH | `open(path, O_WRONLY\|O_CREAT\|O_TRUNC)` on a **dangling symlink whose parent directory exists** returns **EEXIST**. The reference follows the link and creates the target; EEXIST is only correct with `O_EXCL`. Minimal in-guest reproducer: `ln -sf /run/systemd/resolve/stub-resolv.conf /etc/rc2` (that directory exists, the file does not), then `: > /etc/rc2` → `sh: /etc/rc2: File exists`, and `python3 -c "import os;os.open('/etc/rc2',os.O_WRONLY\|os.O_CREAT\|os.O_TRUNC,0o644)"` → `FileExistsError: [Errno 17]`. This is why nothing in the guest can write `/etc/resolv.conf`, which ships as exactly such a dangling symlink — so it is on the path between a working IP stack and working name resolution. Needs its own lane: the fix sits in the `O_CREAT` open path and its errno ordering against `O_EXCL`/`O_NOFOLLOW` has to be audited against the reference. |
 | med | `procfs::net`'s `#[cfg(test)] mod tests` (containing `route_projection_is_namespace_scoped`) is a phantom: `pub mod net` is declared `#[cfg(target_os = "oxide-kernel")]` in the crate root, so the block never compiles. That is why this lane's `/proc/net/arp` row format went into ungated `net::arp::proc_row` instead. |
+
+## Third break: O_CREAT could not write through a dangling symlink
+
+Previously filed here as "not fixed by this lane" — wrong call, now fixed.
+
+`open(path, O_WRONLY|O_CREAT|O_TRUNC)` whose final component was a dangling
+symlink returned **EEXIST**. `/etc/resolv.conf` ships as exactly such a link
+(`-> ../run/systemd/resolve/stub-resolv.conf`), so nothing in the guest — not
+systemd-resolved, not NetworkManager, not a shell redirect — could ever write
+the resolver configuration. Name resolution was unreachable by construction.
+
+### What the reference actually does
+
+Verified in full rather than from memory, because the flag interaction is not
+what it looks like. Three distinct outcomes fall out of one decision:
+
+| Open flags | Trailing link followed? | Result |
+|---|---|---|
+| `O_CREAT` | yes (`LOOKUP_FOLLOW` on the last component) | creates the link's **target** |
+| `O_CREAT\|O_EXCL` | no — **`O_EXCL` silently forces `O_NOFOLLOW`** | `EEXIST` |
+| `O_CREAT\|O_NOFOLLOW` | no | `ELOOP` — the open landed on the link, which is not an openable file |
+
+The `O_EXCL`→`O_NOFOLLOW` implication is set where the open flags are built, and
+the `O_EXCL` `EEXIST` check runs *before* the permission check that produces
+`ELOOP`, which is why `O_EXCL` outranks `O_NOFOLLOW` rather than the reverse.
+
+### The other create family is NOT the same, and must not be "fixed"
+
+`mkdir`, `mkdirat`, `mknod`, `symlink`, `link`, `rename`, AF_UNIX `bind` and the
+bpf pin all resolve through one shared create-parent helper whose reference
+counterpart begins at `-EEXIST` and never sets `LOOKUP_FOLLOW` on the final
+component. For those, `EEXIST` on a dangling trailing symlink is **correct**.
+Treating this as one blanket "EEXIST is wrong" bug would have broken them.
+
+### Why one change covers every entry point
+
+Every open funnels into the same core: `open` and `creat` both delegate to it,
+`NR_CREAT`/`NR_OPENAT` route to it, `openat2` shares it, and io_uring's
+`IORING_OP_OPENAT` calls it directly. The follow therefore lives in exactly one
+place. The decision itself (follow / `EEXIST` / `ELOOP`, and where a relative
+link target anchors) is in ungated `syscalls::create_follow` with 8 tests,
+because the slot file is target-gated where a test compiles away in silence.
+
+A relative target anchors at the directory holding the link and is fed back to
+the **same** directory descriptor and resolve scope — not re-rooted at a
+rendered mount path, which would discard bind-mount, chroot and `RESOLVE_*`
+identity. `..` is left to the walk rather than normalised textually.
+
+### Verified in guest
+
+```
+$ ls -l /etc/resolv.conf
+lrwxrwxrwx 1 root root 39 /etc/resolv.conf -> ../run/systemd/resolve/stub-resolv.conf
+$ cat /etc/resolv.conf
+cat: /etc/resolv.conf: No such file or directory        # dangling
+
+$ printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf     # no rm, no hand-rolling
+$ cat /etc/resolv.conf
+nameserver 10.0.2.3
+$ ls -l /run/systemd/resolve/
+-rw-r--r-- 1 root root 20 stub-resolv.conf              # created at the TARGET
+
+$ getent hosts example.com          -> 2606:4700:10::ac42:93f3   dns=0
+$ curl http://example.com/          -> http=200 bytes=559
+```
+
+The non-following family is unchanged, on the same dangling link:
+
+```
+mkdir /tmp/dl    -> File exists       ln -s x /tmp/dl -> File exists
+mknod /tmp/dl…   -> File exists       ln … /tmp/dl    -> File exists
+```
+
+And the three open-flag outcomes match the table above exactly:
+
+```
+plain    = ok        excl = EEXIST        nofollow = ELOOP
+```

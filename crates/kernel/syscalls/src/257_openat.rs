@@ -359,8 +359,21 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // unscoped here let `openat2(dirfd, "/etc/x", O_CREAT, {RESOLVE_IN_ROOT})`
         // create at the REAL /etc: the scoped full-path walk clamps and returns
         // ENOENT, then this branch re-walked from the process root.
-        let parent_flags = crate::openat2_resolve::parent_lookup_flags(&extra);
-        let parent = match crate::pathresolve::resolve_parent_at_flags(args.a0 as i32, s, parent_flags) {
+        // A create whose final component is a symlink acts on what the link
+        // points at, not on the link's own name — the ONE LOOKUP_FOLLOW bit the
+        // shared parent resolver already understands. O_EXCL and O_NOFOLLOW
+        // clear it and keep the link itself as the subject; O_EXCL outranks
+        // O_NOFOLLOW because its EEXIST is decided before the permission step
+        // that reports ELOOP for a bare O_NOFOLLOW.
+        let mut parent_flags = crate::openat2_resolve::parent_lookup_flags(&extra);
+        parent_flags.follow = matches!(
+            crate::pathresolve::final_symlink_action(
+                (flags & O_EXCL) != 0, (flags & O_NOFOLLOW) != 0),
+            crate::pathresolve::FinalLink::Follow);
+        parent_flags.no_follow_final = !parent_flags.follow;
+        let parent = match crate::pathresolve::resolve_parent_at_flags(
+            args.a0 as i32, s, parent_flags)
+        {
             Ok(x) => x,
             Err(rv) => {
                 #[cfg(feature = "debug-eacces")]
