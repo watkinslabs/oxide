@@ -11,11 +11,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 
-use super::shared::{lock_vt, try_lock_vt, VT_STATE};
-
-/// Serialises these tests against each other and against the rest of the crate:
-/// `VT_STATE`, the softirq tables and the preempt count are all process-global.
-static SERIAL: sync::Spinlock<(), sync::Devices> = sync::Spinlock::new(());
+use super::shared::{lock_vt, try_lock_vt, CONSOLE_TEST_DOMAIN, VT_STATE};
 
 /// Times the stand-in flush handler ran.
 static RAN: AtomicU32 = AtomicU32::new(0);
@@ -50,7 +46,7 @@ fn disarm() {
 /// finds the lock already taken. In the kernel that is the point of no return.
 #[test]
 fn a_plain_acquisition_lets_the_flush_softirq_re_enter() {
-    let _serial = SERIAL.lock();
+    let _serial = CONSOLE_TEST_DOMAIN.lock();
     arm();
     {
         let _held = VT_STATE.lock();
@@ -66,7 +62,7 @@ fn a_plain_acquisition_lets_the_flush_softirq_re_enter() {
 /// drain is a no-op for as long as the lock is held.
 #[test]
 fn lock_vt_excludes_the_flush_softirq() {
-    let _serial = SERIAL.lock();
+    let _serial = CONSOLE_TEST_DOMAIN.lock();
     arm();
     {
         let _held = lock_vt();
@@ -83,7 +79,7 @@ fn lock_vt_excludes_the_flush_softirq() {
 /// it is the one the wedged boot was inside.
 #[test]
 fn try_lock_vt_excludes_the_flush_softirq() {
-    let _serial = SERIAL.lock();
+    let _serial = CONSOLE_TEST_DOMAIN.lock();
     arm();
     {
         let _held = try_lock_vt().expect("uncontended");
@@ -99,7 +95,7 @@ fn try_lock_vt_excludes_the_flush_softirq() {
 /// the flush that arrived meanwhile, and by then the lock is free.
 #[test]
 fn releasing_the_guard_runs_the_deferred_flush() {
-    let _serial = SERIAL.lock();
+    let _serial = CONSOLE_TEST_DOMAIN.lock();
     arm();
     drop(lock_vt());
     assert_eq!(RAN.load(Ordering::Relaxed), 1, "deferred flush ran on release");
@@ -112,7 +108,7 @@ fn releasing_the_guard_runs_the_deferred_flush() {
 /// softirq work onto the interrupt stack.
 #[test]
 fn bh_enable_does_not_drain_from_a_hard_irq() {
-    let _serial = SERIAL.lock();
+    let _serial = CONSOLE_TEST_DOMAIN.lock();
     arm();
     sched::preempt::preempt_count_add(sched::preempt::HARDIRQ_OFFSET);
     drop(try_lock_vt().expect("uncontended"));

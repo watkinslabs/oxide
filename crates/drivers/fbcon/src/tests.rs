@@ -2,7 +2,7 @@ use crate::*;
 use crate::damage::FlushRect;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-static KERNEL_TEST_LOCK: sync::Spinlock<(), sync::Tty> = sync::Spinlock::new(());
+use crate::kernel::CONSOLE_TEST_DOMAIN;
 static FLUSH_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Rect of the most recent flush, so a test can assert the SCOPE of the
 /// upload and not merely that one happened.
@@ -46,7 +46,7 @@ fn arm_flush_probe() {
 
 /// Run the pending `FbconFlush` softirq.
 fn drain_flush() {
-    // SAFETY: hosted unit test owns the fbcon flush slot under KERNEL_TEST_LOCK.
+    // SAFETY: hosted unit test owns the fbcon flush slot under CONSOLE_TEST_DOMAIN.
     unsafe { softirq::run_pending(); }
 }
 
@@ -175,7 +175,7 @@ fn sgr_red_changes_fg() {
 
 #[test]
 fn kernel_graphics_mode_suppresses_foreground_rendering() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     arm_flush_probe();
@@ -200,7 +200,7 @@ fn kernel_graphics_mode_suppresses_foreground_rendering() {
 // nothing yet, so the first upload legitimately damages everything.
 #[test]
 fn console_bring_up_flushes_the_whole_surface() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     arm_flush_probe();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
@@ -216,7 +216,7 @@ fn console_bring_up_flushes_the_whole_surface() {
 // pixel buffer — the rect is what bounds the work.
 #[test]
 fn one_line_of_output_damages_only_that_text_row() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     arm_flush_probe();
@@ -237,7 +237,7 @@ fn one_line_of_output_damages_only_that_text_row() {
 // Writing on a later row damages that row, not everything above it.
 #[test]
 fn a_later_row_damages_that_row_alone() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
 
@@ -261,7 +261,7 @@ fn a_later_row_damages_that_row_alone() {
 // into one upload covering both, and nothing outside them.
 #[test]
 fn damage_coalesces_across_writes_between_flushes() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     kernel::vt_write(1, b"\x1b[2;1Ha");
@@ -290,7 +290,7 @@ fn damage_coalesces_across_writes_between_flushes() {
 // already holds the current frame.
 #[test]
 fn a_flush_with_no_damage_uploads_nothing() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     kernel::vt_write(1, b"text");
@@ -312,7 +312,7 @@ fn a_flush_with_no_damage_uploads_nothing() {
 // everything: the device's copy is stale, so the full frame must go up.
 #[test]
 fn force_repaint_damages_the_whole_surface() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     kernel::vt_write(1, b"text");
@@ -331,7 +331,7 @@ fn force_repaint_damages_the_whole_surface() {
 // surface is damaged rather than the last line written.
 #[test]
 fn vt_switch_damages_the_whole_surface() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     kernel::vt_write(1, b"one");
@@ -350,7 +350,7 @@ fn vt_switch_damages_the_whole_surface() {
 // owned the scanout meanwhile, so nothing on it can be trusted.
 #[test]
 fn leaving_graphics_mode_damages_the_whole_surface() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     kernel::set_vt_graphics_mode(1, true);
@@ -369,7 +369,7 @@ fn leaving_graphics_mode_damages_the_whole_surface() {
 // path must not shrink a scroll to the rows the emulator last wrote.
 #[test]
 fn scrollback_damages_the_whole_surface() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     for _ in 0..64 {
@@ -390,7 +390,7 @@ fn scrollback_damages_the_whole_surface() {
 // must cover the frame and the text must not be left stale on the device.
 #[test]
 fn scrolling_past_the_last_row_damages_every_row() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
     // Fill the 30-row grid, then force it to scroll.
@@ -412,7 +412,7 @@ fn scrolling_past_the_last_row_damages_every_row() {
 // the sink last, and the bring-up repaint has to still see the full frame.
 #[test]
 fn damage_raised_without_a_sink_is_deferred_not_dropped() {
-    let _guard = KERNEL_TEST_LOCK.lock();
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     arm_flush_probe();
     // No sink installed: the raised softirq must not consume the damage.
