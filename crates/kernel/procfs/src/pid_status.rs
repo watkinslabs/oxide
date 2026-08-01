@@ -77,7 +77,9 @@ pub fn body(tid: u32) -> Vec<u8> {
         tgid:   vpid,
         // Linux `task_numa_group_id` — no NUMA balancing, so no group.
         ngid:   0,
-        pid:    vpid,
+        // `Pid:` is the THREAD's number and `Tgid:` the process's; they differ
+        // for `/proc/<pid>/task/<tid>/status`, which this same body renders.
+        pid:    sched::live::registry::display_vtid(tid),
         ppid,
         tracer_pid: if tracer == 0 { 0 } else { sched::live::registry::display_vpid(tracer) },
         uid: [c.ruid.load(Ordering::Acquire), c.euid.load(Ordering::Acquire),
