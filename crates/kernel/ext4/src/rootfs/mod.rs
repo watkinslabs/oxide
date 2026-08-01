@@ -12,6 +12,7 @@
 
 mod state;
 mod evict;
+mod fserror;
 mod inode;
 mod ops;
 mod quota;

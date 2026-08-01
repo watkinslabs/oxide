@@ -66,6 +66,13 @@ struct InodeHooks {
     /// The subscriber owns the `ATTR_*` → event-mask mapping, exactly as
     /// Linux's `fsnotify_change` inline does (`include/linux/fsnotify.h`).
     setattr: Option<fn(&InodeRef, u32)>,
+    /// A filesystem reported an on-disk inconsistency or an I/O failure of its
+    /// own structures. Args: (`st_dev` of the filesystem, the inode the failure
+    /// was discovered on when there is one, positive errno). Unlike every other
+    /// hook here the object is the FILESYSTEM, which is why the inode is
+    /// optional: a filesystem too damaged to name an inode still has to be able
+    /// to say so.
+    fs_error: Option<fn(u64, Option<&InodeRef>, i32)>,
 }
 
 impl InodeHooks {
@@ -73,7 +80,7 @@ impl InodeHooks {
     const fn new() -> Self {
         Self { open: None, read: None, write: None, clone: None,
                close: [None; CLOSE_HOOK_SLOTS], dirent_create: None, dirent_delete: None,
-               delete_self: None, inode_evict: None, setattr: None }
+               delete_self: None, inode_evict: None, setattr: None, fs_error: None }
     }
 }
 
@@ -187,6 +194,21 @@ pub fn set_setattr_hook(f: fn(&InodeRef, u32)) { HOOKS.lock().setattr = Some(f);
 pub fn fire_setattr_hook(inode: &InodeRef, ia_valid: u32) {
     let h = HOOKS.lock().setattr;
     if let Some(f) = h { f(inode, ia_valid); }
+}
+
+/// Install the filesystem-error hook. Fired by a filesystem that has detected
+/// an on-disk inconsistency or an I/O failure of its own metadata, which is a
+/// fact about the whole filesystem rather than about whichever caller happened
+/// to trip over it. # C: O(1)
+pub fn set_fs_error_hook(f: fn(u64, Option<&InodeRef>, i32)) { HOOKS.lock().fs_error = Some(f); }
+
+/// Report a filesystem error: `fsid` is the filesystem's `st_dev`, `inode` the
+/// object the failure was found on when one can be named, and `error` the
+/// POSITIVE errno the failure surfaces as. No-op when no hook is installed.
+/// # C: O(1) + subscriber
+pub fn fire_fs_error(fsid: u64, inode: Option<&InodeRef>, error: i32) {
+    let h = HOOKS.lock().fs_error;
+    if let Some(f) = h { f(fsid, inode, error); }
 }
 
 /// Fire the dirent-create hook (no-op when not installed). # C: O(1)

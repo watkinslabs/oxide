@@ -72,46 +72,44 @@ fn may_decode_facts(cur: &sched::Task, anchor: &vfs::VfsPath, o_flags: u32) -> M
     }
 }
 
-/// Is every uid/gid from `inode` up to the anchor mapped in the caller's user
-/// namespace? Linux `vfs_dentry_acceptable`: the relaxed decode path may
-/// override DAC, but it must not reach an object whose owner it cannot even
-/// express — that would be reach the caller could not have obtained by walking.
+/// The caller's half of [`crate::handle_policy::acceptable::dentry_acceptable`]:
+/// the mount's idmap and the caller's user-namespace id maps.
 ///
-/// Also answers containment for `check_subtree`: the walk terminates at the
-/// anchor, so "reached the anchor" and "is inside the anchor's subtree" are the
-/// same answer and cannot disagree.
-/// # C: O(depth)
-fn decoded_object_acceptable(cur: &sched::Task, ctx: &DecodeCtx, anchor: &vfs::VfsPath,
-                             d: &Arc<vfs::dentry::Dentry>) -> bool
-{
-    if !ctx.check_perms && !ctx.check_subtree { return true; }
+/// The idmap is the ANCHOR MOUNT's, because that is the mount the reopened fd
+/// is attached to and therefore the one whose translation userspace will see.
+/// Comparing raw `i_uid`/`i_gid` instead would answer for a different mount.
+/// # C: O(1)
+struct AcceptableFacts {
+    idmap:   Arc<vfs::idmap::Idmap>,
+    uid_map: alloc::vec::Vec<nscg::user_ns::IdMapExtent>,
+    gid_map: alloc::vec::Vec<nscg::user_ns::IdMapExtent>,
+}
+
+/// Gather them, or `None` when the caller has no user namespace to test
+/// against — which fails the check rather than waving it through.
+/// # C: O(N_extents)
+fn acceptable_facts(cur: &sched::Task, anchor: &vfs::VfsPath) -> Option<AcceptableFacts> {
     use namespace_identity::NamespaceKind;
     use nscg::user_ns::{self, IdMapKind};
-    let owner = match cur.namespace_owner(NamespaceKind::User) { Some(o) => o, None => return false };
-    let uid_map = user_ns::snapshot_map(&owner, IdMapKind::Uid).unwrap_or_default();
-    let gid_map = user_ns::snapshot_map(&owner, IdMapKind::Gid).unwrap_or_default();
-    // An inode with no owner to report cannot be shown to be reachable, so it
-    // fails the check rather than being waved through.
-    let mapped = |i: &vfs::InodeRef| match (i.uid(), i.gid()) {
-        (Some(u), Some(g)) => user_ns::has_mapping(&uid_map, u) && user_ns::has_mapping(&gid_map, g),
-        _                  => false,
-    };
-    let mut cur_d = d.clone();
-    loop {
-        // The ownership leg is skipped for a caller holding the global
-        // capability; the containment leg still runs, because a CONNECTABLE
-        // handle is confined to the anchor's subtree whoever presents it.
-        if ctx.check_perms {
-            match cur_d.inode() { Some(i) if mapped(&i) => {}, _ => return false }
-        }
-        if Arc::ptr_eq(&cur_d, &anchor.dentry) { return true; }
-        match cur_d.parent() {
-            Some(p) => cur_d = p.clone(),
-            // Reached a filesystem root without meeting the anchor. Acceptable
-            // only when containment was not required.
-            None    => return !ctx.check_subtree,
-        }
-    }
+    let owner = cur.namespace_owner(NamespaceKind::User)?;
+    Some(AcceptableFacts {
+        idmap:   vfs::mount::idmap_for(anchor.mnt_id),
+        uid_map: user_ns::snapshot_map(&owner, IdMapKind::Uid).unwrap_or_default(),
+        gid_map: user_ns::snapshot_map(&owner, IdMapKind::Gid).unwrap_or_default(),
+    })
+}
+
+/// Is every owner from `d` up to the anchor expressible by the caller — and,
+/// under `check_subtree`, is the anchor on that chain at all?
+/// # C: O(depth)
+fn decoded_object_acceptable(facts: &Option<AcceptableFacts>, ctx: &DecodeCtx,
+                             anchor: &vfs::VfsPath, d: &Arc<vfs::dentry::Dentry>) -> bool
+{
+    if !ctx.check_perms && !ctx.check_subtree { return true; }
+    let Some(f) = facts else { return false };
+    crate::handle_policy::dentry_acceptable(ctx, &f.idmap, &anchor.dentry, d, |uid, gid| {
+        nscg::user_ns::has_mapping(&f.uid_map, uid) && nscg::user_ns::has_mapping(&f.gid_map, gid)
+    })
 }
 
 /// `sys_open_by_handle_at(mountdirfd, file_handle, flags)` — slot 304.
@@ -182,14 +180,17 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
         return err(Errno::Enotdir);
     }
 
-    // 5. Reconnect. A connectable non-directory handle carries its parent, so
-    //    the decoded object gets a real `(parent, name)` dentry rather than an
-    //    anonymous alias with no renderable path. Everything else takes the
-    //    alias — for a directory that IS the connected dentry, since a
-    //    directory has exactly one.
-    let dentry = match reconnect(&sb, &fid, &inode) { Ok(d) => d, Err(e) => return err(e) };
-
-    if !decoded_object_acceptable(cur, &ctx, &anchor, &dentry) { return err(Errno::Eacces); }
+    // 5. Reconnect. The decoded object must come back as a dentry that reaches
+    //    the filesystem root, and one the caller is allowed to have — the two
+    //    are decided together because an alias the caller cannot accept is a
+    //    reason to keep looking, not a reason to fail.
+    let facts = acceptable_facts(cur, &anchor);
+    let acceptable = |d: &Arc<vfs::dentry::Dentry>| {
+        decoded_object_acceptable(&facts, &ctx, &anchor, d)
+    };
+    let dentry = match reconnect(&sb, &fid, &inode, &acceptable) {
+        Ok(d) => d, Err(e) => return err(e),
+    };
 
     // DAC + EROFS enforcement against the requested access mode
     // (`do_handle_open` -> `vfs_open` -> `may_open`), through the mount the
@@ -207,24 +208,44 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     match fdt_alloc(cur, file, flags) { Ok(fd) => fd, Err(rv) => rv }
 }
 
-/// Turn a decoded inode into the dentry the reopened file will carry.
+/// Turn a decoded inode into the dentry the reopened file will carry — Linux
+/// `exportfs_decode_fh_raw`'s second half.
 ///
-/// With a parent in the FID this is Linux's `fh_to_parent` →
-/// `exportfs_get_name` → `lookup_one` sequence: resolve the parent, scan it for
-/// the entry naming this inode, and instantiate that `(parent, name)` cache
-/// node. A child that is no longer an entry of that parent (unlinked, or
-/// renamed away since the handle was minted) is ESTALE — never a silent
-/// downgrade to a disconnected alias, which would report success while handing
-/// back an fd whose path cannot be rendered.
-/// # C: O(N_entries) with a parent, else O(N_aliases)
-fn reconnect(sb: &Arc<vfs::SuperBlock>, fid: &Fid, inode: &vfs::InodeRef)
+/// A DIRECTORY has exactly one dentry, so the decode must make THAT dentry
+/// reach the filesystem root: the reconnect walk climbs `get_parent` until it
+/// meets an ancestor already in the tree, however many levels up that is. A
+/// single hop leaves every level above it disconnected, so a directory more
+/// than one level below the last cached ancestor came back pathless.
+///
+/// A NON-directory prefers an already-acceptable alias — the object may already
+/// be in the cache under one of its links — and otherwise reconnects through
+/// the parent the FID carries, whose OWN dentry goes through the same upward
+/// walk before the child is instantiated under it.
+///
+/// ESTALE covers every "the tree no longer says what the handle says" case: a
+/// parent that will not decode, a child no longer named in it, an unreconnectable
+/// chain, and a non-directory with neither an acceptable alias nor a parent in
+/// its handle. EACCES is the caller's reach failing, never a silent downgrade to
+/// a pathless alias.
+/// # C: O(depth * N_entries)
+fn reconnect<F>(sb: &Arc<vfs::SuperBlock>, fid: &Fid, inode: &vfs::InodeRef, acceptable: F)
     -> Result<Arc<vfs::dentry::Dentry>, Errno>
+where F: Fn(&Arc<vfs::dentry::Dentry>) -> bool
 {
-    let Some((pino, pgen)) = fid.parent else { return Ok(vfs::export::fh_alias(inode.clone())); };
+    if inode.file_type() == vfs::FileType::Directory {
+        let d = vfs::export::reconnect_path(sb, inode).ok_or(Errno::Estale)?;
+        if !acceptable(&d) { return Err(Errno::Eacces); }
+        return Ok(d);
+    }
+    let result = vfs::export::fh_alias(inode.clone());
+    if let Some(a) = vfs::export::find_acceptable_alias(sb, &result, &acceptable) { return Ok(a); }
+    let (pino, pgen) = fid.parent.ok_or(Errno::Estale)?;
     let parent = sb.s_op.fh_to_parent(sb, pino, pgen).ok_or(Errno::Estale)?;
+    let parent_dentry = vfs::export::reconnect_path(sb, &parent).ok_or(Errno::Estale)?;
     let name = vfs::export::get_name(&parent, inode.ino()).ok_or(Errno::Estale)?;
-    let parent_dentry = vfs::export::fh_alias(parent);
-    vfs::export::reconnect_child(&parent_dentry, &name, inode).ok_or(Errno::Estale)
+    let d = vfs::export::reconnect_child(&parent_dentry, &name, inode).ok_or(Errno::Estale)?;
+    if !acceptable(&d) { return Err(Errno::Eacces); }
+    Ok(d)
 }
 
 /// Install the reopened file under the RLIMIT_NOFILE soft cap, honoring
