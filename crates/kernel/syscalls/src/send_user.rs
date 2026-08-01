@@ -340,11 +340,6 @@ impl<'a> SendBatchIo<'a> {
         Self { task, fd, base, meta: None, compat: false }
     }
 
-    /// Build a lazy sendmmsg importer for Linux's 32-bit compat layout. # C: O(1)
-    pub(crate) fn new_compat(task: &'a sched::Task, fd: i32, base: u64) -> Self {
-        Self { task, fd, base, meta: None, compat: true }
-    }
-
     fn entry(&self, index: u32) -> socket::KResult<u64> {
         let stride = if self.compat { COMPAT_MMSGHDR_LEN } else { MMSGHDR_LEN };
         let offset = (index as u64).checked_mul(stride).ok_or(socket::Error::Efault)?;
@@ -561,10 +556,17 @@ mod tests {
 
     #[test]
     fn native_compat_flag_precedes_task_and_fd_lookup() {
-        let shim = include_str!("046_sendmsg.rs");
-        let compat = shim.find("MSG_CMSG_COMPAT").unwrap();
-        let current = shim.find("sched::live::current()").unwrap();
-        assert!(compat < current);
+        for name in [include_str!("046_sendmsg.rs"), include_str!("307_sendmmsg.rs")] {
+            let compat = name.find("MSG_CMSG_COMPAT").unwrap();
+            let current = name.find("sched::live::current()").unwrap();
+            assert!(compat < current, "the native entry rejects the compat layout first");
+        }
+        // The batch spec carries the caller's flags unmasked, so the one
+        // owner that screens the compat layout cannot be bypassed by the shim
+        // stripping the bit before handing the batch over.
+        let batch = include_str!("307_sendmmsg.rs");
+        assert!(batch.contains("flags: args.a3 as u32"));
+        assert!(!batch.contains("new_compat"));
 
         let sendto = include_str!("044_sendto.rs");
         let readable = sendto.find("validate_user_buf_readable").unwrap();
