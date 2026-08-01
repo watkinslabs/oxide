@@ -64,7 +64,7 @@ filesystem skeleton) is ours but is plain text, not C.
 /                          ext4 root
 ├── bin/                   coreutils + bash + util-linux binaries
 ├── sbin/                  init→systemd, agetty, login, halt, reboot
-├── lib/                   ld-musl-<arch>.so.1
+├── lib64/                 ld-linux-<arch>.so, libc.so.6 (Fedora glibc)
 ├── lib64 -> lib           symlink
 ├── etc/
 │   ├── passwd group shadow
@@ -201,7 +201,7 @@ hosts:   files
 ## 10 Cross-references
 
 - `29§3` — abstract init contract
-- `29a§2` — userspace target triple (musl-static-pie convention)
+- `29a§2` — userland supplier (Fedora RPMs; this repo builds no userspace)
 - `28§3` — VT/console semantics getty depends on
 - `19` — devfs/procfs/sysfs registration paths
 - `16` revisions R01/R02 — mount(2) namespace + dirent hooks

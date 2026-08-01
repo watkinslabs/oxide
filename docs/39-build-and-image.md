@@ -1,6 +1,14 @@
 # 39 Build + Image
 
-FROZEN 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:every workflow (`xtask kernel`,`xtask user`,`xtask image`,`xtask qemu`).
+FROZEN 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:every workflow (`xtask kernel`,`xtask rootfs`,`xtask image`,`xtask qemu`).
+
+## Revision 2026-08-01 (R01)
+
+- Changed: §3 layout, §4 command list, §5 image content, §9 test contract — no userspace is built here. `userspace/libc/musl/`, `userspace/dynlink/`, `userspace/apps/` and `xtask user` are deleted; the root filesystem is a Fedora glibc image composed by `../images` and copied in by `xtask rootfs`. §3 also matches the real grouped crate layout (`52§4`).
+- Why: `crates/user/*`, the `xtask glibc`/`sysroot`/`ldso` commands, the `userspace/` build tree, and `vendor/cross` are deleted; spec `59` is deleted with them. The layout block described a tree that has not existed for months.
+- Affected code: none — the deletions already landed.
+- Test contract change: §9 drops "`xtask user` builds"; adds the boot gate against the Fedora rootfs.
+
 ## 1 Purpose
 
 Define workspace layout, `xtask` commands, image-build pipeline (kernel ELF + initramfs + ESP partition), QEMU runner.
@@ -22,38 +30,23 @@ oxide2/
 ├── targets/
 │   ├── x86_64-unknown-oxide-kernel.json
 │   └── aarch64-unknown-oxide-kernel.json
-│   # userspace uses upstream x86_64-unknown-linux-musl + aarch64-unknown-linux-musl
-│   # per 29a§2 (no custom JSON)
+│   # no userspace target: userspace is Fedora RPMs per 29a§2
 ├── link/
 │   ├── x86_64-kernel.ld
 │   └── aarch64-kernel.ld
 ├── docs/                         # specs (this dir)
-├── kernel/                       # the kernel binary crate
-├── crates/
-│   ├── hal/, hal-x86_64/, hal-aarch64/
-│   ├── boot-x86_64/, boot-aarch64/
-│   ├── pmm/, vmm/, slab/, kalloc/
-│   ├── sched/, task/, syscall/
-│   ├── vfs/, fs-tmpfs/, fs-devtmpfs/, fs-devpts/, fs-procfs/, fs-sysfs/, fs-cgroup2/, fs-ext4/
-│   ├── block/, ipc/, signals/, futex/
-│   ├── net/, net-ipv4/, net-ipv6/, net-tcp/, net-udp/
-│   ├── time/, irq/, modules/
-│   ├── elf/, exec/, klog/
-│   ├── drv-uart-{16550,pl011}/, drv-virtio-{blk,net,console,rng,vsock,input,gpu}/, drv-nvme/, drv-ahci/, drv-ps2-keyboard/
-│   ├── userspace-abi/            # struct layouts shared with userspace
-│   └── vdso-x86_64/, vdso-aarch64/
-├── userspace/
-│   ├── init/                     # PID 1
-│   ├── libc/musl/                # vendored fork
-│   ├── dynlink/                  # ld-oxide
-│   ├── coreutils-{ls,cat,...}/ + bash/ + util-linux/
-│   └── apps/                     # acceptance binaries (curl, redis built against our libc)
+├── kernel/                       # thin integration crate
+├── crates/                       # grouped per 52§4
+│   ├── arch/                     # hal-x86_64, hal-aarch64, boot-*, kernel-bin-*
+│   ├── kernel/                   # subsystem crates (mm-pmm, mm-vmm, sched, vfs, net, …)
+│   ├── drivers/                  # virtio, nvme, ahci, uart, input, gpu
+│   └── shared/                   # no_std libraries
+├── userspace/                    # kernel conformance probes only (29a§5) — not userland
 ├── tools/
 │   ├── xtask/
-│   ├── oracle-{buddy,slab,sched}/
-│   ├── perfrunner/
 │   ├── spec-lint/
-│   └── img-builder/
+│   ├── qemu-mcp/
+│   └── boot-smoke.sh + smoke harnesses
 ├── tests/
 │   ├── unit/                     # arch-free hosted #[cfg(test)]
 │   ├── integration/              # boots a kernel, runs a userspace test program
@@ -61,11 +54,14 @@ oxide2/
 └── bench-history/, perf-history/
 ```
 
+Userland lives in the sibling `../images` repo (composition from RPMs) and `../packages` (locally built RPMs). Neither is part of this workspace.
+
 ## 4 xtask commands
 
 ```
 xtask kernel    --arch <a> --profile <p>
-xtask user      --arch <a>
+xtask artifacts --arch <a>            -> target/artifacts/<a>/kernel.elf
+xtask rootfs    --arch <a>            -> root-<a>.img (copy of ../images output)
 xtask image     --arch <a>            -> boot.img
 xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
 xtask test      [--hosted | --kernel | --loom | --miri | --proptest | --all]
@@ -81,25 +77,13 @@ xtask sign-cert <key.pem>             # generate `OXIDE_TRUSTED_KEYS` for module
 1. ESP (FAT32, ~64 MiB): `EFI/BOOT/BOOT<arch>.EFI` (Limine x86 / EDK2-shim arm), kernel ELF, initramfs.cpio.zst, `limine.conf` (x86) or DTB (arm).
 2. Optional: ext4 rootfs partition (when running with persistent root; otherwise `root=tmpfs`).
 
-Initramfs structure:
-```
-/init                # PID 1 binary
-/bin/{bash,sh}       # sh→bash; static or dynlinked
-/lib/ld-oxide.so.1
-/lib/libc.so
-/etc/{passwd,shadow,group,hosts,resolv.conf,init.conf,fstab,os-release}
-/dev (empty; populated by kernel devtmpfs)
-/proc, /sys, /tmp (empty mountpoints)
-/sbin/getty, /sbin/login (when v2)
-```
+Root filesystem content is Fedora's, composed by `../images` (`29a§2`): `/sbin/init`→systemd, `/lib64/ld-linux-*`, `/lib64/libc.so.6`, `/bin/{bash,…}`, `/etc/*`, empty `/proc`,`/sys`,`/dev`,`/tmp` mount points. This repo adds nothing to it but the conformance probes (`29a§5`).
 
-Built by `tools/img-builder/`:
-- `cargo build --release -p init -p ld-oxide -p libc-shim`; cross-build bash + coreutils + util-linux into the rootfs.
-- Strip binaries.
-- Compose initramfs cpio with deterministic timestamps (SOURCE_DATE_EPOCH).
-- zstd-compress.
-- Build ESP image with `mtools` (`mformat`,`mcopy`).
-- Build GPT with `sgdisk` or hand-rolled.
+Built by `xtask`:
+- `xtask kernel` + `xtask artifacts` → kernel ELF.
+- `xtask rootfs` → copy `../images/output/<profile>-<arch>-root.img`.
+- Build ESP image with `mtools` (`mformat`,`mcopy`); GRUB config for x86, DTB path for arm.
+- Build GPT.
 
 ## 6 Reproducibility
 
@@ -145,9 +129,9 @@ qemu-system-aarch64 \
 ## 9 Test contract (frozen)
 
 - `xtask kernel --arch x86_64` and `--arch aarch64` succeed clean checkout.
-- `xtask user` builds.
-- `xtask image` produces a `boot.img` whose hash matches across machines (with same toolchain).
-- `xtask qemu` boots and prints "init started" within 3s.
+- `xtask rootfs` fails with a clear message when `../images/output/<profile>-<arch>-root.img` is absent.
+- `xtask image` produces a `boot.img` whose hash matches across machines (with same toolchain + same rootfs image).
+- `make smoke-x86` / `make smoke-arm` boot to `oxide login:`.
 - CI runs `xtask spec-lint` and `xtask doc-check`; both pass.
 
 ## 10 Failure modes

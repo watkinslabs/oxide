@@ -1,13 +1,20 @@
 # 29 Init + Userspace bring-up
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`. Provides:every running userspace.
+FROZEN 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`,`51`. Provides:every running userspace.
+
+## Revision 2026-08-01 (R05)
+
+- Changed: §2 invariant 5, §3, §4, §4.1, §5, §6, §7, §8, §10, §11 — this repo builds no libc, no loader, no init and no userspace binary. PID 1 is upstream systemd from the Fedora rootfs (`51§2`); the rootfs is composed from RPMs by `../images` and consumed as a packed image. §4 becomes "libc (consumed, not built)"; §4.1 becomes the image-consumption order; `xtask user` deleted from §5. Spec `59` deleted; `59§` references in the R04 block are flattened to plain text so `xref` resolves.
+- Why: `crates/user/*`, the `xtask glibc`/`sysroot`/`ldso` command family, and the `userspace/` build tree are deleted. R04 and R03 described building a libc + loader + apps here; nothing in the tree does that.
+- Affected code: none — the deletions already landed. `xtask rootfs` copies `../images/output/<profile>-<arch>-root.img`.
+- Test contract change: §10 drops the "builds userspace" items; the boot-to-shell gates stand, now against the Fedora image.
 
 ## Revision 2026-06-14 (R04)
 
-- Changed: §4 libc = **oxide-libc** (glibc-ABI Rust, `crates/user/glibc`, `59`), not the musl fork; loader = `ld-linux-x86-64.so.2`/`ld-linux-aarch64.so.1` (`crates/user/ldso`), not `ld-oxide.so.1`. §4.1 build-order step "musl" → "oxide-libc + ldso". `/etc` + image steps unchanged.
-- Why: glibc ABI is the userspace contract (`03` R01, `59`).
-- Affected code: `xtask user` retargets to `xtask glibc`; musl fork + ld-oxide retired at `59§6` G19.
-- Test contract change: glibc differential oracle (`59§7`).
+- Changed: §4 libc = **oxide-libc** (glibc-ABI Rust, `crates/user/glibc`, spec 59), not the musl fork; loader = `ld-linux-x86-64.so.2`/`ld-linux-aarch64.so.1` (`crates/user/ldso`), not `ld-oxide.so.1`. §4.1 build-order step "musl" → "oxide-libc + ldso". `/etc` + image steps unchanged.
+- Why: glibc ABI is the userspace contract (`03` R01).
+- Affected code: `xtask user` retargets to `xtask glibc`; musl fork + ld-oxide retired at spec 59 G19.
+- Test contract change: glibc differential oracle.
 
 ## Revision 2026-05-02 (R03)
 
@@ -26,42 +33,32 @@ PID 1 (init), libc, image build pipeline (initramfs + on-disk root), boot-to-she
 2. PID 1: signal-default-ignore for many; reaps orphans; exit ⇒ kernel panic.
 3. Initramfs is a CPIO archive (gzip or zstd) loaded by bootloader, mounted as initial rootfs (tmpfs-backed).
 4. Real root mounted via `pivot_root` from initramfs once block devices come up.
-5. libc (musl, vendored fork) ships with our syscall stubs and dynamic linker `/lib/ld-oxide.so.1`.
+5. libc + loader are upstream Fedora glibc (`libc.so.6`, `ld-linux-x86-64.so.2` / `ld-linux-aarch64.so.1`) installed from RPMs; this repo builds neither.
 
 ## 3 Init (PID 1)
 
-Minimal init for v1: a 200-line Rust program at `userspace/init/`. Responsibilities:
-1. Mount `/proc`, `/sys`, `/dev` (devtmpfs), `/dev/pts` (devpts), `/sys/fs/cgroup` (cgroup2).
-2. Read `/etc/init.conf` (TOML): list of services with `cmd`, `restart=on-failure|always|never`.
-3. Spawn each service.
-4. Reap zombies forever (loop on `waitid`).
-5. Handle SIGTERM/SIGINT/SIGUSR1: shutdown.
-6. Handle child exit per restart policy.
+PID 1 is upstream systemd from the Fedora rootfs, reached via `/sbin/init`. Literal chain, unit tree, and `/etc` glue in `51§2-3`. No init binary is built here.
 
-Not systemd. Not OpenRC. v2 can ship something fancier (sd_notify, socket-activation). v1: just enough to launch a shell.
+Kernel obligations toward PID 1: exec `/sbin/init` with `argv[0]="/sbin/init"`, fds 0/1/2 on `/dev/console`, zero TLS base (`51§2`); panic if it exits (§2 invariant 2).
 
-## 4 libc
+## 4 libc (consumed, not built)
 
-Vendored fork of musl at `userspace/libc/musl/`. Patches:
-- Syscall stubs in `arch/x86_64/syscall_arch.h`,`arch/aarch64/syscall_arch.h` use our trap instructions (same Linux opcodes).
-- Define `__OXIDE__` macro for any oxide-specific code paths (none expected; goal is unmodified upstream behavior).
-- vDSO lookup via auxv `AT_SYSINFO_EHDR`.
-- Dynamic linker installed at `/lib/ld-oxide.so.1` (ELF interp path).
+Upstream Fedora glibc, installed from RPMs into the rootfs by `../images`:
+- `libc.so.6` + the `GLIBC_2.x` symbol-version set Fedora ships.
+- Loader `/lib64/ld-linux-x86-64.so.2` (x86_64) / `/lib/ld-linux-aarch64.so.1` (aarch64), named by `PT_INTERP` in every dynamic binary (`31§5`).
+- vDSO located via auxv `AT_SYSINFO_EHDR` (`15§8`).
 
-### 4.1 Build order
+The kernel's obligation is the Linux syscall ABI in `15`; glibc is unmodified, so any divergence is a kernel bug, never a libc patch.
 
-Userspace bring-up follows the LFS pattern (cross-toolchain → kernel-headers → libc → ld → apps):
+### 4.1 Image order
 
 | Step | Artifact | Source | Consumes |
 |---|---|---|---|
-| 1 | cross-toolchain | `07§1` rustc + clang pin | — |
-| 2 | UAPI export | `xtask uapi-export` → `userspace/uapi/` | `15§6.7` |
-| 3 | musl fork | `userspace/libc/musl/` → `libc.{so,a}` + `usr/include/` | step 2 |
-| 4 | `ld-oxide.so.1` | `userspace/dynlink/` | step 3 |
-| 5 | coreutils / bash / `init` | `userspace/{apps,init}/` | steps 3 + 4 |
-| 6 | initramfs + image | `xtask image` (§5) | kernel binary + step 5 |
+| 1 | kernel ELF | `xtask kernel` → `xtask artifacts` | `07§3.4` |
+| 2 | rootfs image | `../images` composes + packs `<profile>-<arch>-root.img` from RPMs | Fedora + local oxide RPMs |
+| 3 | boot disk | `xtask rootfs` copies step 2; `xtask image`/`grub` joins step 1 | steps 1 + 2 |
 
-Kernel binary is independent of steps 2–5: built off step 1 only per `07§3.4`. Step 6 (image assembly) joins kernel binary + userspace artifacts into `boot.img`.
+Kernel binary is independent of step 2. Composition (package set, `/etc` contents, users) is owned by `../images`, not by this repo.
 
 ## 5 Image pipeline
 
@@ -72,41 +69,38 @@ Kernel binary is independent of steps 2–5: built off step 1 only per `07§3.4`
 4. Bootloader config (`limine.conf` / device-tree blob with kernel args).
 5. (Optional) extra rootfs partition with ext4.
 
-`xtask user --arch <a>` builds userspace:
-- All of `userspace/coreutils-{ls,cat,cp,...}`, `userspace/sh` (bash built against our libc), `userspace/init`.
-- Statically linked or against our libc.
-- Stripped, packed into cpio.
+`xtask rootfs --arch <a>` supplies the root filesystem: copy of `../images/output/<profile>-<arch>-root.img`, already composed + packed from RPMs. No userspace build step exists in this repo.
 
 `xtask qemu --arch <a>` runs:
 - `qemu-system-<arch> -bios /usr/share/edk2/<arch>/code.fd -drive ...boot.img -smp 4 -m 4G -nographic`.
 
 ## 6 Boot sequence (post-kernel-init)
 
-1. Kernel mounts initramfs at `/`.
-2. Kernel exec's `/init` (which is our `init` binary).
-3. `init` does §3 sequence.
-4. `init` spawns `getty` on `/dev/tty1`,`/dev/ttyS0` (per config).
-5. `getty` reads username, exec's `/bin/login`.
-6. `login` authenticates against `/etc/passwd`+`/etc/shadow` (Argon2id), exec's user shell.
+1. Kernel mounts the ext4 root.
+2. Kernel exec's `/sbin/init` (systemd).
+3. systemd runs its unit tree (`51§3`).
+4. systemd spawns `agetty` per VT unit.
+5. `agetty` reads username, exec's `/bin/login`.
+6. `login` authenticates via PAM against `/etc/passwd`+`/etc/shadow`, exec's the shell from passwd field 7.
 7. User's `bash` runs.
 
-For headless server: skip getty/login, init exec's a configured service.
+For headless server: no getty unit; systemd runs the configured service.
 
 ## 7 /etc baseline
 
-Initramfs `/etc/`:
-- `passwd`,`shadow`,`group`: minimal (root + service accounts).
+Staged into the rootfs by `../images`, not by this repo:
+- `passwd`,`shadow`,`group`: root + service accounts.
 - `nsswitch.conf`: `files dns`.
 - `resolv.conf`: nameservers (or DHCP-populated post-boot).
 - `hosts`: `127.0.0.1 localhost`.
-- `init.conf`: services list.
+- `systemd/`: unit tree (`51§2`).
 - `os-release`: distro identity.
-- `fstab`: mount points (parsed by init for non-essential mounts).
+- `fstab`: mount points.
 - `localtime` symlink.
 
 ## 8 Concurrency
 
-Init is single-threaded. Reaps via `waitid(P_ALL, WEXITED|WNOHANG, &si)` in a SIGCHLD-driven loop.
+systemd reaps orphans via `waitid(P_ALL, WEXITED|WNOHANG, &si)` in a SIGCHLD-driven loop; the kernel's obligation is reparent-to-PID-1 plus SIGCHLD delivery (`13`).
 
 ## 9 Perf budget
 
@@ -118,18 +112,18 @@ Init is single-threaded. Reaps via `waitid(P_ALL, WEXITED|WNOHANG, &si)` in a SI
 
 ## 10 Test contract (frozen)
 
-- `xtask qemu` boots to a shell prompt within 3s of bootloader handoff.
-- `init` reaps orphan zombies (test harness fork+abandon).
-- `init` exit ⇒ kernel panic with "init exited" message.
-- Service restart on failure: kill a service, verify restart per policy.
-- Mount sequence: every mount in `init.conf` succeeds before service spawn.
+- `make smoke-x86` and `make smoke-arm` boot the Fedora rootfs to `oxide login:`.
+- PID 1 reaps orphan zombies (test harness fork+abandon).
+- PID 1 exit ⇒ kernel panic with "init exited" message.
+- systemd restarts a killed service per its unit `Restart=` policy.
+- Early-boot mount units succeed before the services depending on them start.
 - Acceptance: run `bash -c "ls /; cat /proc/cpuinfo; uptime"` from boot; output matches expected substrings.
 
 ## 11 Failure modes
 
-- `/init` not found in initramfs: kernel panic.
-- `/init` exits with status: kernel panic.
-- Mount in `init.conf` fails: log, continue (init does not fail on mount errors except for `/proc`,`/sys`,`/dev`).
+- `/sbin/init` not found in the root filesystem: kernel panic.
+- `/sbin/init` exits with status: kernel panic.
+- A mount unit fails: systemd policy (`51§3`); the kernel reports the errno and continues.
 
 ## 12 Debug
 

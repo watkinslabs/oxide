@@ -1,6 +1,13 @@
 # 15 Syscall ABI
 
-FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`.
+FROZEN 2026-05-02. Dep:`01`,`03`,`06`,`08`,`09`,`29a`.
+
+## Revision 2026-08-01 (R07)
+
+- Changed: §6.7 — no UAPI export tree and no in-tree consumer. Userspace is unmodified Fedora glibc (`29a§3`) binding Linux uapi headers, so the contract direction reverses: the kernel must match Linux, and `29a§5` conformance probes assert it. `xtask uapi-export` and `userspace/uapi/` are deleted. §9 boot probe is a `-gnu` binary.
+- Why: the musl fork and the in-tree glibc that were the export tree's only consumers are deleted, along with `crates/user/*` and spec `59`.
+- Affected code: none — `xtask uapi-export` was never implemented and is now unwanted.
+- Test contract change: §9 names a `-gnu` probe instead of a static-musl one.
 
 ## Revision 2026-06-05 (R06)
 
@@ -813,9 +820,9 @@ UAPI = the union of types and numbers userspace can rely on:
 
 Everything else is **kernel-internal** per `01§10`: subsystem `Error`/`KResult`, lock primitives, slab caches, scheduler state, internal trait sigs. Userspace must never depend on those.
 
-Mechanical export: `xtask uapi-export` walks the listed sections + their cross-referenced types and emits `userspace/uapi/oxide/*.h` + `*.rs`. The musl fork (`29§4`, `29a§3`) reads from there. Build-chain step 2 per `07§3.4`.
+No export tree and no in-tree consumer: userspace is unmodified Fedora glibc (`29a§3`), which binds Linux's own uapi headers. The obligation runs the other way — every item above must match Linux exactly, and the conformance probes (`29a§5`) are where that is asserted.
 
-In-tree single source of truth = `crates/uapi/` (kernel side); `userspace/uapi/` is its generated export tree. Kernel code that touches UAPI imports `crates/uapi/`; userspace consumers see the exported tree only.
+In-tree single source of truth = the kernel-side uapi modules; no second copy, no generated export tree.
 
 Static-assert per arch (already in §9 test contract): every ABI struct in `userspace-abi` matches Linux layout. The export step is the production form of that assertion.
 
@@ -843,7 +850,7 @@ Per-arch impls in `crates/vdso-x86_64/`,`crates/vdso-aarch64/`. Time data in per
 - Static-assert: every ABI struct in `userspace-abi` matches Linux layout (size+align+field offsets) per arch via `static_assertions`.
 - Property `UserPtr<T>::read/write` vs oracle: random ptrs (user/kernel/unmapped), random sizes; `EFAULT` ⇔ unmapped OR kernel-side.
 - Trampoline review: `hal-*::syscall_entry` cited line-by-line vs SysV (x86) / AAPCS (arm) ABI docs; review notes committed.
-- Boot+run: static-musl binary calls `getpid`, `write(1,"hi\n",3)`, `exit(0)`. Serial = `hi\n`, exit 0.
+- Boot+run: a static `-gnu` probe binary calls `getpid`, `write(1,"hi\n",3)`, `exit(0)`. Serial = `hi\n`, exit 0.
 
 ## 10 Cross-spec
 
