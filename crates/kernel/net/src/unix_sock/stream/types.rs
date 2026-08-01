@@ -84,6 +84,14 @@ pub struct UnixRing {
     /// Per-write SCM_RIGHTS and sender credentials tagged with the absolute
     /// stream offset of their first byte. FIFO / ascending by offset.
     pub ancillary: VecDeque<(u64, GcRights, crate::unix_sock::MsgCred)>,
+    /// Absolute stream offset of the one out-of-band byte still awaiting a
+    /// `recv(MSG_OOB)`. A second out-of-band send while this one is unread
+    /// replaces it, demoting the earlier byte to ordinary in-band data.
+    pub oob: Option<u64>,
+    /// Ascending absolute offsets of out-of-band bytes already delivered
+    /// through `recv(MSG_OOB)`. The byte stays queued and carries no data; all
+    /// it still does is bound a receive. See `stream::oob`.
+    pub oob_marks: VecDeque<u64>,
 }
 
 impl UnixRing {
@@ -96,6 +104,13 @@ impl UnixRing {
             produced: 0,
             consumed: 0,
             ancillary: VecDeque::new(),
+            oob: None,
+            oob_marks: VecDeque::new(),
         }
     }
+
+    /// Bytes a receive may still take. A spent out-of-band record occupies a
+    /// queue slot but delivers nothing, so `SIOCINQ`/`FIONREAD` and every
+    /// other queued-byte report discount it. # C: O(1)
+    pub fn readable_len(&self) -> usize { self.buf.len().saturating_sub(self.oob_marks.len()) }
 }

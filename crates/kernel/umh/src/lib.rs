@@ -6,6 +6,7 @@
 //   gate     suspend/hibernate disable gate + running-helper accounting
 //   backend  installable spawn backend (the piece that needs a live kernel)
 //   exec     `call_usermodehelper{,_setup,_exec}` decision logic
+//   pool     servicing-context growth rule (why one context is not enough)
 //   spawn    the real backend: kworker hand-off, fork+exec, wait/reap
 //
 // Everything a caller's observable behavior depends on — gate answer, wait-mode
@@ -26,6 +27,7 @@ pub mod gate;
 pub mod backend;
 pub mod exec;
 pub mod env;
+pub mod pool;
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod spawn;

@@ -6,10 +6,12 @@
 // - coalesce.rs  : control-buffer-less receive boundaries (rights / sender change).
 // - recv.rs      : transactional boundary-aware recvmsg reads.
 // - lifecycle.rs : shutdown, release, reset, EOF, and readiness state.
+// - oob.rs       : out-of-band byte state, boundaries, and `SIOCATMARK`.
 // - trace.rs     : feature-gated D-Bus stream diagnostics.
 
 mod coalesce;
 mod lifecycle;
+mod oob;
 mod pair;
 mod read;
 mod recv;
@@ -24,5 +26,6 @@ pub use lifecycle::ArmStreamRead;
 pub use lifecycle::ArmStreamWrite;
 #[cfg(target_os = "oxide-kernel")]
 pub use read::ReadOutcome;
+pub use oob::{at_mark, limit, step, OobStep};
 pub use recv::{stream_recv_continues, StreamFiles};
 pub use types::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};

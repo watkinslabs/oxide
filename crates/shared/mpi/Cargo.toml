@@ -1,0 +1,19 @@
+[package]
+name = "mpi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Multi-precision natural-number arithmetic for the in-kernel public-key
+# paths (Diffie-Hellman modular exponentiation, RSA modular exponentiation).
+# No allocator assumptions beyond `alloc`, no floating point, no unsafe.
+
+[dependencies]
+
+[features]
+default = []
+hosted = []
+
+[lints]
+workspace = true

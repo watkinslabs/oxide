@@ -4,7 +4,7 @@ use super::*;
 // stream owns pair/SCM basics; listener_lifecycle owns accept queues;
 // recv_transactions owns receive commit/rollback; scm_creds owns credentials;
 // scm_gc owns rights graphs/collection; scm_release owns direct release boundaries;
-// shutdown owns close/reset semantics; filter owns datagram/seqpacket filtering;
+// oob owns the out-of-band byte contract; shutdown owns close/reset semantics; filter owns datagram/seqpacket filtering;
 // worker_watch owns the systemd-udevd SOCK_DGRAM completion-delivery contract.
 mod support;
 use support::anon_file;
@@ -16,6 +16,7 @@ mod recv_transactions;
 mod scm_creds;
 mod scm_gc;
 mod scm_release;
+mod oob;
 mod shutdown;
 mod backpressure;
 mod filter;

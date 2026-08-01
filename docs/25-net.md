@@ -94,7 +94,7 @@ Features (frozen):
 - TSO/GSO/GRO when driver supports.
 - SO_REUSEPORT with per-CPU socket-table sharding.
 
-Tracked as later phases: MPTCP, TCP-AO, zerocopy.
+Tracked as later phases: MPTCP, TCP-AO.
 
 ## 8 UDP
 

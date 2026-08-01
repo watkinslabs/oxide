@@ -159,7 +159,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             if flags as u64 & net::uapi::MSG_OOB != 0
                 && matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_))
                 && message.requested_len != 1 { return Err(Error::Einval); }
-            if let Some(result) = crate::control::prepare_unix(ctx, socket, message) {
+            if let Some(result) = crate::control::prepare_unix(ctx, socket, message, flags) {
                 return result.map(|scm| PreparedSend::Inet(InetPrepared::Unix(scm)));
             }
             if matches!(*socket.kind.lock(), net::sock::SockKind::Packet { .. }) {
@@ -176,7 +176,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             crate::control::validate_non_unix(ctx, &message.control)?;
             let mut control = if let Some(ipv6) = raw_family {
                 let cap = nscg::proc_ns::has_net_raw_for(ctx.task(), &socket.net_namespace);
-                crate::control_raw::parse_raw_control(&message.control, ipv6, cap)?
+                crate::control_raw::parse_raw_control(&message.control, ipv6, cap, socket.net_ns())?
             } else { net::send_control::SendControl::default() };
             control.apply_flags(flags as u64);
             Ok(PreparedSend::Inet(InetPrepared::Transport(address, control)))
@@ -284,12 +284,21 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
     let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
     let seqpacket = matches!(&*socket.kind.lock(),
         net::sock::SockKind::UnixMsgPair(pair, _) if pair.kind == net::UnixMsgKind::SeqPacket);
+    // The out-of-band byte is the payload's last: the ordinary loop stops one
+    // short of it, then one more pass queues it as the urgent record. Its
+    // count is part of the return, so a `MSG_OOB` send reports every byte it
+    // was given.
+    let plan = crate::oob::unix_oob_plan(stream, flags as u64 & net::uapi::MSG_OOB != 0,
+        message.requested_len);
+    let body = crate::oob::plan_body(plan, message.payload.len());
+    let requested = if matches!(plan, crate::oob::UnixOobPlan::Split { .. }) { body + 1 } else { body };
     let mut total = 0usize;
     loop {
-        match crate::control::send_unix_once(ctx, socket, message, &scm, cap, total) {
+        let tail = crate::oob::owes_oob(plan, total);
+        match crate::control::send_unix_once(ctx, socket, message, &scm, cap, total, body, tail) {
             Ok(n) if stream && n != 0 => {
                 total += n;
-                if total >= message.payload.len() { return Ok(total); }
+                if total >= requested { return Ok(total); }
             }
             Ok(n) => return Ok(total.saturating_add(n)),
             Err(Error::Eagain) if nonblock => return if total == 0 { Err(Error::Eagain) } else { Ok(total) },
@@ -315,9 +324,12 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
             }
             Err(error) => {
                 if total != 0 { return Ok(total); }
-                return if error == Error::Epipe && (stream || seqpacket) {
-                    complete(ctx, flags, Err(error))
-                } else { Err(error) };
+                // The out-of-band tail is the one stream send that reports
+                // EPIPE without raising SIGPIPE: the in-band body owns that
+                // signal, and this pass sent no in-band byte.
+                return if error == Error::Epipe
+                    && crate::oob::signals_pipe(stream || seqpacket, tail)
+                { complete(ctx, flags, Err(error)) } else { Err(error) };
             }
         }
     }

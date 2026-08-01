@@ -132,7 +132,8 @@ impl TcpListenEntry {
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
-            defer_window_secs: ::core::sync::atomic::AtomicI32::new(0),
+            defer_accept: ::core::sync::atomic::AtomicU8::new(0),
+            synack_retries: ::core::sync::atomic::AtomicU8::new(0),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -185,17 +186,6 @@ impl TcpListenEntry {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
         }
         true
-    }
-
-    /// Publish that a queued child has become acceptable. Used when a
-    /// `TCP_DEFER_ACCEPT` window runs out, which changes accept readiness
-    /// without anything being added to the queue. # C: O(1)
-    pub fn notify_acceptable(&self) {
-        #[cfg(target_os = "oxide-kernel")]
-        self.accept_waiters.wake_all();
-        if let Some(weak) = self.poll_subs.lock().clone() {
-            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
-        }
     }
 
     /// Close admission and take every completed unaccepted child. # C: O(N)
@@ -290,11 +280,9 @@ impl NetStack {
         let entry = {
             let mut queue = listener.accept_q.lock();
             if listener.is_closed() { return None; }
-            // A connection deferred by `TCP_DEFER_ACCEPT` stays in the queue
-            // without being handed over, and does not hold back the ones
-            // behind it that already carry data.
-            let index = queue.iter().position(|child| child.acceptable())?;
-            let entry = queue.remove(index)?;
+            // Everything in this queue is a completed connection: a deferred
+            // one is still a request and was never published here.
+            let entry = queue.pop_front()?;
             entry.accepted.store(true, ::core::sync::atomic::Ordering::Release);
             entry
         };

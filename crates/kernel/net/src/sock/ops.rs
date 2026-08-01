@@ -53,6 +53,10 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             if let Some(result) = bind_raw4(sock, ip, port) { return result; }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
+            // The local-address screen precedes the port rules on the IPv4
+            // path: a socket that names an address the namespace does not own
+            // reports that, whatever the port would have done.
+            super::nonlocal::screen_v4(sock, ip, bound_iface(sock)?)?;
             if is_udp {
                 let mut local_port = sock.local_port.lock();
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
@@ -84,6 +88,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
             if let Some(result) = bind_raw6(sock, ip, scope_id, port) { return result; }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
+            super::nonlocal::screen_v6(sock, ip, crate::sock_v6::scoped_iface(sock, ip, scope_id)?)?;
             if is_udp {
                 let mut local_port = sock.local_port.lock();
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }

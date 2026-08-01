@@ -92,6 +92,9 @@ fn apply(sock: &Arc<InetSocket>, action: Action, raw_val: i32) -> i64 {
                 _ => {}
             }
         }
+        // The shared nonlocal-bind pair: one storage word, written through the
+        // `IPPROTO_IP` state whichever level's option number arrived.
+        Action::InetFlag { bit, on } => sock.opts.ip.set_flag(bit, on),
         Action::RecvErr(on) => sock.error.set_recverr6(on),
         Action::UnicastHops(v) => sock.opts.ipv6_ucast_hops.store(v, Ordering::Release),
         Action::MulticastHops(v) =>

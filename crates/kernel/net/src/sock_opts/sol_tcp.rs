@@ -10,6 +10,7 @@
 // - `repair`: `TCP_REPAIR_WINDOW` / `TCP_REPAIR_OPTIONS` operand shapes.
 // - `defer`: the `TCP_DEFER_ACCEPT` hand-over rule.
 // - `apply`: pushes accepted option state into a live connection.
+// - `zerocopy`: `TCP_ZEROCOPY_RECEIVE`'s operand layout and decision rules.
 // - `tests`: hosted coverage for the ordering, capability, and length rules.
 //
 // No target gate: the decision logic must run under hosted `cargo test`.
@@ -19,8 +20,8 @@ pub mod get;
 pub mod ca;
 pub mod ulp;
 pub mod repair;
-pub mod defer;
 pub mod apply;
+pub mod zerocopy;
 #[cfg(test)]
 mod tests;
 

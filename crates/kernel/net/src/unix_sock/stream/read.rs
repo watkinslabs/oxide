@@ -21,7 +21,7 @@ impl UnixPair {
     /// credential passing.
     /// # C: O(min(max, queue))
     pub fn read(&self, end: UnixEnd, max: usize) -> Vec<u8> {
-        self.read_passcred(end, max, false)
+        self.read_passcred(end, max, false, false)
     }
 
     /// `read` for a receiver whose socket may pass credentials.
@@ -35,18 +35,22 @@ impl UnixPair {
     /// released AFTER the ring lock is dropped (closing a file may take
     /// other locks — never under the ring spinlock).
     /// # C: O(min(max, queue) + segments)
-    pub fn read_passcred(&self, end: UnixEnd, max: usize, passcred: bool) -> Vec<u8> {
+    pub fn read_passcred(&self, end: UnixEnd, max: usize, passcred: bool, inline: bool) -> Vec<u8> {
         let mut rights_later: Vec<GcRights> = Vec::new();
         let out = {
             let mut g = match end {
                 UnixEnd::A => self.b_to_a.lock(),
                 UnixEnd::B => self.a_to_b.lock(),
             };
+            // The out-of-band records in front of this read are retired first;
+            // `consumed` moves with them, so every bound below comes after.
+            let head = g.consumed;
+            let window = g.oob_window(head, false, inline);
             let stop = super::coalesce::coalesce_stop(
                 g.ancillary.iter().map(|(off, rights, cred)| super::coalesce::Segment {
                     off: *off, has_rights: !rights.is_empty(), cred,
                 }), g.consumed, g.produced, passcred);
-            let allowed = stop.saturating_sub(g.consumed) as usize;
+            let allowed = core::cmp::min(stop, window.stop).saturating_sub(g.consumed) as usize;
             let take = core::cmp::min(core::cmp::min(max, allowed), g.buf.len());
             let mut out = Vec::with_capacity(take);
             for _ in 0..take {
@@ -97,7 +101,8 @@ impl UnixPair {
     /// MUST `schedule()` after a `Parked` return (the ring lock is released
     /// here). # C: O(min(max, queue))
     #[cfg(target_os = "oxide-kernel")]
-    pub fn read_or_park(&self, end: UnixEnd, max: usize, deadline_ns: u64, passcred: bool) -> ReadOutcome {
+    pub fn read_or_park(&self, end: UnixEnd, max: usize, deadline_ns: u64, passcred: bool,
+        inline: bool) -> ReadOutcome {
         let read_ring = match end {
             UnixEnd::A => &self.b_to_a,
             UnixEnd::B => &self.a_to_b,
@@ -105,7 +110,7 @@ impl UnixPair {
         let g = read_ring.lock();
         if !g.buf.is_empty() {
             drop(g);
-            return ReadOutcome::Data(self.read_passcred(end, max, passcred));
+            return ReadOutcome::Data(self.read_passcred(end, max, passcred, inline));
         }
         if self.take_reset(end) {
             drop(g);
@@ -128,12 +133,18 @@ impl UnixPair {
 
     /// MSG_PEEK variant of `read`: copy without draining.
     /// # C: O(min(max, queued))
-    pub fn peek(&self, end: UnixEnd, max: usize) -> Vec<u8> {
-        let g = match end {
+    pub fn peek(&self, end: UnixEnd, max: usize, inline: bool) -> Vec<u8> {
+        let mut g = match end {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
         };
-        let take = core::cmp::min(max, g.buf.len());
-        g.buf.iter().take(take).copied().collect()
+        // A peek steps over the out-of-band records in front of it without
+        // retiring them, so the next receive still meets them.
+        let head = g.consumed;
+        let window = g.oob_window(head, true, inline);
+        let start = window.head.saturating_sub(g.consumed) as usize;
+        let end_index = core::cmp::min(window.stop.saturating_sub(g.consumed) as usize, g.buf.len());
+        let take = core::cmp::min(max, end_index.saturating_sub(start));
+        g.buf.iter().skip(start).take(take).copied().collect()
     }
 }

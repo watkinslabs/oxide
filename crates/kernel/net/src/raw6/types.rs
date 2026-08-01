@@ -175,20 +175,20 @@ impl Raw6Endpoint {
 
     /// Validate native IPv6 namespace/device ownership of a candidate local
     /// address without publishing it. # C: O(N)
-    pub fn check_local(&self, local: Raw6Address, iface: Option<NetIfaceId>) -> crate::netdev::NetResult<()> {
+    pub fn check_local(&self, local: Raw6Address, iface: Option<NetIfaceId>,
+        nonlocal: crate::bind_screen::SockNonlocal) -> crate::netdev::NetResult<()>
+    {
+        // A v4-mapped address has no native IPv6 owner, so no nonlocal
+        // permission makes it bindable here.
         if local.addr.to_v4_mapped().is_some() { return Err(crate::netdev::NetError::Eaddrnotavail); }
-        let net_ns = self.net_ns();
-        if !local.addr.is_unspecified() && !crate::global_stack().v6_addr_snapshot_in(net_ns)
-            .into_iter().any(|(id, row)| row.addr == local.addr && iface.is_none_or(|want| want == id))
-        {
-            return Err(crate::netdev::NetError::Eaddrnotavail);
-        }
-        Ok(())
+        crate::bind_screen::screen_v6(self.net_ns(), local.addr, iface, nonlocal)
     }
 
-    /// Validate native IPv6 namespace/device ownership before binding. # C: O(N)
-    pub fn bind_checked(&self, local: Raw6Address, iface: Option<NetIfaceId>) -> crate::netdev::NetResult<()> {
-        self.check_local(local, iface)?;
+    /// Screen native IPv6 ownership before binding. # C: O(N)
+    pub fn bind_checked(&self, local: Raw6Address, iface: Option<NetIfaceId>,
+        nonlocal: crate::bind_screen::SockNonlocal) -> crate::netdev::NetResult<()>
+    {
+        self.check_local(local, iface, nonlocal)?;
         self.bind(local, iface);
         Ok(())
     }
