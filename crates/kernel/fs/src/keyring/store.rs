@@ -17,6 +17,6 @@ mod resolve;
 mod state;
 mod types;
 
-pub use quota::{max_bytes, max_keys, quota_limit, set_quota_limit, QuotaKnob};
+pub use quota::{max_bytes, max_keys, over_quota, quota_limit, set_quota_limit, QuotaKnob};
 pub use state::{Store, STORE};
 pub use types::{AuthData, Key, KeyUser, Quota, TaskIds};

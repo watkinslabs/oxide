@@ -6,8 +6,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use syscall::errno::Errno;
 
-#[cfg(test)] use super::KeyUser;
-use super::{Quota, Store};
+use super::{KeyUser, Quota, Store};
 use super::super::uapi::*;
 
 /// The four quota ceilings, live rather than constant: they are
@@ -44,6 +43,15 @@ pub fn max_keys(uid: u32) -> u64 {
 pub fn max_bytes(uid: u32) -> u64 {
     quota_limit(if uid == ROOT_UID { QuotaKnob::RootMaxBytes } else { QuotaKnob::MaxBytes })
 }
+/// `key_alloc`'s ceiling test: one more key, and `add_bytes` more bytes, must
+/// both still fit. Taking the two ceilings as arguments is what lets the
+/// `/proc/sys/kernel/keys/` knobs be proved to GATE an allocation rather than
+/// merely to store a number — the alternative, lowering a global ceiling inside
+/// a test, would make every concurrently running test see it. # C: O(1)
+pub fn over_quota(u: &KeyUser, add_bytes: u64, maxkeys: u64, maxbytes: u64) -> bool {
+    u.nkeys + 1 > maxkeys || u.nbytes + add_bytes > maxbytes
+}
+
 impl Store {
     /// The uid's current charge, zero when it has never held a key. The
     /// production paths mutate the entry in place through `charge` /
@@ -58,10 +66,9 @@ impl Store {
     /// with EDQUOT when either ceiling would be crossed. `Quota::Overrun`
     /// charges unconditionally. # C: O(log N)
     pub(super) fn charge(&mut self, uid: u32, nbytes: u64, mode: Quota) -> Result<(), Errno> {
+        let (maxkeys, maxbytes) = (max_keys(uid), max_bytes(uid));
         let u = self.quota.entry(uid).or_default();
-        if mode == Quota::InQuota
-            && (u.nkeys + 1 > max_keys(uid) || u.nbytes + nbytes > max_bytes(uid))
-        {
+        if mode == Quota::InQuota && over_quota(u, nbytes, maxkeys, maxbytes) {
             return Err(Errno::Edquot);
         }
         u.nkeys += 1;

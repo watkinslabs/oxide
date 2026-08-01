@@ -163,10 +163,3 @@ pub struct ParentInfo {
     pub egid: u32,
     pub sgid: u32,
 }
-
-/// Copy the parent's session keyring serial to a forked child (Linux shares
-/// the session keyring across fork via `copy_creds`). # C: O(log N)
-pub fn inherit_session(parent_tid: u32, child_tid: u32) {
-    let mut g = STORE.lock();
-    if let Some(&s) = g.session.get(&parent_tid) { g.session.insert(child_tid, s); }
-}

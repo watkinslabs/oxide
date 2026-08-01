@@ -23,7 +23,7 @@ use super::uapi::*;
 ///     membership is the full supplementary list (`groups_search`), not just
 ///     the fsgid.
 /// # C: O(members + groups) via possession search
-fn key_task_permission(g: &Store, key: &Key, t: &TaskIds, need: u32) -> Result<(), Errno> {
+pub(super) fn key_task_permission(g: &Store, key: &Key, t: &TaskIds, need: u32) -> Result<(), Errno> {
     let mut kperm = if key.uid == t.fsuid {
         (key.perm >> KEY_PERM_USR_SHIFT) & KEY_PERM_BYTE_MASK
     } else if key.gid != GID_INVALID && key.perm & KEY_GRP_ALL != 0 && t.in_group(key.gid) {

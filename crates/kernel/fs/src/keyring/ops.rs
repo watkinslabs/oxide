@@ -8,7 +8,7 @@
 //
 // Module manifest:
 // - rings: keyring lifecycle — JOIN_SESSION, GET_KEYRING_ID, GET_PERSISTENT,
-//          SET_REQKEY_KEYRING, SESSION_TO_PARENT, fork inheritance.
+//          SET_REQKEY_KEYRING, SESSION_TO_PARENT.
 // - keys:  single-key ops — add_key, UPDATE, REVOKE, INVALIDATE, CHOWN,
 //          SETPERM, SET_TIMEOUT, READ, DESCRIBE, GET_SECURITY.
 // - links: keyring membership and search — LINK, UNLINK, MOVE, CLEAR,
@@ -28,7 +28,7 @@ pub use links::{clear_core, link_core, move_core, request_key_core, restrict_cor
 // store directly; the hosted tests are what assert link/unlink membership.
 #[cfg(test)]
 pub use links::members_of;
-pub use rings::{get_keyring_id, get_persistent, inherit_session, join_session,
+pub use rings::{get_keyring_id, get_persistent, join_session,
     session_to_parent, set_reqkey_keyring, ParentInfo};
 
 /// Everything an op needs about its caller. `now_ns` is read once by the
