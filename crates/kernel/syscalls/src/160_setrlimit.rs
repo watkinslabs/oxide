@@ -35,8 +35,13 @@ pub fn sys_setrlimit(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let cap = cur.has_cap(sched::cap::SYS_RESOURCE);
-    match cur.do_prlimit(resource, Some((new_cur, new_max)), cap) {
+    // `capable(CAP_SYS_RESOURCE)`, NOT an effective-set test: the hard-limit
+    // raise is gated on the INIT user namespace (`crate::perm_common::capable`).
+    // An effective-set-only test let root inside an unprivileged user namespace
+    // hand itself any hard limit after one `unshare(CLONE_NEWUSER)`.
+    match cur.do_prlimit(resource, Some((new_cur, new_max)),
+        crate::rlimit_policy::cap_sys_resource(&cur))
+    {
         Ok(_)  => 0,
         Err(e) => -(crate::rlimit_policy::errno_of(e).as_i32() as i64),
     }
