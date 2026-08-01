@@ -103,6 +103,19 @@ pub fn leader_tgid_nr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
     Some(if vtgid != 0 { vtgid } else { t.tgid.load(Ordering::Acquire) })
 }
 
+/// `tgid_nr_in` for a caller that already holds the registry lock: the group
+/// leader is resolved from the map it is holding, never through a nested
+/// acquire. # C: O(log N_tasks + depth)
+fn tgid_nr_in_locked(g: &super::core::Registry, t: &Task, ns: &NamespaceRef) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    let tgid = t.tgid.load(Ordering::Acquire);
+    if tgid == t.tid { return leader_tgid_nr_in(t, ns); }
+    match g.by_tid.get(&tgid).and_then(|w| w.upgrade()) {
+        Some(leader) => leader_tgid_nr_in(&leader, ns),
+        None => leader_tgid_nr_in(t, ns),
+    }
+}
+
 /// Resolve a USERSPACE-supplied pid/tid (the value getpid/gettid/fork return)
 /// to a Task, interpreted in the CALLER's pid namespace. THIS is the correct
 /// primitive for any syscall whose pid arg comes from userspace (kill,
@@ -145,7 +158,7 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
     if let Some(w) = g.vpid_hint.get(&vpid) {
         match w.upgrade() {
             Some(t) if !t.reaped.load(Ordering::Acquire)
-                && tgid_nr_in(&t, &ns) == Some(vpid)
+                && tgid_nr_in_locked(&g, &t, &ns) == Some(vpid)
                 && t.vtid.load(Ordering::Acquire) == t.vtgid.load(Ordering::Acquire) =>
             {
                 return Some(t);
@@ -158,7 +171,7 @@ pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
     let mut leader: Option<alloc::sync::Weak<Task>> = None;
     for (_, w) in g.by_tid.iter() {
         let Some(t) = w.upgrade() else { continue };
-        if t.reaped.load(Ordering::Acquire) || tgid_nr_in(&t, &ns) != Some(vpid) {
+        if t.reaped.load(Ordering::Acquire) || tgid_nr_in_locked(&g, &t, &ns) != Some(vpid) {
             continue;
         }
         if t.vtid.load(Ordering::Acquire) == t.vtgid.load(Ordering::Acquire) {
@@ -195,7 +208,7 @@ pub fn live_vpids() -> Vec<u32> {
         // A reader only sees the processes its OWN namespace numbers, by the
         // number that namespace gives them: a task in a sibling or descendant
         // namespace has no name here and is not listed.
-        .filter_map(|t| tgid_nr_in(&t, &ns))
+        .filter_map(|t| tgid_nr_in_locked(&g, &t, &ns))
         .filter(|&v| v != 0)
         .collect();
     out.sort_unstable();
@@ -221,7 +234,7 @@ pub fn display_vpid(tid: u32) -> u64 {
     g.by_tid.values().filter_map(|weak| weak.upgrade()).find_map(|task| {
         (!task.reaped.load(Ordering::Acquire)
             && task.tgid.load(Ordering::Acquire) == tid)
-            .then(|| tgid_nr_in(&task, &ns).unwrap_or(0) as u64)
+            .then(|| tgid_nr_in_locked(&g, &task, &ns).unwrap_or(0) as u64)
             .filter(|vpid| *vpid != 0)
     }).unwrap_or(tid as u64)
 }
