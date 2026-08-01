@@ -6,11 +6,26 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, InodeRef};
 
 use crate::inotify::layout::encode_name;
+use crate::inotify::mask::{mask_applicable, IterType};
 use crate::inotify::types::{
-    inode_key, Event, InotifyData, FAN_ATTRIB, FAN_DELETE_SELF, FAN_MOVED_FROM, FAN_MOVED_TO, FAN_MOVE_SELF,
+    inode_key, Event, InotifyData, MarkScope, FAN_ATTRIB, FAN_DELETE_SELF, FAN_EVENT_ON_CHILD,
+    FAN_MOVED_FROM, FAN_MOVED_TO, FAN_MOVE_SELF,
     FAN_ONDIR, FAN_OPEN_EXEC, IN_ACCESS, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_IGNORED,
     IN_EXCL_UNLINK, IN_ISDIR, IN_MODIFY, IN_ONESHOT, IN_OPEN, IN_SELF_NO_ISDIR, MARK_COUNT, MOVE_COOKIE,
 };
+
+/// `send_to_group`'s "clear ignored on inode modification": every mark on the
+/// modified object that did not ask its ignore set to survive a modification
+/// loses it. # C: O(N_watches)
+fn clear_volatile_ignores(arc: &Arc<InotifyData>, key: usize, fsid: u64) {
+    let mut watches = arc.watches.lock();
+    for wi in watches.iter_mut() {
+        if !wi.applies(key, fsid) { continue; }
+        if wi.ignore_survives_modify { continue; }
+        wi.ignored = 0;
+        wi.ignore_has_flags = false;
+    }
+}
 
 /// One notification's identifying facts, shared by every group the fire path
 /// visits — the same set Linux threads through `fsnotify()`: the event bit, the
@@ -30,6 +45,13 @@ struct Fire<'a> {
     /// leaves this `false`, because Linux's guard short-circuits on `path` being
     /// NULL and such events reach an `IN_EXCL_UNLINK` mark regardless.
     unlinked:   bool,
+    /// The dispatch is the PARENT leg of an event that happened to an entry
+    /// INSIDE the object being visited. Two things follow, and both were
+    /// missing: a mark only sees such an event if it asked for child events,
+    /// and a mount- or filesystem-scope mark must NOT see it at all — that mark
+    /// already received the event on its own leg, and firing it again on the
+    /// parent delivers the same access to the same watcher twice.
+    parent_leg: bool,
 }
 
 /// Global registry of weak refs to every live InotifyData. Walked
@@ -59,30 +81,50 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
     if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
     let key = inode_key(inode);
     let fsid = inode.fsid();
-    #[cfg(target_os = "oxide-kernel")]
-    // `fanotify_event_metadata.pid` is a pid userspace can act on, so it is
-    // the process's VISIBLE number — never the opaque internal tgid.
-    let pid = sched::current().map(|t| t.visible_pid()).unwrap_or(0);
-    #[cfg(not(target_os = "oxide-kernel"))]
-    let pid = 0u32;
+    let mut oneshot_pins: Vec<InodeRef> = Vec::new();
     let g = INSTANCES.lock();
     for w in g.iter() {
         let arc = match w.upgrade() { Some(a) => a, None => continue };
+        // `fanotify_event_metadata.pid` is a pid userspace can act on, so it is
+        // the process's VISIBLE number — never the opaque internal tgid. Which
+        // of the two it is depends on the GROUP's `FAN_REPORT_TID`, so it is
+        // decided here rather than once for the whole dispatch.
+        let pid = crate::inotify::perm::reporting_pid(&arc);
+        // `send_to_group`: a modification of the watched object clears every
+        // ignore set that did not ask to survive one. A watcher that suppressed
+        // its own writes has to start hearing about the file again the moment
+        // something else changes it, or it silently misses every later event.
+        if f.mask_bit & IN_MODIFY != 0 { clear_volatile_ignores(&arc, key, fsid); }
         let mut watches = arc.watches.lock();
         let mut i = 0usize;
         while i < watches.len() {
             let wi = &watches[i];
             if !wi.applies(key, fsid) { i += 1; continue; }
+            // The parent leg reaches INODE-scope marks only. A mount- or
+            // filesystem-scope mark matched the same event on its own leg.
+            if f.parent_leg && wi.scope != MarkScope::Inode { i += 1; continue; }
+            let iter = if f.parent_leg { IterType::Parent } else { wi.iter_type() };
             // `fsnotify_handle_inode_event`: an `IN_EXCL_UNLINK` mark drops
             // every path-carrying event about a file that has already been
             // unlinked, which is how a watcher avoids the endless
             // ACCESS/MODIFY/CLOSE stream from a still-open deleted file.
             if (wi.flags & IN_EXCL_UNLINK) != 0 && f.unlinked { i += 1; continue; }
-            if (wi.ignored & f.mask_bit) != 0 { i += 1; continue; }
+            if (wi.effective_ignore(f.target_dir, iter) & f.mask_bit) != 0 { i += 1; continue; }
             if (wi.mask & f.mask_bit) == 0 { i += 1; continue; }
+            // The child gate applies to every group kind: a mark that did not
+            // ask to watch children does not hear about them. inotify marks on
+            // a directory are created already carrying the bit, so this is only
+            // ever a filter for fanotify in practice.
+            if iter == IterType::Parent && (wi.mask & FAN_EVENT_ON_CHILD) == 0 { i += 1; continue; }
+            // The directory gate is fanotify's alone — an inotify mark never
+            // carries FAN_ONDIR and would be silenced on every directory event.
+            if arc.fanotify && !mask_applicable(wi.mask, f.target_dir, iter) { i += 1; continue; }
             let mut report = f.mask_bit;
             if arc.fanotify {
-                if f.target_dir && (wi.mask & FAN_ONDIR) == 0 { i += 1; continue; }
+                // A fid-reporting group is told the affected object was a
+                // directory; a legacy fd-reporting group is not, for the same
+                // backward-compatibility reason it is never told about children.
+                if f.target_dir && arc.reports_event_flags() { report |= FAN_ONDIR; }
             } else if f.target_dir && (f.mask_bit & IN_SELF_NO_ISDIR) == 0 {
                 report |= IN_ISDIR;
             }
@@ -93,44 +135,64 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
             // record, so it keeps the leaf.
             let name = if arc.fanotify && !arc.reports_dir_fid() { Vec::new() }
                        else { encode_name(f.name) };
-            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie: f.cookie, name, obj, pid });
+            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie: f.cookie, name, obj, pid, ..Default::default() });
             if !arc.fanotify && (wi.flags & IN_ONESHOT) != 0 {
                 let wd = wi.wd;
-                watches.remove(i);
+                let mut dead = watches.remove(i);
+                // The watch pinned its inode; the reference leaves both locks
+                // before it is dropped, since releasing the last one evicts
+                // the inode and re-enters these same tables.
+                oneshot_pins.extend(dead.take_pin());
                 MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
                 arc.release_marks(1);
-                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid });
+                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid, ..Default::default() });
                 continue;
             }
             i += 1;
         }
     }
+    drop(g);
+    crate::inotify::types::release_pins(oneshot_pins);
 }
 
 /// An event on `inode` itself (no name; `FS_ISDIR` from `inode`).
 /// # C: O(N_groups * N_watches)
 pub(crate) fn fire_self(inode: &InodeRef, mask_bit: u32) {
     let target_dir = inode.file_type() == FileType::Directory;
-    dispatch(inode, &Fire { mask_bit, cookie: 0, name: None, target_dir, unlinked: false });
+    dispatch(inode, &Fire { mask_bit, cookie: 0, name: None, target_dir, unlinked: false, parent_leg: false });
 }
 
 /// `fire_self` for an event that carries an open file's PATH — the arm the
 /// `IN_EXCL_UNLINK` guard applies to. # C: as dispatch
 pub(crate) fn fire_self_path(inode: &InodeRef, mask_bit: u32, unlinked: bool) {
     let target_dir = inode.file_type() == FileType::Directory;
-    dispatch(inode, &Fire { mask_bit, cookie: 0, name: None, target_dir, unlinked });
+    dispatch(inode, &Fire { mask_bit, cookie: 0, name: None, target_dir, unlinked, parent_leg: false });
 }
 
-/// A dir-entry event reported on watched directory `parent`, naming the entry
-/// (`leaf`) it happened to. `child_dir` is whether THAT entry is a directory.
+/// A dir-entry event (create/delete/move) reported on watched directory
+/// `parent`, naming the entry (`leaf`) it happened to. `child_dir` is whether
+/// THAT entry is a directory.
+///
+/// This is NOT the parent leg. A dirent event is reported on the directory as
+/// an event about the directory itself — the directory IS the object that
+/// changed — so a mark on it does not need to have asked for child events. Only
+/// an event that happened to a FILE and is additionally reported on its parent
+/// (`fire_child_path`) is gated that way.
 /// # C: as dispatch
 pub(crate) fn fire_child(parent: &InodeRef, mask_bit: u32, cookie: u32, leaf: &str, child_dir: bool) {
-    dispatch(parent, &Fire { mask_bit, cookie, name: Some(leaf), target_dir: child_dir, unlinked: false });
+    dispatch(parent, &Fire { mask_bit, cookie, name: Some(leaf), target_dir: child_dir, unlinked: false, parent_leg: false });
+}
+
+/// The parent leg, reachable from the hosted suite: the fire paths that use it
+/// need a real dentry, which a unit test has no way to build. # C: as dispatch
+#[cfg(test)]
+pub(crate) fn fire_child_path_for_test(parent: &InodeRef, mask_bit: u32, leaf: &str, child_dir: bool) {
+    fire_child_path(parent, mask_bit, leaf, child_dir, false);
 }
 
 /// `fire_child` for the parent leg of a path-carrying event. # C: as dispatch
 fn fire_child_path(parent: &InodeRef, mask_bit: u32, leaf: &str, child_dir: bool, unlinked: bool) {
-    dispatch(parent, &Fire { mask_bit, cookie: 0, name: Some(leaf), target_dir: child_dir, unlinked });
+    dispatch(parent, &Fire { mask_bit, cookie: 0, name: Some(leaf), target_dir: child_dir, unlinked, parent_leg: true });
 }
 
 /// Fire `IN_MODIFY` on an already-identified inode. Leaf crates (cgroup) that
@@ -185,7 +247,11 @@ pub fn fire_delete_self(inode: &InodeRef) {
 pub fn fire_move(old_parent: &InodeRef, new_parent: &InodeRef, moved: Option<&InodeRef>,
                  old_name: &str, new_name: &str) {
     let c = MOVE_COOKIE.fetch_add(1, Ordering::Relaxed);
-    let is_dir = moved.map(|m| m.file_type() == FileType::Directory).unwrap_or(false);
+    let is_dir = crate::inotify::fan_rename::moved_is_dir(moved);
+    // The whole-rename record comes FIRST, before either half of the cookie
+    // pair: a watcher that asked for both forms must never be holding half a
+    // rename while the complete description of it is still behind in the queue.
+    crate::inotify::fan_rename::fire_rename(old_parent, new_parent, old_name, new_name, is_dir);
     fire_child(old_parent, FAN_MOVED_FROM, c, old_name, is_dir);
     fire_child(new_parent, FAN_MOVED_TO, c, new_name, is_dir);
     if let Some(m) = moved { fire_self(m, FAN_MOVE_SELF); }
@@ -259,6 +325,7 @@ pub(crate) fn vfs_setattr_notify(inode: &InodeRef, ia_valid: u32) {
 /// # C: O(1)
 pub fn install_write_hook() {
     vfs::set_delete_self_hook(fire_delete_self);
+    vfs::set_inode_evict_hook(crate::inotify::marks::evict_inode_marks);
     vfs::set_setattr_hook(vfs_setattr_notify);
     vfs::set_write_hook(vfs_write_notify);
     vfs::set_open_hook(vfs_open_notify);
@@ -266,6 +333,14 @@ pub fn install_write_hook() {
     vfs::set_close_hook(vfs_close_notify);
     vfs::set_dirent_create_hook(vfs_dirent_create);
     vfs::set_dirent_delete_hook(vfs_dirent_delete);
+    // Mount-tree changes reach a `FAN_MARK_MNTNS` mark through the mount
+    // subsystem's own choke points, not through any inode hook — a mount event
+    // has no inode to hang one on.
+    crate::inotify::fan_mnt::install_mnt_hook();
+    // A filesystem error likewise has no inode to hang a hook on: the object is
+    // the filesystem, and the failure that produced the report may be exactly
+    // the reason no inode can be named.
+    crate::inotify::fan_err::install_fs_error_hook();
 }
 
 fn vfs_dirent_create(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {

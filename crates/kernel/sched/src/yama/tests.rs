@@ -199,3 +199,34 @@ fn the_ancestry_walk_stops_at_an_unrooted_chain() {
     assert!(task_is_descendant(7101, &child));
     assert!(!task_is_descendant(0, &child));
 }
+
+#[test]
+fn attach_class_access_is_yama_gated_but_read_class_is_not() {
+    // The distinction every ATTACH-class caller depends on. `pidfd_getfd(2)`
+    // and `process_vm_readv/writev(2)` take something OUT of another process,
+    // which is what `ptrace_scope` restricts — routing them through the
+    // READ-class ladder let a same-uid process read another's memory at
+    // `ptrace_scope=1`. `kcmp(2)` and `get_robust_list(2)` really are
+    // READ-class and must stay ungated.
+    use crate::ptrace_access::{may_access_full, Access, Mode};
+    let _g = registry_test_lock();
+    let _s = with_scope(SCOPE_RELATIONAL);
+    let stranger = task(9101, 0);
+    let victim = task(9102, 0);
+    assert!(may_access_full(&stranger, &victim, Mode::RealCreds, Access::Read).is_ok(),
+            "same credentials satisfy the READ-class ladder");
+    assert!(may_access_full(&stranger, &victim, Mode::RealCreds, Access::Attach).is_err(),
+            "ptrace_scope=1 refuses an unrelated ATTACH");
+}
+
+#[test]
+fn a_refused_scope_write_is_reported_to_the_caller() {
+    // The sysctl leaf turns `false` into EINVAL. Reporting success for a
+    // refused lowering would tell a hardening script it had relaxed a
+    // restriction that is still in force.
+    let _g = registry_test_lock();
+    let _s = with_scope(SCOPE_CAPABILITY);
+    assert!(!set_scope(SCOPE_RELATIONAL as i64), "lowering is refused");
+    assert!(!set_scope(SCOPE_MAX as i64 + 1), "out of range is refused");
+    assert_eq!(scope(), SCOPE_CAPABILITY, "a refused write changes nothing");
+}

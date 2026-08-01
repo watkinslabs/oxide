@@ -33,6 +33,9 @@ pub fn sys_pread64(args: &SyscallArgs) -> i64 {
     if !file.f_mode().contains(vfs::Fmode::READ) {
         return -(Errno::Ebadf.as_i32() as i64);
     }
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), false, Some(off as u64), cnt as u64) {
+        return -(e.as_i32() as i64);
+    }
     if cnt == 0 {
         let mut empty: [u8; 0] = [];
         let ret = match file.pread(&mut empty, off) {

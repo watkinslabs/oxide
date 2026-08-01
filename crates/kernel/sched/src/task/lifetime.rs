@@ -6,6 +6,11 @@ use super::Task;
 
 impl Drop for Task {
     fn drop(&mut self) {
+        // Release the lazily-allocated debug-register shadows. No other
+        // reference to this task exists here, so the claim is uncontended.
+        self.debugregs.free();
+        #[cfg(target_arch = "aarch64")]
+        self.hw_break.free();
         #[cfg(feature = "debug-taskdrop")]
         {
             let top = self.kernel_stack.load(Ordering::Acquire) as u64;

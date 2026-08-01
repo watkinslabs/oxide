@@ -122,10 +122,11 @@ fn init_boot_percpu() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use hal::CpuOps;
-        let mut cr4: u64;
-        core::arch::asm!("mov {cr4}, cr4", cr4 = out(reg) cr4, options(nomem, nostack, preserves_flags));
-        cr4 |= 1u64 << 16;
-        core::arch::asm!("mov cr4, {cr4}", cr4 = in(reg) cr4, options(nomem, nostack, preserves_flags));
+        // Force CR4.FSGSBASE off before the first GS base exists. The
+        // bootloader may leave it set, and while it is set ring 3 can
+        // `wrgsbase` the kernel per-CPU base out from under every `gs:[…]`
+        // the entry asm and the percpu accessors perform.
+        hal_x86_64::clear_cr4_fsgsbase();
         hal_x86_64::X86CpuOps::set_percpu_base(p);
         hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
     }

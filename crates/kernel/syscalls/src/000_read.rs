@@ -21,8 +21,14 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
     if !file.f_mode().contains(vfs::Fmode::READ) { return -(Errno::Ebadf.as_i32() as i64); }
     // fanotify FAN_ACCESS_PERM: blocks until a daemon allows/denies (fast
-    // no-op when no perm marks exist). Deny → EACCES.
-    if !::fs::inotify::check_access_perm(&file.inode()) { return -(Errno::Eacces.as_i32() as i64); }
+    // no-op when no perm marks exist). A denial reports the errno the verdict
+    // named — EPERM unless a pre-content daemon chose another.
+    // fanotify content gates, in Linux's order: FAN_PRE_ACCESS (a pre-content
+    // watcher fills the bytes) naming the range about to be read, then
+    // FAN_ACCESS_PERM (a scanner inspects what is now there).
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), false, Some(file.pos()), cnt as u64) {
+        return -(e.as_i32() as i64);
+    }
     if let Ok(target) = crate::recvmsg::from_file(file.clone()) {
         if cnt == 0 {
             cur.account_read_result(0);

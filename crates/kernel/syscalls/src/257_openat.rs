@@ -474,8 +474,9 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
     // the lease holder + waits before proceeding. Zero-cost without a lease;
     // skip for a just-created file (cannot hold a pre-existing lease).
     if !created { if let Some(rv) = break_lease_for_open(&inode, flags) { return rv; } }
-    // fanotify FAN_OPEN_PERM (fast no-op without perm marks; deny → EACCES).
-    if !::fs::inotify::check_open_perm(&inode) { return -(Errno::Eacces.as_i32() as i64); }
+    // fanotify FAN_OPEN_PERM (fast no-op without perm marks). A denial reports
+    // the errno the verdict named — EPERM unless a pre-content daemon chose one.
+    if let Err(e) = ::fs::inotify::check_open_perm(&inode) { return -(e.as_i32() as i64); }
     if let Err(rv) = ::security::bpf_lsm::file_open(&inode) { return rv; }
     // D23: controlling-terminal acquisition on open (Linux `tty_open`). A
     // session leader opening a console/serial/VT tty WITHOUT O_NOCTTY, when

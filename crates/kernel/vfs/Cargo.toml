@@ -13,12 +13,12 @@ klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 bitflags = { version = "2", default-features = false }
 namespace-identity = { path = "../namespace-identity" }
+syscall     = { path = "../syscall" }
 user-namespace = { path = "../user-namespace" }
 vmm      = { path = "../mm-vmm" }
 
 [dev-dependencies]
 conformance = { path = "../conformance" }
-syscall     = { path = "../syscall" }
 libc        = "0.2"
 sched       = { path = "../sched" }
 nscg        = { path = "../nscg" }

@@ -32,6 +32,7 @@ fn test_scanout_ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
         hhdm: 0,
         fbdev_idx: None,
         quiesced: false,
+        bound: None,
     }
 }
 

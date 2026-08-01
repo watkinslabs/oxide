@@ -32,7 +32,7 @@ pub struct InodeBuilder {
     projid:       u32,
     flags:        u32,
     rdev:         u32,
-    generation:   u32,
+    generation:   Option<u32>,
     fsid:         u64,
     atime:        Timespec64,
     mtime:        Timespec64,
@@ -53,7 +53,7 @@ impl InodeBuilder {
     pub fn new(ino: Ino, mode: u32, i_op: Arc<dyn InodeOps>, i_fop: Arc<dyn FileOps>) -> Self {
         InodeBuilder {
             ino, mode, i_op, i_fop, sb: Weak::new(), size: 0, blocks: 0, nlink: None, uid: 0, gid: 0,
-            projid: 0, flags: 0, rdev: 0, generation: 0, fsid: 0, atime: Timespec64::ZERO, mtime: Timespec64::ZERO, ctime: Timespec64::ZERO, btime: None,
+            projid: 0, flags: 0, rdev: 0, generation: None, fsid: 0, atime: Timespec64::ZERO, mtime: Timespec64::ZERO, ctime: Timespec64::ZERO, btime: None,
             version: 0, mapping: None, private: Arc::new(()), poll_subs: None, seal_carrier: None,
             owner_persist: None, link: None, xattrs: None,
         }
@@ -66,7 +66,10 @@ impl InodeBuilder {
     pub fn projid(mut self, projid: u32) -> Self { self.projid = projid; self }
     pub fn i_flags(mut self, f: u32) -> Self { self.flags = f; self }
     pub fn rdev(mut self, d: u32) -> Self { self.rdev = d; self }
-    pub fn generation(mut self, g: u32) -> Self { self.generation = g; self }
+    /// Stamp the backend's own `i_generation` (an on-disk filesystem reads it
+    /// from the inode). Left unset, [`Self::build`] mints one from the
+    /// superblock instead. # C: O(1)
+    pub fn generation(mut self, g: u32) -> Self { self.generation = Some(g); self }
     pub fn fsid(mut self, f: u64) -> Self { self.fsid = f; self }
     pub fn times(mut self, a: Timespec64, m: Timespec64, c: Timespec64) -> Self { self.atime = a; self.mtime = m; self.ctime = c; self }
     pub fn btime(mut self, b: Timespec64) -> Self { self.btime = Some(b); self }
@@ -85,6 +88,17 @@ impl InodeBuilder {
     /// Finish the build. # C: O(1)
     pub fn build(self) -> Arc<Inode> {
         let nlink = self.nlink.unwrap_or_else(|| default_nlink(self.mode));
+        // A backend-supplied generation is authoritative and stable across
+        // eviction+reload — that is what makes an on-disk handle outlive the
+        // inode cache. With none, the OWNING SUPERBLOCK mints one, so two
+        // in-memory inodes that reuse a number are still distinguishable by a
+        // decoded handle. An inode built before its superblock exists gets 0,
+        // the "unversioned" wildcard (`export::GENERATION_ANY`).
+        let generation = match self.generation {
+            Some(g) => g,
+            None    => self.sb.upgrade().map_or(crate::export::GENERATION_ANY,
+                                                |sb| sb.next_inode_generation()),
+        };
         Arc::new(Inode {
             i_ino: self.ino,
             i_mode: AtomicU32::new(self.mode),
@@ -96,7 +110,7 @@ impl InodeBuilder {
             i_projid: AtomicU32::new(self.projid),
             i_flags: AtomicU32::new(self.flags),
             i_rdev: self.rdev,
-            i_generation: self.generation,
+            i_generation: generation,
             i_atime_sec: AtomicI64::new(self.atime.sec),
             i_atime_nsec: AtomicU32::new(self.atime.nsec),
             i_mtime_sec: AtomicI64::new(self.mtime.sec),

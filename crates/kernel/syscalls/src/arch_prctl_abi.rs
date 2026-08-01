@@ -1,6 +1,4 @@
-// `arch_prctl(2)` decision core — Linux `arch/x86/kernel/process.c`
-// (`SYSCALL_DEFINE2(arch_prctl)`, `set_cpuid_mode`, `get_cpuid_mode`) and
-// `arch/x86/kernel/process_64.c` (`do_arch_prctl_64`).
+// `arch_prctl(2)` decision core.
 //
 // Deliberately NOT `#![cfg(target_os = "oxide-kernel")]`: slot file
 // `158_arch_prctl.rs` is kernel-only, so every rule written inside it is
@@ -11,17 +9,29 @@
 // (docs/53).
 //
 // Module manifest:
-//   this file — sub-code classification, the TASK_SIZE_MAX address rule,
-//               and the CPUID-faulting capability rule.
-//   arch_prctl_abi/tests.rs — hosted unit tests.
+//   this file          — sub-code classification + the TASK_SIZE_MAX rule.
+//   arch_prctl_abi/cpuid.rs — CPUID-faulting capability + per-task mode rules.
+//   arch_prctl_abi/shstk.rs — CET shadow-stack (`ARCH_SHSTK_*`) rule ladder.
+//   arch_prctl_abi/xcomp.rs — xstate support/permission rules.
+//   arch_prctl_abi/lam.rs   — linear-address-masking (`0x4001..0x4004`) rules.
+//   arch_prctl_abi/tests.rs — hosted unit tests (manifest of test modules).
 
 use syscall::errno::Errno;
 use syscall::nrs;
 
-/// Linux `TASK_SIZE_MAX` — `arch/x86/include/asm/page_64.h:task_size_max()`
-/// under 4-level paging: `(1 << 47) - PAGE_SIZE`. `hal::USER_VA_END` is the
-/// `1 << 47` ceiling, so the last user page is excluded exactly as Linux
-/// excludes it.
+pub mod cpuid;
+pub mod shstk;
+pub mod xcomp;
+pub mod lam;
+
+pub use cpuid::{get_cpuid_mode, set_cpuid_mode, CpuidModeChange};
+pub use shstk::{shstk_prctl, ShstkOutcome, ShstkState};
+pub use xcomp::{xcomp_permitted, xcomp_request, xcomp_supported, XFEATURE_MASK_FPSSE, XFEATURE_MAX};
+pub use lam::{lam_enable_tagged_addr, lam_max_tag_bits, lam_untag_mask, LAM_U57_BITS};
+
+/// Linux `TASK_SIZE_MAX` under 4-level paging: `(1 << 47) - PAGE_SIZE`.
+/// `hal::USER_VA_END` is the `1 << 47` ceiling, so the last user page is
+/// excluded exactly as Linux excludes it.
 pub const TASK_SIZE_MAX: u64 = hal::USER_VA_END - PAGE_SIZE;
 const PAGE_SIZE: u64 = 4096;
 
@@ -41,26 +51,29 @@ pub enum ArchOp {
     GetCpuid,
     /// `ARCH_SET_CPUID` — enable/disable user-mode `cpuid` faulting.
     SetCpuid(bool),
-    /// `ARCH_SHSTK_*` — CET shadow-stack control.
-    Shstk,
+    /// `ARCH_SHSTK_*` — CET shadow-stack control, carrying the sub-code
+    /// itself because the five codes share one rule ladder.
+    Shstk { option: u64, features: u64 },
     /// `ARCH_GET_XCOMP_SUPP` — write the xstate feature mask the kernel
     /// supports for user state to the user `u64` at `val`.
     GetXcompSupp(u64),
     /// `ARCH_GET_XCOMP_PERM` / `ARCH_GET_XCOMP_GUEST_PERM` — write the mask
-    /// this thread group is PERMITTED to use.
-    GetXcompPerm(u64),
+    /// this thread group is PERMITTED to use. `guest` picks the group.
+    GetXcompPerm { ptr: u64, guest: bool },
     /// `ARCH_REQ_XCOMP_PERM` / `ARCH_REQ_XCOMP_GUEST_PERM` — ask for a
     /// dynamically-enabled xstate component by its highest feature number.
-    ReqXcompPerm(u64),
+    ReqXcompPerm { idx: u64, guest: bool },
+    /// `ARCH_GET_UNTAG_MASK` — write this mm's pointer-untagging mask.
+    GetUntagMask(u64),
+    /// `ARCH_ENABLE_TAGGED_ADDR` — request `nr_bits` of address masking.
+    EnableTaggedAddr(u64),
+    /// `ARCH_GET_MAX_TAG_BITS` — write the largest tag width available.
+    GetMaxTagBits(u64),
+    /// `ARCH_FORCE_TAGGED_SVA` — allow masking despite a live PASID.
+    ForceTaggedSva,
+    /// `ARCH_MAP_VDSO_{X32,32,64}` — checkpoint/restore vDSO relocation.
+    MapVdso(u64),
 }
-
-/// `XFEATURE_MAX` (`arch/x86/include/asm/fpu/types.h`) — the ceiling
-/// `xstate_request_perm` compares the requested feature number against.
-pub const XFEATURE_MAX: u64 = 19;
-
-/// `XFEATURE_MASK_FPSSE` — x87 + SSE, the two components every XSAVE-capable
-/// CPU has and the whole user mask on a kernel that fell back to FXSAVE.
-pub const XFEATURE_MASK_FPSSE: u64 = 0b11;
 
 /// Linux `do_arch_prctl_64` classification plus the shared address rule.
 ///
@@ -82,23 +95,24 @@ pub fn classify(code: u64, arg2: u64) -> Result<ArchOp, Errno> {
         nrs::ARCH_GET_CPUID => Ok(ArchOp::GetCpuid),
         nrs::ARCH_SET_CPUID => Ok(ArchOp::SetCpuid(arg2 != 0)),
         nrs::ARCH_SHSTK_ENABLE | nrs::ARCH_SHSTK_DISABLE | nrs::ARCH_SHSTK_LOCK
-        | nrs::ARCH_SHSTK_UNLOCK | nrs::ARCH_SHSTK_STATUS => Ok(ArchOp::Shstk),
+        | nrs::ARCH_SHSTK_UNLOCK | nrs::ARCH_SHSTK_STATUS =>
+            Ok(ArchOp::Shstk { option: code, features: arg2 }),
         // The xstate-permission group is handled BEFORE the 64-bit switch in
-        // Linux (`do_arch_prctl_common`), so `arg2` is a feature INDEX for the
-        // REQ codes and a user pointer for the GET ones — neither is subject
-        // to the TASK_SIZE_MAX rule above.
+        // Linux (`SYSCALL_DEFINE2(arch_prctl)` → `fpu_xstate_prctl`), so
+        // `arg2` is a feature INDEX for the REQ codes and a user pointer for
+        // the GET ones — neither is subject to the TASK_SIZE_MAX rule above.
         nrs::ARCH_GET_XCOMP_SUPP => Ok(ArchOp::GetXcompSupp(arg2)),
-        nrs::ARCH_GET_XCOMP_PERM | nrs::ARCH_GET_XCOMP_GUEST_PERM =>
-            Ok(ArchOp::GetXcompPerm(arg2)),
-        nrs::ARCH_REQ_XCOMP_PERM | nrs::ARCH_REQ_XCOMP_GUEST_PERM =>
-            Ok(ArchOp::ReqXcompPerm(arg2)),
-        // ARCH_MAP_VDSO_* (0x2001..0x2003), the CONFIG_ADDRESS_MASKING LAM
-        // codes (ARCH_GET_UNTAG_MASK / ARCH_ENABLE_TAGGED_ADDR /
-        // ARCH_GET_MAX_TAG_BITS / ARCH_FORCE_TAGGED_SVA, 0x4001..0x4004) and
-        // every unknown code land here. EINVAL is what Linux answers for the
-        // LAM group without CONFIG_ADDRESS_MASKING, and this port maps no LAM
-        // bits into CR3, so accepting ARCH_ENABLE_TAGGED_ADDR would promise a
-        // pointer-masking behaviour the MMU is not configured for.
+        nrs::ARCH_GET_XCOMP_PERM => Ok(ArchOp::GetXcompPerm { ptr: arg2, guest: false }),
+        nrs::ARCH_GET_XCOMP_GUEST_PERM => Ok(ArchOp::GetXcompPerm { ptr: arg2, guest: true }),
+        nrs::ARCH_REQ_XCOMP_PERM => Ok(ArchOp::ReqXcompPerm { idx: arg2, guest: false }),
+        nrs::ARCH_REQ_XCOMP_GUEST_PERM => Ok(ArchOp::ReqXcompPerm { idx: arg2, guest: true }),
+        nrs::ARCH_GET_UNTAG_MASK => Ok(ArchOp::GetUntagMask(arg2)),
+        nrs::ARCH_ENABLE_TAGGED_ADDR => Ok(ArchOp::EnableTaggedAddr(arg2)),
+        nrs::ARCH_GET_MAX_TAG_BITS => Ok(ArchOp::GetMaxTagBits(arg2)),
+        nrs::ARCH_FORCE_TAGGED_SVA => Ok(ArchOp::ForceTaggedSva),
+        nrs::ARCH_MAP_VDSO_X32 | nrs::ARCH_MAP_VDSO_32 | nrs::ARCH_MAP_VDSO_64 =>
+            Ok(ArchOp::MapVdso(code)),
+        // Every code the uapi header does not assign. Linux's `default:`.
         _ => Err(Errno::Einval),
     }
 }
@@ -108,63 +122,12 @@ pub fn check_base(base: u64) -> Result<(), Errno> {
     if base >= TASK_SIZE_MAX { Err(Errno::Eperm) } else { Ok(()) }
 }
 
-/// Linux `get_cpuid_mode()` — `!test_thread_flag(TIF_NOCPUID)`. This port
-/// never arms CPUID faulting (see `cpuid_fault_supported`), so user-mode
-/// `cpuid` is always enabled and the answer is always 1, exactly as on a
-/// Linux host whose CPU lacks `X86_FEATURE_CPUID_FAULT`.
+/// `ARCH_MAP_VDSO_*` on a kernel built without checkpoint/restore support:
+/// the sub-code falls through `do_arch_prctl_64`'s `default:` to EINVAL.
+/// This port relocates no vDSO mapping, so promising success would hand a
+/// restoring CRIU image a vDSO that never moved.
 /// # C: O(1)
-pub fn get_cpuid_mode() -> i64 { 1 }
-
-/// Linux `set_cpuid_mode()`:
-/// `if (!boot_cpu_has(X86_FEATURE_CPUID_FAULT)) return -ENODEV;`
-///
-/// `supported` comes from the live `MSR_PLATFORM_INFO[31]` probe, which is
-/// how Linux derives `X86_FEATURE_CPUID_FAULT` in the first place.
-/// # C: O(1)
-pub fn set_cpuid_mode(supported: bool) -> i64 {
-    if !supported { -(Errno::Enodev.as_i32() as i64) } else { 0 }
-}
-
-/// Linux `shstk_prctl` built WITHOUT `CONFIG_X86_USER_SHADOW_STACK` — the
-/// `arch/x86/include/asm/shstk.h` stub, `{ return -EINVAL; }`. This port
-/// compiles no CET user shadow-stack support, so EINVAL is the matching
-/// answer, not `EOPNOTSUPP` (which the real `shstk.c` only reaches when the
-/// feature is configured in but the CPU lacks `X86_FEATURE_USER_SHSTK`).
-/// # C: O(1)
-pub fn shstk_prctl_unsupported() -> i64 { -(Errno::Einval.as_i32() as i64) }
-
-/// The user-visible xstate mask, from the live XCR0 the FPU owner programmed.
-///
-/// Linux reports `fpu_user_cfg.max_features | fpu_user_cfg.legacy_features`.
-/// On a kernel that fell back to FXSAVE there is no XCR0 and the answer is
-/// the legacy x87+SSE pair, which is exactly the state such a kernel saves.
-/// # C: O(1)
-pub fn xcomp_supported(xsave_active: bool, xcr0: u64) -> u64 {
-    if xsave_active { xcr0 | XFEATURE_MASK_FPSSE } else { XFEATURE_MASK_FPSSE }
-}
-
-/// `xstate_request_perm(idx, guest)`.
-///
-/// The index is the HIGHEST feature number of the facility being asked for,
-/// and the permission table has exactly one non-zero entry (AMX's
-/// `XFEATURE_XTILE_DATA`). So an index at or above `XFEATURE_MAX` is EINVAL,
-/// and every valid index that names no dynamically-enabled facility — or one
-/// the CPU/kernel does not offer — is **EOPNOTSUPP**, not EINVAL. This port
-/// enables no AMX component (its XCR0 request stops below the tile bits) and
-/// programs no XFD, so no index can succeed; a request that returned 0 would
-/// tell a runtime it may execute AMX instructions that will `#UD`.
-/// # C: O(1)
-pub fn xcomp_request(idx: u64, supported: u64) -> i64 {
-    if idx >= XFEATURE_MAX { return -(Errno::Einval.as_i32() as i64); }
-    // `xstate_prctl_req[idx]` — zero for every index except XTILE_DATA(18).
-    const XFEATURE_XTILE_DATA: u64 = 18;
-    const XFEATURE_MASK_XTILE: u64 = (1 << 17) | (1 << 18);
-    let requested = if idx == XFEATURE_XTILE_DATA { XFEATURE_MASK_XTILE } else { 0 };
-    if requested == 0 || (supported & requested) != requested {
-        return -(Errno::Eopnotsupp.as_i32() as i64);
-    }
-    0
-}
+pub fn map_vdso_unsupported() -> i64 { -(Errno::Einval.as_i32() as i64) }
 
 #[cfg(test)]
 #[path = "arch_prctl_abi/tests.rs"]

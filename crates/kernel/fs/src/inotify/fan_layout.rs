@@ -11,6 +11,11 @@ pub(crate) const FAN_EVENT_METADATA_LEN: usize = 24;
 pub(crate) const FANOTIFY_METADATA_VERSION: u8 = 3;
 /// `FAN_NOFD` — no descriptor accompanies this event.
 pub(crate) const FAN_NOFD: i32 = -1;
+/// `FAN_NOPIDFD` — the group asked for a pidfd but the process is already gone.
+pub(crate) const FAN_NOPIDFD: i32 = FAN_NOFD;
+/// `FAN_EPIDFD` — the group asked for a pidfd and minting one failed. Distinct
+/// from `FAN_NOPIDFD`, which means the process itself is gone.
+pub(crate) const FAN_EPIDFD: i32 = -2;
 
 /// `FAN_EVENT_INFO_TYPE_FID` — the fid of the object the event happened to.
 pub(crate) const FAN_EVENT_INFO_TYPE_FID: u8 = 1;
@@ -19,8 +24,17 @@ pub(crate) const FAN_EVENT_INFO_TYPE_DFID_NAME: u8 = 2;
 /// `FAN_EVENT_INFO_TYPE_DFID` — a directory fid alone.
 pub(crate) const FAN_EVENT_INFO_TYPE_DFID: u8 = 3;
 
+/// `FAN_EVENT_INFO_TYPE_PIDFD` — a descriptor for the process the event is
+/// reported for.
+pub(crate) const FAN_EVENT_INFO_TYPE_PIDFD: u8 = 4;
+
 /// `FANOTIFY_EVENT_ALIGN` — every info record is padded out to this.
 const FAN_EVENT_ALIGN: usize = 4;
+/// `sizeof(struct fanotify_event_info_header)`: `{info_type u8, pad u8, len u16}`.
+const INFO_HDR_LEN: usize = 4;
+/// `sizeof(struct fanotify_event_info_pidfd)`: the shared header plus one
+/// `__s32 pidfd`. Already a multiple of the record alignment.
+pub(crate) const PIDFD_INFO_LEN: usize = INFO_HDR_LEN + 4;
 /// `sizeof(struct fanotify_event_info_fid)`: a 4-byte
 /// `fanotify_event_info_header {info_type u8, pad u8, len u16}` followed by the
 /// 8-byte `__kernel_fsid_t`.
@@ -31,11 +45,13 @@ const FILE_HANDLE_HDR: usize = 8;
 /// `FANOTIFY_FID_INFO_HDR_LEN`.
 const FID_INFO_HDR_LEN: usize = FID_INFO_FIXED + FILE_HANDLE_HDR;
 
-/// `FILEID_INO32_GEN` — the `{ino u32, gen u32}` handle every filesystem
-/// without its own `export_operations` encodes.
-pub(crate) const FILEID_INO32_GEN: i32 = 1;
+/// The `handle_type` a fid info record carries. It MUST be the type
+/// `open_by_handle_at` decodes: a `FAN_REPORT_FID` watcher's whole use for the
+/// record is to open the object it names, and a second private encoding here
+/// would hand it a handle this kernel cannot decode.
+pub(crate) const FANOTIFY_FID_TYPE: i32 = vfs::export::fid::HANDLE_TYPE_INO_GEN;
 /// Bytes such a handle occupies.
-pub(crate) const FILEID_INO32_GEN_LEN: usize = 8;
+pub(crate) const FANOTIFY_FID_LEN: usize = vfs::export::fid::FID_LEN as usize;
 
 /// Linux `fanotify_fid_info_len`: the fixed header, the file handle, the name
 /// with its terminating NUL when one is present, rounded up to the record
@@ -70,19 +86,17 @@ pub(crate) fn info_type_for(report_fid: bool, report_dir_fid: bool, report_name:
     Some(FAN_EVENT_INFO_TYPE_DFID)
 }
 
-/// Name bytes that ride along with `info_type`. Only the two `*_NAME` types
-/// carry one; `copy_fid_info_to_user` rejects a name on any other type.
+/// Name bytes that ride along with `info_type`. Only the `*_DFID_NAME` types
+/// carry one — the ordinary one and the two rename-specific ones — and a name
+/// handed to any other type is dropped rather than written where a reader would
+/// not look for it.
 /// # C: O(1)
 pub(crate) fn name_len_for(info_type: u8, name_len: usize) -> usize {
-    if info_type == FAN_EVENT_INFO_TYPE_DFID_NAME { name_len } else { 0 }
-}
-
-/// `metadata.event_len` — the fixed metadata plus whatever info record follows.
-/// # C: O(1)
-pub(crate) fn event_len(info_type: Option<u8>, fh_len: usize, name_len: usize) -> usize {
     match info_type {
-        None => FAN_EVENT_METADATA_LEN,
-        Some(t) => FAN_EVENT_METADATA_LEN + fid_info_len(fh_len, name_len_for(t, name_len)),
+        FAN_EVENT_INFO_TYPE_DFID_NAME
+        | crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_OLD_DFID_NAME
+        | crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_NEW_DFID_NAME => name_len,
+        _ => 0,
     }
 }
 
@@ -133,11 +147,27 @@ pub(crate) fn encode_fid_info(dst: &mut [u8], info_type: u8, s_dev: u64,
     total
 }
 
-/// `FILEID_INO32_GEN` handle bytes for an inode. # C: O(1)
-pub(crate) fn ino32_gen_handle(ino: u64, generation: u32) -> [u8; FILEID_INO32_GEN_LEN] {
-    let mut h = [0u8; FILEID_INO32_GEN_LEN];
-    h[0..4].copy_from_slice(&(ino as u32).to_le_bytes());
-    h[4..8].copy_from_slice(&generation.to_le_bytes());
+/// Encode one `fanotify_event_info_pidfd`. Returns the bytes written, or 0
+/// when `dst` cannot hold the whole record. # C: O(1)
+pub(crate) fn encode_pidfd_info(dst: &mut [u8], pidfd: i32) -> usize {
+    if dst.len() < PIDFD_INFO_LEN { return 0; }
+    dst[0] = FAN_EVENT_INFO_TYPE_PIDFD;
+    dst[1] = 0;
+    dst[2..4].copy_from_slice(&(PIDFD_INFO_LEN as u16).to_le_bytes());
+    dst[4..8].copy_from_slice(&pidfd.to_le_bytes());
+    PIDFD_INFO_LEN
+}
+
+/// The handle bytes for an inode, produced by the SAME codec
+/// `name_to_handle_at` uses, so a reported fid round-trips through
+/// `open_by_handle_at`. # C: O(1)
+pub(crate) fn fid_handle(ino: u64, generation: u32) -> [u8; FANOTIFY_FID_LEN] {
+    let mut buf = [0u8; vfs::export::fid::FID_LEN_PARENT as usize];
+    let fid = vfs::export::fid::Fid { ino, generation, parent: None };
+    let (len, _) = vfs::export::fid::encode_fid(&fid, &mut buf);
+    debug_assert!(len as usize == FANOTIFY_FID_LEN);
+    let mut h = [0u8; FANOTIFY_FID_LEN];
+    h.copy_from_slice(&buf[..FANOTIFY_FID_LEN]);
     h
 }
 
@@ -149,7 +179,6 @@ mod tests {
     fn a_legacy_group_reports_bare_metadata() {
         assert_eq!(info_type_for(false, false, false, false), None);
         assert_eq!(info_type_for(false, false, true, true), None, "NAME alone is not a fid mode");
-        assert_eq!(event_len(None, 8, 5), FAN_EVENT_METADATA_LEN);
     }
 
     #[test]
@@ -179,7 +208,7 @@ mod tests {
     fn fid_info_len_rounds_the_whole_record_to_the_alignment() {
         // 12-byte fixed part + 8-byte file_handle header = 20, already aligned.
         assert_eq!(fid_info_len(0, 0), 20);
-        assert_eq!(fid_info_len(8, 0), 28, "a FILEID_INO32_GEN handle stays aligned");
+        assert_eq!(fid_info_len(8, 0), 28, "a FANOTIFY_FID_TYPE handle stays aligned");
         // name + NUL is included BEFORE the rounding.
         assert_eq!(fid_info_len(8, 1), 32, "20+8+2 = 30 rounds to 32");
         assert_eq!(fid_info_len(8, 3), 32, "20+8+4 = 32 exactly");
@@ -189,36 +218,39 @@ mod tests {
     #[test]
     fn encoded_fid_record_lays_out_header_fsid_handle_then_name() {
         let mut buf = [0xAAu8; 64];
-        let fh = ino32_gen_handle(0x1234_5678, 9);
+        let fh = fid_handle(0x1234_5678, 9);
         let n = encode_fid_info(&mut buf, FAN_EVENT_INFO_TYPE_DFID_NAME,
-                                0x0000_0007_0000_0035, FILEID_INO32_GEN, &fh, b"abc");
-        assert_eq!(n, 32);
+                                0x0000_0007_0000_0035, FANOTIFY_FID_TYPE, &fh, b"abc");
+        let want = fid_info_len(FANOTIFY_FID_LEN, 3);
+        assert_eq!(n, want);
         assert_eq!(buf[0], FAN_EVENT_INFO_TYPE_DFID_NAME);
         assert_eq!(buf[1], 0, "pad byte is zero");
-        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 32, "hdr.len is the PADDED record length");
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), want as u16, "hdr.len is the PADDED record length");
         assert_eq!(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]), 0x35);
         assert_eq!(u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]), 7);
-        assert_eq!(u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]), 8, "handle_bytes");
-        assert_eq!(i32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]), FILEID_INO32_GEN);
-        assert_eq!(&buf[20..28], &fh);
-        assert_eq!(&buf[28..31], b"abc");
-        assert_eq!(buf[31], 0, "name is NUL-terminated inside the padding");
+        assert_eq!(u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]),
+                   FANOTIFY_FID_LEN as u32, "handle_bytes");
+        assert_eq!(i32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]), FANOTIFY_FID_TYPE);
+        let nm = 20 + FANOTIFY_FID_LEN;
+        assert_eq!(&buf[20..nm], &fh);
+        assert_eq!(&buf[nm..nm + 3], b"abc");
+        assert_eq!(buf[nm + 3], 0, "name is NUL-terminated inside the padding");
     }
 
     #[test]
     fn a_nameless_type_drops_the_name_it_was_handed() {
         let mut buf = [0xAAu8; 64];
-        let fh = ino32_gen_handle(1, 0);
-        let n = encode_fid_info(&mut buf, FAN_EVENT_INFO_TYPE_FID, 1, FILEID_INO32_GEN, &fh, b"ignored");
-        assert_eq!(n, 28, "no name tail");
-        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 28);
+        let fh = fid_handle(1, 0);
+        let n = encode_fid_info(&mut buf, FAN_EVENT_INFO_TYPE_FID, 1, FANOTIFY_FID_TYPE, &fh, b"ignored");
+        assert_eq!(n, fid_info_len(FANOTIFY_FID_LEN, 0), "no name tail");
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), n as u16);
     }
 
     #[test]
     fn encode_refuses_to_write_a_partial_record() {
         let mut buf = [0xAAu8; 20];
-        let fh = ino32_gen_handle(1, 0);
-        assert_eq!(encode_fid_info(&mut buf, FAN_EVENT_INFO_TYPE_FID, 1, FILEID_INO32_GEN, &fh, b""), 0);
+        let fh = fid_handle(1, 0);
+        assert_eq!(encode_fid_info(&mut buf, FAN_EVENT_INFO_TYPE_FID, 1, FANOTIFY_FID_TYPE, &fh, b""), 0);
         assert_eq!(buf, [0xAAu8; 20], "nothing written");
     }
 
@@ -235,11 +267,33 @@ mod tests {
         assert_eq!(i32::from_le_bytes(buf[20..24].try_into().unwrap()), 4242);
     }
 
+    /// The pidfd record is a bare header plus the descriptor, and its two
+    /// failure descriptors are distinct values userspace can tell apart.
+    /// # C: O(1)
     #[test]
-    fn event_len_adds_exactly_one_info_record() {
-        assert_eq!(event_len(Some(FAN_EVENT_INFO_TYPE_FID), 8, 0), 24 + 28);
-        assert_eq!(event_len(Some(FAN_EVENT_INFO_TYPE_DFID_NAME), 8, 3), 24 + 32);
-        assert_eq!(event_len(Some(FAN_EVENT_INFO_TYPE_DFID), 8, 3), 24 + 28,
+    fn pidfd_record_carries_the_descriptor_after_the_header() {
+        let mut buf = [0xAAu8; 16];
+        assert_eq!(encode_pidfd_info(&mut buf, 9), PIDFD_INFO_LEN);
+        assert_eq!(buf[0], FAN_EVENT_INFO_TYPE_PIDFD);
+        assert_eq!(buf[1], 0);
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), PIDFD_INFO_LEN as u16);
+        assert_eq!(i32::from_le_bytes(buf[4..8].try_into().unwrap()), 9);
+        assert_ne!(FAN_EPIDFD, FAN_NOPIDFD, "a failed mint is not a dead process");
+        assert_eq!(encode_pidfd_info(&mut buf[..7], 1), 0, "no partial record");
+    }
+
+    /// Each record is sized from the name its TYPE carries, so a nameless type
+    /// never pays for a name it was handed. The event length is the metadata
+    /// plus exactly those record sizes. # C: O(1)
+    #[test]
+    fn a_record_is_sized_from_the_name_its_type_carries() {
+        let n = |t, name: usize| fid_info_len(8, name_len_for(t, name));
+        assert_eq!(FAN_EVENT_METADATA_LEN + n(FAN_EVENT_INFO_TYPE_FID, 0), 24 + 28);
+        assert_eq!(FAN_EVENT_METADATA_LEN + n(FAN_EVENT_INFO_TYPE_DFID_NAME, 3), 24 + 32);
+        assert_eq!(FAN_EVENT_METADATA_LEN + n(FAN_EVENT_INFO_TYPE_DFID, 3), 24 + 28,
                    "a nameless type does not pay for the name");
+        // The two rename record types DO carry a name, so both pay for one.
+        assert_eq!(n(crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_OLD_DFID_NAME, 3), 32);
+        assert_eq!(n(crate::inotify::fan_rename::FAN_EVENT_INFO_TYPE_NEW_DFID_NAME, 3), 32);
     }
 }

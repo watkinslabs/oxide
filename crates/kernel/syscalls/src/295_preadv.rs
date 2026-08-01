@@ -76,6 +76,10 @@ fn do_preadv(args: &SyscallArgs, v2: bool) -> i64 {
     // `if (!tot_len) goto out;` returns 0 BEFORE the flag admission, so a
     // zero-length preadv2 with an unsupported RWF bit still returns 0.
     if ranges.is_empty() { cur.account_read_result(0); return 0; }
+    let want: u64 = ranges.iter().map(|(_, l)| *l as u64).sum();
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), false, Some(off), want) {
+        let r = errno(e); cur.account_read_result(r); return r;
+    }
     let caps = RwCaps {
         nowait: file.f_mode().contains(vfs::Fmode::NOWAIT),
         o_append: file.flags().contains(vfs::OpenFlags::O_APPEND),

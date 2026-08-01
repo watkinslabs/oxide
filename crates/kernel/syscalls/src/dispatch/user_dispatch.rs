@@ -20,12 +20,11 @@ const SYS_USER_DISPATCH: i32 = 2;
 /// Run the registration test for the syscall about to dispatch.
 ///
 /// `Some(rv)` means the syscall is SKIPPED and `rv` goes to userspace;
-/// `None` means dispatch normally. Linux's `syscall_rollback` on x86_64 is
-/// `regs->ax = regs->orig_ax`, i.e. the syscall NUMBER is what a returning
-/// SIGSYS handler observes in the return register — the same convention the
-/// seccomp `RET_TRAP` path uses here.
+/// `None` means dispatch normally. The skipped call is rolled back first, and
+/// what that leaves in the return register is architecture-specific — see
+/// `crate::syscall_rollback`.
 /// # C: O(1)
-pub(super) fn user_dispatch_gate(nr: u64) -> Option<u64> {
+pub(super) fn user_dispatch_gate(nr: u64, a0: u64) -> Option<u64> {
     let cur = sched::live::current()?;
     let cfg = cur.syscall_dispatch.armed()?;
     let pc = crate::arch_frame::current_user_pc();
@@ -40,7 +39,7 @@ pub(super) fn user_dispatch_gate(nr: u64) -> Option<u64> {
         Action::Dispatch => {
             cur.syscall_dispatch.set_on_dispatch();
             raise_sigsys(nr, pc);
-            Some(nr)
+            Some(crate::syscall_rollback::rolled_back_return(nr, a0))
         }
         // `force_exit_sig(SIGSYS)` / `force_exit_sig(SIGSEGV)` — these are
         // process-fatal and uncatchable, NOT deliverable signals: a selector

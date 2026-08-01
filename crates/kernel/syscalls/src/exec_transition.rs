@@ -163,6 +163,14 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // `SET_PERSONALITY2(*elf_ex, &arch_state)` — the arch half, which on both
     // 64-bit targets clears READ_IMPLIES_EXEC unconditionally.
     crate::exec_persona::set_personality(cur);
+    // `arch_setup_new_exec()` + `reset_thread_features()` — the arch state
+    // `arch_prctl` owns (CPUID faulting, CET facility set), which a new image
+    // must not inherit.
+    crate::exec_persona::arch_setup_new_exec(cur);
+    // Linux `flush_thread()` + `arch_setup_new_exec()`: the per-thread ARCH
+    // flags whose exec rule is architecture-specific (TSC trap, tagged-address
+    // ABI). Owned by sched so the two arches cannot drift apart here.
+    sched::exec_flush::flush_thread_flags(cur);
     cur.dumpable.store(t.dumpable, Ordering::Release);
 }
 
@@ -179,6 +187,24 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
 pub(crate) fn exec_rnd(cur: &sched::Task, per_clear: u32) -> aslr::ExecRnd {
     let persona = sched::personality::get(cur) & !per_clear;
     aslr::ExecRnd::draw(persona & sched::personality::ADDR_NO_RANDOMIZE != 0)
+}
+
+/// Linux `setup_new_exec` → `arch_pick_mmap_layout(mm, &rlim_stack)`: this
+/// exec's arena anchor AND search direction.
+///
+/// `raw_stack_rlim` is the caller's `RLIMIT_STACK` soft limit BEFORE this
+/// kernel's `min(…, RLIM_STACK_MAP_CAP)` clamp, because `RLIM_INFINITY` is one
+/// of the three conditions that select the legacy layout and the clamp would
+/// erase it. `per_clear` is folded in for the same reason `exec_rnd` folds it:
+/// a caller must not pre-arm `ADDR_COMPAT_LAYOUT` and have a setuid image
+/// inherit a predictable low arena.
+/// # C: O(1)
+pub(crate) fn exec_mmap_layout(cur: &sched::Task, per_clear: u32, rnd: &aslr::ExecRnd,
+                               rlim_stack: u64, raw_stack_rlim: u64) -> aslr::Layout {
+    let persona = sched::personality::at_exec(sched::personality::get(cur), per_clear);
+    rnd.mmap_layout(rlim_stack,
+                    sched::personality::addr_compat_layout(persona),
+                    raw_stack_rlim == sched::rlimit::INFINITY)
 }
 
 /// Linux `begin_new_exec`: a secure exec resets `RLIMIT_STACK` to `_STK_LIM`

@@ -32,7 +32,7 @@ fn masks(g: &InotifyData) -> Vec<u32> { g.events.lock().iter().map(|e| e.mask).c
 fn a_new_hardlink_reports_attrib_on_the_file() {
     let g = InotifyData::new(0);
     let f = mk(FileType::Regular, 0x6B01, 1);
-    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB).unwrap();
+    add_or_update_watch(&g, inode_key(&f), f.fsid(), IN_ATTRIB, false, None).unwrap();
 
     fire_link_count(&f);
     assert_eq!(masks(&g), alloc::vec![IN_ATTRIB], "the link()ed file sees its count move");
@@ -44,7 +44,7 @@ fn a_new_hardlink_reports_attrib_on_the_file() {
 fn an_overwritten_rename_target_reports_attrib() {
     let g = InotifyData::new(0);
     let victim = mk(FileType::Regular, 0x6B02, 2);
-    add_or_update_watch(&g, inode_key(&victim), victim.fsid(), IN_ATTRIB).unwrap();
+    add_or_update_watch(&g, inode_key(&victim), victim.fsid(), IN_ATTRIB, false, None).unwrap();
 
     fire_link_count(&victim);
     assert_eq!(masks(&g), alloc::vec![IN_ATTRIB]);
@@ -57,7 +57,7 @@ fn an_overwritten_rename_target_reports_attrib() {
 fn delete_self_on_a_directory_carries_no_isdir() {
     let g = InotifyData::new(0);
     let d = mk(FileType::Directory, 0x6B03, 2);
-    add_or_update_watch(&g, inode_key(&d), d.fsid(), FAN_DELETE_SELF).unwrap();
+    add_or_update_watch(&g, inode_key(&d), d.fsid(), FAN_DELETE_SELF, true, None).unwrap();
 
     // `fsnotify_inoderemove` = FS_DELETE_SELF then `__fsnotify_inode_delete`,
     // so the wd's IN_IGNORED follows in the same call.
@@ -72,7 +72,7 @@ fn delete_self_on_a_directory_carries_no_isdir() {
 fn the_two_legs_are_separately_maskable() {
     let g = InotifyData::new(0);
     let f = mk(FileType::Regular, 0x6B04, 1);
-    add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_DELETE_SELF).unwrap();
+    add_or_update_watch(&g, inode_key(&f), f.fsid(), FAN_DELETE_SELF, false, None).unwrap();
 
     fire_link_count(&f);
     assert_eq!(masks(&g), Vec::<u32>::new(), "an ATTRIB leg is not a DELETE_SELF");

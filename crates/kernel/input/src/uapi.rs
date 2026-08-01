@@ -26,6 +26,8 @@ pub const KEY_MIN_INTERESTING: usize = 0x71;
 
 pub const REL_MAX: u16 = 0x0f;
 pub const REL_CNT: usize = REL_MAX as usize + 1;
+pub const ABS_X: u16 = 0x00;
+pub const ABS_Y: u16 = 0x01;
 pub const ABS_MAX: u16 = 0x3f;
 pub const ABS_CNT: usize = ABS_MAX as usize + 1;
 pub const MSC_MAX: u16 = 0x07;

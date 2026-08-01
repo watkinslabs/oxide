@@ -23,6 +23,9 @@ pub const SA_NOCLDSTOP: u64 = 0x0000_0001;
 pub const CLD_STOPPED: i32 = 5;
 /// `CLD_CONTINUED` si_code (`<asm-generic/siginfo.h>`).
 pub const CLD_CONTINUED: i32 = 6;
+/// `CLD_TRAPPED` si_code (`<asm-generic/siginfo.h>`): a TRACEE stopped, which
+/// is reported to its TRACER — never to its real parent as `CLD_STOPPED`.
+pub const CLD_TRAPPED: i32 = 4;
 
 /// The reaping parent's `SIGCHLD` disposition (Linux
 /// `psig->action[SIGCHLD-1].sa`).
@@ -98,6 +101,9 @@ pub enum Cldstop {
     Stopped,
     /// SIGCONT resumed a stopped group.
     Continued,
+    /// A ptrace stop — a syscall stop, an event stop or a signal-delivery
+    /// stop. Its audience is the TRACER, not the real parent.
+    Trapped,
 }
 
 /// What a job-control stop/continue owes the real parent.
@@ -122,6 +128,10 @@ pub struct CldstopNotify {
 /// # C: O(1)
 pub const fn cldstop_notify(why: Cldstop, parent: ParentSigchld) -> CldstopNotify {
     let signal = parent.handler != SIG_IGN && parent.flags & SA_NOCLDSTOP == 0;
-    let si_code = match why { Cldstop::Stopped => CLD_STOPPED, Cldstop::Continued => CLD_CONTINUED };
+    let si_code = match why {
+        Cldstop::Stopped   => CLD_STOPPED,
+        Cldstop::Continued => CLD_CONTINUED,
+        Cldstop::Trapped   => CLD_TRAPPED,
+    };
     CldstopNotify { signal, wake_parent: true, si_code }
 }

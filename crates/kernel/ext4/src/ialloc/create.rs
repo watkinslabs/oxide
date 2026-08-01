@@ -203,6 +203,7 @@ impl Mount {
             if m.sb.inode_size as usize > crate::csum::EXT4_GOOD_OLD_INODE_SIZE {
                 bytes[0x80..0x82].copy_from_slice(&32u16.to_le_bytes());
             }
+            super::stamp_new_inode_generation(&mut bytes);
             m.inherit_inode_flags_project(parent_ino, mode, &mut bytes)?;
             if matches!(ftype, S_IFCHR | S_IFBLK) {
                 bytes[0x28..0x2C].copy_from_slice(&rdev.to_le_bytes());
