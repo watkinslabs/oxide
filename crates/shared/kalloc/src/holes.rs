@@ -285,7 +285,7 @@ impl HoleList {
         #[cfg(feature = "debug-heappoison")]
         if result.is_err() {
             klog::write_primary_raw(b"[KALLOC] seq=");
-            klog::write_primary_dec_u64(crate::next_seq());
+            klog::write_primary_dec_u64(crate::hooks::next_seq());
             klog::write_primary_raw(b" add-region-failed start=");
             klog::write_primary_hex_u64(aligned as u64);
             klog::write_primary_raw(b" usable=");
@@ -521,7 +521,7 @@ impl HoleList {
                             klog::write_primary_raw(b"\n");
                         }
                         #[cfg(feature = "debug-heappoison")]
-                        crate::probe_corruption(cur);
+                        crate::hooks::probe_corruption(cur);
                         return Err(HoleListError::MalformedNode);
                     }
                     // SAFETY: alignment and strict ordering validate the link;
@@ -529,7 +529,7 @@ impl HoleList {
                     let cur_size = unsafe { (*n.as_ptr()).size };
                     if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 {
                         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
-                        crate::probe_corruption(cur);
+                        crate::hooks::probe_corruption(cur);
                         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                         {
                             klog::write_primary_raw(b"[KALLOC] malformed-free-size addr=");
@@ -548,7 +548,7 @@ impl HoleList {
                             klog::write_primary_raw(b" size=");
                             klog::write_primary_hex_u64(cur_size as u64);
                             klog::write_primary_raw(b"\n");
-                            crate::probe_corruption(cur); // B1345: classify frame
+                            crate::hooks::probe_corruption(cur); // B1345: classify frame
                             self.print_free_ip(cur); // B1346: name the freer
                         }
                         return Err(HoleListError::AddressOverflow);
@@ -561,7 +561,7 @@ impl HoleList {
                             klog::write_primary_raw(b" end=");
                             klog::write_primary_hex_u64(cur_end as u64);
                             klog::write_primary_raw(b"\n");
-                            crate::probe_corruption(cur); // B1345: classify frame
+                            crate::hooks::probe_corruption(cur); // B1345: classify frame
                             self.print_free_ip(cur); // B1346: name the freer
                         }
                         return Err(HoleListError::OutsideOwnedRegion);
@@ -637,7 +637,7 @@ impl HoleList {
                 #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                 {
                     klog::write_primary_raw(b"[KALLOC] seq=");
-                    klog::write_primary_dec_u64(crate::next_seq());
+                    klog::write_primary_dec_u64(crate::hooks::next_seq());
                     klog::write_primary_raw(b" merge-header-outside node=");
                     klog::write_primary_hex_u64(node as u64);
                     klog::write_primary_raw(b" node_size=");
@@ -648,7 +648,7 @@ impl HoleList {
                     // B1345 hunt: classify the corrupt node's physical frame
                     // (MANAGED/buddy vs kernel-image-reserved; refcount/mapcount)
                     // to decide device/double-map cross-write vs pure CPU UAF.
-                    crate::probe_corruption(node as usize);
+                    crate::hooks::probe_corruption(node as usize);
                     self.print_free_ip(node as usize); // B1346: name the freer
                     #[cfg(feature = "debug-heappoison")]
                     if let Some((base, size, free_ip)) = self.lookup_evicted(node as usize) {
@@ -673,7 +673,7 @@ impl HoleList {
                         klog::write_primary_raw(b"\n");
                     }
                     #[cfg(feature = "debug-heappoison")]
-                    crate::probe_corruption(node as usize);
+                    crate::hooks::probe_corruption(node as usize);
                     self.print_free_ip(node as usize); // B1346: name the freer
                 }
                 return Err(HoleListError::OutsideOwnedRegion);
@@ -787,7 +787,7 @@ impl HoleList {
                     // B1345 hunt: classify the corrupt node's physical frame
                     // (MANAGED/buddy vs kernel-image-reserved; refcount/mapcount)
                     // to decide device/double-map cross-write vs pure CPU UAF.
-                    crate::probe_corruption(cur_addr);
+                    crate::hooks::probe_corruption(cur_addr);
                     self.print_free_ip(cur_addr); // B1346: name the freer
                 }
                 return None;
