@@ -281,7 +281,12 @@ impl Nameidata {
                 // yields its BODY string to splice as a new path frame. Only
                 // magic inodes ever take the `Jump` arm, so the common symlink
                 // walk below is byte-for-byte unchanged.
-                match child.inode().ok_or(VfsError::Enoent)?.follow_link()? {
+                // Linux `get_link` (fs/namei.c): a symlink traversed by the walk
+                // has ITS atime bumped before the body is read, so `relatime`
+                // sees a followed symlink as an access.
+                let link_inode = child.inode().ok_or(VfsError::Enoent)?;
+                crate::atime::touch_atime(self.cur_mnt_id, &link_inode);
+                match link_inode.follow_link()? {
                     LinkTarget::Jump(vp) => {
                         // RESOLVE_NO_MAGICLINKS (Linux `nd_jump_link` under
                         // LOOKUP_NO_MAGICLINKS): a magic link followed in the

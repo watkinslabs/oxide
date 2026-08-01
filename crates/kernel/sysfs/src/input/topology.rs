@@ -42,17 +42,9 @@ impl FileOps for TransportInputOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let parent = inode.private::<TransportInputData>().ok_or(VfsError::Einval)?;
         let children = children(&parent.bus, &parent.addr);
-        let mut idx = ctx.pos as usize;
-        while idx < children.len() {
-            let name = parent_name(&children[idx]);
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(&name).map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit(&name, ino, FileType::Directory, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names: Vec<String> = children.iter().map(parent_name).collect();
+        crate::readdir::emit_names(inode, ctx, names.iter().map(|n| n.as_str()),
+            FileType::Directory)
     }
 }
 
@@ -90,17 +82,9 @@ impl FileOps for VirtualInputOps {
         let devices: Vec<InputDevInfo> = input_devs().into_iter()
             .filter(|info| info.device.parent().is_none())
             .collect();
-        let mut idx = ctx.pos as usize;
-        while idx < devices.len() {
-            let name = parent_name(&devices[idx]);
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(&name).map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit(&name, ino, FileType::Directory, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names: Vec<String> = devices.iter().map(parent_name).collect();
+        crate::readdir::emit_names(inode, ctx, names.iter().map(|n| n.as_str()),
+            FileType::Directory)
     }
 }
 

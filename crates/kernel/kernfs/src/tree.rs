@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use sync::{Kernfs as KernfsClass, Spinlock};
 use vfs::superblock::SuperBlock;
-use vfs::{CreateCtx, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{CookieEntry, CreateCtx, DirContext, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError, default_file_ops, default_inode_ops, mk_mode};
 
 use crate::dir_ops::{PseudoDirFileOps, PseudoDirOps};
 
@@ -457,25 +457,21 @@ impl PseudoDir {
         }
     }
 
-    pub(crate) fn op_readdir(
-        &self,
-        off: u64,
-        f: &mut dyn FnMut(u64, u64, &str, FileType) -> bool,
-    ) -> KResult<u64> {
-        let kids: Vec<(String, u64, FileType)> = {
+    /// `kernfs_fop_readdir` (Linux fs/kernfs/dir.c) — the ONE readdir loop every
+    /// pseudo filesystem built on [`PseudoDir`] shares (devfs, devpts, sysfs's
+    /// static tree, procfs's registered tree, tracefs/debugfs, configfs).
+    ///
+    /// The cursor is a per-entry NAME cookie ([`vfs::name_cookie`]), not an
+    /// ordinal index. An ordinal shifts when a sibling is created or removed
+    /// between two `getdents` calls, which duplicates or skips entries in a
+    /// paginated listing and silently repoints a `seekdir(3)` cookie; a name
+    /// cookie is derived from the entry alone and survives its neighbours
+    /// changing. # C: O(N log N) per call
+    pub(crate) fn op_readdir(&self, ctx: &mut DirContext) -> KResult<()> {
+        let mut kids: Vec<CookieEntry> = {
             let g = self.children.lock();
-            g.iter().map(|(k, v)| (k.clone(), v.ino(), v.file_type())).collect()
+            g.iter().map(|(k, v)| CookieEntry::new(k.clone(), v.ino(), v.file_type())).collect()
         };
-        let r_len = kids.len() as u64;
-        let mut idx = off as usize;
-        while idx < kids.len() {
-            let (name, ino, ft) = &kids[idx];
-            let next = idx as u64 + 1;
-            if !f(*ino, next, name, *ft) {
-                return Ok(next);
-            }
-            idx += 1;
-        }
-        Ok(r_len)
+        vfs::emit_by_cookie(&mut kids, ctx)
     }
 }

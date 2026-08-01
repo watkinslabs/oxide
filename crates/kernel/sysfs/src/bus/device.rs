@@ -338,20 +338,12 @@ impl FileOps for DeviceDirOps {
                 && dev_canon_exact(c).is_some())
             .map(|c| c.addr.clone())
             .collect();
-        let total = entries.len() + child_names.len();
-        let mut idx = ctx.pos as usize;
-        while idx < total {
-            let next = idx as u64 + 1;
-            let (name, file_type): (&str, FileType) = if idx < entries.len() {
-                entries[idx]
-            } else {
-                (child_names[idx - entries.len()].as_str(), FileType::Directory)
-            };
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, file_type, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        // Attrs and nested child dirs share ONE cookie space keyed by name, so
+        // the two former ordinal ranges no longer need to be concatenated.
+        let mut es = crate::readdir::DirEntries::new(inode);
+        for (name, file_type) in entries.iter() { es.push(name, *file_type); }
+        for name in child_names.iter() { es.push(name, FileType::Directory); }
+        es.emit(ctx)
     }
 }
 pub(super) fn make_device_dir_inode(device: Arc<drv::Device>) -> InodeRef {

@@ -36,15 +36,8 @@ impl FileOps for NetStatsOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let fields = net::STAT_FIELDS;
-        let mut idx = ctx.pos as usize;
-        while idx < fields.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(fields[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(fields[idx], ino, FileType::Regular, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, net::STAT_FIELDS.iter().copied(),
+            FileType::Regular)
     }
 }
 

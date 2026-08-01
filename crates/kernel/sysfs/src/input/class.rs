@@ -38,16 +38,8 @@ impl FileOps for ClassInputOps {
             names.push(parent_name(device));
             names.push(device.addr.clone());
         }
-        let mut index = ctx.pos as usize;
-        while index < names.len() {
-            let next = index as u64 + 1;
-            let ino = inode.lookup(&names[index]).map(|child| child.ino()).unwrap_or(0);
-            if !ctx.emit(&names[index], ino, FileType::Symlink, next) {
-                return Ok(());
-            }
-            index += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, names.iter().map(|n| n.as_str()),
+            FileType::Symlink)
     }
 }
 

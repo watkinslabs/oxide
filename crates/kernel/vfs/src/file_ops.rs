@@ -240,6 +240,19 @@ pub trait FileOps: Send + Sync {
         Err(crate::types::VfsError::Enotdir)
     }
 
+    /// `f_op->iterate_shared(struct file *, struct dir_context *)` — the
+    /// FILE-carrying form. Linux hands the open DESCRIPTION to readdir, not the
+    /// inode, so a backend can keep per-open cursor state across the paginated
+    /// `getdents` calls that make up one listing. A backend whose entries are
+    /// inode state only (every synthetic fs, tmpfs, ext4) needs nothing from the
+    /// file and inherits the default; FUSE overrides it so the daemon's
+    /// `OPENDIR` handle — and therefore the daemon's own cursor — survives from
+    /// one page to the next instead of being re-opened and released per call.
+    /// # C: backend-dependent
+    fn iterate_file(&self, file: &crate::File, ctx: &mut DirContext) -> KResult<()> {
+        self.iterate(file.inode(), ctx)
+    }
+
     /// Does [`Self::iterate`] already emit `.` and `..`? Linux makes each
     /// filesystem call `dir_emit_dots` itself; a backend whose entries live on
     /// disk (ext4) or come from a userspace daemon (FUSE) has them already, and

@@ -1,5 +1,7 @@
 use alloc::format;
+use alloc::string::String;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use core::sync::atomic::Ordering;
 use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
@@ -70,6 +72,10 @@ fn pc_fd(t: u32, is_self: bool) -> InodeRef { make_proc_fd_dir(if is_self { None
 fn pc_fdinfo(t: u32, is_self: bool) -> InodeRef { crate::fdinfo::make_fdinfo_dir(if is_self { None } else { Some(t) }) }
 fn pc_attr(t: u32, _s: bool) -> InodeRef { make_proc_pid_attr_dir(t) }
 
+/// `/proc/<tgid>/task` — present only on a thread-group leader's directory
+/// (Linux `tgid_base_stuff` vs `tid_base_stuff`).
+const TASK_DIR: &str = "task";
+
 const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
     ("status", FileType::Regular, pc_status),
     ("cmdline", FileType::Regular, pc_cmdline),
@@ -135,7 +141,7 @@ fn pid_entry_inode(d: &ProcPidDirInode, tid: u32, name: &str) -> KResult<InodeRe
         return Ok(ctor(tid, d.is_self));
     }
     match name {
-        "task" if d.allow_task_dir => {
+        TASK_DIR if d.allow_task_dir => {
             let task = sched::live::registry::lookup(tid).ok_or(VfsError::Enoent)?;
             let tgid = task.tgid.load(Ordering::Acquire);
             Ok(make_proc_pid_task_dir(tgid))
@@ -160,25 +166,15 @@ impl InodeOps for ProcPidDirOps {
 }
 
 impl FileOps for ProcPidDirOps {
+    /// Every entry is synthesized on lookup, so a name whose constructor now
+    /// fails (the task exited between two `getdents` pages) is dropped rather
+    /// than emitted with `d_ino == 0`. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcPidDirInode>().ok_or(VfsError::Einval)?;
-        let mut idx = ctx.pos as usize;
-        let total = PID_ENTRIES.len() + usize::from(d.allow_task_dir);
-        while idx < total {
-            let next = idx as u64 + 1;
-            let (name, ft) = if idx < PID_ENTRIES.len() {
-                let (n, ft, _) = PID_ENTRIES[idx];
-                (n, ft)
-            } else {
-                ("task", FileType::Directory)
-            };
-            let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(name, ino, ft, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let mut names: Vec<(String, FileType)> =
+            PID_ENTRIES.iter().map(|(n, ft, _)| (String::from(*n), *ft)).collect();
+        if d.allow_task_dir { names.push((String::from(TASK_DIR), FileType::Directory)); }
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 
@@ -227,34 +223,13 @@ impl InodeOps for ProcPidTaskDirOps {
 }
 
 impl FileOps for ProcPidTaskDirOps {
+    /// The thread set is re-snapshotted per call; a thread exiting mid-listing
+    /// must not shift its siblings' cursors. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcPidTaskDirInode>().ok_or(VfsError::Einval)?;
-        let tids = sched::live::registry::thread_entries(d.tgid);
-        let mut idx = ctx.pos as usize;
-        while idx < tids.len() {
-            let next = idx as u64 + 1;
-            let mut buf = [0u8; 11];
-            let mut t = tids[idx].0;
-            let mut n = 0;
-            if t == 0 {
-                buf[0] = b'0';
-                n = 1;
-            } else {
-                while t > 0 {
-                    buf[n] = b'0' + (t % 10) as u8;
-                    t /= 10;
-                    n += 1;
-                }
-            }
-            buf[..n].reverse();
-            let s = crate::util::decimal_str(&buf, n);
-            let ino = inode.lookup(s).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(s, ino, FileType::Directory, next) {
-                return Ok(());
-            }
-            idx += 1;
-        }
-        Ok(())
+        let names = sched::live::registry::thread_entries(d.tgid).into_iter()
+            .map(|(vtid, _)| (crate::readdir::decimal_name(vtid), FileType::Directory));
+        crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }
 

@@ -18,10 +18,16 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as LockClass};
-use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{CookieEntry, FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
 use vfs::{DirContext, FileOps, InodeBuilder, mk_mode};
 
 pub const BINFMT_MISC_MAGIC: u64 = ids::MAGIC;
+
+/// The two control files binfmt_misc publishes alongside the registered rules
+/// (Linux `bm_status_operations` / `bm_register_operations`).
+const BINFMT_STATUS: &str = "status";
+const BINFMT_REGISTER: &str = "register";
+const BINFMT_CONTROL_FILES: &[&str] = &[BINFMT_STATUS, BINFMT_REGISTER];
 
 /// binfmt_misc's reserved inode-number range, owned by `vfs::pseudo_ino`. The
 /// bare counter it replaces started at the range's base and counted on past it
@@ -139,9 +145,9 @@ impl InodeOps for BinfmtRootInodeOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = inode.private::<BinfmtRootData>().ok_or(VfsError::Einval)?;
         match name {
-            "status" => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Status,
+            BINFMT_STATUS => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Status,
                 NEXT_INO.alloc(), 8)),
-            "register" => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Register,
+            BINFMT_REGISTER => Ok(make_binfmt_file(Arc::clone(&d.state), BinKind::Register,
                 NEXT_INO.alloc(), 0)),
             _ => {
                 let rules = d.state.rules.lock();
@@ -160,30 +166,19 @@ impl InodeOps for BinfmtRootInodeOps {
 /// `i_fop` for the binfmt_misc directory (readdir). # C: O(N_rules)
 struct BinfmtRootFileOps;
 impl FileOps for BinfmtRootFileOps {
+    /// The control files and the registered rules share ONE cookie space keyed
+    /// on the name. Unregistering a rule between two `getdents` pages used to
+    /// shift every later ordinal; a rule that vanished before its ino could be
+    /// resolved is dropped rather than emitted with `d_ino == 0`. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<BinfmtRootData>().ok_or(VfsError::Einval)?;
-        let off = ctx.pos;
-        let mut idx = 0u64;
-        for name in ["status", "register"] {
-            if idx >= off {
-                let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-                if !ctx.emit(name, ino, FileType::Regular, idx + 1) {
-                    return Ok(());
-                }
-            }
-            idx += 1;
+        let rules: Vec<String> = d.state.rules.lock().keys().cloned().collect();
+        let mut es: Vec<CookieEntry> = Vec::with_capacity(BINFMT_CONTROL_FILES.len() + rules.len());
+        for name in BINFMT_CONTROL_FILES.iter().map(|n| (*n).to_string()).chain(rules) {
+            let Ok(i) = inode.lookup(&name) else { continue };
+            es.push(CookieEntry::new(name, i.ino(), FileType::Regular));
         }
-        let names: Vec<String> = d.state.rules.lock().keys().cloned().collect();
-        for name in names {
-            if idx >= off {
-                let ino = inode.lookup(&name).map(|i| i.ino()).unwrap_or(0);
-                if !ctx.emit(&name, ino, FileType::Regular, idx + 1) {
-                    return Ok(());
-                }
-            }
-            idx += 1;
-        }
-        Ok(())
+        vfs::emit_by_cookie(&mut es, ctx)
     }
 }
 

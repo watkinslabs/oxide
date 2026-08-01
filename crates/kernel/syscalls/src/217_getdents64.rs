@@ -185,7 +185,7 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
     let self_ino = inode.ino();
     let parent_ino = file.dentry().parent()
         .and_then(|p| p.inode()).map(|i| i.ino()).unwrap_or(self_ino);
-    let (r, new_off) = vfs::readdir_dots(&inode, self_ino, parent_ino, start, &mut actor);
+    let (r, new_off) = vfs::readdir_dots(&file, self_ino, parent_ino, start, &mut actor);
     let iter_err = r.as_ref().err().map(|e| *e as i32);
 
     #[cfg(feature = "debug-getdents")]
@@ -197,6 +197,9 @@ fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
 
     // Linux `iterate_dir` stores the cursor unconditionally, error or not.
     file.set_pos(new_off);
+    // `iterate_dir` runs `file_accessed(file)` after the backend walk — reading
+    // a directory advances its atime exactly as reading a file does.
+    vfs::file_accessed(&file);
     if actor.fill.written() > 0 {
         let cap = actor.fill.capacity();
         // SAFETY: same admitted [dirp, dirp+count) range as the packing path;

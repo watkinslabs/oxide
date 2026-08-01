@@ -391,7 +391,12 @@ pub fn root_path_for_ns(ns: u64) -> Option<crate::VfsPath> {
 /// `mnt_id` of `m`'s parent mount — the value RECORDED at attach. # C: O(1)
 pub fn parent_mnt_id(m: &Mount) -> u64 { m.parent_id.load(Ordering::Acquire) }
 
-/// Build the `Mount` Arc (intrusive links empty; caller wires them). # C: O(1)
+/// Build the `Mount` Arc (intrusive links empty; caller wires them). The
+/// initial `flags` word is Linux `path_mount`'s "Default to relatime unless
+/// overriden" — `ms_to_mnt(0)` — NOT a bare 0. A bare 0 means the ABSENCE of
+/// both MNT_RELATIME and MNT_NOATIME, which `relatime_need_update` reads as
+/// STRICTATIME: every internal/boot mount would then stamp atime on every
+/// single read and (on ext4) write the inode through. # C: O(1)
 fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentry>>,
              parent_id: u64, mnt_id: u64, ns: u64) -> Arc<Mount> {
     let mnt_root = sb.s_root();
@@ -401,7 +406,7 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         sb, rendered_path: Spinlock::new(rendered), mountpoint: Spinlock::new(mountpoint),
         parent_id: AtomicU64::new(parent_id), mnt_id,
         propagation: AtomicU8::new(Propagation::Private as u8),
-        peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns: AtomicU64::new(ns),
+        peer_group: AtomicU64::new(0), flags: AtomicU64::new(crate::mount::ms_to_mnt(0)), ns: AtomicU64::new(ns),
         mnt_root: Spinlock::new(mnt_root),
         mnt_parent: Spinlock::new(Weak::new()),
         mnt_mounts: Spinlock::new(Vec::new()),

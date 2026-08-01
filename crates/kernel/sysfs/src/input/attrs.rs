@@ -145,15 +145,7 @@ fn make_cap_dir(info: &InputDevInfo) -> InodeRef {
 }
 
 fn emit(inode: &Inode, ctx: &mut DirContext, entries: &[(&str, FileType)]) -> KResult<()> {
-    let mut idx = ctx.pos as usize;
-    while idx < entries.len() {
-        let (name, ty) = entries[idx];
-        let next = idx as u64 + 1;
-        let ino = inode.lookup(name).map(|child| child.ino()).unwrap_or(0);
-        if !ctx.emit(name, ino, ty, next) { return Ok(()); }
-        idx += 1;
-    }
-    Ok(())
+    crate::readdir::emit_table(inode, ctx, entries)
 }
 
 pub(super) fn lookup(info: &InputDevInfo, name: &str) -> Option<KResult<InodeRef>> {

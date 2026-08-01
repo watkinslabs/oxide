@@ -1,9 +1,10 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use sync::{Spinlock, Inode as InodeClass};
-use vfs::{CreateCtx, Devt, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, make_device_node_inode, mk_mode};
+use vfs::{CookieEntry, CreateCtx, Devt, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, make_device_node_inode, mk_mode};
 use vfs::superblock::SuperBlock;
 
 use super::accounting::TmpfsSb;
@@ -65,17 +66,19 @@ pub(super) fn make_tmpfs_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: 
 /// `i_fop` for a tmpfs directory (readdir). # C: O(1)
 struct TmpfsDirFileOps;
 impl FileOps for TmpfsDirFileOps {
+    /// Cookie-ordered (Linux `shmem_dir_operations` keeps a per-name
+    /// `simple_offset` cookie). The `.skip(off)` ordinal this replaced indexed
+    /// the live `kids` map: a create or unlink between two `getdents` pages
+    /// shifted every later ordinal, so `ls /tmp` under concurrent writers
+    /// duplicated or skipped names. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
-        let g = d.kids.lock();
-        let off = ctx.pos as usize;
-        let mut idx = off;
-        for (name, child) in g.iter().skip(off) {
-            let next = idx as u64 + 1;
-            if !ctx.emit(name, child.ino(), child.file_type(), next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        // Children are held by the map, so their ino is already known: no
+        // second lookup, and no entry can carry `d_ino == 0`.
+        let mut es: Vec<CookieEntry> = d.kids.lock().iter()
+            .map(|(name, c)| CookieEntry::new(name.clone(), c.ino(), c.file_type()))
+            .collect();
+        vfs::emit_by_cookie(&mut es, ctx)
     }
 }
 

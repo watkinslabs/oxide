@@ -13,11 +13,12 @@
 
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use vfs::inode::{Inode, InodeBuilder, OwnerPersist};
 use vfs::inode_ops::{mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
-use vfs::{DirContext, FileType, Ino, InodeRef, KResult, VfsError};
+use vfs::{CookieEntry, DirContext, FileType, Ino, InodeRef, KResult, VfsError};
 
 /// Permission bits of a cgroup DIRECTORY inode. `0o755` (Linux cgroup2 dirs are
 /// `drwxr-xr-x`): the owner may create sub-cgroups (`mkdir`) — required for a
@@ -117,28 +118,26 @@ impl InodeOps for CgDirOps {
 /// control files then the child cgroups.
 struct CgDirFileOps;
 impl FileOps for CgDirFileOps {
+    /// Control files and child cgroups share ONE cookie space keyed on the name
+    /// (Linux cgroupfs is kernfs-backed, so its `d_off` is a name hash). The
+    /// concatenated-ordinal cursor this replaced re-indexed on every call:
+    /// systemd creating or removing a sub-cgroup between two `getdents` pages
+    /// shifted every later ordinal and the listing duplicated or skipped.
+    /// A child that vanished between the snapshot and the resolve is dropped —
+    /// `d_ino == 0` means "deleted placeholder" to userspace. # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let cgid = dir_data(inode)?.cgid;
-        // Stable order: control files first, then child cgroups. The
-        // offset is an index into that concatenated sequence. The child's real
-        // ino (resolved via `lookup` — no lock held here) feeds getdents `d_ino`.
         let files = crate::node_file_names(cgid);
         let kids = crate::node_child_names(cgid);
-        let total = files.len() + kids.len();
-        let mut idx = ctx.pos as usize;
-        while idx < total {
-            let next = idx as u64 + 1;
-            if idx < files.len() {
-                let ino = inode.lookup(files[idx]).map(|i| i.ino()).unwrap_or(0);
-                if !ctx.emit(files[idx], ino, FileType::Regular, next) { return Ok(()); }
-            } else {
-                let name = &kids[idx - files.len()];
-                let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
-                if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
-            }
-            idx += 1;
+        let mut es: Vec<CookieEntry> = Vec::with_capacity(files.len() + kids.len());
+        for (name, d_type) in files.iter().map(|f| ((*f).to_string(), FileType::Regular))
+            .chain(kids.into_iter().map(|k| (k, FileType::Directory)))
+        {
+            // No lock held here: `lookup` re-reads the hierarchy.
+            let Ok(i) = inode.lookup(&name) else { continue };
+            es.push(CookieEntry::new(name, i.ino(), d_type));
         }
-        Ok(())
+        vfs::emit_by_cookie(&mut es, ctx)
     }
 }
 

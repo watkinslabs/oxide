@@ -40,14 +40,7 @@ impl FileOps for DevicesRootOps {
         let list: Vec<&str> = devs.iter()
             .filter(|d| d.bus == bus && is_root_device(d))
             .map(|d| d.addr.as_str()).collect();
-        let mut idx = ctx.pos as usize;
-        while idx < list.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(list[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(list[idx], ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, list.into_iter(), FileType::Directory)
     }
 }
 pub(super) fn make_devices_root_inode(bus: &'static str) -> InodeRef {
@@ -77,14 +70,7 @@ impl FileOps for BusDevicesOps {
             .filter(|d| d.bus == bus && dev_canon_exact(d).is_some())
             .map(|d| d.addr.as_str())
             .collect();
-        let mut idx = ctx.pos as usize;
-        while idx < list.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(list[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(list[idx], ino, FileType::Symlink, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, list.into_iter(), FileType::Symlink)
     }
 }
 pub(super) fn make_bus_devices_inode(bus: &'static str) -> InodeRef {
@@ -110,14 +96,7 @@ impl FileOps for BusDriversOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let bus = inode.private::<BusData>().ok_or(VfsError::Einval)?.bus;
         let names = drv::driver_names_for_bus(bus);
-        let mut idx = ctx.pos as usize;
-        while idx < names.len() {
-            let next = idx as u64 + 1;
-            let ino = inode.lookup(names[idx]).map(|i| i.ino()).unwrap_or(0);
-            if !ctx.emit(names[idx], ino, FileType::Directory, next) { return Ok(()); }
-            idx += 1;
-        }
-        Ok(())
+        crate::readdir::emit_names(inode, ctx, names.into_iter(), FileType::Directory)
     }
 }
 pub(super) fn make_bus_drivers_inode(bus: &'static str) -> InodeRef {
