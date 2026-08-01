@@ -73,7 +73,8 @@ mod tests {
     #[test]
     fn keys_sysctl_write_reaches_the_bound_ceiling() {
         keyring::set_quota_hooks((fake_maxkeys, set_fake_maxkeys), (fake_maxkeys, set_fake_maxkeys),
-            (fake_maxkeys, set_fake_maxkeys), (fake_maxkeys, set_fake_maxkeys));
+            (fake_maxkeys, set_fake_maxkeys), (fake_maxkeys, set_fake_maxkeys),
+            (fake_maxkeys, set_fake_maxkeys));
         let leaf = IntHook { get: keyring::maxkeys, set: keyring::set_maxkeys,
             bounds: Some(keyring::KEY_QUOTA_BOUNDS) };
         leaf.store(b"777\n").expect("an in-range ceiling is accepted");

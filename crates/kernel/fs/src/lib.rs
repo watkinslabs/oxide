@@ -48,7 +48,6 @@ pub mod fileattr;
 pub mod keyring;
 /// Boot binding of the keyring's `/proc/keys`, `/proc/key-users` and
 /// `/proc/sys/kernel/keys/*` accessors into procfs.
-pub mod keyring_procfs;
 pub mod perf;
 /// Identity vs numbering for this crate's anon-inode families.
 pub mod pseudo_ino_identity;

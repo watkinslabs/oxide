@@ -19,6 +19,11 @@ const UNBOUND: i64 = 0;
 /// range — a uid that may hold no key at all is not an expressible quota.
 pub const KEY_QUOTA_BOUNDS: (i64, i64) = (1, i32::MAX as i64);
 
+/// `persistent_keyring_expiry`'s window starts at ZERO, not one: setting it to
+/// 0 expires every persistent keyring as it is handed out, which is how the
+/// facility is turned off without a rebuild.
+pub const KEY_EXPIRY_BOUNDS: (i64, i64) = (0, i32::MAX as i64);
+
 static KEYS:      AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static KEY_USERS: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
@@ -53,6 +58,7 @@ static MAXKEYS:       QuotaSlot = QuotaSlot::new();
 static MAXBYTES:      QuotaSlot = QuotaSlot::new();
 static ROOT_MAXKEYS:  QuotaSlot = QuotaSlot::new();
 static ROOT_MAXBYTES: QuotaSlot = QuotaSlot::new();
+static PERSISTENT_EXPIRY: QuotaSlot = QuotaSlot::new();
 
 /// Bind `/proc/keys` and `/proc/key-users` to the store's renderers. Both are
 /// per-read: `/proc/keys` is filtered by the READING task's view permission, so
@@ -63,18 +69,20 @@ pub fn set_report_hooks(keys: fn() -> Vec<u8>, key_users: fn() -> Vec<u8>) {
     KEY_USERS.store(key_users as *mut (), Ordering::Release);
 }
 
-/// Bind the four `/proc/sys/kernel/keys/` ceilings to the live variables the
+/// Bind the `/proc/sys/kernel/keys/` values to the live variables the
 /// key allocation path tests. # C: O(1)
 pub fn set_quota_hooks(
     maxkeys: (fn() -> i64, fn(i64)),
     maxbytes: (fn() -> i64, fn(i64)),
     root_maxkeys: (fn() -> i64, fn(i64)),
     root_maxbytes: (fn() -> i64, fn(i64)),
+    persistent_expiry: (fn() -> i64, fn(i64)),
 ) {
     MAXKEYS.install(maxkeys.0, maxkeys.1);
     MAXBYTES.install(maxbytes.0, maxbytes.1);
     ROOT_MAXKEYS.install(root_maxkeys.0, root_maxkeys.1);
     ROOT_MAXBYTES.install(root_maxbytes.0, root_maxbytes.1);
+    PERSISTENT_EXPIRY.install(persistent_expiry.0, persistent_expiry.1);
 }
 
 /// `/proc/keys` body for the CURRENT reader. Empty while no store is bound —
@@ -110,3 +118,8 @@ pub fn set_root_maxkeys(v: i64) { ROOT_MAXKEYS.write(v) }
 pub fn root_maxbytes() -> i64 { ROOT_MAXBYTES.read() }
 /// # C: O(1)
 pub fn set_root_maxbytes(v: i64) { ROOT_MAXBYTES.write(v) }
+/// `kernel.keys.persistent_keyring_expiry` — the window every successful
+/// `KEYCTL_GET_PERSISTENT` refreshes. # C: O(1)
+pub fn persistent_expiry() -> i64 { PERSISTENT_EXPIRY.read() }
+/// # C: O(1)
+pub fn set_persistent_expiry(v: i64) { PERSISTENT_EXPIRY.write(v) }

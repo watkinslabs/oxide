@@ -4,7 +4,7 @@
 
 use super::{e, Ctx};
 use super::super::perm::{check_perm, check_perm_with, Lookup, Possess};
-use super::super::store::{Quota, Store, TaskIds, STORE};
+use super::super::store::{persistent_expiry, Quota, Store, TaskIds, STORE};
 use super::super::types;
 use super::super::uapi::*;
 use syscall::errno::Errno;
@@ -150,7 +150,7 @@ pub fn get_persistent(c: &Ctx, uid: i32, destid: i32) -> i64 {
     if let Err(rv) = check_perm_with(&g, ring, &c.t, KEY_NEED_LINK, c.now_ns, Possess::Yes) { return rv; }
     if let Err(err) = g.link(dest, ring) { return e(err); }
     let k = g.keys.get_mut(&ring).expect("presence proved under the same held lock");
-    k.expiry_ns = c.now_ns.saturating_add(PERSISTENT_KEYRING_EXPIRY.saturating_mul(NS_PER_SEC));
+    k.expiry_ns = c.now_ns.saturating_add(persistent_expiry().saturating_mul(NS_PER_SEC));
     ring as i64
 }
 
