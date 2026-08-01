@@ -16,6 +16,9 @@ extern crate alloc;
 /// Sole caller is `trace.rs`'s MSI-X table dump, itself `debug-boot`-only.
 #[cfg(feature = "debug-boot")]
 pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
+    // SAFETY: this fn is itself `unsafe` and forwards its contract unchanged —
+    // `pa` names a 4K-aligned device region the kernel exclusively owns, at
+    // boot with the PMM ready, single-CPU, IRQs masked.
     unsafe { mmio_map::map_pages(pa, n_pages) }
 }
 
@@ -118,6 +121,8 @@ pub fn enumerate_and_log() {
         // unmask window mirrors arm-timer smoke; restore boot-mask state.
         unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
         for _ in 0..2_000_000 { core::hint::spin_loop(); }
+        // SAFETY: privileged DAIF write at EL1, restoring the boot-mask state
+        // this block opened two lines above; no scheduler runs yet.
         unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)); }
     }
     #[cfg(target_arch = "x86_64")]

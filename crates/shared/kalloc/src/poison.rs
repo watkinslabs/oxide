@@ -168,6 +168,9 @@ pub unsafe fn quarantine(q: &mut Quar, ptr: *mut u8, layout: Layout, free_ip: u6
         let head = core::cmp::min(POISON_HEAD, s.size as usize);
         // SAFETY: s.base/s.size came from a prior alloc still owned by the ring; reading the poisoned head is in-bounds.
         for off in 0..head {
+            // SAFETY: `s.base`/`s.size` came from a prior alloc that the
+            // quarantine ring still owns, so the block is not reusable and
+            // `off < head <= s.size` keeps the read inside it.
             let b = unsafe { ptr::read((s.base as *const u8).add(off)) };
             if b != POISON_BYTE {
                 #[cfg(feature = "debug-heappoison")]
