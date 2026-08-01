@@ -115,9 +115,9 @@ impl FileSystem for FakeDevptsFs {
     fn root(&self) -> Option<InodeRef> { Some(fake_devpts_root()) }
 }
 fn register_fake_devpts() {
-    let _ = vfs::fs::register_fs(FsType::new("devpts", 0, FsFlags::empty(), Box::new(|ty, _s, _t, _d| {
+    let _ = vfs::fs::register_fs(FsType::new("devpts", 0, FsFlags::empty(), Box::new(|ty, _s, _t, _d, _| {
         let fs: std::sync::Arc<dyn FileSystem> = std::sync::Arc::new(FakeDevptsFs);
-        vfs::fs::superblock_from_filesystem(ty, fs, None, "devpts".into())
+        vfs::fs::superblock_from_filesystem(ty, fs, None, "devpts".into(), 0)
     })));
 }
 
@@ -247,9 +247,9 @@ fn a_userns_caller_cannot_mount_a_non_userns_filesystem() {
 fn a_userns_caller_may_mount_a_userns_filesystem() {
     let _g = guard();
     let _ = vfs::fs::register_fs(FsType::new("usernsfs", 0, FsFlags::FS_USERNS_MOUNT,
-        Box::new(|ty, _s, _t, _d| {
+        Box::new(|ty, _s, _t, _d, _| {
             let fs: std::sync::Arc<dyn FileSystem> = std::sync::Arc::new(FakeDevptsFs);
-            vfs::fs::superblock_from_filesystem(ty, fs, None, "usernsfs".into())
+            vfs::fs::superblock_from_filesystem(ty, fs, None, "usernsfs".into(), 0)
         })));
     let target_d = mount_tree("usernsfs-a");
     assert_eq!(mount_dispatch::dispatch_mount(None, "usernsfs", "/mnt/point", &target_d, None, "", 0,

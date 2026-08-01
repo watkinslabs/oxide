@@ -1,4 +1,10 @@
-// 166 umount2 — one syscall, one file (docs/53 §0). Moved verbatim from mount.rs.
+// 166 umount2 — one syscall, one file (docs/53 §0).
+//
+// `sys_umount2(target, flags)`, shaped as Linux `fs/namespace.c` `ksys_umount`
+// → `path_umount` → `can_umount` + `do_umount`: validate the flag word, resolve
+// the target, run `can_umount`'s rungs, then the `do_umount` ladder (owned as a
+// pure decision by `vfs::mount::umount_check`), fire `s_op->umount_begin` when
+// `MNT_FORCE` asked for it, and detach.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -9,20 +15,10 @@ use syscall::errno::Errno;
 
 use crate::mount_common::read_user_path_required;
 
-/// `sys_umount2(target, flags)` — slot 166.
-///
-/// Linux umount2(2) detaches a mount point. v1 implementation:
-/// resolve the target path to a mount-NS-scoped registry entry,
-/// remove every entry under the subtree (inclusive), and fire
-/// IN_DELETE on each. Returns EINVAL if the target isn't a known
-/// path, EPERM without CAP_SYS_ADMIN, EBUSY if `flags == 0` and
-/// the target is a kernel-internal mount that shouldn't unmount
-/// (proc/sys/dev/devpts), 0 on success.
-///
-/// `flags` honours MNT_FORCE (1) + MNT_DETACH (2) + UMOUNT_NOFOLLOW
-/// (8) syntactically; v1 detaches in all cases since we don't track
-/// open-fd refcounts on registry entries (see `26§3.1` follow-up).
-/// # C: O(N) over devfs registry.
+/// `sys_umount2(target, flags)` — slot 166. `MNT_FORCE` / `MNT_DETACH` /
+/// `MNT_EXPIRE` / `UMOUNT_NOFOLLOW` all carry their Linux meaning; the refusal
+/// ladder and its errnos are [`vfs::mount::umount_check`].
+/// # C: O(N_subtree)
 pub fn sys_umount2(args: &SyscallArgs) -> i64 {
     let rv = sys_umount2_impl(args);
     #[cfg(feature = "debug-mount")]
@@ -58,12 +54,30 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     // Linux `ksys_umount` resolves the path (`user_path_at`) BEFORE `path_umount`
-    // → `can_umount`, whose first gate is `may_mount()` = `ns_capable(mnt_ns->
-    // user_ns, CAP_SYS_ADMIN)` — not the flat effective-set test this had.
+    // → `can_umount`, whose rungs run in THIS order: `may_mount()`,
+    // `path_mounted()`, `check_mnt()`, `MNT_LOCKED`, then the `MNT_FORCE`
+    // capability demand. The force rung used to run second, so a forced unmount
+    // of a plain directory reported EPERM where Linux reports EINVAL.
     if let Some(rv) = crate::mount_perm::may_mount_or_eperm() { return rv; }
-    // `can_umount`: `if (flags & MNT_FORCE && !ns_capable(sb->s_user_ns,
-    // CAP_SYS_ADMIN)) return -EPERM` — a forced unmount needs authority over the
-    // FILESYSTEM's user namespace, a strictly stronger demand than may_mount.
+    // `path_mounted(path)`: the resolved dentry IS the mount's root. The walk
+    // crosses into the mounted filesystem at the final component, so a mount
+    // target lands on that filesystem's root dentry; anything else names a
+    // directory inside a filesystem, not a mount.
+    let at_mount_root = vfs::mount::root_dentry_for_mount_id(resolved.mnt_id)
+        .map(|r| Arc::ptr_eq(&resolved.dentry, &r)).unwrap_or(false);
+    if !at_mount_root { return -(Errno::Einval.as_i32() as i64); }
+    let Some(target_mount) = vfs::mount::mount_by_id(resolved.mnt_id) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    // `check_mnt` + the optimistic `MNT_LOCKED` test. `do_umount` repeats both
+    // under the namespace lock (they live in [`vfs::mount::umount_check`]);
+    // Linux tests them here first because they are cheap and they must outrank
+    // the force rung.
+    if !vfs::mount::check_mnt(&target_mount) { return -(Errno::Einval.as_i32() as i64); }
+    if target_mount.is_locked() { return -(Errno::Einval.as_i32() as i64); }
+    // `if (flags & MNT_FORCE && !ns_capable(sb->s_user_ns, CAP_SYS_ADMIN))
+    // return -EPERM` — a forced unmount needs authority over the FILESYSTEM's
+    // user namespace, a strictly stronger demand than may_mount.
     if (flags & MNT_FORCE) != 0 && !cur.has_cap(sched::cap::SYS_ADMIN) {
         return -(Errno::Eperm.as_i32() as i64);
     }
@@ -72,8 +86,7 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         Some(namespace) => namespace,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let ns = namespace.id();
-    let lazy = (flags & MNT_DETACH) != 0;
+    let _ns = namespace.id();
 
     // Linux `do_umount`'s admission ladder over the resolved mount. The three
     // rungs this had never applied: MNT_EXPIRE's two-pass grace (an autofs
@@ -81,127 +94,58 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
     // go briefly idle), MNT_LOCKED (an unprivileged user namespace must not
     // reveal what a locked mount covers), and `check_mnt`.
     let root_mnt = cur.fs_context_snapshot().root_vfs().map(|r| r.mnt_id);
-    if let Some(facts) = vfs::mount::umount_facts(
-        resolved.mnt_id, flags, root_mnt, cur.has_cap(sched::cap::SYS_ADMIN)) {
-        match vfs::mount::umount_check(flags, &facts) {
-            Err(vfs::mount::UmountRefusal::Einval) => return -(Errno::Einval.as_i32() as i64),
-            Err(vfs::mount::UmountRefusal::Ebusy) => return -(Errno::Ebusy.as_i32() as i64),
-            Err(vfs::mount::UmountRefusal::Eagain) => return -(Errno::Eagain.as_i32() as i64),
-            Err(vfs::mount::UmountRefusal::Eperm) => return -(Errno::Eperm.as_i32() as i64),
-            Ok(vfs::mount::Umount::RemountRootReadonly) => {
-                // Linux `do_umount_root`: "unmounting" the caller's own root
-                // reconfigures the superblock read-only rather than detaching
-                // it — there is nothing underneath to expose.
-                return match vfs::mount::mnt_setattr_attached(
-                    resolved.mnt_id, vfs::mount::MNT_RDONLY, 0, None, false) {
-                    Ok(()) => 0,
-                    Err(e) => crate::namei_common::errno_from_vfs(e),
-                };
-            }
-            Ok(_) => {}
-        }
+    let Some(facts) = vfs::mount::umount_facts(
+        resolved.mnt_id, flags, root_mnt, cur.has_cap(sched::cap::SYS_ADMIN)) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    let plan = vfs::mount::umount_check(flags, &facts);
+    // `if (flags & MNT_FORCE && sb->s_op->umount_begin) sb->s_op->umount_begin(sb)`
+    // — the whole reason MNT_FORCE exists: a mount whose server/daemon is gone
+    // has callers blocked inside it holding references that keep it busy, and
+    // only the filesystem can abort those requests. Fires BEFORE the ladder's
+    // remaining rungs are acted on, so a subsequently refused unmount still
+    // unwedges them and a retry can succeed.
+    if plan.umount_begin {
+        let sb = target_mount.sb();
+        sb.s_op.umount_begin(&sb);
     }
-
-    // Linux `do_umount` semantics (fs/namespace.c), NO path blacklist:
+    let outcome = match plan.outcome {
+        Err(vfs::mount::UmountRefusal::Einval) => return -(Errno::Einval.as_i32() as i64),
+        Err(vfs::mount::UmountRefusal::Ebusy) => return -(Errno::Ebusy.as_i32() as i64),
+        Err(vfs::mount::UmountRefusal::Eagain) => return -(Errno::Eagain.as_i32() as i64),
+        Err(vfs::mount::UmountRefusal::Eperm) => return -(Errno::Eperm.as_i32() as i64),
+        Ok(o) => o,
+    };
+    if outcome == vfs::mount::Umount::RemountRootReadonly {
+        // Linux `do_umount_root`: "unmounting" the caller's own root
+        // reconfigures the superblock read-only rather than detaching it —
+        // there is nothing underneath to expose.
+        return match vfs::mount::mnt_setattr_attached(
+            resolved.mnt_id, vfs::mount::MNT_RDONLY, 0, None, false) {
+            Ok(()) => 0,
+            Err(e) => crate::namei_common::errno_from_vfs(e),
+        };
+    }
+    // The mount engine detaches by the COVERED mountpoint dentry, so translate
+    // the mount id back to it. `umount_check`'s `has_parent` rung already
+    // refused a namespace root, which is the only mount without one.
+    let Some((target_d, _)) = vfs::mount::mountpoint_of(resolved.mnt_id) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    // `MNT_DETACH` ⇒ `umount_tree(mnt, UMOUNT_PROPAGATE)`, which takes the whole
+    // subtree; a plain umount detaches this mount only. The busy test that
+    // decides between them lives in the ladder above, where it is under test.
     //
-    //  * The namespace root `/` can never be unmounted → EINVAL.
-    //  * A mount that has CHILD MOUNTS stacked under it is busy → EBUSY,
-    //    unless MNT_DETACH (lazy) was requested. This is what protects the
-    //    init ns's /dev (its real /dev/shm tmpfs submount makes it busy),
-    //    /sys (cgroup2), etc. — exactly as Linux does, via the mount tree,
-    //    not a hardcoded list. Plain device-node *files* under /dev are fs
-    //    content, not mounts, so they correctly don't block the unmount.
-    //  * Otherwise detach. The unmount is namespace-LOCAL: it only touches
-    //    THIS task's mount_ns (its copy-on-unshare snapshot), never another
-    //    namespace — so a private-ns service unmounting /dev/proc/sys for
-    //    PrivateDevices=/ProtectKernelTunables= no longer fails the sandbox
-    //    (was status=226/NAMESPACE).
-    if resolved.mnt_id == 0 && vfs::mount::mountpoint_of(resolved.mnt_id).is_none() && !lazy {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    // Linux umount(2) detaches a mount; it NEVER destroys the filesystem's
-    // backing data. For the synthetic pseudo-filesystems (procfs/sysfs/
-    // devtmpfs) the "data" is generated from kernel state — sysctl ctl_tables
-    // (/proc/sys/*), the device list (/dev/*), kobjects (/sys/*) — which lives
-    // independent of any mount and persists across umount/remount. Our
-    // INITIAL-namespace (ns 0) devfs tree IS that kernel-side backing store.
-    // So umounting one of these in ns 0 must detach the mount WITHOUT deleting
-    // the tree; deleting it (the old devfs::unregister_subtree path) permanently
-    // wiped /proc/sys/* after systemd's early `umount /proc`, breaking every
-    // later sandbox that binds /proc/sys/kernel/domainname (status 226). Treat
-    // it as a successful no-op: a (re)mount re-exposes the same synthetic
-    // content, exactly as procfs regenerates it on Linux. Per-namespace (ns>0)
-    // sandbox copies remain real mount content and tear down normally below.
-    // The single namei walk umount2(2) does to validate the target crosses
-    // into a mounted fs, so `/proc` resolves to procfs's root dentry. The
-    // mount engine, however, detaches by the covered mountpoint dentry. If the
-    // resolved final dentry is exactly the mounted fs root, translate the
-    // VfsPath's mnt_id back to that mountpoint; otherwise it is not an exact
-    // mount root and unregister_top() must fail with EINVAL.
-    let exact_mountpoint = {
-        let root = vfs::mount::root_dentry_for_mount_id(resolved.mnt_id);
-        root.and_then(|root| {
-            if !Arc::ptr_eq(&resolved.dentry, &root) {
-                return None;
-            }
-            vfs::mount::mountpoint_of(resolved.mnt_id).map(|(mp, _)| mp)
-        })
-    };
-    let Some(target_d) = exact_mountpoint else {
-        #[cfg(feature = "debug-boot")]
-        {
-            klog::write_raw(b"[umount EINVAL] ns="); klog::write_dec_u64(ns);
-            klog::write_raw(b" lazy="); klog::write_dec_u64(lazy as u64);
-            klog::write_raw(b" path="); klog::write_raw(_display.as_bytes());
-            klog::write_raw(b"\n");
-        }
-        return -(Errno::Einval.as_i32() as i64);
-    };
-    // Exact-root umount of a synthetic pseudo-filesystem (procfs/sysfs/
-    // devtmpfs/devfs) is a successful no-op in ANY mount namespace, not only
-    // ns 0. The content is kernel-generated and a (re)mount re-exposes it, so
-    // tearing it down would strand later accessors — e.g. systemd/udevd in a
-    // PRIVATE mount namespace umounts /proc during sandbox setup and must keep
-    // seeing procfs afterward. The `exact_mountpoint` identity check fires
-    // ONLY for the mounted fs ROOT: a descendant like /proc/sys/fs/binfmt_misc
-    // keeps the same mnt_id but fails the root-dentry check, so it falls
-    // through to normal teardown below.
-    // Is the umount target a synthetic pseudo-fs (procfs/sysfs/devfs) mount?
-    // Previously these returned 0 as a NO-OP (mount left in the table) to avoid
-    // wiping their kernel-generated backing — but leaving the mount visible in
-    // /proc/self/mountinfo made a userspace "umount until gone" loop spin
-    // FOREVER: systemd's RootDirectory/MountAPIVFS teardown of
-    // /run/systemd/mount-rootfs/{dev,proc,sys} called umount2 tens of thousands
-    // of times (each returned 0, the mount never left mountinfo), a CPU-burning
-    // livelock that starved dbus-broker/udevd/logind into their start timeouts.
-    // Now: DETACH the instance (unregister_top below removes it from the table →
-    // gone from mountinfo → the loop terminates) but NEVER wipe the synthetic
-    // backing (it regenerates on re-mount, exactly as Linux umount detaches a
-    // mount without destroying fs data).
-    let is_pseudo = vfs::mount::mount_by_id(resolved.mnt_id)
-        .map(|m| matches!(m.sb().s_type.name(), "procfs" | "sysfs" | "devtmpfs" | "devfs"))
-        .unwrap_or(false);
-    // A pseudo-fs mount (procfs/sysfs/devfs) detaches its WHOLE subtree, even
-    // non-lazy. systemd tears down its per-service sandbox staging tree
-    // (/run/systemd/mount-rootfs/{proc,sys,dev}) with non-lazy umount2 — in
-    // Linux that mount is already childless (its submounts were moved out via
-    // pivot_root/MS_MOVE), so it succeeds; our tree keeps them nested, so the
-    // Linux EBUSY-on-children busy-test spuriously fired and aborted the
-    // sandbox setup (EXIT_NAMESPACE 226, intermittently, for dbus-broker/
-    // udevd/logind → no graphical target). Recursive detach makes the staging
-    // subtree vanish cleanly; a REAL (non-pseudo) mount keeps the Linux
-    // EBUSY-on-children guard.
-    let recursive = lazy || is_pseudo;
-    if !recursive && vfs::mount::has_child_mounts(&target_d, ns) {
-        return -(Errno::Ebusy.as_i32() as i64);
-    }
-    // Detach from the unified mount table only. A non-mounted descendant such
-    // as `/proc/sys/fs/binfmt_misc` must report EINVAL; returning success there
-    // makes systemd's automount cleanup spin on umount2 forever.
+    // The shim used to carve procfs/sysfs/devtmpfs/devfs out of that busy test
+    // and detach their whole subtree even without MNT_DETACH. Busy-ness is not
+    // a property of the filesystem type — Linux applies the same test to procfs
+    // as to ext4 — and the carve-out silently unmounted mounts the caller never
+    // named.
+    let recursive = outcome == vfs::mount::Umount::DetachTree;
     // `s_dev` of the filesystem this mount exposes, captured while the mount is
     // still in the table so the post-detach "was that the last one?" test below
     // has something to compare against.
-    let doomed_fsid = vfs::mount::mount_by_id(resolved.mnt_id).map(|m| m.sb().s_dev).unwrap_or(0);
+    let doomed_fsid = target_mount.sb().s_dev;
     let removed_tab = vfs::mount::unregister_top(&target_d, recursive);
     // Linux reports `FS_UNMOUNT` (and then frees every mark) when the
     // SUPERBLOCK is torn down — `generic_shutdown_super` →
@@ -214,14 +158,11 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         && !vfs::mount::all_mounts().iter().any(|m| m.sb().s_dev == doomed_fsid) {
         fs::inotify::fire_unmount(doomed_fsid);
     }
-    // A pseudo-fs umount that matched no removable mount instance is a
-    // successful no-op (Linux detaches the initial /proc; a synthetic root with
-    // no separate instance has nothing to remove) — never surface EINVAL there.
-    if removed_tab == 0 && !is_pseudo {
+    if removed_tab == 0 {
         #[cfg(feature = "debug-boot")]
         {
-            klog::write_raw(b"[umount EINVAL] ns="); klog::write_dec_u64(ns);
-            klog::write_raw(b" lazy="); klog::write_dec_u64(lazy as u64);
+            klog::write_raw(b"[umount EINVAL] ns="); klog::write_dec_u64(_ns);
+            klog::write_raw(b" lazy="); klog::write_dec_u64(recursive as u64);
             klog::write_raw(b" path="); klog::write_raw(_display.as_bytes());
             klog::write_raw(b"\n");
         }

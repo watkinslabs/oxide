@@ -100,8 +100,15 @@ impl vfs::SuperOps for Ext4SuperOps {
         Ok(())
     }
 
-    fn remount_fs(&self, sb_flags: u64) -> vfs::KResult<()> {
+    fn remount_fs(&self, sb_flags: u64, data: &str) -> vfs::KResult<()> {
         if let Some(sb) = self.st.i_sb() {
+            // Option validation runs FIRST and commits nothing on failure, so a
+            // remount naming a change the live filesystem cannot make (a
+            // different journalled quota file, a different quota format) leaves
+            // both the options and the quota state exactly as they were.
+            let quota_loaded = (0..vfs::MAXQUOTAS)
+                .any(|slot| sb.s_dquot.is_enabled(vfs::QuotaType::from_slot(slot)));
+            self.st.configure_mount_opts(data, quota_loaded)?;
             if sb_flags & SB_RDONLY != 0 { return vfs::quota_suspend_sysfiles(&sb); }
             self.st.enable_mount_quotas(&sb, true)?;
         }
@@ -168,6 +175,26 @@ impl Ext4Mount {
         // mount (Linux logs and continues).
         let _ = st.mount.mark_state_dirty();
         Ok(Arc::new(Self { st, dev_t }))
+    }
+
+    /// Open `dev` and apply the mount-data option string to it.
+    ///
+    /// Options are parsed and consistency-checked BEFORE the superblock is
+    /// published, so a rejected combination (`usrjquota=` without `jqfmt=`,
+    /// `prjquota` on a filesystem without the project feature, …) fails the
+    /// mount with the option error rather than half-mounting. An unknown
+    /// non-quota option never fails the mount.
+    /// # C: O(N_groups + len(data))
+    pub fn open_with_data(
+        dev: Arc<dyn block::BlockDevice>,
+        dev_t: Option<u64>,
+        data: &str,
+    ) -> vfs::KResult<Arc<Self>> {
+        let fs = Self::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
+        // Nothing has loaded quota yet on a fresh open, so this is the
+        // first-mount half of the option contract, not the remount half.
+        fs.st.configure_mount_opts(data, false)?;
+        Ok(fs)
     }
 
     pub fn state(&self) -> &Arc<RootfsState> {

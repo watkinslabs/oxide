@@ -29,7 +29,7 @@ fn field_offsets_match_struct_acct_v3() {
     f.set_comm(b"bash");
     let r = f.encode();
     assert_eq!(r[0], AFORK | AXSIG,                     "ac_flag @0");
-    assert_eq!(r[1], ACCT_VERSION,                      "ac_version @1");
+    assert_eq!(r[1], ACCT_VERSION_BYTE,                 "ac_version @1");
     assert_eq!(u16::from_le_bytes([r[2], r[3]]), 0x0402, "ac_tty @2");
     assert_eq!(u32::from_le_bytes([r[4], r[5], r[6], r[7]]), 0x1122_3344, "ac_exitcode @4");
     assert_eq!(u32::from_le_bytes([r[8], r[9], r[10], r[11]]), 1000, "ac_uid @8");
@@ -144,4 +144,199 @@ fn exit_flags_ride_the_flag_byte() {
     assert_eq!(f.encode()[0], 0x18);
     f.flag = AFORK | ASU | AGROUP;
     assert_eq!(f.encode()[0], 0x23);
+}
+
+/// The version byte carries the byte-order bit, and the whole record is
+/// written in that byte order. A reader decides how to interpret every
+/// multi-byte field from this one bit, so the two must agree — on x86_64 and
+/// on aarch64 alike, both of which this kernel builds little-endian.
+#[test]
+fn the_version_byte_declares_the_records_byte_order() {
+    assert_eq!(ACCT_VERSION_BYTE, ACCT_VERSION | ACCT_BYTEORDER);
+    assert_eq!(ACCT_VERSION_BYTE & 0x7f, 3, "the low bits stay the version");
+    #[cfg(target_endian = "little")]
+    {
+        assert_eq!(ACCT_BYTEORDER, 0x00);
+        let f = AcctFacts { tty: 0x0102, ..Default::default() };
+        assert_eq!(&f.encode()[2..4], &[0x02, 0x01], "fields are little-endian");
+    }
+    #[cfg(target_endian = "big")]
+    assert_eq!(ACCT_BYTEORDER, 0x80);
+}
+
+// ---------------------------------------------------------------- free space
+
+use super::parm::*;
+use super::space::*;
+
+fn parm() -> AcctParm { AcctParm::default() }
+
+/// Between checks the standing verdict is reused and no `statfs` is asked for,
+/// so a burst of exits does not query the filesystem once per record.
+#[test]
+fn the_verdict_stands_until_the_interval_elapses() {
+    let mut st = SpaceState::new(0);
+    // The first record is due at once, so accounting never writes on a stale
+    // "active" it has not verified.
+    assert_eq!(check_due(&st, 0), SpaceCheck::Due);
+    apply_statfs(&mut st, 0, parm(), 1000, 900);
+    // 30 s of records ride the recorded verdict.
+    assert_eq!(check_due(&st, 1_000_000_000), SpaceCheck::Standing(true));
+    assert_eq!(check_due(&st, 29_999_999_999), SpaceCheck::Standing(true));
+    assert_eq!(check_due(&st, 30_000_000_000), SpaceCheck::Due);
+}
+
+/// The suspend and resume thresholds are DIFFERENT percentages, so a disk
+/// hovering just under the suspend line does not flap: once suspended, it
+/// takes a real recovery to 4% to resume, not a return to 2%.
+#[test]
+fn suspend_and_resume_hysteresis_does_not_flap() {
+    let p = parm();
+    let mut st = SpaceState::new(0);
+    // 2% of 1000 blocks is 20; at exactly 20 free we suspend (`<=`).
+    assert_eq!(apply_statfs(&mut st, 0, p, 1000, 20), SpaceTransition::Paused);
+    assert!(!st.active);
+    // 30 free is above the suspend line but below the 4% (40) resume line —
+    // still suspended, and reported as no edge rather than a second pause.
+    assert_eq!(apply_statfs(&mut st, 100, p, 1000, 30), SpaceTransition::Unchanged(false));
+    // 40 free reaches the resume line (`>=`).
+    assert_eq!(apply_statfs(&mut st, 200, p, 1000, 40), SpaceTransition::Resumed);
+    assert!(st.active);
+    // And 21 free — one above the suspend line — keeps it active.
+    assert_eq!(apply_statfs(&mut st, 300, p, 1000, 21), SpaceTransition::Unchanged(true));
+}
+
+/// A backend that reports no blocks at all (a pseudo filesystem) has no notion
+/// of fullness, so the verdict is left where it stands rather than read as an
+/// empty disk.
+#[test]
+fn a_filesystem_with_no_blocks_never_moves_the_verdict() {
+    let mut st = SpaceState::new(0);
+    assert_eq!(apply_statfs(&mut st, 0, parm(), 0, 0), SpaceTransition::Unchanged(true));
+    assert!(st.active);
+    // The check is still rescheduled, so it does not spin.
+    assert_eq!(st.needcheck_ns, 30 * 1_000_000_000);
+}
+
+/// A `statfs` that cannot answer leaves both the verdict AND the due time
+/// alone, so the next record retries instead of coasting a whole interval on
+/// an answer nobody got.
+#[test]
+fn a_failed_statfs_keeps_the_check_due() {
+    let st = SpaceState { active: false, needcheck_ns: 0 };
+    assert!(!statfs_failed(&st));
+    assert_eq!(check_due(&st, 0), SpaceCheck::Due, "still due after a failure");
+}
+
+/// A shorter interval written through the tunable takes effect on the NEXT
+/// scheduled check — the knob is live, not a boot-time constant.
+#[test]
+fn the_timeout_tunable_sets_the_interval() {
+    let mut st = SpaceState::new(0);
+    let p = AcctParm { timeout_secs: 5, ..parm() };
+    apply_statfs(&mut st, 0, p, 1000, 900);
+    assert_eq!(st.needcheck_ns, 5 * 1_000_000_000);
+    assert_eq!(check_due(&st, 4_999_999_999), SpaceCheck::Standing(true));
+    assert_eq!(check_due(&st, 5_000_000_000), SpaceCheck::Due);
+}
+
+// ------------------------------------------------------------- kernel/acct
+
+/// The leaf reports all three tunables tab-separated with one trailing
+/// newline — the vector form `sysctl` parses.
+#[test]
+fn the_tunable_leaf_reports_three_tab_separated_ints() {
+    assert_eq!(format_parms(AcctParm::default()), b"4\t2\t30\n".to_vec());
+    assert_eq!(
+        format_parms(AcctParm { resume_pct: 10, suspend_pct: 5, timeout_secs: 1 }),
+        b"10\t5\t1\n".to_vec());
+}
+
+/// A write updates as many leading elements as it supplies and leaves the rest
+/// alone, which is what makes `sysctl -w kernel.acct="10"` a one-field change
+/// rather than a reset of the other two.
+#[test]
+fn a_short_write_updates_only_the_elements_it_supplies() {
+    let base = AcctParm::default();
+    assert_eq!(parse_parms(base, b"10"),
+        Some(AcctParm { resume_pct: 10, ..base }));
+    assert_eq!(parse_parms(base, b"10 5"),
+        Some(AcctParm { resume_pct: 10, suspend_pct: 5, ..base }));
+    assert_eq!(parse_parms(base, b"10 5 60\n"),
+        Some(AcctParm { resume_pct: 10, suspend_pct: 5, timeout_secs: 60 }));
+    // Tabs and newlines separate exactly as spaces do.
+    assert_eq!(parse_parms(base, b"1\t2\t3\n"),
+        Some(AcctParm { resume_pct: 1, suspend_pct: 2, timeout_secs: 3 }));
+}
+
+/// A malformed or oversized write is rejected WHOLE: a typo in a config file
+/// must not leave the first field applied and the rest not.
+#[test]
+fn a_malformed_write_applies_nothing() {
+    let base = AcctParm::default();
+    assert_eq!(parse_parms(base, b"10 nope"), None);
+    assert_eq!(parse_parms(base, b""), None);
+    assert_eq!(parse_parms(base, b"   \n"), None);
+    assert_eq!(parse_parms(base, b"1 2 3 4"), None, "more elements than the leaf holds");
+    assert_eq!(parse_parms(base, b"99999999999"), None, "wider than the int it is stored in");
+    assert_eq!(parse_parms(base, b"-"), None);
+}
+
+/// Negative values round-trip, since the leaf is a signed int vector.
+#[test]
+fn the_leaf_round_trips_through_format_and_parse() {
+    for p in [
+        AcctParm::default(),
+        AcctParm { resume_pct: 0, suspend_pct: 0, timeout_secs: 0 },
+        AcctParm { resume_pct: -1, suspend_pct: 100, timeout_secs: 2_147_483_647 },
+    ] {
+        assert_eq!(parse_parms(AcctParm::default(), &format_parms(p)), Some(p));
+    }
+}
+
+/// A nonsensical percentage cannot make the check panic or wrap: a negative
+/// threshold reads as zero, which suspends only on a genuinely full disk.
+#[test]
+fn a_negative_threshold_degrades_rather_than_wrapping() {
+    let p = AcctParm { resume_pct: -5, suspend_pct: -5, timeout_secs: -5 };
+    let mut st = SpaceState::new(0);
+    assert_eq!(apply_statfs(&mut st, 0, p, 1000, 0), SpaceTransition::Paused,
+        "0 free is still <= a 0% threshold");
+    assert_eq!(apply_statfs(&mut st, 0, p, 1000, 1), SpaceTransition::Resumed);
+    assert_eq!(st.needcheck_ns, 0, "a negative interval means always due");
+}
+
+// ------------------------------------------------------- per-namespace write
+
+/// The record a namespace receives carries THAT namespace's pids, so one exit
+/// written to two files is not the same 64 bytes twice.
+#[test]
+fn each_target_gets_its_own_pid_pair() {
+    let host  = NsTarget { ns_id: 0,  pid: 900, ppid: 880 };
+    let guest = NsTarget { ns_id: 42, pid: 7,   ppid: 1 };
+    assert_ne!(host, guest);
+    let mut f = AcctFacts::default();
+    f.pid = host.pid; f.ppid = host.ppid;
+    let a = f.encode();
+    f.pid = guest.pid; f.ppid = guest.ppid;
+    let b = f.encode();
+    assert_eq!(u32::from_le_bytes([a[16], a[17], a[18], a[19]]), 900);
+    assert_eq!(u32::from_le_bytes([b[16], b[17], b[18], b[19]]), 7);
+    assert_eq!(u32::from_le_bytes([a[20], a[21], a[22], a[23]]), 880);
+    assert_eq!(u32::from_le_bytes([b[20], b[21], b[22], b[23]]), 1);
+    // Everything else is identical: the two records describe one exit.
+    assert_eq!(&a[..16], &b[..16]);
+    assert_eq!(&a[24..], &b[24..]);
+}
+
+/// The three fields the record reserves but no longer maintains are zero in
+/// every record. A tool computing averages over `ac_io` gets the same answer
+/// here as on the system it was written for.
+#[test]
+fn the_unmaintained_bsd_fields_are_zero() {
+    let f = AcctFacts { io: 0, rw: 0, swaps: 0, ..Default::default() };
+    let r = f.encode();
+    assert_eq!(u16::from_le_bytes([r[38], r[39]]), 0, "ac_io @38");
+    assert_eq!(u16::from_le_bytes([r[40], r[41]]), 0, "ac_rw @40");
+    assert_eq!(u16::from_le_bytes([r[46], r[47]]), 0, "ac_swaps @46");
 }

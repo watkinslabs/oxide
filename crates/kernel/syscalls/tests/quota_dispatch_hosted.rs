@@ -32,6 +32,8 @@ mod abi;
 mod cmd;
 #[path = "../src/179_quotactl/dispatch.rs"]
 mod dispatch;
+#[path = "../src/179_quotactl/qidns.rs"]
+mod qidns;
 #[path = "../src/179_quotactl_xfs/core.rs"]
 mod xfs;
 
@@ -231,4 +233,65 @@ fn targeted_dispatch_setquota_root_reaches_usercopy_hosted() {
         eno(Errno::Efault),
     );
     CURRENT_TASK_PTR.store(0, Ordering::Release);
+}
+
+/// A filesystem whose quota control installs NEITHER a quota-file disable hook
+/// nor the generic quota-file `quota_off`: the state it keeps has no
+/// "turn this class off" operation at all.
+struct NoQuotaOffOps;
+impl vfs::SuperOps for NoQuotaOffOps {
+    fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> { Ok(vfs::SbStatFs::default()) }
+    fn quota_supported(&self) -> bool { true }
+    fn quota_type_supported(&self, _kind: vfs::QuotaType) -> bool { true }
+    fn quota_off_supported(&self, _sb: &vfs::SuperBlock, _kind: vfs::QuotaType) -> bool { false }
+}
+
+/// The same filesystem, but with the hidden-system-file disable hook that
+/// replaces `quota_off`.
+struct DisableOnlyOps { disables: AtomicU64 }
+impl vfs::SuperOps for DisableOnlyOps {
+    fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> { Ok(vfs::SbStatFs::default()) }
+    fn quota_supported(&self) -> bool { true }
+    fn quota_type_supported(&self, _kind: vfs::QuotaType) -> bool { true }
+    fn quota_off_supported(&self, _sb: &vfs::SuperBlock, _kind: vfs::QuotaType) -> bool { false }
+    fn quota_disable_supported(&self, _sb: &vfs::SuperBlock, _kind: vfs::QuotaType) -> bool { true }
+    fn quota_disable(&self, _sb: &vfs::SuperBlock, _kind: vfs::QuotaType) -> vfs::KResult<()> {
+        self.disables.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn quotaoff_without_either_disable_operation_is_enosys_hosted() {
+    let _serial = begin_current_test();
+    install_current(0, true);
+    let sb = sb_with_ops(Arc::new(NoQuotaOffOps));
+
+    assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_QUOTAOFF, cmd::USRQUOTA), 0, 0),
+        eno(Errno::Enosys),
+        "quota control with no off/disable operation cannot turn a class off");
+}
+
+#[test]
+fn quotaoff_prefers_the_disable_operation_when_quota_off_is_absent_hosted() {
+    let _serial = begin_current_test();
+    install_current(0, true);
+    let ops = Arc::new(DisableOnlyOps { disables: AtomicU64::new(0) });
+    let sb = sb_with_ops(ops.clone());
+
+    assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_QUOTAOFF, cmd::USRQUOTA), 0, 0), 0);
+    assert_eq!(ops.disables.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn quotaoff_uses_the_generic_quota_file_path_by_default_hosted() {
+    // A filesystem that overrides neither hook still has an off operation:
+    // the generic quota-file disable. ENOSYS is reserved for one that has
+    // opted out of both.
+    let _serial = begin_current_test();
+    install_current(0, true);
+    let sb = sb_with_ops(Arc::new(UserQuotaOps));
+
+    assert_ne!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_QUOTAOFF, cmd::USRQUOTA), 0, 0),
+        eno(Errno::Enosys));
 }

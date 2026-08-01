@@ -26,6 +26,7 @@ impl SuperBlock {
     ) -> Arc<Self> {
         let sb = Arc::new(Self {
             s_op, s_type, s_magic, s_dev, s_blocksize,
+            s_user_ns: super::userns::mounting_user_ns(),
             s_flags: AtomicU64::new(SB_ACTIVE | SB_BORN),
             s_iflags: AtomicU64::new(0),
             s_active: AtomicU32::new(1),

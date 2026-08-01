@@ -20,6 +20,11 @@ pub const OVERFLOW_UID: u32 = 65534;
 /// translates to at the namespace boundary. # C: O(1)
 pub const OVERFLOW_GID: u32 = 65534;
 
+/// Linux `OVERFLOW_PROJID` — the id an unmapped project id translates to at
+/// the namespace boundary. Fixed, unlike the uid/gid pair, which are also
+/// sysctl-settable. # C: O(1)
+pub const OVERFLOW_PROJID: u32 = 65534;
+
 /// Identity extent Linux seeds `init_user_ns.{uid,gid}_map` with at boot:
 /// one extent, ns id 0 maps to host id 0, spanning the full 32-bit space.
 /// # C: O(1)

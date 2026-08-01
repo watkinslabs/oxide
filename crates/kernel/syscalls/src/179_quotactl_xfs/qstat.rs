@@ -74,7 +74,7 @@ fn xfs_id0_info_timer_ignores_bigtime_high_byte() {
 fn xfs_qstatv_checks_get_state_support_before_user_version() {
     let sb = qstat_sb();
 
-    assert_eq!(dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, 0, 0), eno(Errno::Enosys));
+    assert_eq!(dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), 0), eno(Errno::Enosys));
 }
 
 #[test]
@@ -95,9 +95,9 @@ fn xfs_qstatv_reads_version_before_state_snapshot() {
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), ops.clone(), 0x51544154, Q_XGETQSTATV, 4096, "xfs-qstatv-version".into(), Arc::new(()));
     let mut wrong_version = 0i8;
 
-    assert_eq!(dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, 0, 0), eno(Errno::Efault));
+    assert_eq!(dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), 0), eno(Errno::Efault));
     assert_eq!(
-        dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, 0, &mut wrong_version as *mut i8 as u64),
+        dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut wrong_version as *mut i8 as u64),
         eno(Errno::Einval),
     );
     assert_eq!(ops.calls.load(Ordering::SeqCst), 0);
@@ -141,7 +141,7 @@ fn xfs_qgetqstat_maps_filesystem_state_and_project_group_fallback() {
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), Arc::new(StateOps), 0x51544154, Q_XGETQSTAT, 4096, "xfs-qstat-state".into(), Arc::new(()));
     let mut out = FsQuotaStat::default();
 
-    assert_eq!(dispatch(&sb, Q_XGETQSTAT, vfs::QuotaType::User, 0, &mut out as *mut FsQuotaStat as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XGETQSTAT, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut out as *mut FsQuotaStat as u64), 0);
     assert_eq!(out.qs_version, FS_QSTAT_VERSION);
     assert_eq!(out.qs_flags, FS_QUOTA_UDQ_ACCT | FS_QUOTA_UDQ_ENFD | FS_QUOTA_PDQ_ACCT);
     assert_eq!(out.qs_uquota.qfs_ino, 101);
@@ -196,7 +196,7 @@ fn xfs_qstatv_maps_all_filesystem_state_slots() {
     let sb = vfs::SuperBlock::new(Arc::new(QstatType), Arc::new(StatevOps), 0x51544154, Q_XGETQSTATV, 4096, "xfs-qstatv-state".into(), Arc::new(()));
     let mut out = FsQuotaStatv { qs_version: FS_QSTATV_VERSION1, ..FsQuotaStatv::default() };
 
-    assert_eq!(dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, 0, &mut out as *mut FsQuotaStatv as u64), 0);
+    assert_eq!(dispatch(&sb, Q_XGETQSTATV, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut out as *mut FsQuotaStatv as u64), 0);
     assert_eq!(out.qs_flags, FS_QUOTA_UDQ_ACCT | FS_QUOTA_PDQ_ACCT | FS_QUOTA_PDQ_ENFD);
     assert_eq!((out.qs_uquota.qfs_ino, out.qs_gquota.qfs_ino, out.qs_pquota.qfs_ino), (111, 333, 555));
     assert_eq!((out.qs_uquota.qfs_nblks, out.qs_gquota.qfs_nblks, out.qs_pquota.qfs_nblks), (222, 444, 666));
@@ -204,4 +204,72 @@ fn xfs_qstatv_maps_all_filesystem_state_slots() {
     assert_eq!(out.qs_incoredqs, 18);
     assert_eq!((out.qs_btimelimit, out.qs_itimelimit, out.qs_rtbtimelimit), (12, 23, 34));
     assert_eq!((out.qs_bwarnlimit, out.qs_iwarnlimit, out.qs_rtbwarnlimit), (45, 56, 67));
+}
+
+// A quota inode can exist while its class is inactive. Q_XGETQSTAT reports
+// each slot whenever an inode number is present, so an inactive group class
+// with a real quota inode is still reported — the project slot only borrows
+// the group slot when a project quota inode actually exists.
+#[test]
+fn xfs_qgetqstat_reports_inactive_group_inode_when_no_project_inode() {
+    struct StateOps;
+    impl vfs::SuperOps for StateOps {
+        fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> { Ok(vfs::SbStatFs::default()) }
+        fn quota_supported(&self) -> bool { true }
+        fn quota_type_supported(&self, _kind: vfs::QuotaType) -> bool { true }
+        fn quota_get_state_supported(&self, _sb: &vfs::SuperBlock) -> bool { true }
+        fn quota_get_state(&self, _sb: &vfs::SuperBlock) -> vfs::KResult<vfs::QuotaState> {
+            let mut st = vfs::QuotaState::default();
+            st.types[vfs::QuotaType::User.slot()] = vfs::QuotaTypeState {
+                accounting: true,
+                file: vfs::QuotaFileStat { ino: 101, blocks: 202, nextents: 3 },
+                ..vfs::QuotaTypeState::default()
+            };
+            // Group accounting is OFF but its quota inode still exists.
+            st.types[vfs::QuotaType::Group.slot()] = vfs::QuotaTypeState {
+                accounting: false,
+                file: vfs::QuotaFileStat { ino: 404, blocks: 505, nextents: 6 },
+                ..vfs::QuotaTypeState::default()
+            };
+            // No project quota inode, so nothing overwrites the group slot.
+            st.types[vfs::QuotaType::Project.slot()] = vfs::QuotaTypeState::default();
+            Ok(st)
+        }
+    }
+
+    let sb = vfs::SuperBlock::new(Arc::new(QstatType), Arc::new(StateOps), 0x51544154, Q_XGETQSTAT, 4096, "xfs-qstat-inactive-group".into(), Arc::new(()));
+    let mut out = FsQuotaStat::default();
+
+    assert_eq!(dispatch(&sb, Q_XGETQSTAT, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut out as *mut FsQuotaStat as u64), 0);
+    assert_eq!(out.qs_gquota.qfs_ino, 404);
+    assert_eq!(out.qs_gquota.qfs_nblks, 505);
+    assert_eq!(out.qs_gquota.qfs_nextents, 6);
+}
+
+// With no quota inode anywhere for a class, its slot stays zeroed.
+#[test]
+fn xfs_qgetqstat_leaves_absent_class_slots_zeroed() {
+    struct StateOps;
+    impl vfs::SuperOps for StateOps {
+        fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> { Ok(vfs::SbStatFs::default()) }
+        fn quota_supported(&self) -> bool { true }
+        fn quota_type_supported(&self, _kind: vfs::QuotaType) -> bool { true }
+        fn quota_get_state_supported(&self, _sb: &vfs::SuperBlock) -> bool { true }
+        fn quota_get_state(&self, _sb: &vfs::SuperBlock) -> vfs::KResult<vfs::QuotaState> {
+            let mut st = vfs::QuotaState::default();
+            st.types[vfs::QuotaType::User.slot()] = vfs::QuotaTypeState {
+                accounting: true,
+                file: vfs::QuotaFileStat { ino: 101, blocks: 202, nextents: 3 },
+                ..vfs::QuotaTypeState::default()
+            };
+            Ok(st)
+        }
+    }
+
+    let sb = vfs::SuperBlock::new(Arc::new(QstatType), Arc::new(StateOps), 0x51544154, Q_XGETQSTAT, 4096, "xfs-qstat-absent".into(), Arc::new(()));
+    let mut out = FsQuotaStat::default();
+
+    assert_eq!(dispatch(&sb, Q_XGETQSTAT, vfs::QuotaType::User, &super::super::super::qidns::QuotaIdCtx::initial(vfs::QuotaType::User, 0), &mut out as *mut FsQuotaStat as u64), 0);
+    assert_eq!(out.qs_uquota.qfs_ino, 101);
+    assert_eq!((out.qs_gquota.qfs_ino, out.qs_gquota.qfs_nblks, out.qs_gquota.qfs_nextents), (0, 0, 0));
 }

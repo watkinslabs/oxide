@@ -127,19 +127,26 @@ impl SuperBlock {
     /// `(s_flags & !clear) | set`. When the remount turns the fs READ-ONLY
     /// (RW→RO) the dirty state is flushed FIRST ([`Self::sync_filesystem`], Linux
     /// syncs before sealing RO so no buffered write is lost). The backend hook
-    /// `s_op->remount_fs(proposed_flags)` then runs and ONLY on its success are
+    /// `s_op->remount_fs(proposed_flags, data)` then runs and ONLY on its success are
     /// `s_flags` rewritten — a hook error leaves the SB untouched (Linux returns
     /// the error with the old flags intact), so a backend that refuses (e.g.
     /// RW on a fs needing recovery) cleanly aborts. Re-applying the current flags
     /// is idempotent. The per-MOUNT `MNT_*` bits and `fs_context` param parse
     /// live at their own layers ([`crate::fs::reconfigure_super`]); this is the
-    /// sb-flag + classic-backend-hook core. # C: O(dirty) on RW→RO, else O(1)
-    pub fn reconfigure_super(&self, set: u64, clear: u64) -> KResult<()> {
+    /// sb-flag + classic-backend-hook core. `data` is the remount's option
+    /// string, which backends with per-mount options (quota files, journal
+    /// mode) need in order to reject a change the live filesystem cannot make
+    /// — dropping it made every such option silently accepted-and-ignored. # C: O(dirty) on RW→RO, else O(1)
+    pub fn reconfigure_super(&self, set: u64, clear: u64, data: &str) -> KResult<()> {
         let cur = self.s_flags();
         let proposed = (cur & !clear) | set;
         let going_ro = (proposed & SB_RDONLY) != 0 && (cur & SB_RDONLY) == 0;
+        // Sealing RW→RO evicts every kernel-side writer first (process
+        // accounting), so no in-kernel file keeps writing to a filesystem
+        // userspace has been told is read-only.
+        if going_ro { crate::sb_pin::kill_sb_pins(crate::sb_pin::sb_key_ref(self)); }
         if going_ro { self.sync_filesystem()?; }
-        self.s_op.remount_fs(proposed)?;
+        self.s_op.remount_fs(proposed, data)?;
         self.set_s_flags(set, clear);
         Ok(())
     }

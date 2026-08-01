@@ -11,6 +11,29 @@ static DOM_SET:   AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CMDLINE:   AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CPAT_GET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CPAT_SET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static ACCT_GET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static ACCT_SET:  AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// `/proc/sys/kernel/acct` get/set — the three-int free-space tunable vector
+/// owned by `fs::acct`. # C: O(1)
+pub fn set_acct_parm_hooks(get: fn() -> Vec<u8>, set: fn(&[u8])) {
+    ACCT_GET.store(get as *mut (), Ordering::Release);
+    ACCT_SET.store(set as *mut (), Ordering::Release);
+}
+/// # C: O(1)
+pub fn acct_parm() -> Vec<u8> {
+    let p = ACCT_GET.load(Ordering::Acquire);
+    if p.is_null() { return b"4\t2\t30\n".to_vec(); }
+    // SAFETY: pointer set from a `fn() -> Vec<u8>` via set_acct_parm_hooks.
+    let f: fn() -> Vec<u8> = unsafe { core::mem::transmute(p) }; f()
+}
+/// # C: O(1)
+pub fn set_acct_parm(b: &[u8]) {
+    let p = ACCT_SET.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: pointer set from a `fn(&[u8])` via set_acct_parm_hooks.
+    let f: fn(&[u8]) = unsafe { core::mem::transmute(p) }; f(b)
+}
 
 /// `/proc/sys/kernel/core_pattern` get/set (owned by fs::coredump). # C: O(1)
 pub fn set_core_pattern_hooks(get: fn() -> Vec<u8>, set: fn(&[u8])) {

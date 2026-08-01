@@ -16,12 +16,13 @@ use vfs::fs::FileSystem;
 use vfs::superblock::{next_anon_dev, SB_RDONLY};
 use vfs::{SbStatFs, SuperBlock, SuperOps, VfsError};
 
-/// A `SuperOps` that records the last `remount_fs(sb_flags)` it saw, counts
-/// remount + sync calls, and can be told to refuse the remount.
+/// A `SuperOps` that records the last `remount_fs(sb_flags, data)` it saw,
+/// counts remount + sync calls, and can be told to refuse the remount.
 struct RemountOps {
     remounts:   AtomicU32,
     syncs:      AtomicU32,
     last_flags: AtomicU64,
+    last_data:  std::sync::Mutex<String>,
     fail:       bool,
 }
 impl SuperOps for RemountOps {
@@ -29,9 +30,10 @@ impl SuperOps for RemountOps {
     fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
         self.syncs.fetch_add(1, Ordering::Relaxed); Ok(())
     }
-    fn remount_fs(&self, sb_flags: u64) -> vfs::KResult<()> {
+    fn remount_fs(&self, sb_flags: u64, data: &str) -> vfs::KResult<()> {
         self.remounts.fetch_add(1, Ordering::Relaxed);
         self.last_flags.store(sb_flags, Ordering::Relaxed);
+        *self.last_data.lock().unwrap() = String::from(data);
         if self.fail { Err(VfsError::Eacces) } else { Ok(()) }
     }
 }
@@ -46,7 +48,7 @@ impl FileSystem for RemountFs {
 fn build(fail: bool) -> (Arc<SuperBlock>, Arc<RemountOps>) {
     let ops = Arc::new(RemountOps {
         remounts: AtomicU32::new(0), syncs: AtomicU32::new(0),
-        last_flags: AtomicU64::new(0), fail,
+        last_flags: AtomicU64::new(0), last_data: std::sync::Mutex::new(String::new()), fail,
     });
     let fs = Arc::new(RemountFs { ops: ops.clone() });
     let sb = common::realize_sb(fs, None, next_anon_dev(), String::from("remountfs"));
@@ -60,7 +62,7 @@ fn remount_ro_syncs_first_then_calls_hook_and_sets_flag() {
     assert!(sb.sb_start_write(), "RW sb admits a writer before remount");
     sb.sb_end_write();
 
-    sb.reconfigure_super(SB_RDONLY, 0).expect("RW→RO remount");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("RW→RO remount");
 
     assert!(sb.is_readonly(), "SB_RDONLY now set on the live SB");
     assert_eq!(ops.remounts.load(Ordering::Relaxed), 1, "backend remount_fs hook ran once");
@@ -77,7 +79,7 @@ fn remount_rw_clears_rdonly_without_pre_sync() {
     assert!(sb.is_readonly());
     let syncs_before = ops.syncs.load(Ordering::Relaxed);
 
-    sb.reconfigure_super(0, SB_RDONLY).expect("RO→RW remount");
+    sb.reconfigure_super(0, SB_RDONLY, "").expect("RO→RW remount");
 
     assert!(!sb.is_readonly(), "SB_RDONLY cleared");
     assert_eq!(ops.remounts.load(Ordering::Relaxed), 1, "hook ran");
@@ -92,7 +94,7 @@ fn hook_error_aborts_with_flags_unchanged() {
     let (sb, ops) = build(true); // backend refuses every remount
     assert!(!sb.is_readonly());
 
-    let r = sb.reconfigure_super(SB_RDONLY, 0);
+    let r = sb.reconfigure_super(SB_RDONLY, 0, "");
     assert_eq!(r, Err(VfsError::Eacces), "remount returns the backend's error");
     assert!(!sb.is_readonly(), "a refused remount leaves s_flags untouched");
     assert_eq!(ops.remounts.load(Ordering::Relaxed), 1, "hook was consulted");
@@ -103,8 +105,8 @@ fn hook_error_aborts_with_flags_unchanged() {
 #[test]
 fn idempotent_reapply_keeps_flag() {
     let (sb, _ops) = build(false);
-    sb.reconfigure_super(SB_RDONLY, 0).expect("first RO");
-    sb.reconfigure_super(SB_RDONLY, 0).expect("re-apply RO is idempotent");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("first RO");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("re-apply RO is idempotent");
     assert!(sb.is_readonly());
 }
 
@@ -115,6 +117,25 @@ fn default_super_ops_remount_is_noop_ok() {
     struct Plain;
     impl FileSystem for Plain { fn name(&self) -> &str { "plain" } }
     let sb = common::realize_sb(Arc::new(Plain), None, next_anon_dev(), String::from("plain"));
-    sb.reconfigure_super(SB_RDONLY, 0).expect("default remount_fs is a no-op Ok");
+    sb.reconfigure_super(SB_RDONLY, 0, "").expect("default remount_fs is a no-op Ok");
     assert!(sb.is_readonly());
+}
+
+#[test]
+fn the_remount_option_string_reaches_the_backend_hook() {
+    // A backend with per-mount options (journalled quota files, journal mode)
+    // can only reject a change the live filesystem cannot make if it is HANDED
+    // the requested options. Dropping the string made every such option
+    // silently accepted and ignored.
+    let (sb, ops) = build(false);
+    sb.reconfigure_super(SB_RDONLY, 0, "usrjquota=aquota.user,jqfmt=vfsv1")
+        .expect("RW→RO remount");
+    assert_eq!(&*ops.last_data.lock().unwrap(), "usrjquota=aquota.user,jqfmt=vfsv1");
+
+    // A backend refusal aborts the remount with s_flags untouched, so an
+    // option the live filesystem cannot change cannot half-apply.
+    let (sb, ops) = build(true);
+    assert_eq!(sb.reconfigure_super(SB_RDONLY, 0, "jqfmt=vfsv0"), Err(VfsError::Eacces));
+    assert_eq!(&*ops.last_data.lock().unwrap(), "jqfmt=vfsv0");
+    assert!(!sb.is_readonly(), "a refused remount leaves the flags alone");
 }

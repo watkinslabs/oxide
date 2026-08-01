@@ -101,7 +101,7 @@ fn attach_recursive_mnt_attaches_and_propagates_atomically() {
     use vfs::mount::Propagation;
     let _g = guard(0xD140);
     vfs::fs::register_fs(vfs::fs::FsType::new("tfs", 0, vfs::fs::FsFlags::empty(),
-        Box::new(|_, _, _, _| Err(VfsError::Enodev)))).expect("register tfs type");
+        Box::new(|_, _, _, _, _| Err(VfsError::Enodev)))).expect("register tfs type");
     common::register("/", fs(0x1)).expect("root");
     common::register("/ra", fs(0xA)).expect("ra");
     common::set_propagation("/ra", Propagation::Shared).expect("share ra");
