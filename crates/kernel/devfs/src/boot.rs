@@ -114,7 +114,26 @@ pub fn try_populate_defaults() -> drv::KResult<()> {
 /// form above to prove rollback/error behavior.
 /// # C: O(N nodes)
 pub fn populate_defaults() {
-    if let Err(e) = try_populate_defaults() {
-        panic!("devfs pseudo device registration failed: {:?}", e);
+    if let Err(e) = try_populate_defaults() { populate_fatal(e); }
+}
+
+/// Boot-fatal counterpart of `try_populate_defaults`.
+///
+/// Per-variant literal rather than `panic!("… {:?}", e)`: `07§5` requires
+/// `panic!` messages to be interned `&'static str`, because kernel profiles are
+/// `panic="abort"` and must not drag `core::fmt` into the abort path.
+/// # C: O(1)
+#[cold]
+fn populate_fatal(e: drv::Error) -> ! {
+    use drv::Error as E;
+    match e {
+        E::NoMatch      => panic!("devfs pseudo device registration failed: no matching driver"),
+        E::NoMem        => panic!("devfs pseudo device registration failed: out of memory"),
+        E::ProbeFailed  => panic!("devfs pseudo device registration failed: probe failed"),
+        E::Removed      => panic!("devfs pseudo device registration failed: device removed"),
+        E::AlreadyBound => panic!("devfs pseudo device registration failed: already bound"),
+        E::NotFound     => panic!("devfs pseudo device registration failed: not found"),
+        E::Busy         => panic!("devfs pseudo device registration failed: busy"),
+        E::Invalid      => panic!("devfs pseudo device registration failed: invalid argument"),
     }
 }
