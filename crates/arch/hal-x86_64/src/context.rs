@@ -3,12 +3,15 @@
 // host builds substitute a no-op extern fn so call-site checks
 // exercise the trait surface without invoking real asm.
 //
-// Layout per `14§5.2`: 8 callee-saved + fs_base, repr(C), 64 B total.
+// Layout per `14§5.2`: 8 callee-saved + fs_base + gs_base, repr(C), 72 B.
 // Offsets are asm-coupled — the inline assembly references `[rdi +
 // 0x00]`, `[rsi + 0x00]`, etc. — so any field reordering breaks the
 // switch. Tests pin every offset.
 
 use hal::Context;
+
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+use crate::cpu::{rdmsr, wrmsr};
 
 use crate::pt_regs::{PtRegs, PT_REGS_BYTES};
 
@@ -66,7 +69,13 @@ pub struct ContextX86_64 {
     pub r13:     u64, // 0x20 — trampoline reads `arg` from here
     pub r14:     u64, // 0x28
     pub r15:     u64, // 0x30
-    pub fs_base: u64, // 0x38 (saved/restored by syscall entry, not switch)
+    pub fs_base: u64, // 0x38 — reloaded into IA32_FS_BASE by the switch
+    /// This thread's USER GS base (`arch_prctl(ARCH_SET_GS)`), 0 by default.
+    /// Kernel mode keeps it in `IA32_KERNEL_GS_BASE` — the register `swapgs`
+    /// exchanges with the live GS base on every ring transition — so the
+    /// switch reloads THAT MSR, not `IA32_GS_BASE` (which holds this CPU's
+    /// per-CPU area and is not per-task at all).
+    pub gs_base: u64, // 0x40
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -96,10 +105,21 @@ core::arch::global_asm!(
     "    mov  rax, [rsi + 0x38]",
     "    mov  rdx, rax",
     "    shr  rdx, 32",
-    "    mov  ecx, 0xC0000100",
+    "    mov  ecx, {msr_fs_base}",
+    "    wrmsr",
+    // Same for next's user GS base, into IA32_KERNEL_GS_BASE. We are in
+    // kernel mode, so the live IA32_GS_BASE is this CPU's per-CPU area (which
+    // must NOT move) and the shadow register is where the outgoing thread's
+    // user base sits; the exit-path `swapgs` promotes it on the way to ring 3.
+    "    mov  rax, [rsi + 0x40]",
+    "    mov  rdx, rax",
+    "    shr  rdx, 32",
+    "    mov  ecx, {msr_kernel_gs_base}",
     "    wrmsr",
     "    ret",
     ".size oxide_context_switch, . - oxide_context_switch",
+    msr_fs_base = const crate::msr::IA32_FS_BASE,
+    msr_kernel_gs_base = const crate::msr::IA32_KERNEL_GS_BASE,
 );
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -188,6 +208,7 @@ impl Context for ContextX86_64 {
             r14: 0,
             r15: 0,
             fs_base: 0,
+            gs_base: 0,
         }
     }
 
@@ -242,6 +263,7 @@ impl Context for ContextX86_64 {
             r14: 0,
             r15: 0,
             fs_base: 0,
+            gs_base: 0,
         }
     }
 
@@ -261,6 +283,7 @@ impl Context for ContextX86_64 {
             r14: user_ip,
             r15: 0,
             fs_base: 0,
+            gs_base: 0,
         }
     }
 
@@ -280,19 +303,17 @@ impl Context for ContextX86_64 {
             // that called `arch_prctl(SET_FS, ...)` leaves the CPU
             // FS_BASE pointing at *its* TLS region, which faults the
             // moment the parent runs again.
-            // SAFETY: rdmsr/wrmsr IA32_FS_BASE legal at CPL=0; reads/writes only the FS_BASE MSR.
-            let cur_fs: u64 = unsafe {
-                let lo: u32; let hi: u32;
-                core::arch::asm!(
-                    "rdmsr",
-                    in("ecx") 0xC000_0100u32,
-                    out("eax") lo, out("edx") hi,
-                    options(nomem, nostack, preserves_flags),
-                );
-                ((hi as u64) << 32) | (lo as u64)
-            };
+            // SAFETY: rdmsr IA32_FS_BASE legal at CPL=0; reads only the FS_BASE MSR.
+            let cur_fs: u64 = unsafe { rdmsr(crate::msr::IA32_FS_BASE) };
+            // The outgoing thread's USER GS base lives in IA32_KERNEL_GS_BASE
+            // while we are in kernel mode (the live GS base is this CPU's
+            // per-CPU area). Same staleness argument as fs_base: arch_prctl
+            // writes the MSR directly, so the MSR — not the saved field — is
+            // the truth at this instant.
+            // SAFETY: rdmsr IA32_KERNEL_GS_BASE legal at CPL=0; reads only that MSR.
+            let cur_gs: u64 = unsafe { rdmsr(crate::msr::IA32_KERNEL_GS_BASE) };
             // SAFETY: prev is a valid &mut Self per fn contract.
-            unsafe { (*prev).fs_base = cur_fs; }
+            unsafe { (*prev).fs_base = cur_fs; (*prev).gs_base = cur_gs; }
             // SAFETY: `oxide_context_switch` OVERWRITES rsp/rbp/rbx/r12-r15
             // with the incoming task's saved values — that IS the switch
             // (see its global_asm! body: every one of those regs is loaded
@@ -331,17 +352,10 @@ impl Context for ContextX86_64 {
             // own ctx — so we restore from `(*prev).fs_base`, NOT
             // `(*next).fs_base` (which would be the unrelated task
             // we *originally* switched into).
-            // SAFETY: prev is a valid *mut Self per fn contract; wrmsr IA32_FS_BASE legal at CPL=0.
+            // SAFETY: prev is a valid *mut Self per fn contract; wrmsr of the two per-thread segment-base MSRs is legal at CPL=0.
             unsafe {
-                let fs = (*prev).fs_base;
-                let lo = fs as u32;
-                let hi = (fs >> 32) as u32;
-                core::arch::asm!(
-                    "wrmsr",
-                    in("ecx") 0xC000_0100u32,
-                    in("eax") lo, in("edx") hi,
-                    options(nomem, nostack, preserves_flags),
-                );
+                wrmsr(crate::msr::IA32_FS_BASE, (*prev).fs_base);
+                wrmsr(crate::msr::IA32_KERNEL_GS_BASE, (*prev).gs_base);
             }
         }
         #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
@@ -391,6 +405,7 @@ impl ContextX86_64 {
             r14: 0,
             r15: 0,
             fs_base: 0,
+            gs_base: 0,
         }
     }
 
@@ -412,6 +427,7 @@ impl ContextX86_64 {
         user_rflags: u64,
         regs: &ForkRegs,
         parent_fs_base: u64,
+        parent_gs_base: u64,
     ) -> Self {
         let frame = PtRegs {
             r15: regs.r15, r14: regs.r14, r13: regs.r13, r12: regs.r12,
@@ -437,6 +453,7 @@ impl ContextX86_64 {
             r14: regs.r14,
             r15: regs.r15,
             fs_base: parent_fs_base,
+            gs_base: parent_gs_base,
         }
     }
 }

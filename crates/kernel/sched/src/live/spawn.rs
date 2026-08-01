@@ -399,10 +399,18 @@ pub unsafe fn spawn_user_thread_for_fork(
     // are on the parent's syscall stack so the MSR holds the parent's
     // user FS_BASE.
     let parent_fs_base = unsafe { hal_x86_64::get_user_fs_base() };
+    // Same argument for the user GS base (`arch_prctl(ARCH_SET_GS)`), which
+    // kernel mode keeps in IA32_KERNEL_GS_BASE. Reading the live MSR rather
+    // than the saved `arch_ctx.gs_base` closes the same window: a fork that
+    // lands between an ARCH_SET_GS and the next context switch would
+    // otherwise hand the child a stale base.
+    // SAFETY: rdmsr IA32_KERNEL_GS_BASE at CPL=0 is unconditionally legal; we
+    // are on the parent's syscall stack so the MSR holds the parent's user GS base.
+    let parent_gs_base = unsafe { hal_x86_64::get_user_gs_base() };
     // SAFETY: stack_top freshly installed; entry_va/user_sp/regs from parent's saved frame; new_user_for_fork lays out the iretq frame for ring-3 resume with regs preloaded.
     unsafe {
         let p = task.arch_ctx_ptr::<ArchCtx>();
-        core::ptr::write(p, ArchCtx::new_user_for_fork(stack_top, entry_va, user_sp, user_rflags, regs, parent_fs_base));
+        core::ptr::write(p, ArchCtx::new_user_for_fork(stack_top, entry_va, user_sp, user_rflags, regs, parent_fs_base, parent_gs_base));
     }
 
     let start_boottime_ns = monotonic_ns();

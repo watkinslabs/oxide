@@ -9,7 +9,7 @@ use crate::msr;
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[inline]
-unsafe fn wrmsr(sel: u32, val: u64) {
+pub(crate) unsafe fn wrmsr(sel: u32, val: u64) {
     // SAFETY: per fn contract — `wrmsr` is legal at CPL=0; ECX selects the
     // register, EDX:EAX carry the value; no memory effect.
     unsafe {
@@ -28,7 +28,7 @@ unsafe fn wrmsr(sel: u32, val: u64) {
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[inline]
-unsafe fn rdmsr(sel: u32) -> u64 {
+pub(crate) unsafe fn rdmsr(sel: u32) -> u64 {
     let lo: u32; let hi: u32;
     // SAFETY: per fn contract — `rdmsr` is legal at CPL=0; ECX selects the
     // register; no memory effect.
@@ -69,6 +69,40 @@ pub unsafe fn get_user_fs_base() -> u64 {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     // SAFETY: per fn contract — privileged read of the architectural FS_BASE register; no memory effect.
     unsafe { rdmsr(msr::IA32_FS_BASE) }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
+/// Write this thread's USER GS base.
+///
+/// The value goes to `IA32_KERNEL_GS_BASE`, not `IA32_GS_BASE`: kernel mode
+/// runs with the per-CPU area in the live GS base, and the shadow register is
+/// what the exit-path `swapgs` promotes on the way to ring 3. Writing
+/// `IA32_GS_BASE` here would replace this CPU's per-CPU base — the exact
+/// takeover `clear_cr4_fsgsbase` exists to prevent ring 3 from performing.
+///
+/// # SAFETY: `wrmsr` is privileged at CPL=0. Caller validates `va` is below
+/// `TASK_SIZE_MAX` if user-supplied (`arch_prctl` answers EPERM otherwise),
+/// which keeps it canonical AND keeps bit 63 clear — the paranoid exception
+/// entry's kernel-vs-user GS test depends on that.
+/// # C: O(1)
+/// # Ctx: syscall context
+pub unsafe fn set_user_gs_base(va: u64) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: per fn contract — privileged write of the shadow GS base with a caller-validated user VA; the live per-CPU GS base is untouched.
+    unsafe { wrmsr(msr::IA32_KERNEL_GS_BASE, va); }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = va; }
+}
+
+/// Read this thread's USER GS base. Inverse of `set_user_gs_base`; valid only
+/// in kernel mode, where the user base is the shadow register.
+/// # SAFETY: `rdmsr` is privileged at CPL=0; reads only.
+/// # C: O(1)
+pub unsafe fn get_user_gs_base() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: per fn contract — privileged read of the shadow GS base; no memory effect.
+    unsafe { rdmsr(msr::IA32_KERNEL_GS_BASE) }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { 0 }
 }
