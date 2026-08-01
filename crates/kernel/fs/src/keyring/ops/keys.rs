@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use super::{e, Ctx};
+use super::super::notify;
 use super::super::perm::{check_perm, Lookup};
 use super::super::store::STORE;
 use super::super::types;
@@ -65,6 +66,7 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
             if let Err(rv) = check_perm(&g, s, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
             if let Err(err) = g.payload_reserve(s, quota) { return e(err); }
             g.keys.get_mut(&s).expect("membership proved existence under the held lock").payload = payload;
+            notify::updated(&g, s);
             return s as i64;
         }
     }
@@ -92,6 +94,7 @@ pub fn update_core(c: &Ctx, serial: i32, payload: Vec<u8>, have_payload_ptr: boo
         return e(err);
     }
     g.keys.get_mut(&serial).expect("presence proved under the same held lock").payload = payload;
+    notify::updated(&g, serial);
     0
 }
 
@@ -118,6 +121,7 @@ pub fn revoke_core(c: &Ctx, serial: i32) -> i64 {
     // `key_revoke` is idempotent; the full lookup above is what turns a second
     // revoke into EKEYREVOKED, so reaching here means the key was live.
     g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock").revoked = true;
+    notify::revoked(&g, serial);
     0
 }
 
@@ -129,6 +133,7 @@ pub fn invalidate_core(c: &Ctx, serial: i32) -> i64 {
     let mut g = STORE.lock();
     if let Err(rv) = check_perm(&g, serial, &c.t, KEY_NEED_SEARCH, Lookup::Full, c.now_ns) { return rv; }
     g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock").invalidated = true;
+    notify::invalidated(&g, serial);
     for k in g.keys.values_mut() { k.members.retain(|&m| m != serial); }
     // Unlinked from everything, the key has no references left: the gc
     // collects it and hands its quota charge back to its owner.
@@ -152,6 +157,7 @@ pub fn chown_core(c: &Ctx, serial: i32, uid: u32, gid: u32) -> i64 {
     let k = g.keys.get_mut(&serial).expect("presence proved under the same held lock");
     if uid != UNCHANGED { k.uid = uid; }
     if gid != UNCHANGED { k.gid = gid; }
+    notify::setattr(&g, serial);
     0
 }
 
@@ -172,6 +178,7 @@ pub fn setperm_core(c: &Ctx, serial: i32, perm: u32) -> i64 {
     let k = g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock");
     if k.uid != c.t.fsuid && !c.sys_admin { return e(Errno::Eacces); }
     k.perm = perm;
+    notify::setattr(&g, serial);
     0
 }
 
@@ -195,6 +202,7 @@ pub fn set_timeout_core(c: &Ctx, serial: i32, secs: u64) -> i64 {
     }
     let k = g.keys.get_mut(&serial).expect("check_perm proved existence under the same held lock");
     k.expiry_ns = if secs == 0 { 0 } else { c.now_ns.saturating_add(secs.saturating_mul(NS_PER_SEC)) };
+    notify::setattr(&g, serial);
     0
 }
 

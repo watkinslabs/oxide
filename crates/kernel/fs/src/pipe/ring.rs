@@ -265,6 +265,21 @@ impl PipeData {
         mask
     }
 
+    /// Enqueue the running task on this pipe's read wait list without
+    /// scheduling. The caller holds whatever lock makes its "nothing to read"
+    /// observation atomic with this enqueue, and schedules once that lock is
+    /// dropped. # C: O(1)
+    ///
+    /// # Safety
+    /// Process context, preemption off, and the caller MUST schedule after
+    /// dropping its lock — a task marked Sleeping that never schedules would
+    /// keep running with the wrong state.
+    #[cfg(target_os = "oxide-kernel")]
+    pub unsafe fn arm_read_wait(&self) {
+        // SAFETY: forwarded from this function's own contract — process context, preempt-off, caller schedules next.
+        unsafe { self.read_waiters.park(); }
+    }
+
     /// Bytes currently queued for `FIONREAD`. # C: O(1)
     pub(super) fn queued_bytes(&self) -> usize { self.buf.lock().len }
 }

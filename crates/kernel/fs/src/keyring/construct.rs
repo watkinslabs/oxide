@@ -192,7 +192,8 @@ pub fn instantiate(g: &mut Store, key: i32, payload: Vec<u8>, keyring: Option<i3
     k.payload = payload;
     k.state = KEY_IS_POSITIVE;
     k.under_construction = false;
-    if let Some(r) = keyring { g.link(r, key).map_err(e)?; }
+    super::notify::instantiated(g, key, 0);
+    if let Some(r) = keyring { g.link(r, key).map_err(e)?; super::notify::linked(g, r, key); }
     if let Some(a) = authkey { auth::invalidate_auth(g, a); }
     Ok(())
 }
@@ -221,7 +222,10 @@ pub fn reject(g: &mut Store, key: i32, timeout: u64, error: i32, keyring: Option
     k.state = -error;
     k.under_construction = false;
     k.expiry_ns = now_ns.saturating_add(timeout.saturating_mul(NS_PER_SEC)).max(1);
-    if let Some(r) = keyring { g.link(r, key).map_err(e)?; }
+    // A watcher of a rejected key is told the request was answered AND with
+    // what error, so it need not re-look-up the key to find out.
+    super::notify::instantiated(g, key, error as u32);
+    if let Some(r) = keyring { g.link(r, key).map_err(e)?; super::notify::linked(g, r, key); }
     if let Some(a) = authkey { auth::invalidate_auth(g, a); }
     Ok(())
 }

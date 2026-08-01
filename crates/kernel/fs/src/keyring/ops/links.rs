@@ -7,6 +7,7 @@ use syscall::errno::Errno;
 use super::search::{self, Expired};
 use super::{e, Ctx};
 use super::super::construct;
+use super::super::notify;
 use super::super::perm::{check_perm, Lookup};
 use super::super::store::{Store, STORE};
 use super::super::types;
@@ -26,7 +27,7 @@ pub fn link_core(c: &Ctx, child: i32, ring: i32) -> i64 {
     let r  = match g.resolve(ring, &c.t)  { Ok(x) => x, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, ch, &c.t, KEY_NEED_LINK, Lookup::Full, c.now_ns) { return rv; }
     if let Err(rv) = check_perm(&g, r, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
-    match g.link(r, ch) { Ok(()) => 0, Err(err) => e(err) }
+    match g.link(r, ch) { Ok(()) => { notify::linked(&g, r, ch); 0 } Err(err) => e(err) }
 }
 
 /// `KEYCTL_UNLINK` core — Linux `keyctl_keyring_unlink`: only the ring needs
@@ -44,6 +45,7 @@ pub fn unlink_core(c: &Ctx, child: i32, ring: i32) -> i64 {
             let before = k.members.len();
             k.members.retain(|&m| m != ch);
             if k.members.len() == before { return e(Errno::Enoent); }
+            notify::unlinked(&g, r, ch);
             // Dropping the last link drops the last reference: the gc collects
             // the key and refunds its quota charge to its owner.
             g.collect();
@@ -71,7 +73,9 @@ pub fn move_core(c: &Ctx, id: i32, from_ring: i32, to_ring: i32, flags: u32) -> 
     if let Err(rv) = check_perm(&g, to, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     if flags & KEYCTL_MOVE_EXCL != 0 && has_matching_member(&g, to, key) { return e(Errno::Eexist); }
     if let Err(err) = g.link(to, key) { return e(err); }
+    notify::linked(&g, to, key);
     if let Some(k) = g.keys.get_mut(&from) { k.members.retain(|&m| m != key); }
+    notify::unlinked(&g, from, key);
     0
 }
 
@@ -91,7 +95,12 @@ pub fn clear_core(c: &Ctx, ring_id: i32) -> i64 {
     let r = match g.resolve(ring_id, &c.t) { Ok(r) => r, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, r, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     match g.keys.get_mut(&r) {
-        Some(k) if k.is_keyring() => { k.members.clear(); g.collect(); 0 }
+        Some(k) if k.is_keyring() => {
+            k.members.clear();
+            notify::cleared(&g, r);
+            g.collect();
+            0
+        }
         Some(_) => e(Errno::Enotdir),
         None => e(Errno::Enokey),
     }

@@ -20,6 +20,7 @@ extern crate std;
 
 pub mod anon_dname;
 pub mod pipe;
+pub mod watch_queue;
 pub mod signalfd;
 pub mod timerfd;
 pub mod epoll;

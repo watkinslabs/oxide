@@ -43,6 +43,11 @@ pkey     = { path = "../../shared/pkey" }
 crng     = { path = "../crng" }
 
 [dev-dependencies]
+# TEMPORARY (B1659): `net` leaves `ipv4_options`, `raw4`, `send_control` and
+# `sock_v6_name` ungated while they use `sock_opts`, which is
+# `cfg(any(oxide-kernel, test, hosted))`. Without this, `cargo test -p fs` does
+# not build at all. Drop the line once net's hosted build is whole again.
+net = { path = "../net", features = ["hosted"] }
 block = { path = "../block" }
 boot-info = { path = "../../shared/boot-info" }
 
