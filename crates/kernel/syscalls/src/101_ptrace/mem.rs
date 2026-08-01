@@ -55,10 +55,10 @@ pub fn peek_user(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
             // 27; anything past the end reads as the zero Linux also returns.
             if i < super::frame::REGS_N { u[i] } else { 0 }
         }
-        // No hardware debug registers are wired on this port, so DR0..DR7
-        // read as zero — the same value Linux reports for a task that never
-        // armed one.
-        UserArea::DebugReg(_) | UserArea::Padding => 0,
+        // `ptrace_get_debugreg(n)` — the tracee's own DR0..DR7 shadow, which
+        // the context switch installs whenever the task is armed.
+        UserArea::DebugReg(n) => sched::debugreg::get(target, n).unwrap_or(0),
+        UserArea::Padding => 0,
     };
     put_word(data, word)
 }
@@ -73,15 +73,35 @@ pub fn poke_user(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
             u[i] = data;
             super::frame::set_user_regs(target, &u)
         }
-        // Writing a debug register we do not implement must not report
-        // success — a tracer would then believe a hardware watchpoint is
-        // armed. Linux's own arm is `ptrace_set_debugreg`, which errors on
-        // an unsupported request too.
-        UserArea::DebugReg(_) => Err(Errno::Eio),
+        // `ptrace_set_debugreg(n, data)`. An address is range-checked, a DR7
+        // goes through the architecture's full RW/LEN/alignment/reserved-bit
+        // ladder, and DR6 may only be cleared — a tracer must not be able to
+        // point the CPU's breakpoint hardware at kernel text, nor forge a
+        // breakpoint hit the tracee never took. A refused write stores nothing
+        // and reports EIO, as Linux does.
+        UserArea::DebugReg(n) => set_debugreg(target, n, data),
         // Padding inside `struct user` is writable-but-ignored on Linux.
         UserArea::Padding => Ok(()),
     }
 }
+
+/// `ptrace_set_debugreg(n, data)`.
+///
+/// x86_64 only: `struct user`'s `u_debugreg` window is an x86 shape, and the
+/// whole PEEKUSER/POKEUSER request is already EIO on every other arch
+/// (`decide::unsupported_on_arch`), so this arm is unreachable there.
+/// # C: O(1)
+#[cfg(target_arch = "x86_64")]
+fn set_debugreg(target: &Task, n: usize, data: u64) -> Result<(), Errno> {
+    use sched::debugreg;
+    if debugreg::is_status(n) { debugreg::x86::set_status(target, data); return Ok(()); }
+    let r = if debugreg::is_control(n) { debugreg::x86::set_control(target, data) }
+            else { debugreg::x86::set_addr(target, n, data) };
+    r.map_err(|_| Errno::Eio)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn set_debugreg(_target: &Task, _n: usize, _data: u64) -> Result<(), Errno> { Err(Errno::Eio) }
 
 /// `put_user(word, data)` into the tracer's own address space.
 fn put_word(data: u64, word: u64) -> Result<(), Errno> {

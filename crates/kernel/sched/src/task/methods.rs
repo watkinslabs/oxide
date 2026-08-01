@@ -438,6 +438,7 @@ impl Task {
             stop_pending:    AtomicBool::new(false),
             cont_pending:    AtomicBool::new(false),
             stop_code:       AtomicU32::new(0),
+            debugregs:       [const { AtomicU64::new(0) }; crate::debugreg::SLOTS],
             jobctl:          AtomicU64::new(0),
             stop_wake:       AtomicU8::new(crate::jobctl::WakeKind::Cont as u8),
             rseq_ptr:       AtomicU64::new(0),

@@ -9,6 +9,7 @@
 mod context;
 mod cpu;
 mod cpuid;
+pub mod debugreg;
 mod fault;
 mod exception_table;
 mod fpu;
@@ -36,6 +37,8 @@ pub use cpu::{get_user_fs_base, halt, mmio_barrier, set_user_fs_base, X86CpuOps}
 pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, vendor as cpuid_vendor};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
+pub use debugreg::{validate_addr as validate_dr_addr, validate_dr7, DebugRegs, Dr6Status,
+    Dr7Error, HBP_NUM};
 pub use fault::{
     current_fault_frame, install_fault_handler, install_user_trap_hook,
     vector_stub_addr, FaultHandler, UserTrapHook,

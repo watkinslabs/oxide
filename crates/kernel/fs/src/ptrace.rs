@@ -73,17 +73,25 @@ pub unsafe extern "C" fn oxide_x86_arm_singlestep(rflags_ptr: *mut u64) {
 fn x86_user_trap_hook(regs: &mut hal_x86_64::PtRegs) -> bool {
     if regs.vector != 1 { return false; }
     regs.rflags &= !RFLAGS_TF;
-    // Linux `exc_debug_user` -> `send_sigtrap` -> `force_sig_fault(SIGTRAP,
-    // TRAP_TRACE, pc)`: the step report is a `_sigfault` record, so a debugger
-    // reading si_code can tell a single-step from a breakpoint. The raw bit-set
-    // this replaced queued nothing at all.
+    // Linux `exc_debug_user` -> `send_sigtrap` / `hw_breakpoint_handler` ->
+    // `force_sig_fault(SIGTRAP, code, pc)`: the report is a `_sigfault`
+    // record, and DR6 says WHICH code — `TRAP_TRACE` for the single step,
+    // `TRAP_HWBKPT` for one of the four hardware breakpoint slots. Reading and
+    // clearing DR6 here is also what stops the next #DB from re-reporting a
+    // hit the tracee already consumed.
+    #[allow(unused_mut)]
+    let mut code = hal::siginfo::code::TRAP_TRACE;
     if let Some(cur) = sched::current() {
         cur.singlestep.store(0, Ordering::Release);
-        let _ = cur;
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            // SAFETY: #DB dispatch from CPL=3 with interrupts masked, so this
+            // CPU is the sole reader of its own DR6; `cur` is the running task.
+            code = unsafe { sched::debugreg::x86::take_trap(cur) };
+        }
     }
     #[cfg(target_os = "oxide-kernel")]
-    sched::live::force_sig_fault(sched::signum::Signum::Sigtrap,
-                                 hal::siginfo::code::TRAP_TRACE, regs.rip, 0);
+    sched::live::force_sig_fault(sched::signum::Signum::Sigtrap, code, regs.rip, 0);
     true
 }
 

@@ -741,6 +741,12 @@ pub struct Task {
     /// `SIGTRAP | 0x80`. `syscall::ptrace` composes and decodes it; the wait
     /// status is `syscall::wait::stopped_wstatus(stop_code)`.
     pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_code: AtomicU32,
+    /// Per-task hardware debug-register shadow: DR0-DR3 addresses, then the
+    /// DR6 status and DR7 control at `debugreg::STATUS`/`CONTROL`. Installed
+    /// into hardware by the context switch when armed and read/written by
+    /// `PTRACE_PEEKUSER`/`POKEUSER` on the `u_debugreg` window. Arch-neutral
+    /// storage: the bit contract belongs to the HAL (`debugreg::x86`).
+    pub debugregs: [AtomicU64; crate::debugreg::SLOTS],
     /// Linux `task->jobctl`: the job-control / ptrace-trap latch. Bit layout
     /// and every rule read off it are `crate::jobctl`.
     pub jobctl: AtomicU64,
