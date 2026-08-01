@@ -38,8 +38,12 @@ pub fn sys_open_tree_attr(args: &SyscallArgs) -> i64 {
     // mount_setattr bits and must not leak into its `VALID_AT_FLAGS` check.
     let at_flags = syscall::at::AT_EMPTY_PATH as u64
         | if f.recursive { syscall::at::AT_RECURSIVE as u64 } else { 0 };
+    // A CLONE produced a tree in an anonymous namespace that nothing else can
+    // reach, so this call — and only this call — may also remove or replace an
+    // idmap rather than merely install a first one.
+    let kflags = crate::mount_idmap_policy::kflags_for_open_tree_attr(f.clone_tree, f.recursive);
     let rv = crate::s442_mount_setattr::mount_setattr_at(
-        fd as i32, Some(""), 0, at_flags, uattr, size);
+        fd as i32, Some(""), 0, at_flags, uattr, size, kflags);
     if rv < 0 { close_fd(fd as i32); return rv; }
     fd
 }

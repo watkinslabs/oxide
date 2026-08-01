@@ -68,6 +68,13 @@ impl Idmap {
     /// True for the no-op (non-idmapped) map. # C: O(1)
     pub fn is_identity(&self) -> bool { self.nop }
 
+    /// The uid extents, in declaration order — what `statmount(2)` reports as
+    /// `mnt_uidmap`. Empty for the no-op map. # C: O(1)
+    pub fn uid_extents(&self) -> &[IdExtent] { &self.uid_ext }
+    /// The gid extents, in declaration order (`statmount(2)` `mnt_gidmap`).
+    /// # C: O(1)
+    pub fn gid_extents(&self) -> &[IdExtent] { &self.gid_ext }
+
     /// fs-id → vfs-id; INVALID on an extent miss in a real idmap. # C: O(extents)
     fn out(&self, ext: &[IdExtent], fs: u32) -> u32 {
         if self.nop { return fs; }
