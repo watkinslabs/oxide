@@ -15,8 +15,9 @@ pub(super) fn handle_mask(opened: &EvdevOpen, nr: u32, arg: u64) -> i64 {
         return err(Errno::Efault);
     }
     let mut raw = [0u8; policy::INPUT_MASK_BYTES];
-    // SAFETY: valid_user_range accepted arg for the whole fixed-length input_mask descriptor.
-    unsafe { uread(arg, &mut raw); }
+    if !uread(arg, &mut raw) {
+        return err(Errno::Efault);
+    }
     let desc = policy::parse_input_mask(&raw);
     let cnt = policy::mask_cnt(desc.ev_type);
     if nr == crate::EVIOCSMASK_NR as u32 {
@@ -38,8 +39,9 @@ fn set_mask(opened: &EvdevOpen, desc: &policy::InputMask, cnt: usize) -> i64 {
         if !valid_user_range(desc.codes_ptr, len as u64) {
             return err(Errno::Efault);
         }
-        // SAFETY: valid_user_range accepted codes_ptr for the len bytes this mask reads.
-        unsafe { uread(desc.codes_ptr, &mut codes[..len]); }
+        if !uread(desc.codes_ptr, &mut codes[..len]) {
+            return err(Errno::Efault);
+        }
     }
     if opened.mask_set(desc.ev_type, &codes[..len]) { 0 } else { err(Errno::Einval) }
 }
@@ -57,13 +59,14 @@ fn get_mask(opened: &EvdevOpen, desc: &policy::InputMask, cnt: usize) -> i64 {
         Some(_) => copy,
         None => plan.payload.min(policy::MASK_MAX_BYTES),
     };
-    if payload > 0 {
-        // SAFETY: valid_user_range accepted codes_ptr for codes_size bytes, and payload <= codes_size.
-        unsafe { uwrite(desc.codes_ptr, &codes[..payload], payload); }
+    // `payload` and the tail together span at most `codes_size`, the length
+    // `valid_user_range` accepted above, so neither transfer runs past the
+    // caller's buffer.
+    if payload > 0 && uwrite(desc.codes_ptr, &codes[..payload], payload) < 0 {
+        return err(Errno::Efault);
     }
-    if plan.tail_len > 0 {
-        // SAFETY: valid_user_range accepted codes_ptr for codes_size bytes, and this tail ends there.
-        unsafe { uzero(desc.codes_ptr + plan.tail_off as u64, plan.tail_len); }
+    if plan.tail_len > 0 && !uzero(desc.codes_ptr + plan.tail_off as u64, plan.tail_len) {
+        return err(Errno::Efault);
     }
     0
 }

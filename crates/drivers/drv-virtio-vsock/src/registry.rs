@@ -72,6 +72,10 @@ impl Drop for VsockProbeState {
         if self.owned_frames {
             free_rx_bufs(&mut self.rx_bufs);
             if self.tx_buf_pa != 0 {
+                // SAFETY: `owned_frames` is still set, so this probe failed
+                // before `transfer_frames_to_ctx` handed the frames to a Ctx —
+                // no descriptor names them, the device was never kicked for
+                // them, and this drop is their only remaining owner.
                 unsafe { pmm::setup::free_one_frame(self.tx_buf_pa); }
                 self.tx_buf_pa = 0;
             }
@@ -129,6 +133,9 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
 
     let rx_used = resources.hhdm.wrapping_add(rxq.device_pa) as *const u16;
     let tx_used = resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
+    // SAFETY: HHDM-mapped q0/q1 used rings — `require_queue` accepted both
+    // device_pa values above — read as aligned u16 loads of used.idx at index
+    // 1, so the driver's avail counters start from what the device consumed.
     let (rx_used_seen, tx_used_seen) = unsafe {
         (
             core::ptr::read_volatile(rx_used.add(1)),
@@ -175,6 +182,10 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
 fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
     for pa in rx_bufs.iter_mut() {
         if *pa != 0 {
+            // SAFETY: each `pa` came from `alloc_one_frame` for this context's
+            // RX ring; every caller either never published it (probe drop) or
+            // has already removed the Ctx from CTX and reset the transport, so
+            // the device holds no descriptor pointing at it.
             unsafe { pmm::setup::free_one_frame(*pa); }
             *pa = 0;
         }
@@ -194,6 +205,9 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let _ = virtio::reset_device(ctx.cfg_va);
     free_rx_bufs(&mut ctx.rx_bufs);
     if ctx.tx_buf_pa != 0 {
+        // SAFETY: `remove_ctx` took this Ctx out of CTX and `tx_packet` runs
+        // entirely under the CTX lock, so no sender can still be using the
+        // frame; the transport reset above stopped the device first.
         unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
     }
     true
@@ -212,6 +226,9 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let _ = virtio::reset_device(ctx.cfg_va);
     free_rx_bufs(&mut ctx.rx_bufs);
     if ctx.tx_buf_pa != 0 {
+        // SAFETY: same disarm order as `uninstall` — the Ctx left CTX before
+        // this point, so no TX or RX path can name the frame, and the reset
+        // above quiesced the device that was given it.
         unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
     }
     true

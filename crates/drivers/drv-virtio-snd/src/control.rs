@@ -10,6 +10,10 @@ pub(super) fn pcm_info_scan(device_key: DeviceKey) -> Option<(u32, u32)> {
     let h = ctx.hhdm;
 
     let req = h.wrapping_add(ctx.scratch_pa + REQ_OFF) as *mut u32;
+    // SAFETY: HHDM view of the control scratch frame this Ctx owns; the four
+    // u32 stores build a virtio_snd_query_info at REQ_OFF, and REQ_OFF plus
+    // QUERY_INFO_SIZE stays below RESP_OFF, so the request never overlaps the
+    // response half of the same frame. The CTX lock makes this the only writer.
     unsafe {
         core::ptr::write_volatile(req.add(0), VIRTIO_SND_R_PCM_INFO);
         core::ptr::write_volatile(req.add(1), 0);
@@ -31,6 +35,10 @@ pub(super) fn pcm_info_scan(device_key: DeviceKey) -> Option<(u32, u32)> {
     let mut first_in: Option<u32> = None;
     for i in 0..entries {
         let e = base.wrapping_add(i * PCM_INFO_SIZE);
+        // SAFETY: HHDM view of the response half of the scratch frame the
+        // device just filled; `entries` was derived from `resp_len`, itself
+        // clamped to the frame, so every `e + off` with off < PCM_INFO_SIZE
+        // stays inside the bytes the device was allowed to write.
         let rd8 = |off: usize| -> u8 { unsafe { core::ptr::read_volatile(e.add(off)) } };
         let rd64 = |off: usize| -> u64 {
             let mut v = 0u64;
@@ -69,6 +77,12 @@ pub(super) fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Opti
     let controlq = ctx.controlq;
 
     let desc = h.wrapping_add(controlq.desc_pa) as *mut u64;
+    // Two-descriptor chain 0 -> 1: device-readable request at REQ_OFF, then a
+    // device-WRITE response at RESP_OFF. Both halves are the driver's own
+    // scratch frame, and callers size `req_len`/`resp_len` to stay inside it.
+    // SAFETY: HHDM-mapped q0 descriptor table (require_queue accepted
+    // desc_pa); four aligned u64 stores cover slots 0 and 1, well inside the
+    // one-frame (256-entry) descriptor table the transport allocated.
     unsafe {
         core::ptr::write_volatile(desc.add(0), ctx.scratch_pa + REQ_OFF);
         let d0 = (req_len as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48);
@@ -80,6 +94,10 @@ pub(super) fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Opti
 
     let slot = (ctx.avail_idx % controlq.size) as usize;
     let avail = h.wrapping_add(controlq.driver_pa) as *mut u16;
+    // SAFETY: HHDM-mapped q0 avail ring; ring[slot] is u16 index 2+slot with
+    // slot < controlq.size (nonzero per require_queue, capped at one ring
+    // frame), idx is index 1, and the release fence publishes the descriptor
+    // chain and ring entry before the idx store the device polls.
     let target = unsafe {
         core::ptr::write_volatile(avail.add(2 + slot), 0u16);
         core::sync::atomic::fence(Ordering::Release);
@@ -89,11 +107,15 @@ pub(super) fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Opti
     };
     core::sync::atomic::fence(Ordering::Release);
 
+    // SAFETY: controlq notify VA is the Device-attr MMIO window the transport
+    // mapped for this child; the kick is one aligned u16 store of the index.
     unsafe { core::ptr::write_volatile(controlq.notify_va as *mut u16, controlq.index); }
 
     let used = h.wrapping_add(controlq.device_pa) as *const u16;
     let mut polls = 0u32;
     loop {
+        // SAFETY: HHDM-mapped q0 used ring; aligned u16 load of used.idx at
+        // index 1, volatile because the device is what advances it.
         let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
         if uidx == target {
             break;
@@ -107,5 +129,8 @@ pub(super) fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Opti
     core::sync::atomic::fence(Ordering::Acquire);
 
     let st = h.wrapping_add(ctx.scratch_pa + RESP_OFF) as *const u32;
+    // SAFETY: HHDM view of the response half of the driver's own scratch
+    // frame, read only after used.idx reached `target` and the acquire fence
+    // above; the status code is the leading aligned u32 of every response.
     Some(unsafe { core::ptr::read_volatile(st) })
 }

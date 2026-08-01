@@ -42,7 +42,12 @@ pub enum Error {
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
+/// # SAFETY: `cfg_va` is a mapped virtio_input_config window.
 unsafe fn cfg_select(cfg_va: u64, select: u8, subsel: u8) -> u8 {
+    // SAFETY: the caller's contract makes `cfg_va` the Device-attr
+    // virtio_input_config window; select/subsel/size are the three u8 fields
+    // at its head, and the size read-back is the device's answer to the
+    // selection, which is why the pair must be stored before it is read.
     unsafe {
         core::ptr::write_volatile((cfg_va + INPUT_CFG_SELECT_OFF) as *mut u8, select);
         core::ptr::write_volatile((cfg_va + INPUT_CFG_SUBSEL_OFF) as *mut u8, subsel);
@@ -50,10 +55,19 @@ unsafe fn cfg_select(cfg_va: u64, select: u8, subsel: u8) -> u8 {
     }
 }
 
+/// # SAFETY: `cfg_va` is a mapped virtio_input_config window.
 unsafe fn cfg_payload(cfg_va: u64, dst: &mut [u8]) -> usize {
+    // SAFETY: caller-supplied virtio_input_config window; `size` is the u8
+    // field at INPUT_CFG_SIZE_OFF reporting how much of the union the last
+    // selection filled.
     let size = unsafe { core::ptr::read_volatile((cfg_va + INPUT_CFG_SIZE_OFF) as *const u8) } as usize;
+    // `size` is DEVICE-supplied: clamped to the caller's buffer AND to the
+    // 128-byte union the config window actually has, so a lying device can
+    // neither overrun `dst` nor drag reads past the mapped window.
     let n = size.min(dst.len()).min(INPUT_CFG_PAYLOAD_MAX);
     for (i, slot) in dst.iter_mut().take(n).enumerate() {
+        // SAFETY: same window; byte i of the union at INPUT_CFG_PAYLOAD_OFF
+        // with i < n <= INPUT_CFG_PAYLOAD_MAX, so it stays inside it.
         *slot = unsafe {
             core::ptr::read_volatile((cfg_va + INPUT_CFG_PAYLOAD_OFF + i as u64) as *const u8)
         };
@@ -73,14 +87,23 @@ struct MmioInputConfig {
 
 impl InputConfigAccess for MmioInputConfig {
     fn select(&mut self, select: u8, subsel: u8) -> u8 {
+        // SAFETY: `MmioInputConfig` is only ever built in `install_device` from
+        // `resources.device_cfg_va`, the Device-attr virtio_input_config window
+        // the transport mapped for this child and rejected when zero.
         unsafe { cfg_select(self.cfg_va, select, subsel) }
     }
 
     fn payload(&mut self, dst: &mut [u8]) -> usize {
+        // SAFETY: same window as `select`, held for the life of this value;
+        // `cfg_payload` clamps the device-reported size to `dst` and to the
+        // config union before reading.
         unsafe { cfg_payload(self.cfg_va, dst) }
     }
 
     fn payload_u8(&mut self, off: u64) -> u8 {
+        // SAFETY: same mapped window; callers pass an `off` inside the config
+        // union (abs-info field offsets, all < INPUT_CFG_PAYLOAD_MAX), so the
+        // single u8 load stays within it.
         unsafe { core::ptr::read_volatile((self.cfg_va + INPUT_CFG_PAYLOAD_OFF + off) as *const u8) }
     }
 }

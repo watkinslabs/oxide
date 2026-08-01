@@ -4,6 +4,9 @@ pub(crate) const PERIOD_BYTES: usize = 2048;
 
 pub(crate) fn pcm_ctl(ctx: &mut Ctx, code: u32, stream_id: u32) -> Option<u32> {
     let req = ctx.hhdm.wrapping_add(ctx.scratch_pa + REQ_OFF) as *mut u32;
+    // SAFETY: HHDM view of the control scratch frame this Ctx owns, written
+    // under the CTX lock; the two u32 stores build an 8-byte pcm header at
+    // REQ_OFF, far below RESP_OFF, so they cannot touch the response half.
     unsafe {
         core::ptr::write_volatile(req.add(0), code);
         core::ptr::write_volatile(req.add(1), stream_id);
@@ -18,6 +21,9 @@ pub(crate) fn pcm_set_params(
     let base = ctx.hhdm.wrapping_add(ctx.scratch_pa + REQ_OFF);
     let w = base as *mut u32;
     let b = base as *mut u8;
+    // SAFETY: same control scratch frame under the CTX lock; the stores lay out
+    // the 24-byte set_params request at REQ_OFF (five aligned u32 at 0..20,
+    // then four bytes at 20..24), which stays well below RESP_OFF.
     unsafe {
         core::ptr::write_volatile(w.add(0), VIRTIO_SND_R_PCM_SET_PARAMS);
         core::ptr::write_volatile(w.add(1), stream_id);
@@ -39,27 +45,41 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
     let n = pcm.len().min(SND_FRAME_BYTES);
     let xfer = h.wrapping_add(ctx.tx_scratch_pa) as *mut u32;
     let buf = h.wrapping_add(ctx.tx_buf_pa) as *mut u8;
+    // SAFETY: HHDM views of the TX scratch and TX audio frames this Ctx owns
+    // (both nonzero, checked above) under the CTX lock; the header is one
+    // aligned u32 at offset 0, and `n <= SND_FRAME_BYTES` bounds the payload
+    // copy to the audio frame, with `pcm[i]` bounds-checked by the slice.
     unsafe {
         core::ptr::write_volatile(xfer, stream_id);
         for i in 0..n { core::ptr::write_volatile(buf.add(i), pcm[i]); }
     }
     let desc = h.wrapping_add(txq.desc_pa) as *mut u64;
+    // Chain 0 -> 1 -> 2: 4-byte header (read), n-byte payload (read), 8-byte
+    // status at tx_scratch_pa+16 (WRITE). Header and status share the scratch
+    // frame without overlapping; the device writes only the status span.
+    // SAFETY: HHDM-mapped txq descriptor table; six aligned u64 stores cover
+    // slots 0..2, inside the one-frame (256-entry) descriptor table.
     unsafe {
         core::ptr::write_volatile(desc.add(0), ctx.tx_scratch_pa);
         core::ptr::write_volatile(
             desc.add(1),
-            4u64 | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48),
+            (SND_XFER_HDR_BYTES as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48),
         );
         core::ptr::write_volatile(desc.add(2), ctx.tx_buf_pa);
         core::ptr::write_volatile(
             desc.add(3),
             (n as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (2u64 << 48),
         );
-        core::ptr::write_volatile(desc.add(4), ctx.tx_scratch_pa + 16);
-        core::ptr::write_volatile(desc.add(5), 8u64 | ((VRING_DESC_F_WRITE as u64) << 32));
+        core::ptr::write_volatile(desc.add(4), ctx.tx_scratch_pa + SND_XFER_STATUS_OFF);
+        core::ptr::write_volatile(desc.add(5),
+            (SND_XFER_STATUS_BYTES as u64) | ((VRING_DESC_F_WRITE as u64) << 32));
     }
     let slot = (ctx.tx_avail_idx % txq.size) as usize;
     let avail = h.wrapping_add(txq.driver_pa) as *mut u16;
+    // SAFETY: HHDM-mapped txq avail ring; ring[slot] is u16 index 2+slot with
+    // slot < txq.size (nonzero per require_queue, capped at one ring frame),
+    // idx is index 1, and the release fence publishes the descriptor chain and
+    // ring entry before the idx store the device polls.
     let target = unsafe {
         core::ptr::write_volatile(avail.add(2 + slot), 0u16);
         core::sync::atomic::fence(Ordering::Release);
@@ -68,10 +88,14 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
         ctx.tx_avail_idx
     };
     core::sync::atomic::fence(Ordering::Release);
+    // SAFETY: txq notify VA is the Device-attr MMIO window the transport
+    // mapped for this child; the kick is one aligned u16 store of the index.
     unsafe { core::ptr::write_volatile(txq.notify_va as *mut u16, txq.index); }
     let used = h.wrapping_add(txq.device_pa) as *const u16;
     let mut polls = 0u32;
     loop {
+        // SAFETY: HHDM-mapped txq used ring; aligned u16 load of used.idx at
+        // index 1, volatile because the device is what advances it.
         let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
         if uidx == target { return true; }
         if polls >= TX_POLL_BUDGET { return false; }
