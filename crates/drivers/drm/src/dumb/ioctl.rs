@@ -5,14 +5,24 @@ use syscall::errno::Errno;
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 fn enomem() -> i64 { -(Errno::Enomem.as_i32() as i64) }
+fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn user_ok(ptr: u64, len: u64) -> bool {
-    ptr != 0 && ptr < hal::USER_VA_END && ptr.checked_add(len).is_some_and(|end| end <= hal::USER_VA_END)
+/// Read one ioctl argument struct, or the negative errno to return.
+///
+/// The range check lives inside `uaccess::copy_from_user` (Linux's `access_ok`
+/// inside `copy_from_user`), so a bad pointer answers `EFAULT` — including the
+/// unmapped-but-in-range pointer a bare range check cannot detect.
+fn arg_in<T: Copy>(arg: u64) -> Result<T, i64> {
+    crate::uarg::read_arg::<T>(arg).map_err(errno)
+}
+
+/// Write one ioctl argument struct back, or the negative errno to return.
+fn arg_out<T: Copy>(arg: u64, value: T) -> Result<(), i64> {
+    crate::uarg::write_arg(arg, value).map_err(errno)
 }
 
 pub fn create_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeCreateDumb>() as u64) { return einval(); }
-    let mut req: DrmModeCreateDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeCreateDumb) };
+    let mut req: DrmModeCreateDumb = match arg_in(arg) { Ok(r) => r, Err(e) => return e };
     let pitch = match dumb_pitch(req.width, req.bpp) { Some(p) => p, None => return einval() };
     let size = match dumb_size(pitch, req.height) { Some(s) if s > 0 => s, _ => return einval() };
     let order = order_for_bytes(size);
@@ -53,7 +63,7 @@ pub fn create_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
     req.handle = handle;
     req.pitch = pitch;
     req.size = size;
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeCreateDumb, req); }
+    if let Err(e) = arg_out(arg, req) { return e; }
     // Keep the completed ABI result beside the allocation trace.  A caller that
     // stops after CREATE_DUMB needs an unambiguous record that the handle,
     // pitch, and size were published successfully, not merely that PMM found
@@ -72,17 +82,15 @@ pub fn create_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
 }
 
 pub fn map_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeMapDumb>() as u64) { return einval(); }
-    let mut req: DrmModeMapDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeMapDumb) };
+    let mut req: DrmModeMapDumb = match arg_in(arg) { Ok(r) => r, Err(e) => return e };
     if TABLES.lock().find_buf_owned(card_id, token, req.handle).is_none() { return einval(); }
     req.offset = cookie_for(req.handle);
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeMapDumb, req); }
+    if let Err(e) = arg_out(arg, req) { return e; }
     0
 }
 
 pub fn destroy_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeDestroyDumb>() as u64) { return einval(); }
-    let req: DrmModeDestroyDumb = unsafe { core::ptr::read_volatile(arg as *const DrmModeDestroyDumb) };
+    let req: DrmModeDestroyDumb = match arg_in(arg) { Ok(r) => r, Err(e) => return e };
     let freed = {
         let mut t = TABLES.lock();
         match t.close_handle(card_id, token, req.handle) { Ok(freed) => freed, Err(()) => return einval() }
@@ -94,8 +102,7 @@ pub fn destroy_dumb(card_id: u32, token: u64, arg: u64) -> i64 {
 pub fn addfb2(card_id: u32, arg: u64) -> i64 { addfb2_for_token(card_id, 0, arg) }
 
 pub fn addfb2_for_token(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd2>() as u64) { return einval(); }
-    let mut req: DrmModeFbCmd2 = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd2) };
+    let mut req: DrmModeFbCmd2 = match arg_in(arg) { Ok(r) => r, Err(e) => return e };
     // Accept the explicit-modifier path (DRM_MODE_FB_MODIFIERS) now that IN_FORMATS
     // advertises the LINEAR modifier: mutter may pass flags=DRM_MODE_FB_MODIFIERS
     // with modifier[0]=LINEAR(0) or INVALID ("driver picks", = linear for our
@@ -139,15 +146,14 @@ pub fn addfb2_for_token(card_id: u32, token: u64, arg: u64) -> i64 {
         });
     }
     req.fb_id = fb_id;
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeFbCmd2, req); }
+    if let Err(e) = arg_out(arg, req) { return e; }
     0
 }
 
 pub fn addfb(card_id: u32, arg: u64) -> i64 { addfb_for_token(card_id, 0, arg) }
 
 pub fn addfb_for_token(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd>() as u64) { return einval(); }
-    let mut req: DrmModeFbCmd = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd) };
+    let mut req: DrmModeFbCmd = match arg_in(arg) { Ok(r) => r, Err(e) => return e };
     if req.width == 0 || req.height == 0 || req.handle == 0 { return einval(); }
     let fourcc = match (req.bpp, req.depth) {
         (32, 24) => DRM_FORMAT_XRGB8888,
@@ -172,13 +178,12 @@ pub fn addfb_for_token(card_id: u32, token: u64, arg: u64) -> i64 {
         });
     }
     req.fb_id = fb_id;
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeFbCmd, req); }
+    if let Err(e) = arg_out(arg, req) { return e; }
     0
 }
 
 pub fn rmfb(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, 4) { return einval(); }
-    let fb_id: u32 = unsafe { core::ptr::read_volatile(arg as *const u32) };
+    let fb_id: u32 = match arg_in(arg) { Ok(v) => v, Err(e) => return e };
     let retired = match TABLES.lock().remove_owned_fb(card_id, token, fb_id) { Ok(v) => v, Err(()) => return einval() };
     crate::crtc::detach_fb(card_id, fb_id);
     super::tables::release_fb(card_id, retired);
@@ -186,8 +191,7 @@ pub fn rmfb(card_id: u32, token: u64, arg: u64) -> i64 {
 }
 
 pub fn closefb(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmModeCloseFb>() as u64) { return einval(); }
-    let req: DrmModeCloseFb = unsafe { core::ptr::read_volatile(arg as *const DrmModeCloseFb) };
+    let req: DrmModeCloseFb = match arg_in(arg) { Ok(r) => r, Err(e) => return e };
     match TABLES.lock().close_fb(card_id, token, req.fb_id) {
         Ok(Some(retired)) => super::tables::release_fb(card_id, retired),
         Ok(None) => {}
@@ -197,8 +201,7 @@ pub fn closefb(card_id: u32, token: u64, arg: u64) -> i64 {
 }
 
 pub fn gem_close(card_id: u32, token: u64, arg: u64) -> i64 {
-    if !user_ok(arg, core::mem::size_of::<DrmGemClose>() as u64) { return einval(); }
-    let req: DrmGemClose = unsafe { core::ptr::read_volatile(arg as *const DrmGemClose) };
+    let req: DrmGemClose = match arg_in(arg) { Ok(r) => r, Err(e) => return e };
     let freed = match TABLES.lock().close_handle(card_id, token, req.handle) { Ok(v) => v, Err(()) => return einval() };
     if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
     0

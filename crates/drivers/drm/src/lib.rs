@@ -3,6 +3,8 @@
 
 extern crate alloc;
 
+/// Fault-recoverable transfer of ioctl argument structs to and from user memory.
+mod uarg;
 mod core_api;
 mod ids;
 mod registry;
