@@ -80,7 +80,7 @@ pub fn emit_uevent_with_env_bytes(
         let mut g = UEVENT_LISTENERS.lock();
         g.retain(|w| w.strong_count() > 0);
         g.iter().filter_map(Weak::upgrade).filter(|s| {
-            s.groups.load(Ordering::Acquire) & KOBJECT_UEVENT_KERNEL_GROUP_MASK != 0
+            s.groups.low_mask() & KOBJECT_UEVENT_KERNEL_GROUP_MASK != 0
         }).collect()
     };
     let mut n = 0;
@@ -125,7 +125,7 @@ pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkS
         g.retain(|w| w.strong_count() > 0);
         g.iter().filter_map(Weak::upgrade).filter(|s| {
             if core::ptr::eq(Arc::as_ptr(s), sender as *const NetlinkSocket) { return false; }
-            let grp = s.groups.load(Ordering::Acquire);
+            let grp = s.groups.low_mask();
             grp & KOBJECT_UEVENT_KERNEL_GROUP_MASK == 0 && grp & dest_groups != 0
         }).collect()
     };
@@ -164,14 +164,12 @@ pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
 /// `NETLINK_ROUTE` socket in `net_ns` subscribed to `group`.
 /// Returns the number of sockets reached. # C: O(N_listeners)
 pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
-    if group == 0 || group > 32 { return 0; }
-    let bit = 1u32 << (group - 1);
+    if group == 0 || group > crate::groups::RTNLGRP_MAX { return 0; }
     let targets: Vec<_> = {
         let mut g = RTNL_LISTENERS.lock();
         g.retain(|w| w.strong_count() > 0);
         g.iter().filter_map(Weak::upgrade).filter(|s| {
-            s.net_ns.id().as_u64() == net_ns
-                && s.groups.load(Ordering::Acquire) & bit != 0
+            s.net_ns.id().as_u64() == net_ns && s.groups.test(group)
         }).collect()
     };
     let mut n = 0;

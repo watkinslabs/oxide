@@ -19,7 +19,7 @@ fn listener(namespace: &network_namespace::NetworkNamespaceRef, group: u32)
     -> Arc<crate::NetlinkSocket>
 {
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, namespace));
-    listener.add_membership(group);
+    let _ = listener.add_membership(group);
     crate::register_rtnl_listener(&listener);
     listener
 }
@@ -216,7 +216,7 @@ fn link_route_rule_notifications_share_one_rtnl_order() {
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
     for group in [crate::mcast::grp::RTNLGRP_LINK, crate::mcast::grp::RTNLGRP_IPV4_ROUTE,
         crate::mcast::grp::RTNLGRP_IPV4_RULE] {
-        listener.add_membership(group);
+        let _ = listener.add_membership(group);
     }
     crate::register_rtnl_listener(&listener);
     crate::mcast::block_notification(iface.raw());
@@ -423,8 +423,8 @@ fn ra_withdrawal_and_teardown_emit_ipv6_addr_route_events_in_order() {
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
     let ifindex = visible_ifindex(iface, ns);
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
-    listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_IFADDR);
-    listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_ROUTE);
+    let _ = listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_IFADDR);
+    let _ = listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_ROUTE);
     crate::register_rtnl_listener(&listener);
     let router = net::Ipv6Addr::from_segments([0xfe80, 0, 0, 0, 0, 0, 0, 1]);
     let prefix = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0x844, 0, 0, 0, 0, 0]);
@@ -480,7 +480,7 @@ fn loopback_registration_emits_ipv4_and_ipv6_address_route_events() {
         crate::mcast::grp::RTNLGRP_IPV4_ROUTE, crate::mcast::grp::RTNLGRP_IPV6_IFADDR,
         crate::mcast::grp::RTNLGRP_IPV6_ROUTE]
     {
-        listener.add_membership(group);
+        let _ = listener.add_membership(group);
     }
     crate::register_rtnl_listener(&listener);
 

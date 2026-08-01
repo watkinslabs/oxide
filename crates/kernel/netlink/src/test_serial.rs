@@ -15,6 +15,8 @@ use std::sync::{Mutex, MutexGuard};
 
 static FIB: Mutex<()> = Mutex::new(());
 static UEVENT: Mutex<()> = Mutex::new(());
+static GENL: Mutex<()> = Mutex::new(());
+static QUOTA_EVENTS: Mutex<()> = Mutex::new(());
 
 /// Serialise access to the global routing table (`rtnetlink::route_*`).
 pub(crate) fn fib() -> MutexGuard<'static, ()> {
@@ -24,4 +26,17 @@ pub(crate) fn fib() -> MutexGuard<'static, ()> {
 /// Serialise access to the global `UEVENT_LISTENERS` broadcast registry.
 pub(crate) fn uevent() -> MutexGuard<'static, ()> {
     UEVENT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Serialise genetlink family registration: registering announces on the
+/// controller's notify group, so a concurrent registration would land in
+/// another test's watcher queue.
+pub(crate) fn genl() -> MutexGuard<'static, ()> {
+    GENL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Serialise the `VFS_DQUOT` events group, which every quota test shares
+/// because the family's group id is statically reserved.
+pub(crate) fn quota_events() -> MutexGuard<'static, ()> {
+    QUOTA_EVENTS.lock().unwrap_or_else(|e| e.into_inner())
 }
