@@ -33,7 +33,6 @@ impl NetStack {
         let _ = metadata;
         if self.bridges.stp_bpdu_ingress(lease, header, frame) { return Ok(()); }
         if let Some(decision) = self.bridges.ingress(lease, header) {
-            self.arp_observe_ethernet(decision.bridge, header, frame);
             let mut error = None;
             for port in decision.egress {
                 match self.ifaces.acquire_egress_in_ns(port, lease.net_ns()) {
@@ -44,23 +43,27 @@ impl NetStack {
             if !decision.local { return error.map_or(Ok(()), Err); }
             let bridge = self.ifaces.acquire_ingress(decision.bridge)
                 .filter(|bridge| bridge.net_ns() == lease.net_ns()).ok_or(NetError::Enodev)?;
-            self.arp_answer_request(&bridge, header, frame)?;
             #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
             crate::sock::deliver_packet_ingress_from_in(&bridge, lease, frame, metadata);
             self.deliver_ethernet_l3_in(&bridge, frame, header)?;
             return error.map_or(Ok(()), Err);
         }
-        self.arp_observe_ethernet(lease.iface(), header, frame);
-        self.arp_answer_request(lease, header, frame)?;
         self.deliver_ethernet_l3_in(lease, frame, header)
     }
 
-    /// Run local L3 demultiplexing after the canonical L2 observer/bridge path. # C: O(frame)
+    /// Run local L3 demultiplexing after the canonical L2 observer/bridge path.
+    ///
+    /// ARP reaches the same IPv4 neighbour owner every other consumer reads —
+    /// the per-interface cache behind `ip neigh`, `/proc/net/arp`, the ARP
+    /// ioctls, and the transmit path's resolve-or-queue. A reply that landed
+    /// anywhere else would leave the neighbour INCOMPLETE and strand every
+    /// packet queued on it. # C: O(frame)
     fn deliver_ethernet_l3_in(&self, lease: &crate::IngressLease, frame: &[u8],
                               header: crate::ethernet::EthHdr) -> NetResult<()>
     {
         let payload = &frame[header.hdr_len..];
         match header.ethertype {
+            crate::eth_p::ARP  => self.deliver_arp_in(lease, payload),
             crate::eth_p::IPV4 => self.deliver_rx_in(lease, payload),
             crate::eth_p::IPV6 => self.deliver_rx_ipv6_in(lease, payload),
             _ => Ok(()),
@@ -103,3 +106,7 @@ mod tests {
             Err(NetError::Einval));
     }
 }
+
+#[cfg(test)]
+#[path = "arp_ingress_tests.rs"]
+mod arp_ingress_tests;
