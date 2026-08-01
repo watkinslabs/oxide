@@ -168,7 +168,7 @@ fn datagram_shutdown_read_drains_queue_then_rejects_senders() {
     let _serial = test_guard();
     let queue = UnixDgramQueue::new();
     queue.try_push(UnixDgram {
-        payload: b"queued".to_vec(), creds: (1, 2, 3),
+        payload: b"queued".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)),
         fds: alloc::vec::Vec::new(),
     }).unwrap();
     queue.shutdown_reader();
@@ -176,7 +176,7 @@ fn datagram_shutdown_read_drains_queue_then_rejects_senders() {
     assert_eq!(queue.pop().unwrap().payload, b"queued");
     assert!(queue.pop().is_none());
     assert!(matches!(queue.try_push(UnixDgram {
-        payload: b"late".to_vec(), creds: (1, 2, 3),
+        payload: b"late".to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)),
         fds: alloc::vec::Vec::new(),
     }), Err(crate::NetError::Epipe)));
 }

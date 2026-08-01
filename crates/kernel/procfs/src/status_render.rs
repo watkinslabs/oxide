@@ -38,10 +38,12 @@ pub struct Status<'a> {
     pub fd_size: u64,
     /// `cred->group_info`, ascending (the order `setgroups` stores).
     pub groups: &'a [u32],
-    pub ns_tgid: u64,
-    pub ns_pid:  u64,
-    pub ns_pgid: u64,
-    pub ns_sid:  u64,
+    /// Numbers from the reader's PID namespace level inward to the task's own,
+    /// one per level, the way Linux reports the whole nest.
+    pub ns_tgid: &'a [u64],
+    pub ns_pid:  &'a [u64],
+    pub ns_pgid: &'a [u64],
+    pub ns_sid:  &'a [u64],
     /// Linux `p->flags & PF_KTHREAD`.
     pub kthread: bool,
     /// Linux `get_nr_threads(p)`.
@@ -105,10 +107,10 @@ pub fn render(s: &Status) -> Vec<u8> {
         push_dec(&mut o, *g as u64);
     }
     o.push(b' ');
-    push(&mut o, b"\nNStgid:\t"); push_dec(&mut o, s.ns_tgid);
-    push(&mut o, b"\nNSpid:\t"); push_dec(&mut o, s.ns_pid);
-    push(&mut o, b"\nNSpgid:\t"); push_dec(&mut o, s.ns_pgid);
-    push(&mut o, b"\nNSsid:\t"); push_dec(&mut o, s.ns_sid);
+    push_ns_row(&mut o, b"\nNStgid:", s.ns_tgid);
+    push_ns_row(&mut o, b"\nNSpid:", s.ns_pid);
+    push_ns_row(&mut o, b"\nNSpgid:", s.ns_pgid);
+    push_ns_row(&mut o, b"\nNSsid:", s.ns_sid);
     push(&mut o, b"\nKthread:\t"); o.push(if s.kthread { b'1' } else { b'0' });
     push(&mut o, b"\nThreads:\t"); push_dec(&mut o, s.threads);
     // Linux `proc_pid_status` emits `task_mem`'s block here, between the
@@ -147,4 +149,11 @@ pub fn render(s: &Status) -> Vec<u8> {
     push(&mut o, b"\nnonvoluntary_ctxt_switches:\t"); push_dec(&mut o, s.nivcsw);
     o.push(b'\n');
     o
+}
+
+/// One `NS*` row: the label, then one tab-prefixed number per namespace level.
+/// # C: O(depth)
+fn push_ns_row(o: &mut Vec<u8>, label: &[u8], numbers: &[u64]) {
+    push(o, label);
+    for nr in numbers { o.push(b'\t'); push_dec(o, *nr); }
 }

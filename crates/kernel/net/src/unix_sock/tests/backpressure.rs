@@ -43,7 +43,7 @@ fn socketpair_datagram_capacity_is_atomic() {
 }
 
 fn datagram(payload: &[u8]) -> UnixDgram {
-    UnixDgram { payload: payload.to_vec(), creds: (1, 2, 3), fds: alloc::vec::Vec::new() }
+    UnixDgram { payload: payload.to_vec(), creds: crate::unix_sock::MsgCred::from_ids((1, 2, 3)), fds: alloc::vec::Vec::new() }
 }
 
 #[test]

@@ -127,6 +127,8 @@ pub struct Namespace {
     pub(crate) parent: Option<NamespacePin>,
     /// `struct pid_namespace::memfd_noexec_scope`; zero for non-PID kinds.
     pub(crate) pid_memfd_noexec_scope: AtomicU8,
+    /// `struct pid_namespace`'s number space; inert for non-PID kinds.
+    pub(crate) pid_numbers: crate::pid_numbers::PidNumberSpace,
     pub(crate) active: AtomicUsize,
     pub(crate) finalizers: crate::sync::SpinLock<Vec<NamespaceFinalizer>>,
 }
@@ -143,6 +145,8 @@ impl Namespace {
         }
     }
     pub fn parent(&self) -> Option<NamespacePin> { self.parent.clone() }
+    /// Numbering authority this PID namespace owns. # C: O(1)
+    pub fn pid_numbers(&self) -> &crate::pid_numbers::PidNumberSpace { &self.pid_numbers }
     pub const fn is_initial(&self) -> bool { self.id.0 == 0 }
     /// Effective `vm.memfd_noexec`, including every ancestor's floor.
     /// # C: O(PID namespace depth)

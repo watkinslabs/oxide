@@ -48,35 +48,26 @@ pub fn acct_process_current(task: &sched::Task, internal_status: i32) {
 const NS_INIT_VPID: u32 = 1;
 
 /// One target per pid namespace in the exiting task's ancestor chain, each
-/// carrying the pids THAT namespace sees. # C: O(depth)
+/// carrying the numbers THAT namespace gives the process and its real parent.
+/// # C: O(depth log N_tasks)
 fn ns_targets(task: &sched::Task) -> alloc::vec::Vec<::fs::acct::NsTarget> {
-    let chain = sched::live::pid_namespace_chain(task);
-    let pids = crate::acct_ns::NsPids {
-        own_ns:      chain.first().copied().unwrap_or(0),
-        global_pid:  task.tgid.load(Ordering::Acquire),
-        own_pid:     task.vtgid.load(Ordering::Acquire),
-        global_ppid: parent_tgid(task),
-        own_ppid:    parent_vtgid(task),
-    };
-    chain.iter().map(|ns| pids.target_for(*ns)).collect()
-}
-
-/// The real parent's thread-group id, as the initial namespace numbers it.
-/// # C: O(log N_tasks)
-fn parent_tgid(task: &sched::Task) -> u32 {
-    let ptid = task.parent_tid.load(Ordering::Acquire);
-    sched::registry::lookup(ptid)
-        .map(|p| p.tgid.load(Ordering::Acquire))
-        .unwrap_or(ptid)
-}
-
-/// The real parent's thread-group id as the EXITING task's own pid namespace
-/// numbers it. Zero when the parent lives outside that namespace, which is
-/// what a namespace-local reader must see. # C: O(log N_tasks)
-fn parent_vtgid(task: &sched::Task) -> u32 {
-    sched::registry::lookup(task.parent_tid.load(Ordering::Acquire))
-        .map(|p| p.vtgid.load(Ordering::Acquire))
-        .unwrap_or(0)
+    let parent = sched::registry::lookup(task.parent_tid.load(Ordering::Acquire));
+    let views: alloc::vec::Vec<crate::acct_ns::NsView> = task.pid.namespaces().iter()
+        .map(|owner| {
+            let namespace = owner.get_active();
+            let (pid, ppid) = match &namespace {
+                Some(active) => (
+                    task.pid_nr_ns(active),
+                    parent.as_ref().and_then(|p| {
+                        sched::registry::tgid_nr_in(p, active)
+                    }).unwrap_or(0),
+                ),
+                None => (0, 0),
+            };
+            crate::acct_ns::NsView { ns_id: owner.id().as_u64(), pid, ppid }
+        })
+        .collect();
+    crate::acct_ns::targets(&views)
 }
 
 /// Fold the process's cputime, faults and flags into the record.

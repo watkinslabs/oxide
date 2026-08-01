@@ -19,6 +19,7 @@ extern crate alloc;
 pub mod events;
 pub mod types;
 pub mod stream;
+pub mod msg_cred;
 pub mod msg_pair;
 pub mod dgram;
 pub mod listener;
@@ -36,6 +37,7 @@ pub(crate) use events::{wake_msgpair_peer_subs, wake_peer_subs};
 pub use types::{EndCred, PeerCred, UnixEnd};
 
 pub use stream::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};
+pub use msg_cred::MsgCred;
 pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing, UnixMsgSendError};
 pub use dgram::{UnixDgram, UnixDgramQueue};
 pub use listener::{UnixAddr, UnixAddrKey, UnixConnectError, UnixListener};

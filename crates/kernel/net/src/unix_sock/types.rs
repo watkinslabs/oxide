@@ -98,9 +98,27 @@ impl EndCred {
     /// # C: O(1)
     pub fn identity(&self) -> Option<Arc<PidIdentity>> { self.identity.lock().clone() }
 
-    /// # C: O(1)
+    /// The owning process's credentials for the reader running NOW: the pid is
+    /// re-rendered from the pinned identity in the READER's pid namespace, so
+    /// a peer the reader's namespace cannot name reports 0 rather than a
+    /// number that means nothing there. # C: O(depth)
     pub fn get(&self) -> PeerCred {
         use core::sync::atomic::Ordering;
+        if let Some(identity) = self.identity() {
+            let ns = sched::registry::reader_pid_ns();
+            let nr = match identity.nr_in(&ns) {
+                // The initial namespace numbers every process; an identity that
+                // published no mapping keeps its snapshotted number there.
+                0 if ns.is_initial() => self.pid.load(Ordering::Acquire),
+                nr => nr,
+            };
+            return PeerCred {
+                pid: nr,
+                uid: self.uid.load(Ordering::Acquire),
+                gid: self.gid.load(Ordering::Acquire),
+                groups: self.groups.lock().clone(),
+            };
+        }
         PeerCred {
             pid: self.pid.load(Ordering::Acquire),
             uid: self.uid.load(Ordering::Acquire),
