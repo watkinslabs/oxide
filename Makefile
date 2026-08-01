@@ -77,9 +77,14 @@ lint:
 stats:
 	$(XTASK) stats $(STATS_ARGS)
 
+# Branch counters derived from git, so `metadata/index.md` cannot silently fall
+# behind history and hand two lanes the same number.
+counter-check:
+	tools/next-branch.sh --check
+
 # Mirror of the PR-time gate per `docs/40§2`: spec-lint clean, hosted tests
 # green, both arches build default AND with debug-all on.
-ci: lint test build build-debug
+ci: lint test build build-debug counter-check
 
 # ---- qemu -----------------------------------------------------------------
 
