@@ -71,7 +71,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         return -(Errno::Erofs.as_i32() as i64);
     }
     if let Err(rv) = crate::landlock::check_parent(&parent,
-        ::security::landlock::access::MAKE_DIR) { return rv; }
+        ::landlock::uapi::ACCESS_FS_MAKE_DIR) { return rv; }
     let cred = crate::pathresolve::current_cred();
     if let Err(e) = vfs::may_create(&parent.inode, &cred) {
         let rv = errno_from_vfs(e);

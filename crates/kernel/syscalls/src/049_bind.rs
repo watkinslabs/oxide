@@ -189,6 +189,11 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     if sock_fam == AF_INET6 as u16 && family != AF_INET6 as u16 {
         return -(Errno::Eafnosupport.as_i32() as i64);
     }
+    // Port rules for the local endpoint, after the family checks so a
+    // malformed address reports its own error rather than a denial.
+    if let Err(rv) = crate::landlock::check_socket(
+        crate::landlock::sock_proto(&sock), false, storage.as_bytes(), sock_fam)
+    { return rv; }
     // Parse the user sockaddr into the typed BoundAddr enum.
     let mut unix_node: Option<UnixSockNode> = None;
     let addr = if family == net::sock::AF_UNIX {

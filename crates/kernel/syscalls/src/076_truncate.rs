@@ -24,6 +24,6 @@ pub fn sys_truncate(args: &SyscallArgs) -> i64 {
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     if let Err(rv) = crate::landlock::check(&vp,
-        ::security::landlock::access::TRUNCATE) { return rv; }
+        ::landlock::uapi::ACCESS_FS_TRUNCATE) { return rv; }
     ::fs::truncate::vfs_truncate(&vp, len, &crate::pathresolve::current_cred())
 }
