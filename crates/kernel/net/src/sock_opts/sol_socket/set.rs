@@ -23,6 +23,11 @@ pub enum ArgClass {
     Device,
     /// Handled by the socket-filter owner, not by this table.
     Filter,
+    /// Reuseport-group program attach/detach — the reuseport owner imports the
+    /// program descriptor and runs the group ladder.
+    Reuseport,
+    /// `SO_DEVMEM_DONTNEED` — an array of release tokens, not a scalar.
+    Devmem,
 }
 
 /// One accepted SOL_SOCKET write. # C: O(1)
@@ -70,6 +75,18 @@ impl Arg {
     fn boolean(self) -> bool { self.int() != 0 }
 }
 
+/// Live state outside the socket personality that one write is judged against:
+/// the caller's network capabilities, whether a device is already bound, the
+/// send/receive ceilings, and the budget a `SO_BUSY_POLL_BUDGET` raise is
+/// compared to. # C: O(1)
+#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+pub struct SetEnv {
+    pub caps: OptCaps,
+    pub bound_device: bool,
+    pub ceilings: BufCeilings,
+    pub busy_poll_budget: i32,
+}
+
 /// `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, `CLOCK_TAI` — the clocks `SO_TXTIME`
 /// accepts.
 pub const CLOCK_REALTIME: i32 = 0;
@@ -81,6 +98,9 @@ pub fn arg_class(optname: u64) -> ArgClass {
     match optname {
         SO_BINDTODEVICE => ArgClass::Device,
         SO_ATTACH_FILTER | SO_DETACH_FILTER | SO_ATTACH_BPF | SO_LOCK_FILTER => ArgClass::Filter,
+        SO_ATTACH_REUSEPORT_CBPF | SO_ATTACH_REUSEPORT_EBPF | SO_DETACH_REUSEPORT_BPF =>
+            ArgClass::Reuseport,
+        SO_DEVMEM_DONTNEED => ArgClass::Devmem,
         SO_LINGER => ArgClass::Linger,
         SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW | SO_SNDTIMEO_OLD | SO_SNDTIMEO_NEW => ArgClass::Timeval,
         SO_TXTIME => ArgClass::TxTime,
@@ -93,9 +113,8 @@ pub fn arg_class(optname: u64) -> ArgClass {
 /// Linux `sk_setsockopt` admission for one SOL_SOCKET write. Callers must
 /// already have enforced the leading `int` length rule
 /// (`reads_int_argument`) and imported `arg` per `arg_class`. # C: O(1)
-pub fn admit(optname: u64, arg: Arg, sock: OptSock, caps: OptCaps, bound_device: bool)
-    -> Result<Action, Errno>
-{
+pub fn admit(optname: u64, arg: Arg, sock: OptSock, env: SetEnv) -> Result<Action, Errno> {
+    let SetEnv { caps, bound_device, ceilings, busy_poll_budget } = env;
     let value = arg.int();
     let on = arg.boolean();
     match optname {
@@ -110,6 +129,17 @@ pub fn admit(optname: u64, arg: Arg, sock: OptSock, caps: OptCaps, bound_device:
         SO_BUSY_POLL => {
             if value < 0 { return Err(Errno::Einval); }
             Ok(Action::Scalar { slot: Scalar::BusyPoll, value })
+        }
+        SO_PREFER_BUSY_POLL => {
+            if on && !caps.net_admin { return Err(Errno::Eperm); }
+            Ok(Action::Flag { bit: flag::PREFER_BUSY_POLL, on })
+        }
+        SO_BUSY_POLL_BUDGET => {
+            // Raising the budget is privileged, and that ladder runs before the
+            // field-width screen, so an over-wide raise is `EPERM` not `EINVAL`.
+            if value > busy_poll_budget && !caps.net_admin { return Err(Errno::Eperm); }
+            if !(0..=BUSY_POLL_BUDGET_MAX).contains(&value) { return Err(Errno::Einval); }
+            Ok(Action::Scalar { slot: Scalar::BusyPollBudget, value })
         }
         SO_MAX_PACING_RATE => Ok(Action::PacingRate(match arg {
             Arg::PacingRate(wide) => wide,
@@ -145,15 +175,15 @@ pub fn admit(optname: u64, arg: Arg, sock: OptSock, caps: OptCaps, bound_device:
         }
         SO_DONTROUTE => Ok(Action::Flag { bit: flag::LOCALROUTE, on }),
         SO_BROADCAST => Ok(Action::Broadcast(i32::from(on))),
-        SO_SNDBUF => Ok(Action::SndBuf(buf_value(value, SOCK_MIN_SNDBUF, DEFAULT_WMEM_MAX, false))),
+        SO_SNDBUF => Ok(Action::SndBuf(buf_value(value, SOCK_MIN_SNDBUF, ceilings.wmem_max, false))),
         SO_SNDBUFFORCE => {
             if !caps.net_admin { return Err(Errno::Eperm); }
-            Ok(Action::SndBuf(buf_value(value, SOCK_MIN_SNDBUF, DEFAULT_WMEM_MAX, true)))
+            Ok(Action::SndBuf(buf_value(value, SOCK_MIN_SNDBUF, ceilings.wmem_max, true)))
         }
-        SO_RCVBUF => Ok(Action::RcvBuf(buf_value(value, SOCK_MIN_RCVBUF, DEFAULT_RMEM_MAX, false))),
+        SO_RCVBUF => Ok(Action::RcvBuf(buf_value(value, SOCK_MIN_RCVBUF, ceilings.rmem_max, false))),
         SO_RCVBUFFORCE => {
             if !caps.net_admin { return Err(Errno::Eperm); }
-            Ok(Action::RcvBuf(buf_value(value, SOCK_MIN_RCVBUF, DEFAULT_RMEM_MAX, true)))
+            Ok(Action::RcvBuf(buf_value(value, SOCK_MIN_RCVBUF, ceilings.rmem_max, true)))
         }
         SO_KEEPALIVE => Ok(Action::Keepalive(i32::from(on))),
         SO_OOBINLINE => Ok(Action::Oobinline(i32::from(on))),
@@ -261,4 +291,17 @@ pub const IFNAMSIZ: usize = 16;
 /// # C: O(1)
 pub fn device_name_len(optlen: u32) -> usize {
     core::cmp::min(optlen as usize, IFNAMSIZ - 1)
+}
+
+/// `sock_devmem_dontneed`: the option releases device-memory receive tokens, so
+/// it is a stream-socket-only operation whose argument is a whole number of
+/// tokens. The wrong socket shape outranks the length screen. Returns the token
+/// count the caller must import. # C: O(1)
+pub fn devmem_dontneed_tokens(sock: OptSock, optlen: u32) -> Result<usize, Errno> {
+    if !sock.tcp { return Err(Errno::Ebadf); }
+    let optlen = optlen as usize;
+    if optlen % DEVMEM_TOKEN_SIZE != 0 || optlen > DEVMEM_TOKEN_SIZE * MAX_DONTNEED_TOKENS {
+        return Err(Errno::Einval);
+    }
+    Ok(optlen / DEVMEM_TOKEN_SIZE)
 }

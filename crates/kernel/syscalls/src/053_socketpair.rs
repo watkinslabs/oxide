@@ -57,21 +57,17 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
         _ => None,
     };
     if let Some(p) = &stream {
-        use core::sync::atomic::Ordering;
-        let (pid, uid, gid) = (cur.visible_pid(),
-            cur.creds.euid.load(Ordering::Relaxed), cur.creds.egid.load(Ordering::Relaxed));
-        p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
-        p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
+        let cred = net::PeerCred::of_current().unwrap_or_default();
+        p.set_end_cred(net::UnixEnd::A, cred.clone());
+        p.set_end_cred(net::UnixEnd::B, cred);
         let identity = cur.thread_group.leader_pid();
         p.set_end_identity(net::UnixEnd::A, Some(identity.clone()));
         p.set_end_identity(net::UnixEnd::B, Some(identity));
     }
     if let Some(p) = &msg {
-        use core::sync::atomic::Ordering;
-        let (pid, uid, gid) = (cur.visible_pid(),
-            cur.creds.euid.load(Ordering::Relaxed), cur.creds.egid.load(Ordering::Relaxed));
-        p.set_end_cred(net::UnixEnd::A, pid, uid, gid);
-        p.set_end_cred(net::UnixEnd::B, pid, uid, gid);
+        let cred = net::PeerCred::of_current().unwrap_or_default();
+        p.set_end_cred(net::UnixEnd::A, cred.clone());
+        p.set_end_cred(net::UnixEnd::B, cred);
         let identity = cur.thread_group.leader_pid();
         p.set_end_identity(net::UnixEnd::A, Some(identity.clone()));
         p.set_end_identity(net::UnixEnd::B, Some(identity));

@@ -44,7 +44,8 @@ fn import(optname: u64, optval: u64, optlen: u32) -> Result<Arg, Errno> {
     if optlen < core::mem::size_of::<i32>() as u32 { return Err(Errno::Einval); }
     let leading = i32_at(&read_bytes::<4>(optval)?, 0);
     match net::sock_opts::sol_socket::set::arg_class(optname) {
-        ArgClass::Int | ArgClass::Device | ArgClass::Filter => Ok(Arg::Int(leading)),
+        ArgClass::Int | ArgClass::Device | ArgClass::Filter | ArgClass::Reuseport
+            | ArgClass::Devmem => Ok(Arg::Int(leading)),
         ArgClass::Linger => {
             if optlen < 8 { return Err(Errno::Einval); }
             let bytes = read_bytes::<8>(optval)?;
@@ -77,14 +78,73 @@ pub(super) fn set(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen: u32
     debug_assert!(sol::reads_int_argument(optname));
     let arg = match import(optname, optval, optlen) { Ok(a) => a, Err(e) => return errno(e) };
     let personality = net::sock_opts::describe(sock);
-    let bound_device = sock.opts.bound_ifindex.load(Ordering::Acquire) != 0;
-    let action = match net::sock_opts::sol_socket::set::admit(
-        optname, arg, personality, caps_for(sock), bound_device)
-    {
+    match net::sock_opts::sol_socket::set::arg_class(optname) {
+        ArgClass::Reuseport => {
+            let Arg::Int(ufd) = arg else { return errno(Errno::Einval); };
+            return reuseport(sock, optname, ufd, optval, optlen);
+        }
+        ArgClass::Devmem => return devmem_dontneed(sock, personality, optval, optlen),
+        _ => {}
+    }
+    let env = net::sock_opts::sol_socket::set::SetEnv {
+        caps: caps_for(sock),
+        bound_device: sock.opts.bound_ifindex.load(Ordering::Acquire) != 0,
+        ceilings: net::sysctl::buf_ceilings(),
+        busy_poll_budget: sock.opts.generic.scalar(Scalar::BusyPollBudget),
+    };
+    let action = match net::sock_opts::sol_socket::set::admit(optname, arg, personality, env) {
         Ok(action) => action,
         Err(e) => return errno(e),
     };
     apply(sock, action)
+}
+
+/// Attach or detach the program that steers the socket's reuseport group.
+/// # C: O(program bytes)
+fn reuseport(sock: &Arc<InetSocket>, optname: u64, ufd: i32, optval: u64, optlen: u32) -> i64 {
+    let result = (|| -> Result<(), Errno> {
+        match optname {
+            sol::SO_ATTACH_REUSEPORT_CBPF => {
+                let header = super::main::classic_filter_header(optval, optlen)?;
+                filter_mutable(sock)?;
+                let program = super::main::classic_filter_program(header)?;
+                net::reuseport::attach_prog(sock, program)
+            }
+            sol::SO_ATTACH_REUSEPORT_EBPF => {
+                if optlen != core::mem::size_of::<i32>() as u32 { return Err(Errno::Einval); }
+                filter_mutable(sock)?;
+                let program = super::main::bpf_prog(ufd)?;
+                net::reuseport::attach_prog(sock, program)
+            }
+            _ => net::reuseport::detach_prog(sock),
+        }
+    })();
+    match result { Ok(()) => 0, Err(e) => errno(e) }
+}
+
+/// A locked socket filter forbids installing another program. # C: O(1)
+fn filter_mutable(sock: &Arc<InetSocket>) -> Result<(), Errno> {
+    sock.bpf_filter.ensure_mutable().map_err(|_| Errno::Eperm)
+}
+
+/// `SO_DEVMEM_DONTNEED`: release device-memory receive tokens. The token space
+/// is populated only by a device-memory receive binding, so a socket that never
+/// received into one releases nothing and reports zero. # C: O(tokens)
+fn devmem_dontneed(sock: &Arc<InetSocket>, personality: sol::OptSock, optval: u64, optlen: u32)
+    -> i64
+{
+    let tokens = match net::sock_opts::sol_socket::set::devmem_dontneed_tokens(personality, optlen) {
+        Ok(tokens) => tokens, Err(e) => return errno(e),
+    };
+    let mut raw = alloc::vec![0u8; tokens * sol::DEVMEM_TOKEN_SIZE];
+    if !raw.is_empty() && uaccess::copy_from_user(&mut raw, optval).is_err() {
+        return errno(Errno::Efault);
+    }
+    // The return value counts fragments actually released. A token names a
+    // fragment this socket received into a device-memory binding; no receive
+    // path here establishes one, so every token names nothing.
+    let _ = sock;
+    0
 }
 
 fn apply(sock: &Arc<InetSocket>, action: Action) -> i64 {

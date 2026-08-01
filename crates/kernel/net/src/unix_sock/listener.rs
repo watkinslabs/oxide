@@ -26,7 +26,7 @@ struct UnixListenerState {
     send_shutdown: bool,
     backlog: usize,
     accept_q: alloc::collections::VecDeque<(Arc<UnixPair>, GcLink)>,
-    owner_cred: (u32, u32, u32),
+    owner_cred: crate::PeerCred,
     /// Linux `sk->sk_peer_pid` on the listening socket: copied onto every
     /// accepted connection's server end so the client's `SO_PEERPIDFD` names
     /// the listening process itself, not whatever holds its pid number later.
@@ -100,7 +100,7 @@ impl UnixListener {
                 send_shutdown: false,
                 backlog: 0,
                 accept_q: alloc::collections::VecDeque::new(),
-                owner_cred: (0, 0, 0),
+                owner_cred: crate::PeerCred::default(),
                 owner_identity: None,
                 #[cfg(target_os = "oxide-kernel")]
                 connect_sockets: Vec::new(),
@@ -124,7 +124,7 @@ impl UnixListener {
 
     /// Publish a listener and atomically replace its peer credential snapshot.
     /// # C: O(1)
-    pub(crate) fn listen_with_cred(&self, backlog: i32, somaxconn: usize, cred: Option<(u32, u32, u32)>,
+    pub(crate) fn listen_with_cred(&self, backlog: i32, somaxconn: usize, cred: Option<crate::PeerCred>,
         identity: Option<Arc<sched::pid::PidIdentity>>) {
         let mut st = self.state.lock();
         if let Some(cred) = cred { st.owner_cred = cred; }
@@ -152,7 +152,7 @@ impl UnixListener {
 
     /// Credentials published by the latest successful `listen(2)`.
     /// # C: O(1)
-    pub fn owner_cred(&self) -> (u32, u32, u32) { self.state.lock().owner_cred }
+    pub fn owner_cred(&self) -> crate::PeerCred { self.state.lock().owner_cred.clone() }
 
     /// Pinned identity published by the latest successful `listen(2)`
     /// (`init_peercred` on the listening socket). # C: O(1)
@@ -187,8 +187,7 @@ impl UnixListener {
         let mut st = self.state.lock();
         if st.closed || st.receive_shutdown || !st.listening { return Err(UnixConnectError::Refused); }
         if st.accept_q.len() > st.backlog { return Err(UnixConnectError::Full); }
-        let (pid, uid, gid) = st.owner_cred;
-        pair.set_end_cred(UnixEnd::A, pid, uid, gid);
+        pair.set_end_cred(UnixEnd::A, st.owner_cred.clone());
         pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
         st.accept_q.push_back((pair.clone(), link));
         drop(st);
@@ -214,8 +213,7 @@ impl UnixListener {
         }
         if st.closed || st.receive_shutdown || !st.listening { return Err(crate::NetError::Econnrefused); }
         if st.accept_q.len() > st.backlog { return Err(crate::NetError::Eagain); }
-        let (pid, uid, gid) = st.owner_cred;
-        pair.set_end_cred(UnixEnd::A, pid, uid, gid);
+        pair.set_end_cred(UnixEnd::A, st.owner_cred.clone());
         pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
         use core::sync::atomic::Ordering::Acquire;
         if sock.read_shut.load(Acquire) { pair.shutdown_reader(UnixEnd::B); }

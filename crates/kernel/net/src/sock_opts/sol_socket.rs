@@ -5,6 +5,7 @@
 //   storage, and the shared value transforms.
 // - `set`: Linux-ordered admission for every SOL_SOCKET write.
 // - `get`: Linux value/length table for every SOL_SOCKET read.
+// - `varlen`: the reads whose value is not one fixed-width scalar.
 // - `tests`: hosted coverage for the ordering, capability, and length rules.
 //
 // No target gate: the decision logic must run under hosted `cargo test`.
@@ -15,6 +16,7 @@ pub use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_OOBINLINE, SO_PRO
 
 pub mod set;
 pub mod get;
+pub mod varlen;
 #[cfg(test)]
 mod tests;
 
@@ -63,8 +65,13 @@ pub const SO_MAX_PACING_RATE: u64 = 47;
 pub const SO_BPF_EXTENSIONS: u64 = 48;
 pub const SO_INCOMING_CPU: u64 = 49;
 pub const SO_ATTACH_BPF: u64 = 50;
+pub const SO_ATTACH_REUSEPORT_CBPF: u64 = 51;
+pub const SO_ATTACH_REUSEPORT_EBPF: u64 = 52;
 pub const SO_CNX_ADVICE: u64 = 53;
+pub const SO_MEMINFO: u64 = 55;
+pub const SO_INCOMING_NAPI_ID: u64 = 56;
 pub const SO_COOKIE: u64 = 57;
+pub const SO_PEERGROUPS: u64 = 59;
 pub const SO_ZEROCOPY: u64 = 60;
 pub const SO_TXTIME: u64 = 61;
 pub const SO_BINDTOIFINDEX: u64 = 62;
@@ -73,6 +80,9 @@ pub const SO_TIMESTAMPNS_NEW: u64 = 64;
 pub const SO_TIMESTAMPING_NEW: u64 = 65;
 pub const SO_RCVTIMEO_NEW: u64 = 66;
 pub const SO_SNDTIMEO_NEW: u64 = 67;
+pub const SO_DETACH_REUSEPORT_BPF: u64 = 68;
+pub const SO_PREFER_BUSY_POLL: u64 = 69;
+pub const SO_BUSY_POLL_BUDGET: u64 = 70;
 pub const SO_NETNS_COOKIE: u64 = 71;
 pub const SO_BUF_LOCK: u64 = 72;
 pub const SO_RESERVE_MEM: u64 = 73;
@@ -80,8 +90,12 @@ pub const SO_TXREHASH: u64 = 74;
 pub const SO_RCVMARK: u64 = 75;
 pub const SO_PASSPIDFD: u64 = 76;
 pub const SO_PEERPIDFD: u64 = 77;
+pub const SO_DEVMEM_DONTNEED: u64 = 80;
 pub const SO_RCVPRIORITY: u64 = 82;
 pub const SO_PASSRIGHTS: u64 = 83;
+/// `SO_GET_FILTER` shares `SO_ATTACH_FILTER`'s number; the read direction gives
+/// it the separate meaning.
+pub const SO_GET_FILTER: u64 = SO_ATTACH_FILTER;
 
 /// `SOCK_SNDBUF_LOCK | SOCK_RCVBUF_LOCK`.
 pub const SOCK_BUF_LOCK_MASK: i32 = 3;
@@ -94,16 +108,25 @@ pub const SOF_TXTIME_REPORT_ERRORS: u32 = 2;
 /// `TC_PRIO_BESTEFFORT ..= TC_PRIO_INTERACTIVE` — the unprivileged band.
 pub const TC_PRIO_BESTEFFORT: i32 = 0;
 pub const TC_PRIO_INTERACTIVE: i32 = 6;
-/// `SOCK_MIN_SNDBUF` / `SOCK_MIN_RCVBUF` for this ABI.
-pub const SOCK_MIN_SNDBUF: i32 = 4608;
-pub const SOCK_MIN_RCVBUF: i32 = 2304;
-/// `sysctl_wmem_max` / `sysctl_rmem_max` defaults.
-pub const DEFAULT_WMEM_MAX: u32 = 4 << 20;
-pub const DEFAULT_RMEM_MAX: u32 = 4 << 20;
+/// The buffer floors and ceilings are owned by the sysctl leaves that publish
+/// them; re-exported so this table stays the single place to look.
+pub use crate::sysctl::{BufCeilings, DEFAULT_RMEM_MAX, DEFAULT_WMEM_MAX, SOCK_MIN_RCVBUF,
+    SOCK_MIN_SNDBUF};
 /// `SO_SNDLOWAT` is fixed at one byte and is not settable.
 pub const SNDLOWAT: i32 = 1;
 /// `bpf_tell_extensions()` — the classic-BPF ancillary extension count.
 pub const BPF_EXTENSIONS: i32 = 42;
+/// `SO_BUSY_POLL_BUDGET` is a `u16` field.
+pub const BUSY_POLL_BUDGET_MAX: i32 = u16::MAX as i32;
+/// `MIN_NAPI_ID`: smaller identifiers are reserved, so `SO_INCOMING_NAPI_ID`
+/// aggregates every non-NAPI receive down to zero.
+pub const MIN_NAPI_ID: u32 = 8;
+/// `SK_MEMINFO_VARS` — the `u32` slot count `SO_MEMINFO` writes back.
+pub const SK_MEMINFO_VARS: usize = 9;
+/// `struct dmabuf_token` is two `u32`s, and `SO_DEVMEM_DONTNEED` accepts at
+/// most `MAX_DONTNEED_TOKENS` of them in one call.
+pub const DEVMEM_TOKEN_SIZE: usize = 8;
+pub const MAX_DONTNEED_TOKENS: usize = 128;
 
 const USEC_PER_SEC: i64 = 1_000_000;
 const NSEC_PER_SEC: i64 = 1_000_000_000;
@@ -174,6 +197,7 @@ pub mod flag {
     pub const RCVTSTAMP: u64 = 1 << 17;
     pub const RCVTSTAMPNS: u64 = 1 << 18;
     pub const TSTAMP_NEW: u64 = 1 << 19;
+    pub const PREFER_BUSY_POLL: u64 = 1 << 20;
 }
 
 /// Indexed scalar slots the generic table owns. # C: O(1)
@@ -189,9 +213,10 @@ pub enum Scalar {
     LingerSeconds = 7,
     TxTimeClockid = 8,
     TimestampingBindPhc = 9,
+    BusyPollBudget = 10,
 }
 
-impl Scalar { pub const COUNT: usize = 10; }
+impl Scalar { pub const COUNT: usize = 11; }
 
 /// Generic SOL_SOCKET state Linux keeps on every `struct sock`. # C: O(1)
 #[derive(Debug)]

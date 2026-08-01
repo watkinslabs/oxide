@@ -150,26 +150,26 @@ fn listener_publishes_only_fully_initialized_pairs() {
     let path = "\0listener-initialized-pair";
     let addr = UnixAddr::from_abstract_or_test_path(String::from(path));
     let listener = registry.bind_addr(addr.clone()).unwrap();
-    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((10, 20, 30)), None);
+    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some(crate::PeerCred::new(10, 20, 30, None)), None);
     let client = UnixPair::new();
-    client.set_end_cred(UnixEnd::B, 40, 50, 60);
+    client.set_end_cred(UnixEnd::B, crate::PeerCred::new(40, 50, 60, None));
 
     registry.connect_pair_addr(&addr, client.clone()).unwrap();
     let (accepted, _pin) = listener.accept().unwrap();
 
     assert!(Arc::ptr_eq(&accepted, &client));
-    assert_eq!(accepted.peer_cred(UnixEnd::A), (40, 50, 60));
-    assert_eq!(accepted.peer_cred(UnixEnd::B), (10, 20, 30));
+    assert_eq!(accepted.peer_cred(UnixEnd::A).ids(), (40, 50, 60));
+    assert_eq!(accepted.peer_cred(UnixEnd::B).ids(), (10, 20, 30));
 
-    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((11, 21, 31)), None);
+    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some(crate::PeerCred::new(11, 21, 31, None)), None);
     let next = UnixPair::new();
-    next.set_end_cred(UnixEnd::B, 41, 51, 61);
+    next.set_end_cred(UnixEnd::B, crate::PeerCred::new(41, 51, 61, None));
     registry.connect_pair_addr(&addr, next).unwrap();
     let (accepted, _pin) = listener.accept().unwrap();
-    assert_eq!(accepted.peer_cred(UnixEnd::A), (41, 51, 61));
-    assert_eq!(accepted.peer_cred(UnixEnd::B), (11, 21, 31));
+    assert_eq!(accepted.peer_cred(UnixEnd::A).ids(), (41, 51, 61));
+    assert_eq!(accepted.peer_cred(UnixEnd::B).ids(), (11, 21, 31));
     accepted.write(UnixEnd::B, b"cred").unwrap();
-    assert_eq!(accepted.peer_cred(UnixEnd::A), (41, 51, 61), "write does not mutate SO_PEERCRED");
+    assert_eq!(accepted.peer_cred(UnixEnd::A).ids(), (41, 51, 61), "write does not mutate SO_PEERCRED");
     let (_, _, cred) = accepted.read_stream(UnixEnd::A, 16);
     assert_eq!(cred, Some((41, 51, 61)), "SCM_CREDENTIALS follows the write record");
 }
@@ -215,10 +215,10 @@ fn accepted_pairs_carry_the_pinned_peer_identity_both_ways() {
     let server = Arc::new(sched::pid::PidIdentity::new(10));
     let client_id = Arc::new(sched::pid::PidIdentity::new(40));
     let listener = registry.bind_addr(addr.clone()).unwrap();
-    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some((10, 20, 30)),
+    listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, Some(crate::PeerCred::new(10, 20, 30, None)),
         Some(Arc::clone(&server)));
     let client = UnixPair::new();
-    client.set_end_cred(UnixEnd::B, 40, 50, 60);
+    client.set_end_cred(UnixEnd::B, crate::PeerCred::new(40, 50, 60, None));
     client.set_end_identity(UnixEnd::B, Some(Arc::clone(&client_id)));
 
     registry.connect_pair_addr(&addr, client.clone()).unwrap();
@@ -228,7 +228,7 @@ fn accepted_pairs_carry_the_pinned_peer_identity_both_ways() {
     let seen_by_client = accepted.peer_identity(UnixEnd::B).expect("server identity");
     assert!(Arc::ptr_eq(&seen_by_server, &client_id));
     assert!(Arc::ptr_eq(&seen_by_client, &server));
-    assert_eq!(accepted.peer_cred(UnixEnd::A).0, seen_by_server.tid);
+    assert_eq!(accepted.peer_cred(UnixEnd::A).pid, seen_by_server.tid);
 }
 
 #[test]
@@ -237,7 +237,7 @@ fn a_pair_with_no_snapshot_reports_no_peer_identity() {
     // to hand out — distinct from handing out a stale pid number.
     let _serial = test_guard();
     let pair = UnixPair::new();
-    pair.set_end_cred(UnixEnd::B, 40, 50, 60);
+    pair.set_end_cred(UnixEnd::B, crate::PeerCred::new(40, 50, 60, None));
     assert!(pair.peer_identity(UnixEnd::A).is_none());
     assert!(pair.peer_identity(UnixEnd::B).is_none());
 }

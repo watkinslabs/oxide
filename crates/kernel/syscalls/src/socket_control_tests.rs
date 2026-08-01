@@ -294,12 +294,12 @@ fn netlink_connect_runs_one_admission_before_destination_state() {
 // in the canonical table rather than the ABI shim.
 #[test]
 fn oobinline_setsockopt_normalizes_linux_boolean_values() {
-    use net::sock_opts::sol_socket::set::{Action, Arg, admit};
+    use net::sock_opts::sol_socket::set::{Action, Arg, SetEnv, admit};
     let sock = net::sock_opts::sol_socket::OptSock::default();
-    let caps = net::sock_opts::sol_socket::OptCaps::default();
-    assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(42), sock, caps, false),
+    let env = SetEnv::default();
+    assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(42), sock, env),
         Ok(Action::Oobinline(1)));
-    assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(0), sock, caps, false),
+    assert_eq!(admit(net::uapi::SO_OOBINLINE, Arg::Int(0), sock, env),
         Ok(Action::Oobinline(0)));
     assert!(include_str!("054_setsockopt/sol_socket.rs")
         .contains("Action::Oobinline(v) => sock.opts.oobinline.store(v, Ordering::Release)"));
@@ -451,4 +451,60 @@ fn connect_security_precedes_family_parse_and_unix_lookup_once() {
     assert_eq!(body.matches("net::sock::admit_connect").count(), 1);
     assert!(body.contains("preflight_connect_admitted(&sock, admission)"));
     assert!(body.contains("connect_admitted("));
+}
+
+// The SOL_SOCKET options with their own argument or value shape are routed to
+// their owner instead of the scalar table, and the option numbers come from the
+// one canonical table.
+#[test]
+fn variable_shape_sol_socket_options_route_to_their_owners() {
+    use net::sock_opts::sol_socket as sol;
+    assert_eq!((sol::SO_ATTACH_REUSEPORT_CBPF, sol::SO_ATTACH_REUSEPORT_EBPF,
+        sol::SO_DETACH_REUSEPORT_BPF, sol::SO_DEVMEM_DONTNEED), (51, 52, 68, 80));
+    assert_eq!((sol::SO_MEMINFO, sol::SO_INCOMING_NAPI_ID, sol::SO_PEERGROUPS,
+        sol::SO_PREFER_BUSY_POLL, sol::SO_BUSY_POLL_BUDGET), (55, 56, 59, 69, 70));
+    assert_eq!((sol::SO_PEERNAME, sol::SO_PEERSEC, sol::SO_GET_FILTER), (28, 31, 26));
+
+    let set = include_str!("054_setsockopt/sol_socket.rs");
+    assert!(set.contains("ArgClass::Reuseport =>"));
+    assert!(set.contains("ArgClass::Devmem => return devmem_dontneed("));
+    assert!(set.contains("net::reuseport::attach_prog(sock, program)"));
+    assert!(set.contains("net::reuseport::detach_prog(sock)"));
+    // The buffer ceilings come from the live sysctl pair, not a constant.
+    assert!(set.contains("ceilings: net::sysctl::buf_ceilings()"));
+
+    let get = include_str!("055_getsockopt.rs");
+    for routed in ["SO_MEMINFO => return varlen::meminfo(",
+        "SO_PEERGROUPS => {", "SO_PEERNAME => return varlen::peername(",
+        "SO_PEERSEC => return varlen::peersec("]
+    {
+        assert!(get.contains(routed), "{routed}");
+    }
+    assert!(get.contains("if optname == SO_GET_FILTER { return varlen::get_filter("));
+    // The scalar table must not claim any of them.
+    let table = include_str!("../../net/src/sock_opts/sol_socket/get.rs");
+    for owned in ["SO_MEMINFO", "SO_PEERGROUPS", "SO_PEERNAME", "SO_PEERSEC", "SO_GET_FILTER",
+        "SO_BUSY_POLL_BUDGET"]
+    {
+        assert!(!table.contains(&alloc::format!("{owned} =>")), "{owned}");
+    }
+    for owned in ["SO_PREFER_BUSY_POLL =>", "SO_INCOMING_NAPI_ID =>"] {
+        assert!(table.contains(owned), "{owned}");
+    }
+}
+
+// The peer identity one AF_UNIX end reports is a single snapshot, so
+// SO_PEERCRED and SO_PEERGROUPS can never name two different instants.
+#[test]
+fn peer_credentials_and_groups_come_from_one_snapshot() {
+    let pair = net::UnixPair::new();
+    let groups: alloc::sync::Arc<[u32]> = alloc::vec![10u32, 20, 30].into();
+    pair.set_end_cred(net::UnixEnd::A, net::PeerCred::new(7, 1000, 1000, Some(groups.clone())));
+    // The peer of end B is end A.
+    let seen = pair.peer_cred(net::UnixEnd::B);
+    assert_eq!(seen.ids(), (7, 1000, 1000));
+    assert_eq!(seen.group_count(), 3);
+    assert_eq!(seen.groups.as_deref(), Some(&[10u32, 20, 30][..]));
+    // A pair nobody published credentials for has no supplementary list.
+    assert_eq!(pair.peer_cred(net::UnixEnd::A).group_count(), 0);
 }

@@ -111,10 +111,27 @@ impl SocketFilter {
 
     /// Observe irreversible SO_LOCK_FILTER state. # C: O(1)
     pub fn is_locked(&self) -> bool { self.state.lock().locked }
+
+    /// The retained classic source of the attached program. An eBPF program
+    /// carries no original classic blocks, so it cannot be dumped back out.
+    /// # C: O(program bytes)
+    pub fn classic_insns(&self) -> Option<Vec<u8>> {
+        let state = self.state.lock();
+        let program = state.program.as_deref()?;
+        if program.kind != FilterKind::Classic { return None; }
+        Some(program.insns.clone())
+    }
 }
 
 impl Default for SocketFilter {
     fn default() -> Self { Self::new() }
+}
+
+/// Run one program that is not attached as a socket filter, returning its raw
+/// u32 result. Reuseport selection reads that result as a member index rather
+/// than as a keep/drop verdict. # C: O(program)
+pub fn run_program(program: &FilterProgram, packet: &[u8]) -> u32 {
+    run_filter(program.kind, &program.insns, packet)
 }
 
 /// `(kind, insns, packet) -> Linux socket-filter u32 verdict`.

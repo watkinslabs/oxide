@@ -1,9 +1,56 @@
+use core::sync::atomic::{AtomicI64, Ordering};
+
 use network_namespace::NetworkNamespaceRef;
 
 use crate::net_ns::NetSysctlKey;
 
 pub const DEFAULT_SOMAXCONN: usize = 4096;
 pub const DEFAULT_OPTMEM_MAX: usize = 131_072;
+/// `net.core.wmem_max` / `net.core.rmem_max` compiled defaults.
+pub const DEFAULT_WMEM_MAX: u32 = 4 << 20;
+pub const DEFAULT_RMEM_MAX: u32 = 4 << 20;
+/// `SOCK_MIN_SNDBUF` / `SOCK_MIN_RCVBUF` — the write floors on both leaves and
+/// the floor `SO_SNDBUF` / `SO_RCVBUF` clamp up to.
+pub const SOCK_MIN_SNDBUF: i32 = 4608;
+pub const SOCK_MIN_RCVBUF: i32 = 2304;
+
+/// The two send/receive ceilings are ONE global pair, not per-namespace state:
+/// only the initial network namespace may write them and every namespace reads
+/// the same number.
+static WMEM_MAX: AtomicI64 = AtomicI64::new(DEFAULT_WMEM_MAX as i64);
+static RMEM_MAX: AtomicI64 = AtomicI64::new(DEFAULT_RMEM_MAX as i64);
+
+/// Write window for both ceilings: floored at the protocol minimum, unbounded
+/// above beyond the `int` the leaf is stored in. # C: O(1)
+pub const WMEM_MAX_BOUNDS: (i64, i64) = (SOCK_MIN_SNDBUF as i64, i32::MAX as i64);
+pub const RMEM_MAX_BOUNDS: (i64, i64) = (SOCK_MIN_RCVBUF as i64, i32::MAX as i64);
+
+/// `net.core.wmem_max`. # C: O(1)
+pub fn wmem_max() -> u32 { WMEM_MAX.load(Ordering::Acquire) as u32 }
+
+/// `net.core.rmem_max`. # C: O(1)
+pub fn rmem_max() -> u32 { RMEM_MAX.load(Ordering::Acquire) as u32 }
+
+/// # C: O(1)
+pub fn set_wmem_max(value: i64) { WMEM_MAX.store(value, Ordering::Release); }
+
+/// # C: O(1)
+pub fn set_rmem_max(value: i64) { RMEM_MAX.store(value, Ordering::Release); }
+
+/// The live `net.core.wmem_max` / `net.core.rmem_max` pair one option write
+/// clamps against. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct BufCeilings { pub wmem_max: u32, pub rmem_max: u32 }
+
+impl Default for BufCeilings {
+    fn default() -> Self { Self { wmem_max: DEFAULT_WMEM_MAX, rmem_max: DEFAULT_RMEM_MAX } }
+}
+
+/// The ceilings `SO_SNDBUF` / `SO_RCVBUF` clamp against, read once per call so
+/// one write cannot be observed half-applied. # C: O(1)
+pub fn buf_ceilings() -> BufCeilings {
+    BufCeilings { wmem_max: wmem_max(), rmem_max: rmem_max() }
+}
 
 /// Read canonical sysctl state owned by a retained namespace. # C: O(log N)
 pub fn value(namespace: &NetworkNamespaceRef, key: NetSysctlKey) -> Option<i64> {
@@ -86,6 +133,25 @@ pub fn normalize_listen_backlog(backlog: i32, limit: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buf_ceilings_are_global_and_default_to_the_compiled_maximums() {
+        let saved = (wmem_max(), rmem_max());
+        set_wmem_max(DEFAULT_WMEM_MAX as i64);
+        set_rmem_max(DEFAULT_RMEM_MAX as i64);
+        assert_eq!(buf_ceilings().wmem_max, DEFAULT_WMEM_MAX);
+        assert_eq!(buf_ceilings().rmem_max, DEFAULT_RMEM_MAX);
+        set_wmem_max(SOCK_MIN_SNDBUF as i64);
+        assert_eq!(buf_ceilings().wmem_max, SOCK_MIN_SNDBUF as u32);
+        set_wmem_max(saved.0 as i64);
+        set_rmem_max(saved.1 as i64);
+    }
+
+    #[test]
+    fn buf_ceiling_write_windows_floor_at_the_protocol_minimum() {
+        assert_eq!(WMEM_MAX_BOUNDS, (SOCK_MIN_SNDBUF as i64, i32::MAX as i64));
+        assert_eq!(RMEM_MAX_BOUNDS, (SOCK_MIN_RCVBUF as i64, i32::MAX as i64));
+    }
 
     fn namespace() -> NetworkNamespaceRef {
         let namespace = crate::net_ns::test_support::allocate_namespace();
