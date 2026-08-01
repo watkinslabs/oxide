@@ -32,18 +32,10 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
     // longer resolve afterwards) so Landlock and `d_unlink` both use the exact
     // object under the already-resolved parent.
     let victim = child_dentry(&parent, &name);
-    let landlock_target = victim.as_ref()
-        .and_then(|d| d.inode().map(|inode| vfs::VfsPath {
-            mnt_id: parent.mnt_id,
-            dentry: d.clone(),
-            inode,
-            last_component: None,
-        }));
-    let landlock_result = match landlock_target.as_ref() {
-        Some(vp) => crate::landlock::check(vp, ::security::landlock::access::REMOVE_FILE),
-        None => crate::landlock::check_parent(&parent, ::security::landlock::access::REMOVE_FILE),
-    };
-    if let Err(rv) = landlock_result {
+    // The removal right is a property of the containing directory: a rule
+    // granting it on the victim itself must not authorise unlinking the victim.
+    if let Err(rv) = crate::landlock::check_parent(&parent,
+        ::landlock::uapi::ACCESS_FS_REMOVE_FILE) {
         #[cfg(feature = "debug-udevdb")]
         crate::namei_common::trace_udevdb_path(b"unlink", &p, rv);
         return rv;

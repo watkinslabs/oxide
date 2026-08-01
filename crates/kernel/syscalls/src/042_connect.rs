@@ -162,6 +162,11 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         ) {
             return errno_from_neterr(error);
         }
+        // Port rules for the remote endpoint. Placed after the family and
+        // length checks so a malformed address reports its own error.
+        if let Err(rv) = crate::landlock::check_socket(
+            crate::landlock::sock_proto(&sock), true, storage.as_bytes(), sock_fam as u16)
+        { return rv; }
         let addr = if family == AF_INET {
             if let Err(error) = require_sockaddr_in(copied_len) { return error; }
             let Some((ip, port)) = storage.inet4() else {

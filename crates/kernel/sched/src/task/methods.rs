@@ -401,7 +401,7 @@ impl Task {
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
             ptrace_siginfo:  Spinlock::new(None),
-            landlock_chain:  Spinlock::new(alloc::vec::Vec::new()),
+            landlock_domain: Spinlock::new(None),
             fpu_state:       UnsafeCell::new(fpu_state),
             #[cfg(feature = "debug-task-fpu-provenance")]
             dbg_fpu_state_expected: AtomicUsize::new(dbg_fpu_state_expected),

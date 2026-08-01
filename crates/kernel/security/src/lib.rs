@@ -4,9 +4,8 @@
 //
 // Capability bits live on `sched::Creds` (the workspace `sched`
 // crate); has_cap_for / user-NS scoping live in `crates/nscg`.
-// Landlock admit + file-cap (security.capability xattr) live in
-// kernel-side glue files because they wire directly into the
-// syscall dispatch + xattr storage paths.
+// Landlock lives in its own crate (`crates/kernel/landlock`), below `sched`,
+// because the enforced domain is task state.
 
 #![no_std]
 #![feature(allocator_api)]
@@ -30,8 +29,6 @@ pub mod bpf_interp;
 mod bpf_layout;
 pub mod socket_filter;
 pub mod network;
-#[cfg(any(target_os = "oxide-kernel", test))]
-pub mod landlock;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error { Inval, Perm }

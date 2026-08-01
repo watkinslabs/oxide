@@ -585,9 +585,12 @@ pub struct Task {
     /// reads via PTRACE_GETSIGINFO; writes via SETSIGINFO.
     pub ptrace_siginfo: Spinlock<Option<SigInfo>, TaskListClass>,
 
-    /// landlock ruleset-id chain. landlock_restrict_self appends;
-    /// path-based syscalls consult; entries can't be removed.
-    pub landlock_chain: Spinlock<alloc::vec::Vec<u64>, TaskListClass>,
+    /// Enforced Landlock domain. `landlock_restrict_self` replaces it with a
+    /// strictly deeper one; path, port and scoped-IPC operations consult it.
+    /// `None` means unconfined. It is never removed or narrowed in place — the
+    /// domain object is immutable, so a live check can never observe a policy
+    /// being widened underneath it.
+    pub landlock_domain: Spinlock<Option<alloc::sync::Arc<landlock::Domain>>, TaskListClass>,
     /// Per-arch FPU/SIMD snapshot for PTRACE_GETFPREGS/SETFPREGS.
     pub fpu_state: UnsafeCell<ArchFpuBuf>,
     /// Immutable construction-time raw FP/SIMD-area address. Diagnostic-only:

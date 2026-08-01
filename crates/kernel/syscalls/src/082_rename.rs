@@ -152,7 +152,8 @@ fn rename_resolved(s: &RenameSides, from_raw: &str, to_raw: &str, flags: u32) ->
         return err(Errno::Ebusy);
     }
 
-    if let Err(rv) = landlock_gate(old_parent, old_name, &old_victim, new_parent, new_name, new_target.as_ref()) {
+    if let Err(rv) = landlock_gate(old_parent, old_name, &old_victim, new_parent, new_name,
+                                   new_target.as_ref(), flags & RENAME_EXCHANGE != 0) {
         return rv;
     }
     if let Err(e) = vfs::namei::may_rename(&old_parent.inode, &old_victim, &new_parent.inode,
@@ -197,31 +198,22 @@ fn rename_resolved(s: &RenameSides, from_raw: &str, to_raw: &str, flags: u32) ->
     }
 }
 
-/// Linux `security_path_rename`. From-side needs REMOVE_FILE | REMOVE_DIR |
-/// REFER; to-side needs MAKE_REG. Approximated as REMOVE_FILE+MAKE_REG+REFER
-/// on both. # C: O(landlock ruleset)
+/// Rename is a reparenting: the exact rights depend on both endpoints' file
+/// types and on whether the name is moving between directories, so the whole
+/// decision is deferred to the reparenting check.
+/// # C: O(depth × N_layers × N_rules)
 fn landlock_gate(
     old_parent: &vfs::VfsPath, old_name: &str, old_victim: &vfs::InodeRef,
     new_parent: &vfs::VfsPath, new_name: &str, new_target: Option<&vfs::InodeRef>,
+    exchange: bool,
 ) -> Result<(), i64> {
-    let la = ::security::landlock::access::REMOVE_FILE
-           | ::security::landlock::access::MAKE_REG
-           | ::security::landlock::access::REFER;
-    let old_check = vfs::VfsPath {
-        mnt_id: old_parent.mnt_id,
+    let old = ::landlock::refer::Target {
         dentry: vfs::file::open_dentry_at(&old_parent.dentry, old_name, old_victim),
         inode: old_victim.clone(),
-        last_component: None,
     };
-    crate::landlock::check(&old_check, la)?;
-    let new_check = match new_target {
-        Some(i) => vfs::VfsPath {
-            mnt_id: new_parent.mnt_id,
-            dentry: vfs::file::open_dentry_at(&new_parent.dentry, new_name, i),
-            inode: i.clone(),
-            last_component: None,
-        },
-        None => new_parent.clone(),
-    };
-    crate::landlock::check(&new_check, la)
+    let new = new_target.map(|i| ::landlock::refer::Target {
+        dentry: vfs::file::open_dentry_at(&new_parent.dentry, new_name, i),
+        inode: i.clone(),
+    });
+    crate::landlock::check_refer(old_parent, &old, new_parent, new.as_ref(), true, exchange)
 }

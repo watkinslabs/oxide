@@ -45,6 +45,9 @@ pub fn exec_permission(vp: &vfs::VfsPath) -> Result<(), i64> {
             return Err(-(Errno::Eacces.as_i32() as i64));
         }
     }
+    // The sandbox execute right, applied to every interpreter in a shebang
+    // chain because each one is opened for execution in turn.
+    crate::landlock::check(vp, ::landlock::uapi::ACCESS_FS_EXECUTE)?;
     vfs::inode_permission(&vp.inode, vfs::MAY_EXEC, &super::cred::current_cred())
         .map_err(crate::namei_common::errno_from_vfs)
 }

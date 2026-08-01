@@ -11,6 +11,8 @@ use syscall::errno::Errno;
 pub const LSM_ID_UNDEF: u64 = 0;
 /// `LSM_ID_CAPABILITY` (`include/uapi/linux/lsm.h:54`).
 pub const LSM_ID_CAPABILITY: u64 = 100;
+/// `LSM_ID_LANDLOCK`.
+pub const LSM_ID_LANDLOCK: u64 = 110;
 /// `LSM_ATTR_UNDEF`.
 pub const LSM_ATTR_UNDEF: u32 = 0;
 /// `LSM_FLAG_SINGLE` — the only flag `lsm_get_self_attr` accepts.
@@ -65,7 +67,12 @@ pub const LSM_ID_BYTES: u32 = 8;
 /// `capability` supplies no `getselfattr`/`setselfattr` hook (its hook list is
 /// `capability_hooks`, `security/commoncap.c:1490-1512`), so slots 459/460
 /// still answer EOPNOTSUPP — the two facts are consistent, not contradictory.
-pub const ACTIVE_LSM_IDS: &[u64] = &[LSM_ID_CAPABILITY];
+/// Landlock is the second: it is unconditionally registered wherever its
+/// syscalls answer, and slots 444/445/446 here do. Both modules supply
+/// `getselfattr`/`setselfattr` hooks for no attribute, so 459/460 still answer
+/// EOPNOTSUPP — reporting a module and reporting an attribute for it are
+/// separate facts, and inventing the second would be worse than an empty set.
+pub const ACTIVE_LSM_IDS: &[u64] = &[LSM_ID_CAPABILITY, LSM_ID_LANDLOCK];
 
 /// `lsm_list_modules`' only argument rule: `flags` is reserved and must be 0
 /// (`security/lsm_syscalls.c:112-113`).
@@ -150,6 +157,15 @@ mod tests {
 
     #[test]
     fn no_lsm_answer_is_eopnotsupp() {
+        assert_eq!(NO_LSM_RESULT, Errno::Eopnotsupp);
+    }
+
+    #[test]
+    fn landlock_is_reported_because_its_syscalls_answer() {
+        // A module list that omits a mechanism the kernel actually enforces
+        // makes a caller believe it is unsandboxed.
+        assert!(ACTIVE_LSM_IDS.contains(&LSM_ID_LANDLOCK));
+        // Reporting the module does not imply it supplies a self-attribute.
         assert_eq!(NO_LSM_RESULT, Errno::Eopnotsupp);
     }
 

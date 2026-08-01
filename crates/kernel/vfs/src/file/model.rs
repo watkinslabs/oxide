@@ -122,6 +122,7 @@ impl File {
             // RWH_WRITE_LIFE_NOT_SET (Linux `F_GET_RW_HINT` default).
             rw_hint: AtomicU64::new(0),
             epoll_links: Spinlock::new(alloc::vec::Vec::new()),
+            landlock_access: AtomicU64::new(u64::MAX),
         })
     }
 
@@ -148,6 +149,13 @@ impl File {
 
     /// The id of the vfsmount this file was opened through; 0 = anon. # C: O(1)
     pub fn mnt_id(&self) -> u64 { self.mnt_id }
+
+    /// Sandbox rights recorded at open. # C: O(1)
+    pub fn landlock_access(&self) -> u64 { self.landlock_access.load(Ordering::Acquire) }
+
+    /// Record the sandbox rights this description was opened with. Called once,
+    /// on the open path, before the fd is installed. # C: O(1)
+    pub fn set_landlock_access(&self, a: u64) { self.landlock_access.store(a, Ordering::Release); }
 
     /// Resolve `f_path.mnt` to its `Mount`, if still mounted. # C: O(log N)
     pub fn vfsmount(&self) -> Option<Arc<crate::mount::Mount>> {

@@ -34,7 +34,7 @@ pub(crate) fn symlink_impl(dirfd: i32, target: Vec<u8>, link: String) -> i64 {
         return -(Errno::Erofs.as_i32() as i64);
     }
     if let Err(rv) = crate::landlock::check_parent(&parent,
-        ::security::landlock::access::MAKE_SYM) { return rv; }
+        ::landlock::uapi::ACCESS_FS_MAKE_SYM) { return rv; }
     // Thread the mount idmap + caller cred so the new symlink gets the right
     // owner (symlinks carry no umask). Linux `->symlink(struct mnt_idmap *, ...)`.
     let cred = crate::pathresolve::current_cred();
