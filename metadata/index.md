@@ -1,32 +1,21 @@
-# Branch-counter index (AUTHORITATIVE)
+# Branch-counter index (HISTORY ONLY — no longer authoritative)
 
-HARD RULE: branch counters live HERE, not invented. Before creating a branch
-of type `<T>` (F/B/D/R/Z/C), read the `next` value below, name the branch
-`<T><NN>-<kebab-title>` (zero-padded ≥2 digits, widen past 99→3 digits), then
-INCREMENT the value here and commit it (same PR or a tracking commit) so the
-next run/branch is correct. Phase branches `P<n>-<NN>` use the per-phase
-counter; bump the matching `P<n>` line.
+**Counters are derived from git, not from this file.** Claim a number with:
 
-`tools/next-branch.sh <TYPE>` derives the answer from git (branch refs plus
-merge-commit subjects, which are the only surviving trace of a branch deleted on
-merge) and takes the max against this table, so a stale table cannot hand out a
-used number. `tools/next-branch.sh --check` fails when this table has fallen
-behind git; `make counter-check` runs it and `make ci` includes it. Git is the
-truth for numbers already USED; this table is the truth for numbers RESERVED by
-a live lane that has not merged yet.
+    tools/next-branch.sh --claim <TYPE> <kebab-title>
 
-Counters are `next` (the number to USE for the next branch of that type).
-Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
+which pushes a `claim/<T><NN>` ref to origin BEFORE returning the name. Two lanes
+racing push different values to the same ref and the remote refuses the loser,
+which then retries with the next number — the atomicity is the remote's, not a
+check-then-act in the script. `tools/next-branch.sh <TYPE>` still just READS the
+next number without claiming it; `--dry-run` says so explicitly.
 
-| Type | next | meaning |
-|---|---|---|
-| F | 788 | new functionality |
-| B | 1690 | bug fix |
-| D | 439 | spec/doc edits (no code) |
-| R | 87  | revision block on FROZEN spec |
-| Z | 19  | freeze a DRAFT spec |
-| C | 248 | tooling / deps / CI plumbing |
-| P17 | 18 | phase-17 work (tty + login) |
+The `next` table that used to live here was a second source of truth for a number
+git already knows, and it fell behind on nearly every wave of this project's
+parallel lanes — issuing `D399` twice, losing the `C` row to a conflict
+resolution, and firing a red `make ci` gate over drift that changed nothing. It is
+retired. What stays below is the history: which numbers were reserved, which
+collided, and why — because that record is not derivable from git.
 
 ## Reserved (in flight)
 

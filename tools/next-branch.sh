@@ -5,12 +5,26 @@
 # git is authoritative for what has already been USED. The answer is the max of
 # both, which is correct whichever one is behind.
 #
-#   tools/next-branch.sh B                  -> next B number
-#   tools/next-branch.sh B my-fix-title     -> full branch name
+#   tools/next-branch.sh B                  -> next B number (READ ONLY)
+#   tools/next-branch.sh B my-fix-title     -> full branch name (READ ONLY)
+#   tools/next-branch.sh --claim B my-title -> CLAIM the number, then print it
+#   tools/next-branch.sh --dry-run --claim B my-title -> show, claim nothing
 #   tools/next-branch.sh --check            -> non-zero if index.md is behind git
 #   tools/next-branch.sh --check B          -> same, one type
 #
 # Types: F B D R Z C, plus phase branches P<n>.
+#
+# READING THE COUNTER IS NOT CLAIMING IT. Every concurrent lane that reads gets
+# the SAME answer, and the number is only really taken once something reaches
+# the remote — so three lanes drew B1667 on one day and an entire
+# implementation was discarded as the duplicate.
+#
+# `--claim` closes that window: it pushes a ref under `claim/` to origin BEFORE
+# returning the name. The ref carries a commit unique to this lane, so two lanes
+# racing for one number push DIFFERENT values to the SAME ref and the remote
+# rejects the loser — the atomicity is the remote's, not a check-then-act here.
+# The loser retries with the next number. Claim refs are never deleted: they are
+# the record of which numbers have been handed out, and `git_max` counts them.
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
@@ -26,10 +40,30 @@ git_max() {
   {
     git for-each-ref --format='%(refname:short)' refs/heads refs/remotes
     git log --all --format='%s'
-  } | grep -oE "(^|[^A-Za-z0-9])${t}[0-9]{2,4}-" \
+  } | grep -oE "(^|[^A-Za-z0-9])${t}[0-9]{2,4}(-|$)" \
     | grep -oE "${t}[0-9]{2,4}" \
     | sed "s/^${t}//" \
     | sort -n | tail -1
+}
+
+# Refresh the claim namespace from origin, so `next_for` sees numbers other
+# lanes have taken but not yet built anything on. Failure is not fatal: a lane
+# with no network still gets the git-and-index answer it always got.
+fetch_claims() {
+  git fetch -q origin '+refs/heads/claim/*:refs/remotes/origin/claim/*' 2>/dev/null || true
+}
+
+# Take NUMBER for TYPE by creating `claim/<TYPE><nn>` on the remote. The pushed
+# commit is empty and unique to this invocation, so a second lane pushing to the
+# same ref is a non-fast-forward and is refused. Returns non-zero if the number
+# is already taken.
+claim_number() {
+  local name=$1 base tree sha
+  base=$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD)
+  tree=$(git rev-parse "${base}^{tree}")
+  sha=$(git commit-tree "$tree" -p "$base" \
+        -m "claim ${name} by $(hostname)/$$ at $(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  git push -q origin "${sha}:refs/heads/claim/${name}" 2>/dev/null
 }
 
 # The `next` value recorded in the index table for TYPE.
@@ -71,16 +105,55 @@ if [ "${1:-}" = "--check" ]; then
   exit "$rc"
 fi
 
+claim=0
+dry=0
+while true; do
+  case "${1:-}" in
+    --claim)   claim=1; shift ;;
+    --dry-run) dry=1;   shift ;;
+    *) break ;;
+  esac
+done
+
 type=${1:-}
 if [ -z "$type" ]; then
-  echo "usage: $0 <TYPE> [kebab-title] | --check [TYPE...]" >&2
+  echo "usage: $0 [--claim] [--dry-run] <TYPE> [kebab-title] | --check [TYPE...]" >&2
   exit 2
 fi
-
-n=$(pad "$(next_for "$type")")
 title=${2:-}
-if [ -z "$title" ]; then
-  echo "${type}${n}"
-else
-  echo "${type}${n}-${title}"
+
+full() {
+  if [ -z "$title" ]; then printf '%s%s' "$type" "$1"; else printf '%s%s-%s' "$type" "$1" "$title"; fi
+}
+
+# Read-only: the historical behaviour, and what `--dry-run` reports. Says
+# nothing about whether another lane is about to take the same number.
+if [ "$claim" -eq 0 ] || [ "$dry" -eq 1 ]; then
+  n=$(pad "$(next_for "$type")")
+  full "$n"; echo
+  if [ "$dry" -eq 1 ]; then
+    echo "next-branch: --dry-run — nothing claimed, this number is NOT yours" >&2
+  fi
+  exit 0
 fi
+
+# Claiming: re-derive the number against the freshly fetched claim namespace on
+# every attempt, so a lane that loses a race does not retry the same number.
+ATTEMPTS=25
+fetch_claims
+a=1
+while [ "$a" -le "$ATTEMPTS" ]; do
+  n=$(pad "$(next_for "$type")")
+  name=$(full "$n")
+  if claim_number "${type}${n}"; then
+    echo "next-branch: CLAIMED ${type}${n} as ${name} (attempt ${a})" >&2
+    echo "$name"
+    exit 0
+  fi
+  echo "next-branch: ${type}${n} was taken by another lane — retrying" >&2
+  fetch_claims
+  a=$(( a + 1 ))
+done
+
+echo "next-branch: FAILED to claim a ${type} number in ${ATTEMPTS} attempts" >&2
+exit 1

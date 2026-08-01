@@ -34,6 +34,13 @@ unsafe extern "C" fn _start_rust() -> ! {
     // enable unconditionally so user binaries built with NEON
     // intrinsics (memcpy, glibc strxx, etc.) don't trap.
     hal_aarch64::fpu_enable();
+    // Stage-1 permission overlay (protection keys). The BSP is the CPU that
+    // decides: it reads the ID registers and latches the answer, and every
+    // secondary CPU then follows that latch instead of re-deciding, so a
+    // big.LITTLE package cannot end up applying the overlay on some cores and
+    // ignoring it on others. Must follow fpu_enable — both write CPACR_EL1.
+    // SAFETY: BSP bring-up at EL1 before EL0 starts; TCR2_EL1/CPACR_EL1 are per-CPU and this CPU is their sole writer.
+    unsafe { hal_aarch64::setup_poe(true); }
     // SAFETY: BSP bring-up before EL0 starts; enables architected counter reads for userspace.
     unsafe { hal_aarch64::timer::enable_el0_counter_access(); }
     // Latch how many hardware breakpoint / watchpoint slots this CPU actually

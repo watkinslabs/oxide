@@ -19,10 +19,12 @@ use crate::Task;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[path = "pkey_rights/hw_x86.rs"]
 mod hw;
-// aarch64's POR_EL0 joins as a third arm when its enablement lands; until then
-// it takes the inert path rather than a stub that claims a register it has not
-// been given.
-#[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+#[path = "pkey_rights/hw_arm.rs"]
+mod hw;
+// Hosted builds have no rights register at all.
+#[cfg(not(any(all(target_arch = "x86_64", target_os = "oxide-kernel"),
+              all(target_arch = "aarch64", target_os = "oxide-kernel"))))]
 #[path = "pkey_rights/hw_none.rs"]
 mod hw;
 
@@ -36,10 +38,37 @@ pub fn supported() -> bool { hw::supported() }
 pub fn init_value() -> u64 { hw::init_value() }
 
 /// Snapshot the live register. # C: O(1)
-pub fn read_live() -> u64 { hw::read_live() }
+pub fn read_live() -> u64 { if fake::active() { fake::get() } else { hw::read_live() } }
 
 /// Load `v` into the live register. # C: O(1)
-pub fn write_live(v: u64) { hw::write_live(v); }
+pub fn write_live(v: u64) { if fake::active() { fake::set(v); } else { hw::write_live(v); } }
+
+/// A stand-in for the hardware register, so the read-before-write ordering
+/// [`switch_to`] depends on can be tested on a host that has no such register.
+/// Inert unless a test arms it; the production paths above compile to the same
+/// branch either way and it is never armed outside `cfg(test)`.
+mod fake {
+    #[cfg(test)]
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    #[cfg(test)]
+    pub(super) static ARMED: AtomicBool = AtomicBool::new(false);
+    #[cfg(test)]
+    pub(super) static VALUE: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(test)]
+    pub(super) fn active() -> bool { ARMED.load(Ordering::Relaxed) }
+    #[cfg(test)]
+    pub(super) fn get() -> u64 { VALUE.load(Ordering::Relaxed) }
+    #[cfg(test)]
+    pub(super) fn set(v: u64) { VALUE.store(v, Ordering::Relaxed); }
+
+    #[cfg(not(test))]
+    pub(super) fn active() -> bool { false }
+    #[cfg(not(test))]
+    pub(super) fn get() -> u64 { 0 }
+    #[cfg(not(test))]
+    pub(super) fn set(v: u64) { let _ = v; }
+}
 
 /// `__switch_to`'s rights-register handoff: capture what `prev` ended up with
 /// — including any unprivileged user write the kernel never saw — then install
@@ -49,7 +78,7 @@ pub fn write_live(v: u64) { hw::write_live(v); }
 /// key still hold it when it is scheduled again.
 /// # C: O(1)
 pub fn switch_to(prev: &Task, next: &Task) {
-    if !supported() { return; }
+    if !supported() && !fake::active() { return; }
     prev.pkey_rights.store(read_live(), Ordering::Relaxed);
     write_live(next.pkey_rights.load(Ordering::Relaxed));
 }

@@ -46,3 +46,59 @@ fn exec_resets_the_snapshot_to_the_default() {
     reset_on_exec(&t);
     assert_eq!(t.pkey_rights.load(Ordering::Relaxed), init_value());
 }
+
+// ── the read-before-write ordering ──────────────────────────────────────
+// The rights register is USER-writable, so the per-task field is a snapshot
+// and NOT the truth while a thread runs. These drive a stand-in register so
+// the ordering is pinned on a host that has none.
+
+fn arm_fake(initial: u64) {
+    super::fake::VALUE.store(initial, Ordering::Relaxed);
+    super::fake::ARMED.store(true, Ordering::Relaxed);
+}
+fn disarm_fake() { super::fake::ARMED.store(false, Ordering::Relaxed); }
+
+// THE invariant: a thread that changed its own rights with an unprivileged
+// register write, without the kernel ever seeing it, must still hold those
+// rights the next time it is scheduled. `switch_to` has to READ the live
+// register into the outgoing task before it loads the incoming one's — a
+// write-only handoff throws the change away, and this test fails if the read
+// is removed or reordered after the write.
+#[test]
+fn a_user_write_the_kernel_never_saw_survives_a_switch() {
+    let _g = ();
+    let a = task(10);
+    let b = task(11);
+    a.pkey_rights.store(0x1111, Ordering::Relaxed);
+    b.pkey_rights.store(0x2222, Ordering::Relaxed);
+    arm_fake(0x1111);
+
+    // Userspace opens a key behind the kernel's back.
+    super::fake::VALUE.store(0xBEEF, Ordering::Relaxed);
+    // ... and is switched away from.
+    switch_to(&a, &b);
+    assert_eq!(a.pkey_rights.load(Ordering::Relaxed), 0xBEEF,
+        "the outgoing task's snapshot must capture the user's write");
+    assert_eq!(read_live(), 0x2222, "the incoming task's rights must be installed");
+
+    // Switching back must restore what userspace had, not the stale snapshot.
+    switch_to(&b, &a);
+    assert_eq!(read_live(), 0xBEEF);
+    disarm_fake();
+}
+
+// The incoming task's value is what ends up in the register even when the
+// outgoing task's live value differs from every stored snapshot.
+#[test]
+fn the_incoming_tasks_rights_are_installed_not_the_outgoing_tasks() {
+    let a = task(12);
+    let b = task(13);
+    a.pkey_rights.store(0xAAAA, Ordering::Relaxed);
+    b.pkey_rights.store(0xBBBB, Ordering::Relaxed);
+    arm_fake(0xCCCC);
+    switch_to(&a, &b);
+    assert_eq!(a.pkey_rights.load(Ordering::Relaxed), 0xCCCC);
+    assert_eq!(b.pkey_rights.load(Ordering::Relaxed), 0xBBBB);
+    assert_eq!(read_live(), 0xBBBB);
+    disarm_fake();
+}
