@@ -81,6 +81,7 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
     if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
     let key = inode_key(inode);
     let fsid = inode.fsid();
+    let mut oneshot_pins: Vec<InodeRef> = Vec::new();
     let g = INSTANCES.lock();
     for w in g.iter() {
         let arc = match w.upgrade() { Some(a) => a, None => continue };
@@ -134,18 +135,24 @@ fn dispatch(inode: &InodeRef, f: &Fire<'_>) {
             // record, so it keeps the leaf.
             let name = if arc.fanotify && !arc.reports_dir_fid() { Vec::new() }
                        else { encode_name(f.name) };
-            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie: f.cookie, name, obj, pid, perm: None });
+            arc.enqueue_event(Event { wd: wi.wd, mask: report, cookie: f.cookie, name, obj, pid, ..Default::default() });
             if !arc.fanotify && (wi.flags & IN_ONESHOT) != 0 {
                 let wd = wi.wd;
-                watches.remove(i);
+                let mut dead = watches.remove(i);
+                // The watch pinned its inode; the reference leaves both locks
+                // before it is dropped, since releasing the last one evicts
+                // the inode and re-enters these same tables.
+                oneshot_pins.extend(dead.take_pin());
                 MARK_COUNT.fetch_sub(1, Ordering::AcqRel);
                 arc.release_marks(1);
-                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid, perm: None });
+                arc.enqueue_event(Event { wd, mask: IN_IGNORED, cookie: 0, name: Vec::new(), obj: None, pid, ..Default::default() });
                 continue;
             }
             i += 1;
         }
     }
+    drop(g);
+    crate::inotify::types::release_pins(oneshot_pins);
 }
 
 /// An event on `inode` itself (no name; `FS_ISDIR` from `inode`).
@@ -240,7 +247,11 @@ pub fn fire_delete_self(inode: &InodeRef) {
 pub fn fire_move(old_parent: &InodeRef, new_parent: &InodeRef, moved: Option<&InodeRef>,
                  old_name: &str, new_name: &str) {
     let c = MOVE_COOKIE.fetch_add(1, Ordering::Relaxed);
-    let is_dir = moved.map(|m| m.file_type() == FileType::Directory).unwrap_or(false);
+    let is_dir = crate::inotify::fan_rename::moved_is_dir(moved);
+    // The whole-rename record comes FIRST, before either half of the cookie
+    // pair: a watcher that asked for both forms must never be holding half a
+    // rename while the complete description of it is still behind in the queue.
+    crate::inotify::fan_rename::fire_rename(old_parent, new_parent, old_name, new_name, is_dir);
     fire_child(old_parent, FAN_MOVED_FROM, c, old_name, is_dir);
     fire_child(new_parent, FAN_MOVED_TO, c, new_name, is_dir);
     if let Some(m) = moved { fire_self(m, FAN_MOVE_SELF); }
@@ -322,6 +333,14 @@ pub fn install_write_hook() {
     vfs::set_close_hook(vfs_close_notify);
     vfs::set_dirent_create_hook(vfs_dirent_create);
     vfs::set_dirent_delete_hook(vfs_dirent_delete);
+    // Mount-tree changes reach a `FAN_MARK_MNTNS` mark through the mount
+    // subsystem's own choke points, not through any inode hook — a mount event
+    // has no inode to hang one on.
+    crate::inotify::fan_mnt::install_mnt_hook();
+    // A filesystem error likewise has no inode to hang a hook on: the object is
+    // the filesystem, and the failure that produced the report may be exactly
+    // the reason no inode can be named.
+    crate::inotify::fan_err::install_fs_error_hook();
 }
 
 fn vfs_dirent_create(parent: &InodeRef, leaf: &str, leaf_is_dir: bool) {

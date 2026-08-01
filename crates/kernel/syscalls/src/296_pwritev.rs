@@ -116,6 +116,9 @@ pub fn sys_pwritev(args: &SyscallArgs) -> i64 {
         None    => return -(Errno::Efault.as_i32() as i64),
     };
     if let Err(rv) = validate_user_buf(iov, array_bytes, 8) { return rv; }
+    if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), true, Some(off), 0) {
+        return -(e.as_i32() as i64);
+    }
     let mut total: u64 = 0;
     for i in 0..iovcnt {
         let iov_i = iov + i * 16;

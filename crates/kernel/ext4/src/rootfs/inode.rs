@@ -13,7 +13,7 @@ mod data;
 mod links;
 mod fallocate;
 mod meta;
-mod regular;
+pub(super) mod regular;
 mod rename;
 mod special;
 

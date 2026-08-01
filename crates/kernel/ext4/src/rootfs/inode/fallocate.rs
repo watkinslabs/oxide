@@ -10,7 +10,7 @@ use vfs::uapi::{FALLOC_FL_ALLOCATE_RANGE, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_IN
 use vfs::{Inode, KResult, VfsError};
 
 use super::data::Ext4FileData;
-use super::regular::vfs_error_from_mount;
+use super::regular::fs_err;
 
 /// Every mode `ext4_fallocate` admits. `FALLOC_FL_UNSHARE_RANGE` is absent —
 /// ext4 has no shared (reflinked) blocks to unshare, so it reports
@@ -39,12 +39,12 @@ pub(crate) fn ext4_fallocate(inode: &Inode, mode: u32, off: u64, len: u64) -> KR
         // Preallocation: map the range as UNWRITTEN extents (no data I/O).
         FALLOC_FL_ALLOCATE_RANGE => {
             grow_check(inode, d, keep_size, off, len)?;
-            d.st.mount.fallocate_inode(d.ino, off, len, keep_size).map_err(vfs_error_from_mount)?;
+            d.st.mount.fallocate_inode(d.ino, off, len, keep_size).map_err(|e| fs_err(&d.st, e))?;
         }
         // Deallocate the range → holes, which read as zeros. Size unchanged
         // (the VFS ladder already required KEEP_SIZE for this mode).
         FALLOC_FL_PUNCH_HOLE => {
-            d.st.mount.punch_hole_inode(d.ino, off, len).map_err(vfs_error_from_mount)?;
+            d.st.mount.punch_hole_inode(d.ino, off, len).map_err(|e| fs_err(&d.st, e))?;
         }
         // ZERO_RANGE and WRITE_ZEROES share `ext4_zero_range` in Linux and share
         // it here: this backend zeroes eagerly, producing INITIALIZED extents,
@@ -89,9 +89,9 @@ fn zero_range(d: &Ext4FileData, keep_size: bool, off: u64, len: u64) -> KResult<
     let mut pos = off;
     while pos < end {
         let n = core::cmp::min((end - pos) as usize, zeros.len());
-        d.st.mount.write_at(d.ino, pos, &zeros[..n]).map_err(vfs_error_from_mount)?;
+        d.st.mount.write_at(d.ino, pos, &zeros[..n]).map_err(|e| fs_err(&d.st, e))?;
         pos += n as u64;
     }
-    if keep_size && end > old { d.st.mount.set_inode_size(d.ino, old).map_err(vfs_error_from_mount)?; }
+    if keep_size && end > old { d.st.mount.set_inode_size(d.ino, old).map_err(|e| fs_err(&d.st, e))?; }
     Ok(())
 }

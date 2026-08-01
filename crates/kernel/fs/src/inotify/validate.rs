@@ -199,6 +199,7 @@ pub(crate) fn validate_fanotify_mark_group(
     scope: MarkScope,
     mask: u32,
     flags: u32,
+    has_sys_admin: bool,
 ) -> Result<(), Errno> {
     if !group.is_fanotify() { return Err(Errno::Einval); }
     if group.flags & FAN_REPORT_MNT != 0 {
@@ -208,6 +209,16 @@ pub(crate) fn validate_fanotify_mark_group(
         if mask & FAN_MNT_EVENTS != 0 { return Err(Errno::Einval); }
         if scope == MarkScope::MountNamespace { return Err(Errno::Einval); }
     }
+    // Only an INODE mark is available to an unprivileged caller. A mount, a
+    // filesystem or a mount namespace is shared by everything running on it, so
+    // watching one is an administrative act and needs `CAP_SYS_ADMIN` in the
+    // user namespace the GROUP was created in.
+    //
+    // Position is user-visible: this sits AFTER the mount-event/scope pairing
+    // above and BEFORE every remaining mask check, so an unprivileged caller
+    // asking for a filesystem mark with an otherwise-invalid mask is told
+    // `EPERM`, not `EINVAL` — the mask it chose never gets examined.
+    if scope != MarkScope::Inode && !has_sys_admin { return Err(Errno::Eperm); }
     let class = group.flags & FAN_ALL_CLASS_BITS;
     if mask & PERM_BITS != 0 && class == 0 { return Err(Errno::Einval); }
     if mask & FAN_PRE_ACCESS != 0 && class == FAN_CLASS_CONTENT { return Err(Errno::Einval); }
