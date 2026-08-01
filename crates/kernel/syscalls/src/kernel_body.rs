@@ -69,8 +69,6 @@ mod execve_common; mod exec_transition; mod exec_persona; #[path = "059_execve/m
 #[path = "318_getrandom.rs"] pub mod s318_getrandom;
 #[path = "463_setxattrat.rs"] pub mod s463_setxattrat;
 #[path = "464_getxattrat.rs"] pub mod s464_getxattrat;
-#[path = "457_statmount.rs"] pub mod s457_statmount;
-#[path = "458_listmount.rs"] pub mod s458_listmount;
 #[path = "314_sched_setattr.rs"] pub mod s314_sched_setattr;
 mod signal_common;
 mod fsmount_common;

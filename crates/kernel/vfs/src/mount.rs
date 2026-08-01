@@ -19,6 +19,8 @@
 //! - `locked`: MNT_LOCK_*/MNT_LOCKED stamping and the no-relax admission ladder.
 //! - `revealing`: `mount_too_revealing` — the userns already-visible constraint.
 //! - `expiry`: expiry list marking and sweep logic.
+//! - `busy`: the propagation-aware `umount(2)` busy test.
+//! - `shrink`: eager reap of expirable submounts under an unmount target.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -77,6 +79,8 @@ pub use mnt_flags::{
     MNT_LOCK_READONLY,
     MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_RDONLY, MOUNT_ATTR_SETTABLE,
     MOUNT_ATTR_STRICTATIME, MOUNT_ATTR__ATIME, mount_attr_to_mnt,
+    MOUNT_ATTR_NODEV, MOUNT_ATTR_NODIRATIME, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID,
+    MOUNT_ATTR_NOSYMFOLLOW,
     MNT_DETACH, MNT_EXPIRE, MNT_FORCE, UMOUNT_NOFOLLOW, UMOUNT_VALID,
 };
 
@@ -84,6 +88,20 @@ pub use mnt_flags::{
 // ORDER (and MNT_EXPIRE's two-pass EAGAIN grace) is a hosted unit test.
 mod umount_check;
 pub use umount_check::{umount_check, umount_facts, Umount, UmountFacts, UmountPlan, UmountRefusal, EXPIRE_REQUIRED_REFS};
+
+// `propagate_mount_busy`: the propagation-aware busy test both `umount(2)` and
+// the expiry sweep apply — a peer/slave copy of the mount being pinned refuses
+// the unmount just as a pin on the named mount does. A submodule so the rule
+// (including the completely-overmounted-mirror exception) carries its own
+// hosted unit tests.
+mod busy;
+pub use busy::{propagate_busy_decision, propagate_mount_busy, BusyFacts, MirrorBusyFacts,
+    PASSIVE_REFCNT, UMOUNT_SYSCALL_REFCNT};
+
+// `shrink_submounts`: the eager reap of expirable (automounted) submounts a
+// non-lazy `umount(2)` owes its target before the busy test runs.
+mod shrink;
+pub use shrink::shrink_submounts;
 
 // Locked mount flags: the MNT_LOCK_*/MNT_LOCKED stamp an unprivileged user-ns
 // copy inherits (`lock_mnt_tree`) and the ladder that refuses to relax it
@@ -97,7 +115,8 @@ pub use locked::{
 // Idmapped mount installation is one VFS transaction over detached mount
 // state, shared by open_tree and the deferred fsmount representation.
 mod idmapped;
-pub use idmapped::{can_idmap_superblock, mnt_setattr_attached, mnt_setattr_detached_tree};
+pub use idmapped::{can_idmap_mount, can_idmap_superblock, idmap_facts_for, IdmapFacts,
+    IdmapSet, mnt_setattr_attached, mnt_setattr_detached_tree};
 
 // mount_too_revealing: the visibility constraint on an unprivileged user-ns
 // mount of a FS_USERNS_MOUNT_RESTRICTED filesystem (procfs/sysfs). A submodule
@@ -121,6 +140,20 @@ pub use expiry::{
     sweep_expired_mounts,
 };
 use expiry::mnt_expire_remove_any;
+
+// `is_path_reachable`: the single "is this path at or below that root?"
+// predicate shared by pivot_root's two rungs and the statmount/listmount
+// visibility gates.
+mod reachable;
+pub use reachable::{mount_reachable_from, path_reachable_from_root, reachable_from_mount_root};
+
+// statmount(2)/listmount(2) fact gathering: the unique-mount-id space, the
+// per-mount reportable values, and the listmount subtree selection.
+mod statmount;
+pub use statmount::{dominating_group_id, is_slave, listmount_ids, master_group_id,
+    mounts_in_ns_snapshot,
+    mnt_id_from_unique, mnt_to_attr_flags, mnt_to_propagation_flags, mount_by_unique_id_in_ns,
+    statmount_facts, unique_mnt_id, MountFacts, MNT_UNIQUE_ID_OFFSET};
 
 mod flags;
 pub use flags::*;

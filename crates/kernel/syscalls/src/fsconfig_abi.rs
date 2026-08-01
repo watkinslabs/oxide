@@ -117,6 +117,25 @@ pub fn classify(fd: i32, cmd: u64, key: u64, value: u64, aux: i32) -> Result<Fsc
     }
 }
 
+/// `strndup_user(p, n)` (`mm/util.c`) applied to bytes already copied in.
+/// `bytes` is what a NUL-stopping bounded read produced, so it is `n` bytes long
+/// exactly when no terminator was found inside the bound — Linux's `length > n`
+/// rejection. The distinction matters: a silent `n`-byte prefix would turn an
+/// over-long option name into a DIFFERENT, possibly valid, option name.
+/// Non-UTF-8 is the same EINVAL the key/value readers report. # C: O(n)
+pub fn strndup_admit(bytes: &[u8], n: usize) -> Result<&str, Errno> {
+    if bytes.len() >= n { return Err(Errno::Einval); }
+    core::str::from_utf8(bytes).map_err(|_| Errno::Einval)
+}
+
+/// `getname_flags(_value, lookup_flags)` for the `SET_PATH` pair: `LOOKUP_EMPTY`
+/// is set only by `FSCONFIG_SET_PATH_EMPTY`, and without it an empty pathname is
+/// ENOENT — the same rule `AT_EMPTY_PATH` follows everywhere else. # C: O(1)
+pub fn admit_path_value(value: &str, empty_ok: bool) -> Result<(), Errno> {
+    if value.is_empty() && !empty_ok { return Err(Errno::Enoent); }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +215,32 @@ mod tests {
             assert_eq!(classify(3, c, 0, 0, 1), Err(Errno::Einval));
             assert!(!want.takes_key());
         }
+    }
+
+    // An over-long key is EINVAL, not a truncated prefix: `strndup_user(_key,
+    // 256)` accepts at most 255 characters plus the terminator.
+    #[test]
+    fn a_key_that_does_not_terminate_inside_the_bound_is_einval() {
+        let long = [b'k'; KEY_MAX];
+        assert_eq!(strndup_admit(&long, KEY_MAX), Err(Errno::Einval));
+        let just_fits = [b'k'; KEY_MAX - 1];
+        assert_eq!(strndup_admit(&just_fits, KEY_MAX), Ok(core::str::from_utf8(&just_fits).unwrap()));
+    }
+
+    #[test]
+    fn an_empty_value_is_accepted_and_non_utf8_is_einval() {
+        assert_eq!(strndup_admit(b"", VALUE_MAX), Ok(""));
+        assert_eq!(strndup_admit(b"ro", VALUE_MAX), Ok("ro"));
+        assert_eq!(strndup_admit(&[0xffu8, 0xfe], VALUE_MAX), Err(Errno::Einval));
+    }
+
+    // `FSCONFIG_SET_PATH` has no LOOKUP_EMPTY, so "" is ENOENT; only the
+    // _EMPTY variant admits it.
+    #[test]
+    fn an_empty_path_is_enoent_unless_the_command_is_the_empty_variant() {
+        assert_eq!(admit_path_value("", false), Err(Errno::Enoent));
+        assert_eq!(admit_path_value("", true), Ok(()));
+        assert_eq!(admit_path_value("/dev/sda", false), Ok(()));
+        assert_eq!(admit_path_value("/dev/sda", true), Ok(()));
     }
 }

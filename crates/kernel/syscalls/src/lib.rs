@@ -111,6 +111,23 @@ pub mod mount_flags_policy;
 // move_mount's BENEATH-xor-SET_GROUP), and each accepted call SELECTS the walk
 // (follow/automount/empty) — none of which a kernel-gated slot file can test.
 pub mod open_tree_policy;
+// The idmap half of the shared `struct mount_attr` block: which of the two
+// syscalls may REMOVE or REPLACE a mount's idmap, and when the `userns_fd`
+// field is read at all. Ungated so it is testable — both slots are kernel-only.
+pub mod mount_idmap_policy;
+// statmount(2)/listmount(2) ABI: the request struct's size admission, the
+// STATMOUNT_* field-mask space, the namespace-admission ladder, and the
+// `struct statmount` writer. Ungated so all of it is testable — both slots are
+// kernel-only.
+pub mod statmount_abi;
+// Shared statmount/listmount request plumbing; scheduler/nsfs facts sit behind
+// its one cfg-selected child so the hosted harness can drive both slots.
+pub mod statmount_target;
+// Slots 457/458 are ungated: with the scheduler/nsfs facts isolated behind
+// `statmount_target`'s cfg-selected child, both syscall bodies compile hosted
+// and are driven end-to-end against a real fixture mount tree.
+#[path = "457_statmount.rs"] pub mod s457_statmount;
+#[path = "458_listmount.rs"] pub mod s458_listmount;
 pub mod move_mount_policy;
 pub mod fspick_policy;
 // io_uring identity: which description is a ring, and each caller's errno when
