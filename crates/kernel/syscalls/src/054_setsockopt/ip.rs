@@ -75,7 +75,19 @@ fn apply(sock: &Arc<InetSocket>, action: Action) -> i64 {
         Action::UnicastIf(ifindex) => sock.opts.ip.set_unicast_if(ifindex),
         Action::LocalPortRange(packed) => sock.opts.ip.set_local_port_range(packed),
         Action::Options(compiled) => sock.opts.ip.set_options(compiled),
-        Action::RouterAlert(on) => sock.opts.ip.set_flag(flag::RTALERT, on),
+        Action::RouterAlert(on) => {
+            // Take or release the real chain slot before the option bit that
+            // reports it; a raw endpoint of another family keeps the bit only.
+            let endpoint = match &*sock.kind.lock() {
+                net::sock::SockKind::Raw4(endpoint) => Some(endpoint.clone()), _ => None,
+            };
+            if let Some(endpoint) = endpoint {
+                let joined = if on { net::router_alert::v4_join(&endpoint) }
+                    else { net::router_alert::v4_leave(&endpoint) };
+                if let Err(e) = joined { return errno(e); }
+            }
+            sock.opts.ip.set_flag(flag::RTALERT, on)
+        }
         Action::Delegated => return errno(Errno::Enoprotoopt),
     }
     0

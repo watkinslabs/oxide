@@ -100,6 +100,12 @@ impl NetStack {
     pub(crate) fn forward_ipv4_in(&self, net_ns: u64, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
         if crate::forwarding::ipv4_enabled_in(net_ns) != Some(true) { return Ok(()); }
         if l3.len() < IPV4_HDR_LEN { return Ok(()); }
+        // A transit packet asking routers to examine it goes to the sockets
+        // that joined the router-alert chain, ahead of the hop-limit check;
+        // once one of them takes it, it leaves the forwarding path.
+        if crate::router_alert::v4_present(l3)
+            && crate::router_alert::v4_deliver(net_ns, ingress, l3)
+        { return Ok(()); }
         let src = Ipv4Addr::from_u32(u32::from_be_bytes([l3[12], l3[13], l3[14], l3[15]]));
         let dst = Ipv4Addr::from_u32(u32::from_be_bytes([l3[16], l3[17], l3[18], l3[19]]));
         let error_src = self.ipv4_iface_addr(net_ns, ingress).unwrap_or(dst);

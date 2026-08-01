@@ -161,9 +161,15 @@ pub fn describe_ip(sock: &InetSocket) -> sol_ip::set::IpSock {
         SockKind::Raw6(endpoint) => (false, false, true, endpoint.protocol() as u16),
         _ => (false, false, false, 0),
     };
+    // Chain membership is the chain's own answer, not a mirror of the option
+    // bit: `describe_ip` runs before the write that would set it.
+    let on_ra_chain = match &*sock.kind.lock() {
+        SockKind::Raw4(endpoint) => crate::router_alert::v4_joined(endpoint),
+        _ => sock.opts.ip.flag(sol_ip::flag::RTALERT),
+    };
     sol_ip::set::IpSock {
         stream, dgram, raw, inet_num,
-        on_ra_chain: sock.opts.ip.flag(sol_ip::flag::RTALERT),
+        on_ra_chain,
         bound_if: sock.opts.bound_ifindex.load(Ordering::Acquire) as i32,
     }
 }
@@ -192,7 +198,7 @@ pub fn describe_ipv6(sock: &InetSocket) -> sol_ipv6::set::Ipv6Sock {
         // this stack, so a conversion never races one.
         send_pending: false,
         bound_if: sock.opts.bound_ifindex.load(Ordering::Acquire) as i32,
-        on_ra_chain: sock.opts.ipv6.flag(sol_ipv6::flag::RTALERT),
+        on_ra_chain: sock.opts.ipv6.on_ra_chain(),
     }
 }
 

@@ -31,6 +31,9 @@ pub mod flag {
     // Bits 16 and 17 are retired: `IPV6_TRANSPARENT` and `IPV6_FREEBIND`
     // write the `IPPROTO_IP` flag word their IPv4 twins own, so this level
     // stores neither.
+    /// `IPV6_ROUTER_ALERT` reports the value the caller passed, which is not
+    /// the same question as whether the socket holds a chain slot — a zero
+    /// selector joins the chain and reads back as off.
     pub const RTALERT: u64 = 1 << 18;
     pub const RTALERT_ISOLATE: u64 = 1 << 19;
     pub const RECVERR_RFC4884: u64 = 1 << 20;
@@ -69,6 +72,10 @@ pub struct Ipv6Opts {
     headers: Spinlock<[Option<Vec<u8>>; Sticky::COUNT], LockClass>,
     /// Flow labels this socket holds a reference on.
     labels: Spinlock<Vec<u32>, LockClass>,
+    /// `IPV6_ROUTER_ALERT` chain slot: the selector the socket joined with,
+    /// negative when it holds no slot. Chain membership is this value, not the
+    /// `RTALERT` flag — a zero selector joins and reads back as off.
+    ra_selector: AtomicI32,
 }
 
 impl Default for Ipv6Opts {
@@ -85,7 +92,21 @@ impl Default for Ipv6Opts {
             nexthop: Spinlock::new(None),
             headers: Spinlock::new([const { None }; Sticky::COUNT]),
             labels: Spinlock::new(Vec::new()),
+            ra_selector: AtomicI32::new(crate::router_alert::V6_NO_SLOT),
         }
+    }
+}
+
+impl Ipv6Opts {
+    /// The `IPV6_ROUTER_ALERT` selector this socket joined with. # C: O(1)
+    pub fn ra_selector(&self) -> i32 { self.ra_selector.load(Ordering::Acquire) }
+    /// # C: O(1)
+    pub fn set_ra_selector(&self, selector: i32) {
+        self.ra_selector.store(selector, Ordering::Release);
+    }
+    /// Whether the socket holds a router-alert chain slot. # C: O(1)
+    pub fn on_ra_chain(&self) -> bool {
+        self.ra_selector() >= crate::router_alert::V6_FIRST_SLOT
     }
 }
 
