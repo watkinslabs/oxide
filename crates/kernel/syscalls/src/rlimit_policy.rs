@@ -9,6 +9,21 @@
 use sched::rlimit::PrlimitError;
 use syscall::errno::Errno;
 
+/// The `cap_sys_resource` argument slots 160 and 302 hand `do_prlimit` —
+/// Linux's `capable(CAP_SYS_RESOURCE)`, which is `ns_capable(&init_user_ns, …)`
+/// and NOT a plain effective-set test. The upstream comment on the check is
+/// explicit that it stays pinned to the initial user namespace "until cgroups
+/// can contain all limits".
+///
+/// Named here rather than open-coded at each slot because the slots are
+/// `target_os = "oxide-kernel"`-gated and cannot be tested: both previously
+/// passed `has_cap`, so root inside an unprivileged user namespace could raise
+/// any hard limit after one `unshare(CLONE_NEWUSER)`.
+/// # C: O(1)
+pub fn cap_sys_resource(cur: &sched::Task) -> bool {
+    crate::perm_common::capable(cur, sched::cap::SYS_RESOURCE)
+}
+
 /// Map a `do_prlimit` rejection to its Linux errno. # C: O(1)
 pub fn errno_of(e: PrlimitError) -> Errno {
     match e {
@@ -21,6 +36,12 @@ pub fn errno_of(e: PrlimitError) -> Errno {
 mod tests {
     use super::*;
     use sched::rlimit::{DEFAULT_RLIMITS, INFINITY, rlim};
+
+    // The exact boolean slots 160/302 hand `do_prlimit`. Driving the real
+    // helper rather than re-deriving it here is the point: the defect this
+    // covers was a call site that computed the right answer nowhere and passed
+    // an effective-set test instead, so only the composition is evidence.
+    use super::cap_sys_resource as cap_arg;
 
     fn task() -> sched::Task {
         sched::Task::new(9001, "rlimit-test", sched::SchedClass::Normal { weight: 1024 })
@@ -91,6 +112,48 @@ mod tests {
         assert_eq!(t.do_prlimit(rlim::MEMLOCK, None, false), Ok((100, 200)));
         // A rejected write yields Err, so prlimit64 never copies `old` out.
         assert!(t.do_prlimit(rlim::MEMLOCK, Some((100, 300)), false).is_err());
+    }
+
+    #[test]
+    fn hard_raise_gate_is_the_init_user_namespace_test_not_the_effective_set() {
+        use core::sync::atomic::Ordering;
+        use namespace_identity::{allocate, initial, NamespaceKind};
+
+        let t = task();
+        t.creds.cap_effective.store(1u64 << sched::cap::SYS_RESOURCE, Ordering::Release);
+        t.set_rlimit(rlim::CORE, (0, 4096));
+
+        // Root of a NON-initial user namespace holds a full effective set
+        // there, so an effective-set-only gate would let it raise the hard
+        // limit. Linux asks `capable()`, which is the init-namespace test.
+        let init_user = initial(NamespaceKind::User);
+        let inner = allocate(NamespaceKind::User, init_user.clone(), Some(init_user.clone())).unwrap();
+        assert!(t.replace_namespace(inner).is_ok());
+        assert!(t.has_cap(sched::cap::SYS_RESOURCE), "effective set still holds it");
+        assert!(!cap_arg(&t), "but not in the initial user namespace");
+        assert_eq!(t.do_prlimit(rlim::CORE, Some((0, 8192)), cap_arg(&t)),
+            Err(PrlimitError::Eperm));
+        assert_eq!(t.rlimit(rlim::CORE), (0, 4096), "denied raise must not write");
+
+        // Back in the initial user namespace the same task may raise it.
+        assert!(t.replace_namespace(init_user).is_ok());
+        assert!(cap_arg(&t));
+        assert_eq!(t.do_prlimit(rlim::CORE, Some((0, 8192)), cap_arg(&t)), Ok((0, 4096)));
+        assert_eq!(t.rlimit(rlim::CORE), (0, 8192));
+    }
+
+    #[test]
+    fn lowering_a_hard_limit_stays_unprivileged_inside_a_user_namespace() {
+        use core::sync::atomic::Ordering;
+        use namespace_identity::{allocate, initial, NamespaceKind};
+        let t = task();
+        t.creds.cap_effective.store(0, Ordering::Release);
+        t.set_rlimit(rlim::CORE, (4096, 4096));
+        let init_user = initial(NamespaceKind::User);
+        let inner = allocate(NamespaceKind::User, init_user.clone(), Some(init_user)).unwrap();
+        assert!(t.replace_namespace(inner).is_ok());
+        assert_eq!(t.do_prlimit(rlim::CORE, Some((0, 512)), cap_arg(&t)), Ok((4096, 4096)));
+        assert_eq!(t.rlimit(rlim::CORE), (0, 512));
     }
 
     #[test]

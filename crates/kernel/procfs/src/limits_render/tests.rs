@@ -55,8 +55,12 @@ fn the_rendered_defaults_track_default_rlimits_not_a_stale_blob() {
         "cores disabled by default: {t}");
     assert!(t.contains("Max locked memory        8388608              8388608              bytes"),
         "MLOCK_LIMIT is 8 MiB soft AND hard, not unlimited and not the old blob's 65536: {t}");
-    assert!(t.contains("Max msgqueue size        unlimited"),
-        "MSGQUEUE is unlimited here, NOT the old blob's 819200: {t}");
+    assert!(t.contains("Max msgqueue size        819200               819200               bytes"),
+        "MQ_BYTES_MAX in BOTH columns: {t}");
+    assert!(t.contains("Max nice priority        0                    0"),
+        "RLIMIT_NICE defaults to 0/0, so an unprivileged nice reduction is refused: {t}");
+    assert!(t.contains("Max realtime priority    0                    0"),
+        "RLIMIT_RTPRIO defaults to 0/0, so an unprivileged RT policy is refused: {t}");
 }
 
 #[test]
@@ -87,7 +91,7 @@ fn the_unitless_priority_rows_have_no_trailing_unit() {
     let t = text(&DEFAULT_RLIMITS);
     for label in ["Max nice priority", "Max realtime priority"] {
         let row = t.lines().find(|l| l.starts_with(label)).expect(label);
-        assert!(row.trim_end().ends_with("unlimited"),
-            "{label} carries no unit string: {row}");
+        assert!(row.trim_end().ends_with('0'),
+            "{label} carries no unit string after its 0/0 default: {row}");
     }
 }
