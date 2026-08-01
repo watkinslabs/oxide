@@ -16,6 +16,10 @@ pub(super) fn create(a: &Attr) -> Result<i64, Errno> {
     if flags != 0 { return Err(Errno::Einval); }
     let fd = a.u32_at(TOKEN_BPFFS_FD) as i32;
     let cur = sched::current().ok_or(Errno::Ebadf)?;
+    // SAFETY: `cur` is the running task on this CPU, and the only writers of its
+    // `fd_table` slot (execve, unshare, close_range, exit) run on the task
+    // itself — it cannot be inside one of those while it executes this bpf
+    // syscall, so no concurrent `replace_fd_table` can race the borrow.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
     let file = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
     if file.inode().statfs_magic() != BPF_FS_MAGIC { return Err(Errno::Enodev); }

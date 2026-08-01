@@ -123,6 +123,10 @@ impl Drop for Mapping {
 /// Same contract as `map_pages`.
 /// # C: O(n_pages * page-table depth)
 pub unsafe fn map_owned(pa: u64, n_pages: u64) -> Mapping {
+    // SAFETY: forwarded verbatim — this fn is `unsafe` precisely so its caller
+    // carries `map_pages`' contract (device-MMIO `pa`, not refcounted RAM, and
+    // no other owner of that window). The returned `Mapping` takes sole
+    // ownership of the VA range so only its `unmap`/`Drop` tears it down.
     let base_va = unsafe { map_pages(pa, n_pages) };
     Mapping { base_va, n_pages }
 }

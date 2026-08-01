@@ -146,7 +146,10 @@ fn target_is_its_group(p: *const u8, table_len: usize, off: usize) -> bool {
     if off + IORT_NODE_HEADER_BYTES > table_len {
         return false;
     }
-    // SAFETY: bounds checked above.
+    // SAFETY: `p` is the HHDM-mapped IORT base and `table_len` its SDT length,
+    // so the whole `[p, p+table_len)` range is readable; the guard above proved
+    // `off + IORT_NODE_HEADER_BYTES <= table_len`, which puts this single node
+    // -type byte at `p+off` strictly inside the table.
     unsafe { core::ptr::read_volatile(p.add(off)) == IORT_NODE_ITS_GROUP }
 }
 
