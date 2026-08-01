@@ -4,12 +4,19 @@ FROZEN 2026-05-02. Dep:`02`,`08`.
 
 Linux-compatible at modern userspace ABI. Pre-2015 / 4.x-era stuff dropped unless named reason. glibc≥2.34 runs; libc5 doesn't.
 
+## Revision 2026-08-01 (R02)
+
+- Changed: userspace libc ABI stays **glibc**, but the implementation is upstream Fedora glibc installed from RPMs, not a libc written here. R01's "our own Rust impl" clause is void. Spec `59` (glibc-in-Rust) deleted; `59§` references in the R01 block above are flattened to plain text so `xref` resolves.
+- Why: `crates/user/*` (own libc, `ld.so`, NSS, PAM, RPM, pkg) and the `xtask glibc`/`sysroot`/`ldso` command family are deleted. The kernel repo builds no userspace; the sibling `../images` repo composes the rootfs from Fedora RPMs. The compat filter is unchanged — the binaries under test are the same Fedora `-gnu` binaries.
+- Affected code: none in this repo — userspace composition moved out of it.
+- Test contract change: the differential-oracle-vs-host-glibc gate is void with the libc it tested; §1 clause 2 is exercised by real Fedora binaries running on the image.
+
 ## Revision 2026-06-14 (R01)
 
-- Changed: userspace libc ABI = **glibc** (our own Rust impl, `59`), not musl. §1 clause 2 reads against glibc-linked binaries; Linux-compat ABI target = glibc ABI (`libc.so.6`, `ld-linux-*`, `GLIBC_2.x` symbol versions, IFUNC).
+- Changed: userspace libc ABI = **glibc** (our own Rust impl, spec 59), not musl. §1 clause 2 reads against glibc-linked binaries; Linux-compat ABI target = glibc ABI (`libc.so.6`, `ld-linux-*`, `GLIBC_2.x` symbol versions, IFUNC).
 - Why: endgame = Fedora RPM userspace + from-source GNOME; Fedora is glibc. musl cannot run unmodified Fedora `-gnu` binaries.
-- Affected code: `crates/user/glibc/` per `59`; supersedes `29a§2-4`, `07§3`, `29§4` (see their R-blocks).
-- Test contract change: differential oracle vs host glibc (`59§7`) replaces musl-parity smokes.
+- Affected code: `crates/user/glibc/` per spec 59; supersedes `29a§2-4`, `07§3`, `29§4` (see their R-blocks).
+- Test contract change: differential oracle vs host glibc replaces musl-parity smokes.
 
 ## 1 Filter (per feature)
 

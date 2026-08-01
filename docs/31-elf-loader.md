@@ -1,6 +1,14 @@
 # 31 ELF loader + dynamic linker
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`11`,`12`,`16`,`18`,`27`. Provides:`execve` syscall, module loader (shares parser).
+FROZEN 2026-05-02. Dep:`01`,`02`,`11`,`12`,`16`,`18`,`27`,`29a`. Provides:`execve` syscall, module loader (shares parser).
+
+## Revision 2026-08-01 (R01)
+
+- Changed: §5 + §9 — the dynamic linker is Fedora's `ld-linux-x86-64.so.2` / `ld-linux-aarch64.so.1` from the `glibc` RPM, not a `userspace/dynlink/` build installed at `/lib/ld-oxide.so.1`. Kernel scope is unchanged: `PT_INTERP` chain + auxv contract.
+- Why: this repo builds no userspace (`29a§2`); `userspace/dynlink/`, `crates/user/ldso` and spec `59` are deleted.
+- Affected code: none in the loader — only the interpreter path a real binary names.
+- Test contract change: §9 names the Fedora loader instead of `ld-oxide`.
+
 ## 1 Purpose
 
 Load ELF64 binaries into an `AddressSpace`. Support static + dynamic (PIE). Establish auxv. Hand off to `_start` or `ld.so` interp.
@@ -44,7 +52,7 @@ pub struct LoadedExe { entry: UVA<u8>, sp: UVA<u8>, brk: UVA<u8>, interp: Option
 
 ## 5 Dynamic linker (ld.so)
 
-Built as part of userspace at `userspace/dynlink/` against our libc. Installed `/lib/ld-oxide.so.1`.
+Fedora `glibc` ships it: `/lib64/ld-linux-x86-64.so.2` (x86_64), `/lib/ld-linux-aarch64.so.1` (aarch64). Named by `PT_INTERP` (`29a§4`).
 
 Responsibilities:
 - Map dependent shared libs.
@@ -78,7 +86,7 @@ Mostly disk-bound; budget is non-disk overhead.
 ## 9 Test contract (frozen)
 
 - Static binary loads + runs.
-- Dyn binary + ld-oxide loads + runs.
+- Dyn binary + Fedora `ld-linux` loads + runs.
 - Bad e_machine: ENOEXEC.
 - Both W&X segment: ENOEXEC.
 - PT_INTERP not found: ELIBBAD.

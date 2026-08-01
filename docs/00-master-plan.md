@@ -99,10 +99,10 @@ non-overlapping phases land in parallel once their deps are green.
 | 24 | SysV IPC (shm/sem/msg) + POSIX MQ + keyring | open | `24` |
 | 25 | perf_event_open + tracefs/ftrace + ebpf programs running tracepoints | open | `27`,`37` |
 | 26 | Core dump generation (sigaction SIGSEGV → ELF coredump in fs) | open | `27`,`16` |
-| 27 | Dynamic linker (real ld-linux `crates/user/ldso`: PT_INTERP, DT_NEEDED, GOT/PLT, RELA/JMPREL/IRELATIVE, sym-versioning, ld.so.cache, LD_LIBRARY_PATH, dlopen/dlsym) | open | `31`,`29a`,`59` |
-| 28 | Standard userspace libc (oxide-libc, glibc-ABI Rust `crates/user/glibc` per `59`) + NSS + PAM, /etc/{passwd,group,shadow}, pam_unix | open | `29a`,`43`,`59` |
+| 27 | Dynamic linking: kernel side of Fedora `ld-linux` (PT_INTERP chain, load bias, auxv incl. AT_BASE/AT_RANDOM/AT_SYSINFO_EHDR, file-backed mmap for DT_NEEDED libs) | open | `31`,`29a` |
+| 28 | Kernel surface Fedora glibc + NSS + PAM need (dlopen paths, /etc/{passwd,group,shadow} over VFS, keyctl, setgroups, locale archive mmap) | open | `29a`,`43` |
 | 29 | System manager (real PID 1 — service supervision, dep order, journalctl on klog ring) | open | `29a` |
-| 30 | Package manager (rpmbuild against our libc, dnf/microdnf, /var/lib/rpm) | open | `43`,`29a` |
+| 30 | Package manager (Fedora `dnf5` + `rpm` running on the image, /var/lib/rpm) | open | `43`,`29a` |
 | 31 | TTY + login flow (agetty per /dev/tty[0-N], terminfo/ncurses, motd/issue, real /dev/console termios) | open | `28`,`29a` |
 | 32 | DRM/KMS framebuffer + virtio-gpu + input subsystem (evdev) | open | `35` |
 | 33 | vDSO per-arch + glibc compat surface (FSGSBASE, set_thread_area i386, IFUNC) | open | `15` |
@@ -190,7 +190,7 @@ Detail: `13`,`14`.
 
 ## 7 Syscall ABI
 
-- Linux-compat at numbers; unmodified musl-linked binaries run.
+- Linux-compat at numbers; unmodified Fedora glibc-linked binaries run.
 - One table (`SYSCALL_TABLE: [SyscallFn; 462]`) called from per-arch trampoline in `hal-*`.
 - Every syscall: `fn(&SyscallArgs) -> KR<u64>`. Trampoline marshals regs.
 - Userspace ptrs via `UserPtr<T>` newtype; check before deref. No raw `*mut u8` past dispatch.

@@ -41,10 +41,10 @@ DRAFT 2026-05-14. Dep:`00`,`40`,`43`.
 | 24 | SysV IPC + POSIX MQ + keyring | `24` |
 | 25 | perf_event_open + tracefs/ftrace + ebpf tracepoints | `27`,`37` |
 | 26 | Core dump generation (sigaction SIGSEGV → ELF coredump) | `27`,`16` |
-| 27 | Dynamic linker (real ld-musl: PT_INTERP, DT_NEEDED, GOT/PLT, dlopen) | `31`,`29a` |
-| 28 | Standard userspace libc + NSS + PAM | `29a`,`43` |
+| 27 | Dynamic linking: kernel side of Fedora `ld-linux` (PT_INTERP, load bias, auxv) | `31`,`29a` |
+| 28 | Kernel surface Fedora glibc + NSS + PAM need | `29a`,`43` |
 | 29 | System manager (real PID 1, service supervision, journalctl) | `29a` |
-| 30 | Package manager (rpmbuild + dnf/microdnf + /var/lib/rpm) | `43`,`29a` |
+| 30 | Package manager (Fedora `dnf5` + `rpm` + /var/lib/rpm) | `43`,`29a` |
 | 31 | TTY + login flow (agetty, terminfo/ncurses, motd/issue) | `28`,`29a` |
 | 32 | DRM/KMS framebuffer + virtio-gpu + input subsystem (evdev) | `35` |
 | 33 | vDSO + glibc compat surface (FSGSBASE, IFUNC) | `15` |
