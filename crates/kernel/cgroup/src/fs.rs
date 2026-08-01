@@ -26,6 +26,10 @@ impl CgroupFs {
 impl FileSystem for CgroupFs {
     /// # C: O(1)
     fn name(&self) -> &str { "cgroup2" }
+    /// cgroup2 exports kernfs file handles (`crate::export`), so `s_op` is its
+    /// own — the generic fallback would mint a 12-byte handle the cgroup-id
+    /// readers in userspace cannot receive. # C: O(1)
+    fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> { Some(crate::export::super_ops()) }
     /// CGROUP2_SUPER_MAGIC (linux/magic.h) — systemd's `cg_all_unified()`
     /// detects the unified hierarchy by this `statfs` f_type.
     /// # C: O(1)

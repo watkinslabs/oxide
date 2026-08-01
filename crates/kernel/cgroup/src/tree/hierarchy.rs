@@ -131,6 +131,15 @@ impl Tree {
         self.nodes.get(&id)?.children.get(name).copied()
     }
 
+    /// True iff `id` names a live node. The existence test a decoded file
+    /// handle needs: an id no longer in the hierarchy is `ESTALE`, not an
+    /// inode synthesized for a cgroup that was removed. # C: O(log n)
+    pub fn contains(&self, id: u64) -> bool { self.nodes.contains_key(&id) }
+
+    /// Parent node id of `id`, or `None` for the root (and for an id that is
+    /// gone). # C: O(log n)
+    pub fn parent_of(&self, id: u64) -> Option<u64> { self.nodes.get(&id)?.parent }
+
     /// DAC owner `(uid, gid)` of node `id`'s DIRECTORY inode (root:root if the
     /// node is gone). # C: O(log n)
     pub fn dir_owner(&self, id: u64) -> (u32, u32) {

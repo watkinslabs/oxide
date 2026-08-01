@@ -25,8 +25,7 @@ use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
 use crate::handle_policy::{DecodeCtx, FILEID_IS_CONNECTABLE, FILEID_IS_DIR, Fid, HANDLE_HDR,
-    MayDecodeFh, decode::O_DIRECTORY, decode_fid, handle_header_check, header_is_our_fid,
-    may_decode_fh, strip_user_flags};
+    MayDecodeFh, decode::O_DIRECTORY, handle_header_check, may_decode_fh, strip_user_flags};
 use crate::userbuf::validate_user_buf;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -161,18 +160,24 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     // 4. Decode. A well-formed handle from a different encoder is not EINVAL:
     //    an undecodable-but-valid handle is ESTALE, because it may simply
     //    describe an object this filesystem no longer has.
-    if !header_is_our_fid(bytes, raw_htype) { return err(Errno::Estale); }
+    // The decoder is the FILESYSTEM's: a kernfs-backed pseudo-fs mints an
+    // 8-byte node-id handle whose type the generic codec does not know, so the
+    // "is this ours" test has to be asked of the superblock the handle will be
+    // decoded on, not of the VFS-wide codec.
+    let sb = match anchor.inode.i_sb() { Some(s) => s, None => return err(Errno::Estale) };
+    if sb.s_op.export_fid_len_for_type(strip_user_flags(raw_htype)) != Some(bytes) {
+        return err(Errno::Estale);
+    }
     if let Err(rv) = validate_user_buf(handle_ptr + HANDLE_HDR, bytes as u64, 1) { return rv; }
     let mut fid_bytes = vec![0u8; bytes as usize];
     for (i, b) in fid_bytes.iter_mut().enumerate() {
         // SAFETY: f_handle region validated readable for `bytes` in the caller's AS above; byte-wise unaligned reads of the little-endian FID payload.
         *b = unsafe { core::ptr::read_unaligned((handle_ptr + HANDLE_HDR + i as u64) as *const u8) };
     }
-    let fid = match decode_fid(&fid_bytes, strip_user_flags(raw_htype)) {
+    let fid = match sb.s_op.export_decode_fh(&fid_bytes, strip_user_flags(raw_htype)) {
         Ok(f) => f, Err(e) => return err(e),
     };
 
-    let sb = match anchor.inode.i_sb() { Some(s) => s, None => return err(Errno::Estale) };
     let inode = match sb.s_op.fh_to_dentry(&sb, fid.ino, fid.generation) {
         Some(i) => i, None => return err(Errno::Estale),
     };

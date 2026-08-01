@@ -26,12 +26,16 @@ extern crate alloc;
 //               `name_to_handle_at`/`open_by_handle_at` and by fanotify's
 //               `FAN_REPORT_FID` info records, which must encode the SAME
 //               handle or a fid a watcher was handed cannot be opened.
+//   kernfs_fid — the 8-byte node-id handle a kernfs-backed pseudo-filesystem
+//               (cgroup2) mints, whose width userspace depends on.
 //   reconnect — the upward `get_parent` walk that makes a decoded object reach
 //               the filesystem root, plus the acceptable-alias preference.
 
 pub mod fid;
+pub mod kernfs_fid;
 pub mod reconnect;
 
+pub use kernfs_fid::{HANDLE_TYPE_KERNFS, KERNFS_FID_LEN, decode_kernfs_fid, encode_kernfs_fid};
 pub use reconnect::{MAX_RECONNECT_DEPTH, connected_alias, dentry_connected, find_acceptable_alias,
     generic_get_parent, reconnect_path};
 
