@@ -611,6 +611,18 @@ pub struct Task {
     /// across fork, cleared at exec (`arch_setup_new_exec`).
     pub nocpuid: AtomicBool,
 
+    /// Linux `thread.pkru` — this thread's protection-key rights register.
+    ///
+    /// Per-THREAD, and writable from user mode by an unprivileged `WRPKRU`, so
+    /// this field is a SNAPSHOT the switch path refreshes by reading the live
+    /// register on the way out; it is never treated as authoritative while the
+    /// thread is running. Cleared to the restrictive default at exec, and
+    /// inherited across fork so a thread that opened a key keeps it.
+    ///
+    /// Meaningless without OSPKE, where the register does not exist and every
+    /// read answers 0.
+    pub pkru: AtomicU32,
+
     /// Linux `thread.features` / `thread.features_locked` — the CET
     /// shadow-stack facilities (`ARCH_SHSTK_SHSTK`, `ARCH_SHSTK_WRSS`) this
     /// thread has enabled, and those whose state may no longer change.

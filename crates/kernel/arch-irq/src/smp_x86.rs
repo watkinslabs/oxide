@@ -149,7 +149,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // _start_rust right after install_syscall_msrs; the AP must match.
     // SAFETY: AP at CPL=0, long mode; privileged CR0/CR4 writes legal; this AP
     // is the sole writer of its own CR0/CR4 (the regs are per-CPU).
-    unsafe { hal_x86_64::enable_sse(); }
+    unsafe { hal_x86_64::enable_cpu_features(false); }
     ap_stage(logical_cpu_id, AP_STAGE_SSE);
 
     // Force CR4.FSGSBASE off on this AP, matching the BSP. While the bit is

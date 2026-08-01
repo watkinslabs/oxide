@@ -10,6 +10,7 @@ mod context;
 mod cpu;
 mod cpuid;
 mod cpuid_fault;
+pub mod pkru;
 pub mod debugreg;
 mod fault;
 mod exception_table;
@@ -42,6 +43,7 @@ pub use cpuid_fault::{cpuid_fault_kind, cpuid_fault_supported, set_cpuid_faultin
 pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, vendor as cpuid_vendor};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
+pub use pkru::{arch_max_pkey, ospke_enabled, pkru_init_value, pkru_write_default, read_pkru, setup_pku, write_pkru};
 pub use debugreg::{validate_addr as validate_dr_addr, validate_dr7, DebugRegs, Dr6Status,
     Dr7Error, HBP_NUM};
 pub use fault::{
@@ -76,7 +78,7 @@ pub use pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_NMI, PT_REGS_VECTOR_SYSC
 pub use regs::{read_clear_dr6, set_data_watchpoint};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
 pub use regs::{arm_hole_watchpoint, disarm_hole_watchpoint, read_dr0_dr1};
-pub use regs::{clear_cr4_fsgsbase, enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
+pub use regs::{clear_cr4_fsgsbase, enable_cpu_features, enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
 pub use signal::{build_signal_frame, min_sigstksz, current_user_sp, sigframe_base, sigframe_range, restart_ignored_syscall, restart_via_restart_syscall, restore_signal_frame, rt_sigreturn_frame_range};
 pub use syscall::{
     boot_syscall_kstack_top, current_kstack_top, current_pt_regs,

@@ -28,6 +28,11 @@ use crate::task::Task;
 /// failed `execve` leaves every flag as the caller had it.
 /// # C: O(1)
 pub fn flush_thread_flags(cur: &Task) {
+    // Linux `fpu_flush_thread` -> `pkru_write_default`: protection-key rights
+    // do NOT survive exec. The new image's keys mean something else entirely,
+    // so inheriting the old program's open keys would hand it access it never
+    // asked for. Inert where the register does not exist.
+    crate::pkru::reset_on_exec(cur);
     #[cfg(target_arch = "aarch64")]
     {
         crate::prctl::tsc::apply(cur, false);
