@@ -14,6 +14,8 @@ const CMSG_ALIGN: usize = 8;
 const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
+// `deliver` is the only consumer and is kernel-gated.
+#[cfg(target_os = "oxide-kernel")]
 use net::sock_opts::sol_socket::SCM_INQ;
 
 fn errno(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }

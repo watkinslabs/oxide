@@ -33,6 +33,19 @@ impl OptOut {
         0
     }
 
+    /// Publish a value whose length the option table already resolved: the
+    /// bytes go out as they are, and the published length is exactly how many
+    /// were written. # C: O(n)
+    pub fn exact(&self, value: &[u8]) -> i64 {
+        if !value.is_empty() && uaccess::copy_to_user(self.optval, value).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if uaccess::copy_to_user(self.optlen_p, &(value.len() as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    }
+
     /// Publish only a length — the size a value needs when the caller's buffer
     /// was too small to receive it. # C: O(1)
     pub fn length_only(&self, len: usize) -> i64 {

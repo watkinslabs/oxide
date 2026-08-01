@@ -1,4 +1,8 @@
 #![cfg(target_os = "oxide-kernel")]
+// The `IPPROTO_IP` and `IPPROTO_IPV6` numbers are owned by
+// `net::sock_opts::sol_ip` / `sol_ipv6`; the copies here stay as the ABI
+// record the option-number tests read.
+#![allow(dead_code)]
 
 // SOL_SOCKET option numbers live in `net::sock_opts::sol_socket`.
 pub(super) use net::sock_opts::sol_socket::{SOL_SOCKET, SO_BINDTODEVICE};
