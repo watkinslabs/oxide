@@ -134,8 +134,12 @@ pub fn describe(sock: &InetSocket) -> sol_socket::OptSock {
         SockKind::Udp => (false, inet),
         _ => (false, false),
     };
+    let stream = matches!(&*sock.kind.lock(),
+        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_)
+        | SockKind::Unix(_, _) | SockKind::UnixUnbound(_, _) | SockKind::UnixListener(_))
+        && sock.opts.so_type.load(Ordering::Acquire) == 0;
     sol_socket::OptSock {
-        family, tcp, udp,
+        family, stream, tcp, udp,
         // Linux gives `set_peek_off` to the AF_UNIX protocol operations only.
         peek_off_capable: family == crate::sock::AF_UNIX,
     }

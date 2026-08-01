@@ -9,9 +9,10 @@ const AF_INET_W: u16 = crate::socket_args::AF_INET as u16;
 const AF_NETLINK_W: u16 = crate::socket_args::AF_NETLINK as u16;
 const AF_PACKET_W: u16 = crate::socket_args::AF_PACKET as u16;
 
-fn tcp() -> OptSock { OptSock { family: AF_INET_W, tcp: true, udp: false, peek_off_capable: false } }
-fn udp() -> OptSock { OptSock { family: AF_INET_W, tcp: false, udp: true, peek_off_capable: false } }
-fn unix() -> OptSock { OptSock { family: AF_UNIX_W, tcp: false, udp: false, peek_off_capable: true } }
+fn tcp() -> OptSock { OptSock { family: AF_INET_W, stream: true, tcp: true, udp: false, peek_off_capable: false } }
+fn udp() -> OptSock { OptSock { family: AF_INET_W, stream: false, tcp: false, udp: true, peek_off_capable: false } }
+fn unix() -> OptSock { OptSock { family: AF_UNIX_W, stream: true, tcp: false, udp: false, peek_off_capable: true } }
+fn unix_dgram() -> OptSock { OptSock { stream: false, ..unix() } }
 fn packet() -> OptSock { OptSock { family: AF_PACKET_W, ..Default::default() } }
 
 fn none() -> OptCaps { OptCaps::default() }
@@ -484,5 +485,44 @@ fn options_with_their_own_argument_shape_never_reach_the_scalar_table() {
     let view = SockView { sock: tcp(), ..Default::default() };
     for optname in [SO_PEERSEC, SO_PEERGROUPS, SO_MEMINFO, SO_PEERNAME, SO_GET_FILTER] {
         assert_eq!(get::value(optname, 64, &state, &view), Err(Errno::Enoprotoopt));
+    }
+}
+
+#[test]
+fn so_inq_is_an_af_unix_stream_option_only() {
+    // Every other socket shape reaches no implementation of it at all.
+    assert_eq!(set(SO_INQ, 1, unix(), none()), Ok(Action::Scalar { slot: Scalar::Inq, value: 1 }));
+    assert_eq!(set(SO_INQ, 0, unix(), none()), Ok(Action::Scalar { slot: Scalar::Inq, value: 0 }));
+    assert_eq!(set(SO_INQ, 1, unix_dgram(), none()), Err(Errno::Enoprotoopt));
+    assert_eq!(set(SO_INQ, 1, tcp(), admin()), Err(Errno::Enoprotoopt));
+    assert_eq!(set(SO_INQ, 1, udp(), admin()), Err(Errno::Enoprotoopt));
+    assert_eq!(set(SO_INQ, 1, packet(), admin()), Err(Errno::Enoprotoopt));
+}
+
+#[test]
+fn so_inq_is_a_strict_boolean_and_the_family_screen_outranks_the_value_window() {
+    assert_eq!(set(SO_INQ, 2, unix(), none()), Err(Errno::Einval));
+    assert_eq!(set(SO_INQ, -1, unix(), none()), Err(Errno::Einval));
+    // An out-of-window value on a socket that has no SO_INQ at all still
+    // reports the missing option, not the bad value.
+    assert_eq!(set(SO_INQ, 2, tcp(), none()), Err(Errno::Enoprotoopt));
+}
+
+#[test]
+fn so_inq_screens_an_exact_int_where_every_other_option_screens_a_minimum() {
+    assert!(exact_int_argument(SO_INQ));
+    for optname in [SO_DEBUG, SO_RCVBUF, SO_LINGER, SO_TXTIME, SO_PASSCRED] {
+        assert!(!exact_int_argument(optname), "optname {optname}");
+    }
+}
+
+#[test]
+fn so_inq_is_write_only_and_reads_back_as_a_missing_option() {
+    // The option enables a control message; it is not itself readable, on any
+    // family, including the one that accepts the write.
+    let state = GenericSockOpts::default();
+    for sock in [unix(), unix_dgram(), tcp()] {
+        let view = SockView { sock, ..Default::default() };
+        assert_eq!(get::value(SO_INQ, 4, &state, &view), Err(Errno::Enoprotoopt));
     }
 }

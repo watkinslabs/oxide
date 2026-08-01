@@ -36,9 +36,25 @@ fn wait_nonblock_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadl
 }
 
 fn finish(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<(u32, u32, u32)>, flags: u64, out_flags: u32, name: &[u8]) -> Result<(), i64> {
-    let delivered = recv_control::deliver(user, files, cred, flags)?;
+    finish_inq(user, files, cred, None, flags, out_flags, name)
+}
+
+/// `SO_INQ` is an AF_UNIX stream option, so only the stream arm can publish a
+/// remaining-bytes control message. # C: O(files + faults)
+fn finish_inq(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<(u32, u32, u32)>,
+    inq: Option<i32>, flags: u64, out_flags: u32, name: &[u8]) -> Result<(), i64> {
+    let delivered = recv_control::deliver(user, files, cred, inq, flags)?;
     user.copy_name(name)?;
     user.finish(delivered.len, out_flags | delivered.flags)
+}
+
+/// Bytes still queued for the reader, published as `SCM_INQ` when the socket
+/// asked for it. The count comes from the one memory report `SO_MEMINFO` and
+/// `SIOCINQ` also answer from, so the three can never disagree.
+/// # C: O(queued frames)
+fn inq(sock: &Arc<InetSocket>) -> Option<i32> {
+    if sock.opts.generic.scalar(net::sock_opts::sol_socket::Scalar::Inq) == 0 { return None; }
+    Some(net::sock_opts::meminfo(sock).rmem_alloc.min(i32::MAX as u32) as i32)
 }
 
 /// Receive from one AF_UNIX socket using queue-owned copy transactions. # C: O(payload + rights + faults)
@@ -82,7 +98,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                 }) {
                     Err(e) => {
                         if total == 0 { return e; }
-                        if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
+                        if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
                         sock.note_receive_now();
                         return total as i64;
                     }
@@ -92,7 +108,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                         all_files.extend(files);
                         if cred.is_some() { last_cred = cred; }
                         if !waitall || total == user.capacity || got_control {
-                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
@@ -106,13 +122,13 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                             let pending = sock.take_pending_recv_error();
                             if pending != 0 { return -(pending as i64); }
                         } else if sock.has_pending_recv_error() {
-                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
                         if pair.take_reset(end) {
                             if total == 0 { return err(Errno::Econnreset); }
-                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
@@ -121,7 +137,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                                 if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0, recv_control::output_flags(flags))) { return e; }
                                 return 0;
                             }
-                            if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
@@ -130,7 +146,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                 if let Err(e) = wait_nonblock_after(sock, nonblock, flags, deadline,
                     if peek { total } else { 0 }, shutdown_generation) {
                     if total == 0 { return e; }
-                    if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
+                    if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
                     sock.note_receive_now();
                     return total as i64;
                 }
