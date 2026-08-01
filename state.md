@@ -1,91 +1,91 @@
 # state.md — session hand-off
 
-Main `10c213ec8`, clean: 0 open PRs, both arches boot, **GNOME boots with
-working mouse and keyboard**, 0 failed units, 0 core dumps. 40 PRs merged.
+Main `351684a44`, clean: 0 open PRs. Syscall matrix **IMPL 273 / PARTIAL 89 /
+LINUX-ENOSYS 22** of 385. Two lanes in flight, both blocked on their own gates —
+neither is mergeable as-is.
 
-## Headline: the desktop works
+## Headline: a ring-3 LPE, and GNOME is usable again
 
-Four kernel bugs stood between the tree and a usable GNOME session. All fixed.
+`B1638` (#4299) found that the kernel set `CR4.FSGSBASE=1` on every CPU while
+running a **no-`swapgs`** model, so `GS_BASE` pointed at the kernel per-CPU area
+*in ring 3*. Unprivileged `wrgsbase <attacker ptr>` made the next `syscall`
+execute `mov gs:[16], rsp` / `mov rsp, gs:[8]` against that base — arbitrary
+kernel write plus stack pivot, i.e. LPE from any process. Fixed by moving the
+per-CPU base to `wrmsr(IA32_GS_BASE)` and clearing `CR4.FSGSBASE`; a real
+`ARCH_SET_GS` then forced the x86_64 entry model onto `swapgs` across all eight
+ring transitions incl. paranoid entry/exit for the four IST vectors.
 
-| Bug | PR | Effect |
-|---|---|---|
-| `/proc/self` bound to tid 0 | #4267 | The inode existed so `open` succeeded, but every read/write returned ENOENT. systemd writes `/proc/self/oom_score_adj` at its OOM_ADJUST exec step on *every* spawn, so udevd, journald, dbus-broker, rtkit, accounts-daemon and upower all died there and gdm never ran. Now a magic symlink resolved at readlink time, with `/proc/thread-self`. |
-| x86_64 `clone(2)` used arm64's argument order | #4269 | arm64 selects `CONFIG_CLONE_BACKWARDS`; x86_64 does **not** — the `select` at `arch/x86/Kconfig:16` is inside `config X86_32`. `CLONE_SETTLS` took FS_BASE from the `child_tid` register (glibc passes `&pd->tid`), displacing every thread's static TLS by `0x2d0`, so `__ctype_init` dereferenced a NULL locale pointer. Every threaded glibc daemon SEGV'd. |
-| procfs had no `dentry_operations` | #4271 | `/proc/<pid>` inodes cached ownership from first lookup. systemd's child walked its own `/proc/<pid>/fd` as root, then `setresuid(1000)` and got EACCES from `opendir` — `user@1000.service` exited 1, leaving gnome-session in degraded fallback with no user D-Bus. Now `pid_revalidate`/`pid_delete_dentry` via a new `InodeOps::child_d_op`. |
-| epoll/evdev inode-number collision | #4272 | Both used base `0x7400_0000`, so `/dev/input/event0` decoded as an epoll instance and the epoll ioctl handler claimed every evdev ioctl, answering EINVAL. libinput asks `EVIOCGBIT(0)` first, concluded the devices were unusable, and never read them: live compositor, dead input. |
+Two Yama holes went with it: `pidfd_getfd` and `process_vm_readv/writev` used the
+READ-class ladder, so at `ptrace_scope=1` a same-uid process could read another's
+memory. And seccomp ran **before** the ptrace entry stop, letting a tracer
+substitute a call the filter had already approved.
 
-## Defect classes worth checking at review
+## Merged this session
 
-These each bit more than once, and naming them made the next one faster to find.
+| PR | What it fixed |
+|---|---|
+| #4299 | ptrace/prctl/arch_prctl/personality; the LPE above; 3 prctl values stored-and-never-read |
+| #4301 | fanotify delivery: perm events drained ahead of their notifications, EACCES where Linux says EPERM, an accessor spinning on `tick_yield()` with no signal check |
+| #4304 | fanotify completion: `FAN_REPORT_MNT` fired for real, hashed merge index, `FAN_MARK_EVICTABLE` fixed at the root, `RootfsState::fsid()` three-way identity split |
+| #4305 | GNOME pointer: the guest was never offered an **absolute** pointer (`absolute: False` on every device) |
+| #4306 | GNOME display: connector published **one** mode; `SET_SCANOUT` ran *before* `TRANSFER`, binding the display to an unwritten buffer every frame |
 
-1. **Correct code nothing calls.** `kill_fasync` had no production caller so
-   `O_ASYNC` was inert kernel-wide; user-namespace id translation had zero
-   callers; readahead was computed and discarded at all three call sites;
-   `RLIMIT_NPROC`/`RLIMIT_MEMLOCK` were enforced nowhere; atime policy still
-   has zero call sites.
-2. **Identity inferred instead of owned.** #4273 swept the class: `/dev/console`
-   and `/dev/tty1` shared one `st_ino`; every signalfd shared one; socket ids
-   came from reused heap addresses; `fbdev` masked only the low half of the ino
-   so ~1 socket in 65536 reached the framebuffer ioctl handler. Identity now
-   comes from `i_private`, and `vfs::pseudo_ino` owns the number space with a
-   compile-time disjointness assertion.
-3. **Large values on a 16 KiB stack.** Four instances: `VirtioInputDev` 3440 B
-   by value (#4275), 21 driftsort scratch frames at 4160 B each (#4276), a TCP
-   child built by value on the delivery frame (#4279), and **two** copies of the
-   3528-byte child `Task` on the parent's stack (#4280). Linux heap-allocates
-   each of these and passes a pointer. `make stack-gate` now catches it at build
-   time.
+## Open: two lanes, both self-blocked
 
-## Gates that now exist (and one that never ran)
+**B1641 (socket cluster).** `net` 1511/0, `syscalls` 998/0, but **`make
+stack-gate` FAILs on aarch64**: `oxide_svc_save_block` 13424 B against a 13000 B
+ceiling (x86 passes). Bisected to this lane's own merges. Two fixes moved it the
+*wrong* way — `#[inline(never)]` → 13552 (frames sum instead of overlap), boxing
+the option blocks → 13440, which disproves the whole "shrink the socket" family.
+Real cause: `tcp_connect_reserved_min_hop` builds a 512 B `TcpConn` on the frame
+then moves it into a function returning 608 B **by value** into `Arc::new` —
+1120 B of a 1872 B inlined frame. Fix = allocate first, initialise in place.
+Also needs a boot before merge: `IP_MULTICAST_ALL` behaves as `MC_ALL=0` where
+Linux defaults to 1, changing mDNS/LLMNR delivery.
 
-- `make smoke-mouse` — injects virtio input over QMP and asserts real event
-  counts. Both arches PASS. Input regressions are now caught.
-- `make smoke-virtio-input-rebind` — PASS both arches as of #4281.
-- `stack-gates` CI job — runs `stack-depth-gate.py` and `frame-size-gate.py`.
-  The latter **was not in CI at all** and both its baselines were empty.
+**B1648 (GNOME left-click).** Left-click doesn't launch; the `New Window`/`Unpin`
+menu appears instead. **Coordinates are proven correct** (injected pixel
+hover-lights the icon and anchors its tooltip there), and the user confirmed by
+hand that a genuine long press opens that same menu — so *every ordinary click is
+read as a long press*. Kernel is clean to the evdev node on both arches: BTN_LEFT
+press+release, each its own `SYN_REPORT`, ~0.5 ms apart. Prime suspect:
+`evdev_queue.rs` stamps `tv_sec`/`tv_usec` at **drain** time, not when the device
+reported the event, so a delayed drain inflates the apparent press duration.
+Decisive measurement = `libinput debug-events` in-guest during an injected click.
 
-## Open: the gate under-reports blocking paths (lane B1621 in flight)
+## Named follow-ups, unowned
 
-`schedule()` costs x86_64 3016 B / aarch64 **4608 B**, and the walker cuts that
-cycle so it is added to no reported depth. aarch64 `sys_sendmmsg` reports
-12880 but would be 17488 against a 16384 B stack if it blocks at max static
-depth — the gate says PASS on a path that can overflow. B1621 is making the
-accounting honest first, then fixing what it exposes.
+- **Citation debt is tree-wide**: 273 files with `.c:NNN`, 113 with
+  `include/uapi`, 50 with `.h:NNN`, 10 naming the local reference tree. Repo rule
+  forbids citing external implementation sources in tree text.
+- **42 `find(...).unwrap()` source-grep assertions** break on unrelated refactors
+  and already manufactured one false flake.
+- **Phantom tests live in the tree**: `net/src/sock_v6.rs` and
+  `sock/{udp,ops,send}.rs` are target-gated, so their test modules have never
+  executed once. Same trap in the other direction: `procfs/ctl.rs` is gated, so
+  `cargo check` compiles none of it and breakage appears only in the kernel build.
+- Queued net work: request-sock minisock (`TCP_DEFER_ACCEPT` establishes
+  server-side where Linux leaves the peer retransmitting), `TCP_ZEROCOPY_RECEIVE`,
+  fast-open, `IP_OPTIONS` on transmit.
+- GPU: damage rectangles not plumbed from DRM (whole framebuffer every present);
+  EDID negotiated but `GET_EDID` never issued; no vblank pacing; PRIME is EINVAL.
+- `absinfo.rs::eviocgabs_decodes_the_axis_from_the_request_number` was pinned
+  from memory, not verified — may encode a divergence. B1648 owns re-verifying it.
 
-## Syscall compliance matrix (`scratch/syscall-compliance-matrix.md`)
+## Traps that cost real time this session
 
-PARTIAL 194 → **110**; IMPL 250/385. Rows annotated per merge with what was
-actually wrong.
-
-## Next up
-
-1. Finish B1621 (blocking-path stack accounting + the aarch64 net arm).
-2. The remaining 110 PARTIAL rows — largest clusters: socket 54/55 (~8 options
-   still `ENOPROTOOPT`), ptrace 101, mount 165/166.
-3. Named subsystem gaps, each its own lane: SCHED_DEADLINE has no scheduling
-   class; **RSS accounting does not exist** (blocks `ru_maxrss`, `VmRSS`); atime
-   policy has zero call sites; synthetic filesystems use ordinal readdir
-   cursors; FUSE has no fsync slot.
-4. Flagged, unowned: `packet::deliver` holds `Weak::upgrade` temporaries so the
-   last drop runs socket teardown from the packet path (Linux's protocol hook
-   holds a strong ref released with `synchronize_net()`); journal socket lines
-   report a nonsense SCM_CREDENTIALS pid; `parse_proc_path` has no production
-   callers.
-
-## Traps that cost real time
-
-- **`make smoke-*` must run with the sandbox disabled.** Otherwise boot-smoke
-  cannot reap its QEMU; the leak locks `root-<arch>.img` and the next attempt
-  fails with *zero kernel output*, which reads exactly like a boot failure.
-  Also: boot-smoke DELETES its log on completion, and the log path it prints is
-  the one to copy while the boot is live.
-- **Kernel-gated files are invisible to `cargo test`.** #4265 merged with 4934
-  hosted tests green while `xtask kernel` failed on six `SigInfo` initializers
-  in `#[cfg(target_os)]` files. Always build both kernel targets before trusting
-  a merge.
-- **Check the enclosing `config` block before believing a Kconfig grep.**
-  `grep 'select CLONE_BACKWARDS' arch/x86/Kconfig` hits a line owned by
-  `config X86_32`. That mis-verification cost a lane and a wrongly-dropped branch.
-- **A leaf symbol is not a cause.** The #4275 overflow reported `vt_console_sink`
-  on x86 and `ArmMmu::map` on aarch64 — two different leaves on one failure means
-  the stack was already gone. Chasing the leaf wasted a lane.
+- **Matrix column indexing.** `scratch/syscall-compliance-matrix.md` is
+  pipe-delimited with status at awk `$9` / python `f[8]`, branch at `$10`, notes
+  at `$13`. Python's split index is one *less* than awk's field number; getting
+  that wrong overwrote the branch column on four rows (repaired in #4302).
+- **Merged branches reappear on the remote.** `--delete-branch` works, but a
+  sub-lane agent pushing *after* the parent PR merges recreates the ref. 13 stale
+  remote branches accumulated unnoticed because cleanup only checked local ones.
+  Re-check `git branch -r` after each merge.
+- **Do not remove a worktree whose lane is still running.** Doing so mid-boot
+  orphaned a QEMU against a deleted build directory and killed the run.
+- **Verify against primary source even when the instruction comes from the
+  integration owner.** A directive to relax the GRO flow key was wrong — it was
+  derived from the device-level pass alone, while a second transport-level
+  comparison owns exactly the fields it said to drop (the two IPv6 masks are
+  exact complements). The sub-lane refused and was right.
