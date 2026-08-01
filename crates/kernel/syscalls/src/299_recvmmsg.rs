@@ -5,9 +5,9 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_WAITFORONE};
+use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_OOB, MSG_WAITFORONE};
 
-use crate::recvmsg::layout::{MMSGHDR_LEN_OFFSET, MMSGHDR_SIZE, TIMESPEC_SIZE};
+use crate::recvmsg::layout::{MMSGHDR_FLAGS_OFFSET, MMSGHDR_LEN_OFFSET, MMSGHDR_SIZE, TIMESPEC_SIZE};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -44,6 +44,15 @@ fn timeout_copyback(timeout: &Option<BatchTimeout>) -> Result<(), i64> {
     uaccess::copy_to_user(timeout.user, &raw).map_err(|_| err(Errno::Efault))
 }
 
+/// Whether the message just delivered into this entry carried `MSG_OOB`.
+/// # C: O(1)
+fn oob_received(entry: u64) -> bool {
+    let Some(flags_ptr) = entry.checked_add(MMSGHDR_FLAGS_OFFSET) else { return false };
+    let mut raw = [0u8; 4];
+    if uaccess::copy_from_user(&mut raw, flags_ptr).is_err() { return false; }
+    u32::from_ne_bytes(raw) as u64 & MSG_OOB != 0
+}
+
 fn partial(target: &crate::recvmsg::dispatch::RecvTarget, got: i64, failure: i64) -> i64 {
     if got == 0 { return failure; }
     if failure != err(Errno::Eagain) {
@@ -58,14 +67,20 @@ fn partial(target: &crate::recvmsg::dispatch::RecvTarget, got: i64, failure: i64
 /// # C: O(vlen)
 pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     let mmsg_ptr = args.a1;
-    // Linux recvmmsg(2) BUGS: vlen above UIO_MAXIOV is silently truncated,
-    // not rejected — mirrors sendmmsg's UIO_MAXIOV clamp.
-    const UIO_MAXIOV: u64 = 1024;
-    let vlen = (args.a2 as u32 as u64).min(UIO_MAXIOV);
+    // `sendmmsg` clamps its batch to UIO_MAXIOV; `recvmmsg` does not, and
+    // walks the caller's whole array.
+    let vlen = args.a2 as u32 as u64;
     let mut flags = args.a3;
     if flags & MSG_CMSG_COMPAT != 0 { return err(Errno::Einval); }
     let mut timeout = match timeout_import(args.a4) { Ok(timeout) => timeout, Err(e) => return e };
     let target = match crate::recvmsg::lookup(args.a0) { Ok(target) => target, Err(e) => return e };
+    // A pending socket error is reported BEFORE the batch runs and consumed by
+    // doing so — except for an error-queue read, which is how that error is
+    // meant to be collected.
+    if flags & MSG_ERRQUEUE == 0 {
+        let pending = target.take_error();
+        if pending != 0 { return -(pending as i64); }
+    }
     if vlen == 0 { return 0; }
     flags &= !MSG_WAITFORONE;
     let mut got: i64 = 0;
@@ -91,6 +106,8 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
         if args.a3 & MSG_WAITFORONE != 0 { flags |= MSG_DONTWAIT; }
         let expired = timeout_update(&mut timeout);
         if expired { break; }
+        // Out-of-band data ends the batch: the caller must see it alone.
+        if oob_received(entry) { break; }
     }
     got
     };
