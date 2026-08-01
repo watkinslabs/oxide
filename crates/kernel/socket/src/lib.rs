@@ -38,7 +38,7 @@ mod receive;
 mod send;
 mod target;
 
-pub use batch::{BatchIo, BatchSpec, send_batch};
+pub use batch::{BatchIo, BatchSpec, UIO_MAXIOV, send_batch};
 pub use error::{Error, KResult};
 pub use filter::{FilterError, FilterFile};
 pub use message::{Message, SendOutcome};
