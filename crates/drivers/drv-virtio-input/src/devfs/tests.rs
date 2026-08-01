@@ -10,11 +10,11 @@ mod common;
 
 use common::*;
 
-static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Hold the evdev-table lock for the duration of one test. # C: O(1)
-pub(crate) fn serialize() -> std::sync::MutexGuard<'static, ()> {
-    TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+/// Own the input device table for the duration of one test. The table is the
+/// `registry`'s, so the lock is too — a second one here would exclude nothing.
+/// # C: O(MAX_INPUT_DEVICES)
+pub(crate) fn serialize() -> crate::registry::DeviceTableOwner {
+    crate::registry::own_device_table()
 }
 
 mod absinfo;

@@ -6,6 +6,7 @@ const REL_VALUE: i32 = 1;
 
 #[test]
 fn native_and_kpi_events_share_canonical_inhibit_filter() {
+    let _devices = crate::registry::own_device_table();
     let _guard = TEST_LOCK.lock();
     let device_key = key(DEVICE_KEY_RAW);
     let mut model = input::VirtioInputDev::empty_boxed(device_key);

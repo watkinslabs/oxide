@@ -7,6 +7,7 @@ const SECOND_DEVICE_KEY_RAW: u32 = 0x0020_0000;
 
 #[test]
 fn removing_one_eventq_keeps_shared_input_drain_handler() {
+    let _devices = crate::registry::own_device_table();
     let _guard = TEST_LOCK.lock();
     reset();
     {
@@ -34,6 +35,7 @@ fn removing_one_eventq_keeps_shared_input_drain_handler() {
 
 #[test]
 fn removing_last_eventq_clears_shared_input_drain_handler() {
+    let _devices = crate::registry::own_device_table();
     let _guard = TEST_LOCK.lock();
     reset();
     CTXS.lock()[0] = Some(ctx(key(FIRST_DEVICE_KEY_RAW)));
@@ -57,6 +59,7 @@ fn removing_last_eventq_clears_shared_input_drain_handler() {
 
 #[test]
 fn missing_eventq_key_does_not_remove_another_device_queue() {
+    let _devices = crate::registry::own_device_table();
     let _guard = TEST_LOCK.lock();
     reset();
     CTXS.lock()[1] = Some(ctx(key(SECOND_DEVICE_KEY_RAW)));
