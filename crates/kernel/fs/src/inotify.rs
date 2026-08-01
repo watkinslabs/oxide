@@ -6,16 +6,26 @@
 // - `queue`: notification-queue admission — overflow + each kind's merge rule.
 // - `mask`: per-mark applicability (ONDIR / ON_CHILD) and ignore-mask rules.
 // - `response`: `fanotify_response` admission and the verdict→errno mapping.
+// - `fan_ids`: reported-pid selection and the event descriptor's open mode.
 // - `fan_read`: fanotify read path — metadata, info records, minted fds.
 // - `layout`: `struct inotify_event` wire encoding + name padding rules.
 // - `fan_layout`: `fanotify_event_metadata` + `fanotify_event_info_fid` encoding.
+// - `fan_mnt`: `FAN_MARK_MNTNS` marks, mount-tree dispatch, and the mount info record.
+// - `fan_err`: `FAN_FS_ERROR` dispatch, the error info record, and its always-merge rule.
+// - `fan_range`: `FAN_PRE_ACCESS` byte ranges and the range info record.
+// - `fan_rename`: `FAN_RENAME` dispatch and the old/new parent+name info records.
 // - `path`: watch-path resolution through task root/cwd plus credentials.
 // - `perm`: `FAN_*_PERM` access gates and the park-until-verdict wait.
 // - `validate`: inotify/fanotify UAPI flags and Linux argument validation.
 // - `syscalls`: inotify/fanotify syscall entry points and mark editing.
 
 mod dispatch;
+mod fan_err;
+mod fan_ids;
 mod fan_layout;
+mod fan_mnt;
+mod fan_range;
+mod fan_rename;
 mod fan_read;
 mod group;
 mod layout;
@@ -32,6 +42,22 @@ mod validate;
 #[cfg(test)]
 #[path = "inotify_fan_tests.rs"]
 mod fan_tests;
+
+#[cfg(test)]
+#[path = "inotify_fan_mnt_tests.rs"]
+mod fan_mnt_tests;
+
+#[cfg(test)]
+#[path = "inotify_fan_err_tests.rs"]
+mod fan_err_tests;
+
+#[cfg(test)]
+#[path = "inotify_fan_rename_tests.rs"]
+mod fan_rename_tests;
+
+#[cfg(test)]
+#[path = "inotify_fan_range_tests.rs"]
+mod fan_range_tests;
 
 #[cfg(test)]
 #[path = "inotify_deleteself_tests.rs"]
@@ -54,7 +80,8 @@ mod tests;
 
 pub use dispatch::{fire_attrib, fire_delete_self, fire_link_count, fire_modify, fire_move, fire_open_exec, fire_unmount, install_write_hook};
 pub use group::make_inotify_inode;
-pub use perm::{check_access_perm, check_open_exec_perm, check_open_perm, perm_marks_present};
+pub use perm::{check_file_area_perm, check_mmap_perm, check_open_exec_perm,
+    check_open_perm, check_truncate_perm, perm_marks_present};
 pub use syscalls::{sys_fanotify_init, sys_fanotify_mark, sys_inotify_add_watch, sys_inotify_init,
     sys_inotify_init1, sys_inotify_rm_watch};
 pub use types::{
