@@ -22,6 +22,7 @@ pub mod obsolete;
 // kernel-only cfg so the pinned slot set is actually unit-tested.
 pub mod unconfigured;
 mod access_cred;
+mod cachestat;
 mod lsm;
 mod pkey;
 // User-buffer range coverage, the decision half of `userbuf`'s access checks.
