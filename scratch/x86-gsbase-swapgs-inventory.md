@@ -1,6 +1,15 @@
 # x86_64 GS-base: ring-transition inventory, `ARCH_SET_GS` blocker, and a live hole
 
-Status: ANALYSIS (B1638). No code change in this lane.
+Status: RESOLVED (B1638-gsbase). Both items shipped — §4's defect by the
+CR4.FSGSBASE clear, §2/§3 by the swapgs conversion. Kept as the record of
+what the conversion had to cover; the live contract is `docs/54§8` +
+`docs/20§10`.
+
+Correction to §3: the "GS-independent per-CPU base lookup" was a
+prerequisite only for the FSGSBASE-enabled configuration. With the bit
+held clear, no value userspace can install has bit 63 set, so the sign
+test on `IA32_GS_BASE` is exact and no `lsl`/`__per_cpu_offset` table is
+needed. Enabling FSGSBASE later reopens that requirement.
 
 ## 1 Why this exists
 
