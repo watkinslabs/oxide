@@ -31,6 +31,7 @@ pub use uapi::*;
 mod tests;
 
 pub mod crtc;
+pub mod damage;
 pub mod diag;
 pub mod atomic;
 pub mod dumb;

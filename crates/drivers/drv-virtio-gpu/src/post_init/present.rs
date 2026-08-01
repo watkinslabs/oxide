@@ -65,16 +65,24 @@ pub enum Step {
 /// Longest sequence `plan` can produce.
 pub const MAX_STEPS: usize = 3;
 
-/// Command sequence presenting `rect` of `next` on a scanout currently bound
+/// Command sequence presenting `damage` of `next` on a scanout currently bound
 /// to `cur`. Transfer always precedes any bind, the bind is emitted only when
 /// the binding actually changes, and the flush is last.
 ///
-/// An empty rect with an unchanged binding is a no-op — the caller then issues
-/// no device command at all. # C: O(1)
-pub fn plan(cur: Option<Binding>, next: Binding, rect: Rect, bytes_per_pixel: u32)
+/// `damage` is honoured only while the binding is UNCHANGED. A presentation
+/// that rebinds is the first time this resource reaches the screen in its
+/// current role, and only the caller's own previous frames ever wrote its host
+/// copy — a partial upload would leave the rest of the frame holding whatever
+/// that copy last held, or nothing at all for a resource the device just
+/// created. So a rebind widens to the whole surface.
+///
+/// An empty damage rect with an unchanged binding is a no-op — the caller then
+/// issues no device command at all. # C: O(1)
+pub fn plan(cur: Option<Binding>, next: Binding, damage: Rect, bytes_per_pixel: u32)
     -> ([Step; MAX_STEPS], usize)
 {
     let rebind = cur != Some(next);
+    let rect = if rebind { Rect::full(next.w, next.h) } else { damage };
     let mut steps = [Step::SetScanout; MAX_STEPS];
     let mut n = 0;
     if !rect.is_empty() {
@@ -187,9 +195,25 @@ mod tests {
     }
 
     #[test]
-    fn empty_damage_still_binds_when_the_binding_changed() {
+    fn a_rebind_uploads_the_whole_surface_not_just_the_damage() {
+        // The incoming resource's host copy is not known to hold the rest of
+        // this frame, so a partial upload would show stale or blank pixels
+        // outside the damage rect.
+        let r = Rect { x: 64, y: 32, w: 128, h: 16 };
+        let s = steps(Some(bind(2)), bind(3), r);
+        assert_eq!(s[0], Step::Transfer { rect: Rect::full(W, H), offset: 0 });
+        assert_eq!(s[2], Step::Flush { rect: Rect::full(W, H) });
+    }
+
+    #[test]
+    fn empty_damage_still_uploads_and_binds_when_the_binding_changed() {
+        // Even with nothing reported damaged, a rebind must land a full frame.
         let s = steps(Some(bind(2)), bind(3), Rect { x: 0, y: 0, w: 0, h: 0 });
-        assert_eq!(s, alloc::vec![Step::SetScanout]);
+        assert_eq!(s, alloc::vec![
+            Step::Transfer { rect: Rect::full(W, H), offset: 0 },
+            Step::SetScanout,
+            Step::Flush { rect: Rect::full(W, H) },
+        ]);
     }
 
     #[test]
