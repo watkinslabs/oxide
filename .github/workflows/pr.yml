@@ -92,14 +92,21 @@ jobs:
         run: rustup show
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
-      - name: install rustfilt (symbol demangling in the report)
-        run: cargo install rustfilt --locked || true
-      - name: parser self-test
-        run: python3 tools/stack-depth-gate.py --self-test
+      # No `rustfilt` install: both gates demangle in-process via
+      # tools/rust_symbol_identity.py, so their output and their allowlist
+      # keys cannot depend on whether a demangler happened to be present.
+      - name: parser + identity self-test
+        run: |
+          python3 tools/rust_symbol_identity.py
+          python3 tools/frame-size-gate.py --self-test
+          python3 tools/stack-depth-gate.py --self-test
       - name: build release kernel ${{ matrix.arch }}
         env:
           OXIDE_STUB_BLOBS: "1"
         run: cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }}
+      # The RELEASE, default-feature ELF — the same file `make stack-gate`
+      # reads. Never target/artifacts, whose contents depend on which build
+      # last exported (B1632).
       - name: locate kernel ELF
         id: elf
         run: |

@@ -174,18 +174,30 @@ smoke-cmdline-arm: arm
 	./tools/boot-smoke-cmdline.sh arm $(CMDLINE_SMOKE_TIMEOUT)
 smoke-cmdline: smoke-cmdline-x86 smoke-cmdline-arm
 
+# WHICH ELF THE STACK GATES READ (B1632)
+# --------------------------------------
+# The RELEASE, default-feature kernel each arch's build target produces —
+# exactly what CI's `stack gates` job builds — and never target/artifacts.
+# target/artifacts holds whatever build last EXPORTED: `make qemu-*` builds
+# with `--features debug-boot`, whose frames and crate hashes both differ, so
+# gating that file made the verdict depend on which build ran last. The gates
+# therefore depend on the arch build target and read its output directly.
+KERNEL_ELF_x86_64 ?= target/x86_64-unknown-oxide-kernel/release/oxide-x86_64
+KERNEL_ELF_aarch64 ?= target/aarch64-unknown-oxide-kernel/release/oxide-aarch64
+
 # Stack-frame size gate (Linux CONFIG_FRAME_WARN; `skizm.md` Step 6). Reads
 # prologue reservations out of an already-built kernel ELF, so it needs no
-# rebuild and no extra codegen flags. Ratcheted: frames already over the
-# ceiling are recorded in tools/frame-size-baseline-<arch>.txt and tolerated at
-# or below their recorded size; a NEW or WORSENED frame fails.
-# Requires the artifacts to exist: `make x86 && cargo run -p xtask -- artifacts
-# --arch x86_64` (building alone does NOT export to target/artifacts).
-frame-gate-x86:
-	python3 tools/frame-size-gate.py target/artifacts/x86_64/kernel.elf \
+# extra codegen flags. Ratcheted: frames already over the ceiling are recorded
+# in tools/frame-size-baseline-<arch>.txt, keyed on the DEMANGLED path so a
+# rebuild cannot rename them, and tolerated at or below their recorded size; a
+# NEW or WORSENED frame fails, and a baseline entry naming a frame that no
+# longer exists fails as stale.
+frame-gate-x86: x86
+	python3 tools/frame-size-gate.py --self-test
+	python3 tools/frame-size-gate.py $(KERNEL_ELF_x86_64) \
 	  --baseline tools/frame-size-baseline-x86_64.txt
-frame-gate-arm:
-	python3 tools/frame-size-gate.py target/artifacts/aarch64/kernel.elf \
+frame-gate-arm: arm
+	python3 tools/frame-size-gate.py $(KERNEL_ELF_aarch64) \
 	  --baseline tools/frame-size-baseline-aarch64.txt
 frame-gate: frame-gate-x86 frame-gate-arm
 
@@ -197,35 +209,34 @@ frame-gate: frame-gate-x86 frame-gate-arm
 #
 # Ceiling 13000 B of the 16384 B stack; paths already over it are recorded with
 # a reason in tools/stack-depth-allow-<arch>.txt and tolerated at or below the
-# recorded budget, so a NEW or DEEPER path fails. Same artifact requirement as
-# frame-gate: `make x86 && cargo run -p xtask -- artifacts --arch x86_64`.
+# recorded budget, so a NEW or DEEPER path fails.
 STACK_DEPTH_CEILING ?= 13000
-stack-gate-x86:
+stack-gate-x86: x86
 	python3 tools/stack-depth-gate.py --self-test
-	python3 tools/stack-depth-gate.py target/artifacts/x86_64/kernel.elf \
+	python3 tools/stack-depth-gate.py $(KERNEL_ELF_x86_64) \
 	  --arch x86_64 --fail $(STACK_DEPTH_CEILING) \
 	  --allowlist tools/stack-depth-allow-x86_64.txt
-stack-gate-arm:
-	python3 tools/stack-depth-gate.py target/artifacts/aarch64/kernel.elf \
+stack-gate-arm: arm
+	python3 tools/stack-depth-gate.py $(KERNEL_ELF_aarch64) \
 	  --arch aarch64 --fail $(STACK_DEPTH_CEILING) \
 	  --allowlist tools/stack-depth-allow-aarch64.txt
 stack-gate: stack-gate-x86 stack-gate-arm
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.
-stack-gate-baseline-x86:
-	python3 tools/stack-depth-gate.py target/artifacts/x86_64/kernel.elf \
+stack-gate-baseline-x86: x86
+	python3 tools/stack-depth-gate.py $(KERNEL_ELF_x86_64) \
 	  --arch x86_64 --fail $(STACK_DEPTH_CEILING) \
 	  --allowlist tools/stack-depth-allow-x86_64.txt --write-allowlist
-stack-gate-baseline-arm:
-	python3 tools/stack-depth-gate.py target/artifacts/aarch64/kernel.elf \
+stack-gate-baseline-arm: arm
+	python3 tools/stack-depth-gate.py $(KERNEL_ELF_aarch64) \
 	  --arch aarch64 --fail $(STACK_DEPTH_CEILING) \
 	  --allowlist tools/stack-depth-allow-aarch64.txt --write-allowlist
 
 # The deepest paths, frame by frame — the debugging view. `make stack-report ARCH=aarch64`
 ARCH ?= x86_64
 stack-report:
-	python3 tools/stack-depth-gate.py target/artifacts/$(ARCH)/kernel.elf \
+	python3 tools/stack-depth-gate.py $(KERNEL_ELF_$(ARCH)) \
 	  --arch $(ARCH) --fail 99999 --top 20 --show-path
 
 DRIVER_PATH_SMOKE_TIMEOUT ?= 900
