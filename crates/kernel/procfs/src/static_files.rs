@@ -229,6 +229,7 @@ pub fn register_static_files() {
     crate::reg::register("/proc/net/udp", crate::net::make_proc_net_udp());
     crate::reg::register("/proc/net/udp6", crate::net::make_proc_net_udp6());
     crate::reg::register("/proc/net/unix", crate::net::make_proc_net_unix());
+    crate::reg::register("/proc/net/softnet_stat", crate::net::make_proc_net_softnet_stat());
     crate::reg::register("/proc/net/raw", crate::net_raw::make_proc_net_raw());
     crate::reg::register("/proc/net/raw6", crate::net_raw::make_proc_net_raw6());
     crate::reg::register("/proc/net/icmp", crate::net_icmp::make_proc_net_icmp());

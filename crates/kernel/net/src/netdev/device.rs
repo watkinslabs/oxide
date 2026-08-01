@@ -92,6 +92,9 @@ pub trait NetDev: Send + Sync {
     fn retire_namespace(&self);
     /// Resume device-private work after reassignment to the initial namespace. # C: O(1)
     fn resume_namespace(&self) {}
+    /// Account one received frame the protocol layer rejected. Devices that keep
+    /// no receive-error counter ignore it. # C: O(1)
+    fn record_rx_error(&self) {}
     /// Device disposition when its current network namespace is destroyed. # C: O(1)
     fn namespace_drop_action(&self) -> NamespaceDropAction;
     /// Apply primary IPv4 state to device-private receive/control runtime. # C: O(device runtime lookup)
