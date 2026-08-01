@@ -90,7 +90,7 @@ impl NetStack {
         iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize, df: bool,
         may_fragment: bool, owner: Option<&crate::SocketOwner>,
-        opts: Option<&crate::sock_opts::sol_ip::options::Compiled>)
+        opts: Option<&crate::ipv4_options::Compiled>)
         -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
         let stamp = crate::ipv4_options::timestamp();
@@ -190,7 +190,7 @@ impl NetStack {
     pub fn send_udp_pmtu_to_bound_opts_owned(&self, owner: &crate::SocketOwner,
         src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16, payload: &[u8],
         bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32,
-        opts: Option<&crate::sock_opts::sol_ip::options::Compiled>) -> NetResult<()> {
+        opts: Option<&crate::ipv4_options::Compiled>) -> NetResult<()> {
         self.send_udp_pmtu_to_bound_opts_owner(Some(owner), owner.net_ns(), src, src_port,
             dst, dst_port, payload, bound, tos, ttl, mode, opts)
     }
@@ -203,7 +203,7 @@ impl NetStack {
     fn send_udp_pmtu_to_bound_opts_owner(&self, owner: Option<&crate::SocketOwner>,
         net_ns: u64, src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16,
         payload: &[u8], bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32,
-        opts: Option<&crate::sock_opts::sol_ip::options::Compiled>)
+        opts: Option<&crate::ipv4_options::Compiled>)
         -> NetResult<()> {
         let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
         let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, wire_dst, bound)?;

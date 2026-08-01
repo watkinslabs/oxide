@@ -7,7 +7,8 @@
 // - `state`: per-socket storage (`IpOpts`) and the port-range resolution.
 // - `set`: Linux-ordered admission for every write.
 // - `get`: Linux value/length table for every read.
-// - `options`: IPv4 header option area compile and its inverse.
+// - the header option area itself is owned by `crate::ipv4_options`, which
+//   is ungated: its compile pass and its emitter are hosted-testable.
 // - `tests`: hosted coverage for the ordering, capability and length rules.
 //
 // No target gate: the decision logic must run under hosted `cargo test`.
@@ -16,7 +17,6 @@ pub mod uapi;
 pub mod state;
 pub mod set;
 pub mod get;
-pub mod options;
 #[cfg(test)]
 mod tests;
 

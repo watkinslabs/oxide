@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use syscall::errno::Errno;
 
-use super::options::Compiled;
+use crate::ipv4_options::Compiled;
 use super::state::flag;
 use super::uapi::*;
 use crate::sock_opts::sol_socket::OptCaps;

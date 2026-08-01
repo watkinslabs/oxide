@@ -1,6 +1,8 @@
-// IPv4 header option area: the compile pass `setsockopt(IP_OPTIONS)` runs over
-// caller bytes, and the inverse pass `getsockopt(IP_OPTIONS)` runs before
-// handing the area back. No target gate — the whole decision is hosted-testable.
+// IPv4 header option area: the compile pass `setsockopt(IP_OPTIONS)` and the
+// `IP_OPTIONS` control message run over caller bytes, and the inverse pass
+// `getsockopt(IP_OPTIONS)` runs before handing the area back. No target gate —
+// the whole decision is hosted-testable, and the option level that admits
+// these areas is not.
 
 use alloc::vec::Vec;
 use syscall::errno::Errno;
