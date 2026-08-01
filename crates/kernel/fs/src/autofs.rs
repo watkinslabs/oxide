@@ -1,6 +1,11 @@
 //! Built-in Linux autofs filesystem surface.
+//!
+//! `params` owns the mount-parameter table autofs options are admitted against.
 
 extern crate alloc;
+
+mod params;
+pub use params::AUTOFS_PARAMS;
 
 mod autofs_ids {
     /// One autofs root today; the region reserves room for more.

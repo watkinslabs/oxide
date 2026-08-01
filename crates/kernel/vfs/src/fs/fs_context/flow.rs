@@ -19,6 +19,11 @@ pub fn vfs_clean_context(fc: &mut FsContext) {
     fc.source = None;
     fc.create_exclusive = false;
     fc.params.clear();
+    // The blob and the target described HOW and WHERE to build the tree; both
+    // are spent once it exists, and a later reconfigure must not replay the
+    // original `mount(2)` option string as if it had been asked for again.
+    fc.monolithic = None;
+    fc.mount_target = None;
     fc.purpose = FsContextPurpose::Reconfigure;
     fc.phase = FsContextPhase::AwaitingReconf;
 }

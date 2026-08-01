@@ -75,16 +75,43 @@ fn graft_mount(sb: Arc<vfs::SuperBlock>, target_d: &Arc<Dentry>, parent_hint: Op
 pub(crate) fn dispatch_mount(source: Option<&str>, fstype: &str, target: &str, target_d: &Arc<Dentry>,
     parent_hint: Option<u64>, data: &str, ms_flags: u64, caps: MountCaps) -> i64 {
     if let Some(ty) = vfs::fs::get_fs(fstype) {
-        // Linux `do_new_mount` order: resolve the type, build the context, parse
-        // the options, THEN `if (!mount_capable(fc)) err = -EPERM`, then graft.
-        // The superblock is constructed first, so a refused mount must not leave
-        // it grafted — this returns before `graft_mount`.
-        if !mount_capable(ty.fs_flags(), caps) { return -(Errno::Eperm.as_i32() as i64); }
+        // Linux `do_new_mount` order, exactly: build the context, parse
+        // `source`, parse the monolithic data blob, THEN
+        // `if (!mount_capable(fc)) err = -EPERM`, then `vfs_get_tree`.
+        //
+        // Building the context is the point: before this, `mount(2)` handed the
+        // raw comma-separated blob straight to the constructor, so the
+        // per-parameter admission every `fsconfig(2)` goes through was applied
+        // to PROBES only. A filesystem could report an option unsupported to a
+        // probe and still swallow it silently on the mount that mattered.
+        //
+        // Parsing precedes the privilege check, so an unprivileged caller
+        // supplying a bad option gets EINVAL rather than EPERM — the option is
+        // rejected on its own merits and the errno does not leak whether the
+        // caller would have been allowed to mount.
         let sb_flags = ms_flags & vfs::fs::SB_FLAGS_USER_MASK;
-        let sb = match ty.construct_with_flags(source, target, data, sb_flags) {
-            Ok(s) => s,
-            Err(e) => return crate::namei_common::errno_from_vfs(e),
+        let mut fc = vfs::fs::FsContext::for_mount(ty.clone() as Arc<dyn vfs::FileSystemType>, sb_flags);
+        fc.set_mount_target(target);
+        if let Some(name) = source {
+            if let Err(e) = vfs::fs::vfs_parse_fs_string(&mut fc, "source", name) {
+                return crate::namei_common::errno_from_vfs(e);
+            }
+        }
+        if let Err(e) = vfs::fs::parse_monolithic_mount_data(&mut fc, data) {
+            return crate::namei_common::errno_from_vfs(e);
+        }
+        // The superblock does not exist yet, so a refusal here leaks nothing.
+        if !mount_capable(ty.fs_flags(), caps) { return -(Errno::Eperm.as_i32() as i64); }
+        if let Err(e) = vfs::fs::vfs_get_tree(&mut fc) {
+            return crate::namei_common::errno_from_vfs(e);
+        }
+        let sb = match fc.sb() {
+            Some(s) => s.clone(),
+            None => return -(Errno::Einval.as_i32() as i64),
         };
+        // Release the context BEFORE grafting so the mount holds the same
+        // superblock reference count the pre-context path handed it.
+        vfs::fs::put_fs_context(fc);
         let mnt_flags = vfs::mount::ms_to_mnt(ms_flags);
         // Linux `do_new_mount_fc`: after the superblock exists and BEFORE
         // `do_add_mount`, `if (mount_too_revealing(sb, &mnt_flags)) return
