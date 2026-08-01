@@ -86,10 +86,21 @@ pub fn reader_pid_ns() -> NamespaceRef {
 pub fn tgid_nr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
     use core::sync::atomic::Ordering;
     let tgid = t.tgid.load(Ordering::Acquire);
-    match if tgid == t.tid { None } else { lookup(tgid) } {
+    if tgid == t.tid { return leader_tgid_nr_in(t, ns); }
+    match lookup(tgid) {
         Some(leader) => leader_tgid_nr_in(&leader, ns),
-        None => leader_tgid_nr_in(t, ns),
+        None => group_nr_without_leader(t, ns),
     }
+}
+
+/// The process number a task carries when its group leader is no longer
+/// reachable: the number clone copied from the leader. Only the initial
+/// namespace can name a task from that copy alone. # C: O(1)
+fn group_nr_without_leader(t: &Task, ns: &NamespaceRef) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    if !ns.is_initial() { return None; }
+    let vtgid = t.vtgid.load(Ordering::Acquire);
+    Some(if vtgid != 0 { vtgid } else { t.tgid.load(Ordering::Acquire) })
 }
 
 /// `tgid_nr_in` for a task already known to be its group's leader, which every
@@ -111,8 +122,9 @@ fn tgid_nr_in_locked(g: &super::core::Registry, t: &Task, ns: &NamespaceRef) -> 
     let tgid = t.tgid.load(Ordering::Acquire);
     if tgid == t.tid { return leader_tgid_nr_in(t, ns); }
     match g.by_tid.get(&tgid).and_then(|w| w.upgrade()) {
-        Some(leader) => leader_tgid_nr_in(&leader, ns),
-        None => leader_tgid_nr_in(t, ns),
+        Some(leader) if !leader.reaped.load(Ordering::Acquire) =>
+            leader_tgid_nr_in(&leader, ns),
+        _ => group_nr_without_leader(t, ns),
     }
 }
 

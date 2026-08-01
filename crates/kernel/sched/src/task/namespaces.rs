@@ -244,8 +244,12 @@ impl Task {
         if self.pid.mappings_configured() { return; }
         let Some(namespace) = self.namespace_owner(NamespaceKind::Pid) else { return };
         if !namespace.is_initial() { return; }
-        let nr = self.vtid.load(core::sync::atomic::Ordering::Acquire);
-        let nr = if nr == 0 { self.tid } else { nr };
+        // The number this task is known by: its own thread number, else the
+        // process number a leader was stamped with, else the internal tid for
+        // a kernel thread that took neither.
+        let mut nr = self.vtid.load(core::sync::atomic::Ordering::Acquire);
+        if nr == 0 { nr = self.vtgid.load(core::sync::atomic::Ordering::Acquire); }
+        if nr == 0 { nr = self.tid; }
         let _ = self.pid.configure_mappings(&namespace, &[nr]);
     }
 
