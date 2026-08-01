@@ -49,6 +49,58 @@ fn advice_valid(advice: u64) -> bool {
         MADV_HWPOISON)
 }
 
+/// `madvise_behavior_valid` — the advice set the syscall recognises at all.
+/// `process_madvise` shares it: a behaviour outside this set is EINVAL there
+/// too, whether the target is the caller's own mm or another's.
+/// # C: O(1)
+pub(crate) fn madvise_behavior_valid(advice: u64) -> bool { advice_valid(advice) }
+
+/// `process_madvise_remote_valid` — the advice `process_madvise` may apply to
+/// ANOTHER process's mm. Only non-destructive reclaim hints: a remote caller
+/// may make the target's pages colder or warmer, never drop its data.
+/// # C: O(1)
+pub(crate) fn process_madvise_remote_valid(advice: u64) -> bool {
+    matches!(advice, MADV_COLD | MADV_PAGEOUT | MADV_WILLNEED | MADV_COLLAPSE)
+}
+
+/// `check_input_range` — the per-range prologue `madvise_vmas` applies, split
+/// out because `process_madvise`'s vector loop runs it per iovec entry and
+/// must distinguish "this entry is malformed" from "the walk failed".
+/// # C: O(1)
+pub(crate) fn check_input_range(start: u64, len_in: u64) -> Result<(), Errno> {
+    if (start & PAGE_MASK) != 0 { return Err(Errno::Einval); }
+    let Some(len) = page_align_len(len_in) else { return Err(Errno::Einval); };
+    // `len_in` rounding up to zero means it wrapped: a huge unsigned length.
+    if len_in != 0 && len == 0 { return Err(Errno::Einval); }
+    if start.checked_add(len).is_none() { return Err(Errno::Einval); }
+    Ok(())
+}
+
+/// `vector_madvise` — apply one advice across an iovec vector, entry by entry.
+///
+/// The return value is the byte count actually advised, NOT the sum of the
+/// vector: a malformed or failing entry stops the loop, and the syscall
+/// reports the bytes consumed BEFORE it. Only a failure on the very first
+/// entry (nothing consumed) surfaces as the errno itself — which is why a
+/// caller cannot tell a short result from an error without comparing against
+/// what it asked for. A zero-length entry is skipped, not applied, and still
+/// counts as consumed.
+/// # C: O(N_entries) x apply
+pub(crate) fn vector_madvise<F: FnMut(u64, u64) -> i64>(iovs: &[(u64, u64)], mut apply: F) -> i64 {
+    let mut done: u64 = 0;
+    let mut ret: i64 = 0;
+    for &(start, len) in iovs {
+        ret = match check_input_range(start, len) {
+            Err(e) => err(e),
+            Ok(()) if len == 0 => 0,
+            Ok(()) => apply(start, len),
+        };
+        if ret < 0 { break; }
+        done = done.wrapping_add(len);
+    }
+    if done != 0 { done as i64 } else { ret }
+}
+
 pub(crate) trait MadviseOps {
     fn evict_pages(&mut self, _start: u64, _len: u64) -> i64 { 0 }
     fn pageout_anon_pages(&mut self, _start: u64, _len: u64) -> i64 { 0 }
@@ -255,14 +307,21 @@ pub(crate) fn madvise_vmas<O: MadviseOps>(
 }
 
 #[cfg(target_os = "oxide-kernel")]
-struct LiveOps {
-    mm: alloc::sync::Arc<vmm::AddressSpace>,
+pub(crate) struct LiveOps {
+    pub(crate) mm: alloc::sync::Arc<vmm::AddressSpace>,
+    /// `mm` is the caller's own address space, so the active page-table root
+    /// IS the target and the cheap same-root evictor applies. `process_madvise`
+    /// against another process clears this and every page operation goes
+    /// through the foreign-root path, which invalidates each CPU in that mm's
+    /// cpumask before releasing a frame.
+    pub(crate) local: bool,
 }
 
 #[cfg(target_os = "oxide-kernel")]
 impl MadviseOps for LiveOps {
     fn evict_pages(&mut self, start: u64, len: u64) -> i64 {
-        pmm::user_as::evict_pages_in_range(start, len)
+        if self.local { pmm::user_as::evict_pages_in_range(start, len) }
+        else { pmm::user_as::evict_foreign_pages_in_range(&self.mm, start, len) }
     }
 
     fn pageout_anon_pages(&mut self, start: u64, len: u64) -> i64 {
@@ -301,6 +360,6 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
         Ok(v) => v,
         Err(e) => return err(e),
     };
-    let mut ops = LiveOps { mm };
+    let mut ops = LiveOps { mm, local: true };
     madvise_vmas(args.a0, args.a1, args.a2, &vmas, &mut ops)
 }

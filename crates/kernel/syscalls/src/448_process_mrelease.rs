@@ -2,26 +2,61 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use sched::Task;
 use crate::misc::misc_common::errno;
+use crate::process_mrelease::{disposition, task_will_free_mem, Disposition, ExitState};
 
-// SIGKILL pending bit in `Task::sigpending` (Signum SIGKILL=9 → bit 8).
-const SIGKILL_PENDING_BIT: u64 = 1 << 8;
-// sig arg for `sig_perm_check`: mrelease carries no signal (Linux gates
-// on PTRACE_MODE); 0 avoids the SIGCONT same-session bypass.
-const NO_SIG: i32 = 0;
+/// Read one task's `__task_will_free_mem` inputs.
+///
+/// `coredumping` is always false: nothing here writes a core dump on the way
+/// out, so the "dying but asleep in the dumper" state the kernel guards
+/// against cannot occur. `Zombie` is this kernel's `PF_EXITING` — a task past
+/// its own exit path.
+fn exit_state(t: &Task) -> ExitState {
+    ExitState {
+        coredumping: false,
+        group_exit: t.thread_group.group_exit_status().is_some(),
+        thread_group_empty: t.thread_group.is_single_member(),
+        exiting: t.state() == sched::task::TaskState::Zombie,
+    }
+}
 
-/// process_mrelease(pidfd, flags). Reclaims the address space of a
-/// DYING target (pending SIGKILL or already Zombie), resolved via the
-/// pidfd. Linux `process_mrelease` requires the target be exiting and
-/// forbids releasing self. Returns 0 on success.
-/// # C: O(target_mm pages) via AS Drop→teardown
+/// `find_lock_task_mm` — during a group exit the thread the pidfd names may
+/// already have dropped its mm while a sibling still holds it, so the reap
+/// target is the first thread of the group that still has one.
+fn find_task_mm(target: &Arc<Task>, tasks: &[Arc<Task>]) -> Option<(Arc<Task>, Arc<vmm::AddressSpace>)> {
+    if let Some(mm) = target.clone_mm() { return Some((Arc::clone(target), mm)); }
+    let tgid = target.tgid.load(core::sync::atomic::Ordering::Acquire);
+    tasks.iter()
+        .filter(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire) == tgid)
+        .find_map(|t| t.clone_mm().map(|mm| (Arc::clone(t), mm)))
+}
+
+/// `process_mrelease(pidfd, flags)` — slot 448.
+///
+/// Releases the anonymous memory of a DYING process early, so a killer does
+/// not have to wait for the victim to be scheduled before the memory comes
+/// back. The pidfd is the whole authority — there is no separate permission
+/// check — which is why the "is it really dying" ladder carries all the
+/// safety: a live target, or one whose mm another live process still shares,
+/// is refused.
+///
+/// The mm is NOT detached. Detaching it would leave the dying task with a null
+/// page-table root, which the context switch reads as a kernel thread and so
+/// keeps the previous root — a user task could then return to user mode
+/// against another process's address space. Reaping in place avoids that
+/// entirely, and file-backed pages are left alone because they are
+/// reclaimable from their backing store.
+/// # C: O(N_tasks + target_mm anon pages)
 pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     let pidfd = args.a0 as i32;
     let flags = args.a1;
 
-    // Linux: flags must be 0.
     if flags != 0 { return errno(Errno::Einval); }
 
     let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
@@ -37,45 +72,34 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
         None => return errno(Errno::Esrch),
     };
 
-    // Linux forbids releasing the caller's own mm.
-    if target.tid == cur.tid { return errno(Errno::Einval); }
+    let tasks = sched::registry::try_snapshot().unwrap_or_default();
+    // `find_lock_task_mm` returning NULL is ESRCH: the whole group is already
+    // past its mm teardown, so there is nothing left to release.
+    let Some((holder, mm)) = find_task_mm(&target, &tasks) else { return errno(Errno::Esrch) };
 
-    // Require the target be exiting: pending SIGKILL OR already Zombie
-    // (Linux gate: `task_will_free_mem` / signal_group_exit / PF_EXITING).
-    let sigkill_pending = target.pending_signals() & SIGKILL_PENDING_BIT != 0;
-    let is_zombie = target.state() == sched::task::TaskState::Zombie;
-    if !sigkill_pending && !is_zombie { return errno(Errno::Einval); }
+    // Tasks sharing this mm from OUTSIDE the holder's thread group (CLONE_VM
+    // without CLONE_THREAD). Same-group threads are already accounted for by
+    // the holder's own group-exit state.
+    let tgid = holder.tgid.load(core::sync::atomic::Ordering::Acquire);
+    let sharers: Vec<ExitState> = tasks.iter()
+        .filter(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire) != tgid)
+        .filter(|t| t.clone_mm().is_some_and(|other| Arc::ptr_eq(&other, &mm)))
+        .map(|t| exit_state(t))
+        .collect();
+    // `mm_users`: this mm's holder plus every outside sharer.
+    let mm_users = 1 + sharers.len() as u64;
+    let oom_skip = mm.oom_skip();
+    let will_free = task_will_free_mem(exit_state(&holder), oom_skip, mm_users, &sharers);
 
-    if !crate::signal::sig_perm_check(cur, &target, NO_SIG) {
-        return errno(Errno::Eperm);
+    match disposition(will_free, oom_skip) {
+        Disposition::Refuse(e) => return errno(e),
+        Disposition::AlreadyDrained => return 0,
+        Disposition::Reap => {}
     }
-    // target is a foreign task: clone_mm pins against a concurrent
-    // exit/execve mm replacement on another CPU.
-    let mm = match target.clone_mm() {
-        Some(mm) => mm,
-        None => return errno(Errno::Esrch),
-    };
 
-    // Reap the target's ANONYMOUS pages in place (Linux `process_mrelease`
-    // → OOM-reaper `__oom_reap_task_mm`): unmap + free every anon VMA's
-    // frames to reclaim memory eagerly, but LEAVE the mm attached. The
-    // target still has a valid address space when it is next scheduled to
-    // process the pending SIGKILL and run its own exit teardown.
-    //
-    // Detaching the mm (`replace_mm(None)`) would be UNSAFE: the context
-    // switch treats a null root as lazy-TLB (kernel-thread) and keeps the
-    // previous CR3, so a dying USER task could return to user mode against
-    // the WRONG address space before it exits. In-place anon reap avoids
-    // that entirely. File-backed pages are skipped (reclaimable from
-    // backing store, like Linux). If the mm is already gone, Linux
-    // `find_lock_task_mm` returns NULL and process_mrelease returns ESRCH.
-    // The foreign root the evictor walks is stable for this call (target
-    // pinned via the pidfd's Arc<Task>, mm cloned). The target has been
-    // SIGKILLed but has NOT necessarily left its CPU yet, and its other
-    // threads may still be running, so `evict_foreign_pages_in_range` must
-    // (and does) invalidate every CPU in the mm's cpumask before releasing a
-    // frame — Linux `__oom_reap_task_mm` reaps under an mmu_gather for the
-    // same reason.
+    // The target has been killed but has NOT necessarily left its CPU, and its
+    // siblings may still be running, so the foreign-root evictor invalidates
+    // every CPU in the mm's cpumask before releasing a frame.
     let guard = mm.vmas_for_test();
     for vma in guard.iter() {
         if matches!(vma.backing, vmm::VmaBacking::Anonymous) {
@@ -84,5 +108,7 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
             if len != 0 { pmm::user_as::evict_foreign_pages_in_range(&mm, start, len); }
         }
     }
+    drop(guard);
+    mm.set_oom_skip();
     0
 }
