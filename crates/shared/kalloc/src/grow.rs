@@ -7,15 +7,41 @@ use core::alloc::Layout;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use crate::{AllocState, GrowFn, KAlloc, GROW_HOOK_NONE, NO_MEMCG_CONTEXT, GROW_CHUNK_MIN, sizeclass};
+use crate::sizeclass;
+use crate::limits::{GROW_CHUNK_MIN, GROW_HOOK_NONE, NO_MEMCG_CONTEXT};
+use crate::state::{AllocState, KAlloc};
 #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 use crate::caller;
 #[cfg(feature = "debug-heappoison")]
 use crate::poison;
 #[cfg(feature = "debug-dealloc-diag")]
-use crate::record_recent_op;
+use crate::recent::record_recent_op;
+
+/// T16 (F247) growable kernel heap: when the hole-list allocator can't
+/// satisfy a request, fall back to a registered grow callback that
+/// asks the PMM for more pages and feeds them to the hole list.
+/// Linux's vmalloc equivalent; without it the kernel OOMs on any
+/// single workload bigger than the static heap can hold.
+///
+/// Callback signature: takes the minimum extra bytes needed; returns
+/// `(start_addr, size_bytes)` of a fresh region added to the hole
+/// list, or `None` if no more memory is available. The callback owns
+/// the lifetime of the region — it must stay valid until process
+/// shutdown.
+pub type GrowFn = fn(min_extra: usize, memcg: u64) -> Option<(usize, usize)>;
 
 impl KAlloc {
+    /// Register a callback the alloc path invokes when the hole-list
+    /// can't satisfy a request. Idempotent: a later call replaces the
+    /// prior hook.
+    /// # SAFETY: `f` must remain a valid fn-pointer for the lifetime
+    /// of this allocator; the kernel never unloads it.
+    /// # C: O(1)
+    pub fn set_grow_hook(&self, f: GrowFn) {
+        let raw = (f as usize) as u64;
+        self.grow_hook.store(raw, Ordering::Release);
+    }
+
     /// Hole-list miss path: ask the PMM grow hook for a fresh region, register
     /// it, then carve `carve_layout` out of it. Split out of `alloc` so the
     /// size-class refill reaches the same growth machinery instead of carrying
