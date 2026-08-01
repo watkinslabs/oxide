@@ -153,13 +153,9 @@ pub fn check_socket(proto: ::landlock::netcheck::Proto, op: ::landlock::netcheck
         .map_err(crate::net_errno::errno_from_neterr)
 }
 
-/// Gate resolving a pathname UNIX-domain socket, whose server was published
-/// from `peer`.
-/// # C: O(depth × N_layers × N_rules)
-pub fn check_unix_resolve(path: &VfsPath, peer: Option<&Arc<Domain>>) -> Result<(), i64> {
-    match current_domain() {
-        None => Ok(()),
-        Some(d) => d.check_unix_resolve(path, peer).map_err(|e| -(e.as_i32() as i64)),
-    }
-}
+// Resolving a pathname UNIX-domain socket has no entry point here on purpose.
+// Deciding it needs the answer to "has anyone bound this address at all", which
+// only the AF_UNIX registry holds, so the gate is composed in `net` and both
+// call sites — `connect(2)` and a send naming a recipient — use that one. A
+// wrapper here would put the not-bound-is-not-a-denial rule in two places.
 
