@@ -17,7 +17,12 @@
 #      `xtask kernel`, then kills `make qemu-*` before QEMU starts — an empty
 #      boot log that reads like a boot failure. B1641 lost a lane to that.
 #      Bypass: SKIP_FEATURE_GATE=1.
-#   3. boot-smoke (direct main pushes only): capped at 180 seconds per arch.
+#   3. lint-ratchet (EVERY push, branch or main, ~0.8 s): spec-lint findings may
+#      not grow per (crate, rule). `make lint` itself reports a 2696-finding
+#      backlog and so gates nothing; `make ci` included it and was therefore
+#      unconditionally red and unread, which is how the backlog grew unnoticed.
+#      Bypass: SKIP_LINT_RATCHET=1.
+#   4. boot-smoke (direct main pushes only): capped at 180 seconds per arch.
 #      Bypass: SKIP_SMOKE=1.
 #
 # Documentation-only, CI-only, and tooling-only pushes trigger neither.
@@ -67,6 +72,20 @@ fi
 changed="$(git show --name-only --format= $shas 2>/dev/null | sort -u | grep -v '^$')"
 if [ -z "$changed" ]; then
     exit 0
+fi
+
+# ---- gate 0: spec-lint findings may not grow ------------------------------
+# Runs on EVERY push including doc-only ones: the ratchet covers the doc, xref
+# and manifest lints too, and it costs under a second.
+if [ "${SKIP_LINT_RATCHET:-0}" = "1" ]; then
+    echo "pre-push: SKIP_LINT_RATCHET=1 set, bypassing lint-ratchet"
+else
+    if ! make lint-ratchet; then
+        echo "pre-push: FAIL — spec-lint findings grew (make lint-ratchet)" >&2
+        echo "         the baseline is a ratchet, not a waiver list: fix the new finding," >&2
+        echo "         do not raise the count. SKIP_LINT_RATCHET=1 to bypass." >&2
+        exit 1
+    fi
 fi
 
 # Trigger paths — anything that can break the build or the boot. Pure-doc,

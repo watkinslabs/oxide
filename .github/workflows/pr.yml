@@ -22,6 +22,22 @@ jobs:
       - name: spec-lint all
         run: cargo run --quiet -p spec-lint -- all
 
+  # Unconditional, unlike `spec-lint` above: the full lint is disabled behind
+  # OXIDE_RUN_SPEC_LINT until its backlog is paid down, which is how the backlog
+  # reached 2696 unobserved. This job gates the DERIVATIVE — findings per
+  # (crate, rule) may not exceed `tools/spec-lint/baseline.tsv` — so a new
+  # violation fails even inside a crate that already has hundreds. Under a
+  # second after the build.
+  lint-ratchet:
+    name: lint-ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rust toolchain
+        run: rustup show
+      - name: spec-lint ratchet
+        run: cargo run --quiet -p spec-lint -- ratchet
+
   test-hosted:
     name: test --hosted
     # Temporary: hosted tests currently fail on missing fixture state. Set repo
