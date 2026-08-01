@@ -108,8 +108,9 @@ impl UdpRxQueue {
         let len = datagram.5.len();
         let same_flow = state.datagrams.back()
             .is_some_and(|q| udp4_same_flow(&q.datagram, &datagram));
+        let batch = crate::udp_gro::current_batch();
         let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
-            checksum_zero, offered && self.gro_enabled());
+            checksum_zero, offered && self.gro_enabled(), batch);
         match decision {
             GroAdmit::Merge => {
                 let tail = state.datagrams.back_mut().expect("a merge names a tail");
@@ -117,7 +118,7 @@ impl UdpRxQueue {
                 tail.gro.extend(len);
             }
             GroAdmit::Separate { open } => {
-                let gro = if open { GroRun::open(len) } else { GroRun::single(len) };
+                let gro = if open { GroRun::open(len, batch) } else { GroRun::single(len, batch) };
                 state.datagrams.push_back(QueuedUdp { datagram, gro });
             }
         }

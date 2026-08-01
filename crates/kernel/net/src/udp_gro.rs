@@ -8,6 +8,23 @@
 /// Most datagrams one coalesced receive may carry.
 pub const UDP_GRO_CNT_MAX: usize = 64;
 
+/// Identifies the receive batch a run was opened in.
+///
+/// Coalescing is bounded in time as well as in shape: an interface merges only
+/// the datagrams it hands to the protocol in ONE receive batch, and every open
+/// run is closed when that batch ends. Without the bound a run would keep
+/// absorbing datagrams that arrived arbitrarily far apart, which no interface
+/// does.
+static RX_BATCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The batch a datagram arriving now belongs to. # C: O(1)
+pub fn current_batch() -> u64 { RX_BATCH.load(core::sync::atomic::Ordering::Acquire) }
+
+/// End the current receive batch, closing every run still open in it. An
+/// interface driver calls this once its poll has handed over everything it
+/// drained. # C: O(1)
+pub fn end_rx_batch() { RX_BATCH.fetch_add(1, core::sync::atomic::Ordering::AcqRel); }
+
 /// The coalescing state of one queued datagram.
 ///
 /// `seg_size` is the length of the run's FIRST datagram and never changes as
@@ -15,14 +32,24 @@ pub const UDP_GRO_CNT_MAX: usize = 64;
 /// merged payload back into segments. A run closes when it can accept nothing
 /// further: it reached the segment cap, or it absorbed a short final segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GroRun { pub seg_size: usize, pub segments: usize, pub closed: bool }
+pub struct GroRun {
+    pub seg_size: usize,
+    pub segments: usize,
+    pub closed: bool,
+    /// The receive batch this run was opened in; a later batch cannot extend it.
+    pub batch: u64,
+}
 
 impl GroRun {
     /// A datagram that has not been coalesced with anything. # C: O(1)
-    pub fn single(len: usize) -> Self { Self { seg_size: len, segments: 1, closed: true } }
+    pub fn single(len: usize, batch: u64) -> Self {
+        Self { seg_size: len, segments: 1, closed: true, batch }
+    }
 
     /// A datagram that may still absorb further segments. # C: O(1)
-    pub fn open(len: usize) -> Self { Self { seg_size: len, segments: 1, closed: false } }
+    pub fn open(len: usize, batch: u64) -> Self {
+        Self { seg_size: len, segments: 1, closed: false, batch }
+    }
 
     /// The segment size this receive reports, or `None` when nothing was
     /// coalesced. A receive of ONE datagram carries no segmentation size, so
@@ -65,12 +92,12 @@ pub fn may_coalesce(len: usize, checksum_zero: bool) -> bool { len != 0 && !chec
 /// the run, which is how a segmented write's short final segment arrives.
 /// # C: O(1)
 pub fn admit(tail: Option<&GroRun>, same_flow: bool, len: usize, checksum_zero: bool,
-    enabled: bool) -> GroAdmit
+    enabled: bool, batch: u64) -> GroAdmit
 {
     let open = enabled && may_coalesce(len, checksum_zero);
     if !open { return GroAdmit::Separate { open: false }; }
     let Some(tail) = tail else { return GroAdmit::Separate { open: true } };
-    if tail.closed || !same_flow || len > tail.seg_size {
+    if tail.closed || tail.batch != batch || !same_flow || len > tail.seg_size {
         return GroAdmit::Separate { open: true };
     }
     GroAdmit::Merge
@@ -102,6 +129,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_run_never_spans_two_receive_batches() {
+        let run = GroRun::open(1_000, 7);
+        assert_eq!(admit(Some(&run), true, 1_000, false, true, 7), GroAdmit::Merge);
+        assert_eq!(admit(Some(&run), true, 1_000, false, true, 8),
+            GroAdmit::Separate { open: true },
+            "datagrams the interface handed over in separate batches never merge");
+    }
+
+    #[test]
+    fn ending_a_batch_moves_the_counter_forward() {
+        let before = current_batch();
+        end_rx_batch();
+        assert_ne!(current_batch(), before);
+    }
+
+    #[test]
     fn loopback_delivery_is_never_coalesced() {
         assert!(!device_offers_gro(crate::uapi::ARPHRD_LOOPBACK));
         assert!(device_offers_gro(crate::uapi::ARPHRD_ETHER));
@@ -119,13 +162,13 @@ mod tests {
 
     #[test]
     fn a_lone_datagram_reports_no_segment_size() {
-        assert_eq!(GroRun::single(1_000).cmsg_seg_size(), None);
-        assert_eq!(GroRun::open(1_000).cmsg_seg_size(), None);
+        assert_eq!(GroRun::single(1_000, 0).cmsg_seg_size(), None);
+        assert_eq!(GroRun::open(1_000, 0).cmsg_seg_size(), None);
     }
 
     #[test]
     fn a_coalesced_receive_reports_the_first_datagrams_length() {
-        let mut run = GroRun::open(1_000);
+        let mut run = GroRun::open(1_000, 0);
         run.extend(1_000);
         assert_eq!(run.cmsg_seg_size(), Some(1_000));
         assert_eq!(run.segments, 2);
@@ -134,7 +177,7 @@ mod tests {
 
     #[test]
     fn a_short_segment_joins_the_run_and_ends_it() {
-        let mut run = GroRun::open(1_000);
+        let mut run = GroRun::open(1_000, 0);
         run.extend(1_000);
         run.extend(400);
         assert!(run.closed, "a short final segment closes the run");
@@ -145,75 +188,75 @@ mod tests {
 
     #[test]
     fn a_run_stops_growing_at_the_segment_cap() {
-        let mut run = GroRun::open(100);
+        let mut run = GroRun::open(100, 0);
         for _ in 1..UDP_GRO_CNT_MAX { run.extend(100); }
         assert_eq!(run.segments, UDP_GRO_CNT_MAX);
         assert!(run.closed);
-        assert_eq!(admit(Some(&run), true, 100, false, true), GroAdmit::Separate { open: true });
+        assert_eq!(admit(Some(&run), true, 100, false, true, 0), GroAdmit::Separate { open: true });
     }
 
     #[test]
     fn coalescing_never_happens_with_the_option_off() {
-        let run = GroRun::open(1_000);
-        assert_eq!(admit(Some(&run), true, 1_000, false, false),
+        let run = GroRun::open(1_000, 0);
+        assert_eq!(admit(Some(&run), true, 1_000, false, false, 0),
             GroAdmit::Separate { open: false });
-        assert_eq!(admit(None, true, 1_000, false, false), GroAdmit::Separate { open: false });
+        assert_eq!(admit(None, true, 1_000, false, false, 0), GroAdmit::Separate { open: false });
     }
 
     #[test]
     fn a_suppressed_checksum_is_never_coalesced_in_either_direction() {
         assert!(!may_coalesce(1_000, true));
         // It cannot join a run...
-        let run = GroRun::open(1_000);
-        assert_eq!(admit(Some(&run), true, 1_000, true, true),
+        let run = GroRun::open(1_000, 0);
+        assert_eq!(admit(Some(&run), true, 1_000, true, true, 0),
             GroAdmit::Separate { open: false });
         // ...and it cannot head one either, so the datagram after it is also
         // delivered on its own.
-        assert_eq!(admit(None, true, 1_000, true, true), GroAdmit::Separate { open: false });
+        assert_eq!(admit(None, true, 1_000, true, true, 0), GroAdmit::Separate { open: false });
     }
 
     #[test]
     fn an_empty_datagram_is_never_coalesced() {
         assert!(!may_coalesce(0, false));
-        let run = GroRun::open(1_000);
-        assert_eq!(admit(Some(&run), true, 0, false, true), GroAdmit::Separate { open: false });
+        let run = GroRun::open(1_000, 0);
+        assert_eq!(admit(Some(&run), true, 0, false, true, 0), GroAdmit::Separate { open: false });
     }
 
     #[test]
     fn equal_sized_datagrams_of_one_flow_merge() {
-        let run = GroRun::open(1_000);
-        assert_eq!(admit(Some(&run), true, 1_000, false, true), GroAdmit::Merge);
+        let run = GroRun::open(1_000, 0);
+        assert_eq!(admit(Some(&run), true, 1_000, false, true, 0), GroAdmit::Merge);
     }
 
     #[test]
     fn a_shorter_datagram_merges_but_a_longer_one_does_not() {
-        let run = GroRun::open(1_000);
-        assert_eq!(admit(Some(&run), true, 999, false, true), GroAdmit::Merge);
-        assert_eq!(admit(Some(&run), true, 1_001, false, true),
+        let run = GroRun::open(1_000, 0);
+        assert_eq!(admit(Some(&run), true, 999, false, true, 0), GroAdmit::Merge);
+        assert_eq!(admit(Some(&run), true, 1_001, false, true, 0),
             GroAdmit::Separate { open: true });
     }
 
     #[test]
     fn a_different_flow_never_merges_but_still_starts_its_own_run() {
-        let run = GroRun::open(1_000);
-        assert_eq!(admit(Some(&run), false, 1_000, false, true),
+        let run = GroRun::open(1_000, 0);
+        assert_eq!(admit(Some(&run), false, 1_000, false, true, 0),
             GroAdmit::Separate { open: true });
     }
 
     #[test]
     fn a_closed_run_absorbs_nothing_further() {
-        let mut run = GroRun::open(1_000);
+        let mut run = GroRun::open(1_000, 0);
         run.extend(500);
         assert!(run.closed);
-        assert_eq!(admit(Some(&run), true, 500, false, true), GroAdmit::Separate { open: true });
-        assert_eq!(admit(Some(&run), true, 1_000, false, true), GroAdmit::Separate { open: true });
+        assert_eq!(admit(Some(&run), true, 500, false, true, 0), GroAdmit::Separate { open: true });
+        assert_eq!(admit(Some(&run), true, 1_000, false, true, 0), GroAdmit::Separate { open: true });
     }
 
     #[test]
     fn a_single_delivered_datagram_is_closed_and_reports_nothing() {
-        let run = GroRun::single(1_000);
+        let run = GroRun::single(1_000, 0);
         assert!(run.closed);
         assert_eq!(run.cmsg_seg_size(), None);
-        assert_eq!(admit(Some(&run), true, 1_000, false, true), GroAdmit::Separate { open: true });
+        assert_eq!(admit(Some(&run), true, 1_000, false, true, 0), GroAdmit::Separate { open: true });
     }
 }
