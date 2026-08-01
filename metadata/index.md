@@ -7,6 +7,14 @@ INCREMENT the value here and commit it (same PR or a tracking commit) so the
 next run/branch is correct. Phase branches `P<n>-<NN>` use the per-phase
 counter; bump the matching `P<n>` line.
 
+`tools/next-branch.sh <TYPE>` derives the answer from git (branch refs plus
+merge-commit subjects, which are the only surviving trace of a branch deleted on
+merge) and takes the max against this table, so a stale table cannot hand out a
+used number. `tools/next-branch.sh --check` fails when this table has fallen
+behind git; `make counter-check` runs it and `make ci` includes it. Git is the
+truth for numbers already USED; this table is the truth for numbers RESERVED by
+a live lane that has not merged yet.
+
 Counters are `next` (the number to USE for the next branch of that type).
 Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 
@@ -17,7 +25,7 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | D | 439 | spec/doc edits (no code) |
 | R | 87  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
-| C | 247 | tooling / deps / CI plumbing |
+| C | 248 | tooling / deps / CI plumbing |
 | P17 | 18 | phase-17 work (tty + login) |
 
 ## Reserved (in flight)
