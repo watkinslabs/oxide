@@ -47,14 +47,21 @@ pub fn set_control(t: &Task, dr7: u64) -> Result<(), Dr7Error> {
     Ok(())
 }
 
-/// `ptrace_set_debugreg(6, data)` — a tracer may only CLEAR the status
-/// register. Linux keeps a `virtual_dr6` the tracee never writes through, so a
-/// tracer cannot forge a breakpoint hit that never happened; the bits it may
-/// affect are the cause bits, and only downward.
+/// `ptrace_set_debugreg(6, data)`. The status a tracer writes is a VIRTUAL
+/// DR6 kept per task and never loaded into hardware, so the write always
+/// succeeds and round-trips verbatim: the value is stored in positive polarity
+/// (`raw ^ reserved-ones`) and flipped back on read. Masking it to the cause
+/// bits — which is what this used to do — silently dropped part of a value a
+/// tracer is entitled to read back unchanged.
 /// # C: O(1)
 pub fn set_status(t: &Task, dr6: u64) {
-    t.debugregs[STATUS].store(dr6 & dr6::DR6_CAUSE_MASK, Ordering::Release);
+    t.debugregs[STATUS].store(dr6::normalize(dr6), Ordering::Release);
 }
+
+/// `ptrace_get_debugreg(6)` — the virtual DR6 flipped back to architectural
+/// polarity, which is the form userspace expects.
+/// # C: O(1)
+pub fn status(t: &Task) -> u64 { dr6::normalize(t.debugregs[STATUS].load(Ordering::Acquire)) }
 
 /// Install `t`'s breakpoints on this CPU. Skips every privileged write when
 /// neither the outgoing nor the incoming task has a slot armed, which is every

@@ -18,7 +18,7 @@ mod state;
 pub mod hw;
 
 pub use dr6::Dr6Status;
-pub use dr7::{validate_addr, validate_dr7, Dr7Error, HBP_NUM};
+pub use dr7::{programmable, validate_addr, validate_dr7, Dr7Error, HBP_NUM};
 pub use state::DebugRegs;
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ pub unsafe fn load(regs: &DebugRegs) {
         asm!("mov dr1, {}", in(reg) regs.addr[1], options(nomem, nostack, preserves_flags));
         asm!("mov dr2, {}", in(reg) regs.addr[2], options(nomem, nostack, preserves_flags));
         asm!("mov dr3, {}", in(reg) regs.addr[3], options(nomem, nostack, preserves_flags));
-        asm!("mov dr7, {}", in(reg) regs.dr7,     options(nomem, nostack, preserves_flags));
+        asm!("mov dr7, {}", in(reg) regs.hw_dr7(), options(nomem, nostack, preserves_flags));
     }
 }
 

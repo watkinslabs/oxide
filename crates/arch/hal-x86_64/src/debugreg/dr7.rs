@@ -24,10 +24,16 @@ pub const DR7_RESERVED_ONE: u64 = 1 << 10;
 /// every later debug-register access into a #DB, which would trap the kernel's
 /// own context-switch reload. Rejected here.
 pub const DR7_GD: u64 = 1 << 13;
-/// DR7 bits that must read zero: 11, 12, 14, 15 and the whole upper half.
-/// Bit 13 (GD) is excluded so it reports as its own error; bit 10 is
-/// reserved-ONE and excluded likewise.
-pub const DR7_RESERVED_ZERO: u64 = 0xFFFF_FFFF_0000_D800;
+/// DR7 bits a task may not express: 10-15 (which includes GD at 13) plus the
+/// whole upper half. A write carrying any of them has them masked away before
+/// it reaches hardware — the write itself still succeeds, and a read-back
+/// still reports them.
+pub const DR7_RESERVED: u64 = 0xFFFF_FFFF_0000_FC00;
+
+/// The value actually loaded into hardware for a given shadow DR7: reserved
+/// bits removed, the architectural reserved-ONE bit restored.
+/// # C: O(1)
+pub const fn programmable(dr7: u64) -> u64 { (dr7 & !DR7_RESERVED) | DR7_RESERVED_ONE }
 /// Every local+global enable bit (bits 0-7): non-zero ⇒ at least one slot armed.
 pub const DR7_ENABLE_MASK: u64 = 0x0000_0000_0000_00FF;
 /// DR7 with no slot armed — the architectural reset value.
@@ -107,10 +113,6 @@ pub const fn len_bytes(len: u64) -> u64 {
 /// `slot` names the offending DR0-DR3 index so a ptrace caller can report it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Dr7Error {
-    /// DR7.GD requested — general detect is kernel-owned.
-    GeneralDetect,
-    /// A reserved-zero DR7 bit was set.
-    Reserved,
     /// R/W = I/O breakpoint, which requires CR4.DE and is never granted.
     IoBreakpoint { slot: usize },
     /// Execute breakpoint with LEN != 1 byte.
@@ -127,8 +129,14 @@ pub enum Dr7Error {
 /// and user-range tests, `user_end` is the first non-user virtual address.
 /// # C: O(HBP_NUM)
 pub fn validate_dr7(dr7: u64, addrs: &[u64; HBP_NUM], user_end: u64) -> Result<u64, Dr7Error> {
-    if dr7 & DR7_GD != 0 { return Err(Dr7Error::GeneralDetect); }
-    if dr7 & DR7_RESERVED_ZERO != 0 { return Err(Dr7Error::Reserved); }
+    // Reserved bits are MASKED OFF for the purpose of programming hardware,
+    // not refused: a write carrying them is accepted and simply cannot express
+    // them. General-detect sits inside that mask, so a task asking for it
+    // silently does not get it rather than having its whole write rejected.
+    // The RAW value is what is returned and stored, because a PEEKUSER of DR7
+    // reads back exactly what was poked, reserved bits included.
+    let raw = dr7;
+    let dr7 = programmable(dr7);
     let mut slot = 0;
     while slot < HBP_NUM {
         if slot_enabled(dr7, slot) {
@@ -143,7 +151,7 @@ pub fn validate_dr7(dr7: u64, addrs: &[u64; HBP_NUM], user_end: u64) -> Result<u
         }
         slot += 1;
     }
-    Ok(dr7 | DR7_RESERVED_ONE)
+    Ok(raw)
 }
 
 /// Whole `[addr, addr+span)` span lies below `user_end` without wrapping.

@@ -51,12 +51,22 @@ pub fn stop_until_cont_sig(sig: u8) { stop_until_cont_code(sig as u32, StopKind:
 pub fn stop_until_cont_code(code: u32, kind: StopKind) {
     let cur = match crate::live::current() { Some(c) => c, None => return };
     let sig = (code & 0xff) as u8;
+    // `if (!current->ptrace || __fatal_signal_pending(current)) return exit_code;`
+    // — a tracee with a pending SIGKILL must NOT park. Parking it would leave
+    // the death waiting on a tracer that may never resume it, which is the one
+    // thing SIGKILL is guaranteed against.
+    if kind == StopKind::Ptrace && dying(cur) { return; }
     cur.stop_code.store(code, Ordering::Release);
     cur.stop_pending.store(true, Ordering::Release);
-    cur.jobctl.fetch_or(match kind {
+    // Entering a trap settles the latch that asked for it: any trap clears a
+    // pending TRAP_STOP, and a trap REPORTING PTRACE_EVENT_STOP also clears the
+    // TRAP_NOTIFY whose event it is announcing.
+    let reports_event_stop = kind == StopKind::Ptrace && syscall::ptrace::event_of_stop_code(code as i32) == syscall::ptrace::EVENT_STOP;
+    let latched = jobctl::trap_entry_clears(cur.jobctl.load(Ordering::Acquire), reports_event_stop);
+    cur.jobctl.store(latched | match kind {
         StopKind::Ptrace     => jobctl::TRACED,
         StopKind::JobControl => jobctl::STOPPED,
-    }, Ordering::AcqRel);
+    }, Ordering::Release);
     cur.set_state(TaskState::Stopped);
     if group_stop_notifies(cur, kind) {
         notify_parent_cldstop(cur, jobctl::stop_si_code(kind), sig as u32,
@@ -67,11 +77,14 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
         unsafe { crate::live::schedule(); }
         if cur.state() == TaskState::Runnable {
             let wake = WakeKind::from_u8(cur.stop_wake.load(Ordering::Acquire));
-            // `PTRACE_LISTEN`'s contract: the tracee stays stopped, and an
-            // asynchronous event re-traps it so the tracer is told, instead of
-            // silently resuming it into userspace with the event unreported.
-            if jobctl::wake_retraps(cur.jobctl.load(Ordering::Acquire), wake) {
-                cur.jobctl.fetch_and(!jobctl::TRAP_NOTIFY, Ordering::AcqRel);
+            // Leaving the trap drops LISTENING, so PTRACE_LISTEN is per-stop:
+            // the tracer must re-issue it after each report.
+            let jc = jobctl::stop_exit_clears(cur.jobctl.load(Ordering::Acquire));
+            // An event landed while we were parked and nobody has been told.
+            // Re-enter the trap and report it rather than running on.
+            if jobctl::wake_retraps(jc, wake) && !dying(cur) {
+                cur.jobctl.store(jobctl::trap_entry_clears(jc, true) | jobctl::TRACED,
+                                 Ordering::Release);
                 cur.stop_code.store(code, Ordering::Release);
                 cur.stop_pending.store(true, Ordering::Release);
                 cur.set_state(TaskState::Stopped);
@@ -79,7 +92,7 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
                                       jobctl::notify_target(kind));
                 continue;
             }
-            cur.jobctl.fetch_and(!(jobctl::TRACED | jobctl::STOPPED), Ordering::AcqRel);
+            cur.jobctl.store(jc & !jobctl::STOPPED, Ordering::Release);
             if let Some(why) = jobctl::resume_notify(kind, wake) {
                 notify_parent_cldstop(cur, why, crate::Signum::Sigcont as u32,
                                       NotifyTarget::RealParent);
@@ -95,6 +108,11 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
         // task either).
         cur.sigpending.fetch_and(!(1u64 << 18), Ordering::Release);
     }
+}
+
+/// `__fatal_signal_pending(current)` — a pending SIGKILL. # C: O(1)
+fn dying(cur: &crate::Task) -> bool {
+    cur.sigpending.load(Ordering::Acquire) & crate::Signum::Sigkill.bit() != 0
 }
 
 /// Linux `task_participate_group_stop` folded together with `do_signal_stop`'s

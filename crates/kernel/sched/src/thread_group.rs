@@ -118,6 +118,10 @@ pub struct ThreadGroup {
     /// threaded process reported its own stop, so a shell saw N `SIGCHLD`s for
     /// one `^Z`.
     group_stop_count: AtomicU32,
+    /// Linux `signal_struct::flags & SIGNAL_STOP_STOPPED` — the group stop has
+    /// completed and been reported. A thread joining an already-completed stop
+    /// owes nobody a second `CLD_STOPPED`; the latch drops on SIGCONT.
+    stop_stopped: AtomicBool,
     /// Linux `signal_struct::shared_pending.signal` — the PROCESS-directed
     /// pending bitmap, the set `kill(2)`/`kill_pgrp`/`sigqueue(3)` post into
     /// and that ANY thread of the group may dequeue from. See
@@ -194,6 +198,7 @@ impl ThreadGroup {
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             group_stop_count: AtomicU32::new(0),
+            stop_stopped: AtomicBool::new(false),
             shared_pending: AtomicU64::new(0),
             shared_sigqueue: crate::sigqueue::new_queues(),
             signalfd_poll: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
@@ -311,14 +316,22 @@ impl ThreadGroup {
             0 => { let n = self.live_count().max(1); self.group_stop_count.store(n, Ordering::Release); n }
             n => n,
         };
-        let step = crate::jobctl::participate_group_stop(jobctl, count);
+        let step = crate::jobctl::participate_group_stop(
+            jobctl, count, self.stop_stopped.load(Ordering::Acquire));
         self.group_stop_count.store(step.count, Ordering::Release);
+        // `signal_set_stop_flags(sig, SIGNAL_STOP_STOPPED)` — latched by the
+        // thread that completes the stop, so a later joiner reports nothing.
+        if step.completed { self.stop_stopped.store(true, Ordering::Release); }
         step
     }
 
-    /// A SIGCONT (or a group exit) ends the stop, so the next `^Z` starts a
-    /// fresh count instead of resuming a half-finished one. # C: O(1)
-    pub fn end_group_stop(&self) { self.group_stop_count.store(0, Ordering::Release); }
+    /// A SIGCONT (or a group exit) ends the stop: the tally restarts and the
+    /// `SIGNAL_STOP_STOPPED` latch drops, so the next `^Z` is a fresh group
+    /// stop that reports again. # C: O(1)
+    pub fn end_group_stop(&self) {
+        self.group_stop_count.store(0, Ordering::Release);
+        self.stop_stopped.store(false, Ordering::Release);
+    }
 
     /// Threads of this process that still owe the group stop a stop. # C: O(1)
     pub fn group_stop_count(&self) -> u32 { self.group_stop_count.load(Ordering::Acquire) }
