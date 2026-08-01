@@ -67,7 +67,10 @@ impl Store {
     /// `key_put`'s last-reference arm: hand the key's whole charge back to its
     /// owner and drop it from the serial space. # C: O(log N)
     pub fn destroy(&mut self, serial: i32) {
-        let k = match self.keys.remove(&serial) { Some(k) => k, None => return };
+        let mut k = match self.keys.remove(&serial) { Some(k) => k, None => return };
+        // A watcher is told the object it watched has gone, so a queue never
+        // just stops producing with no explanation.
+        k.watchers.remove_all();
         if !k.in_quota { return; }
         if let Some(u) = self.quota.get_mut(&k.uid) {
             u.nkeys = u.nkeys.saturating_sub(1);
