@@ -3,7 +3,7 @@
 // alignment, reuse after free, OOM, and coalescing.
 
 use super::*;
-use core::alloc::Layout;
+use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::boxed::Box;
 use std::vec;
