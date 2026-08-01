@@ -39,27 +39,25 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     // Without this every outbound UDP claims src=127.0.0.1, and
     // replies from a remote peer (slirp's DNS at 10.0.2.3, …) can
     // never make it back since they target loopback not eth0.
-    let src_ip = if src_ip != Ipv4Addr::ANY {
-        src_ip
-    } else if dst.is_multicast() {
-        crate::sock_mcast::src_ip(sock, dst, bound_iface)
-    } else if dst.is_loopback() {
-        Ipv4Addr::LOOPBACK
-    } else {
-        // Find the outbound iface's primary IPv4 via the route table.
-        stack().routes.lookup_in(net_ns, dst)
+    let src_ip = match crate::inet_tx::source_choice(src_ip, dst) {
+        crate::inet_tx::SourceChoice::Bound(ip) => ip,
+        crate::inet_tx::SourceChoice::Multicast => crate::sock_mcast::src_ip(sock, dst, bound_iface),
+        crate::inet_tx::SourceChoice::Loopback => Ipv4Addr::LOOPBACK,
+        // The outbound interface's primary IPv4, via the route table.
+        crate::inet_tx::SourceChoice::Route => stack().routes.lookup_in(net_ns, dst)
             .and_then(|r| r.src_hint)
             .or_else(|| iface_primary_ip(bound_iface.or_else(|| stack().routes.lookup_in(net_ns, dst).map(|r| r.iface))))
-            .unwrap_or(Ipv4Addr::LOOPBACK)
+            .unwrap_or(Ipv4Addr::LOOPBACK),
     };
+    let multicast = dst.is_multicast();
     let mcast_loop = sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0;
-    let ttl = if dst.is_multicast() {
-        sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) as u8
-    } else {
-        let ttl = sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire);
-        if ttl < 0 { 0 } else { ttl as u8 }
-    };
-    let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8; if dst.is_multicast() && !mcast_loop && crate::sock_mcast::is_loopback_iface(bound_iface) { return Ok(payload.len()); }
+    let ttl = crate::inet_tx::ipv4_ttl(
+        sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire),
+        sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire), multicast);
+    let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8;
+    if crate::inet_tx::multicast_delivers_nowhere(multicast, mcast_loop,
+        crate::sock_mcast::is_loopback_iface(bound_iface))
+    { return Ok(payload.len()); }
     let pmtudisc = sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
     // `IP_OPTIONS` rides every datagram this socket sends, and a source route
     // among them retargets the route lookup at its first hop.
@@ -79,7 +77,7 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
                     pmtudisc, ip_options.as_ref(),
                 )?;
             }
-            if !dst.is_multicast() || mcast_loop { drain_loopback(); }
+            if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
             return Ok(payload.len());
         }
     }
@@ -87,6 +85,6 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
         &sock.owner, src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl, pmtudisc,
         ip_options.as_ref(),
     )?;
-    if !dst.is_multicast() || mcast_loop { drain_loopback(); }
+    if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
     Ok(payload.len())
 }

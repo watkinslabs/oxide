@@ -123,7 +123,8 @@ pub mod sock;
 pub mod sock_opts;
 pub mod vsock;
 pub mod vsock_socket;
-#[cfg(any(target_os = "oxide-kernel", test))]
+// Pure errno mapping with no socket state: ungated, so every build and every
+// hosted test sees the one owner of it.
 mod sock_error;
 // Linux `sock_intr_errno` — NOT kernel-gated, so the ERESTARTSYS/EINTR rule
 // every socket wait shares is unit-tested hosted.
@@ -138,7 +139,7 @@ pub(crate) mod sock_vfs_read;
 pub mod sock_drop;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_rtnl_defer;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_v6;
 // Ungated for `cargo test`, but it reads the socket type, which the plain
 // `cargo check -p net` build does not have.
@@ -150,6 +151,8 @@ pub mod stack_ipv6;
 pub mod stack_igmp;
 pub mod tcp_cc;
 pub mod stack_icmp;
+pub mod inet_tx;
+pub mod listen_admit;
 pub mod ipv4_reasm;
 pub mod ipv6_reasm;
 pub use loopback::LoopbackDev;

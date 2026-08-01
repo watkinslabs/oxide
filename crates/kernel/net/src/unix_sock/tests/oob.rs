@@ -231,3 +231,35 @@ fn the_mark_stands_at_the_pending_byte_and_at_a_record_it_follows() {
     assert!(!at_mark(3, Some(4), None, true), "the cursor has not reached it");
     assert!(!at_mark(3, Some(3), None, false), "an empty queue is never at the mark");
 }
+
+#[test]
+fn a_spent_record_still_reports_readable_while_reporting_zero_bytes() {
+    let _serial = test_guard();
+    let p = UnixPair::new();
+    p.write_oob_byte(UnixEnd::A, b'X').unwrap();
+    assert_eq!(p.recv_oob(UnixEnd::B, false, false), Some(b'X'));
+    // The spent record is still a queued record, so the reader is still told
+    // "readable" even though the receive that follows delivers nothing and
+    // then blocks. This is the reference's own answer — its readiness test is
+    // "the receive queue is not empty", and the record it left behind is in
+    // that queue — so the two disagreeing reports below are matched, not a
+    // divergence. Pinned so a later queue change cannot silently pick one.
+    assert_ne!(p.poll_mask(UnixEnd::B, 4096) & vfs::POLL_IN, 0,
+        "a queued record reports readable");
+    assert_eq!(p.readable_len(UnixEnd::B), 0, "and no byte is there to take");
+    assert_eq!(&read(&p, UnixEnd::B, 64)[..], b"", "the receive that follows takes nothing");
+    // Having stepped over it, the reader is no longer told readable.
+    assert_eq!(p.poll_mask(UnixEnd::B, 4096) & vfs::POLL_IN, 0);
+}
+
+#[test]
+fn a_pending_byte_reports_both_readable_and_urgent() {
+    let _serial = test_guard();
+    let p = UnixPair::new();
+    p.write_oob_byte(UnixEnd::A, b'X').unwrap();
+    // Priority readiness is what a signal-driven owner turns into SIGURG; the
+    // socket layer adds it beside the pair's own mask.
+    assert!(p.has_oob(UnixEnd::B));
+    assert_ne!(p.poll_mask(UnixEnd::B, 4096) & vfs::POLL_IN, 0);
+    assert_eq!(p.readable_len(UnixEnd::B), 1, "the pending byte is queued data");
+}

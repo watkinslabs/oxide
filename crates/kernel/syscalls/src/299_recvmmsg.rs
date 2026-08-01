@@ -1,12 +1,15 @@
-// `sys_recvmmsg` — slot 299. Native mmsghdr import, pinned socket batch,
-// pending-error publication, WAITFORONE, and relative timeout copyback.
+// `sys_recvmmsg` — slot 299. ABI only: import one entry, run one receive,
+// publish one length. Every batch DECISION — what admits a batch, what ends
+// one, what a partly-delivered batch reports — belongs to `crate::mmsg_batch`,
+// which is ungated and therefore tested.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_OOB, MSG_WAITFORONE};
+use net::uapi::MSG_OOB;
 
+use crate::mmsg_batch::{self, AfterDelivery, OnFailure};
 use crate::recvmsg::layout::{MMSGHDR_FLAGS_OFFSET, MMSGHDR_LEN_OFFSET, MMSGHDR_SIZE, TIMESPEC_SIZE};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -23,15 +26,16 @@ fn timeout_import(user: u64) -> Result<Option<BatchTimeout>, i64> {
     uaccess::copy_from_user(&mut raw, user).map_err(|_| err(Errno::Efault))?;
     let sec = i64::from_ne_bytes(raw[..8].try_into().unwrap());
     let nsec = i64::from_ne_bytes(raw[8..].try_into().unwrap());
-    if sec < 0 || nsec < 0 || nsec >= crate::time_common::NS_PER_SEC as i64 { return Err(err(Errno::Einval)); }
-    let total = (sec as u64).saturating_mul(crate::time_common::NS_PER_SEC).saturating_add(nsec as u64);
+    let total = mmsg_batch::timeout_total_ns(sec, nsec).map_err(err)?;
     Ok(Some(BatchTimeout { user, deadline: crate::time_common::monotonic_ns().saturating_add(total), remaining: total }))
 }
 
-fn timeout_update(timeout: &mut Option<BatchTimeout>) -> bool {
-    let Some(timeout) = timeout else { return false };
+/// Re-read the supplied timeout, reporting what is left for the batch rule.
+/// # C: O(1)
+fn timeout_left(timeout: &mut Option<BatchTimeout>) -> Option<u64> {
+    let timeout = timeout.as_mut()?;
     timeout.remaining = timeout.deadline.saturating_sub(crate::time_common::monotonic_ns());
-    timeout.remaining == 0
+    Some(timeout.remaining)
 }
 
 fn timeout_copyback(timeout: &Option<BatchTimeout>) -> Result<(), i64> {
@@ -53,36 +57,31 @@ fn oob_received(entry: u64) -> bool {
     u32::from_ne_bytes(raw) as u64 & MSG_OOB != 0
 }
 
+/// Apply the batch's failure rule to one failed entry. # C: O(1)
 fn partial(target: &crate::recvmsg::dispatch::RecvTarget, got: i64, failure: i64) -> i64 {
-    if got == 0 { return failure; }
-    if failure != err(Errno::Eagain) {
-        if let Ok(errno) = i32::try_from(-failure) {
-            if errno > 0 { target.set_pending_error(errno); }
+    match mmsg_batch::on_failure(got, failure) {
+        OnFailure::Report(failure) => failure,
+        OnFailure::Deliver { count, latch } => {
+            if let Some(errno) = latch { target.set_pending_error(errno); }
+            count
         }
     }
-    got
 }
 
 /// `recvmmsg(fd, mmsghdr*, vlen, flags, timeout)` — slot 299.
 /// # C: O(vlen)
 pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     let mmsg_ptr = args.a1;
-    // `sendmmsg` clamps its batch to UIO_MAXIOV; `recvmmsg` does not, and
-    // walks the caller's whole array.
-    let vlen = args.a2 as u32 as u64;
-    let mut flags = args.a3;
-    if flags & MSG_CMSG_COMPAT != 0 { return err(Errno::Einval); }
+    let vlen = mmsg_batch::batch_len(args.a2);
+    let flags = args.a3;
+    if let Err(e) = mmsg_batch::admit_flags(flags) { return err(e); }
     let mut timeout = match timeout_import(args.a4) { Ok(timeout) => timeout, Err(e) => return e };
     let target = match crate::recvmsg::lookup(args.a0) { Ok(target) => target, Err(e) => return e };
-    // A pending socket error is reported BEFORE the batch runs and consumed by
-    // doing so — except for an error-queue read, which is how that error is
-    // meant to be collected.
-    if flags & MSG_ERRQUEUE == 0 {
+    if mmsg_batch::reports_pending_error(flags) {
         let pending = target.take_error();
         if pending != 0 { return -(pending as i64); }
     }
     if vlen == 0 { return 0; }
-    flags &= !MSG_WAITFORONE;
     let mut got: i64 = 0;
     let result = 'batch: {
     for i in 0..vlen {
@@ -91,7 +90,7 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
             None => break 'batch partial(&target, got, err(Errno::Efault)),
         };
         let user = match crate::recv_user::import(entry) { Ok(user) => user, Err(e) => break 'batch partial(&target, got, e) };
-        let r = crate::recvmsg::recv(&target, &user, flags);
+        let r = crate::recvmsg::recv(&target, &user, mmsg_batch::entry_flags(flags, got as u64));
         if r < 0 {
             break 'batch partial(&target, got, r);
         }
@@ -103,17 +102,14 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
             break 'batch partial(&target, got, err(Errno::Efault));
         }
         got += 1;
-        if args.a3 & MSG_WAITFORONE != 0 { flags |= MSG_DONTWAIT; }
-        let expired = timeout_update(&mut timeout);
-        if expired { break; }
-        // Out-of-band data ends the batch: the caller must see it alone.
-        if oob_received(entry) { break; }
+        match mmsg_batch::after_delivery(timeout_left(&mut timeout), oob_received(entry)) {
+            AfterDelivery::Continue => {}
+            AfterDelivery::TimedOut | AfterDelivery::OutOfBand => break,
+        }
     }
     got
     };
-    // Linux copies a supplied timeout back only after at least one completed
-    // datagram. An empty nonblocking/error return must leave user memory alone.
-    if result > 0 {
+    if mmsg_batch::copies_timeout_back(result) {
         if let Err(e) = timeout_copyback(&timeout) { return e; }
     }
     result
