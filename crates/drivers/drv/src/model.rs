@@ -42,6 +42,9 @@ pub struct Resource {
     pub flags: u64,
 }
 
+/// Linux `NUMA_NO_NODE`: the device is not attached to any node. # C: O(1)
+pub const NUMA_NODE_NONE: i32 = -1;
+
 /// Linux `IORESOURCE_IO` flag for [`Resource::flags`]. # C: O(1)
 pub const IORESOURCE_IO: u64 = 0x0000_0100;
 /// Linux `IORESOURCE_MEM` flag for [`Resource::flags`]. # C: O(1)
@@ -73,6 +76,17 @@ pub struct Device {
     pub device_id: u16,
     /// 24-bit PCI class/subclass/prog-if (class<<16|sub<<8|progif).
     pub class:     u32,
+    /// PCI-function identity beyond vendor/device/class; None off the PCI bus.
+    pub pci:       Option<crate::pci_dev::PciIdent>,
+    /// Whether MSI/MSI-X may be requested for this function by a driver that
+    /// has not yet bound (Linux `pci_dev->no_msi`, inverted).
+    pub msi_allowed: core::sync::atomic::AtomicBool,
+    /// Firmware-reported broken parity status (Linux
+    /// `pci_dev->broken_parity_status`).
+    pub broken_parity_status: core::sync::atomic::AtomicBool,
+    /// NUMA node this device is attached to (Linux `dev->numa_node`);
+    /// [`NUMA_NODE_NONE`] when unattached.
+    pub numa_node: core::sync::atomic::AtomicI32,
     /// Bound driver name, None when unbound.
     pub driver:    Spinlock<Option<&'static str>, DriverListClass>,
     /// Optional Linux `driver_override`: when set, only this driver name may
@@ -105,7 +119,10 @@ impl Device {
             bus, addr, sysfs_relpath: None, parent_bus: None, parent_addr: None,
             parent_chain: Spinlock::new(Vec::new()),
             lifecycle: lifecycle_state::Lifecycle::new(),
-            vendor_id, device_id, class,
+            vendor_id, device_id, class, pci: None,
+            msi_allowed: core::sync::atomic::AtomicBool::new(true),
+            broken_parity_status: core::sync::atomic::AtomicBool::new(false),
+            numa_node: core::sync::atomic::AtomicI32::new(NUMA_NODE_NONE),
             driver: Spinlock::new(None), driver_override: Spinlock::new(None),
             dev_class: "", devname: None, dev_t: None, node_factory: None,
             uevent_env: Vec::new(), resources: Vec::new(),
@@ -135,6 +152,7 @@ impl Device {
             && self.vendor_id == other.vendor_id
             && self.device_id == other.device_id
             && self.class == other.class
+            && self.pci == other.pci
             && self.dev_class == other.dev_class
             && self.devname == other.devname
             && self.dev_t == other.dev_t
@@ -163,6 +181,35 @@ impl Device {
     pub fn with_node_factory(mut self, f: NodeFactory) -> Self { self.node_factory = Some(f); self }
     /// Builder: attach class/device-specific uevent environment. # C: O(n)
     pub fn with_uevent_env(mut self, env: Vec<String>) -> Self { self.uevent_env = env; self }
+    /// Builder: attach PCI-function identity read from config space. # C: O(1)
+    pub fn with_pci_ident(mut self, ident: crate::pci_dev::PciIdent) -> Self {
+        self.pci = Some(ident);
+        self
+    }
+    /// Whether a not-yet-bound driver may request MSI/MSI-X. # C: O(1)
+    pub fn msi_allowed(&self) -> bool {
+        self.msi_allowed.load(core::sync::atomic::Ordering::Acquire)
+    }
+    /// Set the MSI/MSI-X admission policy for future drivers. # C: O(1)
+    pub fn set_msi_allowed(&self, allowed: bool) {
+        self.msi_allowed.store(allowed, core::sync::atomic::Ordering::Release);
+    }
+    /// NUMA node this device is attached to. # C: O(1)
+    pub fn numa_node(&self) -> i32 {
+        self.numa_node.load(core::sync::atomic::Ordering::Acquire)
+    }
+    /// Override the device's NUMA node. # C: O(1)
+    pub fn set_numa_node(&self, node: i32) {
+        self.numa_node.store(node, core::sync::atomic::Ordering::Release);
+    }
+    /// Current broken-parity-status flag. # C: O(1)
+    pub fn broken_parity_status(&self) -> bool {
+        self.broken_parity_status.load(core::sync::atomic::Ordering::Acquire)
+    }
+    /// Set the broken-parity-status flag. # C: O(1)
+    pub fn set_broken_parity_status(&self, broken: bool) {
+        self.broken_parity_status.store(broken, core::sync::atomic::Ordering::Release);
+    }
     /// Builder: attach bus resources to the device. # C: O(n)
     pub fn with_resources(mut self, resources: Vec<Resource>) -> Self {
         self.resources = resources;
