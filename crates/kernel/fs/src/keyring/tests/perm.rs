@@ -136,11 +136,13 @@ fn invalid_gid_never_matches_the_group_byte() {
         "an fsgid of INVALID_GID must not match the key's INVALID_GID");
 }
 
-// A permission-less key is invisible to KEYCTL_SEARCH/request_key: the caller
-// gets ENOKEY (not EACCES) — Linux hides existence from keyring search, unlike
-// a direct-serial op which reveals the key exists but denies it.
+// A key the caller cannot SEARCH does not satisfy a search, and KEYCTL_SEARCH
+// reports EACCES rather than ENOKEY: the skip reason is what the search
+// returns, and only "nothing matched at all" becomes ENOKEY. Reporting ENOKEY
+// here would tell a caller a key is absent when it is merely out of reach, so
+// it would keep asking for one that is already there.
 #[test]
-fn permissionless_key_invisible_to_search() {
+fn a_key_the_caller_cannot_search_is_denied_not_reported_missing() {
     let owner = ctx(3008, 6008);
     let stranger = ctx(3009, 6009);
     // A shared keyring the stranger may SEARCH, but which is NOT one of their
@@ -149,8 +151,10 @@ fn permissionless_key_invisible_to_search() {
     let shared = add_key_core(&owner, "keyring", "shared-search-ring", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
     force_perm(shared, KEY_PERM_VALID);
     let serial = add_key_core(&owner, "user", "search-test-desc", alloc::vec![7u8], true, shared) as i32;
-    assert_eq!(search_core(&stranger, shared, "user", "search-test-desc", 0), enokey(),
-        "no KEY_NEED_SEARCH -> invisible, not just denied");
+    assert_eq!(search_core(&stranger, shared, "user", "search-test-desc", 0), eacces(),
+        "no KEY_NEED_SEARCH on the key -> denied, distinct from absent");
+    assert_eq!(search_core(&stranger, shared, "user", "no-such-key-at-all", 0), enokey(),
+        "a name that matches nothing is ENOKEY");
     let owner_ring = get_keyring_id(&owner, KEY_SPEC_SESSION_KEYRING, true) as i32;
     assert_eq!(search_core(&owner, owner_ring, "user", "search-test-desc", 0), serial as i64);
 }

@@ -237,3 +237,69 @@ fn default_perm_drops_pos_read_for_an_unreadable_type() {
     assert_eq!(perm & KEY_POS_READ, 0, "no `type->read` means no KEY_POS_READ");
     assert_eq!(perm & KEY_POS_WRITE, KEY_POS_WRITE, "`type->update` still grants KEY_POS_WRITE");
 }
+
+// REVOKE retries the lookup with SETATTR when WRITE is denied: revoking is an
+// attribute change as much as a write, and a key whose mask grants Setattr but
+// not Write is still revocable. Without the retry a holder cannot withdraw its
+// own key.
+#[test]
+fn revoke_falls_back_to_setattr_permission() {
+    let owner = ctx(3101, 7101);
+    let ring = get_keyring_id(&owner, KEY_SPEC_SESSION_KEYRING, true) as i32;
+    let k = add_key_core(&owner, "user", "revoke-setattr", alloc::vec![1], true, ring) as i32;
+    let peer = ctx(3102, 7102);
+    // Setattr for everyone, Write for nobody.
+    force_perm(k, KEY_NEED_SETATTR | KEY_NEED_VIEW);
+    assert_eq!(revoke_core(&peer, k), 0, "SETATTR alone is enough to revoke");
+    assert!(STORE.lock().keys[&k].revoked);
+}
+
+// With neither Write nor Setattr the retry does not paper over the denial.
+#[test]
+fn revoke_without_write_or_setattr_is_denied() {
+    let owner = ctx(3103, 7103);
+    let ring = get_keyring_id(&owner, KEY_SPEC_SESSION_KEYRING, true) as i32;
+    let k = add_key_core(&owner, "user", "revoke-denied", alloc::vec![1], true, ring) as i32;
+    let peer = ctx(3104, 7104);
+    force_perm(k, KEY_NEED_VIEW);
+    assert_eq!(revoke_core(&peer, k), eacces());
+}
+
+// Re-revoking reports EKEYREVOKED, not EACCES: the full lookup validates the
+// key BEFORE the permission check, so a caller learns the key is already gone
+// rather than that it lacks access to it.
+#[test]
+fn revoking_twice_reports_the_key_is_already_revoked() {
+    let t = ctx(3105, 7105);
+    let ring = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
+    let k = add_key_core(&t, "user", "revoke-twice", alloc::vec![1], true, ring) as i32;
+    assert_eq!(revoke_core(&t, k), 0);
+    assert_eq!(revoke_core(&t, k), err(Errno::Ekeyrevoked));
+}
+
+// A helper holding the key's authorisation token may set a timeout on it even
+// though it has no permission on a key it does not yet own — it has to be able
+// to bound the lifetime of what it is about to build.
+#[test]
+fn set_timeout_accepts_the_authorisation_token_instead_of_setattr() {
+    let requester = ctx(3106, 7106);
+    let ring = get_keyring_id(&requester, KEY_SPEC_SESSION_KEYRING, true) as i32;
+    let helper = ctx(3107, 7107);
+    let hring = get_keyring_id(&helper, KEY_SPEC_SESSION_KEYRING, true) as i32;
+    let (key, _auth) = {
+        let mut g = STORE.lock();
+        let user = super::super::types::lookup("user").expect("user type");
+        let key = g.mint_uninstantiated(user, "timeout-authtoken", 7106, 7106, 0, 0).expect("mint");
+        let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"", ring,
+            &requester.t).expect("token");
+        g.link(hring, auth).expect("hand the token to the helper");
+        (key, auth)
+    };
+    // The key's mask grants nothing at all, so this is the token's doing.
+    let stranger = ctx(3108, 7108);
+    assert_eq!(set_timeout_core(&stranger, key, 30), eacces(),
+        "a task without the token is denied");
+    assert_eq!(set_timeout_core(&helper, key, 30), 0,
+        "the token holder may bound the key it was asked to build");
+    assert!(STORE.lock().keys[&key].expiry_ns > 0);
+}

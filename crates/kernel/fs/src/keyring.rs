@@ -40,6 +40,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
+mod auth;
+mod construct;
 mod keyctl;
 mod lifecycle;
 mod ops;
@@ -118,6 +120,43 @@ fn read_user_bytes(p: u64, len: u64) -> Result<Vec<u8>, i64> {
     Ok(out)
 }
 
+/// `import_iovec` for `KEYCTL_INSTANTIATE_IOV`: gather `n` Linux `struct
+/// iovec` segments into one payload. The segments are validated as a whole
+/// BEFORE any is copied, so a bad pointer in the last one does not leave a
+/// half-gathered payload to be instantiated. The combined length is bounded by
+/// the same 1 MiB ceiling `KEYCTL_INSTANTIATE` applies — a vectored call must
+/// not be a way around it. # C: O(n + total)
+fn read_user_iov(p: u64, n: u64) -> Result<Vec<u8>, i64> {
+    /// `sizeof(struct iovec)` — `void *iov_base; size_t iov_len;`.
+    const IOVEC_SIZE: u64 = 16;
+    const IOVEC_LEN_OFFSET: u64 = 8;
+    if n == 0 { return Ok(Vec::new()); }
+    let array_bytes = n.checked_mul(IOVEC_SIZE).ok_or(err(Errno::Efault))?;
+    validate_user_buf(p, array_bytes, 8)?;
+    let mut segs: Vec<(u64, u64)> = Vec::new();
+    let mut total: u64 = 0;
+    for i in 0..n {
+        let e = p + i * IOVEC_SIZE;
+        // SAFETY: the whole iovec array was validated above; e and e+8 lie inside it and the Linux ABI aligns both to 8.
+        let base = unsafe { core::ptr::read_volatile(e as *const u64) };
+        // SAFETY: same validated array range; iov_len sits at offset +8, 8-byte aligned.
+        let len = unsafe { core::ptr::read_volatile((e + IOVEC_LEN_OFFSET) as *const u64) };
+        if len == 0 { continue; }
+        total = total.checked_add(len).ok_or(err(Errno::Einval))?;
+        if total > KEY_MAX_PAYLOAD { return Err(err(Errno::Einval)); }
+        validate_user_buf(base, len, 1)?;
+        segs.push((base, len));
+    }
+    let mut out = Vec::with_capacity(total as usize);
+    for (base, len) in segs {
+        for i in 0..len {
+            // SAFETY: every segment was validated readable above and none has been unmapped since — the caller holds no lock that would let it.
+            out.push(unsafe { core::ptr::read_unaligned((base + i) as *const u8) });
+        }
+    }
+    Ok(out)
+}
+
 /// Raw copy-out of an exact byte range. # C: O(n)
 fn write_user_bytes(p: u64, src: &[u8]) -> Result<(), i64> {
     if src.is_empty() { return Ok(()); }
@@ -165,9 +204,9 @@ fn cur_ctx() -> Ctx {
                 fsgid: c.creds.fsgid.load(Acquire),
                 groups: c.creds.group_list().map(|g| g.to_vec()).unwrap_or_default(),
             };
-            Ctx::new(t, now_ns, c.has_cap(sched::cap::SYS_ADMIN))
+            Ctx::with_caps(t, now_ns, c.has_cap(sched::cap::SYS_ADMIN), c.has_cap(sched::cap::SETUID))
         }
-        None => Ctx::new(TaskIds::default(), now_ns, true),
+        None => Ctx::with_caps(TaskIds::default(), now_ns, true, true),
     }
 }
 
@@ -212,17 +251,21 @@ pub fn sys_add_key(args: &SyscallArgs) -> i64 {
     ops::add_key_core(&cur_ctx(), &key_type, &description, payload, args.a2 != 0, args.a4 as i32)
 }
 
-/// `sys_request_key(type, desc, callout, dest)` — slot 249. The callout string
-/// is still validated (Linux `strndup_user(_callout_info, PAGE_SIZE)` faults
-/// on a bad pointer before the search runs) even though no `/sbin/request-key`
-/// helper exists to consume it. # C: O(N)
+/// `sys_request_key(type, desc, callout, dest)` — slot 249.
+///
+/// The callout pointer being NULL is the whole difference between "does this
+/// key exist" and "build it if it does not": a NULL callout means a miss is
+/// ENOKEY and nothing is constructed, while ANY callout string — including the
+/// empty one — makes a miss run `/sbin/request-key`. So the pointer is read
+/// with `strndup_user(_callout_info, PAGE_SIZE)` semantics and its presence,
+/// not its content, selects the path. # C: O(N)
 pub fn sys_request_key(args: &SyscallArgs) -> i64 {
     let key_type = match read_user_key_type(args.a0) { Ok(s) => s, Err(rv) => return rv };
     let description = match read_user_key_desc(args.a1) { Ok(s) => s, Err(rv) => return rv };
-    if args.a2 != 0 {
-        if let Err(rv) = read_user_key_cstr(args.a2, KEY_CALLOUT_MAX) { return rv; }
-    }
-    ops::request_key_core(&cur_ctx(), &key_type, &description, args.a3 as i32)
+    let callout = if args.a2 == 0 { None } else {
+        match read_user_key_cstr(args.a2, KEY_CALLOUT_MAX) { Ok(b) => Some(b), Err(rv) => return rv }
+    };
+    ops::request_key_core(&cur_ctx(), &key_type, &description, callout.as_deref(), args.a3 as i32)
 }
 
 /// `/proc/keys` as the CURRENT reader sees it — keys it may not VIEW are

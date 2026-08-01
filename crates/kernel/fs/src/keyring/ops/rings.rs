@@ -3,10 +3,23 @@
 // session inheritance Linux does in `copy_creds`.
 
 use super::{e, Ctx};
-use super::super::perm::{check_perm, Lookup};
-use super::super::store::{Quota, STORE};
+use super::super::perm::{check_perm, check_perm_with, Lookup, Possess};
+use super::super::store::{Quota, Store, TaskIds, STORE};
+use super::super::types;
 use super::super::uapi::*;
 use syscall::errno::Errno;
+
+/// `keyctl_join_session_keyring`'s name admission, applied before the keyring
+/// is looked up or created. A leading `.` is EPERM: dot-prefixed names are the
+/// kernel's own (`.persistent_register`, `.request_key_auth`), and letting a
+/// caller join one by name would place it inside a keyring holding other
+/// tasks' credentials. # C: O(1)
+pub fn vet_session_name(name: Option<&str>) -> Result<(), Errno> {
+    match name {
+        Some(n) if n.starts_with('.') => Err(Errno::Eperm),
+        _ => Ok(()),
+    }
+}
 
 /// `KEYCTL_JOIN_SESSION_KEYRING`: `name==None` → mint a FRESH anonymous
 /// session keyring; `Some(n)` → join the existing named session keyring or
@@ -31,9 +44,24 @@ pub fn join_session(c: &Ctx, name: Option<&str>) -> i64 {
                 .map(|k| k.serial);
             match found {
                 Some(s) => {
-                    if let Err(rv) = check_perm(&g, s, &c.t, KEY_NEED_SEARCH, Lookup::Full, c.now_ns) {
-                        return rv;
+                    // `find_keyring_by_name` checks Search WITHOUT possession,
+                    // so reaching the keyring through your own session does not
+                    // let you back into it — only its user/group/other bytes
+                    // count. A candidate that fails is SKIPPED, and a keyring of
+                    // that name is created instead of the call being denied.
+                    if check_perm_with(&g, s, &c.t, KEY_NEED_SEARCH, c.now_ns, Possess::No).is_err() {
+                        return match g.new_keyring(n, c.t.fsuid, c.t.fsgid,
+                            NAMED_SESSION_KEYRING_PERM, Quota::InQuota)
+                        {
+                            Ok(fresh) => { g.session.insert(c.t.tid, fresh); g.collect(); fresh as i64 }
+                            Err(err) => e(err),
+                        };
                     }
+                    // Joining the keyring the caller is ALREADY in is a no-op
+                    // that answers 0 rather than the serial — `pam_keyinit`
+                    // re-runs on every session in a login and relies on the
+                    // idempotent call not looking like a fresh join.
+                    if g.session.get(&c.t.tid) == Some(&s) { return 0; }
                     s
                 }
                 // A named session keyring is always charged IN_QUOTA.
@@ -82,21 +110,77 @@ pub fn get_keyring_id(c: &Ctx, id: i32, create: bool) -> i64 {
     serial as i64
 }
 
-/// `KEYCTL_GET_PERSISTENT` core: resolve (lazily create) the caller's
-/// persistent keyring. Linux `keyctl_get_persistent` refuses a uid other than
-/// the caller's own unless the caller holds `CAP_SETUID`
-/// (`security/keys/persistent.c`), and links the ring into `destid`.
-/// `uid == -1` means "my own". # C: O(N)
+/// `KEYCTL_GET_PERSISTENT` core — Linux `keyctl_get_persistent` +
+/// `key_get_persistent`.
+///
+/// The persistent keyring is NOT the user keyring. It is a separate
+/// `_persistent.<uid>` ring held in a kernel-wide `.persistent_register`, and
+/// the difference is its whole purpose: the user keyring dies with the user's
+/// last session, while the persistent one survives logout so a cron job or a
+/// systemd unit can still find the credentials a login left behind. Aliasing
+/// the two hands a caller a keyring with the wrong lifetime and the wrong
+/// owner.
+///
+/// Order:
+///   1. `uid == -1` means the caller's own, with no capability check; a
+///      different uid needs `CAP_SETUID` — not `CAP_SYS_ADMIN`, because reading
+///      another user's cached credentials is an identity operation;
+///   2. a destination is MANDATORY (`destid == 0` is ENOKEY out of the id
+///      resolver) and must be a keyring (ENOTDIR): the ring is useless to the
+///      caller unless it is linked somewhere reachable;
+///   3. the ring needs `KEY_NEED_LINK`, then it is linked and its expiry is
+///      REFRESHED. That refresh is the "persistent" contract — the ring lives
+///      three days from its last use, not three days from creation.
+/// # C: O(N)
 pub fn get_persistent(c: &Ctx, uid: i32, destid: i32) -> i64 {
-    if uid != -1 && uid as u32 != c.t.fsuid && !c.sys_admin { return e(Errno::Eperm); }
+    const SELF_UID: i32 = -1;
+    let target = if uid == SELF_UID { c.t.fsuid } else {
+        if uid < 0 { return e(Errno::Einval); }
+        uid as u32
+    };
+    if target != c.t.fsuid && !c.set_uid { return e(Errno::Eperm); }
     let mut g = STORE.lock();
-    let ring = match g.resolve(KEY_SPEC_USER_KEYRING, &c.t) { Ok(s) => s, Err(err) => return e(err) };
-    if destid != 0 {
-        let dest = match g.resolve(destid, &c.t) { Ok(d) => d, Err(err) => return e(err) };
-        if let Err(rv) = check_perm(&g, dest, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
-        if let Err(err) = g.link(dest, ring) { return e(err); }
-    }
+    let dest = match g.resolve(destid, &c.t) { Ok(d) => d, Err(err) => return e(err) };
+    if let Err(rv) = check_perm(&g, dest, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
+    if g.keys.get(&dest).map(|k| !k.is_keyring()).unwrap_or(true) { return e(Errno::Enotdir); }
+    let ring = match persistent_keyring(&mut g, target, &c.t) { Ok(r) => r, Err(err) => return e(err) };
+    // The persistent keyring is reachable from nothing the caller owns, so its
+    // LINK check is made as its possessor — being handed the ring is what
+    // possession means here.
+    if let Err(rv) = check_perm_with(&g, ring, &c.t, KEY_NEED_LINK, c.now_ns, Possess::Yes) { return rv; }
+    if let Err(err) = g.link(dest, ring) { return e(err); }
+    let k = g.keys.get_mut(&ring).expect("presence proved under the same held lock");
+    k.expiry_ns = c.now_ns.saturating_add(PERSISTENT_KEYRING_EXPIRY.saturating_mul(NS_PER_SEC));
     ring as i64
+}
+
+const NS_PER_SEC: u64 = 1_000_000_000;
+
+/// `key_get_persistent`: find or create `_persistent.<uid>` inside the
+/// `.persistent_register`, creating the register itself on first use. Both are
+/// allocated outside the quota — a user must not be unable to reach its own
+/// persistent credentials because it is at its key limit. # C: O(N)
+fn persistent_keyring(g: &mut Store, uid: u32, t: &TaskIds) -> Result<i32, Errno> {
+    let register = match g.persistent_register {
+        Some(r) => r,
+        None => {
+            // Owned by root, and dot-prefixed so no `KEYCTL_JOIN_SESSION_KEYRING`
+            // can name it.
+            let r = g.mint_not_in_quota(types::keyring_type(), PERSISTENT_REGISTER_NAME,
+                ROOT_UID, ROOT_UID, PERSISTENT_KEYRING_PERM)?;
+            g.persistent_register = Some(r);
+            r
+        }
+    };
+    let name = alloc::format!("{PERSISTENT_PREFIX}{uid}");
+    let existing = g.keys.get(&register).map(|r| r.members.clone()).unwrap_or_default().into_iter()
+        .find(|s| g.keys.get(s).map(|k| k.is_keyring() && k.description == name).unwrap_or(false));
+    if let Some(s) = existing { return Ok(s); }
+    let _ = t;
+    let ring = g.mint_not_in_quota(types::keyring_type(), &name, uid, GID_INVALID,
+        PERSISTENT_KEYRING_PERM)?;
+    g.link(register, ring)?;
+    Ok(ring)
 }
 
 /// `KEYCTL_SET_REQKEY_KEYRING` core — Linux `keyctl_set_reqkey_keyring`:

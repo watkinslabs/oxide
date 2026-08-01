@@ -82,7 +82,22 @@ static TYPES: &[KeyType] = &[
     // proportion to its size.
     KeyType { name: "big_key", readable: true,  updatable: true,  is_keyring: false,
               vet_colon: false, restrictable: false, payload_rule: PayloadRule::Big },
+    // The instantiation authorisation token. Registered like any other type,
+    // and unreachable from userspace by name for the same reason Linux's is:
+    // `key_get_type_from_user` rejects a `.`-prefixed name with EPERM, so no
+    // caller can `add_key` one or aim `KEYCTL_SEARCH` at the type. Its payload
+    // is the requester's callout info, which `KEYCTL_READ` hands to the helper
+    // holding the token — that is how `/sbin/request-key` learns what it was
+    // asked to build.
+    KeyType { name: REQKEY_AUTH_TYPE, readable: true, updatable: false, is_keyring: false,
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty },
 ];
+
+/// The authorisation-token type, for the paths that mint one directly.
+/// # C: O(types)
+pub fn auth_type() -> &'static KeyType {
+    lookup(REQKEY_AUTH_TYPE).expect("the authorisation-token type is registered unconditionally")
+}
 
 /// Linux `key_type_lookup`. # C: O(types)
 pub fn lookup(name: &str) -> Option<&'static KeyType> {
