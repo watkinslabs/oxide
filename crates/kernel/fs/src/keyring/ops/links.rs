@@ -191,8 +191,7 @@ pub fn request_key_core(c: &Ctx, key_type: &str, description: &str, callout: Opt
             if let Err(rv) = check_perm(&g, d, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
             Some(d)
         };
-        let roots = g.cred_roots(&c.t);
-        match search::search(&g, &roots, &c.t, ty.name, description, c.now_ns, Expired::Skip) {
+        match search::search_process(&g, &c.t, ty.name, description, c.now_ns, Expired::Skip) {
             Ok(s) => (dest_ring, Some(s)),
             Err(x) if x == search::NO_MATCH => (dest_ring, None),
             Err(x) => return -(x as i64),

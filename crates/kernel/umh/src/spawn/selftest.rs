@@ -16,7 +16,12 @@ use crate::uapi::{UMH_WAIT_EXEC, UMH_WAIT_PROC};
 /// Program every root has, used to prove a helper reaches user mode and exits.
 const PRESENT: &[u8] = b"/usr/bin/true";
 /// Program no root has, used to prove a missing helper reports its real error.
-const ABSENT: &[u8] = b"/sbin/request-key";
+///
+/// It must be a path nothing can ever install. This was `/sbin/request-key`
+/// until the images grew keyutils, at which point both `absent-*` cases
+/// silently started reporting success — a self-test that passes by testing
+/// nothing.
+const ABSENT: &[u8] = b"/nonexistent/oxide-umh-absent";
 /// A directory, used to prove the executability gate runs.
 const NOT_A_PROGRAM: &[u8] = b"/usr/bin";
 
