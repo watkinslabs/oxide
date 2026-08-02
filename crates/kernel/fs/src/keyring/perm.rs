@@ -23,7 +23,9 @@ use super::uapi::*;
 ///     membership is the full supplementary list (`groups_search`), not just
 ///     the fsgid.
 /// # C: O(members + groups) via possession search
-pub(super) fn key_task_permission(g: &Store, key: &Key, t: &TaskIds, need: u32) -> Result<(), Errno> {
+pub(super) fn key_task_permission(g: &Store, key: &Key, t: &TaskIds, need: u32, now_ns: u64)
+    -> Result<(), Errno>
+{
     let mut kperm = if key.uid == t.fsuid {
         (key.perm >> KEY_PERM_USR_SHIFT) & KEY_PERM_BYTE_MASK
     } else if key.gid != GID_INVALID && key.perm & KEY_GRP_ALL != 0 && t.in_group(key.gid) {
@@ -31,16 +33,42 @@ pub(super) fn key_task_permission(g: &Store, key: &Key, t: &TaskIds, need: u32) 
     } else {
         (key.perm >> KEY_PERM_OTH_SHIFT) & KEY_PERM_BYTE_MASK
     };
-    if is_possessed(g, key.serial, t) { kperm |= (key.perm >> KEY_PERM_POS_SHIFT) & KEY_PERM_BYTE_MASK; }
+    if is_possessed(g, key.serial, t, now_ns) { kperm |= (key.perm >> KEY_PERM_POS_SHIFT) & KEY_PERM_BYTE_MASK; }
     if kperm & need == need { Ok(()) } else { Err(Errno::Eacces) }
 }
 
 /// Does `t` possess `target` — reachable from one of `t`'s own thread/process/
 /// session/user/user-session keyrings, transitively through nested keyrings?
-/// Linux `is_key_possessed`. Peeks the per-task maps (no lazy-create side
-/// effect); cycle-safe via `visited`. # C: O(members)
-pub(super) fn is_possessed(g: &Store, target: i32, t: &TaskIds) -> bool {
-    let roots = g.possession_roots(t);
+/// Linux `is_key_possessed`.
+///
+/// And, when `t` is servicing an upcall, from the REQUESTER's keyrings too:
+/// `lookup_user_key` decides possession by running `search_process_keyrings`
+/// for the key itself, which follows the assumed token into the requesting
+/// task's keyrings. Without that half a helper cannot write the answer into the
+/// keyring it was TOLD to cache it in — a session keyring grants its owner
+/// View and Read through the user byte and Write only through the possessor
+/// byte, so `KEYCTL_INSTANTIATE <key> <payload> %S` is EACCES and no real
+/// construction can complete.
+///
+/// A token is excluded for the same reason it is excluded from the search:
+/// authority is handed over, never found.
+///
+/// Peeks the per-task maps (no lazy-create side effect); cycle-safe via
+/// `visited`. # C: O(members)
+pub(super) fn is_possessed(g: &Store, target: i32, t: &TaskIds, now_ns: u64) -> bool {
+    if reachable(g, g.possession_roots(t), target) { return true; }
+    if g.keys.get(&target).map(|k| k.key_type.name == REQKEY_AUTH_TYPE).unwrap_or(false) {
+        return false;
+    }
+    match super::auth::assumed_requester(g, t, now_ns) {
+        Some(rq) => reachable(g, g.possession_roots(&rq), target),
+        None => false,
+    }
+}
+
+/// Is `target` one of `roots`, or reachable from one through nested keyrings?
+/// # C: O(members)
+fn reachable(g: &Store, roots: alloc::vec::Vec<i32>, target: i32) -> bool {
     if roots.contains(&target) { return true; }
     let mut visited: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
     let mut stack = roots;
@@ -100,7 +128,7 @@ pub(crate) fn check_perm(g: &Store, serial: i32, t: &TaskIds, need: u32, mode: L
     if mode == Lookup::Full {
         key_validate(key, now_ns).map_err(|e| -(e.as_i32() as i64))?;
     }
-    key_task_permission(g, key, t, need).map_err(|e| -(e.as_i32() as i64))
+    key_task_permission(g, key, t, need, now_ns).map_err(|e| -(e.as_i32() as i64))
 }
 
 /// How a call site decides whether the possessor perm byte applies —
@@ -140,7 +168,7 @@ pub(crate) fn check_perm_with(g: &Store, serial: i32, t: &TaskIds, need: u32, no
         (key.perm >> KEY_PERM_OTH_SHIFT) & KEY_PERM_BYTE_MASK
     };
     let possessed = match possess {
-        Possess::Computed => is_possessed(g, serial, t),
+        Possess::Computed => is_possessed(g, serial, t, now_ns),
         Possess::Yes => true,
         Possess::No => false,
     };
@@ -153,5 +181,5 @@ pub(crate) fn check_perm_with(g: &Store, serial: i32, t: &TaskIds, need: u32, no
 /// invisible — no ENOKEY/EACCES split, it just never matches, matching Linux
 /// hiding existence from keyring search. # C: O(members)
 pub(crate) fn visible_for_search(g: &Store, key: &Key, t: &TaskIds, now_ns: u64) -> bool {
-    key_validate(key, now_ns).is_ok() && key_task_permission(g, key, t, KEY_NEED_SEARCH).is_ok()
+    key_validate(key, now_ns).is_ok() && key_task_permission(g, key, t, KEY_NEED_SEARCH, now_ns).is_ok()
 }

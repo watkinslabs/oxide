@@ -28,6 +28,12 @@ use super::super::uapi::*;
 /// # C: O(N)
 pub fn instantiate_core(c: &Ctx, id: i32, payload: Vec<u8>, ringid: i32) -> i64 {
     if payload.len() as u64 > KEY_MAX_PAYLOAD { return e(Errno::Einval); }
+    let rv = instantiate_inner(c, id, payload, ringid);
+    super::super::trace::step(b"instantiate", c.t.tid, id, rv);
+    rv
+}
+
+fn instantiate_inner(c: &Ctx, id: i32, payload: Vec<u8>, ringid: i32) -> i64 {
     let mut g = STORE.lock();
     let (authkey, a) = match auth::held_auth(&g, &c.t) { Ok(x) => x, Err(err) => return e(err) };
     if a.target != id { return e(Errno::Eperm); }
@@ -81,6 +87,7 @@ pub fn reject_core(c: &Ctx, id: i32, timeout: u64, error: u32, ringid: i32) -> i
 pub fn assume_authority_core(c: &Ctx, id: i32) -> i64 {
     let mut g = STORE.lock();
     if id < 0 { return e(Errno::Einval); }
+    super::super::trace::step(b"assume", c.t.tid, id, 0);
     if id == 0 { auth::change_reqkey_auth(&mut g, c.t.tid, None); return 0; }
     let authkey = match auth::get_instantiation_authkey(&g, id, &c.t, c.now_ns) {
         Ok(a) => a, Err(err) => return e(err),

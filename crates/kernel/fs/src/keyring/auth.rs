@@ -83,8 +83,7 @@ pub fn get_instantiation_authkey(g: &Store, target: i32, t: &TaskIds, now_ns: u6
     -> Result<i32, Errno>
 {
     let desc = alloc::format!("{target:x}");
-    let roots = g.cred_roots(t);
-    match search::search(g, &roots, t, REQKEY_AUTH_TYPE, &desc, now_ns, Expired::Report) {
+    match search::search_process(g, t, REQKEY_AUTH_TYPE, &desc, now_ns, Expired::Report) {
         Ok(s) => {
             let k = g.keys.get(&s).ok_or(Errno::Enokey)?;
             if k.revoked { return Err(Errno::Ekeyrevoked); }
@@ -175,6 +174,16 @@ pub fn instantiation_keyring(g: &mut Store, ringid: i32, a: &AuthData, t: &TaskI
         return Ok(if a.dest_keyring == 0 { None } else { Some(a.dest_keyring) });
     }
     Err(-(Errno::Enokey.as_i32() as i64))
+}
+
+/// The identity recorded in the live token the caller has assumed — `rka->cred`
+/// — whose keyrings both the process-keyrings search and the possession test
+/// fall back to. `None` when the caller is servicing no upcall, which is the
+/// state that keeps that reach exactly as wide as the authority. # C: O(log N)
+pub(super) fn assumed_requester(g: &Store, t: &TaskIds, now_ns: u64) -> Option<TaskIds> {
+    let a = *g.authkey.get(&t.tid)?;
+    if !auth_is_live(g, a, now_ns) { return None; }
+    g.keys.get(&a)?.auth.as_ref().map(|d| d.requester.clone())
 }
 
 /// The token's own validity, for the paths that must not act under an expired

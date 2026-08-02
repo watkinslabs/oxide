@@ -234,7 +234,7 @@ pub fn read_core(c: &Ctx, serial: i32, buflen: u64) -> Result<Vec<u8>, i64> {
     // all, so a `logon` key the caller may not touch is EACCES, not the
     // EOPNOTSUPP that would leak that the payload is write-only.
     if check_perm(&g, serial, &c.t, KEY_NEED_READ, Lookup::Full, c.now_ns).is_err()
-        && !super::super::perm::is_possessed(&g, serial, &c.t)
+        && !super::super::perm::is_possessed(&g, serial, &c.t, c.now_ns)
     {
         return Err(e(Errno::Eacces));
     }

@@ -23,6 +23,10 @@ use super::super::ops::{add_key_core, assume_authority_core, get_keyring_id, ins
     join_session, read_core, reject_core, request_key_core, vet_iov_count};
 use super::super::store::{TaskIds, STORE};
 
+/// The two transitions a real helper puts between "authority assumed" and "key
+/// answered": `exec` into the handler, `fork` into the program that answers.
+mod chain;
+
 /// Synthetic helper tids, distinct from any requester's.
 static HELPER_TID: AtomicU32 = AtomicU32::new(900_000);
 
@@ -42,7 +46,9 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// The behaviour a test selects through the key description it asks for.
 fn behaviour(desc: &str) -> &'static str {
-    for b in ["unrunnable", "silent", "negate", "reject", "dest", "instantiate"] {
+    for b in ["unrunnable", "silent", "negate", "reject", "dest", "chain", "execonly", "borrow", "sessiondest",
+        "instantiate"]
+    {
         if desc.starts_with(b) { return b; }
     }
     "instantiate"
@@ -72,6 +78,19 @@ fn test_helper(a: &HelperArgs) -> i64 {
         "reject" => reject_core(&h, a.key, 60, Errno::Ekeyrejected.as_i32() as u32, 0),
         // Instantiate into the REQUESTOR's keyring rather than naming one.
         "dest" => instantiate_core(&h, a.key, b"from-helper".to_vec(), KEY_SPEC_REQUESTOR_KEYRING),
+        // The shape a real `/sbin/request-key` has: assume authority, EXEC the
+        // configured handler, and let a FORKED child answer the key. See
+        // `chain`.
+        "chain" => chain::answer_after_exec_and_fork(a, tid),
+        // The exec half on its own, so a divestment there is distinguishable
+        // from a fork that drops the token.
+        "execonly" => chain::answer_after_exec(a, &h, tid),
+        // A handler that needs one of the REQUESTER's keys reaches it through
+        // the token it holds. See `chain`.
+        "borrow" => chain::answer_after_borrowing_a_requester_key(a, &h),
+        // Name the requester's session keyring by serial, the way the stock
+        // handler's `%S` does. See `chain`.
+        "sessiondest" => chain::answer_into_requester_session(a, &h),
         _ => instantiate_core(&h, a.key, b"from-helper".to_vec(), 0),
     };
     assert_eq!(rc, 0, "the helper answered the key: {desc}");

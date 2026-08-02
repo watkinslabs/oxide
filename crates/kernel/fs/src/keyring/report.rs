@@ -88,7 +88,7 @@ pub fn proc_keys(t: &TaskIds, now_ns: u64) -> String {
     let g = STORE.lock();
     let mut out = String::new();
     for k in g.keys.values() {
-        if key_task_permission(&g, k, t, KEY_NEED_VIEW).is_err() { continue; }
+        if key_task_permission(&g, k, t, KEY_NEED_VIEW, now_ns).is_err() { continue; }
         out.push_str(&format!("{:08x} {} {:5} {:>4} {:08x} {:5} {:5} {:<9.9} {}\n",
             k.serial, flag_field(k), usage_field(&g, k.serial), timeout_field(k, now_ns),
             k.perm, k.uid as i32, k.gid as i32, k.key_type.name, describe_field(k)));

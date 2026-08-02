@@ -70,6 +70,7 @@ debug-sched = []
 debug-wakelat = ["sched/debug-wakelat"]  # epoll_wait busy-wait stall probe ([WLBLK]) for the gnome wakeup-latency hunt
 # F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.
 debug-ssh = []
+debug-keyring = []  # [KEYRING] construction/instantiation outcome trace for the request_key upcall
 # Level-triggered epoll readiness trace ([epoll-lvl]) — busy-loop diagnosis.
 debug-epoll = []
 debug-displaystack = []  # [EP-NOTIFY] per-interest epoll callback trace
