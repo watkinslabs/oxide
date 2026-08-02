@@ -50,24 +50,51 @@ impl Control {
     pub fn copy_to(&mut self, user: &RecvUser) -> Result<usize, i64> {
         let mut copied = 0usize;
         for (level, ty, data) in &self.entries {
-            let full_len = CMSG_HDR + data.len();
-            let remaining = self.cap.saturating_sub(copied);
-            if remaining < CMSG_HDR { self.flags |= MSG_CTRUNC as u32; continue; }
-            let advance = core::cmp::min(aligned(full_len), remaining);
-            let data_len = core::cmp::min(data.len(), remaining - CMSG_HDR);
-            if remaining < full_len { self.flags |= MSG_CTRUNC as u32; }
-            let cmsg_len = CMSG_HDR + data_len;
-            let mut entry = alloc::vec![0u8; cmsg_len];
-            entry[..8].copy_from_slice(&(cmsg_len as u64).to_ne_bytes());
-            entry[8..12].copy_from_slice(&level.to_ne_bytes());
-            entry[12..16].copy_from_slice(&ty.to_ne_bytes());
-            entry[CMSG_HDR..CMSG_HDR + data_len].copy_from_slice(&data[..data_len]);
+            let Some((entry, advance, truncated)) =
+                encode_entry(*level, *ty, data, self.cap.saturating_sub(copied))
+            else { self.flags |= MSG_CTRUNC as u32; continue; };
+            if truncated { self.flags |= MSG_CTRUNC as u32; }
             let Some(dst) = user.control.checked_add(copied as u64) else { continue; };
             uaccess::copy_to_user(dst, &entry).map_err(errno)?;
             copied += advance;
         }
         Ok(copied)
     }
+
+    /// The same stream as one buffer, for the option read that publishes a
+    /// control stream instead of a value. # C: O(entries + data)
+    pub fn to_bytes(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (level, ty, data) in &self.entries {
+            let Some((entry, advance, truncated)) =
+                encode_entry(*level, *ty, data, self.cap.saturating_sub(out.len()))
+            else { self.flags |= MSG_CTRUNC as u32; continue; };
+            if truncated { self.flags |= MSG_CTRUNC as u32; }
+            let at = out.len();
+            out.resize(at + advance, 0);
+            out[at..at + entry.len()].copy_from_slice(&entry);
+        }
+        out
+    }
+}
+
+/// One control message's bytes, how far the cursor advances past it, and
+/// whether the payload was cut short. `None` when not even the header fits.
+/// # C: O(data)
+fn encode_entry(level: i32, ty: i32, data: &[u8], remaining: usize)
+    -> Option<(Vec<u8>, usize, bool)>
+{
+    if remaining < CMSG_HDR { return None; }
+    let full_len = CMSG_HDR + data.len();
+    let advance = core::cmp::min(aligned(full_len), remaining);
+    let data_len = core::cmp::min(data.len(), remaining - CMSG_HDR);
+    let cmsg_len = CMSG_HDR + data_len;
+    let mut entry = alloc::vec![0u8; cmsg_len];
+    entry[..8].copy_from_slice(&(cmsg_len as u64).to_ne_bytes());
+    entry[8..12].copy_from_slice(&level.to_ne_bytes());
+    entry[12..16].copy_from_slice(&ty.to_ne_bytes());
+    entry[CMSG_HDR..CMSG_HDR + data_len].copy_from_slice(&data[..data_len]);
+    Some((entry, advance, remaining < full_len))
 }
 
 /// Preserve receive-only input flags that Linux returns in `msg_flags`. # C: O(1)
