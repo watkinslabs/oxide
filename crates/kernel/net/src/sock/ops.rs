@@ -342,6 +342,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         (c.remote.ip, c.remote.port)
     };
     let new_sock = InetSocket::from_accepted_tcp(sock, entry.clone());
+    record_accepted_header(&new_sock, &entry);
     inherit_tcp_keepalive_opts(&new_sock, sock);
     inherit_tcp_oobinline(&new_sock, sock);
     new_sock.opts.tcp.inherit(&sock.opts.tcp);

@@ -50,7 +50,8 @@ impl NetStack {
         // SYN-ACK from this, and a SYN whose data is taken must deliver that
         // data before the acknowledgement covering it is built.
         let plan = super::tcp_fastopen::plan(&listener, hdr, seg, src_ip, dst_ip, &metrics);
-        let new_entry = build_passive_child(local_ep, own_mss, metrics, packet, &listener);
+        let new_entry = build_passive_child(local_ep, own_mss, metrics, packet, &listener,
+            iface, ipv6);
         plan.install(&new_entry);
         let resp = match new_entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
@@ -159,9 +160,10 @@ fn select_listener_for_syn(stack: &NetStack, net_ns: u64, iface: NetIfaceId, src
 /// child sock (`inet_csk_clone_lock`) rather than building a connection on the stack.
 /// # C: O(1)
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn build_passive_child(local_ep: Endpoint, own_mss: u16,
     metrics: crate::route_metrics::RouteMetrics, packet: &[u8],
-    listener: &Arc<TcpListenEntry>) -> Arc<TcpEntry>
+    listener: &Arc<TcpListenEntry>, iface: NetIfaceId, ipv6: bool) -> Arc<TcpEntry>
 {
     let mut conn = TcpConn::new_listener(local_ep);
     conn.own_mss = own_mss;
@@ -172,6 +174,10 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16,
     // connection if nobody does.
     conn.syn_bytes = Some(
         packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
+    let (iif, ttl, tos) = crate::tcp_conn::passive_rcv_header(packet, ipv6, iface.raw());
+    conn.rcv_iif = iif;
+    conn.rcv_ttl = ttl;
+    conn.rcv_tos = tos;
     Arc::new(TcpEntry::new_bound_full(
         conn, Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
         Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)),

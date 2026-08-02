@@ -98,6 +98,7 @@ impl TcpConn {
             ack_pending: false,
             ack_deadline_ns: 0,
             syn_bytes: None,
+            rcv_iif: 0, rcv_ttl: 0, rcv_tos: 0,
             rsk: crate::tcp_conn::reqsk::ReqSock::default(),
         }
     }
@@ -191,6 +192,7 @@ impl TcpConn {
             ack_pending: false,
             ack_deadline_ns: 0,
             syn_bytes: None,
+            rcv_iif: 0, rcv_ttl: 0, rcv_tos: 0,
             rsk: crate::tcp_conn::reqsk::ReqSock::default(),
         }
     }
