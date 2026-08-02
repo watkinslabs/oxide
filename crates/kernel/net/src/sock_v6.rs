@@ -198,6 +198,9 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
     {
         return Ok(payload.len());
     }
+    // A v4-mapped destination leaves as an IPv4 datagram, so an unset hop
+    // budget is the sentinel the IPv4 transmit path resolves against the
+    // route, and the checksum suppression is the IPv4 one.
     let ttl = if dst_ip.is_multicast() {
         sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) as u8
     } else {
@@ -209,6 +212,7 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
         sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8, ttl,
         sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
         sock.opts.ip.options().as_ref(),
+        sock.opts.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX),
     )?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }
     Ok(payload.len())
