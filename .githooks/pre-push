@@ -10,6 +10,13 @@
 #      feature unification with a dependant. B1660 reached main red for
 #      `cargo check -p net` with all of them green.
 #      Bypass: SKIP_HOSTED_GATE=1.
+#   1b. test-build-gate (EVERY push that touches those surfaces): BUILD every
+#      crate's test targets on its own. `cargo check -p <crate>` compiles no
+#      test targets at all, so gate 1 is silent about `#[cfg(test)]` trees,
+#      `tests/` directories and dev-dependencies. `cargo test -p procfs` did
+#      not build on main; its 155 tests only ever ran under `--workspace`,
+#      where a sibling's dev-dependency unified `sched/hosted` on.
+#      Bypass: SKIP_TEST_BUILD_GATE=1.
 #   2. feature-gate (EVERY push, branch or main): type-check both arches with
 #      `--features debug-all`. Nothing else in the routine set compiles
 #      feature-gated code, so a compile error inside `debug_boot! { … }` or any
@@ -120,6 +127,25 @@ else
     if ! make hosted-gate; then
         echo "pre-push: FAIL — a crate does not type-check on its own (make hosted-gate)" >&2
         echo "         push aborted; fix the gating or SKIP_HOSTED_GATE=1 to bypass" >&2
+        exit 1
+    fi
+fi
+
+# ---- gate 1b: every crate's TEST targets build on their own ---------------
+# `cargo check -p <crate>` compiles no test targets, so gate 1 says nothing
+# about whether `cargo test -p <crate>` builds. `cargo test -p procfs` did not
+# build at all on main and its 155 tests only ran under `--workspace`, where a
+# sibling's dev-dependency unified `sched/hosted` on. Every routine gate was
+# green throughout.
+if [ "${SKIP_TEST_BUILD_GATE:-0}" = "1" ]; then
+    echo "pre-push: SKIP_TEST_BUILD_GATE=1 set, bypassing test-build-gate"
+else
+    echo "pre-push: kernel change — running test-build-gate (per-crate cargo test --no-run)"
+    if ! make test-build-gate; then
+        echo "pre-push: FAIL — a crate's test targets do not build on their own" >&2
+        echo "         (make test-build-gate); its tests run only under feature" >&2
+        echo "         unification. Fix the crate's own features/deps, or" >&2
+        echo "         SKIP_TEST_BUILD_GATE=1 to bypass." >&2
         exit 1
     fi
 fi
