@@ -59,6 +59,42 @@ fi
 # GRUB bring-up milestone.
 MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 
+# ...but the passive marker CANNOT be the only proof, because whether it is
+# printed at all is the IMAGE's decision, not the kernel's. Measured on a
+# healthy boot: systemd's status messages reach the serial line until journald
+# starts at t=6.4s, and after `Received client request to flush runtime
+# journal.` the serial console is SILENT for the next 547 seconds while the
+# guest boots all the way to a GNOME session. `basic.target` is activated in
+# that silent window, so the marker never appears and the gate times out on a
+# kernel that is completely healthy. Enabling `debug-boot` does not change it
+# (measured): the missing line is userspace's, not klog's.
+#
+# So the gate ALSO asks the guest a question and waits for its answer. The
+# serial line already has a writable FIFO ($SYSRQ_WFD, used for the sysrq RX
+# probe below) and the boot command line already carries
+# `systemd.debug_shell=ttyS0`, so typing a shell command and matching its
+# output proves — with no dependence on any log routing — that init ran, that
+# a service started, that fork/exec works, and that the tty carries bytes in
+# BOTH directions. A boot that reaches a desktop always answers it; a boot
+# whose userspace is broken cannot.
+#
+# Either proof passes the attempt. Set SMOKE_ALIVE_PROBE='' to require the
+# passive marker alone (a profile with no debug shell), or override the
+# command with SMOKE_ALIVE_CMD.
+ALIVE_PROBE="${SMOKE_ALIVE_PROBE-1}"
+# The nonce is SPLIT BY QUOTES in the command and whole only in the OUTPUT, so
+# the guest's echo of what we typed can never match it — only a shell that
+# actually evaluated the line can produce it. That makes the probe proof of
+# evaluation rather than of byte-mirroring, and it removes the need for a `^`
+# anchor: the reply carries a bracketed-paste escape prefix, so an anchored
+# match silently never fires (measured — the first version of this probe was
+# answered correctly and still failed to match).
+# The serial echo path is known to duplicate a character occasionally; a
+# corrupted typing simply fails to match and the next cycle retypes it.
+ALIVE_NONCE="OXIDE-ALIVE-OK"
+ALIVE_CMD="${SMOKE_ALIVE_CMD:-echo OXIDE-AL\"IVE\"-OK}"
+ALIVE_MARKER="${SMOKE_ALIVE_MARKER:-$ALIVE_NONCE}"
+
 # Failure marker: an unrecoverable kernel fault. The boot is dead the moment this
 # appears — the fault handler parks the PE and nothing further will be printed, so
 # waiting out the remaining timeout gains nothing and costs a pegged core per
@@ -247,7 +283,25 @@ check_serial_rx() {
     return 1
 }
 
-# Run one boot; return 0 if `oxide login:` appears within TIMEOUT.
+# Type a command at the guest's serial debug shell and report whether its
+# output came back. Called once per poll cycle; each call types the command
+# again, so a shell that starts late (or a typing corrupted by the known serial
+# echo defect) is simply retried on the next cycle rather than failing the run.
+#
+# Cheap by construction: one short write per 2s cycle, and the match is the
+# same `grep` over the same log the passive marker uses. # Returns 0 once the
+# guest has answered.
+probe_userspace_alive() {
+    [ -n "$ALIVE_PROBE" ] || return 1
+    [ -n "${SYSRQ_WFD:-}" ] || return 1
+    # Nothing to talk to until the kernel has handed off to userspace; typing
+    # into the kernel's own console before that just adds noise to the log.
+    grep -qa '^\[[0-9]' "$LOG" 2>/dev/null || return 1
+    printf '%s\n' "$ALIVE_CMD" >&"$SYSRQ_WFD" 2>/dev/null || return 1
+    grep -qaE "$ALIVE_MARKER" "$LOG" 2>/dev/null
+}
+
+# Run one boot; return 0 if the guest proves itself alive within TIMEOUT.
 attempt_boot() {
     # Before anything opens the image: release it if a killed predecessor is
     # still holding it, or this attempt fails with no kernel output at all.
@@ -289,15 +343,24 @@ attempt_boot() {
             close_sysrq
             return 1
         fi
+        # Ask the guest whether its userspace is alive, once the kernel has
+        # printed enough that init could plausibly have run. Typing costs
+        # nothing on a boot that is going to print the passive marker anyway.
+        local proof=""
         if grep -qF "$MARKER" "$LOG" 2>/dev/null; then
+            proof="marker '$MARKER'"
+        elif probe_userspace_alive; then
+            proof="userspace answered '$ALIVE_CMD' on serial"
+        fi
+        if [ -n "$proof" ]; then
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
-            echo "boot-smoke: $ARCH reached marker '$MARKER' in ${elapsed}s (attempt $1)"
+            echo "boot-smoke: $ARCH proved alive by $proof in ${elapsed}s (attempt $1)"
             if ! check_serial_rx; then
                 keep_log_copy "$1" "no-serial-rx"
                 close_sysrq
                 return 1
             fi
-            echo "boot-smoke: PASS — $ARCH reached marker '$MARKER' in ${elapsed}s (attempt $1)"
+            echo "boot-smoke: PASS — $ARCH proved alive by $proof in ${elapsed}s (attempt $1)"
             keep_log_copy "$1" "pass"
             close_sysrq
             return 0

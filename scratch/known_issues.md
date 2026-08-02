@@ -32,19 +32,20 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Section | DEFECT | MISSING | COVERAGE | INFRA | total |
 |---|---|---|---|---|---|
-| Net / socket | 29 | 19 | 22 | 0 | 70 |
+| Net / socket | 29 | 19 | 23 | 0 | 71 |
 | Filesystem / mount | 28 | 13 | 5 | 0 | 46 |
 | Memory / MM | 19 | 3 | 3 | 0 | 25 |
 | Process / exec / signals | 14 | 1 | 4 | 0 | 19 |
 | Drivers / devices | 12 | 1 | 5 | 0 | 18 |
 | Kernel core | 4 | 2 | 1 | 0 | 7 |
 | Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **106** | **39** | **40** | **51** | **236** |
+| **total** | **106** | **39** | **41** | **51** | **237** |
 
 ## Net / socket
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| OPEN | COVERAGE | low | `syscalls::socket_control_tests::netlink_getsockopt_imports_optlen_before_dispatch_or_value_copyout` fails on `origin/main` (`0f39c79cb`), unrelated to this lane: it is an `include_str!` source-ORDER assertion (`import < negative && negative < dispatch && dispatch < value`) that a source edit invalidated. Reproduced on the untouched base before any change here, and the count is identical after (1208 passed, 1 failed). It is an instance of the curated row that opens "`syscalls::socket_control_tests` proves nothing about behaviour" — a gate that cannot fail on a behaviour change but can fail on a harmless reordering. | `cargo test -p syscalls` on `0f39c79cb` and on this branch: same single failure, same assertion at `socket_control_tests.rs:123`. | unowned |
 | OPEN | DEFECT | high | **Incremental-compilation MISCOMPILE in `sock_opts::sol_tcp::set::admit`.** Adding a call to a cross-module `pub fn clamp_qlen(a,b) -> i32 { min(a,b) }` in the `TCP_FASTOPEN` arm made the *neighbouring, untouched* `TCP_LINGER2` arm return `Linger2(-5)` for input `-5` — i.e. `if val < 0 { -1 }` produced `-5` with `val == -5`. Instrumenting the arm made it correct again (observation changes the result), which is the signature of a codegen bug, not a source defect. Mitigated in this PR by `#[inline]` on `clamp_qlen`; the mitigation is fragile — any future edit could re-trigger it in another function. | Reproduction on this branch: revert `#[inline]` on `tcp_fastopen::queue::clamp_qlen`, then `cargo test -p net the_orphan` → `FAILED` (`left: Ok(Linger2(-5))`, `right: Ok(Linger2(-1))`); `CARGO_INCREMENTAL=0 cargo test -p net the_orphan` → `ok` with the SAME source. `main` (a90153f0f) is green both ways. Toolchain `nightly-2026-05-01`. | unclaimed |
 | OPEN | DEFECT | med | `cargo test --workspace --no-fail-fast` on `main` (`460dc8e89`) is NOT green and its failing set is UNSTABLE run to run — same class as this row (global process state shared by parallel tests), none of them owned here. Run 1 failed `drv-virtio-input` (`devfs::tests::lifetime::{reused_event_number_cannot_retarget_old_open_file, state_reconciliation_flushes_only_querying_client}`, both at `lifetime.rs:24` — a `publish_endpoint` collision on fixed event ids), `fbcon` (`kernel::tests::try_lock_vt_excludes_the_flush_softirq`), `softirq` (`tests::raise_then_run_invokes_handler`), plus `pmm`/`socket`. Run 2 (this branch) failed a DIFFERENT `fbcon` test (`tests::one_line_of_output_damages_only_that_text_row`) and a `net` test that was green in run 1 (`stack::ethernet::tests::ethernet_ingress_rejects_a_truncated_link_header_before_l3`, `Option::unwrap()` on None at `net/src/stack/core.rs:193`), while `drv-virtio-input` and `softirq` passed. So per-package green does not imply workspace green, and one workspace run does not characterize the failing set. | Two full runs captured; failing package lists differ (`drv-virtio-input,fbcon,pmm,socket,softirq` vs `fbcon,net,socket`). | — |
 | OPEN | DEFECT | med | **`napi::skb_page_frag_refill` leaks on every call and refills nothing.** It calls `__napi_alloc_frag_align(sz, 0)` → `alloc_zeroed`, binds the result, null-tests it, and drops the pointer. The `page_frag` argument it is meant to populate is only null-checked, never written. Every invocation leaks `sz` bytes and returns `true`. | `crates/kernel/modules/src/linux_netdev/napi.rs`, `skb_page_frag_refill` body: `p` has no other use, and there is no `dealloc` or store into `page_frag`. The unsafe block itself is sound (no caller pointer is dereferenced), so it was commented honestly and left. | unclaimed |
