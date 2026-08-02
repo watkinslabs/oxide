@@ -71,14 +71,14 @@ fn namespace_teardown_drops_raw4_fragment_queue_without_cross_namespace_delivery
     let final_fragment = packet(PROTOCOL, Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK, FRAGMENT_ID,
         FINAL_FRAGMENT_OFFSET, &[], FINAL_FRAGMENT_PAYLOAD);
 
-    stack.deliver_raw4(ns_a.as_u64(), iface_a, &first, Ipv4Hdr::parse(&first).unwrap(), REASSEMBLY_NOW_NS);
-    stack.deliver_raw4(ns_b.as_u64(), iface_b, &final_fragment, Ipv4Hdr::parse(&final_fragment).unwrap(), REASSEMBLY_NOW_NS);
+    stack.deliver_raw4(ns_a.as_u64(), iface_a, &first, Ipv4Hdr::parse(&first).unwrap(), REASSEMBLY_NOW_NS, &Default::default());
+    stack.deliver_raw4(ns_b.as_u64(), iface_b, &final_fragment, Ipv4Hdr::parse(&final_fragment).unwrap(), REASSEMBLY_NOW_NS, &Default::default());
     assert!(raw_a.recv(false).is_none());
     assert!(raw_b.recv(false).is_none());
     assert!(crate::net_ns::destroy_namespace_into(&stack, ns_a.as_u64()));
     assert!(!raw_a.snapshot().accepting);
 
-    stack.deliver_raw4(ns_b.as_u64(), iface_b, &first, Ipv4Hdr::parse(&first).unwrap(), REASSEMBLY_NOW_NS);
+    stack.deliver_raw4(ns_b.as_u64(), iface_b, &first, Ipv4Hdr::parse(&first).unwrap(), REASSEMBLY_NOW_NS, &Default::default());
     let reassembled = raw_b.recv(false).expect("namespace-local fragments complete only in namespace B");
     assert_eq!(&reassembled.packet[IPV4_HDR_LEN..], b"fragmenttail");
     drop(raw_a);
@@ -218,10 +218,10 @@ fn receive_limit_accounts_bytes_and_reports_drops() {
     raw.set_rcvbuf(3);
     assert!(raw.enqueue(super::Raw4Datagram { packet: b"abc".to_vec(),
         source: Ipv4Addr::LOOPBACK, destination: Ipv4Addr::LOOPBACK,
-        iface: crate::NetIfaceId::from_raw(1), ttl: 64 }));
+        iface: crate::NetIfaceId::from_raw(1), ttl: 64 , options: Default::default() }));
     assert!(!raw.enqueue(super::Raw4Datagram { packet: b"d".to_vec(),
         source: Ipv4Addr::LOOPBACK, destination: Ipv4Addr::LOOPBACK,
-        iface: crate::NetIfaceId::from_raw(1), ttl: 64 }));
+        iface: crate::NetIfaceId::from_raw(1), ttl: 64 , options: Default::default() }));
     assert_eq!((raw.snapshot().queued_bytes, raw.snapshot().drops), (3, 1));
     assert_eq!(raw.recv(false).unwrap().packet, b"abc");
     assert_eq!(raw.snapshot().queued_bytes, 0);

@@ -152,6 +152,7 @@ fn meta(sock: &InetSocket, rcv: &Received) -> net::cmsg::RxMeta {
         ttl: rcv.ttl,
         tos: rcv.tos,
         options: rcv.options.clone(),
+        src: rcv.peer.map_or([0u8; 4], |(addr, _)| addr.octets()),
         dport: rcv.dport,
         frag_max: rcv.frag_max,
         // No receive path in this stack retains a whole-datagram checksum, so

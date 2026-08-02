@@ -13,6 +13,8 @@ mod tests;
 
 use alloc::vec::Vec;
 
+use crate::addr::Ipv4Addr;
+
 pub const SOL_IP: i32 = 0;
 /// `SOL_UDP` / `IPPROTO_UDP`.
 pub const SOL_UDP: i32 = 17;
@@ -113,8 +115,12 @@ pub struct RxMeta {
     pub dst: Option<([u8; 4], u32)>,
     pub ttl: Option<u8>,
     pub tos: Option<u8>,
-    /// Received header option area, empty when the header carried none.
-    pub options: Vec<u8>,
+    /// Compiled receive-side IPv4 option area, empty when the header carried
+    /// none.
+    pub options: crate::ipv4_options::Compiled,
+    /// Source address, which decides whether an echoed source route would
+    /// name the sender twice.
+    pub src: [u8; 4],
     /// Destination port, which completes the original-destination address.
     pub dport: u16,
     /// Largest fragment the datagram was reassembled from.
@@ -176,13 +182,20 @@ fn ipv4(want: &Want, meta: &RxMeta, out: &mut Vec<Msg>) {
         if let Some(tos) = meta.tos { out.push(Msg::raw(SOL_IP, IP_TOS, &[tos])); }
     }
     // A header with no option area produces no message at all, rather than an
-    // empty one.
-    if want.recvopts && !meta.options.is_empty() {
-        out.push(Msg::raw(SOL_IP, IP_RECVOPTS, &meta.options));
-    }
-    if want.retopts && !meta.options.is_empty() {
-        let echoed = payload::echo_options(&meta.options);
-        if !echoed.is_empty() { out.push(Msg::raw(SOL_IP, IP_RETOPTS, &echoed)); }
+    // empty one. Both messages are the SAME echoed area: IP_RETOPTS publishes
+    // the reply as it would go out, IP_RECVOPTS the same reply with the
+    // pointer the ECHO advanced stepped back and that slot cleared — the area
+    // as this host received and recorded it, not as the sender wrote it.
+    if (want.recvopts || want.retopts) && !meta.options.is_empty() {
+        if let Ok(echoed) = crate::ipv4_options::echo(&meta.options, Ipv4Addr::new(meta.src[0], meta.src[1], meta.src[2], meta.src[3])) {
+            if !echoed.is_empty() {
+                if want.recvopts {
+                    let undone = crate::ipv4_options::undo(&echoed);
+                    out.push(Msg::raw(SOL_IP, IP_RECVOPTS, &undone));
+                }
+                if want.retopts { out.push(Msg::raw(SOL_IP, IP_RETOPTS, &echoed.data)); }
+            }
+        }
     }
     if want.passsec {
         if let Some(label) = &meta.security {

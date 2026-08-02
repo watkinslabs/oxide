@@ -259,17 +259,28 @@ impl NetStack {
         if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
+        // A delivered header's option area is compiled and PAID before
+        // anything sees it, and an area that does not compile is a header
+        // error. The filled area then replaces the received one, so a raw
+        // receiver and the area IP_RETOPTS echoes carry the same bytes.
+        let rx_options = crate::ipv4_options::rx::delivered(
+            net_ns, iface, hdr.dst, &l3[IPV4_HDR_LEN..hdr.ihl_bytes()])
+            .map_err(|_| NetError::Einval)?;
+        let filled;
+        let l3: &[u8] = if rx_options.data != l3[IPV4_HDR_LEN..hdr.ihl_bytes()] {
+            let mut v = l3.to_vec();
+            v[IPV4_HDR_LEN..hdr.ihl_bytes()].copy_from_slice(&rx_options.data);
+            filled = v;
+            &filled[..]
+        } else { l3 };
         let frag_payload = &l3[hdr.ihl_bytes() .. total];
         let assembled;
         let reassembled_packet;
-        // The received option area is what IP_RECVOPTS and IP_RETOPTS publish,
-        // so it is kept rather than skipped past.
-        let rx_options = l3[IPV4_HDR_LEN..hdr.ihl_bytes()].to_vec();
         let mut frag_max = 0u32;
         let mf = (hdr.flags_frag & 0x2000) != 0;
         let off8 = (hdr.flags_frag & 0x1FFF) as usize;
         let (payload, full_packet): (&[u8], &[u8]) = if mf || off8 != 0 {
-            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns());
+            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
             let k = crate::ipv4_reasm::ReasmKey {
                 net_ns, domain: 0, iface: Some(iface), src: hdr.src, dst: hdr.dst,
                 proto: hdr.proto, id: hdr.id,
@@ -290,7 +301,7 @@ impl NetStack {
                 None    => return Ok(()),
             }
         } else {
-            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns());
+            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
             (frag_payload, &l3[..total])
         };
         match hdr.proto {
@@ -319,7 +330,8 @@ impl NetStack {
                 } else if crate::ping::is_reply(crate::ping::PingFamily::V4, echo.typ) {
                     let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
                         .map_or(0, |dev| dev.hardware_type());
-                    self.deliver_ping_v4(net_ns, iface, &hdr, payload, full_packet, hatype);
+                    self.deliver_ping_v4(net_ns, iface, &hdr, payload, full_packet, hatype,
+                        &rx_options);
                 } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH
                     || echo.typ == icmp::ICMP_TYPE_TIME_EXC || echo.typ == 12
                 {
