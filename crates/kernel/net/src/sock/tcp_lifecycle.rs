@@ -86,9 +86,10 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
         crate::tcp_fastopen::init_key_once(&sock.net_namespace);
     }
     let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, None)?;
-    let listener = stack().tcp_listen_reserved_min_hop(
+    let listener = stack().tcp_listen_reserved_fastopen(
         &bind, sock.bpf_filter.clone(), sock.opts.ip_mtu_discover.clone(),
-        sock.opts.ipv6_mtu_discover.clone(), sock.opts.min_hop.clone())?;
+        sock.opts.ipv6_mtu_discover.clone(), sock.opts.min_hop.clone(),
+        sock.opts.tcp.fastopen.clone())?;
     listener.set_backlog(backlog, somaxconn);
     crate::sock_opts::sol_tcp::apply::to_listener(&sock.opts, &listener);
     listener.register_poll_subs(&sock.poll_subs);
