@@ -162,6 +162,7 @@ pub mod stack_igmp;
 pub mod tcp_cc;
 pub mod stack_icmp;
 pub mod inet_tx;
+pub mod tcp_ext_hdr;
 pub mod listen_admit;
 pub mod ipv4_reasm;
 pub mod ipv6_reasm;
@@ -197,6 +198,8 @@ mod tests_ipv4_udp_errors;
 mod tests_ipv4_options_tx;
 #[cfg(test)]
 mod tests_udp_no_check_tx;
+#[cfg(test)]
+mod tests_tcp_ip_options_tx;
 #[cfg(test)]
 mod tests_inet_netns;
 #[cfg(test)]

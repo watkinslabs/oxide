@@ -1,15 +1,17 @@
 use super::*;
 
 const IPV4_TCP_OVERHEAD: u32 = 40;
-const TCP_MIN_SND_MSS: u16 = 48;
 
 fn seq_before(a: u32, b: u32) -> bool { (a.wrapping_sub(b) as i32) < 0 }
 
 fn seq_after(a: u32, b: u32) -> bool { seq_before(b, a) }
 
-fn ipv4_tcp_mss(path_mtu: u32) -> u16 {
-    path_mtu.saturating_sub(IPV4_TCP_OVERHEAD)
-        .min(u16::MAX as u32).max(u32::from(TCP_MIN_SND_MSS)) as u16
+/// The MSS a learned path MTU leaves this connection, once the sticky option
+/// area it prepends to every segment is charged. # C: O(1)
+fn ipv4_tcp_mss(path_mtu: u32, ext_hdr_len: u16) -> u16 {
+    crate::tcp_ext_hdr::subtract_ext_hdr(
+        path_mtu.saturating_sub(IPV4_TCP_OVERHEAD).min(u16::MAX as u32) as u16,
+        ext_hdr_len)
 }
 
 impl TcpEntry {
@@ -81,13 +83,32 @@ impl NetStack {
         entry.accepts_frag_needed(quoted_seq).then_some(entry)
     }
 
+    /// Re-derive the MSS a live connection sends at, after the sticky option
+    /// area it prepends to every segment changed size. Nothing is
+    /// resegmented here: the reference recomputes the cached MSS at the same
+    /// point and lets the send path apply it to the next segment.
+    /// # C: O(route lookup)
+    pub fn tcp_sync_mss(&self, entry: &TcpEntry) {
+        use ::core::sync::atomic::Ordering;
+        let ext = crate::tcp_ext_hdr::ext_hdr_len(entry.ip_opts.options().as_ref());
+        let ip_mode = entry.ip_mtu_discover.load(Ordering::Acquire);
+        let ipv6_mode = entry.ipv6_mtu_discover.load(Ordering::Acquire);
+        let dst = entry.conn.lock().remote.ip;
+        let mss = crate::tcp_ext_hdr::mss_minus_ext_hdr(
+            self.mss_for_dst_on_iface_pmtu_modes_in(
+                entry.net_ns(), dst, entry.bound_iface(), ip_mode, ipv6_mode), ext);
+        if mss != 0 { entry.conn.lock().own_mss = mss; }
+    }
+
     /// Apply learned IPv4 PMTU and immediately retransmit resegmented data. # C: O(retx_q + xmit)
     pub(crate) fn tcp_mtu_reduced(&self, entry: &TcpEntry, path_mtu: u32) {
         if !entry.reduces_mss_for_frag_needed() { return; }
         let (segments, src, dst, tos) = {
             let mut c = entry.conn.lock();
             let segments = c.resegment_for_pmtu(
-                ipv4_tcp_mss(path_mtu), super::monotonic_ns_safe());
+                ipv4_tcp_mss(path_mtu, crate::tcp_ext_hdr::ext_hdr_len(
+                    entry.ip_opts.options().as_ref())),
+                super::monotonic_ns_safe());
             (segments, c.local.ip, c.remote.ip, super::ecn_tos(&c))
         };
         for segment in segments {
