@@ -38,6 +38,7 @@ mod lock_wait;
 mod lifetime;
 mod model;
 mod mode;
+mod kernel_open;
 mod open;
 pub(crate) mod readahead;
 mod fsync;
@@ -50,7 +51,8 @@ pub use lease::{dnotify_emit, dnotify_register, dnotify_registered, dnotify_unre
 pub use lock_wait::{clear_file_lock_wait_hooks, file_lock_interrupted, file_lock_park, file_lock_schedule, file_lock_wake, set_file_lock_wait_hooks};
 pub use lifetime::{fput, get_file, iput};
 pub use mode::{Fmode, SeekFrom};
-pub use open::{install_open_at, open_dentry_at};
+pub use kernel_open::kernel_open_at_root;
+pub use open::{install_open_at, open_dentry_at, open_file_at};
 pub use readahead::FileRaState;
 pub use fsync::{iocb_sync_mode, fsync_slot_present, SyncMode, SYNC_TO_EOF};
 
