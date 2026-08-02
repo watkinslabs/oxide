@@ -142,8 +142,20 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         klog::write_raw(b" to="); klog::write_raw(target.as_bytes());
         klog::write_raw(b"\n");
     }
-    // Mode (a): from_fd refers to a detached fsmount object.
+    // Mode (a): from_fd refers to a detached mount object.
     if from_path.is_empty() {
+        // An `fsmount(2)` fd is a PATH fd over a real anonymous mount, so the
+        // move is Linux's `do_move_mount` with an anonymous source: the SAME
+        // mount object leaves its anonymous namespace and joins the caller's
+        // tree, keeping its id. Checked before the private-inode shapes below,
+        // which are the open_tree clone cases.
+        if let Some(m) = anon_mount_of_fd(from_fd) {
+            return match vfs::mount::graft_anon_mount_at(&m, target_d.clone(), target_mnt) {
+                Ok(()) => { let _ = vfs::mount::propagate_mount(&target_d); 0 }
+                Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
+                Err(e) => crate::namei_common::errno_from_vfs(e),
+            };
+        }
         let inode = match fd_inode(from_fd) {
             Some(i) => i, None => return -(Errno::Ebadf.as_i32() as i64),
         };
@@ -246,4 +258,23 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
         Err(vfs::VfsError::Ebusy) => -(Errno::Ebusy.as_i32() as i64),
         Err(_)                    => -(Errno::Einval.as_i32() as i64),
     }
+}
+
+/// The anonymous mount an `fsmount(2)` fd refers to, if that is what `fd` is.
+///
+/// `None` for every other fd — an ordinary path fd, an `open_tree` clone
+/// object, or a closed slot — so the caller falls through to the shapes it
+/// handled before. The mount must still be an ANONYMOUS ROOT: an fd whose
+/// mount was already moved is no longer a source, which is what makes a second
+/// `move_mount(2)` on the same fd EINVAL rather than a second attach.
+/// # C: O(log N)
+fn anon_mount_of_fd(fd: i32) -> Option<alloc::sync::Arc<vfs::mount::Mount>> {
+    let cur = sched::live::current()?;
+    // SAFETY: running task on this CPU; preempt-off; sole reader of its fd_table slot.
+    let fdt = unsafe { cur.fd_table_ref() }?.clone();
+    let file = fdt.get(fd).ok()?;
+    let id = file.need_unmount();
+    if id == 0 { return None; }
+    let m = vfs::mount::mount_by_id(id)?;
+    if vfs::mount::anon_ns_root(&m) { Some(m) } else { None }
 }

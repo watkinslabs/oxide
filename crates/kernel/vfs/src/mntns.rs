@@ -129,17 +129,31 @@ pub struct MntNamespace {
     /// blow past `sysctl_mount_max`. `commit_mounts` rolls it into `nr_mounts`;
     /// `abort_mounts` releases it on the failure unwind.
     pub pending_mounts: AtomicU64,
+    /// Linux `mnt_ns->is_anon`. An ANONYMOUS namespace holds a mount that no
+    /// task can see: `fsmount(2)` puts its new mount in one so the mount is
+    /// real — real id, real superblock, real root — while belonging to nobody's
+    /// tree until `move_mount(2)` grafts it. It is not a task's namespace and
+    /// never becomes one; when its root mount is dissolved the namespace goes
+    /// with it.
+    is_anon: bool,
 }
 
 impl MntNamespace {
-    fn new(identity: namespace_identity::NamespacePin) -> MntNamespaceRef
+    fn new(identity: namespace_identity::NamespacePin) -> MntNamespaceRef {
+        Self::new_flagged(identity, false)
+    }
+
+    fn new_flagged(identity: namespace_identity::NamespacePin, is_anon: bool) -> MntNamespaceRef
     {
         Arc::new(Self {
             identity, active: Spinlock::new(None), finalizers: Spinlock::new(Vec::new()),
             root: AtomicU64::new(0), seq: AtomicU64::new(0),
-            nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0),
+            nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0), is_anon,
         })
     }
+
+    /// Linux `is_anon_ns()`. # C: O(1)
+    pub fn is_anon(&self) -> bool { self.is_anon }
 
     /// Stable numeric key used by mount-table state. # C: O(1)
     pub fn id(&self) -> u64 { self.identity.id().as_u64() }
@@ -228,9 +242,24 @@ pub fn initial() -> MntNamespaceRef {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MntNamespaceAllocError { IdExhausted, OwnerNotUserNamespace }
 
+/// Allocate and publish a fresh ANONYMOUS namespace (Linux `alloc_mnt_ns(..,
+/// anon=true)`), the holder for a mount that exists but is in nobody's tree.
+/// # C: O(log N)
+pub fn allocate_anon<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H)
+    -> Result<MntNamespaceRef, MntNamespaceAllocError>
+{
+    allocate_flagged(owner_user_namespace, true)
+}
+
 /// Allocate and publish a fresh namespace owned by `owner_user_namespace`.
 /// # C: O(log N)
 pub fn allocate<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H)
+    -> Result<MntNamespaceRef, MntNamespaceAllocError>
+{
+    allocate_flagged(owner_user_namespace, false)
+}
+
+fn allocate_flagged<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H, is_anon: bool)
     -> Result<MntNamespaceRef, MntNamespaceAllocError>
 {
     let owner = owner_user_namespace.get_active_ref()
@@ -242,7 +271,7 @@ pub fn allocate<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H)
             | namespace_identity::AllocError::ParentKindMismatch =>
                 MntNamespaceAllocError::OwnerNotUserNamespace,
         })?;
-    let namespace = MntNamespace::new(identity);
+    let namespace = MntNamespace::new_flagged(identity, is_anon);
     NAMESPACES.lock().by_id.insert(namespace.id(), Arc::downgrade(&namespace));
     namespace.activate();
     Ok(namespace)

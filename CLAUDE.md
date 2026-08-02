@@ -234,6 +234,20 @@ rc=0; wait $p1 || rc=1; wait $p2 || rc=1; exit $rc
 
 The same applies to any pair of independent long-running checks in a lane — a build, a boot and a hosted suite that do not read each other's output should overlap. Serial execution of independent work is the single largest avoidable cost in a session.
 
+**Every parallel job must `cd` to the worktree ITSELF (HARD RULE).** `&` binds looser than `&&`, so
+
+```
+cd <worktree> && (gate) & (smoke) & wait      # WRONG
+```
+
+parses as `{ cd <worktree> && gate } &` followed by `{ smoke } &`: the second job never sees the `cd` and runs in the shell's original directory — usually the MAIN TREE. That produced a green `make feature-gate` on a branch whose kernel build was broken, because the gate type-checked `main`, where the offending call site does not exist. Write it so each job is self-contained:
+
+```
+( (cd <worktree> && gate) & (cd <worktree> && smoke) & wait )
+```
+
+and before believing a green gate, confirm its log names YOUR worktree — the `Checking <crate> (/path/...)` lines carry the path. This is the same class as the boot-smoke rule above: trust the run you actually launched, in the tree you meant.
+
 A pre-push hook at `.githooks/pre-push` enforces this automatically. Install once per clone with `git config core.hooksPath .githooks`. Bypass for known-safe doc-only pushes with `SKIP_SMOKE=1 git push`.
 
 Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn GHA minutes. The pre-push hook runs on the dev box where KVM keeps boot under a minute.
