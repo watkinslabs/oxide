@@ -486,10 +486,18 @@ ledger; the integration owner folds drops into it and deletes the drop file.
 `tools/issues.sh` renders curated + drops, `--count` shows row counts. A row in a drop
 file is exactly as binding as one in the curated ledger.
 
+**Row shape: `| Status | Class | Sev | Issue | Evidence | Owner |`.** `Class` is
+`DEFECT` (behaviour diverges from Linux) | `MISSING` (absent Linux surface, or present
+but unconsumed) | `COVERAGE` (no check here can fail if the behaviour breaks) | `INFRA`
+(tooling, gates, docs, images, dev box). **Class says what KIND of work a row needs,
+never whether it gets done — there is no "won't fix", no "deliberate deviation" that
+closes a row, and no deferral status.** Every row is work this project WILL do.
+
 - **Find it, file it.** This includes: anything non-Linux, anything stubbed or
   stored-but-unconsumed, a test that flakes, a gate that misses a defect class, a
   pre-existing failure you confirmed, a negative result that saves the next lane time,
-  and any deviation you decided NOT to fix.
+  and any divergence you chose on purpose — the choice is not the fix, so the row stays
+  open until Linux behaviour is implemented.
 - **Fix it, flip it.** Change the row to `FIXED <sha>` in the PR that fixes it. Do not
   silently delete rows — a shrinking list must mean fixed, never forgotten.
 - **A row with no owner is still a row.** Not knowing who will fix it is not a reason to
