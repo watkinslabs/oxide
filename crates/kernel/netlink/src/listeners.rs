@@ -111,7 +111,7 @@ pub fn unicast_uevent_to_port(dest_pid: u32, msg: &[u8], src_port: u32) -> usize
             .find(|s| s.port_id.load(Ordering::Acquire) == dest_pid)
     };
     let Some(target) = target else { return 0; };
-    target.enqueue_from(msg.to_vec(), src_port);
+    target.enqueue_from_creds(msg.to_vec(), src_port, crate::creds::current_sender());
     1
 }
 
@@ -131,8 +131,9 @@ pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkS
     };
     let mut n = 0;
     let src_port = sender.port_id.load(Ordering::Acquire);
+    let sender_creds = crate::creds::current_sender();
     for s in targets {
-        s.enqueue_from(msg.to_vec(), src_port);
+        s.enqueue_from_creds(msg.to_vec(), src_port, sender_creds);
         n += 1;
     }
     n
