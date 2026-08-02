@@ -16,7 +16,7 @@ impl vfs::FileSystemType for DevptsType {
 pub fn smoke_test() {
     use hal::kassert;
 
-    let (master, n) = allocate_pair().expect("pty index space");
+    let (master, n) = allocate_pair(0, 0).expect("pty index space");
     let ino = master.ino();
     kassert!(vfs::pseudo_ino::DEVPTS.contains(ino), "master ino inside the devpts region");
     kassert!(crate::is_master_inode(&master), "master inode resolves as the master half");
@@ -62,7 +62,7 @@ fn devpts_fs_smoke() {
     kassert!(ptmx.file_type() == FileType::CharDev, "pts/ptmx is chardev");
     kassert!(ptmx.fsid() == DEVPTS_FSID, "pts/ptmx on devpts fsid");
 
-    let (_m, n) = allocate_pair().expect("pty index space");
+    let (_m, n) = allocate_pair(0, 0).expect("pty index space");
     let name = format!("{}", n);
     let slave = fs.root_dir().lookup_path(&name).expect("slave mirrored in devpts root");
     kassert!(slave.file_type() == FileType::CharDev, "mirrored slave is chardev");
@@ -91,7 +91,7 @@ fn sigint_chain_smoke() {
     fake.set_pgid(fake_tid);
     sched::live::registry::insert(&fake);
 
-    let (master, n) = allocate_pair().expect("pty index space");
+    let (master, n) = allocate_pair(0, 0).expect("pty index space");
     let pair = pair_for(n).expect("pair_for");
     pair.with_pair(|p| {
         kassert!(p.lflag() != 0, "cooked default");
@@ -131,7 +131,7 @@ fn sigint_chain_smoke() {
 fn termios_winsize_smoke() {
     use hal::kassert;
 
-    let (_master, n) = allocate_pair().expect("pty index space");
+    let (_master, n) = allocate_pair(0, 0).expect("pty index space");
     let pair = pair_for(n).expect("pair_for");
 
     pair.with_pair(|p| {

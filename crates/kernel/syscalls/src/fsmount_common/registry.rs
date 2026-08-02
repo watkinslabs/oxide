@@ -194,10 +194,20 @@ fn register_filesystems() {
         let (fs, root) = ::fs::fuse::mount_from_data(data, pinned)?;
         mounted(ty, fs, Some(root), "fuse", sb_flags)
     }), Some(::fs::fuse::FUSE_PARAMS)));
-    let _ = register_fs(FsType::new("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
-        let fs: Arc<dyn vfs::fs::FileSystem> = devpts::devpts_fs();
+    // devpts declares the six options the reference does and ENFORCES all of
+    // them: `uid=`/`gid=`/`mode=` stamp every pty slave node, `ptmxmode=` the
+    // instance `ptmx`, `max=` bounds index allocation, and `newinstance` is the
+    // reference's own accepted no-op. systemd passes
+    // `-o gid=5,mode=620,ptmxmode=000` on EVERY boot, and all of it used to be
+    // discarded — slaves were born 0o620 by a hardcode that happened to match
+    // the requested mode, with no owner set at all.
+    let _ = register_fs(FsType::with_parameters("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        let opts = devpts::mount_opts::opts_for_mount(d, p)?;
+        let dfs = devpts::devpts_fs();
+        dfs.set_opts(opts);
+        let fs: Arc<dyn vfs::fs::FileSystem> = dfs;
         mounted(ty, fs, None, "devpts", sb_flags)
-    })));
+    }), Some(devpts::mount_opts::DEVPTS_PARAMS)));
     let _ = register_fs(FsType::new("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(devfs::DevfsFs);
         mounted(ty, fs, None, "devtmpfs", sb_flags)

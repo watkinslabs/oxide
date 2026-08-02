@@ -315,7 +315,13 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // as `/dev/ptmx`. O_PATH remains a pure path fd and never runs the
         // device-open side effect (PTY allocation / controlling-tty lookup).
         if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_PTMX_RDEV) {
-            let (master, _n) = match devpts::allocate_pair() {
+            // The slave node's owner when the mount did not name one is the
+            // OPENER's fs credentials (Linux `devpts_pty_new`: `current_fsuid()`
+            // / `current_fsgid()`), which is why they are read here rather than
+            // inside devpts.
+            let opener = crate::pathresolve::current_cred();
+            let (fsuid, fsgid) = (opener.uid, opener.gid);
+            let (master, _n) = match devpts::allocate_pair(fsuid, fsgid) {
                 Ok(v) => v,
                 Err(e) => return crate::namei_common::errno_from_vfs(e),
             };
