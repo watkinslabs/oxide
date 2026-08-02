@@ -1,84 +1,78 @@
 # state.md — session hand-off
 
-Main `09d4695a3`. ~25 PRs merged this session across ~15 concurrent lanes.
-`scratch/known_issues.md` is the ledger of record; **read it before picking up work.**
+Main `db658b904`. Tree is clean: 1 worktree, 1 local branch, 1 remote branch,
+0 open PRs, 0 stray QEMU. Every gate green, both arches boot first attempt.
 
-## Ledger mechanics changed — read this first
+## Gate status on this commit
 
-- Lanes write findings to `scratch/issues.d/<branch>.md`, one file per lane.
-  Never edit `scratch/known_issues.md` / `scratch/fixed-issues.md` from a lane —
-  a single shared table conflicted on every PR of a 15-lane wave. The
-  integration owner folds drops in and moves closed rows to `fixed-issues.md`.
-  `tools/issues.sh` renders curated + drops, `--count` shows counts. (`D441`)
-- Branch counters: `tools/next-branch.sh <TYPE>` maxes `metadata/index.md`
-  against git refs + merge subjects. Trust the tool; the file lags constantly.
-  `make counter-check` fails when the file is behind. (`C247`)
-- **`git stash` is banned** — the stack is shared across worktrees; a concurrent
-  pop destroyed one lane's tracked edits. Park WIP as a temporary commit. (`D440`)
-- Conflict resolution and "verification must be able to fail" are now CLAUDE.md
-  hard rules. Both were earned this session; the second caught the integrator
-  resolving a conflict by taking main's ledger wholesale, silently dropping 5
-  FIXED rows.
-
-## Open, in priority order
-
-1. **`cargo check -p net` is RED on main** — ungated `ipv4_options`/`send_control`/
-   `raw4::tx` import the gated `sock_opts`. `--features hosted` and `cfg(test)`
-   both mask it, which is why it landed. Blocks `cargo test -p fs`/`-p procfs`.
-   Lane `B1674-hosted-check-gate` (fix + the missing hosted `cargo check` gate).
-2. **`cargo test --workspace` is not green and its failing set varies run to run**
-   (`fbcon`, `softirq`, `pmm`, `socket`, `drv-virtio-input`, and a `net` ethernet
-   `unwrap()` on None at `stack/core.rs:193`). Every per-package "0 failed" claim
-   this session is weaker than it reads. Lane `B1680-workspace-suite-determinism`.
-3. **Unknown filesystem mount parameters are silently ACCEPTED**, so the
-   option-support probe always answers "yes". In the desktop image systemd then
-   enables `ProtectProc=`/`ProcSubset=` because `proc` claims `hidepid`/`subset`,
-   while procfs ignores mount data entirely — a confinement userspace believes it
-   applied is absent. Found by B1668; needs boot access to change safely.
-4. **GNOME Settings + Files both SIGSEGV** (user-reported). GTK4 GSK **Vulkan**
-   renderer; trigger is the `powervr_mesa` ICD plus at least one other — alone it
-   is clean. Disproven: ICD count, the DRM render node (`chmod 000` still faults),
-   the device-select layer, and a TLS-size theory (retracted — both libraries use
-   the identical TLSDESC relocation). The kernel now prints an unhandled-fault
-   report with the faulting instruction's file offset, so the next boot yields a
-   real `ip`. Take that boot when the box is quiet.
-5. **Syscall matrix tracks 319 of 385 syscalls** — 66 missing rows including
-   `read`, `mmap`, `fcntl`, `ptrace`, `prctl`, `execveat`. Spot-checked ones all
-   have slot files and dispatch entries, so it is a tracking gap; every
-   IMPL/PARTIAL statistic was computed over 83% of the surface. Being filled with
-   the existing `NEEDS-AUDIT` status, `DISPATCH-GAP` where no route exists.
-6. **`exit_shm` does not exist** — a SysV segment whose creator exits is never
-   unlinked, so it leaks until an explicit `IPC_RMID` and `kernel.shm_rmid_forced`
-   cannot exist. Needs a `Weak<Task>` creator back-reference; keying on `cpid`
-   recycles tids.
-7. Protection keys, `memfd_secret`, `map_shadow_stack`, `userfaultfd` WP/MINOR —
-   all blocked on real hardware enablement (CR4.PKE/PKRU, FEAT_S1POE/POR_EL0,
-   HHDM huge-leaf split, CET/GCS). Scoped in the matrix notes; not deferrable.
-
-## Landed worth knowing about
-
-| Area | What |
+| gate | result |
 |---|---|
-| net | NET_RX per-CPU backlog + softirq drain replaces inline receive at 32 call sites; aarch64 stack margin −344 B (main was FAILING the gate) → +1352 B |
-| net | TCP_DEFER_ACCEPT on real request socks; TCP_ZEROCOPY_RECEIVE + `mmap(2)` on TCP fds; AF_UNIX MSG_OOB; IPv4 options on transmit |
-| net | SACK blocks were emitted to peers that never permitted them; a declined window scale was never taken back |
-| sched | `RLIMIT_NICE`/`RTPRIO` defaulted to infinity, so the `setpriority`/`sched_setscheduler` ladders could never refuse; hard-limit raise checked the effective set, so userns root could raise any limit |
-| sched | child CPU time folded at exit instead of reap — zombies, `WNOWAIT` peeks and auto-reaped children all counted |
-| mm | `cachestat` returned an all-zero struct to every caller; `process_madvise` re-implemented dispatch instead of calling the work fn |
-| keys | keyctl DH-compute + PKEY family; request-key upcall |
-| gates | the routine gate compiled ZERO feature-gated code (pre-push skipped it on every PR-branch push); ~75 `debug-*` features were built by nothing, four rotted |
+| `make hosted-gate` | PASS — 103 crates type-check in isolation |
+| `make test-build-gate` | PASS — 103 crates build their **test** targets |
+| `make feature-gate` | clean both arches (only rustc's upstream-`core` future-incompat note) |
+| `make matrix-gate` | ok — 385 rows, 385 distinct syscalls |
+| `make lint-ratchet` | PASS — at baseline |
+| `cargo build --workspace` | **0 warnings** |
+| `make smoke-x86` / `smoke-arm` | PASS 66s / 100s, attempt 1 |
 
-## Negative results — do not re-derive
+## Counts
 
-- `timerfd_settime(flags=3)`, the polkitd `pidfd_open` EINVAL storm, and the
-  systemd `fsconfig`/`mount_setattr` EINVALs are all **reference-correct**. The
-  pidfd storm is polkitd passing `pid = 0`; the fsconfig/mount_setattr calls are
-  systemd feature probes whose right answer is EINVAL.
-- A runtime re-entrancy guard cannot fix inline receive depth — the stack walker
-  follows static call edges; only breaking the edge through a function pointer works.
-- TFO's queue bound and key are **not** per-socket options to inherit on accept;
-  they belong to the listener's accept queue and the namespace.
+- Ledger: **253 open (10 high), 277 archived**.
+- Syscall matrix: **291 IMPL / 56 PARTIAL / 16 NEEDS-REWORK / 22 LINUX-ENOSYS** of 385.
+- Default boot output: **3379 -> 513 lines**; `qemu-*` build with no debug features.
+
+## Rules earned this session — read before working
+
+- **The framing question (HARD RULE):** "is this how Linux does it?" — before the
+  design, not after the diff. Reference tree is `../linux-master`. It has caught a
+  coordinator error, an EEXIST "fix" that would have broken seven syscalls, and a
+  `/sys/subsystem` shape that would have suppressed udev's three-root scan.
+- **Boot only what can break the boot.** Docs, `scratch/**`, `cfg(test)`-only,
+  harness edits and lint baselines get no boot; say why in the PR body.
+- **Investigative agents run on Sonnet**; Opus for implementation, root-causing
+  without a hypothesis, and ABI semantics.
+- **One lane, one item, then it closes.** Follow-on work gets a fresh lane.
+- Never `git stash` (shared stack across worktrees). Never `git reset` onto a
+  remote ref. Never `git add -A`/`-u`. Claim numbers with
+  `tools/next-branch.sh --claim <T> <title>`; claims live in `refs/claims/*`,
+  never the branch namespace.
+- Reap your own stale QEMU by PID with the sandbox disabled; do not ask the user.
+
+## Open work, highest value first
+
+1. **`name_to_handle_at` on cgroupfs returns EOVERFLOW** — 74 lines per boot of
+   `Failed to get cgroup ID of cgroup ...`, the largest remaining log source and a
+   real systemd-visible defect.
+2. **`systemd-resolved` and `systemd-sysctl` fail to start** — pre-existing on the
+   baseline, never investigated.
+3. **Net interfaces have no `device`/`driver` symlink.** They project under
+   `/sys/devices/virtual/net/` even for the real virtio-net NIC, so udev's
+   `path_id`/`net_id` builtins cannot compute `ID_NET_NAME_PATH` — which is why the
+   interface is `eth0` and not a predictable name. Needs the netdev registry wired
+   to the bus device registry.
+4. **Generic `SOL_SOCKET` is typed to `InetSocket`**, so netlink/vsock hand-roll
+   their own option tables. Linux keeps one `struct sock` base. This is why the
+   netlink `SO_PASSCRED` fix first shipped as four parallel copies.
+5. **The `boot-smoke` marker rides on systemd output**, not the unconditional
+   console path. It works today; it is fragile to exactly the quieting just done.
+6. Matrix: 56 PARTIAL + 16 NEEDS-REWORK rows.
+7. `pidfd/src/tests.rs` is red under `--features hosted` and uncovered — the new
+   test-build gate uses default features only.
+
+## Traps that cost real time today
+
+- **A stale ledger row reads as fact.** Two audit passes found 41 stale/duplicate
+  rows; several lanes chased blockers fixed hours earlier. Re-check a row's claim
+  before acting on it.
+- **`make boot` boots `target/artifacts/`, and `xtask kernel` does NOT export
+  there** — `xtask artifacts` is a separate step. Check the mtime before trusting
+  any boot result.
+- **Concurrent boots contend for the rootfs image lock** and produce
+  zero-kernel-output logs that read exactly like a boot failure. Confirm the log
+  has kernel lines before believing a red result.
+- **Bulk ledger edits by substring close rows nobody audited.** Match on exact row
+  text, and read the diff before pushing.
 
 ## First command
 
-    tools/issues.sh --count && gh pr list
+    make hosted-gate && make test-build-gate && tools/issues.sh --count
