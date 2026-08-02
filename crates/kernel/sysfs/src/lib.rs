@@ -43,6 +43,8 @@ pub mod zram;
 
 #[cfg(test)]
 mod net_tests;
+#[cfg(test)]
+mod root_tests;
 
 pub use root::{drop_cached, register, register_dir, sys_root, SYSFS_FSID};
 #[cfg(test)]
