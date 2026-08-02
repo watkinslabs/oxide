@@ -286,7 +286,10 @@ mod fd_pair;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod socket_fd;
 
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
+// Ungated hosted (not just under `cfg(test)`) because `sock_route::endpoint_of`
+// classifies through its downcasts, and that classification is what the control
+// slots act on.
+#[cfg(not(target_os = "oxide-kernel"))]
 mod net_common;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
@@ -330,6 +333,12 @@ mod socketpair_spec;
 // with no such name reports) — kernel + hosted, so `getsockname`/`getpeername`
 // behaviour is provable under `cargo test` while the slots stay ABI shims.
 mod sock_name;
+
+// The fd-classification ladder the control syscalls share (EBADF before
+// ENOTSOCK before a protocol's "no such operation") — kernel + hosted, so the
+// order and the errnos are provable under `cargo test` while
+// `048_shutdown`/`050_listen`/`043_accept`/`052_getpeername` stay ABI shims.
+mod sock_route;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod socket_control_tests;

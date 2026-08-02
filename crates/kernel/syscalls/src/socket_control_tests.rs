@@ -1,46 +1,51 @@
 // The dispatch-instrumentation half, split out at the per-file size cutoff.
 mod dispatch;
 
-#[test]
-fn socket_control_routes_retain_one_file() {
-    for source in [
-        include_str!("048_shutdown.rs"),
-        include_str!("050_listen.rs"),
-        include_str!("052_getpeername.rs"),
-    ] {
-        assert_eq!(source.matches("fd_file(fd)").count(), 1);
-        assert!(!source.contains("socket_from_fd"));
-        assert!(!source.contains("vsock_from_fd"));
-    }
-}
-
-#[test]
-fn vsock_control_routes_use_the_pinned_endpoint() {
-    let shutdown = include_str!("048_shutdown.rs");
-    assert!(shutdown.contains("vsock_from_file(file.clone())"));
-    assert!(shutdown.contains("vsock.shutdown_raw(how)"));
-    assert!(!shutdown.contains("make_hdr"));
-    assert!(!shutdown.contains("VIRTIO_VSOCK_OP_SHUTDOWN"));
-
-    let listen = include_str!("050_listen.rs");
-    assert!(listen.contains("vsock_from_file(file.clone())"));
-
-    let peer = include_str!("052_getpeername.rs");
-    assert!(peer.contains("vsock_from_file(file.clone())"));
-    assert!(peer.contains("vsock.peer_addr()"));
-    assert!(peer.contains("encoded_sockaddr_vm(port, cid)"));
-}
+// B1715: `shutdown`/`listen`/`accept`/`getpeername` used to be "covered" by
+// grepping their kernel-gated slot files for `fd_file(fd)` and `Errno::Ebadf`
+// — assertions that could not fail on a behaviour change and broke whenever
+// the text moved. The ladder now lives in the ungated `sock_route`, which the
+// slots call, so these drive the same code the kernel runs.
 
 #[test]
 fn control_routes_distinguish_bad_fd_from_non_socket() {
-    for source in [
-        include_str!("048_shutdown.rs"),
-        include_str!("050_listen.rs"),
-        include_str!("052_getpeername.rs"),
-    ] {
-        assert!(source.contains("None => return -(Errno::Ebadf.as_i32() as i64)"));
-        assert!(source.contains("Errno::Enotsock"));
+    use crate::sock_route::{ControlOp, Endpoint, route};
+    for op in [ControlOp::Shutdown, ControlOp::Listen, ControlOp::Accept,
+               ControlOp::GetPeerName] {
+        // An fd naming no open file, and an open file that is no socket, are
+        // different refusals — collapsing them tells a caller its fd is closed
+        // when it is merely a pipe.
+        assert_eq!(route(op, None, None), Err(syscall::errno::Errno::Ebadf), "{op:?}");
+        assert_eq!(route(op, Some(Endpoint::NotSocket), None),
+            Err(syscall::errno::Errno::Enotsock), "{op:?}");
     }
+}
+
+#[test]
+fn vsock_control_routes_reach_the_vsock_endpoint() {
+    use crate::sock_route::{ControlOp, Endpoint, endpoint_of, route};
+    let socket = alloc::sync::Arc::new(net::vsock_socket::VsockSocket::new());
+    let inode = net::vsock_socket::make_vsock_socket_inode(socket);
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    // Every control call on an AF_VSOCK file reaches the vsock endpoint rather
+    // than falling through to the INET tail or to ENOTSOCK.
+    for op in [ControlOp::Shutdown, ControlOp::Listen, ControlOp::Accept,
+               ControlOp::GetPeerName] {
+        assert_eq!(route(op, Some(endpoint_of(&file)), None), Ok(Endpoint::Vsock), "{op:?}");
+    }
+}
+
+// The AF_VSOCK peer name a `getpeername` copies out carries the port and CID
+// in the `struct sockaddr_vm` slots, so the encoding is checked on the bytes
+// rather than on the shim's call text.
+#[test]
+fn vsock_peer_name_encodes_its_cid_and_port_in_place() {
+    let sa = crate::sockaddr_encode::encoded_sockaddr_vm(0x1234, 0x2a);
+    let bytes = sa.as_bytes();
+    assert_eq!(u16::from_ne_bytes([bytes[0], bytes[1]]), net::sock::AF_VSOCK as u16);
+    assert_eq!(u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 0x1234);
+    assert_eq!(u32::from_ne_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]), 0x2a);
 }
 
 
