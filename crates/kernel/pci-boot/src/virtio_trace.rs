@@ -8,8 +8,6 @@ use super::virtio_drv::VirtioPciProbeTrace;
 /// `debug-boot`; the side-effect bring-up itself runs in `virtio_drv`.
 /// # C: O(num_queues) klog writes
 pub(super) fn trace_probe(bdf: pci::Bdf, p: &VirtioPciProbeTrace) {
-    #[cfg(not(feature = "debug-boot"))]
-    let _ = (bdf, p);
     debug_boot! {
         klog::write_raw(b"[INFO]  pci-cmd ");
         klog::write_dec_u64(bdf.bus as u64);
