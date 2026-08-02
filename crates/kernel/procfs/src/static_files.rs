@@ -61,21 +61,19 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c
 }
 
-/// The singleton `/proc` root inode (built once from `build_proc_root`). procfs
-/// OWNS /proc and resolves through THIS: static children here, `/proc/{sys,net,
-/// self}` via the `crate::reg` PROC_REG kernfs subtree (D1d), per-pid dirs
-/// synthesized. No devfs registry involvement.
-static PROC_ROOT: Spinlock<Option<InodeRef>, RootClass> = Spinlock::new(None);
-
-/// The `/proc` root directory inode (cached). `ProcfsFs::lookup` resolves the
-/// static-file children + `self` + pid dirs through this.
-/// # C: O(1) cached; O(N files) on first build
-pub fn proc_root() -> InodeRef {
-    let mut g = PROC_ROOT.lock();
-    if let Some(r) = g.as_ref() { return Arc::clone(r); }
-    let r = make_proc_root(build_proc_root());
-    *g = Some(Arc::clone(&r));
-    r
+/// Build the `/proc` root inode for ONE mount. procfs OWNS /proc and resolves
+/// through this: static children here, `/proc/{sys,net,self}` via the
+/// `crate::reg` PROC_REG kernfs subtree (D1d), per-pid dirs synthesized. No
+/// devfs registry involvement.
+///
+/// NOT cached. It used to be a process-global singleton, which meant every
+/// `mount -t proc` in every namespace shared one root inode and there was
+/// nowhere for a mount's own `hidepid=`/`subset=` to live. The reference builds
+/// a fresh root inode per superblock in `proc_fill_super` and shares only the
+/// static `proc_dir_entry` skeleton, which `crate::reg` already is.
+/// # C: O(N static files)
+pub fn build_root(info: Arc<crate::fs_info::ProcFsInfo>) -> InodeRef {
+    make_proc_root(build_proc_root(), info)
 }
 
 /// # SAFETY: caller is the boot path; single-CPU pre-init.

@@ -22,7 +22,12 @@ pub fn smoke_test() {
 
     fn smoke_resolve(path: &str) -> Option<InodeRef> {
         if let Some(rest) = path.strip_prefix("/proc/") {
-            return lookup_child_path(crate::static_files::proc_root() as InodeRef, rest);
+            // A throwaway root for the diagnostic, with default options: this
+            // smoke runs before any procfs mount exists, so it checks that the
+            // static tree BUILDS and resolves, not what a mount would answer.
+            let root = crate::static_files::build_root(
+                alloc::sync::Arc::new(crate::fs_info::ProcFsInfo::default()));
+            return lookup_child_path(root as InodeRef, rest);
         }
         if let Some(rest) = path.strip_prefix("/sys/") {
             return sysfs::sys_root().lookup_path(rest);

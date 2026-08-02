@@ -87,3 +87,24 @@ pub fn make_pid_gated_file(ino: Ino, tid: u32, entry: &'static str, gen: fn(u32)
         .private(Arc::new(GatedData { tid, entry, gen }))
         .build()
 }
+
+/// May this reader see `/proc/<pid>` on THIS mount, at the threshold the call
+/// site cares about (Linux `has_pid_permissions`)?
+///
+/// Every decision is `crate::fs_info::has_pid_permissions`; this reads the two
+/// live inputs it cannot: whether the reader is in the mount's `gid=` group
+/// (`in_group_p`) and whether it could ptrace the target. Both are skipped when
+/// `hidepid=off`, which is every mount that did not ask for confinement — the
+/// gate must not put a task lookup and a ptrace walk on the default `/proc`
+/// readdir path.
+/// # C: O(1) for hidepid=off; O(groups) + O(ptrace check) otherwise
+pub(crate) fn pid_visible(info: &crate::fs_info::ProcFsInfo, tid: u32,
+                          min: crate::fs_info::HidePid) -> bool {
+    if info.hide_pid == crate::fs_info::HidePid::Off { return true; }
+    let in_group = match (info.pid_gid, sched::live::current()) {
+        (Some(g), Some(cur)) => cur.creds.egid.load(core::sync::atomic::Ordering::Acquire) == g
+            || cur.creds.group_list().is_some_and(|l| l.contains(&g)),
+        _ => false,
+    };
+    crate::fs_info::has_pid_permissions(info, min, in_group, ptrace_may_access(tid).is_ok())
+}

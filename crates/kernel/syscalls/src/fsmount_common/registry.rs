@@ -141,20 +141,22 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_data(dev, dev_t, d)?;
         mounted(ty, fs, None, source, sb_flags)
     }), Some(ext4::rootfs::EXT4_PARAMS)));
-    // procfs honours NO mount option: its constructor discards the data string
-    // and its root inode is a process-global singleton, so there is nowhere for
-    // a per-mount option to live. Declaring an EMPTY table states that
-    // truthfully, which makes an option-support query answer "no" for
-    // `hidepid`/`subset` instead of claiming a confinement that is not applied.
-    // Restore each name here as its enforcement lands, never before.
-    //
-    // That declaration now binds `mount(2)` too, so `mount -t proc -o hidepid=2`
-    // reports EINVAL instead of succeeding with no confinement applied. Failing
-    // closed is the point: a caller told "yes" while getting no confinement is
-    // strictly worse off than one told "no", which it can see and react to.
-    let _ = register_fs(FsType::with_parameters("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
-        mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs), None, "proc", sb_flags)
-    }), Some(&[])));
+    // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
+    // `subset=`) and builds a per-mount root that carries them. The table was an
+    // empty list while the root inode was a process-global singleton — there was
+    // nowhere for a mount's own answer to live, so declaring a name would have
+    // claimed a confinement nothing applied. Each name is here because its
+    // enforcement is, and `procfs::fs_info` holds both halves so they cannot
+    // drift: an option in the table with no enforcement fails that module's own
+    // table-versus-parse test.
+    let _ = register_fs(FsType::with_parameters("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        // Which argument carries the options is `procfs::fs_info`'s decision and
+        // is hosted-tested there: `mount(2)` puts them in the DATA BLOB, while
+        // this slice holds only pinned open files. Reading the slice here made
+        // every option silently do nothing.
+        let info = procfs::fs_info::info_for_mount(d, p)?;
+        mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs::new(info)), None, "proc", sb_flags)
+    }), Some(procfs::fs_info::PROC_PARAMS)));
     let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         mounted(ty, Arc::new(sysfs::SysfsFs), None, "sysfs", sb_flags)
     })));

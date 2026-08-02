@@ -37,16 +37,33 @@ use super::types::{FsParameter, KResult};
 ///
 /// # C: O(len data)
 pub fn generic_parse_monolithic(fc: &mut FsContext, data: &str) -> KResult<()> {
-    for piece in data.split(',') {
-        if piece.is_empty() { continue; }
-        let param = match piece.find('=') {
-            None => FsParameter::flag(piece),
-            Some(0) => continue,
-            Some(i) => FsParameter::string(&piece[..i], &piece[i + 1..]),
-        };
+    for param in split_monolithic(data) {
         vfs_parse_fs_param(fc, &param)?;
     }
     Ok(())
+}
+
+/// The split half of [`generic_parse_monolithic`], without the admission.
+///
+/// A `mount(2)` hands its options as ONE blob and the constructor receives that
+/// blob, not the admitted parameter list — the constructor's parameter slice
+/// carries only values that are pinned open files (`FSCONFIG_SET_FD`). A
+/// filesystem that wants its options as parameters therefore has to split the
+/// blob itself, and every one that rolls its own splitter is a second answer to
+/// "what does `a,b=c,` mean". This is that answer, once, with the separator
+/// rules documented above.
+/// # C: O(len data)
+pub fn split_monolithic(data: &str) -> alloc::vec::Vec<FsParameter> {
+    let mut out = alloc::vec::Vec::new();
+    for piece in data.split(',') {
+        if piece.is_empty() { continue; }
+        match piece.find('=') {
+            None => out.push(FsParameter::flag(piece)),
+            Some(0) => continue,
+            Some(i) => out.push(FsParameter::string(&piece[..i], &piece[i + 1..])),
+        }
+    }
+    out
 }
 
 /// `parse_monolithic_mount_data`: hand the `mount(2)` data blob to the
