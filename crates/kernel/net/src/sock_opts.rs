@@ -107,6 +107,19 @@ pub fn inherit_tcp_keepalive_opts(dst: &InetSocket, src: &InetSocket) {
     dst.opts.tcp_keepcnt.store(src.opts.tcp_keepcnt.load(Ordering::Acquire), Ordering::Release);
 }
 
+/// Record on an accepted socket what the IPv4 header of the packet that
+/// opened the connection carried. The interface index and hop limit land in
+/// the multicast fields, which is where `IP_PKTOPTIONS` reads them from and
+/// where a connection has no other use for them. # C: O(1)
+pub fn record_accepted_header(dst: &InetSocket, entry: &TcpEntry) {
+    use core::sync::atomic::Ordering;
+    let (iif, ttl, tos) = { let c = entry.conn.lock(); (c.rcv_iif, c.rcv_ttl, c.rcv_tos) };
+    if iif == 0 { return; }
+    dst.opts.ip_mcast_ifindex.store(iif, Ordering::Release);
+    dst.opts.ip_mcast_ttl.store(ttl as i32, Ordering::Release);
+    dst.opts.ip_rcv_tos.store(tos as i32, Ordering::Release);
+}
+
 /// Copy listener OOB-inline policy to an accepted TCP socket. # C: O(1)
 pub fn inherit_tcp_oobinline(dst: &InetSocket, src: &InetSocket) {
     use core::sync::atomic::Ordering;

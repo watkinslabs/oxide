@@ -5,9 +5,11 @@
 // Module manifest:
 // - this file: the message numbers, the received-datagram view, and the plan.
 // - `payload`: the wire layout of each non-scalar message.
+// - `pktoptions`: the stream socket's on-demand publication of the same set.
 // - `tests`: hosted coverage for the ordering and the layouts.
 
 pub mod payload;
+pub mod pktoptions;
 #[cfg(test)]
 mod tests;
 
@@ -62,10 +64,12 @@ pub const IPV6_FLOWINFO_MASK: u32 = 0x0fff_ffff;
 pub struct Msg { pub level: i32, pub kind: i32, pub bytes: Vec<u8> }
 
 impl Msg {
-    fn int(level: i32, kind: i32, value: i32) -> Self {
+    /// One `int`-shaped message. # C: O(1)
+    pub(crate) fn int(level: i32, kind: i32, value: i32) -> Self {
         Self { level, kind, bytes: Vec::from(value.to_ne_bytes()) }
     }
-    fn raw(level: i32, kind: i32, bytes: &[u8]) -> Self {
+    /// One message whose payload is a wire layout. # C: O(bytes)
+    pub(crate) fn raw(level: i32, kind: i32, bytes: &[u8]) -> Self {
         Self { level, kind, bytes: Vec::from(bytes) }
     }
 }

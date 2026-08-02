@@ -69,7 +69,32 @@ pub(super) fn get(sock: &Arc<InetSocket>, optname: u64, out: &OptOut) -> i64 {
     let value = match ipget::read(optname, net::sock_opts::describe_ip(sock), &view(sock)) {
         Ok(v) => v, Err(e) => return errno(e),
     };
+    if value == Value::ControlStream { return pktoptions_get(sock, out); }
     publish(out, value)
+}
+
+/// `IP_PKTOPTIONS`: the ancillary messages a stream socket publishes on
+/// demand, encoded into the caller's buffer. A message that does not fit whole
+/// is not written at all. # C: O(messages)
+fn pktoptions_get(sock: &Arc<InetSocket>, out: &OptOut) -> i64 {
+    let requested = match requested(out.optlen_p) { Ok(v) => v, Err(e) => return errno(e) };
+    let want = net::cmsg::Want {
+        pktinfo: sock.opts.ip_pktinfo.load(Ordering::Acquire) != 0,
+        ttl: sock.opts.ip_recvttl.load(Ordering::Acquire) != 0,
+        tos: sock.opts.ip.flag(net::sock_opts::sol_ip::flag::RECVTOS),
+        ..Default::default()
+    };
+    let rx = net::cmsg::pktoptions::StreamRx {
+        saddr: sock.local_ip.lock().octets(),
+        ifindex: sock.opts.ip_mcast_ifindex.load(Ordering::Acquire),
+        ttl: sock.opts.ip_mcast_ttl.load(Ordering::Acquire),
+        tos: sock.opts.ip_rcv_tos.load(Ordering::Acquire),
+    };
+    let mut control = crate::recv_control::Control::new(requested as usize);
+    for msg in net::cmsg::pktoptions::plan(&want, &rx) {
+        control.push(msg.level, msg.kind, &msg.bytes);
+    }
+    out.exact(&control.to_bytes())
 }
 
 fn publish(out: &OptOut, value: Value) -> i64 {
@@ -83,7 +108,7 @@ fn publish(out: &OptOut, value: Value) -> i64 {
             let len = ipget::bytes_len(bytes.len(), requested);
             out.exact(&bytes[..len])
         }
-        Value::Delegated => errno(Errno::Enoprotoopt),
+        Value::Delegated | Value::ControlStream => errno(Errno::Enoprotoopt),
     }
 }
 

@@ -195,6 +195,11 @@ pub struct SockOpts {
     pub ip_ttl:    core::sync::atomic::AtomicI32,
     pub ip_tos:    core::sync::atomic::AtomicI32,
     pub ip_pktinfo: core::sync::atomic::AtomicI32, pub ip_mcast_ttl: core::sync::atomic::AtomicI32, pub ip_mcast_loop: core::sync::atomic::AtomicI32, pub ip_mcast_ifaddr: core::sync::atomic::AtomicU32, pub ip_mcast_ifindex: core::sync::atomic::AtomicU32,
+    /// Type-of-service byte of the packet that opened this connection, which
+    /// only IP_PKTOPTIONS publishes. The interface and hop limit it reports
+    /// alongside are the multicast fields, which a stream socket's accept
+    /// overwrites with the same header's values.
+    pub ip_rcv_tos: core::sync::atomic::AtomicI32,
     /// IP_RECVTTL: deliver the received IPv4 header TTL as an IP_TTL cmsg on
     /// recvmsg (systemd-resolved LLMNR/mDNS hop check). IP_MTU_DISCOVER is
     /// shared with the bound UDP endpoint because ICMP owns PMTU error input.
@@ -278,7 +283,7 @@ impl Default for SockOpts {
             mark:        AtomicI32::new(0),
             ip_ttl:      AtomicI32::new(-1),
             ip_tos:      AtomicI32::new(0),
-            ip_pktinfo:  AtomicI32::new(0), ip_mcast_ttl: AtomicI32::new(1), ip_mcast_loop: AtomicI32::new(1), ip_mcast_ifaddr: AtomicU32::new(0), ip_mcast_ifindex: AtomicU32::new(0),
+            ip_pktinfo:  AtomicI32::new(0), ip_mcast_ttl: AtomicI32::new(1), ip_mcast_loop: AtomicI32::new(1), ip_mcast_ifaddr: AtomicU32::new(0), ip_mcast_ifindex: AtomicU32::new(0), ip_rcv_tos: AtomicI32::new(0),
             ip_recvttl: AtomicI32::new(0),
             ip_mtu_discover: Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             ipv6_v6only: Arc::new(AtomicI32::new(0)),

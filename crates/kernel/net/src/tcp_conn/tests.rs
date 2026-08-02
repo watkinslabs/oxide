@@ -371,3 +371,26 @@ fn peek_offset_reads_waitall_suffix_without_consuming() {
     assert_eq!(second, b"def");
     assert_eq!(conn.recv(6), b"abcdef");
 }
+
+// ---- what a passive open records off the opening header -------------------
+
+#[test]
+fn a_passive_open_records_the_service_class_and_hop_limit_it_arrived_with() {
+    // A 20-byte IPv4 header: version/IHL, TOS, then the hop limit at 8.
+    let mut packet = [0u8; crate::ipv4::IPV4_HDR_LEN + 20];
+    packet[0] = 0x45;
+    packet[1] = 0x2c;
+    packet[8] = 57;
+    assert_eq!(super::passive_rcv_header(&packet, false, 9), (9, 57, 0x2c));
+}
+
+#[test]
+fn an_ipv6_passive_open_records_nothing_at_the_ipv4_level() {
+    let packet = [0u8; 60];
+    assert_eq!(super::passive_rcv_header(&packet, true, 9), (0, 0, 0));
+}
+
+#[test]
+fn a_packet_too_short_to_hold_a_header_records_nothing() {
+    assert_eq!(super::passive_rcv_header(&[0x45, 0x2c, 0, 0], false, 9), (0, 0, 0));
+}

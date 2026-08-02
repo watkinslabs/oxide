@@ -46,6 +46,9 @@ pub enum Value {
     Bytes(Vec<u8>),
     /// Owned by the multicast or raw-socket table.
     Delegated,
+    /// Published as a control-message stream rather than a value, whose
+    /// content depends on how much room the caller offered.
+    ControlStream,
 }
 
 /// `do_ip_getsockopt`. # C: O(optlen)
@@ -86,7 +89,7 @@ pub fn read(optname: u64, sock: IpSock, s: &IpGetState) -> Result<Value, Errno> 
         // The stream-socket ancillary snapshot has no datagram form.
         IP_PKTOPTIONS => {
             if !sock.stream { return Err(Errno::Enoprotoopt); }
-            Value::Bytes(Vec::new())
+            Value::ControlStream
         }
         IP_UNICAST_IF => Value::Int(s.unicast_if.swap_bytes() as i32),
         // An interface bound by index still reports the ANY address.
