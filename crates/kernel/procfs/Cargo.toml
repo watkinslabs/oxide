@@ -38,12 +38,20 @@ ipc = { path = "../ipc" }
 slab = { path = "../../shared/slab" }
 kmacros = { path = "../../shared/kmacros" }
 
+[dev-dependencies]
+# `coredump_filter` reads `sched::live`, which is gated behind `sched/hosted`
+# off the kernel target. Without this, `cargo test -p procfs` does not BUILD:
+# the 146 unit tests only ran under `cargo test --workspace`, where another
+# crate's dev-dependency turned the feature on through feature unification. A
+# procfs-only test job would never have run one of them.
+sched = { path = "../sched", features = ["hosted"] }
+
 [features]
 debug-cgroup = []  # [PROCCG]/[OPENCG-adjacent] /proc/<pid>/cgroup read trace
 debug-mntcost = []  # [MNTBUILD] per-render cost census for /proc/*/mountinfo + /proc/mounts (snapshot vs row-render split, row + global mount counts)
 debug-mnt = []  # [MNTINFO] /proc mountinfo reader namespace/projection trace
 default = []
-hosted  = []
+hosted  = ["sched/hosted"]
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
