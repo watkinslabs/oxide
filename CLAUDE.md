@@ -6,6 +6,35 @@ Linux-class kernel + glibc-ABI userspace, in Rust. Kernel targets `x86_64-unknow
 
 Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) and Phase 0 build infra are next.
 
+## The framing question (HARD RULE — ask it first, every time)
+
+**"Is this how Linux does it?"** Every feature, every fix, every plan starts there —
+before the design, not after the diff. The reference tree is `../linux-master`; read
+the actual implementation, not your memory of it.
+
+- **Design.** Before writing code, find the structure Linux uses for this job and ask
+  why. If our shape differs, the difference is a decision that needs a reason, not an
+  accident you discovered later. Most defects in this repo trace to a shape invented
+  here — machinery with no caller, a second registry beside the real one, a parser
+  that runs before the table it should consult.
+- **Fixes.** Before patching a symptom, check what Linux returns and *where it decides*.
+  A fix at the wrong layer passes its test and leaves the defect. Several rows in the
+  ledger were closed only after someone asked this and found the blocker was stale, the
+  premise wrong, or the "bug" correct behaviour.
+- **Plans.** A plan that cannot say which Linux mechanism it mirrors is a plan to invent
+  one. Say the mechanism in the plan.
+- **When we deviate, it is deliberate and recorded.** A deviation with a stated reason
+  is engineering; an undocumented one is a bug nobody has found yet. Put it in
+  `scratch/known_issues.md` with the reason, and pin it with a test so it cannot drift.
+- **Asking it is not optional when the answer seems obvious.** The expensive mistakes
+  this session — an EEXIST "fix" that would have broken seven syscalls, a comparator
+  that never compared, a shim that decided how long a request lives — all looked obvious
+  in the wrong direction until someone read the reference.
+
+Repository text still must not name, path-link or quote external implementation files
+(`Semantic verification` below). Tests carry the provenance: encode the verified
+behaviour so the contract is re-checkable without citing another codebase.
+
 ## Discipline (READ BEFORE EDITING)
 
 1. **Spec-before-code** (`docs/02`): subsystem code may not be written while its spec is DRAFT. Charters (`02`,`08`,`09`,`01`,`06`,`07`) gate everything below.
