@@ -20,33 +20,31 @@ pub(crate) const KERNEL_SIGINFO_BYTES: u64 = 48;
 /// `copy_siginfo_to_user` writes out.
 pub(crate) const SIGINFO_BYTES: u64 = 128;
 
-/// `siginfo_t` field offsets the READ side needs (`asm-generic/siginfo.h`).
-/// The write side has no table of its own — it renders through
-/// `hal::write_siginfo`, the one owner of the union arms.
+/// `si_signo`'s offset, the one field a caller reads on its own (the signal
+/// number a record claims, before the syscall's argument overrides it). Every
+/// other offset belongs to `hal::siginfo`, the one owner of the union arms —
+/// a second table here is what let a `_sigfault` record copy in as a `_kill`
+/// one.
 pub(crate) const SI_SIGNO: u64 = 0;
-pub(crate) const SI_CODE:  u64 = 8;
-pub(crate) const SI_PID:   u64 = 16;
-pub(crate) const SI_UID:   u64 = 20;
-/// The `_rt` arm's `sigval_t`, a full 8 bytes — the `_sigchld` arm's
-/// `si_status` aliases its low half.
-pub(crate) const SI_VALUE: u64 = 24;
 
-/// Decode the leading `kernel_siginfo` fields of a user `siginfo_t`.
+/// Decode a user `siginfo_t` (Linux `copy_siginfo_from_user`).
+///
+/// Linux copies the union verbatim, so the arm survives the copy untouched;
+/// our record is decomposed, so the arm is recovered from `(signo, si_code)`
+/// by the same classifier the write side and `signalfd` use.
+///
 /// Caller must have validated `info_ptr` readable for `KERNEL_SIGINFO_BYTES`.
 /// # C: O(1)
 pub(crate) fn read_user_siginfo(info_ptr: u64, signo: u32) -> sched::SigInfo {
-    // SAFETY: caller validated info_ptr readable for KERNEL_SIGINFO_BYTES, which
-    // covers every offset read here (highest is SI_VALUE + 8 = 32).
+    let mut buf = [0u8; SIGINFO_BYTES as usize];
+    // SAFETY: caller validated info_ptr readable for KERNEL_SIGINFO_BYTES; only that prefix is copied and the 128-byte destination is a local array, so the tail stays zero exactly as Linux's `kernel_siginfo` copy-in leaves it.
     unsafe {
-        let code  = core::ptr::read_unaligned((info_ptr + SI_CODE)  as *const i32);
-        let pid   = core::ptr::read_unaligned((info_ptr + SI_PID)   as *const u32);
-        let uid   = core::ptr::read_unaligned((info_ptr + SI_UID)   as *const u32);
-        let value = core::ptr::read_unaligned((info_ptr + SI_VALUE) as *const u64);
-        // Linux `__copy_siginfo_from_user` overwrites si_signo with the
-        // syscall's `sig` argument — the sender cannot make the two disagree.
-        // `rt_sigqueueinfo` cannot forge a seccomp `_sigsys` arm.
-        sched::SigInfo { signo, code, pid, uid, value, sys: None, fault: None, poll: None }
+        core::ptr::copy_nonoverlapping(info_ptr as *const u8, buf.as_mut_ptr(),
+                                       KERNEL_SIGINFO_BYTES as usize);
     }
+    // Linux `__copy_siginfo_from_user` overwrites si_signo with the syscall's
+    // `sig` argument — the sender cannot make the two disagree.
+    sched::SigInfo::from_payload(signo, hal::read_siginfo(&buf, signo))
 }
 
 /// Write a dequeued signal into a user `siginfo_t` (Linux

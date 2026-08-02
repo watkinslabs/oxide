@@ -117,3 +117,61 @@ fn the_two_syscall_stop_messages_are_distinct_and_nonzero() {
     assert_eq!(EVENTMSG_SYSCALL_ENTRY, 1);
     assert_eq!(EVENTMSG_SYSCALL_EXIT, 2);
 }
+
+// ---- the record a stop publishes ---------------------------------------
+
+/// The tracee, as its own pid namespace numbers it.
+const TRACEE_VPID: u32 = 41;
+/// The tracer. It must appear NOWHERE in the tracee's own stop record.
+const TRACER_VPID: u32 = 40;
+
+#[test]
+fn a_synthesised_event_record_names_the_tracee_not_the_tracer() {
+    let code = uapi::event_stop_code(uapi::EVENT_EXEC);
+    let r = notify_record(TRACEE_VPID, 1000, code);
+    assert_eq!(r.signo, SIGTRAP);
+    assert_eq!(r.code, code);
+    assert_eq!(r.pid, TRACEE_VPID);
+    assert_ne!(r.pid, TRACER_VPID, "si_pid is task_pid_vnr(current), the tracee");
+    assert_eq!(r.uid, 1000);
+}
+
+// Every event stop code is `SIGTRAP | event << 8`, far above the largest
+// SIGTRAP-specific code, so the shared classifier gives it the `_kill` arm —
+// which is what makes si_pid/si_uid the right members to write for it.
+#[test]
+fn every_event_stop_code_classifies_as_the_kill_arm() {
+    for ev in ALL_EVENTS.iter().copied().chain([uapi::EVENT_STOP]) {
+        let code = uapi::event_stop_code(ev);
+        assert_eq!(hal::siginfo::layout(SIGTRAP, code), hal::siginfo::Layout::Kill,
+                   "event {ev} stop code {code} must not decode as a fault");
+    }
+}
+
+// The counterpart: a SIGTRAP whose si_code IS one of the signal's own is a
+// `_sigfault` record, so writing a pid into it would land in si_addr. This is
+// the pair of rules that keeps a synthesised stop and a real trap apart.
+#[test]
+fn a_real_sigtrap_condition_classifies_as_a_fault_and_carries_no_sender() {
+    for c in [hal::siginfo::code::TRAP_BRKPT, hal::siginfo::code::TRAP_TRACE,
+              hal::siginfo::code::TRAP_HWBKPT] {
+        assert!(hal::siginfo::layout(SIGTRAP, c).is_fault(), "si_code {c}");
+    }
+}
+
+// A signal-delivery stop reports the record that was DEQUEUED. A synthesised
+// SIGTRAP would tell the tracer a signal arrived that never did, and stamping
+// sender fields onto a fault record puts a pid where si_addr belongs.
+#[test]
+fn a_fault_records_sender_fields_stay_empty_end_to_end() {
+    let addr = 0x7fff_1234_5000u64;
+    let rec = sched::sigsend::fault_info(11, hal::siginfo::code::SEGV_MAPERR, addr, 0);
+    assert_eq!(rec.pid, 0);
+    assert_eq!(rec.uid, 0);
+    let mut buf = [0u8; 128];
+    hal::write_siginfo(&mut buf, rec.signo, Some(rec.payload(rec.signo)));
+    assert_eq!(u64::from_ne_bytes(buf[16..24].try_into().unwrap()), addr,
+               "the tracer reads si_addr here, not a pid");
+    assert_eq!(i32::from_ne_bytes(buf[8..12].try_into().unwrap()),
+               hal::siginfo::code::SEGV_MAPERR, "and a fault si_code, not SI_USER");
+}

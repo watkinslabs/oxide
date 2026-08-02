@@ -37,11 +37,22 @@ use crate::s101_ptrace_uapi as uapi;
 /// # Sleeps: yes — parks until the tracer resumes it.
 /// # C: O(N_schedule) until the tracer resumes
 pub fn notify(stop_code: i32, message: u64) -> u32 {
-    notify_with(stop_code, message, sched::SigInfo {
-        signo: Signum::Sigtrap as u32, code: stop_code,
-        pid: 0, uid: 0, value: 0, sys: None, fault: None, poll: None,
-    }).0
+    let Some(cur) = sched::live::current() else { return 0 };
+    notify_with(stop_code, message,
+                event::notify_record(self_vpid(&cur), self_uid(&cur), stop_code)).0
 }
+
+/// Linux `task_pid_vnr(current)` — the tracee's own thread number in its OWN
+/// pid namespace, which is what a synthesised record's `si_pid` carries.
+/// # C: O(depth)
+fn self_vpid(cur: &Task) -> u32 {
+    let ns = cur.namespace_owner(namespace_identity::NamespaceKind::Pid);
+    match ns { Some(ns) => sched::registry::vnr_in(cur, &ns).unwrap_or(0), None => cur.tid }
+}
+
+/// Linux `current_uid()` — the real uid of the task the record describes.
+/// # C: O(1)
+fn self_uid(cur: &Task) -> u32 { cur.creds.ruid.load(Ordering::Acquire) }
 
 /// `ptrace_notify` with a caller-supplied `last_siginfo`. A signal-delivery
 /// stop reports the SIGNAL's record, not a synthesised SIGTRAP, so a tracer's
@@ -49,23 +60,20 @@ pub fn notify(stop_code: i32, message: u64) -> u32 {
 /// rewrites the very record the tracee then delivers (Linux keeps a POINTER to
 /// the pending `kernel_siginfo_t` in `last_siginfo`, so the rewrite is in
 /// place). The caller reads the record back out after this returns.
+///
+/// The record is published EXACTLY as the caller built it. Linux's
+/// `ptrace_stop` takes a `kernel_siginfo_t *` and touches none of it; the
+/// sender fields belong to whoever produced the record, and a
+/// `_sigfault`/`_sigsys`/`_sigpoll` one has no sender fields at all — those
+/// bytes are its `si_addr`/`si_call_addr`/`si_band`.
 /// # Ctx: the tracee itself, process context.
 /// # Sleeps: yes — parks until the tracer resumes it.
 /// # C: O(N_schedule) until the tracer resumes
-pub fn notify_with(stop_code: i32, message: u64, mut info: sched::SigInfo)
+pub fn notify_with(stop_code: i32, message: u64, info: sched::SigInfo)
     -> (u32, Option<sched::SigInfo>)
 {
     let Some(cur) = sched::live::current() else { return (0, None) };
     cur.ptrace_eventmsg.store(message, Ordering::Release);
-    // The record is read by the TRACEE (and by the tracer through
-    // PTRACE_GETSIGINFO), so the tracer is named by the number the tracee's pid
-    // namespace gives it — never the opaque internal tid.
-    if info.pid == 0 {
-        let tracer = cur.traced_by.load(Ordering::Acquire);
-        info.pid = sched::live::registry::lookup(tracer)
-            .map(|t| sched::registry::tgid_nr_seen_by(&t, &cur))
-            .unwrap_or(0);
-    }
     *cur.ptrace_siginfo.lock() = Some(info);
     crate::ptrace_fpu::snapshot_current();
     sched::live::stop::stop_until_cont_code(stop_code as u32, sched::jobctl::StopKind::Ptrace);
@@ -174,10 +182,12 @@ pub fn init_task(parent: &Task, child: &Arc<Task>, reported_event: Option<u32>) 
     child.ptrace_seized.store(inherited.seized, Ordering::Release);
     let code = inherited.child_stop_code();
     child.stop_code.store(code as u32, Ordering::Release);
-    *child.ptrace_siginfo.lock() = Some(sched::SigInfo {
-        signo: Signum::Sigtrap as u32, code,
-        pid: inherited.tracer, uid: 0, value: 0, sys: None, fault: None, poll: None,
-    });
+    // The record names the CHILD, the task it describes, exactly as the stop it
+    // comes to rest in would have built it.
+    let vpid = child.vtid.load(Ordering::Acquire);
+    let vpid = if vpid != 0 { vpid } else { child.tid };
+    *child.ptrace_siginfo.lock() =
+        Some(event::notify_record(vpid, child.creds.ruid.load(Ordering::Acquire), code));
     // A SEIZED child is trapped by `JOBCTL_TRAP_STOP`, which has no signal
     // behind it; a classic attach adds SIGSTOP to the child's pending set and
     // the child stops at its first signal-delivery point.

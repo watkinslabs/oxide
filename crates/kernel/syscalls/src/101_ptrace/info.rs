@@ -52,21 +52,14 @@ pub fn peeksiginfo(target: &Task, addr: u64, data: u64) -> Result<i64, Errno> {
     Ok(copied)
 }
 
-/// One `siginfo_t` at the Linux field offsets: signo@0, errno@4, code@8,
-/// pid@16, uid@20, value@24; the rest zeroed.
+/// One queued `siginfo_t`, rendered by the shared writer so a `_sigfault`
+/// record in the tracee's queue peeks out as a fault rather than as a kill
+/// from a sender that never existed.
 fn write_siginfo(dst: u64, rec: &sched::SigInfo) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf_writable(dst, uapi::SIGINFO_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `dst..dst+128` validated as a mapped writable siginfo_t slot in the caller's AS; the leading fields follow the Linux `siginfo_t` layout and the remainder is zeroed.
-    unsafe {
-        core::ptr::write_bytes(dst as *mut u8, 0, uapi::SIGINFO_BYTES as usize);
-        core::ptr::write_unaligned(dst as *mut i32, rec.signo as i32);
-        core::ptr::write_unaligned((dst + 8) as *mut i32, rec.code);
-        core::ptr::write_unaligned((dst + 16) as *mut u32, rec.pid);
-        core::ptr::write_unaligned((dst + 20) as *mut u32, rec.uid);
-        core::ptr::write_unaligned((dst + 24) as *mut u64, rec.value);
-    }
+    crate::signal_common::write_user_siginfo(dst, rec.signo, Some(*rec));
     Ok(())
 }
 

@@ -5,6 +5,20 @@
 // The union arms OVERLAP (`_kill`, `_sigchld`, `_rt`, `_sigsys` all start at
 // `_sifields`, byte 16), so the arm must be selected before any field is
 // written — one writer here so the two arches cannot drift.
+//
+// Three sides, ONE owner:
+//   * PRODUCER — a record built in the kernel names its arm directly (the
+//     `Option` members of `SigPayload`), exactly as a kernel producer assigns
+//     one union member. `write_siginfo` renders it.
+//   * DECODER  — a FLAT 128-byte record (from userspace, or read back out of a
+//     buffer) carries no such tag, so its arm is derived from
+//     `(si_signo, si_code)` by [`layout`]. `read_siginfo` renders that.
+//   * CLASSIFIER — [`layout`] is also what `signalfd_siginfo` rendering keys
+//     on, so a `_sigfault` record cannot be a `_kill` one on one path and a
+//     fault on another.
+//
+// Ungated on purpose (`CLAUDE.md` phantom-test rule): every rule below is a
+// decision provable by `cargo test -p hal`.
 
 /// Extra siginfo_t payload an SA_SIGINFO handler reads, passed
 /// arch-neutrally from the signal-delivery path into the per-arch
@@ -159,6 +173,133 @@ pub mod code {
     pub const TRAP_HWBKPT: i32 = 4;
     /// SIGTRAP — undiagnosed trap.
     pub const TRAP_UNK: i32 = 5;
+    /// SIGTRAP — `perf_event_open` sample with `sigtrap=1`; selects the
+    /// `_perf` inner union rather than the plain `_sigfault` one.
+    pub const TRAP_PERF: i32 = 6;
+}
+
+/// Signal numbers the union-arm decision keys on. Identical on x86_64 and
+/// aarch64 (both take the asm-generic numbering), and duplicated here rather
+/// than imported so `hal` keeps no dependency on `sched`.
+pub mod signo {
+    pub const SIGILL:  u32 = 4;
+    pub const SIGTRAP: u32 = 5;
+    pub const SIGBUS:  u32 = 7;
+    pub const SIGFPE:  u32 = 8;
+    pub const SIGSEGV: u32 = 11;
+    pub const SIGCHLD: u32 = 17;
+    /// `SIGPOLL` is the same number.
+    pub const SIGIO:   u32 = 29;
+    pub const SIGSYS:  u32 = 31;
+}
+
+/// `si_code` values that name a SOURCE rather than a signal-specific
+/// condition. The window `SI_USER < code < SI_KERNEL` is what makes a code
+/// signal-specific; everything outside it is classified by source alone.
+pub mod source {
+    /// `kill(2)`, `raise(3)`, `sigsend`.
+    pub const SI_USER:   i32 = 0;
+    /// Raised by the kernel from somewhere with no better classification.
+    pub const SI_KERNEL: i32 = 0x80;
+    /// `timer_create(2)` expiry — selects the `_timer` arm.
+    pub const SI_TIMER:  i32 = -2;
+    /// A queued `SIGIO` — selects `_sigpoll` even though the code is negative.
+    pub const SI_SIGIO:  i32 = -5;
+}
+
+/// Per-signal `si_code` upper bound (Linux `sig_sicodes[].limit`). A code above
+/// its signal's bound is not signal-specific, so the pair falls back to
+/// `_sigpoll`/`_kill` rather than the signal's own arm.
+pub mod limit {
+    pub const NSIGILL:  i32 = 11;
+    pub const NSIGFPE:  i32 = 15;
+    pub const NSIGSEGV: i32 = 10;
+    pub const NSIGBUS:  i32 = 5;
+    pub const NSIGTRAP: i32 = 6;
+    pub const NSIGCHLD: i32 = 6;
+    pub const NSIGPOLL: i32 = 6;
+    pub const NSIGSYS:  i32 = 2;
+}
+
+/// Which `_sifields` union arm a `(si_signo, si_code)` pair selects — Linux
+/// `enum siginfo_layout`.
+///
+/// The four `Fault*` variants all put `si_addr` at `_sifields`; they differ
+/// only in what follows it, so every one of them is decoded through the
+/// `_sigfault` arm and the extra members belong to their own producers.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Layout {
+    Kill,
+    Timer,
+    Poll,
+    Fault,
+    /// `si_trapno` after `si_addr` — SPARC/Alpha only, never produced here.
+    FaultTrapno,
+    /// `si_addr_lsb` after `si_addr` (the SIGBUS machine-check codes).
+    FaultMceerr,
+    FaultBnderr,
+    FaultPkuerr,
+    FaultPerfEvent,
+    Chld,
+    Rt,
+    Sys,
+}
+
+impl Layout {
+    /// Whether this layout's `_sifields` is the `_sigfault` arm — i.e. bytes
+    /// 16..24 are `si_addr` and NOT `si_pid`/`si_uid`.
+    /// # C: O(1)
+    pub fn is_fault(self) -> bool {
+        matches!(self, Layout::Fault | Layout::FaultTrapno | Layout::FaultMceerr
+                     | Layout::FaultBnderr | Layout::FaultPkuerr | Layout::FaultPerfEvent)
+    }
+}
+
+/// Signal-specific arm and code bound for `sig`, when it has one.
+/// # C: O(1)
+fn sig_sicode(sig: u32) -> Option<(i32, Layout)> {
+    match sig {
+        signo::SIGILL  => Some((limit::NSIGILL,  Layout::Fault)),
+        signo::SIGFPE  => Some((limit::NSIGFPE,  Layout::Fault)),
+        signo::SIGSEGV => Some((limit::NSIGSEGV, Layout::Fault)),
+        signo::SIGBUS  => Some((limit::NSIGBUS,  Layout::Fault)),
+        signo::SIGTRAP => Some((limit::NSIGTRAP, Layout::Fault)),
+        signo::SIGCHLD => Some((limit::NSIGCHLD, Layout::Chld)),
+        signo::SIGIO   => Some((limit::NSIGPOLL, Layout::Poll)),
+        signo::SIGSYS  => Some((limit::NSIGSYS,  Layout::Sys)),
+        _ => None,
+    }
+}
+
+/// `si_code` values that override their signal's default fault arm.
+const BUS_MCEERR_AR: i32 = 4;
+const BUS_MCEERR_AO: i32 = 5;
+
+/// Linux `siginfo_layout(sig, si_code)` — the ONE owner of "which union arm
+/// does this record use". A record whose arm is decided anywhere else can
+/// disagree with the one a handler reads, which is how a fault reports as a
+/// kill.
+/// # C: O(1)
+pub fn layout(sig: u32, si_code: i32) -> Layout {
+    if si_code > source::SI_USER && si_code < source::SI_KERNEL {
+        if let Some((bound, arm)) = sig_sicode(sig) {
+            if si_code <= bound {
+                if sig == signo::SIGBUS && (BUS_MCEERR_AR..=BUS_MCEERR_AO).contains(&si_code) {
+                    return Layout::FaultMceerr;
+                }
+                if sig == signo::SIGSEGV && si_code == code::SEGV_BNDERR { return Layout::FaultBnderr; }
+                if sig == signo::SIGSEGV && si_code == code::SEGV_PKUERR { return Layout::FaultPkuerr; }
+                if sig == signo::SIGTRAP && si_code == code::TRAP_PERF { return Layout::FaultPerfEvent; }
+                return arm;
+            }
+        }
+        if si_code <= limit::NSIGPOLL { return Layout::Poll; }
+        return Layout::Kill;
+    }
+    if si_code == source::SI_TIMER { return Layout::Timer; }
+    if si_code == source::SI_SIGIO { return Layout::Poll; }
+    if si_code < 0 { return Layout::Rt; }
+    Layout::Kill
 }
 
 /// siginfo_t field offsets (`asm-generic/siginfo.h`) — identical on x86_64 and
@@ -222,117 +363,65 @@ pub fn write_siginfo(info: &mut [u8; 128], sig: u32, payload: Option<SigPayload>
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn write_siginfo_fills_si_signo_even_without_a_payload() {
-        let mut info = [0u8; 128];
-        write_siginfo(&mut info, 11, None);
-        assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 11);
-        assert!(info[4..].iter().all(|b| *b == 0), "no payload ⇒ nothing else is set");
-    }
-
-    #[test]
-    fn write_siginfo_sigchld_arm_writes_a_four_byte_si_status() {
-        let mut info = [0u8; 128];
-        let p = SigPayload { code: 1, pid: 42, uid: 7, status: -9, value: u64::MAX, chld_arm: true,
-                             sigsys: None, fault: None, poll: None };
-        write_siginfo(&mut info, 17, Some(p));
-        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), 1);
-        assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 42);
-        assert_eq!(u32::from_ne_bytes(info[20..24].try_into().unwrap()), 7);
-        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), -9);
-        assert!(info[28..32].iter().all(|b| *b == 0), "si_status is an int; bytes 28..32 stay clear");
-    }
-
-    #[test]
-    fn write_siginfo_rt_arm_writes_a_full_eight_byte_si_value() {
-        let mut info = [0u8; 128];
-        let ptr = 0x7fff_dead_beefu64;
-        let p = SigPayload { code: -1, pid: 42, uid: 7, status: 0, value: ptr, chld_arm: false,
-                             sigsys: None, fault: None, poll: None };
-        write_siginfo(&mut info, 34, Some(p));
-        assert_eq!(u64::from_ne_bytes(info[24..32].try_into().unwrap()), ptr,
-                   "truncating si_value to 4 bytes loses a sigqueue(3) sival_ptr");
-    }
-
-    // `force_sig_seccomp` fills si_errno / si_call_addr / si_syscall /
-    // si_arch. All four read back as 0 without the `_sigsys` arm, so a SIGSYS
-    // handler could not tell which syscall the filter rejected.
-    #[test]
-    fn write_siginfo_sigsys_arm_writes_call_addr_syscall_arch_and_errno() {
-        let mut info = [0u8; 128];
-        let s = Sigsys { call_addr: 0x7fff_1234_5678, syscall: 257, arch: 0xc000_003e, errno: 0xbeef };
-        let p = SigPayload { code: 1, pid: 42, uid: 7, status: -9, value: u64::MAX, chld_arm: true,
-                             sigsys: Some(s), fault: None, poll: None };
-        write_siginfo(&mut info, 31, Some(p));
-        assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 31);
-        assert_eq!(i32::from_ne_bytes(info[4..8].try_into().unwrap()), 0xbeef);
-        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), 1, "si_code = SYS_SECCOMP");
-        assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), 0x7fff_1234_5678);
-        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 257);
-        assert_eq!(u32::from_ne_bytes(info[28..32].try_into().unwrap()), 0xc000_003e);
-    }
-
-    // A synchronous fault signal's whole point is si_addr; without the
-    // `_sigfault` arm a SIGSEGV handler reads si_addr == 0 and cannot tell
-    // which address faulted.
-    #[test]
-    fn write_siginfo_sigfault_arm_writes_si_addr_and_si_addr_lsb() {
-        let mut info = [0u8; 128];
-        let f = SigFault { addr: 0x7fff_dead_b000, addr_lsb: 12 };
-        let p = SigPayload { code: code::SEGV_MAPERR, pid: 0, uid: 0, status: 0, value: 0,
-                             chld_arm: false, sigsys: None, fault: Some(f), poll: None };
-        write_siginfo(&mut info, 11, Some(p));
-        assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 11);
-        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), code::SEGV_MAPERR);
-        assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), 0x7fff_dead_b000);
-        assert_eq!(i16::from_ne_bytes(info[24..26].try_into().unwrap()), 12);
-    }
-
-    // `_sigfault` overlaps `_kill`/`_rt` at byte 16, so si_pid/si_uid/si_value
-    // must not be written over si_addr.
-    #[test]
-    fn the_sigfault_arm_excludes_the_pid_uid_and_value_fields() {
-        let mut info = [0u8; 128];
-        let f = SigFault { addr: u64::MAX, addr_lsb: 0 };
-        let p = SigPayload { code: code::SEGV_ACCERR, pid: 0x4242, uid: 0x77, status: -9,
-                             value: u64::MAX, chld_arm: false, sigsys: None, fault: Some(f), poll: None };
-        write_siginfo(&mut info, 11, Some(p));
-        assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), u64::MAX);
-        assert!(info[26..].iter().all(|b| *b == 0), "nothing past si_addr_lsb is written");
-    }
-
-    // `F_SETSIG`'s whole point is telling the handler WHICH fd fired. si_band is
-    // a `long` covering both `_kill` words, so si_pid/si_uid must not be written
-    // over it and si_fd must land in the `si_value` slot.
-    #[test]
-    fn write_siginfo_sigpoll_arm_writes_si_band_and_si_fd() {
-        let mut info = [0u8; 128];
-        let q = SigPoll { band: 0x41, fd: 7 };
-        let p = SigPayload { code: 1, pid: 0x4242, uid: 0x77, status: -9, value: u64::MAX,
-                             chld_arm: false, sigsys: None, fault: None, poll: Some(q) };
-        write_siginfo(&mut info, 29, Some(p));
-        assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 29);
-        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), 1, "si_code = POLL_IN");
-        assert_eq!(i64::from_ne_bytes(info[16..24].try_into().unwrap()), 0x41,
-                   "si_band is a long; si_pid/si_uid must not be written over it");
-        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), 7, "si_fd");
-        assert!(info[28..].iter().all(|b| *b == 0), "nothing past si_fd is written");
-    }
-
-    // The `_sigsys` arm OVERLAPS `_kill`/`_sigchld`: si_pid and si_call_addr
-    // share offset 16. Writing both would corrupt si_call_addr's low half.
-    #[test]
-    fn the_sigsys_arm_excludes_the_pid_uid_and_status_fields() {
-        let mut info = [0u8; 128];
-        let s = Sigsys { call_addr: u64::MAX, syscall: 0, arch: 0, errno: 0 };
-        let p = SigPayload { code: 1, pid: 0x4242, uid: 0x77, status: -9, value: 0, chld_arm: false,
-                             sigsys: Some(s), fault: None, poll: None };
-        write_siginfo(&mut info, 31, Some(p));
-        assert_eq!(u64::from_ne_bytes(info[16..24].try_into().unwrap()), u64::MAX,
-                   "si_pid/si_uid must not be written over si_call_addr");
-    }
+fn i32_at(b: &[u8], off: usize) -> i32 { i32::from_ne_bytes([b[off], b[off+1], b[off+2], b[off+3]]) }
+fn u32_at(b: &[u8], off: usize) -> u32 { i32_at(b, off) as u32 }
+fn u64_at(b: &[u8], off: usize) -> u64 {
+    let mut w = [0u8; 8];
+    w.copy_from_slice(&b[off..off + 8]);
+    u64::from_ne_bytes(w)
 }
+
+/// Decode a FLAT `siginfo_t` (Linux `copy_siginfo_from_user`) into the
+/// arm-tagged payload the rest of the kernel carries.
+///
+/// Linux's `kernel_siginfo_t` IS the union, so its copy-in is a straight
+/// `copy_from_user` and the arm survives untouched. Ours is a decomposed
+/// struct, so the arm has to be recovered — from `(sig, si_code)`, the only
+/// thing the bytes say about it. Reading `si_pid`/`si_uid` unconditionally is
+/// what turns a `_sigfault` record's `si_addr` into a sender that never
+/// existed.
+///
+/// `sig` overrides whatever `si_signo` the buffer holds, matching
+/// `__copy_siginfo_from_user`: the syscall's signal argument wins.
+/// # C: O(1)
+pub fn read_siginfo(info: &[u8; 128], sig: u32) -> SigPayload {
+    let code = i32_at(info, SI_CODE);
+    let arm = layout(sig, code);
+    let mut p = SigPayload { code, ..Default::default() };
+    if arm == Layout::Sys {
+        p.sigsys = Some(Sigsys {
+            call_addr: u64_at(info, SI_CALL_ADDR),
+            syscall:   i32_at(info, SI_SYSCALL),
+            arch:      u32_at(info, SI_ARCH),
+            errno:     i32_at(info, SI_ERRNO),
+        });
+        return p;
+    }
+    if arm.is_fault() {
+        p.fault = Some(SigFault {
+            addr:     u64_at(info, SI_ADDR),
+            addr_lsb: i16::from_ne_bytes([info[SI_ADDR_LSB], info[SI_ADDR_LSB + 1]]),
+        });
+        return p;
+    }
+    if arm == Layout::Poll {
+        p.poll = Some(SigPoll { band: u64_at(info, SI_BAND) as i64, fd: i32_at(info, SI_FD) });
+        return p;
+    }
+    p.pid = i32_at(info, SI_PID);
+    p.uid = u32_at(info, SI_UID);
+    // `_sigchld.si_status` is an `int`; the four bytes past it belong to
+    // `si_utime` and must not be folded into an 8-byte `si_value`.
+    if arm == Layout::Chld {
+        p.chld_arm = true;
+        p.status = i32_at(info, SI_VALUE);
+        p.value  = p.status as u32 as u64;
+    } else {
+        p.value  = u64_at(info, SI_VALUE);
+        p.status = p.value as i32;
+    }
+    p
+}
+
+#[cfg(test)]
+#[path = "siginfo/tests.rs"] mod tests;

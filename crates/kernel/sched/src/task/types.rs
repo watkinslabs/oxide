@@ -54,6 +54,21 @@ impl SigInfo {
             poll: self.poll,
         }
     }
+
+    /// Inverse of [`SigInfo::payload`]: rebuild a queued record from an
+    /// arm-tagged payload, which is what `hal::read_siginfo` decodes a FLAT
+    /// user `siginfo_t` into.
+    ///
+    /// Every copy-in path goes through here, so a `_sigfault` record a tracer
+    /// installs with `PTRACE_SETSIGINFO` keeps its `si_addr` instead of being
+    /// re-read as a sender's pid.
+    /// # C: O(1)
+    pub fn from_payload(signo: u32, p: hal::SigPayload) -> SigInfo {
+        SigInfo {
+            signo, code: p.code, pid: p.pid as u32, uid: p.uid, value: p.value,
+            sys: p.sigsys, fault: p.fault, poll: p.poll,
+        }
+    }
 }
 
 /// Per-signal RT queue depth cap. Drops new arrivals past this
