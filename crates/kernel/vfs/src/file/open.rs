@@ -26,6 +26,31 @@ pub fn install_open_at(
 ) -> Result<i32, VfsError> {
     let fd = fdt.get_unused_fd_flags(flags, limit).map_err(|_| VfsError::Emfile)?;
     let result = (|| {
+        let file = open_file_at(inode, dentry, flags, mnt_id, cred, fop_override)?;
+        fdt.fd_install(fd, file);
+        Ok(fd)
+    })();
+    if result.is_err() { fdt.put_unused_fd(fd); }
+    result
+}
+
+/// Everything an open does to reach a live `struct file`, with no descriptor
+/// involved: the `O_DIRECTORY` check, the read-only-mount gate, the `f_op`
+/// binding, `f_op->open`, the `O_DIRECT` capability gate and `O_TRUNC`.
+///
+/// Split out so an in-kernel open ([`crate::file::kernel_open_at_root`]) and a
+/// descriptor-installing open run the SAME sequence — an internal opener that
+/// skipped any of it would hold a file the syscall path would have refused.
+/// # C: O(1)
+pub fn open_file_at(
+    inode: InodeRef,
+    dentry: alloc::sync::Arc<crate::dentry::Dentry>,
+    flags: OpenFlags,
+    mnt_id: u64,
+    cred: FileCred,
+    fop_override: Option<alloc::sync::Arc<dyn crate::file_ops::FileOps>>,
+) -> Result<alloc::sync::Arc<File>, VfsError> {
+    {
         if flags.contains(OpenFlags::O_DIRECTORY)
             && !flags.contains(OpenFlags::O_TMPFILE)
             && !matches!(inode.file_type(), crate::types::FileType::Directory)
@@ -78,11 +103,8 @@ pub fn install_open_at(
             return Err(VfsError::Einval);
         }
         if truncate { file.inode().truncate(0)?; }
-        fdt.fd_install(fd, file);
-        Ok(fd)
-    })();
-    if result.is_err() { fdt.put_unused_fd(fd); }
-    result
+        Ok(file)
+    }
 }
 
 /// Build the opened leaf from an already-resolved parent dentry. This is the

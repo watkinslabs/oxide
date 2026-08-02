@@ -6,7 +6,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 use vmm::coredump_filter::{CoredumpFilter, FilterParseError};
 
 use crate::ino::pid_ino;
@@ -70,10 +70,23 @@ impl FileOps for CoredumpFilterOps {
     }
 }
 
+/// `i_op` for the filter file. Overrides only `truncate`, which must succeed
+/// as a no-op on a procfs leaf holding a single value: the default returns
+/// `Erofs`, and a shell redirection opens with `O_TRUNC`, so
+/// `echo 0x3f > /proc/self/coredump_filter` reported "Read-only file system"
+/// and left the filter at its default — the value could be read but never set
+/// from a shell.
+struct CoredumpFilterInodeOps;
+impl InodeOps for CoredumpFilterInodeOps {
+    /// # C: O(1)
+    fn truncate(&self, _inode: &Inode, _len: u64) -> KResult<()> { Ok(()) }
+}
+
 /// Build one target-process core-dump filter file. # C: O(1)
 pub fn make(tid: u32) -> InodeRef {
     InodeBuilder::new(pid_ino(COREDUMP_FILTER_TAG, tid),
-        mk_mode(FileType::Regular, FILE_MODE), default_inode_ops(), Arc::new(CoredumpFilterOps))
+        mk_mode(FileType::Regular, FILE_MODE), Arc::new(CoredumpFilterInodeOps),
+        Arc::new(CoredumpFilterOps))
         .private(Arc::new(CoredumpFilterFile { tid }))
         .build()
 }

@@ -119,7 +119,10 @@ pub unsafe fn dispatch_pending(regs: *mut UserRegs, p: &PendingSignal, saved_ret
             use sched::signum::{default_action, DefaultAction, killed_status};
             let action = default_action(p.sig);
             if action == DefaultAction::Core {
-                ::fs::coredump::write_for_current(p.sig as i32);
+                // The registers a debugger reads as the crash site are the
+                // ones in this very frame; nothing reconstructs them.
+                // SAFETY: caller's contract — `regs` is this task's live entry frame, exclusively owned by this CPU for the dump.
+                unsafe { ::fs::coredump::write_for_current(p.sig as i32, regs, siginfo_payload(p)); }
             }
             if action == DefaultAction::Core || action == DefaultAction::Term {
                 // Linux `get_signal`: a fatal signal terminates the WHOLE

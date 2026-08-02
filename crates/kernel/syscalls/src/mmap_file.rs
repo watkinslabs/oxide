@@ -21,12 +21,21 @@ use vmm::{FileBacking, FileBackingError, SharedFrame};
 pub struct InodeFileBacking {
     inode: InodeRef,
     cache: PageCache,
+    /// Path this backing was established from, for the mapping table a core
+    /// dump carries. Empty when the mapper had no name for the object.
+    path: alloc::vec::Vec<u8>,
 }
 
 impl InodeFileBacking {
     /// # C: O(1)
     pub fn new(inode: InodeRef) -> Arc<Self> {
-        Arc::new(Self { inode, cache: PageCache::new() })
+        Arc::new(Self { inode, cache: PageCache::new(), path: alloc::vec::Vec::new() })
+    }
+
+    /// Same, naming the path the mapping was established from.
+    /// # C: O(path)
+    pub fn new_named(inode: InodeRef, path: alloc::vec::Vec<u8>) -> Arc<Self> {
+        Arc::new(Self { inode, cache: PageCache::new(), path })
     }
 }
 
@@ -131,6 +140,11 @@ impl FileBacking for InodeFileBacking {
     fn ino(&self) -> u64 { self.inode.ino() }
     fn i_nlink(&self) -> u32 { self.inode.nlink() }
     fn i_mode(&self) -> u16 { self.inode.i_mode() }
+
+    /// # C: O(1)
+    fn map_path(&self) -> Option<&[u8]> {
+        if self.path.is_empty() { None } else { Some(&self.path) }
+    }
 
     /// The inode's kernel identity — the address of the refcounted `InodeRef`
     /// the inode cache hands to every opener of this file. Every mapping of one
