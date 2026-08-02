@@ -4,7 +4,6 @@
 // total transform from an accepted `Action` to observable transport state.
 
 use core::sync::atomic::Ordering;
-use alloc::vec::Vec;
 use crate::sock::SockOpts;
 use crate::tcp_conn::TcpConn;
 use super::*;
@@ -27,6 +26,9 @@ pub struct Effects {
     pub reload: bool,
     /// Reload a live listener's applied copies of the request-sock options.
     pub listener: bool,
+    /// Draw this namespace's default fast-open keys if it has none: naming a
+    /// queue bound is the moment a listener could need a cookie to mint.
+    pub fastopen_keys: bool,
 }
 
 impl Effects {
@@ -89,7 +91,8 @@ pub fn store(opts: &SockOpts, action: &Action) -> Effects {
             Effects::default(),
         Action::SaveSyn(v) => { tcp.save_syn.store(*v, Ordering::Release); Effects::default() }
         Action::Fastopen(v) => {
-            tcp.fastopen_max_qlen.store(*v, Ordering::Release); Effects::default()
+            tcp.fastopen.set_max_qlen(*v);
+            Effects { fastopen_keys: true, ..Effects::default() }
         }
         Action::FastopenConnect(on) => {
             tcp.fastopen_connect.store(*on, Ordering::Release); Effects::default()
@@ -98,9 +101,9 @@ pub fn store(opts: &SockOpts, action: &Action) -> Effects {
             tcp.fastopen_no_cookie.store(*on, Ordering::Release); Effects::reload()
         }
         Action::FastopenKey { primary, backup } => {
-            let mut key: Vec<u8> = primary.to_vec();
-            if let Some(backup) = backup { key.extend_from_slice(backup); }
-            *tcp.fastopen_key.lock() = Some(key);
+            tcp.fastopen.set_keys(crate::tcp_fastopen::KeyCtx::new(
+                crate::tcp_fastopen::Key::new(*primary),
+                backup.map(crate::tcp_fastopen::Key::new)));
             Effects::default()
         }
         Action::Timestamp { tsoffset, usec_ts } => {

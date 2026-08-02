@@ -71,6 +71,7 @@ pub mod udp_gro;
 mod udp_gro_endpoint_tests;
 pub mod tcp_hdr;
 pub mod tcp_conn;
+pub mod tcp_fastopen;
 pub use tcp_conn::{Endpoint, TcpCongestionControl, TcpConn, TcpConnError};
 
 pub mod unix_sock;

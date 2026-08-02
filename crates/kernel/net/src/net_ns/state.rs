@@ -77,6 +77,9 @@ pub enum NetSysctlKey {
     /// namespace-wide half of the nonlocal-bind screen `crate::bind_screen`
     /// applies; the per-socket half is `IP_FREEBIND` / `IP_TRANSPARENT`.
     Ipv4NonlocalBind, Ipv6NonlocalBind,
+    /// `net.ipv4.tcp_fastopen` — the enable bits both halves of fast open are
+    /// judged against (`crate::tcp_fastopen`), not a boolean.
+    TcpFastopen,
     /// `net.ipv4.tcp_wmem` / `net.ipv4.tcp_rmem` — a three-value window per
     /// namespace, not a scalar: `Min` is the floor the transport may moderate
     /// down to, `Default` is what a new TCP socket starts with, `Max` is the
@@ -100,7 +103,7 @@ impl BufWindow {
 }
 
 impl NetSysctlKey {
-    const WMEM_BASE: usize = 11;
+    const WMEM_BASE: usize = 12;
     const RMEM_BASE: usize = Self::WMEM_BASE + BufWindow::COUNT;
     const BASE_COUNT: usize = Self::RMEM_BASE + BufWindow::COUNT;
     const COUNT: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
@@ -113,6 +116,7 @@ impl NetSysctlKey {
             Self::IcmpEchoIgnoreAll => 6, Self::Ipv6DisableAll => 7,
             Self::Ipv6DisableDefault => 8,
             Self::Ipv4NonlocalBind => 9, Self::Ipv6NonlocalBind => 10,
+            Self::TcpFastopen => 11,
             Self::TcpWmem(slot) => Self::WMEM_BASE + slot.index(),
             Self::TcpRmem(slot) => Self::RMEM_BASE + slot.index(),
             Self::Ipv4Conf(dev, key) => Self::BASE_COUNT
@@ -130,6 +134,7 @@ impl NetSysctlKey {
             6 => Self::IcmpEchoIgnoreAll, 7 => Self::Ipv6DisableAll,
             8 => Self::Ipv6DisableDefault,
             9 => Self::Ipv4NonlocalBind, 10 => Self::Ipv6NonlocalBind,
+            11 => Self::TcpFastopen,
             _ if index < Self::RMEM_BASE => match BufWindow::from_index(index - Self::WMEM_BASE) {
                 Some(slot) => Self::TcpWmem(slot), None => return None,
             },
@@ -157,6 +162,7 @@ impl NetSysctlKey {
             3 => 2,
             4 => 60,
             5 => 7_200,
+            11 => crate::tcp_fastopen::TFO_DEFAULT as i64,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>
@@ -194,6 +200,9 @@ pub struct NsNet {
     pub(crate) sysctls: NetSysctls,
     pub(crate) ports: crate::ephemeral::State,
     pub(crate) ping_group: crate::ping::GroupRange,
+    /// `net.ipv4.tcp_fastopen_key` — the keys every listener in this namespace
+    /// that named none of its own mints fast-open cookies from.
+    pub(crate) fastopen_keys: crate::tcp_fastopen::NsKeys,
     pub(crate) loopback: Spinlock<Option<(crate::NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>,
 }
 
@@ -220,7 +229,9 @@ impl NsNet {
         Arc::new(Self {
             unix: UnixRegistry::new(), sysctls: NetSysctls::new(),
             ports: crate::ephemeral::State::new(),
-            ping_group: crate::ping::GroupRange::new(), loopback: Spinlock::new(None),
+            ping_group: crate::ping::GroupRange::new(),
+            fastopen_keys: Spinlock::new(None),
+            loopback: Spinlock::new(None),
         })
     }
 }

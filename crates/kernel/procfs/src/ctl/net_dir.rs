@@ -42,6 +42,14 @@ pub const NET_SYSCTLS: &[Node] = &[
             // boot so an echo-probe tool needs no capability.
             File("ping_group_range", PerNetGroupRangeHook(ping_group_range, set_ping_group_range)),
             File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv4NonlocalBind, Some((0, 1)))),
+            // The fast-open enable bits are a bit field, not a range: the
+            // client and server halves are read independently, so no minimum
+            // or maximum screens a write.
+            File("tcp_fastopen",       NetInt(net::net_ns::NetSysctlKey::TcpFastopen, None)),
+            // The keys the namespace's cookies are minted from. Owner-only:
+            // anyone who can read them can forge a cookie for every listener
+            // in the namespace.
+            File("tcp_fastopen_key",   PerNetStrHook(tcp_fastopen_key, set_tcp_fastopen_key, true)),
         ]),
         Dir("ipv6", &[
             File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv6NonlocalBind, Some((0, 1)))),

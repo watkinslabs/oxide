@@ -38,15 +38,15 @@ fn import(optname: u64, optval: u64, optlen: u32) -> Result<Arg, Errno> {
         }
         ArgClass::FastopenKey => {
             let len = optlen as usize;
-            if len != sol::FASTOPEN_KEY_LEN && len != sol::FASTOPEN_KEY_BUF_LEN {
+            if len != net::tcp_fastopen::KEY_LEN && len != net::tcp_fastopen::KEY_BUF_LEN {
                 return Err(Errno::Einval);
             }
             let raw = read_vec(optval, len)?;
-            let mut primary = [0u8; sol::FASTOPEN_KEY_LEN];
-            primary.copy_from_slice(&raw[..sol::FASTOPEN_KEY_LEN]);
-            let backup = (len == sol::FASTOPEN_KEY_BUF_LEN).then(|| {
-                let mut b = [0u8; sol::FASTOPEN_KEY_LEN];
-                b.copy_from_slice(&raw[sol::FASTOPEN_KEY_LEN..]);
+            let mut primary = [0u8; net::tcp_fastopen::KEY_LEN];
+            primary.copy_from_slice(&raw[..net::tcp_fastopen::KEY_LEN]);
+            let backup = (len == net::tcp_fastopen::KEY_BUF_LEN).then(|| {
+                let mut b = [0u8; net::tcp_fastopen::KEY_LEN];
+                b.copy_from_slice(&raw[net::tcp_fastopen::KEY_LEN..]);
                 b
             });
             Ok(Arg::FastopenKey { primary, backup })
@@ -109,9 +109,7 @@ fn env_for(sock: &Arc<InetSocket>) -> SetEnv {
         bytes_sent: false,
         cc_locked: false,
         current_algo: tcp.algo(),
-        // No connection completes a fast-open handshake in this kernel, so
-        // neither the client nor the server enable bit is ever published.
-        fastopen_sysctl: 0,
+        fastopen_sysctl: net::tcp_fastopen::enable_bits(&sock.net_namespace),
         somaxconn: net::sysctl::somaxconn() as i32,
         rcv_nxt: 0,
         clock_ts_ms: now_ms,
@@ -146,6 +144,7 @@ fn net_admin(sock: &InetSocket) -> bool {
 fn apply(sock: &Arc<InetSocket>, action: &Action) -> i64 {
     use net::sock_opts::sol_tcp::apply as install;
     let effects = install::store(&sock.opts, action);
+    if effects.fastopen_keys { net::tcp_fastopen::init_key_once(&sock.net_namespace); }
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => Some(entry.clone()),
         SockKind::TcpListener(listener) => {
