@@ -163,6 +163,21 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     const SOL_SOCKET_NL: u64 = 1;
     const SO_RCVTIMEO_NL: u64 = 20;
     const NL_TIMEVAL_BYTES: u64 = 16;
+    const NL_INT_BYTES: u64 = core::mem::size_of::<i32>() as u64;
+    // `SO_PASSCRED` likewise belongs to the generic socket, so it is settable
+    // on AF_NETLINK and is the only thing that decides whether a receive
+    // reports SCM_CREDENTIALS. A netlink client that sets it and then discards
+    // every message that arrives without credentials — NetworkManager's
+    // platform layer does exactly that — sees an empty link cache without it.
+    if level == SOL_SOCKET_NL && optname == net::sock_opts::sol_socket::SO_PASSCRED {
+        if optlen < NL_INT_BYTES { return -(Errno::Einval.as_i32() as i64); }
+        let mut raw = [0u8; core::mem::size_of::<i32>()];
+        if uaccess::copy_from_user(&mut raw, optval).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        socket.passcred.store(i32::from_ne_bytes(raw) != 0, core::sync::atomic::Ordering::Release);
+        return 0;
+    }
     if level == SOL_SOCKET_NL && optname == SO_RCVTIMEO_NL {
         if optlen < NL_TIMEVAL_BYTES { return -(Errno::Einval.as_i32() as i64); }
         let mut raw = [0u8; 16];
@@ -224,6 +239,12 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
         (net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL) => {
             if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
             bytes.extend_from_slice(&(socket.protocol as u32).to_ne_bytes());
+            NETLINK_SCALAR_BYTES
+        }
+        (net::uapi::SOL_SOCKET, net::sock_opts::sol_socket::SO_PASSCRED) => {
+            if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
+            let on = socket.passcred.load(core::sync::atomic::Ordering::Acquire);
+            bytes.extend_from_slice(&(on as i32).to_ne_bytes());
             NETLINK_SCALAR_BYTES
         }
         (net::uapi::SOL_SOCKET, net::uapi::SO_TYPE) => {
