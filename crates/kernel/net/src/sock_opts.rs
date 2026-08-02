@@ -82,6 +82,26 @@ pub struct SenderCreds {
 }
 
 impl SenderCreds {
+    /// The running task's set: the REAL uid/gid, which is what a receiver
+    /// reads back from `SCM_CREDENTIALS` (`SO_PEERCRED` is the effective-pair
+    /// interface). One owner for every family that stamps a send.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn current() -> Self {
+        match sched::live::current() {
+            Some(t) => Self {
+                pid: t.visible_pid(),
+                uid: t.creds.ruid.load(core::sync::atomic::Ordering::Acquire),
+                gid: t.creds.rgid.load(core::sync::atomic::Ordering::Acquire),
+            },
+            None => Self::default(),
+        }
+    }
+
+    /// Hosted builds have no running task to snapshot. # C: O(1)
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub fn current() -> Self { Self::default() }
+
     /// The per-message stamp these credentials produce, pinning the identity
     /// the pid names so a receiver in another namespace is told ITS number for
     /// the sender. # C: O(N_tasks) for a caller-supplied pid; O(1) otherwise

@@ -26,7 +26,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     if flags & MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
-    let (dgram, copied, src_pid) = loop {
+    let (dgram, copied, src_pid, carried) = loop {
         match sock.receive(peek) {
             ::netlink::ReceiveState::Empty => {
                 if nonblock { return err(Errno::Eagain); }
@@ -47,19 +47,25 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
                 let copied = user.copy_payload(
                     &received.bytes[..core::cmp::min(user.capacity, received.bytes.len())]);
                 match copied {
-                    Ok(copied) => break (received.bytes, copied, received.src_port),
+                    Ok(copied) => break (received.bytes, copied, received.src_port, received.creds),
                     Err(e) => return e,
                 }
             }
         }
     };
-    let delivered = if sock.protocol == NETLINK_KOBJECT_UEVENT {
-        match crate::recv_control::deliver(user, Vec::new(), Some((0, 0, 0)), None, flags) {
+    // `netlink_recvmsg` hands every datagram's carried credentials to
+    // `scm_recv`, which emits SCM_CREDENTIALS when — and only when — the
+    // RECEIVING socket set SO_PASSCRED. One rule for every protocol: a reader
+    // that did not ask is never handed a control message, and a reader that
+    // did is answered whether it is watching uevents or the link table.
+    let passcred = sock.passcred.load(core::sync::atomic::Ordering::Acquire);
+    let delivered = match ::netlink::reported_creds(passcred, carried) {
+        Some(creds) => match crate::recv_control::deliver(user, Vec::new(), Some(creds), None, flags) {
             Ok(delivered) => delivered,
             Err(error) => return error,
-        }
-    } else {
-        crate::recv_control::DeliveredControl { len: 0, flags: crate::recv_control::output_flags(flags) }
+        },
+        None => crate::recv_control::DeliveredControl {
+            len: 0, flags: crate::recv_control::output_flags(flags) },
     };
     if let Err(e) = user.copy_name(encoded_sockaddr_nl(src_pid, groups(sock.protocol, &dgram)).as_bytes()) { return e; }
     let mut out_flags = delivered.flags;

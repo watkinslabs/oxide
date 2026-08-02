@@ -1,6 +1,7 @@
 // Netlink module manifest.
 // - `wire`: AF_NETLINK numbers, nlmsghdr wire types, and alignment helpers.
 // - `handler`: external protocol-handler registration for netfilter.
+// - `creds`: per-datagram sender credentials + the SO_PASSCRED report rule.
 // - `groups`: the per-socket multicast-group subscription bitmap.
 // - `membership`: socket-side group subscription + genetlink credentials.
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
@@ -34,6 +35,7 @@ extern crate std;
 #[cfg(test)]
 pub(crate) mod test_serial;
 
+mod creds;
 mod groups;
 mod handler;
 mod membership;
@@ -58,6 +60,7 @@ pub mod rtnetlink_rule;
 pub mod audit;
 pub mod sock_diag;
 
+pub use creds::{reported as reported_creds, NetlinkCreds};
 pub use groups::{GroupBitmap, GROUP_BITS_PER_WORD, NETLINK_MIN_NGROUPS, RTNLGRP_MAX};
 pub use handler::{install_netfilter_handler, ProtoHandler};
 pub use inode::{

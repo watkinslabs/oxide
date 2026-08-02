@@ -8,16 +8,7 @@ mod poll;
 /// credential stamp: the REAL uid/gid, which is what a receiver reads back
 /// from `SCM_CREDENTIALS` (`SO_PEERCRED` is the effective-pair interface).
 /// # C: O(1)
-fn current_sender_creds() -> SenderCreds {
-    match sched::live::current() {
-        Some(t) => SenderCreds {
-            pid: t.visible_pid(),
-            uid: t.creds.ruid.load(core::sync::atomic::Ordering::Acquire),
-            gid: t.creds.rgid.load(core::sync::atomic::Ordering::Acquire),
-        },
-        None => SenderCreds::default(),
-    }
-}
+fn current_sender_creds() -> SenderCreds { SenderCreds::current() }
 
 fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
     match e {
