@@ -216,7 +216,12 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 // each fault — this is also the only atime a mapped `execve`
                 // image ever gets (fs/exec.c never touches atime itself).
                 vfs::file_accessed(&file);
-                backing = Some(crate::mmap_file::InodeFileBacking::new(inode.clone()));
+                // The mapping remembers the name it was established under, so
+                // a core dump can tell a debugger which object to reopen for
+                // the pages it did not carry.
+                let map_path = file.dentry().dentry_path(None);
+                backing = Some(crate::mmap_file::InodeFileBacking::new_named(
+                    inode.clone(), map_path.into_bytes()));
             },
         }
     }

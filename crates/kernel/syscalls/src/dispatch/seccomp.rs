@@ -70,7 +70,19 @@ fn kill_group_sigsys(s: &Sigsys) -> ! {
     // no handler to reach; it goes to the log, which is where a killed
     // sandbox's post-mortem starts.
     log_sigsys(s);
-    ::fs::coredump::write_for_current(Signum::Sigsys as i32);
+    // The dump's `NT_SIGINFO` carries the `_sigsys` arm the log just printed —
+    // which syscall the filter refused, at which instruction.
+    let info = sched::SigInfo {
+        signo: Signum::Sigsys as u32, code: SYS_SECCOMP,
+        pid: 0, uid: 0, value: 0,
+        sys: Some(*s), fault: None, poll: None,
+    };
+    // SAFETY: this is a return-to-user path on the dying task's own kernel stack, so `current_user_regs` is its live entry frame and no other CPU writes it.
+    unsafe {
+        ::fs::coredump::write_for_current(Signum::Sigsys as i32,
+            crate::arch_frame::current_user_regs(),
+            Some(info.payload(Signum::Sigsys as u32)));
+    }
     sched::live::terminate_current_with_signal(Signum::Sigsys.as_u8())
 }
 

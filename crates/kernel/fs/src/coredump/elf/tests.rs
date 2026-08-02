@@ -8,8 +8,8 @@
 //   xnum      the extended-numbering escape
 //   consistency  every published offset checked against where bytes landed
 
-mod fixture;
-mod reader;
+pub(crate) mod fixture;
+pub(crate) mod reader;
 
 mod header;
 mod notes;
