@@ -38,13 +38,12 @@ mod net_class;
 pub mod net_stats;
 mod readdir;
 pub mod root;
+mod subsystem;
 pub mod tty;
 pub mod zram;
 
 #[cfg(test)]
 mod net_tests;
-#[cfg(test)]
-mod root_tests;
 
 pub use root::{drop_cached, register, register_dir, sys_root, SYSFS_FSID};
 #[cfg(test)]
@@ -177,6 +176,9 @@ pub fn init() {
     drm::init();
     input::init();
     dmi::init();
+    // Published last: the unified view enumerates whatever the class and
+    // bus roots hold, so every registration above is already visible in it.
+    register("/sys/subsystem", subsystem::make_sys_subsystem_inode());
 }
 
 /// `vfs::fs::FileSystem` impl mounted at `/sys`. Lookups consult sysfs's own

@@ -178,6 +178,15 @@ impl PseudoDir {
 
     pub fn path(&self) -> &str { &self.path }
 
+    /// Names of this directory's children, sorted. A read view over the tree
+    /// that already exists, for a projection that must enumerate it rather
+    /// than keep a second list of what is registered. # C: O(N children)
+    pub fn child_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.children.lock().keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     fn child_dir(self: &Arc<PseudoDir>, name: &str) -> Arc<PseudoDir> {
         let mut g = self.children.lock();
         if let Some(PseudoEntry::Dir(d)) = g.get(name) {
@@ -254,6 +263,20 @@ impl PseudoDir {
             dir = dir.child_dir(c);
         }
         *dir.hooks.lock() = Some(hooks);
+    }
+
+    /// The child DIRECTORY at `path`, for a reader that must enumerate it
+    /// rather than open one entry. # C: O(depth)
+    pub fn lookup_dir(self: &Arc<PseudoDir>, path: &str) -> Option<Arc<PseudoDir>> {
+        let comps = components(path);
+        let mut dir = Arc::clone(self);
+        for c in &comps {
+            let g = dir.children.lock();
+            let next = match g.get(*c) { Some(PseudoEntry::Dir(d)) => Arc::clone(d), _ => return None };
+            drop(g);
+            dir = next;
+        }
+        Some(dir)
     }
 
     pub fn lookup_path(self: &Arc<PseudoDir>, full_path: &str) -> Option<InodeRef> {
