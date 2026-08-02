@@ -231,8 +231,9 @@ pub struct SockOpts {
     /// `IP_MINTTL` / `IPV6_MINHOPCOUNT`, shared with the transport entry the
     /// receive path reaches so the option has exactly one home.
     pub min_hop: Arc<crate::min_hop::MinHop>,
-    /// `IPPROTO_IP` option state (`sock_opts::sol_ip`).
-    pub ip: crate::sock_opts::sol_ip::IpOpts,
+    /// `IPPROTO_IP` option state (`sock_opts::sol_ip`), shared with the TCP
+    /// transport entry so a connection's sticky option area has one home.
+    pub ip: Arc<crate::sock_opts::sol_ip::IpOpts>,
     /// `IPPROTO_IPV6` option state (`sock_opts::sol_ipv6`).
     pub ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts,
     /// `IPPROTO_TCP` option state (`sock_opts::sol_tcp`).
@@ -288,7 +289,7 @@ impl Default for SockOpts {
             so_type: AtomicU8::new(0),
             generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
             min_hop: Arc::new(crate::min_hop::MinHop::new()),
-            ip: crate::sock_opts::sol_ip::IpOpts::default(),
+            ip: Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
             ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts::default(),
             tcp: crate::sock_opts::sol_tcp::TcpOpts::default(),
             udp: crate::sock_opts::sol_udp::UdpOpts::default(),

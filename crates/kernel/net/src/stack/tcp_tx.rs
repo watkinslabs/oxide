@@ -25,6 +25,14 @@ impl TcpTxPolicy<'_> {
         }
     }
 
+    /// The sticky IPv4 option area every segment this socket emits carries.
+    /// # C: O(optlen)
+    fn ipv4_options(&self) -> Option<crate::ipv4_options::Compiled> {
+        match self {
+            Self::Entry(entry) => entry.ip_opts.options(),
+        }
+    }
+
     fn note_congestion(&self) {
         match self {
             Self::Entry(entry) => crate::tcp_cc::on_ece(&mut entry.conn.lock()),
@@ -49,6 +57,7 @@ impl NetStack {
         let verdict = match (src, dst) {
             (IpAddr::V4(src), IpAddr::V4(dst)) => self.send_tcp_ipv4_segment_in(
                 net_ns, src, dst, segment, tos, bound, policy.ipv4_mode(), Some(policy.owner()),
+                policy.ipv4_options().as_ref(),
             ),
             (IpAddr::V6(src), IpAddr::V6(dst)) => {
                 let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound)?;

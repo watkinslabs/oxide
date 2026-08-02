@@ -384,18 +384,20 @@ impl NetStack {
     {
         self.tcp_connect_reserved_min_hop(bind, local_ip, remote_ip, remote_port, error,
             bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
-            Arc::new(crate::min_hop::MinHop::new()))
+            Arc::new(crate::min_hop::MinHop::new()),
+            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
     }
 
-    /// Active-open while sharing the socket's hop-limit minimums too.
-    /// # C: O(log N + xmit)
+    /// Active-open while sharing the socket's hop-limit minimums and its
+    /// sticky IPv4 option area too. # C: O(log N + xmit)
     #[allow(clippy::too_many_arguments)]
     pub fn tcp_connect_reserved_min_hop(&self, bind: &Arc<TcpBindReservation>,
         local_ip: IpAddr, remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-        min_hop: Arc<crate::min_hop::MinHop>) -> NetResult<Arc<TcpEntry>>
+        min_hop: Arc<crate::min_hop::MinHop>,
+        ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> NetResult<Arc<TcpEntry>>
     {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
@@ -405,7 +407,7 @@ impl NetStack {
         let mut conns = tables.tcp_conns.lock();
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
         let (entry, syn) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
-            error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop)?;
+            error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop, ip_opts)?;
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(
@@ -437,7 +439,8 @@ impl NetStack {
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-        min_hop: Arc<crate::min_hop::MinHop>)
+        min_hop: Arc<crate::min_hop::MinHop>,
+        ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>)
         -> NetResult<(Arc<TcpEntry>, alloc::vec::Vec<u8>)>
     {
         // The initial sequence number and the timestamp bias are the two
@@ -453,14 +456,18 @@ impl NetStack {
             local_ip, remote_ip, bind.local.port, remote_port);
         let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
         let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
-        conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
-            bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode);
+        // The sticky option area rides ahead of the TCP header on every
+        // segment, so the connection gives that many bytes up from its MSS.
+        conn.own_mss = crate::tcp_ext_hdr::mss_minus_ext_hdr(
+            self.mss_for_dst_on_iface_pmtu_modes_in(
+                bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode),
+            crate::tcp_ext_hdr::ext_hdr_len(ip_opts.options().as_ref()));
         conn.apply_route_metrics(self.route_metrics_for_dst_in(
             bind.net_ns(), remote_ip, bind.bound_iface()));
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        Ok((Arc::new(TcpEntry::new_bound_full(
+        Ok((Arc::new(TcpEntry::new_bound_ip_opts(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover, None, min_hop)), syn))
+            ipv6_mtu_discover, None, min_hop, ip_opts)), syn))
     }
 }
 

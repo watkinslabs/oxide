@@ -98,7 +98,7 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
     let entry = stack().tcp_connect_reserved_min_hop(
         &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
         sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),
-        sock.opts.min_hop.clone(),
+        sock.opts.min_hop.clone(), sock.opts.ip.clone(),
     )?;
     entry.register_poll_subs(&sock.poll_subs);
     apply_tcp_keepalive_opts(sock, &entry);
