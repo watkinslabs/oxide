@@ -52,7 +52,7 @@ pub(super) fn raw_setsockopt(sock: &Arc<net::sock::InetSocket>, level: u64,
             if endpoint.protocol() == IPPROTO_ICMPV6 && level == IPPROTO_IPV6 {
                 return Some(errno(Errno::Einval));
             }
-            Some(match endpoint.set_checksum(value) { Ok(()) => 0, Err(error) => crate::net_common::errno_from_neterr(error) })
+            Some(match endpoint.set_checksum(value) { Ok(()) => 0, Err(error) => crate::net_errno::errno_from_neterr(error) })
         }
         (net::sock::SockKind::Raw6(endpoint), SOL_ICMPV6, ICMP6_FILTER) => {
             if endpoint.protocol() != IPPROTO_ICMPV6 { return Some(errno(Errno::Eopnotsupp)); }

@@ -39,7 +39,7 @@ pub(super) fn handle(net_ns: u64, arg: u64) -> i64 {
     };
     match dev.wan_settings(settings(&ifreq)) {
         Ok(()) => SIOCWANDEV_SUCCESS,
-        Err(error) => crate::net_common::errno_from_neterr(error),
+        Err(error) => crate::net_errno::errno_from_neterr(error),
     }
 }
 

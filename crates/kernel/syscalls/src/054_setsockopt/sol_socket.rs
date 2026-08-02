@@ -231,6 +231,6 @@ pub(super) fn bind_to_ifindex(sock: &Arc<InetSocket>, index: i32) -> i64 {
     };
     match sock.set_bound_iface(iface) {
         Ok(()) => 0,
-        Err(e) => crate::net_common::errno_from_neterr(e),
+        Err(e) => crate::net_errno::errno_from_neterr(e),
     }
 }

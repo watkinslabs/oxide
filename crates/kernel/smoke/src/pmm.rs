@@ -1,6 +1,6 @@
 //! PMM boot smoke/stress (debug-pmm). Moved out of kernel_main — exercises
 //! the buddy allocator alloc/free + multi-order split/merge after init.
-use pmm::{Order, PageBacking, Pmm};
+use pmm::{PageBacking, Pmm};
 use sync::IrqGate;
 
 /// Run the PMM smoke + stress passes (klogs results).

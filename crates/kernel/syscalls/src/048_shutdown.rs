@@ -1,7 +1,8 @@
 // 048 shutdown — one syscall, one file (docs/53 §0). Moved verbatim from net.rs.
 #![cfg(target_os = "oxide-kernel")]
 use syscall::SyscallArgs;
-use crate::net_common::{classify, errno_from_neterr, Routed};
+use crate::net_common::{classify, Routed};
+use crate::net_errno::errno_from_neterr;
 use crate::sock_route::ControlOp;
 
 /// `shutdown(fd, how)` slot 48. POSIX semantics:

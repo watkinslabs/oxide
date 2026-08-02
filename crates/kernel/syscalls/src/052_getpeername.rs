@@ -20,11 +20,11 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         Routed::Netlink(target) => crate::netlink_fd::getpeername(&target, addr_p, len_p),
         Routed::Vsock(vsock) => {
             if let Err(e) = net::sock_opts::check_name_query(vsock.net_ns(), net::sock::AF_VSOCK) {
-                return crate::net_common::errno_from_neterr(e);
+                return crate::net_errno::errno_from_neterr(e);
             }
             let (port, cid) = match vsock.peer_addr() {
                 Ok(addr) => addr,
-                Err(e) => return crate::net_common::errno_from_neterr(e),
+                Err(e) => return crate::net_errno::errno_from_neterr(e),
             };
             let sa = encoded_sockaddr_vm(port, cid);
             copy_sockaddr_to_user(addr_p, len_p, &sa)
@@ -32,7 +32,7 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         Routed::Inet(_, sock) => {
             if let Err(e) = net::sock_opts::check_name_query(sock.net_ns(),
                 sock.family.load(core::sync::atomic::Ordering::Acquire)) {
-                return crate::net_common::errno_from_neterr(e);
+                return crate::net_errno::errno_from_neterr(e);
             }
             match crate::sock_name::peer_sockaddr(&sock) {
                 Ok(sa) => copy_sockaddr_to_user(addr_p, len_p, &sa),

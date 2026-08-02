@@ -90,7 +90,7 @@ fn path_mtu_info(sock: &Arc<InetSocket>, out: &OptOut) -> i64 {
     let bound = if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) };
     match net::sock::stack().path_mtu(net::IpAddr::V6(ip), bound, false) {
         Ok(mtu) => out.exact(&v6get::mtuinfo(mtu)),
-        Err(error) => crate::net_common::errno_from_neterr(error),
+        Err(error) => crate::net_errno::errno_from_neterr(error),
     }
 }
 

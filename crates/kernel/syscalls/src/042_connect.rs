@@ -6,7 +6,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, fd_file, inode_as_inet_socket, vsock_from_file};
+use crate::net_common::{AF_INET, AF_INET6, fd_file, inode_as_inet_socket, vsock_from_file};
+use crate::net_errno::errno_from_neterr;
 
 fn copy_sockaddr(addr_p: u64, len: usize) -> Result<net::SockaddrStorage, i64> {
     let mut bytes = [0u8; net::sockaddr::SOCKADDR_STORAGE_LEN];
