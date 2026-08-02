@@ -3,7 +3,9 @@ use core::sync::atomic::Ordering;
 
 use crate::*;
 
-// Module manifest: `uevent` owns raw, cooked, and unicast uevent delivery tests.
+// Module manifest: `creds` owns SO_PASSCRED and per-datagram credentials;
+// `uevent` owns raw, cooked, and unicast uevent delivery tests.
+mod creds;
 mod uevent;
 
 fn namespace_dropped() {}
