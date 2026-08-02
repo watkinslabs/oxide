@@ -441,7 +441,7 @@ def _rebuild_flags(rebuild_rootfs: bool = False,
     return flags
 
 
-def _build_image(arch: str, build_id: str, features: str = "debug-boot",
+def _build_image(arch: str, build_id: str, features: str = "",
                  rebuild_flags: list[str] | None = None) -> Path:
     """Run `cargo run -p xtask -- grub --arch <arch> --id <build_id>` from
     the repo root, building kernel + rootfs + ISO into the `build_id`
@@ -452,10 +452,11 @@ def _build_image(arch: str, build_id: str, features: str = "debug-boot",
     namespace) and marked active under `_BUILDING` so GC can't rmtree a
     build mid-construction.
 
-    Default features = `debug-boot` (matches `make qemu-x86`/`-arm`):
-    boot UART sink installs + operational-pulse log lines, but no
-    per-syscall flood. Pass features="debug-all" for the full firehose
-    when debugging kernel internals."""
+    Default: no debug features, matching `make qemu-x86`/`-arm`. The console
+    and its serial mirror are unconditional, so a default build boots, logs in
+    and answers on serial with none of them. Pass features="debug-all" for the
+    full firehose when debugging kernel internals, or a single `debug-*`
+    feature for one subsystem's trace."""
     if arch not in ("x86_64", "aarch64"):
         raise ValueError(f"arch must be x86_64 or aarch64, got {arch!r}")
     # Both arches: `xtask grub --arch <arch> --id <id>
@@ -464,7 +465,9 @@ def _build_image(arch: str, build_id: str, features: str = "debug-boot",
     # without launching qemu, so the MCP can spawn its own gdb-paused one.
     cmd = ["cargo", "run", "--quiet", "-p", "xtask", "--",
            "grub", "--arch", arch, "--id", build_id,
-           "--features", features, "--build-only",
+           # An empty `--features ""` is not the same as omitting the flag.
+           *(("--features", features) if features else ()),
+           "--build-only",
            *(rebuild_flags or [])]
     with _BUILDING_LOCK:
         _BUILDING.add(build_id)
@@ -503,7 +506,7 @@ def _blob(arch: str, build_id: str, kind: str) -> Path:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
+def qemu_start(arch: str, name: str | None = None, features: str = "",
                smp: int = 1, accel: str = "kvm", mem: str = "2G", cpu: str = "",
                paused: bool = True, ssh_fwd: bool = False,
                extra_args: list[str] | None = None,
@@ -521,7 +524,7 @@ def qemu_start(arch: str, name: str | None = None, features: str = "debug-boot",
       arch       "x86_64" | "aarch64"
       name       optional build label; slugified into the build_id
                  `<slug>-<UTCstamp>`. Default = current git branch.
-      features   kernel Cargo features (default "debug-boot"; "debug-all"
+      features   kernel Cargo features (default none; "debug-all"
                  = full trace firehose; "debug-watchdog" already default-on
                  in the boot crates so the liveness diag is always present).
       smp        vCPU count (`-smp N`, default 1). Use 2 to exercise AP
