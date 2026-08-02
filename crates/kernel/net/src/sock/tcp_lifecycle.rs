@@ -98,21 +98,26 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
     Ok(())
 }
 
-fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate::IpAddr,
-               remote_ip: crate::IpAddr, remote_port: u16)
-    -> Result<Arc<crate::stack::TcpEntry>, NetError> {
-    if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
-    let bind = ensure_tcp_bind(sock, local_ip, local_port, Some((remote_ip, remote_port)))?;
-    let entry = stack().tcp_connect_reserved_min_hop(
-        &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
-        sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),
-        sock.opts.min_hop.clone(), sock.opts.ip.clone(),
-    )?;
-    entry.register_poll_subs(&sock.poll_subs);
-    apply_tcp_keepalive_opts(sock, &entry);
-    crate::sock_opts::sol_tcp::apply::to_conn(&sock.opts, &mut entry.conn.lock());
-    super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(sock, &entry);
-    *sock.kind.lock() = SockKind::TcpConn(entry.clone());
+/// The result of an active open. A deferred one committed its destination —
+/// `getpeername` reports it — without sending anything: `TCP_FASTOPEN_CONNECT`
+/// leaves the SYN for the write that will fill it.
+pub(crate) enum TcpOpen {
+    Deferred,
+    Opened { entry: Arc<crate::stack::TcpEntry>, carried: usize },
+}
+
+impl TcpOpen {
+    /// The connection an open produced, or `None` while it is deferred.
+    /// # C: O(1)
+    pub(crate) fn entry(&self) -> Option<&Arc<crate::stack::TcpEntry>> {
+        match self { Self::Deferred => None, Self::Opened { entry, .. } => Some(entry) }
+    }
+}
+
+/// Publish the names a connected socket reports, which a deferred open owes
+/// its caller just as much as a sent one. # C: O(1)
+fn commit_peer_names(sock: &InetSocket, local_ip: crate::IpAddr, remote_ip: crate::IpAddr,
+                     remote_port: u16) -> Result<(), NetError> {
     match remote_ip {
         crate::IpAddr::V4(ip) => {
             *sock.peer.lock() = Some((ip, remote_port));
@@ -130,12 +135,47 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
         }
         crate::IpAddr::V6(ip) => *sock.peer6.lock() = Some((ip, remote_port)),
     }
-    Ok(entry)
+    Ok(())
+}
+
+fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate::IpAddr,
+               remote_ip: crate::IpAddr, remote_port: u16,
+               source: crate::tcp_fastopen::Source, data: &[u8])
+    -> Result<TcpOpen, NetError> {
+    if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
+    let bind = ensure_tcp_bind(sock, local_ip, local_port, Some((remote_ip, remote_port)))?;
+    // Judged after the source address is chosen, because the cookie names the
+    // address pair, and before the SYN is built, because the answer decides
+    // whether there is a SYN at all.
+    let open = super::tcp_fastopen::plan(sock, local_ip, remote_ip, source);
+    if open == crate::tcp_fastopen::Open::Defer {
+        commit_peer_names(sock, local_ip, remote_ip, remote_port)?;
+        *sock.fastopen_deferred.lock() = Some(super::types::DeferredConnect {
+            local_ip, remote_ip, remote_port });
+        return Ok(TcpOpen::Deferred);
+    }
+    let confirming = super::tcp_fastopen::confirming(sock);
+    let (entry, carried) = stack().tcp_connect_reserved_min_hop(
+        &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
+        sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),
+        sock.opts.min_hop.clone(), sock.opts.ip.clone(),
+        super::tcp_fastopen::ActiveOpen::from(open), data,
+    )?;
+    entry.conn.lock().fastopen_confirming = confirming;
+    entry.register_poll_subs(&sock.poll_subs);
+    apply_tcp_keepalive_opts(sock, &entry);
+    crate::sock_opts::sol_tcp::apply::to_conn(&sock.opts, &mut entry.conn.lock());
+    super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(sock, &entry);
+    *sock.kind.lock() = SockKind::TcpConn(entry.clone());
+    *sock.fastopen_deferred.lock() = None;
+    commit_peer_names(sock, local_ip, remote_ip, remote_port)?;
+    Ok(TcpOpen::Opened { entry, carried })
 }
 
 /// Select IPv4 source and perform one reservation-backed active open. # C: O(N + RTT)
 pub(crate) fn connect_tcp4_locked(sock: &InetSocket, local_port: &mut Option<u16>,
-    dst_ip: Ipv4Addr, remote_port: u16) -> Result<Arc<crate::stack::TcpEntry>, NetError> {
+    dst_ip: Ipv4Addr, remote_port: u16, source: crate::tcp_fastopen::Source, data: &[u8])
+    -> Result<TcpOpen, NetError> {
     let net_ns = sock.net_ns();
     let configured = *sock.local_ip.lock();
     let local_ip = if configured != Ipv4Addr::ANY {
@@ -149,12 +189,13 @@ pub(crate) fn connect_tcp4_locked(sock: &InetSocket, local_port: &mut Option<u16
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
     connect_tcp(sock, local_port, crate::IpAddr::V4(local_ip),
-        crate::IpAddr::V4(dst_ip), remote_port)
+        crate::IpAddr::V4(dst_ip), remote_port, source, data)
 }
 
 /// Perform a mapped TCP6 active open through the retained IPv4 owner. # C: O(N + RTT)
 pub(crate) fn connect_tcp4_mapped_locked(sock: &InetSocket, local_port: &mut Option<u16>,
-    dst_ip: Ipv4Addr, remote_port: u16) -> Result<Arc<crate::stack::TcpEntry>, NetError> {
+    dst_ip: Ipv4Addr, remote_port: u16, source: crate::tcp_fastopen::Source, data: &[u8])
+    -> Result<TcpOpen, NetError> {
     let configured6 = *sock.local_ip6.lock();
     let configured = match configured6.to_v4_mapped() {
         Some(ip) => ip,
@@ -175,13 +216,13 @@ pub(crate) fn connect_tcp4_mapped_locked(sock: &InetSocket, local_port: &mut Opt
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
     connect_tcp(sock, local_port, crate::IpAddr::V4(local_ip),
-        crate::IpAddr::V4(dst_ip), remote_port)
+        crate::IpAddr::V4(dst_ip), remote_port, source, data)
 }
 
 /// Select IPv6 source and perform one reservation-backed active open. # C: O(N + RTT)
 pub(crate) fn connect_tcp6_locked(sock: &InetSocket, local_port: &mut Option<u16>,
-    dst_ip: crate::Ipv6Addr, remote_port: u16)
-    -> Result<Arc<crate::stack::TcpEntry>, NetError> {
+    dst_ip: crate::Ipv6Addr, remote_port: u16, source: crate::tcp_fastopen::Source, data: &[u8])
+    -> Result<TcpOpen, NetError> {
     let configured = *sock.local_ip6.lock();
     let local_ip = if configured != crate::Ipv6Addr::ANY {
         configured
@@ -191,5 +232,5 @@ pub(crate) fn connect_tcp6_locked(sock: &InetSocket, local_port: &mut Option<u16
         crate::Ipv6Addr::ANY
     };
     connect_tcp(sock, local_port, crate::IpAddr::V6(local_ip),
-        crate::IpAddr::V6(dst_ip), remote_port)
+        crate::IpAddr::V6(dst_ip), remote_port, source, data)
 }

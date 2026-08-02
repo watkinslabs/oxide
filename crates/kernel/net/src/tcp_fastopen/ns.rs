@@ -28,6 +28,56 @@ pub fn enable_bits_in(ns: u64) -> Option<i32> {
     crate::sysctl::value_in(ns, NetSysctlKey::TcpFastopen).map(|bits| bits as i32)
 }
 
+/// `net.ipv4.tcp_fastopen_blackhole_timeout_sec` for a retained namespace.
+/// # C: O(log N)
+pub fn blackhole_timeout(namespace: &NetworkNamespaceRef) -> i64 {
+    crate::net_ns::materialize_state(namespace)
+        .sysctls.get(NetSysctlKey::TcpFastopenBlackholeTimeout)
+}
+
+/// Whether an active open in this namespace falls inside the blackhole pause,
+/// and whether the pause it just left needs confirming. # C: O(log N)
+pub fn blackhole_pause(namespace: &NetworkNamespaceRef, now_ns: u64) -> super::blackhole::Pause {
+    let state = crate::net_ns::materialize_state(namespace);
+    let timeout = state.sysctls.get(NetSysctlKey::TcpFastopenBlackholeTimeout);
+    state.fastopen_blackhole.pause(timeout, now_ns)
+}
+
+/// Record that a path in this namespace ate a fast open. # C: O(log N)
+pub fn blackhole_disable(namespace: &NetworkNamespaceRef, now_ns: u64) {
+    let state = crate::net_ns::materialize_state(namespace);
+    let timeout = state.sysctls.get(NetSysctlKey::TcpFastopenBlackholeTimeout);
+    state.fastopen_blackhole.disable(timeout, now_ns);
+}
+
+/// A fast open in this namespace worked end to end. # C: O(log N)
+pub fn blackhole_reset(namespace: &NetworkNamespaceRef) {
+    crate::net_ns::materialize_state(namespace).fastopen_blackhole.reset();
+}
+
+/// Detections recorded here without an intervening success. # C: O(log N)
+pub fn blackhole_times(namespace: &NetworkNamespaceRef) -> u32 {
+    crate::net_ns::materialize_state(namespace).fastopen_blackhole.times()
+}
+
+/// What this namespace's clients learned about one destination. # C: O(log N)
+pub fn cached_cookie(namespace: &NetworkNamespaceRef, src: crate::addr::IpAddr,
+                     dst: crate::addr::IpAddr, now_ns: u64) -> super::cache::Cached
+{
+    crate::net_ns::materialize_state(namespace).fastopen_cache.get(src, dst, now_ns)
+}
+
+/// Record what one handshake taught this namespace about a destination.
+/// # C: O(log N)
+#[allow(clippy::too_many_arguments)]
+pub fn cache_learned(namespace: &NetworkNamespaceRef, src: crate::addr::IpAddr,
+                     dst: crate::addr::IpAddr, now_ns: u64, mss: u16,
+                     learned: &super::learn::Learned)
+{
+    crate::net_ns::materialize_state(namespace).fastopen_cache.set(
+        src, dst, now_ns, mss, learned.cookie, learned.syn_lost, learned.try_exp);
+}
+
 /// The namespace's default keys, or `None` while it has drawn none.
 /// # C: O(log N)
 pub fn ns_keys(namespace: &NetworkNamespaceRef) -> Option<KeyCtx> {

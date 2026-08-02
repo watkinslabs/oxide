@@ -44,7 +44,12 @@ impl TcpConn {
         else if self.first_unacked_ns == 0 { self.first_unacked_ns = now_ns; }
         let rto = self.rto_ns;
         let mut expired = alloc::vec::Vec::new();
+        // Nothing behind the head goes out before the handshake finishes: a
+        // fast open leaves its data queued behind the SYN, and that data is
+        // only sendable once there is a connection to send it on.
+        let handshaking = self.state == crate::tcp_state::TcpState::SynSent;
         for (i, s) in self.retx_q.iter().enumerate() {
+            if handshaking && i > 0 { break; }
             if s.sacked { continue; }
             if now_ns.saturating_sub(s.last_sent_ns) >= rto {
                 expired.push(i);

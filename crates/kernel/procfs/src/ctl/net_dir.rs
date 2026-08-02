@@ -50,6 +50,11 @@ pub const NET_SYSCTLS: &[Node] = &[
             // anyone who can read them can forge a cookie for every listener
             // in the namespace.
             File("tcp_fastopen_key",   PerNetStrHook(tcp_fastopen_key, set_tcp_fastopen_key, true)),
+            // Seconds active fast open pauses after a path is found to eat a
+            // SYN carrying data. Zero — the compiled default — turns the
+            // pause off; each recurrence doubles it up to sixty-four times.
+            File("tcp_fastopen_blackhole_timeout_sec",
+                NetInt(net::net_ns::NetSysctlKey::TcpFastopenBlackholeTimeout, None)),
         ]),
         Dir("ipv6", &[
             File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv6NonlocalBind, Some((0, 1)))),

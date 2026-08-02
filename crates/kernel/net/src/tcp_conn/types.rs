@@ -79,10 +79,37 @@ pub struct TcpConn {
     pub quickack: bool,
     pub fastopen_no_cookie: bool,
     /// The fast-open option this side's next handshake segment carries, if
-    /// any. The listener decides it before the segment is built, because the
-    /// decision needs the accept queue's keys and bound — state a connection
-    /// does not own.
-    pub fastopen_reply: Option<crate::tcp_conn::fastopen::Cookie>,
+    /// any. Decided before the segment is built, because the decision needs
+    /// state a connection does not own: the accept queue's keys and bound on
+    /// a listener, the namespace's cookie cache on a client. Cleared once the
+    /// segment is built, so a SYN retransmit goes out bare — a middlebox that
+    /// ate the first one is exactly what the retransmit has to get past.
+    pub fastopen_opt: Option<crate::tcp_conn::fastopen::Cookie>,
+    /// This side's opening SYN carried a fast-open option, and which kind.
+    /// The answer's cookie is only believed when one was asked for.
+    pub syn_fastopen: bool,
+    pub syn_fastopen_exp: bool,
+    /// This side's opening SYN carried the program's data.
+    pub syn_data: bool,
+    /// That data was acknowledged: a fast open that worked end to end.
+    pub syn_data_acked: bool,
+    /// This active open left a blackhole pause that had run out, so a
+    /// success on it clears the recurrence count that produced the pause.
+    pub fastopen_confirming: bool,
+    /// Why this connection's fast open did not put the program's bytes in
+    /// the SYN, as `TCP_INFO` reports it.
+    pub fastopen_client_fail: u8,
+    /// Segments carrying data this connection has received. A fast-open
+    /// connection that has received none is the state a middlebox
+    /// interfering with it produces.
+    pub data_segs_in: u32,
+    /// A fast open on this connection met the shape a middlebox eating one
+    /// produces, waiting for the layer that owns the namespace's pause to
+    /// record it.
+    pub fastopen_blackhole_seen: bool,
+    /// What the SYN-ACK taught, waiting for the layer that owns the
+    /// namespace's cookie cache to record it.
+    pub fastopen_learned: Option<crate::tcp_fastopen::Learned>,
     /// This child was opened by a SYN whose data was taken. It reached the
     /// accept queue at the SYN rather than at the handshake's end, so the
     /// acknowledgement that completes the handshake must not publish it a

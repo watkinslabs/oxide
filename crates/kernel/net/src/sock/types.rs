@@ -55,6 +55,14 @@ pub enum SockKind {
 /// Process-global AF_UNIX path registry.
 pub static UNIX_REGISTRY: crate::UnixRegistry = crate::UnixRegistry::new();
 
+/// A `connect` that committed its destination without sending a SYN.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DeferredConnect {
+    pub local_ip: crate::addr::IpAddr,
+    pub remote_ip: crate::addr::IpAddr,
+    pub remote_port: u16,
+}
+
 /// AF_INET/AF_INET6 socket VFS state.
 pub struct InetSocket {
     pub family:     core::sync::atomic::AtomicU16,
@@ -93,6 +101,11 @@ pub struct InetSocket {
     pub local_ip6: Spinlock<crate::Ipv6Addr, SockLockClass>,
     pub peer6:     Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
     pub peer6_scope: core::sync::atomic::AtomicU32,
+    /// `TCP_FASTOPEN_CONNECT` deferred this socket's handshake. The
+    /// destination is already committed — `getpeername` reports it — but no
+    /// SYN has gone out: it waits for the write that will supply the payload
+    /// to put in it. Holds the addresses that write opens with.
+    pub fastopen_deferred: Spinlock<Option<DeferredConnect>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub recv_waiters: sched::live::WaitList,
     /// Calls waiting to connect this socket, independent of target listener.

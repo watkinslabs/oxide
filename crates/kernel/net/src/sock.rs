@@ -80,6 +80,9 @@ mod connect_security;
 mod connect_admission;
 mod tcp_rcvbuf;
 mod legacy_ioctl;
+pub(crate) mod tcp_fastopen;
+#[cfg(target_os = "oxide-kernel")]
+pub mod send_fastopen;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod tcp_lifecycle;
 #[cfg(target_os = "oxide-kernel")]

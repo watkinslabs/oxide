@@ -80,6 +80,10 @@ pub enum NetSysctlKey {
     /// `net.ipv4.tcp_fastopen` — the enable bits both halves of fast open are
     /// judged against (`crate::tcp_fastopen`), not a boolean.
     TcpFastopen,
+    /// `net.ipv4.tcp_fastopen_blackhole_timeout_sec` — how long active fast
+    /// open pauses after a path is found to eat a SYN carrying data
+    /// (`crate::tcp_fastopen::Blackhole`). Zero turns the pause off.
+    TcpFastopenBlackholeTimeout,
     /// `net.ipv4.tcp_wmem` / `net.ipv4.tcp_rmem` — a three-value window per
     /// namespace, not a scalar: `Min` is the floor the transport may moderate
     /// down to, `Default` is what a new TCP socket starts with, `Max` is the
@@ -103,7 +107,7 @@ impl BufWindow {
 }
 
 impl NetSysctlKey {
-    const WMEM_BASE: usize = 12;
+    const WMEM_BASE: usize = 13;
     const RMEM_BASE: usize = Self::WMEM_BASE + BufWindow::COUNT;
     const BASE_COUNT: usize = Self::RMEM_BASE + BufWindow::COUNT;
     const COUNT: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
@@ -117,6 +121,7 @@ impl NetSysctlKey {
             Self::Ipv6DisableDefault => 8,
             Self::Ipv4NonlocalBind => 9, Self::Ipv6NonlocalBind => 10,
             Self::TcpFastopen => 11,
+            Self::TcpFastopenBlackholeTimeout => 12,
             Self::TcpWmem(slot) => Self::WMEM_BASE + slot.index(),
             Self::TcpRmem(slot) => Self::RMEM_BASE + slot.index(),
             Self::Ipv4Conf(dev, key) => Self::BASE_COUNT
@@ -135,6 +140,7 @@ impl NetSysctlKey {
             8 => Self::Ipv6DisableDefault,
             9 => Self::Ipv4NonlocalBind, 10 => Self::Ipv6NonlocalBind,
             11 => Self::TcpFastopen,
+            12 => Self::TcpFastopenBlackholeTimeout,
             _ if index < Self::RMEM_BASE => match BufWindow::from_index(index - Self::WMEM_BASE) {
                 Some(slot) => Self::TcpWmem(slot), None => return None,
             },
@@ -163,6 +169,7 @@ impl NetSysctlKey {
             4 => 60,
             5 => 7_200,
             11 => crate::tcp_fastopen::TFO_DEFAULT as i64,
+            12 => crate::tcp_fastopen::BLACKHOLE_TIMEOUT_DEFAULT,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>
@@ -203,6 +210,10 @@ pub struct NsNet {
     /// `net.ipv4.tcp_fastopen_key` — the keys every listener in this namespace
     /// that named none of its own mints fast-open cookies from.
     pub(crate) fastopen_keys: crate::tcp_fastopen::NsKeys,
+    /// The cookies this namespace's clients learned, keyed by destination.
+    pub(crate) fastopen_cache: crate::tcp_fastopen::ClientCache,
+    /// The pause on active fast open after a path here ate one.
+    pub(crate) fastopen_blackhole: crate::tcp_fastopen::Blackhole,
     pub(crate) loopback: Spinlock<Option<(crate::NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>,
 }
 
@@ -231,6 +242,8 @@ impl NsNet {
             ports: crate::ephemeral::State::new(),
             ping_group: crate::ping::GroupRange::new(),
             fastopen_keys: Spinlock::new(None),
+            fastopen_cache: crate::tcp_fastopen::ClientCache::new(),
+            fastopen_blackhole: crate::tcp_fastopen::Blackhole::new(),
             loopback: Spinlock::new(None),
         })
     }

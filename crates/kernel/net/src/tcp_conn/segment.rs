@@ -88,15 +88,24 @@ impl TcpConn {
             // freshly minted cookie for a client that asked, one under the
             // current key for a client whose cookie verified under the
             // retired one, or nothing at all.
-            fastopen: self.fastopen_reply,
+            fastopen: self.fastopen_opt,
         }
     }
 
     pub(super) fn build_syn_with_opts_at(&self, seq: u32, flag_bits: u8) -> Vec<u8> {
+        self.build_syn_with_data(seq, flag_bits, &[])
+    }
+
+    /// A handshake segment carrying `payload`. Only an opening SYN doing a
+    /// fast open ever carries one; every retransmission of it goes out empty,
+    /// because the retransmit queue holds the data as its own entry.
+    /// # C: O(options + payload)
+    pub(crate) fn build_syn_with_data(&self, seq: u32, flag_bits: u8, payload: &[u8]) -> Vec<u8> {
         let opts = self.syn_options(flag_bits);
         let opts_len = opts.encoded_len();
-        let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + opts_len];
-        opts.encode(&mut buf[TCP_HDR_MIN_LEN..]);
+        let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + opts_len + payload.len()];
+        opts.encode(&mut buf[TCP_HDR_MIN_LEN..TCP_HDR_MIN_LEN + opts_len]);
+        buf[TCP_HDR_MIN_LEN + opts_len..].copy_from_slice(payload);
         let mut h = TcpHdr {
             src_port: self.local.port,
             dst_port: self.remote.port,
