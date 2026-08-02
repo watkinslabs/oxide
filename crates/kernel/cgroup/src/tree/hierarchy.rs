@@ -36,6 +36,20 @@ impl Tree {
         out
     }
 
+    /// Is `id` at or below the cgroup-namespace root at `root_path`?
+    ///
+    /// Linux asks `cgroup_is_descendant(cgrp, ns->root_cset->dfl_cgrp)`; the
+    /// namespace root is a PATH here (`nscg::cgroup_ns`), so the same question
+    /// is asked of the rendered path. Compared component-wise, never as a raw
+    /// string prefix: `/foo` must not be read as containing `/foobar`.
+    /// # C: O(depth · log n)
+    pub fn is_under_path(&self, id: u64, root_path: &str) -> bool {
+        if root_path == "/" { return true; }
+        let p = self.path_of(id);
+        if p == root_path { return true; }
+        p.starts_with(root_path) && p.as_bytes().get(root_path.len()) == Some(&b'/')
+    }
+
     /// Create child `name` under `parent`. Returns the new id +
     /// controllers available to it (= parent.subtree_control).
     /// # C: O(log n)

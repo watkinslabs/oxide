@@ -7,6 +7,7 @@ use alloc::string::ToString;
 
 mod identity;
 mod memory_accounting;
+mod root_options;
 
 fn s(v: &[u8]) -> &str { core::str::from_utf8(v).unwrap() }
 

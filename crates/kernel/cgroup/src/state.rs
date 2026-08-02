@@ -9,6 +9,48 @@ pub(crate) const SIGKILL: i32 = 9;
 
 pub(crate) static TREE: Spinlock<Tree, TaskListClass> = Spinlock::new(Tree::new());
 
+/// The hierarchy root's flag word (Linux `cgrp_dfl_root.flags`). cgroup v2 has
+/// ONE default root, so these are hierarchy-wide rather than per-mount: a
+/// mount or remount naming a flag turns it on for everybody, which is the
+/// reference's shape and why a single word is correct here.
+static ROOT_FLAGS: Spinlock<crate::root_flags::RootFlags, TaskListClass> =
+    Spinlock::new(crate::root_flags::RootFlags::empty());
+
+/// # C: O(1)
+pub fn root_flags() -> crate::root_flags::RootFlags { *ROOT_FLAGS.lock() }
+
+/// Install the flags a `mount -t cgroup2 -o ...` supplied. Linux's
+/// `cgroup_reconfigure` likewise ORs the newly named flags into the live root
+/// rather than replacing the word, so a second mount cannot silently turn a
+/// delegation boundary off. # C: O(1)
+pub fn add_root_flags(flags: crate::root_flags::RootFlags) {
+    let mut g = ROOT_FLAGS.lock();
+    let merged = crate::root_flags::RootFlags::from_bits(g.bits() | flags.bits());
+    *g = merged;
+}
+
+/// The calling task's cgroup-namespace root PATH, installed by the kernel
+/// (this leaf crate has no `sched`/`nscg` dependency, the same reason the
+/// signal and freeze hooks exist). `None` means the caller is in the initial
+/// cgroup namespace, whose root is the hierarchy root.
+static NS_ROOT_HOOK: Spinlock<Option<fn() -> Option<alloc::string::String>>, TaskListClass> =
+    Spinlock::new(None);
+
+/// # C: O(1)
+pub fn set_cgroup_ns_root_hook(h: fn() -> Option<alloc::string::String>) {
+    *NS_ROOT_HOOK.lock() = Some(h);
+}
+
+/// The caller's cgroup-namespace root path, or `/` when there is no hook or no
+/// namespace. # C: O(1) + hook
+pub(crate) fn caller_ns_root() -> alloc::string::String {
+    let hook = *NS_ROOT_HOOK.lock();
+    match hook.and_then(|h| h()) {
+        Some(root) if !root.is_empty() => root,
+        _ => alloc::string::String::from("/"),
+    }
+}
+
 /// Signal-delivery hook: `fn(pid, signum)`. Set by the kernel at
 /// boot so `cgroup.kill` can SIGKILL every member without this crate
 /// depending on `sched`.
