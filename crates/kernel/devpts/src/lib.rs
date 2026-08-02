@@ -30,6 +30,7 @@ pub mod pair;
 
 pub mod fs;
 pub mod inodes;
+pub mod mount_opts;
 
 #[cfg(target_os = "oxide-kernel")] pub mod ctty;
 #[cfg(target_os = "oxide-kernel")] mod fileops;

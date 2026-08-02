@@ -25,7 +25,7 @@ fn foreign_lookalike(ino: u64, ty: FileType, fsid: u64) -> InodeRef {
 fn both_halves_resolve_to_their_own_pair_and_side() {
     let a = LockedPair::new(0);
     let b = LockedPair::new(1);
-    let (ma, sa) = (make_master_inode(Arc::clone(&a)), make_slave_inode(Arc::clone(&a)));
+    let (ma, sa) = (make_master_inode(Arc::clone(&a)), make_slave_inode(Arc::clone(&a), &crate::mount_opts::PtsMountOpts::default(), 0, 0));
     let mb = make_master_inode(Arc::clone(&b));
 
     assert!(crate::is_master_inode(&ma), "master half reports master");
@@ -44,7 +44,7 @@ fn both_halves_resolve_to_their_own_pair_and_side() {
 fn foreign_inode_with_the_same_number_is_rejected() {
     let pair = LockedPair::new(7);
     let master = make_master_inode(Arc::clone(&pair));
-    let slave = make_slave_inode(Arc::clone(&pair));
+    let slave = make_slave_inode(Arc::clone(&pair), &crate::mount_opts::PtsMountOpts::default(), 0, 0);
 
     for real in [&master, &slave] {
         let fake = foreign_lookalike(real.ino(), FileType::CharDev, real.fsid());
