@@ -386,7 +386,13 @@ pub(super) fn handle_tty_ioctl(
             };
             if pair.is_locked() { return -(Errno::Eio.as_i32() as i64); }
             let flags = vfs::OpenFlags::from_bits_truncate(arg as u32);
-            let slave = devpts::make_slave_inode(alloc::sync::Arc::clone(pair));
+            // TIOCGPTPEER hands back the SAME slave the mount would have made,
+            // so it takes the mount's mode/ownership too — a peer opened this
+            // way must not differ from `/dev/pts/<n>` in its permissions.
+            let pts_opts = devpts::devpts_fs().opts();
+            let opener = crate::pathresolve::current_cred();
+            let slave = devpts::make_slave_inode(alloc::sync::Arc::clone(pair), &pts_opts,
+                opener.uid, opener.gid);
             devpts::acquire_ctty_on_open(&slave, flags.bits());
             let cred = match crate::pathresolve::file_cred_for(cur) {
                 Some(cred) => cred,
