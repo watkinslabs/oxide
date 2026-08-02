@@ -230,3 +230,18 @@ pub fn passive_rcv_header(packet: &[u8], ipv6: bool, iif: u32) -> (u32, u8, u8) 
     if ipv6 || packet.len() < crate::ipv4::IPV4_HDR_LEN { return (0, 0, 0); }
     (iif, packet[8], packet[1])
 }
+
+#[cfg(test)]
+mod size_tests {
+    /// The passive-open path builds a `TcpConn` on the SOFTIRQ stack
+    /// (`build_passive_child`), and that stack is the 16 KiB per-CPU hardirq
+    /// stack whose measured peak is already ~14.5 KiB. Print-and-pin the size so
+    /// a growth shows up here rather than as a guard-page double fault.
+    #[test]
+    fn a_tcp_conn_is_small_enough_to_build_on_the_softirq_stack() {
+        let n = core::mem::size_of::<super::TcpConn>();
+        let e = core::mem::size_of::<crate::stack::TcpEntry>();
+        assert!(n + e <= 1536, "TcpConn is {n} bytes, TcpEntry is {e} bytes — the passive-open path builds one on the \
+            hardirq stack, which has ~1.5 KiB of headroom");
+    }
+}
