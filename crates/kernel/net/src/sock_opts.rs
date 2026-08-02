@@ -74,7 +74,7 @@ pub fn check_send(sock: &InetSocket) -> Result<(), crate::NetError> {
 
 /// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller fetches from
 /// `sched::current()` and passes the snapshot through the socket layer.
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct SenderCreds {
     pub pid: u32,
     pub uid: u32,

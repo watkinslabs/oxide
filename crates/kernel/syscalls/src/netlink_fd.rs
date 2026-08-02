@@ -6,6 +6,9 @@ use alloc::sync::Arc;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 
+// SOL_SOCKET is answered before family dispatch, never by the family table.
+pub mod sol_socket;
+
 use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_nl};
 
 /// NETLINK socket plus the Linux `fget`-style file pin retained for one syscall.
@@ -155,42 +158,10 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
     { return crate::net_errno::errno_from_neterr(error); }
-    // Linux handles SOL_SOCKET options on a netlink socket through the generic
-    // `sock_setsockopt`, so SO_RCVTIMEO lands on `sk->sk_rcvtimeo` and is read
-    // back by `__skb_wait_for_more_packets` (`net/core/datagram.c:128`) for
-    // `sock_intr_errno(*timeo)`. Without it a timed netlink recv is impossible
-    // and every interrupted one must report ERESTARTSYS.
-    const SOL_SOCKET_NL: u64 = 1;
-    const SO_RCVTIMEO_NL: u64 = 20;
-    const NL_TIMEVAL_BYTES: u64 = 16;
-    const NL_INT_BYTES: u64 = core::mem::size_of::<i32>() as u64;
-    // `SO_PASSCRED` likewise belongs to the generic socket, so it is settable
-    // on AF_NETLINK and is the only thing that decides whether a receive
-    // reports SCM_CREDENTIALS. A netlink client that sets it and then discards
-    // every message that arrives without credentials — NetworkManager's
-    // platform layer does exactly that — sees an empty link cache without it.
-    if level == SOL_SOCKET_NL && optname == net::sock_opts::sol_socket::SO_PASSCRED {
-        if optlen < NL_INT_BYTES { return -(Errno::Einval.as_i32() as i64); }
-        let mut raw = [0u8; core::mem::size_of::<i32>()];
-        if uaccess::copy_from_user(&mut raw, optval).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        socket.passcred.store(i32::from_ne_bytes(raw) != 0, core::sync::atomic::Ordering::Release);
-        return 0;
-    }
-    if level == SOL_SOCKET_NL && optname == SO_RCVTIMEO_NL {
-        if optlen < NL_TIMEVAL_BYTES { return -(Errno::Einval.as_i32() as i64); }
-        let mut raw = [0u8; 16];
-        if uaccess::copy_from_user(&mut raw, optval).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        let sec = i64::from_ne_bytes(raw[..8].try_into().unwrap());
-        let usec = i64::from_ne_bytes(raw[8..].try_into().unwrap());
-        let ns = (sec.max(0) as i128 * 1_000_000_000 + usec.max(0) as i128 * 1_000)
-            .min(u64::MAX as i128) as u64;
-        socket.rcvtimeo_ns.store(ns, core::sync::atomic::Ordering::Release);
-        return 0;
-    }
+    // The family table owns its own level and nothing else: SOL_SOCKET was
+    // already answered generically before dispatch, and every other level is
+    // ENOPROTOOPT.
+    if level != SOL_NETLINK { return -(Errno::Enoprotoopt.as_i32() as i64); }
     if level == SOL_NETLINK && matches!(optname,
         NETLINK_ADD_MEMBERSHIP | NETLINK_DROP_MEMBERSHIP | NETLINK_NO_ENOBUFS)
     {
@@ -235,16 +206,21 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
     let requested = requested as usize;
     let mut bytes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    if level == net::uapi::SOL_SOCKET {
+        if let Some(answer) = sol_socket::get(target, optname) {
+            match answer {
+                Ok(value) => {
+                    if requested < value.len() { return -(Errno::Einval.as_i32() as i64); }
+                    return netlink_getsockopt_copyout(optval, optlen_p, requested, &value);
+                }
+                Err(e) => return e,
+            }
+        }
+    }
     let required = match (level, optname) {
         (net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL) => {
             if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
             bytes.extend_from_slice(&(socket.protocol as u32).to_ne_bytes());
-            NETLINK_SCALAR_BYTES
-        }
-        (net::uapi::SOL_SOCKET, net::sock_opts::sol_socket::SO_PASSCRED) => {
-            if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
-            let on = socket.passcred.load(core::sync::atomic::Ordering::Acquire);
-            bytes.extend_from_slice(&(on as i32).to_ne_bytes());
             NETLINK_SCALAR_BYTES
         }
         (net::uapi::SOL_SOCKET, net::uapi::SO_TYPE) => {

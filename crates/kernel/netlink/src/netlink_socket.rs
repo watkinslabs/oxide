@@ -47,10 +47,10 @@ pub struct NetlinkSocket {
     pub dst_port_id: AtomicU32,
     pub dst_groups: AtomicU32,
     pub connected: AtomicBool,
-    /// `SO_PASSCRED`. Linux keeps this on the generic socket, so it is
-    /// settable on every family including AF_NETLINK, and it is the only
-    /// thing that decides whether a receive reports `SCM_CREDENTIALS`.
-    pub passcred: AtomicBool,
+    /// `sk_scm_credentials`, in the type every credential-carrying family
+    /// shares. Not netlink-private state: the flag, its family gate and the
+    /// receive decision all live with `net::scm`.
+    pub scm: net::scm::ScmCredentials,
     pub sndbuf: AtomicUsize,
     pub rcvbuf: AtomicUsize, pub no_enobufs: AtomicBool,
     pub rx_congested: AtomicBool, pub rx_drops: AtomicUsize,
@@ -91,7 +91,7 @@ impl NetlinkSocket {
             dst_port_id: AtomicU32::new(crate::NETLINK_UNCONNECTED_PORT_ID),
             dst_groups: AtomicU32::new(crate::NETLINK_UNCONNECTED_GROUPS),
             connected: AtomicBool::new(false),
-            passcred: AtomicBool::new(false),
+            scm: net::scm::ScmCredentials::new(),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             rcvbuf: AtomicUsize::new(NETLINK_RCVBUF_DEFAULT),
             no_enobufs: AtomicBool::new(false),

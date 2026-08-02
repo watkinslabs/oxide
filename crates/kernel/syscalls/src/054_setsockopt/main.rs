@@ -39,6 +39,15 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
         let optlen = signed_optlen as u32;
+        // SOL_SOCKET is answered generically for every family and never
+        // reaches the family's own table.
+        if level == SOL_SOCKET {
+            if let Err(error) = net::security_admission::check(
+                net::net_ns::namespace_id(&target.socket().net_ns),
+                net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+            { return errno_from_neterr(error); }
+            return crate::netlink_fd::sol_socket::set(&target, optname, optval, optlen as u64);
+        }
         return crate::netlink_fd::setsockopt(&target, level, optname, optval, optlen as u64);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
