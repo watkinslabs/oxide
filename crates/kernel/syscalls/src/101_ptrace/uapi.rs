@@ -112,8 +112,9 @@ pub const NT_ARM_HW_WATCH: u64 = 0x403;
 /// Highest signal number `valid_signal()` accepts (`_NSIG`).
 pub const NSIG: u64 = 64;
 
-/// `sizeof(struct user_regs_struct)` on x86_64: 27 unsigned longs.
-pub const X86_USER_REGS_N: usize = 27;
+/// `sizeof(struct user_regs_struct)` on x86_64: 27 unsigned longs. Owned by
+/// `hal::uregs`, which the core-dump register block indexes with too.
+pub use hal::uregs::x86_64::user_regs::N as X86_USER_REGS_N;
 /// `sizeof(struct user)` on x86_64 — the PEEKUSER/POKEUSER address ceiling.
 /// regs(216) + u_fpvalid+pad0(8) + i387(512) + 5 ulongs(40) + signal/reserved/pad1(16)
 /// + u_ar0(8) + u_fpstate(8) + magic(8) + u_comm[32] + u_debugreg[8](64)
@@ -123,7 +124,7 @@ pub const X86_SIZEOF_USER: u64 = 920;
 pub const X86_USER_DEBUGREG_OFF: u64 = 848;
 
 /// `sizeof(struct user_pt_regs) / 8` on arm64: `regs[31] + sp + pc + pstate`.
-pub const ARM64_USER_PT_REGS_N: usize = 34;
+pub use hal::uregs::aarch64::user_pt_regs::N as ARM64_USER_PT_REGS_N;
 
 /// FP regset payload sizes: `struct user_i387_struct` (x86_64 FXSAVE image)
 /// and `struct user_fpsimd_state` (arm64 NEON image).

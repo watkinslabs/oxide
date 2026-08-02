@@ -2,113 +2,93 @@
 // entry frame and the ABI struct a tracer expects
 // (`struct user_regs_struct` on x86_64, `struct user_pt_regs` on arm64).
 //
-// Pure array-in / array-out so the field mapping is hosted-testable: a
-// wrong index here is silent (a tracer reads a plausible-looking garbage
-// register), which is exactly the class of bug a unit test catches and a
-// boot does not.
+// The frame has ONE owner per arch — the struct the entry asm actually
+// pushes (`PtRegs` on x86_64, `SvcFrame` on aarch64), the same struct the
+// signal-frame builder and the core-dump `NT_PRSTATUS` block read. Fields are
+// reached by NAME, so this file restates no offset and cannot drift from the
+// asm: a reordered frame is a compile error here, not a tracer quietly
+// reporting register B when it asked for register A.
+//
+// The ABI-side indexes have one owner too (`hal::uregs`), shared with the
+// core-dump path.
+//
+// Field mapping is hosted-testable — a wrong mapping is silent (a tracer
+// reads a plausible-looking garbage register), which is exactly the class of
+// bug a unit test catches and a boot does not. Both arch modules therefore
+// compile under `test` on either host, via the dev-dependency on the two HAL
+// crates.
 
-use syscall::errno::Errno;
-
-/// x86_64: the syscall-entry frame written by `oxide_syscall_entry`
-/// (`crates/arch/hal-x86_64/src/syscall.rs`), 16 quadwords at
-/// `kstack_top - 0x80`.
+/// x86_64: the entry frame every kernel entry pushes.
+#[cfg(any(target_arch = "x86_64", test))]
 pub mod x86 {
-    use super::*;
+    use hal_x86_64::PtRegs;
+    use syscall::errno::Errno;
 
-    pub const FRAME_N: usize = 16;
-    pub const F_ORIG_RAX: usize = 0;
-    pub const F_RDI:      usize = 1;
-    pub const F_RSI:      usize = 2;
-    pub const F_RDX:      usize = 3;
-    pub const F_R10:      usize = 4;
-    pub const F_R8:       usize = 5;
-    pub const F_R9:       usize = 6;
-    /// `rcx` slot — SYSCALL parks the user RIP here, exactly like Linux `pt_regs.cx`.
-    pub const F_RIP:      usize = 7;
-    /// `r11` slot — SYSCALL parks the user RFLAGS here, like Linux `pt_regs.r11`.
-    pub const F_RFLAGS:   usize = 8;
-    pub const F_RSP:      usize = 9;
-    pub const F_RBX:      usize = 10;
-    pub const F_RBP:      usize = 11;
-    pub const F_R13:      usize = 12;
-    pub const F_R14:      usize = 13;
-    pub const F_R15:      usize = 14;
-    pub const F_R12:      usize = 15;
+    /// The saved frame, by its owning definition.
+    pub type Frame = PtRegs;
 
-    /// `struct user_regs_struct` field indexes (quadword units).
-    pub const N: usize = crate::s101_ptrace_uapi::X86_USER_REGS_N;
-    pub const U_R15: usize = 0;
-    pub const U_R14: usize = 1;
-    pub const U_R13: usize = 2;
-    pub const U_R12: usize = 3;
-    pub const U_RBP: usize = 4;
-    pub const U_RBX: usize = 5;
-    pub const U_R11: usize = 6;
-    pub const U_R10: usize = 7;
-    pub const U_R9:  usize = 8;
-    pub const U_R8:  usize = 9;
-    pub const U_RAX: usize = 10;
-    pub const U_RCX: usize = 11;
-    pub const U_RDX: usize = 12;
-    pub const U_RSI: usize = 13;
-    pub const U_RDI: usize = 14;
-    pub const U_ORIG_RAX: usize = 15;
-    pub const U_RIP:     usize = 16;
-    pub const U_CS:      usize = 17;
-    pub const U_EFLAGS:  usize = 18;
-    pub const U_RSP:     usize = 19;
-    pub const U_SS:      usize = 20;
-    pub const U_FS_BASE: usize = 21;
-    pub const U_GS_BASE: usize = 22;
-    pub const U_DS:      usize = 23;
-    pub const U_ES:      usize = 24;
-    pub const U_FS:      usize = 25;
-    pub const U_GS:      usize = 26;
+    /// `struct user_regs_struct` field indexes (quadword units), owned by
+    /// `hal::uregs` because the core-dump register block indexes the same way.
+    pub use hal::uregs::x86_64::user_regs::{
+        CS as U_CS, DS as U_DS, EFLAGS as U_EFLAGS, ES as U_ES, FS as U_FS,
+        FS_BASE as U_FS_BASE, GS as U_GS, GS_BASE as U_GS_BASE, N, NO_SYSCALL,
+        ORIG_RAX as U_ORIG_RAX, R10 as U_R10, R11 as U_R11, R12 as U_R12,
+        R13 as U_R13, R14 as U_R14, R15 as U_R15, R8 as U_R8, R9 as U_R9,
+        RAX as U_RAX, RBP as U_RBP, RBX as U_RBX, RCX as U_RCX, RDI as U_RDI,
+        RDX as U_RDX, RIP as U_RIP, RSI as U_RSI, RSP as U_RSP, SS as U_SS,
+    };
 
-    /// Linux x86_64 `FLAG_MASK` = `FLAG_MASK_32 | X86_EFLAGS_NT`
-    /// (`arch/x86/kernel/ptrace.c`) — the EFLAGS bits a tracer may install
-    /// (CF PF AF ZF SF TF DF OF RF AC NT). Everything else keeps the kernel's
-    /// value, so IF/IOPL cannot be forged from userspace. Owned by
-    /// `hal::uregs` so this and `rt_sigreturn`'s stricter `FIX_EFLAGS` cannot
-    /// drift apart.
+    /// Linux x86_64 `FLAG_MASK` = `FLAG_MASK_32 | X86_EFLAGS_NT` — the EFLAGS
+    /// bits a tracer may install (CF PF AF ZF SF TF DF OF RF AC NT).
+    /// Everything else keeps the kernel's value, so IF/IOPL cannot be forged
+    /// from userspace. Owned by `hal::uregs` so this and `rt_sigreturn`'s
+    /// stricter `FIX_EFLAGS` cannot drift apart.
     pub const FLAG_MASK: u64 = hal::uregs::x86_64::PTRACE_FLAG_MASK;
 
-    /// Segment-register context the frame does not carry.
+    /// Segment-register context the frame does not carry. `cs` and `ss` are
+    /// NOT here: the frame holds the real pair the entry pushed, so reporting
+    /// a fixed selector instead would be the same restatement this file
+    /// exists to avoid.
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
     pub struct SegState {
-        pub cs: u64, pub ss: u64,
         pub ds: u64, pub es: u64, pub fs: u64, pub gs: u64,
         pub fs_base: u64, pub gs_base: u64,
     }
 
-    /// Build `struct user_regs_struct` from the saved frame. `rax` is
-    /// supplied by the caller because the frame slot keeps the syscall
-    /// number (`orig_ax`): Linux reports `-ENOSYS` at a syscall-entry stop
-    /// and the return value at a syscall-exit stop.
+    /// Build `struct user_regs_struct` from the saved frame.
+    ///
+    /// The frame's `rax` slot plays Linux's `orig_ax` role on a `syscall`
+    /// entry — it keeps the syscall number for the whole dispatch — so the
+    /// ABI return register comes from `stop_rax`, the value recorded at the
+    /// stop (Linux reports `-ENOSYS` at a syscall-entry stop and the result at
+    /// a syscall-exit stop). On a trap frame there is no syscall: `rax` is the
+    /// user's own register and `orig_rax` reads back as [`NO_SYSCALL`], which
+    /// is what the core-dump block reports for the same frame.
     /// # C: O(1)
-    pub fn to_user_regs(f: &[u64; FRAME_N], rax: u64, seg: &SegState) -> [u64; N] {
+    pub fn to_user_regs(f: &Frame, stop_rax: u64, seg: &SegState) -> [u64; N] {
+        let from_syscall = f.from_syscall();
         let mut u = [0u64; N];
-        u[U_R15] = f[F_R15];
-        u[U_R14] = f[F_R14];
-        u[U_R13] = f[F_R13];
-        u[U_R12] = f[F_R12];
-        u[U_RBP] = f[F_RBP];
-        u[U_RBX] = f[F_RBX];
-        u[U_R11] = f[F_RFLAGS];
-        u[U_R10] = f[F_R10];
-        u[U_R9]  = f[F_R9];
-        u[U_R8]  = f[F_R8];
-        u[U_RAX] = rax;
-        u[U_RCX] = f[F_RIP];
-        u[U_RDX] = f[F_RDX];
-        u[U_RSI] = f[F_RSI];
-        u[U_RDI] = f[F_RDI];
-        u[U_ORIG_RAX] = f[F_ORIG_RAX];
-        u[U_RIP]    = f[F_RIP];
-        u[U_CS]     = seg.cs;
-        u[U_EFLAGS] = f[F_RFLAGS];
-        u[U_RSP]    = f[F_RSP];
-        u[U_SS]     = seg.ss;
+        u[U_R15] = f.r15;
+        u[U_R14] = f.r14;
+        u[U_R13] = f.r13;
+        u[U_R12] = f.r12;
+        u[U_RBP] = f.rbp;
+        u[U_RBX] = f.rbx;
+        u[U_R11] = f.r11;
+        u[U_R10] = f.r10;
+        u[U_R9]  = f.r9;
+        u[U_R8]  = f.r8;
+        u[U_RAX] = if from_syscall { stop_rax } else { f.rax };
+        u[U_RCX] = f.rcx;
+        u[U_RDX] = f.rdx;
+        u[U_RSI] = f.rsi;
+        u[U_RDI] = f.rdi;
+        u[U_ORIG_RAX] = if from_syscall { f.rax } else { NO_SYSCALL };
+        u[U_RIP]    = f.rip;
+        u[U_CS]     = f.cs;
+        u[U_EFLAGS] = f.rflags;
+        u[U_RSP]    = f.rsp;
+        u[U_SS]     = f.ss;
         u[U_FS_BASE] = seg.fs_base;
         u[U_GS_BASE] = seg.gs_base;
         u[U_DS] = seg.ds;
@@ -126,11 +106,16 @@ pub mod x86 {
     }
 
     /// Apply a tracer-supplied `struct user_regs_struct` to the saved frame.
-    /// Returns the new `(rax, SegState)` the caller must store alongside.
-    /// Rejects the same values Linux `putreg` rejects (bad selector, or a
-    /// non-canonical FS/GS base) with EIO, leaving the frame untouched.
+    /// Returns the ABI return-register value the caller must record alongside
+    /// the frame. Rejects the same values Linux `putreg` rejects (bad
+    /// selector, or a non-canonical FS/GS base) with EIO, leaving the frame
+    /// untouched.
+    ///
+    /// Which supplied word lands in the frame's single `rax` slot follows the
+    /// entry tag, mirroring [`to_user_regs`]: the syscall number on a
+    /// `syscall` frame, the architectural `rax` on a trap frame.
     /// # C: O(1)
-    pub fn from_user_regs(u: &[u64; N], f: &mut [u64; FRAME_N], seg: &mut SegState,
+    pub fn from_user_regs(u: &[u64; N], f: &mut Frame, seg: &mut SegState,
                           user_va_end: u64) -> Result<u64, Errno> {
         for idx in [U_CS, U_SS, U_DS, U_ES, U_FS, U_GS] {
             if invalid_selector(u[idx]) { return Err(Errno::Eio); }
@@ -138,23 +123,24 @@ pub mod x86 {
         if u[U_FS_BASE] >= user_va_end || u[U_GS_BASE] >= user_va_end {
             return Err(Errno::Eio);
         }
-        f[F_R15] = u[U_R15];
-        f[F_R14] = u[U_R14];
-        f[F_R13] = u[U_R13];
-        f[F_R12] = u[U_R12];
-        f[F_RBP] = u[U_RBP];
-        f[F_RBX] = u[U_RBX];
-        f[F_R10] = u[U_R10];
-        f[F_R9]  = u[U_R9];
-        f[F_R8]  = u[U_R8];
-        f[F_RDX] = u[U_RDX];
-        f[F_RSI] = u[U_RSI];
-        f[F_RDI] = u[U_RDI];
-        f[F_ORIG_RAX] = u[U_ORIG_RAX];
-        f[F_RIP] = u[U_RIP];
-        f[F_RSP] = u[U_RSP];
-        f[F_RFLAGS] = hal::uregs::x86_64::ptrace_eflags(f[F_RFLAGS], u[U_EFLAGS]);
-        seg.cs = u[U_CS]; seg.ss = u[U_SS];
+        f.r15 = u[U_R15];
+        f.r14 = u[U_R14];
+        f.r13 = u[U_R13];
+        f.r12 = u[U_R12];
+        f.rbp = u[U_RBP];
+        f.rbx = u[U_RBX];
+        f.r11 = u[U_R11];
+        f.r10 = u[U_R10];
+        f.r9  = u[U_R9];
+        f.r8  = u[U_R8];
+        f.rcx = u[U_RCX];
+        f.rdx = u[U_RDX];
+        f.rsi = u[U_RSI];
+        f.rdi = u[U_RDI];
+        f.rax = if f.from_syscall() { u[U_ORIG_RAX] } else { u[U_RAX] };
+        f.rip = u[U_RIP];
+        f.rsp = u[U_RSP];
+        f.rflags = hal::uregs::x86_64::ptrace_eflags(f.rflags, u[U_EFLAGS]);
         seg.ds = u[U_DS]; seg.es = u[U_ES];
         seg.fs = u[U_FS]; seg.gs = u[U_GS];
         seg.fs_base = u[U_FS_BASE];
@@ -163,30 +149,27 @@ pub mod x86 {
     }
 }
 
-/// arm64: the 288-byte `SvcFrame` written by the EL0-sync save block
-/// (`crates/arch/hal-aarch64/src/vbar.rs`), read as 36 quadwords at
-/// `kstack_top - 0x120`.
+/// arm64: the `SvcFrame` the EL0-sync save block writes.
+#[cfg(any(target_arch = "aarch64", test))]
 pub mod arm64 {
+    use hal_aarch64::SvcFrame;
 
-    pub const FRAME_N: usize = 36;
-    /// `gp[0..18]` = x0..x17.
-    pub const F_X0: usize = 0;
-    /// `x18_x29` packs [x18, x29] (one `stp`).
-    pub const F_X18: usize = 18;
-    pub const F_X29: usize = 19;
-    pub const F_X30: usize = 20;
-    pub const F_ELR: usize = 22;
-    pub const F_SPSR: usize = 23;
-    pub const F_SP_EL0: usize = 24;
-    pub const F_RETVAL: usize = 25;
-    /// `x19_x28[0..10]` = x19..x28.
-    pub const F_X19: usize = 26;
+    /// The saved frame, by its owning definition.
+    pub type Frame = SvcFrame;
 
-    /// `struct user_pt_regs`: `regs[31]`, `sp`, `pc`, `pstate`.
-    pub const N: usize = crate::s101_ptrace_uapi::ARM64_USER_PT_REGS_N;
-    pub const U_SP: usize = 31;
-    pub const U_PC: usize = 32;
-    pub const U_PSTATE: usize = 33;
+    /// `x18` and `x29` share one store pair in the frame.
+    const P_X18: usize = 0;
+    const P_X29: usize = 1;
+    /// Register indexes the frame's scattered blocks land on.
+    const X18: usize = 18;
+    const X19: usize = 19;
+    const X29: usize = 29;
+    const X30: usize = 30;
+
+    /// `struct user_pt_regs` indexes, owned by `hal::uregs`.
+    pub use hal::uregs::aarch64::user_pt_regs::{
+        N, NGPR, PC as U_PC, PSTATE as U_PSTATE, SP as U_SP,
+    };
 
     /// `SPSR_EL1` fields consulted by Linux `valid_native_regs`. Owned by
     /// `hal::uregs::aarch64` — the same rule `rt_sigreturn` applies.
@@ -194,6 +177,8 @@ pub mod arm64 {
         PSR_A_BIT, PSR_D_BIT, PSR_F_BIT, PSR_I_BIT, PSR_MODE32_BIT, PSR_MODE_EL0T,
         PSR_MODE_MASK, PSR_NZCV, PSR_SS_BIT,
     };
+
+    const _: () = assert!(NGPR == X30 + 1);
 
     /// Linux `valid_native_regs`: a tracer-supplied PSTATE is accepted whole
     /// only when it still describes unmasked EL0t AArch64 execution; anything
@@ -215,17 +200,17 @@ pub mod arm64 {
     /// same reason as x86's `rax`: at a syscall-exit stop the ABI value is the
     /// return value, which the frame keeps in its own `retval` slot.
     /// # C: O(1)
-    pub fn to_user_pt_regs(f: &[u64; FRAME_N], x0: u64) -> [u64; N] {
+    pub fn to_user_pt_regs(f: &Frame, x0: u64) -> [u64; N] {
         let mut u = [0u64; N];
-        for i in 0..18 { u[i] = f[F_X0 + i]; }
+        u[..f.gp.len()].copy_from_slice(&f.gp);
         u[0] = x0;
-        u[18] = f[F_X18];
-        for i in 0..10 { u[19 + i] = f[F_X19 + i]; }
-        u[29] = f[F_X29];
-        u[30] = f[F_X30];
-        u[U_SP] = f[F_SP_EL0];
-        u[U_PC] = f[F_ELR];
-        u[U_PSTATE] = f[F_SPSR];
+        u[X18] = f.x18_x29[P_X18];
+        u[X19..X29].copy_from_slice(&f.x19_x28);
+        u[X29] = f.x18_x29[P_X29];
+        u[X30] = f.x30;
+        u[U_SP] = f.sp_el0;
+        u[U_PC] = f.elr_el1;
+        u[U_PSTATE] = f.spsr_el1;
         u
     }
 
@@ -233,16 +218,17 @@ pub mod arm64 {
     /// user-settable bits so a tracer cannot promote the tracee's exception
     /// level (Linux `valid_user_regs`).
     /// # C: O(1)
-    pub fn from_user_pt_regs(u: &[u64; N], f: &mut [u64; FRAME_N]) {
-        for i in 0..18 { f[F_X0 + i] = u[i]; }
-        f[F_X18] = u[18];
-        for i in 0..10 { f[F_X19 + i] = u[19 + i]; }
-        f[F_X29] = u[29];
-        f[F_X30] = u[30];
-        f[F_SP_EL0] = u[U_SP];
-        f[F_ELR] = u[U_PC];
-        f[F_SPSR] = sanitize_pstate(u[U_PSTATE]);
-        f[F_RETVAL] = u[0];
+    pub fn from_user_pt_regs(u: &[u64; N], f: &mut Frame) {
+        let gp = f.gp.len();
+        f.gp.copy_from_slice(&u[..gp]);
+        f.x18_x29[P_X18] = u[X18];
+        f.x19_x28.copy_from_slice(&u[X19..X29]);
+        f.x18_x29[P_X29] = u[X29];
+        f.x30 = u[X30];
+        f.sp_el0 = u[U_SP];
+        f.elr_el1 = u[U_PC];
+        f.spsr_el1 = sanitize_pstate(u[U_PSTATE]);
+        f.retval = u[0];
     }
 }
 

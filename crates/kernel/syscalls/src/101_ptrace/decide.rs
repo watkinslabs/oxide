@@ -81,7 +81,7 @@ pub enum UserArea {
 pub fn user_area(addr: u64) -> Result<UserArea, Errno> {
     if addr & 7 != 0 { return Err(Errno::Eio); }
     if addr >= uapi::X86_SIZEOF_USER { return Err(Errno::Eio); }
-    if (addr as usize) < crate::s101_ptrace_regs::x86::N * 8 {
+    if (addr as usize) < uapi::X86_USER_REGS_N * 8 {
         return Ok(UserArea::Reg(addr as usize / 8));
     }
     let dr0 = uapi::X86_USER_DEBUGREG_OFF;

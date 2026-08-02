@@ -15,52 +15,25 @@ use alloc::vec::Vec;
 const GREG_BYTES: usize = 8;
 
 // `struct user_regs_struct` (x86-64) — quadword indexes, the order a debugger
-// decodes the block in.
-pub const X86_U_R15: usize = 0;
-pub const X86_U_R14: usize = 1;
-pub const X86_U_R13: usize = 2;
-pub const X86_U_R12: usize = 3;
-pub const X86_U_RBP: usize = 4;
-pub const X86_U_RBX: usize = 5;
-pub const X86_U_R11: usize = 6;
-pub const X86_U_R10: usize = 7;
-pub const X86_U_R9:  usize = 8;
-pub const X86_U_R8:  usize = 9;
-pub const X86_U_RAX: usize = 10;
-pub const X86_U_RCX: usize = 11;
-pub const X86_U_RDX: usize = 12;
-pub const X86_U_RSI: usize = 13;
-pub const X86_U_RDI: usize = 14;
-pub const X86_U_ORIG_RAX: usize = 15;
-pub const X86_U_RIP:     usize = 16;
-pub const X86_U_CS:      usize = 17;
-pub const X86_U_EFLAGS:  usize = 18;
-pub const X86_U_RSP:     usize = 19;
-pub const X86_U_SS:      usize = 20;
-pub const X86_U_FS_BASE: usize = 21;
-pub const X86_U_GS_BASE: usize = 22;
-pub const X86_U_DS:      usize = 23;
-pub const X86_U_ES:      usize = 24;
-pub const X86_U_FS:      usize = 25;
-pub const X86_U_GS:      usize = 26;
-
-/// Registers in the x86-64 block.
-pub const X86_NGREG: usize = 27;
+// decodes the block in. ONE owner (`hal::uregs`), shared with the live
+// `PTRACE_GETREGS` path so a dump and a tracer cannot disagree about which
+// word is which register.
+pub use hal::uregs::x86_64::user_regs::{
+    CS as X86_U_CS, DS as X86_U_DS, EFLAGS as X86_U_EFLAGS, ES as X86_U_ES,
+    FS as X86_U_FS, FS_BASE as X86_U_FS_BASE, GS as X86_U_GS,
+    GS_BASE as X86_U_GS_BASE, N as X86_NGREG, NO_SYSCALL,
+    ORIG_RAX as X86_U_ORIG_RAX, R10 as X86_U_R10, R11 as X86_U_R11,
+    R12 as X86_U_R12, R13 as X86_U_R13, R14 as X86_U_R14, R15 as X86_U_R15,
+    R8 as X86_U_R8, R9 as X86_U_R9, RAX as X86_U_RAX, RBP as X86_U_RBP,
+    RBX as X86_U_RBX, RCX as X86_U_RCX, RDI as X86_U_RDI, RDX as X86_U_RDX,
+    RIP as X86_U_RIP, RSI as X86_U_RSI, RSP as X86_U_RSP, SS as X86_U_SS,
+};
 
 // `struct user_pt_regs` (aarch64): `regs[31]`, then the three named words.
-/// General registers the aarch64 block leads with: `x0`..`x30`.
-pub const ARM_NGPR: usize = 31;
-pub const ARM_U_SP:     usize = 31;
-pub const ARM_U_PC:     usize = 32;
-pub const ARM_U_PSTATE: usize = 33;
-
-/// Registers in the aarch64 block.
-pub const ARM_NGREG: usize = 34;
-
-/// `orig_ax` outside a syscall. A frame that did not come from a `syscall`
-/// instruction has no syscall number to report, and a debugger reading a
-/// plausible number there would show the crash as an interrupted call.
-pub const NO_SYSCALL: u64 = u64::MAX;
+pub use hal::uregs::aarch64::user_pt_regs::{
+    N as ARM_NGREG, NGPR as ARM_NGPR, PC as ARM_U_PC, PSTATE as ARM_U_PSTATE,
+    SP as ARM_U_SP,
+};
 
 /// Everything the x86-64 block carries that a saved frame does not: the two
 /// segment bases live in the thread's saved context rather than in the frame.
