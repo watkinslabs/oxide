@@ -295,4 +295,41 @@ mod tests {
         let child = InetSocket::from_accepted_tcp(&listener, entry);
         assert!(Arc::ptr_eq(&child.owner, &listener.owner));
     }
+
+    /// One accepted child, with the header fields the passive open recorded.
+    fn accepted_with_header(iif: u32, ttl: u8, tos: u8) -> Arc<InetSocket> {
+        let listener = InetSocket::new_tcp();
+        let local = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK), port: 41001,
+        };
+        let remote = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 1)), port: 443,
+        };
+        let mut conn = crate::TcpConn::new_client(local, remote, 1);
+        conn.rcv_iif = iif;
+        conn.rcv_ttl = ttl;
+        conn.rcv_tos = tos;
+        let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
+            conn, listener.error.clone(), None));
+        let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
+        crate::sock_opts::record_accepted_header(&child, &entry);
+        child
+    }
+
+    #[test]
+    fn an_accepted_socket_records_what_the_opening_header_carried() {
+        let child = accepted_with_header(9, 57, 0x2c);
+        assert_eq!(child.opts.ip_mcast_ifindex.load(Ordering::Acquire), 9);
+        assert_eq!(child.opts.ip_mcast_ttl.load(Ordering::Acquire), 57);
+        assert_eq!(child.opts.ip_rcv_tos.load(Ordering::Acquire), 0x2c);
+    }
+
+    #[test]
+    fn a_child_opened_by_no_ipv4_header_keeps_the_multicast_defaults() {
+        // An IPv6 passive open records no interface, and must not overwrite
+        // the multicast hop limit a socket starts life with.
+        let child = accepted_with_header(0, 0, 0);
+        assert_eq!(child.opts.ip_mcast_ttl.load(Ordering::Acquire), 1);
+        assert_eq!(child.opts.ip_rcv_tos.load(Ordering::Acquire), 0);
+    }
 }

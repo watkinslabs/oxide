@@ -187,6 +187,12 @@ pub struct TcpConn {
     /// `TCP_SAVE_SYN`: the handshake packet that opened this connection, from
     /// the network header onward, kept until `TCP_SAVED_SYN` collects it.
     pub syn_bytes: Option<alloc::vec::Vec<u8>>,
+    /// What the IPv4 header of that packet carried, and the interface it
+    /// arrived on. An accepted socket publishes these through IP_PKTOPTIONS,
+    /// and they are the only receive-side header state a stream socket keeps.
+    pub rcv_iif: u32,
+    pub rcv_ttl: u8,
+    pub rcv_tos: u8,
     /// Request-sock state while this passive connection is half-open: the
     /// SYN-ACK timer's accounting and the `TCP_DEFER_ACCEPT` deferral. Unarmed
     /// on every connection that was never a request.
@@ -214,3 +220,13 @@ pub const SYN_RETRIES_DEFAULT: u32 = 6;
 pub const DATA_RETRIES_DEFAULT: u32 = 15;
 /// FIN-WAIT-2 hold time a connection runs with until `TCP_LINGER2` names one.
 pub const LINGER2_DEFAULT_NS: u64 = 60_000_000_000;
+
+/// What the network header of a passive open's opening packet carried, and the
+/// interface it arrived on — the state `IP_PKTOPTIONS` publishes on the
+/// accepted socket. An IPv6 open records nothing: the option is an IPv4-level
+/// one, and its IPv6 twin reports its own header's fields. A zero interface
+/// index is what "nothing was recorded" means. # C: O(1)
+pub fn passive_rcv_header(packet: &[u8], ipv6: bool, iif: u32) -> (u32, u8, u8) {
+    if ipv6 || packet.len() < crate::ipv4::IPV4_HDR_LEN { return (0, 0, 0); }
+    (iif, packet[8], packet[1])
+}

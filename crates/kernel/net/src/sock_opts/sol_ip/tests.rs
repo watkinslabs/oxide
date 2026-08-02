@@ -377,7 +377,7 @@ fn the_path_mtu_read_needs_a_route() {
 #[test]
 fn the_ancillary_snapshot_is_a_stream_socket_read() {
     assert_eq!(get::read(IP_PKTOPTIONS, dgram(), &state()), Err(Errno::Enoprotoopt));
-    assert_eq!(get::read(IP_PKTOPTIONS, stream(), &state()), Ok(Value::Bytes(Vec::new())));
+    assert_eq!(get::read(IP_PKTOPTIONS, stream(), &state()), Ok(Value::ControlStream));
 }
 
 #[test]
