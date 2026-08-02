@@ -18,4 +18,6 @@ mod probe_state;
 mod runtime;
 
 pub(super) use driver::{register_model_drivers, VirtioPciTransport};
-pub(super) use probe::{VirtioPciProbeTrace, VirtioProbe};
+pub(super) use probe::VirtioProbe;
+#[cfg(feature = "debug-boot")]
+pub(super) use probe::VirtioPciProbeTrace;

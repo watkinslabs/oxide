@@ -152,8 +152,18 @@ pub fn register_netdev(device_key: DeviceKey) -> Option<net::NetIfaceId> {
     // between raised the NetRx softirq with no handler and was dropped, and the
     // device will not re-interrupt for the same used-ring advance — so the
     // first RX frame (e.g. the DHCP OFFER) would sit undrained until an
-    // unrelated wakeup, intermittently starving DHCP. Sweep it now.
-    super::rx::rx_drain_softirq();
+    // unrelated wakeup, intermittently starving DHCP. Mark it pending now that
+    // the handler is installed.
+    //
+    // Raised, not drained inline. The reference marks the receive half pending
+    // and lets the softirq run from the interrupt-exit path; it never calls the
+    // poll loop from device registration. Calling it here put the entire
+    // receive-and-forward chain — through the TCP listener path and out to a
+    // transmit — on the probe's own stack, and that chain ends at a scheduling
+    // point, so registration carried the whole subtree: 14320 B of a 16384 B
+    // stack on aarch64. Pending work costs one bit here and runs on the
+    // interrupt stack where it belongs.
+    super::rx::raise_rx();
     Some(id)
 }
 
