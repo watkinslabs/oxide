@@ -78,6 +78,13 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
     } else {
         crate::IpAddr::V4(*sock.local_ip.lock())
     };
+    // Only the transition into listening does this: a second `listen` on a
+    // socket that is already listening returned above.
+    if crate::tcp_fastopen::on_listen(crate::tcp_fastopen::enable_bits(&sock.net_namespace),
+        &sock.opts.tcp.fastopen, backlog, somaxconn as i32)
+    {
+        crate::tcp_fastopen::init_key_once(&sock.net_namespace);
+    }
     let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, None)?;
     let listener = stack().tcp_listen_reserved_min_hop(
         &bind, sock.bpf_filter.clone(), sock.opts.ip_mtu_discover.clone(),

@@ -44,7 +44,7 @@ pub(super) fn get(sock: &Arc<InetSocket>, optname: u64, out: &OptOut) -> i64 {
     let snap = snapshot(sock);
     let tcp = &sock.opts.tcp;
     let saved_syn: Option<Vec<u8>> = tcp.saved_syn.lock().clone();
-    let fastopen_key: Option<Vec<u8>> = tcp.fastopen_key.lock().clone();
+    let fastopen_key: Option<Vec<u8>> = tcp.fastopen.keys().map(|ctx| ctx.bytes());
     let usec_ts = tcp.usec_ts.load(Ordering::Acquire);
     let now_ms = net::tcp_conn::tcp_now_ms() as i32;
     let env = GetEnv {
@@ -71,7 +71,7 @@ pub(super) fn get(sock: &Arc<InetSocket>, optname: u64, out: &OptOut) -> i64 {
         ulp: None,
         thin_lto: tcp.thin_lto.load(Ordering::Acquire),
         user_timeout_ms: tcp.user_timeout_ms.load(Ordering::Acquire),
-        fastopen_max_qlen: tcp.fastopen_max_qlen.load(Ordering::Acquire),
+        fastopen_max_qlen: tcp.fastopen.max_qlen(),
         fastopen_connect: tcp.fastopen_connect.load(Ordering::Acquire),
         fastopen_no_cookie: tcp.fastopen_no_cookie.load(Ordering::Acquire),
         fastopen_key: fastopen_key.as_deref(),

@@ -26,6 +26,7 @@ pub mod zerocopy;
 mod tests;
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, Socket as SockLockClass};
 
@@ -97,14 +98,6 @@ pub const TCP_QUEUES_NR: i32 = 3;
 /// `TCP_SAVE_SYN`: 0 disabled, 1 from the network header, 2 from the link
 /// header.
 pub const SAVE_SYN_MAX: i32 = 2;
-
-/// `TCP_FASTOPEN_KEY` accepts one key, or an active plus a backup key.
-pub const FASTOPEN_KEY_LEN: usize = 16;
-pub const FASTOPEN_KEY_BUF_LEN: usize = FASTOPEN_KEY_LEN * 2;
-
-/// `TFO_CLIENT_ENABLE` / `TFO_SERVER_ENABLE` bits of the fast-open sysctl.
-pub const TFO_CLIENT_ENABLE: i32 = 1;
-pub const TFO_SERVER_ENABLE: i32 = 2;
 
 /// The ceilings the keepalive and SYN counters accept.
 pub const MAX_TCP_KEEPIDLE: i32 = 32767;
@@ -231,12 +224,16 @@ pub struct TcpOpts {
     /// `TCP_SAVE_SYN` mode, and the bytes it captured for `TCP_SAVED_SYN`.
     pub save_syn: AtomicI32,
     pub saved_syn: Spinlock<Option<Vec<u8>>, SockLockClass>,
-    /// `TCP_FASTOPEN` listener queue bound, `TCP_FASTOPEN_CONNECT`,
-    /// `TCP_FASTOPEN_NO_COOKIE`, and the `TCP_FASTOPEN_KEY` pair.
-    pub fastopen_max_qlen: AtomicI32,
+    /// This socket's accept queue's fast-open state: the bound `TCP_FASTOPEN`
+    /// names and the keys `TCP_FASTOPEN_KEY` installs. Held here rather than
+    /// as two option values because it belongs to the accept queue, which
+    /// outlives a `shutdown` and is NOT what a socket accepted from this one
+    /// comes away with.
+    pub fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
+    /// `TCP_FASTOPEN_CONNECT` and `TCP_FASTOPEN_NO_COOKIE` — per-socket, and
+    /// the only two of the family that are.
     pub fastopen_connect: AtomicBool,
     pub fastopen_no_cookie: AtomicBool,
-    pub fastopen_key: Spinlock<Option<Vec<u8>>, SockLockClass>,
     /// `TCP_TIMESTAMP`: the caller-installed TSval bias, and the low bit that
     /// selects a microsecond timestamp clock.
     pub tsoffset: AtomicI32,
@@ -283,10 +280,9 @@ impl Default for TcpOpts {
             repair_queue: AtomicI32::new(TCP_NO_QUEUE),
             save_syn: AtomicI32::new(0),
             saved_syn: Spinlock::new(None),
-            fastopen_max_qlen: AtomicI32::new(0),
+            fastopen: Arc::new(crate::tcp_fastopen::FastOpenQueue::new()),
             fastopen_connect: AtomicBool::new(false),
             fastopen_no_cookie: AtomicBool::new(false),
-            fastopen_key: Spinlock::new(None),
             tsoffset: AtomicI32::new(0),
             usec_ts: AtomicBool::new(false),
             notsent_lowat: AtomicU32::new(u32::MAX),
