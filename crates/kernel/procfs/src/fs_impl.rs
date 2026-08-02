@@ -16,7 +16,30 @@ const PAGE_SIZE: u32 = 4096;
 /// FileSystem trait impl. Read-only. The mount table crosses into procfs
 /// at `root()` and the namei walker resolves every component below it
 /// through the procfs inode tree.
-pub struct ProcfsFs;
+pub struct ProcfsFs {
+    /// THIS mount's root inode and identity. One per mount: two `mount -t proc`
+    /// calls with different options must give different answers, which is
+    /// impossible while they share a root.
+    root: vfs::InodeRef,
+    info: Arc<crate::fs_info::ProcFsInfo>,
+}
+
+impl ProcfsFs {
+    /// Build a procfs instance for one mount. # C: O(N static files)
+    pub fn new(info: crate::fs_info::ProcFsInfo) -> Self {
+        let info = Arc::new(info);
+        ProcfsFs { root: crate::static_files::build_root(Arc::clone(&info)), info }
+    }
+
+    /// # C: O(1)
+    pub fn info(&self) -> &Arc<crate::fs_info::ProcFsInfo> { &self.info }
+}
+
+impl Default for ProcfsFs {
+    /// An option-less `mount -t proc`, which is every mount the kernel itself
+    /// performs. # C: O(N static files)
+    fn default() -> Self { ProcfsFs::new(crate::fs_info::ProcFsInfo::default()) }
+}
 
 /// `super_operations` for procfs. procfs is a zero-sized pseudo filesystem:
 /// `statfs(2)` reports the magic + `PAGE_SIZE` block size and zero block/inode
@@ -59,17 +82,28 @@ impl vfs::fs::FileSystem for ProcfsFs {
     /// so `statfs(2)`/`df` report PROC_SUPER_MAGIC + PAGE_SIZE, not the generic
     /// synthetic figures. # C: O(1)
     fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> { Some(Arc::new(ProcfsSuperOps)) }
+    /// `/proc/mounts` shows the options this mount actually carries, in the
+    /// reference's spelling, so what is displayed round-trips as input.
+    /// # C: O(1)
+    fn show_options(&self) -> alloc::string::String {
+        crate::fs_info::show_options(&self.info)
+    }
     /// Mount root = the `ProcRootInode` singleton. The path walk crosses
     /// into the procfs mount and resolves `/proc/<name>`, `/proc/self`,
     /// `/proc/<pid>/<leaf>`, `/proc/net`, `/proc/sys` per-component via
     /// `ProcRootInode::lookup` + `ProcPidDirInode::lookup` — no whole-path
     /// synthesis.
     /// # C: O(1)
-    fn root(&self) -> Option<vfs::InodeRef> {
-        Some(crate::static_files::proc_root() as vfs::InodeRef)
+    fn root(&self) -> Option<vfs::InodeRef> { Some(self.root.clone()) }
+
+    /// Publish this mount's identity where the reference keeps it — the
+    /// superblock's private slot (`sb->s_fs_info`, read back through
+    /// `proc_sb_info`). The root inode carries the same `Arc`, so a lookup that
+    /// already has an inode needs no superblock round-trip; this is what lets
+    /// code holding only a `SuperBlock` (statfs, show_options, a future
+    /// remount) reach the same answers. # C: O(1)
+    fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) -> vfs::KResult<()> {
+        if let Some(sb) = sb.upgrade() { sb.set_fs_info(Arc::clone(&self.info)); }
+        Ok(())
     }
 }
-
-/// Singleton accessor for the mount table.
-/// # C: O(1)
-pub fn instance() -> &'static dyn vfs::fs::FileSystem { &ProcfsFs }
