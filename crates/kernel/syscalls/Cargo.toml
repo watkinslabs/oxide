@@ -69,6 +69,12 @@ sound             = { path = "../sound" }
 drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
 [dev-dependencies]
+# Both arch register mappings are hosted-testable: the ptrace conversion reads
+# the REAL entry-frame struct by field name, so the owning HAL crate has to be
+# present under `cargo test` on either host. A wrong mapping is silent at
+# runtime, so losing either arm to an arch gate would be losing the only check.
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
 # Host oracle: `rename_ladder_oracle` runs the REAL renameat2/faccessat2/
 # lchown on this machine and compares the verdict to `rename_policy`.
 conformance = { path = "../conformance" }

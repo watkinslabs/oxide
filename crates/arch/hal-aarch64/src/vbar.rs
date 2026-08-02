@@ -195,6 +195,7 @@ fn percpu_base() -> u64 {
 /// The frame is 36 x 8 = 288 bytes. Every field offset is pinned below because
 /// the assembly addresses these slots directly.
 #[repr(C)]
+#[derive(Copy, Clone, Debug)]
 pub struct SvcFrame {
     pub gp:        [u64; 18],   // x0..x17                     (offsets 0x00..0x90)
     pub x18_x29:   [u64; 2],    // [x18, x29] — packed by stp  (offset 0x90..0xa0)

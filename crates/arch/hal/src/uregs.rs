@@ -6,6 +6,13 @@
 //                       `hal-aarch64/src/signal.rs::restore_signal_frame`
 //   * `ptrace(2)`     — `syscalls/src/101_ptrace/regs.rs`
 //
+// Same rule for the ABI register STRUCT a debugger decodes (`user_regs`,
+// `user_pt_regs` below): the live ptrace path and the core-dump `NT_PRSTATUS`
+// path both index with these, so they cannot tell different stories about the
+// same registers. Neither owns the KERNEL frame layout — that is the struct
+// the entry asm pushes (`PtRegs` / `SvcFrame`), and every consumer reads it
+// through named fields rather than a restated offset table.
+//
 // Both take a word straight out of memory an unprivileged process writes.
 // Without the rules below a forged `pstate.M[3:0] = 0b0101` returns the
 // process's own code at EL1, and a forged `eflags.IOPL = 3` hands it the
@@ -21,6 +28,49 @@
 
 /// x86_64 EFLAGS. Bit names from `arch/x86/include/uapi/asm/processor-flags.h`.
 pub mod x86_64 {
+    /// `struct user_regs_struct` (x86_64) — quadword index of each field, in
+    /// the order a debugger decodes `PTRACE_GETREGS` / `NT_PRSTATUS`. This is
+    /// the ABI order, which is NOT the order the kernel's entry frame stores
+    /// registers in; mapping between the two is the consumer's job.
+    pub mod user_regs {
+        pub const R15: usize = 0;
+        pub const R14: usize = 1;
+        pub const R13: usize = 2;
+        pub const R12: usize = 3;
+        pub const RBP: usize = 4;
+        pub const RBX: usize = 5;
+        pub const R11: usize = 6;
+        pub const R10: usize = 7;
+        pub const R9:  usize = 8;
+        pub const R8:  usize = 9;
+        pub const RAX: usize = 10;
+        pub const RCX: usize = 11;
+        pub const RDX: usize = 12;
+        pub const RSI: usize = 13;
+        pub const RDI: usize = 14;
+        pub const ORIG_RAX: usize = 15;
+        pub const RIP:      usize = 16;
+        pub const CS:       usize = 17;
+        pub const EFLAGS:   usize = 18;
+        pub const RSP:      usize = 19;
+        pub const SS:       usize = 20;
+        pub const FS_BASE:  usize = 21;
+        pub const GS_BASE:  usize = 22;
+        pub const DS:       usize = 23;
+        pub const ES:       usize = 24;
+        pub const FS:       usize = 25;
+        pub const GS:       usize = 26;
+
+        /// Quadwords in the struct.
+        pub const N: usize = 27;
+
+        /// `orig_rax` on a frame that did NOT come from a `syscall`
+        /// instruction: there is no syscall number to report, and a debugger
+        /// reading a plausible number there would show the stop as an
+        /// interrupted call.
+        pub const NO_SYSCALL: u64 = u64::MAX;
+    }
+
     pub const X86_EFLAGS_CF:   u64 = 1 << 0;
     /// Bit 1 reads as 1 architecturally; SYSRET ORs it back in unconditionally.
     pub const X86_EFLAGS_FIXED: u64 = 1 << 1;
@@ -150,6 +200,19 @@ pub mod x86_64 {
 /// (plus IL from `arch/arm64/include/asm/ptrace.h` and SS = `DBG_SPSR_SS`
 /// from `arch/arm64/include/asm/debug-monitors.h`).
 pub mod aarch64 {
+    /// `struct user_pt_regs` (arm64) — `regs[31]`, then the three named
+    /// words. Same ownership rule as the x86_64 sibling.
+    pub mod user_pt_regs {
+        /// General registers the struct leads with: `x0`..`x30`.
+        pub const NGPR: usize = 31;
+        pub const SP:     usize = 31;
+        pub const PC:     usize = 32;
+        pub const PSTATE: usize = 33;
+
+        /// Quadwords in the struct.
+        pub const N: usize = 34;
+    }
+
     /// `M[3:0]` — the exception level + stack-pointer selector.
     pub const PSR_MODE_MASK:  u64 = 0x0000_000f;
     /// EL0 with SP_EL0: the ONLY mode a user context may carry.
