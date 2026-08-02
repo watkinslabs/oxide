@@ -1,6 +1,8 @@
 //! Synthetic sysfs inode layout owned by the sysfs filesystem.
 pub(crate) const ROOT: u64 = 0x5100_0001;
 pub(crate) const CLASS: u64 = 0x5100_0002;
+pub(crate) const SUBSYSTEM_ROOT: u64 = 0x5100_0003;
+pub(crate) const SUBSYSTEM_DIR: u64 = 0x5100_5000;
 pub(crate) const KOBJ_ROOT: u64 = 0x5100_1000;
 pub(crate) const SYMLINK: u64 = 0x5100_0080;
 pub(crate) const ATTR: u64 = 0x5100_2000;
