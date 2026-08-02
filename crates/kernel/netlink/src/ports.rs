@@ -75,7 +75,7 @@ pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, byt
     let Some(target) = target else { return false; };
     let source_port_id = sender.port_id.load(Ordering::Acquire);
     if !target.accepts_unicast_from(source_port_id) { return false; }
-    target.enqueue_from_creds(bytes.to_vec(), source_port_id, crate::creds::current_sender());
+    target.enqueue_from_creds(bytes.to_vec(), source_port_id, net::sock_opts::SenderCreds::current());
     true
 }
 

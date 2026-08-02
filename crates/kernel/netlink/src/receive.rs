@@ -3,7 +3,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use crate::creds::NetlinkCreds;
+use net::sock_opts::SenderCreds;
+
 use crate::NetlinkSocket;
 
 #[cfg(feature = "debug-netlink")]
@@ -18,7 +19,7 @@ fn trace_rx(event: &'static [u8], value: usize) {
 /// One socket-owned NETLINK receive queue.  Byte accounting is retained with
 /// the datagrams so multicast overrun and `sk_err` share one canonical owner.
 pub(crate) struct ReceiveQueue {
-    datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, NetlinkCreds)>,
+    datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, SenderCreds)>,
     bytes: usize,
 }
 
@@ -28,15 +29,15 @@ impl ReceiveQueue {
     }
 
     fn charge(bytes: &Vec<u8>) -> usize {
-        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, NetlinkCreds)>())
+        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, SenderCreds)>())
     }
 
-    fn push(&mut self, bytes: Vec<u8>, src_port: u32, creds: NetlinkCreds) {
+    fn push(&mut self, bytes: Vec<u8>, src_port: u32, creds: SenderCreds) {
         self.bytes = self.bytes.saturating_add(Self::charge(&bytes));
         self.datagrams.push_back((bytes, src_port, creds));
     }
 
-    fn pop(&mut self) -> Option<(Vec<u8>, u32, NetlinkCreds)> {
+    fn pop(&mut self) -> Option<(Vec<u8>, u32, SenderCreds)> {
         let dgram = self.datagrams.pop_front()?;
         self.bytes = self.bytes.saturating_sub(Self::charge(&dgram.0));
         Some(dgram)
@@ -49,8 +50,9 @@ impl ReceiveQueue {
 pub struct ReceivedDatagram {
     pub bytes: Vec<u8>,
     pub src_port: u32,
-    /// `NETLINK_CB(skb).creds`: whoever produced this datagram.
-    pub creds: NetlinkCreds,
+    /// `NETLINK_CB(skb).creds`: whoever produced this datagram. The default
+    /// all-zero set names the kernel.
+    pub creds: SenderCreds,
 }
 
 /// Canonical result of one NETLINK queue/error observation.
@@ -124,12 +126,12 @@ impl NetlinkSocket {
 
     /// Enqueue one kernel-originated datagram with its sender port. # C: O(1)
     pub fn enqueue_from(&self, msg: Vec<u8>, src_port: u32) {
-        self.enqueue_from_creds(msg, src_port, NetlinkCreds::KERNEL);
+        self.enqueue_from_creds(msg, src_port, SenderCreds::default());
     }
 
     /// Enqueue one datagram with its sender port and credentials, then publish
     /// receive readiness. # C: O(1)
-    pub fn enqueue_from_creds(&self, mut msg: Vec<u8>, src_port: u32, creds: NetlinkCreds) {
+    pub fn enqueue_from_creds(&self, mut msg: Vec<u8>, src_port: u32, creds: SenderCreds) {
         let verdict = self.bpf_filter.verdict(&msg);
         if verdict == 0 { return; }
         msg.truncate(msg.len().min(verdict as usize));
@@ -148,7 +150,7 @@ impl NetlinkSocket {
             used <= self.rcvbuf.load(Ordering::Acquire)
         });
         if fits {
-            queue.push(msg, 0, NetlinkCreds::KERNEL);
+            queue.push(msg, 0, SenderCreds::default());
             drop(queue);
             #[cfg(feature = "debug-netlink")]
             trace_rx(b"multicast-enqueue", self.rx_drops.load(Ordering::Relaxed));

@@ -68,7 +68,7 @@ impl InetSocket {
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
             K::Unix(pair, end) => {
-                let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let passcred = self.opts.passcred.on();
                 let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns,
                     passcred, inline);
@@ -147,7 +147,7 @@ impl InetSocket {
             // AF_UNIX SOCK_STREAM: drain what's queued; empty → EOF (peer closed
             // + drained) gives Ok(0), else EAGAIN. Never parks.
             K::Unix(pair, end) => {
-                let passcred = self.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let passcred = self.opts.passcred.on();
                 let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let got = pair.read_passcred(end, buf.len(), passcred, inline);
                 if !got.is_empty() {

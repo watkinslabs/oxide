@@ -24,7 +24,7 @@ pub(super) fn view(sock: &Arc<InetSocket>) -> SockView {
         rcvbuf: sock.opts.rcvbuf.load(Ordering::Acquire),
         priority: sock.opts.priority.load(Ordering::Acquire),
         mark: sock.opts.mark.load(Ordering::Acquire),
-        passcred: sock.opts.passcred.load(Ordering::Acquire),
+        passcred: sock.opts.passcred.value(),
         timestamping_flags: sock.opts.timestamping.load(Ordering::Acquire),
         sndtimeo_ns: sock.opts.sndtimeo_ns.load(Ordering::Acquire),
         rcvtimeo_ns: sock.opts.rcvtimeo_ns.load(Ordering::Acquire),
