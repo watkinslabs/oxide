@@ -377,7 +377,7 @@ pub(crate) fn resolve_unix_addr(path: alloc::vec::Vec<u8>) -> Result<net::UnixAd
     // filesystem right, checked once the object is known to be a socket so a
     // name that is not one keeps its own error.
     if let Err(e) = net::landlock_addr::check_unix_resolve(&p, &addr) {
-        return Err(crate::net_common::errno_from_neterr(e));
+        return Err(crate::net_errno::errno_from_neterr(e));
     }
     Ok(addr)
 }

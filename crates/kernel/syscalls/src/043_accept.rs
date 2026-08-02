@@ -4,7 +4,8 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_sockaddr::*;
-use crate::net_common::{classify, errno_from_neterr, Routed};
+use crate::net_common::{classify, Routed};
+use crate::net_errno::errno_from_neterr;
 use crate::sock_route::ControlOp;
 use net::socket_args::{AcceptFlags, parse_accept_flags};
 
@@ -162,7 +163,7 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
                 nonblock: bool, acc_flags: AcceptFlags) -> i64 {
     let listener = match vs.listener_for_accept() {
         Ok(listener) => listener,
-        Err(error) => return crate::net_common::errno_from_neterr(error),
+        Err(error) => return crate::net_errno::errno_from_neterr(error),
     };
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }

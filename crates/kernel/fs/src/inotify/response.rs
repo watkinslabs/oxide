@@ -36,6 +36,12 @@ pub(crate) const RESPONSE_VALID_MASK: u32 =
 pub(crate) const RESPONSE_LEN: usize = 8;
 
 /// `FAN_RESPONSE_INFO_NONE` — the response carries no additional record.
+/// Kept for ABI completeness: it is a defined header type, but the ONLY type a
+/// response may carry is the audit rule, so nothing on the write path compares
+/// against it — `parse_response_info` rejects everything that is not
+/// `FAN_RESPONSE_INFO_AUDIT_RULE`. Named here so the rejection tests can state
+/// what they are rejecting rather than a bare `0`.
+#[allow(dead_code)]
 pub(crate) const FAN_RESPONSE_INFO_NONE: u8 = 0;
 /// `FAN_RESPONSE_INFO_AUDIT_RULE` — the record names the userspace rule that
 /// produced the verdict. The only record type a response may carry.

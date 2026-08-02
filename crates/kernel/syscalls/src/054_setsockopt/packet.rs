@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use syscall::errno::Errno;
 
-use crate::net_common::errno_from_neterr;
+use crate::net_errno::errno_from_neterr;
 use crate::packet_optshape as shape;
 use super::packet_abi::{parse_packet_bool, parse_packet_flag, parse_packet_mreq,
                         parse_packet_version, parse_packet_fanout, parse_packet_ring,

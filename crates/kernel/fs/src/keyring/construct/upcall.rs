@@ -25,8 +25,16 @@ use super::super::uapi::*;
 /// itself can run without holding it.
 pub struct HelperArgs {
     /// The key being built — what the helper answers.
+    ///
+    /// Part of the [`Upcall`] contract rather than of this module: an in-kernel
+    /// actor is handed the request and must know which key it answers under
+    /// which token. The `/sbin/request-key` actor reads both out of the
+    /// prebuilt `argv` instead, so nothing in this crate reads the fields
+    /// directly.
+    #[allow(dead_code)]
     pub key: i32,
     /// The authorisation token granting the right to answer it.
+    #[allow(dead_code)]
     pub authkey: i32,
     /// The helper's own session keyring, holding the token.
     pub helper_keyring: i32,

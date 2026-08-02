@@ -13,7 +13,7 @@ use net::sock::InetSocket;
 use net::sock_opts::sol_ip::set::{self as ipset, Action, ArgClass};
 use net::sock_opts::sol_ip::uapi::*;
 
-use crate::net_common::errno_from_neterr;
+use crate::net_errno::errno_from_neterr;
 use super::multicast::{
     SourceOp, ipv4_group_filter, ipv4_mcast_group_req, ipv4_mcast_group_source_req,
     ipv4_mcast_if, ipv4_mcast_membership, ipv4_mcast_source_req, ipv4_msfilter,

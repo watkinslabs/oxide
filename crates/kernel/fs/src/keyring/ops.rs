@@ -72,11 +72,6 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// A caller holding neither capability. # C: O(1)
-    pub fn new(t: TaskIds, now_ns: u64, sys_admin: bool) -> Self {
-        Self { t, now_ns, sys_admin, set_uid: false }
-    }
-
     /// Both capabilities resolved explicitly. They are separate gates on
     /// separate commands, so deriving one from the other would silently hand
     /// `KEYCTL_GET_PERSISTENT` to every `CAP_SYS_ADMIN` holder — or withhold it

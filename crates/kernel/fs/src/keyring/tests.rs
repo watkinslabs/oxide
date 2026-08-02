@@ -33,7 +33,7 @@ mod watch;
 
 /// A caller with fsuid == fsgid == `uid` and no supplementary groups.
 fn ctx(tid: u32, uid: u32) -> Ctx {
-    Ctx::new(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false)
+    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false, false)
 }
 
 /// The same caller holding `CAP_SYS_ADMIN`.

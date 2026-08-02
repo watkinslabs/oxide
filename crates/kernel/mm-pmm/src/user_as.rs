@@ -63,6 +63,7 @@ pub use debug::{install_lock_step_hook, lock_step_hook};
 #[cfg(feature = "debug-cow")]
 use debug::segv_dump;
 #[cfg(feature = "debug-displaystack")]
+#[cfg(all(feature = "debug-displaystack", target_arch = "aarch64"))]
 use debug::dump_arm_vmas;
 pub use fault::user_fault_handler;
 pub use swapoff::drain_swap_area;

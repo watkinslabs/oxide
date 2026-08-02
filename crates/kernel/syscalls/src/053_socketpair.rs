@@ -48,7 +48,7 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
     let spec = pair.args;
     let socket_type = pair.socket_type;
     net::sock_opts::check_socketpair(net_namespace.id().as_u64(), spec.family as u16,
-        socket_type, spec.protocol).map_err(|e| -(crate::net_common::errno_from_neterr(e) as i64))?;
+        socket_type, spec.protocol).map_err(|e| -(crate::net_errno::errno_from_neterr(e) as i64))?;
     let stream = if socket_type == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
     let msg = match socket_type {
         SOCK_DGRAM => Some(net::UnixMsgPair::new_datagram()),

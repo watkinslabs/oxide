@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use syscall::errno::Errno;
 
-use crate::net_common::errno_from_neterr;
+use crate::net_errno::errno_from_neterr;
 use super::packet_abi::{packet_rollover_statistics_bytes, packet_statistics_bytes,
                         PacketOptionValue};
 
