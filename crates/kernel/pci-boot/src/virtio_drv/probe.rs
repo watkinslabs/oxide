@@ -83,6 +83,7 @@ impl VirtioPciAcquisition {
             handoff.queue_resources,
             handoff.net_boot_payloads,
         );
+        #[cfg(feature = "debug-boot")]
         let trace = VirtioPciProbeTrace {
             cmd_orig: self.cmd_orig,
             cmd_new: self.cmd_new,
@@ -107,6 +108,7 @@ impl VirtioPciAcquisition {
         let devres = state.finish_devres(&transport_result, self.cmd_orig);
         Some(VirtioProbe {
             child_facts,
+            #[cfg(feature = "debug-boot")]
             trace,
             devres,
         })
@@ -114,9 +116,11 @@ impl VirtioPciAcquisition {
 }
 
 /// Probe-time record consumed only by `virtio_trace::trace_probe`, whose every
-/// read sits inside `debug_boot!` — so in a default build the record is still
-/// built and passed, but no field is ever read.
-#[cfg_attr(not(feature = "debug-boot"), allow(dead_code, reason = "every field is read by virtio_trace::trace_probe inside debug_boot!; without that feature the record is write-only"))]
+/// read sits inside `debug_boot!`. The record therefore exists only when that
+/// feature does: built unconditionally it was ~408 B of probe frame — its own
+/// copy of the `MAX_RESOURCE_QUEUES` resource array included — written and
+/// never read, on a boot path already close to the stack-depth ceiling.
+#[cfg(feature = "debug-boot")]
 pub(crate) struct VirtioPciProbeTrace {
     pub(crate) cmd_orig: u16,
     pub(crate) cmd_new: u16,
@@ -139,6 +143,7 @@ pub(crate) struct VirtioPciProbeTrace {
 
 pub(crate) struct VirtioProbe {
     pub(crate) child_facts: virtio::VirtioChildProbeFacts,
+    #[cfg(feature = "debug-boot")]
     pub(crate) trace: VirtioPciProbeTrace,
     devres: VirtioProbeDevres,
 }
