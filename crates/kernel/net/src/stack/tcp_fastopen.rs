@@ -52,6 +52,32 @@ pub(crate) fn plan(listener: &TcpListenEntry, hdr: &crate::tcp_hdr::TcpHdr, seg:
     }
 }
 
+/// Move what an active open learned out of the connection and into the
+/// namespace that owns it: the cookie for next time, the pause a blackholed
+/// path earns, and the clearing of that pause by a fast open that worked.
+///
+/// The connection cannot do this itself — the cookie cache and the pause are
+/// namespace state — so it records the facts and this runs at every point a
+/// segment or a timer could have produced them. # C: O(log N)
+pub(crate) fn drain_client(entry: &Arc<TcpEntry>, now_ns: u64) {
+    let (learned, blackholed, confirmed, src, dst, mss) = {
+        let mut c = entry.conn.lock();
+        let confirmed = c.fastopen_confirming && c.data_segs_in > 0;
+        if confirmed { c.fastopen_confirming = false; }
+        (c.fastopen_learned.take(), ::core::mem::take(&mut c.fastopen_blackhole_seen), confirmed,
+            c.local.ip, c.remote.ip, c.peer_mss)
+    };
+    if learned.is_none() && !blackholed && !confirmed { return; }
+    let namespace = &entry.owner.net_namespace;
+    if let Some(learned) = learned.as_ref() {
+        tcp_fastopen::cache_learned(namespace, src, dst, now_ns, mss, learned);
+    }
+    if blackholed { tcp_fastopen::blackhole_disable(namespace, now_ns); }
+    // A fast open that carried data over a path the pause had just released
+    // is the evidence that ends the pause outright.
+    if confirmed { tcp_fastopen::blackhole_reset(namespace); }
+}
+
 impl Plan {
     /// Put the decision where the handshake reads it, before the SYN is
     /// processed: the SYN-ACK's option area, and — for a taken SYN — the flag
@@ -59,7 +85,7 @@ impl Plan {
     /// listener's bound. # C: O(1)
     pub(crate) fn install(&self, entry: &Arc<TcpEntry>) {
         let mut c = entry.conn.lock();
-        c.fastopen_reply = self.reply;
+        c.fastopen_opt = self.reply;
         c.fastopen_child = self.accept;
         drop(c);
         if self.accept {

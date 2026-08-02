@@ -9,6 +9,8 @@ pub const MSG_WAITALL: u64 = 0x100;
 pub const MSG_OOB: u64 = 0x01;
 pub const MSG_DONTROUTE: u64 = 0x04;
 pub const MSG_ERRQUEUE: u64 = 0x2000;
+/// Open the connection with this message's first bytes in the SYN.
+pub const MSG_FASTOPEN: u64 = 0x2000_0000;
 pub const MSG_NOSIGNAL: u64 = 0x4000;
 pub const MSG_WAITFORONE: u64 = 0x1_0000;
 pub const MSG_CMSG_CLOEXEC: u64 = 0x4000_0000;

@@ -133,7 +133,15 @@ impl TcpConn {
         self.last_rx_ns = crate::tcp_conn::ka_now_ns();
         self.ka_count = 0;
         if (hdr.flags & flags::RST) != 0 {
-            if !self.rst_acceptable(hdr) { return Ok(None); }
+            if !self.rst_acceptable(hdr) {
+                // A reset out of sequence on a fast-opened connection that
+                // has received nothing is what a middlebox interfering with
+                // fast open looks like; a peer refusing the connection sends
+                // one in sequence. The reset itself is still ignored.
+                if self.fastopen_reset_is_blackhole() { self.fastopen_confirming = false;
+                    self.fastopen_blackhole_seen = true; }
+                return Ok(None);
+            }
             self.state = TcpState::Closed;
             return Err(TcpConnError::Reset);
         }
@@ -203,6 +211,10 @@ impl TcpConn {
                 Ok(Some(resp))
             }
             TcpState::SynSent if (hdr.flags & (flags::SYN | flags::ACK)) == (flags::SYN | flags::ACK) => {
+                // Read before the retransmit queue is trimmed: what the
+                // answer teaches depends on how many times the SYN went out
+                // and on whether the data it carried is still owed.
+                self.learn_from_synack(seg, hdr.ack, self.snd_una);
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.rcv_read_seq = self.rcv_nxt;
                 self.snd_una = hdr.ack;
@@ -289,6 +301,7 @@ impl TcpConn {
                     (index < payload.len()).then(|| (hdr.seq.wrapping_add(index as u32), payload[index]))
                 } else { None };
                 if !payload.is_empty() {
+                    self.data_segs_in = self.data_segs_in.saturating_add(1);
                     if hdr.seq == self.rcv_nxt {
                         self.append_recv_payload(hdr.seq, payload);
                         if let Some(urgent) = urgent {
