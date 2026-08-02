@@ -76,11 +76,14 @@ pub fn init(alloc: FrameAllocFn, free: FrameFreeFn) {
         unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
     }
     NEXT_FRESH.store(1, Ordering::Release); // slot 0 reserved by the sentinel
-    klog::write_raw(b"[KSTACK] guard-paged stacks armed va=");
-    klog::write_hex_u64(KSTACK_VA_BASE);
-    klog::write_raw(b" thread_size=");
-    klog::write_dec_u64(KSTACK_BYTES as u64);
-    klog::write_raw(b"\n");
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[KSTACK] guard-paged stacks armed va=");
+        klog::write_hex_u64(KSTACK_VA_BASE);
+        klog::write_raw(b" thread_size=");
+        klog::write_dec_u64(KSTACK_BYTES as u64);
+        klog::write_raw(b"\n");
+    }
 }
 
 fn frame_alloc() -> Option<u64> {

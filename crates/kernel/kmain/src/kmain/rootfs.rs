@@ -252,11 +252,14 @@ fn boot_register(fstype: &str, path: &str, fs: Arc<dyn vfs::fs::FileSystem>) {
                 klog::write_dec_u64(e as u64);
                 klog::write_raw(b"\n");
             } else {
-                klog::write_raw(b"[BOOT-MOUNT-OK] type=");
-                klog::write_raw(fstype.as_bytes());
-                klog::write_raw(b" path=");
-                klog::write_raw(path.as_bytes());
-                klog::write_raw(b"\n");
+                #[cfg(feature = "debug-boot")]
+                {
+                    klog::write_raw(b"[BOOT-MOUNT-OK] type=");
+                    klog::write_raw(fstype.as_bytes());
+                    klog::write_raw(b" path=");
+                    klog::write_raw(path.as_bytes());
+                    klog::write_raw(b"\n");
+                }
             }
         } else {
             klog::write_raw(b"[BOOT-MOUNT-FAIL] type-missing=");

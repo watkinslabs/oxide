@@ -7,11 +7,15 @@
 /// strings (tmpfiles/sysusers/udevd/journald) surface in klog. The
 /// services log their fatal reason to journald's socket (which queues
 /// because journald itself is wedged), so the payload is the only
-/// place the human-readable cause appears — and it is where `boot-smoke`'s
-/// `Reached target basic.target` marker comes from, so this stays on
-/// `debug-boot`.
+/// place the human-readable cause appears.
 ///
-/// B1474: on `debug-boot` only the human-readable line is emitted. A journald
+/// `debug-journal`, never the operational pulse: this fires once per datagram
+/// and dominated default boots (767 of 3379 lines on one capture). An earlier
+/// comment claimed `boot-smoke`'s `Reached target basic.target` marker rode
+/// this trace — it does not. The marker is ordinary console output, and
+/// `make smoke-x86` has always built with no features at all.
+///
+/// B1474: without `debug-journal` nothing is emitted. A journald
 /// native record is a set of `FIELD=value` lines of which exactly one
 /// (`MESSAGE=`) is prose; the rest — PRIORITY, SYSLOG_FACILITY, TID, CODE_FILE,
 /// CODE_LINE, CODE_FUNC, INVOCATION_ID, MESSAGE_ID, UNIT, JOB_* — is machine
@@ -20,7 +24,7 @@
 /// record. Payloads with no `MESSAGE=` field (`/dev/log` syslog text,
 /// `sd_notify` READY=1/STATUS=) are already one short line and print whole.
 /// # C: O(payload bytes)
-#[cfg(all(target_os = "oxide-kernel", any(feature = "debug-boot", feature = "debug-journal")))]
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-journal"))]
 pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
     let is_journal = path.windows(7).any(|w| w == b"journal")
         || path.windows(4).any(|w| w == b"/log")
@@ -29,10 +33,7 @@ pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
     if !is_journal { return; }
     // Cap the dump so a huge journal record can't flood the UART.
     const DUMP_CAP: usize = 512;
-    #[cfg(feature = "debug-journal")]
     let body = payload;
-    #[cfg(not(feature = "debug-journal"))]
-    let body = message_field(payload).unwrap_or(payload);
     klog::write_raw(b"[B288 dgram ");
     klog::write_raw(&crate::unix_sock::unix_path_display(path));
     klog::write_raw(b" pid=");
@@ -64,8 +65,8 @@ pub fn message_field(payload: &[u8]) -> Option<&[u8]> {
     None
 }
 
-/// No-op when neither `debug-boot` nor `debug-journal` is on.
+/// No-op without `debug-journal`.
 /// # C: O(1)
-#[cfg(not(all(target_os = "oxide-kernel", any(feature = "debug-boot", feature = "debug-journal"))))]
+#[cfg(not(all(target_os = "oxide-kernel", feature = "debug-journal")))]
 #[inline]
 pub fn trace_dgram_journal(_path: &[u8], _payload: &[u8]) {}

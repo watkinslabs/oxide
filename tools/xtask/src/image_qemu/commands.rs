@@ -32,18 +32,10 @@ pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     }
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
     let repo = prepare_rootfs(rest, &arch)?;
-    // `debug-boot` by default — installs the UART klog sink without the
-    // debug-sched/debug-vmm bring-up smokes. Those smokes (e.g. ksched RR)
-    // `sti; hlt` on a deliberately-disarmed timer and deadlock — a
-    // debug-all property. Override with `--features debug-all`.
-    let mut kr: Vec<String>;
-    let kargs: &[String] = if parse_arg(rest, "--features").is_none() {
-        kr = rest.to_vec();
-        kr.push("--features".into());
-        kr.push("debug-boot".into());
-        &kr[..]
-    } else { rest };
-    crate::cmd_kernel(kargs)?;
+    // No debug features by default. The serial mirror of the console is
+    // unconditional, so a default build boots and logs in with none of them;
+    // `--features debug-all` (or `make qemu-x86-debug`) is the firehose.
+    crate::cmd_kernel(rest)?;
     let id = parse_arg(rest, "--id");
     if let Some(ref id) = id { crate::buildns::validate(id)?; }
     let kernel_elf = kernel_elf_path(&repo, &arch, rest)?;
@@ -95,16 +87,8 @@ where
 fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
     let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
     let repo = prepare_rootfs(rest, "aarch64")?;
-    // debug-boot by default — UART klog sink, no bring-up smokes (parity
-    // with the x86 grub path). Override with --features debug-all.
-    let mut kr: Vec<String>;
-    let kargs: &[String] = if parse_arg(rest, "--features").is_none() {
-        kr = rest.to_vec();
-        kr.push("--features".into());
-        kr.push("debug-boot".into());
-        &kr[..]
-    } else { rest };
-    crate::cmd_kernel(kargs)?;
+    // No debug features by default (parity with the x86 grub path).
+    crate::cmd_kernel(rest)?;
     let id = parse_arg(rest, "--id");
     if let Some(ref id) = id { crate::buildns::validate(id)?; }
     let kernel_elf = kernel_elf_path(&repo, "aarch64", rest)?;
