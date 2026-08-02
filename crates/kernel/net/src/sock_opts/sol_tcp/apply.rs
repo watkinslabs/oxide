@@ -98,7 +98,10 @@ pub fn store(opts: &SockOpts, action: &Action) -> Effects {
             tcp.fastopen_connect.store(*on, Ordering::Release); Effects::default()
         }
         Action::FastopenNoCookie(on) => {
-            tcp.fastopen_no_cookie.store(*on, Ordering::Release); Effects::reload()
+            // A listening socket has no connection to reload it into, but its
+            // requests are judged against it on every SYN.
+            tcp.fastopen_no_cookie.store(*on, Ordering::Release);
+            Effects { listener: true, ..Effects::reload() }
         }
         Action::FastopenKey { primary, backup } => {
             tcp.fastopen.set_keys(crate::tcp_fastopen::KeyCtx::new(
@@ -255,6 +258,8 @@ pub fn to_listener(opts: &SockOpts, listener: &crate::stack::TcpListenEntry) {
     listener.synack_retries.store(
         opts.tcp.syncnt.load(Ordering::Acquire).clamp(0, u8::MAX as i32) as u8,
         Ordering::Release);
+    listener.fastopen_no_cookie.store(
+        opts.tcp.fastopen_no_cookie.load(Ordering::Acquire), Ordering::Release);
 }
 
 /// Hand the handshake packet the connection was opened by to the accepted

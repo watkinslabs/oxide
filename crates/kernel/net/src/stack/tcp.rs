@@ -377,17 +377,18 @@ impl NetStack {
                 }
             }
             // F158: wake on either recv_buf growth or terminal state
-            let (_pre_len, pre_state, input, _post_len, post_state) = {
+            let (_pre_len, pre_state, input, _post_len, post_state, fastopen_child) = {
                 let mut c = entry.conn.lock();
                 let pre_len = c.recv_buf.len();
                 let pre_state = c.state;
+                let fastopen_child = c.fastopen_child;
                 if pre_state == crate::tcp_state::TcpState::SynRecv {
                     if let Some(listener) = passive_listener.as_ref() {
                         entry.bpf_filter.inherit_from(&listener.bpf_filter);
                     }
                 }
                 let input = c.input_prevalidated(src_ip, dst_ip, seg);
-                (pre_len, pre_state, input, c.recv_buf.len(), c.state)
+                (pre_len, pre_state, input, c.recv_buf.len(), c.state, fastopen_child)
             };
             let pre_syn = pre_state == crate::tcp_state::TcpState::SynSent;
             let resp = match input {
@@ -396,11 +397,23 @@ impl NetStack {
                     let eno = if pre_syn { syscall::errno::Errno::Econnrefused }
                         else { syscall::errno::Errno::Econnreset };
                     entry.set_error(eno as i32);
+                    // A fast-open connection the peer reset is what a forged
+                    // source address produces, so its charge against the
+                    // listener's bound outlives it.
+                    entry.release_fastopen_qlen(true);
                     None
                 }
                 Err(_) => return Err(NetError::Einval),
             };
             if pre_state == crate::tcp_state::TcpState::SynRecv
+                && post_state == crate::tcp_state::TcpState::Established
+                && fastopen_child
+            {
+                // The handshake is finished, so the charge this child held
+                // against its listener's fast-open bound is given back. It is
+                // already in the accept queue and must not be published twice.
+                entry.release_fastopen_qlen(false);
+            } else if pre_state == crate::tcp_state::TcpState::SynRecv
                 && post_state == crate::tcp_state::TcpState::Established
             {
                 let Some(listener) = passive_listener else { return Ok(()); };

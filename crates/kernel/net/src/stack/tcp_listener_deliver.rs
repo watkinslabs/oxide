@@ -46,7 +46,12 @@ impl NetStack {
         let metrics = self.route_metrics_for_dst_in(net_ns, src_ip, bound);
         // Handshake input runs against the heap-resident child, so the
         // connection state never occupies a frame on the delivery path.
+        // Decided before the SYN is processed: the handshake builds its
+        // SYN-ACK from this, and a SYN whose data is taken must deliver that
+        // data before the acknowledgement covering it is built.
+        let plan = super::tcp_fastopen::plan(&listener, hdr, seg, src_ip, dst_ip, &metrics);
         let new_entry = build_passive_child(local_ep, own_mss, metrics, packet, &listener);
+        plan.install(&new_entry);
         let resp = match new_entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
             Err(_) => {
@@ -55,6 +60,12 @@ impl NetStack {
             }
         };
         if !super::tcp_listener::publish_passive_child(&tables, &listener, key, &new_entry) {
+            return Ok(());
+        }
+        // A fast-open child is accept-ready at the SYN: the program is handed
+        // the request now, complete with its data, and the acknowledgement
+        // that finishes the handshake arrives against a child already queued.
+        if plan.accept && !publish_fastopen_child(&tables, &listener, &key, &new_entry) {
             return Ok(());
         }
         if let Some(r) = resp {
@@ -69,6 +80,23 @@ impl NetStack {
         }
         Ok(())
     }
+}
+
+/// Move a fast-open child from the half-open population to the accept queue at
+/// once. A listener whose accept backlog is full, or that closed underneath
+/// the SYN, drops the child rather than leaving one nothing will ever accept —
+/// the peer retransmits its SYN and gets an ordinary handshake. # C: O(1)
+fn publish_fastopen_child(tables: &super::inet_tables::InetTables,
+                          listener: &Arc<TcpListenEntry>, key: &TcpKey,
+                          entry: &Arc<TcpEntry>) -> bool
+{
+    if entry.promote_to_accept_backlog() && listener.enqueue_accepted(entry.clone()) {
+        return true;
+    }
+    entry.release_backlog();
+    entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+    super::tcp_listener::remove_tcp_entry_exact(tables, key, entry);
+    false
 }
 
 /// Build the passive child connection directly onto the heap.

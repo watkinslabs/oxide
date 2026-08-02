@@ -72,6 +72,7 @@ mod tcp_bind;
 pub(crate) mod tcp_listener;
 pub use tcp_listener::TcpAcceptWait;
 mod tcp;
+mod tcp_fastopen;
 mod tcp_listener_deliver;
 mod tcp_reqsk;
 mod tcp_open;
