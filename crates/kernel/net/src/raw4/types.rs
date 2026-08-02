@@ -19,6 +19,10 @@ pub struct Raw4Datagram {
     pub destination: Ipv4Addr,
     pub iface: NetIfaceId,
     pub ttl: u8,
+    /// Compiled receive-side header option area, as the delivery pass filled
+    /// it. Carried rather than re-parsed out of `packet`: the pointers a
+    /// second pass would advance have already been advanced once.
+    pub options: crate::ipv4_options::Compiled,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

@@ -8,10 +8,18 @@ use super::payload;
 use super::*;
 
 const V4: [u8; 4] = [10, 1, 2, 3];
+const SRC: [u8; 4] = [198, 51, 100, 9];
 const V6: [u8; 16] = [0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
 fn meta4() -> RxMeta {
-    RxMeta { dst: Some((V4, 7)), ttl: Some(64), tos: Some(0x28), dport: 53, ..Default::default() }
+    RxMeta { dst: Some((V4, 7)), ttl: Some(64), tos: Some(0x28), dport: 53, src: SRC,
+        ..Default::default() }
+}
+
+/// One received option area, compiled and filled the way delivery fills it.
+fn area(bytes: &[u8]) -> crate::ipv4_options::Compiled {
+    crate::ipv4_options::received(bytes, &crate::ipv4_options::NoUnicast,
+        crate::addr::Ipv4Addr::new(V4[0], V4[1], V4[2], V4[3]), 0x0102_0304).unwrap()
 }
 
 fn meta6() -> RxMeta {
@@ -43,7 +51,7 @@ fn a_socket_with_no_receive_option_produces_no_message() {
 #[test]
 fn the_ipv4_level_is_ordered_by_how_often_it_is_asked_for() {
     let meta = RxMeta {
-        options: Vec::from([7u8, 7, 4, 0, 0, 0, 0, 0]),
+        options: area(&[7u8, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
         frag_max: 1400,
         checksum: Some(0xdead_beef),
         security: Some(Vec::from(b"system_u".as_slice())),
@@ -111,67 +119,33 @@ fn a_datagram_that_arrived_whole_reports_no_fragment_size() {
 }
 
 // ---- the echoed option area ---------------------------------------------
+//
+// The echo pass itself is `ipv4_options::tests_rx`; what belongs here is which
+// message each half of it becomes.
 
 #[test]
-fn the_received_option_area_is_published_verbatim() {
-    let area = [7u8, 7, 4, 0, 0, 0, 0, 0];
-    let want = Want { recvopts: true, ..Default::default() };
-    let meta = RxMeta { options: Vec::from(area), ..meta4() };
-    assert_eq!(plan(&want, &meta)[0].bytes, Vec::from(area));
+fn the_reply_area_and_the_received_area_are_two_messages_from_one_echo() {
+    let want = Want { recvopts: true, retopts: true, ..Default::default() };
+    let filled = area(&[7u8, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let msgs = plan(&want, &RxMeta { options: filled.clone(), ..meta4() });
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[0].kind, IP_RECVOPTS);
+    assert_eq!(msgs[1].kind, IP_RETOPTS);
+    // The record this host made rode back in both.
+    assert_eq!(&msgs[0].bytes[3..7], &V4);
+    assert_eq!(&msgs[1].bytes[3..7], &V4);
+    // The reply names the slot it will fill next; the received area does not.
+    assert_eq!(msgs[1].bytes[2], 12);
+    assert_eq!(msgs[0].bytes[2], 8);
 }
 
 #[test]
-fn the_echo_keeps_the_record_route_and_timestamp_and_drops_the_rest() {
-    // A record route, a security option, then a timestamp: the reply carries
-    // the first and the last, never the security option.
-    let area = [7u8, 7, 4, 0, 0, 0, 0,
-        130, 4, 0, 0,
-        68, 8, 5, 0, 0, 0, 0, 0];
-    let echoed = payload::echo_options(&area);
-    assert_eq!(&echoed[..7], &area[..7]);
-    assert_eq!(&echoed[7..15], &area[11..19]);
-    assert_eq!(echoed.len(), 16);
-}
-
-#[test]
-fn the_echo_reverses_a_source_route() {
-    // A loose source route with three slots, all three traversed: the pointer
-    // names the byte past the list. The reply retraces the visited hops, and
-    // the hop that forwarded the datagram here leads the reply separately
-    // rather than sitting in the list.
-    let area = [131u8, 15, 16,
-        10, 0, 0, 1,
-        10, 0, 0, 2,
-        10, 0, 0, 3,
-        0];
-    let echoed = payload::echo_options(&area);
-    assert_eq!(echoed[0], 131);
-    assert_eq!(echoed[2], 4);
-    assert_eq!(echoed[1] as usize, 11);
-    // Latest-visited first, and the final hop is carried outside the list.
-    assert_eq!(&echoed[3..7], &[10, 0, 0, 2]);
-    assert_eq!(&echoed[7..11], &[10, 0, 0, 1]);
-}
-
-#[test]
-fn a_source_route_with_one_traversed_hop_echoes_nothing() {
-    // The only visited hop becomes the reply's first hop, which travels
-    // outside the option, so no list remains to publish.
-    let area = [131u8, 7, 8, 10, 0, 0, 1, 0];
-    assert!(payload::echo_options(&area).is_empty());
-}
-
-#[test]
-fn a_malformed_option_area_echoes_nothing() {
-    assert!(payload::echo_options(&[7u8]).is_empty());
-    assert!(payload::echo_options(&[7u8, 40, 4, 0]).is_empty());
-    assert!(payload::echo_options(&[7u8, 1, 0, 0]).is_empty());
-}
-
-#[test]
-fn an_echoed_area_is_padded_to_a_four_byte_multiple() {
-    let area = [7u8, 7, 4, 0, 0, 0, 0, 0];
-    assert_eq!(payload::echo_options(&area).len() % 4, 0);
+fn an_area_with_nothing_worth_echoing_produces_no_message() {
+    // A security option is never reflected at its sender, and it is the only
+    // option this header carries.
+    let want = Want { recvopts: true, retopts: true, ..Default::default() };
+    let meta = RxMeta { options: area(&[130u8, 4, 0, 0]), ..meta4() };
+    assert!(plan(&want, &meta).is_empty());
 }
 
 // ---- the IPv6 level ------------------------------------------------------

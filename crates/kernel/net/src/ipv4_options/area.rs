@@ -44,6 +44,20 @@ pub trait AddrClass { fn is_unicast(&self, addr: [u8; 4]) -> bool; }
 pub struct NoUnicast;
 impl AddrClass for NoUnicast { fn is_unicast(&self, _addr: [u8; 4]) -> bool { false } }
 
+/// Where the area being compiled came from. The pass is one pass, but a
+/// received header is a packet this host is processing — its record-route and
+/// timestamp pointers advance over a slot this host fills, its overflow
+/// counter is incremented when there is no slot left, and the option kinds a
+/// socket may not construct without `CAP_NET_RAW` carry no privilege question
+/// at all because no local caller built them.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Origin { Socket, Packet }
+
+impl Origin {
+    /// # C: O(1)
+    fn packet(self) -> bool { self == Origin::Packet }
+}
+
 /// `ip_options_get`: pad the caller's area to a four-byte multiple, compile it,
 /// then gate a source route on `CAP_NET_RAW`. An over-long area is refused
 /// before anything is parsed. # C: O(optlen)
@@ -59,7 +73,7 @@ pub fn build_with(bytes: &[u8], net_raw: bool, class: &dyn AddrClass)
     let mut data = Vec::from(bytes);
     while data.len() & 3 != 0 { data.push(IPOPT_END); }
     if data.is_empty() { return Ok(Compiled::default()); }
-    let mut out = compile(data, net_raw, class)?;
+    let mut out = compile(data, net_raw, class, Origin::Socket)?;
     // A source route is a privileged construction, refused only AFTER the area
     // parses: a malformed area carrying one still answers the parse error.
     if out.srr.is_some() && !net_raw { return Err(Errno::Eperm); }
@@ -67,10 +81,20 @@ pub fn build_with(bytes: &[u8], net_raw: bool, class: &dyn AddrClass)
     Ok(out)
 }
 
-/// `__ip_options_compile` with no packet in hand. Every structural rejection
-/// is one errno — the parameter-problem pointer a router would emit has no
-/// socket-visible form. # C: O(optlen)
-fn compile(mut data: Vec<u8>, net_raw: bool, class: &dyn AddrClass)
+/// `__ip_options_compile` over a received header: the pointers advance over
+/// the slots this host owes the packet, which [`super::emit::fill_slots`] then
+/// writes. The area must already be a four-byte multiple, which a header
+/// length field guarantees. # C: O(optlen + addresses)
+pub fn build_packet(bytes: &[u8], class: &dyn AddrClass) -> Result<Compiled, Errno> {
+    if bytes.len() > MAX_IPOPTLEN || bytes.len() & 3 != 0 { return Err(Errno::Einval); }
+    if bytes.is_empty() { return Ok(Compiled::default()); }
+    compile(Vec::from(bytes), true, class, Origin::Packet)
+}
+
+/// `__ip_options_compile`. Every structural rejection is one errno — the
+/// parameter-problem pointer a router would emit has no socket-visible form.
+/// # C: O(optlen)
+fn compile(mut data: Vec<u8>, net_raw: bool, class: &dyn AddrClass, origin: Origin)
     -> Result<Compiled, Errno>
 {
     let mut c = Compiled::default();
@@ -93,11 +117,15 @@ fn compile(mut data: Vec<u8>, net_raw: bool, class: &dyn AddrClass)
                 if c.srr.is_some() { return Err(Errno::Einval); }
                 // Without a packet the pointer must still name the first hop,
                 // which is then lifted out of the list and carried separately.
-                if data[at + 2] != 4 || optlen < 7 || (optlen - 3) & 3 != 0 {
-                    return Err(Errno::Einval);
+                // A received route is left exactly as it arrived: the hop it
+                // names is a routing question, not an area-shape one.
+                if !origin.packet() {
+                    if data[at + 2] != 4 || optlen < 7 || (optlen - 3) & 3 != 0 {
+                        return Err(Errno::Einval);
+                    }
+                    c.faddr.copy_from_slice(&data[at + 3..at + 7]);
+                    if optlen > 7 { data.copy_within(at + 7..at + optlen, at + 3); }
                 }
-                c.faddr.copy_from_slice(&data[at + 3..at + 7]);
-                if optlen > 7 { data.copy_within(at + 7..at + optlen, at + 3); }
                 c.is_strictroute = data[at] == IPOPT_SSRR;
                 c.srr = Some(at);
             }
@@ -143,7 +171,14 @@ fn compile(mut data: Vec<u8>, net_raw: bool, class: &dyn AddrClass)
                         _ => { if !net_raw { return Err(Errno::Einval); } }
                     }
                 } else if data[at + 3] & 0xf != IPOPT_TS_PRESPEC {
-                    if data[at + 3] >> 4 == 15 { return Err(Errno::Einval); }
+                    // No slot left. A full counter is a malformed option; a
+                    // host that could not stamp a received packet records the
+                    // omission by advancing the counter.
+                    let overflow = data[at + 3] >> 4;
+                    if overflow == 15 { return Err(Errno::Einval); }
+                    if origin.packet() {
+                        data[at + 3] = (data[at + 3] & 0xf) | ((overflow + 1) << 4);
+                    }
                 }
                 c.ts = Some(at);
             }

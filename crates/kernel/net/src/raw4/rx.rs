@@ -7,7 +7,8 @@ use crate::stack::NetStack;
 impl NetStack {
     /// Reassemble when required and clone one full IPv4 packet to every match. # C: O(S * packet)
     pub(crate) fn deliver_raw4(&self, net_ns: u64, iface: NetIfaceId,
-                               packet: &[u8], hdr: Ipv4Hdr, now_ns: u64) {
+                               packet: &[u8], hdr: Ipv4Hdr, now_ns: u64,
+                               opts: &crate::ipv4_options::Compiled) {
         let fragmented = hdr.flags_frag & 0x3fff != 0;
         let assembled;
         let full = if fragmented {
@@ -50,6 +51,7 @@ impl NetStack {
                 destination: normalized.dst,
                 iface,
                 ttl: normalized.ttl,
+                options: opts.clone(),
             });
         }
     }

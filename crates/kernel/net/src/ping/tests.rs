@@ -90,7 +90,7 @@ fn a_reply_reaches_only_the_endpoint_whose_identifier_it_carries() {
     let reply = reply_for(&sent);
     let hdr = header(PEER, LOCAL, reply.len());
     assert!(stack.deliver_ping_v4(owner.id().as_u64(), NetIfaceId::from_raw(IFACE), &hdr,
-        &reply, &reply, 0));
+        &reply, &reply, 0, &Default::default()));
     let got = mine.recv(false).expect("the owning endpoint receives its reply");
     assert_eq!(got.packet, reply, "the record starts at the ICMP message, not the network header");
     assert_eq!(got.source, PEER);
@@ -109,7 +109,7 @@ fn a_reply_for_an_unowned_identifier_is_dropped() {
     reply[4..6].copy_from_slice(&stray.to_be_bytes());
     let hdr = header(PEER, LOCAL, reply.len());
     assert!(!stack.deliver_ping_v4(owner.id().as_u64(), NetIfaceId::from_raw(IFACE), &hdr,
-        &reply, &reply, 0));
+        &reply, &reply, 0, &Default::default()));
     assert!(endpoint.recv(false).is_none());
 }
 
@@ -121,7 +121,7 @@ fn an_echo_request_is_never_demultiplexed_as_a_reply() {
     let sent = crate::ping::prepare_v4(&endpoint, &probe(1, 0), false).unwrap();
     let hdr = header(PEER, LOCAL, sent.len());
     assert!(!stack.deliver_ping_v4(owner.id().as_u64(), NetIfaceId::from_raw(IFACE), &hdr,
-        &sent, &sent, 0), "a request carrying our identifier is not our reply");
+        &sent, &sent, 0, &Default::default()), "a request carrying our identifier is not our reply");
     assert!(endpoint.recv(false).is_none());
 }
 
@@ -152,7 +152,7 @@ fn identifiers_are_private_to_their_network_namespace() {
     let reply = reply_for(&sent);
     let hdr = header(PEER, LOCAL, reply.len());
     assert!(stack.deliver_ping_v4(first.id().as_u64(), NetIfaceId::from_raw(IFACE), &hdr,
-        &reply, &reply, 0));
+        &reply, &reply, 0, &Default::default()));
     assert!(mine.recv(false).is_some());
     assert!(theirs.recv(false).is_none());
 }
