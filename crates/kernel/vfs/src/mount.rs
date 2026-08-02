@@ -47,6 +47,9 @@ pub use crate::mntns::{
 
 // Mount-propagation engine (peer/slave fan-out) lives in a submodule to hold
 // the line cap; its public surface stays `vfs::mount::*` verbatim.
+mod anon;
+pub use anon::{anon_ns_root, create_anon_mount, dissolve_anon, graft_anon_mount_at};
+
 mod propagation;
 pub use propagation::{change_type_by_id, join_peer_group, peer_group_of, propagate_mount, set_group,
     set_propagation, set_propagation_recursive};
