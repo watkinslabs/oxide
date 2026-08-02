@@ -62,6 +62,9 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     // `IP_OPTIONS` rides every datagram this socket sends, and a source route
     // among them retargets the route lookup at its first hop.
     let ip_options = sock.opts.ip.options();
+    // `SO_NO_CHECK`: the datagram leaves with a zero checksum field, which an
+    // IPv4 receiver reads as "not computed".
+    let no_check = sock.opts.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX);
     // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
     // size, the last carrying the remainder.
     let gso = sock.opts.udp.gso_size();
@@ -69,12 +72,12 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
         let mtu = stack().path_mtu_in(net_ns, crate::addr::IpAddr::V4(dst), bound_iface, false)?
             as usize;
         if let Some(plan) = crate::sock_opts::sol_udp::segment::plan_v4(
-            payload.len(), gso, mtu, false)?
+            payload.len(), gso, mtu, no_check)?
         {
             for segment in payload.chunks(plan.seg_size) {
                 stack().send_udp_pmtu_to_bound_opts_owned(
                     &sock.owner, src_ip, src_port, dst, dst_port, segment, bound_iface, tos, ttl,
-                    pmtudisc, ip_options.as_ref(),
+                    pmtudisc, ip_options.as_ref(), no_check,
                 )?;
             }
             if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
@@ -83,7 +86,7 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     }
     stack().send_udp_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl, pmtudisc,
-        ip_options.as_ref(),
+        ip_options.as_ref(), no_check,
     )?;
     if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
     Ok(payload.len())

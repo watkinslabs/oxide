@@ -60,6 +60,18 @@ impl UdpHdr {
         src_port: u16, dst_port: u16,
         src_ip: Ipv4Addr, dst_ip: Ipv4Addr,
         payload: &[u8], out: &mut [u8],
+    ) { Self::build_into_opts(src_port, dst_port, src_ip, dst_ip, payload, out, false) }
+
+    /// Build a UDP/IPv4 datagram, optionally suppressing the checksum.
+    ///
+    /// A suppressed checksum goes on the wire as zero, which an IPv4 receiver
+    /// accepts as "not computed". A computed checksum of zero is instead
+    /// transmitted as all-ones, since zero is reserved for "suppressed".
+    /// # C: O(N) checksum
+    pub fn build_into_opts(
+        src_port: u16, dst_port: u16,
+        src_ip: Ipv4Addr, dst_ip: Ipv4Addr,
+        payload: &[u8], out: &mut [u8], no_check: bool,
     ) {
         let length = (UDP_HDR_LEN + payload.len()) as u16;
         out[0..2].copy_from_slice(&src_port.to_be_bytes());
@@ -67,10 +79,11 @@ impl UdpHdr {
         out[4..6].copy_from_slice(&length.to_be_bytes());
         out[6..8].copy_from_slice(&0u16.to_be_bytes());
         out[8 .. 8 + payload.len()].copy_from_slice(payload);
+        if no_check { return; }
         let cs = compute_udp_checksum(&out[..length as usize], src_ip, dst_ip);
         // Per RFC 768: a computed checksum of 0 must be transmitted
         // as 0xFFFF (since 0 means "skipped" on the wire).
-        let cs = if cs == 0 { 0xFFFF } else { cs };
+        let cs = if cs == 0 { UDP_CSUM_MANGLED_ZERO } else { cs };
         out[6..8].copy_from_slice(&cs.to_be_bytes());
     }
 }
@@ -244,6 +257,54 @@ mod tests {
         buf[6] = 0; buf[7] = 0;
         let h = UdpHdr::parse(&buf, src, dst).unwrap();
         assert_eq!(h.checksum, 0);
+    }
+
+    /// `SO_NO_CHECK`: the checksum field goes out as the reserved zero, which
+    /// a receiver reads as "not computed" and therefore does not validate. The
+    /// payload and every other header field are untouched.
+    #[test]
+    fn suppressed_checksum_leaves_the_field_zero_and_the_datagram_acceptable() {
+        let src = Ipv4Addr::new(127, 0, 0, 1);
+        let dst = Ipv4Addr::new(198, 51, 100, 9);
+        let payload = b"abcd";
+        let mut buf = alloc::vec![0u8; UDP_HDR_LEN + payload.len()];
+        UdpHdr::build_into_opts(1, 2, src, dst, payload, &mut buf, true);
+        assert_eq!(&buf[6..8], &[0, 0]);
+        assert_eq!(&buf[UDP_HDR_LEN..], payload);
+        let h = UdpHdr::parse(&buf, src, dst).unwrap();
+        assert_eq!(h.checksum, 0);
+        assert_eq!((h.src_port, h.dst_port), (1, 2));
+
+        // The same datagram WITH the checksum differs only in that field.
+        let mut checked = alloc::vec![0u8; UDP_HDR_LEN + payload.len()];
+        UdpHdr::build_into_opts(1, 2, src, dst, payload, &mut checked, false);
+        assert_ne!(&checked[6..8], &[0, 0]);
+        assert_eq!(&checked[..6], &buf[..6]);
+        assert_eq!(&checked[8..], &buf[8..]);
+    }
+
+    /// A computed checksum of zero is transmitted as all-ones, so the
+    /// suppressed encoding stays unambiguous. The bytes chosen make the
+    /// one's-complement sum come out zero.
+    #[test]
+    fn a_computed_zero_checksum_is_transmitted_as_all_ones() {
+        let src = Ipv4Addr::new(127, 0, 0, 1);
+        let dst = Ipv4Addr::new(127, 0, 0, 1);
+        let mut found = false;
+        for probe in 0u16..=u16::MAX {
+            let mut buf = alloc::vec![0u8; UDP_HDR_LEN + 2];
+            UdpHdr::build_into(1, 2, src, dst, &probe.to_be_bytes(), &mut buf);
+            if buf[6..8] == [0xFF, 0xFF] {
+                // Re-checking with the field cleared proves the raw sum was 0.
+                let mut raw = buf.clone();
+                raw[6] = 0; raw[7] = 0;
+                assert_eq!(compute_udp_checksum(&raw, src, dst), 0);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "no payload produced a zero one's-complement sum");
+        assert_eq!(UDP_CSUM_MANGLED_ZERO, 0xFFFF);
     }
 
     #[test]
