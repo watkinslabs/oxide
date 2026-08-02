@@ -110,6 +110,7 @@ debug-zram = ["tracefs/zram-memory-tracking"]  # retained CONFIG_ZRAM_MEMORY_TRA
 debug-zram-lifecycle = ["syscalls/debug-zram-lifecycle"]  # [ZRAM-TEST] executable-scoped lifecycle conformance trace
 debug-mutter-timer-verbose = ["fs/debug-mutter-timer-verbose"]  # full timerfd ledger; debug-boot keeps the frame-clock-only subset
 debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup", "syscalls/debug-cgroup", "procfs/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
+debug-keyring = ["fs/debug-keyring"]  # [KEYRING] request_key construction + instantiation outcome trace
 debug-umh = ["umh/debug-umh"]  # boot self-test of the kernel -> userspace exec path
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall", "syscalls/debug-syscall", "pmm/debug-syscall"]  # per-syscall trace (proc/wait/futex + PAM keyring/ns/cred set + any EPERM return [RETERR])

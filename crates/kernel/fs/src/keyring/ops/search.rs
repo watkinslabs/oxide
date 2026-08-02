@@ -55,7 +55,7 @@ fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &s
         // failing the whole search — Linux records EACCES and keeps going, so
         // one unreachable branch does not hide a match in another.
         if key_validate(ring, now_ns).is_err()
-            || key_task_permission(g, ring, t, KEY_NEED_SEARCH).is_err()
+            || key_task_permission(g, ring, t, KEY_NEED_SEARCH, now_ns).is_err()
         {
             if cur == root { return Err(Errno::Eacces.as_i32()); }
             result = Errno::Eacces.as_i32();
@@ -74,7 +74,7 @@ fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &s
                 continue;
             }
             if k.description != description { continue; }
-            if key_task_permission(g, k, t, KEY_NEED_SEARCH).is_err() { result = Errno::Eacces.as_i32(); continue; }
+            if key_task_permission(g, k, t, KEY_NEED_SEARCH, now_ns).is_err() { result = Errno::Eacces.as_i32(); continue; }
             // A negative key MATCHES but does not satisfy the search: its
             // stored errno becomes the search's answer, which is what stops
             // `request_key` from upcalling again for a name userspace already
@@ -142,7 +142,7 @@ pub fn search_process(g: &Store, t: &TaskIds, key_type: &str, description: &str,
     };
     let mut ret = Errno::Eacces.as_i32();
     if key_type != REQKEY_AUTH_TYPE {
-        if let Some(rq) = requester_of(g, t, now_ns) {
+        if let Some(rq) = auth::assumed_requester(g, t, now_ns) {
             let roots = g.cred_roots(&rq);
             match search(g, &roots, &rq, key_type, description, now_ns, expired) {
                 Ok(s) => return Ok(s),
@@ -153,12 +153,4 @@ pub fn search_process(g: &Store, t: &TaskIds, key_type: &str, description: &str,
     let enokey = Errno::Enokey.as_i32();
     if err == enokey || ret == enokey { return Err(enokey); }
     Err(if err == Errno::Eacces.as_i32() { ret } else { err })
-}
-
-/// The identity recorded in the live token the caller has assumed, if any —
-/// `rka->cred`, whose keyrings the search above falls back to. # C: O(log N)
-fn requester_of(g: &Store, t: &TaskIds, now_ns: u64) -> Option<TaskIds> {
-    let a = *g.authkey.get(&t.tid)?;
-    if !auth::auth_is_live(g, a, now_ns) { return None; }
-    g.keys.get(&a)?.auth.as_ref().map(|d| d.requester.clone())
 }

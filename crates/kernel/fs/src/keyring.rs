@@ -54,6 +54,7 @@ mod perm;
 mod procfs;
 mod report;
 mod store;
+mod trace;
 mod types;
 // The complete `uapi/linux/keyctl.h` + `include/linux/key.h` number space:
 // KEY_SPEC_* special ids, KEYCTL_* opcodes, KEY_REQKEY_DEFL_* defaults,
