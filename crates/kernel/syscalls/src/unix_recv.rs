@@ -103,7 +103,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
     };
     let _transfer = net::transfer_guard();
     let peek = flags & MSG_PEEK != 0;
-    let passcred = sock.opts.passcred.load(Ordering::Acquire) != 0;
+    let passcred = sock.opts.passcred.on();
     let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
     let shutdown_generation = net::sock_recv::unix_shutdown_generation(sock);
     match target {
@@ -127,7 +127,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                 }) {
                     Err(e) => {
                         if total == 0 { return e; }
-                        if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
+                        if let Err(e) = finish_inq(user, all_files, last_cred.and_then(|c: (u32, u32, u32)| net::scm::recv(passcred, net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 })), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                         sock.note_receive_now();
                         return total as i64;
                     }
@@ -138,7 +138,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                         all_files.extend(files);
                         if last_cred.is_none() { last_cred = cred; }
                         if !net::unix_sock::stream_recv_continues(waitall, peek, total, user.capacity, got_control) {
-                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, last_cred.and_then(|c: (u32, u32, u32)| net::scm::recv(passcred, net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 })), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
@@ -152,13 +152,13 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                             let pending = sock.take_pending_recv_error();
                             if pending != 0 { return -(pending as i64); }
                         } else if sock.has_pending_recv_error() {
-                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, last_cred.and_then(|c: (u32, u32, u32)| net::scm::recv(passcred, net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 })), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
                         if pair.take_reset(end) {
                             if total == 0 { return err(Errno::Econnreset); }
-                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, last_cred.and_then(|c: (u32, u32, u32)| net::scm::recv(passcred, net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 })), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
@@ -167,7 +167,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                                 if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0, recv_control::output_flags(flags))) { return e; }
                                 return 0;
                             }
-                            if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
+                            if let Err(e) = finish_inq(user, all_files, last_cred.and_then(|c: (u32, u32, u32)| net::scm::recv(passcred, net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 })), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                             sock.note_receive_now();
                             return total as i64;
                         }
@@ -176,14 +176,14 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                 // A receive that already copied something and may not sleep for
                 // more ends here with what it has rather than blocking.
                 if total != 0 && !net::unix_sock::stream_recv_continues(waitall, peek, total, user.capacity, false) {
-                    if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
+                    if let Err(e) = finish_inq(user, all_files, last_cred.and_then(|c: (u32, u32, u32)| net::scm::recv(passcred, net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 })), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                     sock.note_receive_now();
                     return total as i64;
                 }
                 if let Err(e) = wait_nonblock_after(sock, nonblock, flags, deadline,
                     if peek { total } else { 0 }, shutdown_generation) {
                     if total == 0 { return e; }
-                    if let Err(e) = finish_inq(user, all_files, if passcred { last_cred } else { None }, inq(sock), flags, 0, sa.as_bytes()) { return e; }
+                    if let Err(e) = finish_inq(user, all_files, last_cred.and_then(|c: (u32, u32, u32)| net::scm::recv(passcred, net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 })), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                     sock.note_receive_now();
                     return total as i64;
                 }
@@ -200,7 +200,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                 Ok(Some((copied, msg, full))) => {
                     let mut out_flags = 0;
                     if full > copied { out_flags |= MSG_TRUNC as u32; }
-                    if let Err(e) = finish(user, msg.fds, if passcred { Some(msg.creds.ids_for_reader()) } else { None }, flags, out_flags, sa.as_bytes()) { return e; }
+                    if let Err(e) = finish(user, msg.fds, net::scm::recv(passcred, { let c = msg.creds.ids_for_reader(); net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 } }), flags, out_flags, sa.as_bytes()) { return e; }
                     sock.note_receive_now();
                     return if flags & MSG_TRUNC != 0 { full as i64 } else { copied as i64 };
                 }
@@ -235,7 +235,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                     let mut out_flags = 0;
                     if msg.payload.len() > copied { out_flags |= MSG_TRUNC as u32; }
                     let sa = encoded_sockaddr_un(sender.as_ref().map(|addr| addr.display.as_slice()));
-                    if let Err(e) = finish(user, msg.fds, if passcred { Some(msg.creds.ids_for_reader()) } else { None }, flags, out_flags, sa.as_bytes()) { return e; }
+                    if let Err(e) = finish(user, msg.fds, net::scm::recv(passcred, { let c = msg.creds.ids_for_reader(); net::sock_opts::SenderCreds { pid: c.0, uid: c.1, gid: c.2 } }), flags, out_flags, sa.as_bytes()) { return e; }
                     sock.note_receive_now();
                     return if flags & MSG_TRUNC != 0 { msg.payload.len() as i64 } else { copied as i64 };
                 }

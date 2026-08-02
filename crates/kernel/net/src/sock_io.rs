@@ -326,7 +326,7 @@ pub fn recvfrom_opts(
         _ => None,
     };
     if let Some((pair, end)) = stream {
-        let passcred = sock.opts.passcred.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let passcred = sock.opts.passcred.on();
         let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
         let got = if opts.peek { pair.peek(end, max_len, inline) }
             else { pair.read_passcred(end, max_len, passcred, inline) };

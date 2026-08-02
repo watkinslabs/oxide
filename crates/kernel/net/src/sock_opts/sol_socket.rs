@@ -172,9 +172,7 @@ impl OptSock {
     /// `sk_is_unix`. # C: O(1)
     pub fn unix(&self) -> bool { self.family == crate::socket_args::AF_UNIX as u16 }
     /// `sk_may_scm_recv`. # C: O(1)
-    pub fn may_scm_recv(&self) -> bool {
-        self.unix() || self.family == crate::socket_args::AF_NETLINK as u16
-    }
+    pub fn may_scm_recv(&self) -> bool { crate::scm::may_scm_recv(self.family) }
 }
 
 /// `sock_flag` bits the generic table owns. Values are private to this crate;
