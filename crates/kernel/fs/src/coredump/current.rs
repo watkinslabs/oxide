@@ -41,7 +41,8 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     // process that asked not to be dumped got a full memory image on its
     // first SIGSEGV, and a setuid binary's dump was readable to whoever owned
     // the pattern's directory.
-    if !dump_allowed(cx.dumpable) { return; }
+    trace(b"entry", cx.signo as u64, cx.dumpable as u64);
+    if !dump_allowed(cx.dumpable) { trace(b"refused-dumpable", cx.dumpable as u64, 0); return; }
     let raw = pattern::core_pattern();
     let kind = pattern::kind_of(trim(&raw));
     // `coredump_force_suid_safe`: a dump whose dumpability was downgraded by a
@@ -50,13 +51,15 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     // which an unprivileged caller controls, so honouring it would let that
     // caller choose where a root-owned memory image lands.
     if kind == CoreKind::File && suid_safe_required(cx.dumpable)
-        && !pattern::file_path(&raw, &cx).starts_with('/') { return; }
+        && !pattern::file_path(&raw, &cx).starts_with('/') { trace(b"refused-suid-safe", 0, 0); return; }
 
     // A program collects the dump itself and is not subject to the size limit —
     // nothing is written to a filesystem, and Linux overwrites `cprm->limit`
     // with RLIM_INFINITY once the helper is chosen. A file destination is
     // bounded: a zero limit is how a system says it does not want core files.
-    if kind == CoreKind::File && !sched::rlimit::dump::file_dump_enabled(cx.rlimit_core) { return; }
+    if kind == CoreKind::File && !sched::rlimit::dump::file_dump_enabled(cx.rlimit_core) {
+        trace(b"refused-rlimit", cx.rlimit_core, 0); return;
+    }
 
     // Linux latches `mm->core_state` for the whole dump: a reaper that stole
     // the address space mid-write would leave the image describing memory that
@@ -65,6 +68,7 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_coredumping(true); }
     // SAFETY: caller's contract — `regs` is this thread's live entry frame, and the address space it describes is still this task's own.
     let body = unsafe { super::capture::build_image(&cx, regs, payload) };
+    trace(b"image", body.len() as u64, 0);
     match kind {
         CoreKind::Pipe => { super::pipe::dump_to_program(trim(&raw), &cx, &body); }
         // Linux `dump_emit` refuses the first chunk that would cross the limit,
@@ -72,8 +76,9 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
         // core is still worth having, and gdb reads it.
         CoreKind::File => {
             let n = sched::rlimit::dump::prefix_len(body.len(), cx.rlimit_core, DUMP_CHUNK);
-            super::file_target::write_to_file(&pattern::file_path(&raw, &cx), &body[..n],
+            let ok = super::file_target::write_to_file(&pattern::file_path(&raw, &cx), &body[..n],
                 cx.uid, cx.gid, suid_safe_required(cx.dumpable));
+            trace(b"file", n as u64, u64::from(ok));
         }
         // A socket destination needs a connection to a listener that this
         // kernel has no path to yet, so nothing is delivered. Writing a file
@@ -83,6 +88,21 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     // SAFETY: same running-task mm access as the latch above.
     if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_coredumping(false); }
 }
+
+/// DIAG (`debug-boot`): why a crash produced the dump it did, or produced
+/// none. A dump has no caller to report to, so without this a missing core is
+/// indistinguishable from a refused one, an empty image or a failed write.
+#[cfg(feature = "debug-boot")]
+fn trace(stage: &'static [u8], a: u64, b: u64) {
+    klog::write_raw(b"[COREDUMP] ");
+    klog::write_raw(stage);
+    klog::write_raw(b" a="); klog::write_dec_u64(a);
+    klog::write_raw(b" b="); klog::write_dec_u64(b);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-boot"))]
+fn trace(_stage: &'static [u8], _a: u64, _b: u64) {}
 
 fn trim(p: &[u8]) -> &[u8] {
     let mut end = p.len();

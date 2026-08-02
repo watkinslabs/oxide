@@ -1,17 +1,21 @@
 // Writing a dump to the file the pattern named.
 //
-// Walk the namespace the crashing process sees, create the target exclusively,
-// check what was created against the admission ladder, then stream the body in.
-// No step may be skipped and none may be reordered: the exclusive create is
-// what stops a symlink planted at the path from redirecting the dump, and the
-// check-after-create is what stops a backend that could not honour the mode
-// from publishing it.
+// The dump opens its target the way anything else opens a file: through the
+// kernel's own open path, in the namespace the crashing process sees, with the
+// crashing process's ownership. It then checks what it actually opened against
+// the admission ladder before a byte is written, and writes through the open
+// description.
+//
+// It does NOT create through the directory inode. Doing that leaves the name
+// unpublished in the dentry cache, so the dump is written and then unreachable:
+// the file sits in the directory, a directory listing shows it, and every
+// lookup of its path reports ENOENT.
 
 #![cfg(target_os = "oxide-kernel")]
 
-use vfs::{CreateCtx, Cred, InodeRef, LookupFlags};
+use vfs::Cred;
 
-use super::file::{admit_created, may_unlink_existing, split_parent, CreatedTarget, CORE_FILE_MODE};
+use super::file::{admit_opened, core_open_flags, split_parent, OpenedTarget, CORE_FILE_MODE};
 use super::stream::{deliver, Chunk};
 
 /// Bytes handed to the backend per write. A dump is emitted a page at a time,
@@ -25,53 +29,35 @@ const DUMP_CHUNK: usize = hal::PAGE_SIZE_BYTES as usize;
 /// says how much landed.
 /// # C: O(components × dir-lookup) + O(len)
 pub fn write_to_file(path: &str, body: &[u8], fsuid: u32, fsgid: u32, force_suid_safe: bool) -> bool {
-    let Some((dir, name)) = split_parent(path) else { return false };
-    let Some(parent) = lookup_dir(dir) else { return false };
-    // The dump is created as the dying process's owner, not as root: the file
-    // must end up belonging to whoever crashed, and the admission ladder below
-    // refuses it if the backend recorded anyone else.
+    // Refused before the namespace is walked: a path naming no final component
+    // names a directory, and a dump is not a directory.
+    if split_parent(path).is_none() { return false }
+    let ns = vfs::mount::current_ns();
+    let Some(root) = vfs::mount::root_path_for_ns(ns) else { return false };
+    // The dump belongs to whoever crashed, not to the kernel: it must end up
+    // owned by them, and the ladder below refuses it if it did not.
     let cred = Cred { uid: fsuid, gid: fsgid, ..Cred::root() };
-    let ctx = CreateCtx { idmap: &vfs::idmap::IDENTITY, cred: &cred, umask: 0 };
+    let Ok(file) = vfs::file::kernel_open_at_root(
+        &root.dentry, root.mnt_id, path, core_open_flags(force_suid_safe),
+        CORE_FILE_MODE, cred) else { return false };
 
-    // Failure is ignored on purpose: whatever the reason the name could not be
-    // removed, the exclusive create below is what decides the outcome.
-    if may_unlink_existing(force_suid_safe) { let _ = parent.unlink_child(name); }
-
-    let inode = match parent.create_child(name, CORE_FILE_MODE, &ctx) {
-        Ok(i) => i,
-        // A racing dump of another thread of the same process won the create.
-        // One of the two dumps lands, which is all that was ever promised.
-        Err(_) => return false,
-    };
-    let target = CreatedTarget {
+    let inode = file.inode();
+    let target = OpenedTarget {
         file_type: inode.file_type(),
         nlink: inode.nlink(),
         uid: inode.uid().unwrap_or(u32::MAX),
         perm: inode.perm().unwrap_or(0),
+        hashed: file.dentry().is_hashed(),
+        writable: file.f_mode().contains(vfs::Fmode::WRITE),
     };
-    if admit_created(&target, fsuid).is_err() {
-        // The target is not fit to hold the dump. Remove it rather than leave a
-        // zero-length file that reads as a dump that was taken.
-        let _ = parent.unlink_child(name);
-        return false;
-    }
-    let mut off = 0u64;
-    let d = deliver(body, DUMP_CHUNK, &mut |c| match inode.write(off, c) {
+    if admit_opened(&target, fsuid).is_err() { return false }
+    // An ordinary dump reuses whatever name was already there, so yesterday's
+    // larger core must not show through the tail of today's smaller one.
+    if inode.truncate(0).is_err() { return false }
+
+    let d = deliver(body, DUMP_CHUNK, &mut |c| match file.write(c) {
         Ok(0) | Err(_) => Chunk::Refused,
-        Ok(n) => { off += n as u64; Chunk::Took(n) }
+        Ok(n) => Chunk::Took(n),
     });
     d.written > 0
-}
-
-/// Resolve a directory in the namespace the crashing process sees, refusing to
-/// follow a symlink as the final component.
-fn lookup_dir(dir: &str) -> Option<InodeRef> {
-    let ns = vfs::mount::current_ns();
-    let root = vfs::mount::root_path_for_ns(ns)?;
-    let root_mnt = root.mnt_id;
-    let flags = LookupFlags { no_follow_final: true, ..LookupFlags::default() };
-    let vp = vfs::path_lookup_at_root_cred(
-        root.dentry.clone(), root_mnt, root.dentry, root_mnt, dir, flags, Cred::root()).ok()?;
-    if vp.inode.file_type() != vfs::FileType::Directory { return None; }
-    Some(vp.inode)
 }

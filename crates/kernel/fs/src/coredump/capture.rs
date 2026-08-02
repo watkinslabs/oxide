@@ -156,5 +156,23 @@ pub unsafe fn build_image(
         // SAFETY: `root_pa` is the running task's own page-table root, held live by its mm; the walk only reads present leaves through the HHDM, and a page it cannot resolve becomes a hole.
         unsafe { pmm::user_as::read_foreign_user(root_pa, va, buf) }
     };
-    build_core_image(&input, &mut mem).unwrap_or_default()
+    match build_core_image(&input, &mut mem) {
+        Ok(v) => v,
+        // A dump has no caller to report to, so an image the assembler refused
+        // would otherwise be indistinguishable from one it never built.
+        Err(e) => { image_refused(e, segs.len(), gregs.len()); Vec::new() }
+    }
 }
+
+/// DIAG (`debug-boot`): the assembler refused the inputs.
+#[cfg(feature = "debug-boot")]
+fn image_refused(e: super::elf::CoreImageError, segs: usize, regs: usize) {
+    klog::write_raw(b"[COREDUMP] image-refused err=");
+    klog::write_dec_u64(e as u64);
+    klog::write_raw(b" segs="); klog::write_dec_u64(segs as u64);
+    klog::write_raw(b" regs="); klog::write_dec_u64(regs as u64);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-boot"))]
+fn image_refused(_e: super::elf::CoreImageError, _segs: usize, _regs: usize) {}
