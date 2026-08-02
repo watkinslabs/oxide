@@ -42,7 +42,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         frame-gate frame-gate-x86 frame-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
-        hosted-gate \
+        hosted-gate test-build-gate \
         smoke-ping smoke-ping-x86 smoke-ping-arm \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -119,7 +119,7 @@ counters:
 # (C255), so `make ci` has been unconditionally red and therefore unread. The
 # ratchet holds the line while the backlog is burned down; swap it back to
 # `lint` once the count reaches zero.
-ci: lint-ratchet audit-counts matrix-gate hosted-gate test build build-debug
+ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build build-debug
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
@@ -329,6 +329,18 @@ feature-gate-atexit:
 # ~5 s when nothing changed, ~12 s after a core crate is touched, on 24 jobs.
 hosted-gate:
 	./tools/hosted-check.sh
+
+# The same isolation, one step further along: BUILD each crate's test targets
+# with only that crate's own features. `cargo check -p <crate>` compiles no
+# test targets, so `hosted-gate` says nothing about whether
+# `cargo test -p <crate>` builds — `cargo test -p procfs` did not build on
+# main while every routine gate was green, and its 155 tests ran only under
+# `cargo test --workspace`, where a sibling's dev-dependency unified
+# `sched/hosted` on.
+#
+# ~2 s when nothing changed, ~2.5 min from a fully cold target directory.
+test-build-gate:
+	./tools/test-build-check.sh
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.
