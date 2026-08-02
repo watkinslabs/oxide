@@ -18,11 +18,18 @@ const DUMP_CHUNK: usize = hal::PAGE_SIZE_BYTES as usize;
 
 /// Dump the running process, killed by `signo`.
 ///
+/// `regs` is the thread's live kernel-entry frame, threaded in from the return
+/// path that is about to tear the process down — the registers a debugger reads
+/// as the crash site come from there and from nowhere else. `payload` is the
+/// killing signal's descriptor, which becomes the dump's `NT_SIGINFO`.
+///
 /// Best-effort: the process is already terminating, so a failure to deliver the
 /// dump cannot be reported to anyone. It is never papered over as success —
 /// a pattern naming a program that does not exist produces no dump and no file.
+/// # SAFETY: `regs` is the calling thread's live entry frame, or null.
 /// # C: O(dump size)
-pub fn write_for_current(signo: i32) {
+pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::UserRegs,
+                                payload: Option<hal::SigPayload>) {
     let Some(cur) = sched::live::current() else { return };
     let cx = snapshot(&cur, signo);
     // Linux `coredump_skip`: `cprm->dumpable == TASK_DUMPABLE_OFF` produces NO
@@ -51,7 +58,13 @@ pub fn write_for_current(signo: i32) {
     // bounded: a zero limit is how a system says it does not want core files.
     if kind == CoreKind::File && !sched::rlimit::dump::file_dump_enabled(cx.rlimit_core) { return; }
 
-    let body = build_image(&cx);
+    // Linux latches `mm->core_state` for the whole dump: a reaper that stole
+    // the address space mid-write would leave the image describing memory that
+    // no longer exists. `process_mrelease` reads the same flag and refuses.
+    // SAFETY: `cur` is the running task, so its mm slot cannot be replaced under us; the flag is the only field touched.
+    if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_coredumping(true); }
+    // SAFETY: caller's contract — `regs` is this thread's live entry frame, and the address space it describes is still this task's own.
+    let body = unsafe { super::capture::build_image(&cx, regs, payload) };
     match kind {
         CoreKind::Pipe => { super::pipe::dump_to_program(trim(&raw), &cx, &body); }
         // Linux `dump_emit` refuses the first chunk that would cross the limit,
@@ -67,39 +80,8 @@ pub fn write_for_current(signo: i32) {
         // instead would put the dump somewhere the operator did not ask for.
         CoreKind::Socket => {}
     }
-}
-
-/// Assemble the image from what the pattern snapshot already carries.
-///
-/// The register block and the mapping list still arrive empty here: capturing
-/// them needs the dying thread's saved frame and a walk of its address space,
-/// which this path does not reach yet. Everything downstream of the assembler
-/// is wired, so filling these two inputs is all that stands between this and a
-/// dump a debugger can open.
-fn build_image(cx: &CoreContext) -> Vec<u8> {
-    use super::elf::{
-        build_core_image, CoreArch, CoreIdentity, CoreImageInput, CoreState, CoreThread, CoreTimes,
-    };
-    let arch = CoreArch::native();
-    let regs = alloc::vec![0u8; arch.gregset_bytes()];
-    let threads = [CoreThread { tid: cx.vtid as i32, regs: &regs, fpregs: None, xstate: None }];
-    let input = CoreImageInput {
-        arch,
-        identity: CoreIdentity {
-            pid: cx.vpid as i32, ppid: 0, pgrp: 0, sid: 0,
-            uid: cx.uid, gid: cx.gid,
-            signo: cx.signo, sigpend: 0, sighold: 0,
-            state: CoreState::Running, nice: 0, flag: 0,
-            comm: &cx.comm, psargs: &cx.comm,
-            times: CoreTimes::default(),
-        },
-        threads: &threads,
-        segments: &[],
-        auxv: &[],
-        siginfo: None,
-    };
-    let mut nothing = |_va: u64, _buf: &mut [u8]| 0usize;
-    build_core_image(&input, &mut nothing).unwrap_or_default()
+    // SAFETY: same running-task mm access as the latch above.
+    if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_coredumping(false); }
 }
 
 fn trim(p: &[u8]) -> &[u8] {

@@ -203,6 +203,14 @@ pub trait FileBacking: Send + Sync {
     /// # C: O(1)
     fn i_mode(&self) -> u16 { 0 }
 
+    /// Path the mapping was established from, as the mapper named it. `None`
+    /// for a backing with no name in any directory — anonymous shared memory,
+    /// a device ring, an unlinked file. A core dump's `NT_FILE` table is built
+    /// from these, which is how a debugger reopens the objects a crashed
+    /// process had mapped and recovers the pages the dump did not carry.
+    /// # C: O(1)
+    fn map_path(&self) -> Option<&[u8]> { None }
+
     /// Stable identity of the OBJECT behind this backing, shared by every
     /// mapping of it in every process, or 0 when the backing has no such
     /// identity.

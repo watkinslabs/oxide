@@ -13,13 +13,14 @@ use crate::process_mrelease::{disposition, task_will_free_mem, Disposition, Exit
 
 /// Read one task's `__task_will_free_mem` inputs.
 ///
-/// `coredumping` is always false: nothing here writes a core dump on the way
-/// out, so the "dying but asleep in the dumper" state the kernel guards
-/// against cannot occur. `Zombie` is this kernel's `PF_EXITING` — a task past
+/// `coredumping` is the mm's own latch, held for as long as an image of this
+/// address space is being written: a dump can sleep for a long time before it
+/// releases anything, so reaping under it would pull the mappings out of a
+/// half-written image. `Zombie` is this kernel's `PF_EXITING` — a task past
 /// its own exit path.
 fn exit_state(t: &Task) -> ExitState {
     ExitState {
-        coredumping: false,
+        coredumping: t.clone_mm().is_some_and(|mm| mm.coredumping()),
         group_exit: t.thread_group.group_exit_status().is_some(),
         thread_group_empty: t.thread_group.is_single_member(),
         exiting: t.state() == sched::task::TaskState::Zombie,

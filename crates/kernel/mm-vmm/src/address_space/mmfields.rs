@@ -9,7 +9,7 @@
 // setters and PR_SET_MM_MAP path validate exactly like Linux
 // `kernel/sys.c` `prctl_set_mm` / `validate_prctl_map_addr`.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use alloc::vec::Vec;
 use hal::USER_VA_END;
@@ -154,6 +154,11 @@ pub(super) struct MmLayout {
     /// choice. `/proc/<pid>/coredump_filter` is a view of this word and of
     /// nothing else.
     coredump_filter: AtomicU32,
+    /// Linux `mm_struct::core_state` reduced to the one question anything asks
+    /// of it: is a core dump of this address space being written right now.
+    /// Latched for the whole dump, so a reaper cannot tear the mappings out
+    /// from under an image that is still describing them.
+    coredumping: AtomicBool,
 }
 
 impl MmLayout {
@@ -168,6 +173,7 @@ impl MmLayout {
             user_set:    AtomicU64::new(0),
             vdso_ehdr:   AtomicU64::new(0),
             coredump_filter: AtomicU32::new(CoredumpFilter::DEFAULT.bits()),
+            coredumping: AtomicBool::new(false),
         }
     }
 
@@ -185,6 +191,9 @@ impl MmLayout {
             user_set:    g(&src.user_set),
             vdso_ehdr:   g(&src.vdso_ehdr),
             coredump_filter: AtomicU32::new(src.coredump_filter.load(Ordering::Acquire)),
+            // Not inherited: the child is a new process, and nothing is
+            // dumping it however far along its parent's dump had got.
+            coredumping: AtomicBool::new(false),
         }
     }
 }
@@ -228,6 +237,16 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn set_coredump_filter(&self, f: CoredumpFilter) {
         self.mm_layout.coredump_filter.store(f.bits(), Ordering::Release);
+    }
+
+    /// Whether a core dump of this address space is being written.
+    /// # C: O(1)
+    pub fn coredumping(&self) -> bool { self.mm_layout.coredumping.load(Ordering::Acquire) }
+
+    /// Latch or release the dumping state around writing an image.
+    /// # C: O(1)
+    pub fn set_coredumping(&self, v: bool) {
+        self.mm_layout.coredumping.store(v, Ordering::Release);
     }
 
     /// True once `prctl(PR_SET_MM)` explicitly rewrote a layout field.
