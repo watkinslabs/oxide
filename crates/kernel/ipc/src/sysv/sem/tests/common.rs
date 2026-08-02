@@ -7,7 +7,16 @@ use super::super::{model, undo};
 
 /// The registry is a process-wide static; every test serialises on this and
 /// resets it first.
-pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// Alias, not a second mutex: `sched::current()` (read by `current_tgid()`,
+/// which the SEM_UNDO path stamps adjustments under) is a process-global
+/// hook, and `sysv_shm::creator::tests` installs it for the body of every
+/// shm-creator test under `sysv_shm::test_claim::SHM`. Two separate locks
+/// here would let a sem test observe `current_tgid() != 0` mid-shm-test —
+/// the actual flake (`setval_and_setall_clear_pending_adjustments`,
+/// `ipc_rmid_invalidates_the_undo_so_a_later_exit_is_a_no_op`). One
+/// crate-wide IPC claim closes it.
+pub static TEST_LOCK: &std::sync::Mutex<()> = &crate::sysv_shm::test_claim::SHM;
 
 pub fn reset() {
     model::reset_for_test();
