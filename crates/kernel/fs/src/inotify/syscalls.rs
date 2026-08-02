@@ -166,7 +166,7 @@ pub fn sys_inotify_add_watch(args: &syscall::SyscallArgs) -> i64 {
     let inode = match resolve_watch_path(&s, no_follow, only_dir) {
         Ok(i) => i,
         Err(rv) => {
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-inotify")]
             { klog::write_raw(b"[INOTIFY-ENOENT path="); klog::write_raw(s.as_bytes()); klog::write_raw(b"]\n"); }
             return rv;
         }
@@ -397,7 +397,7 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
     let inode = match resolve_watch_path(&s, flags & FAN_MARK_DONT_FOLLOW != 0, false) {
         Ok(i) => i,
         Err(rv) => {
-            #[cfg(feature = "debug-boot")]
+            #[cfg(feature = "debug-inotify")]
             { klog::write_raw(b"[INOTIFY-ENOENT path="); klog::write_raw(s.as_bytes()); klog::write_raw(b"]\n"); }
             return rv;
         }

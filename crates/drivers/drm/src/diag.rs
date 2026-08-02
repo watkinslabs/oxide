@@ -59,6 +59,10 @@ pub fn record(kind: Present, fb_id: u32, res_id: u32) {
         }
     }
     if !should_report(n) { return; }
+    #[cfg(not(feature = "debug-boot"))]
+    let _ = (fb_id, res_id);
+    #[cfg(feature = "debug-boot")]
+    {
     klog::write_raw(match kind {
         Present::Flip => b"[DRM-PRESENT] flip n=",
         Present::Dirty => b"[DRM-PRESENT] dirty n=",
@@ -72,6 +76,7 @@ pub fn record(kind: Present, fb_id: u32, res_id: u32) {
     klog::write_raw(b" flips="); klog::write_hex_u64(FLIPS.load(Ordering::Relaxed));
     klog::write_raw(b" dirty="); klog::write_hex_u64(DIRTIES.load(Ordering::Relaxed));
     klog::write_raw(b"\n");
+    }
 }
 
 #[cfg(test)]
