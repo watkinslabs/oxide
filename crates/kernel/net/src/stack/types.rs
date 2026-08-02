@@ -130,6 +130,11 @@ pub struct TcpEntry {
     pub accept_backlog_reserved: ::core::sync::atomic::AtomicBool,
     /// Passive child has crossed accept and is no longer listener-owned.
     pub accepted: ::core::sync::atomic::AtomicBool,
+    /// This child holds a charge against its listener's fast-open bound. Set
+    /// when a SYN's data was taken, cleared exactly once — by the
+    /// acknowledgement that finishes the handshake, by the reset that ends it,
+    /// or by teardown, whichever reaches it first.
+    pub fastopen_qlen: ::core::sync::atomic::AtomicBool,
     /// F158: blocking-read waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
@@ -242,6 +247,7 @@ impl TcpEntry {
             syn_backlog_reserved: ::core::sync::atomic::AtomicBool::new(syn_backlog_reserved),
             accept_backlog_reserved: ::core::sync::atomic::AtomicBool::new(false),
             accepted: ::core::sync::atomic::AtomicBool::new(false),
+            fastopen_qlen: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
@@ -279,6 +285,18 @@ impl TcpEntry {
     pub fn release_backlog(&self) {
         self.release_syn_backlog();
         self.release_accept_backlog();
+        self.release_fastopen_qlen(false);
+    }
+
+    /// Give back this child's charge against the listener's fast-open bound,
+    /// once. `reset` says the peer ended the connection with a reset, which is
+    /// what the bound charges for a while longer. # C: O(1)
+    pub fn release_fastopen_qlen(&self, reset: bool) {
+        if !self.fastopen_qlen.swap(false, ::core::sync::atomic::Ordering::AcqRel) { return; }
+        let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade)
+            else { return; };
+        listener.fastopen.release(crate::tcp_conn::ka_now_ns(), reset,
+            self.accepted.load(::core::sync::atomic::Ordering::Acquire), !listener.is_closed());
     }
 
     /// # C: O(1)
@@ -382,6 +400,16 @@ pub struct TcpListenEntry {
     /// `TCP_SYNCNT` as the SYN-ACK retransmit ceiling this listener's requests
     /// run under. `0` = the stack's own.
     pub synack_retries: ::core::sync::atomic::AtomicU8,
+    /// The listening socket's own fast-open accept-queue state — the bound,
+    /// this listener's keys, and the live occupancy the bound governs. Shared
+    /// with the socket rather than copied: `TCP_FASTOPEN` may be written while
+    /// the socket listens, and the occupancy the delivery path charges must be
+    /// the same object `listen` sized.
+    pub fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
+    /// `TCP_FASTOPEN_NO_COOKIE` as the delivery path reads it. The option
+    /// block is the source of truth; this is the applied copy, in the same
+    /// unit, reloaded whenever the option is written.
+    pub fastopen_no_cookie: ::core::sync::atomic::AtomicBool,
     /// Listener close linearizes child admission and accept publication here.
     pub closed: ::core::sync::atomic::AtomicBool,
     pub local: Endpoint,

@@ -78,6 +78,16 @@ pub struct TcpConn {
     pub route_features: u32,
     pub quickack: bool,
     pub fastopen_no_cookie: bool,
+    /// The fast-open option this side's next handshake segment carries, if
+    /// any. The listener decides it before the segment is built, because the
+    /// decision needs the accept queue's keys and bound — state a connection
+    /// does not own.
+    pub fastopen_reply: Option<crate::tcp_conn::fastopen::Cookie>,
+    /// This child was opened by a SYN whose data was taken. It reached the
+    /// accept queue at the SYN rather than at the handshake's end, so the
+    /// acknowledgement that completes the handshake must not publish it a
+    /// second time.
+    pub fastopen_child: bool,
     pub cubic_w_max:    u32,
     pub cubic_epoch_ms: u32,
     pub cubic_k_ms:     u32,
