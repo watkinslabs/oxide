@@ -27,7 +27,7 @@ pub enum FsParamType {
     U32Oct,
     /// Byte count with a `k`/`m`/`g` suffix or a trailing `%`: `size=`.
     Size,
-    /// Pathname: `usrjquota=`.
+    /// Pathname resolved by a path walk: `journal_path=`.
     Path,
     /// Descriptor number, from `FSCONFIG_SET_FD` or a decimal string: `fd=`.
     Fd,
@@ -36,6 +36,34 @@ pub enum FsParamType {
 impl FsParamType {
     /// A spec with no value is the reference's `is_flag`. # C: O(1)
     pub fn is_flag(self) -> bool { matches!(self, FsParamType::Flag) }
+
+    /// Which value PAYLOADS this parameter type can consume — the reference's
+    /// per-type `switch (param->type)`, which is a second gate after the key
+    /// lookup and rejects on its own.
+    ///
+    /// - a descriptor parameter takes the number written as text (`fd=17` from
+    ///   `mount -o`) or a pinned open file (`FSCONFIG_SET_FD`), and nothing
+    ///   else;
+    /// - a pathname parameter takes text or an unresolved pathname
+    ///   (`FSCONFIG_SET_PATH`), the two the path walk that consumes it can
+    ///   start from;
+    /// - a free-form string and every number take TEXT ONLY. A pathname is not
+    ///   a string here even though it reads like one: a filesystem that wants a
+    ///   pathname says so, and one that asked for a string gets the same
+    ///   refusal the reference gives rather than a silently different value;
+    /// - NO type consumes a binary blob, so `FSCONFIG_SET_BINARY` is refused by
+    ///   every filesystem registered here. That is a property of the tables, not
+    ///   a rule of the parser: a filesystem that wants a blob declares one.
+    /// # C: O(1)
+    pub fn accepts(self, v: &FsValue) -> bool {
+        match self {
+            FsParamType::Flag => matches!(v, FsValue::Flag),
+            FsParamType::Fd => matches!(v, FsValue::String(_) | FsValue::File { .. }),
+            FsParamType::Path => matches!(v, FsValue::String(_) | FsValue::Filename { .. }),
+            FsParamType::String | FsParamType::U32 | FsParamType::U32Oct | FsParamType::Size =>
+                matches!(v, FsValue::String(_)),
+        }
+    }
 }
 
 /// One accepted parameter.
@@ -119,13 +147,19 @@ pub enum FsParamVerdict {
 
 /// Admit one parameter against a table, checking only the value SHAPE. Range and
 /// syntax checking of the value itself belongs to the filesystem, which is the
-/// only party that knows what its numbers mean. # C: O(N_specs * len key)
+/// only party that knows what its numbers mean.
+///
+/// Two gates, in the reference's order: the key lookup settles flag-ness, then
+/// [`FsParamType::accepts`] settles the payload. The second is what a
+/// value-carrying `fsconfig(2)` command reaches — without it a descriptor
+/// parameter and a byte blob are indistinguishable to the table.
+/// # C: O(N_specs * len key)
 pub fn admit(specs: &[FsParamSpec], param: &FsParameter) -> FsParamVerdict {
     let want_flag = matches!(param.value, FsValue::Flag);
     match lookup_key(specs, &param.key, want_flag) {
         None => FsParamVerdict::Unknown,
         Some(m) => {
-            if m.spec.ty.is_flag() != want_flag {
+            if m.spec.ty.is_flag() != want_flag || !m.spec.ty.accepts(&param.value) {
                 return FsParamVerdict::WrongValueShape(m.spec);
             }
             FsParamVerdict::Accept(m)
@@ -230,11 +264,69 @@ mod tests {
     #[test]
     fn non_string_value_kinds_take_the_value_branch() {
         const FD: &[FsParamSpec] = &[FsParamSpec::value("fd", FsParamType::Fd)];
-        let file = FsParameter::path("fd", "/dev/fuse");
-        assert!(matches!(admit(FD, &file), FsParamVerdict::Accept(_)));
+        assert!(matches!(admit(FD, &FsParameter::string("fd", "17")), FsParamVerdict::Accept(_)));
         assert_eq!(admit(FD, &FsParameter::flag("fd")),
             FsParamVerdict::WrongValueShape(FsParamSpec::value("fd", FsParamType::Fd)));
         let _ = Arc::new(());
+    }
+
+    // The value PAYLOAD is a second gate after the key lookup, and getting it
+    // wrong in either direction is a real bug: too strict and
+    // `fsconfig(FSCONFIG_SET_FD)` can never succeed for any filesystem; too
+    // loose and a filesystem that asked for a number is handed a pathname.
+    //
+    // The row that matters most is `Fd` × pinned file: that combination is
+    // exactly what a descriptor-passing mount produces, and rejecting it made
+    // the whole value-carrying half of the mount API dead.
+    #[test]
+    fn each_parameter_type_accepts_exactly_the_payloads_it_can_consume() {
+        use alloc::vec::Vec;
+        let file = |k: &str| {
+            let inode = crate::InodeBuilder::new(1, crate::mk_mode(crate::FileType::Regular, 0o600),
+                crate::default_inode_ops(), crate::default_file_ops()).build();
+            let dentry = crate::dentry::Dentry::new_root(inode.clone());
+            FsParameter::fd(k, 17, crate::File::new(inode, dentry, crate::OpenFlags::O_RDWR))
+        };
+        // (type, accepts flag?, string?, filename?, pinned file?, blob?)
+        let table: Vec<(FsParamType, [bool; 5])> = alloc::vec![
+            (FsParamType::Flag,   [true,  false, false, false, false]),
+            (FsParamType::String, [false, true,  false, false, false]),
+            (FsParamType::U32,    [false, true,  false, false, false]),
+            (FsParamType::U32Oct, [false, true,  false, false, false]),
+            (FsParamType::Size,   [false, true,  false, false, false]),
+            (FsParamType::Path,   [false, true,  true,  false, false]),
+            (FsParamType::Fd,     [false, true,  false, true,  false]),
+        ];
+        for (ty, want) in table {
+            let vals = [
+                FsParameter::flag("k"),
+                FsParameter::string("k", "v"),
+                FsParameter::path("k", "/dev/fuse"),
+                file("k"),
+                FsParameter::blob("k", b"\x00\x01"),
+            ];
+            for (i, p) in vals.iter().enumerate() {
+                assert_eq!(ty.accepts(&p.value), want[i], "{ty:?} vs {:?}", p.value);
+            }
+        }
+    }
+
+    // FAILS-BEFORE: a descriptor-typed spec given a pinned file was rejected,
+    // so no filesystem could ever accept `FSCONFIG_SET_FD` no matter what it
+    // declared — and a blob was accepted by any value-typed spec.
+    #[test]
+    fn a_descriptor_parameter_admits_a_pinned_file_and_refuses_a_blob() {
+        const FD: &[FsParamSpec] = &[FsParamSpec::value("fd", FsParamType::Fd)];
+        let inode = crate::InodeBuilder::new(2, crate::mk_mode(crate::FileType::Regular, 0o600),
+            crate::default_inode_ops(), crate::default_file_ops()).build();
+        let dentry = crate::dentry::Dentry::new_root(inode.clone());
+        let f = crate::File::new(inode, dentry, crate::OpenFlags::O_RDWR);
+        assert!(matches!(admit(FD, &FsParameter::fd("fd", 17, f)), FsParamVerdict::Accept(_)));
+        assert_eq!(admit(FD, &FsParameter::blob("fd", b"17")),
+            FsParamVerdict::WrongValueShape(FsParamSpec::value("fd", FsParamType::Fd)));
+        // A pathname is not a descriptor, and a descriptor is not a pathname.
+        assert_eq!(admit(FD, &FsParameter::path("fd", "/dev/fuse")),
+            FsParamVerdict::WrongValueShape(FsParamSpec::value("fd", FsParamType::Fd)));
     }
 
     #[test]
@@ -255,7 +347,7 @@ mod admission_tests {
 
     fn ty(params: Option<&'static [FsParamSpec]>) -> Arc<dyn crate::FileSystemType> {
         FsType::with_parameters("paramtest", 0x5a5a, FsFlags::empty(),
-            Box::new(|_, _, _, _, _| Err(VfsError::Einval)), params)
+            Box::new(|_, _, _, _, _, _| Err(VfsError::Einval)), params)
     }
 
     // A filesystem that declares no table is the legacy backend: it cannot

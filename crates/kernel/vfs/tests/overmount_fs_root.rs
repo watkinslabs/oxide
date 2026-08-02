@@ -66,7 +66,7 @@ impl FileSystem for PseudoFs {
 
 fn register(mp: Arc<vfs::Dentry>, fs: Arc<dyn FileSystem>) -> KResult<()> {
     let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
-        fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _, _| unreachable!()));
+        fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _, _, _| unreachable!()));
     vfs::mount::register_typed(ty, Some(mp), fs)
 }
 

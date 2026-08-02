@@ -128,7 +128,7 @@ fn mk_file(ft: FileType, flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>, per
 }
 
 fn remap_sb(block_size: u32) -> &'static Arc<SuperBlock> {
-    let fs_ty = vfs::fs::FsType::new("dedupe-alignfs", 0x7931, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _, _| Err(vfs::VfsError::Enotty)));
+    let fs_ty = vfs::fs::FsType::new("dedupe-alignfs", 0x7931, vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _, _, _| Err(vfs::VfsError::Enotty)));
     let sb = SuperBlock::new(fs_ty, Arc::new(SimpleSuperOps {
         magic: 0x7931,
         block_size,

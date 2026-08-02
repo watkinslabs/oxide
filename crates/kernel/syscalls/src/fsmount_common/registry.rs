@@ -101,7 +101,8 @@ fn register_filesystems() {
         superblock_from_filesystem(ty, fs, root, s_id.to_string(), sb_flags)
     }
 
-    fn tmpfs_ctor(ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, target: &str, d: &str, sb_flags: u64) -> R {
+    fn tmpfs_ctor(ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, target: &str, d: &str, sb_flags: u64,
+        _p: &[vfs::fs::FsParameter]) -> R {
         // Honour the `-o mode=/uid=/gid=/size=/nr_inodes=` option string: the
         // per-user runtime dir (systemd-user-runtime-dir) mounts /run/user/UID
         // mode 0700 owned by UID:UID, and pam_systemd/`systemd --user` reject a
@@ -116,7 +117,8 @@ fn register_filesystems() {
     // stamps RAMFS_MAGIC and imposes no block/inode ceiling. Sharing tmpfs's
     // constructor made every ramfs mount report `tmpfs`/TMPFS_MAGIC to statfs(2)
     // and to /proc/mounts.
-    fn ramfs_ctor(ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, target: &str, d: &str, sb_flags: u64) -> R {
+    fn ramfs_ctor(ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, target: &str, d: &str, sb_flags: u64,
+        _p: &[vfs::fs::FsParameter]) -> R {
         let rfs = ::fs::tmpfs::TmpfsFs::ramfs_from_mount_data(d);
         let root = rfs.root_inode();
         let fs: Arc<dyn vfs::fs::FileSystem> = rfs;
@@ -128,7 +130,7 @@ fn register_filesystems() {
     let _ = register_fs(FsType::with_parameters("ramfs", RAMFS_MAGIC,
         FsFlags::FS_USERNS_MOUNT, Box::new(ramfs_ctor), Some(::fs::tmpfs::RAMFS_PARAMS)));
     let _ = register_fs(FsType::with_parameters("ext4", EXT4_MAGIC,
-        FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64| -> R {
+        FsFlags::FS_REQUIRES_DEV | FsFlags::FS_ALLOW_IDMAP, Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64, _p: &[vfs::fs::FsParameter]| -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let access = vfs::MAY_READ
             | if sb_flags & vfs::superblock::SB_RDONLY == 0 { vfs::MAY_WRITE } else { 0 };
@@ -150,20 +152,20 @@ fn register_filesystems() {
     // reports EINVAL instead of succeeding with no confinement applied. Failing
     // closed is the point: a caller told "yes" while getting no confinement is
     // strictly worse off than one told "no", which it can see and react to.
-    let _ = register_fs(FsType::with_parameters("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::with_parameters("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs), None, "proc", sb_flags)
     }), Some(&[])));
-    let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         mounted(ty, Arc::new(sysfs::SysfsFs), None, "sysfs", sb_flags)
     })));
-    let _ = register_fs(FsType::new("debugfs", DEBUGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("debugfs", DEBUGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         mounted(ty, Arc::new(tracefs::fs_impl::DebugfsFs), None, "debugfs", sb_flags)
     })));
-    let _ = register_fs(FsType::new("tracefs", TRACEFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("tracefs", TRACEFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         mounted(ty, Arc::new(tracefs::fs_impl::TracefsFs), None, "tracefs", sb_flags)
     })));
     macro_rules! pseudo { ($name:literal, $magic:expr) => {
-        let _ = register_fs(FsType::new($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+        let _ = register_fs(FsType::new($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
             let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new($name, $magic);
             mounted(ty, fs, None, $name, sb_flags)
         })));
@@ -172,33 +174,33 @@ fn register_filesystems() {
     pseudo!("efivarfs", EFIVARFS_MAGIC);
     pseudo!("pstore", PSTOREFS_MAGIC);
     pseudo!("bpf", BPF_FS_MAGIC);
-    let _ = register_fs(FsType::new("configfs", CONFIGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("configfs", CONFIGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         mounted(ty, Arc::new(tracefs::fs_impl::ConfigfsFs), None, "configfs", sb_flags)
     })));
     pseudo!("fusectl", FUSE_CTL_MAGIC);
     pseudo!("mqueue", MQUEUE_MAGIC);
     pseudo!("hugetlbfs", HUGETLBFS_MAGIC);
-    let _ = register_fs(FsType::with_parameters("autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, data: &str, sb_flags| -> R {
+    let _ = register_fs(FsType::with_parameters("autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, data: &str, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::autofs::AutofsFs::new(data)?;
         mounted(ty, fs, None, "autofs", sb_flags)
     }), Some(::fs::autofs::AUTOFS_PARAMS)));
-    let _ = register_fs(FsType::new("binfmt_misc", BINFMTFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("binfmt_misc", BINFMTFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
         mounted(ty, fs, None, "binfmt_misc", sb_flags)
     })));
-    let _ = register_fs(FsType::with_parameters("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _s: Option<&str>, _t: &str, data: &str, sb_flags| -> R {
-        let (fs, root) = ::fs::fuse::mount_from_data(data)?;
+    let _ = register_fs(FsType::with_parameters("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _s: Option<&str>, _t: &str, data: &str, sb_flags, pinned: &[vfs::fs::FsParameter]| -> R {
+        let (fs, root) = ::fs::fuse::mount_from_data(data, pinned)?;
         mounted(ty, fs, Some(root), "fuse", sb_flags)
     }), Some(::fs::fuse::FUSE_PARAMS)));
-    let _ = register_fs(FsType::new("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = devpts::devpts_fs();
         mounted(ty, fs, None, "devpts", sb_flags)
     })));
-    let _ = register_fs(FsType::new("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(devfs::DevfsFs);
         mounted(ty, fs, None, "devtmpfs", sb_flags)
     })));
-    let _ = register_fs(FsType::new("cgroup2", CGROUP2_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags| -> R {
+    let _ = register_fs(FsType::new("cgroup2", CGROUP2_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let (fs, root) = cgroup::realize_tree();
         mounted(ty, fs, Some(root), "cgroup2", sb_flags)
     })));

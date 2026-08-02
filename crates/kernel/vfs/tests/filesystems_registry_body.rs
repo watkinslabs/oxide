@@ -27,7 +27,8 @@ const NODEV_NAME: &str = "t756nodev";
 const DEV_NAME:   &str = "t756devfs";
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn ctor(_ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, _t: &str, _d: &str, _sb_flags: u64)
+fn ctor(_ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, _t: &str, _d: &str, _sb_flags: u64,
+    _p: &[vfs::fs::FsParameter])
     -> Result<Arc<vfs::SuperBlock>, VfsError>
 {
     Err(VfsError::Einval)

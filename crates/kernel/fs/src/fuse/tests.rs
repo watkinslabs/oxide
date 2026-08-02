@@ -455,7 +455,7 @@ fn mnt_force_umount_begin_aborts_the_channel() {
     let ffs = super::fs::build_fuse_fs(c.clone(), 0, 0, 0);
     let pending = c.new_request(FUSE_READ, 1, &[0u8; 40]);
     let ty = vfs::fs::FsType::new("fuse", super::FUSE_SUPER_MAGIC, vfs::fs::FsFlags::empty(),
-        alloc::boxed::Box::new(|_, _, _, _, _| Err(vfs::VfsError::Einval)));
+        alloc::boxed::Box::new(|_, _, _, _, _, _| Err(vfs::VfsError::Einval)));
     let fs: Arc<dyn vfs::fs::FileSystem> = ffs.clone();
     let sb = vfs::fs::superblock_from_filesystem(
         ty, fs, Some(ffs.root_inode()), alloc::string::String::from("fuse"), 0)
@@ -478,7 +478,7 @@ fn a_filesystem_without_in_flight_requests_takes_the_no_op_default() {
         magic: 0, block_size: 4096, options: alloc::string::String::new(),
     };
     let ty = vfs::fs::FsType::new("nobegin", 0, vfs::fs::FsFlags::empty(),
-        alloc::boxed::Box::new(|_, _, _, _, _| Err(vfs::VfsError::Einval)));
+        alloc::boxed::Box::new(|_, _, _, _, _, _| Err(vfs::VfsError::Einval)));
     let sb = vfs::SuperBlock::from_ops(ty, Arc::new(ops), None, 0, 0x4e4f_0001, 4096,
         alloc::string::String::from("nobegin"), Arc::new(()));
     sb.s_op.umount_begin(&sb);

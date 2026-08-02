@@ -379,26 +379,44 @@ pub trait FileSystemType: Send + Sync {
     fn name(&self) -> &str;
     /// Build a superblock instance (`fill_super`). # C: FS-dependent
     fn mount(&self, src: Option<&str>, opts: &str) -> KResult<Arc<SuperBlock>>;
-    /// Build with the mount context's `SB_*` flags. # C: FS-dependent
+    /// Build with the mount context's `SB_*` flags.
+    ///
+    /// A backend that only implements [`Self::mount`] never sees the flag word,
+    /// so the default STAMPS it here — this is the fill-super compatibility
+    /// boundary, and it is the last point at which a `mount -o ro` can still
+    /// reach the superblock it asked to create. It is safe precisely because
+    /// such a backend mints a fresh instance every call; a backend that shares
+    /// instances implements this method and settles the reuse question where
+    /// the sharing happens. # C: FS-dependent
     fn mount_with_flags(
         &self,
         src: Option<&str>,
         opts: &str,
-        _sb_flags: u64,
+        sb_flags: u64,
     ) -> KResult<Arc<SuperBlock>> {
-        self.mount(src, opts)
+        let sb = self.mount(src, opts)?;
+        crate::fs::apply_sb_flags(&sb, sb_flags, crate::fs::SB_FLAGS_USER_MASK);
+        Ok(sb)
     }
     /// Build for a `mount(2)` request, which — unlike `fsopen(2)` — already
     /// names the target pathname. A backend whose superblock identity is
     /// derived from the target reads it here; the default ignores it, because
     /// `fsopen(2)`/`fsmount(2)` genuinely have no target to give.
     /// # C: FS-dependent
+    ///
+    /// `pinned` carries the parameters whose values are open files the kernel
+    /// pinned at parse time (`FSCONFIG_SET_FD`). A backend that takes a
+    /// descriptor reads the pinned description from here rather than
+    /// re-resolving the number out of `opts`, which the caller is free to have
+    /// closed by now. The default ignores it, because a backend that declares
+    /// no descriptor-typed parameter can never be given one.
     fn mount_at(
         &self,
         src: Option<&str>,
         _target: &str,
         opts: &str,
         sb_flags: u64,
+        _pinned: &[crate::fs::FsParameter],
     ) -> KResult<Arc<SuperBlock>> {
         self.mount_with_flags(src, opts, sb_flags)
     }
