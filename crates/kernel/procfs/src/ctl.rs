@@ -94,6 +94,10 @@ enum Leaf {
     ULong(u64, Option<(u64, u64)>),
     /// `proc_dostring` bound to a subsystem accessor pair.
     StrHook(fn() -> alloc::vec::Vec<u8>, fn(&[u8])),
+    /// `proc_dostring` over a per-namespace text value. The flag makes the
+    /// file owner-only, for a value that is a secret.
+    PerNetStrHook(fn(&network_namespace::NetworkNamespaceRef) -> alloc::vec::Vec<u8>,
+        fn(&network_namespace::NetworkNamespaceRef, &[u8]) -> Result<(), ()>, bool),
     /// Two-u16 `proc_dointvec` bound to subsystem accessors.
     PerNetU16PairHook(fn(&network_namespace::NetworkNamespaceRef) -> Result<(u16, u16), ()>,
         fn(&network_namespace::NetworkNamespaceRef, u16, u16) -> Result<(), ()>),
@@ -294,6 +298,10 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))
         }
         Leaf::StrHook(get, set) => bound_sysctl_inode(Arc::new(HStrHook { get, set })),
+        Leaf::PerNetStrHook(get, set, owner_only) => bound_sysctl_inode(Arc::new(
+            crate::proc_handler_netstr::PerNetStrHook {
+                current_ns: current_net_ns, get, set, owner_only,
+            })),
         Leaf::PerNetBufWindowHook(get, set, bounds) => bound_sysctl_inode(Arc::new(
             HPerNetBufWindowHook { current_ns: current_net_ns, get, set, bounds })),
         Leaf::PerNetGroupRangeHook(get, set) => bound_sysctl_inode(Arc::new(HPerNetGroupRangeHook {

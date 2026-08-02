@@ -8,6 +8,7 @@
 
 use syscall::errno::Errno;
 use alloc::vec::Vec;
+use crate::tcp_fastopen::{clamp_qlen, client_enabled, KEY_LEN};
 use crate::tcp_state::TcpState;
 use super::*;
 use super::repair::{RepairEffect, RepairOpt, RepairWindow};
@@ -44,7 +45,7 @@ pub enum Arg {
     Int(i32),
     /// A name truncated to the option's buffer and cut at the first NUL.
     Name(Vec<u8>),
-    FastopenKey { primary: [u8; FASTOPEN_KEY_LEN], backup: Option<[u8; FASTOPEN_KEY_LEN]> },
+    FastopenKey { primary: [u8; KEY_LEN], backup: Option<[u8; KEY_LEN]> },
     /// The caller's declared length plus the decoded window, or the fault the
     /// copy took. Both are needed because the repair screen runs before the
     /// length screen, which runs before the copy.
@@ -136,7 +137,7 @@ pub enum Action {
     Fastopen(i32),
     FastopenConnect(bool),
     FastopenNoCookie(bool),
-    FastopenKey { primary: [u8; FASTOPEN_KEY_LEN], backup: Option<[u8; FASTOPEN_KEY_LEN]> },
+    FastopenKey { primary: [u8; KEY_LEN], backup: Option<[u8; KEY_LEN]> },
     Timestamp { tsoffset: i32, usec_ts: bool },
     NotsentLowat(u32),
     Inq(bool),
@@ -320,12 +321,14 @@ pub fn admit(optname: u64, arg: Arg, env: SetEnv) -> Result<Action, Errno> {
             Err(Errno::Enoprotoopt),
         TCP_FASTOPEN => {
             if val >= 0 && closed_or_listen {
-                Ok(Action::Fastopen(core::cmp::min(val, env.somaxconn)))
+                Ok(Action::Fastopen(clamp_qlen(val, env.somaxconn)))
             } else { Err(Errno::Einval) }
         }
         TCP_FASTOPEN_CONNECT => {
             if !(0..=1).contains(&val) { return Err(Errno::Einval); }
-            if env.fastopen_sysctl & TFO_CLIENT_ENABLE == 0 { return Err(Errno::Eopnotsupp); }
+            if !client_enabled(env.fastopen_sysctl) {
+                return Err(Errno::Eopnotsupp);
+            }
             if env.state != TcpState::Closed { return Err(Errno::Einval); }
             Ok(Action::FastopenConnect(on))
         }

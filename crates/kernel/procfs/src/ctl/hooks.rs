@@ -180,3 +180,17 @@ pub(super) fn set_unprivileged_port_start(namespace: &network_namespace::Network
     net::ephemeral::set_unprivileged_start_for(namespace, value as u16)
 }
 
+
+/// `net.ipv4.tcp_fastopen_key` binds to the namespace's own keys. A namespace
+/// that has drawn none still reads as one all-zero key, so the file always
+/// names the shape of the value.
+pub(super) fn tcp_fastopen_key(ns: &network_namespace::NetworkNamespaceRef) -> alloc::vec::Vec<u8> {
+    net::tcp_fastopen::format_hex(net::tcp_fastopen::ns_keys(ns).as_ref())
+}
+pub(super) fn set_tcp_fastopen_key(ns: &network_namespace::NetworkNamespaceRef,
+    src: &[u8]) -> Result<(), ()>
+{
+    let ctx = net::tcp_fastopen::parse_hex(src).ok_or(())?;
+    net::tcp_fastopen::set_ns_keys(ns, ctx);
+    Ok(())
+}

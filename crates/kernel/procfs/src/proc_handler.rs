@@ -42,6 +42,9 @@ pub trait ProcHandler: Send + Sync {
     /// Whether the leaf accepts writes (mode 0644 vs read-only 0444).
     /// # C: O(1)
     fn writable(&self) -> bool { true }
+    /// Whether the value is a secret, so the file is readable only by its
+    /// owner (mode 0600) rather than world-readable. # C: O(1)
+    fn owner_only(&self) -> bool { false }
 }
 
 /// Per-network-namespace fallible integer binding. `current_ns` runs once at
