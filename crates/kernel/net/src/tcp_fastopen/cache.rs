@@ -27,6 +27,7 @@
 // can fast open, so they live where `cargo test` compiles them (`docs/53§4`).
 
 extern crate alloc;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use sync::{Socket as SockLockClass, Spinlock};
@@ -85,8 +86,16 @@ pub struct Cached {
 }
 
 /// One namespace's client cookie cache.
+///
+/// The bucket array is a separate heap allocation reached by pointer, not an
+/// inline member. Inline, `BUCKETS` locks made this 8192 B and, embedded in
+/// the per-namespace state, gave that state a 9336 B constructor that the
+/// compiler reserved on the stack of every namespace-state lookup — over half
+/// a 16 KiB kernel stack, on a path reachable from softirq receive. The
+/// reference keeps its destination-metrics hash in exactly this shape: a
+/// separately allocated bucket array the namespace refers to.
 pub struct ClientCache {
-    chains: [Spinlock<Vec<Entry>, SockLockClass>; BUCKETS],
+    chains: Box<[Spinlock<Vec<Entry>, SockLockClass>]>,
 }
 
 impl Default for ClientCache {
@@ -107,9 +116,13 @@ fn bucket(dst: IpAddr) -> usize {
 }
 
 impl ClientCache {
-    /// # C: O(BUCKETS)
+    /// Buckets are pushed one at a time into a heap vector, never built as an
+    /// array temporary — the temporary is what put `BUCKETS` locks on the
+    /// stack. # C: O(BUCKETS)
     pub fn new() -> Self {
-        Self { chains: core::array::from_fn(|_| Spinlock::new(Vec::new())) }
+        let mut chains = Vec::with_capacity(BUCKETS);
+        for _ in 0..BUCKETS { chains.push(Spinlock::new(Vec::new())); }
+        Self { chains: chains.into_boxed_slice() }
     }
 
     /// What this host knows about `dst` from `src`. A miss and a stale entry

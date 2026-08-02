@@ -178,3 +178,16 @@ fn an_ipv6_destination_keeps_its_own_entry() {
     assert_eq!(cache.get(src6, v6, NOW).cookie, Some(cookie(7)));
     assert_eq!(cache.get(src(), dst(), NOW).cookie, None);
 }
+
+/// The bucket array must stay a separate allocation. Inline it was 8192 B, and
+/// embedding it in the per-namespace state gave that state's constructor a
+/// stack frame over half the size of a kernel stack, on a path softirq receive
+/// can reach. A handle is two words; anything near `BUCKETS * 32` means the
+/// array moved back inline.
+#[test]
+fn the_bucket_array_is_not_stored_inline() {
+    assert!(core::mem::size_of::<ClientCache>() <= 32,
+        "ClientCache is {} B — the bucket array is inline again",
+        core::mem::size_of::<ClientCache>());
+    assert_eq!(ClientCache::new().chains.len(), BUCKETS);
+}
