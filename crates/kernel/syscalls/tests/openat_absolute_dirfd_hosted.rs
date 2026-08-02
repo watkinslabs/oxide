@@ -33,11 +33,6 @@ use vfs::{Dentry, FdTable, File, FileType, InodeBuilder, InodeOps, InodeRef,
 #[path = "../src/pathresolve/at.rs"]
 mod at;
 
-// The REAL trailing-symlink decision, not a stand-in: `at.rs` consults it on
-// every parent resolve, so a harness that faked it would test nothing.
-#[path = "../src/pathresolve/trailing_link.rs"]
-mod trailing_link;
-
 // `at.rs` reaches these two collaborators via `super::`; stand-ins live at
 // this file's crate root so the relative paths resolve identically to the
 // real `pathresolve` module.
