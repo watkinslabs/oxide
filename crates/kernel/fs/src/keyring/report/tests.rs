@@ -9,7 +9,7 @@ use super::super::ops::{add_key_core, join_session, revoke_core, set_timeout_cor
 use super::super::store::{over_quota, quota_limit, set_quota_limit, KeyUser, QuotaKnob, STORE};
 
 fn ctx(tid: u32, uid: u32) -> Ctx {
-    Ctx::new(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false)
+    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false, false)
 }
 
 /// The `/proc/keys` line for `serial` as `t` sees it, if any.
@@ -84,7 +84,7 @@ fn proc_keys_marks_an_expired_key() {
     let ring = join_session(&t, None) as i32;
     let k = add_key_core(&t, "user", "report-expired", b"z".to_vec(), true, ring);
     assert_eq!(set_timeout_core(&t, k as i32, 1), 0);
-    let later = Ctx::new(t.t.clone(), 5_000_000_000, false);
+    let later = Ctx::with_caps(t.t.clone(), 5_000_000_000, false, false);
     let line = line_for(&later, k).expect("still viewable once expired");
     assert_eq!(line.split_whitespace().nth(3), Some("expd"));
 }

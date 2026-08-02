@@ -2,7 +2,8 @@
 #![cfg(target_os = "oxide-kernel")]
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::net_common::{classify, errno_from_neterr, Routed};
+use crate::net_common::{classify, Routed};
+use crate::net_errno::errno_from_neterr;
 use crate::sock_route::ControlOp;
 
 /// `listen(fd, backlog)` slot 50. ABI shim per `docs/53§4`.

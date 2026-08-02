@@ -32,7 +32,7 @@ pub(crate) fn backing(file: &Arc<vfs::File>, off: u64, len: u64, flags: u64)
     }
     let pin = match socket.packet_ring_mmap(off, len) {
         Ok(pin) => pin,
-        Err(error) => return Some(Err(crate::net_common::errno_from_neterr(error))),
+        Err(error) => return Some(Err(crate::net_errno::errno_from_neterr(error))),
     };
     Some(Ok(Arc::new(PacketRingBacking { pin, file: file.clone() })))
 }

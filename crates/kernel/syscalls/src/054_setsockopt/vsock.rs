@@ -1,6 +1,6 @@
 use syscall::errno::Errno;
 
-use crate::net_common::errno_from_neterr;
+use crate::net_errno::errno_from_neterr;
 
 /// `SO_RCVTIMEO_OLD` / `SO_SNDTIMEO_OLD` (`asm-generic/socket.h`).
 const SO_RCVTIMEO_VSOCK: u64 = 20;

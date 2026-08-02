@@ -7,7 +7,7 @@ const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 /// VMA and a corrupted tree have identical fault codes; ranges plus canonical
 /// Arc ownership pointers distinguish them without changing fault handling.
 /// # C: O(number of VMAs)
-#[cfg(feature = "debug-displaystack")]
+#[cfg(all(feature = "debug-displaystack", target_arch = "aarch64"))]
 pub(super) fn dump_arm_vmas(mm: &vmm::AddressSpace) {
     let vmas = mm.snapshot_vmas();
     klog::write_raw(b"[FAULT-ARM-VMAS] root=");

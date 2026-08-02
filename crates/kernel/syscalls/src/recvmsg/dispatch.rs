@@ -52,7 +52,7 @@ pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
                 if let Err(error) = net::security_admission::check(sock.net_ns(),
                     sock.family.load(core::sync::atomic::Ordering::Acquire),
                     security::network::Operation::Receive)
-                { return crate::net_common::errno_from_neterr(error); }
+                { return crate::net_errno::errno_from_neterr(error); }
                 return super::inet::recv_error(sock, user, flags);
             }
         }

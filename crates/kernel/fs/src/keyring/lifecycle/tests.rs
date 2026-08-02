@@ -7,13 +7,13 @@ use super::super::store::{TaskIds, STORE};
 use super::super::uapi::*;
 
 fn ctx(tid: u32, uid: u32) -> super::super::ops::Ctx {
-    super::super::ops::Ctx::new(
-        TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new() }, 0, false)
+    super::super::ops::Ctx::with_caps(
+        TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new() }, 0, false, false)
 }
 
 fn thread_ctx(tid: u32, tgid: u32, uid: u32) -> super::super::ops::Ctx {
-    super::super::ops::Ctx::new(
-        TaskIds { tid, tgid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new() }, 0, false)
+    super::super::ops::Ctx::with_caps(
+        TaskIds { tid, tgid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new() }, 0, false, false)
 }
 
 // A forked child shares the parent's session keyring — the reason a login

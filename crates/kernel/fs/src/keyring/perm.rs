@@ -136,8 +136,6 @@ pub(crate) fn check_perm(g: &Store, serial: i32, t: &TaskIds, need: u32, mode: L
 /// computed by reachability.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum Possess {
-    /// Reachability from the caller's own keyrings (`is_key_possessed`).
-    Computed,
     /// Possessed by construction. A persistent keyring lives in the
     /// kernel-wide `.persistent_register`, which is in nobody's keyrings, so
     /// computed possession is always false and its user byte grants only
@@ -168,18 +166,9 @@ pub(crate) fn check_perm_with(g: &Store, serial: i32, t: &TaskIds, need: u32, no
         (key.perm >> KEY_PERM_OTH_SHIFT) & KEY_PERM_BYTE_MASK
     };
     let possessed = match possess {
-        Possess::Computed => is_possessed(g, serial, t, now_ns),
         Possess::Yes => true,
         Possess::No => false,
     };
     if possessed { kperm |= (key.perm >> KEY_PERM_POS_SHIFT) & KEY_PERM_BYTE_MASK; }
     if kperm & need == need { Ok(()) } else { Err(-(Errno::Eacces.as_i32() as i64)) }
-}
-
-/// Search-path visibility check (`KEYCTL_SEARCH`/`request_key`): a key the
-/// caller cannot `KEY_NEED_SEARCH`, or that is revoked/invalidated/expired, is
-/// invisible — no ENOKEY/EACCES split, it just never matches, matching Linux
-/// hiding existence from keyring search. # C: O(members)
-pub(crate) fn visible_for_search(g: &Store, key: &Key, t: &TaskIds, now_ns: u64) -> bool {
-    key_validate(key, now_ns).is_ok() && key_task_permission(g, key, t, KEY_NEED_SEARCH, now_ns).is_ok()
 }

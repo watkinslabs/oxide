@@ -21,11 +21,11 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
         if let Err(e) = net::sock_opts::check_name_query(vsock.net_ns(), net::sock::AF_VSOCK) {
-            return crate::net_common::errno_from_neterr(e);
+            return crate::net_errno::errno_from_neterr(e);
         }
         let (port, cid) = match vsock.local_addr() {
             Ok(addr) => addr,
-            Err(e) => return crate::net_common::errno_from_neterr(e),
+            Err(e) => return crate::net_errno::errno_from_neterr(e),
         };
         let sa = encoded_sockaddr_vm(port, cid);
         return copy_sockaddr_to_user(addr_p, len_p, &sa);
@@ -35,7 +35,7 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     };
     if let Err(e) = net::sock_opts::check_name_query(sock.net_ns(),
         sock.family.load(core::sync::atomic::Ordering::Acquire)) {
-        return crate::net_common::errno_from_neterr(e);
+        return crate::net_errno::errno_from_neterr(e);
     }
     let sa = crate::sock_name::local_sockaddr(&sock);
     copy_sockaddr_to_user(addr_p, len_p, &sa)

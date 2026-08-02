@@ -172,7 +172,20 @@ impl Ext4FrameStore {
         let window = Self::READAHEAD_WINDOW_PAGES.min(last_page.saturating_sub(start_idx)).max(1);
         let first_blk = start_idx.saturating_mul(bpp) as u32;
         let n_blks = window.saturating_mul(bpp) as u32;
-        let mut buf = self.st.mount.read_file_range(dinode, first_blk, n_blks).map_err(|_| VfsError::Eio)?;
+        let mut buf = self.st.mount.read_file_range(dinode, first_blk, n_blks).map_err(|_e| {
+            // DIAG (debug-fillverify): the fill failure collapses to EIO here, so
+            // the class that produced it is only recoverable at this one point.
+            #[cfg(feature = "debug-fillverify")]
+            {
+                klog::write_raw(b"[FILLVERIFY] read-file-range failed ino=");
+                klog::write_dec_u64(self.ino as u64);
+                klog::write_raw(b" first-blk="); klog::write_dec_u64(first_blk as u64);
+                klog::write_raw(b" n-blks=");    klog::write_dec_u64(n_blks as u64);
+                klog::write_raw(b" why=");       klog::write_raw(debug::fill_error_label(_e));
+                klog::write_raw(b"\n");
+            }
+            VfsError::Eio
+        })?;
         // Zero the window past EOF: the last mapped block extends beyond i_size
         // and its tail is stale disk garbage a MAP_SHARED mapper must read as zero
         // (Linux page-cache EOF zeroing — matches the old fill_page tail-zero).
