@@ -146,6 +146,7 @@ pub fn construct_key_and_link(c: &Ctx, ty: &'static KeyType, desc: &str, callout
     // this same lock. Holding it across the wait would deadlock the helper
     // against the requester waiting for it.
     let rc = upcall::run(&args);
+    super::trace::step(b"upcall", c.t.tid, key, rc);
     let mut g = STORE.lock();
     // `call_sbin_request_key`: the helper's status is only consulted to detect
     // that it could not be run at all. What decides the outcome is whether the
@@ -164,6 +165,7 @@ pub fn construct_key_and_link(c: &Ctx, ty: &'static KeyType, desc: &str, callout
     } else {
         auth::revoke_auth(&mut g, authkey);
     }
+    super::trace::step(b"construct", c.t.tid, key, rc);
     upcall::teardown(&mut g, &args);
     let _ = dest;
     g.collect();

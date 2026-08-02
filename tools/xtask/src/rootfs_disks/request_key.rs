@@ -4,6 +4,13 @@
 // configuration come from the keyutils package in the image profile, so what
 // this proves is the real distribution helper, not a stand-in we wrote. Only
 // the probe and the unit that runs it are added here.
+//
+// One rule IS injected, in the package's own drop-in directory: the nested
+// case. No stock handler asks the kernel for a second key while it is still
+// answering the first, and that is precisely the shape the servicing pool has
+// to grow a thread for — a single context would be waiting for the outer
+// helper to exit and could never start the inner one. The rule routes its own
+// description only; the stock rule that answers the plain case is untouched.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,10 +20,26 @@ use std::process::Command;
 /// producing a run whose failure would be ambiguous.
 const HELPER: &str = "/sbin/request-key";
 
+/// Where the package reads extra rules from, ahead of its own configuration.
+const DROPIN: &str = "/etc/request-key.d/oxide-nested.conf";
+/// The handler that rule names.
+const NESTED_HANDLER: &str = "/usr/local/bin/oxide-nested-handler";
+/// The handler for the key the nested one asks for while it is still running.
+/// It exists because the stock debug handler caches its answer in `%S` — for a
+/// nested request that is the OUTER helper's request keyring, which grants
+/// View and Read to its owner and Write only to a possessor, and the original
+/// requester (whose credentials a nested token carries) possesses no such
+/// thing. Naming no destination keeps the case about re-entry rather than
+/// about a destination nothing may write.
+const INNER_HANDLER: &str = "/usr/local/bin/oxide-inner-handler";
+
 pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     require_helper(root_img)?;
     let bin = build_probe(arch)?;
     let service = write_service()?;
+    let handler = write_nested_handler()?;
+    let inner = write_inner_handler()?;
+    let dropin = write_nested_rule()?;
     super::dbg(root_img, "mkdir /etc/systemd/system")?;
     super::dbg(root_img, "mkdir /etc/systemd/system/basic.target.wants")?;
     super::dbg_ignore(root_img, "rm /usr/local/bin/request_key_probe");
@@ -26,6 +49,15 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
     super::dbg(root_img, &format!("write {} /etc/systemd/system/request-key-smoke.service", service.display()))?;
     super::dbg_ignore(root_img, "rm /etc/systemd/system/basic.target.wants/request-key-smoke.service");
     super::dbg(root_img, "symlink /etc/systemd/system/basic.target.wants/request-key-smoke.service ../request-key-smoke.service")?;
+    super::dbg_ignore(root_img, &format!("rm {NESTED_HANDLER}"));
+    super::dbg(root_img, &format!("write {} {}", handler.display(), NESTED_HANDLER))?;
+    super::dbg(root_img, &format!("sif {NESTED_HANDLER} mode 0100755"))?;
+    super::dbg_ignore(root_img, &format!("rm {INNER_HANDLER}"));
+    super::dbg(root_img, &format!("write {} {}", inner.display(), INNER_HANDLER))?;
+    super::dbg(root_img, &format!("sif {INNER_HANDLER} mode 0100755"))?;
+    super::dbg_ignore(root_img, "mkdir /etc/request-key.d");
+    super::dbg_ignore(root_img, &format!("rm {DROPIN}"));
+    super::dbg(root_img, &format!("write {} {}", dropin.display(), DROPIN))?;
     eprintln!("xtask rootfs: injected request_key upcall proof into {}", root_img.display());
     Ok(())
 }
@@ -47,11 +79,54 @@ fn require_helper(img: &Path) -> Result<(), u8> {
 /// glibc's `syscall(3)`, which is the entry point under test on both arches.
 fn build_probe(arch: &str) -> Result<PathBuf, u8> { super::probe_cargo(arch, "request_key_probe") }
 
-fn write_service() -> Result<PathBuf, u8> {
+/// The rule that routes the nested description to our handler. Columns are
+/// `<op> <type> <description> <callout-info> <prog> <args...>`; the package
+/// ranks rules by wildcard length, so a description-specific rule wins over its
+/// own `debug:*` line without displacing it.
+fn write_nested_rule() -> Result<PathBuf, u8> {
+    write_smoke_file("oxide-nested.conf",
+        "create\tuser\toxide-nested:*\t*\t/usr/local/bin/oxide-nested-handler %k %d %c %S\n\
+create\tuser\toxide-inner:*\t*\t/usr/local/bin/oxide-inner-handler %k %c\n")
+}
+
+/// The nested handler: ask the kernel for a SECOND key, then answer the first
+/// with the inner key's serial folded into the payload. The probe requires that
+/// serial to be there, so the outer construction cannot pass unless the inner
+/// one completed while it was still in flight.
+fn write_nested_handler() -> Result<PathBuf, u8> {
+    write_smoke_file("oxide-nested-handler", NESTED_HANDLER_BODY)
+}
+
+/// `$1` key, `$3` callout, `$4` the requester's session keyring. The inner
+/// request is issued while this handler is still the one the kernel is waiting
+/// on, which is the whole point of the case.
+const NESTED_HANDLER_BODY: &str = r#"#!/bin/sh
+inner=`keyctl request2 user oxide-inner:key oxide-inner @s` || exit 1
+keyctl instantiate "$1" "Debug $3 inner=$inner" "$4" || exit 1
+exit 0
+"#;
+
+/// The inner handler. `$1` key, `$2` callout; no destination keyring.
+fn write_inner_handler() -> Result<PathBuf, u8> {
+    write_smoke_file("oxide-inner-handler", INNER_HANDLER_BODY)
+}
+
+const INNER_HANDLER_BODY: &str = r#"#!/bin/sh
+keyctl instantiate "$1" "inner $2" 0 || exit 1
+exit 0
+"#;
+
+/// Stage one generated file under `target/smoke`. # C: O(len)
+fn write_smoke_file(name: &str, body: &str) -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
-    let path = dir.join("request-key-smoke.service");
-    let body = "[Unit]\n\
+    let path = dir.join(name);
+    std::fs::write(&path, body).map_err(|e| { eprintln!("xtask rootfs: write {name} failed: {e}"); 1u8 })?;
+    Ok(path)
+}
+
+fn write_service() -> Result<PathBuf, u8> {
+    write_smoke_file("request-key-smoke.service", "[Unit]\n\
 Description=Oxide request_key upcall proof\n\
 After=basic.target\n\
 \n\
@@ -60,7 +135,5 @@ Type=oneshot\n\
 ExecStart=/bin/sh -c '/usr/local/bin/request_key_probe 2>&1 | /usr/bin/logger -t request-key-probe'\n\
 \n\
 [Install]\n\
-WantedBy=basic.target\n";
-    std::fs::write(&path, body).map_err(|e| { eprintln!("xtask rootfs: write service failed: {e}"); 1u8 })?;
-    Ok(path)
+WantedBy=basic.target\n")
 }
