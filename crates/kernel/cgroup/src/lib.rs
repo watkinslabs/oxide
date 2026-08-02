@@ -17,6 +17,7 @@ pub mod inode;
 pub mod fs;
 pub mod bpf;
 pub mod policy;
+pub mod root_flags;
 pub mod state;
 pub mod tree;
 mod ids;
@@ -150,6 +151,21 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
                 klog::write_raw(b"\n");
             }
             let vpid: u64 = buf.trim().parse().map_err(|_| VfsError::Einval)?;
+            // `nsdelegate` (Linux `cgroup_procs_write_permission`): when cgroup
+            // namespaces are delegation boundaries, the writer must be able to
+            // SEE both the source and the destination from its own namespace,
+            // and a write across the boundary is ENOENT — not EPERM, because
+            // the cgroup is not supposed to exist as far as the caller is
+            // concerned.
+            if state::root_flags().has(root_flags::RootFlag::NsDelegate) {
+                let ns_root = state::caller_ns_root();
+                let tree = state::TREE.lock();
+                let src = tree.cgroup_of(vpid);
+                let visible = tree.is_under_path(cgid, &ns_root)
+                    && tree.is_under_path(src, &ns_root);
+                drop(tree);
+                if !visible { return Err(VfsError::Enoent); }
+            }
             // The scheduler pins and serializes the live task against exit,
             // then the cgroup tree performs one atomic membership mutation.
             let src = migrate_task(vpid, cgid, file == "cgroup.threads")?;

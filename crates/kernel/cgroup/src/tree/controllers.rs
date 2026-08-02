@@ -111,7 +111,7 @@ pub fn controller_files(avail: u8) -> Vec<&'static str> {
         v.extend(["memory.current", "memory.max", "memory.high", "memory.low",
             "memory.min", "memory.swap.max", "memory.swap.current",
             "memory.oom.group", "memory.zswap.max", "memory.pressure_level",
-            "memory.events", "memory.stat"]);
+            "memory.events", "memory.events.local", "memory.stat"]);
     }
     if avail & CPU != 0 {
         v.extend(["cpu.weight", "cpu.max", "cpu.stat"]);

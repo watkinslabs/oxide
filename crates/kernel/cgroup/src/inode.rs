@@ -63,6 +63,7 @@ fn file_perm(file: &str) -> u16 {
         "cgroup.controllers" | "cgroup.events" | "cgroup.stat"
         | "cgroup.type" | "pids.current" | "pids.peak" | "pids.events"
         | "memory.current" | "memory.swap.current" | "memory.events"
+        | "memory.events.local"
         | "memory.stat" | "memory.pressure_level" | "cpu.stat" | "io.stat"
         | "cpuset.cpus.effective" | "cpuset.mems.effective" => CG_FILE_MODE_READ_ONLY,
         _ => CG_FILE_MODE_WRITABLE,

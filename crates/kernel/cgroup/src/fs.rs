@@ -24,6 +24,12 @@ impl CgroupFs {
 }
 
 impl FileSystem for CgroupFs {
+    /// `/proc/mounts` shows the hierarchy-root flags in force (Linux
+    /// `cgroup_show_options`). They are hierarchy-wide, so every cgroup2 mount
+    /// reports the same set — as the reference does. # C: O(1)
+    fn show_options(&self) -> alloc::string::String {
+        crate::state::root_flags().show_options()
+    }
     /// # C: O(1)
     fn name(&self) -> &str { "cgroup2" }
     /// cgroup2 exports kernfs file handles (`crate::export`), so `s_op` is its
