@@ -366,11 +366,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // O_NOFOLLOW because its EEXIST is decided before the permission step
         // that reports ELOOP for a bare O_NOFOLLOW.
         let mut parent_flags = crate::openat2_resolve::parent_lookup_flags(&extra);
-        parent_flags.follow = matches!(
-            crate::pathresolve::final_symlink_action(
-                (flags & O_EXCL) != 0, (flags & O_NOFOLLOW) != 0),
-            crate::pathresolve::FinalLink::Follow);
-        parent_flags.no_follow_final = !parent_flags.follow;
+        parent_flags.set_open_create_trailing((flags & O_EXCL) != 0, (flags & O_NOFOLLOW) != 0);
         let parent = match crate::pathresolve::resolve_parent_at_flags(
             args.a0 as i32, s, parent_flags)
         {

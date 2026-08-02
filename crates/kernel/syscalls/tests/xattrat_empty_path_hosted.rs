@@ -38,11 +38,6 @@ use vfs::{Dentry, FdTable, File, FileType, InodeBuilder, InodeRef, OpenFlags, Vf
 #[path = "../src/pathresolve/at.rs"]
 mod at;
 
-// The REAL trailing-symlink decision, not a stand-in: `at.rs` consults it on
-// every parent resolve, so a harness that faked it would test nothing.
-#[path = "../src/pathresolve/trailing_link.rs"]
-mod trailing_link;
-
 mod cred {
     pub(crate) fn current_cred() -> vfs::Cred { vfs::Cred::root() }
 }

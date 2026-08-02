@@ -138,6 +138,27 @@ impl LookupFlags {
     /// the syscall layer picks its resolve entry point on it, and the two may
     /// never disagree about whether a walk is scoped. # C: O(1)
     pub fn confines_to_dirfd(&self) -> bool { self.beneath_exdev || self.in_root }
+
+    /// Apply an `open(O_CREAT)`'s trailing-component rule to a parent walk.
+    ///
+    /// The reference derives it once, in `fs/open.c` `build_open_flags`: `O_EXCL`
+    /// FORCES `O_NOFOLLOW` on the open, and `LOOKUP_FOLLOW` is then set only when
+    /// `O_NOFOLLOW` is absent. So a plain create follows its trailing link and
+    /// acts on the target; `O_EXCL` and `O_NOFOLLOW` both keep the link itself as
+    /// the subject, and `O_EXCL` outranks `O_NOFOLLOW` because forcing the one
+    /// implies the other. The two errno answers that follow — `EEXIST` for
+    /// `O_EXCL` on a name already taken, `ELOOP` for a bare `O_NOFOLLOW` landing
+    /// on a link — are decided by the open, not here: this bit only says whether
+    /// the walk resolves the link.
+    ///
+    /// Lives on `LookupFlags` because the flag set IS the answer; a separate
+    /// enum in the syscall layer would be a second statement of the same rule.
+    /// # C: O(1)
+    pub fn set_open_create_trailing(&mut self, o_excl: bool, o_nofollow: bool) {
+        let follow = !(o_excl || o_nofollow);
+        self.follow = follow;
+        self.no_follow_final = !follow;
+    }
 }
 
 /// Caller credentials for the VFS permission checks — Linux `struct cred`

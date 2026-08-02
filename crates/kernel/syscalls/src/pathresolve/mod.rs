@@ -11,8 +11,6 @@ mod lookup;
 mod root;
 
 pub(crate) use at::at_path_empty;
-pub mod trailing_link;
-pub use trailing_link::{final_symlink_action, next_create_path, FinalLink, MAX_CREATE_LINK_HOPS};
 pub use at::{AT_FDCWD, resolve_at_lookup, resolve_at_lookup_cred, resolve_at_lookup_maybe_null, resolve_at_or_dirfd, resolve_at_or_fd, resolve_at_path, resolve_confined, resolve_parent_at, resolve_parent_at_flags};
 pub use cred::{current_cred, current_cred_real, file_cred_for};
 pub use exec::{exec_permission, open_exec, read_exec_inode};
