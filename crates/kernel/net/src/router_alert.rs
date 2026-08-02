@@ -139,6 +139,9 @@ pub fn v4_deliver(ns: u64, iface: NetIfaceId, l3: &[u8]) -> bool {
             destination: hdr.dst,
             iface,
             ttl: hdr.ttl,
+            // A forwarded packet's option area is not compiled by this stack,
+            // so a router-alert receiver sees none.
+            options: Default::default(),
         });
     }
     delivered
