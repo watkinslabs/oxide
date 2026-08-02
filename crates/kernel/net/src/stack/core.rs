@@ -394,7 +394,7 @@ impl NetStack {
         -> NetResult<()>
     {
         self.send_tcp_ipv4_segment_in(
-            0, src, dst, l4, 0, None, crate::uapi::IP_PMTUDISC_WANT, None,
+            0, src, dst, l4, 0, None, crate::uapi::IP_PMTUDISC_WANT, None, None,
         ).map(|_| ())
     }
 

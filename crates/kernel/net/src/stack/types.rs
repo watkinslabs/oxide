@@ -112,6 +112,10 @@ pub struct TcpEntry {
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Sticky `IPPROTO_IP` option state, shared with the owning socket: the
+    /// compiled `IP_OPTIONS` area every segment this connection emits carries,
+    /// and the length its MSS budget must give up for it.
+    pub ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
     /// `IP_MINTTL` / `IPV6_MINHOPCOUNT`, shared with the owning socket. A
     /// passive child snapshots its listener's, the way every other inherited
     /// option does.
@@ -195,8 +199,8 @@ impl TcpEntry {
             passive_listener, Arc::new(crate::min_hop::MinHop::new()))
     }
 
-    /// Build a transport entry sharing every option the receive path reads.
-    /// # C: O(1)
+    /// Build a transport entry sharing every option the receive path reads,
+    /// carrying no sticky IPv4 option area. # C: O(1)
     #[allow(clippy::too_many_arguments)]
     pub fn new_bound_full(conn: TcpConn, error: Arc<crate::SocketError>,
                                  bind: Option<Arc<TcpBindReservation>>,
@@ -205,6 +209,22 @@ impl TcpEntry {
                                  ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
                                  min_hop: Arc<crate::min_hop::MinHop>) -> Self {
+        Self::new_bound_ip_opts(conn, error, bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, passive_listener, min_hop,
+            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
+    }
+
+    /// Build a transport entry sharing every option the receive path reads and
+    /// the owning socket's sticky IPv4 option area. # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_bound_ip_opts(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
+                                 min_hop: Arc<crate::min_hop::MinHop>,
+                                 ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Self {
         let syn_backlog_reserved = passive_listener.is_some();
         let owner = bind.as_ref().map(|bind| bind.owner.clone())
             .unwrap_or_else(|| crate::SocketOwner::root(network_namespace::initial(), 0));
@@ -214,6 +234,7 @@ impl TcpEntry {
             error,
             ip_mtu_discover,
             ipv6_mtu_discover,
+            ip_opts,
             min_hop,
             bind,
             bpf_filter,
