@@ -152,20 +152,29 @@ impl NetStack {
         Ok(verdict)
     }
 
-    /// Transmit one TCP/IPv4 segment using the selected socket PMTU mode. # C: O(payload + N)
+    /// Transmit one TCP/IPv4 segment using the selected socket PMTU mode and
+    /// the socket's sticky option area. A compiled source route retargets the
+    /// route lookup, the path MTU and the wire destination at its first hop;
+    /// the segment's own checksum stays bound to the final destination, which
+    /// is why it is computed before this call. # C: O(payload + N)
     pub(super) fn send_tcp_ipv4_segment_in(&self, net_ns: u64, src: Ipv4Addr,
         dst: Ipv4Addr, l4: &[u8], tos: u8, bound: Option<NetIfaceId>, mode: i32,
-        owner: Option<&crate::SocketOwner>)
+        owner: Option<&crate::SocketOwner>,
+        opts: Option<&crate::ipv4_options::Compiled>)
         -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
-        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
+        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, wire_dst, bound)?;
+        if crate::ipv4_options::is_strict_route(opts) && next_hop != wire_dst {
+            return Err(NetError::Enetunreach);
+        }
         let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
-            net_ns, route, dst, iface.mtu(), mode,
+            net_ns, route, wire_dst, iface.mtu(), mode,
         );
         self.xmit_ipv4_l4_with_policy(
             route.iface, iface, next_hop, src, dst, IpProto::Tcp, l4, tos,
             route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL),
-            self.next_ipv4_id(), mtu, df, may_fragment, owner, None,
+            self.next_ipv4_id(), mtu, df, may_fragment, owner, opts,
         )
     }
 
