@@ -214,7 +214,20 @@ smoke-x86: x86
 smoke-arm: arm
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
 
-smoke: smoke-x86 smoke-arm
+# Both arches at once. The builds are prerequisites, so they finish first
+# (cargo serialises them through its own lock anyway); only the two BOOTS
+# overlap, and they contend for nothing — separate build namespaces, separate
+# root images, separate qemu instances. Running them back to back doubles the
+# wall clock of every lockstep check for no benefit, which is the whole cost of
+# this gate. Both exit statuses are collected: a failure on either arch fails
+# the target, and neither cancels the other, so one run reports both answers.
+smoke: x86 arm
+	@rc=0; \
+	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
+	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
+	wait $$p1 || rc=1; \
+	wait $$p2 || rc=1; \
+	exit $$rc
 
 # Boot-cmdline propagation gate — asserts the BOOTLOADER's command line
 # reaches /proc/cmdline on both arches (different transport per arch:
