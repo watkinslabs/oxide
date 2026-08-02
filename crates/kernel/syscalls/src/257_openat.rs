@@ -397,24 +397,19 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // (Linux `filename_create` → `i_op->create`), instead of the
         // old whole-path backend create re-splitting the path string.
         let cred = crate::pathresolve::current_cred();
-        if let Err(e) = vfs::may_create(&parent.inode, &cred) {
-            #[cfg(feature = "debug-eacces")]
-            if e == vfs::VfsError::Eacces {
-                crate::namei_common::trace_create_eacces(b"openat-create", &create_path, &parent.inode, &cred);
-            }
-            return crate::namei_common::errno_from_vfs(e);
-        }
         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
-        // D29: parent dir `i_rwsem` EXCLUSIVE across the backend create.
-        let r = { let _g = parent.inode.inode_lock(); parent.inode.create_child(&name, final_mode, &ctx) };
+        // Permission gate, the exclusive parent lock the backend create runs
+        // under, and the cache publication are ONE operation, shared with every
+        // other in-kernel creator (`vfs::vfs_create_at`). Open-coding them here
+        // is what let a second creator publish an object without its name.
+        let r = vfs::vfs_create_at(&parent, &name, final_mode, &ctx);
         match r {
-            Ok(i) => {
-                let d = vfs::file::open_dentry_at(&parent.dentry, &name, &i);
-                crate::namei_common::drop_child_cache(&parent, &name);
-                vfs::fire_dirent_create(&parent.inode, &name, false);
-                (i, mnt.mnt_id, d, true, create_path)
-            }
+            Ok((i, d)) => (i, mnt.mnt_id, d, true, create_path),
             Err(e) => {
+                #[cfg(feature = "debug-eacces")]
+                if e == vfs::VfsError::Eacces {
+                    crate::namei_common::trace_create_eacces(b"openat-create", &create_path, &parent.inode, &cred);
+                }
                 crate::namei_common::trace_run_vfs_error(b"openat-create", &create_path, e);
                 // D7: surface the real VfsError→errno (EACCES/EROFS/
                 // ENOSPC/ENOTDIR/…) instead of collapsing to ENOENT.

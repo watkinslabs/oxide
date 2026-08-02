@@ -267,7 +267,8 @@ pub(crate) fn resolve_shebang_chain(
 /// rather than private memory with nothing behind them.
 /// # C: O(1)
 pub(crate) fn image_backing(vp: &vfs::VfsPath) -> alloc::sync::Arc<dyn vmm::FileBacking> {
-    crate::mmap_file::InodeFileBacking::new(vp.inode.clone())
+    let path = vp.dentry.dentry_path(None);
+    crate::mmap_file::InodeFileBacking::new_named(vp.inode.clone(), path.into_bytes())
 }
 
 /// Open the pathname a PT_INTERP names through the same `do_open_execat` gate

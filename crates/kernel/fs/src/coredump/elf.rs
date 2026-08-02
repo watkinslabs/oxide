@@ -23,4 +23,4 @@ pub use input::{
 pub use build::{build_core_image, CORE_PAGE_SIZE};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
