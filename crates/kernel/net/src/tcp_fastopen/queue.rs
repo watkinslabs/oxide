@@ -12,17 +12,38 @@
 // (`super::ns`); a key set here overrides that for this listener alone, which
 // is how a load-balanced pool shares one key across hosts.
 
+extern crate alloc;
+use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use sync::{Socket as SockLockClass, Spinlock};
 
 use super::keys::KeyCtx;
 
+/// How long a fast-open connection that ended in a reset keeps counting
+/// against the bound. A peer forging a source address cannot receive the
+/// SYN-ACK, so the connection it opened dies by reset; charging those for a
+/// while is what makes a flood of them turn passive fast open off on this
+/// listener instead of letting it amplify.
+pub const RST_PENALTY_NS: u64 = 60 * 1_000_000_000;
+
 /// The bound `TCP_FASTOPEN` installs, clamped by the live `somaxconn` the same
 /// way `listen`'s backlog is: a fast-open queue may not outgrow the accept
 /// queue it feeds. # C: O(1)
 #[inline]
 pub fn clamp_qlen(backlog: i32, somaxconn: i32) -> i32 { core::cmp::min(backlog, somaxconn) }
+
+/// Outstanding fast-open requests, and the reset penalties still charged.
+#[derive(Default)]
+struct Outstanding {
+    /// Fast-open connections whose handshake has not finished, plus every
+    /// penalty below.
+    qlen: i32,
+    /// When each charged reset stops counting, oldest first. A penalty is only
+    /// ever reclaimed by an admission that needs the slot, so this is
+    /// FIFO-ordered by expiry without being sorted.
+    penalties: VecDeque<u64>,
+}
 
 /// Fast-open state of one accept queue.
 pub struct FastOpenQueue {
@@ -32,6 +53,8 @@ pub struct FastOpenQueue {
     /// Keys this listener mints and verifies cookies with, overriding its
     /// namespace's. `None` = follow the namespace.
     ctx: Spinlock<Option<KeyCtx>, SockLockClass>,
+    /// The bound's live occupancy.
+    out: Spinlock<Outstanding, SockLockClass>,
 }
 
 impl Default for FastOpenQueue {
@@ -41,7 +64,10 @@ impl Default for FastOpenQueue {
 
 impl FastOpenQueue {
     /// # C: O(1)
-    pub fn new() -> Self { Self { max_qlen: AtomicI32::new(0), ctx: Spinlock::new(None) } }
+    pub fn new() -> Self {
+        Self { max_qlen: AtomicI32::new(0), ctx: Spinlock::new(None),
+               out: Spinlock::new(Outstanding::default()) }
+    }
 
     /// # C: O(1)
     pub fn max_qlen(&self) -> i32 { self.max_qlen.load(Ordering::Acquire) }
@@ -54,6 +80,47 @@ impl FastOpenQueue {
 
     /// # C: O(1)
     pub fn set_keys(&self, ctx: KeyCtx) { *self.ctx.lock() = Some(ctx); }
+
+    /// Outstanding fast-open requests, reset penalties included. # C: O(1)
+    pub fn qlen(&self) -> i32 { self.out.lock().qlen }
+
+    /// Whether the bound has room for one more fast-open request, reclaiming
+    /// the oldest reset penalty first if it has run out.
+    ///
+    /// It is asked before the cookie is looked at, so a listener that is full
+    /// declines without spending the hash — and a client cannot tell a full
+    /// queue from a server that does not do fast open at all, because both
+    /// answer with a plain handshake. # C: O(1)
+    pub fn admit(&self, now_ns: u64) -> bool {
+        let max = self.max_qlen();
+        if max == 0 { return false; }
+        let mut out = self.out.lock();
+        if out.qlen < max { return true; }
+        match out.penalties.front() {
+            Some(expiry) if now_ns >= *expiry => { out.penalties.pop_front(); out.qlen -= 1; true }
+            _ => false,
+        }
+    }
+
+    /// Charge one admitted fast-open request against the bound. # C: O(1)
+    pub fn hold(&self) { self.out.lock().qlen += 1; }
+
+    /// Give the charge back once the handshake has finished or been abandoned.
+    ///
+    /// A connection the peer reset keeps its charge for [`RST_PENALTY_NS`]
+    /// instead, but only once the program has taken it: an unaccepted request
+    /// costs the listener nothing extra, while one a program was already
+    /// handed and then lost is the shape a forged source address produces. A
+    /// listener that has stopped listening charges nothing — the bound it
+    /// would protect is gone. # C: O(1)
+    pub fn release(&self, now_ns: u64, reset: bool, accepted: bool, listening: bool) {
+        let mut out = self.out.lock();
+        if out.qlen > 0 { out.qlen -= 1; }
+        if reset && accepted && listening {
+            out.qlen += 1;
+            out.penalties.push_back(now_ns.saturating_add(RST_PENALTY_NS));
+        }
+    }
 }
 
 /// What the transition into listening does to a socket's fast-open queue: a

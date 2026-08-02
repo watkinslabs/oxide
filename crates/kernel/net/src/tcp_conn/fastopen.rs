@@ -53,6 +53,15 @@ impl Cookie {
         Some(c)
     }
 
+    /// The cookie this side issues. Total where [`Self::new`] is not: the
+    /// issued length is fixed, so a mint cannot fail the length rules and has
+    /// no failure for a caller to handle. # C: O(1)
+    pub fn minted(val: [u8; COOKIE_SIZE], exp: bool) -> Self {
+        let mut c = Self { val: [0; COOKIE_MAX], len: COOKIE_SIZE as u8, exp };
+        c.val[..COOKIE_SIZE].copy_from_slice(&val);
+        c
+    }
+
     /// # C: O(1)
     pub fn as_bytes(&self) -> &[u8] { &self.val[..self.len as usize] }
 

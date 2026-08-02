@@ -125,6 +125,19 @@ impl TcpListenEntry {
                            ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                            ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                            min_hop: Arc<crate::min_hop::MinHop>) -> Self {
+        Self::new_with_fastopen(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop,
+            Arc::new(crate::tcp_fastopen::FastOpenQueue::new()))
+    }
+
+    /// Build a listener sharing its socket's fast-open accept-queue state too.
+    /// # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_fastopen(bind: Arc<TcpBindReservation>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           min_hop: Arc<crate::min_hop::MinHop>,
+                           fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>) -> Self {
         let owner = bind.owner.clone();
         Self {
             owner, accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
@@ -134,6 +147,8 @@ impl TcpListenEntry {
             accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             defer_accept: ::core::sync::atomic::AtomicU8::new(0),
             synack_retries: ::core::sync::atomic::AtomicU8::new(0),
+            fastopen,
+            fastopen_no_cookie: ::core::sync::atomic::AtomicBool::new(false),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -280,8 +295,11 @@ impl NetStack {
         let entry = {
             let mut queue = listener.accept_q.lock();
             if listener.is_closed() { return None; }
-            // Everything in this queue is a completed connection: a deferred
-            // one is still a request and was never published here.
+            // Everything in this queue is a connection a program may be
+            // handed: a deferred one is still a request and was never
+            // published here, while a fast-open child is published at its SYN
+            // — its data is already readable and only the acknowledgement
+            // that closes the handshake is still outstanding.
             let entry = queue.pop_front()?;
             entry.accepted.store(true, ::core::sync::atomic::Ordering::Release);
             entry

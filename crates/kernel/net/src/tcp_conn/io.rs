@@ -176,6 +176,15 @@ impl TcpConn {
                     self.ecn_enabled = true;
                     sa_flags |= flags::ECE;
                 }
+                // A SYN whose data was accepted delivers that data now, before
+                // the SYN-ACK is built: the acknowledgement it carries has to
+                // cover the payload, or the peer retransmits what this side
+                // has already handed to the program.
+                if self.fastopen_child && seg.len() > hdr.payload_offset() {
+                    let payload = &seg[hdr.payload_offset()..];
+                    self.append_recv_payload(self.rcv_nxt, payload);
+                    self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
+                }
                 let resp = self.build_syn_with_opts(sa_flags);
                 self.snd_nxt = self.snd_nxt.wrapping_add(1);
                 self.retx_q.push_back(crate::tcp_conn::UnackedSegment {

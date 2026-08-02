@@ -309,6 +309,21 @@ impl NetStack {
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>) -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_reserved_fastopen(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            min_hop, Arc::new(crate::tcp_fastopen::FastOpenQueue::new()))
+    }
+
+    /// Publish a listener sharing the socket's fast-open accept-queue state
+    /// too — the bound `TCP_FASTOPEN` named before this `listen`, the keys it
+    /// mints with, and the occupancy that bound governs. # C: O(N)
+    #[allow(clippy::too_many_arguments)]
+    pub fn tcp_listen_reserved_fastopen(&self, bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        min_hop: Arc<crate::min_hop::MinHop>,
+        fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>) -> NetResult<Arc<TcpListenEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -337,8 +352,8 @@ impl NetStack {
             });
             if conflict { return Err(NetError::Eaddrinuse); }
         }
-        let entry = Arc::new(TcpListenEntry::new_with_min_hop(
-            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop));
+        let entry = Arc::new(TcpListenEntry::new_with_fastopen(
+            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop, fastopen));
         let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
         listeners.entry(key).or_default().push(entry.clone());
         bind.role.store(TCP_BIND_LISTEN, Ordering::Release);
