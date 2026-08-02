@@ -13,6 +13,7 @@
 //! - `root`: global root provider plus absolute resolve/mount-identification helpers.
 //! - `lookup`: public lookup wrapper entry points.
 
+mod child;
 mod create;
 mod group_list;
 mod device_permission;
