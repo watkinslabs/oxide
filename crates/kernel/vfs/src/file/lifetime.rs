@@ -11,6 +11,17 @@ use super::hooks::{close_hooks, flock_release_hook};
 
 impl Drop for File {
     fn drop(&mut self) {
+        // Linux `__fput` → `dissolve_on_fput`: an `fsmount(2)` fd that was never
+        // moved takes its anonymous mount with it. `dissolve_anon` re-checks
+        // that the mount is STILL an anonymous root, so a mount that
+        // `move_mount(2)` has since grafted is left alone — the flag says "this
+        // fd created it", not "this fd owns it forever".
+        let pending_unmount = self.need_unmount.load(Ordering::Acquire);
+        if pending_unmount != 0 {
+            if let Some(m) = crate::mount::mount_by_id(pending_unmount) {
+                crate::mount::dissolve_anon(&m);
+            }
+        }
         self.release_epoll_links();
         // Drop any lease / dnotify registration (Linux `__fput` → `locks_remove_file`
         // / `dnotify_flush`). Weaks self-expire, but prune eagerly + fix the counters.
