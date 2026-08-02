@@ -30,6 +30,7 @@ mod virtio_bus;
 mod virtio_child;
 mod virtio_drv;
 mod trace;
+#[cfg(feature = "debug-boot")]
 mod virtio_trace;
 mod virtio_transport;
 
