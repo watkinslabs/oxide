@@ -53,7 +53,7 @@ pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
             if let Some(c) = cur.as_ref() {
                 // SAFETY: running task on this CPU; single-mutator mm slot.
                 if let Some(mm) = unsafe { c.mm_ref() } {
-                    let mut symbolize = |label: &'static [u8], addr: u64| {
+                    let symbolize = |label: &'static [u8], addr: u64| {
                         if let Some(uva) = hal::UserVirtAddr::new(addr) {
                             if let Some(vma) = mm.find_vma(uva) {
                                 if let vmm::VmaBacking::File { backing, off } = &vma.backing {
@@ -97,10 +97,8 @@ pub fn sys_sched_yield(_args: &SyscallArgs) -> i64 {
                                             klog::write_raw(b" LOCK@"); klog::write_hex_u64(lock_va);
                                             klog::write_raw(b"=");      klog::write_hex_u64(byte as u64);
                                             #[cfg(target_arch = "x86_64")]
-                                            // SAFETY: read-only translate of the active root for a
-                                            // user VA, in syscall context on the owning CPU.
-                                            if let Some((pa, _)) = unsafe {
-                                                <hal_x86_64::mmu_ops::X86Mmu as hal::MmuOps>::translate(hal::Va(lock_va & !0xfff)) } {
+                                            if let Some((pa, _)) =
+                                                <hal_x86_64::mmu_ops::X86Mmu as hal::MmuOps>::translate(hal::Va(lock_va & !0xfff)) {
                                                 klog::write_raw(b" rc="); klog::write_dec_u64(pmm::setup::frame_refcount(pa.0 & !0xfff) as u64);
                                             }
                                         }

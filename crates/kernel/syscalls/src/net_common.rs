@@ -3,7 +3,6 @@
 use alloc::sync::Arc;
 use net::sock::InetSocket;
 
-pub(crate) use crate::net_errno::errno_from_neterr;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "307_sendmmsg.rs"]

@@ -31,8 +31,14 @@ pub const CLASS_SIZES: [usize; 11] =
     [16, 32, 64, 96, 128, 192, 256, 512, 1024, 2048, 4096];
 
 /// Largest routed request. Above this, Linux leaves `kmalloc` for the page
-/// allocator; here the hole list keeps large blocks.
-pub const MAX_CLASS_BYTES: usize = 4096;
+/// allocator; here the hole list keeps large blocks. Derived from
+/// [`CLASS_SIZES`] so the bound cannot drift from the table it bounds.
+///
+/// Read by the real `class_index` and by the class-routing tests. Diagnostic
+/// builds replace `class_index` with a stub that routes nothing, so in those
+/// configurations the bound has no reader.
+#[allow(dead_code)]
+pub const MAX_CLASS_BYTES: usize = CLASS_SIZES[CLASS_SIZES.len() - 1];
 
 /// Alignment every slab base is carved to, and the largest alignment a routed
 /// request may ask for. Linux's `kmalloc` caches guarantee `ARCH_KMALLOC_MINALIGN`

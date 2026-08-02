@@ -16,7 +16,7 @@ use net::sock_opts::sol_ipv6::state::Sticky;
 use net::sock_opts::sol_ipv6::uapi::*;
 use net::sock_opts::sol_ipv6::{flowlabel, hdr};
 
-use crate::net_common::errno_from_neterr;
+use crate::net_errno::errno_from_neterr;
 use super::multicast::{
     SourceOp, ipv6_group_filter, ipv6_mcast_group_req, ipv6_mcast_group_source_req,
     ipv6_mcast_membership,

@@ -5,12 +5,9 @@
 // the records live in the queue, which is where the loss accounting and the
 // filter also live.
 
-use alloc::sync::Arc;
-
-use vfs::{Inode, KResult, VfsError};
+use vfs::{KResult, VfsError};
 
 use super::queue::WatchQueue;
-use super::registry;
 
 /// Non-blocking record read. An empty queue is EAGAIN — not end-of-file: the
 /// kernel is the only writer, and it has not stopped existing. # C: O(records)
@@ -28,9 +25,6 @@ pub fn read_nb(q: &WatchQueue, buf: &mut [u8]) -> KResult<usize> {
 pub fn poll_mask(q: &WatchQueue) -> u32 {
     if q.readable() { vfs::POLL_IN } else { 0 }
 }
-
-/// The queue for an inode, if it is a notification pipe. # C: O(log N)
-pub fn queue(inode: &Inode) -> Option<Arc<WatchQueue>> { registry::queue_of(inode) }
 
 /// Writing to a notification pipe is EXDEV: the descriptor is a delivery
 /// endpoint, not a channel, and its records come from the kernel. Reported as

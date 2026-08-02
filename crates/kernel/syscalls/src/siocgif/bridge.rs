@@ -98,7 +98,7 @@ fn bridge_name(arg: u64) -> Result<alloc::string::String, i64> {
         .map_err(|_| -(Errno::Einval.as_i32() as i64))
 }
 
-fn errno(error: net::NetError) -> i64 { crate::net_common::errno_from_neterr(error) }
+fn errno(error: net::NetError) -> i64 { crate::net_errno::errno_from_neterr(error) }
 
 fn add_bridge(net_ns: u64, arg: u64) -> i64 {
     let name = match bridge_name(arg) { Ok(name) => name, Err(rv) => return rv };

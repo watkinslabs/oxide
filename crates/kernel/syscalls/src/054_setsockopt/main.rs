@@ -6,7 +6,8 @@ use core::sync::atomic::Ordering;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from_file};
+use crate::net_common::{fd_file, socket_from_file, vsock_from_file};
+use crate::net_errno::errno_from_neterr;
 use crate::net_trace::trace_enotsock_at;
 use super::raw::raw_setsockopt;
 use super::packet::packet_setsockopt;

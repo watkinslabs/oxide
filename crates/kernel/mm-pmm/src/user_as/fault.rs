@@ -346,13 +346,12 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
     if let FaultKind::Protection { access: FaultAccess::Write } = fault {
         use hal::MmuOps;
         let va_page = uva.as_u64() & !(hal::PAGE_SIZE_BYTES - 1);
-        // SAFETY: read-only translate of the active CR3/TTBR0 for the faulting VA.
+        // Read-only translate of the active CR3/TTBR0 for the faulting VA
+        // through the safe `MmuOps` trait method.
         #[cfg(target_arch = "x86_64")]
-        let cur = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
-        // SAFETY: same read-only translate of the live root as the x86_64 arm
-        // above, in fault context on the CPU that owns it.
+        let cur = hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page));
         #[cfg(target_arch = "aarch64")]
-        let cur = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
+        let cur = hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page));
         if let Some((p, _)) = cur {
             let tid = sched::current().map(|t| t.tid).unwrap_or(0);
             let cpu = current_cpu_idx() as u32;

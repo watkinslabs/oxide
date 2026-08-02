@@ -4,7 +4,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
-use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from_file};
+use crate::net_common::{fd_file, socket_from_file, vsock_from_file};
+use crate::net_errno::errno_from_neterr;
 
 #[path = "055_getsockopt/multicast.rs"]
 mod multicast;

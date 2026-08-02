@@ -105,9 +105,9 @@ pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
     let s = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&s.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Bind)
-    { return crate::net_common::errno_from_neterr(error); }
+    { return crate::net_errno::errno_from_neterr(error); }
     if let Err(error) = ::netlink::bind_port_id(s, port_id) {
-        return crate::net_common::errno_from_neterr(error);
+        return crate::net_errno::errno_from_neterr(error);
     }
     s.set_group_mask(nl_groups);
     #[cfg(feature = "debug-uevent")]
@@ -126,9 +126,9 @@ pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
     let socket = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Connect)
-    { return crate::net_common::errno_from_neterr(error); }
+    { return crate::net_errno::errno_from_neterr(error); }
     if family as u32 == net::socket_args::AF_UNSPEC {
-        return socket.disconnect_destination().map_or_else(crate::net_common::errno_from_neterr, |_| 0);
+        return socket.disconnect_destination().map_or_else(crate::net_errno::errno_from_neterr, |_| 0);
     }
     if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
     if address.len() < ::netlink::SOCKADDR_NL_SIZE {
@@ -136,7 +136,7 @@ pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
     }
     let port_id = u32::from_ne_bytes(address[4..8].try_into().unwrap());
     let groups = u32::from_ne_bytes(address[8..12].try_into().unwrap());
-    socket.connect_destination(port_id, groups).map_or_else(crate::net_common::errno_from_neterr, |_| 0)
+    socket.connect_destination(port_id, groups).map_or_else(crate::net_errno::errno_from_neterr, |_| 0)
 }
 
 /// `setsockopt(fd, level, optname, optval, optlen)` for netlink. At
@@ -154,7 +154,7 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     let socket = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
-    { return crate::net_common::errno_from_neterr(error); }
+    { return crate::net_errno::errno_from_neterr(error); }
     // Linux handles SOL_SOCKET options on a netlink socket through the generic
     // `sock_setsockopt`, so SO_RCVTIMEO lands on `sk->sk_rcvtimeo` and is read
     // back by `__skb_wait_for_more_packets` (`net/core/datagram.c:128`) for
@@ -193,7 +193,7 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
         let membership = if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group) }
             else if optname == NETLINK_DROP_MEMBERSHIP { s.drop_membership(group) }
             else { s.set_no_enobufs(group != 0); Ok(()) };
-        if let Err(error) = membership { return crate::net_common::errno_from_neterr(error); }
+        if let Err(error) = membership { return crate::net_errno::errno_from_neterr(error); }
         #[cfg(feature = "debug-uevent")]
         if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
             trace_uev_bind(group, if optname == NETLINK_ADD_MEMBERSHIP { b"addmemb" } else { b"dropmemb" });
@@ -211,7 +211,7 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     let socket = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
-    { return crate::net_common::errno_from_neterr(error); }
+    { return crate::net_errno::errno_from_neterr(error); }
     let mut raw_len = [0u8; core::mem::size_of::<i32>()];
     if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {
         return -(Errno::Efault.as_i32() as i64);
@@ -270,7 +270,7 @@ pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
         net::socket_args::AF_NETLINK_WIRE,
         security::network::Operation::NameQuery,
     ) {
-        return crate::net_common::errno_from_neterr(e);
+        return crate::net_errno::errno_from_neterr(e);
     }
     // nl_pid MUST be the socket's port_id — the same value its replies
     // carry in nlmsg_pid. sd_netlink learns this via getsockname and then
@@ -295,7 +295,7 @@ pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
         net::socket_args::AF_NETLINK_WIRE,
         security::network::Operation::NameQuery,
     ) {
-        return crate::net_common::errno_from_neterr(e);
+        return crate::net_errno::errno_from_neterr(e);
     }
     let dest = target.socket().destination();
     let sa = encoded_sockaddr_nl(dest.port_id, dest.group);
@@ -326,7 +326,7 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
     };
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
-    { return crate::net_common::errno_from_neterr(error); }
+    { return crate::net_errno::errno_from_neterr(error); }
     let dest = match user_sockaddr_nl(name, namelen) {
         Some(name) => match ::netlink::parse_dest(&name) {
             Ok(dest) => dest,
@@ -364,7 +364,7 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
     };
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&sock.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
-    { return crate::net_common::errno_from_neterr(error); }
+    { return crate::net_errno::errno_from_neterr(error); }
     let dest = if name.is_empty() { sock.destination() } else {
         match ::netlink::parse_dest(name) {
             Ok(dest) => dest,

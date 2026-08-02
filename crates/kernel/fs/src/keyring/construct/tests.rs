@@ -39,7 +39,7 @@ static CACHED_UPCALLS: AtomicU32 = AtomicU32::new(0);
 const CACHED_DESC: &str = "negate-cached";
 
 fn ctx(tid: u32, uid: u32) -> Ctx {
-    Ctx::new(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false)
+    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false, false)
 }
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }

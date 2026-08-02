@@ -136,7 +136,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         if let Err(error) = net::security_admission::check(
             net::net_ns::namespace_id(&namespace), sioc_socket_family(&file),
             security::network::Operation::Ioctl,
-        ) { return crate::net_common::errno_from_neterr(error); }
+        ) { return crate::net_errno::errno_from_neterr(error); }
         return super::netns::handle_siocgskns(namespace);
     }
     if matches!(req, super::uapi::SIOCGSTAMP_OLD | super::uapi::SIOCGSTAMPNS_OLD
@@ -161,7 +161,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         if let Err(error) = net::security_admission::check(
             net::net_ns::namespace_id(&namespace), sioc_socket_family(&file),
             security::network::Operation::Ioctl,
-        ) { return crate::net_common::errno_from_neterr(error); }
+        ) { return crate::net_errno::errno_from_neterr(error); }
         if let Some(rv) = handle_socket_owner_ioctl(&file, req, arg) { return rv; }
     }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
@@ -180,9 +180,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         if let Err(error) = net::security_admission::check(
             net::net_ns::namespace_id(&net_namespace), sioc_socket_family(&file),
             security::network::Operation::Ioctl,
-        ) { return crate::net_common::errno_from_neterr(error); }
+        ) { return crate::net_errno::errno_from_neterr(error); }
         if let Some(error) = net::sock::legacy_ioctl_errno(sioc_socket_family(&file), req) {
-            return crate::net_common::errno_from_neterr(error);
+            return crate::net_errno::errno_from_neterr(error);
         }
         if access == crate::siocgif::SiocAccess::Mutate
             && !nscg::has_net_admin_for(cur, &net_namespace)
@@ -269,7 +269,7 @@ fn socket_receive_timestamp_ioctl(file: &vfs::File, req: u64, arg: u64) -> i64 {
     };
     if let Err(error) = net::security_admission::check(sock.net_ns(),
         sock.family.load(core::sync::atomic::Ordering::Acquire), security::network::Operation::Ioctl)
-    { return crate::net_common::errno_from_neterr(error); }
+    { return crate::net_errno::errno_from_neterr(error); }
     let timestamp_ns = match sock.enable_receive_timestamp() {
         Some(timestamp_ns) => timestamp_ns,
         None => return -(Errno::Enoent.as_i32() as i64),

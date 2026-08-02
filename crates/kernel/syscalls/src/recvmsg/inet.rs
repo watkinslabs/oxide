@@ -6,7 +6,7 @@ use net::sock::{InetSocket, Received, SockKind};
 use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
-use crate::net_common::errno_from_neterr;
+use crate::net_errno::errno_from_neterr;
 use crate::net_sockaddr::{encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::recv_user::RecvUser;
 use crate::recv_control::Control;

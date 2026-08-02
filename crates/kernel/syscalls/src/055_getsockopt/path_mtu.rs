@@ -6,7 +6,7 @@ use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 use net::sock::SockKind;
 
-use crate::net_common::errno_from_neterr;
+use crate::net_errno::errno_from_neterr;
 use super::out::OptOut;
 
 /// `IP_MTU` / `IPV6_MTU`: the path MTU toward the connected peer. Linux

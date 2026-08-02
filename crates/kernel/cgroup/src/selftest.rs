@@ -2,7 +2,6 @@
 //! the SAME VFS path userspace uses (`vfs::resolve_abs` then Inode
 //! read/write/mkdir/rmdir) so a routing or inode-impl regression surfaces
 //! as a klog FAIL at boot. Lives in the cgroup crate (it tests cgroup).
-use vfs::Inode;
 
 fn rd(path: &str) -> alloc::vec::Vec<u8> {
     match vfs::resolve_abs(path) {
