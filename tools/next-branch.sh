@@ -19,7 +19,7 @@
 # the remote — so three lanes drew B1667 on one day and an entire
 # implementation was discarded as the duplicate.
 #
-# `--claim` closes that window: it pushes a ref under `claim/` to origin BEFORE
+# `--claim` closes that window: it pushes a ref under `refs/claims/` to origin BEFORE
 # returning the name. The ref carries a commit unique to this lane, so two lanes
 # racing for one number push DIFFERENT values to the SAME ref and the remote
 # rejects the loser — the atomicity is the remote's, not a check-then-act here.
@@ -38,7 +38,7 @@ TYPES="F B D R Z C"
 git_max() {
   local t=$1
   {
-    git for-each-ref --format='%(refname:short)' refs/heads refs/remotes
+    git for-each-ref --format='%(refname:short)' refs/heads refs/remotes refs/claims
     git log --all --format='%s'
   } | grep -oE "(^|[^A-Za-z0-9])${t}[0-9]{2,4}(-|$)" \
     | grep -oE "${t}[0-9]{2,4}" \
@@ -50,10 +50,13 @@ git_max() {
 # lanes have taken but not yet built anything on. Failure is not fatal: a lane
 # with no network still gets the git-and-index answer it always got.
 fetch_claims() {
-  git fetch -q origin '+refs/heads/claim/*:refs/remotes/origin/claim/*' 2>/dev/null || true
+  git fetch -q origin '+refs/claims/*:refs/claims/*' 2>/dev/null || true
 }
 
-# Take NUMBER for TYPE by creating `claim/<TYPE><nn>` on the remote. The pushed
+# Take NUMBER for TYPE by creating `refs/claims/<TYPE><nn>` on the remote. NOT
+# under refs/heads — a claim is not a branch and must never appear in the branch
+# list. Remote ref creation is atomic in any namespace, so this loses nothing.
+# The pushed
 # commit is empty and unique to this invocation, so a second lane pushing to the
 # same ref is a non-fast-forward and is refused. Returns non-zero if the number
 # is already taken.
@@ -63,7 +66,7 @@ claim_number() {
   tree=$(git rev-parse "${base}^{tree}")
   sha=$(git commit-tree "$tree" -p "$base" \
         -m "claim ${name} by $(hostname)/$$ at $(date -u +%Y-%m-%dT%H:%M:%SZ)")
-  git push -q origin "${sha}:refs/heads/claim/${name}" 2>/dev/null
+  git push -q origin "${sha}:refs/claims/${name}" 2>/dev/null
 }
 
 # The `next` value recorded in the index table for TYPE.
