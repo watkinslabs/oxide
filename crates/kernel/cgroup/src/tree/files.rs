@@ -52,8 +52,26 @@ impl Tree {
             "memory.oom.group" => format!("{}\n", n.mem_oom_group as u8),
             "memory.zswap.max" => { let mut o = fmt_max(n.zswap_max); o.push('\n'); o }
             "memory.pressure_level" => "0\n".to_string(),
+            // `memory_localevents` (Linux `CGRP_ROOT_MEMORY_LOCAL_EVENTS`):
+            // report THIS cgroup's own counts instead of the subtree's. The
+            // default is the recursive count, which is what a v2 reader
+            // expects; `memory.events.local` below is always the local one, as
+            // upstream publishes it unconditionally.
+            // Published unconditionally by the reference, and always the
+            // node's own counts — the file exists so a reader can get the
+            // local view without changing how the hierarchy is mounted.
+            "memory.events.local" => {
+                let e = self.local_memory_events(id);
+                format!("low {}\nhigh {}\nmax {}\noom {}\noom_kill {}\n",
+                    e.low, e.high, e.max, e.oom, e.oom_kill)
+            }
             "memory.events" => {
-                let e = self.subtree_memory_events(id);
+                let e = if crate::state::root_flags()
+                    .has(crate::root_flags::RootFlag::MemoryLocalEvents) {
+                    self.local_memory_events(id)
+                } else {
+                    self.subtree_memory_events(id)
+                };
                 format!("low {}\nhigh {}\nmax {}\noom {}\noom_kill {}\n", e.low, e.high, e.max, e.oom, e.oom_kill)
             }
             "memory.stat" => {

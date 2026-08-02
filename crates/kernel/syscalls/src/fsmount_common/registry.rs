@@ -88,9 +88,26 @@ pub fn ensure_filesystems_registered() {
 ///
 /// `proc` is the exception, and `Some(&[])` is a real declaration rather than
 /// a default — see its registration below.
+/// The calling task's cgroup-namespace root path, for `nsdelegate`.
+///
+/// The cgroup crate is a leaf with no `sched`/`nscg` dependency (the same
+/// reason its signal and freeze hooks are installed rather than called), so the
+/// live lookup lives here and the DECISION it feeds — is this cgroup inside
+/// that root — lives in the cgroup crate where it is hosted-tested.
+/// # C: O(1)
+fn cgroup_ns_root_of_caller() -> Option<alloc::string::String> {
+    let cur = sched::live::current()?;
+    let ns = cur.namespace_owner(namespace_identity::NamespaceKind::Cgroup)?;
+    Some(nscg::cgroup_ns::root_of(&ns))
+}
+
 fn register_filesystems() {
     use vfs::fs::{superblock_from_filesystem, FsFlags, FsType, register_fs};
     type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
+
+    // One-time: give the cgroup crate its view of the caller's cgroup namespace
+    // so `nsdelegate` can be enforced.
+    cgroup::state::set_cgroup_ns_root_hook(cgroup_ns_root_of_caller);
 
     // Every registered constructor funnels its `sb_flags` word through here:
     // Linux stamps `s_flags` in `alloc_super()`, so the flags a `mount -o
@@ -212,8 +229,17 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(devfs::DevfsFs);
         mounted(ty, fs, None, "devtmpfs", sb_flags)
     })));
-    let _ = register_fs(FsType::new("cgroup2", CGROUP2_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+    // cgroup2 declares the six flags the reference does. They are hierarchy-wide
+    // (Linux keeps them in `cgrp_dfl_root.flags`, not per mount), so a mount
+    // naming one turns it on for the whole default hierarchy — and a remount
+    // ORs, never clears, so a second mount cannot silently drop a delegation
+    // boundary. Every name is declared because omitting one would fail a mount
+    // the reference accepts; which of them this kernel can act on is recorded
+    // per flag on `cgroup::root_flags::RootFlag`.
+    let _ = register_fs(FsType::with_parameters("cgroup2", CGROUP2_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        let flags = cgroup::root_flags::flags_for_mount(d, p)?;
+        cgroup::state::add_root_flags(flags);
         let (fs, root) = cgroup::realize_tree();
         mounted(ty, fs, Some(root), "cgroup2", sb_flags)
-    })));
+    }), Some(cgroup::root_flags::CGROUP2_PARAMS)));
 }
