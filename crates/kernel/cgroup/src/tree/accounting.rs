@@ -229,6 +229,13 @@ impl Tree {
         out
     }
 
+    /// This cgroup's OWN memory events, with no descendant contribution — what
+    /// `memory.events.local` always reports, and what `memory.events` reports
+    /// under `memory_localevents`. # C: O(log n)
+    pub fn local_memory_events(&self, id: u64) -> MemoryEvents {
+        self.nodes.get(&id).map(|n| n.memory_events).unwrap_or_default()
+    }
+
     /// Direct memory-event snapshot for this node and its descendants.
     /// # C: O(subtree)
     pub fn subtree_memory_events(&self, id: u64) -> MemoryEvents {
