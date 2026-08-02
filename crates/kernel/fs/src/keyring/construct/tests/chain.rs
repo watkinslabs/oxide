@@ -46,6 +46,19 @@ pub(super) fn answer_after_exec(a: &HelperArgs, h: &Ctx, helper_tid: u32) -> i64
     instantiate_core(h, a.key, ANSWER.to_vec(), 0)
 }
 
+/// The actor body for `sessiondest`: cache the answer in the REQUESTER's
+/// session keyring, named by serial — what the stock handler's `%S` expands to.
+/// # C: O(N)
+pub(super) fn answer_into_requester_session(a: &HelperArgs, h: &Ctx) -> i64 {
+    let ring = {
+        let g = STORE.lock();
+        g.keys.get(&a.authkey).and_then(|k| k.auth.as_ref()).map(|d| d.requester.tid)
+            .and_then(|tid| g.session.get(&tid).copied()).unwrap_or(0)
+    };
+    assert!(ring > 0, "the requester has a session keyring for the helper to name");
+    instantiate_core(h, a.key, ANSWER.to_vec(), ring)
+}
+
 /// The actor body for `borrow`: read a key that exists only in the REQUESTER's
 /// keyrings, then answer. # C: O(N)
 pub(super) fn answer_after_borrowing_a_requester_key(a: &HelperArgs, h: &Ctx) -> i64 {
@@ -161,4 +174,23 @@ fn the_requester_reach_is_token_scoped_and_never_yields_a_token() {
             .is_err(), "the reach lasts exactly as long as the token is held");
         let _ = token;
     }
+}
+
+// The destination the stock handler actually names. A session keyring grants
+// its owner View and Read through the user byte and Write only through the
+// possessor byte, and the helper is a different task — so caching the answer
+// there is EACCES unless the helper possesses what the REQUESTER possesses.
+// This is the step that stopped every real construction: the token reached the
+// program that answers, and the answer had nowhere to go.
+#[test]
+fn a_helper_caches_the_answer_in_the_requester_s_session_keyring() {
+    with_helper();
+    let t = ctx(910_112, 910_112);
+    let ses = join_session(&t, None) as i32;
+    assert!(ses > 0);
+    let key = request_key_core(&t, "user", "sessiondest-probe", Some(b"callout"), 0);
+    assert!(key > 0, "the construction completed: {key}");
+    let g = STORE.lock();
+    assert!(g.keys[&ses].members.contains(&(key as i32)),
+        "the answer is cached where the helper was told to put it");
 }

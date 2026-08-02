@@ -46,7 +46,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// The behaviour a test selects through the key description it asks for.
 fn behaviour(desc: &str) -> &'static str {
-    for b in ["unrunnable", "silent", "negate", "reject", "dest", "chain", "execonly", "borrow",
+    for b in ["unrunnable", "silent", "negate", "reject", "dest", "chain", "execonly", "borrow", "sessiondest",
         "instantiate"]
     {
         if desc.starts_with(b) { return b; }
@@ -88,6 +88,9 @@ fn test_helper(a: &HelperArgs) -> i64 {
         // A handler that needs one of the REQUESTER's keys reaches it through
         // the token it holds. See `chain`.
         "borrow" => chain::answer_after_borrowing_a_requester_key(a, &h),
+        // Name the requester's session keyring by serial, the way the stock
+        // handler's `%S` does. See `chain`.
+        "sessiondest" => chain::answer_into_requester_session(a, &h),
         _ => instantiate_core(&h, a.key, b"from-helper".to_vec(), 0),
     };
     assert_eq!(rc, 0, "the helper answered the key: {desc}");
