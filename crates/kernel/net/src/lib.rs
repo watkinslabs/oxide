@@ -196,6 +196,8 @@ mod tests_ipv4_udp_errors;
 #[cfg(test)]
 mod tests_ipv4_options_tx;
 #[cfg(test)]
+mod tests_udp_no_check_tx;
+#[cfg(test)]
 mod tests_inet_netns;
 #[cfg(test)]
 mod tests_min_hop;
