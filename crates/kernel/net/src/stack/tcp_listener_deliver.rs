@@ -165,21 +165,16 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16,
     metrics: crate::route_metrics::RouteMetrics, packet: &[u8],
     listener: &Arc<TcpListenEntry>, iface: NetIfaceId, ipv6: bool) -> Arc<TcpEntry>
 {
-    let mut conn = TcpConn::new_listener(local_ep);
-    conn.own_mss = own_mss;
-    conn.apply_route_metrics(metrics);
-    // Record the handshake packet the child was opened by, from the network
-    // header onward, so an accepted socket that asked for it with
-    // `TCP_SAVE_SYN` has something to collect. It is dropped with the
-    // connection if nobody does.
-    conn.syn_bytes = Some(
-        packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
-    let (iif, ttl, tos) = crate::tcp_conn::passive_rcv_header(packet, ipv6, iface.raw());
-    conn.rcv_iif = iif;
-    conn.rcv_ttl = ttl;
-    conn.rcv_tos = tos;
-    Arc::new(TcpEntry::new_bound_full(
-        conn, Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
+    // This runs on the SOFTIRQ stack — the 16 KiB per-CPU hardirq stack whose
+    // measured peak is already ~14.5 KiB (`sched::kstack`). A `TcpConn` is 584
+    // bytes and a `TcpEntry` 688, so holding a fully-built `conn` local ACROSS
+    // the entry construction put both in one frame (measured 1816 bytes, the
+    // deepest on the receive path). The connection state is behind the entry's
+    // own lock, so the child is built first and its fields written through that
+    // lock — the same order the reference uses, where the child socket is
+    // allocated and then initialised rather than assembled on the stack.
+    let child = Arc::new(TcpEntry::new_bound_full(
+        TcpConn::new_listener(local_ep), Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
         Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)),
         Arc::new(::core::sync::atomic::AtomicI32::new(
             listener.ip_mtu_discover.load(::core::sync::atomic::Ordering::Acquire))),
@@ -190,5 +185,21 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16,
         // snapshotted: a later write reaches every child, which is what a
         // socket option inherited from a listening socket does.
         listener.min_hop.clone(),
-    ))
+    ));
+    {
+        let mut conn = child.conn.lock();
+        conn.own_mss = own_mss;
+        conn.apply_route_metrics(metrics);
+        // Record the handshake packet the child was opened by, from the network
+        // header onward, so an accepted socket that asked for it with
+        // `TCP_SAVE_SYN` has something to collect. It is dropped with the
+        // connection if nobody does.
+        conn.syn_bytes = Some(
+            packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
+        let (iif, ttl, tos) = crate::tcp_conn::passive_rcv_header(packet, ipv6, iface.raw());
+        conn.rcv_iif = iif;
+        conn.rcv_ttl = ttl;
+        conn.rcv_tos = tos;
+    }
+    child
 }
