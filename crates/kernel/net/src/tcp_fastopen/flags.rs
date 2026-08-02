@@ -26,6 +26,11 @@ pub const TFO_SERVER_COOKIE_NOT_REQD: i32 = 0x200;
 /// know nothing about the option.
 pub const TFO_SERVER_WO_SOCKOPT1: i32 = 0x400;
 
+/// Compiled default of `net.ipv4.tcp_fastopen_blackhole_timeout_sec`: the
+/// pause on active fast open is off until an administrator asks for it, so a
+/// host that meets one bad middlebox does not stop fast-opening everywhere.
+pub const BLACKHOLE_TIMEOUT_DEFAULT: i64 = 0;
+
 /// Compiled default of the sysctl: the client half only. A host therefore
 /// accepts `TCP_FASTOPEN_CONNECT` out of the box and fast-opens nothing it
 /// listens for until an administrator says so.

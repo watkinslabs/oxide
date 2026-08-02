@@ -61,6 +61,7 @@ impl InetSocket {
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])), peer6: Arc::new(Spinlock::new(None)),
             peer6_scope: core::sync::atomic::AtomicU32::new(0),
+            fastopen_deferred: Spinlock::new(None),
             owner,
             receive_timestamp_ns: core::sync::atomic::AtomicU64::new(crate::sock::SOCKET_TIMESTAMP_UNSET),
             receive_timestamp_enabled: core::sync::atomic::AtomicBool::new(false),

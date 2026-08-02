@@ -233,6 +233,16 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
         let timeout = socket.opts.sndtimeo_ns.load(Ordering::Acquire);
         if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 }
     };
+    // One call that both opens the connection and sends: the write reports
+    // one result for both halves, so it cannot go through the send loop
+    // below, which assumes a connection already exists.
+    if net::sock::send_fastopen::opens_connection(socket,
+        flags as u64 & net::uapi::MSG_FASTOPEN != 0)
+    {
+        let result = net::sock::send_fastopen::send(socket, &message.payload, dest, nonblock)
+            .map_err(Error::from);
+        return if signals_pipe { complete(ctx, flags, result) } else { result };
+    }
     let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::TcpConn(_));
     if flags as u64 & net::uapi::MSG_OOB != 0 && stream {
         let byte = *message.payload.first().ok_or(Error::Einval)?;

@@ -29,6 +29,11 @@ struct TcpInfo {
     tcpi_total_rto_time: u32,
 }
 
+/// Width and position of `tcpi_fastopen_client_fail` inside the bitfield byte
+/// `tcpi_delivery_rate_app_limited` opens.
+const FASTOPEN_CLIENT_FAIL_MASK: u8 = 0x3;
+const FASTOPEN_CLIENT_FAIL_SHIFT: u32 = 1;
+
 const TCP_INFO_LEN: usize = core::mem::size_of::<TcpInfo>();
 /// Short-buffer boundary the copyout tests cut at: everything before
 /// `tcpi_pacing_rate` is the pre-3.15 `struct tcp_info` prefix.
@@ -93,6 +98,11 @@ fn populate(sock: &InetSocket, info: &mut TcpInfo) {
     info.tcpi_snd_cwnd = c.cwnd / core::cmp::max(snd_mss, 1);
     info.tcpi_reordering = c.reordering;
     info.tcpi_rcv_space = c.rcv_buf_cap;
+    info.tcpi_data_segs_in = c.data_segs_in;
+    // Linux packs this byte as `delivery_rate_app_limited:1,
+    // fastopen_client_fail:2`, so the reason rides bits 1-2.
+    info.tcpi_delivery_rate_app_limited =
+        (c.fastopen_client_fail & FASTOPEN_CLIENT_FAIL_MASK) << FASTOPEN_CLIENT_FAIL_SHIFT;
 }
 
 #[cfg(target_os = "oxide-kernel")]

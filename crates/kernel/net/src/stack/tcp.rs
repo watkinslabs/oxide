@@ -226,7 +226,12 @@ impl NetStack {
                     let max = if front_is_syn { c.syn_retries }
                         else { crate::tcp_conn::DATA_RETRIES_DEFAULT };
                     let max_retries = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0);
-                    if max_retries >= max || c.user_timeout_expired(now_ns) {
+                    let out_of_budget = max_retries >= max || c.user_timeout_expired(now_ns);
+                    // Read before the retransmit that would advance the count:
+                    // the third consecutive timeout on a connection that fast
+                    // opened names its path a blackhole.
+                    if c.fastopen_blackholed(out_of_budget) { c.fastopen_blackhole_seen = true; }
+                    if out_of_budget {
                         // Give up on this connection. F163: surface as
                         // SO_ERROR = ETIMEDOUT so a getsockopt after
                         // async-connect's EPOLLOUT can report the cause.
@@ -242,6 +247,7 @@ impl NetStack {
                     }
                 }
             };
+            super::tcp_fastopen::drain_client(entry, now_ns);
             for s in &segs {
                 let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
                     entry.bound_iface(), TcpTxPolicy::Entry(entry));
@@ -390,6 +396,7 @@ impl NetStack {
                 let input = c.input_prevalidated(src_ip, dst_ip, seg);
                 (pre_len, pre_state, input, c.recv_buf.len(), c.state, fastopen_child)
             };
+            super::tcp_fastopen::drain_client(&entry, crate::tcp_conn::ka_now_ns());
             let pre_syn = pre_state == crate::tcp_state::TcpState::SynSent;
             let resp = match input {
                 Ok(resp) => resp,
