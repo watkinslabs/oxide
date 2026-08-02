@@ -212,6 +212,15 @@ If you are unsure whether a change is boot-visible, say so and boot once — but
 
 **Rule:** before `git push` on a branch whose changes are boot-visible per the list above — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach the marker.
 
+**Run the two arches CONCURRENTLY, never one after the other (HARD RULE).** `make smoke` already does: the builds are prerequisites and only the boots overlap, and the two boots contend for nothing — separate build namespaces, separate root images, separate qemu instances. Running them back to back doubles the wall clock of every lockstep check for zero information. If you invoke the scripts by hand, background both and `wait` on both, collecting each exit status so one run reports both answers:
+
+```
+./tools/boot-smoke.sh x86 & p1=$!; ./tools/boot-smoke.sh arm & p2=$!
+rc=0; wait $p1 || rc=1; wait $p2 || rc=1; exit $rc
+```
+
+The same applies to any pair of independent long-running checks in a lane — a build, a boot and a hosted suite that do not read each other's output should overlap. Serial execution of independent work is the single largest avoidable cost in a session.
+
 A pre-push hook at `.githooks/pre-push` enforces this automatically. Install once per clone with `git config core.hooksPath .githooks`. Bypass for known-safe doc-only pushes with `SKIP_SMOKE=1 git push`.
 
 Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn GHA minutes. The pre-push hook runs on the dev box where KVM keeps boot under a minute.
