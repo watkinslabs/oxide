@@ -212,6 +212,19 @@ If you are unsure whether a change is boot-visible, say so and boot once — but
 
 **Rule:** before `git push` on a branch whose changes are boot-visible per the list above — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach the marker.
 
+**A HARNESS BEATS A BOOT — reach for the boot only when nothing else can answer (HARD RULE).** A boot is 1-2 minutes plus a build and serialises against every other lane; a hosted test is milliseconds and can be run fifty times while you think. Before booting to answer a question, ask what the smallest thing that could answer it is:
+
+| question | answer it with |
+|---|---|
+| does this decision produce the right value? | a hosted test on the ungated decision function |
+| does this errno/ordering match the reference? | a hosted test, with the reference read first |
+| does this option/flag reach the code that acts on it? | extract the wiring decision into an ungated function and test THAT |
+| does the whole thing work against real glibc userspace? | a boot — this is the only row that needs one |
+
+If a question cannot be answered hosted because the code is `#![cfg(target_os = "oxide-kernel")]`, that is a defect in where the decision lives, not a reason to boot: move the decision into an ungated module and leave the gated file a shim (`docs/53`, and the phantom-test rule above). Doing that is usually FASTER than the boot you were about to run, and it leaves a check behind that can fail next time.
+
+Boot as the FINAL gate, once, when the change is otherwise green — never as the dev loop. If you have booted more than twice to chase one bug, stop and build the harness instead.
+
 **Run the two arches CONCURRENTLY, never one after the other (HARD RULE).** `make smoke` already does: the builds are prerequisites and only the boots overlap, and the two boots contend for nothing — separate build namespaces, separate root images, separate qemu instances. Running them back to back doubles the wall clock of every lockstep check for zero information. If you invoke the scripts by hand, background both and `wait` on both, collecting each exit status so one run reports both answers:
 
 ```
