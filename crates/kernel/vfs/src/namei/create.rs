@@ -38,16 +38,18 @@ pub fn vfs_create_at(dir: &VfsPath, name: &str, mode: u32, ctx: &CreateCtx<'_>)
 }
 
 /// `d_instantiate` for a freshly created object: splice it onto the negative
-/// dentry the lookup left, or add a new one.
+/// dentry the lookup left, or add a new one. Either way the name ends up
+/// POSITIVE and HASHED, which is what makes it reachable.
 ///
-/// The extra `d_drop_child` is this tree's existing behaviour on the open
-/// path — it forces the next lookup through the backend rather than trusting
-/// the dentry just built. Kept identical here so moving the open path onto
-/// this owner changes nothing about what it does.
+/// The open path used to unhash it again immediately, forcing the next lookup
+/// through the backend. That is not what creating a name does, and it is
+/// observable: a caller that keeps the open description and asks whether its
+/// name is still hashed — the way a core dump refuses to write to a file that
+/// was unlinked out from under it — cannot tell the difference between a name
+/// this dropped and a name someone deleted.
 /// # C: O(1)
 fn publish(dir: &VfsPath, name: &str, inode: &InodeRef) -> Arc<Dentry> {
     let d = crate::file::open_dentry_at(&dir.dentry, name, inode);
-    crate::dcache::d_drop_child(&dir.dentry, name);
     crate::file::fire_dirent_create(&dir.inode, name, false);
     d
 }
