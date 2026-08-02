@@ -66,6 +66,7 @@ fn queued_datagram_drains_before_shutdown_eof() {
     assert!(endpoint.enqueue(Raw4Datagram {
         packet: packet.clone(), source: Ipv4Addr::LOOPBACK,
         destination: Ipv4Addr::LOOPBACK, iface, ttl: 64,
+        options: Default::default(),
     }));
 
     endpoint.shutdown_read(&read_shut);

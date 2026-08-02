@@ -18,8 +18,10 @@ pub struct UdpDatagram {
     pub iface: NetIfaceId,
     pub ttl: u8,
     pub tos: u8,
-    /// Received header option area, empty when the header carried none.
-    pub options: Vec<u8>,
+    /// Compiled receive-side option area, empty when the header carried
+    /// none. Compiled rather than raw because the reply area IP_RETOPTS
+    /// echoes needs the pointers the receive pass advanced.
+    pub options: crate::ipv4_options::Compiled,
     /// Largest fragment this datagram was reassembled from, zero when it
     /// arrived whole.
     pub frag_max: u32,
@@ -35,7 +37,7 @@ impl UdpDatagram {
     pub fn plain(src: Ipv4Addr, sport: u16, dst: Ipv4Addr, iface: NetIfaceId, ttl: u8,
                  payload: Vec<u8>) -> Self
     {
-        Self { src, sport, dst, dport: 0, iface, ttl, tos: 0, options: Vec::new(),
+        Self { src, sport, dst, dport: 0, iface, ttl, tos: 0, options: Default::default(),
                frag_max: 0, dont_fragment: false, payload }
     }
 }

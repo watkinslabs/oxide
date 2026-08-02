@@ -109,7 +109,7 @@ fn a_run_never_spans_two_flows() {
 fn plain4(fill: u8) -> UdpDatagram {
     UdpDatagram {
         src: SRC, sport: SPORT, dst: DST, dport: DPORT, iface: iface(1), ttl: TTL,
-        tos: 0, options: alloc::vec::Vec::new(), frag_max: 0, dont_fragment: false,
+        tos: 0, options: Default::default(), frag_max: 0, dont_fragment: false,
         payload: alloc::vec![fill; 100],
     }
 }
@@ -146,7 +146,7 @@ fn a_run_never_spans_two_compared_header_values() {
 fn an_optioned_datagram_is_delivered_alone_even_against_an_identical_one() {
     let optioned = |fill: u8| {
         let mut d = plain4(fill);
-        d.options = alloc::vec![1, 2, 3, 4];
+        d.options = crate::ipv4_options::build(&[1, 1, 1, 1], false).expect("no-ops parse");
         d
     };
     let q = queue(true);

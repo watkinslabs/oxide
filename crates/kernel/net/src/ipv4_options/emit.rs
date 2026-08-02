@@ -61,6 +61,15 @@ pub fn fill(area: &mut [u8], c: &Compiled, src: Ipv4Addr, dst: Ipv4Addr, stamp_m
         let optlen = area.get(at + 1).copied().unwrap_or(0) as usize;
         if optlen >= 4 { stamp(area, at + optlen - 4, dst.octets()); }
     }
+    fill_slots(area, c, src, stamp_ms);
+}
+
+/// The record-route and timestamp slots alone, without the source route's
+/// final-destination slot. A received header owes exactly these: the address
+/// this host answered for, and the arrival stamp. The compile pass already
+/// advanced each pointer past the slot it names, so both sit behind it.
+/// # C: O(1)
+pub fn fill_slots(area: &mut [u8], c: &Compiled, src: Ipv4Addr, stamp_ms: u32) {
     if c.rr_needaddr {
         if let Some(at) = c.rr {
             let ptr = area.get(at + 2).copied().unwrap_or(0) as usize;

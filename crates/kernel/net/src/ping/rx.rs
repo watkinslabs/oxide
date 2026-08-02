@@ -28,7 +28,8 @@ pub struct Reply6<'a> {
 impl NetStack {
     /// Steer one IPv4 echo reply to the endpoint owning its identifier. # C: O(N)
     pub fn deliver_ping_v4(&self, net_ns: u64, iface: NetIfaceId, hdr: &Ipv4Hdr,
-                           message: &[u8], packet: &[u8], hatype: u16) -> bool {
+                           message: &[u8], packet: &[u8], hatype: u16,
+                           opts: &crate::ipv4_options::Compiled) -> bool {
         if message.len() < super::validate::HEADER_LEN { return false; }
         if !is_reply(PingFamily::V4, message[0]) { return false; }
         let Some(table) = self.ping_table(net_ns) else { return false };
@@ -53,6 +54,7 @@ impl NetStack {
             destination: hdr.dst,
             iface,
             ttl: hdr.ttl,
+            options: opts.clone(),
         })
     }
 

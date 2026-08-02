@@ -369,14 +369,12 @@ pub fn recvfrom_opts(
         };
         let full_len = datagram.packet.len();
         let take = core::cmp::min(max_len, full_len);
-        // A raw socket receives the whole packet, so the header fields the
-        // ancillary messages publish are read back out of it.
-        let (tos, options) = match crate::ipv4::Ipv4Hdr::parse(&datagram.packet) {
-            Ok(h) => (Some(h.tos),
-                datagram.packet.get(crate::ipv4::IPV4_HDR_LEN..h.ihl_bytes())
-                    .unwrap_or(&[]).to_vec()),
-            Err(_) => (None, alloc::vec::Vec::new()),
-        };
+        // A raw socket receives the whole packet, so the type-of-service byte
+        // is read back out of it. The option area is NOT: the delivery pass
+        // already compiled and filled it, and a second pass over the filled
+        // bytes would advance every pointer a second time.
+        let tos = crate::ipv4::Ipv4Hdr::parse(&datagram.packet).ok().map(|h| h.tos);
+        let options = datagram.options;
         return Ok(Received {
             payload: datagram.packet[..take].to_vec(), full_len,
             peer: Some((datagram.source, 0)),

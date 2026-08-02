@@ -20,9 +20,9 @@ pub struct Received {
     pub ttl: Option<u8>,
     /// Received IPv4 type-of-service byte, published by IP_RECVTOS.
     pub tos: Option<u8>,
-    /// Received IPv4 header option area, published by IP_RECVOPTS, and echoed
-    /// by IP_RETOPTS.
-    pub options: alloc::vec::Vec<u8>,
+    /// Compiled receive-side IPv4 option area, published by IP_RECVOPTS and
+    /// echoed by IP_RETOPTS.
+    pub options: crate::ipv4_options::Compiled,
     /// Datagram destination port, which completes the socket address
     /// IP_RECVORIGDSTADDR and IPV6_RECVORIGDSTADDR publish.
     pub dport: u16,
