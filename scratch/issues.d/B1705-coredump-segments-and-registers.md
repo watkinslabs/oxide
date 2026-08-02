@@ -61,9 +61,38 @@ The ladder gained the two rungs that only became checkable once there was a
 real open description behind it: the name is still hashed (not unlinked or
 renamed out from under the open), and the description can be written through.
 
+The hashed rung immediately caught a third deviation. `openat` used to unhash
+the dentry it had just instantiated (`d_drop_child` straight after the create),
+forcing the next lookup back through the backend. That is not what creating a
+name does — `d_instantiate` leaves it positive and hashed — and it is
+observable: a caller holding the open description cannot tell a name the kernel
+dropped from a name someone deleted. Removed, so `vfs_create_at` publishes and
+leaves it published. Boot-verified on x86.
+
 ## Evidence
 
-Hosted: `cargo test -p fs --lib` 919 → 935. Positive controls, each defect
+The end-to-end observation this subsystem has never had, from a real crash:
+
+```
+[PASS] a crash leaves a core file — 3821568 bytes
+[PASS] it is an ET_CORE object — e_type=4 e_machine=62
+       program headers: 25 total, 24 PT_LOAD
+[PASS] some PT_LOAD carries contents — 3817472 bytes of memory
+[PASS] the register block is not zeroed — pc=0x7f5b72bda24b
+[PASS] the mapping table has entries — 15 mappings, page size 4096
+[PASS] a PT_LOAD covers the crashing program counter
+       crash segment: vaddr=0x7f5b72bc0000 filesz=0x16e000 flags=5
+core[pc..pc+64]          = 483d01f0ffff7301c3488b0d85cb1c00f7d86489014883c8ff…
+libc.so.6[0x1a24b]       = 483d01f0ffff7301c3488b0d85cb1c00f7d86489014883c8ff…
+[PASS] the dumped text is the program's own instructions
+```
+
+`tools/guest-coredump-check.py x86` — boots, crashes a real program, pulls the
+image's header, program-header table and note segment back over the serial
+line, and compares the bytes at the crashing program counter against the
+on-disk object `NT_FILE` names.
+
+Hosted: `cargo test -p fs --lib` 919 → 937, `cargo test -p vfs --lib` 325 → 340. Positive controls, each defect
 reinstated alone and then restored (baseline 142 coredump tests green):
 
 | Defect reinstated | Result |
