@@ -71,6 +71,10 @@ debug-wakelat = ["sched/debug-wakelat"]  # epoll_wait busy-wait stall probe ([WL
 # F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.
 debug-ssh = []
 debug-keyring = []  # [KEYRING] construction/instantiation outcome trace for the request_key upcall
+# [INOTIFY-ENOENT] per-failed-watch path trace. Its own feature, never
+# debug-boot: systemd's watch churn made it the single largest source of
+# default-boot log volume (1297 of 3379 lines on one capture).
+debug-inotify = []
 # Level-triggered epoll readiness trace ([epoll-lvl]) — busy-loop diagnosis.
 debug-epoll = []
 debug-displaystack = []  # [EP-NOTIFY] per-interest epoll callback trace

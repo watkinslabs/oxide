@@ -26,8 +26,8 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 # `make lint`            — `xtask spec-lint`.
 # `make stats`           — `xtask stats` (use `STATS_ARGS=...` for flags).
 # `make ci`              — what PR gate runs: spec-lint, test, both arches default + debug-all.
-# `make qemu-x86 / qemu-arm` — boot under QEMU. See QEMU_FEATURES_* below for
-#                          what is enabled; `qemu-*-debug` is the firehose.
+# `make qemu-x86 / qemu-arm` — boot under QEMU with NO debug features;
+#                          `qemu-*-debug` is the firehose.
 # `make qemu-mcp`        — print the MCP tool list (interactive QEMU debug).
 # `make artifacts`       — export stable packaging artifacts to target/artifacts.
 # `make clean`           — `cargo clean`.
@@ -138,26 +138,27 @@ matrix-gate:
 
 # ---- qemu -----------------------------------------------------------------
 
-# `debug-boot` is a macro gate ONLY (`kmacros::debug_boot!` expands to the body
-# or to nothing). It does NOT install the console: the display console and the
-# serial mirror are unconditional, and nothing in `crates/kernel/console`,
-# `crates/drivers/fbcon` or `crates/kernel/vt` is gated on it. An earlier
-# version of this comment claimed the UART sink required it and that login
-# would not appear without it — that was false, and it is why every default
-# boot carried the operational-pulse log lines.
+# `make qemu-x86` / `make qemu-arm` boot with NO debug features.
 #
-# What it does enable: `[INFO]`-tagged operational-pulse lines such as
-# `[INFO] boot: kernel ready, halting`, useful when you want to see the kernel
-# is alive but noise on an ordinary boot.
-# `debug-sched` is intentionally excluded — that's the per-syscall
-# trace flood. FEATURES=... appends extras (e.g. FEATURES=debug-irq).
+# The display is the console and the serial port mirrors it; both are
+# unconditional. `debug-boot` is a macro gate ONLY (`kmacros::debug_boot!`
+# expands to the body or to nothing) — nothing in `crates/kernel/console`,
+# `crates/drivers/fbcon` or `crates/kernel/vt` is gated on it. This target used
+# to force it on, under a comment claiming the UART sink required it and that
+# login would not appear without it. That was false, and it is why every
+# default boot carried thousands of lines of operational-pulse log.
 #
-# B1474: `debug-boot` is the OPERATIONAL PULSE, nothing else. Because this
-# target turns it on unconditionally, any trace that fires per syscall, per
-# signal, per fault, per exec or per journald datagram belongs to its own
-# feature — on `debug-boot` such a trace slowed a live-gnome guest by an order
-# of magnitude, far enough to blow userspace D-Bus activation timeouts, so the
-# instrument changed the result instead of measuring it. Opt in per lane:
+# What `debug-boot` actually enables: `[INFO]`-tagged operational-pulse lines
+# such as `[INFO] boot: kernel ready, halting`. Useful when you want to watch
+# the kernel come up; noise on an ordinary boot. `make qemu-x86-debug` /
+# `qemu-arm-debug` turn on `debug-all`, and `FEATURES=...` adds any single
+# feature to the default-quiet boot (e.g. `make qemu-x86 FEATURES=debug-irq`).
+#
+# B1474: any trace that fires per syscall, per signal, per fault, per exec or
+# per journald datagram belongs to its own feature — carried on a default boot
+# such a trace slowed a live-gnome guest by an order of magnitude, far enough
+# to blow userspace D-Bus activation timeouts, so the instrument changed the
+# result instead of measuring it. Opt in per lane:
 #   FEATURES=debug-sigdeliv   [SIGDELIV]  per-delivery signal trace
 #   FEATURES=debug-ustack     [USTACK]    futex user return-address walk
 #   FEATURES=debug-desktop    [MUTTER*]/[DRMPROP]/[LGD] compositor+KMS ledger
@@ -166,9 +167,9 @@ matrix-gate:
 #                                         already keeps each MESSAGE= line)
 #   FEATURES=debug-taskdrop   [TASK-DROP] per-task teardown record
 #   FEATURES=debug-faultdiag  [FAULT-*]   per-page-fault VMA/resolve trace
-comma := ,
-QEMU_FEATURES_X86 := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
-QEMU_FEATURES_ARM := debug-boot$(if $(FEATURES),$(comma)$(FEATURES),)
+#   FEATURES=debug-boot       [INFO]      the operational boot pulse itself
+QEMU_FEATURES_X86 := $(FEATURES)
+QEMU_FEATURES_ARM := $(FEATURES)
 
 # SMP CPU count for qemu (default 1). The boot-smoke gate sets SMP=2 so
 # AP bring-up + the periodic load balancer are exercised every push.
@@ -179,15 +180,14 @@ SMP ?= 1
 # `cmd_grub` takes --arch/--smp/--features.
 qemu-x86:
 	$(TRIM_ROOTFS_CACHE)
-	$(XTASK) grub --arch x86_64  --smp $(SMP) --features "$(QEMU_FEATURES_X86)"
+	$(XTASK) grub --arch x86_64  --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
 
 qemu-arm:
 	$(TRIM_ROOTFS_CACHE)
-	$(XTASK) grub --arch aarch64 --smp $(SMP) --features "$(QEMU_FEATURES_ARM)"
+	$(XTASK) grub --arch aarch64 --smp $(SMP) $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
 
-# Same x86 GRUB path as `qemu-x86`, but with xtask's own defaults instead of
-# QEMU_FEATURES_X86. `kmain`'s `default = []`, so that means NO debug features
-# at all — an earlier version of this comment said `debug-boot`, which was wrong.
+# Same x86 GRUB path as `qemu-x86` without the `FEATURES=` passthrough.
+# `kmain`'s `default = []`, so this is a no-debug-features boot.
 qemu-x86-grub:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64 --smp $(SMP)

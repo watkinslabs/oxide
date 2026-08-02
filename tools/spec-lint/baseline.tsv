@@ -8,7 +8,7 @@ crates/arch/hal	code/pub-fn-complexity	2
 crates/arch/hal-aarch64	code/klog-ungated	33
 crates/arch/hal-x86_64	code/klog-ungated	12
 crates/arch/hal-x86_64	code/pub-fn-complexity	9
-crates/drivers/drm	code/klog-ungated	27
+crates/drivers/drm	code/klog-ungated	12
 crates/drivers/drm	code/pub-fn-complexity	76
 crates/drivers/drv	code/klog-ungated	7
 crates/drivers/drv-ahci	code/klog-ungated	2
@@ -40,7 +40,7 @@ crates/kernel/fs	code/klog-ungated	26
 crates/kernel/fs	code/pub-fn-complexity	27
 crates/kernel/ipc	code/pub-fn-complexity	1
 crates/kernel/kernfs	code/pub-fn-complexity	22
-crates/kernel/kmain	code/klog-ungated	45
+crates/kernel/kmain	code/klog-ungated	40
 crates/kernel/mm-pmm	code/klog-ungated	76
 crates/kernel/mm-pmm	code/pub-fn-complexity	9
 crates/kernel/mm-vmm	code/pub-fn-complexity	7
@@ -59,7 +59,7 @@ crates/kernel/pidfd	code/pub-fn-complexity	1
 crates/kernel/power	code/klog-ungated	6
 crates/kernel/procfs	code/klog-ungated	21
 crates/kernel/procfs	code/pub-fn-complexity	15
-crates/kernel/sched	code/klog-ungated	170
+crates/kernel/sched	code/klog-ungated	165
 crates/kernel/sched	code/pub-fn-complexity	54
 crates/kernel/security	code/pub-fn-complexity	24
 crates/kernel/smoke	code/klog-ungated	5
