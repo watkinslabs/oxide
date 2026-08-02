@@ -11,96 +11,23 @@
 //! a `SIGSEGV` invents a sender that never existed.
 
 use sched::SigInfo;
-use sched::signum::{self, Signum};
+
 
 use super::uapi::*;
 
-/// Linux `enum siginfo_layout` — which `_sifields` union arm a
-/// `(signo, si_code)` pair selects.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum SigLayout {
-    Kill,
-    Timer,
-    Poll,
-    Fault,
-    FaultTrapno,
-    FaultMceerr,
-    FaultBnderr,
-    FaultPkuerr,
-    FaultPerfEvent,
-    Chld,
-    Rt,
-    Sys,
-}
+// The `(signo, si_code)` → union-arm decision has ONE owner: `hal::siginfo`,
+// which is also where the `siginfo_t` writer and reader live. A second copy
+// here is exactly the split that lets a record render as a fault on one path
+// and a kill on another.
+pub use hal::siginfo::{layout as siginfo_layout, Layout as SigLayout};
+pub use hal::siginfo::limit::*;
+pub use hal::siginfo::source::{SI_SIGIO, SI_TIMER};
+pub use hal::siginfo::code::{SEGV_BNDERR, SEGV_PKUERR, TRAP_PERF};
 
-/// `si_code` values that select a layout by themselves (negative half).
-const SI_TIMER: i32 = -2;
-const SI_SIGIO: i32 = -5;
-
-/// Per-signal `si_code` upper bounds (Linux `sig_sicodes[].limit`). A code
-/// above the bound is not a signal-specific code, so the pair falls back to
-/// `SIL_POLL`/`SIL_KILL` rather than the signal's own arm.
-const NSIGILL:  i32 = 11;
-const NSIGFPE:  i32 = 15;
-const NSIGSEGV: i32 = 10;
-const NSIGBUS:  i32 = 5;
-const NSIGTRAP: i32 = 6;
-const NSIGCHLD: i32 = 6;
-const NSIGPOLL: i32 = 6;
-const NSIGSYS:  i32 = 2;
-
-/// Signal-specific `si_code`s that override their signal's default arm.
-const BUS_MCEERR_AR: i32 = 4;
-const BUS_MCEERR_AO: i32 = 5;
-const SEGV_BNDERR:   i32 = 3;
-const SEGV_PKUERR:   i32 = 4;
-const TRAP_PERF:     i32 = 6;
-
-/// Signal-specific arm and code bound for `signo`, when it has one.
-/// # C: O(1)
-fn sig_sicode(signo: u32) -> Option<(i32, SigLayout)> {
-    match signo {
-        s if s == Signum::Sigill  as u32 => Some((NSIGILL,  SigLayout::Fault)),
-        s if s == Signum::Sigfpe  as u32 => Some((NSIGFPE,  SigLayout::Fault)),
-        s if s == Signum::Sigsegv as u32 => Some((NSIGSEGV, SigLayout::Fault)),
-        s if s == Signum::Sigbus  as u32 => Some((NSIGBUS,  SigLayout::Fault)),
-        s if s == Signum::Sigtrap as u32 => Some((NSIGTRAP, SigLayout::Fault)),
-        s if s == Signum::Sigchld as u32 => Some((NSIGCHLD, SigLayout::Chld)),
-        s if s == Signum::Sigio   as u32 => Some((NSIGPOLL, SigLayout::Poll)),
-        s if s == Signum::Sigsys  as u32 => Some((NSIGSYS,  SigLayout::Sys)),
-        _ => None,
-    }
-}
-
-/// Linux `siginfo_layout(sig, si_code)`. # C: O(1)
-pub fn siginfo_layout(signo: u32, si_code: i32) -> SigLayout {
-    if si_code > signum::SI_USER && si_code < signum::SI_KERNEL {
-        if let Some((limit, layout)) = sig_sicode(signo) {
-            if si_code <= limit {
-                if signo == Signum::Sigbus as u32
-                    && (BUS_MCEERR_AR..=BUS_MCEERR_AO).contains(&si_code) {
-                    return SigLayout::FaultMceerr;
-                }
-                if signo == Signum::Sigsegv as u32 && si_code == SEGV_BNDERR {
-                    return SigLayout::FaultBnderr;
-                }
-                if signo == Signum::Sigsegv as u32 && si_code == SEGV_PKUERR {
-                    return SigLayout::FaultPkuerr;
-                }
-                if signo == Signum::Sigtrap as u32 && si_code == TRAP_PERF {
-                    return SigLayout::FaultPerfEvent;
-                }
-                return layout;
-            }
-        }
-        if si_code <= NSIGPOLL { return SigLayout::Poll; }
-        return SigLayout::Kill;
-    }
-    if si_code == SI_TIMER { return SigLayout::Timer; }
-    if si_code == SI_SIGIO { return SigLayout::Poll; }
-    if si_code < 0 { return SigLayout::Rt; }
-    SigLayout::Kill
-}
+/// SIGBUS machine-check `si_code`s, named for the tests that pin the arm they
+/// select.
+pub const BUS_MCEERR_AR: i32 = 4;
+pub const BUS_MCEERR_AO: i32 = 5;
 
 fn put_u16(out: &mut [u8], off: usize, v: u16) { out[off..off + 2].copy_from_slice(&v.to_ne_bytes()); }
 fn put_u32(out: &mut [u8], off: usize, v: u32) { out[off..off + 4].copy_from_slice(&v.to_ne_bytes()); }
