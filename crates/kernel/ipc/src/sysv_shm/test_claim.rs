@@ -20,7 +20,11 @@
 use core::sync::atomic::Ordering;
 use std::sync::{Mutex, MutexGuard};
 
-static SHM: Mutex<()> = Mutex::new(());
+// `pub(crate)`: the sem-undo tests alias this SAME mutex as their
+// `TEST_LOCK` (`sysv::sem::tests::common`) because both files install the
+// process-global `sched::current` hook / read `current_tgid()` — one
+// resource, one claim, crate-wide.
+pub(crate) static SHM: Mutex<()> = Mutex::new(());
 
 /// Live claim on the shared-memory subsystem. Held for the body of a test.
 pub(crate) struct ShmClaim(#[allow(dead_code)] MutexGuard<'static, ()>);
