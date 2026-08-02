@@ -11,11 +11,29 @@ use super::pid_dir::{make_proc_pid_dir, pid_to_kernel_tid};
 
 pub struct ProcRootInode {
     children: BTreeMap<String, InodeRef>,
+    /// THIS MOUNT's identity (Linux `sb->s_fs_info`). Every mount builds its own
+    /// root, so `hidepid=`/`subset=` are answers this mount owns rather than
+    /// properties of the process asking.
+    info: Arc<crate::fs_info::ProcFsInfo>,
+}
+
+impl ProcRootInode {
+    /// # C: O(1)
+    pub fn info(&self) -> &Arc<crate::fs_info::ProcFsInfo> { &self.info }
 }
 
 fn proc_root_lookup(d: &ProcRootInode, name: &str) -> KResult<InodeRef> {
-    if let Some(i) = d.children.get(name) {
-        return Ok(i.clone());
+    // `subset=pid` (Linux `proc_lookup`: `if (fs_info->pidonly ==
+    // PROC_PIDONLY_ON) return ERR_PTR(-ENOENT)`) removes every non-process
+    // entry from the mount. The `self`/`thread-self` links and the pid
+    // directories below survive it — the reference creates those in
+    // `proc_fill_super` rather than as PDE lookups, so the gate never sees
+    // them.
+    let statics_visible = crate::fs_info::static_entries_visible(&d.info);
+    if statics_visible {
+        if let Some(i) = d.children.get(name) {
+            return Ok(i.clone());
+        }
     }
     if name == "self" {
         return Ok(crate::proc_links::make_proc_self_link());
@@ -23,11 +41,20 @@ fn proc_root_lookup(d: &ProcRootInode, name: &str) -> KResult<InodeRef> {
     if name == "thread-self" {
         return Ok(crate::proc_links::make_proc_thread_self_link());
     }
-    if let Some(i) = crate::reg::proc_reg().lookup_path(name) {
-        return Ok(i);
+    if statics_visible {
+        if let Some(i) = crate::reg::proc_reg().lookup_path(name) {
+            return Ok(i);
+        }
     }
     let vpid: u32 = name.parse().map_err(|_| VfsError::Enoent)?;
     let tid = pid_to_kernel_tid(vpid).ok_or(VfsError::Enoent)?;
+    // `hidepid` at the ACCESS threshold (Linux `proc_pid_lookup` →
+    // `has_pid_permissions(fs_info, task, HIDEPID_NO_ACCESS)`): a directory the
+    // reader may not reach reports ENOENT, not EPERM, so the existence of the
+    // process is not disclosed by the errno.
+    if !super::pid_access::pid_visible(&d.info, tid, crate::fs_info::HidePid::NoAccess) {
+        return Err(VfsError::Enoent);
+    }
     Ok(make_proc_pid_dir(tid, false, true))
 }
 
@@ -55,23 +82,46 @@ impl FileOps for ProcRootOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<ProcRootInode>().ok_or(VfsError::Einval)?;
         // Statically registered children hold their inode already — no lookup.
-        let mut es: Vec<CookieEntry> = d.children.iter()
-            .map(|(n, c)| CookieEntry::new(n.clone(), c.ino(), c.file_type()))
-            .collect();
-        let vpids = sched::live::registry::live_vpids();
+        // `subset=pid` (Linux `proc_readdir`: `if (fs_info->pidonly ==
+        // PROC_PIDONLY_ON) return 1` — emit nothing and report the directory
+        // exhausted) leaves only the process entries.
+        let mut es: Vec<CookieEntry> = if crate::fs_info::static_entries_visible(&d.info) {
+            d.children.iter()
+                .map(|(n, c)| CookieEntry::new(n.clone(), c.ino(), c.file_type()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // `hidepid` at the VISIBILITY threshold (Linux `proc_pid_readdir` →
+        // `has_pid_permissions(fs_info, iter.task, HIDEPID_INVISIBLE)`): a
+        // process the reader may not see is left out of the listing entirely.
+        // `hidepid=off` keeps the whole snapshot, so the default `/proc` listing
+        // costs exactly what it did.
+        let mut vpids = sched::live::registry::live_vpids();
+        if d.info.hide_pid != crate::fs_info::HidePid::Off {
+            vpids.retain(|vpid| match pid_to_kernel_tid(*vpid) {
+                Some(tid) => super::pid_access::pid_visible(
+                    &d.info, tid, crate::fs_info::HidePid::Invisible),
+                None => false,
+            });
+        }
         crate::readdir::push_resolved(&mut es, crate::readdir::proc_root_dynamic(&vpids),
             |n| inode.lookup(n).ok().map(|i| i.ino()));
         vfs::emit_by_cookie(&mut es, ctx)
     }
 }
 
-pub fn make_proc_root(children: BTreeMap<String, InodeRef>) -> InodeRef {
+/// Build ONE mount's `/proc` root. Called per mount — the reference builds a
+/// fresh root inode in `proc_fill_super` for every superblock and shares only
+/// the static `proc_dir_entry` skeleton between them. # C: O(N static files)
+pub fn make_proc_root(children: BTreeMap<String, InodeRef>,
+                      info: Arc<crate::fs_info::ProcFsInfo>) -> InodeRef {
     InodeBuilder::new(
         crate::ids::PROC_ROOT,
         mk_mode(FileType::Directory, PROC_ROOT_DIR_MODE),
         Arc::new(ProcRootOps),
         Arc::new(ProcRootOps),
     )
-    .private(Arc::new(ProcRootInode { children }))
+    .private(Arc::new(ProcRootInode { children, info }))
     .build()
 }

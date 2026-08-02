@@ -45,7 +45,7 @@ pub unsafe fn init(info: &BootInfo) {
             let _ = vfs::mount::register_typed(ext4_ty, None, Arc::new(ext4::rootfs::Ext4RootfsFs));
         }
         boot_register("devtmpfs", "/dev",  Arc::new(::devfs::DevfsFs));
-        boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs));
+        boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs::default()));
         boot_register("sysfs",    "/sys",  Arc::new(crate::sysfs::SysfsFs));
         boot_register_cgroup();
         let tmp = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/tmp"));

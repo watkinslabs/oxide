@@ -117,5 +117,6 @@ pub mod net_icmp;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod mem_render;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod pid_mem;
 pub mod maps_name;
+pub mod fs_info;
 pub mod pid_file_policy;
 #[cfg(target_os = "oxide-kernel")] pub mod smaps;
