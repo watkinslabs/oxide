@@ -74,7 +74,7 @@ fn apply(sock: &Arc<InetSocket>, action: Action) -> i64 {
         Action::MtuDiscover(v) => sock.opts.ip_mtu_discover.store(v, Ordering::Release),
         Action::UnicastIf(ifindex) => sock.opts.ip.set_unicast_if(ifindex),
         Action::LocalPortRange(packed) => sock.opts.ip.set_local_port_range(packed),
-        Action::Options(compiled) => sock.opts.ip.set_options(compiled),
+        Action::Options(compiled) => net::sock_opts::sol_ip::apply::install_options(sock, compiled),
         Action::RouterAlert(on) => {
             // Take or release the real chain slot before the option bit that
             // reports it; a raw endpoint of another family keeps the bit only.
