@@ -3,6 +3,7 @@
 //! record must never render a member its arm does not define.
 
 use super::*;
+use sched::signum::{self, Signum};
 
 fn rec(signo: u32, code: i32) -> SigInfo {
     SigInfo { signo, code, pid: 0, uid: 0, value: 0, sys: None, fault: None, poll: None }

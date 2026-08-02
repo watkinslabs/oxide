@@ -119,5 +119,29 @@ pub fn legacy_exec_sigtrap(traced: bool, seized: bool, opts: u32) -> bool {
 /// # C: O(1)
 pub fn exitkill(opts: u32) -> bool { opts & uapi::O_EXITKILL != 0 }
 
+/// `SIGTRAP`, the signal every SYNTHESISED ptrace event stop reports.
+pub const SIGTRAP: u32 = 5;
+
+/// The `last_siginfo` a synthesised event stop publishes — Linux
+/// `ptrace_do_notify`'s `clear_siginfo` + four assignments.
+///
+/// `vpid`/`uid` are the TRACEE's own (`task_pid_vnr(current)`,
+/// `current_uid()`), not the tracer's. Substituting the tracer there put a pid
+/// into the bytes a `_sigfault` record uses for `si_addr`, so a debugger read
+/// the number of the process attached to it as the address its tracee
+/// faulted on.
+///
+/// The `_kill` arm is right for this record BY CONSTRUCTION: a
+/// `PTRACE_EVENT_*` stop code is `SIGTRAP | event << 8`, which is far above
+/// `NSIGTRAP`, so the arm the shared classifier picks for it is `_kill` —
+/// there is no address to report.
+/// # C: O(1)
+pub fn notify_record(vpid: u32, uid: u32, stop_code: i32) -> sched::SigInfo {
+    sched::SigInfo {
+        signo: SIGTRAP, code: stop_code, pid: vpid, uid,
+        value: 0, sys: None, fault: None, poll: None,
+    }
+}
+
 #[cfg(test)]
 #[path = "event/tests.rs"] mod tests;

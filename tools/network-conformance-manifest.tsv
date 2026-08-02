@@ -26,3 +26,4 @@ N21	close/poll	AF_UNIX SOCK_STREAM	t_net_teardown	pending	peer close must wake e
 control	guest-loader	glibc runtime	t_inet2	control-only	runner/loader control; never syscall-row evidence
 zram-lifecycle	swapon,swapoff	zram block/sysfs	t_zram_lifecycle	lifecycle	disposable hot-added zram attributes, initialized swap header, activation visibility, deactivation, reset, and hot-remove	--live	root	target-pass-exact	zram_lifecycle: PASS sysfs swap swapon swapoff reset
 ptrace-liveregs	ptrace	PTRACE_GETREGSET/SETREGSET NT_PRSTATUS	t_ptrace_getregs	partial-ordering	tracer sees the live program counter at a fault stop, not another register; PTRACE_SETREGSET redirects it
+ptrace-siginfo	ptrace	PTRACE_GETSIGINFO siginfo_t union arms	t_ptrace_siginfo	partial-ordering	a fault stop reports a fault si_code and the address the tracee dereferenced, not SI_USER with the tracer pid in si_addr

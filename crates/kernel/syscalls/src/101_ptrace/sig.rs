@@ -34,44 +34,36 @@ pub fn geteventmsg(target: &Task, data: u64) -> Result<(), Errno> {
 /// tracee has no `last_siginfo` — i.e. it is not stopped for a signal. A
 /// synthesised SIGTRAP record (what this used to return) tells a tracer a
 /// signal arrived that never did.
+///
+/// The record is rendered by the SAME writer an `SA_SIGINFO` handler's frame
+/// and `rt_sigtimedwait`'s copy-out use, so the union arm is picked once. A
+/// local `_kill`-only store here reported every fault stop as a kill and put
+/// a pid where the debugger reads `si_addr`.
 /// # C: O(1)
 pub fn getsiginfo(target: &Task, data: u64) -> Result<(), Errno> {
     let snap = target.ptrace_siginfo.lock().clone().ok_or(Errno::Einval)?;
     if crate::userbuf::validate_user_buf_writable(data, SIGINFO_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+128` validated as a mapped writable siginfo_t slot in the caller's AS; the leading fields follow the Linux `siginfo_t` layout (signo@0, errno@4, code@8, pid@16, uid@20, value@24) and the remainder is zeroed.
-    unsafe {
-        core::ptr::write_bytes(data as *mut u8, 0, SIGINFO_BYTES as usize);
-        core::ptr::write_unaligned(data as *mut i32, snap.signo as i32);
-        core::ptr::write_unaligned((data +  8) as *mut i32, snap.code);
-        core::ptr::write_unaligned((data + 16) as *mut u32, snap.pid);
-        core::ptr::write_unaligned((data + 20) as *mut u32, snap.uid);
-        core::ptr::write_unaligned((data + 24) as *mut u64, snap.value);
-    }
+    crate::signal_common::write_user_siginfo(data, snap.signo, Some(snap));
     Ok(())
 }
 
 /// PTRACE_SETSIGINFO — same EINVAL-when-not-signal-stopped rule.
+///
+/// Linux copies the whole `kernel_siginfo` union in, so a tracer CAN rewrite
+/// the `si_addr` of the fault its tracee is about to take, or hand it a
+/// `_sigsys` record; the arm is recovered from `(si_signo, si_code)` by the
+/// one classifier.
 /// # C: O(1)
 pub fn setsiginfo(target: &Task, data: u64) -> Result<(), Errno> {
     if target.ptrace_siginfo.lock().is_none() { return Err(Errno::Einval); }
     if crate::userbuf::validate_user_buf(data, SIGINFO_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+128` validated readable in the caller's AS; fields read at the Linux `siginfo_t` offsets.
-    let info = unsafe {
-        sched::SigInfo {
-            signo: core::ptr::read_unaligned(data as *const i32) as u32,
-            code:  core::ptr::read_unaligned((data +  8) as *const i32),
-            pid:   core::ptr::read_unaligned((data + 16) as *const u32),
-            uid:   core::ptr::read_unaligned((data + 20) as *const u32),
-            value: core::ptr::read_unaligned((data + 24) as *const u64),
-            // PTRACE_SETSIGINFO cannot forge a seccomp `_sigsys` arm.
-            sys:   None, fault: None, poll: None
-        }
-    };
-    *target.ptrace_siginfo.lock() = Some(info);
+    // SAFETY: `data..data+128` validated readable in the caller's AS; only si_signo is read directly here, at offset 0, and the rest is decoded by the shared reader from the same proven range.
+    let signo = unsafe { core::ptr::read_unaligned(data as *const i32) } as u32;
+    *target.ptrace_siginfo.lock() = Some(crate::signal_common::read_user_siginfo(data, signo));
     Ok(())
 }
 
@@ -106,11 +98,14 @@ pub fn interrupt(target: &Arc<Task>) -> Result<(), Errno> {
     // reads must carry the event byte, not a bare SIGSTOP.
     target.stop_code.store(uapi::event_stop_code(uapi::EVENT_STOP) as u32, Ordering::Release);
     target.stop_pending.store(true, Ordering::Release);
-    *target.ptrace_siginfo.lock() = Some(sched::SigInfo {
-        signo: sched::Signum::Sigtrap as u32,
-        code: uapi::event_stop_code(uapi::EVENT_STOP),
-        pid: 0, uid: 0, value: 0, sys: None, fault: None, poll: None
-    });
+    // Same synthesised-event record `ptrace_do_notify` builds, and it names the
+    // TRACEE — the tracer's own pid in that field would be read as the
+    // `si_addr` of any record whose si_code selects the `_sigfault` arm.
+    let vtid = target.vtid.load(Ordering::Acquire);
+    *target.ptrace_siginfo.lock() = Some(crate::s101_ptrace_event::notify_record(
+        if vtid != 0 { vtid } else { target.tid },
+        target.creds.ruid.load(Ordering::Acquire),
+        uapi::event_stop_code(uapi::EVENT_STOP)));
     sched::live::send_sig_priv_group(target, sched::Signum::Sigstop as u32);
     Ok(())
 }
