@@ -2,11 +2,13 @@
 // `mount_ops` owns the kernel-only glue (registration + user-string reads);
 // `mount_dispatch` owns the pure fstype→mount_capable→graft-or-honest-errno decision
 // (ungated, hosted-testable); `objects` owns fs_context and detached-mount
-// inode types; `fd` owns user-string/fd installation helpers.
+// inode types; `fscontext_ops` owns `read(2)` on the context fd; `fd` owns
+// user-string/fd installation helpers.
 
 #![cfg(target_os = "oxide-kernel")]
 
 mod fd;
+mod fscontext_ops;
 mod mount_dispatch;
 mod mount_ops;
 mod objects;

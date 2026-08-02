@@ -90,7 +90,7 @@ mod tests {
         use vfs::fs::{FileSystem, FsFlags, FsType};
         let ty: Arc<dyn vfs::FileSystemType> = FsType::new(
             "kernfs", TEST_MAGIC, FsFlags::empty(),
-            alloc::boxed::Box::new(|_, _, _, _, _| unreachable!("not mounted through ->mount")),
+            alloc::boxed::Box::new(|_, _, _, _, _, _| unreachable!("not mounted through ->mount")),
         );
         vfs::fs::superblock_from_filesystem(
             ty, Arc::clone(fs) as Arc<dyn FileSystem>, fs.root(),

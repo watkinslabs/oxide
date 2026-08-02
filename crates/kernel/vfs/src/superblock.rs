@@ -37,7 +37,7 @@ mod userns;
 
 pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_NODEV, SB_I_NOEXEC, SB_I_NOIDMAP, SB_I_RESTRICTED_VARIANT, SB_I_USERNS_REQUIRED, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
 pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
-pub use registry::{fs_supers, next_anon_dev, register_super, sb_by_dev, sget, sget_result};
+pub use registry::{fs_supers, next_anon_dev, register_super, sb_by_dev, sget, sget_result, sget_reused};
 pub use userns::{clear_current_user_ns_hook, set_current_user_ns_hook};
 pub(crate) use registry::alloc_anon_minor;
 

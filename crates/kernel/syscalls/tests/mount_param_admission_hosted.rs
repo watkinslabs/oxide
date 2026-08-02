@@ -115,7 +115,7 @@ fn record_ctor(source: Option<&str>, target: &str, data: &str) {
 /// A filesystem that PUBLISHES a table — real admission.
 fn register_declared(name: &'static str, flags: FsFlags) {
     let _ = vfs::fs::register_fs(FsType::with_parameters(name, 0xB169_6000, flags,
-        Box::new(move |ty, s, t, d, sb_flags| {
+        Box::new(move |ty, s, t, d, sb_flags, _: &[vfs::fs::FsParameter]| {
             record_ctor(s, t, d);
             let fs: Arc<dyn FileSystem> = Arc::new(LeafFs { name: "declared" });
             vfs::fs::superblock_from_filesystem(ty, fs, None, t.into(), sb_flags)
@@ -128,7 +128,7 @@ fn register_declared(name: &'static str, flags: FsFlags) {
 /// `/dev/pts`, and with it every tty.
 fn register_legacy(name: &'static str) {
     let _ = vfs::fs::register_fs(FsType::new(name, 0xB169_6100, FsFlags::empty(),
-        Box::new(move |ty, s, t, d, sb_flags| {
+        Box::new(move |ty, s, t, d, sb_flags, _: &[vfs::fs::FsParameter]| {
             record_ctor(s, t, d);
             let fs: Arc<dyn FileSystem> = Arc::new(LeafFs { name: "legacy" });
             vfs::fs::superblock_from_filesystem(ty, fs, None, t.into(), sb_flags)

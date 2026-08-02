@@ -81,9 +81,12 @@ pub fn vfs_parse_fs_param(fc: &mut FsContext, param: &FsParameter) -> KResult<()
     }
     if param.key.is_empty() { return fc.invalf("VFS: Empty parameter name"); }
     finish_clean_context(fc)?;
-    if let FsValue::Flag = param.value {
-        if vfs_parse_sb_flag(fc, &param.key) { return Ok(()); }
-    }
+    // The superblock-flag rung is keyed on the NAME alone and never looks at
+    // the value — `ro=1`, `ro=0` and a bare `ro` all set `SB_RDONLY`, because
+    // the reference consults this table before any value is examined. Gating it
+    // on a bare word instead sent `mount -o ro=1` down to the filesystem table,
+    // which does not describe `ro` and reported it an unknown parameter.
+    if vfs_parse_sb_flag(fc, &param.key) { return Ok(()); }
     if let Some(sec) = fc.security.clone() {
         match sec.parse_param(fc, param)? {
             ParamResult::Consumed => return Ok(()),

@@ -42,7 +42,7 @@ fn register_ext4_like(fstype: &str) {
         fstype,
         ext4::EXT4_SUPER_MAGIC as u64,
         FsFlags::FS_REQUIRES_DEV,
-        alloc::boxed::Box::new(move |ty, source: Option<&str>, _t: &str, _d: &str, _sb_flags: u64| -> R {
+        alloc::boxed::Box::new(move |ty, source: Option<&str>, _t: &str, _d: &str, _sb_flags: u64, _p: &[vfs::fs::FsParameter]| -> R {
             let source = source.ok_or(vfs::VfsError::Enoent)?;
             let name = source.rsplit('/').next().unwrap_or(source);
             let dev = block::by_name(name).map(|d| d.dev.clone()).ok_or(vfs::VfsError::Enoent)?;
