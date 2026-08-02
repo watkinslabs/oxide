@@ -41,6 +41,15 @@ impl File {
         Self::new_at_fop(inode, dentry, flags, mnt_id, cred, f_op)
     }
 
+    /// Mark this fd as the sole holder of anonymous mount `mnt_id` (Linux
+    /// `f_mode |= FMODE_NEED_UNMOUNT` on the `fsmount(2)` fd). # C: O(1)
+    pub fn set_need_unmount(&self, mnt_id: u64) {
+        self.need_unmount.store(mnt_id, Ordering::Release);
+    }
+
+    /// # C: O(1)
+    pub fn need_unmount(&self) -> u64 { self.need_unmount.load(Ordering::Acquire) }
+
     /// `f_op`-OVERRIDE constructor — Linux `fifo_open` (and any `f_op->open`
     /// that swaps the vtable) sets `filp->f_op` to something OTHER than the
     /// inode's `i_fop` for the life of this open description. The FIFO open path
@@ -118,6 +127,7 @@ impl File {
             // F_UNLCK (2) = no lease held (Linux `F_GETLEASE` default).
             lease: core::sync::atomic::AtomicI32::new(2),
             dnotify_mask: AtomicU32::new(0),
+            need_unmount: AtomicU64::new(0),
             f_version: AtomicU64::new(0),
             // RWH_WRITE_LIFE_NOT_SET (Linux `F_GET_RW_HINT` default).
             rw_hint: AtomicU64::new(0),

@@ -113,3 +113,33 @@ pub(crate) fn fd_file(fd: i32) -> Option<Arc<File>> {
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
     fdt.get(fd).ok()
 }
+
+/// Install the `fsmount(2)` fd: an `O_PATH` file over the anonymous mount's
+/// root, marked as the mount's sole holder.
+///
+/// Linux `dentry_open(&new_path, O_PATH, fc->cred)` followed by `f_mode |=
+/// FMODE_NEED_UNMOUNT`. Being a path fd is what makes it usable as a `dirfd`
+/// and what gives it a real mount id; the mark is what stops the mount leaking
+/// when the fd is closed without a `move_mount(2)`.
+/// # C: O(1)
+pub(crate) fn install_mount_path_fd(path: vfs::VfsPath, mnt_id: u64, cloexec: bool) -> i64 {
+    let cur = match sched::live::current() {
+        Some(c) => c,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(),
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let cred = match crate::pathresolve::file_cred_for(cur) {
+        Some(c) => c,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let file = File::new_at(path.inode, path.dentry, OpenFlags::O_PATH, path.mnt_id, cred);
+    file.set_need_unmount(mnt_id);
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
+        Ok(fd) => { if cloexec { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
+        Err(e) => -(e as i64),
+    }
+}

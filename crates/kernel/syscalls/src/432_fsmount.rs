@@ -3,7 +3,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use vfs::InodeRef;
 
 use crate::fsmount_common::*;
 
@@ -79,14 +78,39 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
             if crate::mount_perm::current_user_ns_differs_from_mount_ns_owner() {
                 lock_flags |= vfs::mount::lock_new_mount_bits(mnt_flags);
             }
-            let mo: InodeRef = MountObjectInode::new_realized(sb, root, ctx.fstype.clone(), attrs,
-                lock_flags);
+            // Linux `do_fsmount`: `vfs_create_mount(fc)` then `alloc_mnt_ns(..,
+            // anon=true)` + `mnt_add_to_ns` — the mount is REAL from here, with
+            // its own id and its own root, and simply belongs to no task's
+            // namespace until `move_mount(2)`. What this replaces carried
+            // `(sb, root)` on the fd and minted a mount only at move time, so
+            // between the two calls there was no mount to have an id, to report
+            // through `statmount`, or to dissolve if the fd was just closed.
+            let anon = match vfs::mount::create_anon_mount(sb, mnt_flags, lock_flags, None) {
+                Ok(m) => m,
+                Err(e) => return crate::namei_common::errno_from_vfs(e),
+            };
+            let Some(mnt_root) = anon.mnt_root() else {
+                vfs::mount::dissolve_anon(&anon);
+                return -(Errno::Einval.as_i32() as i64);
+            };
+            let Some(root_inode) = mnt_root.inode() else {
+                vfs::mount::dissolve_anon(&anon);
+                return -(Errno::Einval.as_i32() as i64);
+            };
             // `vfs_clean_context(fc)`: the mount is made, so the context returns
             // to the state an `fspick(2)` leaves behind. Without this a caller
             // could fsmount(2) one context fd repeatedly and mint N mount
             // objects from a single superblock.
             vfs::fs::vfs_clean_context(fc);
-            return install_fd(mo, "fsmount", (args.a1 & FSMOUNT_CLOEXEC) != 0);
+            // `dentry_open(&new_path, O_PATH, fc->cred)` + `FMODE_NEED_UNMOUNT`:
+            // a real path fd over (mount, root dentry), so it carries the mount
+            // id, resolves as a dirfd, and dissolves its mount if closed
+            // unmoved.
+            let path = vfs::VfsPath {
+                mnt_id: anon.mnt_id, dentry: mnt_root, inode: root_inode, last_component: None,
+            };
+            return install_mount_path_fd(path, anon.mnt_id,
+                (args.a1 & FSMOUNT_CLOEXEC) != 0);
         }
     }
     -(Errno::Einval.as_i32() as i64)

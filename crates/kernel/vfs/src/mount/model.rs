@@ -25,7 +25,7 @@ pub const MNT_ID_NONE: u64 = 0;
 /// `statmount`/`open_tree` fd, a `/proc/.../mountinfo` row a reader cached).
 /// Same safety argument as `NEXT_NS_ID` in `mntns`. Detach drops the `MOUNTS`
 /// entry; the id is simply never minted again.
-static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT_MNT_ID: AtomicU64 = AtomicU64::new(1);
 /// Monotonic peer-group id source. Starts at 1 (0 = none).
 ///
 /// [D29] Monotonic-never-recycled for the same reason as `NEXT_MNT_ID`: a
@@ -95,6 +95,15 @@ pub struct Mount {
     /// mount is detached. Readers clone the immutable map under this lock;
     /// the pointer changes at most once for the public mount_setattr path.
     mnt_idmap: Spinlock<Arc<crate::idmap::Idmap>, MountClass>,
+    /// The ANONYMOUS namespace this mount is the root of, held STRONGLY.
+    ///
+    /// Linux's `mount` points at its `mnt_ns` with a reference; ours keys the
+    /// namespace by id alone. That is fine for a mount in a task's namespace —
+    /// the task holds it — and fatal for an anonymous one: nothing else refers
+    /// to it, so it was dropped the moment `create_anon_mount` returned and its
+    /// `Drop` reaped the very mount it had just published. Set only for an
+    /// anonymous root; cleared when the mount is grafted or dissolved.
+    pub(crate) anon_ns: Spinlock<Option<crate::mntns::MntNamespaceRef>, MountClass>,
 }
 
 impl Mount {
@@ -410,6 +419,24 @@ pub fn parent_mnt_id(m: &Mount) -> u64 { m.parent_id.load(Ordering::Acquire) }
 /// both MNT_RELATIME and MNT_NOATIME, which `relatime_need_update` reads as
 /// STRICTATIME: every internal/boot mount would then stamp atime on every
 /// single read and (on ext4) write the inode through. # C: O(1)
+/// Build the root mount of an ANONYMOUS namespace: no mountpoint (it is not
+/// mounted on anything), its own parent (as a namespace root is). Separate entry
+/// point so `anon.rs` never re-implements `new_mount`'s field discipline.
+/// # C: O(1)
+pub(crate) fn new_mount_for_anon(sb: Arc<SuperBlock>, rendered: String, mnt_id: u64, ns: u64)
+    -> Arc<Mount>
+{
+    new_mount(sb, rendered, None, mnt_id, mnt_id, ns)
+}
+
+/// Publish / unpublish for the anonymous-mount path. Same arena, same indices —
+/// an anonymous mount is a real mount, so it must be findable by id (a
+/// `statmount` on its own fd answers) while its namespace keeps it out of every
+/// task's view. # C: O(log N)
+pub(crate) fn mounts_publish_anon(m: Arc<Mount>) { mounts_publish(m); }
+/// # C: O(log N)
+pub(crate) fn mounts_unpublish_anon(id: u64) -> Option<Arc<Mount>> { mounts_unpublish(id) }
+
 fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentry>>,
              parent_id: u64, mnt_id: u64, ns: u64) -> Arc<Mount> {
     let mnt_root = sb.s_root();
@@ -431,6 +458,7 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         detached: AtomicBool::new(false),
         mnt_internal_flags: AtomicU32::new(0),
         mnt_idmap: Spinlock::new(Arc::new(crate::idmap::Idmap::identity())),
+        anon_ns: Spinlock::new(None),
     })
 }
 

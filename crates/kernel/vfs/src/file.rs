@@ -159,6 +159,12 @@ pub struct File {
     /// zero arg (clear). Storage + validation only; the event delivery rides
     /// the dnotify follow-up (needs dir-mutation hooks, cross-lane).
     dnotify_mask: AtomicU32,
+    /// Linux `FMODE_NEED_UNMOUNT`: this fd is the only thing holding an
+    /// anonymous mount (`fsmount(2)`), so closing it without a `move_mount(2)`
+    /// must dissolve that mount. Holds the mount id, 0 for every other file.
+    /// Re-checked at teardown rather than trusted: a mount that has since been
+    /// grafted belongs to the tree and must survive its creating fd.
+    need_unmount: AtomicU64,
     /// `file->f_version` (Linux): inode change-version this open last observed;
     /// directory readers compare it vs `inode->i_version` to drop a stale cursor.
     f_version: AtomicU64,
