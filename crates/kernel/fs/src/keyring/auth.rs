@@ -83,8 +83,7 @@ pub fn get_instantiation_authkey(g: &Store, target: i32, t: &TaskIds, now_ns: u6
     -> Result<i32, Errno>
 {
     let desc = alloc::format!("{target:x}");
-    let roots = g.cred_roots(t);
-    match search::search(g, &roots, t, REQKEY_AUTH_TYPE, &desc, now_ns, Expired::Report) {
+    match search::search_process(g, t, REQKEY_AUTH_TYPE, &desc, now_ns, Expired::Report) {
         Ok(s) => {
             let k = g.keys.get(&s).ok_or(Errno::Enokey)?;
             if k.revoked { return Err(Errno::Ekeyrevoked); }

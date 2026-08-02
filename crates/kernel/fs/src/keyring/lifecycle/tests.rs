@@ -81,15 +81,40 @@ fn exec_drops_thread_and_process_keyrings_but_keeps_the_session() {
     assert_ne!(get_keyring_id(&t, KEY_SPEC_PROCESS_KEYRING, true), pr);
 }
 
-// exec also divests any assumed instantiation authority: a helper that execs
-// another program must not pass on the right to instantiate the key it was
-// asked to build.
+// exec does NOT divest assumed instantiation authority. `/sbin/request-key`
+// assumes authority over the key it was asked to build and then execs the
+// handler its configuration names, so a kernel that divested here would give
+// that handler no authority and no construction could ever complete.
 #[test]
-fn exec_divests_assumed_authority() {
+fn exec_keeps_assumed_authority() {
     let t = ctx(4111, 4111);
     STORE.lock().authkey.insert(t.t.tid, 0x7fff_0000);
     exec(t.t.tid, t.t.tgid);
-    assert!(STORE.lock().authkey.get(&t.t.tid).is_none());
+    assert_eq!(STORE.lock().authkey.get(&t.t.tid).copied(), Some(0x7fff_0000),
+        "the token survives the exec into the handler");
+}
+
+// ... and a fork carries it to the child, because `prepare_creds` takes a
+// reference to the same token. The handler answers the key from a FORKED
+// `keyctl instantiate`, so a child without the token is EPERM.
+#[test]
+fn fork_inherits_assumed_authority() {
+    let parent = ctx(4119, 4119);
+    let child = ctx(4120, 4119);
+    STORE.lock().authkey.insert(parent.t.tid, 0x7fff_0001);
+    fork(parent.t.tid, child.t.tid);
+    assert_eq!(STORE.lock().authkey.get(&child.t.tid).copied(), Some(0x7fff_0001));
+}
+
+// A child of a task holding no token gets none — the inheritance is a copy of
+// what the parent had, never a lazily created authority.
+#[test]
+fn fork_grants_no_authority_the_parent_did_not_hold() {
+    let parent = ctx(4121, 4121);
+    let child = ctx(4122, 4121);
+    STORE.lock().authkey.remove(&parent.t.tid);
+    fork(parent.t.tid, child.t.tid);
+    assert!(STORE.lock().authkey.get(&child.t.tid).is_none());
 }
 
 // Exit purges the dying tid's entries, so a RECYCLED tid does not inherit a

@@ -173,11 +173,11 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     sched::exec_flush::flush_thread_flags(cur);
     cur.dumpable.store(t.dumpable, Ordering::Release);
     // Linux `prepare_exec_creds`: the new image gets no thread keyring and a
-    // fresh (absent) process keyring, and drops any authority the caller had
-    // assumed; only the session keyring is inherited. Dropping the first two is
-    // what stops a key the pre-exec program left behind from being visible
-    // across a setuid exec, so it belongs at the credential commit — the same
-    // point the euid/fsuid/capability transition above lands.
+    // fresh (absent) process keyring; the session keyring and any assumed
+    // instantiation authority are inherited. Dropping the first two is what
+    // stops a key the pre-exec program left behind from being visible across a
+    // setuid exec, so it belongs at the credential commit — the same point the
+    // euid/fsuid/capability transition above lands.
     fs::keyring::exec_keys(cur.tid, cur.vtgid.load(Ordering::Acquire));
 }
 

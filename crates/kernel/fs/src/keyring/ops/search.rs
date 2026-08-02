@@ -12,6 +12,7 @@
 use alloc::vec::Vec;
 use syscall::errno::Errno;
 
+use super::super::auth;
 use super::super::perm::{key_task_permission, key_validate};
 use super::super::store::{Store, TaskIds};
 use super::super::uapi::*;
@@ -109,4 +110,55 @@ pub fn search(g: &Store, roots: &[i32], t: &TaskIds, key_type: &str, description
         }
     }
     Err(ret.unwrap_or(err))
+}
+
+/// `search_process_keyrings_rcu`: [`search`] over the caller's OWN keyrings,
+/// and then — when the caller is servicing an upcall — over the REQUESTER's,
+/// under the requester's credentials.
+///
+/// The second half is what makes a construction helper able to see the keys of
+/// the task it is building for: `/sbin/request-key` runs as a fresh process
+/// with nothing but its own request keyring, so a handler that needs the
+/// requester's ticket cache or its parent key would otherwise find nothing.
+/// The authority to reach them is exactly the token, which is why the reach
+/// disappears the moment the key is answered.
+///
+/// A token is deliberately NOT reachable this way: a helper may only act under
+/// the token it was handed directly, never under one it found by searching the
+/// requester it is servicing.
+///
+/// The two outcomes merge by `success > -ENOKEY > -EAGAIN > other error`, the
+/// same priority [`search`] uses across keyrings — so a negative key in either
+/// half outranks "nothing here", and a denial only survives when the other
+/// half had nothing better to say.
+/// # C: O(N)
+pub fn search_process(g: &Store, t: &TaskIds, key_type: &str, description: &str, now_ns: u64,
+    expired: Expired) -> Result<i32, SearchErr>
+{
+    let own = g.cred_roots(t);
+    let err = match search(g, &own, t, key_type, description, now_ns, expired) {
+        Ok(s) => return Ok(s),
+        Err(e) => e,
+    };
+    let mut ret = Errno::Eacces.as_i32();
+    if key_type != REQKEY_AUTH_TYPE {
+        if let Some(rq) = requester_of(g, t, now_ns) {
+            let roots = g.cred_roots(&rq);
+            match search(g, &roots, &rq, key_type, description, now_ns, expired) {
+                Ok(s) => return Ok(s),
+                Err(e) => ret = e,
+            }
+        }
+    }
+    let enokey = Errno::Enokey.as_i32();
+    if err == enokey || ret == enokey { return Err(enokey); }
+    Err(if err == Errno::Eacces.as_i32() { ret } else { err })
+}
+
+/// The identity recorded in the live token the caller has assumed, if any —
+/// `rka->cred`, whose keyrings the search above falls back to. # C: O(log N)
+fn requester_of(g: &Store, t: &TaskIds, now_ns: u64) -> Option<TaskIds> {
+    let a = *g.authkey.get(&t.tid)?;
+    if !auth::auth_is_live(g, a, now_ns) { return None; }
+    g.keys.get(&a)?.auth.as_ref().map(|d| d.requester.clone())
 }

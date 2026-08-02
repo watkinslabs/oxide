@@ -59,10 +59,11 @@ mod types;
 // KEY_SPEC_* special ids, KEYCTL_* opcodes, KEY_REQKEY_DEFL_* defaults,
 // KEY_NEED_*/KEY_{POS,USR,GRP,OTH}_* permission bits and the
 // KEYCTL_CAPABILITIES byte-0/1 feature bits. Entries with no reader are the
-// point: `KEYCTL_CAPS0_{DIFFIE_HELLMAN,PUBLIC_KEY,BIG_KEY}` and
-// `KEYCTL_CAPS1_NOTIFICATIONS` name features this build reports as absent, and
-// the unreached KEY_SPEC_/KEY_REQKEY_DEFL_ ids are rejected by range check
-// rather than by name. Dropping them would make the table a subset (`docs/02`).
+// point: the unreached KEY_SPEC_/KEY_REQKEY_DEFL_ ids are rejected by range
+// check rather than by name. Dropping them would make the table a subset
+// (`docs/02`). The capability bits are NOT among them — each is read by the
+// module that implements the feature and reported from there, so a bit and the
+// behaviour behind it cannot disagree.
 #[allow(dead_code, reason = "complete Linux keyctl UAPI number space; unreferenced entries are deliberate — see comment above")]
 mod uapi;
 

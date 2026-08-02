@@ -12,8 +12,16 @@
 use super::store::STORE;
 
 /// `copy_creds`: the child's cred is a copy of the parent's, so it starts out
-/// pointing at the SAME session keyring and carries the same
-/// `jit_keyring` default. That holds for a new thread and a new process alike.
+/// pointing at the SAME session keyring, carries the same `jit_keyring`
+/// default, and holds a reference to the SAME assumed instantiation authority.
+/// That holds for a new thread and a new process alike.
+///
+/// The assumed authority matters more than it looks: `/sbin/request-key`
+/// assumes authority over the key it was asked to build and then runs a
+/// handler, and that handler answers the key from a CHILD process
+/// (`keyctl instantiate`). A child that did not inherit the token has no
+/// authority, so every real construction ends EPERM and the key is never
+/// filled in.
 ///
 /// What is NOT copied:
 ///   * the thread keyring — `copy_creds` drops it (`new->thread_keyring =
@@ -29,6 +37,7 @@ pub fn fork(parent_tid: u32, child_tid: u32) {
     let mut g = STORE.lock();
     if let Some(&s) = g.session.get(&parent_tid) { g.session.insert(child_tid, s); }
     if let Some(&j) = g.jit.get(&parent_tid) { g.jit.insert(child_tid, j); }
+    if let Some(&a) = g.authkey.get(&parent_tid) { g.authkey.insert(child_tid, a); }
 }
 
 /// `prepare_exec_creds`: a newly exec'd program gets no thread keyring and a
@@ -36,15 +45,17 @@ pub fn fork(parent_tid: u32, child_tid: u32) {
 /// the first two is what stops a key left behind by the pre-exec program from
 /// being visible to the new image, which matters most across a setuid exec.
 ///
-/// Any authority the task had assumed is dropped with the cred too — a helper
-/// that execs something else must not hand that program the right to
-/// instantiate the key it was asked to build.
+/// Assumed instantiation authority is NOT dropped: `prepare_exec_creds`
+/// touches only the thread and process keyrings, leaving `request_key_auth`
+/// alone. That is load-bearing rather than an oversight — `/sbin/request-key`
+/// assumes authority over the key and then EXECS the configured handler in the
+/// same process, so a kernel that divested on exec would hand that handler no
+/// authority and no construction could ever complete.
 /// # C: O(N)
 pub fn exec(tid: u32, tgid: u32) {
     let mut g = STORE.lock();
     g.thread.remove(&tid);
     g.process.remove(&tgid);
-    g.authkey.remove(&tid);
     g.collect();
 }
 
