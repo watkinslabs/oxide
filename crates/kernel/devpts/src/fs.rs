@@ -24,6 +24,12 @@ use crate::ids::{DEVPTS_FSID, DEVPTS_MAGIC};
 /// `DEVPTS_FSID` once the mount engine builds its `SuperBlock`.
 pub struct DevptsFs {
     root: Arc<PseudoDir>,
+    /// This devpts instance's mount options (Linux `pts_fs_info.mount_opts`).
+    /// The pty namespace is global here — one instance backs every devpts mount
+    /// — so these are the options of the mount that last supplied any, and a
+    /// second mount with different options is a residual recorded in the ledger
+    /// rather than a second namespace.
+    opts: Spinlock<crate::mount_opts::PtsMountOpts, TaskList>,
 }
 
 impl DevptsFs {
@@ -33,11 +39,25 @@ impl DevptsFs {
     fn new() -> Arc<Self> {
         let root = PseudoDir::new_root(kernfs::dir_ino("/dev/pts"), DEVPTS_FSID);
         root.insert_path("ptmx", crate::inodes::make_pts_ptmx_inode());
-        Arc::new(Self { root })
+        Arc::new(Self { root, opts: Spinlock::new(crate::mount_opts::PtsMountOpts::default()) })
     }
 
     /// The instance root directory (tree-population entry point). # C: O(1)
     pub fn root_dir(&self) -> &Arc<PseudoDir> { &self.root }
+
+    /// This instance's mount options. # C: O(1)
+    pub fn opts(&self) -> crate::mount_opts::PtsMountOpts { *self.opts.lock() }
+
+    /// Install the options a `mount -t devpts` supplied, and re-stamp the
+    /// instance `ptmx` node's mode from them — Linux `devpts_fill_super` builds
+    /// the node from `opts->ptmxmode`, and `devpts_reconfigure` re-applies it
+    /// through `update_ptmx_mode`. # C: O(1)
+    pub fn set_opts(&self, opts: crate::mount_opts::PtsMountOpts) {
+        *self.opts.lock() = opts;
+        if let Some(ptmx) = self.root.lookup_path("ptmx") {
+            let _ = ptmx.set_perm(opts.ptmxmode);
+        }
+    }
 }
 
 impl vfs::fs::FileSystem for DevptsFs {
@@ -53,6 +73,12 @@ impl vfs::fs::FileSystem for DevptsFs {
     /// override (set at build), so their `st_dev` is the devpts fs id either
     /// way. # C: O(tree)
     fn set_sb(&self, sb: Weak<SuperBlock>) -> vfs::KResult<()> { self.root.set_sb(sb); Ok(()) }
+    /// `/proc/mounts` shows the options this mount carries (Linux
+    /// `devpts_show_options`), so what is displayed parses back as input.
+    /// # C: O(1)
+    fn show_options(&self) -> alloc::string::String {
+        crate::mount_opts::show_options(&self.opts())
+    }
 }
 
 /// Process-wide singleton devpts instance. The current pty namespace is global
