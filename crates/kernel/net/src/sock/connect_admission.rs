@@ -38,6 +38,11 @@ pub fn preflight_connect_admitted(sock: &InetSocket, _admission: ConnectAdmissio
     }
     let (kind, protocol) = match &*sock.kind.lock() {
         SockKind::Udp => (ConnectKind::Udp, Some(crate::addr::IpProto::Udp as u32)),
+        // A socket whose handshake is deferred has already committed its
+        // destination, so a second `connect` is answered the way one on a
+        // connecting socket is rather than opening a second connection.
+        SockKind::TcpInit if sock.fastopen_deferred.lock().is_some() =>
+            return Err(NetError::Eisconn),
         SockKind::TcpInit => (ConnectKind::Tcp, Some(crate::addr::IpProto::Tcp as u32)),
         SockKind::TcpConn(entry) => {
             if entry.conn.lock().state == crate::tcp_state::TcpState::Established {
@@ -70,6 +75,52 @@ impl ConnectTransaction<'_> {
         self.sock.opts.ipv6_v6only.load(core::sync::atomic::Ordering::Acquire) != 0
     }
 
+    /// Open the connection with the caller's first bytes in the SYN, as
+    /// `MSG_FASTOPEN` and the write after a deferred `connect` ask for.
+    /// Returns the connection and how many of those bytes rode the SYN —
+    /// zero when the ladder declined to fast open, which is an ordinary
+    /// handshake and not an error. # C: O(N + xmit)
+    pub(crate) fn commit_write(self, addr: RemoteAddr, data: &[u8])
+        -> Result<(Arc<crate::stack::TcpEntry>, usize), NetError>
+    {
+        let Self { sock, mut local_port, kind, .. } = self;
+        let source = crate::tcp_fastopen::Source::Write;
+        let open = match (kind, addr) {
+            (ConnectKind::Tcp, RemoteAddr::Inet { ip, port })
+                if sock.family.load(core::sync::atomic::Ordering::Acquire)
+                    == super::AF_INET6 =>
+            {
+                super::tcp_lifecycle::connect_tcp4_mapped_locked(
+                    sock, &mut local_port, ip, port, source, data)?
+            }
+            (ConnectKind::Tcp, RemoteAddr::Inet { ip, port }) =>
+                super::tcp_lifecycle::connect_tcp4_locked(
+                    sock, &mut local_port, ip, port, source, data)?,
+            (ConnectKind::Tcp, RemoteAddr::Inet6 { ip, port, scope_id }) => {
+                if let Some(ip) = crate::inet_tx::tcp6_mapped_destination(
+                    ip,
+                    sock.opts.ipv6_v6only.load(core::sync::atomic::Ordering::Acquire) != 0,
+                )? {
+                    super::tcp_lifecycle::connect_tcp4_mapped_locked(
+                        sock, &mut local_port, ip, port, source, data)?
+                } else {
+                    let _ = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+                    sock.peer6_scope.store(scope_id, core::sync::atomic::Ordering::Release);
+                    super::tcp_lifecycle::connect_tcp6_locked(
+                        sock, &mut local_port, ip, port, source, data)?
+                }
+            }
+            _ => return Err(NetError::Eopnotsupp),
+        };
+        drop(local_port);
+        match open {
+            // A write never defers: it is holding the payload the deferral
+            // was waiting for.
+            super::tcp_lifecycle::TcpOpen::Deferred => Err(NetError::Eopnotsupp),
+            super::tcp_lifecycle::TcpOpen::Opened { entry, carried } => Ok((entry, carried)),
+        }
+    }
+
     /// Publish a rewritten destination without reopening the lifecycle race. # C: O(N + wait)
     pub fn commit(self, addr: RemoteAddr, nonblock: bool) -> Result<(), NetError> {
         let Self { sock, mut local_port, kind, .. } = self;
@@ -99,12 +150,13 @@ impl ConnectTransaction<'_> {
                 )
             }
             (ConnectKind::Tcp, RemoteAddr::Inet { ip, port }) => {
-                let entry = super::tcp_lifecycle::connect_tcp4_locked(
-                    sock, &mut local_port, ip, port,
+                let open = super::tcp_lifecycle::connect_tcp4_locked(
+                    sock, &mut local_port, ip, port, crate::tcp_fastopen::Source::Connect, &[],
                 )?;
                 drop(local_port);
+                let Some(entry) = open.entry() else { return Ok(()); };
                 if nonblock { return Err(NetError::Einprogress); }
-                crate::sock_io::connect_wait_established(sock, &entry)
+                crate::sock_io::connect_wait_established(sock, entry)
             }
             (ConnectKind::Tcp, RemoteAddr::Inet6 { ip, port, scope_id }) => {
                 if let Some(ip) = crate::inet_tx::tcp6_mapped_destination(
@@ -113,21 +165,23 @@ impl ConnectTransaction<'_> {
                         core::sync::atomic::Ordering::Acquire,
                     ) != 0,
                 )? {
-                    let entry = super::tcp_lifecycle::connect_tcp4_mapped_locked(
-                        sock, &mut local_port, ip, port,
+                    let open = super::tcp_lifecycle::connect_tcp4_mapped_locked(
+                        sock, &mut local_port, ip, port, crate::tcp_fastopen::Source::Connect, &[],
                     )?;
                     drop(local_port);
+                    let Some(entry) = open.entry() else { return Ok(()); };
                     if nonblock { return Err(NetError::Einprogress); }
-                    return crate::sock_io::connect_wait_established(sock, &entry);
+                    return crate::sock_io::connect_wait_established(sock, entry);
                 }
                 let _ = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
                 sock.peer6_scope.store(scope_id, core::sync::atomic::Ordering::Release);
-                let entry = super::tcp_lifecycle::connect_tcp6_locked(
-                    sock, &mut local_port, ip, port,
+                let open = super::tcp_lifecycle::connect_tcp6_locked(
+                    sock, &mut local_port, ip, port, crate::tcp_fastopen::Source::Connect, &[],
                 )?;
                 drop(local_port);
+                let Some(entry) = open.entry() else { return Ok(()); };
                 if nonblock { return Err(NetError::Einprogress); }
-                crate::sock_io::connect_wait_established(sock, &entry)
+                crate::sock_io::connect_wait_established(sock, entry)
             }
             (ConnectKind::Raw4(endpoint), RemoteAddr::Inet { ip, .. }) => {
                 let iface = bound_iface(sock)?;

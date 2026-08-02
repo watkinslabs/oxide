@@ -167,6 +167,10 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
     match addr {
         RemoteAddr::Unspec => {
             let _lifecycle = sock.local_port.lock();
+            // A disconnect withdraws a handshake that was deferred waiting
+            // for a write, so the socket does not keep a destination nothing
+            // will open to.
+            *sock.fastopen_deferred.lock() = None;
             enum Disc {
                 Udp,
                 UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),

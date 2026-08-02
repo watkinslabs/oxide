@@ -400,19 +400,22 @@ impl NetStack {
         self.tcp_connect_reserved_min_hop(bind, local_ip, remote_ip, remote_port, error,
             bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
             Arc::new(crate::min_hop::MinHop::new()),
-            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
+            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
+            crate::sock::tcp_fastopen::ActiveOpen::default(), &[]).map(|(entry, _)| entry)
     }
 
     /// Active-open while sharing the socket's hop-limit minimums and its
     /// sticky IPv4 option area too. # C: O(log N + xmit)
     #[allow(clippy::too_many_arguments)]
-    pub fn tcp_connect_reserved_min_hop(&self, bind: &Arc<TcpBindReservation>,
+    pub(crate) fn tcp_connect_reserved_min_hop(&self, bind: &Arc<TcpBindReservation>,
         local_ip: IpAddr, remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>,
-        ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> NetResult<Arc<TcpEntry>>
+        ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+        fastopen: crate::sock::tcp_fastopen::ActiveOpen,
+        data: &[u8]) -> NetResult<(Arc<TcpEntry>, usize)>
     {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
@@ -421,8 +424,9 @@ impl NetStack {
         let key = TcpKey { local_ip, local_port: bind.local.port, remote_ip, remote_port };
         let mut conns = tables.tcp_conns.lock();
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
-        let (entry, syn) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
-            error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop, ip_opts)?;
+        let (entry, syn, carried) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
+            error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop, ip_opts,
+            fastopen, data)?;
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(
@@ -434,7 +438,7 @@ impl NetStack {
         }
         bind.role.store(TCP_BIND_CONNECT, Ordering::Release);
         crate::stack::stamp_last_sent_public(&entry, 1);
-        Ok(entry)
+        Ok((entry, carried))
     }
 
     /// Materialise the client connection, its opening SYN, and the table entry
@@ -455,8 +459,10 @@ impl NetStack {
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>,
-        ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>)
-        -> NetResult<(Arc<TcpEntry>, alloc::vec::Vec<u8>)>
+        ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+        fastopen: crate::sock::tcp_fastopen::ActiveOpen,
+        data: &[u8])
+        -> NetResult<(Arc<TcpEntry>, alloc::vec::Vec<u8>, usize)>
     {
         // The initial sequence number and the timestamp bias are the two
         // halves of one keyed hash over the connection's four-tuple, so an
@@ -479,10 +485,11 @@ impl NetStack {
             crate::tcp_ext_hdr::ext_hdr_len(ip_opts.options().as_ref()));
         conn.apply_route_metrics(self.route_metrics_for_dst_in(
             bind.net_ns(), remote_ip, bind.bound_iface()));
-        let syn = conn.active_open().map_err(|_| NetError::Eio)?;
+        let (syn, carried) = conn.active_open_fastopen(fastopen.option, fastopen.payload(data))
+            .map_err(|_| NetError::Eio)?;
         Ok((Arc::new(TcpEntry::new_bound_ip_opts(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover, None, min_hop, ip_opts)), syn))
+            ipv6_mtu_discover, None, min_hop, ip_opts)), syn, carried))
     }
 }
 
