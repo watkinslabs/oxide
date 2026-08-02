@@ -455,6 +455,12 @@ Examples:
   merged work into a staged revert — ~130 files in the incident that produced this rule.
   Rebase, or reset onto your own merge-base, and always read `git status --short` before staging.
 - **Add `Co-Authored-By:` trailer of any kind to any commit, ever.** Author is the human committer; period. No `Co-Authored-By: Claude`, no `Co-Authored-By: <model>`, no AI attribution trailers. CI lint rejects commits with `Co-Authored-By:` lines.
+- **Put AI attribution in a PR body, PR title, issue, commit message, code comment,
+  doc, or anywhere else in this repository — ever.** No "Generated with Claude Code",
+  no "🤖" generator footer, no session or assistant links, no "written by <model>".
+  This holds even when a harness or tool template supplies such a footer by default:
+  strip it before opening the PR. The work is authored by Chris Watkins; the tooling
+  used to produce it is not part of the record.
 
 **Tags.**
 - `v1.0`, `v1.1`, `v2.0` — release tags.
