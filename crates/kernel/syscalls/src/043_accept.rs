@@ -3,9 +3,9 @@
 use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::{errno_from_neterr, fd_file, inode_as_inet_socket};
+use crate::net_common::{classify, errno_from_neterr, Routed};
+use crate::sock_route::ControlOp;
 use net::socket_args::{AcceptFlags, parse_accept_flags};
 
 /// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
@@ -27,19 +27,28 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let len_p  = args.a2;
-    let file = match fd_file(fd) {
-        Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64),
+    // An fd that names no open file is EBADF before the flag word is even
+    // read; a bad flag word is EINVAL before the file's protocol gets a say.
+    // Both, and netlink's "no accept operation" EOPNOTSUPP, come from the one
+    // ladder in `sock_route`.
+    let parsed = parse_accept_flags(flags);
+    let target = match classify(fd, ControlOp::Accept, parsed.as_ref().err().copied()) {
+        Ok(target) => target,
+        Err(error) => return -(error.as_i32() as i64),
     };
-    let acc_flags = match parse_accept_flags(flags) {
+    let acc_flags = match parsed {
         Ok(f) => f, Err(e) => return -(e.as_i32() as i64),
     };
-    let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
-    if let Ok(vs) = file.inode().i_private().clone().downcast::<net::vsock_socket::VsockSocket>() {
-        return vsock_accept(&vs, addr_p, len_p, nonblock, acc_flags);
-    }
-    let sock = match inode_as_inet_socket(file.inode()) {
-        Some(s) => s, None => { trace_enotsock_at(fd, b"accept"); return -(Errno::Enotsock.as_i32() as i64); }
+    let (file, sock) = match target {
+        // `route` refuses a netlink accept before classification returns.
+        Routed::Netlink(_) => return -(Errno::Eopnotsupp.as_i32() as i64),
+        Routed::Vsock(vs) => {
+            let nonblock = vs.is_nonblock();
+            return vsock_accept(&vs, addr_p, len_p, nonblock, acc_flags);
+        }
+        Routed::Inet(file, sock) => (file, sock),
     };
+    let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
     let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
     let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
@@ -120,7 +129,7 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
     let mut fl = vfs::OpenFlags::O_RDWR;
     if acc_flags.nonblock { fl |= vfs::OpenFlags::O_NONBLOCK; }
     let file = vfs::File::new(inode, dentry, fl);
-    if let Some(sock) = inode_as_inet_socket(file.inode()) {
+    if let Some(sock) = crate::net_common::inode_as_inet_socket(file.inode()) {
         net::bind_file(&file, &sock);
     }
     drop(unix_gc_pin);

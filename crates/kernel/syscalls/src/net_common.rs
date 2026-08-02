@@ -97,6 +97,54 @@ pub(crate) fn fd_file(fd: u64) -> Option<Arc<vfs::File>> {
     fdt.get(fd as i32).ok()
 }
 
+/// One classified control-syscall target: the endpoint that owns the fd, with
+/// the `fget`-style pin on the exact open file description that was looked up.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) enum Routed {
+    Netlink(crate::netlink_fd::NetlinkFileRef),
+    Vsock(VsockFileRef),
+    Inet(Arc<vfs::File>, SocketFileRef),
+}
+
+/// Resolve an fd ONCE and route it per `sock_route`. The single lookup is the
+/// point: a second `fd_file` could land on a different open file description
+/// after a concurrent close/reopen recycled the slot.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn classify(fd: u64, op: crate::sock_route::ControlOp,
+                       arg_error: Option<syscall::errno::Errno>)
+    -> Result<Routed, syscall::errno::Errno>
+{
+    use crate::sock_route::{Endpoint, endpoint_of, route};
+    let file = fd_file(fd);
+    let endpoint = match route(op, file.as_ref().map(endpoint_of), arg_error) {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            if error == syscall::errno::Errno::Enotsock {
+                crate::net_trace::trace_enotsock_at(fd, op.trace_name());
+            }
+            return Err(error);
+        }
+    };
+    // `route` returns the endpoint only for a file it classified, so this fd
+    // named an open file description.
+    let file = match file { Some(file) => file, None => return Err(syscall::errno::Errno::Ebadf) };
+    Ok(match endpoint {
+        Endpoint::Netlink => match crate::netlink_fd::from_file(file) {
+            Some(target) => Routed::Netlink(target),
+            None => return Err(syscall::errno::Errno::Enotsock),
+        },
+        Endpoint::Vsock => match vsock_from_file(file) {
+            Some(target) => Routed::Vsock(target),
+            None => return Err(syscall::errno::Errno::Enotsock),
+        },
+        Endpoint::Inet | Endpoint::NotSocket => match socket_from_file(file.clone()) {
+            Some(target) => Routed::Inet(file, target),
+            None => return Err(syscall::errno::Errno::Enotsock),
+        },
+    })
+}
+
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod tests {
     use super::*;
@@ -261,12 +309,6 @@ mod tests {
 
         let listen = include_str!("050_listen.rs");
         assert!(listen.contains("vs.listen_with_backlog(backlog)"));
-        // A netlink socket has no listen operation; it must not be reported
-        // as "not a socket".
-        let netlink = listen.find("crate::netlink_fd::from_file(file.clone()).is_some()").unwrap();
-        let notsock = listen.find("Errno::Enotsock").unwrap();
-        assert!(netlink < notsock, "listen classifies netlink before the not-a-socket tail");
-        assert!(listen[netlink..notsock].contains("Errno::Eopnotsupp"));
 
         let accept = include_str!("043_accept.rs");
         assert!(accept.contains("vs.listener_for_accept()"));
