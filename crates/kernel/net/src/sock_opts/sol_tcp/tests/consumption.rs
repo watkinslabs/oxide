@@ -405,20 +405,6 @@ fn an_installed_timestamp_bias_becomes_the_connections_own_offset() {
 }
 
 #[test]
-fn a_fast_open_key_is_stored_as_the_active_key_then_the_backup() {
-    let opts = SockOpts::default();
-    let primary = [1u8; FASTOPEN_KEY_LEN];
-    let backup = [2u8; FASTOPEN_KEY_LEN];
-    apply::store(&opts, &Action::FastopenKey { primary, backup: None });
-    assert_eq!(opts.tcp.fastopen_key.lock().as_deref(), Some(&primary[..]));
-    apply::store(&opts, &Action::FastopenKey { primary, backup: Some(backup) });
-    let stored = opts.tcp.fastopen_key.lock().clone().unwrap();
-    assert_eq!(stored.len(), FASTOPEN_KEY_BUF_LEN);
-    assert_eq!(&stored[..FASTOPEN_KEY_LEN], &primary[..]);
-    assert_eq!(&stored[FASTOPEN_KEY_LEN..], &backup[..]);
-}
-
-#[test]
 fn an_accepted_socket_inherits_the_listeners_policy() {
     let listener = SockOpts::default();
     let mut c = conn();

@@ -170,8 +170,20 @@ fn no_upper_layer_protocol_name_attaches() {
 
 #[test]
 fn fast_open_connect_reports_the_feature_off_before_it_looks_at_state() {
+    use crate::tcp_fastopen::{TFO_CLIENT_ENABLE, TFO_DEFAULT, TFO_SERVER_ENABLE};
     assert_eq!(set(TCP_FASTOPEN_CONNECT, 2, env()), Err(Errno::Einval));
+    // A namespace whose client bit is clear reports the feature off ahead of
+    // any state check — and only the CLIENT bit answers this option, so a
+    // server-only namespace still reports it off.
     assert_eq!(set(TCP_FASTOPEN_CONNECT, 1, env()), Err(Errno::Eopnotsupp));
+    assert_eq!(set(TCP_FASTOPEN_CONNECT, 1,
+        SetEnv { fastopen_sysctl: TFO_SERVER_ENABLE, ..SetEnv::default() }),
+        Err(Errno::Eopnotsupp));
+    // The compiled default of the sysctl carries the client bit, so a socket
+    // in a namespace nobody configured is accepted.
+    assert_eq!(set(TCP_FASTOPEN_CONNECT, 1,
+        SetEnv { fastopen_sysctl: TFO_DEFAULT, ..SetEnv::default() }),
+        Ok(Action::FastopenConnect(true)));
     let enabled = SetEnv { fastopen_sysctl: TFO_CLIENT_ENABLE, state: TcpState::Established,
                            ..SetEnv::default() };
     assert_eq!(set(TCP_FASTOPEN_CONNECT, 1, enabled), Err(Errno::Einval));

@@ -20,6 +20,8 @@ use crate::dyn_file::read_at;
 
 const SYSCTL_RW_MODE: u16 = 0o644;
 const SYSCTL_RO_MODE: u16 = 0o444;
+/// A leaf whose value is a secret: writable, but readable only by its owner.
+const SYSCTL_OWNER_ONLY_MODE: u16 = 0o600;
 use crate::live::next_ino;
 
 /// `i_private` for a mutable sysctl value (KEYSTONE struct-`Inode`). Stored
@@ -233,7 +235,8 @@ fn write_bound_handler(h: &dyn crate::proc_handler::ProcHandler, off: u64,
 /// # C: O(1)
 pub fn bound_sysctl_inode(h: Arc<dyn crate::proc_handler::ProcHandler>) -> InodeRef {
     let ino = next_ino();
-    let perm = if h.writable() { SYSCTL_RW_MODE } else { SYSCTL_RO_MODE };
+    let perm = if h.owner_only() { SYSCTL_OWNER_ONLY_MODE }
+        else if h.writable() { SYSCTL_RW_MODE } else { SYSCTL_RO_MODE };
     InodeBuilder::new(ino, mk_mode(FileType::Regular, perm), Arc::new(SysctlInodeOps), Arc::new(BoundSysctlFileOps))
         .private(Arc::new(BoundSysctlInode { h }))
         .build()
