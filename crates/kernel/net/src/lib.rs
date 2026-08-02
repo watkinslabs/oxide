@@ -131,6 +131,7 @@ pub use netdev::{
 };
 
 pub mod sock;
+pub mod scm;
 pub mod sock_opts;
 pub mod vsock;
 pub mod vsock_socket;

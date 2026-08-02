@@ -236,7 +236,9 @@ pub struct SockOpts {
     pub tcp_keepidle_s: core::sync::atomic::AtomicI32,
     pub tcp_keepintvl_s: core::sync::atomic::AtomicI32,
     pub tcp_keepcnt: core::sync::atomic::AtomicI32,
-    pub passcred: core::sync::atomic::AtomicI32,
+    /// `sk_scm_credentials`, in the type every credential-carrying family
+    /// shares (`net::scm`).
+    pub passcred: crate::scm::ScmCredentials,
     pub timestamping: core::sync::atomic::AtomicI32,
     /// SO_TYPE override (Linux `sock->type`) for AF_UNIX sockets whose
     /// `SockKind` doesn't itself encode the requested shape — chiefly a
@@ -302,7 +304,7 @@ impl Default for SockOpts {
             tcp_keepidle_s: AtomicI32::new(crate::sock_opts::TCP_KEEPIDLE_DEFAULT_S),
             tcp_keepintvl_s: AtomicI32::new(crate::sock_opts::TCP_KEEPINTVL_DEFAULT_S),
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
-            passcred: AtomicI32::new(0),
+            passcred: crate::scm::ScmCredentials::new(),
             timestamping: AtomicI32::new(0),
             so_type: AtomicU8::new(0),
             generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),

@@ -180,7 +180,7 @@ fn apply(sock: &Arc<InetSocket>, action: Action) -> i64 {
         }
         Action::Priority(v) => sock.opts.priority.store(v, Ordering::Release),
         Action::Mark(v) => sock.opts.mark.store(v, Ordering::Release),
-        Action::Passcred(v) => sock.opts.passcred.store(v, Ordering::Release),
+        Action::Passcred(v) => sock.opts.passcred.set(v != 0),
         Action::Timestamping { flags, bind_phc, new } => {
             sock.opts.timestamping.store(flags, Ordering::Release);
             generic.set_scalar(Scalar::TimestampingBindPhc, bind_phc);

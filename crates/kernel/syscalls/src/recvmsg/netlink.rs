@@ -58,8 +58,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     // RECEIVING socket set SO_PASSCRED. One rule for every protocol: a reader
     // that did not ask is never handed a control message, and a reader that
     // did is answered whether it is watching uevents or the link table.
-    let passcred = sock.passcred.load(core::sync::atomic::Ordering::Acquire);
-    let delivered = match ::netlink::reported_creds(passcred, carried) {
+    let delivered = match net::scm::recv(sock.scm.on(), carried) {
         Some(creds) => match crate::recv_control::deliver(user, Vec::new(), Some(creds), None, flags) {
             Ok(delivered) => delivered,
             Err(error) => return error,
