@@ -18,6 +18,16 @@ fn packet_tx_ring_file() -> Arc<vfs::File> {
     let owner = network_namespace::initial();
     let iface = net::sock::stack().ifaces.register_in_ns(Arc::new(PacketKickDev),
         owner.id().as_u64());
+    // Registration leaves an ethernet device administratively DOWN, as the
+    // reference's `ether_setup` does, and the packet transmit path refuses a
+    // down link with ENETDOWN. Bring it up the way userspace would before
+    // expecting it to carry frames — the same step the two sibling fixtures in
+    // the `net` crate take.
+    {
+        let rtnl = net::sock::stack().rtnl_lock();
+        net::sock::stack().ifaces.set_iface_flags_in_ns(&rtnl, iface, owner.id().as_u64(),
+            net::netdev::iff::IFF_UP, net::netdev::iff::IFF_UP);
+    }
     let socket = Arc::new(net::sock::InetSocket::new_packet_in(net::eth_p::IPV4, 3, owner));
     if let net::sock::SockKind::Packet { ifindex, .. } = &*socket.kind.lock() {
         ifindex.store(iface.raw(), core::sync::atomic::Ordering::Release);

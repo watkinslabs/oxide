@@ -157,15 +157,29 @@ pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
         crate::registry::resolve_user_pid(vpid as u32)
             .or_else(|| crate::live::registry::lookup_by_vpid(vpid as u32))
     }.ok_or(vfs::VfsError::Esrch)?;
-    // The task's own state decides, as the reference's `PF_EXITING` does. A
-    // side table keyed by tid used to answer this, and it retained an entry
-    // for a LIVE task — so the service manager could not move its own pid into
-    // its own cgroup and froze at boot. Two records of one fact can disagree;
-    // one cannot.
+    // A task on its way out is SKIPPED, not refused. The reference decides this
+    // in `cgroup_migrate_add_task`, which returns without doing anything:
+    //
+    //     /* @task either already exited or can't exit until the end */
+    //     if (task->flags & PF_EXITING)
+    //             return;
+    //
+    // and `cgroup_procs_write_start` — the part that CAN fail — rejects only a
+    // pid that resolves to nothing (ESRCH) or a kthread pinned by
+    // `PF_NO_SETAFFINITY` (EINVAL). It never turns an exiting task into an
+    // error, because the write asked for a state the task is about to reach
+    // anyway: nothing to move, nothing to report.
+    //
+    // Returning ESRCH here instead made a `cgroup.procs` write fail whenever
+    // the resolved task happened to be leaving, and the service manager takes
+    // that at its word: `Failed to create /init.scope control group: No such
+    // process`, then `Freezing execution.` The destination is returned as the
+    // source so the caller sees a move from where it already is — no movement,
+    // no notification.
     if task.exiting.load(CgOrd::Acquire)
         || task.reaped.load(CgOrd::Acquire)
         || task.state() == TaskState::Zombie {
-        return Err(vfs::VfsError::Esrch);
+        return Ok(cgid);
     }
     if thread {
         cgroup::migrate_thread(cgid, task.tid as u64)
