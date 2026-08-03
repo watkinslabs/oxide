@@ -18,6 +18,7 @@ use core::sync::atomic::Ordering;
         ModernNetState {
             device_key: key(raw),
             cfg_va: 0,
+            drv_features: 0,
             hhdm: 0,
             rxq: virtio::VirtQueueResource {
                 index: 0,
@@ -95,7 +96,8 @@ use core::sync::atomic::Ordering;
             resources_with_mac(&MAC1),
             9,
             2048,
-            10
+            10,
+            0,
         ));
         assert!(is_modern_present_for(key(1)));
         assert_eq!(mac_for(key(1)), Some(MAC1));
@@ -104,7 +106,8 @@ use core::sync::atomic::Ordering;
             resources_with_mac(&MAC2),
             9,
             2048,
-            10
+            10,
+            0,
         ));
         assert_eq!(mac_for(key(2)), Some(MAC2));
         assert_eq!(modern_state_for(key(1)).unwrap().device_key, key(1));
@@ -114,7 +117,8 @@ use core::sync::atomic::Ordering;
             resources_with_mac(&MAC2),
             9,
             2048,
-            10
+            10,
+            0,
         ));
         MODERN_DEVS.lock().clear();
         assert!(!is_modern_present());
@@ -143,6 +147,7 @@ use core::sync::atomic::Ordering;
                 },
             ],
             0xb000,
+            0,
         ));
         let state = modern_state_for(key(3)).unwrap();
         assert_eq!(state.rx_bufs.len(), 2);
@@ -167,6 +172,7 @@ use core::sync::atomic::Ordering;
                 },
             ],
             0xb000,
+            0,
         ));
         assert!(!is_modern_present_for(key(4)));
     }
@@ -189,6 +195,7 @@ use core::sync::atomic::Ordering;
                 len: 2048,
             }],
             0xb000,
+            0,
         ));
         assert!(!is_modern_present_for(key(5)));
         assert!(registered_iface_for(key(5)).is_none());
@@ -476,3 +483,30 @@ use core::sync::atomic::Ordering;
             net::MacAddr([0x33, 0x33, 0xff, 0x34, 0x56, 0x78])
         );
     }
+
+// A config window that published only a MAC has no `status` field after it.
+// Reading one anyway walks off the end of whatever the device exposed — the
+// defect this test exists to keep out, found when the read aborted the suite
+// under workspace feature unification while passing on its own.
+#[test]
+fn carrier_is_not_read_from_a_device_that_never_offered_the_status_feature() {
+    static MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 9];
+    let resources = resources_with_mac(&MAC);
+    // No VIRTIO_NET_F_STATUS: always up, and the six-byte window is not read past.
+    assert!(super::state::read_device_carrier(resources, virtio::VIRTIO_NET_F_MAC));
+    assert!(super::state::read_device_carrier(resources, 0));
+    // Nor is a device that published no config window at all.
+    let bare = virtio::VirtioResources::new(1, 1);
+    assert!(super::state::read_device_carrier(bare, virtio::VIRTIO_NET_F_STATUS));
+}
+
+#[test]
+fn carrier_follows_the_link_up_bit_of_a_published_status_word() {
+    // mac[6] then status[2] — the layout the reference declares.
+    static CFG: [u8; 8] = [0x02, 0, 0, 0, 0, 9, 0x01, 0x00];
+    static DOWN: [u8; 8] = [0x02, 0, 0, 0, 0, 9, 0x00, 0x00];
+    let up = virtio::VirtioResources::new(1, 1).with_device_cfg_va(CFG.as_ptr() as u64);
+    let down = virtio::VirtioResources::new(1, 1).with_device_cfg_va(DOWN.as_ptr() as u64);
+    assert!(super::state::read_device_carrier(up, virtio::VIRTIO_NET_F_STATUS));
+    assert!(!super::state::read_device_carrier(down, virtio::VIRTIO_NET_F_STATUS));
+}

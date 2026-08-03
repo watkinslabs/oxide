@@ -59,7 +59,8 @@ pub use queue::{
 pub mod net;
 pub use net::{VirtioNet, VirtioNetHdr, VIRTIO_NET_HDR_LEN_V1,
               VIRTIO_NET_F_CSUM, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MRG_RXBUF,
-              VIRTIO_NET_F_STATUS};
+              VIRTIO_NET_F_STATUS, VIRTIO_NET_S_LINK_UP,
+              NET_CFG_MAC_OFFSET, NET_CFG_STATUS_OFFSET, carrier_from_status};
 
 pub mod blk;
 pub use blk::{

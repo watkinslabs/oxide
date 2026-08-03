@@ -17,6 +17,54 @@ pub const VIRTIO_NET_F_MAC:     u64 = 1 << 5;
 pub const VIRTIO_NET_F_MRG_RXBUF: u64 = 1 << 15;
 pub const VIRTIO_NET_F_STATUS:  u64 = 1 << 16;
 
+/// `virtio_net_config.status` bit: the link can carry frames.
+pub const VIRTIO_NET_S_LINK_UP: u16 = 1;
+/// `virtio_net_config` byte offset of `mac`.
+pub const NET_CFG_MAC_OFFSET: u64 = 0;
+/// `virtio_net_config` byte offset of `status`, immediately after the MAC.
+pub const NET_CFG_STATUS_OFFSET: u64 = 6;
+
+/// Carrier a device reports, given the negotiated features and the `status`
+/// word read from its config window.
+///
+/// Without `VIRTIO_NET_F_STATUS` the field does not exist and the device is
+/// always up, which is what the reference assumes; with it, the link-up bit
+/// decides. Reading `status` unconditionally would read whatever follows the
+/// MAC on a device that never published one.
+/// # C: O(1)
+pub fn carrier_from_status(features: u64, status: u16) -> bool {
+    if features & VIRTIO_NET_F_STATUS == 0 { return true; }
+    status & VIRTIO_NET_S_LINK_UP != 0
+}
+
+#[cfg(test)]
+mod carrier_tests {
+    use super::*;
+
+    #[test]
+    fn a_device_without_the_status_feature_is_always_up() {
+        // The field is absent, so whatever those bytes hold means nothing.
+        assert!(carrier_from_status(VIRTIO_NET_F_MAC, 0));
+        assert!(carrier_from_status(0, 0xdead));
+    }
+
+    #[test]
+    fn the_link_up_bit_decides_once_the_feature_is_negotiated() {
+        let f = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
+        assert!(carrier_from_status(f, VIRTIO_NET_S_LINK_UP));
+        assert!(!carrier_from_status(f, 0));
+        // Other status bits (e.g. ANNOUNCE) do not imply carrier.
+        assert!(!carrier_from_status(f, 1 << 1));
+        assert!(carrier_from_status(f, VIRTIO_NET_S_LINK_UP | (1 << 1)));
+    }
+
+    #[test]
+    fn the_status_word_follows_the_mac_in_the_config_window() {
+        assert_eq!(NET_CFG_MAC_OFFSET, 0);
+        assert_eq!(NET_CFG_STATUS_OFFSET, 6);
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct VirtioNetHdr {
