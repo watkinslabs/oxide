@@ -44,6 +44,12 @@ pub struct Ipv4IfaceAddr {
     pub broadcast: Option<Ipv4Addr>,
     pub scope:     u8,
     pub flags:     u32,
+    /// `IFA_PROTO`: which agent owns the address. `IFAPROT_UNSPEC` (0) means
+    /// the setter named none, and the attribute is then not reported.
+    pub proto:     u8,
+    /// `IFA_RT_PRIORITY`: metric of the prefix route this address installs.
+    /// Zero means unset, and the attribute is then not reported.
+    pub rt_priority: u32,
     pub cacheinfo: Ipv4AddrCacheInfo,
 }
 
@@ -102,6 +108,8 @@ fn set_primary_addr_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, scope: u8) {
             broadcast: None,
             scope,
             flags: IFA_F_PERMANENT,
+            proto: 0,
+            rt_priority: 0,
             cacheinfo: Ipv4AddrCacheInfo::PERMANENT,
         });
     }
@@ -134,29 +142,52 @@ impl Ipv4AddrEffect {
     pub fn publish(self) { self.effect.apply_ipv4(self.addr); }
 }
 
+mod lifetime;
+pub use lifetime::{age, now_centisecs, stamp, CENTISECS_PER_SEC};
+
+/// `IFA_PROTO` values: which agent owns an address.
+pub const IFAPROT_UNSPEC: u8 = 0;
+pub const IFAPROT_KERNEL_LO: u8 = 1;
+pub const IFAPROT_KERNEL_RA: u8 = 2;
+pub const IFAPROT_KERNEL_LL: u8 = 3;
+
+/// Everything an `RTM_NEWADDR` states about an address beyond its prefix.
+/// Carried as one value so a field the setter supplied cannot be dropped on
+/// the way to the table — every one of these is reported back verbatim, and a
+/// caller that reads back something it did not set re-applies the address
+/// forever trying to correct it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ipv4AddrMeta {
+    pub scope: u8,
+    pub flags: u32,
+    pub broadcast: Option<Ipv4Addr>,
+    pub proto: u8,
+    pub rt_priority: u32,
+    pub cacheinfo: Ipv4AddrCacheInfo,
+}
+
+impl Ipv4AddrMeta {
+    /// A permanent address with nothing else stated. # C: O(1)
+    pub fn permanent(scope: u8) -> Self {
+        Self { scope, flags: IFA_F_PERMANENT, broadcast: None, proto: 0, rt_priority: 0,
+               cacheinfo: Ipv4AddrCacheInfo::PERMANENT }
+    }
+}
+
 /// Set/replace from an rtnetlink prefix. # C: O(N)
 pub fn set_prefix(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, prefixlen: u8, scope: u8) {
-    set_prefix_meta(ns, iface, addr, None, prefixlen, scope, IFA_F_PERMANENT,
-        Ipv4AddrCacheInfo::PERMANENT);
+    set_prefix_meta(ns, iface, addr, None, prefixlen, Ipv4AddrMeta::permanent(scope));
 }
 
 /// Set/replace from an rtnetlink prefix with Linux address metadata. # C: O(N)
-pub fn set_prefix_meta(
-    ns: u64,
-    iface: NetIfaceId,
-    addr: Ipv4Addr,
-    peer: Option<Ipv4Addr>,
-    prefixlen: u8,
-    scope: u8,
-    flags: u32,
-    cacheinfo: Ipv4AddrCacheInfo,
-) {
-    set_prefix_meta_row(ns, iface, addr, peer, prefixlen, scope, flags, cacheinfo);
+pub fn set_prefix_meta(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, peer: Option<Ipv4Addr>,
+                       prefixlen: u8, meta: Ipv4AddrMeta) {
+    set_prefix_meta_row(ns, iface, addr, peer, prefixlen, meta);
 }
 
 pub(crate) fn set_prefix_meta_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
-                                  peer: Option<Ipv4Addr>, prefixlen: u8, scope: u8,
-                                  flags: u32, cacheinfo: Ipv4AddrCacheInfo) {
+                                  peer: Option<Ipv4Addr>, prefixlen: u8,
+                                  meta: Ipv4AddrMeta) {
     insert(Ipv4IfaceAddr {
         ns,
         iface,
@@ -164,10 +195,12 @@ pub(crate) fn set_prefix_meta_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
         peer: peer.filter(|peer| *peer != addr),
         prefixlen: prefixlen.min(32),
         mask: mask_from_prefix(prefixlen),
-        broadcast: None,
-        scope,
-        flags,
-        cacheinfo,
+        broadcast: meta.broadcast,
+        scope: meta.scope,
+        flags: meta.flags,
+        proto: meta.proto,
+        rt_priority: meta.rt_priority,
+        cacheinfo: meta.cacheinfo,
     });
 }
 
@@ -176,15 +209,14 @@ impl crate::NetStack {
     pub fn set_ipv4_prefix_meta_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
                                                  iface: NetIfaceId, generation: u64,
                                                  addr: Ipv4Addr, peer: Option<Ipv4Addr>,
-                                                 prefixlen: u8, scope: u8, flags: u32,
-                                                 cacheinfo: Ipv4AddrCacheInfo)
+                                                 prefixlen: u8, meta: Ipv4AddrMeta)
         -> Option<Ipv4AddrEffect>
     {
         if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
             return None;
         }
         let effect = self.ifaces.admit_control_effect_in_ns(rtnl, iface, ns)?;
-        set_prefix_meta_row(ns, iface, addr, peer, prefixlen, scope, flags, cacheinfo);
+        set_prefix_meta_row(ns, iface, addr, peer, prefixlen, meta);
         let addr = primary_addr(&IPV4_ADDRS.lock(), ns, iface);
         Some(Ipv4AddrEffect { effect, addr })
     }
@@ -250,13 +282,13 @@ impl crate::NetStack {
 
     /// Set IPv4 prefix metadata if interface remains control-ready in `ns`. # C: O(N)
     pub fn set_ipv4_prefix_meta_in(&self, ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
-                                   peer: Option<Ipv4Addr>, prefixlen: u8, scope: u8, flags: u32,
-                                   cacheinfo: Ipv4AddrCacheInfo) -> bool {
+                                   peer: Option<Ipv4Addr>, prefixlen: u8,
+                                   meta: Ipv4AddrMeta) -> bool {
         let (effect, primary) = {
             let rtnl = self.rtnl_lock();
             let Some(effect) = self.ifaces.admit_control_effect_in_ns(&rtnl, iface, ns)
                 else { return false };
-            set_prefix_meta_row(ns, iface, addr, peer, prefixlen, scope, flags, cacheinfo);
+            set_prefix_meta_row(ns, iface, addr, peer, prefixlen, meta);
             (effect, primary_addr(&IPV4_ADDRS.lock(), ns, iface))
         };
         effect.apply_ipv4(primary);

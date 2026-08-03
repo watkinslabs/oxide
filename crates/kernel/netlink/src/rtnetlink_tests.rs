@@ -27,6 +27,8 @@
     mod address_semantics;
     #[path = "rtnetlink_tests/strict_dumps.rs"]
     mod strict_dumps;
+    #[path = "rtnetlink_tests/addr_fields.rs"]
+    mod addr_fields;
 
     fn visible_ifindex(iface: net::NetIfaceId, ns: u64) -> u32 {
         net::global_stack().ifaces.ifindex_in_ns(iface, ns).unwrap()
@@ -352,8 +354,8 @@
         let before = addr_snapshot_ns(0).len();
         addr_insert(IfaceAddr {
             ns: 0, ifindex: 9999, family: AF_INET,
-            addr: [10, 9, 9, 9], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
-            flags: net::iface_addr::IFA_F_PERMANENT,
+            addr: [10, 9, 9, 9], peer: None, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            flags: net::iface_addr::IFA_F_PERMANENT, proto: 0, rt_priority: 0,
             cacheinfo: IfaCacheInfo::PERMANENT,
         });
         let after_insert = addr_snapshot_ns(0).len();
@@ -369,8 +371,8 @@
         domain.set_notifier(crate::mcast::notify_control_event);
         let row = IfaceAddr {
             ns: 0, ifindex: 9998, family: AF_INET,
-            addr: [10, 9, 9, 8], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
-            flags: net::iface_addr::IFA_F_PERMANENT,
+            addr: [10, 9, 9, 8], peer: None, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            flags: net::iface_addr::IFA_F_PERMANENT, proto: 0, rt_priority: 0,
             cacheinfo: IfaCacheInfo::PERMANENT,
         };
         let before = addr_snapshot_ns(0).len();
@@ -385,8 +387,8 @@
     fn addrs_are_isolated_per_net_ns() {
         let row = |ns| IfaceAddr {
             ns, ifindex: 9997, family: AF_INET,
-            addr: [10, 9, 9, 7], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
-            flags: net::iface_addr::IFA_F_PERMANENT,
+            addr: [10, 9, 9, 7], peer: None, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            flags: net::iface_addr::IFA_F_PERMANENT, proto: 0, rt_priority: 0,
             cacheinfo: IfaCacheInfo::PERMANENT,
         };
         let n0 = addr_snapshot_ns(880).len();
@@ -485,8 +487,9 @@
     #[test]
     fn build_newaddr_reply_well_formed() {
         let bytes = build_newaddr_reply(
-            1, 42, 2, "eth0", [10, 0, 2, 15], None, 24, RT_SCOPE_UNIVERSE,
-            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, crate::flags::NLM_F_MULTI,
+            1, 42, 2, "eth0", [10, 0, 2, 15], None, Some([10, 0, 2, 255]), 24,
+            RT_SCOPE_UNIVERSE, net::iface_addr::IFA_F_PERMANENT, 0, 0,
+            IfaCacheInfo::PERMANENT, crate::flags::NLM_F_MULTI,
         );
         // Header nlmsg_type == RTM_NEWADDR
         let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
@@ -499,6 +502,8 @@
         let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
         assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).unwrap(), &[10, 0, 2, 15]);
         assert_eq!(find_attr(attrs, ifa::IFA_ADDRESS).unwrap(), &[10, 0, 2, 15]);
+        // The broadcast is the one the setter stated — the reference never
+        // derives one from the prefix.
         assert_eq!(find_attr(attrs, ifa::IFA_BROADCAST).unwrap(), &[10, 0, 2, 255]);
         assert!(find_attr(attrs, ifa::IFA_FLAGS).is_some());
         let ci = find_attr(attrs, ifa::IFA_CACHEINFO)
@@ -512,8 +517,9 @@
         let local = [192, 0, 2, 10];
         let peer = [192, 0, 2, 11];
         let bytes = build_newaddr_reply(
-            1, 42, 2, "ppp0", local, Some(peer), 32, RT_SCOPE_UNIVERSE,
-            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, crate::flags::NLM_F_MULTI,
+            1, 42, 2, "ppp0", local, Some(peer), None, 32, RT_SCOPE_UNIVERSE,
+            net::iface_addr::IFA_F_PERMANENT, 0, 0, IfaCacheInfo::PERMANENT,
+            crate::flags::NLM_F_MULTI,
         );
         let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
         assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).unwrap(), &local);

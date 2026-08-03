@@ -82,7 +82,8 @@ fn explicit_broadcast_overrides_subnet_fallback() {
     let iface = NetIfaceId::from_raw(912);
     insert(Ipv4IfaceAddr { ns, iface, addr: Ipv4Addr::new(192, 0, 2, 9), peer: None,
         prefixlen: 24, mask: 0xffff_ff00, broadcast: Some(Ipv4Addr::new(192, 0, 2, 254)),
-        scope: 0, flags: IFA_F_PERMANENT, cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
+        scope: 0, flags: IFA_F_PERMANENT, proto: 0, rt_priority: 0,
+        cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
     assert_eq!(broadcast(ns, iface), Some(Ipv4Addr::new(192, 0, 2, 254)));
     remove(ns, iface, Ipv4Addr::new(192, 0, 2, 9), 24);
 }
@@ -204,8 +205,7 @@ fn address_effects_publish_primary_promotion_and_clear_in_commit_order() {
         let first = stack.set_primary_ipv4_generation_rtnl(&rtnl, NS, iface, generation,
             Ipv4Addr::new(192, 0, 2, 1), 0).unwrap();
         let second = stack.set_ipv4_prefix_meta_generation_rtnl(&rtnl, NS, iface, generation,
-            Ipv4Addr::new(192, 0, 2, 2), None, 24, 0, IFA_F_PERMANENT,
-            Ipv4AddrCacheInfo::PERMANENT).unwrap();
+            Ipv4Addr::new(192, 0, 2, 2), None, 24, Ipv4AddrMeta::permanent(0)).unwrap();
         let (_, promote) = stack.remove_ipv4_prefix_generation_rtnl(&rtnl, NS, iface,
             generation, Ipv4Addr::new(192, 0, 2, 1), None, 0).unwrap();
         let (_, clear) = stack.remove_ipv4_prefix_generation_rtnl(&rtnl, NS, iface,
@@ -236,8 +236,7 @@ fn peer_is_canonical_row_metadata_and_exact_delete_selector() {
         let rtnl = stack.rtnl_lock();
         let generation = stack.ifaces.control_generation_in_ns(&rtnl, iface, NS).unwrap();
         stack.set_ipv4_prefix_meta_generation_rtnl(&rtnl, NS, iface, generation,
-            local, Some(peer), 32, 0, IFA_F_PERMANENT,
-            Ipv4AddrCacheInfo::PERMANENT).unwrap()
+            local, Some(peer), 32, Ipv4AddrMeta::permanent(0)).unwrap()
     };
     effect.publish();
     let wrong = {

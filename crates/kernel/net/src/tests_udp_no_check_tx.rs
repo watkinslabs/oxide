@@ -39,7 +39,7 @@ fn emit(no_check: bool) -> Vec<u8> {
     let dev = Arc::new(Capture { packets: Spinlock::new(Vec::new()) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
     crate::iface_addr::insert(Ipv4IfaceAddr { ns: 0, iface, addr: SRC, peer: None, prefixlen: 24,
-        mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0,
+        mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0, proto: 0, rt_priority: 0,
         cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
     if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {

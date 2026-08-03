@@ -96,8 +96,8 @@ fn emit_addr(event: &net::control_event::AddrEvent) {
     let row = event.row;
     let mut msg = rt::build_newaddr_reply(
         0, 0, notify_ifindex(&event.owner, event.namespace.id()), &event.label, row.addr.octets(),
-        row.peer.map(|peer| peer.octets()),
-        row.prefixlen, row.scope, row.flags,
+        row.peer.map(|peer| peer.octets()), row.broadcast.map(|b| b.octets()),
+        row.prefixlen, row.scope, row.flags, row.proto, row.rt_priority,
         rt::IfaCacheInfo {
             preferred: row.cacheinfo.preferred, valid: row.cacheinfo.valid,
             cstamp: row.cacheinfo.cstamp, tstamp: row.cacheinfo.tstamp,

@@ -44,7 +44,7 @@ fn device(stack: &NetStack, addr: Ipv4Addr) -> (Arc<Capture>, NetIfaceId) {
     let dev = Arc::new(Capture { packets: Spinlock::new(Vec::new()) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
     crate::iface_addr::insert(Ipv4IfaceAddr { ns: 0, iface, addr, peer: None, prefixlen: 24,
-        mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0,
+        mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0, proto: 0, rt_priority: 0,
         cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
     (dev, iface)
 }
