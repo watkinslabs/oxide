@@ -165,6 +165,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioNetOps {
             resources,
             rx_bufs,
             payloads.tx_buf_pa,
+            session.drv_features(),
         );
         #[cfg(feature = "debug-boot")]
         {
