@@ -49,6 +49,9 @@ pub struct DrmModeCrtcPageFlip {
 }
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
+/// A user pointer the copy routines could not read: the caller named memory
+/// it does not have, which is EFAULT and never a kernel fault. # C: O(1)
+fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 
 /// True iff `[ptr, ptr+len)` is a usable user range. # C: O(1)
 fn user_ok(ptr: u64, len: u64) -> bool {

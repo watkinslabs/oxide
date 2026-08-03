@@ -5,6 +5,7 @@ use crate::{
 
 /// `struct drm_version` Linux UAPI (88 bytes on 64-bit).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct DrmVersion {
     pub(super) version_major:      i32,
     pub(super) version_minor:      i32,
@@ -19,6 +20,7 @@ pub(super) struct DrmVersion {
 
 /// `struct drm_unique` Linux UAPI (16 bytes on 64-bit).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct DrmUnique {
     pub(super) unique_len: u64,
     pub(super) unique:     u64, // user pointer
@@ -26,6 +28,7 @@ pub(super) struct DrmUnique {
 
 /// `struct drm_set_version` Linux UAPI (16 bytes).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct DrmSetVersion {
     pub(super) drm_di_major: i32,
     pub(super) drm_di_minor: i32,
