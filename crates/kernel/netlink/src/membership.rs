@@ -15,7 +15,11 @@ use crate::{genetlink, proto};
 impl NetlinkSocket {
     /// `bind` nl_groups: subscribe to the given group bitmask.
     /// # C: O(1)
-    pub fn set_group_mask(&self, mask: u32) { self.groups.set_low_mask(mask); }
+    pub fn set_group_mask(&self, mask: u32) {
+        self.groups.set_low_mask(mask);
+        #[cfg(feature = "debug-netlink")]
+        trace_subscribe(self, mask, b"bindmask");
+    }
 
     /// Multicast groups this socket's PROTOCOL offers. Netlink floors every
     /// protocol at a full word of groups; rtnetlink and genetlink each declare
@@ -40,6 +44,8 @@ impl NetlinkSocket {
     pub fn add_membership(&self, group: u32) -> Result<(), net::NetError> {
         self.group_in_range(group)?;
         self.groups.add(group);
+        #[cfg(feature = "debug-netlink")]
+        trace_subscribe(self, group, b"add");
         Ok(())
     }
 
@@ -70,4 +76,26 @@ impl NetlinkSocket {
         #[cfg(not(target_os = "oxide-kernel"))]
         { genetlink::GenlCred { init_ns_net_admin: true, sock_ns_net_admin: true } }
     }
+}
+
+/// Which task subscribed which netlink socket to which group, and how. A
+/// notification that reaches nobody is explained either by no subscription
+/// ever happening or by it happening after the event.
+#[cfg(feature = "debug-netlink")]
+fn trace_subscribe(sock: &NetlinkSocket, group: u32, via: &[u8]) {
+    klog::write_raw(b"[NL-SUB ");
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(c) = sched::live::current() {
+        klog::write_dec_u64(c.tid as u64);
+        klog::write_raw(b"/");
+        let comm = c.comm_bytes();
+        klog::write_raw(sched::Task::comm_trim(&comm).as_bytes());
+    }
+    klog::write_raw(b" proto=");
+    klog::write_dec_u64(sock.protocol as u64);
+    klog::write_raw(b" ");
+    klog::write_raw(via);
+    klog::write_raw(b"=");
+    klog::write_dec_u64(group as u64);
+    klog::write_raw(b"]\n");
 }
