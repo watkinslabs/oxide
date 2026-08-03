@@ -68,7 +68,35 @@ pub trait TimerOps { fn monotonic_ns() -> Nanos; }
 
 /// Virtual monotonic clock the tests drive directly — no real sleeping
 /// needed to prove the `ETIMEDOUT` classification path in `wait::wait_loop`.
+///
+/// One clock, process-wide, and the PRODUCTION wait loop reads it. Cargo runs
+/// the tests in this file concurrently on separate threads, so two of them
+/// driving this at once is one test rewriting another's notion of "now" —
+/// which is not a hypothetical: a sibling storing 501 between this file's
+/// waiter being woken and its own `now >= deadline` recheck makes a 1000 ns
+/// deadline read as not-yet-elapsed, so the loop takes the reference's genuine
+/// "spurious wakeup, retry" path (`__futex_wait`) and re-parks with nothing
+/// left to wake it. The test then hangs, and it hung only under full-workspace
+/// load, which is the worst way for it to fail.
+///
+/// Take [`fake_clock`] before touching it.
 pub static FAKE_NOW_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Serialises the tests that drive [`FAKE_NOW_NS`], and resets it so each one
+/// starts from a known time rather than from whatever ran last.
+///
+/// Hold the guard for as long as the clock matters — including across any
+/// waiter thread the test spawns, because the loop reads the clock from there.
+static FAKE_CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn fake_clock() -> std::sync::MutexGuard<'static, ()> {
+    // A test that panicked while holding this poisoned the lock; the clock is
+    // reset on acquire anyway, so the next test is unaffected and should run
+    // rather than fail for someone else's reason.
+    let guard = FAKE_CLOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    FAKE_NOW_NS.store(0, Ordering::SeqCst);
+    guard
+}
 
 pub struct X86TimerOps;
 impl TimerOps for X86TimerOps {
@@ -490,6 +518,8 @@ fn wake_bitset_only_wakes_matching_waiters() {
 
 #[test]
 fn wait_timeout_returns_etimedout_not_a_fake_success() {
+    // Held for the whole test: the waiter thread below reads this clock too.
+    let _clock = fake_clock();
     static WORD: AtomicU32 = AtomicU32::new(9);
     let uaddr = &WORD as *const AtomicU32 as u64;
     let (tx, rx) = mpsc::channel();
@@ -550,6 +580,8 @@ fn untimed_wait_returns_erestartsys_on_signal_not_a_fake_success_or_timeout() {
 
 #[test]
 fn timed_wait_arms_futex_wait_restart_with_the_same_absolute_deadline() {
+    // Held for the whole test: the waiter thread below reads this clock too.
+    let _clock = fake_clock();
     static WORD: AtomicU32 = AtomicU32::new(7);
     let uaddr = &WORD as *const AtomicU32 as u64;
     let (tx, rx) = mpsc::channel();
@@ -585,6 +617,8 @@ fn timed_wait_arms_futex_wait_restart_with_the_same_absolute_deadline() {
 
 #[test]
 fn wait_timeout_beats_signal_when_deadline_already_elapsed() {
+    // Held for the whole test: the waiter thread below reads this clock too.
+    let _clock = fake_clock();
     // Linux `__futex_wait`: `to->task == NULL` (deadline fired) is checked
     // BEFORE `signal_pending`. Mirror that ordering: arm a deadline, let it
     // elapse, ALSO mark a signal pending, then wake — must report
@@ -672,4 +706,35 @@ fn wake_op_sign_extends_cmparg_for_negative_compare() {
     assert_eq!(rv, 0);
     assert_eq!(WORD2.load(Ordering::SeqCst), 0, "SET must still apply oparg=0");
     h.join().unwrap();
+}
+
+/// The clock guard does the two things the hang needed: it excludes a
+/// concurrent driver, and it hands each test a known starting time.
+///
+/// Without the first, one test rewrites another's notion of "now" and a
+/// deadline reads as not-yet-elapsed, sending the wait loop down the
+/// reference's genuine spurious-wakeup retry with nothing left to wake it.
+/// Without the second, a test inherits whatever time ran last.
+#[test]
+fn the_fake_clock_guard_excludes_and_resets() {
+    let guard = fake_clock();
+    assert_eq!(FAKE_NOW_NS.load(Ordering::SeqCst), 0, "acquire resets the clock");
+    FAKE_NOW_NS.store(9_999, Ordering::SeqCst);
+
+    // A second acquirer must not get in while the first holds it.
+    let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = entered.clone();
+    let waiter = std::thread::spawn(move || {
+        let _g = fake_clock();
+        flag.store(true, Ordering::SeqCst);
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!entered.load(Ordering::SeqCst), "the clock is held exclusively");
+    assert_eq!(FAKE_NOW_NS.load(Ordering::SeqCst), 9_999,
+        "nobody else rewrote the clock while it was held");
+
+    drop(guard);
+    waiter.join().expect("the second acquirer proceeds once released");
+    assert!(entered.load(Ordering::SeqCst));
+    assert_eq!(FAKE_NOW_NS.load(Ordering::SeqCst), 0, "and it reset on its acquire too");
 }
