@@ -99,7 +99,13 @@ pub mod ifa {
     pub const IFA_BROADCAST: u16 = 4;
     pub const IFA_ANYCAST:   u16 = 5;
     pub const IFA_CACHEINFO: u16 = 6;
-    pub const IFA_FLAGS:     u16 = 8;
+    pub const IFA_MULTICAST:  u16 = 7;
+    pub const IFA_FLAGS:      u16 = 8;
+    /// u32: priority/metric of the prefix route this address installs.
+    pub const IFA_RT_PRIORITY: u16 = 9;
+    pub const IFA_TARGET_NETNSID: u16 = 10;
+    /// u8: which agent owns the address (`IFAPROT_*`).
+    pub const IFA_PROTO:      u16 = 11;
 }
 
 pub use net::socket_args::{AF_INET6_NETLINK_WIRE as AF_INET6,

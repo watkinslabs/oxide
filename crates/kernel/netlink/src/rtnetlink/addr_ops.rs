@@ -13,7 +13,10 @@ use super::uapi::{ifa, Ifaddrmsg, AF_INET};
 struct NewAddrAttrs {
     local: [u8; 4],
     address: Option<[u8; 4]>,
+    broadcast: Option<[u8; 4]>,
     flags: Option<u32>,
+    proto: u8,
+    rt_priority: u32,
     cacheinfo: Option<IfaCacheInfo>,
 }
 
@@ -22,7 +25,10 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<NewAddrAttrs> {
     let mut off = 0;
     let mut local = None;
     let mut address = None;
+    let mut broadcast = None;
     let mut flags = None;
+    let mut proto = 0u8;
+    let mut rt_priority = 0u32;
     let mut cacheinfo = None;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
@@ -35,6 +41,12 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<NewAddrAttrs> {
             local = Some([payload[0], payload[1], payload[2], payload[3]]);
         } else if nla_type == ifa::IFA_ADDRESS && payload.len() == 4 {
             address = Some([payload[0], payload[1], payload[2], payload[3]]);
+        } else if nla_type == ifa::IFA_BROADCAST && payload.len() == 4 {
+            broadcast = Some([payload[0], payload[1], payload[2], payload[3]]);
+        } else if nla_type == ifa::IFA_PROTO && payload.len() == 1 {
+            proto = payload[0];
+        } else if nla_type == ifa::IFA_RT_PRIORITY && payload.len() == 4 {
+            rt_priority = u32::from_ne_bytes(payload[0..4].try_into().unwrap());
         } else if nla_type == ifa::IFA_FLAGS && payload.len() == 4 {
             flags = Some(u32::from_ne_bytes(payload[0..4].try_into().unwrap()));
         } else if nla_type == ifa::IFA_CACHEINFO && payload.len() == IfaCacheInfo::SIZE {
@@ -44,15 +56,15 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<NewAddrAttrs> {
                 cstamp: u32::from_ne_bytes(payload[8..12].try_into().unwrap()),
                 tstamp: u32::from_ne_bytes(payload[12..16].try_into().unwrap()),
             });
-        } else if matches!(nla_type, ifa::IFA_LOCAL | ifa::IFA_ADDRESS | ifa::IFA_FLAGS
-            | ifa::IFA_CACHEINFO) {
+        } else if matches!(nla_type, ifa::IFA_LOCAL | ifa::IFA_ADDRESS | ifa::IFA_BROADCAST
+            | ifa::IFA_PROTO | ifa::IFA_RT_PRIORITY | ifa::IFA_FLAGS | ifa::IFA_CACHEINFO) {
             return None;
         }
         off = next;
     }
     if off != attrs.len() { return None; }
     let local = local.or(address)?;
-    Some(NewAddrAttrs { local, address, flags, cacheinfo })
+    Some(NewAddrAttrs { local, address, broadcast, flags, proto, rt_priority, cacheinfo })
 }
 
 /// Handle RTM_NEWADDR.
@@ -82,6 +94,7 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     };
     let addr = parsed.local;
     let peer = parsed.address.filter(|address| *address != addr);
+    let broadcast = parsed.broadcast;
     let flags = parsed.flags.unwrap_or_else(|| {
         if parsed.cacheinfo.is_some() { ifa_flags } else { ifa_flags | net::iface_addr::IFA_F_PERMANENT }
     });
@@ -112,10 +125,22 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         {
             return build_ack(req, -17);
         }
+        // Everything the setter stated is stored. Dropping a field here makes
+        // the address read back different from the one that was asked for, and
+        // a manager that reconciles its own state against the table then
+        // re-applies the address forever trying to correct the difference.
+        let meta = net::iface_addr::Ipv4AddrMeta {
+            scope, flags, broadcast: broadcast.map(|b| net::Ipv4Addr::from_u32(u32::from_be_bytes(b))),
+            proto: parsed.proto, rt_priority: parsed.rt_priority,
+            // The lifetimes are the setter's; the timestamps are the kernel's,
+            // and readbacks age the lifetimes against them.
+            cacheinfo: net::iface_addr::stamp(cache_to_net(cacheinfo),
+                net::iface_addr::now_centisecs()),
+        };
         let Some(effect) = stack.set_ipv4_prefix_meta_generation_rtnl(&rtnl, ns, id,
             lease.generation(), net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)),
             peer.map(|peer| net::Ipv4Addr::from_u32(u32::from_be_bytes(peer))), prefixlen,
-            scope, flags, cache_to_net(cacheinfo)) else {
+            meta) else {
             return build_ack(req, -19);
         };
         let row = net::iface_addr::Ipv4IfaceAddr {
@@ -123,8 +148,9 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
             peer: peer.map(|peer| net::Ipv4Addr::from_u32(u32::from_be_bytes(peer))),
             prefixlen, mask: if prefixlen == 0 { 0 }
                 else { u32::MAX << (32 - prefixlen.min(32)) },
-            broadcast: None,
-            scope, flags, cacheinfo: cache_to_net(cacheinfo),
+            broadcast: meta.broadcast,
+            scope, flags, proto: meta.proto, rt_priority: meta.rt_priority,
+            cacheinfo: meta.cacheinfo,
         };
         net::control_event::stage_addr(&rtnl, net::control_event::AddrEvent {
             kind: net::control_event::EventKind::New,

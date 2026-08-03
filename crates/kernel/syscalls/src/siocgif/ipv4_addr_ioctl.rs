@@ -65,8 +65,11 @@ pub(super) fn set_destination(net_ns: u64, arg: u64) -> i64 {
             .find(|row| row.iface == id && !row.addr.is_unspecified())
         else { return -(Errno::Eaddrnotavail.as_i32() as i64) };
         let Some(effect) = stack.set_ipv4_prefix_meta_generation_rtnl(&rtnl, net_ns, id,
-            lease.generation(), row.addr, Some(peer), row.prefixlen, row.scope, row.flags,
-            row.cacheinfo) else { return -(Errno::Enodev.as_i32() as i64) };
+            lease.generation(), row.addr, Some(peer), row.prefixlen,
+            net::iface_addr::Ipv4AddrMeta { scope: row.scope, flags: row.flags,
+                broadcast: row.broadcast, proto: row.proto, rt_priority: row.rt_priority,
+                cacheinfo: row.cacheinfo })
+            else { return -(Errno::Enodev.as_i32() as i64) };
         let Some(updated) = net::iface_addr::snapshot_ns(net_ns).into_iter()
             .find(|candidate| candidate.iface == id && candidate.addr == row.addr
                 && candidate.prefixlen == row.prefixlen)

@@ -49,7 +49,7 @@ fn setup(scope: u8, gateway: Option<Ipv4Addr>) -> (NetStack, Arc<Capture>, crate
         protocol: 2, scope, kind: RTN_UNICAST, metric: 0, metrics: crate::RouteMetrics::NONE,
         flags: 0, weight: 1, nh_flags: 0 });
     crate::iface_addr::insert(Ipv4IfaceAddr { ns: 0, iface, addr: SRC, peer: None, prefixlen: 24,
-        mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0, cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
+        mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0, proto: 0, rt_priority: 0, cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
     resolve_neighbour(&stack, iface, gateway.unwrap_or(DST));
     (stack, dev, iface)
 }

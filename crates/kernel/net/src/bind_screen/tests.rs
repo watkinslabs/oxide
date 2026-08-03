@@ -99,7 +99,7 @@ fn a_directed_broadcast_address_is_claimable_without_a_permission() {
     let cast = Ipv4Addr::new(203, 0, 113, 255);
     crate::iface_addr::insert(crate::iface_addr::Ipv4IfaceAddr {
         ns: NS0, iface, addr, peer: None, prefixlen: 24, mask: 0xffff_ff00,
-        broadcast: Some(cast), scope: 0, flags: 0,
+        broadcast: Some(cast), scope: 0, flags: 0, proto: 0, rt_priority: 0,
         cacheinfo: crate::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
     });
 

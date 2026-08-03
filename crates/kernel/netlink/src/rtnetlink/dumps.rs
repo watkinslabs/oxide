@@ -188,16 +188,28 @@ pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool)
     reply
 }
 
+/// The lifetimes a readback reports: what remains, not what was asked for.
+/// # C: O(1)
+fn age_cacheinfo(ci: IfaCacheInfo, flags: u32) -> IfaCacheInfo {
+    let aged = net::iface_addr::age(super::rtnetlink_addr::cache_to_net(ci), flags,
+        net::iface_addr::now_centisecs());
+    IfaCacheInfo { preferred: aged.preferred, valid: aged.valid,
+                   cstamp: aged.cstamp, tstamp: aged.tstamp }
+}
+
 /// Build a single RTM_NEWADDR reply for one iface's IPv4 address.
 /// # C: O(N attrs)
 pub(crate) fn build_newaddr_reply(
     seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 4], peer: Option<[u8; 4]>,
-    prefixlen: u8, scope: u8, flags: u32, cacheinfo: IfaCacheInfo, msg_flags: u16,
+    broadcast: Option<[u8; 4]>, prefixlen: u8, scope: u8, flags: u32, proto: u8,
+    rt_priority: u32, cacheinfo: IfaCacheInfo, msg_flags: u16,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
         ifa_family: AF_INET,
         ifa_prefixlen: prefixlen,
+        // The header field is a u8 and holds only the low eight bits; the whole
+        // 32-bit value goes in `IFA_FLAGS`.
         ifa_flags: flags as u8,
         ifa_scope: scope,
         ifa_index: ifindex as u32,
@@ -206,18 +218,19 @@ pub(crate) fn build_newaddr_reply(
     ifa.write_to(&mut ifa_buf);
     body.extend_from_slice(&ifa_buf);
 
-    put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
+    // Every attribute is reported only when it was actually set, in the order
+    // the reference emits them. A synthesized value reads back as one the
+    // setter never asked for, and an agent that reconciles its own state
+    // against this reply re-applies the address forever trying to correct it.
     put_nlattr(&mut body, ifa::IFA_ADDRESS, &peer.unwrap_or(addr));
-    if peer.is_none() && scope != RT_SCOPE_HOST {
-        let host_mask = if prefixlen >= 32 { 0u32 } else { (1u32 << (32 - prefixlen)) - 1 };
-        let a = u32::from_be_bytes(addr);
-        let bcast = ((a & !host_mask) | host_mask).to_be_bytes();
-        put_nlattr(&mut body, ifa::IFA_BROADCAST, &bcast);
-    }
+    put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
+    if let Some(bcast) = broadcast { put_nlattr(&mut body, ifa::IFA_BROADCAST, &bcast); }
     put_nlattr_str(&mut body, ifa::IFA_LABEL, label);
+    if proto != 0 { put_nlattr_u8(&mut body, ifa::IFA_PROTO, proto); }
     put_nlattr_u32(&mut body, ifa::IFA_FLAGS, flags);
+    if rt_priority != 0 { put_nlattr_u32(&mut body, ifa::IFA_RT_PRIORITY, rt_priority); }
     let mut ci = [0u8; IfaCacheInfo::SIZE];
-    cacheinfo.write_to(&mut ci);
+    age_cacheinfo(cacheinfo, flags).write_to(&mut ci);
     put_nlattr(&mut body, ifa::IFA_CACHEINFO, &ci);
 
     let total = Nlmsghdr::SIZE + body.len();
@@ -314,7 +327,8 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool)
         };
         let one = build_newaddr_reply(
             req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr, row.peer,
-            row.prefixlen, row.scope, row.flags, row.cacheinfo, msg_flags,
+            row.broadcast, row.prefixlen, row.scope, row.flags, row.proto, row.rt_priority,
+            row.cacheinfo, msg_flags,
         );
         reply.extend_from_slice(&one);
     }

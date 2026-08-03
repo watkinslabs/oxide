@@ -207,8 +207,13 @@ fn deladdr_notification_preserves_removed_row_metadata() {
     let cache = find_attr(attrs, ifa::IFA_CACHEINFO).unwrap();
     assert_eq!(u32::from_ne_bytes(cache[0..4].try_into().unwrap()), cacheinfo.preferred);
     assert_eq!(u32::from_ne_bytes(cache[4..8].try_into().unwrap()), cacheinfo.valid);
-    assert_eq!(u32::from_ne_bytes(cache[8..12].try_into().unwrap()), cacheinfo.cstamp);
-    assert_eq!(u32::from_ne_bytes(cache[12..16].try_into().unwrap()), cacheinfo.tstamp);
+    // The install timestamps are the kernel's, not the setter's: the reference
+    // stamps `ifa_cstamp`/`ifa_tstamp` itself and ages the lifetimes against
+    // them, so whatever the caller put in those two words is discarded.
+    assert_eq!(u32::from_ne_bytes(cache[8..12].try_into().unwrap()),
+        net::iface_addr::now_centisecs());
+    assert_eq!(u32::from_ne_bytes(cache[12..16].try_into().unwrap()),
+        net::iface_addr::now_centisecs());
     let _ = stack.ifaces.unregister(iface);
 }
 
