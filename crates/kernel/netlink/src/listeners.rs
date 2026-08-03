@@ -166,16 +166,50 @@ pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
 /// Returns the number of sockets reached. # C: O(N_listeners)
 pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
     if group == 0 || group > crate::groups::RTNLGRP_MAX { return 0; }
+    #[cfg(feature = "debug-netlink")]
+    let mut live = 0usize;
     let targets: Vec<_> = {
         let mut g = RTNL_LISTENERS.lock();
         g.retain(|w| w.strong_count() > 0);
+        #[cfg(feature = "debug-netlink")]
+        { live = g.len(); }
         g.iter().filter_map(Weak::upgrade).filter(|s| {
             s.net_ns.id().as_u64() == net_ns && s.groups.test(group)
         }).collect()
     };
+    #[cfg(feature = "debug-netlink")]
+    let subscribed = targets.len();
     let mut n = 0;
     for s in targets {
         if s.enqueue_multicast(msg.to_vec()) { n += 1; }
     }
+    // A notification nobody receives is indistinguishable from one never sent:
+    // the three counts separate "no rtnetlink socket exists" from "none
+    // subscribed to this group" from "subscribed but the queue refused it".
+    #[cfg(feature = "debug-netlink")]
+    trace_mcast(net_ns, group, live, subscribed, n, msg);
     n
+}
+
+#[cfg(feature = "debug-netlink")]
+fn trace_mcast(net_ns: u64, group: u32, live: usize, subscribed: usize, reached: usize, msg: &[u8]) {
+    // The message TYPE is what separates an address being announced from one
+    // being withdrawn — a pair of them repeating is a flap, and a listener
+    // that keeps its own address cache ends up empty after the withdrawal.
+    let typ = crate::Nlmsghdr::parse(msg).map_or(0, |h| h.nlmsg_type);
+    klog::write_raw(b"[NL-MCAST ns=");
+    klog::write_dec_u64(net_ns);
+    klog::write_raw(b" grp=");
+    klog::write_dec_u64(group as u64);
+    klog::write_raw(b" live=");
+    klog::write_dec_u64(live as u64);
+    klog::write_raw(b" subscribed=");
+    klog::write_dec_u64(subscribed as u64);
+    klog::write_raw(b" reached=");
+    klog::write_dec_u64(reached as u64);
+    klog::write_raw(b" type=");
+    klog::write_dec_u64(typ as u64);
+    klog::write_raw(b" bytes=");
+    klog::write_dec_u64(msg.len() as u64);
+    klog::write_raw(b"]\n");
 }
