@@ -39,6 +39,59 @@ fn default_handler(_vec: u64, _error: u64, _rip: u64, _cr2: u64) -> bool { false
 static FAULT_HANDLER: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(default_handler as *const () as *mut ());
 
+/// Kernel-installed hook that NAMES the kernel stack an address belongs to.
+///
+/// A guard-page hit reports `rsp` sitting on a slot boundary, and that alone
+/// cannot say which stack overflowed: task stacks and the per-CPU interrupt
+/// stack are slots of one allocator window. The reference classifies the
+/// faulting address in its double-fault handler and prints the stack's name and
+/// bounds; without it the same question has been answered by hand, from a
+/// register dump, more than once.
+///
+/// Fills `(name, guard_lo, stack_lo, stack_hi)` and returns true when the
+/// address is inside the window. Must not lock: it runs from the fault path.
+#[derive(Copy, Clone)]
+pub struct StackReport {
+    pub name: &'static [u8],
+    pub guard_lo: u64,
+    pub stack_lo: u64,
+    pub stack_hi: u64,
+    /// Most-repeated code address on the dead stack, and how often. A stack
+    /// consumed by one site repeating is unbounded nesting, not a deep chain —
+    /// the two need opposite fixes, and a static depth walk cannot tell them
+    /// apart because it measures a single pass.
+    pub repeat_site: u64,
+    pub repeat_count: u32,
+}
+
+impl StackReport {
+    /// # C: O(1)
+    pub const fn empty() -> Self {
+        Self { name: b"", guard_lo: 0, stack_lo: 0, stack_hi: 0, repeat_site: 0, repeat_count: 0 }
+    }
+}
+
+pub type StackNameHook = fn(va: u64, out: &mut StackReport) -> bool;
+
+fn default_stack_name_hook(_va: u64, _o: &mut StackReport) -> bool { false }
+
+static STACK_NAME_HOOK: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(default_stack_name_hook as *const () as *mut ());
+
+/// Install the stack-naming hook.
+/// # SAFETY: caller guarantees `h` lives for the rest of the kernel's lifetime.
+/// # C: O(1)
+pub unsafe fn install_stack_name_hook(h: StackNameHook) {
+    STACK_NAME_HOOK.store(h as *const () as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+fn current_stack_name_hook() -> StackNameHook {
+    let p = STACK_NAME_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    // SAFETY: only ever written by install_stack_name_hook with a valid StackNameHook, or the default initialiser.
+    unsafe { core::mem::transmute::<*mut (), StackNameHook>(p) }
+}
+
 /// Kernel-installed hook invoked from `oxide_fault_print_rust` BEFORE
 /// the generic FaultHandler chain when the trap originates in user
 /// mode (CS RPL == 3) and the vector is software-debug related.
@@ -252,13 +305,50 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
             klog::write_hex_u64(f.rip);
             klog::write_raw(b" rflags=");
             klog::write_hex_u64(f.rflags);
-            if f.vector == 14 {
+            if f.vector == 14 || f.vector == 8 {
+                // #DF too: the page fault that escalated set CR2, and on a
+                // guard-page hit that address IS the overflow. The reference
+                // reads it in its double-fault handler for exactly this.
                 klog::write_raw(b" cr2=");
                 klog::write_hex_u64(cr2);
-                klog::write_raw(b" pf=");
-                klog::write_raw(decode_pfec(f.error));
+                if f.vector == 14 {
+                    klog::write_raw(b" pf=");
+                    klog::write_raw(decode_pfec(f.error));
+                }
             }
             klog::write_raw(b"\n");
+            // Name the stack. `rsp` first — on a guard-page hit it sits on the
+            // slot boundary and is the reliable witness; CR2 is the byte that
+            // was touched and can be below the guard page on a large frame.
+            {
+                let mut o = StackReport::empty();
+                let hook = current_stack_name_hook();
+                let hit = if hook(f.rsp, &mut o) { true }
+                          else { (f.vector == 14 || f.vector == 8) && hook(cr2, &mut o) };
+                if hit {
+                    klog::write_raw(b"[FAULT] BUG: ");
+                    klog::write_raw(o.name);
+                    klog::write_raw(b" stack guard page was hit (stack is ");
+                    klog::write_hex_u64(o.stack_lo);
+                    klog::write_raw(b"..");
+                    klog::write_hex_u64(o.stack_hi);
+                    klog::write_raw(b", guard ");
+                    klog::write_hex_u64(o.guard_lo);
+                    klog::write_raw(b", rsp=");
+                    klog::write_hex_u64(f.rsp);
+                    klog::write_raw(b", headroom=");
+                    klog::write_dec_u64(if f.rsp >= o.stack_lo && f.rsp <= o.stack_hi
+                                        { f.rsp - o.stack_lo } else { 0 });
+                    klog::write_raw(b")\n");
+                    // What filled it. One site repeating is unbounded nesting;
+                    // many distinct sites is a genuinely deep chain.
+                    klog::write_raw(b"[FAULT] BUG: deepest repeated site ");
+                    klog::write_hex_u64(o.repeat_site);
+                    klog::write_raw(b" x");
+                    klog::write_dec_u64(o.repeat_count as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
             // B45: full GPR dump when we're about to halt. Helps name
             // the bad register on a kernel-mode trip without needing
             // to re-attach gdb. User-mode trips also get this dump

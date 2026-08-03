@@ -55,10 +55,6 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
     IRQ_LAST_VEC.store(vec_tag as u64, Ordering::Release);
     IRQ_SEQ.fetch_add(1, Ordering::AcqRel);
 
-    // EOI on every IRQ vector -- both timer and IPIs need it.
-    // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
-    unsafe { eoi(); }
-
     match vec_tag {
         hal_x86_64::VEC_TIMER => {
             TICK_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -211,19 +207,35 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
     // (Linux `invoke_softirq`) — `do_softirq`'s `in_interrupt` guard must see
     // only the softirq field, so a nested IRQ inside an in-progress drain
     // still refuses to re-enter. Unconditional, so the count never leaks.
+    // EOI AFTER the handler, as the reference does (`handle_irq_event` then
+    // `cond_unmask_eoi_irq`). Issued before the handler, the in-service bit is
+    // already clear while the handler runs, so a source that is still asserted
+    // — or a serial port whose receive FIFO refills as fast as it is drained —
+    // re-interrupts the moment interrupts come back on, and each re-entry
+    // spends another frame of the one per-CPU interrupt stack.
+    // SAFETY: this vector's handler has returned; the LAPIC was mapped and enabled long before any STI.
+    unsafe { eoi(); }
+
     sched::preempt::irq_exit();
     // `in_atomic()` before `sti`, not after: re-entering from inside the
     // unmasked window lets every nesting level open a fresh one and the frames
     // accumulate (see the aarch64 mirror in `gic/dispatch.rs`).
     // `in_interrupt()`, not `in_atomic()` — see the aarch64 mirror: the drain
     // runs on the hardirq stack by design, so `on_irq_stack()` must not veto it.
-    if softirq::pending() && !sched::preempt::in_interrupt() {
-        // SAFETY: EOI issued above; LAPIC accepts the next IRQ; do_softirq's in_interrupt guard blocks re-entry; cli restores ISR masking before the vector epilogue.
+    // The bottom-half count is taken BEFORE `sti`, not inside the drain. Taken
+    // after, there is a window in which a nested dispatch sees
+    // `in_interrupt() == 0` and opens its own interrupt-enabled window; every
+    // level can do that, on this one stack, with nothing bounding the depth.
+    // The reference disables bottom halves while interrupts are still off and
+    // enables them inside the drain.
+    if sched::bh::softirq_tail_begin() {
+        // SAFETY: EOI issued above so the LAPIC accepts the next IRQ; the bottom-half count is held across the whole window, so a nested dispatch cannot open a second one; cli restores masking before the vector epilogue.
         unsafe {
             core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-            sched::bh::do_softirq();
+            sched::bh::softirq_tail_run();
             core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
         }
+        sched::bh::softirq_tail_end();
     }
 }
 
