@@ -24,6 +24,14 @@
 #      `xtask kernel`, then kills `make qemu-*` before QEMU starts — an empty
 #      boot log that reads like a boot failure. B1641 lost a lane to that.
 #      Bypass: SKIP_FEATURE_GATE=1.
+#   2b. frame-gate + stack-gate (EVERY push that touches those surfaces): no
+#      single frame >= 8 KiB, no static call path >= 13 KiB of the 16 KiB
+#      kernel stack. Both gates existed only inside a workflow that has taken
+#      no automatic trigger since 2026-07-04, and nothing local ran them, so
+#      both sat RED on main while every routine gate stayed green — that is how
+#      an 8192 B lock array reached per-namespace state and put the softirq
+#      receive path 2.5 KiB from the guard page.
+#      Bypass: SKIP_STACK_GATE=1.
 #   3. lint-ratchet (EVERY push, branch or main, ~0.8 s): spec-lint findings may
 #      not grow per (crate, rule). `make lint` itself reports a 2696-finding
 #      backlog and so gates nothing; `make ci` included it and was therefore
@@ -161,6 +169,37 @@ else
         exit 1
     fi
     echo "pre-push: feature-gate PASS on both arches"
+fi
+
+# ---- gate 2b: kernel stack budget, both arches ----------------------------
+# frame-gate: no single frame may reserve >= 8 KiB. stack-gate: no static call
+# path may reach 13 KiB of the 16 KiB kernel stack.
+#
+# Both existed for weeks inside a workflow that has taken no automatic trigger
+# since 2026-07-04, and nothing local ran them, so both sat RED on main while
+# every routine gate stayed green. What got through: an 8192 B lock array
+# inlined into per-namespace state, giving a function reachable from softirq
+# receive a 9256 B frame and putting the worst interrupt-reachable path 2.5 KiB
+# from the guard page — the intermittent serial double fault. A per-function
+# ceiling cannot catch a chain that sums, and a type-check cannot see a frame
+# at all; only these two, on a linked ELF, can.
+#
+# The builds they depend on are the same release kernels `make build` produces,
+# so this is a rebuild only when the push actually changed kernel code.
+# Bypass: SKIP_STACK_GATE=1.
+if [ "${SKIP_STACK_GATE:-0}" = "1" ]; then
+    echo "pre-push: SKIP_STACK_GATE=1 set, bypassing frame-gate/stack-gate"
+else
+    echo "pre-push: kernel change — running frame-gate + stack-gate (both arches)"
+    if ! make -j2 frame-gate stack-gate; then
+        echo "pre-push: FAIL — a stack frame or call path is over budget" >&2
+        echo "         (make frame-gate stack-gate). Split the chain so the big" >&2
+        echo "         frames overlap instead of summing, or move the data" >&2
+        echo "         off-stack. An allowlist entry is permission for the" >&2
+        echo "         defect, not a fix. SKIP_STACK_GATE=1 to bypass." >&2
+        exit 1
+    fi
+    echo "pre-push: stack budget PASS on both arches"
 fi
 
 # ---- gate 3: boot-smoke, direct main pushes only --------------------------
