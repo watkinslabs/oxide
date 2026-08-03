@@ -38,6 +38,35 @@ static TEST_RELEASED_FRAMES: core::sync::atomic::AtomicU64 =
 static TEST_RESETS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// The carrier the device reports.
+///
+/// `status` is read ONLY when `VIRTIO_NET_F_STATUS` was negotiated: the field
+/// does not exist otherwise, so reading it would touch whatever follows the
+/// MAC in a config window that never published one. The reference guards the
+/// read the same way, and treats a device without the feature as always up.
+/// # C: O(1)
+pub fn read_device_carrier(resources: virtio::VirtioResources, drv_features: u64) -> bool {
+    if drv_features & virtio::VIRTIO_NET_F_STATUS == 0 { return true; }
+    let cfg = resources.device_cfg_va;
+    if cfg == 0 { return true; }
+    // Byte-wise, like the MAC read above: nothing guarantees the config
+    // window is two-byte aligned, and a typed u16 load imposes an alignment
+    // the device's layout never promised.
+    let mut raw = [0u8; 2];
+    for (i, byte) in raw.iter_mut().enumerate() {
+        // SAFETY: `device_cfg_va` is the transport-owned, Device-attr mapped
+        // virtio-net config window, and `status` occupies the two bytes after
+        // the MAC — present exactly when the feature checked above was
+        // negotiated.
+        *byte = unsafe {
+            core::ptr::read_volatile(
+                (cfg + virtio::NET_CFG_STATUS_OFFSET + i as u64) as *const u8)
+        };
+    }
+    let status = u16::from_le_bytes(raw);
+    virtio::carrier_from_status(drv_features, status)
+}
+
 fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; NET_CFG_MAC_BYTES]> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
@@ -62,6 +91,7 @@ pub fn init_modern(
     rx0_buf_pa: u64,
     rx0_buf_len: u16,
     tx0_buf_pa: u64,
+    drv_features: u64,
 ) -> bool {
     let mut rx_bufs = alloc::vec::Vec::new();
     if rx0_buf_pa != 0 && rx0_buf_len != 0 {
@@ -76,6 +106,7 @@ pub fn init_modern(
         resources,
         rx_bufs,
         tx0_buf_pa,
+        drv_features,
     )
 }
 
@@ -87,6 +118,7 @@ pub fn init_modern_with_rx_pool(
     resources: virtio::VirtioResources,
     rx_bufs: alloc::vec::Vec<virtio::VirtioNetRxBuffer>,
     tx0_buf_pa: u64,
+    drv_features: u64,
 ) -> bool {
     let Some(rxq) = resources.require_queue(0) else {
         return false;
@@ -128,6 +160,7 @@ pub fn init_modern_with_rx_pool(
         device_key,
         cfg_va: resources.cfg_va,
         hhdm: resources.hhdm,
+        drv_features,
         rxq,
         txq,
         rx_bufs,
@@ -148,6 +181,11 @@ pub fn init_modern_with_rx_pool(
         let _ = uninstall_modern(device_key);
         return false;
     }
+    // Carrier is a driver fact and the device states it: with
+    // VIRTIO_NET_F_STATUS negotiated, the link-up bit of the config window
+    // decides. Publishing it here is what makes IFF_RUNNING / IFF_LOWER_UP
+    // report the medium rather than a constant.
+    publish_carrier(device_key, read_device_carrier(resources, drv_features));
     #[cfg(feature = "debug-boot")]
     {
         let (dk, cfg_va, rxq_size, txq_size, rxq_notify, txq_notify, mac) = log;
@@ -172,6 +210,17 @@ pub fn init_modern_with_rx_pool(
     }
     true
 }
+
+/// Report the device's carrier to the registered interface. # C: O(N ifaces)
+#[cfg(target_os = "oxide-kernel")]
+fn publish_carrier(device_key: DeviceKey, up: bool) {
+    if let Some(id) = registered_iface_for(device_key) {
+        net::sock::stack().ifaces.set_iface_carrier(id, up);
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn publish_carrier(_device_key: DeviceKey, _up: bool) {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn register_netdev_after_install(device_key: DeviceKey) -> bool {

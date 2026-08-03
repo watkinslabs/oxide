@@ -167,7 +167,7 @@ pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
 pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
     if group == 0 || group > crate::groups::RTNLGRP_MAX { return 0; }
     #[cfg(feature = "debug-netlink")]
-    let mut live = 0usize;
+    let live;
     let targets: Vec<_> = {
         let mut g = RTNL_LISTENERS.lock();
         g.retain(|w| w.strong_count() > 0);
