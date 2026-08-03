@@ -33,6 +33,24 @@ pub(super) fn ssh_fwd_netdev() -> String {
     }
 }
 
+/// Optional QEMU-side packet capture on the primary user-net device.
+///
+/// Whether the guest sends a frame at all, and whether anything answers it,
+/// is not decidable from inside the guest: a driver that never transmits and
+/// one whose peer never replies look identical there. `OXIDE_QEMU_PCAP=<path>`
+/// writes every frame crossing `net0` to a pcap file the host can read.
+/// # C: O(1)
+pub(super) fn pcap_filter_args() -> Vec<String> {
+    match std::env::var("OXIDE_QEMU_PCAP") {
+        Ok(path) if !path.is_empty() => {
+            eprintln!("xtask qemu: capturing net0 to {path}");
+            vec!["-object".to_string(),
+                 format!("filter-dump,id=oxpcap,netdev=net0,file={path}")]
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// D3.5: ensure a small raw NVMe scratch disk exists at
 /// `target/builds/<id>/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `nvme` QEMU device always has a backing file. Returns its path. # C: O(1)

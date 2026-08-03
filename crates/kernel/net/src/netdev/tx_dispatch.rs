@@ -179,6 +179,20 @@ impl TxDispatch {
     }
 
     pub(crate) fn emit_arp_probe(probe: crate::arp::ArpProbe) -> NetResult<()> {
+        #[cfg(feature = "debug-arp")]
+        {
+            klog::write_raw(b"[ARP-SOLICIT tgt=");
+            for (i, b) in probe.target_ip.octets().iter().enumerate() {
+                klog::write_dec_u64(*b as u64);
+                if i < 3 { klog::write_raw(b"."); }
+            }
+            klog::write_raw(b" src=");
+            for (i, b) in probe.source_ip.octets().iter().enumerate() {
+                klog::write_dec_u64(*b as u64);
+                if i < 3 { klog::write_raw(b"."); }
+            }
+            klog::write_raw(b"]\n");
+        }
         let body = crate::arp::build_request(probe.lease.device().mac(), probe.source_ip,
             probe.target_ip);
         let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + body.len()];
@@ -268,6 +282,55 @@ impl TxJob {
                 },
             _ => return Ok(self),
         };
+        #[cfg(feature = "debug-arp")]
+        if next_hop.is_unspecified() {
+            // A solicitation for the unspecified address can never be answered.
+            // Name the datagram that asked for it: its IPv4 destination is the
+            // value the route lookup should have turned into a next hop.
+            let data = match &self.0.payload {
+                TxPayload::Packet { pkt, .. } => pkt.data(),
+                _ => &[],
+            };
+            klog::write_raw(b"[ARP-ZERO src=");
+            for (i, b) in source.octets().iter().enumerate() {
+                klog::write_dec_u64(*b as u64);
+                if i < 3 { klog::write_raw(b"."); }
+            }
+            klog::write_raw(b" ipdst=");
+            if data.len() >= 20 {
+                for i in 16..20 {
+                    klog::write_dec_u64(data[i] as u64);
+                    if i < 19 { klog::write_raw(b"."); }
+                }
+                klog::write_raw(b" proto=");
+                klog::write_dec_u64(data[9] as u64);
+            }
+            klog::write_raw(b"]\n");
+            // The route table that produced the zero: one of these rows
+            // matched, and its gateway is what became the next hop.
+            for r in crate::sock::stack().routes.snapshot_records_in(0) {
+                klog::write_raw(b"[ARP-ROUTE dst=");
+                for (i, b) in r.route.dst.octets().iter().enumerate() {
+                    klog::write_dec_u64(*b as u64);
+                    if i < 3 { klog::write_raw(b"."); }
+                }
+                klog::write_raw(b"/");
+                klog::write_dec_u64(r.route.prefix_len as u64);
+                klog::write_raw(b" tbl=");
+                klog::write_dec_u64(r.route.table as u64);
+                klog::write_raw(b" kind=");
+                klog::write_dec_u64(r.kind as u64);
+                klog::write_raw(b" gw=");
+                match r.route.gateway {
+                    None => klog::write_raw(b"none"),
+                    Some(g) => for (i, b) in g.octets().iter().enumerate() {
+                        klog::write_dec_u64(*b as u64);
+                        if i < 3 { klog::write_raw(b"."); }
+                    },
+                }
+                klog::write_raw(b"]\n");
+            }
+        }
         if next_hop.is_broadcast() {
             let dst = self.0.lease.device().broadcast();
             return Ok(self.with_l2(dst));

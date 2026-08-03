@@ -158,7 +158,7 @@ impl NetStack {
         }
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(route.iface);
-        p.next_hop = Some(crate::pkt::TxNextHop::V4(route.gateway.unwrap_or(dst)));
+        p.next_hop = Some(crate::pkt::TxNextHop::V4(crate::route::RouteRecord::next_hop_for(route.gateway, dst)));
         if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
         if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
         dev.xmit(p)

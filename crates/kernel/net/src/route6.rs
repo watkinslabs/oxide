@@ -408,3 +408,14 @@ mod tests {
         lookup.join().unwrap();
     }
 }
+
+/// The address a transmit to `dst` solicits. An all-zeroes gateway is not a
+/// gateway — the reference reads a zero nexthop as directly-connected — and
+/// answering with it makes every neighbour solicitation ask for `::`.
+/// # C: O(1)
+pub fn next_hop6_for(gateway: Option<crate::Ipv6Addr>, dst: crate::Ipv6Addr) -> crate::Ipv6Addr {
+    match gateway {
+        Some(gw) if !gw.is_unspecified() => gw,
+        _ => dst,
+    }
+}

@@ -77,6 +77,7 @@ pub(super) fn qemu_run_grub_x86_64(
         },
     };
     let netdev = ssh_fwd_netdev();
+    let pcap_args = super::common::pcap_filter_args();
     // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on
     // the whole machine may own a given CID. Hardcoding 3 made concurrent boots
     // from DIFFERENT worktrees collide ("vhost-vsock: unable to set guest cid:
@@ -128,6 +129,7 @@ pub(super) fn qemu_run_grub_x86_64(
     if let Some(ref q) = qmp_arg {
         c.args(["-qmp", q.as_str()]);
     }
+    c.args(&pcap_args);
     c.args([
         "-machine", "q35",
         "-accel", accel,

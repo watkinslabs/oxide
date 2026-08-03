@@ -56,6 +56,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64", package = "hal-aarch64" }
 [features]
 default = []
 hosted  = ["sched/hosted"]
+debug-arp = []  # [ARP-SOLICIT] which next hop a transmit solicits, and the datagram that asked for it
 debug-tcprx = []  # [TCPRX] TCP delivery wake trace — did the receiver publish itself before the peer's bytes landed?
 debug-boot = []
 debug-journal = []  # [B288 dgram] full journald record, one line per datagram. NOT on debug-boot: it is per-datagram volume (B1474)

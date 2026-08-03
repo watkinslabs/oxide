@@ -162,6 +162,19 @@ pub fn route_metrics_match(filters: &[RouteMetricFilter], metrics: net::RouteMet
     })
 }
 
+/// A gateway address of all zeroes states no gateway: the destination is
+/// directly reachable on the link. The reference stores the nexthop address
+/// and treats a zero one as on-link, so a route carrying `RTA_GATEWAY` set to
+/// `0.0.0.0` — which is what a manager sends for a prefix route — must not be
+/// retained as a gateway. Kept as one, every packet to that prefix is sent to
+/// the gateway `0.0.0.0`, and the neighbour solicitation asks who has
+/// `0.0.0.0`, which nothing answers: the interface transmits and never
+/// resolves, so no unicast traffic to a directly-connected host ever leaves.
+/// # C: O(1)
+fn gateway_or_onlink(address: [u8; 4]) -> Option<[u8; 4]> {
+    if address == [0; 4] { None } else { Some(address) }
+}
+
 /// Parse nested attributes in one `struct rtnexthop`. # C: O(N attrs)
 fn parse_nh_attrs(attrs: &[u8]) -> Result<Option<[u8; 4]>, RouteAttrError> {
     let mut gw = None;
@@ -173,7 +186,7 @@ fn parse_nh_attrs(attrs: &[u8]) -> Result<Option<[u8; 4]>, RouteAttrError> {
         let payload = &attrs[off + 4..off + nla_len];
         if nla_type == rta::RTA_GATEWAY {
             if payload.len() != 4 { return Err(RouteAttrError::Invalid); }
-            gw = Some([payload[0], payload[1], payload[2], payload[3]]);
+            gw = gateway_or_onlink([payload[0], payload[1], payload[2], payload[3]]);
         }
         off += nlmsg_align(nla_len);
     }
@@ -221,7 +234,8 @@ fn parse_route_attrs_mode(attrs: &[u8], validate_metrics: bool)
         let payload = &attrs[off + 4..off + nla_len];
         match (nla_type, payload.len()) {
             (rta::RTA_DST, 4)     => out.dst = Some([payload[0], payload[1], payload[2], payload[3]]),
-            (rta::RTA_GATEWAY, 4) => out.gateway = Some([payload[0], payload[1], payload[2], payload[3]]),
+            (rta::RTA_GATEWAY, 4) => out.gateway =
+                gateway_or_onlink([payload[0], payload[1], payload[2], payload[3]]),
             (rta::RTA_OIF, 4)     => out.oif = Some(u32::from_ne_bytes([
                                        payload[0], payload[1], payload[2], payload[3]])),
             (rta::RTA_PREFSRC, 4) => out.prefsrc = Some([payload[0], payload[1], payload[2], payload[3]]),
