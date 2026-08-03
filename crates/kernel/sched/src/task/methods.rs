@@ -299,6 +299,7 @@ impl Task {
             kthread_park: AtomicBool::new(false),
             kthread_parked: AtomicBool::new(false),
             reaped:   AtomicBool::new(false),
+            exiting:  AtomicBool::new(false),
             oom_score_adj: AtomicI32::new(0),
             oom_victim: AtomicBool::new(false),
             wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),

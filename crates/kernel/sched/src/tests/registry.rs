@@ -244,3 +244,21 @@ fn thread_group_drops_a_thread_that_has_exited() {
     }
     assert_eq!(crate::registry::thread_group(300).len(), 1);
 }
+
+/// A task on its way out is refused a cgroup migration, and the fact lives on
+/// the task rather than in a table beside it.
+///
+/// The reference tests `PF_EXITING` on the task. A side map keyed by tid used
+/// to answer this here, and it retained an entry for a LIVE task — so the
+/// service manager could not move its own pid into its own cgroup and froze at
+/// boot with `Failed to create /init.scope control group: No such process`.
+/// Two records of one fact can disagree; one cannot.
+#[test]
+fn the_exiting_flag_lives_on_the_task_and_starts_clear() {
+    use core::sync::atomic::Ordering;
+    let t = crate::task::Task::new(4242, "exiting", crate::task::SchedClass::Normal { weight: 1024 });
+    assert!(!t.exiting.load(Ordering::Acquire), "a fresh task is not exiting");
+    assert!(!t.reaped.load(Ordering::Acquire));
+    t.exiting.store(true, Ordering::Release);
+    assert!(t.exiting.load(Ordering::Acquire), "the flag is the task's own state");
+}
