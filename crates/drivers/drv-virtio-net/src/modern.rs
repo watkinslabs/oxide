@@ -54,6 +54,9 @@ pub struct ModernNetState {
     pub device_key: DeviceKey,
     pub cfg_va:   u64,
     pub hhdm:     u64,
+    /// Features the transport negotiated. `VIRTIO_NET_F_STATUS` decides
+    /// whether `virtio_net_config.status` exists to read carrier from.
+    pub drv_features: u64,
     pub rxq:      virtio::VirtQueueResource,
     pub txq:      virtio::VirtQueueResource,
     /// RX descriptors posted on queue 0. Each descriptor owns one packet-sized
@@ -86,6 +89,7 @@ mod state;
 pub use state::{
     init_modern,
     init_modern_with_rx_pool,
+    read_device_carrier,
     is_modern_present,
     is_modern_present_for,
     mac,
