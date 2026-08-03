@@ -101,7 +101,7 @@ fn emit_addr(event: &net::control_event::AddrEvent) {
         rt::IfaCacheInfo {
             preferred: row.cacheinfo.preferred, valid: row.cacheinfo.valid,
             cstamp: row.cacheinfo.cstamp, tstamp: row.cacheinfo.tstamp,
-        }, false,
+        }, 0,
     );
     if event.kind == net::control_event::EventKind::Delete {
         patch_type(&mut msg, rt::RTM_DELADDR);
@@ -118,7 +118,7 @@ fn emit_addr6(event: &net::control_event::Addr6Event) {
     let mut msg = rt::build_newaddr6_reply(0, 0, notify_ifindex(&event.owner, event.namespace.id()),
         &event.label, row.addr.0, row.prefixlen, scope, flags,
         rt::IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 },
-        false);
+        0);
     if event.kind == net::control_event::EventKind::Delete {
         patch_type(&mut msg, rt::RTM_DELADDR);
     }

@@ -16,6 +16,7 @@
 mod ack;
 mod addr_ops;
 mod attrs;
+mod dump_req;
 mod dumps;
 mod iface;
 mod neigh;
@@ -34,6 +35,7 @@ pub use ack::nlmsg_ack_pub;
 pub use addr_ops::{handle_deladdr, handle_deladdr_in, handle_newaddr, handle_newaddr_in};
 pub use attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
+pub use dump_req::{validate_addr_dump, validate_link_dump, AddrDump, LinkDump, NLM_F_DUMP_FILTERED};
 pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in, handle_getlink, handle_getlink_in};
 pub use neigh::{handle_delneigh_in, handle_getneigh_in, handle_newneigh_in};
 pub(crate) use rtnetlink_link::LinkStats64;

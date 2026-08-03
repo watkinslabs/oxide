@@ -2,6 +2,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+use syscall::errno::Errno;
+
 use crate::{flags, Nlmsghdr};
 
 use super::attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
@@ -89,7 +91,7 @@ pub fn done_multi(seq: u32, pid: u32) -> Vec<u8> {
 pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
     let mut only_header = [0u8; Nlmsghdr::SIZE];
     req.write_to(&mut only_header);
-    handle_getlink_in(net::netdev::current_net_ns(), req, &only_header)
+    handle_getlink_in(net::netdev::current_net_ns(), req, &only_header, false)
 }
 
 /// The non-dump `RTM_GETLINK`: one device, named by `ifi_index` or by
@@ -136,7 +138,7 @@ fn ifname_attr(mut attrs: &[u8]) -> Option<alloc::string::String> {
 /// Handle RTM_GETLINK in the socket's captured network namespace: a dump
 /// when the caller set `NLM_F_DUMP`, otherwise the one device it named.
 /// # C: O(N_ifaces)
-pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool) -> Vec<u8> {
     // A GETLINK is two different requests, and answering both with a dump is
     // what made `ip link show eth0` print `lo`.
     //
@@ -153,6 +155,12 @@ pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     // configured.
     if req.nlmsg_flags & crate::wire::flags::NLM_F_DUMP != crate::wire::flags::NLM_F_DUMP {
         return getlink_one(ns, req, full_msg);
+    }
+    // A link dump defines no device filter: a non-zero `ifi_index` is refused
+    // rather than answered with every device, which would read as though the
+    // filter had been honoured.
+    if let super::dump_req::LinkDump::Err(e) = super::dump_req::validate_link_dump(strict, full_msg) {
+        return super::ack::build_ack(req, -(e.as_i32()));
     }
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let entries = ifaces_snapshot_in(ns);
@@ -184,7 +192,7 @@ pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 /// # C: O(N attrs)
 pub(crate) fn build_newaddr_reply(
     seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 4], peer: Option<[u8; 4]>,
-    prefixlen: u8, scope: u8, flags: u32, cacheinfo: IfaCacheInfo, multi: bool,
+    prefixlen: u8, scope: u8, flags: u32, cacheinfo: IfaCacheInfo, msg_flags: u16,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
@@ -216,7 +224,7 @@ pub(crate) fn build_newaddr_reply(
     let hdr = Nlmsghdr {
         nlmsg_len: total as u32,
         nlmsg_type: RTM_NEWADDR,
-        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_flags: msg_flags,
         nlmsg_seq: seq,
         nlmsg_pid: pid,
     };
@@ -233,7 +241,7 @@ pub(crate) fn build_newaddr_reply(
 /// # C: O(N attrs)
 pub(crate) fn build_newaddr6_reply(
     seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 16], prefixlen: u8, scope: u8,
-    flags: u32, cacheinfo: IfaCacheInfo, multi: bool,
+    flags: u32, cacheinfo: IfaCacheInfo, msg_flags: u16,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
@@ -258,7 +266,7 @@ pub(crate) fn build_newaddr6_reply(
     let hdr = Nlmsghdr {
         nlmsg_len: total as u32,
         nlmsg_type: RTM_NEWADDR,
-        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 },
+        nlmsg_flags: msg_flags,
         nlmsg_seq: seq,
         nlmsg_pid: pid,
     };
@@ -274,30 +282,46 @@ pub(crate) fn build_newaddr6_reply(
 /// RTM_GETADDR dump.
 /// # C: O(N_ifaces)
 pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
-    handle_getaddr_in(net::netdev::current_net_ns(), req)
+    handle_getaddr_in(net::netdev::current_net_ns(), req, &[], false)
 }
 
 /// Handle RTM_GETADDR in the socket's captured network namespace.
+///
+/// Under `NETLINK_GET_STRICT_CHK` the request header is validated and its
+/// `ifa_index` selects one device; without it every address in the namespace
+/// is reported, which is what a client asking for one device used to receive.
 /// # C: O(N_ifaces)
-pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
+pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool) -> Vec<u8> {
+    let want = match super::dump_req::validate_addr_dump(strict, full_msg) {
+        super::dump_req::AddrDump::Err(e) => return super::ack::build_ack(req, -(e.as_i32())),
+        super::dump_req::AddrDump::All => None,
+        super::dump_req::AddrDump::OneDevice(index) => Some(index),
+    };
+    let msg_flags = flags::NLM_F_MULTI
+        | if want.is_some() { super::dump_req::NLM_F_DUMP_FILTERED } else { 0 };
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let ifaces = ifaces_snapshot_in(ns);
+    if want.is_some_and(|w| !ifaces.iter().any(|(id, ..)| *id == w)) {
+        return super::ack::build_ack(req, -(Errno::Enodev.as_i32()));
+    }
     for row in super::rtnetlink_addr::addr_snapshot_ns(ns).iter() {
         let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(
             net::NetIfaceId::from_raw(row.ifindex), ns) else { continue; };
+        if want.is_some_and(|w| w != ifindex) { continue; }
         let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == ifindex) {
             Some((_, n, _, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
         let one = build_newaddr_reply(
             req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr, row.peer,
-            row.prefixlen, row.scope, row.flags, row.cacheinfo, true,
+            row.prefixlen, row.scope, row.flags, row.cacheinfo, msg_flags,
         );
         reply.extend_from_slice(&one);
     }
     #[cfg(target_os = "oxide-kernel")]
     for (iface, row) in net::sock::stack().v6_addr_snapshot_in(ns) {
         let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(iface, ns) else { continue; };
+        if want.is_some_and(|w| w != ifindex) { continue; }
         let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == ifindex) {
             Some((_, n, _, _, _, _, _, _)) => n.as_str(),
             None => continue,
@@ -309,7 +333,7 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
         let cacheinfo = IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 };
         reply.extend_from_slice(&build_newaddr6_reply(
             req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, addr.0, row.prefixlen, scope,
-            row.flags(), cacheinfo, true,
+            row.flags(), cacheinfo, msg_flags,
         ));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
