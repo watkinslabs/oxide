@@ -160,7 +160,7 @@ impl NetlinkSocket {
             return true;
         }
         self.rx_drops.fetch_add(1, Ordering::Relaxed);
-        let report = !self.no_enobufs.load(Ordering::Acquire)
+        let report = !self.flags.get(crate::sockflags::F_RECV_NO_ENOBUFS)
             && !self.rx_congested.swap(true, Ordering::AcqRel);
         if report { self.error.set(vfs::VfsError::Enobufs as i32); }
         drop(queue);
@@ -183,7 +183,8 @@ impl NetlinkSocket {
 
     /// Enable Linux `NETLINK_NO_ENOBUFS` suppression for multicast loss. # C: O(1)
     pub fn set_no_enobufs(&self, enabled: bool) {
-        self.no_enobufs.store(enabled, Ordering::Release);
+        self.flags.assign(crate::sockflags::F_RECV_NO_ENOBUFS, enabled);
+        if enabled { self.rx_congested.store(false, Ordering::Release); }
     }
 
     /// Pop the head datagram if present. # C: O(1)

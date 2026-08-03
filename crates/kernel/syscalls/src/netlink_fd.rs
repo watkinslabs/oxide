@@ -149,10 +149,7 @@ pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
 /// controls the socket-owned multicast-overrun error report.
 /// # C: O(1)
 pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64, optlen: u64) -> i64 {
-    const SOL_NETLINK: u64 = 270;
-    const NETLINK_ADD_MEMBERSHIP:  u64 = 1;
-    const NETLINK_DROP_MEMBERSHIP: u64 = 2;
-    const NETLINK_NO_ENOBUFS: u64 = 5;
+    use ::netlink::{sockopt, SetAction};
     const NETLINK_OPTION_BYTES: u64 = core::mem::size_of::<u32>() as u64;
     let socket = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
@@ -161,31 +158,61 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     // The family table owns its own level and nothing else: SOL_SOCKET was
     // already answered generically before dispatch, and every other level is
     // ENOPROTOOPT.
-    if level != SOL_NETLINK { return -(Errno::Enoprotoopt.as_i32() as i64); }
-    if level == SOL_NETLINK && matches!(optname,
-        NETLINK_ADD_MEMBERSHIP | NETLINK_DROP_MEMBERSHIP | NETLINK_NO_ENOBUFS)
-    {
-        if optval == 0 || optval + NETLINK_OPTION_BYTES > USER_VA_END
-            || optlen < NETLINK_OPTION_BYTES
-        {
-            return -(Errno::Einval.as_i32() as i64);
+    if level != sockopt::SOL_NETLINK { return -(Errno::Enoprotoopt.as_i32() as i64); }
+    // Netlink reads the value only when the caller supplied a whole `int`; a
+    // shorter option is not an error, it simply leaves the value zero.
+    let mut val: u32 = 0;
+    if optlen >= NETLINK_OPTION_BYTES {
+        if optval == 0 || optval + NETLINK_OPTION_BYTES > USER_VA_END {
+            return -(Errno::Efault.as_i32() as i64);
         }
         let mut raw = [0u8; core::mem::size_of::<u32>()];
         if uaccess::copy_from_user(&mut raw, optval).is_err() {
             return -(Errno::Efault.as_i32() as i64);
         }
-        let group = u32::from_ne_bytes(raw);
-        let s = socket;
-        let membership = if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group) }
-            else if optname == NETLINK_DROP_MEMBERSHIP { s.drop_membership(group) }
-            else { s.set_no_enobufs(group != 0); Ok(()) };
-        if let Err(error) = membership { return crate::net_errno::errno_from_neterr(error); }
-        #[cfg(feature = "debug-uevent")]
-        if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
-            trace_uev_bind(group, if optname == NETLINK_ADD_MEMBERSHIP { b"addmemb" } else { b"dropmemb" });
+        val = u32::from_ne_bytes(raw);
+    }
+    match ::netlink::set_action(optname) {
+        SetAction::Unknown => -(Errno::Enoprotoopt.as_i32() as i64),
+        SetAction::Flag(bit) => { socket.flags.assign(bit, val != 0); 0 }
+        SetAction::PrivilegedFlag(bit) => {
+            if !has_net_broadcast(socket) { return -(Errno::Eperm.as_i32() as i64); }
+            socket.flags.assign(bit, val != 0);
+            0
+        }
+        SetAction::NoEnobufs => { socket.set_no_enobufs(val != 0); 0 }
+        SetAction::Membership { add } => {
+            if !::netlink::nonroot_recv(socket.protocol) && !has_net_admin(socket) {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            let membership = if add { socket.add_membership(val) } else { socket.drop_membership(val) };
+            if let Err(error) = membership { return crate::net_errno::errno_from_neterr(error); }
+            #[cfg(feature = "debug-uevent")]
+            if socket.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
+                trace_uev_bind(val, if add { b"addmemb" } else { b"dropmemb" });
+            }
+            0
         }
     }
-    0
+}
+
+/// `CAP_NET_BROADCAST` in the user namespace owning the socket's network
+/// namespace, gating `NETLINK_LISTEN_ALL_NSID`. # C: O(ns depth)
+fn has_net_broadcast(socket: &::netlink::NetlinkSocket) -> bool {
+    #[cfg(target_os = "oxide-kernel")]
+    { sched::current().is_some_and(|cur| nscg::has_cap_for(cur,
+        &socket.net_ns.owner_user_namespace(), sched::cap::NET_BROADCAST)) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = socket; true }
+}
+
+/// `CAP_NET_ADMIN` for a protocol that does not declare unprivileged
+/// multicast subscription. # C: O(ns depth)
+fn has_net_admin(socket: &::netlink::NetlinkSocket) -> bool {
+    #[cfg(target_os = "oxide-kernel")]
+    { sched::current().is_some_and(|cur| nscg::has_net_admin_for(cur, &socket.net_ns)) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = socket; true }
 }
 
 /// `getsockopt(fd, level, optname, optval, optlen)` for netlink.
@@ -228,10 +255,18 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
             bytes.extend_from_slice(&net::socket_args::SOCK_RAW.to_ne_bytes());
             NETLINK_SCALAR_BYTES
         }
-        (::netlink::sockopt::SOL_NETLINK, ::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS) => {
-            bytes = netlink_membership_words(socket.membership_words());
-            bytes.len()
-        }
+        (::netlink::sockopt::SOL_NETLINK, name) => match ::netlink::get_answer(name) {
+            ::netlink::GetAnswer::Unknown => return -(Errno::Enoprotoopt.as_i32() as i64),
+            ::netlink::GetAnswer::Memberships => {
+                bytes = netlink_membership_words(socket.membership_words());
+                bytes.len()
+            }
+            ::netlink::GetAnswer::Flag(bit) => {
+                if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
+                bytes.extend_from_slice(&(socket.flags.get(bit) as u32).to_ne_bytes());
+                NETLINK_SCALAR_BYTES
+            }
+        },
         _ => return -(Errno::Enoprotoopt.as_i32() as i64),
     };
     netlink_getsockopt_copyout(optval, optlen_p, requested, &bytes[..required])
