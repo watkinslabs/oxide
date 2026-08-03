@@ -25,6 +25,8 @@
     mod notification_races;
     #[path = "rtnetlink_tests/address_semantics.rs"]
     mod address_semantics;
+    #[path = "rtnetlink_tests/strict_dumps.rs"]
+    mod strict_dumps;
 
     fn visible_ifindex(iface: net::NetIfaceId, ns: u64) -> u32 {
         net::global_stack().ifaces.ifindex_in_ns(iface, ns).unwrap()
@@ -96,7 +98,7 @@
             nlmsg_flags: crate::flags::NLM_F_DUMP, nlmsg_seq: 9, nlmsg_pid: 11 };
         let mut dump_msg = [0u8; crate::Nlmsghdr::SIZE];
         req.write_to(&mut dump_msg);
-        let reply = handle_getlink_in(0, &req, &dump_msg);
+        let reply = handle_getlink_in(0, &req, &dump_msg, false);
 
         // The SINGLE-device form must answer with the device that was named.
         // Answering it with a dump handed the caller the first entry in the
@@ -118,7 +120,7 @@
             let mut msg = alloc::vec![0u8; crate::Nlmsghdr::SIZE];
             one.write_to(&mut msg[..]);
             msg.extend_from_slice(&body);
-            let single = handle_getlink_in(0, &one, &msg);
+            let single = handle_getlink_in(0, &one, &msg, false);
             let hdr = crate::Nlmsghdr::parse(&single).expect("one reply");
             assert_eq!(hdr.nlmsg_type, RTM_NEWLINK, "a single RTM_NEWLINK, not an error");
             assert_eq!(hdr.nlmsg_flags & crate::flags::NLM_F_MULTI, 0,
@@ -484,7 +486,7 @@
     fn build_newaddr_reply_well_formed() {
         let bytes = build_newaddr_reply(
             1, 42, 2, "eth0", [10, 0, 2, 15], None, 24, RT_SCOPE_UNIVERSE,
-            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, true,
+            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, crate::flags::NLM_F_MULTI,
         );
         // Header nlmsg_type == RTM_NEWADDR
         let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
@@ -511,7 +513,7 @@
         let peer = [192, 0, 2, 11];
         let bytes = build_newaddr_reply(
             1, 42, 2, "ppp0", local, Some(peer), 32, RT_SCOPE_UNIVERSE,
-            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, true,
+            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, crate::flags::NLM_F_MULTI,
         );
         let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
         assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).unwrap(), &local);
@@ -524,7 +526,7 @@
         let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
         let ci = IfaCacheInfo { preferred: 1800, valid: 3600, cstamp: 0, tstamp: 0 };
         let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 64, RT_SCOPE_UNIVERSE,
-            net::iface_addr::IFA_F_PERMANENT, ci, true);
+            net::iface_addr::IFA_F_PERMANENT, ci, crate::flags::NLM_F_MULTI);
         assert_eq!(u16::from_ne_bytes([bytes[4], bytes[5]]), RTM_NEWADDR);
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET6);
         assert_eq!(bytes[Nlmsghdr::SIZE + 1], 64);
