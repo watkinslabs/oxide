@@ -94,7 +94,42 @@
 
         let req = crate::Nlmsghdr { nlmsg_len: 32, nlmsg_type: RTM_GETLINK,
             nlmsg_flags: crate::flags::NLM_F_DUMP, nlmsg_seq: 9, nlmsg_pid: 11 };
-        let reply = handle_getlink_in(0, &req);
+        let mut dump_msg = [0u8; crate::Nlmsghdr::SIZE];
+        req.write_to(&mut dump_msg);
+        let reply = handle_getlink_in(0, &req, &dump_msg);
+
+        // The SINGLE-device form must answer with the device that was named.
+        // Answering it with a dump handed the caller the first entry in the
+        // table, so `ip link show eth0` printed `lo` and every client that
+        // queried a device by name read loopback's identity and flags.
+        {
+            let mut body = alloc::vec![0u8; 16];
+            let name = b"eth-stable";
+            body.extend_from_slice(&((4 + name.len() + 1) as u16).to_ne_bytes());
+            body.extend_from_slice(&3u16.to_ne_bytes());   // IFLA_IFNAME
+            body.extend_from_slice(name);
+            body.push(0);
+            while body.len() % 4 != 0 { body.push(0); }
+            let one = crate::Nlmsghdr {
+                nlmsg_len: (crate::Nlmsghdr::SIZE + body.len()) as u32,
+                nlmsg_type: RTM_GETLINK, nlmsg_flags: crate::flags::NLM_F_REQUEST,
+                nlmsg_seq: 12, nlmsg_pid: 11,
+            };
+            let mut msg = alloc::vec![0u8; crate::Nlmsghdr::SIZE];
+            one.write_to(&mut msg[..]);
+            msg.extend_from_slice(&body);
+            let single = handle_getlink_in(0, &one, &msg);
+            let hdr = crate::Nlmsghdr::parse(&single).expect("one reply");
+            assert_eq!(hdr.nlmsg_type, RTM_NEWLINK, "a single RTM_NEWLINK, not an error");
+            assert_eq!(hdr.nlmsg_flags & crate::flags::NLM_F_MULTI, 0,
+                "not multipart: the caller asked for one device");
+            assert_eq!(hdr.nlmsg_len as usize, single.len(), "exactly one message, no DONE");
+            let off = crate::Nlmsghdr::SIZE;
+            let got = i32::from_ne_bytes([single[off + 4], single[off + 5],
+                                          single[off + 6], single[off + 7]]);
+            assert_eq!(got, eth_idx as i32, "the named device comes back, not the first in the table");
+            assert_ne!(got, lo_idx as i32, "not loopback");
+        }
 
         // Walk the multipart dump; collect (ifindex, ifi_type, IFLA_IFNAME) for
         // each RTM_NEWLINK. Ifinfomsg: ifi_type @ off+2 (u16), ifi_index @ off+4

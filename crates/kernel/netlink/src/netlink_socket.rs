@@ -174,7 +174,7 @@ impl NetlinkSocket {
             && !self.may_mutate_rtnl() {
             rtnetlink::nlmsg_ack_pub(hdr, -1)
         } else { match (self.protocol, hdr.nlmsg_type) {
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr_in(net_ns, hdr),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => rtnetlink::handle_newaddr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(net_ns, hdr, msg),
