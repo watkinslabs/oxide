@@ -30,8 +30,9 @@ impl NetStack {
         self.ifaces.control_ready_in_ns(rtnl, iface, net_ns)?;
         let generation = self.ifaces.control_generation_in_ns(rtnl, iface, net_ns)?;
         let flags = self.ifaces.iface_flags(iface)?;
+        let ifindex = self.ifaces.ifindex_in_ns(iface, net_ns)?;
         Some(crate::control_event::LinkEvent {
-            kind, namespace,
+            kind, namespace, ifindex,
             owner: crate::control_event::IfaceOwner { iface, generation },
             name: properties.name, mac: properties.mac, broadcast: properties.broadcast, mtu: properties.mtu,
             is_loopback: properties.is_loopback, flags, stats: properties.stats,
@@ -46,7 +47,7 @@ impl NetStack {
         -> crate::control_event::LinkEvent
     {
         crate::control_event::LinkEvent {
-            kind, namespace,
+            kind, namespace, ifindex: teardown.ifindex(),
             owner: crate::control_event::IfaceOwner {
                 iface: teardown.iface(), generation: teardown.generation(),
             },

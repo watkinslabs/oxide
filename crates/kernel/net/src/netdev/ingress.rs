@@ -247,6 +247,11 @@ pub(crate) struct IfaceTeardown {
     iface:       NetIfaceId,
     net_ns:      u64,
     generation:  u64,
+    /// The namespace-scoped ifindex, snapshotted here for the same reason
+    /// `flags` is: the deletion is announced after the entry has gone, so it
+    /// cannot be looked up by then, and a notification that cannot name the
+    /// interface it removed is one no client can act on.
+    ifindex:     u32,
     flags:       u32,
     gate:        Arc<IngressGate>,
     pub(crate) dev: Arc<dyn NetDev>,
@@ -260,6 +265,8 @@ impl IfaceTeardown {
     pub(crate) fn net_ns(&self) -> u64 { self.net_ns }
     pub(crate) fn generation(&self) -> u64 { self.generation }
     pub(crate) fn flags(&self) -> u32 { self.flags }
+    /// # C: O(1)
+    pub(crate) fn ifindex(&self) -> u32 { self.ifindex }
 }
 
 pub(crate) enum IfaceUnregisterClaim {
@@ -386,6 +393,7 @@ impl IfaceRegistry {
         }
         IfaceUnregisterClaim::Teardown(IfaceTeardown {
             iface, net_ns: entry.ns, generation: entry.ingress.generation,
+            ifindex: entry.ifindex,
             flags: entry.flags.load(Ordering::Acquire),
             gate: entry.ingress.clone(), dev: entry.dev.clone(), arp: entry.arp.clone(),
             mcast_report: entry.mcast_report.clone(),
