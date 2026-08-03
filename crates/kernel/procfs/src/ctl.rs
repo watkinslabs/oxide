@@ -142,8 +142,14 @@ const SYSCTL_TREE: &[Node] = &[
         File("pipe-max-size",         Int(4096, Some((0, INT_MAX)))),
         File("protected_regular",     Int(2, Some((0, 2)))),
         File("protected_fifos",       Int(1, Some((0, 2)))),
-        File("protected_hardlinks",   Const(b"1\n")),
-        File("protected_symlinks",    Const(b"1\n")),
+        // Writable, like their `protected_regular`/`protected_fifos` siblings
+        // above: the reference registers all four mode 0644 over a [0,1] or
+        // [0,2] window. Bound as read-only constants these answered the service
+        // manager's boot-time sysctl apply with EROFS, and because the shipped
+        // config does not prefix them with `-`, that one refusal failed the
+        // whole unit.
+        File("protected_hardlinks",   Int(1, Some((0, 1)))),
+        File("protected_symlinks",    Int(1, Some((0, 1)))),
         File("suid_dumpable",         IntHook(get_suid_dumpable, set_suid_dumpable, Some((0, 2)))),
         Dir("mqueue", &[
             // `ipc/mq_sysctl.c`: `queues_max` is a plain `proc_dointvec`; the

@@ -30,16 +30,29 @@ static SCOPE: AtomicU8 = AtomicU8::new(SCOPE_RELATIONAL);
 /// # C: O(1)
 pub fn scope() -> u8 { SCOPE.load(Ordering::Acquire) }
 
-/// Install a new scope. Linux's sysctl handler is `yama_dointvec_minmax`,
-/// which additionally refuses to LOWER the value once it has been raised —
-/// the knob is one-way, so a compromised privileged process cannot relax it.
-/// Returns false for a refused write (Linux `-EINVAL`).
+/// Install a new scope.
+///
+/// The knob locks only once it reaches its MAXIMUM, not on every raise. The
+/// reference's handler copies the table and, when the current value already
+/// equals the maximum, raises the minimum to that maximum — so `[0, max)` stays
+/// freely writable in both directions and only `max` is a one-way door:
+///
+///   /* Lock the max value if it ever gets set. */
+///   if (*(int *)table_copy.data == *(int *)table_copy.extra2)
+///           table_copy.extra1 = table_copy.extra2;
+///
+/// Refusing every lowering instead made the default value a floor, so the
+/// boot-time sysctl apply — which writes 0 from the shipped configuration —
+/// was refused with EINVAL and failed the whole unit.
+///
+/// Returns false for a refused write (the reference's `-EINVAL`).
 /// # C: O(1)
 pub fn set_scope(new: i64) -> bool {
     if !(0..=SCOPE_MAX as i64).contains(&new) { return false; }
     let new = new as u8;
-    // `if (write && (*(int *)table->data > *(int *)table_copy.data)) return -EINVAL;`
-    if new < SCOPE.load(Ordering::Acquire) { return false; }
+    // Locked at the top: from the maximum, the only value still in range is
+    // the maximum itself.
+    if SCOPE.load(Ordering::Acquire) == SCOPE_MAX && new != SCOPE_MAX { return false; }
     SCOPE.store(new, Ordering::Release);
     true
 }
