@@ -62,6 +62,18 @@ impl RouteRecord {
             weight: 1, nh_flags: 0 }
     }
 
+    /// The address a transmit to `dst` solicits: the gateway when the route
+    /// has one, else the destination itself. A gateway of all zeroes is not a
+    /// gateway — the reference reads a zero nexthop as directly-connected —
+    /// and answering with it makes every solicitation ask who has `0.0.0.0`.
+    /// # C: O(1)
+    pub fn next_hop_for(gateway: Option<Ipv4Addr>, dst: Ipv4Addr) -> Ipv4Addr {
+        match gateway {
+            Some(gw) if !gw.is_unspecified() => gw,
+            _ => dst,
+        }
+    }
+
     /// Project one canonical FIB record into immutable datapath state. # C: O(1)
     pub const fn resolved(self) -> ResolvedRoute {
         ResolvedRoute {

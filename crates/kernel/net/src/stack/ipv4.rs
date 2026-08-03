@@ -51,7 +51,7 @@ impl NetStack {
         let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
         self.xmit_ipv4_l4_on_iface(
-            route, iface, route.gateway.unwrap_or(dst), src, dst, proto, l4, tos, id,
+            route, iface, crate::route::RouteRecord::next_hop_for(route.gateway, dst), src, dst, proto, l4, tos, id,
         )
     }
 
