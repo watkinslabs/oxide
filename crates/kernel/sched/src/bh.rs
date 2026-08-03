@@ -84,6 +84,47 @@ pub unsafe fn do_softirq() {
     preempt::preempt_count_sub(SOFTIRQ_OFFSET);
 }
 
+/// The IRQ-tail drain, split so the bottom-half count is taken while
+/// interrupts are still OFF.
+///
+/// `do_softirq` above takes `SOFTIRQ_OFFSET` itself, which is correct for a
+/// caller that already has interrupts enabled. It is NOT correct for the
+/// interrupt tail: the dispatcher there enables interrupts and then calls in,
+/// so between the two a nested dispatch observes `in_interrupt() == 0`, decides
+/// it may drain, and opens its OWN interrupt-enabled window. Every nesting
+/// level can do that, on one 16 KiB stack, with nothing bounding the depth —
+/// which is how a burst of serial receive interrupts walked the interrupt stack
+/// into its guard page.
+///
+/// The reference takes the count first and enables interrupts after
+/// (`irq_exit_rcu` -> `__local_bh_disable_ip(SOFTIRQ_OFFSET)`, then
+/// `local_irq_enable()` inside the drain). These three make the dispatcher able
+/// to do the same while the `sti`/`cli` stay in arch code.
+///
+/// Returns false when there is nothing to do; the caller must not enable
+/// interrupts or call the other two in that case.
+/// # C: O(1)
+pub fn softirq_tail_begin() -> bool {
+    if preempt::in_interrupt() { return false; }
+    if !softirq::pending() { return false; }
+    preempt::preempt_count_add(SOFTIRQ_OFFSET);
+    true
+}
+
+/// Run the drain. Call only between [`softirq_tail_begin`] returning true and
+/// [`softirq_tail_end`].
+/// # SAFETY: bottom-half count is held by `softirq_tail_begin`; interrupts may be enabled.
+/// # C: O(pending softirq work)
+pub unsafe fn softirq_tail_run() {
+    // SAFETY: bh-accounted by softirq_tail_begin; drains this CPU's mask.
+    unsafe { softirq::run_pending(); }
+}
+
+/// Release the bottom-half count. Call with interrupts OFF again, so the count
+/// is never dropped while a nested dispatch could still observe it.
+/// # C: O(1)
+pub fn softirq_tail_end() { preempt::preempt_count_sub(SOFTIRQ_OFFSET); }
+
 /// Drain softirqs from ksoftirqd, including process-only slots. # C: O(pending work)
 /// # SAFETY: process-context kthread, IRQs enabled, no handler-owned lock held.
 pub unsafe fn do_softirq_process() {
