@@ -103,6 +103,7 @@ fn lint_file(path: &PathBuf, test_gated: bool, ext_gated: &HashSet<PathBuf>, f: 
 
     if is_root { check_no_std(path, &lines, f); }
     check_extern_std(path, &lines, &off_kernel, f);
+    check_drm_user_deref(path, &lines, f);
     if !is_test { check_static_mut(path, &text, &lines, f); }
     check_panic_fmt(path, &lines, &off_kernel, f);
     if !is_test { check_unsafe_safety(path, &lines, f); }
@@ -150,6 +151,25 @@ fn check_extern_std(path: &Path, lines: &[&str], off_kernel: &[bool], f: &mut Fi
         if !l.trim_start().starts_with("extern crate std") { continue; }
         if off_kernel.get(i).copied().unwrap_or(false) { continue; }
         f.push(path, i + 1, "code/extern-std", "`extern crate std` forbidden in kernel crate");
+    }
+}
+
+/// A raw `read_volatile`/`write_volatile` on a user pointer has no
+/// exception-table entry, so a bogus address any unprivileged process can pass
+/// through an ioctl halts the CPU instead of returning `EFAULT`. The DRM tree
+/// touches no MMIO — every volatile access in it was a user-pointer
+/// dereference — so the pattern has no legitimate use there outside `uarg`,
+/// which owns the fault-recoverable transfer.
+fn check_drm_user_deref(path: &Path, lines: &[&str], f: &mut Findings) {
+    let p = path.to_string_lossy().replace('\\', "/");
+    if !p.contains("crates/drivers/drm/src/") { return; }
+    if p.ends_with("/uarg.rs") { return; }
+    for (i, l) in lines.iter().enumerate() {
+        let code = match l.find("//") { Some(idx) => &l[..idx], None => l };
+        if code.contains("read_volatile") || code.contains("write_volatile") {
+            f.push(path, i + 1, "code/drm-user-deref",
+                "raw volatile dereference of a user pointer — transfer through `uarg` (no MMIO exists in this tree)");
+        }
     }
 }
 
