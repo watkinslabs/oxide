@@ -14,7 +14,7 @@
 //! frames come from a hook kmain installs from pmm. Page-table mapping uses the
 //! HAL `MmuOps` (already a sched dependency) and the frame-alloc hook the HAL
 //! itself holds for intermediate tables.
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 #[cfg(feature = "debug-armctx")]
 use core::sync::atomic::AtomicU32;
 use hal::{MmuOps, PageFlags, PageSize, Pa, Va};
@@ -25,7 +25,7 @@ use hal_x86_64::mmu_ops::X86Mmu as Mmu;
 #[cfg(target_arch = "aarch64")]
 use hal_aarch64::mmu_ops::ArmMmu as Mmu;
 
-const PAGE: u64 = hal::PAGE_SIZE_BYTES;
+pub(crate) const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 /// 16 KiB usable stack = Linux `THREAD_SIZE`, on both arches.
 ///
 /// Briefly raised to 32 KiB while chasing the aarch64 `-smp 2` overflows and put
@@ -40,14 +40,68 @@ const STACK_PAGES: u64 = KSTACK_BYTES as u64 / PAGE;
 const _: () = assert!(KSTACK_BYTES as u64 % PAGE == 0);
 /// One unmapped guard page below each stack. Slot = guard + stack pages.
 const SLOT_PAGES: u64 = STACK_PAGES + 1;
-const SLOT_BYTES: u64 = SLOT_PAGES * PAGE;
+pub(crate) const SLOT_BYTES: u64 = SLOT_PAGES * PAGE;
 /// Dedicated kernel VA window, disjoint from HHDM, the device-BAR window
 /// (`0xffff_fd00_…`) and the debug-efence arena (`0xffff_fc00_…`).
-const KSTACK_VA_BASE: u64 = 0xffff_fb00_0000_0000;
+pub(crate) const KSTACK_VA_BASE: u64 = 0xffff_fb00_0000_0000;
 /// Max concurrent kernel stacks (slots recycle on task exit). 16384 * 16 KiB =
 /// 256 MiB of frames only if every slot is live at once; steady-state is far
 /// less because slots recycle.
-const MAX_STACKS: usize = 16384;
+pub(crate) const MAX_STACKS: usize = 16384;
+
+pub mod classify;
+pub use classify::{Span, StackKind, span_of};
+
+/// What each slot is, so a guard-page hit can NAME the stack.
+///
+/// A task stack and the per-CPU interrupt stack are slots of one window, so a
+/// faulting address cannot say which it is — the tag written when the slot is
+/// handed out is the only thing that can. Cleared on free, so a slot nobody
+/// owns reports as such instead of reading as an ordinary task stack.
+///
+/// Plain atomics: the fault path reads this, including from the double-fault
+/// handler, and must not take a lock.
+static SLOT_TAG: [AtomicU8; MAX_STACKS] =
+    [const { AtomicU8::new(classify::TAG_NONE) }; MAX_STACKS];
+
+fn tag_slot(slot: usize, tag: u8) {
+    if slot < MAX_STACKS { SLOT_TAG[slot].store(tag, Ordering::Release); }
+}
+
+/// Name the stack a faulting address belongs to, with its bounds.
+///
+/// The reference classifies the address in its double-fault handler and prints
+/// the stack's NAME; here the same question was answered by hand, from a
+/// register dump, across several sessions. Lock-free — one atomic load and
+/// arithmetic — so it is safe from the fault path.
+/// # C: O(1)
+/// The most-repeated code address on a slot's stack, with its count.
+///
+/// Reads the stack's own words, so it must only be called on a slot that is
+/// mapped — which the faulting one is. Lock-free.
+/// # C: O(KSTACK_BYTES/8)
+pub fn stack_top_repeat(span: &Span) -> (u64, u32) {
+    let n = ((span.stack_hi - span.stack_lo) / 8) as usize;
+    // SAFETY: [stack_lo, stack_hi) is this slot's mapped stack; reading it as words is a plain aligned read of memory that is mapped for the kernel's lifetime once handed out.
+    let words = unsafe { core::slice::from_raw_parts(span.stack_lo as *const u64, n) };
+    classify::top_repeat(words, TEXT_LO, TEXT_HI)
+}
+
+/// Kernel text bounds that make a stack word a return site rather than data.
+const TEXT_LO: u64 = 0xffff_ffff_8000_0000;
+const TEXT_HI: u64 = 0xffff_ffff_8200_0000;
+
+/// Name the stack a faulting address belongs to, with its bounds.
+///
+/// The reference classifies the address in its double-fault handler and prints
+/// the stack's NAME; here the same question was answered by hand, from a
+/// register dump, across several sessions. Lock-free — one atomic load and
+/// arithmetic — so it is safe from the fault path.
+/// # C: O(1)
+pub fn describe_fault(va: u64) -> Option<(StackKind, Span)> {
+    let span = span_of(va)?;
+    Some((classify::kind_from_tag(SLOT_TAG[span.slot].load(Ordering::Acquire)), span))
+}
 
 /// `fn() -> Option<pa>` and `fn(pa)` frame hooks, installed by kmain from pmm.
 type FrameAllocFn = fn() -> Option<u64>;
@@ -201,6 +255,9 @@ impl Drop for GuardedStack {
     /// Unmap the stack pages, return the frames to the PMM, recycle the slot.
     /// The guard page was never mapped. # C: O(STACK_PAGES)
     fn drop(&mut self) {
+        // Untag before the slot is recycled: a stack still being used after its
+        // slot was freed must report UNOWNED, not the kind it used to be.
+        tag_slot(self.slot as usize, classify::TAG_NONE);
         #[cfg(feature = "debug-armctx")]
         {
             let prev = OWNER[self.slot as usize].swap(0, Ordering::AcqRel);
@@ -261,6 +318,7 @@ pub fn alloc() -> Option<GuardedStack> {
     // Zero the stack (the old Box was zero-initialized; keep that contract).
     // SAFETY: [lo, lo+16KiB) is now mapped RW and owned by this new stack.
     unsafe { core::ptr::write_bytes(lo as *mut u8, 0, KSTACK_BYTES); }
+    tag_slot(slot as usize, classify::TAG_TASK);
     Some(GuardedStack { slot, frames })
 }
 
@@ -273,5 +331,10 @@ pub fn alloc_leaked_top() -> Option<u64> {
     let s = alloc()?;
     let top = s.top() as u64;
     core::mem::forget(s);
+    // Register it, so a guard-page hit on this stack can be NAMED. Without
+    // this the fault report cannot tell an interrupt stack from a task stack:
+    // both are slots of one window, and only the registration distinguishes
+    // them.
+    if let Some(span) = span_of(top - 1) { tag_slot(span.slot, classify::TAG_IRQ); }
     Some(top)
 }
