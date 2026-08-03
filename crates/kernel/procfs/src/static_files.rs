@@ -235,14 +235,7 @@ pub fn register_static_files() {
     crate::reg::register("/proc/net/raw6", crate::net_raw::make_proc_net_raw6());
     crate::reg::register("/proc/net/icmp", crate::net_icmp::make_proc_net_icmp());
     crate::reg::register("/proc/net/icmp6", crate::net_icmp::make_proc_net_icmp6());
-    crate::reg::register(
-        "/proc/net/netlink",
-        StaticFileInode::new(
-            b"\
-sk               Eth Pid        Groups   Rmem     Wmem     Dump  Locks    Drops    Inode\n\
-",
-        ) as InodeRef,
-    );
+    crate::reg::register("/proc/net/netlink", crate::net::make_proc_net_netlink());
     crate::reg::register(
         "/proc/net/packet",
         StaticFileInode::new(

@@ -19,6 +19,7 @@ drv = { path = "../../drivers/drv" }
 arch-irq = { path = "../arch-irq" }
 vfs  = { path = "../vfs" }
 net  = { path = "../net" }
+netlink = { path = "../netlink" }
 modules = { path = "../modules" }
 sched = { path = "../sched" }
 syscall = { path = "../syscall" }

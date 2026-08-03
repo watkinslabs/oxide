@@ -259,6 +259,18 @@ pub fn make_proc_net_softnet_stat() -> InodeRef {
     crate::dyn_file::make_gen_file(ids::NET_SOFTNET_STAT as Ino, softnet_stat_body)
 }
 
+/// `/proc/net/netlink` — one line per live netlink socket in the reading
+/// namespace. `Rmem` is the socket's unread backlog, which is the only way
+/// from outside the kernel to tell a notification that was never delivered
+/// from one the process never read.
+fn net_netlink_body(net_ns: u64) -> alloc::vec::Vec<u8> {
+    netlink::render_proc_netlink(&netlink::proc_rows(net_ns))
+}
+/// `/proc/net/netlink` inode. # C: O(1)
+pub fn make_proc_net_netlink() -> InodeRef {
+    make_net_file(ids::NET_NETLINK as Ino, net_netlink_body)
+}
+
 fn make_net_file(ino: Ino, gen: fn(u64) -> alloc::vec::Vec<u8>) -> InodeRef {
     crate::dyn_file::make_ns_gen_file(ino, net::netdev::current_net_ns, gen)
 }
