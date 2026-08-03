@@ -165,6 +165,9 @@ impl NetlinkSocket {
     /// # C: O(reply build)
     fn handle_one(&self, hdr: &Nlmsghdr, msg: &[u8]) {
         let net_ns = self.net_ns.id().as_u64();
+        // `NETLINK_GET_STRICT_CHK`: the client asked for its dump requests to be
+        // validated and their header filters honoured.
+        let strict = self.flags.get(crate::sockflags::F_STRICT_CHK);
         if !crate::rcv_skb::reaches_handler(self.protocol, hdr) {
             // Netlink core acknowledges a control message or a non-request only
             // when the sender asked for one, and never runs a handler for it.
@@ -177,8 +180,8 @@ impl NetlinkSocket {
             && !self.may_mutate_rtnl() {
             rtnetlink::nlmsg_ack_pub(hdr, -1)
         } else { match (self.protocol, hdr.nlmsg_type) {
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr_in(net_ns, hdr),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg, strict),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr_in(net_ns, hdr, msg, strict),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => rtnetlink::handle_newaddr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => rtnetlink::handle_getroute_in(net_ns, hdr, msg),
