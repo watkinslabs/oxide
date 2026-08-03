@@ -90,7 +90,11 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
 
     // A filesystem that cannot turn its own handles back into inodes must not
     // mint one a caller will later fail to open (`exportfs_can_encode_fh`).
-    let sb = inode.i_sb();
+    // The mount's superblock first: the handle is minted for a PATH, and an
+    // inode's own back-pointer is unset on every filesystem that synthesizes
+    // its inodes, which is precisely the set that overrides the handle width.
+    let sb = vfs::export::export_sb(
+        vfs::mount::mount_by_id(mount_id).map(|m| m.sb().clone()), inode.i_sb());
     if let Some(sb) = sb.as_ref() {
         if !vfs::export::can_encode_fh(sb) { return err(Errno::Eopnotsupp); }
     }

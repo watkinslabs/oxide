@@ -83,6 +83,30 @@ pub fn generation_matches(inode: &Inode, encoded: u32) -> bool {
 /// # C: O(1)
 pub fn can_encode_fh(sb: &crate::SuperBlock) -> bool { sb.s_op.export_can_decode_fh() }
 
+/// The superblock whose export ops govern a resolved path: the one the path
+/// was reached THROUGH, and only then the inode's own back-pointer.
+///
+/// The reference reaches these ops through the dentry (`dentry->d_sb`), which
+/// is always populated because an inode can only exist against a superblock.
+/// Here the inode's `i_sb` is a `Weak` the builder has to be told to fill, and
+/// only the filesystems with a backing store fill it — every pseudo-filesystem
+/// that synthesizes inodes on lookup leaves it empty. Reading the width from
+/// the inode therefore silently fell back to the VFS-generic 12-byte handle for
+/// exactly the filesystems that override it, so cgroupfs answered every
+/// `name_to_handle_at` with EOVERFLOW and the cgroup id was unreadable for
+/// every unit, 25 times in one boot, while cgroupfs's own 8-byte encoder sat
+/// correct and wired and never consulted.
+///
+/// Taking the mount's superblock also matches what the caller asked about: the
+/// handle is minted for a path, and the path names the mount.
+/// # C: O(1)
+pub fn export_sb(mount_sb: Option<alloc::sync::Arc<crate::SuperBlock>>,
+                 inode_sb: Option<alloc::sync::Arc<crate::SuperBlock>>)
+    -> Option<alloc::sync::Arc<crate::SuperBlock>>
+{
+    mount_sb.or(inode_sb)
+}
+
 /// Resolve `ino` on `sb` from the inode cache alone, honoring the encoded
 /// generation. The [`crate::SuperOps::fh_to_dentry`] default builds on this;
 /// a filesystem with a backing store overrides the hook so an EVICTED inode
