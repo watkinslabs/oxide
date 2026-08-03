@@ -401,6 +401,95 @@ def read_allowlist(path):
     return allow
 
 
+def index_by_identity(frames):
+    """-> {identity: [raw symbol, ...]}. Many-to-one is normal."""
+    by_ident = {}
+    for raw in frames:
+        by_ident.setdefault(rsi.identity(raw), []).append(raw)
+    return by_ident
+
+
+def read_edge_map(path, frames):
+    """-> ({caller raw: {callee raw}}, [(line, which, identity) unresolved])
+
+    A `<caller>\\t<callee>` TSV of DEMANGLED identities, one edge per line,
+    repeating the caller for a dispatch site with several targets.
+
+    WHY THIS EXISTS. The walker follows direct call edges only, so it stops
+    dead at a function pointer — and every hardware interrupt handler in this
+    kernel is reached through one. The MSI vector table, the line-handler
+    table, the softirq slots, the tick-poll hook and the exit-to-user hook are
+    all registered `fn` pointers, so the receive path measured 8 bytes deep
+    when its real chain runs to five figures. A gate that reports 8 for the
+    deepest path in the kernel is not a conservative gate, it is a blind one.
+
+    The target sets are finite and enumerable: each table has a handful of
+    `register_*`/`set_handler` call sites, all in this tree. Naming them here
+    makes the edges visible to the walker without teaching it to guess.
+
+    Entries are identities, not mangled symbols, for the same reason the
+    allowlist is: a crate disambiguator changes with the features a build
+    selects. An entry naming something absent from the ELF is reported for the
+    caller to reject — a map that has drifted silently reintroduces exactly the
+    blindness it was written to remove.
+    """
+    by_ident = index_by_identity(frames)
+    edges, unresolved = {}, []
+    with open(path) as f:
+        for n, raw_line in enumerate(f, 1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split("\t") if p.strip()]
+            if len(parts) != 2:
+                raise SystemExit(f"{path}:{n}: expected `<caller>\\t<callee>`, got {line!r}")
+            caller, callee = parts
+            callers, callees = by_ident.get(caller), by_ident.get(callee)
+            if not callers:
+                unresolved.append((n, "caller", caller))
+                continue
+            if not callees:
+                unresolved.append((n, "callee", callee))
+                continue
+            for c in callers:
+                edges.setdefault(c, set()).update(callees)
+    return edges, unresolved
+
+
+def read_roots(path, frames):
+    """-> ([raw symbols], [(line, identity) unresolved]) from a file of
+    demangled identities, one per line."""
+    by_ident = index_by_identity(frames)
+    roots, unresolved = [], []
+    with open(path) as f:
+        for n, raw_line in enumerate(f, 1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            hit = by_ident.get(line)
+            if not hit:
+                unresolved.append((n, line))
+                continue
+            roots.extend(hit)
+    return roots, unresolved
+
+
+def verdict(over_by_id, allow, present):
+    """-> (fresh, worse, stale, slack). The pass/fail decision, as data.
+
+    Split out of `main` so it can be tested. The accounting below it had a
+    positive control and this did not, which is the wrong way round: the
+    accounting being right is worth nothing if the layer that turns a number
+    into an exit code is wrong.
+    """
+    fresh = [(k, d, raw) for k, (d, raw) in over_by_id.items() if k not in allow]
+    worse = [(k, d, raw, allow[k][0]) for k, (d, raw) in over_by_id.items()
+             if k in allow and d > allow[k][0]]
+    stale = [(k, allow[k][1]) for k in allow if k not in present]
+    slack = [k for k in allow if k in present and k not in over_by_id]
+    return fresh, worse, stale, slack
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("elf", nargs="?")
@@ -427,6 +516,17 @@ def main():
                          "of failing on them (they are dead permission either way)")
     ap.add_argument("--write-allowlist", action="store_true",
                     help="rewrite --allowlist from this ELF (reasons must be edited in by hand)")
+    ap.add_argument("--indirect-map",
+                    help="file of `<caller>\\t<callee>` demangled identities naming the "
+                         "targets of function-pointer dispatch sites, so the walker can "
+                         "see past them (see read_edge_map)")
+    ap.add_argument("--irq-roots",
+                    help="file of demangled identities that run on the per-CPU hardirq "
+                         "stack rather than a task stack — a SECOND budget domain")
+    ap.add_argument("--irq-fail", type=int, default=12000,
+                    help="ceiling for the --irq-roots domain. The hardirq stack is the "
+                         "same 16384 B, but a hardware interrupt nests into the softirq "
+                         "drain, so the drain must leave room for a whole second entry")
     args = ap.parse_args()
 
     if args.self_test:
@@ -441,6 +541,24 @@ def main():
     if not frames:
         print(f"stack-depth-gate: no functions found in {args.elf} — wrong file?", file=sys.stderr)
         return 2
+
+    # Resolve function-pointer dispatch BEFORE the blocking tail and the walk:
+    # an edge added afterwards would not be seen by either.
+    resolved_edges = 0
+    if args.indirect_map:
+        edges, unresolved = read_edge_map(args.indirect_map, frames)
+        if unresolved:
+            print(f"stack-depth-gate: FAIL — {len(unresolved)} entr(y/ies) in "
+                  f"{args.indirect_map} name something not in {args.elf}:", file=sys.stderr)
+            for n, which, ident in unresolved:
+                print(f"    {args.indirect_map}:{n}  {which} not found: {ident}", file=sys.stderr)
+            print("\nThe map exists to make interrupt dispatch visible. An entry that no "
+                  "longer resolves silently restores the blindness it was written to "
+                  "remove, so a drifted map is a failure, not a warning.", file=sys.stderr)
+            return 1
+        for caller, callees in edges.items():
+            calls[caller].update(callees)
+            resolved_edges += len(callees)
 
     tails = {}
     if not args.no_blocking_tail:
@@ -486,16 +604,15 @@ def main():
         return 0
 
     allow = read_allowlist(args.allowlist) if args.allowlist else {}
-    fresh = [(k, d, raw) for k, (d, raw) in over_by_id.items() if k not in allow]
-    worse = [(k, d, raw, allow[k][0]) for k, (d, raw) in over_by_id.items()
-             if k in allow and d > allow[k][0]]
-    stale = [(k, allow[k][1]) for k in allow if k not in present]
-    slack = [k for k in allow if k in present and k not in over_by_id]
+    fresh, worse, stale, slack = verdict(over_by_id, allow, present)
 
     print(f"stack-depth-gate: {args.elf} ({args.arch})")
     print(f"  functions scanned  : {len(frames)}")
     print(f"  unresolved indirect: {sum(1 for v in indirect.values() if v)} function(s) "
           "— their true depth is larger than reported")
+    if args.indirect_map:
+        print(f"  dispatch resolved  : {resolved_edges} edge(s) from {args.indirect_map} "
+              "— interrupt handlers the walker would otherwise stop at")
     print(f"  recursive          : {len(w.recursive)} function(s) — depth is a lower bound")
     for point, tail in tails.items():
         print(f"  blocking tail      : {tail} B charged once to every path reaching "
@@ -517,6 +634,39 @@ def main():
         for k in sorted(slack):
             print(f"  slack              : {allow[k][0]} B allowed, now under the "
                   f"ceiling — the entry can go: {k}")
+
+    # ---- second domain: the per-CPU hardirq stack -------------------------
+    # A different 16384 B from the task stack, with a different worst case. The
+    # entry asm does not re-switch when an interrupt arrives while already on
+    # it, and the drain runs with interrupts unmasked, so a hardware interrupt
+    # nests onto whatever the softirq drain has already spent. The budget is
+    # therefore the stack MINUS a whole second entry, not the stack.
+    irq_failed = False
+    if args.irq_roots:
+        roots, unresolved = read_roots(args.irq_roots, frames)
+        if unresolved:
+            print(f"\nstack-depth-gate: FAIL — {len(unresolved)} root(s) in "
+                  f"{args.irq_roots} are not in {args.elf}:", file=sys.stderr)
+            for n, ident in unresolved:
+                print(f"    {args.irq_roots}:{n}  {ident}", file=sys.stderr)
+            irq_failed = True
+        ranked_irq = sorted(((r, depth.get(r, 0)) for r in roots), key=lambda kv: -kv[1])
+        over_irq = [(r, d) for r, d in ranked_irq if d >= args.irq_fail]
+        print(f"\n  hardirq domain     : {len(roots)} root(s), ceiling {args.irq_fail} B "
+              f"of the {16 * 1024} B interrupt stack")
+        for raw, d in ranked_irq[: args.top]:
+            note = w.flags(raw)
+            print(f"    {d:7d}  {rsi.identity(raw)}" + (f"   [{note}]" if note else ""))
+        if over_irq:
+            print(f"\nstack-depth-gate: FAIL — {len(over_irq)} interrupt-stack path(s) "
+                  f"reach >= {args.irq_fail} B:", file=sys.stderr)
+            for raw, d in over_irq:
+                print(f"    {d:7d}  {rsi.identity(raw)}", file=sys.stderr)
+            print("\nThis stack takes a nested hardware interrupt on top of whatever the "
+                  "softirq drain has already spent, so the headroom left here is what a "
+                  "second entry has to fit in. Shorten the chain; raising the ceiling "
+                  "spends headroom that the nesting needs.", file=sys.stderr)
+            irq_failed = True
 
     # The two failures need OPPOSITE responses, so they are never merged into
     # one list: a NEW or WORSENED path is code to fix, a STALE entry is a line
@@ -544,7 +694,7 @@ def main():
               "stops meaning anything. If the symbol only vanishes in the build you are "
               "checking, check the build the list was recorded against instead of "
               "passing --allow-stale.", file=sys.stderr)
-    if fresh or worse or (stale and not args.allow_stale):
+    if fresh or worse or (stale and not args.allow_stale) or irq_failed:
         return 1
     if stale:
         print(f"  stale (ignored)    : {len(stale)} entr(y/ies) name a path not in this ELF")
@@ -714,9 +864,50 @@ def self_test():
     assert wb.depth["reaper"] == (8 + 0x80) + (8 + 0x40) + tail, wb.depth["reaper"]
 
     identity_self_test()
+    verdict_self_test()
     print("stack-depth-gate: self-test PASS (x86_64 + aarch64, probe-split, "
-          "recursion, indirect, blocking tail, allowlist identity)")
+          "recursion, indirect, blocking tail, allowlist identity, verdict)")
     return 0
+
+
+def verdict_self_test():
+    """The layer that turns a number into an exit code, with a positive control.
+
+    Everything below this was tested and this was not, which is the wrong way
+    round: correct accounting feeding a broken decision still merges the defect.
+    Each case asserts BOTH that the intended verdict fires and that the others
+    stay empty, so a rule that fires on everything cannot pass.
+    """
+    present = {"a", "b"}
+
+    # Clean: over nothing, allow nothing.
+    assert verdict({}, {}, present) == ([], [], [], [])
+
+    # A NEW over-ceiling path with no allowlist entry must be `fresh`.
+    fresh, worse, stale, slack = verdict({"a": (14000, "_ZN1a")}, {}, present)
+    assert [k for k, _, _ in fresh] == ["a"], fresh
+    assert (worse, stale, slack) == ([], [], [])
+
+    # Allowlisted AT the recorded budget is tolerated and reported as neither.
+    fresh, worse, stale, slack = verdict({"a": (14000, "_ZN1a")}, {"a": (14000, 7)}, present)
+    assert (fresh, worse, stale, slack) == ([], [], [], [])
+
+    # One byte DEEPER than the budget must be `worse`, not silently held. This
+    # is the control that matters: a ratchet that accepts `>=` instead of `>`
+    # lets a path grow without limit, one byte at a time, and every run passes.
+    fresh, worse, stale, slack = verdict({"a": (14001, "_ZN1a")}, {"a": (14000, 7)}, present)
+    assert [(k, d, was) for k, d, _, was in worse] == [("a", 14001, 14000)], worse
+    assert (fresh, stale, slack) == ([], [], [])
+
+    # An entry naming a path absent from the ELF is `stale` — dead permission.
+    fresh, worse, stale, slack = verdict({}, {"gone": (9000, 3)}, present)
+    assert stale == [("gone", 3)], stale
+    assert (fresh, worse, slack) == ([], [], [])
+
+    # Present, allowed, but now under the ceiling: the entry can go.
+    fresh, worse, stale, slack = verdict({}, {"a": (9000, 3)}, present)
+    assert slack == ["a"], slack
+    assert (fresh, worse, stale) == ([], [], [])
 
 
 # Two builds of one tree, differing only in the crate disambiguator — the

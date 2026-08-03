@@ -1,0 +1,65 @@
+# Targets of the function-pointer dispatch sites on the aarch64 interrupt
+# path. Mirrors tools/irq-edges-x86_64.tsv; see that file for the rationale
+# (the walker follows direct call edges only, so it stops dead at every
+# `blr` unless the target is named here).
+#
+# aarch64 shape: `oxide_arm_irq_dispatch` (the equivalent of x86's
+# `oxide_irq_dispatch`) is the SINGLE root that reaches every hardware
+# handler indirectly. Unlike x86 there is no separate MSI-vector-table
+# function — `invoke_arm_spi_handler` / `invoke_arm_irq_handler` /
+# `invoke_arm_spi_line_handler` / `invoke_arm_irq_line_handler` /
+# `tick_poll` are all small enough to have been inlined into
+# `oxide_arm_irq_dispatch` in this release build (confirmed: it disassembles
+# with 17 `blr` sites), so every target below is attributed directly to it
+# rather than to the small wrapper fns that source-level own each table.
+#
+# Four parallel tables feed those 17 sites:
+#   ARM_MSI_HANDS       (fn())      — PCI MSI/MSI-X + GICv3 LPI, `request via
+#                                      register_msi_handler` from
+#                                      `arch_irq::register_pci_msi_handler`
+#                                      (`bind_msix_vector`, pci-boot).
+#   ARM_IRQ_HANDS       (fn())      — fixed platform INTIDs (PL011),
+#                                      `request_arm_irq_handler`.
+#   ARM_MSI_LINE_HANDLERS (fn(u32)) — Linux-shaped MSI line handlers,
+#                                      `register_msi_line_handler`.
+#   ARM_FIXED_LINE_HANDLERS(fn(u32))— Linux-shaped fixed-INTID line handlers,
+#                                      `request_arm_irq_line_handler`.
+#   TICK_POLL_HOOK      (unsafe fn(bool)) — `arch_irq::set_tick_poll_hook`,
+#                                      read by `arch_irq::tick_poll()`, which
+#                                      is itself inlined into the dispatcher.
+#
+# Format: `<caller>\t<callee>`, demangled identities, caller repeated per
+# target. An entry that no longer resolves FAILS the gate.
+oxide_arm_irq_dispatch	drv_uart_pl011::imp::rx_isr_irq
+oxide_arm_irq_dispatch	drv_virtio_net::modern::rx::raise_rx
+oxide_arm_irq_dispatch	drv_virtio_blk::modern::state::wake_completions
+oxide_arm_irq_dispatch	drv_virtio_snd::event::raise_event
+oxide_arm_irq_dispatch	drv_virtio_vsock::registry::raise_rx
+oxide_arm_irq_dispatch	drv_virtio_input::drain::queue::raise_drain
+oxide_arm_irq_dispatch	drv_ahci::irq::hard_handler
+oxide_arm_irq_dispatch	modules::linux_irq::linux_irq_dispatch
+oxide_arm_irq_dispatch	kmain::kmain::hooks::tick_poll_combined
+softirq::run_pending_mode	fbcon::kernel::shared::flush_softirq
+softirq::run_pending_mode	drv_virtio_input::drain::queue::drain_softirq
+softirq::run_pending_mode	net::backlog::action::net_rx_action
+softirq::run_pending_mode	drv_virtio_vsock::registry::rx_drain_softirq
+softirq::run_pending_mode	drv_virtio_snd::event::event_softirq
+softirq::run_pending_mode	net::net_ns::teardown::wake_namespace_reaper
+softirq::run_pending_mode	block::completion::dispatch
+softirq::run_pending_mode	net::stack::stp_softirq::stp_softirq
+softirq::run_pending_mode	sched::live::tasklet::drain_softirq
+drv_serial::deliver	sched::diag::emit::sysrq_rx
+drv_serial::deliver	console::static_console::rx_byte
+# NAPI poll list, one level BELOW the softirq table: `net_rx_action` walks the
+# registered poll functions (`net::backlog::register_poll`). `poll_all` is
+# inlined into it, so the edge is attributed to `net_rx_action` itself, same
+# as x86.
+net::backlog::action::net_rx_action	drv_virtio_net::modern::rx::rx_drain_softirq
+#
+# x86 targets with NO aarch64 counterpart (omitted, not stubbed):
+#   drv_ps2_keyboard::imp::irq::irq1_handler  — PS/2 is x86-only; QEMU virt
+#     has no i8042. `drv-ps2-keyboard` is not in the aarch64 driver set.
+#   drv_uart_16550::imp::rx_isr_msi           — 16550 is x86-only; aarch64
+#     uses `drv-uart-pl011` (`rx_isr_irq` above), a fixed-INTID line handler
+#     rather than an MSI vector, so it goes through a different table
+#     (`ARM_IRQ_HANDS`/`request_arm_irq_handler`) than its x86 counterpart.
