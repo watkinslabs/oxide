@@ -126,9 +126,7 @@ use rx::{install_rx_runtime, release_rx_shared_runtime_if_last, remove_rx_runtim
 use rx::{clear_rx_runtime, first_iface_ip_for, set_softirq_iface};
 
 mod neighbor;
-#[cfg(test)]
-use neighbor::resolve_next_hop_mac;
-use neighbor::resolve_next_hop_mac_observed;
+use neighbor::link_address_for;
 
 #[cfg(test)]
 mod tests;
