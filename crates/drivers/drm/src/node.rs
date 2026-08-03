@@ -146,51 +146,39 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 Some(d) => (d.name(), d.date(), d.desc(), d.version()),
                 None    => (FALLBACK_NAME, FALLBACK_DATE, FALLBACK_DESC, (1, 6, 0)),
             };
-            // SAFETY: arg validated < USER_VA_END; struct drm_version is 88 bytes.
-            let mut v: DrmVersion = unsafe { core::ptr::read_volatile(arg as *const DrmVersion) };
+            let Ok(mut v) = crate::uarg::read_arg::<DrmVersion>(arg)
+                else { return Some(-(Errno::Efault.as_i32() as i64)) };
             v.version_major     = ver.0 as i32;
             v.version_minor     = ver.1 as i32;
             v.version_patchlevel = ver.2 as i32;
-            // SAFETY: each user pointer + len validated < USER_VA_END before write; CPL=0 writes through caller's AS.
-            unsafe {
-                if v.name != 0 && v.name < hal::USER_VA_END && v.name_len > 0 {
-                    let n = (v.name_len as usize).min(name.len());
-                    for i in 0..n {
-                        core::ptr::write_volatile((v.name + i as u64) as *mut u8, name.as_bytes()[i]);
-                    }
-                }
-                if v.date != 0 && v.date < hal::USER_VA_END && v.date_len > 0 {
-                    let n = (v.date_len as usize).min(date.len());
-                    for i in 0..n {
-                        core::ptr::write_volatile((v.date + i as u64) as *mut u8, date.as_bytes()[i]);
-                    }
-                }
-                if v.desc != 0 && v.desc < hal::USER_VA_END && v.desc_len > 0 {
-                    let n = (v.desc_len as usize).min(desc.len());
-                    for i in 0..n {
-                        core::ptr::write_volatile((v.desc + i as u64) as *mut u8, desc.as_bytes()[i]);
-                    }
+            for (dst, len, bytes) in [(v.name, v.name_len, name.as_bytes()),
+                                      (v.date, v.date_len, date.as_bytes()),
+                                      (v.desc, v.desc_len, desc.as_bytes())] {
+                if crate::uarg::write_str(dst, len, bytes).is_err() {
+                    return Some(-(Errno::Efault.as_i32() as i64));
                 }
             }
             v.name_len = name.len() as u64;
             v.date_len = date.len() as u64;
             v.desc_len = desc.len() as u64;
-            // SAFETY: arg validated; struct drm_version is 88 bytes; CPL=0 writes through caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut DrmVersion, v); }
+            if crate::uarg::write_arg(arg, v).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
             Some(0)
         }
         DRM_IOCTL_GET_CAP => {
             // struct drm_get_cap { capability u64; value u64; }.
             // Delegate to driver.cap(); fall back to crate::default_cap.
-            // SAFETY: arg validated < USER_VA_END; aligned u64 read of capability + write of value.
-            let cap = unsafe { core::ptr::read_volatile(arg as *const u64) };
+            let Ok(cap) = crate::uarg::read_arg::<u64>(arg)
+                else { return Some(-(Errno::Efault.as_i32() as i64)) };
             let val = match driver.as_ref() {
                 Some(d) => d.cap(cap),
                 None    => crate::default_cap(cap),
             };
             let val = crate::advertised_cap(cap, val);
-            // SAFETY: arg validated; cap struct is 16 bytes; value at +8.
-            unsafe { core::ptr::write_volatile((arg + 8) as *mut u64, val); }
+            if crate::uarg::write_arg(arg + 8, val).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
             Some(0)
         }
         DRM_IOCTL_GET_UNIQUE => {
@@ -203,24 +191,25 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                     None    => FALLBACK_UNIQUE,
                 }
             } else { "" };
-            // SAFETY: the full drm_unique user struct was validated above.
-            let mut u: DrmUnique = unsafe { core::ptr::read_volatile(arg as *const DrmUnique) };
+            let Ok(mut u) = crate::uarg::read_arg::<DrmUnique>(arg)
+                else { return Some(-(Errno::Efault.as_i32() as i64)) };
             if u.unique_len >= unique.len() as u64 && !unique.is_empty() {
                 if copy_bytes_to_user(u.unique, unique.len() as u64, unique.as_bytes()).is_err() {
                     return Some(-(Errno::Efault.as_i32() as i64));
                 }
             }
             u.unique_len = unique.len() as u64;
-            // SAFETY: the full drm_unique user struct was validated above.
-            unsafe { core::ptr::write_volatile(arg as *mut DrmUnique, u); }
+            if crate::uarg::write_arg(arg, u).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
             Some(0)
         }
         DRM_IOCTL_SET_VERSION => {
             if !valid_user_range(arg, core::mem::size_of::<DrmSetVersion>() as u64) {
                 return Some(-(Errno::Efault.as_i32() as i64));
             }
-            // SAFETY: the full drm_set_version user struct was validated above.
-            let mut v: DrmSetVersion = unsafe { core::ptr::read_volatile(arg as *const DrmSetVersion) };
+            let Ok(mut v) = crate::uarg::read_arg::<DrmSetVersion>(arg)
+                else { return Some(-(Errno::Efault.as_i32() as i64)) };
             let (drv_major, drv_minor, _) = driver.as_ref().map(|d| d.version()).unwrap_or((0, 0, 0));
             let mut ret = 0;
             if v.drm_di_major != -1 {
@@ -239,8 +228,9 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             v.drm_di_minor = DRM_IF_MINOR;
             v.drm_dd_major = drv_major as i32;
             v.drm_dd_minor = drv_minor as i32;
-            // SAFETY: the full drm_set_version user struct was validated above.
-            unsafe { core::ptr::write_volatile(arg as *mut DrmSetVersion, v); }
+            if crate::uarg::write_arg(arg, v).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
             Some(ret)
         }
         DRM_IOCTL_MODE_GETRESOURCES => {
@@ -250,10 +240,9 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_resources(d, arg)),
                 None => {
-                    // SAFETY: arg validated; struct ≥ 64 B; zero counts + dims.
-                    unsafe {
-                        for off in [32u64, 36, 40, 44, 48, 52, 56, 60] {
-                            core::ptr::write_volatile((arg + off) as *mut u32, 0);
+                    for off in [32u64, 36, 40, 44, 48, 52, 56, 60] {
+                        if crate::uarg::write_arg(arg + off, 0u32).is_err() {
+                            return Some(-(Errno::Efault.as_i32() as i64));
                         }
                     }
                     Some(0)
@@ -264,8 +253,9 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             match driver.as_ref() {
                 Some(d) => Some(crate::modeset::get_plane_res(d, arg)),
                 None => {
-                    // SAFETY: arg validated; field at +8 is the count u32.
-                    unsafe { core::ptr::write_volatile((arg + 8) as *mut u32, 0); }
+                    if crate::uarg::write_arg(arg + 8, 0u32).is_err() {
+                        return Some(-(Errno::Efault.as_i32() as i64));
+                    }
                     Some(0)
                 }
             }
@@ -314,7 +304,9 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 return Some(-(Errno::Efault.as_i32() as i64));
             }
             // SAFETY: arg..arg+4 was validated above; drm_auth is one u32.
-            unsafe { core::ptr::write_volatile(arg as *mut u32, file_magic(file)); }
+            if crate::uarg::write_arg(arg, file_magic(file)).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
             Some(0)
         }
         DRM_IOCTL_AUTH_MAGIC => {
@@ -324,8 +316,8 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             if !is_master(card_id, token) {
                 return Some(-(Errno::Eacces.as_i32() as i64));
             }
-            // SAFETY: arg..arg+4 was validated above; drm_auth is one u32.
-            let magic = unsafe { core::ptr::read_volatile(arg as *const u32) };
+            let Ok(magic) = crate::uarg::read_arg::<u32>(arg)
+                else { return Some(-(Errno::Efault.as_i32() as i64)) };
             if authorize_magic(card_id, magic) {
                 Some(0)
             } else {
