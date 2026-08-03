@@ -39,9 +39,12 @@ pub struct IfaceAddr {
     pub family:    u8,
     pub addr:      [u8; 4],
     pub peer:      Option<[u8; 4]>,
+    pub broadcast: Option<[u8; 4]>,
     pub prefixlen: u8,
     pub scope:     u8,
     pub flags:     u32,
+    pub proto:     u8,
+    pub rt_priority: u32,
     pub cacheinfo: IfaCacheInfo,
 }
 
@@ -72,9 +75,11 @@ fn addr_to_net(row: IfaceAddr) -> net::iface_addr::Ipv4IfaceAddr {
         peer: row.peer.map(|peer| net::Ipv4Addr::from_u32(u32::from_be_bytes(peer))),
         prefixlen: row.prefixlen,
         mask: if row.prefixlen == 0 { 0 } else { !0u32 << (32 - row.prefixlen.min(32)) },
-        broadcast: None,
+        broadcast: row.broadcast.map(|b| net::Ipv4Addr::from_u32(u32::from_be_bytes(b))),
         scope: row.scope,
         flags: row.flags,
+        proto: row.proto,
+        rt_priority: row.rt_priority,
         cacheinfo: cache_to_net(row.cacheinfo),
     }
 }
@@ -86,9 +91,12 @@ fn addr_from_net(row: net::iface_addr::Ipv4IfaceAddr) -> IfaceAddr {
         family: AF_INET,
         addr: row.addr.octets(),
         peer: row.peer.map(net::Ipv4Addr::octets),
+        broadcast: row.broadcast.map(net::Ipv4Addr::octets),
         prefixlen: row.prefixlen,
         scope: row.scope,
         flags: row.flags,
+        proto: row.proto,
+        rt_priority: row.rt_priority,
         cacheinfo: cache_from_net(row.cacheinfo),
     }
 }
@@ -127,9 +135,12 @@ pub fn seed_defaults(eth0_ifindex: Option<u32>, lo_ifindex: Option<u32>) {
             family: AF_INET,
             addr: [127, 0, 0, 1],
             peer: None,
+            broadcast: None,
             prefixlen: 8,
             scope: RT_SCOPE_HOST,
             flags: net::iface_addr::IFA_F_PERMANENT,
+            proto: net::iface_addr::IFAPROT_KERNEL_LO,
+            rt_priority: 0,
             cacheinfo: IfaCacheInfo::PERMANENT,
         });
     }
