@@ -52,7 +52,10 @@ pub struct NetlinkSocket {
     /// receive decision all live with `net::scm`.
     pub scm: net::scm::ScmCredentials,
     pub sndbuf: AtomicUsize,
-    pub rcvbuf: AtomicUsize, pub no_enobufs: AtomicBool,
+    pub rcvbuf: AtomicUsize,
+    /// Canonical `NETLINK_F_*` word: the single owner of every boolean
+    /// SOL_NETLINK option, written by `setsockopt` and read by `getsockopt`.
+    pub flags: crate::sockflags::NetlinkFlags,
     pub rx_congested: AtomicBool, pub rx_drops: AtomicUsize,
     /// Canonical Linux `sk_err`.
     pub error: net::SocketError,
@@ -94,7 +97,7 @@ impl NetlinkSocket {
             scm: net::scm::ScmCredentials::new(),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             rcvbuf: AtomicUsize::new(NETLINK_RCVBUF_DEFAULT),
-            no_enobufs: AtomicBool::new(false),
+            flags: crate::sockflags::NetlinkFlags::new(),
             rx_congested: AtomicBool::new(false),
             rx_drops: AtomicUsize::new(0),
             error: net::SocketError::new(),
