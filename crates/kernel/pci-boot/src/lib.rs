@@ -173,16 +173,22 @@ pub fn enumerate_and_log() {
             ::netlink::rtnetlink::seed_default_routes_lo(lo_idx);
         }
         for (_device_key, id) in drv_virtio_net::modern::registered_ifaces() {
-            // The QEMU user network contract is the boot-time v1 network
-            // identity. Publish it through NetStack so the address table and
-            // virtio-net RX runtime receive the same primary address.
-            let oxide_guest_ip = net::Ipv4Addr::new(10, 0, 2, 15);
-            let oxide_guest_mask = net::Ipv4Addr::new(255, 255, 255, 0).as_u32();
-            let _ = stack.set_primary_ipv4_in(
-                0, id, oxide_guest_ip, ::netlink::rtnetlink::RT_SCOPE_UNIVERSE,
-            );
-            let _ = stack.set_primary_ipv4_mask_in(0, id, oxide_guest_mask);
-            ::netlink::rtnetlink::seed_default_routes(id.0);
+            // NO address, mask or default route is seeded here.
+            //
+            // A kernel does not know its own IPv4 identity; a DHCP client
+            // learns it. Installing the emulator's well-known guest address at
+            // boot handed the network manager a link that already carried an
+            // address and a default route it had not configured, and a manager
+            // that finds a link configured behind its back marks it externally
+            // connected and declines to own it. It then never runs its own
+            // activation, so it never performs DHCP and never publishes the
+            // DNS servers the lease would have carried — which is why
+            // `/etc/resolv.conf` had no `nameserver` line at all and name
+            // resolution failed while a query aimed straight at a server's
+            // address still worked.
+            //
+            // The router solicitation stays: it is the kernel's own half of
+            // IPv6 address autoconfiguration, which the reference also drives.
             let _ = stack.send_router_solicitation(id, net::Ipv6Addr::ANY);
         }
     }

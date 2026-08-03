@@ -6,7 +6,13 @@ impl IfaceRegistry {
         let g = self.inner.lock();
         g.entries.iter().filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
             .map(|e| IfaceSnapshot { id: e.id, ifindex: e.ifindex, name: e.name.clone(),
-                mtu: e.dev.mtu(), flags: e.flags.load(Ordering::Acquire), stats: e.dev.stats() }).collect()
+                mtu: e.dev.mtu(),
+                // Reported flags, not stored ones: carrier is driver state and
+                // `IFF_RUNNING`/`IFF_LOWER_UP` are derived from it, as the
+                // reference's `dev_get_flags` does for every reader.
+                flags: super::iff::dev_get_flags(e.flags.load(Ordering::Acquire),
+                                                 e.carrier.load(Ordering::Acquire)),
+                stats: e.dev.stats() }).collect()
     }
 
     /// Init-NS snapshot compatibility shim. # C: O(N)

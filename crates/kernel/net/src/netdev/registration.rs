@@ -36,6 +36,16 @@ impl Drop for IfaceRegistration<'_> {
     }
 }
 
+/// Carrier at registration — the reference's `netif_carrier_on` at probe.
+///
+/// A virtio link with no status negotiation is up from the moment it exists,
+/// and loopback is always up. Carrier is a DRIVER fact: it says the medium can
+/// carry frames, and says nothing about whether an administrator has admitted
+/// the link for traffic. A driver that learns otherwise later reports it
+/// through the registry rather than by rewriting the flags word.
+/// # C: O(1)
+fn initial_carrier(_hardware_type: u16) -> bool { true }
+
 /// The flags a device carries the moment it is registered.
 ///
 /// An ethernet NIC comes up administratively DOWN, as the reference does:
@@ -52,8 +62,11 @@ impl Drop for IfaceRegistration<'_> {
 /// # C: O(1)
 fn initial_flags(hardware_type: u16) -> u32 {
     if hardware_type == crate::uapi::ARPHRD_LOOPBACK {
-        iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
+        iff::IFF_UP | iff::IFF_LOOPBACK
     } else {
+        // No carrier bit here: carrier is driver state, held separately in
+        // `IfaceEntry::carrier`, and `IFF_RUNNING`/`IFF_LOWER_UP` are derived
+        // from it when the link is reported. The reference keeps the same split.
         iff::IFF_BROADCAST | iff::IFF_MULTICAST
     }
 }
@@ -66,10 +79,12 @@ impl IfaceRegistry {
         let ns = owner.id().as_u64();
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
-        let flags = initial_flags(dev.hardware_type());
+        let dev_hw = dev.hardware_type();
+        let flags = initial_flags(dev_hw);
         let gate = Arc::new(IngressGate::registration_pending(ns, 1));
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
+            carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()), ingress: gate.clone() });
@@ -160,9 +175,11 @@ impl IfaceRegistry {
         let id = NetIfaceId::from_raw(g.alloc_id());
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
-        let flags = initial_flags(dev.hardware_type());
+        let dev_hw = dev.hardware_type();
+        let flags = initial_flags(dev_hw);
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
+            carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()),
@@ -184,7 +201,8 @@ mod initial_flags_tests {
     fn an_ethernet_nic_is_registered_down() {
         let f = initial_flags(crate::uapi::ARPHRD_ETHER);
         assert_eq!(f & iff::IFF_UP, 0, "no IFF_UP at registration");
-        assert_eq!(f & iff::IFF_RUNNING, 0, "IFF_RUNNING follows the link, not registration");
+        assert_eq!(f & iff::IFF_RUNNING, 0,
+            "carrier is not stored in the flags word at all");
         assert_eq!(f & iff::IFF_BROADCAST, iff::IFF_BROADCAST);
         assert_eq!(f & iff::IFF_MULTICAST, iff::IFF_MULTICAST);
         assert_eq!(f & iff::IFF_LOOPBACK, 0);
@@ -192,11 +210,73 @@ mod initial_flags_tests {
 
     /// Loopback is the reference's exception: registered and then opened during
     /// its own namespace init, so it is always up.
+    /// `dev_get_flags` is the one accessor: carrier turns into `IFF_RUNNING`
+    /// and `IFF_LOWER_UP` only while the link is administratively up, and an
+    /// administrative write can never fabricate or destroy it.
+    #[test]
+    fn reported_flags_derive_running_and_lower_up_from_carrier() {
+        let stored = initial_flags(crate::uapi::ARPHRD_ETHER);
+        // Down with carrier: the medium is live, the link is not admitted.
+        let down = iff::dev_get_flags(stored, true);
+        assert_eq!(down & iff::IFF_RUNNING, 0);
+        assert_eq!(down & iff::IFF_LOWER_UP, 0);
+        // Up with carrier: both appear.
+        let up = iff::dev_get_flags(stored | iff::IFF_UP, true);
+        assert_eq!(up & iff::IFF_RUNNING, iff::IFF_RUNNING);
+        assert_eq!(up & iff::IFF_LOWER_UP, iff::IFF_LOWER_UP);
+        // Up without carrier: neither, which is the state a manager reads as
+        // "device has no carrier" and refuses to activate.
+        let no_carrier = iff::dev_get_flags(stored | iff::IFF_UP, false);
+        assert_eq!(no_carrier & (iff::IFF_RUNNING | iff::IFF_LOWER_UP), 0);
+        // A caller cannot fabricate carrier by writing the bits.
+        let forged = iff::dev_get_flags(stored | iff::IFF_UP | iff::IFF_RUNNING
+            | iff::IFF_LOWER_UP, false);
+        assert_eq!(forged & (iff::IFF_RUNNING | iff::IFF_LOWER_UP), 0);
+    }
+
     #[test]
     fn loopback_is_registered_up() {
         let f = initial_flags(crate::uapi::ARPHRD_LOOPBACK);
         assert_eq!(f & iff::IFF_UP, iff::IFF_UP);
         assert_eq!(f & iff::IFF_LOOPBACK, iff::IFF_LOOPBACK);
         assert_eq!(f & iff::IFF_BROADCAST, 0, "loopback does not broadcast");
+    }
+}
+
+#[cfg(test)]
+mod volatile_flag_tests {
+    use super::*;
+
+    /// Carrier survives an administrative flag write.
+    ///
+    /// The reference keeps carrier out of `dev->flags` altogether and
+    /// `__dev_change_flags` never takes the volatile bits from the caller.
+    /// Storing carrier in the same word a `SIOCSIFFLAGS` writes let an ordinary
+    /// "bring this link up" clear it, so a manager that had just brought the
+    /// device up was told it had no carrier and parked it at "unavailable".
+    #[test]
+    fn an_administrative_write_cannot_clear_carrier() {
+        let volatile = iff::IFF_VOLATILE;
+        assert_eq!(volatile & iff::IFF_RUNNING, iff::IFF_RUNNING, "carrier is volatile");
+        assert_eq!(volatile & iff::IFF_LOWER_UP, iff::IFF_LOWER_UP);
+        assert_eq!(volatile & iff::IFF_BROADCAST, iff::IFF_BROADCAST);
+        assert_eq!(volatile & iff::IFF_LOOPBACK, iff::IFF_LOOPBACK);
+        // Administrative bits stay writable, or nothing could be configured.
+        assert_eq!(volatile & iff::IFF_UP, 0, "IFF_UP is administrative");
+        assert_eq!(volatile & iff::IFF_MULTICAST, 0);
+        assert_eq!(volatile & iff::IFF_PROMISC, 0);
+        assert_eq!(volatile & iff::IFF_ALLMULTI, 0);
+        assert_eq!(volatile & iff::IFF_NOARP, 0);
+    }
+
+    /// The mask a write is reduced to keeps every administrative bit and drops
+    /// every volatile one, which is the whole contract.
+    #[test]
+    fn a_write_mask_is_reduced_to_the_administrative_bits() {
+        let requested_everything = u32::MAX;
+        let effective = requested_everything & !iff::IFF_VOLATILE;
+        assert_eq!(effective & iff::IFF_UP, iff::IFF_UP);
+        assert_eq!(effective & iff::IFF_RUNNING, 0);
+        assert_eq!(effective & iff::IFF_LOWER_UP, 0);
     }
 }
