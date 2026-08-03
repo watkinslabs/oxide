@@ -357,6 +357,14 @@ fn init_pmm_and_arch(info: &BootInfo) {
             }
             None => klog::write_raw(b"[IRQSTK] BSP hardirq stack alloc failed; on task stack\n"),
         }
+
+        // Teach the fault printer to NAME the stack an address belongs to. A
+        // guard-page hit otherwise prints a raw `rsp` on a slot boundary, which
+        // cannot distinguish an interrupt stack from a task stack — they are
+        // slots of one allocator window.
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: installed once, pre-SMP, with a fn that lives for the kernel's lifetime and takes no locks.
+        unsafe { hal_x86_64::install_stack_name_hook(stack_name_for_fault); }
         #[cfg(target_arch = "x86_64")]
         smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(target_arch = "aarch64")]
@@ -459,4 +467,26 @@ fn debug_boot_smokes() {
         devpts::smoke_test();
     }
     debug_boot! { klog::write_raw(b"[INFO]  syscall: ~200 slots wired (real impls + compat stubs)\n"); }
+}
+
+
+/// Fault-path stack naming: resolve `va` to its kstack slot and name it.
+///
+/// Lock-free by construction — atomics and arithmetic only — because it runs
+/// from the fault printer, including the double-fault path.
+/// # C: O(n_cpus)
+#[cfg(target_arch = "x86_64")]
+fn stack_name_for_fault(va: u64, out: &mut hal_x86_64::StackReport) -> bool {
+    match ::sched::kstack::describe_fault(va) {
+        Some((kind, span)) => {
+            let (site, count) = ::sched::kstack::stack_top_repeat(&span);
+            *out = hal_x86_64::StackReport {
+                name: kind.name(), guard_lo: span.guard_lo,
+                stack_lo: span.stack_lo, stack_hi: span.stack_hi,
+                repeat_site: site, repeat_count: count,
+            };
+            true
+        }
+        None => false,
+    }
 }
