@@ -9,10 +9,8 @@ pub(super) fn set_client_cap(file: &File, arg: u64) -> i64 {
     if !valid_user_range(arg, 16) {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: arg..arg+16 was validated above and is the fixed UAPI layout.
-    let capability = unsafe { core::ptr::read_volatile(arg as *const u64) };
-    // SAFETY: same validated UAPI structure, value is the second u64.
-    let value = unsafe { core::ptr::read_volatile((arg + 8) as *const u64) };
+    let Ok([capability, value]) = crate::uarg::read_arg::<[u64; 2]>(arg)
+        else { return -(Errno::Efault.as_i32() as i64) };
     if value > 1 {
         return -(Errno::Einval.as_i32() as i64);
     }

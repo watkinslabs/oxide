@@ -1,0 +1,7 @@
+# B1746 — DRM raw user-pointer dereferences
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B1746 | DEFECT | high | `DRM_IOCTL_VERSION`, `GET_CAP`, `GET_UNIQUE`, `SET_VERSION`, `GET_MAGIC`, `AUTH_MAGIC`, the driverless `GETRESOURCES`/`GETPLANERESOURCES` zero-fills, `SET_CLIENT_CAP`, `VIRTGPU_GETPARAM`, `MODE_SETCRTC` and `MODE_PAGE_FLIP` dereferenced user pointers with `read_volatile`/`write_volatile`. A range check proves the address is in the user half, not that it is mapped: such a dereference has no exception-table entry, so any unprivileged process holding a DRM fd could halt the CPU with a bogus ioctl pointer. 22 sites. | all now route through `uarg::read_arg`/`write_arg`/`write_str`; `the_converted_ioctl_handlers_hold_no_raw_user_dereference` fails if one returns | — |
+| OPEN | DEFECT | high | 60 raw dereferences remain: `modeset.rs` (27), `atomic/props.rs` (16), `kms_ext.rs` (10), `atomic/blobs.rs` (5), `node/auth.rs` (2). `node/auth.rs:177` `atomic_property_count` needs a count cap before its loop can be converted. | `grep -c 'read_volatile\|write_volatile' crates/drivers/drm/src/**` | — |
+| OPEN | COVERAGE | med | No repo-wide lint forbids `read_volatile`/`write_volatile` under `crates/drivers/drm/src` outside `uarg.rs`. No MMIO exists in that tree, so the rule has no legitimate exception. Add it once the remaining 60 sites are converted — added now it would fire on every one of them. | `tools/spec-lint/src/code_lint` has no such rule | — |
