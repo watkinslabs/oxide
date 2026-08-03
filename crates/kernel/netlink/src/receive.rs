@@ -176,6 +176,11 @@ impl NetlinkSocket {
         false
     }
 
+    /// Bytes delivered to this socket and not yet read — the reference's
+    /// `sk_rmem_alloc`, and the one observable that separates a message the
+    /// kernel never delivered from one the process never read. # C: O(1)
+    pub fn queued_bytes(&self) -> usize { self.rx_queue.lock().bytes }
+
     /// Set the canonical NETLINK receive-buffer budget. # C: O(1)
     pub fn set_receive_buffer(&self, bytes: usize) {
         self.rcvbuf.store(bytes, Ordering::Release);

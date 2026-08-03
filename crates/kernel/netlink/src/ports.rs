@@ -112,3 +112,32 @@ mod tests {
         assert!(!unicast_port(&sender, target_port, b"blocked"));
     }
 }
+
+/// Live netlink sockets in `net_ns`, as `/proc/net/netlink` reports them.
+///
+/// The reference lists only the reading namespace's sockets, so a container
+/// cannot enumerate the host's. # C: O(N live Netlink ports)
+pub fn proc_rows(net_ns: u64) -> Vec<crate::ProcRow> {
+    let mut owners = PORT_OWNERS.lock();
+    retain_live(&mut owners);
+    let mut rows = Vec::new();
+    for owner in owners.iter() {
+        if owner.namespace != net_ns { continue; }
+        let Some(sock) = owner.socket.upgrade() else { continue };
+        rows.push(crate::ProcRow {
+            // Arc address stands in for the reference's `%pK` socket pointer:
+            // a stable identity for the life of the socket, nothing more.
+            sk: Arc::as_ptr(&sock) as *const () as u64,
+            protocol: sock.protocol,
+            port_id: sock.port_id.load(Ordering::Acquire),
+            groups: sock.groups.low_mask(),
+            rmem: sock.queued_bytes(),
+            wmem: 0,
+            dump: 0,
+            locks: Arc::strong_count(&sock) as u32,
+            drops: sock.rx_drops.load(Ordering::Relaxed),
+            ino: sock.ino.load(Ordering::Acquire),
+        });
+    }
+    rows
+}

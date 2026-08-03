@@ -42,6 +42,7 @@ mod listeners;
 mod netlink_socket;
 mod destination;
 mod ports;
+mod proc_seq;
 mod rcv_skb;
 mod receive;
 mod sockaddr;
@@ -71,7 +72,8 @@ pub use listeners::{
     unicast_uevent_to_port,
 };
 pub(crate) use handler::invoke_netfilter;
-pub use ports::bind_port_id;
+pub use ports::{bind_port_id, proc_rows};
+pub use proc_seq::{render as render_proc_netlink, ProcRow};
 pub(crate) use ports::{register_port_id, unicast_port};
 pub use netlink_socket::{NETLINK_RCVBUF_DEFAULT, NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD,
     NetlinkSocket, SendError};
