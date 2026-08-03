@@ -342,11 +342,11 @@ use core::sync::atomic::Ordering;
         let dst = net::Ipv4Addr::new(10, 0, 0, 2);
 
         assert_eq!(
-            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1], net::pkt::TxNextHop::V4(dst)),
+            link_address_for(net::pkt::TxNextHop::V4(dst)),
             None
         );
         assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::pkt::TxNextHop::V4(dst)),
+            link_address_for(net::pkt::TxNextHop::V4(dst)),
             None
         );
         clear_test_state();
@@ -359,8 +359,7 @@ use core::sync::atomic::Ordering;
         let gateway = net::Ipv4Addr::new(10, 0, 0, 1);
 
         assert_eq!(
-            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
-                net::pkt::TxNextHop::V4(gateway)),
+            link_address_for(net::pkt::TxNextHop::V4(gateway)),
             None,
         );
         clear_test_state();
@@ -376,11 +375,9 @@ use core::sync::atomic::Ordering;
         clear_test_state();
         let src = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
         let dst = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 2]);
-        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
-            net::pkt::TxNextHop::V6 { addr: dst, src }), None,
+        assert_eq!(link_address_for(net::pkt::TxNextHop::V6 { addr: dst, src }), None,
             "a unicast next hop reaching the driver was declined upstream");
-        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
-            net::pkt::TxNextHop::V4(net::Ipv4Addr::new(10, 0, 2, 2))), None);
+        assert_eq!(link_address_for(net::pkt::TxNextHop::V4(net::Ipv4Addr::new(10, 0, 2, 2))), None);
     }
 
     /// Multicast mappings are computed from the address, never learned, so they
@@ -389,11 +386,9 @@ use core::sync::atomic::Ordering;
     fn multicast_link_addresses_are_still_derived_here() {
         let src = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
         let group = net::Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0, 0, 1]);
-        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
-            net::pkt::TxNextHop::V6 { addr: group, src }),
+        assert_eq!(link_address_for(net::pkt::TxNextHop::V6 { addr: group, src }),
             Some(net::MacAddr([0x33, 0x33, 0, 0, 0, 1])));
-        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
-            net::pkt::TxNextHop::V4(net::Ipv4Addr::BROADCAST)),
+        assert_eq!(link_address_for(net::pkt::TxNextHop::V4(net::Ipv4Addr::BROADCAST)),
             Some(net::MacAddr::BROADCAST));
     }
 
