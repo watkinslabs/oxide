@@ -169,7 +169,17 @@ pub fn mnt_setattr_attached(
 ) -> KResult<()> {
     let _write = MOUNT_WRITE.lock();
     let top = mount_by_id(top_id).ok_or(VfsError::Einval)?;
-    if !check_mnt(&top) { return Err(VfsError::Einval); }
+    // A DETACHED mount is settable too. The reference's `do_mount_setattr`
+    // checks only that the path names a mount ROOT — it has no namespace test
+    // at all — because the whole point of the new mount API is
+    // `fsmount` → `mount_setattr` → `move_mount`: the attributes are applied
+    // while the mount still lives in the anonymous namespace `fsmount` put it
+    // in, BEFORE it is grafted anywhere. Requiring the caller's namespace
+    // refused every one of those, so `mount -o nosuid,nodev,noexec` failed for
+    // every filesystem the service manager mounts that way — four mount units
+    // at boot. Reaching the mount at all already proves access: it was named
+    // either by a path the caller can resolve or by a descriptor it holds.
+    if !check_mnt(&top) && !super::anon_ns_root(&top) { return Err(VfsError::Einval); }
     let namespace_id = top.namespace_id();
     let mounts = if recursive {
         subtree_ids(namespace_id, top_id).into_iter()
