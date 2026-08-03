@@ -134,3 +134,39 @@ fn the_ipv6_next_hop_rule_reads_a_zero_gateway_as_no_gateway() {
     assert_eq!(crate::route6::next_hop6_for(Some(crate::Ipv6Addr([0u8; 16])), dst), dst);
     assert_eq!(crate::route6::next_hop6_for(Some(gw), dst), gw);
 }
+
+/// A packet parked on an unresolved neighbour must carry the link-layer
+/// address once the neighbour answers.
+///
+/// The job is queued with no L2 destination — that is what it waits for — and
+/// re-entering the dispatcher without attaching the address that just arrived
+/// leaves the driver to guess. The reference fills the header from the
+/// neighbour's `ha` before releasing the queue.
+#[test]
+fn a_queued_packet_leaves_with_the_address_the_neighbour_answered_with() {
+    let source = include_str!("netdev/tx_dispatch.rs");
+    let resume = source.split("pub(crate) fn resume(self, mac:").nth(1).expect("resume");
+    let body = resume.split("\n    }").next().unwrap();
+    assert!(body.contains("with_l2(mac)"),
+        "the resolved address is attached before the job is dispatched again");
+    // Every caller supplies the address it learned rather than none.
+    for (name, caller) in [
+        ("stack_forward.rs", include_str!("stack_forward.rs")),
+        ("arp/ioctl.rs", include_str!("arp/ioctl.rs")),
+        ("stack/neigh_rtnl.rs", include_str!("stack/neigh_rtnl.rs")),
+    ] {
+        assert!(!caller.contains("job.resume();"), "{name} resumes without an address");
+    }
+}
+
+/// A transmit that names its link-layer destination reaches the driver's
+/// explicit-destination entry point, which writes that address into the
+/// header. The no-destination entry point makes the driver resolve the hop
+/// again through state the neighbour layer does not own.
+#[test]
+fn an_attached_destination_reaches_the_drivers_explicit_l2_path() {
+    let source = include_str!("netdev/tx_dispatch.rs");
+    let transmit = source.split("fn transmit(self)").nth(1).expect("transmit");
+    assert!(transmit.contains("Some(dst) => lease.device().xmit_l2_observed(pkt, dst"));
+    assert!(transmit.contains("None => lease.device().xmit_observed(pkt"));
+}
