@@ -13,7 +13,13 @@ mod socket_gate;
 // The IPv6 membership half, split out at the per-file size cutoff. The IPv4
 // half, the delivery decision and the shared state stay here.
 mod membership_v6;
-pub(crate) use socket_gate::{SocketMcastGate, SocketMcastLease};
+pub(crate) use socket_gate::SocketMcastGate;
+// The lease type has exactly one consumer, `sock_mcast`, which is compiled
+// only for the kernel or a hosted test. Re-exporting it unconditionally left
+// `cargo check -p net` — the one build that turns neither gate on — reporting
+// an unused import on every run, which is how real warnings get ignored.
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub(crate) use socket_gate::SocketMcastLease;
 
 pub const MCAST_EXCLUDE: u32 = 0;
 pub const MCAST_INCLUDE: u32 = 1;

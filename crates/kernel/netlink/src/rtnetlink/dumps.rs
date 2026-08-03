@@ -12,10 +12,10 @@ use super::rtnetlink_addr::IfaCacheInfo;
 use super::rtnetlink_link::{put_link_stats64, LinkStats64};
 use super::uapi::{
     ifa, ifla, iff, AF_INET, AF_INET6, Ifaddrmsg, Ifinfomsg,
-    RTM_NEWADDR, RTM_NEWLINK, RT_SCOPE_HOST,
+    RTM_NEWADDR, RTM_NEWLINK,
 };
 #[cfg(target_os = "oxide-kernel")]
-use super::uapi::{RT_SCOPE_LINK, RT_SCOPE_UNIVERSE};
+use super::uapi::{RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE};
 
 const IF_OPER_UP: u8 = 6;
 const IF_OPER_DOWN: u8 = 2;
