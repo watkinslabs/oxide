@@ -9,18 +9,9 @@
 // `cgroup` crate (sched->cgroup, no cycle). Linux: kernel/sched cfs_bandwidth.
 
 
-use alloc::collections::BTreeMap;
-use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
-use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::{Task, TaskState};
-
-/// Serializes task migration with exit. Values are weak lifecycle guards,
-/// not membership state; the cgroup hierarchy remains the sole membership
-/// owner.
-static CGROUP_EXITS: Spinlock<BTreeMap<u32, Weak<Task>>, TaskListClass> =
-    Spinlock::new(BTreeMap::new());
 
 fn lookup_init_pid(pid: u32) -> Option<alloc::sync::Arc<crate::Task>> {
     let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
@@ -166,9 +157,12 @@ pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
         crate::registry::resolve_user_pid(vpid as u32)
             .or_else(|| crate::live::registry::lookup_by_vpid(vpid as u32))
     }.ok_or(vfs::VfsError::Esrch)?;
-    let mut exited = CGROUP_EXITS.lock();
-    exited.retain(|_, weak| weak.strong_count() != 0);
-    if exited.contains_key(&task.tid)
+    // The task's own state decides, as the reference's `PF_EXITING` does. A
+    // side table keyed by tid used to answer this, and it retained an entry
+    // for a LIVE task — so the service manager could not move its own pid into
+    // its own cgroup and froze at boot. Two records of one fact can disagree;
+    // one cannot.
+    if task.exiting.load(CgOrd::Acquire)
         || task.reaped.load(CgOrd::Acquire)
         || task.state() == TaskState::Zombie {
         return Err(vfs::VfsError::Esrch);
@@ -184,12 +178,11 @@ pub fn migrate_hook(vpid: u64, cgid: u64, thread: bool) -> vfs::KResult<u64> {
 /// concurrent cgroup.procs/threads migration that could resurrect the task.
 /// # C: O(exited tasks + threads)
 pub fn exit_task(task: &Task) {
-    let task_ref = crate::registry::lookup(task.tid);
-    let mut exited = CGROUP_EXITS.lock();
-    exited.retain(|_, weak| weak.strong_count() != 0);
-    if let Some(task_ref) = task_ref {
-        exited.insert(task.tid, Arc::downgrade(&task_ref));
-    }
+    // Mark the task itself, then tear its membership down. A migration that
+    // arrives in between sees the flag and refuses, which is the race the old
+    // side table existed to close — without a second place for the answer to
+    // live.
+    task.exiting.store(true, CgOrd::Release);
     cgroup::on_exit(
         task.tid as u64,
         task.tgid.load(CgOrd::Acquire) as u64,
