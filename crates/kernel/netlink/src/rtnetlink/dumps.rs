@@ -75,15 +75,76 @@ pub fn done_multi(seq: u32, pid: u32) -> Vec<u8> {
     v
 }
 
-/// Handle a single RTM_GETLINK request.
+/// Handle an RTM_GETLINK request carrying no body — the dump form.
 /// # C: O(N_ifaces)
 pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
-    handle_getlink_in(net::netdev::current_net_ns(), req)
+    let mut only_header = [0u8; Nlmsghdr::SIZE];
+    req.write_to(&mut only_header);
+    handle_getlink_in(net::netdev::current_net_ns(), req, &only_header)
 }
 
-/// Handle RTM_GETLINK in the socket's captured network namespace.
+/// The non-dump `RTM_GETLINK`: one device, named by `ifi_index` or by
+/// `IFLA_IFNAME`, answered with a single non-multipart `RTM_NEWLINK`.
+///
+/// The reference returns `-ENODEV` when the name or index matches nothing, and
+/// `-EINVAL` when the request is too short to carry an `ifinfomsg`.
 /// # C: O(N_ifaces)
-pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
+fn getlink_one(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let off = Nlmsghdr::SIZE;
+    if full_msg.len() < off + Ifinfomsg::SIZE { return super::ack::build_ack(req, -22); }
+    let want_index = i32::from_ne_bytes([
+        full_msg[off + 4], full_msg[off + 5], full_msg[off + 6], full_msg[off + 7],
+    ]);
+    let want_name = ifname_attr(&full_msg[off + Ifinfomsg::SIZE..]);
+    let entries = ifaces_snapshot_in(ns);
+    let found = entries.iter().find(|(id, name, _, _, _, _, _, _)| {
+        (want_index > 0 && *id as i32 == want_index)
+            || want_name.as_deref().is_some_and(|w| w == name.as_str())
+    });
+    let Some((id, name, mac, broadcast, mtu, is_lo, flags, stats)) = found
+        else { return super::ack::build_ack(req, -19) };
+    build_newlink_reply(req.nlmsg_seq, req.nlmsg_pid, *id as i32, name, *mac,
+        &broadcast.bytes[..broadcast.len as usize], *mtu, *is_lo, *flags, *stats, false)
+}
+
+/// `IFLA_IFNAME` out of a request's attribute area, if present.
+/// # C: O(attr bytes)
+fn ifname_attr(mut attrs: &[u8]) -> Option<alloc::string::String> {
+    while attrs.len() >= 4 {
+        let len = u16::from_ne_bytes([attrs[0], attrs[1]]) as usize;
+        let kind = u16::from_ne_bytes([attrs[2], attrs[3]]);
+        if len < 4 || len > attrs.len() { return None; }
+        if kind == ifla::IFLA_IFNAME {
+            let body = &attrs[4..len];
+            let end = body.iter().position(|b| *b == 0).unwrap_or(body.len());
+            return core::str::from_utf8(&body[..end]).ok().map(alloc::string::String::from);
+        }
+        attrs = &attrs[(len + 3) & !3..];
+    }
+    None
+}
+
+/// Handle RTM_GETLINK in the socket's captured network namespace: a dump
+/// when the caller set `NLM_F_DUMP`, otherwise the one device it named.
+/// # C: O(N_ifaces)
+pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    // A GETLINK is two different requests, and answering both with a dump is
+    // what made `ip link show eth0` print `lo`.
+    //
+    // With NLM_F_DUMP the reference walks every device and terminates with
+    // NLMSG_DONE. WITHOUT it, it resolves the one device the caller named — by
+    // `ifi_index`, else by IFLA_IFNAME — and replies with a SINGLE RTM_NEWLINK
+    // carrying no multipart flag and no DONE, or ENODEV when nothing matches.
+    //
+    // Replying to the single form with a full dump hands the caller the FIRST
+    // device in the table as if it were the one asked for. Every client that
+    // queries a device by name or index therefore read loopback's identity and
+    // loopback's flags — including the network manager, which is why it
+    // believed a down, unaddressed `eth0` was already up and externally
+    // configured.
+    if req.nlmsg_flags & crate::wire::flags::NLM_F_DUMP != crate::wire::flags::NLM_F_DUMP {
+        return getlink_one(ns, req, full_msg);
+    }
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let entries = ifaces_snapshot_in(ns);
     for (id, name, mac, broadcast, mtu, is_lo, flags, stats) in entries.iter() {
@@ -244,4 +305,78 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
+}
+
+#[cfg(test)]
+mod getlink_form_tests {
+    use super::*;
+
+    fn request(flags: u16, ifindex: i32, name: Option<&str>) -> (Nlmsghdr, alloc::vec::Vec<u8>) {
+        let mut body = alloc::vec![0u8; Ifinfomsg::SIZE];
+        body[4..8].copy_from_slice(&ifindex.to_ne_bytes());
+        if let Some(n) = name {
+            let payload = n.as_bytes();
+            let len = 4 + payload.len() + 1;
+            body.extend_from_slice(&(len as u16).to_ne_bytes());
+            body.extend_from_slice(&ifla::IFLA_IFNAME.to_ne_bytes());
+            body.extend_from_slice(payload);
+            body.push(0);
+            while body.len() % 4 != 0 { body.push(0); }
+        }
+        let hdr = Nlmsghdr {
+            nlmsg_len: (Nlmsghdr::SIZE + body.len()) as u32,
+            nlmsg_type: super::super::RTM_GETLINK,
+            nlmsg_flags: crate::wire::flags::NLM_F_REQUEST | flags,
+            nlmsg_seq: 5, nlmsg_pid: 9,
+        };
+        let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE];
+        hdr.write_to(&mut msg[..]);
+        msg.extend_from_slice(&body);
+        (hdr, msg)
+    }
+
+    /// `IFLA_IFNAME` is read out of the attribute area, which is what lets a
+    /// client name a device instead of numbering it.
+    #[test]
+    fn the_interface_name_attribute_is_parsed() {
+        let (_h, msg) = request(0, 0, Some("eth0"));
+        let attrs = &msg[Nlmsghdr::SIZE + Ifinfomsg::SIZE..];
+        assert_eq!(ifname_attr(attrs).as_deref(), Some("eth0"));
+    }
+
+    #[test]
+    fn an_absent_name_attribute_reads_as_none() {
+        let (_h, msg) = request(0, 2, None);
+        assert_eq!(ifname_attr(&msg[Nlmsghdr::SIZE + Ifinfomsg::SIZE..]), None);
+    }
+
+    /// A truncated attribute must not be trusted or walked past.
+    #[test]
+    fn a_malformed_attribute_header_is_refused() {
+        assert_eq!(ifname_attr(&[3, 0, 3, 0]), None);
+        assert_eq!(ifname_attr(&[255, 255, 3, 0]), None);
+    }
+
+    /// The single-device form answers ENODEV for a device that does not exist,
+    /// rather than handing back whatever happens to be first in the table —
+    /// which is what made a by-name query read loopback's identity.
+    #[test]
+    fn a_single_get_for_an_unknown_device_reports_enodev() {
+        let (hdr, msg) = request(0, 0, Some("nosuchdev0"));
+        let reply = getlink_one(0, &hdr, &msg);
+        assert_eq!(u16::from_ne_bytes([reply[4], reply[5]]), crate::msg::NLMSG_ERROR);
+        let err = i32::from_ne_bytes([reply[16], reply[17], reply[18], reply[19]]);
+        assert_eq!(err, -19, "ENODEV");
+    }
+
+    /// A request too short to carry an `ifinfomsg` is EINVAL, as the reference
+    /// reports it.
+    #[test]
+    fn a_truncated_single_get_is_einval() {
+        let (hdr, _msg) = request(0, 1, None);
+        let short = alloc::vec![0u8; Nlmsghdr::SIZE];
+        let reply = getlink_one(0, &hdr, &short);
+        let err = i32::from_ne_bytes([reply[16], reply[17], reply[18], reply[19]]);
+        assert_eq!(err, -22, "EINVAL");
+    }
 }
