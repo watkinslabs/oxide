@@ -40,7 +40,16 @@ pub(crate) fn build_newlink_reply(
     put_nlattr(&mut body, ifla::IFLA_BROADCAST, broadcast);
     put_nlattr_u32(&mut body, ifla::IFLA_MTU, mtu);
     put_nlattr_u32(&mut body, ifla::IFLA_TXQLEN, 1000);
-    let carrier = flags & iff::IFF_RUNNING != 0;
+    // The reference reports these two, it does not store them: `dev_get_flags`
+    // derives them while the device is running — `IFF_RUNNING` from the
+    // operational state and `IFF_LOWER_UP` from the driver's carrier. Reporting
+    // the stored word verbatim left `IFF_LOWER_UP` permanently clear, which is
+    // the bit a network manager reads to decide a link can carry traffic; it
+    // therefore held the device at "unavailable" with `CARRIER: off` even after
+    // taking ownership and bringing the link up itself.
+    // The flags arriving here are already the REPORTED set (`dev_get_flags`),
+    // so carrier is read back out of them rather than derived a second time.
+    let carrier = flags & iff::IFF_LOWER_UP != 0;
     let operstate = if carrier { IF_OPER_UP } else { IF_OPER_DOWN };
     put_nlattr_u8(&mut body, ifla::IFLA_OPERSTATE, operstate);
     put_nlattr_u8(&mut body, ifla::IFLA_LINKMODE, 0);

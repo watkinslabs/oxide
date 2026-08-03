@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use sync::{Spinlock, Socket as SocketLockClass};
 
@@ -179,6 +179,15 @@ pub struct IfaceEntry {
     /// are separate: drivers provide the initial name, while the registry
     /// owns namespace-scoped rename semantics.
     pub name: String,
+    /// Driver-owned carrier, the reference's `__LINK_STATE_NOCARRIER` in
+    /// `dev->state`. It is deliberately NOT a bit in `flags`: `IFF_RUNNING`
+    /// and `IFF_LOWER_UP` are derived from it at read time by `dev_get_flags`,
+    /// and userspace can neither see nor write the underlying state. Kept in
+    /// the flags word it was cleared by an ordinary administrative write, so a
+    /// link reported no carrier the moment anyone brought it up — and a manager
+    /// that has just brought a device up and is told it has no carrier refuses
+    /// to activate it: "device has no carrier".
+    pub carrier: AtomicBool,
     /// Real, mutable IFF_* flags. Set at registration from the device
     /// kind; mutated by RTM_SETLINK; read by RTM_GETLINK. Not a
     /// reply-time fabrication.
@@ -275,7 +284,33 @@ impl IfaceRegistry {
     pub fn iface_flags(&self, id: NetIfaceId) -> Option<u32> {
         let g = self.inner.lock();
         g.entries.iter().find(|e| e.id == id && e.ingress.live() && e.ingress.ready())
-            .map(|e| e.flags.load(Ordering::Acquire))
+            // REPORTED flags, so every reader gets one answer. This is the
+            // accessor the reference funnels callers through (`dev_get_flags`):
+            // carrier lives outside the stored word and `IFF_RUNNING` /
+            // `IFF_LOWER_UP` are computed here. Returning the raw word made two
+            // ways to read flags that could disagree, and the link dump took
+            // the raw one — so a device with carrier still reported NO-CARRIER.
+            .map(|e| iff::dev_get_flags(e.flags.load(Ordering::Acquire),
+                                        e.carrier.load(Ordering::Acquire)))
+    }
+
+    /// Driver-reported carrier for one interface — the reference's
+    /// `netif_carrier_ok`. # C: O(N)
+    pub fn iface_carrier(&self, id: NetIfaceId) -> Option<bool> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ingress.live() && e.ingress.ready())
+            .map(|e| e.carrier.load(Ordering::Acquire))
+    }
+
+    /// Set driver-reported carrier — the reference's `netif_carrier_on` /
+    /// `netif_carrier_off`. Only a driver calls this; userspace cannot.
+    /// # C: O(N)
+    pub fn set_iface_carrier(&self, id: NetIfaceId, up: bool) -> bool {
+        let g = self.inner.lock();
+        match g.entries.iter().find(|e| e.id == id) {
+            Some(e) => { e.carrier.store(up, Ordering::Release); true }
+            None => false,
+        }
     }
 
     fn guard_matches(&self, rtnl: &crate::RtnlGuard<'_>) -> bool {
@@ -364,6 +399,13 @@ impl IfaceRegistry {
     pub fn set_iface_flags_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
                                  new: u32, change: u32) -> Option<u32> {
         if !self.guard_matches(rtnl) { return None; }
+        // A caller may not write the volatile bits. They describe the device
+        // and its driver's carrier, not an administrative request, and the
+        // reference never takes them from userspace — `__dev_change_flags`
+        // preserves `IFF_VOLATILE` from the device. Without this an ordinary
+        // "bring the link up" cleared `IFF_RUNNING`, so the link reported no
+        // carrier the instant anyone administered it.
+        let change = change & !iff::IFF_VOLATILE;
         let rx_change = change & (iff::IFF_PROMISC | iff::IFF_ALLMULTI);
         let (notify, next) = {
             let g = self.inner.lock();
