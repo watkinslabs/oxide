@@ -124,6 +124,7 @@ impl vfs::FileOps for NetlinkFileOps {
 pub fn make_netlink_socket_inode(sock: Arc<NetlinkSocket>) -> vfs::InodeRef {
     crate::register_port_id(&sock);
     let ino = NEXT_NETLINK_INO.alloc();
+    sock.ino.store(ino, core::sync::atomic::Ordering::Release);
     let subs = sock.poll_subs.clone();
     vfs::InodeBuilder::new(
         ino,

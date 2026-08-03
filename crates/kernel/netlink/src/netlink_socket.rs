@@ -53,6 +53,10 @@ pub struct NetlinkSocket {
     pub scm: net::scm::ScmCredentials,
     pub sndbuf: AtomicUsize,
     pub rcvbuf: AtomicUsize,
+    /// The pseudo-inode number of the file this socket is reachable through,
+    /// which `/proc/net/netlink` reports and `ss` matches against `/proc/*/fd`.
+    /// Zero until the inode is built.
+    pub ino: core::sync::atomic::AtomicU64,
     /// Canonical `NETLINK_F_*` word: the single owner of every boolean
     /// SOL_NETLINK option, written by `setsockopt` and read by `getsockopt`.
     pub flags: crate::sockflags::NetlinkFlags,
@@ -97,6 +101,7 @@ impl NetlinkSocket {
             scm: net::scm::ScmCredentials::new(),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             rcvbuf: AtomicUsize::new(NETLINK_RCVBUF_DEFAULT),
+            ino: core::sync::atomic::AtomicU64::new(0),
             flags: crate::sockflags::NetlinkFlags::new(),
             rx_congested: AtomicBool::new(false),
             rx_drops: AtomicUsize::new(0),
