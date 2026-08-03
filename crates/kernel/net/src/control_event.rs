@@ -61,6 +61,12 @@ pub struct LinkEvent {
     pub kind: EventKind,
     pub namespace: NamespaceOwner,
     pub owner: IfaceOwner,
+    /// The namespace-scoped Linux ifindex, captured HERE rather than looked up
+    /// when the notification is emitted. A deletion is announced after the
+    /// interface has left the namespace, so an emit-time lookup finds nothing
+    /// and cannot name what was removed — the index has to be taken while the
+    /// interface still exists, exactly as the name, mac and flags beside it are.
+    pub ifindex: u32,
     pub name: String,
     pub mac: MacAddr,
     pub broadcast: PacketLinkAddress,

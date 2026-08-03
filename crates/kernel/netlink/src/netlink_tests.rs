@@ -456,7 +456,7 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
     let namespace_owner = || net::control_event::NamespaceOwner::Live(namespace_a.clone());
     let link_ticket = net::control_event::stage(&rtnl,
         net::control_event::ControlEvent::Link(net::control_event::LinkEvent {
-            kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner,
+            kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner, ifindex: 1,
             name: alloc::string::String::from("lo"), mac: net::MacAddr::ZERO, mtu: 65_535,
             broadcast: net::PacketLinkAddress { len: net::MacAddr::ZERO.0.len() as u8,
                 bytes: [0; net::PACKET_LINK_ADDRESS_MAX] },
