@@ -30,7 +30,7 @@ impl NetStack {
         };
         let resolved = cache.learn_at(request.sender_ip, request.sender_mac, state,
             crate::stack::net_now_ns());
-        for job in resolved { job.resume(); }
+        for job in resolved { job.resume(request.sender_mac); }
         // A bridge parks its own unresolved packets rather than in the
         // interface transmit queue, so the one neighbour owner has to release
         // both or bridged traffic waits on a binding that already exists.

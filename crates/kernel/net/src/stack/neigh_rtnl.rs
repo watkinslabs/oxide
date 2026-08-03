@@ -49,7 +49,7 @@ impl NetStack {
         let _rtnl = self.rtnl_lock();
         let (id, _) = self.ifaces.lookup_ifindex_in_ns(ifindex, ns).ok_or(NeighAdminError::NoDev)?;
         let cache = self.ifaces.arp_cache_in_ns(id, ns).ok_or(NeighAdminError::NoDev)?;
-        for job in cache.admin_set(ip, Some(mac), permanent, super::net_now_ns()) { job.resume(); }
+        for job in cache.admin_set(ip, Some(mac), permanent, super::net_now_ns()) { job.resume(mac); }
         Ok(())
     }
 
