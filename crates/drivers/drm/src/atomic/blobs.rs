@@ -31,8 +31,7 @@ fn user_ok(ptr: u64, len: u64) -> bool {
 /// Copy a caller-owned byte sequence into a stable DRM blob object. # C: O(n)
 pub fn create_blob(arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCreateBlob>() as u64) { return efault(); }
-    // SAFETY: fixed repr(C) UAPI structure range was validated above.
-    let mut req = unsafe { core::ptr::read_volatile(arg as *const DrmModeCreateBlob) };
+    let Ok(mut req) = crate::uarg::read_arg::<DrmModeCreateBlob>(arg) else { return efault() };
     if req.length == 0 || req.length > MAX_USER_BLOB_BYTES || !user_ok(req.data, req.length as u64) {
         return einval();
     }
@@ -40,23 +39,19 @@ pub fn create_blob(arg: u64) -> i64 {
     if bytes.try_reserve_exact(req.length as usize).is_err() {
         return -(Errno::Enomem.as_i32() as i64);
     }
-    for off in 0..req.length as u64 {
-        // SAFETY: [data,data+length) was validated and bytes are copied now.
-        bytes.push(unsafe { core::ptr::read_volatile((req.data + off) as *const u8) });
-    }
+    bytes.resize(req.length as usize, 0);
+    if uaccess::copy_from_user(&mut bytes, req.data).is_err() { return efault(); }
     let id = NEXT_BLOB_ID.fetch_add(1, Ordering::AcqRel).max(0x100);
     BLOBS.lock().push(Blob { id, bytes });
     req.blob_id = id;
-    // SAFETY: the same fixed UAPI range is writable in the caller address space.
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeCreateBlob, req); }
+    if crate::uarg::write_arg(arg, req).is_err() { return efault(); }
     0
 }
 
 /// Release a named user blob. # C: O(n)
 pub fn destroy_blob(arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeDestroyBlob>() as u64) { return efault(); }
-    // SAFETY: fixed 4-byte UAPI structure range was validated above.
-    let req = unsafe { core::ptr::read_volatile(arg as *const DrmModeDestroyBlob) };
+    let Ok(req) = crate::uarg::read_arg::<DrmModeDestroyBlob>(arg) else { return efault() };
     let mut blobs = BLOBS.lock();
     match blobs.iter().position(|blob| blob.id == req.blob_id) {
         Some(pos) => { blobs.remove(pos); 0 }
@@ -70,11 +65,7 @@ pub fn get_blob(blob_id: u32, ulen: u32, data_ptr: u64) -> Option<i64> {
     let blob = blobs.iter().find(|blob| blob.id == blob_id)?;
     let len = blob.bytes.len() as u32;
     if ulen >= len && data_ptr != 0 {
-        if !user_ok(data_ptr, len as u64) { return Some(efault()); }
-        for (off, byte) in blob.bytes.iter().copied().enumerate() {
-            // SAFETY: destination range was validated immediately above.
-            unsafe { core::ptr::write_volatile((data_ptr + off as u64) as *mut u8, byte); }
-        }
+        if uaccess::copy_to_user(data_ptr, &blob.bytes).is_err() { return Some(efault()); }
     }
     Some(len as i64)
 }
