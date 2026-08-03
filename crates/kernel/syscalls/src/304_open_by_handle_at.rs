@@ -43,7 +43,8 @@ fn may_decode_facts(cur: &sched::Task, anchor: &vfs::VfsPath, o_flags: u32) -> M
     let init_user_ns = namespace_identity::initial(NamespaceKind::User).pin();
     let cap_dac_read_search = nscg::proc_ns::has_cap_for(cur, &init_user_ns,
                                                          sched::cap::DAC_READ_SEARCH);
-    let sb = anchor.inode.i_sb();
+    let sb = vfs::export::export_sb(
+        vfs::mount::mount_by_id(anchor.mnt_id).map(|m| m.sb().clone()), anchor.inode.i_sb());
     let sys_admin_over_sb_userns = sb.as_ref().is_some_and(|sb|
         nscg::proc_ns::has_cap_for(cur, &sb.s_user_ns, sched::cap::SYS_ADMIN));
     let mount = vfs::mount::mount_by_id(anchor.mnt_id);
@@ -164,7 +165,12 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     // 8-byte node-id handle whose type the generic codec does not know, so the
     // "is this ours" test has to be asked of the superblock the handle will be
     // decoded on, not of the VFS-wide codec.
-    let sb = match anchor.inode.i_sb() { Some(s) => s, None => return err(Errno::Estale) };
+    // The mount's superblock, not the inode's: a filesystem that synthesizes
+    // its inodes leaves `i_sb` unset, which reported ESTALE for every handle it
+    // had itself just minted.
+    let sb = match vfs::export::export_sb(
+        vfs::mount::mount_by_id(anchor.mnt_id).map(|m| m.sb().clone()), anchor.inode.i_sb())
+    { Some(s) => s, None => return err(Errno::Estale) };
     if sb.s_op.export_fid_len_for_type(strip_user_flags(raw_htype)) != Some(bytes) {
         return err(Errno::Estale);
     }
