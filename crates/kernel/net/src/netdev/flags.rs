@@ -48,3 +48,53 @@ pub fn dev_get_flags(stored: u32, carrier: bool) -> u32 {
     let base = stored & !(IFF_RUNNING | IFF_LOWER_UP);
     if base & IFF_UP != 0 && carrier { base | IFF_RUNNING | IFF_LOWER_UP } else { base }
 }
+
+/// Whether a `SIOCSIFFLAGS` request only asks for changes this path supports.
+///
+/// The comparison is over ADMINISTRATIVE bits alone. `dev_get_flags` reports
+/// carrier-derived bits that a caller's `ifr_flags` cannot carry — the field is
+/// 16 bits and `IFF_LOWER_UP` does not fit — so comparing the reported word
+/// against a request always differs in bits the caller could not have set. The
+/// reference does not compare them either: `dev_change_flags` ignores the
+/// volatile set entirely.
+/// # C: O(1)
+pub fn siocsifflags_supported(current: u32, requested: u32) -> bool {
+    (current ^ requested) & !(IFF_UP | IFF_VOLATILE) == 0
+}
+
+#[cfg(test)]
+mod siocsifflags_tests {
+    use super::*;
+
+    /// Bringing a link up is supported even though the reported word carries
+    /// carrier bits the caller never set. Comparing those made every
+    /// `SIOCSIFFLAGS` fail with EOPNOTSUPP once carrier began being reported.
+    #[test]
+    fn bringing_a_link_up_is_supported_against_reported_flags() {
+        let reported_up = IFF_BROADCAST | IFF_MULTICAST | IFF_UP | IFF_RUNNING | IFF_LOWER_UP;
+        let requested = (IFF_BROADCAST | IFF_MULTICAST | IFF_UP) as u16 as u32;
+        assert!(siocsifflags_supported(reported_up, requested));
+    }
+
+    #[test]
+    fn taking_a_link_down_is_supported() {
+        let reported_up = IFF_BROADCAST | IFF_MULTICAST | IFF_UP | IFF_RUNNING | IFF_LOWER_UP;
+        assert!(siocsifflags_supported(reported_up, IFF_BROADCAST | IFF_MULTICAST));
+    }
+
+    /// An administrative bit this path does not implement is still refused, so
+    /// widening the mask did not turn the check off.
+    #[test]
+    fn an_unsupported_administrative_change_is_still_refused() {
+        let current = IFF_BROADCAST | IFF_MULTICAST | IFF_UP;
+        assert!(!siocsifflags_supported(current, current | IFF_NOARP));
+        assert!(!siocsifflags_supported(current, current | IFF_PROMISC));
+    }
+
+    /// A caller cannot provoke a refusal by echoing carrier bits back.
+    #[test]
+    fn echoed_carrier_bits_do_not_make_a_request_unsupported() {
+        let current = IFF_BROADCAST | IFF_MULTICAST | IFF_UP | IFF_RUNNING | IFF_LOWER_UP;
+        assert!(siocsifflags_supported(current, IFF_BROADCAST | IFF_MULTICAST | IFF_UP | IFF_RUNNING));
+    }
+}
