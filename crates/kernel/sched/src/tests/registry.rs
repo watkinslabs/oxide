@@ -262,3 +262,38 @@ fn the_exiting_flag_lives_on_the_task_and_starts_clear() {
     t.exiting.store(true, Ordering::Release);
     assert!(t.exiting.load(Ordering::Acquire), "the flag is the task's own state");
 }
+
+/// A `cgroup.procs` write naming a task that is leaving succeeds and moves
+/// nothing — it does not report ESRCH.
+///
+/// The reference decides this in `cgroup_migrate_add_task`, which returns
+/// without acting when `PF_EXITING` is set, and the part that can fail
+/// (`cgroup_procs_write_start`) rejects only a pid that resolves to nothing or
+/// a kthread pinned by `PF_NO_SETAFFINITY`. Turning "this task is leaving" into
+/// an error made the service manager fail to create its own scope and freeze at
+/// boot.
+#[test]
+fn a_migration_naming_an_exiting_task_is_skipped_not_refused() {
+    use core::sync::atomic::Ordering;
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let l = leader(7000, 7000);
+    crate::registry::insert(&l);
+    l.exiting.store(true, Ordering::Release);
+
+    const DEST: u64 = 0;
+    match crate::cgroup::migrate_hook(7000, DEST, false) {
+        Ok(src) => assert_eq!(src, DEST, "nothing moved, so source is the destination"),
+        Err(e) => panic!("an exiting task must be skipped, not refused: {e:?}"),
+    }
+}
+
+/// A pid that resolves to nothing is still ESRCH — the one failure the
+/// reference does report from this path.
+#[test]
+fn a_migration_naming_an_unknown_pid_is_still_esrch() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    assert!(crate::cgroup::migrate_hook(65123, 0, false).is_err(),
+        "an unresolvable pid is ESRCH, as the reference reports it");
+}
