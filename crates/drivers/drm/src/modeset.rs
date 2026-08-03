@@ -27,12 +27,8 @@ fn user_ok(ptr: u64, len: u64) -> bool {
 /// elements. # C: O(min(ids.len, cap))
 fn write_ids(ptr: u64, ids: &[u32], cap: u32) {
     let n = (ids.len() as u32).min(cap) as usize;
-    if !user_ok(ptr, (n as u64) * 4) { return; }
-    // SAFETY: range [ptr, ptr+n*4) validated < USER_VA_END; aligned-by-4 u32 stores through caller's AS at CPL=0.
-    unsafe {
-        for i in 0..n {
-            core::ptr::write_volatile((ptr + (i as u64) * 4) as *mut u32, ids[i]);
-        }
+    for i in 0..n {
+        if crate::uarg::write_arg(ptr + (i as u64) * 4, ids[i]).is_err() { return; }
     }
 }
 
@@ -45,12 +41,8 @@ fn copy_modes(ptr: u64, cap: u32, modes: &[DrmModeModeinfo]) -> u32 {
     let n = modes.len() as u32;
     if ptr == 0 || cap < n || n == 0 { return 0; }
     let stride = core::mem::size_of::<DrmModeModeinfo>() as u64;
-    if !user_ok(ptr, (n as u64) * stride) { return 0; }
-    // SAFETY: range [ptr, ptr+n*stride) validated < USER_VA_END; drm_mode_modeinfo stores through the caller's AS at CPL=0.
-    unsafe {
-        for (i, m) in modes.iter().enumerate() {
-            core::ptr::write_volatile((ptr + (i as u64) * stride) as *mut DrmModeModeinfo, *m);
-        }
+    for (i, m) in modes.iter().enumerate() {
+        if crate::uarg::write_arg(ptr + (i as u64) * stride, *m).is_err() { return 0; }
     }
     n
 }
@@ -60,7 +52,7 @@ fn copy_modes(ptr: u64, cap: u32, modes: &[DrmModeModeinfo]) -> u32 {
 /// count is >= real count and the ptr is non-null. # C: O(objects)
 pub fn get_resources(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END by caller; drm_mode_card_res is 64 B; aligned struct read.
-    let res: DrmModeCardRes = unsafe { core::ptr::read_volatile(arg as *const DrmModeCardRes) };
+    let Ok(res) = crate::uarg::read_arg::<DrmModeCardRes>(arg) else { return efault() };
     let crtcs = card.crtc_ids();
     let conns = card.connector_ids();
     let encs  = card.encoder_ids();
@@ -77,16 +69,9 @@ pub fn get_resources(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
         write_ids(res.encoder_id_ptr, &encs, res.count_encoders);
     }
     let _ = cf;
-    // SAFETY: arg validated; struct is 64 B; aligned u32 stores at the documented offsets.
-    unsafe {
-        core::ptr::write_volatile((arg + 32) as *mut u32, 0); // count_fbs
-        core::ptr::write_volatile((arg + 36) as *mut u32, cc);
-        core::ptr::write_volatile((arg + 40) as *mut u32, cn);
-        core::ptr::write_volatile((arg + 44) as *mut u32, ce);
-        core::ptr::write_volatile((arg + 48) as *mut u32, min_w);
-        core::ptr::write_volatile((arg + 52) as *mut u32, max_w);
-        core::ptr::write_volatile((arg + 56) as *mut u32, min_h);
-        core::ptr::write_volatile((arg + 60) as *mut u32, max_h);
+    for (off, v) in [(32u64, 0u32), (36, cc), (40, cn), (44, ce),
+                     (48, min_w), (52, max_w), (56, min_h), (60, max_h)] {
+        if crate::uarg::write_arg(arg + off, v).is_err() { return efault(); }
     }
     0
 }
@@ -95,7 +80,7 @@ pub fn get_resources(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 /// # C: O(1)
 pub fn get_crtc(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_crtc is 104 B; aligned struct read.
-    let mut c: DrmModeCrtc = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtc) };
+    let Ok(mut c) = crate::uarg::read_arg::<DrmModeCrtc>(arg) else { return efault() };
     let count = card.crtc_ids().len();
     let idx = match crtc_idx_of(c.crtc_id, count) { Some(i) => i, None => return einval() };
     let info = match card.crtc_info(idx) { Some(i) => i, None => return einval() };
@@ -113,7 +98,7 @@ pub fn get_crtc(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     c.mode       = if fb_id != 0 { info.mode } else { DrmModeModeinfo::default() };
     c.count_connectors = 0;
     // SAFETY: arg validated; struct is 104 B; aligned struct write through caller's AS at CPL=0.
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeCrtc, c); }
+    if crate::uarg::write_arg(arg, c).is_err() { return efault(); }
     0
 }
 
@@ -130,7 +115,7 @@ pub fn get_crtc(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 /// # C: O(properties)
 pub fn get_connector(card_id: u32, card: &Arc<dyn DrmDriver>, atomic_client: bool, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_get_connector is 80 B; aligned struct read.
-    let mut g: DrmModeGetConnector = unsafe { core::ptr::read_volatile(arg as *const DrmModeGetConnector) };
+    let Ok(mut g) = crate::uarg::read_arg::<DrmModeGetConnector>(arg) else { return efault() };
     let count = card.connector_ids().len();
     let idx = match connector_idx_of(g.connector_id, count) { Some(i) => i, None => return einval() };
     let info = match card.connector_info(idx) { Some(i) => i, None => return einval() };
@@ -158,7 +143,7 @@ pub fn get_connector(card_id: u32, card: &Arc<dyn DrmDriver>, atomic_client: boo
     g.subpixel         = DRM_MODE_SUBPIXEL_UNKNOWN;
     let _ = DRM_MODE_CONNECTOR_VIRTUAL;
     // SAFETY: arg validated; struct is 80 B; aligned struct write through caller's AS at CPL=0.
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeGetConnector, g); }
+    if crate::uarg::write_arg(arg, g).is_err() { return efault(); }
     0
 }
 
@@ -166,7 +151,7 @@ pub fn get_connector(card_id: u32, card: &Arc<dyn DrmDriver>, atomic_client: boo
 /// # C: O(1)
 pub fn get_encoder(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_get_encoder is 20 B; aligned struct read.
-    let mut e: DrmModeGetEncoder = unsafe { core::ptr::read_volatile(arg as *const DrmModeGetEncoder) };
+    let Ok(mut e) = crate::uarg::read_arg::<DrmModeGetEncoder>(arg) else { return efault() };
     let count = card.encoder_ids().len();
     let idx = match encoder_idx_of(e.encoder_id, count) { Some(i) => i, None => return einval() };
     let info = match card.encoder_info(idx) { Some(i) => i, None => return einval() };
@@ -175,7 +160,7 @@ pub fn get_encoder(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     e.possible_crtcs  = info.possible_crtcs;
     e.possible_clones = info.possible_clones;
     // SAFETY: arg validated; struct is 20 B; aligned struct write through caller's AS at CPL=0.
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeGetEncoder, e); }
+    if crate::uarg::write_arg(arg, e).is_err() { return efault(); }
     0
 }
 
@@ -183,7 +168,7 @@ pub fn get_encoder(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 /// plane per CRTC). # C: O(planes)
 pub fn get_plane_res(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_get_plane_res is 16 B; aligned struct read.
-    let r: DrmModeGetPlaneRes = unsafe { core::ptr::read_volatile(arg as *const DrmModeGetPlaneRes) };
+    let Ok(r) = crate::uarg::read_arg::<DrmModeGetPlaneRes>(arg) else { return efault() };
     let planes = card.plane_ids();
     #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMPROP planeres count="); klog::write_dec_u64(planes.len() as u64);
@@ -192,7 +177,7 @@ pub fn get_plane_res(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
         write_ids(r.plane_id_ptr, &planes, r.count_planes);
     }
     // SAFETY: arg validated; struct is 16 B; count_planes at +8.
-    unsafe { core::ptr::write_volatile((arg + 8) as *mut u32, planes.len() as u32); }
+    if crate::uarg::write_arg(arg + 8, planes.len() as u32).is_err() { return efault(); }
     0
 }
 
@@ -200,7 +185,7 @@ pub fn get_plane_res(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 /// + the XRGB8888/ARGB8888 format list. # C: O(1)
 pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_get_plane is 32 B; aligned struct read.
-    let mut p: DrmModeGetPlane = unsafe { core::ptr::read_volatile(arg as *const DrmModeGetPlane) };
+    let Ok(mut p) = crate::uarg::read_arg::<DrmModeGetPlane>(arg) else { return efault() };
     let idx = match card.plane_ids().iter().position(|id| *id == p.plane_id) { Some(i) => i, None => return einval() };
     let info = match card.plane_info(idx) { Some(i) => i, None => return einval() };
     let fmts: [u32; 2] = [DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888];
@@ -217,7 +202,7 @@ pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
       klog::write_raw(b" crtc_id="); klog::write_dec_u64(info.crtc_id as u64);
       klog::write_raw(b" possible_crtcs="); klog::write_hex_u64(info.possible_crtcs as u64); klog::write_raw(b"]\n"); }
     // SAFETY: arg validated; struct is 32 B; aligned struct write through caller's AS at CPL=0.
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeGetPlane, p); }
+    if crate::uarg::write_arg(arg, p).is_err() { return efault(); }
     0
 }
 
@@ -258,14 +243,10 @@ fn in_formats_blob() -> [u8; 56] {
 /// report its true byte length. # C: O(n)
 fn copy_driver_blob(arg: u64, ulen: u32, data_ptr: u64, bytes: &[u8]) -> i64 {
     let len = bytes.len() as u32;
-    if ulen >= len && data_ptr != 0 && user_ok(data_ptr, len as u64) {
-        for (i, byte) in bytes.iter().enumerate() {
-            // SAFETY: data_ptr..+len validated; byte-wise copy through caller AS at CPL=0.
-            unsafe { core::ptr::write_volatile((data_ptr + i as u64) as *mut u8, *byte); }
-        }
+    if ulen >= len && data_ptr != 0 && uaccess::copy_to_user(data_ptr, bytes).is_err() {
+        return efault();
     }
-    // SAFETY: length@4 within the validated 16-byte range; report the real size.
-    unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len); }
+    if crate::uarg::write_arg(arg + 4, len).is_err() { return efault(); }
     0
 }
 
@@ -276,12 +257,9 @@ fn copy_driver_blob(arg: u64, ulen: u32, data_ptr: u64, bytes: &[u8]) -> i64 {
 /// length; length>=len + data ptr → copies the blob. # C: O(blob bytes)
 pub fn get_prop_blob(card: Option<&Arc<dyn DrmDriver>>, arg: u64) -> i64 {
     if !user_ok(arg, 16) { return efault(); }
-    // SAFETY: [arg,arg+16) validated; blob_id@0 u32, length@4 u32, data@8 u64.
-    let (blob_id, ulen, data_ptr) = unsafe {
-        (core::ptr::read_volatile(arg as *const u32),
-         core::ptr::read_volatile((arg + 4) as *const u32),
-         core::ptr::read_volatile((arg + 8) as *const u64))
-    };
+    let (Ok(blob_id), Ok(ulen), Ok(data_ptr)) = (
+        crate::uarg::read_arg::<u32>(arg), crate::uarg::read_arg::<u32>(arg + 4),
+        crate::uarg::read_arg::<u64>(arg + 8)) else { return efault() };
     #[cfg(feature = "debug-desktop")]
     { klog::write_raw(b"[DRMPROP getblob id="); klog::write_dec_u64(blob_id as u64);
       klog::write_raw(b" ulen="); klog::write_dec_u64(ulen as u64); klog::write_raw(b"]\n"); }
@@ -293,8 +271,7 @@ pub fn get_prop_blob(card: Option<&Arc<dyn DrmDriver>>, arg: u64) -> i64 {
     }
     match crate::atomic::get_blob(blob_id, ulen, data_ptr) {
         Some(len) if len >= 0 => {
-            // SAFETY: arg+4 lies in the validated get-blob UAPI structure.
-            unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len as u32); }
+            if crate::uarg::write_arg(arg + 4, len as u32).is_err() { return efault(); }
             0
         }
         Some(err) => err,

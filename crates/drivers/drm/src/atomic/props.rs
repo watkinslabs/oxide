@@ -46,11 +46,11 @@ fn user_ok(ptr: u64, len: u64) -> bool {
 
 /// Zero-padded fixed-width name copy, matching `strscpy_pad` into
 /// `char name[DRM_PROP_NAME_LEN]`. # C: O(DRM_PROP_NAME_LEN)
-fn write_name(dst: u64, name: &[u8]) {
-    for off in 0..DRM_PROP_NAME_LEN {
-        // SAFETY: caller range-validated dst..dst+DRM_PROP_NAME_LEN as user memory.
-        unsafe { core::ptr::write_volatile((dst + off) as *mut u8, name.get(off as usize).copied().unwrap_or(0)); }
-    }
+fn write_name(dst: u64, name: &[u8]) -> bool {
+    let mut padded = [0u8; DRM_PROP_NAME_LEN as usize];
+    let n = name.len().min(padded.len());
+    padded[..n].copy_from_slice(&name[..n]);
+    uaccess::copy_to_user(dst, &padded).is_ok()
 }
 
 /// Planes are published as a primary/cursor pair per CRTC; odd slots are
@@ -158,10 +158,9 @@ pub fn copy_object_properties(card_id: u32, card: &Arc<dyn DrmDriver>, obj_id: u
         if cap > count {
             let (id_at, val_at) = (props_ptr + count as u64 * 4, vals_ptr + count as u64 * 8);
             if !user_ok(id_at, 4) || !user_ok(val_at, 8) { return Err(efault()); }
-            // SAFETY: both parallel array slots were range-validated immediately above.
-            unsafe {
-                core::ptr::write_volatile(id_at as *mut u32, prop);
-                core::ptr::write_volatile(val_at as *mut u64, value(card_id, card, obj_id, prop));
+            if crate::uarg::write_arg(id_at, prop).is_err() { return Err(efault()); }
+            if crate::uarg::write_arg(val_at, value(card_id, card, obj_id, prop)).is_err() {
+                return Err(efault());
             }
         }
         count += 1;
@@ -173,16 +172,13 @@ pub fn copy_object_properties(card_id: u32, card: &Arc<dyn DrmDriver>, obj_id: u
 /// object, with Linux's two-pass count ABI. # C: O(properties)
 pub fn get_obj_properties(card_id: u32, card: &Arc<dyn DrmDriver>, atomic_client: bool, arg: u64) -> i64 {
     if !user_ok(arg, OBJ_PROPS_SIZE) { return efault(); }
-    // SAFETY: the complete fixed object-properties UAPI object was validated.
-    let (props_ptr, vals_ptr, cap, obj_id, obj_type) = unsafe {
-        (core::ptr::read_volatile(arg as *const u64), core::ptr::read_volatile((arg + 8) as *const u64),
-         core::ptr::read_volatile((arg + 16) as *const u32), core::ptr::read_volatile((arg + 20) as *const u32),
-         core::ptr::read_volatile((arg + 24) as *const u32))
-    };
+    let (Ok(props_ptr), Ok(vals_ptr), Ok(cap), Ok(obj_id), Ok(obj_type)) = (
+        crate::uarg::read_arg::<u64>(arg), crate::uarg::read_arg::<u64>(arg + 8),
+        crate::uarg::read_arg::<u32>(arg + 16), crate::uarg::read_arg::<u32>(arg + 20),
+        crate::uarg::read_arg::<u32>(arg + 24)) else { return efault() };
     let count = match copy_object_properties(card_id, card, obj_id, obj_type, atomic_client,
         props_ptr, vals_ptr, cap) { Ok(n) => n, Err(err) => return err };
-    // SAFETY: count field lies inside the validated 28-byte UAPI object.
-    unsafe { core::ptr::write_volatile((arg + OBJ_PROPS_COUNT_OFF) as *mut u32, count); }
+    if crate::uarg::write_arg(arg + OBJ_PROPS_COUNT_OFF, count).is_err() { return efault(); }
     0
 }
 
@@ -192,39 +188,33 @@ pub fn get_obj_properties(card_id: u32, card: &Arc<dyn DrmDriver>, atomic_client
 /// drm_property.c). # C: O(values + enums)
 pub fn get_property(arg: u64) -> i64 {
     if !user_ok(arg, GET_PROP_SIZE) { return efault(); }
-    // SAFETY: the complete fixed property UAPI object was validated.
-    let (values_ptr, enum_ptr, id, value_cap, enum_cap) = unsafe {
-        (core::ptr::read_volatile(arg as *const u64), core::ptr::read_volatile((arg + 8) as *const u64),
-         core::ptr::read_volatile((arg + 16) as *const u32),
-         core::ptr::read_volatile((arg + GET_PROP_COUNT_VALUES_OFF) as *const u32),
-         core::ptr::read_volatile((arg + GET_PROP_COUNT_ENUMS_OFF) as *const u32))
-    };
+    let (Ok(values_ptr), Ok(enum_ptr), Ok(id), Ok(value_cap), Ok(enum_cap)) = (
+        crate::uarg::read_arg::<u64>(arg), crate::uarg::read_arg::<u64>(arg + 8),
+        crate::uarg::read_arg::<u32>(arg + 16),
+        crate::uarg::read_arg::<u32>(arg + GET_PROP_COUNT_VALUES_OFF),
+        crate::uarg::read_arg::<u32>(arg + GET_PROP_COUNT_ENUMS_OFF)) else { return efault() };
     // Linux resolves the id through drm_property_find; an unknown id is ENOENT.
     let Some(d) = desc(id) else { return enoent(); };
-    // SAFETY: the flags field lies inside the validated 64-byte UAPI object.
-    unsafe { core::ptr::write_volatile((arg + GET_PROP_FLAGS_OFF) as *mut u32, d.flags); }
-    write_name(arg + GET_PROP_NAME_OFF, d.name);
+    if crate::uarg::write_arg(arg + GET_PROP_FLAGS_OFF, d.flags).is_err() { return efault(); }
+    if !write_name(arg + GET_PROP_NAME_OFF, d.name) { return efault(); }
     for i in 0..d.num_values() {
         if i >= value_cap { break; }
         let at = values_ptr + i as u64 * 8;
         if !user_ok(at, 8) { return efault(); }
-        // SAFETY: this value slot was range-validated immediately above.
-        unsafe { core::ptr::write_volatile(at as *mut u64, d.value_at(i as usize)); }
+        if crate::uarg::write_arg(at, d.value_at(i as usize)).is_err() { return efault(); }
     }
     if d.flags & (DRM_MODE_PROP_ENUM | DRM_MODE_PROP_BITMASK) != 0 && d.flags & DRM_MODE_PROP_BLOB == 0 {
         for (i, (val, name)) in d.enums.iter().enumerate() {
             if i as u32 >= enum_cap { break; }
             let at = enum_ptr + i as u64 * DRM_PROP_ENUM_STRIDE;
             if !user_ok(at, DRM_PROP_ENUM_STRIDE) { return efault(); }
-            // SAFETY: this enum entry slot was range-validated immediately above.
-            unsafe { core::ptr::write_volatile(at as *mut u64, *val); }
-            write_name(at + ENUM_NAME_OFF, name);
+            if crate::uarg::write_arg(at, *val).is_err() { return efault(); }
+            if !write_name(at + ENUM_NAME_OFF, name) { return efault(); }
         }
     }
-    // SAFETY: both count fields lie inside the validated 64-byte UAPI object.
-    unsafe {
-        core::ptr::write_volatile((arg + GET_PROP_COUNT_VALUES_OFF) as *mut u32, d.num_values());
-        core::ptr::write_volatile((arg + GET_PROP_COUNT_ENUMS_OFF) as *mut u32, d.enum_count());
+    if crate::uarg::write_arg(arg + GET_PROP_COUNT_VALUES_OFF, d.num_values()).is_err()
+        || crate::uarg::write_arg(arg + GET_PROP_COUNT_ENUMS_OFF, d.enum_count()).is_err() {
+        return efault();
     }
     0
 }

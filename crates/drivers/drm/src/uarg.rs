@@ -94,7 +94,12 @@ mod tests {
             ("node.rs", include_str!("node.rs")),
             ("node/client_caps.rs", include_str!("node/client_caps.rs")),
             ("node/virtgpu.rs", include_str!("node/virtgpu.rs")),
+            ("node/auth.rs", include_str!("node/auth.rs")),
             ("crtc/handlers.rs", include_str!("crtc/handlers.rs")),
+            ("modeset.rs", include_str!("modeset.rs")),
+            ("kms_ext.rs", include_str!("kms_ext.rs")),
+            ("atomic/props.rs", include_str!("atomic/props.rs")),
+            ("atomic/blobs.rs", include_str!("atomic/blobs.rs")),
         ] {
             assert!(!source.contains("read_volatile"), "{name} dereferences a user pointer");
             assert!(!source.contains("write_volatile"), "{name} writes a user pointer");

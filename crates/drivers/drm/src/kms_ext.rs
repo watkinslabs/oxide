@@ -32,6 +32,9 @@ const GAMMA_ENTRY_MAX:   u64 = 0xFFFF;
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 
+/// `struct drm_clip_rect` ABI width — four `u16` corners.
+const CLIP_RECT_BYTES: u64 = core::mem::size_of::<crate::damage::DrmClipRect>() as u64;
+
 #[derive(Copy, Clone)]
 struct CursorState {
     card_id: u32,
@@ -78,7 +81,7 @@ fn user_ok(ptr: u64, len: u64) -> bool {
 pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeSetPlane>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; DrmModeSetPlane is repr(C) 48 B; aligned read through the caller's AS at CPL=0.
-    let p: DrmModeSetPlane = unsafe { core::ptr::read_volatile(arg as *const DrmModeSetPlane) };
+    let Ok(p) = crate::uarg::read_arg::<DrmModeSetPlane>(arg) else { return efault() };
     let idx = match card.plane_ids().iter().position(|id| *id == p.plane_id) { Some(i) => i, None => return einval() };
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
     // The virtio GPU exposes a primary/cursor pair for each enabled CRTC.
@@ -220,7 +223,7 @@ pub fn cursor2(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, arg: u64) ->
 pub fn dirty_fb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbDirtyCmd>() as u64) { return einval(); }
     // SAFETY: arg range validated; DrmModeFbDirtyCmd is repr(C) 24 B; aligned read at CPL=0.
-    let d: DrmModeFbDirtyCmd = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbDirtyCmd) };
+    let Ok(d) = crate::uarg::read_arg::<DrmModeFbDirtyCmd>(arg) else { return efault() };
     if d.fb_id == 0 { return einval(); }
     // Not the on-screen fb → nothing to refresh (Linux dirtyfb on an unbound fb
     // is a successful no-op).
@@ -245,12 +248,10 @@ fn dirty_damage(d: &DrmModeFbDirtyCmd, w: u32, h: u32) -> crate::node::DamageRec
     let bytes = (n as u64) * core::mem::size_of::<crate::damage::DrmClipRect>() as u64;
     if !user_ok(d.clips_ptr, bytes) { return full; }
     let mut clips = [crate::damage::DrmClipRect::default(); crate::damage::MAX_DAMAGE_CLIPS as usize];
-    // SAFETY: range [clips_ptr, clips_ptr+n*8) validated < USER_VA_END above; drm_clip_rect is 8 bytes with no padding; reads through the caller's AS at CPL=0.
-    unsafe {
-        for (i, slot) in clips.iter_mut().take(n).enumerate() {
-            *slot = core::ptr::read_volatile(
-                (d.clips_ptr + (i as u64) * 8) as *const crate::damage::DrmClipRect);
-        }
+    for (i, slot) in clips.iter_mut().take(n).enumerate() {
+        let Ok(rect) = crate::uarg::read_arg::<crate::damage::DrmClipRect>(
+            d.clips_ptr + (i as u64) * CLIP_RECT_BYTES) else { return full };
+        *slot = rect;
     }
     crate::damage::bounding_rect(&clips[..n], w, h).unwrap_or(full)
 }
@@ -263,7 +264,7 @@ fn dirty_damage(d: &DrmModeFbDirtyCmd, w: u32, h: u32) -> crate::node::DamageRec
 pub fn obj_set_property(arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeObjSetProperty>() as u64) { return einval(); }
     // SAFETY: arg range validated; DrmModeObjSetProperty is repr(C) 24 B; aligned read at CPL=0.
-    let _p: DrmModeObjSetProperty = unsafe { core::ptr::read_volatile(arg as *const DrmModeObjSetProperty) };
+    let Ok(_p) = crate::uarg::read_arg::<DrmModeObjSetProperty>(arg) else { return efault() };
     // A single always-connected virtual output with no mutable HW state — every
     // property set is a no-op that must not fail the caller.
     0
@@ -274,7 +275,7 @@ pub fn obj_set_property(arg: u64) -> i64 {
 pub fn set_property(arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeConnectorSetProperty>() as u64) { return einval(); }
     // SAFETY: arg range validated; DrmModeConnectorSetProperty is repr(C) 16 B; aligned read at CPL=0.
-    let _p: DrmModeConnectorSetProperty = unsafe { core::ptr::read_volatile(arg as *const DrmModeConnectorSetProperty) };
+    let Ok(_p) = crate::uarg::read_arg::<DrmModeConnectorSetProperty>(arg) else { return efault() };
     0
 }
 
@@ -285,7 +286,7 @@ pub fn set_property(arg: u64) -> i64 {
 pub fn set_gamma(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCrtcLut>() as u64) { return einval(); }
     // SAFETY: arg range validated; DrmModeCrtcLut is repr(C) 32 B; aligned read at CPL=0.
-    let g: DrmModeCrtcLut = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtcLut) };
+    let Ok(g) = crate::uarg::read_arg::<DrmModeCrtcLut>(arg) else { return efault() };
     let crtc_count = card.crtc_ids().len();
     if crtc_idx_of(g.crtc_id, crtc_count).is_none() { return einval(); }
     // Each ramp is `gamma_size` u16 entries; validate the pointers are user-sane
@@ -303,7 +304,7 @@ pub fn set_gamma(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 pub fn get_gamma(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCrtcLut>() as u64) { return einval(); }
     // SAFETY: arg range validated; repr(C) 32 B; aligned read at CPL=0.
-    let g: DrmModeCrtcLut = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtcLut) };
+    let Ok(g) = crate::uarg::read_arg::<DrmModeCrtcLut>(arg) else { return efault() };
     let crtc_count = card.crtc_ids().len();
     if crtc_idx_of(g.crtc_id, crtc_count).is_none() { return einval(); }
     let n = g.gamma_size as u64;
@@ -314,8 +315,7 @@ pub fn get_gamma(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
         for i in 0..n {
             // Identity ramp scaled to the entry range: v = i * MAX / (n-1).
             let v: u16 = if n <= 1 { 0 } else { ((i * GAMMA_ENTRY_MAX) / (n - 1)) as u16 };
-            // SAFETY: p..p+bytes validated; write one u16 entry through caller AS at CPL=0.
-            unsafe { core::ptr::write_volatile((p + i * GAMMA_ENTRY_BYTES) as *mut u16, v); }
+            if crate::uarg::write_arg(p + i * GAMMA_ENTRY_BYTES, v).is_err() { return efault(); }
         }
     }
     0
@@ -329,7 +329,7 @@ pub fn get_gamma(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 pub fn get_fb(card_id: u32, arg: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeFbCmd>() as u64) { return einval(); }
     // SAFETY: arg range validated; DrmModeFbCmd is repr(C) 28 B; aligned read at CPL=0.
-    let mut c: DrmModeFbCmd = unsafe { core::ptr::read_volatile(arg as *const DrmModeFbCmd) };
+    let Ok(mut c) = crate::uarg::read_arg::<DrmModeFbCmd>(arg) else { return efault() };
     let t = crate::dumb::TABLES.lock();
     let Some(fb) = t.find_fb(card_id, c.fb_id) else { return einval(); };
     // XRGB8888/ARGB8888 are 32bpp / 24-depth (X) — the only formats we scan out.
@@ -340,7 +340,6 @@ pub fn get_fb(card_id: u32, arg: u64) -> i64 {
     c.depth  = FB_COLOR_DEPTH;
     c.handle = fb.handles[0];
     drop(t);
-    // SAFETY: arg validated; write the 28 B repr(C) struct back through caller AS at CPL=0.
-    unsafe { core::ptr::write_volatile(arg as *mut DrmModeFbCmd, c); }
+    if crate::uarg::write_arg(arg, c).is_err() { return efault(); }
     0
 }
