@@ -1,0 +1,15 @@
+# Functions that run on the per-CPU hardirq stack, not a task stack.
+#
+# The aarch64 vector entry switches SP to this CPU's IRQ stack (`tpidr_el1`
+# slot) unless the interrupted SP is already inside it — a nested interrupt
+# keeps the outer frame — and then calls the dispatcher, which runs the device
+# handler and drains softirqs with interrupts unmasked. Everything reachable
+# from here spends the interrupt stack's 16 KiB, and a nested interrupt lands
+# on top of whatever has already been spent.
+#
+# `oxide_irq_exit_to_user` carries the same symbol name on both arches. It runs
+# after SP has switched back to the interrupted stack, and is also reached from
+# the fault / undef / soft-step save blocks, so it is rooted here for parity
+# with the x86 file rather than left to the task domain.
+oxide_arm_irq_dispatch
+oxide_irq_exit_to_user
