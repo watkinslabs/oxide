@@ -298,8 +298,15 @@ fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
             return siocsifflags_enodev(b"generation");
         }
         let id = lease.iface();
+        // Compare ADMINISTRATIVE bits only. `iface_flags` reports what the
+        // device presents — carrier included, as `dev_get_flags` does — and a
+        // caller's `ifr_flags` never carries the volatile bits (it cannot: the
+        // field is 16 bits and `IFF_LOWER_UP` does not fit). Comparing the
+        // reported word against a request therefore always differs in bits the
+        // caller could not have set, and the reference does not compare them
+        // either: `dev_change_flags` ignores the volatile set entirely.
         let current = stack.ifaces.iface_flags(id).unwrap_or(0);
-        if (current ^ requested) & !net::netdev::iff::IFF_UP != 0 {
+        if !net::netdev::iff::siocsifflags_supported(current, requested) {
             return -(Errno::Eopnotsupp.as_i32() as i64);
         }
         if stack.ifaces.set_iface_flags_in_ns(
