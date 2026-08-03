@@ -154,14 +154,7 @@ pub(super) fn copy_bytes_to_user(dst: u64, dst_len: u64, src: &[u8]) -> core::re
         return Err(());
     }
     let n = core::cmp::min(dst_len, src.len() as u64) as usize;
-    // SAFETY: dst..dst+n is validated as a user range above; caller supplied
-    // bytes are kernel-owned and immutable for the copy.
-    unsafe {
-        for (i, b) in src.iter().copied().take(n).enumerate() {
-            core::ptr::write_volatile((dst + i as u64) as *mut u8, b);
-        }
-    }
-    Ok(())
+    uaccess::copy_to_user(dst, &src[..n]).map_err(|_| ())
 }
 
 pub(super) fn atomic_property_count(count_props_ptr: u64, count_objs: u32) -> core::result::Result<u64, ()> {
@@ -169,14 +162,25 @@ pub(super) fn atomic_property_count(count_props_ptr: u64, count_objs: u32) -> co
     if !valid_user_range(count_props_ptr, bytes) {
         return Err(());
     }
+    // Read the caller's per-object counts in chunks rather than one word at a
+    // time: every transfer goes through the fault-recoverable copy routines,
+    // so a bad pointer anywhere in the array is reported instead of faulting.
+    const CHUNK: usize = 256;
     let mut total = 0u64;
-    for idx in 0..count_objs {
-        let off = idx as u64 * core::mem::size_of::<u32>() as u64;
-        // SAFETY: the whole count_props array was validated above.
-        let count = unsafe {
-            core::ptr::read_volatile((count_props_ptr + off) as *const u32)
+    let mut chunk = [0u32; CHUNK];
+    let mut done = 0u32;
+    while done < count_objs {
+        let n = (count_objs - done).min(CHUNK as u32) as usize;
+        let at = count_props_ptr + done as u64 * core::mem::size_of::<u32>() as u64;
+        // SAFETY: `chunk` is a live `[u32; CHUNK]` on this frame; the byte view
+        // covers exactly the `n` words being filled and has no other aliases.
+        let raw = unsafe {
+            core::slice::from_raw_parts_mut(chunk.as_mut_ptr() as *mut u8,
+                n * core::mem::size_of::<u32>())
         };
-        total = total.checked_add(count as u64).ok_or(())?;
+        uaccess::copy_from_user(raw, at).map_err(|_| ())?;
+        for count in chunk.iter().take(n) { total = total.checked_add(*count as u64).ok_or(())?; }
+        done += n as u32;
     }
     Ok(total)
 }
