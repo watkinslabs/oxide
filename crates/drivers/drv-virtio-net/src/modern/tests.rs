@@ -366,36 +366,35 @@ use core::sync::atomic::Ordering;
         clear_test_state();
     }
 
+    /// Neighbour resolution belongs to the neighbour layer. The driver used to
+    /// keep its own IPv6 binding table and consult it for any transmit that
+    /// arrived without a link-layer address — a second copy of state the stack
+    /// owns, with none of its queueing, so a miss dropped the packet.
     #[test]
-    fn ndp_cache_is_keyed_by_device() {
+    fn the_driver_resolves_no_unicast_neighbour_of_its_own() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        let rt1 = ensure_net_runtime(key(1));
-        let rt2 = ensure_net_runtime(key(2));
         let src = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
         let dst = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 2]);
-        let mac1 = net::MacAddr([1, 1, 1, 1, 1, 1]);
-        let mac2 = net::MacAddr([2, 2, 2, 2, 2, 2]);
-        rt1.ndp.insert(dst, mac1);
-        rt2.ndp.insert(dst, mac2);
+        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
+            net::pkt::TxNextHop::V6 { addr: dst, src }), None,
+            "a unicast next hop reaching the driver was declined upstream");
+        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
+            net::pkt::TxNextHop::V4(net::Ipv4Addr::new(10, 0, 2, 2))), None);
+    }
 
-        assert_eq!(
-            resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
-                net::pkt::TxNextHop::V6 { addr: dst, src }),
-            Some(mac1)
-        );
-        assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2],
-                net::pkt::TxNextHop::V6 { addr: dst, src }),
-            Some(mac2)
-        );
-        let _ = remove_net_runtime(key(1));
-        assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2],
-                net::pkt::TxNextHop::V6 { addr: dst, src }),
-            Some(mac2)
-        );
-        clear_test_state();
+    /// Multicast mappings are computed from the address, never learned, so they
+    /// are the one thing the driver can still answer.
+    #[test]
+    fn multicast_link_addresses_are_still_derived_here() {
+        let src = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
+        let group = net::Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
+            net::pkt::TxNextHop::V6 { addr: group, src }),
+            Some(net::MacAddr([0x33, 0x33, 0, 0, 0, 1])));
+        assert_eq!(resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
+            net::pkt::TxNextHop::V4(net::Ipv4Addr::BROADCAST)),
+            Some(net::MacAddr::BROADCAST));
     }
 
     #[test]
@@ -467,7 +466,7 @@ use core::sync::atomic::Ordering;
     fn solicited_node_address_uses_low_24_bits() {
         let _guard = TEST_STATE_LOCK.lock();
         let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
-        let got = test_solicited_node_multicast(ip);
+        let got = net::ndp::solicited_node_multicast(ip);
         assert_eq!(
             got,
             net::Ipv6Addr::from_segments([0xff02, 0, 0, 0, 0, 0x0001, 0xff34, 0x5678])
@@ -479,7 +478,7 @@ use core::sync::atomic::Ordering;
         let _guard = TEST_STATE_LOCK.lock();
         let ip = net::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0x1234, 0x5678]);
         assert_eq!(
-            test_solicited_node_ethernet(ip),
+            net::ndp::solicited_node_ethernet(ip),
             net::MacAddr([0x33, 0x33, 0xff, 0x34, 0x56, 0x78])
         );
     }
