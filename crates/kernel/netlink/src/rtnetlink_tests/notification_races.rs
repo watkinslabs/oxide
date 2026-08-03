@@ -126,12 +126,20 @@ fn namespace_move_emits_old_dellink_then_initial_newlink() {
     let (created, _) = new_listener.dequeue().expect("initial namespace link creation");
     assert_eq!(Nlmsghdr::parse(&deleted).unwrap().nlmsg_type, RTM_DELLINK);
     assert_eq!(Nlmsghdr::parse(&created).unwrap().nlmsg_type, RTM_NEWLINK);
-    assert_eq!(i32::from_ne_bytes(
-        deleted[Nlmsghdr::SIZE + 4..Nlmsghdr::SIZE + 8].try_into().unwrap()),
-        iface.raw() as i32);
-    assert_eq!(i32::from_ne_bytes(
-        created[Nlmsghdr::SIZE + 4..Nlmsghdr::SIZE + 8].try_into().unwrap()),
-        iface.raw() as i32);
+    // Each namespace is told the index IT knows the interface by, not the
+    // kernel-internal handle. The removal names the index the interface had in
+    // the namespace it left; the creation names the one it now has in the
+    // initial namespace. These are different numbers, which is the whole point
+    // — a client tracking either namespace matches its own dump.
+    let removed_index = i32::from_ne_bytes(
+        deleted[Nlmsghdr::SIZE + 4..Nlmsghdr::SIZE + 8].try_into().unwrap());
+    let created_index = i32::from_ne_bytes(
+        created[Nlmsghdr::SIZE + 4..Nlmsghdr::SIZE + 8].try_into().unwrap());
+    assert_eq!(created_index, visible_ifindex(iface, 0) as i32,
+        "the initial namespace hears the index it can now look up");
+    assert!(removed_index > 0, "the removal still names an interface");
+    assert_ne!(created_index, iface.raw() as i32,
+        "the fixture must distinguish index from internal handle, or it proves nothing");
     let _ = stack.ifaces.unregister(iface);
 }
 
@@ -227,7 +235,7 @@ fn link_route_rule_notifications_share_one_rtnl_order() {
     let rtnl = stack.rtnl_lock();
     let _link = net::control_event::stage(&rtnl,
         net::control_event::ControlEvent::Link(net::control_event::LinkEvent {
-            kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner,
+            kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner, ifindex: 1,
             name: String::from("eth-stable"), mac: net::MacAddr([2, 0, 0, 0, 0, 1]),
             broadcast: net::PacketLinkAddress { len: net::MacAddr::ZERO.0.len() as u8,
                 bytes: [u8::MAX; net::PACKET_LINK_ADDRESS_MAX] },
