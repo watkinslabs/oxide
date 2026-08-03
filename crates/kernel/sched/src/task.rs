@@ -126,6 +126,17 @@ pub struct Task {
     /// (`live_vpids`/`live_tids`/`live_counts`) skips reaped tasks, so ps/htop
     /// never show a reaped-but-pidfd-pinned child as a lingering zombie.
     pub reaped:   AtomicBool,
+    /// Set the moment the task enters its exit path, before its cgroup
+    /// membership is torn down — the reference's `PF_EXITING`.
+    ///
+    /// A cgroup migration must refuse a task that is on its way out, or the
+    /// migration races the teardown and resurrects membership for a task that
+    /// is leaving. The reference tests this flag ON THE TASK; a side table
+    /// keyed by tid was tried here instead, and it retained an entry for a
+    /// LIVE task, so the service manager could not move its own pid into its
+    /// own cgroup: `Failed to create /init.scope control group: No such
+    /// process`, then `Freezing execution.` One fact, on the task that owns it.
+    pub exiting:  AtomicBool,
     /// Linux `/proc/<pid>/oom_score_adj`, bounded by -1000..=1000.  It is
     /// task-owned rather than inferred from a cgroup or executable name.
     pub oom_score_adj: AtomicI32,
