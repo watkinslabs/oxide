@@ -262,9 +262,11 @@ impl NetStack {
             origin:     crate::route6::Route6Origin::Static,
         });
         self.add_v6_addr(id, Ipv6Addr::LOOPBACK);
-        crate::iface_addr::set_prefix_meta_row(net_ns, id, Ipv4Addr::LOOPBACK, None, 8,
-            crate::iface_addr::RT_SCOPE_HOST, crate::iface_addr::IFA_F_PERMANENT,
-            crate::iface_addr::Ipv4AddrCacheInfo::PERMANENT);
+        // The reference sets `IFAPROT_KERNEL_LO` on the loopback address it
+        // installs itself, so a reader can tell it from one an agent added.
+        let mut meta = crate::iface_addr::Ipv4AddrMeta::permanent(crate::iface_addr::RT_SCOPE_HOST);
+        meta.proto = crate::iface_addr::IFAPROT_KERNEL_LO;
+        crate::iface_addr::set_prefix_meta_row(net_ns, id, Ipv4Addr::LOOPBACK, None, 8, meta);
     }
 
     /// Select socket-owned endpoints for one received IPv4 datagram. # C: O(N_port)
