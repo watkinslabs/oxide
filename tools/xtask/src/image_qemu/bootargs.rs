@@ -34,6 +34,10 @@ fn bootloader_supplies_boot_image(arch: &str) -> bool { arch == "aarch64" }
 /// token and the LAST one backs `/dev/console`, so serial-then-VT keeps the
 /// serial log while the VT stays the interactive console — identical on both
 /// arches.
+/// One trailing space so the caller's format string stays readable whether or
+/// not extra parameters were supplied. # C: O(len)
+fn alloc_extra(value: &str) -> String { format!("{value} ") }
+
 pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     let ser = serial_console(arch);
     let dev = serial_devnode(arch);
@@ -42,8 +46,16 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     } else {
         format!("BOOT_IMAGE={image_path} ")
     };
+    // Extra parameters for one run, e.g. raising a service's log level from
+    // boot (`systemd.setenv=SYSTEMD_LOG_LEVEL=debug`). A service that misbehaves
+    // only during boot cannot be restarted to observe it: restarting is the one
+    // thing that changes the state under investigation.
+    let extra = match std::env::var("OXIDE_CMDLINE_EXTRA") {
+        Ok(v) if !v.is_empty() => alloc_extra(&v),
+        _ => String::new(),
+    };
     format!(
-        "{boot_image}root=/dev/oxide0 rw quiet \
+        "{boot_image}root=/dev/oxide0 rw quiet {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
