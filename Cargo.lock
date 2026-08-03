@@ -1301,6 +1301,7 @@ dependencies = [
  "modules",
  "namespace-identity",
  "net",
+ "netlink",
  "network-namespace",
  "nscg",
  "pmm",

@@ -249,11 +249,12 @@ impl NetStack {
                 },
                 None => return Err(NetError::Enetunreach),
             };
-            return Ok((route, iface, route.gateway.unwrap_or(dst)));
+            return Ok((route, iface, crate::route::RouteRecord::next_hop_for(route.gateway, dst)));
         }
         match self.routes.lookup_result_in(net_ns, dst) {
             Ok(route) => Ok((route, self.ifaces.acquire_egress_in_ns(route.iface, net_ns)
-                .ok_or(NetError::Enetunreach)?, route.gateway.unwrap_or(dst))),
+                .ok_or(NetError::Enetunreach)?,
+                crate::route::RouteRecord::next_hop_for(route.gateway, dst))),
             Err(NetError::Enetunreach) if dst.is_broadcast()
                 && self.routes.lookup_record_in(net_ns, dst).is_none() => {
                 let devs = self.ifaces.snapshot_devs_in_ns(net_ns);
@@ -312,7 +313,7 @@ impl NetStack {
         let route = self.routes6.lookup_policy_in(
             net_ns, dst, self.policy_rules()).ok_or(NetError::Enetunreach)?;
         let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
-        Ok((route.iface, iface, route.gateway.unwrap_or(dst)))
+        Ok((route.iface, iface, crate::route6::next_hop6_for(route.gateway, dst)))
     }
 
     pub(crate) fn next_ipv4_id(&self) -> u16 {

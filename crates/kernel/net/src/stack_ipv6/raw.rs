@@ -38,7 +38,7 @@ impl NetStack {
         let (iface_id, iface, next_hop) = if let Some(route) = controlled_route {
             let iface = self.ifaces.acquire_egress_in_ns(route.iface, endpoint.net_ns())
                 .ok_or(NetError::Enetunreach)?;
-            (route.iface, iface, route.gateway.unwrap_or(route_dst))
+            (route.iface, iface, crate::route6::next_hop6_for(route.gateway, route_dst))
         } else { self.route_v6_iface_in(endpoint.net_ns(), route_dst, bound)? };
         if let Some(source) = control.source {
             if !self.v6_addr_owned_by(iface_id, source) { return Err(NetError::Einval); }

@@ -90,7 +90,7 @@ impl NetStack {
                 .ok_or(NetError::Eaddrnotavail)?
         } else { src };
         self.xmit_ipv6_l4_on_iface(
-            route.iface, iface, route.gateway.unwrap_or(dst), src, dst, proto, l4,
+            route.iface, iface, crate::route6::next_hop6_for(route.gateway, dst), src, dst, proto, l4,
         )
     }
 
