@@ -42,6 +42,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
+        irq-gate irq-gate-x86 irq-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
         hosted-gate test-build-gate \
         smoke-ping smoke-ping-x86 smoke-ping-arm \
@@ -120,7 +121,7 @@ counters:
 # (C255), so `make ci` has been unconditionally red and therefore unread. The
 # ratchet holds the line while the backlog is burned down; swap it back to
 # `lint` once the count reaches zero.
-ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build build-debug frame-gate stack-gate
+ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build build-debug frame-gate stack-gate irq-gate
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
@@ -296,6 +297,35 @@ stack-gate-arm: arm
 	  --arch aarch64 --fail $(STACK_DEPTH_CEILING) \
 	  --allowlist tools/stack-depth-allow-aarch64.txt
 stack-gate: stack-gate-x86 stack-gate-arm
+
+# Interrupt-stack DEPTH gate — a SECOND budget domain, and the only one that
+# looks at the stack the `#DF` actually overflowed.
+#
+# `stack-gate` above measures task stacks and, because the walker follows
+# direct call edges only, it stops dead at the first function pointer. Every
+# hardware interrupt handler here is reached through one, so the receive path
+# measured 8 bytes deep. `tools/irq-edges-<arch>.tsv` names the targets of each
+# dispatch table (MSI vectors, line handlers, the nine softirq slots, the NAPI
+# poll list, the tick-poll and exit-to-user hooks), which is what makes the
+# interrupt path visible at all.
+#
+# Ceiling 12000 of the same 16384 B stack, and the 4 KiB difference is the
+# point: the entry asm does NOT re-switch when an interrupt arrives while
+# already on this stack, and the softirq drain runs with interrupts unmasked,
+# so a second entry lands on top of whatever the drain has spent. The headroom
+# is not slack, it is the nested interrupt's stack.
+IRQ_DEPTH_CEILING ?= 12000
+irq-gate-x86: x86
+	python3 tools/stack-depth-gate.py $(KERNEL_ELF_x86_64) \
+	  --arch x86_64 --fail 99999 \
+	  --indirect-map tools/irq-edges-x86_64.tsv \
+	  --irq-roots tools/irq-roots-x86_64.txt --irq-fail $(IRQ_DEPTH_CEILING)
+irq-gate-arm: arm
+	python3 tools/stack-depth-gate.py $(KERNEL_ELF_aarch64) \
+	  --arch aarch64 --fail 99999 \
+	  --indirect-map tools/irq-edges-aarch64.tsv \
+	  --irq-roots tools/irq-roots-aarch64.txt --irq-fail $(IRQ_DEPTH_CEILING)
+irq-gate: irq-gate-x86 irq-gate-arm
 
 # Feature-gated compile gate. The routine gates (`xtask kernel`, hosted tests,
 # stack-gate) all build WITHOUT features, so code inside `debug_boot! { … }` and
