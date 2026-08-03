@@ -151,6 +151,7 @@ pub struct EgressLease {
     iface: NetIfaceId,
     dev:   Arc<dyn NetDev>,
     arp:   Arc<crate::arp::ArpCache>,
+    ndp:   Arc<crate::neigh::NeighCache<crate::Ipv6Addr>>,
     hold:  Arc<EgressAdmission>,
 }
 
@@ -168,6 +169,9 @@ impl EgressLease {
     /// Canonical IPv4 neighbour owner retained with this egress generation.
     /// # C: O(1)
     pub fn arp_cache(&self) -> &crate::arp::ArpCache { self.arp.as_ref() }
+
+    /// The IPv6 half of the same neighbour table. # C: O(1)
+    pub fn ndp_cache(&self) -> &crate::neigh::NeighCache<crate::Ipv6Addr> { self.ndp.as_ref() }
 
     /// Resume an ARP-resolved packet through this exact generation's dispatcher. # C: O(packet)
     pub(crate) fn resume_arp_job(&self, job: crate::netdev::tx_dispatch::TxJob) {
@@ -256,6 +260,7 @@ pub(crate) struct IfaceTeardown {
     gate:        Arc<IngressGate>,
     pub(crate) dev: Arc<dyn NetDev>,
     pub(crate) arp: Arc<crate::arp::ArpCache>,
+    pub(crate) ndp: Arc<crate::neigh::NeighCache<crate::Ipv6Addr>>,
     pub(crate) mcast_report: Arc<McastReportState>,
 }
 
@@ -285,7 +290,7 @@ impl IfaceRegistry {
         let entry = g.entries.iter().find(|entry| entry.id == iface && entry.ns == net_ns
             && entry.ingress.live() && entry.ingress.ready())?;
         if !entry.ingress.try_enter() { return None; }
-        Some(EgressLease { iface, dev: entry.dev.clone(), arp: entry.arp.clone(),
+        Some(EgressLease { iface, dev: entry.dev.clone(), arp: entry.arp.clone(), ndp: entry.ndp.clone(),
             hold: Arc::new(EgressAdmission {
                 gate: entry.ingress.clone(), _owner: owner,
                 flags: entry.flags.load(Ordering::Acquire),
@@ -395,7 +400,7 @@ impl IfaceRegistry {
             iface, net_ns: entry.ns, generation: entry.ingress.generation,
             ifindex: entry.ifindex,
             flags: entry.flags.load(Ordering::Acquire),
-            gate: entry.ingress.clone(), dev: entry.dev.clone(), arp: entry.arp.clone(),
+            gate: entry.ingress.clone(), dev: entry.dev.clone(), arp: entry.arp.clone(), ndp: entry.ndp.clone(),
             mcast_report: entry.mcast_report.clone(),
         })
     }
@@ -456,6 +461,7 @@ impl IfaceRegistry {
         let next = Arc::new(IngressGate::resume_pending(0, next_generation));
         entry.ns = 0;
         entry.arp = Arc::new(crate::arp::ArpCache::new());
+        entry.ndp = Arc::new(crate::neigh::NeighCache::new());
         entry.mcast_report = Arc::new(McastReportState::new());
         entry.ingress = next.clone();
         Some(next)

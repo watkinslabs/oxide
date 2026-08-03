@@ -29,8 +29,6 @@ pub struct VirtioNetDev {
 pub(super) struct NetRuntime {
     pub(super) device_key: DeviceKey,
     pub(super) name: alloc::string::String,
-    #[cfg(not(target_os = "oxide-kernel"))]
-    pub(super) ndp: net::ndp::NdpCache,
     pub(super) rx_packets: AtomicU64,
     pub(super) rx_bytes:   AtomicU64,
     pub(super) rx_dropped: AtomicU64,
@@ -85,8 +83,6 @@ pub(super) fn ensure_net_runtime(device_key: DeviceKey) -> alloc::sync::Arc<NetR
     let runtime = alloc::sync::Arc::new(NetRuntime {
         device_key,
         name: allocate_net_name(&runtimes),
-        #[cfg(not(target_os = "oxide-kernel"))]
-        ndp: net::ndp::NdpCache::new(),
         rx_packets: AtomicU64::new(0),
         rx_bytes:   AtomicU64::new(0),
         rx_dropped: AtomicU64::new(0),

@@ -129,14 +129,6 @@ mod neighbor;
 #[cfg(test)]
 use neighbor::resolve_next_hop_mac;
 use neighbor::resolve_next_hop_mac_observed;
-#[cfg(test)]
-pub(crate) fn test_solicited_node_multicast(ip: net::Ipv6Addr) -> net::Ipv6Addr {
-    neighbor::test_solicited_node_multicast(ip)
-}
-#[cfg(test)]
-pub(crate) fn test_solicited_node_ethernet(ip: net::Ipv6Addr) -> net::MacAddr {
-    neighbor::test_solicited_node_ethernet(ip)
-}
 
 #[cfg(test)]
 mod tests;

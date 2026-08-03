@@ -440,7 +440,6 @@ pub struct NetStack {
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
     /// F180c: IPv6 neighbor cache keyed by ingress/egress interface.
-    pub(crate) ndp: Spinlock<BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>, StackLockClass>,
     /// F195: IPv4 reassembly table.
     pub ipv4_reasm: crate::ipv4_reasm::ReasmTable,
     /// IPv6 Fragment extension reassembly table.

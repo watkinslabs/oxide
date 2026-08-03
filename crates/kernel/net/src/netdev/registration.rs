@@ -87,7 +87,8 @@ impl IfaceRegistry {
             carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
-            arp: Arc::new(crate::arp::ArpCache::new()), ingress: gate.clone() });
+            arp: Arc::new(crate::arp::ArpCache::new()),
+            ndp: Arc::new(crate::neigh::NeighCache::new()), ingress: gate.clone() });
         IfaceRegistration {
             id, gate, owner: owner.clone(), registry: self, armed: true,
         }
@@ -183,6 +184,7 @@ impl IfaceRegistry {
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()),
+            ndp: Arc::new(crate::neigh::NeighCache::new()),
             ingress: Arc::new(IngressGate::new(ns, 1)) });
         id
     }
