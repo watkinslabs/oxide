@@ -120,7 +120,7 @@ counters:
 # (C255), so `make ci` has been unconditionally red and therefore unread. The
 # ratchet holds the line while the backlog is burned down; swap it back to
 # `lint` once the count reaches zero.
-ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build build-debug
+ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build build-debug frame-gate stack-gate
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
