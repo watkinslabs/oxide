@@ -146,8 +146,17 @@ fn netlink_getsockopt_keeps_linux_owned_options_and_rejects_unknowns() {
     assert!(dispatch.contains("socket.protocol as u32"));
     assert!(dispatch.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_TYPE)"));
     assert!(dispatch.contains("net::socket_args::SOCK_RAW"));
-    assert!(dispatch.contains("(::netlink::sockopt::SOL_NETLINK, ::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS)"));
+    // SOL_NETLINK answers are owned by the netlink crate's decision table, not
+    // by a second switch in the shim.
+    assert!(dispatch.contains("(::netlink::sockopt::SOL_NETLINK, name) => match ::netlink::get_answer(name)"));
     assert!(dispatch.contains("netlink_membership_words(socket.membership_words())"));
+    assert!(dispatch.contains("socket.flags.get(bit)"));
+    assert_eq!(::netlink::get_answer(::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS),
+        ::netlink::GetAnswer::Memberships);
+    assert_eq!(::netlink::get_answer(::netlink::sockopt::NETLINK_GET_STRICT_CHK),
+        ::netlink::GetAnswer::Flag(::netlink::F_STRICT_CHK));
+    assert_eq!(::netlink::get_answer(::netlink::sockopt::NETLINK_ADD_MEMBERSHIP),
+        ::netlink::GetAnswer::Unknown);
     let unknown = dispatch.find("_ => return -(Errno::Enoprotoopt").unwrap();
     let copyout = dispatch.find("netlink_getsockopt_copyout(optval").unwrap();
     assert!(unknown < copyout);
@@ -273,3 +282,34 @@ fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
 // the cooked-socket refusal that precedes any import, and the vnet-header
 // value coercion the shim now calls instead of open-coding. Value truncation
 // and the statistics layout are covered by `055_getsockopt/packet_abi.rs`.
+
+#[test]
+fn netlink_setsockopt_reports_enoprotoopt_for_an_option_it_does_not_implement() {
+    // Accepting an unknown SOL_NETLINK option and returning success tells the
+    // client a setting took effect that never did. The shim reaches the
+    // decision table for every optname and has no silent fall-through.
+    let source = include_str!("netlink_fd.rs");
+    let body = source.split("pub fn setsockopt(").nth(1).unwrap()
+        .split("/// `CAP_NET_BROADCAST`").next().unwrap();
+    assert!(body.contains("match ::netlink::set_action(optname)"));
+    assert!(body.contains("SetAction::Unknown => -(Errno::Enoprotoopt"));
+    assert!(!body.contains("matches!(optname"), "no second optname table in the shim");
+    for name in [::netlink::sockopt::NETLINK_RX_RING, ::netlink::sockopt::NETLINK_TX_RING,
+                 ::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS, u64::MAX] {
+        assert_eq!(::netlink::set_action(name), ::netlink::SetAction::Unknown);
+    }
+    // A short option is not an error in netlink: the value simply stays zero.
+    assert!(body.contains("if optlen >= NETLINK_OPTION_BYTES"));
+    assert!(body.contains("Errno::Efault"), "a bad pointer is EFAULT, not EINVAL");
+}
+
+#[test]
+fn netlink_membership_and_listen_all_nsid_carry_their_capability_gates() {
+    let source = include_str!("netlink_fd.rs");
+    assert!(source.contains("!::netlink::nonroot_recv(socket.protocol) && !has_net_admin(socket)"));
+    assert!(source.contains("sched::cap::NET_BROADCAST"));
+    assert!(::netlink::nonroot_recv(::netlink::proto::NETLINK_ROUTE));
+    assert!(!::netlink::nonroot_recv(::netlink::proto::NETLINK_NETFILTER));
+    assert_eq!(::netlink::set_action(::netlink::sockopt::NETLINK_LISTEN_ALL_NSID),
+        ::netlink::SetAction::PrivilegedFlag(::netlink::F_LISTEN_ALL_NSID));
+}

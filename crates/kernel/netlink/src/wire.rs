@@ -20,8 +20,16 @@ pub mod sockopt {
     pub const SOL_NETLINK: u64 = 270;
     pub const NETLINK_ADD_MEMBERSHIP: u64 = 1;
     pub const NETLINK_DROP_MEMBERSHIP: u64 = 2;
+    pub const NETLINK_PKTINFO: u64 = 3;
+    pub const NETLINK_BROADCAST_ERROR: u64 = 4;
     pub const NETLINK_NO_ENOBUFS: u64 = 5;
+    pub const NETLINK_RX_RING: u64 = 6;
+    pub const NETLINK_TX_RING: u64 = 7;
+    pub const NETLINK_LISTEN_ALL_NSID: u64 = 8;
     pub const NETLINK_LIST_MEMBERSHIPS: u64 = 9;
+    pub const NETLINK_CAP_ACK: u64 = 10;
+    pub const NETLINK_EXT_ACK: u64 = 11;
+    pub const NETLINK_GET_STRICT_CHK: u64 = 12;
 }
 
 /// `NETLINK_*` protocol family IDs.

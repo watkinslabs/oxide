@@ -46,6 +46,7 @@ mod rcv_skb;
 mod receive;
 mod sockaddr;
 mod shutdown;
+mod sockflags;
 #[cfg(test)]
 mod netlink_tests;
 mod wire;
@@ -75,6 +76,9 @@ pub(crate) use ports::{register_port_id, unicast_port};
 pub use netlink_socket::{NETLINK_RCVBUF_DEFAULT, NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD,
     NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
+pub use sockflags::{get_answer, nonroot_recv, set_action, GetAnswer, NetlinkFlags, SetAction,
+    F_BROADCAST_SEND_ERROR, F_CAP_ACK, F_EXT_ACK, F_LISTEN_ALL_NSID, F_RECV_NO_ENOBUFS,
+    F_RECV_PKTINFO, F_STRICT_CHK};
 pub use sockaddr::{encode_dest, first_group, parse_dest, NlDest};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
     KOBJECT_UEVENT_KERNEL_GROUP_MASK, KOBJECT_UEVENT_UDEV_GROUP_MASK,
