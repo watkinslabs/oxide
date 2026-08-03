@@ -1,11 +1,11 @@
 use super::*;
 
-impl ArpCache {
+impl<A: NeighAddr> NeighCache<A> {
     /// Advance unresolved IPv4 neighbours under Linux's bounded solicitation
     /// policy. The caller emits probes and completes failures after this lock
     /// is released. # C: O(N entries)
-    pub(crate) fn tick(&self, now_ns: u64) -> ArpTick {
-        let mut out = ArpTick { probes: Vec::new(), failed: Vec::new() };
+    pub(crate) fn tick(&self, now_ns: u64) -> NeighTick<A> {
+        let mut out = NeighTick { probes: Vec::new(), failed: Vec::new() };
         if self.closed.load(Ordering::Acquire) || now_ns == 0 { return out; }
         let mut entries = self.inner.lock();
         for (target_ip, entry) in entries.iter_mut() {
@@ -22,7 +22,7 @@ impl ArpCache {
                     let Some(job) = entry.pending.front() else { continue; };
                     entry.probes += 1;
                     entry.probe_deadline_ns = now_ns.saturating_add(ARP_RETRANS_TIME_NS);
-                    out.probes.push(ArpProbe { lease: job.lease(), source_ip: entry.source_ip,
+                    out.probes.push(NeighProbe { lease: job.lease(), source_ip: entry.source_ip,
                         target_ip: *target_ip, destination: MacAddr::BROADCAST });
                 }
                 NudState::Delay | NudState::Probe => {
@@ -37,7 +37,7 @@ impl ArpCache {
                     entry.state = NudState::Probe;
                     entry.probes += 1;
                     entry.probe_deadline_ns = now_ns.saturating_add(ARP_RETRANS_TIME_NS);
-                    out.probes.push(ArpProbe { lease, source_ip: entry.source_ip,
+                    out.probes.push(NeighProbe { lease, source_ip: entry.source_ip,
                         target_ip: *target_ip, destination: mac });
                 }
                 NudState::Reachable | NudState::Stale | NudState::Permanent | NudState::Failed => {}
@@ -48,7 +48,7 @@ impl ArpCache {
     }
 }
 
-fn fail(entry: &mut ArpEntry, out: &mut ArpTick) {
+fn fail<A: NeighAddr>(entry: &mut NeighEntry<A>, out: &mut NeighTick<A>) {
     entry.state = NudState::Failed;
     entry.mac = None;
     entry.pending_bytes = 0;

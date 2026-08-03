@@ -131,11 +131,14 @@ impl TxDispatch {
             };
             let job = match job.admit_arp() {
                 Ok(job) => job,
-                Err(crate::arp::ArpResolution::Deferred { probe, dropped, queued }) => {
+                Err(NeighAdmission::DeferredV4 { probe, dropped, queued }) => {
                     Self::finish_deferred_neighbour(probe, dropped, queued);
                     continue;
                 }
-                Err(crate::arp::ArpResolution::Send { job, mac }) => job.with_l2(mac),
+                Err(NeighAdmission::DeferredV6 { probe, dropped, queued }) => {
+                    Self::finish_deferred_neighbour6(probe, dropped, queued);
+                    continue;
+                }
             };
             let done = job.0.done.clone();
             let result = {
@@ -176,6 +179,43 @@ impl TxDispatch {
         for dropped in dropped { dropped.complete(Err(NetError::Enobufs)); }
         if let Some(queued) = queued { queued.complete(Ok(())); }
         if let Some(probe) = probe { let _ = Self::emit_arp_probe(probe); }
+    }
+
+    /// Solicit one IPv6 neighbour — the reference's `nd_tbl.solicit`. Same
+    /// queue-then-solicit shape as ARP, with a Neighbour Solicitation to the
+    /// target's solicited-node group instead of a broadcast request.
+    /// # C: O(1)
+    pub(crate) fn emit_ndp_probe(probe: crate::neigh::NeighProbe<crate::Ipv6Addr>)
+        -> NetResult<()>
+    {
+        let (target, source) = (probe.target_ip, probe.source_ip);
+        let destination = crate::ndp::solicited_node_multicast(target);
+        let mac = probe.lease.device().mac();
+        let body = crate::ndp::NdpMsg::build_ns(source, destination, mac, target);
+        let mut l3 = alloc::vec![0u8; crate::ipv6::IPV6_HDR_LEN + body.len()];
+        let mut hdr = crate::ipv6::Ipv6Hdr::build(source, destination,
+            crate::IpProto::Icmpv6, body.len() as u16);
+        hdr.hop_limit = u8::MAX;
+        hdr.write_to(&mut l3[..crate::ipv6::IPV6_HDR_LEN]);
+        l3[crate::ipv6::IPV6_HDR_LEN..].copy_from_slice(&body);
+        let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + l3.len()];
+        crate::ethernet::EthHdr::write_to(probe.destination, mac,
+            crate::addr::eth_p::IPV6, &mut frame);
+        frame[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&l3);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        crate::sock::deliver_packet_egress_in(&probe.lease, &frame, crate::addr::eth_p::IPV6,
+            crate::ethernet::ETH_HDR_LEN, None);
+        probe.lease.device().xmit_raw(&frame)
+    }
+
+    /// The IPv6 counterpart of `finish_deferred_neighbour`. # C: O(evicted)
+    #[inline(never)]
+    fn finish_deferred_neighbour6(probe: Option<crate::neigh::NeighProbe<crate::Ipv6Addr>>,
+        dropped: alloc::vec::Vec<TxJob>, queued: Option<TxAck>)
+    {
+        for dropped in dropped { dropped.complete(Err(NetError::Enobufs)); }
+        if let Some(queued) = queued { queued.complete(Ok(())); }
+        if let Some(probe) = probe { let _ = Self::emit_ndp_probe(probe); }
     }
 
     pub(crate) fn emit_arp_probe(probe: crate::arp::ArpProbe) -> NetResult<()> {
@@ -286,10 +326,36 @@ impl TxJob {
         self
     }
 
-    fn admit_arp(self) -> Result<Self, crate::arp::ArpResolution> {
+    /// Resolve an IPv6 next hop through the same neighbour table the IPv4 half
+    /// uses: a hit attaches the address, a miss queues the packet and
+    /// solicits. Before this, an IPv6 miss dropped the packet, so the first
+    /// packet to every new IPv6 neighbour was lost.
+    /// # C: O(log N)
+    fn admit_ndp(self, next_hop: crate::Ipv6Addr, source: crate::Ipv6Addr)
+        -> Result<Self, NeighAdmission>
+    {
+        if next_hop.is_multicast() {
+            return Ok(self.with_l2(crate::ndp::multicast_ethernet(next_hop)));
+        }
+        let iface = self.0.lease.iface();
+        let Some(cache) = crate::sock::stack().ifaces.ndp_cache_for(iface) else { return Ok(self) };
+        match cache.resolve_or_queue(next_hop, source, self, crate::stack::net_now_ns()) {
+            crate::neigh::NeighResolution::Send { job, mac } => Ok(job.with_l2(mac)),
+            crate::neigh::NeighResolution::Deferred { probe, dropped, queued } =>
+                Err(NeighAdmission::DeferredV6 { probe, dropped, queued }),
+        }
+    }
+
+    fn admit_arp(self) -> Result<Self, NeighAdmission> {
+        if self.0.lease.device().hardware_type() != crate::uapi::ARPHRD_ETHER { return Ok(self); }
         let (next_hop, source) = match &self.0.payload {
-            TxPayload::Packet { pkt, .. } if self.0.lease.device().hardware_type() == crate::uapi::ARPHRD_ETHER
-                && pkt.proto == crate::addr::eth_p::IPV4 => match pkt.next_hop {
+            TxPayload::Packet { pkt, .. } if pkt.proto == crate::addr::eth_p::IPV6 =>
+                match pkt.next_hop {
+                    Some(crate::pkt::TxNextHop::V6 { addr, src }) => return self.admit_ndp(addr, src),
+                    _ => return Ok(self),
+                },
+            TxPayload::Packet { pkt, .. } if pkt.proto == crate::addr::eth_p::IPV4 =>
+                match pkt.next_hop {
                     Some(crate::pkt::TxNextHop::V4(next_hop)) => (next_hop, ipv4_source(pkt.data())),
                     _ => return Ok(self),
                 },
@@ -351,8 +417,9 @@ impl TxJob {
         if next_hop.is_multicast() { return Ok(self.with_l2(ipv4_multicast_mac(next_hop))); }
         let lease = self.0.lease.clone();
         match lease.arp_cache().resolve_or_queue(next_hop, source, self, crate::stack::net_now_ns()) {
-            crate::arp::ArpResolution::Send { job, mac } => Ok(job.with_l2(mac)),
-            deferred => Err(deferred),
+            crate::neigh::NeighResolution::Send { job, mac } => Ok(job.with_l2(mac)),
+            crate::neigh::NeighResolution::Deferred { probe, dropped, queued } =>
+                Err(NeighAdmission::DeferredV4 { probe, dropped, queued }),
         }
     }
 
@@ -389,6 +456,21 @@ impl TxJob {
             }
         }
     }
+}
+
+/// What a neighbour admission decided. The resolved case is
+/// family-independent; only the solicitation differs.
+pub(crate) enum NeighAdmission {
+    DeferredV4 {
+        probe: Option<crate::neigh::NeighProbe<crate::Ipv4Addr>>,
+        dropped: alloc::vec::Vec<TxJob>,
+        queued: Option<TxAck>,
+    },
+    DeferredV6 {
+        probe: Option<crate::neigh::NeighProbe<crate::Ipv6Addr>>,
+        dropped: alloc::vec::Vec<TxJob>,
+        queued: Option<TxAck>,
+    },
 }
 
 fn ipv4_source(packet: &[u8]) -> crate::Ipv4Addr {

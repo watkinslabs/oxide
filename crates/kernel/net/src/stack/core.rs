@@ -13,7 +13,6 @@ impl NetStack {
             bridge_pending: Spinlock::new(BTreeMap::new()),
             inet: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
-            ndp:        Spinlock::new(BTreeMap::new()),
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
@@ -109,27 +108,39 @@ impl NetStack {
     /// Learn or update an IPv6 neighbor binding scoped to `iface`.
     /// # C: O(log N)
     pub fn ndp_insert(&self, iface: NetIfaceId, ip: Ipv6Addr, mac: MacAddr) {
-        self.ndp.lock().insert((iface, ip), mac);
+        // Learning releases whatever was parked on this neighbour, exactly as
+        // the IPv4 half does: the packets waiting for the address are handed
+        // back with it attached rather than dropped.
+        if let Some(cache) = self.ifaces.ndp_cache_for(iface) {
+            for job in cache.learn_at(ip, mac, crate::neigh::NudState::Reachable,
+                crate::stack::net_now_ns()) { job.resume(mac); }
+        }
         self.bridge_neighbour_resolved(iface, IpAddr::V6(ip));
     }
 
     /// Lookup an IPv6 neighbor binding scoped to `iface`.
     /// # C: O(log N)
     pub fn ndp_lookup(&self, iface: NetIfaceId, ip: Ipv6Addr) -> Option<MacAddr> {
-        self.ndp.lock().get(&(iface, ip)).copied()
+        self.ifaces.ndp_cache_for(iface).and_then(|cache| cache.lookup(ip))
     }
 
     /// Remove one IPv6 neighbor binding scoped to `iface`, returning its prior
     /// link address when present (RTM_DELNEIGH). # C: O(log N)
     pub fn ndp_remove(&self, iface: NetIfaceId, ip: Ipv6Addr) -> Option<MacAddr> {
-        self.ndp.lock().remove(&(iface, ip))
+        let cache = self.ifaces.ndp_cache_for(iface)?;
+        let entry = cache.remove(ip)?;
+        for job in entry.pending { job.complete(Err(crate::NetError::Ehostunreach)); }
+        entry.mac
     }
 
     /// Snapshot every IPv6 neighbor binding live in `ns`, paired with each
     /// owning interface's namespace-local index (RTM_GETNEIGH). # C: O(N)
     pub fn ndp_snapshot_in_ns(&self, ns: u64) -> Vec<(u32, Ipv6Addr, MacAddr)> {
-        let rows: Vec<(NetIfaceId, Ipv6Addr, MacAddr)> =
-            self.ndp.lock().iter().map(|((iface, ip), mac)| (*iface, *ip, *mac)).collect();
+        let mut rows: Vec<(NetIfaceId, Ipv6Addr, MacAddr)> = Vec::new();
+        for (iface, _) in self.ifaces.snapshot_devs_in_ns(ns) {
+            let Some(cache) = self.ifaces.ndp_cache_for(iface) else { continue };
+            for (ip, mac) in cache.snapshot_bindings() { rows.push((iface, ip, mac)); }
+        }
         rows.into_iter().filter_map(|(iface, ip, mac)| {
             self.ifaces.ifindex_in_ns(iface, ns).map(|ifindex| (ifindex, ip, mac))
         }).collect()

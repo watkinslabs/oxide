@@ -148,7 +148,6 @@ impl NetStack {
                     })));
             }
         }
-        self.ndp.lock().retain(|(id, _), _| *id != iface);
         self.v6_mcast.lock().remove(&iface);
         self.v4_mcast.lock().remove(&iface);
         if let Some(tables) = self.try_inet_tables(net_ns) {

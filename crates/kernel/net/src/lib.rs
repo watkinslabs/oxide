@@ -62,6 +62,7 @@ pub mod ipv6_ext;
 pub mod icmp;
 pub mod igmp;
 pub mod icmpv6;
+pub mod neigh;
 pub mod arp;
 pub mod ethernet;
 pub mod ndp;

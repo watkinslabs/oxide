@@ -198,6 +198,8 @@ pub struct IfaceEntry {
     /// Canonical per-interface IPv4 neighbour owner. It is created with the
     /// interface generation and disappears when that generation is removed.
     pub(crate) arp: Arc<crate::arp::ArpCache>,
+    /// IPv6 half of the same neighbour table.
+    pub(crate) ndp: Arc<crate::neigh::NeighCache<crate::Ipv6Addr>>,
     ingress: Arc<IngressGate>,
 }
 
@@ -444,6 +446,16 @@ impl IfaceRegistry {
         let g = self.inner.lock();
         g.entries.iter().find(|e| e.id == id && e.ns == ns
             && e.ingress.live() && e.ingress.ready()).map(|e| e.arp.clone())
+    }
+
+    /// The IPv6 half of one interface's neighbour table. One state machine
+    /// serves both families, so this is the type the IPv4 half uses.
+    /// # C: O(N)
+    pub fn ndp_cache_for(&self, id: NetIfaceId)
+        -> Option<Arc<crate::neigh::NeighCache<crate::Ipv6Addr>>>
+    {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ingress.live()).map(|e| e.ndp.clone())
     }
 
     /// Resolve one Linux-visible interface index in its owning namespace.
