@@ -54,6 +54,25 @@ fn patch_type(msg: &mut [u8], ty: u16) {
     if msg.len() >= 6 { msg[4..6].copy_from_slice(&ty.to_ne_bytes()); }
 }
 
+/// The interface index a NOTIFICATION must carry: the namespace-scoped Linux
+/// ifindex, the same number the dumps report.
+///
+/// `NetIfaceId` is a process-global internal handle; `ifindex` is per-namespace
+/// and is what userspace knows an interface by — each namespace's `lo` is 1.
+/// Sending the internal id meant a notification could name a different
+/// interface than the dump did, so a client that builds its table from a dump
+/// cannot match the notification to anything. They coincide in the initial
+/// namespace, which is exactly why this survived: it is wrong only where a
+/// second namespace exists, and silently.
+///
+/// Falls back to the internal id if the interface has already gone, which is
+/// the pre-existing behaviour for a device removed mid-notification.
+/// # C: O(N_ifaces)
+fn notify_ifindex(owner: &net::control_event::IfaceOwner, ns: u64) -> i32 {
+    net::global_stack().ifaces.ifindex_in_ns(owner.iface, ns)
+        .unwrap_or(owner.iface.raw()) as i32
+}
+
 fn emit_link(event: &net::control_event::LinkEvent) {
     pause_notification(event.owner.iface.raw());
     let stats = rt::LinkStats64 {
@@ -63,7 +82,7 @@ fn emit_link(event: &net::control_event::LinkEvent) {
         rx_dropped: event.stats.rx_dropped, tx_dropped: event.stats.tx_dropped,
     };
     let mut msg = rt::build_newlink_reply(
-        0, 0, event.owner.iface.raw() as i32, &event.name, event.mac.0,
+        0, 0, event.ifindex as i32, &event.name, event.mac.0,
         &event.broadcast.bytes[..event.broadcast.len as usize], event.mtu,
         event.is_loopback, event.flags, stats, false);
     if event.kind == net::control_event::EventKind::Delete {
@@ -76,7 +95,7 @@ fn emit_addr(event: &net::control_event::AddrEvent) {
     pause_notification(event.owner.iface.raw());
     let row = event.row;
     let mut msg = rt::build_newaddr_reply(
-        0, 0, event.owner.iface.raw() as i32, &event.label, row.addr.octets(),
+        0, 0, notify_ifindex(&event.owner, event.namespace.id()), &event.label, row.addr.octets(),
         row.peer.map(|peer| peer.octets()),
         row.prefixlen, row.scope, row.flags,
         rt::IfaCacheInfo {
@@ -96,7 +115,7 @@ fn emit_addr6(event: &net::control_event::Addr6Event) {
     let scope = if row.addr.is_loopback() { rt::RT_SCOPE_HOST }
         else if row.addr.is_link_local() { rt::RT_SCOPE_LINK } else { rt::RT_SCOPE_UNIVERSE };
     let flags = row.flags();
-    let mut msg = rt::build_newaddr6_reply(0, 0, event.owner.iface.raw() as i32,
+    let mut msg = rt::build_newaddr6_reply(0, 0, notify_ifindex(&event.owner, event.namespace.id()),
         &event.label, row.addr.0, row.prefixlen, scope, flags,
         rt::IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 },
         false);
@@ -153,5 +172,41 @@ pub fn notify_control_event(event: &net::control_event::ControlEvent) {
         net::control_event::ControlEvent::Route(event) => emit_route(event),
         net::control_event::ControlEvent::Route6(event) => emit_route6(event),
         net::control_event::ControlEvent::Rule(event) => emit_rule(event),
+    }
+}
+
+#[cfg(test)]
+mod notify_ifindex_tests {
+    use super::*;
+
+    /// A notification carries the namespace-scoped ifindex, not the internal
+    /// handle — and this is only observable where the two differ.
+    ///
+    /// `NetIfaceId` is process-global; `ifindex` restarts per namespace, so a
+    /// second namespace's first interface is ifindex 1 while its id keeps
+    /// climbing. Sending the id meant a notification named a different
+    /// interface than the dump did, and a client that builds its table from the
+    /// dump could not match it. In the initial namespace the two coincide,
+    /// which is why this was invisible.
+    #[test]
+    fn a_notification_carries_the_namespace_ifindex_not_the_internal_id() {
+        let _domain = net::hosted_fixture::init_net_domain();
+        let stack = net::global_stack();
+        // Fill the initial namespace so the global id counter runs ahead.
+        let _a = stack.ifaces.register_in_ns(alloc::sync::Arc::new(net::LoopbackDev::new()), 0);
+        let _b = stack.ifaces.register_in_ns(alloc::sync::Arc::new(net::LoopbackDev::new()), 0);
+
+        const OTHER_NS: u64 = 4242;
+        let first = stack.ifaces.register_in_ns(
+            alloc::sync::Arc::new(net::LoopbackDev::new()), OTHER_NS);
+
+        let ifindex = stack.ifaces.ifindex_in_ns(first, OTHER_NS).expect("registered");
+        assert_eq!(ifindex, 1, "each namespace numbers its own interfaces from 1");
+        assert_ne!(ifindex, first.raw(),
+            "the fixture must actually distinguish the two, or it proves nothing");
+
+        let owner = net::control_event::IfaceOwner { iface: first, generation: 0 };
+        assert_eq!(notify_ifindex(&owner, OTHER_NS), ifindex as i32,
+            "notifications report what userspace knows the interface by");
     }
 }
