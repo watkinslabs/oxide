@@ -235,8 +235,7 @@ impl net::NetDev for VirtioNetDev {
         // to broadcast, matching the older one-shot behavior until the
         // upper layer retries after the neighbor cache is warm.
         let dst = pkt.next_hop
-            .and_then(|next_hop| resolve_next_hop_mac_observed(
-                self.device_key, self.mac, next_hop, observe))
+            .and_then(link_address_for)
             .ok_or(net::NetError::Ehostunreach)?;
         let mut frame = alloc::vec![0u8; 14 + body.len()];
         net::ethernet::EthHdr::write_to(
