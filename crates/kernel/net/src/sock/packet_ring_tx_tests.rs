@@ -62,6 +62,14 @@ fn fixture(version: u8, kind: u8, loss: bool)
     let owner = crate::net_ns::test_support::allocate_namespace();
     let device = Arc::new(TxDev::new());
     let iface = stack().ifaces.register_in_ns(device.clone(), owner.id().as_u64());
+    // Registration leaves an ethernet device administratively DOWN, as the
+    // reference does, and the packet transmit path refuses a down link. Bring
+    // it up the way userspace would before expecting it to carry frames.
+    {
+        let rtnl = stack().rtnl_lock();
+        stack().ifaces.set_iface_flags_in_ns(&rtnl, iface, owner.id().as_u64(),
+            crate::netdev::iff::IFF_UP, crate::netdev::iff::IFF_UP);
+    }
     let socket = Arc::new(InetSocket::new_packet_in(crate::eth_p::IPV4, kind, owner));
     if loss { socket.set_packet_loss(true).unwrap(); }
     socket.set_packet_version(version).unwrap();

@@ -36,6 +36,28 @@ impl Drop for IfaceRegistration<'_> {
     }
 }
 
+/// The flags a device carries the moment it is registered.
+///
+/// An ethernet NIC comes up administratively DOWN, as the reference does:
+/// `ether_setup` sets `dev->flags = IFF_BROADCAST|IFF_MULTICAST` and nothing
+/// more, and `IFF_UP` arrives only when userspace asks for it. Registering it
+/// already UP told the network manager the link had been configured by
+/// somebody else, so it marked the device externally-connected, left its
+/// generated profile bound to no device, and never ran its own activation —
+/// which is the step that issues DHCP. The guest therefore never took a lease.
+///
+/// Loopback is the exception in the reference too: it is registered and then
+/// opened during its own net-namespace init, so it is always up. Stamping that
+/// end state here matches what a caller observes.
+/// # C: O(1)
+fn initial_flags(hardware_type: u16) -> u32 {
+    if hardware_type == crate::uapi::ARPHRD_LOOPBACK {
+        iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
+    } else {
+        iff::IFF_BROADCAST | iff::IFF_MULTICAST
+    }
+}
+
 impl IfaceRegistry {
     fn insert_pending(&self, dev: Arc<dyn NetDev>,
                       owner: &network_namespace::NetworkNamespaceRef) -> IfaceRegistration<'_> {
@@ -44,11 +66,7 @@ impl IfaceRegistry {
         let ns = owner.id().as_u64();
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
-        let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
-        } else {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
-        };
+        let flags = initial_flags(dev.hardware_type());
         let gate = Arc::new(IngressGate::registration_pending(ns, 1));
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
@@ -142,11 +160,7 @@ impl IfaceRegistry {
         let id = NetIfaceId::from_raw(g.alloc_id());
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
-        let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
-        } else {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
-        };
+        let flags = initial_flags(dev.hardware_type());
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
@@ -154,5 +168,35 @@ impl IfaceRegistry {
             arp: Arc::new(crate::arp::ArpCache::new()),
             ingress: Arc::new(IngressGate::new(ns, 1)) });
         id
+    }
+}
+
+#[cfg(test)]
+mod initial_flags_tests {
+    use super::*;
+
+    /// An ethernet NIC is registered administratively DOWN, as the reference
+    /// registers it: `ether_setup` sets broadcast and multicast and nothing
+    /// more. Registering it UP made the network manager treat the link as
+    /// already configured by someone else, so it never ran the activation that
+    /// issues DHCP and the guest never took a lease.
+    #[test]
+    fn an_ethernet_nic_is_registered_down() {
+        let f = initial_flags(crate::uapi::ARPHRD_ETHER);
+        assert_eq!(f & iff::IFF_UP, 0, "no IFF_UP at registration");
+        assert_eq!(f & iff::IFF_RUNNING, 0, "IFF_RUNNING follows the link, not registration");
+        assert_eq!(f & iff::IFF_BROADCAST, iff::IFF_BROADCAST);
+        assert_eq!(f & iff::IFF_MULTICAST, iff::IFF_MULTICAST);
+        assert_eq!(f & iff::IFF_LOOPBACK, 0);
+    }
+
+    /// Loopback is the reference's exception: registered and then opened during
+    /// its own namespace init, so it is always up.
+    #[test]
+    fn loopback_is_registered_up() {
+        let f = initial_flags(crate::uapi::ARPHRD_LOOPBACK);
+        assert_eq!(f & iff::IFF_UP, iff::IFF_UP);
+        assert_eq!(f & iff::IFF_LOOPBACK, iff::IFF_LOOPBACK);
+        assert_eq!(f & iff::IFF_BROADCAST, 0, "loopback does not broadcast");
     }
 }
