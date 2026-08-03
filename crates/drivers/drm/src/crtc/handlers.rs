@@ -52,8 +52,7 @@ pub(crate) fn fb_scanout_resource(card_id: u32, ops: crate::node::ScanoutOps, fb
 /// / no virtio-gpu scanout backend installed. # C: O(1) + O(scanout).
 pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCrtc>() as u64) { return einval(); }
-    // SAFETY: arg range validated < USER_VA_END; drm_mode_crtc is 104 bytes; aligned struct read through the caller's AS at CPL=0.
-    let c: DrmModeCrtc = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtc) };
+    let Ok(c) = crate::uarg::read_arg::<DrmModeCrtc>(arg) else { return efault() };
     // DIAG: mutter's legacy modeset drives the scanout switch through here. One
     // line names whether it's called, whether the virtio-gpu scanout backend is
     // wired for THIS card_id, and the crtc/fb it targets — so a console-never-
@@ -106,8 +105,7 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
 /// # C: O(1) + O(scanout).
 pub fn page_flip(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg: u64, token: u64) -> i64 {
     if !user_ok(arg, core::mem::size_of::<DrmModeCrtcPageFlip>() as u64) { return einval(); }
-    // SAFETY: arg range validated < USER_VA_END; drm_mode_crtc_page_flip is 24 bytes; aligned struct read through the caller's AS at CPL=0.
-    let f: DrmModeCrtcPageFlip = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtcPageFlip) };
+    let Ok(f) = crate::uarg::read_arg::<DrmModeCrtcPageFlip>(arg) else { return efault() };
     let count = card.crtc_ids().len();
     if crtc_idx_of(f.crtc_id, count).is_none() { return einval(); }
     if f.fb_id == 0 { return einval(); }

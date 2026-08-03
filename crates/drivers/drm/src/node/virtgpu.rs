@@ -14,18 +14,14 @@ pub(super) fn ioctl(driver: Option<Arc<dyn DrmDriver>>, req: u64, arg: u64) -> i
 }
 
 fn getparam(driver: Option<Arc<dyn DrmDriver>>, arg: u64) -> i64 {
-    // SAFETY: node::handle_drm_ioctl checked the non-null user ioctl pointer.
-    let param = unsafe { core::ptr::read_volatile(arg as *const u64) };
-    // SAFETY: same checked 16-byte drm_virtgpu_getparam structure.
-    let value_ptr = unsafe { core::ptr::read_volatile((arg + 8) as *const u64) };
+    let Ok([param, value_ptr]) = crate::uarg::read_arg::<[u64; 2]>(arg)
+        else { return -(Errno::Efault.as_i32() as i64) };
     let Some(value) = driver.as_ref().and_then(|d| d.virtgpu_getparam(param)) else {
         return -(Errno::Enotty.as_i32() as i64);
     };
-    if value_ptr == 0 || value_ptr >= hal::USER_VA_END {
+    if crate::uarg::write_arg(value_ptr, value).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: value_ptr was checked against the user address ceiling above.
-    unsafe { core::ptr::write_volatile(value_ptr as *mut u64, value); }
     0
 }
 

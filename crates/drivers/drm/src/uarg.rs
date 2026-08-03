@@ -43,6 +43,18 @@ pub fn write_arg<T: Copy>(arg: u64, value: T) -> Result<(), Errno> {
     uaccess::copy_to_user(arg, &raw[..len])
 }
 
+/// Copy a driver-identity string into a user buffer, truncated to the length
+/// the caller advertised. The caller's pointer and length are its own claim
+/// about its buffer; `uaccess` decides whether the range is really writable,
+/// and a short or unmapped buffer is `EFAULT` rather than a kernel fault.
+/// # C: O(min(len, bytes))
+pub fn write_str(dst: u64, len: u64, bytes: &[u8]) -> Result<(), Errno> {
+    if dst == 0 || len == 0 { return Ok(()); }
+    let n = (len as usize).min(bytes.len());
+    if n == 0 { return Ok(()); }
+    uaccess::copy_to_user(dst, &bytes[..n])
+}
+
 /// Largest DRM ioctl argument struct handled through [`read_arg`]/[`write_arg`].
 /// `DrmModeFbCmd2` (4 handles + 4 pitches + 4 offsets + 4 modifiers) is the
 /// biggest at 88 bytes; the buffer is sized with headroom and every call checks.
@@ -70,5 +82,34 @@ mod tests {
     fn a_null_user_pointer_is_reported_not_dereferenced() {
         assert!(read_arg::<u64>(0).is_err());
         assert!(write_arg::<u64>(0, 0).is_err());
+    }
+
+    /// The handlers converted to the fault-recoverable path stay converted.
+    /// A raw dereference reintroduced into any of them is a fault an
+    /// unprivileged process can aim at the kernel, and nothing else in the
+    /// tree would notice it — `cargo check` compiles it happily.
+    #[test]
+    fn the_converted_ioctl_handlers_hold_no_raw_user_dereference() {
+        for (name, source) in [
+            ("node.rs", include_str!("node.rs")),
+            ("node/client_caps.rs", include_str!("node/client_caps.rs")),
+            ("node/virtgpu.rs", include_str!("node/virtgpu.rs")),
+            ("crtc/handlers.rs", include_str!("crtc/handlers.rs")),
+        ] {
+            assert!(!source.contains("read_volatile"), "{name} dereferences a user pointer");
+            assert!(!source.contains("write_volatile"), "{name} writes a user pointer");
+        }
+    }
+
+    /// A driver-identity string is copied only where the caller offered room:
+    /// a null pointer or a zero length is the caller declining the field, not
+    /// an error, which is how the reference answers a two-pass size query.
+    #[test]
+    fn a_declined_string_field_is_skipped_rather_than_written() {
+        assert!(super::write_str(0, 16, b"virtio_gpu").is_ok());
+        assert!(super::write_str(0x1000, 0, b"virtio_gpu").is_ok());
+        // With room offered, the transfer is attempted rather than skipped:
+        // an address outside the user half is reported, not written.
+        assert!(super::write_str(u64::MAX, 16, b"virtio_gpu").is_err());
     }
 }
