@@ -1,0 +1,9 @@
+# Functions that run on the per-CPU hardirq stack, not a task stack.
+#
+# `oxide_irq_common` (asm) switches RSP to this CPU's interrupt stack and calls
+# `oxide_irq_dispatch`, which runs the device handler and then, with interrupts
+# unmasked, drains softirqs. Everything reachable from these two spends the
+# interrupt stack's 16 KiB, and a nested hardware interrupt lands on top of
+# whatever they have already spent.
+oxide_irq_dispatch
+oxide_irq_exit_to_user

@@ -191,7 +191,7 @@ if [ "${SKIP_STACK_GATE:-0}" = "1" ]; then
     echo "pre-push: SKIP_STACK_GATE=1 set, bypassing frame-gate/stack-gate"
 else
     echo "pre-push: kernel change — running frame-gate + stack-gate (both arches)"
-    if ! make -j2 frame-gate stack-gate; then
+    if ! make -j2 frame-gate stack-gate irq-gate; then
         echo "pre-push: FAIL — a stack frame or call path is over budget" >&2
         echo "         (make frame-gate stack-gate). Split the chain so the big" >&2
         echo "         frames overlap instead of summing, or move the data" >&2
