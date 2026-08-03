@@ -224,6 +224,18 @@ impl NdpMsg {
     }
 }
 
+/// Ethernet address an IPv6 multicast group maps to (RFC 2464 §7): the
+/// group's low 32 bits under the `33:33` prefix. Computed, never learned.
+/// # C: O(1)
+pub const fn multicast_ethernet(group: Ipv6Addr) -> MacAddr {
+    MacAddr([0x33, 0x33, group.0[12], group.0[13], group.0[14], group.0[15]])
+}
+
+/// Ethernet address of a target's solicited-node group. # C: O(1)
+pub const fn solicited_node_ethernet(target: Ipv6Addr) -> MacAddr {
+    multicast_ethernet(solicited_node_multicast(target))
+}
+
 /// Solicited-node multicast destination for one unicast address. # C: O(1)
 pub const fn solicited_node_multicast(target: Ipv6Addr) -> Ipv6Addr {
     Ipv6Addr([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff,

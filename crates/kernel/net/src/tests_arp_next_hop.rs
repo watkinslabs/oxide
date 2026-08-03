@@ -170,3 +170,40 @@ fn an_attached_destination_reaches_the_drivers_explicit_l2_path() {
     assert!(transmit.contains("Some(dst) => lease.device().xmit_l2_observed(pkt, dst"));
     assert!(transmit.contains("None => lease.device().xmit_observed(pkt"));
 }
+
+/// One neighbour state machine serves both families.
+///
+/// IPv6 used to have a bare `BTreeMap<(iface, ip), MacAddr>` beside the IPv4
+/// table: no NUD states, no bounded solicitation policy, and no unresolved
+/// queue — so a miss dropped the packet and the first packet to every new
+/// IPv6 neighbour was lost, permanently. The fix is not a second queue but one
+/// table, as the reference's `arp_tbl`/`nd_tbl` share `neigh_table`.
+#[test]
+fn both_families_use_the_same_neighbour_table_type() {
+    let v4: crate::neigh::NeighCache<Ipv4Addr> = crate::neigh::NeighCache::new();
+    let v6: crate::neigh::NeighCache<crate::Ipv6Addr> = crate::neigh::NeighCache::new();
+    assert!(v4.lookup(GATEWAY).is_none());
+    assert!(v6.lookup(crate::Ipv6Addr([0u8; 16])).is_none());
+}
+
+#[test]
+fn an_ipv6_miss_queues_and_solicits_instead_of_dropping() {
+    let source = include_str!("netdev/tx_dispatch.rs");
+    assert!(source.contains("cache.resolve_or_queue(next_hop, source, self"),
+        "IPv6 goes through the shared table's queue-or-send decision");
+    assert!(source.contains("NeighAdmission::DeferredV6"));
+    assert!(source.contains("emit_ndp_probe"), "a miss solicits, as ARP does");
+    let types = include_str!("stack/types.rs");
+    assert!(!types.contains("ndp: Spinlock<BTreeMap<(NetIfaceId, Ipv6Addr), MacAddr>"),
+        "the duplicate IPv6 binding map is gone");
+}
+
+#[test]
+fn the_multicast_link_address_has_one_owner() {
+    let group = crate::Ipv6Addr([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    assert_eq!(crate::ndp::multicast_ethernet(group), crate::MacAddr([0x33, 0x33, 0, 0, 0, 1]));
+    let target = crate::Ipv6Addr([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa, 0xbb, 0xcc]);
+    assert_eq!(crate::ndp::solicited_node_ethernet(target),
+        crate::MacAddr([0x33, 0x33, 0xff, 0xaa, 0xbb, 0xcc]));
+    assert!(!include_str!("netdev/tx_dispatch.rs").contains("0x33, 0x33, next_hop"));
+}
