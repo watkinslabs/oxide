@@ -256,8 +256,21 @@ impl TxJob {
     /// Exact interface generation retained by this deferred dispatch. # C: O(1)
     pub(crate) fn lease(&self) -> EgressLease { self.0.lease.clone() }
 
-    /// Re-enter the exact dispatcher retained by this job's interface generation. # C: O(packet)
-    pub(crate) fn resume(self) { self.0.lease.clone().resume_arp_job(self); }
+    /// Re-enter the exact dispatcher with the link-layer address the neighbour
+    /// resolved to.
+    ///
+    /// A job parked on an unresolved neighbour carries no link-layer
+    /// destination — that is what it was waiting for. Re-entering the
+    /// dispatcher without attaching the address that just arrived transmits it
+    /// with none, so the very first packet to every new neighbour is lost
+    /// while every later one succeeds: a ping reports one loss and a resolver
+    /// pays a full timeout on its first query. The reference fills the header
+    /// from the neighbour's `ha` before releasing the queue.
+    /// # C: O(packet)
+    pub(crate) fn resume(self, mac: crate::MacAddr) {
+        let job = self.with_l2(mac);
+        job.0.lease.clone().resume_arp_job(job);
+    }
 
     /// Complete the original synchronous transmit admission exactly once.
     /// A job the neighbour queue already acknowledged has no sender left. # C: O(1)

@@ -133,7 +133,7 @@ fn set(stack: &NetStack, net_ns: u64, request: ArpReq) -> Result<(), Errno> {
     let completed = cache.admin_set(request.ip,
         (request.flags & (ATF_COM | ATF_PERM) != 0).then_some(request.mac),
         request.flags & ATF_PERM != 0, crate::stack::net_now_ns());
-    for job in completed { job.resume(); }
+    for job in completed { job.resume(request.mac); }
     Ok(())
 }
 
