@@ -75,9 +75,19 @@ pub fn classify_v4(ns: u64, addr: Ipv4Addr, iface: Option<NetIfaceId>) -> V4Addr
     if rows.iter().any(|row| row.broadcast == Some(addr) && scoped(row.iface)) {
         return V4AddrType::Broadcast;
     }
+    // A route in the LOCAL table makes every address it covers local. The
+    // reference asks the local table only for the address TYPE — `RTN_LOCAL`
+    // and friends — and never compares the route's preferred-source
+    // annotation, which is metadata for choosing a source address on transmit,
+    // not a constraint on what may be bound.
+    //
+    // Requiring `src_hint == addr` made exactly one address in 127.0.0.0/8
+    // bindable, the 127.0.0.1 the loopback route was registered with, so every
+    // other loopback address answered EADDRNOTAVAIL — including the 127.0.0.53
+    // the stub resolver binds before it does anything else, which is why name
+    // resolution failed to start at all.
     let local_route = crate::global_stack().routes.lookup_in(ns, addr).is_some_and(|route| {
-        route.table == crate::policy_rule::RT_TABLE_LOCAL && route.src_hint == Some(addr)
-            && scoped(route.iface)
+        route.table == crate::policy_rule::RT_TABLE_LOCAL && scoped(route.iface)
     });
     if local_route { V4AddrType::Local } else { V4AddrType::Other }
 }

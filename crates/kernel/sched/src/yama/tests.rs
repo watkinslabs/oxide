@@ -6,7 +6,7 @@ use super::*;
 use crate::task::{SchedClass, Task};
 use crate::tests::common::registry_test_lock;
 
-/// Restore the scope on drop. `set_scope` refuses to LOWER the value, so the
+/// Restore the scope on drop. From the maximum the knob is locked, so the
 /// tests write the cell directly to reset it.
 struct ScopeGuard(u8);
 impl Drop for ScopeGuard {
@@ -28,20 +28,35 @@ fn task(tid: u32, caps: u64) -> Task {
 const CAP_PTRACE: u64 = 1u64 << crate::cap::SYS_PTRACE;
 
 #[test]
-fn the_scope_knob_is_bounded_and_one_way() {
+fn the_scope_knob_is_bounded_and_locks_only_at_its_maximum() {
     let _g = registry_test_lock();
     let _s = with_scope(SCOPE_DISABLED);
     assert!(set_scope(SCOPE_RELATIONAL as i64));
     assert_eq!(scope(), SCOPE_RELATIONAL);
-    // Raising is allowed...
     assert!(set_scope(SCOPE_NO_ATTACH as i64));
-    // ...lowering never is, so a compromised privileged process cannot relax
-    // a hardened box back to unrestricted ptrace.
+    // At the maximum the knob is a one-way door: a compromised privileged
+    // process cannot relax a fully hardened box back to unrestricted ptrace.
     assert!(!set_scope(SCOPE_DISABLED as i64));
     assert_eq!(scope(), SCOPE_NO_ATTACH);
     // Out of range in either direction.
     assert!(!set_scope(-1));
     assert!(!set_scope(SCOPE_MAX as i64 + 1));
+}
+
+/// Below the maximum the knob moves BOTH ways, which is what the reference
+/// does — it raises the minimum to the maximum only once the value has reached
+/// it. Refusing every lowering made the default a floor, so the boot-time
+/// sysctl apply, which writes 0 from the shipped configuration, was refused and
+/// failed its unit.
+#[test]
+fn a_scope_below_the_maximum_can_be_lowered_again() {
+    let _g = registry_test_lock();
+    let _s = with_scope(SCOPE_RELATIONAL);
+    assert!(set_scope(SCOPE_DISABLED as i64), "0 is writable from the default");
+    assert_eq!(scope(), SCOPE_DISABLED);
+    assert!(set_scope(SCOPE_RELATIONAL as i64));
+    assert!(set_scope(SCOPE_DISABLED as i64), "and again, it is not one-way below the max");
+    assert_eq!(scope(), SCOPE_DISABLED);
 }
 
 #[test]
@@ -222,11 +237,15 @@ fn attach_class_access_is_yama_gated_but_read_class_is_not() {
 #[test]
 fn a_refused_scope_write_is_reported_to_the_caller() {
     // The sysctl leaf turns `false` into EINVAL. Reporting success for a
-    // refused lowering would tell a hardening script it had relaxed a
-    // restriction that is still in force.
+    // refused write would tell a hardening script it had relaxed a restriction
+    // that is still in force.
     let _g = registry_test_lock();
+    {
+        let _s = with_scope(SCOPE_MAX);
+        assert!(!set_scope(SCOPE_RELATIONAL as i64), "lowering from the max is refused");
+        assert_eq!(scope(), SCOPE_MAX, "a refused write changes nothing");
+    }
     let _s = with_scope(SCOPE_CAPABILITY);
-    assert!(!set_scope(SCOPE_RELATIONAL as i64), "lowering is refused");
     assert!(!set_scope(SCOPE_MAX as i64 + 1), "out of range is refused");
     assert_eq!(scope(), SCOPE_CAPABILITY, "a refused write changes nothing");
 }

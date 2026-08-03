@@ -150,3 +150,36 @@ fn the_v6_namespace_knob_is_separate_from_the_v4_one() {
     crate::sysctl::set_value_in(ns, NetSysctlKey::Ipv6NonlocalBind, 1).unwrap();
     assert_eq!(screen_v6(ns, unowned, None, none()), Ok(()));
 }
+
+/// Every address in the loopback prefix is bindable, not just the one the
+/// loopback route carries as its preferred source.
+///
+/// The reference asks the local table for an address TYPE and never compares
+/// the route's source annotation, which exists to pick a source address on
+/// transmit. Comparing it made exactly one loopback address bindable, so the
+/// stub resolver's `127.0.0.53` — the first thing it binds — was refused and
+/// name resolution never started.
+#[test]
+fn any_loopback_address_is_local_not_only_the_routes_preferred_source() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = crate::global_stack();
+    let _ = stack.register_loopback();
+
+    for a in [Ipv4Addr::new(127, 0, 0, 1), Ipv4Addr::new(127, 0, 0, 53),
+              Ipv4Addr::new(127, 0, 1, 1), Ipv4Addr::new(127, 255, 255, 254)] {
+        assert_eq!(classify_v4(NS0, a, None), V4AddrType::Local, "{a:?} is in 127.0.0.0/8");
+        assert_eq!(screen_v4(NS0, a, None, none()), Ok(()), "{a:?} binds without a permission");
+    }
+}
+
+/// The screen still refuses an address no local route covers, so widening the
+/// loopback case did not turn the check off.
+#[test]
+fn an_address_outside_every_local_route_is_still_refused() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = crate::global_stack();
+    let _ = stack.register_loopback();
+    let outside = Ipv4Addr::new(198, 51, 100, 7);
+    assert_eq!(classify_v4(NS0, outside, None), V4AddrType::Other);
+    assert_eq!(screen_v4(NS0, outside, None, none()), Err(NetError::Eaddrnotavail));
+}
