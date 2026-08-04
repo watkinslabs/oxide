@@ -5,7 +5,6 @@
 
 use alloc::sync::Arc;
 use vfs::InodeRef;
-use sync::{Spinlock, MountTable as RootClass};
 
 use crate::{
     make_proc_cmdline, make_proc_loadavg, make_proc_meminfo, make_proc_root,
@@ -235,15 +234,7 @@ sk       RefCnt Type Proto  Iface R Rmem   User   Inode\n\
     );
     crate::reg::register("/proc/net/snmp", crate::net::make_proc_net_snmp());
     crate::reg::register("/proc/net/snmp6", StaticFileInode::new(b"") as InodeRef);
-    crate::reg::register(
-        "/proc/net/netstat",
-        StaticFileInode::new(
-            b"\
-TcpExt: SyncookiesSent SyncookiesRecv SyncookiesFailed\n\
-TcpExt: 0 0 0\n\
-",
-        ) as InodeRef,
-    );
+    crate::reg::register("/proc/net/netstat", crate::net::make_proc_net_netstat());
     crate::reg::register("/proc/net/protocols", StaticFileInode::new(b"\
 protocol  size sockets  memory press maxhdr  slab module     cl co di ac io in de sh ss gs se re sp bi br ha uh gp em\n\
 PACKET   1024      0     0   no       0   no  kernel       n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n  n\n\

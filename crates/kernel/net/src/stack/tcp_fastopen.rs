@@ -13,7 +13,8 @@
 // publish the child again.
 
 use super::*;
-use crate::tcp_fastopen::{self, Passive};
+use crate::mib::{self, TcpExt};
+use crate::tcp_fastopen::{self, Counter, Passive};
 
 /// What the fast-open decision left for the handshake to carry out.
 pub(crate) struct Plan {
@@ -45,7 +46,17 @@ pub(crate) fn plan(listener: &TcpListenEntry, hdr: &crate::tcp_hdr::TcpHdr, seg:
         src: src_ip,
         dst: dst_ip,
     };
-    match tcp_fastopen::decide(&listener.fastopen, &syn, crate::tcp_conn::ka_now_ns()) {
+    let decision = tcp_fastopen::decide_counted(&listener.fastopen, &syn, crate::tcp_conn::ka_now_ns());
+    for counter in decision.counters() {
+        mib::bump_tcp_ext(namespace.id().as_u64(), match counter {
+            Counter::Passive => TcpExt::TcpFastOpenPassive,
+            Counter::PassiveFail => TcpExt::TcpFastOpenPassiveFail,
+            Counter::PassiveAltKey => TcpExt::TcpFastOpenPassiveAltKey,
+            Counter::CookieReqd => TcpExt::TcpFastOpenCookieReqd,
+            Counter::ListenOverflow => TcpExt::TcpFastOpenListenOverflow,
+        });
+    }
+    match decision.passive {
         Passive::Decline => Plan { reply: None, accept: false },
         Passive::Offer(cookie) => Plan { reply: Some(cookie), accept: false },
         Passive::Accept { reply } => Plan { reply, accept: true },

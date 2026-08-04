@@ -57,6 +57,10 @@ pub struct FastOpenQueue {
     out: Spinlock<Outstanding, SockLockClass>,
 }
 
+/// The queue-bound result the fast-open policy needs to account for.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Admission { Disabled, Full, Admitted }
+
 impl Default for FastOpenQueue {
     /// # C: O(1)
     fn default() -> Self { Self::new() }
@@ -91,14 +95,16 @@ impl FastOpenQueue {
     /// declines without spending the hash — and a client cannot tell a full
     /// queue from a server that does not do fast open at all, because both
     /// answer with a plain handshake. # C: O(1)
-    pub fn admit(&self, now_ns: u64) -> bool {
+    pub fn admit(&self, now_ns: u64) -> Admission {
         let max = self.max_qlen();
-        if max == 0 { return false; }
+        if max == 0 { return Admission::Disabled; }
         let mut out = self.out.lock();
-        if out.qlen < max { return true; }
+        if out.qlen < max { return Admission::Admitted; }
         match out.penalties.front() {
-            Some(expiry) if now_ns >= *expiry => { out.penalties.pop_front(); out.qlen -= 1; true }
-            _ => false,
+            Some(expiry) if now_ns >= *expiry => {
+                out.penalties.pop_front(); out.qlen -= 1; Admission::Admitted
+            }
+            _ => Admission::Full,
         }
     }
 
