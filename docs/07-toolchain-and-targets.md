@@ -162,12 +162,10 @@ Custom sections:
 ## 7 Build artifacts
 
 ```
-target/<triple>/<profile>/
-  kernel             # ELF
-  kernel.bin         # objcopied raw
-  initramfs.cpio.zst
-  boot.img           # ESP w/ kernel+initramfs+bootloader cfg
-  debug-symbols/     # split debuginfo (gdb, decoder)
+target/builds/<id-or-default>/
+  <arch>-unknown-oxide-kernel/<profile>/oxide-<arch>  # ELF snapshot
+  root-<arch>.img                                      # ext4 root disk
+  oxide-<arch>-grub.iso                                # boot ISO
 ```
 
 ## 8 xtask
@@ -195,7 +193,7 @@ xtask doc-check
 - `panic!("err: {}", x)` injected → build fail. Injected into host-test code → NO finding (scope, §5).
 - An audit count for a scoped rule equals the linter's count, not a raw grep: `make audit-counts` reports 0 `panic!(fmt)` and 0 `extern crate std` against a clean kernel build.
 - `Box<dyn MmuOps>` injected → post-build vtable grep fail.
-- `xtask qemu --arch x86_64`/`--arch aarch64` boot hello-world + clean exit.
+- `make qemu-x86` / `make qemu-arm` boot the kernel through the GRUB runner.
 - Toolchain bump PR template documented (`CONTRIBUTING.md`).
 
 ## 10 Cross-spec
