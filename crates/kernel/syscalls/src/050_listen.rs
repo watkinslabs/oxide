@@ -1,7 +1,6 @@
 // 050 listen — one syscall, one file (docs/53 §0). Moved verbatim from net.rs.
 #![cfg(target_os = "oxide-kernel")]
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
 use crate::net_common::{classify, Routed};
 use crate::net_errno::errno_from_neterr;
 use crate::sock_route::ControlOp;
@@ -18,8 +17,9 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
         Err(error) => return -(error.as_i32() as i64),
     };
     match target {
-        // `route` refuses a netlink listen before classification returns.
-        Routed::Netlink(_) => -(Errno::Eopnotsupp.as_i32() as i64),
+        Routed::Netlink(netlink) => match netlink.socket().listen() {
+            Ok(()) => 0, Err(error) => errno_from_neterr(error),
+        },
         // D3.3: AF_VSOCK listen — register the bound port in the vsock
         // connection table so inbound OP_REQUESTs are accepted + queued.
         Routed::Vsock(vs) => match vs.listen_with_backlog(backlog) {
