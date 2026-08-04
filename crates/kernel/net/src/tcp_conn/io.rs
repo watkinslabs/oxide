@@ -43,6 +43,12 @@ impl TcpConn {
         }
     }
 
+    /// Accept payload into the contiguous receive stream. # C: O(payload)
+    fn receive_payload(&mut self, seq: u32, payload: &[u8]) {
+        self.append_recv_payload(seq, payload);
+        self.bytes_received = self.bytes_received.saturating_add(payload.len() as u64);
+    }
+
     fn trim_retx_acked(&mut self, ack: u32) {
         while let Some(front) = self.retx_q.front_mut() {
             let len = front.payload.len() as u32 +
@@ -118,6 +124,7 @@ impl TcpConn {
                                 hdr: crate::tcp_hdr::TcpHdr)
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
+        self.segs_in = self.segs_in.saturating_add(1);
         let was_request = self.state == TcpState::SynRecv;
         let resp = self.input_with_header(src_ip, dst_ip, seg, hdr)?;
         if !was_request || self.state != TcpState::Established { return Ok(resp); }
@@ -190,7 +197,8 @@ impl TcpConn {
                 // has already handed to the program.
                 if self.fastopen_child && seg.len() > hdr.payload_offset() {
                     let payload = &seg[hdr.payload_offset()..];
-                    self.append_recv_payload(self.rcv_nxt, payload);
+                    self.data_segs_in = self.data_segs_in.saturating_add(1);
+                    self.receive_payload(self.rcv_nxt, payload);
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
                     if (hdr.flags & flags::FIN) != 0 {
                         self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
@@ -313,7 +321,7 @@ impl TcpConn {
                     }
                     if hdr.seq == self.rcv_nxt {
                         if !payload.is_empty() {
-                            self.append_recv_payload(hdr.seq, payload);
+                            self.receive_payload(hdr.seq, payload);
                         }
                         if let Some(urgent) = urgent {
                             self.urgent = Some(urgent);
@@ -326,7 +334,7 @@ impl TcpConn {
                             if seq != self.rcv_nxt { break; }
                             let segment = self.ooo_buf.remove(&seq).unwrap();
                             let len = segment.payload.len() as u32;
-                            self.append_recv_payload(seq, &segment.payload);
+                            self.receive_payload(seq, &segment.payload);
                             if let Some(urgent) = segment.urgent {
                                 self.urgent = Some(urgent);
                                 self.oob_consumed = None;
@@ -345,6 +353,7 @@ impl TcpConn {
                                     entry.insert(crate::tcp_conn::OutOfOrderSegment {
                                         payload: payload.to_vec(), urgent, fin: has_fin,
                                     });
+                                    self.rcv_ooopack = self.rcv_ooopack.saturating_add(1);
                                     self.note_fastopen_ofo_fin_blackhole();
                                 }
                             }

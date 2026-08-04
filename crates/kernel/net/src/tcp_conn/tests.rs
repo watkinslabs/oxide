@@ -47,6 +47,19 @@ fn data_round_trip_after_handshake() {
 
     let got = server.recv(64);
     assert_eq!(&got[..], b"oxide-tcp");
+    assert_eq!(server.segs_in, 3, "SYN, completing ACK, and data each count once");
+    assert_eq!(server.bytes_received, b"oxide-tcp".len() as u64);
+}
+
+#[test]
+fn tcp_info_notsent_bytes_follow_the_canonical_send_queue() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut client = TcpConn::new_client(ep(lo, 5001), ep(lo, 80), 1000);
+    client.state = crate::tcp_state::TcpState::Established;
+    client.send(b"queued");
+    assert_eq!(client.notsent_bytes(), 6);
+    let _ = client.output(1500, true, false);
+    assert_eq!(client.notsent_bytes(), 0);
 }
 
 #[test]
@@ -151,9 +164,11 @@ fn out_of_order_urgent_waits_for_stream_gap_before_publication() {
     let ooo = make(seq.wrapping_add(1), b"bc", 1);
     let _ = server.input_prevalidated(lo_ip(), lo_ip(), &ooo).unwrap();
     assert!(!server.has_urgent(), "URG must not bypass an unfilled receive gap");
+    assert_eq!(server.rcv_ooopack, 1);
 
     let first = make(seq, b"a", 0);
     let _ = server.input_prevalidated(lo_ip(), lo_ip(), &first).unwrap();
+    assert_eq!(server.bytes_received, 3, "bytes count when the gap becomes contiguous");
     assert_eq!(server.take_urgent(), Some((seq.wrapping_add(1), b'b')));
 }
 
