@@ -55,6 +55,24 @@ pub(crate) unsafe fn cpuid_count(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
     (a, b, c, d)
 }
 
+/// Initial local-APIC identity decoded from CPUID leaf 1 EBX.
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+fn initial_apic_id_from_leaf1(ebx: u32) -> u32 { ebx >> 24 }
+
+/// Boot CPU's initial local-APIC identity before the LAPIC is mapped.
+/// # C: O(1)
+pub fn initial_apic_id() -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: CPUID leaf 1 is present on every x86_64 CPU and has no
+        // memory effects or privilege requirement.
+        let (_, ebx, _, _) = unsafe { cpuid(1) };
+        return initial_apic_id_from_leaf1(ebx);
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
 /// TSC frequency in kHz from an AUTHORITATIVE CPUID source, or 0 if none
 /// is available (caller then calibrates). Mirrors Linux
 /// `native_calibrate_tsc` order — this is the x86 analogue of arm's
@@ -183,5 +201,11 @@ mod tests {
     #[test]
     fn brand_returns_zeros_on_host() {
         assert_eq!(brand(), [0u8; 48]);
+    }
+
+    #[test]
+    fn initial_apic_id_uses_leaf_one_ebx_high_byte() {
+        assert_eq!(initial_apic_id_from_leaf1(0x7a00_0000), 0x7a);
+        assert_eq!(initial_apic_id_from_leaf1(0x00ff_ffff), 0);
     }
 }

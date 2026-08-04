@@ -145,10 +145,9 @@ pub(crate) unsafe fn build_boot_info() -> BootInfo {
         boot_ns:      hal_x86_64::X86TimerOps::monotonic_ns().0,
         hhdm_offset:  mb2::info::MB2_HHDM,
         rsdp_pa,
-        // Boot CPU's LAPIC id. The multiboot2 handoff carries no CPU
-        // identity; 0 is the BSP's conventional id and the ACPI MADT
-        // walk (`cpu::add_cpu`) is the authority for the rest.
-        bsp_lapic_id: 0,
+        // The handoff has no CPU identity. Read the architectural initial
+        // APIC id before the LAPIC mapping exists; ACPI supplies the rest.
+        bsp_lapic_id: hal_x86_64::initial_apic_id(),
         _pad: 0,
     }
 }
