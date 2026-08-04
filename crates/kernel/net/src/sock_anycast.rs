@@ -16,8 +16,10 @@ struct Membership { iface: NetIfaceId, addr: Ipv6Addr }
 pub struct SocketAnycast { members: Spinlock<Vec<Membership>, SockLockClass> }
 
 impl SocketAnycast {
+    /// # C: O(1)
     pub const fn new() -> Self { Self { members: Spinlock::new(Vec::new()) } }
 
+    /// # C: O(1)
     pub fn is_empty(&self) -> bool { self.members.lock().is_empty() }
 
     fn push(&self, iface: NetIfaceId, addr: Ipv6Addr) {
