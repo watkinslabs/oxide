@@ -177,6 +177,12 @@ pub struct TcpConn {
     pub ka_cnt_max:  u32,
     pub ka_count:    u32,
     pub last_rx_ns:  u64,
+    /// Last successfully transmitted sequence-consuming TCP segment.
+    pub last_data_sent_ns: u64,
+    /// Last received TCP segment carrying payload.
+    pub last_data_recv_ns: u64,
+    /// Last received TCP segment carrying the ACK flag.
+    pub last_ack_recv_ns: u64,
     pub next_ka_ns:  u64,
     /// `TCP_SYNCNT`: how many times the initial SYN is retransmitted before
     /// the connection attempt is abandoned.
