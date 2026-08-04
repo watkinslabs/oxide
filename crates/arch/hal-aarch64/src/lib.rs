@@ -207,6 +207,10 @@ impl CpuOps for ArmCpuOps {
         HWCAP_FP | HWCAP_ASIMD | crate::cpuid::isar0_hwcap(crate::cpuid::id_aa64isar0_el1())
     }
 
+    /// `AT_HWCAP2` for aarch64. Permission overlay is advertised only after
+    /// its EL0 ABI was enabled on the system. # C: O(1)
+    fn cpu_hwcap2() -> u64 { crate::por::hwcap2() }
+
     /// # C: O(1)
     fn cpu_min_sigstksz() -> u64 { signal::min_sigstksz() as u64 }
 
@@ -389,6 +393,11 @@ mod tests {
     fn arm_cpuops_host_fallback_returns_cpu_zero() {
         assert_eq!(ArmCpuOps::current_cpu(), 0);
         assert_eq!(ArmCpuOps::cpu_count(),    1);
+    }
+
+    #[test]
+    fn arm_cpuops_host_fallback_advertises_no_second_hwcap_word() {
+        assert_eq!(ArmCpuOps::cpu_hwcap2(), 0);
     }
 
     #[test]

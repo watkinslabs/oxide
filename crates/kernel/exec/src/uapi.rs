@@ -13,6 +13,7 @@ pub(crate) const AT_GID: u64 = 13;
 pub(crate) const AT_EGID: u64 = 14;
 pub(crate) const AT_PLATFORM: u64 = 15;
 pub(crate) const AT_HWCAP: u64 = 16;
+pub(crate) const AT_HWCAP2: u64 = 26;
 pub(crate) const AT_CLKTCK: u64 = 17;
 pub(crate) const AT_SECURE: u64 = 23;
 pub(crate) const AT_RANDOM: u64 = 25;

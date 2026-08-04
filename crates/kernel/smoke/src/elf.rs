@@ -277,6 +277,7 @@ unsafe fn spawn_user_blob_with_vpid(
             argv_ref.first().copied().unwrap_or(b""),
             0, // smoke: no vDSO mapped
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap(),
+            <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap2(),
             // The smoke loader runs before any credential exists: uid 0,
             // no privilege gained, so AT_SECURE is 0 (Linux's plain-exec case).
             elf_load::stack::AuxCreds::default(),

@@ -158,7 +158,7 @@ fn load_image(mm: &Arc<vmm::AddressSpace>, program: &[u8], info: &SubprocessInfo
     let layout = unsafe {
         elf_load::stack::build_user_stack(
             stack_top, HELPER_STACK_BYTES, &argv_slices, &envp_slices, &img,
-            &random16, info.path_bytes(), 0, arch::cpu_hwcap(),
+            &random16, info.path_bytes(), 0, arch::cpu_hwcap(), arch::cpu_hwcap2(),
             // A helper runs with the full kernel credential set and gains no
             // privilege by being exec'd, so the secure-execution flag is clear.
             elf_load::stack::AuxCreds::default(),
