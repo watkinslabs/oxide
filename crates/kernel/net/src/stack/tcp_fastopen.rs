@@ -13,6 +13,7 @@
 // publish the child again.
 
 use super::*;
+use crate::netdev::iff;
 use crate::mib::{self, TcpExt};
 use crate::tcp_fastopen::{self, Counter, Passive};
 
@@ -70,7 +71,7 @@ pub(crate) fn plan(listener: &TcpListenEntry, hdr: &crate::tcp_hdr::TcpHdr, seg:
 /// The connection cannot do this itself — the cookie cache and the pause are
 /// namespace state — so it records the facts and this runs at every point a
 /// segment or a timer could have produced them. # C: O(log N)
-pub(crate) fn drain_client(entry: &Arc<TcpEntry>, now_ns: u64) {
+pub(crate) fn drain_client(stack: &NetStack, entry: &Arc<TcpEntry>, now_ns: u64) {
     let (learned, blackholed, confirmed, src, dst, mss) = {
         let mut c = entry.conn.lock();
         let confirmed = c.fastopen_confirming && c.data_segs_in > 0;
@@ -86,7 +87,27 @@ pub(crate) fn drain_client(entry: &Arc<TcpEntry>, now_ns: u64) {
     if blackholed { tcp_fastopen::blackhole_disable(namespace, now_ns); }
     // A fast open that carried data over a path the pause had just released
     // is the evidence that ends the pause outright.
-    if confirmed { tcp_fastopen::blackhole_reset(namespace); }
+    if confirmed && !confirmed_on_loopback(stack, entry) {
+        tcp_fastopen::blackhole_reset(namespace);
+    }
+}
+
+/// Linux resets the Fast Open blackhole recurrence only when the confirming
+/// connection's selected egress device is not loopback. A vanished route has
+/// no loopback device to protect, matching the reference's absent-dst case.
+/// # C: O(route lookup)
+fn confirmed_on_loopback(stack: &NetStack, entry: &TcpEntry) -> bool {
+    let net_ns = entry.net_ns();
+    let bound = entry.bound_iface();
+    let dst = entry.conn.lock().remote.ip;
+    match dst {
+        IpAddr::V4(dst) => stack.route_v4_iface_in(net_ns, dst, bound)
+            .map(|(_, iface, _)| iface.flags() & iff::IFF_LOOPBACK != 0)
+            .unwrap_or(false),
+        IpAddr::V6(dst) => stack.route_v6_iface_in(net_ns, dst, bound)
+            .map(|(_, iface, _)| iface.flags() & iff::IFF_LOOPBACK != 0)
+            .unwrap_or(false),
+    }
 }
 
 impl Plan {
