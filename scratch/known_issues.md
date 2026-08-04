@@ -32,14 +32,14 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Section | DEFECT | MISSING | COVERAGE | INFRA | total |
 |---|---|---|---|---|---|
-| Net / socket | 29 | 17 | 22 | 0 | 68 |
+| Net / socket | 29 | 17 | 21 | 0 | 67 |
 | Filesystem / mount | 18 | 13 | 5 | 0 | 36 |
 | Memory / MM | 19 | 3 | 3 | 0 | 25 |
 | Process / exec / signals | 13 | 1 | 4 | 0 | 18 |
 | Drivers / devices | 12 | 1 | 5 | 0 | 18 |
 | Kernel core | 4 | 2 | 1 | 0 | 7 |
 | Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **95** | **37** | **40** | **51** | **223** |
+| **total** | **95** | **37** | **39** | **51** | **222** |
 
 ## Net / socket
 
@@ -85,7 +85,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | COVERAGE | med | The 66 new rows are `NEEDS-AUDIT`, meaning a route exists but NO semantic audit against the Linux contract has been performed. This is not a backlog of small items: it includes `read`, `mmap`, `clone`, `execve`, `fcntl`, `ptrace`, `prctl`, `pipe`, `nanosleep`, `accept4`, `getrandom`, `memfd_create` and `execveat` — several of them among the highest-traffic entry points in the tree. Owner/deps/model columns are `-` by design and the auditing lane fills them. | F784. Full list is the 66 rows carrying branch `F784-matrix-untracked-syscalls`. | — |
 | OPEN | COVERAGE | low | The `sendto`/`sendmsg` Landlock hooks (port rights on an explicit destination; `ACCESS_FS_RESOLVE_UNIX` on a pathname recipient) are pinned only by source-inspection tests in `socket/src/tests/landlock_hooks.rs`, not by a behavioural one. The decision itself is behaviourally covered in `net::landlock_addr`, but the call site cannot be driven hosted: the domain is read off the running task and a hosted build has none. A wrong ARGUMENT at the call site (right socket, wrong bytes) would not be caught. Closing it needs a hosted `SendContext` fixture that can carry a domain. | F791. | — |
 | OPEN | COVERAGE | low | accept4 copy-out failure relies on `Drop`, untested | On `copy_sockaddr_to_user` failure the INET path returns the errno and drops `accepted.new_sock`, where the VSOCK sibling calls `net::vsock::close(&conn)` explicitly. The child is already popped off `accept_q` with its backlog slot released. No test asserts the errno or that the slot is not leaked. Not shown to be a defect — untested. | unowned |
-| OPEN | COVERAGE | low | `syscalls::socket_control_tests` proves nothing about behaviour | It "covers" `050_listen.rs` by `include_str!` source-text grep (asserting the file contains `fd_file(fd)`, `Errno::Enotsock`); `043_accept.rs` is not covered at all. A gate that cannot fail on a behaviour change. | unowned |
 | OPEN | COVERAGE | low | `syscalls/src/tcp_zerocopy/receive.rs` has no hosted coverage | `#![cfg(target_os = "oxide-kernel")]` by design; the remap, copy-out and frame-lifetime code is uncovered and only the pure planner it delegates to is tested. | unowned |
 | OPEN | COVERAGE | low | `043_accept.rs`'s blocking half is still uncovered hosted — the per-listener park (TCP/AF_UNIX/VSOCK arm, `schedule()`, `remove_current`), the `sock_intr_errno` rung and the `SO_RCVTIMEO` deadline all sit in the kernel-gated slot. Only the admission head (EBADF, the flag word, ENOTSOCK, EOPNOTSUPP) moved to the ungated owner. The interrupted-wait rung keeps its `include_str!` assertion in `net_common.rs` (`every_blocking_socket_receive_wait_routes_through_sock_intr_errno`), which is still a source grep — left in place because the decision it names has no ungated seam yet. Settling it needs the wait loop restructured around an ungated "what does this wait return" decision, the way `net_errno::sock_intr_errno` already is for the errno alone. | `crates/kernel/syscalls/src/043_accept.rs` `accept_common` loop. | unclaimed |
 | OPEN | COVERAGE | low | `accept4` copy-out failure still relies on `Drop` for the INET path and no test asserts the backlog slot is not leaked — the curated row that opens "accept4 copy-out failure relies on `Drop`, untested" is untouched by this PR. It needs a hosted seam for the copy-out itself, which is `uaccess`-gated. | Curated ledger row; `043_accept.rs` `copy_sockaddr_to_user` arm. | unclaimed |
