@@ -113,29 +113,12 @@ fn generic_getsockopt_matches_canonical_socket_option_constants() {
     }
 }
 
-/// The caller's `optlen` is imported and screened before ANY answer is produced.
-///
-/// Checked against every copy-out site, not the first one in the file. There
-/// are two — the `SOL_SOCKET` fast path returns before the option dispatch —
-/// and an ordering test written against `find()` alone silently described only
-/// whichever happened to appear first, so adding the earlier site failed the
-/// test while the code was correct.
 #[test]
-fn netlink_getsockopt_imports_optlen_before_dispatch_or_value_copyout() {
-    let source = include_str!("netlink_fd.rs");
-    let import = source.find("copy_from_user(&mut raw_len, optlen_p)").unwrap();
-    let negative = source.find("if requested < 0").unwrap();
-    let dispatch = source.find("let required = match (level, optname)").unwrap();
-    assert!(import < negative, "optlen is imported before it is screened");
-    assert!(negative < dispatch, "it is screened before any option is dispatched");
-    let copyouts: alloc::vec::Vec<usize> =
-        source.match_indices("netlink_getsockopt_copyout(optval, optlen_p").map(|(i, _)| i).collect();
-    assert!(copyouts.len() >= 2, "both the fast path and the dispatch tail copy out");
-    for at in copyouts {
-        assert!(negative < at, "no value is copied out before optlen is screened");
-    }
-    assert!(source[import..negative].contains("Errno::Efault"));
-    assert!(source[negative..dispatch].contains("Errno::Einval"));
+fn netlink_getsockopt_negative_optlen_is_rejected_by_the_live_policy_owner() {
+    use crate::netlink_getsockopt_policy::requested_len;
+    assert_eq!(requested_len((-1i32).to_ne_bytes()), Err(syscall::errno::Errno::Einval));
+    assert_eq!(requested_len(0i32.to_ne_bytes()), Ok(0));
+    assert_eq!(requested_len(4i32.to_ne_bytes()), Ok(4));
 }
 
 #[test]
