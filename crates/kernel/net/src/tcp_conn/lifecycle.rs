@@ -300,6 +300,11 @@ impl TcpConn {
         if scaled > u16::MAX as u32 { u16::MAX } else { scaled as u16 }
     }
 
+    /// Actual receive-window bytes currently advertised on the wire. # C: O(1)
+    pub fn advertised_rcv_wnd(&self) -> u32 {
+        (self.current_rcv_window() as u32) << self.snd_wscale
+    }
+
     /// Apply `setsockopt(SO_RCVBUF)` to the advertised receive window and stop
     /// autotuning (Linux `__sock_set_rcvbuf`: sets `SOCK_RCVBUF_LOCK`, and
     /// `sk_rcvbuf` is what `__tcp_select_window` then works from). `bytes` is
