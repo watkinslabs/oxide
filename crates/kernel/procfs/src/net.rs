@@ -245,6 +245,11 @@ fn net_snmp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
 /// `/proc/net/snmp` inode. # C: O(1)
 pub fn make_proc_net_snmp() -> InodeRef { make_net_file(ids::NET_SNMP as Ino, net_snmp_body) }
 
+/// `/proc/net/netstat` — extended TCP counters. # C: O(1)
+fn net_netstat_body(net_ns: u64) -> alloc::vec::Vec<u8> { net::mib::render_proc_netstat(net_ns) }
+/// `/proc/net/netstat` inode. # C: O(1)
+pub fn make_proc_net_netstat() -> InodeRef { make_net_file(ids::NET_NETSTAT as Ino, net_netstat_body) }
+
 /// `/proc/net/softnet_stat` — one row per CPU of receive bottom-half counters.
 /// Not namespace-scoped: the backlog is per-CPU, not per network namespace.
 fn softnet_stat_body() -> alloc::vec::Vec<u8> {
