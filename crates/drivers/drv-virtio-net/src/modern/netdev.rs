@@ -128,9 +128,14 @@ impl VirtioNetDev {
 pub fn register_netdev(device_key: DeviceKey) -> Option<net::NetIfaceId> {
     let dev = VirtioNetDev::new_for(device_key)?;
     let owner = dev.clone() as alloc::sync::Arc<dyn net::NetDev>;
+    let child_index = device_key.raw().checked_sub(1)?;
+    let child_addr = virtio::virtio_child_addr(child_index);
+    let parent = drv::devices().into_iter().find(|candidate| {
+        candidate.bus == virtio::VIRTIO_CHILD_BUS && candidate.addr == child_addr
+    })?;
     let stack = net::sock::stack();
     let namespace = net::net_ns::initial_namespace();
-    let reg = stack.prepare_iface(owner.clone(), &namespace)?;
+    let reg = stack.prepare_parented_iface(owner.clone(), parent, &namespace)?;
     let id = reg.id();
     set_registered_iface(device_key, id);
     let generation = dev.runtime.rx_assignments.current();

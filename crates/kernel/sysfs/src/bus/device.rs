@@ -209,7 +209,7 @@ impl InodeOps for DeviceLinkOps {
 }
 
 /// A device-owned symlink that dies with its exact registration. # C: O(N)
-pub(super) fn make_device_link_inode(device: Arc<drv::Device>, target: Vec<u8>) -> InodeRef {
+pub(crate) fn make_device_link_inode(device: Arc<drv::Device>, target: Vec<u8>) -> InodeRef {
     InodeBuilder::new(INO_SYMLINK, mk_mode(FileType::Symlink, LNK_PERM),
         Arc::new(DeviceLinkOps), default_file_ops())
         .size(target.len() as u64)
@@ -246,6 +246,9 @@ impl InodeOps for DeviceDirOps {
         }
         if name == "input" && crate::input::has_parented_inputs(dev.bus, &dev.addr) {
             return Ok(crate::input::make_transport_input_dir(dev.bus, &dev.addr));
+        }
+        if name == "net" && crate::net_class::has_parented_net(dev) {
+            return Ok(crate::net_class::make_parent_net_inode(Arc::clone(dev)));
         }
         // Nested child-device directory: a device whose model parent is this
         // one lives *under* it (Linux sysfs topology), e.g. `virtioN` under its
@@ -317,6 +320,9 @@ impl FileOps for DeviceDirOps {
         }
         if crate::input::has_parented_inputs(dev.bus, &dev.addr) {
             entries.push(("input", FileType::Directory));
+        }
+        if crate::net_class::has_parented_net(dev) {
+            entries.push(("net", FileType::Directory));
         }
         if bound {
             entries.push(("driver", FileType::Symlink));

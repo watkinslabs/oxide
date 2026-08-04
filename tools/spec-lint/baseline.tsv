@@ -65,7 +65,7 @@ crates/kernel/smoke	code/klog-ungated	5
 crates/kernel/sound	code/pub-fn-complexity	52
 crates/kernel/syscalls	code/klog-ungated	98
 crates/kernel/syscalls	code/pub-fn-complexity	38
-crates/kernel/sysfs	code/pub-fn-complexity	12
+crates/kernel/sysfs	code/pub-fn-complexity	11
 crates/kernel/time-namespace	code/pub-fn-complexity	1
 crates/kernel/timekeeper	code/pub-fn-complexity	9
 crates/kernel/tracefs	code/pub-fn-complexity	3

@@ -25,6 +25,15 @@ impl IfaceRegistry {
             .map(|e| (e.id, e.dev.clone())).collect()
     }
 
+    /// Snapshot each live interface with its exact driver-model parent for
+    /// sysfs placement. # C: O(N)
+    pub fn snapshot_sysfs_in_ns(&self, ns: u64)
+        -> Vec<(NetIfaceId, String, Arc<dyn NetDev>, Option<Arc<drv::Device>>)> {
+        let g = self.inner.lock();
+        g.entries.iter().filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
+            .map(|e| (e.id, e.name.clone(), e.dev.clone(), e.parent.clone())).collect()
+    }
+
     /// Init-NS device snapshot compatibility shim. # C: O(N)
     pub fn snapshot_devs(&self) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
         self.snapshot_devs_in_ns(0)
