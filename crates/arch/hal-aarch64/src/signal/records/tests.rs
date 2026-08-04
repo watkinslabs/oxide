@@ -18,7 +18,7 @@ fn head(b: &mut [u8], off: usize, magic: u32, size: u32) {
     put_u32(b, off + 4, size);
 }
 
-fn scan(r: &[u8]) -> Result<Scan, ()> { scan_region(r, RESERVED_VA, FRAME_VA, false, false) }
+fn scan(r: &[u8]) -> Result<Scan, ()> { scan_region(r, RESERVED_VA, FRAME_VA, false, false, false, false) }
 
 #[test]
 fn record_sizes_match_the_linux_uapi() {
@@ -40,7 +40,7 @@ fn write_chain_emits_a_linux_shaped_fpsimd_record_then_a_terminator() {
     let mut r = [0u8; RESERVED_BYTES];
     let mut q = [0u8; 32 * 16];
     for (i, b) in q.iter_mut().enumerate() { *b = (i as u8) ^ 0x3c; }
-    assert!(write_chain(&mut r, &q, 0x0080_0000, 0x1000_0010));
+    assert!(write_chain(&mut r, &q, 0x0080_0000, 0x1000_0010, None));
 
     assert_eq!(get_u32(&r, 0), FPSIMD_MAGIC);
     assert_eq!(get_u32(&r, 4), FPSIMD_CONTEXT_BYTES as u32);
@@ -56,6 +56,27 @@ fn write_chain_emits_a_linux_shaped_fpsimd_record_then_a_terminator() {
     assert_eq!(s.rebase, None);
     assert_eq!(read_fpsimd(&r, 0, FPSIMD_CONTEXT_BYTES as u32),
                Ok((0x1000_0010, 0x0080_0000, FPSIMD_VREGS_OFF)));
+}
+
+#[test]
+fn poe_context_is_exactly_sized_feature_gated_and_unique() {
+    let mut r = [0u8; RESERVED_BYTES];
+    assert!(write_chain(&mut r, &[0u8; 32 * 16], 0, 0, Some(0x7654_3210_fedc_ba98)));
+    let off = FPSIMD_CONTEXT_BYTES;
+    assert_eq!(get_u32(&r, off), POE_MAGIC);
+    assert_eq!(get_u32(&r, off + 4), POE_CONTEXT_BYTES as u32);
+    assert_eq!(read_poe(&r, off, POE_CONTEXT_BYTES as u32), Ok(0x7654_3210_fedc_ba98));
+    assert_eq!(scan_region(&r, RESERVED_VA, FRAME_VA, false, false, false, false), Err(()));
+    let s = scan_region(&r, RESERVED_VA, FRAME_VA, false, false, false, true).unwrap();
+    assert_eq!(s.poe, Some((off, POE_CONTEXT_BYTES as u32)));
+    let mut bad = r;
+    head(&mut bad, off, POE_MAGIC, 32);
+    assert_eq!(scan_region(&bad, RESERVED_VA, FRAME_VA, false, false, false, true), Err(()));
+    let mut duplicate = r;
+    let next = off + POE_CONTEXT_BYTES;
+    head(&mut duplicate, next, POE_MAGIC, POE_CONTEXT_BYTES as u32);
+    head(&mut duplicate, next + POE_CONTEXT_BYTES, 0, 0);
+    assert_eq!(scan_region(&duplicate, RESERVED_VA, FRAME_VA, false, false, false, true), Err(()));
 }
 
 /// Linux `init_user_layout`: the cursor stops `TERMINATOR_SIZE +
@@ -84,7 +105,7 @@ fn the_reserved_allocator_matches_linuxs_limit_arithmetic() {
 #[test]
 fn a_malformed_record_chain_is_rejected_the_way_linux_rejects_it() {
     let mut good = [0u8; RESERVED_BYTES];
-    assert!(write_chain(&mut good, &[0u8; 32 * 16], 0, 0));
+    assert!(write_chain(&mut good, &[0u8; 32 * 16], 0, 0, None));
     assert!(scan(&good).is_ok());
 
     // A record whose size runs past the region.
@@ -114,7 +135,7 @@ fn a_malformed_record_chain_is_rejected_the_way_linux_rejects_it() {
     assert_eq!(scan(&r), Err(()), "unknown magic accepted");
 
     // A `__reserved` base that is not 16-aligned.
-    assert_eq!(scan_region(&good, RESERVED_VA + 8, FRAME_VA, false, false), Err(()));
+    assert_eq!(scan_region(&good, RESERVED_VA + 8, FRAME_VA, false, false, false, false), Err(()));
 
     // No terminator at all — the walk runs out of region.
     let r = [0xffu8; RESERVED_BYTES];
@@ -128,7 +149,7 @@ fn a_malformed_record_chain_is_rejected_the_way_linux_rejects_it() {
 #[test]
 fn sve_and_sme_records_are_rejected_as_they_are_on_a_non_sve_cpu() {
     let mut good = [0u8; RESERVED_BYTES];
-    assert!(write_chain(&mut good, &[0u8; 32 * 16], 0, 0));
+    assert!(write_chain(&mut good, &[0u8; 32 * 16], 0, 0, None));
     for magic in [SVE_MAGIC, ZA_MAGIC, ZT_MAGIC, TPIDR2_MAGIC, FPMR_MAGIC, POE_MAGIC, GCS_MAGIC] {
         let mut r = good;
         head(&mut r, FPSIMD_CONTEXT_BYTES, magic, 16);
@@ -152,7 +173,7 @@ fn extra_context_rebases_only_under_the_full_linux_rule_set() {
     let datap = RESERVED_VA + (ex + EXTRA_CONTEXT_SIZE + TERMINATOR_SIZE) as u64;
     let build = |datap: u64, size: u32, ecsize: u32, term: (u32, u32)| {
         let mut r = [0u8; RESERVED_BYTES];
-        assert!(write_chain(&mut r, &[0u8; 32 * 16], 0, 0));
+        assert!(write_chain(&mut r, &[0u8; 32 * 16], 0, 0, None));
         head(&mut r, ex, EXTRA_MAGIC, ecsize);
         put_u64(&mut r, ex + CTX_HEAD_BYTES, datap);
         put_u32(&mut r, ex + CTX_HEAD_BYTES + 8, size);
@@ -187,7 +208,7 @@ fn extra_context_rebases_only_under_the_full_linux_rule_set() {
 
     // Only ONE extra_context — a second must not re-base and loop.
     let r = build(datap, 64, EXTRA_CONTEXT_SIZE as u32, (0, 0));
-    assert_eq!(scan_region(&r, RESERVED_VA, FRAME_VA, false, true), Err(()),
+    assert_eq!(scan_region(&r, RESERVED_VA, FRAME_VA, false, false, true, false), Err(()),
                "a second extra_context accepted");
 }
 
@@ -196,7 +217,7 @@ fn extra_context_rebases_only_under_the_full_linux_rule_set() {
 #[test]
 fn a_truncated_or_oversized_fpsimd_record_is_rejected() {
     let mut r = [0u8; RESERVED_BYTES];
-    assert!(write_chain(&mut r, &[0u8; 32 * 16], 0, 0));
+    assert!(write_chain(&mut r, &[0u8; 32 * 16], 0, 0, None));
     assert!(read_fpsimd(&r, 0, FPSIMD_CONTEXT_BYTES as u32).is_ok());
     assert_eq!(read_fpsimd(&r, 0, (FPSIMD_CONTEXT_BYTES - 16) as u32), Err(()));
     assert_eq!(read_fpsimd(&r, 0, (FPSIMD_CONTEXT_BYTES + 16) as u32), Err(()));

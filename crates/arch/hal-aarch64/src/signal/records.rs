@@ -38,6 +38,9 @@ pub const ESR_MAGIC: u32 = 0x4553_5201;
 /// process — or CRIU restoring a checkpoint — may hand us one, and Linux
 /// accepts it, so the parser must too.
 pub const EXTRA_MAGIC: u32 = 0x4558_5401;
+/// `POE_MAGIC` / `sizeof(struct poe_context)`.
+pub const POE_MAGIC: u32 = 0x504f_4530;
+pub const POE_CONTEXT_BYTES: usize = 16;
 
 // Magics Linux only accepts when the matching `system_supports_*()` holds.
 // This kernel enables neither SVE nor SME for EL0: `CPACR_EL1.ZEN` is never
@@ -60,8 +63,6 @@ pub mod unsupported_magic {
     pub const TPIDR2_MAGIC: u32 = 0x5450_4902;
     /// `FPMR_MAGIC` — rejected: `!system_supports_fpmr()`.
     pub const FPMR_MAGIC: u32 = 0x4650_4d52;
-    /// `POE_MAGIC` — rejected: `!system_supports_poe()`.
-    pub const POE_MAGIC: u32 = 0x504f_4530;
     /// `GCS_MAGIC` — rejected: `!system_supports_gcs()`.
     pub const GCS_MAGIC: u32 = 0x4743_5300;
 }
@@ -144,10 +145,11 @@ impl Default for ReservedAlloc {
 /// Returns false only if the chain does not fit, which the caller must turn
 /// into a failed delivery.
 /// # C: O(n) in the 528-byte record
-pub fn write_chain(reserved: &mut [u8], q: &[u8], fpcr: u32, fpsr: u32) -> bool {
+pub fn write_chain(reserved: &mut [u8], q: &[u8], fpcr: u32, fpsr: u32, por: Option<u64>) -> bool {
     if reserved.len() < RESERVED_BYTES || q.len() < 32 * 16 { return false; }
     let mut a = ReservedAlloc::new();
     let Some(fp_off) = a.alloc(FPSIMD_CONTEXT_BYTES) else { return false };
+    let poe_off = match por { Some(_) => match a.alloc(POE_CONTEXT_BYTES) { Some(v) => Some(v), None => return false }, None => None };
     let Some(end_off) = a.alloc_end() else { return false };
     // Linux `preserve_fpsimd_context`.
     put_u32(reserved, fp_off, FPSIMD_MAGIC);
@@ -156,6 +158,11 @@ pub fn write_chain(reserved: &mut [u8], q: &[u8], fpcr: u32, fpsr: u32) -> bool 
     put_u32(reserved, fp_off + FPSIMD_FPCR_OFF, fpcr);
     reserved[fp_off + FPSIMD_VREGS_OFF..fp_off + FPSIMD_CONTEXT_BYTES]
         .copy_from_slice(&q[..32 * 16]);
+    if let (Some(off), Some(value)) = (poe_off, por) {
+        put_u32(reserved, off, POE_MAGIC);
+        put_u32(reserved, off + 4, POE_CONTEXT_BYTES as u32);
+        put_u64(reserved, off + CTX_HEAD_BYTES, value);
+    }
     // Linux's "end" magic — the record the parser stops on.
     put_u32(reserved, end_off, 0);
     put_u32(reserved, end_off + 4, 0);
@@ -177,6 +184,8 @@ pub fn write_terminator(reserved: &mut [u8]) {
 pub struct Scan {
     /// `(offset, size)` of an `FPSIMD_MAGIC` record inside this region.
     pub fpsimd: Option<(usize, u32)>,
+    /// `(offset, size)` of a POE context record.
+    pub poe: Option<(usize, u32)>,
     /// `(datap, size)` of an `extra_context` the caller must re-scan. The
     /// walk of THIS region ends there; Linux deliberately ignores the
     /// trailing `__reserved` terminator and continues in the extra area.
@@ -193,12 +202,13 @@ pub struct Scan {
 /// it does not degrade.
 /// # C: O(n) in the number of records
 pub fn scan_region(region: &[u8], region_va: u64, frame_va: u64,
-                   seen_fpsimd: bool, have_extra: bool) -> Result<Scan, ()> {
+                   seen_fpsimd: bool, seen_poe: bool, have_extra: bool, poe_enabled: bool) -> Result<Scan, ()> {
     if region_va % RECORD_ALIGN as u64 != 0 { return Err(()); }
     let limit = region.len();
     let mut offset = 0usize;
     let mut out = Scan::default();
     let mut seen_fpsimd = seen_fpsimd;
+    let mut seen_poe = seen_poe;
     loop {
         if limit - offset < CTX_HEAD_BYTES { return Err(()); }
         if offset % RECORD_ALIGN != 0 { return Err(()); }
@@ -214,6 +224,11 @@ pub fn scan_region(region: &[u8], region_va: u64, frame_va: u64,
                 if seen_fpsimd { return Err(()); }
                 seen_fpsimd = true;
                 out.fpsimd = Some((offset, size as u32));
+            }
+            POE_MAGIC => {
+                if !poe_enabled || seen_poe || size != POE_CONTEXT_BYTES { return Err(()); }
+                seen_poe = true;
+                out.poe = Some((offset, size as u32));
             }
             // Linux ignores the fault-syndrome record on restore.
             ESR_MAGIC => {}
@@ -275,11 +290,17 @@ fn get_u64(b: &[u8], off: usize) -> u64 {
     v.copy_from_slice(&b[off..off + 8]);
     u64::from_le_bytes(v)
 }
+/// Read the POR value from one exact-size POE record. # C: O(1)
+pub fn read_poe(region: &[u8], off: usize, size: u32) -> Result<u64, ()> {
+    if size as usize != POE_CONTEXT_BYTES || off.checked_add(POE_CONTEXT_BYTES).filter(|e| *e <= region.len()).is_none() { return Err(()); }
+    Ok(get_u64(region, off + CTX_HEAD_BYTES))
+}
 
 /// Store a little-endian u32 at `off`. # C: O(1)
 fn put_u32(b: &mut [u8], off: usize, v: u32) {
     b[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
+fn put_u64(b: &mut [u8], off: usize, v: u64) { b[off..off + 8].copy_from_slice(&v.to_le_bytes()); }
 
 #[cfg(test)]
 mod tests;
