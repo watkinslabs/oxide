@@ -11,14 +11,11 @@ use super::iface::ifaces_snapshot_in;
 use super::rtnetlink_addr::IfaCacheInfo;
 use super::rtnetlink_link::{put_link_stats64, LinkStats64};
 use super::uapi::{
-    ifa, ifla, iff, AF_INET, AF_INET6, Ifaddrmsg, Ifinfomsg,
+    ifa, if_oper, ifla, iff, AF_INET, AF_INET6, Ifaddrmsg, Ifinfomsg,
     RTM_NEWADDR, RTM_NEWLINK,
 };
 #[cfg(target_os = "oxide-kernel")]
 use super::uapi::{RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE};
-
-const IF_OPER_UP: u8 = 6;
-const IF_OPER_DOWN: u8 = 2;
 
 /// Build a single RTM_NEWLINK reply for one iface.
 /// # C: O(N attrs)
@@ -52,7 +49,9 @@ pub(crate) fn build_newlink_reply(
     // The flags arriving here are already the REPORTED set (`dev_get_flags`),
     // so carrier is read back out of them rather than derived a second time.
     let carrier = flags & iff::IFF_LOWER_UP != 0;
-    let operstate = if carrier { IF_OPER_UP } else { IF_OPER_DOWN };
+    let operstate = if carrier && flags & iff::IFF_UP != 0 {
+        if_oper::UP
+    } else { if_oper::DOWN };
     put_nlattr_u8(&mut body, ifla::IFLA_OPERSTATE, operstate);
     put_nlattr_u8(&mut body, ifla::IFLA_LINKMODE, 0);
     put_nlattr_u8(&mut body, ifla::IFLA_CARRIER, carrier as u8);
