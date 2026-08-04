@@ -200,12 +200,14 @@ pub fn classify_arm_abort(esr: u64, far: u64) -> Option<FaultKind> {
         }
         _ => return None,
     };
-    // DFSC (ISS bits 5..0): 0x04..0x07 = translation fault L0..L3.
+    // DFSC (ISS bits 5..0): Linux's arm64 fault table sends translation,
+    // access-flag, and permission faults to the VM fault path. External
+    // aborts, ECC/parity, alignment, and reserved syndromes bypass it and
+    // retain their architecture-specific signal result.
     let dfsc = esr & 0x3F;
-    if (0x04..=0x07).contains(&dfsc) {
-        Some(FaultKind::NotPresent { access })
-    } else {
-        // Permission fault, alignment, etc → protection class.
-        Some(FaultKind::Protection { access })
+    match dfsc {
+        0x04..=0x07 => Some(FaultKind::NotPresent { access }),
+        0x08..=0x0f => Some(FaultKind::Protection { access }),
+        _ => None,
     }
 }
