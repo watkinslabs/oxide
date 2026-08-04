@@ -49,24 +49,24 @@ fn register_pci_model_drivers() {
     virtio_drv::register_model_drivers();
 }
 
-fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
-    let resources = {
+fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
+    let bars = {
         #[cfg(target_arch = "x86_64")]
         {
             match hal_x86_64::pci::EcamPci::from_published() {
-                Some(r) => pci::probe_bar_resources(&r, bdf),
+                Some(r) => pci::probe_bar_resources(&r, d.bdf),
                 None => [None; 6],
             }
         }
         #[cfg(target_arch = "aarch64")]
         {
             match hal_aarch64::pci::EcamPci::from_published() {
-                Some(r) => pci::probe_bar_resources(&r, bdf),
+                Some(r) => pci::probe_bar_resources(&r, d.bdf),
                 None => [None; 6],
             }
         }
     };
-    resources
+    let mut resources: alloc::vec::Vec<_> = bars
         .iter()
         .enumerate()
         .filter_map(|(bar, r)| r.map(|r| drv::Resource {
@@ -75,7 +75,24 @@ fn pci_resources_arch(bdf: pci::Bdf) -> alloc::vec::Vec<drv::Resource> {
             end: r.end,
             flags: r.flags,
         }))
-        .collect()
+        .collect();
+    if d.header_type & pci::uapi::HEADER_TYPE_MASK == pci::uapi::HEADER_TYPE_BRIDGE {
+        let windows = {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::pci::EcamPci::from_published().map(|r| pci::bridge_window_resources(&r, d.bdf)) }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::pci::EcamPci::from_published().map(|r| pci::bridge_window_resources(&r, d.bdf)) }
+        };
+        for (index, window) in windows.unwrap_or([None; 3]).iter().enumerate() {
+            if let Some(window) = window {
+                resources.push(drv::Resource {
+                    bar: (pci::uapi::BRIDGE_RESOURCE_INDEX + index) as u8,
+                    start: window.start, end: window.end, flags: window.flags,
+                });
+            }
+        }
+    }
+    resources
 }
 
 /// Enumerate the live PCI bus and emit a `[INFO] pci ...` line per
@@ -325,7 +342,7 @@ fn publish_pci_model_device(
     let dev = alloc::sync::Arc::new(
         drv::Device::new("pci", addr.clone(), d.vendor_id, d.device_id, class24)
             .with_pci_ident(config_access::pci_ident(d))
-            .with_resources(pci_resources_arch(d.bdf)),
+            .with_resources(pci_resources_arch(d)),
     );
     match drv::try_device_add(dev) {
         Ok(dev) => Some(dev),

@@ -63,11 +63,12 @@ pub(crate) fn resource_row(r: Option<&drv::Resource>) -> String {
     s
 }
 
-/// The `resource` table: one row per standard BAR plus the expansion ROM,
-/// zero-filled where the function decodes nothing. # C: O(n)
-pub(crate) fn resource_table(resources: &[drv::Resource]) -> String {
+/// The `resource` table: endpoints expose BAR+ROM rows; PCI-to-PCI bridges
+/// append their forwarding windows. Empty slots stay zero-filled. # C: O(n)
+pub(crate) fn resource_table(resources: &[drv::Resource], bridge: bool) -> String {
     let mut s = String::new();
-    for idx in 0..pci::uapi::NUM_RESOURCE_ROWS {
+    let rows = if bridge { pci::uapi::P2P_BRIDGE_RESOURCE_ROWS } else { pci::uapi::NUM_RESOURCE_ROWS };
+    for idx in 0..rows {
         s.push_str(&resource_row(resources.iter().find(|r| r.bar as usize == idx)));
     }
     s
@@ -108,7 +109,7 @@ pub(crate) fn body(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
         "class" => { let _ = write!(s, "0x{:06x}", dev.class); }
         "irq" => { let _ = write!(s, "{}", ident.interrupt_line); }
         "power_state" => { s.push_str(POWER_STATE_D0); }
-        "resource" => { return Some(resource_table(&dev.resources).into_bytes()); }
+        "resource" => { return Some(resource_table(&dev.resources, is_bridge(dev)).into_bytes()); }
         "local_cpus" => { s.push_str(&cpumask_hex(ncpu())); }
         "local_cpulist" => { s.push_str(&cpumask_list(ncpu())); }
         "numa_node" => { let _ = write!(s, "{}", dev.numa_node()); }
@@ -179,12 +180,26 @@ mod tests {
         let resources = alloc::vec![
             drv::Resource { bar: 1, start: 0xc000, end: 0xc07f, flags: drv::IORESOURCE_IO },
         ];
-        let table = resource_table(&resources);
+        let table = resource_table(&resources, false);
         assert_eq!(table.lines().count(), pci::uapi::NUM_RESOURCE_ROWS);
         let mut lines = table.lines();
         assert_eq!(lines.next().unwrap(), "0x0000000000000000 0x0000000000000000 0x0000000000000000");
         assert_eq!(lines.next().unwrap(), "0x000000000000c000 0x000000000000c07f 0x0000000000000100");
         assert!(lines.all(|l| l == "0x0000000000000000 0x0000000000000000 0x0000000000000000"));
+    }
+
+    #[test]
+    fn bridge_resource_table_appends_forwarding_windows() {
+        let resources = alloc::vec![
+            drv::Resource { bar: pci::uapi::BRIDGE_IO_RESOURCE_INDEX as u8, start: 0x1000, end: 0x1fff, flags: drv::IORESOURCE_IO },
+            drv::Resource { bar: pci::uapi::BRIDGE_PREF_MEM_RESOURCE_INDEX as u8, start: 0x1_0000_0000, end: 0x1_00ff_ffff, flags: drv::IORESOURCE_MEM | drv::IORESOURCE_PREFETCH },
+        ];
+        let table = resource_table(&resources, true);
+        assert_eq!(table.lines().count(), pci::uapi::P2P_BRIDGE_RESOURCE_ROWS);
+        let lines: alloc::vec::Vec<_> = table.lines().collect();
+        assert_eq!(lines[pci::uapi::BRIDGE_IO_RESOURCE_INDEX], "0x0000000000001000 0x0000000000001fff 0x0000000000000100");
+        assert_eq!(lines[pci::uapi::BRIDGE_MEM_RESOURCE_INDEX], "0x0000000000000000 0x0000000000000000 0x0000000000000000");
+        assert_eq!(lines[pci::uapi::BRIDGE_PREF_MEM_RESOURCE_INDEX], "0x0000000100000000 0x0000000100ffffff 0x0000000000002200");
     }
 
     #[test]
