@@ -27,6 +27,16 @@ fn an_unset_hop_limit_resolves_through_the_route_then_the_default() {
 }
 
 #[test]
+fn sticky_pktinfo_reads_back_as_an_in6_pktinfo() {
+    let mut pktinfo = [0u8; 20];
+    pktinfo[..16].copy_from_slice(&[0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 9]);
+    pktinfo[16..].copy_from_slice(&7u32.to_ne_bytes());
+    let s = Ipv6GetState { pktinfo, ..state() };
+    assert_eq!(get::read(IPV6_PKTINFO, dgram(), &s), Ok(Value::Bytes(pktinfo.to_vec())));
+}
+
+#[test]
 fn the_path_mtu_reads_need_a_route() {
     assert_eq!(get::read(IPV6_MTU, dgram(), &state()), Err(Errno::Enotconn));
     assert_eq!(get::read(IPV6_PATHMTU, dgram(), &state()), Err(Errno::Enotconn));
