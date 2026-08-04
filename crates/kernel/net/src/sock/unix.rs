@@ -51,8 +51,7 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
             Ok(()) => return Ok(()),
             Err(NetError::Eagain) if nonblock => return Err(NetError::Eagain),
             Err(NetError::Eagain) => {
-                // Linux `unix_stream_connect` (`net/unix/af_unix.c:1705`):
-                // `sock_intr_errno(timeo)` off `sock_sndtimeo`.
+                // A signal interrupts through `sock_intr_errno(timeo)`.
                 if sched::live::deliverable_signals_self() != 0 {
                     return Err(crate::sock_intr::sock_intr_net(deadline_ns));
                 }

@@ -1,6 +1,4 @@
-// TCP write-readiness predicate — Linux `__sk_stream_is_writeable`
-// (`include/net/sock.h:1428-1432`), the exact test `tcp_poll` gates
-// `EPOLLOUT | EPOLLWRNORM` on (`net/ipv4/tcp.c:600-616`):
+// TCP write-readiness predicate gates `EPOLLOUT | EPOLLWRNORM`:
 //
 //     static inline int sk_stream_min_wspace(const struct sock *sk)
 //     { return READ_ONCE(sk->sk_wmem_queued) >> 1; }

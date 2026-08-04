@@ -84,8 +84,7 @@ pub struct UnixDgramQueue {
     pub writers: sched::live::WaitList,
     /// F181a: epoll subscribers of the owning InetSocket.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
-    /// Linux `sk->sk_peer_wait` (`net/unix/af_unix.c` `unix_dgram_peer_wake_
-    /// connect`): the wait queues of OTHER sockets that are connected to this
+    /// Wait queues of OTHER sockets that are connected to this
     /// one and found it full during `unix_dgram_poll`. Their `EPOLLOUT`
     /// depends on THIS queue draining, and they are subscribed to their own
     /// list, not to this one — without the relay a poll-driven connected
@@ -258,9 +257,8 @@ impl UnixDgramQueue {
     /// [`try_push_from_with_rights_bounded`] carrying the sender's write-memory
     /// ownership (`skb->sk` / `skb->truesize`). # C: O(1)
     ///
-    /// Linux `net/unix/af_unix.c` `unix_dgram_sendmsg` charges the skb through
-    /// `sock_alloc_send_pskb` before `sk_filter`; `net/core/filter.c`
-    /// `sk_filter_trim_cap` changes `skb->len`, not `skb->truesize`; and
+    /// Send admission charges a message before filtering; filtering changes
+    /// its length, not its charged size; and
     /// `net/core/sock.c` `sock_wfree` releases that original `truesize` whether
     /// the filter drops or truncates the skb.
     fn try_push_from_with_rights_bounded_owned(&self, mut msg: UnixDgram, sender: Option<UnixAddr>,

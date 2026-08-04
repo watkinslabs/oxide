@@ -101,9 +101,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_soc
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
         #[cfg(target_os = "oxide-kernel")]
         {
-            // Linux `vsock_connectible_recvmsg`'s wait loop
-            // (`net/vmw_vsock/af_vsock.c:2383-2385`): `err = sock_intr_errno(timeout)`
-            // off `sock_rcvtimeo`.
+            // A signal interrupts this receive-timeout wait through the shared rule.
             if sched::live::deliverable_signals_self() != 0 {
                 return crate::net_errno::recv_interrupted(sock.recv_deadline_ns(), total);
             }
@@ -176,8 +174,7 @@ fn recv_seqpacket_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, conn: &Arc<
         if nonblock { return err(Errno::Eagain); }
         #[cfg(target_os = "oxide-kernel")]
         {
-            // Same `sock_intr_errno(timeout)` rule as the stream path above
-            // (`net/vmw_vsock/af_vsock.c:2384`).
+            // Same interrupted-wait rule as the stream path above.
             if sched::live::deliverable_signals_self() != 0 {
                 return crate::net_errno::sock_intr_errno(sock.recv_deadline_ns());
             }

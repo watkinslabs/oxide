@@ -16,8 +16,8 @@ pub(super) fn vsock_setsockopt(socket: &net::vsock_socket::VsockSocket, level: u
     // AF_VSOCK has no setsockopt of its own for SOL_SOCKET options: Linux
     // routes them through the generic `sock_setsockopt`, so SO_RCVTIMEO /
     // SO_SNDTIMEO land on `sk->sk_{rcv,snd}timeo` and are read back by
-    // `vsock_connectible_recvmsg` (`af_vsock.c:2384`) and `_sendmsg` (`:2267`)
-    // to feed `sock_intr_errno`. Rejecting them with ENOPROTOOPT, as this did,
+    // VSOCK receive and send waits feed them to `sock_intr_errno`. Rejecting
+    // them with ENOPROTOOPT, as this did,
     // made a timed vsock recv impossible AND forced every interrupted vsock
     // wait to report ERESTARTSYS.
     if level == net::uapi::SOL_SOCKET
