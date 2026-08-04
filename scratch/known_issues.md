@@ -28,19 +28,6 @@ never deleted, only relocated.
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
-## Worklist size
-
-| Section | DEFECT | MISSING | COVERAGE | INFRA | total |
-|---|---|---|---|---|---|
-| Net / socket | 29 | 17 | 21 | 0 | 67 |
-| Filesystem / mount | 18 | 13 | 5 | 0 | 36 |
-| Memory / MM | 19 | 3 | 3 | 0 | 25 |
-| Process / exec / signals | 13 | 1 | 4 | 0 | 18 |
-| Drivers / devices | 12 | 1 | 5 | 0 | 18 |
-| Kernel core | 4 | 2 | 1 | 0 | 7 |
-| Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **95** | **37** | **39** | **51** | **222** |
-
 ## Net / socket
 
 | Status | Class | Sev | Issue | Evidence | Owner |
