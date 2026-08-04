@@ -24,6 +24,16 @@ pub mod rx;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use sync::{LockClass, Spinlock};
+
+struct UartPort;
+impl LockClass for UartPort {
+    fn rank() -> u16 { 121 }
+    fn name() -> &'static str { "UartPort" }
+}
+
+/// Serializes TX with baud reprogramming on the one hardware register file.
+static PORT: Spinlock<(), UartPort> = Spinlock::new(());
 
 /// PL011 reference clock (`UARTCLK`) fallback / test reference. qemu `virt`
 /// wires the PL011 to a fixed 24 MHz clock (also the near-universal AMBA PL011
@@ -106,6 +116,7 @@ mod imp {
     /// # C: O(len(bytes))
     pub fn emit(bytes: &[u8]) {
         let va = base(); if va == 0 { return; }
+        let _port = PORT.lock_irqsave::<hal_aarch64::ArmIrqGate>();
         for &c in bytes {
             let mut n = 0u32;
             // SAFETY: FR read through the published PL011 Device VA.
@@ -128,6 +139,7 @@ mod imp {
     pub fn set_baud(baud: u32) {
         let va = base(); if va == 0 || baud == 0 { return; }
         let (ibrd, fbrd) = super::pl011_divisor(hal_aarch64::pl011::uartclk_hz(), baud);
+        let _port = PORT.lock_irqsave::<hal_aarch64::ArmIrqGate>();
         // SAFETY: CR/LCRH read + baud reprogram through the published PL011 VA.
         unsafe {
             let cr = core::ptr::read_volatile((va + PL011_CR) as *const u32);
