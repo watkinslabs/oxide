@@ -295,11 +295,14 @@ pub unsafe fn schedule() {
         klog::write_raw(if crate::preempt::in_interrupt() { b" in_interrupt=1" } else { b" in_interrupt=0" });
         klog::write_raw(b" sp=0x");
         klog::write_hex_u64(current_sp());
-        let caller = core::panic::Location::caller();
-        klog::write_raw(b" caller=");
-        klog::write_raw(caller.file().as_bytes());
-        klog::write_raw(b":");
-        klog::write_dec_u64(caller.line() as u64);
+        #[cfg(feature = "debug-preempt")]
+        {
+            let caller = core::panic::Location::caller();
+            klog::write_raw(b" caller=");
+            klog::write_raw(caller.file().as_bytes());
+            klog::write_raw(b":");
+            klog::write_dec_u64(caller.line() as u64);
+        }
         klog::write_raw(b"\n");
         return;
     }
