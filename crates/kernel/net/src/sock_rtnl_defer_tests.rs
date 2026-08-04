@@ -151,6 +151,7 @@ fn interrupt_context_final_drop_defers_then_drains() {
 #[test]
 fn process_context_final_drop_still_releases_inline() {
     let _fixture = fixture_guard();
+    assert!(!sched::preempt::in_interrupt(), "test must begin in process context");
     let owner = crate::net_ns::test_support::allocate_namespace();
     let stack = crate::global_stack();
     let dev = Arc::new(ModeDev::new());

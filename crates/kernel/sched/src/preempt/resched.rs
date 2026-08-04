@@ -39,6 +39,11 @@ struct Pcpu<T>(T);
 const ANCHOR_ZERO: Pcpu<AtomicBool> = Pcpu(AtomicBool::new(false));
 static ANCHOR: [Pcpu<AtomicBool>; MAX_CPUS] = [ANCHOR_ZERO; MAX_CPUS];
 
+#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+std::thread_local! {
+    static HOSTED_ANCHOR: AtomicBool = const { AtomicBool::new(false) };
+}
+
 /// The ONE decision of "whose `TIF_NEED_RESCHED` is this": the running task's
 /// when a task is running, else this CPU's pre-task anchor. Every set / read /
 /// take goes through here, so the two storages can never be consulted
@@ -48,9 +53,15 @@ static ANCHOR: [Pcpu<AtomicBool>; MAX_CPUS] = [ANCHOR_ZERO; MAX_CPUS];
 fn slot<R>(f: impl FnOnce(&AtomicBool) -> R) -> R {
     match current_task() {
         Some(t) => f(&t.need_resched),
-        None    => f(&ANCHOR[super::this_cpu()].0),
+        None    => hosted_anchor(f),
     }
 }
+
+#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+fn hosted_anchor<R>(f: impl FnOnce(&AtomicBool) -> R) -> R { HOSTED_ANCHOR.with(f) }
+
+#[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+fn hosted_anchor<R>(f: impl FnOnce(&AtomicBool) -> R) -> R { f(&ANCHOR[super::this_cpu()].0) }
 
 // ---- Linux's per-task accessors (`include/linux/sched.h`) ----
 
@@ -150,7 +161,15 @@ fn curr_of(_cpu: usize) -> Option<&'static Task> { None }
 /// # C: O(1)
 #[cfg(any(test, feature = "hosted"))]
 pub(super) fn _test_reset_anchor(cpu: usize) {
-    if let Some(a) = ANCHOR.get(cpu) { a.0.store(false, Ordering::Release); }
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    {
+        HOSTED_ANCHOR.with(|anchor| anchor.store(false, Ordering::Release));
+        if let Some(anchor) = ANCHOR.get(cpu) { anchor.0.store(false, Ordering::Release); }
+    }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    {
+        if let Some(anchor) = ANCHOR.get(cpu) { anchor.0.store(false, Ordering::Release); }
+    }
 }
 
 #[cfg(test)]

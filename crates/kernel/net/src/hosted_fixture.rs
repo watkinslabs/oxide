@@ -8,9 +8,9 @@ use crate::{NetIfaceId, RouteRecord};
 
 static INITIAL_NET_DOMAIN: Mutex<()> = Mutex::new(());
 
-/// `sock::PACKET_REGISTRY` is one process-global list and
+/// `sock::PACKET_REGISTRY` is partitioned by namespace, while
 /// `sock::service_packet_ring_timers` is the single kernel-wide V3 retire
-/// tick that walks it across every namespace. A hosted test driving that
+/// tick that walks every namespace list. A hosted test driving that
 /// sweep therefore advances the retire deadline of, and retires blocks in,
 /// every other test's registered V3 ring — an ownership boundary no
 /// namespace or per-`NetStack` fixture can restore, because the sweep is
