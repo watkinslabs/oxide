@@ -67,6 +67,12 @@ shape they were retired in.
 | FIXED 068551621, dcf0e7dbf | high | Name resolution was reported as still failing through the `127.0.0.53` systemd-resolved stub after DHCP had supplied `10.0.2.3`. | The original observation predated the loopback-bind fix and netlink packet-info fix. B1768 serial-only probe on current main ran `getent hosts one.one.one.one` inside the guest and returned `2606:4700:4700::1001` and `2606:4700:4700::1111`; it therefore traversed the guest resolver path successfully. | B1768 |
 | FIXED B1655 | med | `TCP_ZEROCOPY_RECEIVE` returned ENOPROTOOPT. Needed mm-side page mapping into the caller's address space. | B1655. `mmap(2)` on a TCP socket fd now builds a receive window (read-only, `EPERM` on write/exec, `ENODEV` for every other socket); the option remaps whole receive-queue pages into it. Operand layout, optlen versioning, errno ordering, copy-buffer fallback and straggler, `length`/`recv_skip_hint`/`inq`/`err` rules covered by 26 hosted tests in `net::sock_opts::sol_tcp::zerocopy::tests` plus 6 in `syscalls::tcp_zerocopy::window::tests`. | B1655 |
 
+## Filesystem / mount
+
+| Status | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|
+| FIXED 51f9f6709 | low | `mount -t proc -o hidepid=…` / `-o subset=…` had been recorded as returning `EINVAL` instead of applying its confinement. | Procfs declares and consumes the `gid`, `hidepid`, and `subset` mount parameters into per-mount state; root lookup, readdir, and PID access enforce that state. Current hosted parser and mount-admission regressions pass. | D498-procfs-hidepid-subset-ledger |
+
 ## Process
 
 Retired to CLAUDE.md as standing hard rules (`Conflict resolution is where
