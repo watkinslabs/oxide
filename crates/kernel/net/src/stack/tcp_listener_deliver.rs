@@ -43,6 +43,8 @@ impl NetStack {
             ::core::sync::atomic::Ordering::Acquire);
         let own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
             net_ns, src_ip, bound, ip_mode, ipv6_mode);
+        let path_mtu = self.tcp_path_mtu_in(net_ns, src_ip, bound, ip_mode, ipv6_mode)
+            .unwrap_or(0);
         let metrics = self.route_metrics_for_dst_in(net_ns, src_ip, bound);
         // Handshake input runs against the heap-resident child, so the
         // connection state never occupies a frame on the delivery path.
@@ -50,7 +52,7 @@ impl NetStack {
         // SYN-ACK from this, and a SYN whose data is taken must deliver that
         // data before the acknowledgement covering it is built.
         let plan = super::tcp_fastopen::plan(&listener, hdr, seg, src_ip, dst_ip, &metrics);
-        let new_entry = build_passive_child(local_ep, own_mss, metrics, packet, &listener,
+        let new_entry = build_passive_child(local_ep, own_mss, path_mtu, metrics, packet, &listener,
             iface, ipv6);
         plan.install(&new_entry);
         let resp = match new_entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) {
@@ -161,7 +163,7 @@ fn select_listener_for_syn(stack: &NetStack, net_ns: u64, iface: NetIfaceId, src
 /// # C: O(1)
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-fn build_passive_child(local_ep: Endpoint, own_mss: u16,
+fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u32,
     metrics: crate::route_metrics::RouteMetrics, packet: &[u8],
     listener: &Arc<TcpListenEntry>, iface: NetIfaceId, ipv6: bool) -> Arc<TcpEntry>
 {
@@ -191,6 +193,7 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16,
     {
         let mut conn = child.conn.lock();
         conn.own_mss = own_mss;
+        conn.path_mtu = path_mtu;
         conn.apply_route_metrics(metrics);
         // Record the handshake packet the child was opened by, from the network
         // header onward, so an accepted socket that asked for it with

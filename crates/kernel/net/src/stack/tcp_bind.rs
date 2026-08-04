@@ -451,6 +451,8 @@ impl NetStack {
             local_ip, remote_ip, bind.local.port, remote_port);
         let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
         let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
+        conn.path_mtu = self.tcp_path_mtu_in(
+            bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode).unwrap_or(0);
         // The sticky option area rides ahead of the TCP header on every
         // segment, so the connection gives that many bytes up from its MSS.
         conn.own_mss = crate::tcp_ext_hdr::mss_minus_ext_hdr(
