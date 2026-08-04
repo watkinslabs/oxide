@@ -17,14 +17,14 @@ pub enum ArgClass {
     Header,
     /// `IPV6_PKTINFO` — a sticky source address and interface.
     PktInfo,
-    /// `IPV6_NEXTHOP` — a sticky first hop, in socket-address form.
-    NextHop,
     /// `IPV6_FLOWLABEL_MGR`.
     FlowLabel,
     /// `IPV6_2292PKTOPTIONS` — an ancillary-message stream.
     PktOptions,
     /// `IPV6_IPSEC_POLICY` / `IPV6_XFRM_POLICY`.
     Policy,
+    /// A UAPI number with no socket-option implementation.
+    Unsupported,
     /// Owned by the multicast, anycast or raw-socket table.
     Delegated,
 }
@@ -87,8 +87,8 @@ pub fn arg_class(optname: u64) -> ArgClass {
     match optname {
         IPV6_HOPOPTS | IPV6_RTHDRDSTOPTS | IPV6_RTHDR | IPV6_DSTOPTS => ArgClass::Header,
         IPV6_PKTINFO => ArgClass::PktInfo,
-        IPV6_NEXTHOP => ArgClass::NextHop,
         IPV6_FLOWLABEL_MGR => ArgClass::FlowLabel,
+        IPV6_NEXTHOP => ArgClass::Unsupported,
         IPV6_2292PKTOPTIONS => ArgClass::PktOptions,
         IPV6_IPSEC_POLICY | IPV6_XFRM_POLICY => ArgClass::Policy,
         IPV6_ADD_MEMBERSHIP | IPV6_DROP_MEMBERSHIP | IPV6_JOIN_ANYCAST
