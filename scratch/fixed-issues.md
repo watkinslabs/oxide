@@ -439,6 +439,10 @@ open issue. Live rows that still need the work carry it in their own row.
 
 | FIXED a06dbab2b | med | Fast Open now implements all four reference blackhole-detection rungs. The out-of-order receive queue retains payload, urgent metadata, and FIN together, so a sole bare FIN is detected both when it was queued before local close and when it arrives after close. | `TcpConn::ooo_buf` owns complete out-of-order segments; `tcp_conn::active_fastopen` tests both close orderings; x86 and ARM smoke pass. | F807-fold-f806-ledger |
 
+| FIXED 29cd0cbd6 | med | Default-parallel `net` tests could deadlock while a global AF_PACKET registry retained sockets from unrelated network namespaces. | AF_PACKET registration is now namespace-scoped; 50 default-parallel full-net runs passed. | B1824-hosted-preempt-thread-state |
+
+| FIXED 29cd0cbd6 | med | Hosted preemption state reused a 64-slot CPU array across more test workers, making one worker observe another's softirq context. | Hosted preemption and pre-task reschedule state are thread-local; regression test holds 128 contexts simultaneously. | B1824-hosted-preempt-thread-state |
+
 
 ### Memory / page cache
 
