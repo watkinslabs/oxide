@@ -32,20 +32,19 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Section | DEFECT | MISSING | COVERAGE | INFRA | total |
 |---|---|---|---|---|---|
-| Net / socket | 29 | 17 | 23 | 0 | 69 |
+| Net / socket | 29 | 17 | 22 | 0 | 68 |
 | Filesystem / mount | 18 | 13 | 5 | 0 | 36 |
 | Memory / MM | 19 | 3 | 3 | 0 | 25 |
 | Process / exec / signals | 13 | 1 | 4 | 0 | 18 |
 | Drivers / devices | 12 | 1 | 5 | 0 | 18 |
 | Kernel core | 4 | 2 | 1 | 0 | 7 |
 | Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **95** | **37** | **41** | **51** | **224** |
+| **total** | **95** | **37** | **40** | **51** | **223** |
 
 ## Net / socket
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| IN-PROGRESS B1814-socket-control-behavioral-optlen-test | COVERAGE | low | `netlink_getsockopt_policy::requested_len` is the single live owner for NETLINK `getsockopt`'s decoded `optlen`; it rejects a negative capacity with `EINVAL` before either answer path can produce output. The former `include_str!` source-order assertion was replaced by a hosted behaviour test that calls that owner. | `cargo test -p syscalls netlink_getsockopt` | B1814-socket-control-behavioral-optlen-test |
 | OPEN | DEFECT | high | **Incremental-compilation MISCOMPILE in `sock_opts::sol_tcp::set::admit`.** Adding a call to a cross-module `pub fn clamp_qlen(a,b) -> i32 { min(a,b) }` in the `TCP_FASTOPEN` arm made the *neighbouring, untouched* `TCP_LINGER2` arm return `Linger2(-5)` for input `-5` — i.e. `if val < 0 { -1 }` produced `-5` with `val == -5`. Instrumenting the arm made it correct again (observation changes the result), which is the signature of a codegen bug, not a source defect. Mitigated in this PR by `#[inline]` on `clamp_qlen`; the mitigation is fragile — any future edit could re-trigger it in another function. | Reproduction on this branch: revert `#[inline]` on `tcp_fastopen::queue::clamp_qlen`, then `cargo test -p net the_orphan` → `FAILED` (`left: Ok(Linger2(-5))`, `right: Ok(Linger2(-1))`); `CARGO_INCREMENTAL=0 cargo test -p net the_orphan` → `ok` with the SAME source. `main` (a90153f0f) is green both ways. Toolchain `nightly-2026-05-01`. | unclaimed |
 | OPEN | DEFECT | med | `cargo test --workspace --no-fail-fast` on `main` (`460dc8e89`) is NOT green and its failing set is UNSTABLE run to run — same class as this row (global process state shared by parallel tests), none of them owned here. Run 1 failed `drv-virtio-input` (`devfs::tests::lifetime::{reused_event_number_cannot_retarget_old_open_file, state_reconciliation_flushes_only_querying_client}`, both at `lifetime.rs:24` — a `publish_endpoint` collision on fixed event ids), `fbcon` (`kernel::tests::try_lock_vt_excludes_the_flush_softirq`), `softirq` (`tests::raise_then_run_invokes_handler`), plus `pmm`/`socket`. Run 2 (this branch) failed a DIFFERENT `fbcon` test (`tests::one_line_of_output_damages_only_that_text_row`) and a `net` test that was green in run 1 (`stack::ethernet::tests::ethernet_ingress_rejects_a_truncated_link_header_before_l3`, `Option::unwrap()` on None at `net/src/stack/core.rs:193`), while `drv-virtio-input` and `softirq` passed. So per-package green does not imply workspace green, and one workspace run does not characterize the failing set. | Two full runs captured; failing package lists differ (`drv-virtio-input,fbcon,pmm,socket,softirq` vs `fbcon,net,socket`). | — |
 | OPEN | DEFECT | med | Row 299's differential is closed for the BATCH rules only. Single-entry receive semantics reached through `recvmsg::recv` (extended-error origins, OOB delivery, control-message copyout, VSOCK address parity) have no host-oracle case, and nothing here executes the real uaccess path — the fake supplies the ABI steps. A guest differential is still required for syscall-context copy-fault ordering. | `crates/kernel/syscalls/tests/conformance_mmsg.rs` case list. | unowned |
