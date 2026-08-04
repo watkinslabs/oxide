@@ -65,6 +65,17 @@ fn tcp_info_notsent_bytes_follow_the_canonical_send_queue() {
 }
 
 #[test]
+fn advertised_receive_window_uses_the_same_scale_as_tcp_headers() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut c = TcpConn::new_client(ep(lo, 5005), ep(lo, 80), 1000);
+    c.rcv_buf_cap = 65_536;
+    c.window_clamp = 65_536;
+    c.snd_wscale = 4;
+    assert_eq!(c.current_rcv_window(), 4_096);
+    assert_eq!(c.advertised_rcv_wnd(), 65_536);
+}
+
+#[test]
 fn urgent_flag_records_latest_urgent_byte_for_oob_owner() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut client = TcpConn::new_client(ep(lo, 5002), ep(lo, 80), 1000);
