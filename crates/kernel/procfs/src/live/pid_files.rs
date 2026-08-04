@@ -184,7 +184,7 @@ pid_gated_ctor!(make_pid_io, pid_io_body, 0x29, "io");
 pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
 use crate::pid_sched::pid_sched_body;
 pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
-pid_gated_ctor!(make_pid_personality, pid_personality_body, 0x2e, "personality");
+pid_gated_ctor!(make_pid_personality, pid_personality_body, crate::ino::PID_INO_TAG_PERSONALITY, "personality");
 pid_gated_ctor!(make_pid_auxv, pid_auxv_body, 0x2f, "auxv");
 
 /// Linux `auxv_read`: serve the mm's `saved_auxv` array, truncated at the
