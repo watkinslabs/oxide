@@ -70,10 +70,6 @@ impl NetStack {
     pub(crate) fn mss_for_dst_on_iface_pmtu_modes_in(&self, net_ns: u64, dst: IpAddr,
         bound: Option<NetIfaceId>, ip_mode: i32, ipv6_mode: i32) -> u16
     {
-        let probe = match dst {
-            IpAddr::V4(_) => crate::uapi::ip_pmtudisc_uses_interface(ip_mode),
-            IpAddr::V6(_) => crate::uapi::ipv6_pmtudisc_uses_interface(ipv6_mode),
-        };
         let overhead = if matches!(dst, IpAddr::V6(_)) {
             IPV6_TCP_OVERHEAD
         } else { IPV4_TCP_OVERHEAD };
@@ -86,7 +82,7 @@ impl NetStack {
             }.unwrap_or(0),
             IpAddr::V6(_) => 0,
         };
-        self.path_mtu_in(net_ns, dst, bound, probe).ok()
+        self.tcp_path_mtu_in(net_ns, dst, bound, ip_mode, ipv6_mode).ok()
             .map(|mtu| mtu.saturating_sub(overhead).min(u16::MAX as u32) as u16)
             .map(|mss| if route_advmss == 0 {
                 mss
@@ -94,6 +90,17 @@ impl NetStack {
                 mss.min(route_advmss.min(u16::MAX as u32) as u16)
             })
             .unwrap_or(0)
+    }
+
+    /// Path MTU selected by this TCP socket's destination family and PMTU mode. # C: O(N)
+    pub(crate) fn tcp_path_mtu_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>,
+        ip_mode: i32, ipv6_mode: i32) -> NetResult<u32>
+    {
+        let probe = match dst {
+            IpAddr::V4(_) => crate::uapi::ip_pmtudisc_uses_interface(ip_mode),
+            IpAddr::V6(_) => crate::uapi::ipv6_pmtudisc_uses_interface(ipv6_mode),
+        };
+        self.path_mtu_in(net_ns, dst, bound, probe)
     }
 
     /// Build + transmit UDP/IPv4, optionally pinned to an iface. # C: O(payload + N)
