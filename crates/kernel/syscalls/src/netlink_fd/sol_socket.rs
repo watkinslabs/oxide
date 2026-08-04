@@ -39,6 +39,16 @@ pub fn set(target: &NetlinkFileRef, optname: u64, optval: u64, optlen: u64) -> i
                 Err(e) => e,
             }
         }
+        net::sock_opts::sol_socket::SO_PASSSEC => {
+            if !net::scm::may_scm_recv(net::socket_args::AF_NETLINK as u16) {
+                return errno(Errno::Eopnotsupp);
+            }
+            if optlen < INT_BYTES { return errno(Errno::Einval); }
+            match read_int(optval) {
+                Ok(v) => { socket.scm_security.set(v != 0); 0 }
+                Err(e) => e,
+            }
+        }
         // `sk_rcvtimeo`, read back by the receive wait for `sock_intr_errno`:
         // without it a timed netlink receive is impossible and every
         // interrupted one must report ERESTARTSYS.
@@ -67,6 +77,12 @@ pub fn get(target: &NetlinkFileRef, optname: u64) -> Option<Result<alloc::vec::V
                 return Some(Err(errno(Errno::Eopnotsupp)));
             }
             Some(Ok(socket.scm.value().to_ne_bytes().to_vec()))
+        }
+        net::sock_opts::sol_socket::SO_PASSSEC => {
+            if !net::scm::may_scm_recv(net::socket_args::AF_NETLINK as u16) {
+                return Some(Err(errno(Errno::Eopnotsupp)));
+            }
+            Some(Ok(socket.scm_security.value().to_ne_bytes().to_vec()))
         }
         _ => None,
     }
