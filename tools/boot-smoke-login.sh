@@ -27,9 +27,6 @@ ARCH="${1:-}"
 case "$ARCH" in
     x86)  MAKE_TARGET=qemu-x86 ;;
     arm)  MAKE_TARGET=qemu-arm ;;
-    # Same x86 GRUB path with xtask's default features; headless stdio
-    # serial, so the QIN fifo reaches the guest UART RX unchanged.
-    grub) MAKE_TARGET=qemu-x86-grub ;;
     *)    usage ;;
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"

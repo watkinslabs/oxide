@@ -187,11 +187,9 @@ qemu-arm:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch aarch64 --smp $(SMP) $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
 
-# Same x86 GRUB path as `qemu-x86` without the `FEATURES=` passthrough.
-# `kmain`'s `default = []`, so this is a no-debug-features boot.
-qemu-x86-grub:
-	$(TRIM_ROOTFS_CACHE)
-	$(XTASK) grub --arch x86_64 --smp $(SMP)
+# Compatibility spelling for the former bootloader-specific target. Keep one
+# canonical recipe so `FEATURES=` has identical meaning on both spellings.
+qemu-x86-grub: qemu-x86
 
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you
@@ -446,7 +444,7 @@ smoke-wait-diff:
 # bring-up, override the marker for an intermediate milestone, e.g.
 # `make smoke-grub SMOKE_MARKER='MB2' SMOKE_TIMEOUT=180`.
 smoke-grub:
-	./tools/boot-smoke.sh grub $(SMOKE_TIMEOUT)
+	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
 # B18: console-login regression. Drives `alice`/`swordfish` at the
 # oxide login: prompt and checks `id` reports uid=1000. Catches

@@ -405,6 +405,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Tooling / gates
 
+| FIXED C281 | low | `qemu-x86-grub` duplicated the x86 QEMU target and silently discarded `FEATURES=`; smoke scripts kept a redundant `grub` architecture alias. | Kept the public target as a compatibility dependency on canonical `qemu-x86`, so feature handling cannot diverge; migrated internal GRUB smoke callers to `x86`. | C281-canonicalize-x86-qemu-alias |
+
 | FIXED B1818 | med | `match_token` did not recognise literal percent escapes or string widths, and it did not parse the full reference conversion set. | Reworked the parser around the reference's literal/format sequence: `%%`, field widths, and `%s`/`%d`/`%u`/`%o`/`%x` now consume their defined input before the remaining pattern is matched. Hosted tests cover literal percent, width, and hexadecimal cases. | B1818-align-match-token-parser |
 
 | FIXED C280 | low | The `pidfd/hosted` tests had fallen behind `Task::replace_namespace` and did not compile. The stale `B1674` owner did not represent an active lane. | Passed the `NamespaceRef` directly, restoring all six hosted tests; removed the obsolete owner-only ledger row. Routine coverage for feature-gated test targets remains tracked separately. | C280-reconcile-stale-pidfd-owner |
