@@ -19,7 +19,7 @@ pub use config_space::{
 };
 
 pub use bars::{
-    bar_offset, decode_bars, probe_bar_resources, Bar, Resource, IORESOURCE_IO, IORESOURCE_MEM,
+    bar_offset, bridge_window_resources, decode_bars, probe_bar_resources, Bar, Resource, IORESOURCE_IO, IORESOURCE_MEM,
     IORESOURCE_PREFETCH,
 };
 pub use caps::{

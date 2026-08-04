@@ -42,6 +42,35 @@ pub const STD_NUM_BARS: usize = 6;
 pub const ROM_RESOURCE_INDEX: usize = STD_NUM_BARS;
 /// Resource rows a function publishes: every standard BAR plus the ROM.
 pub const NUM_RESOURCE_ROWS: usize = ROM_RESOURCE_INDEX + 1;
+/// First resource index reserved for PCI-to-PCI bridge forwarding windows.
+pub const BRIDGE_RESOURCE_INDEX: usize = NUM_RESOURCE_ROWS;
+/// Bridge I/O forwarding window resource index.
+pub const BRIDGE_IO_RESOURCE_INDEX: usize = BRIDGE_RESOURCE_INDEX;
+/// Bridge non-prefetchable memory forwarding window resource index.
+pub const BRIDGE_MEM_RESOURCE_INDEX: usize = BRIDGE_RESOURCE_INDEX + 1;
+/// Bridge prefetchable-memory forwarding window resource index.
+pub const BRIDGE_PREF_MEM_RESOURCE_INDEX: usize = BRIDGE_RESOURCE_INDEX + 2;
+/// Rows a PCI-to-PCI bridge publishes in its `resource` file.
+pub const P2P_BRIDGE_RESOURCE_ROWS: usize = BRIDGE_PREF_MEM_RESOURCE_INDEX + 1;
+
+/// PCI-to-PCI bridge I/O base/limit register pair.
+pub const BRIDGE_IO_BASE_OFF: u8 = 0x1c;
+/// PCI-to-PCI bridge non-prefetchable memory base register.
+pub const BRIDGE_MEM_BASE_OFF: u8 = 0x20;
+/// PCI-to-PCI bridge non-prefetchable memory limit register.
+pub const BRIDGE_MEM_LIMIT_OFF: u8 = 0x22;
+/// PCI-to-PCI bridge prefetchable-memory base register.
+pub const BRIDGE_PREF_MEM_BASE_OFF: u8 = 0x24;
+/// PCI-to-PCI bridge prefetchable-memory limit register.
+pub const BRIDGE_PREF_MEM_LIMIT_OFF: u8 = 0x26;
+/// PCI-to-PCI bridge prefetchable-memory upper-base register.
+pub const BRIDGE_PREF_BASE_UPPER_OFF: u8 = 0x28;
+/// PCI-to-PCI bridge prefetchable-memory upper-limit register.
+pub const BRIDGE_PREF_LIMIT_UPPER_OFF: u8 = 0x2c;
+/// PCI-to-PCI bridge I/O upper-base register.
+pub const BRIDGE_IO_BASE_UPPER_OFF: u8 = 0x30;
+/// PCI-to-PCI bridge I/O upper-limit register.
+pub const BRIDGE_IO_LIMIT_UPPER_OFF: u8 = 0x32;
 
 /// Class-code value (`class >> 8`) of an undefined-class VGA device.
 pub const CLASS_NOT_DEFINED_VGA: u32 = 0x0001;
