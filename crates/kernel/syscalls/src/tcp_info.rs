@@ -112,6 +112,8 @@ fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
     info.tcpi_bytes_sent = c.bytes_sent;
     info.tcpi_bytes_retrans = c.bytes_retrans;
     info.tcpi_rcv_ooopack = c.rcv_ooopack;
+    info.tcpi_snd_wnd = c.snd_wnd;
+    info.tcpi_rcv_wnd = c.advertised_rcv_wnd();
     // Linux packs this byte as `delivery_rate_app_limited:1,
     // fastopen_client_fail:2`, so the reason rides bits 1-2.
     info.tcpi_delivery_rate_app_limited =
@@ -144,6 +146,10 @@ mod tests {
         conn.data_segs_out = 5;
         conn.bytes_sent = 64;
         conn.bytes_retrans = 11;
+        conn.snd_wnd = 12_345;
+        conn.rcv_buf_cap = 32_768;
+        conn.window_clamp = 32_768;
+        conn.snd_wscale = 3;
         conn.send(b"unsent");
         let mut info = TcpInfo::default();
         populate_conn(&conn, &mut info);
@@ -156,6 +162,8 @@ mod tests {
         assert_eq!(info.tcpi_bytes_sent, 64);
         assert_eq!(info.tcpi_bytes_retrans, 11);
         assert_eq!(info.tcpi_notsent_bytes, 6);
+        assert_eq!(info.tcpi_snd_wnd, 12_345);
+        assert_eq!(info.tcpi_rcv_wnd, 32_768);
     }
 
     #[test]
