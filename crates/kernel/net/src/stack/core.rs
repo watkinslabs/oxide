@@ -16,6 +16,7 @@ impl NetStack {
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
+            v6_anycast: Spinlock::new(BTreeMap::new()),
             v6_ra_pending: Spinlock::new(Vec::new()),
             softnet: [const { Spinlock::new(crate::backlog::queue::SoftnetData::new()) }; cpu::MAX_CPUS],
             rx_poll: Spinlock::new(Vec::new()),
@@ -86,6 +87,7 @@ impl NetStack {
     pub(crate) fn v6_dst_is_local(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
         let now_ns = self.ra_now_ns();
         if ip.is_multicast() { return self.v6_mcast_owned_by(iface, ip); }
+        if self.v6_anycast_owned_by(iface, ip) { return true; }
         if ip.is_link_local() { return self.v6_addr_owned_by(iface, ip); }
         let Some(net_ns) = self.ifaces.namespace(iface) else { return false };
         self.v6_addrs.lock().iter().any(|(id, addrs)| {

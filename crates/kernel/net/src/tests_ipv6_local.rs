@@ -64,3 +64,23 @@ fn ipv6_all_nodes_is_always_local_on_a_registered_interface() {
 
     assert!(stack.v6_dst_is_local(iface, crate::ndp::IPV6_ALL_NODES));
 }
+
+#[test]
+fn ipv6_anycast_is_device_local_and_refcounted() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let other = stack.ifaces.register(alloc::sync::Arc::new(crate::LoopbackDev::new()));
+    let anycast = Ipv6Addr::from_segments([0x2001, 0xdb8, 7, 0, 0, 0, 0, 9]);
+    let rtnl = stack.rtnl_lock();
+    stack.v6_anycast_acquire(&rtnl, 0, iface, anycast).unwrap();
+    stack.v6_anycast_acquire(&rtnl, 0, iface, anycast).unwrap();
+    drop(rtnl);
+
+    assert!(stack.v6_dst_is_local(iface, anycast));
+    assert!(!stack.v6_dst_is_local(other, anycast));
+    stack.v6_anycast_release(iface, anycast);
+    assert!(stack.v6_dst_is_local(iface, anycast));
+    stack.v6_anycast_release(iface, anycast);
+    assert!(!stack.v6_dst_is_local(iface, anycast));
+}
