@@ -12,6 +12,12 @@ use syscall::errno::Errno;
 use super::uapi::{Ifaddrmsg, Ifinfomsg};
 use crate::Nlmsghdr;
 
+/// Whether a request selected the dump handler rather than a one-shot handler.
+/// # C: O(1)
+pub fn is_dump(req: &Nlmsghdr) -> bool {
+    req.nlmsg_flags & crate::flags::NLM_F_DUMP == crate::flags::NLM_F_DUMP
+}
+
 /// `NLM_F_DUMP_FILTERED`: the answer covers only what the request asked for.
 pub const NLM_F_DUMP_FILTERED: u16 = 0x20;
 
