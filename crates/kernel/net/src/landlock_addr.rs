@@ -75,6 +75,19 @@ pub fn check_send_addr(sock: &crate::sock::InetSocket, name: &[u8]) -> Result<()
                  sock.family.load(core::sync::atomic::Ordering::Acquire))
 }
 
+/// Gate UDP's implicit local-port allocation as though the caller had bound
+/// port zero on this socket family. # C: O(N_layers × N_rules)
+pub fn check_autobind_udp(sock: &crate::sock::InetSocket) -> Result<(), NetError> {
+    use core::sync::atomic::Ordering;
+    if sock_proto(sock) != Proto::Udp { return Ok(()); }
+    let family = sock.family.load(Ordering::Acquire);
+    let len = if family == netcheck::AF_INET6 { netcheck::SOCKADDR_IN6_LEN }
+        else { netcheck::SOCKADDR_IN_LEN };
+    let mut port_zero = [0u8; netcheck::SOCKADDR_IN6_LEN];
+    port_zero[..2].copy_from_slice(&family.to_le_bytes());
+    addr_verdict(current_domain().as_ref(), Proto::Udp, Op::Bind, &port_zero[..len], family)
+}
+
 /// Domain that published the pathname socket bound at `addr`. The outer `None`
 /// means nothing is bound there at all; an inner `None` is a server published
 /// outside every domain. Pathname bindings are filesystem-global, so the lookup

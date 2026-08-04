@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use landlock::abi::RulesetAttr;
 use landlock::uapi::{ACCESS_FS_RESOLVE_UNIX, ACCESS_NET_CONNECT_SEND_UDP,
-                     ACCESS_NET_CONNECT_TCP, ACCESS_NET_BIND_TCP};
+                     ACCESS_NET_CONNECT_TCP, ACCESS_NET_BIND_TCP, ACCESS_NET_BIND_UDP};
 use landlock::uapi::AccessMask;
 use landlock::Ruleset;
 use vfs::{default_file_ops, default_inode_ops, mk_mode, Dentry, FileType, InodeBuilder,
@@ -46,6 +46,28 @@ fn a_udp_send_to_an_explicit_recipient_asks_for_the_connect_send_right() {
                Ok(()));
     assert_eq!(addr_verdict(Some(&d), Proto::Udp, Op::Send, &sockaddr_in(54), AF_INET_WIRE),
                Err(NetError::Eacces));
+}
+
+#[test]
+fn an_implicit_udp_bind_asks_for_the_bind_zero_right() {
+    let d = net_domain(ACCESS_NET_BIND_UDP, &[(0, ACCESS_NET_BIND_UDP)]);
+    assert_eq!(addr_verdict(Some(&d), Proto::Udp, Op::Bind, &sockaddr_in(0), AF_INET_WIRE),
+               Ok(()));
+    let denied = net_domain(ACCESS_NET_BIND_UDP, &[(53, ACCESS_NET_BIND_UDP)]);
+    assert_eq!(addr_verdict(Some(&denied), Proto::Udp, Op::Bind, &sockaddr_in(0), AF_INET_WIRE),
+               Err(NetError::Eacces));
+}
+
+#[test]
+fn udp_autobind_checks_the_bind_right_before_allocating_a_port() {
+    let source = include_str!("../sock/lifecycle.rs");
+    let unbound = source.find("if let Some(port) = *local_port { return Ok(port); }")
+        .expect("the lifecycle checks whether allocation is needed");
+    let check = source.find("crate::landlock_addr::check_autobind_udp(self)?;")
+        .expect("autobind asks for the UDP bind right");
+    let allocate = source.find("alloc_ephemeral_udp4_owned(")
+        .expect("the lifecycle allocates an ephemeral UDP endpoint");
+    assert!(unbound < check && check < allocate);
 }
 
 #[test]
