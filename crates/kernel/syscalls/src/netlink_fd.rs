@@ -229,9 +229,10 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let requested = i32::from_ne_bytes(raw_len);
-    if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
-    let requested = requested as usize;
+    let requested = match crate::netlink_getsockopt_policy::requested_len(raw_len) {
+        Ok(requested) => requested,
+        Err(error) => return -(error.as_i32() as i64),
+    };
     let mut bytes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
     if level == net::uapi::SOL_SOCKET {
         if let Some(answer) = sol_socket::get(target, optname) {
