@@ -35,11 +35,11 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | Net / socket | 29 | 17 | 23 | 0 | 69 |
 | Filesystem / mount | 26 | 13 | 5 | 0 | 44 |
 | Memory / MM | 19 | 3 | 3 | 0 | 25 |
-| Process / exec / signals | 14 | 1 | 4 | 0 | 19 |
+| Process / exec / signals | 13 | 1 | 4 | 0 | 18 |
 | Drivers / devices | 12 | 1 | 5 | 0 | 18 |
 | Kernel core | 4 | 2 | 1 | 0 | 7 |
 | Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **104** | **37** | **41** | **51** | **233** |
+| **total** | **103** | **37** | **41** | **51** | **232** |
 
 ## Net / socket
 
@@ -114,7 +114,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | DEFECT | med | The upcall proof has run on x86_64 only. `../images/out/lite-aarch64-root.img` predates the keyutils profile change, so `OXIDE_REQUEST_KEY_SMOKE=1 make smoke-arm` refuses (the injector checks for the helper and fails rather than producing an ambiguous ENOENT run). Command for the user: `cd ../images && ./build.sh rootfs lite aarch64`, then `OXIDE_QUICKBOOT_PROFILE=lite OXIDE_REQUEST_KEY_SMOKE=1 SMOKE_MARKER='REQUEST-KEY-PROBE' make smoke-arm`. | B1672. | — |
 | OPEN | DEFECT | med | Not yet attributed: the combined x86 boot exercising `swapfile_probe` + `request_key_probe` hit `[CPU-STALL] cpu=0 no heartbeat for 10s (seen by cpu=1) last: tid=4181 syscall=fsync ... now: tid=4181 syscall=madvise` on attempt 1. That is the swapfile probe's `MADV_PAGEOUT` ladder. The C probe issued the same `MADV_PAGEOUT`, so it is most likely pre-existing rather than caused by the port — but the A/B that would prove it has NOT been run, and this row must not be read as either a new regression or a cleared one. | `target/smoke-x86.out`, boot attempt 1; `[NMI-BT] rip=ffffffff8043d104` | unowned |
 | OPEN | DEFECT | med | **autofs and fuse admit their full tables but their constructors re-parse the blob themselves.** `AutofsFs::new(data)` and `fuse::mount_from_data(data)` each scan the option string a second time. Admission and the backend now agree on WHICH keys are legal, but the backend still owns value parsing, so a value admission accepts can still be rejected (or silently defaulted) one layer down. | `crates/kernel/fs/src/autofs.rs`, `crates/kernel/fs/src/fuse/fs.rs` | — |
-| OPEN | DEFECT | low | Pre-existing, unrelated to this lane: two `/proc/<pid>` inode-number tags collide — the projected-id map file and the personality file both use tag `0x2e`, so the two files of one process share an inode number. | `procfs/src/userns_idmap.rs` `PID_INO_TAG_PROJID_MAP = 0x2e` vs `procfs/src/live/pid_files.rs` `pid_gated_ctor!(make_pid_personality, …, 0x2e, …)`. | — |
 | OPEN | DEFECT | low | **`mount -t proc -o hidepid=…` / `-o subset=…` now returns EINVAL.** procfs declares `Some(&[])` (B1686), and that declaration now binds `mount(2)` as well as `fsconfig(2)`. This is the intended fail-closed direction — a caller told "yes" while getting no confinement is worse off than one told "no" — and userspace that probes with `fsconfig` before mounting already saw the same answer. Recorded because it is a mount that used to succeed. | `registry.rs` proc registration; `crates/kernel/syscalls/tests/mount_param_admission_hosted.rs` | — |
 | OPEN | DEFECT | low | A watch on a key whose notification pipe has been closed keeps posting into a queue nobody can read. The queue stays alive because the watch holds a reference to it, so nothing leaks and nothing is corrupted, but the watch is never torn down: Linux drops the queue's watches when the pipe is released (`watch_queue_clear`). The visible effect is a key carrying a dead watch entry until the key itself dies. Fix: have `detach` walk the queue's own watch list. That list is not kept today — a watch points at its queue, not the other way about. | B1659, `watch_queue/registry.rs::detach`. | — |
 | OPEN | DEFECT | low | `try_fill_iter`'s atomicity guard carries a `total <= cap` term that is unreachable: `round_pipe_size` floors capacity at `PIPE_GROW_STEP` (4096) which equals `PIPE_BUF`, so `total <= PIPE_BUF` already implies `total <= cap`. Harmless and defensive, not a defect; noted so a later reader does not mistake it for live logic. | `crates/kernel/fs/src/pipe/limits.rs` `round_pipe_size`, `PIPE_GROW_STEP == PIPE_BUF == 4096`. | unowned |
