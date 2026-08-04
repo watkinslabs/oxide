@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::tcp_conn::{TcpConn, TcpConnError};
 use crate::tcp_state::{TcpEvent, TcpState};
-use crate::tcp_conn::types::{TcpCongestionControl, OWN_MSS_DEFAULT};
+use crate::tcp_conn::types::{TcpCongestionControl, OWN_MSS_DEFAULT, RCV_MSS_DEFAULT, RCV_MSS_MIN};
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
@@ -31,6 +31,7 @@ impl TcpConn {
             rto_ns:   1_000_000_000,
             tw_start_ns: 0,
             peer_mss: 0,
+            rcv_mss: 0,
             snd_wscale: 0,
             rcv_wscale: 0,
             snd_wnd: 65535,
@@ -136,6 +137,7 @@ impl TcpConn {
             rto_ns:   1_000_000_000,
             tw_start_ns: 0,
             peer_mss: 0,
+            rcv_mss: 0,
             snd_wscale: 0,
             rcv_wscale: 0,
             snd_wnd: 65535,
@@ -311,6 +313,22 @@ impl TcpConn {
     /// Actual receive-window bytes currently advertised on the wire. # C: O(1)
     pub fn advertised_rcv_wnd(&self) -> u32 {
         (self.current_rcv_window() as u32) << self.snd_wscale
+    }
+
+    /// Receiver MSS used by delayed-ACK decisions and TCP_INFO. # C: O(1)
+    pub fn rcv_mss(&self) -> u16 {
+        let own = if self.own_mss == 0 { crate::tcp_conn::OWN_MSS_DEFAULT } else { self.own_mss };
+        if self.rcv_mss != 0 { return self.rcv_mss.min(own); }
+        let window = (self.advertised_rcv_wnd() / 2).min(u32::from(u16::MAX)) as u16;
+        own.min(RCV_MSS_DEFAULT).min(window).max(RCV_MSS_MIN)
+    }
+
+    /// Record one validated payload segment for receiver-MSS adaptation. # C: O(1)
+    pub(crate) fn note_rcv_mss(&mut self, payload_len: usize) {
+        let observed = payload_len.min(usize::from(u16::MAX)) as u16;
+        if observed < self.rcv_mss() { return; }
+        let own = if self.own_mss == 0 { crate::tcp_conn::OWN_MSS_DEFAULT } else { self.own_mss };
+        self.rcv_mss = observed.min(own);
     }
 
     /// Apply `setsockopt(SO_RCVBUF)` to the advertised receive window and stop
