@@ -301,11 +301,8 @@ impl UnixListener {
     pub fn arm_accept_wait(&self, deadline_ns: u64) -> bool {
         let st = self.state.lock();
         if !st.accept_q.is_empty() || st.closed || st.receive_shutdown { return false; }
-        // SAFETY: process ctx (sys_accept); preempt-off owned by the syscall
-        // stub; park_with_deadline marks Sleeping + enqueues on accept_waiters
-        // while we hold accept_q — connect() must take accept_q to push, so it
-        // cannot wake us before we are enqueued. Lock dropped below; caller
-        // owns the schedule().
+        // SAFETY: syscall context owns preemption; holding accept_q makes the
+        // waiter visible before connect can push and wake this listener.
         unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
         drop(st);
         true
