@@ -27,10 +27,12 @@ impl InetSocket {
         // takes no RTNL and is unaffected.
         if sched::preempt::in_interrupt() {
             let mcast_pending = if self.mcast.is_empty() { None } else { Some(self.mcast.clone()) };
+            let anycast_pending = if self.anycast.is_empty() { None } else { Some(self.anycast.clone()) };
             let packet_pending = self.packet_memberships.take_pending(self);
-            crate::sock_rtnl_defer::defer(mcast_pending, packet_pending);
+            crate::sock_rtnl_defer::defer(mcast_pending, anycast_pending, packet_pending);
         } else {
             self.mcast.release(stk);
+            self.anycast.release(stk);
             self.release_packet_memberships();
         }
         self.release_packet_fanout();

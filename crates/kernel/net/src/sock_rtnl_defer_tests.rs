@@ -66,7 +66,7 @@ fn deferred_mcast_release_finishes_on_drain_not_before() {
     assert!(mcast.accept_v4(iface, group, Ipv4Addr::LOOPBACK));
 
     assert_eq!(pending_len(), 0);
-    defer(Some(mcast.clone()), None);
+    defer(Some(mcast.clone()), None, None);
     // Deferred: no leave report yet, group membership still live.
     assert!(lo.rx_pop().is_none(), "defer must not run the RTNL-taking release inline");
     assert!(mcast.accept_v4(iface, group, Ipv4Addr::LOOPBACK), "group must survive until drained");
@@ -88,7 +88,7 @@ fn deferred_mcast_release_finishes_on_drain_not_before() {
 fn defer_skips_queueing_when_both_pieces_are_empty() {
     let _fixture = fixture_guard();
     assert_eq!(pending_len(), 0);
-    defer(None, None);
+    defer(None, None, None);
     assert_eq!(pending_len(), 0, "nothing to release must never reach the reaper queue");
 }
 

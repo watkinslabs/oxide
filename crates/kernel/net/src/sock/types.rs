@@ -81,6 +81,9 @@ pub struct InetSocket {
     /// socket removes it from the group.
     pub reuseport_group: crate::reuseport::ReuseportSlot,
     pub mcast: Arc<crate::mcast_filter::SocketMcast>,
+    /// IPv6 anycast addresses this socket acquired.  This is deliberately
+    /// independent from multicast filtering and MLD state.
+    pub anycast: Arc<crate::sock_anycast::SocketAnycast>,
     pub(crate) packet_memberships: crate::sock::PacketMemberships,
     pub(crate) packet_fanout: Spinlock<Option<Arc<PacketFanoutMember>>, SockLockClass>,
     pub(crate) packet_rings: Spinlock<PacketRings, SockLockClass>,

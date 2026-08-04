@@ -112,6 +112,7 @@ impl NetStack {
 
     fn v6_dst_is_local_in(&self, net_ns: u64, iface: NetIfaceId, ip: Ipv6Addr) -> bool {
         if ip.is_multicast() || ip.is_link_local() { return self.v6_dst_is_local(iface, ip); }
+        if self.v6_anycast_owned_by(iface, ip) { return true; }
         self.v6_addrs.lock().iter().any(|(id, addrs)| {
             self.ifaces.lookup_in_ns(*id, net_ns).is_some()
                 && addrs.iter().any(|addr| addr.addr == ip && addr.usable_at(self.ra_now_ns()))
@@ -261,7 +262,8 @@ impl NetStack {
                     if let Some(mac) = msg.lladdr {
                         self.ndp_insert(iface, src, mac);
                     }
-                    if self.v6_addr_owned_by(iface, msg.target) {
+                    if self.v6_addr_owned_by(iface, msg.target)
+                        || self.v6_anycast_owned_by(iface, msg.target) {
                         let our_mac = self
                             .ifaces
                             .lookup_in_ns(iface, net_ns)
