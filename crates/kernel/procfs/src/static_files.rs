@@ -98,19 +98,8 @@ pub fn register_static_files() {
     crate::reg::register("/proc/self/cwd", make_proc_self_cwd());
     crate::reg::register("/proc/self/root", make_proc_self_root());
 
-    // /sys hierarchy (P3-19). Same Static inode shape; libc/systemd
-    // probes look these up before falling back.
-    // Same two utsname fields as the `/proc/sys/kernel` leaves, so they derive
-    // from the same owner: two file trees reporting different kernel versions
-    // is a split source of truth whichever one a prober happens to read.
-    sysfs::register(
-        "/sys/kernel/osrelease",
-        StaticFileInode::new(syscall::uts::PROC_SYS_OSRELEASE.as_bytes()) as InodeRef,
-    );
-    sysfs::register(
-        "/sys/kernel/ostype",
-        StaticFileInode::new(syscall::uts::PROC_SYS_OSTYPE.as_bytes()) as InodeRef,
-    );
+    // /sys hierarchy (P3-19). UTS fields belong exclusively to the matching
+    // `/proc/sys/kernel/*` leaves; `/sys/kernel` has no duplicate version ABI.
     // Same `proc_do_uuid` semantics as the /proc/sys leaf: fresh v4 UUID per
     // read. A static body here would hand every reader on the boot the same
     // "random" UUID — the exact bug systemd/dbus id generators trip over.

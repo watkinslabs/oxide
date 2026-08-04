@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Post-login filesystem sweep. Reuses the B18 console-login path,
-# then drives the bash shell through a curated ls/cat/readlink
+# Filesystem sweep. Drives the boot command line's debug shell through a
+# curated ls/cat/readlink
 # sweep of /proc, /dev, /sys in lockstep: one command at a time,
 # each followed by `echo ===DONE_<tag>===`. The harness waits for
 # that exact marker before sending the next command, so any hang
@@ -81,20 +81,53 @@ wait_for() {
 # marker observed in order. FAIL = a step's marker never arrives →
 # that path wedges.
 TAGS=()
+wait_for_step() {
+    local pat="$1" label="$2"
+    local retry_deadline=$(( $(date +%s) + 20 ))
+    while [ "$(date +%s)" -lt "$deadline" ] && [ "$(date +%s)" -lt "$retry_deadline" ]; do
+        local pid
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            echo "boot-smoke-fs: FAIL — qemu exited before $label" >&2
+            tail -n 80 "$LOG" >&2
+            exit 1
+        fi
+        grep -aq "$pat" "$LOG" 2>/dev/null && return 0
+        sleep 1
+    done
+    return 1
+}
+
 step() {
     local tag="$1" cmd="$2"
     TAGS+=("$tag")
-    printf '%s; echo ===DONE_%s===\n' "$cmd" "$tag" >&9
-    wait_for "===DONE_${tag}===" "$tag"
+    local attempt
+    for attempt in 1 2 3; do
+        send_slowly "$cmd; echo ===DONE_${tag}==="
+        wait_for_step "===DONE_${tag}===" "$tag" && return 0
+    done
+    echo "boot-smoke-fs: FAIL — timeout waiting for $tag after 3 sends" >&2
+    tail -n 120 "$LOG" >&2
+    exit 1
 }
 
-wait_for "oxide login:" "login prompt"
+# The production image boots a graphical session and has no serial getty.
+# Its command line deliberately starts systemd's root debug shell on the
+# serial tty, the canonical in-guest control plane for smoke probes.
+wait_for "Started debug-shell.service" "debug shell"
 sleep 1
-printf 'alice\n'     >&9
-sleep 2
-printf 'swordfish\n' >&9
-wait_for 'oxide:~\$' "shell prompt"
-sleep 1
+
+# The UART shares the line with early boot output and can drop long bursts.
+# Type commands in small chunks so the shell receives every probe intact.
+send_slowly() {
+    local text="$1" i=0
+    while [ "$i" -lt "${#text}" ]; do
+        printf '%s' "${text:$i:8}" >&9
+        i=$(( i + 8 ))
+        sleep 0.3
+    done
+    printf '\n' >&9
+}
 
 # /proc — system-wide files
 step proc_cmdline     'cat /proc/cmdline'
@@ -142,6 +175,8 @@ step dev_shm_statfs   'stat -f -c %T /dev/shm'
 
 # /sys
 step sys_ls           'ls -la /sys 2>&1 | head -20'
+step sys_no_ostype    'test ! -e /sys/kernel/ostype || { echo unexpected-sysfs-ostype; exit 1; }'
+step sys_no_osrelease 'test ! -e /sys/kernel/osrelease || { echo unexpected-sysfs-osrelease; exit 1; }'
 step sys_class_ls     'ls /sys/class 2>&1 | head -20'
 step sys_class_net    'ls /sys/class/net 2>&1'
 step sys_lo_attrs     'ls /sys/class/net/lo 2>&1'
@@ -157,7 +192,7 @@ step sys_cpu_present  'cat /sys/devices/system/cpu/present'
 step sys_cpu_offline  'cat /sys/devices/system/cpu/offline'
 step sys_lo_readlink  'readlink /sys/class/net/lo'
 step sys_dev_lo_addr  'cat /sys/devices/virtual/net/lo/address'
-step sys_lo_addr_thru 'cat /sys/class/net/lo/address  # via symlink follow'
+step sys_lo_addr_thru 'cat /sys/class/net/lo/address'
 
 # /proc/net
 step proc_net_tcp     'cat /proc/net/tcp'
