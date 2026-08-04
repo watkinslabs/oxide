@@ -91,6 +91,12 @@ fn short_groups_are_accepted_and_zero_extended() {
 }
 
 #[test]
+fn oversized_hex_groups_wrap_like_linux_sscanf_percent_x() {
+    let wrapped = parse_hex(b"23456789-2-3-4").unwrap();
+    assert_eq!(parse_hex(b"123456789-2-3-4"), Some(wrapped));
+}
+
+#[test]
 fn a_write_that_names_no_four_groups_is_refused() {
     for text in [&b""[..], b"1-2-3", b"1-2-3-", b"-1-2-3-4", b"1_2-3-4",
                  b"zz-2-3-4", b"1-2-3-4-5-6-7-8,", b"1-2-3-4,1-2-3"]

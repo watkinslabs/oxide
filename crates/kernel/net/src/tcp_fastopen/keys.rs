@@ -146,14 +146,17 @@ fn parse_key(text: &[u8]) -> Option<Key> {
 fn parse_group(text: &[u8]) -> Option<(u32, usize)> {
     let mut value: u32 = 0;
     let mut len = 0;
-    while len < text.len() && len < GROUP_DIGITS {
+    // `sscanf("%x")` accepts an arbitrarily long hexadecimal word and stores
+    // its low 32 bits in the destination `u32`. Keep consuming rather than
+    // treating digit nine as the separator position.
+    while len < text.len() {
         let digit = match text[len] {
             b'0'..=b'9' => text[len] - b'0',
             b'a'..=b'f' => text[len] - b'a' + 10,
             b'A'..=b'F' => text[len] - b'A' + 10,
             _ => break,
         };
-        value = (value << 4) | digit as u32;
+        value = value.wrapping_shl(4) | digit as u32;
         len += 1;
     }
     if len == 0 { None } else { Some((value, len)) }
