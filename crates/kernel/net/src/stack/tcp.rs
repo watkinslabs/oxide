@@ -247,7 +247,7 @@ impl NetStack {
                     }
                 }
             };
-            super::tcp_fastopen::drain_client(entry, now_ns);
+            super::tcp_fastopen::drain_client(self, entry, now_ns);
             for s in &segs {
                 let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
                     entry.bound_iface(), TcpTxPolicy::Entry(entry));
@@ -396,7 +396,7 @@ impl NetStack {
                 let input = c.input_prevalidated(src_ip, dst_ip, seg);
                 (pre_len, pre_state, input, c.recv_buf.len(), c.state, fastopen_child)
             };
-            super::tcp_fastopen::drain_client(&entry, crate::tcp_conn::ka_now_ns());
+            super::tcp_fastopen::drain_client(self, &entry, crate::tcp_conn::ka_now_ns());
             let pre_syn = pre_state == crate::tcp_state::TcpState::SynSent;
             let resp = match input {
                 Ok(resp) => resp,
