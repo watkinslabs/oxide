@@ -44,7 +44,10 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
                    local_port: &mut Option<u16>, peer: Option<(crate::IpAddr, u16)>)
     -> Result<Arc<crate::stack::TcpBindReservation>, NetError> {
     if let Some(bind) = sock.tcp_bind.lock().as_ref().cloned() { return Ok(bind); }
-    let iface = bound_iface(sock)?;
+    let iface = match local_ip {
+        crate::IpAddr::V4(_) => super::iface::v4_egress_iface(sock)?,
+        crate::IpAddr::V6(_) => bound_iface(sock)?,
+    };
     let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
     let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
     let v6only = tcp_v6only(sock, local_ip);
@@ -183,8 +186,10 @@ pub(crate) fn connect_tcp4_locked(sock: &InetSocket, local_port: &mut Option<u16
     } else if dst_ip.is_loopback() {
         Ipv4Addr::LOOPBACK
     } else {
-        let iface = bound_iface(sock)?;
-        stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint)
+        let iface = super::iface::v4_egress_iface(sock)?;
+        iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id).ok().flatten()
+            .and_then(|route| route.src_hint))
+            .or_else(|| stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint))
             .or_else(|| iface_primary_ip(iface.or_else(|| stack().routes.lookup_in(net_ns, dst_ip).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK)
     };
@@ -208,8 +213,10 @@ pub(crate) fn connect_tcp4_mapped_locked(sock: &InetSocket, local_port: &mut Opt
     } else if dst_ip.is_loopback() {
         Ipv4Addr::LOOPBACK
     } else {
-        let iface = bound_iface(sock)?;
-        stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint)
+        let iface = super::iface::v4_egress_iface(sock)?;
+        iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id).ok().flatten()
+            .and_then(|route| route.src_hint))
+            .or_else(|| stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint))
             .or_else(|| iface_primary_ip(iface.or_else(|| {
                 stack().routes.lookup_in(net_ns, dst_ip).map(|route| route.iface)
             })))
