@@ -282,6 +282,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             &path_owned,
             vdso_ehdr,
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap(),
+            <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_hwcap2(),
             elf_load::stack::AuxCreds {
                 uid: creds.new.ruid, euid: creds.new.euid,
                 gid: creds.new.rgid, egid: creds.new.egid,

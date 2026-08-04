@@ -159,6 +159,16 @@ fn the_overlay_is_inert_when_unsupported() {
     assert_eq!(id_aa64mmfr3_el1(), 0);
 }
 
+// The capability word reports the usable EL0 ABI, not merely an ID-register
+// claim: a probe must stay false until setup enabled the overlay.
+#[test]
+fn hwcap2_publishes_poe_only_after_overlay_enablement() {
+    assert_eq!(HWCAP2_POE, 1u64 << 63);
+    assert_eq!(hwcap2_from_enabled(false), 0);
+    assert_eq!(hwcap2_from_enabled(true), HWCAP2_POE);
+    assert_eq!(hwcap2(), 0, "hosted tests never enable the overlay");
+}
+
 // The default is settable, but never to a value that would close key 0.
 #[test]
 fn the_default_cannot_close_key_zero() {
