@@ -133,9 +133,9 @@ fn canonical_line_cooked_and_echoed() {
     let tty = TtyStruct::new(RecordingDriver::default(), HostWait::new());
     // Default termios = ICANON|ECHO. Type "hi\n".
     tty.receive_from_driver(b"hi\n");
-    // Echo went out the driver.
+    // Echo uses the normal OPOST path, so default ONLCR renders the newline.
     tty.with_driver(|d| {
-        assert_eq!(d.out, b"hi\n");
+        assert_eq!(d.out, b"hi\r\n");
     });
     // read returns the whole cooked line.
     let mut buf = [0u8; 16];
@@ -446,4 +446,3 @@ fn tcxonc_parked_writer_wakes_on_resume() {
         assert_eq!(n, 7, "parked write completes after TCOON");
     }
 }
-
