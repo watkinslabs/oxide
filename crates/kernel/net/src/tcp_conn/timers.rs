@@ -58,6 +58,7 @@ impl TcpConn {
         for i in &expired {
             let seg = {
                 let s = &self.retx_q[*i];
+                self.bytes_retrans = self.bytes_retrans.saturating_add(s.payload.len() as u64);
                 self.build_retx(s)
             };
             out.push(seg);

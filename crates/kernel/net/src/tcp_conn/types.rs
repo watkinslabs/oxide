@@ -84,6 +84,16 @@ pub struct TcpConn {
     pub bytes_received: u64,
     /// Segments retained because they arrived beyond `rcv_nxt`.
     pub rcv_ooopack: u32,
+    /// Bytes cumulatively acknowledged by the peer.
+    pub bytes_acked: u64,
+    /// Every TCP segment successfully handed to the network output path.
+    pub segs_out: u32,
+    /// Outbound segments carrying payload.
+    pub data_segs_out: u32,
+    /// Payload bytes handed to the network output path.
+    pub bytes_sent: u64,
+    /// Payload bytes handed to retransmission.
+    pub bytes_retrans: u64,
     /// Complete out-of-order segments, including control flags that consume
     /// sequence space such as FIN.
     pub ooo_buf: BTreeMap<u32, OutOfOrderSegment>,

@@ -49,6 +49,15 @@ impl TcpConn {
         self.bytes_received = self.bytes_received.saturating_add(payload.len() as u64);
     }
 
+    /// Advance the cumulative ACK and retain Linux's monotonic byte total. # C: O(1)
+    fn advance_snd_una(&mut self, ack: u32) {
+        let delta = ack.wrapping_sub(self.snd_una);
+        if delta != 0 && (delta & 0x8000_0000) == 0 {
+            self.bytes_acked = self.bytes_acked.saturating_add(delta as u64);
+            self.snd_una = ack;
+        }
+    }
+
     fn trim_retx_acked(&mut self, ack: u32) {
         while let Some(front) = self.retx_q.front_mut() {
             let len = front.payload.len() as u32 +
@@ -230,7 +239,7 @@ impl TcpConn {
                 self.learn_from_synack(seg, hdr.ack, self.snd_una);
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.rcv_read_seq = self.rcv_nxt;
-                self.snd_una = hdr.ack;
+                self.advance_snd_una(hdr.ack);
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 match crate::tcp_hdr::parse_wscale_option(seg) {
                     Some(s) => { self.wscale_ok = true; self.rcv_wscale = s; }
@@ -275,7 +284,7 @@ impl TcpConn {
                 // connection, so `output`'s Nagle guard holds every sub-MSS write
                 // and `tcp_retx_tick` re-sends a segment the peer already ACKed
                 // (B1454).
-                self.snd_una = hdr.ack;
+                self.advance_snd_una(hdr.ack);
                 self.trim_retx_acked(hdr.ack);
                 self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvAckEstablish)
@@ -362,9 +371,7 @@ impl TcpConn {
                 }
                 if (hdr.flags & flags::ACK) != 0 {
                     let acked = hdr.ack.wrapping_sub(self.snd_una);
-                    if acked > 0 {
-                        self.snd_una = hdr.ack;
-                    }
+                    self.advance_snd_una(hdr.ack);
                     self.cc_on_ack(acked, payload.len() as u32);
                     if self.ecn_enabled && (hdr.flags & flags::ECE) != 0 {
                         crate::tcp_cc::on_ece(self);
