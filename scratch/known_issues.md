@@ -32,14 +32,14 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Section | DEFECT | MISSING | COVERAGE | INFRA | total |
 |---|---|---|---|---|---|
-| Net / socket | 29 | 19 | 23 | 0 | 71 |
+| Net / socket | 29 | 18 | 23 | 0 | 70 |
 | Filesystem / mount | 26 | 13 | 5 | 0 | 44 |
 | Memory / MM | 19 | 3 | 3 | 0 | 25 |
 | Process / exec / signals | 14 | 1 | 4 | 0 | 19 |
 | Drivers / devices | 12 | 1 | 5 | 0 | 18 |
 | Kernel core | 4 | 2 | 1 | 0 | 7 |
 | Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **104** | **39** | **41** | **51** | **235** |
+| **total** | **104** | **38** | **41** | **51** | **234** |
 
 ## Net / socket
 
@@ -76,7 +76,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | MISSING | low | Landlock erratum 3 (disconnected directories) is not implemented, and is correspondingly NOT advertised in the errata bitmask. A directory moved outside a bind mount's scope does not have its mount-point hierarchy folded into the evaluated rights, so `ACCESS_FS_REFER` restrictions can in principle be widened by a rename or link in that state. | `crates/kernel/landlock/src/{refer.rs,walk.rs}` walk the dentry parent chain only. `uapi::ERRATA` reports bits 1 and 2 and deliberately not bit 3 — a program feature-detecting the fix is told the truth. Test `the_reported_abi_version_matches_the_rights_actually_accepted` pins the value. Blocks `444`/`445` from `IMPL`. | unowned |
 | OPEN | MISSING | low | Landlock logging is inert: the three `LANDLOCK_RESTRICT_SELF_LOG_*` flags, the `quiet_*` ruleset masks and the per-rule `LANDLOCK_ADD_RULE_QUIET` marking are all validated and carried, but nothing consumes them because this kernel has no audit subsystem. Identical to a Linux built without audit support, and no access decision changes — recorded because "stored but unconsumed" is otherwise indistinguishable from a bug. | `crates/kernel/landlock/src/uapi.rs`; `Ruleset::{quiet_fs,quiet_net,quiet_scoped}` are consumed by the `ADD_RULE_QUIET` admission test, `FsRule::quiet`/`NetRule::quiet` are not consumed at all. | unowned |
 | OPEN | MISSING | low | `TCP_ZEROCOPY_RECEIVE` never sets `TCP_CMSG_TS` in `msg_flags`, so `msg_control`/`msg_controllen` are never filled. The receive queue is a byte stream with no per-segment arrival timestamp to publish. Everything else about the option (operand versioning, remap, copy buffer, `inq`, `err`) is implemented. | B1655. `run` clears `msg_flags`; the reference publishes a timestamp only for a segment carrying one. | — |
-| OPEN | MISSING | low | `IPV6_NEXTHOP` sticky has no reader anywhere. | `Ipv6Opts::nexthop` has zero callers. The adjacent `IPV6_PKTINFO` gap was fixed by 5ca8b9d45: UDP, raw IPv6, and TCP active-open consume it; getsockopt returns `in6_pktinfo`. | unowned |
 | OPEN | MISSING | low | SOL_PACKET stored-but-unconsumed | `PACKET_COPY_THRESH`, `PACKET_TX_HAS_OFF`, `PACKET_QDISC_BYPASS`. Rest of the family is live. | unowned |
 | OPEN | MISSING | low | **`ClientCache` records `syn_loss`/`last_syn_loss_ns` and nothing reads them.** The reference records the same two fields and only exports them through the tcp_metrics netlink family, which does not exist here. They are kept because they are part of the cache's contract and because the netlink family will want them; `ClientCache::syn_loss` exists so the recording is at least observable from a test. | `tcp_fastopen/cache.rs`; `cache::tests::recurring_unanswered_fast_open_syns_are_counted_and_a_success_clears_them`. No production reader. | unclaimed |
 | OPEN | COVERAGE | med | Landlock `LANDLOCK_RESTRICT_SELF_TSYNC` is best-effort, not the all-or-nothing protocol. `sync_siblings` walks the thread group and overwrites each sibling's domain under that sibling's own lock. A thread created during the walk is never visited, so it runs unconfined under a policy its process believes is enforced; two racing `TSYNC` calls can interleave to a mixed result. Linux runs a two-barrier task-work protocol and restarts the syscall on a race. | `crates/kernel/syscalls/src/446_landlock_restrict_self.rs` `sync_siblings`; no hosted test covers a concurrent walk (the thread group is not driveable from the hosted suite). Blocks `446` from `IMPL`. | unowned |
