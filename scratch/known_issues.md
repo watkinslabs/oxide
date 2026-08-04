@@ -35,11 +35,11 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | Net / socket | 29 | 17 | 23 | 0 | 69 |
 | Filesystem / mount | 18 | 13 | 5 | 0 | 36 |
 | Memory / MM | 19 | 3 | 3 | 0 | 25 |
-| Process / exec / signals | 14 | 1 | 4 | 0 | 19 |
+| Process / exec / signals | 13 | 1 | 4 | 0 | 18 |
 | Drivers / devices | 12 | 1 | 5 | 0 | 18 |
 | Kernel core | 4 | 2 | 1 | 0 | 7 |
 | Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **96** | **37** | **41** | **51** | **225** |
+| **total** | **95** | **37** | **41** | **51** | **224** |
 
 ## Net / socket
 
@@ -159,7 +159,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | DEFECT | low | An anonymous mapping whose pages have all been evicted reports zero resident pages and is treated as never written to, so it is skipped under the default filter. | `describe_vma` derives the written-to property from the VMA's resident count. | — |
 | OPEN | DEFECT | low | `process_mrelease` cannot report `EINTR` or `EAGAIN`. Upstream returns `EINTR` when the killable mmap read-lock is interrupted and `EAGAIN` when the reaper cannot take that lock; this kernel's reap walk takes an uninterruptible VMA guard and cannot fail, so neither state exists to report. A caller that retries on `EAGAIN` is not misled — it never sees one — but the two errnos become real once the reap is made lock-failure-tolerant. | F780; `crates/kernel/syscalls/src/448_process_mrelease.rs`. | — |
 | OPEN | DEFECT | low | `process_mrelease`'s mm-sharer scan is O(all tasks) per call: it walks the registry snapshot to find CLONE_VM peers outside the thread group, because there is no per-mm task list. Correct, but it makes a syscall meant for OOM-response paths scale with total process count. A back-pointer list on `AddressSpace` would make it O(sharers). | F780; `sys_process_mrelease`. | — |
-| OPEN | DEFECT | low | `AT_HWCAP2`'s `HWCAP2_POE` bit is not published, so a userspace library probing the auxv for permission-overlay support sees nothing even once the overlay is on. glibc's `pkey_get`/`pkey_set` already emit the raw `POR_EL0` encodings, so they will work; anything gating on the hwcap will not. Closes with the syscall-semantics lane. | F786; no `POE` bit in `isar0_hwcap()`/hwcap publication. | F787 |
 | OPEN | DEFECT | low | aarch64 has no independent `orig_ax` equivalent and x86_64 here deliberately keeps ONE `rax` slot serving both roles (`PtRegs` header documents the split of Linux's overloaded `orig_ax` into `vector`/`error`). A tracer therefore cannot set `orig_rax` and `rax` to independent values on a trap frame: the write side picks the slot by entry tag. Linux has two distinct slots and would honour both. Not fixed because giving the frame a second slot changes an asm-coupled layout on both arches; recorded so the next lane touching `PtRegs` sees the cost. | `from_user_regs` in `crates/kernel/syscalls/src/101_ptrace/regs.rs`; pinned by `x86_setregs_on_a_trap_frame_installs_the_architectural_rax`. | — |
 | OPEN | MISSING | low | Huge-page and directly-addressable-persistent-memory mappings do not exist in this kernel, so the four filter bits covering them can never fire from a live mapping. The ladder implements all four; the adapter reports both properties as absent. | `describe_vma` sets `dax: false` and `hugetlb: false` unconditionally; the ladder rungs are covered by `hugetlb_bits_gate_huge_mappings_by_sharing` and `dax_bits_gate_persistent_memory_mappings_by_sharing`. | — |
 | OPEN | MISSING | low | `setup_pku` leaves `CR4.PKE` set on the BSP even in the impossible case where the hardware does not report OSPKE after the write; the latch stays false so every PKRU access remains inert. Matches upstream's ordering (it cannot know OSPKE before setting PKE) but means CR4 and the latch can in principle disagree. Harmless while nothing reads CR4.PKE directly. | F785; `pkru::setup_pku`. | — |
