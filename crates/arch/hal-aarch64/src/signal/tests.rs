@@ -132,7 +132,7 @@ fn sigreturn_with(pstate: u64, with_fpsimd: bool, q_fill: u8) -> Out {
     uframe.0.uc.uc_mcontext.regs[0] = 0x1234;
     if with_fpsimd {
         let q = [q_fill; 32 * 16];
-        assert!(records::write_chain(&mut uframe.0.uc.uc_mcontext.__reserved, &q, 0x0080_0000, 0x10));
+        assert!(records::write_chain(&mut uframe.0.uc.uc_mcontext.__reserved, &q, 0x0080_0000, 0x10, None));
     }
     let base = &uframe.0 as *const RtSigframe as u64;
     assert!(base % FRAME_ALIGN == 0 && base + core::mem::size_of::<RtSigframe>() as u64 <= hal::USER_VA_END,

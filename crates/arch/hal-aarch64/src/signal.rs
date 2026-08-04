@@ -288,7 +288,8 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     };
     if fpu.len() >= crate::FPU_STATE_BYTES {
         let (fpcr, fpsr) = fpcr_fpsr(fpu);
-        if !records::write_chain(reserved, &fpu[..crate::FPU_VREGS_BYTES], fpcr, fpsr) { return false; }
+        let por = crate::por::poe_enabled().then(crate::por::read_por);
+        if !records::write_chain(reserved, &fpu[..crate::FPU_VREGS_BYTES], fpcr, fpsr, por) { return false; }
     } else {
         // No FPU image to carry: still terminate the chain, or the parser
         // walks whatever the process left in `__reserved`.
@@ -423,7 +424,8 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame, fpu: &mut [u8])
             SIGCONTEXT_RESERVED_BYTES)
     };
     // SAFETY: `restore_fpsimd` proves any `extra_context` span lies below USER_VA_END before touching it; the same TTBR0 contract applies.
-    let fpu_dirty = unsafe { restore_fpsimd(reserved, frame_base, fpu) }?;
+    let (fpu_dirty, por) = unsafe { restore_fpsimd(reserved, frame_base, fpu) }?;
+    if let Some(por) = por { crate::por::write_por(por); }
     // Restore x0..x30 into the scattered SvcFrame slots.
     for i in 0..18 { frame.gp[i] = regs[i]; }
     frame.x18_x29[0] = regs[18];
@@ -448,10 +450,12 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame, fpu: &mut [u8])
 /// address space, so a VA proved below `USER_VA_END` reads the caller's own
 /// memory and nothing else.
 /// # C: O(n) in the record chain
-unsafe fn restore_fpsimd(reserved: &[u8], frame_base: u64, fpu: &mut [u8]) -> Option<bool> {
-    if fpu.len() < crate::FPU_STATE_BYTES { return Some(false); }
+unsafe fn restore_fpsimd(reserved: &[u8], frame_base: u64, fpu: &mut [u8]) -> Option<(bool, Option<u64>)> {
+    if fpu.len() < crate::FPU_STATE_BYTES { return Some((false, None)); }
     let reserved_va = frame_base.checked_add(RESERVED_IN_FRAME as u64)?;
-    let scan = records::scan_region(reserved, reserved_va, frame_base, false, false).ok()?;
+    let poe_enabled = crate::por::poe_enabled();
+    let scan = records::scan_region(reserved, reserved_va, frame_base, false, false, false, poe_enabled).ok()?;
+    let por = match scan.poe { Some((off, size)) => Some(records::read_poe(reserved, off, size).ok()?), None => None };
     let (region, base, hit) = match scan.rebase {
         None => (reserved, reserved_va, scan.fpsimd),
         Some((datap, size)) => {
@@ -461,7 +465,7 @@ unsafe fn restore_fpsimd(reserved: &[u8], frame_base: u64, fpu: &mut [u8]) -> Op
             datap.checked_add(size as u64).filter(|e| *e <= hal::USER_VA_END)?;
             // SAFETY: `[datap, datap+size)` was just proved to end at or below USER_VA_END and EL1 reads run through the caller's active TTBR0, so this reads the calling process's own memory.
             let extra = unsafe { core::slice::from_raw_parts(datap as *const u8, size) };
-            let s2 = records::scan_region(extra, datap, frame_base, scan.fpsimd.is_some(), true).ok()?;
+            let s2 = records::scan_region(extra, datap, frame_base, scan.fpsimd.is_some(), scan.poe.is_some(), true, poe_enabled).ok()?;
             match (scan.fpsimd, s2.fpsimd) {
                 (Some(h), None) => (reserved, reserved_va, Some(h)),
                 (None, Some(h)) => (extra, datap, Some(h)),
@@ -477,7 +481,7 @@ unsafe fn restore_fpsimd(reserved: &[u8], frame_base: u64, fpu: &mut [u8]) -> Op
     fpu[..32 * 16].copy_from_slice(&region[vregs..vregs + 32 * 16]);
     fpu[crate::FPU_FPCR_OFF..crate::FPU_FPCR_OFF + 4].copy_from_slice(&fpcr.to_le_bytes());
     fpu[crate::FPU_FPSR_OFF..crate::FPU_FPSR_OFF + 4].copy_from_slice(&fpsr.to_le_bytes());
-    Some(true)
+    Some((true, por))
 }
 
 /// User rt-sigframe range for pre-copy badframe validation. # C: O(1)
