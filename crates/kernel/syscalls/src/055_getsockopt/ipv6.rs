@@ -28,6 +28,10 @@ fn view(sock: &Arc<InetSocket>) -> Ipv6GetState {
     if sock.opts.ipv6_recvtclass.load(Ordering::Acquire) != 0 { flags |= RECVTCLASS; }
     if sock.mcast.multicast_all_v6() { flags &= !flag::MC_ALL_OFF; }
     else { flags |= flag::MC_ALL_OFF; }
+    let (pktinfo_addr, pktinfo_ifindex) = sock.opts.ipv6.sticky_pktinfo();
+    let mut pktinfo = [0u8; 20];
+    pktinfo[..16].copy_from_slice(&pktinfo_addr);
+    pktinfo[16..].copy_from_slice(&pktinfo_ifindex.to_ne_bytes());
     Ipv6GetState {
         flags,
         inet_flags: sock.opts.ip.flag_word(),
@@ -57,6 +61,7 @@ fn view(sock: &Arc<InetSocket>) -> Ipv6GetState {
             sock.opts.ipv6.header(Sticky::Rthdr),
             sock.opts.ipv6.header(Sticky::DstOpts),
         ],
+        pktinfo,
         family: sock.family.load(Ordering::Acquire) as i32,
     }
 }
