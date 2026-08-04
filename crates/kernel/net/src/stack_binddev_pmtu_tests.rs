@@ -69,6 +69,11 @@ fn active_open_uses_learned_pmtu_unless_mode_uses_interface() {
     let probe = connect_with_mode(&stack, CLIENT_PORT + 1, crate::uapi::IP_PMTUDISC_PROBE);
     assert_eq!(cached.conn.lock().own_mss, LEARNED_MSS);
     assert_eq!(probe.conn.lock().own_mss, LOOPBACK_MSS);
+    assert_eq!(cached.conn.lock().path_mtu, u32::from(LEARNED_PMTU));
+    assert_eq!(probe.conn.lock().path_mtu, 65_535);
+    cached.conn.lock().path_mtu = 0;
+    stack.tcp_sync_mss(&cached);
+    assert_eq!(cached.conn.lock().path_mtu, u32::from(LEARNED_PMTU));
 }
 
 #[test]
@@ -104,6 +109,10 @@ fn passive_child_uses_learned_pmtu_unless_listener_uses_interface() {
         };
         let child = stack.inet_tables(0).tcp_conns.lock().get(&key).cloned().unwrap();
         assert_eq!(child.conn.lock().own_mss, expected, "mode={mode}");
+        let expected_pmtu = if mode == crate::uapi::IP_PMTUDISC_PROBE {
+            65_535
+        } else { u32::from(LEARNED_PMTU) };
+        assert_eq!(child.conn.lock().path_mtu, expected_pmtu, "mode={mode}");
     }
 }
 
