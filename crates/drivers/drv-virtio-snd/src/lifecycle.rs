@@ -67,14 +67,14 @@ pub fn event_stats_for(device_key: DeviceKey) -> Option<(u64, u64)> {
 }
 
 pub fn install(p: SndInstall) -> Option<SndProbe> {
-    let controlq = p.resources.require_queue(0)?;
+    let controlq = p.resources.require_queue_at_least(0, 2)?;
     let eventq = p.resources.require_queue(1)?;
     if !p.resources.common_cfg_valid() {
         return None;
     }
     let device_cfg = read_device_config(p.resources)?;
-    let txq = p.resources.require_queue(2);
-    let rxq = p.resources.require_queue(3);
+    let txq = p.resources.require_queue_at_least(2, 3);
+    let rxq = p.resources.require_queue_at_least(3, 3);
     if CTX.lock().iter().any(|ctx| ctx.device_key == p.device_key) {
         return None;
     }

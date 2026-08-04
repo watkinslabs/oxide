@@ -43,6 +43,13 @@ impl VirtioResources {
         if queue.index == index && queue.is_runtime_valid() { Some(queue) } else { None }
     }
 
+    /// Return a valid queue only when it has enough descriptor ids for this consumer.
+    /// # C: O(1)
+    pub const fn require_queue_at_least(&self, index: u16, min_size: u16) -> Option<VirtQueueResource> {
+        let Some(queue) = self.require_queue(index) else { return None };
+        if queue.size >= min_size { Some(queue) } else { None }
+    }
+
     pub const fn common_cfg_valid(&self) -> bool {
         self.cfg_va != 0 && self.hhdm != 0
     }
