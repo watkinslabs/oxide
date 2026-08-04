@@ -433,6 +433,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Net / socket
 
+| FIXED a06dbab2b | med | Fast Open now implements all four reference blackhole-detection rungs. The out-of-order receive queue retains payload, urgent metadata, and FIN together, so a sole bare FIN is detected both when it was queued before local close and when it arrives after close. | `TcpConn::ooo_buf` owns complete out-of-order segments; `tcp_conn::active_fastopen` tests both close orderings; x86 and ARM smoke pass. | F807-fold-f806-ledger |
+
 
 ### Memory / page cache
 
