@@ -48,7 +48,7 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
         let multicast = dst.is_multicast();
         let iface = if control.raw4.iface.is_some() { control.raw4.iface } else if multicast {
             crate::sock_mcast::bound_iface(sock, dst)?
-        } else { bound_iface(sock)? };
+        } else { super::iface::v4_egress_iface(sock)? };
         let socket_source = if multicast { crate::sock_mcast::src_ip(sock, dst, iface) }
             else { crate::Ipv4Addr::ANY };
         let options = crate::raw4::Raw4TxOptions {

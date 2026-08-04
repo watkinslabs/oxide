@@ -184,7 +184,7 @@ impl ConnectTransaction<'_> {
                 crate::sock_io::connect_wait_established(sock, entry)
             }
             (ConnectKind::Raw4(endpoint), RemoteAddr::Inet { ip, .. }) => {
-                let iface = bound_iface(sock)?;
+                let iface = super::iface::v4_egress_iface(sock)?;
                 if ip.is_broadcast() && sock.opts.broadcast.load(
                     core::sync::atomic::Ordering::Acquire,
                 ) == 0 {

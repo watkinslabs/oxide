@@ -27,7 +27,10 @@ pub(crate) fn plan(sock: &InetSocket, local_ip: IpAddr, remote_ip: IpAddr, sourc
     let namespace = &sock.owner.net_namespace;
     let now_ns = crate::tcp_conn::ka_now_ns();
     let metrics = super::stack().route_metrics_for_dst_in(
-        sock.net_ns(), remote_ip, bound_iface(sock).ok().flatten());
+        sock.net_ns(), remote_ip, match remote_ip {
+            IpAddr::V4(_) => super::iface::v4_egress_iface(sock).ok().flatten(),
+            IpAddr::V6(_) => bound_iface(sock).ok().flatten(),
+        });
     let pause = tcp_fastopen::blackhole_pause(namespace, now_ns);
     let cached = tcp_fastopen::cached_cookie(namespace, local_ip, remote_ip, now_ns);
     tcp_fastopen::decide_active(&tcp_fastopen::Active {
