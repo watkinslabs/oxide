@@ -81,6 +81,10 @@ fn populate(sock: &InetSocket, info: &mut TcpInfo) {
         _ => { info.tcpi_state = state_to_byte(net::tcp_state::TcpState::Closed); return; }
     };
     let c = entry.conn.lock();
+    populate_conn(&c, info);
+}
+
+fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
     info.tcpi_state = state_to_byte(c.state);
     info.tcpi_retransmits = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0) as u8;
     info.tcpi_snd_wscale_rcv = (c.snd_wscale << 4) | (c.rcv_wscale & 0x0F);
@@ -98,14 +102,17 @@ fn populate(sock: &InetSocket, info: &mut TcpInfo) {
     info.tcpi_snd_cwnd = c.cwnd / core::cmp::max(snd_mss, 1);
     info.tcpi_reordering = c.reordering;
     info.tcpi_rcv_space = c.rcv_buf_cap;
+    info.tcpi_bytes_received = c.bytes_received;
+    info.tcpi_segs_in = c.segs_in;
+    info.tcpi_notsent_bytes = c.notsent_bytes();
     info.tcpi_data_segs_in = c.data_segs_in;
+    info.tcpi_rcv_ooopack = c.rcv_ooopack;
     // Linux packs this byte as `delivery_rate_app_limited:1,
     // fastopen_client_fail:2`, so the reason rides bits 1-2.
     info.tcpi_delivery_rate_app_limited =
         (c.fastopen_client_fail & FASTOPEN_CLIENT_FAIL_MASK) << FASTOPEN_CLIENT_FAIL_SHIFT;
 }
 
-#[cfg(target_os = "oxide-kernel")]
 fn state_to_byte(s: net::tcp_state::TcpState) -> u8 {
     use net::tcp_state::TcpState::*;
     match s {
@@ -116,7 +123,25 @@ fn state_to_byte(s: net::tcp_state::TcpState) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_tcp_info, TcpInfo, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN};
+    use super::{copy_tcp_info, populate_conn, TcpInfo, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN};
+
+    #[test]
+    fn populate_reads_the_connection_owned_receive_and_send_counters() {
+        let ip = net::addr::IpAddr::V4(net::addr::Ipv4Addr::LOOPBACK);
+        let endpoint = |port| net::tcp_conn::Endpoint { ip, port };
+        let mut conn = net::tcp_conn::TcpConn::new_client(endpoint(40_000), endpoint(80), 1);
+        conn.state = net::tcp_state::TcpState::Established;
+        conn.segs_in = 7;
+        conn.bytes_received = 91;
+        conn.rcv_ooopack = 2;
+        conn.send(b"unsent");
+        let mut info = TcpInfo::default();
+        populate_conn(&conn, &mut info);
+        assert_eq!(info.tcpi_segs_in, 7);
+        assert_eq!(info.tcpi_bytes_received, 91);
+        assert_eq!(info.tcpi_rcv_ooopack, 2);
+        assert_eq!(info.tcpi_notsent_bytes, 6);
+    }
 
     #[test]
     fn full_request_returns_full_linux_abi_and_zero_extension() {

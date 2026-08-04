@@ -148,8 +148,12 @@ fn presenting_the_cookie_delivers_the_syns_data_into_an_accepted_connection() {
     assert!(Arc::ptr_eq(&accepted, &server));
     assert_eq!(stack.tcp_recv(&accepted, 64), b"GET /",
         "the data the SYN carried is readable before the handshake finishes");
-    assert_eq!(server.conn.lock().state, TcpState::SynRecv,
+    let conn = server.conn.lock();
+    assert_eq!(conn.state, TcpState::SynRecv,
         "the acknowledgement completing the handshake is still outstanding");
+    assert_eq!(conn.data_segs_in, 1);
+    assert_eq!(conn.bytes_received, b"GET /".len() as u64);
+    drop(conn);
     assert_eq!(listener.fastopen.qlen(), 1, "the request is charged against the bound");
 }
 

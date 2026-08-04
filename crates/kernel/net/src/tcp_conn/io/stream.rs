@@ -8,6 +8,11 @@ use crate::tcp_state::TcpState;
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
+    /// Application bytes accepted but not yet emitted into a TCP segment. # C: O(1)
+    pub fn notsent_bytes(&self) -> u32 {
+        core::cmp::min(self.send_buf.len(), u32::MAX as usize) as u32
+    }
+
     /// Convert queued send_buf into wire segments.
     /// # C: O(send_buf)
     pub fn output(&mut self, mtu: usize, nodelay: bool, cork: bool) -> Vec<Vec<u8>> {

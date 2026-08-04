@@ -78,6 +78,12 @@ pub struct TcpConn {
     pub snd_wscale: u8,
     pub rcv_wscale: u8,
     pub snd_wnd: u32,
+    /// Every valid TCP segment admitted to this connection.
+    pub segs_in: u32,
+    /// Payload bytes accepted into the contiguous receive stream.
+    pub bytes_received: u64,
+    /// Segments retained because they arrived beyond `rcv_nxt`.
+    pub rcv_ooopack: u32,
     /// Complete out-of-order segments, including control flags that consume
     /// sequence space such as FIN.
     pub ooo_buf: BTreeMap<u32, OutOfOrderSegment>,
