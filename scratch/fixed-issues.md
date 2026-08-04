@@ -75,6 +75,7 @@ shape they were retired in.
 | FIXED 0c6257856 | med | `read(2)` on an fscontext fd had been recorded as returning `EINVAL` while its diagnostic ring was unreachable. | Context inodes use dedicated file operations: each read returns the oldest newline-terminated message, an empty ring yields `ENODATA`, and a short buffer yields `EMSGSIZE` without consuming the message. `cargo test -p vfs --test fs_context_log` passes all 9 regressions. | D499-fscontext-read-error-log-ledger |
 | FIXED a96f86b2c | med | Core-dump pipe writes did not stop when the dumper was frozen. | The core-dump wait rule now stops for freezer state or a new fatal kill, while ignoring the delivered signal that initiated the dump. Hosted pipe decision coverage and the 939-test FS suite pass. | D500-pipe-freezer-write-abort-ledger |
 | FIXED f28f74eca | med | Core-dump mapping metadata had been recorded as naming only a backing inode rather than a self-contained path. | `FileBacking` carries the mapper's path and core-dump planning emits it with the mapping offset into `NT_FILE`; focused walk tests prove named and nameless backing behavior. | D501-coredump-vma-file-path-ledger |
+| FIXED 74cbee0fd | med | `POR_EL0` was not saved in or restored from the aarch64 signal frame. | The feature-gated POE record now preserves the overlay across signal delivery and sigreturn; malformed, wrong-sized, disabled-feature, and duplicate records are rejected. Focused ARM signal tests pass. | D502-arm64-por-el0-signal-frame-ledger |
 
 ## Process
 
