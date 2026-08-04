@@ -70,8 +70,8 @@ fn f179a_sack_blocks_coalesce_contiguous_ooo() {
     let base = c.rcv_nxt;
     // OOO chunks at base+5..10 and base+10..15 should collapse
     // into a single block (left=base+5, right=base+15).
-    c.ooo_buf.insert(base.wrapping_add(5), alloc::vec![0u8; 5]);
-    c.ooo_buf.insert(base.wrapping_add(10), alloc::vec![0u8; 5]);
+    c.ooo_buf.insert(base.wrapping_add(5), crate::tcp_conn::OutOfOrderSegment::data(alloc::vec![0u8; 5]));
+    c.ooo_buf.insert(base.wrapping_add(10), crate::tcp_conn::OutOfOrderSegment::data(alloc::vec![0u8; 5]));
     let blocks = c.sack_blocks();
     assert_eq!(blocks.len(), 1);
     assert_eq!(blocks[0].left,  base.wrapping_add(5));
@@ -82,8 +82,8 @@ fn f179a_sack_blocks_coalesce_contiguous_ooo() {
 fn f179a_sack_blocks_two_disjoint_runs() {
     let mut c = client_established();
     let base = c.rcv_nxt;
-    c.ooo_buf.insert(base.wrapping_add(5),  alloc::vec![0u8; 5]);
-    c.ooo_buf.insert(base.wrapping_add(20), alloc::vec![0u8; 8]);
+    c.ooo_buf.insert(base.wrapping_add(5),  crate::tcp_conn::OutOfOrderSegment::data(alloc::vec![0u8; 5]));
+    c.ooo_buf.insert(base.wrapping_add(20), crate::tcp_conn::OutOfOrderSegment::data(alloc::vec![0u8; 8]));
     let blocks = c.sack_blocks();
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].left,  base.wrapping_add(5));

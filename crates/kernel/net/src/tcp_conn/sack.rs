@@ -11,11 +11,11 @@ impl TcpConn {
     pub fn sack_blocks(&self) -> alloc::vec::Vec<SackBlock> {
         let mut out: alloc::vec::Vec<SackBlock> = alloc::vec::Vec::new();
         let mut iter = self.ooo_buf.iter().peekable();
-        while let Some((&seq, chunk)) = iter.next() {
-            let mut right = seq.wrapping_add(chunk.len() as u32);
-            while let Some(&(&nseq, nchunk)) = iter.peek() {
+        while let Some((&seq, segment)) = iter.next() {
+            let mut right = seq.wrapping_add(segment.sequence_len());
+            while let Some(&(&nseq, next)) = iter.peek() {
                 if nseq == right {
-                    right = right.wrapping_add(nchunk.len() as u32);
+                    right = right.wrapping_add(next.sequence_len());
                     iter.next();
                 } else {
                     break;
