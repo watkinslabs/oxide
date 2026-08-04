@@ -82,6 +82,25 @@ impl NetStack {
         true
     }
 
+    /// Publish a driver-originated carrier transition and its RTM_NEWLINK
+    /// notification. Repeating the present state is a no-op.
+    /// # C: O(N)
+    pub fn set_iface_carrier(&self, iface: NetIfaceId, up: bool) -> bool {
+        let Some(net_ns) = self.ifaces.namespace(iface) else { return false };
+        let Some(namespace) = Self::namespace_owner(net_ns) else { return false };
+        let rtnl = self.rtnl_lock();
+        let Some(dev) = self.ifaces.control_ready_in_ns(&rtnl, iface, net_ns) else { return false };
+        let Some(changed) = self.ifaces.set_iface_carrier_in_ns(&rtnl, iface, net_ns, up) else { return false };
+        if !changed { return true; }
+        let properties = crate::control_event::LinkProperties::from_dev(dev.as_ref());
+        let Some(event) = self.live_link_event(&rtnl, namespace, iface, properties,
+            crate::control_event::EventKind::New) else { return false };
+        let ticket = crate::control_event::stage(&rtnl, crate::control_event::ControlEvent::Link(event));
+        drop(rtnl);
+        crate::control_event::publish(ticket);
+        true
+    }
+
     /// Abort an interface generation that was never published. # C: O(N)
     pub fn abort_iface(&self, reg: crate::netdev::IfaceRegistration<'_>) -> bool {
         self.ifaces.abort(reg)

@@ -304,17 +304,6 @@ impl IfaceRegistry {
             .map(|e| e.carrier.load(Ordering::Acquire))
     }
 
-    /// Set driver-reported carrier — the reference's `netif_carrier_on` /
-    /// `netif_carrier_off`. Only a driver calls this; userspace cannot.
-    /// # C: O(N)
-    pub fn set_iface_carrier(&self, id: NetIfaceId, up: bool) -> bool {
-        let g = self.inner.lock();
-        match g.entries.iter().find(|e| e.id == id) {
-            Some(e) => { e.carrier.store(up, Ordering::Release); true }
-            None => false,
-        }
-    }
-
     fn guard_matches(&self, rtnl: &crate::RtnlGuard<'_>) -> bool {
         core::ptr::eq(self, &rtnl.stack().ifaces)
     }
@@ -428,6 +417,20 @@ impl IfaceRegistry {
         };
         if let Some((dev, mode)) = notify { dev.packet_rx_mode_changed(&mode); }
         Some(next)
+    }
+
+    /// Apply a driver carrier transition under the matching RTNL. The caller
+    /// owns the later link notification, after it has captured the new flags.
+    /// # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn set_iface_carrier_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
+                                   up: bool) -> Option<bool> {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        let entry = g.entries.iter().find(|entry| entry.id == id && entry.ns == ns
+            && entry.ingress.live() && entry.ingress.ready())?;
+        let was = entry.carrier.swap(up, Ordering::AcqRel);
+        Some(was != up)
     }
 
     /// Look up a registered iface by id, restricted to the given
