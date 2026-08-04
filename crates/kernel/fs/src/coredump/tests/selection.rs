@@ -11,7 +11,7 @@ use hal::UserVirtAddr;
 use vmm::{FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
 
 use crate::coredump::filter::{
-    describe_vma, dump_size, resolve_elf_probe, vma_dump_verdict, VmaDumpDesc, VmaDumpVerdict, ELF_MAGIC,
+    describe_vma, describe_vma_in_range, dump_size, resolve_elf_probe, vma_dump_verdict, VmaDumpDesc, VmaDumpVerdict, ELF_MAGIC,
     PAGE_BYTES,
 };
 
@@ -328,4 +328,16 @@ fn the_adapter_always_dumps_the_vdso_image_and_the_data_page_below_it() {
     // vDSO mapped at all.
     assert!(!describe_vma(&image, VMA_START + 0x1_0000_0000).always_dump);
     assert!(!describe_vma(&image, 0).always_dump);
+}
+
+#[test]
+fn the_adapter_always_dumps_every_vdso_segment() {
+    let start = VMA_START - PAGE_BYTES;
+    let end = VMA_START + VMA_LEN * 2;
+    let image = vma(VmaFlags::PRIVATE, VmaBacking::Anonymous);
+    let later = Vma::new(va(VMA_START + VMA_LEN), va(end), VmaProt::READ, VmaFlags::PRIVATE, VmaBacking::Anonymous);
+    let outside = Vma::new(va(end), va(end + VMA_LEN), VmaProt::READ, VmaFlags::PRIVATE, VmaBacking::Anonymous);
+    assert!(describe_vma_in_range(&image, start, end).always_dump);
+    assert!(describe_vma_in_range(&later, start, end).always_dump);
+    assert!(!describe_vma_in_range(&outside, start, end).always_dump);
 }

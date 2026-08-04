@@ -163,11 +163,16 @@ pub fn dump_size(v: VmaDumpVerdict, d: &VmaDumpDesc, page_size: u64) -> u64 {
 /// build that produced it.
 /// # C: O(1)
 pub fn describe_vma(vma: &Vma, vdso_base: u64) -> VmaDumpDesc {
+    describe_vma_in_range(vma, vdso_base.saturating_sub(PAGE_BYTES), vdso_base.saturating_add(PAGE_BYTES))
+}
+
+/// Reduce a VMA while recognizing every mapping in a vvar + vDSO reservation.
+/// # C: O(1)
+pub fn describe_vma_in_range(vma: &Vma, vdso_start: u64, vdso_end: u64) -> VmaDumpDesc {
     let start = vma.start.as_u64();
     let end = vma.end.as_u64();
-    let covers = |a: u64| a >= start && a < end;
     let always_dump = matches!(vma.backing, VmaBacking::Special)
-        || (vdso_base != 0 && (covers(vdso_base) || covers(vdso_base.saturating_sub(PAGE_BYTES))));
+        || (vdso_end > vdso_start && start < vdso_end && vdso_start < end);
     let file = match &vma.backing { VmaBacking::File { backing, off } => Some((backing, *off)), _ => None };
     VmaDumpDesc {
         start,

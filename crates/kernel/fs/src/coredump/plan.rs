@@ -17,7 +17,7 @@ use vmm::coredump_filter::CoredumpFilter;
 use vmm::{Vma, VmaBacking, VmaProt};
 
 use super::elf::{SEG_EXEC, SEG_READ, SEG_WRITE};
-use super::filter::{describe_vma, dump_size, resolve_elf_probe, vma_dump_verdict, VmaDumpVerdict};
+use super::filter::{describe_vma_in_range, dump_size, resolve_elf_probe, vma_dump_verdict, VmaDumpVerdict};
 
 /// Bytes read to settle an [`VmaDumpVerdict::ElfProbe`]: enough for the magic
 /// that tells a mapped object from anything else.
@@ -72,11 +72,11 @@ fn planned_file(vma: &Vma, page_size: u64) -> Option<PlannedFile> {
 /// here at all.
 /// # C: O(mappings)
 pub fn plan_mappings<R: FnMut(u64, &mut [u8]) -> usize>(
-    vmas: &[Vma], vdso_base: u64, filter: CoredumpFilter, page_size: u64, head: &mut R,
+    vmas: &[Vma], vdso_start: u64, vdso_end: u64, filter: CoredumpFilter, page_size: u64, head: &mut R,
 ) -> Vec<PlannedSegment> {
     let mut out: Vec<PlannedSegment> = Vec::with_capacity(vmas.len());
     for vma in vmas.iter() {
-        let d = describe_vma(vma, vdso_base);
+        let d = describe_vma_in_range(vma, vdso_start, vdso_end);
         let mut v = vma_dump_verdict(&d, filter);
         if v == VmaDumpVerdict::ElfProbe {
             let mut probe = [0u8; PROBE_BYTES];

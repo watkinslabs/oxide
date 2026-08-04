@@ -147,7 +147,8 @@ pub(super) struct MmLayout {
     /// Load address of this mm's vDSO ELF header. The signal path uses the
     /// mapped image's `__kernel_rt_sigreturn` symbol when an AArch64 handler
     /// has no SA_RESTORER trampoline, exactly as Linux does.
-    vdso_ehdr:   AtomicU64,
+    vdso_start:  AtomicU64,
+    vdso_end:    AtomicU64,
     /// Which VMA classes a core dump of this process contains
     /// ([`CoredumpFilter`]). Per-mm, so every thread of the process shares one
     /// value, and copied by `forked` so a child starts from its parent's
@@ -171,7 +172,7 @@ impl MmLayout {
             start_stack: AtomicU64::new(0), start_brk: AtomicU64::new(0),
             auxv:        Spinlock::new(None),
             user_set:    AtomicU64::new(0),
-            vdso_ehdr:   AtomicU64::new(0),
+            vdso_start:  AtomicU64::new(0), vdso_end: AtomicU64::new(0),
             coredump_filter: AtomicU32::new(CoredumpFilter::DEFAULT.bits()),
             coredumping: AtomicBool::new(false),
         }
@@ -189,7 +190,7 @@ impl MmLayout {
             start_stack: g(&src.start_stack), start_brk: g(&src.start_brk),
             auxv:        Spinlock::new(src.auxv.lock().clone()),
             user_set:    g(&src.user_set),
-            vdso_ehdr:   g(&src.vdso_ehdr),
+            vdso_start:  g(&src.vdso_start), vdso_end: g(&src.vdso_end),
             coredump_filter: AtomicU32::new(src.coredump_filter.load(Ordering::Acquire)),
             // Not inherited: the child is a new process, and nothing is
             // dumping it however far along its parent's dump had got.
@@ -225,7 +226,16 @@ impl AddressSpace {
     pub fn auxv(&self) -> Option<Vec<u8>> { self.mm_layout.auxv.lock().clone() }
     /// vDSO ELF header address for this mm, or zero before exec mapping.
     /// # C: O(1)
-    pub fn vdso_ehdr(&self) -> u64 { self.mm_layout.vdso_ehdr.load(Ordering::Acquire) }
+    pub fn vdso_ehdr(&self) -> u64 {
+        let start = self.mm_layout.vdso_start.load(Ordering::Acquire);
+        let end = self.mm_layout.vdso_end.load(Ordering::Acquire);
+        if end > start { start.saturating_add(0x1000) } else { 0 }
+    }
+    /// Complete vvar + vDSO reservation, or `(0, 0)` before exec mapping.
+    /// # C: O(1)
+    pub fn vdso_range(&self) -> (u64, u64) {
+        (self.mm_layout.vdso_start.load(Ordering::Acquire), self.mm_layout.vdso_end.load(Ordering::Acquire))
+    }
 
     /// Which VMA classes a core dump of this process contains.
     /// # C: O(1)
@@ -306,7 +316,10 @@ impl AddressSpace {
 
     /// Record the vDSO ELF header address installed during exec.
     /// # C: O(1)
-    pub fn set_vdso_ehdr(&self, addr: u64) { self.mm_layout.vdso_ehdr.store(addr, Ordering::Release); }
+    pub fn set_vdso_range(&self, start: u64, end: u64) {
+        self.mm_layout.vdso_end.store(end, Ordering::Release);
+        self.mm_layout.vdso_start.store(start, Ordering::Release);
+    }
 
     // --- prctl(PR_SET_MM) apply paths ---
     /// Snapshot the current layout into a `PrctlMmMap` (auxv ptr /

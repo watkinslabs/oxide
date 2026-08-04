@@ -189,6 +189,17 @@ fn fork_preserves_vdso_signal_restorer() {
 }
 
 #[test]
+fn vdso_reservation_is_one_forked_range() {
+    let parent = AddressSpace::new(0).unwrap();
+    parent.set_vdso_range(0x7fff_f000_0000, 0x7fff_f000_5000);
+    assert_eq!(parent.vdso_ehdr(), 0x7fff_f000_1000);
+    assert_eq!(parent.vdso_range(), (0x7fff_f000_0000, 0x7fff_f000_5000));
+    let child = parent.fork(0).unwrap();
+    assert_eq!(child.vdso_ehdr(), parent.vdso_ehdr());
+    assert_eq!(child.vdso_range(), parent.vdso_range());
+}
+
+#[test]
 fn mmap_no_hint_uses_topdown() {
     use crate::address_space::MMAP_TOP;
     let a = AddressSpace::new(0).unwrap();

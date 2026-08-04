@@ -95,7 +95,7 @@ fn memory() -> impl FnMut(u64, &mut [u8]) -> usize {
 
 fn plan(vmas: &[Vma], filter: F) -> Vec<PlannedSegment> {
     let mut mem = memory();
-    plan_mappings(vmas, 0, filter, PAGE, &mut mem)
+    plan_mappings(vmas, 0, 0, filter, PAGE, &mut mem)
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn the_default_filter_carries_written_anonymous_memory_and_one_page_of_each_obje
 fn a_non_executable_object_is_carried_only_when_its_head_says_it_is_one() {
     let vmas = tree();
     let mut nothing = |_va: u64, _buf: &mut [u8]| 0usize;
-    let p = plan_mappings(&vmas, 0, F::DEFAULT, PAGE, &mut nothing);
+    let p = plan_mappings(&vmas, 0, 0, F::DEFAULT, PAGE, &mut nothing);
     assert_eq!(p[1].dump_size, 0, "unreadable head is not a mapped object");
     assert_eq!(p[0].dump_size, PAGE, "an executable object needs no probe");
 }
