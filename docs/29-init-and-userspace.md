@@ -4,15 +4,14 @@ FROZEN 2026-05-02. Dep:`01`,`02`,`13`,`15`,`16`,`19`,`28`,`31`,`39`,`51`. Provid
 
 ## 1 Purpose
 
-PID 1 (init), libc, image build pipeline (initramfs + on-disk root), boot-to-shell sequence.
+PID 1 (init), libc, ext4 root-image pipeline, boot-to-shell sequence.
 
 ## 2 Invariants (frozen)
 
-1. Kernel exec's `/init` (or `/sbin/init` fallback) as PID 1 from initramfs.
+1. Kernel mounts the ext4 root disk and exec's `/sbin/init` as PID 1.
 2. PID 1: signal-default-ignore for many; reaps orphans; exit ⇒ kernel panic.
-3. Initramfs is a CPIO archive (gzip or zstd) loaded by bootloader, mounted as initial rootfs (tmpfs-backed).
-4. Real root mounted via `pivot_root` from initramfs once block devices come up.
-5. libc + loader are upstream Fedora glibc (`libc.so.6`, `ld-linux-x86-64.so.2` / `ld-linux-aarch64.so.1`) installed from RPMs; this repo builds neither.
+3. Root filesystem is an ext4 disk assembled by `../images`, attached as virtio-blk, and mounted directly as `/`.
+4. libc + loader are upstream Fedora glibc (`libc.so.6`, `ld-linux-x86-64.so.2` / `ld-linux-aarch64.so.1`) installed from RPMs; this repo builds neither.
 
 ## 3 Init (PID 1)
 
@@ -50,8 +49,8 @@ Root is a separate ext4 disk (`root-<arch>.img`, virtio-blk), not part of the IS
 
 `xtask rootfs --arch <a>` supplies the root filesystem: copy of `../images/output/<profile>-<arch>-root.img`, already composed + packed from RPMs. No userspace build step exists in this repo.
 
-`xtask qemu --arch <a>` runs:
-- `qemu-system-<arch> -cdrom oxide-<arch>-grub.iso -drive ...root-<arch>.img -smp N -m 4G -nographic` (aarch64 adds `-bios vendor/firmware/ovmf-aarch64.fd`).
+`make qemu-x86` / `make qemu-arm` run the matching GRUB ISO plus root disk;
+the smoke targets add the serial verdict harness.
 
 ## 6 Boot sequence (post-kernel-init)
 
