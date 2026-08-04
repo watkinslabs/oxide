@@ -60,16 +60,39 @@ pub enum Mib {
 /// Number of distinct counters, and the index each `Mib` occupies.
 const COUNTERS: usize = 37;
 
+/// One extended TCP event reported by `/proc/net/netstat`'s `TcpExt` row.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TcpExt {
+    TcpFastOpenPassive,
+    TcpFastOpenPassiveFail,
+    TcpFastOpenPassiveAltKey,
+    TcpFastOpenCookieReqd,
+    TcpFastOpenListenOverflow,
+}
+
+const TCP_EXT_COUNTERS: usize = 5;
+
+impl TcpExt {
+    /// # C: O(1)
+    const fn index(self) -> usize { self as usize }
+}
+
 impl Mib {
     /// # C: O(1)
     const fn index(self) -> usize { self as usize }
 }
 
-struct Counters([AtomicU64; COUNTERS]);
+struct Counters {
+    snmp: [AtomicU64; COUNTERS],
+    tcp_ext: [AtomicU64; TCP_EXT_COUNTERS],
+}
 
 impl Counters {
     fn new() -> Self {
-        Self([const { AtomicU64::new(0) }; COUNTERS])
+        Self {
+            snmp: [const { AtomicU64::new(0) }; COUNTERS],
+            tcp_ext: [const { AtomicU64::new(0) }; TCP_EXT_COUNTERS],
+        }
     }
 }
 
@@ -83,23 +106,33 @@ fn counters(net_ns: u64) -> alloc::sync::Arc<Counters> {
 
 /// Count one event in `net_ns`. # C: O(log N namespaces)
 pub fn bump(net_ns: u64, which: Mib) {
-    counters(net_ns).0[which.index()].fetch_add(1, Ordering::Relaxed);
+    counters(net_ns).snmp[which.index()].fetch_add(1, Ordering::Relaxed);
 }
 
 /// Count `n` occurrences of one event in `net_ns`. # C: O(log N namespaces)
 pub fn add(net_ns: u64, which: Mib, n: u64) {
-    counters(net_ns).0[which.index()].fetch_add(n, Ordering::Relaxed);
+    counters(net_ns).snmp[which.index()].fetch_add(n, Ordering::Relaxed);
 }
 
 /// Current value of one counter in `net_ns`. # C: O(log N namespaces)
 pub fn get(net_ns: u64, which: Mib) -> u64 {
-    counters(net_ns).0[which.index()].load(Ordering::Relaxed)
+    counters(net_ns).snmp[which.index()].load(Ordering::Relaxed)
 }
 
 /// Every counter of `net_ns`, in `Mib` order. # C: O(COUNTERS)
 pub fn snapshot(net_ns: u64) -> Vec<u64> {
     let c = counters(net_ns);
-    c.0.iter().map(|v| v.load(Ordering::Relaxed)).collect()
+    c.snmp.iter().map(|v| v.load(Ordering::Relaxed)).collect()
+}
+
+/// Count one extended TCP event in `net_ns`. # C: O(log N namespaces)
+pub fn bump_tcp_ext(net_ns: u64, which: TcpExt) {
+    counters(net_ns).tcp_ext[which.index()].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Current value of one extended TCP event in `net_ns`. # C: O(log N namespaces)
+pub fn get_tcp_ext(net_ns: u64, which: TcpExt) -> u64 {
+    counters(net_ns).tcp_ext[which.index()].load(Ordering::Relaxed)
 }
 
 /// Drop a namespace's counters when it goes away. # C: O(log N)
@@ -229,6 +262,20 @@ SndbufErrors InCsumErrors IgnoredMulti");
     s.into_bytes()
 }
 
+/// Render `/proc/net/netstat` for one namespace. # C: O(TCP_EXT_COUNTERS)
+pub fn render_proc_netstat(net_ns: u64) -> Vec<u8> {
+    use core::fmt::Write as _;
+    let v = |m: TcpExt| get_tcp_ext(net_ns, m);
+    let mut s = alloc::string::String::new();
+    let _ = writeln!(s, "TcpExt: TCPFastOpenPassive TCPFastOpenPassiveFail \
+TCPFastOpenPassiveAltKey TCPFastOpenCookieReqd TCPFastOpenListenOverflow");
+    let _ = writeln!(s, "TcpExt: {} {} {} {} {}",
+        v(TcpExt::TcpFastOpenPassive), v(TcpExt::TcpFastOpenPassiveFail),
+        v(TcpExt::TcpFastOpenPassiveAltKey), v(TcpExt::TcpFastOpenCookieReqd),
+        v(TcpExt::TcpFastOpenListenOverflow));
+    s.into_bytes()
+}
+
 #[cfg(test)]
 mod render_tests {
     use super::*;
@@ -304,6 +351,19 @@ mod render_tests {
         let on = alloc::string::String::from_utf8(render_proc_snmp(NS, true, 7)).unwrap();
         assert_eq!(column(&on, "Ip:", "Forwarding"), 1);
         assert_eq!(column(&on, "Tcp:", "CurrEstab"), 7);
+        forget(NS);
+    }
+
+    #[test]
+    fn tcp_fast_open_events_render_in_their_tcp_ext_columns() {
+        const NS: u64 = 0x530e;
+        forget(NS);
+        bump_tcp_ext(NS, TcpExt::TcpFastOpenPassive);
+        bump_tcp_ext(NS, TcpExt::TcpFastOpenPassiveAltKey);
+        let text = alloc::string::String::from_utf8(render_proc_netstat(NS)).unwrap();
+        assert_eq!(column(&text, "TcpExt:", "TCPFastOpenPassive"), 1);
+        assert_eq!(column(&text, "TcpExt:", "TCPFastOpenPassiveAltKey"), 1);
+        assert_eq!(column(&text, "TcpExt:", "TCPFastOpenCookieReqd"), 0);
         forget(NS);
     }
 }

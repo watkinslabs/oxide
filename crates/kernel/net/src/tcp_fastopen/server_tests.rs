@@ -76,6 +76,34 @@ fn a_cookie_under_the_backup_key_is_honoured_and_upgraded() {
 }
 
 #[test]
+fn the_decision_names_each_tcp_ext_event_at_the_rung_that_caused_it() {
+    let queue = listener(1);
+    let request = decide_counted(&queue, &syn(FastOpen::Request { exp: false }, false), NOW);
+    assert_eq!(request.counters().collect::<alloc::vec::Vec<_>>(),
+        alloc::vec![Counter::CookieReqd]);
+
+    let accepted = decide_counted(&queue, &syn(FastOpen::Cookie(issued(false)), true), NOW);
+    assert_eq!(accepted.counters().collect::<alloc::vec::Vec<_>>(),
+        alloc::vec![Counter::Passive]);
+
+    let overflow = decide_counted(&queue, &syn(FastOpen::Request { exp: false }, false), NOW);
+    assert_eq!(overflow.counters().collect::<alloc::vec::Vec<_>>(),
+        alloc::vec![Counter::CookieReqd, Counter::ListenOverflow]);
+
+    let failed_queue = listener(1);
+    let forged = Cookie::new(&[0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef], false).unwrap();
+    let failed = decide_counted(&failed_queue, &syn(FastOpen::Cookie(forged), true), NOW);
+    assert_eq!(failed.counters().collect::<alloc::vec::Vec<_>>(), alloc::vec![Counter::PassiveFail]);
+
+    let backup_queue = listener(1);
+    let backup = Syn { keys: Some(KeyCtx::new(Key::new(KEY), Some(Key::new(OLD)))),
+        ..syn(FastOpen::Cookie(cookie::gen(&Key::new(OLD), src(), dst(), false)), true) };
+    let upgraded = decide_counted(&backup_queue, &backup, NOW);
+    assert_eq!(upgraded.counters().collect::<alloc::vec::Vec<_>>(),
+        alloc::vec![Counter::Passive, Counter::PassiveAltKey]);
+}
+
+#[test]
 fn a_cookie_that_does_not_verify_gets_a_fresh_one_instead_of_a_refusal() {
     let queue = listener(4);
     let forged = Cookie::new(&[0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef], false)

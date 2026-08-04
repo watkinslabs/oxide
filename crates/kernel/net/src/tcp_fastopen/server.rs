@@ -23,6 +23,7 @@ use super::cookie::{self, KeyMatch};
 use super::flags::{self, TFO_SERVER_COOKIE_NOT_REQD};
 use super::keys::KeyCtx;
 use super::queue::FastOpenQueue;
+use super::Admission;
 
 /// One SYN as the fast-open decision sees it.
 pub struct Syn {
@@ -61,6 +62,29 @@ pub enum Passive {
     Accept { reply: Option<Cookie> },
 }
 
+/// A `TcpExt` event produced while deciding one passive fast-open SYN.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Counter { Passive, PassiveFail, PassiveAltKey, CookieReqd, ListenOverflow }
+
+/// The policy result plus the events it produced.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Decision {
+    pub passive: Passive,
+    counters: [Option<Counter>; 2],
+}
+
+impl Decision {
+    /// Events in the order Linux accounts them. # C: O(1)
+    pub fn counters(&self) -> impl Iterator<Item = Counter> + '_ {
+        self.counters.iter().flatten().copied()
+    }
+}
+
+/// The ordinary-handshake policy result with its events. # C: O(1)
+fn decline(counters: [Option<Counter>; 2]) -> Decision {
+    Decision { passive: Passive::Decline, counters }
+}
+
 /// Whether the option carried a value the ladder can act on. An option whose
 /// length cannot be a cookie is not one: the peer meant something, but nothing
 /// this side can answer, so it weighs exactly as much as no option at all.
@@ -81,27 +105,37 @@ fn exp_of(option: FastOpen) -> bool {
 
 /// Decide one SYN, charging the queue when the answer takes its data.
 /// # C: O(1)
-pub fn decide(queue: &FastOpenQueue, syn: &Syn, now_ns: u64) -> Passive {
-    if !flags::server_enabled(syn.bits) { return Passive::Decline; }
+pub fn decide_counted(queue: &FastOpenQueue, syn: &Syn, now_ns: u64) -> Decision {
+    let cookie_req = matches!(syn.option, FastOpen::Request { .. });
+    let mut counters = [cookie_req.then_some(Counter::CookieReqd), None];
+    if !flags::server_enabled(syn.bits) { return decline(counters); }
     // Nothing to do for a SYN that neither carries data nor says a word about
     // fast open — the ordinary handshake already handles it.
-    if !(syn.syn_data || present(syn.option)) { return Passive::Decline; }
-    if !queue.admit(now_ns) { return Passive::Decline; }
+    if !(syn.syn_data || present(syn.option)) { return decline(counters); }
+    match queue.admit(now_ns) {
+        Admission::Disabled => return decline(counters),
+        Admission::Full => {
+            counters[1] = Some(Counter::ListenOverflow);
+            return decline(counters);
+        }
+        Admission::Admitted => {}
+    }
     let exp = exp_of(syn.option);
     if flags::no_cookie(syn.bits, TFO_SERVER_COOKIE_NOT_REQD,
         syn.sock_no_cookie, syn.route_no_cookie)
     {
         queue.hold();
-        return Passive::Accept { reply: None };
+        counters[0] = Some(Counter::Passive);
+        return Decision { passive: Passive::Accept { reply: None }, counters };
     }
     // No key has been drawn, so nothing can be minted or believed. The
     // connection still proceeds, without a cookie for the client to keep.
-    let Some(ctx) = syn.keys.as_ref() else { return Passive::Decline; };
+    let Some(ctx) = syn.keys.as_ref() else { return decline(counters); };
     let fresh = || cookie::gen(&ctx.primary, syn.src, syn.dst, exp);
     match syn.option {
         // The client is asking for a cookie, not presenting one. It gets one
         // on the SYN-ACK and opens the ordinary way this time.
-        FastOpen::Request { .. } => Passive::Offer(fresh()),
+        FastOpen::Request { .. } => Decision { passive: Passive::Offer(fresh()), counters },
         FastOpen::Cookie(presented) => {
             match cookie::verify(ctx, syn.src, syn.dst, &presented) {
                 // A cookie this side did not mint proves nothing, so the data
@@ -109,21 +143,35 @@ pub fn decide(queue: &FastOpenQueue, syn: &Syn, now_ns: u64) -> Passive {
                 // gets the current cookie, which is also the repair path for a
                 // client holding one from before a key rotation dropped the
                 // backup.
-                None => Passive::Offer(fresh()),
-                Some(KeyMatch::Primary) => { queue.hold(); Passive::Accept { reply: None } }
+                None => {
+                    counters[1] = Some(Counter::PassiveFail);
+                    Decision { passive: Passive::Offer(fresh()), counters }
+                }
+                Some(KeyMatch::Primary) => {
+                    queue.hold();
+                    counters[0] = Some(Counter::Passive);
+                    Decision { passive: Passive::Accept { reply: None }, counters }
+                }
                 // Minted under the retired key. Honour it, and hand back one
                 // under the current key so the next connection verifies as
                 // primary and the backup can eventually be dropped.
                 Some(KeyMatch::Backup) => {
                     queue.hold();
-                    Passive::Accept { reply: Some(fresh()) }
+                    counters[0] = Some(Counter::Passive);
+                    counters[1] = Some(Counter::PassiveAltKey);
+                    Decision { passive: Passive::Accept { reply: Some(fresh()) }, counters }
                 }
             }
         }
         // Data in the SYN with no usable option: the peer never proved
         // anything, so the ordinary handshake carries the connection.
-        FastOpen::Absent | FastOpen::Invalid { .. } => Passive::Decline,
+        FastOpen::Absent | FastOpen::Invalid { .. } => decline(counters),
     }
+}
+
+/// Decide one SYN without observing its accounting events. # C: O(1)
+pub fn decide(queue: &FastOpenQueue, syn: &Syn, now_ns: u64) -> Passive {
+    decide_counted(queue, syn, now_ns).passive
 }
 
 #[cfg(test)]

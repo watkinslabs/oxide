@@ -26,7 +26,7 @@ const FIXED_STATIC: &[u64] = &[
 const FIXED_NET: &[u64] = &[
     ids::NET_DEV, ids::NET_TCP, ids::NET_UDP, ids::MODULES, ids::NET_ROUTE, ids::NET_ARP,
     ids::NET_UNIX, ids::NET_IF_INET6, ids::NET_SNMP, ids::NET_TCP6, ids::NET_UDP6,
-    ids::NET_RAW, ids::NET_RAW6, ids::NS_GENERATED,
+    ids::NET_RAW, ids::NET_RAW6, ids::NET_NETSTAT, ids::NS_GENERATED,
 ];
 
 #[test]

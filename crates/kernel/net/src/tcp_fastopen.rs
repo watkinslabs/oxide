@@ -56,5 +56,5 @@ pub use learn::{learn, Learned, Synack};
 pub use ns::{blackhole_disable, blackhole_pause, blackhole_reset, blackhole_timeout,
     blackhole_times, cache_learned, cached_cookie, enable_bits, enable_bits_in, init_key_once,
     ns_keys, set_ns_keys, NsKeys};
-pub use queue::{clamp_qlen, on_listen, FastOpenQueue, RST_PENALTY_NS};
-pub use server::{decide, Passive, Syn};
+pub use queue::{clamp_qlen, on_listen, Admission, FastOpenQueue, RST_PENALTY_NS};
+pub use server::{decide, decide_counted, Counter, Decision, Passive, Syn};
