@@ -69,6 +69,7 @@ fn entry(area: Option<&[u8]>) -> TcpEntry {
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_DONT)),
         Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_DONT)),
+        Arc::new(::core::sync::atomic::AtomicI32::new(0)),
         None, Arc::new(crate::min_hop::MinHop::new()), opts)
 }
 
