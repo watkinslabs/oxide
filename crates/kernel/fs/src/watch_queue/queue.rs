@@ -43,6 +43,9 @@ struct State {
 /// The watch queue behind one notification pipe.
 pub struct WatchQueue {
     state: Spinlock<State, WatchQueueClass>,
+    /// Key serials this queue currently watches. The queue owns this reverse
+    /// membership so closing its pipe can unlink exactly these watches.
+    watched_keys: Spinlock<Vec<i32>, WatchQueueClass>,
     /// Wakes whoever is blocked reading the pipe this queue belongs to. Held
     /// as a callback so the queue itself knows nothing about pipes — a queue
     /// driven by the hosted tests simply has none.
@@ -61,8 +64,26 @@ impl WatchQueue {
             state: Spinlock::new(State {
                 notes: VecDeque::new(), capacity: 0, note_loss: false, filter: None,
             }),
+            watched_keys: Spinlock::new(Vec::new()),
             waker: Spinlock::new(None),
         }
+    }
+
+    /// Record one key watch held by this queue. # C: O(watches)
+    pub(crate) fn add_watched_key(&self, serial: i32) {
+        let mut keys = self.watched_keys.lock();
+        if !keys.contains(&serial) { keys.push(serial); }
+    }
+
+    /// Forget one key watch removed through `KEYCTL_WATCH_KEY`. # C: O(watches)
+    pub(crate) fn remove_watched_key(&self, serial: i32) {
+        let mut keys = self.watched_keys.lock();
+        if let Some(idx) = keys.iter().position(|&key| key == serial) { keys.remove(idx); }
+    }
+
+    /// Take every key watch for queue teardown. # C: O(watches)
+    pub(crate) fn take_watched_keys(&self) -> Vec<i32> {
+        core::mem::take(&mut *self.watched_keys.lock())
     }
 
     /// `IOC_WATCH_QUEUE_SET_SIZE`. The depth is settable ONCE: a queue whose
