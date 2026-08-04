@@ -405,6 +405,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Tooling / gates
 
+| FIXED C283 | low | A one-time B1672 shared-box QEMU observation remained in the live ledger after its build namespace and process disappeared. | Verified no live QEMU and no `b1663boot1` namespace; archived the historical observation rather than presenting it as an active defect. | C283-archive-expired-qemu-observation |
+
 | FIXED C282 | low | `MAX_CLASS_BYTES` was recorded as unused in diagnostic builds despite being intentionally derived from `CLASS_SIZES`. | Verified production routing and its tests consume the derived bound; diagnostic builds deliberately bypass the size-class front end, so no separate value can drift. | C282-archive-derived-kalloc-bound |
 
 | FIXED B1820 | low | N_TTY input echo wrote directly to the driver, so echoed newlines bypassed OPOST and ONLCR. | Made user writes and echo share one output owner for OPOST, column tracking, and IXON buffering; default echo now renders newline as CRLF while the input queue remains LF. | B1820-route-ntty-echo-through-opost |
