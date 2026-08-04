@@ -34,7 +34,6 @@ pub struct Ipv6GetState {
     pub min_hopcount: i32,
     pub srcprefs: i32,
     pub frag_size: i32,
-    pub use_min_mtu: i32,
     /// Namespace automatic-flow-label policy, published when the socket named
     /// none of its own.
     pub default_autoflowlabel: bool,
@@ -119,7 +118,6 @@ pub fn read(optname: u64, sock: Ipv6Sock, s: &Ipv6GetState) -> Result<Value, Err
         IPV6_ADDR_PREFERENCES => Value::Int(published_prefs(s.srcprefs)),
         IPV6_MINHOPCOUNT => Value::Int(s.min_hopcount),
         IPV6_DONTFRAG => bit(flag::DONTFRAG),
-        IPV6_USE_MIN_MTU => Value::Int(s.use_min_mtu),
         IPV6_AUTOFLOWLABEL => Value::Int(i32::from(
             if s.flags & flag::AUTOFLOWLABEL_SET != 0 {
                 s.flags & flag::AUTOFLOWLABEL != 0

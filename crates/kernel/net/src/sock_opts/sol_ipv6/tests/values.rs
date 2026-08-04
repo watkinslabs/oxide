@@ -37,6 +37,12 @@ fn the_fragmentation_size_is_zero_or_at_least_the_ipv6_minimum() {
 }
 
 #[test]
+fn use_min_mtu_is_not_a_live_ipv6_socket_option() {
+    assert_eq!(set6(IPV6_USE_MIN_MTU, 0, 4), Err(Errno::Enoprotoopt));
+    assert_eq!(set6(IPV6_USE_MIN_MTU, 1, 4), Err(Errno::Enoprotoopt));
+}
+
+#[test]
 fn the_traffic_class_sentinel_resolves_to_zero() {
     assert_eq!(set6(IPV6_TCLASS, -1, 4), Ok(Action::Tclass(0)));
     assert_eq!(set6(IPV6_TCLASS, 255, 4), Ok(Action::Tclass(255)));
