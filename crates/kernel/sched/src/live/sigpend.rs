@@ -200,6 +200,12 @@ pub fn fatal_kill_pending_self() -> bool {
     super::schedule::current().map(|t| fatal_kill_pending(&t)).unwrap_or(false)
 }
 
+/// Whether the running task is held by the cgroup freezer. # C: O(1)
+pub fn frozen_self() -> bool {
+    use core::sync::atomic::Ordering;
+    super::schedule::current().map(|t| t.frozen.load(Ordering::Acquire)).unwrap_or(false)
+}
+
 /// F168: if `task` is currently Sleeping (parked on some
 /// WaitList), transition to Runnable and enqueue so the parked
 /// helper observes the just-set pending signal on its next

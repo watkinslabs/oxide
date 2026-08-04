@@ -276,7 +276,10 @@ impl PipeData {
             #[cfg(target_os = "oxide-kernel")]
             // A write that has placed no bytes reports the interruption; the
             // dumper's rule keeps it waiting for room instead.
-            if write_wait_aborted(abort) { return Err(VfsError::Erestartsys); }
+            if write_wait_aborted(abort, sched::live::deliverable_signals_self() != 0,
+                                  sched::live::fatal_kill_pending_self(), sched::live::frozen_self()) {
+                return Err(VfsError::Erestartsys);
+            }
             // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping before scheduling.
             #[cfg(target_os = "oxide-kernel")]
             unsafe { self.write_waiters.park(); }
@@ -374,11 +377,10 @@ impl PipeData {
 }
 
 /// Whether a blocking write that found no room gives up now.
-#[cfg(target_os = "oxide-kernel")]
-fn write_wait_aborted(abort: WriteAbort) -> bool {
+fn write_wait_aborted(abort: WriteAbort, deliverable_signal: bool, fatal_kill: bool, frozen: bool) -> bool {
     match abort {
-        WriteAbort::OnDeliverableSignal => sched::live::deliverable_signals_self() != 0,
-        WriteAbort::OnFatalKill => sched::live::fatal_kill_pending_self(),
+        WriteAbort::OnDeliverableSignal => deliverable_signal,
+        WriteAbort::OnFatalKill => fatal_kill || frozen,
     }
 }
 
