@@ -405,6 +405,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Tooling / gates
 
+| FIXED C282 | low | `MAX_CLASS_BYTES` was recorded as unused in diagnostic builds despite being intentionally derived from `CLASS_SIZES`. | Verified production routing and its tests consume the derived bound; diagnostic builds deliberately bypass the size-class front end, so no separate value can drift. | C282-archive-derived-kalloc-bound |
+
 | FIXED B1820 | low | N_TTY input echo wrote directly to the driver, so echoed newlines bypassed OPOST and ONLCR. | Made user writes and echo share one output owner for OPOST, column tracking, and IXON buffering; default echo now renders newline as CRLF while the input queue remains LF. | B1820-route-ntty-echo-through-opost |
 
 | FIXED B1819 | low | Four ext4 e2fsck repros copied multi-gigabyte images to fixed `/tmp` names and only attempted cleanup on their success path. Concurrent runs collided, and assertion failures leaked the images. | Each repro now owns a PID+sequence-named `TempImage` whose `Drop` removes it on all exits; paths cannot collide across processes. | B1819-isolate-ext4-e2fsck-images |
