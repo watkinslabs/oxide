@@ -46,7 +46,7 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
     if let Some(bind) = sock.tcp_bind.lock().as_ref().cloned() { return Ok(bind); }
     let iface = match local_ip {
         crate::IpAddr::V4(_) => super::iface::v4_egress_iface(sock)?,
-        crate::IpAddr::V6(_) => bound_iface(sock)?,
+        crate::IpAddr::V6(_) => super::iface::v6_egress_iface(sock)?,
     };
     let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
     let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
