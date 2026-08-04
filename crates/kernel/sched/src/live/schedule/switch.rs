@@ -270,6 +270,7 @@ fn current_sp() -> u64 {
 /// # SAFETY: caller is at a safe schedule point per `13§9`.
 /// # C: O(log N) CFS pick + O(1) ctx switch
 /// # Ctx: process|kthread|irq-exit-to-user; enters preempt-off
+#[track_caller]
 pub unsafe fn schedule() {
     // Linux `schedule_debug` -> `__schedule_bug`: switching away from atomic
     // context is a bug, not a policy choice. Parking here would record the
@@ -294,6 +295,14 @@ pub unsafe fn schedule() {
         klog::write_raw(if crate::preempt::in_interrupt() { b" in_interrupt=1" } else { b" in_interrupt=0" });
         klog::write_raw(b" sp=0x");
         klog::write_hex_u64(current_sp());
+        #[cfg(feature = "debug-preempt")]
+        {
+            let caller = core::panic::Location::caller();
+            klog::write_raw(b" caller=");
+            klog::write_raw(caller.file().as_bytes());
+            klog::write_raw(b":");
+            klog::write_dec_u64(caller.line() as u64);
+        }
         klog::write_raw(b"\n");
         return;
     }
