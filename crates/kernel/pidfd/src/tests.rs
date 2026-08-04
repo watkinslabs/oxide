@@ -17,7 +17,7 @@ fn pid_namespace() -> namespace_identity::NamespaceRef {
 
 fn task(tid: u32, namespace: &namespace_identity::NamespaceRef, visible: u32) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "pidfd", SchedClass::Normal { weight: 1024 }));
-    assert!(task.replace_namespace(Arc::clone(namespace)).is_ok());
+    assert!(task.replace_namespace(namespace.clone()).is_ok());
     task.vtid.store(visible, Ordering::Release);
     task.vtgid.store(visible, Ordering::Release);
     task.configure_pid_mappings(&[visible]).unwrap();
