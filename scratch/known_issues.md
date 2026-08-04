@@ -32,14 +32,14 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Section | DEFECT | MISSING | COVERAGE | INFRA | total |
 |---|---|---|---|---|---|
-| Net / socket | 29 | 18 | 23 | 0 | 70 |
+| Net / socket | 29 | 17 | 23 | 0 | 69 |
 | Filesystem / mount | 26 | 13 | 5 | 0 | 44 |
 | Memory / MM | 19 | 3 | 3 | 0 | 25 |
 | Process / exec / signals | 14 | 1 | 4 | 0 | 19 |
 | Drivers / devices | 12 | 1 | 5 | 0 | 18 |
 | Kernel core | 4 | 2 | 1 | 0 | 7 |
 | Tooling, gates, docs, dev box | 0 | 0 | 0 | 51 | 51 |
-| **total** | **104** | **38** | **41** | **51** | **234** |
+| **total** | **104** | **37** | **41** | **51** | **233** |
 
 ## Net / socket
 
@@ -76,7 +76,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | MISSING | low | Landlock erratum 3 (disconnected directories) is not implemented, and is correspondingly NOT advertised in the errata bitmask. A directory moved outside a bind mount's scope does not have its mount-point hierarchy folded into the evaluated rights, so `ACCESS_FS_REFER` restrictions can in principle be widened by a rename or link in that state. | `crates/kernel/landlock/src/{refer.rs,walk.rs}` walk the dentry parent chain only. `uapi::ERRATA` reports bits 1 and 2 and deliberately not bit 3 — a program feature-detecting the fix is told the truth. Test `the_reported_abi_version_matches_the_rights_actually_accepted` pins the value. Blocks `444`/`445` from `IMPL`. | unowned |
 | OPEN | MISSING | low | Landlock logging is inert: the three `LANDLOCK_RESTRICT_SELF_LOG_*` flags, the `quiet_*` ruleset masks and the per-rule `LANDLOCK_ADD_RULE_QUIET` marking are all validated and carried, but nothing consumes them because this kernel has no audit subsystem. Identical to a Linux built without audit support, and no access decision changes — recorded because "stored but unconsumed" is otherwise indistinguishable from a bug. | `crates/kernel/landlock/src/uapi.rs`; `Ruleset::{quiet_fs,quiet_net,quiet_scoped}` are consumed by the `ADD_RULE_QUIET` admission test, `FsRule::quiet`/`NetRule::quiet` are not consumed at all. | unowned |
 | OPEN | MISSING | low | `TCP_ZEROCOPY_RECEIVE` never sets `TCP_CMSG_TS` in `msg_flags`, so `msg_control`/`msg_controllen` are never filled. The receive queue is a byte stream with no per-segment arrival timestamp to publish. Everything else about the option (operand versioning, remap, copy buffer, `inq`, `err`) is implemented. | B1655. `run` clears `msg_flags`; the reference publishes a timestamp only for a segment carrying one. | — |
-| OPEN | MISSING | low | SOL_PACKET stored-but-unconsumed | `PACKET_COPY_THRESH`, `PACKET_TX_HAS_OFF`, `PACKET_QDISC_BYPASS`. Rest of the family is live. | unowned |
 | OPEN | MISSING | low | **`ClientCache` records `syn_loss`/`last_syn_loss_ns` and nothing reads them.** The reference records the same two fields and only exports them through the tcp_metrics netlink family, which does not exist here. They are kept because they are part of the cache's contract and because the netlink family will want them; `ClientCache::syn_loss` exists so the recording is at least observable from a test. | `tcp_fastopen/cache.rs`; `cache::tests::recurring_unanswered_fast_open_syns_are_counted_and_a_success_clears_them`. No production reader. | unclaimed |
 | OPEN | COVERAGE | med | Landlock `LANDLOCK_RESTRICT_SELF_TSYNC` is best-effort, not the all-or-nothing protocol. `sync_siblings` walks the thread group and overwrites each sibling's domain under that sibling's own lock. A thread created during the walk is never visited, so it runs unconfined under a policy its process believes is enforced; two racing `TSYNC` calls can interleave to a mixed result. Linux runs a two-barrier task-work protocol and restarts the syscall on a race. | `crates/kernel/syscalls/src/446_landlock_restrict_self.rs` `sync_siblings`; no hosted test covers a concurrent walk (the thread group is not driveable from the hosted suite). Blocks `446` from `IMPL`. | unowned |
 | OPEN | COVERAGE | med | No hosted coverage of the real `copy_from_user` fault rungs for slots 444/445/446. The pure admission decisions (null-attr `EFAULT` before any size check, the size ladder) are tested, but the faulting-copy paths live in `#![cfg(target_os = "oxide-kernel")]` slot files and cannot be driven hosted. Structural, not an oversight — recorded because the matrix's harness rule names user-copy faults as a required category. | `444_landlock_create_ruleset.rs`, `445_landlock_add_rule.rs`; `landlock::abi::attr_buffer_ok` is the ungated half that IS tested. | unowned |
