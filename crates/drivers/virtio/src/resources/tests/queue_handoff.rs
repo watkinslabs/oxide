@@ -21,6 +21,16 @@ fn require_queue_rejects_missing_or_invalid_queue() {
 }
 
 #[test]
+fn require_queue_rejects_a_ring_larger_than_its_backing_frame() {
+    let mut oversized = VALID_Q0;
+    oversized.size = crate::queue_cfg::MAX_QUEUE_SIZE + 1;
+    let resources = VirtioResources::from_queues(0x10, 0x20, &[oversized]);
+
+    assert_eq!(resources.require_queue(0), None);
+    assert!(!resources.require_common_and_queues(&[0]));
+}
+
+#[test]
 fn require_common_and_queues_rejects_missing_common_state() {
     let resources = VirtioResources::from_queues(0, 0x20, &[VALID_Q0]);
 

@@ -20,12 +20,12 @@ pub const CFG_QUEUE_DEVICE: u64 = 0x30;
 const QUEUE_ZERO: u16 = 0;
 /// `program_queue` backs each split-virtqueue area with exactly ONE frame from
 /// `VirtioQueueAllocator::alloc_frame`, so every area must fit in one frame.
-const QUEUE_FRAME_BYTES: u64 = 4096;
+pub const QUEUE_FRAME_BYTES: u64 = 4096;
 /// `struct vring_desc` is addr/len/flags/next = 16 bytes (Virtio 1.2 §2.7.5).
-const VRING_DESC_BYTES: u64 = 16;
+pub const VRING_DESC_BYTES: u64 = 16;
 /// Descriptor table is the binding area at 16 B/entry; at this N the avail ring
 /// (6 + 2N bytes) and used ring (6 + 8N bytes) both still fit one frame.
-const MAX_QUEUE_SIZE: u16 = (QUEUE_FRAME_BYTES / VRING_DESC_BYTES) as u16;
+pub const MAX_QUEUE_SIZE: u16 = (QUEUE_FRAME_BYTES / VRING_DESC_BYTES) as u16;
 const QUEUE_ENABLE_READY: u16 = 1;
 const QUEUE_ADDR_HIGH_OFF: u64 = 4;
 const QUEUE_ADDR_LOW_MASK: u64 = 0xFFFF_FFFF;
@@ -391,7 +391,10 @@ mod tests {
             core::ptr::read_volatile((base + CFG_QUEUE_SIZE) as *const u16)
         };
         assert_eq!(negotiated, MAX_QUEUE_SIZE);
-        assert!(MAX_QUEUE_SIZE as u64 * VRING_DESC_BYTES <= QUEUE_FRAME_BYTES);
+        let size = MAX_QUEUE_SIZE as u64;
+        assert!(size * VRING_DESC_BYTES <= QUEUE_FRAME_BYTES);
+        assert!(6 + 2 * size <= QUEUE_FRAME_BYTES, "avail flags/index/ring fit one frame");
+        assert!(6 + 8 * size <= QUEUE_FRAME_BYTES, "used flags/index/elements fit one frame");
     }
 
     #[test]
