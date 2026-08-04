@@ -31,6 +31,14 @@ fn require_queue_rejects_a_ring_larger_than_its_backing_frame() {
 }
 
 #[test]
+fn require_queue_at_least_rejects_a_too_small_protocol_ring() {
+    let resources = VirtioResources::from_queues(0x10, 0x20, &[VALID_Q0]);
+
+    assert_eq!(resources.require_queue_at_least(0, VALID_Q0.size), Some(VALID_Q0));
+    assert_eq!(resources.require_queue_at_least(0, VALID_Q0.size + 1), None);
+}
+
+#[test]
 fn require_common_and_queues_rejects_missing_common_state() {
     let resources = VirtioResources::from_queues(0, 0x20, &[VALID_Q0]);
 

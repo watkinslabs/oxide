@@ -56,7 +56,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     if !block::completion::register(run_completion_bottom_half) {
         return 0;
     }
-    let Some(requestq) = init.resources.require_queue(0) else {
+    let Some(requestq) = init.resources.require_queue_at_least(0, 3) else {
         return 0;
     };
     if !init.resources.common_cfg_valid() {
