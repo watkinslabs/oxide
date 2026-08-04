@@ -13,6 +13,7 @@ shape they were retired in.
 
 | Status | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|
+| FIXED 6b3ef16c9 | low | The five passive TCP Fast Open extended counters were absent. | The decision ladder emits the canonical event facts into the per-network-namespace MIB owner; live proc/net/netstat projects TCPFastOpenPassive, TCPFastOpenPassiveFail, TCPFastOpenPassiveAltKey, TCPFastOpenCookieReqd, and TCPFastOpenListenOverflow. Focused net/procfs tests, feature gate, and paired smoke passed. | F802-tcp-fastopen-snmp |
 | FIXED 7e5c7d3e6 | med | Passive fast-open no-cookie sysctl and socket/route policy were recorded as inert. | Re-audit: cookie mint/verification and passive no-cookie admission consume `TFO_SERVER_COOKIE_NOT_REQD`; current source and focused fast-open tests cover the path. | B1790 |
 | FIXED B1822 | low | `/sys/kernel/ostype` and `/sys/kernel/osrelease` were oxide-invented copies of the UTS sysctl leaves. | Removed both sysfs registrations; `/proc/sys/kernel/{ostype,osrelease,version}` remains the sole UTS file ABI. The filesystem smoke asserts both invented paths are absent on each architecture. | B1822-remove-invented-sysfs-uts-leaves |
 | FIXED F797 | low | Coredump always-dump detection recognized only the vDSO ELF header page and vvar page, omitting later vDSO load segments. | The address space now owns one complete vvar-plus-vDSO reservation range; coredump selects every intersecting mapping. Focused coredump and fork-preservation tests cover later segments and metadata inheritance. | F797-dump-vdso-mappings |
