@@ -19,7 +19,7 @@ fn trace_rx(event: &'static [u8], value: usize) {
 /// One socket-owned NETLINK receive queue.  Byte accounting is retained with
 /// the datagrams so multicast overrun and `sk_err` share one canonical owner.
 pub(crate) struct ReceiveQueue {
-    datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, SenderCreds)>,
+    datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, u32, SenderCreds)>,
     bytes: usize,
 }
 
@@ -29,15 +29,15 @@ impl ReceiveQueue {
     }
 
     fn charge(bytes: &Vec<u8>) -> usize {
-        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, SenderCreds)>())
+        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, u32, SenderCreds)>())
     }
 
-    fn push(&mut self, bytes: Vec<u8>, src_port: u32, creds: SenderCreds) {
+    fn push(&mut self, bytes: Vec<u8>, src_port: u32, multicast_group: u32, creds: SenderCreds) {
         self.bytes = self.bytes.saturating_add(Self::charge(&bytes));
-        self.datagrams.push_back((bytes, src_port, creds));
+        self.datagrams.push_back((bytes, src_port, multicast_group, creds));
     }
 
-    fn pop(&mut self) -> Option<(Vec<u8>, u32, SenderCreds)> {
+    fn pop(&mut self) -> Option<(Vec<u8>, u32, u32, SenderCreds)> {
         let dgram = self.datagrams.pop_front()?;
         self.bytes = self.bytes.saturating_sub(Self::charge(&dgram.0));
         Some(dgram)
@@ -50,6 +50,9 @@ impl ReceiveQueue {
 pub struct ReceivedDatagram {
     pub bytes: Vec<u8>,
     pub src_port: u32,
+    /// `NETLINK_CB(skb).dst_group`: zero for unicast, otherwise the multicast
+    /// group delivered through `NETLINK_PKTINFO` when the receiver requested it.
+    pub multicast_group: u32,
     /// `NETLINK_CB(skb).creds`: whoever produced this datagram. The default
     /// all-zero set names the kernel.
     pub creds: SenderCreds,
@@ -135,7 +138,7 @@ impl NetlinkSocket {
         let verdict = self.bpf_filter.verdict(&msg);
         if verdict == 0 { return; }
         msg.truncate(msg.len().min(verdict as usize));
-        self.rx_queue.lock().push(msg, src_port, creds);
+        self.rx_queue.lock().push(msg, src_port, 0, creds);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         self.poll_subs.notify();
@@ -144,13 +147,13 @@ impl NetlinkSocket {
     /// Deliver one multicast datagram under Linux NETLINK receive-buffer
     /// pressure.  A failed delivery owns `sk_err=ENOBUFS` and wakeup here.
     /// # C: O(1)
-    pub(crate) fn enqueue_multicast(&self, msg: Vec<u8>) -> bool {
+    pub(crate) fn enqueue_multicast(&self, msg: Vec<u8>, group: u32) -> bool {
         let mut queue = self.rx_queue.lock();
         let fits = queue.bytes.checked_add(msg.len()).is_some_and(|used| {
             used <= self.rcvbuf.load(Ordering::Acquire)
         });
         if fits {
-            queue.push(msg, 0, SenderCreds::default());
+            queue.push(msg, 0, group, SenderCreds::default());
             drop(queue);
             #[cfg(feature = "debug-netlink")]
             trace_rx(b"multicast-enqueue", self.rx_drops.load(Ordering::Relaxed));
@@ -197,17 +200,17 @@ impl NetlinkSocket {
         let mut queue = self.rx_queue.lock();
         let dgram = queue.pop();
         if queue.is_empty() { self.rx_congested.store(false, Ordering::Release); }
-        dgram.map(|(bytes, src_port, _)| (bytes, src_port))
+        dgram.map(|(bytes, src_port, _, _)| (bytes, src_port))
     }
 
     /// Clone the head datagram without consuming it. # C: O(msg len)
     pub fn peek_front(&self) -> Option<(Vec<u8>, u32)> {
-        self.rx_queue.lock().datagrams.front().map(|(bytes, src_port, _)| (bytes.clone(), *src_port))
+        self.rx_queue.lock().datagrams.front().map(|(bytes, src_port, _, _)| (bytes.clone(), *src_port))
     }
 
     /// Length of the next readable NETLINK datagram. # C: O(1)
     pub fn front_len(&self) -> u32 {
-        self.rx_queue.lock().datagrams.front().map(|(msg, _, _)| msg.len() as u32).unwrap_or(0)
+        self.rx_queue.lock().datagrams.front().map(|(msg, _, _, _)| msg.len() as u32).unwrap_or(0)
     }
 
     /// Observe one receive event with Linux `sk_err`-before-queue ordering. # C: O(msg len)
@@ -217,12 +220,12 @@ impl NetlinkSocket {
         // `sk_receive_queue`; keep both observations under the publication lock.
         let error = self.error.take();
         if error != 0 { return ReceiveState::Error(error); }
-        if let Some((bytes, src_port, creds)) = queue.datagrams.front().cloned() {
+        if let Some((bytes, src_port, multicast_group, creds)) = queue.datagrams.front().cloned() {
             if !peek {
                 queue.pop();
                 if queue.is_empty() { self.rx_congested.store(false, Ordering::Release); }
             }
-            return ReceiveState::Datagram(ReceivedDatagram { bytes, src_port, creds });
+            return ReceiveState::Datagram(ReceivedDatagram { bytes, src_port, multicast_group, creds });
         }
         ReceiveState::Empty
     }
@@ -345,18 +348,19 @@ mod tests {
     fn multicast_overrun_sets_sk_err_once_and_preserves_queued_data() {
         let socket = socket();
         let retained = alloc::vec![7, 8, 9];
-        let queue_entry_bytes = core::mem::size_of::<(alloc::vec::Vec<u8>, u32)>();
+        let queue_entry_bytes = core::mem::size_of::<(alloc::vec::Vec<u8>, u32, u32,
+            net::sock_opts::SenderCreds)>();
         socket.set_receive_buffer(retained.len() + queue_entry_bytes);
         socket.enqueue(retained.clone());
-        assert!(!socket.enqueue_multicast(alloc::vec![1]));
+        assert!(!socket.enqueue_multicast(alloc::vec![1], 5));
         assert_eq!(socket.rx_drops.load(Ordering::Acquire), 1);
         assert_eq!(socket.poll() & vfs::POLL_ERR, vfs::POLL_ERR);
         assert!(matches!(socket.receive(false), ReceiveState::Error(errno)
             if errno == vfs::VfsError::Enobufs as i32));
         assert_datagram(socket.receive(false), &retained);
 
-        assert!(socket.enqueue_multicast(alloc::vec![2]));
-        assert!(!socket.enqueue_multicast(retained));
+        assert!(socket.enqueue_multicast(alloc::vec![2], 5));
+        assert!(!socket.enqueue_multicast(retained, 5));
         assert!(matches!(socket.receive(false), ReceiveState::Error(errno)
             if errno == vfs::VfsError::Enobufs as i32));
     }
@@ -366,10 +370,24 @@ mod tests {
         let socket = socket();
         socket.set_receive_buffer(0);
         socket.set_no_enobufs(true);
-        assert!(!socket.enqueue_multicast(alloc::vec![1]));
+        assert!(!socket.enqueue_multicast(alloc::vec![1], 5));
         assert_eq!(socket.rx_drops.load(Ordering::Acquire), 1);
         assert_eq!(socket.poll() & vfs::POLL_ERR, 0);
         assert!(matches!(socket.receive(false), ReceiveState::Empty));
+    }
+
+    #[test]
+    fn multicast_delivery_retains_the_group_for_pktinfo() {
+        let socket = socket();
+        assert!(socket.enqueue_multicast(alloc::vec![7, 8], 5));
+        match socket.receive(false) {
+            ReceiveState::Datagram(dgram) => {
+                assert_eq!(dgram.bytes, [7, 8]);
+                assert_eq!(dgram.src_port, 0);
+                assert_eq!(dgram.multicast_group, 5);
+            }
+            _ => panic!("expected multicast datagram"),
+        }
     }
 
     #[test]
