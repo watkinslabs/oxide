@@ -101,7 +101,8 @@ fn plan_for(cur: &sched::Task) -> (Vec<PlannedSegment>, u64, Vec<u8>) {
         // SAFETY: `root_pa` is the running task's own page-table root, held live by its mm; the walk only reads present leaves through the HHDM.
         unsafe { pmm::user_as::read_foreign_user(root_pa, va, buf) }
     };
-    let segs = plan_mappings(&vmas, mm.vdso_ehdr(), mm.coredump_filter(), PAGE, &mut head);
+    let (vdso_start, vdso_end) = mm.vdso_range();
+    let segs = plan_mappings(&vmas, vdso_start, vdso_end, mm.coredump_filter(), PAGE, &mut head);
     (segs, root_pa, mm.auxv().unwrap_or_default())
 }
 
