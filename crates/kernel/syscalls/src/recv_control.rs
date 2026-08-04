@@ -14,12 +14,25 @@ const CMSG_ALIGN: usize = 8;
 const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
+const SCM_SECURITY: i32 = 3;
+const SCM_PIDFD: i32 = 4;
 use net::sock_opts::inq::InqCmsg;
 
 fn errno(e: syscall::errno::Errno) -> i64 { -(e.as_i32() as i64) }
 pub(crate) struct DeliveredControl {
     pub len: usize,
     pub flags: u32,
+}
+
+/// Per-record SOL_SOCKET data handed to the sole receive copyout owner.
+/// Transports retain this alongside their queued payload; deciding which
+/// receiver options consume it belongs here, not in AF_UNIX or NETLINK.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) struct ScmReceive {
+    pub credentials: Option<(u32, u32, u32)>,
+    pub security: Option<Vec<u8>>,
+    pub pid: Option<Arc<sched::pid::PidIdentity>>,
+    pub want_pidfd: bool,
 }
 
 pub(crate) struct Control {
@@ -48,13 +61,17 @@ impl Control {
 
     /// Emit queued cmsgs through one Linux-style advancing cursor. # C: O(entries + data + faults)
     pub fn copy_to(&mut self, user: &RecvUser) -> Result<usize, i64> {
+        self.copy_to_at(user, 0)
+    }
+
+    fn copy_to_at(&mut self, user: &RecvUser, at: usize) -> Result<usize, i64> {
         let mut copied = 0usize;
         for (level, ty, data) in &self.entries {
             let Some((entry, advance, truncated)) =
                 encode_entry(*level, *ty, data, self.cap.saturating_sub(copied))
             else { self.flags |= MSG_CTRUNC as u32; continue; };
             if truncated { self.flags |= MSG_CTRUNC as u32; }
-            let Some(dst) = user.control.checked_add(copied as u64) else { continue; };
+            let Some(dst) = user.control.checked_add(at.saturating_add(copied) as u64) else { continue; };
             uaccess::copy_to_user(dst, &entry).map_err(errno)?;
             copied += advance;
         }
@@ -112,7 +129,7 @@ fn cred_bytes(cred: (u32, u32, u32)) -> [u8; 12] {
 
 /// Emit credentials, then reserve, copy, and publish each received fd. # C: O(files + faults)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32, u32, u32)>,
+pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
     inq: Option<InqCmsg>, protocol: Option<(i32, i32, &[u8])>, recv_flags: u64)
     -> Result<DeliveredControl, i64>
 {
@@ -120,9 +137,10 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32,
     let cap = if user.control == 0 { 0 } else { user.controllen };
     let mut control = Control::new(cap);
     if let Some((level, ty, data)) = protocol { control.push(level, ty, data); }
-    if let Some(cred) = cred { control.push(SOL_SOCKET, SCM_CREDENTIALS, &cred_bytes(cred)); }
+    if let Some(cred) = scm.credentials { control.push(SOL_SOCKET, SCM_CREDENTIALS, &cred_bytes(cred)); }
+    if let Some(label) = scm.security.as_deref() { control.push(SOL_SOCKET, SCM_SECURITY, label); }
     control.push_inq(inq);
-    let off = control.copy_to(user)?;
+    let mut off = control.copy_to(user)?;
     flags |= control.flags;
     let remaining = cap.saturating_sub(off);
     let rights_cap = remaining.saturating_sub(CMSG_HDR) / 4;
@@ -145,14 +163,33 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32,
         });
     if result.truncated { flags |= MSG_CTRUNC as u32; }
     let installed = result.installed;
-    if installed == 0 { return Ok(DeliveredControl { len: off, flags }); }
-    let rights_len = CMSG_HDR + installed * 4;
-    let rights_space = core::cmp::min(aligned(rights_len), cap - off);
-    let base = user.control.checked_add(off as u64);
-    let header_ok = base.is_some_and(|base| base.checked_add(8).is_some_and(|p| uaccess::copy_to_user(p, &SOL_SOCKET.to_ne_bytes()).is_ok())
-        && base.checked_add(12).is_some_and(|p| uaccess::copy_to_user(p, &SCM_RIGHTS.to_ne_bytes()).is_ok())
-        && uaccess::copy_to_user(base, &(rights_len as u64).to_ne_bytes()).is_ok());
-    Ok(DeliveredControl { len: if header_ok { off + rights_space } else { off }, flags })
+    if installed != 0 {
+        let rights_len = CMSG_HDR + installed * 4;
+        let rights_space = core::cmp::min(aligned(rights_len), cap - off);
+        let base = user.control.checked_add(off as u64);
+        let header_ok = base.is_some_and(|base| base.checked_add(8).is_some_and(|p| uaccess::copy_to_user(p, &SOL_SOCKET.to_ne_bytes()).is_ok())
+            && base.checked_add(12).is_some_and(|p| uaccess::copy_to_user(p, &SCM_RIGHTS.to_ne_bytes()).is_ok())
+            && uaccess::copy_to_user(base, &(rights_len as u64).to_ne_bytes()).is_ok());
+        if header_ok { off += rights_space; }
+    }
+    if scm.want_pidfd {
+        if cap.saturating_sub(off) < CMSG_HDR + core::mem::size_of::<i32>() {
+            flags |= MSG_CTRUNC as u32;
+        } else if let Some(identity) = scm.pid {
+            let current = sched::live::current();
+            let prepared = current.as_ref().and_then(|task|
+                pidfd::prepare(task, identity, pidfd::OpenOptions::default()).ok());
+            let fd = prepared.as_ref().map_or(-1, pidfd::Prepared::fd);
+            let mut pidfd = Control::new(cap - off);
+            pidfd.push(SOL_SOCKET, SCM_PIDFD, &fd.to_ne_bytes());
+            let copied = pidfd.copy_to_at(user, off)?;
+            if copied != 0 {
+                if let Some(prepared) = prepared { prepared.commit(); }
+                off += copied;
+            }
+        }
+    }
+    Ok(DeliveredControl { len: off, flags })
 }
 
 #[cfg(test)]
@@ -191,6 +228,22 @@ mod tests {
 
         assert_eq!(control.copy_to(&user).unwrap(), 32, "cursor advances through CMSG_SPACE");
         assert_eq!(&bytes[28..], &[0xa5; 4], "put_cmsg never touches alignment padding");
+    }
+
+    #[test]
+    fn socket_security_follows_credentials_in_the_one_control_cursor() {
+        let mut bytes = [0u8; 64];
+        let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: Vec::new(), capacity: 0 };
+        let mut control = Control::new(bytes.len());
+        control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0; 12]);
+        control.push(SOL_SOCKET, SCM_SECURITY, b"sender_t");
+        assert_eq!(control.copy_to(&user).unwrap(), 56);
+        assert_eq!(i32::from_ne_bytes(bytes[8..12].try_into().unwrap()), SOL_SOCKET);
+        assert_eq!(i32::from_ne_bytes(bytes[12..16].try_into().unwrap()), SCM_CREDENTIALS);
+        assert_eq!(i32::from_ne_bytes(bytes[40..44].try_into().unwrap()), SOL_SOCKET);
+        assert_eq!(i32::from_ne_bytes(bytes[44..48].try_into().unwrap()), SCM_SECURITY);
+        assert_eq!(&bytes[48..56], b"sender_t");
     }
 
     #[test]

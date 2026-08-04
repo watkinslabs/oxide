@@ -5,7 +5,7 @@
 // carries the sender's pid IDENTITY, and the number is rendered at receive
 // time — the same reason `SO_PEERCRED` pins an identity rather than a number.
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use sched::pid::PidIdentity;
 
@@ -21,12 +21,15 @@ pub struct MsgCred {
     /// Linux `UNIXCB(skb).pid`: the pinned sender identity, so the number can
     /// be re-rendered for whichever namespace ends up reading the message.
     pub identity: Option<Arc<PidIdentity>>,
+    /// Security context captured while the sender owns the message.  It must
+    /// not be derived from a receiver-side peer lookup after queueing.
+    pub security: Option<Vec<u8>>,
 }
 
 impl MsgCred {
     /// Numbers only, for a sender with no identity to pin. # C: O(1)
     pub fn from_ids(ids: (u32, u32, u32)) -> Self {
-        Self { pid: ids.0, uid: ids.1, gid: ids.2, identity: None }
+        Self { pid: ids.0, uid: ids.1, gid: ids.2, identity: None, security: None }
     }
 
     /// A credential set userspace supplied through `SCM_CREDENTIALS`. The pid
@@ -35,7 +38,11 @@ impl MsgCred {
     #[cfg(target_os = "oxide-kernel")]
     pub fn from_supplied(ids: (u32, u32, u32)) -> Self {
         let identity = sched::registry::resolve_user_pid(ids.0).map(|t| Arc::clone(&t.pid));
-        Self { pid: ids.0, uid: ids.1, gid: ids.2, identity }
+        // SCM_CREDENTIALS may name an authorised supplied pid, but the LSM
+        // label is always that of the task doing the send.
+        let sender = sched::live::current().map(|task| leader_identity(&task));
+        let security = security::network::message_security(sender.as_deref());
+        Self { pid: ids.0, uid: ids.1, gid: ids.2, identity, security }
     }
 
     #[cfg(not(target_os = "oxide-kernel"))]
@@ -46,15 +53,18 @@ impl MsgCred {
     pub fn of_current(fallback: (u32, u32, u32)) -> Self {
         use core::sync::atomic::Ordering::Relaxed;
         match sched::live::current() {
-            Some(c) => Self {
+            Some(c) => {
+                let identity = leader_identity(&c);
+                let security = security::network::message_security(Some(&identity));
+                Self {
                 pid: c.visible_pid(),
                 uid: c.creds.ruid.load(Relaxed),
                 gid: c.creds.rgid.load(Relaxed),
                 // The credential names the PROCESS, so it pins the thread
                 // group's identity — a worker thread's message must be
                 // attributed to its process, not to the thread.
-                identity: Some(leader_identity(&c)),
-            },
+                identity: Some(identity), security,
+            }},
             None => Self::from_ids(fallback),
         }
     }

@@ -51,6 +51,9 @@ pub struct NetlinkSocket {
     /// shares. Not netlink-private state: the flag, its family gate and the
     /// receive decision all live with `net::scm`.
     pub scm: net::scm::ScmCredentials,
+    /// `sk_scm_security`, sharing its state type with every SCM-capable
+    /// family while this standalone socket type has no `InetSocket` base.
+    pub scm_security: net::scm::ScmSecurity,
     pub sndbuf: AtomicUsize,
     pub rcvbuf: AtomicUsize,
     /// The pseudo-inode number of the file this socket is reachable through,
@@ -99,6 +102,7 @@ impl NetlinkSocket {
             dst_groups: AtomicU32::new(crate::NETLINK_UNCONNECTED_GROUPS),
             connected: AtomicBool::new(false),
             scm: net::scm::ScmCredentials::new(),
+            scm_security: net::scm::ScmSecurity::new(),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             rcvbuf: AtomicUsize::new(NETLINK_RCVBUF_DEFAULT),
             ino: core::sync::atomic::AtomicU64::new(0),

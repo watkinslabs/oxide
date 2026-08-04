@@ -19,7 +19,7 @@ fn trace_rx(event: &'static [u8], value: usize) {
 /// One socket-owned NETLINK receive queue.  Byte accounting is retained with
 /// the datagrams so multicast overrun and `sk_err` share one canonical owner.
 pub(crate) struct ReceiveQueue {
-    datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, u32, SenderCreds)>,
+    datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, u32, SenderCreds, Option<Vec<u8>>)>,
     bytes: usize,
 }
 
@@ -29,15 +29,16 @@ impl ReceiveQueue {
     }
 
     fn charge(bytes: &Vec<u8>) -> usize {
-        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, u32, SenderCreds)>())
+        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, u32, SenderCreds, Option<Vec<u8>>)>() )
     }
 
-    fn push(&mut self, bytes: Vec<u8>, src_port: u32, multicast_group: u32, creds: SenderCreds) {
+    fn push(&mut self, bytes: Vec<u8>, src_port: u32, multicast_group: u32, creds: SenderCreds,
+        security: Option<Vec<u8>>) {
         self.bytes = self.bytes.saturating_add(Self::charge(&bytes));
-        self.datagrams.push_back((bytes, src_port, multicast_group, creds));
+        self.datagrams.push_back((bytes, src_port, multicast_group, creds, security));
     }
 
-    fn pop(&mut self) -> Option<(Vec<u8>, u32, u32, SenderCreds)> {
+    fn pop(&mut self) -> Option<(Vec<u8>, u32, u32, SenderCreds, Option<Vec<u8>>)> {
         let dgram = self.datagrams.pop_front()?;
         self.bytes = self.bytes.saturating_sub(Self::charge(&dgram.0));
         Some(dgram)
@@ -56,6 +57,8 @@ pub struct ReceivedDatagram {
     /// `NETLINK_CB(skb).creds`: whoever produced this datagram. The default
     /// all-zero set names the kernel.
     pub creds: SenderCreds,
+    /// Security label stamped before this datagram entered the queue.
+    pub security: Option<Vec<u8>>,
 }
 
 /// Canonical result of one NETLINK queue/error observation.
@@ -138,7 +141,14 @@ impl NetlinkSocket {
         let verdict = self.bpf_filter.verdict(&msg);
         if verdict == 0 { return; }
         msg.truncate(msg.len().min(verdict as usize));
-        self.rx_queue.lock().push(msg, src_port, 0, creds);
+        #[cfg(target_os = "oxide-kernel")]
+        let security = {
+            let sender = sched::live::current().map(|task| alloc::sync::Arc::clone(&task.pid));
+            security::network::message_security(sender.as_deref())
+        };
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let security = security::network::message_security(None);
+        self.rx_queue.lock().push(msg, src_port, 0, creds, security);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         self.poll_subs.notify();
@@ -153,7 +163,8 @@ impl NetlinkSocket {
             used <= self.rcvbuf.load(Ordering::Acquire)
         });
         if fits {
-            queue.push(msg, 0, group, SenderCreds::default());
+            queue.push(msg, 0, group, SenderCreds::default(),
+                security::network::message_security(None));
             drop(queue);
             #[cfg(feature = "debug-netlink")]
             trace_rx(b"multicast-enqueue", self.rx_drops.load(Ordering::Relaxed));
@@ -200,17 +211,17 @@ impl NetlinkSocket {
         let mut queue = self.rx_queue.lock();
         let dgram = queue.pop();
         if queue.is_empty() { self.rx_congested.store(false, Ordering::Release); }
-        dgram.map(|(bytes, src_port, _, _)| (bytes, src_port))
+        dgram.map(|(bytes, src_port, _, _, _)| (bytes, src_port))
     }
 
     /// Clone the head datagram without consuming it. # C: O(msg len)
     pub fn peek_front(&self) -> Option<(Vec<u8>, u32)> {
-        self.rx_queue.lock().datagrams.front().map(|(bytes, src_port, _, _)| (bytes.clone(), *src_port))
+        self.rx_queue.lock().datagrams.front().map(|(bytes, src_port, _, _, _)| (bytes.clone(), *src_port))
     }
 
     /// Length of the next readable NETLINK datagram. # C: O(1)
     pub fn front_len(&self) -> u32 {
-        self.rx_queue.lock().datagrams.front().map(|(msg, _, _, _)| msg.len() as u32).unwrap_or(0)
+        self.rx_queue.lock().datagrams.front().map(|(msg, _, _, _, _)| msg.len() as u32).unwrap_or(0)
     }
 
     /// Observe one receive event with Linux `sk_err`-before-queue ordering. # C: O(msg len)
@@ -220,12 +231,12 @@ impl NetlinkSocket {
         // `sk_receive_queue`; keep both observations under the publication lock.
         let error = self.error.take();
         if error != 0 { return ReceiveState::Error(error); }
-        if let Some((bytes, src_port, multicast_group, creds)) = queue.datagrams.front().cloned() {
+        if let Some((bytes, src_port, multicast_group, creds, security)) = queue.datagrams.front().cloned() {
             if !peek {
                 queue.pop();
                 if queue.is_empty() { self.rx_congested.store(false, Ordering::Release); }
             }
-            return ReceiveState::Datagram(ReceivedDatagram { bytes, src_port, multicast_group, creds });
+            return ReceiveState::Datagram(ReceivedDatagram { bytes, src_port, multicast_group, creds, security });
         }
         ReceiveState::Empty
     }
@@ -349,7 +360,7 @@ mod tests {
         let socket = socket();
         let retained = alloc::vec![7, 8, 9];
         let queue_entry_bytes = core::mem::size_of::<(alloc::vec::Vec<u8>, u32, u32,
-            net::sock_opts::SenderCreds)>();
+            net::sock_opts::SenderCreds, Option<alloc::vec::Vec<u8>>) >();
         socket.set_receive_buffer(retained.len() + queue_entry_bytes);
         socket.enqueue(retained.clone());
         assert!(!socket.enqueue_multicast(alloc::vec![1], 5));
