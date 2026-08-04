@@ -110,6 +110,7 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     info.tcpi_retransmits = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0) as u8;
     info.tcpi_snd_wscale_rcv = (c.snd_wscale << 4) | (c.rcv_wscale & 0x0F);
     info.tcpi_rto = (c.rto_ns / 1_000) as u32;
+    info.tcpi_ato = (c.delack_ato_ns() / 1_000).min(u64::from(u32::MAX)) as u32;
     let snd_mss = if c.own_mss != 0 { c.own_mss as u32 } else { 1460 };
     info.tcpi_snd_mss = snd_mss;
     info.tcpi_rcv_mss = c.rcv_mss() as u32;
@@ -250,6 +251,16 @@ mod tests {
         conn.rcv_mss = 800;
         populate_conn_at(&conn, 0, &mut info);
         assert_eq!(info.tcpi_rcv_mss, 800);
+    }
+
+    #[test]
+    fn delayed_ack_timeout_projects_the_connection_owned_interval() {
+        let mut conn = conn();
+        conn.delack_ato_ns = 40_000_000;
+        conn.delack_max_ns = 20_000_000;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_ato, 20_000);
     }
 
     #[test]
