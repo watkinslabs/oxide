@@ -3,6 +3,7 @@ extern crate alloc;
 use super::skb;
 use super::types::*;
 use alloc::alloc::{alloc_zeroed, Layout};
+use crate::linux_alloc::{self, LinuxPage, PAGE_SIZE};
 use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 
@@ -10,6 +11,14 @@ const NAPI_STATE_DISABLED: u32 = 1 << 0;
 const NAPI_STATE_SCHEDULED: u32 = 1 << 1;
 const DEFAULT_NAPI_WEIGHT: i32 = 64;
 const FRAG_ALIGN: usize = 64;
+
+/// Linux `struct page_frag` as consumed by the exported NAPI allocator KPI.
+#[repr(C)]
+struct LinuxPageFrag {
+    page: *mut LinuxPage,
+    offset: u32,
+    size: u32,
+}
 
 /// Register Linux NAPI KPI symbols.
 /// # C: O(1)
@@ -227,11 +236,27 @@ unsafe extern "C" fn __napi_alloc_frag_align(fragsz: u32, align_mask: u32) -> *m
 
 /// # C: O(fragsz)
 unsafe extern "C" fn skb_page_frag_refill(sz: u32, page_frag: *mut c_void, gfp: u32) -> bool {
-    if page_frag.is_null() { return false; }
-    // SAFETY: __napi_alloc_frag_align takes only integers and returns alloc_zeroed storage; page_frag itself is not dereferenced, only null-checked above.
-    let p = unsafe { __napi_alloc_frag_align(sz, 0) };
-    let _ = gfp;
-    !p.is_null()
+    if page_frag.is_null() || sz as usize > PAGE_SIZE { return false; }
+    // SAFETY: page_frag is writable C `struct page_frag` storage; LinuxPageFrag has the same
+    // pointer/u32/u32 layout used by the supported 64-bit module ABIs.
+    let frag = unsafe { &mut *(page_frag as *mut LinuxPageFrag) };
+    if !frag.page.is_null() {
+        match linux_alloc::page_ref_count(frag.page) {
+            Some(1) => {
+                frag.offset = 0;
+                return true;
+            }
+            Some(count) if count > 1 && frag.offset.saturating_add(sz) <= frag.size => return true,
+            Some(count) if count > 1 => linux_alloc::page_put(frag.page),
+            None => return false,
+            _ => return false,
+        }
+    }
+    frag.offset = 0;
+    frag.page = linux_alloc::alloc_pages(gfp, 0);
+    if frag.page.is_null() { return false; }
+    frag.size = PAGE_SIZE as u32;
+    true
 }
 
 /// # C: O(1)

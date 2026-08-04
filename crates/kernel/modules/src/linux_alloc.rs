@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 use core::ffi::{c_void, VaList};
 use core::mem::{align_of, size_of};
 use core::ptr::{copy_nonoverlapping, null_mut, write_bytes};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 const ALLOC_MAGIC: u64 = 0x4f58_4b50_4941_4c4c;
 const PAGE_MAGIC: u64 = 0x4f58_4b50_4950_4147;
@@ -52,6 +53,7 @@ pub struct LinuxPage {
     pa: u64,
     va: *mut u8,
     order: u32,
+    refs: AtomicU32,
 }
 
 /// Register Linux allocation KPI symbols.
@@ -161,7 +163,13 @@ pub(crate) extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
         Some(v) => v,
         None => return null_mut(),
     };
-    let page = page_desc_alloc(LinuxPage { magic: PAGE_MAGIC, pa, va, order });
+    let page = page_desc_alloc(LinuxPage {
+        magic: PAGE_MAGIC,
+        pa,
+        va,
+        order,
+        refs: AtomicU32::new(1),
+    });
     if page.is_null() {
         page_run_free_pa(pa, order);
         return null_mut();
@@ -226,6 +234,46 @@ pub(crate) fn page_run_len(page: *mut LinuxPage) -> Option<usize> {
     // SAFETY: valid_page returned true above, so page is a live page_desc_alloc descriptor whose
     // order field was written by alloc_pages; the shift is the same one page_run_alloc sized with.
     PAGE_SIZE.checked_shl(unsafe { (*page).order })
+}
+
+/// Return the number of owners of a live Linux page descriptor.
+/// # C: O(1)
+pub(crate) fn page_ref_count(page: *mut LinuxPage) -> Option<u32> {
+    // SAFETY: the caller supplies a descriptor returned by alloc_pages which remains live while
+    // this count is inspected; valid_page verifies that descriptor before reading its refcount.
+    if unsafe { valid_page(page) } {
+        // SAFETY: valid_page above proved page is an initialized live descriptor, so its atomic
+        // refcount field is readable for this ownership observation.
+        Some(unsafe { (*page).refs.load(Ordering::Acquire) })
+    } else {
+        None
+    }
+}
+
+/// Add an owner to a live Linux page descriptor.
+/// # C: O(1)
+#[cfg(any(test, feature = "hosted"))]
+pub(crate) fn page_get(page: *mut LinuxPage) -> bool {
+    // SAFETY: the caller supplies a live descriptor returned by alloc_pages; valid_page verifies
+    // that it is the allocator's descriptor before the reference count is incremented.
+    if !unsafe { valid_page(page) } { return false; }
+    // SAFETY: valid_page above proved page is an initialized live descriptor with an atomic
+    // refcount field whose increment records the caller's new ownership reference.
+    unsafe { (*page).refs.fetch_add(1, Ordering::AcqRel); }
+    true
+}
+
+/// Release one owner of a live Linux page descriptor, freeing it on the final release.
+/// # C: O(order)
+pub(crate) fn page_put(page: *mut LinuxPage) {
+    // SAFETY: the caller transfers one outstanding allocation ownership reference; valid_page
+    // rejects NULL and non-allocator descriptors before touching the reference count.
+    if !unsafe { valid_page(page) } { return; }
+    // SAFETY: valid_page proved page is live. AcqRel pairs this final release with prior owners.
+    if unsafe { (*page).refs.fetch_sub(1, Ordering::AcqRel) } == 1 {
+        // SAFETY: this was the final reference, so releasing the backing run exactly once is valid.
+        unsafe { __free_pages(page, (*page).order); }
+    }
 }
 
 extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
