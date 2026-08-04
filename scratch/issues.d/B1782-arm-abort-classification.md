@@ -1,3 +1,0 @@
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| FIXED pending | DEFECT | med | `classify_arm_abort` sent every non-translation data/instruction abort through demand paging as a protection fault, including external aborts, ECC/parity errors, alignment faults, and reserved syndromes. | Linux `arch/arm64/mm/fault.c` dispatches only translation, access-flag, and permission DFSCs to `do_*page_fault`; other DFSCs preserve their architecture-specific signal path. Oxide now accepts `0x04..=0x0f` only, with translation distinct from access/permission. Curated row moves after merge. | B1782-arm-abort-classification |
