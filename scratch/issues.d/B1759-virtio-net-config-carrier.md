@@ -2,4 +2,4 @@
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| CLAIMED B1759 | DEFECT | med | A negotiated `VIRTIO_NET_F_STATUS` link change is never consumed after probe: the driver samples the config status once and has no config-change callback, so carrier and `RTM_NEWLINK` remain stale. | `modern/state.rs` publishes only from `init_modern_with_rx_pool`; `B1750` records the missing runtime transition. | B1759 |
+| FIXED b2669b8ad | DEFECT | med | A negotiated `VIRTIO_NET_F_STATUS` link change was never consumed after probe, leaving carrier and `RTM_NEWLINK` stale. | The config vector now defers status refresh to the network bottom half; changed carrier state emits exactly one link notification. Unit tests cover status refresh and notification behavior; serial smokes pass on x86 and arm. | B1759 |
