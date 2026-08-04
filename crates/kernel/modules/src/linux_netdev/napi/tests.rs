@@ -124,3 +124,35 @@ fn disable_cancels_prepared_generation() {
     }
     assert_eq!(POLLS.load(Ordering::Acquire), 0);
 }
+
+#[test]
+fn page_frag_refill_populates_and_reuses_the_page_fragment() {
+    let _modules = crate::test_serial::claim();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut frag = LinuxPageFrag { page: core::ptr::null_mut(), offset: 99, size: 0 };
+
+    // SAFETY: frag is test-owned C-layout page_frag storage passed to the KPI.
+    assert!(unsafe { skb_page_frag_refill(512, (&mut frag as *mut LinuxPageFrag).cast(), 0) });
+    assert!(!frag.page.is_null());
+    assert_eq!(frag.offset, 0);
+    assert_eq!(frag.size, PAGE_SIZE as u32);
+    let first = frag.page;
+
+    frag.offset = 128;
+    assert!(linux_alloc::page_get(frag.page));
+    // SAFETY: an external page user holds a reference and frag has enough remaining capacity.
+    assert!(unsafe { skb_page_frag_refill(512, (&mut frag as *mut LinuxPageFrag).cast(), 0) });
+    assert_eq!(frag.page, first);
+    assert_eq!(frag.offset, 128);
+
+    frag.offset = frag.size;
+    // SAFETY: the held external reference prevents reset, so a full fragment is replaced.
+    assert!(unsafe { skb_page_frag_refill(512, (&mut frag as *mut LinuxPageFrag).cast(), 0) });
+    assert_ne!(frag.page, first);
+    assert_eq!(frag.offset, 0);
+    assert_eq!(frag.size, PAGE_SIZE as u32);
+
+    // SAFETY: these drop the old external and new page-fragment ownership references respectively.
+    linux_alloc::page_put(first);
+    linux_alloc::page_put(frag.page);
+}
