@@ -28,23 +28,22 @@ const PC_ZERO: Pcpu<AtomicU32>  = Pcpu(AtomicU32::new(0));
 
 static PREEMPT_COUNT: [Pcpu<AtomicU32>;  MAX_CPUS] = [PC_ZERO; MAX_CPUS];
 
+#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+std::thread_local! {
+    static HOSTED_PREEMPT_COUNT: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
 /// Current CPU index, clamped to `MAX_CPUS`. Reads the per-CPU base
 /// register (`gs:0` on x86, `TPIDR_EL1` on arm). Callers index a per-CPU
 /// slot with this; the brief read→use window is safe because the running
 /// task is never migrated off its CPU mid-flight (only queued tasks
 /// migrate, via the balancer).
 ///
-/// Hosted/test builds have no real per-CPU register, so each OS thread is
-/// given its own stable simulated slot (`hosted_cpu_slot`) rather than
-/// collapsing every thread onto slot 0: a shared slot 0 made any two
-/// concurrently-running hosted tests that legitimately raise/lower this
-/// CPU's preempt count (e.g. one test's `local_bh_disable`/`lock_bh`
-/// critical section, unrelated to another test's own softirq-context
-/// simulation) observe each other's contribution — a real, reproduced
-/// cross-test false-positive `in_interrupt()` read (B1415) that leaked a
-/// deferred-release queue entry from one test into another's initial-state
-/// assertion. A real kernel has exactly one thread per CPU by construction,
-/// so this only changes behavior for hosted multi-threaded tests.
+/// Hosted/test builds have no real per-CPU register. Their local preemption
+/// state therefore lives in thread-local storage; the synthetic CPU index is
+/// only the pre-task diagnostic anchor. A real kernel has exactly one running
+/// thread per CPU, so this distinction exists only for hosted multi-threaded
+/// tests.
 /// # C: O(1)
 #[inline]
 fn this_cpu() -> usize {
@@ -53,30 +52,17 @@ fn this_cpu() -> usize {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
     #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
-    { hosted_cpu_slot() }
+    { 0 }
     #[cfg(all(not(target_os = "oxide-kernel"), not(any(test, feature = "hosted"))))]
     { 0 }
 }
 
-/// Stable per-OS-thread simulated CPU slot for hosted/test builds. Assigned
-/// once per thread from a shared monotonic counter (wrapping into
-/// `0..MAX_CPUS` — plenty for `cargo test`'s default parallelism), so two
-/// different test threads never alias the same `PREEMPT_COUNT`/
-/// `NEED_RESCHED` slot the way a fixed `0` did. # C: O(1)
+/// Hosted execution has one preemption context per OS thread. A test process
+/// can create more workers than the kernel's fixed CPU maximum, so assigning
+/// hosted workers into that array aliases unrelated contexts. # C: O(1)
 #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
-fn hosted_cpu_slot() -> usize {
-    use core::cell::Cell;
-    use core::sync::atomic::AtomicUsize;
-    static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
-    std::thread_local! {
-        static SLOT: Cell<Option<usize>> = const { Cell::new(None) };
-    }
-    SLOT.with(|slot| {
-        if let Some(s) = slot.get() { return s; }
-        let s = NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % MAX_CPUS;
-        slot.set(Some(s));
-        s
-    })
+fn hosted_preempt<R>(f: impl FnOnce(&core::cell::Cell<u32>) -> R) -> R {
+    HOSTED_PREEMPT_COUNT.with(f)
 }
 
 /// Count a task carries while parked, and that a never-run task starts with.
@@ -98,7 +84,48 @@ pub use resched::{need_resched, need_resched_on, set_need_resched, set_need_resc
                   take_need_resched};
 
 #[inline]
+#[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
 fn preempt_count_slot() -> &'static AtomicU32 { &PREEMPT_COUNT[this_cpu()].0 }
+
+fn preempt_count_load() -> u32 {
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { return hosted_preempt(core::cell::Cell::get); }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    { preempt_count_slot().load(Ordering::Acquire) }
+}
+
+fn preempt_count_swap_local(incoming: u32) -> u32 {
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { return hosted_preempt(|count| count.replace(incoming)); }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    { preempt_count_slot().swap(incoming, Ordering::AcqRel) }
+}
+
+fn preempt_count_add_local(n: u32) {
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { hosted_preempt(|count| count.set(count.get().wrapping_add(n))); }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    { preempt_count_slot().fetch_add(n, Ordering::AcqRel); }
+}
+
+fn preempt_count_sub_local(n: u32) -> u32 {
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { return hosted_preempt(|count| {
+        let prev = count.get();
+        count.set(prev.wrapping_sub(n));
+        prev
+    }); }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    { preempt_count_slot().fetch_sub(n, Ordering::AcqRel) }
+}
+
+#[cfg(any(test, feature = "hosted"))]
+fn preempt_count_store_local(value: u32) {
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { hosted_preempt(|count| count.set(value)); }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    { preempt_count_slot().store(value, Ordering::Release); }
+}
 
 /// Live count of an ARBITRARY CPU. The per-CPU state is a plain array, so a
 /// CPU that is still ticking can read a wedged one's — which is the only way
@@ -107,6 +134,9 @@ fn preempt_count_slot() -> &'static AtomicU32 { &PREEMPT_COUNT[this_cpu()].0 }
 /// Out-of-range yields 0.
 /// # C: O(1)
 pub fn preempt_count_on(cpu: usize) -> u32 {
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { let _ = cpu; return 0; }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
     PREEMPT_COUNT.get(cpu).map_or(0, |s| s.0.load(Ordering::Acquire))
 }
 
@@ -127,7 +157,7 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 
 /// Current preempt count on this CPU.
 /// # C: O(1)
-pub fn preempt_count() -> u32 { preempt_count_slot().load(Ordering::Acquire) }
+pub fn preempt_count() -> u32 { preempt_count_load() }
 
 /// Swap this CPU's live count for the incoming task's, returning the outgoing
 /// task's value to be stored on it. Called from `schedule()` around the context
@@ -135,7 +165,7 @@ pub fn preempt_count() -> u32 { preempt_count_slot().load(Ordering::Acquire) }
 /// as x86 Linux treats `pcpu_hot.preempt_count` and swaps it in `__switch_to`.
 /// # C: O(1)
 pub fn preempt_count_swap(incoming: u32) -> u32 {
-    preempt_count_slot().swap(incoming, Ordering::AcqRel)
+    preempt_count_swap_local(incoming)
 }
 
 // ---- Linux preempt_count bit-field layout (`include/linux/preempt.h`) ----
@@ -282,12 +312,12 @@ pub fn in_atomic() -> bool {
 
 /// Raw add to this CPU's count (Linux `preempt_count_add`/`__preempt_count_add`).
 /// No reschedule check — bottom-half accounting only. # C: O(1)
-pub fn preempt_count_add(n: u32) { preempt_count_slot().fetch_add(n, Ordering::AcqRel); }
+pub fn preempt_count_add(n: u32) { preempt_count_add_local(n); }
 
 /// Raw subtract from this CPU's count (Linux `preempt_count_sub`). No
 /// reschedule check — the bh layer decides when to resched. # C: O(1)
 pub fn preempt_count_sub(n: u32) {
-    let prev = preempt_count_slot().fetch_sub(n, Ordering::AcqRel);
+    let prev = preempt_count_sub_local(n);
     debug_assert!(prev >= n, "preempt_count_sub underflow");
 }
 
@@ -334,7 +364,7 @@ pub unsafe fn rcu_read_unlock() { preempt_enable_no_check() }
 /// to keep pairs balanced.
 /// # C: O(1)
 pub fn preempt_disable() {
-    preempt_count_slot().fetch_add(1, Ordering::AcqRel);
+    preempt_count_add_local(1);
 }
 
 /// Decrement without the resched check. Used at sites that must
@@ -342,7 +372,7 @@ pub fn preempt_disable() {
 /// switching back into a preempt-off region).
 /// # C: O(1)
 pub fn preempt_enable_no_check() {
-    let prev = preempt_count_slot().fetch_sub(1, Ordering::AcqRel);
+    let prev = preempt_count_sub_local(1);
     // Underflow check in debug; in release the saturating_sub
     // semantics on AtomicU32::fetch_sub wrap, which would surface
     // as a wedged scheduler — so refuse in debug.
@@ -358,7 +388,7 @@ pub fn preempt_enable_no_check() {
 /// task's stack is suitable for a context switch.
 /// # C: O(1) + O(log N) iff schedule fires
 pub unsafe fn preempt_enable() {
-    let prev = preempt_count_slot().fetch_sub(1, Ordering::AcqRel);
+    let prev = preempt_count_sub_local(1);
     debug_assert!(prev != 0, "preempt_enable underflow");
     if prev == 1 && take_need_resched() {
         let raw = SCHEDULE_HOOK.load(Ordering::Acquire);
@@ -431,8 +461,11 @@ impl Drop for PreemptGuard {
 /// # C: O(1)
 #[cfg(any(test, feature = "hosted"))]
 pub fn _test_reset() {
-    let cpu = this_cpu();
-    PREEMPT_COUNT[cpu].0.store(0, Ordering::Release);
-    resched::_test_reset_anchor(cpu);
+    preempt_count_store_local(0);
+    resched::_test_reset_anchor(this_cpu());
     if let Some(t) = crate::live::current() { t.need_resched.store(false, Ordering::Release); }
 }
+
+#[cfg(test)]
+#[path = "preempt/hosted_tests.rs"]
+mod hosted_tests;
