@@ -107,7 +107,6 @@ fn apply(sock: &Arc<InetSocket>, action: Action, raw_val: i32) -> i64 {
         Action::V6Only(on) => sock.opts.ipv6_v6only.store(i32::from(on), Ordering::Release),
         Action::MtuDiscover(v) => sock.opts.ipv6_mtu_discover.store(v, Ordering::Release),
         Action::FragSize(v) => sock.opts.ipv6.set_frag_size(v),
-        Action::UseMinMtu(v) => sock.opts.ipv6.set_use_min_mtu(v),
         Action::MinHopCount(v) => sock.opts.min_hop.set_hopcount(v),
         Action::Tclass(v) => {
             let current = sock.opts.ipv6_tclass.load(Ordering::Acquire).max(0);

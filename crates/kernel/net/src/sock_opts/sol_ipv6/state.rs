@@ -56,8 +56,6 @@ pub struct Ipv6Opts {
     flags: AtomicU64,
     /// `IPV6_MTU`: caller-named fragmentation size, zero to follow the path.
     frag_size: Arc<AtomicI32>,
-    /// `IPV6_USE_MIN_MTU`: -1 unset, 0 path MTU, 1 the IPv6 minimum.
-    use_min_mtu: AtomicI32,
     unicast_if: AtomicU32,
     /// `IPV6_ADDR_PREFERENCES` source-selection bits.
     srcprefs: AtomicI32,
@@ -82,7 +80,6 @@ impl Default for Ipv6Opts {
         Self {
             flags: AtomicU64::new(0),
             frag_size: Arc::new(AtomicI32::new(0)),
-            use_min_mtu: AtomicI32::new(-1),
             unicast_if: AtomicU32::new(0),
             srcprefs: AtomicI32::new(0),
             flow_label: AtomicU32::new(0),
@@ -135,11 +132,6 @@ impl Ipv6Opts {
     pub fn frag_size_cell(&self) -> Arc<AtomicI32> { self.frag_size.clone() }
     /// # C: O(1)
     pub fn set_frag_size(&self, v: i32) { self.frag_size.store(v, Ordering::Release); }
-
-    /// # C: O(1)
-    pub fn use_min_mtu(&self) -> i32 { self.use_min_mtu.load(Ordering::Acquire) }
-    /// # C: O(1)
-    pub fn set_use_min_mtu(&self, v: i32) { self.use_min_mtu.store(v, Ordering::Release); }
 
     /// # C: O(1)
     pub fn unicast_if(&self) -> u32 { self.unicast_if.load(Ordering::Acquire) }
