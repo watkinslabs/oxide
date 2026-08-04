@@ -13,6 +13,12 @@ use super::uapi::*;
 /// # C: O(1)
 pub(super) fn get(sock: &Arc<net::sock::InetSocket>, level: u64, optname: u64,
                   out: &OptOut) -> Option<i64> {
+    // Linux's IPv6 option dispatcher does not delegate SOL_IP for SOCK_RAW.
+    // Answer before the individual IPv4 tables can expose state a raw IPv6
+    // socket was never permitted to set.
+    if level == IPPROTO_IP && matches!(&*sock.kind.lock(), SockKind::Raw6(_)) {
+        return Some(-(Errno::Enoprotoopt.as_i32() as i64));
+    }
     Some(match (level, optname) {
         (IPPROTO_IP, IP_HDRINCL) => match &*sock.kind.lock() {
             SockKind::Raw4(endpoint) if !endpoint.is_ping() =>
