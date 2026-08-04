@@ -80,6 +80,7 @@ pub fn write_tcp_info(sock: &InetSocket, optval: u64, optlen_p: u64) -> i64 {
 
 #[cfg(target_os = "oxide-kernel")]
 fn populate(sock: &InetSocket, info: &mut TcpInfo) {
+    populate_max_pacing_rate(&sock.opts.generic, info);
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(e) => e.clone(),
         SockKind::TcpListener(_) => { info.tcpi_state = state_to_byte(net::tcp_state::TcpState::Listen); return; }
@@ -87,6 +88,10 @@ fn populate(sock: &InetSocket, info: &mut TcpInfo) {
     };
     let c = entry.conn.lock();
     populate_conn_at(&c, net::tcp_conn::ka_now_ns(), info);
+}
+
+fn populate_max_pacing_rate(opts: &net::sock_opts::sol_socket::GenericSockOpts, info: &mut TcpInfo) {
+    info.tcpi_max_pacing_rate = opts.max_pacing_rate();
 }
 
 #[cfg(test)]
@@ -159,7 +164,7 @@ fn state_to_byte(s: net::tcp_state::TcpState) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_tcp_info, populate_conn, populate_conn_at, tcp_info_options, TcpInfo, TCPI_OPT_ECN,
+    use super::{copy_tcp_info, populate_conn, populate_conn_at, populate_max_pacing_rate, tcp_info_options, TcpInfo, TCPI_OPT_ECN,
         TCPI_OPT_SACK, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN};
 
     fn conn() -> net::tcp_conn::TcpConn {
@@ -231,6 +236,17 @@ mod tests {
         assert_eq!(info.tcpi_last_data_sent, 3);
         assert_eq!(info.tcpi_last_data_recv, 4);
         assert_eq!(info.tcpi_last_ack_recv, 5);
+    }
+
+    #[test]
+    fn max_pacing_rate_projects_the_socket_owned_ceiling() {
+        let opts = net::sock_opts::sol_socket::GenericSockOpts::default();
+        let mut info = TcpInfo::default();
+        populate_max_pacing_rate(&opts, &mut info);
+        assert_eq!(info.tcpi_max_pacing_rate, u64::MAX);
+        opts.set_max_pacing_rate(1 << 40);
+        populate_max_pacing_rate(&opts, &mut info);
+        assert_eq!(info.tcpi_max_pacing_rate, 1 << 40);
     }
 
     #[test]
