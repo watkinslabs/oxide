@@ -67,8 +67,6 @@ pub struct Ipv6Opts {
     rcv_flowinfo: AtomicU32,
     /// `IPV6_PKTINFO`: sticky source address and interface.
     sticky_pktinfo: Spinlock<([u8; 16], u32), LockClass>,
-    /// `IPV6_NEXTHOP`: sticky first hop.
-    nexthop: Spinlock<Option<[u8; 16]>, LockClass>,
     headers: Spinlock<[Option<Vec<u8>>; Sticky::COUNT], LockClass>,
     /// Flow labels this socket holds a reference on.
     labels: Spinlock<Vec<u32>, LockClass>,
@@ -89,7 +87,6 @@ impl Default for Ipv6Opts {
             flow_label: AtomicU32::new(0),
             rcv_flowinfo: AtomicU32::new(0),
             sticky_pktinfo: Spinlock::new(([0u8; 16], 0)),
-            nexthop: Spinlock::new(None),
             headers: Spinlock::new([const { None }; Sticky::COUNT]),
             labels: Spinlock::new(Vec::new()),
             ra_selector: AtomicI32::new(crate::router_alert::V6_NO_SLOT),
@@ -167,11 +164,6 @@ impl Ipv6Opts {
     pub fn set_sticky_pktinfo(&self, addr: [u8; 16], ifindex: u32) {
         *self.sticky_pktinfo.lock() = (addr, ifindex);
     }
-
-    /// # C: O(1)
-    pub fn nexthop(&self) -> Option<[u8; 16]> { *self.nexthop.lock() }
-    /// # C: O(1)
-    pub fn set_nexthop(&self, addr: Option<[u8; 16]>) { *self.nexthop.lock() = addr; }
 
     /// The sticky extension header in one slot. # C: O(len)
     pub fn header(&self, slot: Sticky) -> Option<Vec<u8>> {
