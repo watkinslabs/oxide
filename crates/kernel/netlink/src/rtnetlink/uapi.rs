@@ -65,6 +65,12 @@ pub mod ifla {
     pub const IFLA_CARRIER:   u16 = 33;
 }
 
+/// Linux interface operational states carried by `IFLA_OPERSTATE`.
+pub mod if_oper {
+    pub const DOWN: u8 = 2;
+    pub const UP:   u8 = 6;
+}
+
 /// Linux interface flags are owned by the network device UAPI module.
 pub use net::netdev::iff;
 
