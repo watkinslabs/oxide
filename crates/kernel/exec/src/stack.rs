@@ -99,6 +99,7 @@ pub unsafe fn build_user_stack(
     exec_path: &[u8],
     vdso_ehdr: u64,
     hwcap: u64,
+    hwcap2: u64,
     creds: AuxCreds,
     min_sigstksz: u64,
     rnd: &aslr::ExecRnd,
@@ -151,7 +152,7 @@ pub unsafe fn build_user_stack(
     // 2. Compute total size of the pointer/auxv vector area, then
     //    align the resulting SP down to 16. The vector area is
     //    written bottom-up (low → high) starting at `vec_base`.
-    let auxv: [(u64, u64); 19] = [
+    let auxv: [(u64, u64); 20] = [
         (AT_PHDR,    img.phdr_va),
         (AT_PHENT,   img.phentsize as u64),
         (AT_PHNUM,   img.phnum as u64),
@@ -168,6 +169,7 @@ pub unsafe fn build_user_stack(
         (AT_EXECFN,  execfn_va),
         (AT_RANDOM,  random_va),
         (AT_HWCAP,   hwcap),
+        (AT_HWCAP2,  hwcap2),
         (AT_CLKTCK,  syscall::rusage::USER_HZ),
         (AT_MINSIGSTKSZ, min_sigstksz),
         // 0 = "no vDSO mapped" — glibc / musl skip the AT_SYSINFO_EHDR

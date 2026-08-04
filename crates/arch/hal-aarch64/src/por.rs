@@ -64,6 +64,9 @@ pub const TCR2_EL1_E0POE: u64 = 1 << 2;
 /// feature's whole purpose.
 pub const CPACR_EL1_E0POE: u64 = 1 << 29;
 
+/// `AT_HWCAP2` bit announcing the usable Stage-1 permission overlay ABI.
+pub const HWCAP2_POE: u64 = 1 << 63;
+
 /// The `POR_EL0` a thread starts with: key 0 fully open, every other key
 /// closed.
 ///
@@ -84,6 +87,14 @@ static INIT_POR: AtomicU64 = AtomicU64::new(POR_EL0_INIT);
 
 /// Is the permission overlay enabled? # C: O(1)
 pub fn poe_enabled() -> bool { POE.load(Ordering::Relaxed) }
+
+/// Encode the permission-overlay capability after its enablement decision.
+/// # C: O(1)
+pub const fn hwcap2_from_enabled(enabled: bool) -> u64 { if enabled { HWCAP2_POE } else { 0 } }
+
+/// `AT_HWCAP2` bits owned by the permission-overlay ABI. The bit appears
+/// only after the kernel has enabled EL0 overlay access. # C: O(1)
+pub fn hwcap2() -> u64 { hwcap2_from_enabled(poe_enabled()) }
 
 /// `arch_max_pkey()` — 8 keys with the overlay, key 0 alone without.
 /// # C: O(1)
