@@ -427,7 +427,7 @@ impl IfaceRegistry {
     }
 
     pub(crate) fn finish_destroy(&self, teardown: &IfaceTeardown)
-        -> Option<Arc<dyn NetDev>>
+        -> Option<(Arc<dyn NetDev>, Option<Arc<drv::Device>>)>
     {
         let dev = {
             let mut g = self.inner.lock();
@@ -436,16 +436,16 @@ impl IfaceRegistry {
                 && entry.ingress.generation == teardown.generation
                 && Arc::ptr_eq(&entry.ingress, &teardown.gate)
                 && teardown.gate.drained())?;
-            g.entries.remove(pos).dev
+            let entry = g.entries.remove(pos);
+            (entry.dev, entry.parent)
         };
         Some(dev)
     }
 
     pub(crate) fn complete_destroy(teardown: &IfaceTeardown) { teardown.gate.finish(); }
 
-    pub(crate) fn notify_destroyed(dev: &Arc<dyn NetDev>) {
-        let hook = *NETDEV_REMOVE_HOOK.lock();
-        if let Some(f) = hook { f(dev.name()); }
+    pub(crate) fn notify_destroyed(dev: &Arc<dyn NetDev>, parent: Option<&Arc<drv::Device>>) {
+        super::notify_changed(dev.name(), parent);
     }
 
     pub(crate) fn begin_move_to_initial(&self, teardown: &IfaceTeardown)

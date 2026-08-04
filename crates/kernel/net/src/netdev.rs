@@ -41,11 +41,18 @@ pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
 pub use device::{NetDev, WanSettings};
 
-type NetdevRemoveHook = fn(&str);
-static NETDEV_REMOVE_HOOK: Spinlock<Option<NetdevRemoveHook>, SocketLockClass> = Spinlock::new(None);
+type NetdevChangeHook = fn(&str, Option<&Arc<drv::Device>>);
+static NETDEV_CHANGE_HOOK: Spinlock<Option<NetdevChangeHook>, SocketLockClass> = Spinlock::new(None);
 
-/// Install the netdev remove hook used by sysfs to drop stale class dentries. # C: O(1)
-pub fn set_remove_hook(f: NetdevRemoveHook) { *NETDEV_REMOVE_HOOK.lock() = Some(f); }
+/// Install the netdev publication hook used by sysfs to invalidate the exact
+/// class and parent-device dentries. # C: O(1)
+pub fn set_change_hook(f: NetdevChangeHook) { *NETDEV_CHANGE_HOOK.lock() = Some(f); }
+
+/// Notify the sysfs projection after a live interface changes. # C: O(1)
+pub(crate) fn notify_changed(name: &str, parent: Option<&Arc<drv::Device>>) {
+    let hook = *NETDEV_CHANGE_HOOK.lock();
+    if let Some(f) = hook { f(name, parent); }
+}
 
 /// Per-iface running counters for `/proc/net/dev` and ethtool.
 #[derive(Copy, Clone, Debug, Default)]
@@ -175,6 +182,10 @@ pub struct IfaceEntry {
     /// only entries matching their own net_ns.
     pub ns:   u64,
     pub dev:  Arc<dyn NetDev>,
+    /// Model device that physically owns this interface. The interface
+    /// registry retains this exact object so sysfs follows the same live
+    /// parent chain as the driver model instead of rediscovering it by name.
+    pub parent: Option<Arc<drv::Device>>,
     /// Canonical Linux interface name. Device identity and registry naming
     /// are separate: drivers provide the initial name, while the registry
     /// owns namespace-scoped rename semantics.
@@ -269,15 +280,14 @@ impl IfaceRegistry {
             entry.ingress.clone()
         };
         gate.wait();
-        let (dev, old_name) = {
+        let (dev, old_name, parent) = {
             let mut g = self.inner.lock();
             let pos = g.entries.iter().position(|entry| entry.id == id
                 && Arc::ptr_eq(&entry.ingress, &gate) && gate.drained())?;
             let entry = g.entries.remove(pos);
-            (entry.dev, entry.name)
+            (entry.dev, entry.name, entry.parent)
         };
-        let hook = *NETDEV_REMOVE_HOOK.lock();
-        if let Some(f) = hook { f(&old_name); }
+        notify_changed(&old_name, parent.as_ref());
         gate.finish();
         Some(dev)
     }

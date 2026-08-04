@@ -29,6 +29,7 @@ cgroup   = { path = "../cgroup" }
 crng     = { path = "../crng" }
 siphash  = { path = "../../shared/siphash" }
 nscg = { path = "../nscg" }
+drv = { path = "../../drivers/drv" }
 
 [dev-dependencies]
 loom = "0.7.2"

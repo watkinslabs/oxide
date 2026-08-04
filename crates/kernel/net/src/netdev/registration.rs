@@ -72,7 +72,7 @@ fn initial_flags(hardware_type: u16) -> u32 {
 }
 
 impl IfaceRegistry {
-    fn insert_pending(&self, dev: Arc<dyn NetDev>,
+    fn insert_pending(&self, dev: Arc<dyn NetDev>, parent: Option<Arc<drv::Device>>,
                       owner: &network_namespace::NetworkNamespaceRef) -> IfaceRegistration<'_> {
         let mut g = self.inner.lock();
         let id = NetIfaceId::from_raw(g.alloc_id());
@@ -83,7 +83,7 @@ impl IfaceRegistry {
         let flags = initial_flags(dev_hw);
         let gate = Arc::new(IngressGate::registration_pending(ns, 1));
         let name = String::from(dev.name());
-        g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
+        g.entries.push(IfaceEntry { id, ifindex, ns, dev, parent, name, flags: AtomicU32::new(flags),
             carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
@@ -101,7 +101,18 @@ impl IfaceRegistry {
         -> Option<IfaceRegistration<'_>>
     {
         if !self.guard_matches(rtnl) { return None; }
-        Some(self.insert_pending(dev, owner))
+        Some(self.insert_pending(dev, None, owner))
+    }
+
+    /// Prepare an interface whose driver-model parent owns its physical sysfs
+    /// placement. # C: O(1)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn prepare_parented_in_ns(&self, rtnl: &crate::RtnlGuard<'_>,
+        dev: Arc<dyn NetDev>, parent: Arc<drv::Device>,
+        owner: &network_namespace::NetworkNamespaceRef) -> Option<IfaceRegistration<'_>>
+    {
+        if !self.guard_matches(rtnl) { return None; }
+        Some(self.insert_pending(dev, Some(parent), owner))
     }
 
     /// Publish one fully initialized interface generation. # C: O(N)
@@ -117,6 +128,10 @@ impl IfaceRegistry {
             return false;
         };
         entry.ingress.finish_resume();
+        let name = entry.name.clone();
+        let parent = entry.parent.clone();
+        drop(g);
+        super::notify_changed(&name, parent.as_ref());
         reg.disarm();
         true
     }
@@ -179,7 +194,7 @@ impl IfaceRegistry {
         let dev_hw = dev.hardware_type();
         let flags = initial_flags(dev_hw);
         let name = String::from(dev.name());
-        g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
+        g.entries.push(IfaceEntry { id, ifindex, ns, dev, parent: None, name, flags: AtomicU32::new(flags),
             carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
