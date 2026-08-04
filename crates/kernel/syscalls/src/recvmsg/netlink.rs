@@ -7,11 +7,18 @@ use crate::net_sockaddr::encoded_sockaddr_nl;
 use crate::recv_user::RecvUser;
 
 const NETLINK_KOBJECT_UEVENT: u16 = 15;
+const SOL_NETLINK: i32 = 270;
+const NETLINK_PKTINFO: i32 = 3;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn groups(protocol: u16, dgram: &[u8]) -> u32 {
-    if protocol != NETLINK_KOBJECT_UEVENT { 0 }
+fn group_mask(group: u32) -> u32 {
+    if group > 32 { 0 } else { group.checked_sub(1).and_then(|bit| 1u32.checked_shl(bit)).unwrap_or(0) }
+}
+
+fn source_groups(protocol: u16, dgram: &[u8], multicast_group: u32) -> u32 {
+    if multicast_group != 0 { group_mask(multicast_group) }
+    else if protocol != NETLINK_KOBJECT_UEVENT { 0 }
     else if dgram.starts_with(b"libudev\0") { 2 }
     else { 1 }
 }
@@ -26,7 +33,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     if flags & MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
-    let (dgram, copied, src_pid, carried) = loop {
+    let (dgram, copied, src_pid, multicast_group, carried) = loop {
         match sock.receive(peek) {
             ::netlink::ReceiveState::Empty => {
                 if nonblock { return err(Errno::Eagain); }
@@ -47,7 +54,8 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
                 let copied = user.copy_payload(
                     &received.bytes[..core::cmp::min(user.capacity, received.bytes.len())]);
                 match copied {
-                    Ok(copied) => break (received.bytes, copied, received.src_port, received.creds),
+                    Ok(copied) => break (received.bytes, copied, received.src_port,
+                        received.multicast_group, received.creds),
                     Err(e) => return e,
                 }
             }
@@ -58,17 +66,31 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     // RECEIVING socket set SO_PASSCRED. One rule for every protocol: a reader
     // that did not ask is never handed a control message, and a reader that
     // did is answered whether it is watching uevents or the link table.
-    let delivered = match net::scm::recv(sock.scm.on(), carried) {
-        Some(creds) => match crate::recv_control::deliver(user, Vec::new(), Some(creds), None, flags) {
-            Ok(delivered) => delivered,
-            Err(error) => return error,
-        },
-        None => crate::recv_control::DeliveredControl {
-            len: 0, flags: crate::recv_control::output_flags(flags) },
+    let pktinfo = multicast_group.to_ne_bytes();
+    let protocol = sock.flags.get(::netlink::F_RECV_PKTINFO)
+        .then_some((SOL_NETLINK, NETLINK_PKTINFO, pktinfo.as_slice()));
+    let delivered = match crate::recv_control::deliver(user, Vec::new(),
+        net::scm::recv(sock.scm.on(), carried), None, protocol, flags)
+    {
+        Ok(delivered) => delivered,
+        Err(error) => return error,
     };
-    if let Err(e) = user.copy_name(encoded_sockaddr_nl(src_pid, groups(sock.protocol, &dgram)).as_bytes()) { return e; }
+    if let Err(e) = user.copy_name(encoded_sockaddr_nl(src_pid,
+        source_groups(sock.protocol, &dgram, multicast_group)).as_bytes()) { return e; }
     let mut out_flags = delivered.flags;
     if copied < dgram.len() { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(delivered.len, out_flags) { return e; }
     if flags & MSG_TRUNC != 0 { dgram.len() as i64 } else { copied as i64 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_group_uses_linuxs_low_word_mask() {
+        assert_eq!(source_groups(::netlink::proto::NETLINK_ROUTE, b"", 5), 1 << 4);
+        assert_eq!(source_groups(::netlink::proto::NETLINK_ROUTE, b"", 33), 0);
+        assert_eq!(source_groups(::netlink::proto::NETLINK_ROUTE, b"", 0), 0);
+    }
 }
