@@ -30,8 +30,8 @@ mod imp {
     pub(super) type Lock = sched::live::Mutex<()>;
     pub(super) type LockGuard<'a> = sched::live::MutexGuard<'a, ()>;
     pub(super) const fn new() -> Lock { sched::live::Mutex::new(()) }
-    /// # SAFETY: caller is in process context holding no spinlock -- see the
-    /// call-site audit quoted in `Rtnl::lock`.
+    // SAFETY: Rtnl::lock admits process context with no spinlock, as its
+    // audited callers require before a sleeping mutex acquisition can park.
     pub(super) fn lock(l: &Lock) -> LockGuard<'_> { unsafe { l.lock() } }
     pub(super) fn try_lock(l: &Lock) -> Option<LockGuard<'_>> { l.try_lock() }
 }
