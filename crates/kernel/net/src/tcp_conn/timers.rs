@@ -96,12 +96,15 @@ impl TcpConn {
     pub fn delayed_ack_due(&mut self, now_ns: u64) -> Option<alloc::vec::Vec<u8>> {
         if !self.ack_pending { return None; }
         if self.ack_deadline_ns == 0 {
-            self.ack_deadline_ns = now_ns.saturating_add(self.delack_max_ns);
+            self.ack_deadline_ns = now_ns.saturating_add(self.delack_ato_ns());
             return None;
         }
         if now_ns < self.ack_deadline_ns { return None; }
         self.ack_pending = false;
         self.ack_deadline_ns = 0;
+        if !self.quickack {
+            self.delack_ato_ns = self.delack_ato_ns().saturating_mul(2).min(self.rto_ns);
+        }
         self.rcv_wup = self.rcv_nxt;
         Some(self.build_ack_with_sack())
     }
