@@ -15,7 +15,7 @@ pub(crate) struct AnycastAddr {
 
 impl NetStack {
     /// True when an address is configured on any device in this namespace.
-    /// Linux refuses to convert an ordinary IPv6 address into an anycast one.
+    /// An ordinary IPv6 address cannot become an anycast address. # C: O(N)
     pub(crate) fn v6_addr_owned_in(&self, net_ns: u64, addr: Ipv6Addr) -> bool {
         let now_ns = self.ra_now_ns();
         self.v6_addrs.lock().iter().any(|(iface, rows)| {
@@ -25,7 +25,7 @@ impl NetStack {
     }
 
     /// True when `addr` belongs to one configured prefix on `iface`.
-    /// Link-local anycast is valid without a separately configured prefix.
+    /// Link-local anycast is valid without a separately configured prefix. # C: O(N)
     pub(crate) fn v6_anycast_prefix_on_iface(&self, iface: NetIfaceId, addr: Ipv6Addr) -> bool {
         if addr.is_link_local() { return true; }
         let now_ns = self.ra_now_ns();
