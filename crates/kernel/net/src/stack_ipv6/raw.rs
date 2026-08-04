@@ -22,6 +22,16 @@ impl NetStack {
         scoped: Option<NetIfaceId>, protocol_override: Option<u8>, payload: &[u8],
         hop_limit: u8, pmtudisc: i32, control: &Raw6Control) -> NetResult<()>
     {
+        self.send_raw6_with_frag_size(endpoint, final_dst, scoped, protocol_override, payload,
+            hop_limit, pmtudisc, 0, control)
+    }
+
+    /// Route and transmit one socket-owned raw IPv6 message. # C: O(payload + N)
+    pub fn send_raw6_with_frag_size(&self, endpoint: &crate::raw6::Raw6Endpoint,
+        final_dst: Ipv6Addr, scoped: Option<NetIfaceId>, protocol_override: Option<u8>,
+        payload: &[u8], hop_limit: u8, pmtudisc: i32, frag_size: i32,
+        control: &Raw6Control) -> NetResult<()>
+    {
         if final_dst.is_unspecified() { return Err(NetError::Edestaddrreq); }
         let route_dst = control.route_destination(final_dst);
         let (local, endpoint_iface) = endpoint.tx_binding();
@@ -61,8 +71,8 @@ impl NetStack {
             return Err(NetError::Eaddrnotavail);
         }
         let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(pmtudisc);
-        let mtu = self.path_mtu_in(endpoint.net_ns(), IpAddr::V6(route_dst),
-            Some(iface_id), use_iface)? as usize;
+        let mtu = super::tx::ipv6_output_mtu(self.path_mtu_in(endpoint.net_ns(),
+            IpAddr::V6(route_dst), Some(iface_id), use_iface)? as usize, frag_size);
         if final_dst.is_multicast() && control.multicast_loop == Some(false)
             && iface.hardware_type() == crate::uapi::ARPHRD_LOOPBACK
         {

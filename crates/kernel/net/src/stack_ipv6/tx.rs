@@ -5,6 +5,24 @@ use crate::netfilter_hook::{nf_output, NFPROTO_IPV6};
 use crate::stack::NetStack;
 use crate::stack::TcpKey;
 
+/// Apply a socket's requested IPv6 fragmentation size after route PMTU selection.
+/// A zero request leaves the route result unchanged. # C: O(1)
+pub(crate) fn ipv6_output_mtu(route_mtu: usize, frag_size: i32) -> usize {
+    if frag_size > 0 { route_mtu.min(frag_size as usize) } else { route_mtu }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ipv6_output_mtu;
+
+    #[test]
+    fn a_socket_fragment_size_only_reduces_the_resolved_route_mtu() {
+        assert_eq!(ipv6_output_mtu(1500, 0), 1500);
+        assert_eq!(ipv6_output_mtu(1500, 1280), 1280);
+        assert_eq!(ipv6_output_mtu(1280, 1500), 1280);
+    }
+}
+
 impl NetStack {
     pub fn send_router_solicitation(&self, iface: NetIfaceId, src: Ipv6Addr) -> NetResult<()> {
         let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enetunreach)?;
@@ -242,22 +260,22 @@ impl NetStack {
         hop_limit: u8, traffic_class: u8, mode: i32) -> NetResult<()>
     {
         self.send_udp6_pmtu_to_bound_opts_owner(None, net_ns, src, src_port, dst, dst_port,
-            payload, bound, hop_limit, traffic_class, mode, false)
+            payload, bound, hop_limit, traffic_class, mode, 0, false)
     }
 
     /// Build and transmit socket-owned UDP/IPv6. # C: O(payload + N)
     pub fn send_udp6_pmtu_to_bound_opts_owned(&self, owner: &crate::SocketOwner,
         src: Ipv6Addr, src_port: u16, dst: Ipv6Addr, dst_port: u16, payload: &[u8],
         bound: Option<NetIfaceId>, hop_limit: u8, traffic_class: u8, mode: i32,
-        no_check: bool) -> NetResult<()> {
+        frag_size: i32, no_check: bool) -> NetResult<()> {
         self.send_udp6_pmtu_to_bound_opts_owner(Some(owner), owner.net_ns(), src, src_port,
-            dst, dst_port, payload, bound, hop_limit, traffic_class, mode, no_check)
+            dst, dst_port, payload, bound, hop_limit, traffic_class, mode, frag_size, no_check)
     }
 
     fn send_udp6_pmtu_to_bound_opts_owner(&self, owner: Option<&crate::SocketOwner>,
         net_ns: u64, src: Ipv6Addr, src_port: u16, dst: Ipv6Addr, dst_port: u16,
         payload: &[u8], bound: Option<NetIfaceId>, hop_limit: u8, traffic_class: u8,
-        mode: i32, no_check: bool) -> NetResult<()> {
+        mode: i32, frag_size: i32, no_check: bool) -> NetResult<()> {
         let src = if src == Ipv6Addr::ANY && dst == Ipv6Addr::LOOPBACK {
             Ipv6Addr::LOOPBACK
         } else { src };
@@ -268,7 +286,8 @@ impl NetStack {
             self.v6_select_source(iface_id, dst, src_hint).ok_or(NetError::Eaddrnotavail)?
         } else { src };
         let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(mode);
-        let mtu = self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id), use_iface)? as usize;
+        let mtu = ipv6_output_mtu(self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id),
+            use_iface)? as usize, frag_size);
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut packet = crate::pkt::Pkt::with_capacity(0, l4_len);
         let body = packet.put(l4_len).map_err(|_| NetError::Enobufs)?;

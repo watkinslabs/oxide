@@ -164,8 +164,8 @@ fn xmit_raw6_with_sticky(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint
     } else { scoped_iface(sock, dst_ip, scope_id)? };
     let (_, scoped) = sticky_pktinfo_choice(crate::Ipv6Addr::ANY,
         sock.opts.ipv6.sticky_pktinfo(), scoped);
-    stack().send_raw6(endpoint, dst_ip, scoped,
-        protocol_override, payload, hop, pmtudisc, &effective)
+    stack().send_raw6_with_frag_size(endpoint, dst_ip, scoped,
+        protocol_override, payload, hop, pmtudisc, sock.opts.ipv6.frag_size(), &effective)
 }
 
 fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
@@ -277,6 +277,7 @@ pub fn sendto_v6(sock: &InetSocket,
     let hop = resolve_v6_hop_limit(sock, dst_ip);
     let tclass = resolve_v6_tclass(sock);
     let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    let frag_size = sock.opts.ipv6.frag_size();
     // Linux gives the explicit scope/device choice precedence, then applies
     // sticky IPV6_PKTINFO's output interface before route lookup.
     let (src_ip, iface) = sticky_pktinfo_choice(*sock.local_ip6.lock(), sticky,
@@ -303,7 +304,7 @@ pub fn sendto_v6(sock: &InetSocket,
             for segment in payload.chunks(plan.seg_size) {
                 stack().send_udp6_pmtu_to_bound_opts_owned(
                     &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
-                    pmtudisc, no_check,
+                    pmtudisc, frag_size, no_check,
                 )?;
             }
             drain_loopback();
@@ -312,7 +313,7 @@ pub fn sendto_v6(sock: &InetSocket,
     }
     stack().send_udp6_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload,
-        iface, hop, tclass, pmtudisc, no_check,
+        iface, hop, tclass, pmtudisc, frag_size, no_check,
     )?;
     drain_loopback();
     Ok(payload.len())

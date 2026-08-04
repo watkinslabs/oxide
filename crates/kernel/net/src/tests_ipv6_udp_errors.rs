@@ -370,3 +370,18 @@ fn udp6_pmtudisc_modes_select_cache_interface_and_fragmentation() {
     assert_eq!(send(crate::uapi::IPV6_PMTUDISC_PROBE, &interface_large), Err(crate::NetError::Emsgsize));
     assert_eq!(send(crate::uapi::IPV6_PMTUDISC_INTERFACE, &interface_large), Err(crate::NetError::Emsgsize));
 }
+
+#[test]
+fn socket_fragment_size_caps_udp6_after_route_selection() {
+    let stack = NetStack::new();
+    let dev = Arc::new(Pmtu6Dev { tx: AtomicUsize::new(0), fragments: AtomicUsize::new(0) });
+    let iface = stack.ifaces.register(dev.clone());
+    let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, 9, 0, 0, 0, 0, 1]);
+    let owner = crate::SocketOwner::root(network_namespace::initial(), OWNER_UID);
+
+    stack.send_udp6_pmtu_to_bound_opts_owned(&owner, Ipv6Addr::LOOPBACK, LOCAL_PORT,
+        remote, REMOTE_PORT, &[0; 1_300], Some(iface), crate::ipv6::IPV6_DEFAULT_HOP_LIMIT,
+        0, crate::uapi::IPV6_PMTUDISC_WANT, 1280, false).unwrap();
+
+    assert_eq!((dev.tx.load(Ordering::Relaxed), dev.fragments.load(Ordering::Relaxed)), (2, 2));
+}

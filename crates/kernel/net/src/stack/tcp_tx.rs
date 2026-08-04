@@ -25,6 +25,13 @@ impl TcpTxPolicy<'_> {
         }
     }
 
+    fn ipv6_frag_size(&self) -> i32 {
+        use ::core::sync::atomic::Ordering;
+        match self {
+            Self::Entry(entry) => entry.ipv6_frag_size.load(Ordering::Acquire),
+        }
+    }
+
     /// The sticky IPv4 option area every segment this socket emits carries.
     /// # C: O(optlen)
     fn ipv4_options(&self) -> Option<crate::ipv4_options::Compiled> {
@@ -62,8 +69,10 @@ impl NetStack {
             (IpAddr::V6(src), IpAddr::V6(dst)) => {
                 let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound)?;
                 let mode = policy.ipv6_mode();
-                let mtu = self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id),
-                    crate::uapi::ipv6_pmtudisc_uses_interface(mode))? as usize;
+                let mtu = crate::stack_ipv6::ipv6_output_mtu(
+                    self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id),
+                        crate::uapi::ipv6_pmtudisc_uses_interface(mode))? as usize,
+                    policy.ipv6_frag_size());
                 self.xmit_ipv6_l4_with_policy(
                     iface_id, iface, next_hop, src, dst, IpProto::Tcp, segment,
                     crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0, mtu,
@@ -95,5 +104,15 @@ mod tests {
         let conn = entry.conn.lock();
         assert!(conn.send_cwr);
         assert!(conn.cwnd < 16_000);
+    }
+
+    #[test]
+    fn tcp_transmit_policy_reads_the_shared_ipv6_fragment_cap() {
+        use ::core::sync::atomic::Ordering;
+        let entry = TcpEntry::new(TcpConn::new_client(
+            Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_001 },
+            Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_002 }, 1));
+        entry.ipv6_frag_size.store(1280, Ordering::Release);
+        assert_eq!(TcpTxPolicy::Entry(&entry).ipv6_frag_size(), 1280);
     }
 }

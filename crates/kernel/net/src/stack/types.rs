@@ -112,6 +112,8 @@ pub struct TcpEntry {
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Canonical `IPV6_MTU` request, shared with the owning socket.
+    pub ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
     /// Sticky `IPPROTO_IP` option state, shared with the owning socket: the
     /// compiled `IP_OPTIONS` area every segment this connection emits carries,
     /// and the length its MSS budget must give up for it.
@@ -214,8 +216,23 @@ impl TcpEntry {
                                  ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
                                  min_hop: Arc<crate::min_hop::MinHop>) -> Self {
+        Self::new_bound_full_frag(conn, error, bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, Arc::new(::core::sync::atomic::AtomicI32::new(0)),
+            passive_listener, min_hop)
+    }
+
+    /// Build a transport entry sharing its IPv6 fragmentation request too. # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_bound_full_frag(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+                                 passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
+                                 min_hop: Arc<crate::min_hop::MinHop>) -> Self {
         Self::new_bound_ip_opts(conn, error, bind, bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover, passive_listener, min_hop,
+            ipv6_mtu_discover, ipv6_frag_size, passive_listener, min_hop,
             Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
     }
 
@@ -227,6 +244,7 @@ impl TcpEntry {
                                  bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                                  ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
                                  min_hop: Arc<crate::min_hop::MinHop>,
                                  ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Self {
@@ -239,6 +257,7 @@ impl TcpEntry {
             error,
             ip_mtu_discover,
             ipv6_mtu_discover,
+            ipv6_frag_size,
             ip_opts,
             min_hop,
             bind,
@@ -384,6 +403,8 @@ pub struct TcpListenEntry {
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Live listening-socket IPv6 PMTU mode; each passive child snapshots it.
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Live listening-socket `IPV6_MTU`; passive children snapshot this cell.
+    pub ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
     /// Live listening-socket hop-limit minimums; each passive child shares them.
     pub min_hop: Arc<crate::min_hop::MinHop>,
     /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
