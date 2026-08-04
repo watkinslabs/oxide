@@ -230,10 +230,10 @@ impl net::NetDev for VirtioNetDev {
             self.tx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err(net::NetError::Erange);
         }
-        // F149/F180c: real next-hop MAC resolution. IPv4 misses send
-        // ARP; IPv6 misses send NDP NS. The current frame falls back
-        // to broadcast, matching the older one-shot behavior until the
-        // upper layer retries after the neighbor cache is warm.
+        // ARP/NDP admission happens before the driver receives this packet.
+        // A unicast miss stays queued in the canonical neighbour layer;
+        // reaching this path without an address is an invalid transmit, not
+        // a reason to fall back to broadcast.
         let dst = pkt.next_hop
             .and_then(link_address_for)
             .ok_or(net::NetError::Ehostunreach)?;
