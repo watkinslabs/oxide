@@ -138,10 +138,23 @@ impl TcpListenEntry {
                            ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                            min_hop: Arc<crate::min_hop::MinHop>,
                            fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>) -> Self {
+        Self::new_with_fastopen_frag(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(::core::sync::atomic::AtomicI32::new(0)), min_hop, fastopen)
+    }
+
+    /// Build a listener sharing its IPv6 fragmentation request too. # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_fastopen_frag(bind: Arc<TcpBindReservation>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+                           min_hop: Arc<crate::min_hop::MinHop>,
+                           fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>) -> Self {
         let owner = bind.owner.clone();
         Self {
             owner, accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
-            ip_mtu_discover, ipv6_mtu_discover, min_hop,
+            ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, min_hop,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),

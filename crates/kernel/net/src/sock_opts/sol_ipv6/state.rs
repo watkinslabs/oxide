@@ -1,6 +1,7 @@
 // Per-socket `IPPROTO_IPV6` state. Storage only: every admission rule lives in
 // `set`, every value/shape rule in `get`.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Socket as LockClass, Spinlock};
@@ -54,7 +55,7 @@ impl Sticky { pub const COUNT: usize = 4; }
 pub struct Ipv6Opts {
     flags: AtomicU64,
     /// `IPV6_MTU`: caller-named fragmentation size, zero to follow the path.
-    frag_size: AtomicI32,
+    frag_size: Arc<AtomicI32>,
     /// `IPV6_USE_MIN_MTU`: -1 unset, 0 path MTU, 1 the IPv6 minimum.
     use_min_mtu: AtomicI32,
     unicast_if: AtomicU32,
@@ -80,7 +81,7 @@ impl Default for Ipv6Opts {
     fn default() -> Self {
         Self {
             flags: AtomicU64::new(0),
-            frag_size: AtomicI32::new(0),
+            frag_size: Arc::new(AtomicI32::new(0)),
             use_min_mtu: AtomicI32::new(-1),
             unicast_if: AtomicU32::new(0),
             srcprefs: AtomicI32::new(0),
@@ -130,6 +131,8 @@ impl Ipv6Opts {
 
     /// # C: O(1)
     pub fn frag_size(&self) -> i32 { self.frag_size.load(Ordering::Acquire) }
+    /// Shared `IPV6_MTU` cell for a transport entry that outlives the socket API call. # C: O(1)
+    pub fn frag_size_cell(&self) -> Arc<AtomicI32> { self.frag_size.clone() }
     /// # C: O(1)
     pub fn set_frag_size(&self, v: i32) { self.frag_size.store(v, Ordering::Release); }
 

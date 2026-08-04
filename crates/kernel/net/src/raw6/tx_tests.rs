@@ -90,6 +90,20 @@ fn hdrincl_transmits_caller_bytes_without_header_validation_or_rewriting() {
 }
 
 #[test]
+fn socket_fragment_size_caps_raw6_after_route_selection() {
+    let (stack, dev) = routed_capture(1500);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), 253);
+
+    stack.send_raw6_with_frag_size(&endpoint, ROUTE_DST, None, None, &[0x5a; 2_000], 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, 1280,
+        &crate::send_control::Raw6Control::default()).unwrap();
+
+    let packets = dev.packets.lock();
+    assert_eq!(packets.len(), 2);
+    assert_eq!(packets[0].len(), 1280);
+}
+
+#[test]
 fn hdrincl_enforces_only_base_header_minimum_and_route_mtu() {
     let (stack, dev) = routed_capture(64);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Raw as u8);
