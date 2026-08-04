@@ -53,14 +53,13 @@ pub fn source_choice(bound: Ipv4Addr, dst: Ipv4Addr) -> SourceChoice {
 /// Outbound IPv4 TTL: a multicast destination takes `IP_MULTICAST_TTL`, any
 /// other takes `IP_TTL`, whose negative sentinel means the caller never set it.
 ///
-/// An unset unicast TTL is the default hop budget, not zero. A datagram sent
-/// with TTL 0 is discarded by the first router, which answers ICMP Time
-/// Exceeded — so a guest whose sockets all leave `IP_TTL` alone (every ordinary
-/// program does) can reach nothing beyond its own link.
+/// An unset unicast TTL remains the zero sentinel until route selection: the
+/// selected route supplies its hoplimit metric, falling back to the IPv4
+/// default only when that metric is unset.
 /// # C: O(1)
 pub fn ipv4_ttl(mcast_ttl: i32, unicast_ttl: i32, multicast: bool) -> u8 {
     if multicast { return mcast_ttl as u8; }
-    if unicast_ttl < 0 { crate::ipv4::IPV4_DEFAULT_TTL } else { unicast_ttl as u8 }
+    if unicast_ttl < 0 { 0 } else { unicast_ttl as u8 }
 }
 
 /// Outbound IPv6 hop limit: `IPV6_MULTICAST_HOPS` for a multicast destination,

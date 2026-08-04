@@ -68,9 +68,12 @@ impl NetStack {
                 source, payload, mtu);
         }
         let id = self.next_raw4_id();
+        let ttl = control.ttl.unwrap_or(options.ttl);
+        let ttl = if ttl == 0 { route.metrics.ipv4_hoplimit(crate::ipv4::IPV4_DEFAULT_TTL) }
+            else { ttl };
         self.send_raw4_payload(endpoint, iface_id, iface, next_hop, source, dst,
             endpoint.protocol(),
-            payload, control.tos.unwrap_or(options.tos), control.ttl.unwrap_or(options.ttl),
+            payload, control.tos.unwrap_or(options.tos), ttl,
             id, mtu, df, may_fragment,
             control.options.as_ref())
     }
