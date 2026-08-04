@@ -62,6 +62,7 @@ pub const fn transition(s: TcpState, e: TcpEvent) -> Option<TcpState> {
         (SynSent,     RecvSynAck)       => Some(Established),
         (SynSent,     RecvSyn)          => Some(SynRecv), // simultaneous open
         (SynRecv,     RecvAckEstablish) => Some(Established),
+        (SynRecv,     RecvFin)          => Some(CloseWait),
         (Established, LocalClose)       => Some(FinWait1),
         (Established, RecvFin)          => Some(CloseWait),
         (FinWait1,    RecvFinAck)       => Some(FinWait2),

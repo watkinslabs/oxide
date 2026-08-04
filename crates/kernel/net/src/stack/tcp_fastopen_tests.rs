@@ -40,6 +40,13 @@ fn fixture(stack: &NetStack, port: u16, max_qlen: i32)
 fn syn(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
        option: Option<Cookie>, payload: &[u8]) -> Option<Arc<TcpEntry>>
 {
+    syn_flags(stack, iface, port, client_port, option, payload, crate::tcp_hdr::flags::SYN)
+}
+
+/// Deliver one SYN with an explicit control-flag set. # C: O(segment)
+fn syn_flags(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
+             option: Option<Cookie>, payload: &[u8], flags: u8) -> Option<Arc<TcpEntry>>
+{
     let opts = SynOptions { mss: Some(1460), fastopen: option, ..SynOptions::default() };
     let opt_len = opts.encoded_len();
     let mut buf = alloc::vec![0u8; crate::tcp_hdr::TCP_HDR_MIN_LEN + opt_len + payload.len()];
@@ -49,7 +56,7 @@ fn syn(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
     let mut hdr = crate::tcp_hdr::TcpHdr {
         src_port: client_port, dst_port: port,
         seq: CLIENT_SEQ, ack: 0, data_offset: opts.data_offset(),
-        flags: crate::tcp_hdr::flags::SYN,
+        flags,
         window: 65_535, checksum: 0, urg_ptr: 0,
     };
     hdr.build_into(SERVER, SERVER, &mut buf);
@@ -123,6 +130,25 @@ fn presenting_the_cookie_delivers_the_syns_data_into_an_accepted_connection() {
     assert_eq!(server.conn.lock().state, TcpState::SynRecv,
         "the acknowledgement completing the handshake is still outstanding");
     assert_eq!(listener.fastopen.qlen(), 1, "the request is charged against the bound");
+}
+
+#[test]
+fn a_fast_open_syn_fin_delivers_data_then_enters_close_wait() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, listener) = fixture(&stack, 716, 4);
+    let cookie = obtain_cookie(&stack, iface, 716, 50_716);
+    let payload = b"GET /";
+    let server = syn_flags(&stack, iface, 716, 50_717, Some(cookie), payload,
+        crate::tcp_hdr::flags::SYN | crate::tcp_hdr::flags::FIN).expect("a child");
+
+    let accepted = stack.tcp_accept(&listener).expect("a fast-open child is acceptable at its SYN");
+    assert!(Arc::ptr_eq(&accepted, &server));
+    assert_eq!(stack.tcp_recv(&accepted, 64), payload);
+    let (state, rcv_nxt) = { let conn = server.conn.lock(); (conn.state, conn.rcv_nxt) };
+    assert_eq!(state, TcpState::CloseWait);
+    assert_eq!(rcv_nxt, CLIENT_SEQ.wrapping_add(1 + payload.len() as u32 + 1));
+    assert_eq!(synack_ack(&server), rcv_nxt);
 }
 
 #[test]
