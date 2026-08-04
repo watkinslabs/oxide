@@ -26,9 +26,6 @@ ARCH="${1:-}"
 case "$ARCH" in
     x86)  MAKE_TARGET=qemu-x86 ;;
     arm)  MAKE_TARGET=qemu-arm ;;
-    # Same x86 GRUB path with xtask's default features. Same headless
-    # capture + marker grep.
-    grub) MAKE_TARGET=qemu-x86-grub ;;
     *)    usage ;;
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
