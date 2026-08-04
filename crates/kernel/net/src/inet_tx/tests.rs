@@ -27,10 +27,9 @@ fn the_ttl_a_datagram_carries_depends_on_whether_it_is_multicast() {
     assert_eq!(ipv4_ttl(1, 64, true), 1, "multicast takes IP_MULTICAST_TTL");
     assert_eq!(ipv4_ttl(1, 64, false), 64, "unicast takes IP_TTL");
     assert_eq!(ipv4_ttl(32, 64, true), 32);
-    // The unicast option's negative sentinel means the caller never set it, and
-    // its default is the hop budget every ordinary datagram rides on. Zero here
-    // meant the first router discarded the packet and answered Time Exceeded.
-    assert_eq!(ipv4_ttl(1, -1, false), crate::ipv4::IPV4_DEFAULT_TTL);
+    // The unicast option's negative sentinel is resolved against route metrics
+    // after the sender has selected its route.
+    assert_eq!(ipv4_ttl(1, -1, false), 0);
     // A set value of zero is a real value, not "unset".
     assert_eq!(ipv4_ttl(1, 0, false), 0);
 }
