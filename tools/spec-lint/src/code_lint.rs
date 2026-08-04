@@ -247,9 +247,8 @@ fn strip_line_comment(s: &str) -> &str {
 }
 
 fn check_unsafe_safety(path: &Path, lines: &[&str], f: &mut Findings) {
-    // For each `unsafe {` opening, require a `// SAFETY:` comment within the
-    // 3 lines immediately preceding (skipping blanks/attrs), with body ≥30 chars
-    // after the marker.
+    // For each `unsafe {` opening, require a `// SAFETY:` comment in its
+    // immediately preceding comment/attribute block, with body ≥30 chars.
     for (i, l) in lines.iter().enumerate() {
         let t = strip_line_comment(l).trim_start();
         if !t.contains("unsafe ") || !contains_unsafe_block(t) { continue; }
@@ -258,10 +257,10 @@ fn check_unsafe_safety(path: &Path, lines: &[&str], f: &mut Findings) {
             || t.starts_with("unsafe impl ") || t.starts_with("unsafe trait ")
         { continue; }
         let mut found = false;
-        for back in 1..=4 {
-            if i < back { break; }
+        let mut back = 1usize;
+        while i >= back {
             let prev = lines[i - back].trim_start();
-            if prev.is_empty() { continue; }
+            if prev.is_empty() { back += 1; continue; }
             if let Some(idx) = prev.find("// SAFETY:") {
                 let body = prev[idx + "// SAFETY:".len()..].trim();
                 if body.len() >= 30 { found = true; break; }
@@ -272,7 +271,10 @@ fn check_unsafe_safety(path: &Path, lines: &[&str], f: &mut Findings) {
                     break;
                 }
             }
-            if prev.starts_with("//") || prev.starts_with("#[") { continue; }
+            if prev.starts_with("//") || prev.starts_with("#[") {
+                back += 1;
+                continue;
+            }
             break;
         }
         if !found {
@@ -395,3 +397,48 @@ fn strip_for_lint(s: &str) -> String {
 }
 
 fn is_ident_char(c: char) -> bool { c.is_ascii_alphanumeric() || c == '_' }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unsafe_findings(lines: &[&str]) -> Findings {
+        let mut f = Findings::default();
+        check_unsafe_safety(Path::new("fixture.rs"), lines, &mut f);
+        f
+    }
+
+    #[test]
+    fn safety_comment_can_head_a_longer_comment_block() {
+        let f = unsafe_findings(&[
+            "// SAFETY: this comment establishes the pointer provenance and exclusive access.",
+            "// Rationale remains before the operation so reviewers see it in source order.",
+            "// The operation cannot race because the caller retains the unique owner.",
+            "#[allow(clippy::needless_borrow)]",
+            "unsafe { core::ptr::read(ptr); }",
+        ]);
+        assert!(f.items().is_empty());
+    }
+
+    #[test]
+    fn safety_comment_does_not_cross_a_code_boundary() {
+        let f = unsafe_findings(&[
+            "// SAFETY: this comment establishes the pointer provenance and exclusive access.",
+            "let ptr = raw;",
+            "unsafe { core::ptr::read(ptr); }",
+        ]);
+        assert_eq!(f.items().len(), 1);
+        assert_eq!(f.items()[0].rule, "code/safety-missing");
+    }
+
+    #[test]
+    fn short_safety_comment_remains_a_distinct_finding() {
+        let f = unsafe_findings(&[
+            "// SAFETY: trusted pointer",
+            "// The detailed rationale intentionally follows the claim.",
+            "unsafe { core::ptr::read(ptr); }",
+        ]);
+        assert_eq!(f.items().len(), 1);
+        assert_eq!(f.items()[0].rule, "code/safety-short");
+    }
+}
