@@ -64,7 +64,7 @@ fn finish(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<
 fn finish_inq(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<(u32, u32, u32)>,
     inq: Option<net::sock_opts::inq::InqCmsg>, flags: u64, out_flags: u32, name: &[u8])
     -> Result<(), i64> {
-    let delivered = recv_control::deliver(user, files, cred, inq, flags)?;
+    let delivered = recv_control::deliver(user, files, cred, inq, None, flags)?;
     user.copy_name(name)?;
     user.finish(delivered.len, out_flags | delivered.flags)
 }

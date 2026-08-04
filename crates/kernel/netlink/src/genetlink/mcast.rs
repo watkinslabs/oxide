@@ -59,7 +59,7 @@ fn deliver(net_ns: Option<u64>, group_id: u32, msg: &[u8], exclude_portid: u32) 
     };
     let mut n = 0;
     for s in targets {
-        if s.enqueue_multicast(msg.to_vec()) { n += 1; }
+        if s.enqueue_multicast(msg.to_vec(), group_id) { n += 1; }
     }
     n
 }
