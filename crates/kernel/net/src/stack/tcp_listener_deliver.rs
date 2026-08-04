@@ -80,6 +80,7 @@ impl NetStack {
                 new_entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                 return Err(error);
             }
+            super::stamp_last_sent(&new_entry, 1);
         }
         Ok(())
     }

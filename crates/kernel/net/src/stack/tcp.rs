@@ -43,6 +43,7 @@ impl NetStack {
         };
         self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos, entry.bound_iface(),
             TcpTxPolicy::Entry(entry))?;
+        stamp_last_sent(entry, 1);
         Ok(1)
     }
 
@@ -118,7 +119,9 @@ impl NetStack {
         };
         super::tcp_fastopen::drain_client(self, entry, crate::tcp_conn::ka_now_ns());
         self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos, entry.bound_iface(),
-            TcpTxPolicy::Entry(entry))
+            TcpTxPolicy::Entry(entry))?;
+        stamp_last_sent(entry, 1);
+        Ok(())
     }
 
     /// Publish an active Fast Open result produced by socket teardown.
