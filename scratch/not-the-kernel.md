@@ -94,7 +94,7 @@ Fedora RPMs**. Separately ~**5.9k LOC** has no consumer of any kind.
 | OPEN | `work/` | — | Accidentally committed boot tree — **includes a committed kernel ELF binary** (`boot-live-gnome-x86_64/boot/oxide-x86_64`) | — |
 | OPEN | `tools/xtask/src/assets/oxide-smokes.sh` | ~5 KB | In-guest smoke runner; not `include_str!`d, not referenced anywhere | — |
 | KEEP | `AGENTS.md` | 233 B | Points other agents at CLAUDE.md | — |
-| KEEP | `state.md`, `project-stats.md` | — | Process doc; generated stats artifact (`make stats`) | — |
+| KEEP | `state.md` | — | Process doc | — |
 
 Unverified, no caller found — check by hand before removing, they are plausible
 manual tools: `tools/accept.py` (202), `tools/syscall-audit.py` (144),
