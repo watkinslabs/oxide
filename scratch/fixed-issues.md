@@ -405,6 +405,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Tooling / gates
 
+| FIXED B1820 | low | N_TTY input echo wrote directly to the driver, so echoed newlines bypassed OPOST and ONLCR. | Made user writes and echo share one output owner for OPOST, column tracking, and IXON buffering; default echo now renders newline as CRLF while the input queue remains LF. | B1820-route-ntty-echo-through-opost |
+
 | FIXED B1819 | low | Four ext4 e2fsck repros copied multi-gigabyte images to fixed `/tmp` names and only attempted cleanup on their success path. Concurrent runs collided, and assertion failures leaked the images. | Each repro now owns a PID+sequence-named `TempImage` whose `Drop` removes it on all exits; paths cannot collide across processes. | B1819-isolate-ext4-e2fsck-images |
 
 | FIXED C281 | low | `qemu-x86-grub` duplicated the x86 QEMU target and silently discarded `FEATURES=`; smoke scripts kept a redundant `grub` architecture alias. | Kept the public target as a compatibility dependency on canonical `qemu-x86`, so feature handling cannot diverge; migrated internal GRUB smoke callers to `x86`. | C281-canonicalize-x86-qemu-alias |

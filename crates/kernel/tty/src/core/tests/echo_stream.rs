@@ -87,10 +87,8 @@ fn echo_of_interleaved_staging_and_flushing_is_byte_exact() {
     assert_eq!(emitted(&tty), expect);
 }
 
-/// Whole typed lines: the echo carries every byte once AND the read queue
-/// delivers the same bytes to the shell. A defect that duplicated on the echo
-/// side only would pass a read-side assertion alone, which is why both halves
-/// are asserted against the same input.
+/// Whole typed lines reach the reader byte-for-byte; the terminal echo carries
+/// the same stream after its default ONLCR rendering.
 #[test]
 fn echoed_bytes_and_delivered_bytes_agree_line_by_line() {
     let tty = cooked_tty();
@@ -109,7 +107,12 @@ fn echoed_bytes_and_delivered_bytes_agree_line_by_line() {
         let n = tty.read_nonblock(&mut buf);
         delivered.extend_from_slice(&buf[..n]);
     }
-    assert_eq!(emitted(&tty), typed, "echo stream");
+    let mut rendered = Vec::new();
+    for b in &typed {
+        if *b == b'\n' { rendered.extend_from_slice(b"\r\n"); }
+        else { rendered.push(*b); }
+    }
+    assert_eq!(emitted(&tty), rendered, "echo stream");
     assert_eq!(delivered, typed, "bytes handed to the reader");
 }
 

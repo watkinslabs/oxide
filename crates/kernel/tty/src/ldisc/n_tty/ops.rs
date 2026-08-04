@@ -1,7 +1,7 @@
 use super::super::{pollmask, LdiscOps, TtyDriverHooks};
 use super::state::NTty;
-use super::timing::{flow_action, FlowAction, HOLD_CAP};
-use crate::pty::{cc, oflag, TERMIOS_BYTES};
+use super::timing::{flow_action, FlowAction};
+use crate::pty::{cc, TERMIOS_BYTES};
 
 impl LdiscOps for NTty {
     fn receive_buf<D: TtyDriverHooks>(&mut self, drv: &mut D, input: &[u8]) {
@@ -104,21 +104,7 @@ impl LdiscOps for NTty {
         // Hung-up tty: writes are dropped (Linux returns -EIO; the core
         // maps the hung-up state to EIO — here the byte goes nowhere).
         if self.hung_up { return buf.len(); }
-        let mut out = alloc::vec::Vec::with_capacity(buf.len() + 8);
-        if self.oflag() & oflag::OPOST == 0 {
-            out.extend_from_slice(buf);
-        } else {
-            for &b in buf { self.output_byte(b, &mut out); }
-        }
-        // IXON: while flow is stopped (^S), withhold the processed bytes
-        // in `out_hold`; they flush in order on ^Q (flush_hold). The
-        // caller still sees full consumption (Linux blocks the writer; we
-        // buffer, then drop past HOLD_CAP).
-        if self.stopped {
-            for b in out { if self.out_hold.len() < HOLD_CAP { self.out_hold.push_back(b); } }
-        } else {
-            drv.driver_write(&out);
-        }
+        self.emit_output(drv, buf);
         buf.len()
     }
 
