@@ -217,13 +217,17 @@ pub(crate) fn read_unix_msg_blocking(
                 return Err(vfs::VfsError::Econnreset);
             }
             crate::unix_sock::msg_pair::ArmMsgRead::Eof => return Ok(0),
-            crate::unix_sock::msg_pair::ArmMsgRead::Parked { reader_shutdown } => unsafe {
-                sched::live::schedule::schedule();
-                pair.reader_waiters(end).remove_current();
-                if !reader_shutdown && pair.kind == crate::UnixMsgKind::Datagram
-                    && pair.reader_shutdown(end) && !pair.has_msg(end)
-                {
-                    return Ok(0);
+            crate::unix_sock::msg_pair::ArmMsgRead::Parked { reader_shutdown } => {
+                // SAFETY: arm_read enrolled current while holding the pair lock;
+                // syscall context owns preemption before schedule can park it.
+                unsafe {
+                    sched::live::schedule::schedule();
+                    pair.reader_waiters(end).remove_current();
+                    if !reader_shutdown && pair.kind == crate::UnixMsgKind::Datagram
+                        && pair.reader_shutdown(end) && !pair.has_msg(end)
+                    {
+                        return Ok(0);
+                    }
                 }
             },
         }

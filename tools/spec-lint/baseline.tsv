@@ -49,7 +49,6 @@ crates/kernel/modules	code/pub-fn-complexity	35
 crates/kernel/namespace-identity	code/pub-fn-complexity	24
 crates/kernel/net	code/klog-ungated	14
 crates/kernel/net	code/pub-fn-complexity	189
-crates/kernel/net	code/safety-missing	3
 crates/kernel/netfilter	code/pub-fn-complexity	12
 crates/kernel/netlink	code/pub-fn-complexity	9
 crates/kernel/network-namespace	code/pub-fn-complexity	2
