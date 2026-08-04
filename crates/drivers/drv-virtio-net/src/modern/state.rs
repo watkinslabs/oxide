@@ -46,8 +46,11 @@ static TEST_RESETS: core::sync::atomic::AtomicU64 =
 /// read the same way, and treats a device without the feature as always up.
 /// # C: O(1)
 pub fn read_device_carrier(resources: virtio::VirtioResources, drv_features: u64) -> bool {
+    read_device_carrier_at(resources.device_cfg_va, drv_features)
+}
+
+fn read_device_carrier_at(cfg: u64, drv_features: u64) -> bool {
     if drv_features & virtio::VIRTIO_NET_F_STATUS == 0 { return true; }
-    let cfg = resources.device_cfg_va;
     if cfg == 0 { return true; }
     // Byte-wise, like the MAC read above: nothing guarantees the config
     // window is two-byte aligned, and a typed u16 load imposes an alignment
@@ -65,6 +68,19 @@ pub fn read_device_carrier(resources: virtio::VirtioResources, drv_features: u64
     }
     let status = u16::from_le_bytes(raw);
     virtio::carrier_from_status(drv_features, status)
+}
+
+/// Snapshot carrier facts from every driver-owned virtio-net record.
+/// # C: O(N_devices)
+pub(super) fn carrier_updates() -> alloc::vec::Vec<(DeviceKey, bool)> {
+    MODERN_DEVS.lock().iter().map(|state| {
+        (state.device_key, read_device_carrier_at(state.device_cfg_va, state.drv_features))
+    }).collect()
+}
+
+#[cfg(target_os = "oxide-kernel")]
+pub(super) fn refresh_carriers() {
+    for (device_key, up) in carrier_updates() { publish_carrier(device_key, up); }
 }
 
 fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; NET_CFG_MAC_BYTES]> {
@@ -159,6 +175,7 @@ pub fn init_modern_with_rx_pool(
     let state = super::ModernNetState {
         device_key,
         cfg_va: resources.cfg_va,
+        device_cfg_va: resources.device_cfg_va,
         hhdm: resources.hhdm,
         drv_features,
         rxq,
@@ -215,7 +232,7 @@ pub fn init_modern_with_rx_pool(
 #[cfg(target_os = "oxide-kernel")]
 fn publish_carrier(device_key: DeviceKey, up: bool) {
     if let Some(id) = registered_iface_for(device_key) {
-        net::sock::stack().ifaces.set_iface_carrier(id, up);
+        net::sock::stack().set_iface_carrier(id, up);
     }
 }
 
