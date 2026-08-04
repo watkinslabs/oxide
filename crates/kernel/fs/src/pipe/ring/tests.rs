@@ -22,6 +22,15 @@ use std::sync::{Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[test]
+fn a_core_dump_wait_stops_for_a_kill_or_freezer_but_not_its_delivered_signal() {
+    assert!(!write_wait_aborted(WriteAbort::OnFatalKill, true, false, false),
+        "the signal being dumped must not discard its own core");
+    assert!(write_wait_aborted(WriteAbort::OnFatalKill, false, true, false));
+    assert!(write_wait_aborted(WriteAbort::OnFatalKill, false, false, true));
+    assert!(write_wait_aborted(WriteAbort::OnDeliverableSignal, true, false, false));
+}
+
 /// Lossy hosted wait-list stand-in: `wake` is a no-op unless a reader is
 /// currently registered — exactly `WaitList::wake_all` finding an empty
 /// list.
