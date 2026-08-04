@@ -173,13 +173,15 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16,
     // own lock, so the child is built first and its fields written through that
     // lock — the same order the reference uses, where the child socket is
     // allocated and then initialised rather than assembled on the stack.
-    let child = Arc::new(TcpEntry::new_bound_full(
+    let child = Arc::new(TcpEntry::new_bound_full_frag(
         TcpConn::new_listener(local_ep), Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
         Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)),
         Arc::new(::core::sync::atomic::AtomicI32::new(
             listener.ip_mtu_discover.load(::core::sync::atomic::Ordering::Acquire))),
         Arc::new(::core::sync::atomic::AtomicI32::new(
             listener.ipv6_mtu_discover.load(::core::sync::atomic::Ordering::Acquire))),
+        Arc::new(::core::sync::atomic::AtomicI32::new(
+            listener.ipv6_frag_size.load(::core::sync::atomic::Ordering::Acquire))),
         Some(Arc::downgrade(listener)),
         // The hop-limit minimums stay SHARED with the listener rather than
         // snapshotted: a later write reaches every child, which is what a

@@ -1,6 +1,8 @@
 use super::*;
 use ::core::sync::atomic::Ordering;
 
+mod frag;
+
 fn iface_overlap(a: Option<NetIfaceId>, b: Option<NetIfaceId>) -> bool {
     a.is_none() || b.is_none() || a == b
 }
@@ -309,8 +311,8 @@ impl NetStack {
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>) -> NetResult<Arc<TcpListenEntry>>
     {
-        self.tcp_listen_reserved_fastopen(bind, bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
-            min_hop, Arc::new(crate::tcp_fastopen::FastOpenQueue::new()))
+        self.tcp_listen_reserved_min_hop_frag(bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, Arc::new(::core::sync::atomic::AtomicI32::new(0)), min_hop)
     }
 
     /// Publish a listener sharing the socket's fast-open accept-queue state
@@ -324,40 +326,9 @@ impl NetStack {
         min_hop: Arc<crate::min_hop::MinHop>,
         fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>) -> NetResult<Arc<TcpListenEntry>>
     {
-        let tables = self.inet_tables(bind.net_ns());
-        let mut binds = tables.tcp_binds.lock();
-        if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
-        if bind.role.load(Ordering::Acquire) != TCP_BIND_BOUND { return Err(NetError::Einval); }
-        let mut listeners = tables.tcp_listens.lock();
-        for entries in listeners.values() {
-            for old in entries {
-                if old.bind.local.port == bind.local.port
-                    && addr_overlap(&old.bind, bind)
-                    && iface_overlap(old.bound_iface(), bind.bound_iface())
-                    && !listener_may_share(&old.bind, bind)
-                {
-                    return Err(NetError::Eaddrinuse);
-                }
-            }
-        }
-        if !bind.reuseaddr {
-            let conns = tables.tcp_conns.lock();
-            let conflict = conns.values().any(|entry| {
-                entry.conn.lock().state == crate::tcp_state::TcpState::TimeWait
-                    && entry.bind.as_ref().is_some_and(|old| {
-                        old.local.port == bind.local.port
-                            && addr_overlap(old, bind)
-                            && iface_overlap(old.bound_iface(), bind.bound_iface())
-                    })
-            });
-            if conflict { return Err(NetError::Eaddrinuse); }
-        }
-        let entry = Arc::new(TcpListenEntry::new_with_fastopen(
-            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop, fastopen));
-        let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
-        listeners.entry(key).or_default().push(entry.clone());
-        bind.role.store(TCP_BIND_LISTEN, Ordering::Release);
-        Ok(entry)
+        self.tcp_listen_reserved_fastopen_frag(bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, Arc::new(::core::sync::atomic::AtomicI32::new(0)), min_hop,
+            fastopen)
     }
 
     /// Transition one reservation into an active-open tuple. # C: O(log N + xmit)
@@ -399,6 +370,7 @@ impl NetStack {
     {
         self.tcp_connect_reserved_min_hop(bind, local_ip, remote_ip, remote_port, error,
             bpf_filter, ip_mtu_discover, ipv6_mtu_discover,
+            Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(crate::min_hop::MinHop::new()),
             Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
             crate::sock::tcp_fastopen::ActiveOpen::default(), &[]).map(|(entry, _)| entry)
@@ -412,6 +384,7 @@ impl NetStack {
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>,
         ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
         fastopen: crate::sock::tcp_fastopen::ActiveOpen,
@@ -425,7 +398,7 @@ impl NetStack {
         let mut conns = tables.tcp_conns.lock();
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
         let (entry, syn, carried) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
-            error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, min_hop, ip_opts,
+            error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, min_hop, ip_opts,
             fastopen, data)?;
         conns.insert(key, entry.clone());
         drop(conns);
@@ -458,6 +431,7 @@ impl NetStack {
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>,
         ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
         fastopen: crate::sock::tcp_fastopen::ActiveOpen,
@@ -489,7 +463,7 @@ impl NetStack {
             .map_err(|_| NetError::Eio)?;
         Ok((Arc::new(TcpEntry::new_bound_ip_opts(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover, None, min_hop, ip_opts)), syn, carried))
+            ipv6_mtu_discover, ipv6_frag_size, None, min_hop, ip_opts)), syn, carried))
     }
 }
 
