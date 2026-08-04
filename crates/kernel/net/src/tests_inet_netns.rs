@@ -307,3 +307,48 @@ fn the_receive_path_counts_what_it_delivers() {
     assert_eq!(get(ns, Mib::TcpInSegs), 0, "a UDP datagram is not a TCP segment");
     forget(ns);
 }
+
+/// One ICMP type must move one column.
+///
+/// The echo-reply arm once named its constant unqualified. An unqualified
+/// name that is not in scope is a *binding pattern*, not a comparison: it
+/// matched every type, counted every ICMP message as an echo reply, and made
+/// the arm after it unreachable. The compiler said so and the suite did not,
+/// because nothing asserted which column a given type moves.
+#[test]
+fn each_icmp_type_counts_in_its_own_column() {
+    use crate::mib::{forget, get, Mib};
+    fn icmp4_packet(src: Ipv4Addr, dst: Ipv4Addr, typ: u8) -> alloc::vec::Vec<u8> {
+        const ICMP_LEN: usize = 8 + 1;
+        let mut packet = alloc::vec![0u8; crate::ipv4::IPV4_HDR_LEN + ICMP_LEN];
+        let mut echo = crate::icmp::IcmpEcho { typ, code: 0, checksum: 0, id: 1, seq: 1 };
+        echo.build_into(&[7], &mut packet[crate::ipv4::IPV4_HDR_LEN..]);
+        crate::ipv4::Ipv4Hdr::build(src, dst, IpProto::Icmp, ICMP_LEN as u16, 1)
+            .write_to(&mut packet[..crate::ipv4::IPV4_HDR_LEN]);
+        packet
+    }
+    let stack = NetStack::new();
+    let (owner, _) = owners();
+    let ns = owner.id().as_u64();
+    let (iface, _) = stack.register_loopback_in(ns);
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+    let src = Ipv4Addr::new(192, 0, 2, 1);
+    forget(ns);
+
+    let _ = stack.deliver_rx_in(&lease,
+        &icmp4_packet(src, Ipv4Addr::LOOPBACK, crate::icmp::ICMP_TYPE_ECHO_REPLY));
+    assert_eq!(get(ns, Mib::IcmpInEchoReps), 1);
+    assert_eq!(get(ns, Mib::IcmpInEchos), 0, "a reply is not a request");
+
+    let _ = stack.deliver_rx_in(&lease,
+        &icmp4_packet(src, Ipv4Addr::LOOPBACK, crate::icmp::ICMP_TYPE_ECHO_REQUEST));
+    assert_eq!(get(ns, Mib::IcmpInEchos), 1);
+    assert_eq!(get(ns, Mib::IcmpInEchoReps), 1, "the request did not move the reply column");
+
+    // A type that is neither moves neither, which the catch-all binding broke.
+    let _ = stack.deliver_rx_in(&lease, &icmp4_packet(src, Ipv4Addr::LOOPBACK, 13));
+    assert_eq!(get(ns, Mib::IcmpInEchos), 1);
+    assert_eq!(get(ns, Mib::IcmpInEchoReps), 1);
+    assert_eq!(get(ns, Mib::IcmpInMsgs), 3, "every ICMP message is counted once");
+    forget(ns);
+}

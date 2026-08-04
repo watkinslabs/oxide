@@ -321,10 +321,14 @@ impl NetStack {
                         return Ok(());
                     }
                 };
+                // Both arms name the constant through its owning module. An
+                // unqualified name that is not in scope is a binding pattern,
+                // not a comparison: it matches every value, shadows the
+                // scrutinee, and makes the arms after it unreachable.
                 match echo.typ {
-                    ICMP_TYPE_ECHO_REQUEST =>
+                    icmp::ICMP_TYPE_ECHO_REQUEST =>
                         crate::mib::bump(net_ns, crate::mib::Mib::IcmpInEchos),
-                    ICMP_TYPE_ECHO_REPLY =>
+                    icmp::ICMP_TYPE_ECHO_REPLY =>
                         crate::mib::bump(net_ns, crate::mib::Mib::IcmpInEchoReps),
                     _ => {}
                 }
