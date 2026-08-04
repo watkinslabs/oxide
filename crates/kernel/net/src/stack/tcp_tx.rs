@@ -45,6 +45,22 @@ impl TcpTxPolicy<'_> {
             Self::Entry(entry) => crate::tcp_cc::on_ece(&mut entry.conn.lock()),
         }
     }
+
+    /// Account for a segment accepted by the canonical TCP output path. # C: O(1)
+    fn note_transmit(&self, segment: &[u8]) {
+        let Ok(header) = crate::tcp_hdr::parse_prevalidated(segment) else { return; };
+        let payload_len = segment.len().saturating_sub(header.payload_offset());
+        match self {
+            Self::Entry(entry) => {
+                let mut conn = entry.conn.lock();
+                conn.segs_out = conn.segs_out.saturating_add(1);
+                if payload_len != 0 {
+                    conn.data_segs_out = conn.data_segs_out.saturating_add(1);
+                    conn.bytes_sent = conn.bytes_sent.saturating_add(payload_len as u64);
+                }
+            }
+        }
+    }
 }
 
 impl NetStack {
@@ -85,6 +101,7 @@ impl NetStack {
         if verdict == crate::cgroup_bpf::EgressVerdict::Congestion {
             policy.note_congestion();
         }
+        policy.note_transmit(segment);
         Ok(())
     }
 }
@@ -104,6 +121,26 @@ mod tests {
         let conn = entry.conn.lock();
         assert!(conn.send_cwr);
         assert!(conn.cwnd < 16_000);
+    }
+
+    #[test]
+    fn transmit_accounting_counts_each_accepted_segment_once() {
+        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40_003 };
+        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40_004 };
+        let mut conn = TcpConn::new_client(local, remote, 1);
+        conn.state = crate::tcp_state::TcpState::Established;
+        let ack = conn.build_segment(crate::tcp_hdr::flags::ACK, &[]);
+        let data = conn.build_segment(crate::tcp_hdr::flags::ACK, b"sent");
+        let entry = TcpEntry::new(conn);
+
+        let policy = TcpTxPolicy::Entry(&entry);
+        policy.note_transmit(&ack);
+        policy.note_transmit(&data);
+
+        let conn = entry.conn.lock();
+        assert_eq!(conn.segs_out, 2);
+        assert_eq!(conn.data_segs_out, 1);
+        assert_eq!(conn.bytes_sent, 4);
     }
 
     #[test]

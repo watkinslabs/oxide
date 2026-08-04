@@ -103,9 +103,14 @@ fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
     info.tcpi_reordering = c.reordering;
     info.tcpi_rcv_space = c.rcv_buf_cap;
     info.tcpi_bytes_received = c.bytes_received;
+    info.tcpi_bytes_acked = c.bytes_acked;
+    info.tcpi_segs_out = c.segs_out;
     info.tcpi_segs_in = c.segs_in;
     info.tcpi_notsent_bytes = c.notsent_bytes();
     info.tcpi_data_segs_in = c.data_segs_in;
+    info.tcpi_data_segs_out = c.data_segs_out;
+    info.tcpi_bytes_sent = c.bytes_sent;
+    info.tcpi_bytes_retrans = c.bytes_retrans;
     info.tcpi_rcv_ooopack = c.rcv_ooopack;
     // Linux packs this byte as `delivery_rate_app_limited:1,
     // fastopen_client_fail:2`, so the reason rides bits 1-2.
@@ -134,12 +139,22 @@ mod tests {
         conn.segs_in = 7;
         conn.bytes_received = 91;
         conn.rcv_ooopack = 2;
+        conn.bytes_acked = 73;
+        conn.segs_out = 8;
+        conn.data_segs_out = 5;
+        conn.bytes_sent = 64;
+        conn.bytes_retrans = 11;
         conn.send(b"unsent");
         let mut info = TcpInfo::default();
         populate_conn(&conn, &mut info);
         assert_eq!(info.tcpi_segs_in, 7);
         assert_eq!(info.tcpi_bytes_received, 91);
         assert_eq!(info.tcpi_rcv_ooopack, 2);
+        assert_eq!(info.tcpi_bytes_acked, 73);
+        assert_eq!(info.tcpi_segs_out, 8);
+        assert_eq!(info.tcpi_data_segs_out, 5);
+        assert_eq!(info.tcpi_bytes_sent, 64);
+        assert_eq!(info.tcpi_bytes_retrans, 11);
         assert_eq!(info.tcpi_notsent_bytes, 6);
     }
 

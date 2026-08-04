@@ -49,6 +49,8 @@ fn data_round_trip_after_handshake() {
     assert_eq!(&got[..], b"oxide-tcp");
     assert_eq!(server.segs_in, 3, "SYN, completing ACK, and data each count once");
     assert_eq!(server.bytes_received, b"oxide-tcp".len() as u64);
+    assert_eq!(client.bytes_acked, 1 + b"oxide-tcp".len() as u64,
+        "the SYN and delivered payload advance snd_una exactly once");
 }
 
 #[test]
@@ -230,7 +232,19 @@ fn retransmit_due_re_emits_after_rto() {
     let _ = c.active_open().unwrap();
     assert_eq!(c.retransmit_due(0).len(), 0);
     assert_eq!(c.retransmit_due(2_000_000_000).len(), 1, "after 2s, SYN re-emitted");
+    assert_eq!(c.bytes_retrans, 0, "control-only retransmits carry no payload bytes");
     assert!(c.rto_ns >= 2_000_000_000);
+}
+
+#[test]
+fn retransmit_due_counts_retransmitted_payload_bytes() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut c = TcpConn::new_client(ep(lo, 5004), ep(lo, 80), 1000);
+    c.state = crate::tcp_state::TcpState::Established;
+    c.send(b"retry");
+    assert_eq!(c.output(1500, true, false).len(), 1);
+    assert_eq!(c.retransmit_due(c.rto_ns).len(), 1);
+    assert_eq!(c.bytes_retrans, 5);
 }
 
 #[test]
