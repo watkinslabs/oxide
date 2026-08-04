@@ -29,13 +29,13 @@ pub(super) fn set(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen: u32
     if let Err(e) = require_v6(sock) { return e; }
     let caps = super::sol_socket::caps_for(sock);
     match v6set::arg_class(optname) {
+        ArgClass::Unsupported => return errno(Errno::Enoprotoopt),
         ArgClass::Delegated => return delegated(sock, optname, optval, optlen),
         ArgClass::Policy => return match v6set::admit_policy(caps) {
             Err(e) => errno(e), Ok(_) => errno(Errno::Eopnotsupp),
         },
         ArgClass::Header => return set_header(sock, optname, optval, optlen, caps),
         ArgClass::PktInfo => return set_pktinfo(sock, optval, optlen),
-        ArgClass::NextHop => return set_nexthop(sock, optval, optlen, caps),
         ArgClass::FlowLabel => return flow_label(sock, optval, optlen, caps),
         // The ancillary-message stream form of the sticky headers: an empty
         // write clears every slot, and anything else is an option list this
@@ -174,29 +174,6 @@ fn set_pktinfo(sock: &Arc<InetSocket>, optval: u64, optlen: u32) -> i64 {
     let bound = sock.opts.bound_ifindex.load(Ordering::Acquire) as i32;
     if let Err(e) = v6set::admit_pktinfo(optlen, ifindex, bound) { return errno(e); }
     sock.opts.ipv6.set_sticky_pktinfo(addr, ifindex);
-    0
-}
-
-/// `IPV6_NEXTHOP`: the sticky first hop, named as an IPv6 socket address.
-/// # C: O(1)
-fn set_nexthop(sock: &Arc<InetSocket>, optval: u64, optlen: u32,
-               caps: net::sock_opts::sol_socket::OptCaps) -> i64 {
-    if optlen == 0 { sock.opts.ipv6.set_nexthop(None); return 0; }
-    // A caller-chosen first hop bypasses the routing table, so it carries the
-    // same privilege as a source route.
-    if !caps.net_raw { return errno(Errno::Eperm); }
-    // `struct sockaddr_in6`: family, port, flow info, then the address.
-    const SOCKADDR_IN6_SIZE: usize = 28;
-    if (optlen as usize) < SOCKADDR_IN6_SIZE { return errno(Errno::Einval); }
-    let mut bytes = [0u8; SOCKADDR_IN6_SIZE];
-    if uaccess::copy_from_user(&mut bytes, optval).is_err() { return errno(Errno::Efault); }
-    if u16::from_ne_bytes([bytes[0], bytes[1]]) != net::sock::AF_INET6 {
-        return errno(Errno::Eafnosupport);
-    }
-    let mut addr = [0u8; 16];
-    addr.copy_from_slice(&bytes[8..24]);
-    if addr == [0u8; 16] { sock.opts.ipv6.set_nexthop(None); return 0; }
-    sock.opts.ipv6.set_nexthop(Some(addr));
     0
 }
 
