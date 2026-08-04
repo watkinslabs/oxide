@@ -33,7 +33,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     if flags & MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
-    let (dgram, copied, src_pid, multicast_group, carried) = loop {
+    let (dgram, copied, src_pid, multicast_group, carried, security) = loop {
         match sock.receive(peek) {
             ::netlink::ReceiveState::Empty => {
                 if nonblock { return err(Errno::Eagain); }
@@ -55,7 +55,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
                     &received.bytes[..core::cmp::min(user.capacity, received.bytes.len())]);
                 match copied {
                     Ok(copied) => break (received.bytes, copied, received.src_port,
-                        received.multicast_group, received.creds),
+                        received.multicast_group, received.creds, received.security),
                     Err(e) => return e,
                 }
             }
@@ -69,8 +69,13 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     let pktinfo = multicast_group.to_ne_bytes();
     let protocol = sock.flags.get(::netlink::F_RECV_PKTINFO)
         .then_some((SOL_NETLINK, NETLINK_PKTINFO, pktinfo.as_slice()));
-    let delivered = match crate::recv_control::deliver(user, Vec::new(),
-        net::scm::recv(sock.scm.on(), carried), None, protocol, flags)
+    let scm = crate::recv_control::ScmReceive {
+        credentials: net::scm::recv(sock.scm.on(), carried),
+        security: if sock.scm_security.on() { security } else { None },
+        pid: None,
+        want_pidfd: false,
+    };
+    let delivered = match crate::recv_control::deliver(user, Vec::new(), scm, None, protocol, flags)
     {
         Ok(delivered) => delivered,
         Err(error) => return error,

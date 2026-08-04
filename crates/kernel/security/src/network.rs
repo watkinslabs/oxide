@@ -3,7 +3,7 @@
 //! Policy is keyed by the concrete network-namespace id.  Callers pass only
 //! operation metadata; syscall shims must not duplicate policy decisions.
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Namespace, Spinlock};
 
@@ -77,6 +77,32 @@ pub fn peer_security(context: PeerContext) -> Option<alloc::vec::Vec<u8>> {
     hook(context)
 }
 
+/// The sender label carried by one received message.  This is deliberately a
+/// message-time hook: querying a peer again at receive time would let a later
+/// policy change relabel an already queued record.
+pub struct MessageContext<'a> { pub sender: Option<&'a sched::pid::PidIdentity> }
+
+pub type MessageSecurityHook = for<'a> fn(MessageContext<'a>) -> Option<Vec<u8>>;
+
+static MESSAGE_SECURITY: Spinlock<Option<MessageSecurityHook>, Namespace> =
+    Spinlock::new(None);
+
+/// Install the one LSM-like source for `SCM_SECURITY` labels. # C: O(1)
+pub fn install_message_security(hook: MessageSecurityHook) -> Option<MessageSecurityHook> {
+    MESSAGE_SECURITY.lock().replace(hook)
+}
+
+/// Remove the message-label source. # C: O(1)
+pub fn remove_message_security() -> Option<MessageSecurityHook> {
+    MESSAGE_SECURITY.lock().take()
+}
+
+/// Capture a sender label before a transport queues its record. # C: O(1)
+pub fn message_security(sender: Option<&sched::pid::PidIdentity>) -> Option<Vec<u8>> {
+    let hook = *MESSAGE_SECURITY.lock().as_ref()?;
+    hook(MessageContext { sender })
+}
+
 pub fn evaluate(context: Context) -> Verdict {
     let all = HOOKS.lock();
     let Some(entry) = all.get(&context.namespace).and_then(|ops| ops.get(&context.operation))
@@ -103,6 +129,21 @@ mod tests {
     fn allow(_ctx: Context) -> Verdict { Verdict::Allow }
     fn label(ctx: PeerContext) -> Option<alloc::vec::Vec<u8>> {
         if ctx.connected { Some(alloc::vec::Vec::from(&b"peer_u:peer_r:peer_t"[..])) } else { None }
+    }
+
+    fn message_label(ctx: MessageContext<'_>) -> Option<alloc::vec::Vec<u8>> {
+        assert!(ctx.sender.is_none());
+        Some(alloc::vec::Vec::from(&b"system_u:system_r:sender_t"[..]))
+    }
+
+    #[test]
+    fn message_security_is_captured_from_its_one_installed_source() {
+        let _ = remove_message_security();
+        assert_eq!(message_security(None), None);
+        assert!(install_message_security(message_label).is_none());
+        assert_eq!(message_security(None).as_deref(), Some(&b"system_u:system_r:sender_t"[..]));
+        assert_eq!(remove_message_security(), Some(message_label as MessageSecurityHook));
+        assert_eq!(message_security(None), None);
     }
 
     #[test]
