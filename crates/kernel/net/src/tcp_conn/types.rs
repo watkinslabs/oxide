@@ -75,6 +75,8 @@ pub struct TcpConn {
     pub rto_ns:     u64,
     pub tw_start_ns: u64,
     pub peer_mss: u16,
+    /// Observed receive MSS used for delayed-ACK decisions; zero uses the live policy hint.
+    pub rcv_mss: u16,
     pub snd_wscale: u8,
     pub rcv_wscale: u8,
     pub snd_wnd: u32,
@@ -257,6 +259,8 @@ pub enum TcpConnError {
 /// Wire format constant from `TCP_HDR_MIN_LEN`; exported because it is used
 /// by tests that construct minimal TCP frames.
 pub const OWN_MSS_DEFAULT: u16 = 1460;
+pub const RCV_MSS_DEFAULT: u16 = 536;
+pub const RCV_MSS_MIN: u16 = 48;
 pub const OWN_WSCALE: u8 = 7;
 /// Retransmit-timeout ceiling and delayed-acknowledgement ceiling a connection
 /// runs with until `TCP_RTO_MAX_MS` / `TCP_DELACK_MAX_US` name others.

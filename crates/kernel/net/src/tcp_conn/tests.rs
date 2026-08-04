@@ -54,6 +54,21 @@ fn data_round_trip_after_handshake() {
 }
 
 #[test]
+fn receiver_mss_uses_live_policy_then_validated_payload() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut c = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1);
+    c.own_mss = 1_200;
+    c.rcv_buf_cap = 400;
+    assert_eq!(c.rcv_mss(), 200);
+    c.note_rcv_mss(150);
+    assert_eq!(c.rcv_mss(), 200);
+    c.note_rcv_mss(800);
+    assert_eq!(c.rcv_mss(), 800);
+    c.own_mss = 600;
+    assert_eq!(c.rcv_mss(), 600);
+}
+
+#[test]
 fn tcp_info_notsent_bytes_follow_the_canonical_send_queue() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut client = TcpConn::new_client(ep(lo, 5001), ep(lo, 80), 1000);
