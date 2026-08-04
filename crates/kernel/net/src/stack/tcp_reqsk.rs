@@ -25,6 +25,9 @@ pub(crate) fn defers_segment(entry: &TcpEntry, listener: &TcpListenEntry,
     let bare = reqsk::bare_ack(hdr.flags, seg.len().saturating_sub(hdr.payload_offset()));
     let mut c = entry.conn.lock();
     if c.state != crate::tcp_state::TcpState::SynRecv { return false; }
+    // A fast-open child was published at its SYN. Linux completes that child
+    // before applying TCP_DEFER_ACCEPT's bare-ACK rule to ordinary requests.
+    if c.fastopen_child { return false; }
     // Only the acknowledgement that would have completed the handshake is a
     // bare ACK worth deferring; anything else is left to the state machine.
     if hdr.ack != c.snd_nxt { return false; }
