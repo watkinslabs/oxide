@@ -1,16 +1,16 @@
 # 39 Build + Image
 
-FROZEN 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:every workflow (`xtask kernel`,`xtask rootfs`,`xtask image`,`xtask qemu`).
+FROZEN 2026-05-02. Dep:`02`,`07`,`29`,`36`. Provides:build/image workflows and QEMU entrypoints.
 
 ## 1 Purpose
 
-Define workspace layout, `xtask` commands, image-build pipeline (kernel ELF + initramfs + ESP partition), QEMU runner.
+Define workspace layout, `xtask` commands, image-build pipeline (kernel ELF + GRUB ISO + ext4 root disk), QEMU runner.
 
 ## 2 Invariants (frozen)
 
 1. Single Cargo workspace at repo root.
 2. Each kernel crate `#![no_std]`.
-3. `xtask` is the only build entry point users invoke; CI calls `xtask` only.
+3. `xtask` owns build operations; Makefile owns the composed QEMU and smoke entrypoints.
 4. `cargo build` directly with the right target also works (xtask is convenience, not required).
 5. Image is reproducible: same source → same hash. SOURCE_DATE_EPOCH respected.
 
@@ -55,14 +55,18 @@ Userland lives in the sibling `../images` repo (composition from RPMs) and `../p
 xtask kernel    --arch <a> --profile <p>
 xtask artifacts --arch <a>            -> target/artifacts/<a>/kernel.elf
 xtask rootfs    --arch <a>            -> root-<a>.img (copy of ../images output)
-xtask image     --arch <a>            -> boot.img
-xtask qemu      --arch <a> [--gdb] [--smp N] [--mem MB]
+xtask image     --arch <a>            -> oxide-<arch>-grub.iso
+xtask grub      --arch <a> [--smp N] [--features <f>]
 xtask test      [--hosted | --kernel | --loom | --miri | --proptest | --all]
 xtask bench     --arch <a>
 xtask spec-lint                       # CI lints from `08`,`07`
 xtask doc-check                       # MANIFEST consistency, spec header/status/xref lints
 xtask sign-cert <key.pem>             # generate `OXIDE_TRUSTED_KEYS` for module signing
 ```
+
+`make qemu-x86` and `make qemu-arm` are the supported QEMU entrypoints. Each
+invokes `xtask grub` for its architecture; `make smoke-x86` and `make smoke-arm`
+add the serial verdict harness.
 
 ## 5 Image format
 
@@ -86,33 +90,11 @@ Built by `xtask`:
 
 ## 7 QEMU invocation
 
-`xtask qemu --arch x86_64`:
-```
-qemu-system-x86_64 \
-  -machine q35,accel=kvm -cpu host \
-  -m 4G -smp 4 \
-  -drive if=pflash,format=raw,unit=0,file=$OVMF_CODE,readonly=on \
-  -drive if=pflash,format=raw,unit=1,file=$OVMF_VARS \
-  -drive format=raw,file=boot.img \
-  -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
-  -device virtio-rng-pci \
-  -nographic \
-  -serial mon:stdio \
-  -device isa-debug-exit,iobase=0xf4,iosize=0x04
-```
-
-`xtask qemu --arch aarch64`:
-```
-qemu-system-aarch64 \
-  -machine virt -cpu max -m 4G -smp 4 \
-  -bios $EDK2_AARCH64 \
-  -drive format=raw,file=boot.img,if=virtio \
-  -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
-  -device virtio-rng-pci \
-  -nographic
-```
-
-`--gdb` adds `-s -S`.
+`make qemu-x86` builds and boots the x86_64 GRUB rescue ISO through the
+multiboot2 path. `make qemu-arm` builds and boots the aarch64 GRUB rescue ISO
+through the EFI-stub `linux` path. The runner attaches the ext4 root disk and
+passes the architecture's QEMU options; `SMP=<n>` and `FEATURES=<csv>` select
+the exposed Makefile controls.
 
 ## 8 Concurrency
 
@@ -122,18 +104,20 @@ qemu-system-aarch64 \
 
 - `xtask kernel --arch x86_64` and `--arch aarch64` succeed clean checkout.
 - `xtask rootfs` fails with a clear message when `../images/output/<profile>-<arch>-root.img` is absent.
-- `xtask image` produces a `boot.img` whose hash matches across machines (with same toolchain + same rootfs image).
+- `xtask image` produces an `oxide-<arch>-grub.iso` whose hash matches across machines (with same toolchain + same rootfs image).
 - `make smoke-x86` / `make smoke-arm` boot to `oxide login:`.
 - CI runs `xtask spec-lint` and `xtask doc-check`; both pass.
 
 ## 10 Failure modes
 
 - Toolchain mismatch: xtask checks `rustc --version` vs `rust-toolchain.toml`; mismatch errors clearly.
-- Missing UEFI firmware: xtask provides path hints (`OVMF_CODE`, `EDK2_AARCH64`).
+- Missing aarch64 UEFI firmware: xtask provides the `EDK2_AARCH64` path hint.
 
 ## 11 Debug
 
-`xtask qemu --gdb` + `gdb-multiarch` with kernel ELF + symbol-decoded klog.
+`OXIDE_QEMU_GDB=wait make qemu-x86` or `make qemu-arm`, then `gdb-multiarch`
+with the kernel ELF + symbol-decoded klog. `OXIDE_QEMU_GDB_PORT` selects the
+otherwise per-launch port.
 
 ## 12 Cross-spec
 
