@@ -48,13 +48,16 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
 }
 
 /// Resolve an IPv6 scope id to the interface a send leaves by. A zero scope
-/// falls back to the socket's multicast interface; a non-zero one must name a
-/// live interface in this namespace and must not fight `SO_BINDTODEVICE`.
+/// falls back to the socket's multicast or unicast interface; a non-zero one
+/// must name a live interface in this namespace and must not fight the binding.
 /// # C: O(1) lookup
 pub(crate) fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u32)
     -> Result<Option<crate::NetIfaceId>, NetError>
 {
-    if scope_id == 0 { return crate::sock_mcast::bound_iface6(sock, dst); }
+    if scope_id == 0 {
+        return if dst.is_multicast() { crate::sock_mcast::bound_iface6(sock, dst) }
+        else { crate::sock::iface::v6_egress_iface(sock) };
+    }
     let iface = crate::NetIfaceId::from_raw(scope_id);
     let net_ns = sock.net_ns();
     if stack().ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
@@ -330,5 +333,17 @@ mod tests {
             Some(crate::NetIfaceId::from_raw(3)));
         assert_eq!(source, sticky);
         assert_eq!(iface, Some(crate::NetIfaceId::from_raw(3)));
+    }
+
+    #[test]
+    fn zero_scope_uses_ipv6_unicast_interface_before_route_lookup() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let owner = crate::net_ns::test_support::allocate_namespace();
+        let ns = owner.id().as_u64();
+        let iface = stack().ifaces.register_in_ns(alloc::sync::Arc::new(crate::LoopbackDev::new()), ns);
+        let sock = InetSocket::new_udp_in(owner);
+        let ifindex = stack().ifaces.ifindex_in_ns(iface, ns).unwrap();
+        sock.opts.ipv6.set_unicast_if(ifindex);
+        assert_eq!(scoped_iface(&sock, crate::Ipv6Addr::LOOPBACK, 0), Ok(Some(iface)));
     }
 }
