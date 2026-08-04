@@ -112,7 +112,7 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     info.tcpi_rto = (c.rto_ns / 1_000) as u32;
     let snd_mss = if c.own_mss != 0 { c.own_mss as u32 } else { 1460 };
     info.tcpi_snd_mss = snd_mss;
-    info.tcpi_rcv_mss = if c.peer_mss != 0 { c.peer_mss as u32 } else { snd_mss };
+    info.tcpi_rcv_mss = c.rcv_mss() as u32;
     info.tcpi_advmss = snd_mss;
     info.tcpi_pmtu = c.path_mtu;
     info.tcpi_unacked = c.retx_q.len() as u32;
@@ -236,6 +236,20 @@ mod tests {
         assert_eq!(info.tcpi_last_data_sent, 3);
         assert_eq!(info.tcpi_last_data_recv, 4);
         assert_eq!(info.tcpi_last_ack_recv, 5);
+    }
+
+    #[test]
+    fn receive_mss_projects_policy_and_validated_payload_observation() {
+        let mut conn = conn();
+        conn.own_mss = 1_200;
+        conn.rcv_buf_cap = 400;
+        conn.window_clamp = 400;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_rcv_mss, 200);
+        conn.rcv_mss = 800;
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_rcv_mss, 800);
     }
 
     #[test]

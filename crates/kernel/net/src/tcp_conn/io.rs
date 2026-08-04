@@ -207,6 +207,7 @@ impl TcpConn {
                 // has already handed to the program.
                 if self.fastopen_child && seg.len() > hdr.payload_offset() {
                     let payload = &seg[hdr.payload_offset()..];
+                    self.note_rcv_mss(payload.len());
                     self.data_segs_in = self.data_segs_in.saturating_add(1);
                     self.receive_payload(self.rcv_nxt, payload);
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
@@ -327,6 +328,7 @@ impl TcpConn {
                 let mut received_fin = false;
                 if !payload.is_empty() || has_fin {
                     if !payload.is_empty() {
+                        self.note_rcv_mss(payload.len());
                         self.data_segs_in = self.data_segs_in.saturating_add(1);
                     }
                     if hdr.seq == self.rcv_nxt {
