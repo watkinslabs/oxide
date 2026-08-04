@@ -3,7 +3,7 @@
 
 use vfs::pseudo_ino::{PROCFS_DYNAMIC, PROCFS_NET, PROCFS_PID, PROCFS_STATIC};
 
-use super::{next_ino, pid_ino};
+use super::{next_ino, pid_ino, PID_INO_TAG_PERSONALITY, PID_INO_TAG_PROJID_MAP};
 use crate::ids;
 
 /// Every fixed `/proc` identity, so the coverage check below cannot silently
@@ -66,5 +66,16 @@ fn per_pid_numbers_sit_inside_the_per_pid_region() {
             let ino = pid_ino(tag, id);
             assert!(PROCFS_PID.contains(ino), "tag {tag:#x} id {id} → {ino:#x} outside procfs-pid");
         }
+    }
+}
+
+#[test]
+fn projid_map_and_personality_have_distinct_per_pid_identities() {
+    for id in [0u32, 1, 4096, u32::MAX] {
+        assert_ne!(
+            pid_ino(PID_INO_TAG_PROJID_MAP, id),
+            pid_ino(PID_INO_TAG_PERSONALITY, id),
+            "projid_map and personality collide for pid {id}",
+        );
     }
 }

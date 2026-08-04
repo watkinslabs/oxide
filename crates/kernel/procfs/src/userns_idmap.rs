@@ -27,8 +27,6 @@ const PID_INO_TAG_UID_MAP: u64 = 0x2b;
 const PID_INO_TAG_GID_MAP: u64 = 0x2c;
 #[cfg(target_os = "oxide-kernel")]
 const PID_INO_TAG_SETGROUPS: u64 = 0x2d;
-#[cfg(target_os = "oxide-kernel")]
-const PID_INO_TAG_PROJID_MAP: u64 = 0x2e;
 /// `write(2)` on a Linux `setgroups` file accepts only "allow"/"deny" plus
 /// an optional trailing newline (Linux `proc_setgroups_write` `kbuf[8]`).
 const SETGROUPS_BUF_MAX: usize = 8;
@@ -189,7 +187,7 @@ pub fn make(tid: u32, kind: IdMapKind) -> InodeRef {
     let tag = match kind {
         IdMapKind::Uid => PID_INO_TAG_UID_MAP,
         IdMapKind::Gid => PID_INO_TAG_GID_MAP,
-        IdMapKind::Projid => PID_INO_TAG_PROJID_MAP,
+        IdMapKind::Projid => crate::ino::PID_INO_TAG_PROJID_MAP,
     };
     InodeBuilder::new(super::live::pid_ino(tag, tid),
         mk_mode(FileType::Regular, FILE_MODE), default_inode_ops(), Arc::new(UidGidMapOps))
