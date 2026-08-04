@@ -34,6 +34,11 @@ struct TcpInfo {
 const FASTOPEN_CLIENT_FAIL_MASK: u8 = 0x3;
 const FASTOPEN_CLIENT_FAIL_SHIFT: u32 = 1;
 
+const TCPI_OPT_TIMESTAMPS: u8 = 1;
+const TCPI_OPT_SACK: u8 = 2;
+const TCPI_OPT_WSCALE: u8 = 4;
+const TCPI_OPT_ECN: u8 = 8;
+
 const TCP_INFO_LEN: usize = core::mem::size_of::<TcpInfo>();
 /// Short-buffer boundary the copyout tests cut at: everything before
 /// `tcpi_pacing_rate` is the pre-3.15 `struct tcp_info` prefix.
@@ -86,6 +91,7 @@ fn populate(sock: &InetSocket, info: &mut TcpInfo) {
 
 fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
     info.tcpi_state = state_to_byte(c.state);
+    info.tcpi_options = tcp_info_options(c);
     info.tcpi_retransmits = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0) as u8;
     info.tcpi_snd_wscale_rcv = (c.snd_wscale << 4) | (c.rcv_wscale & 0x0F);
     info.tcpi_rto = (c.rto_ns / 1_000) as u32;
@@ -120,6 +126,15 @@ fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
         (c.fastopen_client_fail & FASTOPEN_CLIENT_FAIL_MASK) << FASTOPEN_CLIENT_FAIL_SHIFT;
 }
 
+fn tcp_info_options(c: &net::tcp_conn::TcpConn) -> u8 {
+    let mut options = 0;
+    if c.ts_enabled { options |= TCPI_OPT_TIMESTAMPS; }
+    if c.sack_ok { options |= TCPI_OPT_SACK; }
+    if c.wscale_ok { options |= TCPI_OPT_WSCALE; }
+    if c.ecn_enabled { options |= TCPI_OPT_ECN; }
+    options
+}
+
 fn state_to_byte(s: net::tcp_state::TcpState) -> u8 {
     use net::tcp_state::TcpState::*;
     match s {
@@ -130,13 +145,30 @@ fn state_to_byte(s: net::tcp_state::TcpState) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_tcp_info, populate_conn, TcpInfo, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN};
+    use super::{copy_tcp_info, populate_conn, tcp_info_options, TcpInfo, TCPI_OPT_ECN,
+        TCPI_OPT_SACK, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN};
+
+    fn conn() -> net::tcp_conn::TcpConn {
+        let ip = net::addr::IpAddr::V4(net::addr::Ipv4Addr::LOOPBACK);
+        let endpoint = |port| net::tcp_conn::Endpoint { ip, port };
+        net::tcp_conn::TcpConn::new_client(endpoint(40_000), endpoint(80), 1)
+    }
+
+    #[test]
+    fn options_project_only_the_connection_negotiation_bits() {
+        let mut c = conn();
+        assert_eq!(tcp_info_options(&c), 0);
+        c.ts_enabled = true;
+        c.sack_ok = true;
+        c.wscale_ok = true;
+        c.ecn_enabled = true;
+        assert_eq!(tcp_info_options(&c), TCPI_OPT_TIMESTAMPS | TCPI_OPT_SACK
+            | TCPI_OPT_WSCALE | TCPI_OPT_ECN);
+    }
 
     #[test]
     fn populate_reads_the_connection_owned_receive_and_send_counters() {
-        let ip = net::addr::IpAddr::V4(net::addr::Ipv4Addr::LOOPBACK);
-        let endpoint = |port| net::tcp_conn::Endpoint { ip, port };
-        let mut conn = net::tcp_conn::TcpConn::new_client(endpoint(40_000), endpoint(80), 1);
+        let mut conn = conn();
         conn.state = net::tcp_state::TcpState::Established;
         conn.segs_in = 7;
         conn.bytes_received = 91;
@@ -150,6 +182,10 @@ mod tests {
         conn.rcv_buf_cap = 32_768;
         conn.window_clamp = 32_768;
         conn.snd_wscale = 3;
+        conn.ts_enabled = true;
+        conn.sack_ok = true;
+        conn.wscale_ok = true;
+        conn.ecn_enabled = true;
         conn.send(b"unsent");
         let mut info = TcpInfo::default();
         populate_conn(&conn, &mut info);
@@ -164,6 +200,8 @@ mod tests {
         assert_eq!(info.tcpi_notsent_bytes, 6);
         assert_eq!(info.tcpi_snd_wnd, 12_345);
         assert_eq!(info.tcpi_rcv_wnd, 32_768);
+        assert_eq!(info.tcpi_options, TCPI_OPT_TIMESTAMPS | TCPI_OPT_SACK
+            | TCPI_OPT_WSCALE | TCPI_OPT_ECN);
     }
 
     #[test]
