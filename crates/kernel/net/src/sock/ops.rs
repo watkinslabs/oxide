@@ -176,6 +176,7 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
                 UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
                 TcpConn(alloc::sync::Arc<TcpEntry>),
                 TcpListener(alloc::sync::Arc<TcpListenEntry>),
+                TcpInit,
                 Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),
                 Raw6(alloc::sync::Arc<crate::raw6::Raw6Endpoint>),
                 Bad,
@@ -187,6 +188,7 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
                     SockKind::UnixDgram(q) => Disc::UnixDgram(q.clone()),
                     SockKind::TcpConn(entry) => Disc::TcpConn(entry.clone()),
                     SockKind::TcpListener(listener) => Disc::TcpListener(listener.clone()),
+                    SockKind::TcpInit => Disc::TcpInit,
                     SockKind::Raw4(endpoint) => Disc::Raw4(endpoint.clone()),
                     SockKind::Raw6(endpoint) => Disc::Raw6(endpoint.clone()),
                     _ => Disc::Bad,
@@ -216,6 +218,9 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
                     *sock.kind.lock() = SockKind::TcpInit;
                     Ok(())
                 }
+                // `tcp_disconnect` accepts TCP_CLOSE as a successful no-op.
+                // A fresh TCP socket is already in that state.
+                Disc::TcpInit => Ok(()),
                 Disc::Raw4(endpoint) => { endpoint.disconnect(); Ok(()) }
                 Disc::Raw6(endpoint) => { endpoint.disconnect(); Ok(()) }
                 Disc::Bad => Err(NetError::Einval),
@@ -391,6 +396,13 @@ mod tests {
         } else {
             panic!("expected unix dgram socket");
         }
+    }
+
+    #[test]
+    fn fresh_tcp_af_unspec_connect_is_a_successful_noop() {
+        let sock = alloc::sync::Arc::new(InetSocket::new_tcp());
+        connect(&sock, RemoteAddr::Unspec, false).unwrap();
+        assert!(matches!(*sock.kind.lock(), SockKind::TcpInit));
     }
 
     #[test]
