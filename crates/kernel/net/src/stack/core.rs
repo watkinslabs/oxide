@@ -83,6 +83,18 @@ impl NetStack {
         self.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
             .any(|state| state.group == group && !state.is_empty()))
     }
+    /// True when an IPv4 multicast packet belongs to the ingress interface. # C: O(N groups + sources)
+    pub(crate) fn v4_mcast_owned_by(&self, net_ns: u64, iface: NetIfaceId,
+                                    group: crate::addr::Ipv4Addr, src: crate::addr::Ipv4Addr,
+                                    proto: u8) -> bool {
+        if group == crate::igmp::IPV4_ALL_HOSTS { return true; }
+        let Some(generation) = self.ifaces.control_generation_in_ns_rx(iface, net_ns) else {
+            return false;
+        };
+        self.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|state|
+            state.iface_generation() == generation && state.group == group
+                && state.admits_rx(src, proto)))
+    }
     /// IPv6 local-input decision with link-local interface scoping. # C: O(N addrs)
     pub(crate) fn v6_dst_is_local(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
         let now_ns = self.ra_now_ns();

@@ -186,6 +186,15 @@ impl V4IfaceGroup {
         }
     }
     pub(crate) fn is_empty(&self) -> bool { self.asm_refs == 0 && self.members.is_empty() }
+    /// Admit one IPv4 packet through this interface group's aggregate source policy.
+    /// # C: O(S + M)
+    pub(crate) fn admits_rx(&self, src: Ipv4Addr, proto: u8) -> bool {
+        if self.is_empty() { return false; }
+        if src == Ipv4Addr::ANY || proto == crate::addr::IpProto::Igmp as u8 { return true; }
+        let filter = self.aggregate();
+        let listed = filter.sources.contains(&src);
+        match filter.mode { FilterMode::Include => listed, FilterMode::Exclude => !listed }
+    }
     pub(crate) fn stage(&mut self, prior: Option<&SourceFilter>, now_ns: u64) -> (u64, V4Change) {
         self.queries.clear();
         self.generation = self.generation.wrapping_add(1);
